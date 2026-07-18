@@ -201,6 +201,15 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     body: JSON.stringify(requestBodyForScenario(scenario, stream))
   })
   const responseText = await response.text()
+  if (!isCodexScenario(scenario)) {
+    assert.equal(response.status, 200, `${scenario} 通用客户端应收到上游原始响应，实际 HTTP ${response.status}: ${responseText}`)
+    assert.equal(upstreamHits.length, 1, `${scenario} 通用客户端不得因响应内容策略切换账号：${JSON.stringify({ upstreamHits, responseText })}`)
+    assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-polluted-${scenario}`, `${scenario} 应保持首次调度账号`)
+    assert.equal(upstreamHits.some((hit) => hit.bodyText.includes('公益服务器压力很大')), false, `${scenario} 客户端请求体不应携带污染文本`)
+    assert(responseText.includes('公益服务器压力很大') || responseText.includes('dc.hhhl.cc'), `${scenario} 通用响应不得被管理策略拦截或改写：${responseText}`)
+    assert.match(response.headers.get('content-type') ?? '', stream ? /text\/event-stream|application\/json/ : /application\/json/, `${scenario} 应保留明确 content-type`)
+    return
+  }
   assert.equal(response.status, 200, `${scenario} 应在污染账号命中策略后切到干净账号成功，实际 HTTP ${response.status}: ${responseText}`)
   assert.equal(upstreamHits.length, 2, `${scenario} 应先命中污染账号再服务端切到干净账号：${JSON.stringify({ upstreamHits, responseText })}`)
   assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-polluted-${scenario}`, `${scenario} 第一次请求应命中污染账号`)

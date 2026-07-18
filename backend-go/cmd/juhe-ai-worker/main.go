@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,6 +19,28 @@ import (
 )
 
 func main() {
+	os.Exit(executeCommand(newRootCommand(defaultWorkerCommandDependencies()), os.Stderr))
+}
+
+type workerCommandDependencies struct {
+	loadConfig         func() (config.Config, error)
+	newLogger          func(string, io.Writer) (*slog.Logger, error)
+	runWithRuntimeGate func(context.Context, config.Config, *slog.Logger, app.WorkerRunner) error
+}
+
+type workerRunnerFactory func(config.Config, *slog.Logger) app.WorkerRunner
+
+func defaultWorkerCommandDependencies() workerCommandDependencies {
+	return workerCommandDependencies{
+		loadConfig: func() (config.Config, error) {
+			return config.Load(config.LoadOptions{LoadDotEnv: true})
+		},
+		newLogger:          logging.New,
+		runWithRuntimeGate: app.RunWorkerWithRuntimeGate,
+	}
+}
+
+func newRootCommand(deps workerCommandDependencies) *cobra.Command {
 	root := &cobra.Command{
 		Use:     "juhe-ai-worker",
 		Version: version.Version,
@@ -33,22 +57,9 @@ func main() {
 	root.AddCommand(&cobra.Command{
 		Use:   "ingest",
 		Short: "Run ingest worker",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
-			if err != nil {
-				return err
-			}
-
-			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
-			if err != nil {
-				return err
-			}
-
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-
-			return app.RunIngestWorker(ctx, cfg, logger)
-		},
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error { return app.RunIngestWorker(ctx, cfg, logger) }
+		}),
 	})
 	expirySweepOptions := app.AuthorizationExpirySweepWorkerOptions{
 		Interval:     time.Minute,
@@ -57,22 +68,11 @@ func main() {
 	expirySweepCommand := &cobra.Command{
 		Use:   "authorization-expiry-sweep",
 		Short: "Run authorization expiry sweep worker",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
-			if err != nil {
-				return err
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error {
+				return app.RunAuthorizationExpirySweepWorker(ctx, cfg, logger, expirySweepOptions)
 			}
-
-			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
-			if err != nil {
-				return err
-			}
-
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-
-			return app.RunAuthorizationExpirySweepWorker(ctx, cfg, logger, expirySweepOptions)
-		},
+		}),
 	}
 	expirySweepCommand.Flags().IntVar(&expirySweepOptions.Limit, "limit", 0, "maximum grants to expire per sweep; 0 uses the service default")
 	expirySweepCommand.Flags().DurationVar(&expirySweepOptions.Interval, "interval", expirySweepOptions.Interval, "sweep interval")
@@ -87,22 +87,11 @@ func main() {
 	operationLogRetentionCleanupCommand := &cobra.Command{
 		Use:   "operation-log-retention-cleanup",
 		Short: "Run operation log retention cleanup worker",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
-			if err != nil {
-				return err
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error {
+				return app.RunOperationLogRetentionCleanupWorker(ctx, cfg, logger, operationLogRetentionCleanupOptions)
 			}
-
-			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
-			if err != nil {
-				return err
-			}
-
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-
-			return app.RunOperationLogRetentionCleanupWorker(ctx, cfg, logger, operationLogRetentionCleanupOptions)
-		},
+		}),
 	}
 	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.RetentionDays, "retention-days", 0, "override operation log retention days; 0 reads system settings")
 	operationLogRetentionCleanupCommand.Flags().IntVar(&operationLogRetentionCleanupOptions.BatchSize, "batch-size", 0, "operation logs to delete per batch; 0 uses the service default")
@@ -119,22 +108,11 @@ func main() {
 	usageRangeWindowCommand := &cobra.Command{
 		Use:   "authorization-usage-range-windows-refresh",
 		Short: "Run authorization usage range window refresh worker",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
-			if err != nil {
-				return err
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error {
+				return app.RunAuthorizationUsageRangeWindowRefreshWorker(ctx, cfg, logger, usageRangeWindowOptions)
 			}
-
-			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
-			if err != nil {
-				return err
-			}
-
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-
-			return app.RunAuthorizationUsageRangeWindowRefreshWorker(ctx, cfg, logger, usageRangeWindowOptions)
-		},
+		}),
 	}
 	usageRangeWindowCommand.Flags().DurationVar(&usageRangeWindowOptions.Interval, "interval", usageRangeWindowOptions.Interval, "refresh interval")
 	usageRangeWindowCommand.Flags().DurationVar(&usageRangeWindowOptions.InitialDelay, "initial-delay", usageRangeWindowOptions.InitialDelay, "initial delay before the first refresh")
@@ -149,22 +127,11 @@ func main() {
 	gatewayQuotaSnapshotCommand := &cobra.Command{
 		Use:   "gateway-quota-snapshot-build",
 		Short: "Build gateway quota snapshot from PostgreSQL aggregates",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(config.LoadOptions{LoadDotEnv: true})
-			if err != nil {
-				return err
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error {
+				return app.RunGatewayQuotaSnapshotBuildWorker(ctx, cfg, logger, gatewayQuotaSnapshotOptions)
 			}
-
-			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
-			if err != nil {
-				return err
-			}
-
-			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-			defer stop()
-
-			return app.RunGatewayQuotaSnapshotBuildWorker(ctx, cfg, logger, gatewayQuotaSnapshotOptions)
-		},
+		}),
 	}
 	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.Interval, "interval", gatewayQuotaSnapshotOptions.Interval, "build interval")
 	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.InitialDelay, "initial-delay", gatewayQuotaSnapshotOptions.InitialDelay, "initial delay before the first build")
@@ -174,7 +141,23 @@ func main() {
 	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.SnapshotTTL, "snapshot-ttl", 0, "Redis runtime state snapshot TTL; 0 uses the service default")
 	root.AddCommand(gatewayQuotaSnapshotCommand)
 
-	os.Exit(executeCommand(root, os.Stderr))
+	return root
+}
+
+func newWorkerCommandRunE(deps workerCommandDependencies, factory workerRunnerFactory) func(*cobra.Command, []string) error {
+	return func(cmd *cobra.Command, _ []string) error {
+		cfg, err := deps.loadConfig()
+		if err != nil {
+			return err
+		}
+		logger, err := deps.newLogger(cfg.LogLevel, cmd.ErrOrStderr())
+		if err != nil {
+			return err
+		}
+		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return deps.runWithRuntimeGate(ctx, cfg, logger, factory(cfg, logger))
+	}
 }
 
 func executeCommand(root *cobra.Command, stderr io.Writer) int {

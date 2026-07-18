@@ -17,10 +17,13 @@ export interface SystemForm {
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
-  streamRequestTimeoutSeconds: number
-  streamIdleTimeoutSeconds: number
-  streamClientTotalWaitTimeoutSeconds: number
-  streamMaxLifetimeSeconds: number
+  textFirstResponseTimeoutSeconds: number
+  textStreamIdleTimeoutSeconds: number
+  textUncommittedAttemptMaxLifetimeSeconds: number
+  imageFirstResponseTimeoutSeconds: number
+  imageStreamIdleTimeoutSeconds: number
+  imageUncommittedAttemptMaxLifetimeSeconds: number
+  noAvailableAccountWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
   accountTestTaskConcurrency: number
@@ -50,10 +53,13 @@ export const defaultSystemSettings: SystemForm = {
   defaultTemporaryUnschedulableMinutes: 2,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
-  streamRequestTimeoutSeconds: 120,
-  streamIdleTimeoutSeconds: 30,
-  streamClientTotalWaitTimeoutSeconds: 270,
-  streamMaxLifetimeSeconds: 1800,
+  textFirstResponseTimeoutSeconds: 120,
+  textStreamIdleTimeoutSeconds: 30,
+  textUncommittedAttemptMaxLifetimeSeconds: 1800,
+  imageFirstResponseTimeoutSeconds: 600,
+  imageStreamIdleTimeoutSeconds: 120,
+  imageUncommittedAttemptMaxLifetimeSeconds: 3600,
+  noAvailableAccountWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5,
   accountTestTaskConcurrency: 100,
@@ -86,10 +92,13 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     defaultTemporaryUnschedulableMinutes: integerValue(settings.defaultTemporaryUnschedulableMinutes, '临时不可调用最大暂停时间', 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: integerValue(settings.temporaryUnschedulableRetryIntervalSeconds, '临时状态重试间隔', 0, 3600),
     temporaryUnschedulableRetryAttempts: integerValue(settings.temporaryUnschedulableRetryAttempts, '临时状态重试次数', 0, 10),
-    streamRequestTimeoutSeconds: integerValue(settings.streamRequestTimeoutSeconds, '上游首包等待上限', 10, 3600),
-    streamIdleTimeoutSeconds: integerValue(settings.streamIdleTimeoutSeconds, '输出停顿上限', 1, 3600),
-    streamClientTotalWaitTimeoutSeconds: integerValue(settings.streamClientTotalWaitTimeoutSeconds, '客户端总等待时长', 10, 3600),
-    streamMaxLifetimeSeconds: integerValue(settings.streamMaxLifetimeSeconds, '单条流最大存活时间', 60, 86400),
+    textFirstResponseTimeoutSeconds: integerValue(settings.textFirstResponseTimeoutSeconds, '文本首响应等待上限', 10, 3600),
+    textStreamIdleTimeoutSeconds: integerValue(settings.textStreamIdleTimeoutSeconds, '文本流式停顿上限', 1, 3600),
+    textUncommittedAttemptMaxLifetimeSeconds: integerValue(settings.textUncommittedAttemptMaxLifetimeSeconds, '文本未提交尝试最大存活时间', 60, 86400),
+    imageFirstResponseTimeoutSeconds: integerValue(settings.imageFirstResponseTimeoutSeconds, '图像首响应等待上限', 10, 3600),
+    imageStreamIdleTimeoutSeconds: integerValue(settings.imageStreamIdleTimeoutSeconds, '图像流式停顿上限', 1, 3600),
+    imageUncommittedAttemptMaxLifetimeSeconds: integerValue(settings.imageUncommittedAttemptMaxLifetimeSeconds, '图像未提交尝试最大存活时间', 60, 86400),
+    noAvailableAccountWaitTimeoutSeconds: integerValue(settings.noAvailableAccountWaitTimeoutSeconds, '无可用账号等待上限', 10, 3600),
     streamFailureThresholdCount: integerValue(settings.streamFailureThresholdCount, '流失败诊断计数', 1, 100),
     streamFailureThresholdWindowMinutes: integerValue(settings.streamFailureThresholdWindowMinutes, '流失败诊断窗口', 1, 1440),
     accountTestTaskConcurrency: integerValue(settings.accountTestTaskConcurrency, '账号测试后台并发上限', 1, 1000),

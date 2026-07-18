@@ -98,8 +98,8 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 try {
   settingsRepository.updateSettings({
     temporaryUnschedulableRetryAttempts: 0,
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 10
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 10
   })
   gatewayCache.clearGatewayRuntimeCache()
 

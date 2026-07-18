@@ -3,6 +3,7 @@ import type { Request, Response } from 'express'
 import { logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
+import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import {
   applyAccountErrorHandlingWithCacheInvalidation,
@@ -11,7 +12,10 @@ import {
 } from '../runtime/account-effects.js'
 import { rememberCodexTurnStreamFailureAsync } from '../client-profiles/codex-turn-retry.service.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
-import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
+import {
+  gatewayClientAllowsUpstreamSemanticInterpretation,
+  type OpenAIGatewayClientStrategyContext
+} from '../client-profiles/strategy.js'
 import {
   confirmClientIpAccountAvoidanceAfterFinalFailureAsync,
   confirmClientIpAccountAvoidanceAfterSuccessAsync,
@@ -28,8 +32,7 @@ import {
   endResponse,
   pipeNonStreamUpstreamResponse,
   pipeNonStreamUpstreamResponseForInspection,
-  nonStreamResponseCaptureBytes,
-  readUpstreamBodyLimited
+  nonStreamResponseCaptureBytes
 } from '../upstream/body.js'
 import {
   responseInspectionAuditMetadata
@@ -38,6 +41,8 @@ import {
   forgetOpenAIAccountForSessionAsync
 } from '../runtime/session-affinity.service.js'
 import {
+  gatewayStreamClientRetryErrorCode,
+  gatewayStreamClientRetryMessage,
   isOpenAIJsonResponseContentType,
   writeGatewayStreamFailureEvent,
   type GatewayErrorProtocol
@@ -56,7 +61,6 @@ import {
 import {
   isEffectiveOpenAIStreamRequest,
   isUpstreamRequestAbortedError,
-  upstreamRequestTimeoutMs,
   UpstreamRequestAbortedError,
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
@@ -117,6 +121,7 @@ import {
 import type { UpstreamResponseHandlingResult } from './response-handling-result.js'
 import { inspectBufferedGatewayJsonResponse } from './non-stream-json-inspection.js'
 import { prepareUpstreamResponseForDownstream } from './downstream-headers.js'
+import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
@@ -130,6 +135,7 @@ interface HandleUpstreamResponseInput {
   auditAttemptId: string
   auditCapture: AuditCaptureContext
   settings: GatewaySettings
+  timeoutProfile: GatewayTimeoutProfile
   usageContext: GatewayUsageContext
   startedAt: number
   signal: AbortSignal
@@ -144,6 +150,7 @@ interface HandleUpstreamResponseInput {
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
   codexTurnAccountAvoidanceApplied?: boolean
+  downstreamCommitState: GatewayDownstreamCommitState
 }
 
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
@@ -177,7 +184,22 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, account)
   const responseEndpointFamily = gatewayProtocolResponseEndpointFamilyForRequest(req, account)
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(req, account)
+  const interpretUpstreamResponseSemantics = clientStrategy
+    ? gatewayClientAllowsUpstreamSemanticInterpretation(clientStrategy)
+    : false
   if (!upstreamResponse.body) {
+    if (!interpretUpstreamResponseSemantics) {
+      prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
+      input.downstreamCommitState.markTransportCommitted()
+      endResponse(res)
+      input.downstreamCommitState.markSemanticCommitted()
+      return {
+        alreadyFinalized: false,
+        usage: emptyUsage(),
+        firstTokenMs: Date.now() - startedAt,
+        errorPayload: {}
+      }
+    }
     const errorMessage = '上游响应体为空'
     await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     auditCapture.completeAttempt(auditAttemptId, {
@@ -256,22 +278,26 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     streamResult = await pipeUpstreamStream(
       upstreamResponse.body,
       res,
-      settings,
+      input.timeoutProfile,
       startedAt,
       (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context)),
       signal,
       {
-        clientRetryEnabled: clientStrategy?.retryCoordination.committedFailureSignal === 'protocol_error_event',
+        clientRetryEnabled: interpretUpstreamResponseSemantics
+          && clientStrategy?.retryCoordination.committedFailureSignal === 'protocol_error_event',
+        interpretProtocolFailures: interpretUpstreamResponseSemantics,
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
         firstByteTimeoutMs: input.firstByteTimeoutMs,
         firstByteDeadlineMs: input.firstByteDeadlineMs,
         onFirstByteDeadline: input.onFirstByteDeadline,
-        responseInspectionPolicies: resolveRuntimeResponseInspectionPolicies({
-          account,
-          managementPolicies: input.responseInspectionPolicies
-        }),
+        responseInspectionPolicies: interpretUpstreamResponseSemantics
+          ? resolveRuntimeResponseInspectionPolicies({
+              account,
+              managementPolicies: input.responseInspectionPolicies
+            })
+          : [],
         responseInspectionContext: {
           clientProfile: clientStrategy?.clientProfile ?? defaultClientProfile,
           accountClientCompatibility: account.clientCompatibility,
@@ -280,7 +306,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         downstreamProtocol: clientStrategy?.downstreamProtocol,
         responseProtocol,
         endpointFamily: responseEndpointFamily,
-        prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
+        prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true),
+        downstreamCommitState: input.downstreamCommitState
       }
     )
   } catch (error) {
@@ -352,7 +379,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     statusCode: upstreamResponse.status,
     responseHeaders: upstreamResponse.headers,
     responseBody: streamResult.auditUpstreamBody,
-    success: streamResult.completed && upstreamResponse.ok,
+    success: streamResult.completed && (!interpretUpstreamResponseSemantics || upstreamResponse.ok),
     errorPhase: streamResult.completed ? undefined : 'stream',
     errorCode: streamResult.completed ? undefined : streamResult.errorCode,
     errorMessage: streamResult.completed ? undefined : streamResult.message
@@ -622,6 +649,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   if (signal.aborted) {
     throw new UpstreamRequestAbortedError('请求已取消', true)
   }
+  if (input.downstreamCommitState.transportCommitted && !input.downstreamCommitState.semanticCommitted) {
+    return finalizeNonStreamResponseAfterSseHeartbeat(input)
+  }
   let responseBody: Buffer | undefined
   let responseBodyText: string | undefined
   let responseUsageText: string | undefined
@@ -630,8 +660,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
   let errorPayload: Record<string, unknown> = {}
+  const interpretUpstreamResponseSemantics = input.clientStrategy
+    ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
+    : false
+  const forwardedResponseSuccessful = !interpretUpstreamResponseSemantics || upstreamResponse.ok
   try {
-    if (!upstreamResponse.body) {
+    if (!upstreamResponse.body && interpretUpstreamResponseSemantics) {
       const errorMessage = '上游响应体为空'
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       auditCapture.completeAttempt(auditAttemptId, {
@@ -691,7 +725,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         message: errorMessage,
         errorCode: 'upstream_empty_body'
       }
-    } else if (upstreamResponse.ok) {
+    } else if (upstreamResponse.body) {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
       const inspectJsonResponse = isOpenAIJsonResponseContentType(contentType)
         && shouldBufferNonStreamJsonResponse(input)
@@ -701,10 +735,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
-          prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
+          prepareDownstream: () => {
+            prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
+            input.downstreamCommitState.markTransportCommitted()
+          },
+          onChunkWritten: (bytesWritten) => input.downstreamCommitState.markSemanticCommitted(bytesWritten),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
             markFirstOutput?.()
@@ -753,7 +791,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             firstTokenMs = Date.now() - startedAt
           }
           prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
+          input.downstreamCommitState.markTransportCommitted()
           res.send(completeBody)
+          input.downstreamCommitState.markSemanticCommitted(completeBody.length)
           if (!responseBody && auditCapture.shouldCaptureSuccessPayloads()) {
             responseBody = completeBody
             responseBodyText = completeBodyText
@@ -783,10 +823,17 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
-          prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
+          prepareDownstream: () => {
+            prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
+            input.downstreamCommitState.markTransportCommitted()
+          },
+          onChunkWritten: (bytesWritten) => input.downstreamCommitState.markSemanticCommitted(bytesWritten),
+          onBodyCompleted: (transferredBytes) => {
+            if (transferredBytes === 0) input.downstreamCommitState.markSemanticCommitted()
+          },
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
             markFirstOutput?.()
@@ -807,26 +854,12 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         }
       }
     } else {
-      const readResult = await readUpstreamBodyLimited(upstreamResponse.body, {
-        startedAt,
-        signal,
-        onFirstByte: markFirstOutput
-      })
-      responseBody = readResult.body
-      responseBodyText = readResult.diagnosticBodyText
-      responseUsageText = responseBodyText
-      firstTokenMs = readResult.firstByteMs ?? Date.now() - startedAt
-      if (readResult.truncated) {
-        logger.warn({
-          event: 'gateway_upstream_error_body_truncated',
-          accountId: account.id,
-          statusCode: upstreamResponse.status,
-          readBytes: readResult.readBytes,
-          endpoint: usageContext.endpoint
-        }, '上游错误响应体超过网关捕获上限，已截断用于诊断')
-      }
       prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-      res.send(readResult.body)
+      input.downstreamCommitState.markTransportCommitted()
+      endResponse(res)
+      input.downstreamCommitState.markSemanticCommitted()
+      firstTokenMs = Date.now() - startedAt
+      markFirstOutput?.()
     }
   } catch (error) {
     if (
@@ -1010,10 +1043,10 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   }
   if (responseBody) {
     usage = parseGatewayProtocolUsageFromJsonBufferForRequest(req, account, responseBody)
-  } else if (upstreamResponse.ok) {
+  } else if (responseUsageText) {
     usage = parseGatewayProtocolUsageFromJsonTextFragmentForRequest(req, account, responseUsageText)
   }
-  if (upstreamResponse.ok) {
+  if (forwardedResponseSuccessful) {
     usage = applyNonStreamUsageFallback({
       req,
       account,
@@ -1023,10 +1056,10 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       endpoint: usageContext.endpoint
     })
   }
-  if (!upstreamResponse.ok) {
+  if (interpretUpstreamResponseSemantics && !upstreamResponse.ok) {
     errorPayload = parseGatewayProtocolErrorPayloadForRequest(req, account, responseBodyText ?? '', upstreamResponse.headers)
   }
-  if (upstreamResponse.ok) {
+  if (forwardedResponseSuccessful) {
     bodyOmission = nonStreamImageResponseBodyOmission(responseBodyText ?? responseSemanticText ?? responseBody?.toString('utf8'), responseBody?.byteLength)
     if (bodyOmission) {
       responseBody = undefined
@@ -1038,8 +1071,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     statusCode: upstreamResponse.status,
     responseHeaders: upstreamResponse.headers,
     responseBody: bodyOmission ? undefined : responseBody,
-    success: upstreamResponse.ok,
-    errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
+    success: forwardedResponseSuccessful,
+    errorPhase: forwardedResponseSuccessful ? undefined : 'upstream_response',
     errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
     errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined
   })
@@ -1055,17 +1088,92 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
 }
 
 function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): boolean {
+  const interpretUpstreamResponseSemantics = input.clientStrategy
+    ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
+    : false
   return Boolean(
-    (input.responseInspectionPolicies?.length ?? 0) > 0
-    || input.clientStrategy?.codexCompactionExpected === true
-    || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
+    interpretUpstreamResponseSemantics
+    && (
+      (input.responseInspectionPolicies?.length ?? 0) > 0
+      || input.clientStrategy?.codexCompactionExpected === true
+      || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
+    )
   )
 }
 
-function isFirstByteTimeoutStreamResult(streamResult: { errorCode?: string; firstTokenMs?: number; downstreamBytesWritten: number; outputReceived: boolean }): boolean {
+async function finalizeNonStreamResponseAfterSseHeartbeat(
+  input: HandleUpstreamResponseInput
+): Promise<UpstreamResponseHandlingResult> {
+  const message = '等待可用账户期间已建立 SSE 保活连接，但上游返回了非流式响应，请客户端重试'
+  try {
+    const iterator = input.upstreamResponse.body?.[Symbol.asyncIterator]()
+    await iterator?.return?.()
+  } catch (error) {
+    logger.debug({
+      event: 'gateway_non_stream_after_sse_heartbeat_cancel_failed',
+      accountId: input.account.id,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    }, 'SSE 保活连接无法承接非流式响应，取消上游正文时出现非阻断异常')
+  }
+  const failureEvent = writeGatewayStreamFailureEvent(
+    input.res,
+    gatewayStreamClientRetryMessage,
+    gatewayStreamClientRetryErrorCode,
+    gatewayProtocolClientErrorProtocolForRequest(input.req, input.account),
+    input.clientStrategy?.downstreamProtocol
+  )
+  if (failureEvent?.length && !input.res.writableEnded && !input.res.destroyed) {
+    input.res.write(failureEvent)
+    input.downstreamCommitState.markSemanticCommitted(failureEvent.length)
+    endResponse(input.res)
+  } else if (!input.res.writableEnded && !input.res.destroyed) {
+    input.res.destroy()
+  }
+  input.auditCapture.completeAttempt(input.auditAttemptId, {
+    statusCode: input.upstreamResponse.status,
+    responseHeaders: input.upstreamResponse.headers,
+    success: false,
+    errorPhase: 'downstream',
+    errorCode: 'downstream_transport_conflict',
+    errorMessage: message
+  })
+  await recordCompletedUpstreamAttempt(input.req, {
+    ...input.usageContext,
+    account: input.account,
+    statusCode: input.upstreamResponse.status,
+    success: false,
+    stream: true,
+    startedAt: input.startedAt,
+    usage: emptyUsage(),
+    errorCode: 'downstream_transport_conflict',
+    errorMessage: message,
+    requestSnapshot: input.usageContext.requestSnapshot,
+    responseSnapshot: buildUsageResponseSnapshot({
+      upstreamUrl: input.upstreamUrl,
+      statusCode: input.upstreamResponse.status,
+      headers: input.upstreamResponse.headers,
+      errorMessage: message
+    })
+  })
+  input.auditCapture.finalize({
+    outcome: 'stream_failed',
+    success: false,
+    statusCode: input.res.statusCode,
+    responseHeaders: responseHeadersToObject(input.res),
+    responseBody: failureEvent,
+    responsePartType: 'gateway_response',
+    errorPhase: 'downstream',
+    errorCode: 'downstream_transport_conflict',
+    errorMessage: message,
+    accountId: input.account.id
+  })
+  return { alreadyFinalized: true }
+}
+
+function isFirstByteTimeoutStreamResult(streamResult: { errorCode?: string; firstTokenMs?: number; semanticCommitted: boolean; outputReceived: boolean }): boolean {
   return streamResult.errorCode === 'first_byte_timeout'
     && streamResult.firstTokenMs === undefined
-    && streamResult.downstreamBytesWritten === 0
+    && !streamResult.semanticCommitted
     && !streamResult.outputReceived
 }
 
@@ -1296,7 +1404,11 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     result,
     clientIpAccountAvoidanceTracker
   } = input
-  if (upstreamResponse.ok) {
+  const interpretUpstreamResponseSemantics = input.clientStrategy
+    ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
+    : false
+  const forwardedResponseSuccessful = !interpretUpstreamResponseSemantics || upstreamResponse.ok
+  if (interpretUpstreamResponseSemantics && upstreamResponse.ok) {
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
       if (clearedProxyFailure) {
@@ -1375,7 +1487,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     account,
     stream: isEffectiveOpenAIStreamRequest(req, account),
     statusCode: upstreamResponse.status,
-    success: upstreamResponse.ok,
+    success: forwardedResponseSuccessful,
     firstTokenMs: result.firstTokenMs,
     startedAt,
     completedAtMs: input.completedAtMs,
@@ -1384,7 +1496,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     errorMessage: typeof result.errorPayload.message === 'string' ? result.errorPayload.message : undefined,
     requestSnapshot: result.bodyOmission
       ? usageRequestSnapshotWithBodyOmission(usageContext.requestSnapshot, result.bodyOmission)
-      : upstreamResponse.ok ? undefined : usageContext.requestSnapshot,
+      : forwardedResponseSuccessful ? undefined : usageContext.requestSnapshot,
     responseSnapshot: result.bodyOmission
       ? buildUsageResponseSnapshot({
         upstreamUrl,
@@ -1392,7 +1504,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
         headers: upstreamResponse.headers,
         bodyOmission: result.bodyOmission
       })
-      : upstreamResponse.ok ? undefined : buildUsageResponseSnapshot({
+      : forwardedResponseSuccessful ? undefined : buildUsageResponseSnapshot({
         upstreamUrl,
         statusCode: upstreamResponse.status,
         headers: upstreamResponse.headers,
@@ -1407,13 +1519,13 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     })
   }
   auditCapture.finalize({
-    outcome: upstreamResponse.ok ? 'success' : 'upstream_failed',
-    success: upstreamResponse.ok,
+    outcome: forwardedResponseSuccessful ? 'success' : 'upstream_failed',
+    success: forwardedResponseSuccessful,
     statusCode: upstreamResponse.status,
     responseHeaders: responseHeadersToObject(res),
     responseBody: result.bodyOmission ? undefined : result.responseBodyText,
-    responsePartType: upstreamResponse.ok ? 'gateway_response' : 'gateway_error',
-    errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
+    responsePartType: forwardedResponseSuccessful ? 'gateway_response' : 'gateway_error',
+    errorPhase: forwardedResponseSuccessful ? undefined : 'upstream_response',
     errorCode: typeof result.errorPayload.code === 'string' ? result.errorPayload.code : undefined,
     errorMessage: typeof result.errorPayload.message === 'string' ? result.errorPayload.message : undefined,
     accountId: account.id,

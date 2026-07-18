@@ -95,7 +95,7 @@ func RunAuthorizationExpirySweepWorker(ctx context.Context, cfg config.Config, l
 	if err != nil {
 		return err
 	}
-	publisher, err := newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace)
+	publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
 	if err != nil {
 		return err
 	}

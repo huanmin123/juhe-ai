@@ -56,8 +56,8 @@ func TestW5SystemSettingsMigrationSeedsNodeDefaults(t *testing.T) {
 	}
 	sql := string(source)
 	defaults := nodeSystemSettingDefaultJSON()
-	if len(defaults) != 52 {
-		t.Fatalf("initial migration default count = %d, want 52", len(defaults))
+	if len(defaults) != 55 {
+		t.Fatalf("initial migration default count = %d, want 55", len(defaults))
 	}
 	if count := strings.Count(sql, "'sys_admin'"); count != len(defaults) {
 		t.Fatalf("migration sys_admin row count = %d, want %d", count, len(defaults))
@@ -561,10 +561,13 @@ func nodeSystemSettingDefaultJSON() map[string]string {
 		"defaultTemporaryUnschedulableMinutes":       "2",
 		"temporaryUnschedulableRetryIntervalSeconds": "3",
 		"temporaryUnschedulableRetryAttempts":        "3",
-		"streamRequestTimeoutSeconds":                "120",
-		"streamIdleTimeoutSeconds":                   "30",
-		"streamClientTotalWaitTimeoutSeconds":        "270",
-		"streamMaxLifetimeSeconds":                   "1800",
+		"textFirstResponseTimeoutSeconds":           "120",
+		"textStreamIdleTimeoutSeconds":              "30",
+		"textUncommittedAttemptMaxLifetimeSeconds":  "1800",
+		"imageFirstResponseTimeoutSeconds":          "600",
+		"imageStreamIdleTimeoutSeconds":             "120",
+		"imageUncommittedAttemptMaxLifetimeSeconds": "3600",
+		"noAvailableAccountWaitTimeoutSeconds":      "270",
 		"streamFailureThresholdCount":                "3",
 		"streamFailureThresholdWindowMinutes":        "5",
 		"operationLogRetentionDays":                  "365",

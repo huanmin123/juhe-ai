@@ -113,8 +113,8 @@ async function main(): Promise<void> {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
     auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
     settingsRepository.updateSettings({
-      streamRequestTimeoutSeconds: 10,
-      streamIdleTimeoutSeconds: 10,
+      textFirstResponseTimeoutSeconds: 10,
+      textStreamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
@@ -192,8 +192,8 @@ async function main(): Promise<void> {
     assert.equal(Number(noFirstChunkFailureState?.stream_failure_count ?? 0), 0, '首段前失败未产生可见输出，不应累计账号流失败计数')
 
     settingsRepository.updateSettings({
-      streamRequestTimeoutSeconds: 10,
-      streamIdleTimeoutSeconds: 10,
+      textFirstResponseTimeoutSeconds: 10,
+      textStreamIdleTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
@@ -1071,8 +1071,8 @@ function sendFuzzBackupSuccess(res: http.ServerResponse, scenario: string): void
 
 async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 1,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1100,8 +1100,8 @@ async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string)
 
 async function requestFragmentedSseEventKeepalive(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 1,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1129,8 +1129,8 @@ async function requestFragmentedSseEventKeepalive(baseUrl: string, apiKey: strin
 
 async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 1,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1158,8 +1158,8 @@ async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): 
 
 async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 1,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1187,8 +1187,8 @@ async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promi
 
 async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 1,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1216,8 +1216,8 @@ async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): P
 
 async function requestHeartbeatOnlyServerRetry(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 1,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 1,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1245,8 +1245,8 @@ async function requestHeartbeatOnlyServerRetry(baseUrl: string, apiKey: string):
 
 async function requestAndCloseAfterTerminal(baseUrl: string, apiKey: string): Promise<void> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 10,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1305,8 +1305,8 @@ async function requestStreamFailureBeforeOutput(
   scenario: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 10,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1335,8 +1335,8 @@ async function requestGenericStreamFailureBeforeOutput(
   scenario: string
 ): Promise<{ status: number; contentType: string; streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 10,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1377,8 +1377,8 @@ async function requestStreamScenario(
   traceId?: string
 ): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 10,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()
@@ -1409,8 +1409,8 @@ async function requestJsonResponseForStreamRequest(
   apiKey: string
 ): Promise<{ text: string; contentType: string }> {
   settingsRepository.updateSettings({
-    streamRequestTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 10,
+    textFirstResponseTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 10,
     temporaryUnschedulableRetryAttempts: 0
   })
   gatewayCache.clearGatewayRuntimeCache()

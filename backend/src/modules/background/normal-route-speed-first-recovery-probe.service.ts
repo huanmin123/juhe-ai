@@ -101,9 +101,9 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0,
-      streamRequestTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteThresholdMs),
-      streamClientTotalWaitTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteThresholdMs),
-      streamMaxLifetimeSeconds: Math.max(60, probeTimeoutSeconds(item.config.firstByteThresholdMs))
+      textFirstResponseTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteThresholdMs),
+      noAvailableAccountWaitTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteThresholdMs),
+      textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, probeTimeoutSeconds(item.config.firstByteThresholdMs))
     }
   })
 

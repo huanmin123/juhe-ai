@@ -17,15 +17,31 @@ import (
 )
 
 const (
-	pageDataAccountsStaticDomain = "accounts.static"
-	pageDataRangeResetOperation  = "range_reset"
-	pageDataMaxEventOwners       = 256
-	pageDataEventLogTTLSeconds   = 8 * 24 * 60 * 60
+	pageDataAccountsStaticDomain  = "accounts.static"
+	pageDataAccountsOptionsDomain = "accounts.options"
+	pageDataRangeResetOperation   = "range_reset"
+	pageDataMaxEventOwners        = 256
+	pageDataEventLogTTLSeconds    = 8 * 24 * 60 * 60
 )
 
 var (
 	pageDataOccurredAtPattern  = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
 	pageDataRedisNamespaceRule = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,64}$`)
+	pageDataDomains            = map[string]struct{}{
+		pageDataAccountsStaticDomain:  {},
+		"accounts.runtime":            {},
+		pageDataAccountsOptionsDomain: {},
+		"usage.records":               {},
+		"announcements.public":        {},
+		"providers.catalog":           {},
+		"groups.static":               {},
+		"systemAccounts.options":      {},
+		"teams.options":               {},
+		"routeStrategies.options":     {},
+		"stats.overview":              {},
+		"stats.accountUsage":          {},
+		"stats.aiPerformance":         {},
+	}
 )
 
 // PageDataChangeEvent is the Node page-data protocol v2 event shape.
@@ -106,16 +122,27 @@ func (p *PageDataChangePublisher) NewAccountsStaticResetEvents(ownerIDs []string
 	if p == nil {
 		return nil, errors.New("page data publisher is required")
 	}
-	return newAccountStaticResetEvents(ownerIDs, allScopes, p.now(), p.newEventID), nil
+	return p.NewRangeResetEvents(pageDataAccountsStaticDomain, ownerIDs, allScopes)
+}
+
+// NewRangeResetEvents creates Node-compatible range_reset events for a supported domain.
+func (p *PageDataChangePublisher) NewRangeResetEvents(domain string, ownerIDs []string, allScopes bool) ([]PageDataChangeEvent, error) {
+	if p == nil {
+		return nil, errors.New("page data publisher is required")
+	}
+	if !isSupportedPageDataDomain(domain) {
+		return nil, fmt.Errorf("unsupported page data domain %q", domain)
+	}
+	return newRangeResetEvents(domain, ownerIDs, allScopes, p.now(), p.newEventID), nil
 }
 
 // NewAccountStaticResetEvents builds Node-compatible accounts.static reset
 // events using UUID event ids and the supplied occurrence time.
 func NewAccountStaticResetEvents(ownerIDs []string, allScopes bool, now time.Time) []PageDataChangeEvent {
-	return newAccountStaticResetEvents(ownerIDs, allScopes, now, uuid.NewString)
+	return newRangeResetEvents(pageDataAccountsStaticDomain, ownerIDs, allScopes, now, uuid.NewString)
 }
 
-func newAccountStaticResetEvents(ownerIDs []string, allScopes bool, now time.Time, newEventID func() string) []PageDataChangeEvent {
+func newRangeResetEvents(domain string, ownerIDs []string, allScopes bool, now time.Time, newEventID func() string) []PageDataChangeEvent {
 	owners := normalizePageDataOwners(ownerIDs)
 	if len(owners) == 0 {
 		owners = []string{}
@@ -125,7 +152,7 @@ func newAccountStaticResetEvents(ownerIDs []string, allScopes bool, now time.Tim
 		end := min(start+pageDataMaxEventOwners, len(owners))
 		events = append(events, PageDataChangeEvent{
 			EventID:               newEventID(),
-			Domain:                pageDataAccountsStaticDomain,
+			Domain:                domain,
 			Operation:             pageDataRangeResetOperation,
 			FieldMask:             []string{},
 			OwnerSystemAccountIDs: append([]string(nil), owners[start:end]...),
@@ -213,14 +240,14 @@ func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 	if strings.TrimSpace(event.EventID) == "" {
 		return errors.New("page data eventId is required")
 	}
-	if event.Domain != pageDataAccountsStaticDomain {
+	if !isSupportedPageDataDomain(event.Domain) {
 		return fmt.Errorf("unsupported page data domain %q", event.Domain)
 	}
 	if event.Operation != pageDataRangeResetOperation {
 		return fmt.Errorf("unsupported page data operation %q", event.Operation)
 	}
 	if len(event.FieldMask) != 0 {
-		return errors.New("accounts.static range_reset fieldMask must be empty")
+		return fmt.Errorf("%s range_reset fieldMask must be empty", event.Domain)
 	}
 	if len(event.OwnerSystemAccountIDs) > pageDataMaxEventOwners {
 		return fmt.Errorf("page data owner count exceeds %d", pageDataMaxEventOwners)
@@ -231,7 +258,7 @@ func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 		}
 	}
 	if !event.MembershipChanged || !event.OrderChanged || !event.FilterChanged || !event.PageChanged {
-		return errors.New("accounts.static range_reset change flags must all be true")
+		return fmt.Errorf("%s range_reset change flags must all be true", event.Domain)
 	}
 	if !pageDataOccurredAtPattern.MatchString(event.OccurredAt) {
 		return errors.New("page data occurredAt must use UTC milliseconds")
@@ -240,6 +267,11 @@ func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 		return fmt.Errorf("invalid page data occurredAt: %w", err)
 	}
 	return nil
+}
+
+func isSupportedPageDataDomain(domain string) bool {
+	_, ok := pageDataDomains[domain]
+	return ok
 }
 
 func normalizePageDataOwners(ownerIDs []string) []string {
