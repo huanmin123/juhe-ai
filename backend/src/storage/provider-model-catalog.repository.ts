@@ -112,7 +112,7 @@ export async function listBuiltInProviderModelsAsync(providerCodes: string[]): P
     SELECT ${columns()} FROM juhe_business.provider_model_catalog
     WHERE provider_code = ANY(?::text[])
       AND status = 'active'
-      AND catalog_visible = 1
+      AND catalog_visible = TRUE
       AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
     ORDER BY provider_code, catalog_order, model, id
   `, [providerCodes])
