@@ -284,7 +284,6 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         modelCheckProtocol: target.modelCheckProfile.protocol,
         model,
         profile: defaultProfile,
-        includeExtremeContext: input.includeExtremeContext === true,
         trustedComparison,
         trustedComparisonAccountId: comparison?.targetId,
         trustedComparisonAccountName: comparison?.targetName
@@ -301,7 +300,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
 
   try {
     throwIfAborted(signal)
-    const targetSuite = await executeProbeSuite(target, model, 'target', input.includeExtremeContext === true, signal, progress)
+    const targetSuite = await executeProbeSuite(target, model, 'target', signal, progress)
     const targetUnavailable = targetSuite.basic?.success !== true
     const tokenIntegrity = targetUnavailable || target.modelCheckProfile.protocol !== 'openai_responses' || !target.accountId || !target.candidateAccounts?.[0]?.baseUrl
       ? undefined
@@ -332,7 +331,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     const comparisonSuite = comparison
       ? targetUnavailable
         ? undefined
-        : await executeProbeSuite(comparison, model, 'trusted_comparison', input.includeExtremeContext === true, signal, progress)
+        : await executeProbeSuite(comparison, model, 'trusted_comparison', signal, progress)
       : undefined
     const trustedComparisonItem = comparisonSuite
       ? buildTrustedComparisonItem(targetSuite, comparisonSuite)
@@ -639,7 +638,6 @@ async function executeProbeSuite(
   target: ModelCheckTarget,
   model: SupportedModel,
   prefix: ModelCheckProbePrefix,
-  includeExtremeContext: boolean,
   signal?: AbortSignal,
   progress?: ModelCheckProgressReporter
 ): Promise<ProbeSuiteResult> {
@@ -691,7 +689,7 @@ async function executeProbeSuite(
   pushProbeItem(items, behaviorItem, progress)
 
   const longContextObservations: LongContextProbeObservation[] = []
-  for (const definition of longContextProbeDefinitionsForModel(target.providerCode, model, includeExtremeContext)) {
+  for (const definition of longContextProbeDefinitionsForModel(target.providerCode, model)) {
     const longContext = await runModelCheckProbeRequest(
       target,
       createModelCheckLongContextRequest(profile.protocol, model, definition),

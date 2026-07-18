@@ -8,6 +8,7 @@ import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-
 import { mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
+import { accountPageDataOwnerIds, publishAccountRuntimeChange } from '../page-data/page-data-change.publisher.js'
 
 export function registerAccountForceActivateRoutes(router: Router): void {
   router.post('/:id/force-activate', mutationGuard({
@@ -69,6 +70,11 @@ export function registerAccountForceActivateRoutes(router: Router): void {
         }
       }, req)
       await clearServerAccountRuntimeAvailability({ accountId: account.id }).catch(() => undefined)
+      await publishAccountRuntimeChange({
+        accountId: account.id,
+        ownerSystemAccountIds: accountPageDataOwnerIds(account, resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)),
+        fieldMask: ['status', 'schedulable', 'lastErrorCode', 'lastErrorMessage']
+      })
       res.json(ok(sanitizeAccountResponse(account)))
     } catch (error) {
       const message = error instanceof Error ? error.message : '人工恢复账户失败'

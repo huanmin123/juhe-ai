@@ -64,9 +64,59 @@ try {
   const ownerAccess = { systemAccountId: seed.ownerId, role: 'user' as const }
   const granteeAccess = { systemAccountId: seed.granteeId, role: 'user' as const }
 
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 1
+    WHERE id = ?
+  `).run(seed.ownerAccountId)
   const authorizedAccount = authorizedAccountForSource(seed.ownerAccountId, granteeAccess)
   const accountAuthorizationId = authorizedAccount?.accountAuthorizationId
   assert(accountAuthorizationId, '被授权账户应带运行态授权 ID')
+  assert.equal(repositories.findAccountSummary(seed.ownerAccountId, ownerAccess)?.status, 'active', '持续探活同步回归要求来源账户保持正常')
+  const oldObservationStartedAt = '2020-01-01T00:00:00.000Z'
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'temporary_unavailable',
+        schedulable = 1,
+        cooldown_retest_failure_count = 4,
+        cooldown_retest_observation_started_at = ?,
+        cooldown_retest_last_at = ?,
+        cooldown_retest_last_status_code = 503,
+        cooldown_until = ?
+    WHERE id = ?
+  `).run(oldObservationStartedAt, oldObservationStartedAt, oldObservationStartedAt, authorizedAccount.id)
+  const policyChangedAt = Date.now()
+  repositories.updateAccount(seed.ownerAccountId, {
+    temporaryUnavailableContinuousProbeEnabled: false
+  }, ownerAccess)
+  const boundedInstance = databaseModule.getBusinessDatabase().prepare(`
+    SELECT cooldown_retest_failure_count, cooldown_retest_observation_started_at,
+      cooldown_retest_last_at, cooldown_retest_last_status_code, cooldown_until,
+      temporary_unavailable_continuous_probe_enabled
+    FROM accounts
+    WHERE id = ?
+  `).get(authorizedAccount.id) as {
+    cooldown_retest_failure_count: number
+    cooldown_retest_observation_started_at: string | null
+    cooldown_retest_last_at: string | null
+    cooldown_retest_last_status_code: number | null
+    cooldown_until: string | null
+    temporary_unavailable_continuous_probe_enabled: number
+  }
+  assert.equal(boundedInstance.temporary_unavailable_continuous_probe_enabled, 0, '授权实例必须同步来源的关闭策略')
+  assert.equal(boundedInstance.cooldown_retest_failure_count, 0, '来源正常时也必须按授权实例自身临时不可用状态清零失败计数')
+  assert.notEqual(boundedInstance.cooldown_retest_observation_started_at, oldObservationStartedAt, '授权实例必须从保存时重启十分钟观察代次')
+  assert.ok(Date.parse(boundedInstance.cooldown_retest_observation_started_at ?? '') >= policyChangedAt, '授权实例新观察代次不得早于本次保存')
+  assert.equal(boundedInstance.cooldown_retest_last_at, null, '授权实例重启观察窗口时必须清理旧复测时间')
+  assert.equal(boundedInstance.cooldown_retest_last_status_code, null, '授权实例重启观察窗口时必须清理旧状态码')
+  assert.ok(Date.parse(boundedInstance.cooldown_until ?? '') > policyChangedAt, '授权实例重启观察窗口后必须尽快安排下一次复测')
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 1, cooldown_until = NULL,
+        cooldown_retest_failure_count = 0, cooldown_retest_observation_started_at = NULL,
+        cooldown_retest_last_at = NULL, cooldown_retest_last_status_code = NULL
+    WHERE id = ?
+  `).run(authorizedAccount.id)
   assert.equal(authorizedAccount?.permissions?.canDelete, false, '个人直授权账户不应暴露删除权限')
   assert.equal(authorizedAccount?.permissions?.canReturnAuthorization, true, '个人直授权账户应暴露归还授权权限')
   const initialAccountGrant = repositories

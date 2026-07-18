@@ -15,6 +15,7 @@ export interface AccountImportCreatePayloadAccount {
   supportedModels?: string[]
   healthCheckModel?: string
   healthCheckEndpointMode?: AccountHealthCheckEndpointMode
+  temporaryUnavailableContinuousProbeEnabled?: boolean
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -48,6 +49,7 @@ export function buildAccountImportCreatePayload(
   if (account.supportedModels !== undefined) payload.supportedModels = account.supportedModels
   if (account.healthCheckModel !== undefined) payload.healthCheckModel = account.healthCheckModel
   if (account.healthCheckEndpointMode !== undefined) payload.healthCheckEndpointMode = account.healthCheckEndpointMode
+  if (account.temporaryUnavailableContinuousProbeEnabled !== undefined) payload.temporaryUnavailableContinuousProbeEnabled = account.temporaryUnavailableContinuousProbeEnabled
   if (account.modelMappings !== undefined) payload.modelMappings = account.modelMappings
   if (account.tags !== undefined) payload.tags = account.tags
   if (account.accountExpiresAt !== undefined) payload.accountExpiresAt = account.accountExpiresAt

@@ -43,6 +43,7 @@ export const importAccountKeys: ReadonlySet<string> = new Set([
   'supportedModels',
   'healthCheckModel',
   'healthCheckEndpointMode',
+  'temporaryUnavailableContinuousProbeEnabled',
   'modelMappings',
   'tags',
   'accountExpiresAt',

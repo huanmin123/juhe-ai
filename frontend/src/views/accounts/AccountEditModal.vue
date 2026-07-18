@@ -151,6 +151,23 @@
                 :authorized-editing="authorizedEditing"
               />
 
+              <section class="form-section">
+                <div class="form-section-title">
+                  <span>恢复探活</span>
+                  <a-tooltip title="仅影响账户进入临时不可调用后的后台恢复探测。关闭后仍在前 10 分钟按退避有限复测；最终复测仍失败才标记异常。周期健康检查、首次激活、人工测试和限流恢复不受影响。">
+                    <span class="form-section-tip">?</span>
+                  </a-tooltip>
+                </div>
+                <a-form-item label="持续恢复探活">
+                  <a-switch
+                    v-model:checked="form.temporaryUnavailableContinuousProbeEnabled"
+                    :disabled="authorizedEditing"
+                    checked-children="开启"
+                    un-checked-children="关闭"
+                  />
+                </a-form-item>
+              </section>
+
               <AccountExtraInfoSection
                 :form="form"
                 :readonly="authorizedEditing"
@@ -352,7 +369,8 @@ const advancedConfiguredCount = computed(() => {
     errorPolicyRules.value.length > 0,
     responseInspectionRules.value.length > 0,
     Boolean(form.serviceTierOverride),
-    Boolean(form.reasoningEffortOverride)
+    Boolean(form.reasoningEffortOverride),
+    form.temporaryUnavailableContinuousProbeEnabled === false
   ]
   return checks.filter(Boolean).length
 })

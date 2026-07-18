@@ -102,6 +102,7 @@ import {
   createSameAccountRetryBudget,
   type SameAccountRetryBudget
 } from '../dispatch/upstream-dispatch.js'
+import { gatewayRequestAbsoluteDeadlineAtMs } from '../runtime/gateway-request-deadline.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -121,6 +122,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   requestLane?: OpenAIGatewayRequestLane
   ignoreAccountRuntimeSuppression?: boolean
   sameAccountRetryBudget?: SameAccountRetryBudget
+  requestDeadlineAtMs?: number
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -154,6 +156,8 @@ export interface OpenAIGatewayDispatchContext {
   normalRouteLatencyDegradationApplied?: boolean
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
+  precheckHalfOpenEligible?: boolean
+  requestDeadlineAtMs: number
   sameAccountRetryBudget: SameAccountRetryBudget
   releaseClientIpConcurrency: () => void
 }
@@ -240,6 +244,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
+  const requestDeadlineAtMs = options.requestDeadlineAtMs
+    ?? gatewayRequestAbsoluteDeadlineAtMs(startedAt, activeGatewaySettings.streamClientTotalWaitTimeoutSeconds)
+  options.requestDeadlineAtMs = requestDeadlineAtMs
   const sameAccountRetryBudget = options.sameAccountRetryBudget
     ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
   options.sameAccountRetryBudget = sameAccountRetryBudget
@@ -724,6 +731,8 @@ export async function prepareOpenAIGatewayDispatchContext(
         systemAccountId,
         apiKeyId,
         groupId,
+        startedAt,
+        requestDeadlineAtMs,
         signal
       }),
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
@@ -801,6 +810,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIp: gatewayClientIp,
     clientStrategy,
     requestLane,
+    requestDeadlineAtMs,
     signal,
     ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
@@ -874,6 +884,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     normalRouteLatencyDegradationApplied: dispatchPreparation.normalRouteLatencyDegradationApplied,
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
+    precheckHalfOpenEligible: dispatchPreparation.precheckHalfOpenEligible,
+    requestDeadlineAtMs,
     sameAccountRetryBudget,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
@@ -1040,6 +1052,8 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
+  startedAt: number
+  requestDeadlineAtMs: number
   signal?: AbortSignal
 }): Promise<UpstreamAccount[]> {
   const requestedModel = requestModel(input.req)
@@ -1078,6 +1092,8 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
     isReady: (state) => state.accounts.length > 0,
     nextRetryAfterMs: (state) => nextRecoverableAccountRetryAfterMs(state.recoverableAccounts),
     auditCapture: input.auditCapture,
+    requestStartedAtMs: input.startedAt,
+    deadlineAtMs: input.requestDeadlineAtMs,
     signal: input.signal
   })
   return wait.state.accounts

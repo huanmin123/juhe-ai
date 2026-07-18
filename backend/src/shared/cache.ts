@@ -37,6 +37,10 @@ export interface SharedJsonCache<V extends {}> {
   set(key: string, value: V, options?: { ttlMs?: number }): Promise<void>
   delete(key: string): Promise<void>
   clear(): Promise<void>
+  acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean>
+  renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean>
+  setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean>
+  releaseLease(key: string, token: string): Promise<void>
 }
 
 export function clearSharedJsonCacheInBackground<V extends {}>(
@@ -176,6 +180,22 @@ class DriverSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
     await this.cache().clear()
   }
 
+  async acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
+    return await this.cache().acquireLease(key, options)
+  }
+
+  async renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean> {
+    return await this.cache().renewLease(key, token, options)
+  }
+
+  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean> {
+    return await this.cache().setIfLeaseOwner(key, token, value, options)
+  }
+
+  async releaseLease(key: string, token: string): Promise<void> {
+    await this.cache().releaseLease(key, token)
+  }
+
   private cache(): SharedJsonCache<V> {
     if (runtimeConfig.cacheDriver !== 'redis') return this.memoryCache
     this.redisCache ??= new RedisSharedJsonCache(this.options)
@@ -186,6 +206,7 @@ class DriverSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
 class MemorySharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   readonly name: string
   private store: LRUCache<string, V>
+  private readonly leases = new Map<string, { token: string; expiresAt: number }>()
 
   constructor(private readonly options: SharedJsonCacheOptions<V>) {
     this.name = options.name
@@ -207,6 +228,31 @@ class MemorySharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   async clear(): Promise<void> {
     this.store = createSharedStore(this.options)
   }
+
+  async acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
+    const current = this.leases.get(key)
+    if (current && current.expiresAt > Date.now()) return false
+    this.leases.set(key, { token: options.token, expiresAt: Date.now() + normalizeTtlMs(options.ttlMs) })
+    return true
+  }
+
+  async renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean> {
+    const current = this.leases.get(key)
+    if (!current || current.token !== token || current.expiresAt <= Date.now()) return false
+    current.expiresAt = Date.now() + normalizeTtlMs(options.ttlMs)
+    return true
+  }
+
+  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean> {
+    const current = this.leases.get(key)
+    if (!current || current.token !== token || current.expiresAt <= Date.now()) return false
+    this.store.set(key, value, options?.ttlMs === undefined ? undefined : { ttl: normalizeTtlMs(options.ttlMs) })
+    return true
+  }
+
+  async releaseLease(key: string, token: string): Promise<void> {
+    if (this.leases.get(key)?.token === token) this.leases.delete(key)
+  }
 }
 
 class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
@@ -214,6 +260,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   private readonly keyPrefix: string
   private readonly indexKeyPrefix: string
   private readonly versionKey: string
+  private readonly leaseKeyPrefix: string
 
   constructor(private readonly options: SharedJsonCacheOptions<V>) {
     const cacheUrl = runtimeConfig.redis.cacheUrl
@@ -225,6 +272,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
     this.keyPrefix = redisNamespacedKey(`juhe-ai:cache:${safeName}:`)
     this.indexKeyPrefix = redisNamespacedKey(`juhe-ai:cache-index:${safeName}:`)
     this.versionKey = redisNamespacedKey(`juhe-ai:cache-version:${safeName}`)
+    this.leaseKeyPrefix = redisNamespacedKey(`juhe-ai:cache-lease:${safeName}:`)
   }
 
   async get(key: string): Promise<V | undefined> {
@@ -260,6 +308,43 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
 
   async clear(): Promise<void> {
     await (await this.client()).set(this.versionKey, nextCacheVersion(), { PX: 30 * 24 * 60 * 60 * 1000 })
+  }
+
+  async acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
+    const result = await (await this.client()).set(
+      `${this.leaseKeyPrefix}${key}`,
+      options.token,
+      { PX: normalizeTtlMs(options.ttlMs), NX: true }
+    )
+    return result === 'OK'
+  }
+
+  async renewLease(key: string, token: string, options: { ttlMs: number }): Promise<boolean> {
+    const result = await (await this.client()).eval(renewSharedCacheLeaseScript, {
+      keys: [`${this.leaseKeyPrefix}${key}`],
+      arguments: [token, String(normalizeTtlMs(options.ttlMs))]
+    })
+    return Number(result) === 1
+  }
+
+  async setIfLeaseOwner(key: string, token: string, value: V, options?: { ttlMs?: number }): Promise<boolean> {
+    const ttlMs = normalizeTtlMs(options?.ttlMs ?? this.options.ttlMs)
+    const location = await this.redisLocation(key)
+    const client = await this.client()
+    const result = await client.eval(setSharedCacheEntryIfLeaseOwnerScript, {
+      keys: [`${this.leaseKeyPrefix}${key}`, location.key],
+      arguments: [token, JSON.stringify(value), String(ttlMs)]
+    })
+    if (Number(result) !== 1) return false
+    await this.trackKeyAndTrim(client, location.indexKey, location.key, ttlMs)
+    return true
+  }
+
+  async releaseLease(key: string, token: string): Promise<void> {
+    await (await this.client()).eval(releaseSharedCacheLeaseScript, {
+      keys: [`${this.leaseKeyPrefix}${key}`],
+      arguments: [token]
+    })
   }
 
   private client(): Promise<RedisCommandClient> {
@@ -339,3 +424,25 @@ function stringArray(value: unknown): string[] {
 function nextCacheVersion(): string {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
+
+const releaseSharedCacheLeaseScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`
+
+const renewSharedCacheLeaseScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+`
+
+const setSharedCacheEntryIfLeaseOwnerScript = `
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  redis.call('SET', KEYS[2], ARGV[2], 'PX', ARGV[3])
+  return 1
+end
+return 0
+`

@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
+import { runAccountBalanceRefresh } from '../../../../backend/src/modules/background/account-balance-refresh.job'
+import { WorkerScheduler } from '../../../../backend/src/modules/background/worker-scheduler'
+import { logger } from '../../../../backend/src/shared/logger'
 import { formatDateTime, parseStrictDatePickerValue, serverDateTimeTimestamp } from '../../shared/formatters'
+import type { SystemMetricsOverview } from '../../types/domain'
 import { auditLogEmptyDescription } from '../../views/audit-logs/auditLogRetentionText'
+import {
+  backgroundJobStatusColor,
+  backgroundJobStatusText
+} from '../../views/stats/statsBackgroundJobs'
 import {
   backgroundQueueActiveCount,
   backgroundQueueStatusColor,
@@ -12,6 +20,7 @@ import {
 } from '../../views/stats/statsBackgroundQueues'
 
 const goNanosecondTime = '2026-07-14T12:34:56.123456789Z'
+logger.level = 'silent'
 assert.notEqual(formatDateTime(goNanosecondTime), '时间格式异常', 'Go RFC3339Nano 时间必须可显示')
 assert.equal(serverDateTimeTimestamp('2026-07-14T20:34:56.123456+08:00'), Date.parse('2026-07-14T12:34:56.123456Z'))
 assert(parseStrictDatePickerValue('2026-07-14T12:34:56.1Z'), '1 位小数 RFC3339 时间必须可用于时间选择器')
@@ -71,6 +80,8 @@ const noActiveMetricRows = buildBackgroundQueueRows({
 } as never)
 assert.equal(backgroundQueueActiveCount(noActiveMetricRows[0]!), undefined, '没有任何活跃来源时必须显示不适用而不是 0')
 
+await testAccountBalancePartialAndRecoveryAcrossRuntimeDto()
+
 assert.equal(auditLogEmptyDescription(undefined), '暂无审计日志。')
 assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 6, successSampleRate: 0.025 })), /最近 6 小时.*2\.5%/)
 assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 0, successSampleRate: 0 })), /成功请求当前不记录/)
@@ -78,10 +89,15 @@ assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 
 assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 1, successSampleRate: 0.1, successRetentionDays: 0 })), /最近 1 小时.*不长期保留/)
 
 const jobsCardSource = readFileSync(new URL('../../views/stats/StatsBackgroundJobsCard.vue', import.meta.url), 'utf8')
-assert(jobsCardSource.includes("if (row.lastError) return '上次失败'"), '后台任务最近失败时不能显示为空闲')
-assert(jobsCardSource.includes("if (row.lastWarning) return '部分失败'"), '候选级部分失败必须与整项后台任务失败区分')
+const statsRoutesSource = readFileSync(new URL('../../../../backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
+assert.match(statsRoutesSource, /statsRouter\.get\('\/system-metrics'/, '跨层门禁必须绑定真实 system-metrics 接口')
+assert.match(
+  statsRoutesSource,
+  /function backgroundJobsFromSnapshot[\s\S]+\.map\(\(job\) => \(\{ \.\.\.job, workerRole: snapshot\.workerRole \}\)\)/,
+  'system-metrics DTO 必须完整保留 scheduler job snapshot 的部分失败与恢复字段'
+)
+assert(jobsCardSource.includes('backgroundJobStatusText'), '后台任务组件必须复用已验证的状态格式化函数')
 assert(jobsCardSource.includes("title: '部分失败（本进程）'"), '后台任务必须单独展示部分失败次数')
-assert(jobsCardSource.includes("return '已恢复'"), '后台任务后续成功后必须与当前失败区分')
 assert(jobsCardSource.includes("title: '累计失败（本进程）'"), '后台任务历史失败必须明确计数作用域')
 assert(jobsCardSource.includes("title: '最近失败'"), '后台任务必须展示最近失败时间以区分当前异常和历史计数')
 
@@ -94,6 +110,72 @@ assert(queuesCardSource.includes("{ title: '异常累计', key: 'problemMetrics'
 assert(!queuesCardSource.includes("{ title: '已完成', key: 'completedCount'"), '不应为仅少数队列适用的指标保留固定空列')
 
 console.log('运行状态展示契约回归通过：RFC3339Nano、任务失败、队列历史失败和审计动态空态符合预期')
+
+async function testAccountBalancePartialAndRecoveryAcrossRuntimeDto(): Promise<void> {
+  const scheduler = new WorkerScheduler()
+  let refreshAttempt = 0
+  const neverSettles = new Promise<never>(() => undefined)
+  scheduler.schedule({
+    name: 'account-balance-refresh',
+    intervalMs: 100,
+    task: () => runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [{
+        id: 'account-balance-partial-contract',
+        systemAccountId: 'sys_admin',
+        configRevision: 1,
+        credentials: { api_key: 'sk-contract', base_url: 'https://relay.example/v1' },
+        config: { adapter: 'builtin', intervalMinutes: 5 },
+        nextRefreshAt: new Date().toISOString(),
+        stateUpdatedAt: new Date().toISOString()
+      }],
+      refreshCandidate: async () => {
+        refreshAttempt += 1
+        if (refreshAttempt === 1) await neverSettles
+      },
+      runBudgetMs: 20,
+      candidateTimeoutMs: 5
+    })
+  })
+  try {
+    await waitFor(() => scheduler.snapshots()[0]?.partialCount === 1)
+    const partialDto = systemMetricsJobDto(scheduler.snapshots()[0]!)
+    const partialRow = partialDto.backgroundJobs![0]!
+    assert.equal(partialRow.name, 'account-balance-refresh')
+    assert.equal(partialRow.failureCount, 0, '候选超时经 system-metrics DTO 后不能变成整项失败')
+    assert.equal(partialRow.partialCount, 1)
+    assert.equal(backgroundJobStatusText(partialRow), '部分失败')
+    assert.equal(backgroundJobStatusColor(partialRow), 'warning')
+
+    await waitFor(() => scheduler.snapshots()[0]?.successCount === 1)
+    const recoveredDto = systemMetricsJobDto(scheduler.snapshots()[0]!)
+    const recoveredRow = recoveredDto.backgroundJobs![0]!
+    assert.equal(recoveredRow.lastWarning, undefined, '完整成功后 DTO 不应保留当前部分失败原因')
+    assert.ok(recoveredRow.lastWarningAt, 'DTO 必须保留历史部分失败时间用于识别恢复')
+    assert.ok(recoveredRow.lastSuccessAt)
+    assert.equal(backgroundJobStatusText(recoveredRow), '已恢复')
+    assert.equal(backgroundJobStatusColor(recoveredRow), 'success')
+  } finally {
+    scheduler.stop()
+  }
+}
+
+function systemMetricsJobDto(
+  snapshot: ReturnType<WorkerScheduler['snapshots']>[number]
+): Pick<SystemMetricsOverview, 'backgroundJobsAvailable' | 'backgroundJobs'> {
+  return {
+    backgroundJobsAvailable: true,
+    backgroundJobs: [{ ...snapshot, workerRole: 'ops-worker' }]
+  }
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1000
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('等待后台任务运行态快照超时')
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
 
 function auditSettings(overrides: Partial<NonNullable<Parameters<typeof auditLogEmptyDescription>[0]>> = {}): NonNullable<Parameters<typeof auditLogEmptyDescription>[0]> {
   return {

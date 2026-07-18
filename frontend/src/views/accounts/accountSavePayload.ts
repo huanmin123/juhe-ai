@@ -51,6 +51,7 @@ export type AccountSavePayload = {
   supportedModels: string[]
   healthCheckModel: string
   healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
+  temporaryUnavailableContinuousProbeEnabled: boolean
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string | null
@@ -73,6 +74,7 @@ export type AccountOAuthCreateCommonPayload = {
   supportedModels: string[]
   healthCheckModel: string
   healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
+  temporaryUnavailableContinuousProbeEnabled: boolean
   modelMappings: AccountFormModel['modelMappings']
   tags: string[]
   proxyProfileId?: string
@@ -204,6 +206,7 @@ export function buildAccountSavePayload(input: {
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,
+    temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
@@ -224,6 +227,7 @@ export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountU
     supportedModels: payload.supportedModels,
     healthCheckModel: payload.healthCheckModel,
     healthCheckEndpointMode: payload.healthCheckEndpointMode,
+    temporaryUnavailableContinuousProbeEnabled: payload.temporaryUnavailableContinuousProbeEnabled,
     modelMappings: payload.modelMappings,
     tags: payload.tags,
     proxyProfileId: payload.proxyProfileId,
@@ -253,6 +257,7 @@ export function buildOAuthCreateCommonPayload(input: {
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,
+    temporaryUnavailableContinuousProbeEnabled: input.form.temporaryUnavailableContinuousProbeEnabled,
     modelMappings: normalizeAccountModelMappings(input.form.modelMappings),
     tags: normalizeAccountTags(input.form.tags),
     proxyProfileId: input.form.proxyProfileId,

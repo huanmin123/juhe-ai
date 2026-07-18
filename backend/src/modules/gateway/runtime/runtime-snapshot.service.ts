@@ -263,19 +263,17 @@ async function refreshServerRuntimeSnapshotCache<T>(
 async function applyRedisAccountRuntimeToAccountList<T extends { items: AccountSummary[] }>(
   result: T
 ): Promise<T & { runtimeSnapshot: AccountRuntimeSnapshotStatus }> {
-  const runtimeAvailability = peekServerAccountRuntimeAvailabilitySnapshot()
   const concurrency = await loadRedisAccountConcurrencySnapshot(accountConcurrencySnapshotIds(result.items))
   return {
     ...result,
     runtimeSnapshot: {
       accountConcurrencyAvailable: Boolean(concurrency),
-      accountRuntimeAvailabilityAvailable: Boolean(runtimeAvailability)
+      accountRuntimeAvailabilityAvailable: false
     },
     items: result.items.map((account) => {
-      const withConcurrency = concurrency
+      return concurrency
         ? applyAccountConcurrency(account, concurrency)
         : markAccountConcurrencyUnavailable(account)
-      return applyAccountRuntimeAvailability(withConcurrency, runtimeAvailability)
     })
   }
 }

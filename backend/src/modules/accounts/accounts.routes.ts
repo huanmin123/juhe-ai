@@ -53,6 +53,11 @@ import {
 import { cleanupAccountBalanceSnapshotAfterSave } from './account-balance-snapshot-cleanup.service.js'
 import { registerAccountForceActivateRoutes } from './account-force-activate.routes.js'
 import { registerAccountStatusSnapshotRoutes } from './account-status-snapshot.routes.js'
+import {
+  accountPageDataOwnerIds,
+  publishAccountRuntimeChange,
+  publishAccountStaticChange
+} from '../page-data/page-data-change.publisher.js'
 
 export const accountsRouter = Router()
 
@@ -230,6 +235,7 @@ accountsRouter.post('/', mutationGuard({
             safeChange('reasoningEffortOverride', '思考级别覆盖', undefined, parsed.data.credentials?.reasoning_effort_override),
             safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
             safeChange('healthCheckModel', '检查模型', undefined, account.healthCheckModel),
+            safeChange('temporaryUnavailableContinuousProbeEnabled', '持续恢复探活', undefined, account.temporaryUnavailableContinuousProbeEnabled),
             safeChange('modelMappings', '模型映射', undefined, account.modelMappings),
             safeChange('tags', '标签', undefined, account.tags),
             safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
@@ -242,6 +248,16 @@ accountsRouter.post('/', mutationGuard({
         }
       }
     }, req)
+    await publishAccountStaticChange({
+      accountId: account.id,
+      ownerSystemAccountIds: accountPageDataOwnerIds(account, effectiveRequestSystemAccountId(requestAccess)),
+      operation: 'upsert',
+      fieldMask: ['id', 'name', 'status', 'boundGroupId'],
+      membershipChanged: true,
+      orderChanged: true,
+      filterChanged: true,
+      pageChanged: true
+    })
     dispatchPendingAccountHealthCheck(account)
     res.status(201).json(ok(sanitizeAccountResponse(account)))
   } catch (error) {
@@ -477,6 +493,7 @@ accountsRouter.patch('/:id', async (req, res) => {
               supportedModels: '支持模型',
               healthCheckModel: '检查模型',
               healthCheckEndpointMode: '检查协议',
+              temporaryUnavailableContinuousProbeEnabled: '持续恢复探活',
               modelMappings: '模型映射',
               tags: '标签',
               proxyProfileId: '代理',
@@ -518,6 +535,25 @@ accountsRouter.patch('/:id', async (req, res) => {
       dispatchAccountHealthCheck(account.id, 'activation')
     } else if (accountUpdateNeedsImmediateHealthCheck(accountUpdateInput)) {
       dispatchAccountHealthCheck(account.id, 'configuration')
+    }
+    const ownerSystemAccountIds = accountPageDataOwnerIds(account, effectiveRequestSystemAccountId(requestAccess))
+    await publishAccountStaticChange({
+      accountId: account.id,
+      ownerSystemAccountIds,
+      fieldMask: Object.keys(body),
+      membershipChanged: hasGroupId,
+      orderChanged: Object.prototype.hasOwnProperty.call(body, 'name') || Object.prototype.hasOwnProperty.call(body, 'priority'),
+      filterChanged: hasGroupId || Object.prototype.hasOwnProperty.call(body, 'status'),
+      pageChanged: hasGroupId
+    })
+    if (requestedClearFailureState === true
+      || Object.prototype.hasOwnProperty.call(body, 'status')
+      || Object.prototype.hasOwnProperty.call(body, 'schedulable')) {
+      await publishAccountRuntimeChange({
+        accountId: account.id,
+        ownerSystemAccountIds,
+        fieldMask: ['status', 'schedulable', 'cooldownUntil', 'lastErrorCode', 'lastErrorMessage']
+      })
     }
     res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
   } catch (error) {

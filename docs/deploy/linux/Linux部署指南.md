@@ -8,7 +8,7 @@
 | 单机容器部署 | Docker Compose 单容器 | [Docker 部署指南](../Docker部署指南.md) |
 | 高并发部署 | Docker Compose + PostgreSQL + Redis | [高性能模式部署指南](../高性能模式部署指南.md) |
 | 公网 HTTPS | Caddy 自动 HTTPS | [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) |
-| 自动恢复 | systemd + watchdog | [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) |
+| 自动恢复 | systemd + 内部 supervisor | [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) |
 | 上游需要代理 | sing-box 本机代理 + 后台代理管理 | [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md) |
 
 ## 2. 部署前检查
@@ -206,4 +206,4 @@ juhe-ai 中转请求上游时，推荐在后台“代理管理”中新增代理
 
 ## 8. 状态检测和自动恢复
 
-Linux 生产建议使用 systemd 守护主服务，并额外配置 watchdog 检查本机 `/__aisys__/health` 和 `/__aisys__/api/health`。watchdog 连续失败 2-3 次后再 `systemctl restart juhe-ai`，并设置启动宽限、冷却时间和窗口限频，避免配置错误或网络抖动导致重启风暴。完整策略见 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
+Linux 生产使用 systemd 守护主服务进程退出，DB service 和 worker 由内部 supervisor 独立恢复。外部 HTTP watchdog 已退役；本机和公网 health 只用于观察、告警和发布门禁。完整策略见 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。

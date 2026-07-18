@@ -27,6 +27,7 @@ import {
   normalizeAccountErrorHandlingRules,
   type AccountErrorHandlingRule
 } from '../../accounts/account-error-policy-validation.js'
+import { publishAccountRuntimeChange } from '../../page-data/page-data-change.publisher.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -262,19 +263,7 @@ function accountErrorPolicyPayload(
   headers: Headers,
   account: AccountErrorPolicyAccount
 ): Record<string, unknown> {
-  try {
-    return parseErrorPayload(bodyText, headers, account)
-  } catch {
-    try {
-      const parsed = JSON.parse(bodyText) as Record<string, unknown>
-      const nested = parsed.error
-      return nested && typeof nested === 'object' && !Array.isArray(nested)
-        ? nested as Record<string, unknown>
-        : parsed
-    } catch {
-      return {}
-    }
-  }
+  return parseErrorPayload(bodyText, headers, account)
 }
 
 function accountErrorRuleMatches(
@@ -343,6 +332,13 @@ function applyExplicitAccountErrorPolicyDecision(
           undefined,
           input.traceId
         )
+  if (updated) {
+    void publishAccountRuntimeChange({
+      accountId: account.id,
+      ownerSystemAccountIds: [account.bindingSystemAccountId ?? '', account.groupOwnerSystemAccountId ?? ''],
+      fieldMask: ['status', 'schedulable', 'cooldownUntil', 'lastErrorCode', 'lastErrorMessage']
+    })
+  }
   return {
     action: decision.action,
     changed: Boolean(updated),
@@ -387,6 +383,13 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
           undefined,
           input.traceId
         )
+  if (updated) {
+    await publishAccountRuntimeChange({
+      accountId: account.id,
+      ownerSystemAccountIds: [account.bindingSystemAccountId ?? '', account.groupOwnerSystemAccountId ?? ''],
+      fieldMask: ['status', 'schedulable', 'cooldownUntil', 'lastErrorCode', 'lastErrorMessage']
+    })
+  }
   return {
     action: decision.action,
     changed: Boolean(updated),
@@ -406,10 +409,11 @@ function explicitAccountErrorPolicyReason(
   decision: AccountErrorPolicyDecision
 ): string {
   const bodyText = input.bodyText ?? input.errorMessage ?? ''
-  const summary = accountErrorPolicyUpstreamSummary(account, bodyText, normalizeHeadersInput(input.headers))
-  const failure = input.statusCode === undefined
+  const statusCode = input.statusCode
+  const upstreamSummary = accountErrorPolicyUpstreamSummary(account, bodyText, normalizeHeadersInput(input.headers))
+  const failure = statusCode === undefined
     ? genericUpstreamRequestFailureReason(input.errorMessage ?? bodyText)
-    : genericUpstreamResponseFailureReason(input.statusCode, summary)
+    : genericUpstreamResponseFailureReason(statusCode, upstreamSummary)
   return `账户错误策略「${decision.ruleName ?? '未命名规则'}」命中；${failure}`.slice(0, 1000)
 }
 

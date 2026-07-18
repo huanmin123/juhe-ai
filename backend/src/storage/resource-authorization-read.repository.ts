@@ -49,6 +49,20 @@ export interface ResourceAuthorizationListOptions {
   pageSize?: number
 }
 
+export async function listAccountAuthorizationGranteeIdsAsync(accountId: string): Promise<string[]> {
+  const normalizedAccountId = accountId.trim()
+  if (!normalizedAccountId) return []
+  const client = await getResourceAuthorizationReadDatabaseClient()
+  const rows = await client.query<{ grantee_system_account_id: string }>(`
+    SELECT DISTINCT grantee_system_account_id
+    FROM ${resourceAuthorizationReadTable(client, 'resource_authorizations')}
+    WHERE resource_type = 'account'
+      AND resource_id = ?
+    ORDER BY grantee_system_account_id ASC
+  `, [normalizedAccountId])
+  return rows.map((row) => row.grantee_system_account_id).filter(Boolean)
+}
+
 interface NormalizedResourceAuthorizationPageOptions {
   page: number
   pageSize: number

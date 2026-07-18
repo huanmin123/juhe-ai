@@ -547,6 +547,7 @@ export interface AccountSummary {
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
+  temporaryUnavailableContinuousProbeEnabled?: boolean
   lastHealthCheckAt?: string
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string
@@ -866,7 +867,6 @@ export interface ModelCheckRunRequest {
   targetId: string
   model: string
   profile?: ModelCheckProfile
-  includeExtremeContext?: boolean
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
 }

@@ -6,6 +6,7 @@ PACKAGE_NAME="juhe-ai-release"
 ARCHIVE_FORMAT="both"
 FRONTEND_API_BASE_URL="/__aisys__/api"
 FRONTEND_GATEWAY_BASE_URL=""
+EXPECTED_COMMIT=""
 INCLUDE_LOCAL_ENV="0"
 
 usage() {
@@ -18,6 +19,7 @@ Options:
   --archive-format <tar.gz|zip|both> Archive format. Default: both
   --frontend-api-base-url <url>      Frontend API base URL injected at build time. Default: /__aisys__/api
   --frontend-gateway-base-url <url>  Frontend gateway base URL injected at build time. Default: infer from browser origin
+  --expected-commit <sha>            Require the release source to match this commit
   --include-local-env                Copy local backend/.env and frontend/.env as .env.example.local
   -h, --help                         Show this help
 USAGE
@@ -45,6 +47,10 @@ while [ "$#" -gt 0 ]; do
       FRONTEND_GATEWAY_BASE_URL="$2"
       shift 2
       ;;
+    --expected-commit)
+      EXPECTED_COMMIT="$2"
+      shift 2
+      ;;
     --include-local-env)
       INCLUDE_LOCAL_ENV="1"
       shift
@@ -69,12 +75,15 @@ case "$ARCHIVE_FORMAT" in
     ;;
 esac
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 RELEASE_ROOT="$REPO_ROOT/$OUTPUT_DIR"
 PACKAGE_ROOT="$RELEASE_ROOT/$PACKAGE_NAME"
 TAR_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar.gz"
 ZIP_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.zip"
+
+bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$EXPECTED_COMMIT"
+RELEASE_SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
 copy_required_item() {
   local source_path="$1"
@@ -162,10 +171,12 @@ else
   echo "==> Frontend gateway base URL: inferred from browser origin"
 fi
 pnpm build
+bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$RELEASE_SOURCE_COMMIT"
 
 echo "==> Preparing release folder"
 rm -rf "$PACKAGE_ROOT"
 mkdir -p "$PACKAGE_ROOT/backend" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs"
+printf '%s\n' "$RELEASE_SOURCE_COMMIT" > "$PACKAGE_ROOT/RELEASE_SOURCE_COMMIT"
 
 copy_required_item "$REPO_ROOT/package.json" "$PACKAGE_ROOT/package.json"
 copy_required_item "$REPO_ROOT/pnpm-lock.yaml" "$PACKAGE_ROOT/pnpm-lock.yaml"

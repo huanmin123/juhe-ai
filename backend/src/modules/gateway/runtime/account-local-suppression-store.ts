@@ -48,7 +48,9 @@ export interface GatewayAccountHalfOpenLease {
   runtimeKey: string
   accountId: string
   leaseId: string
-  release: () => boolean
+  generation?: number
+  release: () => boolean | Promise<boolean>
+  completeSuccess?: () => Promise<boolean>
 }
 
 export interface LocalAccountSuppressionFilterResult<T> {
@@ -57,6 +59,9 @@ export interface LocalAccountSuppressionFilterResult<T> {
   allSuppressed: boolean
   suppressedAccountIds: string[]
   acquiredHalfOpenLeases: GatewayAccountHalfOpenLease[]
+  precheckSuppressedAccountIds?: string[]
+  configuredPolicySuppressedAccountIds?: string[]
+  precheckSuppressedRuntimeScopes?: Array<{ runtimeKey: string; generation: number }>
   nextRetryAtMs?: number
   nextRetryAfterMs?: number
 }
@@ -75,6 +80,8 @@ export interface LocalAccountDegradationOrderOptions {
 
 export interface LocalAccountSuppressionFilterOptions {
   acquireHalfOpenLease?: boolean
+  acquirePrecheckHalfOpenLease?: boolean
+  precheckHalfOpenGroupKey?: string
 }
 
 type PrecheckRuntimeBlockingPredicate = (runtimeKey: string) => boolean

@@ -242,7 +242,8 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     removeItems,
     refreshMobile,
     resetPagination,
-    updateItems
+    updateItems,
+    applyResult: (result: ResponsivePagedListResult<T>, loadOptions = {} as ResponsivePagedListLoadOptions & ExtraOptions) => applyPageResult(result, loadOptions)
   }
 }
 

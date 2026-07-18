@@ -31,8 +31,10 @@ import {
 } from './modules/gateway/audit/capture.service.js'
 import {
   captureGatewayRawBody,
+  classifyGatewayRawBodyParserError,
   recordGatewayBodyRejection,
-  rejectGatewayRawBodyByContentLength
+  rejectGatewayRawBodyByContentLength,
+  type GatewayRawBodyParserError
 } from './modules/gateway/request/body-middleware.js'
 import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
@@ -48,7 +50,7 @@ import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
-import { dispatchAccountHealthCheck } from './modules/accounts/account-health-check-dispatch.service.js'
+import { dispatchAccountHealthCheck } from './modules/internal-api/account-health-check-dispatch.service.js'
 import {
   mountAccountHealthCheckDispatchBridge
 } from './modules/internal-api/account-health-check-dispatch.routes.js'
@@ -79,22 +81,17 @@ let serverShutdownInProgress = false
 const serverShutdownGraceMs = 40_000
 const httpShutdownGraceMs = 10_000
 
-type BodyParserError = Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number }
-
-function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Response, next: NextFunction): void {
+function handleGatewayRawBodyError(error: Error & GatewayRawBodyParserError, req: Request, res: Response, next: NextFunction): void {
   if (res.headersSent) {
     next(error)
     return
   }
 
-  const statusCode = Number.isInteger(error.statusCode)
-    ? Number(error.statusCode)
-    : Number.isInteger(error.status)
-      ? Number(error.status)
-      : 400
-  const message = statusCode === 413 ? '请求体过大' : '网关请求体无效'
+  const parserFailure = classifyGatewayRawBodyParserError(error)
+  const statusCode = parserFailure.statusCode
+  const message = parserFailure.message
   const traceId = getTraceId() ?? 'unknown'
-  const responsePayload = gatewayErrorPayload(message, statusCode === 413 ? 'request_too_large' : 'invalid_request_error')
+  const responsePayload = gatewayErrorPayload(message, parserFailure.errorType)
   recordGatewayBodyRejection(req as GatewayRawBodyRequest, {
     statusCode,
     responsePayload,
@@ -102,6 +99,7 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
     reason: 'gateway_body_parser',
     errorCode: error.type,
     errorMessage: message,
+    failureAttribution: parserFailure.failureAttribution,
     limitBytes: statusCode === 413 ? Number(error.limit ?? gatewayRawBodyHardLimitBytes) : undefined,
     limitScope: statusCode === 413 ? 'gateway' : undefined
   })

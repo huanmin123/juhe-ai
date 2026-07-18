@@ -7,6 +7,7 @@
 
 - [macOS 部署指南](macOS部署指南.md)：macOS 发布包、launchd、Docker Desktop、HTTPS、反向代理和代理配置入口。
 - [macOS 部署流程示例](macOS部署流程示例.md)：一次从 tar 包到 launchd 和代理绑定的示例流程。
+- [macOS 运维脚本](operations/README.md)：launchd 主服务、sing-box、只读诊断和临时接管回滚门禁。
 
 ## 适用边界
 

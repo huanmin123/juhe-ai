@@ -13,6 +13,7 @@ import {
   unpublishAnnouncementAsync,
   updateAnnouncementAsync
 } from '../../storage/repositories.js'
+import { publishAnnouncementPublicChange } from '../page-data/page-data-change.publisher.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
@@ -132,6 +133,13 @@ announcementsRouter.post('/', requireAdmin, mutationGuard({
       }
     }
   }, req)
+  if (announcement.status === 'published') {
+    await publishAnnouncementPublicChange({
+      announcementId: announcement.id,
+      operation: 'upsert',
+      fieldMask: ['title', 'content', 'level', 'status', 'publishedAt']
+    })
+  }
   res.status(201).json(ok(announcement))
 })
 
@@ -173,6 +181,13 @@ announcementsRouter.patch('/:id', requireAdmin, async (req, res) => {
       }
     }
   }, req)
+  if (announcement.status === 'published' || before.status === 'published') {
+    await publishAnnouncementPublicChange({
+      announcementId: announcement.id,
+      operation: announcement.status === 'published' ? 'upsert' : 'delete',
+      fieldMask: ['title', 'content', 'level', 'status', 'publishedAt']
+    })
+  }
   res.json(ok(announcement))
 })
 
@@ -207,6 +222,11 @@ announcementsRouter.post('/:id/publish', requireAdmin, async (req, res) => {
       }
     }
   }, req)
+  await publishAnnouncementPublicChange({
+    announcementId: announcement.id,
+    operation: 'upsert',
+    fieldMask: ['status', 'publishedAt']
+  })
   res.json(ok(announcement))
 })
 
@@ -240,6 +260,11 @@ announcementsRouter.post('/:id/unpublish', requireAdmin, async (req, res) => {
       }
     }
   }, req)
+  await publishAnnouncementPublicChange({
+    announcementId: announcement.id,
+    operation: 'delete',
+    fieldMask: ['status']
+  })
   res.json(ok(announcement))
 })
 
@@ -270,6 +295,13 @@ announcementsRouter.delete('/:id', requireAdmin, async (req, res) => {
       }
     }
   }, req)
+  if (before.status === 'published') {
+    await publishAnnouncementPublicChange({
+      announcementId: req.params.id,
+      operation: 'delete',
+      fieldMask: []
+    })
+  }
   res.status(204).send()
 })
 

@@ -53,6 +53,7 @@ export interface AccountRow {
   cooldown_retest_observation_started_at: string | null
   cooldown_retest_last_at: string | null
   cooldown_retest_last_status_code: number | null
+  temporary_unavailable_continuous_probe_enabled: number
   health_check_model: string
   health_check_endpoint_mode: import('../domain/types.js').AccountHealthCheckEndpointMode
   last_health_check_at: string | null
@@ -211,6 +212,7 @@ export type AccountListRow = AccountRow & {
   source_availability_schedule_json?: string | null
   source_account_expires_at?: string | null
   source_cooldown_until?: string | null
+  source_temporary_unavailable_continuous_probe_enabled?: number | null
   source_last_error_code?: string | null
   source_last_error_message?: string | null
   source_health_check_model?: string | null

@@ -1,6 +1,7 @@
 export const dbServiceHealthRecoveryDefaults = {
   startupGraceMs: 180_000,
   failureThreshold: 3,
+  failureSustainMs: 5 * 60_000,
   recoveryCooldownMs: 60_000,
   recoveryBudgetWindowMs: 15 * 60_000,
   recoveryBudgetMaxAttempts: 3
@@ -9,6 +10,7 @@ export const dbServiceHealthRecoveryDefaults = {
 export interface DbServiceHealthRecoveryState {
   childStartedAtMs: number
   consecutiveFailures: number
+  failureStartedAtMs?: number
   lastRecoveryAtMs?: number
   recoveryAttemptsMs: number[]
 }
@@ -29,6 +31,7 @@ export function createDbServiceHealthRecoveryState(childStartedAtMs: number): Db
   return {
     childStartedAtMs,
     consecutiveFailures: 0,
+    failureStartedAtMs: undefined,
     recoveryAttemptsMs: []
   }
 }
@@ -56,34 +59,36 @@ export function recordDbServiceHealthProbe(
 
   if (input.nowMs - state.childStartedAtMs < dbServiceHealthRecoveryDefaults.startupGraceMs) {
     return {
-      state: { ...currentState, consecutiveFailures: 0 },
+      state: { ...currentState, consecutiveFailures: 0, failureStartedAtMs: undefined },
       action: 'ignored_grace'
     }
   }
   if (input.healthy) {
     return {
-      state: { ...currentState, consecutiveFailures: 0 },
+      state: { ...currentState, consecutiveFailures: 0, failureStartedAtMs: undefined },
       action: 'none'
     }
   }
 
   const consecutiveFailures = currentState.consecutiveFailures + 1
-  if (consecutiveFailures < dbServiceHealthRecoveryDefaults.failureThreshold) {
+  const failureStartedAtMs = currentState.failureStartedAtMs ?? input.nowMs
+  if (consecutiveFailures < dbServiceHealthRecoveryDefaults.failureThreshold
+    || input.nowMs - failureStartedAtMs < dbServiceHealthRecoveryDefaults.failureSustainMs) {
     return {
-      state: { ...currentState, consecutiveFailures },
+      state: { ...currentState, consecutiveFailures, failureStartedAtMs },
       action: 'none'
     }
   }
   if (currentState.lastRecoveryAtMs !== undefined
     && input.nowMs - currentState.lastRecoveryAtMs < dbServiceHealthRecoveryDefaults.recoveryCooldownMs) {
     return {
-      state: { ...currentState, consecutiveFailures },
+      state: { ...currentState, consecutiveFailures, failureStartedAtMs },
       action: 'suppressed_cooldown'
     }
   }
   if (recoveryAttemptsMs.length >= dbServiceHealthRecoveryDefaults.recoveryBudgetMaxAttempts) {
     return {
-      state: { ...currentState, consecutiveFailures },
+      state: { ...currentState, consecutiveFailures, failureStartedAtMs },
       action: 'suppressed_budget'
     }
   }
@@ -92,6 +97,7 @@ export function recordDbServiceHealthProbe(
     state: {
       ...currentState,
       consecutiveFailures: 0,
+      failureStartedAtMs: undefined,
       lastRecoveryAtMs: input.nowMs,
       recoveryAttemptsMs: [...recoveryAttemptsMs, input.nowMs]
     },

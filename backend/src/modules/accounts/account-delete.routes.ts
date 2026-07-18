@@ -5,6 +5,7 @@ import { deleteAccountWithRelatedCleanupAsync, findAccountSummaryAsync } from '.
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { accountPageDataOwnerIds, publishAccountStaticChange } from '../page-data/page-data-change.publisher.js'
 
 export function registerAccountDeleteRoutes(router: Router): void {
   router.delete('/:id', async (req, res) => {
@@ -39,6 +40,16 @@ export function registerAccountDeleteRoutes(router: Router): void {
           }
         }
       }, req)
+      await publishAccountStaticChange({
+        accountId: req.params.id,
+        ownerSystemAccountIds: accountPageDataOwnerIds(before, ownerSystemAccountId),
+        operation: 'delete',
+        fieldMask: [],
+        membershipChanged: true,
+        orderChanged: true,
+        filterChanged: true,
+        pageChanged: true
+      })
     } catch (error) {
       if (error instanceof Error && error.message === '账户不存在') {
         res.status(404).json({ message: '账户不存在' })

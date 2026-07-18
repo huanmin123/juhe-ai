@@ -5,6 +5,13 @@ import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
+import {
+  createSupervisorRestartState,
+  recordSupervisorChildReady,
+  recordSupervisorChildStopped,
+  supervisorRestartDelayMs
+} from '../../shared/supervisor-restart-policy.js'
 import { attachDbServiceProcess, getDbServiceState } from './db-service-ipc.js'
 import {
   createDbServiceHealthRecoveryState,
@@ -19,7 +26,7 @@ let dbServiceHealthTimer: NodeJS.Timeout | undefined
 let dbServiceForceKillTimer: NodeJS.Timeout | undefined
 let dbServiceHealthProbeInFlight = false
 let dbServiceHealthRecoveryState = createDbServiceHealthRecoveryState(0)
-let restartAttempts = 0
+let restartState = createSupervisorRestartState()
 let stopping = false
 let shutdownHooksInstalled = false
 let dbServiceReady = false
@@ -30,8 +37,6 @@ const sourceRoot = resolve(dirname(currentModulePath), '../..')
 const backendRoot = resolve(sourceRoot, '..')
 const dbServiceSourcePath = resolve(sourceRoot, 'db-service.ts')
 const dbServiceDistPath = resolve(sourceRoot, 'db-service.js')
-const dbServiceRestartBaseDelayMs = 1000
-const dbServiceRestartMaxDelayMs = 30_000
 const dbServiceHealthProbeIntervalMs = 15_000
 const dbServiceHealthProbeTimeoutMs = 5_000
 const dbServiceForceKillDelayMs = 10_000
@@ -77,7 +82,7 @@ function startDbServiceProcess(): void {
   startDbServiceHealthMonitor(child)
   attachDbServiceProcess(child, {
     onReady: () => {
-      restartAttempts = 0
+      restartState = recordSupervisorChildReady(restartState, Date.now())
       dbServiceReady = true
       notifyDbServiceReadyCallbacks()
     }
@@ -106,6 +111,7 @@ function startDbServiceProcess(): void {
     dbServiceProcess = undefined
     dbServiceReady = false
     if (!stopping) {
+      restartState = recordSupervisorChildStopped(restartState, Date.now())
       scheduleDbServiceRestart()
     }
   })
@@ -121,6 +127,7 @@ function startDbServiceProcess(): void {
     dbServiceProcess = undefined
     dbServiceReady = false
     if (!stopping) {
+      restartState = recordSupervisorChildStopped(restartState, Date.now())
       scheduleDbServiceRestart()
     }
   })
@@ -260,10 +267,10 @@ function resolveDbServiceEntry(): { modulePath: string; execArgv: string[] } {
 
 function pipeDbServiceOutput(child: ChildProcess): void {
   child.stdout?.on('data', (chunk: Buffer) => {
-    process.stdout.write(chunk)
+    forwardSupervisorOutput(process.stdout, chunk)
   })
   child.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(chunk)
+    forwardSupervisorOutput(process.stderr, chunk)
   })
 }
 
@@ -272,8 +279,7 @@ function scheduleDbServiceRestart(): void {
     return
   }
 
-  restartAttempts += 1
-  const delayMs = Math.min(dbServiceRestartMaxDelayMs, dbServiceRestartBaseDelayMs * 2 ** Math.min(restartAttempts - 1, 5))
+  const delayMs = supervisorRestartDelayMs(restartState.restartAttempts)
   restartTimer = setTimeout(() => {
     restartTimer = undefined
     startDbServiceProcess()

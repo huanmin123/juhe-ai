@@ -61,6 +61,7 @@ export function defaultAccountForm(
     supportedModels,
     healthCheckModel: defaultHealthCheckModelForProvider(provider, profile, supportedModels),
     healthCheckEndpointMode: defaultAccountHealthCheckEndpointMode(resolvedProviderCode, profile?.id ?? '', supportedEndpointModes),
+    temporaryUnavailableContinuousProbeEnabled: true,
     serviceTierOverride: '',
     reasoningEffortOverride: '',
     modelMappings: [],

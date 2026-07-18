@@ -19,6 +19,10 @@ assert(runtimeSnapshotSource.includes("runtimeConfig.runtimeStateDriver === 'red
 assert(runtimeSnapshotSource.includes('account.authorizationInstanceSourceAccountId || account.id'), '授权实例当前并发必须读取来源账号并发槽')
 assert(runtimeSnapshotSource.includes('peekServerAccountRuntimeAvailabilitySnapshot'), 'Redis runtime state 下管理端读取只能使用已有 server 运行态快照，缺失时后台刷新，不能同步阻塞列表')
 assert(
+  /async function applyRedisAccountRuntimeToAccountList[\s\S]*?accountRuntimeAvailabilityAvailable:\s*false/.test(runtimeSnapshotSource),
+  'Redis 账户列表不得把 server-local 空运行态快照标记为权威，否则刷新会先清空真实分布式运行态'
+)
+assert(
   !/Promise\.all\(\s*\[[\s\S]*loadRedisAccountConcurrencySnapshot\([\s\S]*loadServerAccountRuntimeSnapshot\(\)[\s\S]*\]\s*\)/.test(runtimeSnapshotSource),
   'Redis runtime state 下账户列表 / 详情不能把 Redis 并发读取和 server 运行态 IPC 绑定成同步等待'
 )

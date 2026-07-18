@@ -29,6 +29,8 @@ import { systemAccountsRouter } from '../system-accounts/system-accounts.routes.
 import { myTeamsRouter, systemTeamsRouter } from '../system-teams/system-teams.routes.js'
 import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
+import { createPageDataChangesRouter } from '../page-data/page-data-change.routes.js'
+import { getPageDataChangeStore } from '../page-data/page-data-change.runtime.js'
 import { ok } from '../../shared/http.js'
 import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
@@ -39,6 +41,7 @@ import {
   systemApiDbServiceAdmissionControl,
   systemApiDbServiceMaxInFlight
 } from './system-api-db-access.js'
+import { systemApiReadOnlyMethodMiddleware } from './system-api-read-only.middleware.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -69,6 +72,8 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(requestContextMiddleware)
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
+  app.use(systemApiPrefix, systemApiReadOnlyMethodMiddleware)
+  app.use(publicApiPrefix, systemApiReadOnlyMethodMiddleware)
   if (!options.bypassSystemApiRateLimitForTest) {
     app.use(systemApiPrefix, systemApiIpRateLimit)
     app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
@@ -99,6 +104,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
     app.use(systemApiPrefix, systemApiAuthenticatedRateLimit)
   }
   app.use(systemApiPrefix, systemApiDbServiceAdmissionControl)
+  app.use(`${systemApiPrefix}/data-changes`, createPageDataChangesRouter({ store: getPageDataChangeStore() }))
   app.use(`${systemApiPrefix}/announcements`, announcementsRouter)
   app.use(`${systemApiPrefix}/my-accounts`, forceSelfAccessScope, accountsRouter)
   app.use(`${systemApiPrefix}/my-groups`, forceSelfAccessScope, groupsRouter)

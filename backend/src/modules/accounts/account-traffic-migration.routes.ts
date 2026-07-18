@@ -8,6 +8,7 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { migrateServerOpenAIAccountTrafficRuntime } from '../db-service/db-service-ipc.js'
 import type { OpenAIAccountTrafficMigrationRuntimeRequest } from '../db-service/db-service-types.js'
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { accountPageDataOwnerIds, publishAccountRuntimeChange } from '../page-data/page-data-change.publisher.js'
 import { accountTrafficMigrationSchema } from './account-request.schemas.js'
 import { sanitizeAccountTrafficMigrationResponse } from './account-response-sanitizer.js'
 
@@ -82,6 +83,11 @@ export function registerAccountTrafficMigrationRoutes(router: Router): void {
       const affinityResult = runtimeMigrationInput
         ? await migrateServerOpenAIAccountTrafficRuntime(runtimeMigrationInput) ?? { migratedSessionCount: 0 }
         : { migratedSessionCount: 0 }
+      await publishAccountRuntimeChange({
+        accountId: migration.sourceAccount.id,
+        ownerSystemAccountIds: accountPageDataOwnerIds(migration.sourceAccount, effectiveRequestSystemAccountId(requestAccess)),
+        fieldMask: ['status', 'schedulable', 'cooldownUntil']
+      })
       res.json(ok(sanitizeAccountTrafficMigrationResponse({
         sourceAccount: migration.sourceAccount,
         targetAccount: migration.targetAccount,

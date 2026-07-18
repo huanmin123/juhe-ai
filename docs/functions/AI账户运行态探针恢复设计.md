@@ -4,8 +4,8 @@
 
 本文固定 AI 账户在真实网关失败、高并发失败风暴、调度降级、临时不可用和恢复探测之间的状态机。核心目标是：
 
-- 用户请求只负责发现失败和写入失败样本，不负责恢复账号。
-- 账号恢复、调度降级确认和持久状态确认统一由状态事件触发探针和后台兜底探针完成。
+- 普通用户请求只负责救当前请求、记录诊断事实、建立 API Key / IP / 会话局部回避，并在不存在同账户后台事件时原子首次投递 `recovery_wait`；不能建立、续期、升级或清理账户级运行态。
+- 账号运行态建立、恢复、调度降级确认和持久状态确认统一由独立后台探针或明确人工操作完成；账户所有者显式配置的账户错误策略和响应拦截策略属于主动管理意图，命中后仍可按配置直接执行。
 - 高并发或多 IP 同一时间打出的失败不能把账号快速打死。
 - 每个运行态和持久态都必须有自动恢复出口，避免长期挂死。
 - 高性能模式可能存在多个 Web 节点，跨节点运行态、generation 和 due 索引必须进入 Redis runtime state，不能回退到进程内 memory，也不使用 Redis 分布式锁。
@@ -14,11 +14,11 @@
 
 真实请求链路和后台探针链路必须分工：
 
-- 真实请求失败：记录失败样本、短暂避让当前账号、切换后续账号救当前请求。
-- 状态事件触发探针：账号进入 `local_suppressed`、`latency_degraded`、`runtime_degraded`、`precheck_pending` 或持久冷却到期时，由状态机调度通用探针。触发源是状态转换，不是“用户请求到来”。
+- 真实请求失败：记录失败样本、排除当前请求已经失败的账号、建立 API Key / IP / 会话局部回避、切换后续账号，并原子首次投递 `recovery_wait`；未命中显式策略时不得改变账户全局调度资格。
+- 后台探针调度：`recovery_wait` 是不展示、保持普通可调度的内部后台任务。独立后台探针真实到达上游并确认失败后，才允许 CAS 建立 `precheck_pending` 等账户级运行态；后续探针由状态机和 due sweep 调度，不依赖新的用户请求到来。
 - 后台兜底探针：扫描 due 的探针任务，补偿漏调度、进程重启和无新请求场景。本地运行态由 Web / Redis runtime state 探针恢复，已落库冷却态由 ops-worker 冷却复测恢复。
-- 真实请求成功：可以作为强恢复信号，清理运行态观察和调度降级，但不能恢复已经持久化的限流或临时不可用；持久态恢复仍由对应后台复测或显式人工恢复完成。
-- 请求数量不能直接驱动状态升级。状态升级必须同时满足最小观察时间、失败窗口、无成功证据和后台探针结果。
+- 真实请求成功：只记录本次业务成功，并可清理本请求或当前来源范围内的局部回避；不能清理、降级或恢复账户级运行态和持久状态。账户级恢复只由后台探针、主动健康检查、显式人工恢复或对应后台任务完成。
+- 请求数量不能直接驱动状态升级。状态升级必须同时满足最小观察时间、失败窗口、无后台成功证据和独立后台探针结果。
 - 运行态恢复探针只允许使用系统账户检查探针，也就是共享最小请求执行器；模型固定为账户保存的 `healthCheckModel`。禁止从历史测试、个人默认、管理员默认、协议档案默认、支持模型首项或失败请求回退模型，也禁止复用失败请求的 endpoint、stream 或用户 payload。
 - 人工测试是独立诊断流量，成功或失败都不清理、确认、升级或恢复本设计中的任何运行态和持久态。
 
@@ -27,13 +27,14 @@
 | 状态 | 存储位置 | 调度影响 | 触发入口 | 自动恢复 |
 | --- | --- | --- | --- | --- |
 | `normal` | 无运行态 / `accounts.status = active` | 正常调度 | 后台激活检查成功、探针恢复、运行态清理 | 无需恢复 |
-| `failure_observed` | Web 进程运行态样本 | 不影响排序 | 真实请求命中上游后失败 | 成功信号清理；观察窗口过期清理；后台探针成功清理 |
-| `latency_degraded` | Web / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 普通路由速度优先下首字慢样本达到阈值 | 后台探针连续达标清理；真实请求首字连续达标清理；TTL 过期清理 |
-| `local_suppressed` | Web 进程短 TTL 运行态 | 暂不选中该账号 | 真实请求失败后立即止血 | TTL 到期由后台探针验证；探针成功清理；窗口过期且无新失败清理 |
-| `runtime_degraded` | Web 进程运行态快照 | 普通候选优先，降级账号兜底 | 后台探针确认近期不稳 | 后台探针连续成功清理；真实完整成功可清理；观察窗口无新失败清理；手动恢复清理 |
-| `precheck_pending` | Web 进程运行态快照 / 后台探针队列 | 暂不作为普通候选 | 达到确认条件后由后台探针接管 | 探针成功清理；探针失败且并发归零后写持久态；探针异常按退避重试 |
+| `recovery_wait` | memory / Redis 后台任务 | 不影响普通调度，不作为账户状态展示 | 普通请求原子首次投递后台核实 | 后台任务接管后按探针结果删除或推进；普通请求不得续期或改写 |
+| `failure_observed` | memory / Redis 后台观察 | 不影响排序 | 后台核实任务开始处理失败事实 | 后台探针成功或观察过期清理 |
+| `latency_degraded` | memory / Redis 短 TTL 运行态 | 速度优先普通路由下未降级硬可承接候选优先，首字慢账号兜底；有效期内可临时覆盖账户偏好 | 后台探针或后台状态评估确认持续首字慢 | 后台探针连续达标、TTL 到期或手动恢复清理 |
+| `local_suppressed` | memory / Redis TTL 运行态 | 暂不选中该账号 | 用户显式响应拦截 `avoid_account_ttl` 等主动策略 | 配置 TTL 到期或人工恢复清理；后台自动成功不能提前解除显式策略 |
+| `runtime_degraded` | memory / Redis 运行态快照 | 普通候选优先，降级账号兜底 | 后台探针确认近期不稳 | 后台探针成功、观察窗口过期或手动恢复清理 |
+| `precheck_pending` | memory / Redis 运行态快照 | 软阻断普通候选；后台探针、主动健康检查和 generation 租约半开可访问 | 首次有效独立后台探针真实失败 | 后台探针或受控半开完整成功 CAS 清理；失败释放租约并继续后台确认 |
 | `temporary_unavailable` | `accounts.status` / `cooldown_until` | 不参与调度 | 后台探针确认不可用 | 后台冷却复测成功恢复；手动恢复清理 |
-| `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 账户错误策略或探针确认限流 | 后台慢速复测成功恢复；手动恢复清理 |
+| `rate_limited` | `accounts.status` / `cooldown_until` | 不参与调度 | 用户显式账户错误策略或明确后台任务 | 后台慢速复测成功恢复；手动恢复清理 |
 | `error` | `accounts.status = error` | 不参与调度 | 明确硬异常，例如凭据无效、OAuth 刷新连续失败 | 可自动恢复的异常由对应后台任务恢复；不可自动恢复的异常需要用户修配置或手动恢复 |
 
 `failure_observed` 是内部观察态，不作为前端状态标签展示；`latency_degraded` 只表示当前普通路由速度优先偏好下近期首字慢，不表示账号不可用，也不能升级为持久账号状态。它是路由策略目标对账户偏好的短 TTL 覆盖层，不改写超级优先、账号优先级、备用层、会话亲和或质量排序；恢复清理后，后续请求必须重新回到账户配置排序。账户页只展示会影响调度或需要排障的 `latency_degraded`、`runtime_degraded`、`local_suppressed`、`precheck_pending`、`precheck_failed` 和持久状态。
@@ -47,7 +48,7 @@
 授权实例：accountId + 使用方系统账户 + 本地分组 + 授权 ID
 ```
 
-采样只接收已经真实进入上游账号调用链路的失败：
+普通请求可以记录已经真实进入上游账号调用链路的诊断样本，但样本只服务本请求救回、审计、来源级回避和首次 `recovery_wait` 投递，不能直接建立账户级运行态：
 
 - 上游请求异常、连接失败、超时、EOF。
 - 上游 HTTP 非 `2xx`。
@@ -67,7 +68,7 @@
 
 - 同一运行态键在很短时间内的大量失败先合并为同一观察窗口内的失败样本，不按请求数快速升级状态。
 - 多 IP 只作为可信度维度，不作为立即升级条件。
-- 状态升级必须满足最小观察时长；例如刚开始 60 秒内只允许短暂避让和采样，不允许直接写 `runtime_degraded` 或 `temporary_unavailable`。
+- 状态升级必须由独立后台探针结果驱动并满足最小观察时长；普通请求在任何时间都不能直接写 `runtime_degraded`、`precheck_pending` 或 `temporary_unavailable`。
 
 ## 首字慢采样规则
 
@@ -75,20 +76,20 @@
 
 - 采样来源是已经真实进入上游账号调用链路的首字等待。流式请求按首个可见语义输出计算，SSE comment、空心跳和未完成语义事件不算达标；非流式请求按上游 `2xx` 后首个 body 字节计算。
 - 采样键必须带当前调用方和路由上下文，建议为 `systemAccountId + routeStrategyId + groupId + accountRuntimeKey`。不同路由策略的速度偏好不能互相污染。
-- 窗口内连续慢样本达到策略配置后进入 `latency_degraded`。快样本只清理首字慢连续计数，不清理普通失败样本。
+- 窗口内慢样本只投递后台核实；后台探针或后台状态评估确认持续超阈值后才进入 `latency_degraded`。普通快样本只作为诊断事实，不能清理账户级运行态。
 - `latency_degraded` 有效期内，速度优先可以把未降级且硬可承接的同分组账号排到前面，即使被后置账号拥有超级优先、更高账号优先级、主池身份或会话亲和。
 - `latency_degraded` 只覆盖账户偏好，不覆盖硬约束；候选仍必须满足账户状态、授权、时间计划、模型能力、协议能力、额度、账号硬并发、分组队列和本地不可调度过滤。
 - `latency_degraded` 账号仍可兜底调度；所有硬可承接候选都处于 `latency_degraded` 时应旁路该排序，保留原账户顺序，避免保护机制筛空号池。
-- 后台探针或真实请求连续首字达标清理 `latency_degraded` 后，后续选号立即回到账户配置排序，避免恢复账号饿死或替补账号被长期耗尽额度。
-- 首字慢不是账号故障。只有真实上游错误、响应中断、探针确认失败或账户错误处理策略命中，才进入 `failure_observed`、`local_suppressed`、`runtime_degraded` 或持久冷却链路。
+- 后台探针连续首字达标清理 `latency_degraded` 后，后续选号立即回到账户配置排序，避免恢复账号饿死或替补账号被长期耗尽额度。
+- 首字慢不是账号故障。普通真实上游错误或响应中断只首次投递 `recovery_wait`；后台探针确认后才进入 `failure_observed`、`runtime_degraded` 或持久冷却链路。`local_suppressed` 只由用户显式策略建立。
 
 ## 后台探针分层
 
 探针按状态存储位置分两层，避免为了恢复 Web 进程内易失状态而引入额外分布式依赖：
 
-- 运行态恢复探针：处理 `failure_observed`、`latency_degraded`、`local_suppressed`、`runtime_degraded` 和 `precheck_pending` 这类短 TTL 运行态。standalone 模式可以保存在 Web 进程内；performance 模式必须保存在 Redis runtime state，但不使用 Redis 分布式锁。
+- 运行态恢复探针：处理系统自动的 `failure_observed`、`latency_degraded`、`runtime_degraded` 和 `precheck_pending`。用户显式策略建立的 `local_suppressed` 只按配置 TTL 到期或人工恢复清理。standalone 模式可以保存在 Web 进程内；performance 模式必须保存在 Redis runtime state，但不使用通用 Redis 分布式锁。
 - ops-worker 冷却复测：处理 `accounts.status = temporary_unavailable / rate_limited` 这类持久状态，按冷却时间和退避策略持续复测，直到恢复、进入长期低频复测或用户手动处理。
-- 所有后台系统探针统一采用二元结果：只有完整探测成功才算成功；超时、网络错误、非成功响应、协议错误和业务错误都算本次失败。失败原因只用于日志、状态展示和排障，不能让某类失败跳过失败次数累计或下一次复测时间推进。
+- 后台系统探针统一采用三类事实：完整协议成功、已经形成真实上游尝试但未成功、未形成有效上游尝试。前两类分别推进成功或失败状态机；任务取消、执行器内部错误、检查模型配置异常等未形成有效上游尝试的结论必须丢弃，不能累计失败、建立软阻断或推进下一次确认轮次。分类依据是是否形成真实上游尝试，不维护状态码、错误码或错误文案白名单。
 - ops-worker 冷却复测必须按 `(cooldown_until, priority, created_at, id)` 复合游标公平扫描，并在扫描到末尾后回绕。已在队列或执行中的账户不能永久占用固定查询窗口，避免前排账户让后续到期账户长期得不到复测。
 - 每个进程内的自动完整诊断共享最多 3 路门禁，不能随批量设置或同进程多个队列叠加放大；server 运行态恢复探针、恢复探针升级后的 precheck 和 Redis 运行态探针也必须共享同一 3 路门禁。不同 worker 不引入 Redis 全局诊断锁，依靠任务归属、启动错峰和 DB service 优先级隔离。冷却复测、Key 级冷却复测和速度优先恢复探针在 ops-worker 启动后分别延迟 60、65、75 秒执行首轮，避免与 stats-worker 启动期窗口刷新同时争用 DB service。探针 DB service 请求窗口为 30 秒，超时日志必须携带具体 operation 类型。
 - `error` 只在明确硬异常时写入；可自动恢复的后台任务成功后可以清理，不能把普通上游抖动写成长期硬错误。
@@ -114,8 +115,8 @@ generation
 调度器职责：
 
 - standalone 模式同一个 `runtimeKey` 尽量只保留一个本地探针；performance 模式允许多个 server 节点短暂重复执行同一个 `runtimeKey` 的探针。
-- 相同或更早 `dueAt` 的新意图合并到同一个任务，失败计数和来源维度取最大值或并集。
-- 所有探针任务带 `generation`。探针开始时记录 generation，结束回写前必须确认 generation 未变化；如果真实成功、手动恢复或新状态转换已经推进 generation，旧探针结果直接丢弃，旧 generation 也不能覆盖或删除新 generation 状态。
+- 后台状态机内部生成的相同或更早 `dueAt` 意图可以按 generation 合并；普通请求只能首次创建 `recovery_wait`，不能合并失败计数、改写 generation、刷新 TTL 或推迟已有任务。
+- 所有探针任务带 `generation`。探针开始时记录 generation，结束回写前必须确认 generation 未变化；如果后台探针 / 主动健康检查 / 匹配租约半开完整成功、手动恢复或新状态转换已经推进 generation，旧探针结果直接丢弃，旧 generation 也不能覆盖或删除新 generation 状态。
 - 调度时间必须带 jitter，避免大批账号在同一秒同时探测。
 - 有本机全局并发保护、单账号最小间隔，以及 provider / proxy / baseUrl 维度的本机最小间隔。预算不足时只推迟 due 时间，不把账号升级为更重状态；该预算不进入 Redis 分布式锁。
 - 后台 sweep 周期性读取 due 索引补偿漏调度；performance 模式的 due 索引必须在 Redis 中，不能只存在于某个 Web 进程的 timer。
@@ -125,7 +126,7 @@ generation
 
 | 级别 | 状态 | 探针策略 |
 | --- | --- | --- |
-| L1 soft recovery | `local_suppressed` 到期 | 单次账号健康探针，短超时，成功即清 |
+| L1 recovery intake | `recovery_wait` | 单次账号健康探针；未形成有效上游尝试时丢弃结论，账户保持普通可调度 |
 | L2 latency verify | `latency_degraded` | 使用账号健康探针校验首字是否回到策略阈值内；连续达标后清理 |
 | L2 stability verify | `runtime_degraded` | 低频账号健康探针；必要时连续成功再清 |
 | L3 precheck confirm | `precheck_pending` | 完整诊断，多次失败且并发归零后才落库 |
@@ -136,7 +137,7 @@ generation
 
 performance 模式默认可能有多个 server 节点，同一账号的运行态必须满足跨节点一致性：
 
-- 状态转换、probe intent、probe generation 和 due index 进入 Redis runtime state；失败窗口和 success observation 可以保留进程内短窗口，用时间窗口、后台探针和真实成功信号兜底。
+- 状态转换、probe intent、probe generation 和 due index 进入 Redis runtime state；失败窗口和 success observation 可以保留进程内短窗口，但账户级结论只能由后台探针、主动健康检查或显式人工操作推进。
 - 请求调度链路允许短暂不一致，优先性能。读取 Redis 探针状态时使用 server 进程内短 TTL 近端缓存；缓存过期前可能继续避让或短暂误选，但不能写坏持久状态。
 - Redis key 必须有 TTL，不能成为持久事实；Redis 丢失时最多回到保守调度，不能丢账务、授权、审计或使用记录事实。
 - due index 用 Redis sorted set 或等价 runtime state 索引保存 `runtimeKey -> dueAt`，各 Web 节点都可以 sweep；重复执行由 generation 条件写入和条件删除收敛。
@@ -150,7 +151,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - Redis 存储拆为 JSON 状态、due sorted set 和 generation key。写状态时同时写 due 索引；删除状态时同时清理 due。
 - generation 使用 Redis `INCR + PEXPIRE` 原子递增；探针执行和事前确认每次回写前都读取当前 generation，旧结果直接丢弃。
 - server 进程启动后会启动 Redis due sweep，周期读取 due 索引并执行到期探针；worker 和 DB service 不执行运行态恢复探针。
-- 调度过滤在 Redis runtime state 下读取共享探针状态，但使用 `1s` 正向缓存和 `500ms` 负向缓存降低热路径 Redis 读放大；真实请求成功、手动恢复或持久状态写回会清理共享探针状态和当前进程缓存。
+- 调度过滤在 Redis runtime state 下读取共享探针状态，但使用 `1s` 正向缓存和 `500ms` 负向缓存降低热路径 Redis 读放大；后台探针成功、主动健康检查成功、手动恢复或持久状态写回会按 generation 清理共享探针状态和当前进程缓存，普通请求成功不能清理。
 - Redis 探针状态只保存非敏感元数据：`runtimeKey`、`accountId`、账号展示名、供应商、系统账户 / 分组 ID、设置快照、失败计数、观察时间、下一次探针时间、原因和 generation。
 - Redis 探针状态不保存账号凭据、API Key、OAuth token、代理密码、完整请求 / 响应正文、失败请求 model、endpoint、stream 或用户 payload。执行探针前必须通过 DB service 按 `accountId + groupId + systemAccountId` 重载账号凭据，并允许读取当前不可用账号用于恢复验证。
 
@@ -187,59 +188,52 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 后台主动探针负责所有恢复和重状态确认：
 
-1. 扫描 due 的失败样本、运行态降级、短暂避让、探针确认态和持久冷却态。
+1. 扫描 due 的 `recovery_wait`、系统自动失败观察、运行态降级、`precheck_pending` 和持久冷却态；不接管用户显式策略 TTL。
 2. 多个 Web 节点可以短暂重复执行同一个运行态键的探针；探针结果回写必须校验 generation，旧探针结果直接丢弃，不能靠 Redis 分布式锁保证唯一执行。
 3. 使用系统账户检查探针发起最小请求；模型固定为账户 `healthCheckModel`，不从历史测试、目录默认或失败请求提取 model / endpoint。
 4. 运行态恢复探针必须标记 `traffic_source = runtime_recovery_probe`；持久冷却复测继续使用 `traffic_source = cooldown_retest`，两者都不能伪装成真实用户网关流量。
 5. 探针使用记录和审计只保留诊断摘要，不参与业务统计或账号质量统计。
-6. Web 本地探针成功清理运行态；ops-worker 冷却复测成功时恢复持久状态为 `active`。
+6. 运行态探针或主动健康检查成功按 generation 清理 standalone memory / performance Redis 运行态；ops-worker 冷却复测成功时恢复持久状态为 `active`。
 7. 探针失败只推进后台状态机，不把失败结果回灌成用户请求失败，也不进入账号质量统计。
 
 ## 状态转换条件
 
-### 从 `failure_observed` 到 `local_suppressed`
+### 普通请求到 `recovery_wait`
 
-真实请求失败后可以立即短暂避让，目的是挡住同一波并发风暴：
+未命中用户显式策略的普通请求失败只允许执行以下账户核实副作用：
 
-- 首次失败进入短 TTL 避让。
-- TTL 到期后由后台探针检查，不把用户请求作为半开恢复主路径。
-- 如果后台探针成功，清理观察和短暂避让。
-- 如果后台探针失败，继续短 TTL 或进入更高观察态，但仍需满足最小观察时间。
+- 当前请求排除已失败账号并继续换号；按 API Key / IP / 会话建立有界局部回避。
+- 仅在该运行态键不存在后台事件时，原子首次创建 `recovery_wait`。
+- 已有事件时不得累计请求次数、合并来源、替换 generation、刷新 TTL 或提前 / 推迟 due 时间。
+- 普通成功和失败都不能建立、清理或改写账户级运行态。
 
-### 从 `local_suppressed` 到 `runtime_degraded`
+`recovery_wait` 不展示账户异常、不影响普通调度；后台执行器未形成有效上游尝试时结论为未知，释放本轮执行并保持账户调度资格。
 
-只能由后台探针或后台状态评估触发，不能由用户请求次数直接触发。
+### 有效后台失败到 `precheck_pending`
 
-推荐条件：
+独立后台探针真实到达上游并确认失败后，才能按当前 generation 原子进入 `precheck_pending`：
 
-- 观察窗口至少持续 `60s`。
-- 窗口内至少有多个时间点的失败样本，不能全部来自同一瞬间并发。
-- 没有近期真实成功或探针成功。
-- 后台探针至少失败 1 次，证明问题不是单次请求抖动。
+- standalone 使用 memory 条件更新；performance 使用 Redis `phase + generation + leaseId` Lua CAS。
+- `precheck_pending` 立即从普通候选中软阻断，但后台探针、主动健康检查和受控半开仍可访问。
+- 后台探针未到达上游、任务取消、执行器内部错误或检查模型配置异常都属于未知，不得建立软阻断。
+- 后台探针后续结果按最小观察时间、独立轮次和 generation 推进；普通请求数量和普通成功信号不能参与账户级状态转换。
 
-进入 `runtime_degraded` 后，有普通候选时排后；普通候选不足时仍可兜底尝试，避免账号池被保护机制筛空。
+### 全池软阻断与受控半开
 
-### 从 `runtime_degraded` 到 `precheck_pending`
+当前分组普通候选全部软阻断时，先尝试健康候选和路由策略允许的后备分组；仍无可用候选时：
 
-只能由后台探针持续失败触发。
-
-推荐条件：
-
-- `runtime_degraded` 持续超过最小确认窗口。
-- 后台探针连续失败达到确认阈值。
-- 当前账号仍没有真实成功信号。
-
-进入 `precheck_pending` 后不再由用户请求恢复；后台探针继续执行确认。
+- 按 `runtimeKey + generation` 获取账户半开租约，并按 `systemAccountId + groupId` 限制同分组同时最多一个半开。
+- 只有租约持有者可以发起真实半开请求；显式用户策略建立的 TTL 避让不参与系统自动半开。
+- 其他请求按分组、模型和候选 generation 进入有上限的 FIFO 等待；协调器使用单 timer、支持 AbortSignal 并在结束时清理等待者。
+- 半开请求禁用同账户 / 同 Key 原地重试。完整 JSON 或 SSE 协议成功后才按 generation CAS 清理软阻断；headers、首字节或部分 token 不算恢复成功。
+- 半开失败、超时或客户端中断只释放匹配租约，不能累计后台探针轮次；旧 generation 或旧 leaseId 不能清理新状态。
+- 后备、排队、重新选号、同请求重试、fetch 和响应读取共用从原始 `startedAt` 计算的绝对 deadline，最大 270 秒，任何阶段不得重置预算。
 
 ### 从 `precheck_pending` 到持久状态
 
-后台探针连续失败后，如果当前账号仍有在途并发，只保持 `precheck_pending`，等待并发归零。
+后台探针完成至少 5 分钟观察、3 个独立失败轮次且轮次至少间隔 2 分钟后，如果当前账号仍有在途并发，只保持 `precheck_pending` 并等待并发归零。并发归零后，系统自动路径默认写 `temporary_unavailable`，原因必须使用后台探针真实上游 `HTTP/code/message` 摘要，不能使用网关最终 `service_unavailable` 兜底文案。
 
-并发归零后按待确认目标写入：
-
-- 默认写 `temporary_unavailable`。
-- 命中账户错误处理策略时，可以写 `rate_limited` 或 `error`。
-- 写入原因使用后台探针真实上游 `HTTP/code/message` 摘要，不使用网关最终 `service_unavailable` 兜底文案。
+账户所有者显式配置的账户错误策略和响应拦截策略不走上述自动确认路径：规则实际命中后按用户配置直接执行 `retry_next`、TTL 运行态避让、`temporary_unavailable`、`rate_limited` 或 `error` 等动作；显式 TTL 只在到期或人工恢复时清理，后台自动成功不能提前解除。
 
 ### 持久状态恢复
 
@@ -262,15 +256,17 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 用户请求失败时允许做：
 
 - 记录失败使用记录和审计。
-- 写失败样本。
-- 短 TTL 避让当前账号。
+- 写本请求诊断样本并原子首次投递 `recovery_wait`。
 - 忘记当前会话亲和。
-- 切换后续账号或后续分组救当前请求。
+- 按 API Key / IP / 会话做局部回避，并切换后续账号或后续分组救当前请求。
+- 命中账户所有者显式错误策略或响应拦截策略时，按配置执行明确动作。
 
 用户请求失败时不允许做：
 
 - 直接写 `temporary_unavailable`。
 - 直接把账号标为 `runtime_degraded`。
+- 直接建立 `local_suppressed` 或 `precheck_pending` 等系统自动账户级运行态。
+- 把普通成功作为清理任何账户级运行态的依据。
 - 因多个 IP 同时失败而绕过最小观察时间。
 - 用“用户请求到来”作为探针触发条件。
 - 把请求数量当成状态转换依据。
@@ -279,11 +275,12 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 | 状态 | 自动恢复出口 | 人工恢复出口 |
 | --- | --- | --- |
-| `failure_observed` | 窗口过期；后台探针成功；真实成功 | 手动恢复正常 |
-| `latency_degraded` | 后台探针连续首字达标；真实请求连续首字达标；TTL 过期 | 手动恢复正常；关闭对应普通路由速度优先 |
-| `local_suppressed` | TTL 到期后后台探针成功；窗口过期 | 手动恢复正常 |
-| `runtime_degraded` | 后台探针成功；真实完整成功；观察窗口过期 | 手动恢复正常 |
-| `precheck_pending` | 后台探针成功 | 手动恢复正常 |
+| `recovery_wait` | 后台任务完成、丢弃未知结论或推进为探针运行态 | 无需展示；人工恢复可精确清理后台事件 |
+| `failure_observed` | 窗口过期；后台探针成功 | 手动恢复正常 |
+| `latency_degraded` | 后台探针连续首字达标；TTL 过期 | 手动恢复正常；关闭对应普通路由速度优先 |
+| `local_suppressed` | 显式策略 TTL 到期 | 手动恢复正常 |
+| `runtime_degraded` | 后台探针成功；观察窗口过期 | 手动恢复正常 |
+| `precheck_pending` | 后台探针或匹配 generation 的半开完整成功 | 手动恢复正常 |
 | `temporary_unavailable` | 后台冷却复测成功 | 手动恢复正常 |
 | `rate_limited` | 后台慢速复测成功 | 手动恢复正常 |
 | `error` | 对应后台任务成功，例如 OAuth 刷新恢复 | 人工“异常恢复”只进入 `pending_test` 并立即投递后台复检 |
@@ -296,7 +293,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - `gateway_account_latency_degraded`：普通路由速度优先确认账号近期首字慢，账号进入速度降级。
 - `gateway_account_latency_probe_success`：首字恢复探针达标，速度降级恢复计数推进或已清理。
 - `gateway_account_latency_probe_failed`：首字恢复探针未达标，继续速度降级并等待下一轮。
-- `gateway_account_local_suppressed`：账号进入短暂避让。
+- `gateway_account_local_suppressed`：用户显式策略命中，账号进入配置 TTL 避让；普通失败不触发。
 - `gateway_account_recovery_probe_scheduled`：后台探针已调度。
 - `gateway_account_recovery_probe_budget_delayed`：探针因本机并发保护、单账号最小间隔或本机 provider / proxy / Base URL 最小间隔被推迟。
 - `gateway_account_recovery_probe_stale_result_ignored`：探针结束时 generation 已变化，旧结果已丢弃。
@@ -312,17 +309,18 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 改动该状态机时至少验证：
 
-- 单账号高并发多 IP 同一波失败只进入短暂避让，不进入 `runtime_degraded` 或持久状态。
-- 普通路由速度优先下，首字慢只进入 `latency_degraded`，不写账号 `temporary_unavailable`、`rate_limited`、`error` 或健康检测失败次数。
+- 单账号高并发多 IP 同一波失败只影响当前请求和来源局部回避，并原子首次投递 `recovery_wait`，不建立账户级运行态或持久状态。
+- 普通路由速度优先下，首字慢只记录样本并投递后台核实；只有后台确认后才进入 `latency_degraded`，且不写账号 `temporary_unavailable`、`rate_limited`、`error` 或健康检测失败次数。
 - `latency_degraded` 账号在同普通路由分组内后置，未降级硬可承接账号可临时越过账户超级优先、账号优先级、备用层和会话亲和；全部候选都速度降级时旁路排序并保留原候选顺序。
-- `latency_degraded` 恢复清理后，后续请求重新按账户配置排序，已恢复的主账号不会因为之前切到替补账号而长期饿死。
+- 后台探针清理 `latency_degraded` 后，后续请求重新按账户配置排序，已恢复的主账号不会因为之前切到替补账号而长期饿死。
 - 首字超阈值且下游尚未写出可见内容时，可按策略限制切换同分组后续账号；下游已写出可见内容后不得透明切号。
 - 关闭速度优先或修改路由策略后，对应 `latency_degraded` 运行态必须清理。
-- 后台探针成功能清理 `failure_observed`、`latency_degraded`、`local_suppressed`、`runtime_degraded` 和 `precheck_pending`。
+- 后台探针成功能清理系统自动建立的 `failure_observed`、`latency_degraded`、`runtime_degraded` 和 `precheck_pending`；不能提前清理用户显式策略建立的 TTL 避让。
 - 后台探针连续失败且并发归零后才写 `temporary_unavailable`。
 - `temporary_unavailable` 后台复测成功能自动恢复 `active`。
 - 所有用户请求失败路径仍能切号救回当前请求。
-- 旧 generation 探针结果不能覆盖真实成功、手动恢复或更新后的状态。
+- 旧 generation 探针结果不能覆盖后台 / 主动健康 / 匹配租约半开成功、手动恢复或更新后的状态。
 - performance / Redis runtime state 下，多节点同时调度同一运行态允许短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。
+- `precheck_pending` 在 memory / Redis 下都软阻断普通调度；全池软阻断时健康 / 后备优先、同账户与同分组单飞半开、FIFO 等待和 270 秒绝对 deadline 均生效。
 - 模型 / endpoint 明确不支持时不进入账号级状态升级；恢复探针不能复用失败请求形态，也不能因此把账号打成不可用。
 - Mock AI 覆盖失败后恢复、失败后持续不可用、高并发失败风暴和授权实例隔离。

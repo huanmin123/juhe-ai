@@ -78,18 +78,17 @@ export const distributionProbeDefinitions = [
 ] as const
 
 export interface LongContextProbeDefinition {
-  key: 'context_low' | 'context_medium' | 'context_high' | 'context_extreme'
+  key: 'context_low' | 'context_medium' | 'context_high'
   marker: string
   targetInputTokens: number
   markerTokenRatio: number
   maxOutputTokens: number
-  level: 'low' | 'medium' | 'high' | 'extreme'
+  level: 'low' | 'medium' | 'high'
 }
 
 export function longContextProbeDefinitionsForModel(
   providerCode: string,
-  model: string,
-  includeExtreme = false
+  model: string
 ): LongContextProbeDefinition[] {
   const pricing = getProviderModelPricing(providerCode, model)
   const modelLimit = Math.max(8_000, pricing?.maxInputTokens ?? pricing?.contextWindowTokens ?? 64_000)
@@ -97,14 +96,11 @@ export function longContextProbeDefinitionsForModel(
   const high = Math.min(safeLimit, Math.max(4_000, Math.floor(modelLimit * 0.25)))
   const medium = Math.min(high - 1, Math.max(2_000, Math.min(60_000, Math.floor(high * 0.6))))
   const low = Math.min(medium - 1, Math.max(1_000, Math.min(8_000, Math.floor(medium * 0.5))))
-  const definitions: LongContextProbeDefinition[] = [
+  return [
     definition('low', low, 0.58, 40),
     definition('medium', medium, 0.67, 48),
     definition('high', high, 0.74, 48)
   ]
-  const extreme = Math.min(safeLimit, Math.max(high + 1, Math.floor(modelLimit * 0.85)))
-  if (includeExtreme && extreme > high) definitions.push(definition('extreme', extreme, 0.82, 48))
-  return definitions
 }
 
 export const longContextProbeDefinitions = longContextProbeDefinitionsForModel('gpt', 'gpt-5.6-sol')

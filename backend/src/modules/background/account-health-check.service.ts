@@ -14,6 +14,7 @@ import {
 } from '../accounts/account-health-check-trigger.js'
 import { enqueueAccountBalanceAutoDetection } from './account-balance-auto-detect.service.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
+import { accountPageDataOwnerIds, publishAccountRuntimeChange } from '../page-data/page-data-change.publisher.js'
 
 interface AccountHealthCheckQueueItem extends AccountHealthCheckSettings {
   accountId: string
@@ -151,6 +152,13 @@ async function runAccountHealthCheckQueueItem(
     }, backgroundProbeDbServiceTimeoutMs)
     const changed = healthCheckResult?.changed ?? false
     sendAccountRuntimeClearToServer({ accountId: account.id })
+    if (changed) {
+      await publishAccountRuntimeChange({
+        accountId: account.id,
+        ownerSystemAccountIds: accountPageDataOwnerIds(account),
+        fieldMask: ['status', 'schedulable', 'lastHealthCheckAt', 'nextHealthCheckAt', 'lastHealthSuccessAt']
+      })
+    }
     logger.info({
       event: 'background_account_health_check_passed',
       accountId: account.id,
@@ -200,6 +208,23 @@ async function runAccountHealthCheckQueueItem(
       }
     }, backgroundProbeDbServiceTimeoutMs)
     markedTemporaryUnavailable = updated?.updated ?? false
+  }
+
+  if (failure?.changed || markedTemporaryUnavailable) {
+    await publishAccountRuntimeChange({
+      accountId: account.id,
+      ownerSystemAccountIds: accountPageDataOwnerIds(account),
+      fieldMask: [
+        'status',
+        'schedulable',
+        'cooldownUntil',
+        'lastErrorCode',
+        'lastErrorMessage',
+        'lastHealthCheckAt',
+        'nextHealthCheckAt',
+        'healthCheckFailureCount'
+      ]
+    })
   }
 
   const logFields = {

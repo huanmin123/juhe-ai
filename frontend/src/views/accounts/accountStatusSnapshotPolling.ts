@@ -58,7 +58,7 @@ export function createAccountStatusSnapshotPolling(options: AccountStatusSnapsho
     if (!started || inFlight || options.isBlocked() || !options.isVisible()) {
       return
     }
-    const ids = [...new Set(options.accountIds().filter(Boolean))].slice(0, 100)
+    const ids = [...new Set(options.accountIds().filter(Boolean))]
     if (ids.length === 0) {
       schedule()
       return
@@ -66,7 +66,10 @@ export function createAccountStatusSnapshotPolling(options: AccountStatusSnapsho
     inFlight = true
     abortController = new AbortController()
     try {
-      await options.request(ids, abortController.signal)
+      for (let offset = 0; offset < ids.length; offset += 100) {
+        if (abortController.signal.aborted) break
+        await options.request(ids.slice(offset, offset + 100), abortController.signal)
+      }
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         // Periodic refresh failures retain the last accepted snapshot.

@@ -1,0 +1,158 @@
+import { createSharedJsonCache } from '../../shared/cache.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
+import { canAccessAll, scopedSystemAccountId, type AccessScope } from '../../storage/access-scope.js'
+import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import type { UsageRecordInput, UsageRecordListOptions, UsageRecordListResult, UsageRecordSummary } from '../../storage/usage-records.repository.js'
+
+const firstPageLimit = 50
+const firstPageResponseSize = 20
+const cache = createSharedJsonCache<UsageRecordSummary[]>({
+  name: 'usage_record_first_page',
+  max: 512,
+  ttlMs: 36 * 60 * 60 * 1000,
+  version: 'v1'
+})
+
+export async function publishUsageRecordFirstPage(inputs: UsageRecordInput[]): Promise<void> {
+  const gatewayInputs = inputs.filter((input) => input.trafficSource === 'gateway' && input.systemAccountId && input.id && input.createdAt)
+  if (gatewayInputs.length === 0) return
+  const timezone = await usageStatsTimezoneAsync()
+  const byKey = new Map<string, UsageRecordSummary[]>()
+  for (const input of gatewayInputs) {
+    const date = dateKey(new Date(input.createdAt!), timezone)
+    const key = firstPageCacheKey(input.systemAccountId!, date)
+    const rows = byKey.get(key) ?? []
+    rows.push(summaryFromInput(input))
+    byKey.set(key, rows)
+  }
+  for (const [key, rows] of byKey) {
+    try {
+      const existing = await cache.get(key) ?? []
+      const merged = dedupeAndSort([...rows, ...existing]).slice(0, firstPageLimit)
+      await cache.set(key, merged)
+    } catch (error) {
+      logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_write_failed', cacheKey: key }), '使用记录首屏热列表更新失败，已保留数据库事实')
+    }
+  }
+}
+
+export async function seedUsageRecordFirstPage(
+  access: AccessScope | undefined,
+  options: UsageRecordListOptions | undefined,
+  result: UsageRecordListResult
+): Promise<void> {
+  const systemAccountId = scopedSystemAccountId(access)
+  if (!systemAccountId || canAccessAll(access) || !isDefaultFirstPageOptions(options)) return
+  const timezone = await usageStatsTimezoneAsync()
+  const today = dateKey(new Date(), timezone)
+  const todayStart = startOfZonedDateKeyIso(today, timezone)
+  const tomorrow = dateKey(new Date(Date.now() + 24 * 60 * 60 * 1000), timezone)
+  const tomorrowStart = startOfZonedDateKeyIso(tomorrow, timezone)
+  if (options?.startAt !== todayStart || options?.endAt !== tomorrowStart) return
+  try {
+    await cache.set(firstPageCacheKey(systemAccountId, today), dedupeAndSort(result.items).slice(0, firstPageLimit))
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_seed_failed', systemAccountId }), '使用记录首屏热列表回填失败，已保留数据库查询结果')
+  }
+}
+
+export async function getUsageRecordFirstPage(
+  access: AccessScope | undefined,
+  options: UsageRecordListOptions | undefined
+): Promise<UsageRecordListResult | undefined> {
+  const systemAccountId = scopedSystemAccountId(access)
+  if (!systemAccountId || canAccessAll(access) || !isDefaultFirstPageOptions(options)) return undefined
+  const timezone = await usageStatsTimezoneAsync()
+  const today = dateKey(new Date(), timezone)
+  const todayStart = startOfZonedDateKeyIso(today, timezone)
+  const tomorrow = dateKey(new Date(Date.now() + 24 * 60 * 60 * 1000), timezone)
+  const tomorrowStart = startOfZonedDateKeyIso(tomorrow, timezone)
+  if (options?.startAt !== todayStart || options?.endAt !== tomorrowStart) return undefined
+  try {
+    const rows = await cache.get(firstPageCacheKey(systemAccountId, today))
+    if (!rows) return undefined
+    return { items: rows.slice(0, firstPageResponseSize), total: rows.length, page: 1, pageSize: firstPageResponseSize, hasMore: rows.length > firstPageResponseSize }
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_read_failed', systemAccountId }), '使用记录首屏热列表读取失败，回源数据库')
+    return undefined
+  }
+}
+
+export function isUsageRecordFirstPageOptions(options: UsageRecordListOptions | undefined): boolean {
+  return isDefaultFirstPageOptions(options)
+}
+
+function isDefaultFirstPageOptions(options: UsageRecordListOptions | undefined): boolean {
+  return (options?.page ?? 1) === 1
+    && (options?.pageSize ?? 50) === firstPageResponseSize
+    && (options?.sortBy ?? 'createdAt') === 'createdAt'
+    && (options?.sortOrder ?? 'desc') === 'desc'
+    && options?.trafficSource === 'gateway'
+    && !options?.traceId && !options?.accountKeyword && !options?.clientIp
+    && !options?.result && options?.statusCode === undefined && !options?.groupId && !options?.model
+}
+
+function firstPageCacheKey(systemAccountId: string, date: string): string {
+  return `${systemAccountId}:${date}`
+}
+
+function summaryFromInput(input: UsageRecordInput): UsageRecordSummary {
+  return {
+    id: input.id!,
+    systemAccountId: input.systemAccountId,
+    traceId: input.traceId,
+    trafficSource: input.trafficSource,
+    clientIp: input.clientIp,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    accountId: input.accountId,
+    endpoint: input.endpoint,
+    providerCode: input.providerCode,
+    providerProtocolProfileId: input.providerProtocolProfileId,
+    usageSemantic: input.usageSemantic,
+    model: input.model,
+    upstreamModel: input.upstreamModel,
+    pricingModel: input.pricingModel,
+    requestedServiceTier: input.requestedServiceTier,
+    effectiveServiceTier: input.effectiveServiceTier,
+    reportedServiceTier: input.reportedServiceTier,
+    billedServiceTier: input.billedServiceTier,
+    requestedReasoningEffort: input.requestedReasoningEffort,
+    effectiveReasoningEffort: input.effectiveReasoningEffort,
+    pricingSnapshot: input.pricingSnapshot,
+    modelMappingApplied: input.modelMappingApplied,
+    modelMappingSource: input.modelMappingSource,
+    sourceEndpointFamily: input.sourceEndpointFamily,
+    upstreamEndpointFamily: input.upstreamEndpointFamily,
+    stream: input.stream === true,
+    statusCode: input.statusCode,
+    success: input.success,
+    failureAttribution: input.failureAttribution,
+    firstTokenMs: input.firstTokenMs,
+    durationMs: input.durationMs,
+    inputTokens: input.inputTokens,
+    outputTokens: input.outputTokens,
+    cacheReadTokens: input.cacheReadTokens,
+    cacheReadCostUsd: input.cacheReadCostUsd,
+    cacheWriteTokens: input.cacheWriteTokens,
+    cacheWrite1hTokens: input.cacheWrite1hTokens,
+    cacheWriteCostUsd: input.cacheWriteCostUsd,
+    thinkingTokens: input.thinkingTokens,
+    inputImageTokens: input.inputImageTokens,
+    outputImageTokens: input.outputImageTokens,
+    inputAudioTokens: input.inputAudioTokens,
+    outputAudioTokens: input.outputAudioTokens,
+    outputImageCount: input.outputImageCount,
+    costUsd: input.costUsd,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    createdAt: input.createdAt!
+  }
+}
+
+function dedupeAndSort(rows: UsageRecordSummary[]): UsageRecordSummary[] {
+  const seen = new Set<string>()
+  return rows
+    .filter((row) => !seen.has(row.id) && seen.add(row.id))
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+}

@@ -22,6 +22,10 @@
 
 `temporary_unavailable` 和 `rate_limited` 继续使用 `cooldown_retest_observation_started_at` 作为自动恢复观察起点。
 
+- `temporaryUnavailableContinuousProbeEnabled = true` 时保持现有长期恢复与 7 天终态。
+- 该字段为 `false` 且状态为 `temporary_unavailable` 时，观察窗口固定为 10 分钟，下一次退避不得越过截止点；截止后必须执行一次真实最终探针，成功恢复，真实失败才写入 `cooldown_retest_limited_probe_timeout` 并转为 `error`。worker 停止或任务未形成真实上游尝试时不能只按墙钟判异常。
+- 已处于 `temporary_unavailable` 时真实 `true -> false` 保存会从保存时间重开 10 分钟窗口并清理本轮复测计数；重复保存 `false` 不续期。`rate_limited` 始终沿用原恢复规则。
+
 - 快速和慢速阶段沿用现有受控退避。
 - 进入长期不可用阶段后固定每 1 小时复检一次，不使用更长的配置间隔。
 - 从观察起点满 7 天的下一次失败，repository 原子写入 `status = error`、`schedulable = false`、清空 `cooldown_until`，并写入 `last_error_code = cooldown_retest_observation_timeout`。

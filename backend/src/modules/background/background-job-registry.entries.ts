@@ -5,6 +5,19 @@ const entry = <const T extends BackgroundJobRegistryEntry>(value: T) => value
 
 export const backgroundScheduledJobs = [
   scheduled({
+    jobName: 'usage-record-first-page-prewarm',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'ingest-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: false,
+    blocksUserVisibleFreshness: false,
+    writes: ['cache:usage_record_first_page']
+  }),
+  scheduled({
     jobName: 'system-metrics-sample',
     category: 'scheduled',
     kind: 'sample',

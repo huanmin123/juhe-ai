@@ -31,12 +31,14 @@ try {
     { createMockGatewayFixture },
     { runModelCheck },
     repositories,
-    gatewayJsonParser
+    gatewayJsonParser,
+    { buildModelMatchEvidence }
   ] = await Promise.all([
     import('../maintenance/mockdata/fixtures.js'),
     import('../../modules/model-checks/model-checks.service.js'),
     import('../../storage/repositories.js'),
-    import('../../modules/gateway/request/json-parser.js')
+    import('../../modules/gateway/request/json-parser.js'),
+    import('../../modules/model-checks/model-checks-parsing.js')
   ])
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
 
@@ -106,13 +108,18 @@ try {
   assert.equal(mappedBasic.evidenceSummary.requestModel, mappedRequestModel, '模型检测证据应保留请求模型')
   assert.equal(mappedBasic.evidenceSummary.upstreamModel, mappedUpstreamModel, '模型检测证据应保留实际上游模型')
   assert.equal(mappedBasic.evidenceSummary.expectedModel, mappedUpstreamModel, '映射命中后应按实际上游模型校验返回模型')
-  assert.equal(mappedBasic.evidenceSummary.responseModel, mappedUpstreamModel, '映射命中后应保存上游返回模型')
+  assert.equal(mappedBasic.evidenceSummary.responseModel, mappedRequestModel, '映射命中后应允许上游返回公开请求模型名')
   assert.equal(mappedBasic.evidenceSummary.modelMappingApplied, true, '模型检测证据应明确标记模型映射已命中')
   const mappedTrustReport = mappedDetail.resultSummary.trustReport as Record<string, unknown> | undefined
   assert.equal(mappedTrustReport?.mappingStatus, 'configured_mapping', '显式模型映射必须展示为已配置映射')
   assert.notEqual(mappedTrustReport?.identityStatus, 'suspected_downgrade', '显式映射不能被身份维度误判为降级')
+  assert.equal(buildModelMatchEvidence('gpt-unrelated', mappedUpstreamModel, {
+    requestModel: mappedRequestModel,
+    upstreamModel: mappedUpstreamModel,
+    modelMappingApplied: true
+  }).modelMismatch, true, '映射场景返回第三个无关模型时仍必须判定不一致')
 
-  console.log('模型检测严格模型匹配回归通过：变体模型不会冒充目标模型，合法模型映射按实际上游模型校验')
+  console.log('模型检测严格模型匹配回归通过：变体模型不会冒充目标模型，合法映射允许请求模型或映射目标模型')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -200,7 +207,7 @@ function sendStream(res: http.ServerResponse, outputText: string, actualResponse
 }
 
 function responseModelForBody(body: Record<string, unknown>): string {
-  return body.model === mappedUpstreamModel ? mappedUpstreamModel : responseModel
+  return body.model === mappedUpstreamModel ? mappedRequestModel : responseModel
 }
 
 function outputForProbe(body: Record<string, unknown>): string {

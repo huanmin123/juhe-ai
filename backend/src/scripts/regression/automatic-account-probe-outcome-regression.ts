@@ -93,8 +93,8 @@ assert.match(sideEffectsSource, /distributedRecoveryProbeStore\.setIfAbsent\(/, 
 assert.doesNotMatch(sideEffectsSource, /mergeDistributedRecoveryProbeFailureState\(/, 'Redis 用户信号不得 merge 或续期已有后台事件')
 assert.match(
   sideEffectsSource,
-  /function isPrecheckRuntimeBlocking\([^)]*\): boolean \{[\s\S]{0,120}return false[\s\S]{0,20}\}/,
-  '后台最终确认前账户必须继续允许调度'
+  /function isPrecheckRuntimeBlocking\(runtimeKey: string\): boolean \{[\s\S]{0,120}return precheckStates\.has\(runtimeKey\)[\s\S]{0,20}\}/,
+  'memory 运行态只能在后台探针进入 precheck_pending 后软阻断账户'
 )
 assert.match(
   sideEffectsSource,
@@ -107,12 +107,12 @@ const distributedSuppressionFilterSource = sideEffectsSource.match(
 assert.doesNotMatch(
   distributedSuppressionFilterSource,
   /distributedRecoveryProbeStore|precheck_pending|recovery_wait/,
-  'Redis 易失探针状态不能参与候选池硬过滤'
+  '用户显式策略过滤器必须保持独立，自动探针软阻断由专用过滤器叠加'
 )
 assert.match(
   distributedSuppressionFilterSource,
   /loadConfiguredPolicyAvoidanceStates/,
-  '候选池硬过滤只允许读取用户显式配置的账户避让'
+  '用户显式策略过滤器必须继续读取账户所有者配置的避让状态'
 )
 assert.match(sideEffectsSource, /onUpstreamAttempt:/)
 assert.match(sideEffectsSource, /isRealUpstreamAttempt\(attempt\)/, '网关后台复核只能接受真实 HTTP(S) 上游尝试')

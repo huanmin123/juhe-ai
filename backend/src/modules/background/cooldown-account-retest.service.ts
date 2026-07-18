@@ -8,10 +8,13 @@ import { automaticAccountProbeOutcome } from '../accounts/automatic-account-prob
 import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
+import { accountPageDataOwnerIds, publishAccountRuntimeChange } from '../page-data/page-data-change.publisher.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
   accountName: string
+  configRevision: number
+  cooldownRetestObservationStartedAt?: string
   maxPauseMinutes: number
   maxRecoveryHours: number
 }
@@ -40,6 +43,8 @@ export function enqueueCooldownAccountRetest(
   return cooldownAccountRetestQueue.enqueue(account.id, {
     accountId: account.id,
     accountName: account.name,
+    configRevision: account.configRevision ?? 1,
+    cooldownRetestObservationStartedAt: account.cooldownRetestObservationStartedAt,
     maxPauseMinutes: strategy.maxPauseMinutes,
     maxRecoveryHours: strategy.maxRecoveryHours
   })
@@ -58,7 +63,7 @@ async function runCooldownAccountRetestQueueItem(
   context: { attemptIndex: number; retryNumber: number }
 ) {
   const account = await cooldownRetestAccountForQueueItem(item)
-  if (!account || !isAccountDueForCooldownRetest(account)) {
+  if (!account || !isAccountDueForCooldownRetest(account) || (account.configRevision ?? 1) !== item.configRevision || account.cooldownRetestObservationStartedAt !== item.cooldownRetestObservationStartedAt) {
     logger.debug({
       event: 'background_cooldown_account_retest_discarded',
       accountId: item.accountId,
@@ -103,9 +108,18 @@ async function runCooldownAccountRetestQueueItem(
   const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
-      type: 'clear_account_failure_state',
-      accountId: account.id
+      type: 'record_cooldown_account_retest_success',
+      accountId: account.id,
+      expectedConfigRevision: item.configRevision,
+      expectedObservationStartedAt: item.cooldownRetestObservationStartedAt
     }, backgroundProbeDbServiceTimeoutMs)
+    if (restored?.changed) {
+      await publishAccountRuntimeChange({
+        accountId: account.id,
+        ownerSystemAccountIds: accountPageDataOwnerIds(account),
+        fieldMask: ['status', 'schedulable', 'cooldownUntil', 'lastErrorCode', 'lastErrorMessage']
+      })
+    }
     logger.info({
       event: 'background_cooldown_account_retest_restored',
       accountId: account.id,
@@ -126,6 +140,13 @@ async function runCooldownAccountRetestQueueItem(
       accountId: account.id,
       delaySeconds: 10
     }, backgroundProbeDbServiceTimeoutMs)
+    if (deferred?.cooldownUntil) {
+      await publishAccountRuntimeChange({
+        accountId: account.id,
+        ownerSystemAccountIds: accountPageDataOwnerIds(account),
+        fieldMask: ['cooldownUntil']
+      })
+    }
     logger.warn({
       event: 'background_cooldown_account_retest_task_failed',
       accountId: account.id,
@@ -149,10 +170,27 @@ async function runCooldownAccountRetestQueueItem(
       errorCode: result.errorCode,
       errorMessage: result.message,
       traceId: result.traceId,
+      expectedConfigRevision: item.configRevision,
+      expectedObservationStartedAt: item.cooldownRetestObservationStartedAt,
       maxPauseMinutes: item.maxPauseMinutes,
       maxRecoveryHours: item.maxRecoveryHours
     }
   }, backgroundProbeDbServiceTimeoutMs)
+  if (failure) {
+    await publishAccountRuntimeChange({
+      accountId: account.id,
+      ownerSystemAccountIds: accountPageDataOwnerIds(account),
+      fieldMask: [
+        'status',
+        'schedulable',
+        'cooldownUntil',
+        'lastErrorCode',
+        'lastErrorMessage',
+        'cooldownRetestFailureCount',
+        'cooldownRetestLastAt'
+      ]
+    })
+  }
 
   const logFields = {
     event: 'background_cooldown_account_retest_failed',

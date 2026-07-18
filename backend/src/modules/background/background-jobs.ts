@@ -4,13 +4,13 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { datasetDatabasePath, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
-import { getSettings, getSettingsAsync } from '../../storage/repositories.js'
+import { getSettings, getSettingsAsync, listSystemAccountsAsync, listUsageRecordsAsync } from '../../storage/repositories.js'
 import {
   latestUsageStatsLagSecondsForRuntime,
   usageStatsCursorSafetyDelaySeconds,
   type UsageRankSnapshotStageName
 } from '../../storage/usage-stats.repository.js'
-import { dateKey, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
@@ -54,6 +54,7 @@ import {
   backgroundTaskRunReconcileIntervalMs,
   runBackgroundTaskRunReconcile
 } from './background-task-run-reconcile.job.js'
+import { seedUsageRecordFirstPage } from '../usage-records/usage-record-first-page-cache.service.js'
 
 let started = false
 let usageStatsAggregationRunning = false
@@ -120,6 +121,7 @@ export function startBackgroundJobs(): void {
 function scheduleBackgroundJobs(): void {
   switch (runtimeConfig.workerRole) {
     case 'ingest-worker':
+      scheduler.schedule({ name: backgroundScheduledJobName('usage-record-first-page-prewarm'), intervalMs: 30 * minuteMs, initialDelayMs: 8 * secondMs, task: runUsageRecordFirstPagePrewarm })
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 24 * secondMs, task: runApiKeyRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('account-record-cleanup-retry'), intervalMs: minuteMs, initialDelayMs: 42 * secondMs, task: runAccountRecordCleanupRetry })
       scheduler.schedule({ name: backgroundScheduledJobName('audit-hot-retention-cleanup'), intervalMs: minuteMs, initialDelayMs: 13 * secondMs, task: runAuditHotRetentionCleanup })
@@ -186,6 +188,22 @@ function scheduleBackgroundJobs(): void {
       return
     default:
       return
+  }
+}
+
+async function runUsageRecordFirstPagePrewarm(): Promise<void> {
+  const accounts = await listSystemAccountsAsync()
+  const timezone = await usageStatsTimezoneAsync()
+  const today = dateKey(new Date(), timezone)
+  const startAt = startOfZonedDateKeyIso(today, timezone)
+  const tomorrow = dateKey(new Date(Date.now() + 24 * 60 * 60 * 1000), timezone)
+  const endAt = startOfZonedDateKeyIso(tomorrow, timezone)
+  for (const account of accounts) {
+    if (account.status !== 'active') continue
+    const access = { systemAccountId: account.id, role: 'user' as const }
+    const options = { page: 1, pageSize: 20, sortBy: 'createdAt' as const, sortOrder: 'desc' as const, trafficSource: 'gateway' as const, startAt, endAt }
+    const result = await listUsageRecordsAsync(access, options)
+    await seedUsageRecordFirstPage(access, options, result)
   }
 }
 

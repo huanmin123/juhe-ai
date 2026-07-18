@@ -8,6 +8,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
+import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
 import {
   cleanupNonBusinessDataBeforeWithResult,
   cleanupProcessedUsageRecordsBeforeWithResultAsync,
@@ -25,6 +26,7 @@ import {
 import { requestBackgroundWorkerDbService, sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
 import { requestStatsWriter, type BackgroundStatsWriteOperation } from '../background/background-stats-writer.js'
 import type { BackgroundWorkerMessage } from '../background/background-ipc.types.js'
+import { publishUsageRecordsGlobalReset } from '../page-data/page-data-change.publisher.js'
 import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 
 const currentModulePath = fileURLToPath(import.meta.url)
@@ -662,8 +664,8 @@ function spawnTemporaryMaintenanceWorker(runId: string, job: RecordMaintenanceJo
     serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   })
-  child.stdout?.on('data', (chunk: Buffer) => process.stdout.write(chunk))
-  child.stderr?.on('data', (chunk: Buffer) => process.stderr.write(chunk))
+  child.stdout?.on('data', (chunk: Buffer) => forwardSupervisorOutput(process.stdout, chunk))
+  child.stderr?.on('data', (chunk: Buffer) => forwardSupervisorOutput(process.stderr, chunk))
   child.on('message', (message: unknown) => {
     void handleTemporaryMaintenanceWorkerMessage(child, message, runId, job)
   })
@@ -900,6 +902,7 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
   let batches = 0
   let hasMore = false
   let blockedReason: string | undefined
+  let resetNeeded = false
   const cutoffTime = Date.parse(input.cutoffAt)
   if (Number.isNaN(cutoffTime)) {
     return {
@@ -930,6 +933,7 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
     hasMore = batch.hasMore
     blockedReason = batch.blockedReason ?? blockedReason
     const changed = batch.deletedRows > 0 || Number(batch.droppedPartitions ?? 0) > 0
+    resetNeeded ||= changed
     if (changed) {
       batches += 1
     }
@@ -937,6 +941,8 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
       break
     }
   }
+
+  if (resetNeeded) await publishUsageRecordsGlobalReset()
 
   return {
     cutoffAt: input.cutoffAt,

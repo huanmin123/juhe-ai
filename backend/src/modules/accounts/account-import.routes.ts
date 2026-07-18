@@ -5,6 +5,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { publishAccountStaticReset } from '../page-data/page-data-change.publisher.js'
 import { executeAccountImportAsync, previewAccountImportAsync, type AccountImportOptions } from './account-import.service.js'
 import { accountImportRequestSchema } from './account-request.schemas.js'
 
@@ -79,6 +80,9 @@ export function registerAccountImportRoutes(router: Router): void {
           }
         }
       }, req)
+      if (result.summary.accounts.create > 0) {
+        await publishAccountStaticReset([requestAccess.systemAccountFilterId ?? requestAccess.systemAccountId])
+      }
       res.json(ok(result))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '账户导入失败'))

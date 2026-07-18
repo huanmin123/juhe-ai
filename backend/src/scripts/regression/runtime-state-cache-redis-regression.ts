@@ -52,6 +52,7 @@ const cleanupTargets = [
   { client: cacheClient, pattern: redisNamespacedKey(`juhe-ai:cache:${cacheName}:*`) },
   { client: cacheClient, pattern: redisNamespacedKey(`juhe-ai:cache-index:${cacheName}:*`) },
   { client: cacheClient, pattern: redisNamespacedKey(`juhe-ai:cache-version:${cacheName}`) },
+  { client: cacheClient, pattern: redisNamespacedKey(`juhe-ai:cache-lease:${cacheName}:*`) },
   { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:${stateName}:*`) },
   { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:auth_login_guard:login:ip:${loginIp}:*`) },
   { client: stateClient, pattern: redisNamespacedKey(`juhe-ai:state:auth_login_guard:login:username:${loginUser}:*`) },
@@ -108,6 +109,13 @@ async function verifySharedJsonCache(): Promise<void> {
 
   await cache.set('ttl', { value: 3 }, { ttlMs: 5 })
   await waitFor(async () => (await cache.get('ttl')) === undefined, 'Redis cache TTL 应按毫秒过期')
+
+  assert.equal(await cache.acquireLease('singleflight', { ttlMs: 1000, token: 'owner-a' }), true, 'Redis shared cache lease 应允许首个实例获得刷新权')
+  assert.equal(await cache.acquireLease('singleflight', { ttlMs: 1000, token: 'owner-b' }), false, 'Redis shared cache lease 必须阻止第二个实例并发回源')
+  await cache.releaseLease('singleflight', 'owner-b')
+  assert.equal(await cache.acquireLease('singleflight', { ttlMs: 1000, token: 'owner-b' }), false, '错误 token 不得释放其他实例的 shared cache lease')
+  await cache.releaseLease('singleflight', 'owner-a')
+  assert.equal(await cache.acquireLease('singleflight', { ttlMs: 1000, token: 'owner-b' }), true, '正确 token 释放后其他实例可以接管刷新')
 }
 
 async function verifyRuntimeStateStore(): Promise<void> {

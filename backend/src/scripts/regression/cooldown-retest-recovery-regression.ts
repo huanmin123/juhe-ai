@@ -313,6 +313,97 @@ try {
   assert.equal(limitedStillRecovering.action, 'retry_immediately', '限流首次复测失败应走快速恢复通道')
   assert.equal(repositories.findAccountSummary(rateLimitedAccount.id, access)?.status, 'rate_limited', '限流复测失败后应保持限流状态等待下次自动恢复')
 
+  const boundedAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '有界持续恢复探活回归',
+    type: 'api_key',
+    credentials: { api_key: 'sk-cooldown-bounded', base_url: 'https://api.openai.com/v1' },
+    status: 'active',
+    groupId: group.id,
+    temporaryUnavailableContinuousProbeEnabled: false
+  }, access)
+  assert.equal(repositories.findAccountSummary(boundedAccount.id, access)?.temporaryUnavailableContinuousProbeEnabled, false, 'SQLite 账户读取必须保留持续恢复探活关闭值')
+  activateTestAccount(boundedAccount.id)
+  repositories.markAccountTemporaryUnavailable(boundedAccount.id, '有界模式临时不可调用')
+  const boundedStartedAt = new Date(Date.now() - 9 * 60 * 1000).toISOString()
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts SET cooldown_retest_observation_started_at = ?, cooldown_until = ? WHERE id = ?
+  `).run(boundedStartedAt, new Date(Date.now() - 1000).toISOString(), boundedAccount.id)
+  const boundedRetry = repositories.recordCooldownAccountRetestFailure(boundedAccount.id, {
+    statusCode: 503, errorMessage: '有界复测仍失败', maxPauseMinutes: 1440, maxRecoveryHours: 24
+  })
+  assert.notEqual(boundedRetry.recoveryStage, 'long_term', '十分钟窗口内有界账户不得进入长期每小时复测')
+  assert.ok(
+    Date.parse(boundedRetry.cooldownUntil ?? '') <= Date.parse(boundedStartedAt) + 10 * 60 * 1000,
+    '有界模式下一次复测不得越过十分钟最终探测截止时间'
+  )
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts SET cooldown_retest_observation_started_at = ?, cooldown_until = ? WHERE id = ?
+  `).run(new Date(Date.now() - 11 * 60 * 1000).toISOString(), new Date(Date.now() - 1000).toISOString(), boundedAccount.id)
+  const boundedTerminal = repositories.recordCooldownAccountRetestFailure(boundedAccount.id, {
+    statusCode: 503, errorMessage: '有界最终探测失败', maxPauseMinutes: 1440, maxRecoveryHours: 24
+  })
+  assert.equal(boundedTerminal.action, 'error', '十分钟到期后的真实失败必须转异常')
+  assert.equal(boundedTerminal.errorCode, 'cooldown_retest_limited_probe_timeout', '有界终态必须使用独立错误码')
+  assert.match(boundedTerminal.errorMessage, /已持续 10 分钟仍未恢复/, '有界终态必须显示真实十分钟观察窗口')
+  assert.equal(boundedTerminal.account?.status, 'error', '有界最终失败后必须停止冷却复测')
+
+  const boundedRateLimited = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '有界开关不影响限流回归', type: 'api_key',
+    credentials: { api_key: 'sk-cooldown-bounded-rate', base_url: 'https://api.openai.com/v1' },
+    status: 'active', groupId: group.id, temporaryUnavailableContinuousProbeEnabled: false
+  }, access)
+  activateTestAccount(boundedRateLimited.id)
+  repositories.markAccountCooldown(boundedRateLimited.id, new Date(Date.now() - 1000).toISOString(), '有界开关下的限流', 'rate_limited')
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts SET cooldown_retest_observation_started_at = ?, cooldown_until = ? WHERE id = ?
+  `).run(new Date(Date.now() - 11 * 60 * 1000).toISOString(), new Date(Date.now() - 1000).toISOString(), boundedRateLimited.id)
+  const rateStillContinuous = repositories.recordCooldownAccountRetestFailure(boundedRateLimited.id, {
+    statusCode: 429, errorMessage: '限流未恢复', maxPauseMinutes: 10, maxRecoveryHours: 24
+  })
+  assert.notEqual(rateStillContinuous.action, 'error', '持续恢复探活开关不能把 rate_limited 提前转异常')
+
+  const guardedRestore = repositories.createAccount({
+    providerCode: 'gpt', providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '有界探针旧结果守卫回归', type: 'api_key',
+    credentials: { api_key: 'sk-cooldown-guarded', base_url: 'https://api.openai.com/v1' },
+    status: 'active', groupId: group.id
+  }, access)
+  activateTestAccount(guardedRestore.id)
+  const guardedCooling = repositories.markAccountTemporaryUnavailable(guardedRestore.id, '旧探针守卫')
+  assert(guardedCooling?.cooldownRetestObservationStartedAt)
+  const staleRestore = repositories.recordCooldownAccountRetestSuccess(guardedRestore.id, {
+    expectedConfigRevision: (guardedCooling.configRevision ?? 1) + 1,
+    expectedObservationStartedAt: guardedCooling.cooldownRetestObservationStartedAt
+  })
+  assert.equal(staleRestore.changed, false, '配置版本变化后的旧成功探针不得恢复账户')
+  const currentRestore = repositories.recordCooldownAccountRetestSuccess(guardedRestore.id, {
+    expectedConfigRevision: guardedCooling.configRevision ?? 1,
+    expectedObservationStartedAt: guardedCooling.cooldownRetestObservationStartedAt
+  })
+  assert.equal(currentRestore.changed, true, '当前代次的成功探针必须恢复账户')
+
+  const staleFailureAccount = createActiveCoolingAccount('冷却复测旧失败代次守卫', 'sk-cooldown-stale-failure', group.id)
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts SET cooldown_retest_observation_started_at = ? WHERE id = ?
+  `).run(new Date(Date.now() - 60_000).toISOString(), staleFailureAccount.id)
+  const staleFailureQueued = repositories.findAccountSummary(staleFailureAccount.id, access)
+  assert(staleFailureQueued?.cooldownRetestObservationStartedAt)
+  repositories.clearAccountFailureState(staleFailureAccount.id, access)
+  const nextFailureGeneration = repositories.markAccountTemporaryUnavailable(staleFailureAccount.id, '进入新一轮冷却观察')
+  assert(nextFailureGeneration?.cooldownRetestObservationStartedAt)
+  assert.notEqual(nextFailureGeneration.cooldownRetestObservationStartedAt, staleFailureQueued.cooldownRetestObservationStartedAt, '新一轮冷却必须生成新的观察代次')
+  const staleFailure = repositories.recordCooldownAccountRetestFailure(staleFailureAccount.id, {
+    statusCode: 503,
+    errorMessage: '上一轮迟到失败',
+    expectedConfigRevision: staleFailureQueued.configRevision ?? 1,
+    expectedObservationStartedAt: staleFailureQueued.cooldownRetestObservationStartedAt
+  })
+  assert.equal(staleFailure.changed, false, '上一轮迟到失败不得写入新的观察代次')
+  assert.equal(repositories.findAccountSummary(staleFailureAccount.id, access)?.cooldownRetestFailureCount, 0, '上一轮迟到失败不得累计到新一轮')
+
   const ineligibleFailureAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
@@ -443,6 +534,7 @@ try {
   const authorizedCandidate = repositories.listAccountsDueForCooldownRetest(20)
     .find((item) => item.id === authorizedInstance.id)
   assert(authorizedCandidate, '授权实例冷却到期后应进入后台复测候选')
+  assert.equal(authorizedCandidate.temporaryUnavailableContinuousProbeEnabled, true, 'SQLite 授权实例复测必须读取来源账户默认开启策略')
   assert.equal(authorizedCandidate.accessType, 'authorized', '后台复测候选应保留授权实例视角，不能伪装成普通账户')
   assert.equal(authorizedCandidate.schedulable, true, '后台复测候选应读取本地实例原始可恢复调度状态')
   assert.equal(authorizedCandidate.cooldownRetestFailureCount, 1, '后台复测候选应读取授权实例本地失败次数')

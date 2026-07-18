@@ -9,6 +9,9 @@ type RecoverableUnavailableWaitSkippedReason =
   | 'no_retry_time'
   | 'retry_after_exceeds_window'
   | 'aborted'
+  | 'deadline_exceeded'
+  | 'scope_limit'
+  | 'global_limit'
 
 export interface RecoverableUnavailableWaitResult<T> {
   state: T
@@ -31,9 +34,196 @@ interface RecoverableUnavailableWaitInput<T> {
   waitWithoutRetryAfter?: boolean
   maxWaitMs?: number
   checkIntervalMs?: number
+  requestStartedAtMs?: number
+  deadlineAtMs?: number
+  coordinator?: RecoverableUnavailableWaitCoordinator
+  runtimeKeys?: string[]
 }
 
-const sharedWaits = new Map<string, { untilMs: number; promise: Promise<void> }>()
+export type RecoverableUnavailableCoordinatorWaitResult =
+  | 'ready'
+  | 'aborted'
+  | 'deadline_exceeded'
+  | 'scope_limit'
+  | 'global_limit'
+
+export interface RecoverableUnavailableWaitCoordinatorOptions {
+  maxWaitersPerScope?: number
+  maxWaitersGlobal?: number
+  setTimer?: (callback: () => void, delayMs: number) => unknown
+  clearTimer?: (timer: unknown) => void
+  now?: () => number
+}
+
+export interface RecoverableUnavailableCoordinatorWaitInput {
+  scopeKey: string
+  reason: string
+  delayMs: number
+  deadlineAtMs: number
+  signal?: AbortSignal
+  runtimeKeys?: string[]
+}
+
+interface RecoverableUnavailableCoordinatorWaiter {
+  id: number
+  notBeforeMs: number
+  deadlineAtMs: number
+  signal?: AbortSignal
+  abortListener?: () => void
+  resolve: (result: RecoverableUnavailableCoordinatorWaitResult) => void
+}
+
+interface RecoverableUnavailableCoordinatorScope {
+  waiters: RecoverableUnavailableCoordinatorWaiter[]
+  runtimeKeys: Set<string>
+  timer?: unknown
+}
+
+const defaultMaxWaitersPerScope = 256
+const defaultMaxWaitersGlobal = 4096
+
+export class RecoverableUnavailableWaitCoordinator {
+  private readonly scopes = new Map<string, RecoverableUnavailableCoordinatorScope>()
+  private readonly maxWaitersPerScope: number
+  private readonly maxWaitersGlobal: number
+  private readonly setTimer: (callback: () => void, delayMs: number) => unknown
+  private readonly clearTimer: (timer: unknown) => void
+  private readonly now: () => number
+  private nextWaiterId = 1
+  private waiterCount = 0
+
+  constructor(options: RecoverableUnavailableWaitCoordinatorOptions = {}) {
+    this.maxWaitersPerScope = normalizePositiveMs(options.maxWaitersPerScope, defaultMaxWaitersPerScope)
+    this.maxWaitersGlobal = normalizePositiveMs(options.maxWaitersGlobal, defaultMaxWaitersGlobal)
+    this.setTimer = options.setTimer ?? ((callback, delayMs) => {
+      const timer = setTimeout(callback, delayMs)
+      timer.unref()
+      return timer
+    })
+    this.clearTimer = options.clearTimer ?? ((timer) => clearTimeout(timer as NodeJS.Timeout))
+    this.now = options.now ?? Date.now
+  }
+
+  waitForTurn(input: RecoverableUnavailableCoordinatorWaitInput): Promise<RecoverableUnavailableCoordinatorWaitResult> {
+    if (input.signal?.aborted) return Promise.resolve('aborted')
+    const now = this.now()
+    const deadlineAtMs = normalizeDeadlineAtMs(input.deadlineAtMs, now)
+    if (deadlineAtMs <= now) return Promise.resolve('deadline_exceeded')
+    const key = coordinatorScopeKey(input.reason, input.scopeKey)
+    const scope = this.scopes.get(key) ?? { waiters: [], runtimeKeys: new Set<string>() }
+    if (scope.waiters.length >= this.maxWaitersPerScope) return Promise.resolve('scope_limit')
+    if (this.waiterCount >= this.maxWaitersGlobal) return Promise.resolve('global_limit')
+
+    return new Promise((resolve) => {
+      const waiter: RecoverableUnavailableCoordinatorWaiter = {
+        id: this.nextWaiterId++,
+        notBeforeMs: Math.min(deadlineAtMs, now + normalizeNonNegativeMs(input.delayMs)),
+        deadlineAtMs,
+        signal: input.signal,
+        resolve
+      }
+      if (input.signal) {
+        waiter.abortListener = () => this.settleWaiter(key, waiter.id, 'aborted')
+        input.signal.addEventListener('abort', waiter.abortListener, { once: true })
+      }
+      scope.waiters.push(waiter)
+      for (const runtimeKey of input.runtimeKeys ?? []) {
+        if (runtimeKey.trim()) scope.runtimeKeys.add(runtimeKey.trim())
+      }
+      this.waiterCount += 1
+      this.scopes.set(key, scope)
+      this.scheduleScope(key, scope)
+    })
+  }
+
+  notifyOne(scopeKey: string, reason: string): boolean {
+    const key = coordinatorScopeKey(reason, scopeKey)
+    const scope = this.scopes.get(key)
+    const waiter = scope?.waiters[0]
+    return waiter ? this.settleWaiter(key, waiter.id, 'ready') : false
+  }
+
+  notifyOneForRuntimeKey(runtimeKey: string): boolean {
+    const normalized = runtimeKey.trim()
+    let selected: { key: string; waiterId: number } | undefined
+    for (const [key, scope] of this.scopes) {
+      const waiter = scope.waiters[0]
+      if (!waiter || !scope.runtimeKeys.has(normalized)) continue
+      if (!selected || waiter.id < selected.waiterId) selected = { key, waiterId: waiter.id }
+    }
+    return selected ? this.settleWaiter(selected.key, selected.waiterId, 'ready') : false
+  }
+
+  snapshot(): { scopeCount: number; waiterCount: number; timerCount: number } {
+    let timerCount = 0
+    for (const scope of this.scopes.values()) {
+      if (scope.timer !== undefined) timerCount += 1
+    }
+    return { scopeCount: this.scopes.size, waiterCount: this.waiterCount, timerCount }
+  }
+
+  private scheduleScope(key: string, scope: RecoverableUnavailableCoordinatorScope): void {
+    if (scope.timer !== undefined || scope.waiters.length === 0) return
+    const head = scope.waiters[0]!
+    const dueAtMs = Math.min(head.notBeforeMs, head.deadlineAtMs)
+    scope.timer = this.setTimer(() => {
+      scope.timer = undefined
+      const now = this.now()
+      if (head.signal?.aborted) {
+        this.settleWaiter(key, head.id, 'aborted')
+      } else if (now >= head.deadlineAtMs) {
+        this.settleWaiter(key, head.id, 'deadline_exceeded')
+      } else if (now >= head.notBeforeMs) {
+        this.settleWaiter(key, head.id, 'ready')
+      } else {
+        this.scheduleScope(key, scope)
+      }
+    }, Math.max(0, dueAtMs - this.now()))
+  }
+
+  private settleWaiter(
+    key: string,
+    waiterId: number,
+    result: RecoverableUnavailableCoordinatorWaitResult
+  ): boolean {
+    const scope = this.scopes.get(key)
+    if (!scope) return false
+    const index = scope.waiters.findIndex((waiter) => waiter.id === waiterId)
+    if (index < 0) return false
+    const wasHead = index === 0
+    const [waiter] = scope.waiters.splice(index, 1)
+    if (!waiter) return false
+    if (waiter.signal && waiter.abortListener) {
+      waiter.signal.removeEventListener('abort', waiter.abortListener)
+    }
+    this.waiterCount = Math.max(0, this.waiterCount - 1)
+    if (wasHead && scope.timer !== undefined) {
+      this.clearTimer(scope.timer)
+      scope.timer = undefined
+    }
+    if (scope.waiters.length === 0) {
+      this.scopes.delete(key)
+    } else {
+      this.scheduleScope(key, scope)
+    }
+    waiter.resolve(result)
+    return true
+  }
+}
+
+const defaultRecoverableUnavailableWaitCoordinator = new RecoverableUnavailableWaitCoordinator()
+
+export function notifyOneRecoverableUnavailableRuntimeWaiter(runtimeKey: string): boolean {
+  return defaultRecoverableUnavailableWaitCoordinator.notifyOneForRuntimeKey(runtimeKey)
+}
+
+export function recoverableUnavailableWaitCoordinatorSnapshotForTest(): {
+  scopeCount: number
+  waiterCount: number
+  timerCount: number
+} {
+  return defaultRecoverableUnavailableWaitCoordinator.snapshot()
+}
 
 export async function waitForRecoverableUnavailableState<T>(
   input: RecoverableUnavailableWaitInput<T>
@@ -41,6 +231,13 @@ export async function waitForRecoverableUnavailableState<T>(
   const maxWaitMs = normalizePositiveMs(input.maxWaitMs, recoverableUnavailableMaxWaitMs)
   const checkIntervalMs = normalizePositiveMs(input.checkIntervalMs, recoverableUnavailableCheckIntervalMs)
   const startedAtMs = Date.now()
+  const requestStartedAtMs = normalizeOptionalTimestamp(input.requestStartedAtMs) ?? startedAtMs
+  const localDeadlineAtMs = requestStartedAtMs + maxWaitMs
+  const deadlineAtMs = Math.min(
+    localDeadlineAtMs,
+    normalizeOptionalTimestamp(input.deadlineAtMs) ?? localDeadlineAtMs
+  )
+  const coordinator = input.coordinator ?? defaultRecoverableUnavailableWaitCoordinator
   let state = input.initialState
   let checkCount = 0
 
@@ -52,6 +249,10 @@ export async function waitForRecoverableUnavailableState<T>(
       ready: true,
       timedOut: false
     }
+  }
+
+  if (deadlineAtMs <= Date.now()) {
+    return finalizeRecoverableUnavailableWait(input, state, startedAtMs, checkCount, false, true, 'deadline_exceeded')
   }
 
   input.auditCapture.addGatewayMetadata({
@@ -66,8 +267,7 @@ export async function waitForRecoverableUnavailableState<T>(
   })
 
   while (!input.signal?.aborted) {
-    const elapsedMs = Date.now() - startedAtMs
-    const remainingMs = maxWaitMs - elapsedMs
+    const remainingMs = deadlineAtMs - Date.now()
     if (remainingMs <= 0) {
       return finalizeRecoverableUnavailableWait(input, state, startedAtMs, checkCount, false, true)
     }
@@ -99,9 +299,24 @@ export async function waitForRecoverableUnavailableState<T>(
       remainingMs
     }, '本地可恢复阻塞短等后重新检查调度候选')
 
-    await waitForSharedRecoverableTick(input.scopeKey, input.reason, delayMs.delayMs, input.signal)
-    if (input.signal?.aborted) {
-      return finalizeRecoverableUnavailableWait(input, state, startedAtMs, checkCount, false, false, 'aborted')
+    const turn = await coordinator.waitForTurn({
+      scopeKey: input.scopeKey,
+      reason: input.reason,
+      delayMs: delayMs.delayMs,
+      deadlineAtMs,
+      signal: input.signal,
+      runtimeKeys: input.runtimeKeys
+    })
+    if (turn !== 'ready') {
+      return finalizeRecoverableUnavailableWait(
+        input,
+        state,
+        startedAtMs,
+        checkCount,
+        false,
+        turn === 'deadline_exceeded',
+        turn
+      )
     }
     checkCount += 1
     state = await input.refresh()
@@ -172,64 +387,24 @@ function nextRecoverableWaitDelayMs(input: {
   }
 }
 
-async function waitForSharedRecoverableTick(
-  scopeKey: string,
-  reason: string,
-  delayMs: number,
-  signal?: AbortSignal
-): Promise<void> {
-  if (delayMs <= 0 || signal?.aborted) {
-    return
-  }
-  const key = `${reason}:${scopeKey}`
-  const now = Date.now()
-  const existing = sharedWaits.get(key)
-  const promise = existing && existing.untilMs > now
-    ? existing.promise
-    : createSharedWait(key, delayMs, now)
-  await waitForPromiseOrAbort(promise, signal)
-}
-
-function createSharedWait(key: string, delayMs: number, now: number): Promise<void> {
-  let timer: NodeJS.Timeout | undefined
-  const promise = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, delayMs)
-    timer.unref()
-  }).finally(() => {
-    if (timer) {
-      clearTimeout(timer)
-    }
-    if (sharedWaits.get(key)?.promise === promise) {
-      sharedWaits.delete(key)
-    }
-  })
-  sharedWaits.set(key, {
-    untilMs: now + delayMs,
-    promise
-  })
-  return promise
-}
-
-async function waitForPromiseOrAbort(promise: Promise<void>, signal?: AbortSignal): Promise<void> {
-  if (!signal) {
-    await promise
-    return
-  }
-  if (signal.aborted) {
-    return
-  }
-  await Promise.race([
-    promise,
-    new Promise<void>((resolve) => {
-      const listener = () => resolve()
-      signal.addEventListener('abort', listener, { once: true })
-      promise.finally(() => signal.removeEventListener('abort', listener))
-    })
-  ])
-}
-
 function normalizeOptionalMs(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : undefined
+}
+
+function normalizeNonNegativeMs(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+}
+
+function normalizeOptionalTimestamp(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : undefined
+}
+
+function normalizeDeadlineAtMs(value: number, now: number): number {
+  return Number.isFinite(value) ? Math.trunc(value) : now
+}
+
+function coordinatorScopeKey(reason: string, scopeKey: string): string {
+  return JSON.stringify([reason, scopeKey])
 }
 
 function normalizePositiveMs(value: number | undefined, fallback: number): number {

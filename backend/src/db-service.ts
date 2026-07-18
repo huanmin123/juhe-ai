@@ -74,6 +74,8 @@ async function startDbService(): Promise<void> {
   if (runtimeConfig.databaseDriver === 'sqlite') {
     getBusinessDatabase()
   }
+  const { initializePageDataChangeRuntime } = await import('./modules/page-data/page-data-change.runtime.js')
+  await initializePageDataChangeRuntime()
 
   const httpEndpoint = await startDbServiceHttpServer()
   setDbServiceHttpEndpoint({ host: httpEndpoint.host, port: httpEndpoint.port })
