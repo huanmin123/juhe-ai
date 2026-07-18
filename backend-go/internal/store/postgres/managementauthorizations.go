@@ -2757,7 +2757,7 @@ SET provider_code = $1,
     deleted_by = NULL,
     updated_at = $12
 WHERE id = $13
-`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, source.HealthCheckModel, source.HealthCheckEndpointMode, source.TemporaryUnavailableContinuousProbeEnabled, authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
+`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, source.HealthCheckModel, source.HealthCheckEndpointMode, boolInt(source.TemporaryUnavailableContinuousProbeEnabled), authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
 			if isPGUniqueViolation(err) {
 				return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 			}
@@ -2789,7 +2789,7 @@ INSERT INTO juhe_business.accounts (
   $14, $15, $16,
   $17, $17
 )
-`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, source.TemporaryUnavailableContinuousProbeEnabled, authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
+`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, boolInt(source.TemporaryUnavailableContinuousProbeEnabled), authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
 		if isPGUniqueViolation(err) {
 			return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 		}
@@ -2821,7 +2821,7 @@ func managementAuthorizationSourceAccountTx(ctx context.Context, tx pgx.Tx, acco
 	err := tx.QueryRow(ctx, `
 SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code,
   protocol_version, name, type, concurrency_limit, health_check_model, health_check_endpoint_mode,
-  temporary_unavailable_continuous_probe_enabled
+  temporary_unavailable_continuous_probe_enabled = 1
 FROM juhe_business.accounts
 WHERE id = $1
   AND deleted_at IS NULL

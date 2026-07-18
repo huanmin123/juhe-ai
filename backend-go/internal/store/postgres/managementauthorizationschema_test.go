@@ -383,12 +383,16 @@ func TestManagementResourceAuthorizationAccountInstancePreservesHealthCheckModel
 		"health_check_model = $7",
 		"health_check_endpoint_mode = $8",
 		"temporary_unavailable_continuous_probe_enabled = $9",
+		"temporary_unavailable_continuous_probe_enabled = 1",
 		"concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,\n  health_check_model, health_check_endpoint_mode,",
-		"source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, source.TemporaryUnavailableContinuousProbeEnabled, authorization.ResourceID",
 	} {
 		if !strings.Contains(code, want) {
 			t.Fatalf("authorization account instance implementation missing %q", want)
 		}
+	}
+	const probePolicyWriteArg = "boolInt(source.TemporaryUnavailableContinuousProbeEnabled)"
+	if got := strings.Count(code, probePolicyWriteArg); got != 2 {
+		t.Fatalf("authorization account instance probe policy integer writes = %d, want 2", got)
 	}
 }
 
