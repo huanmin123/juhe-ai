@@ -330,3 +330,7 @@ func (s *authorizationExpiryWorkerPublisherStub) PublishAccountsStaticReset(_ co
 	s.allScopes = allScopes
 	return s.err
 }
+
+func (s *authorizationExpiryWorkerPublisherStub) PublishPageDataReset(_ context.Context, _ string, _ []string, _ bool) error {
+	return s.err
+}

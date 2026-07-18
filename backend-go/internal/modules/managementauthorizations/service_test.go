@@ -811,7 +811,7 @@ func TestAuthorizationInvalidationUsesDetachedTimeoutAndWarns(t *testing.T) {
 
 	service.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationExpiredReason)
 
-	if invalidator.contextErr != nil || !invalidator.hasDeadline || invalidator.deadlineRemaining <= 0 || invalidator.deadlineRemaining > accountsStaticResetPublishTimeout {
+	if invalidator.contextErr != nil || !invalidator.hasDeadline || invalidator.deadlineRemaining <= 0 || invalidator.deadlineRemaining > authorizationPostCommitSyncTimeout {
 		t.Fatalf("invalidator contextErr=%v deadline=%v remaining=%v", invalidator.contextErr, invalidator.hasDeadline, invalidator.deadlineRemaining)
 	}
 	if !strings.Contains(logs.String(), "level=WARN") ||
@@ -1186,7 +1186,7 @@ func TestAuthorizationPublisherFailureUsesDetachedTimeoutAndWarns(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	service.publishAccountsStaticResetAfterCommit(ctx, Summary{
+	service.publishAuthorizationPageDataAfterCommit(ctx, Summary{
 		ID:                           "rauthgrant_main",
 		ResourceType:                 "account",
 		ResourceID:                   "acct_main",
@@ -1194,11 +1194,11 @@ func TestAuthorizationPublisherFailureUsesDetachedTimeoutAndWarns(t *testing.T) 
 		GranteeType:                  "system_account",
 		GranteeSystemAccountID:       "grantee",
 	})
-	if publisher.contextErr != nil || !publisher.hasDeadline || publisher.deadlineRemaining <= 0 || publisher.deadlineRemaining > accountsStaticResetPublishTimeout {
+	if publisher.contextErr != nil || !publisher.hasDeadline || publisher.deadlineRemaining <= 0 || publisher.deadlineRemaining > authorizationPostCommitSyncTimeout {
 		t.Fatalf("publisher contextErr=%v deadline=%v remaining=%v", publisher.contextErr, publisher.hasDeadline, publisher.deadlineRemaining)
 	}
 	if !strings.Contains(logs.String(), "level=WARN") ||
-		!strings.Contains(logs.String(), "domain=accounts.static") ||
+		!strings.Contains(logs.String(), "domains=accounts.static,accounts.options") ||
 		!strings.Contains(logs.String(), "authorizationId=rauthgrant_main") ||
 		!strings.Contains(logs.String(), "resourceId=acct_main") ||
 		!strings.Contains(logs.String(), "redis unavailable") {
@@ -2067,6 +2067,10 @@ type accountsStaticResetPublisherStub struct {
 	err               error
 }
 
+func (s *accountsStaticResetPublisherStub) PublishPageDataReset(_ context.Context, _ string, _ []string, _ bool) error {
+	return nil
+}
+
 func (s *accountsStaticResetPublisherStub) PublishAccountsStaticReset(ctx context.Context, owners []string, allScopes bool) error {
 	s.calls++
 	s.ctx = ctx
@@ -2119,5 +2123,5 @@ var _ port.ManagementAuthorizationUsageRangeWindowRefresher = (*authorizationUsa
 var _ port.ManagementAuthorizationUsageOverviewReader = (*authorizationUsageStoreStub)(nil)
 var _ port.ManagementResourceAuthorizationUsageReader = (*authorizationUsageStoreStub)(nil)
 var _ AuthorizationInvalidator = (*authorizationInvalidatorStub)(nil)
-var _ AccountsStaticResetPublisher = (*accountsStaticResetPublisherStub)(nil)
+var _ AuthorizationPageDataPublisher = (*accountsStaticResetPublisherStub)(nil)
 var _ TeamReader = (*authorizationTeamReaderStub)(nil)
