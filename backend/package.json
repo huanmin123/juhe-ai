@@ -224,6 +224,7 @@
     "test:deleted-account-related-cleanup": "tsx src/scripts/regression/deleted-account-related-cleanup-regression.ts",
     "test:expired-deleted-account-cleanup-postgres-smoke": "tsx src/scripts/regression/expired-deleted-account-cleanup-postgres-smoke.ts",
     "test:account-probe-postgres-smoke": "tsx src/scripts/regression/account-probe-postgres-smoke.ts",
+    "test:cooldown-retest-postgres-smoke": "tsx src/scripts/regression/cooldown-retest-postgres-smoke.ts",
     "test:deleted-record-cleanup-lock": "tsx src/scripts/regression/deleted-record-cleanup-lock-regression.ts",
     "test:db-service-runtime-metrics": "tsx src/scripts/regression/db-service-runtime-metrics-regression.ts",
     "test:db-service-queue-expiry": "tsx src/scripts/regression/db-service-queue-expiry-regression.ts",
