@@ -58,7 +58,11 @@ func (s *Store) ListManagementSystemTeams(ctx context.Context, input port.Manage
 }
 
 func (s *Store) FindManagementSystemTeam(ctx context.Context, teamID string, systemAccountID string) (port.ManagementSystemTeamDetail, bool, error) {
-	row, err := s.queries().FindManagementSystemTeam(ctx, postgresqueries.FindManagementSystemTeamParams{
+	return managementSystemTeamDetailTx(ctx, s.queries(), strings.TrimSpace(teamID), strings.TrimSpace(systemAccountID))
+}
+
+func managementSystemTeamDetailTx(ctx context.Context, q *postgresqueries.Queries, teamID string, systemAccountID string) (port.ManagementSystemTeamDetail, bool, error) {
+	row, err := q.FindManagementSystemTeam(ctx, postgresqueries.FindManagementSystemTeamParams{
 		TeamID:          strings.TrimSpace(teamID),
 		SystemAccountID: strings.TrimSpace(systemAccountID),
 	})
@@ -68,7 +72,7 @@ func (s *Store) FindManagementSystemTeam(ctx context.Context, teamID string, sys
 	if err != nil {
 		return port.ManagementSystemTeamDetail{}, false, fmt.Errorf("find management system team: %w", err)
 	}
-	members, err := s.queries().ListManagementSystemTeamMembers(ctx, strings.TrimSpace(teamID))
+	members, err := q.ListManagementSystemTeamMembers(ctx, strings.TrimSpace(teamID))
 	if err != nil {
 		return port.ManagementSystemTeamDetail{}, false, fmt.Errorf("list management system team members: %w", err)
 	}
@@ -144,7 +148,13 @@ func (s *Store) UpdateManagementSystemTeam(ctx context.Context, input port.Manag
 	if err != nil {
 		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("find management system team for update: %w", err)
 	}
-	before := managementSystemTeamSummaryFromTeamRow(beforeRow, 0)
+	beforeDetail, found, err := managementSystemTeamDetailTx(ctx, q, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamUpdateResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("find locked management system team before update: not found")
+	}
 
 	description := pgtype.Text{}
 	if input.Description != nil {
@@ -185,6 +195,13 @@ func (s *Store) UpdateManagementSystemTeam(ctx context.Context, input port.Manag
 			return port.ManagementSystemTeamUpdateResult{}, false, err
 		}
 	}
+	team, found, err := managementSystemTeamDetailTx(ctx, q, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamUpdateResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("find updated management system team before commit: not found")
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		if errors.Is(err, pgx.ErrTxCommitRollback) {
@@ -193,16 +210,8 @@ func (s *Store) UpdateManagementSystemTeam(ctx context.Context, input port.Manag
 		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("commit update management system team tx: %w", err)
 	}
 	committed = true
-
-	team, found, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
-	if err != nil {
-		return port.ManagementSystemTeamUpdateResult{}, false, err
-	}
-	if !found {
-		return port.ManagementSystemTeamUpdateResult{}, false, fmt.Errorf("find updated management system team: not found")
-	}
 	return port.ManagementSystemTeamUpdateResult{
-		Before:               before,
+		Before:               beforeDetail.ManagementSystemTeamSummary,
 		Team:                 team,
 		AuthorizationChanged: authorizationChanged,
 	}, true, nil
@@ -211,11 +220,6 @@ func (s *Store) UpdateManagementSystemTeam(ctx context.Context, input port.Manag
 func (s *Store) AddManagementSystemTeamMembers(ctx context.Context, input port.ManagementSystemTeamMemberAddInput) (port.ManagementSystemTeamMemberAddResult, bool, error) {
 	teamID := strings.TrimSpace(input.TeamID)
 	systemAccountID := strings.TrimSpace(input.SystemAccountID)
-	before, _, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
-	if err != nil {
-		return port.ManagementSystemTeamMemberAddResult{}, false, err
-	}
-
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("begin add management system team members tx: %w", err)
@@ -237,6 +241,13 @@ func (s *Store) AddManagementSystemTeamMembers(ctx context.Context, input port.M
 		return port.ManagementSystemTeamMemberAddResult{}, false, nil
 	} else if err != nil {
 		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("find active management system team for member add: %w", err)
+	}
+	before, found, err := managementSystemTeamDetailTx(ctx, q, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("find locked management system team before member add: not found")
 	}
 
 	existingActiveMemberIDs, err := activeManagementTeamMemberIDsForLimitTx(ctx, tx, teamID)
@@ -300,6 +311,13 @@ INSERT INTO juhe_business.system_team_members (
 	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "team_members_changed", now); err != nil {
 		return port.ManagementSystemTeamMemberAddResult{}, false, err
 	}
+	team, found, err := managementSystemTeamDetailTx(ctx, q, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberAddResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("find added management system team before commit: not found")
+	}
 	if err := tx.Commit(ctx); err != nil {
 		if errors.Is(err, pgx.ErrTxCommitRollback) {
 			return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("commit add management system team members tx rolled back: %w", err)
@@ -307,25 +325,12 @@ INSERT INTO juhe_business.system_team_members (
 		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("commit add management system team members tx: %w", err)
 	}
 	committed = true
-
-	team, found, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
-	if err != nil {
-		return port.ManagementSystemTeamMemberAddResult{}, false, err
-	}
-	if !found {
-		return port.ManagementSystemTeamMemberAddResult{}, false, fmt.Errorf("find added management system team: not found")
-	}
 	return port.ManagementSystemTeamMemberAddResult{Before: before, Team: team}, true, nil
 }
 
 func (s *Store) RemoveManagementSystemTeamMember(ctx context.Context, input port.ManagementSystemTeamMemberRemoveInput) (port.ManagementSystemTeamMemberRemoveResult, bool, error) {
 	teamID := strings.TrimSpace(input.TeamID)
 	systemAccountID := strings.TrimSpace(input.SystemAccountID)
-	before, _, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
-	if err != nil {
-		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
-	}
-
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("begin remove management system team member tx: %w", err)
@@ -338,6 +343,23 @@ func (s *Store) RemoveManagementSystemTeamMember(ctx context.Context, input port
 			_ = tx.Rollback(rollbackCtx)
 		}
 	}()
+
+	q := s.queries().WithTx(tx)
+	if _, err := q.FindManagementSystemTeamForUpdate(ctx, postgresqueries.FindManagementSystemTeamForUpdateParams{
+		TeamID:          teamID,
+		SystemAccountID: systemAccountID,
+	}); errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, nil
+	} else if err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("find management system team for member remove: %w", err)
+	}
+	before, found, err := managementSystemTeamDetailTx(ctx, q, teamID, systemAccountID)
+	if err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("find locked management system team before member remove: not found")
+	}
 
 	removedMember, found, err := activeManagementTeamMemberForAccessTx(ctx, tx, teamID, strings.TrimSpace(input.MemberID), systemAccountID)
 	if err != nil {
@@ -362,6 +384,13 @@ WHERE id = $2
 	if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, "team_members_changed", now); err != nil {
 		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
 	}
+	team, found, err := managementSystemTeamDetailTx(ctx, q, teamID, "")
+	if err != nil {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
+	}
+	if !found {
+		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("find removed management system team before commit: not found")
+	}
 	if err := tx.Commit(ctx); err != nil {
 		if errors.Is(err, pgx.ErrTxCommitRollback) {
 			return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("commit remove management system team member tx rolled back: %w", err)
@@ -369,20 +398,6 @@ WHERE id = $2
 		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("commit remove management system team member tx: %w", err)
 	}
 	committed = true
-
-	team, found, err := s.FindManagementSystemTeam(ctx, teamID, systemAccountID)
-	if err != nil {
-		return port.ManagementSystemTeamMemberRemoveResult{}, false, err
-	}
-	if !found {
-		team, found, err = s.FindManagementSystemTeam(ctx, teamID, "")
-		if err != nil {
-			return port.ManagementSystemTeamMemberRemoveResult{}, false, err
-		}
-	}
-	if !found {
-		return port.ManagementSystemTeamMemberRemoveResult{}, false, fmt.Errorf("find removed management system team: not found")
-	}
 	return port.ManagementSystemTeamMemberRemoveResult{
 		Before:        before,
 		Team:          team,

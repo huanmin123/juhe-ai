@@ -58,6 +58,7 @@ func TestServiceUpdateOwner(t *testing.T) {
 		},
 	}
 	invalidator := &managementGroupUpdateInvalidatorStub{}
+	publisher := &groupPageDataPublisherStub{}
 	concurrency := &managementGroupAccountConcurrencyStub{values: map[string]int{"acc_1": 2}}
 	service := NewServiceWithOptions(ServiceOptions{
 		Store:              &store,
@@ -65,6 +66,7 @@ func TestServiceUpdateOwner(t *testing.T) {
 		DetailStore:        &store,
 		AccountConcurrency: concurrency,
 		Invalidator:        invalidator,
+		PageDataPublisher:  publisher,
 		Now:                func() time.Time { return now },
 	})
 	description := "   "
@@ -116,6 +118,7 @@ func TestServiceUpdateOwner(t *testing.T) {
 	if result.Before.Name != "更新前" || result.AccessType != "owner" {
 		t.Fatalf("Update() result = %+v", result)
 	}
+	assertGroupPageDataResets(t, publisher)
 }
 
 func TestServiceUpdateAuthorizedSettings(t *testing.T) {
@@ -224,7 +227,8 @@ func TestServiceUpdateMapsStoreErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := managementGroupUpdateStoreStub{updateErr: tt.storeErr}
-			service := NewServiceWithOptions(ServiceOptions{Store: &store})
+			publisher := &groupPageDataPublisherStub{}
+			service := NewServiceWithOptions(ServiceOptions{Store: &store, PageDataPublisher: publisher})
 			_, err := service.Update(context.Background(), UpdateInput{
 				ActorSystemAccountID: "sys_owner",
 				ActorRole:            "user",
@@ -242,8 +246,46 @@ func TestServiceUpdateMapsStoreErrors(t *testing.T) {
 					t.Fatalf("UpdateRejectedMessage() = %q, %v", message, ok)
 				}
 			}
+			if len(publisher.domains) != 0 {
+				t.Fatalf("page data domains = %#v, want none", publisher.domains)
+			}
 		})
 	}
+}
+
+func TestServiceUpdatePublishesPageDataResetsWhenCommittedWriteDetailReadFails(t *testing.T) {
+	wantErr := errors.New("detail read failed")
+	store := managementGroupUpdateStoreStub{
+		managementGroupDetailStoreStub: managementGroupDetailStoreStub{findErr: wantErr},
+		updateResult: port.ManagementGroupUpdateResult{
+			AccessType:               "owner",
+			OwnerSystemAccountID:     "sys_owner",
+			EffectiveSystemAccountID: "sys_owner",
+		},
+	}
+	publisher := &groupPageDataPublisherStub{}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:              &store,
+		DetailStore:        &store,
+		AccountConcurrency: &managementGroupAccountConcurrencyStub{},
+		PageDataPublisher:  publisher,
+	})
+
+	_, err := service.Update(context.Background(), UpdateInput{
+		ActorSystemAccountID: "sys_owner",
+		ActorRole:            "user",
+		SelfOnly:             true,
+		GroupID:              "grp_owner",
+		HasEnabled:           true,
+		Enabled:              false,
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Update() error = %v, want %v", err, wantErr)
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("UpdateManagementGroup() calls = %d, want 1", store.updateCalls)
+	}
+	assertGroupPageDataResets(t, publisher)
 }
 
 func TestServiceUpdateUsesStoreConflictNameForProviderOnlyPatch(t *testing.T) {

@@ -1489,7 +1489,7 @@ func (s *Store) ExpireDueManagementResourceAuthorizations(ctx context.Context, i
 	}
 	rows.Close()
 
-	expired := 0
+	authorizations := make([]port.ManagementResourceAuthorizationExpiryFanout, 0, len(dueGrants))
 	for _, grant := range dueGrants {
 		tag, err := tx.Exec(ctx, `
 UPDATE juhe_business.resource_authorization_grants
@@ -1517,8 +1517,9 @@ WHERE id = $2
 		if err := syncManagementGrantRuntimeAfterUpdateTx(ctx, tx, grant, actor, now, 0); err != nil {
 			return port.ManagementResourceAuthorizationExpirySweepResult{}, err
 		}
-		expired++
+		authorizations = append(authorizations, managementAuthorizationExpiryFanout(grant))
 	}
+	expired := len(authorizations)
 	if expired > 0 {
 		if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, managementResourceAuthorizationExpiredReason, now); err != nil {
 			return port.ManagementResourceAuthorizationExpirySweepResult{}, err
@@ -1531,7 +1532,22 @@ WHERE id = $2
 		return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("commit management resource authorization expiry sweep tx: %w", err)
 	}
 	committed = true
-	return port.ManagementResourceAuthorizationExpirySweepResult{Expired: expired}, nil
+	return port.ManagementResourceAuthorizationExpirySweepResult{
+		Expired:        expired,
+		Authorizations: authorizations,
+	}, nil
+}
+
+func managementAuthorizationExpiryFanout(grant postgresqueries.JuheBusinessResourceAuthorizationGrant) port.ManagementResourceAuthorizationExpiryFanout {
+	return port.ManagementResourceAuthorizationExpiryFanout{
+		AuthorizationID:              grant.ID,
+		ResourceType:                 grant.ResourceType,
+		ResourceID:                   grant.ResourceID,
+		ResourceOwnerSystemAccountID: grant.ResourceOwnerSystemAccountID,
+		GranteeType:                  grant.GranteeType,
+		GranteeSystemAccountID:       textValue(grant.GranteeSystemAccountID),
+		GranteeTeamID:                textValue(grant.GranteeTeamID),
+	}
 }
 
 func managementResourceAuthorizationExpirySweepQuery() string {
@@ -2750,13 +2766,14 @@ SET provider_code = $1,
     last_error_message = NULL,
     health_check_model = $7,
     health_check_endpoint_mode = $8,
-    authorization_instance_source_account_id = $9,
-    authorization_instance_owner_system_account_id = $10,
+    temporary_unavailable_continuous_probe_enabled = $9,
+    authorization_instance_source_account_id = $10,
+    authorization_instance_owner_system_account_id = $11,
     deleted_at = NULL,
     deleted_by = NULL,
-    updated_at = $11
-WHERE id = $12
-`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, source.HealthCheckModel, source.HealthCheckEndpointMode, authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
+    updated_at = $12
+WHERE id = $13
+`, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, source.HealthCheckModel, source.HealthCheckEndpointMode, boolInt(source.TemporaryUnavailableContinuousProbeEnabled), authorization.ResourceID, authorization.ResourceOwnerSystemAccountID, now.UTC(), deleted.ID); err != nil {
 			if isPGUniqueViolation(err) {
 				return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 			}
@@ -2777,18 +2794,18 @@ INSERT INTO juhe_business.accounts (
   id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
   name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
   concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,
-  health_check_model, health_check_endpoint_mode,
+  health_check_model, health_check_endpoint_mode, temporary_unavailable_continuous_probe_enabled,
   authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
   created_at, updated_at
 ) VALUES (
   $1, $2, $3, $4, $5, $6,
   $7, $8, 'active', $9, NULL, '',
   $10, 0, false, false, true,
-  $11, $12,
-  $13, $14, $15,
-  $16, $16
+  $11, $12, $13,
+  $14, $15, $16,
+  $17, $17
 )
-`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
+`, id, authorization.GranteeSystemAccountID, source.ProviderCode, source.ProviderProtocolProfileID, source.ProtocolCode, source.ProtocolVersion, name, source.Type, credentialEncrypted, source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, boolInt(source.TemporaryUnavailableContinuousProbeEnabled), authorization.ResourceID, authorization.ID, authorization.ResourceOwnerSystemAccountID, now.UTC()); err != nil {
 		if isPGUniqueViolation(err) {
 			return activeManagementAuthorizationAccountInstanceTx(ctx, tx, authorization.ID)
 		}
@@ -2801,29 +2818,31 @@ INSERT INTO juhe_business.accounts (
 }
 
 type managementAuthorizationAccountRow struct {
-	ID                        string
-	SystemAccountID           string
-	ProviderCode              string
-	ProviderProtocolProfileID string
-	ProtocolCode              string
-	ProtocolVersion           string
-	Name                      string
-	Type                      string
-	ConcurrencyLimit          int32
-	HealthCheckModel          string
-	HealthCheckEndpointMode   string
+	ID                                         string
+	SystemAccountID                            string
+	ProviderCode                               string
+	ProviderProtocolProfileID                  string
+	ProtocolCode                               string
+	ProtocolVersion                            string
+	Name                                       string
+	Type                                       string
+	ConcurrencyLimit                           int32
+	HealthCheckModel                           string
+	HealthCheckEndpointMode                    string
+	TemporaryUnavailableContinuousProbeEnabled bool
 }
 
 func managementAuthorizationSourceAccountTx(ctx context.Context, tx pgx.Tx, accountID string) (managementAuthorizationAccountRow, bool, error) {
 	var row managementAuthorizationAccountRow
 	err := tx.QueryRow(ctx, `
 SELECT id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code,
-  protocol_version, name, type, concurrency_limit, health_check_model, health_check_endpoint_mode
+  protocol_version, name, type, concurrency_limit, health_check_model, health_check_endpoint_mode,
+  temporary_unavailable_continuous_probe_enabled = 1
 FROM juhe_business.accounts
 WHERE id = $1
   AND deleted_at IS NULL
 LIMIT 1
-`, accountID).Scan(&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.ConcurrencyLimit, &row.HealthCheckModel, &row.HealthCheckEndpointMode)
+`, accountID).Scan(&row.ID, &row.SystemAccountID, &row.ProviderCode, &row.ProviderProtocolProfileID, &row.ProtocolCode, &row.ProtocolVersion, &row.Name, &row.Type, &row.ConcurrencyLimit, &row.HealthCheckModel, &row.HealthCheckEndpointMode, &row.TemporaryUnavailableContinuousProbeEnabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return managementAuthorizationAccountRow{}, false, nil
 	}

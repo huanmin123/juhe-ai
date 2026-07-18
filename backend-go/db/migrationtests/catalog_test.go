@@ -64,4 +64,11 @@ func TestMigrationCatalogContainsOnlyUniqueVersionedSQLFiles(t *testing.T) {
 	if len(catalog.Entries) == 0 {
 		t.Fatal("migration catalog must not be empty")
 	}
+	if got := catalog.Entries[len(catalog.Entries)-1].Version; got != migrationcatalog.CurrentSchemaVersion {
+		t.Fatalf(
+			"latest migration version = %d, current schema version = %d",
+			got,
+			migrationcatalog.CurrentSchemaVersion,
+		)
+	}
 }

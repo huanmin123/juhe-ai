@@ -268,6 +268,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		RouteStrategyUpdatedReason,
 		"策略路由更新后网关运行态失效失败",
 	)
+	s.publishOptionsPageDataReset(ctx)
 	return result, nil
 }
 
