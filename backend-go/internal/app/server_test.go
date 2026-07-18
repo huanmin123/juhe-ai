@@ -5,6 +5,9 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
@@ -47,6 +50,177 @@ func TestRunServerRejectsWorkerOwnerLockRoleBeforeDependencies(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "role must be server") {
 		t.Fatalf("RunServer() error = %v, want server role error", err)
 	}
+}
+
+func TestRunServerGooseSchemaGateOrderAndOwnerLockCondition(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	runServer := findFunction(t, file, "RunServer")
+	positions := map[string]token.Pos{
+		"ownerlock.Acquire":               token.NoPos,
+		"runtimeOwnerLock.Release":        token.NoPos,
+		"postgresstore.Open":              token.NoPos,
+		"store.Close":                     token.NoPos,
+		"store.Ping":                      token.NoPos,
+		"store.RequireGooseSchemaVersion": token.NoPos,
+		"redisplatform.NewClient":         token.NoPos,
+		"newPublicAPIHandlerWithOptions":  token.NoPos,
+		"newManagementOperationLogQueue":  token.NoPos,
+		"httpapi.NewRouter":               token.NoPos,
+		"server.ListenAndServe":           token.NoPos,
+	}
+	gateCalls := 0
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callName(call.Fun)
+		if _, tracked := positions[name]; tracked && positions[name] == token.NoPos {
+			positions[name] = call.Pos()
+		}
+		if name == "store.RequireGooseSchemaVersion" {
+			gateCalls++
+		}
+		return true
+	})
+
+	for _, name := range []string{
+		"ownerlock.Acquire",
+		"runtimeOwnerLock.Release",
+		"postgresstore.Open",
+		"store.Close",
+		"store.Ping",
+		"store.RequireGooseSchemaVersion",
+		"redisplatform.NewClient",
+		"newPublicAPIHandlerWithOptions",
+		"newManagementOperationLogQueue",
+		"httpapi.NewRouter",
+		"server.ListenAndServe",
+	} {
+		if positions[name] == token.NoPos {
+			t.Fatalf("RunServer missing call %s", name)
+		}
+	}
+	if gateCalls != 1 {
+		t.Fatalf("schema gate calls = %d, want 1", gateCalls)
+	}
+	deferredCalls := map[string]bool{
+		"runtimeOwnerLock.Release": false,
+		"store.Close":              false,
+	}
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		deferStatement, ok := node.(*ast.DeferStmt)
+		if !ok {
+			return true
+		}
+		ast.Inspect(deferStatement.Call, func(deferredNode ast.Node) bool {
+			call, ok := deferredNode.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if _, tracked := deferredCalls[callName(call.Fun)]; tracked {
+				deferredCalls[callName(call.Fun)] = true
+			}
+			return true
+		})
+		return true
+	})
+	for name, deferred := range deferredCalls {
+		if !deferred {
+			t.Fatalf("%s must be registered with defer before schema gate", name)
+		}
+	}
+	gate := positions["store.RequireGooseSchemaVersion"]
+	for _, name := range []string{
+		"ownerlock.Acquire",
+		"runtimeOwnerLock.Release",
+		"postgresstore.Open",
+		"store.Close",
+		"store.Ping",
+	} {
+		if positions[name] >= gate {
+			t.Fatalf("%s must run before schema gate", name)
+		}
+	}
+	for _, name := range []string{
+		"redisplatform.NewClient",
+		"newPublicAPIHandlerWithOptions",
+		"newManagementOperationLogQueue",
+		"httpapi.NewRouter",
+		"server.ListenAndServe",
+	} {
+		if positions[name] <= gate {
+			t.Fatalf("%s must run after schema gate", name)
+		}
+	}
+
+	ownerConditionedGate := false
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		ifStatement, ok := node.(*ast.IfStmt)
+		if !ok || !isOwnerLockEnabledSelector(ifStatement.Cond) {
+			return true
+		}
+		ast.Inspect(ifStatement.Body, func(bodyNode ast.Node) bool {
+			call, ok := bodyNode.(*ast.CallExpr)
+			if ok && callName(call.Fun) == "store.RequireGooseSchemaVersion" {
+				ownerConditionedGate = true
+			}
+			return true
+		})
+		return true
+	})
+	if !ownerConditionedGate {
+		t.Fatal("schema gate must be inside cfg.OwnerLockEnabled condition")
+	}
+
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	if !strings.Contains(string(source), "schemaCtx, cancel := context.WithTimeout(ctx, 5*time.Second)") {
+		t.Fatal("schema gate must use a five-second context timeout")
+	}
+}
+
+func findFunction(t *testing.T, file *ast.File, name string) *ast.FuncDecl {
+	t.Helper()
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == name {
+			return function
+		}
+	}
+	t.Fatalf("function %s not found", name)
+	return nil
+}
+
+func callName(expression ast.Expr) string {
+	if identifier, ok := expression.(*ast.Ident); ok {
+		return identifier.Name
+	}
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return receiver.Name + "." + selector.Sel.Name
+}
+
+func isOwnerLockEnabledSelector(expression ast.Expr) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "OwnerLockEnabled" {
+		return false
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	return ok && receiver.Name == "cfg"
 }
 
 func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {

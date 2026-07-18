@@ -100,6 +100,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return err
 	}
 	cancel()
+	if cfg.OwnerLockEnabled {
+		schemaCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := store.RequireGooseSchemaVersion(schemaCtx, version.SchemaVersion)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("require goose schema version %d: %w", version.SchemaVersion, err)
+		}
+	}
 
 	stateRedis, err := redisplatform.NewClient(cfg.RedisStateURL, cfg.RedisNamespace+":state")
 	if err != nil {
