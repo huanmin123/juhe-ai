@@ -872,14 +872,12 @@ func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read server.go: %v", err)
 	}
-	text := strings.ReplaceAll(string(source), "\r\n", "\n")
-	wiring := `providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
-	})`
-	if !strings.Contains(text, wiring) {
-		t.Fatalf("server.go missing provider model logger wiring %q", wiring)
+	block := sourceBlockBetween(t, string(source),
+		"providerModelService := managementprovidermodels.NewServiceWithOptions",
+		"routeStrategyService := managementroutestrategies.NewServiceWithOptions",
+	)
+	if !strings.Contains(block, "Logger:            logger") {
+		t.Fatal("server.go must inject the logger into the provider model service")
 	}
 }
 

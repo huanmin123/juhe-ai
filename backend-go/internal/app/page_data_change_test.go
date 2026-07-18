@@ -137,6 +137,13 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	if !strings.Contains(systemTeamBlock, "Publisher:                accountsStaticResetPublisher") {
 		t.Fatal("server must inject the page data publisher into management system teams")
 	}
+	providerModelBlock := sourceBlockBetween(t, text,
+		"providerModelService := managementprovidermodels.NewServiceWithOptions",
+		"routeStrategyService := managementroutestrategies.NewServiceWithOptions",
+	)
+	if !strings.Contains(providerModelBlock, "PageDataPublisher: accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management provider models")
+	}
 }
 
 func sourceBlockBetween(t *testing.T, source string, startMarker string, endMarker string) string {
