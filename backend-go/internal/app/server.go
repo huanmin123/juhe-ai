@@ -588,13 +588,14 @@ func newManagementAPIHandlerWithPageData(
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{
-			OptionReader: store,
-			ListReader:   store,
-			DetailReader: store,
-			CreateStore:  store,
-			Transactor:   store,
-			Invalidator:  systemAccountInvalidator,
-			Logger:       logger,
+			OptionReader:      store,
+			ListReader:        store,
+			DetailReader:      store,
+			CreateStore:       store,
+			Transactor:        store,
+			Invalidator:       systemAccountInvalidator,
+			PageDataPublisher: accountsStaticResetPublisher,
+			Logger:            logger,
 		},
 	)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
