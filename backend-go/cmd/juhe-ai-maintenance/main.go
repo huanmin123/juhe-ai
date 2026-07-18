@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -101,22 +100,11 @@ func executeCommand(root *cobra.Command, stderr io.Writer) int {
 	root.SilenceErrors = true
 	root.SilenceUsage = true
 	if err := root.Execute(); err != nil {
-		var reported reportedCommandError
-		if errors.As(err, &reported) {
-			return 1
-		}
 		logging.WriteFatal(stderr, err)
 		return 1
 	}
 	return 0
 }
-
-type reportedCommandError struct {
-	err error
-}
-
-func (e reportedCommandError) Error() string { return e.err.Error() }
-func (e reportedCommandError) Unwrap() error { return e.err }
 
 func newMigrationCatalogPreflightCommand() *cobra.Command {
 	var directory string
@@ -129,11 +117,7 @@ func newMigrationCatalogPreflightCommand() *cobra.Command {
 			cmd.SilenceUsage = true
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			err := maintenance.RunMigrationCatalogPreflight(ctx, directory, cmd.OutOrStdout())
-			if err != nil {
-				return reportedCommandError{err: err}
-			}
-			return nil
+			return maintenance.RunMigrationCatalogPreflight(ctx, directory, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringVar(&directory, "dir", "db/migrations", "migration catalog directory")

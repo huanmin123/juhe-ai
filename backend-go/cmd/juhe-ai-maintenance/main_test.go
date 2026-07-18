@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -39,33 +37,6 @@ func TestExecuteCommandSuccessDoesNotWriteFatal(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
-	}
-}
-
-func TestExecuteCommandDoesNotDuplicateStructuredPreflightFailure(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "notes.go"), []byte("package notes"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	root := &cobra.Command{Use: "test"}
-	root.AddCommand(newMigrationCatalogPreflightCommand())
-	root.SetArgs([]string{"migration-catalog-preflight", "--dir", dir})
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	root.SetOut(&stdout)
-	if code := executeCommand(root, &stderr); code != 1 {
-		t.Fatalf("exit code = %d, want 1", code)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("stderr = %q, want empty after structured failure output", stderr.String())
-	}
-	var result commandPreflightResult
-	if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
-		t.Fatalf("stdout is not one structured JSON result: %v; output = %q", err, stdout.String())
-	}
-	if result.Success {
-		t.Fatalf("result = %+v, want failure", result)
 	}
 }
 
