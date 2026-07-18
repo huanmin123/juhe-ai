@@ -57,6 +57,7 @@ async function main(): Promise<void> {
     schemaMode === fullSchemaMode || schemaMode === gooseDetailSchemaMode,
     `${fixtureSchemaModeEnv} must be ${fullSchemaMode} or ${gooseDetailSchemaMode}`
   )
+  const falseDatabaseValue = schemaMode === gooseDetailSchemaMode ? false : 0
 
   const pool = await getPostgresPool()
   try {
@@ -71,8 +72,8 @@ async function main(): Promise<void> {
     }
 
     const timezoneSelection = selectFixtureTimezone(new Date())
-    await configureFixtureTimezone(client, timezoneSelection.timezone)
-    await seedFixtureAccounts(client)
+    await configureFixtureTimezone(client, timezoneSelection.timezone, falseDatabaseValue)
+    await seedFixtureAccounts(client, falseDatabaseValue)
     clearUsageStatsTimezoneCache()
     const timezone = await usageStatsTimezoneAsync()
     assert.equal(timezone, timezoneSelection.timezone, 'production usage statistics timezone should read the fixture setting')
@@ -334,7 +335,11 @@ function selectFixtureTimezone(now: Date): {
   return selected
 }
 
-async function configureFixtureTimezone(client: DatabaseClient, timezone: string): Promise<void> {
+async function configureFixtureTimezone(
+  client: DatabaseClient,
+  timezone: string,
+  falseDatabaseValue: boolean | number
+): Promise<void> {
   const updatedAt = new Date().toISOString()
   await client.transaction(async (transaction) => {
     await transaction.execute(`
@@ -351,8 +356,8 @@ async function configureFixtureTimezone(client: DatabaseClient, timezone: string
       'super_admin',
       'active',
       'node-go-ip-stats-fixture-password-hash',
-      false,
-      false,
+      falseDatabaseValue,
+      falseDatabaseValue,
       updatedAt,
       updatedAt
     ])
@@ -366,7 +371,7 @@ async function configureFixtureTimezone(client: DatabaseClient, timezone: string
   })
 }
 
-async function seedFixtureAccounts(client: DatabaseClient): Promise<void> {
+async function seedFixtureAccounts(client: DatabaseClient, falseDatabaseValue: boolean | number): Promise<void> {
   const updatedAt = new Date().toISOString()
   await client.transaction(async (transaction) => {
     for (const account of [primaryAccount, secondaryAccount]) {
@@ -386,8 +391,8 @@ async function seedFixtureAccounts(client: DatabaseClient): Promise<void> {
         'user',
         'active',
         'node-go-ip-stats-owner-password-hash',
-        false,
-        false,
+        falseDatabaseValue,
+        falseDatabaseValue,
         updatedAt,
         updatedAt
       ])
