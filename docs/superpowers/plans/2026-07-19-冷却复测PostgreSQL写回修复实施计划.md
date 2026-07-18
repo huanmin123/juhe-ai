@@ -16,12 +16,12 @@
 - Modify: `backend/src/scripts/regression/account-probe-postgres-smoke.ts`
 - Modify: `backend/src/scripts/regression/cooldown-retest-recovery-regression.ts`
 
-- [ ] 在 PostgreSQL smoke 的冷却复测失败写回中传入当前 `configRevision` 和当前 observation timestamp，断言当前观测可以写回。
-- [ ] 增加冷却复测成功写回用例，携带相同两个期望值并断言账号恢复为可调度状态。
-- [ ] 增加陈旧 config revision 与陈旧 observation timestamp 的成功/失败写回断言，确认返回 `changed: false` 且运行态不被覆盖。
-- [ ] 在本地回归中增加源码守卫，禁止冷却复测写回重新出现 `? IS NULL`，并要求队列耗尽日志携带结构化错误字段。
-- [ ] 运行 `pnpm --filter juhe-ai-backend test:cooldown-retest-recovery`，确认新增源码守卫先失败。
-- [ ] 使用 `192.168.1.203` 的一次性隔离 PostgreSQL 数据库与 Redis namespace 运行 `pnpm --filter juhe-ai-backend test:account-probe-postgres-smoke`，确认修复前稳定复现 `42P18`；失败后的测试数据由脚本 `finally` 清理，隔离数据库与 namespace 随后删除。
+- [x] 在 PostgreSQL smoke 的冷却复测失败写回中传入当前 `configRevision` 和当前 observation timestamp，断言当前观测可以写回。
+- [x] 增加冷却复测成功写回用例，携带相同两个期望值并断言账号恢复为可调度状态。
+- [x] 增加陈旧 config revision 与陈旧 observation timestamp 的成功/失败写回断言，确认返回 `changed: false` 且运行态不被覆盖。
+- [x] 在本地回归中增加源码守卫，禁止冷却复测写回重新出现 `? IS NULL`，并要求队列耗尽日志携带结构化错误字段。
+- [x] 运行 `pnpm --filter juhe-ai-backend test:cooldown-retest-recovery`，确认新增源码守卫先失败。
+- [x] 生产 trace 已提供旧实现 `42P18` 证据；测试环境通用 smoke 被既有 provider catalog fixture 漂移提前阻断后，改用 `cooldown-retest-postgres-smoke` 在 `192.168.1.203` 一次性隔离数据库验证真实 repository SQL，隔离库已删除。
 
 ## Task 2：实现动态并发保护条件与耗尽错误日志
 
@@ -29,11 +29,11 @@
 - Modify: `backend/src/storage/account-cooldown-retest.repository.ts`
 - Modify: `backend/src/modules/background/cooldown-account-retest.service.ts`
 
-- [ ] 在 repository 内新增文件私有条件构造器，根据 `expectedConfigRevision` 和 `expectedObservationStartedAt` 是否存在返回 SQL 片段及参数。
-- [ ] 让 SQLite/PostgreSQL 的成功与失败写回共同使用该构造器；成功路径始终校验 config revision，observation 仅在存在时校验，失败路径按实际提供值追加条件。
-- [ ] 保持 PostgreSQL 失败写回的行锁事务和 group stats dirty 标记顺序不变。
-- [ ] 在 `onExhausted` 日志中合并 `errorLogFields(event.error, ...)`，保留原事件、账号、任务名和尝试次数字段。
-- [ ] 运行 Task 1 两项回归，确认 RED 转 GREEN。
+- [x] 在 repository 内新增文件私有条件构造器，根据 `expectedConfigRevision` 和 `expectedObservationStartedAt` 是否存在返回 SQL 片段及参数。
+- [x] 让 SQLite/PostgreSQL 的成功与失败写回共同使用该构造器；成功路径始终校验 config revision，observation 仅在存在时校验，失败路径按实际提供值追加条件。
+- [x] 保持 PostgreSQL 失败写回的行锁事务和 group stats dirty 标记顺序不变。
+- [x] 在 `onExhausted` 日志中合并 `errorLogFields(event.error, ...)`，保留原事件、账号、任务名和尝试次数字段。
+- [x] 运行 Task 1 两项回归，确认 RED 转 GREEN。
 
 ## Task 3：完成本地与真实中间件验证
 
@@ -43,10 +43,12 @@
 - Verify: `backend/src/scripts/regression/account-probe-postgres-smoke.ts`
 - Verify: `backend/src/scripts/regression/cooldown-retest-recovery-regression.ts`
 
-- [ ] 运行 `pnpm --filter juhe-ai-backend test:database-client`。
-- [ ] 运行后端 `typecheck` 及仓库 canonical build。
-- [ ] 在隔离 PostgreSQL/Redis 环境重跑 PG smoke，确认当前成功、当前失败、陈旧 config、陈旧 observation 与并发失败计数全部通过。
-- [ ] 检查退出码、测试数量、`git diff --check`、工作区差异及隔离资源清理结果，确保无密钥、临时日志或无关生成物。
+- [x] 运行 `pnpm --filter juhe-ai-backend test:database-client`。
+- [x] 运行全仓 `pnpm typecheck` 及 canonical `pnpm build`。
+- [x] 在隔离 PostgreSQL/Redis 环境运行专用 PG smoke，确认当前成功、当前失败、陈旧 config、陈旧 observation 与可选保护语义全部通过。
+- [x] 检查退出码、测试数量、`git diff --check`、工作区差异及隔离资源清理结果，确保无密钥、临时日志或无关生成物。
+
+执行记录：`test:postgres-schema-sql` 与 `test:sqlite-high-volume-guards` 在当前 `origin/master` 分别存在 provider catalog 整数/布尔谓词和资源授权源码守卫漂移，均与本次差异无关；本任务未扩大范围修复。
 
 ## Task 4：同步、提交并独立复核
 
@@ -81,4 +83,3 @@
 - [ ] 完成数据库与 Redis 配对备份、临时服务候选部署、3101/3102 与 3099 入口验证；不运行 schema 变更，不清理业务 Redis。
 - [ ] 候选验证通过后切换主服务，检查 API/worker/DB service、冷却复测日志、目标账号重新参与调度以及外部入口；持续观察至少 60 秒。
 - [ ] 验收失败则按计划回滚程序与入口并复验；成功后清理本次临时资源、记录 `VERIFY_SUCCESS`，最后释放部署计划锁。
-

@@ -78,7 +78,7 @@ interface CooldownRetestExpectationClause {
 
 ### RED
 
-先扩展 `account-probe-postgres-smoke.ts`，在独立临时 schema 中验证：
+扩展 `account-probe-postgres-smoke.ts` 的完整账号探针覆盖，并新增窄范围 `cooldown-retest-postgres-smoke.ts` 在一次性隔离数据库中直接验证 repository 写回：
 
 1. 当前代次失败能写回并把失败次数加一。
 2. 当前代次成功能恢复 `active` 并清理冷却字段。
@@ -95,13 +95,14 @@ interface CooldownRetestExpectationClause {
 ### 集成验证
 
 - `pnpm --filter juhe-ai-backend test:cooldown-retest-recovery`
-- `pnpm --filter juhe-ai-backend test:account-probe-postgres-smoke`
+- `pnpm --filter juhe-ai-backend test:cooldown-retest-postgres-smoke`
+- `pnpm --filter juhe-ai-backend test:account-probe-postgres-smoke`（完整测试库 fixture 可用时）
 - `pnpm --filter juhe-ai-backend test:database-client`
 - `pnpm --filter juhe-ai-backend typecheck`
 - `pnpm --filter juhe-ai-backend build`
 - `git diff --check`
 
-真实 PostgreSQL smoke 只使用测试环境连接串和任务专用临时 schema；无论成功失败都在 `finally` 清理。Redis 如需 smoke，只使用测试 DB/namespace，不清理生产 namespace。
+真实 PostgreSQL smoke 只使用测试环境连接串和任务专用随机数据库；脚本按随机账号 ID 清理，外层无论成功失败都强制删除整库。Redis 只使用测试 DB/namespace，不清理生产 namespace。
 
 ## 集成与发布
 
