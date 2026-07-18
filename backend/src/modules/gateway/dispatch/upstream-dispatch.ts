@@ -19,6 +19,10 @@ import {
   type RetryPolicy
 } from '../../../shared/retry-policy.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
+import {
+  gatewayTimeoutProfileForLane,
+  type GatewayTimeoutProfile
+} from '../policy/timeout-profile.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import {
   buildPreparedUpstreamRequestParts,
@@ -77,6 +81,7 @@ export interface OpenAIUpstreamDispatchResult {
   auditAttemptId: string
   attemptStartedAt: number
   effectiveServiceTier: UsageServiceTier
+  timeoutProfile: GatewayTimeoutProfile
   releaseConcurrency: () => void
   markFirstOutput: () => void
   confirmSameAccountApiKeyFailures: () => Promise<void>
@@ -150,6 +155,7 @@ export async function fetchFirstAvailableUpstream(
     settings.temporaryUnschedulableRetryAttempts
   )
   const maxAttemptCount = retryAttemptCount(sameAccountRetryPolicy)
+  const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane)
   const requestSameAccountRetryBudget = sameAccountRetryBudget
     ?? createSameAccountRetryBudget(maxAttemptCount - 1)
   let lastAttempt: UpstreamAttempt | undefined
@@ -427,7 +433,7 @@ export async function fetchFirstAvailableUpstream(
                   auditAttemptIndex,
                   headers,
                   body,
-                  settings,
+                  timeoutProfile,
                   attemptStartedAt,
                   signal,
                   requestClientCompatibility
@@ -456,6 +462,7 @@ export async function fetchFirstAvailableUpstream(
                     auditAttemptId,
                     attemptStartedAt,
                     effectiveServiceTier,
+                    timeoutProfile,
                     releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release),
                     markFirstOutput: concurrencySlot.markFirstOutput,
                     confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext),

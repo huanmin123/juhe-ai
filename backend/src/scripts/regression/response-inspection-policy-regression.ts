@@ -48,6 +48,7 @@ import {
   updateResponseInspectionPolicyAsync
 } from '../../storage/response-inspection-policy.repository.js'
 import { closeSqliteReadWorkerPool } from '../../storage/sqlite-read-worker-pool.js'
+import { gatewayTimeoutProfileForLane } from '../../modules/gateway/policy/timeout-profile.js'
 
 const settings: GatewaySettings = {
   gatewayTextRawBodyLimitMegabytes: 8,
@@ -65,6 +66,7 @@ const settings: GatewaySettings = {
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }
+const timeoutProfile = gatewayTimeoutProfileForLane(settings, 'text')
 
 function responsePolicy(overrides: Partial<RuntimeResponseInspectionPolicy>): RuntimeResponseInspectionPolicy {
   return {
@@ -127,7 +129,7 @@ async function assertMalformedResponsesSseFailsBeforeDownstreamCommit(
   const result = await pipeUpstreamStream(
     upstreamChunks(),
     response as never,
-    settings,
+    timeoutProfile,
     Date.now(),
     async () => { failureCalled = true },
     undefined,
@@ -1344,7 +1346,7 @@ assert.equal(validateAccountResponseInspectionRules([
   const result = await pipeUpstreamStream(
     upstreamChunks(),
     response as never,
-    settings,
+    timeoutProfile,
     Date.now(),
     async () => { failureCalled = true },
     undefined,
@@ -1403,7 +1405,7 @@ assert.equal(validateAccountResponseInspectionRules([
   const result = await pipeUpstreamStream(
     upstreamChunks(),
     response as never,
-    settings,
+    timeoutProfile,
     Date.now(),
     async () => { failureCalled = true },
     undefined,
@@ -1457,7 +1459,7 @@ assert.equal(validateAccountResponseInspectionRules([
   const result = await pipeUpstreamStream(
     upstreamChunks(),
     response as never,
-    settings,
+    timeoutProfile,
     Date.now(),
     async () => { failureCalled = true },
     undefined,

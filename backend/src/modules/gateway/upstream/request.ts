@@ -15,7 +15,7 @@ import type { Request } from 'express'
 import { createProxyAgent } from '../../openai-oauth/openai-oauth.service.js'
 import { prepareSafeUpstreamRequestUrl } from '../../../shared/upstream-url-policy.js'
 import { createProcessLocalResourceCache } from '../../../shared/cache.js'
-import type { GatewaySettings } from '../policy/account-error-policy.service.js'
+import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import {
   isOpenAIOAuthCodexCompactRequest
 } from '../adapters/gpt-codex/oauth-adapter.js'
@@ -421,17 +421,16 @@ export async function readStreamChunkWithAbort(
   return readStreamChunkWithTimeout(iterator, undefined, () => new Error(''), signal)
 }
 
-export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number {
+export function upstreamSocketTimeoutMs(req: Request, profile: GatewayTimeoutProfile, account?: { type?: string }): number {
   const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
-  const requestTimeoutSeconds = Math.max(1, settings.textFirstResponseTimeoutSeconds)
   if (!isStreamRequest) {
-    return Math.max(requestTimeoutSeconds, 30) * 1000
+    return Math.max(profile.firstResponseTimeoutMs, 30_000)
   }
-  return Math.max(requestTimeoutSeconds, settings.textStreamIdleTimeoutSeconds + 15, 30) * 1000
+  return Math.max(profile.firstResponseTimeoutMs, profile.idleTimeoutMs + 15_000, 30_000)
 }
 
-export function upstreamRequestTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number | undefined {
-  return Math.max(1, settings.textFirstResponseTimeoutSeconds) * 1000
+export function upstreamRequestTimeoutMs(profile: GatewayTimeoutProfile): number {
+  return profile.firstResponseTimeoutMs
 }
 
 export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: string }): boolean {

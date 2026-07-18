@@ -103,6 +103,7 @@ import {
   type SameAccountRetryBudget
 } from '../dispatch/upstream-dispatch.js'
 import { gatewayRequestAbsoluteDeadlineAtMs } from '../runtime/gateway-request-deadline.js'
+import { normalRouteSpeedFirstAppliesToLane } from '../policy/speed-first-lane.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -790,7 +791,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   requestLane = imagePermissionPreflight.requestLane
-  const normalRouteSpeedFirstConfig = normalRouteSpeedFirstConfigForApiKey(apiKeyRecord)
+  const normalRouteSpeedFirstConfig = normalRouteSpeedFirstAppliesToLane(requestLane)
+    ? normalRouteSpeedFirstConfigForApiKey(apiKeyRecord)
+    : undefined
 
   const dispatchPreparation = await prepareOpenAIGatewayDispatchAccounts({
     req,

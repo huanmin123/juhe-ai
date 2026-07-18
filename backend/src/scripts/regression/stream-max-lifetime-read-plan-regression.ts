@@ -1,26 +1,24 @@
 import { strict as assert } from 'node:assert'
 
-import type { GatewaySettings } from '../../modules/gateway/policy/account-error-policy.service.js'
+import type { GatewayTimeoutProfile } from '../../modules/gateway/policy/timeout-profile.js'
 import { AnthropicStreamInspector } from '../../modules/gateway/protocols/anthropic-v1/stream-inspection.js'
 import { GeminiStreamInspector } from '../../modules/gateway/protocols/gemini-v1beta/stream-inspection.js'
 import { OpenAIStreamInspector } from '../../modules/gateway/protocols/openai-v1/stream-inspection.js'
 import { buildStreamReadPlan } from '../../modules/gateway/response/stream-read-plan.js'
 
-const settings: GatewaySettings = {
-  gatewayTextRawBodyLimitMegabytes: 8,
-  defaultTemporaryUnschedulableMinutes: 2,
-  temporaryUnschedulableRetryIntervalSeconds: 3,
-  temporaryUnschedulableRetryAttempts: 3,
-  streamCircuitBreakerEnabled: true,
-  textFirstResponseTimeoutSeconds: 120,
-  textStreamIdleTimeoutSeconds: 30,
-  textUncommittedAttemptMaxLifetimeSeconds: 60,
-  imageFirstResponseTimeoutSeconds: 600,
-  imageStreamIdleTimeoutSeconds: 120,
-  imageUncommittedAttemptMaxLifetimeSeconds: 3600,
-  noAvailableAccountWaitTimeoutSeconds: 270,
-  streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 5
+const textProfile: GatewayTimeoutProfile = {
+  firstResponseTimeoutMs: 120_000,
+  firstByteTimeoutMs: 120_000,
+  idleTimeoutMs: 30_000,
+  uncommittedAttemptMaxLifetimeMs: 60_000,
+  noAvailableAccountWaitMs: 270_000
+}
+const imageProfile: GatewayTimeoutProfile = {
+  firstResponseTimeoutMs: 600_000,
+  firstByteTimeoutMs: 600_000,
+  idleTimeoutMs: 120_000,
+  uncommittedAttemptMaxLifetimeMs: 3_600_000,
+  noAvailableAccountWaitMs: 270_000
 }
 
 const now = Date.now()
@@ -30,45 +28,45 @@ const activeStreamStatus = {
   parserSkipped: false
 }
 
-const activeLifetimePlan = buildStreamReadPlan(settings, now - 61_000, {
+const activeLifetimePlan = buildStreamReadPlan(textProfile, now - 61_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
   upstreamChunkReceived: true,
   ...activeStreamStatus
-})
-assert.equal(activeLifetimePlan.timeoutKind, 'stream_lifetime', '持续有心跳的活跃流超过最大存活时间时应按 lifetime 中断')
-assert(activeLifetimePlan.timeoutMessage.includes('最大存活时间'), `最大存活时间文案不正确：${activeLifetimePlan.timeoutMessage}`)
+}, now)
+assert.equal(activeLifetimePlan.timeoutKind, 'upstream_activity', '已有语义输出的活跃流不应再受未提交尝试寿命限制')
+assert.equal(activeLifetimePlan.streamLifetimeTimeoutMs, undefined, '已有语义输出后不得保留未提交尝试寿命')
 
-const idlePlan = buildStreamReadPlan(settings, now - 10_000, {
+const idlePlan = buildStreamReadPlan(textProfile, now - 10_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now - 31_000,
   upstreamChunkReceived: true,
   ...activeStreamStatus
-})
+}, now)
 assert.equal(idlePlan.timeoutKind, 'upstream_activity', '流式空闲比最大存活时间更早到达时仍应按 idle 中断')
 
-const firstChunkLifetimePlan = buildStreamReadPlan(settings, now - 61_000, {
+const firstChunkLifetimePlan = buildStreamReadPlan(textProfile, now - 61_000, {
   waitingForFirstChunk: true,
   lastUpstreamActivityAt: now - 61_000,
   upstreamChunkReceived: false,
   semanticResultReceived: false,
   pendingProtocolEvent: false,
   parserSkipped: false
-})
+}, now)
 assert.equal(firstChunkLifetimePlan.timeoutKind, 'stream_lifetime', '首段未返回但先达到最大存活时间时应按 lifetime 中断')
 
-const semanticResultPlan = buildStreamReadPlan({ ...settings, textUncommittedAttemptMaxLifetimeSeconds: 300 }, now - 121_000, {
+const semanticResultPlan = buildStreamReadPlan({ ...textProfile, uncommittedAttemptMaxLifetimeMs: 300_000 }, now - 121_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
   upstreamChunkReceived: true,
   semanticResultReceived: false,
   pendingProtocolEvent: false,
   parserSkipped: false
-})
+}, now)
 assert.equal(semanticResultPlan.timeoutKind, 'semantic_result', '只有心跳 raw chunk 但无语义结果时应按有效输出超时中断')
 assert(semanticResultPlan.timeoutMessage.includes('有效输出'), `有效输出超时文案不正确：${semanticResultPlan.timeoutMessage}`)
 
-const recentProtocolEventPlan = buildStreamReadPlan({ ...settings, textUncommittedAttemptMaxLifetimeSeconds: 300 }, now - 121_000, {
+const recentProtocolEventPlan = buildStreamReadPlan({ ...textProfile, uncommittedAttemptMaxLifetimeMs: 300_000 }, now - 121_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
   lastSseEventActivityAt: now - 1_000,
@@ -76,18 +74,38 @@ const recentProtocolEventPlan = buildStreamReadPlan({ ...settings, textUncommitt
   semanticResultReceived: false,
   pendingProtocolEvent: false,
   parserSkipped: false
-})
+}, now)
 assert.equal(recentProtocolEventPlan.timeoutKind, 'upstream_activity', '最近完整协议事件应刷新有效输出等待窗口，避免碎片或非输出事件后误杀')
 
-const pendingEventPlan = buildStreamReadPlan({ ...settings, textUncommittedAttemptMaxLifetimeSeconds: 300 }, now - 121_000, {
+const pendingEventPlan = buildStreamReadPlan({ ...textProfile, uncommittedAttemptMaxLifetimeMs: 300_000 }, now - 121_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
   upstreamChunkReceived: true,
   semanticResultReceived: false,
   pendingProtocolEvent: true,
   parserSkipped: false
-})
+}, now)
 assert.equal(pendingEventPlan.timeoutKind, 'upstream_activity', '正在接收未闭合协议事件时应继续按 raw activity 保护，避免误杀大事件碎片')
+
+const imageFirstChunkPlan = buildStreamReadPlan(imageProfile, now, {
+  waitingForFirstChunk: true,
+  lastUpstreamActivityAt: now,
+  upstreamChunkReceived: false,
+  semanticResultReceived: false,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+}, now)
+assert.equal(imageFirstChunkPlan.timeoutMs, 600_000, '图像 lane 首段等待应使用 600 秒 profile')
+
+const imageActivePlan = buildStreamReadPlan(imageProfile, now, {
+  waitingForFirstChunk: false,
+  lastUpstreamActivityAt: now,
+  upstreamChunkReceived: true,
+  semanticResultReceived: true,
+  pendingProtocolEvent: false,
+  parserSkipped: false
+}, now)
+assert.equal(imageActivePlan.timeoutMs, 120_000, '图像 lane 活动流应使用 120 秒 idle profile')
 
 assertProtocolPendingEvent(new OpenAIStreamInspector(), 'OpenAI')
 assertProtocolPendingEvent(new AnthropicStreamInspector(), 'Anthropic')

@@ -1,7 +1,7 @@
 import type { Request } from 'express'
 
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
-import type { GatewaySettings } from '../policy/account-error-policy.service.js'
+import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   isEffectiveOpenAIStreamRequest,
@@ -25,7 +25,7 @@ interface PerformUpstreamRequestAttemptInput {
   auditAttemptIndex: number
   headers: Headers
   body?: Buffer | string
-  settings: GatewaySettings
+  timeoutProfile: GatewayTimeoutProfile
   attemptStartedAt: number
   signal?: AbortSignal
   requestClientCompatibility?: ClientCompatibilityCapability
@@ -42,13 +42,13 @@ export async function performUpstreamRequestAttempt(
     auditAttemptIndex,
     headers,
     body,
-    settings,
+    timeoutProfile,
     attemptStartedAt,
     signal,
     requestClientCompatibility
   } = input
-  const socketTimeoutMs = upstreamSocketTimeoutMs(req, settings, account)
-  const requestTimeoutMs = upstreamRequestTimeoutMs(req, settings, account)
+  const socketTimeoutMs = upstreamSocketTimeoutMs(req, timeoutProfile, account)
+  const requestTimeoutMs = upstreamRequestTimeoutMs(timeoutProfile)
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
   const upstreamBody = normalizeAnthropicMessagesBodyForAttempt(headers, upstreamUrl, body)
 

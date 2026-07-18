@@ -527,7 +527,7 @@ export async function handleOpenAIGatewayRequest(
           dispatchCutoverReservation.release()
         }
       }
-      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease } = upstreamResult
+      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease } = upstreamResult
       const releaseAccountSlot = attachAccountSlotRelease(res, releaseConcurrency)
       const speedFirstFirstByteDeadlineMs = normalRouteSpeedFirstByteDeadlineMs(normalRouteSpeedFirstConfig)
       const speedFirstLatencyScope = normalRouteLatencyDegradationScope({
@@ -629,6 +629,7 @@ export async function handleOpenAIGatewayRequest(
             auditAttemptId,
             auditCapture,
             settings: activeGatewaySettings,
+            timeoutProfile,
             usageContext: gatewayUsageContext,
             startedAt: attemptStartedAt,
             signal: requestExecutionSignal,
@@ -654,6 +655,7 @@ export async function handleOpenAIGatewayRequest(
               auditAttemptId,
               auditCapture,
               settings: activeGatewaySettings,
+              timeoutProfile,
               usageContext: gatewayUsageContext,
               startedAt: attemptStartedAt,
               signal: requestExecutionSignal,
@@ -1015,7 +1017,7 @@ export async function handleOpenAIGatewayRequest(
                 }
               })
             }
-          } else if (upstreamResponse.ok) {
+          } else {
             const recoveryResult = await recordNormalRouteFirstByteSuccessAsync(
               account,
               speedFirstLatencyScope,
@@ -1047,6 +1049,7 @@ export async function handleOpenAIGatewayRequest(
           auditAttemptId,
           auditCapture,
           settings: activeGatewaySettings,
+          timeoutProfile,
           usageContext: gatewayUsageContext,
           startedAt,
           completedAtMs: httpCompletedAtMs,

@@ -3,6 +3,7 @@ import type { Request, Response } from 'express'
 import { logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
+import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import {
   applyAccountErrorHandlingWithCacheInvalidation,
@@ -56,7 +57,6 @@ import {
 import {
   isEffectiveOpenAIStreamRequest,
   isUpstreamRequestAbortedError,
-  upstreamRequestTimeoutMs,
   UpstreamRequestAbortedError,
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
@@ -130,6 +130,7 @@ interface HandleUpstreamResponseInput {
   auditAttemptId: string
   auditCapture: AuditCaptureContext
   settings: GatewaySettings
+  timeoutProfile: GatewayTimeoutProfile
   usageContext: GatewayUsageContext
   startedAt: number
   signal: AbortSignal
@@ -256,7 +257,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     streamResult = await pipeUpstreamStream(
       upstreamResponse.body,
       res,
-      settings,
+      input.timeoutProfile,
       startedAt,
       (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context)),
       signal,
@@ -701,7 +702,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           inspectBytes: nonStreamResponseInspectionMaxBytes,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),
@@ -783,7 +784,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           startedAt,
           captureBody: auditCapture.shouldCaptureSuccessPayloads(),
           signal,
-          firstByteTimeoutMs: upstreamRequestTimeoutMs(req, input.settings, account),
+          firstByteTimeoutMs: input.timeoutProfile.firstByteTimeoutMs,
           firstByteDeadlineMs: input.firstByteDeadlineMs,
           onFirstByteDeadline: input.onFirstByteDeadline,
           prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, false),

@@ -2,7 +2,7 @@ import type { Response } from 'express'
 
 import { getRequestLogger } from '../../../shared/request-context.js'
 import type { OpenAIGatewayDownstreamProtocol } from '../client-profiles/strategy.js'
-import type { GatewaySettings } from '../policy/account-error-policy.service.js'
+import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
 import {
   emptyUsage,
@@ -104,7 +104,7 @@ class StreamMaxLifetimeExceededError extends Error {}
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
   res: Response,
-  settings: GatewaySettings,
+  timeoutProfile: GatewayTimeoutProfile,
   startedAt: number,
   handleStreamFailure: (reason: string, errorCode: string | undefined, context: StreamFailureContext) => Promise<void>,
   signal?: AbortSignal,
@@ -362,8 +362,9 @@ export async function pipeUpstreamStream(
 
   streamLogger.debug({
     event: 'gateway_stream_pipe_started',
-    textFirstResponseTimeoutSeconds: settings.textFirstResponseTimeoutSeconds,
-    textStreamIdleTimeoutSeconds: settings.textStreamIdleTimeoutSeconds,
+    firstResponseTimeoutMs: timeoutProfile.firstResponseTimeoutMs,
+    idleTimeoutMs: timeoutProfile.idleTimeoutMs,
+    uncommittedAttemptMaxLifetimeMs: timeoutProfile.uncommittedAttemptMaxLifetimeMs,
     startedAt
   }, '网关开始转发上游流式响应')
 
@@ -373,7 +374,7 @@ export async function pipeUpstreamStream(
         throw new Error('客户端连接已断开')
       }
       const readStartedAt = Date.now()
-      const readResult = await readNextStreamChunk(iterator, settings, startedAt, {
+      const readResult = await readNextStreamChunk(iterator, timeoutProfile, startedAt, {
         waitingForFirstChunk,
         lastUpstreamActivityAt,
         lastSseEventActivityAt,
@@ -1133,7 +1134,7 @@ export async function pipeUpstreamStream(
 
 async function readNextStreamChunk(
   iterator: AsyncIterator<Uint8Array>,
-  settings: GatewaySettings,
+  timeoutProfile: GatewayTimeoutProfile,
   startedAt: number,
   status: {
     waitingForFirstChunk: boolean
@@ -1178,7 +1179,7 @@ async function readNextStreamChunk(
       continue
     }
 
-    const readPlan = buildStreamReadPlan(settings, startedAt, status)
+    const readPlan = buildStreamReadPlan(timeoutProfile, startedAt, status)
     if (readPlan.timeoutMs <= 0) {
       throw streamReadPlanTimeoutError(readPlan)
     }
