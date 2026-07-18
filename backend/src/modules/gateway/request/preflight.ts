@@ -101,6 +101,8 @@ import {
 } from '../dispatch/upstream-dispatch.js'
 import { normalRouteSpeedFirstAppliesToLane } from '../policy/speed-first-lane.js'
 import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
+import { GatewayDownstreamCommitState } from '../response/downstream-commit-state.js'
+import { createGatewaySseWaitHeartbeatObserver } from '../response/sse-wait-heartbeat.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -121,6 +123,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   ignoreAccountRuntimeSuppression?: boolean
   sameAccountRetryBudget?: SameAccountRetryBudget
   serverRetryBudget?: ServerRetryBudget
+  downstreamCommitState?: GatewayDownstreamCommitState
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -156,6 +159,7 @@ export interface OpenAIGatewayDispatchContext {
   codexTurnAvoidedAccountIds?: string[]
   precheckHalfOpenEligible?: boolean
   serverRetryBudget: ServerRetryBudget
+  downstreamCommitState: GatewayDownstreamCommitState
   sameAccountRetryBudget: SameAccountRetryBudget
   releaseClientIpConcurrency: () => void
 }
@@ -245,6 +249,8 @@ export async function prepareOpenAIGatewayDispatchContext(
   const serverRetryBudget = options.serverRetryBudget
     ?? new ServerRetryBudget(activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds * 1000)
   options.serverRetryBudget = serverRetryBudget
+  const downstreamCommitState = options.downstreamCommitState ?? new GatewayDownstreamCommitState()
+  options.downstreamCommitState = downstreamCommitState
   const sameAccountRetryBudget = options.sameAccountRetryBudget
     ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
   options.sameAccountRetryBudget = sameAccountRetryBudget
@@ -525,6 +531,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     providerCode: groupAccess?.providerCode
   })
+  serverRetryBudget.setWaitObserver(createGatewaySseWaitHeartbeatObserver({
+    res,
+    downstreamProtocol: clientStrategy.downstreamProtocol,
+    downstreamCommitState,
+    signal
+  }))
   const clientIpAccountAvoidanceTracker = createClientIpAccountAvoidanceTracker({
     systemAccountId,
     apiKeyId,
@@ -887,6 +899,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     precheckHalfOpenEligible: dispatchPreparation.precheckHalfOpenEligible,
     serverRetryBudget,
+    downstreamCommitState,
     sameAccountRetryBudget,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }

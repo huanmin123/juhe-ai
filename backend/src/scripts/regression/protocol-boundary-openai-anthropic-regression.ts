@@ -57,6 +57,7 @@ try {
       supported_endpoint_modes: ['messages_json', 'messages_sse']
     },
     supportedModels: ['claude-haiku-4-5'],
+    healthCheckModel: 'claude-haiku-4-5',
     groupId: group.id,
     status: 'active',
     schedulable: true

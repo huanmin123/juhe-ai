@@ -66,6 +66,7 @@ import {
   type StreamBodyOmissionSummary,
   type StreamPipeResult
 } from './stream-result.js'
+import { GatewayDownstreamCommitState } from './downstream-commit-state.js'
 export type { StreamBodyOmissionSummary, StreamPipeResult } from './stream-result.js'
 
 export interface StreamFailureContext {
@@ -76,6 +77,7 @@ export interface StreamFailureContext {
 
 export interface StreamPipeOptions {
   clientRetryEnabled?: boolean
+  interpretProtocolFailures?: boolean
   onFirstOutput?: () => void
   captureSuccessPayloads?: boolean
   retryBeforeDownstreamWriteUntilOutput?: boolean
@@ -90,6 +92,7 @@ export interface StreamPipeOptions {
   prepareDownstream?: () => void
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
+  downstreamCommitState?: GatewayDownstreamCommitState
 }
 
 const streamDiagnosticCaptureBytes = 256 * 1024
@@ -115,6 +118,7 @@ export async function pipeUpstreamStream(
   const protocolDriver = requireGatewayProtocolDriverForResponseProtocol(responseProtocol)
   const gatewayErrorProtocol = protocolDriver.clientErrorProtocol
   const inspector = protocolDriver.createStreamInspector()
+  const interpretProtocolFailures = options.interpretProtocolFailures !== false
   const responseInspectionEnabled = options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
@@ -131,6 +135,9 @@ export async function pipeUpstreamStream(
     })
     : undefined
   const captureSuccessPayloads = options.captureSuccessPayloads !== false
+  const interpretedProtocolFailure = (inspection: GatewayStreamInspection) => (
+    interpretProtocolFailures && inspection.failedReceived
+  )
   const responseCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : -1)
   const upstreamCapture = new LimitedBufferCapture(captureSuccessPayloads ? streamAuditCaptureBytes : streamDiagnosticCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
@@ -157,6 +164,7 @@ export async function pipeUpstreamStream(
   let terminalEventWritten = false
   let bodyCaptureOmitted = false
   let downstreamPrepared = false
+  const downstreamCommit = options.downstreamCommitState ?? new GatewayDownstreamCommitState()
   const preCommitBuffer = createStreamPreCommitBufferState(options.retryBeforeDownstreamWriteUntilOutput === true)
   const responseInspectionObservations: ResponseInspectionDecision[] = []
   let responseInspectionObservationOmittedCount = 0
@@ -170,12 +178,17 @@ export async function pipeUpstreamStream(
     responseCapture.push(chunk)
     diagnosticCapture.push(chunk)
   }
-  const writeDownstreamChunk = async (chunk: Buffer) => {
+  const writeDownstreamChunk = async (chunk: Buffer, semantic = false) => {
     captureDownstreamChunk(chunk)
     prepareDownstreamForWrite()
     const writeResult = await writeResponseChunk(res, chunk)
     interceptor?.markDownstreamWrite()
     totalResponseBytes += chunk.length
+    if (semantic) {
+      downstreamCommit.markSemanticCommitted(chunk.length)
+    } else {
+      downstreamCommit.markTransportCommitted(chunk.length)
+    }
     return writeResult
   }
   const canKeepPreCommitBuffered = (inspection: GatewayStreamInspection, chunk: Buffer) => {
@@ -285,7 +298,9 @@ export async function pipeUpstreamStream(
     bodyOmission,
     responseInspectionObservations,
     responseInspectionObservationOmittedCount,
-    totalResponseBytes,
+    downstreamCommit.downstreamBytesWritten,
+    downstreamCommit.transportCommitted || res.headersSent,
+    downstreamCommit.semanticCommitted,
     uncommittedStreamResponseBody(preCommitBuffer)
   )
   const finishTerminalSuccess = async (
@@ -295,7 +310,7 @@ export async function pipeUpstreamStream(
     let finalInspection = inspection
     let closeIteratorAfterEnd = false
     omitBodyCaptureIfImageStream(finalInspection, { eofPendingFlush: input.eofPendingFlush })
-    if (input.drainForKeepAlive && !finalInspection.failedReceived) {
+    if (input.drainForKeepAlive && !interpretedProtocolFailure(finalInspection)) {
       res.off('close', closeIterator)
       finalInspection = await drainIteratorAfterTerminalForInspection(iterator, inspector, {
         lightweightImageStream: bodyCaptureOmitted || finalInspection.imageOutputReceived
@@ -306,7 +321,7 @@ export async function pipeUpstreamStream(
       res.off('close', closeIterator)
       closeIteratorAfterEnd = true
     }
-    if (finalInspection.failedReceived) {
+    if (interpretedProtocolFailure(finalInspection)) {
       const message = finalInspection.errorMessage ?? '上游流式响应失败'
       const errorCode = streamClientFailureCode(
         finalInspection.errorCode ?? gatewayStreamFailureCode(message),
@@ -314,7 +329,7 @@ export async function pipeUpstreamStream(
         options.clientRetryEnabled === true,
         totalResponseBytes
       )
-      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, finalInspection.failedReceived))
+      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, finalInspection.outputReceived, interpretedProtocolFailure(finalInspection)))
       endResponse(res)
       if (closeIteratorAfterEnd) {
         void closeAsyncIterator(iterator)
@@ -385,7 +400,7 @@ export async function pipeUpstreamStream(
         waitingForFirstOutput: options.firstByteDeadlineMs !== undefined
           && firstTokenMs === undefined
           && totalResponseBytes === 0
-          && !res.headersSent,
+          && !downstreamCommit.semanticCommitted,
         firstByteDeadlineObserved
       }, signal, {
         firstByteDeadlineMs: options.firstByteDeadlineMs,
@@ -495,7 +510,7 @@ export async function pipeUpstreamStream(
           appendStreamPreCommitChunk(preCommitBuffer, outbound)
           continue
         }
-        if (latestInspection.failedReceived && shouldFailBeforeDownstreamCommit()) {
+        if (interpretedProtocolFailure(latestInspection) && shouldFailBeforeDownstreamCommit()) {
           const message = latestInspection.errorMessage ?? '上游流式响应失败'
           const errorCode = streamClientFailureCode(
             latestInspection.errorCode ?? gatewayStreamFailureCode(message),
@@ -503,7 +518,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
+          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
           await closeAsyncIterator(iterator)
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
@@ -519,7 +534,7 @@ export async function pipeUpstreamStream(
         }
         const writeStartedAt = Date.now()
         await flushPreCommitChunks()
-        const writeResult = await writeDownstreamChunk(outbound)
+        const writeResult = await writeDownstreamChunk(outbound, streamSemanticResultReceived(latestInspection))
         const writeMs = Date.now() - writeStartedAt
         chunkWriteMs += writeMs
         chunkWroteDownstream = true
@@ -612,7 +627,7 @@ export async function pipeUpstreamStream(
         }, '网关已命中响应检查策略并结束当前流')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
-      if ((chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !latestInspection.failedReceived && chunkCanEndAfterTerminal) {
+      if ((chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && chunkCanEndAfterTerminal) {
         await flushPreCommitChunks()
         terminalEventWritten = true
         return await finishTerminalSuccess(inspector.finish(), {
@@ -705,7 +720,7 @@ export async function pipeUpstreamStream(
           appendStreamPreCommitChunk(preCommitBuffer, outbound)
           continue
         }
-        if (latestInspection.failedReceived && shouldFailBeforeDownstreamCommit()) {
+        if (interpretedProtocolFailure(latestInspection) && shouldFailBeforeDownstreamCommit()) {
           const message = latestInspection.errorMessage ?? '上游流式响应失败'
           const errorCode = streamClientFailureCode(
             latestInspection.errorCode ?? gatewayStreamFailureCode(message),
@@ -713,7 +728,7 @@ export async function pipeUpstreamStream(
             options.clientRetryEnabled === true,
             totalResponseBytes
           )
-          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, latestInspection.failedReceived))
+          await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, interpretedProtocolFailure(latestInspection)))
           streamLogger.warn({
             event: 'gateway_stream_failure_before_downstream_commit',
             message,
@@ -728,7 +743,7 @@ export async function pipeUpstreamStream(
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
         await flushPreCommitChunks()
-        const writeResult = await writeDownstreamChunk(outbound)
+        const writeResult = await writeDownstreamChunk(outbound, streamSemanticResultReceived(latestInspection))
         eofWroteDownstream = true
         const writeNow = Date.now()
         if (
@@ -787,7 +802,7 @@ export async function pipeUpstreamStream(
         }, '网关已在上游 EOF 时命中响应检查策略并结束当前流')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
-      if ((eofWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !latestInspection.failedReceived && eofCanEndAfterTerminal) {
+      if ((eofWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && eofCanEndAfterTerminal) {
         await flushPreCommitChunks()
         terminalEventWritten = true
         return await finishTerminalSuccess(latestInspection, { eofPendingFlush: true })
@@ -798,7 +813,7 @@ export async function pipeUpstreamStream(
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = inspector.finish()
       omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-      if (inspection.terminalReceived && !inspection.failedReceived) {
+      if (inspection.terminalReceived && !interpretedProtocolFailure(inspection)) {
         endResponse(res)
         streamLogger.info({
           event: 'gateway_stream_client_closed_after_terminal',
@@ -867,7 +882,7 @@ export async function pipeUpstreamStream(
         options.clientRetryEnabled === true,
         totalResponseBytes
       )
-      await handleStreamFailure(rawMessage, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+      await handleStreamFailure(rawMessage, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
       streamLogger.warn({
         event: 'gateway_stream_max_lifetime_interrupted',
         elapsedMs: Date.now() - startedAt,
@@ -884,7 +899,7 @@ export async function pipeUpstreamStream(
       interruptResponse(res)
       return finishStreamResult(false, rawMessage, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    if (inspection.terminalReceived && !inspection.failedReceived) {
+    if (inspection.terminalReceived && !interpretedProtocolFailure(inspection)) {
       endResponse(res)
       streamLogger.info({
         event: 'gateway_stream_error_ignored_after_terminal',
@@ -893,7 +908,7 @@ export async function pipeUpstreamStream(
       }, '网关已收到终止事件，忽略终止后的流式异常')
       return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    const message = inspection.errorMessage ?? rawMessage
+    const message = interpretedProtocolFailure(inspection) ? inspection.errorMessage ?? rawMessage : rawMessage
     const errorCode = streamClientFailureCode(
       inspection.errorCode ?? (isGatewayFirstByteTimeoutError(error) ? 'first_byte_timeout' : gatewayStreamFailureCode(message)),
       inspection.outputReceived,
@@ -903,7 +918,7 @@ export async function pipeUpstreamStream(
     if (isGatewayFirstByteTimeoutError(error) && error.source === 'speed_first_deadline') {
       await closeAsyncIterator(iterator)
     }
-    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
     if (shouldFailBeforeDownstreamCommit()) {
       streamLogger.warn({
         event: 'gateway_stream_failure_before_downstream_commit',
@@ -925,7 +940,7 @@ export async function pipeUpstreamStream(
       interruptResponse(res)
       return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
     }
-    if (!inspection.failedReceived) {
+    if (!interpretedProtocolFailure(inspection)) {
       streamLogger.warn({
         event: 'gateway_stream_failure_event_writing',
         message
@@ -944,6 +959,7 @@ export async function pipeUpstreamStream(
           diagnosticCapture.push(failureEvent)
         }
         totalResponseBytes += failureEvent.length
+        downstreamCommit.markSemanticCommitted(failureEvent.length)
         streamLogger.warn({
           event: 'gateway_stream_failure_event_written',
           message,
@@ -965,10 +981,15 @@ export async function pipeUpstreamStream(
 
   const inspection = inspector.finish()
   omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
+  if (!interpretProtocolFailures && completed) {
+    await flushPreCommitChunks()
+    endResponse(res)
+    return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+  }
   if (inspection.skipped) {
     endResponse(res)
-    const success = completed && !inspection.failedReceived
-    const message = success ? '已完成' : (inspection.errorMessage ?? '上游流式响应失败')
+    const success = completed && !interpretedProtocolFailure(inspection)
+    const message = success ? '已完成' : '上游流式响应已中断'
     const errorCode = success ? undefined : streamClientFailureCode(
       inspection.errorCode ?? gatewayStreamFailureCode(message),
       inspection.outputReceived,
@@ -976,7 +997,7 @@ export async function pipeUpstreamStream(
       totalResponseBytes
     )
     if (!success) {
-      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+      await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
     }
     streamLogger.warn({
       event: 'gateway_stream_completed_with_parser_skipped',
@@ -1046,6 +1067,7 @@ export async function pipeUpstreamStream(
         diagnosticCapture.push(failureEvent)
       }
       totalResponseBytes += failureEvent.length
+      downstreamCommit.markSemanticCommitted(failureEvent.length)
       streamLogger.warn({
         event: 'gateway_stream_missing_terminal_failure_event_written',
         failureEventBytes: failureEvent.length,
@@ -1060,15 +1082,15 @@ export async function pipeUpstreamStream(
     return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
   }
 
-  if (!completed || inspection.failedReceived) {
-    const message = inspection.errorMessage ?? '上游流式响应失败'
+  if (!completed || interpretedProtocolFailure(inspection)) {
+    const message = interpretedProtocolFailure(inspection) ? inspection.errorMessage ?? '上游流式响应失败' : '上游流式响应已中断'
     const errorCode = streamClientFailureCode(
       inspection.errorCode ?? gatewayStreamFailureCode(message),
       inspection.outputReceived,
       options.clientRetryEnabled === true,
       totalResponseBytes
     )
-    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, inspection.failedReceived))
+    await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived, interpretedProtocolFailure(inspection)))
     if (shouldFailBeforeDownstreamCommit()) {
       streamLogger.warn({
         event: 'gateway_stream_finished_failed_before_downstream_commit',

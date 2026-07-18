@@ -51,6 +51,14 @@ export interface OpenAIGatewayClientStrategyContext {
   allowCodexTurnAccountAvoidance: boolean
 }
 
+export function gatewayClientAllowsUpstreamSemanticInterpretation(
+  strategy: Pick<OpenAIGatewayClientStrategyContext, 'clientProfile'>
+): boolean {
+  return strategy.clientProfile === 'codex'
+    || strategy.clientProfile === 'claude_code'
+    || strategy.clientProfile === 'gemini_cli'
+}
+
 interface CodexTurnMetadata {
   turnId?: string
   sessionId?: string

@@ -37,6 +37,17 @@ assert.equal(budget.remainingMs(760_000), 0)
 budget.pauseNoAvailableWait(760_000)
 assert.equal(budget.elapsedMs(), 270_000)
 
+const observedBudget = new ServerRetryBudget(1000)
+const observedTransitions: string[] = []
+observedBudget.setWaitObserver({
+  onWaitStarted: () => observedTransitions.push('started'),
+  onWaitPaused: () => observedTransitions.push('paused')
+})
+observedBudget.beginNoAvailableWait(100)
+observedBudget.beginNoAvailableWait(200)
+observedBudget.pauseNoAvailableWait(300)
+assert.deepEqual(observedTransitions, ['started', 'paused'], '重复 begin 不得启动多个 SSE 心跳定时器')
+
 const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
 const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
 const dispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')

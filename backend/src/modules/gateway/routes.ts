@@ -84,6 +84,7 @@ import {
 import { resolveOpenAIGatewayRequestLane } from './protocols/openai-v1/request-lane.js'
 import { forgetOpenAIAccountForSessionAsync } from './runtime/session-affinity.service.js'
 import { gatewayProtocolClientErrorProtocolForRequest } from './protocols/registry.js'
+import { gatewayClientAllowsUpstreamSemanticInterpretation } from './client-profiles/strategy.js'
 import {
   normalRouteLatencyDegradationScope,
   isNormalRouteAccountLatencyDegradedAsync,
@@ -261,7 +262,8 @@ export async function handleOpenAIGatewayRequest(
         trafficSource,
         requestLane: currentPreflight.requestLane,
         sameAccountRetryBudget: currentPreflight.sameAccountRetryBudget,
-        serverRetryBudget: currentPreflight.serverRetryBudget
+        serverRetryBudget: currentPreflight.serverRetryBudget,
+        downstreamCommitState: currentPreflight.downstreamCommitState
       },
       startedAt,
       traceId,
@@ -349,6 +351,7 @@ export async function handleOpenAIGatewayRequest(
         ...options,
         sameAccountRetryBudget: currentPreflight.sameAccountRetryBudget,
         serverRetryBudget: currentPreflight.serverRetryBudget,
+        downstreamCommitState: currentPreflight.downstreamCommitState,
         identity: {
           systemAccountId: currentPreflight.usageContext.systemAccountId,
           apiKeyId: currentPreflight.usageContext.apiKeyId,
@@ -480,7 +483,8 @@ export async function handleOpenAIGatewayRequest(
           currentPreflight.sameAccountRetryBudget,
           dispatchCutoverReservation,
           precheckHalfOpenEligible === true,
-          currentPreflight.serverRetryBudget
+          currentPreflight.serverRetryBudget,
+          gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy)
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
@@ -634,7 +638,8 @@ export async function handleOpenAIGatewayRequest(
             markFirstOutput,
             clientIpAccountAvoidanceTracker,
             accountStateMutationEnabled: options.disableAccountStateMutation !== true,
-            codexTurnAccountAvoidanceApplied
+            codexTurnAccountAvoidanceApplied,
+            downstreamCommitState: currentPreflight.downstreamCommitState
           })
         } else {
           try {
@@ -659,7 +664,8 @@ export async function handleOpenAIGatewayRequest(
               clientStrategy,
               markFirstOutput,
               clientIpAccountAvoidanceTracker,
-              accountStateMutationEnabled: options.disableAccountStateMutation !== true
+              accountStateMutationEnabled: options.disableAccountStateMutation !== true,
+              downstreamCommitState: currentPreflight.downstreamCommitState
             })
           } catch (error) {
             if (res.headersSent || res.writableEnded || res.destroyed) {
@@ -1043,7 +1049,8 @@ export async function handleOpenAIGatewayRequest(
           signal: requestExecutionSignal,
           result: handledResponse,
           clientIpAccountAvoidanceTracker,
-          accountStateMutationEnabled: options.disableAccountStateMutation !== true
+          accountStateMutationEnabled: options.disableAccountStateMutation !== true,
+          downstreamCommitState: currentPreflight.downstreamCommitState
         })
         await confirmHalfOpenSuccess()
         await confirmSameAccountApiKeyFailures()
@@ -1265,7 +1272,7 @@ function shouldSendDispatchExhaustedProtocolRetry(
   return error instanceof UpstreamAttemptError
     && !error.agentGuidanceResponse
     && preflight.clientStrategy.retryCoordination.preCommitFailureSignal === 'protocol_error_event'
-    && !res.headersSent
+    && !preflight.downstreamCommitState.semanticCommitted
     && !res.writableEnded
     && !res.destroyed
 }

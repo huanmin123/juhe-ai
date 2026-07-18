@@ -146,7 +146,8 @@ export async function fetchFirstAvailableUpstream(
   sameAccountRetryBudget?: SameAccountRetryBudget,
   preAcquiredConcurrency?: SpeedFirstCutoverReservation,
   allowPrecheckHalfOpen = false,
-  serverRetryBudget = new ServerRetryBudget(settings.noAvailableAccountWaitTimeoutSeconds * 1000)
+  serverRetryBudget = new ServerRetryBudget(settings.noAvailableAccountWaitTimeoutSeconds * 1000),
+  interpretUpstreamResponseSemantics = false
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -248,20 +249,18 @@ export async function fetchFirstAvailableUpstream(
         }
       } else {
         try {
-          serverRetryBudget.beginNoAvailableWait()
           concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
             concurrencyAccountId,
             originalAccount.concurrencyLimit,
-            Math.min(concurrencyRetryWaitBudgetMs, serverRetryBudget.remainingMs()),
+            concurrencyRetryWaitBudgetMs,
             signal,
             requestLane,
-            groupSchedulingPolicy
+            groupSchedulingPolicy,
+            serverRetryBudget
           )
         } catch (error) {
           await releaseHalfOpenLease(halfOpenLease)
           throw error
-        } finally {
-          serverRetryBudget.pauseNoAvailableWait()
         }
       }
       concurrencyRetryWaitBudgetMs = concurrencyAcquire.remainingWaitBudgetMs
@@ -442,7 +441,7 @@ export async function fetchFirstAvailableUpstream(
                   upstreamUrl,
                   status: response.status
                 }
-                if (response.ok) {
+                if (!interpretUpstreamResponseSemantics || response.ok) {
                   await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
                     systemAccountId: usageContext.systemAccountId,
                     apiKeyId: usageContext.apiKeyId,
@@ -795,21 +794,30 @@ async function acquireAccountConcurrencyWithShortRetry(
   waitBudgetMs: number,
   signal: AbortSignal | undefined,
   requestLane: OpenAIGatewayRequestLane,
-  groupSchedulingPolicy?: GroupSchedulingPolicy
+  groupSchedulingPolicy?: GroupSchedulingPolicy,
+  serverRetryBudget?: ServerRetryBudget
 ): Promise<AccountConcurrencyAcquireResult> {
   let remainingWaitBudgetMs = Math.max(0, Math.trunc(waitBudgetMs))
   const acquireOptions = accountConcurrencyLaneAcquireOptions(concurrencyLimit, requestLane, groupSchedulingPolicy)
   let slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
   let waitedMs = 0
   let retryCount = 0
-  while (!slot.acquired && remainingWaitBudgetMs > 0) {
-    const delayMs = Math.min(retryDelayMs(accountConcurrencyRetryPolicy, retryCount + 1), remainingWaitBudgetMs)
-    const currentDelayMs = Math.min(delayMs, remainingWaitBudgetMs)
-    await waitForAccountConcurrencyRetry(currentDelayMs, signal)
-    waitedMs += currentDelayMs
-    remainingWaitBudgetMs -= currentDelayMs
-    retryCount += 1
-    slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
+  if (!slot.acquired && remainingWaitBudgetMs > 0) {
+    serverRetryBudget?.beginNoAvailableWait()
+    try {
+      remainingWaitBudgetMs = Math.min(remainingWaitBudgetMs, serverRetryBudget?.remainingMs() ?? remainingWaitBudgetMs)
+      while (!slot.acquired && remainingWaitBudgetMs > 0) {
+        const delayMs = Math.min(retryDelayMs(accountConcurrencyRetryPolicy, retryCount + 1), remainingWaitBudgetMs)
+        const currentDelayMs = Math.min(delayMs, remainingWaitBudgetMs)
+        await waitForAccountConcurrencyRetry(currentDelayMs, signal)
+        waitedMs += currentDelayMs
+        remainingWaitBudgetMs -= currentDelayMs
+        retryCount += 1
+        slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
+      }
+    } finally {
+      serverRetryBudget?.pauseNoAvailableWait()
+    }
   }
   return {
     slot,

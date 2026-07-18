@@ -115,7 +115,8 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       input.sameAccountRetryBudget,
       undefined,
       false,
-      input.serverRetryBudget
+      input.serverRetryBudget,
+      true
     )
     const readResult = await readUpstreamBodyLimited(upstreamResult.response.body, {
       maxBytes: 1024 * 1024,

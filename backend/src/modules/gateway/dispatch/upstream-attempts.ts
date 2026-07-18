@@ -122,6 +122,7 @@ export async function performUpstreamRequestAttempt(
   const codexBridgeState = getCodexResponsesContextState(req)
   const codexBridgeCompletionHandler = codexResponsesChatBridgeCompletionHandlerForRequest(req, account)
   return transformGatewayUpstreamResponseForAccount(req, account, response, {
+    signal,
     requestClientCompatibility,
     continueUpstreamJsonRequest,
     codexResponsesChatBridgePreviousResponseId: codexBridgeCompletionHandler ? codexBridgeState?.previousResponseId : undefined,

@@ -1,5 +1,10 @@
 export type GatewayAccountAvailability = 'dispatchable_now' | 'recoverable_later' | 'hard_exhausted'
 
+export interface ServerRetryBudgetWaitObserver {
+  onWaitStarted?: () => void
+  onWaitPaused?: () => void
+}
+
 export function shouldHandoffClient(input: {
   availability: GatewayAccountAvailability
   noAvailableElapsedMs: number
@@ -13,6 +18,7 @@ export function shouldHandoffClient(input: {
 export class ServerRetryBudget {
   private accumulatedWaitMs = 0
   private waitingSinceMs: number | undefined
+  private waitObserver: ServerRetryBudgetWaitObserver | undefined
 
   constructor(readonly waitBudgetMs: number) {
     this.waitBudgetMs = Math.max(1, normalizedMs(waitBudgetMs))
@@ -21,6 +27,7 @@ export class ServerRetryBudget {
   beginNoAvailableWait(nowMs = Date.now()): void {
     if (this.waitingSinceMs !== undefined) return
     this.waitingSinceMs = normalizedTimestamp(nowMs)
+    this.waitObserver?.onWaitStarted?.()
   }
 
   pauseNoAvailableWait(nowMs = Date.now()): void {
@@ -31,6 +38,18 @@ export class ServerRetryBudget {
       this.accumulatedWaitMs + Math.max(0, now - this.waitingSinceMs)
     )
     this.waitingSinceMs = undefined
+    this.waitObserver?.onWaitPaused?.()
+  }
+
+  setWaitObserver(observer: ServerRetryBudgetWaitObserver | undefined): void {
+    if (this.waitObserver === observer) return
+    if (this.waitingSinceMs !== undefined) {
+      this.waitObserver?.onWaitPaused?.()
+    }
+    this.waitObserver = observer
+    if (this.waitingSinceMs !== undefined) {
+      this.waitObserver?.onWaitStarted?.()
+    }
   }
 
   elapsedMs(nowMs = Date.now()): number {
