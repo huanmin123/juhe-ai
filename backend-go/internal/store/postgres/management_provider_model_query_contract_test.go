@@ -7,6 +7,26 @@ import (
 	"testing"
 )
 
+func TestManagementProviderModelCatalogUsesPostgresBooleanVisibility(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
+	if err != nil {
+		t.Fatalf("read provider model query: %v", err)
+	}
+	sql := string(source)
+	if !regexp.MustCompile(`(?i)catalog_visible\s*=\s*true`).MatchString(sql) {
+		t.Fatal("built-in provider model catalog must filter catalog_visible with PostgreSQL boolean true")
+	}
+	integerVisibility := regexp.MustCompile(`(?i)catalog_visible\s*=\s*(?:'1'|1\b)`)
+	for _, invalidSQL := range []string{"catalog_visible = 1\n", "catalog_visible = '1'\n"} {
+		if !integerVisibility.MatchString(invalidSQL) {
+			t.Fatalf("integer visibility guard does not reject %q", strings.TrimSpace(invalidSQL))
+		}
+	}
+	if integerVisibility.MatchString(sql) {
+		t.Fatal("built-in provider model catalog must not compare PostgreSQL boolean catalog_visible with integer 1")
+	}
+}
+
 func TestManagementProviderModelQueryLocksFullConfigurationBeforeFullUpdate(t *testing.T) {
 	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
 	if err != nil {
