@@ -101,6 +101,36 @@ func TestManagementSystemTeamReadSQLScopeIsNarrow(t *testing.T) {
 	}
 }
 
+func TestManagementSystemTeamWritesBuildReturnedStateBeforeCommit(t *testing.T) {
+	source, err := os.ReadFile("managementsystemteams.go")
+	if err != nil {
+		t.Fatalf("read management system teams store: %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		marker string
+	}{
+		{name: "Update", marker: "func (s *Store) UpdateManagementSystemTeam("},
+		{name: "AddMembers", marker: "func (s *Store) AddManagementSystemTeamMembers("},
+		{name: "RemoveMember", marker: "func (s *Store) RemoveManagementSystemTeamMember("},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := goFunctionBlock(t, string(source), test.marker)
+			commit := strings.Index(body, "tx.Commit(ctx)")
+			if commit < 0 {
+				t.Fatal("write method does not commit its transaction")
+			}
+			if strings.Contains(body[commit:], "FindManagementSystemTeam(") {
+				t.Fatal("write method queries returned state after commit; a read failure would report an error after the write was committed")
+			}
+			if !strings.Contains(body[:commit], "managementSystemTeamDetailTx(") {
+				t.Fatal("write method does not build returned team detail inside the transaction before commit")
+			}
+		})
+	}
+}
+
 func sqlBlock(t *testing.T, sql string, marker string) string {
 	t.Helper()
 	start := strings.Index(sql, marker)
@@ -112,4 +142,17 @@ func sqlBlock(t *testing.T, sql string, marker string) string {
 		return sql[start:]
 	}
 	return sql[start : start+len(marker)+next]
+}
+
+func goFunctionBlock(t *testing.T, source string, marker string) string {
+	t.Helper()
+	start := strings.Index(source, marker)
+	if start < 0 {
+		t.Fatalf("missing Go function marker %q", marker)
+	}
+	next := strings.Index(source[start+len(marker):], "\nfunc ")
+	if next < 0 {
+		return source[start:]
+	}
+	return source[start : start+len(marker)+next]
 }

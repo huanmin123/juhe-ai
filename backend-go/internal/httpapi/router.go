@@ -184,7 +184,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 	mutationGuards := newMutationGuardStore()
 
 	health := NewHealthHandler(opts.Config, opts.Logger)
+	readiness := NewReadinessHandler(opts.Config, opts.Logger)
 	r.Get("/__aisys__/health", health.ServeHTTP)
+	r.Get("/__aisys__/readyz", readiness.ServeHTTP)
 	r.Route("/__aisys__/api", func(system chi.Router) {
 		system.Use(noStoreMiddleware)
 		if opts.SystemAPIRateLimitReader != nil {
@@ -198,6 +200,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 			))
 		}
 		system.Get("/health", health.ServeHTTP)
+		system.Get("/readyz", readiness.ServeHTTP)
 		if opts.PublicSettingsService != nil {
 			publicSettingsHandler := NewPublicSettingsHandler(*opts.PublicSettingsService, opts.Logger)
 			system.Get("/settings/public", publicSettingsHandler.ServeHTTP)

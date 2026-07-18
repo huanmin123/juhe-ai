@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -341,10 +342,12 @@ func TestServiceAccountOptionsMapsAuthorizedReturnPermission(t *testing.T) {
 func TestServiceCreatePersonalNormalizesDefaultsAndReturnsZeroSummary(t *testing.T) {
 	now := time.Date(2026, 7, 10, 20, 30, 0, 0, time.FixedZone("CST", 8*60*60))
 	store := &groupOptionStoreStub{}
+	publisher := &groupPageDataPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
-		Store: store,
-		Now:   func() time.Time { return now },
-		NewID: func(prefix string) string { return prefix + "_fixed" },
+		Store:             store,
+		PageDataPublisher: publisher,
+		Now:               func() time.Time { return now },
+		NewID:             func(prefix string) string { return prefix + "_fixed" },
 	})
 	description := "   "
 	validPersonalPolicy := 10
@@ -404,6 +407,7 @@ func TestServiceCreatePersonalNormalizesDefaultsAndReturnsZeroSummary(t *testing
 	if strings.Contains(string(encoded), "systemAccountId") || strings.Contains(string(encoded), "schedulingPolicy") {
 		t.Fatalf("personal result json = %s, want omitted scoped fields", encoded)
 	}
+	assertGroupPageDataResets(t, publisher)
 }
 
 func TestServiceCreateHighConcurrencyWritesStableCompletePolicy(t *testing.T) {
@@ -656,11 +660,13 @@ func TestServiceCreateMapsStoreErrorsForHTTP(t *testing.T) {
 func TestServiceCreateInvalidatesDetachedAndIgnoresFailure(t *testing.T) {
 	store := &groupOptionStoreStub{}
 	invalidator := &groupRuntimeInvalidatorStub{err: errors.New("redis unavailable")}
+	publisher := &groupPageDataPublisherStub{err: errors.New("page data unavailable")}
 	var logs bytes.Buffer
 	service := NewServiceWithOptions(ServiceOptions{
-		Store:       store,
-		Invalidator: invalidator,
-		Logger:      slog.New(slog.NewJSONHandler(&logs, nil)),
+		Store:             store,
+		Invalidator:       invalidator,
+		PageDataPublisher: publisher,
+		Logger:            slog.New(slog.NewJSONHandler(&logs, nil)),
 	})
 	requestCtx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -680,13 +686,18 @@ func TestServiceCreateInvalidatesDetachedAndIgnoresFailure(t *testing.T) {
 	if !strings.Contains(logs.String(), "management_group_gateway_runtime_invalidation_failed") {
 		t.Fatalf("logs = %s", logs.String())
 	}
+	assertGroupPageDataResets(t, publisher)
+	if strings.Count(logs.String(), "management_group_page_data_reset_failed") != 2 {
+		t.Fatalf("page data failure logs = %s", logs.String())
+	}
 }
 
 func TestServiceCreateStoreFailureSkipsInvalidation(t *testing.T) {
 	wantErr := errors.New("postgres unavailable")
 	store := &groupOptionStoreStub{createErr: wantErr}
 	invalidator := &groupRuntimeInvalidatorStub{}
-	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+	publisher := &groupPageDataPublisherStub{}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, PageDataPublisher: publisher})
 
 	_, err := service.Create(context.Background(), validCreateInput())
 	if !errors.Is(err, wantErr) {
@@ -694,6 +705,46 @@ func TestServiceCreateStoreFailureSkipsInvalidation(t *testing.T) {
 	}
 	if invalidator.calls != 0 {
 		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+	if len(publisher.domains) != 0 {
+		t.Fatalf("page data domains = %#v, want none", publisher.domains)
+	}
+}
+
+type groupPageDataPublisherStub struct {
+	domains      []string
+	owners       [][]string
+	allScopes    []bool
+	contextErr   []error
+	hasDeadlines []bool
+	err          error
+}
+
+func (s *groupPageDataPublisherStub) PublishPageDataReset(
+	ctx context.Context,
+	domain string,
+	owners []string,
+	allScopes bool,
+) error {
+	s.domains = append(s.domains, domain)
+	s.owners = append(s.owners, append([]string(nil), owners...))
+	s.allScopes = append(s.allScopes, allScopes)
+	s.contextErr = append(s.contextErr, ctx.Err())
+	_, hasDeadline := ctx.Deadline()
+	s.hasDeadlines = append(s.hasDeadlines, hasDeadline)
+	return s.err
+}
+
+func assertGroupPageDataResets(t *testing.T, publisher *groupPageDataPublisherStub) {
+	t.Helper()
+	wantDomains := []string{"groups.static", "routeStrategies.options"}
+	if !reflect.DeepEqual(publisher.domains, wantDomains) {
+		t.Fatalf("page data domains = %#v, want %#v", publisher.domains, wantDomains)
+	}
+	for index := range wantDomains {
+		if len(publisher.owners[index]) != 0 || !publisher.allScopes[index] || publisher.contextErr[index] != nil || !publisher.hasDeadlines[index] {
+			t.Fatalf("page data call %d owners=%#v allScopes=%v contextErr=%v deadline=%v", index, publisher.owners[index], publisher.allScopes[index], publisher.contextErr[index], publisher.hasDeadlines[index])
+		}
 	}
 }
 

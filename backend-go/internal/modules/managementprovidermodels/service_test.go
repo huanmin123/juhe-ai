@@ -2154,12 +2154,15 @@ type providerModelStoreStub struct {
 	customFindCalls        int
 	customUpdateInput      port.ManagementCustomProviderModelUpdateInput
 	customUpdateResult     port.ManagementCustomProviderModelUpdateResult
+	customUpdateErr        error
 	customUpdateCalls      int
 	saveInput              port.ManagementCustomProviderModelSaveInput
 	saveCalls              int
 	saveResult             port.ManagementProviderModelCatalogItem
+	saveErr                error
 	deleteID               string
 	deleteResult           bool
+	deleteErr              error
 	bindingInput           port.ManagementCustomProviderModelBindingInput
 	bindingSummary         port.ManagementCustomProviderModelBindingSummary
 	clearInput             port.ManagementProviderDefaultHealthCheckModelClearInput
@@ -2363,6 +2366,9 @@ func (s *providerModelStoreStub) FindManagementCustomProviderModelByScope(_ cont
 func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Context, input port.ManagementCustomProviderModelSaveInput) (port.ManagementProviderModelCatalogItem, error) {
 	s.saveCalls++
 	s.saveInput = input
+	if s.saveErr != nil {
+		return port.ManagementProviderModelCatalogItem{}, s.saveErr
+	}
 	if s.saveResult.ID != "" {
 		return s.saveResult, nil
 	}
@@ -2406,6 +2412,9 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 func (s *providerModelStoreStub) UpdateManagementCustomProviderModel(_ context.Context, input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
 	s.customUpdateCalls++
 	s.customUpdateInput = input
+	if s.customUpdateErr != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, s.customUpdateErr
+	}
 	result := s.customUpdateResult
 	if result.Before.ID == "" {
 		before, found := s.customByID[input.ID]
@@ -2454,7 +2463,7 @@ func applyCustomProviderModelUpdateStub(item *port.ManagementProviderModelCatalo
 
 func (s *providerModelStoreStub) DeleteManagementCustomProviderModel(_ context.Context, id string) (bool, error) {
 	s.deleteID = id
-	return s.deleteResult, nil
+	return s.deleteResult, s.deleteErr
 }
 
 func (s *providerModelStoreStub) GetManagementCustomProviderModelBindingSummary(_ context.Context, input port.ManagementCustomProviderModelBindingInput) (port.ManagementCustomProviderModelBindingSummary, error) {

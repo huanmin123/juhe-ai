@@ -9,15 +9,15 @@ import (
 )
 
 func TestNewManagementAPIHandlerExternalIntegrationSourceTokenUpdateOptIn(t *testing.T) {
-	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalSourceTokenUpdateHandler != nil {
 		t.Fatal("token update handler created while management API disabled")
 	}
-	sessionOnly := newManagementAPIHandler(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
+	sessionOnly := newManagementAPIHandlerWithPageData(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if sessionOnly.ExternalSourceTokenUpdateHandler != nil {
 		t.Fatal("token update handler created for session-only mode")
 	}
-	enabled := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
+	enabled := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if enabled.ExternalSourceTokenUpdateHandler == nil {
 		t.Fatal("token update handler missing while management API enabled")
 	}

@@ -218,7 +218,7 @@ func (s *CreateService) createOnce(
 			Token:       token,
 			TokenPrefix: tokenSummary.TokenPrefix,
 			TokenSuffix: tokenSummary.TokenSuffix,
-			Scopes:      append([]string(nil), tokenSummary.Scopes...),
+			Scopes:      append([]string{}, tokenSummary.Scopes...),
 			ExpiresAt:   tokenSummary.ExpiresAt,
 		},
 	}, nil
