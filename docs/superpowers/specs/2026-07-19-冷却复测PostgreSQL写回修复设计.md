@@ -95,7 +95,7 @@ interface CooldownRetestExpectationClause {
 ### 集成验证
 
 - `pnpm --filter juhe-ai-backend test:cooldown-retest-recovery`
-- `pnpm --filter juhe-ai-backend test:cooldown-retest-postgres-smoke`
+- 设置显式 opt-in `JUHE_AI_ALLOW_COOLDOWN_RETEST_POSTGRES_SMOKE=1` 后运行 `pnpm --filter juhe-ai-backend test:cooldown-retest-postgres-smoke`
 - `pnpm --filter juhe-ai-backend test:account-probe-postgres-smoke`（完整测试库 fixture 可用时）
 - `pnpm --filter juhe-ai-backend test:database-client`
 - `pnpm --filter juhe-ai-backend typecheck`

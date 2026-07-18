@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { notifyGatewayRuntimeCacheInvalidationAsync } from '../../shared/gateway-cache-invalidation.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import { encryptJson } from '../../storage/crypto.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
@@ -10,9 +11,15 @@ import {
 } from '../../storage/repositories.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '冷却复测 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
+assert.equal(
+  process.env.JUHE_AI_ALLOW_COOLDOWN_RETEST_POSTGRES_SMOKE,
+  '1',
+  '冷却复测 PG smoke 会写测试 fixture，必须显式设置 JUHE_AI_ALLOW_COOLDOWN_RETEST_POSTGRES_SMOKE=1'
+)
 
 const marker = `cooldown_retest_pg_smoke_${Date.now()}_${Math.random().toString(16).slice(2)}`
 const accountId = `acc_${marker}`
+let fixtureCreated = false
 
 try {
   const pool = await getPostgresPool()
@@ -51,6 +58,7 @@ try {
     observationStartedAt,
     now
   ])
+  fixtureCreated = true
 
   const currentFailure = await recordCooldownAccountRetestFailureAsync(accountId, {
     statusCode: 403,
@@ -128,18 +136,25 @@ try {
   })
   assert.equal(unguardedFailure.changed, true, 'PG 未提供期望值时应保持既有可选保护语义')
 
+  const successWithoutObservation = await recordCooldownAccountRetestSuccessAsync(accountId, {
+    expectedConfigRevision: 1
+  })
+  assert.equal(successWithoutObservation.changed, true, 'PG 未提供观察窗口时的成功仍应按配置版本恢复账户')
+
   console.log(JSON.stringify({
     message: '冷却复测 PostgreSQL 写回 smoke 通过',
     currentFailure: true,
     currentSuccess: true,
     staleConfigGuard: true,
     staleObservationGuard: true,
-    optionalGuard: true
+    optionalFailureGuard: true,
+    optionalSuccessObservation: true
   }))
 } finally {
-  const pool = await getPostgresPool().catch(() => undefined)
-  if (pool) {
-    await pool.query('DELETE FROM juhe_business.accounts WHERE id = $1', [accountId]).catch(() => undefined)
+  await notifyGatewayRuntimeCacheInvalidationAsync('cooldown_retest_postgres_smoke_cleanup').catch(() => undefined)
+  if (fixtureCreated) {
+    const pool = await getPostgresPool()
+    await pool.query('DELETE FROM juhe_business.accounts WHERE id = $1', [accountId])
   }
   await closeRedisClients()
   await closePostgresPool()
