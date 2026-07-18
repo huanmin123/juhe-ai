@@ -53,7 +53,7 @@ func TestCreateServiceAppliesDefaultsAndReturnsOneTimeToken(t *testing.T) {
 	}
 	if result.Token.Token != plainToken || result.Token.ID != input.TokenID ||
 		result.Token.Name != input.TokenName || result.Token.TokenPrefix != input.TokenPrefix ||
-		result.Token.TokenSuffix != input.TokenSuffix || len(result.Token.Scopes) != 0 || result.Token.ExpiresAt != nil {
+		result.Token.TokenSuffix != input.TokenSuffix || result.Token.Scopes == nil || len(result.Token.Scopes) != 0 || result.Token.ExpiresAt != nil {
 		t.Fatalf("created token result = %#v", result.Token)
 	}
 	if result.Source.ID != input.SourceID || result.Source.Name != "新来源" ||
