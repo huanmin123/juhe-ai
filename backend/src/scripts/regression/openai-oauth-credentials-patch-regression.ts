@@ -1,9 +1,13 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   buildReauthorizedOpenAIOAuthCredentials,
   buildSafeOpenAIOAuthCredentials
 } from '../../modules/openai-oauth/openai-oauth.routes.js'
+
+const oauthRoutesSource = readFileSync(new URL('../../modules/openai-oauth/openai-oauth.routes.ts', import.meta.url), 'utf8')
+assert.match(oauthRoutesSource, /service_tier_override: z\.enum\(\['default', 'priority', 'flex'\]\)/, 'OAuth 创建接口 schema 必须接受 Flex 覆盖')
 
 const legacyErrorHandlingRules = [{
   enabled: true,
@@ -27,7 +31,7 @@ const accountResponseInspectionRules = [{
 
 const maliciousPatch = {
   supported_endpoint_modes: ['responses_json', 'responses_sse'],
-  service_tier_override: 'priority',
+  service_tier_override: 'flex',
   reasoning_effort_override: 'high',
   error_handling_rules: legacyErrorHandlingRules,
   response_inspection_rules: accountResponseInspectionRules,
@@ -53,7 +57,7 @@ assert.equal(tokenCredentials.expires_at, '2026-01-01T00:00:00.000Z', 'credentia
 assert.equal(tokenCredentials.client_id, 'server-client', 'credentialsPatch 不能覆盖 OAuth client_id')
 assert.equal(tokenCredentials.base_url, 'https://api.openai.com/v1', 'credentialsPatch 不能覆盖 OpenAI base_url')
 assert.deepEqual(tokenCredentials.supported_endpoint_modes, ['responses_json', 'responses_sse'], 'credentialsPatch 应保留 OAuth 上游接口能力')
-assert.equal(tokenCredentials.service_tier_override, 'priority', 'credentialsPatch 应保留 OAuth 服务等级覆盖')
+assert.equal(tokenCredentials.service_tier_override, 'flex', 'credentialsPatch 应按模型能力规则保留 OAuth Flex 服务等级覆盖')
 assert.equal(tokenCredentials.reasoning_effort_override, 'high', 'credentialsPatch 应保留 OAuth 思考级别覆盖')
 assert.deepEqual(tokenCredentials.error_handling_rules, legacyErrorHandlingRules, 'credentialsPatch 应保留账户级错误处理规则')
 assert.deepEqual(tokenCredentials.response_inspection_rules, accountResponseInspectionRules, 'credentialsPatch 应保留账户级响应检查规则')
@@ -75,7 +79,7 @@ const reauthorizedCredentials = buildReauthorizedOpenAIOAuthCredentials(tokenCre
   clientId: 'reauthorized-client'
 })
 assert.equal(reauthorizedCredentials.access_token, 'reauthorized-access', '重新授权必须替换服务端 token')
-assert.equal(reauthorizedCredentials.service_tier_override, 'priority', '重新授权必须保留服务等级覆盖')
+assert.equal(reauthorizedCredentials.service_tier_override, 'flex', '重新授权必须保留 Flex 服务等级覆盖')
 assert.equal(reauthorizedCredentials.reasoning_effort_override, 'high', '重新授权必须保留思考级别覆盖')
 assert.deepEqual(reauthorizedCredentials.error_handling_rules, legacyErrorHandlingRules, '重新授权必须保留账户错误策略')
 

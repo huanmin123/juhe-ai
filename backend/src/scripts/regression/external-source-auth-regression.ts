@@ -603,7 +603,7 @@ async function assertPublicAccountCrud(
     accountId,
     apiKey: 'sk-public-account-regression-sync-rejected',
     supportedModels: ['gpt-image-2']
-  }), /账户全部支持模型必须共同支持/, '同步公开更新必须拒绝不支持现有 GPT 覆盖的模型')
+  }), /所选支持模型中没有模型支持服务等级/, '同步公开更新必须拒绝不支持现有 GPT 覆盖的模型')
   const afterSyncRejection = dependencies.repositories.findAccountSummary(accountId, access)
   assert(afterSyncRejection, '同步公开更新拒绝后账户应仍存在')
   assert.deepEqual(publicAccountMutationSnapshot(afterSyncRejection), stableSnapshot, '同步校验失败后账户 models/credentials 必须原子不变')
@@ -616,7 +616,7 @@ async function assertPublicAccountCrud(
     supportedModels: ['gpt-public-catalog-missing']
   })
   assert.equal(missingCatalogUpdate.status, 400, `异步公开更新目录缺失模型应被拒绝：${JSON.stringify(missingCatalogUpdate.body)}`)
-  assert.match(missingCatalogUpdate.body.message, /模型目录缺少账户支持模型.*gpt-public-catalog-missing/)
+  assert.match(missingCatalogUpdate.body.message, /所选支持模型中没有模型支持服务等级/)
   const afterAsyncRejection = dependencies.repositories.findAccountSummary(accountId, access)
   assert(afterAsyncRejection, '异步公开更新拒绝后账户应仍存在')
   assert.deepEqual(publicAccountMutationSnapshot(afterAsyncRejection), stableSnapshot, '异步校验失败后账户 models/credentials 必须原子不变')

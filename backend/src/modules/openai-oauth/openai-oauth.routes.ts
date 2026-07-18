@@ -31,7 +31,7 @@ export const openAIOAuthRouter = Router()
 const authUrlSchema = z.object({}).strict()
 const oauthCredentialsPatchSchema = z.object({
   supported_endpoint_modes: z.array(z.string().trim().min(1)).max(20).optional(),
-  service_tier_override: z.enum(['default', 'priority']).optional(),
+  service_tier_override: z.enum(['default', 'priority', 'flex']).optional(),
   reasoning_effort_override: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
   error_handling_rules: z.unknown().optional(),
   response_inspection_rules: z.unknown().optional()

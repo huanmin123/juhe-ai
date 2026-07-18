@@ -1,18 +1,26 @@
 <template>
-  <section v-if="serviceTierOptions.length || reasoningEffortOptions.length" class="form-section gpt-request-overrides-section">
+  <section v-if="requestOverridesSupported" class="form-section gpt-request-overrides-section">
     <h4>上游请求覆盖</h4>
     <div class="gpt-request-overrides-grid">
-      <a-form-item v-if="serviceTierOptions.length" label="服务等级">
+      <a-form-item
+        label="服务等级"
+        :help="serviceTierHelp"
+        :validate-status="serviceTierUnavailable ? 'warning' : undefined"
+      >
         <a-select
           v-model:value="serviceTierValue"
-          :disabled="readonly || serviceTierOptions.length <= 1"
+          :disabled="readonly || modelsLoading || (!capabilities.serviceTiers.length && !form.serviceTierOverride)"
           :options="serviceTierOptions"
         />
       </a-form-item>
-      <a-form-item v-if="reasoningEffortOptions.length" label="思考级别">
+      <a-form-item
+        label="思考级别"
+        :help="reasoningEffortHelp"
+        :validate-status="reasoningEffortUnavailable ? 'warning' : undefined"
+      >
         <a-select
           v-model:value="reasoningEffortValue"
-          :disabled="readonly || reasoningEffortOptions.length <= 1"
+          :disabled="readonly || modelsLoading || (!capabilities.reasoningEfforts.length && !form.reasoningEffortOverride)"
           :options="reasoningEffortOptions"
         />
       </a-form-item>
@@ -21,9 +29,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 
-import { message } from '@/lib/antd'
 import type {
   AccountGptReasoningEffortOverride,
   AccountGptServiceTierOverride
@@ -34,6 +41,7 @@ import {
   accountGptRequestOverrideCapabilities,
   availableAccountGptReasoningEffortOptions,
   availableAccountGptServiceTierOptions,
+  isAccountRequestOverrideProviderSupported,
   isAccountGptReasoningEffortOverrideAvailable,
   isAccountGptServiceTierOverrideAvailable
 } from './accountGptRequestOverrides'
@@ -54,53 +62,35 @@ const capabilities = computed(() => accountGptRequestOverrideCapabilities({
   modelOptions: props.modelOptions,
   supportedModels: props.form.supportedModels
 }))
-const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(capabilities.value))
-const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(capabilities.value))
+const requestOverridesSupported = computed(() => isAccountRequestOverrideProviderSupported(props.form.providerCode))
+const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(capabilities.value, props.form.serviceTierOverride))
+const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(capabilities.value, props.form.reasoningEffortOverride))
+const serviceTierUnavailable = computed(() => !isAccountGptServiceTierOverrideAvailable(props.form.serviceTierOverride, capabilities.value))
+const reasoningEffortUnavailable = computed(() => !isAccountGptReasoningEffortOverrideAvailable(props.form.reasoningEffortOverride, capabilities.value))
+const serviceTierHelp = computed(() => {
+  if (serviceTierUnavailable.value) return '当前服务等级配置不受已选模型支持，请清除或重新选择'
+  if (!props.modelsLoading && !capabilities.value.serviceTiers.length) return '当前已选模型未声明可用服务等级'
+  return undefined
+})
+const reasoningEffortHelp = computed(() => {
+  if (reasoningEffortUnavailable.value) return '当前思考级别配置不受已选模型支持，请清除或重新选择'
+  if (!props.modelsLoading && !capabilities.value.reasoningEfforts.length) return '当前已选模型未声明可用思考级别'
+  return undefined
+})
 
 const serviceTierValue = computed<AccountGptServiceTierOverride>({
-  get: () => isAccountGptServiceTierOverrideAvailable(props.form.serviceTierOverride, capabilities.value)
-    ? props.form.serviceTierOverride
-    : '',
+  get: () => props.form.serviceTierOverride,
   set: (value) => {
     props.form.serviceTierOverride = value
   }
 })
 
 const reasoningEffortValue = computed<AccountGptReasoningEffortOverride>({
-  get: () => isAccountGptReasoningEffortOverrideAvailable(props.form.reasoningEffortOverride, capabilities.value)
-    ? props.form.reasoningEffortOverride
-    : '',
+  get: () => props.form.reasoningEffortOverride,
   set: (value) => {
     props.form.reasoningEffortOverride = value
   }
 })
-
-watch(
-  [
-    () => props.modelsLoading,
-    () => props.form.providerCode,
-    () => props.form.type,
-    () => props.form.supportedModels.join('\n'),
-    () => capabilities.value.serviceTiers.join('\n'),
-    () => capabilities.value.reasoningEfforts.join('\n')
-  ],
-  () => {
-    if (props.readonly || props.modelsLoading) return
-    const cleared: string[] = []
-    if (!isAccountGptServiceTierOverrideAvailable(props.form.serviceTierOverride, capabilities.value)) {
-      props.form.serviceTierOverride = ''
-      cleared.push('服务等级')
-    }
-    if (!isAccountGptReasoningEffortOverrideAvailable(props.form.reasoningEffortOverride, capabilities.value)) {
-      props.form.reasoningEffortOverride = ''
-      cleared.push('思考级别')
-    }
-    if (cleared.length) {
-      message.warning(`账户支持模型目录中已无模型支持${cleared.join('和')}，已清空对应覆盖`)
-    }
-  },
-  { immediate: true }
-)
 </script>
 
 <style scoped>
