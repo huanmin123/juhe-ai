@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -35,7 +35,8 @@ const [
   customProviderModelsRepository,
   providerModelCatalogRepository,
   gatewayCacheInvalidation,
-  inflightQuotaService
+  inflightQuotaService,
+  sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
@@ -47,10 +48,73 @@ const [
   import('../../storage/custom-provider-models.repository.js'),
   import('../../storage/provider-model-catalog.repository.js'),
   import('../../shared/gateway-cache-invalidation.js'),
-  import('../../modules/gateway/quota/api-key-inflight-quota.service.js')
+  import('../../modules/gateway/quota/api-key-inflight-quota.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
+const modelCatalogSource = readFileSync(resolve('src/modules/model-pricing/model-catalog.service.ts'), 'utf8')
+assert.match(modelCatalogSource, /await providerModelCatalogInvalidationInFlight[\s\S]{0,300}const cacheKey/, '模型目录读取必须等待正在进行的全局失效')
+assert.match(modelCatalogSource, /clearProviderModelCatalogCaches[\s\S]{0,1200}Promise\.allSettled\(pendingLoads\)[\s\S]{0,500}clearProviderModelCatalogSharedCacheAsync/, '模型目录失效必须等待旧 loader 和迟到 cache set 完成后再清理 shared cache')
+
 try {
+  databaseModule.getBusinessDatabase()
+  runtimeConfig.processRole = 'db-service'
+  assert.equal(sqliteReadWorkerPool.sqliteReadWorkerPoolEnabled(), true, '模型目录缓存回归必须真实启用 SQLite read worker')
+  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('model_catalog_cache_regression_start')
+  const sequentialHandledBefore = sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  await catalogService.listProviderModelCatalogAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_model_cache',
+    includeUnpriced: true
+  })
+  await catalogService.listProviderModelCatalogAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_model_cache',
+    includeUnpriced: true
+  })
+  assert.equal(
+    sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs - sequentialHandledBefore,
+    1,
+    'SQLite read worker 模式相同模型目录连续读取只能在首次 cache miss 时执行一次 worker job'
+  )
+
+  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('model_catalog_cache_regression_concurrent')
+  const concurrentHandledBefore = sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  await Promise.all([
+    catalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_model_cache', includeUnpriced: true }),
+    catalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_model_cache', includeUnpriced: true })
+  ])
+  assert.equal(
+    sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs - concurrentHandledBefore,
+    1,
+    'SQLite read worker 模式相同模型目录并发 miss 必须共享一个 loader'
+  )
+
+  const scopedHandledBefore = sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  await Promise.all([
+    catalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_model_cache_a', includeUnpriced: true }),
+    catalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_model_cache_b', includeUnpriced: true })
+  ])
+  assert.equal(
+    sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs - scopedHandledBefore,
+    2,
+    '不同系统账户 scope 的个人模型目录不能共享后端缓存'
+  )
+
+  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('model_catalog_cache_regression_invalidate')
+  const invalidatedHandledBefore = sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
+  await catalogService.listProviderModelCatalogAsync({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_model_cache',
+    includeUnpriced: true
+  })
+  assert.equal(
+    sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs - invalidatedHandledBefore,
+    1,
+    '模型目录失效后下一次读取必须重新执行一次 read worker job'
+  )
+  runtimeConfig.processRole = 'worker'
+
   assert.equal(
     providerModelCatalogId('gpt', 'gpt-5.6-sol'),
     'provider_model_gpt_gpt_5_6_sol_69ec47b65152',
@@ -967,6 +1031,7 @@ try {
 
   console.log('model catalog regression passed')
 } finally {
+  await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   try {
     databaseModule.closeStorageDatabases()
   } catch {

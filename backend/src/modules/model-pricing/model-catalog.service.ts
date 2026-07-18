@@ -152,6 +152,10 @@ const providerModelCatalogSharedCache = createSharedJsonCache<ProviderModelCatal
   max: 1000,
   ttlMs: modelCatalogCacheTtlMs
 })
+const pendingProviderModelCatalogLoads = new Map<string, Promise<ProviderModelCatalogItem[]>>()
+let providerModelCatalogCacheGeneration = 0
+let providerModelCatalogInvalidationInFlight: Promise<void> = Promise.resolve()
+let providerModelCatalogSharedCacheUsable = true
 
 const postgresSyncOpenAIProtocolProviderCodes = [
   GPT_VENDOR_CODE,
@@ -180,12 +184,7 @@ export function listProviderModelCatalogReadOnly(options: ModelCatalogListOption
 }
 
 export async function listProviderModelCatalogAsync(options: ModelCatalogListOptions): Promise<ProviderModelCatalogItem[]> {
-  if (sqliteReadWorkerPoolEnabled()) {
-    return requestSqliteReadWorker({
-      type: 'list_provider_model_catalog_read_only',
-      options
-    })
-  }
+  await providerModelCatalogInvalidationInFlight
   const cacheKey = modelCatalogCacheKey(options)
   if (runtimeConfig.cacheDriver !== 'redis') {
     const cached = providerModelCatalogCache.get(cacheKey)
@@ -193,14 +192,37 @@ export async function listProviderModelCatalogAsync(options: ModelCatalogListOpt
       return cloneProviderModelCatalogItems(cached)
     }
   }
-  const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
-  if (sharedCached) {
-    providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(sharedCached))
-    return cloneProviderModelCatalogItems(sharedCached)
+  const pending = pendingProviderModelCatalogLoads.get(cacheKey)
+  if (pending) return cloneProviderModelCatalogItems(await pending)
+
+  const generation = providerModelCatalogCacheGeneration
+  const load = (async () => {
+    const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
+    if (sharedCached) {
+      if (generation === providerModelCatalogCacheGeneration) {
+        providerModelCatalogCache.set(cacheKey, cloneProviderModelCatalogItems(sharedCached))
+      }
+      return cloneProviderModelCatalogItems(sharedCached)
+    }
+    const catalog = sqliteReadWorkerPoolEnabled()
+      ? await requestSqliteReadWorker({
+          type: 'list_provider_model_catalog_read_only',
+          options
+        })
+      : await buildProviderModelCatalogAsync(options)
+    if (generation === providerModelCatalogCacheGeneration) {
+      await setProviderModelCatalogCacheEntryAsync(cacheKey, cloneProviderModelCatalogItems(catalog))
+    }
+    return cloneProviderModelCatalogItems(catalog)
+  })()
+  pendingProviderModelCatalogLoads.set(cacheKey, load)
+  try {
+    return cloneProviderModelCatalogItems(await load)
+  } finally {
+    if (pendingProviderModelCatalogLoads.get(cacheKey) === load) {
+      pendingProviderModelCatalogLoads.delete(cacheKey)
+    }
   }
-  const catalog = await buildProviderModelCatalogAsync(options)
-  await setProviderModelCatalogCacheEntryAsync(cacheKey, cloneProviderModelCatalogItems(catalog))
-  return cloneProviderModelCatalogItems(catalog)
 }
 
 function buildProviderModelCatalog(options: ModelCatalogListOptions): ProviderModelCatalogItem[] {
@@ -929,7 +951,7 @@ function sumCostParts(...parts: Array<number | undefined>): number | undefined {
 }
 
 async function getProviderModelCatalogSharedCacheEntry(cacheKey: string): Promise<ProviderModelCatalogItem[] | undefined> {
-  if (runtimeConfig.cacheDriver !== 'redis') return undefined
+  if (runtimeConfig.cacheDriver !== 'redis' || !providerModelCatalogSharedCacheUsable) return undefined
   const cached = await providerModelCatalogSharedCache.get(cacheKey)
   return cached ? cloneProviderModelCatalogItems(cached) : undefined
 }
@@ -943,6 +965,7 @@ async function setProviderModelCatalogCacheEntryAsync(cacheKey: string, value: P
 async function setProviderModelCatalogSharedCacheEntry(cacheKey: string, value: ProviderModelCatalogItem[]): Promise<void> {
   if (runtimeConfig.cacheDriver !== 'redis') return
   await providerModelCatalogSharedCache.set(cacheKey, cloneProviderModelCatalogItems(value), { ttlMs: modelCatalogCacheTtlMs })
+  providerModelCatalogSharedCacheUsable = true
 }
 
 async function clearProviderModelCatalogSharedCacheAsync(): Promise<void> {
@@ -951,16 +974,28 @@ async function clearProviderModelCatalogSharedCacheAsync(): Promise<void> {
 }
 
 async function clearProviderModelCatalogCaches(): Promise<void> {
+  providerModelCatalogCacheGeneration += 1
   providerModelCatalogCache.clear()
-  try {
-    await clearProviderModelCatalogSharedCacheAsync()
-  } catch (error) {
-    logger.warn(errorLogFields(error, {
-      event: 'provider_model_catalog_shared_cache_clear_failed',
-      cacheName: providerModelCatalogSharedCache.name
-    }), '供应商模型目录 Redis shared cache 清理失败')
-    throw error
-  }
+  const pendingLoads = [...pendingProviderModelCatalogLoads.values()]
+  const previous = providerModelCatalogInvalidationInFlight
+  const operation = (async () => {
+    await previous
+    await Promise.allSettled(pendingLoads)
+    providerModelCatalogCache.clear()
+    try {
+      await clearProviderModelCatalogSharedCacheAsync()
+      providerModelCatalogSharedCacheUsable = true
+    } catch (error) {
+      providerModelCatalogSharedCacheUsable = false
+      logger.warn(errorLogFields(error, {
+        event: 'provider_model_catalog_shared_cache_clear_failed',
+        cacheName: providerModelCatalogSharedCache.name
+      }), '供应商模型目录 Redis shared cache 清理失败')
+      throw error
+    }
+  })()
+  providerModelCatalogInvalidationInFlight = operation.catch(() => undefined)
+  return await operation
 }
 
 registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)

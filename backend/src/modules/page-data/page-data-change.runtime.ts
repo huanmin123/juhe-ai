@@ -13,6 +13,7 @@ import {
   type PageDataDomain,
   type PageDataRedisClient
 } from './page-data-change.service.js'
+import { invalidatePageDataReadCacheDomain } from './page-data-read-cache.service.js'
 
 let pageDataChangeStore: PageDataChangeStore | undefined
 let pageDataPublishRetryQueue: PageDataPublishRetryQueue | undefined
@@ -48,6 +49,7 @@ export function getPageDataChangeStore(): PageDataChangeStore {
 }
 
 export async function publishPageDataChange(event: PageDataChangeEvent): Promise<void> {
+  await invalidatePageDataReadCacheDomain(event.domain)
   pageDataPublishRetryQueue ??= createPageDataPublishRetryQueue({
     deliver: dispatchPageDataChangeNow,
     onFailure: (_error, event) => {
@@ -72,8 +74,15 @@ async function dispatchPageDataChangeNow(event: PageDataChangeEvent): Promise<vo
   })
 }
 
-export async function acceptPageDataChangeFromIpc(event: PageDataChangeEvent): Promise<void> {
-  await getPageDataChangeStore().publish(event)
+export async function acceptPageDataChangeFromIpc(
+  event: PageDataChangeEvent,
+  options: {
+    invalidateDomain?: (domain: PageDataDomain) => Promise<void>
+    publishLocal?: (event: PageDataChangeEvent) => Promise<void>
+  } = {}
+): Promise<void> {
+  await (options.invalidateDomain ?? invalidatePageDataReadCacheDomain)(event.domain)
+  await (options.publishLocal ?? ((acceptedEvent) => getPageDataChangeStore().publish(acceptedEvent)))(event)
 }
 
 export async function acceptPageDataDirtyDomainsFromIpc(domains: PageDataDomain[]): Promise<void> {

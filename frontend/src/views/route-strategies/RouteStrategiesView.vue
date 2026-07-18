@@ -471,6 +471,7 @@ import RowActions from '@/components/RowActions.vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import { loadGroupOptionsResource } from '@/composables/useGroupOptionsResource'
 import { filterModelOption, useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -481,7 +482,6 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionFailureAction,
@@ -593,7 +593,6 @@ const page = ref(initialPageState.pagination.current)
 const pageSize = ref(initialPageState.pagination.pageSize)
 const groupOptionsRaw = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
-const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
 let groupOptionsRequestToken = 0
 let groupOptionsLoadingKey: string | undefined
 let groupOptionsLoadingPromise: Promise<void> | undefined
@@ -1224,41 +1223,21 @@ async function loadGroupOptions(keywordInput = '', selectedIds: string[] = []) {
     return groupOptionsLoadingPromise
   }
   const requestToken = ++groupOptionsRequestToken
-  const cachedGroups = groupOptionsCache.get(requestKey)
-  if (cachedGroups) {
-    groupOptionsLoadingKey = undefined
-    groupOptionsLoadingPromise = undefined
-    groupOptionsRaw.value = cachedGroups
-    groupOptionsLoading.value = false
-    return
-  }
   groupOptionsLoading.value = true
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {
     try {
-      const windowGroups = await groupsApi.options({
+      await loadGroupOptionsResource({
+        api: groupsApi,
+        isManagementView: isManagementView.value,
+        systemAccountId: operationScopeParams?.systemAccountId,
         keyword,
-        limit: 50,
-        manageableOnly: true,
-        systemAccountId: operationScopeParams?.systemAccountId
+        selectedIds: normalizedSelectedIds,
+        isCurrent: () => requestToken === groupOptionsRequestToken,
+        apply: (groups) => {
+          groupOptionsRaw.value = groups
+        }
       })
-      if (requestToken !== groupOptionsRequestToken) return
-      const missingSelectedIds = normalizedSelectedIds.filter((id) => !windowGroups.some((group) => group.id === id))
-      if (!missingSelectedIds.length) {
-        groupOptionsCache.set(requestKey, windowGroups)
-        groupOptionsRaw.value = windowGroups
-        return
-      }
-      const selectedGroups = await groupsApi.options({
-        ids: missingSelectedIds,
-        limit: missingSelectedIds.length,
-        manageableOnly: true,
-        systemAccountId: operationScopeParams?.systemAccountId
-      })
-      if (requestToken !== groupOptionsRequestToken) return
-      const mergedGroups = mergeGroupOptionsById(selectedGroups, windowGroups)
-      groupOptionsCache.set(requestKey, mergedGroups)
-      groupOptionsRaw.value = mergedGroups
     } catch (error) {
       if (requestToken !== groupOptionsRequestToken) return
       message.error(extractApiErrorMessage(error, '分组选项加载失败'))
@@ -1273,14 +1252,6 @@ async function loadGroupOptions(keywordInput = '', selectedIds: string[] = []) {
     }
   })()
   return groupOptionsLoadingPromise
-}
-
-function mergeGroupOptionsById(leading: GroupOptionSummary[], trailing: GroupOptionSummary[]): GroupOptionSummary[] {
-  const merged = new Map<string, GroupOptionSummary>()
-  for (const group of [...leading, ...trailing]) {
-    merged.set(group.id, group)
-  }
-  return [...merged.values()]
 }
 
 function groupOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined, selectedIds: string[]): string {

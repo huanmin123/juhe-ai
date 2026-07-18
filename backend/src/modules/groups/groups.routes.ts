@@ -9,8 +9,19 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToGroupList } from '../gateway/runtime/runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
+import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
 
 export const groupsRouter = Router()
+
+const groupOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listGroupOptionsAsync>>>('groups.static', {
+  max: 512,
+  ttlMs: 6 * 60 * 60 * 1000
+})
+const accountGroupOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listAccountGroupOptionsAsync>>>('groups.static', {
+  max: 512,
+  ttlMs: 6 * 60 * 60 * 1000
+})
 
 const groupSchema = z.object({
   name: z.string().trim().min(1),
@@ -52,7 +63,14 @@ function parseGroupListOptions(query: Record<string, unknown>) {
 
 groupsRouter.get('/options', async (req, res, next) => {
   try {
-    res.json(ok(await listGroupOptionsAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const query = parseGroupOptionListOptions(req.query)
+    const options = await groupOptionsReadCache.load(pageDataReadCacheKey({
+      scope: access,
+      route: '/groups/options',
+      query
+    }), () => listGroupOptionsAsync(access, query))
+    res.json(ok(options))
   } catch (error) {
     next(error)
   }
@@ -60,7 +78,14 @@ groupsRouter.get('/options', async (req, res, next) => {
 
 groupsRouter.get('/account-options', async (req, res, next) => {
   try {
-    res.json(ok(await listAccountGroupOptionsAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const query = parseGroupOptionListOptions(req.query)
+    const options = await accountGroupOptionsReadCache.load(pageDataReadCacheKey({
+      scope: access,
+      route: '/groups/account-options',
+      query
+    }), () => listAccountGroupOptionsAsync(access, query))
+    res.json(ok(options))
   } catch (error) {
     next(error)
   }
@@ -204,6 +229,10 @@ groupsRouter.post('/', mutationGuard({
         }
       }
     }, req)
+    await Promise.all([
+      publishPageDataDomainGlobalReset('groups.static'),
+      publishPageDataDomainGlobalReset('routeStrategies.options')
+    ])
     res.status(201).json(ok(group))
   } catch (error) {
     const message = error instanceof Error ? error.message : '创建分组失败'
@@ -281,6 +310,10 @@ groupsRouter.patch('/:id', async (req, res, next) => {
         }
       }
     }, req)
+    await Promise.all([
+      publishPageDataDomainGlobalReset('groups.static'),
+      publishPageDataDomainGlobalReset('routeStrategies.options')
+    ])
     res.json(ok(group))
   } catch (error) {
     if (error instanceof DefaultGroupReadonlyError) {
@@ -360,6 +393,10 @@ groupsRouter.post('/:id/return-authorization', mutationGuard({
         }
       }
     }, req)
+    await Promise.all([
+      publishPageDataDomainGlobalReset('groups.static'),
+      publishPageDataDomainGlobalReset('routeStrategies.options')
+    ])
     res.status(204).send()
   } catch (error) {
     if (error instanceof Error && error.message === '授权分组不存在或不可归还') {
@@ -425,6 +462,10 @@ groupsRouter.delete('/:id', async (req, res, next) => {
         }
       }
     }, req)
+    await Promise.all([
+      publishPageDataDomainGlobalReset('groups.static'),
+      publishPageDataDomainGlobalReset('routeStrategies.options')
+    ])
     res.status(204).send()
   } catch (error) {
     if (error instanceof Error && error.message === '分组不存在') {

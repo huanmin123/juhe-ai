@@ -131,13 +131,8 @@ if (-not (Test-CommandExists 'pnpm')) {
 $env:NODE_ENV = if ($env:NODE_ENV) { $env:NODE_ENV } else { 'production' }
 
 if (-not (Test-Path -LiteralPath 'backend/.env')) {
-  if (Test-Path -LiteralPath 'backend/.env.example.local') {
-    Copy-Item -LiteralPath 'backend/.env.example.local' -Destination 'backend/.env'
-    Write-Host 'Created backend/.env from backend/.env.example.local'
-  } else {
-    Copy-Item -LiteralPath 'backend/.env.example' -Destination 'backend/.env'
-    Write-Host 'Created backend/.env from backend/.env.example'
-  }
+  Copy-Item -LiteralPath 'backend/.env.example' -Destination 'backend/.env'
+  Write-Host 'Created backend/.env from backend/.env.example'
   Write-Host 'Please review backend/.env before production use, especially JUHE_AI_SECRET.'
 }
 

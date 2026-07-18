@@ -414,9 +414,9 @@ import { computed, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ProxySelect from '@/components/ProxySelect.vue'
+import { loadAccountProviderModelOptionsResource } from '@/views/accounts/useAccountProviderModelOptions'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type {
   AccountModelMapping,
   AccountSummary,
@@ -617,18 +617,13 @@ async function loadModelOptions(token: number): Promise<void> {
     const scope = props.isManagementView
       ? accountOperationScopeParams(account, props.scopeParams)
       : undefined
-    const models = isHybridProviderCode(account.providerCode)
-      ? await api.providers.modelOptions(scope)
-      : await api.providers.models(account.providerCode, scope)
+    const models = await loadAccountProviderModelOptionsResource({
+      isManagementView: props.isManagementView,
+      providerCode: account.providerCode,
+      scopeParams: scope
+    })
     if (token !== loadToken || !open.value) return
-    modelOptions.value = dedupeModelOptions(models.map((item) => ({
-      label: item.model,
-      value: item.model,
-      supportedApiProtocols: item.supportedApiProtocols,
-      supportedServiceTiers: item.supportedServiceTiers,
-      supportedReasoningEfforts: item.supportedReasoningEfforts,
-      defaultReasoningEffort: item.defaultReasoningEffort
-    })))
+    modelOptions.value = models.data
   } finally {
     if (token === loadToken) modelsLoading.value = false
   }
@@ -714,17 +709,6 @@ function normalizedTextList(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
 }
 
-function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
-  const output: AccountModelSelectOption[] = []
-  const seen = new Set<string>()
-  for (const option of options) {
-    const model = option.value.trim()
-    if (!model || seen.has(model)) continue
-    seen.add(model)
-    output.push({ ...option, label: option.label || model, value: model })
-  }
-  return output
-}
 </script>
 
 <style scoped>

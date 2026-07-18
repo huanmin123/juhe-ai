@@ -1,5 +1,6 @@
-import { api } from '@/api/client'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import { api, pageDataApi } from '@/api/client'
+import { authState } from '@/composables/useAuth'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountScopeParams } from './accountOperationScope'
 
@@ -9,8 +10,8 @@ interface AccountTagOptionsLoadInput {
   scopeParams?: AccountScopeParams
 }
 
-const accountTagOptionsCache = createShortLivedQueryCache<AccountTagSummary[]>({ ttlMs: 30_000 })
-const accountTagOptionsInFlight = new Map<string, Promise<AccountTagSummary[]>>()
+const accountTagOptionsMemory = new Map<string, AccountTagSummary[]>()
+const accountTagOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function resolveAccountTagOptionsScopeKey(isManagementView: boolean, scopeParams?: AccountScopeParams): string | undefined {
   if (!isManagementView) return 'self'
@@ -19,46 +20,69 @@ export function resolveAccountTagOptionsScopeKey(isManagementView: boolean, scop
 }
 
 export function readAccountTagOptionsCache(scopeKey: string): AccountTagSummary[] | undefined {
-  return accountTagOptionsCache.get(scopeKey)
+  const options = accountTagOptionsMemory.get(scopeKey)
+  return options ? [...options] : undefined
 }
 
 export function writeAccountTagOptionsCache(scopeKey: string, options: AccountTagSummary[]): void {
-  accountTagOptionsCache.set(scopeKey, [...options])
+  accountTagOptionsMemory.set(scopeKey, [...options])
 }
 
 export function invalidateAccountTagOptionsCache(scopeKey?: string): void {
   if (!scopeKey) {
-    accountTagOptionsCache.clear()
-    accountTagOptionsInFlight.clear()
+    accountTagOptionsMemory.clear()
+    void accountTagOptionsResourceCache.invalidate('accounts.options')
     return
   }
-  accountTagOptionsCache.remove(scopeKey)
-  accountTagOptionsInFlight.delete(scopeKey)
+  accountTagOptionsMemory.delete(scopeKey)
+  const scope = accountTagResourceScope(scopeKey.startsWith('management:'), targetSystemAccountId(scopeKey))
+  const route = scopeKey.startsWith('management:') ? '/accounts/tags' : '/my-accounts/tags'
+  void accountTagOptionsResourceCache.invalidate('accounts.options', scope, route)
 }
 
 export async function loadAccountTagOptionsCached(input: AccountTagOptionsLoadInput): Promise<AccountTagSummary[]> {
   const scopeKey = resolveAccountTagOptionsScopeKey(input.isManagementView, input.scopeParams)
   if (!scopeKey) return []
 
-  const pending = accountTagOptionsInFlight.get(scopeKey)
-  if (pending) return pending
   if (!input.force) {
-    const cached = accountTagOptionsCache.get(scopeKey)
-    if (cached) return cached
+    const cached = accountTagOptionsMemory.get(scopeKey)
+    if (cached) return [...cached]
   }
-
-  let request: Promise<AccountTagSummary[]>
-  request = (input.isManagementView
-    ? api.accounts.tags(input.scopeParams)
-    : api.myAccounts.tags()
-  ).then((options) => {
-    accountTagOptionsCache.set(scopeKey, options)
-    return options
-  }).finally(() => {
-    if (accountTagOptionsInFlight.get(scopeKey) === request) {
-      accountTagOptionsInFlight.delete(scopeKey)
-    }
+  const systemAccountId = input.scopeParams?.systemAccountId?.trim()
+  const scope = accountTagResourceScope(input.isManagementView, systemAccountId)
+  const route = input.isManagementView ? '/accounts/tags' : '/my-accounts/tags'
+  if (input.force) await accountTagOptionsResourceCache.invalidate('accounts.options', scope, route)
+  const result = await accountTagOptionsResourceCache.load<AccountTagSummary[]>({
+    cacheKey: {
+      scope,
+      route,
+      query: { systemAccountId },
+      version: 1
+    },
+    domain: 'accounts.options',
+    viewScope: input.isManagementView ? 'admin' : 'self',
+    ...(input.isManagementView && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
+    loadNetwork: () => input.isManagementView
+      ? api.accounts.tags(input.scopeParams)
+      : api.myAccounts.tags()
   })
-  accountTagOptionsInFlight.set(scopeKey, request)
-  return request
+  accountTagOptionsMemory.set(scopeKey, [...result.data])
+  void result.confirmation?.then((outcome) => {
+    if (outcome.data) accountTagOptionsMemory.set(scopeKey, [...outcome.data])
+  })
+  return result.data
+}
+
+function accountTagResourceScope(isManagementView: boolean, systemAccountId?: string): string {
+  const viewer = authState.currentUser.value
+  return [
+    isManagementView ? 'admin' : 'self',
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    systemAccountId ?? (isManagementView ? 'all' : 'self')
+  ].join(':')
+}
+
+function targetSystemAccountId(scopeKey: string): string | undefined {
+  return scopeKey.startsWith('management:') ? scopeKey.slice('management:'.length).trim() || undefined : undefined
 }

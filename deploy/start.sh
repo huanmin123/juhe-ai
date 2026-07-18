@@ -106,13 +106,8 @@ ensure_deployment_defaults() {
 }
 
 if [ ! -f backend/.env ]; then
-  if [ -f backend/.env.example.local ]; then
-    cp backend/.env.example.local backend/.env
-    echo "Created backend/.env from backend/.env.example.local"
-  else
-    cp backend/.env.example backend/.env
-    echo "Created backend/.env from backend/.env.example"
-  fi
+  cp backend/.env.example backend/.env
+  echo "Created backend/.env from backend/.env.example"
   echo "Please review backend/.env before production use, especially JUHE_AI_SECRET."
 fi
 

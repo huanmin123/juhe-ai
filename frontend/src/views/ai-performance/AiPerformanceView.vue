@@ -22,7 +22,7 @@
       @calendar-change="handleCalendarChange"
       @date-range-change="handleDateRangeChange"
       @date-range-open-change="handleDateRangeOpenChange"
-      @refresh="loadPerformance"
+      @refresh="refreshPerformance"
       @remove-account="removeAddedAccount"
       @reset="resetFilters"
       @system-account-change="handleSystemAccountChange"
@@ -65,6 +65,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger } from '@/views/stats/statsFormatters'
+import { loadStatsPageDataResource } from '@/views/stats/statsPageDataResource'
 import { buildAiPerformanceOption, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 import AiPerformanceFilterToolbar from './AiPerformanceFilterToolbar.vue'
 import { useAiPerformanceAccountSelection } from './useAiPerformanceAccountSelection'
@@ -241,7 +242,7 @@ const summaryCards = computed(() => {
   ]
 })
 
-async function loadPerformance() {
+async function loadPerformance(options: { force?: boolean } = {}) {
   const requestSeq = ++performanceRequestSeq
   loading.value = true
   try {
@@ -254,13 +255,24 @@ async function loadPerformance() {
       systemAccountId,
       accountIds: addedAccountIds.value
     }
-    const [performanceOverview] = await Promise.all([
-      isManagementView.value ? api.stats.aiPerformance(performanceParams) : api.myStats.aiPerformance(performanceParams)
-    ])
-    if (requestSeq !== performanceRequestSeq) return
-    overview.value = performanceOverview
-    syncDateRangeFromResponse(performanceOverview.range)
-    pruneAccountState()
+    await loadStatsPageDataResource<AiPerformanceOverview>({
+      apply: (performanceOverview) => {
+        overview.value = performanceOverview
+        syncDateRangeFromResponse(performanceOverview.range)
+        pruneAccountState()
+        renderCharts()
+      },
+      domain: 'stats.aiPerformance',
+      force: options.force,
+      isCurrent: () => requestSeq === performanceRequestSeq,
+      isManagementView: isManagementView.value,
+      loadNetwork: () => isManagementView.value
+        ? api.stats.aiPerformance(performanceParams)
+        : api.myStats.aiPerformance(performanceParams),
+      query: performanceParams,
+      route: isManagementView.value ? '/stats/ai-performance' : '/my-stats/ai-performance',
+      targetSystemAccountId: systemAccountId
+    })
   } catch (error) {
     if (requestSeq !== performanceRequestSeq) return
     console.error(error)
@@ -271,6 +283,10 @@ async function loadPerformance() {
       renderCharts()
     }
   }
+}
+
+function refreshPerformance() {
+  void loadPerformance({ force: true })
 }
 
 function handleDateRangeChange() {
