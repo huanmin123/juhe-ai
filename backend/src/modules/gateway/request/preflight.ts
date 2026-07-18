@@ -90,10 +90,7 @@ import { resolveHybridGatewayRoute, type HybridGatewayRuntimeRoute } from '../hy
 import { resolveNormalGatewayModelRoute } from '../routing/normal-model-route.service.js'
 import { applyCodexResponsesContextStatePreflight } from '../codex-responses/chat-bridge-state.js'
 import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
-import {
-  recoverableUnavailableMaxWaitMs,
-  waitForRecoverableUnavailableState
-} from '../runtime/recoverable-unavailable-wait.js'
+import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unavailable-wait.js'
 import { requestModel } from './metadata.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
@@ -102,8 +99,8 @@ import {
   createSameAccountRetryBudget,
   type SameAccountRetryBudget
 } from '../dispatch/upstream-dispatch.js'
-import { gatewayRequestAbsoluteDeadlineAtMs } from '../runtime/gateway-request-deadline.js'
 import { normalRouteSpeedFirstAppliesToLane } from '../policy/speed-first-lane.js'
+import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -123,7 +120,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   requestLane?: OpenAIGatewayRequestLane
   ignoreAccountRuntimeSuppression?: boolean
   sameAccountRetryBudget?: SameAccountRetryBudget
-  requestDeadlineAtMs?: number
+  serverRetryBudget?: ServerRetryBudget
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -158,7 +155,7 @@ export interface OpenAIGatewayDispatchContext {
   codexTurnAccountAvoidanceApplied?: boolean
   codexTurnAvoidedAccountIds?: string[]
   precheckHalfOpenEligible?: boolean
-  requestDeadlineAtMs: number
+  serverRetryBudget: ServerRetryBudget
   sameAccountRetryBudget: SameAccountRetryBudget
   releaseClientIpConcurrency: () => void
 }
@@ -245,9 +242,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
-  const requestDeadlineAtMs = options.requestDeadlineAtMs
-    ?? gatewayRequestAbsoluteDeadlineAtMs(startedAt, activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds)
-  options.requestDeadlineAtMs = requestDeadlineAtMs
+  const serverRetryBudget = options.serverRetryBudget
+    ?? new ServerRetryBudget(activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds * 1000)
+  options.serverRetryBudget = serverRetryBudget
   const sameAccountRetryBudget = options.sameAccountRetryBudget
     ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
   options.sameAccountRetryBudget = sameAccountRetryBudget
@@ -733,7 +730,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         apiKeyId,
         groupId,
         startedAt,
-        requestDeadlineAtMs,
+        serverRetryBudget,
         signal
       }),
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
@@ -813,7 +810,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIp: gatewayClientIp,
     clientStrategy,
     requestLane,
-    requestDeadlineAtMs,
+    serverRetryBudget,
     signal,
     ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
     attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
@@ -862,6 +859,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
     sameAccountRetryBudget,
+    serverRetryBudget,
     signal
   })
   if (codexBridgeCompactPreflight.outcome === 'completed') {
@@ -888,7 +886,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     codexTurnAccountAvoidanceApplied: dispatchPreparation.codexTurnAccountAvoidanceApplied,
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     precheckHalfOpenEligible: dispatchPreparation.precheckHalfOpenEligible,
-    requestDeadlineAtMs,
+    serverRetryBudget,
     sameAccountRetryBudget,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
@@ -1056,7 +1054,7 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
   apiKeyId?: string
   groupId: string
   startedAt: number
-  requestDeadlineAtMs: number
+  serverRetryBudget: ServerRetryBudget
   signal?: AbortSignal
 }): Promise<UpstreamAccount[]> {
   const requestedModel = requestModel(input.req)
@@ -1068,7 +1066,7 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
   const loadRecoverableAccounts = () => listRecoverableUnavailableOpenAIAccountsForGroupAsync(input.groupId, input.systemAccountId, {
     requestedModel,
     requestedEndpointFamily,
-    windowMs: recoverableUnavailableMaxWaitMs
+    windowMs: input.serverRetryBudget.remainingMs()
   })
   const activeAccounts = await loadActiveAccounts()
   if (activeAccounts.length > 0) {
@@ -1081,25 +1079,32 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
   if (initialState.recoverableAccounts.length === 0) {
     return []
   }
-  const wait = await waitForRecoverableUnavailableState({
-    scopeKey: recoverableCandidateScopeKey(input.systemAccountId, input.apiKeyId, input.groupId, requestedModel, requestedEndpointFamily),
-    reason: 'account_cooldown_recoverable',
-    initialState,
-    refresh: async () => {
-      const accounts = await loadActiveAccounts()
-      return {
-        accounts,
-        recoverableAccounts: accounts.length > 0 ? [] : await loadRecoverableAccounts()
-      }
-    },
-    isReady: (state) => state.accounts.length > 0,
-    nextRetryAfterMs: (state) => nextRecoverableAccountRetryAfterMs(state.recoverableAccounts),
-    auditCapture: input.auditCapture,
-    requestStartedAtMs: input.startedAt,
-    deadlineAtMs: input.requestDeadlineAtMs,
-    signal: input.signal
-  })
-  return wait.state.accounts
+  const waitStartedAtMs = Date.now()
+  const deadlineAtMs = input.serverRetryBudget.deadlineAtMs(waitStartedAtMs)
+  try {
+    const wait = await waitForRecoverableUnavailableState({
+      scopeKey: recoverableCandidateScopeKey(input.systemAccountId, input.apiKeyId, input.groupId, requestedModel, requestedEndpointFamily),
+      reason: 'account_cooldown_recoverable',
+      initialState,
+      refresh: async () => {
+        const accounts = await loadActiveAccounts()
+        return {
+          accounts,
+          recoverableAccounts: accounts.length > 0 ? [] : await loadRecoverableAccounts()
+        }
+      },
+      isReady: (state) => state.accounts.length > 0,
+      nextRetryAfterMs: (state) => nextRecoverableAccountRetryAfterMs(state.recoverableAccounts),
+      auditCapture: input.auditCapture,
+      maxWaitMs: input.serverRetryBudget.remainingMs(waitStartedAtMs),
+      requestStartedAtMs: waitStartedAtMs,
+      deadlineAtMs,
+      signal: input.signal
+    })
+    return wait.state.accounts
+  } finally {
+    input.serverRetryBudget.pauseNoAvailableWait()
+  }
 }
 
 function nextRecoverableAccountRetryAfterMs(accounts: UpstreamAccount[]): number | undefined {

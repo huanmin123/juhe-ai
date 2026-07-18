@@ -337,7 +337,7 @@
     "test:gateway-account-precheck-runtime": "tsx src/scripts/regression/gateway-account-precheck-runtime-regression.ts",
     "test:gateway-recoverable-unavailable-mock-ai": "tsx src/scripts/regression/gateway-recoverable-unavailable-mock-ai-regression.ts",
     "test:recoverable-unavailable-wait-coordinator": "tsx src/scripts/regression/recoverable-unavailable-wait-coordinator-regression.ts",
-    "test:gateway-request-deadline": "tsx src/scripts/regression/gateway-request-deadline-regression.ts",
+    "test:server-retry-budget": "tsx src/scripts/regression/server-retry-budget-regression.ts",
     "test:gateway-concurrency-snapshot": "tsx src/scripts/regression/gateway-concurrency-snapshot-regression.ts",
     "test:gateway-raw-body-parser-error": "tsx src/scripts/regression/gateway-raw-body-parser-error-regression.ts",
     "test:usage-record-first-page-cache": "tsx src/scripts/regression/usage-record-first-page-cache-regression.ts",
