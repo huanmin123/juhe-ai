@@ -12,6 +12,10 @@ type pageDataCorePublisher interface {
 	Publish(ctx context.Context, event redisplatform.PageDataChangeEvent) error
 }
 
+type managementPageDataPublisher interface {
+	PublishAccountsStaticReset(ctx context.Context, ownerSystemAccountIDs []string, allScopes bool) error
+}
+
 type accountsStaticResetPublisherAdapter struct {
 	publisher pageDataCorePublisher
 }
