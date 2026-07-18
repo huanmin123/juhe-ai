@@ -24,6 +24,7 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const cooldownRetestRepositorySource = readFileSync(resolve('src/storage/account-cooldown-retest.repository.ts'), 'utf8')
+const cooldownRetestServiceSource = readFileSync(resolve('src/modules/background/cooldown-account-retest.service.ts'), 'utf8')
 assert.match(
   cooldownRetestRepositorySource,
   /runInDatabaseTransaction\(\(\) => recordCooldownAccountRetestFailureInSqliteTransaction/,
@@ -41,6 +42,16 @@ assert.match(
 )
 assert.match(cooldownRetestRepositorySource, /accounts\.health_check_endpoint_mode IN/, '冷却复测候选必须按可执行生成检查 mode 筛选')
 assert.doesNotMatch(cooldownRetestRepositorySource, /listOpenAIProtocolProfileIds/, '冷却复测候选不得继续只允许 OpenAI profile')
+assert.doesNotMatch(
+  cooldownRetestRepositorySource,
+  /AND \(\? IS NULL OR (?:config_revision|cooldown_retest_observation_started_at) = \?\)/,
+  '冷却复测写回不得使用 PostgreSQL 无法推断参数类型的 nullable guard'
+)
+assert.match(
+  cooldownRetestServiceSource,
+  /errorLogFields\(event\.error,/,
+  '冷却复测队列耗尽日志必须保留结构化错误上下文'
+)
 
 const restoreWorkerParentIpc = installWorkerParentIpcHarness()
 

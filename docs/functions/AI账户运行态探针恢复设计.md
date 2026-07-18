@@ -245,6 +245,13 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - 超过长期观察阈值后降低频率继续探测，不停止。
 - 探针成功恢复 `active`，清理冷却、错误摘要和运行态。
 
+冷却复测结果写回必须同时满足以下存储契约：
+
+- 成功恢复和失败退避都要校验任务入队时的 `configRevision` 与观察起点；旧配置或旧观察代次的迟到结果只能返回未变更，不能覆盖当前状态。
+- 可选 expectation 只能在值存在时生成 `AND column = ?` 条件。禁止使用 `(? IS NULL OR column = ?)` 传递无类型 nullable 参数；该写法在 PostgreSQL 扩展查询协议下会触发 `42P18`，同时阻断成功恢复和失败次数写回。
+- SQLite 与 PostgreSQL 必须复用相同的 expectation 条件构造规则，并分别执行真实 driver 回归，不能用 SQLite 通过替代 PostgreSQL 参数绑定验证。
+- 写回或后续副作用抛错时，本轮账户状态保持原有事务语义；队列耗尽日志必须保留经统一脱敏后的原始错误 code/message，不能只记录“重试耗尽”。
+
 `error` 只用于硬异常：
 
 - OAuth 刷新失败这类可自动恢复异常，由对应后台任务成功后恢复。
@@ -302,6 +309,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - `gateway_account_runtime_degraded`：后台确认近期不稳，账号进入调度降级。
 - `gateway_account_precheck_scheduled`：后台进入持久状态确认。
 - `gateway_account_precheck_failed_marked`：后台确认失败并写入持久状态。
+- `background_cooldown_account_retest_retry_exhausted`：冷却复测队列项执行异常且无可用重试；必须附带脱敏后的原始错误，区分 PostgreSQL 参数、事务、DB service 超时和探针执行错误。
 
 日志只记录账号 ID、运行态键、状态、窗口、失败计数、首字耗时、探针结果和短错误摘要，不写完整请求 / 响应 payload。
 
@@ -318,6 +326,7 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 - 后台探针成功能清理系统自动建立的 `failure_observed`、`latency_degraded`、`runtime_degraded` 和 `precheck_pending`；不能提前清理用户显式策略建立的 TTL 避让。
 - 后台探针连续失败且并发归零后才写 `temporary_unavailable`。
 - `temporary_unavailable` 后台复测成功能自动恢复 `active`。
+- SQLite 与真实 PostgreSQL 都要覆盖冷却复测当前代次成功恢复、当前代次失败累加、错误配置版本拒绝和旧观察起点拒绝；PostgreSQL 回归必须真实执行参数绑定，防止无类型 nullable 参数重新进入写回 SQL。
 - 所有用户请求失败路径仍能切号救回当前请求。
 - 旧 generation 探针结果不能覆盖后台 / 主动健康 / 匹配租约半开成功、手动恢复或更新后的状态。
 - performance / Redis runtime state 下，多节点同时调度同一运行态允许短暂重复执行；旧 generation 结果不能覆盖或误删新状态，due sweep 能补偿进程重启后的任务。
