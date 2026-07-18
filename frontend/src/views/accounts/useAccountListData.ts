@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, pageDataApi, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
@@ -12,7 +12,7 @@ import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountBalanceSnapshot, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
-import type { PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
+import { createPageDataActivationController, type PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
@@ -192,17 +192,24 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   })
 
   const refreshStatusSnapshot = () => snapshotPolling.refreshNow()
-  onMounted(() => {
-    snapshotPolling.start()
-    document.addEventListener('visibilitychange', refreshStatusSnapshot)
-    window.addEventListener('focus', refreshStatusSnapshot)
+  const snapshotPollingLifecycle = createPageDataActivationController({
+    start: () => {
+      snapshotPolling.start()
+      document.addEventListener('visibilitychange', refreshStatusSnapshot)
+      window.addEventListener('focus', refreshStatusSnapshot)
+    },
+    stop: () => {
+      snapshotRequestSequence += 1
+      snapshotPolling.stop()
+      document.removeEventListener('visibilitychange', refreshStatusSnapshot)
+      window.removeEventListener('focus', refreshStatusSnapshot)
+    },
+    onActivate: () => snapshotPolling.refreshNow()
   })
-  onBeforeUnmount(() => {
-    snapshotRequestSequence += 1
-    snapshotPolling.stop()
-    document.removeEventListener('visibilitychange', refreshStatusSnapshot)
-    window.removeEventListener('focus', refreshStatusSnapshot)
-  })
+  onMounted(() => snapshotPollingLifecycle.mount())
+  onActivated(() => snapshotPollingLifecycle.activate())
+  onDeactivated(() => snapshotPollingLifecycle.deactivate())
+  onBeforeUnmount(() => snapshotPollingLifecycle.dispose())
 
   async function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, force: boolean) {
     const params = accountListParams(systemAccountId, pageState)

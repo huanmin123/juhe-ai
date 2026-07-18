@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import {
@@ -396,6 +396,25 @@ const redisStoreA = createRedisPageDataChangeStore({ client: redisClient, keyPre
 const redisStoreB = createRedisPageDataChangeStore({ client: redisClient, keyPrefix: 'test:page-data', epoch: 'ignored-second-epoch' })
 const redisBase = (await redisStoreA.confirm(selfScope, { 'usage.records': undefined })).domains['usage.records']?.token
 assert(redisBase)
+assert.deepEqual(redisClient.commandCounts(), { eval: 1, get: 0, set: 0, sendCommand: 0 }, '单域首次 confirm 必须恰好一次 EVAL')
+redisClient.resetCommandCounts()
+const redisInitialUnchanged = await redisStoreA.confirm(selfScope, { 'usage.records': redisBase })
+assert.equal(redisInitialUnchanged.domains['usage.records']?.action, 'unchanged')
+assert.deepEqual(redisClient.commandCounts(), { eval: 1, get: 0, set: 0, sendCommand: 0 }, '单域 unchanged confirm 必须恰好一次 EVAL 且无旁路命令')
+
+for (const domains of [
+  ['accounts.static', 'accounts.runtime', 'usage.records'],
+  ['accounts.static', 'accounts.runtime', 'usage.records', 'announcements.public']
+] as const) {
+  redisClient.resetCommandCounts()
+  const base = await redisStoreA.confirm(selfScope, Object.fromEntries(domains.map((domain) => [domain, undefined])))
+  assert.deepEqual(redisClient.commandCounts(), { eval: 1, get: 0, set: 0, sendCommand: 0 }, `${domains.length} 域首次 confirm 必须恰好一次 EVAL`)
+  redisClient.resetCommandCounts()
+  const unchangedResult = await redisStoreA.confirm(selfScope, Object.fromEntries(domains.map((domain) => [domain, base.domains[domain]?.token])))
+  assert(domains.every((domain) => unchangedResult.domains[domain]?.action === 'unchanged'))
+  assert.deepEqual(redisClient.commandCounts(), { eval: 1, get: 0, set: 0, sendCommand: 0 }, `${domains.length} 域 unchanged confirm 必须恰好一次 EVAL 且无旁路命令`)
+}
+redisClient.resetCommandCounts()
 await redisStoreA.publish({
   ...event,
   eventId: 'redis-event-1',
@@ -406,6 +425,7 @@ await redisStoreA.publish({
 const redisChanged = await redisStoreB.confirm(selfScope, { 'usage.records': redisBase })
 assert.equal(redisChanged.domains['usage.records']?.action, 'delta', '不同进程实例必须共享 Redis epoch 和变更序列')
 assert.equal(redisChanged.domains['usage.records']?.token.epoch, 'redis-epoch')
+assert.equal(redisClient.commandCounts().eval >= 2, true, 'publish 与后续 confirm 分别使用 Lua；publish 命令不计入 confirm 门禁')
 await redisStoreA.publish({
   ...event,
   eventId: 'redis-event-1',
@@ -418,8 +438,61 @@ const redisDeduplicated = await redisStoreB.confirm(selfScope, {
 })
 assert.equal(redisDeduplicated.domains['usage.records']?.action, 'unchanged', '重复 eventId 必须幂等')
 
+const redisOldEpoch = await redisStoreB.confirm(selfScope, {
+  'usage.records': { ...redisChanged.domains['usage.records']!.token, epoch: 'old-epoch' }
+})
+assert.equal(redisOldEpoch.domains['usage.records']?.action, 'reload', '旧 epoch token 必须 reload')
+
+const redisResetBase = (await redisStoreA.confirm(selfScope, { 'accounts.static': undefined })).domains['accounts.static']?.token
+assert(redisResetBase)
+await redisStoreA.publish({ ...event, eventId: 'redis-global-reset', domain: 'accounts.static', operation: 'range_reset', allScopes: true })
+const redisGlobalReset = await redisStoreB.confirm(selfScope, { 'accounts.static': redisResetBase })
+assert.equal(redisGlobalReset.domains['accounts.static']?.action, 'reset', 'Redis 全域 reset sequence 必须对 owner scope 生效')
+
+const gapClient = createFakePageDataRedisClient()
+const gapStore = createRedisPageDataChangeStore({ client: gapClient, keyPrefix: 'test:page-data-gap', epoch: 'gap-epoch', maxEventsPerStream: 1 })
+const gapBase = (await gapStore.confirm(selfScope, { 'accounts.runtime': undefined })).domains['accounts.runtime']?.token
+assert(gapBase)
+await gapStore.publish({ ...event, eventId: 'gap-1' })
+await gapStore.publish({ ...event, eventId: 'gap-2' })
+const gapResult = await gapStore.confirm(selfScope, { 'accounts.runtime': gapBase })
+assert.equal(gapResult.domains['accounts.runtime']?.action, 'reset', 'Redis 日志缺口必须 reset')
+
+const rangeBase = gapResult.domains['accounts.runtime']?.token
+assert(rangeBase)
+await gapStore.publish({ ...event, eventId: 'range-reset', operation: 'range_reset', fieldMask: [] })
+const rangeResult = await gapStore.confirm(selfScope, { 'accounts.runtime': rangeBase })
+assert.equal(rangeResult.domains['accounts.runtime']?.action, 'reset', 'Redis range_reset 事件必须 reset')
+
+const malformedMiddle = await createRedisLogIntegrityScenario('malformed-middle')
+malformedMiddle.client.mutateLogEntry(2, () => '2\t{malformed')
+const malformedMiddleResult = await malformedMiddle.store.confirm(selfScope, { 'accounts.runtime': malformedMiddle.baseToken })
+assert.equal(malformedMiddleResult.domains['accounts.runtime']?.action, 'reset', 'Redis 日志中间坏项不能被过滤后误判为 delta')
+
+const jumpedSequence = await createRedisLogIntegrityScenario('jumped-sequence')
+jumpedSequence.client.mutateLogEntry(2, (entry) => entry.replace(/^2\t/, '4\t'))
+const jumpedSequenceResult = await jumpedSequence.store.confirm(selfScope, { 'accounts.runtime': jumpedSequence.baseToken })
+assert.equal(jumpedSequenceResult.domains['accounts.runtime']?.action, 'reset', 'Redis 日志序号跳跃必须 reset')
+
+const malformedTail = await createRedisLogIntegrityScenario('malformed-tail')
+malformedTail.client.mutateLogEntry(3, () => '3\t{malformed')
+const malformedTailResult = await malformedTail.store.confirm(selfScope, { 'accounts.runtime': malformedTail.baseToken })
+assert.equal(malformedTailResult.domains['accounts.runtime']?.action, 'reset', 'Redis 日志尾部坏项导致尾序号缺失时必须 reset')
+
 const serviceSource = readFileSync(resolve('src/modules/page-data/page-data-change.service.ts'), 'utf8')
 assert.doesNotMatch(serviceSource, /EXPIRE', sequenceKey/, '共享 sequence 不得过期回绕后复用同一 epoch')
+const fakeBenchmarkSource = readFileSync(resolve('src/scripts/performance/page-data-confirm-benchmark.ts'), 'utf8')
+assert.match(fakeBenchmarkSource, /4-domain-sequential/, 'fake benchmark 必须覆盖 4 域顺序 confirm')
+assert.match(fakeBenchmarkSource, /4-domain-concurrent-20/, 'fake benchmark 必须覆盖 4 域 20 并发 confirm')
+const backendPackage = JSON.parse(readFileSync(resolve('package.json'), 'utf8')) as { scripts?: Record<string, string> }
+assert.match(backendPackage.scripts?.['benchmark:page-data-confirm'] ?? '', /page-data-confirm-redis-benchmark/, '默认 page-data confirm benchmark 必须指向真实 Redis 实现')
+assert.match(backendPackage.scripts?.['benchmark:page-data-confirm-fake'] ?? '', /page-data-confirm-benchmark/, 'fake benchmark 必须使用明确的独立命令')
+const redisBenchmarkPath = resolve('src/scripts/performance/page-data-confirm-redis-benchmark.ts')
+assert.equal(existsSync(redisBenchmarkPath), true, '必须提供独立的真实 Redis page-data confirm benchmark')
+const redisBenchmarkSource = readFileSync(redisBenchmarkPath, 'utf8')
+assert.match(redisBenchmarkSource, /createDedicatedRedisClient/, '真实 Redis benchmark 必须建立专用 Redis 连接')
+assert.match(redisBenchmarkSource, /JUHE_AI_PAGE_DATA_CONFIRM_BENCHMARK_REDIS_URL/, '真实 Redis benchmark 必须要求专用环境变量')
+assert.doesNotMatch(redisBenchmarkSource, /createBenchmarkRedisClient|createFakePageDataRedisClient/, '真实 Redis benchmark 禁止 fallback 到 fake client')
 const systemAppSource = readFileSync(resolve('src/modules/system-api/system-api-app.ts'), 'utf8')
 assert.match(systemAppSource, /createPageDataChangesRouter/, '有真实写端后必须挂载页面变更确认路由')
 assert.match(systemAppSource, /\/data-changes/, '页面变更确认路由必须使用稳定路径')
@@ -576,36 +649,83 @@ try {
 
 console.log('页面数据变更确认回归通过：全局/owner 作用域、Redis 代际和未公开边界生效')
 
-function createFakePageDataRedisClient(): PageDataRedisClient {
+interface FakePageDataRedisClient extends PageDataRedisClient {
+  commandCounts(): { eval: number; get: number; set: number; sendCommand: number }
+  resetCommandCounts(): void
+  mutateLogEntry(sequence: number, mutate: (entry: string) => string): void
+}
+
+function createFakePageDataRedisClient(): FakePageDataRedisClient {
   const strings = new Map<string, string>()
   const lists = new Map<string, string[]>()
   const sets = new Map<string, Set<string>>()
+  const counts = { eval: 0, get: 0, set: 0, sendCommand: 0 }
   return {
+    commandCounts: () => ({ ...counts }),
+    resetCommandCounts: () => { counts.eval = 0; counts.get = 0; counts.set = 0; counts.sendCommand = 0 },
+    mutateLogEntry: (sequence, mutate) => {
+      for (const [key, entries] of lists) {
+        lists.set(key, entries.map((entry) => entry.startsWith(`${sequence}\t`) ? mutate(entry) : entry))
+      }
+    },
     async get(key) {
+      counts.get += 1
       return strings.get(key) ?? null
     },
     async set(key, value, options) {
+      counts.set += 1
       if (options?.NX === true && strings.has(key)) return null
       strings.set(key, value)
       return 'OK'
     },
-    async eval(_script, options) {
-    const [sequenceKey, logKey, dedupeKey] = options.keys
-    const [eventId, rawEvent, maxEventsText] = options.arguments
-    assert(sequenceKey && logKey && dedupeKey && eventId && rawEvent && maxEventsText)
-    const dedupe = sets.get(dedupeKey) ?? new Set<string>()
-    if (dedupe.has(eventId)) return Number(strings.get(sequenceKey) ?? 0)
-    dedupe.add(eventId)
-    sets.set(dedupeKey, dedupe)
-    const sequence = Number(strings.get(sequenceKey) ?? 0) + 1
-    strings.set(sequenceKey, String(sequence))
-    const list = lists.get(logKey) ?? []
-    list.push(`${sequence}\t${rawEvent}`)
-    const maxEvents = Number(maxEventsText)
-    lists.set(logKey, list.slice(Math.max(0, list.length - maxEvents)))
-    return sequence
+    async eval(script, options) {
+      counts.eval += 1
+      if (script.includes('page_data_confirm_v1')) {
+        const [epochKey, ...streamKeys] = options.keys
+        const [proposedEpoch, domainCountText, ...knownTokens] = options.arguments
+        assert(epochKey && proposedEpoch && domainCountText)
+        if (!strings.has(epochKey)) strings.set(epochKey, proposedEpoch)
+        const epoch = strings.get(epochKey)!
+        const domainCount = Number(domainCountText)
+        const result: unknown[] = [epoch]
+        for (let index = 0; index < domainCount; index += 1) {
+          const sequenceKey = streamKeys[index * 3]
+          const logKey = streamKeys[index * 3 + 1]
+          const resetSequenceKey = streamKeys[index * 3 + 2]
+          assert(sequenceKey && logKey && resetSequenceKey)
+          const sequence = Number(strings.get(sequenceKey) ?? 0)
+          const resetSequence = Number(strings.get(resetSequenceKey) ?? 0)
+          const knownEpoch = knownTokens[index * 3]
+          const knownSequence = Number(knownTokens[index * 3 + 1])
+          const knownResetSequence = Number(knownTokens[index * 3 + 2])
+          const rawLog = knownEpoch === epoch
+            && knownSequence >= 0
+            && knownSequence < sequence
+            && knownResetSequence === resetSequence
+            ? [...(lists.get(logKey) ?? [])]
+            : []
+          result.push([sequence, resetSequence, rawLog])
+        }
+        return result
+      }
+      if (!script.includes('page_data_publish_v1')) throw new Error('Fake Redis 收到未知 Lua 脚本')
+      const [sequenceKey, logKey, dedupeKey] = options.keys
+      const [eventId, rawEvent, maxEventsText] = options.arguments
+      assert(sequenceKey && logKey && dedupeKey && eventId && rawEvent && maxEventsText)
+      const dedupe = sets.get(dedupeKey) ?? new Set<string>()
+      if (dedupe.has(eventId)) return Number(strings.get(sequenceKey) ?? 0)
+      dedupe.add(eventId)
+      sets.set(dedupeKey, dedupe)
+      const sequence = Number(strings.get(sequenceKey) ?? 0) + 1
+      strings.set(sequenceKey, String(sequence))
+      const list = lists.get(logKey) ?? []
+      list.push(`${sequence}\t${rawEvent}`)
+      const maxEvents = Number(maxEventsText)
+      lists.set(logKey, list.slice(Math.max(0, list.length - maxEvents)))
+      return sequence
     },
     async sendCommand(command) {
+      counts.sendCommand += 1
       const [name, key, startText, endText] = command
       if (name !== 'LRANGE' || !key || startText === undefined || endText === undefined) {
         throw new Error(`Fake Redis 不支持命令：${command.join(' ')}`)
@@ -616,4 +736,19 @@ function createFakePageDataRedisClient(): PageDataRedisClient {
       return list.slice(start, end < 0 ? undefined : end + 1)
     }
   }
+}
+
+async function createRedisLogIntegrityScenario(keySuffix: string): Promise<{
+  client: FakePageDataRedisClient
+  store: ReturnType<typeof createRedisPageDataChangeStore>
+  baseToken: NonNullable<Awaited<ReturnType<ReturnType<typeof createRedisPageDataChangeStore>['confirm']>>['domains']['accounts.runtime']>['token']
+}> {
+  const client = createFakePageDataRedisClient()
+  const store = createRedisPageDataChangeStore({ client, keyPrefix: `test:page-data-${keySuffix}`, epoch: `${keySuffix}-epoch` })
+  const baseToken = (await store.confirm(selfScope, { 'accounts.runtime': undefined })).domains['accounts.runtime']?.token
+  assert(baseToken)
+  for (let sequence = 1; sequence <= 3; sequence += 1) {
+    await store.publish({ ...event, eventId: `${keySuffix}-${sequence}` })
+  }
+  return { client, store, baseToken }
 }
