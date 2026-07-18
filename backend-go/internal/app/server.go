@@ -180,7 +180,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
-	var accountsStaticResetPublisher managementsystemteams.AccountsStaticResetPublisher
+	var accountsStaticResetPublisher managementPageDataPublisher
 	if cfg.ManagementAPIEnabled {
 		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
 		if err != nil {
@@ -549,7 +549,7 @@ func newManagementAPIHandlerWithPageData(
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
-	accountsStaticResetPublisher managementsystemteams.AccountsStaticResetPublisher,
+	accountsStaticResetPublisher managementPageDataPublisher,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
@@ -637,6 +637,9 @@ func newManagementAPIHandlerWithPageData(
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		AuthorizationInvalidator: systemAccountInvalidator,
+		Publisher:                accountsStaticResetPublisher,
+		TeamReader:               store,
+		Logger:                   logger,
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
