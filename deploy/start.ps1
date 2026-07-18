@@ -176,7 +176,7 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
   $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
   $PSNativeCommandUseErrorActionPreference = $false
   try {
-    node scripts/run-with-owner-lock.mjs --lock-path $ownerLockPath --deployment-epoch $ownerLockEpoch --role server --version $nodeVersion -- node backend/dist/server.js
+    node scripts/run-with-owner-lock.mjs --lock-path $ownerLockPath --release-root $appDir --deployment-epoch $ownerLockEpoch --role server --version $nodeVersion -- node backend/dist/server.js
     $ownerLockExitCode = $LASTEXITCODE
   } finally {
     $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference

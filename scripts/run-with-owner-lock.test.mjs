@@ -28,6 +28,7 @@ function cliArgs(lockPath, extra = []) {
   return [
     cliPath,
     '--lock-path', lockPath,
+    '--release-root', projectRoot,
     '--deployment-epoch', 'owner-lock-test-epoch',
     '--role', 'management',
     '--version', '0.1.0-test',
@@ -218,6 +219,27 @@ test('a relative lock path is rejected before starting the command', async () =>
   const result = await runCli(cliArgs('runtime/owner.lock', await commandArgs(50))).result
   assert.notEqual(result.code, 0)
   assert.match(`${result.stdout}${result.stderr}`, /absolute|lock path/i)
+})
+
+test('a lock path inside the release root is rejected before starting the command', async () => {
+  const lockPath = path.join(projectRoot, 'runtime', 'owner.lock')
+  const result = await runCli(cliArgs(lockPath, await commandArgs(50))).result
+  assert.notEqual(result.code, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /outside|release root|lock path/i)
+  await assert.rejects(stat(lockPath), error => error?.code === 'ENOENT')
+})
+
+test('a child spawn failure releases the acquired lock', async () => {
+  const directory = await createTempDirectory()
+  const lockPath = path.join(directory, 'spawn-failure.lock')
+
+  try {
+    const result = await runCli(cliArgs(lockPath, ['--', path.join(directory, 'missing-command')])).result
+    assert.notEqual(result.code, 0)
+    await assert.rejects(stat(lockPath), error => error?.code === 'ENOENT')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 process.stdout.write('run-with-owner-lock regression tests loaded.\n')

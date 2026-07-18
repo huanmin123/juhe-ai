@@ -12,7 +12,7 @@ const SIGNAL_EXIT_CODES = new Map([
 ])
 
 function usage() {
-  return 'usage: node scripts/run-with-owner-lock.mjs --lock-path <path> --deployment-epoch <epoch> --role <role> --version <version> -- <command> [args...]'
+  return 'usage: node scripts/run-with-owner-lock.mjs --lock-path <path> --release-root <path> --deployment-epoch <epoch> --role <role> --version <version> -- <command> [args...]'
 }
 
 function requireValue(args, index, option) {
@@ -34,7 +34,7 @@ export function parseArguments(argv) {
     }
 
     const option = argv[index]
-    if (!['--lock-path', '--deployment-epoch', '--role', '--version'].includes(option)) {
+    if (!['--lock-path', '--release-root', '--deployment-epoch', '--role', '--version'].includes(option)) {
       throw new Error(`unknown option: ${option}\n${usage()}`)
     }
     options[option.slice(2).replaceAll('-', '')] = requireValue(argv, index, option)
@@ -44,16 +44,29 @@ export function parseArguments(argv) {
   if (commandIndex < 0 || commandIndex === argv.length - 1) {
     throw new Error(`a command is required after --\n${usage()}`)
   }
-  for (const option of ['lockpath', 'deploymentepoch', 'role', 'version']) {
+  for (const option of ['lockpath', 'releaseroot', 'deploymentepoch', 'role', 'version']) {
     if (!options[option]) throw new Error(`--${option.replaceAll(/([A-Z])/g, '-$1').toLowerCase()} is required\n${usage()}`)
   }
 
   if (!path.isAbsolute(options.lockpath)) {
     throw new Error(`owner lock path must be absolute: ${options.lockpath}`)
   }
+  if (!path.isAbsolute(options.releaseroot)) {
+    throw new Error(`release root must be absolute: ${options.releaseroot}`)
+  }
+
+  const lockPath = path.normalize(options.lockpath)
+  const releaseRoot = path.normalize(options.releaseroot)
+  const relativeToRelease = path.relative(releaseRoot, lockPath)
+  const insideRelease = relativeToRelease === ''
+    || (relativeToRelease !== '..' && !relativeToRelease.startsWith(`..${path.sep}`) && !path.isAbsolute(relativeToRelease))
+  if (insideRelease) {
+    throw new Error(`owner lock path must be outside the release root: ${lockPath}`)
+  }
 
   return {
-    lockPath: path.normalize(options.lockpath),
+    lockPath,
+    releaseRoot,
     deploymentEpoch: options.deploymentepoch,
     role: options.role,
     version: options.version,
@@ -164,8 +177,8 @@ export async function runWithOwnerLock(config) {
     })
 
     const child = spawn(config.command, config.commandArgs, { stdio: 'inherit' })
-    const childResult = new Promise((resolve, reject) => {
-      child.once('error', reject)
+    const childResult = new Promise(resolve => {
+      child.once('error', error => resolve({ error }))
       child.once('close', (code, signal) => resolve({ code, signal }))
     })
     await writeMetadata(lockPath, {
@@ -193,6 +206,7 @@ export async function runWithOwnerLock(config) {
       for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     }
 
+    if (result.error) throw result.error
     await cleanup()
     if (result.signal) return SIGNAL_EXIT_CODES.get(result.signal) ?? 1
     return result.code ?? 1
