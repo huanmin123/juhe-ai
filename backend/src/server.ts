@@ -34,6 +34,7 @@ import {
   classifyGatewayRawBodyParserError,
   recordGatewayBodyRejection,
   rejectGatewayRawBodyByContentLength,
+  wrapGatewayRawBodyParser,
   type GatewayRawBodyParserError
 } from './modules/gateway/request/body-middleware.js'
 import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
@@ -119,6 +120,11 @@ function handleGatewayRawBodyError(error: Error & GatewayRawBodyParserError, req
     error: responsePayload.error
   })
 }
+
+const parseGatewayRawBody = wrapGatewayRawBodyParser(
+  express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
+  handleGatewayRawBodyError
+)
 
 installProcessLogHandlers()
 if (runtimeConfig.auth.captchaDisabled) {
@@ -400,8 +406,7 @@ app.use(
   openAICompatibleVectorStoresRouter,
   rejectGatewayRawBodyByContentLength,
   admitSpeedFirstRequestBody,
-  express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
-  handleGatewayRawBodyError,
+  parseGatewayRawBody,
   captureGatewayRawBody,
   openAIGatewayRouter
 )
