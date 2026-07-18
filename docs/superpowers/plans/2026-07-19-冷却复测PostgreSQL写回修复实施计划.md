@@ -55,10 +55,10 @@
 **Files:**
 - Review: 本分支相对最新 `origin/master` 的完整差异
 
-- [ ] `git fetch origin` 后合并最新 `origin/master`，有冲突时仅解决本任务文件并重跑受影响验证。
-- [ ] 提交测试与实现，提交信息准确描述 PostgreSQL 冷却复测写回修复。
-- [ ] 启动两个只读复核 Agent：一方检查需求、调用链、正确性和行为回归；另一方检查测试、边界、安全、代码质量和上线风险。
-- [ ] 主 Agent 核验、去重并修正已确认问题；核心逻辑变化后执行针对性再审和相关回归。
+- [x] 两次 `git fetch origin` 并合并最新 `origin/master`，均无本任务冲突；每次同步后重跑核心回归、类型检查，并在最终基线重跑 build 与真实 PG smoke。
+- [x] 提交设计、计划、测试与实现，提交信息准确描述 PostgreSQL 冷却复测写回修复。
+- [x] 完成两个只读复核 Agent：正确性/调用链复核与测试/安全/上线风险复核均无阻断结论。
+- [x] 根据复核补充 config-only success、显式 smoke opt-in、fixture 清理可见性与连接关闭保证；定向再审确认无新增阻断问题。
 
 ## Task 5：集成 master 与 feature 分支
 
