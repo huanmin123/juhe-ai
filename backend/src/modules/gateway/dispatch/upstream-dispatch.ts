@@ -19,6 +19,10 @@ import {
   type RetryPolicy
 } from '../../../shared/retry-policy.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
+import {
+  gatewayTimeoutProfileForLane,
+  type GatewayTimeoutProfile
+} from '../policy/timeout-profile.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import {
   buildPreparedUpstreamRequestParts,
@@ -67,7 +71,7 @@ import {
 import type { GatewayAccountModelPriority } from './model-filter.js'
 import type { SpeedFirstCutoverReservation } from '../runtime/speed-first-cutover-reservation.service.js'
 import type { UsageServiceTier } from '../usage/service-tier.js'
-import { gatewayRequestDeadlineExpired, gatewayRequestWaitWithinDeadlineMs } from '../runtime/gateway-request-deadline.js'
+import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import { requestModel } from '../request/metadata.js'
 
 export interface OpenAIUpstreamDispatchResult {
@@ -77,6 +81,7 @@ export interface OpenAIUpstreamDispatchResult {
   auditAttemptId: string
   attemptStartedAt: number
   effectiveServiceTier: UsageServiceTier
+  timeoutProfile: GatewayTimeoutProfile
   releaseConcurrency: () => void
   markFirstOutput: () => void
   confirmSameAccountApiKeyFailures: () => Promise<void>
@@ -89,7 +94,8 @@ export class UpstreamAttemptError extends Error {
     message: string,
     readonly lastAttempt?: UpstreamAttempt,
     readonly failedAccountIds: string[] = [],
-    readonly agentGuidanceResponse?: GatewayAgentGuidanceResponse
+    readonly agentGuidanceResponse?: GatewayAgentGuidanceResponse,
+    readonly recoverableAccountIds: string[] = []
   ) {
     super(message)
   }
@@ -141,8 +147,9 @@ export async function fetchFirstAvailableUpstream(
   sameAccountRetryBudget?: SameAccountRetryBudget,
   preAcquiredConcurrency?: SpeedFirstCutoverReservation,
   allowPrecheckHalfOpen = false,
-  requestStartedAtMs = Date.now(),
-  requestDeadlineAtMs = Number.MAX_SAFE_INTEGER
+  serverRetryBudget = new ServerRetryBudget(settings.noAvailableAccountWaitTimeoutSeconds * 1000),
+  interpretUpstreamResponseSemantics = false,
+  waitForRecoverableFailures = true
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -150,6 +157,7 @@ export async function fetchFirstAvailableUpstream(
     settings.temporaryUnschedulableRetryAttempts
   )
   const maxAttemptCount = retryAttemptCount(sameAccountRetryPolicy)
+  const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane)
   const requestSameAccountRetryBudget = sameAccountRetryBudget
     ?? createSameAccountRetryBudget(maxAttemptCount - 1)
   let lastAttempt: UpstreamAttempt | undefined
@@ -159,6 +167,7 @@ export async function fetchFirstAvailableUpstream(
   let highConcurrencyDispatchQueueWaitCount = 0
   const failedProxyDispatchKeys = new Map<string, string>()
   const failedAccountIds = new Set<string>()
+  const recoverableFailedAccountIds = new Set<string>()
   const bypassLocalSuppression = isAccountProbeTrafficSource(usageContext.trafficSource)
   let dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(
     await orderAccountsForRequestLaneAsync(accounts, requestLane, groupSchedulingPolicy, modelPriority),
@@ -166,13 +175,11 @@ export async function fetchFirstAvailableUpstream(
   ).accounts
 
   while (dispatchAccounts.length > 0) {
-    let attemptedAccountCount = 0
-    let localSuppressedSkipCount = 0
+    const cycleRecoverableAccountIds = new Set<string>()
     const capacityLimitFailures: AccountCapacityLimitFailure[] = []
 
     for (const originalAccount of dispatchAccounts) {
       throwIfRequestAborted(signal)
-      assertGatewayRequestDeadlineActive(requestDeadlineAtMs)
       const localSuppression = bypassLocalSuppression
         ? {
             accounts: [originalAccount],
@@ -187,7 +194,6 @@ export async function fetchFirstAvailableUpstream(
             precheckHalfOpenGroupKey: `${usageContext.systemAccountId}:${usageContext.groupId}`
           })
       if (localSuppression.allSuppressed) {
-        localSuppressedSkipCount += 1
         lastAttempt = locallySuppressedAttempt(originalAccount, localSuppression.nextRetryAfterMs)
         getRequestLogger().warn({
           event: 'gateway_local_account_suppression_dispatch_skip',
@@ -205,12 +211,14 @@ export async function fetchFirstAvailableUpstream(
         continue
       }
       const halfOpenLease = localSuppression.acquiredHalfOpenLeases[0]
-      attemptedAccountCount += 1
       const skippedProxyAttempt = skipAccountForFailedProxyDispatch(failedProxyDispatchKeys, originalAccount)
       if (skippedProxyAttempt) {
         await releaseHalfOpenLease(halfOpenLease)
         lastAttempt = skippedProxyAttempt
         failedAccountIds.add(originalAccount.id)
+        if (recoverableFailedAccountIds.has(originalAccount.id)) {
+          cycleRecoverableAccountIds.add(originalAccount.id)
+        }
         continue
       }
       const unavailableProxyAuditAttemptIndex = auditAttemptIndex + 1
@@ -251,7 +259,7 @@ export async function fetchFirstAvailableUpstream(
             signal,
             requestLane,
             groupSchedulingPolicy,
-            requestDeadlineAtMs
+            serverRetryBudget
           )
         } catch (error) {
           await releaseHalfOpenLease(halfOpenLease)
@@ -266,12 +274,7 @@ export async function fetchFirstAvailableUpstream(
           ? accountConcurrencyLimitMessage(concurrencySlot, concurrencyAcquire.waitedMs)
           : accountConcurrencyLimitMessage(concurrencySlot)
         lastAttempt = accountCapacityLimitAttempt(originalAccount, message)
-        if (canUseHighConcurrencyDispatchQueue(groupSchedulingPolicy)) {
-          capacityLimitFailures.push({ account: originalAccount, message })
-        } else {
-          auditAttemptIndex += 1
-          await recordAccountCapacityLimitFailure(req, usageContext, originalAccount, message, auditCapture, auditAttemptIndex)
-        }
+        capacityLimitFailures.push({ account: originalAccount, message })
         continue
       }
       if (concurrencyAcquire.waitedMs > 0) {
@@ -406,7 +409,6 @@ export async function fetchFirstAvailableUpstream(
           }
           for (const upstreamUrl of upstreamUrls) {
             for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
-              assertGatewayRequestDeadlineActive(requestDeadlineAtMs)
               const attemptStartedAt = Date.now()
               auditAttemptIndex += 1
               const auditAttemptId = auditCapture.startAttempt({
@@ -427,7 +429,7 @@ export async function fetchFirstAvailableUpstream(
                   auditAttemptIndex,
                   headers,
                   body,
-                  settings,
+                  timeoutProfile,
                   attemptStartedAt,
                   signal,
                   requestClientCompatibility
@@ -442,7 +444,7 @@ export async function fetchFirstAvailableUpstream(
                   upstreamUrl,
                   status: response.status
                 }
-                if (response.ok) {
+                if (!interpretUpstreamResponseSemantics || response.ok) {
                   await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
                     systemAccountId: usageContext.systemAccountId,
                     apiKeyId: usageContext.apiKeyId,
@@ -456,6 +458,7 @@ export async function fetchFirstAvailableUpstream(
                     auditAttemptId,
                     attemptStartedAt,
                     effectiveServiceTier,
+                    timeoutProfile,
                     releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release),
                     markFirstOutput: concurrencySlot.markFirstOutput,
                     confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext),
@@ -490,6 +493,8 @@ export async function fetchFirstAvailableUpstream(
                 })
                 lastAttempt = failedResponseResult.lastAttempt
                 failedAccountIds.add(account.id)
+                recoverableFailedAccountIds.delete(account.id)
+                cycleRecoverableAccountIds.delete(account.id)
                 if (failedResponseResult.action === 'retry') {
                   await waitForSameAccountRetry(
                     account,
@@ -498,8 +503,7 @@ export async function fetchFirstAvailableUpstream(
                     sameAccountRetryPolicy,
                     requestSameAccountRetryBudget,
                     auditCapture,
-                    signal,
-                    requestDeadlineAtMs
+                    signal
                   )
                   continue
                 }
@@ -568,6 +572,14 @@ export async function fetchFirstAvailableUpstream(
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
                 failedAccountIds.add(account.id)
+                if (
+                  requestErrorResult.action === 'skip_account'
+                  && accountStateMutationEnabled
+                  && shouldRetainTransportFailureForRecovery(upstreamUrl, signal)
+                ) {
+                  recoverableFailedAccountIds.add(account.id)
+                  cycleRecoverableAccountIds.add(account.id)
+                }
                 if (requestErrorResult.action === 'retry') {
                   await waitForSameAccountRetry(
                     account,
@@ -576,8 +588,7 @@ export async function fetchFirstAvailableUpstream(
                     sameAccountRetryPolicy,
                     requestSameAccountRetryBudget,
                     auditCapture,
-                    signal,
-                    requestDeadlineAtMs
+                    signal
                   )
                   continue
                 }
@@ -606,16 +617,24 @@ export async function fetchFirstAvailableUpstream(
     }
 
     if (capacityLimitFailures.length > 0 && canUseHighConcurrencyDispatchQueue(groupSchedulingPolicy)) {
-      const queueWait = await waitForHighConcurrencyGroupCapacity({
-        systemAccountId: usageContext.systemAccountId,
-        groupId: usageContext.groupId,
-        apiKeyId: usageContext.apiKeyId,
-        accountIds: gatewayAccountConcurrencyAccountIds(dispatchAccounts),
-        accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(dispatchAccounts),
-        lane: requestLane,
-        policy: groupSchedulingPolicy,
-        signal
-      })
+      const queueWaitStartedAtMs = Date.now()
+      serverRetryBudget.beginNoAvailableWait(queueWaitStartedAtMs)
+      let queueWait: Awaited<ReturnType<typeof waitForHighConcurrencyGroupCapacity>>
+      try {
+        queueWait = await waitForHighConcurrencyGroupCapacity({
+          systemAccountId: usageContext.systemAccountId,
+          groupId: usageContext.groupId,
+          apiKeyId: usageContext.apiKeyId,
+          accountIds: gatewayAccountConcurrencyAccountIds(dispatchAccounts),
+          accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(dispatchAccounts),
+          lane: requestLane,
+          policy: groupSchedulingPolicy,
+          maxWaitMs: serverRetryBudget.remainingMs(queueWaitStartedAtMs),
+          signal
+        })
+      } finally {
+        serverRetryBudget.pauseNoAvailableWait()
+      }
       highConcurrencyDispatchQueueWaitCount += 1
       auditCapture.addGatewayMetadata({
         label: 'high_concurrency_dispatch_queue',
@@ -635,6 +654,36 @@ export async function fetchFirstAvailableUpstream(
         ).accounts
         continue
       }
+      if (!serverRetryBudget.handoffRequired('recoverable_later')) {
+        if (queueWait.reason !== 'timeout') {
+          const retryDelayMs = Math.min(1000, serverRetryBudget.remainingMs())
+          serverRetryBudget.beginNoAvailableWait()
+          try {
+            await waitForRetryDelayMs(retryDelayMs, { signal })
+          } finally {
+            serverRetryBudget.pauseNoAvailableWait()
+          }
+        }
+        concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
+        continue
+      }
+      const failure = capacityLimitFailures[capacityLimitFailures.length - 1]
+      if (failure) {
+        auditAttemptIndex += 1
+        await recordAccountCapacityLimitFailure(req, usageContext, failure.account, failure.message, auditCapture, auditAttemptIndex)
+      }
+    } else if (capacityLimitFailures.length > 0) {
+      if (!serverRetryBudget.handoffRequired('recoverable_later')) {
+        const retryDelayMs = Math.min(500, serverRetryBudget.remainingMs())
+        serverRetryBudget.beginNoAvailableWait()
+        try {
+          await waitForRetryDelayMs(retryDelayMs, { signal })
+        } finally {
+          serverRetryBudget.pauseNoAvailableWait()
+        }
+        concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
+        continue
+      }
       const failure = capacityLimitFailures[capacityLimitFailures.length - 1]
       if (failure) {
         auditAttemptIndex += 1
@@ -642,11 +691,7 @@ export async function fetchFirstAvailableUpstream(
       }
     }
 
-    if (attemptedAccountCount > 0 || localSuppressedSkipCount === 0) {
-      break
-    }
-
-    const suppressionFilter = bypassLocalSuppression
+    const postCycleSuppressionFilter = bypassLocalSuppression
       ? {
           accounts: dispatchAccounts,
           suppressedCount: 0,
@@ -655,31 +700,79 @@ export async function fetchFirstAvailableUpstream(
           acquiredHalfOpenLeases: []
         }
       : await filterGatewayAccountRuntimeSuppressionsAsync(dispatchAccounts)
+    const recoverableAccountIds = new Set([
+      ...postCycleSuppressionFilter.suppressedAccountIds,
+      ...(postCycleSuppressionFilter.precheckSuppressedAccountIds ?? []),
+      ...cycleRecoverableAccountIds
+    ])
+    const recoverableAccounts = dispatchAccounts.filter((account) => recoverableAccountIds.has(account.id))
+    if (recoverableAccounts.length === 0 || !waitForRecoverableFailures) {
+      break
+    }
+    const suppressionFilter = recoverableAccounts.length === dispatchAccounts.length
+      ? postCycleSuppressionFilter
+      : await filterGatewayAccountRuntimeSuppressionsAsync(recoverableAccounts)
+    if (!suppressionFilter.allSuppressed) {
+      if (serverRetryBudget.handoffRequired('recoverable_later')) {
+        break
+      }
+      const retryDelayMs = Math.min(3000, serverRetryBudget.remainingMs())
+      auditCapture.addGatewayMetadata({
+        label: 'recoverable_upstream_failure_dispatch_wait',
+        metadata: {
+          accountIds: suppressionFilter.accounts.map((account) => account.id),
+          retryDelayMs,
+          remainingWaitBudgetMs: serverRetryBudget.remainingMs()
+        }
+      })
+      serverRetryBudget.beginNoAvailableWait()
+      try {
+        await waitForRetryDelayMs(retryDelayMs, { signal })
+      } finally {
+        serverRetryBudget.pauseNoAvailableWait()
+      }
+      if (serverRetryBudget.handoffRequired('recoverable_later')) {
+        break
+      }
+      failedProxyDispatchKeys.clear()
+      dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(suppressionFilter.accounts, {
+        modelRankByAccountId: modelPriority?.rankByAccountId
+      }).accounts
+      continue
+    }
     const precheckRuntimeScopes = suppressionFilter.precheckSuppressedRuntimeScopes ?? []
     const allBlockedByPrecheck = precheckRuntimeScopes.length > 0
       && suppressionFilter.precheckSuppressedAccountIds?.length === dispatchAccounts.length
-    const wait = await waitForRecoverableUnavailableState({
-      scopeKey: recoverableDispatchSuppressionScopeKey(
-        usageContext.systemAccountId,
-        usageContext.apiKeyId,
-        usageContext.groupId,
-        requestModel(req),
-        precheckRuntimeScopes
-      ),
-      reason: allBlockedByPrecheck ? 'precheck_half_open' : 'local_account_suppression_dispatch',
-      initialState: suppressionFilter,
-      refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(dispatchAccounts),
-      isReady: (state) => !state.allSuppressed,
-      nextRetryAfterMs: (state) => state.nextRetryAfterMs,
-      waitWithoutRetryAfter: true,
-      maxWaitMs: Math.max(1, requestDeadlineAtMs - requestStartedAtMs),
-      auditCapture,
-      signal,
-      requestStartedAtMs,
-      deadlineAtMs: requestDeadlineAtMs,
-      runtimeKeys: precheckRuntimeScopes.map((scope) => scope.runtimeKey)
-    })
+    const waitStartedAtMs = Date.now()
+    const deadlineAtMs = serverRetryBudget.deadlineAtMs(waitStartedAtMs)
+    let wait: Awaited<ReturnType<typeof waitForRecoverableUnavailableState<typeof suppressionFilter>>>
+    try {
+      wait = await waitForRecoverableUnavailableState({
+        scopeKey: recoverableDispatchSuppressionScopeKey(
+          usageContext.systemAccountId,
+          usageContext.apiKeyId,
+          usageContext.groupId,
+          requestModel(req),
+          precheckRuntimeScopes
+        ),
+        reason: allBlockedByPrecheck ? 'precheck_half_open' : 'local_account_suppression_dispatch',
+        initialState: suppressionFilter,
+        refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(recoverableAccounts),
+        isReady: (state) => !state.allSuppressed,
+        nextRetryAfterMs: (state) => state.nextRetryAfterMs,
+        waitWithoutRetryAfter: true,
+        maxWaitMs: serverRetryBudget.remainingMs(waitStartedAtMs),
+        auditCapture,
+        signal,
+        requestStartedAtMs: waitStartedAtMs,
+        deadlineAtMs,
+        runtimeKeys: precheckRuntimeScopes.map((scope) => scope.runtimeKey)
+      })
+    } finally {
+      serverRetryBudget.pauseNoAvailableWait()
+    }
     if (!wait.state.allSuppressed) {
+      failedProxyDispatchKeys.clear()
       dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(wait.state.accounts, {
         modelRankByAccountId: modelPriority?.rankByAccountId
       }).accounts
@@ -689,7 +782,7 @@ export async function fetchFirstAvailableUpstream(
     auditCapture.addGatewayMetadata({
       label: 'local_account_suppression_dispatch_exhausted',
       metadata: {
-        suppressedCount: localSuppressedSkipCount,
+        suppressedCount: suppressionFilter.suppressedCount,
         accountCount: accounts.length
       }
     })
@@ -707,7 +800,17 @@ export async function fetchFirstAvailableUpstream(
     break
   }
 
-  throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds], agentGuidanceResponse)
+  throw new UpstreamAttemptError(
+    buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt),
+    lastAttempt,
+    [...failedAccountIds],
+    agentGuidanceResponse,
+    [...recoverableFailedAccountIds]
+  )
+}
+
+function shouldRetainTransportFailureForRecovery(upstreamUrl: string, signal?: AbortSignal): boolean {
+  return !signal?.aborted && /^https?:\/\//i.test(upstreamUrl)
 }
 
 function releaseAccountDispatchSlot(releaseConcurrency: () => void): () => void {
@@ -718,15 +821,6 @@ function releaseAccountDispatchSlot(releaseConcurrency: () => void): () => void 
     }
     released = true
     releaseConcurrency()
-  }
-}
-
-export class GatewayRequestDeadlineExceededError extends Error {
-  readonly code = 'gateway_request_deadline_exceeded'
-
-  constructor() {
-    super('网关请求已超过允许的总等待时间')
-    this.name = 'GatewayRequestDeadlineExceededError'
   }
 }
 
@@ -761,22 +855,29 @@ async function acquireAccountConcurrencyWithShortRetry(
   signal: AbortSignal | undefined,
   requestLane: OpenAIGatewayRequestLane,
   groupSchedulingPolicy?: GroupSchedulingPolicy,
-  requestDeadlineAtMs = Number.MAX_SAFE_INTEGER
+  serverRetryBudget?: ServerRetryBudget
 ): Promise<AccountConcurrencyAcquireResult> {
   let remainingWaitBudgetMs = Math.max(0, Math.trunc(waitBudgetMs))
   const acquireOptions = accountConcurrencyLaneAcquireOptions(concurrencyLimit, requestLane, groupSchedulingPolicy)
   let slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
   let waitedMs = 0
   let retryCount = 0
-  while (!slot.acquired && remainingWaitBudgetMs > 0) {
-    const delayMs = Math.min(retryDelayMs(accountConcurrencyRetryPolicy, retryCount + 1), remainingWaitBudgetMs)
-    const currentDelayMs = gatewayRequestWaitWithinDeadlineMs(Math.min(delayMs, remainingWaitBudgetMs), requestDeadlineAtMs)
-    if (currentDelayMs <= 0) throw new GatewayRequestDeadlineExceededError()
-    await waitForAccountConcurrencyRetry(currentDelayMs, signal)
-    waitedMs += currentDelayMs
-    remainingWaitBudgetMs -= currentDelayMs
-    retryCount += 1
-    slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
+  if (!slot.acquired && remainingWaitBudgetMs > 0) {
+    serverRetryBudget?.beginNoAvailableWait()
+    try {
+      remainingWaitBudgetMs = Math.min(remainingWaitBudgetMs, serverRetryBudget?.remainingMs() ?? remainingWaitBudgetMs)
+      while (!slot.acquired && remainingWaitBudgetMs > 0) {
+        const delayMs = Math.min(retryDelayMs(accountConcurrencyRetryPolicy, retryCount + 1), remainingWaitBudgetMs)
+        const currentDelayMs = Math.min(delayMs, remainingWaitBudgetMs)
+        await waitForAccountConcurrencyRetry(currentDelayMs, signal)
+        waitedMs += currentDelayMs
+        remainingWaitBudgetMs -= currentDelayMs
+        retryCount += 1
+        slot = await tryAcquireAccountConcurrencyAsync(accountId, concurrencyLimit, acquireOptions)
+      }
+    } finally {
+      serverRetryBudget?.pauseNoAvailableWait()
+    }
   }
   return {
     slot,
@@ -1042,8 +1143,7 @@ async function waitForSameAccountRetry(
   policy: RetryPolicy,
   budget: SameAccountRetryBudget,
   auditCapture: AuditCaptureContext,
-  signal?: AbortSignal,
-  requestDeadlineAtMs = Number.MAX_SAFE_INTEGER
+  signal?: AbortSignal
 ): Promise<void> {
   const retryNumber = Math.max(1, Math.trunc(attemptIndex) + 1)
   const requestRetryNumber = budget.initialAttempts - budget.remainingAttempts
@@ -1073,17 +1173,8 @@ async function waitForSameAccountRetry(
     }
   })
   throwIfRequestAborted(signal)
-  const boundedDelayMs = gatewayRequestWaitWithinDeadlineMs(delayMs, requestDeadlineAtMs)
-  if (boundedDelayMs <= 0) throw new GatewayRequestDeadlineExceededError()
-  await waitForRetryDelayMs(boundedDelayMs, { signal })
-  assertGatewayRequestDeadlineActive(requestDeadlineAtMs)
+  await waitForRetryDelayMs(delayMs, { signal })
   throwIfRequestAborted(signal)
-}
-
-function assertGatewayRequestDeadlineActive(requestDeadlineAtMs: number): void {
-  if (gatewayRequestDeadlineExpired(requestDeadlineAtMs)) {
-    throw new GatewayRequestDeadlineExceededError()
-  }
 }
 
 function stringValue(value: unknown): string {

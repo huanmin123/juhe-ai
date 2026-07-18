@@ -8,6 +8,7 @@ import type { AuditCaptureContext } from '../audit/capture.service.js'
 import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 import { responseHeadersToObject } from '../audit/capture.service.js'
 import type { ClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
+import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { splitPathAndQuery } from '../protocols/openai-v1/route-helpers.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
@@ -56,6 +57,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
   sameAccountRetryBudget: SameAccountRetryBudget
+  serverRetryBudget: ServerRetryBudget
   signal?: AbortSignal
 }): Promise<
   | { outcome: 'continued'; accounts: UpstreamAccount[] }
@@ -110,7 +112,11 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       true,
       input.requestClientCompatibility,
       input.modelPriority,
-      input.sameAccountRetryBudget
+      input.sameAccountRetryBudget,
+      undefined,
+      false,
+      input.serverRetryBudget,
+      true
     )
     const readResult = await readUpstreamBodyLimited(upstreamResult.response.body, {
       maxBytes: 1024 * 1024,

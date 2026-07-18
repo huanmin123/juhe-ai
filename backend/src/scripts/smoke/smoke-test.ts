@@ -116,10 +116,13 @@ interface SystemSettings {
   defaultTemporaryUnschedulableMinutes?: number
   temporaryUnschedulableRetryIntervalSeconds?: number
   temporaryUnschedulableRetryAttempts?: number
-  streamRequestTimeoutSeconds?: number
-  streamIdleTimeoutSeconds?: number
-  streamClientTotalWaitTimeoutSeconds?: number
-  streamMaxLifetimeSeconds?: number
+  textFirstResponseTimeoutSeconds?: number
+  textStreamIdleTimeoutSeconds?: number
+  textUncommittedAttemptMaxLifetimeSeconds?: number
+  imageFirstResponseTimeoutSeconds?: number
+  imageStreamIdleTimeoutSeconds?: number
+  imageUncommittedAttemptMaxLifetimeSeconds?: number
+  noAvailableAccountWaitTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
   operationLogRetentionDays?: number
@@ -188,10 +191,13 @@ async function main(): Promise<void> {
     assert(typeof settings.defaultTemporaryUnschedulableMinutes === 'number', '系统设置缺少 defaultTemporaryUnschedulableMinutes')
     assert(typeof settings.temporaryUnschedulableRetryIntervalSeconds === 'number', '系统设置缺少 temporaryUnschedulableRetryIntervalSeconds')
     assert(typeof settings.temporaryUnschedulableRetryAttempts === 'number', '系统设置缺少 temporaryUnschedulableRetryAttempts')
-    assert(typeof settings.streamRequestTimeoutSeconds === 'number', '系统设置缺少 streamRequestTimeoutSeconds')
-    assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
-    assert(typeof settings.streamClientTotalWaitTimeoutSeconds === 'number', '系统设置缺少 streamClientTotalWaitTimeoutSeconds')
-    assert(typeof settings.streamMaxLifetimeSeconds === 'number', '系统设置缺少 streamMaxLifetimeSeconds')
+    assert(typeof settings.textFirstResponseTimeoutSeconds === 'number', '系统设置缺少 textFirstResponseTimeoutSeconds')
+    assert(typeof settings.textStreamIdleTimeoutSeconds === 'number', '系统设置缺少 textStreamIdleTimeoutSeconds')
+    assert(typeof settings.textUncommittedAttemptMaxLifetimeSeconds === 'number', '系统设置缺少 textUncommittedAttemptMaxLifetimeSeconds')
+    assert(typeof settings.imageFirstResponseTimeoutSeconds === 'number', '系统设置缺少 imageFirstResponseTimeoutSeconds')
+    assert(typeof settings.imageStreamIdleTimeoutSeconds === 'number', '系统设置缺少 imageStreamIdleTimeoutSeconds')
+    assert(typeof settings.imageUncommittedAttemptMaxLifetimeSeconds === 'number', '系统设置缺少 imageUncommittedAttemptMaxLifetimeSeconds')
+    assert(typeof settings.noAvailableAccountWaitTimeoutSeconds === 'number', '系统设置缺少 noAvailableAccountWaitTimeoutSeconds')
     assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
     assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
     assert(typeof settings.operationLogRetentionDays === 'number', '系统设置缺少 operationLogRetentionDays')

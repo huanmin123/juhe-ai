@@ -1,4 +1,4 @@
-import type { GatewaySettings } from '../policy/account-error-policy.service.js'
+import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 
 export interface StreamReadPlan {
   phase: 'first_chunk' | 'active_stream'
@@ -12,7 +12,7 @@ export interface StreamReadPlan {
 }
 
 export function buildStreamReadPlan(
-  settings: GatewaySettings,
+  profile: GatewayTimeoutProfile,
   startedAt: number,
   status: {
     waitingForFirstChunk: boolean
@@ -22,24 +22,23 @@ export function buildStreamReadPlan(
     semanticResultReceived: boolean
     pendingProtocolEvent: boolean
     parserSkipped: boolean
-  }
+  },
+  now = Date.now()
 ): StreamReadPlan {
-  const now = Date.now()
-  const streamMaxLifetimeSeconds = Math.max(60, settings.streamMaxLifetimeSeconds)
-  const streamLifetimeTimeoutMs = streamMaxLifetimeSeconds * 1000 - (now - startedAt)
+  const streamLifetimeTimeoutMs = status.semanticResultReceived
+    ? undefined
+    : profile.uncommittedAttemptMaxLifetimeMs - (now - startedAt)
 
   if (!status.waitingForFirstChunk || status.upstreamChunkReceived) {
-    const streamIdleTimeoutSeconds = Math.max(1, settings.streamIdleTimeoutSeconds)
-    const rawTimeoutMs = streamIdleTimeoutSeconds * 1000 - (now - status.lastUpstreamActivityAt)
-    const semanticResultTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
+    const rawTimeoutMs = profile.idleTimeoutMs - (now - status.lastUpstreamActivityAt)
     const semanticResultStartedAt = status.lastSseEventActivityAt ?? startedAt
-    const semanticResultTimeoutMs = semanticResultTimeoutSeconds * 1000 - (now - semanticResultStartedAt)
+    const semanticResultTimeoutMs = profile.firstResponseTimeoutMs - (now - semanticResultStartedAt)
     if (
       !status.semanticResultReceived
       && !status.pendingProtocolEvent
       && !status.parserSkipped
       && semanticResultTimeoutMs <= rawTimeoutMs
-      && semanticResultTimeoutMs <= streamLifetimeTimeoutMs
+      && semanticResultTimeoutMs <= (streamLifetimeTimeoutMs ?? Number.POSITIVE_INFINITY)
     ) {
       return {
         phase: 'active_stream',
@@ -48,11 +47,11 @@ export function buildStreamReadPlan(
         semanticResultTimeoutMs,
         streamLifetimeTimeoutMs,
         timeoutKind: 'semantic_result',
-        timeoutMessage: streamSemanticResultTimeoutMessage(semanticResultTimeoutSeconds),
+        timeoutMessage: streamSemanticResultTimeoutMessage(timeoutSeconds(profile.firstResponseTimeoutMs)),
         deadlineExceeded: semanticResultTimeoutMs <= 0
       }
     }
-    if (streamLifetimeTimeoutMs <= rawTimeoutMs) {
+    if (streamLifetimeTimeoutMs !== undefined && streamLifetimeTimeoutMs <= rawTimeoutMs) {
       return {
         phase: 'active_stream',
         timeoutMs: streamLifetimeTimeoutMs,
@@ -60,7 +59,7 @@ export function buildStreamReadPlan(
         semanticResultTimeoutMs: status.semanticResultReceived || status.pendingProtocolEvent || status.parserSkipped ? undefined : semanticResultTimeoutMs,
         streamLifetimeTimeoutMs,
         timeoutKind: 'stream_lifetime',
-        timeoutMessage: streamMaxLifetimeTimeoutMessage(streamMaxLifetimeSeconds),
+        timeoutMessage: streamMaxLifetimeTimeoutMessage(timeoutSeconds(profile.uncommittedAttemptMaxLifetimeMs)),
         deadlineExceeded: streamLifetimeTimeoutMs <= 0
       }
     }
@@ -73,20 +72,19 @@ export function buildStreamReadPlan(
       semanticResultTimeoutMs: status.semanticResultReceived || status.pendingProtocolEvent || status.parserSkipped ? undefined : semanticResultTimeoutMs,
       streamLifetimeTimeoutMs,
       timeoutKind: 'upstream_activity',
-      timeoutMessage: streamIdleTimeoutMessage(streamIdleTimeoutSeconds),
+      timeoutMessage: streamIdleTimeoutMessage(timeoutSeconds(profile.idleTimeoutMs)),
       deadlineExceeded: rawTimeoutMs <= 0
     }
   }
 
-  const firstChunkTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
-  const firstChunkTimeoutMs = firstChunkTimeoutSeconds * 1000 - (now - startedAt)
-  if (streamLifetimeTimeoutMs <= firstChunkTimeoutMs) {
+  const firstChunkTimeoutMs = profile.firstResponseTimeoutMs - (now - startedAt)
+  if (streamLifetimeTimeoutMs !== undefined && streamLifetimeTimeoutMs <= firstChunkTimeoutMs) {
     return {
       phase: 'first_chunk',
       timeoutMs: streamLifetimeTimeoutMs,
       streamLifetimeTimeoutMs,
       timeoutKind: 'stream_lifetime',
-      timeoutMessage: streamMaxLifetimeTimeoutMessage(streamMaxLifetimeSeconds),
+      timeoutMessage: streamMaxLifetimeTimeoutMessage(timeoutSeconds(profile.uncommittedAttemptMaxLifetimeMs)),
       deadlineExceeded: streamLifetimeTimeoutMs <= 0
     }
   }
@@ -95,9 +93,13 @@ export function buildStreamReadPlan(
     timeoutMs: firstChunkTimeoutMs,
     streamLifetimeTimeoutMs,
     timeoutKind: 'first_chunk',
-    timeoutMessage: firstChunkTimeoutMessage(firstChunkTimeoutSeconds),
+    timeoutMessage: firstChunkTimeoutMessage(timeoutSeconds(profile.firstResponseTimeoutMs)),
     deadlineExceeded: firstChunkTimeoutMs <= 0
   }
+}
+
+function timeoutSeconds(timeoutMs: number): number {
+  return Math.max(1, Math.ceil(timeoutMs / 1000))
 }
 
 export function firstChunkTimeoutMessage(timeoutSeconds: number): string {
