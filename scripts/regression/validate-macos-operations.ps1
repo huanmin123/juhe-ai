@@ -1,4 +1,9 @@
 $ErrorActionPreference = 'Stop'
+
+$releaseStartScript = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../../deploy/start.sh') -Raw
+if ($releaseStartScript -match '\$\{[^}]+,,\}') {
+  throw 'deploy/start.sh must remain compatible with macOS system Bash 3.2'
+}
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path

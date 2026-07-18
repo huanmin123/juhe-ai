@@ -2,6 +2,7 @@
 
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -47,14 +48,72 @@ export function parseArguments(argv) {
     if (!options[option]) throw new Error(`--${option.replaceAll(/([A-Z])/g, '-$1').toLowerCase()} is required\n${usage()}`)
   }
 
+  if (!path.isAbsolute(options.lockpath)) {
+    throw new Error(`owner lock path must be absolute: ${options.lockpath}`)
+  }
+
   return {
-    lockPath: path.resolve(options.lockpath),
+    lockPath: path.normalize(options.lockpath),
     deploymentEpoch: options.deploymentepoch,
     role: options.role,
     version: options.version,
     command: argv[commandIndex + 1],
     commandArgs: argv.slice(commandIndex + 2),
   }
+}
+
+function processIsAlive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    if (error?.code === 'ESRCH') return false
+    if (error?.code === 'EPERM') return true
+    throw error
+  }
+}
+
+async function reclaimStaleLock(lockPath) {
+  let metadata
+  try {
+    metadata = JSON.parse(await readFile(path.join(lockPath, 'metadata.json'), 'utf8'))
+  } catch (error) {
+    throw new Error(`owner lock metadata cannot be verified: ${lockPath}; ${error instanceof Error ? error.message : String(error)}`)
+  }
+
+  const ownerAlive = processIsAlive(metadata.pid)
+  const childAlive = processIsAlive(metadata.childPid)
+  if (ownerAlive === null || childAlive === null || typeof metadata.ownerId !== 'string' || metadata.ownerId === '') {
+    throw new Error(`owner lock metadata cannot be verified: ${lockPath}`)
+  }
+  if (ownerAlive || childAlive) {
+    throw new Error(`owner lock is already held: ${lockPath}`)
+  }
+
+  const stalePath = `${lockPath}.stale.${randomUUID()}`
+  try {
+    await rename(lockPath, stalePath)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false
+    throw new Error(`failed to quarantine stale owner lock: ${lockPath}; ${error instanceof Error ? error.message : String(error)}`)
+  }
+  await rm(stalePath, { recursive: true, force: true })
+  return true
+}
+
+async function acquireLockDirectory(lockPath) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await mkdir(lockPath)
+      return
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error
+      const reclaimed = await reclaimStaleLock(lockPath)
+      if (!reclaimed) continue
+    }
+  }
+  throw new Error(`owner lock changed while acquiring: ${lockPath}`)
 }
 
 async function writeMetadata(lockPath, metadata) {
@@ -80,13 +139,9 @@ function forwardSignal(child, signal) {
 
 export async function runWithOwnerLock(config) {
   const lockPath = config.lockPath
+  const ownerId = randomUUID()
   await mkdir(path.dirname(lockPath), { recursive: true })
-  try {
-    await mkdir(lockPath)
-  } catch (error) {
-    if (error?.code === 'EEXIST') throw new Error(`owner lock is already held: ${lockPath}`)
-    throw error
-  }
+  await acquireLockDirectory(lockPath)
 
   let cleaned = false
   const cleanup = async () => {
@@ -96,17 +151,34 @@ export async function runWithOwnerLock(config) {
   }
 
   try {
+    const startedAt = new Date().toISOString()
     await writeMetadata(lockPath, {
+      ownerId,
       deploymentEpoch: config.deploymentEpoch,
       role: config.role,
       version: config.version,
       pid: process.pid,
-      startedAt: new Date().toISOString(),
+      startedAt,
       command: config.command,
       args: config.commandArgs,
     })
 
     const child = spawn(config.command, config.commandArgs, { stdio: 'inherit' })
+    const childResult = new Promise((resolve, reject) => {
+      child.once('error', reject)
+      child.once('close', (code, signal) => resolve({ code, signal }))
+    })
+    await writeMetadata(lockPath, {
+      ownerId,
+      deploymentEpoch: config.deploymentEpoch,
+      role: config.role,
+      version: config.version,
+      pid: process.pid,
+      childPid: child.pid,
+      startedAt,
+      command: config.command,
+      args: config.commandArgs,
+    })
     const signalHandlers = new Map()
     for (const signal of ['SIGINT', 'SIGTERM']) {
       const handler = () => forwardSignal(child, signal)
@@ -116,10 +188,7 @@ export async function runWithOwnerLock(config) {
 
     let result
     try {
-      result = await new Promise((resolve, reject) => {
-        child.once('error', reject)
-        child.once('close', (code, signal) => resolve({ code, signal }))
-      })
+      result = await childResult
     } finally {
       for (const [signal, handler] of signalHandlers) process.off(signal, handler)
     }

@@ -145,22 +145,79 @@ test('invalid arguments fail closed without creating a lock', async () => {
   }
 })
 
-test('an existing lock directory is rejected and never removed', async () => {
+test('a stale lock is reclaimed only when both wrapper and child processes are gone', async () => {
   const directory = await createTempDirectory()
   const lockPath = path.join(directory, 'stale-owner.lock')
-  const markerPath = path.join(lockPath, 'stale-metadata.json')
+  const metadataPath = path.join(lockPath, 'metadata.json')
 
   try {
     await mkdir(lockPath)
-    await writeFile(markerPath, '{"pid":1,"epoch":"stale"}\n', 'utf8')
+    await writeFile(metadataPath, JSON.stringify({
+      ownerId: 'stale-owner',
+      deploymentEpoch: 'owner-lock-test-epoch',
+      role: 'management',
+      version: '0.1.0-test',
+      pid: 2147483000,
+      childPid: 2147483001,
+      startedAt: '2026-07-19T00:00:00.000Z'
+    }), 'utf8')
 
     const result = await runCli(cliArgs(lockPath, await commandArgs(50))).result
-    assert.notEqual(result.code, 0)
-    assert.match(`${result.stdout}${result.stderr}`, /directory|regular file|lock|owner/i)
-    assert.deepEqual(JSON.parse(await readFile(markerPath, 'utf8')), { pid: 1, epoch: 'stale' })
+    assert.equal(result.code, 0, result.stderr)
+    await assert.rejects(stat(lockPath), error => error?.code === 'ENOENT')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('an unverifiable existing lock is rejected and never removed', async () => {
+  const directory = await createTempDirectory()
+  const lockPath = path.join(directory, 'unverifiable-owner.lock')
+  const markerPath = path.join(lockPath, 'unrelated.json')
+
+  try {
+    await mkdir(lockPath)
+    await writeFile(markerPath, '{"keep":true}\n', 'utf8')
+
+    const result = await runCli(cliArgs(lockPath, await commandArgs(50))).result
+    assert.notEqual(result.code, 0)
+    assert.match(`${result.stdout}${result.stderr}`, /lock|metadata|verify|owner/i)
+    assert.deepEqual(JSON.parse(await readFile(markerPath, 'utf8')), { keep: true })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a stale wrapper lock is preserved while its recorded child is still alive', async () => {
+  const directory = await createTempDirectory()
+  const lockPath = path.join(directory, 'live-child-owner.lock')
+  const metadataPath = path.join(lockPath, 'metadata.json')
+
+  try {
+    await mkdir(lockPath)
+    await writeFile(metadataPath, JSON.stringify({
+      ownerId: 'live-child-owner',
+      deploymentEpoch: 'owner-lock-test-epoch',
+      role: 'management',
+      version: '0.1.0-test',
+      pid: 2147483000,
+      childPid: process.pid,
+      startedAt: '2026-07-19T00:00:00.000Z'
+    }), 'utf8')
+
+    const result = await runCli(cliArgs(lockPath, await commandArgs(50))).result
+    assert.notEqual(result.code, 0)
+    assert.match(`${result.stdout}${result.stderr}`, /already held|owner lock/i)
+    assert.equal((await stat(lockPath)).isDirectory(), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a relative lock path is rejected before starting the command', async () => {
+  const result = await runCli(cliArgs('runtime/owner.lock', await commandArgs(50))).result
+  assert.notEqual(result.code, 0)
+  assert.match(`${result.stdout}${result.stderr}`, /absolute|lock path/i)
 })
 
 process.stdout.write('run-with-owner-lock regression tests loaded.\n')
