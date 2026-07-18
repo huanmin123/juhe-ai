@@ -299,6 +299,7 @@ export interface AccountSummary {
   cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
+  temporaryUnavailableContinuousProbeEnabled?: boolean
   lastHealthCheckAt?: string
   nextHealthCheckAt?: string
   lastHealthSuccessAt?: string

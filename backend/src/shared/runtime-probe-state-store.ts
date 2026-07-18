@@ -10,6 +10,9 @@ export interface RuntimeProbeStateStore<TState extends { runtimeKey: string; gen
   merge(state: TState, ttlMs: number, options: RuntimeProbeStateMergeOptions): Promise<TState | undefined>
   delete(runtimeKey: string): Promise<void>
   deleteGeneration(runtimeKey: string, generation: number): Promise<boolean>
+  acquireGenerationLease(runtimeKey: string, generation: number, leaseId: string, leaseUntilMs: number, ttlMs: number): Promise<TState | undefined>
+  releaseGenerationLease(runtimeKey: string, generation: number, leaseId: string, ttlMs: number): Promise<boolean>
+  completeGenerationLease(runtimeKey: string, generation: number, leaseId: string): Promise<boolean>
   listDue(nowMs: number, limit: number): Promise<string[]>
   nextGeneration(runtimeKey: string, ttlMs: number): Promise<number>
 }
@@ -105,6 +108,44 @@ implements RuntimeProbeStateStore<TState> {
     if (!entry || entry.value.generation !== generation) {
       return false
     }
+    await this.delete(runtimeKey)
+    return true
+  }
+
+  async acquireGenerationLease(runtimeKey: string, generation: number, leaseId: string, leaseUntilMs: number, ttlMs: number): Promise<TState | undefined> {
+    const current = this.freshEntry(runtimeKey)?.value
+    if (!current || current.generation !== generation) return undefined
+    const record = current as TState & { phase?: string; halfOpenLeaseId?: string; halfOpenLeaseUntilMs?: number; halfOpenPreviousNextProbeAtMs?: number }
+    if (record.phase !== 'precheck_pending') return undefined
+    if (record.halfOpenLeaseId && (record.halfOpenLeaseUntilMs ?? 0) > Date.now()) return undefined
+    const leased = {
+      ...current,
+      halfOpenLeaseId: leaseId,
+      halfOpenLeaseUntilMs: leaseUntilMs,
+      halfOpenPreviousNextProbeAtMs: current.nextProbeAtMs,
+      nextProbeAtMs: Math.max(current.nextProbeAtMs, leaseUntilMs)
+    } as TState
+    this.entries.set(runtimeKey, { value: leased, expiresAtMs: Date.now() + normalizedTtlMs(ttlMs) })
+    return leased
+  }
+
+  async releaseGenerationLease(runtimeKey: string, generation: number, leaseId: string, ttlMs: number): Promise<boolean> {
+    const current = this.freshEntry(runtimeKey)?.value
+    if (!current || current.generation !== generation) return false
+    const record = current as TState & { halfOpenLeaseId?: string; halfOpenLeaseUntilMs?: number; halfOpenPreviousNextProbeAtMs?: number }
+    if (record.halfOpenLeaseId !== leaseId) return false
+    const restored = { ...current } as TState & { halfOpenLeaseId?: string; halfOpenLeaseUntilMs?: number; halfOpenPreviousNextProbeAtMs?: number }
+    restored.nextProbeAtMs = record.halfOpenPreviousNextProbeAtMs ?? restored.nextProbeAtMs
+    delete restored.halfOpenLeaseId
+    delete restored.halfOpenLeaseUntilMs
+    delete restored.halfOpenPreviousNextProbeAtMs
+    this.entries.set(runtimeKey, { value: restored, expiresAtMs: Date.now() + normalizedTtlMs(ttlMs) })
+    return true
+  }
+
+  async completeGenerationLease(runtimeKey: string, generation: number, leaseId: string): Promise<boolean> {
+    const current = this.freshEntry(runtimeKey)?.value as (TState & { halfOpenLeaseId?: string }) | undefined
+    if (!current || current.generation !== generation || current.halfOpenLeaseId !== leaseId) return false
     await this.delete(runtimeKey)
     return true
   }
@@ -246,6 +287,43 @@ implements RuntimeProbeStateStore<TState> {
         runtimeKey,
         String(Math.max(0, Math.trunc(generation)))
       ]
+    })
+    return numericRedisResult(result) === 1
+  }
+
+  async acquireGenerationLease(runtimeKey: string, generation: number, leaseId: string, leaseUntilMs: number, ttlMs: number): Promise<TState | undefined> {
+    const result = await (await this.client()).eval(redisAcquireProbeGenerationLeaseScript, {
+      keys: [this.stateKey(runtimeKey), this.dueKey],
+      arguments: [
+        runtimeKey,
+        String(Math.max(0, Math.trunc(generation))),
+        leaseId,
+        String(Math.max(0, Math.trunc(leaseUntilMs))),
+        String(Date.now()),
+        String(normalizedTtlMs(ttlMs))
+      ]
+    })
+    const encoded = typeof result === 'string' ? result : Buffer.isBuffer(result) ? result.toString('utf8') : ''
+    if (!encoded) return undefined
+    try {
+      return JSON.parse(encoded) as TState
+    } catch {
+      return undefined
+    }
+  }
+
+  async releaseGenerationLease(runtimeKey: string, generation: number, leaseId: string, ttlMs: number): Promise<boolean> {
+    const result = await (await this.client()).eval(redisReleaseProbeGenerationLeaseScript, {
+      keys: [this.stateKey(runtimeKey), this.dueKey],
+      arguments: [runtimeKey, String(Math.max(0, Math.trunc(generation))), leaseId, String(normalizedTtlMs(ttlMs))]
+    })
+    return numericRedisResult(result) === 1
+  }
+
+  async completeGenerationLease(runtimeKey: string, generation: number, leaseId: string): Promise<boolean> {
+    const result = await (await this.client()).eval(redisCompleteProbeGenerationLeaseScript, {
+      keys: [this.stateKey(runtimeKey), this.dueKey],
+      arguments: [runtimeKey, String(Math.max(0, Math.trunc(generation))), leaseId]
     })
     return numericRedisResult(result) === 1
   }
@@ -480,6 +558,57 @@ if current_generation and target_generation and current_generation == target_gen
   return 1
 end
 return 0
+`
+
+const redisAcquireProbeGenerationLeaseScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then return '' end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then return '' end
+if tonumber(decoded['generation']) ~= tonumber(ARGV[2]) then return '' end
+if decoded['phase'] ~= 'precheck_pending' then return '' end
+local lease_id = decoded['halfOpenLeaseId']
+local lease_until = tonumber(decoded['halfOpenLeaseUntilMs']) or 0
+if lease_id and lease_id ~= cjson.null and lease_until > tonumber(ARGV[5]) then return '' end
+decoded['halfOpenLeaseId'] = ARGV[3]
+decoded['halfOpenLeaseUntilMs'] = tonumber(ARGV[4])
+decoded['halfOpenPreviousNextProbeAtMs'] = tonumber(decoded['nextProbeAtMs']) or 0
+decoded['nextProbeAtMs'] = math.max(tonumber(decoded['nextProbeAtMs']) or 0, tonumber(ARGV[4]))
+local encoded = cjson.encode(decoded)
+redis.call('SET', KEYS[1], encoded, 'PX', ARGV[6])
+redis.call('ZADD', KEYS[2], tonumber(decoded['nextProbeAtMs']) or 0, ARGV[1])
+redis.call('PEXPIRE', KEYS[2], ARGV[6])
+return encoded
+`
+
+const redisReleaseProbeGenerationLeaseScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then return 0 end
+if tonumber(decoded['generation']) ~= tonumber(ARGV[2]) then return 0 end
+if decoded['halfOpenLeaseId'] ~= ARGV[3] then return 0 end
+decoded['nextProbeAtMs'] = tonumber(decoded['halfOpenPreviousNextProbeAtMs']) or tonumber(decoded['nextProbeAtMs']) or 0
+decoded['halfOpenLeaseId'] = nil
+decoded['halfOpenLeaseUntilMs'] = nil
+decoded['halfOpenPreviousNextProbeAtMs'] = nil
+local encoded = cjson.encode(decoded)
+redis.call('SET', KEYS[1], encoded, 'PX', ARGV[4])
+redis.call('ZADD', KEYS[2], tonumber(decoded['nextProbeAtMs']) or 0, ARGV[1])
+redis.call('PEXPIRE', KEYS[2], ARGV[4])
+return 1
+`
+
+const redisCompleteProbeGenerationLeaseScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then return 0 end
+local ok, decoded = pcall(cjson.decode, current)
+if not ok or type(decoded) ~= 'table' then return 0 end
+if tonumber(decoded['generation']) ~= tonumber(ARGV[2]) then return 0 end
+if decoded['halfOpenLeaseId'] ~= ARGV[3] then return 0 end
+redis.call('DEL', KEYS[1])
+redis.call('ZREM', KEYS[2], ARGV[1])
+return 1
 `
 
 const redisListDueProbeStatesScript = `

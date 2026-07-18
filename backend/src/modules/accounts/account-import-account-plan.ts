@@ -69,6 +69,7 @@ export interface NormalizedImportAccount {
   supportedModels?: string[]
   healthCheckModel?: string
   healthCheckEndpointMode?: AccountHealthCheckEndpointMode
+  temporaryUnavailableContinuousProbeEnabled?: boolean
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -232,6 +233,7 @@ function prepareImportAccountPlan(
   source.supportedModels = optionalStringArrayField(value, 'supportedModels', '账户 supportedModels', item.messages)
   source.healthCheckModel = optionalTextField(value, 'healthCheckModel', '账户 healthCheckModel', item.messages)
   source.healthCheckEndpointMode = optionalHealthCheckEndpointModeField(value, 'healthCheckEndpointMode', '账户 healthCheckEndpointMode', item.messages)
+  source.temporaryUnavailableContinuousProbeEnabled = optionalBooleanField(value, 'temporaryUnavailableContinuousProbeEnabled', '账户 temporaryUnavailableContinuousProbeEnabled', item.messages)
   source.modelMappings = optionalModelMappingsField(value, 'modelMappings', '账户 modelMappings', item.messages)
   source.tags = optionalAccountTagsField(value, 'tags', '账户 tags', item.messages)
   source.accountExpiresAt = optionalDateTimeField(value, 'accountExpiresAt', '账户 accountExpiresAt', item.messages)

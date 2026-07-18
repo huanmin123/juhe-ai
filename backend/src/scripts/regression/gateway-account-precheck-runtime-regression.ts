@@ -67,6 +67,9 @@ try {
   testRuntimeDegradationOrderingAndSuccessRecovery()
   await testRuntimeDegradationDispatchPreparationFallback()
   testGatewayFailuresDoNotCreateAccountSuppression()
+  await testRecoveryWaitRemainsDispatchable()
+  await testPrecheckPendingBlocksMemoryDispatch()
+  await testRedisHalfOpenAcquireFailureReleasesGroupGate()
   await testConfiguredResponsePolicyAvoidance()
   await testGatewayRequestCannotPersistAccountStatus()
   await testExplicitAccountErrorPolicyCanPersistAccountStatus()
@@ -130,6 +133,9 @@ function testPrecheckSummaryMapperBoundary(): void {
 function testLocalSuppressionStoreBoundary(): void {
   const sideEffectsSource = readFileSync(resolve('src/modules/gateway/runtime/account-side-effects.service.ts'), 'utf8')
   const storeSource = readFileSync(resolve('src/modules/gateway/runtime/account-local-suppression-store.ts'), 'utf8')
+  const preparationSource = readFileSync(resolve('src/modules/gateway/dispatch/preparation.ts'), 'utf8')
+  const upstreamDispatchSource = readFileSync(resolve('src/modules/gateway/dispatch/upstream-dispatch.ts'), 'utf8')
+  const routesSource = readFileSync(resolve('src/modules/gateway/routes.ts'), 'utf8')
 
   assert(
     sideEffectsSource.includes("from './account-local-suppression-store.js'"),
@@ -152,6 +158,10 @@ function testLocalSuppressionStoreBoundary(): void {
   assert.match(storeSource, /export function filterLocalAccountSuppressions/)
   assert.match(storeSource, /export function snapshotLocalAccountRuntimeAvailability/)
   assert.match(storeSource, /getAccountCurrentConcurrency/)
+  assert.match(preparationSource, /attemptFallback\('local_account_suppressed'\)[\s\S]*precheckHalfOpenEligible/, '受控半开授权必须发生在后备分组尝试之后')
+  assert.match(upstreamDispatchSource, /allowPrecheckHalfOpen[\s\S]*acquirePrecheckHalfOpenLease/, 'precheck 租约只能由 upstream-dispatch 最后一跳取得')
+  assert.match(upstreamDispatchSource, /halfOpenLease\?\.generation === undefined\s*&&\s*await shouldRetrySameAccountAfterFailure/, 'precheck 半开只允许一次真实上游尝试，不得沿用普通同账户重试')
+  assert.match(routesSource, /finalizeHandledUpstreamResponse\([\s\S]*await confirmHalfOpenSuccess\(\)/, '只有完整响应最终化成功后才能确认半开恢复')
 }
 
 function testRuntimeDegradationOrderingAndSuccessRecovery(): void {
@@ -489,6 +499,101 @@ function testGatewayFailuresDoNotCreateAccountSuppression(): void {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
 }
 
+async function testRedisHalfOpenAcquireFailureReleasesGroupGate(): Promise<void> {
+  const groupKey = `redis-reject-group-${Date.now()}`
+  await assert.rejects(
+    gatewaySideEffects.acquirePrecheckHalfOpenGroupGateForTest(groupKey, async () => {
+      throw new Error('redis eval rejected')
+    }),
+    /redis eval rejected/
+  )
+  const reacquired = await gatewaySideEffects.acquirePrecheckHalfOpenGroupGateForTest(groupKey, async () => 'reacquired')
+  assert.equal(reacquired, 'reacquired', 'Redis EVAL reject 后必须立即释放同组 gate，不能等待 180 秒过期')
+}
+
+async function testRecoveryWaitRemainsDispatchable(): Promise<void> {
+  const account = createRuntimeAccount('gateway-recovery-wait-dispatchable')
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  gatewaySideEffects.recordGatewayAccountFailureForPrecheck(account, undefined, {
+    systemAccountId: 'sys_admin',
+    groupId: 'group-recovery-wait',
+    apiKeyId: 'key-recovery-wait',
+    clientIp: '10.20.30.40',
+    endpoint: '/v1/responses',
+    reason: '模拟用户失败触发后台核实'
+  })
+
+  const filtered = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([account])
+  assert.deepEqual(filtered.accounts.map((item) => item.id), [account.id], '后台探针尚未确认前，recovery_wait 必须保持可调度')
+  assert.equal(filtered.allSuppressed, false, 'recovery_wait 不能把候选池打空')
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id],
+    undefined,
+    'recovery_wait 仍是隐藏后台任务，不能展示成账户异常状态'
+  )
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+}
+
+async function testPrecheckPendingBlocksMemoryDispatch(): Promise<void> {
+  const { account, group, gatewayAccount: blocked } = createGatewayAccount('后台探针确认软阻断')
+  const { account: secondAccount, gatewayAccount: secondBlocked } = createGatewayAccount('同组第二个后台探针确认软阻断')
+  const available = createRuntimeAccount('gateway-precheck-pending-available')
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  const concurrencySlot = accountConcurrency.tryAcquireAccountConcurrency(account.id, 10)
+  const secondConcurrencySlot = accountConcurrency.tryAcquireAccountConcurrency(secondAccount.id, 10)
+  assert.equal(concurrencySlot.acquired, true, '回归前置条件应占用账户并发，保留后台探针确认运行态')
+  assert.equal(secondConcurrencySlot.acquired, true, '回归前置条件应占用同组第二账户并发')
+  await withDbServiceRole(() => gatewaySideEffects.completeGatewayAccountPrecheckForTest(blocked, undefined, {
+    systemAccountId: 'sys_admin',
+    groupId: group.id,
+    apiKeyId: 'key-precheck-background-probe',
+    clientIp: '10.0.10.2',
+    endpoint: '/v1/responses',
+    reason: '模拟后台探针已确认上游异常'
+  }))
+  await withDbServiceRole(() => gatewaySideEffects.completeGatewayAccountPrecheckForTest(secondBlocked, undefined, {
+    systemAccountId: 'sys_admin',
+    groupId: group.id,
+    apiKeyId: 'key-precheck-background-probe-2',
+    clientIp: '10.0.10.3',
+    endpoint: '/v1/responses',
+    reason: '模拟同组第二个后台探针已确认上游异常'
+  }))
+
+  assert.equal(
+    gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[blocked.id]?.status,
+    'precheck_pending',
+    '回归前置条件必须形成待探针复核运行态'
+  )
+  const mixed = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([blocked, available])
+  assert.deepEqual(mixed.accounts.map((item) => item.id), [available.id], 'precheck_pending 必须从普通候选中移除')
+  assert.deepEqual(mixed.suppressedAccountIds, [blocked.id], '软阻断结果必须报告被移除账户')
+
+  const allBlocked = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([blocked])
+  assert.equal(allBlocked.accounts.length, 0, '只有 precheck_pending 候选时不能失败开放继续访问异常账户')
+  assert.equal(allBlocked.allSuppressed, true, '全部候选软阻断时应交给现有后备与可恢复等待链路处理')
+
+  const acquireOptions = {
+    acquirePrecheckHalfOpenLease: true,
+    precheckHalfOpenGroupKey: `sys_admin:${group.id}`
+  } as unknown as Parameters<typeof gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync>[1]
+  const halfOpen = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([blocked, secondBlocked], acquireOptions)
+  assert.equal(halfOpen.accounts.length, 1, '最后一跳应只允许一个 precheck 账户受控半开')
+  assert.equal(halfOpen.acquiredHalfOpenLeases.length, 1, '受控半开必须返回 generation 租约')
+  const concurrentHalfOpen = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([blocked, secondBlocked], acquireOptions)
+  assert.equal(concurrentHalfOpen.accounts.length, 0, '同组另一账户空闲时也不得突破分组半开上限')
+  const lease = halfOpen.acquiredHalfOpenLeases[0] as unknown as { release: () => boolean | Promise<boolean>; completeSuccess?: () => Promise<boolean> }
+  assert.equal(await lease.release(), true, '半开失败或取消必须按租约恢复原 precheck')
+  assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[blocked.id]?.status, 'precheck_pending', '释放租约不得推进或清理后台探针状态')
+  const reacquired = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([blocked], acquireOptions)
+  const successLease = reacquired.acquiredHalfOpenLeases[0] as unknown as { completeSuccess?: () => Promise<boolean> }
+  assert.equal(await successLease.completeSuccess?.(), true, '完整协议成功必须按 generation 清理软阻断')
+  assert.equal(gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[blocked.id], undefined, '完整成功后不得残留 precheck')
+  gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
+  concurrencySlot.release()
+  secondConcurrencySlot.release()
+}
+
 async function testConfiguredResponsePolicyAvoidance(): Promise<void> {
   const avoided = createRuntimeAccount('configured-response-policy-avoided')
   const available = createRuntimeAccount('configured-response-policy-available')
@@ -509,6 +614,12 @@ async function testConfiguredResponsePolicyAvoidance(): Promise<void> {
   const filtered = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([avoided, available])
   assert.deepEqual(filtered.accounts.map((account) => account.id), [available.id], '显式响应策略只能过滤命中的账户')
   assert.deepEqual(filtered.suppressedAccountIds, [avoided.id], '显式响应策略过滤结果应报告命中账户')
+  const configuredHalfOpen = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync(
+    [avoided],
+    { acquirePrecheckHalfOpenLease: true }
+  )
+  assert.equal(configuredHalfOpen.accounts.length, 0, '用户显式策略避让绝不能被 precheck 半开绕过')
+  assert.equal(configuredHalfOpen.acquiredHalfOpenLeases.length, 0, '显式策略避让不得产生半开租约')
 
   gatewaySideEffects.clearGatewayAutomaticAccountRuntimeAvailability(avoided)
   const afterAutomaticRecovery = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([avoided, available])

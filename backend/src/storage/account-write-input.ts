@@ -23,6 +23,7 @@ export const accountCreateInputKeys = new Set([
   'availabilitySchedule',
   'balanceQueryEnabled',
   'balanceQueryConfig',
+  'temporaryUnavailableContinuousProbeEnabled',
   'notes'
 ])
 
@@ -45,6 +46,7 @@ export const accountUpdateInputKeys = new Set([
   'availabilitySchedule',
   'balanceQueryEnabled',
   'balanceQueryConfig',
+  'temporaryUnavailableContinuousProbeEnabled',
   'notes'
 ])
 

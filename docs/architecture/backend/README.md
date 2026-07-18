@@ -51,6 +51,7 @@
 | 目录 / 文件 | 职责 | 变更规则 |
 | --- | --- | --- |
 | `backend/src/server.ts` | Web/API/网关主进程启动、全局中间件、健康检查、系统 API 反向代理、公开接口代理、网关挂载、前端静态资源兜底 | 只放应用装配、DB service / worker 看护和请求入口，不沉淀复杂业务逻辑，不直接执行后台任务 |
+| `backend/src/modules/internal-api/` | 主进程与内部 worker/DB service 之间的受控桥接（例如账户健康检查触发） | 主进程只依赖内部桥接契约，不直接导入 `accounts` 等管理业务模块 |
 | `backend/src/config/` | 运行配置读取、路径解析和默认配置 | 新增环境变量时同步 `.env.example`、开发和部署文档 |
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |

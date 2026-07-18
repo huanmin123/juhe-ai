@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { ref } from 'vue'
 
-import type { AccountStatusSnapshotResult, AccountSummary } from '../../types/domain/accounts.js'
-import { mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountListRow } from '../../views/accounts/accountListMutations.js'
+import type { AccountListResult, AccountRuntimeAvailabilityStatus, AccountStatusSnapshotResult, AccountSummary } from '../../types/domain/accounts.js'
+import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountListRow } from '../../views/accounts/accountListMutations.js'
 import { accountStatusSnapshotPollingDelayMs, createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from '../../views/accounts/accountStatusSnapshotPolling.js'
 
 const usage = (requestCount: number) => ({
@@ -49,6 +50,17 @@ const snapshot: AccountStatusSnapshotResult = {
   }]
 }
 const originalAccounts = [account]
+
+const reactiveCachedResult = ref<AccountListResult>({
+  items: [account],
+  page: 1,
+  pageSize: 50,
+  total: 1,
+  hasMore: false
+}).value
+assert.throws(() => structuredClone(reactiveCachedResult), /could not be cloned|DataCloneError/, 'Vue 响应式缓存值可稳定复现 structuredClone 异常')
+assert.deepEqual(cloneAccountListCacheResult(reactiveCachedResult), reactiveCachedResult, '账户页缓存必须先解除 Vue Proxy 再克隆')
+
 const merged = mergeAccountStatusSnapshot(originalAccounts, snapshot)
 assert.equal(merged[0]?.currentConcurrency, 4)
 assert.equal(merged[0]?.currentConcurrencyAvailable, true)
@@ -91,6 +103,7 @@ let requestSignal: AbortSignal | undefined
 let requestCount = 0
 let maxConcurrent = 0
 let concurrent = 0
+const requestedBatchSizes: number[] = []
 const delays: number[] = []
 const polling = createAccountStatusSnapshotPolling({
   accountIds: () => Array.from({ length: 105 }, (_, index) => `account_${index}`),
@@ -98,7 +111,7 @@ const polling = createAccountStatusSnapshotPolling({
   isVisible: () => visible,
   random: () => 0.5,
   request: async (ids, signal) => {
-    assert.equal(ids.length, 100)
+    requestedBatchSizes.push(ids.length)
     requestSignal = signal
     requestCount += 1
     concurrent += 1
@@ -123,11 +136,16 @@ assert.equal(requestSignal?.aborted, true, '页面转为 hidden 时必须中止�
 pending?.()
 await Promise.resolve()
 await Promise.resolve()
-assert.equal(requestCount, 1, '页面隐藏时不得继续刷新')
+assert.equal(requestCount, 1, '页面隐藏时不得继续下一分块或刷新')
 visible = true
 polling.refreshNow()
 await Promise.resolve()
-assert.equal(requestCount, 2, '页面重新可见时应立即恢复刷新')
+assert.equal(requestCount, 2, '页面重新可见时应立即恢复首个分块')
+pending?.()
+await Promise.resolve()
+await Promise.resolve()
+assert.equal(requestCount, 3, '超过 100 个账户时必须继续请求剩余分块')
+assert.deepEqual(requestedBatchSizes, [100, 100, 5], '每个运行态快照请求最多 100 个账户且必须覆盖全部已加载账户')
 pending?.()
 await Promise.resolve()
 await Promise.resolve()
@@ -162,6 +180,31 @@ assert.equal(preservedRefresh[0]?.runtimeAvailability?.status, 'local_suppressed
 assert.equal(preservedRefresh[0]?.accountRuntimeAvailabilityAvailable, true)
 
 assert.equal(preservedRefresh[0]?.effectiveAvailability, previousRuntimeAccount.effectiveAvailability)
+
+const allRuntimeStatuses = [
+  'normal',
+  'degraded',
+  'local_suppressed',
+  'half_open',
+  'precheck_pending',
+  'precheck_failed'
+] satisfies AccountRuntimeAvailabilityStatus[]
+for (const status of allRuntimeStatuses) {
+  const previous = {
+    ...previousRuntimeAccount,
+    id: `acc_runtime_${status}`,
+    runtimeAvailability: { ...previousRuntimeAccount.runtimeAvailability!, status }
+  } as AccountSummary
+  const refreshed = {
+    ...previous,
+    runtimeAvailability: undefined,
+    effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' },
+    accountRuntimeAvailabilityAvailable: false
+  } as AccountSummary
+  const preserved = mergeAccountListRuntimeSnapshot([previous], [refreshed], false)
+  assert.equal(preserved[0]?.runtimeAvailability?.status, status, `列表运行态来源不可用时必须保留 ${status}`)
+  assert.equal(preserved[0]?.effectiveAvailability, previous.effectiveAvailability)
+}
 
 const changedScopeRefresh = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [refreshedWithoutRuntime], false, false)
 assert.equal(changedScopeRefresh[0]?.runtimeAvailability, undefined)
@@ -257,4 +300,4 @@ const rowRuntimeWithDisabledAccount = replaceAccountListRow([previousRuntimeAcco
 assert.equal(rowRuntimeWithDisabledAccount[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(rowRuntimeWithDisabledAccount[0]?.effectiveAvailability?.status, 'disabled', '行级更新的账户级阻断必须优先于旧运行态派生状态')
 
-console.log('账户状态快照前端回归通过：局部合并、100 ID、递归周期、hidden 与非重叠约束生效')
+console.log('账户状态快照前端回归通过：全部运行态稳定合并、100 ID 分块全覆盖、递归周期、hidden 与非重叠约束生效')

@@ -138,6 +138,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
     clientIp: undefined,
     clientStrategy,
     requestLane: 'text',
+    requestDeadlineAtMs: startedAt + input.timeoutMs,
     signal: dispatchSignal,
     attemptFallback: async () => ({ attempted: false })
   })

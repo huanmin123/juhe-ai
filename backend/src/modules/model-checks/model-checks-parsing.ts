@@ -97,6 +97,7 @@ export function buildModelMatchEvidence(actual: unknown, expected: string, conte
 } {
   const text = textValue(actual)
   const matchedModel = modelMatches(text, expected)
+    || Boolean(context.modelMappingApplied && context.requestModel && modelMatches(text, context.requestModel))
   return {
     expectedModel: expected,
     ...(context.requestModel ? { requestModel: context.requestModel } : {}),

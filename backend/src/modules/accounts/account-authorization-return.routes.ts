@@ -6,6 +6,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { publishAccountStaticReset } from '../page-data/page-data-change.publisher.js'
 
 export function registerAccountAuthorizationReturnRoutes(router: Router): void {
   router.post('/:id/return-authorization', mutationGuard({
@@ -24,14 +25,14 @@ export function registerAccountAuthorizationReturnRoutes(router: Router): void {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const before = await findAccountSummaryAsync(req.params.id, requestAccess)
     try {
-      await runLoggedOperationAsync(async () => {
+      const authorization = await runLoggedOperationAsync(async () => {
         const authorization = await returnAccountAuthorizationInstanceForGranteeAsync(req.params.id, requestAccess)
         if (!authorization) {
           throw new Error('授权账户不存在或不可归还')
         }
         const resourceName = before?.name ?? authorization.resource_id
         return {
-          result: true,
+          result: authorization,
           log: {
             operationScopeSystemAccountId: authorization.grantee_system_account_id,
             mode: operationMode(requestAccess),
@@ -64,6 +65,10 @@ export function registerAccountAuthorizationReturnRoutes(router: Router): void {
           }
         }
       }, req)
+      await publishAccountStaticReset([
+        authorization.resource_owner_system_account_id,
+        authorization.grantee_system_account_id
+      ])
       res.status(204).send()
     } catch (error) {
       if (error instanceof Error && error.message === '授权账户不存在或不可归还') {

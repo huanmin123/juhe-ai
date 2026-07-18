@@ -219,6 +219,8 @@ export {
   listAccountsDueForCooldownRetestPageAsync,
   recordCooldownAccountRetestFailure,
   recordCooldownAccountRetestFailureAsync,
+  recordCooldownAccountRetestSuccess,
+  recordCooldownAccountRetestSuccessAsync,
   type CooldownAccountRetestCursor,
   type CooldownAccountRetestDeferResult,
   type CooldownAccountRetestFailureInput,
@@ -1731,6 +1733,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
+  const temporaryUnavailableContinuousProbeEnabled = normalizeOptionalBooleanInput(input, 'temporaryUnavailableContinuousProbeEnabled', true, '临时不可调用持续恢复探活')
   const account: AccountSummary = accountSummaryWithEffectiveAvailability({
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
@@ -1770,6 +1773,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
     cooldownRetestLastAt: undefined,
     cooldownRetestLastStatusCode: undefined,
+    temporaryUnavailableContinuousProbeEnabled,
     balanceQueryEnabled: balance.enabled,
     balanceQueryConfig: balance.config,
     balanceQueryNextRefreshAt: balance.nextRefreshAt,
@@ -1792,9 +1796,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          health_check_model, health_check_endpoint_mode, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+          health_check_model, health_check_endpoint_mode, cooldown_retest_observation_started_at, temporary_unavailable_continuous_probe_enabled, stream_failure_count, stream_failure_window_started_at,
           balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1828,6 +1832,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.healthCheckModel,
         account.healthCheckEndpointMode,
         account.cooldownRetestObservationStartedAt ?? null,
+        account.temporaryUnavailableContinuousProbeEnabled ? 1 : 0,
         0,
         null,
         balance.enabled ? 1 : 0,
@@ -1970,6 +1975,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     throw new Error('超级优先和降级备用不能同时开启')
   }
   const createSchedulable = normalizeOptionalBooleanInput(input, 'schedulable', true, '账户是否参与调度')
+  const temporaryUnavailableContinuousProbeEnabled = normalizeOptionalBooleanInput(input, 'temporaryUnavailableContinuousProbeEnabled', true, '临时不可调用持续恢复探活')
   const systemAccountName = includeSystemAccountFields(access)
     ? await loadSystemAccountNameForAccountWriteAsync(client, systemAccountId)
     : undefined
@@ -2012,6 +2018,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     cooldownRetestObservationStartedAt: initialObservationStartedAt,
     cooldownRetestLastAt: undefined,
     cooldownRetestLastStatusCode: undefined,
+    temporaryUnavailableContinuousProbeEnabled,
     balanceQueryEnabled: balance.enabled,
     balanceQueryConfig: balance.config,
     balanceQueryNextRefreshAt: balance.nextRefreshAt,
@@ -2031,9 +2038,9 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
           id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           oauth_access_token_expires_at, oauth_refresh_token_present, proxy_profile_id, concurrency_limit,
           priority, super_priority_enabled, fallback_enabled, client_compatibility, schedulable, availability_schedule_json, availability_schedule_next_check_at, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-          health_check_model, health_check_endpoint_mode, cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at,
+          health_check_model, health_check_endpoint_mode, cooldown_retest_observation_started_at, temporary_unavailable_continuous_probe_enabled, stream_failure_count, stream_failure_window_started_at,
           balance_query_enabled, balance_query_config_json, balance_query_next_refresh_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `, [
         account.id,
         systemAccountId,
@@ -2066,6 +2073,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
         account.healthCheckModel,
         account.healthCheckEndpointMode,
         account.cooldownRetestObservationStartedAt ?? null,
+        account.temporaryUnavailableContinuousProbeEnabled ? 1 : 0,
         0,
         null,
         balance.enabled ? 1 : 0,
@@ -2261,6 +2269,27 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   let nextLastErrorMessage = current.lastErrorMessage
   let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
   let clearCooldownRetestState = false
+  const nextTemporaryUnavailableContinuousProbeEnabled = normalizeOptionalBooleanInput(
+    input,
+    'temporaryUnavailableContinuousProbeEnabled',
+    current.temporaryUnavailableContinuousProbeEnabled !== false,
+    '临时不可调用持续恢复探活'
+  )
+  const boundedRecoveryPolicyActivated = current.temporaryUnavailableContinuousProbeEnabled !== false
+    && !nextTemporaryUnavailableContinuousProbeEnabled
+  const boundedRecoveryObservationStartedAt = boundedRecoveryPolicyActivated
+    ? new Date(updateNowMs).toISOString()
+    : undefined
+  const boundedRecoveryCooldownUntil = boundedRecoveryPolicyActivated
+    ? initialCooldownUntilForStatus('temporary_unavailable', updateNowMs)
+    : undefined
+  const restartBoundedRecoveryObservation = current.status === 'temporary_unavailable'
+    && boundedRecoveryPolicyActivated
+  if (restartBoundedRecoveryObservation) {
+    nextCooldownRetestObservationStartedAt = boundedRecoveryObservationStartedAt
+    nextCooldownUntil = boundedRecoveryCooldownUntil
+    clearCooldownRetestState = true
+  }
   if (hasStatusInput || requiresBackgroundRecheck) {
     if (nextStatus === 'active') {
       nextCooldownUntil = undefined
@@ -2359,6 +2388,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
+    temporaryUnavailableContinuousProbeEnabled: nextTemporaryUnavailableContinuousProbeEnabled,
     lastUsedAt: current.lastUsedAt,
     usage: current.usage,
     ...(balanceUpdate.present ? {
@@ -2370,6 +2400,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
+  const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2383,7 +2414,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?, health_check_endpoint_mode = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
               WHEN ? = 1 THEN ?
@@ -2420,6 +2451,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
+        next.temporaryUnavailableContinuousProbeEnabled ? 1 : 0,
         next.healthCheckModel,
         next.healthCheckEndpointMode,
         balanceUpdate.present ? 1 : 0,
@@ -2458,6 +2490,32 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     if (Number(result.changes ?? 0) > 0 && next.name !== current.name) {
       replaceAccountNameSearchTerms(database, id, systemAccountId, next.name, updatedAt)
       renamedAuthorizationInstanceIds = syncAccountAuthorizationInstanceNamesForSourceAccount(database, id, next.name, updatedAt)
+    }
+    if (Number(result.changes ?? 0) > 0 && continuousProbePolicyChanged) {
+      database.prepare(`
+        UPDATE accounts
+        SET temporary_unavailable_continuous_probe_enabled = ?,
+            config_revision = config_revision + 1,
+            cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
+            cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
+            cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
+            cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
+            cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
+            updated_at = ?
+        WHERE authorization_instance_source_account_id = ? AND deleted_at IS NULL
+      `).run(
+        nextTemporaryUnavailableContinuousProbeEnabled ? 1 : 0,
+        boundedRecoveryPolicyActivated ? 1 : 0,
+        boundedRecoveryPolicyActivated ? 1 : 0,
+        boundedRecoveryObservationStartedAt ?? null,
+        boundedRecoveryPolicyActivated ? 1 : 0,
+        boundedRecoveryPolicyActivated ? 1 : 0,
+        boundedRecoveryPolicyActivated ? 1 : 0,
+        boundedRecoveryCooldownUntil ?? null,
+        updatedAt,
+        id
+      )
+      invalidateAccountLookupCache()
     }
     if (Number(result.changes ?? 0) > 0 && supportedModelsChanged) {
       replaceAccountSupportedModels(id, next.providerCode, nextSupportedModels)
@@ -2663,6 +2721,27 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
   let nextLastErrorMessage = current.lastErrorMessage
   let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
   let clearCooldownRetestState = false
+  const nextTemporaryUnavailableContinuousProbeEnabled = normalizeOptionalBooleanInput(
+    input,
+    'temporaryUnavailableContinuousProbeEnabled',
+    current.temporaryUnavailableContinuousProbeEnabled !== false,
+    '临时不可调用持续恢复探活'
+  )
+  const boundedRecoveryPolicyActivated = current.temporaryUnavailableContinuousProbeEnabled !== false
+    && !nextTemporaryUnavailableContinuousProbeEnabled
+  const boundedRecoveryObservationStartedAt = boundedRecoveryPolicyActivated
+    ? new Date(updateNowMs).toISOString()
+    : undefined
+  const boundedRecoveryCooldownUntil = boundedRecoveryPolicyActivated
+    ? initialCooldownUntilForStatus('temporary_unavailable', updateNowMs)
+    : undefined
+  const restartBoundedRecoveryObservation = current.status === 'temporary_unavailable'
+    && boundedRecoveryPolicyActivated
+  if (restartBoundedRecoveryObservation) {
+    nextCooldownRetestObservationStartedAt = boundedRecoveryObservationStartedAt
+    nextCooldownUntil = boundedRecoveryCooldownUntil
+    clearCooldownRetestState = true
+  }
   if (hasStatusInput || requiresBackgroundRecheck) {
     if (nextStatus === 'active') {
       nextCooldownUntil = undefined
@@ -2761,6 +2840,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
     cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
+    temporaryUnavailableContinuousProbeEnabled: nextTemporaryUnavailableContinuousProbeEnabled,
     lastUsedAt: current.lastUsedAt,
     usage: current.usage,
     ...(balanceUpdate.present ? {
@@ -2772,6 +2852,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
 
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
+  const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
@@ -2785,7 +2866,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
             priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, health_check_model = ?, health_check_endpoint_mode = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
               WHEN ? = 1 THEN ?
@@ -2823,6 +2904,7 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
         nextCooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
+        next.temporaryUnavailableContinuousProbeEnabled ? 1 : 0,
         next.healthCheckModel,
         next.healthCheckEndpointMode,
         balanceUpdate.present ? 1 : 0,
@@ -2865,6 +2947,32 @@ export async function updateAccountAsync(id: string, input: Record<string, unkno
       if (next.name !== current.name) {
         await replaceAccountNameSearchTermsAsync(tx, id, systemAccountId, next.name, updatedAt)
         renamedAuthorizationInstanceIds = await syncAccountAuthorizationInstanceNamesForSourceAccountAsync(tx, id, next.name, updatedAt)
+      }
+      if (continuousProbePolicyChanged) {
+        await tx.execute(`
+          UPDATE ${accountWriteTable(tx, 'accounts')}
+          SET temporary_unavailable_continuous_probe_enabled = ?,
+              config_revision = config_revision + 1,
+              cooldown_retest_failure_count = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN 0 ELSE cooldown_retest_failure_count END,
+              cooldown_retest_observation_started_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_retest_observation_started_at END,
+              cooldown_retest_last_at = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_at END,
+              cooldown_retest_last_status_code = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN NULL ELSE cooldown_retest_last_status_code END,
+              cooldown_until = CASE WHEN ? = 1 AND status = 'temporary_unavailable' THEN ? ELSE cooldown_until END,
+              updated_at = ?
+          WHERE authorization_instance_source_account_id = ? AND deleted_at IS NULL
+        `, [
+          nextTemporaryUnavailableContinuousProbeEnabled ? 1 : 0,
+          boundedRecoveryPolicyActivated ? 1 : 0,
+          boundedRecoveryPolicyActivated ? 1 : 0,
+          boundedRecoveryObservationStartedAt ?? null,
+          boundedRecoveryPolicyActivated ? 1 : 0,
+          boundedRecoveryPolicyActivated ? 1 : 0,
+          boundedRecoveryPolicyActivated ? 1 : 0,
+          boundedRecoveryCooldownUntil ?? null,
+          updatedAt,
+          id
+        ])
+        invalidateAccountLookupCache()
       }
       if (supportedModelsChanged) {
         await replaceAccountSupportedModelsInClientAsync(tx, id, next.providerCode, nextSupportedModels)

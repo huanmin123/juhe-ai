@@ -20,38 +20,25 @@ assert.equal(result.state.consecutiveFailures, 1)
 result = recordDbServiceHealthProbe(result.state, { nowMs: startedAtMs + 195_000, healthy: false })
 assert.equal(result.action, 'none')
 result = recordDbServiceHealthProbe(result.state, { nowMs: startedAtMs + 210_000, healthy: false })
-assert.equal(result.action, 'recover', '宽限后连续 3 次失败必须定向恢复 DB service')
+assert.equal(result.action, 'none', '短于五分钟的 DB health 异常不得终止子进程')
+result = recordDbServiceHealthProbe(result.state, { nowMs: startedAtMs + 479_999, healthy: false })
+assert.equal(result.action, 'none')
+result = recordDbServiceHealthProbe(result.state, { nowMs: startedAtMs + 480_000, healthy: false })
+assert.equal(result.action, 'recover', '宽限后持续失败五分钟且最终复核仍失败才能定向恢复 DB service')
 assert.equal(result.state.consecutiveFailures, 0)
 
 state = result.state
-for (const offset of [225_000, 240_000, 255_000]) {
-  result = recordDbServiceHealthProbe(state, { nowMs: startedAtMs + offset, healthy: false })
-  state = result.state
-}
-assert.equal(result.action, 'suppressed_cooldown', '上次恢复后 60 秒内必须阻断重复恢复')
-
-result = recordDbServiceHealthProbe(state, { nowMs: startedAtMs + 270_000, healthy: true })
+result = recordDbServiceHealthProbe(state, { nowMs: startedAtMs + 495_000, healthy: true })
 assert.equal(result.action, 'none')
 assert.equal(result.state.consecutiveFailures, 0, '一次成功探测必须清空连续失败')
 
-state = createDbServiceHealthRecoveryState(startedAtMs)
-for (const recoveryStartedAt of [180_000, 240_000, 300_000]) {
-  for (let index = 0; index < 3; index += 1) {
-    result = recordDbServiceHealthProbe(state, {
-      nowMs: startedAtMs + recoveryStartedAt + index * 15_000,
-      healthy: false
-    })
-    state = result.state
-  }
-  assert.equal(result.action, 'recover')
+state = {
+  ...createDbServiceHealthRecoveryState(startedAtMs),
+  consecutiveFailures: 20,
+  failureStartedAtMs: startedAtMs + 180_000,
+  recoveryAttemptsMs: [startedAtMs + 300_000, startedAtMs + 360_000, startedAtMs + 420_000]
 }
-for (let index = 0; index < 3; index += 1) {
-  result = recordDbServiceHealthProbe(state, {
-    nowMs: startedAtMs + 360_000 + index * 15_000,
-    healthy: false
-  })
-  state = result.state
-}
+result = recordDbServiceHealthProbe(state, { nowMs: startedAtMs + 480_000, healthy: false })
 assert.equal(result.action, 'suppressed_budget', '15 分钟内第 4 次恢复必须只告警，不再终止 child')
 
 state = resetDbServiceHealthRecoveryState(state, startedAtMs + 400_000)

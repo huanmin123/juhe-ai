@@ -15,6 +15,7 @@ import {
   viewer
 } from '../operation-logs/operation-log.service.js'
 import { accountBatchEditContextSchema, accountBatchEditSchema } from './account-request.schemas.js'
+import { accountPageDataOwnerIds, publishAccountRuntimeReset, publishAccountStaticReset, resolveAccountsPageDataOwners } from '../page-data/page-data-change.publisher.js'
 import { sanitizeAccountBatchEditDetailResponse, sanitizeAccountResponse } from './account-response-sanitizer.js'
 import { batchEditAccountsAsync, loadAccountBatchEditContextAsync } from './account-batch-edit.service.js'
 
@@ -97,6 +98,12 @@ export function registerAccountBatchEditRoutes(router: Router): void {
           }
         }
       }, req)
+      const owners = await resolveAccountsPageDataOwners(result.accounts.map((account) => ({
+        accountId: account.id,
+        ownerSystemAccountIds: accountPageDataOwnerIds(account)
+      })))
+      await publishAccountStaticReset(owners.ownerSystemAccountIds, owners.allScopes)
+      await publishAccountRuntimeReset(owners.ownerSystemAccountIds, owners.allScopes)
       res.json(ok({
         ...result,
         accounts: result.accounts.map(sanitizeAccountResponse)

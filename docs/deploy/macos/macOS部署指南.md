@@ -8,7 +8,7 @@
 | 长期运行 | release 目录 + user `launchd` | 本文第 4 节 |
 | Docker 部署 | Docker Desktop + Compose | [Docker 部署指南](../Docker部署指南.md) |
 | 公网 HTTPS | 宿主机 Caddy | [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) |
-| 自动恢复 | `launchd` + watchdog | [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) |
+| 自动恢复 | `launchd KeepAlive` + 内部 supervisor | [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) |
 | 上游代理 | sing-box + 后台代理绑定 | [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md) |
 
 ## 2. 部署前检查
@@ -176,9 +176,11 @@ JUHE_AI_TRUST_PROXY=true
 
 ## 7. 自动恢复
 
-长期运行用 watchdog 检查本机 `/__aisys__/health` 和 `/__aisys__/api/health`。连续失败后终止当前 server，由 launchd `KeepAlive` 拉起；公网域名失败但本机 health 正常时不重启主服务。策略见 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
+长期运行由 launchd `KeepAlive` 在主进程退出后拉起；DB service 和 worker 由内部 supervisor 独立恢复。外部 HTTP watchdog 已退役，公网域名只观察告警。策略见 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
 
 ## 8. 上游网络代理
+
+临时接管发布时，在候选服务环境显式设置 `JUHE_AI_SYSTEM_API_READ_ONLY=true`，阻止管理端和 Public API 非读取请求写入临时数据库；客户端 `/v1` 继续由候选网关提供服务。正式服务保持 `false`，回切前先验证配置并复核 Nginx/Caddy 入口。
 
 裸机同机 sing-box：
 

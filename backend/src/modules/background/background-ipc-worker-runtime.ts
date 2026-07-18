@@ -1,5 +1,6 @@
 import type { ChildProcess } from 'node:child_process'
 
+import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
 import type { BackgroundWorkerProcessRole } from './background-ipc.types.js'
 
 export interface BackgroundWorkerChildProcessSet {
@@ -35,16 +36,16 @@ export function terminateBrokenWorkerIpc(
     try {
       child.kill('SIGTERM')
     } catch (killError) {
-      process.stderr.write(`[background-worker] 终止 IPC 异常 ${role} 失败：${errorMessage(killError)}\n`)
+      forwardSupervisorOutput(process.stderr, `[background-worker] 终止 IPC 异常 ${role} 失败：${errorMessage(killError)}\n`)
     }
   }
   if (error) {
-    process.stderr.write(`[background-worker] ${role} IPC 已断开：${errorMessage(error)}\n`)
+    forwardSupervisorOutput(process.stderr, `[background-worker] ${role} IPC 已断开：${errorMessage(error)}\n`)
   }
 }
 
 export function writeParentIpcBrokenLog(error: unknown): void {
-  process.stderr.write(`[background-worker] 父进程 IPC 已断开：${errorMessage(error)}\n`)
+  forwardSupervisorOutput(process.stderr, `[background-worker] 父进程 IPC 已断开：${errorMessage(error)}\n`)
 }
 
 function errorMessage(error: unknown): string {

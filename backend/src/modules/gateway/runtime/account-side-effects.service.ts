@@ -74,6 +74,7 @@ import {
   shouldSkipHealthySuccessfulAccountSideEffect
 } from './account-side-effect-policy.js'
 import { gatewayAccountConcurrencyAccountId } from '../dispatch/account-concurrency-identity.js'
+import { notifyOneRecoverableUnavailableRuntimeWaiter } from './recoverable-unavailable-wait.js'
 
 export type { GatewayAccountRuntimeClearTarget, SuppressibleGatewayAccount } from './account-runtime-keys.js'
 export type {
@@ -141,6 +142,9 @@ interface PrecheckState {
   running: boolean
   waitingForConcurrencyDrain?: boolean
   minimumObservationCompletedForTest?: boolean
+  halfOpenLeaseId?: string
+  halfOpenLeaseUntilMs?: number
+  halfOpenPreviousNextProbeAtMs?: number
 }
 
 interface RecoveryProbeState {
@@ -182,6 +186,8 @@ interface DistributedRecoveryProbeState {
   clientIpMarkers?: string[]
   apiKeyMarkers?: string[]
   precheckRequested: boolean
+  halfOpenLeaseId?: string
+  halfOpenLeaseUntilMs?: number
 }
 
 interface ConfiguredPolicyAvoidanceState {
@@ -1251,12 +1257,14 @@ async function persistDistributedRecoveryProbeState(state: DistributedRecoveryPr
 
 async function clearDistributedRecoveryProbeState(runtimeKey: string): Promise<void> {
   await distributedRecoveryProbeStore.delete(runtimeKey)
+  notifyOneRecoverableUnavailableRuntimeWaiter(runtimeKey)
   clearGatewayRuntimeCache()
 }
 
 async function clearDistributedRecoveryProbeStateGeneration(runtimeKey: string, generation: number): Promise<boolean> {
   const cleared = await distributedRecoveryProbeStore.deleteGeneration(runtimeKey, generation)
   if (cleared) {
+    notifyOneRecoverableUnavailableRuntimeWaiter(runtimeKey)
     clearGatewayRuntimeCache()
     return true
   }
@@ -1439,19 +1447,279 @@ export async function filterGatewayAccountRuntimeSuppressionsAsync<T extends Sup
   options: LocalAccountSuppressionFilterOptions = {}
 ): Promise<LocalAccountSuppressionFilterResult<T>> {
   const configuredPolicyResult = await filterConfiguredPolicyAvoidances(accounts)
-  if (runtimeConfig.runtimeStateDriver === 'redis' || configuredPolicyResult.accounts.length === 0) {
+  if (configuredPolicyResult.accounts.length === 0) {
     return configuredPolicyResult
   }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    const distributedPrecheckResult = await filterDistributedPrecheckSuppressions(configuredPolicyResult.accounts, options)
+    const nextRetryAtMs = earliestTime(configuredPolicyResult.nextRetryAtMs, distributedPrecheckResult.nextRetryAtMs)
+    return {
+      ...distributedPrecheckResult,
+      suppressedCount: configuredPolicyResult.suppressedCount + distributedPrecheckResult.suppressedCount,
+      allSuppressed: distributedPrecheckResult.accounts.length === 0 && accounts.length > 0,
+      suppressedAccountIds: [...configuredPolicyResult.suppressedAccountIds, ...distributedPrecheckResult.suppressedAccountIds],
+      precheckSuppressedAccountIds: distributedPrecheckResult.precheckSuppressedAccountIds,
+      configuredPolicySuppressedAccountIds: configuredPolicyResult.configuredPolicySuppressedAccountIds,
+      nextRetryAtMs,
+      nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - Date.now())
+    }
+  }
   const localResult = filterLocallySuppressedGatewayAccounts(configuredPolicyResult.accounts, options)
+  if (options.acquirePrecheckHalfOpenLease && localResult.allSuppressed) {
+    const groupLease = acquirePrecheckHalfOpenGroupLease(options.precheckHalfOpenGroupKey)
+    const precheckLease = groupLease ? acquireMemoryPrecheckHalfOpenLease(configuredPolicyResult.accounts) : undefined
+    if (groupLease && !precheckLease) releasePrecheckHalfOpenGroupLease(groupLease)
+    if (precheckLease) {
+      precheckLease.lease = withPrecheckHalfOpenGroupLease(precheckLease.lease, groupLease!)
+      return {
+        accounts: [precheckLease.account],
+        suppressedCount: configuredPolicyResult.suppressedCount + Math.max(0, localResult.suppressedCount - 1),
+        allSuppressed: false,
+        suppressedAccountIds: [
+          ...configuredPolicyResult.suppressedAccountIds,
+          ...localResult.suppressedAccountIds.filter((accountId) => accountId !== precheckLease.account.id)
+        ],
+        acquiredHalfOpenLeases: [precheckLease.lease],
+        precheckSuppressedAccountIds: localResult.suppressedAccountIds.filter((accountId) => accountId !== precheckLease.account.id),
+        configuredPolicySuppressedAccountIds: configuredPolicyResult.configuredPolicySuppressedAccountIds,
+        nextRetryAtMs: localResult.nextRetryAtMs,
+        nextRetryAfterMs: localResult.nextRetryAfterMs
+      }
+    }
+  }
   const nextRetryAtMs = earliestTime(configuredPolicyResult.nextRetryAtMs, localResult.nextRetryAtMs)
   return {
     ...localResult,
     suppressedCount: configuredPolicyResult.suppressedCount + localResult.suppressedCount,
     allSuppressed: localResult.accounts.length === 0 && accounts.length > 0,
     suppressedAccountIds: [...configuredPolicyResult.suppressedAccountIds, ...localResult.suppressedAccountIds],
+    precheckSuppressedAccountIds: configuredPolicyResult.accounts
+      .filter((account) => precheckStates.has(gatewayAccountRuntimeKey(account)))
+      .map((account) => account.id),
+    precheckSuppressedRuntimeScopes: configuredPolicyResult.accounts.flatMap((account) => {
+      const runtimeKey = gatewayAccountRuntimeKey(account)
+      const state = precheckStates.get(runtimeKey)
+      return state ? [{ runtimeKey, generation: state.generation }] : []
+    }),
+    configuredPolicySuppressedAccountIds: configuredPolicyResult.configuredPolicySuppressedAccountIds,
     nextRetryAtMs,
     nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - Date.now())
   }
+}
+
+async function filterDistributedPrecheckSuppressions<T extends SuppressibleGatewayAccount>(
+  accounts: T[],
+  options: LocalAccountSuppressionFilterOptions = {}
+): Promise<LocalAccountSuppressionFilterResult<T>> {
+  const now = Date.now()
+  const runtimeKeys = accounts.map((account) => gatewayAccountRuntimeKey(account))
+  const states = new Map<string, DistributedRecoveryProbeState>()
+  for (let index = 0; index < runtimeKeys.length; index += 100) {
+    const batch = await distributedRecoveryProbeStore.getMany(runtimeKeys.slice(index, index + 100))
+    for (const [runtimeKey, state] of batch) states.set(runtimeKey, state)
+  }
+  const blocked = accounts.flatMap((account, index) => {
+    const state = states.get(runtimeKeys[index]!)
+    return state?.phase === 'precheck_pending' ? [{ account, state }] : []
+  })
+  const acquiredHalfOpenLeases: GatewayAccountHalfOpenLease[] = []
+  const groupAcquisition = options.acquirePrecheckHalfOpenLease
+    ? await acquireWithPrecheckHalfOpenGroupGate(
+        options.precheckHalfOpenGroupKey,
+        () => acquireDistributedPrecheckHalfOpenLease(blocked)
+      )
+    : undefined
+  const halfOpenAccount = groupAcquisition?.value
+  if (halfOpenAccount && groupAcquisition) {
+    halfOpenAccount.lease = withPrecheckHalfOpenGroupLease(halfOpenAccount.lease, groupAcquisition.groupLease)
+  }
+  if (halfOpenAccount) acquiredHalfOpenLeases.push(halfOpenAccount.lease)
+  const blockedRuntimeKeys = new Set(blocked
+    .filter((item) => item.state.runtimeKey !== halfOpenAccount?.state.runtimeKey)
+    .map((item) => item.state.runtimeKey))
+  const visibleAccounts = accounts.filter((_account, index) => !blockedRuntimeKeys.has(runtimeKeys[index]!))
+  const remainingBlocked = blocked.filter((item) => item.state.runtimeKey !== halfOpenAccount?.state.runtimeKey)
+  const nextRetryAtMs = remainingBlocked
+    .map((item) => item.state.nextProbeAtMs)
+    .reduce<number | undefined>((earliest, value) => {
+      const retryAtMs = value <= now ? now + distributedRecoveryProbeDueRetryDelayMs : value
+      return earliest === undefined ? retryAtMs : Math.min(earliest, retryAtMs)
+    }, undefined)
+  return {
+    accounts: visibleAccounts,
+    suppressedCount: remainingBlocked.length,
+    allSuppressed: visibleAccounts.length === 0 && accounts.length > 0,
+    suppressedAccountIds: remainingBlocked.map((item) => item.account.id),
+    acquiredHalfOpenLeases,
+    precheckSuppressedAccountIds: remainingBlocked.map((item) => item.account.id),
+    precheckSuppressedRuntimeScopes: remainingBlocked.map((item) => ({
+      runtimeKey: item.state.runtimeKey,
+      generation: item.state.generation
+    })),
+    nextRetryAtMs,
+    nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - now)
+  }
+}
+
+const precheckHalfOpenLeaseMs = 180_000
+const precheckHalfOpenGroupLeases = new Map<string, { leaseId: string; untilMs: number }>()
+
+function acquirePrecheckHalfOpenGroupLease(groupKey: string | undefined): { groupKey: string; leaseId: string } | undefined {
+  const normalized = groupKey?.trim()
+  if (!normalized) return undefined
+  const now = Date.now()
+  const current = precheckHalfOpenGroupLeases.get(normalized)
+  if (current && current.untilMs > now) return undefined
+  const leaseId = `${process.pid}:${now}:${Math.random().toString(16).slice(2)}`
+  precheckHalfOpenGroupLeases.set(normalized, { leaseId, untilMs: now + precheckHalfOpenLeaseMs })
+  return { groupKey: normalized, leaseId }
+}
+
+function releasePrecheckHalfOpenGroupLease(lease: { groupKey: string; leaseId: string }): boolean {
+  if (precheckHalfOpenGroupLeases.get(lease.groupKey)?.leaseId !== lease.leaseId) return false
+  return precheckHalfOpenGroupLeases.delete(lease.groupKey)
+}
+
+async function acquireWithPrecheckHalfOpenGroupGate<T>(
+  groupKey: string | undefined,
+  acquire: () => Promise<T | undefined>
+): Promise<{ value: T; groupLease: { groupKey: string; leaseId: string } } | undefined> {
+  const groupLease = acquirePrecheckHalfOpenGroupLease(groupKey)
+  if (!groupLease) return undefined
+  let transferred = false
+  try {
+    const value = await acquire()
+    if (value === undefined) return undefined
+    transferred = true
+    return { value, groupLease }
+  } finally {
+    if (!transferred) releasePrecheckHalfOpenGroupLease(groupLease)
+  }
+}
+
+export async function acquirePrecheckHalfOpenGroupGateForTest<T>(
+  groupKey: string,
+  acquire: () => Promise<T>
+): Promise<T | undefined> {
+  const acquired = await acquireWithPrecheckHalfOpenGroupGate(groupKey, acquire)
+  if (!acquired) return undefined
+  try {
+    return acquired.value
+  } finally {
+    releasePrecheckHalfOpenGroupLease(acquired.groupLease)
+  }
+}
+
+export function precheckHalfOpenGroupLeaseCountForTest(): number {
+  return precheckHalfOpenGroupLeases.size
+}
+
+export { recoverableUnavailableWaitCoordinatorSnapshotForTest } from './recoverable-unavailable-wait.js'
+
+function withPrecheckHalfOpenGroupLease(
+  accountLease: GatewayAccountHalfOpenLease,
+  groupLease: { groupKey: string; leaseId: string }
+): GatewayAccountHalfOpenLease {
+  return {
+    ...accountLease,
+    release: async () => {
+      try {
+        return await accountLease.release()
+      } finally {
+        releasePrecheckHalfOpenGroupLease(groupLease)
+      }
+    },
+    completeSuccess: accountLease.completeSuccess
+      ? async () => {
+          try {
+            return await accountLease.completeSuccess!()
+          } finally {
+            releasePrecheckHalfOpenGroupLease(groupLease)
+          }
+        }
+      : undefined
+  }
+}
+
+function acquireMemoryPrecheckHalfOpenLease<T extends SuppressibleGatewayAccount>(
+  accounts: T[]
+): { account: T; lease: GatewayAccountHalfOpenLease } | undefined {
+  const now = Date.now()
+  for (const account of accounts) {
+    const runtimeKey = gatewayAccountRuntimeKey(account)
+    const state = precheckStates.get(runtimeKey)
+    if (!state) continue
+    if (state.halfOpenLeaseId && (state.halfOpenLeaseUntilMs ?? 0) > now) continue
+    const leaseId = `${process.pid}:${now}:${Math.random().toString(16).slice(2)}`
+    const generation = state.generation
+    state.halfOpenLeaseId = leaseId
+    state.halfOpenLeaseUntilMs = now + precheckHalfOpenLeaseMs
+    scheduleGatewayAccountPrecheckRun(runtimeKey, precheckHalfOpenLeaseMs)
+    return {
+      account,
+      lease: {
+        runtimeKey,
+        accountId: account.id,
+        generation,
+        leaseId,
+        release: async () => releaseMemoryPrecheckHalfOpenLease(runtimeKey, generation, leaseId),
+        completeSuccess: async () => completeMemoryPrecheckHalfOpenSuccess(runtimeKey, generation, leaseId)
+      }
+    }
+  }
+  return undefined
+}
+
+async function acquireDistributedPrecheckHalfOpenLease<T extends SuppressibleGatewayAccount>(
+  blocked: Array<{ account: T; state: DistributedRecoveryProbeState }>
+): Promise<{ account: T; state: DistributedRecoveryProbeState; lease: GatewayAccountHalfOpenLease } | undefined> {
+  const now = Date.now()
+  for (const item of blocked) {
+    const leaseId = `${process.pid}:${now}:${Math.random().toString(16).slice(2)}`
+    const leased = await distributedRecoveryProbeStore.acquireGenerationLease(
+      item.state.runtimeKey,
+      item.state.generation,
+      leaseId,
+      now + precheckHalfOpenLeaseMs,
+      distributedRecoveryProbeStateTtlMs
+    )
+    if (!leased) continue
+    return {
+      account: item.account,
+      state: leased,
+      lease: {
+        runtimeKey: leased.runtimeKey,
+        accountId: item.account.id,
+        generation: leased.generation,
+        leaseId,
+        release: () => distributedRecoveryProbeStore.releaseGenerationLease(leased.runtimeKey, leased.generation, leaseId, distributedRecoveryProbeStateTtlMs),
+        completeSuccess: () => completeDistributedPrecheckHalfOpenSuccess(leased.runtimeKey, leased.generation, leaseId)
+      }
+    }
+  }
+  return undefined
+}
+
+async function completeDistributedPrecheckHalfOpenSuccess(runtimeKey: string, generation: number, leaseId: string): Promise<boolean> {
+  const completed = await distributedRecoveryProbeStore.completeGenerationLease(runtimeKey, generation, leaseId)
+  if (completed) clearGatewayRuntimeCache()
+  return completed
+}
+
+function releaseMemoryPrecheckHalfOpenLease(runtimeKey: string, generation: number, leaseId: string): boolean {
+  const state = precheckStates.get(runtimeKey)
+  if (!state || state.generation !== generation || state.halfOpenLeaseId !== leaseId) return false
+  state.halfOpenLeaseId = undefined
+  state.halfOpenLeaseUntilMs = undefined
+  scheduleGatewayAccountPrecheckRun(runtimeKey, 0)
+  return true
+}
+
+function completeMemoryPrecheckHalfOpenSuccess(runtimeKey: string, generation: number, leaseId: string): boolean {
+  const state = precheckStates.get(runtimeKey)
+  if (!state || state.generation !== generation || state.halfOpenLeaseId !== leaseId) return false
+  clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
+  return true
 }
 
 async function filterConfiguredPolicyAvoidances<T extends SuppressibleGatewayAccount>(
@@ -1478,6 +1746,7 @@ async function filterConfiguredPolicyAvoidances<T extends SuppressibleGatewayAcc
     allSuppressed: visibleAccounts.length === 0 && accounts.length > 0,
     suppressedAccountIds: suppressed.map((item) => item.account.id),
     acquiredHalfOpenLeases: [],
+    configuredPolicySuppressedAccountIds: suppressed.map((item) => item.account.id),
     nextRetryAtMs,
     nextRetryAfterMs: nextRetryAtMs === undefined ? undefined : Math.max(0, nextRetryAtMs - now)
   }
@@ -1688,6 +1957,7 @@ export function clearGatewayLocalAccountSuppressionsForTest(): void {
   configuredPolicyAvoidanceCache.clear()
   runtimeProbeGenerationCounters.clear()
   recoveryProbeLastStartedAtByScope.clear()
+  precheckHalfOpenGroupLeases.clear()
   runningRecoveryProbeCount = 0
 }
 
@@ -1938,6 +2208,7 @@ function clearGatewayAccountRuntimeAvailabilityLocal(accountId: string): boolean
   cleared = clearLocalAccountDegradation(accountId) || cleared
   cleared = failureStorms.delete(accountId) || cleared
   cleared = precheckStates.delete(accountId) || cleared
+  if (cleared) notifyOneRecoverableUnavailableRuntimeWaiter(accountId)
   return cleared
 }
 
@@ -1964,8 +2235,8 @@ function cleanupExpiredFailureStorms(): void {
   }
 }
 
-function isPrecheckRuntimeBlocking(_runtimeKey: string): boolean {
-  return false
+function isPrecheckRuntimeBlocking(runtimeKey: string): boolean {
+  return precheckStates.has(runtimeKey)
 }
 
 function precheckPolicyStartedAtMs(state: PrecheckState): number {
@@ -2082,6 +2353,12 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
   if (!state || state.running) {
     return
   }
+  if (state.halfOpenLeaseId && (state.halfOpenLeaseUntilMs ?? 0) > Date.now()) {
+    scheduleGatewayAccountPrecheckRun(runtimeKey, (state.halfOpenLeaseUntilMs ?? Date.now()) - Date.now())
+    return
+  }
+  state.halfOpenLeaseId = undefined
+  state.halfOpenLeaseUntilMs = undefined
   const generation = state.generation
   state.running = true
   try {

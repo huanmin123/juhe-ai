@@ -1,6 +1,7 @@
 import type { NextFunction, Response } from 'express'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import type { UsageFailureAttribution } from '../../../storage/usage-records.repository.js'
 import { getRequestContext } from '../../../shared/request-context.js'
 import {
   createTraceId,
@@ -45,6 +46,54 @@ export interface GatewayBodyRejectionInput {
   errorMessage?: string
   limitBytes?: number
   limitScope?: GatewayRawBodyLimitScope
+  failureAttribution?: UsageFailureAttribution
+}
+
+export interface GatewayRawBodyParserError {
+  status?: number
+  statusCode?: number
+  type?: string
+  received?: number
+  length?: number
+  limit?: number
+}
+
+export interface GatewayRawBodyParserErrorResponse {
+  statusCode: number
+  message: string
+  errorType: string
+  failureAttribution: UsageFailureAttribution
+}
+
+export function classifyGatewayRawBodyParserError(error: GatewayRawBodyParserError): GatewayRawBodyParserErrorResponse {
+  const parserType = error.type?.trim()
+  if (parserType === 'request.aborted' || parserType === 'request.size.invalid') {
+    return {
+      statusCode: 408,
+      message: '请求体上传未完成，请重试',
+      errorType: 'request_timeout',
+      failureAttribution: 'client_lifecycle'
+    }
+  }
+  const statusCode = Number.isInteger(error.statusCode)
+    ? Number(error.statusCode)
+    : Number.isInteger(error.status)
+      ? Number(error.status)
+      : 400
+  if (statusCode === 413) {
+    return {
+      statusCode,
+      message: '请求体过大',
+      errorType: 'request_too_large',
+      failureAttribution: 'gateway_policy'
+    }
+  }
+  return {
+    statusCode,
+    message: '网关请求体无效',
+    errorType: 'invalid_request_error',
+    failureAttribution: 'gateway_policy'
+  }
 }
 
 export async function captureGatewayRawBody(
@@ -499,7 +548,8 @@ export async function recordGatewayBodyRejection(req: GatewayRawBodyRequest, inp
       startedAt,
       responsePayload: input.responsePayload,
       errorMessage: input.errorMessage,
-      errorCode: input.errorCode
+      errorCode: input.errorCode,
+      failureAttribution: input.failureAttribution
     })
   } catch (error) {
     getRequestLogger().warn({

@@ -100,6 +100,8 @@ import {
   recordAccountHealthCheckSuccessAsync,
   recordCooldownAccountRetestFailure,
   recordCooldownAccountRetestFailureAsync,
+  recordCooldownAccountRetestSuccess,
+  recordCooldownAccountRetestSuccessAsync,
   recordAuthorizedAccountBindingStreamFailure,
   recordAuthorizedAccountBindingStreamFailureAsync,
   resolveGroupUsageAccessMetadata,
@@ -873,6 +875,16 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
         return await findAccountForCooldownRetestAsync(operation.accountId)
       }
       return handleDbServiceOperationSync(operation)
+    case 'record_cooldown_account_retest_success':
+      if (runtimeConfig.databaseDriver === 'postgres') {
+        const result = await recordCooldownAccountRetestSuccessAsync(operation.accountId, {
+          expectedConfigRevision: operation.expectedConfigRevision,
+          expectedObservationStartedAt: operation.expectedObservationStartedAt
+        })
+        if (result.changed) clearGatewayRuntimeCacheLocal()
+        return result
+      }
+      return handleDbServiceOperationSync(operation)
     case 'record_cooldown_account_retest_failure':
       if (runtimeConfig.databaseDriver === 'postgres') {
         const result = await recordCooldownAccountRetestFailureAsync(operation.accountId, operation.input)
@@ -1400,6 +1412,14 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     }
     case 'find_account_for_cooldown_retest': {
       return findAccountForCooldownRetest(operation.accountId)
+    }
+    case 'record_cooldown_account_retest_success': {
+      const result = recordCooldownAccountRetestSuccess(operation.accountId, {
+        expectedConfigRevision: operation.expectedConfigRevision,
+        expectedObservationStartedAt: operation.expectedObservationStartedAt
+      })
+      if (result.changed) clearGatewayRuntimeCacheLocal()
+      return result
     }
     case 'record_cooldown_account_retest_failure': {
       const result = recordCooldownAccountRetestFailure(operation.accountId, operation.input)

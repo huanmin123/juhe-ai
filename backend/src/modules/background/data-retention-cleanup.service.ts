@@ -24,6 +24,7 @@ import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retentio
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
+import { publishUsageRecordsGlobalReset } from '../page-data/page-data-change.publisher.js'
 import {
   DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS,
   DATA_RETENTION_CLEANUP_BATCH_SIZE,
@@ -315,9 +316,11 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
   let deletedRows = 0
   let batches = 0
   let blockedReason: string | undefined
+  let resetNeeded = false
   for (let index = 0; index < maxBatches; index += 1) {
     const batch = await cleanupProcessedUsageRecordsBeforeWithResultAsync(cutoffCreatedAt, batchSize)
     deletedRows += batch.deletedRows
+    resetNeeded ||= batch.deletedRows > 0 || Number(batch.droppedPartitions ?? 0) > 0
     blockedReason = batch.blockedReason ?? blockedReason
     if (batch.deletedRows > 0) {
       batches += 1
@@ -328,6 +331,7 @@ async function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, ba
     }
     await pauseBetweenCleanupBatches()
   }
+  if (resetNeeded) await publishUsageRecordsGlobalReset()
   return {
     cutoffCreatedAt,
     deletedRows,

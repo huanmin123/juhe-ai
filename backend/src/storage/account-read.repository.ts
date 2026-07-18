@@ -460,6 +460,7 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.cooldown_retest_observation_started_at',
     'accounts.cooldown_retest_last_at',
     'accounts.cooldown_retest_last_status_code',
+    'accounts.temporary_unavailable_continuous_probe_enabled',
     'accounts.health_check_model',
     'accounts.health_check_endpoint_mode',
     'accounts.last_health_check_at',
@@ -496,6 +497,7 @@ function sourceAccountSelectColumns(includeCredentials: boolean): string {
     'source_accounts.availability_schedule_json AS source_availability_schedule_json',
     'source_accounts.account_expires_at AS source_account_expires_at',
     'source_accounts.cooldown_until AS source_cooldown_until',
+    'source_accounts.temporary_unavailable_continuous_probe_enabled AS source_temporary_unavailable_continuous_probe_enabled',
     'source_accounts.last_error_code AS source_last_error_code',
     'source_accounts.last_error_message AS source_last_error_message',
     'source_accounts.credential_mask AS source_credential_mask',
@@ -539,6 +541,7 @@ function accountListOuterSelectColumns(): string {
     'cooldown_retest_observation_started_at',
     'cooldown_retest_last_at',
     'cooldown_retest_last_status_code',
+    'temporary_unavailable_continuous_probe_enabled',
     'health_check_model',
     'health_check_endpoint_mode',
     'last_health_check_at',
@@ -578,6 +581,7 @@ function accountListOuterSelectColumns(): string {
     'source_availability_schedule_json',
     'source_account_expires_at',
     'source_cooldown_until',
+    'source_temporary_unavailable_continuous_probe_enabled',
     'source_last_error_code',
     'source_last_error_message',
     'source_credential_mask',
@@ -729,6 +733,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     availability_schedule_json: string | null
     account_expires_at: string | null
     cooldown_until: string | null
+    temporary_unavailable_continuous_probe_enabled: number
     last_error_code: string | null
     last_error_message: string | null
     credential_mask: string | null
@@ -742,7 +747,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
     sourceRows.push(...database
       .prepare(`
         SELECT id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, type, status, schedulable, availability_schedule_json, account_expires_at, cooldown_until,
-          last_error_code, last_error_message, credential_mask,
+          temporary_unavailable_continuous_probe_enabled, last_error_code, last_error_message, credential_mask,
           ${includeCredentials ? 'credentials_encrypted' : "'' AS credentials_encrypted"},
           proxy_profile_id, concurrency_limit, client_compatibility
         FROM accounts
@@ -769,6 +774,7 @@ function hydrateAuthorizedAccountSourceFacts(rows: AccountListRow[], includeCred
       source_availability_schedule_json: source.availability_schedule_json,
       source_account_expires_at: source.account_expires_at,
       source_cooldown_until: source.cooldown_until,
+      source_temporary_unavailable_continuous_probe_enabled: source.temporary_unavailable_continuous_probe_enabled,
       source_last_error_code: source.last_error_code,
       source_last_error_message: source.last_error_message,
       source_credential_mask: source.credential_mask,

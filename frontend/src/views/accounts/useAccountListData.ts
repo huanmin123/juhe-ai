@@ -1,22 +1,25 @@
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type ComputedRef } from 'vue'
 
-import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
+import { api, pageDataApi, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { usePageDataRequestCache } from '@/composables/usePageDataRequestCache'
+import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountBalanceSnapshot, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
+import type { PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 import { createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from './accountStatusSnapshotPolling'
 
 interface AccountsPageState {
@@ -80,6 +83,17 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
   }
 
+  let accountPageCacheRequest: PageDataRequestCacheDefinition<AccountListResult> | undefined
+  const accountPageCache = usePageDataRequestCache<AccountListResult>({
+    immediate: false,
+    confirmIntervalMs: 30_000,
+    confirm: pageDataApi.confirm,
+    resolveRequest: () => {
+      if (!accountPageCacheRequest) throw new Error('账户列表缓存请求尚未初始化')
+      return accountPageCacheRequest
+    }
+  })
+
   const {
     items: accounts,
     loading,
@@ -91,9 +105,10 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     loadData,
     loadMoreMobile: loadMoreMobileAccounts,
     removeItems: removeAccountItems,
-    refreshMobile: refreshMobileAccounts,
-    resetPagination: resetAccountListPagination
-  } = useResponsivePagedList<AccountSummary, { forceOptions?: boolean }>({
+    refreshMobile: refreshMobileAccountsCached,
+    resetPagination: resetAccountListPagination,
+    applyResult: applyAccountPageCacheResult
+  } = useResponsivePagedList<AccountSummary, { forceOptions?: boolean; forceData?: boolean }>({
     pageSize: ACCOUNT_PAGE_SIZE,
     initialPagination: initialPageState.pagination,
     showTotal: (total, range, context) => context?.hasMore
@@ -105,7 +120,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         console.error(error)
         message.error('加载账户筛选选项失败')
       })
-      const accountList = await fetchAccountList(systemAccountId, pageState)
+      const accountList = await fetchAccountList(systemAccountId, pageState, _loadOptions.forceData === true)
       const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
       return {
         items: accountList.items.map((account) => ({ ...account, accountRuntimeAvailabilityAvailable: runtimeAvailable })),
@@ -147,7 +162,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const mobileVisibleAccounts = computed(() => filteredAccounts.value)
   let snapshotRequestSequence = 0
 
-  const loadedAccountIds = () => [...new Set(accounts.value.map((account) => account.id).filter(Boolean))].slice(0, 100)
+  const loadedAccountIds = () => [...new Set(accounts.value.map((account) => account.id).filter(Boolean))]
   const snapshotPolling = createAccountStatusSnapshotPolling({
     accountIds: loadedAccountIds,
     isBlocked: () => loading.value,
@@ -155,7 +170,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     request: async (accountIds, signal) => {
       const sequence = ++snapshotRequestSequence
       const revision = accountListRevision.value
-      const signature = accountIds.join('\u0000')
+      const signature = loadedAccountIds().join('\u0000')
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       const scopeSignature = `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
       const result = options.isManagementView.value
@@ -189,15 +204,40 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     window.removeEventListener('focus', refreshStatusSnapshot)
   })
 
-  function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
-    return options.isManagementView.value
-      ? api.accounts.list(accountListParams(systemAccountId, pageState))
+  async function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, force: boolean) {
+    const params = accountListParams(systemAccountId, pageState)
+    const loadNetwork = () => options.isManagementView.value
+      ? api.accounts.list(params)
       : api.myAccounts.list(accountListParams(undefined, pageState))
+    const viewerSystemAccountId = authState.currentUser.value?.id
+    if (!viewerSystemAccountId) return loadNetwork()
+    const viewScope = options.isManagementView.value ? 'admin' as const : 'self' as const
+    accountPageCacheRequest = {
+      cacheKey: {
+        scope: viewScope === 'admin'
+          ? `admin:${viewerSystemAccountId}:target:${systemAccountId ?? 'global'}`
+          : `self:${viewerSystemAccountId}`,
+        route: viewScope === 'admin' ? '/accounts' : '/my-accounts',
+        query: params,
+        version: 1
+      },
+      domain: 'accounts.static',
+      viewScope,
+      maxStaleMs: 30_000,
+      ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
+      loadNetwork
+    }
+    const result = force ? await accountPageCache.forceRefresh() : await accountPageCache.load()
+    return result.data
   }
 
   function refreshData() {
     resetSystemAccountOptionsSearch()
-    void loadData({ forceOptions: true })
+    void loadData({ forceOptions: true, forceData: true })
+  }
+
+  async function refreshMobileAccounts(): Promise<void> {
+    await refreshMobileAccountsCached({ forceData: true })
   }
 
   function applyFilters() {
@@ -326,6 +366,15 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+  watch(accountPageCache.data, (accountList) => {
+    applyAccountPageCacheResult(accountList ? cloneAccountListCacheResult(accountList) : {
+      items: [],
+      page: accountPagination.current,
+      pageSize: accountPagination.pageSize,
+      total: 0,
+      hasMore: false
+    })
+  })
   watch(loading, (value) => {
     if (!value) snapshotPolling.refreshNow()
   })

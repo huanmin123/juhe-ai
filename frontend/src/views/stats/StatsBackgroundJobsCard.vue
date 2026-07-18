@@ -175,12 +175,14 @@ import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import { formatDateTime } from '@/shared/formatters'
-import type { SystemMetricsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import { processRoleLabel } from './statsChartOptions'
+import {
+  backgroundJobStatusColor,
+  backgroundJobStatusText,
+  type BackgroundJobRow
+} from './statsBackgroundJobs'
 import { formatDuration, formatInteger } from './statsFormatters'
-
-type BackgroundJobRow = NonNullable<SystemMetricsOverview['backgroundJobs']>[number]
 
 defineProps<{
   emptyDescription: string
@@ -224,36 +226,6 @@ function formatJobDuration(value?: number): string {
 
 function sortBackgroundJobNumber(field: 'runCount' | 'successCount' | 'failureCount' | 'partialCount' | 'skippedCount') {
   return (left: BackgroundJobRow, right: BackgroundJobRow) => numberValue(left[field]) - numberValue(right[field])
-}
-
-function backgroundJobStatusText(row: BackgroundJobRow): string {
-  if (row.running) return '运行中'
-  if (row.lastError) return '上次失败'
-  if (row.lastWarning) return '部分失败'
-  const latestProblemAt = latestTimestamp(row.lastErrorAt, row.lastWarningAt)
-  if (latestProblemAt && isAfter(row.lastSuccessAt, latestProblemAt)) return '已恢复'
-  if (row.lastErrorAt) return '曾失败'
-  if (row.lastWarningAt) return '曾部分失败'
-  return '空闲'
-}
-
-function backgroundJobStatusColor(row: BackgroundJobRow): string {
-  if (row.running) return 'processing'
-  if (row.lastError || row.lastWarning) return 'warning'
-  const latestProblemAt = latestTimestamp(row.lastErrorAt, row.lastWarningAt)
-  if (latestProblemAt && !isAfter(row.lastSuccessAt, latestProblemAt)) return 'warning'
-  return 'success'
-}
-
-function latestTimestamp(...values: Array<string | undefined>): string | undefined {
-  return values.filter((value): value is string => Boolean(value)).sort().at(-1)
-}
-
-function isAfter(value: string | undefined, baseline: string): boolean {
-  if (!value) return false
-  const valueMs = Date.parse(value)
-  const baselineMs = Date.parse(baseline)
-  return Number.isFinite(valueMs) && Number.isFinite(baselineMs) && valueMs > baselineMs
 }
 
 function backgroundJobDurationNote(row: BackgroundJobRow): string | undefined {

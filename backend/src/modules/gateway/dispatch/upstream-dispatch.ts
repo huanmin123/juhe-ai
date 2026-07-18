@@ -35,7 +35,10 @@ import {
   orderGatewayAccountsByRuntimeDegradation,
   type GatewayAccountHalfOpenLease
 } from '../runtime/account-side-effects.service.js'
-import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unavailable-wait.js'
+import {
+  notifyOneRecoverableUnavailableRuntimeWaiter,
+  waitForRecoverableUnavailableState
+} from '../runtime/recoverable-unavailable-wait.js'
 import type { ClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
 import {
   handleFailedUpstreamResponse,
@@ -64,6 +67,8 @@ import {
 import type { GatewayAccountModelPriority } from './model-filter.js'
 import type { SpeedFirstCutoverReservation } from '../runtime/speed-first-cutover-reservation.service.js'
 import type { UsageServiceTier } from '../usage/service-tier.js'
+import { gatewayRequestDeadlineExpired, gatewayRequestWaitWithinDeadlineMs } from '../runtime/gateway-request-deadline.js'
+import { requestModel } from '../request/metadata.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -75,6 +80,8 @@ export interface OpenAIUpstreamDispatchResult {
   releaseConcurrency: () => void
   markFirstOutput: () => void
   confirmSameAccountApiKeyFailures: () => Promise<void>
+  confirmHalfOpenSuccess: () => Promise<boolean>
+  releaseHalfOpenLease: () => Promise<boolean>
 }
 
 export class UpstreamAttemptError extends Error {
@@ -132,7 +139,10 @@ export async function fetchFirstAvailableUpstream(
   requestClientCompatibility?: ClientCompatibilityCapability,
   modelPriority?: GatewayAccountModelPriority,
   sameAccountRetryBudget?: SameAccountRetryBudget,
-  preAcquiredConcurrency?: SpeedFirstCutoverReservation
+  preAcquiredConcurrency?: SpeedFirstCutoverReservation,
+  allowPrecheckHalfOpen = false,
+  requestStartedAtMs = Date.now(),
+  requestDeadlineAtMs = Number.MAX_SAFE_INTEGER
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -162,6 +172,7 @@ export async function fetchFirstAvailableUpstream(
 
     for (const originalAccount of dispatchAccounts) {
       throwIfRequestAborted(signal)
+      assertGatewayRequestDeadlineActive(requestDeadlineAtMs)
       const localSuppression = bypassLocalSuppression
         ? {
             accounts: [originalAccount],
@@ -170,7 +181,11 @@ export async function fetchFirstAvailableUpstream(
             suppressedAccountIds: [],
             acquiredHalfOpenLeases: []
           }
-        : await filterGatewayAccountRuntimeSuppressionsAsync([originalAccount], { acquireHalfOpenLease: true })
+        : await filterGatewayAccountRuntimeSuppressionsAsync([originalAccount], {
+            acquireHalfOpenLease: true,
+            acquirePrecheckHalfOpenLease: allowPrecheckHalfOpen,
+            precheckHalfOpenGroupKey: `${usageContext.systemAccountId}:${usageContext.groupId}`
+          })
       if (localSuppression.allSuppressed) {
         localSuppressedSkipCount += 1
         lastAttempt = locallySuppressedAttempt(originalAccount, localSuppression.nextRetryAfterMs)
@@ -193,7 +208,7 @@ export async function fetchFirstAvailableUpstream(
       attemptedAccountCount += 1
       const skippedProxyAttempt = skipAccountForFailedProxyDispatch(failedProxyDispatchKeys, originalAccount)
       if (skippedProxyAttempt) {
-        halfOpenLease?.release()
+        await releaseHalfOpenLease(halfOpenLease)
         lastAttempt = skippedProxyAttempt
         failedAccountIds.add(originalAccount.id)
         continue
@@ -212,7 +227,7 @@ export async function fetchFirstAvailableUpstream(
       )
       if (unavailableProxyAttempt) {
         auditAttemptIndex = unavailableProxyAuditAttemptIndex
-        halfOpenLease?.release()
+        await releaseHalfOpenLease(halfOpenLease)
         lastAttempt = unavailableProxyAttempt
         failedAccountIds.add(originalAccount.id)
         continue
@@ -235,17 +250,18 @@ export async function fetchFirstAvailableUpstream(
             concurrencyRetryWaitBudgetMs,
             signal,
             requestLane,
-            groupSchedulingPolicy
+            groupSchedulingPolicy,
+            requestDeadlineAtMs
           )
         } catch (error) {
-          halfOpenLease?.release()
+          await releaseHalfOpenLease(halfOpenLease)
           throw error
         }
       }
       concurrencyRetryWaitBudgetMs = concurrencyAcquire.remainingWaitBudgetMs
       const concurrencySlot = concurrencyAcquire.slot
       if (!concurrencySlot.acquired) {
-        halfOpenLease?.release()
+        await releaseHalfOpenLease(halfOpenLease)
         const message = concurrencyAcquire.waitedMs > 0
           ? accountConcurrencyLimitMessage(concurrencySlot, concurrencyAcquire.waitedMs)
           : accountConcurrencyLimitMessage(concurrencySlot)
@@ -383,13 +399,14 @@ export async function fetchFirstAvailableUpstream(
             })
             lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
             failedAccountIds.add(account.id)
-            if (shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)) {
+            if (halfOpenLease?.generation === undefined && shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)) {
               retryAccountApiKey = true
             }
             continue
           }
           for (const upstreamUrl of upstreamUrls) {
             for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
+              assertGatewayRequestDeadlineActive(requestDeadlineAtMs)
               const attemptStartedAt = Date.now()
               auditAttemptIndex += 1
               const auditAttemptId = auditCapture.startAttempt({
@@ -439,9 +456,11 @@ export async function fetchFirstAvailableUpstream(
                     auditAttemptId,
                     attemptStartedAt,
                     effectiveServiceTier,
-                    releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release, halfOpenLease),
+                    releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release),
                     markFirstOutput: concurrencySlot.markFirstOutput,
-                    confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext)
+                    confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext),
+                    confirmHalfOpenSuccess: () => completeHalfOpenLeaseSuccess(halfOpenLease),
+                    releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease)
                   }
                 }
 
@@ -462,7 +481,7 @@ export async function fetchFirstAvailableUpstream(
                   lastAttempt,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: await shouldRetrySameAccountAfterFailure(
+                  retrySameAccount: halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
                     account,
                     attemptIndex,
                     sameAccountRetryPolicy,
@@ -479,12 +498,14 @@ export async function fetchFirstAvailableUpstream(
                     sameAccountRetryPolicy,
                     requestSameAccountRetryBudget,
                     auditCapture,
-                    signal
+                    signal,
+                    requestDeadlineAtMs
                   )
                   continue
                 }
                 if (
-                  shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                  halfOpenLease?.generation === undefined
+                  && shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
                 ) {
                   if (failedResponseResult.pendingApiKeyFailure) {
                     pendingApiKeyFailures.push(failedResponseResult.pendingApiKeyFailure)
@@ -538,7 +559,7 @@ export async function fetchFirstAvailableUpstream(
                   error,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: await shouldRetrySameAccountAfterFailure(
+                  retrySameAccount: halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
                     account,
                     attemptIndex,
                     sameAccountRetryPolicy,
@@ -555,12 +576,14 @@ export async function fetchFirstAvailableUpstream(
                     sameAccountRetryPolicy,
                     requestSameAccountRetryBudget,
                     auditCapture,
-                    signal
+                    signal,
+                    requestDeadlineAtMs
                   )
                   continue
                 }
                 if (
-                  shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                  halfOpenLease?.generation === undefined
+                  && shouldRetryAnotherAccountApiKey(account, requestErrorResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
                 ) {
                   retryAccountApiKey = true
                   break
@@ -577,7 +600,7 @@ export async function fetchFirstAvailableUpstream(
       } finally {
         if (!keepConcurrencySlot) {
           concurrencySlot.release()
-          halfOpenLease?.release()
+          await releaseHalfOpenLease(halfOpenLease)
         }
       }
     }
@@ -632,16 +655,29 @@ export async function fetchFirstAvailableUpstream(
           acquiredHalfOpenLeases: []
         }
       : await filterGatewayAccountRuntimeSuppressionsAsync(dispatchAccounts)
+    const precheckRuntimeScopes = suppressionFilter.precheckSuppressedRuntimeScopes ?? []
+    const allBlockedByPrecheck = precheckRuntimeScopes.length > 0
+      && suppressionFilter.precheckSuppressedAccountIds?.length === dispatchAccounts.length
     const wait = await waitForRecoverableUnavailableState({
-      scopeKey: recoverableDispatchSuppressionScopeKey(usageContext.systemAccountId, usageContext.apiKeyId, usageContext.groupId),
-      reason: 'local_account_suppression_dispatch',
+      scopeKey: recoverableDispatchSuppressionScopeKey(
+        usageContext.systemAccountId,
+        usageContext.apiKeyId,
+        usageContext.groupId,
+        requestModel(req),
+        precheckRuntimeScopes
+      ),
+      reason: allBlockedByPrecheck ? 'precheck_half_open' : 'local_account_suppression_dispatch',
       initialState: suppressionFilter,
       refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(dispatchAccounts),
       isReady: (state) => !state.allSuppressed,
       nextRetryAfterMs: (state) => state.nextRetryAfterMs,
       waitWithoutRetryAfter: true,
+      maxWaitMs: Math.max(1, requestDeadlineAtMs - requestStartedAtMs),
       auditCapture,
-      signal
+      signal,
+      requestStartedAtMs,
+      deadlineAtMs: requestDeadlineAtMs,
+      runtimeKeys: precheckRuntimeScopes.map((scope) => scope.runtimeKey)
     })
     if (!wait.state.allSuppressed) {
       dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(wait.state.accounts, {
@@ -674,7 +710,7 @@ export async function fetchFirstAvailableUpstream(
   throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds], agentGuidanceResponse)
 }
 
-function releaseAccountDispatchSlot(releaseConcurrency: () => void, halfOpenLease?: GatewayAccountHalfOpenLease): () => void {
+function releaseAccountDispatchSlot(releaseConcurrency: () => void): () => void {
   let released = false
   return () => {
     if (released) {
@@ -682,8 +718,30 @@ function releaseAccountDispatchSlot(releaseConcurrency: () => void, halfOpenLeas
     }
     released = true
     releaseConcurrency()
-    halfOpenLease?.release()
   }
+}
+
+export class GatewayRequestDeadlineExceededError extends Error {
+  readonly code = 'gateway_request_deadline_exceeded'
+
+  constructor() {
+    super('网关请求已超过允许的总等待时间')
+    this.name = 'GatewayRequestDeadlineExceededError'
+  }
+}
+
+async function releaseHalfOpenLease(lease?: GatewayAccountHalfOpenLease): Promise<boolean> {
+  if (!lease) return false
+  const released = await lease.release()
+  if (released) notifyOneRecoverableUnavailableRuntimeWaiter(lease.runtimeKey)
+  return released
+}
+
+async function completeHalfOpenLeaseSuccess(lease?: GatewayAccountHalfOpenLease): Promise<boolean> {
+  if (!lease?.completeSuccess) return false
+  const completed = await lease.completeSuccess()
+  if (completed) notifyOneRecoverableUnavailableRuntimeWaiter(lease.runtimeKey)
+  return completed
 }
 
 function buildUpstreamAttemptFailureMessage(accountCount: number, lastAttempt?: UpstreamAttempt): string {
@@ -702,7 +760,8 @@ async function acquireAccountConcurrencyWithShortRetry(
   waitBudgetMs: number,
   signal: AbortSignal | undefined,
   requestLane: OpenAIGatewayRequestLane,
-  groupSchedulingPolicy?: GroupSchedulingPolicy
+  groupSchedulingPolicy?: GroupSchedulingPolicy,
+  requestDeadlineAtMs = Number.MAX_SAFE_INTEGER
 ): Promise<AccountConcurrencyAcquireResult> {
   let remainingWaitBudgetMs = Math.max(0, Math.trunc(waitBudgetMs))
   const acquireOptions = accountConcurrencyLaneAcquireOptions(concurrencyLimit, requestLane, groupSchedulingPolicy)
@@ -711,7 +770,8 @@ async function acquireAccountConcurrencyWithShortRetry(
   let retryCount = 0
   while (!slot.acquired && remainingWaitBudgetMs > 0) {
     const delayMs = Math.min(retryDelayMs(accountConcurrencyRetryPolicy, retryCount + 1), remainingWaitBudgetMs)
-    const currentDelayMs = Math.min(delayMs, remainingWaitBudgetMs)
+    const currentDelayMs = gatewayRequestWaitWithinDeadlineMs(Math.min(delayMs, remainingWaitBudgetMs), requestDeadlineAtMs)
+    if (currentDelayMs <= 0) throw new GatewayRequestDeadlineExceededError()
     await waitForAccountConcurrencyRetry(currentDelayMs, signal)
     waitedMs += currentDelayMs
     remainingWaitBudgetMs -= currentDelayMs
@@ -982,7 +1042,8 @@ async function waitForSameAccountRetry(
   policy: RetryPolicy,
   budget: SameAccountRetryBudget,
   auditCapture: AuditCaptureContext,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  requestDeadlineAtMs = Number.MAX_SAFE_INTEGER
 ): Promise<void> {
   const retryNumber = Math.max(1, Math.trunc(attemptIndex) + 1)
   const requestRetryNumber = budget.initialAttempts - budget.remainingAttempts
@@ -1012,8 +1073,17 @@ async function waitForSameAccountRetry(
     }
   })
   throwIfRequestAborted(signal)
-  await waitForRetryDelayMs(delayMs, { signal })
+  const boundedDelayMs = gatewayRequestWaitWithinDeadlineMs(delayMs, requestDeadlineAtMs)
+  if (boundedDelayMs <= 0) throw new GatewayRequestDeadlineExceededError()
+  await waitForRetryDelayMs(boundedDelayMs, { signal })
+  assertGatewayRequestDeadlineActive(requestDeadlineAtMs)
   throwIfRequestAborted(signal)
+}
+
+function assertGatewayRequestDeadlineActive(requestDeadlineAtMs: number): void {
+  if (gatewayRequestDeadlineExpired(requestDeadlineAtMs)) {
+    throw new GatewayRequestDeadlineExceededError()
+  }
 }
 
 function stringValue(value: unknown): string {
@@ -1024,6 +1094,16 @@ function numberValue(value: unknown): string {
   return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
 }
 
-function recoverableDispatchSuppressionScopeKey(systemAccountId: string, apiKeyId: string | undefined, groupId: string): string {
-  return [systemAccountId, apiKeyId ?? '', groupId].join(':')
+function recoverableDispatchSuppressionScopeKey(
+  systemAccountId: string,
+  apiKeyId: string | undefined,
+  groupId: string,
+  model: string | undefined,
+  runtimeScopes: Array<{ runtimeKey: string; generation: number }>
+): string {
+  const candidates = runtimeScopes
+    .map((scope) => `${scope.runtimeKey}@${scope.generation}`)
+    .sort()
+    .join(',')
+  return [systemAccountId, apiKeyId ?? '', groupId, model ?? '', candidates].join(':')
 }

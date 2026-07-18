@@ -7,7 +7,6 @@
       :comparison-options-loading="comparisonOptionsLoading"
       :comparison-select-placeholder="comparisonSelectPlaceholder"
       :is-management-view="isManagementView"
-      :include-extreme-context="form.includeExtremeContext === true"
       :model="form.model"
       :model-options="runModelOptions"
       :options-loading="optionsLoading"
@@ -41,7 +40,6 @@
       @target-search="handleTargetSearch"
       @target-value-update="handleTargetValueUpdate"
       @update:model="handleModelUpdate"
-      @update:include-extreme-context="form.includeExtremeContext = $event"
       @update:selected-comparison-account="selectedComparisonAccount = $event"
       @update:selected-target-account="selectedTargetAccount = $event"
       @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
@@ -210,7 +208,6 @@ const form = reactive<ModelCheckRunPayload>({
   targetId: '',
   model: modelCheckFallbackOptions.defaultModel,
   profile: 'full',
-  includeExtremeContext: false,
   trustedComparison: false,
   trustedComparisonAccountId: undefined
 })
@@ -395,12 +392,11 @@ async function submitRun() {
       targetId,
       model: form.model,
       profile: form.profile,
-      includeExtremeContext: form.includeExtremeContext === true,
       trustedComparison: Boolean(trustedComparisonAccountId),
       trustedComparisonAccountId: trustedComparisonAccountId || undefined
     }
     currentRun.value = await startModelCheckRunSession({
-      commandText: `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model}${form.includeExtremeContext ? ' --extreme-context' : ''}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`,
+      commandText: `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`,
       onProgress: handleModelCheckProgress,
       run: (signal, onProgress) => modelChecksApi.runStream(payload, {
         signal,
@@ -485,7 +481,6 @@ function resetRunForm() {
   resetRunAccountSelection()
   form.model = options.value.defaultModel
   form.profile = options.value.defaultProfile
-  form.includeExtremeContext = false
   ensureRunModelMatchesTarget()
 }
 

@@ -72,7 +72,6 @@ export interface ModelCheckRunPayload {
   targetId: string
   model: ModelCheckModel
   profile?: ModelCheckProfile
-  includeExtremeContext?: boolean
   trustedComparison?: boolean
   trustedComparisonAccountId?: string
 }

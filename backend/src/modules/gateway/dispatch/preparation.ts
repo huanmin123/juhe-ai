@@ -71,6 +71,7 @@ export type DispatchPreparationResult =
     normalRouteLatencyDegradationApplied?: boolean
     codexTurnAccountAvoidanceApplied?: boolean
     codexTurnAvoidedAccountIds?: string[]
+    precheckHalfOpenEligible?: boolean
   }
   | { outcome: 'fallback'; context?: OpenAIGatewayDispatchContext }
   | { outcome: 'completed' }
@@ -93,6 +94,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   clientIp?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
   requestLane: OpenAIGatewayRequestLane
+  requestDeadlineAtMs: number
   signal?: AbortSignal
   ignoreAccountRuntimeSuppression?: boolean
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
@@ -117,6 +119,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   const initialLocalSuppressionFilter = bypassLocalSuppression
     ? localSuppressionBypassResult(orderedCandidateAccounts)
     : await filterGatewayAccountRuntimeSuppressionsAsync(orderedCandidateAccounts)
+  let precheckHalfOpenEligible = false
   if (initialLocalSuppressionFilter.allSuppressed) {
     const fallback = await input.attemptFallback('local_account_suppressed')
     if (fallback.attempted) {
@@ -141,11 +144,15 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
       })
       return { outcome: 'fallback', context: fallback.context }
     }
+    precheckHalfOpenEligible = initialLocalSuppressionFilter.precheckSuppressedAccountIds?.length === orderedCandidateAccounts.length
+      && (initialLocalSuppressionFilter.configuredPolicySuppressedAccountIds?.length ?? 0) === 0
   }
 
   const localSuppressionFilter = bypassLocalSuppression
     ? localSuppressionBypassResult(orderedCandidateAccounts)
-    : await resolveLocalSuppressionFilter({
+    : precheckHalfOpenEligible
+      ? localSuppressionBypassResult(orderedCandidateAccounts)
+      : await resolveLocalSuppressionFilter({
         req: input.req,
         res: input.res,
         auditCapture: input.auditCapture,
@@ -155,6 +162,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
         systemAccountId: input.systemAccountId,
         apiKeyId: input.apiKeyId,
         groupId: input.groupId,
+        requestDeadlineAtMs: input.requestDeadlineAtMs,
         signal: input.signal
       })
   if (!localSuppressionFilter) {
@@ -334,6 +342,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   }
   return {
     ...readyPreparation,
+    precheckHalfOpenEligible,
     normalRouteLatencyDegradationApplied: latencyDegradationOrder.applied,
     codexTurnAccountAvoidanceApplied: codexTurnAvoidance.thresholdReached,
     codexTurnAvoidedAccountIds: codexTurnAvoidance.avoidedAccountIds

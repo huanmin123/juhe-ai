@@ -22,6 +22,7 @@ export async function resolveLocalSuppressionFilter(input: {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
+  requestDeadlineAtMs: number
   signal?: AbortSignal
 }): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
   let filter = await filterGatewayAccountRuntimeSuppressionsAsync(input.accounts)
@@ -61,6 +62,8 @@ export async function resolveLocalSuppressionFilter(input: {
       nextRetryAfterMs: (state) => state.nextRetryAfterMs,
       waitWithoutRetryAfter: true,
       auditCapture: input.auditCapture,
+      requestStartedAtMs: input.startedAt,
+      deadlineAtMs: input.requestDeadlineAtMs,
       signal: input.signal
     })
     filter = wait.state

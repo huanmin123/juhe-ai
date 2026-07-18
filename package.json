@@ -11,6 +11,8 @@
     "package:release:windows": "pwsh ./scripts/package-release.ps1",
     "package:release:mac": "bash ./scripts/package-release.sh",
     "package:release:linux": "bash ./scripts/package-release.sh",
+    "test:macos-operations": "pwsh -File ./scripts/regression/validate-macos-operations.ps1",
+    "test:release-source-preflight": "pwsh -NoProfile -File ./scripts/regression/validate-release-source-preflight.ps1",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test:smoke": "pnpm --filter juhe-ai-backend test:smoke",

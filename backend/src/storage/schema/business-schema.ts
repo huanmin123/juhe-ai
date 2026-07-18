@@ -335,6 +335,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_observation_started_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
+      temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model TEXT NOT NULL,
       health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')),
       last_health_check_at TEXT,
@@ -797,6 +798,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, key),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS page_data_dirty_domains (
+      domain TEXT PRIMARY KEY,
+      generation INTEGER NOT NULL,
+      is_dirty INTEGER NOT NULL DEFAULT 1 CHECK (is_dirty IN (0, 1)),
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS announcements (

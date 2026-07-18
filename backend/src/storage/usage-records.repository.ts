@@ -45,6 +45,8 @@ import type { ProviderCostBreakdown } from '../modules/model-pricing/model-prici
 import type { UsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { readUsageHealthCheckSettingsSnapshot } from './usage-health-check-settings-snapshot.js'
+import { publishUsageRecordBatchChange } from '../modules/page-data/page-data-change.publisher.js'
+import { publishUsageRecordFirstPage } from '../modules/usage-records/usage-record-first-page-cache.service.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -379,6 +381,10 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     }
     throw error
   }
+  publishUsageRecordBatchChange(writePlan.shardEntries)
+  void publishUsageRecordFirstPage(inputs).catch((error) => {
+    logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_publish_failed' }), '使用记录首屏热列表异步更新失败')
+  })
 }
 
 export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): Promise<void> {
@@ -386,7 +392,9 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
     return
   }
   if (runtimeConfig.databaseDriver === 'postgres') {
-    await createUsageRecordsBatchPostgres(inputs)
+    const persistedRecords = await createUsageRecordsBatchPostgres(inputs)
+    publishUsageRecordBatchChange(persistedRecords)
+    await publishUsageRecordFirstPage(inputs)
     return
   }
 
@@ -420,6 +428,8 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
     }
     throw error
   }
+  publishUsageRecordBatchChange(writePlan.shardEntries)
+  await publishUsageRecordFirstPage(inputs)
 }
 
 export async function freezeUsageRecordPricingFactsAsync(input: UsageRecordInput): Promise<UsageRecordInput> {
@@ -432,7 +442,7 @@ export async function freezeUsageRecordPricingFactsAsync(input: UsageRecordInput
   return pricingSnapshot === undefined ? enriched : { ...enriched, pricingSnapshot }
 }
 
-async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Promise<void> {
+async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Promise<UsageRecordShardEntryInput[]> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const accountLastUsedAt = new Map<string, string>()
   const accountHealthSuccessAt = new Map<string, string>()
@@ -441,7 +451,7 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
     accessLookupMode: 'provided',
     shardLocationMode: 'postgres'
   })
-  if (writePlan.shardEntries.length === 0) return
+  if (writePlan.shardEntries.length === 0) return []
   const hasAccountHealthSuccess = [...writePlan.rowsByShard.values()]
     .some((shardRows) => shardRows.rows.some((row) => Boolean(row.accountHealthSuccessAt)))
   const healthCheckSettings = hasAccountHealthSuccess
@@ -455,6 +465,7 @@ async function createUsageRecordsBatchPostgres(inputs: UsageRecordInput[]): Prom
     }
     await flushPostgresUsageRecordBusinessSideEffects(tx, accountLastUsedAt, accountHealthSuccessAt, healthCheckSettings)
   })
+  return writePlan.shardEntries
 }
 
 async function enrichUsageRecordPricingAsync(inputs: UsageRecordInput[]): Promise<UsageRecordInput[]> {

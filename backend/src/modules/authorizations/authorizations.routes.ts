@@ -5,6 +5,7 @@ import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from 
 import { getAuthorizationTeamUsageOverviewAsync, getAuthorizationUserUsageOverviewAsync } from '../../storage/authorization-usage.repository.js'
 import {
   createResourceAuthorizationAsync,
+  findSystemTeamSummaryAsync,
   findResourceAuthorizationAsync,
   getResourceAuthorizationUsageAsync,
   listResourceAuthorizationsPageAsync,
@@ -19,6 +20,7 @@ import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-co
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import { publishAccountStaticReset, reportPageDataPublishFailure } from '../page-data/page-data-change.publisher.js'
 import { requestQuotaLimitsSchema } from '../request-quota-limit.schema.js'
 import { isAdminRole, type ResourceAuthorizationSummary } from '../../domain/types.js'
 
@@ -221,6 +223,7 @@ authorizationsRouter.post('/', mutationGuard({
         }
       }
     }, req)
+    await publishAuthorizationAccountReset(authorization)
     res.status(201).json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建授权失败'))
@@ -267,13 +270,13 @@ authorizationsRouter.delete('/:id/return', async (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    await runLoggedOperationAsync(async () => {
+    const authorization = await runLoggedOperationAsync(async () => {
       const authorization = await returnResourceAuthorizationForGranteeAsync(paramsParsed.data.id, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
       }
       return {
-        result: true,
+        result: authorization,
         log: {
           operationScopeSystemAccountId: authorization.grantee_system_account_id,
           mode: operationMode(requestAccess),
@@ -306,6 +309,12 @@ authorizationsRouter.delete('/:id/return', async (req, res) => {
         }
       }
     }, req)
+    if (authorization.resource_type === 'account') {
+      await publishAccountStaticReset([
+        authorization.resource_owner_system_account_id,
+        authorization.grantee_system_account_id
+      ])
+    }
     res.status(204).send()
   } catch (error) {
     if (error instanceof Error && error.message === '授权记录不存在') {
@@ -360,6 +369,7 @@ authorizationsRouter.delete('/:id', async (req, res) => {
         }
       }
     }, req)
+    await publishAuthorizationAccountReset(authorization)
     res.json(ok(authorization))
   } catch (error) {
     if (error instanceof Error && error.message === '授权记录不存在') {
@@ -416,6 +426,7 @@ authorizationsRouter.patch('/:id', async (req, res) => {
         }
       }
     }, req)
+    await publishAuthorizationAccountReset(authorization)
     res.json(ok(authorization))
   } catch (error) {
     if (error instanceof Error && error.message === '授权记录不存在') {
@@ -472,6 +483,7 @@ authorizationsRouter.patch('/:id/expire', async (req, res) => {
         }
       }
     }, req)
+    await publishAuthorizationAccountReset(authorization)
     res.json(ok(authorization))
   } catch (error) {
     if (error instanceof Error && error.message === '授权记录不存在') {
@@ -646,6 +658,24 @@ function authorizationGranteeName(authorization: ResourceAuthorizationSummary): 
     return authorization.granteeTeamName ?? '团队'
   }
   return authorization.granteeSystemAccountName ?? '被授权用户'
+}
+
+async function publishAuthorizationAccountReset(authorization: ResourceAuthorizationSummary): Promise<void> {
+  if (authorization.resourceType !== 'account') return
+  const ownerSystemAccountIds = [
+    authorization.resourceOwnerSystemAccountId,
+    authorization.granteeSystemAccountId ?? ''
+  ]
+  if (authorization.granteeType === 'team' && authorization.granteeTeamId) {
+    const team = await findSystemTeamSummaryAsync(authorization.granteeTeamId).catch((error) => {
+      reportPageDataPublishFailure(error, { domain: 'accounts.static', teamId: authorization.granteeTeamId })
+      return undefined
+    })
+    ownerSystemAccountIds.push(...(team?.members ?? [])
+      .filter((member) => member.status === 'active')
+      .map((member) => member.systemAccountId))
+  }
+  await publishAccountStaticReset(ownerSystemAccountIds)
 }
 
 async function normalizeAuthorizationUsageRangeAsync(input: { startDate?: string; endDate?: string }) {

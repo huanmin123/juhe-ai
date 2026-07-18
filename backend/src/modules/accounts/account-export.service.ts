@@ -50,6 +50,7 @@ export interface AccountExportAccount {
   supportedModels?: string[]
   healthCheckModel?: string
   healthCheckEndpointMode: AccountHealthCheckEndpointMode
+  temporaryUnavailableContinuousProbeEnabled?: boolean
   modelMappings?: AccountModelMapping[]
   tags?: string[]
   accountExpiresAt?: string
@@ -230,6 +231,7 @@ function buildExportAccount(account: AccountSummary, proxyRef: string | undefine
   }
   if (account.supportedModels?.length) output.supportedModels = [...account.supportedModels]
   if (account.healthCheckModel) output.healthCheckModel = account.healthCheckModel
+  if (account.temporaryUnavailableContinuousProbeEnabled === false) output.temporaryUnavailableContinuousProbeEnabled = false
   if (account.modelMappings?.length) output.modelMappings = account.modelMappings.map((item) => ({ ...item }))
   if (account.tags?.length) output.tags = account.tags.map((tag) => tag.name).filter(Boolean)
   if (account.accountExpiresAt) output.accountExpiresAt = account.accountExpiresAt

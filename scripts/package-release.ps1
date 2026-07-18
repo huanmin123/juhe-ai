@@ -4,6 +4,7 @@ param(
   [ValidateSet('tar.gz', 'zip', 'both')][string]$ArchiveFormat = 'both',
   [string]$FrontendApiBaseUrl = '/__aisys__/api',
   [string]$FrontendGatewayBaseUrl = '',
+  [string]$ExpectedCommit = '',
   [switch]$IncludeLocalEnv
 )
 
@@ -58,6 +59,9 @@ function Copy-ReleaseBackendPackageJson {
 
 Set-Location $repoRoot
 
+& (Join-Path $PSScriptRoot 'assert-release-source.ps1') -RepoRoot $repoRoot -ExpectedCommit $ExpectedCommit
+$releaseSourceCommit = ((& git -C $repoRoot rev-parse HEAD) | Select-Object -Last 1).Trim()
+
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
   throw 'Node.js LTS is required for packaging. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) first.'
 }
@@ -89,6 +93,7 @@ pnpm build
 if ($LASTEXITCODE -ne 0) {
   throw 'Workspace build failed.'
 }
+& (Join-Path $PSScriptRoot 'assert-release-source.ps1') -RepoRoot $repoRoot -ExpectedCommit $releaseSourceCommit
 
 Write-Host '==> Preparing release folder'
 Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -96,6 +101,7 @@ New-Item -ItemType Directory -Force $packageRoot | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'backend') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'frontend') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'docs') | Out-Null
+Write-Utf8NoBom -Path (Join-Path $packageRoot 'RELEASE_SOURCE_COMMIT') -Content "$releaseSourceCommit`n"
 
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
 Copy-RequiredItem (Join-Path $repoRoot 'pnpm-lock.yaml') (Join-Path $packageRoot 'pnpm-lock.yaml')

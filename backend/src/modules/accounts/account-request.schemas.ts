@@ -80,6 +80,7 @@ export const accountCreateSchema = z.object({
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   balanceQueryEnabled: z.boolean().optional(),
   balanceQueryConfig: accountBalanceQueryConfigSchema.optional(),
+  temporaryUnavailableContinuousProbeEnabled: z.boolean().optional(),
   notes: z.string().optional()
 }).strict()
 
@@ -103,6 +104,7 @@ export const accountUpdateSchema = z.object({
   availabilitySchedule: z.record(z.string(), z.unknown()).nullable().optional(),
   balanceQueryEnabled: z.boolean().optional(),
   balanceQueryConfig: accountBalanceQueryConfigSchema.optional(),
+  temporaryUnavailableContinuousProbeEnabled: z.boolean().optional(),
   notes: z.string().optional(),
   clearFailureState: z.boolean().optional()
 }).strict()

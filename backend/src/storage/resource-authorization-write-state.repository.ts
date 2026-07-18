@@ -289,6 +289,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
             cooldown_retest_last_status_code = NULL,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
+            temporary_unavailable_continuous_probe_enabled = ?,
             health_check_model = ?,
             health_check_endpoint_mode = ?,
             authorization_instance_source_account_id = ?,
@@ -305,6 +306,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
         source.protocol_version,
         restoredName,
         source.type,
+        source.temporary_unavailable_continuous_probe_enabled,
         source.health_check_model,
         source.health_check_endpoint_mode,
         authorization.resource_id,
@@ -323,10 +325,10 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
         id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
         proxy_profile_id, concurrency_limit,
         priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
-        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, health_check_model, health_check_endpoint_mode,
+        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       id,
@@ -344,6 +346,7 @@ function ensureAccountAuthorizationInstance(database: DatabaseSync, authorizatio
       0,
       0,
       0,
+      source.temporary_unavailable_continuous_probe_enabled,
       source.health_check_model,
       source.health_check_endpoint_mode,
       authorization.resource_id,

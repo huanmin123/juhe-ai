@@ -1,4 +1,10 @@
-import type { AccountBalanceSnapshot, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
+import { toRaw } from 'vue'
+
+import type { AccountBalanceSnapshot, AccountListResult, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
+
+export function cloneAccountListCacheResult(value: unknown): AccountListResult {
+  return structuredClone(toRaw(value as object)) as AccountListResult
+}
 
 export function mergeAccountListRuntimeSnapshot(
   current: AccountSummary[],

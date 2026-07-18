@@ -36,6 +36,14 @@ assert.match(viewSource, /const autoDateRolloverTimer = ref</, '零点计时器�
 assert.match(viewSource, /onActivated\(/, 'KeepAlive 页面重新激活时应恢复 auto 日期生命周期')
 assert.match(viewSource, /onDeactivated\(/, 'KeepAlive 页面停用时应清理当前实例的计时器和监听器')
 assert.match(viewSource, /dateMode/, '页面应显式维护 auto/manual 日期模式')
+const fetchPageStart = viewSource.indexOf('fetchPage: async (options, pageState) => {')
+const fetchPageEnd = viewSource.indexOf('requestSignature:', fetchPageStart)
+const fetchPageSource = fetchPageStart >= 0 && fetchPageEnd > fetchPageStart
+  ? viewSource.slice(fetchPageStart, fetchPageEnd)
+  : ''
+assert.match(fetchPageSource, /void loadModelOptions\(/, '模型筛选项必须独立后台加载')
+assert.match(fetchPageSource, /return await fetchRecords\(pageState, options\.forceData === true\)/, '使用记录列表必须直接等待 cache-first 列表请求，并保留显式强制刷新')
+assert.doesNotMatch(fetchPageSource, /Promise\.all/, '使用记录首屏不得等待模型筛选项加载')
 const tableChangeSource = viewSource.match(/async function handleTableChange[\s\S]*?\n}/)?.[0] ?? ''
 assert.match(tableChangeSource, /businessFiltersDisabled\.value[\s\S]*field: 'createdAt'[\s\S]*order: 'descend'/, '全用户列表处理表格排序时必须强制 createdAt 降序')
 assert.match(toolbarSource, /businessFiltersDisabled/, '全用户模式应统一禁用业务筛选')

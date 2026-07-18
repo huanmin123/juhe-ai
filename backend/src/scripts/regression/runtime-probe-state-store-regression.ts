@@ -18,6 +18,9 @@ interface ProbeState {
   precheckRequested?: boolean
   clientIpMarkers?: string[]
   distinctClientIpCount?: number
+  halfOpenLeaseId?: string
+  halfOpenLeaseUntilMs?: number
+  halfOpenPreviousNextProbeAtMs?: number
 }
 
 const store = createRuntimeProbeStateStore<ProbeState>(`runtime-probe-state-regression-${Date.now()}`)
@@ -152,5 +155,49 @@ const mergedThird = await store.merge({
 assert.equal(mergedThird?.generation, mergeGeneration1, '后续观测只能合并事实，不能替换事件 generation')
 assert.equal(mergedThird?.failureCount, 4, '后续新 generation merge 应继续累加失败次数')
 assert.equal(mergedThird?.distinctClientIpCount, 4, '后续新 generation merge 应继续累计 distinct 观测')
+
+const leaseStore = store as typeof store & {
+  acquireGenerationLease(runtimeKey: string, generation: number, leaseId: string, leaseUntilMs: number, ttlMs: number): Promise<ProbeState | undefined>
+  releaseGenerationLease(runtimeKey: string, generation: number, leaseId: string, ttlMs: number): Promise<boolean>
+  completeGenerationLease(runtimeKey: string, generation: number, leaseId: string): Promise<boolean>
+}
+assert.equal(typeof leaseStore.acquireGenerationLease, 'function', 'probe store 必须提供 generation 原子半开租约')
+assert.equal(typeof leaseStore.releaseGenerationLease, 'function', 'probe store 必须提供 generation 条件租约释放')
+const leaseGeneration = await leaseStore.nextGeneration('acct_half_open', 60_000)
+await leaseStore.set({
+  runtimeKey: 'acct_half_open',
+  generation: leaseGeneration,
+  nextProbeAtMs: now + 30_000,
+  accountId: 'acct_half_open',
+  phase: 'precheck_pending'
+}, 60_000)
+const [leaseA, leaseB] = await Promise.all([
+  leaseStore.acquireGenerationLease('acct_half_open', leaseGeneration, 'lease-a', now + 10_000, 60_000),
+  leaseStore.acquireGenerationLease('acct_half_open', leaseGeneration, 'lease-b', now + 10_000, 60_000)
+])
+assert.equal([leaseA, leaseB].filter(Boolean).length, 1, '同一 runtimeKey + generation 只能原子取得一个半开租约')
+const acquiredLeaseId = leaseA?.halfOpenLeaseId ?? leaseB?.halfOpenLeaseId
+assert(acquiredLeaseId, '单飞半开应返回实际取得的租约 ID')
+assert.equal((await leaseStore.listDue(now + 1, 20)).includes('acct_half_open'), false, '半开租约期间必须把 due 推迟到 leaseUntil，避免后台探针并发')
+assert.equal(
+  await leaseStore.acquireGenerationLease('acct_half_open', leaseGeneration - 1, 'lease-stale', now + 20_000, 60_000),
+  undefined,
+  '旧 generation 不能取得当前状态的半开租约'
+)
+assert.equal(await leaseStore.releaseGenerationLease('acct_half_open', leaseGeneration, 'lease-wrong', 60_000), false, '错误租约不得释放当前半开')
+assert.equal(await leaseStore.releaseGenerationLease('acct_half_open', leaseGeneration, acquiredLeaseId, 60_000), true, '失败或取消应按 generation + leaseId 恢复原 precheck')
+const restoredPrecheck = await leaseStore.get('acct_half_open')
+assert.equal(restoredPrecheck?.phase, 'precheck_pending', '释放半开租约后必须保留原 precheck 状态')
+assert.equal(restoredPrecheck?.halfOpenLeaseId, undefined, '释放后不得残留租约 ID')
+assert.equal(restoredPrecheck?.nextProbeAtMs, now + 30_000, '释放租约后必须恢复原后台探针时间')
+const successLease = await leaseStore.acquireGenerationLease('acct_half_open', leaseGeneration, 'lease-success', now + 10_000, 60_000)
+assert.equal(successLease?.halfOpenLeaseId, 'lease-success', '释放后应允许下一次单飞半开')
+assert.equal(await leaseStore.completeGenerationLease('acct_half_open', leaseGeneration, acquiredLeaseId), false, '同 generation 旧租约不得误清新租约')
+assert.equal(await leaseStore.completeGenerationLease('acct_half_open', leaseGeneration, 'lease-success'), true, '完整成功只能按匹配 generation + leaseId 清理软阻断')
+assert.equal(await leaseStore.get('acct_half_open'), undefined, '完整成功条件删除后不应残留 precheck 或租约')
+
+const wrongPhaseGeneration = await leaseStore.nextGeneration('acct_wrong_phase', 60_000)
+await leaseStore.set({ runtimeKey: 'acct_wrong_phase', generation: wrongPhaseGeneration, nextProbeAtMs: now, accountId: 'acct_wrong_phase', phase: 'recovery_wait' }, 60_000)
+assert.equal(await leaseStore.acquireGenerationLease('acct_wrong_phase', wrongPhaseGeneration, 'lease-wrong-phase', now + 10_000, 60_000), undefined, '原子 acquire 必须拒绝非 precheck_pending phase')
 
 console.log('runtime-probe-state-store-regression passed')

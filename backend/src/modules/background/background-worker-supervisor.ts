@@ -5,12 +5,20 @@ import { fileURLToPath } from 'node:url'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
+import {
+  createSupervisorRestartState,
+  recordSupervisorChildReady,
+  recordSupervisorChildStopped,
+  supervisorRestartDelayMs,
+  type SupervisorRestartState
+} from '../../shared/supervisor-restart-policy.js'
 import { attachBackgroundWorkerProcess, type BackgroundWorkerProcessRole } from './background-ipc.js'
 
 interface SupervisedWorkerState {
   process?: ChildProcess
   restartTimer?: NodeJS.Timeout
-  restartAttempts: number
+  restartState: SupervisorRestartState
 }
 
 const supervisedWorkerRoles: BackgroundWorkerProcessRole[] = [
@@ -19,7 +27,7 @@ const supervisedWorkerRoles: BackgroundWorkerProcessRole[] = [
   'ops-worker'
 ]
 const supervisedWorkers = new Map<BackgroundWorkerProcessRole, SupervisedWorkerState>(
-  supervisedWorkerRoles.map((role) => [role, { restartAttempts: 0 }])
+  supervisedWorkerRoles.map((role) => [role, { restartState: createSupervisorRestartState() }])
 )
 let stopping = false
 let shutdownHooksInstalled = false
@@ -30,8 +38,6 @@ const sourceRoot = resolve(dirname(currentModulePath), '../..')
 const backendRoot = resolve(sourceRoot, '..')
 const workerSourcePath = resolve(sourceRoot, 'worker.ts')
 const workerDistPath = resolve(sourceRoot, 'worker.js')
-const workerRestartBaseDelayMs = 1000
-const workerRestartMaxDelayMs = 30_000
 const workerStartupReadyTimeoutMs = 1_500
 const workerStartupStaggerMs = 250
 
@@ -114,7 +120,7 @@ function startWorkerProcess(
   attachBackgroundWorkerProcess(child, {
     role,
     onReady: () => {
-      state.restartAttempts = 0
+      state.restartState = recordSupervisorChildReady(state.restartState, Date.now())
       settleStartup()
     }
   })
@@ -143,6 +149,7 @@ function startWorkerProcess(
     }
     state.process = undefined
     if (!stopping) {
+      state.restartState = recordSupervisorChildStopped(state.restartState, Date.now())
       scheduleWorkerRestart(role)
     }
   })
@@ -158,6 +165,7 @@ function startWorkerProcess(
     }
     state.process = undefined
     if (!stopping) {
+      state.restartState = recordSupervisorChildStopped(state.restartState, Date.now())
       scheduleWorkerRestart(role)
     }
   })
@@ -179,10 +187,10 @@ function resolveWorkerEntry(): { modulePath: string; execArgv: string[] } {
 
 function pipeWorkerOutput(child: ChildProcess): void {
   child.stdout?.on('data', (chunk: Buffer) => {
-    process.stdout.write(chunk)
+    forwardSupervisorOutput(process.stdout, chunk)
   })
   child.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(chunk)
+    forwardSupervisorOutput(process.stderr, chunk)
   })
 }
 
@@ -192,8 +200,7 @@ function scheduleWorkerRestart(role: BackgroundWorkerProcessRole): void {
     return
   }
 
-  state.restartAttempts += 1
-  const delayMs = Math.min(workerRestartMaxDelayMs, workerRestartBaseDelayMs * 2 ** Math.min(state.restartAttempts - 1, 5))
+  const delayMs = supervisorRestartDelayMs(state.restartState.restartAttempts)
   state.restartTimer = setTimeout(() => {
     state.restartTimer = undefined
     startWorkerProcess(role)

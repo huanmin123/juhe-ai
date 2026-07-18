@@ -167,9 +167,9 @@ docker compose logs --tail=100 juhe-ai
 
 ## 7. 自动恢复
 
-Compose `restart: unless-stopped` 只能在容器进程退出时恢复；Docker healthcheck 标记 `unhealthy` 不一定会自动重启容器。长期运行建议再配置宿主机 watchdog，连续检查本机 `/__aisys__/health` 和 `/__aisys__/api/health`，达到阈值后重启容器，并设置冷却和窗口限频。完整策略见 [状态检测与自动恢复指南](watchdog/状态检测与自动恢复指南.md)。
+Compose `restart: unless-stopped` 在容器主进程退出时恢复；Docker healthcheck 只报告状态。不要再配置宿主机 HTTP watchdog 自动重启容器，公网和本机 health 只用于观察、告警和发布门禁。完整策略见 [状态检测与自动恢复指南](watchdog/状态检测与自动恢复指南.md)。
 
-宿主机 watchdog 重启目标通常是：
+容器进程退出恢复目标是：
 
 ```bash
 cd /opt/juhe-ai/docker

@@ -335,12 +335,25 @@ export async function updateResourceAuthorizationAsync(authorizationId: string, 
 
 export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizationExpirySweepBatchSize): Promise<number> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return expireDueResourceAuthorizations(limit)
+    const database = getBusinessDatabase()
+    const now = nowIso()
+    const dueGrants = database.prepare(`
+      SELECT *
+      FROM resource_authorization_grants
+      WHERE status IN ('active', 'paused')
+        AND expires_at IS NOT NULL
+        AND expires_at <= ?
+      ORDER BY expires_at ASC, updated_at ASC, id ASC
+      LIMIT ?
+    `).all(now, Math.max(1, Math.trunc(limit))) as unknown as ResourceAuthorizationGrantRow[]
+    const expired = expireDueResourceAuthorizations(limit)
+    if (expired > 0) await publishExpiredAccountAuthorizationPageData(dueGrants)
+    return expired
   }
   const now = nowIso()
   const client = await getResourceAuthorizationWriteClient()
   const batchSize = Math.max(1, Math.trunc(limit))
-  const expired = await client.transaction(async (tx) => {
+  const dueGrants = await client.transaction(async (tx) => {
     const dueGrants = await tx.query<ResourceAuthorizationGrantRow>(`
       SELECT *
       FROM ${resourceAuthorizationWriteTable(tx, 'resource_authorization_grants')}
@@ -367,12 +380,39 @@ export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizat
         updated_at: now
       }, grant.revoked_by ?? grant.created_by, tx, now)
     }
-    return dueGrants.length
+    return dueGrants
   })
-  if (expired > 0) {
+  if (dueGrants.length > 0) {
     await refreshAfterResourceAuthorizationBusinessWriteAsync('authorization_expired')
+    await publishExpiredAccountAuthorizationPageData(dueGrants, client)
   }
-  return expired
+  return dueGrants.length
+}
+
+async function publishExpiredAccountAuthorizationPageData(
+  grants: ResourceAuthorizationGrantRow[],
+  client?: DatabaseClient
+): Promise<void> {
+  try {
+    const ownerSystemAccountIds = new Set<string>()
+    for (const grant of grants) {
+      if (grant.resource_type !== 'account') continue
+      ownerSystemAccountIds.add(grant.resource_owner_system_account_id)
+      if (grant.grantee_system_account_id) ownerSystemAccountIds.add(grant.grantee_system_account_id)
+      if (grant.grantee_type === 'team' && grant.grantee_team_id) {
+        const members = client
+          ? await activeTeamMemberRowsAsync(grant.grantee_team_id, client)
+          : activeTeamMemberRows(grant.grantee_team_id)
+        for (const member of members) ownerSystemAccountIds.add(member.system_account_id)
+      }
+    }
+    if (ownerSystemAccountIds.size === 0) return
+    const { publishAccountStaticReset } = await import('../modules/page-data/page-data-change.publisher.js')
+    await publishAccountStaticReset([...ownerSystemAccountIds])
+  } catch (error) {
+    const { reportPageDataPublishFailure } = await import('../modules/page-data/page-data-change.publisher.js')
+    reportPageDataPublishFailure(error, { domain: 'accounts.static', operation: 'authorization_expired' })
+  }
 }
 
 function findResourceAuthorizationAfterWrite(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
@@ -1207,6 +1247,7 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
             cooldown_retest_last_status_code = NULL,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
+            temporary_unavailable_continuous_probe_enabled = ?,
             health_check_model = ?,
             health_check_endpoint_mode = ?,
             authorization_instance_source_account_id = ?,
@@ -1222,6 +1263,7 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
         source.protocol_version,
         restoredName,
         source.type,
+        source.temporary_unavailable_continuous_probe_enabled,
         source.health_check_model,
         source.health_check_endpoint_mode,
         authorization.resource_id,
@@ -1252,10 +1294,10 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
         proxy_profile_id, concurrency_limit,
         priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at,
         cooldown_until, last_error_code, last_error_message,
-        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, health_check_model, health_check_endpoint_mode,
+        cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, temporary_unavailable_continuous_probe_enabled, health_check_model, health_check_endpoint_mode,
         authorization_instance_source_account_id, authorization_instance_authorization_id, authorization_instance_owner_system_account_id,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, NULL, ?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       id,
       authorization.grantee_system_account_id,
@@ -1272,6 +1314,7 @@ async function ensureAccountAuthorizationInstanceAsync(client: DatabaseClient, a
       0,
       0,
       0,
+      source.temporary_unavailable_continuous_probe_enabled,
       source.health_check_model,
       source.health_check_endpoint_mode,
       authorization.resource_id,

@@ -75,8 +75,10 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, 
 import { useRoute, useRouter } from 'vue-router'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
-import { api } from '@/api/client'
+import { api, pageDataApi } from '@/api/client'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
+import { authState } from '@/composables/useAuth'
+import { usePageDataRequestCache } from '@/composables/usePageDataRequestCache'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -87,7 +89,8 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { trimmedRouteQueryValue } from '@/shared/routeQuery'
-import type { UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
+import type { PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
+import type { UsageRecordListResult, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import UsageRecordsTable from './UsageRecordsTable.vue'
@@ -196,6 +199,16 @@ const {
   selectedGroupId: () => groupFilter.value,
   systemAccountId: () => scopedSystemAccountId(systemAccountFilter.value)
 })
+let usageRecordPageCacheRequest: PageDataRequestCacheDefinition<UsageRecordListResult> | undefined
+const usageRecordPageCache = usePageDataRequestCache<UsageRecordListResult>({
+  immediate: false,
+  confirmIntervalMs: 15_000,
+  confirm: pageDataApi.confirm,
+  resolveRequest: () => {
+    if (!usageRecordPageCacheRequest) throw new Error('使用记录缓存请求尚未初始化')
+    return usageRecordPageCacheRequest
+  }
+})
 const {
   items: records,
   loading,
@@ -205,9 +218,10 @@ const {
   tablePagination,
   loadData,
   loadMoreMobile: loadMoreMobileRecords,
-  refreshMobile: refreshMobileRecords,
-  resetPagination
-} = useResponsivePagedList<UsageRecordSummary, { forceOptions?: boolean }>({
+  refreshMobile: refreshMobileRecordsCached,
+  resetPagination,
+  applyResult: applyUsageRecordPageCacheResult
+} = useResponsivePagedList<UsageRecordSummary, { forceOptions?: boolean; forceData?: boolean }>({
   pageSize: usageRecordsPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -218,11 +232,10 @@ const {
       resetSystemAccountOptionsSearch()
       resetGroupOptionsSearch()
     }
-    const [result] = await Promise.all([
-      fetchRecords(pageState),
-      loadModelOptions(options.forceOptions === true)
-    ])
-    return result
+    void loadModelOptions(options.forceOptions === true).catch((error) => {
+      console.error('加载使用记录模型筛选项失败', error)
+    })
+    return await fetchRecords(pageState, options.forceData === true)
   },
   requestSignature: (_options, pageState) => [
     isManagementView.value ? 'management' : 'self',
@@ -358,7 +371,11 @@ function refreshRecords(): void {
   resetSystemAccountOptionsSearch()
   resetGroupOptionsSearch()
   resetPagination()
-  void loadData({ forceOptions: true })
+  void loadData({ forceOptions: true, forceData: true })
+}
+
+async function refreshMobileRecords(): Promise<void> {
+  await refreshMobileRecordsCached({ forceData: true })
 }
 
 function applyRouteTraceId(traceId: string): void {
@@ -427,8 +444,30 @@ function restoreAllSystemAccountsAutoFilters(): void {
   sortState.value = { field: 'createdAt', order: 'descend' }
 }
 
-async function fetchRecords(pageState: { current: number; pageSize: number }) {
-  return usageRecordsApi.list(usageRecordRequestParams(pageState))
+async function fetchRecords(pageState: { current: number; pageSize: number }, force: boolean) {
+  const params = usageRecordRequestParams(pageState)
+  const loadNetwork = () => usageRecordsApi.list(params)
+  const viewerSystemAccountId = authState.currentUser.value?.id
+  if (!viewerSystemAccountId) return loadNetwork()
+  const targetSystemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
+  const viewScope = isManagementView.value ? 'admin' as const : 'self' as const
+  usageRecordPageCacheRequest = {
+    cacheKey: {
+      scope: viewScope === 'admin'
+        ? `admin:${viewerSystemAccountId}:target:${targetSystemAccountId ?? 'global'}`
+        : `self:${viewerSystemAccountId}`,
+      route: viewScope === 'admin' ? '/usage-records' : '/my-usage-records',
+      query: params,
+      version: 1
+    },
+    domain: 'usage.records',
+    viewScope,
+    maxStaleMs: 15_000,
+    ...(viewScope === 'admin' && targetSystemAccountId ? { targetSystemAccountId } : {}),
+    loadNetwork
+  }
+  const result = force ? await usageRecordPageCache.forceRefresh() : await usageRecordPageCache.load()
+  return result.data
 }
 
 function usageRecordRequestParams(pageState: { current: number; pageSize: number }) {
@@ -594,6 +633,15 @@ watch(snapshotPageState, () => {
   }
   pageStateCache.scheduleWrite(snapshotPageState)
 }, { deep: true })
+watch(usageRecordPageCache.data, (result) => {
+  applyUsageRecordPageCacheResult(result ? { ...result, items: [...result.items] } : {
+    items: [],
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    total: 0,
+    hasMore: false
+  })
+})
 watch(groupFilterDisabled, (disabled) => {
   if (!disabled) return
   groupFilterSelection.value = undefined

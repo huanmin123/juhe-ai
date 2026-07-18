@@ -36,6 +36,7 @@ import type {
 } from '../../storage/codex-context-state.repository.js'
 import type { CodexContextStateWriterPoolRuntime } from '../../storage/codex-context-state-writer-pool.js'
 import type { SqliteReadWorkerPoolRuntime } from '../../storage/sqlite-read-worker-pool.js'
+import type { PageDataChangeEvent, PageDataDomain } from '../page-data/page-data-change.service.js'
 import type {
   OpenAICompatibleFileCreateInput,
   OpenAICompatibleFileListOptions,
@@ -653,6 +654,8 @@ export type DbServiceOperation =
     accountId: string
     allowPendingTestRestore?: boolean
     allowErrorRestore?: boolean
+    expectedConfigRevision?: number
+    expectedCooldownRetestObservationStartedAt?: string
     authorizedBinding?: {
       systemAccountId: string
       groupId: string
@@ -739,8 +742,8 @@ export type DbServiceOperation =
       statusCode?: number
       errorCode?: string
       errorMessage?: string
-      countTowardsThreshold?: boolean
       expectedConfigRevision?: number
+      countTowardsThreshold?: boolean
       observedAt?: string
       traceId?: string
     }
@@ -755,6 +758,12 @@ export type DbServiceOperation =
     accountId: string
   }
   | {
+    type: 'record_cooldown_account_retest_success'
+    accountId: string
+    expectedConfigRevision: number
+    expectedObservationStartedAt?: string
+  }
+  | {
     type: 'defer_cooldown_account_retest'
     accountId: string
     delaySeconds?: number
@@ -767,6 +776,8 @@ export type DbServiceOperation =
       statusCode?: number
       errorCode?: string
       errorMessage?: string
+      expectedConfigRevision?: number
+      expectedObservationStartedAt?: string
       maxPauseMinutes?: number
       maxRecoveryHours?: number
     }
@@ -977,6 +988,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'record_account_health_check_failure' } ? { changed: boolean; failureCount: number; reachedThreshold: boolean; checkedAt: string; nextHealthCheckAt?: string; failureStartedAt?: string; transitionedToError: boolean; accountStatus?: string; errorCode: string; errorMessage: string } :
   T extends { type: 'list_accounts_due_for_cooldown_retest' } ? import('../../storage/account-cooldown-retest.repository.js').CooldownAccountRetestPage :
   T extends { type: 'find_account_for_cooldown_retest' } ? AccountSummary | undefined :
+  T extends { type: 'record_cooldown_account_retest_success' } ? { changed: boolean; accountStatus?: string } :
   T extends { type: 'defer_cooldown_account_retest' } ? { changed: boolean; cooldownUntil?: string } :
   T extends { type: 'record_cooldown_account_retest_failure' } ? { changed: boolean; failureCount: number; action: string; cooldownUntil?: string; backoffSeconds?: number; backoffMinutes?: number; recoveryStage?: string; fastThresholdSeconds?: number; maxPauseSeconds?: number; maxRecoverySeconds?: number; longTermIntervalSeconds?: number; maxedFailureCount?: number; observationStartedAt?: string; observationElapsedSeconds?: number; observationTimeoutSeconds?: number; transitionedToError?: boolean; errorCode: string; errorMessage: string } :
   T extends { type: 'mark_account_exception' } ? { updated: boolean; accountStatus?: string } :
@@ -1086,6 +1098,15 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
+  | {
+    type: 'page_data_change_publish'
+    event: PageDataChangeEvent
+  }
+  | {
+    type: 'page_data_change_dirty'
+    requestId: string
+    domains: PageDataDomain[]
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -1181,4 +1202,15 @@ export type DbServiceChildMessage =
     type: 'background_worker_stats_write_request'
     requestId: string
     operation: BackgroundStatsWriteOperation
+  }
+  | {
+    type: 'page_data_change_dirty_ack'
+    requestId: string
+    ok: true
+  }
+  | {
+    type: 'page_data_change_dirty_ack'
+    requestId: string
+    ok: false
+    errorMessage: string
   }

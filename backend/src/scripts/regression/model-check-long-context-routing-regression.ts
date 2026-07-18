@@ -20,7 +20,8 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
 const targetModel = 'gpt-5.5'
-const largeContextDowngradeThresholdChars = 18_000
+// 8k token 低档探针的 JSON 请求体约 32k 字符；阈值需稳定落在低档与 60k token 中档之间。
+const largeContextDowngradeThresholdChars = 40_000
 const upstream = createLengthAwareUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 

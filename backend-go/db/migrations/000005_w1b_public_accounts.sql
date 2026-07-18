@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS juhe_business.account_supported_models (
 CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model
   ON juhe_business.account_supported_models (provider_code, model, account_id);
 
+-- +goose StatementBegin
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -130,6 +131,7 @@ BEGIN
       ON DELETE CASCADE;
   END IF;
 END $$;
+-- +goose StatementEnd
 
 INSERT INTO juhe_business.protocols (
   id, code, version, name, description, enabled, created_at, updated_at

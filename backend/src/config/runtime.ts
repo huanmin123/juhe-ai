@@ -42,6 +42,7 @@ export interface RuntimeConfig {
   dbServiceHttpPort: number
   systemApi: {
     dbServiceMaxInFlight: number
+    readOnly: boolean
   }
   postgres: {
     url?: string
@@ -282,7 +283,8 @@ export const runtimeConfig: RuntimeConfig = {
       defaultSystemApiDbServiceMaxInFlight,
       1,
       5000
-    )
+    ),
+    readOnly: booleanConfig('JUHE_AI_SYSTEM_API_READ_ONLY', false)
   },
   postgres: {
     url: configuredPostgresUrl,

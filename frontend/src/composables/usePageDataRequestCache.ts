@@ -1,0 +1,107 @@
+import { onMounted, onUnmounted, readonly, shallowRef, type DeepReadonly, type ShallowRef } from 'vue'
+
+import type { PageDataConfirmRequest, PageDataConfirmResult } from '@/api/domains/pageData'
+import {
+  PageDataRequestCacheManager,
+  PageDataVisibleConfirmScheduler,
+  getDefaultPageDataTabCoordinator,
+  type PageDataCacheStorage,
+  type PageDataConfirmOutcome,
+  type PageDataLoadResult,
+  type PageDataRequestCacheDefinition,
+  type PageDataTabCoordinator
+} from '@/shared/pageDataCache'
+
+export interface UsePageDataRequestCacheOptions<T> {
+  resolveRequest: () => PageDataRequestCacheDefinition<T>
+  confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
+  storage?: PageDataCacheStorage
+  tabCoordinator?: PageDataTabCoordinator
+  now?: () => Date
+  immediate?: boolean
+  initialData?: T
+  confirmIntervalMs?: number
+}
+
+export interface UsePageDataRequestCacheResult<T> {
+  data: DeepReadonly<ShallowRef<T | undefined>>
+  loading: DeepReadonly<ShallowRef<boolean>>
+  error: DeepReadonly<ShallowRef<unknown>>
+  currentKey: () => string | undefined
+  load: () => Promise<PageDataLoadResult<T>>
+  forceRefresh: () => Promise<PageDataLoadResult<T>>
+  confirm: () => Promise<PageDataConfirmOutcome<T>>
+}
+
+export function usePageDataRequestCache<T>(options: UsePageDataRequestCacheOptions<T>): UsePageDataRequestCacheResult<T> {
+  const data = shallowRef<T | undefined>(options.initialData)
+  const loading = shallowRef(false)
+  const error = shallowRef<unknown>()
+  const manager = new PageDataRequestCacheManager<T>({
+    confirm: options.confirm,
+    storage: options.storage,
+    tabCoordinator: options.tabCoordinator ?? getDefaultPageDataTabCoordinator(),
+    now: options.now
+  })
+  const applyConfirmOutcome = (outcome: PageDataConfirmOutcome<T>): PageDataConfirmOutcome<T> => {
+    if (!disposed && (outcome.state === 'updated' || outcome.state === 'unchanged' || outcome.state === 'unavailable')) {
+      data.value = outcome.data
+    }
+    return outcome
+  }
+  const confirmCurrent = () => manager.confirmCurrent().then(applyConfirmOutcome)
+  const scheduler = new PageDataVisibleConfirmScheduler({
+    confirm: () => { void confirmCurrent() },
+    intervalMs: options.confirmIntervalMs
+  })
+  let operationGeneration = 0
+  let removeSubscription: (() => void) | undefined
+  let disposed = false
+
+  const run = async (operation: (request: PageDataRequestCacheDefinition<T>) => Promise<PageDataLoadResult<T>>): Promise<PageDataLoadResult<T>> => {
+    const generation = ++operationGeneration
+    const request = options.resolveRequest()
+    loading.value = true
+    error.value = undefined
+    try {
+      const result = await operation(request)
+      if (!disposed && generation === operationGeneration && !result.superseded) data.value = result.data
+      return generation === operationGeneration ? result : { ...result, superseded: true }
+    } catch (nextError) {
+      if (!disposed && generation === operationGeneration) error.value = nextError
+      throw nextError
+    } finally {
+      if (!disposed && generation === operationGeneration) loading.value = false
+    }
+  }
+
+  const load = () => run((request) => manager.load(request))
+  const forceRefresh = () => run((request) => manager.forceRefresh(request))
+
+  onMounted(() => {
+    removeSubscription = manager.subscribe((record) => {
+      if (!disposed) data.value = record?.value
+    })
+    scheduler.start()
+    if (options.immediate !== false) void load().catch(() => undefined)
+  })
+
+  onUnmounted(() => {
+    disposed = true
+    operationGeneration += 1
+    scheduler.stop()
+    removeSubscription?.()
+    removeSubscription = undefined
+    manager.close()
+  })
+
+  return {
+    data: readonly(data),
+    loading: readonly(loading),
+    error: readonly(error),
+    currentKey: () => manager.currentKey,
+    load,
+    forceRefresh,
+    confirm: confirmCurrent
+  }
+}

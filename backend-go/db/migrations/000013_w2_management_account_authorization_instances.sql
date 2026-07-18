@@ -11,6 +11,7 @@ CREATE INDEX IF NOT EXISTS idx_accounts_authorization_instance_source
   ON juhe_business.accounts(authorization_instance_source_account_id, authorization_instance_owner_system_account_id)
   WHERE authorization_instance_source_account_id IS NOT NULL AND deleted_at IS NULL;
 
+-- +goose StatementBegin
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -39,6 +40,7 @@ BEGIN
       ON DELETE SET NULL;
   END IF;
 END $$;
+-- +goose StatementEnd
 
 -- +goose Down
 -- no-op: authorization instance account columns are business data.

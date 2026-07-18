@@ -54,7 +54,7 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 - 删除账户 `defaultTestModel / default_test_model`。
 - 删除供应商 `defaultTestModel / default_test_model` 命名。
 - 删除 `provider_default_test_models`。
-- 删除 `healthCheckEnabled / health_check_enabled`。系统检查是基础机制，不提供账户级关闭开关。
+- 删除 `healthCheckEnabled / health_check_enabled`。系统检查是基础机制，不提供账户级关闭开关。账户高级配置中的“持续恢复探活”不是系统检查开关：它只决定 `temporary_unavailable` 在前 10 分钟有界最终确认后是否继续长期低频恢复，周期健康检查、首次激活、人工测试、`rate_limited` 和账户内 Key 复测始终不受影响。
 
 项目不在运行路径保留旧字段兼容、双读双写或自动迁移。既有数据需要处理时由上线流程执行一次性离线字段同步。
 
@@ -306,7 +306,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 - 页面和后端均不存在账户批量测试入口。
 - 新账户保存后保持 `pending_test`，后台激活检查成功后自动进入 `active`。
 - 人工草稿测试成功不能直接激活新账户。
-- 定时健康检查不存在关闭开关，也不存在 `health_check_enabled` 候选条件。
+- 定时健康检查不存在关闭开关，也不存在 `health_check_enabled` 候选条件；`temporaryUnavailableContinuousProbeEnabled` 只由冷却复测读取，不能作为定时健康检查候选条件。
 - 所有系统探针严格使用账户 `healthCheckModel`，缺失或非法时不回退其他模型。
 - 修改模型目录默认检查模型只影响后续新账户初始化，不改变已有账户。
 - 多 Key 人工测试不写 Key 状态，后台激活和 Key 恢复探针可以按职责写入 Key 状态。
