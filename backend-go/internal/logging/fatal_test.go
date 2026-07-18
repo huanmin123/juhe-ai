@@ -78,6 +78,19 @@ func TestWriteFatalIgnoresWriterFailure(t *testing.T) {
 	WriteFatal(failingWriter{}, errors.New("startup failed"))
 }
 
+func TestWriteFatalPreservesQuotesAroundUnquotedCredential(t *testing.T) {
+	var output bytes.Buffer
+	WriteFatal(&output, errors.New(`unknown command "client_secret=oauth-client-secret-123456" for "juhe-ai"`))
+
+	var record fatalRecord
+	if err := json.Unmarshal(bytes.TrimSpace(output.Bytes()), &record); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	if record.Message != `unknown command "client_secret=[REDACTED]" for "juhe-ai"` {
+		t.Fatalf("message = %q", record.Message)
+	}
+}
+
 type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {

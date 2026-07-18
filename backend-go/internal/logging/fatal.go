@@ -11,10 +11,10 @@ const maxFatalOutputBytes = 4096
 
 var (
 	urlUserInfoPattern   = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s]+@`)
-	authorizationPattern = regexp.MustCompile(`(?i)\b(Authorization[ \t]*:[ \t]*(?:Bearer|Basic))[ \t]+[^\s,;]+`)
-	jsonCredential       = regexp.MustCompile(`(?i)(["'][a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|passwd|pwd|secret)["'][ \t]*:[ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&}]+)`)
-	credentialPattern    = regexp.MustCompile(`(?i)\b([a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|passwd|pwd|secret))([ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)`)
-	credentialFlag       = regexp.MustCompile(`(?i)(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|passwd|pwd|secret)[ \t]+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&]+)`)
+	authorizationPattern = regexp.MustCompile(`(?i)\b(Authorization[ \t]*:[ \t]*(?:Bearer|Basic))[ \t]+[^\s,;"']+`)
+	jsonCredential       = regexp.MustCompile(`(?i)(["'][a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|passwd|pwd|secret)["'][ \t]*:[ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&}"']+)`)
+	credentialPattern    = regexp.MustCompile(`(?i)\b([a-z0-9_-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|passwd|pwd|secret))([ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&"']+)`)
+	credentialFlag       = regexp.MustCompile(`(?i)(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|token|password|passwd|pwd|secret)[ \t]+)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&"']+)`)
 	openAIAPIKeyPattern  = regexp.MustCompile(`(?i)\bsk-(?:proj-|svcacct-)?[a-z0-9_-]{12,}\b`)
 )
 
