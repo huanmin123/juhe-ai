@@ -5,11 +5,15 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +32,193 @@ func TestNewPublicAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	if handler != nil || logQueue != nil {
 		t.Fatalf("newPublicAPIHandler() = (%v, %v), want nil handler and queue when disabled", handler, logQueue)
 	}
+}
+
+func TestRunServerRejectsWorkerOwnerLockRoleBeforeDependencies(t *testing.T) {
+	err := RunServer(t.Context(), config.Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "owner-lock-test",
+		TrustProxy:                 "false",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+		OwnerLockEnabled:           true,
+		OwnerLockPath:              filepath.Join(t.TempDir(), "owner.lock"),
+		OwnerLockDeploymentEpoch:   "epoch-test",
+		OwnerLockRole:              "worker",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "role must be server") {
+		t.Fatalf("RunServer() error = %v, want server role error", err)
+	}
+}
+
+func TestRunServerGooseSchemaGateSourceStructure(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	runServer := findFunction(t, file, "RunServer")
+	positions := map[string]token.Pos{
+		"ownerlock.Acquire":               token.NoPos,
+		"runtimeOwnerLock.Release":        token.NoPos,
+		"postgresstore.Open":              token.NoPos,
+		"store.Close":                     token.NoPos,
+		"store.Ping":                      token.NoPos,
+		"store.RequireGooseSchemaVersion": token.NoPos,
+		"redisplatform.NewClient":         token.NoPos,
+		"newPublicAPIHandlerWithOptions":  token.NoPos,
+		"newManagementOperationLogQueue":  token.NoPos,
+		"httpapi.NewRouter":               token.NoPos,
+		"server.ListenAndServe":           token.NoPos,
+	}
+	gateCalls := 0
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := callName(call.Fun)
+		if _, tracked := positions[name]; tracked && positions[name] == token.NoPos {
+			positions[name] = call.Pos()
+		}
+		if name == "store.RequireGooseSchemaVersion" {
+			gateCalls++
+		}
+		return true
+	})
+
+	for _, name := range []string{
+		"ownerlock.Acquire",
+		"runtimeOwnerLock.Release",
+		"postgresstore.Open",
+		"store.Close",
+		"store.Ping",
+		"store.RequireGooseSchemaVersion",
+		"redisplatform.NewClient",
+		"newPublicAPIHandlerWithOptions",
+		"newManagementOperationLogQueue",
+		"httpapi.NewRouter",
+		"server.ListenAndServe",
+	} {
+		if positions[name] == token.NoPos {
+			t.Fatalf("RunServer missing call %s", name)
+		}
+	}
+	if gateCalls != 1 {
+		t.Fatalf("schema gate calls = %d, want 1", gateCalls)
+	}
+	deferredCalls := map[string]bool{
+		"runtimeOwnerLock.Release": false,
+		"store.Close":              false,
+	}
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		deferStatement, ok := node.(*ast.DeferStmt)
+		if !ok {
+			return true
+		}
+		ast.Inspect(deferStatement.Call, func(deferredNode ast.Node) bool {
+			call, ok := deferredNode.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if _, tracked := deferredCalls[callName(call.Fun)]; tracked {
+				deferredCalls[callName(call.Fun)] = true
+			}
+			return true
+		})
+		return true
+	})
+	for name, deferred := range deferredCalls {
+		if !deferred {
+			t.Fatalf("RunServer AST must register %s with defer", name)
+		}
+	}
+	gate := positions["store.RequireGooseSchemaVersion"]
+	for _, name := range []string{
+		"ownerlock.Acquire",
+		"runtimeOwnerLock.Release",
+		"postgresstore.Open",
+		"store.Close",
+		"store.Ping",
+	} {
+		if positions[name] >= gate {
+			t.Fatalf("%s must appear before schema gate in RunServer", name)
+		}
+	}
+	for _, name := range []string{
+		"redisplatform.NewClient",
+		"newPublicAPIHandlerWithOptions",
+		"newManagementOperationLogQueue",
+		"httpapi.NewRouter",
+		"server.ListenAndServe",
+	} {
+		if positions[name] <= gate {
+			t.Fatalf("%s must appear after schema gate in RunServer", name)
+		}
+	}
+
+	ownerConditionedGate := false
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		ifStatement, ok := node.(*ast.IfStmt)
+		if !ok || !isOwnerLockEnabledSelector(ifStatement.Cond) {
+			return true
+		}
+		ast.Inspect(ifStatement.Body, func(bodyNode ast.Node) bool {
+			call, ok := bodyNode.(*ast.CallExpr)
+			if ok && callName(call.Fun) == "store.RequireGooseSchemaVersion" {
+				ownerConditionedGate = true
+			}
+			return true
+		})
+		return true
+	})
+	if !ownerConditionedGate {
+		t.Fatal("schema gate must be inside cfg.OwnerLockEnabled condition")
+	}
+}
+
+func TestGooseSchemaVersionGateTimeout(t *testing.T) {
+	if gooseSchemaVersionGateTimeout != 5*time.Second {
+		t.Fatalf("goose schema version gate timeout = %s, want 5s", gooseSchemaVersionGateTimeout)
+	}
+}
+
+func findFunction(t *testing.T, file *ast.File, name string) *ast.FuncDecl {
+	t.Helper()
+	for _, declaration := range file.Decls {
+		function, ok := declaration.(*ast.FuncDecl)
+		if ok && function.Name.Name == name {
+			return function
+		}
+	}
+	t.Fatalf("function %s not found", name)
+	return nil
+}
+
+func callName(expression ast.Expr) string {
+	if identifier, ok := expression.(*ast.Ident); ok {
+		return identifier.Name
+	}
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return receiver.Name + "." + selector.Sel.Name
+}
+
+func isOwnerLockEnabledSelector(expression ast.Expr) bool {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok || selector.Sel.Name != "OwnerLockEnabled" {
+		return false
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	return ok && receiver.Name == "cfg"
 }
 
 func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
@@ -213,7 +404,7 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 }
 
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
 		handlers.CaptchaHandler != nil ||
@@ -329,7 +520,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandlerWithPageData(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.SessionListHandler == nil ||
@@ -420,7 +611,7 @@ func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testi
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.CaptchaHandler == nil ||
@@ -539,7 +730,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 }
 
 func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testing.T) {
-	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalIntegrationSourceListHandler != nil ||
 		disabled.ExternalIntegrationSourceDetailHandler != nil ||
 		disabled.ExternalIntegrationSourceCreateHandler != nil ||
@@ -552,16 +743,17 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		t.Fatal("external integration source handler was created while management API disabled")
 	}
 
-	sessionOnly := newManagementAPIHandler(
+	sessionOnly := newManagementAPIHandlerWithPageData(
 		config.Config{ManagementAuthSessionsEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
+		nil, nil,
+
 		nil,
-		nil,
-		nil,
-	)
+		nil)
+
 	if sessionOnly.ExternalIntegrationSourceListHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceDetailHandler != nil ||
 		sessionOnly.ExternalIntegrationSourceCreateHandler != nil ||
@@ -574,16 +766,17 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		t.Fatal("external integration source handler was created while only session switch enabled")
 	}
 
-	enabled := newManagementAPIHandler(
+	enabled := newManagementAPIHandlerWithPageData(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
+		nil, nil,
+
 		nil,
-		nil,
-		nil,
-	)
+		nil)
+
 	if enabled.ExternalIntegrationSourceListHandler == nil ||
 		enabled.ExternalIntegrationSourceDetailHandler == nil ||
 		enabled.ExternalIntegrationSourceCreateHandler == nil ||
@@ -679,19 +872,17 @@ func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read server.go: %v", err)
 	}
-	text := strings.ReplaceAll(string(source), "\r\n", "\n")
-	wiring := `providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
-	})`
-	if !strings.Contains(text, wiring) {
-		t.Fatalf("server.go missing provider model logger wiring %q", wiring)
+	block := sourceBlockBetween(t, string(source),
+		"providerModelService := managementprovidermodels.NewServiceWithOptions",
+		"routeStrategyService := managementroutestrategies.NewServiceWithOptions",
+	)
+	if !strings.Contains(block, "Logger:            logger") {
+		t.Fatal("server.go must inject the logger into the provider model service")
 	}
 }
 
 func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPAllowlistHandler != nil ||
 		disabled.ClientIPUnallowlistHandler != nil ||
 		disabled.ClientIPBlacklistHandler != nil ||
@@ -699,16 +890,17 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 		t.Fatal("client IP policy handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandler(
+	enabled := newManagementAPIHandlerWithPageData(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
+		nil, nil,
+
 		nil,
-		nil,
-		nil,
-	)
+		nil)
+
 	if enabled.ClientIPAllowlistHandler == nil ||
 		enabled.ClientIPUnallowlistHandler == nil ||
 		enabled.ClientIPBlacklistHandler == nil ||
@@ -744,35 +936,37 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 }
 
 func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
-	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPStatsHandler != nil || disabled.ClientIPStatsDetailHandler != nil {
 		t.Fatal("client IP stats read handler was created while management API disabled")
 	}
 
-	sessionOnly := newManagementAPIHandler(
+	sessionOnly := newManagementAPIHandlerWithPageData(
 		config.Config{ManagementAuthSessionsEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
+		nil, nil,
+
 		nil,
-		nil,
-		nil,
-	)
+		nil)
+
 	if sessionOnly.ClientIPStatsHandler != nil || sessionOnly.ClientIPStatsDetailHandler != nil {
 		t.Fatal("client IP stats read handler was created while only session switch enabled")
 	}
 
-	enabled := newManagementAPIHandler(
+	enabled := newManagementAPIHandlerWithPageData(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
+		nil, nil,
+
 		nil,
-		nil,
-		nil,
-	)
+		nil)
+
 	if enabled.ClientIPStatsHandler == nil || enabled.ClientIPStatsDetailHandler == nil {
 		t.Fatal("client IP stats read handler was not created while management API enabled")
 	}
@@ -802,22 +996,23 @@ func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerRouteStrategyDeleteOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.RouteStrategyDeleteHandler != nil ||
 		disabled.MyRouteStrategyDeleteHandler != nil {
 		t.Fatal("route strategy delete handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandler(
+	enabled := newManagementAPIHandlerWithPageData(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
+		nil, nil,
+
 		nil,
-		nil,
-		nil,
-	)
+		nil)
+
 	if enabled.RouteStrategyDeleteHandler == nil ||
 		enabled.MyRouteStrategyDeleteHandler == nil {
 		t.Fatal("route strategy delete handlers were not created while management API enabled")
@@ -845,7 +1040,7 @@ func TestNewManagementAPIHandlerRouteStrategyDeleteOptInAndSharedServiceWiring(t
 }
 
 func TestNewGatewaySystemAccountInvalidatorSkipsOnlyWhenDisabled(t *testing.T) {
-	invalidator, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{}, nil)
+	invalidator, _, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{}, nil)
 	if err != nil {
 		t.Fatalf("newGatewaySystemAccountInvalidator() disabled error = %v", err)
 	}
@@ -854,7 +1049,7 @@ func TestNewGatewaySystemAccountInvalidatorSkipsOnlyWhenDisabled(t *testing.T) {
 		t.Fatal("newGatewaySystemAccountInvalidator() returned invalidator while management and public APIs were disabled")
 	}
 
-	_, closeFn, err = newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+	_, _, closeFn, err = newGatewaySystemAccountInvalidator(t.Context(), config.Config{
 		ManagementAPIEnabled: true,
 		RedisNamespace:       "juhe-ai",
 	}, &redisplatform.Client{})
@@ -865,7 +1060,7 @@ func TestNewGatewaySystemAccountInvalidatorSkipsOnlyWhenDisabled(t *testing.T) {
 }
 
 func TestNewGatewaySystemAccountInvalidatorRequiresCacheForPublicAPI(t *testing.T) {
-	_, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+	_, _, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
 		PublicAPIEnabled: true,
 		RedisNamespace:   "juhe-ai",
 	}, &redisplatform.Client{})
@@ -876,7 +1071,7 @@ func TestNewGatewaySystemAccountInvalidatorRequiresCacheForPublicAPI(t *testing.
 }
 
 func TestNewGatewaySystemAccountInvalidatorRequiresStateRedis(t *testing.T) {
-	_, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+	_, _, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
 		ManagementAPIEnabled: true,
 		RedisNamespace:       "juhe-ai",
 	}, nil)
@@ -887,7 +1082,7 @@ func TestNewGatewaySystemAccountInvalidatorRequiresStateRedis(t *testing.T) {
 }
 
 func TestNewGatewaySystemAccountInvalidatorRejectsInvalidCacheURL(t *testing.T) {
-	_, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
+	_, _, closeFn, err := newGatewaySystemAccountInvalidator(t.Context(), config.Config{
 		ManagementAPIEnabled: true,
 		RedisCacheURL:        "http://127.0.0.1:6379/0",
 		RedisNamespace:       "juhe-ai",
@@ -895,6 +1090,31 @@ func TestNewGatewaySystemAccountInvalidatorRejectsInvalidCacheURL(t *testing.T) 
 	closeFn()
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_CACHE_URL") {
 		t.Fatalf("newGatewaySystemAccountInvalidator() error = %v, want Redis cache URL error", err)
+	}
+}
+
+func TestRunServerBuildsSystemAPICacheReadersWhenCacheRedisIsReused(t *testing.T) {
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := strings.ReplaceAll(string(source), "\r\n", "\n")
+	clientCreation := strings.Index(text, "if systemAPIClientIPAllowlistCacheRedis == nil && cfg.RedisCacheURL != \"\"")
+	if clientCreation < 0 {
+		t.Fatal("server must retain the optional cache client creation branch")
+	}
+	allowlistReader := strings.Index(text, "httpapi.NewRedisSystemAPIClientIPAllowlistVersionReader(")
+	rateLimitReader := strings.Index(text, "httpapi.NewRedisSystemAPIRateLimitSettingsVersionReader(")
+	if allowlistReader < 0 || rateLimitReader < 0 {
+		t.Fatal("server must construct both system API cache readers")
+	}
+	branchEnd := strings.Index(text[clientCreation:], "\n\t}\n")
+	if branchEnd < 0 {
+		t.Fatal("cache client creation branch must have a clear boundary")
+	}
+	branchEnd += clientCreation
+	if allowlistReader < branchEnd || rateLimitReader < branchEnd {
+		t.Fatal("system API cache readers must be constructed after the optional client creation branch")
 	}
 }
 

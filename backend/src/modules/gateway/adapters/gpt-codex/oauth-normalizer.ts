@@ -81,10 +81,6 @@ function applyOpenAIOAuthCodexAccountRequestOverrides(
   body: Record<string, unknown>,
   input: OpenAIOAuthCodexNormalizeInput
 ): void {
-  const serviceTierOverride = input.account.credentials?.service_tier_override
-  if (serviceTierOverride === 'flex') {
-    throw new OpenAIOAuthCodexAdapterError('当前 OAuth 上游适配器不支持服务等级 flex')
-  }
   let overridden: Record<string, unknown>
   try {
     overridden = applyGptAccountRequestOverrides(body, {

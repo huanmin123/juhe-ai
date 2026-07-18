@@ -1,0 +1,115 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/spf13/cobra"
+
+	"juhe-ai/backend-go/internal/app"
+	"juhe-ai/backend-go/internal/config"
+)
+
+func TestExecuteCommandWritesOneSanitizedFatalAndReturnsOne(t *testing.T) {
+	const secret = "entry-secret"
+	root := &cobra.Command{
+		Use: "test",
+		RunE: func(*cobra.Command, []string) error {
+			return errors.New("failed\nAuthorization: Bearer " + secret + " api_key=" + secret)
+		},
+	}
+	root.SetArgs([]string{})
+
+	var stderr bytes.Buffer
+	if code := executeCommand(root, &stderr); code != 1 {
+		t.Fatalf("exit code = %d, want 1", code)
+	}
+	assertFatalOnly(t, stderr.Bytes(), secret)
+}
+
+func TestExecuteCommandSuccessDoesNotWriteFatal(t *testing.T) {
+	root := &cobra.Command{Use: "test", Run: func(*cobra.Command, []string) {}}
+	root.SetArgs([]string{})
+
+	var stderr bytes.Buffer
+	if code := executeCommand(root, &stderr); code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestFiveWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
+	var gated []string
+	deps := workerCommandDependencies{
+		loadConfig: func() (config.Config, error) { return config.Config{}, nil },
+		newLogger: func(string, io.Writer) (*slog.Logger, error) {
+			return slog.New(slog.NewTextHandler(io.Discard, nil)), nil
+		},
+		runWithRuntimeGate: func(_ context.Context, _ config.Config, _ *slog.Logger, runner app.WorkerRunner) error {
+			if runner == nil {
+				t.Fatal("runtime gate received nil runner")
+			}
+			gated = append(gated, "gate")
+			return nil
+		},
+	}
+	root := newRootCommand(deps)
+	for _, name := range []string{
+		"ingest",
+		"authorization-expiry-sweep",
+		"operation-log-retention-cleanup",
+		"authorization-usage-range-windows-refresh",
+		"gateway-quota-snapshot-build",
+	} {
+		command, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatalf("find %s: %v", name, err)
+		}
+		if command.RunE == nil {
+			t.Fatalf("%s RunE is nil", name)
+		}
+		command.SetContext(t.Context())
+		before := len(gated)
+		if err := command.RunE(command, nil); err != nil {
+			t.Fatalf("run %s: %v", name, err)
+		}
+		if len(gated) != before+1 {
+			t.Fatalf("%s runtime gate calls = %d, want one additional call", name, len(gated)-before)
+		}
+	}
+
+	versionCommand, _, err := root.Find([]string{"version"})
+	if err != nil {
+		t.Fatalf("find version: %v", err)
+	}
+	before := len(gated)
+	versionCommand.Run(versionCommand, nil)
+	if len(gated) != before {
+		t.Fatal("version command used worker runtime gate")
+	}
+}
+
+func assertFatalOnly(t *testing.T, output []byte, secret string) {
+	t.Helper()
+	if bytes.Count(output, []byte{'\n'}) != 1 {
+		t.Fatalf("stderr is not one line: %q", output)
+	}
+	if bytes.Contains(output, []byte(secret)) || strings.Contains(string(output), "Error:") || strings.Contains(string(output), "Usage:") {
+		t.Fatalf("stderr leaked Cobra or secret output: %q", output)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(output), &record); err != nil {
+		t.Fatalf("stderr is not valid JSON: %v; output = %q", err, output)
+	}
+	if record["level"] != "fatal" {
+		t.Fatalf("fatal level = %#v, want fatal", record["level"])
+	}
+}

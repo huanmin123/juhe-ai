@@ -44,6 +44,9 @@ export interface RuntimeConfig {
     dbServiceMaxInFlight: number
     readOnly: boolean
   }
+  ownerLock: {
+    enabled: boolean
+  }
   postgres: {
     url?: string
     poolMax: number
@@ -286,6 +289,9 @@ export const runtimeConfig: RuntimeConfig = {
     ),
     readOnly: booleanConfig('JUHE_AI_SYSTEM_API_READ_ONLY', false)
   },
+  ownerLock: {
+    enabled: parseOwnerLockEnabled(rawStringConfig('JUHE_AI_OWNER_LOCK_ENABLED'))
+  },
   postgres: {
     url: configuredPostgresUrl,
     poolMax: numberConfig('JUHE_AI_DB_POOL_MAX', 50, 1, 500),
@@ -360,7 +366,7 @@ export const runtimeConfig: RuntimeConfig = {
     apiKey: optionalStringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY'),
     api: imageGenerationProviderApiConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_API', 'images'),
     model: stringConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL', 'gpt-image-2'),
-    timeoutMs: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS', 120000, 1000, 300000),
+    timeoutMs: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS', 600000, 1000, 900000),
     maxBodyBytes: numberConfig('JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB', 64, 1, 256) * 1024 * 1024
   },
   codeInterpreter: {
@@ -454,6 +460,10 @@ function booleanConfig(name: string, fallback: boolean): boolean {
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
   throw new Error(`${name} 只能配置为 true/false/1/0/yes/no/on/off`)
+}
+
+export function parseOwnerLockEnabled(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === 'true'
 }
 
 function runtimeModeConfig(name: string, fallback: RuntimeMode): RuntimeMode {

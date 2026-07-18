@@ -101,6 +101,8 @@ New-Item -ItemType Directory -Force $packageRoot | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'backend') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'frontend') | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $packageRoot 'docs') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $packageRoot 'scripts') | Out-Null
+New-Item -ItemType Directory -Force (Join-Path $packageRoot 'deploy') | Out-Null
 Write-Utf8NoBom -Path (Join-Path $packageRoot 'RELEASE_SOURCE_COMMIT') -Content "$releaseSourceCommit`n"
 
 Copy-RequiredItem (Join-Path $repoRoot 'package.json') (Join-Path $packageRoot 'package.json')
@@ -114,6 +116,9 @@ Copy-RequiredItem (Join-Path $repoRoot 'frontend/.env.example') (Join-Path $pack
 Copy-RequiredItem (Join-Path $repoRoot 'frontend/dist') (Join-Path $packageRoot 'frontend/dist')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.sh') (Join-Path $packageRoot 'start.sh')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.ps1') (Join-Path $packageRoot 'start.ps1')
+Copy-RequiredItem (Join-Path $repoRoot 'scripts/run-with-owner-lock.mjs') (Join-Path $packageRoot 'scripts/run-with-owner-lock.mjs')
+Copy-RequiredItem (Join-Path $repoRoot 'scripts/validate-owner-manifest.mjs') (Join-Path $packageRoot 'scripts/validate-owner-manifest.mjs')
+Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.json') (Join-Path $packageRoot 'deploy/owner-manifest.json')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/README.md') (Join-Path $packageRoot 'README.md')
 Copy-RequiredItem (Join-Path $repoRoot 'docs/deploy') (Join-Path $packageRoot 'docs/deploy')
 

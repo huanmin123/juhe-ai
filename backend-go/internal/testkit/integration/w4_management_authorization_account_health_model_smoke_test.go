@@ -75,6 +75,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		"",
 		"w4-source-health-model-v1",
 		"chat_json",
+		0,
 		false,
 	)
 
@@ -109,16 +110,26 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		initial.ID,
 		"w4-source-health-model-v1",
 		"chat_json",
+		0,
 		true,
 	)
 
 	if _, err := db.ExecContext(ctx, `
 		UPDATE juhe_business.accounts
 		SET health_check_model = $1,
+		    temporary_unavailable_continuous_probe_enabled = 1,
 		    updated_at = $2
 		WHERE id = 'acc_w4_auth_health_source'
 	`, "w4-source-health-model-v2", now.Add(4*time.Minute)); err != nil {
 		t.Fatalf("update W4 source account health_check_model: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE juhe_business.accounts
+		SET temporary_unavailable_continuous_probe_enabled = 0,
+		    updated_at = $1
+		WHERE id = $2
+	`, now.Add(4*time.Minute), initial.ID); err != nil {
+		t.Fatalf("set deleted W4 authorization instance probe flag: %v", err)
 	}
 
 	createInput.CreatedAt = now.Add(5 * time.Minute)
@@ -137,6 +148,7 @@ func TestW4ManagementAuthorizationAccountHealthCheckModelPostgresSmoke(t *testin
 		initial.ID,
 		"w4-source-health-model-v2",
 		"chat_json",
+		1,
 		false,
 	)
 	if restoredInstance.AuthorizationID != initial.AuthorizationID {
@@ -195,7 +207,8 @@ func insertW4AuthorizationAccountHealthModelFixtures(t *testing.T, ctx context.C
 			protocol_code, protocol_version, name, type, status,
 			credentials_encrypted, credential_fingerprint, credential_mask,
 			concurrency_limit, priority, super_priority_enabled, fallback_enabled,
-			schedulable, health_check_model, health_check_endpoint_mode, created_at, updated_at
+			schedulable, health_check_model, health_check_endpoint_mode,
+			temporary_unavailable_continuous_probe_enabled, created_at, updated_at
 		) VALUES (
 			'acc_w4_auth_health_source',
 			'sys_w4_auth_health_owner',
@@ -216,6 +229,7 @@ func insertW4AuthorizationAccountHealthModelFixtures(t *testing.T, ctx context.C
 			true,
 			'w4-source-health-model-v1',
 			'chat_json',
+			0,
 			$1,
 			$1
 		)
@@ -225,16 +239,17 @@ func insertW4AuthorizationAccountHealthModelFixtures(t *testing.T, ctx context.C
 }
 
 type w4AuthorizationAccountHealthModelInstance struct {
-	ID                      string
-	SystemAccountID         string
-	HealthCheckModel        string
-	HealthCheckEndpointMode string
-	SourceAccountID         string
-	AuthorizationID         string
-	OwnerSystemAccountID    string
-	Status                  string
-	Schedulable             bool
-	DeletedAt               sql.NullTime
+	ID                                         string
+	SystemAccountID                            string
+	HealthCheckModel                           string
+	HealthCheckEndpointMode                    string
+	SourceAccountID                            string
+	AuthorizationID                            string
+	OwnerSystemAccountID                       string
+	Status                                     string
+	Schedulable                                bool
+	TemporaryUnavailableContinuousProbeEnabled int
+	DeletedAt                                  sql.NullTime
 }
 
 func readW4AuthorizationAccountHealthModelInstance(
@@ -256,6 +271,7 @@ func readW4AuthorizationAccountHealthModelInstance(
 			authorization_instance_owner_system_account_id,
 			status,
 			schedulable,
+			temporary_unavailable_continuous_probe_enabled,
 			deleted_at
 		FROM juhe_business.accounts
 		WHERE authorization_instance_source_account_id = 'acc_w4_auth_health_source'
@@ -272,6 +288,7 @@ func readW4AuthorizationAccountHealthModelInstance(
 		&row.OwnerSystemAccountID,
 		&row.Status,
 		&row.Schedulable,
+		&row.TemporaryUnavailableContinuousProbeEnabled,
 		&row.DeletedAt,
 	); err != nil {
 		t.Fatalf("read W4 authorization account instance: %v", err)
@@ -285,6 +302,7 @@ func assertW4AuthorizationAccountHealthModelInstance(
 	wantID string,
 	wantHealthCheckModel string,
 	wantHealthCheckEndpointMode string,
+	wantTemporaryUnavailableContinuousProbeEnabled int,
 	wantDeleted bool,
 ) {
 	t.Helper()
@@ -299,6 +317,7 @@ func assertW4AuthorizationAccountHealthModelInstance(
 		row.SourceAccountID != "acc_w4_auth_health_source" ||
 		row.AuthorizationID == "" ||
 		row.OwnerSystemAccountID != "sys_w4_auth_health_owner" ||
+		row.TemporaryUnavailableContinuousProbeEnabled != wantTemporaryUnavailableContinuousProbeEnabled ||
 		row.DeletedAt.Valid != wantDeleted {
 		t.Fatalf(
 			"W4 authorization account instance = %+v, want health_check_model %q, endpoint mode %q and deleted %t",

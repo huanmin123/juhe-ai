@@ -324,7 +324,7 @@ Anthropic 非流式错误结构：
 
 - HTTP 状态码、`error.type`、错误文案和 `request_id` 只作为使用记录、审计、诊断摘要和账户错误处理策略输入。
 - 代码不得内置 `authentication_error = 账号异常`、`rate_limit_error = 账号限流`、`overloaded_error = 临时不可调用` 这类固定映射。
-- 上游非 2xx 仍按“同账号原地确认 -> 本地短期屏蔽 -> 切换其他账号 / 其他分组 -> 事前确认 / 半开探测 -> 并发归零后才写持久状态”的统一流程处理。
+- 通用 Anthropic 客户端的完整上游非 2xx 响应原样转发，不按状态或错误体切号；Claude Code 精确画像才允许按其协议语义和显式策略处理。transport / timeout 失败仍按“同账号确认 -> 切换其他账号 / 分组 -> 后台事前确认”的统一流程处理。
 - 账户错误处理策略可以匹配 Anthropic 的状态码、错误类型、错误码或文案，但命中结果只是待确认目标状态；真实网关流量不能绕过确认直接写 `temporary_unavailable`、`rate_limited` 或 `error`。
 - Anthropic `event: error`、缺少 `message_stop`、上游 EOF 或流式中断按流式失败流水线处理；是否写持久账号状态仍由确认阶段决定。
 - 最终返回给 Anthropic native 客户端的本地错误使用 Anthropic error shape，而不是 OpenAI error shape；所有候选账号耗尽时返回本地统一错误语义，不透传最后一个上游错误体作为权威结论。

@@ -6,7 +6,8 @@ import {
   accountGptRequestOverrideCapabilities,
   accountGptRequestOverridesForForm,
   availableAccountGptReasoningEffortOptions,
-  availableAccountGptServiceTierOptions
+  availableAccountGptServiceTierOptions,
+  isAccountRequestOverrideProviderSupported
 } from '../../views/accounts/accountGptRequestOverrides'
 import { buildAccountCredentials } from '../../views/accounts/accountCredentials'
 import { buildAccountDraftTestPayload } from '../../views/accounts/accountDraftTestPayload'
@@ -46,6 +47,21 @@ assert.doesNotMatch(modelCatalogModalSource, /class="capability-prefix"/, '模�
 assert.doesNotMatch(modelCatalogModalSource, /codexSupportedReasoningLevels/, '模型目录思考列只能消费 API reasoning effort')
 assert.doesNotMatch(modelCatalogModalSource, /codexMultiAgentVersion/, '模型目录思考列不能展示 Codex 多代理能力')
 assert.match(modelCatalogModalSource, /（默认）/, '模型目录思考列必须标明默认思考级别')
+const requestOverridesSectionSource = readFileSync(new URL('../../views/accounts/AccountGptRequestOverridesSection.vue', import.meta.url), 'utf8')
+const batchEditModalSource = readFileSync(new URL('../../views/accounts/AccountBatchEditModal.vue', import.meta.url), 'utf8')
+assert.match(requestOverridesSectionSource, /v-if="requestOverridesSupported"/, '支持账户覆盖的供应商必须保留配置区')
+assert.doesNotMatch(requestOverridesSectionSource, /serviceTierOptions\.length \|\| reasoningEffortOptions\.length/, '单账户配置区不能因能力为空整体隐藏')
+assert.doesNotMatch(requestOverridesSectionSource, /<a-form-item v-if=/, '服务等级和思考级别字段不能按选项数量分别隐藏')
+assert.doesNotMatch(requestOverridesSectionSource, /watch\(/, '模型能力变化不能静默清空已保存覆盖')
+assert.match(requestOverridesSectionSource, /当前已选模型未声明可用服务等级/, '服务等级无能力时必须显示中文原因')
+assert.match(requestOverridesSectionSource, /当前已选模型未声明可用思考级别/, '思考级别无能力时必须显示中文原因')
+assert.match(batchEditModalSource, /v-if="requestOverridesSupported"/, '批量编辑必须为支持供应商保留请求覆盖字段')
+assert.doesNotMatch(batchEditModalSource, /serviceTierOptions\.length \|\| reasoningEffortOptions\.length/, '批量编辑不能因能力为空整体隐藏请求覆盖字段')
+assert.equal(isAccountRequestOverrideProviderSupported('gpt'), true, 'GPT 账户必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('openai'), true, 'OpenAI-compatible 账户必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('anthropic'), true, 'Anthropic 账户必须显示请求覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('gemini'), true, 'Gemini 账户必须显示已实现的思考级别覆盖配置区')
+assert.equal(isAccountRequestOverrideProviderSupported('deepseek'), false, '没有账户覆盖 wire 映射的供应商不能显示无效配置区')
 
 const modelOptions: AccountModelSelectOption[] = [
   {
@@ -71,17 +87,17 @@ const apiKeyCapabilities = accountGptRequestOverrideCapabilities({
   modelOptions,
   supportedModels: ['gpt-5.6-sol', 'gpt-5.6-terra']
 })
-assert.deepEqual(apiKeyCapabilities.serviceTiers, ['priority'], '配置页服务等级必须取账户支持模型目录能力交集')
-assert.deepEqual(apiKeyCapabilities.reasoningEfforts, ['medium', 'high', 'max'], '配置页思考级别必须取账户支持模型目录能力交集')
+assert.deepEqual(apiKeyCapabilities.serviceTiers, ['priority', 'flex'], '配置页服务等级必须取账户支持模型目录能力合集')
+assert.deepEqual(apiKeyCapabilities.reasoningEfforts, ['low', 'medium', 'high', 'max', 'xhigh'], '配置页思考级别必须按模型顺序取能力合集并去重')
 assert.deepEqual(
   availableAccountGptServiceTierOptions(apiKeyCapabilities).map((option) => option.value),
-  ['', 'default', 'priority'],
-  '只有全部模型共同支持的非标准服务等级才能开放覆盖配置'
+  ['', 'default', 'priority', 'flex'],
+  '只要至少一个已选模型支持，非标准服务等级就应开放覆盖配置'
 )
 assert.deepEqual(
   availableAccountGptReasoningEffortOptions(apiKeyCapabilities).map((option) => option.value),
-  ['', 'medium', 'high', 'max'],
-  '账户思考级别选项只能包含全部支持模型的共同值'
+  ['', 'low', 'medium', 'high', 'max', 'xhigh'],
+  '账户思考级别选项必须包含全部已选模型能力的合集'
 )
 
 const unknownCapabilities = accountGptRequestOverrideCapabilities({
@@ -91,8 +107,8 @@ const unknownCapabilities = accountGptRequestOverrideCapabilities({
 })
 assert.deepEqual(
   unknownCapabilities,
-  { serviceTiers: [], reasoningEfforts: [] },
-  '能力未知模型必须阻断覆盖选项，不能由其他已知模型掩盖'
+  { serviceTiers: ['priority', 'flex'], reasoningEfforts: ['low', 'medium', 'high', 'max'] },
+  '能力未知模型不贡献选项，也不能清空其他已知模型能力'
 )
 
 const geminiCapabilities = accountGptRequestOverrideCapabilities({
@@ -106,7 +122,7 @@ const geminiCapabilities = accountGptRequestOverrideCapabilities({
   }],
   supportedModels: ['gemini-test']
 })
-assert.deepEqual(geminiCapabilities.serviceTiers, [], 'Gemini 没有可确认的服务等级 wire 字段时必须隐藏服务等级控件')
+assert.deepEqual(geminiCapabilities.serviceTiers, [], 'Gemini 没有可确认的服务等级 wire 字段时必须保持服务等级不可选')
 assert.deepEqual(geminiCapabilities.reasoningEfforts, ['low', 'high'], 'Gemini thinking level 有明确映射时应显示思考级别控件')
 
 const deepSeekCapabilities = accountGptRequestOverrideCapabilities({
@@ -136,12 +152,39 @@ const oauthFlexOnlyCapabilities = accountGptRequestOverrideCapabilities({
   }],
   supportedModels: ['gpt-flex-only']
 })
-assert.deepEqual(oauthFlexOnlyCapabilities.serviceTiers, [], 'OAuth 必须从可用服务等级中移除 Flex')
+assert.deepEqual(oauthFlexOnlyCapabilities.serviceTiers, ['flex'], 'OAuth 必须与 API Key 一样使用模型目录声明的 Flex 能力')
 assert.deepEqual(
   availableAccountGptServiceTierOptions(oauthFlexOnlyCapabilities).map((option) => option.value),
-  [],
-  'OAuth 过滤 Flex 后没有共同非标准等级时应隐藏服务等级控件'
+  ['', 'default', 'flex'],
+  'OAuth Flex 模型必须提供默认和 Flex 覆盖选项'
 )
+
+const emptyCapabilities = accountGptRequestOverrideCapabilities({
+  accountType: 'api_key',
+  modelOptions: [{
+    label: 'gpt-empty-capabilities',
+    value: 'gpt-empty-capabilities',
+    supportedServiceTiers: [],
+    supportedReasoningEfforts: []
+  }],
+  supportedModels: ['gpt-empty-capabilities']
+})
+assert.deepEqual(
+  availableAccountGptServiceTierOptions(emptyCapabilities).map((option) => option.value),
+  [''],
+  '服务等级能力为空时仍必须提供不覆盖选项，供页面保留禁用字段'
+)
+assert.deepEqual(
+  availableAccountGptReasoningEffortOptions(emptyCapabilities).map((option) => option.value),
+  [''],
+  '思考级别能力为空时仍必须提供不覆盖选项，供页面保留禁用字段'
+)
+const staleServiceTierOptions = availableAccountGptServiceTierOptions(emptyCapabilities, 'flex')
+assert.deepEqual(staleServiceTierOptions.map((option) => option.value), ['', 'flex'], '失效服务等级配置必须保留为当前配置选项并允许用户清除')
+assert.equal(staleServiceTierOptions.find((option) => option.value === 'flex')?.disabled, true, '失效服务等级不能伪装成当前可用能力')
+const staleReasoningOptions = availableAccountGptReasoningEffortOptions(emptyCapabilities, 'max')
+assert.deepEqual(staleReasoningOptions.map((option) => option.value), ['', 'max'], '失效思考级别配置必须保留为当前配置选项并允许用户清除')
+assert.equal(staleReasoningOptions.find((option) => option.value === 'max')?.disabled, true, '失效思考级别不能伪装成当前可用能力')
 
 const apiKeyForm = gptForm('api_key')
 apiKeyForm.serviceTierOverride = 'priority'
@@ -194,8 +237,8 @@ assert.equal(
     mappingUpstreamModelOptions: modelOptions,
     providers: FALLBACK_PROVIDERS
   }),
-  'GPT OAuth 账户不支持 Flex 服务等级',
-  'OAuth 保存前必须稳定拒绝 Flex'
+  undefined,
+  'OAuth 保存前必须按模型目录能力接受 Flex'
 )
 
 const customModelForm = {
@@ -263,7 +306,7 @@ assert.doesNotMatch(
   '账户请求覆盖永远不能显示 Ultra'
 )
 
-console.log('GPT 请求覆盖前端回归通过：完整目录能力交集、OAuth 限制、持久化和自定义模型能力均符合契约')
+console.log('GPT 请求覆盖前端回归通过：模型能力合集、OAuth Flex、常显控件、失效配置保留和持久化均符合契约')
 
 function gptForm(type: 'api_key' | 'oauth'): AccountFormModel {
   const form = defaultAccountForm('gpt', type, FALLBACK_PROVIDERS)

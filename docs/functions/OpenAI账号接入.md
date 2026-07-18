@@ -27,9 +27,9 @@ Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropi
 
 `GET /models` / `GET /v1/models` 始终读取本地供应商模型目录，不请求某个上游账号。默认 OpenAI-compatible 客户端返回标准 `{"object":"list","data":[...]}`；Codex 模型刷新请求会携带 `client_version` query 参数，或带有可识别的 Codex `originator` / User-Agent，此时返回 Codex `{"models":[...]}` 包装和 `ModelInfo` 字段，避免 Codex 客户端初始化阶段把标准 OpenAI 列表解析失败。Codex `ModelInfo` 的默认 reasoning、支持级别、服务等级和多代理版本必须由模型目录精确能力驱动，不再给所有模型伪造统一值；OpenAI API wire reasoning 与 Codex `ultra` 分开建模。
 
-单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，会进入流式失败链路；如果上游持续发送 SSE comment / 空心跳但没有可见输出、失败或终止事件，也必须在首个协议语义结果等待窗口内失败并触发服务端隐藏重试。持续有 raw chunk 且正在形成未闭合 SSE 事件时只记录诊断并继续转发，避免误杀大事件碎片。当前运行时对下游尚未提交的流式失败优先做服务端内部重试：关闭当前上游，本次请求排除失败账号，继续尝试后续账号 / 后续分组；只有服务端可承接账号耗尽后，才按客户端策略写最终失败。Codex Responses、Claude Code Messages 和 Gemini CLI stream 分别使用各自协议错误事件；通用客户端在下游未提交时返回 HTTP `503/upstream_retryable_error`，已提交时断流。客户端可见文案固定为统一可重试提示，上游错误码、状态码、错误文案和 Codex turn 诊断摘要只进日志 / 审计 / 诊断，不作为客户端终局失败内容。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式 response 的 raw chunk 停顿、连接读取异常或 transport EOF 可在 `semanticCommitted = false` 时进入服务端隐藏重试；SSE 等待账号期间网关可写 comment 心跳，该心跳只设置 `transportCommitted`。通用 OpenAI-compatible 客户端不解析上游 comment、失败事件或终止事件来决定切号，完整 SSE 原样转发。Codex Responses、Claude Code Messages 和 Gemini CLI 精确画像才解释各自协议语义并使用对应失败事件；真实协议事件写出后禁止拼接第二条上游流。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
-Codex Responses SSE 请求如果在建流前遇到上游 HTTP 非 `2xx`，仍先进入普通账户错误处理、请求级同账号确认预算、切后续账号和后续分组流程；当所有可承接账号都失败时，命中 Codex profile 的最终响应不返回裸 `503/429/400` JSON，而是返回 `200 text/event-stream`，写入 `response.failed/upstream_retryable_error` 后立即结束连接，防止 Codex 客户端因初始化或建流阶段错误断开整轮。Claude Code 和 Gemini CLI 的流式入口使用各自协议错误事件；通用客户端返回 HTTP `503/upstream_retryable_error`。该兜底只处理已通过本地认证、额度、JSON 校验和调度预检后的上游耗尽；无效本地 API Key、缺少 Bearer、本地 JSON 非法、额度不可用等本地硬失败仍按协议 JSON 错误返回。
+Codex Responses SSE 请求如果在建流前遇到上游 HTTP 非 `2xx`，可按 Codex 精确画像和响应策略在语义提交前切换账号；服务端耗尽后写 `response.failed/upstream_retryable_error` 并结束连接。Claude Code 和 Gemini CLI 使用各自协议事件。通用客户端收到完整非 `2xx` 时原样接收状态和正文，不改写为网关 503，也不因状态切号；只有本地 transport / capacity 耗尽才使用网关统一失败。
 
 ## 协议与供应商定义
 
@@ -150,9 +150,9 @@ type GptAccountType = 'api_key' | 'oauth'
 
 ### GPT 请求覆盖
 
-GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`。空值表示完全保留客户端请求；已配置值是期望上限。保存选项取账户支持模型精确能力并集；运行时在模型映射后按最终上游模型能力独立向下降级，能力未知或无可用低档时保留客户端字段。后端拒绝 `fast`、`auto`、`ultra` 以及非 GPT 账户提交；OAuth 当前不接受 `flex`。
+GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`。空值表示完全保留客户端请求；保存选项取账户已选模型精确能力的合集，未知模型不清空已知模型能力，API Key 与 OAuth 不因认证方式区分 Flex。运行时在模型映射后按最终上游模型逐字段判断：精确支持配置值时才覆盖，不支持或能力未知时保留对应客户端字段，不能向下降级，也不能因另一覆盖项不适用而跳过本项。后端拒绝 `fast`、`auto`、`ultra` 以及非 GPT 账户提交。
 
-覆盖发生在选中真实账户、完成模型映射、确定 endpoint family 且协议桥接生成目标请求体之后，最终字段清洗和 JSON 序列化之前。Responses 改写 `service_tier` 与 `reasoning.effort`，Chat Completions 改写 `service_tier` 与顶层 `reasoning_effort`；`default` 删除客户端 `service_tier`。API Key 大请求只有存在覆盖时才进入结构化改写，并复用 JSON worker，不能在主线程完整解析。`ultra` 只属于 Codex 客户端多代理能力，不能作为上游 wire effort；公共 Responses Multi-agent Beta 不在本期实现。
+覆盖发生在选中真实账户、完成模型映射、确定 endpoint family 且协议桥接生成目标请求体之后，最终字段清洗和 JSON 序列化之前。Responses 在最终模型支持时改写 `service_tier` 与 `reasoning.effort`，Chat Completions 在最终模型支持时改写 `service_tier` 与顶层 `reasoning_effort`；受支持的 `default` 删除客户端 `service_tier`。API Key 大请求只有至少一个覆盖可能生效时才进入结构化改写，并复用 JSON worker，不能在主线程完整解析。`ultra` 只属于 Codex 客户端多代理能力，不能作为上游 wire effort；公共 Responses Multi-agent Beta 不在本期实现。
 
 ## 账户分组绑定
 

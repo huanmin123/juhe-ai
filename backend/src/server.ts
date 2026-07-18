@@ -34,6 +34,7 @@ import {
   classifyGatewayRawBodyParserError,
   recordGatewayBodyRejection,
   rejectGatewayRawBodyByContentLength,
+  wrapGatewayRawBodyParser,
   type GatewayRawBodyParserError
 } from './modules/gateway/request/body-middleware.js'
 import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes, type GatewayRawBodyRequest } from './modules/gateway/request/body.js'
@@ -59,6 +60,7 @@ import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
+import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -120,7 +122,13 @@ function handleGatewayRawBodyError(error: Error & GatewayRawBodyParserError, req
   })
 }
 
+const parseGatewayRawBody = wrapGatewayRawBodyParser(
+  express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
+  handleGatewayRawBodyError
+)
+
 installProcessLogHandlers()
+await enforcePostgresGooseSchemaGate()
 if (runtimeConfig.auth.captchaDisabled) {
   logger.warn({
     event: 'auth_captcha_disabled',
@@ -400,8 +408,7 @@ app.use(
   openAICompatibleVectorStoresRouter,
   rejectGatewayRawBodyByContentLength,
   admitSpeedFirstRequestBody,
-  express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
-  handleGatewayRawBodyError,
+  parseGatewayRawBody,
   captureGatewayRawBody,
   openAIGatewayRouter
 )

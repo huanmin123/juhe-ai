@@ -42,10 +42,13 @@ const settings: GatewaySettings = {
   temporaryUnschedulableRetryIntervalSeconds: 0,
   temporaryUnschedulableRetryAttempts: 0,
   streamCircuitBreakerEnabled: true,
-  streamRequestTimeoutSeconds: 120,
-  streamIdleTimeoutSeconds: 30,
-  streamClientTotalWaitTimeoutSeconds: 270,
-  streamMaxLifetimeSeconds: 1800,
+  textFirstResponseTimeoutSeconds: 120,
+  textStreamIdleTimeoutSeconds: 30,
+  textUncommittedAttemptMaxLifetimeSeconds: 1800,
+  imageFirstResponseTimeoutSeconds: 600,
+  imageStreamIdleTimeoutSeconds: 120,
+  imageUncommittedAttemptMaxLifetimeSeconds: 3600,
+  noAvailableAccountWaitTimeoutSeconds: 3,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }

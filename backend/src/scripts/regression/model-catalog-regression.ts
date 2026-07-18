@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -51,6 +51,16 @@ const [
 ])
 
 try {
+  const providerModelCatalogRepositorySource = readFileSync(
+    new URL('../../storage/provider-model-catalog.repository.ts', import.meta.url),
+    'utf8'
+  )
+  assert.match(
+    providerModelCatalogRepositorySource,
+    /FROM juhe_business\.provider_model_catalog[\s\S]*?catalog_visible = TRUE/,
+    'PostgreSQL 内置模型目录必须用 boolean TRUE 过滤 catalog_visible，不能与整数 1 比较'
+  )
+
   assert.equal(
     providerModelCatalogId('gpt', 'gpt-5.6-sol'),
     'provider_model_gpt_gpt_5_6_sol_69ec47b65152',

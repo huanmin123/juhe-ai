@@ -63,6 +63,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: MockUpstreamHit[] = []
+const transportFailureCounts = new Map<string, number>()
 let rateLimitedCooldownClearTimer: ReturnType<typeof setTimeout> | undefined
 
 const app = express()
@@ -71,9 +72,9 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   settingsRepository.updateSettings({
-    streamClientTotalWaitTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 30,
-    streamRequestTimeoutSeconds: 30,
+    noAvailableAccountWaitTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 30,
+    textFirstResponseTimeoutSeconds: 30,
     temporaryUnschedulableRetryAttempts: 0
   })
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
@@ -86,22 +87,24 @@ try {
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
     const localSuppression = createSingleAccountScenario('本地屏蔽恢复等待', 'sk-recoverable-local-suppression', upstreamBaseUrl)
+    const transportFailure = createSingleAccountScenario('传输失败后恢复等待', 'sk-recoverable-transport-failure', upstreamBaseUrl)
+    const persistentTransportFailure = createSingleAccountScenario('持续传输失败预算终止', 'sk-recoverable-transport-always-fails', upstreamBaseUrl)
     const rateLimitedCooldown = createSingleAccountScenario('限流冷却恢复等待', 'sk-recoverable-rate-limited', upstreamBaseUrl)
     const activeCooldown = createSingleAccountScenario('正常状态冷却时间恢复等待', 'sk-recoverable-active-cooldown', upstreamBaseUrl)
     const fallback = createFallbackScenario(upstreamBaseUrl)
     const disabled = createDisabledScenario(upstreamBaseUrl)
-    const deadline = createDeadlineFallbackScenario(upstreamBaseUrl)
 
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertLocalSuppressionWaitsAndRecovers(baseUrl, localSuppression)
+    await assertTransportFailureWaitsAndRecovers(baseUrl, transportFailure)
+    await assertPersistentTransportFailureStopsAtBudget(baseUrl, persistentTransportFailure)
     await assertRateLimitedCooldownWaitsAndRecovers(baseUrl, rateLimitedCooldown)
     await assertActiveCooldownWaitsAndRecovers(baseUrl, activeCooldown)
     await assertFallbackGroupBypassesRecoverableWait(baseUrl, fallback)
     await assertHardUnavailableDoesNotEnterRecoverableWait(baseUrl, disabled)
-    await assertHttpDeadlineDoesNotResetAcrossFallback(baseUrl, deadline)
     await assertRecoverableWaitTimeoutBranch()
 
     console.log('gateway recoverable unavailable mock ai regression passed')
@@ -133,7 +136,35 @@ async function assertLocalSuppressionWaitsAndRecovers(baseUrl: string, scenario:
   assert.match(response.text, /mock ai ok from sk-recoverable-local-suppression/)
   assert(elapsedMs >= 900, `本地屏蔽恢复等待不应在释放前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `本地屏蔽恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
-  assert.deepEqual(authorizationsSince(startHitCount), ['Bearer sk-recoverable-local-suppression'])
+  assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-local-suppression'), ['Bearer sk-recoverable-local-suppression'])
+}
+
+async function assertTransportFailureWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+  const startHitCount = upstreamHits.length
+  const startedAt = Date.now()
+  const response = await postChat(baseUrl, scenario.apiKey, 'transport failure should wait and recover')
+  const elapsedMs = Date.now() - startedAt
+  const matchingAuthorizations = authorizationsSince(startHitCount)
+    .filter((authorization) => authorization === 'Bearer sk-recoverable-transport-failure')
+  assert.equal(response.status, 200, `传输失败形成短期避让后应等待恢复并重试，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /mock ai ok from sk-recoverable-transport-failure/)
+  assert(elapsedMs >= 2_500, `传输失败恢复不应绕过本地短期避让，实际 ${elapsedMs}ms`)
+  assert(elapsedMs < 8_000, `传输失败恢复不应等满服务端预算，实际 ${elapsedMs}ms`)
+  assert(matchingAuthorizations.length >= 2, `传输失败后应至少再次命中同一可恢复账户，实际 ${matchingAuthorizations.length} 次`)
+}
+
+async function assertPersistentTransportFailureStopsAtBudget(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+  const startHitCount = upstreamHits.length
+  const startedAt = Date.now()
+  const response = await postChat(baseUrl, scenario.apiKey, 'persistent transport failure should stop at budget')
+  const elapsedMs = Date.now() - startedAt
+  const matchingAuthorizations = authorizationsForKeySince(startHitCount, 'sk-recoverable-transport-always-fails')
+  assert.equal(response.status, 503, `持续 transport 失败在预算耗尽后应交给客户端重试，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /上游暂时不可用|上游请求失败/)
+  assert(elapsedMs >= 9_000, `持续 transport 失败不应提前绕过 10 秒测试预算，实际 ${elapsedMs}ms`)
+  assert(elapsedMs < 14_000, `预算耗尽后必须有限结束，不能进入忙循环，实际 ${elapsedMs}ms`)
+  assert(matchingAuthorizations.length >= 3, `预算内应进行有界恢复尝试，实际 ${matchingAuthorizations.length} 次`)
+  assert(matchingAuthorizations.length < 12, `预算内恢复尝试次数必须有界，实际 ${matchingAuthorizations.length} 次`)
 }
 
 async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {
@@ -158,7 +189,7 @@ async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenar
   assert.match(response.text, /mock ai ok from sk-recoverable-rate-limited/)
   assert(elapsedMs >= 900, `限流冷却恢复等待不应在 cooldown_until 前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `限流冷却恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
-  assert.deepEqual(authorizationsSince(startHitCount), ['Bearer sk-recoverable-rate-limited'])
+  assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-rate-limited'), ['Bearer sk-recoverable-rate-limited'])
 }
 
 async function assertActiveCooldownWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {
@@ -175,7 +206,7 @@ async function assertActiveCooldownWaitsAndRecovers(baseUrl: string, scenario: G
   assert.match(response.text, /mock ai ok from sk-recoverable-active-cooldown/)
   assert(elapsedMs >= 900, `active 冷却时间恢复等待不应在 cooldown_until 前命中上游，实际 ${elapsedMs}ms`)
   assert(elapsedMs < 3_000, `active 冷却时间恢复等待不应等满巡检窗口，实际 ${elapsedMs}ms`)
-  assert.deepEqual(authorizationsSince(startHitCount), ['Bearer sk-recoverable-active-cooldown'])
+  assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-active-cooldown'), ['Bearer sk-recoverable-active-cooldown'])
 }
 
 async function assertFallbackGroupBypassesRecoverableWait(baseUrl: string, scenario: { primaryAccountId: string; apiKey: string }): Promise<void> {
@@ -186,7 +217,7 @@ async function assertFallbackGroupBypassesRecoverableWait(baseUrl: string, scena
   const elapsedMs = Date.now() - startedAt
   assert.equal(response.status, 200, `主分组全屏蔽时应先切后备分组，实际 HTTP ${response.status}: ${response.text}`)
   assert(elapsedMs < 2_500, `存在可承接后备分组时不应进入恢复巡检等待，实际 ${elapsedMs}ms`)
-  assert.deepEqual(authorizationsSince(startHitCount), ['Bearer sk-recoverable-fallback-backup'])
+  assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-fallback-backup'), ['Bearer sk-recoverable-fallback-backup'])
 }
 
 async function assertHardUnavailableDoesNotEnterRecoverableWait(baseUrl: string, scenario: { apiKey: string }): Promise<void> {
@@ -197,7 +228,7 @@ async function assertHardUnavailableDoesNotEnterRecoverableWait(baseUrl: string,
   assert.equal(response.status, 503, `硬不可用账号不应恢复等待，实际 HTTP ${response.status}: ${response.text}`)
   assert.match(response.text, /没有可用的上游账户/)
   assert(elapsedMs < 800, `硬不可用账号不应进入本地恢复等待，实际 ${elapsedMs}ms`)
-  assert.deepEqual(authorizationsSince(startHitCount), [])
+  assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-disabled'), [])
 }
 
 async function assertRecoverableWaitTimeoutBranch(): Promise<void> {
@@ -222,47 +253,6 @@ async function assertRecoverableWaitTimeoutBranch(): Promise<void> {
   assert.equal(result.timedOut, true, '恢复等待 helper 应标记 timedOut')
   assert(result.checkCount >= 2, `恢复等待 helper 超时前应至少巡检两次，实际 ${result.checkCount}`)
   assert(metadata.some((item) => item.label === 'recoverable_unavailable_wait_result'), '恢复等待 helper 应写入结果元数据')
-}
-
-async function assertHttpDeadlineDoesNotResetAcrossFallback(baseUrl: string, scenario: GatewayScenario): Promise<void> {
-  const traceId = `trace-http-deadline-${Date.now()}`
-  const startHitCount = upstreamHits.length
-  const startedAt = Date.now()
-  const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${scenario.apiKey}`,
-      'content-type': 'application/json',
-      'x-trace-id': traceId
-    },
-    body: JSON.stringify({
-      model: 'gpt-5.5',
-      messages: [{ role: 'user', content: 'deadline must not reset across fallback' }],
-      stream: false
-    })
-  })
-  const text = await response.text()
-  const elapsedMs = Date.now() - startedAt
-  assert.equal(response.status, 503, `deadline 应返回 HTTP 503，实际 ${response.status}: ${text}`)
-  assert.match(text, /gateway_request_deadline_exceeded/, 'deadline 必须返回独立错误码')
-  assert(elapsedMs >= 9_500, `真实 HTTP deadline 不应提前触发，实际 ${elapsedMs}ms`)
-  assert(elapsedMs < 13_000, `fallback 不得重置 10 秒总预算，实际 ${elapsedMs}ms`)
-  assert.deepEqual(
-    authorizationsSince(startHitCount),
-    ['Bearer sk-deadline-primary'],
-    '主组耗尽总预算后不得再向后备组发起新的上游请求'
-  )
-
-  await auditLogQueue.flushAllAuditLogQueueAsync()
-  const audit = repositories.listAuditLogs({ traceId, pageSize: 10 }).items[0]
-  assert(audit, 'deadline 请求必须写入失败审计')
-  assert.notEqual(audit.auditOutcome, 'client_aborted', '服务端 deadline 不得误标为客户端中断')
-  assert.equal(accountSideEffects.precheckHalfOpenGroupLeaseCountForTest(), 0, 'deadline 后半开 group gate 必须归零')
-  assert.deepEqual(
-    accountSideEffects.recoverableUnavailableWaitCoordinatorSnapshotForTest(),
-    { scopeCount: 0, waiterCount: 0, timerCount: 0 },
-    'deadline 后 recoverable waiter/timer 必须归零'
-  )
 }
 
 function createSingleAccountScenario(label: string, upstreamApiKey: string, upstreamBaseUrl: string): GatewayScenario {
@@ -354,49 +344,6 @@ function createFallbackScenario(upstreamBaseUrl: string): { primaryAccountId: st
   }
 }
 
-function createDeadlineFallbackScenario(upstreamBaseUrl: string): GatewayScenario {
-  const primaryGroup = repositories.createGroup({
-    name: 'deadline 主分组', providerCode: GPT_VENDOR_CODE, enabled: true
-  }, access)
-  const backupGroup = repositories.createGroup({
-    name: 'deadline 后备分组', providerCode: GPT_VENDOR_CODE, enabled: true
-  }, access)
-  const primary = repositories.createAccount({
-    providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: 'deadline 主账户',
-    type: 'api_key',
-    credentials: { api_key: 'sk-deadline-primary', base_url: upstreamBaseUrl },
-    groupId: primaryGroup.id,
-    status: 'active',
-    schedulable: true,
-    supportedModels: ['gpt-5.5', 'gpt-5.6-sol']
-  }, access)
-  const backup = repositories.createAccount({
-    providerCode: GPT_VENDOR_CODE,
-    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-    name: 'deadline 后备账户',
-    type: 'api_key',
-    credentials: { api_key: 'sk-deadline-backup', base_url: upstreamBaseUrl },
-    groupId: backupGroup.id,
-    status: 'active',
-    schedulable: true,
-    supportedModels: ['gpt-5.5', 'gpt-5.6-sol']
-  }, access)
-  activateAccountAfterBackgroundCheck(primary.id)
-  activateAccountAfterBackgroundCheck(backup.id)
-  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: 'deadline 网关 Key',
-    groupBindings: [
-      { groupId: primaryGroup.id, priority: 1, status: 'active' },
-      { groupId: backupGroup.id, priority: 2, status: 'active' }
-    ],
-    status: 'active'
-  }, access)
-  assert(apiKey.key, 'deadline 网关 Key 未返回明文密钥')
-  return { accountId: primary.id, apiKey: apiKey.key }
-}
-
 function createDisabledScenario(upstreamBaseUrl: string): { apiKey: string } {
   const group = repositories.createGroup({
     name: '恢复等待硬不可用分组',
@@ -459,6 +406,10 @@ function authorizationsSince(startHitCount: number): string[] {
   return upstreamHits.slice(startHitCount).map((hit) => hit.authorization)
 }
 
+function authorizationsForKeySince(startHitCount: number, apiKey: string): string[] {
+  return authorizationsSince(startHitCount).filter((authorization) => authorization === `Bearer ${apiKey}`)
+}
+
 function createMockOpenAIUpstream(): http.Server {
   return http.createServer((req, res) => {
     const chunks: Buffer[] = []
@@ -477,10 +428,17 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       const upstreamApiKey = String(req.headers.authorization ?? '').replace(/^Bearer\s+/i, '')
-      if (upstreamApiKey.startsWith('sk-deadline-')) {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        res.write('{"id":"chatcmpl-deadline"')
+      if (upstreamApiKey === 'sk-recoverable-transport-always-fails') {
+        res.destroy()
         return
+      }
+      if (upstreamApiKey === 'sk-recoverable-transport-failure') {
+        const failureCount = transportFailureCounts.get(upstreamApiKey) ?? 0
+        transportFailureCounts.set(upstreamApiKey, failureCount + 1)
+        if (failureCount === 0) {
+          res.destroy()
+          return
+        }
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({

@@ -444,7 +444,7 @@ async function main(): Promise<void> {
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
     settingsRepository.updateSettings({
-      streamRequestTimeoutSeconds: 10,
+      textFirstResponseTimeoutSeconds: 10,
       temporaryUnschedulableRetryAttempts: 0
     })
     gatewayCache.clearGatewayRuntimeCache()
