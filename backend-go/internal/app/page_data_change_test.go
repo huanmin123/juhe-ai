@@ -116,6 +116,10 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	if strings.Contains(text, `newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace+":state")`) {
 		t.Fatal("server must not pass the state client namespace to the page data publisher")
 	}
+	if !strings.Contains(text, "groupService := managementgroups.NewServiceWithOptions") ||
+		!strings.Contains(text, "PageDataPublisher:       accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management groups")
+	}
 }
 
 type pageDataCorePublisherStub struct {

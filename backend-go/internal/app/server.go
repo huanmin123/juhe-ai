@@ -617,6 +617,7 @@ func newManagementAPIHandlerWithPageData(
 		UsageStatsTimezoneStore: store,
 		AccountConcurrency:      accountConcurrencyReader,
 		Invalidator:             systemAccountInvalidator,
+		PageDataPublisher:       accountsStaticResetPublisher,
 		Logger:                  logger,
 	})
 	accountService := managementaccounts.NewService(store)

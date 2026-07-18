@@ -142,6 +142,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		s.invalidateGroupLookup(ctx)
 	}
 	s.invalidateRuntimeWithReason(ctx, reason)
+	s.publishDependentPageDataResets(ctx)
 
 	group, err := s.Detail(ctx, DetailInput{
 		ActorSystemAccountID: input.ActorSystemAccountID,
