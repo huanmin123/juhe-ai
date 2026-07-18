@@ -59,6 +59,7 @@ import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
+import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -121,6 +122,7 @@ function handleGatewayRawBodyError(error: Error & GatewayRawBodyParserError, req
 }
 
 installProcessLogHandlers()
+await enforcePostgresGooseSchemaGate()
 if (runtimeConfig.auth.captchaDisabled) {
   logger.warn({
     event: 'auth_captcha_disabled',
