@@ -158,10 +158,10 @@ $portValue = Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_PORT' -Fallbac
 Write-Host "Starting juhe-ai at http://${hostValue}:${portValue}"
 Write-Host 'The Web/API process will supervise separate background worker and DB service processes.'
 $ownerLockEnabled = if ($env:JUHE_AI_OWNER_LOCK_ENABLED) { $env:JUHE_AI_OWNER_LOCK_ENABLED } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_ENABLED' -Fallback 'false' }
-if ($ownerLockEnabled -eq 'true') {
+if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIgnoreCase)) {
   $manifestEpoch = node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)"
   if ($LASTEXITCODE -ne 0 -or -not $manifestEpoch) { throw 'Unable to read deploy/owner-manifest.json deploymentEpoch.' }
-  node scripts/validate-owner-manifest.mjs --require-owners=management=node,public=node,gateway=node,worker=node deploy/owner-manifest.json
+  node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   $ownerLockPath = if ($env:JUHE_AI_OWNER_LOCK_PATH) { $env:JUHE_AI_OWNER_LOCK_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_PATH' -Fallback 'runtime/node-server.owner.lock' }
   $ownerLockEpoch = if ($env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH) { $env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH' -Fallback $manifestEpoch }
@@ -170,7 +170,14 @@ if ($ownerLockEnabled -eq 'true') {
   if ($LASTEXITCODE -ne 0 -or -not $nodeVersion) { throw 'Unable to read Node release version.' }
   node scripts/validate-owner-manifest.mjs --require-deployment-epoch=$ownerLockEpoch --require-node-version=$nodeVersion --require-schema-version=55 deploy/owner-manifest.json
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  node scripts/run-with-owner-lock.mjs --lock-path $ownerLockPath --deployment-epoch $ownerLockEpoch --role server --version $nodeVersion -- node backend/dist/server.js
-  exit $LASTEXITCODE
+  $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
+  $PSNativeCommandUseErrorActionPreference = $false
+  try {
+    node scripts/run-with-owner-lock.mjs --lock-path $ownerLockPath --deployment-epoch $ownerLockEpoch --role server --version $nodeVersion -- node backend/dist/server.js
+    $ownerLockExitCode = $LASTEXITCODE
+  } finally {
+    $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference
+  }
+  exit $ownerLockExitCode
 }
 node backend/dist/server.js

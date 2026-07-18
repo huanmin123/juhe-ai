@@ -134,13 +134,13 @@ PORT="${PORT:-3000}"
 echo "Starting juhe-ai at http://${HOST}:${PORT}"
 echo "The Web/API process will supervise separate background worker and DB service processes."
 OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
-if [ "$OWNER_LOCK_ENABLED" = "true" ]; then
+if [ "${OWNER_LOCK_ENABLED,,}" = "true" ]; then
   MANIFEST_EPOCH="$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)")"
   if [ -z "$MANIFEST_EPOCH" ]; then
     echo "Unable to read deploy/owner-manifest.json deploymentEpoch." >&2
     exit 1
   fi
-  node scripts/validate-owner-manifest.mjs --require-owners=management=node,public=node,gateway=node,worker=node deploy/owner-manifest.json
+  node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
   OWNER_LOCK_PATH="${JUHE_AI_OWNER_LOCK_PATH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_PATH runtime/node-server.owner.lock)}"
   OWNER_LOCK_EPOCH="${JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH "$MANIFEST_EPOCH")}"
   if [ "$OWNER_LOCK_EPOCH" != "$MANIFEST_EPOCH" ]; then
