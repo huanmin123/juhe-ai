@@ -22,7 +22,7 @@ func TestManagementExternalIntegrationSourceTokenCreateSQLContract(t *testing.T)
 	if err != nil {
 		t.Fatalf("read external integration source SQL: %v", err)
 	}
-	sql := string(raw)
+	sql := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	for _, required := range []string{
 		"-- name: FindManagementExternalIntegrationSourceForUpdate :one",
 		"WHERE sources.id = sqlc.arg(source_id)::text\nFOR UPDATE;",

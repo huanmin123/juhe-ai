@@ -150,9 +150,9 @@ type GptAccountType = 'api_key' | 'oauth'
 
 ### GPT 请求覆盖
 
-GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`。空值表示完全保留客户端请求；已配置值是期望上限。保存选项取账户支持模型精确能力并集；运行时在模型映射后按最终上游模型能力独立向下降级，能力未知或无可用低档时保留客户端字段。后端拒绝 `fast`、`auto`、`ultra` 以及非 GPT 账户提交；OAuth 当前不接受 `flex`。
+GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_override=default|priority|flex` 与 `reasoning_effort_override=none|minimal|low|medium|high|xhigh|max`。空值表示完全保留客户端请求；保存选项取账户已选模型精确能力的合集，未知模型不清空已知模型能力，API Key 与 OAuth 不因认证方式区分 Flex。运行时在模型映射后按最终上游模型逐字段判断：精确支持配置值时才覆盖，不支持或能力未知时保留对应客户端字段，不能向下降级，也不能因另一覆盖项不适用而跳过本项。后端拒绝 `fast`、`auto`、`ultra` 以及非 GPT 账户提交。
 
-覆盖发生在选中真实账户、完成模型映射、确定 endpoint family 且协议桥接生成目标请求体之后，最终字段清洗和 JSON 序列化之前。Responses 改写 `service_tier` 与 `reasoning.effort`，Chat Completions 改写 `service_tier` 与顶层 `reasoning_effort`；`default` 删除客户端 `service_tier`。API Key 大请求只有存在覆盖时才进入结构化改写，并复用 JSON worker，不能在主线程完整解析。`ultra` 只属于 Codex 客户端多代理能力，不能作为上游 wire effort；公共 Responses Multi-agent Beta 不在本期实现。
+覆盖发生在选中真实账户、完成模型映射、确定 endpoint family 且协议桥接生成目标请求体之后，最终字段清洗和 JSON 序列化之前。Responses 在最终模型支持时改写 `service_tier` 与 `reasoning.effort`，Chat Completions 在最终模型支持时改写 `service_tier` 与顶层 `reasoning_effort`；受支持的 `default` 删除客户端 `service_tier`。API Key 大请求只有至少一个覆盖可能生效时才进入结构化改写，并复用 JSON worker，不能在主线程完整解析。`ultra` 只属于 Codex 客户端多代理能力，不能作为上游 wire effort；公共 Responses Multi-agent Beta 不在本期实现。
 
 ## 账户分组绑定
 

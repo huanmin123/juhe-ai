@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
+import { readFileSync } from 'node:fs'
 import type { Request } from 'express'
 
 import {
@@ -50,7 +51,7 @@ async function main(): Promise<void> {
   await testCompactBodyNormalization()
   await testOAuthAccountRequestOverrides()
   await testOAuthCompactRequestOverrides()
-  await testOAuthFlexRequestOverrideRejection()
+  await testOAuthFlexRequestOverride()
   await testHeaderAllowlistAndDefaults()
   await testOldCodexHeadersAreRaisedToCompatibilityFloor()
   await testInvalidAttestationRejection()
@@ -137,23 +138,25 @@ async function testOAuthCompactRequestOverrides(): Promise<void> {
   assert.equal(body.parallel_tool_calls, false, 'OAuth Lite compact 必须关闭并行工具调用')
 }
 
-async function testOAuthFlexRequestOverrideRejection(): Promise<void> {
+async function testOAuthFlexRequestOverride(): Promise<void> {
   const req = createRequest('/v1/responses', {
     model: 'gpt-5.6-sol',
-    input: []
+    input: [],
+    service_tier: 'priority'
   })
-  await assert.rejects(async () => {
-    await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
-      ...account,
-      credentials: {
-        ...account.credentials,
-        service_tier_override: 'flex'
-      }
-    }, identity)
-  }, (error: unknown) => (
-    error instanceof OpenAIOAuthCodexAdapterError
-    && error.message === '当前 OAuth 上游适配器不支持服务等级 flex'
-  ))
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, {
+    ...account,
+    credentials: {
+      ...account.credentials,
+      service_tier_override: 'flex'
+    }
+  }, identity, undefined, {
+    requestOverrideModelCapabilities: {
+      supportedServiceTiers: ['flex'],
+      supportedReasoningEfforts: []
+    }
+  })
+  assert.equal(parseBody(parts.body).service_tier, 'flex', 'OAuth 必须与 API Key 一样应用最终模型支持的 Flex')
 }
 
 async function testResponsesBodyNormalization(): Promise<void> {
@@ -483,14 +486,21 @@ async function testMediumBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
   assert.equal(getGatewayRequestBodyState(req)?.jsonParseStatus, 'deferred_large_json')
   assert.equal(getGatewayRequestBodyState(req)?.model, 'gpt-5.3-codex')
 
-  const originalJsonParse = JSON.parse
-  try {
-    JSON.parse = (() => {
-      throw new Error('主进程不应同步解析 256KB 以上 OAuth Codex JSON 请求体')
-    }) as typeof JSON.parse
+  if (import.meta.url.endsWith('.ts')) {
+    const jsonParserSource = readFileSync(new URL('../../modules/gateway/request/json-parser.ts', import.meta.url), 'utf8')
+    assert.match(jsonParserSource, /currentModulePath\.endsWith\('\.ts'\)/, 'tsx 回归运行时必须显式使用内联 fallback')
+    assert.match(jsonParserSource, /enqueueGatewayJsonWorkerJob<NormalizedCodexBody>/, '编译后的生产运行时必须把 OAuth 规范化提交给 JSON worker')
     await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
-  } finally {
-    JSON.parse = originalJsonParse
+  } else {
+    const originalJsonParse = JSON.parse
+    try {
+      JSON.parse = (() => {
+        throw new Error('主进程不应同步解析 256KB 以上 OAuth Codex JSON 请求体')
+      }) as typeof JSON.parse
+      await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    } finally {
+      JSON.parse = originalJsonParse
+    }
   }
 
   const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
