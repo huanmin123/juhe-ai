@@ -34,6 +34,7 @@
     "test:proxy-postgres-smoke": "tsx src/scripts/regression/proxy-postgres-smoke.ts",
     "test:large-response": "node --expose-gc --import tsx src/scripts/regression/non-stream-large-response-regression.ts",
     "test:stream-first-output-timeout": "tsx src/scripts/regression/stream-first-output-timeout-regression.ts",
+    "test:gateway-timeout-profile": "tsx src/scripts/regression/gateway-timeout-profile-regression.ts",
     "test:stream-event-token-estimate-boundary": "tsx src/scripts/regression/stream-event-token-estimate-boundary-regression.ts",
     "test:response-inspection-policy": "tsx src/scripts/regression/response-inspection-policy-regression.ts",
     "test:response-inspection-policy-postgres-smoke": "tsx src/scripts/regression/response-inspection-policy-postgres-smoke.ts",

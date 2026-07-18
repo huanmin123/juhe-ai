@@ -25,13 +25,13 @@ export function buildStreamReadPlan(
   }
 ): StreamReadPlan {
   const now = Date.now()
-  const streamMaxLifetimeSeconds = Math.max(60, settings.streamMaxLifetimeSeconds)
-  const streamLifetimeTimeoutMs = streamMaxLifetimeSeconds * 1000 - (now - startedAt)
+  const textUncommittedAttemptMaxLifetimeSeconds = Math.max(60, settings.textUncommittedAttemptMaxLifetimeSeconds)
+  const streamLifetimeTimeoutMs = textUncommittedAttemptMaxLifetimeSeconds * 1000 - (now - startedAt)
 
   if (!status.waitingForFirstChunk || status.upstreamChunkReceived) {
-    const streamIdleTimeoutSeconds = Math.max(1, settings.streamIdleTimeoutSeconds)
-    const rawTimeoutMs = streamIdleTimeoutSeconds * 1000 - (now - status.lastUpstreamActivityAt)
-    const semanticResultTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
+    const textStreamIdleTimeoutSeconds = Math.max(1, settings.textStreamIdleTimeoutSeconds)
+    const rawTimeoutMs = textStreamIdleTimeoutSeconds * 1000 - (now - status.lastUpstreamActivityAt)
+    const semanticResultTimeoutSeconds = Math.max(1, settings.textFirstResponseTimeoutSeconds)
     const semanticResultStartedAt = status.lastSseEventActivityAt ?? startedAt
     const semanticResultTimeoutMs = semanticResultTimeoutSeconds * 1000 - (now - semanticResultStartedAt)
     if (
@@ -60,7 +60,7 @@ export function buildStreamReadPlan(
         semanticResultTimeoutMs: status.semanticResultReceived || status.pendingProtocolEvent || status.parserSkipped ? undefined : semanticResultTimeoutMs,
         streamLifetimeTimeoutMs,
         timeoutKind: 'stream_lifetime',
-        timeoutMessage: streamMaxLifetimeTimeoutMessage(streamMaxLifetimeSeconds),
+        timeoutMessage: streamMaxLifetimeTimeoutMessage(textUncommittedAttemptMaxLifetimeSeconds),
         deadlineExceeded: streamLifetimeTimeoutMs <= 0
       }
     }
@@ -73,12 +73,12 @@ export function buildStreamReadPlan(
       semanticResultTimeoutMs: status.semanticResultReceived || status.pendingProtocolEvent || status.parserSkipped ? undefined : semanticResultTimeoutMs,
       streamLifetimeTimeoutMs,
       timeoutKind: 'upstream_activity',
-      timeoutMessage: streamIdleTimeoutMessage(streamIdleTimeoutSeconds),
+      timeoutMessage: streamIdleTimeoutMessage(textStreamIdleTimeoutSeconds),
       deadlineExceeded: rawTimeoutMs <= 0
     }
   }
 
-  const firstChunkTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
+  const firstChunkTimeoutSeconds = Math.max(1, settings.textFirstResponseTimeoutSeconds)
   const firstChunkTimeoutMs = firstChunkTimeoutSeconds * 1000 - (now - startedAt)
   if (streamLifetimeTimeoutMs <= firstChunkTimeoutMs) {
     return {
@@ -86,7 +86,7 @@ export function buildStreamReadPlan(
       timeoutMs: streamLifetimeTimeoutMs,
       streamLifetimeTimeoutMs,
       timeoutKind: 'stream_lifetime',
-      timeoutMessage: streamMaxLifetimeTimeoutMessage(streamMaxLifetimeSeconds),
+      timeoutMessage: streamMaxLifetimeTimeoutMessage(textUncommittedAttemptMaxLifetimeSeconds),
       deadlineExceeded: streamLifetimeTimeoutMs <= 0
     }
   }

@@ -913,7 +913,7 @@ export async function handleOpenAIGatewayRequest(
               retryCount: streamServerRetryCount,
               candidateCount: accounts.length,
               remainingCandidateCount: streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length,
-              clientTotalWaitTimeoutSeconds: activeGatewaySettings.streamClientTotalWaitTimeoutSeconds,
+              clientTotalWaitTimeoutSeconds: activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds,
               elapsedMs: Date.now() - startedAt,
               accountId: account.id,
               excludedAccountIds: [...streamServerRetryExcludedAccountIds],
@@ -1279,11 +1279,11 @@ function streamClientTotalWaitTimedOut(settings: GatewaySettings, startedAt: num
 }
 
 function streamClientTotalWaitTimeoutMs(settings: GatewaySettings): number {
-  return Math.max(10, settings.streamClientTotalWaitTimeoutSeconds) * 1000
+  return Math.max(10, settings.noAvailableAccountWaitTimeoutSeconds) * 1000
 }
 
 function streamClientTotalWaitTimeoutMessage(settings: GatewaySettings): string {
-  return `客户端总等待时长 ${Math.max(10, settings.streamClientTotalWaitTimeoutSeconds)} 秒已到达，停止服务端隐藏重试`
+  return `客户端总等待时长 ${Math.max(10, settings.noAvailableAccountWaitTimeoutSeconds)} 秒已到达，停止服务端隐藏重试`
 }
 
 function shouldSendDispatchExhaustedProtocolRetry(

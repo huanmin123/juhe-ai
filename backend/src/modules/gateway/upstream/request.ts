@@ -423,15 +423,15 @@ export async function readStreamChunkWithAbort(
 
 export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number {
   const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
-  const requestTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
+  const requestTimeoutSeconds = Math.max(1, settings.textFirstResponseTimeoutSeconds)
   if (!isStreamRequest) {
     return Math.max(requestTimeoutSeconds, 30) * 1000
   }
-  return Math.max(requestTimeoutSeconds, settings.streamIdleTimeoutSeconds + 15, 30) * 1000
+  return Math.max(requestTimeoutSeconds, settings.textStreamIdleTimeoutSeconds + 15, 30) * 1000
 }
 
 export function upstreamRequestTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number | undefined {
-  return Math.max(1, settings.streamRequestTimeoutSeconds) * 1000
+  return Math.max(1, settings.textFirstResponseTimeoutSeconds) * 1000
 }
 
 export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: string }): boolean {

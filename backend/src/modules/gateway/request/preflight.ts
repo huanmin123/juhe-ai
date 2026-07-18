@@ -245,7 +245,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     options.settingsOverride
   )
   const requestDeadlineAtMs = options.requestDeadlineAtMs
-    ?? gatewayRequestAbsoluteDeadlineAtMs(startedAt, activeGatewaySettings.streamClientTotalWaitTimeoutSeconds)
+    ?? gatewayRequestAbsoluteDeadlineAtMs(startedAt, activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds)
   options.requestDeadlineAtMs = requestDeadlineAtMs
   const sameAccountRetryBudget = options.sameAccountRetryBudget
     ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
@@ -1211,10 +1211,13 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
     temporaryUnschedulableRetryIntervalSeconds: override.temporaryUnschedulableRetryIntervalSeconds ?? base.temporaryUnschedulableRetryIntervalSeconds,
     temporaryUnschedulableRetryAttempts: override.temporaryUnschedulableRetryAttempts ?? base.temporaryUnschedulableRetryAttempts,
     streamCircuitBreakerEnabled: true,
-    streamRequestTimeoutSeconds: override.streamRequestTimeoutSeconds ?? base.streamRequestTimeoutSeconds,
-    streamIdleTimeoutSeconds: override.streamIdleTimeoutSeconds ?? base.streamIdleTimeoutSeconds,
-    streamClientTotalWaitTimeoutSeconds: override.streamClientTotalWaitTimeoutSeconds ?? base.streamClientTotalWaitTimeoutSeconds,
-    streamMaxLifetimeSeconds: override.streamMaxLifetimeSeconds ?? base.streamMaxLifetimeSeconds,
+    textFirstResponseTimeoutSeconds: override.textFirstResponseTimeoutSeconds ?? base.textFirstResponseTimeoutSeconds,
+    textStreamIdleTimeoutSeconds: override.textStreamIdleTimeoutSeconds ?? base.textStreamIdleTimeoutSeconds,
+    textUncommittedAttemptMaxLifetimeSeconds: override.textUncommittedAttemptMaxLifetimeSeconds ?? base.textUncommittedAttemptMaxLifetimeSeconds,
+    imageFirstResponseTimeoutSeconds: override.imageFirstResponseTimeoutSeconds ?? base.imageFirstResponseTimeoutSeconds,
+    imageStreamIdleTimeoutSeconds: override.imageStreamIdleTimeoutSeconds ?? base.imageStreamIdleTimeoutSeconds,
+    imageUncommittedAttemptMaxLifetimeSeconds: override.imageUncommittedAttemptMaxLifetimeSeconds ?? base.imageUncommittedAttemptMaxLifetimeSeconds,
+    noAvailableAccountWaitTimeoutSeconds: override.noAvailableAccountWaitTimeoutSeconds ?? base.noAvailableAccountWaitTimeoutSeconds,
     streamFailureThresholdCount: override.streamFailureThresholdCount ?? base.streamFailureThresholdCount,
     streamFailureThresholdWindowMinutes: override.streamFailureThresholdWindowMinutes ?? base.streamFailureThresholdWindowMinutes
   }

@@ -71,9 +71,9 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   settingsRepository.updateSettings({
-    streamClientTotalWaitTimeoutSeconds: 10,
-    streamIdleTimeoutSeconds: 30,
-    streamRequestTimeoutSeconds: 30,
+    noAvailableAccountWaitTimeoutSeconds: 10,
+    textStreamIdleTimeoutSeconds: 30,
+    textFirstResponseTimeoutSeconds: 30,
     temporaryUnschedulableRetryAttempts: 0
   })
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)

@@ -338,9 +338,9 @@ async function hybridAuxiliaryGatewaySettings(timeoutMs: number) {
   const base = await readCachedGatewaySettingsAsync()
   return {
     ...base,
-    streamRequestTimeoutSeconds: Math.max(1, Math.ceil(timeoutMs / 1000)),
-    streamClientTotalWaitTimeoutSeconds: Math.max(10, Math.ceil(timeoutMs / 1000)),
-    streamMaxLifetimeSeconds: Math.max(60, Math.ceil(timeoutMs / 1000))
+    textFirstResponseTimeoutSeconds: Math.max(1, Math.ceil(timeoutMs / 1000)),
+    noAvailableAccountWaitTimeoutSeconds: Math.max(10, Math.ceil(timeoutMs / 1000)),
+    textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, Math.ceil(timeoutMs / 1000))
   }
 }
 

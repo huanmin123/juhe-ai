@@ -31,7 +31,7 @@ const dispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upst
 const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
 
 assert.match(preflightSource, /requestDeadlineAtMs:\s*number/, '预检上下文必须携带首次请求计算出的绝对截止时间')
-assert.match(preflightSource, /gatewayRequestAbsoluteDeadlineAtMs\(startedAt,\s*activeGatewaySettings\.streamClientTotalWaitTimeoutSeconds\)/, '绝对截止时间必须从原始 startedAt 计算')
+assert.match(preflightSource, /gatewayRequestAbsoluteDeadlineAtMs\(startedAt,\s*activeGatewaySettings\.noAvailableAccountWaitTimeoutSeconds\)/, '绝对截止时间必须从原始 startedAt 计算')
 assert.match(preflightSource, /requestStartedAtMs:\s*input\.startedAt[\s\S]*deadlineAtMs:\s*input\.requestDeadlineAtMs/, '候选恢复等待必须复用原始请求截止时间')
 assert.match(preparationSource, /requestDeadlineAtMs:\s*number/, '派发准备阶段必须接收同一个绝对截止时间')
 assert.match(suppressionSource, /deadlineAtMs:\s*input\.requestDeadlineAtMs/, '运行态屏蔽等待不得重新开启独立窗口')

@@ -12,10 +12,13 @@ const settings: GatewaySettings = {
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
   streamCircuitBreakerEnabled: true,
-  streamRequestTimeoutSeconds: 120,
-  streamIdleTimeoutSeconds: 30,
-  streamClientTotalWaitTimeoutSeconds: 270,
-  streamMaxLifetimeSeconds: 60,
+  textFirstResponseTimeoutSeconds: 120,
+  textStreamIdleTimeoutSeconds: 30,
+  textUncommittedAttemptMaxLifetimeSeconds: 60,
+  imageFirstResponseTimeoutSeconds: 600,
+  imageStreamIdleTimeoutSeconds: 120,
+  imageUncommittedAttemptMaxLifetimeSeconds: 3600,
+  noAvailableAccountWaitTimeoutSeconds: 270,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 5
 }
@@ -54,7 +57,7 @@ const firstChunkLifetimePlan = buildStreamReadPlan(settings, now - 61_000, {
 })
 assert.equal(firstChunkLifetimePlan.timeoutKind, 'stream_lifetime', '首段未返回但先达到最大存活时间时应按 lifetime 中断')
 
-const semanticResultPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeSeconds: 300 }, now - 121_000, {
+const semanticResultPlan = buildStreamReadPlan({ ...settings, textUncommittedAttemptMaxLifetimeSeconds: 300 }, now - 121_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
   upstreamChunkReceived: true,
@@ -65,7 +68,7 @@ const semanticResultPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeS
 assert.equal(semanticResultPlan.timeoutKind, 'semantic_result', '只有心跳 raw chunk 但无语义结果时应按有效输出超时中断')
 assert(semanticResultPlan.timeoutMessage.includes('有效输出'), `有效输出超时文案不正确：${semanticResultPlan.timeoutMessage}`)
 
-const recentProtocolEventPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeSeconds: 300 }, now - 121_000, {
+const recentProtocolEventPlan = buildStreamReadPlan({ ...settings, textUncommittedAttemptMaxLifetimeSeconds: 300 }, now - 121_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
   lastSseEventActivityAt: now - 1_000,
@@ -76,7 +79,7 @@ const recentProtocolEventPlan = buildStreamReadPlan({ ...settings, streamMaxLife
 })
 assert.equal(recentProtocolEventPlan.timeoutKind, 'upstream_activity', '最近完整协议事件应刷新有效输出等待窗口，避免碎片或非输出事件后误杀')
 
-const pendingEventPlan = buildStreamReadPlan({ ...settings, streamMaxLifetimeSeconds: 300 }, now - 121_000, {
+const pendingEventPlan = buildStreamReadPlan({ ...settings, textUncommittedAttemptMaxLifetimeSeconds: 300 }, now - 121_000, {
   waitingForFirstChunk: false,
   lastUpstreamActivityAt: now,
   upstreamChunkReceived: true,

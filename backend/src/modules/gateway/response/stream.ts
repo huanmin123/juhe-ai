@@ -362,8 +362,8 @@ export async function pipeUpstreamStream(
 
   streamLogger.debug({
     event: 'gateway_stream_pipe_started',
-    streamRequestTimeoutSeconds: settings.streamRequestTimeoutSeconds,
-    streamIdleTimeoutSeconds: settings.streamIdleTimeoutSeconds,
+    textFirstResponseTimeoutSeconds: settings.textFirstResponseTimeoutSeconds,
+    textStreamIdleTimeoutSeconds: settings.textStreamIdleTimeoutSeconds,
     startedAt
   }, '网关开始转发上游流式响应')
 
