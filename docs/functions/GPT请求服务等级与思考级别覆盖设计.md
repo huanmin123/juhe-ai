@@ -1,10 +1,12 @@
 # GPT 请求服务等级与思考级别覆盖设计
 
-> 状态：核心实现完成，待生产数据库同步、真实上游与 Codex Ultra 验证。
+> 状态：请求覆盖语义更新设计，待代码、回归、真实上游与生产验证。
 >
 > 调研日期：2026-07-10。
 >
-> 本文定义 GPT 供应商 AI 账户高级配置中的请求级覆盖能力，并区分 OpenAI API 可发送参数与 Codex 客户端的 Ultra 多代理模式。
+> 本文定义 GPT 供应商 AI 账户高级配置中的两个请求体字段覆盖能力，并区分 OpenAI API 可发送参数与 Codex 客户端的 Ultra 多代理模式。
+
+> `2026-07-19` 语义更新：账户选项按已选模型能力并集展示；API Key 与 OAuth 对 `service_tier` / reasoning effort 使用同一能力规则；覆盖在最终上游模型不支持时只跳过对应字段并保留客户端原值，不再因为模型能力交集为空而隐藏整块配置或让请求失败。
 
 ## 1. 结论摘要
 
@@ -13,9 +15,9 @@
 - 账户高级配置新增两个可空覆盖项：
   - `service_tier_override`
   - `reasoning_effort_override`
-- 两个字段默认都不存在。不存在表示不修改客户端请求；配置值表示账户期望上限，运行时按最终上游模型能力应用或向下选择。
+- 两个字段默认都不存在。不存在表示不修改客户端请求；配置值只覆盖对应请求体字段，运行时按最终上游模型能力独立判断是否应用。
 - `service_tier_override=default` 是本地“强制标准档”哨兵，运行时删除客户端 `service_tier`；`priority`、`flex` 则写入对应值。
-- 思考级别必须由模型目录能力驱动。配置选项取账户支持模型能力并集，运行时以映射后的最终上游模型能力为准。
+- 思考级别必须由模型目录能力驱动。配置选项取账户支持模型能力并集，运行时以映射后的最终上游模型能力为准；不支持时保留客户端原字段。
 - OpenAI API 请求级 reasoning effort 不包含 `ultra`。GPT-5.6 API 当前可发送值为 `none`、`low`、`medium`、`high`、`xhigh`、`max`。
 - Codex 源码中的 Ultra 不是 OAuth 专属能力。当前 `gpt-5.6-sol` 和 `gpt-5.6-terra` 都标记为 `supported_in_api: true` 并提供 Ultra；`gpt-5.6-luna` 不提供 Ultra。
 - Codex 选择 Ultra 时，上游请求实际发送 `max`，同时 Codex 客户端启用主动多代理编排。因此 Ultra 不进入账户“思考级别覆盖”下拉，也不能靠向上游发送 `reasoning.effort=ultra` 实现。
@@ -62,7 +64,7 @@
 
 | 能力 | 上游请求值 | 是否能做账户覆盖 | 是否依赖 OAuth |
 | --- | --- | --- | --- |
-| Fast / Priority | `service_tier=priority` | 可以 | 不依赖；API Key 也可使用，按 API 计价 |
+| Fast / Priority | `service_tier=priority` | 可以 | API Key 与 OAuth 使用同一账户覆盖规则 |
 | Max | reasoning effort `max` | 可以 | 不依赖，取决于模型和账户链路 |
 | Ultra | 上游发送 `max`，客户端同时主动创建子代理 | 不可以作为单一请求字段覆盖 | 不依赖 OAuth；取决于 Codex 客户端、模型目录和多代理兼容 |
 | Responses Multi-agent Beta | `multi_agent.enabled=true`，并带 Beta 请求头 | 不属于本次两个覆盖字段；后续可设计独立开关 | 公共 API Key 能力，当前适用于全部 GPT-5.6 |
@@ -74,7 +76,7 @@
 - 允许 GPT AI 账户统一覆盖客户端请求的服务等级。
 - 允许 GPT AI 账户统一覆盖客户端请求的思考级别。
 - 默认不覆盖，保持客户端原始行为。
-- 展示账户所选上游模型中至少一个模型支持的选项，允许配置统一期望上限。
+- 展示账户所选上游模型中至少一个模型支持的选项，允许配置统一请求覆盖值。
 - 前端和后端使用同一模型能力事实，后端负责最终校验。
 - API Key、OAuth、普通 JSON 和大 JSON 请求使用一致语义。
 - Codex `/models` 返回真实模型能力，不再统一伪造 `minimal|low|medium|high` 和空服务等级。
@@ -153,7 +155,7 @@ interface GptModelRequestCapabilities {
 
 - `supportedServiceTiers` 和 `supportedReasoningEfforts` 是账户覆盖功能的唯一能力来源。
 - `supportsServiceTier` 如需保留给现有展示，应由 `supportedServiceTiers.length > 0` 派生，不允许两份数据独立维护。
-- 空数组表示不支持或能力未知。能力未知时不显示覆盖入口，也不允许通过手工 payload 保存。
+- 空数组表示该模型当前没有可确认的能力。能力未知的模型不贡献并集；如果同一账户仍有其他模型声明能力，不能因此隐藏整块覆盖配置。
 - 日期快照、稳定别名和 `pricingModel` 别名必须继承已确认的规范模型能力，不能在前端做字符串前缀猜测。
 - 当前官方 `gpt-5.6` 别名指向 `gpt-5.6-sol`，能力解析应落到 Sol 的规范能力。
 
@@ -181,7 +183,7 @@ interface CodexModelCapabilities {
 
 ### 4.4 自定义模型
 
-自定义 GPT 模型必须允许维护 wire 能力，否则选中自定义模型后只能按“能力未知”隐藏覆盖项。
+自定义 GPT 模型必须允许维护 wire 能力；未声明能力时只是不贡献并集，不能让其他已知模型提供的覆盖入口消失。
 
 建议给 `custom_provider_models` 增加当前 schema 字段：
 
@@ -235,10 +237,10 @@ interface CodexModelCapabilities {
 
 在 AI 账户编辑弹窗“高级配置”中新增 `AccountGptRequestOverridesSection.vue`：
 
-- 只在 `providerCode === 'gpt'` 时参与渲染。
+- 只在支持账户请求覆盖 driver 的供应商时参与渲染；GPT API Key 与 OAuth 不区分服务等级能力。
 - API Key 和 OAuth 账户都可以显示。
 - 授权账户只读展示来源账户的有效覆盖值。
-- 两个字段各自按能力决定是否显示，不要求同时显示。
+- 支持该配置的供应商始终显示两个字段；无可用能力时显示禁用态和中文原因，不隐藏整块区域。
 - 配置任一字段后，“高级配置”已配置项计数增加。
 
 ### 6.2 服务等级
@@ -256,10 +258,8 @@ interface CodexModelCapabilities {
 
 1. 读取账户 `supportedModels` 对应模型能力。
 2. 计算所有已知模型 `supportedServiceTiers` 的并集，能力未知的模型不贡献选项，也不清空其他模型能力。
-3. 再按账户类型和上游适配器过滤。
-   - OAuth Codex 当前支持 `priority`。
-   - API Key 按模型目录支持 `priority|flex`。
-4. 并集为空时不显示服务等级覆盖。
+3. API Key 与 OAuth 使用相同的服务等级集合；模型目录声明 `flex` 时两种账户都可以选择。
+4. 并集为空时仍显示服务等级字段，但只提供“不覆盖客户端设置”并置为不可编辑，同时给出能力未声明提示。
 5. 并集非空时显示 `default`，并显示并集中的非标准档。
 
 不提供 `auto`。空值已经承担“不覆盖客户端”的语义。
@@ -284,8 +284,8 @@ interface CodexModelCapabilities {
 1. 读取账户每个 `supportedModels` 的 `supportedReasoningEfforts`。
 2. 计算已知模型能力集合的并集。
 3. 能力未知或为空的模型不贡献选项，不影响其他已知模型。
-4. 并集为空时不显示思考级别覆盖。
-5. 显示并集中的选项；运行时再针对最终模型向下选择。
+4. 并集为空时仍显示思考级别字段，但只提供“不覆盖客户端设置”并置为不可编辑，同时给出能力未声明提示。
+5. 显示并集中的选项；运行时针对最终模型独立判断是否覆盖，不向下选择其他值。
 6. 永远不在该下拉中显示 `ultra`。
 
 选择多个模型的示例：
@@ -297,9 +297,9 @@ interface CodexModelCapabilities {
 ### 6.4 模型变化
 
 - 用户修改 `supportedModels` 后重新计算并集。
-- 如果目录中已无任何账户支持模型声明当前覆盖值，前端立即清空对应字段并给出中文提示。
-- 编辑历史无效配置时，不把无效值塞回下拉选项；显示中文警告，表单值初始化为空，保存后清除无效配置。
-- 前端隐藏不等于后端放行，后端仍需按最新模型目录校验。
+- 如果目录中已无任何账户支持模型声明当前覆盖值，前端保留当前字段并给出中文警告；后续请求不应用该字段，不能静默清除账户配置。
+- 编辑历史无效配置时，不把无效值伪装成可用选项；显示中文警告，用户可主动清空或选择当前能力集合中的值。
+- 前端展示不等于运行时放行，网关仍需按最终上游模型能力独立判断两个字段。
 
 ### 6.5 风险提示
 
@@ -344,7 +344,7 @@ interface CodexModelCapabilities {
 
 - 非 `gpt` 供应商拒绝保存两个字段。
 - reasoning 覆盖值必须被至少一个 `supportedModels` 的 `supportedReasoningEfforts` 声明。
-- `priority|flex` 必须被至少一个 `supportedModels` 的 `supportedServiceTiers` 声明，并被当前账户适配器支持。
+- `priority|flex` 必须被至少一个 `supportedModels` 的 `supportedServiceTiers` 声明；API Key 与 OAuth 不因认证方式分叉。
 - `default` 只有在至少一个支持模型声明服务等级能力时允许保存。
 - 未知模型不阻断已知模型的能力；全部模型均未知或无能力时拒绝保存。
 - 校验使用实际上游模型，也就是账户 `supportedModels` 和模型映射的 `upstreamModel`，不使用客户端别名猜能力。
@@ -354,7 +354,7 @@ interface CodexModelCapabilities {
 - `账户支持模型中没有模型支持服务等级 priority`
 - `账户支持模型中没有模型支持思考级别 max`
 - `模型 <model> 未声明思考级别能力，不能启用账户覆盖`
-- `当前 OAuth 上游适配器不支持服务等级 flex`
+- `账户支持模型中没有模型支持服务等级 flex`
 
 ### 7.3 OAuth 创建与重新授权
 
@@ -366,15 +366,15 @@ OAuth 创建流程的 `credentialsPatch` 必须允许携带两个覆盖字段。
 
 统一优先级：
 
-1. 账户已配置的期望上限，按最终模型能力向下选择。
+1. 账户已配置的覆盖值，按最终模型能力独立判断。
 2. 客户端请求值。
 3. 上游模型默认值。
 
 也就是：
 
 - 账户字段不存在：完全保留客户端。
-- 账户字段存在且最终模型存在不高于期望值的支持档位：使用最高的该档位覆盖客户端。
-- 最终模型未知，或不存在不高于期望值的支持档位：保留客户端值。
+- 账户字段存在且最终模型支持该值：覆盖对应客户端字段。
+- 最终模型未知或不支持该值：保留对应客户端字段，不让该字段阻断请求。
 - 不允许采用“客户端有值就不覆盖”的合并方式。
 
 ### 8.2 生效时机
@@ -391,7 +391,7 @@ OAuth 创建流程的 `credentialsPatch` 必须允许携带两个覆盖字段。
 
 ### 8.3 字段改写
 
-思考级别按 `none < minimal < low < medium < high < xhigh < max` 向下选择当前模型支持的最高档。`priority` 与 `flex` 是平级服务档位，不建立高低顺序，也不互相降级；当前模型不支持账户配置档位时不覆盖客户端原值。两个字段独立解析，一个字段无法应用时不影响另一个字段。
+思考级别不向下选择其他值；当前模型支持账户配置值时才覆盖，否则保留客户端原值。`priority` 与 `flex` 是平级服务档位，不建立高低顺序，也不互相降级。两个字段独立解析，一个字段无法应用时不影响另一个字段。
 
 Responses：
 
@@ -427,15 +427,12 @@ Chat Completions：
 
 ### 8.4 OAuth Codex
 
-当前 OAuth normalizer 只保留 `service_tier=priority`：
+OAuth 与 API Key 对本期两个覆盖字段使用同一模型能力规则：
 
-- 覆盖为 `priority`：在 `normalizeOpenAIOAuthCodexServiceTier()` 之前写入，后续保留。
-- 覆盖为 `default`：在 normalizer 之前删除 `service_tier`。
-- `flex`：当前 OAuth 适配器能力集合不包含，前端不显示，后端拒绝保存。
-- 普通 `/responses`：reasoning 覆盖写入后保留。
-- `/responses/compact`：保留客户端合法的 service tier 与 reasoning 字段；账户覆盖仍按该路径明确支持的字段边界执行，不能以 compact 为由静默过滤客户端字段。
-
-`/responses/compact` 的不适用状态应进入调试日志或审计元数据，不能伪装成已经成功覆盖。
+- `priority`、`flex` 和 `default` 只由最终模型能力与账户覆盖值决定，不因认证方式隐藏或拒绝。
+- 普通 `/responses` 在最终模型支持时应用服务等级和 reasoning 覆盖。
+- `/responses/compact` 保留客户端合法的 service tier 与 reasoning 字段；账户覆盖仍按该路径明确支持的字段边界执行，不能以 compact 为由静默过滤客户端字段。
+- 如果 OAuth 上游实际返回参数不支持错误，应按上游真实错误处理；本地代码不能把未公开的认证差异写死成“OAuth 禁止 Flex”。
 
 ### 8.5 API Key 大请求体
 
@@ -444,9 +441,9 @@ Chat Completions：
 - 大于内联解析阈值的请求必须复用现有 JSON worker，不允许在主线程完整解析大请求体。
 - worker 输入需要携带已校验的覆盖值、实际上游模型和 endpoint family。
 
-### 8.6 能力未知或无可降级档位
+### 8.6 能力未知或不支持覆盖值
 
-最终上游模型能力未知，或对应字段不存在不高于配置上限的支持档位时，该字段保留客户端请求值。服务等级与思考级别独立处理，不把账户整体标记为不可用。
+最终上游模型能力未知，或对应字段不支持账户配置值时，该字段保留客户端请求值。服务等级与思考级别独立处理，不把账户整体标记为不可用。
 
 ## 9. Ultra、Multi-agent 与 Codex `/models`
 
@@ -585,7 +582,7 @@ defaultReasoningEffort?: GptWireReasoningEffort
 - GPT-5.6 Sol / Terra / Luna wire reasoning、Codex reasoning 和服务等级准确。
 - Sol / Terra 有 Ultra，Luna 无 Ultra。
 - `gpt-5.6` 别名继承 Sol 能力。
-- 自定义模型空能力数组时不显示覆盖。
+- 自定义模型空能力数组时不贡献选项，但不隐藏其他已知模型提供的覆盖字段。
 - 自定义模型声明能力后可进入配置能力并集。
 - Codex `/models` 不再给所有模型伪造统一 reasoning。
 
@@ -595,9 +592,9 @@ defaultReasoningEffort?: GptWireReasoningEffort
 - 单模型按能力显示选项。
 - 多模型取能力并集。
 - 未知模型不清空其他已知模型提供的选项。
-- 模型变化导致当前值失效时清空并显示中文提示。
+- 模型变化导致当前值失效时保留字段并显示中文提示，不静默清空。
 - Ultra 不出现在账户 reasoning 下拉。
-- API Key 可显示 Priority；OAuth 可显示 Priority；OAuth 不显示 Flex。
+- API Key 与 OAuth 都可按模型能力显示 Priority / Flex。
 - 授权账户只读展示来源覆盖值。
 
 ### 11.3 保存校验
@@ -608,7 +605,7 @@ defaultReasoningEffort?: GptWireReasoningEffort
 - 非 GPT 供应商被拒绝。
 - 至少一个支持模型声明该值时允许保存。
 - 全部模型能力未知或均不支持时被拒绝。
-- OAuth `flex` 被拒绝。
+- OAuth `flex` 与 API Key 使用相同模型能力校验。
 
 ### 11.4 网关
 
@@ -621,7 +618,7 @@ defaultReasoningEffort?: GptWireReasoningEffort
 - OAuth `/responses` Priority 和 reasoning 覆盖生效。
 - OAuth `/responses/compact` Priority 生效、reasoning 标记不适用。
 - 模型映射后按实际上游模型和 endpoint family 应用。
-- 配置高于最终模型能力时按固定顺序降级；最终模型未知时保留客户端值。
+- 最终模型不支持某个账户覆盖值时保留对应客户端字段；另一个字段仍可独立应用。
 - 大请求体走 JSON worker。
 - 两个覆盖字段为空时不增加 API Key 请求体解析。
 - 通用 OpenAI-compatible、Anthropic、GLM、DeepSeek、Gemini 和混合供应商链路不受影响。

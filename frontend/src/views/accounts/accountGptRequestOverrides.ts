@@ -18,6 +18,15 @@ export interface AccountGptRequestOverrideCapabilities {
   reasoningEfforts: ProviderModelReasoningEffort[]
 }
 
+export interface AccountRequestOverrideOption {
+  label: string
+  value: string
+  disabled?: boolean
+}
+
+const serviceTierOverrideProviders = new Set(['gpt', 'openai', 'anthropic'])
+const reasoningEffortOverrideProviders = new Set(['gpt', 'openai', 'anthropic', 'gemini'])
+
 const localizedCapabilityLabels: Record<string, string> = {
   default: '供应商默认（Default）',
   standard: '标准（Standard）',
@@ -43,31 +52,47 @@ export function accountGptRequestOverrideCapabilities(input: {
 }): AccountGptRequestOverrideCapabilities {
   const providerCode = input.providerCode ?? 'gpt'
   const supportedModels = uniqueTextList(input.supportedModels)
-  const serviceTiers = ['gpt', 'openai', 'anthropic'].includes(providerCode)
-    ? intersectModelCapability(supportedModels, input.modelOptions, (option) => option.supportedServiceTiers)
-      .filter((tier) => providerCode !== 'gpt' || input.accountType !== 'oauth' || tier !== 'flex')
+  const serviceTiers = serviceTierOverrideProviders.has(providerCode)
+    ? unionModelCapability(supportedModels, input.modelOptions, (option) => option.supportedServiceTiers)
     : []
-  const reasoningEfforts = ['gpt', 'openai', 'anthropic', 'gemini'].includes(providerCode)
-    ? intersectModelCapability(supportedModels, input.modelOptions, (option) => option.supportedReasoningEfforts)
+  const reasoningEfforts = reasoningEffortOverrideProviders.has(providerCode)
+    ? unionModelCapability(supportedModels, input.modelOptions, (option) => option.supportedReasoningEfforts)
     : []
   return { serviceTiers, reasoningEfforts }
 }
 
-export function availableAccountGptServiceTierOptions(capabilities: AccountGptRequestOverrideCapabilities) {
-  if (!capabilities.serviceTiers.length) return []
-  return [
-    { label: '不覆盖客户端设置', value: '' },
-    { label: localizedCapabilityLabels.default, value: 'default' },
-    ...capabilities.serviceTiers.map((value) => ({ label: capabilityLabel(value), value }))
-  ]
+export function isAccountRequestOverrideProviderSupported(providerCode: string | undefined): boolean {
+  const normalized = providerCode?.trim() || 'gpt'
+  return serviceTierOverrideProviders.has(normalized) || reasoningEffortOverrideProviders.has(normalized)
 }
 
-export function availableAccountGptReasoningEffortOptions(capabilities: AccountGptRequestOverrideCapabilities) {
-  if (!capabilities.reasoningEfforts.length) return []
-  return [
+export function availableAccountGptServiceTierOptions(
+  capabilities: AccountGptRequestOverrideCapabilities,
+  currentValue: AccountGptServiceTierOverride = ''
+): AccountRequestOverrideOption[] {
+  const options: AccountRequestOverrideOption[] = [
+    { label: '不覆盖客户端设置', value: '' },
+    ...(capabilities.serviceTiers.length
+      ? [
+          { label: localizedCapabilityLabels.default, value: 'default' },
+          ...capabilities.serviceTiers
+            .filter((value) => value !== 'default')
+            .map((value) => ({ label: capabilityLabel(value), value }))
+        ]
+      : [])
+  ]
+  return appendUnavailableCurrentOption(options, currentValue)
+}
+
+export function availableAccountGptReasoningEffortOptions(
+  capabilities: AccountGptRequestOverrideCapabilities,
+  currentValue: AccountGptReasoningEffortOverride = ''
+): AccountRequestOverrideOption[] {
+  const options: AccountRequestOverrideOption[] = [
     { label: '不覆盖客户端设置', value: '' },
     ...capabilities.reasoningEfforts.map((value) => ({ label: capabilityLabel(value), value }))
   ]
+  return appendUnavailableCurrentOption(options, currentValue)
 }
 
 export function isAccountGptServiceTierOverrideAvailable(value: AccountGptServiceTierOverride, capabilities: AccountGptRequestOverrideCapabilities): boolean {
@@ -103,24 +128,24 @@ interface AccountGptRequestOverrideForm {
   reasoningEffortOverride: AccountGptReasoningEffortOverride
 }
 
-function intersectModelCapability(
+function unionModelCapability(
   supportedModels: string[],
   modelOptions: AccountGptModelCapabilityOption[],
   readValues: (option: AccountGptModelCapabilityOption) => string[] | undefined
 ): string[] {
-  if (!supportedModels.length) return []
   const optionsByModel = new Map(modelOptions.map((option) => [option.value.trim(), option]))
-  const first = optionsByModel.get(supportedModels[0])
-  const firstValues = first ? normalizeCapabilityTokens(readValues(first)) : []
-  if (!first || !firstValues.length) return []
-  let intersection = new Set(firstValues)
-  for (const model of supportedModels.slice(1)) {
+  const output: string[] = []
+  const seen = new Set<string>()
+  for (const model of supportedModels) {
     const option = optionsByModel.get(model)
-    if (!option) return []
-    const supported = new Set(normalizeCapabilityTokens(readValues(option)))
-    intersection = new Set([...intersection].filter((value) => supported.has(value)))
+    if (!option) continue
+    for (const value of normalizeCapabilityTokens(readValues(option))) {
+      if (seen.has(value)) continue
+      seen.add(value)
+      output.push(value)
+    }
   }
-  return firstValues.filter((value) => intersection.has(value))
+  return output
 }
 
 function normalizeCapabilityTokens(values: string[] | undefined): string[] {
@@ -133,6 +158,21 @@ function normalizeCapabilityToken(value: unknown): string {
 
 function capabilityLabel(value: string): string {
   return localizedCapabilityLabels[value] ?? value
+}
+
+function appendUnavailableCurrentOption(
+  options: AccountRequestOverrideOption[],
+  currentValue: string
+): AccountRequestOverrideOption[] {
+  if (!currentValue || options.some((option) => option.value === currentValue)) return options
+  return [
+    ...options,
+    {
+      label: `当前配置：${capabilityLabel(currentValue)}（当前模型不支持）`,
+      value: currentValue,
+      disabled: true
+    }
+  ]
 }
 
 function uniqueTextList(values: string[]): string[] {
