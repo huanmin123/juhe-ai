@@ -151,13 +151,27 @@ try {
     optionalSuccessObservation: true
   }))
 } finally {
-  await notifyGatewayRuntimeCacheInvalidationAsync('cooldown_retest_postgres_smoke_cleanup').catch(() => undefined)
-  if (fixtureCreated) {
-    const pool = await getPostgresPool()
-    await pool.query('DELETE FROM juhe_business.accounts WHERE id = $1', [accountId])
+  let cleanupError: unknown
+  try {
+    if (fixtureCreated) {
+      const pool = await getPostgresPool()
+      await pool.query('DELETE FROM juhe_business.accounts WHERE id = $1', [accountId])
+      await notifyGatewayRuntimeCacheInvalidationAsync('cooldown_retest_postgres_smoke_cleanup').catch(() => undefined)
+    }
+  } catch (error) {
+    cleanupError = error
   }
-  await closeRedisClients()
-  await closePostgresPool()
+  try {
+    await closeRedisClients()
+  } catch (error) {
+    cleanupError ??= error
+  }
+  try {
+    await closePostgresPool()
+  } catch (error) {
+    cleanupError ??= error
+  }
+  if (cleanupError) throw cleanupError
 }
 
 async function resetCoolingState(id: string, observationStartedAt: string | null): Promise<void> {
