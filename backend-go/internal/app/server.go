@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -42,15 +43,40 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicgroups"
 	"juhe-ai/backend-go/internal/modules/publicroutestrategies"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
+	"juhe-ai/backend-go/internal/ownerlock"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
+	"juhe-ai/backend-go/internal/version"
 )
+
+const gooseSchemaVersionGateTimeout = 5 * time.Second
 
 func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	var runtimeOwnerLock *ownerlock.Lock
+	if cfg.OwnerLockEnabled {
+		if strings.TrimSpace(cfg.OwnerLockRole) != "server" {
+			return fmt.Errorf("Go HTTP server owner lock role must be server")
+		}
+		lock, err := ownerlock.Acquire(cfg.OwnerLockPath, ownerlock.Metadata{
+			DeploymentEpoch: cfg.OwnerLockDeploymentEpoch,
+			RouteOwner:      cfg.OwnerLockRole,
+			Version:         version.Version,
+			PID:             os.Getpid(),
+		})
+		if err != nil {
+			return err
+		}
+		runtimeOwnerLock = lock
+		defer func() {
+			if err := runtimeOwnerLock.Release(); err != nil {
+				logger.Error("释放 Go owner lock 失败", slog.String("error", err.Error()))
+			}
+		}()
 	}
 	if cfg.PostgresURL == "" {
 		return fmt.Errorf("JUHE_AI_POSTGRES_URL 不能为空")
@@ -76,6 +102,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		return err
 	}
 	cancel()
+	if cfg.OwnerLockEnabled {
+		schemaCtx, cancel := context.WithTimeout(ctx, gooseSchemaVersionGateTimeout)
+		err := store.RequireGooseSchemaVersion(schemaCtx, version.SchemaVersion)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("require goose schema version %d: %w", version.SchemaVersion, err)
+		}
+	}
 
 	stateRedis, err := redisplatform.NewClient(cfg.RedisStateURL, cfg.RedisNamespace+":state")
 	if err != nil {
@@ -89,15 +123,23 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	cancel()
 
+	systemAccountInvalidator, cacheRedis, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
+	if err != nil {
+		return err
+	}
+	defer closeSystemAccountInvalidator()
+
 	var systemAPIClientIPAllowlistVersionReader httpapi.SystemAPIClientIPAllowlistVersionReader
 	var systemAPIRateLimitSettingsVersionReader httpapi.SystemAPIRateLimitSettingsVersionReader
-	var systemAPIClientIPAllowlistCacheRedis *redisplatform.Client
-	if cfg.RedisCacheURL != "" {
+	systemAPIClientIPAllowlistCacheRedis := cacheRedis
+	if systemAPIClientIPAllowlistCacheRedis == nil && cfg.RedisCacheURL != "" {
 		systemAPIClientIPAllowlistCacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
 		if err != nil {
 			return fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
 		}
 		defer func() { _ = systemAPIClientIPAllowlistCacheRedis.Close() }()
+	}
+	if systemAPIClientIPAllowlistCacheRedis != nil {
 		systemAPIClientIPAllowlistVersionReader, err = httpapi.NewRedisSystemAPIClientIPAllowlistVersionReader(
 			systemAPIClientIPAllowlistCacheRedis,
 			cfg.RedisNamespace,
@@ -116,12 +158,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	systemAPIRateLimitSettingsCache := httpapi.NewSystemAPIRateLimitSettingsCache(
 		systemAPIRateLimitSettingsVersionReader,
 	)
-
-	systemAccountInvalidator, closeSystemAccountInvalidator, err := newGatewaySystemAccountInvalidator(ctx, cfg, stateRedis)
-	if err != nil {
-		return err
-	}
-	defer closeSystemAccountInvalidator()
 
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
@@ -146,19 +182,26 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
+	var accountsStaticResetPublisher managementPageDataPublisher
 	if cfg.ManagementAPIEnabled {
 		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
 		if err != nil {
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
+		publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
+		if err != nil {
+			return err
+		}
+		accountsStaticResetPublisher = publisher
 	}
-	managementHandlers := newManagementAPIHandler(
+	managementHandlers := newManagementAPIHandlerWithPageData(
 		cfg,
 		store,
 		stateRedis,
 		managementOperationLogQueue,
 		logger,
 		systemAccountInvalidator,
+		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
 	)
@@ -501,13 +544,14 @@ type gatewayCacheInvalidator interface {
 	publicapikeys.APIKeyGatewayCacheInvalidator
 }
 
-func newManagementAPIHandler(
+func newManagementAPIHandlerWithPageData(
 	cfg config.Config,
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
+	accountsStaticResetPublisher managementPageDataPublisher,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
@@ -538,19 +582,21 @@ func newManagementAPIHandler(
 	})
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
+		Store:             store,
+		Invalidator:       systemAccountInvalidator,
+		PageDataPublisher: accountsStaticResetPublisher,
+		Logger:            logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{
-			OptionReader: store,
-			ListReader:   store,
-			DetailReader: store,
-			CreateStore:  store,
-			Transactor:   store,
-			Invalidator:  systemAccountInvalidator,
-			Logger:       logger,
+			OptionReader:      store,
+			ListReader:        store,
+			DetailReader:      store,
+			CreateStore:       store,
+			Transactor:        store,
+			Invalidator:       systemAccountInvalidator,
+			PageDataPublisher: accountsStaticResetPublisher,
+			Logger:            logger,
 		},
 	)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
@@ -572,6 +618,7 @@ func newManagementAPIHandler(
 		UsageStatsTimezoneStore: store,
 		AccountConcurrency:      accountConcurrencyReader,
 		Invalidator:             systemAccountInvalidator,
+		PageDataPublisher:       accountsStaticResetPublisher,
 		Logger:                  logger,
 	})
 	accountService := managementaccounts.NewService(store)
@@ -584,15 +631,22 @@ func newManagementAPIHandler(
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		SystemAccountInvalidator: systemAccountInvalidator,
+		PageDataPublisher:        accountsStaticResetPublisher,
+		Logger:                   logger,
 	})
 	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
 		Store:                    store,
 		AuthorizationInvalidator: systemAccountInvalidator,
+		Publisher:                accountsStaticResetPublisher,
+		Logger:                   logger,
 	})
 	authorizationService := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		AuthorizationInvalidator: systemAccountInvalidator,
+		Publisher:                accountsStaticResetPublisher,
+		TeamReader:               store,
+		Logger:                   logger,
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
@@ -794,29 +848,29 @@ func newGatewaySystemAccountInvalidator(
 	ctx context.Context,
 	cfg config.Config,
 	stateRedis *redisplatform.Client,
-) (gatewayCacheInvalidator, func(), error) {
+) (gatewayCacheInvalidator, *redisplatform.Client, func(), error) {
 	closeFn := func() {}
 	if !cfg.ManagementAPIEnabled && !cfg.PublicAPIEnabled {
-		return nil, closeFn, nil
+		return nil, nil, closeFn, nil
 	}
 	if stateRedis == nil {
-		return nil, closeFn, fmt.Errorf("gateway system account invalidator requires state redis")
+		return nil, nil, closeFn, fmt.Errorf("gateway system account invalidator requires state redis")
 	}
 	var cacheRedis *redisplatform.Client
 	if cfg.RedisCacheURL == "" {
-		return nil, closeFn, fmt.Errorf("gateway invalidator requires JUHE_AI_REDIS_CACHE_URL when management or public API is enabled")
+		return nil, nil, closeFn, fmt.Errorf("gateway invalidator requires JUHE_AI_REDIS_CACHE_URL when management or public API is enabled")
 	} else {
 		var err error
 		cacheRedis, err = redisplatform.NewClient(cfg.RedisCacheURL, cfg.RedisNamespace+":cache")
 		if err != nil {
-			return nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
+			return nil, nil, closeFn, fmt.Errorf("JUHE_AI_REDIS_CACHE_URL 无效: %w", err)
 		}
 		closeFn = func() { _ = cacheRedis.Close() }
 		pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if err := cacheRedis.Ping(pingCtx); err != nil {
 			closeFn()
-			return nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
+			return nil, nil, func() {}, fmt.Errorf("网关缓存 Redis 不可用: %w", err)
 		}
 	}
 	invalidator, err := gatewaycache.NewSystemAccountInvalidator(gatewaycache.SystemAccountInvalidatorOptions{
@@ -826,9 +880,9 @@ func newGatewaySystemAccountInvalidator(
 	})
 	if err != nil {
 		closeFn()
-		return nil, func() {}, err
+		return nil, nil, func() {}, err
 	}
-	return invalidator, closeFn, nil
+	return invalidator, cacheRedis, closeFn, nil
 }
 
 func newManagementOperationLogQueue(cfg config.Config) (*queue.Client, error) {

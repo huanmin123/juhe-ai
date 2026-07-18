@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 	"unicode"
@@ -22,6 +23,7 @@ const (
 	maxOptionLimit          = 50
 	maxOptionFilterItemSize = 50
 	maxDescriptionRunes     = 200
+	pageDataPublishTimeout  = 5 * time.Second
 )
 
 var (
@@ -42,6 +44,8 @@ type Service struct {
 	hashPassword             func(string) (string, error)
 	secret                   string
 	systemAccountInvalidator SystemAccountInvalidator
+	pageDataPublisher        PageDataPublisher
+	logger                   *slog.Logger
 }
 
 type OptionListInput struct {
@@ -91,11 +95,17 @@ type ServiceOptions struct {
 	HashPassword             func(string) (string, error)
 	Secret                   string
 	SystemAccountInvalidator SystemAccountInvalidator
+	PageDataPublisher        PageDataPublisher
+	Logger                   *slog.Logger
 }
 
 type SystemAccountInvalidator interface {
 	InvalidateSystemAccountStatusChanged(ctx context.Context, systemAccountID string) error
 	InvalidateSystemAccountImageGenerationChanged(ctx context.Context, systemAccountID string) error
+}
+
+type PageDataPublisher interface {
+	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
 type PasswordResetInput struct {
@@ -186,6 +196,8 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		hashPassword:             hashPassword,
 		secret:                   opts.Secret,
 		systemAccountInvalidator: opts.SystemAccountInvalidator,
+		pageDataPublisher:        opts.PageDataPublisher,
+		logger:                   opts.Logger,
 	}
 }
 
@@ -275,6 +287,7 @@ func (s *Service) ResetPassword(ctx context.Context, input PasswordResetInput) (
 	if !found {
 		return PasswordResetResult{}, ErrSystemAccountNotFound
 	}
+	s.publishOptionPageDataResets(ctx)
 	return PasswordResetResult{
 		Before:              systemAccountSummaryFromPort(result.Before),
 		Account:             systemAccountSummaryFromPort(result.Account),
@@ -308,6 +321,7 @@ func (s *Service) UpdateStatus(ctx context.Context, input StatusUpdateInput) (St
 	if result.BlockedLastActiveSuperAdmin {
 		return StatusUpdateResult{}, ErrActiveSuperAdminRequired
 	}
+	s.publishOptionPageDataResets(ctx)
 	if result.Before.Status != result.Account.Status && s.systemAccountInvalidator != nil {
 		if err := s.systemAccountInvalidator.InvalidateSystemAccountStatusChanged(ctx, systemAccountID); err != nil {
 			return StatusUpdateResult{}, fmt.Errorf("invalidate management system account status gateway cache: %w", err)
@@ -343,6 +357,7 @@ func (s *Service) UpdateImageGeneration(ctx context.Context, input ImageGenerati
 	if !found {
 		return ImageGenerationUpdateResult{}, ErrSystemAccountNotFound
 	}
+	s.publishOptionPageDataResets(ctx)
 	if result.Before.ImageGenerationEnabled != result.Account.ImageGenerationEnabled && s.systemAccountInvalidator != nil {
 		if err := s.systemAccountInvalidator.InvalidateSystemAccountImageGenerationChanged(ctx, systemAccountID); err != nil {
 			return ImageGenerationUpdateResult{}, fmt.Errorf("invalidate management system account image gateway cache: %w", err)
@@ -413,6 +428,7 @@ func (s *Service) UpdateProfile(ctx context.Context, input ProfileUpdateInput) (
 	if result.BlockedLastActiveSuperAdmin {
 		return ProfileUpdateResult{}, ErrActiveSuperAdminRequired
 	}
+	s.publishOptionPageDataResets(ctx)
 	before := systemAccountSummaryFromPort(result.Before)
 	account := systemAccountSummaryFromPort(result.Account)
 	return ProfileUpdateResult{
@@ -506,6 +522,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	if result.BlockedLastActiveSuperAdmin {
 		return UpdateResult{}, ErrActiveSuperAdminRequired
 	}
+	s.publishOptionPageDataResets(ctx)
 	before := systemAccountSummaryFromPort(result.Before)
 	account := systemAccountSummaryFromPort(result.Account)
 	if s.systemAccountInvalidator != nil {
@@ -527,6 +544,28 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 		PasswordChanged:     passwordChanged,
 		RevokedSessionCount: result.RevokedSessionCount,
 	}, nil
+}
+
+func (s *Service) publishOptionPageDataResets(ctx context.Context) {
+	if s.pageDataPublisher == nil {
+		return
+	}
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	for _, domain := range []string{"systemAccounts.options", "accounts.options"} {
+		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
+		err := s.pageDataPublisher.PublishPageDataReset(publishCtx, domain, nil, true)
+		cancel()
+		if err != nil {
+			logger.WarnContext(context.WithoutCancel(ctx), "系统账户写入后页面数据失效失败",
+				slog.String("event", "management_system_account_page_data_reset_failed"),
+				slog.String("domain", domain),
+				slog.Any("error", err),
+			)
+		}
+	}
 }
 
 func listPageSize(pageSize int) int {

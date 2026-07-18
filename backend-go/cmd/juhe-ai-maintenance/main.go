@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/logging"
 	"juhe-ai/backend-go/internal/maintenance"
 	"juhe-ai/backend-go/internal/version"
 )
@@ -90,9 +92,18 @@ func main() {
 		},
 	})
 
+	os.Exit(executeCommand(root, os.Stderr))
+}
+
+func executeCommand(root *cobra.Command, stderr io.Writer) int {
+	root.SetErr(stderr)
+	root.SilenceErrors = true
+	root.SilenceUsage = true
 	if err := root.Execute(); err != nil {
-		os.Exit(1)
+		logging.WriteFatal(stderr, err)
+		return 1
 	}
+	return 0
 }
 
 func newMigrationCatalogPreflightCommand() *cobra.Command {

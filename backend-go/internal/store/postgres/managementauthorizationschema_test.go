@@ -5,7 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"juhe-ai/backend-go/internal/store/port"
+	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
 
 func TestW4ResourceAuthorizationGrantSourceMigrationMatchesCurrentContract(t *testing.T) {
@@ -382,12 +385,17 @@ func TestManagementResourceAuthorizationAccountInstancePreservesHealthCheckModel
 		"protocol_version, name, type, concurrency_limit, health_check_model, health_check_endpoint_mode",
 		"health_check_model = $7",
 		"health_check_endpoint_mode = $8",
+		"temporary_unavailable_continuous_probe_enabled = $9",
+		"temporary_unavailable_continuous_probe_enabled = 1",
 		"concurrency_limit, priority, super_priority_enabled, fallback_enabled, schedulable,\n  health_check_model, health_check_endpoint_mode,",
-		"source.ConcurrencyLimit, source.HealthCheckModel, source.HealthCheckEndpointMode, authorization.ResourceID",
 	} {
 		if !strings.Contains(code, want) {
 			t.Fatalf("authorization account instance implementation missing %q", want)
 		}
+	}
+	const probePolicyWriteArg = "boolInt(source.TemporaryUnavailableContinuousProbeEnabled)"
+	if got := strings.Count(code, probePolicyWriteArg); got != 2 {
+		t.Fatalf("authorization account instance probe policy integer writes = %d, want 2", got)
 	}
 }
 
@@ -448,6 +456,28 @@ func TestManagementResourceAuthorizationExpirySweepQueryUsesGrantExpiryIndex(t *
 		if strings.Contains(query, forbidden) {
 			t.Fatalf("expiry sweep query should not contain %q:\n%s", forbidden, query)
 		}
+	}
+}
+
+func TestManagementAuthorizationExpiryFanoutPreservesExactGrantScope(t *testing.T) {
+	got := managementAuthorizationExpiryFanout(postgresqueries.JuheBusinessResourceAuthorizationGrant{
+		ID:                           "rauthgrant_team",
+		ResourceType:                 "account",
+		ResourceID:                   "acct_main",
+		ResourceOwnerSystemAccountID: "owner",
+		GranteeType:                  "team",
+		GranteeSystemAccountID:       pgtype.Text{String: "unused", Valid: false},
+		GranteeTeamID:                pgtype.Text{String: "team_main", Valid: true},
+	})
+
+	if got.AuthorizationID != "rauthgrant_team" ||
+		got.ResourceType != "account" ||
+		got.ResourceID != "acct_main" ||
+		got.ResourceOwnerSystemAccountID != "owner" ||
+		got.GranteeType != "team" ||
+		got.GranteeSystemAccountID != "" ||
+		got.GranteeTeamID != "team_main" {
+		t.Fatalf("expiry fanout = %+v", got)
 	}
 }
 

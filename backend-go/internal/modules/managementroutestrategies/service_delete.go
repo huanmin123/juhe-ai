@@ -190,6 +190,7 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (DeleteResult, 
 		RouteStrategyDeletedReason,
 		"策略路由删除后网关运行态失效失败",
 	)
+	s.publishOptionsPageDataReset(ctx)
 	return result, nil
 }
 
