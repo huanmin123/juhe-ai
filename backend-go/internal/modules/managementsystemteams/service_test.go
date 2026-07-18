@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -834,6 +836,120 @@ func TestTeamWritesSkipAccountsStaticResetWhenVisibleAccountsDoNotChange(t *test
 	}
 }
 
+func TestTeamWritesPublishDependentPageDataResetsAfterCommittedWrite(t *testing.T) {
+	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		store  *teamStoreStub
+		invoke func(context.Context, *Service) error
+	}{
+		{
+			name:  "create",
+			store: &teamStoreStub{result: port.ManagementSystemTeamSummary{ID: "team_new", CreatedAt: now, UpdatedAt: now}},
+			invoke: func(ctx context.Context, service *Service) error {
+				_, err := service.Create(ctx, CreateInput{Name: "新团队", CreatedBy: "admin"})
+				return err
+			},
+		},
+		{
+			name: "update",
+			store: &teamStoreStub{updateFound: true, updateResult: port.ManagementSystemTeamUpdateResult{
+				Team: port.ManagementSystemTeamDetail{ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", CreatedAt: now, UpdatedAt: now}},
+			}},
+			invoke: func(ctx context.Context, service *Service) error {
+				name := "重命名团队"
+				_, _, err := service.Update(ctx, UpdateInput{TeamID: "team_ops", Name: &name, UpdatedBy: "admin"})
+				return err
+			},
+		},
+		{
+			name:  "add members",
+			store: &teamStoreStub{addFound: true},
+			invoke: func(ctx context.Context, service *Service) error {
+				_, _, err := service.AddMembers(ctx, AddMembersInput{TeamID: "team_ops", SystemAccountIDs: []string{"sys_new"}, CreatedBy: "admin"})
+				return err
+			},
+		},
+		{
+			name: "remove member",
+			store: &teamStoreStub{removeFound: true, removeResult: port.ManagementSystemTeamMemberRemoveResult{
+				RemovedMember: port.ManagementSystemTeamMemberSummary{SystemAccountID: "sys_old"},
+			}},
+			invoke: func(ctx context.Context, service *Service) error {
+				_, _, err := service.RemoveMember(ctx, RemoveMemberInput{TeamID: "team_ops", MemberID: "member_old", UpdatedBy: "admin"})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			publisher := &accountsStaticResetPublisherStub{domainErr: errors.New("page data unavailable"), domainDelay: 40 * time.Millisecond}
+			service := NewServiceWithOptions(ServiceOptions{
+				Store: test.store, Publisher: publisher, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			})
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			startedAt := time.Now()
+			if err := test.invoke(ctx, service); err != nil {
+				t.Fatalf("write returned page data error: %v", err)
+			}
+			if elapsed := time.Since(startedAt); elapsed >= 150*time.Millisecond {
+				t.Fatalf("five page data resets took %s, want concurrent completion", elapsed)
+			}
+			assertTeamDependentPageDataResets(t, publisher)
+		})
+	}
+}
+
+func TestTeamWritesSkipDependentPageDataResetsBeforeCommit(t *testing.T) {
+	wantErr := errors.New("postgres unavailable")
+	tests := []struct {
+		name   string
+		store  *teamStoreStub
+		invoke func(*Service) error
+	}{
+		{
+			name: "create store error", store: &teamStoreStub{err: wantErr},
+			invoke: func(service *Service) error {
+				_, err := service.Create(context.Background(), CreateInput{Name: "团队", CreatedBy: "admin"})
+				return err
+			},
+		},
+		{
+			name: "update not found", store: &teamStoreStub{},
+			invoke: func(service *Service) error {
+				name := "重命名"
+				_, _, err := service.Update(context.Background(), UpdateInput{TeamID: "team_ops", Name: &name, UpdatedBy: "admin"})
+				return err
+			},
+		},
+		{
+			name: "add not found", store: &teamStoreStub{},
+			invoke: func(service *Service) error {
+				_, _, err := service.AddMembers(context.Background(), AddMembersInput{TeamID: "team_ops", SystemAccountIDs: []string{"sys_new"}, CreatedBy: "admin"})
+				return err
+			},
+		},
+		{
+			name: "remove not found", store: &teamStoreStub{},
+			invoke: func(service *Service) error {
+				_, _, err := service.RemoveMember(context.Background(), RemoveMemberInput{TeamID: "team_ops", MemberID: "member_old", UpdatedBy: "admin"})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			publisher := &accountsStaticResetPublisherStub{}
+			service := NewServiceWithOptions(ServiceOptions{Store: test.store, Publisher: publisher})
+			_ = test.invoke(service)
+			if len(publisher.domainCalls) != 0 {
+				t.Fatalf("page data calls = %#v, want none", publisher.domainCalls)
+			}
+		})
+	}
+}
+
 type teamStoreStub struct {
 	called                bool
 	input                 port.ManagementSystemTeamCreateInput
@@ -911,6 +1027,7 @@ type authorizationInvalidatorStub struct {
 }
 
 type accountsStaticResetPublisherStub struct {
+	mu                sync.Mutex
 	calls             int
 	owners            []string
 	allScopes         bool
@@ -918,6 +1035,17 @@ type accountsStaticResetPublisherStub struct {
 	hasDeadline       bool
 	deadlineRemaining time.Duration
 	err               error
+	domainCalls       []teamPageDataResetCall
+	domainErr         error
+	domainDelay       time.Duration
+}
+
+type teamPageDataResetCall struct {
+	domain      string
+	owners      []string
+	allScopes   bool
+	contextErr  error
+	hasDeadline bool
 }
 
 func (s *accountsStaticResetPublisherStub) PublishAccountsStaticReset(ctx context.Context, owners []string, allScopes bool) error {
@@ -931,6 +1059,40 @@ func (s *accountsStaticResetPublisherStub) PublishAccountsStaticReset(ctx contex
 		s.deadlineRemaining = time.Until(deadline)
 	}
 	return s.err
+}
+
+func (s *accountsStaticResetPublisherStub) PublishPageDataReset(ctx context.Context, domain string, owners []string, allScopes bool) error {
+	if s.domainDelay > 0 {
+		time.Sleep(s.domainDelay)
+	}
+	_, hasDeadline := ctx.Deadline()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.domainCalls = append(s.domainCalls, teamPageDataResetCall{
+		domain: domain, owners: append([]string(nil), owners...), allScopes: allScopes, contextErr: ctx.Err(), hasDeadline: hasDeadline,
+	})
+	return s.domainErr
+}
+
+func assertTeamDependentPageDataResets(t *testing.T, publisher *accountsStaticResetPublisherStub) {
+	t.Helper()
+	wantDomains := []string{"teams.options", "groups.static", "stats.overview", "stats.accountUsage", "stats.aiPerformance"}
+	publisher.mu.Lock()
+	calls := append([]teamPageDataResetCall(nil), publisher.domainCalls...)
+	publisher.mu.Unlock()
+	if len(calls) != len(wantDomains) {
+		t.Fatalf("page data calls = %#v, want domains %#v", calls, wantDomains)
+	}
+	byDomain := make(map[string]teamPageDataResetCall, len(calls))
+	for _, call := range calls {
+		byDomain[call.domain] = call
+	}
+	for _, wantDomain := range wantDomains {
+		call, ok := byDomain[wantDomain]
+		if !ok || len(call.owners) != 0 || !call.allScopes || call.contextErr != nil || !call.hasDeadline {
+			t.Fatalf("page data call for %q = %+v found=%v, want global detached deadline", wantDomain, call, ok)
+		}
+	}
 }
 
 func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.Context, reason string) error {

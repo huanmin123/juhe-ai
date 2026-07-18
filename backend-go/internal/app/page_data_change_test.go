@@ -116,10 +116,40 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	if strings.Contains(text, `newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace+":state")`) {
 		t.Fatal("server must not pass the state client namespace to the page data publisher")
 	}
-	if !strings.Contains(text, "groupService := managementgroups.NewServiceWithOptions") ||
-		!strings.Contains(text, "PageDataPublisher:       accountsStaticResetPublisher") {
+	groupBlock := sourceBlockBetween(t, text,
+		"groupService := managementgroups.NewServiceWithOptions",
+		"accountService := managementaccounts.NewService",
+	)
+	if !strings.Contains(groupBlock, "PageDataPublisher:       accountsStaticResetPublisher") {
 		t.Fatal("server must inject the page data publisher into management groups")
 	}
+	systemAccountBlock := sourceBlockBetween(t, text,
+		"systemAccountService := managementsystemaccounts.NewServiceWithOptions",
+		"systemTeamService := managementsystemteams.NewServiceWithOptions",
+	)
+	if !strings.Contains(systemAccountBlock, "PageDataPublisher:        accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management system accounts")
+	}
+	systemTeamBlock := sourceBlockBetween(t, text,
+		"systemTeamService := managementsystemteams.NewServiceWithOptions",
+		"authorizationService := managementauthorizations.NewServiceWithOptions",
+	)
+	if !strings.Contains(systemTeamBlock, "Publisher:                accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management system teams")
+	}
+}
+
+func sourceBlockBetween(t *testing.T, source string, startMarker string, endMarker string) string {
+	t.Helper()
+	start := strings.Index(source, startMarker)
+	if start < 0 {
+		t.Fatalf("server source missing block start %q", startMarker)
+	}
+	relativeEnd := strings.Index(source[start:], endMarker)
+	if relativeEnd < 0 {
+		t.Fatalf("server source missing block end %q after %q", endMarker, startMarker)
+	}
+	return source[start : start+relativeEnd]
 }
 
 type pageDataCorePublisherStub struct {
