@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 )
 
@@ -149,6 +150,65 @@ func TestAccountsStaticResetPublisherAdapterPublishesRequestedDomainReset(t *tes
 	}
 }
 
+func TestAccountsStaticResetPublisherAdapterPublishesAccountStaticChangeAndDependentResets(t *testing.T) {
+	core := &pageDataCorePublisherStub{
+		upsertEvent: redisplatform.PageDataChangeEvent{EventID: "account-event"},
+		events:      []redisplatform.PageDataChangeEvent{{EventID: "reset-event"}},
+	}
+	cache := &pageDataCacheWriterStub{}
+	adapter := accountsStaticResetPublisherAdapter{publisher: core, cache: cache, logger: slog.Default(), redisNamespace: "prod"}
+	input := managementaccounts.AccountStaticChangeInput{
+		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-b", "owner-a"},
+		FieldMask: []string{"tags"}, FilterChanged: true, PageChanged: true,
+	}
+
+	if err := adapter.PublishAccountStaticChange(t.Context(), input); err != nil {
+		t.Fatalf("PublishAccountStaticChange() error = %v", err)
+	}
+	if got, want := core.upsertInput, (redisplatform.AccountStaticUpsertInput{
+		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-b", "owner-a"},
+		FieldMask: []string{"tags"}, FilterChanged: true, PageChanged: true,
+	}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("upsert input = %#v, want %#v", got, want)
+	}
+	domains := append([]string(nil), core.domains...)
+	sort.Strings(domains)
+	wantDomains := []string{"accounts.options", "stats.accountUsage", "stats.aiPerformance", "stats.overview"}
+	if !reflect.DeepEqual(domains, wantDomains) {
+		t.Fatalf("reset domains = %#v, want %#v", domains, wantDomains)
+	}
+	published := append([]string(nil), core.publishedIDs...)
+	sort.Strings(published)
+	if got, want := published, []string{"account-event", "reset-event", "reset-event", "reset-event", "reset-event"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("published ids = %#v, want %#v", got, want)
+	}
+	if got, want := len(cache.keys), 5; got != want {
+		t.Fatalf("cache version writes = %d, want %d", got, want)
+	}
+}
+
+func TestAccountsStaticResetPublisherAdapterAttemptsEveryAccountChangeDomainAfterFailures(t *testing.T) {
+	cause := errors.New("page data unavailable")
+	core := &pageDataCorePublisherStub{buildErr: cause}
+	adapter := accountsStaticResetPublisherAdapter{publisher: core}
+
+	err := adapter.PublishAccountStaticChange(t.Context(), managementaccounts.AccountStaticChangeInput{
+		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-1"}, FieldMask: []string{"tags"},
+	})
+	if !errors.Is(err, cause) {
+		t.Fatalf("PublishAccountStaticChange() error = %v, want %v", err, cause)
+	}
+	if core.upsertInput.AccountID != "account-1" {
+		t.Fatalf("accounts.static upsert was not attempted: %#v", core.upsertInput)
+	}
+	domains := append([]string(nil), core.domains...)
+	sort.Strings(domains)
+	wantDomains := []string{"accounts.options", "stats.accountUsage", "stats.aiPerformance", "stats.overview"}
+	if !reflect.DeepEqual(domains, wantDomains) {
+		t.Fatalf("attempted reset domains = %#v, want %#v", domains, wantDomains)
+	}
+}
+
 func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	source, err := os.ReadFile("server.go")
 	if err != nil {
@@ -167,6 +227,20 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	)
 	if !strings.Contains(groupBlock, "PageDataPublisher:       accountsStaticResetPublisher") {
 		t.Fatal("server must inject the page data publisher into management groups")
+	}
+	accountBlock := sourceBlockBetween(t, text,
+		"accountService := managementaccounts.NewServiceWithOptions",
+		"accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions",
+	)
+	for _, want := range []string{
+		"Store:             store",
+		"GranteeReader:     store",
+		"PageDataPublisher: accountsStaticResetPublisher",
+		"Logger:            logger",
+	} {
+		if !strings.Contains(accountBlock, want) {
+			t.Fatalf("management accounts wiring missing %q", want)
+		}
 	}
 	systemAccountBlock := sourceBlockBetween(t, text,
 		"systemAccountService := managementsystemaccounts.NewServiceWithOptions",
@@ -210,9 +284,18 @@ type pageDataCorePublisherStub struct {
 	domains      []string
 	allScopes    bool
 	events       []redisplatform.PageDataChangeEvent
+	upsertInput  redisplatform.AccountStaticUpsertInput
+	upsertEvent  redisplatform.PageDataChangeEvent
 	publishedIDs []string
 	buildErr     error
 	publishErr   error
+}
+
+func (s *pageDataCorePublisherStub) NewAccountStaticUpsertEvent(input redisplatform.AccountStaticUpsertInput) (redisplatform.PageDataChangeEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.upsertInput = input
+	return s.upsertEvent, s.buildErr
 }
 
 type blockingPageDataCorePublisherStub struct {
@@ -236,6 +319,10 @@ func (s *blockingPageDataCorePublisherStub) NewRangeResetEvents(domain string, _
 		close(s.optionsStarted)
 	}
 	return nil, nil
+}
+
+func (s *blockingPageDataCorePublisherStub) NewAccountStaticUpsertEvent(redisplatform.AccountStaticUpsertInput) (redisplatform.PageDataChangeEvent, error) {
+	return redisplatform.PageDataChangeEvent{}, nil
 }
 
 func (s *blockingPageDataCorePublisherStub) Publish(_ context.Context, _ redisplatform.PageDataChangeEvent) error {
