@@ -183,16 +183,32 @@ func TestPageDataChangePublisherValidatesConstructorAndEvents(t *testing.T) {
 		MembershipChanged: true, OrderChanged: true, FilterChanged: true, PageChanged: true,
 		OccurredAt: "2026-07-18T01:02:03.456Z",
 	}
-	optionsEvents, err := publisher.NewRangeResetEvents("accounts.options", []string{"owner-a"}, false)
-	if err != nil {
-		t.Fatalf("NewRangeResetEvents(accounts.options) error = %v", err)
-	}
-	if len(optionsEvents) != 1 || optionsEvents[0].Domain != "accounts.options" {
-		t.Fatalf("accounts.options events = %#v", optionsEvents)
+	for _, domain := range []string{
+		"accounts.static",
+		"accounts.runtime",
+		"accounts.options",
+		"usage.records",
+		"announcements.public",
+		"providers.catalog",
+		"groups.static",
+		"systemAccounts.options",
+		"teams.options",
+		"routeStrategies.options",
+		"stats.overview",
+		"stats.accountUsage",
+		"stats.aiPerformance",
+	} {
+		events, err := publisher.NewRangeResetEvents(domain, []string{"owner-a"}, false)
+		if err != nil {
+			t.Fatalf("NewRangeResetEvents(%s) error = %v", domain, err)
+		}
+		if len(events) != 1 || events[0].Domain != domain {
+			t.Fatalf("NewRangeResetEvents(%s) events = %#v", domain, events)
+		}
 	}
 	cases := []PageDataChangeEvent{
 		func() PageDataChangeEvent { value := valid; value.EventID = " "; return value }(),
-		func() PageDataChangeEvent { value := valid; value.Domain = "accounts.runtime"; return value }(),
+		func() PageDataChangeEvent { value := valid; value.Domain = "unknown.domain"; return value }(),
 		func() PageDataChangeEvent { value := valid; value.Operation = "upsert"; return value }(),
 		func() PageDataChangeEvent { value := valid; value.FieldMask = []string{"name"}; return value }(),
 		func() PageDataChangeEvent {
