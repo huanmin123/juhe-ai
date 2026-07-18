@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,7 +81,7 @@ func TestServiceUpdateBuiltInModelPublishesGlobalPageDataResets(t *testing.T) {
 	assertProviderModelPageDataResets(t, publisher, nil, true)
 }
 
-func TestServicePublishesPersonalPageDataResetsBeforePostCommitCleanupFailure(t *testing.T) {
+func TestServicePublishesPersonalPageDataResetsAfterPostCommitCleanupAttempt(t *testing.T) {
 	price := 1.25
 	existing := port.ManagementProviderModelCatalogItem{
 		ID: "custom_model_1", ProviderCode: "gpt", Model: "custom-chat", Scope: "personal",
@@ -117,7 +118,12 @@ func TestServicePublishesPersonalPageDataResetsBeforePostCommitCleanupFailure(t 
 				customByID:   map[string]port.ManagementProviderModelCatalogItem{"custom_model_1": existing},
 				deleteResult: true, clearErr: cleanupErr,
 			}
-			publisher := &providerModelPageDataPublisherStub{}
+			var publishedBeforeCleanup atomic.Bool
+			publisher := &providerModelPageDataPublisherStub{onPublish: func() {
+				if store.clearInput.Model == "" {
+					publishedBeforeCleanup.Store(true)
+				}
+			}}
 			service := NewServiceWithOptions(ServiceOptions{Store: store, PageDataPublisher: publisher})
 
 			err := test.run(service)
@@ -125,6 +131,9 @@ func TestServicePublishesPersonalPageDataResetsBeforePostCommitCleanupFailure(t 
 				t.Fatalf("operation error = %v, want %v", err, cleanupErr)
 			}
 			assertProviderModelPageDataResets(t, publisher, []string{"sys_user"}, false)
+			if publishedBeforeCleanup.Load() {
+				t.Fatal("page data reset was published before default model cleanup was attempted")
+			}
 		})
 	}
 }
@@ -341,12 +350,16 @@ type providerModelPageDataResetCall struct {
 }
 
 type providerModelPageDataPublisherStub struct {
-	mu    sync.Mutex
-	calls []providerModelPageDataResetCall
-	err   error
+	mu        sync.Mutex
+	calls     []providerModelPageDataResetCall
+	err       error
+	onPublish func()
 }
 
 func (s *providerModelPageDataPublisherStub) PublishPageDataReset(ctx context.Context, domain string, owners []string, allScopes bool) error {
+	if s.onPublish != nil {
+		s.onPublish()
+	}
 	deadline, hasDeadline := ctx.Deadline()
 	deadlineRemaining := time.Duration(0)
 	if hasDeadline {
