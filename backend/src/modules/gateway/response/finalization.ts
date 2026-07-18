@@ -190,8 +190,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
   if (!upstreamResponse.body) {
     if (!interpretUpstreamResponseSemantics) {
       prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
-      input.downstreamCommitState.markSemanticCommitted()
+      input.downstreamCommitState.markTransportCommitted()
       endResponse(res)
+      input.downstreamCommitState.markSemanticCommitted()
       return {
         alreadyFinalized: false,
         usage: emptyUsage(),
@@ -739,8 +740,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           onFirstByteDeadline: input.onFirstByteDeadline,
           prepareDownstream: () => {
             prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-            input.downstreamCommitState.markSemanticCommitted()
+            input.downstreamCommitState.markTransportCommitted()
           },
+          onChunkWritten: (bytesWritten) => input.downstreamCommitState.markSemanticCommitted(bytesWritten),
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
             markFirstOutput?.()
@@ -789,8 +791,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             firstTokenMs = Date.now() - startedAt
           }
           prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-          input.downstreamCommitState.markSemanticCommitted()
+          input.downstreamCommitState.markTransportCommitted()
           res.send(completeBody)
+          input.downstreamCommitState.markSemanticCommitted(completeBody.length)
           if (!responseBody && auditCapture.shouldCaptureSuccessPayloads()) {
             responseBody = completeBody
             responseBodyText = completeBodyText
@@ -825,7 +828,11 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           onFirstByteDeadline: input.onFirstByteDeadline,
           prepareDownstream: () => {
             prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-            input.downstreamCommitState.markSemanticCommitted()
+            input.downstreamCommitState.markTransportCommitted()
+          },
+          onChunkWritten: (bytesWritten) => input.downstreamCommitState.markSemanticCommitted(bytesWritten),
+          onBodyCompleted: (transferredBytes) => {
+            if (transferredBytes === 0) input.downstreamCommitState.markSemanticCommitted()
           },
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
@@ -848,8 +855,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       }
     } else {
       prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
-      input.downstreamCommitState.markSemanticCommitted()
+      input.downstreamCommitState.markTransportCommitted()
       endResponse(res)
+      input.downstreamCommitState.markSemanticCommitted()
       firstTokenMs = Date.now() - startedAt
       markFirstOutput?.()
     }

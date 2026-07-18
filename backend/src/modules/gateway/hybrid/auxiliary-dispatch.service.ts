@@ -179,7 +179,7 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
       undefined,
       false,
       serverRetryBudget,
-      true
+      false
     )
     let released = false
     const release = () => {

@@ -94,7 +94,8 @@ export class UpstreamAttemptError extends Error {
     message: string,
     readonly lastAttempt?: UpstreamAttempt,
     readonly failedAccountIds: string[] = [],
-    readonly agentGuidanceResponse?: GatewayAgentGuidanceResponse
+    readonly agentGuidanceResponse?: GatewayAgentGuidanceResponse,
+    readonly recoverableAccountIds: string[] = []
   ) {
     super(message)
   }
@@ -147,7 +148,8 @@ export async function fetchFirstAvailableUpstream(
   preAcquiredConcurrency?: SpeedFirstCutoverReservation,
   allowPrecheckHalfOpen = false,
   serverRetryBudget = new ServerRetryBudget(settings.noAvailableAccountWaitTimeoutSeconds * 1000),
-  interpretUpstreamResponseSemantics = false
+  interpretUpstreamResponseSemantics = false,
+  waitForRecoverableFailures = true
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -165,6 +167,7 @@ export async function fetchFirstAvailableUpstream(
   let highConcurrencyDispatchQueueWaitCount = 0
   const failedProxyDispatchKeys = new Map<string, string>()
   const failedAccountIds = new Set<string>()
+  const recoverableFailedAccountIds = new Set<string>()
   const bypassLocalSuppression = isAccountProbeTrafficSource(usageContext.trafficSource)
   let dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(
     await orderAccountsForRequestLaneAsync(accounts, requestLane, groupSchedulingPolicy, modelPriority),
@@ -172,8 +175,7 @@ export async function fetchFirstAvailableUpstream(
   ).accounts
 
   while (dispatchAccounts.length > 0) {
-    let attemptedAccountCount = 0
-    let localSuppressedSkipCount = 0
+    const cycleRecoverableAccountIds = new Set<string>()
     const capacityLimitFailures: AccountCapacityLimitFailure[] = []
 
     for (const originalAccount of dispatchAccounts) {
@@ -192,7 +194,6 @@ export async function fetchFirstAvailableUpstream(
             precheckHalfOpenGroupKey: `${usageContext.systemAccountId}:${usageContext.groupId}`
           })
       if (localSuppression.allSuppressed) {
-        localSuppressedSkipCount += 1
         lastAttempt = locallySuppressedAttempt(originalAccount, localSuppression.nextRetryAfterMs)
         getRequestLogger().warn({
           event: 'gateway_local_account_suppression_dispatch_skip',
@@ -210,12 +211,14 @@ export async function fetchFirstAvailableUpstream(
         continue
       }
       const halfOpenLease = localSuppression.acquiredHalfOpenLeases[0]
-      attemptedAccountCount += 1
       const skippedProxyAttempt = skipAccountForFailedProxyDispatch(failedProxyDispatchKeys, originalAccount)
       if (skippedProxyAttempt) {
         await releaseHalfOpenLease(halfOpenLease)
         lastAttempt = skippedProxyAttempt
         failedAccountIds.add(originalAccount.id)
+        if (recoverableFailedAccountIds.has(originalAccount.id)) {
+          cycleRecoverableAccountIds.add(originalAccount.id)
+        }
         continue
       }
       const unavailableProxyAuditAttemptIndex = auditAttemptIndex + 1
@@ -490,6 +493,8 @@ export async function fetchFirstAvailableUpstream(
                 })
                 lastAttempt = failedResponseResult.lastAttempt
                 failedAccountIds.add(account.id)
+                recoverableFailedAccountIds.delete(account.id)
+                cycleRecoverableAccountIds.delete(account.id)
                 if (failedResponseResult.action === 'retry') {
                   await waitForSameAccountRetry(
                     account,
@@ -567,6 +572,14 @@ export async function fetchFirstAvailableUpstream(
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
                 failedAccountIds.add(account.id)
+                if (
+                  requestErrorResult.action === 'skip_account'
+                  && accountStateMutationEnabled
+                  && shouldRetainTransportFailureForRecovery(upstreamUrl, signal)
+                ) {
+                  recoverableFailedAccountIds.add(account.id)
+                  cycleRecoverableAccountIds.add(account.id)
+                }
                 if (requestErrorResult.action === 'retry') {
                   await waitForSameAccountRetry(
                     account,
@@ -678,11 +691,7 @@ export async function fetchFirstAvailableUpstream(
       }
     }
 
-    if (attemptedAccountCount > 0 || localSuppressedSkipCount === 0) {
-      break
-    }
-
-    const suppressionFilter = bypassLocalSuppression
+    const postCycleSuppressionFilter = bypassLocalSuppression
       ? {
           accounts: dispatchAccounts,
           suppressedCount: 0,
@@ -691,6 +700,46 @@ export async function fetchFirstAvailableUpstream(
           acquiredHalfOpenLeases: []
         }
       : await filterGatewayAccountRuntimeSuppressionsAsync(dispatchAccounts)
+    const recoverableAccountIds = new Set([
+      ...postCycleSuppressionFilter.suppressedAccountIds,
+      ...(postCycleSuppressionFilter.precheckSuppressedAccountIds ?? []),
+      ...cycleRecoverableAccountIds
+    ])
+    const recoverableAccounts = dispatchAccounts.filter((account) => recoverableAccountIds.has(account.id))
+    if (recoverableAccounts.length === 0 || !waitForRecoverableFailures) {
+      break
+    }
+    const suppressionFilter = recoverableAccounts.length === dispatchAccounts.length
+      ? postCycleSuppressionFilter
+      : await filterGatewayAccountRuntimeSuppressionsAsync(recoverableAccounts)
+    if (!suppressionFilter.allSuppressed) {
+      if (serverRetryBudget.handoffRequired('recoverable_later')) {
+        break
+      }
+      const retryDelayMs = Math.min(3000, serverRetryBudget.remainingMs())
+      auditCapture.addGatewayMetadata({
+        label: 'recoverable_upstream_failure_dispatch_wait',
+        metadata: {
+          accountIds: suppressionFilter.accounts.map((account) => account.id),
+          retryDelayMs,
+          remainingWaitBudgetMs: serverRetryBudget.remainingMs()
+        }
+      })
+      serverRetryBudget.beginNoAvailableWait()
+      try {
+        await waitForRetryDelayMs(retryDelayMs, { signal })
+      } finally {
+        serverRetryBudget.pauseNoAvailableWait()
+      }
+      if (serverRetryBudget.handoffRequired('recoverable_later')) {
+        break
+      }
+      failedProxyDispatchKeys.clear()
+      dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(suppressionFilter.accounts, {
+        modelRankByAccountId: modelPriority?.rankByAccountId
+      }).accounts
+      continue
+    }
     const precheckRuntimeScopes = suppressionFilter.precheckSuppressedRuntimeScopes ?? []
     const allBlockedByPrecheck = precheckRuntimeScopes.length > 0
       && suppressionFilter.precheckSuppressedAccountIds?.length === dispatchAccounts.length
@@ -708,7 +757,7 @@ export async function fetchFirstAvailableUpstream(
         ),
         reason: allBlockedByPrecheck ? 'precheck_half_open' : 'local_account_suppression_dispatch',
         initialState: suppressionFilter,
-        refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(dispatchAccounts),
+        refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(recoverableAccounts),
         isReady: (state) => !state.allSuppressed,
         nextRetryAfterMs: (state) => state.nextRetryAfterMs,
         waitWithoutRetryAfter: true,
@@ -723,6 +772,7 @@ export async function fetchFirstAvailableUpstream(
       serverRetryBudget.pauseNoAvailableWait()
     }
     if (!wait.state.allSuppressed) {
+      failedProxyDispatchKeys.clear()
       dispatchAccounts = orderGatewayAccountsByRuntimeDegradation(wait.state.accounts, {
         modelRankByAccountId: modelPriority?.rankByAccountId
       }).accounts
@@ -732,7 +782,7 @@ export async function fetchFirstAvailableUpstream(
     auditCapture.addGatewayMetadata({
       label: 'local_account_suppression_dispatch_exhausted',
       metadata: {
-        suppressedCount: localSuppressedSkipCount,
+        suppressedCount: suppressionFilter.suppressedCount,
         accountCount: accounts.length
       }
     })
@@ -750,7 +800,17 @@ export async function fetchFirstAvailableUpstream(
     break
   }
 
-  throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt, [...failedAccountIds], agentGuidanceResponse)
+  throw new UpstreamAttemptError(
+    buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt),
+    lastAttempt,
+    [...failedAccountIds],
+    agentGuidanceResponse,
+    [...recoverableFailedAccountIds]
+  )
+}
+
+function shouldRetainTransportFailureForRecovery(upstreamUrl: string, signal?: AbortSignal): boolean {
+  return !signal?.aborted && /^https?:\/\//i.test(upstreamUrl)
 }
 
 function releaseAccountDispatchSlot(releaseConcurrency: () => void): () => void {

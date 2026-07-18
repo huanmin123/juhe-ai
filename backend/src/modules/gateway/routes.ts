@@ -230,6 +230,7 @@ export async function handleOpenAIGatewayRequest(
   let speedFirstCutoverReservation: SpeedFirstCutoverReservation | undefined
   let codexTurnAvoidedFallbackEnabled = false
   let fallbackSwitchCount = 0
+  let forceRecoverableFailureWait = false
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
@@ -484,15 +485,21 @@ export async function handleOpenAIGatewayRequest(
           dispatchCutoverReservation,
           precheckHalfOpenEligible === true,
           currentPreflight.serverRetryBudget,
-          gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy)
+          gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy),
+          forceRecoverableFailureWait
+            || (currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0) <= 1
+            || fallbackSwitchCount >= (currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0) - 1
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
+          const recoverableAccountIds = new Set(error.recoverableAccountIds)
           for (const accountId of nonStreamResponseStartedFailedAccountIds) {
             exhaustedAccountIds.add(accountId)
           }
           for (const accountId of error.failedAccountIds) {
-            exhaustedAccountIds.add(accountId)
+            if (!recoverableAccountIds.has(accountId)) {
+              exhaustedAccountIds.add(accountId)
+            }
           }
           if (
             !codexTurnAvoidedFallbackEnabled
@@ -518,6 +525,13 @@ export async function handleOpenAIGatewayRequest(
             return
           }
           if (fallbackSwitch === 'switched') {
+            continue
+          }
+          if (
+            recoverableAccountIds.size > 0
+            && !currentPreflight.serverRetryBudget.handoffRequired('recoverable_later')
+          ) {
+            forceRecoverableFailureWait = true
             continue
           }
         }
@@ -909,7 +923,7 @@ export async function handleOpenAIGatewayRequest(
               retryCount: streamServerRetryCount,
               candidateCount: accounts.length,
               remainingCandidateCount: streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds).length,
-              clientTotalWaitTimeoutSeconds: activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds,
+              noAvailableAccountWaitTimeoutSeconds: activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds,
               elapsedMs: Date.now() - startedAt,
               accountId: account.id,
               excludedAccountIds: [...streamServerRetryExcludedAccountIds],
