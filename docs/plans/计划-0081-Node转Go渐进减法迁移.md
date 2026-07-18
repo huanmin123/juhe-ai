@@ -10,7 +10,8 @@
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
-- 2026-07-18 AI Chat 迁移顺序调整：AI Chat Go 无缝接管设计已由用户批准并通过独立审查，提交 `e5cd03583` 固化 `/my-chat` 单 owner、Go 调用 Node `/v1/*`、owner generation / advisory lock、attach 版本屏障、at-most-once 恢复、共享资产卷、双向 cross-read、切流 / 回滚和最终 Node 减法门禁。因 `master` 仍持续改造 Chat，用户明确要求 AI Chat 排到整体迁移最后；当前只维护设计与契约漂移审计，不编写实施计划、不开始 Go Chat 代码。待其他迁移与生产切流门禁完成、Chat 契约稳定后再实施。
+- 2026-07-18 AI Chat 迁移顺序调整：AI Chat Go 无缝接管设计已由用户批准并通过独立审查，提交 `e5cd03583` 固化 `/my-chat` 单 owner、Go 调用 Node `/v1/*`、owner generation / advisory lock、attach 版本屏障、at-most-once 恢复、共享资产卷、双向 cross-read、切流 / 回滚和最终 Node 减法门禁。因 `master` 仍持续改造 Chat，用户明确要求 AI Chat 排到 W10 Go 网关稳定之后、W11 最终 Node 减法之前，作为最后一个业务模块迁移；当前只维护设计与契约漂移审计，不编写实施计划、不开始 Go Chat 代码。待其他迁移与生产切流门禁完成、Chat 契约稳定后再实施。
+- 2026-07-18 AI Chat 阶段顺序已同步到迁移主清单、规划总览、测试验收、开发构建、观测规划和本计划门禁：W10 先证明 Go gateway 可灰度接管且稳定，Node gateway 回滚入口保留到 AI Chat 完成单 owner 切流和回滚验证；随后把 `chatgateway.Client` 从 Node `/v1/*` 切到 Go gateway，重验真实生成、恢复和 usage / audit，才进入 W11 最终 Node 减法。同期重新 fetch `origin/master=6a9479192`，当前分支已包含该提交且远端功能分支与本地 HEAD 一致；`de35e8df5..origin/master` 没有新增提交，`ddbb3d3d..origin/master` 已迁移 Go owner 未发现新的确定语义漂移，Chat、gateway、worker 与未迁移模块继续按边界不提前复制。
 
 - 2026-07-18 关键管理页面连接真实 Go listener 浏览器 smoke：在 `HEAD=e5cd03583` 上使用 fresh PostgreSQL `18-bookworm` / Goose schema `55`、Redis `8.2.7-bookworm`、本地 Go listener、Vite dev server 和隔离 admin session，实际渲染系统账户、授权团队、统一授权、API Key、分组、策略路由、代理和系统设置八个页面。系统账户页回读临时管理员；分组页回读 owner 非默认分组；其余列表正确显示空态，系统设置完整显示全局展示、网关限制、健康检测、限流、账户调度、冷却复测、流式中断和保留清理表单；页面均无业务 alert、无残留 spinner。控制台唯一错误是 AppLayout 请求尚未迁移的公告接口得到 `404`，该接口继续属于 Node owner，本轮不提前迁移，也不把直接 Go listener 的该错误宣称为通过。远端 Docker 主机时钟跳变导致首个一小时 session fixture 过期后，已通过延长隔离 fixture 有效期确认 Go `/auth/me=200`，不属于认证逻辑缺陷。浏览器标签页、本地 Go / Vite 进程、临时二进制和远端 PostgreSQL / Redis 容器均已清理；该证据不代表公告接口、生产反向代理混合 owner、写页面交互、回滚或 Node 删除完成。
 
@@ -133,7 +134,7 @@
 - [x] 规划 Go 后端目标架构、技术依赖、并发和线程安全边界。
 - [x] 规划 Go 系统指标、Prometheus / pprof、内部系统监控契约、worker lag、PG / Redis / Asynq 和网关 SLI 替换口径。
 - [x] 规划 PostgreSQL + Redis 单模式存储目标和 SQLite 移除范围。
-- [x] 规划模块迁移顺序，明确公开接口、后台接口优先，真实网关最后。
+- [x] 规划模块迁移顺序，明确公开接口、后台接口优先，W10 Go 网关稳定后最后迁移 AI Chat，再进入 W11 最终减法。
 - [x] 规划完整测试与验收策略。
 - [x] 规划开发、安装、构建、部署、Docker、服务化和回滚调整。
 - [x] 更新文档入口和计划索引。
@@ -187,7 +188,7 @@
 
 ## 方案概述
 
-- 方案原则：渐进式、减法迁移、单 owner、测试先行、Go 原生优先、网关最后。
+- 方案原则：渐进式、减法迁移、单 owner、测试先行、Go 原生优先；W10 Go 网关稳定后最后迁移 AI Chat，再进入 W11 最终减法。
 - 数据变化：本次不改 schema；迁移目标为 PostgreSQL + Redis 单模式，后续 schema 只保留当前最优结构，不在运行路径保留旧 SQLite 结构兼容、双写或双读。
 - 接口变化：本次不改接口；后续迁移需保证当前公开契约和管理契约等价，或先更新功能文档和测试预期。
 - 前端变化：本次不改前端；后续前端继续以 Vue 3 + TypeScript + Ant Design Vue 维护。
@@ -467,7 +468,7 @@
 | --- | --- | --- | --- |
 | 2026-07-06 | 后端目标运行时转 Go | 当前 Node 后端围绕事件循环和阻塞规避积累了过多复杂度 | 后续后端模块按 Go 架构迁移，Node 后端逐步删除 |
 | 2026-07-06 | 采用渐进减法迁移 | 避免一次性重写风险，同时避免迁移后旧实现残留 | 每个模块 Go 接管后必须删除 Node 旧实现 |
-| 2026-07-06 | 公开接口和后台接口优先，真实网关最后 | 公开/后台接口风险相对低，网关是最核心链路 | 网关迁移必须等待测试、存储和 worker 基线成熟 |
+| 2026-07-06 | 公开接口和后台接口优先，真实网关后置 | 公开/后台接口风险相对低，网关是最核心链路 | 网关迁移必须等待测试、存储和 worker 基线成熟；2026-07-18 起 AI Chat 进一步排到 Go 网关稳定之后、W11 之前 |
 | 2026-07-06 | Go 架构优先使用标准库和轻量依赖 | 避免从 Node 复杂度迁移到框架复杂度 | 默认 `net/http`、`chi`、`slog`、`pgx`、`go-redis`；不引入 SQLite driver |
 | 2026-07-06 | Go 后端只保留 PostgreSQL + Redis 单模式 | 继续保留 SQLite 会让 schema、repository、测试和部署长期双倍维护 | 不再引入 Go SQLite driver；删除 standalone / performance 模式分支；旧 SQLite 数据只走离线导入 PostgreSQL |
 | 2026-07-06 | Go 通用能力优先采用成熟开源库并封装在基础设施层 | 不能为了方便手写长期维护成本高的框架、队列、SQL 映射、迁移和观测能力，也不能让第三方库类型污染业务层 | 新增依赖必须先更新 `Go技术选型与依赖基线.md`；业务模块不得直接 import chi、pgx、redis、asynq、validator、prometheus 等基础设施库 |
@@ -477,7 +478,7 @@
 ## 本阶段验收标准
 
 - [x] `docs/migration/` 有 README 和示例文档。
-- [x] 迁移原则、阶段、减法规则和网关最后策略已经写入文档。
+- [x] 迁移原则、阶段、减法规则、网关后置和 AI Chat 最终业务迁移策略已经写入文档。
 - [x] Go 技术基线、目录结构、并发、线程安全、内存和大数据边界已经写入文档。
 - [x] Go 框架、日志、配置、DB、SQL、job、测试、观测和安全扫描依赖基线已经写入文档。
 - [x] PostgreSQL + Redis 单模式和 SQLite 移除范围已经写入文档。
@@ -490,8 +491,9 @@
 - [ ] Go 工程和 PostgreSQL / Redis 基线完成后，再允许模块进入 `已接管`。
 - [ ] W0 必须完成依赖 PoC，包括 chi、config、slog、pgx、sqlc、goose、go-redis、Asynq、Prometheus、testcontainers、lint 和 govulncheck。
 - [ ] W1b 独立完成 query parser 兼容任务：为 Express 4.22.1 + qs@6.14.2 extended parser 与 Go `r.URL.Query()` / 扁平 map 的 bracket、畸形转义差异确定目标契约并补回归；`RawQuery` 原始证据保留不能替代解析后形态 parity。
-- [ ] W9 不删除 Node 网关 preflight；W10 整条网关灰度接管后统一删除 Node gateway。
-- [ ] W11 发布收尾完成后，开发、部署、Docker、watchdog 和 env 文档不再把 SQLite / standalone 当正式路径。
+- [ ] W9 不删除 Node 网关 preflight；W10 先完成整条 Go 网关灰度接管和稳定性验证，AI Chat 切流前保留 Node gateway 回滚入口。
+- [ ] AI Chat 排在其他业务模块和 Go 网关稳定之后实施；完成单 owner、真实链路、双向 cross-read、切流和回滚验证后先删除 Node Chat，再把 `chatgateway.Client` 切到 Go gateway，重验真实 Chat / Responses、恢复链路和 usage / audit，最后删除 Node gateway 回滚入口。
+- [ ] W11 仅在 AI Chat 与网关均完成切流后执行；发布收尾完成后，开发、部署、Docker、watchdog 和 env 文档不再把 SQLite / standalone 当正式路径。
 
 ## 当前 W0 验收状态
 

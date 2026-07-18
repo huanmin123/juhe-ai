@@ -175,8 +175,9 @@ Go 系统指标迁移时建议拆分：
 | W7 | stats-worker 采样 Go runtime、Asynq queue、统计滞后和游标 lag；Node worker IPC 指标删除 | worker integration、queue lag、dead / retry、shutdown drain 验证 |
 | W8 | 删除 DB service、SQLite 文件体积、usage shard 文件指标；改为 PG/Redis/Asynq 指标 | `rg` 删除证据、部署 smoke、表监控更新 |
 | W9 | 网关准备层读模型压测必须记录 PG/Redis pool、cache hit、候选过滤耗时 | 压测报告 |
-| W10 | 网关真实转发必须记录 HTTP、SSE、upstream、goroutine、GC、FD、PG/Redis/Asynq 和副作用入队 | `docs/reports/` 独立性能报告 |
-| W11 | 部署文档、watchdog、Docker 和服务化脚本以 Go health / metrics / pprof / worker lag 为基线 | 发布 smoke 和文档删除检查 |
+| W10 | 网关真实转发必须记录 HTTP、SSE、upstream、goroutine、GC、FD、PG/Redis/Asynq 和副作用入队 | `docs/reports/` 独立性能报告；AI Chat 切流前保留 Node gateway 回滚观测 |
+| W10-Chat | AI Chat 必须区分 store、runner、gateway client、asset、lifecycle worker、owner generation 和 attach / resume 故障；Node / Go gateway client 阶段必须可区分 | Node / Go golden contract、真实生成与恢复 smoke、切流和回滚观测记录；切到 Go gateway 后重验 usage / audit 与恢复链路 |
+| W11 | AI Chat 与网关均完成切流后，部署文档、watchdog、Docker 和服务化脚本以 Go health / metrics / pprof / worker lag 为基线 | 发布 smoke 和文档删除检查 |
 
 ## 9. 安全与标签规范
 
