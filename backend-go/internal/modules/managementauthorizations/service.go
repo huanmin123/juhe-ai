@@ -39,7 +39,7 @@ const (
 	maxRequestQuotaHourlyWindowHours               = 24 * 30
 	maxRequestQuotaAmountUSD                       = 9_007_199_254_740_991
 	quotaAmountPrecision                     int64 = 1_000_000
-	accountsStaticResetPublishTimeout              = 5 * time.Second
+	authorizationPostCommitSyncTimeout             = 5 * time.Second
 	ResourceAuthorizationCreatedReason             = "resource_authorization_created"
 	ResourceAuthorizationUpdatedReason             = "resource_authorization_updated"
 	ResourceAuthorizationReturnedReason            = "resource_authorization_returned"
@@ -72,7 +72,7 @@ type Service struct {
 	now                      func() time.Time
 	secret                   string
 	authorizationInvalidator AuthorizationInvalidator
-	pageDataPublisher        AccountsStaticResetPublisher
+	pageDataPublisher        AuthorizationPageDataPublisher
 	teamReader               TeamReader
 	logger                   *slog.Logger
 }
@@ -83,6 +83,11 @@ type AuthorizationInvalidator interface {
 
 type AccountsStaticResetPublisher interface {
 	PublishAccountsStaticReset(ctx context.Context, ownerSystemAccountIDs []string, allScopes bool) error
+}
+
+type AuthorizationPageDataPublisher interface {
+	AccountsStaticResetPublisher
+	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
 type TeamReader interface {
@@ -105,7 +110,7 @@ type ServiceOptions struct {
 	Now                      func() time.Time
 	Secret                   string
 	AuthorizationInvalidator AuthorizationInvalidator
-	Publisher                AccountsStaticResetPublisher
+	Publisher                AuthorizationPageDataPublisher
 	Logger                   *slog.Logger
 	TeamReader               TeamReader
 }
@@ -733,7 +738,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 		return Summary{}, err
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationCreatedReason)
-	s.publishAccountsStaticResetAfterCommit(ctx, row)
+	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, nil
 }
 
@@ -808,7 +813,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (Summary, bool,
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationUpdatedReason)
-	s.publishAccountsStaticResetAfterCommit(ctx, row)
+	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -836,7 +841,7 @@ func (s *Service) Return(ctx context.Context, input ReturnInput) (Summary, bool,
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationReturnedReason)
-	s.publishAccountsStaticResetAfterCommit(ctx, row)
+	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -866,7 +871,7 @@ func (s *Service) ReturnByResource(ctx context.Context, input ResourceReturnInpu
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationReturnedReason)
-	s.publishAccountsStaticResetAfterCommit(ctx, row)
+	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -899,7 +904,7 @@ func (s *Service) Revoke(ctx context.Context, input RevokeInput) (Summary, bool,
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationRevokedReason)
-	s.publishAccountsStaticResetAfterCommit(ctx, row)
+	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -924,7 +929,7 @@ func (s *Service) ExpireDue(ctx context.Context, input ExpirySweepInput) (Expiry
 	if result.Expired > 0 {
 		s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationExpiredReason)
 	}
-	s.publishAccountsStaticResetBatchAfterCommit(ctx, result.Authorizations)
+	s.publishAuthorizationPageDataBatchAfterCommit(ctx, result.Authorizations)
 	return ExpirySweepResult{Expired: result.Expired}, nil
 }
 
@@ -932,7 +937,7 @@ func (s *Service) invalidateAuthorizationChangedBestEffort(ctx context.Context, 
 	if s.authorizationInvalidator == nil {
 		return
 	}
-	invalidateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountsStaticResetPublishTimeout)
+	invalidateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), authorizationPostCommitSyncTimeout)
 	defer cancel()
 	if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(invalidateCtx, reason); err != nil {
 		s.logger.WarnContext(context.WithoutCancel(ctx), "authorization cache invalidation failed",
@@ -942,19 +947,30 @@ func (s *Service) invalidateAuthorizationChangedBestEffort(ctx context.Context, 
 	}
 }
 
-func (s *Service) publishAccountsStaticResetBatchAfterCommit(ctx context.Context, authorizations []port.ManagementResourceAuthorizationExpiryFanout) {
+func (s *Service) publishAuthorizationPageDataBatchAfterCommit(ctx context.Context, authorizations []port.ManagementResourceAuthorizationExpiryFanout) {
 	if s.pageDataPublisher == nil {
 		return
 	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountsStaticResetPublishTimeout)
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), authorizationPostCommitSyncTimeout)
 	defer cancel()
 
 	owners := make([]string, 0, len(authorizations)*2)
 	teamIDSet := make(map[string]struct{})
+	accountAuthorizationCount := 0
+	groupAuthorizationCount := 0
+	hasAccountAuthorization := false
+	hasGroupAuthorization := false
 	for _, authorization := range authorizations {
+		if authorization.ResourceType == "group" {
+			hasGroupAuthorization = true
+			groupAuthorizationCount++
+			continue
+		}
 		if authorization.ResourceType != "account" {
 			continue
 		}
+		hasAccountAuthorization = true
+		accountAuthorizationCount++
 		owners = append(owners, authorization.ResourceOwnerSystemAccountID)
 		switch authorization.GranteeType {
 		case "system_account":
@@ -996,27 +1012,107 @@ func (s *Service) publishAccountsStaticResetBatchAfterCommit(ctx context.Context
 	}
 
 	owners = normalizeAccountsStaticResetOwnerIDs(owners)
-	if len(owners) == 0 && !allScopes {
-		return
+	var domainPublishDone <-chan struct{}
+	if hasGroupAuthorization {
+		done := make(chan struct{})
+		domainPublishDone = done
+		go func() {
+			defer close(done)
+			s.publishAuthorizationDomainResets(ctx, publishCtx,
+				[]string{"groups.static", "stats.overview", "stats.accountUsage", "stats.aiPerformance"},
+				nil, true,
+				"authorizationCount", len(authorizations),
+				"accountAuthorizationCount", accountAuthorizationCount,
+				"groupAuthorizationCount", groupAuthorizationCount,
+			)
+		}()
+	} else if hasAccountAuthorization {
+		done := make(chan struct{})
+		domainPublishDone = done
+		go func() {
+			defer close(done)
+			s.publishAuthorizationDomainResets(ctx, publishCtx,
+				[]string{"stats.overview", "stats.accountUsage", "stats.aiPerformance"},
+				owners, allScopes,
+				"authorizationCount", len(authorizations),
+				"accountAuthorizationCount", accountAuthorizationCount,
+				"groupAuthorizationCount", groupAuthorizationCount,
+			)
+		}()
 	}
-	if err := s.pageDataPublisher.PublishAccountsStaticReset(publishCtx, owners, allScopes); err != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-			"domain", "accounts.static",
-			"authorizationCount", len(authorizations),
-			"teamCount", len(teamIDs),
+	if len(owners) > 0 || allScopes {
+		if err := s.pageDataPublisher.PublishAccountsStaticReset(publishCtx, owners, allScopes); err != nil {
+			s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
+				"domains", "accounts.static,accounts.options",
+				"authorizationCount", len(authorizations),
+				"teamCount", len(teamIDs),
+				"ownerCount", len(owners),
+				"allScopes", allScopes,
+				"error", err,
+			)
+		}
+	}
+	if domainPublishDone != nil {
+		<-domainPublishDone
+	}
+}
+
+func (s *Service) publishAuthorizationDomainResets(
+	ctx context.Context,
+	publishCtx context.Context,
+	domains []string,
+	owners []string,
+	allScopes bool,
+	attrs ...any,
+) {
+	type publishResult struct {
+		domain string
+		err    error
+	}
+	results := make(chan publishResult, len(domains))
+	for _, domain := range domains {
+		go func(domain string) {
+			results <- publishResult{
+				domain: domain,
+				err:    s.pageDataPublisher.PublishPageDataReset(publishCtx, domain, append([]string(nil), owners...), allScopes),
+			}
+		}(domain)
+	}
+	for range domains {
+		result := <-results
+		if result.err == nil {
+			continue
+		}
+		logAttrs := append([]any{
+			"domain", result.domain,
 			"ownerCount", len(owners),
 			"allScopes", allScopes,
-			"error", err,
+			"error", result.err,
+		}, attrs...)
+		s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
+			logAttrs...,
 		)
 	}
 }
 
-func (s *Service) publishAccountsStaticResetAfterCommit(ctx context.Context, summary Summary) {
-	if s.pageDataPublisher == nil || summary.ResourceType != "account" {
+func (s *Service) publishAuthorizationPageDataAfterCommit(ctx context.Context, summary Summary) {
+	if s.pageDataPublisher == nil {
 		return
 	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountsStaticResetPublishTimeout)
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), authorizationPostCommitSyncTimeout)
 	defer cancel()
+	if summary.ResourceType == "group" {
+		s.publishAuthorizationDomainResets(ctx, publishCtx,
+			[]string{"groups.static", "stats.overview", "stats.accountUsage", "stats.aiPerformance"},
+			nil, true,
+			"authorizationId", summary.ID,
+			"resourceId", summary.ResourceID,
+		)
+		return
+	}
+	if summary.ResourceType != "account" {
+		return
+	}
 
 	owners := []string{summary.ResourceOwnerSystemAccountID}
 	allScopes := false
@@ -1052,9 +1148,19 @@ func (s *Service) publishAccountsStaticResetAfterCommit(ctx context.Context, sum
 	if len(owners) == 0 && !allScopes {
 		return
 	}
+	statsPublishDone := make(chan struct{})
+	go func() {
+		defer close(statsPublishDone)
+		s.publishAuthorizationDomainResets(ctx, publishCtx,
+			[]string{"stats.overview", "stats.accountUsage", "stats.aiPerformance"},
+			owners, allScopes,
+			"authorizationId", summary.ID,
+			"resourceId", summary.ResourceID,
+		)
+	}()
 	if err := s.pageDataPublisher.PublishAccountsStaticReset(publishCtx, owners, allScopes); err != nil {
 		s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-			"domain", "accounts.static",
+			"domains", "accounts.static,accounts.options",
 			"authorizationId", summary.ID,
 			"resourceId", summary.ResourceID,
 			"granteeType", summary.GranteeType,
@@ -1063,6 +1169,7 @@ func (s *Service) publishAccountsStaticResetAfterCommit(ctx context.Context, sum
 			"error", err,
 		)
 	}
+	<-statsPublishDone
 }
 
 func normalizeAccountsStaticResetOwnerIDs(values []string) []string {
