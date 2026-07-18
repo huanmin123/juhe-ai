@@ -1,4 +1,4 @@
-package migrations
+package migrationtests
 
 import (
 	"os"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestAccountRuntimeReleaseMigrationsCoverExistingDatabases(t *testing.T) {
-	continuousProbeSource, err := os.ReadFile("000057_w1b_account_temporary_unavailable_continuous_probe.sql")
+	continuousProbeSource, err := os.ReadFile(migrationPath("000057_w1b_account_temporary_unavailable_continuous_probe.sql"))
 	if err != nil {
 		t.Fatalf("read continuous probe migration: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestAccountRuntimeReleaseMigrationsCoverExistingDatabases(t *testing.T) {
 		t.Fatal("continuous probe migration Down section must remain a non-destructive no-op")
 	}
 
-	dirtyDomainSource, err := os.ReadFile("000056_w7_page_data_dirty_domains.sql")
+	dirtyDomainSource, err := os.ReadFile(migrationPath("000056_w7_page_data_dirty_domains.sql"))
 	if err != nil {
 		t.Fatalf("read page dirty domain migration: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestExistingGooseDoBlockMigrationsUseStatementMarkers(t *testing.T) {
 		"000005_w1b_public_accounts.sql",
 		"000013_w2_management_account_authorization_instances.sql",
 	} {
-		source, err := os.ReadFile(name)
+		source, err := os.ReadFile(migrationPath(name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
