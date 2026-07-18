@@ -274,6 +274,9 @@ func validatePublicAPIConfig(cfg Config) error {
 	if !cfg.PublicAPIEnabled {
 		return nil
 	}
+	if strings.TrimSpace(cfg.PostgresURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_PUBLIC_API_ENABLED 时 JUHE_AI_POSTGRES_URL 不能为空")
+	}
 	if strings.TrimSpace(cfg.RedisStateURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_PUBLIC_API_ENABLED 时 JUHE_AI_REDIS_STATE_URL 不能为空")
 	}
@@ -299,6 +302,9 @@ func validatePublicAPIConfig(cfg Config) error {
 func validateManagementAPIConfig(cfg Config) error {
 	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
 		return nil
+	}
+	if strings.TrimSpace(cfg.PostgresURL) == "" {
+		return fmt.Errorf("启用 Go 管理端接口时 JUHE_AI_POSTGRES_URL 不能为空")
 	}
 	if strings.TrimSpace(cfg.RedisStateURL) == "" {
 		return fmt.Errorf("启用 Go 管理端接口时 JUHE_AI_REDIS_STATE_URL 不能为空")
