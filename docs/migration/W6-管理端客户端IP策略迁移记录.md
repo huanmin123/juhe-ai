@@ -167,6 +167,8 @@ try {
 
 2026-07-18 列表跨运行时复跑：同一远端 Docker `29.1.3` 和强制 integration 门禁下执行 `TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke`。首次红灯暴露 Node full PostgreSQL schema 将 `system_accounts.must_change_password`、`image_generation_enabled` 保存为 `integer 0/1`，而 fixture 直接绑定 `false`；Goose 000041 则使用原生 `boolean`。fixture 改为按已校验 schema mode 选择 `0` 或 `false` 后，用例在 PostgreSQL 18 上完成 Node full schema / production writer / range refresh、Goose 000040 和 Go production HTTP 列表 reader 全链路并非 `SKIP` 通过；随后再次执行详情跨运行时用例也通过，证明双 schema mode 均保持有效。临时 tunnel 与 testcontainers 资源已清理，现有用户 SSH 进程未受影响。该证据仍使用进程内 production router，不代表真实 `app.RunServer` listener、浏览器页面、反向代理单 owner、生产切流或回滚已完成。
 
+2026-07-18 策略真实依赖复跑：通过新的临时 SSH Docker socket 隧道连接远端 Docker `29.1.3`，设置 `JUHE_AI_REQUIRE_INTEGRATION=1` 后执行 `TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke`。用例在 fresh PostgreSQL 18 / Goose 55、Redis 8.2.7 和 Asynq 上完成四条 production handler、策略事务与行锁、shared version 消费、两层 limiter bypass、定时 blacklist 替换 active allowlist、三位毫秒时间、unblock `1/0` 和 8 条 operation log ingest，全链路 `PASS` 且不是 `SKIP`。临时 PostgreSQL、Redis、Ryuk 和 tunnel 均已清理。该证据仍使用进程内 production router，不代表真实 `app.RunServer` listener、浏览器页面、跨 runtime 下一次读取、反向代理单 owner、生产切流或回滚已完成。
+
 代码提交：
 
 | 提交 | 内容 |
@@ -209,4 +211,4 @@ try {
 
 ## 当前结论
 
-客户端 IP 列表、详情与四条写路径已形成 Go store、service、HTTP、router/app、前端 request-capture 和对应 integration smoke 代码；两个读接口只读 Node production writer / worker 生成的预聚合结果，allowlist / unallowlist 另有隔离 fixture 安全真实 Go smoke 入口。Go 全量测试 / vet、目标 race、integration 编译 / vet / race 编译、前端 request-capture、含详情严格门禁的 mock real-Go-management smoke 和 typecheck 已通过。列表真实 PostgreSQL 18 + Redis 8.2.7、管理鉴权 / 限流、筛选 / 排序 / readiness 和 custom / generic plan `EXPLAIN` 已在强制模式非 `SKIP` 通过；列表与详情的 Node production writer / refresh -> Go production HTTP reader 跨运行时用例也均已在远端 PostgreSQL 18 强制模式非 `SKIP` 通过。策略真实 PG/Redis/Asynq、真实 `app.RunServer` listener 和 allowlist 隔离 fixture smoke 仍未通过。生产单 owner 切流、回滚和 Node route 删除仍未完成；统计生产 writer / worker 继续由 Node 提供。
+客户端 IP 列表、详情与四条写路径已形成 Go store、service、HTTP、router/app、前端 request-capture 和对应 integration smoke 代码；两个读接口只读 Node production writer / worker 生成的预聚合结果，allowlist / unallowlist 另有隔离 fixture 安全真实 Go smoke 入口。Go 全量测试 / vet、目标 race、integration 编译 / vet / race 编译、前端 request-capture、含详情严格门禁的 mock real-Go-management smoke 和 typecheck 已通过。列表真实 PostgreSQL 18 + Redis 8.2.7、管理鉴权 / 限流、筛选 / 排序 / readiness 和 custom / generic plan `EXPLAIN` 已在强制模式非 `SKIP` 通过；列表与详情的 Node production writer / refresh -> Go production HTTP reader 跨运行时用例，以及策略 PostgreSQL / Redis / Asynq production-component 用例，也均已在远端强制模式非 `SKIP` 通过。真实 `app.RunServer` listener、allowlist 隔离 fixture、跨 runtime 失效和页面完整 mutation smoke 仍未通过。生产单 owner 切流、回滚和 Node route 删除仍未完成；统计生产 writer / worker 继续由 Node 提供。
