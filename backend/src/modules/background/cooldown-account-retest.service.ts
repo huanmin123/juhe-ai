@@ -1,5 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
-import { logger } from '../../shared/logger.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -27,12 +27,12 @@ const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueIt
   concurrency: 1,
   run: (item, context) => runWithBackgroundFullDiagnosticSlot(() => runCooldownAccountRetestQueueItem(item, context)),
   onExhausted: (event) => {
-    logger.warn({
+    logger.warn(errorLogFields(event.error, {
       event: 'background_cooldown_account_retest_retry_exhausted',
       accountId: event.item.accountId,
       accountName: event.item.accountName,
       attemptCount: event.attemptIndex + 1
-    }, '冷却账户复测重试已用尽，本轮保留冷却状态等待下个周期')
+    }), '冷却账户复测重试已用尽，本轮保留冷却状态等待下个周期')
   }
 })
 
