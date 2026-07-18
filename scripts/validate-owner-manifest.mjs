@@ -65,12 +65,49 @@ export async function readAndValidateOwnerManifest(manifestPath) {
   return validateOwnerManifest(parsed)
 }
 
+function parseRequiredOwners(value) {
+  if (value === undefined) return undefined
+  const result = {}
+  for (const entry of value.split(',')) {
+    const [route, owner, ...extra] = entry.split('=')
+    if (!route || !owner || extra.length > 0 || !REQUIRED_ROUTE_OWNERS.includes(route)) {
+      throw new OwnerManifestValidationError(`invalid required owner expression: ${entry}`)
+    }
+    if (!ALLOWED_OWNERS.has(owner)) {
+      throw new OwnerManifestValidationError(`required owner for ${route} must be node or go`)
+    }
+    result[route] = owner
+  }
+  return result
+}
+
+export function assertRequiredOwners(manifest, requiredOwners) {
+  validateOwnerManifest(manifest)
+  for (const [route, owner] of Object.entries(requiredOwners ?? {})) {
+    if (manifest.routeOwners[route] !== owner) {
+      fail(`routeOwners.${route} is ${manifest.routeOwners[route]}, expected ${owner}`)
+    }
+  }
+  return manifest
+}
+
 async function main() {
   const args = process.argv.slice(2)
-  if (args.length !== 1 || args[0].startsWith('--')) {
-    throw new OwnerManifestValidationError('usage: node scripts/validate-owner-manifest.mjs <manifest.json>')
+  let requiredOwners
+  const positional = []
+  for (const arg of args) {
+    if (arg.startsWith('--require-owners=')) {
+      requiredOwners = parseRequiredOwners(arg.slice('--require-owners='.length))
+      continue
+    }
+    if (arg.startsWith('--')) throw new OwnerManifestValidationError(`unknown option: ${arg}`)
+    positional.push(arg)
   }
-  await readAndValidateOwnerManifest(path.resolve(args[0]))
+  if (positional.length !== 1) {
+    throw new OwnerManifestValidationError('usage: node scripts/validate-owner-manifest.mjs [--require-owners=route=owner,...] <manifest.json>')
+  }
+  const manifest = await readAndValidateOwnerManifest(path.resolve(positional[0]))
+  assertRequiredOwners(manifest, requiredOwners)
   process.stdout.write('Validated owner manifest: 1 file\n')
 }
 
