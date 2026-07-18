@@ -924,6 +924,7 @@ func (s *Service) ExpireDue(ctx context.Context, input ExpirySweepInput) (Expiry
 	if result.Expired > 0 {
 		s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationExpiredReason)
 	}
+	s.publishAccountsStaticResetBatchAfterCommit(ctx, result.Authorizations)
 	return ExpirySweepResult{Expired: result.Expired}, nil
 }
 
@@ -931,7 +932,83 @@ func (s *Service) invalidateAuthorizationChangedBestEffort(ctx context.Context, 
 	if s.authorizationInvalidator == nil {
 		return
 	}
-	_ = s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, reason)
+	invalidateCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountsStaticResetPublishTimeout)
+	defer cancel()
+	if err := s.authorizationInvalidator.InvalidateAuthorizationChanged(invalidateCtx, reason); err != nil {
+		s.logger.WarnContext(context.WithoutCancel(ctx), "authorization cache invalidation failed",
+			"reason", reason,
+			"error", err,
+		)
+	}
+}
+
+func (s *Service) publishAccountsStaticResetBatchAfterCommit(ctx context.Context, authorizations []port.ManagementResourceAuthorizationExpiryFanout) {
+	if s.pageDataPublisher == nil {
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), accountsStaticResetPublishTimeout)
+	defer cancel()
+
+	owners := make([]string, 0, len(authorizations)*2)
+	teamIDSet := make(map[string]struct{})
+	for _, authorization := range authorizations {
+		if authorization.ResourceType != "account" {
+			continue
+		}
+		owners = append(owners, authorization.ResourceOwnerSystemAccountID)
+		switch authorization.GranteeType {
+		case "system_account":
+			owners = append(owners, authorization.GranteeSystemAccountID)
+		case "team":
+			if teamID := strings.TrimSpace(authorization.GranteeTeamID); teamID != "" {
+				teamIDSet[teamID] = struct{}{}
+			}
+		}
+	}
+	teamIDs := make([]string, 0, len(teamIDSet))
+	for teamID := range teamIDSet {
+		teamIDs = append(teamIDs, teamID)
+	}
+	sort.Strings(teamIDs)
+
+	allScopes := false
+	for _, teamID := range teamIDs {
+		if s.teamReader == nil {
+			allScopes = true
+			s.logger.WarnContext(context.WithoutCancel(ctx), "authorization team page data owner lookup unavailable", "teamId", teamID)
+			continue
+		}
+		team, found, err := s.teamReader.FindManagementSystemTeam(publishCtx, teamID, "")
+		if err != nil || !found {
+			allScopes = true
+			attrs := []any{"teamId", teamID, "found", found}
+			if err != nil {
+				attrs = append(attrs, "error", err)
+			}
+			s.logger.WarnContext(context.WithoutCancel(ctx), "authorization team page data owner lookup failed", attrs...)
+			continue
+		}
+		for _, member := range team.Members {
+			if member.Status == "active" {
+				owners = append(owners, member.SystemAccountID)
+			}
+		}
+	}
+
+	owners = normalizeAccountsStaticResetOwnerIDs(owners)
+	if len(owners) == 0 && !allScopes {
+		return
+	}
+	if err := s.pageDataPublisher.PublishAccountsStaticReset(publishCtx, owners, allScopes); err != nil {
+		s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
+			"domain", "accounts.static",
+			"authorizationCount", len(authorizations),
+			"teamCount", len(teamIDs),
+			"ownerCount", len(owners),
+			"allScopes", allScopes,
+			"error", err,
+		)
+	}
 }
 
 func (s *Service) publishAccountsStaticResetAfterCommit(ctx context.Context, summary Summary) {

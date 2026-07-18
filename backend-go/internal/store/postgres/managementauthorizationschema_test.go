@@ -5,7 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"juhe-ai/backend-go/internal/store/port"
+	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
 
 func TestW4ResourceAuthorizationGrantSourceMigrationMatchesCurrentContract(t *testing.T) {
@@ -453,6 +456,28 @@ func TestManagementResourceAuthorizationExpirySweepQueryUsesGrantExpiryIndex(t *
 		if strings.Contains(query, forbidden) {
 			t.Fatalf("expiry sweep query should not contain %q:\n%s", forbidden, query)
 		}
+	}
+}
+
+func TestManagementAuthorizationExpiryFanoutPreservesExactGrantScope(t *testing.T) {
+	got := managementAuthorizationExpiryFanout(postgresqueries.JuheBusinessResourceAuthorizationGrant{
+		ID:                           "rauthgrant_team",
+		ResourceType:                 "account",
+		ResourceID:                   "acct_main",
+		ResourceOwnerSystemAccountID: "owner",
+		GranteeType:                  "team",
+		GranteeSystemAccountID:       pgtype.Text{String: "unused", Valid: false},
+		GranteeTeamID:                pgtype.Text{String: "team_main", Valid: true},
+	})
+
+	if got.AuthorizationID != "rauthgrant_team" ||
+		got.ResourceType != "account" ||
+		got.ResourceID != "acct_main" ||
+		got.ResourceOwnerSystemAccountID != "owner" ||
+		got.GranteeType != "team" ||
+		got.GranteeSystemAccountID != "" ||
+		got.GranteeTeamID != "team_main" {
+		t.Fatalf("expiry fanout = %+v", got)
 	}
 }
 

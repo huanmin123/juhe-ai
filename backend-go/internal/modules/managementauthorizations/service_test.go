@@ -703,14 +703,134 @@ func TestServiceExpireDueUsesDefaultBatchAndInvalidatesAuthorizationCache(t *tes
 	}
 }
 
+func TestServiceExpireDuePublishesOneAggregatedAccountReset(t *testing.T) {
+	store := &authorizationExpirySweepStoreStub{
+		result: port.ManagementResourceAuthorizationExpirySweepResult{
+			Expired: 5,
+			Authorizations: []port.ManagementResourceAuthorizationExpiryFanout{
+				{
+					AuthorizationID:              "rauthgrant_account",
+					ResourceType:                 "account",
+					ResourceID:                   "acct_main",
+					ResourceOwnerSystemAccountID: "owner_account",
+					GranteeType:                  "system_account",
+					GranteeSystemAccountID:       "grantee",
+				},
+				{
+					AuthorizationID:              "rauthgrant_team_first",
+					ResourceType:                 "account",
+					ResourceID:                   "acct_team_first",
+					ResourceOwnerSystemAccountID: "owner_team_first",
+					GranteeType:                  "team",
+					GranteeTeamID:                "team_main",
+				},
+				{
+					AuthorizationID:              "rauthgrant_team_second",
+					ResourceType:                 "account",
+					ResourceID:                   "acct_team_second",
+					ResourceOwnerSystemAccountID: "owner_team_second",
+					GranteeType:                  "team",
+					GranteeTeamID:                "team_main",
+				},
+				{
+					AuthorizationID:              "rauthgrant_team_missing",
+					ResourceType:                 "account",
+					ResourceID:                   "acct_team_missing",
+					ResourceOwnerSystemAccountID: "owner_team_missing",
+					GranteeType:                  "team",
+					GranteeTeamID:                "team_missing",
+				},
+				{
+					AuthorizationID:              "rauthgrant_group",
+					ResourceType:                 "group",
+					ResourceID:                   "group_main",
+					ResourceOwnerSystemAccountID: "owner",
+					GranteeType:                  "system_account",
+					GranteeSystemAccountID:       "grantee",
+				},
+			},
+		},
+	}
+	publisher := &accountsStaticResetPublisherStub{}
+	reader := &authorizationTeamReaderStub{
+		find: func(teamID string) (port.ManagementSystemTeamDetail, bool, error) {
+			if teamID == "team_missing" {
+				return port.ManagementSystemTeamDetail{}, false, nil
+			}
+			return port.ManagementSystemTeamDetail{Members: []port.ManagementSystemTeamMemberSummary{
+				{SystemAccountID: "member_active", Status: "active"},
+				{SystemAccountID: "member_disabled", Status: "disabled"},
+			}}, true, nil
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		ExpirySweepStore: store,
+		Publisher:        publisher,
+		TeamReader:       reader,
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := service.ExpireDue(ctx, ExpirySweepInput{Limit: 5})
+
+	if err != nil {
+		t.Fatalf("ExpireDue() error = %v", err)
+	}
+	if got.Expired != 5 {
+		t.Fatalf("ExpireDue() = %+v, want expired 5", got)
+	}
+	if publisher.calls != 1 {
+		t.Fatalf("publisher calls = %d, want 1 aggregated account reset", publisher.calls)
+	}
+	wantOwners := []string{"grantee", "member_active", "owner_account", "owner_team_first", "owner_team_missing", "owner_team_second"}
+	if !reflect.DeepEqual(publisher.owners, wantOwners) || !publisher.allScopes {
+		t.Fatalf("publisher owners=%#v allScopes=%v", publisher.owners, publisher.allScopes)
+	}
+	if publisher.contextErr != nil || !publisher.hasDeadline {
+		t.Fatalf("publisher contextErr=%v hasDeadline=%v", publisher.contextErr, publisher.hasDeadline)
+	}
+	if !reflect.DeepEqual(reader.teamIDs, []string{"team_main", "team_missing"}) {
+		t.Fatalf("team lookups = %#v", reader.teamIDs)
+	}
+	for _, lookupCtx := range reader.contexts {
+		if lookupCtx != publisher.ctx {
+			t.Fatal("team lookup and publish must share one bounded context")
+		}
+	}
+}
+
+func TestAuthorizationInvalidationUsesDetachedTimeoutAndWarns(t *testing.T) {
+	invalidator := &authorizationInvalidatorStub{err: errors.New("redis unavailable")}
+	var logs bytes.Buffer
+	service := NewServiceWithOptions(ServiceOptions{
+		AuthorizationInvalidator: invalidator,
+		Logger:                   slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	service.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationExpiredReason)
+
+	if invalidator.contextErr != nil || !invalidator.hasDeadline || invalidator.deadlineRemaining <= 0 || invalidator.deadlineRemaining > accountsStaticResetPublishTimeout {
+		t.Fatalf("invalidator contextErr=%v deadline=%v remaining=%v", invalidator.contextErr, invalidator.hasDeadline, invalidator.deadlineRemaining)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") ||
+		!strings.Contains(logs.String(), ResourceAuthorizationExpiredReason) ||
+		!strings.Contains(logs.String(), "redis unavailable") {
+		t.Fatalf("warning log = %q", logs.String())
+	}
+}
+
 func TestServiceExpireDueNormalizesNegativeLimitAndSkipsInvalidationWhenEmpty(t *testing.T) {
 	now := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
 	store := &authorizationExpirySweepStoreStub{}
 	invalidator := &authorizationInvalidatorStub{}
+	publisher := &accountsStaticResetPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
 		ExpirySweepStore:         store,
 		Now:                      func() time.Time { return now },
 		AuthorizationInvalidator: invalidator,
+		Publisher:                publisher,
 	})
 
 	got, err := service.ExpireDue(context.Background(), ExpirySweepInput{Limit: -10})
@@ -727,15 +847,20 @@ func TestServiceExpireDueNormalizesNegativeLimitAndSkipsInvalidationWhenEmpty(t 
 	if invalidator.calls != 0 {
 		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
 	}
+	if publisher.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0", publisher.calls)
+	}
 }
 
 func TestServiceExpireDueDoesNotInvalidateWhenStoreFails(t *testing.T) {
 	storeErr := errors.New("store failed")
 	store := &authorizationExpirySweepStoreStub{err: storeErr}
 	invalidator := &authorizationInvalidatorStub{}
+	publisher := &accountsStaticResetPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
 		ExpirySweepStore:         store,
 		AuthorizationInvalidator: invalidator,
+		Publisher:                publisher,
 	})
 
 	_, err := service.ExpireDue(context.Background(), ExpirySweepInput{Limit: 5})
@@ -745,6 +870,9 @@ func TestServiceExpireDueDoesNotInvalidateWhenStoreFails(t *testing.T) {
 	}
 	if invalidator.calls != 0 {
 		t.Fatalf("invalidator calls = %d, want 0", invalidator.calls)
+	}
+	if publisher.calls != 0 {
+		t.Fatalf("publisher calls = %d, want 0", publisher.calls)
 	}
 }
 
@@ -1907,20 +2035,31 @@ func (s *authorizationUsageStoreStub) FindManagementResourceAuthorizationUsage(_
 }
 
 type authorizationInvalidatorStub struct {
-	calls  int
-	reason string
-	err    error
+	calls             int
+	reason            string
+	contextErr        error
+	hasDeadline       bool
+	deadlineRemaining time.Duration
+	err               error
 }
 
-func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.Context, reason string) error {
+func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(ctx context.Context, reason string) error {
 	s.calls++
 	s.reason = reason
+	s.contextErr = ctx.Err()
+	deadline, ok := ctx.Deadline()
+	s.hasDeadline = ok
+	if ok {
+		s.deadlineRemaining = time.Until(deadline)
+	}
 	return s.err
 }
 
 type accountsStaticResetPublisherStub struct {
 	calls             int
+	ctx               context.Context
 	owners            []string
+	ownerCalls        [][]string
 	allScopes         bool
 	contextErr        error
 	hasDeadline       bool
@@ -1930,7 +2069,9 @@ type accountsStaticResetPublisherStub struct {
 
 func (s *accountsStaticResetPublisherStub) PublishAccountsStaticReset(ctx context.Context, owners []string, allScopes bool) error {
 	s.calls++
+	s.ctx = ctx
 	s.owners = append([]string(nil), owners...)
+	s.ownerCalls = append(s.ownerCalls, append([]string(nil), owners...))
 	s.allScopes = allScopes
 	s.contextErr = ctx.Err()
 	deadline, ok := ctx.Deadline()
@@ -1944,16 +2085,24 @@ func (s *accountsStaticResetPublisherStub) PublishAccountsStaticReset(ctx contex
 type authorizationTeamReaderStub struct {
 	calls           int
 	teamID          string
+	teamIDs         []string
+	contexts        []context.Context
 	systemAccountID string
 	result          port.ManagementSystemTeamDetail
 	found           bool
 	err             error
+	find            func(string) (port.ManagementSystemTeamDetail, bool, error)
 }
 
-func (s *authorizationTeamReaderStub) FindManagementSystemTeam(_ context.Context, teamID string, systemAccountID string) (port.ManagementSystemTeamDetail, bool, error) {
+func (s *authorizationTeamReaderStub) FindManagementSystemTeam(ctx context.Context, teamID string, systemAccountID string) (port.ManagementSystemTeamDetail, bool, error) {
 	s.calls++
 	s.teamID = teamID
+	s.teamIDs = append(s.teamIDs, teamID)
+	s.contexts = append(s.contexts, ctx)
 	s.systemAccountID = systemAccountID
+	if s.find != nil {
+		return s.find(teamID)
+	}
 	return s.result, s.found, s.err
 }
 
