@@ -9,9 +9,33 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const currentGooseSchemaVersionQuery = "SELECT version_id::text, is_applied FROM goose_db_version ORDER BY id DESC LIMIT 1"
+const currentGooseSchemaVersionQuery = `WITH latest_versions AS (
+	SELECT DISTINCT ON (version_id)
+		id,
+		version_id,
+		is_applied
+	FROM goose_db_version
+	ORDER BY version_id, id DESC
+)
+SELECT version_id::text, is_applied
+FROM latest_versions
+WHERE is_applied = TRUE
+ORDER BY id DESC
+LIMIT 1`
 
-const newerAppliedGooseSchemaVersionQuery = "SELECT version_id::text, is_applied FROM goose_db_version WHERE version_id > $1 AND is_applied = TRUE ORDER BY id DESC LIMIT 1"
+const newerAppliedGooseSchemaVersionQuery = `WITH latest_versions AS (
+	SELECT DISTINCT ON (version_id)
+		id,
+		version_id,
+		is_applied
+	FROM goose_db_version
+	ORDER BY version_id, id DESC
+)
+SELECT version_id::text, is_applied
+FROM latest_versions
+WHERE version_id > $1 AND is_applied = TRUE
+ORDER BY id DESC
+LIMIT 1`
 
 type schemaVersionQuerier interface {
 	QueryRow(ctx context.Context, query string, args ...any) pgx.Row
@@ -75,7 +99,7 @@ func scanGooseSchemaVersion(row pgx.Row) (string, bool, error) {
 func parseGooseSchemaVersion(raw string) (int64, error) {
 	version, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid version %q", raw)
+		return 0, fmt.Errorf("invalid version %q: %w", raw, err)
 	}
 	return version, nil
 }

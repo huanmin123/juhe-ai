@@ -52,7 +52,7 @@ func TestRunServerRejectsWorkerOwnerLockRoleBeforeDependencies(t *testing.T) {
 	}
 }
 
-func TestRunServerGooseSchemaGateOrderAndOwnerLockCondition(t *testing.T) {
+func TestRunServerGooseSchemaGateSourceStructure(t *testing.T) {
 	fileSet := token.NewFileSet()
 	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestRunServerGooseSchemaGateOrderAndOwnerLockCondition(t *testing.T) {
 	})
 	for name, deferred := range deferredCalls {
 		if !deferred {
-			t.Fatalf("%s must be registered with defer before schema gate", name)
+			t.Fatalf("RunServer AST must register %s with defer", name)
 		}
 	}
 	gate := positions["store.RequireGooseSchemaVersion"]
@@ -144,7 +144,7 @@ func TestRunServerGooseSchemaGateOrderAndOwnerLockCondition(t *testing.T) {
 		"store.Ping",
 	} {
 		if positions[name] >= gate {
-			t.Fatalf("%s must run before schema gate", name)
+			t.Fatalf("%s must appear before schema gate in RunServer", name)
 		}
 	}
 	for _, name := range []string{
@@ -155,7 +155,7 @@ func TestRunServerGooseSchemaGateOrderAndOwnerLockCondition(t *testing.T) {
 		"server.ListenAndServe",
 	} {
 		if positions[name] <= gate {
-			t.Fatalf("%s must run after schema gate", name)
+			t.Fatalf("%s must appear after schema gate in RunServer", name)
 		}
 	}
 
@@ -177,13 +177,11 @@ func TestRunServerGooseSchemaGateOrderAndOwnerLockCondition(t *testing.T) {
 	if !ownerConditionedGate {
 		t.Fatal("schema gate must be inside cfg.OwnerLockEnabled condition")
 	}
+}
 
-	source, err := os.ReadFile("server.go")
-	if err != nil {
-		t.Fatalf("read server.go: %v", err)
-	}
-	if !strings.Contains(string(source), "schemaCtx, cancel := context.WithTimeout(ctx, 5*time.Second)") {
-		t.Fatal("schema gate must use a five-second context timeout")
+func TestGooseSchemaVersionGateTimeout(t *testing.T) {
+	if gooseSchemaVersionGateTimeout != 5*time.Second {
+		t.Fatalf("goose schema version gate timeout = %s, want 5s", gooseSchemaVersionGateTimeout)
 	}
 }
 

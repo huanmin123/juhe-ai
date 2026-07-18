@@ -31,6 +31,7 @@ assertOwnerLockEnabledParsing()
 await assertDoesNotQueryWhenDisabled()
 await assertDoesNotQueryForSqlite()
 await assertAcceptsExpectedSchemaAndClosesPool()
+await assertAcceptsRolledBackNewerVersion()
 assertRejectsInvalidCurrentStates()
 await assertRejectsAppliedVersionAboveExpected()
 await assertPreservesOperationErrorWhenCloseSucceeds()
@@ -106,9 +107,31 @@ async function assertAcceptsExpectedSchemaAndClosesPool(): Promise<void> {
     lock_timeout: postgresConfig.postgres.lockTimeoutMs
   })
   assert.equal(queryTexts[0], POSTGRES_GOOSE_CURRENT_VERSION_QUERY)
-  assert.match(queryTexts[1] ?? '', /version_id > \$1[\s\S]*is_applied = TRUE/i)
+  assertLatestVersionFoldQuery(queryTexts[0] ?? '')
+  assert.match(
+    queryTexts[0] ?? '',
+    /FROM latest_versions\s+WHERE is_applied = TRUE\s+ORDER BY id DESC\s+LIMIT 1/i
+  )
+  assertLatestVersionFoldQuery(queryTexts[1] ?? '')
+  assert.match(
+    queryTexts[1] ?? '',
+    /FROM latest_versions\s+WHERE version_id > \$1 AND is_applied = TRUE\s+ORDER BY id DESC\s+LIMIT 1/i
+  )
   assert.deepEqual(queryValues[1], [EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION])
   assert.equal(ended, true, '成功校验后必须关闭连接池')
+}
+
+async function assertAcceptsRolledBackNewerVersion(): Promise<void> {
+  let ended = false
+  const pool = createSequencedPool([
+    { rows: [{ version_id: '57', is_applied: true }] },
+    { rows: [] }
+  ], () => {
+    ended = true
+  })
+
+  await enforcePostgresGooseSchemaGate(postgresConfig, () => pool)
+  assert.equal(ended, true, '57 up, 58 up, 58 down 折叠后必须允许启动并关闭连接池')
 }
 
 function assertRejectsInvalidCurrentStates(): void {
@@ -244,4 +267,9 @@ function createSequencedPool(results: QueryResult[], onEnd: () => void): Postgre
       onEnd()
     }
   }
+}
+
+function assertLatestVersionFoldQuery(query: string): void {
+  assert.match(query, /WITH latest_versions AS \(\s*SELECT DISTINCT ON \(version_id\)/i)
+  assert.match(query, /FROM goose_db_version\s+ORDER BY version_id, id DESC\s*\)/i)
 }

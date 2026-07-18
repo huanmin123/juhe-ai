@@ -1,12 +1,27 @@
 import { runtimeConfig, type DatabaseDriver } from '../config/runtime.js'
 
 export const EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION = 57
-export const POSTGRES_GOOSE_CURRENT_VERSION_QUERY =
-  'SELECT version_id::text, is_applied FROM goose_db_version ORDER BY id DESC LIMIT 1'
+export const POSTGRES_GOOSE_CURRENT_VERSION_QUERY = `
+  WITH latest_versions AS (
+    SELECT DISTINCT ON (version_id) id, version_id, is_applied
+    FROM goose_db_version
+    ORDER BY version_id, id DESC
+  )
+  SELECT version_id::text, is_applied
+  FROM latest_versions
+  WHERE is_applied = TRUE
+  ORDER BY id DESC
+  LIMIT 1
+`
 
 const POSTGRES_GOOSE_NEWER_APPLIED_VERSION_QUERY = `
+  WITH latest_versions AS (
+    SELECT DISTINCT ON (version_id) id, version_id, is_applied
+    FROM goose_db_version
+    ORDER BY version_id, id DESC
+  )
   SELECT version_id::text, is_applied
-  FROM goose_db_version
+  FROM latest_versions
   WHERE version_id > $1 AND is_applied = TRUE
   ORDER BY id DESC
   LIMIT 1

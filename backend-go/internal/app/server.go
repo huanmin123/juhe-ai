@@ -51,6 +51,8 @@ import (
 	"juhe-ai/backend-go/internal/version"
 )
 
+const gooseSchemaVersionGateTimeout = 5 * time.Second
+
 func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -101,7 +103,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	cancel()
 	if cfg.OwnerLockEnabled {
-		schemaCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		schemaCtx, cancel := context.WithTimeout(ctx, gooseSchemaVersionGateTimeout)
 		err := store.RequireGooseSchemaVersion(schemaCtx, version.SchemaVersion)
 		cancel()
 		if err != nil {

@@ -28,8 +28,9 @@ func TestGoServerSchemaVersionGateSmokeUsesGooseForVersion58(t *testing.T) {
 		t.Fatal("version 58 setup must use Goose instead of directly writing goose_db_version")
 	}
 	for _, want := range []string{
-		"os.WriteFile",
-		"goose.UpTo(db, schemaGateMigrationDir, version.SchemaVersion+1)",
+		"os." + "WriteFile",
+		"goose." + "DownTo(db, schemaGateMigrationDir, version.SchemaVersion)",
+		"goose." + "UpTo(db, schemaGateMigrationDir, version.SchemaVersion+1)",
 	} {
 		if !strings.Contains(sourceText, want) {
 			t.Fatalf("version 58 setup source missing %q", want)
@@ -100,6 +101,15 @@ SELECT 1;
 	}
 	if err := goose.UpTo(db, schemaGateMigrationDir, version.SchemaVersion+1); err != nil {
 		t.Fatalf("goose up to %d with schema gate test migration: %v", version.SchemaVersion+1, err)
+	}
+	if err := goose.DownTo(db, schemaGateMigrationDir, version.SchemaVersion); err != nil {
+		t.Fatalf("goose down to %d with schema gate test migration: %v", version.SchemaVersion, err)
+	}
+	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err != nil {
+		t.Fatalf("schema gate after version 58 rollback to %d: %v", version.SchemaVersion, err)
+	}
+	if err := goose.UpTo(db, schemaGateMigrationDir, version.SchemaVersion+1); err != nil {
+		t.Fatalf("goose reapply version %d with schema gate test migration: %v", version.SchemaVersion+1, err)
 	}
 	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil {
 		t.Fatalf("schema gate with applied version %d error = nil, want rejection", version.SchemaVersion+1)

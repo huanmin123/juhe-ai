@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,6 +21,14 @@ func TestRequireGooseSchemaVersion(t *testing.T) {
 	}{
 		{
 			name: "version 57 applied",
+			rows: []fakeSchemaVersionRow{
+				{version: "57", applied: true},
+				{err: pgx.ErrNoRows},
+			},
+			wantCalls: 2,
+		},
+		{
+			name: "version 58 rollback history resolves to version 57",
 			rows: []fakeSchemaVersionRow{
 				{version: "57", applied: true},
 				{err: pgx.ErrNoRows},
@@ -101,12 +110,43 @@ func TestRequireGooseSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestRequireGooseSchemaVersionPreservesVersionParseError(t *testing.T) {
+	querier := &fakeSchemaVersionQuerier{rows: []fakeSchemaVersionRow{{
+		version: "not-a-version",
+		applied: true,
+	}}}
+
+	err := requireGooseSchemaVersion(t.Context(), querier, 57)
+	if err == nil {
+		t.Fatal("requireGooseSchemaVersion() error = nil, want parse error")
+	}
+	var numberError *strconv.NumError
+	if !errors.As(err, &numberError) {
+		t.Fatalf("error = %v, want wrapped *strconv.NumError", err)
+	}
+	if !errors.Is(err, strconv.ErrSyntax) {
+		t.Fatalf("error = %v, want wrapped strconv.ErrSyntax", err)
+	}
+}
+
 func assertSchemaVersionQueries(t *testing.T, calls []fakeSchemaVersionQueryCall) {
 	t.Helper()
 	if len(calls) == 0 {
 		return
 	}
-	const wantCurrentQuery = "SELECT version_id::text, is_applied FROM goose_db_version ORDER BY id DESC LIMIT 1"
+	const wantCurrentQuery = `WITH latest_versions AS (
+	SELECT DISTINCT ON (version_id)
+		id,
+		version_id,
+		is_applied
+	FROM goose_db_version
+	ORDER BY version_id, id DESC
+)
+SELECT version_id::text, is_applied
+FROM latest_versions
+WHERE is_applied = TRUE
+ORDER BY id DESC
+LIMIT 1`
 	if calls[0].query != wantCurrentQuery {
 		t.Fatalf("current query = %q, want %q", calls[0].query, wantCurrentQuery)
 	}
@@ -116,7 +156,19 @@ func assertSchemaVersionQueries(t *testing.T, calls []fakeSchemaVersionQueryCall
 	if len(calls) < 2 {
 		return
 	}
-	const wantNewerQuery = "SELECT version_id::text, is_applied FROM goose_db_version WHERE version_id > $1 AND is_applied = TRUE ORDER BY id DESC LIMIT 1"
+	const wantNewerQuery = `WITH latest_versions AS (
+	SELECT DISTINCT ON (version_id)
+		id,
+		version_id,
+		is_applied
+	FROM goose_db_version
+	ORDER BY version_id, id DESC
+)
+SELECT version_id::text, is_applied
+FROM latest_versions
+WHERE version_id > $1 AND is_applied = TRUE
+ORDER BY id DESC
+LIMIT 1`
 	if calls[1].query != wantNewerQuery {
 		t.Fatalf("newer query = %q, want %q", calls[1].query, wantNewerQuery)
 	}
