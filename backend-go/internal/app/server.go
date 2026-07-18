@@ -180,19 +180,26 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
+	var accountsStaticResetPublisher managementsystemteams.AccountsStaticResetPublisher
 	if cfg.ManagementAPIEnabled {
 		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
 		if err != nil {
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
+		publisher, err := newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace)
+		if err != nil {
+			return err
+		}
+		accountsStaticResetPublisher = publisher
 	}
-	managementHandlers := newManagementAPIHandler(
+	managementHandlers := newManagementAPIHandlerWithPageData(
 		cfg,
 		store,
 		stateRedis,
 		managementOperationLogQueue,
 		logger,
 		systemAccountInvalidator,
+		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
 	)
@@ -535,13 +542,14 @@ type gatewayCacheInvalidator interface {
 	publicapikeys.APIKeyGatewayCacheInvalidator
 }
 
-func newManagementAPIHandler(
+func newManagementAPIHandlerWithPageData(
 	cfg config.Config,
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
+	accountsStaticResetPublisher managementsystemteams.AccountsStaticResetPublisher,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
@@ -622,6 +630,8 @@ func newManagementAPIHandler(
 	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
 		Store:                    store,
 		AuthorizationInvalidator: systemAccountInvalidator,
+		Publisher:                accountsStaticResetPublisher,
+		Logger:                   logger,
 	})
 	authorizationService := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
 		Store:                    store,
