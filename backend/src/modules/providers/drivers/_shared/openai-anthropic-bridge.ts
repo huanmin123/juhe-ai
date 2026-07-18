@@ -203,6 +203,7 @@ export interface OpenAIToAnthropicComputerExecutor {
 
 interface OpenAIToAnthropicBridgeTransformOptions {
   model?: string
+  signal?: AbortSignal
   previousResponseId?: string
   onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
   continueAnthropicMessagesRequest?: (body: JsonRecord) => Promise<GatewayUpstreamResponse>
@@ -637,7 +638,8 @@ export function transformOpenAIToAnthropicBridgeUpstreamResponse(
           requestPlan,
           previousResponseId: options.previousResponseId,
           onResponsesCompleted: options.onResponsesCompleted,
-          continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
+          continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest,
+          signal: options.signal
         })
         : transformAnthropicMessagesSseToChatSse(response.body, { model, requestPlan })
     }
@@ -655,7 +657,8 @@ export function transformOpenAIToAnthropicBridgeUpstreamResponse(
         requestPlan,
         previousResponseId: options.previousResponseId,
         onResponsesCompleted: options.onResponsesCompleted,
-        continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
+        continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest,
+        signal: options.signal
       })
       : transformAnthropicMessagesJsonToChatJson(response.body, { model, requestPlan })
   }
@@ -3587,6 +3590,7 @@ async function * transformAnthropicMessagesJsonToResponsesJson(
   body: AsyncIterable<Uint8Array>,
   options: {
     model: string
+    signal?: AbortSignal
     requestPlan?: OpenAIToAnthropicBridgeRequestPlan
     previousResponseId?: string
     onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
@@ -3600,7 +3604,8 @@ async function * transformAnthropicMessagesJsonToResponsesJson(
       model: options.model,
       requestPlan: options.requestPlan,
       previousResponseId: options.previousResponseId,
-      continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest
+      continueAnthropicMessagesRequest: options.continueAnthropicMessagesRequest,
+      signal: options.signal
     })
     if (options.onResponsesCompleted && shouldNotifyResponsesCompletedPayload(payload)) {
       await options.onResponsesCompleted({
@@ -3652,6 +3657,7 @@ async function * transformAnthropicMessagesSseToResponsesSse(
   body: AsyncIterable<Uint8Array>,
   options: {
     model: string
+    signal?: AbortSignal
     requestPlan?: OpenAIToAnthropicBridgeRequestPlan
     previousResponseId?: string
     onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
@@ -3693,6 +3699,7 @@ async function * transformAnthropicMessagesSseToResponsesLocalRuntimeToolLoopSse
   body: AsyncIterable<Uint8Array>,
   options: {
     model: string
+    signal?: AbortSignal
     requestPlan?: OpenAIToAnthropicBridgeRequestPlan
     previousResponseId?: string
     onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
@@ -3735,6 +3742,7 @@ async function * transformAnthropicMessagesSseToResponsesImageGenerationSse(
   body: AsyncIterable<Uint8Array>,
   options: {
     model: string
+    signal?: AbortSignal
     requestPlan?: OpenAIToAnthropicBridgeRequestPlan
     previousResponseId?: string
     onResponsesCompleted?: CodexResponsesChatBridgeCompletionHandler
@@ -3746,7 +3754,7 @@ async function * transformAnthropicMessagesSseToResponsesImageGenerationSse(
       yield Buffer.from(output, 'utf8')
     }
     if (state.terminalReceived && !state.completed && !state.failed) {
-      for await (const output of completeResponsesImageGenerationStream(state)) {
+      for await (const output of completeResponsesImageGenerationStream(state, options.signal)) {
         yield Buffer.from(output, 'utf8')
       }
       await notifyResponsesCompletion(state, options.onResponsesCompleted)
@@ -3819,7 +3827,7 @@ function anthropicMessageToChatCompletion(
 
 async function anthropicMessageToResponsesResponse(
   message: JsonRecord,
-  options: { model: string; requestPlan?: OpenAIToAnthropicBridgeRequestPlan; previousResponseId?: string }
+  options: { model: string; requestPlan?: OpenAIToAnthropicBridgeRequestPlan; previousResponseId?: string; signal?: AbortSignal }
 ): Promise<JsonRecord> {
   const model = stringValue(message.model) ?? options.model
   const responseId = responseIdFromAnthropicId(stringValue(message.id))
@@ -3833,7 +3841,8 @@ async function anthropicMessageToResponsesResponse(
       model,
       previousResponseId: options.previousResponseId,
       requestPlan: options.requestPlan,
-      responseId
+      responseId,
+      signal: options.signal
     })
   }
   const structuredOutput = structuredOutputResultFromAnthropicBlocks(contentBlocks, options.requestPlan)
@@ -3895,6 +3904,7 @@ async function anthropicMessageToResponsesResponseWithLocalRuntimeToolLoop(
     requestPlan?: OpenAIToAnthropicBridgeRequestPlan
     previousResponseId?: string
     continueAnthropicMessagesRequest?: (body: JsonRecord) => Promise<GatewayUpstreamResponse>
+    signal?: AbortSignal
   }
 ): Promise<JsonRecord> {
   if (!options.continueAnthropicMessagesRequest) {
@@ -4443,6 +4453,7 @@ async function anthropicMessageToResponsesImageGenerationResponse(input: {
   previousResponseId?: string
   requestPlan: OpenAIToAnthropicBridgeRequestPlan
   responseId: string
+  signal?: AbortSignal
 }): Promise<JsonRecord> {
   const imageGeneration = input.requestPlan.imageGeneration
   if (!imageGeneration) {
@@ -4453,7 +4464,8 @@ async function anthropicMessageToResponsesImageGenerationResponse(input: {
   try {
     const result = await imageGeneration.executor.generate({
       prompt: revisedPrompt,
-      tool: imageGeneration.tool
+      tool: imageGeneration.tool,
+      signal: input.signal
     })
     item = responsesImageGenerationCallItem(imageGeneration, input.responseId, result, revisedPrompt)
   } catch (error) {
@@ -4936,7 +4948,7 @@ function processAnthropicEventAsResponsesImageGenerationPrompt(state: AnthropicS
   return output
 }
 
-async function * completeResponsesImageGenerationStream(state: AnthropicStreamState): AsyncIterable<string> {
+async function * completeResponsesImageGenerationStream(state: AnthropicStreamState, signal?: AbortSignal): AsyncIterable<string> {
   if (state.completed || state.failed) return
   const imageGeneration = state.requestPlan?.imageGeneration
   if (!imageGeneration) {
@@ -4949,14 +4961,15 @@ async function * completeResponsesImageGenerationStream(state: AnthropicStreamSt
   }
   const revisedPrompt = imageGenerationRevisedPromptFromStreamState(state, imageGeneration.prompt)
   if (shouldStreamImageGenerationProvider(imageGeneration)) {
-    yield * completeResponsesImageGenerationProviderStream(state, imageGeneration, revisedPrompt)
+    yield * completeResponsesImageGenerationProviderStream(state, imageGeneration, revisedPrompt, signal)
     return
   }
   let item: JsonRecord
   try {
     const result = await imageGeneration.executor.generate({
       prompt: revisedPrompt,
-      tool: imageGeneration.tool
+      tool: imageGeneration.tool,
+      signal
     })
     item = responsesImageGenerationCallItem(imageGeneration, state.responseId, result, revisedPrompt)
   } catch (error) {
@@ -5001,7 +5014,8 @@ function shouldStreamImageGenerationProvider(imageGeneration: OpenAIToAnthropicI
 async function * completeResponsesImageGenerationProviderStream(
   state: AnthropicStreamState,
   imageGeneration: OpenAIToAnthropicImageGenerationPlan,
-  revisedPrompt: string
+  revisedPrompt: string,
+  signal?: AbortSignal
 ): AsyncIterable<string> {
   const itemId = ensureResponsesImageGenerationOutputItemId(imageGeneration, state.responseId)
   const outputIndex = state.nextOutputIndex++
@@ -5018,7 +5032,8 @@ async function * completeResponsesImageGenerationProviderStream(
   try {
     const stream = imageGeneration.executor.generateStream?.({
       prompt: revisedPrompt,
-      tool: imageGeneration.tool
+      tool: imageGeneration.tool,
+      signal
     })
     if (!stream) {
       throw bridgeValidationError(

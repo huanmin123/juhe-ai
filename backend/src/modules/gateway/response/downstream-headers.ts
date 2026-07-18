@@ -10,6 +10,9 @@ export function prepareUpstreamResponseForDownstream(
   upstreamResponse: GatewayUpstreamResponse,
   shouldHandleAsStream: boolean
 ): void {
+  if (res.headersSent) {
+    return
+  }
   res.status(upstreamResponse.status)
   copyResponseHeaders(upstreamResponse, res)
   if (shouldHandleAsStream && !res.hasHeader('content-type')) {

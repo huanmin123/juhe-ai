@@ -38,6 +38,7 @@ export interface ProviderUpstreamRequestIdentity {
 }
 
 export interface ProviderGatewayRequestContext {
+  signal?: AbortSignal
   requestClientCompatibility?: ClientCompatibilityCapability
   continueUpstreamJsonRequest?: (body: Record<string, unknown>) => Promise<GatewayUpstreamResponse>
   codexResponsesChatBridgePreviousResponseId?: string

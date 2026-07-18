@@ -119,8 +119,8 @@ try {
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
   settingsRepository.updateSettings({
     temporaryUnschedulableRetryAttempts: 0,
-    streamRequestTimeoutSeconds: 30,
-    streamClientTotalWaitTimeoutSeconds: 60
+    textFirstResponseTimeoutSeconds: 30,
+    noAvailableAccountWaitTimeoutSeconds: 60
   })
   gatewayCache.clearGatewayRuntimeCache()
 
@@ -335,9 +335,9 @@ async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: S
       gatewaySettingsOverride: {
         temporaryUnschedulableRetryAttempts: 0,
         temporaryUnschedulableRetryIntervalSeconds: 0,
-        streamRequestTimeoutSeconds: 20,
-        streamClientTotalWaitTimeoutSeconds: 20,
-        streamMaxLifetimeSeconds: 60
+        textFirstResponseTimeoutSeconds: 20,
+        noAvailableAccountWaitTimeoutSeconds: 20,
+        textUncommittedAttemptMaxLifetimeSeconds: 60
       }
     })
     assert.equal(result.success, true, `第 ${index} 次恢复探针等价账号测试应成功：${result.message ?? result.errorCode ?? 'unknown error'}`)

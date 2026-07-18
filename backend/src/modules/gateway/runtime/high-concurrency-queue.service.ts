@@ -63,6 +63,7 @@ export interface HighConcurrencyQueueWaitInput {
   accountConcurrencyLimits?: Record<string, number>
   lane?: AccountConcurrencyLane
   policy?: GroupSchedulingPolicy
+  maxWaitMs?: number
   signal?: AbortSignal
 }
 
@@ -81,7 +82,10 @@ subscribeAccountConcurrencyRelease((event) => {
 
 export function waitForHighConcurrencyGroupCapacity(input: HighConcurrencyQueueWaitInput): Promise<HighConcurrencyQueueWaitResult> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
-  const maxQueueWaitMs = normalizeNonNegativeInteger(policy.maxQueueWaitMs, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueWaitMs)
+  const configuredMaxQueueWaitMs = normalizeNonNegativeInteger(policy.maxQueueWaitMs, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueWaitMs)
+  const maxQueueWaitMs = input.maxWaitMs === undefined
+    ? configuredMaxQueueWaitMs
+    : Math.min(configuredMaxQueueWaitMs, normalizeNonNegativeInteger(input.maxWaitMs, 0))
   const maxQueueSize = normalizePositiveInteger(policy.maxQueueSize, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.maxQueueSize)
   const perApiKeyQueueLimit = normalizePositiveInteger(policy.perApiKeyQueueLimit, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.perApiKeyQueueLimit)
   const lane = input.lane === 'image' ? 'image' : 'text'
