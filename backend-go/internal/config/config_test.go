@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -177,11 +178,17 @@ func TestConfigRequiresSecureCookieForSameSiteNone(t *testing.T) {
 	cfg := Config{
 		Host:                       "127.0.0.1",
 		Port:                       3000,
+		Env:                        "development",
 		RedisNamespace:             "juhe-ai",
 		CookieSameSite:             "none",
 		NodeInternalRequestTimeout: 2 * time.Second,
 		ShutdownTimeout:            time.Second,
 	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("development Validate() error = %v", err)
+	}
+
+	cfg.Env = "production"
 	err := cfg.Validate()
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_COOKIE_SECURE") {
 		t.Fatalf("Validate() error = %v, want secure cookie dependency error", err)
@@ -194,7 +201,9 @@ func TestConfigRequiresSecureCookieForSameSiteNone(t *testing.T) {
 }
 
 func TestLoadDefaultsSecureCookieInProduction(t *testing.T) {
-	t.Setenv("JUHE_AI_ENV", "production")
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("JUHE_AI_ENV", "development")
+	t.Setenv("JUHE_AI_COOKIE_SECURE", "")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
 	if err != nil {
@@ -205,8 +214,35 @@ func TestLoadDefaultsSecureCookieInProduction(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsProductionOnlyDeclaredInDotEnv(t *testing.T) {
+	t.Setenv("NODE_ENV", "")
+	t.Setenv("JUHE_AI_ENV", "")
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(".env", []byte("NODE_ENV=production\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+
+	_, err := Load(LoadOptions{LoadDotEnv: true})
+	if err == nil || !strings.Contains(err.Error(), "NODE_ENV=production") {
+		t.Fatalf("Load() error = %v, want explicit process environment error", err)
+	}
+}
+
+func TestLoadUsesNodeEnvAsRuntimeEnvironment(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("JUHE_AI_ENV", "development")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !strings.EqualFold(cfg.Env, "production") {
+		t.Fatalf("Env = %q, want production from NODE_ENV", cfg.Env)
+	}
+}
+
 func TestLoadAllowsCaptchaDisableInProduction(t *testing.T) {
-	t.Setenv("JUHE_AI_ENV", "production")
+	t.Setenv("NODE_ENV", "production")
 	t.Setenv("JUHE_AI_AUTH_CAPTCHA_DISABLED", "true")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
@@ -219,7 +255,7 @@ func TestLoadAllowsCaptchaDisableInProduction(t *testing.T) {
 }
 
 func TestLoadAllowsExplicitCookieSecureOverrideInProduction(t *testing.T) {
-	t.Setenv("JUHE_AI_ENV", "production")
+	t.Setenv("NODE_ENV", "production")
 	t.Setenv("JUHE_AI_COOKIE_SECURE", "false")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})

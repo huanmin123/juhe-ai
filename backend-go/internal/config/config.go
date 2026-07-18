@@ -23,7 +23,7 @@ var invalidRedisNamespaceChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
 type Config struct {
 	Host                            string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
 	Port                            int           `env:"JUHE_AI_PORT" envDefault:"3000"`
-	Env                             string        `env:"JUHE_AI_ENV" envDefault:"development"`
+	Env                             string        `env:"NODE_ENV" envDefault:"development"`
 	LogLevel                        string        `env:"JUHE_AI_LOG_LEVEL" envDefault:"info"`
 	PostgresURL                     string        `env:"JUHE_AI_POSTGRES_URL"`
 	RedisCacheURL                   string        `env:"JUHE_AI_REDIS_CACHE_URL"`
@@ -57,8 +57,10 @@ type LoadOptions struct {
 }
 
 func Load(opts LoadOptions) (Config, error) {
-	if opts.LoadDotEnv && os.Getenv("JUHE_AI_ENV") != "production" {
-		_ = godotenv.Load()
+	if opts.LoadDotEnv {
+		if err := loadDotEnvForNonProduction(); err != nil {
+			return Config{}, err
+		}
 	}
 
 	var cfg Config
@@ -75,6 +77,23 @@ func Load(opts LoadOptions) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func loadDotEnvForNonProduction() error {
+	processEnvironment := strings.TrimSpace(os.Getenv("NODE_ENV"))
+	if strings.EqualFold(processEnvironment, "production") {
+		return nil
+	}
+
+	if processEnvironment == "" {
+		values, err := godotenv.Read()
+		if err == nil && strings.EqualFold(strings.TrimSpace(values["NODE_ENV"]), "production") {
+			return fmt.Errorf("NODE_ENV=production 必须由进程环境显式设置，不能从 .env 加载")
+		}
+	}
+
+	_ = godotenv.Load()
+	return nil
 }
 
 func applyProductionCookieDefaults(cfg *Config) {
@@ -129,7 +148,8 @@ func (cfg Config) Validate() error {
 	if _, err := cfg.CookieSameSiteMode(); err != nil {
 		return err
 	}
-	if strings.EqualFold(strings.TrimSpace(cfg.CookieSameSite), "none") && !cfg.CookieSecure {
+	if strings.EqualFold(strings.TrimSpace(cfg.Env), "production") &&
+		strings.EqualFold(strings.TrimSpace(cfg.CookieSameSite), "none") && !cfg.CookieSecure {
 		return fmt.Errorf("JUHE_AI_COOKIE_SAME_SITE=none 时必须启用 JUHE_AI_COOKIE_SECURE=true")
 	}
 	if err := validatePublicAPIConfig(cfg); err != nil {
