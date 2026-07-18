@@ -188,6 +188,17 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     ? gatewayClientAllowsUpstreamSemanticInterpretation(clientStrategy)
     : false
   if (!upstreamResponse.body) {
+    if (!interpretUpstreamResponseSemantics) {
+      prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
+      input.downstreamCommitState.markSemanticCommitted()
+      endResponse(res)
+      return {
+        alreadyFinalized: false,
+        usage: emptyUsage(),
+        firstTokenMs: Date.now() - startedAt,
+        errorPayload: {}
+      }
+    }
     const errorMessage = '上游响应体为空'
     await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
     auditCapture.completeAttempt(auditAttemptId, {
