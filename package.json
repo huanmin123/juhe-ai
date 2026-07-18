@@ -11,6 +11,8 @@
     "package:release:windows": "pwsh ./scripts/package-release.ps1",
     "package:release:mac": "bash ./scripts/package-release.sh",
     "package:release:linux": "bash ./scripts/package-release.sh",
+    "test:owner-manifest": "node scripts/validate-owner-manifest.test.mjs",
+    "validate:owner-manifest": "node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test:smoke": "pnpm --filter juhe-ai-backend test:smoke",

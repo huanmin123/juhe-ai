@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict'
+
+import {
+  OwnerManifestValidationError,
+  validateOwnerManifest
+} from './validate-owner-manifest.mjs'
+
+const valid = {
+  schemaVersion: 1,
+  deploymentEpoch: 'node-production-test',
+  release: { nodeVersion: '0.1.0', goVersion: '0.1.0-w0', schemaVersion: 55 },
+  routeOwners: { management: 'node', public: 'node', gateway: 'node', worker: 'node' }
+}
+
+validateOwnerManifest(valid)
+
+for (const invalid of [
+  { ...valid, schemaVersion: 2 },
+  { ...valid, deploymentEpoch: '' },
+  { ...valid, release: { ...valid.release, schemaVersion: 0 } },
+  { ...valid, routeOwners: { ...valid.routeOwners, management: 'python' } },
+  { ...valid, routeOwners: { management: 'node' } }
+]) {
+  assert.throws(() => validateOwnerManifest(invalid), OwnerManifestValidationError)
+}
+
+process.stdout.write('Owner manifest validator tests passed.\n')

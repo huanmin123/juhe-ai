@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "deploymentEpoch": "node-production-2026-07-18",
+  "release": {
+    "nodeVersion": "0.1.0",
+    "goVersion": "0.1.0-w0",
+    "schemaVersion": 55
+  },
+  "routeOwners": {
+    "management": "node",
+    "public": "node",
+    "gateway": "node",
+    "worker": "node"
+  }
+}
