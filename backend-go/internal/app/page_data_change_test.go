@@ -81,6 +81,29 @@ func TestAccountsStaticResetPublisherAdapterPreservesPublishCause(t *testing.T) 
 	}
 }
 
+func TestAccountsStaticResetPublisherAdapterPublishesRequestedDomainReset(t *testing.T) {
+	core := &pageDataCorePublisherStub{
+		events: []redisplatform.PageDataChangeEvent{{EventID: "event-1"}},
+	}
+	cache := &pageDataCacheWriterStub{}
+	adapter := accountsStaticResetPublisherAdapter{
+		publisher: core, cache: cache, logger: slog.Default(), redisNamespace: "prod",
+	}
+
+	if err := adapter.PublishPageDataReset(t.Context(), "groups.static", nil, true); err != nil {
+		t.Fatalf("PublishPageDataReset() error = %v", err)
+	}
+	if got, want := core.domains, []string{"groups.static"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("build domains = %#v, want %#v", got, want)
+	}
+	if !core.allScopes {
+		t.Fatal("build allScopes = false, want true")
+	}
+	if got, want := cache.keys, []string{"juhe-ai:prod:cache-version:page_data_groups_static"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("cache keys = %#v, want %#v", got, want)
+	}
+}
+
 func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	source, err := os.ReadFile("server.go")
 	if err != nil {
@@ -97,6 +120,7 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 
 type pageDataCorePublisherStub struct {
 	ownerIDs     []string
+	domains      []string
 	allScopes    bool
 	events       []redisplatform.PageDataChangeEvent
 	publishedIDs []string
@@ -104,7 +128,8 @@ type pageDataCorePublisherStub struct {
 	publishErr   error
 }
 
-func (s *pageDataCorePublisherStub) NewRangeResetEvents(_ string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
+func (s *pageDataCorePublisherStub) NewRangeResetEvents(domain string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
+	s.domains = append(s.domains, domain)
 	s.ownerIDs = append([]string(nil), ownerIDs...)
 	s.allScopes = allScopes
 	return append([]redisplatform.PageDataChangeEvent(nil), s.events...), s.buildErr
