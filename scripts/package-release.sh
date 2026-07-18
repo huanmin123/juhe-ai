@@ -7,7 +7,6 @@ ARCHIVE_FORMAT="both"
 FRONTEND_API_BASE_URL="/__aisys__/api"
 FRONTEND_GATEWAY_BASE_URL=""
 EXPECTED_COMMIT=""
-INCLUDE_LOCAL_ENV="0"
 
 usage() {
   cat <<'USAGE'
@@ -19,8 +18,7 @@ Options:
   --archive-format <tar.gz|zip|both> Archive format. Default: both
   --frontend-api-base-url <url>      Frontend API base URL injected at build time. Default: /__aisys__/api
   --frontend-gateway-base-url <url>  Frontend gateway base URL injected at build time. Default: infer from browser origin
-  --expected-commit <sha>            Require the release source to match this commit
-  --include-local-env                Copy local backend/.env and frontend/.env as .env.example.local
+  --expected-commit <sha>            Require the release source to match this full commit SHA
   -h, --help                         Show this help
 USAGE
 }
@@ -51,10 +49,6 @@ while [ "$#" -gt 0 ]; do
       EXPECTED_COMMIT="$2"
       shift 2
       ;;
-    --include-local-env)
-      INCLUDE_LOCAL_ENV="1"
-      shift
-      ;;
     -h|--help)
       usage
       exit 0
@@ -75,15 +69,125 @@ case "$ARCHIVE_FORMAT" in
     ;;
 esac
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+VALIDATOR_PATH="$SCRIPT_DIR/validate-release-package.mjs"
+
+case "$PACKAGE_NAME" in
+  ""|[!A-Za-z0-9]*|*[!A-Za-z0-9._-]*)
+    echo "Package name must be 1-80 characters and contain only letters, numbers, dot, underscore, or hyphen; it must start with a letter or number." >&2
+    exit 1
+    ;;
+esac
+
+if [ "${#PACKAGE_NAME}" -gt 80 ]; then
+  echo "Package name must be 1-80 characters and contain only letters, numbers, dot, underscore, or hyphen; it must start with a letter or number." >&2
+  exit 1
+fi
+
+case "$OUTPUT_DIR" in
+  ""|/*)
+    echo "Output directory must be a non-empty relative path inside the repository." >&2
+    exit 1
+    ;;
+esac
+
+case "$OUTPUT_DIR" in
+  *\\*|*:*)
+    echo "Output directory must use repository-relative POSIX path syntax." >&2
+    exit 1
+    ;;
+esac
+
+case "/$OUTPUT_DIR/" in
+  */../*)
+    echo "Output directory must not contain parent-directory traversal segments (..)." >&2
+    exit 1
+    ;;
+esac
+
+if [ ! -f "$VALIDATOR_PATH" ]; then
+  echo "Release package validator not found: $VALIDATOR_PATH" >&2
+  exit 1
+fi
+
+if [ -L "$VALIDATOR_PATH" ]; then
+  echo "Release package validator must be a regular repository file: $VALIDATOR_PATH" >&2
+  exit 1
+fi
+
 RELEASE_ROOT="$REPO_ROOT/$OUTPUT_DIR"
 PACKAGE_ROOT="$RELEASE_ROOT/$PACKAGE_NAME"
 TAR_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar.gz"
 ZIP_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.zip"
 
-bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$EXPECTED_COMMIT"
-RELEASE_SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+assert_safe_output_ancestors() {
+  local current_path="$REPO_ROOT"
+  local component
+  local remaining_path="$OUTPUT_DIR"
+
+  while :; do
+    case "$remaining_path" in
+      */*)
+        component="${remaining_path%%/*}"
+        remaining_path="${remaining_path#*/}"
+        ;;
+      *)
+        component="$remaining_path"
+        remaining_path=""
+        ;;
+    esac
+
+    if [ -z "$component" ] || [ "$component" = "." ]; then
+      :
+    else
+      current_path="$current_path/$component"
+      if [ -L "$current_path" ]; then
+        echo "Output directory must not traverse a symbolic link: $current_path" >&2
+        exit 1
+      fi
+
+      if [ -e "$current_path" ] && [ ! -d "$current_path" ]; then
+        echo "Output directory contains a non-directory path component: $current_path" >&2
+        exit 1
+      fi
+    fi
+
+    if [ -z "$remaining_path" ]; then
+      break
+    fi
+  done
+}
+
+assert_safe_removal_target() {
+  local target_path="$1"
+  local expected_parent="$2"
+  local recursive_check="${3:-0}"
+
+  if [ "$(dirname "$target_path")" != "$expected_parent" ]; then
+    echo "Refusing to remove a path outside the release directory: $target_path" >&2
+    exit 1
+  fi
+
+  case "$target_path" in
+    "$expected_parent"/*) ;;
+    *)
+      echo "Refusing to remove a path outside the release directory: $target_path" >&2
+      exit 1
+      ;;
+  esac
+
+  if [ -L "$target_path" ]; then
+    echo "Refusing to remove a symbolic-link target: $target_path" >&2
+    exit 1
+  fi
+
+  if [ "$recursive_check" = "1" ] && [ -e "$target_path" ]; then
+    node "$VALIDATOR_PATH" --quiet --links-only "$target_path"
+  fi
+}
+
+assert_safe_output_ancestors
 
 copy_required_item() {
   local source_path="$1"
@@ -94,6 +198,7 @@ copy_required_item() {
     exit 1
   fi
 
+  node "$VALIDATOR_PATH" --quiet --links-only "$source_path"
   cp -R "$source_path" "$destination_path"
 }
 
@@ -106,6 +211,7 @@ copy_release_backend_package_json() {
     exit 1
   fi
 
+  node "$VALIDATOR_PATH" --quiet --links-only "$source_path"
   node - "$source_path" "$destination_path" <<'NODE'
 const fs = require('node:fs')
 
@@ -143,6 +249,9 @@ create_zip_archive() {
 
 cd "$REPO_ROOT"
 
+bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$EXPECTED_COMMIT"
+RELEASE_SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js LTS is required for packaging. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) first." >&2
   exit 1
@@ -171,9 +280,25 @@ else
   echo "==> Frontend gateway base URL: inferred from browser origin"
 fi
 pnpm build
+
 bash "$SCRIPT_DIR/assert-release-source.sh" "$REPO_ROOT" "$RELEASE_SOURCE_COMMIT"
 
 echo "==> Preparing release folder"
+assert_safe_output_ancestors
+mkdir -p "$RELEASE_ROOT"
+assert_safe_output_ancestors
+RELEASE_ROOT="$(cd "$RELEASE_ROOT" && pwd -P)"
+case "$RELEASE_ROOT" in
+  "$REPO_ROOT"/*) ;;
+  *)
+    echo "Output directory must resolve strictly inside the repository." >&2
+    exit 1
+    ;;
+esac
+PACKAGE_ROOT="$RELEASE_ROOT/$PACKAGE_NAME"
+TAR_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.tar.gz"
+ZIP_ARCHIVE_PATH="$RELEASE_ROOT/$PACKAGE_NAME.zip"
+assert_safe_removal_target "$PACKAGE_ROOT" "$RELEASE_ROOT" 1
 rm -rf "$PACKAGE_ROOT"
 mkdir -p "$PACKAGE_ROOT/backend" "$PACKAGE_ROOT/frontend" "$PACKAGE_ROOT/docs" "$PACKAGE_ROOT/scripts" "$PACKAGE_ROOT/deploy"
 printf '%s\n' "$RELEASE_SOURCE_COMMIT" > "$PACKAGE_ROOT/RELEASE_SOURCE_COMMIT"
@@ -200,18 +325,11 @@ tr -d '\r' < "$PACKAGE_ROOT/start.sh" > "$TMP_START_SCRIPT"
 mv "$TMP_START_SCRIPT" "$PACKAGE_ROOT/start.sh"
 chmod +x "$PACKAGE_ROOT/start.sh"
 
-if [ "$INCLUDE_LOCAL_ENV" = "1" ] && [ -f "$REPO_ROOT/backend/.env" ]; then
-  cp "$REPO_ROOT/backend/.env" "$PACKAGE_ROOT/backend/.env.example.local"
-  echo "==> Copied backend/.env as backend/.env.example.local; review secrets before sharing"
-fi
-
-if [ "$INCLUDE_LOCAL_ENV" = "1" ] && [ -f "$REPO_ROOT/frontend/.env" ]; then
-  cp "$REPO_ROOT/frontend/.env" "$PACKAGE_ROOT/frontend/.env.example.local"
-  echo "==> Copied frontend/.env as frontend/.env.example.local; frontend dist is already built"
-fi
+node "$VALIDATOR_PATH" --quiet "$PACKAGE_ROOT"
 
 if [ "$ARCHIVE_FORMAT" = "tar.gz" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   echo "==> Creating tar.gz archive"
+  assert_safe_removal_target "$TAR_ARCHIVE_PATH" "$RELEASE_ROOT"
   rm -f "$TAR_ARCHIVE_PATH"
   tar -czf "$TAR_ARCHIVE_PATH" -C "$RELEASE_ROOT" "$PACKAGE_NAME"
   echo "==> Done: $TAR_ARCHIVE_PATH"
@@ -219,6 +337,7 @@ fi
 
 if [ "$ARCHIVE_FORMAT" = "zip" ] || [ "$ARCHIVE_FORMAT" = "both" ]; then
   echo "==> Creating zip archive"
+  assert_safe_removal_target "$ZIP_ARCHIVE_PATH" "$RELEASE_ROOT"
   rm -f "$ZIP_ARCHIVE_PATH"
   create_zip_archive
   if [ -f "$ZIP_ARCHIVE_PATH" ]; then

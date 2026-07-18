@@ -35,6 +35,9 @@ const confirmResult = (known: PageDataRevisionToken | null | undefined, current 
 
 const cacheRecord = <T>(key: string, value: T, options: Partial<PageDataCacheRecord<T>> = {}): PageDataCacheRecord<T> => ({
   key,
+  domain: 'accounts.runtime',
+  scope: 'self:fixture',
+  route: '/fixture',
   value,
   writtenAt: '2026-07-17T12:00:00.000Z',
   lastAccessedAt: '2026-07-17T12:00:00.000Z',
@@ -68,11 +71,12 @@ class FakeChannel {
   close(): void { this.hub.remove(this) }
 }
 
-const canonicalKey = createPageDataCacheKey({ scope: 'self:sys-1', route: '/accounts', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 3 })
-assert.equal(canonicalKey, createPageDataCacheKey({ scope: 'self:sys-1', route: '/accounts', query: { filters: { tag: ['a'], status: 'active' }, page: 1 }, version: 3 }), 'query 字段顺序不能改变缓存 key')
-assert.notEqual(canonicalKey, createPageDataCacheKey({ scope: 'admin:sys-1', route: '/accounts', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 3 }), '权限 scope 必须隔离缓存')
-assert.notEqual(canonicalKey, createPageDataCacheKey({ scope: 'self:sys-1', route: '/usage-records', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 3 }), 'route 必须隔离缓存')
-assert.notEqual(canonicalKey, createPageDataCacheKey({ scope: 'self:sys-1', route: '/accounts', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 4 }), 'schema version 必须隔离缓存')
+const canonicalKey = createPageDataCacheKey({ scope: 'self:sys-1', route: '/accounts', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 3, domain: 'accounts.runtime' })
+assert.equal(canonicalKey, createPageDataCacheKey({ scope: 'self:sys-1', route: '/accounts', query: { filters: { tag: ['a'], status: 'active' }, page: 1 }, version: 3, domain: 'accounts.runtime' }), 'query 字段顺序不能改变缓存 key')
+assert.notEqual(canonicalKey, createPageDataCacheKey({ scope: 'admin:sys-1', route: '/accounts', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 3, domain: 'accounts.runtime' }), '权限 scope 必须隔离缓存')
+assert.notEqual(canonicalKey, createPageDataCacheKey({ scope: 'self:sys-1', route: '/usage-records', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 3, domain: 'accounts.runtime' }), 'route 必须隔离缓存')
+assert.notEqual(canonicalKey, createPageDataCacheKey({ scope: 'self:sys-1', route: '/accounts', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 4, domain: 'accounts.runtime' }), 'schema version 必须隔离缓存')
+assert.notEqual(canonicalKey, createPageDataCacheKey({ scope: 'self:sys-1', route: '/accounts', query: { page: 1, filters: { status: 'active', tag: ['a'] } }, version: 3, domain: 'accounts.static' }), 'domain 必须隔离缓存')
 
 const fallbackStorage = createPageDataCacheStorage({ indexedDB: undefined })
 assert.equal(await fallbackStorage.writeIfCurrent(cacheRecord('fallback', 1)), true, 'IndexedDB 不可用时必须降级内存缓存')
@@ -161,7 +165,7 @@ assert.equal(unavailable.confirmed, false)
 
 let staleNowMs = Date.parse('2026-07-17T12:00:31.000Z')
 const staleStorage = createMemoryPageDataCacheStorage({ now: () => new Date(staleNowMs) })
-const staleKey = createPageDataCacheKey({ scope: 'self:stale', route: '/usage-records', query: {}, version: 1 })
+const staleKey = createPageDataCacheKey({ scope: 'self:stale', route: '/usage-records', query: {}, version: 1, domain: 'accounts.runtime' })
 await staleStorage.writeIfCurrent(cacheRecord(staleKey, ['too-old'], {
   token: token(1),
   confirmedAt: '2026-07-17T12:00:00.000Z',
@@ -188,6 +192,44 @@ const staleConfirm = await staleController.requestConfirm()
 assert.equal(staleConfirm.state, 'unavailable')
 assert.equal(staleConfirm.data, undefined, '已展示数据超过 maxStaleMs 且 confirm 不可用时必须撤下旧快照')
 assert.equal(staleNetworkLoads, 2, '周期 confirm 超过 maxStaleMs 时必须先尝试业务接口刷新，再决定撤下')
+
+const confirmedStaleStorage = createMemoryPageDataCacheStorage({ now: () => new Date(staleNowMs) })
+const confirmedStaleKey = createPageDataCacheKey({ scope: 'self:confirmed-stale', route: '/providers/gpt/models', query: {}, version: 1, domain: 'providers.catalog' })
+await confirmedStaleStorage.writeIfCurrent(cacheRecord(confirmedStaleKey, ['persisted'], {
+  token: { ...token(7), domain: 'providers.catalog' },
+  confirmedAt: new Date(staleNowMs - 300_001).toISOString(),
+  expiresAt: new Date(staleNowMs + 7 * 24 * 60 * 60_000).toISOString()
+}))
+let confirmedStaleNetworkLoads = 0
+const confirmedStaleController = new PageDataCacheController<string[]>({
+  cacheKey: { scope: 'self:confirmed-stale', route: '/providers/gpt/models', query: {}, version: 1 },
+  domain: 'providers.catalog',
+  viewScope: 'self',
+  storage: confirmedStaleStorage,
+  maxStaleMs: 300_000,
+  now: () => new Date(staleNowMs),
+  confirm: async (request) => {
+    const current = { ...token(7), domain: 'providers.catalog' as const }
+    const known = request.domains['providers.catalog']
+    return {
+      serverTime: new Date(staleNowMs).toISOString(),
+      domains: {
+        'providers.catalog': {
+          action: known?.sequence === current.sequence ? 'unchanged' as const : 'reload' as const,
+          token: current
+        }
+      }
+    }
+  },
+  loadNetwork: async () => {
+    confirmedStaleNetworkLoads += 1
+    return ['unnecessary-network']
+  }
+})
+const confirmedStaleLoad = await confirmedStaleController.load()
+assert.equal(confirmedStaleLoad.source, 'cache', '超过直接展示时间的持久快照经轻量 confirm unchanged 后仍应从 IndexedDB 返回')
+assert.deepEqual(confirmedStaleLoad.data, ['persisted'])
+assert.equal(confirmedStaleNetworkLoads, 0, 'revision unchanged 时不得因为 maxStaleMs 到期重查完整业务接口')
 
 const raceStorage = createMemoryPageDataCacheStorage()
 const firstNetwork = deferred<string[]>()
@@ -236,7 +278,7 @@ queryANetwork.resolve(['query-a-late'])
 const staleQueryResult = await queryALoad
 assert.equal(staleQueryResult.superseded, true, '切换 query 后旧 controller 的结果必须标记为已取代')
 assert.deepEqual(dynamicUpdates, [['query-b']], '只有当前 query 的缓存通知可以应用到页面')
-assert.equal(dynamicManager.currentKey, createPageDataCacheKey({ scope: 'self:dynamic', route: '/accounts', query: { keyword: 'b' }, version: 1 }))
+assert.equal(dynamicManager.currentKey, createPageDataCacheKey({ scope: 'self:dynamic', route: '/accounts', query: { keyword: 'b' }, version: 1, domain: 'accounts.runtime' }))
 
 let visible = false
 let scheduledConfirms = 0
@@ -263,12 +305,16 @@ assert.equal(leader.isLeader(), true)
 assert.equal(follower.isLeader(), false, '多标签必须确定唯一 leader')
 let requestedKey = ''
 let updatedKey = ''
+let invalidatedDomain = ''
 leader.onConfirmRequested((key) => { requestedKey = key })
 follower.onCacheUpdated((key) => { updatedKey = key })
+follower.onDomainInvalidated((domain) => { invalidatedDomain = domain.domain })
 assert.equal(await follower.requestConfirm('key-1'), true)
 leader.notifyUpdated('key-1')
+leader.notifyDomainInvalidated('providers.catalog', 'self:user-a', '/providers/gpt/models')
 assert.equal(requestedKey, 'key-1', 'follower 必须把确认请求交给 leader')
 assert.equal(updatedKey, 'key-1', 'leader 写入后必须通知其他标签页重读 IndexedDB')
+assert.equal(invalidatedDomain, 'providers.catalog', '写入标签即使未实例化目标 key，也必须按 domain 通知其他标签清理缓存')
 now += 20_000
 assert.equal(follower.isLeader(), true, 'leader 心跳过期后 follower 必须接管确认')
 leader.close()
@@ -308,11 +354,15 @@ assert.doesNotMatch(usageRecordsSource, /pageDataApi\.confirm/, '使用记录列
 assert.doesNotMatch(usageRecordsSource, /usageRecordPageCache/, '使用记录列表不得保留 IndexedDB 页面结果缓存')
 assert.doesNotMatch(usageRecordsSource, /confirmIntervalMs:\s*15_000/, '使用记录列表不得启动 15 秒自动确认')
 assert.match(usageRecordsSource, /return\s+await\s+usageRecordsApi\.list\(usageRecordRequestParams\(pageState\)\)/, '使用记录所有显式加载入口必须直接请求 scoped 列表 API')
+const pageDataCacheSource = readFileSync(fileURLToPath(new URL('../../shared/pageDataCache.ts', import.meta.url)), 'utf8')
+assert.doesNotMatch(pageDataCacheSource, /if \(!primaryAvailable\) return fallbackCall\(\)/, 'IndexedDB 一次失败后不得永久降级到内存，后续操作必须重试持久存储')
+assert.match(pageDataCacheSource, /removeBoth/, '删除和按域失效必须同时尝试 IndexedDB 与内存，避免任一层旧值复活')
 
 cacheFirstController.close()
 missController.close()
 unavailableController.close()
 staleController.close()
+confirmedStaleController.close()
 raceController.close()
 dynamicManager.close()
 console.log('通用页面 IndexedDB cache-first、revision 与多标签协调回归通过')
@@ -333,7 +383,7 @@ async function testFollowerTakesOverWhenLeaderDoesNotOwnKey(): Promise<void> {
   const followerCoordinator = new BrowserPageDataTabCoordinator({ tabId: 'b', channelFactory: hub.factory, heartbeatIntervalMs: 60_000 })
   const storage = createMemoryPageDataCacheStorage()
   const keyInput = { scope: 'self:follower-takeover', route: '/accounts', query: {}, version: 1 }
-  const key = createPageDataCacheKey(keyInput)
+  const key = createPageDataCacheKey({ ...keyInput, domain: 'accounts.runtime' })
   await storage.writeIfCurrent(cacheRecord(key, ['cached'], { token: token(1), confirmedAt: '2026-07-17T12:00:00.000Z' }))
   let confirmCalls = 0
   const controller = new PageDataCacheController<string[]>({
@@ -365,7 +415,7 @@ async function testFollowerMaxStaleFallsBackToNetwork(): Promise<void> {
   const followerCoordinator = new BrowserPageDataTabCoordinator({ tabId: 'b', channelFactory: hub.factory, heartbeatIntervalMs: 60_000 })
   const storage = createMemoryPageDataCacheStorage()
   const keyInput = { scope: 'self:follower-stale', route: '/usage-records', query: {}, version: 1 }
-  const key = createPageDataCacheKey(keyInput)
+  const key = createPageDataCacheKey({ ...keyInput, domain: 'accounts.runtime' })
   await storage.writeIfCurrent(cacheRecord(key, ['stale'], { token: token(1), confirmedAt: '2026-07-17T12:00:00.000Z' }))
   let networkLoads = 0
   const controller = new PageDataCacheController<string[]>({
@@ -401,7 +451,7 @@ async function testLeaderInvalidationWithdrawsFollowerData(): Promise<void> {
   const leaderStorage = createMemoryPageDataCacheStorage()
   const followerStorage = createMemoryPageDataCacheStorage()
   const keyInput = { scope: 'self:invalidation', route: '/accounts', query: {}, version: 1 }
-  const key = createPageDataCacheKey(keyInput)
+  const key = createPageDataCacheKey({ ...keyInput, domain: 'accounts.runtime' })
   const stale = cacheRecord(key, ['stale'], { token: token(1), confirmedAt: '2026-07-17T12:00:00.000Z' })
   await leaderStorage.writeIfCurrent(stale)
   await followerStorage.writeIfCurrent(stale)

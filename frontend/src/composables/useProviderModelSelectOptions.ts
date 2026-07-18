@@ -1,6 +1,8 @@
 import { computed, ref, type ComputedRef } from 'vue'
 
-import { api, type ListParams } from '@/api/client'
+import { api, pageDataApi, type ListParams } from '@/api/client'
+import { authState } from '@/composables/useAuth'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { ProviderModelApiProtocol, ProviderModelOption } from '@/types/domain'
 
 export interface ProviderModelSelectOption {
@@ -15,6 +17,8 @@ interface UseProviderModelSelectOptionsOptions {
   protocol?: 'openai' | 'anthropic' | 'gemini'
   onLoadError?: (error: unknown) => void
 }
+
+const providerModelResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useProviderModelSelectOptions(options: UseProviderModelSelectOptionsOptions = {}) {
   const providerModelOptions = ref<ProviderModelOption[]>([])
@@ -59,7 +63,6 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
 
   async function loadModelOptions(force = false): Promise<void> {
     const scopeKey = modelOptionsScopeKey()
-    if (!force && loadedScopeKey === scopeKey) return
     if (!force && loadingKey === scopeKey && loadingPromise) return loadingPromise
 
     const requestId = latestRequestId + 1
@@ -75,14 +78,35 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
       : undefined
     const promise = (async () => {
       try {
-        const nextOptions = await api.providers.modelOptions({
-          ...scopeParams,
-          protocol: options.protocol
+        if (force) {
+          await providerModelResourceCache.invalidate('providers.catalog', providerModelViewerScope(), '/providers/models/options')
+        }
+        const result = await providerModelResourceCache.load<ProviderModelOption[]>({
+          cacheKey: {
+            scope: providerModelViewerScope(),
+            route: '/providers/models/options',
+            query: { ...scopeParams, protocol: options.protocol },
+            version: 1
+          },
+          domain: 'providers.catalog',
+          viewScope: scopeParams?.systemAccountId ? 'admin' : 'self',
+          ...(scopeParams?.systemAccountId ? { targetSystemAccountId: scopeParams.systemAccountId } : {}),
+          loadNetwork: () => api.providers.modelOptions({
+            ...scopeParams,
+            protocol: options.protocol
+          })
         })
+        const nextOptions = result.data
         if (isCurrentRequest(requestId, scopeKey)) {
           providerModelOptions.value = nextOptions
           loadedScopeKey = scopeKey
         }
+        void result.confirmation?.then((outcome) => {
+          if (outcome.data && isCurrentRequest(requestId, scopeKey)) {
+            providerModelOptions.value = outcome.data
+            loadedScopeKey = scopeKey
+          }
+        })
       } catch (error) {
         if (!isCurrentRequest(requestId, scopeKey)) return
         console.error(error)
@@ -112,7 +136,18 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
   }
 
   function modelOptionsScopeKey(): string {
-    return `${options.scopeParams?.value?.systemAccountId ?? ''}:${options.protocol ?? 'all'}`
+    return `${providerModelViewerScope()}:${options.protocol ?? 'all'}`
+  }
+
+  function providerModelViewerScope(): string {
+    const viewer = authState.currentUser.value
+    const targetSystemAccountId = options.scopeParams?.value?.systemAccountId
+    return [
+      targetSystemAccountId ? 'admin' : 'self',
+      viewer?.id ?? 'anonymous',
+      viewer?.role ?? 'anonymous',
+      targetSystemAccountId ?? 'self'
+    ].join(':')
   }
 
   function isCurrentRequest(requestId: number, scopeKey: string): boolean {

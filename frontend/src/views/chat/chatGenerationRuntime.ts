@@ -30,6 +30,7 @@ export interface RunningTurn {
   readonly eventVersion: number
   readonly status: ChatGenerationRuntimeStatus
   readonly reconnectAttempt: number
+  readonly userProjection?: DeepReadonly<ChatMessage>
   readonly projection: DeepReadonly<ChatMessage>
   readonly reconciliationReason?: ChatGenerationReconciliationReason
   readonly error?: Readonly<ChatGenerationRuntimeError>
@@ -91,6 +92,7 @@ interface InternalTurn {
   status: ChatGenerationRuntimeStatus
   controller: AbortController
   reconnectAttempt: number
+  userProjection?: ChatMessage
   projection: ChatMessage
   reconciliationReason?: ChatGenerationReconciliationReason
   error?: ChatGenerationRuntimeError
@@ -174,6 +176,7 @@ export class ChatGenerationRuntime {
       status: 'preparing',
       controller: new AbortController(),
       reconnectAttempt: 0,
+      userProjection: optimisticUserProjection(input),
       projection: emptyAssistantProjection(input.conversationId, input.model),
       stopRequested: false,
       connectionActive: false,
@@ -379,6 +382,7 @@ export class ChatGenerationRuntime {
       turn.turnId = event.data.turnId
       turn.accepted = true
       turn.assistantMessageId = event.data.assistantMessage.id
+      turn.userProjection = cloneJsonSafe(event.data.userMessage)
       turn.projection = cloneJsonSafe(event.data.assistantMessage)
       turn.status = 'running'
       turn.reconciliationReason = undefined
@@ -598,6 +602,25 @@ function emptyAssistantProjection(conversationId: string, model: string, turnId 
   }
 }
 
+function optimisticUserProjection(input: ChatGenerationRuntimeStartInput): ChatMessage {
+  const contentBlocks = (input.contentBlocks?.length ? input.contentBlocks : [{ type: 'input_text' as const, text: input.content }])
+    .map((block, order) => ({ ...block, order }))
+  return {
+    id: '',
+    conversationId: input.conversationId,
+    turnId: '',
+    sequenceNo: 0,
+    clientMessageId: input.clientMessageId,
+    role: 'user',
+    status: 'completed',
+    contentText: input.content,
+    contentBlocks,
+    model: input.model,
+    createdAt: '',
+    expiresAt: ''
+  }
+}
+
 function cloneJsonSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
@@ -613,6 +636,7 @@ function snapshotTurn(turn?: InternalTurn): RunningTurn | undefined {
     eventVersion: turn.eventVersion,
     status: turn.status,
     reconnectAttempt: turn.reconnectAttempt,
+    userProjection: turn.userProjection ? cloneJsonSafe(turn.userProjection) : undefined,
     projection: cloneJsonSafe(turn.projection),
     reconciliationReason: turn.reconciliationReason,
     error: turn.error ? { ...turn.error } : undefined

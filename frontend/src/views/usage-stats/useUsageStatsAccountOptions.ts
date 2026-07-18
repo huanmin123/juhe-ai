@@ -1,8 +1,9 @@
 import { message } from '@/lib/antd'
 import { ref, type Ref } from 'vue'
 
-import { api } from '@/api/client'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import { api, pageDataApi } from '@/api/client'
+import { authState } from '@/composables/useAuth'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { AccountOptionSummary } from '@/types/domain'
 import { mergeOptionsById } from './usageStatsHelpers'
 
@@ -13,6 +14,8 @@ interface UseUsageStatsAccountOptionsOptions {
   pageActive: Ref<boolean>
 }
 
+const usageStatsAccountOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
+
 export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptionsOptions) {
   const accountOptionRows = ref<AccountOptionSummary[]>([])
   const accountOptionsLoading = ref(false)
@@ -21,39 +24,46 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
   let accountOptionsRequestSeq = 0
   let accountOptionsLoadingKey: string | undefined
   let accountOptionsLoadingPromise: Promise<void> | undefined
-  const accountOptionsCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
 
   async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
     accountOptionsKeyword.value = keyword
     const systemAccountId = options.isManagementView() ? options.systemAccountId() : undefined
     const requestKeyword = keyword.trim() || undefined
     const selectedIds = [...options.selectedIds()].sort()
-    const requestKey = JSON.stringify([options.isManagementView() ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', selectedIds])
+    const scope = accountOptionsScope(options.isManagementView(), systemAccountId)
+    const route = options.isManagementView() ? '/accounts/options' : '/my-accounts/options'
+    const requestKey = JSON.stringify([scope, requestKeyword ?? '', selectedIds])
     if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
       return accountOptionsLoadingPromise
     }
     const requestSeq = ++accountOptionsRequestSeq
-    if (!force) {
-      const cachedOptions = accountOptionsCache.get(requestKey)
-      if (cachedOptions) {
-        accountOptionsLoadingKey = undefined
-        accountOptionsLoadingPromise = undefined
-        accountOptionsLoading.value = false
-        accountOptionRows.value = cachedOptions
-        return
-      }
-    }
     accountOptionsLoading.value = true
     accountOptionsLoadingKey = requestKey
     accountOptionsLoadingPromise = (async () => {
       try {
-        let nextOptions = options.isManagementView()
-          ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-          : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
-        nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
-        accountOptionsCache.set(requestKey, nextOptions)
-        if (requestSeq !== accountOptionsRequestSeq) return
-        accountOptionRows.value = nextOptions
+        if (force) await usageStatsAccountOptionsResourceCache.invalidate('accounts.options', scope, route)
+        const result = await usageStatsAccountOptionsResourceCache.load<AccountOptionSummary[]>({
+          cacheKey: {
+            scope,
+            route,
+            query: { keyword: requestKeyword, selectedIds, systemAccountId, limit: 50 },
+            version: 1
+          },
+          domain: 'accounts.options',
+          viewScope: options.isManagementView() ? 'admin' : 'self',
+          ...(options.isManagementView() && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
+          loadNetwork: async () => {
+            let nextOptions = options.isManagementView()
+              ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+              : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
+            nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
+            return nextOptions
+          }
+        })
+        applyOptions(result.data, requestSeq)
+        void result.confirmation?.then((outcome) => {
+          if (outcome.data) applyOptions(outcome.data, requestSeq)
+        })
       } catch (error) {
         if (requestSeq !== accountOptionsRequestSeq) return
         console.error(error)
@@ -69,6 +79,11 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
       }
     })()
     return accountOptionsLoadingPromise
+  }
+
+  function applyOptions(nextOptions: AccountOptionSummary[], requestSeq: number): void {
+    if (requestSeq !== accountOptionsRequestSeq) return
+    accountOptionRows.value = nextOptions
   }
 
   async function ensureSelectedAccountOptions(nextOptions: AccountOptionSummary[], systemAccountId: string | undefined): Promise<AccountOptionSummary[]> {
@@ -118,4 +133,14 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
     handleAccountOptionsDropdown,
     clearAccountOptionsSearchTimer
   }
+}
+
+function accountOptionsScope(isManagementView: boolean, systemAccountId?: string): string {
+  const viewer = authState.currentUser.value
+  return [
+    isManagementView ? 'admin' : 'self',
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    systemAccountId ?? (isManagementView ? 'all' : 'self')
+  ].join(':')
 }

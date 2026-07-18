@@ -4,7 +4,6 @@ import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import { rememberAccountLabels, rememberAccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabels } from '@/shared/groupLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import type { AuthorizationCreateFormModel } from './authorizationFormModel'
 import {
@@ -23,6 +22,7 @@ import {
   ensureSelectedSystemAccountPrincipal,
   ensureSelectedTeamOption
 } from './authorizationSelectedOptionLoaders'
+import { loadAuthorizationOptionResource } from './authorizationOptionResource'
 
 const remoteOptionLimit = 50
 const remoteSearchDelayMs = 250
@@ -63,10 +63,6 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
   const filterTeamSearchKeyword = ref('')
   const filterUserSearchKeyword = ref('')
 
-  const authorizationAccountOptionCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
-  const authorizationGroupOptionCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
-  const authorizationUserOptionCache = createShortLivedQueryCache<SystemAccountPrincipalSummary[]>({ ttlMs: 10_000 })
-  const authorizationTeamOptionCache = createShortLivedQueryCache<SystemTeamPrincipalSummary[]>({ ttlMs: 10_000 })
   let createOwnerUserRequestId = 0
   let createOwnerResourceRequestId = 0
   let createGranteeRequestId = 0
@@ -91,22 +87,22 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
       return
     }
     const search = normalizeSearchKeyword(keyword)
-    const requestKey = JSON.stringify(['create-owner', search ?? '', createForm.ownerSystemAccountId ?? ''])
-    const cachedUsers = authorizationUserOptionCache.get(requestKey)
-    if (cachedUsers) {
-      createOwnerUserRequestId += 1
-      createOwnerUsersLoading.value = false
-      createOwnerUsers.value = cachedUsers
-      return
-    }
     const requestId = ++createOwnerUserRequestId
     createOwnerUsersLoading.value = true
     try {
-      let nextOptions = await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
-      nextOptions = await ensureSelectedSystemAccountPrincipal(nextOptions, createForm.ownerSystemAccountId, isManagementView.value)
-      authorizationUserOptionCache.set(requestKey, nextOptions)
-      if (requestId !== createOwnerUserRequestId) return
-      createOwnerUsers.value = nextOptions
+      await loadAuthorizationOptionResource<SystemAccountPrincipalSummary[]>({
+        apply: (nextOptions) => { createOwnerUsers.value = nextOptions },
+        domain: 'systemAccounts.options',
+        isCurrent: () => requestId === createOwnerUserRequestId,
+        isManagementView: true,
+        loadNetwork: async () => {
+          let nextOptions = await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
+          nextOptions = await ensureSelectedSystemAccountPrincipal(nextOptions, createForm.ownerSystemAccountId, isManagementView.value)
+          return nextOptions
+        },
+        query: { purpose: 'create-owner', search, selectedId: createForm.ownerSystemAccountId, limit: remoteOptionLimit },
+        route: '/authorization-options/grantee-accounts'
+      })
     } catch (error) {
       if (requestId !== createOwnerUserRequestId) return
       console.error(error)
@@ -126,56 +122,48 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
       return
     }
     const search = normalizeSearchKeyword(keyword)
-    const requestKey = JSON.stringify(['create-resource', createForm.resourceType, isManagementView.value ? 'management' : 'self', ownerSystemAccountId ?? '', search ?? '', createForm.resourceId ?? ''])
-    if (createForm.resourceType === 'account') {
-      const cachedAccounts = authorizationAccountOptionCache.get(requestKey)
-      if (cachedAccounts) {
-        createOwnerResourceRequestId += 1
-        createResourceOptionsLoading.value = false
-        rememberAccountLabels(cachedAccounts)
-        syncCreateResourceAccount(cachedAccounts)
-        createAccounts.value = cachedAccounts
-        createGroups.value = []
-        return
-      }
-    } else {
-      const cachedGroups = authorizationGroupOptionCache.get(requestKey)
-      if (cachedGroups) {
-        createOwnerResourceRequestId += 1
-        createResourceOptionsLoading.value = false
-        rememberGroupLabels(cachedGroups)
-        syncCreateResourceGroup(cachedGroups)
-        createGroups.value = cachedGroups
-        createAccounts.value = []
-        return
-      }
-    }
+    const resourceType: 'account' | 'group' = createForm.resourceType === 'account' ? 'account' : 'group'
     const requestId = ++createOwnerResourceRequestId
     createResourceOptionsLoading.value = true
     try {
-      if (createForm.resourceType === 'account') {
-        let nextAccounts = isManagementView.value
-          ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
-          : await api.myAccounts.options({ keyword: search, limit: remoteOptionLimit })
-        nextAccounts = await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
-        rememberAccountLabels(nextAccounts)
-        syncCreateResourceAccount(nextAccounts)
-        authorizationAccountOptionCache.set(requestKey, nextAccounts)
-        if (requestId !== createOwnerResourceRequestId) return
-        createAccounts.value = nextAccounts
-        createGroups.value = []
-      } else {
-        let nextGroups = isManagementView.value
-          ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
-          : await api.myGroups.options({ keyword: search, limit: remoteOptionLimit })
-        nextGroups = await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
-        rememberGroupLabels(nextGroups)
-        syncCreateResourceGroup(nextGroups)
-        authorizationGroupOptionCache.set(requestKey, nextGroups)
-        if (requestId !== createOwnerResourceRequestId) return
-        createGroups.value = nextGroups
-        createAccounts.value = []
-      }
+      const route = resourceType === 'account'
+        ? (isManagementView.value ? '/accounts/options' : '/my-accounts/options')
+        : (isManagementView.value ? '/groups/options' : '/my-groups/options')
+      await loadAuthorizationOptionResource<AccountOptionSummary[] | GroupOptionSummary[]>({
+        apply: (nextOptions) => {
+          if (resourceType === 'account') {
+            const nextAccounts = nextOptions as AccountOptionSummary[]
+            rememberAccountLabels(nextAccounts)
+            syncCreateResourceAccount(nextAccounts)
+            createAccounts.value = nextAccounts
+            createGroups.value = []
+          } else {
+            const nextGroups = nextOptions as GroupOptionSummary[]
+            rememberGroupLabels(nextGroups)
+            syncCreateResourceGroup(nextGroups)
+            createGroups.value = nextGroups
+            createAccounts.value = []
+          }
+        },
+        domain: resourceType === 'account' ? 'accounts.options' : 'groups.static',
+        isCurrent: () => requestId === createOwnerResourceRequestId && createForm.resourceType === resourceType,
+        isManagementView: isManagementView.value,
+        loadNetwork: async () => {
+          if (resourceType === 'account') {
+            let nextAccounts = isManagementView.value
+              ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
+              : await api.myAccounts.options({ keyword: search, limit: remoteOptionLimit })
+            return await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
+          }
+          let nextGroups = isManagementView.value
+            ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
+            : await api.myGroups.options({ keyword: search, limit: remoteOptionLimit })
+          return await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
+        },
+        query: { purpose: 'create-resource', resourceType, ownerSystemAccountId, search, selectedId: createForm.resourceId, limit: remoteOptionLimit },
+        route,
+        targetSystemAccountId: ownerSystemAccountId
+      })
     } catch (error) {
       if (requestId !== createOwnerResourceRequestId) return
       console.error(error)
@@ -190,49 +178,40 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
   async function loadCreateGranteeOptions(keyword?: string): Promise<void> {
     const search = normalizeSearchKeyword(keyword)
     const excludedGranteeIds = [...createExcludedGranteeIds.value].sort()
-    const requestKey = JSON.stringify(['create-grantee', createForm.granteeType, isManagementView.value ? 'management' : 'self', search ?? '', createForm.granteeId ?? '', excludedGranteeIds])
-    if (createForm.granteeType === 'system_account') {
-      const cachedUsers = authorizationUserOptionCache.get(requestKey)
-      if (cachedUsers) {
-        createGranteeRequestId += 1
-        createGranteeOptionsLoading.value = false
-        createUsers.value = cachedUsers
-        createTeams.value = []
-        return
-      }
-    } else {
-      const cachedTeams = authorizationTeamOptionCache.get(requestKey)
-      if (cachedTeams) {
-        createGranteeRequestId += 1
-        createGranteeOptionsLoading.value = false
-        createTeams.value = cachedTeams
-        createUsers.value = []
-        return
-      }
-    }
+    const granteeType: 'system_account' | 'team' = createForm.granteeType === 'system_account' ? 'system_account' : 'team'
     const requestId = ++createGranteeRequestId
     createGranteeOptionsLoading.value = true
     try {
-      if (createForm.granteeType === 'system_account') {
-        let nextUsers = isManagementView.value
-          ? await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
-          : await api.myAuthorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
-        nextUsers = nextUsers.filter((user) => !createExcludedGranteeIds.value.includes(user.id))
-        nextUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, createForm.granteeId, isManagementView.value)
-        authorizationUserOptionCache.set(requestKey, nextUsers)
-        if (requestId !== createGranteeRequestId) return
-        createUsers.value = nextUsers
-        createTeams.value = []
-      } else {
-        let nextTeams = isManagementView.value
-          ? await api.authorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
-          : await api.myAuthorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
-        nextTeams = await ensureSelectedTeamOption(nextTeams, createForm.granteeId, isManagementView.value)
-        authorizationTeamOptionCache.set(requestKey, nextTeams)
-        if (requestId !== createGranteeRequestId) return
-        createTeams.value = nextTeams
-        createUsers.value = []
-      }
+      const route = `/${isManagementView.value ? '' : 'my-'}authorization-options/grantee-${granteeType === 'system_account' ? 'accounts' : 'teams'}`
+      await loadAuthorizationOptionResource<SystemAccountPrincipalSummary[] | SystemTeamPrincipalSummary[]>({
+        apply: (nextOptions) => {
+          if (granteeType === 'system_account') {
+            createUsers.value = nextOptions as SystemAccountPrincipalSummary[]
+            createTeams.value = []
+          } else {
+            createTeams.value = nextOptions as SystemTeamPrincipalSummary[]
+            createUsers.value = []
+          }
+        },
+        domain: granteeType === 'system_account' ? 'systemAccounts.options' : 'teams.options',
+        isCurrent: () => requestId === createGranteeRequestId && createForm.granteeType === granteeType,
+        isManagementView: isManagementView.value,
+        loadNetwork: async () => {
+          if (granteeType === 'system_account') {
+            let nextUsers = isManagementView.value
+              ? await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
+              : await api.myAuthorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
+            nextUsers = nextUsers.filter((user) => !excludedGranteeIds.includes(user.id))
+            return await ensureSelectedSystemAccountPrincipal(nextUsers, createForm.granteeId, isManagementView.value)
+          }
+          let nextTeams = isManagementView.value
+            ? await api.authorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
+            : await api.myAuthorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
+          return await ensureSelectedTeamOption(nextTeams, createForm.granteeId, isManagementView.value)
+        },
+        query: { purpose: 'create-grantee', granteeType, search, selectedId: createForm.granteeId, excludedGranteeIds, limit: remoteOptionLimit },
+        route
+      })
     } catch (error) {
       if (requestId !== createGranteeRequestId) return
       console.error(error)
@@ -254,30 +233,31 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
       return
     }
     const search = normalizeSearchKeyword(keyword)
-    const requestKey = JSON.stringify(['create-target-group', isManagementView.value ? 'management' : 'self', granteeSystemAccountId, providerCode, search ?? '', createForm.targetGroupId ?? ''])
-    const cachedGroups = authorizationGroupOptionCache.get(requestKey)
-    if (cachedGroups) {
-      createTargetGroupRequestId += 1
-      createTargetGroupOptionsLoading.value = false
-      rememberGroupLabels(cachedGroups)
-      syncCreateTargetGroup(cachedGroups)
-      selectDefaultCreateTargetGroup(cachedGroups)
-      createTargetGroups.value = cachedGroups
-      return
-    }
     const requestId = ++createTargetGroupRequestId
     createTargetGroupOptionsLoading.value = true
     try {
-      let nextGroups = isManagementView.value
-        ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
-        : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
-      nextGroups = await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, createForm.targetGroupId, granteeSystemAccountId, providerCode, isManagementView.value)
-      if (requestId !== createTargetGroupRequestId) return
-      rememberGroupLabels(nextGroups)
-      syncCreateTargetGroup(nextGroups)
-      selectDefaultCreateTargetGroup(nextGroups)
-      authorizationGroupOptionCache.set(requestKey, nextGroups)
-      createTargetGroups.value = nextGroups
+      await loadAuthorizationOptionResource<GroupOptionSummary[]>({
+        apply: (nextGroups) => {
+          rememberGroupLabels(nextGroups)
+          syncCreateTargetGroup(nextGroups)
+          selectDefaultCreateTargetGroup(nextGroups)
+          createTargetGroups.value = nextGroups
+        },
+        domain: 'groups.static',
+        isCurrent: () => requestId === createTargetGroupRequestId
+          && createForm.granteeId === granteeSystemAccountId
+          && selectedCreateAccount.value?.providerCode === providerCode,
+        isManagementView: isManagementView.value,
+        loadNetwork: async () => {
+          let nextGroups = isManagementView.value
+            ? await api.authorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
+            : await api.myAuthorizationOptions.granteeGroups({ granteeSystemAccountId, providerCode, keyword: search, limit: remoteOptionLimit, preferDefault: true })
+          return await ensureSelectedAuthorizationGranteeGroupOption(nextGroups, createForm.targetGroupId, granteeSystemAccountId, providerCode, isManagementView.value)
+        },
+        query: { purpose: 'create-target-group', granteeSystemAccountId, providerCode, search, selectedId: createForm.targetGroupId, preferDefault: true, limit: remoteOptionLimit },
+        route: `/${isManagementView.value ? '' : 'my-'}authorization-options/grantee-groups`,
+        targetSystemAccountId: isManagementView.value ? granteeSystemAccountId : undefined
+      })
     } catch (error) {
       if (requestId !== createTargetGroupRequestId) return
       console.error(error)
@@ -310,52 +290,41 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     }
     const requestKeyword = normalizeSearchKeyword(keyword)
     const systemAccountId = selectedFilterOwnerSystemAccountId.value
-    const requestKey = JSON.stringify(['filter-resource', filters.resourceType, systemAccountId ?? '', requestKeyword ?? '', filters.resourceId ?? ''])
-    if (filters.resourceType === 'account') {
-      const cachedAccounts = authorizationAccountOptionCache.get(requestKey)
-      if (cachedAccounts) {
-        filterResourceRequestId += 1
-        filterResourceOptionsLoading.value = false
-        rememberAccountLabels(cachedAccounts)
-        syncFilterResourceAccount(cachedAccounts)
-        accounts.value = cachedAccounts
-        groups.value = []
-        return
-      }
-    } else {
-      const cachedGroups = authorizationGroupOptionCache.get(requestKey)
-      if (cachedGroups) {
-        filterResourceRequestId += 1
-        filterResourceOptionsLoading.value = false
-        rememberGroupLabels(cachedGroups)
-        syncFilterResourceGroup(cachedGroups)
-        groups.value = cachedGroups
-        accounts.value = []
-        return
-      }
-    }
+    const resourceType: 'account' | 'group' = filters.resourceType === 'account' ? 'account' : 'group'
     const requestId = ++filterResourceRequestId
     filterResourceOptionsLoading.value = true
     try {
-      if (filters.resourceType === 'account') {
-        const nextAccounts = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
-        const mergedAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId, isManagementView.value)
-        rememberAccountLabels(mergedAccounts)
-        syncFilterResourceAccount(mergedAccounts)
-        authorizationAccountOptionCache.set(requestKey, mergedAccounts)
-        if (requestId !== filterResourceRequestId) return
-        accounts.value = mergedAccounts
-        groups.value = []
-        return
-      }
-      const nextGroups = await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
-      const mergedGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId, isManagementView.value)
-      rememberGroupLabels(mergedGroups)
-      syncFilterResourceGroup(mergedGroups)
-      authorizationGroupOptionCache.set(requestKey, mergedGroups)
-      if (requestId !== filterResourceRequestId) return
-      groups.value = mergedGroups
-      accounts.value = []
+      await loadAuthorizationOptionResource<AccountOptionSummary[] | GroupOptionSummary[]>({
+        apply: (nextOptions) => {
+          if (resourceType === 'account') {
+            const nextAccounts = nextOptions as AccountOptionSummary[]
+            rememberAccountLabels(nextAccounts)
+            syncFilterResourceAccount(nextAccounts)
+            accounts.value = nextAccounts
+            groups.value = []
+          } else {
+            const nextGroups = nextOptions as GroupOptionSummary[]
+            rememberGroupLabels(nextGroups)
+            syncFilterResourceGroup(nextGroups)
+            groups.value = nextGroups
+            accounts.value = []
+          }
+        },
+        domain: resourceType === 'account' ? 'accounts.options' : 'groups.static',
+        isCurrent: () => requestId === filterResourceRequestId && filters.resourceType === resourceType,
+        isManagementView: true,
+        loadNetwork: async () => {
+          if (resourceType === 'account') {
+            const nextAccounts = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
+            return await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId, isManagementView.value)
+          }
+          const nextGroups = await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
+          return await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId, isManagementView.value)
+        },
+        query: { purpose: 'filter-resource', resourceType, systemAccountId, requestKeyword, selectedId: filters.resourceId, limit: remoteOptionLimit },
+        route: resourceType === 'account' ? '/accounts/options' : '/groups/options',
+        targetSystemAccountId: systemAccountId
+      })
     } catch (error) {
       if (requestId !== filterResourceRequestId) return
       console.error(error)
@@ -373,24 +342,24 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
       return
     }
     const requestKeyword = normalizeSearchKeyword(keyword)
-    const requestKey = JSON.stringify(['filter-team', requestKeyword ?? '', filters.teamId ?? ''])
-    const cachedTeams = authorizationTeamOptionCache.get(requestKey)
-    if (cachedTeams) {
-      filterTeamRequestId += 1
-      filterTeamOptionsLoading.value = false
-      syncFilterTeamSelection(cachedTeams)
-      teams.value = cachedTeams
-      return
-    }
     const requestId = ++filterTeamRequestId
     filterTeamOptionsLoading.value = true
     try {
-      const nextTeams = await api.authorizationOptions.granteeTeams({ keyword: requestKeyword, limit: remoteOptionLimit })
-      const mergedTeams = await ensureSelectedTeamOption(nextTeams, filters.teamId, isManagementView.value)
-      authorizationTeamOptionCache.set(requestKey, mergedTeams)
-      if (requestId !== filterTeamRequestId) return
-      syncFilterTeamSelection(mergedTeams)
-      teams.value = mergedTeams
+      await loadAuthorizationOptionResource<SystemTeamPrincipalSummary[]>({
+        apply: (nextTeams) => {
+          syncFilterTeamSelection(nextTeams)
+          teams.value = nextTeams
+        },
+        domain: 'teams.options',
+        isCurrent: () => requestId === filterTeamRequestId,
+        isManagementView: true,
+        loadNetwork: async () => {
+          const nextTeams = await api.authorizationOptions.granteeTeams({ keyword: requestKeyword, limit: remoteOptionLimit })
+          return await ensureSelectedTeamOption(nextTeams, filters.teamId, isManagementView.value)
+        },
+        query: { purpose: 'filter-team', requestKeyword, selectedId: filters.teamId, limit: remoteOptionLimit },
+        route: '/authorization-options/grantee-teams'
+      })
     } catch (error) {
       if (requestId !== filterTeamRequestId) return
       console.error(error)
@@ -408,24 +377,24 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
       return
     }
     const requestKeyword = normalizeSearchKeyword(keyword)
-    const requestKey = JSON.stringify(['filter-user', requestKeyword ?? '', filters.granteeSystemAccountId ?? ''])
-    const cachedUsers = authorizationUserOptionCache.get(requestKey)
-    if (cachedUsers) {
-      filterUserRequestId += 1
-      filterUserOptionsLoading.value = false
-      syncFilterUserSelection(cachedUsers)
-      users.value = cachedUsers
-      return
-    }
     const requestId = ++filterUserRequestId
     filterUserOptionsLoading.value = true
     try {
-      const nextUsers = await api.authorizationOptions.granteeAccounts({ keyword: requestKeyword, limit: remoteOptionLimit })
-      const mergedUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId, isManagementView.value)
-      authorizationUserOptionCache.set(requestKey, mergedUsers)
-      if (requestId !== filterUserRequestId) return
-      syncFilterUserSelection(mergedUsers)
-      users.value = mergedUsers
+      await loadAuthorizationOptionResource<SystemAccountPrincipalSummary[]>({
+        apply: (nextUsers) => {
+          syncFilterUserSelection(nextUsers)
+          users.value = nextUsers
+        },
+        domain: 'systemAccounts.options',
+        isCurrent: () => requestId === filterUserRequestId,
+        isManagementView: true,
+        loadNetwork: async () => {
+          const nextUsers = await api.authorizationOptions.granteeAccounts({ keyword: requestKeyword, limit: remoteOptionLimit })
+          return await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId, isManagementView.value)
+        },
+        query: { purpose: 'filter-user', requestKeyword, selectedId: filters.granteeSystemAccountId, limit: remoteOptionLimit },
+        route: '/authorization-options/grantee-accounts'
+      })
     } catch (error) {
       if (requestId !== filterUserRequestId) return
       console.error(error)

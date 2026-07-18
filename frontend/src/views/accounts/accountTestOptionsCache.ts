@@ -1,7 +1,7 @@
-import { api } from '@/api/client'
+import { api, pageDataApi } from '@/api/client'
 import type { AccountTestOptions } from '@/api/domains/accounts'
 import { authState } from '@/composables/useAuth'
-import { createShortLivedRequestCache } from '@/shared/shortLivedRequestCache'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { AccountSummary } from '@/types/domain'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 
@@ -11,18 +11,15 @@ interface AccountTestOptionsLoadInput {
   scopeParams?: AccountScopeParams
 }
 
-const accountTestOptionsCache = createShortLivedRequestCache<AccountTestOptions>({
-  maxEntries: 100,
-  ttlMs: 5 * 60_000
-})
+const accountTestOptionsCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 let cacheGeneration = 0
 
 export function invalidateAccountTestOptionsCache(): void {
   cacheGeneration += 1
-  accountTestOptionsCache.clear()
+  void accountTestOptionsCache.invalidate('accounts.options')
 }
 
-export function loadAccountTestOptionsCached(input: AccountTestOptionsLoadInput): Promise<AccountTestOptions> {
+export async function loadAccountTestOptionsCached(input: AccountTestOptionsLoadInput): Promise<AccountTestOptions> {
   const scopeParams = accountOperationScopeParams(input.account, input.scopeParams)
   const loader = () => input.isManagementView
     ? api.accounts.testOptions(input.account.id, scopeParams)
@@ -31,8 +28,29 @@ export function loadAccountTestOptionsCached(input: AccountTestOptionsLoadInput)
   if (!Number.isInteger(configRevision) || Number(configRevision) < 1) {
     return loader()
   }
-  const cacheKey = resolveAccountTestOptionsCacheKey(input, scopeParams, Number(configRevision))
-  return accountTestOptionsCache.load(cacheKey, loader)
+  const viewScope = input.isManagementView ? 'admin' as const : 'self' as const
+  const route = input.isManagementView
+    ? `/accounts/${input.account.id}/test-options`
+    : `/my-accounts/${input.account.id}/test-options`
+  const result = await accountTestOptionsCache.load<AccountTestOptions>({
+    cacheKey: {
+      scope: resolveAccountTestOptionsCacheKey(input, scopeParams, Number(configRevision)),
+      route,
+      query: {
+        accountId: input.account.id,
+        configRevision: Number(configRevision),
+        systemAccountId: scopeParams?.systemAccountId
+      },
+      version: `${cacheGeneration}:1`
+    },
+    domain: 'accounts.options',
+    viewScope,
+    ...(viewScope === 'admin' && scopeParams?.systemAccountId
+      ? { targetSystemAccountId: scopeParams.systemAccountId }
+      : {}),
+    loadNetwork: loader
+  })
+  return result.data
 }
 
 function resolveAccountTestOptionsCacheKey(
@@ -44,5 +62,6 @@ function resolveAccountTestOptionsCacheKey(
   const viewScope = input.isManagementView
     ? `management:${scopeParams?.systemAccountId ?? 'all'}`
     : 'self'
-  return `${cacheGeneration}:${userId}:${viewScope}:${input.account.id}:${configRevision}`
+  const role = authState.currentUser.value?.role ?? 'anonymous'
+  return `${userId}:${role}:${viewScope}:${input.account.id}:${configRevision}`
 }

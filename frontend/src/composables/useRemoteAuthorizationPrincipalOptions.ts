@@ -1,16 +1,13 @@
 import { onBeforeUnmount, ref, shallowRef } from 'vue'
 
-import { api } from '@/api/client'
+import { api, pageDataApi } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import {
-  localSelectStorageKey,
-  readLocalSelectOptionWindow,
-  removeLocalSelectOptionWindowValues,
   removeLocalSelectPreferenceValues,
-  writeLocalSelectOptionWindow,
   type LocalSelectStorageKeyPart
 } from '@/shared/selectLocalPreferenceCache'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -31,12 +28,13 @@ interface RemoteAuthorizationPrincipalOptionsConfig {
   selectedIds?: () => Array<string | undefined>
 }
 
+const authorizationOptionResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
+
 export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPrincipalOption>(config: RemoteAuthorizationPrincipalOptionsConfig) {
   const options = shallowRef<T[]>([])
   const loading = ref(false)
   const keyword = ref('')
   const limit = optionLimitValue(config.limit)
-  const optionCache = createShortLivedQueryCache<T[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
   let loadingKey: string | undefined
@@ -58,34 +56,43 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
       return loadingPromise
     }
     const currentRequestId = ++requestId
-    const optionWindowKey = localOptionWindowKey(requestKeyword)
-    const localWindowOptions = readLocalSelectOptionWindow<T>(optionWindowKey)
-    if (localWindowOptions?.length) {
-      options.value = localWindowOptions
-      loading.value = false
-    }
-    const cachedOptions = optionCache.get(requestKey)
-    if (cachedOptions) {
-      loadingKey = undefined
-      loadingPromise = undefined
-      loading.value = false
-      writeLocalSelectOptionWindow(optionWindowKey, cachedOptions)
-      options.value = cachedOptions
-      return
-    }
-    loading.value = !localWindowOptions?.length
+    loading.value = true
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        let nextOptions = await fetchOptions<T>(config.kind, config.isManagementView(), {
-          keyword: requestKeyword,
-          limit
+        const isManagementView = config.isManagementView()
+        const domain = config.kind === 'team' ? 'teams.options' : 'systemAccounts.options'
+        const route = `/${isManagementView ? '' : 'my-'}authorization-options/grantee-${config.kind === 'team' ? 'teams' : 'accounts'}`
+        const result = await authorizationOptionResourceCache.load<T[]>({
+          cacheKey: {
+            scope: authorizationOptionScope(isManagementView),
+            route,
+            query: {
+              kind: config.kind,
+              keyword: requestKeyword,
+              selectedIds,
+              limit,
+              localScope: config.localCacheKeyParts?.() ?? []
+            },
+            version: 1
+          },
+          domain,
+          viewScope: isManagementView ? 'admin' : 'self',
+          loadNetwork: async () => {
+            let nextOptions = await fetchOptions<T>(config.kind, isManagementView, {
+              keyword: requestKeyword,
+              limit
+            })
+            nextOptions = await ensureSelectedOptions(nextOptions, selectedIds, isManagementView)
+            return nextOptions
+          }
         })
-        nextOptions = await ensureSelectedOptions(nextOptions, selectedIds, optionWindowKey)
-        optionCache.set(requestKey, nextOptions)
-        writeLocalSelectOptionWindow(optionWindowKey, nextOptions)
+        const nextOptions = result.data
         if (currentRequestId !== requestId) return
         options.value = nextOptions
+        void result.confirmation?.then((outcome) => {
+          if (outcome.data && currentRequestId === requestId) options.value = outcome.data
+        })
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
@@ -130,27 +137,26 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     }
   }
 
-  async function ensureSelectedOptions(nextOptions: T[], selectedIds: string[], optionWindowKey: string): Promise<T[]> {
+  async function ensureSelectedOptions(nextOptions: T[], selectedIds: string[], isManagementView: boolean): Promise<T[]> {
     const missingSelectedIds = selectedIds.filter((id) => !nextOptions.some((option) => option.id === id))
     if (!missingSelectedIds.length) return nextOptions
     try {
-      const selectedOptions = await fetchOptions<T>(config.kind, config.isManagementView(), {
+      const selectedOptions = await fetchOptions<T>(config.kind, isManagementView, {
         ids: missingSelectedIds,
         limit: Math.min(50, Math.max(limit, missingSelectedIds.length))
       })
       const foundIds = new Set(selectedOptions.map((option) => option.id))
       const invalidSelectedIds = missingSelectedIds.filter((id) => !foundIds.has(id))
-      handleMissingSelectedIds(invalidSelectedIds, optionWindowKey)
+      handleMissingSelectedIds(invalidSelectedIds)
       return mergeOptionsById(selectedOptions, nextOptions)
     } catch {
       return nextOptions
     }
   }
 
-  function handleMissingSelectedIds(ids: string[], optionWindowKey: string): void {
+  function handleMissingSelectedIds(ids: string[]): void {
     const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
     if (!missingIds.length) return
-    removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
     for (const preferenceKey of config.preferenceKeys?.() ?? [`authorization-principal:${config.kind}`]) {
       removeLocalSelectPreferenceValues(preferenceKey, missingIds)
     }
@@ -168,14 +174,9 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
       .sort())]
   }
 
-  function localOptionWindowKey(requestKeyword: string | undefined): string {
-    return localSelectStorageKey([
-      'authorization-principal-options',
-      config.kind,
-      config.isManagementView() ? 'management' : 'self',
-      ...(config.localCacheKeyParts?.() ?? []),
-      requestKeyword ?? ''
-    ])
+  function authorizationOptionScope(isManagementView: boolean): string {
+    const viewer = authState.currentUser.value
+    return `${isManagementView ? 'admin' : 'self'}:${viewer?.id ?? 'anonymous'}:${viewer?.role ?? 'anonymous'}`
   }
 
   onBeforeUnmount(clearSearchTimer)

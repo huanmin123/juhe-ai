@@ -135,6 +135,7 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
@@ -144,6 +145,7 @@ import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatInteger } from '@/views/stats/statsFormatters'
+import { loadStatsPageDataResource } from '@/views/stats/statsPageDataResource'
 import AccountUsageStatsTable from './AccountUsageStatsTable.vue'
 import {
   aggregateUsageSummaries,
@@ -201,7 +203,9 @@ const dateRange = ref<[Dayjs, Dayjs]>(parseUsageStatsDateRange(initialPageState.
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedTrendAccountIds = ref<string[]>([])
+let usageStatsResourceRequestSeq = 0
 const {
+  applyResult: applyAccountUsageResult,
   items: accountUsageRows,
   loading,
   mobileHasMore: accountUsageMobileHasMore,
@@ -212,28 +216,44 @@ const {
   loadData,
   loadMoreMobile: loadMoreMobileRows,
   resetPagination: resetAccountUsagePagination
-} = useResponsivePagedList<AccountUsageStatsRow, { forceOptions?: boolean }>({
+} = useResponsivePagedList<AccountUsageStatsRow, { forceOptions?: boolean; forceCache?: boolean }>({
   pageSize: accountUsagePageSize,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${formatInteger(range?.[1] ?? Math.max(0, total - 1))} 条账户消耗，还有更多`
     : `共 ${formatInteger(total)} 条账户消耗`,
   fetchPage: async (options, pageState): Promise<ResponsivePagedListResult<AccountUsageStatsRow>> => {
+    const resourceRequestSeq = ++usageStatsResourceRequestSeq
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
-    const [usageOverview] = await Promise.all([
-      isManagementView.value ? api.stats.accountUsage(accountUsageParams(systemAccountId, pageState)) : api.myStats.accountUsage(accountUsageParams(undefined, pageState)),
+    const query = accountUsageParams(isManagementView.value ? systemAccountId : undefined, pageState)
+    let usageOverview: AccountUsageStatsOverview | undefined
+    await Promise.all([
+      loadStatsPageDataResource<AccountUsageStatsOverview>({
+        apply: (nextOverview, phase) => {
+          usageOverview = nextOverview
+          overview.value = nextOverview
+          syncDateRangeFromResponse(nextOverview.range)
+          pruneLoadedTrendAccounts(nextOverview.rows)
+          if (phase === 'confirmation') {
+            applyAccountUsageResult(accountUsagePageResult(nextOverview), options)
+            renderChart()
+          }
+        },
+        domain: 'stats.accountUsage',
+        force: options.forceCache === true,
+        isCurrent: () => resourceRequestSeq === usageStatsResourceRequestSeq,
+        isManagementView: isManagementView.value,
+        loadNetwork: () => isManagementView.value
+          ? api.stats.accountUsage(query)
+          : api.myStats.accountUsage(query),
+        query,
+        route: isManagementView.value ? '/stats/account-usage' : '/my-stats/account-usage',
+        targetSystemAccountId: systemAccountId
+      }),
       loadUsageStatsOptions(options.forceOptions === true),
       loadUsageStatsWindow({ force: true })
     ])
-    overview.value = usageOverview
-    syncDateRangeFromResponse(usageOverview.range)
-    pruneLoadedTrendAccounts(usageOverview.rows)
-    return {
-      items: usageOverview.rows,
-      page: usageOverview.page,
-      pageSize: usageOverview.pageSize || accountUsagePageSize,
-      total: usageOverview.total,
-      hasMore: usageOverview.hasMore
-    }
+    if (!usageOverview) throw new Error('账户用量统计缓存未返回数据')
+    return accountUsagePageResult(usageOverview)
   },
   requestSignature: (_options, pageState) => {
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
@@ -335,9 +355,13 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
   if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
     return
   }
-  const [providerList] = await Promise.all([
-    api.providers.options()
-  ])
+  const providerList = await loadProviderOptionsResource({
+    apply: (nextProviders) => {
+      providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+    },
+    force,
+    isManagementView: isManagementView.value
+  })
   providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
   usageStatsOptionsLoaded.value = true
   usageStatsOptionsScopeKey.value = scopeKey
@@ -345,7 +369,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
 
 function refreshUsageStats() {
   resetAccountUsagePagination()
-  void loadData({ forceOptions: true })
+  void loadData({ forceOptions: true, forceCache: true })
 }
 
 function resetFilters() {
@@ -372,7 +396,17 @@ function handleSystemAccountFilterChange() {
 
 async function refreshMobileRows() {
   resetAccountUsagePagination()
-  await loadData({ forceOptions: true })
+  await loadData({ forceOptions: true, forceCache: true })
+}
+
+function accountUsagePageResult(usageOverview: AccountUsageStatsOverview): ResponsivePagedListResult<AccountUsageStatsRow> {
+  return {
+    items: usageOverview.rows,
+    page: usageOverview.page,
+    pageSize: usageOverview.pageSize || accountUsagePageSize,
+    total: usageOverview.total,
+    hasMore: usageOverview.hasMore
+  }
 }
 
 function accountUsageParams(systemAccountId: string | undefined, pageState: AccountUsagePageState) {

@@ -5,6 +5,7 @@ import { listAccountAuthorizationGranteeIdsAsync } from '../../storage/resource-
 import { errorLogFields, logger } from '../../shared/logger.js'
 import type {
   PageDataChangeEvent,
+  PageDataDomain,
   PageDataChangeOperation
 } from './page-data-change.service.js'
 import { PAGE_DATA_MAX_EVENT_OWNERS } from './page-data-change.service.js'
@@ -37,7 +38,7 @@ export interface PageDataChangePublisher {
   publishUsageRecords(inputs: Array<Pick<UsageRecordInput, 'id' | 'systemAccountId'>>): void
   flushUsageRecords(): Promise<void>
   publishAnnouncementPublic(input: AnnouncementPageDataChangeInput): Promise<void>
-  publishDomainReset(domain: 'accounts.static' | 'accounts.runtime' | 'usage.records', ownerSystemAccountIds: string[], allScopes?: boolean): Promise<void>
+  publishDomainReset(domain: PageDataDomain, ownerSystemAccountIds: string[], allScopes?: boolean): Promise<void>
 }
 
 export function createPageDataChangePublisher(options: {
@@ -150,12 +151,19 @@ const runtimePublisher = createPageDataChangePublisher({
 
 export async function publishAccountStaticChange(input: AccountPageDataChangeInput): Promise<void> {
   const owners = await resolveAccountPageDataOwners(input)
-  await runtimePublisher.publishAccountStatic({ ...input, ...owners })
+  await Promise.all([
+    runtimePublisher.publishAccountStatic({ ...input, ...owners }),
+    runtimePublisher.publishDomainReset('accounts.options', owners.ownerSystemAccountIds, owners.allScopes),
+    ...statsPageDataDomains.map((domain) => runtimePublisher.publishDomainReset(domain, owners.ownerSystemAccountIds, owners.allScopes))
+  ])
 }
 
 export async function publishAccountRuntimeChange(input: AccountPageDataChangeInput): Promise<void> {
   const owners = await resolveAccountPageDataOwners(input)
-  await runtimePublisher.publishAccountRuntime({ ...input, ...owners })
+  await Promise.all([
+    runtimePublisher.publishAccountRuntime({ ...input, ...owners }),
+    runtimePublisher.publishDomainReset('accounts.options', owners.ownerSystemAccountIds, owners.allScopes)
+  ])
 }
 
 export async function resolveAccountPageDataOwners(input: {
@@ -192,11 +200,18 @@ export async function publishAnnouncementPublicChange(input: AnnouncementPageDat
 }
 
 export async function publishAccountStaticReset(ownerSystemAccountIds: string[], allScopes = false): Promise<void> {
-  await runtimePublisher.publishDomainReset('accounts.static', ownerSystemAccountIds, allScopes)
+  await Promise.all([
+    runtimePublisher.publishDomainReset('accounts.static', ownerSystemAccountIds, allScopes),
+    runtimePublisher.publishDomainReset('accounts.options', ownerSystemAccountIds, allScopes),
+    ...statsPageDataDomains.map((domain) => runtimePublisher.publishDomainReset(domain, ownerSystemAccountIds, allScopes))
+  ])
 }
 
 export async function publishAccountRuntimeReset(ownerSystemAccountIds: string[], allScopes = false): Promise<void> {
-  await runtimePublisher.publishDomainReset('accounts.runtime', ownerSystemAccountIds, allScopes)
+  await Promise.all([
+    runtimePublisher.publishDomainReset('accounts.runtime', ownerSystemAccountIds, allScopes),
+    runtimePublisher.publishDomainReset('accounts.options', ownerSystemAccountIds, allScopes)
+  ])
 }
 
 export async function publishUsageRecordsReset(ownerSystemAccountIds: string[]): Promise<void> {
@@ -210,8 +225,28 @@ export async function publishUsageRecordsGlobalReset(): Promise<void> {
 export async function publishAccountsGlobalReset(): Promise<void> {
   await Promise.all([
     runtimePublisher.publishDomainReset('accounts.static', [], true),
-    runtimePublisher.publishDomainReset('accounts.runtime', [], true)
+    runtimePublisher.publishDomainReset('accounts.runtime', [], true),
+    runtimePublisher.publishDomainReset('accounts.options', [], true),
+    ...statsPageDataDomains.map((domain) => runtimePublisher.publishDomainReset(domain, [], true))
   ])
+}
+
+const statsPageDataDomains = ['stats.overview', 'stats.accountUsage', 'stats.aiPerformance'] as const
+
+export async function publishStatsPageDataGlobalReset(): Promise<void> {
+  await Promise.all(statsPageDataDomains.map((domain) => runtimePublisher.publishDomainReset(domain, [], true)))
+}
+
+export async function publishPageDataDomainReset(
+  domain: PageDataDomain,
+  ownerSystemAccountIds: string[] = [],
+  allScopes = false
+): Promise<void> {
+  await runtimePublisher.publishDomainReset(domain, ownerSystemAccountIds, allScopes)
+}
+
+export async function publishPageDataDomainGlobalReset(domain: PageDataDomain): Promise<void> {
+  await runtimePublisher.publishDomainReset(domain, [], true)
 }
 
 export function reportPageDataPublishFailure(error: unknown, context: Record<string, unknown>): void {
