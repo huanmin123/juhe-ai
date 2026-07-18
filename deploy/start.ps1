@@ -158,7 +158,10 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
   if ($LASTEXITCODE -ne 0 -or -not $manifestEpoch) { throw 'Unable to read deploy/owner-manifest.json deploymentEpoch.' }
   node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-  $ownerLockPath = if ($env:JUHE_AI_OWNER_LOCK_PATH) { $env:JUHE_AI_OWNER_LOCK_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_PATH' -Fallback 'runtime/node-server.owner.lock' }
+  $ownerLockPath = if ($env:JUHE_AI_OWNER_LOCK_PATH) { $env:JUHE_AI_OWNER_LOCK_PATH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_PATH' -Fallback '' }
+  if (-not [System.IO.Path]::IsPathRooted($ownerLockPath)) {
+    throw 'JUHE_AI_OWNER_LOCK_PATH must be an absolute shared path outside the release directory.'
+  }
   $ownerLockEpoch = if ($env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH) { $env:JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH } else { Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH' -Fallback $manifestEpoch }
   if ($ownerLockEpoch -ne $manifestEpoch) { throw 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json.' }
   $nodeVersion = node -p "require('./package.json').version"
@@ -168,7 +171,7 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
   $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
   $PSNativeCommandUseErrorActionPreference = $false
   try {
-    node scripts/run-with-owner-lock.mjs --lock-path $ownerLockPath --deployment-epoch $ownerLockEpoch --role server --version $nodeVersion -- node backend/dist/server.js
+    node scripts/run-with-owner-lock.mjs --lock-path $ownerLockPath --release-root $appDir --deployment-epoch $ownerLockEpoch --role server --version $nodeVersion -- node backend/dist/server.js
     $ownerLockExitCode = $LASTEXITCODE
   } finally {
     $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreference

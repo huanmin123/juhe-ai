@@ -228,8 +228,8 @@
           <div class="section-heading">
             <div>
               <h3 class="section-title">
-                <span>首包等待与流式中断</span>
-                <a-tooltip title="首包等待适用于非流式和流式请求；流式输出停顿和失败计数只作用于 SSE 响应，并固定启用。">
+                <span>请求等待与流式中断</span>
+                <a-tooltip title="文本和图像请求使用独立的当前账号尝试超时；只有暂时没有可派发账号时才累计无账号等待时间。">
                   <QuestionCircleOutlined class="help-icon" />
                 </a-tooltip>
               </h3>
@@ -238,23 +238,38 @@
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="首包等待上限（秒）" tooltip="发起上游请求后，超过这个时间仍未收到上游首个响应或非流式首个字节，就中断当前账号并尝试后续账号。">
-                <a-input-number v-model:value="systemForm.streamRequestTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
+              <a-form-item label="文本首响应等待（秒）" tooltip="只作用于文本 lane：当前账号超过该时间仍未返回响应头或非流式首字节时，进入未提交接管。">
+                <a-input-number v-model:value="systemForm.textFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="输出停顿上限（秒）" tooltip="只作用于当前这次流式响应：收到首段上游内容后，超过该时间没有任何上游新数据，就发送失败事件并结束本次响应；任意上游 chunk 都会刷新原始数据计时，未形成完整 SSE 事件只记录诊断。">
-                <a-input-number v-model:value="systemForm.streamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
+              <a-form-item label="文本流式停顿（秒）" tooltip="只作用于文本 lane：收到首段内容后，超过该时间没有任何上游新数据时收口当前尝试。">
+                <a-input-number v-model:value="systemForm.textStreamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="客户端总等待时长（秒）" tooltip="限制同一次客户端连接在服务端隐藏切号和重试期间的总等待时间；超过后停止继续隐藏重试并返回失败，避免客户端长期收不到内容后断开。">
-                <a-input-number v-model:value="systemForm.streamClientTotalWaitTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
+              <a-form-item label="文本未提交尝试寿命（秒）" tooltip="只作用于文本 lane：当前账号尚未产生模型语义输出时的单次尝试最大存活时间；语义输出后不再使用该绝对寿命。">
+                <a-input-number v-model:value="systemForm.textUncommittedAttemptMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="单条流最大存活时间（秒）" tooltip="限制单条 SSE 从进入网关到强制收口的最长时间；即使上游持续发送心跳，到达该时间也会直接中断连接，让客户端重试。默认 1800 秒。">
-                <a-input-number v-model:value="systemForm.streamMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
+              <a-form-item label="图像首响应等待（秒）" tooltip="只作用于 image lane：当前账号超过该时间仍未返回响应头或非流式首字节时，进入未提交接管。">
+                <a-input-number v-model:value="systemForm.imageFirstResponseTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="图像流式停顿（秒）" tooltip="只作用于 image lane：收到首段内容后，超过该时间没有任何上游新数据时收口当前尝试。">
+                <a-input-number v-model:value="systemForm.imageStreamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="图像未提交尝试寿命（秒）" tooltip="只作用于 image lane：当前账号尚未产生模型语义输出时的单次尝试最大存活时间。">
+                <a-input-number v-model:value="systemForm.imageUncommittedAttemptMaxLifetimeSeconds" :min="60" :max="86400" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="无可用账号等待（秒）" tooltip="只在没有可立即派发账号时累计；当前账号仍在执行或存在可派发候选时不会因为该时间到达而停止服务端接管。">
+                <a-input-number v-model:value="systemForm.noAvailableAccountWaitTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
           </div>

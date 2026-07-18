@@ -6,10 +6,26 @@ import {
   type GptRequestOverrideModelCapabilities
 } from './request-overrides.js'
 
+type GptRequestOverrideModelCapabilitiesResolver = (
+  account: DispatchAccountSecret,
+  upstreamModel: string | undefined
+) => GptRequestOverrideModelCapabilities | undefined | Promise<GptRequestOverrideModelCapabilities | undefined>
+
+let modelCapabilitiesResolverForTest: GptRequestOverrideModelCapabilitiesResolver | undefined
+
+export function setGptRequestOverrideModelCapabilitiesResolverForTest(
+  resolver: GptRequestOverrideModelCapabilitiesResolver | undefined
+): void {
+  modelCapabilitiesResolverForTest = resolver
+}
+
 export async function resolveGptRequestOverrideModelCapabilities(
   account: DispatchAccountSecret,
   upstreamModel: string | undefined
 ): Promise<GptRequestOverrideModelCapabilities | undefined> {
+  if (modelCapabilitiesResolverForTest) {
+    return await modelCapabilitiesResolverForTest(account, upstreamModel)
+  }
   const model = upstreamModel?.trim()
   if (!model) return undefined
   const overrides = readGptAccountRequestOverrides(account.credentials)

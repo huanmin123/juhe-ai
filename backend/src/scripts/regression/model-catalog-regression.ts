@@ -57,6 +57,16 @@ assert.match(modelCatalogSource, /await providerModelCatalogInvalidationInFlight
 assert.match(modelCatalogSource, /clearProviderModelCatalogCaches[\s\S]{0,1200}Promise\.allSettled\(pendingLoads\)[\s\S]{0,500}clearProviderModelCatalogSharedCacheAsync/, '模型目录失效必须等待旧 loader 和迟到 cache set 完成后再清理 shared cache')
 
 try {
+  const providerModelCatalogRepositorySource = readFileSync(
+    new URL('../../storage/provider-model-catalog.repository.ts', import.meta.url),
+    'utf8'
+  )
+  assert.match(
+    providerModelCatalogRepositorySource,
+    /FROM juhe_business\.provider_model_catalog[\s\S]*?catalog_visible = TRUE/,
+    'PostgreSQL 内置模型目录必须用 boolean TRUE 过滤 catalog_visible，不能与整数 1 比较'
+  )
+
   databaseModule.getBusinessDatabase()
   runtimeConfig.processRole = 'db-service'
   assert.equal(sqliteReadWorkerPool.sqliteReadWorkerPoolEnabled(), true, '模型目录缓存回归必须真实启用 SQLite read worker')
@@ -114,7 +124,6 @@ try {
     '模型目录失效后下一次读取必须重新执行一次 read worker job'
   )
   runtimeConfig.processRole = 'worker'
-
   assert.equal(
     providerModelCatalogId('gpt', 'gpt-5.6-sol'),
     'provider_model_gpt_gpt_5_6_sol_69ec47b65152',
@@ -1031,6 +1040,7 @@ try {
 
   console.log('model catalog regression passed')
 } finally {
+  runtimeConfig.processRole = 'worker'
   await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   try {
     databaseModule.closeStorageDatabases()

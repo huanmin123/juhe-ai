@@ -95,7 +95,7 @@
 | 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
 | API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和路由策略绑定 |
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
-| 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户 `credentials.error_handling_rules` 校验、非 2xx 错误匹配、冷却 / 限流 / 异常目标和切号动作 |
+| 账户错误处理策略 | `modules/accounts/account-error-policy-validation.ts`、`modules/gateway/policy/account-error-policy.service.ts` | 账户 `credentials.error_handling_rules` 校验，以及精确客户端画像下的非 2xx 语义匹配、冷却 / 限流 / 异常目标和切号动作；通用客户端旁路 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
 | 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |

@@ -42,7 +42,7 @@ const fetchPageSource = fetchPageStart >= 0 && fetchPageEnd > fetchPageStart
   ? viewSource.slice(fetchPageStart, fetchPageEnd)
   : ''
 assert.match(fetchPageSource, /void loadModelOptions\(/, '模型筛选项必须独立后台加载')
-assert.match(fetchPageSource, /return await fetchRecords\(pageState, options\.forceData === true\)/, '使用记录列表必须直接等待 cache-first 列表请求，并保留显式强制刷新')
+assert.match(fetchPageSource, /return await fetchRecords\(pageState\)/, '使用记录列表必须直接等待 scoped 列表请求')
 assert.doesNotMatch(fetchPageSource, /Promise\.all/, '使用记录首屏不得等待模型筛选项加载')
 const tableChangeSource = viewSource.match(/async function handleTableChange[\s\S]*?\n}/)?.[0] ?? ''
 assert.match(tableChangeSource, /businessFiltersDisabled\.value[\s\S]*field: 'createdAt'[\s\S]*order: 'descend'/, '全用户列表处理表格排序时必须强制 createdAt 降序')

@@ -350,32 +350,30 @@
                 </template>
               </AccountBatchEditField>
 
-              <template v-if="serviceTierOptions.length || reasoningEffortOptions.length">
+              <template v-if="requestOverridesSupported">
                 <div class="batch-edit-two-columns">
                   <AccountBatchEditField
-                    v-if="serviceTierOptions.length"
                     v-model:checked="form.enabled.serviceTierOverride"
                     label="服务等级"
-                    description="不覆盖客户端设置表示清除账户覆盖。"
+                    :description="serviceTierDescription"
                   >
                     <template #default="{ disabled }">
                       <a-select
                         v-model:value="form.serviceTierOverride"
-                        :disabled="disabled"
+                        :disabled="disabled || modelsLoading || !gptCapabilities.serviceTiers.length"
                         :options="serviceTierOptions"
                       />
                     </template>
                   </AccountBatchEditField>
                   <AccountBatchEditField
-                    v-if="reasoningEffortOptions.length"
                     v-model:checked="form.enabled.reasoningEffortOverride"
                     label="思考级别"
-                    description="不覆盖客户端设置表示清除账户覆盖。"
+                    :description="reasoningEffortDescription"
                   >
                     <template #default="{ disabled }">
                       <a-select
                         v-model:value="form.reasoningEffortOverride"
-                        :disabled="disabled"
+                        :disabled="disabled || modelsLoading || !gptCapabilities.reasoningEfforts.length"
                         :options="reasoningEffortOptions"
                       />
                     </template>
@@ -440,7 +438,8 @@ import type { AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountGptRequestOverrideCapabilities,
   availableAccountGptReasoningEffortOptions,
-  availableAccountGptServiceTierOptions
+  availableAccountGptServiceTierOptions,
+  isAccountRequestOverrideProviderSupported
 } from './accountGptRequestOverrides'
 import {
   defaultAccountModelMappingSourceEndpointFamily,
@@ -530,8 +529,18 @@ const gptCapabilities = computed(() => accountGptRequestOverrideCapabilities({
   modelOptions: modelOptions.value,
   supportedModels: effectiveBatchModels.value
 }))
+const requestOverridesSupported = computed(() => Boolean(
+  homogeneousAccount.value
+  && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode)
+))
 const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(gptCapabilities.value))
 const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(gptCapabilities.value))
+const serviceTierDescription = computed(() => gptCapabilities.value.serviceTiers.length
+  ? '不覆盖客户端设置表示清除账户覆盖。'
+  : '当前已选模型未声明可用服务等级；仍可批量清除已有覆盖。')
+const reasoningEffortDescription = computed(() => gptCapabilities.value.reasoningEfforts.length
+  ? '不覆盖客户端设置表示清除账户覆盖。'
+  : '当前已选模型未声明可用思考级别；仍可批量清除已有覆盖。')
 const scheduleForm = computed(() => ({ availabilitySchedule: form.availabilitySchedule }))
 const enabledLabels = computed(() => enabledAccountBatchEditFieldLabels(form))
 const saveDisabled = computed(() => (

@@ -65,10 +65,12 @@ provider 支持两类 API 形态。默认 `images` 形态兼容 OpenAI Images AP
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY` | provider Bearer token；本地 mock provider 可不配置 | 未配置 |
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_API` | provider API 形态，`images` 表示 OpenAI Images API，`responses` 表示 OpenAI Responses API 图像工具 | `images` |
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL` | provider 图像模型 | `gpt-image-2` |
-| `JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS` | 图像 provider 请求超时 | 默认 120000，范围 1000-300000 |
+| `JUHE_AI_IMAGE_GENERATION_PROVIDER_TIMEOUT_MS` | 图像 provider 请求超时 | 默认 600000，范围 1000-900000；与 image lane 长首响应档位对齐 |
 | `JUHE_AI_IMAGE_GENERATION_PROVIDER_MAX_BODY_MB` | provider JSON 响应读取上限 | 默认 64，范围 1-256 |
 
 首批只支持 `action=generate|auto` 且无输入图片 / mask 的生成路径。`action=edit`、`input_image_mask`、历史 `image_generation_call` 复用和多图编辑在 provider 编辑端点落地前必须受控失败。provider 不支持 streaming 或返回普通 JSON 时，Responses SSE 仍返回 completed-only 图像事件，不伪造 partial。
+
+PLAN-0134 补充运行边界：Anthropic 和 hybrid driver 必须把当前请求 `AbortSignal` 传入 bridge，再由 bridge 传给 provider `generate / generateStream`。客户端取消、网关请求终止或 attempt 被关闭时必须同步取消 provider 请求；不能让 bridge 使用独立的无关联生命周期。图像 provider 的状态码和错误正文只在该 adapter 的已声明协议内解析，不能上升为通用网关切号规则。
 
 ## 执行拆解
 
@@ -120,6 +122,7 @@ provider 支持两类 API 形态。默认 `images` 形态兼容 OpenAI Images AP
 | 2026-06-24 | 进行中 | AI | 已补 provider partial image streaming：Responses SSE 请求带 `partial_images` 时，图像 provider 收到 `stream=true` / `partial_images`，provider `image_generation.partial_image` 转为 Responses `response.image_generation_call.partial_image`；mock 已通过，真实 provider partial 仍需可用 Images API key 后复测。 |
 | 2026-06-25 | 进行中 | AI | 已用真实账户复测图像能力：`/v1/images/generations` 仍返回 401 `invalid_api_key`，但 `/v1/responses` 使用 `gpt-image-2-chat` 和 `gpt-5.5` 均可返回 `image_generation_call.result`。决策：新增 `responses` provider API 形态，避免真实可用图像能力被 Images API 代理链路阻断。 |
 | 2026-06-25 | 进行中 | AI | 已实现 `JUHE_AI_IMAGE_GENERATION_PROVIDER_API=responses`：executor 构造 Responses provider 请求体，解析 `image_generation_call.result`、`response.image_generation_call.partial_image` 和 `response.completed`；mock、typecheck、真实 JSON 和真实 SSE 网关 E2E 均通过。 |
+| 2026-07-18 | 已完成 | AI | PLAN-0134 将 provider 默认 / 最大超时调整为 600 / 900 秒，并把网关请求取消信号贯穿 Anthropic、hybrid、bridge 和 provider JSON / SSE 路径；`test:image-provider-timeout-signal` 通过。 |
 
 ## 决策记录
 

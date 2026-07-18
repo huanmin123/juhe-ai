@@ -109,6 +109,31 @@ export interface CooldownAccountRetestSuccessInput {
   expectedObservationStartedAt?: string
 }
 
+interface CooldownRetestExpectedState {
+  expectedConfigRevision?: number
+  expectedObservationStartedAt?: string
+}
+
+function cooldownRetestExpectedStateGuard(input: CooldownRetestExpectedState): {
+  sql: string
+  params: Array<number | string>
+} {
+  const clauses: string[] = []
+  const params: Array<number | string> = []
+  if (input.expectedConfigRevision !== undefined) {
+    clauses.push('AND config_revision = ?')
+    params.push(input.expectedConfigRevision)
+  }
+  if (input.expectedObservationStartedAt !== undefined) {
+    clauses.push('AND cooldown_retest_observation_started_at = ?')
+    params.push(input.expectedObservationStartedAt)
+  }
+  return {
+    sql: clauses.map((clause) => `      ${clause}`).join('\n'),
+    params
+  }
+}
+
 export function deferCooldownAccountRetest(id: string, delaySeconds = 10): CooldownAccountRetestDeferResult {
   const now = nowIso()
   const cooldownUntil = new Date(Date.now() + normalizedTaskFailureDelaySeconds(delaySeconds) * 1000).toISOString()
@@ -145,6 +170,7 @@ export function recordCooldownAccountRetestSuccess(
   id: string,
   input: CooldownAccountRetestSuccessInput
 ): { changed: boolean; accountStatus?: string } {
+  const expectedState = cooldownRetestExpectedStateGuard(input)
   const result = getBusinessDatabase().prepare(`
     UPDATE accounts
     SET status = 'active', schedulable = 1, cooldown_until = NULL,
@@ -154,9 +180,8 @@ export function recordCooldownAccountRetestSuccess(
         updated_at = ?
     WHERE id = ? AND deleted_at IS NULL
       AND status IN ('temporary_unavailable', 'rate_limited')
-      AND config_revision = ?
-      AND (? IS NULL OR cooldown_retest_observation_started_at = ?)
-  `).run(nowIso(), id, input.expectedConfigRevision, input.expectedObservationStartedAt ?? null, input.expectedObservationStartedAt ?? null)
+${expectedState.sql}
+  `).run(nowIso(), id, ...expectedState.params)
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_restored' })
@@ -172,6 +197,7 @@ export async function recordCooldownAccountRetestSuccessAsync(
 ): Promise<{ changed: boolean; accountStatus?: string }> {
   if (runtimeConfig.databaseDriver !== 'postgres') return recordCooldownAccountRetestSuccess(id, input)
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  const expectedState = cooldownRetestExpectedStateGuard(input)
   const result = await client.execute(`
     UPDATE ${cooldownRetestTable(client, 'accounts')}
     SET status = 'active', schedulable = 1, cooldown_until = NULL,
@@ -181,9 +207,8 @@ export async function recordCooldownAccountRetestSuccessAsync(
         updated_at = ?
     WHERE id = ? AND deleted_at IS NULL
       AND status IN ('temporary_unavailable', 'rate_limited')
-      AND config_revision = ?
-      AND (? IS NULL OR cooldown_retest_observation_started_at = ?)
-  `, [nowIso(), id, input.expectedConfigRevision, input.expectedObservationStartedAt ?? null, input.expectedObservationStartedAt ?? null])
+${expectedState.sql}
+  `, [nowIso(), id, ...expectedState.params])
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     await refreshGroupAccountStatsAfterWriteAsync({ accountIds: [id], reason: 'account_cooldown_retest_restored' }, client)
@@ -281,6 +306,7 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
         : cooldownRetestObservationTimeoutCode)
     : recovery.stage === 'long_term' ? cooldownRetestLongTermUnavailableCode : errorCode
   const cooldownMessage = cooldownRetestFailureMessage(failureCount, recovery, testErrorMessage)
+  const expectedState = cooldownRetestExpectedStateGuard(input)
   const result = getBusinessDatabase()
     .prepare(`
       UPDATE accounts
@@ -300,8 +326,7 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
       WHERE id = ?
         AND deleted_at IS NULL
         AND status = ?
-        AND (? IS NULL OR config_revision = ?)
-        AND (? IS NULL OR cooldown_retest_observation_started_at = ?)
+${expectedState.sql}
     `)
     .run(
       transitionedToError ? 1 : 0,
@@ -317,10 +342,7 @@ function recordCooldownAccountRetestFailureInSqliteTransaction(id: string, input
       now,
       id,
       current.status,
-      input.expectedConfigRevision ?? null,
-      input.expectedConfigRevision ?? null,
-      input.expectedObservationStartedAt ?? null,
-      input.expectedObservationStartedAt ?? null
+      ...expectedState.params
     )
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
@@ -364,6 +386,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
   const traceId = optionalString(input.traceId)?.slice(0, 200) ?? null
   const maxPauseMinutes = input.maxPauseMinutes ?? await defaultTemporaryUnschedulableMinutesAsync()
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  const expectedState = cooldownRetestExpectedStateGuard(input)
   const transactionResult = await client.transaction(async (tx) => {
     const current = (await queryAccountCooldownRetestStateAsync(tx, id, { forUpdate: true }))[0]
     if (!current || !isCoolingAccountStatus(current.status)) {
@@ -418,8 +441,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
       WHERE id = ?
         AND deleted_at IS NULL
         AND status = ?
-        AND (? IS NULL OR config_revision = ?)
-        AND (? IS NULL OR cooldown_retest_observation_started_at = ?)
+${expectedState.sql}
     `, [
       transitionedToError ? 1 : 0,
       transitionedToError ? 1 : 0,
@@ -434,10 +456,7 @@ export async function recordCooldownAccountRetestFailureAsync(id: string, input:
       now,
       id,
       current.status,
-      input.expectedConfigRevision ?? null,
-      input.expectedConfigRevision ?? null,
-      input.expectedObservationStartedAt ?? null,
-      input.expectedObservationStartedAt ?? null
+      ...expectedState.params
     ])
     const changed = Number(update.changes ?? 0) > 0
     if (changed) {

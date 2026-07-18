@@ -11,6 +11,7 @@ import {
 } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import { buildGatewayUpstreamRequestParts, buildGatewayUpstreamUrlsForAccount } from '../../modules/providers/drivers/registry.js'
 import { applyGptAccountRequestOverrides } from '../../modules/providers/drivers/gpt/request-overrides.js'
+import { setGptRequestOverrideModelCapabilitiesResolverForTest } from '../../modules/providers/drivers/gpt/request-override-capabilities.js'
 import { buildUpstreamHeaders, buildUpstreamRequestBody, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/upstream/request.js'
 import {
   createGatewayRequestBodyState,
@@ -163,28 +164,43 @@ function testGptAccountRequestOverridePureFunction(): void {
   })
   assert.equal(flexOutput.service_tier, 'flex')
 
-  assert.throws(() => applyGptAccountRequestOverrides({ service_tier: 'flex' }, {
-    credentials: { service_tier_override: 'priority' },
-    endpointFamily: 'responses',
-    modelCapabilities: {
-      supportedServiceTiers: [],
-      supportedReasoningEfforts: []
-    }
-  }), /service_tier_override=priority.*不受目标模型支持/, '目标模型不支持配置档位时必须明确失败，不能静默保留客户端原值')
-
-  assert.throws(() => applyGptAccountRequestOverrides({}, {
-    credentials: { reasoning_effort_override: 'max' },
+  const reasoningOnlyOutput = applyGptAccountRequestOverrides({
+    service_tier: 'flex',
+    reasoning: { effort: 'low', summary: 'auto' }
+  }, {
+    credentials: { service_tier_override: 'priority', reasoning_effort_override: 'high' },
     endpointFamily: 'responses',
     modelCapabilities: {
       supportedServiceTiers: [],
       supportedReasoningEfforts: ['high']
     }
-  }), /reasoning_effort_override=max.*不受目标模型支持/, '目标模型不支持精确思考级别时不能向下降级')
+  })
+  assert.equal(reasoningOnlyOutput.service_tier, 'flex', '目标模型不支持配置档位时必须保留客户端服务等级')
+  assert.deepEqual(reasoningOnlyOutput.reasoning, { effort: 'high', summary: 'auto' }, '受支持的思考级别覆盖必须独立生效')
 
-  assert.throws(() => applyGptAccountRequestOverrides({}, {
-    credentials: { service_tier_override: 'priority' },
+  const serviceTierOnlyOutput = applyGptAccountRequestOverrides({
+    service_tier: 'flex',
+    reasoning: { effort: 'low', summary: 'auto' }
+  }, {
+    credentials: { service_tier_override: 'priority', reasoning_effort_override: 'max' },
+    endpointFamily: 'responses',
+    modelCapabilities: {
+      supportedServiceTiers: ['priority'],
+      supportedReasoningEfforts: ['high']
+    }
+  })
+  assert.equal(serviceTierOnlyOutput.service_tier, 'priority', '受支持的服务等级覆盖必须独立生效')
+  assert.deepEqual(serviceTierOnlyOutput.reasoning, { effort: 'low', summary: 'auto' }, '目标模型不支持精确思考级别时必须保留客户端值且不能向下降级')
+
+  const unknownCapabilitiesOutput = applyGptAccountRequestOverrides({
+    service_tier: 'flex',
+    reasoning: { effort: 'low' }
+  }, {
+    credentials: { service_tier_override: 'priority', reasoning_effort_override: 'high' },
     endpointFamily: 'responses'
-  }), /缺少目标模型能力/, '运行时缺少目录能力时不能静默忽略账户覆盖')
+  })
+  assert.equal(unknownCapabilitiesOutput.service_tier, 'flex', '运行时缺少目录能力时必须保留客户端服务等级')
+  assert.deepEqual(unknownCapabilitiesOutput.reasoning, { effort: 'low' }, '运行时缺少目录能力时必须保留客户端思考级别')
 
   const compactOutput = applyGptAccountRequestOverrides({
     service_tier: 'flex',
@@ -1004,8 +1020,13 @@ const testIdentity = {
   groupId: 'grp_test'
 }
 
+setGptRequestOverrideModelCapabilitiesResolverForTest(() => ({
+  supportedServiceTiers: ['priority', 'flex'],
+  supportedReasoningEfforts: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+}))
 try {
   await main()
 } finally {
+  setGptRequestOverrideModelCapabilitiesResolverForTest(undefined)
   await stopGatewayJsonParseWorker()
 }

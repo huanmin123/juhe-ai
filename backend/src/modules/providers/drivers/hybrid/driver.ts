@@ -406,7 +406,8 @@ function transformHybridAnthropicResponse(req: Request, account: DispatchAccount
     model: openAIToAnthropicBridgeUpstreamModel(req, account),
     previousResponseId: context?.codexResponsesChatBridgePreviousResponseId,
     onResponsesCompleted: context?.codexResponsesChatBridgeCompletionHandler,
-    continueAnthropicMessagesRequest: context?.continueUpstreamJsonRequest
+    continueAnthropicMessagesRequest: context?.continueUpstreamJsonRequest,
+    signal: context?.signal
   })
 }
 

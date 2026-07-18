@@ -37,10 +37,13 @@ export interface GatewaySettings {
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
   streamCircuitBreakerEnabled: boolean
-  streamRequestTimeoutSeconds: number
-  streamIdleTimeoutSeconds: number
-  streamClientTotalWaitTimeoutSeconds: number
-  streamMaxLifetimeSeconds: number
+  textFirstResponseTimeoutSeconds: number
+  textStreamIdleTimeoutSeconds: number
+  textUncommittedAttemptMaxLifetimeSeconds: number
+  imageFirstResponseTimeoutSeconds: number
+  imageStreamIdleTimeoutSeconds: number
+  imageUncommittedAttemptMaxLifetimeSeconds: number
+  noAvailableAccountWaitTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
 }
@@ -95,10 +98,13 @@ function gatewaySettingsFromRawSettings(settings: Record<string, unknown>): Gate
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
     streamCircuitBreakerEnabled: true,
-    streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
-    streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
-    streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
-    streamMaxLifetimeSeconds: numberSetting(settings.streamMaxLifetimeSeconds, 'streamMaxLifetimeSeconds', 60, 86400),
+    textFirstResponseTimeoutSeconds: numberSetting(settings.textFirstResponseTimeoutSeconds, 'textFirstResponseTimeoutSeconds', 10, 3600),
+    textStreamIdleTimeoutSeconds: numberSetting(settings.textStreamIdleTimeoutSeconds, 'textStreamIdleTimeoutSeconds', 1, 3600),
+    textUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.textUncommittedAttemptMaxLifetimeSeconds, 'textUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
+    imageFirstResponseTimeoutSeconds: numberSetting(settings.imageFirstResponseTimeoutSeconds, 'imageFirstResponseTimeoutSeconds', 10, 3600),
+    imageStreamIdleTimeoutSeconds: numberSetting(settings.imageStreamIdleTimeoutSeconds, 'imageStreamIdleTimeoutSeconds', 1, 3600),
+    imageUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.imageUncommittedAttemptMaxLifetimeSeconds, 'imageUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
+    noAvailableAccountWaitTimeoutSeconds: numberSetting(settings.noAvailableAccountWaitTimeoutSeconds, 'noAvailableAccountWaitTimeoutSeconds', 10, 3600),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
   }
@@ -115,10 +121,13 @@ export async function readGatewaySettingsAsync(): Promise<GatewaySettings> {
     temporaryUnschedulableRetryIntervalSeconds: numberSetting(settings.temporaryUnschedulableRetryIntervalSeconds, 'temporaryUnschedulableRetryIntervalSeconds', 0, 3600),
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 'temporaryUnschedulableRetryAttempts', 0, 10),
     streamCircuitBreakerEnabled: true,
-    streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 'streamRequestTimeoutSeconds', 10, 3600),
-    streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 'streamIdleTimeoutSeconds', 1, 3600),
-    streamClientTotalWaitTimeoutSeconds: numberSetting(settings.streamClientTotalWaitTimeoutSeconds, 'streamClientTotalWaitTimeoutSeconds', 10, 3600),
-    streamMaxLifetimeSeconds: numberSetting(settings.streamMaxLifetimeSeconds, 'streamMaxLifetimeSeconds', 60, 86400),
+    textFirstResponseTimeoutSeconds: numberSetting(settings.textFirstResponseTimeoutSeconds, 'textFirstResponseTimeoutSeconds', 10, 3600),
+    textStreamIdleTimeoutSeconds: numberSetting(settings.textStreamIdleTimeoutSeconds, 'textStreamIdleTimeoutSeconds', 1, 3600),
+    textUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.textUncommittedAttemptMaxLifetimeSeconds, 'textUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
+    imageFirstResponseTimeoutSeconds: numberSetting(settings.imageFirstResponseTimeoutSeconds, 'imageFirstResponseTimeoutSeconds', 10, 3600),
+    imageStreamIdleTimeoutSeconds: numberSetting(settings.imageStreamIdleTimeoutSeconds, 'imageStreamIdleTimeoutSeconds', 1, 3600),
+    imageUncommittedAttemptMaxLifetimeSeconds: numberSetting(settings.imageUncommittedAttemptMaxLifetimeSeconds, 'imageUncommittedAttemptMaxLifetimeSeconds', 60, 86400),
+    noAvailableAccountWaitTimeoutSeconds: numberSetting(settings.noAvailableAccountWaitTimeoutSeconds, 'noAvailableAccountWaitTimeoutSeconds', 10, 3600),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 'streamFailureThresholdCount', 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 'streamFailureThresholdWindowMinutes', 1, 1440)
   }

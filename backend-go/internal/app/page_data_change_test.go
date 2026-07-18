@@ -81,6 +81,29 @@ func TestAccountsStaticResetPublisherAdapterPreservesPublishCause(t *testing.T) 
 	}
 }
 
+func TestAccountsStaticResetPublisherAdapterPublishesRequestedDomainReset(t *testing.T) {
+	core := &pageDataCorePublisherStub{
+		events: []redisplatform.PageDataChangeEvent{{EventID: "event-1"}},
+	}
+	cache := &pageDataCacheWriterStub{}
+	adapter := accountsStaticResetPublisherAdapter{
+		publisher: core, cache: cache, logger: slog.Default(), redisNamespace: "prod",
+	}
+
+	if err := adapter.PublishPageDataReset(t.Context(), "groups.static", nil, true); err != nil {
+		t.Fatalf("PublishPageDataReset() error = %v", err)
+	}
+	if got, want := core.domains, []string{"groups.static"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("build domains = %#v, want %#v", got, want)
+	}
+	if !core.allScopes {
+		t.Fatal("build allScopes = false, want true")
+	}
+	if got, want := cache.keys, []string{"juhe-ai:prod:cache-version:page_data_groups_static"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("cache keys = %#v, want %#v", got, want)
+	}
+}
+
 func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	source, err := os.ReadFile("server.go")
 	if err != nil {
@@ -93,10 +116,52 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	if strings.Contains(text, `newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace+":state")`) {
 		t.Fatal("server must not pass the state client namespace to the page data publisher")
 	}
+	groupBlock := sourceBlockBetween(t, text,
+		"groupService := managementgroups.NewServiceWithOptions",
+		"accountService := managementaccounts.NewService",
+	)
+	if !strings.Contains(groupBlock, "PageDataPublisher:       accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management groups")
+	}
+	systemAccountBlock := sourceBlockBetween(t, text,
+		"systemAccountService := managementsystemaccounts.NewServiceWithOptions",
+		"systemTeamService := managementsystemteams.NewServiceWithOptions",
+	)
+	if !strings.Contains(systemAccountBlock, "PageDataPublisher:        accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management system accounts")
+	}
+	systemTeamBlock := sourceBlockBetween(t, text,
+		"systemTeamService := managementsystemteams.NewServiceWithOptions",
+		"authorizationService := managementauthorizations.NewServiceWithOptions",
+	)
+	if !strings.Contains(systemTeamBlock, "Publisher:                accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management system teams")
+	}
+	providerModelBlock := sourceBlockBetween(t, text,
+		"providerModelService := managementprovidermodels.NewServiceWithOptions",
+		"routeStrategyService := managementroutestrategies.NewServiceWithOptions",
+	)
+	if !strings.Contains(providerModelBlock, "PageDataPublisher: accountsStaticResetPublisher") {
+		t.Fatal("server must inject the page data publisher into management provider models")
+	}
+}
+
+func sourceBlockBetween(t *testing.T, source string, startMarker string, endMarker string) string {
+	t.Helper()
+	start := strings.Index(source, startMarker)
+	if start < 0 {
+		t.Fatalf("server source missing block start %q", startMarker)
+	}
+	relativeEnd := strings.Index(source[start:], endMarker)
+	if relativeEnd < 0 {
+		t.Fatalf("server source missing block end %q after %q", endMarker, startMarker)
+	}
+	return source[start : start+relativeEnd]
 }
 
 type pageDataCorePublisherStub struct {
 	ownerIDs     []string
+	domains      []string
 	allScopes    bool
 	events       []redisplatform.PageDataChangeEvent
 	publishedIDs []string
@@ -104,7 +169,8 @@ type pageDataCorePublisherStub struct {
 	publishErr   error
 }
 
-func (s *pageDataCorePublisherStub) NewRangeResetEvents(_ string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
+func (s *pageDataCorePublisherStub) NewRangeResetEvents(domain string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
+	s.domains = append(s.domains, domain)
 	s.ownerIDs = append([]string(nil), ownerIDs...)
 	s.allScopes = allScopes
 	return append([]redisplatform.PageDataChangeEvent(nil), s.events...), s.buildErr
