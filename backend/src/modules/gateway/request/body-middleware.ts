@@ -1,4 +1,4 @@
-import type { NextFunction, Response } from 'express'
+import type { ErrorRequestHandler, NextFunction, RequestHandler, Response } from 'express'
 
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { UsageFailureAttribution } from '../../../storage/usage-records.repository.js'
@@ -63,6 +63,21 @@ export interface GatewayRawBodyParserErrorResponse {
   message: string
   errorType: string
   failureAttribution: UsageFailureAttribution
+}
+
+export function wrapGatewayRawBodyParser(
+  parser: RequestHandler,
+  handleParserError: ErrorRequestHandler
+): RequestHandler {
+  return (req, res, next) => {
+    parser(req, res, (error?: unknown) => {
+      if (error === undefined) {
+        next()
+        return
+      }
+      handleParserError(error, req, res, next)
+    })
+  }
 }
 
 export function classifyGatewayRawBodyParserError(error: GatewayRawBodyParserError): GatewayRawBodyParserErrorResponse {
