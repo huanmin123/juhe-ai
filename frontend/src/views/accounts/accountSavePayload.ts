@@ -346,12 +346,10 @@ function validateAccountGptRequestOverrides(
     supportedModels
   })
   if (!isAccountGptServiceTierOverrideAvailable(form.serviceTierOverride, capabilities)) {
-    return form.type === 'oauth' && form.serviceTierOverride === 'flex'
-      ? 'GPT OAuth 账户不支持 Flex 服务等级'
-      : '所选支持模型均不支持当前服务等级覆盖'
+    return '所选支持模型中没有模型支持当前服务等级覆盖'
   }
   if (!isAccountGptReasoningEffortOverrideAvailable(form.reasoningEffortOverride, capabilities)) {
-    return '所选支持模型均不支持当前思考级别覆盖'
+    return '所选支持模型中没有模型支持当前思考级别覆盖'
   }
   return undefined
 }

@@ -364,8 +364,8 @@ OAuth 账户：
 - `providerCode = openai` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = api_key` 时必须有 `credentials.api_key`。
 - `providerCode = gpt` 且 `type = oauth` 时必须有 `credentials.refresh_token` 或 `credentials.access_token`。
-- 文本模型账户凭据可选包含字符串 `service_tier_override` 与 `reasoning_effort_override`；空值表示不覆盖客户端请求。值必须属于账户全部支持模型在当前供应商目录中声明的共同交集。GPT 仍只接受既有 OpenAI 值并保持 OAuth 禁止 Flex；Anthropic 按原生 `service_tier` / effort 映射；Gemini 只支持 thinking level，服务档位覆盖明确拒绝；DeepSeek / GLM 未声明能力时不得提交。`speed`、thinking budget 等原生字段只做同协议保护，不属于这两个账户控件。
-- `service_tier_override` 与 `reasoning_effort_override` 会在模型映射和协议桥接确定实际上游模型后覆盖最终上游请求；OpenAI Responses Multi-agent Beta 不属于本期导入字段。
+- 文本模型账户凭据可选包含字符串 `service_tier_override` 与 `reasoning_effort_override`；空值表示不覆盖客户端请求。保存值必须至少属于账户一个已选模型在当前供应商目录中声明的能力，选项取能力合集，未知模型不清空已知模型能力。GPT 只接受既有 OpenAI 值，API Key 与 OAuth 使用同一规则并都允许模型目录声明的 Flex；Anthropic 按原生 `service_tier` / effort 映射；Gemini 只支持 thinking level，服务档位覆盖明确拒绝；DeepSeek / GLM 未声明能力时不得提交。`speed`、thinking budget 等原生字段只做同协议保护，不属于这两个账户控件。
+- `service_tier_override` 与 `reasoning_effort_override` 在模型映射和协议桥接确定实际上游模型后逐字段判断；最终模型精确支持配置值时覆盖对应请求体字段，不支持或能力未知时保留客户端原值，不降级、不报账户覆盖错误。OpenAI Responses Multi-agent Beta 不属于本期导入字段。
 - `providerCode = anthropic` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。当前导入协议不接受 Anthropic OAuth、Setup Token、Claude Code token、`refresh_token` 或 `access_token`。
 - `providerCode = anthropic` 不接受 `credentials.anthropic_version` 或 `credentials.anthropic_beta`。`anthropic-version` 是客户端请求头，缺省时由网关按协议默认 `2023-06-01` 补齐；`anthropic-beta` 只透传客户端显式 header。
 - `providerCode = glm` 时只允许 `type = api_key`，且必须有 `credentials.api_key`。

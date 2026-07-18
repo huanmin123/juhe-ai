@@ -225,9 +225,6 @@ function normalizeGptAccountRequestOverrides(
     input.service_tier_override,
     '服务等级覆盖'
   )
-  if (context.providerCode === 'gpt' && context.accountType === 'oauth' && serviceTier === 'flex') {
-    throw new Error('OpenAI OAuth 账户不支持 Flex 服务等级覆盖')
-  }
   const reasoningEffort = optionalCredentialToken(
     input.reasoning_effort_override,
     '思考级别覆盖'
