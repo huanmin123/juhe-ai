@@ -163,6 +163,8 @@ try {
 
 `TestW6ManagementClientIPPolicyPostgresRedisAsynqSmoke` 通过真实 PostgreSQL store、Redis version reader / 两层 limiter、Asynq ingest worker 和四条 production handler 组装进程内 router，覆盖策略事务、版本消费、限流 bypass 和 operation log。`TestW6ManagementClientIPStatsListPostgresRedisSmoke` 已加入真实 Goose migration、PostgreSQL + Redis 管理鉴权 / 限流、列表筛选 / 排序 / readiness 和 production SQL `EXPLAIN` 断言，并检查默认与显式 `requestCount desc` 在 custom / generic plan 下使用同一静态 SQL。`TestW6ManagementClientIPStatsNodeWriterGoReaderSmoke` 保留 000040 列表迁移证据；`TestW6ManagementClientIPStatsDetailMigrationNodeWriterGoReaderSmoke` 独立执行 Goose `40 -> 41`，先确认 000040 后详情表不存在，再确认 000041 创建详情窗口表和索引，然后让 Node production writer / refresh 写入并由 Go production HTTP reader 读取。Node 子进程只接收显式环境白名单；详情专用模式不预装完整 Node schema，只从 Node production schema 选择 writer 必需的 daily 表和索引，避免掩盖 000041。四者都使用进程内 `httptest` router，不启动 `app.RunServer` listener；本机 Docker provider 不可用，普通模式只完成 skip / 编译门禁，强制模式按预期非零失败，真实 listener、反向代理和前端页面另列门禁。
 
+2026-07-18 真实依赖复跑：通过独立 SSH Docker socket 隧道连接远端 Docker `29.1.3`，设置 `JUHE_AI_REQUIRE_INTEGRATION=1` 后执行 `TestW6ManagementClientIPStatsDetailMigrationNodeWriterGoReaderSmoke`。首次红灯稳定暴露 Node fixture 仍写旧 `health_check_endpoint_family='responses'`，而 fresh Goose `000005` 已只允许 `health_check_endpoint_mode` 精确枚举；fixture 收口为 `health_check_endpoint_mode='responses_sse'` 后，同一用例在 PostgreSQL 18 上完成 Goose `0 -> 40 -> 41`、000040/000041 对象边界、Node production writer / refresh 和 Go production HTTP reader 全链路并非 `SKIP` 通过。随后 backend typecheck、Go client IP detail 相关包测试、integration 编译、Go vet 和 diff check 通过。该证据仍使用进程内 production router，不代表真实 `app.RunServer` listener、浏览器页面、反向代理单 owner、生产切流或回滚已完成。
+
 代码提交：
 
 | 提交 | 内容 |
@@ -205,4 +207,4 @@ try {
 
 ## 当前结论
 
-客户端 IP 列表、详情与四条写路径已形成 Go store、service、HTTP、router/app、前端 request-capture 和对应 integration smoke 代码；两个读接口只读 Node production writer / worker 生成的预聚合结果，allowlist / unallowlist 另有隔离 fixture 安全真实 Go smoke 入口。Go 全量测试 / vet、目标 race、integration 编译 / vet / race 编译、前端 request-capture、含详情严格门禁的 mock real-Go-management smoke 和 typecheck 已通过。真实依赖普通模式因 Docker 不可用 `SKIP`，强制模式按预期非零失败，因此真实 PostgreSQL / Redis、EXPLAIN、Node writer -> Go reader 和真实 listener 均未执行通过；真实 allowlist smoke 也因缺少隔离 fixture 参数未执行。生产单 owner 切流、回滚和 Node route 删除仍未完成；统计生产 writer / worker 继续由 Node 提供。
+客户端 IP 列表、详情与四条写路径已形成 Go store、service、HTTP、router/app、前端 request-capture 和对应 integration smoke 代码；两个读接口只读 Node production writer / worker 生成的预聚合结果，allowlist / unallowlist 另有隔离 fixture 安全真实 Go smoke 入口。Go 全量测试 / vet、目标 race、integration 编译 / vet / race 编译、前端 request-capture、含详情严格门禁的 mock real-Go-management smoke 和 typecheck 已通过。详情 Goose `40 -> 41`、Node production writer / refresh -> Go production HTTP reader 已在远端 Docker / PostgreSQL 18 强制模式非 `SKIP` 通过；列表真实 PostgreSQL + Redis / EXPLAIN 与跨运行时完整复跑、策略真实 PG/Redis/Asynq、真实 `app.RunServer` listener 和 allowlist 隔离 fixture smoke 仍未通过。生产单 owner 切流、回滚和 Node route 删除仍未完成；统计生产 writer / worker 继续由 Node 提供。

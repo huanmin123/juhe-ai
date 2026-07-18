@@ -396,9 +396,9 @@ async function seedFixtureAccounts(client: DatabaseClient): Promise<void> {
           id, system_account_id, provider_code, provider_protocol_profile_id,
           protocol_code, protocol_version, name, type, status,
           credentials_encrypted, credential_mask, health_check_model,
-          health_check_endpoint_family, created_at, updated_at
+          health_check_endpoint_mode, created_at, updated_at
         ) VALUES (?, ?, 'gpt', 'profile_gpt_openai_v1', 'openai', 'v1', ?,
-          'api_key', 'active', '{}', '', 'gpt-5.5', 'responses', ?, ?)
+          'api_key', 'active', '{}', '', 'gpt-5.5', 'responses_sse', ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           system_account_id = EXCLUDED.system_account_id,
           name = EXCLUDED.name,
