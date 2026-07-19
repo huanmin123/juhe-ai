@@ -222,7 +222,10 @@ function assertServerWiring(): void {
   assert(snapshotServiceSource.includes('let allRebuildAgain = false'), '全量重建期间的新变更必须只追加一次后续重建')
   assert(snapshotServiceSource.includes('const personalRebuildInFlight = new Map'), '同一 personal owner 的重建必须复用进行中的任务')
   assert(snapshotServiceSource.includes('const personalRebuildAgain = new Set'), '同一 personal owner 的新变更必须只追加一次后续重建')
-  assert(snapshotServiceSource.includes('personalRebuildInFlight.size > 0'), '不同 personal owner 并发时必须升级为共享全量重建')
+  assert(snapshotServiceSource.includes('const maxPersonalRebuildsInFlight = 4'), '不同 personal owner 的重建必须有明确并发上限')
+  assert(snapshotServiceSource.includes('personalRebuildInFlight.size >= maxPersonalRebuildsInFlight'), 'personal owner 超过并发上限时必须等待槽位')
+  assert(snapshotServiceSource.includes('Promise.race(personalRebuildInFlight.values())'), 'personal owner 等待必须复用进行中的有界任务')
+  assert(!snapshotServiceSource.includes('personalRebuildInFlight.size > 0'), 'personal owner 不得升级为只覆盖 active owner 的全量重建')
   assert(snapshotServiceSource.includes('return enqueueSnapshotRebuild(async () => {'), '启动预热必须和重建共享串行队列')
 }
 

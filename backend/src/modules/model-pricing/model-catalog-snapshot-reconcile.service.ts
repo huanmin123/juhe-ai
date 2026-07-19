@@ -71,10 +71,7 @@ export class ModelCatalogSnapshotReconcileService {
     for (const request of allRequests) {
       results.push(await this.reconcileCapturedRequestSettledAsync(request))
     }
-    const allRebuildSucceeded = allRequests.length > 0 && results.every((result) => result.rebuildSucceeded)
-    results.push(...await mapWithConcurrency(personalRequests, 4, (request) => allRebuildSucceeded
-      ? this.ackCoveredRequestSettledAsync(request)
-      : this.reconcileCapturedRequestSettledAsync(request)))
+    results.push(...await mapWithConcurrency(personalRequests, 4, (request) => this.reconcileCapturedRequestSettledAsync(request)))
 
     const acknowledgedCount = results.filter((outcome) => outcome.result?.acknowledged === true).length
     const failedCount = results.filter((outcome) => outcome.result === undefined).length
@@ -92,26 +89,6 @@ export class ModelCatalogSnapshotReconcileService {
       return { result: await this.reconcileCapturedRequestAsync(request), rebuildSucceeded: true }
     } catch (error) {
       return { rebuildSucceeded: error instanceof ModelCatalogSnapshotAckError }
-    }
-  }
-
-  private async ackCoveredRequestSettledAsync(request: ModelCatalogSnapshotRebuildRequest): Promise<SettledReconcileResult> {
-    try {
-      return {
-        result: await this.runSingleflightAsync(request, () => this.ackCoveredRequestAsync(request)),
-        rebuildSucceeded: false
-      }
-    } catch {
-      return { rebuildSucceeded: false }
-    }
-  }
-
-  private async ackCoveredRequestAsync(request: ModelCatalogSnapshotRebuildRequest): Promise<ModelCatalogSnapshotReconcileResult> {
-    return {
-      scope: request.scope,
-      ...(request.systemAccountId ? { systemAccountId: request.systemAccountId } : {}),
-      generation: request.generation,
-      acknowledged: await this.dependencies.ackRequest(request)
     }
   }
 

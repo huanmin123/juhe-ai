@@ -59,13 +59,13 @@ const dependencies: ModelCatalogSnapshotReconcileDependencies = {
 const service = new ModelCatalogSnapshotReconcileService(dependencies)
 const scan = await service.reconcileDirtyOnceAsync()
 assert.equal(scan.capturedCount, 10)
-assert.equal(scan.rebuildCount, 1)
+assert.equal(scan.rebuildCount, 10)
 assert.equal(scan.acknowledgedCount, 10)
 assert.equal(scan.retainedCount, 0)
 assert.equal(scan.failedCount, 0)
 assert.equal(events[0], 'all:start')
 assert.equal(events[1], 'all:end')
-assert.equal(personalRebuildCount, 0, 'all 成功后不得重复重建本轮捕获的 personal scope')
+assert.equal(personalRebuildCount, 9, 'all 只覆盖 active owner，captured personal 必须独立重建')
 assert.deepEqual(acknowledged[0], { scope: 'all', generation: 1 })
 assert.deepEqual(
   acknowledged.slice(1).map((request) => `${request.systemAccountId}:${request.generation}`).sort(),
@@ -95,11 +95,24 @@ const allAckFailureService = new ModelCatalogSnapshotReconcileService({
   rebuildPersonal: async () => { rebuildAfterAllAckFailure += 1 }
 })
 const allAckFailureScan = await allAckFailureService.reconcileDirtyOnceAsync()
-assert.equal(allAckFailureScan.rebuildCount, 1)
+assert.equal(allAckFailureScan.rebuildCount, 10)
 assert.equal(allAckFailureScan.acknowledgedCount, 9)
 assert.equal(allAckFailureScan.retainedCount, 1)
 assert.equal(allAckFailureScan.failedCount, 1)
-assert.equal(rebuildAfterAllAckFailure, 0, 'all rebuild 成功后即使其 ack 异常，也不得重复重建 personal')
+assert.equal(rebuildAfterAllAckFailure, 9, 'all generation 未确认时必须逐项重建 personal，不能错误视为已覆盖')
+
+let rebuildAfterAllGenerationChanged = 0
+const allGenerationChangedService = new ModelCatalogSnapshotReconcileService({
+  ...dependencies,
+  ackRequest: async (request) => request.scope !== 'all',
+  rebuildPersonal: async () => { rebuildAfterAllGenerationChanged += 1 }
+})
+const allGenerationChangedScan = await allGenerationChangedService.reconcileDirtyOnceAsync()
+assert.equal(allGenerationChangedScan.rebuildCount, 10)
+assert.equal(allGenerationChangedScan.acknowledgedCount, 9)
+assert.equal(allGenerationChangedScan.retainedCount, 1)
+assert.equal(allGenerationChangedScan.failedCount, 0)
+assert.equal(rebuildAfterAllGenerationChanged, 9, 'all generation fence 失败时必须逐项重建 personal')
 
 const retainedService = new ModelCatalogSnapshotReconcileService({
   ...dependencies,
@@ -135,7 +148,7 @@ const coveredScan = coveredPersonalService.reconcileDirtyOnceAsync()
 await delay(20)
 releaseCoveredPersonal?.()
 await Promise.all([directPersonal, coveredScan])
-assert.equal(coveredPersonalAckCount, 1, 'all covered ack 必须复用同 generation 的 personal singleflight，禁止重复确认')
+assert.equal(coveredPersonalAckCount, 1, 'all 与 personal 同轮执行时必须复用同 generation 的 personal singleflight，禁止重复确认')
 
 let rebuildCount = 0
 let releaseRebuild: (() => void) | undefined

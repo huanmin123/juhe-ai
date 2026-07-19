@@ -61,6 +61,7 @@ let allRebuildInFlight: Promise<number> | undefined
 let allRebuildAgain = false
 const personalRebuildInFlight = new Map<string, Promise<GatewayModelCatalogSnapshot[]>>()
 const personalRebuildAgain = new Set<string>()
+const maxPersonalRebuildsInFlight = 4
 
 export function rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(
   systemAccountId: string
@@ -70,9 +71,10 @@ export function rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(
     personalRebuildAgain.add(systemAccountId)
     return current
   }
-  if (allRebuildInFlight || personalRebuildInFlight.size > 0) {
-    return rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync()
-      .then(() => [])
+  if (personalRebuildInFlight.size >= maxPersonalRebuildsInFlight) {
+    return Promise.race(personalRebuildInFlight.values())
+      .catch(() => undefined)
+      .then(() => rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(systemAccountId))
   }
   const run = (async () => {
     let snapshots: GatewayModelCatalogSnapshot[] = []
