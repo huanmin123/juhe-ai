@@ -30,6 +30,18 @@ CREATE TABLE IF NOT EXISTS juhe_business.announcement_reads (
 );
 
 ALTER TABLE juhe_business.announcements
+  ALTER COLUMN published_at TYPE timestamptz
+    USING NULLIF(published_at::text, '')::timestamptz,
+  ALTER COLUMN created_at TYPE timestamptz
+    USING NULLIF(created_at::text, '')::timestamptz,
+  ALTER COLUMN updated_at TYPE timestamptz
+    USING NULLIF(updated_at::text, '')::timestamptz;
+
+ALTER TABLE juhe_business.announcement_reads
+  ALTER COLUMN read_at TYPE timestamptz
+    USING NULLIF(read_at::text, '')::timestamptz;
+
+ALTER TABLE juhe_business.announcements
   DROP CONSTRAINT IF EXISTS announcements_title_length_check,
   DROP CONSTRAINT IF EXISTS announcements_content_length_check,
   DROP CONSTRAINT IF EXISTS announcements_level_check,
@@ -48,14 +60,21 @@ ALTER TABLE juhe_business.announcements
   ADD CONSTRAINT announcements_published_at_check
     CHECK (status <> 'published' OR published_at IS NOT NULL);
 
-CREATE INDEX IF NOT EXISTS idx_announcements_public_order
+DROP INDEX IF EXISTS juhe_business.idx_announcements_public;
+DROP INDEX IF EXISTS juhe_business.idx_announcements_admin;
+DROP INDEX IF EXISTS juhe_business.idx_announcements_admin_page;
+DROP INDEX IF EXISTS juhe_business.idx_announcements_public_order;
+DROP INDEX IF EXISTS juhe_business.idx_announcements_management_order;
+DROP INDEX IF EXISTS juhe_business.idx_announcement_reads_account;
+
+CREATE INDEX idx_announcements_public_order
   ON juhe_business.announcements (published_at DESC, created_at DESC, id DESC)
   WHERE status = 'published' AND published_at IS NOT NULL;
 
-CREATE INDEX IF NOT EXISTS idx_announcements_management_order
+CREATE INDEX idx_announcements_management_order
   ON juhe_business.announcements (updated_at DESC, created_at DESC, id DESC);
 
-CREATE INDEX IF NOT EXISTS idx_announcement_reads_account
+CREATE INDEX idx_announcement_reads_account
   ON juhe_business.announcement_reads (system_account_id, announcement_id);
 
 -- +goose Down
