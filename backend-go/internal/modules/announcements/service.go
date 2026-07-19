@@ -2,6 +2,7 @@ package announcements
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -9,7 +10,15 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-const maxPublicAnnouncementLimit = 30
+const (
+	maxPublicAnnouncementLimit       = 30
+	defaultManagementPage            = 1
+	defaultManagementPageSize        = 50
+	maxManagementPageSize            = 100
+	managementAnnouncementWindowRows = 1001
+)
+
+var ErrAnnouncementInputInvalid = errors.New("announcement input invalid")
 
 type Service struct {
 	store port.AnnouncementStore
@@ -59,6 +68,34 @@ func (s *Service) ListPublic(ctx context.Context, input PublicListInput) ([]Anno
 	return items, nil
 }
 
+func (s *Service) ListManagement(ctx context.Context, page int, pageSize int) (Page, error) {
+	if s == nil || s.store == nil {
+		return Page{}, fmt.Errorf("announcement store is required")
+	}
+	pageSize = normalizeManagementPageSize(pageSize)
+	page = normalizeManagementPage(page, pageSize)
+	result, err := s.store.ListManagementAnnouncements(ctx, page, pageSize)
+	if err != nil {
+		return Page{}, fmt.Errorf("list management announcements: %w", err)
+	}
+	return result, nil
+}
+
+func (s *Service) FindManagement(ctx context.Context, id string) (Announcement, bool, error) {
+	if s == nil || s.store == nil {
+		return Announcement{}, false, fmt.Errorf("announcement store is required")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Announcement{}, false, fmt.Errorf("%w: announcement id is required", ErrAnnouncementInputInvalid)
+	}
+	result, found, err := s.store.FindManagementAnnouncement(ctx, id)
+	if err != nil {
+		return Announcement{}, false, fmt.Errorf("find management announcement: %w", err)
+	}
+	return result, found, nil
+}
+
 func (s *Service) MarkPublicRead(ctx context.Context, input PublicReadInput) (PublicReadResult, error) {
 	if s == nil || s.store == nil {
 		return PublicReadResult{}, fmt.Errorf("announcement store is required")
@@ -103,4 +140,25 @@ func normalizeAnnouncementIDs(ids []string) []string {
 		}
 	}
 	return result
+}
+
+func normalizeManagementPageSize(pageSize int) int {
+	if pageSize <= 0 {
+		return defaultManagementPageSize
+	}
+	if pageSize > maxManagementPageSize {
+		return maxManagementPageSize
+	}
+	return pageSize
+}
+
+func normalizeManagementPage(page int, pageSize int) int {
+	if page < defaultManagementPage {
+		page = defaultManagementPage
+	}
+	maxPage := max(1, (managementAnnouncementWindowRows-1)/max(1, pageSize))
+	if page > maxPage {
+		return maxPage
+	}
+	return page
 }

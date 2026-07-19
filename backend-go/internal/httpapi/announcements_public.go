@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -115,6 +116,9 @@ func announcementCoercedInteger(value string) (int, error) {
 	if value == "" {
 		return 0, errors.New("empty number")
 	}
+	if radixValue, handled := announcementRadixInteger(value); handled {
+		return radixValue, nil
+	}
 	number, err := strconv.ParseFloat(value, 64)
 	if err != nil {
 		integer, integerErr := strconv.ParseInt(value, 0, 64)
@@ -126,7 +130,39 @@ func announcementCoercedInteger(value string) (int, error) {
 	if math.IsNaN(number) || math.IsInf(number, 0) || math.Trunc(number) != number {
 		return 0, errors.New("number must be a finite integer")
 	}
+	maxInt := int(^uint(0) >> 1)
+	minInt := -maxInt - 1
+	if number >= float64(maxInt) {
+		return maxInt, nil
+	}
+	if number <= float64(minInt) {
+		return minInt, nil
+	}
 	return int(number), nil
+}
+
+func announcementRadixInteger(value string) (int, bool) {
+	base := 0
+	switch {
+	case strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X"):
+		base = 16
+	case strings.HasPrefix(value, "0b") || strings.HasPrefix(value, "0B"):
+		base = 2
+	case strings.HasPrefix(value, "0o") || strings.HasPrefix(value, "0O"):
+		base = 8
+	default:
+		return 0, false
+	}
+	digits := value[2:]
+	parsed, ok := new(big.Int).SetString(digits, base)
+	if !ok || digits == "" {
+		return 0, true
+	}
+	maxInt := int(^uint(0) >> 1)
+	if parsed.Cmp(new(big.Int).SetUint64(uint64(maxInt))) >= 0 {
+		return maxInt, true
+	}
+	return int(parsed.Int64()), true
 }
 
 func decodeAnnouncementPublicReadBody(r *http.Request, body *announcementPublicReadBody) error {
