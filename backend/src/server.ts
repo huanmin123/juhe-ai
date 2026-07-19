@@ -55,13 +55,23 @@ import { dispatchAccountHealthCheck } from './modules/internal-api/account-healt
 import {
   mountAccountHealthCheckDispatchBridge
 } from './modules/internal-api/account-health-check-dispatch.routes.js'
+import {
+  createModelCatalogSnapshotRebuildRouter,
+  modelCatalogSnapshotRebuildInternalPrefix
+} from './modules/internal-api/model-catalog-snapshot-rebuild.routes.js'
 import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
 import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
 import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
-import { prewarmPublishedModelCatalogSnapshotsAsync } from './modules/model-pricing/published-model-catalog.service.js'
+import {
+  prewarmPublishedModelCatalogSnapshotsAsync
+} from './modules/model-pricing/published-model-catalog.service.js'
+import {
+  reconcileDirtyModelCatalogSnapshotsOnceAsync,
+  reconcileModelCatalogSnapshotScopeAsync
+} from './modules/model-pricing/model-catalog-snapshot-reconcile.service.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -80,6 +90,8 @@ const chatHttpProxy = createDbServiceHttpProxy({ maxInFlight: 128, timeoutMs: 15
 const backgroundWorkerStartupFallbackMs = 15_000
 let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
 let backgroundWorkerSupervisorStarted = false
+let modelCatalogSnapshotReconcileInFlight: Promise<void> | undefined
+let modelCatalogSnapshotReconcileTimer: NodeJS.Timeout | undefined
 let serverShutdownInProgress = false
 const serverShutdownGraceMs = 40_000
 const httpShutdownGraceMs = 10_000
@@ -164,6 +176,7 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     }
     startBackgroundWorkerSupervisor()
   }
+  startModelCatalogSnapshotReconcileLoop()
   void prewarmPublishedModelCatalogSnapshotsAsync()
     .then((snapshotCount) => logger.info({
       event: 'published_model_catalog_prewarmed',
@@ -174,6 +187,28 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     }), '发布模型目录快照预热失败，模型接口将回退单行持久化快照'))
 }
 
+function startModelCatalogSnapshotReconcileLoop(): void {
+  if (runtimeConfig.databaseDriver !== 'postgres' || modelCatalogSnapshotReconcileTimer) return
+  const run = (): void => {
+    if (modelCatalogSnapshotReconcileInFlight) return
+    modelCatalogSnapshotReconcileInFlight = reconcileDirtyModelCatalogSnapshotsOnceAsync()
+      .then((result) => {
+        if (result.failedCount > 0) {
+          logger.warn({ event: 'published_model_catalog_reconcile_partial_failure', ...result }, '发布模型目录 dirty 重建未完全成功，保留请求等待下次重试')
+        }
+      })
+      .catch((error) => {
+        logger.warn(errorLogFields(error, { event: 'published_model_catalog_reconcile_failed' }), '发布模型目录 dirty 重建失败，保留请求等待下次重试')
+      })
+      .finally(() => {
+        modelCatalogSnapshotReconcileInFlight = undefined
+      })
+  }
+  run()
+  modelCatalogSnapshotReconcileTimer = setInterval(run, 5_000)
+  modelCatalogSnapshotReconcileTimer.unref()
+}
+
 if (runtimeConfig.httpSecurity.trustProxy !== false) {
   app.set('trust proxy', runtimeConfig.httpSecurity.trustProxy)
 }
@@ -182,6 +217,19 @@ app.disable('x-powered-by')
 app.use(requestContextMiddleware)
 app.use(systemPrefix, managementSecurityHeadersMiddleware)
 const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
+if (runtimeConfig.databaseDriver === 'postgres') {
+  app.use(modelCatalogSnapshotRebuildInternalPrefix, createModelCatalogSnapshotRebuildRouter({
+    secret: runtimeConfig.secret,
+    rebuildAll: async () => {
+      const result = await reconcileModelCatalogSnapshotScopeAsync({ scope: 'all' })
+      if (result && !result.acknowledged) throw new Error('模型目录快照 dirty generation 已变化，当前重建未确认')
+    },
+    rebuildPersonal: async (systemAccountId) => {
+      const result = await reconcileModelCatalogSnapshotScopeAsync({ scope: 'personal', systemAccountId })
+      if (result && !result.acknowledged) throw new Error('个人模型目录快照 dirty generation 已变化，当前重建未确认')
+    }
+  }))
+}
 mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,
   compressionMiddleware: createHttpCompressionMiddleware(),

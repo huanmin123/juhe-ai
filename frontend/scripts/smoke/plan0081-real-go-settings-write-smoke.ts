@@ -91,7 +91,11 @@ export async function runRealGoSettingsWriteSmoke(
   } finally {
     try {
       const current = await getSettings(normalized)
-      if (current[field] !== original) await patchSettings(normalized, original)
+      if (current[field] === temporary) {
+        await patchSettings(normalized, original)
+      } else if (current[field] !== original) {
+        throw new SmokeError('settings changed concurrently; restore skipped')
+      }
       assertSnapshot(await getSettings(normalized), initial, original)
     } catch (error) {
       cleanupError = error

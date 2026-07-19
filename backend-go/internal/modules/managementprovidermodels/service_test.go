@@ -808,6 +808,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		TargetSystemAccountID: " sys_user ",
 		Fields: CustomModelMutation{
 			Model:                     OptionalString{Set: true, Value: " custom-chat "},
+			CatalogVisible:            OptionalBool{Set: true, Value: false},
 			SupportedAPIProtocols:     OptionalStringList{Set: true, Value: []string{"responses", "responses"}},
 			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority", "flex"}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low", "high", "high"}},
@@ -827,6 +828,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		store.saveInput.Scope != "personal" ||
 		store.saveInput.SystemAccountID != "sys_user" ||
 		store.saveInput.Status != "active" ||
+		store.saveInput.CatalogVisible ||
 		len(store.saveInput.SupportedAPIProtocols) != 1 ||
 		store.saveInput.SupportedAPIProtocols[0] != "responses" ||
 		len(store.saveInput.SupportedServiceTiers) != 2 ||
@@ -862,6 +864,45 @@ func TestServiceCreateCustomModelChecksProviderBeforeInvalidFields(t *testing.T)
 	message, ok := CustomModelValidationMessage(err)
 	if !ok || message != "自定义模型参数无效" {
 		t.Fatalf("invalid fields message = %q, ok = %v, err = %v", message, ok, err)
+	}
+}
+
+func TestServiceCreateCustomModelRebuildsPublishedCatalogAfterCommit(t *testing.T) {
+	price := 1.25
+	rebuilder := &catalogSnapshotRebuilderStub{}
+	store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}}}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, CatalogRebuilder: rebuilder})
+	if _, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
+		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", Fields: CustomModelMutation{
+			Model: OptionalString{Set: true, Value: "custom-chat"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price},
+		},
+	}); err != nil {
+		t.Fatalf("CreateCustomModel() error = %v", err)
+	}
+	if len(rebuilder.calls) != 1 || rebuilder.calls[0] != "personal:sys_user" {
+		t.Fatalf("rebuild calls = %v", rebuilder.calls)
+	}
+}
+
+func TestCustomModelEnumsRejectWhitespacePadding(t *testing.T) {
+	price := 1.25
+	tests := []struct {
+		name   string
+		fields CustomModelMutation
+	}{
+		{name: "scope", fields: CustomModelMutation{Scope: OptionalString{Set: true, Value: " personal "}, Model: OptionalString{Set: true, Value: "custom-chat"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+		{name: "status", fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, Status: OptionalString{Set: true, Value: " active "}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+		{name: "mode", fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, Mode: OptionalString{Set: true, Value: " text "}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+		{name: "protocol", fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{" responses "}}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}}}
+			_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", TargetSystemAccountID: "sys_user", Fields: tt.fields})
+			if message, ok := CustomModelValidationMessage(err); !ok || message != "自定义模型参数无效" {
+				t.Fatalf("error = %v, message = %q, ok = %t", err, message, ok)
+			}
+		})
 	}
 }
 
@@ -1056,6 +1097,7 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		Scope:                     "personal",
 		SystemAccountID:           "sys_user",
 		Status:                    "active",
+		CatalogVisible:            true,
 		Mode:                      "text",
 		SupportedServiceTiers:     []string{"priority"},
 		SupportedReasoningEfforts: []string{"low", "high"},
@@ -1072,12 +1114,16 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
 		ActorRole:            "user",
-		Fields:               CustomModelMutation{Notes: OptionalString{Set: true, Value: "updated"}},
+		Fields: CustomModelMutation{
+			CatalogVisible: OptionalBool{Set: true, Value: false},
+			Notes:          OptionalString{Set: true, Value: "updated"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("UpdateCustomModel() clone error = %v", err)
 	}
 	if store.customUpdateCalls != 1 || store.saveCalls != 0 || store.customUpdateInput.Notes.Value != "updated" ||
+		!store.customUpdateInput.CatalogVisible.Present || store.customUpdateInput.CatalogVisible.Value ||
 		store.customUpdateInput.SupportedServiceTiers.Present || store.customUpdateInput.SupportedReasoningEfforts.Present ||
 		!store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
 		t.Fatalf("atomic update input = %+v", store.customUpdateInput)
@@ -1518,7 +1564,8 @@ func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.
 		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
 		Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &inputPrice,
 	}}}
-	result, err := NewService(store).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+	rebuilder := &catalogSnapshotRebuilderStub{}
+	result, err := NewServiceWithOptions(ServiceOptions{Store: store, CatalogRebuilder: rebuilder}).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
 		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
 		Fields: CustomModelMutation{
 			Status: OptionalString{Set: true, Value: "disabled"}, Mode: OptionalString{Set: true, Value: "text"},
@@ -1537,6 +1584,9 @@ func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.
 		!slices.Equal(result.SupportedServiceTiers, []string{"priority"}) || result.DefaultReasoningEffort != "" ||
 		result.ContextWindowTokens == nil || *result.ContextWindowTokens != contextTokens || result.MaxInputTokens == nil || *result.MaxInputTokens != maxInputTokens {
 		t.Fatalf("result = %+v", result)
+	}
+	if len(rebuilder.calls) != 1 || rebuilder.calls[0] != "all:" {
+		t.Fatalf("rebuild calls = %v", rebuilder.calls)
 	}
 }
 
@@ -1760,7 +1810,7 @@ func TestServiceUpdateBuiltInModelRevalidatesDefaultReasoningEffortAgainstLocked
 	}
 }
 
-func TestServiceUpdateBuiltInModelPersistsNormalizedStringLists(t *testing.T) {
+func TestServiceUpdateBuiltInModelRejectsWhitespacePaddedProtocols(t *testing.T) {
 	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
 		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
 	}}}
@@ -1768,15 +1818,8 @@ func TestServiceUpdateBuiltInModelPersistsNormalizedStringLists(t *testing.T) {
 		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
 		Fields: CustomModelMutation{SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{" responses ", "responses", "chat_completions"}}},
 	})
-	if err != nil {
-		t.Fatalf("UpdateCustomModel() error = %v", err)
-	}
-	got := store.builtInUpdateInputs[0].SupportedAPIProtocols.Value
-	if !slices.Equal(got, []string{"responses", "chat_completions"}) {
-		t.Fatalf("stored protocols = %#v", got)
-	}
-	if !store.builtInUpdateInputs[0].DefaultReasoningEffort.Present || store.builtInUpdateInputs[0].DefaultReasoningEffort.Value != "" {
-		t.Fatalf("GPT built-in update must clear default reasoning: %+v", store.builtInUpdateInputs[0].DefaultReasoningEffort)
+	if message, ok := CustomModelValidationMessage(err); !ok || message != "自定义模型参数无效" {
+		t.Fatalf("validation = %q/%t, err = %v", message, ok, err)
 	}
 }
 
@@ -1944,7 +1987,8 @@ func TestServiceUpdateCustomModelRejectsModelChangeAndClearsDefaultWhenDisabled(
 	}
 
 	invalidator := &customProviderModelInvalidatorStub{}
-	service = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
+	rebuilder := &catalogSnapshotRebuilderStub{}
+	service = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, CatalogRebuilder: rebuilder})
 	result, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
@@ -1977,6 +2021,9 @@ func TestServiceUpdateCustomModelRejectsModelChangeAndClearsDefaultWhenDisabled(
 	}
 	if invalidator.reason != CustomProviderModelSavedReason {
 		t.Fatalf("invalidation should happen before clear error, reason = %q", invalidator.reason)
+	}
+	if len(rebuilder.calls) != 2 || rebuilder.calls[1] != "personal:sys_user" {
+		t.Fatalf("rebuild should still happen after committed update, calls = %v", rebuilder.calls)
 	}
 }
 
@@ -2081,9 +2128,10 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	}
 
 	invalidator := &customProviderModelInvalidatorStub{}
+	rebuilder := &catalogSnapshotRebuilderStub{}
 	store.bindingSummary = port.ManagementCustomProviderModelBindingSummary{}
 	store.deleteResult = true
-	result, err := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
+	result, err := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, CatalogRebuilder: rebuilder}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
@@ -2102,7 +2150,7 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	clearErr := errors.New("clear default failed")
 	store.clearErr = clearErr
 	invalidator.reason = ""
-	_, err = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
+	_, err = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, CatalogRebuilder: rebuilder}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
@@ -2113,6 +2161,9 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	}
 	if invalidator.reason != CustomProviderModelDeletedReason {
 		t.Fatalf("invalidation should happen before clear error, reason = %q", invalidator.reason)
+	}
+	if len(rebuilder.calls) != 2 || rebuilder.calls[1] != "personal:sys_user" {
+		t.Fatalf("rebuild should still happen after committed delete, calls = %v", rebuilder.calls)
 	}
 }
 
@@ -2197,6 +2248,9 @@ func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ co
 			original := s.catalog[index]
 			before := builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index])
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Status, input.Status)
+			if input.CatalogVisible.Present {
+				s.catalog[index].CatalogVisible = input.CatalogVisible.Value
+			}
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Mode, input.Mode)
 			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedAPIProtocols, input.SupportedAPIProtocols)
 			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedServiceTiers, input.SupportedServiceTiers)
@@ -2246,6 +2300,7 @@ func builtInProviderModelConfigurationSnapshotFromCatalog(item port.ManagementPr
 		ID:                        item.ID,
 		ProviderCode:              item.ProviderCode,
 		Status:                    item.Status,
+		CatalogVisible:            item.CatalogVisible,
 		Mode:                      item.Mode,
 		SupportedAPIProtocols:     append([]string(nil), item.SupportedAPIProtocols...),
 		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
@@ -2420,7 +2475,7 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		AudioOutputUSDPer1M:       input.AudioOutputUSDPer1M,
 		OutputUSDPerImage:         input.OutputUSDPerImage,
 		SupportsPromptCaching:     input.CachedInputUSDPer1M != nil,
-		CatalogVisible:            true,
+		CatalogVisible:            input.CatalogVisible,
 		PricingNotes:              input.PricingNotes,
 		CapabilityNotes:           input.CapabilityNotes,
 		Notes:                     input.Notes,
@@ -2452,6 +2507,9 @@ func (s *providerModelStoreStub) UpdateManagementCustomProviderModel(_ context.C
 
 func applyCustomProviderModelUpdateStub(item *port.ManagementProviderModelCatalogItem, input port.ManagementCustomProviderModelUpdateInput) {
 	applyBuiltInProviderModelOptionalString(&item.Status, input.Status)
+	if input.CatalogVisible.Present {
+		item.CatalogVisible = input.CatalogVisible.Value
+	}
 	applyBuiltInProviderModelOptionalString(&item.Mode, input.Mode)
 	applyBuiltInProviderModelOptionalStringList(&item.SupportedAPIProtocols, input.SupportedAPIProtocols)
 	applyBuiltInProviderModelOptionalStringList(&item.SupportedServiceTiers, input.SupportedServiceTiers)
@@ -2498,6 +2556,16 @@ type customProviderModelInvalidatorStub struct {
 	reason string
 	err    error
 	calls  int
+}
+
+type catalogSnapshotRebuilderStub struct {
+	calls []string
+	err   error
+}
+
+func (s *catalogSnapshotRebuilderStub) Rebuild(_ context.Context, scope string, systemAccountID string) error {
+	s.calls = append(s.calls, scope+":"+systemAccountID)
+	return s.err
 }
 
 func (s *customProviderModelInvalidatorStub) InvalidateCustomProviderModelChanged(_ context.Context, reason string) error {

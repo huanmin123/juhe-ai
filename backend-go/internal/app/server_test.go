@@ -294,6 +294,25 @@ func TestNewPublicAccountHealthCheckDispatcherPrefersExplicitInjection(t *testin
 	}
 }
 
+func TestNewManagementCatalogSnapshotRebuilderRequiresSafeNodeBridge(t *testing.T) {
+	rebuilder, err := newManagementCatalogSnapshotRebuilder(config.Config{})
+	if err != nil || rebuilder != nil {
+		t.Fatalf("disabled rebuilder = %T, err = %v", rebuilder, err)
+	}
+	if _, err := newManagementCatalogSnapshotRebuilder(config.Config{ManagementAPIEnabled: true, Secret: "secret"}); err == nil {
+		t.Fatal("enabled rebuilder without Node URL error = nil")
+	}
+	rebuilder, err = newManagementCatalogSnapshotRebuilder(config.Config{
+		ManagementAPIEnabled:       true,
+		NodeInternalBaseURL:        "http://127.0.0.1:3001",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		Secret:                     "secret",
+	})
+	if err != nil || rebuilder == nil {
+		t.Fatalf("enabled rebuilder = %T, err = %v", rebuilder, err)
+	}
+}
+
 func TestNewPublicAccountHealthCheckDispatcherFailsFastOnMissingOrInvalidURL(t *testing.T) {
 	for _, test := range []struct {
 		name    string

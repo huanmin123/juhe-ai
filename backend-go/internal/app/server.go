@@ -47,6 +47,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/ownerlock"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
+	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
@@ -195,6 +196,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if managementOperationLogQueue != nil {
 		defer func() { _ = managementOperationLogQueue.Close() }()
 	}
+	catalogSnapshotRebuilder, err := newManagementCatalogSnapshotRebuilder(cfg)
+	if err != nil {
+		return err
+	}
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
@@ -204,7 +209,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
 	}
-	managementHandlers := newManagementAPIHandlerWithPageData(
+	managementHandlers := newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		cfg,
 		store,
 		stateRedis,
@@ -214,6 +219,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
+		catalogSnapshotRebuilder,
 	)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
@@ -573,6 +579,32 @@ func newManagementAPIHandlerWithPageData(
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
+	return newManagementAPIHandlerWithCatalogSnapshotRebuilder(
+		cfg,
+		store,
+		stateRedis,
+		operationLogQueue,
+		logger,
+		systemAccountInvalidator,
+		accountsStaticResetPublisher,
+		accountConcurrencyReader,
+		systemAPIRateLimitSettingsCache,
+		nil,
+	)
+}
+
+func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
+	cfg config.Config,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+	operationLogQueue operationLogEnqueueClient,
+	logger *slog.Logger,
+	systemAccountInvalidator managementAPIInvalidator,
+	accountsStaticResetPublisher managementPageDataPublisher,
+	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
+	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
+	catalogSnapshotRebuilder managementprovidermodels.CatalogSnapshotRebuilder,
+) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
 		return managementAPIHandlers{}
 	}
@@ -603,6 +635,7 @@ func newManagementAPIHandlerWithPageData(
 		Store:             store,
 		Invalidator:       systemAccountInvalidator,
 		PageDataPublisher: accountsStaticResetPublisher,
+		CatalogRebuilder:  catalogSnapshotRebuilder,
 		Logger:            logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
@@ -867,6 +900,17 @@ func newManagementAPIHandlerWithPageData(
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}
+}
+
+func newManagementCatalogSnapshotRebuilder(cfg config.Config) (managementprovidermodels.CatalogSnapshotRebuilder, error) {
+	if !cfg.ManagementAPIEnabled {
+		return nil, nil
+	}
+	timeout := cfg.NodeInternalSnapshotRebuildTimeout
+	if timeout == 0 {
+		timeout = time.Minute
+	}
+	return modelcatalogsnapshotrebuild.NewClientWithTimeout(cfg.NodeInternalBaseURL, cfg.Secret, timeout)
 }
 
 type operationLogEnqueueClient interface {

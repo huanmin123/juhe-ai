@@ -61,7 +61,7 @@ Redis cache / state 数据默认可重建或可过期。Asynq queue 在任务副
 
 Redis queue 必须满足：
 
-- 使用独立 `redis-queue` 或等效隔离 DB / namespace，避免被 cache 淘汰策略影响。
+- 使用独立 `redis-queue` Redis 进程和物理 `host:port`，避免被 cache 淘汰策略影响；DB / namespace 不能替代进程隔离，Asynq 也不使用 `JUHE_AI_REDIS_NAMESPACE` 隔离部署实例。
 - 生产建议使用 `noeviction` 和 AOF；如果环境不满足，部署文档必须标注可靠性降级。
 - Go 目标默认使用 Asynq，不在业务模块里手写 Redis Streams / list / sorted set 队列。
 - 任务必须定义 task type、payload version、幂等 key、timeout、retry、dead / archived 处理和 trace ID。

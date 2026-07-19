@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -37,6 +38,22 @@ func TestMarshalManagementProviderModelPriceMapNormalizesNilToObject(t *testing.
 	}
 }
 
+func TestMarkManagementModelCatalogSnapshotDirtyMapsScope(t *testing.T) {
+	q := &managementCustomProviderModelUpdateQueriesStub{}
+	if err := markManagementModelCatalogSnapshotDirty(t.Context(), q, "personal", " sys_user "); err != nil {
+		t.Fatalf("mark personal dirty: %v", err)
+	}
+	if q.dirtyInput.Scope != "personal" || q.dirtyInput.SystemAccountID != "sys_user" {
+		t.Fatalf("personal dirty input = %+v", q.dirtyInput)
+	}
+	if err := markManagementModelCatalogSnapshotDirty(t.Context(), q, "global", "sys_user"); err != nil {
+		t.Fatalf("mark global dirty: %v", err)
+	}
+	if q.dirtyInput.Scope != "all" || q.dirtyInput.SystemAccountID != "" {
+		t.Fatalf("global dirty input = %+v", q.dirtyInput)
+	}
+}
+
 func TestUpdateManagementCustomProviderModelMergesLockedSnapshotAndValidatesBeforeUpdate(t *testing.T) {
 	price := 1.0
 	newPrice := 2.0
@@ -58,6 +75,9 @@ func TestUpdateManagementCustomProviderModelMergesLockedSnapshotAndValidatesBefo
 	}
 	if q.updateInput.InputUsdPer1m.Float64 != newPrice || !q.updateInput.InputUsdPer1m.Valid || q.updateInput.SupportedApiProtocolsJson != "[]" {
 		t.Fatalf("update input = %+v", q.updateInput)
+	}
+	if q.dirtyInput.Scope != "personal" || q.dirtyInput.SystemAccountID != "sys_user" || !q.dirtyInput.UpdatedAt.Valid {
+		t.Fatalf("dirty input = %+v", q.dirtyInput)
 	}
 }
 
@@ -98,7 +118,7 @@ func TestUpdateManagementCustomProviderModelTransactionPropagatesErrorsAndRollsB
 		wantCalls []string
 	}{
 		{name: "update", updateErr: operationErr, wantErr: operationErr, wantCalls: []string{"lock", "update", "rollback"}},
-		{name: "commit", commitErr: operationErr, wantErr: operationErr, wantCalls: []string{"lock", "update", "commit", "rollback"}},
+		{name: "commit", commitErr: operationErr, wantErr: operationErr, wantCalls: []string{"lock", "update", "mark-dirty", "commit", "rollback"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,6 +138,8 @@ type managementCustomProviderModelUpdateQueriesStub struct {
 	updateErr   error
 	updateCalls int
 	updateInput postgresqueries.UpdateManagementCustomProviderModelParams
+	dirtyInput  postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams
+	dirtyErr    error
 }
 
 func (s *managementCustomProviderModelUpdateQueriesStub) LockManagementCustomProviderModel(context.Context, postgresqueries.LockManagementCustomProviderModelParams) (postgresqueries.LockManagementCustomProviderModelRow, error) {
@@ -127,6 +149,10 @@ func (s *managementCustomProviderModelUpdateQueriesStub) UpdateManagementCustomP
 	s.updateCalls++
 	s.updateInput = input
 	return s.updated, s.updateErr
+}
+func (s *managementCustomProviderModelUpdateQueriesStub) MarkManagementModelCatalogSnapshotRebuildDirty(_ context.Context, input postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error {
+	s.dirtyInput = input
+	return s.dirtyErr
 }
 
 type managementCustomProviderModelUpdateTxStub struct {
@@ -151,6 +177,13 @@ func (s *managementCustomProviderModelUpdateTxStub) QueryRow(_ context.Context, 
 	}
 	return managementProviderModelStaticRow{err: fmt.Errorf("unexpected SQL: %s", sql)}
 }
+func (s *managementCustomProviderModelUpdateTxStub) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "model_catalog_snapshot_rebuild_requests") {
+		s.calls = append(s.calls, "mark-dirty")
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	}
+	return pgconn.CommandTag{}, fmt.Errorf("unexpected SQL: %s", sql)
+}
 func (s *managementCustomProviderModelUpdateTxStub) Commit(context.Context) error {
 	s.calls = append(s.calls, "commit")
 	return s.commitErr
@@ -161,7 +194,7 @@ func (s *managementCustomProviderModelUpdateTxStub) Rollback(context.Context) er
 }
 
 func customProviderModelRow(id, provider, model, scope, owner, status, mode, protocols, tiers, reasoning, defaultReasoning, release, shutdown string, price *float64) postgresqueries.LockManagementCustomProviderModelRow {
-	row := postgresqueries.LockManagementCustomProviderModelRow{ID: id, ProviderCode: provider, Model: model, Scope: scope, SystemAccountID: pgtype.Text{String: owner, Valid: owner != ""}, Status: status, Mode: pgtype.Text{String: mode, Valid: mode != ""}, SupportedApiProtocolsJson: protocols, SupportedServiceTiersJson: tiers, SupportedReasoningEffortsJson: reasoning, DefaultReasoningEffort: pgtype.Text{String: defaultReasoning, Valid: defaultReasoning != ""}, ReleaseDate: pgtype.Text{String: release, Valid: release != ""}, ShutdownDate: pgtype.Text{String: shutdown, Valid: shutdown != ""}, ServiceTierPricesJson: `{}`, CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, UpdatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}}
+	row := postgresqueries.LockManagementCustomProviderModelRow{ID: id, ProviderCode: provider, Model: model, Scope: scope, SystemAccountID: pgtype.Text{String: owner, Valid: owner != ""}, Status: status, CatalogVisible: true, Mode: pgtype.Text{String: mode, Valid: mode != ""}, SupportedApiProtocolsJson: protocols, SupportedServiceTiersJson: tiers, SupportedReasoningEffortsJson: reasoning, DefaultReasoningEffort: pgtype.Text{String: defaultReasoning, Valid: defaultReasoning != ""}, ReleaseDate: pgtype.Text{String: release, Valid: release != ""}, ShutdownDate: pgtype.Text{String: shutdown, Valid: shutdown != ""}, ServiceTierPricesJson: `{}`, CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}, UpdatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true}}
 	if price != nil {
 		row.InputUsdPer1m = pgtype.Float8{Float64: *price, Valid: true}
 	}
@@ -169,14 +202,14 @@ func customProviderModelRow(id, provider, model, scope, owner, status, mode, pro
 }
 
 func customProviderModelUpdateRowFromLock(row postgresqueries.LockManagementCustomProviderModelRow) postgresqueries.UpdateManagementCustomProviderModelRow {
-	return postgresqueries.UpdateManagementCustomProviderModelRow{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	return postgresqueries.UpdateManagementCustomProviderModelRow{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, CatalogVisible: row.CatalogVisible, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 func customProviderModelValues(row interface{}) []any {
 	switch value := row.(type) {
 	case postgresqueries.LockManagementCustomProviderModelRow:
-		return []any{value.ID, value.ProviderCode, value.Model, value.Scope, value.SystemAccountID, value.Status, value.Mode, value.SupportedApiProtocolsJson, value.SupportedServiceTiersJson, value.SupportedReasoningEffortsJson, value.DefaultReasoningEffort, value.ReleaseDate, value.ShutdownDate, value.ContextWindowTokens, value.MaxInputTokens, value.MaxOutputTokens, value.InputUsdPer1m, value.OutputUsdPer1m, value.CachedInputUsdPer1m, value.CacheWriteUsdPer1m, value.CacheWrite1hUsdPer1m, value.ServiceTierPricesJson, value.ImageInputUsdPer1m, value.ImageOutputUsdPer1m, value.AudioInputUsdPer1m, value.AudioOutputUsdPer1m, value.OutputUsdPerImage, value.PricingNotes, value.CapabilityNotes, value.Notes, value.CreatedBy, value.UpdatedBy, value.CreatedAt, value.UpdatedAt}
+		return []any{value.ID, value.ProviderCode, value.Model, value.Scope, value.SystemAccountID, value.Status, value.CatalogVisible, value.Mode, value.SupportedApiProtocolsJson, value.SupportedServiceTiersJson, value.SupportedReasoningEffortsJson, value.DefaultReasoningEffort, value.ReleaseDate, value.ShutdownDate, value.ContextWindowTokens, value.MaxInputTokens, value.MaxOutputTokens, value.InputUsdPer1m, value.OutputUsdPer1m, value.CachedInputUsdPer1m, value.CacheWriteUsdPer1m, value.CacheWrite1hUsdPer1m, value.ServiceTierPricesJson, value.ImageInputUsdPer1m, value.ImageOutputUsdPer1m, value.AudioInputUsdPer1m, value.AudioOutputUsdPer1m, value.OutputUsdPerImage, value.PricingNotes, value.CapabilityNotes, value.Notes, value.CreatedBy, value.UpdatedBy, value.CreatedAt, value.UpdatedAt}
 	case postgresqueries.UpdateManagementCustomProviderModelRow:
-		return []any{value.ID, value.ProviderCode, value.Model, value.Scope, value.SystemAccountID, value.Status, value.Mode, value.SupportedApiProtocolsJson, value.SupportedServiceTiersJson, value.SupportedReasoningEffortsJson, value.DefaultReasoningEffort, value.ReleaseDate, value.ShutdownDate, value.ContextWindowTokens, value.MaxInputTokens, value.MaxOutputTokens, value.InputUsdPer1m, value.OutputUsdPer1m, value.CachedInputUsdPer1m, value.CacheWriteUsdPer1m, value.CacheWrite1hUsdPer1m, value.ServiceTierPricesJson, value.ImageInputUsdPer1m, value.ImageOutputUsdPer1m, value.AudioInputUsdPer1m, value.AudioOutputUsdPer1m, value.OutputUsdPerImage, value.PricingNotes, value.CapabilityNotes, value.Notes, value.CreatedBy, value.UpdatedBy, value.CreatedAt, value.UpdatedAt}
+		return []any{value.ID, value.ProviderCode, value.Model, value.Scope, value.SystemAccountID, value.Status, value.CatalogVisible, value.Mode, value.SupportedApiProtocolsJson, value.SupportedServiceTiersJson, value.SupportedReasoningEffortsJson, value.DefaultReasoningEffort, value.ReleaseDate, value.ShutdownDate, value.ContextWindowTokens, value.MaxInputTokens, value.MaxOutputTokens, value.InputUsdPer1m, value.OutputUsdPer1m, value.CachedInputUsdPer1m, value.CacheWriteUsdPer1m, value.CacheWrite1hUsdPer1m, value.ServiceTierPricesJson, value.ImageInputUsdPer1m, value.ImageOutputUsdPer1m, value.AudioInputUsdPer1m, value.AudioOutputUsdPer1m, value.OutputUsdPerImage, value.PricingNotes, value.CapabilityNotes, value.Notes, value.CreatedBy, value.UpdatedBy, value.CreatedAt, value.UpdatedAt}
 	default:
 		return nil
 	}
