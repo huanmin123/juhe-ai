@@ -53,6 +53,11 @@ assert.match(requestOverridesSectionSource, /v-if="requestOverridesSupported"/, 
 assert.doesNotMatch(requestOverridesSectionSource, /serviceTierOptions\.length \|\| reasoningEffortOptions\.length/, '单账户配置区不能因能力为空整体隐藏')
 assert.doesNotMatch(requestOverridesSectionSource, /<a-form-item v-if=/, '服务等级和思考级别字段不能按选项数量分别隐藏')
 assert.doesNotMatch(requestOverridesSectionSource, /watch\(/, '模型能力变化不能静默清空已保存覆盖')
+assert.match(
+  requestOverridesSectionSource,
+  /requestOverridesSupported[\s\S]+serviceTierOverride \|\| props\.form\.reasoningEffortOverride/,
+  'Interactions-only 账户已有覆盖时必须保留清除入口'
+)
 assert.match(requestOverridesSectionSource, /当前已选模型未声明可用服务等级/, '服务等级无能力时必须显示中文原因')
 assert.match(requestOverridesSectionSource, /当前已选模型未声明可用思考级别/, '思考级别无能力时必须显示中文原因')
 assert.match(batchEditModalSource, /v-if="requestOverridesSupported"/, '批量编辑必须为支持供应商保留请求覆盖字段')

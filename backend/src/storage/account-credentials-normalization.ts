@@ -278,6 +278,11 @@ function normalizeGptAccountRequestOverrides(
   const hasServiceTier = Object.prototype.hasOwnProperty.call(input, 'service_tier_override')
   const hasReasoningEffort = Object.prototype.hasOwnProperty.call(input, 'reasoning_effort_override')
   if (!hasServiceTier && !hasReasoningEffort) return
+  if (context.providerCode === 'gemini'
+    && Array.isArray(credentials.supported_endpoint_modes)
+    && !credentials.supported_endpoint_modes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
+    return
+  }
   const serviceTier = optionalCredentialToken(
     input.service_tier_override,
     '服务等级覆盖'

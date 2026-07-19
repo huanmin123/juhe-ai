@@ -55,6 +55,21 @@ assert.equal(googleOAuth.client_secret, 'google-client-secret')
 assert.equal(googleOAuth.quota_project_id, 'quota-project')
 assert.equal(googleOAuth.service_tier_override, 'priority')
 assert.equal(googleOAuth.reasoning_effort_override, 'high')
+const interactionsOnlyGoogleOAuth = normalizeAccountCredentialsForWrite('google_oauth', {
+  access_token: 'google-access',
+  base_url: 'https://generativelanguage.googleapis.com/v1beta',
+  supported_endpoint_modes: ['interactions_json', 'interactions_sse'],
+  service_tier_override: 'priority',
+  reasoning_effort_override: 'high'
+}, {
+  accountType: 'google_oauth',
+  providerCode: 'gemini',
+  providerProtocolProfileId: 'profile_gemini_native_v1beta',
+  protocolCode: 'gemini',
+  protocolVersion: 'v1beta'
+})
+assert.equal(interactionsOnlyGoogleOAuth.service_tier_override, undefined)
+assert.equal(interactionsOnlyGoogleOAuth.reasoning_effort_override, undefined)
 assert.throws(
   () => assertAccountGptRequestOverridesSupportedByCatalog({
     providerCode: 'gemini',
