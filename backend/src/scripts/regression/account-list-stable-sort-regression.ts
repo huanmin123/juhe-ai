@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-list-stable-sort-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -69,6 +70,7 @@ try {
 function createStableAccount(name: string, apiKey: string, createdAt: string): { id: string } {
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name,
     type: 'api_key',
     credentials: {

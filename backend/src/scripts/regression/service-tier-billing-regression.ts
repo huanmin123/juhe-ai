@@ -134,6 +134,14 @@ assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
   reasoning_effort: 'medium'
 }))).reasoningEffort, 'medium', 'Chat Completions 最终上游 body 必须提取 reasoning_effort')
 assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
+  model: 'claude-sonnet-5',
+  output_config: { effort: 'high' }
+}))).reasoningEffort, 'high', 'Anthropic 最终上游 body 必须提取 output_config.effort')
+assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
+  model: 'gemini-3.5-flash',
+  generationConfig: { thinkingConfig: { thinkingLevel: 'medium' } }
+}))).reasoningEffort, 'medium', 'Gemini 最终上游 body 必须提取 generationConfig.thinkingConfig.thinkingLevel')
+assert.equal(extractGatewayJsonBodyMetadata(Buffer.from(JSON.stringify({
   model: 'gpt-5.6-sol',
   reasoning: { effort: 'high' },
   reasoning_effort: 'low'
@@ -151,6 +159,7 @@ assert.equal(bridgedChatBody.service_tier, 'flex', 'Responses 到 Chat 桥接必
 assert.equal(bridgedChatBody.reasoning_effort, 'high', 'Responses 到 Chat 桥接必须转换 reasoning.effort')
 
 const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
+  service_tier: 'standard',
   usageMetadata: {
     promptTokenCount: 80,
     candidatesTokenCount: 60,
@@ -159,6 +168,12 @@ const geminiUsage = parseGeminiUsageFromJsonBuffer(Buffer.from(JSON.stringify({
 })))
 assert.equal(geminiUsage.outputTokens, 100, 'Gemini candidates 不含 thoughts，必须归一为完整可计费输出')
 assert.equal(geminiUsage.thinkingTokens, 40)
+assert.equal(geminiUsage.serviceTier, 'standard', 'Gemini JSON 必须保留上游报告的实际服务等级')
+assert.equal(resolveUsageServiceTiers({
+  requestedServiceTier: 'priority',
+  effectiveServiceTier: 'priority',
+  reportedServiceTier: geminiUsage.serviceTier
+}).billedServiceTier, 'standard', 'Gemini 上游报告 Standard 时必须覆盖请求的 Priority 作为最终计费档位')
 
 const anthropicFastUsage = parseAnthropicUsageFromJsonBuffer(Buffer.from(JSON.stringify({
   usage: { input_tokens: 100_000, output_tokens: 100_000, speed: 'fast' }

@@ -1,6 +1,15 @@
 <template>
   <section class="form-section" autocomplete="off">
-    <template v-if="editing">
+    <template v-if="isGoogleOAuth">
+      <a-alert class="form-alert" type="info" show-icon message="Gemini Google OAuth 使用用户授权 Refresh Token 自动换取 Access Token；可留空 Refresh Token 以使用尚未过期的 Access Token。" />
+      <a-form-item label="Access Token"><a-textarea v-model:value="form.accessToken" :rows="3" autocomplete="off" placeholder="粘贴 Google Access Token" /></a-form-item>
+      <a-form-item label="Refresh Token"><a-textarea v-model:value="form.refreshToken" :rows="3" autocomplete="off" placeholder="粘贴 Google OAuth Refresh Token" /></a-form-item>
+      <a-form-item label="Client ID"><a-input v-model:value="form.googleClientId" autocomplete="off" /></a-form-item>
+      <a-form-item label="Client Secret"><a-input-password v-model:value="form.googleClientSecret" autocomplete="off" /></a-form-item>
+      <a-form-item label="Quota Project ID"><a-input v-model:value="form.googleQuotaProjectId" placeholder="可选，用于 x-goog-user-project" /></a-form-item>
+    </template>
+
+    <template v-else-if="editing">
       <a-form-item label="Access Token">
         <a-textarea
           v-model:value="form.accessToken"
@@ -70,6 +79,7 @@ defineProps<{
   editing: boolean
   form: AccountFormModel
   isOpenAI: boolean
+  isGoogleOAuth: boolean
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
   title: string

@@ -328,6 +328,7 @@ function accountHealthCheckFailureDecision(
     failureCount: number
     intervalHours: number
     errorMessage: string
+    countTowardsThreshold: boolean
   }
 ): AccountHealthCheckFailureDecision {
   if (row.status !== 'pending_test') {
@@ -338,6 +339,14 @@ function accountHealthCheckFailureDecision(
         Math.max(1, input.failureCount),
         input.intervalHours
       ),
+      transitionedToError: false
+    }
+  }
+  if (!input.countTowardsThreshold) {
+    return {
+      accountStatus: 'pending_test',
+      nextHealthCheckAt: new Date(Date.parse(input.checkedAt) + pendingHealthCheckRetryIntervalMs).toISOString(),
+      failureStartedAt: normalizedIso(row.health_check_failure_started_at),
       transitionedToError: false
     }
   }
@@ -404,7 +413,8 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
         checkedAt,
         failureCount,
         intervalHours: input.intervalHours,
-        errorMessage
+        errorMessage,
+        countTowardsThreshold
       })
       nextHealthCheckAt = decision.nextHealthCheckAt
       failureStartedAt = decision.failureStartedAt
@@ -539,7 +549,8 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
       checkedAt,
       failureCount,
       intervalHours: input.intervalHours,
-      errorMessage
+      errorMessage,
+      countTowardsThreshold
     })
     const result = await tx.execute(`
       UPDATE ${healthCheckTable(tx, 'accounts')}
@@ -798,7 +809,7 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
       WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('active', 'pending_test')
         AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)
@@ -888,7 +899,7 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
     LEFT JOIN ${healthCheckTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
     WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-      AND accounts.type IN ('api_key', 'oauth')
+      AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('active', 'pending_test')
       AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)

@@ -422,8 +422,16 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
     return
   }
   if (event.key === 'logout') {
-    await logout()
-    await router.replace('/login')
+    try {
+      await logout()
+      await router.replace('/login')
+    } catch (error) {
+      if (!authState.currentUser.value) {
+        await router.replace('/login')
+        return
+      }
+      message.error(extractApiErrorMessage(error, '退出登录失败，请稍后重试'))
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express'
 
-import { logger } from '../../../shared/logger.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
 import { type GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
@@ -122,9 +122,32 @@ import type { UpstreamResponseHandlingResult } from './response-handling-result.
 import { inspectBufferedGatewayJsonResponse } from './non-stream-json-inspection.js'
 import { prepareUpstreamResponseForDownstream } from './downstream-headers.js'
 import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
+import {
+  deleteGeminiInteractionAffinityAsync,
+  GeminiInteractionAffinityUnavailableError,
+  geminiInteractionResourceIdFromRequest,
+  geminiInteractionIdFromJsonPrefix,
+  geminiInteractionIdFromResponseBody,
+  isGeminiInteractionCreateRequest,
+  isGeminiInteractionResourceRequest,
+  rememberGeminiInteractionAffinityAsync
+} from '../protocols/gemini-v1beta/interaction-affinity.service.js'
 
 export type { StreamServerRetryReason } from './stream-finalization-retry-decision.js'
 export type { UpstreamResponseHandlingResult } from './response-handling-result.js'
+
+export function isSuccessfulEmptyUpstreamResponseAllowed(input: {
+  req: Request
+  account: UpstreamAccount
+  statusCode: number
+}): boolean {
+  if (input.statusCode < 200 || input.statusCode >= 300) return false
+  if (input.req.method.toUpperCase() !== 'DELETE') return false
+  const requestPath = (input.req.originalUrl || input.req.path || '').split('?', 1)[0].toLowerCase()
+  const normalizedPath = requestPath.replace(/^\/v1beta(?=\/|$)/, '') || '/'
+  if (!/^\/interactions\/[^/]+$/.test(normalizedPath)) return false
+  return gatewayProtocolResponseEndpointFamilyForRequest(input.req, input.account) === 'interactions'
+}
 
 interface HandleUpstreamResponseInput {
   req: Request
@@ -307,7 +330,17 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         responseProtocol,
         endpointFamily: responseEndpointFamily,
         prepareDownstream: () => prepareUpstreamResponseForDownstream(res, upstreamResponse, true),
-        downstreamCommitState: input.downstreamCommitState
+        downstreamCommitState: input.downstreamCommitState,
+        beforeDownstreamCommit: isGeminiInteractionCreateRequest(req) && upstreamResponse.ok
+          ? async ({ responseResourceId }) => {
+            await rememberGeminiInteractionBeforeDownstreamCommit({
+              auditCapture,
+              account,
+              usageContext,
+              responseResourceId
+            })
+          }
+          : undefined
       }
     )
   } catch (error) {
@@ -379,7 +412,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     statusCode: upstreamResponse.status,
     responseHeaders: upstreamResponse.headers,
     responseBody: streamResult.auditUpstreamBody,
-    success: streamResult.completed && (!interpretUpstreamResponseSemantics || upstreamResponse.ok),
+    success: streamResult.completed && upstreamResponse.ok,
     errorPhase: streamResult.completed ? undefined : 'stream',
     errorCode: streamResult.completed ? undefined : streamResult.errorCode,
     errorMessage: streamResult.completed ? undefined : streamResult.message
@@ -550,6 +583,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     usage: streamUsageFallback.usage,
     firstTokenMs: streamResult.firstTokenMs,
     responseBodyText: streamResult.responseBodyText,
+    responseResourceId: streamResult.responseResourceId,
     bodyOmission: streamResult.bodyOmission,
     errorPayload: {}
   }
@@ -654,18 +688,34 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   }
   let responseBody: Buffer | undefined
   let responseBodyText: string | undefined
+  let responseResourceId: string | undefined
   let responseUsageText: string | undefined
   let responseSemanticText: string | undefined
   let bodyOmission: StreamBodyOmissionSummary | undefined
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
   let errorPayload: Record<string, unknown> = {}
+  const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, account)
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
-  const forwardedResponseSuccessful = !interpretUpstreamResponseSemantics || upstreamResponse.ok
+  const forwardedResponseSuccessful = upstreamResponse.ok
   try {
-    if (!upstreamResponse.body && interpretUpstreamResponseSemantics) {
+    if (upstreamResponse.ok && isGeminiInteractionDeleteRequest(req, account)) {
+      await deleteGeminiInteractionBeforeDownstreamCommit({ req, auditCapture, account, usageContext })
+    }
+    if (!upstreamResponse.body && isSuccessfulEmptyUpstreamResponseAllowed({
+      req,
+      account,
+      statusCode: upstreamResponse.status
+    })) {
+      prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
+      input.downstreamCommitState.markTransportCommitted()
+      endResponse(res)
+      input.downstreamCommitState.markSemanticCommitted()
+      firstTokenMs = Date.now() - startedAt
+      markFirstOutput?.()
+    } else if (!upstreamResponse.body && interpretUpstreamResponseSemantics) {
       const errorMessage = '上游响应体为空'
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
       auditCapture.completeAttempt(auditAttemptId, {
@@ -743,6 +793,17 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             input.downstreamCommitState.markTransportCommitted()
           },
           onChunkWritten: (bytesWritten) => input.downstreamCommitState.markSemanticCommitted(bytesWritten),
+          beforeDownstreamCommit: isGeminiInteractionCreateRequest(req) && upstreamResponse.ok
+            ? async (inspectionBody) => {
+              responseResourceId = geminiInteractionIdFromJsonPrefix(inspectionBody)
+              await rememberGeminiInteractionBeforeDownstreamCommit({
+                auditCapture,
+                account,
+                usageContext,
+                responseResourceId
+              })
+            }
+            : undefined,
           onFirstByte: () => {
             firstTokenMs = Date.now() - startedAt
             markFirstOutput?.()
@@ -755,6 +816,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         if (pipeResult.fullyBuffered) {
           const completeBody = pipeResult.completeBody ?? Buffer.alloc(0)
           const completeBodyText = pipeResult.completeBodyText ?? completeBody.toString('utf8')
+          if (isGeminiInteractionCreateRequest(req)) {
+            responseResourceId = geminiInteractionIdFromResponseBody(completeBodyText)
+          }
           const jsonInspectionResult = await inspectBufferedGatewayJsonResponse({
             req,
             res,
@@ -785,6 +849,14 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
           })
           if (hybridQualityResult) {
             return hybridQualityResult
+          }
+          if (isGeminiInteractionCreateRequest(req)) {
+            await rememberGeminiInteractionBeforeDownstreamCommit({
+              auditCapture,
+              account,
+              usageContext,
+              responseResourceId
+            })
           }
           responseSemanticText = completeBodyText
           if (firstTokenMs === undefined) {
@@ -1082,6 +1154,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     usage,
     firstTokenMs,
     responseBodyText,
+    responseResourceId,
     bodyOmission,
     errorPayload
   }
@@ -1092,11 +1165,17 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
   return Boolean(
-    interpretUpstreamResponseSemantics
-    && (
-      (input.responseInspectionPolicies?.length ?? 0) > 0
-      || input.clientStrategy?.codexCompactionExpected === true
-      || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
+    (
+      interpretUpstreamResponseSemantics
+      && (
+        (input.responseInspectionPolicies?.length ?? 0) > 0
+        || input.clientStrategy?.codexCompactionExpected === true
+        || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
+      )
+    )
+    || (
+      input.upstreamResponse.ok
+      && isGeminiInteractionCreateRequest(input.req)
     )
   )
 }
@@ -1168,6 +1247,110 @@ async function finalizeNonStreamResponseAfterSseHeartbeat(
     accountId: input.account.id
   })
   return { alreadyFinalized: true }
+}
+
+function isGeminiInteractionDeleteRequest(req: Request, account: UpstreamAccount): boolean {
+  return req.method.toUpperCase() === 'DELETE'
+    && isGeminiInteractionResourceRequest(req)
+    && gatewayProtocolResponseEndpointFamilyForRequest(req, account) === 'interactions'
+}
+
+async function rememberGeminiInteractionBeforeDownstreamCommit(input: {
+  auditCapture: AuditCaptureContext
+  account: UpstreamAccount
+  usageContext: GatewayUsageContext
+  responseResourceId: string | undefined
+}): Promise<void> {
+  let mutation
+  try {
+    mutation = await rememberGeminiInteractionAffinityAsync({
+      interactionId: input.responseResourceId,
+      account: input.account,
+      scope: geminiInteractionAffinityScope(input.usageContext)
+    })
+  } catch (error) {
+    recordGeminiInteractionAffinityPersistenceFailure(error, {
+      operation: 'remember',
+      auditCapture: input.auditCapture,
+      accountId: input.account.id,
+      groupId: input.usageContext.groupId
+    })
+    throw error
+  }
+  if (mutation.action !== 'none') {
+    input.auditCapture.addGatewayMetadata({
+      label: 'gemini_interaction_account_affinity_update',
+      metadata: { ...mutation, commitPhase: 'before_downstream_commit' }
+    })
+  }
+}
+
+async function deleteGeminiInteractionBeforeDownstreamCommit(input: {
+  req: Request
+  auditCapture: AuditCaptureContext
+  account: UpstreamAccount
+  usageContext: GatewayUsageContext
+}): Promise<void> {
+  let mutation
+  try {
+    mutation = await deleteGeminiInteractionAffinityAsync({
+      interactionId: geminiInteractionResourceIdFromRequest(input.req),
+      scope: geminiInteractionAffinityScope(input.usageContext)
+    })
+  } catch (error) {
+    recordGeminiInteractionAffinityPersistenceFailure(error, {
+      operation: 'delete',
+      auditCapture: input.auditCapture,
+      accountId: input.account.id,
+      groupId: input.usageContext.groupId
+    })
+    throw error
+  }
+  if (mutation.action !== 'none') {
+    input.auditCapture.addGatewayMetadata({
+      label: 'gemini_interaction_account_affinity_update',
+      metadata: { ...mutation, commitPhase: 'before_downstream_commit' }
+    })
+  }
+}
+
+function recordGeminiInteractionAffinityPersistenceFailure(
+  error: unknown,
+  input: {
+    operation: 'remember' | 'delete'
+    auditCapture: AuditCaptureContext
+    accountId: string
+    groupId: string
+  }
+): void {
+  const originalError = error instanceof GeminiInteractionAffinityUnavailableError
+    ? error.originalError
+    : error
+  getRequestLogger().error(errorLogFields(originalError, {
+    event: 'gateway_gemini_interaction_affinity_update_failed',
+    operation: input.operation,
+    accountId: input.accountId,
+    groupId: input.groupId
+  }), 'Gemini Interaction 账号亲和状态更新失败')
+  input.auditCapture.addGatewayMetadata({
+    label: 'gemini_interaction_account_affinity_update_failed',
+    metadata: {
+      operation: input.operation,
+      accountId: input.accountId
+    }
+  })
+}
+
+function geminiInteractionAffinityScope(usageContext: GatewayUsageContext): {
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+} {
+  return {
+    systemAccountId: usageContext.systemAccountId,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId
+  }
 }
 
 function isFirstByteTimeoutStreamResult(streamResult: { errorCode?: string; firstTokenMs?: number; semanticCommitted: boolean; outputReceived: boolean }): boolean {
@@ -1407,7 +1590,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
-  const forwardedResponseSuccessful = !interpretUpstreamResponseSemantics || upstreamResponse.ok
+  const forwardedResponseSuccessful = upstreamResponse.ok
   if (interpretUpstreamResponseSemantics && upstreamResponse.ok) {
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)

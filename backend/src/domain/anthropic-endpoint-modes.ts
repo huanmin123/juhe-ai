@@ -134,9 +134,9 @@ export function assertAnthropicEndpointModesCompatible(input: {
   }
   const unsupported = input.modes.filter((mode) => !ANTHROPIC_ENDPOINT_MODE_VALUES.includes(mode))
   if (unsupported.length) {
-    throw new Error(`Anthropic API Key 账户上游接口能力不支持：${unsupported.join(', ')}`)
+    throw new Error(`Anthropic 账户上游接口能力不支持：${unsupported.join(', ')}`)
   }
   if (!input.modes.includes('messages_json') && !input.modes.includes('messages_sse')) {
-    throw new Error('Anthropic API Key 账户上游接口能力必须至少启用 Messages API (JSON) 或 Messages API (Streaming)')
+    throw new Error('Anthropic 账户上游接口能力必须至少启用 Messages API (JSON) 或 Messages API (Streaming)')
   }
 }

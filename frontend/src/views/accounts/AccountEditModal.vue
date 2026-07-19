@@ -62,12 +62,13 @@
         />
 
         <AccountOAuthSection
-          v-else-if="isOAuthForm && !authorizedEditing"
+          v-else-if="isTokenCredentialForm && !authorizedEditing"
           :auth-loading="authLoading"
           :auth-result="authResult"
           :editing="editing"
           :form="form"
           :is-open-a-i="isOpenAIOAuthForm"
+          :is-google-o-auth="form.type === 'google_oauth'"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
           :title="credentialTitle"
@@ -151,21 +152,19 @@
                 :authorized-editing="authorizedEditing"
               />
 
-              <section class="form-section">
-                <div class="form-section-title">
-                  <span>恢复探活</span>
+              <section class="form-section probe-toggle-row">
+                <div class="probe-toggle-label">
+                  <span>持续恢复探活</span>
                   <a-tooltip title="仅影响账户进入临时不可调用后的后台恢复探测。关闭后仍在前 10 分钟按退避有限复测；最终复测仍失败才标记异常。周期健康检查、首次激活、人工测试和限流恢复不受影响。">
-                    <span class="form-section-tip">?</span>
+                    <QuestionCircleOutlined class="probe-toggle-help" />
                   </a-tooltip>
                 </div>
-                <a-form-item label="持续恢复探活">
-                  <a-switch
-                    v-model:checked="form.temporaryUnavailableContinuousProbeEnabled"
-                    :disabled="authorizedEditing"
-                    checked-children="开启"
-                    un-checked-children="关闭"
-                  />
-                </a-form-item>
+                <a-switch
+                  v-model:checked="form.temporaryUnavailableContinuousProbeEnabled"
+                  :disabled="authorizedEditing"
+                  checked-children="开启"
+                  un-checked-children="关闭"
+                />
               </section>
 
               <AccountExtraInfoSection
@@ -214,6 +213,7 @@
 </template>
 
 <script setup lang="ts">
+import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { computed, ref, watch } from 'vue'
 
 import { formatDateTime } from '@/shared/formatters'
@@ -278,6 +278,7 @@ const props = withDefaults(defineProps<{
   isApiKeyForm: boolean
   isManagementView: boolean
   isOAuthForm: boolean
+  isTokenCredentialForm: boolean
   isOpenAIOAuthForm: boolean
   loading?: boolean
   mappingAnthropicSourceModelOptions: SelectOption[]
@@ -415,6 +416,28 @@ const emit = defineEmits<{
   padding: 0;
   border-bottom: 0;
   background: transparent;
+}
+
+.probe-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 32px;
+}
+
+.probe-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #1f2937;
+  font-weight: 500;
+}
+
+.probe-toggle-help {
+  color: #8c8c8c;
+  cursor: help;
 }
 
 .readonly-config-section {

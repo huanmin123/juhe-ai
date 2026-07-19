@@ -30,7 +30,9 @@ export function buildAccountCredentials(input: {
 }): Record<string, unknown> {
   const credentials: Record<string, unknown> = input.form.type === 'api_key'
     ? buildApiKeyCredentials(input.form)
-    : buildOAuthCredentials(input.form, input.currentCredentials ?? {})
+    : input.form.type === 'google_oauth'
+      ? buildGoogleOAuthCredentials(input.form)
+      : buildOAuthCredentials(input.form, input.currentCredentials ?? {})
   writeAccountGptRequestOverrides(credentials, input.form)
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
   writeAccountResponseInspectionRulesToCredentials(credentials, input.responseInspectionRules)
@@ -129,6 +131,18 @@ function buildOAuthCredentials(form: AccountFormModel, currentCredentials: Recor
     ...pickOAuthCredentialMetadata(currentCredentials),
     access_token: form.accessToken,
     refresh_token: form.refreshToken,
+    supported_endpoint_modes: [...form.supportedEndpointModes]
+  })
+}
+
+function buildGoogleOAuthCredentials(form: AccountFormModel): Record<string, unknown> {
+  return compactAccountCredentials({
+    access_token: form.accessToken,
+    refresh_token: form.refreshToken,
+    client_id: form.googleClientId,
+    client_secret: form.googleClientSecret,
+    quota_project_id: form.googleQuotaProjectId,
+    base_url: form.baseUrl,
     supported_endpoint_modes: [...form.supportedEndpointModes]
   })
 }

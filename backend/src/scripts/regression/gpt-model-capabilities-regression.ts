@@ -43,6 +43,10 @@ for (const [model, efforts] of expectedApiReasoning) {
   assert.deepEqual(requireModel(model).supportedReasoningEfforts, efforts, `${model} API reasoning effort 必须与官方模型契约一致`)
 }
 
+for (const model of pricing) {
+  assert.equal(model.defaultReasoningEffort, undefined, `${model.model} GPT API 默认思考级别必须留给上游决定`)
+}
+
 for (const model of [sol, terra, luna]) {
   assert.deepEqual(model.supportedServiceTiers, ['priority', 'flex'])
   assert.deepEqual(model.supportedReasoningEfforts, wireReasoning)
@@ -84,9 +88,9 @@ const codexSol = requireCodexModel('gpt-5.6-sol')
 const codexTerra = requireCodexModel('gpt-5.6-terra')
 const codexLuna = requireCodexModel('gpt-5.6-luna')
 
-assert.deepEqual(codexSol.supported_reasoning_levels.map((item) => item.effort), [...codexReasoning, 'ultra'])
-assert.deepEqual(codexTerra.supported_reasoning_levels.map((item) => item.effort), [...codexReasoning, 'ultra'])
-assert.deepEqual(codexLuna.supported_reasoning_levels.map((item) => item.effort), codexReasoning)
+assert.deepEqual((codexSol.supported_reasoning_levels ?? []).map((item) => item.effort), [...codexReasoning, 'ultra'])
+assert.deepEqual((codexTerra.supported_reasoning_levels ?? []).map((item) => item.effort), [...codexReasoning, 'ultra'])
+assert.deepEqual((codexLuna.supported_reasoning_levels ?? []).map((item) => item.effort), codexReasoning)
 assert.deepEqual(codexSol.additional_speed_tiers, ['fast'])
 assert.deepEqual(codexTerra.additional_speed_tiers, ['fast'])
 assert.deepEqual(codexLuna.additional_speed_tiers, ['fast'])
@@ -94,6 +98,17 @@ assert.deepEqual(codexSol.service_tiers.map((item) => item.id), ['priority', 'fl
 assert.equal(codexSol.multi_agent_version, 'v2')
 assert.equal(codexTerra.multi_agent_version, 'v2')
 assert.equal(codexLuna.multi_agent_version, null)
+
+const codexWithoutExplicitDefault = buildCodexModelsResponseFromCatalog([{
+  ...catalog[0],
+  model: 'custom-no-codex-default',
+  codexSupportedReasoningLevels: ['low', 'high'],
+  codexDefaultReasoningLevel: undefined,
+  defaultReasoningEffort: 'high'
+}]).models[0]
+assert(codexWithoutExplicitDefault)
+assert.deepEqual((codexWithoutExplicitDefault.supported_reasoning_levels ?? []).map((item) => item.effort), ['low', 'high'])
+assert.equal(codexWithoutExplicitDefault.default_reasoning_level, undefined, 'Codex 默认思考级别不得从 API 默认或首个选项推断')
 
 console.log('GPT model capabilities regression passed')
 

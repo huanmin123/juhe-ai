@@ -2,6 +2,7 @@ export const OPENAI_PROTOCOL_CODE = 'openai'
 export const OPENAI_PROTOCOL_VERSION = 'v1'
 export const OPENAI_COMPATIBLE_PROVIDER_CODE = 'openai'
 export const GPT_VENDOR_CODE = 'gpt'
+export const XAI_PROVIDER_CODE = 'xai'
 export const DEEPSEEK_PROVIDER_CODE = 'deepseek'
 export const GLM_PROVIDER_CODE = 'glm'
 export const ANTHROPIC_PROTOCOL_CODE = 'anthropic'
@@ -13,6 +14,7 @@ export const GEMINI_PROVIDER_CODE = 'gemini'
 export const HYBRID_PROVIDER_CODE = 'hybrid'
 export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID = 'profile_openai_openai_v1'
 export const GPT_OPENAI_V1_PROFILE_ID = 'profile_gpt_openai_v1'
+export const XAI_OPENAI_V1_PROFILE_ID = 'profile_xai_openai_v1'
 export const DEEPSEEK_OPENAI_V1_PROFILE_ID = 'profile_deepseek_openai_v1'
 export const DEEPSEEK_ANTHROPIC_V1_PROFILE_ID = 'profile_deepseek_anthropic_v1'
 export const GLM_GENERAL_OPENAI_V1_PROFILE_ID = 'profile_glm_general_openai_v1'
@@ -47,6 +49,7 @@ export interface ProviderProtocolProfileDefinition {
   providerCode?: string
   protocolCode?: string
   protocolVersion?: string
+  endpointFamilies?: readonly ({ code?: string } | string)[]
 }
 
 export function isOpenAIProtocolProvider(provider: ProviderProtocolDefinition | undefined): boolean {
@@ -80,6 +83,10 @@ export function isGatewaySupportedProtocolProfile(profile: ProviderProtocolProfi
 
 export function isGptVendorCode(value: unknown): boolean {
   return normalizeProviderToken(value) === GPT_VENDOR_CODE
+}
+
+export function isXaiProviderCode(value: unknown): boolean {
+  return normalizeProviderToken(value) === XAI_PROVIDER_CODE
 }
 
 export function isDeepSeekProviderCode(value: unknown): boolean {

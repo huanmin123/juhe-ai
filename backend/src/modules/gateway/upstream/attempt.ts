@@ -20,3 +20,11 @@ export function isRealUpstreamAttempt(attempt: Pick<UpstreamAttempt, 'upstreamUr
     return false
   }
 }
+
+export function isCompletedRealUpstreamAttempt(
+  attempt: Pick<UpstreamAttempt, 'upstreamUrl' | 'status'>
+): boolean {
+  return isRealUpstreamAttempt(attempt)
+    && typeof attempt.status === 'number'
+    && Number.isFinite(attempt.status)
+}

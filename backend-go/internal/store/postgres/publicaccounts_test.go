@@ -200,7 +200,7 @@ func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *tes
 		ProtocolCode:               "openai",
 		ProtocolVersion:            "v1",
 		AccountTypesJson:           `["oauth","api_key"]`,
-		CapabilitiesJson:           `["responses","stream_responses","chat","models","messages","generate_content","passthrough","bridge"]`,
+		CapabilitiesJson:           `["responses","stream_responses","chat","models","messages","generate_content","interactions","passthrough","bridge"]`,
 	})
 	if err != nil {
 		t.Fatalf("publicAccountProviderProfileFromRow() error = %v", err)
@@ -220,6 +220,7 @@ func TestPublicAccountProviderProfileFromRowDecodesDefaultSupportedModels(t *tes
 		"chat_json", "chat_sse",
 		"messages_json", "messages_sse",
 		"generate_content_json", "generate_content_sse",
+		"interactions_json", "interactions_sse",
 	}
 	if !slices.Equal(profile.EnabledEndpointModes, wantModes) {
 		t.Fatalf("enabled endpoint modes = %#v, want %#v", profile.EnabledEndpointModes, wantModes)
@@ -259,6 +260,57 @@ func TestPublicAccountGoFreshSeedIncludesGPT56DefaultModels(t *testing.T) {
 				t.Fatalf("provider %q default models = %#v, missing %q", providerCode, models, model)
 			}
 		}
+	}
+}
+
+func TestPublicAccountGoFreshSeedIncludesProviderAuthAndInteractionsProfiles(t *testing.T) {
+	baseline, err := os.ReadFile("../../../db/migrations/000008_w2_management_provider_options.sql")
+	if err != nil {
+		t.Fatalf("read Go fresh provider baseline: %v", err)
+	}
+	catchUp, err := os.ReadFile("../../../db/migrations/000060_w2_provider_auth_protocol_schema_20260718.sql")
+	if err != nil {
+		t.Fatalf("read Go provider auth catch-up: %v", err)
+	}
+	sql := string(baseline) + "\n" + string(catchUp)
+	for _, required := range []string{
+		"'xai', 'xai', 'xAI / Grok', 'openai'",
+		"('profile_xai_openai_v1', 'xai'",
+		"('profile_anthropic_anthropic_v1', 'anthropic'",
+		"'[\"api_key\"]'",
+		"'[\"api_key\",\"google_oauth\"]'",
+		"'gemini_v1beta_interactions'",
+		"'profile_gemini_native_v1beta', 'interactions'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("Go fresh provider seed missing %q", required)
+		}
+	}
+	if strings.Contains(sql, "workload_identity") {
+		t.Fatal("Go fresh provider seed must not expose workload_identity")
+	}
+}
+
+func TestPublicAccountSchemaAllowsCurrentAccountTypesAndInteractionsHealthModes(t *testing.T) {
+	baseline, err := os.ReadFile("../../../db/migrations/000005_w1b_public_accounts.sql")
+	if err != nil {
+		t.Fatalf("read Go public account baseline: %v", err)
+	}
+	catchUp, err := os.ReadFile("../../../db/migrations/000060_w2_provider_auth_protocol_schema_20260718.sql")
+	if err != nil {
+		t.Fatalf("read Go public account catch-up: %v", err)
+	}
+	sql := string(baseline) + "\n" + string(catchUp)
+	for _, required := range []string{
+		"CHECK (type IN ('api_key', 'oauth', 'google_oauth'))",
+		"'interactions_json', 'interactions_sse'",
+	} {
+		if !strings.Contains(sql, required) {
+			t.Fatalf("Go public account schema missing %q", required)
+		}
+	}
+	if strings.Contains(sql, "workload_identity") {
+		t.Fatal("Go public account schema must not allow workload_identity")
 	}
 }
 

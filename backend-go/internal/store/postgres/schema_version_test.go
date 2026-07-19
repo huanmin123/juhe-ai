@@ -20,36 +20,36 @@ func TestRequireGooseSchemaVersion(t *testing.T) {
 		wantCalls int
 	}{
 		{
-			name: "version 57 applied",
+			name: "version 61 applied",
 			rows: []fakeSchemaVersionRow{
-				{version: "57", applied: true},
+				{version: "61", applied: true},
 				{err: pgx.ErrNoRows},
 			},
 			wantCalls: 2,
 		},
 		{
-			name: "version 58 rollback history resolves to version 57",
+			name: "version 62 rollback history resolves to version 61",
 			rows: []fakeSchemaVersionRow{
-				{version: "57", applied: true},
+				{version: "61", applied: true},
 				{err: pgx.ErrNoRows},
 			},
 			wantCalls: 2,
 		},
 		{
-			name:      "version 56",
-			rows:      []fakeSchemaVersionRow{{version: "56", applied: true}},
-			wantError: "expected 57",
+			name:      "version 60",
+			rows:      []fakeSchemaVersionRow{{version: "60", applied: true}},
+			wantError: "expected 61",
 			wantCalls: 1,
 		},
 		{
-			name:      "version 58",
-			rows:      []fakeSchemaVersionRow{{version: "58", applied: true}},
-			wantError: "expected 57",
+			name:      "version 62",
+			rows:      []fakeSchemaVersionRow{{version: "62", applied: true}},
+			wantError: "expected 61",
 			wantCalls: 1,
 		},
 		{
-			name:      "version 57 unapplied",
-			rows:      []fakeSchemaVersionRow{{version: "57", applied: false}},
+			name:      "version 61 unapplied",
+			rows:      []fakeSchemaVersionRow{{version: "61", applied: false}},
 			wantError: "not applied",
 			wantCalls: 1,
 		},
@@ -62,10 +62,10 @@ func TestRequireGooseSchemaVersion(t *testing.T) {
 		{
 			name: "newer applied version",
 			rows: []fakeSchemaVersionRow{
-				{version: "57", applied: true},
-				{version: "58", applied: true},
+				{version: "61", applied: true},
+				{version: "62", applied: true},
 			},
-			wantError: "newer applied version 58",
+			wantError: "newer applied version 62",
 			wantCalls: 2,
 		},
 		{
@@ -77,7 +77,7 @@ func TestRequireGooseSchemaVersion(t *testing.T) {
 		{
 			name: "newer version query error",
 			rows: []fakeSchemaVersionRow{
-				{version: "57", applied: true},
+				{version: "61", applied: true},
 				{err: errors.New("synthetic query failure")},
 			},
 			wantError: "query newer applied goose schema version",
@@ -94,7 +94,7 @@ func TestRequireGooseSchemaVersion(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			querier := &fakeSchemaVersionQuerier{rows: append([]fakeSchemaVersionRow(nil), test.rows...)}
-			err := requireGooseSchemaVersion(t.Context(), querier, 57)
+			err := requireGooseSchemaVersion(t.Context(), querier, 61)
 			if test.wantError == "" {
 				if err != nil {
 					t.Fatalf("requireGooseSchemaVersion() error = %v", err)
@@ -116,7 +116,7 @@ func TestRequireGooseSchemaVersionPreservesVersionParseError(t *testing.T) {
 		applied: true,
 	}}}
 
-	err := requireGooseSchemaVersion(t.Context(), querier, 57)
+	err := requireGooseSchemaVersion(t.Context(), querier, 61)
 	if err == nil {
 		t.Fatal("requireGooseSchemaVersion() error = nil, want parse error")
 	}
@@ -172,7 +172,7 @@ LIMIT 1`
 	if calls[1].query != wantNewerQuery {
 		t.Fatalf("newer query = %q, want %q", calls[1].query, wantNewerQuery)
 	}
-	if want := []any{int64(57)}; !reflect.DeepEqual(calls[1].args, want) {
+	if want := []any{int64(61)}; !reflect.DeepEqual(calls[1].args, want) {
 		t.Fatalf("newer query args = %#v, want %#v", calls[1].args, want)
 	}
 }

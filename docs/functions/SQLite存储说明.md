@@ -540,7 +540,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 - schema 入口及 `storage/schema/` 拆分文件中只保留当前 `operation_logs`、`operation_log_targets`、`operation_log_viewers`、`operation_log_summary_search_terms` 表结构和索引。
 - 操作日志只记录成功提交的状态变更；`GET`、列表、详情、筛选、分页和日志查看不写操作日志。
-- 操作日志不主动采集完整请求体、完整响应体、完整 headers 或原始审计 payload；如果调用方把凭据、token、代理密码、验证码、登录密码等字段作为变更项、摘要或元数据传入，操作日志服务不再按字段名脱敏，只保留条数、单值长度和可见性裁剪边界。
+- 操作日志不主动采集完整请求体、完整响应体、完整 headers 或原始审计 payload；结构化变更项的 `field` 精确命中认证容器 allowlist 时只持久化状态摘要。allowlist 包含 `credentials/credential/token/key/secret/password` 和 API Key、access/refresh/id/identity token、client secret、session token、proxy password 的 camelCase / snake_case 精确字段名。服务不扫描普通文本、metadata、summary、字段子串或疑似 token 字符串，调用方不得把秘密放入这些非敏感容器。
 - 删除业务资源时不删除历史操作日志；历史日志保留当时的资源 ID、资源名称、安全摘要和影响用户。
 - 普通用户可见性优先由 `operation_log_viewers` 预计算，全员安全摘要由 `operation_logs.visibility_scope = 'all_users'` 承载，不为全员摘要展开 viewer 行。
 - 用户侧列表由 `operation_log_viewers.system_account_id` 命中的可见集合与 `visibility_scope = 'all_users'` 的全员摘要集合按固定窗口分别读取后合并，列表不解析字段差异 JSON，详情按权限再读取明细。
@@ -594,7 +594,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 保存规则：
 
-- `changes_json` 保存调用方传入的字段差异；不再因为字段名命中敏感词自动改写为“已变更”“已清空”“已设置”等摘要，但仍受变更条数和单值长度上限控制。
+- `changes_json` 保存调用方传入的字段差异；精确命中认证容器 allowlist 的字段统一改写为“未设置 / 已设置 / 已变更”状态摘要，其余字段仍受变更条数和单值长度上限控制。
 - `metadata_json` 只保存业务排查所需的安全上下文，例如授权来源摘要、设置分组、资源归属快照等。
 - 管理员操作某个用户资源时，`actor_system_account_id` 保存真实管理员，`operation_scope_system_account_id` 保存被管理用户或资源 owner。
 - 全员可见的设置或公告变化可不展开 `operation_log_viewers`，由 `visibility_scope = 'all_users'` 支撑用户侧查询。
@@ -1047,7 +1047,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - OpenAI API Key
 - Anthropic API Key
 - 代理密码
-- 操作日志中明确传入的敏感字段变更详情
+- 操作日志非敏感字段、metadata 或 summary 中由调用方错误传入的敏感值；精确 allowlist 敏感容器只保存状态摘要
 
 本地网关 API Key 的完整明文在创建成功时返回，也可通过单条完整密钥读取接口按资源权限返回；列表和更新响应只返回空 `key` 以及 `key_prefix` / `key_suffix` 组成的安全标识，不能批量暴露完整密钥。授权账户和授权分组接口不能返回完整密钥，只能返回列表摘要和必要状态。数据库中必须通过 `key_secret_encrypted` 密文保存本地 API Key，`key_hash` 用于网关校验，`key_prefix` 和 `key_suffix` 用于摘要展示；API Key 列表通用搜索只按名称匹配。缺少 `key_secret_encrypted` 或密文不可解的数据不进入运行时，应停机离线修复或重建 API Key。
 

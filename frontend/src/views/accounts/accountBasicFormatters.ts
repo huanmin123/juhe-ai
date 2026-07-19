@@ -10,7 +10,8 @@ import {
   isGeminiProviderCode,
   isGlmProviderCode,
   isGptVendorCode,
-  isHybridProviderCode
+  isHybridProviderCode,
+  isXaiProviderCode
 } from '@/shared/providerProtocol'
 import type { AccountClientCompatibility, AccountSummary, AccountType } from '@/types/domain'
 
@@ -41,6 +42,7 @@ export function accountDisplayName(account: AccountSummary): string {
 export function accountTypeText(type: AccountType) {
   if (type === 'oauth') return 'OAuth'
   if (type === 'api_key') return 'API Key'
+  if (type === 'google_oauth') return 'Google OAuth'
   return type || '-'
 }
 
@@ -52,12 +54,15 @@ export function accountClientCompatibilityText(value?: AccountClientCompatibilit
 export function accountTypeTitle(providerName: string, type: AccountType) {
   if (type === 'oauth') return `${providerName} OAuth`
   if (type === 'api_key') return `${providerName} API Key`
+  if (type === 'google_oauth') return `${providerName} Google OAuth`
   return `${providerName} ${type}`.trim()
 }
 
 export function accountTypeDescription(providerCode: string, type: AccountType, providerProtocolProfileId?: string) {
   if (isGptVendorCode(providerCode) && type === 'oauth') return '适合 GPT / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
   if (isGptVendorCode(providerCode) && type === 'api_key') return '适合 GPT 官方或 OpenAI v1 兼容透传，可配置 Base URL。'
+  if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return '使用 Google OAuth 用户授权访问 Gemini API；支持自动刷新 Access Token 与官方 Interactions API。'
+  if (isXaiProviderCode(providerCode) && type === 'api_key') return '适合 xAI 官方 API Key；原生支持 OpenAI v1 Chat Completions 与 Responses 文本接口。'
   if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_GENERAL_OPENAI_V1_PROFILE_ID) return '适合智谱通用 GLM API Key；默认只启用对话补全 (JSON/Streaming)，不承接 Responses API。'
   if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_OPENAI_V1_PROFILE_ID) return '适合 GLM Coding Plan Key；使用 Coding 专用 Base URL；Codex Responses 桥接请使用混合供应商账户配置。'
   if (isGlmProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) return '适合 GLM Coding Plan Key 的 Anthropic Messages 接入；使用 Anthropic v1 Messages 协议，不承接 Codex Responses 桥接。'

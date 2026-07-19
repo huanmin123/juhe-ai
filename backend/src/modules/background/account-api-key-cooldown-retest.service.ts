@@ -7,7 +7,7 @@ import {
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -83,7 +83,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     selectedApiKeyFingerprint: item.keyFingerprint,
     selectedApiKeyIndex: item.keyIndex
   }
-  let upstreamAttemptObserved = false
+  let upstreamResponseObserved = false
   const result = await testOpenAIAccount(account, {
     diagnostics: 'limited',
     testEndpointMode: account.healthCheckEndpointMode,
@@ -93,7 +93,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     candidateAccount: fixedKeyCandidate,
     disableAccountStateMutation: true,
     onUpstreamAttempt: (attempt) => {
-      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
     },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -103,7 +103,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     }
   })
 
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_account_api_key_success',
@@ -132,7 +132,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       attemptIndex: context.attemptIndex,
       retryNumber: context.retryNumber,
       probeOutcome,
-      upstreamAttemptObserved,
+      upstreamResponseObserved,
       durationMs: result.durationMs,
       message: result.message
     }, '账户内 API Key 复测未形成可归因的上游失败，已保留 Key 状态')
@@ -159,7 +159,7 @@ async function runAccountApiKeyCooldownRetestQueueItem(
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     probeOutcome,
-    upstreamAttemptObserved,
+    upstreamResponseObserved,
     durationMs: result.durationMs,
     changed: failure?.changed ?? false,
     message: result.message

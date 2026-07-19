@@ -195,6 +195,11 @@ assert.doesNotMatch(hybridAffinitySource, /createAppCache/, 'hybrid route affini
 assert.match(functionBody(hybridAffinitySource, 'applyHybridRouteAffinityAsync'), /hybridRouteAffinityStateStore\.getJson[\s\S]*rememberHybridRouteAffinityAsync/, 'Redis hybrid route affinity 必须读取并写入共享状态')
 assert.match(source('modules/gateway/hybrid/routing.service.ts'), /await applyHybridRouteAffinityAsync/, 'hybrid routing 必须等待 Redis affinity 状态')
 
+const geminiInteractionAffinitySource = source('modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.ts')
+assert.match(geminiInteractionAffinitySource, /createRuntimeStateStore\('gateway-gemini-interaction-affinity'\)/, 'Redis runtime state 下 Gemini Interaction 账号亲和必须写共享运行态')
+assert.match(functionBody(geminiInteractionAffinitySource, 'resolveGeminiInteractionAffinityAsync'), /interactionAffinityStateStore\.getJson/, 'Redis Gemini Interaction 资源路由必须读取共享亲和状态')
+assert.match(functionBody(geminiInteractionAffinitySource, 'setBinding'), /runtimeStateDriver === 'redis'[\s\S]*interactionAffinityStateStore\.setJson/, 'Redis Gemini Interaction 资源路由必须把绑定写入共享亲和状态')
+
 const normalRouteLatencySource = source('modules/gateway/runtime/normal-route-latency-degradation.service.ts')
 assert.match(normalRouteLatencySource, /createRuntimeStateStore\('gateway-normal-route-latency-degradation'\)/, 'Redis runtime state 下普通路由速度优先降级必须写共享运行态')
 assert.doesNotMatch(normalRouteLatencySource, /createAppCache/, '普通路由速度优先降级不能依赖 createAppCache 作为 performance 事实源')
@@ -231,6 +236,7 @@ function assertRuntimeStateStoreCallsites(): void {
       'modules/auth/login-guard.service.ts:auth_login_guard',
       'modules/gateway/client-profiles/codex-turn-retry.service.ts:gateway-codex-turn-retry',
       'modules/gateway/hybrid/affinity.service.ts:gateway-hybrid-route-affinity',
+      'modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.ts:gateway-gemini-interaction-affinity',
       'modules/gateway/quota/quota-snapshot-cache.service.ts:gateway_quota_snapshot',
       'modules/gateway/runtime/account-side-effects.service.ts:gateway-configured-account-policy-avoidance',
       'modules/gateway/runtime/client-ip-account-avoidance.service.ts:gateway-client-ip-account-avoidance',
@@ -264,7 +270,7 @@ function assertQueueContracts(): void {
       assert.match(content, /commandsQueueMaxLength: runtimeLogRedisProducerCommandQueueMaxLength/, '运行日志专用 Redis producer 必须限制底层命令队列')
       assert.doesNotMatch(content, /scheduleProcessFatalError/, '派生运行日志索引单次入队失败不得终止业务主进程')
     } else {
-      assert.match(content, /catch\(scheduleProcessFatalError\)/, `${contract.file} 同步入口 Redis Stream 入队失败必须进入受控 fail-fast，不能退化为未处理 Promise`)
+      assert.doesNotMatch(content, /scheduleProcessFatalError/, `${contract.file} Redis Stream 瞬时入队失败不得升级为主进程 fatal`)
     }
     assert.doesNotMatch(content, /AfterRedisStreamFailure/, `${contract.file} Redis Stream 入队失败后不能回退到进程内队列作为事实源`)
     assert.doesNotMatch(content, /shouldEnqueue\w+ToRedisStream[\s\S]*&&\s*!is\w+IngestWorker/, `${contract.file} redis_stream driver 下不能因为当前是 ingest-worker 而绕过 Redis Stream`)
@@ -312,11 +318,8 @@ function assertStrictRedisCacheBoundaries(): void {
     /gateway_cache_invalidation_runtime_state_sync_failed[\s\S]*throw error/,
     'Redis runtime state 失效同步失败必须抛错，不能继续使用本地缓存'
   )
-  assert.match(
-    invalidationSource,
-    /gateway_cache_invalidation_runtime_state_publish_failed[\s\S]*runtimeConfig\.runtimeMode === 'performance'[\s\S]*(throw error|scheduleProcessFatalError\(error\))/,
-    'performance 模式发布 Redis runtime state 失效版本失败必须 fail-fast'
-  )
+  assert.match(invalidationSource, /gateway_cache_invalidation_runtime_state_publish_failed/, 'performance 模式发布 Redis runtime state 失效版本失败必须记录受控错误')
+  assert.doesNotMatch(invalidationSource, /scheduleProcessFatalError/, 'performance 模式发布 Redis runtime state 失效版本失败不得终止主进程')
 
   const gatewayApiKeySource = source('storage/gateway-api-key.repository.ts')
   assert.match(
@@ -614,7 +617,7 @@ function assertRedisRuntimeQueuesAndLimits(): void {
 function assertOAuthAndRateLimitRedisBoundaries(): void {
   const oauthSource = source('modules/openai-oauth/openai-oauth.service.ts')
   assert.match(functionBody(oauthSource, 'generateOpenAIAuthURL'), /oauthSessionStore\(\)\.setJson[\s\S]*sessionTtlMs/, 'OAuth 授权会话必须写 RuntimeStateStore，Redis 模式共享且带 TTL')
-  assert.match(functionBody(oauthSource, 'exchangeOpenAIAuthCode'), /oauthSessionStore\(\)\.getDeleteJson/, 'OAuth 授权会话兑换必须用 GETDEL 防重放，不能读本机 Map')
+  assert.match(functionBody(oauthSource, 'consumeOpenAIOAuthSession'), /oauthSessionStore\(\)[\s\S]*\.getJson<[\s\S]*\.compareDeleteJson\(/, 'OAuth 授权会话必须校验 state/owner 后再用 compare-delete 原子消费，不能提前 GETDEL')
   assert.doesNotMatch(oauthSource, /const sessions = new Map/, 'OAuth 授权会话不能使用进程内 Map')
 
   const oauthRefreshSource = source('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')

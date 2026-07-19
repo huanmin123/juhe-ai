@@ -17,13 +17,16 @@ import (
 )
 
 const (
-	pageDataAccountsStaticDomain  = "accounts.static"
-	pageDataAccountsOptionsDomain = "accounts.options"
-	pageDataUpsertOperation       = "upsert"
-	pageDataRangeResetOperation   = "range_reset"
-	pageDataMaxEventOwners        = 256
-	pageDataMaxFieldMask          = 32
-	pageDataEventLogTTLSeconds    = 8 * 24 * 60 * 60
+	pageDataAccountsStaticDomain      = "accounts.static"
+	pageDataAccountsRuntimeDomain     = "accounts.runtime"
+	pageDataAccountsOptionsDomain     = "accounts.options"
+	pageDataAnnouncementsPublicDomain = "announcements.public"
+	pageDataUpsertOperation           = "upsert"
+	pageDataDeleteOperation           = "delete"
+	pageDataRangeResetOperation       = "range_reset"
+	pageDataMaxEventOwners            = 256
+	pageDataMaxFieldMask              = 32
+	pageDataEventLogTTLSeconds        = 8 * 24 * 60 * 60
 )
 
 var (
@@ -31,7 +34,7 @@ var (
 	pageDataRedisNamespaceRule = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,64}$`)
 	pageDataDomains            = map[string]struct{}{
 		pageDataAccountsStaticDomain:  {},
-		"accounts.runtime":            {},
+		pageDataAccountsRuntimeDomain: {},
 		pageDataAccountsOptionsDomain: {},
 		"usage.records":               {},
 		"announcements.public":        {},
@@ -77,12 +80,13 @@ type PageDataChangePublisher struct {
 	runPublish   func(context.Context, []string, ...interface{}) error
 	marshalEvent func(PageDataChangeEvent) ([]byte, error)
 
-	epochMu sync.Mutex
-	epoch   string
+	epochLockOnce sync.Once
+	epochLock     chan struct{}
+	epoch         string
 }
 
-// AccountStaticUpsertInput describes an accounts.static upsert event.
-type AccountStaticUpsertInput struct {
+// AccountChangeInput describes one account entity change event.
+type AccountChangeInput struct {
 	AccountID             string
 	OwnerSystemAccountIDs []string
 	FieldMask             []string
@@ -153,15 +157,60 @@ func (p *PageDataChangePublisher) NewRangeResetEvents(domain string, ownerIDs []
 // NewAccountStaticUpsertEvent creates one Node-compatible accounts.static
 // upsert event. Unlike range resets, entity events are intentionally not split
 // because each event represents one account mutation.
-func (p *PageDataChangePublisher) NewAccountStaticUpsertEvent(input AccountStaticUpsertInput) (PageDataChangeEvent, error) {
+func (p *PageDataChangePublisher) NewAccountStaticUpsertEvent(input AccountChangeInput) (PageDataChangeEvent, error) {
+	return p.newAccountChangeEvent(pageDataAccountsStaticDomain, pageDataUpsertOperation, input)
+}
+
+// NewAccountStaticDeleteEvent creates one accounts.static delete event.
+func (p *PageDataChangePublisher) NewAccountStaticDeleteEvent(input AccountChangeInput) (PageDataChangeEvent, error) {
+	return p.newAccountChangeEvent(pageDataAccountsStaticDomain, pageDataDeleteOperation, input)
+}
+
+// NewAccountRuntimeUpsertEvent creates one accounts.runtime upsert event.
+func (p *PageDataChangePublisher) NewAccountRuntimeUpsertEvent(input AccountChangeInput) (PageDataChangeEvent, error) {
+	return p.newAccountChangeEvent(pageDataAccountsRuntimeDomain, pageDataUpsertOperation, input)
+}
+
+// NewAnnouncementPublicChangeEvent creates a Node-compatible public
+// announcement entity event with the fixed public page-data flags.
+func (p *PageDataChangePublisher) NewAnnouncementPublicChangeEvent(
+	announcementID string,
+	operation string,
+	fieldMask []string,
+) (PageDataChangeEvent, error) {
 	if p == nil {
 		return PageDataChangeEvent{}, errors.New("page data publisher is required")
 	}
 	event := PageDataChangeEvent{
 		EventID:               p.newEventID(),
-		Domain:                pageDataAccountsStaticDomain,
+		Domain:                pageDataAnnouncementsPublicDomain,
+		EntityID:              strings.TrimSpace(announcementID),
+		Operation:             operation,
+		FieldMask:             append([]string(nil), fieldMask...),
+		OwnerSystemAccountIDs: []string{},
+		MembershipChanged:     true,
+		OrderChanged:          true,
+		PageChanged:           true,
+		OccurredAt:            p.now().UTC().Format("2006-01-02T15:04:05.000Z"),
+	}
+	if event.FieldMask == nil {
+		event.FieldMask = []string{}
+	}
+	if err := validatePageDataChangeEvent(event); err != nil {
+		return PageDataChangeEvent{}, err
+	}
+	return event, nil
+}
+
+func (p *PageDataChangePublisher) newAccountChangeEvent(domain string, operation string, input AccountChangeInput) (PageDataChangeEvent, error) {
+	if p == nil {
+		return PageDataChangeEvent{}, errors.New("page data publisher is required")
+	}
+	event := PageDataChangeEvent{
+		EventID:               p.newEventID(),
+		Domain:                domain,
 		EntityID:              strings.TrimSpace(input.AccountID),
-		Operation:             pageDataUpsertOperation,
+		Operation:             operation,
 		FieldMask:             append([]string(nil), input.FieldMask...),
 		OwnerSystemAccountIDs: normalizePageDataOwners(input.OwnerSystemAccountIDs),
 		MembershipChanged:     input.MembershipChanged,
@@ -250,8 +299,11 @@ func (p *PageDataChangePublisher) Publish(ctx context.Context, event PageDataCha
 }
 
 func (p *PageDataChangePublisher) ensureEpoch(ctx context.Context) (string, error) {
-	p.epochMu.Lock()
-	defer p.epochMu.Unlock()
+	release, err := p.acquireEpochLock(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	if p.epoch != "" {
 		return p.epoch, nil
 	}
@@ -283,6 +335,19 @@ func (p *PageDataChangePublisher) ensureEpoch(ctx context.Context) (string, erro
 	return existing, nil
 }
 
+func (p *PageDataChangePublisher) acquireEpochLock(ctx context.Context) (func(), error) {
+	p.epochLockOnce.Do(func() {
+		p.epochLock = make(chan struct{}, 1)
+		p.epochLock <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.epochLock:
+		return func() { p.epochLock <- struct{}{} }, nil
+	}
+}
+
 func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 	if strings.TrimSpace(event.EventID) == "" {
 		return errors.New("page data eventId is required")
@@ -306,12 +371,17 @@ func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 		if !event.MembershipChanged || !event.OrderChanged || !event.FilterChanged || !event.PageChanged {
 			return fmt.Errorf("%s range_reset change flags must all be true", event.Domain)
 		}
-	case pageDataUpsertOperation:
-		if event.Domain != pageDataAccountsStaticDomain {
-			return fmt.Errorf("unsupported page data upsert domain %q", event.Domain)
+	case pageDataUpsertOperation, pageDataDeleteOperation:
+		if event.Domain != pageDataAccountsStaticDomain && event.Domain != pageDataAccountsRuntimeDomain && event.Domain != pageDataAnnouncementsPublicDomain {
+			return fmt.Errorf("unsupported page data entity domain %q", event.Domain)
+		}
+		if event.Domain == pageDataAnnouncementsPublicDomain {
+			if len(event.OwnerSystemAccountIDs) != 0 || !event.MembershipChanged || !event.OrderChanged || event.FilterChanged || !event.PageChanged {
+				return errors.New("announcements.public entity flags must match the Node protocol")
+			}
 		}
 		if event.EntityID == "" || event.EntityID != strings.TrimSpace(event.EntityID) {
-			return errors.New("accounts.static upsert entityId must be non-empty and trimmed")
+			return errors.New("page data entityId must be non-empty and trimmed")
 		}
 		if len(event.FieldMask) > pageDataMaxFieldMask {
 			return fmt.Errorf("page data fieldMask count exceeds %d", pageDataMaxFieldMask)

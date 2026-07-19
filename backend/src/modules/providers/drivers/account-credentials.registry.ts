@@ -10,10 +10,12 @@ import { glmAccountCredentialDriver } from './glm/account-credentials.js'
 import { gptAccountCredentialDriver } from './gpt/account-credentials.js'
 import { hybridAccountCredentialDriver } from './hybrid/account-credentials.js'
 import { openAICompatibleAccountCredentialDriver } from './openai-compatible/account-credentials.js'
+import { xaiAccountCredentialDriver } from './xai/account-credentials.js'
 
 const providerAccountCredentialDrivers: readonly ProviderAccountCredentialDriver[] = [
   openAICompatibleAccountCredentialDriver,
   gptAccountCredentialDriver,
+  xaiAccountCredentialDriver,
   deepSeekAccountCredentialDriver,
   anthropicAccountCredentialDriver,
   geminiAccountCredentialDriver,

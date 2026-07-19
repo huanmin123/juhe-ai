@@ -19,6 +19,8 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
+  | 'interactions_json'
+  | 'interactions_sse'
 export type AccountHealthCheckEndpointMode = Extract<
   AccountSupportedEndpointMode,
   | 'chat_json'
@@ -29,6 +31,8 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'messages_sse'
   | 'generate_content_json'
   | 'generate_content_sse'
+  | 'interactions_json'
+  | 'interactions_sse'
 >
 export const SYSTEM_ACCOUNT_ROLES = ['super_admin', 'admin', 'user'] as const
 export type SystemAccountRole = typeof SYSTEM_ACCOUNT_ROLES[number]
@@ -198,13 +202,14 @@ export interface ProviderModelPricing {
   id?: string
   scope?: 'built_in' | 'global' | 'personal'
   status?: 'draft' | 'active' | 'disabled'
+  catalogVisible?: boolean
   systemAccountId?: string
   mode?: string
   catalogOrder?: number
   releaseDate?: string
   shutdownDate?: string
   contextWindowTokens?: number
-  supportedApiProtocols: Array<'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'generate_content' | 'stream_generate_content' | 'count_tokens' | 'embed_content' | 'completions' | 'images' | 'audio' | 'realtime'>
+  supportedApiProtocols: Array<'chat_completions' | 'responses' | 'messages' | 'message_token_counting' | 'generate_content' | 'stream_generate_content' | 'count_tokens' | 'embed_content' | 'interactions' | 'completions' | 'images' | 'audio' | 'realtime'>
   inputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
   outputModalities?: Array<'text' | 'image' | 'audio' | 'video' | 'file'>
   supportedTools?: string[]
@@ -222,6 +227,10 @@ export interface ProviderModelPricing {
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
+  longContextInputTokenThreshold?: number
+  longContextInputTokenThresholdInclusive?: boolean
+  longContextInputCostMultiplier?: number
+  longContextOutputCostMultiplier?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
   supportedServiceTiers?: string[]
@@ -459,6 +468,7 @@ export type GatewayRequestEndpointFamily =
   | 'stream_generate_content'
   | 'count_tokens'
   | 'embed_content'
+  | 'interactions'
 export type AccountModelMappingSourceEndpointFamily = 'chat_completions' | 'responses' | 'messages' | 'generate_content' | 'stream_generate_content'
 export type AccountModelMappingUpstreamEndpointFamily = 'chat_completions' | 'responses' | 'messages' | 'generate_content'
 export type AccountModelMappingEndpointFamily = AccountModelMappingSourceEndpointFamily | AccountModelMappingUpstreamEndpointFamily

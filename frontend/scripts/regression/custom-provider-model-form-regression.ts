@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   applyConfigurationTemplateToCustomModelForm,
@@ -78,7 +79,7 @@ assert.equal(form.mode, 'text')
 assert.deepEqual(form.supportedApiProtocols, ['responses', 'chat_completions'])
 assert.deepEqual(form.supportedServiceTiers, ['priority', 'flex'])
 assert.deepEqual(form.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
-assert.equal(form.defaultReasoningEffort, 'high', '配置模板必须复制默认思考级别')
+assert.equal(form.defaultReasoningEffort, undefined, '配置模板不得给新增自定义模型复制默认思考级别')
 assert.equal(form.releaseDate, '2026-06-26', '配置模板必须复制发布时间')
 assert.equal(form.shutdownDate, '2027-06-26', '配置模板必须复制停用时间')
 assert.equal(form.contextWindowTokens, 1_050_000)
@@ -90,7 +91,13 @@ assert.deepEqual(form.serviceTierPrices, template.serviceTierPrices)
 const userPayload = buildCustomModelPayload(form, 'text', { includeRequestCapabilities: true, includePrices: false })
 assert.equal(userPayload?.configurationTemplateId, template.id, '普通用户请求应提交配置模板 ID')
 assert.equal('inputUsdPer1M' in (userPayload ?? {}), false, '普通用户请求仍不得提交价格')
-assert.equal(userPayload?.defaultReasoningEffort, 'high', '创建契约必须提交模板复制的默认思考级别')
+assert.equal(userPayload?.defaultReasoningEffort, null, '创建契约必须明确由上游决定默认思考级别')
+const providersViewSource = readFileSync(new URL('../../src/views/providers/ProvidersView.vue', import.meta.url), 'utf8')
+assert.match(
+  providersViewSource,
+  /function buildCurrentCustomModelPayload\(\)[\s\S]+?includeDefaultReasoningEffort: false/,
+  '自定义模型编辑提交也必须固定清空默认思考级别'
+)
 assert(availableCustomModelStatusOptions(false).some((option) => option.value === 'active'), '普通用户新增模型必须可以选择启用')
 
 const capabilityOptions = buildCustomModelCapabilityOptions('gpt', [], [])

@@ -9,7 +9,7 @@
 
 核心决策：
 
-- Gemini native 是独立协议 `gemini/v1beta`，使用自己的请求体、路径模型、SSE chunk、usage 和错误结构。
+- Gemini native 是独立协议 `gemini/v1beta`，使用自己的请求体、路径模型、SSE chunk、usage 和错误结构；Interactions 是同一协议下独立的 `interactions` endpoint family，不复用 GenerateContent 语义。
 - Gemini 官方 OpenAI compatibility 是 OpenAI Chat Completions 兼容入口，在本项目中落为 `profile_gemini_openai_chat_v1beta`，不是本项目自研协议转换。
 - OpenAI Chat / Responses 和 Anthropic Messages 如需桥接到 Gemini native 生成类上游，必须命中混合供应商账户；混合账户右侧只暴露 `generate_content`，运行时按下游请求是否流式动态选择 `:generateContent` 或 `:streamGenerateContent?alt=sse`。
 - Gemini native `generateContent` / `streamGenerateContent` 可以作为混合供应商账户的下游来源，桥接到 OpenAI Chat Completions 上游；下游响应仍渲染为 Gemini JSON / SSE。
@@ -21,10 +21,12 @@
 | 维度 | Gemini native | Gemini OpenAI compatibility | 本项目处理 |
 | --- | --- | --- | --- |
 | 下游路径 | `/v1beta/models/{model}:generateContent` | `/v1/chat/completions` 或 OpenAI SDK 等价路径 | 按路径识别协议，不按模型名猜 |
+| Interactions 路径 | `/v1beta/interactions`、`/v1beta/interactions/{id}`、`/v1beta/interactions/{id}/cancel` | 不适用 | 按 `interactions_json` / `interactions_sse` 独立调度 |
 | 上游默认 Base URL | `https://generativelanguage.googleapis.com` | `https://generativelanguage.googleapis.com/v1beta/openai` | 分属不同协议档案 |
 | 模型字段 | 路径 `{model}` | 请求体 `model` | 各自协议适配器提取 |
 | 请求内容 | `contents[].parts[]`、`systemInstruction`、`tools`、`generationConfig` | `messages[]`、`tools`、`tool_choice` 等 OpenAI Chat 字段 | 默认不互转；只有混合供应商账户会在 Gemini native 与 OpenAI / Anthropic 之间重构生成类请求 |
 | 流式 | `:streamGenerateContent?alt=sse`，`data: GenerateContentResponse` | OpenAI Chat SSE chunk | 保持各自原始事件 |
+| Interactions 流式 | POST body `stream: true` 或 GET query `stream=true`，并使用 `Accept: text/event-stream` | 不适用 | 从 `data:` JSON 的 `event_type` 识别事件，不追加 `alt=sse`，不合成 GenerateContent chunk |
 | usage | `usageMetadata` | OpenAI compatible `usage` | 单独 usage semantic |
 | 错误 | Google API error shape | OpenAI error shape | 按下游协议渲染本地错误 |
 | 全功能覆盖 | Gemini 原生能力最完整 | OpenAI Chat 子集 / 兼容层 | Gemini native 是默认深度适配目标 |
@@ -34,7 +36,7 @@
 运行时必须按“请求协议 + endpoint family + model route + API Key 所选路由策略分组”共同收敛：
 
 1. 先由路径识别下游协议和 endpoint family。
-2. Gemini native 路径解析为 `protocolCode = gemini`、`endpointFamily = generate_content|stream_generate_content|count_tokens|...` 和路径模型。
+2. Gemini native 路径解析为 `protocolCode = gemini`、`endpointFamily = generate_content|stream_generate_content|count_tokens|interactions|...`；GenerateContent 从路径提取模型，Interactions 从请求体 / Interaction 资源语义读取目标模型。
 3. Gemini native `generate_content` / `stream_generate_content` 默认走 Gemini native 档案候选；如果策略路由最终命中混合供应商账户，则由该账户配置决定是否进入 OpenAI Chat 或 Anthropic Messages 真实上游。
 4. OpenAI Chat / Responses 路径先按 OpenAI 协议解析 source family；命中混合供应商账户中的 `chat_completions|responses -> generate_content` 配置时，才进入 Gemini native 真实上游。
 5. Anthropic Messages 路径先按 Anthropic 协议解析 source family；命中混合供应商账户中的 `messages -> generate_content` 配置时，才进入 Gemini native 真实上游。
@@ -80,7 +82,7 @@ Gemini 相关模型映射只允许下面这些生成类方向：
 | Gemini native GenerateContent / StreamGenerateContent | OpenAI 协议 Chat 上游档案 | Chat Completions | 支持范围内 | 必须在混合供应商账户配置 `generate_content|stream_generate_content -> chat_completions`，响应还原为 Gemini JSON / SSE |
 | Gemini native GenerateContent / StreamGenerateContent | Anthropic 协议 Messages 上游档案 | Anthropic Messages | 支持范围内 | 必须在混合供应商账户配置 `generate_content|stream_generate_content -> messages`，响应还原为 Gemini JSON / SSE |
 | Anthropic Messages | `profile_gemini_openai_chat_v1beta` | OpenAI Chat compatibility | 不支持 | 不做 `messages -> chat_completions` 到 Gemini OpenAI Chat，避免绕过 Anthropic 到 Chat 桥接矩阵 |
-| Gemini native CountTokens / EmbedContent / Files / Cache / Live | OpenAI / Anthropic 上游 | 任意 | 不支持 | 只放开生成类 `generateContent` / `streamGenerateContent` |
+| Gemini native CountTokens / EmbedContent / Files / Cache / Live / Interactions | OpenAI / Anthropic 上游 | 任意 | 不支持 | Interactions 保留为 Gemini 原生端点；不把它转换成 Chat / Messages |
 
 ## Gemini native 端点族
 
@@ -88,6 +90,7 @@ Gemini 相关模型映射只允许下面这些生成类方向：
 | --- | --- | --- | --- |
 | `generate_content` | `POST /v1beta/models/{model}:generateContent` | Gemini JSON | JSON / usage / safety / function call 语义帧 |
 | `stream_generate_content` | `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` | Gemini SSE | 增量 SSE parser，坏 chunk 受控错误 |
+| `interactions` | `POST /v1beta/interactions`、`GET/DELETE /v1beta/interactions/{id}`、`POST /v1beta/interactions/{id}/cancel` | Interaction JSON / SSE / 空成功响应 | `interactions_json` / `interactions_sse`，解析 `steps`、JSON `event_type`、完成 / 失败状态和 `metadata.total_usage` |
 | `count_tokens` | `POST /v1beta/models/{model}:countTokens` | Gemini JSON | 透传 request，记录 token count 审计 |
 | `models` | `GET /v1beta/models`、`GET /v1beta/models/{model}` | Gemini model list / model | 本地目录渲染 |
 | `embed_content` | `POST /v1beta/models/{model}:embedContent` | Embedding JSON | usage / 向量响应不进入文本语义 |
@@ -96,7 +99,7 @@ Gemini 相关模型映射只允许下面这些生成类方向：
 | `batch` | batch / operations | operation object | 不能在热路径轮询大任务 |
 | `live` | WebSocket | 双向事件 | 后续专项，不混入 HTTP 网关 |
 
-第一阶段 mockai 必须覆盖 `generate_content`、`stream_generate_content`、`count_tokens` 和 `models`。Files / cache / embeddings 可以先完成协议落点和 endpoint mode，但真实验收前不能在 UI 宣称“全部已验证”。
+第一阶段 mockai 必须覆盖 `generate_content`、`stream_generate_content`、`count_tokens`、`interactions` 和 `models`。Files / cache / embeddings 可以先完成协议落点和 endpoint mode，但真实验收前不能在 UI 宣称“全部已验证”。
 
 ## 请求兼容细节
 
@@ -148,6 +151,8 @@ ProtocolDriver 必须能提取：
 - OpenAI / Anthropic / Codex / Claude Code 专属本地画像 header
 - 代理链路 header
 
+账户认证例外：API Key 账户在上游写入 `x-goog-api-key`；`google_oauth` 账户由 ProviderDriver 获取 / 刷新 Google OAuth access token 后写入 `Authorization: Bearer <access_token>`，并按非敏感配置写入 `x-goog-user-project`。客户端传入的本地 `Authorization`、`x-goog-api-key` 和 query `key` 都先移除，不能直接透传。
+
 ### 请求体透传
 
 Gemini native 直连请求体字段扩展较快，默认保持 raw passthrough。ProtocolDriver 只解析轻量元数据，不重构未知字段。
@@ -165,7 +170,7 @@ Gemini native 直连请求体字段扩展较快，默认保持 raw passthrough�
 
 如果命中 Gemini native 直连账号模型别名，只改 URL 中的 `{model}`，不改请求体。如果命中 混合供应商账户里的 `generate_content|stream_generate_content -> chat_completions` 或 `generate_content|stream_generate_content -> messages` 桥接规则，才由共享 bridge 将 `contents`、`systemInstruction`、`generationConfig`、`tools.functionDeclarations` 和 `toolConfig` 转为目标上游请求；不支持的 Gemini native 能力返回 Gemini 形态的 agent guidance。
 
-反向的 OpenAI Chat / Responses -> Gemini native 桥接会把 `reasoning_effort` 或 `reasoning.effort` 转为 `generationConfig.thinkingConfig.thinkingLevel`，并把 `service_tier=default|priority|flex` 分别转为 Gemini `serviceTier=standard|priority|flex`。只有模型目录明确声明对应能力时，AI 问答才提供这些选项。
+反向的 OpenAI Chat / Responses -> Gemini native 桥接会把 `reasoning_effort` 或 `reasoning.effort` 转为 `generationConfig.thinkingConfig.thinkingLevel`，并把 `service_tier=default|priority|flex` 分别转为 Gemini 官方请求体字段 `service_tier=standard|priority|flex`。只有模型目录明确声明对应能力时，AI 问答才提供这些选项。
 
 ## 响应兼容细节
 
@@ -187,6 +192,14 @@ Gemini native 直连请求体字段扩展较快，默认保持 raw passthrough�
 
 语义帧用于响应检查、使用记录、审计和账号错误策略输入；下游仍收到 Gemini 原生 JSON，不渲染成 OpenAI。
 
+### Interactions JSON / SSE
+
+Interactions JSON 以官方 `interaction` 对象为根，保留 `id`、`status`、`steps`、`model` 和 `metadata.total_usage`。文本步骤从 `steps[].content` 提取为可见输出，工具 / 模型步骤只作为语义摘要和审计元数据，不改写为 GenerateContent `candidates`。
+
+Interactions 创建流由 POST body `stream: true` 与 `Accept: text/event-stream` 协商，读取既有资源的流由 `GET /v1beta/interactions/{id}?stream=true` 与同一 Accept 协商；两者都不得追加 GenerateContent 专用的 `alt=sse`。每个 SSE `data:` JSON 的 `event_type` 决定 `step.delta`、`interaction.completed` 或 `interaction.failed`，payload 的 `type` 保持原值。流式检查器必须在完成 / 失败事件后结束下游响应，即使上游连接没有立即 EOF；空心跳或未闭合事件不计为可见输出。`metadata.total_usage` 中 input/output/thought/cache token 作为累计快照归一到 Gemini usage semantic，后帧覆盖相同累计维度，不能逐帧求和。
+
+Interaction 资源支持 `POST /v1beta/interactions/{id}/cancel`。`DELETE /v1beta/interactions/{id}` 的 2xx 空 body（包括 204）由通用响应最终化按 endpoint + method + status 精准识别，记录零 usage 成功结果并删除亲和映射。其他响应继续遵循客户端画像边界：`generic_gemini` 原样转发状态、header 和 body，不把非 2xx 或空 body 升级为本地协议失败；只有允许上游语义解释的精确客户端策略才可把空响应判为可重试协议失败。
+
 ### SSE
 
 Gemini streaming 使用 SSE。每个有效事件的 `data:` 是 Gemini response chunk JSON。实现要求：
@@ -195,7 +208,7 @@ Gemini streaming 使用 SSE。每个有效事件的 `data:` 是 Gemini response 
 - 支持多行 `data:` 合并。
 - 空行表示一个 SSE event 结束。
 - 注释 / keep-alive 行只刷新活跃时间，不当作可见输出。
-- 坏 JSON chunk 进入协议错误语义；下游尚未写出可见输出时可触发账号切换，已写出后按当前流式失败规则处理。
+- `generic_gemini` 的坏 JSON chunk 原样转发，不触发切号或账户副作用；只有允许上游语义解释的精确 `gemini_cli` 策略才把坏 chunk 作为协议错误，并在下游尚未写出可见输出时按既有规则尝试切号，写出后按当前流式失败规则处理。
 - 不要求 `[DONE]`。
 - 不把 Gemini chunk 改成 `chat.completion.chunk`。
 
@@ -283,7 +296,7 @@ endpointFamilies = [chat_completions]
 
 响应策略：
 
-- 通用 Gemini 默认规则只检查 Gemini JSON / SSE `error` 对象，动作为 `retry_no_avoidance`，不根据上游 HTTP 状态码或 `error.status` 泛化切号。
+- `generic_gemini` 的完整 JSON / SSE 响应不解释失败语义：非 2xx、`200 + error` 和流内 error 都原样转发，不触发响应策略、账号重试、账号避让或账户副作用。协议解析器仍可有界提取 usage 和 Interactions 资源 ID，但不得借此升级失败语义。
 - `gemini_cli` 专属默认规则只在 `clientProfiles = ['gemini_cli']` 时匹配 Google canonical `error.status`：`RESOURCE_EXHAUSTED`、`UNAVAILABLE`、`DEADLINE_EXCEEDED`、`INTERNAL`、`CANCELLED`。
 - 该专属规则动作为 `retry_next_account`，并进入服务端写出前重试白名单；普通 `generic_gemini`、OpenAI、Anthropic 客户端不会继承。
 - 不伪造 `TOS_VIOLATION`、`VALIDATION_REQUIRED` 等 Google 特定 reason；这些会触发 `gemini-cli` 账号封禁或验证流程语义。

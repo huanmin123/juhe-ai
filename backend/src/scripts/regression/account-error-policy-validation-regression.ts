@@ -43,6 +43,8 @@ assert.equal(validateAccountCredentialsErrorHandlingRules({ error_handling_rules
 const textKeywordDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_keyword_validation',
   providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
   type: 'api_key',
   credentials: {
     error_handling_rules: [
@@ -92,6 +94,8 @@ assert.equal(anthropicErrorTypeAsCodeDecision?.ruleName, 'Anthropic overloaded')
 const unconfiguredDecision = decideAccountErrorPolicy({
   id: 'account_error_policy_unconfigured',
   providerCode: 'openai',
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
   credentials: {},
   status: 'active'
 }, 503, new Headers(), Buffer.from('failed'), settings)

@@ -1,14 +1,14 @@
 <template>
   <div class="usage-cell">
     <UsageSummaryTags :usage="account.todayUsage" />
-    <div v-if="account.balanceQueryEnabled && balanceDisplay.visible" class="balance-row">
-      <a-tooltip :title="balanceDisplay.tooltip">
+    <div v-if="account.balanceQueryEnabled" class="balance-row">
+      <a-tooltip v-if="balanceDisplay.visible" :title="balanceDisplay.tooltip">
         <span class="balance-text">
           <span v-if="balanceDisplay.tone !== 'failed'" class="balance-label">剩余：</span>
           <span class="balance-value" :class="`balance-${balanceDisplay.tone}`">{{ balanceDisplay.text }}</span>
         </span>
       </a-tooltip>
-      <a-tooltip title="刷新上游余额">
+      <a-tooltip :title="canRefresh ? '刷新上游余额' : '授权账户不能刷新来源账户余额'">
         <ReloadOutlined
           class="balance-refresh-icon"
           :class="{ spinning: refreshing || balanceDisplay.refreshing, disabled: !canRefresh }"
@@ -34,7 +34,7 @@ import { computed } from 'vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import type { AccountSummary } from '@/types/domain'
 import { oauthUsageBars } from './accountUsageFormatters'
-import { formatAccountBalance } from './accountBalanceQuery'
+import { canManuallyRefreshAccountBalance, formatAccountBalance } from './accountBalanceQuery'
 
 const props = defineProps<{
   account: AccountSummary
@@ -45,7 +45,7 @@ defineEmits<{ (event: 'refresh-balance', accountId: string): void }>()
 
 const bars = computed(() => oauthUsageBars(props.account))
 const balanceDisplay = computed(() => formatAccountBalance(props.account.balanceSnapshot))
-const canRefresh = computed(() => props.account.balanceQueryEnabled === true && props.account.status === 'active' && props.account.accessType !== 'authorized')
+const canRefresh = computed(() => canManuallyRefreshAccountBalance(props.account))
 </script>
 
 <style scoped>
@@ -89,12 +89,12 @@ const canRefresh = computed(() => props.account.balanceQueryEnabled === true && 
 .balance-unsupported { color: #64748b; }
 
 .balance-refresh-icon {
-  color: #94a3b8;
+  color: #1677ff;
   cursor: pointer;
   font-size: 11px;
 }
 
-.balance-refresh-icon:hover { color: #64748b; }
+.balance-refresh-icon:hover { color: #0958d9; }
 
 .balance-refresh-icon.disabled {
   color: #b8b8b8;

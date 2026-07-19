@@ -35,6 +35,7 @@ import {
   GPT_VENDOR_CODE,
   HYBRID_PROVIDER_CODE,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
+  XAI_PROVIDER_CODE,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
 import { usesOpenAICodexResponsesLite } from '../gateway/adapters/gpt-codex/client-headers.js'
@@ -48,6 +49,7 @@ import {
 } from '../../storage/provider.repository.js'
 import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
+import { shouldInvalidateProviderModelCatalog } from '../gateway/response/model-catalog-cache-policy.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
@@ -90,8 +92,8 @@ export interface CodexModelListItem {
   slug: string
   display_name: string
   description: string | null
-  default_reasoning_level: string
-  supported_reasoning_levels: CodexReasoningEffortPreset[]
+  default_reasoning_level?: string | null
+  supported_reasoning_levels?: CodexReasoningEffortPreset[]
   shell_type: 'shell_command'
   visibility: 'list'
   supported_in_api: boolean
@@ -140,7 +142,7 @@ export interface SaveCustomProviderModelInput extends Omit<UpsertCustomProviderM
   actorSystemAccountId: string
 }
 
-const modelCatalogCacheTtlMs = 60_000
+const modelCatalogCacheTtlMs = 24 * 60 * 60_000
 const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogItem[]>({
   name: 'model-pricing:provider-model-catalog',
   max: 1000,
@@ -162,6 +164,7 @@ const postgresSyncOpenAIProtocolProviderCodes = [
   DEEPSEEK_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
   GEMINI_PROVIDER_CODE,
+  XAI_PROVIDER_CODE,
   OPENAI_COMPATIBLE_PROVIDER_CODE
 ] as const
 
@@ -426,10 +429,10 @@ export function buildCatalogCostBreakdownFromPricing(
   const cacheWritePrice = tokenPrices.cacheWritePrice
   const cacheWrite1hPrice = tokenPrices.cacheWrite1hPrice ?? cacheWritePrice
   const inputImagePrice = perToken(pricing.imageInputUsdPer1M)
-  const outputImagePrice = perToken(pricing.imageOutputUsdPer1M)
-  const inputAudioPrice = perToken(pricing.audioInputUsdPer1M)
-  const outputAudioPrice = perToken(pricing.audioOutputUsdPer1M)
-  const outputImageUnitPrice = pricing.outputUsdPerImage
+  const outputImagePrice = tokenPrices.outputImagePrice
+  const inputAudioPrice = tokenPrices.inputAudioPrice
+  const outputAudioPrice = tokenPrices.outputAudioPrice
+  const outputImageUnitPrice = tokenPrices.outputImageUnitPrice
   if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, cacheWritePrice, cacheWrite1hPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
@@ -444,6 +447,18 @@ export function buildCatalogCostBreakdownFromPricing(
   const cacheReadTokensIncludedInInput = usesIncludedCacheReadUsage(input.providerCode) ? cacheReadTokens : 0
   const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokensIncludedInInput - inputImageTokens - inputAudioTokens, 0)
   const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens - outputAudioTokens, 0)
+  if (hasUnpricedTokenUsage({
+    uncachedInputTokens,
+    inputPrice,
+    outputTokens,
+    outputPrice,
+    cacheReadTokens,
+    cachedInputPrice,
+    cacheWriteStandardTokens,
+    cacheWritePrice,
+    cacheWrite1hTokens,
+    cacheWrite1hPrice
+  })) return undefined
   const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)
   const outputCostUsd = outputPrice === undefined ? undefined : roundCost(outputTokens * outputPrice)
   const cacheReadCostUsd = cachedInputPrice === undefined ? undefined : roundCost(cacheReadTokens * cachedInputPrice)
@@ -469,14 +484,14 @@ export function buildCatalogCostBreakdownFromPricing(
     thinkingTokens: input.thinkingTokens,
     inputImageCostUsd,
     outputImageCostUsd,
-    inputImageUsdPer1M: pricing.imageInputUsdPer1M,
-    outputImageUsdPer1M: pricing.imageOutputUsdPer1M,
+    inputImageUsdPer1M: perMillion(inputImagePrice),
+    outputImageUsdPer1M: perMillion(outputImagePrice),
     inputAudioCostUsd,
     outputAudioCostUsd,
-    inputAudioUsdPer1M: pricing.audioInputUsdPer1M,
-    outputAudioUsdPer1M: pricing.audioOutputUsdPer1M,
+    inputAudioUsdPer1M: perMillion(inputAudioPrice),
+    outputAudioUsdPer1M: perMillion(outputAudioPrice),
     outputImageUnitCostUsd,
-    outputUsdPerImage: pricing.outputUsdPerImage,
+    outputUsdPerImage: outputImageUnitPrice,
     accountChargeUsd: input.costUsd ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, cacheWriteCostUsd, cacheWrite1hCostUsd, inputImageCostUsd, outputImageCostUsd, inputAudioCostUsd, outputAudioCostUsd, outputImageUnitCostUsd),
     multiplier: 1,
     serviceTierPricingSource: tokenPrices.serviceTierPricingSource,
@@ -613,7 +628,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: item.supportedServiceTiers.length > 0,
-    catalogVisible: true,
+    catalogVisible: item.catalogVisible,
     source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
     status: item.status,
@@ -638,15 +653,20 @@ function buildCodexModelInfo(item: ProviderModelCatalogItem, index: number): Cod
     name: tier === 'priority' ? 'Fast' : 'Flex',
     description: tier === 'priority' ? 'Priority processing' : 'Flex processing'
   }))
+  const codexDefaultReasoningLevel = item.codexDefaultReasoningLevel
+  const reasoningMetadata: Pick<CodexModelListItem, 'default_reasoning_level' | 'supported_reasoning_levels'> = supportedReasoningLevels.length
+    ? {
+        ...(codexDefaultReasoningLevel && supportedReasoningLevels.some((level) => level.effort === codexDefaultReasoningLevel)
+          ? { default_reasoning_level: codexDefaultReasoningLevel }
+          : {}),
+        supported_reasoning_levels: supportedReasoningLevels
+      }
+    : {}
   return {
     slug: item.model,
     display_name: item.model,
     description: item.capabilityNotes || item.pricingNotes || item.notes || null,
-    default_reasoning_level: item.codexDefaultReasoningLevel
-      ?? item.defaultReasoningEffort
-      ?? supportedReasoningLevels[0]?.effort
-      ?? 'medium',
-    supported_reasoning_levels: supportedReasoningLevels,
+    ...reasoningMetadata,
     shell_type: 'shell_command',
     visibility: 'list',
     supported_in_api: true,
@@ -753,6 +773,9 @@ function compareSharedCatalogOrder(left?: number, right?: number): number {
 function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
+  if (normalizedProviderCode === OPENAI_COMPATIBLE_PROVIDER_CODE && runtimeConfig.databaseDriver === 'postgres') {
+    return [...postgresSyncOpenAIProtocolProviderCodes]
+  }
   if (normalizedProviderCode === HYBRID_PROVIDER_CODE) {
     return [...new Set([
       ...listOpenAIProtocolProviderCodes(),
@@ -761,8 +784,6 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
     ].map(normalizeProviderToken).filter((code): code is string => Boolean(code) && code !== HYBRID_PROVIDER_CODE))]
   }
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return [normalizedProviderCode]
-  if (runtimeConfig.databaseDriver === 'postgres') return [...postgresSyncOpenAIProtocolProviderCodes]
-
   const openAIProtocolProviderCodes = listOpenAIProtocolProviderCodes()
     .map((code) => normalizeProviderToken(code))
     .filter((code): code is string => Boolean(code))
@@ -848,6 +869,25 @@ function hasAnyPrice(...prices: Array<number | undefined>): boolean {
   return prices.some((price) => price !== undefined)
 }
 
+function hasUnpricedTokenUsage(input: {
+  uncachedInputTokens: number
+  inputPrice?: number
+  outputTokens: number
+  outputPrice?: number
+  cacheReadTokens: number
+  cachedInputPrice?: number
+  cacheWriteStandardTokens: number
+  cacheWritePrice?: number
+  cacheWrite1hTokens: number
+  cacheWrite1hPrice?: number
+}): boolean {
+  return (input.uncachedInputTokens > 0 && input.inputPrice === undefined)
+    || (input.outputTokens > 0 && input.outputPrice === undefined)
+    || (input.cacheReadTokens > 0 && input.cachedInputPrice === undefined)
+    || (input.cacheWriteStandardTokens > 0 && input.cacheWritePrice === undefined)
+    || (input.cacheWrite1hTokens > 0 && input.cacheWrite1hPrice === undefined)
+}
+
 function normalizedCacheWrite1hTokens(input: CostInput, cacheWriteTokens: number): number {
   const cacheWrite1hTokens = Math.max(input.cacheWrite1hTokens ?? 0, 0)
   return cacheWriteTokens > 0 ? Math.min(cacheWrite1hTokens, cacheWriteTokens) : cacheWrite1hTokens
@@ -859,6 +899,11 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
   cachedInputPrice?: number
   cacheWritePrice?: number
   cacheWrite1hPrice?: number
+  inputImagePrice?: number
+  outputImagePrice?: number
+  inputAudioPrice?: number
+  outputAudioPrice?: number
+  outputImageUnitPrice?: number
   serviceTierPricingSource: ProviderCostBreakdown['serviceTierPricingSource']
   serviceTierMultiplier?: number
 } {
@@ -868,8 +913,11 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
   const tierPrices = tierSupported ? pricing.serviceTierPrices?.[tierKey] : undefined
   const selectPrice = (standard: number | undefined, specific: number | undefined): number | undefined =>
     tierKey ? specific : standard
+  const inputTokens = Math.max(input.inputTokens ?? 0, 0)
   const longContext = pricing.longContextInputTokenThreshold !== undefined
-    && Math.max(input.inputTokens ?? 0, 0) > pricing.longContextInputTokenThreshold
+    && (pricing.longContextInputTokenThresholdInclusive
+      ? inputTokens >= pricing.longContextInputTokenThreshold
+      : inputTokens > pricing.longContextInputTokenThreshold)
   const inputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextInputCostMultiplier) : 1
   const outputMultiplier = longContext ? normalizeCatalogMultiplier(pricing.longContextOutputCostMultiplier) : 1
   const serviceTierPricing = catalogServiceTierPricingMetadata(pricing, input, tierSupported)
@@ -879,6 +927,11 @@ function effectiveCatalogTokenPrices(pricing: ProviderModelCatalogItem, input: C
     cachedInputPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cachedInputUsdPer1M, tierPrices?.cachedInputUsdPer1M), inputMultiplier)),
     cacheWritePrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWriteUsdPer1M, tierPrices?.cacheWriteUsdPer1M), inputMultiplier)),
     cacheWrite1hPrice: perToken(multiplyCatalogPrice(selectPrice(pricing.cacheWrite1hUsdPer1M, tierPrices?.cacheWrite1hUsdPer1M), inputMultiplier)),
+    inputImagePrice: perToken(pricing.imageInputUsdPer1M),
+    outputImagePrice: perToken(pricing.imageOutputUsdPer1M),
+    inputAudioPrice: perToken(selectPrice(pricing.audioInputUsdPer1M, tierPrices?.audioInputUsdPer1M)),
+    outputAudioPrice: perToken(selectPrice(pricing.audioOutputUsdPer1M, tierPrices?.audioOutputUsdPer1M)),
+    outputImageUnitPrice: pricing.outputUsdPerImage,
     ...serviceTierPricing
   }
 }
@@ -899,7 +952,9 @@ function catalogServiceTierPricingMetadata(
     [pricing.outputUsdPer1M, tierPrices?.outputUsdPer1M],
     [pricing.cachedInputUsdPer1M, tierPrices?.cachedInputUsdPer1M],
     [pricing.cacheWriteUsdPer1M, tierPrices?.cacheWriteUsdPer1M],
-    [pricing.cacheWrite1hUsdPer1M, tierPrices?.cacheWrite1hUsdPer1M]
+    [pricing.cacheWrite1hUsdPer1M, tierPrices?.cacheWrite1hUsdPer1M],
+    [pricing.audioInputUsdPer1M, tierPrices?.audioInputUsdPer1M],
+    [pricing.audioOutputUsdPer1M, tierPrices?.audioOutputUsdPer1M]
   ] as const
   let specificCount = 0
   let missingSpecificCount = 0
@@ -998,4 +1053,6 @@ async function clearProviderModelCatalogCaches(): Promise<void> {
   return await operation
 }
 
-registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)
+registerGatewayRuntimeCacheInvalidator((reason) => shouldInvalidateProviderModelCatalog(reason)
+  ? clearProviderModelCatalogCaches()
+  : undefined)

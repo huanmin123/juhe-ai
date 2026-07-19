@@ -156,12 +156,16 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceCreateHandler  http.Handler
 	ManagementExternalIntegrationSourceUpdateHandler  http.Handler
 	ManagementExternalIntegrationSourceDeleteHandler  http.Handler
+	ManagementExternalSourceBuiltInResetHandler       http.Handler
 	ManagementExternalSourceTokenCreateHandler        http.Handler
 	ManagementExternalSourceTokenUpdateHandler        http.Handler
 	ManagementExternalSourceTokenSecretHandler        http.Handler
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
 	ManagementPublicAPILogsHandler                    http.Handler
+	ManagementAnnouncementPublicListHandler           http.Handler
+	ManagementAnnouncementPublicReadHandler           http.Handler
+	ManagementAnnouncementsHandler                    http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
 }
@@ -170,6 +174,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 	r := chi.NewRouter()
 	r.Use(requestIDMiddleware)
 	r.Use(recoverMiddleware(opts.Logger))
+	r.Use(managementSecurityHeadersMiddleware)
 	clientIPs := newClientIPResolver(opts.Config)
 	systemAPIClientIPAllowlist := newSystemAPIClientIPAllowlistInspector(
 		opts.SystemAPIClientIPAllowlistReader,
@@ -386,12 +391,16 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceUpdateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDeleteHandler == nil &&
+				opts.ManagementExternalSourceBuiltInResetHandler == nil &&
 				opts.ManagementExternalSourceTokenCreateHandler == nil &&
 				opts.ManagementExternalSourceTokenUpdateHandler == nil &&
 				opts.ManagementExternalSourceTokenSecretHandler == nil &&
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
 				opts.ManagementPublicAPILogsHandler == nil &&
+				opts.ManagementAnnouncementPublicListHandler == nil &&
+				opts.ManagementAnnouncementPublicReadHandler == nil &&
+				opts.ManagementAnnouncementsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
 				opts.ManagementMyStatsUsageWindowHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
@@ -878,7 +887,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 					opts.ManagementExternalIntegrationSourceListHandler.ServeHTTP,
 				)
 			} else if opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
-				opts.ManagementExternalSourceTokenCreateHandler != nil {
+				opts.ManagementExternalSourceTokenCreateHandler != nil ||
+				opts.ManagementExternalSourceBuiltInResetHandler != nil {
 				system.Get("/external-integration-sources", func(w http.ResponseWriter, _ *http.Request) {
 					writeError(w, http.StatusNotFound, "接口不存在")
 				})
@@ -908,6 +918,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
 					"/external-integration-sources/api-docs",
 					opts.ManagementExternalIntegrationSourceAPIDocsHandler.ServeHTTP,
+				)
+			}
+			if opts.ManagementExternalSourceBuiltInResetHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementExternalIntegrationSourceBuiltInResetMutationGuardConfig()),
+				).Post(
+					"/external-integration-sources/built-in-test-token/reset",
+					opts.ManagementExternalSourceBuiltInResetHandler.ServeHTTP,
 				)
 			}
 			if opts.ManagementExternalIntegrationSourceDetailHandler != nil {
@@ -1031,6 +1052,21 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementPublicAPILogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs", opts.ManagementPublicAPILogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs/{id}", opts.ManagementPublicAPILogsHandler.ServeHTTP)
+			}
+			if opts.ManagementAnnouncementPublicListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/public", opts.ManagementAnnouncementPublicListHandler.ServeHTTP)
+			}
+			if opts.ManagementAnnouncementPublicReadHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/announcements/public/read", opts.ManagementAnnouncementPublicReadHandler.ServeHTTP)
+			}
+			if opts.ManagementAnnouncementsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Patch("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/publish", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/unpublish", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Delete("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
 			}
 			if opts.ManagementStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
@@ -1199,12 +1235,16 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
+		opts.ManagementExternalSourceBuiltInResetHandler != nil ||
 		opts.ManagementExternalSourceTokenCreateHandler != nil ||
 		opts.ManagementExternalSourceTokenUpdateHandler != nil ||
 		opts.ManagementExternalSourceTokenSecretHandler != nil ||
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
 		opts.ManagementPublicAPILogsHandler != nil ||
+		opts.ManagementAnnouncementPublicListHandler != nil ||
+		opts.ManagementAnnouncementPublicReadHandler != nil ||
+		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
 		opts.ManagementMyStatsUsageWindowHandler != nil
 }
@@ -1223,6 +1263,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
 		opts.ManagementAPIKeyDeleteHandler != nil ||
+		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementMyAPIKeyDeleteHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
@@ -1273,6 +1314,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
+		opts.ManagementExternalSourceBuiltInResetHandler != nil ||
 		opts.ManagementExternalSourceTokenCreateHandler != nil ||
 		opts.ManagementExternalSourceTokenUpdateHandler != nil
 }

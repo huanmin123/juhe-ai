@@ -13,6 +13,8 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/accountpagedata"
+	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
@@ -159,12 +161,26 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAPIRateLimitSettingsVersionReader,
 	)
 
+	var accountsStaticResetPublisher managementPageDataPublisher
+	if cfg.ManagementAPIEnabled || cfg.PublicAPIEnabled {
+		publisher, closePublisher, err := newRecoveringAccountsStaticResetPublisher(
+			ctx, stateRedis, cacheRedis, cfg.RedisNamespace, store, logger,
+		)
+		if err != nil {
+			return err
+		}
+		defer closePublisher()
+		accountsStaticResetPublisher = publisher
+	}
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
 		logger,
 		store,
 		stateRedis,
-		PublicAPIHandlerOptions{APIKeyInvalidator: systemAccountInvalidator},
+		PublicAPIHandlerOptions{
+			APIKeyInvalidator: systemAccountInvalidator,
+			PageDataPublisher: accountsStaticResetPublisher,
+		},
 	)
 	if err != nil {
 		return err
@@ -182,17 +198,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
-	var accountsStaticResetPublisher managementPageDataPublisher
 	if cfg.ManagementAPIEnabled {
 		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
 		if err != nil {
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
-		publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
-		if err != nil {
-			return err
-		}
-		accountsStaticResetPublisher = publisher
 	}
 	managementHandlers := newManagementAPIHandlerWithPageData(
 		cfg,
@@ -347,12 +357,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
 		ManagementExternalIntegrationSourceUpdateHandler:  managementHandlers.ExternalIntegrationSourceUpdateHandler,
 		ManagementExternalIntegrationSourceDeleteHandler:  managementHandlers.ExternalIntegrationSourceDeleteHandler,
+		ManagementExternalSourceBuiltInResetHandler:       managementHandlers.ExternalSourceBuiltInResetHandler,
 		ManagementExternalSourceTokenCreateHandler:        managementHandlers.ExternalSourceTokenCreateHandler,
 		ManagementExternalSourceTokenUpdateHandler:        managementHandlers.ExternalSourceTokenUpdateHandler,
 		ManagementExternalSourceTokenSecretHandler:        managementHandlers.ExternalSourceTokenSecretHandler,
 		ManagementExternalIntegrationSourceScopesHandler:  managementHandlers.ExternalIntegrationSourceScopesHandler,
 		ManagementExternalIntegrationSourceAPIDocsHandler: managementHandlers.ExternalIntegrationSourceAPIDocsHandler,
 		ManagementPublicAPILogsHandler:                    managementHandlers.PublicAPILogsHandler,
+		ManagementAnnouncementPublicListHandler:           managementHandlers.AnnouncementPublicListHandler,
+		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
+		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 	})
@@ -517,12 +531,16 @@ type managementAPIHandlers struct {
 	ExternalIntegrationSourceCreateHandler  http.Handler
 	ExternalIntegrationSourceUpdateHandler  http.Handler
 	ExternalIntegrationSourceDeleteHandler  http.Handler
+	ExternalSourceBuiltInResetHandler       http.Handler
 	ExternalSourceTokenCreateHandler        http.Handler
 	ExternalSourceTokenUpdateHandler        http.Handler
 	ExternalSourceTokenSecretHandler        http.Handler
 	ExternalIntegrationSourceScopesHandler  http.Handler
 	ExternalIntegrationSourceAPIDocsHandler http.Handler
 	PublicAPILogsHandler                    http.Handler
+	AnnouncementPublicListHandler           http.Handler
+	AnnouncementPublicReadHandler           http.Handler
+	AnnouncementsHandler                    http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
 }
@@ -667,9 +685,11 @@ func newManagementAPIHandlerWithPageData(
 	externalIntegrationSourceUpdateService := managementexternalintegrationsources.NewUpdateService(store)
 	externalIntegrationSourceDeleteService := managementexternalintegrationsources.NewDeleteService(store)
 	externalIntegrationSourceCreateService := managementexternalintegrationsources.NewCreateService(store, cfg.Secret)
+	externalIntegrationSourceBuiltInResetService := managementexternalintegrationsources.NewBuiltInResetService(store, cfg.Secret)
 	externalIntegrationSourceTokenCreateService := managementexternalintegrationsources.NewTokenCreateService(store, cfg.Secret)
 	externalIntegrationSourceTokenUpdateService := managementexternalintegrationsources.NewTokenUpdateService(store)
 	publicAPILogService := managementpublicapilogs.NewService(store)
+	announcementService := announcements.NewService(store)
 	statsService := managementstats.NewService(store)
 	globalSettingsService := publicsettings.NewService(store)
 	globalSettingsUpdateService := managementsettings.NewServiceWithOptions(managementsettings.ServiceOptions{
@@ -834,12 +854,16 @@ func newManagementAPIHandlerWithPageData(
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),
 		ExternalIntegrationSourceUpdateHandler:  httpapi.NewManagementExternalIntegrationSourceUpdateHandlerWithOperationLog(externalIntegrationSourceUpdateService, operationLogOptions),
 		ExternalIntegrationSourceDeleteHandler:  httpapi.NewManagementExternalIntegrationSourceDeleteHandlerWithOperationLog(externalIntegrationSourceDeleteService, operationLogOptions),
+		ExternalSourceBuiltInResetHandler:       httpapi.NewManagementExternalIntegrationSourceBuiltInResetHandlerWithOperationLog(externalIntegrationSourceBuiltInResetService, operationLogOptions),
 		ExternalSourceTokenCreateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenCreateHandlerWithOperationLog(externalIntegrationSourceTokenCreateService, operationLogOptions),
 		ExternalSourceTokenUpdateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenUpdateHandlerWithOperationLog(externalIntegrationSourceTokenUpdateService, operationLogOptions),
 		ExternalSourceTokenSecretHandler:        httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceScopesHandler:  httpapi.NewManagementExternalIntegrationSourceScopesHandler(),
 		ExternalIntegrationSourceAPIDocsHandler: httpapi.NewManagementExternalIntegrationSourceAPIDocsHandler(),
 		PublicAPILogsHandler:                    httpapi.NewManagementPublicAPILogsHandler(publicAPILogService),
+		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
+		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
+		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}
@@ -920,6 +944,7 @@ type PublicAPIHandlerOptions struct {
 	NewLogID                     func() string
 	APIKeyInvalidator            publicapikeys.APIKeyGatewayCacheInvalidator
 	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
+	PageDataPublisher            accountpagedata.Publisher
 }
 
 func NewPublicAPIHandler(
@@ -983,6 +1008,7 @@ func newPublicAPIHandlerWithOptions(
 		cfg.UpstreamBaseURLPrivateAllowlist,
 		opts.APIKeyInvalidator,
 		accountHealthCheckDispatcher,
+		opts.PageDataPublisher,
 		logger,
 		cfg.NodeInternalRequestTimeout,
 		nil,
@@ -1013,6 +1039,7 @@ func newPublicAPIHandlers(
 	privateBaseURLAllowlist []string,
 	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
 	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
+	pageDataPublisher accountpagedata.Publisher,
 	logger *slog.Logger,
 	healthCheckDispatchTimeout time.Duration,
 	accountServiceFactory publicAccountServiceFactory,
@@ -1033,6 +1060,8 @@ func newPublicAPIHandlers(
 		Transactor:                 store,
 		ProviderModels:             providerModelService,
 		HealthCheckDispatcher:      accountHealthCheckDispatcher,
+		GranteeReader:              store,
+		PageDataPublisher:          pageDataPublisher,
 		HealthCheckDispatchTimeout: healthCheckDispatchTimeout,
 		Logger:                     logger,
 		Secret:                     credentialSecret,

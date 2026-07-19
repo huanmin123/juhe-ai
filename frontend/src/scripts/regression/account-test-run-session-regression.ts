@@ -50,6 +50,13 @@ assert.equal(
   'sessionStorage 恢复必须接受精确 JSON / Streaming 健康检查请求形态'
 )
 
+const interactionsSnapshot = readAccountTestRunSession(false, accountA.id)
+assert.ok(interactionsSnapshot)
+interactionsSnapshot.testEndpointMode = 'interactions_sse'
+interactionsSnapshot.testEndpointModes = ['interactions_sse', 'interactions_json']
+writeAccountTestRunSession(interactionsSnapshot)
+assert.equal(readAccountTestRunSession(false, accountA.id)?.testEndpointMode, 'interactions_sse', '前端会话恢复必须保留 Gemini Interactions SSE mode')
+
 const managementAccount = accountFixture('account_session_management', '管理账户')
 writeAccountTestRunSession({
   ...snapshotFixture(managementAccount, 'session_management', 'task_management'),

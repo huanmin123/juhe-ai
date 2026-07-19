@@ -214,7 +214,8 @@ try {
 
   const listBeforeWindow = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
   assert.equal(listBeforeWindow.rangeReady, false, '列表不应在请求内同步重建范围窗口')
-  assert.equal(listBeforeWindow.pageUpperBound, 0, '范围窗口未生成时列表应返回空结果等待后台刷新')
+  assert.equal(listBeforeWindow.pageUpperBound, 2, '范围窗口未生成时仍应按注册表返回全部 IP')
+  assert.equal(listBeforeWindow.items.every((item) => item.rangeUsage.requestCount === 0), true, '范围窗口未生成时不应返回部分统计数据')
   const detailBeforeWindow = clientIpStats.getClientIpStatsDetail({ ipHash: ipv4Identity.ipHash, startDate: today, endDate: today, pageSize: 10 })
   assert(detailBeforeWindow, 'IP 详情应能返回注册表信息')
   assert.equal(detailBeforeWindow.rangeReady, false, 'IP 详情不应在请求内同步重建账号范围窗口')
@@ -224,14 +225,15 @@ try {
   assert.equal(clientIpStats.pendingClientIpRangeWindowDirtyCountForTest(), 1, '部分增量窗口刷新后应保留未处理 dirty IP')
   const partialWindowList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
   assert.equal(partialWindowList.rangeReady, false, 'dirty IP 未全部刷新前窗口不能提前标记 ready')
-  assert.equal(partialWindowList.pageUpperBound, 0, 'dirty IP 未全部刷新前列表不应返回部分窗口结果')
+  assert.equal(partialWindowList.pageUpperBound, 2, 'dirty IP 未全部刷新前仍应按注册表返回全部 IP')
+  assert.equal(partialWindowList.items.every((item) => item.rangeUsage.requestCount === 0), true, 'dirty IP 未全部刷新前不应暴露部分窗口统计')
   clientIpStats.refreshClientIpUsageRangeWindows()
   assert.equal(clientIpStats.pendingClientIpRangeWindowDirtyCountForTest(), 0, '增量窗口刷新后 dirty IP 集合应清空')
 
   const list = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10, sortField: 'requestCount', sortOrder: 'desc' })
   assert.equal(list.rangeReady, true, '后台增量刷新后列表应标记当前窗口可用')
   assert.equal(list.pageUpperBound, 2, '列表 pageUpperBound 应使用当前页分页上界，不依赖范围总聚合')
-  assert.equal(list.items.length, 2, '列表应只返回有 IP 聚合事实的来源')
+  assert.equal(list.items.length, 2, '列表应返回当前全部已注册 IP')
 
   const statsDatabase = databaseModule.getStatsDatabase()
   const policyColumns = new Set(
@@ -346,7 +348,8 @@ try {
   assert.equal(clientIpStats.aggregateClientIpStatsBatch(100), 1, '新 IP 用量进入 daily 后应只标记窗口过期，不在请求内刷新')
   const staleList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
   assert.equal(staleList.rangeReady, false, '已发布窗口存在时，新数据仍应让范围窗口进入未就绪状态')
-  assert.equal(staleList.pageUpperBound, 0, '过期窗口不应继续返回已发布分页上界')
+  assert.equal(staleList.pageUpperBound, 2, '过期窗口仍应按注册表返回全部 IP')
+  assert.equal(staleList.items.every((item) => item.rangeUsage.requestCount === 0), true, '过期窗口不应继续返回已发布统计值')
   clientIpStats.refreshClientIpUsageRangeWindows()
   const refreshedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10, sortField: 'requestCount', sortOrder: 'desc' })
   const refreshedIpv4Row = refreshedList.items.find((item) => item.ipHash === ipv4Identity.ipHash)
@@ -388,6 +391,8 @@ try {
   clientIpStats.clearClientIpRangeWindowDirtyMemoryForTest()
   const staleWithoutDirtyList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
   assert.equal(staleWithoutDirtyList.rangeReady, false, '窗口 stale 但 dirty 为空时列表应继续标记未就绪')
+  assert.equal(staleWithoutDirtyList.pageUpperBound, 2, '窗口 stale 但 dirty 为空时仍应按注册表返回全部 IP')
+  assert.equal(staleWithoutDirtyList.items.every((item) => item.rangeUsage.requestCount === 0), true, '窗口 stale 但 dirty 为空时不应返回旧统计值')
   clientIpStats.refreshClientIpUsageRangeWindows()
   const selfHealedList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10, sortField: 'requestCount', sortOrder: 'desc' })
   const selfHealedIpv4Row = selfHealedList.items.find((item) => item.ipHash === ipv4Identity.ipHash)
@@ -481,6 +486,50 @@ try {
   }).disabledCount, 1, '解封应停用当前 status=active 的封禁策略')
   assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === replacementBlacklist.id), false, '解封后策略不应继续进入运行态列表')
 
+  const outsideRangeIdentity = clientIpStats.normalizeClientIpForStats('192.0.2.77')
+  assert(outsideRangeIdentity, '范围外 IPv4 来源应可规范化')
+  const outsideRangeSeenAt = new Date(createdAtBase - 24 * 60 * 60 * 1000).toISOString()
+  statsDatabase.prepare(`
+    INSERT INTO client_ip_registry (
+      ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
+      first_seen_at, last_seen_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    outsideRangeIdentity.ipHash,
+    outsideRangeIdentity.bucketNo,
+    outsideRangeIdentity.aggregateIpKey,
+    outsideRangeIdentity.clientIp,
+    4,
+    outsideRangeSeenAt,
+    outsideRangeSeenAt,
+    outsideRangeSeenAt,
+    outsideRangeSeenAt
+  )
+  const allIpList = clientIpStats.listClientIpStats({ startDate: today, endDate: today, pageSize: 10 })
+  const outsideRangeRow = allIpList.items.find((item) => item.ipHash === outsideRangeIdentity.ipHash)
+  assert(outsideRangeRow, 'IP 管理列表应包含所选统计范围内无用量的已注册 IP')
+  assert.equal(outsideRangeRow.rangeUsage.requestCount, 0, '范围外 IP 的当前窗口请求数应为 0')
+  assert.equal(outsideRangeRow.rangeUsage.totalTokens, 0, '范围外 IP 的当前窗口 Token 应为 0')
+
+  const outsideRangePolicy = clientIpStats.createClientIpPolicy({
+    ipHash: outsideRangeIdentity.ipHash,
+    policyType: 'blacklist',
+    reason: 'outside range regression',
+    actorSystemAccountId: 'sys_admin'
+  })
+  assert.deepEqual(
+    clientIpStats.listClientIpStats({ startDate: today, endDate: today, status: 'blacklisted', pageSize: 10 }).items.map((item) => item.ipHash),
+    [outsideRangeIdentity.ipHash],
+    '状态筛选应作用于全量已注册 IP，而不是仅作用于当前统计窗口内的 IP'
+  )
+  assert.equal(clientIpStats.disableClientIpPolicies({
+    ipHash: outsideRangeIdentity.ipHash,
+    policyType: 'blacklist',
+    reason: 'outside range regression cleanup',
+    actorSystemAccountId: 'sys_admin'
+  }).disabledCount, 1, '范围外 IP 回归策略应可停用')
+  assert.equal(clientIpStats.listActiveClientIpPolicies().some((item) => item.id === outsideRangePolicy.id), false, '范围外 IP 回归策略停用后不应保持 active')
+
   const cursorCount = statsDatabase
     .prepare("SELECT COUNT(*) AS total FROM stats_job_state WHERE job_name = 'client_ip_stats_aggregation' AND scope_type = 'usage_shard' AND cursor_id IS NOT NULL")
     .get() as { total?: number } | undefined
@@ -499,11 +548,12 @@ function assertClientIpListPolicyQueryPlan(today: string): void {
   const policyNow = new Date().toISOString()
   const details = explainStatsQuery(`
     SELECT registry.ip_hash
-    FROM client_ip_usage_range_windows range_stats
-    INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash
-    WHERE range_stats.start_date = ?
+    FROM client_ip_registry registry
+    LEFT JOIN client_ip_usage_range_windows range_stats
+      ON range_stats.ip_hash = registry.ip_hash
+      AND range_stats.start_date = ?
       AND range_stats.end_date = ?
-      AND EXISTS (
+    WHERE EXISTS (
         SELECT 1
         FROM client_ip_policies active_policies
         WHERE active_policies.status = 'active'
@@ -512,10 +562,10 @@ function assertClientIpListPolicyQueryPlan(today: string): void {
           AND (active_policies.expires_at IS NULL OR active_policies.expires_at > ?)
         LIMIT 1
       )
-    ORDER BY range_stats.request_count DESC, range_stats.ip_hash ASC
+    ORDER BY COALESCE(range_stats.request_count, 0) DESC, registry.ip_hash ASC
     LIMIT ? OFFSET ?
   `, [today, today, policyNow, 11, 0])
-  assert(details.includes('idx_client_ip_range_requests'), `IP 列表应通过范围窗口排序索引读取当前页，实际计划：${details}`)
+  assert(details.includes('client_ip_usage_range_windows') && details.includes('LEFT-JOIN'), `IP 列表应从注册表左连接范围窗口，实际计划：${details}`)
   assert(details.includes('idx_client_ip_policies_active'), `IP 封禁筛选应按 ip_hash 命中策略索引，实际计划：${details}`)
   assert(!details.includes('MATERIALIZE'), `IP 列表不应 materialize 封禁策略全集，实际计划：${details}`)
   assert(!details.includes('USE TEMP B-TREE FOR GROUP BY'), `IP 列表不应为封禁策略做临时 GROUP BY，实际计划：${details}`)
@@ -545,22 +595,20 @@ function assertClientIpDetailQueryPlan(today: string, ipHash: string): void {
 }
 
 function assertClientIpListSortQueryPlans(today: string): void {
-  const sortIndexes = new Map([
-    ['requestCount', 'idx_client_ip_range_requests']
-  ])
-  for (const [sortField, indexName] of sortIndexes) {
+  for (const sortField of ['requestCount']) {
     const orderBy = clientIpListOrderByForPlan(sortField)
     const details = explainStatsQuery(`
       SELECT registry.ip_hash
-      FROM client_ip_usage_range_windows range_stats
-      INNER JOIN client_ip_registry registry ON registry.ip_hash = range_stats.ip_hash
-      WHERE range_stats.start_date = ?
+      FROM client_ip_registry registry
+      LEFT JOIN client_ip_usage_range_windows range_stats
+        ON range_stats.ip_hash = registry.ip_hash
+        AND range_stats.start_date = ?
         AND range_stats.end_date = ?
-      ORDER BY ${orderBy}, range_stats.ip_hash ASC
+      ORDER BY ${orderBy}, registry.ip_hash ASC
       LIMIT ? OFFSET ?
     `, [today, today, 11, 0])
-    assert(details.includes(indexName), `${sortField} 排序应使用 ${indexName}，实际计划：${details}`)
-    assert(!/USE TEMP B-TREE/i.test(details), `${sortField} 排序不应创建临时排序树，实际计划：${details}`)
+    assert(details.includes('client_ip_usage_range_windows') && details.includes('LEFT-JOIN'), `${sortField} 排序应按 IP hash 左连接预聚合窗口，实际计划：${details}`)
+    assert(!/usage_records/i.test(details), `${sortField} 排序不应访问 usage_records 明细表，实际计划：${details}`)
   }
 }
 
@@ -568,8 +616,9 @@ function assertClientIpListGlobalLastUsedSortQueryPlan(today: string): void {
   const descDetails = explainStatsQuery(`
     SELECT registry.ip_hash
     FROM client_ip_registry registry INDEXED BY idx_client_ip_registry_last_seen
-    INNER JOIN client_ip_usage_range_windows range_stats ON registry.ip_hash = range_stats.ip_hash
-    WHERE range_stats.start_date = ?
+    LEFT JOIN client_ip_usage_range_windows range_stats
+      ON range_stats.ip_hash = registry.ip_hash
+      AND range_stats.start_date = ?
       AND range_stats.end_date = ?
     ORDER BY registry.last_seen_at DESC, registry.ip_hash ASC
     LIMIT ? OFFSET ?
@@ -580,8 +629,9 @@ function assertClientIpListGlobalLastUsedSortQueryPlan(today: string): void {
   const ascDetails = explainStatsQuery(`
     SELECT registry.ip_hash
     FROM client_ip_registry registry INDEXED BY idx_client_ip_registry_last_seen
-    INNER JOIN client_ip_usage_range_windows range_stats ON registry.ip_hash = range_stats.ip_hash
-    WHERE range_stats.start_date = ?
+    LEFT JOIN client_ip_usage_range_windows range_stats
+      ON range_stats.ip_hash = registry.ip_hash
+      AND range_stats.start_date = ?
       AND range_stats.end_date = ?
     ORDER BY registry.last_seen_at ASC, registry.ip_hash DESC
     LIMIT ? OFFSET ?
@@ -608,7 +658,7 @@ function clientIpListOrderByForPlan(sortField: string): string {
       return 'range_stats.last_used_at DESC'
     case 'requestCount':
     default:
-      return 'range_stats.request_count DESC'
+      return 'COALESCE(range_stats.request_count, 0) DESC'
   }
 }
 
@@ -648,6 +698,7 @@ function assertIpStatsViewUsesUsageWindowAsPrimaryTimeFilter(): void {
   assert(!source.includes('lastUsedDateRange'), 'IP 管理页面不应再展示最后使用日期筛选')
   assert(source.includes('if (value === \'today\') return [today, today]'), 'IP 管理今天统计范围应提交当天窗口')
   assert(source.includes('if (value === \'recent1m\') return [today.subtract(30, \'day\'), today]'), 'IP 管理近 1 月统计范围应提交最近 31 天窗口')
+  assert(source.includes('<a-alert') && source.includes('v-if="!rangeReady"'), 'IP 管理列表统计窗口未就绪时应保留列表并展示提示')
   assert(buildListParamsSource.includes('const usageRange = usageWindowDateRange(usageWindow.value)'), 'IP 管理页面应使用统计范围构造 startDate/endDate')
   assert(buildListParamsSource.includes('startDate: formatDateKey(usageRange[0])'), 'IP 管理 startDate 应来自用量统计窗口')
   assert(buildListParamsSource.includes('endDate: formatDateKey(usageRange[1])'), 'IP 管理 endDate 应来自用量统计窗口')

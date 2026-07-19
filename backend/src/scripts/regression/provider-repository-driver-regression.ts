@@ -92,6 +92,12 @@ function assertModelCatalogPostgresSyncBoundary(): void {
       && source.includes("runtimeConfig.databaseDriver === 'postgres'"),
     '模型目录同步路径在 PG 模式下必须使用内置 provider code 列表'
   )
+  const postgresProviderCodes = source.match(/const postgresSyncOpenAIProtocolProviderCodes = \[([\s\S]*?)\] as const/)?.[1] ?? ''
+  assert.match(
+    postgresProviderCodes,
+    /XAI_PROVIDER_CODE/,
+    'PostgreSQL OpenAI 协议聚合必须包含 xAI 模型目录'
+  )
   assert.doesNotMatch(
     source,
     /function modelCatalogSourceProviderCodes\([\s\S]*?listOpenAIProtocolProviderCodes\(\)[\s\S]*?runtimeConfig\.databaseDriver === 'postgres'/,

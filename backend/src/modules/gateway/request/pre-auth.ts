@@ -40,6 +40,10 @@ import { isOpenAIModelsRequest } from '../protocols/openai-v1/route-helpers.js'
 import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
 import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
 import { errorLogFields } from '../../../shared/logger.js'
+import {
+  validateGatewayApiKeyAsync,
+  type GatewayApiKeyRow
+} from '../../../storage/gateway-api-key.repository.js'
 
 export type GatewayRuntimeRequest = Request & {
   gatewayRuntime?: DbServiceGatewayRuntime
@@ -149,6 +153,62 @@ export async function resolveGatewayRuntimeAsync(
   }
 
   return runtime
+}
+
+export async function resolveGatewayApiKeyForModelsAsync(
+  req: GatewayRuntimeRequest,
+  res: Response,
+  options: ResolveGatewayRuntimeOptions = {}
+): Promise<GatewayApiKeyRow | undefined> {
+  const clientIp = extractClientIp(req)
+  const authorization = req.header('authorization')
+  const gatewayAuthSource = gatewayPreAuthSource(req, authorization)
+  if (await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
+    return undefined
+  }
+  const preAuthDecision = await inspectGatewayPreAuthCircuitAsync({ clientIp, authorization: gatewayAuthSource })
+  if (preAuthDecision.blocked) {
+    prepareEarlyAuthFailureResponse(res, options)
+    sendPreAuthCircuitResponse(req, res, preAuthDecision)
+    return undefined
+  }
+  const gatewayApiKey = extractGatewayApiKey(req, authorization)
+  if (!gatewayApiKey) {
+    await rejectMissingOrInvalidGatewayCredential(req, res, 'missing_bearer_token', options)
+    return undefined
+  }
+  const apiKey = await validateGatewayApiKeyAsync(gatewayApiKey)
+  if (!apiKey) {
+    await rejectMissingOrInvalidGatewayCredential(req, res, 'invalid_api_key', options)
+    return undefined
+  }
+  if (options.inspectClientIpPolicyAfterRuntime !== false
+    && await rejectCachedClientIpBlacklist(req, res, clientIp, options, { cacheOnly: true })) {
+    return undefined
+  }
+  return apiKey
+}
+
+async function rejectMissingOrInvalidGatewayCredential(
+  req: Request,
+  res: Response,
+  reason: Extract<GatewayPreAuthFailureReason, 'missing_bearer_token' | 'invalid_api_key'>,
+  options: ResolveGatewayRuntimeOptions
+): Promise<void> {
+  const failureDecision = await recordPreAuthFailure(req, res, reason, options)
+  if (failureDecision.blocked) return
+  getRequestLogger().warn({
+    event: 'gateway_auth_failed',
+    reason,
+    endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
+  }, '网关认证失败')
+  prepareEarlyAuthFailureResponse(res, options)
+  sendGatewayJsonError(
+    res,
+    401,
+    gatewayErrorPayload(reason === 'invalid_api_key' ? 'API Key 无效' : '缺少访问令牌', 'invalid_request_error'),
+    { protocol: gatewayErrorProtocolForRequest(req) }
+  )
 }
 
 export function isOpenAIStreamRequest(req: Request): boolean {

@@ -25,6 +25,7 @@ import {
   shouldHandleOpenAIUpstreamResponseAsStream,
   writeGatewayStreamFailureEvent
 } from './response/responses.js'
+import { classifyGatewayDispatchExhaustion } from './response/dispatch-exhaustion-classifier.js'
 import {
   createAuditCapture,
   observeGatewayHttpCompletion,
@@ -97,6 +98,7 @@ import {
   type SpeedFirstCutoverReservation
 } from './runtime/speed-first-cutover-reservation.service.js'
 import { gatewayAccountConcurrencyAccountId } from './dispatch/account-concurrency-identity.js'
+import { GeminiInteractionAffinityUnavailableError } from './protocols/gemini-v1beta/interaction-affinity.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -237,6 +239,9 @@ export async function handleOpenAIGatewayRequest(
     reason: string,
     input: { allowCandidateWrap?: boolean } = {}
   ): Promise<'none' | 'switched' | 'completed'> => {
+    if (currentPreflight.interactionResourceAffinity) {
+      return 'none'
+    }
     const fallbackApiKeyRecord = reason === 'account_scoped_agent_guidance_exhausted'
       ? currentPreflight.groupFallbackApiKeyRecord ?? currentPreflight.apiKeyRecord
       : currentPreflight.apiKeyRecord
@@ -542,6 +547,16 @@ export async function handleOpenAIGatewayRequest(
         }
       }
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease } = upstreamResult
+      notifyUpstreamAttemptDiagnostic(options, {
+        accountId: account.id,
+        accountName: account.name,
+        providerCode: account.providerCode,
+        providerProtocolProfileId: account.providerProtocolProfileId,
+        protocolCode: account.protocolCode,
+        protocolVersion: account.protocolVersion,
+        upstreamUrl,
+        status: upstreamResponse.status
+      })
       const releaseAccountSlot = attachAccountSlotRelease(res, releaseConcurrency)
       const speedFirstFirstByteDeadlineMs = normalRouteSpeedFirstByteDeadlineMs(normalRouteSpeedFirstConfig)
       const speedFirstLatencyScope = normalRouteLatencyDegradationScope({
@@ -682,6 +697,9 @@ export async function handleOpenAIGatewayRequest(
               downstreamCommitState: currentPreflight.downstreamCommitState
             })
           } catch (error) {
+            if (error instanceof GeminiInteractionAffinityUnavailableError) {
+              throw error
+            }
             if (res.headersSent || res.writableEnded || res.destroyed) {
               throw error
             }
@@ -1093,13 +1111,26 @@ export async function handleOpenAIGatewayRequest(
     }
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : '没有可用的上游账户'
-    getRequestLogger().error(errorLogFields(error, {
-      event: 'gateway_request_unexpected_error',
-      endpoint: gatewayUsageContext.endpoint,
-      apiKeyId: gatewayUsageContext.apiKeyId,
-      groupId: gatewayUsageContext.groupId,
-      trafficSource: gatewayUsageContext.trafficSource
-    }), '网关请求处理出现未预期异常')
+    if (error instanceof UpstreamAttemptError) {
+      getRequestLogger().warn({
+        event: 'gateway_dispatch_exhausted',
+        ...classifyGatewayDispatchExhaustion(lastAttempt),
+        endpoint: gatewayUsageContext.endpoint,
+        apiKeyId: gatewayUsageContext.apiKeyId,
+        groupId: gatewayUsageContext.groupId,
+        trafficSource: gatewayUsageContext.trafficSource,
+        lastAttemptAccountId: lastAttempt?.accountId,
+        failedAccountIds: error.failedAccountIds
+      }, '网关上游调度已耗尽')
+    } else {
+      getRequestLogger().error(errorLogFields(error, {
+        event: 'gateway_request_unexpected_error',
+        endpoint: gatewayUsageContext.endpoint,
+        apiKeyId: gatewayUsageContext.apiKeyId,
+        groupId: gatewayUsageContext.groupId,
+        trafficSource: gatewayUsageContext.trafficSource
+      }), '网关请求处理出现未预期异常')
+    }
     notifyUpstreamAttemptDiagnostic(options, lastAttempt)
     if (shouldSendDispatchExhaustedProtocolRetry(currentPreflight, error, res)) {
       await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'dispatch_exhausted_protocol_retry')

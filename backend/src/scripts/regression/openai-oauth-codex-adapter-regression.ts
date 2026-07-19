@@ -59,7 +59,7 @@ async function main(): Promise<void> {
   await testInvalidBodyRejection()
   await testLargeBodyWorkerNormalization()
   await testLargeApiKeyLiteBodyWorkerNormalization()
-  await testMediumBodyDeferredMiddlewareToOAuthWorker()
+  await testMediumBodyDeferredMiddlewareToOAuthNormalizer()
   await testLargeBodyDeferredMiddlewareToOAuthWorker()
   await testGatewayJsonWorkerConcurrentParsing()
   await testRequiredBodyFieldRejection()
@@ -456,7 +456,7 @@ async function testLargeApiKeyLiteBodyWorkerNormalization(): Promise<void> {
   assert.equal(headers.get('x-openai-internal-codex-responses-lite'), 'true')
 }
 
-async function testMediumBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
+async function testMediumBodyDeferredMiddlewareToOAuthNormalizer(): Promise<void> {
   const requestBody = {
     model: 'gpt-5.3-codex',
     input: 'x'.repeat(gatewayJsonBodyInlineParseMaxBytes + 32 * 1024),
@@ -502,7 +502,6 @@ async function testMediumBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
       JSON.parse = originalJsonParse
     }
   }
-
   const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   const body = parseBody(parts.body)
   const input = body.input as Array<{ content?: Array<{ text?: string }> }>

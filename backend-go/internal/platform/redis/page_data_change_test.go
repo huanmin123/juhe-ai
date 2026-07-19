@@ -74,7 +74,7 @@ func TestNewAccountStaticResetEventsUsesProvidedTime(t *testing.T) {
 func TestPageDataChangePublisherBuildsNodeCompatibleAccountStaticUpsertEvent(t *testing.T) {
 	publisher, _ := testPageDataChangePublisher()
 
-	event, err := publisher.NewAccountStaticUpsertEvent(AccountStaticUpsertInput{
+	event, err := publisher.NewAccountStaticUpsertEvent(AccountChangeInput{
 		AccountID:             "account-1",
 		OwnerSystemAccountIDs: []string{" owner-b ", "owner-a", "owner-a", ""},
 		FieldMask:             []string{"tags"},
@@ -99,6 +99,75 @@ func TestPageDataChangePublisherBuildsNodeCompatibleAccountStaticUpsertEvent(t *
 	}
 }
 
+func TestPageDataChangePublisherBuildsAnnouncementPublicChangeEvent(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	event, err := publisher.NewAnnouncementPublicChangeEvent(" announcement-1 ", pageDataUpsertOperation, []string{"title", "publishedAt"})
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent() error = %v", err)
+	}
+	want := PageDataChangeEvent{
+		EventID: "event-1", Domain: pageDataAnnouncementsPublicDomain, EntityID: "announcement-1",
+		Operation: pageDataUpsertOperation, FieldMask: []string{"title", "publishedAt"}, OwnerSystemAccountIDs: []string{},
+		MembershipChanged: true, OrderChanged: true, PageChanged: true,
+		OccurredAt: "2026-07-18T01:02:03.456Z",
+	}
+	if !reflect.DeepEqual(event, want) {
+		t.Fatalf("event = %#v, want %#v", event, want)
+	}
+
+	fieldMask := []string{"status"}
+	created, err := publisher.NewAnnouncementPublicChangeEvent("announcement-2", pageDataDeleteOperation, fieldMask)
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent(delete) error = %v", err)
+	}
+	fieldMask[0] = "mutated"
+	if !reflect.DeepEqual(created.FieldMask, []string{"status"}) || len(created.OwnerSystemAccountIDs) != 0 {
+		t.Fatalf("event slices were not copied/defaulted: %#v", created)
+	}
+}
+
+func TestPageDataChangePublisherRejectsInvalidAnnouncementPublicChangeEvent(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	tooManyFields := make([]string, pageDataMaxFieldMask+1)
+	for index := range tooManyFields {
+		tooManyFields[index] = fmt.Sprintf("field-%02d", index)
+	}
+	for _, test := range []struct {
+		name      string
+		id        string
+		operation string
+		fields    []string
+	}{
+		{name: "empty id", id: " ", operation: pageDataUpsertOperation},
+		{name: "invalid operation", id: "announcement-1", operation: pageDataRangeResetOperation},
+		{name: "empty operation", id: "announcement-1"},
+		{name: "empty field", id: "announcement-1", operation: pageDataUpsertOperation, fields: []string{" "}},
+		{name: "too many fields", id: "announcement-1", operation: pageDataDeleteOperation, fields: tooManyFields},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := publisher.NewAnnouncementPublicChangeEvent(test.id, test.operation, test.fields); err == nil {
+				t.Fatal("NewAnnouncementPublicChangeEvent() error = nil")
+			}
+		})
+	}
+}
+
+func TestPageDataChangePublisherMarshalsAnnouncementPublicChangeProtocol(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	event, err := publisher.NewAnnouncementPublicChangeEvent("announcement-1", pageDataDeleteOperation, nil)
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent() error = %v", err)
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	want := `{"eventId":"event-1","domain":"announcements.public","entityId":"announcement-1","operation":"delete","fieldMask":[],"ownerSystemAccountIds":[],"membershipChanged":true,"orderChanged":true,"filterChanged":false,"pageChanged":true,"occurredAt":"2026-07-18T01:02:03.456Z"}`
+	if string(raw) != want {
+		t.Fatalf("JSON = %s, want %s", raw, want)
+	}
+}
+
 func TestPageDataChangePublisherRejectsInvalidAccountStaticUpsertInput(t *testing.T) {
 	publisher, _ := testPageDataChangePublisher()
 	tooManyOwners := make([]string, pageDataMaxEventOwners+1)
@@ -110,7 +179,7 @@ func TestPageDataChangePublisherRejectsInvalidAccountStaticUpsertInput(t *testin
 		tooManyFields[index] = fmt.Sprintf("field-%02d", index)
 	}
 
-	for _, input := range []AccountStaticUpsertInput{
+	for _, input := range []AccountChangeInput{
 		{AccountID: " ", FieldMask: []string{"tags"}},
 		{AccountID: "account-1", FieldMask: []string{""}},
 		{AccountID: "account-1", FieldMask: tooManyFields},
@@ -119,6 +188,36 @@ func TestPageDataChangePublisherRejectsInvalidAccountStaticUpsertInput(t *testin
 		if _, err := publisher.NewAccountStaticUpsertEvent(input); err == nil {
 			t.Fatalf("NewAccountStaticUpsertEvent(%#v) error = nil", input)
 		}
+	}
+}
+
+func TestPageDataChangePublisherBuildsAccountDeleteAndRuntimeUpsertEvents(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+
+	deleted, err := publisher.NewAccountStaticDeleteEvent(AccountChangeInput{
+		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-1"},
+		MembershipChanged: true, OrderChanged: true, FilterChanged: true, PageChanged: true,
+	})
+	if err != nil {
+		t.Fatalf("NewAccountStaticDeleteEvent() error = %v", err)
+	}
+	if deleted.Domain != pageDataAccountsStaticDomain || deleted.Operation != pageDataDeleteOperation ||
+		deleted.EntityID != "account-1" || len(deleted.FieldMask) != 0 || !deleted.MembershipChanged ||
+		!deleted.OrderChanged || !deleted.FilterChanged || !deleted.PageChanged {
+		t.Fatalf("delete event = %#v", deleted)
+	}
+
+	runtime, err := publisher.NewAccountRuntimeUpsertEvent(AccountChangeInput{
+		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-1"},
+		FieldMask: []string{"status", "schedulable"},
+	})
+	if err != nil {
+		t.Fatalf("NewAccountRuntimeUpsertEvent() error = %v", err)
+	}
+	if runtime.Domain != pageDataAccountsRuntimeDomain || runtime.Operation != pageDataUpsertOperation ||
+		runtime.EntityID != "account-1" || !reflect.DeepEqual(runtime.FieldMask, []string{"status", "schedulable"}) ||
+		runtime.MembershipChanged || runtime.OrderChanged || runtime.FilterChanged || runtime.PageChanged {
+		t.Fatalf("runtime event = %#v", runtime)
 	}
 }
 
@@ -256,6 +355,9 @@ func TestPageDataChangePublisherValidatesConstructorAndEvents(t *testing.T) {
 		if len(events) != 1 || events[0].Domain != domain {
 			t.Fatalf("NewRangeResetEvents(%s) events = %#v", domain, events)
 		}
+		if err := validatePageDataChangeEvent(events[0]); err != nil {
+			t.Fatalf("NewRangeResetEvents(%s) validation error = %v", domain, err)
+		}
 	}
 	cases := []PageDataChangeEvent{
 		func() PageDataChangeEvent { value := valid; value.EventID = " "; return value }(),
@@ -310,6 +412,21 @@ func TestPageDataChangePublisherEpochUsesPersistentGetAndSetNX(t *testing.T) {
 	}
 	if capture.epochSets != 1 {
 		t.Fatalf("epoch SET calls after cached publish = %d, want 1", capture.epochSets)
+	}
+}
+
+func TestPageDataChangePublisherEpochLockRespectsCanceledContext(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	release, err := publisher.acquireEpochLock(t.Context())
+	if err != nil {
+		t.Fatalf("first acquireEpochLock() error = %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := publisher.acquireEpochLock(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second acquireEpochLock() error = %v, want context.Canceled", err)
 	}
 }
 
@@ -483,6 +600,49 @@ func TestPageDataChangePublisherRedisIntegration(t *testing.T) {
 	}
 	if epoch, getErr := client.client.Get(t.Context(), epochKey).Result(); getErr != nil || strings.TrimSpace(epoch) == "" {
 		t.Fatalf("epoch = %q, error = %v", epoch, getErr)
+	}
+
+	announcementEvent, err := publisher.NewAnnouncementPublicChangeEvent(
+		"ann-integration",
+		pageDataUpsertOperation,
+		[]string{"title", "content", "status", "publishedAt"},
+	)
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent() error = %v", err)
+	}
+	if err := publisher.Publish(t.Context(), announcementEvent); err != nil {
+		t.Fatalf("Publish(announcement) error = %v", err)
+	}
+	announcementSequenceKey := prefix + "sequence:global:announcements.public"
+	announcementLogKey := prefix + "log:global:announcements.public"
+	if got, getErr := client.client.Get(t.Context(), announcementSequenceKey).Int64(); getErr != nil || got != 1 {
+		t.Fatalf("announcement sequence = %d, error = %v, want 1", got, getErr)
+	}
+	announcementEntries, err := client.client.LRange(t.Context(), announcementLogKey, 0, 0).Result()
+	if err != nil || len(announcementEntries) != 1 {
+		t.Fatalf("announcement log entries = %#v, error = %v", announcementEntries, err)
+	}
+	separator := strings.IndexByte(announcementEntries[0], '\t')
+	if separator < 1 {
+		t.Fatalf("invalid announcement log entry %q", announcementEntries[0])
+	}
+	var publishedAnnouncement PageDataChangeEvent
+	if err := json.Unmarshal([]byte(announcementEntries[0][separator+1:]), &publishedAnnouncement); err != nil {
+		t.Fatalf("decode announcement event: %v", err)
+	}
+	if publishedAnnouncement.Domain != pageDataAnnouncementsPublicDomain || publishedAnnouncement.EntityID != "ann-integration" || publishedAnnouncement.Operation != pageDataUpsertOperation {
+		t.Fatalf("published announcement event = %+v", publishedAnnouncement)
+	}
+
+	resets, err := publisher.NewRangeResetEvents(pageDataAnnouncementsPublicDomain, nil, true)
+	if err != nil || len(resets) != 1 {
+		t.Fatalf("announcement reset events = %+v, error = %v", resets, err)
+	}
+	if err := publisher.Publish(t.Context(), resets[0]); err != nil {
+		t.Fatalf("Publish(announcement reset) error = %v", err)
+	}
+	if got, getErr := client.client.Get(t.Context(), announcementSequenceKey).Int64(); getErr != nil || got != 2 {
+		t.Fatalf("announcement sequence after reset = %d, error = %v, want 2", got, getErr)
 	}
 }
 

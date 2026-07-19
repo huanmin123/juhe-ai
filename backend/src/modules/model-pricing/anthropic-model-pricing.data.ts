@@ -21,7 +21,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'fable',
@@ -42,7 +42,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'opus',
@@ -63,7 +63,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'opus[1m]',
@@ -84,7 +84,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'opusplan',
@@ -105,7 +105,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'sonnet',
@@ -125,7 +125,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'sonnet[1m]',
@@ -145,7 +145,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'haiku',
@@ -182,7 +182,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-mythos-5',
@@ -202,7 +202,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-sonnet-5',
@@ -212,7 +212,7 @@ export const anthropicModelPricingData = [
     cache_creation_input_token_cost: 2.5 / 1_000_000,
     cache_creation_input_token_cost_above_1hr: 4 / 1_000_000,
     cache_read_input_token_cost: 0.2 / 1_000_000,
-    context_window_tokens: 200_000,
+    context_window_tokens: 1_000_000,
     max_output_tokens: 128_000,
     supported_api_protocols: ["messages","message_token_counting"],
     supports_prompt_caching: true,
@@ -222,7 +222,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-mythos-preview',
@@ -237,7 +237,12 @@ export const anthropicModelPricingData = [
     max_output_tokens: 128_000,
     supported_api_protocols: ['messages', 'message_token_counting'],
     supports_prompt_caching: true,
-    supports_service_tier: true
+    supports_service_tier: true,
+    input_modalities: ["text","image"],
+    output_modalities: ["text"],
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high","max"],
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-8',
@@ -257,7 +262,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-7',
@@ -277,7 +282,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","xhigh","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-6',
@@ -297,7 +302,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-6-thinking',
@@ -317,7 +322,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'antigravity-claude-opus-4-6-thinking',
@@ -338,7 +343,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'antigravity/claude-opus-4-6-thinking',
@@ -359,7 +364,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google/antigravity-claude-opus-4-6-thinking',
@@ -380,7 +385,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google-antigravity/claude-opus-4-6-thinking',
@@ -401,7 +406,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google-antigravity:claude-opus-4-6-thinking',
@@ -422,7 +427,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-6-antigravity',
@@ -443,7 +448,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-5',
@@ -459,7 +464,9 @@ export const anthropicModelPricingData = [
   ,
     input_modalities: ["text","image"],
     output_modalities: ["text"],
-    supported_tools: ["function_calling","code_execution"]
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high"],
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-5-20251101',
@@ -476,7 +483,9 @@ export const anthropicModelPricingData = [
   ,
     input_modalities: ["text","image"],
     output_modalities: ["text"],
-    supported_tools: ["function_calling","code_execution"]
+    supported_tools: ["function_calling","code_execution"],
+    supported_reasoning_efforts: ["low","medium","high"],
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-opus-4-1',
@@ -535,7 +544,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-sonnet-4-6-antigravity',
@@ -556,7 +565,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'antigravity-claude-sonnet-4-6',
@@ -577,7 +586,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'antigravity/claude-sonnet-4-6',
@@ -598,7 +607,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google/antigravity-claude-sonnet-4-6',
@@ -619,7 +628,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google-antigravity/claude-sonnet-4-6',
@@ -640,7 +649,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google-antigravity:claude-sonnet-4-6',
@@ -661,7 +670,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-sonnet-4-6-thinking',
@@ -681,7 +690,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'antigravity-claude-sonnet-4-6-thinking',
@@ -702,7 +711,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'antigravity/claude-sonnet-4-6-thinking',
@@ -723,7 +732,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google/antigravity-claude-sonnet-4-6-thinking',
@@ -744,7 +753,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google-antigravity/claude-sonnet-4-6-thinking',
@@ -765,7 +774,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'google-antigravity:claude-sonnet-4-6-thinking',
@@ -786,7 +795,7 @@ export const anthropicModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","code_execution"],
     supported_reasoning_efforts: ["low","medium","high","max"],
-    default_reasoning_effort: "medium"
+    default_reasoning_effort: "high"
   },
   {
     model: 'claude-sonnet-4-5',

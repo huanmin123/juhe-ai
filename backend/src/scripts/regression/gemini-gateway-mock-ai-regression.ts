@@ -65,6 +65,7 @@ const [
   usageRecordQueue,
   auditLogQueue,
   providerDriverRegistry,
+  interactionAffinity,
   readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -76,11 +77,14 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/providers/drivers/registry.js'),
+  import('../../modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const upstreamHits: GeminiUpstreamHit[] = []
+const interactionOwners = new Map<string, string>()
+let interactionSequence = 0
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -137,13 +141,71 @@ try {
     }, access)
     assert.equal(account.providerCode, GEMINI_PROVIDER_CODE)
     assert.equal(account.providerProtocolProfileId, GEMINI_NATIVE_V1BETA_PROFILE_ID)
-    assert.deepEqual(account.credentials.supported_endpoint_modes, ['generate_content_json', 'generate_content_sse', 'count_tokens'])
+    assert.deepEqual(account.credentials.supported_endpoint_modes, [
+      'generate_content_json',
+      'generate_content_sse',
+      'count_tokens',
+      'interactions_json',
+      'interactions_sse'
+    ])
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: 'Gemini Mock AI 回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
       status: 'active'
     }, access)
     assert(apiKey.key, '回归 API Key 未返回明文密钥')
+
+    const interactionsGroup = repositories.createGroup({
+      name: 'Gemini Interactions 亲和回归分组',
+      providerCode: GEMINI_PROVIDER_CODE,
+      enabled: true
+    }, access)
+    const interactionsPrimaryAccount = repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      name: 'Gemini Interactions 亲和主账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-gemini-interactions-primary',
+        base_url: upstreamOrigin,
+        supported_endpoint_modes: ['interactions_json', 'interactions_sse']
+      },
+      groupId: interactionsGroup.id,
+      supportedModels: ['gemini-3.5-flash'],
+      priority: 0,
+      status: 'active',
+      schedulable: true
+    }, access)
+    const interactionsFallbackAccount = repositories.createAccount({
+      providerCode: GEMINI_PROVIDER_CODE,
+      providerProtocolProfileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      name: 'Gemini Interactions 亲和备用账户',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-gemini-interactions-fallback',
+        base_url: upstreamOrigin,
+        supported_endpoint_modes: ['interactions_json', 'interactions_sse']
+      },
+      groupId: interactionsGroup.id,
+      supportedModels: ['gemini-3.5-flash'],
+      priority: 10,
+      status: 'active',
+      schedulable: true
+    }, access)
+    activateFixtureAccount(interactionsPrimaryAccount.id)
+    activateFixtureAccount(interactionsFallbackAccount.id)
+    const interactionsApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+      name: 'Gemini Interactions 亲和回归 Key',
+      groupBindings: [{ groupId: interactionsGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(interactionsApiKey.key, 'Gemini Interactions 亲和回归 API Key 未返回明文密钥')
+    const interactionsForeignApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+      name: 'Gemini Interactions 亲和隔离回归 Key',
+      groupBindings: [{ groupId: interactionsGroup.id, priority: 1, status: 'active' }],
+      status: 'active'
+    }, access)
+    assert(interactionsForeignApiKey.key, 'Gemini Interactions 亲和隔离回归 API Key 未返回明文密钥')
 
     const openAIChatGroup = repositories.createGroup({
       name: 'Gemini OpenAI Chat Mock AI 回归分组',
@@ -458,6 +520,8 @@ try {
     await assertGeminiGenerateContentKeyQuery(baseUrl, apiKey.key)
     await assertGeminiStreamGenerateContent(baseUrl, apiKey.key)
     await assertGeminiCountTokens(baseUrl, apiKey.key)
+    await assertGeminiInteractionsAccountAffinity(baseUrl, interactionsApiKey.key, interactionsForeignApiKey.key)
+    await assertGeminiInteractionsAffinityPersistenceFailures(baseUrl, interactionsApiKey.key)
     await assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl, apiKey.key)
     await assertGeminiCliRetryableErrorSwitchesAccount(baseUrl, apiKey.key)
     await assertGeminiUpstreamError(baseUrl, apiKey.key)
@@ -717,6 +781,284 @@ async function assertGeminiCountTokens(baseUrl: string, localApiKey: string): Pr
   assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:countTokens')
 }
 
+async function assertGeminiInteractionsAccountAffinity(
+  baseUrl: string,
+  localApiKey: string,
+  foreignApiKey: string
+): Promise<void> {
+  upstreamHits.length = 0
+  interactionOwners.clear()
+  interactionSequence = 0
+
+  const createJsonResponse = await fetch(new URL('/v1beta/interactions', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gemini-3.5-flash',
+      input: 'create affinity json interaction'
+    })
+  })
+  const createJsonText = await createJsonResponse.text()
+  assert.equal(createJsonResponse.status, 200, createJsonText)
+  const jsonInteraction = JSON.parse(createJsonText) as { id?: string }
+  assert(jsonInteraction.id, 'Interactions JSON 创建响应必须返回 id')
+  const jsonOwner = interactionOwners.get(jsonInteraction.id)
+  assert(jsonOwner, 'Mock upstream 必须记录 JSON interaction 所属上游账号')
+
+  const hitsBeforeForeignLookup = upstreamHits.length
+  const foreignLookupResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(jsonInteraction.id)}`, baseUrl), {
+    headers: {
+      authorization: `Bearer ${foreignApiKey}`,
+      accept: 'application/json'
+    }
+  })
+  const foreignLookupText = await foreignLookupResponse.text()
+  assert.equal(foreignLookupResponse.status, 404, foreignLookupText)
+  assert.match(foreignLookupText, /interaction_affinity_not_found/)
+  assert.equal(upstreamHits.length, hitsBeforeForeignLookup, 'Interaction 亲和记录必须按 API Key 隔离')
+
+  const getStreamResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(jsonInteraction.id)}?stream=true`, baseUrl), {
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      accept: 'text/event-stream'
+    }
+  })
+  const getStreamText = await getStreamResponse.text()
+  assert.equal(getStreamResponse.status, 200, getStreamText)
+  assert.match(getStreamText, /interaction\.completed/)
+
+  const cancelResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(jsonInteraction.id)}/cancel`, baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: '{}'
+  })
+  const cancelText = await cancelResponse.text()
+  assert.equal(cancelResponse.status, 200, cancelText)
+
+  const deleteResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(jsonInteraction.id)}`, baseUrl), {
+    method: 'DELETE',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      accept: 'application/json'
+    }
+  })
+  assert.equal(deleteResponse.status, 204, await deleteResponse.text())
+
+  const jsonInteractionHits = upstreamHits.filter((hit) => hit.path.includes(jsonInteraction.id!))
+  assert.deepEqual(
+    jsonInteractionHits.map((hit) => hit.xGoogApiKey),
+    [jsonOwner, jsonOwner, jsonOwner],
+    'Interactions GET 流、取消和删除必须始终使用创建资源的同一上游账号'
+  )
+
+  const hitsBeforeDeletedLookup = upstreamHits.length
+  const deletedLookupResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(jsonInteraction.id)}`, baseUrl), {
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      accept: 'application/json'
+    }
+  })
+  const deletedLookupText = await deletedLookupResponse.text()
+  assert.equal(deletedLookupResponse.status, 404, deletedLookupText)
+  assert.match(deletedLookupText, /interaction_affinity_not_found/)
+  assert.equal(upstreamHits.length, hitsBeforeDeletedLookup, '已删除或未知 interaction 不得猜测其他账号并命中上游')
+
+  const largeCreateResponse = await fetch(new URL('/v1beta/interactions', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'application/json'
+    },
+    body: JSON.stringify({
+      model: 'gemini-3.5-flash',
+      input: 'create affinity large json interaction',
+      largeResponse: true
+    })
+  })
+  const largeCreateText = await largeCreateResponse.text()
+  assert.equal(largeCreateResponse.status, 200, largeCreateText.slice(0, 1024))
+  assert(largeCreateText.length > 2 * 1024 * 1024, 'Interactions 大 JSON 回归响应必须超过网关响应捕获上限')
+  const largeInteraction = JSON.parse(largeCreateText) as { id?: string }
+  assert(largeInteraction.id, 'Interactions 大 JSON 创建响应必须返回 id')
+  const largeOwner = interactionOwners.get(largeInteraction.id)
+  assert(largeOwner, 'Mock upstream 必须记录大 JSON interaction 所属上游账号')
+
+  const largeLookupResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(largeInteraction.id)}`, baseUrl), {
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      accept: 'application/json'
+    }
+  })
+  const largeLookupText = await largeLookupResponse.text()
+  assert.equal(largeLookupResponse.status, 200, largeLookupText)
+  const largeLookupHit = upstreamHits.find((hit) => hit.path.endsWith(`/interactions/${largeInteraction.id}`))
+  assert.equal(largeLookupHit?.xGoogApiKey, largeOwner, '超过捕获上限的 Interactions JSON 创建响应仍必须建立账号亲和')
+
+  const hitsBeforeInvalidId = upstreamHits.length
+  const invalidIdResponse = await fetch(new URL('/v1beta/interactions/%2F', baseUrl), {
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      accept: 'application/json'
+    }
+  })
+  const invalidIdText = await invalidIdResponse.text()
+  assert.equal(invalidIdResponse.status, 400, invalidIdText)
+  assert.match(invalidIdText, /interaction_id_invalid/)
+  assert.equal(upstreamHits.length, hitsBeforeInvalidId, '非法编码 Interaction ID 必须在调度前拒绝，不能绕过亲和命中任意账号')
+
+  upstreamHits.length = 0
+  const createStreamResponse = await fetch(new URL('/v1beta/interactions', baseUrl), {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gemini-3.5-flash',
+      input: 'create affinity stream interaction',
+      stream: true
+    })
+  })
+  const createStreamText = await createStreamResponse.text()
+  assert.equal(createStreamResponse.status, 200, createStreamText)
+  const streamInteractionId = interactionIdFromSse(createStreamText)
+  assert(streamInteractionId, 'Interactions 流式创建响应必须包含 interaction.created id')
+  const streamOwner = interactionOwners.get(streamInteractionId)
+  assert(streamOwner, 'Mock upstream 必须记录流式 interaction 所属上游账号')
+
+  const streamLookupResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(streamInteractionId)}`, baseUrl), {
+    headers: {
+      authorization: `Bearer ${localApiKey}`,
+      accept: 'application/json'
+    }
+  })
+  const streamLookupText = await streamLookupResponse.text()
+  assert.equal(streamLookupResponse.status, 200, streamLookupText)
+  const streamLookupHit = upstreamHits.find((hit) => hit.path.endsWith(`/interactions/${streamInteractionId}`))
+  assert.equal(streamLookupHit?.xGoogApiKey, streamOwner, '流式创建响应中的 interaction id 也必须建立账号亲和')
+}
+
+async function assertGeminiInteractionsAffinityPersistenceFailures(
+  baseUrl: string,
+  localApiKey: string
+): Promise<void> {
+  const entries = new Map<string, unknown>()
+  let failSet = true
+  let failDelete = false
+  interactionAffinity.setGeminiInteractionAffinityStateStoreForTest({
+    async getJson<T>(key: string): Promise<T | undefined> {
+      return entries.get(key) as T | undefined
+    },
+    async setJson<T>(key: string, value: T): Promise<void> {
+      if (failSet) throw new Error('forced interaction affinity set failure')
+      entries.set(key, value)
+    },
+    async delete(key: string): Promise<void> {
+      if (failDelete) throw new Error('forced interaction affinity delete failure')
+      entries.delete(key)
+    }
+  })
+
+  try {
+    const hitsBeforeFailedCreate = upstreamHits.length
+    const failedCreateResponse = await fetch(new URL('/v1beta/interactions', baseUrl), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json',
+        accept: 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gemini-3.5-flash',
+        input: 'force affinity set failure'
+      })
+    })
+    const failedCreateText = await failedCreateResponse.text()
+    assert.equal(failedCreateResponse.status, 503, failedCreateText)
+    assert.match(failedCreateText, /interaction_affinity_unavailable/)
+    assert.equal(upstreamHits.length, hitsBeforeFailedCreate + 1, '亲和存储写入失败不得触发上游切号')
+
+    const hitsBeforeFailedStreamCreate = upstreamHits.length
+    const failedStreamCreateResponse = await fetch(new URL('/v1beta/interactions', baseUrl), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json',
+        accept: 'text/event-stream'
+      },
+      body: JSON.stringify({
+        model: 'gemini-3.5-flash',
+        input: 'force streaming affinity set failure',
+        stream: true
+      })
+    })
+    const failedStreamCreateText = await failedStreamCreateResponse.text()
+    assert.equal(failedStreamCreateResponse.status, 503, failedStreamCreateText)
+    assert.match(failedStreamCreateText, /interaction_affinity_unavailable/)
+    assert.equal(upstreamHits.length, hitsBeforeFailedStreamCreate + 1, '流式亲和存储写入失败不得触发上游切号')
+
+    failSet = false
+    const createResponse = await fetch(new URL('/v1beta/interactions', baseUrl), {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        'content-type': 'application/json',
+        accept: 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gemini-3.5-flash',
+        input: 'create before affinity delete failure'
+      })
+    })
+    const createText = await createResponse.text()
+    assert.equal(createResponse.status, 200, createText)
+    const interaction = JSON.parse(createText) as { id?: string }
+    assert(interaction.id, '删除故障回归必须先创建 interaction')
+
+    failDelete = true
+    const hitsBeforeFailedDelete = upstreamHits.length
+    const deleteResponse = await fetch(new URL(`/v1beta/interactions/${encodeURIComponent(interaction.id)}`, baseUrl), {
+      method: 'DELETE',
+      headers: {
+        authorization: `Bearer ${localApiKey}`,
+        accept: 'application/json'
+      }
+    })
+    const deleteText = await deleteResponse.text()
+    assert.equal(deleteResponse.status, 503, deleteText)
+    assert.match(deleteText, /interaction_affinity_unavailable/)
+    assert.equal(upstreamHits.length, hitsBeforeFailedDelete + 1, '亲和删除失败不得触发上游切号')
+  } finally {
+    interactionAffinity.setGeminiInteractionAffinityStateStoreForTest()
+    interactionAffinity.clearGeminiInteractionAffinityForTest()
+  }
+}
+
+function interactionIdFromSse(bodyText: string): string | undefined {
+  for (const line of bodyText.split(/\r?\n/)) {
+    if (!line.startsWith('data:')) continue
+    try {
+      const payload = JSON.parse(line.slice('data:'.length).trim()) as { interaction?: { id?: unknown } }
+      if (typeof payload.interaction?.id === 'string' && payload.interaction.id.trim()) {
+        return payload.interaction.id.trim()
+      }
+    } catch {
+      continue
+    }
+  }
+  return undefined
+}
+
 async function assertGeminiUpstreamError(baseUrl: string, localApiKey: string): Promise<void> {
   upstreamHits.length = 0
   const response = await fetch(new URL('/v1beta/models/gemini-3.5-flash:generateContent?case=quota', baseUrl), {
@@ -732,13 +1074,13 @@ async function assertGeminiUpstreamError(baseUrl: string, localApiKey: string): 
       ]
     })
   })
-  assert.equal(response.status, 503)
-  const body = await response.json() as { error?: { status?: string; message?: string; code?: string } }
-  assert.equal(body.error?.status, 'UNAVAILABLE')
-  assert.match(body.error?.message ?? '', /上游暂时不可用，请重试/)
-  assert.equal(body.error?.code, 'upstream_retryable_error')
-  assert(upstreamHits.length >= 1, 'Gemini 上游错误用例必须命中 mock upstream')
-  assert(upstreamHits.every((hit) => hit.rawUrl.includes('case=quota')), 'Gemini 上游错误重试必须保持原始查询参数')
+  assert.equal(response.status, 429)
+  const body = await response.json() as { error?: { status?: string; message?: string; code?: number } }
+  assert.equal(body.error?.status, 'RESOURCE_EXHAUSTED')
+  assert.equal(body.error?.message, 'quota exhausted')
+  assert.equal(body.error?.code, 429)
+  assert.equal(upstreamHits.length, 1, '通用 Gemini 客户端的完整非 2xx 响应必须原样转发，不触发换号')
+  assert(upstreamHits[0]?.rawUrl.includes('case=quota'), 'Gemini 通用错误转发必须保持原始查询参数')
 }
 
 async function assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl: string, localApiKey: string): Promise<void> {
@@ -756,8 +1098,13 @@ async function assertGenericGeminiRetryableErrorDoesNotSwitchAccount(baseUrl: st
       ]
     })
   })
-  assert.equal(response.status, 503)
-  await response.text()
+  assert.equal(response.status, 200)
+  const body = await response.json() as { error?: { status?: string; message?: string; code?: number } }
+  assert.deepEqual(body.error, {
+    code: 503,
+    message: 'primary account temporarily unavailable',
+    status: 'UNAVAILABLE'
+  })
   assert.equal(upstreamHits.length, 1, '通用 Gemini 客户端不应触发 Gemini CLI 专属服务端换账号')
   assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-upstream')
 }
@@ -1255,15 +1602,15 @@ async function assertOpenAIChatToGeminiNativeJson(baseUrl: string, localApiKey: 
   assert.equal(upstreamHits[0]?.path, '/v1beta/models/gemini-3.5-flash:generateContent')
   assert.equal(upstreamHits[0]?.xGoogApiKey, 'sk-gemini-target-upstream')
   assert.equal(upstreamHits[0]?.authorization, '', 'OpenAI -> Gemini native 上游不应透传本地 Authorization')
-  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>; systemInstruction?: { parts?: Array<{ text?: string }> }; generationConfig?: { responseMimeType?: string; temperature?: number; maxOutputTokens?: number; thinkingConfig?: { thinkingLevel?: string } }; serviceTier?: string; tools?: Array<{ functionDeclarations?: Array<{ name?: string }> }> }
+  const upstreamBody = JSON.parse(upstreamHits[0]?.bodyText ?? '{}') as { contents?: Array<{ role?: string; parts?: Array<{ text?: string }> }>; systemInstruction?: { parts?: Array<{ text?: string }> }; generationConfig?: { responseMimeType?: string; temperature?: number; maxOutputTokens?: number; thinkingConfig?: { thinkingLevel?: string } }; service_tier?: string; tools?: Array<{ functionDeclarations?: Array<{ name?: string }> }> }
   assert.equal(upstreamBody.systemInstruction?.parts?.[0]?.text, '只输出简短中文')
   assert.equal(upstreamBody.contents?.[0]?.role, 'user')
   assert.equal(upstreamBody.contents?.[0]?.parts?.[0]?.text, 'reply with gemini json ok')
   assert.equal(upstreamBody.generationConfig?.responseMimeType, 'application/json')
   assert.equal(upstreamBody.generationConfig?.temperature, 0.2)
   assert.equal(upstreamBody.generationConfig?.maxOutputTokens, 64)
-  assert.equal(upstreamBody.generationConfig?.thinkingConfig?.thinkingLevel, 'MEDIUM')
-  assert.equal(upstreamBody.serviceTier, 'standard')
+  assert.equal(upstreamBody.generationConfig?.thinkingConfig?.thinkingLevel, 'medium')
+  assert.equal(upstreamBody.service_tier, 'standard')
   assert.equal(upstreamBody.tools?.[0]?.functionDeclarations?.[0]?.name, 'lookup_order')
 }
 
@@ -1461,6 +1808,82 @@ function createGeminiMockUpstream(): http.Server {
         ]
       })
       return
+    }
+
+    if (req.method === 'POST' && url.pathname === '/v1beta/interactions') {
+      const body = parseJsonObject(bodyText)
+      const owner = headerText(req, 'x-goog-api-key')
+      const interactionId = `interaction-${++interactionSequence}`
+      interactionOwners.set(interactionId, owner)
+      if (body.stream === true || headerText(req, 'accept').toLowerCase().includes('text/event-stream')) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive'
+        })
+        res.write(`data: ${JSON.stringify({ event_type: 'interaction.created', interaction: { id: interactionId, status: 'in_progress', model: body.model } })}\n\n`)
+        res.write(`data: ${JSON.stringify({ event_type: 'step.delta', index: 0, delta: { type: 'text', text: 'interaction stream ok' } })}\n\n`)
+        res.write(`data: ${JSON.stringify({ event_type: 'interaction.completed', interaction: { id: interactionId, status: 'completed', model: body.model, usage: { total_input_tokens: 3, total_output_tokens: 2, total_tokens: 5 } } })}\n\n`)
+        res.end()
+        return
+      }
+      sendJson(res, 200, {
+        id: interactionId,
+        status: 'completed',
+        model: body.model,
+        outputs: [
+          { type: 'model_output', content: [{ type: 'text', text: 'interaction json ok' }] }
+        ],
+        usage: { total_input_tokens: 3, total_output_tokens: 2, total_tokens: 5 },
+        ...(body.largeResponse === true ? { diagnosticPadding: 'x'.repeat(3 * 1024 * 1024) } : {})
+      })
+      return
+    }
+
+    const cancelInteractionMatch = /^\/v1beta\/interactions\/([^/]+)\/cancel$/.exec(url.pathname)
+    if (req.method === 'POST' && cancelInteractionMatch?.[1]) {
+      const interactionId = decodeURIComponent(cancelInteractionMatch[1])
+      if (!interactionOwnerMatches(interactionId, headerText(req, 'x-goog-api-key'))) {
+        sendJson(res, 404, { error: { code: 404, status: 'NOT_FOUND', message: 'interaction owner mismatch' } })
+        return
+      }
+      sendJson(res, 200, { id: interactionId, status: 'cancelled' })
+      return
+    }
+
+    const interactionMatch = /^\/v1beta\/interactions\/([^/]+)$/.exec(url.pathname)
+    if (interactionMatch?.[1]) {
+      const interactionId = decodeURIComponent(interactionMatch[1])
+      if (!interactionOwnerMatches(interactionId, headerText(req, 'x-goog-api-key'))) {
+        sendJson(res, 404, { error: { code: 404, status: 'NOT_FOUND', message: 'interaction owner mismatch' } })
+        return
+      }
+      if (req.method === 'DELETE') {
+        interactionOwners.delete(interactionId)
+        res.writeHead(204)
+        res.end()
+        return
+      }
+      if (req.method === 'GET' && (url.searchParams.get('stream') === 'true' || headerText(req, 'accept').toLowerCase().includes('text/event-stream'))) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache, no-transform',
+          connection: 'keep-alive'
+        })
+        res.write(`data: ${JSON.stringify({ event_type: 'interaction.created', interaction: { id: interactionId, status: 'in_progress', model: 'gemini-3.5-flash' } })}\n\n`)
+        res.write(`data: ${JSON.stringify({ event_type: 'interaction.completed', interaction: { id: interactionId, status: 'completed', model: 'gemini-3.5-flash', usage: { total_input_tokens: 1, total_output_tokens: 1, total_tokens: 2 } } })}\n\n`)
+        res.end()
+        return
+      }
+      if (req.method === 'GET') {
+        sendJson(res, 200, {
+          id: interactionId,
+          status: 'completed',
+          model: 'gemini-3.5-flash',
+          outputs: [{ type: 'model_output', content: [{ type: 'text', text: 'interaction lookup ok' }] }]
+        })
+        return
+      }
     }
 
     if (req.method === 'POST' && url.pathname === '/v1beta/models/gemini-3.5-flash:generateContent') {
@@ -1678,6 +2101,10 @@ function createGeminiMockUpstream(): http.Server {
       }
     })
   })
+}
+
+function interactionOwnerMatches(interactionId: string, apiKey: string): boolean {
+  return interactionOwners.get(interactionId) === apiKey
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {

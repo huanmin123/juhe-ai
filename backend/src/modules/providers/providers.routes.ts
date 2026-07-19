@@ -31,6 +31,7 @@ import {
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
+import { rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync } from '../model-pricing/published-model-catalog.service.js'
 import {
   findBuiltInProviderModelByIdAsync,
   updateBuiltInProviderModelConfigurationAsync
@@ -252,6 +253,7 @@ const customModelSchema = z.object({
   scope: z.enum(['personal', 'global']).optional(),
   model: z.string().trim().min(1),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
+  catalogVisible: z.boolean().optional(),
   mode: nullableModelModeSchema,
   supportedApiProtocols: z.array(z.enum([
     'chat_completions',
@@ -262,6 +264,7 @@ const customModelSchema = z.object({
     'stream_generate_content',
     'count_tokens',
     'embed_content',
+    'interactions',
     'completions',
     'images',
     'audio',
@@ -350,7 +353,7 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       }
       inherited = customModelInputFromConfigurationTemplate(template)
     }
-    const effectiveInput = { ...inherited, ...submitted }
+    const effectiveInput = { ...inherited, ...submitted, defaultReasoningEffort: null }
     const validation = await validateCustomModelPricing({
       providerCode: provider.code,
       ownerSystemAccountId,
@@ -360,14 +363,17 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       res.status(400).json(badRequest(validation.message))
       return
     }
+    // 自定义模型是中转目录，不替上游选择 reasoning 默认值。
+    const saveInput = effectiveInput
     try {
       const saved = await saveCustomProviderModelAsync({
-        ...effectiveInput,
+        ...saveInput,
         scope,
         providerCode: provider.code,
         systemAccountId: ownerSystemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(saved.scope === 'personal' ? saved.systemAccountId : undefined)
       await publishProviderModelPageDataReset(saved)
       res.status(201).json(ok(saved))
     } catch (error) {
@@ -400,17 +406,21 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         res.status(400).json(badRequest('内置模型配置参数无效'))
         return
       }
-      const next = { ...builtIn, ...parsedConfiguration.data }
+      const configurationPatch = builtIn.providerCode === 'gpt'
+        ? { ...parsedConfiguration.data, defaultReasoningEffort: null }
+        : parsedConfiguration.data
+      const next = { ...builtIn, ...configurationPatch }
       const capabilityMessage = validateCustomModelCapabilities(builtIn.providerCode, next)
       if (capabilityMessage) {
         res.status(400).json(badRequest(capabilityMessage))
         return
       }
-      const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, parsedConfiguration.data)
+      const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, configurationPatch)
       if (!saved) {
         sendNotFound(res, '模型不存在')
         return
       }
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync()
       await recordOperationLogAsync({
         module: 'providers', action: 'update_model_configuration', operationKey: 'providers.update_model_configuration',
         resourceType: 'provider_model', resourceId: saved.id, resourceName: saved.model,
@@ -442,6 +452,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     const next = {
       ...existing,
       ...parsed.data,
+      defaultReasoningEffort: null,
       scope: existing.scope
     }
     const validation = await validateCustomModelPricing({
@@ -460,6 +471,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         systemAccountId: existing.systemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(saved.scope === 'personal' ? saved.systemAccountId : undefined)
       if (saved.status !== 'active') {
         await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
           providerCode: saved.providerCode,
@@ -513,6 +525,7 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
     }
     const deleted = await removeCustomProviderModelAsync(existing.id)
     if (deleted) {
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(existing.scope === 'personal' ? existing.systemAccountId : undefined)
       await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
         providerCode: existing.providerCode,
         systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,
@@ -811,7 +824,7 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
     supportedApiProtocols: [...(template.supportedApiProtocols ?? [])],
     supportedServiceTiers: [...(template.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(template.supportedReasoningEfforts ?? [])],
-    defaultReasoningEffort: template.defaultReasoningEffort ?? null,
+    defaultReasoningEffort: null,
     releaseDate: template.releaseDate ?? null,
     shutdownDate: template.shutdownDate ?? null,
     contextWindowTokens: template.contextWindowTokens ?? null,

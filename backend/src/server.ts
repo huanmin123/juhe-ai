@@ -45,7 +45,7 @@ import { errorLogFields, installProcessLogHandlers, logger } from './shared/logg
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
-import { createCorsOriginDelegate } from './shared/http-security.js'
+import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
@@ -61,6 +61,7 @@ import {
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
 import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
+import { prewarmPublishedModelCatalogSnapshotsAsync } from './modules/model-pricing/published-model-catalog.service.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -155,22 +156,31 @@ backgroundWorkerStartupFallbackTimer = setTimeout(() => {
 backgroundWorkerStartupFallbackTimer.unref()
 
 function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
-  if (backgroundWorkerSupervisorStarted) {
-    return
+  if (!backgroundWorkerSupervisorStarted) {
+    backgroundWorkerSupervisorStarted = true
+    if (backgroundWorkerStartupFallbackTimer) {
+      clearTimeout(backgroundWorkerStartupFallbackTimer)
+      backgroundWorkerStartupFallbackTimer = undefined
+    }
+    startBackgroundWorkerSupervisor()
   }
-  backgroundWorkerSupervisorStarted = true
-  if (backgroundWorkerStartupFallbackTimer) {
-    clearTimeout(backgroundWorkerStartupFallbackTimer)
-    backgroundWorkerStartupFallbackTimer = undefined
-  }
-  startBackgroundWorkerSupervisor()
+  void prewarmPublishedModelCatalogSnapshotsAsync()
+    .then((snapshotCount) => logger.info({
+      event: 'published_model_catalog_prewarmed',
+      snapshotCount
+    }, '发布模型目录快照已预热'))
+    .catch((error) => logger.warn(errorLogFields(error, {
+      event: 'published_model_catalog_prewarm_failed'
+    }), '发布模型目录快照预热失败，模型接口将回退单行持久化快照'))
 }
 
 if (runtimeConfig.httpSecurity.trustProxy !== false) {
   app.set('trust proxy', runtimeConfig.httpSecurity.trustProxy)
 }
 
+app.disable('x-powered-by')
 app.use(requestContextMiddleware)
+app.use(systemPrefix, managementSecurityHeadersMiddleware)
 const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
 mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,

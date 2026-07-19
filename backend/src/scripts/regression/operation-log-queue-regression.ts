@@ -19,11 +19,13 @@ logger.level = 'silent'
 const [
   databaseModule,
   operationLogQueue,
+  operationLogService,
   backgroundIpc,
   repositories
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
+  import('../../modules/operation-logs/operation-log.service.js'),
   import('../../modules/background/background-ipc.js'),
   import('../../storage/repositories.js')
 ])
@@ -89,6 +91,96 @@ try {
   assert.equal(richDetail.viewers.length, 3, '操作日志详情应保留全部 viewer')
   assert.equal(richDetail.changes[0]?.field, 'status', '操作日志详情应保留 changes payload')
   assert.equal(richDetail.metadata.batchIndex, 3, '操作日志详情应保留 metadata payload')
+
+  const persistedSecrets = {
+    wifJwt: 'eyJhbGciOiJSUzI1NiJ9.wif-payload.wif-signature',
+    googleRefreshToken: '1//google-refresh-token-sensitive',
+    openAIRefreshToken: 'rt_openai_refresh_token_sensitive',
+    clientSecret: 'google-client-secret-sensitive',
+    apiKey: 'sk-ant-api-key-sensitive',
+    proxyPassword: 'proxy-password-sensitive'
+  }
+  const ordinaryText = 'token/key/secret/credentials 字样只是字段说明，不应做任意文本正则扫描'
+  const sensitiveChanges = operationLogService.sanitizeOperationChanges([{
+    field: 'credentials',
+    label: '账户凭据',
+    before: undefined,
+    after: {
+      identity_token: persistedSecrets.wifJwt,
+      google_refresh_token: persistedSecrets.googleRefreshToken,
+      openai_refresh_token: persistedSecrets.openAIRefreshToken
+    }
+  }, {
+    field: 'token',
+    label: 'Token',
+    before: undefined,
+    after: persistedSecrets.googleRefreshToken
+  }, {
+    field: 'key',
+    label: 'Key',
+    before: undefined,
+    after: persistedSecrets.apiKey
+  }, {
+    field: 'secret',
+    label: 'Secret',
+    before: undefined,
+    after: persistedSecrets.clientSecret
+  }, {
+    field: 'apiKey',
+    label: 'API Key',
+    before: undefined,
+    after: persistedSecrets.apiKey
+  }, {
+    field: 'access_token',
+    label: 'Access Token',
+    before: undefined,
+    after: persistedSecrets.wifJwt
+  }, {
+    field: 'refresh_token',
+    label: 'Refresh Token',
+    before: undefined,
+    after: persistedSecrets.openAIRefreshToken
+  }, {
+    field: 'client_secret',
+    label: 'Client Secret',
+    before: undefined,
+    after: persistedSecrets.clientSecret
+  }, {
+    field: 'identity_token',
+    label: 'Identity Token',
+    before: undefined,
+    after: persistedSecrets.wifJwt
+  }, {
+    field: 'password',
+    label: '代理密码',
+    before: undefined,
+    after: persistedSecrets.proxyPassword
+  }, {
+    field: 'tokenPreview',
+    label: 'Token 标识',
+    before: undefined,
+    after: 'prefix...suffix'
+  }, {
+    field: 'notes',
+    label: '说明',
+    before: '',
+    after: ordinaryText
+  }], 100)
+  operationLogQueue.enqueueOperationLogsLocal([{
+    ...buildOperationLog('sensitive_container_redaction'),
+    id: 'oplog_sensitive_container_redaction',
+    changes: sensitiveChanges
+  }])
+  operationLogQueue.flushAllOperationLogQueue()
+  const sensitiveDetail = repositories.getOperationLogDetail('oplog_sensitive_container_redaction')
+  assert(sensitiveDetail, '敏感容器操作日志必须完成真实持久化')
+  const persistedDetailText = JSON.stringify(sensitiveDetail)
+  for (const secret of Object.values(persistedSecrets)) {
+    assert.equal(persistedDetailText.includes(secret), false, `操作日志持久化不得包含认证秘密：${secret.slice(0, 12)}`)
+  }
+  assert.equal(sensitiveDetail.changes.find((change) => change.field === 'credentials')?.after, '已变更', 'credentials 容器只记录状态摘要')
+  assert.equal(sensitiveDetail.changes.find((change) => change.field === 'notes')?.after, ordinaryText, '普通文本不得按敏感关键词做任意正则扫描')
+  assert.equal(sensitiveDetail.changes.find((change) => change.field === 'tokenPreview')?.after, 'prefix...suffix', '精确 allowlist 不得误伤 tokenPreview 摘要字段')
 
   let failedInsertPrepares = 0
   const failuresBefore = operationLogQueue.getOperationLogQueueRuntime().flushFailureCount

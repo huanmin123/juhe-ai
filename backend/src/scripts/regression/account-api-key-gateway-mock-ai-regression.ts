@@ -188,13 +188,13 @@ try {
   const recoveredAccountAuthorizations = authorizationsForBatches([recoveredAccountBatch])
   assert.deepEqual(
     recoveredAccountAuthorizations,
-    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-good'],
-    '坏 Key 被同账号其他 Key 成功确认后，后续请求应先使用剩余可用 Key 的短避让'
+    ['Bearer sk-gateway-failover-good', 'Bearer sk-gateway-failover-bad', 'Bearer sk-gateway-failover-good'],
+    '通用未知失败不得持久化屏蔽坏 Key，后续请求仍可按请求级轮换继续完成'
   )
   assert.equal(
     mockHits.filter((hit) => hit.authorization === 'Bearer sk-gateway-failover-bad').length,
-    1,
-    '坏 Key 进入本地短避让后不应在短窗口内再次被调度'
+    2,
+    '通用未知失败只允许请求级排除，后续独立请求可以再次尝试该 Key'
   )
   failoverBadKeyRecovered = true
 
@@ -223,11 +223,14 @@ try {
       'Bearer sk-gateway-allbad-a',
       'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue',
-      'Bearer sk-gateway-allbad-b',
+      'Bearer sk-gateway-allbad-a',
+      'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue',
+      'Bearer sk-gateway-allbad-a',
+      'Bearer sk-gateway-allbad-c',
       'Bearer sk-gateway-allbad-rescue'
     ],
-    '账户内 Key 失败时单请求最多尝试当前 Key 加下一个 Key，连续失败后不应为扫完整个 Key 池而阻塞真实请求'
+    '通用未知失败应在每次请求内最多尝试两个 Key 后切后备账户，跨请求不得持久屏蔽 Key'
   )
   assert.equal(
     allBadAuthorizations.indexOf('Bearer sk-gateway-allbad-rescue'),

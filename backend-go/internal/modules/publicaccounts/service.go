@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -48,12 +49,15 @@ const (
 	accountHealthCheckReasonActivation        = "activation"
 	accountHealthCheckDispatchFailedEvent     = "public_account_health_check_dispatch_failed"
 	accountHealthCheckDispatchTimeout         = 2 * time.Second
+	accountPageDataPostCommitTimeout          = 5 * time.Second
+	accountPageDataOwnerLookupTimeout         = time.Second
 	deepSeekOpenAIProfileID                   = "profile_deepseek_openai_v1"
 	deepSeekAnthropicProfileID                = "profile_deepseek_anthropic_v1"
 	glmGeneralOpenAIProfileID                 = "profile_glm_general_openai_v1"
 	glmCodingOpenAIProfileID                  = "profile_glm_coding_openai_v1"
 	glmCodingAnthropicProfileID               = "profile_glm_coding_anthropic_v1"
 	geminiOpenAIChatProfileID                 = "profile_gemini_openai_chat_v1beta"
+	xAIOpenAIProfileID                        = "profile_xai_openai_v1"
 )
 
 var (
@@ -79,12 +83,16 @@ var (
 	geminiEndpointModes = []string{
 		"generate_content_json",
 		"generate_content_sse",
+		"interactions_json",
+		"interactions_sse",
 		"count_tokens",
 		"embed_content",
 	}
 	geminiDefaultEndpointModes = []string{
 		"generate_content_json",
 		"generate_content_sse",
+		"interactions_json",
+		"interactions_sse",
 		"count_tokens",
 	}
 	hybridEndpointModes = []string{
@@ -131,6 +139,10 @@ type Service struct {
 	transactor                 port.PublicAccountTransactor
 	providerModels             ProviderModelReader
 	dispatcher                 AccountHealthCheckDispatcher
+	granteeReader              accountpagedata.GranteeReader
+	pageDataPublisher          accountpagedata.Publisher
+	pageDataPostCommitTimeout  time.Duration
+	pageDataOwnerLookupTimeout time.Duration
 	healthCheckDispatchTimeout time.Duration
 	logger                     *slog.Logger
 	now                        func() time.Time
@@ -144,6 +156,10 @@ type Options struct {
 	Transactor                 port.PublicAccountTransactor
 	ProviderModels             ProviderModelReader
 	HealthCheckDispatcher      AccountHealthCheckDispatcher
+	GranteeReader              accountpagedata.GranteeReader
+	PageDataPublisher          accountpagedata.Publisher
+	PageDataPostCommitTimeout  time.Duration
+	PageDataOwnerLookupTimeout time.Duration
 	HealthCheckDispatchTimeout time.Duration
 	Logger                     *slog.Logger
 	Now                        func() time.Time
@@ -313,11 +329,24 @@ func NewService(opts Options) *Service {
 	if healthCheckDispatchTimeout <= 0 {
 		healthCheckDispatchTimeout = accountHealthCheckDispatchTimeout
 	}
+	pageDataPostCommitTimeout := opts.PageDataPostCommitTimeout
+	if pageDataPostCommitTimeout <= 0 {
+		pageDataPostCommitTimeout = accountPageDataPostCommitTimeout
+	}
+	pageDataOwnerLookupTimeout := opts.PageDataOwnerLookupTimeout
+	if pageDataOwnerLookupTimeout <= 0 {
+		pageDataOwnerLookupTimeout = accountPageDataOwnerLookupTimeout
+	}
+	pageDataOwnerLookupTimeout = min(pageDataOwnerLookupTimeout, pageDataPostCommitTimeout)
 	return &Service{
 		store:                      opts.Store,
 		transactor:                 opts.Transactor,
 		providerModels:             opts.ProviderModels,
 		dispatcher:                 opts.HealthCheckDispatcher,
+		granteeReader:              opts.GranteeReader,
+		pageDataPublisher:          opts.PageDataPublisher,
+		pageDataPostCommitTimeout:  pageDataPostCommitTimeout,
+		pageDataOwnerLookupTimeout: pageDataOwnerLookupTimeout,
 		healthCheckDispatchTimeout: healthCheckDispatchTimeout,
 		logger:                     opts.Logger,
 		now:                        now,
@@ -434,6 +463,16 @@ func (s *Service) Add(ctx context.Context, input AddInput) (AccountResponse, err
 		if publicAccountAddRetryable(err) {
 			continue
 		}
+		if err == nil && response.Account != nil {
+			s.publishAccountPageData(ctx, response.Account.ID, response.Target.SystemAccountID, accountpagedata.ChangeInput{
+				Operation:         accountpagedata.OperationUpsert,
+				FieldMask:         []string{"id", "name", "status", "boundGroupId"},
+				MembershipChanged: true,
+				OrderChanged:      true,
+				FilterChanged:     true,
+				PageChanged:       true,
+			})
+		}
 		if err == nil && response.Account != nil && response.Account.Status == StatusPendingTest {
 			s.dispatchAccountHealthCheckAsync(ctx, response.Account.ID, accountHealthCheckReasonActivation)
 		}
@@ -503,7 +542,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err != nil {
 			return err
 		}
-		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, models); err != nil {
+		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, profile, models); err != nil {
 			return err
 		}
 		healthCheckModel, err := normalizeAccountHealthCheckModel(profile.DefaultHealthCheckModel, models)
@@ -568,6 +607,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountResponse, error) {
 	var response AccountResponse
+	runtimeChanged := false
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAccountStore) error {
 		current, target, err := s.accountAndTargetForWrite(ctx, store, input.AccountID, input.TargetUsername)
 		if err != nil {
@@ -680,7 +720,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		}
 		supportedModelsChanged := input.SupportedModels.Set() && !unorderedStringListsEqual(models, current.SupportedModels)
 		if supportedModelsChanged {
-			if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, current.ProviderCode, models); err != nil {
+			if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, current.ProviderCode, profile, models); err != nil {
 				return err
 			}
 		}
@@ -742,9 +782,26 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if !ok {
 			return ErrAccountNotFound
 		}
+		runtimeChanged = input.Status != nil || connectionConfigurationChanged
 		response = accountResponse("updated", target, nil, updated, false, s.generatedAt())
 		return nil
 	})
+	if err == nil && response.Account != nil {
+		staticInput := accountpagedata.ChangeInput{
+			Operation:     accountpagedata.OperationUpsert,
+			FieldMask:     publicAccountUpdateFieldMask(input),
+			OrderChanged:  input.Name != nil || input.Priority != nil,
+			FilterChanged: input.Status != nil,
+		}
+		var runtimeInput *accountpagedata.ChangeInput
+		if runtimeChanged {
+			runtimeInput = &accountpagedata.ChangeInput{
+				Operation: accountpagedata.OperationUpsert,
+				FieldMask: []string{"status", "schedulable", "cooldownUntil", "lastErrorCode", "lastErrorMessage"},
+			}
+		}
+		s.publishAccountPageData(ctx, response.Account.ID, response.Target.SystemAccountID, staticInput, runtimeInput)
+	}
 	return response, err
 }
 
@@ -784,6 +841,15 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (AccountRespons
 		response = accountResponse("deleted", target, nil, current, false, s.generatedAt())
 		return nil
 	})
+	if err == nil && response.Action == "deleted" && response.Account != nil {
+		s.publishAccountPageData(ctx, response.Account.ID, response.Target.SystemAccountID, accountpagedata.ChangeInput{
+			Operation:         accountpagedata.OperationDelete,
+			MembershipChanged: true,
+			OrderChanged:      true,
+			FilterChanged:     true,
+			PageChanged:       true,
+		})
+	}
 	return response, err
 }
 
@@ -1234,6 +1300,10 @@ func credentialEndpointModePolicy(
 		if protocolCode == "openai" && protocolVersion == "v1" {
 			return openAIEndpointModes, openAIEndpointModes, nil
 		}
+	case "xai":
+		if profileID == xAIOpenAIProfileID && protocolCode == "openai" && protocolVersion == "v1" {
+			return openAIEndpointModes, openAIEndpointModes, nil
+		}
 	case "deepseek":
 		if profileID == deepSeekOpenAIProfileID && protocolCode == "openai" && protocolVersion == "v1" {
 			return openAIChatEndpointModes, openAIChatEndpointModes, nil
@@ -1266,6 +1336,98 @@ func credentialEndpointModePolicy(
 		ErrInvalidCredentials,
 		providerCode,
 	)
+}
+
+func (s *Service) publishAccountPageData(
+	ctx context.Context,
+	accountID string,
+	ownerSystemAccountID string,
+	staticInput accountpagedata.ChangeInput,
+	runtimeInput ...*accountpagedata.ChangeInput,
+) {
+	if s.pageDataPublisher == nil {
+		return
+	}
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	postCommitCtx, postCommitCancel := context.WithTimeout(context.WithoutCancel(ctx), s.pageDataPostCommitTimeout)
+	defer postCommitCancel()
+	lookupCtx, cancel := context.WithTimeout(postCommitCtx, s.pageDataOwnerLookupTimeout)
+	owners, allScopes, lookupErr := accountpagedata.ResolveOwners(
+		lookupCtx,
+		s.granteeReader,
+		accountID,
+		[]string{ownerSystemAccountID},
+	)
+	cancel()
+	if lookupErr != nil {
+		logger.WarnContext(context.WithoutCancel(ctx), "public account page data grantee lookup failed",
+			"accountId", accountID,
+			"error", lookupErr,
+		)
+	}
+	staticInput.AccountID = strings.TrimSpace(accountID)
+	staticInput.OwnerSystemAccountIDs = owners
+	staticInput.AllScopes = allScopes
+	if err := s.pageDataPublisher.PublishAccountStaticChange(postCommitCtx, staticInput); err != nil {
+		logger.WarnContext(context.WithoutCancel(ctx), "public account static page data publish failed",
+			"accountId", accountID,
+			"error", err,
+		)
+	}
+	if len(runtimeInput) == 0 || runtimeInput[0] == nil {
+		return
+	}
+	runtime := *runtimeInput[0]
+	runtime.AccountID = strings.TrimSpace(accountID)
+	runtime.OwnerSystemAccountIDs = append([]string(nil), owners...)
+	runtime.AllScopes = allScopes
+	if err := s.pageDataPublisher.PublishAccountRuntimeChange(postCommitCtx, runtime); err != nil {
+		logger.WarnContext(context.WithoutCancel(ctx), "public account runtime page data publish failed",
+			"accountId", accountID,
+			"error", err,
+		)
+	}
+}
+
+func publicAccountUpdateFieldMask(input UpdateInput) []string {
+	fields := make([]string, 0, 11)
+	if input.Name != nil {
+		fields = append(fields, "name")
+	}
+	if input.Type != nil {
+		fields = append(fields, "type")
+	}
+	if input.BaseURL != nil {
+		fields = append(fields, "baseUrl")
+	}
+	if input.APIKey != nil {
+		fields = append(fields, "apiKey")
+	}
+	if input.SupportedModels.Set() {
+		fields = append(fields, "supportedModels")
+	}
+	if input.HealthCheckEndpointMode != nil {
+		fields = append(fields, "healthCheckEndpointMode")
+	}
+	if input.Status != nil {
+		fields = append(fields, "status")
+	}
+	if input.ConcurrencyLimit != nil {
+		fields = append(fields, "concurrencyLimit")
+	}
+	if input.Priority != nil {
+		fields = append(fields, "priority")
+	}
+	if input.AvailabilitySchedule.Set() {
+		fields = append(fields, "availabilitySchedule")
+	}
+	if input.Notes.Set() {
+		fields = append(fields, "notes")
+	}
+	return fields
 }
 
 func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.PublicAccountStore) error) error {
@@ -1484,7 +1646,7 @@ func preferredHealthCheckEndpointMode(providerCode string, profileID string) str
 
 func isHealthCheckEndpointMode(mode string) bool {
 	switch strings.TrimSpace(mode) {
-	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse":
+	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse":
 		return true
 	default:
 		return false
@@ -1500,7 +1662,7 @@ func stringListContains(values []string, want string) bool {
 	return false
 }
 
-func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, models []string) error {
+func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, profile port.PublicAccountProviderProfile, models []string) error {
 	providerCode = strings.TrimSpace(providerCode)
 	if strings.EqualFold(providerCode, hybridProviderCode) {
 		return nil
@@ -1512,7 +1674,7 @@ func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, 
 		ProviderCode:    providerCode,
 		SystemAccountID: strings.TrimSpace(systemAccountID),
 		IncludeInactive: false,
-		IncludeUnpriced: false,
+		IncludeUnpriced: true,
 	})
 	if err != nil {
 		return err
@@ -1520,7 +1682,7 @@ func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, 
 	available := make(map[string]struct{}, len(catalog))
 	for _, item := range catalog {
 		model := strings.TrimSpace(item.Model)
-		if model != "" {
+		if model != "" && catalogModelSupportsProfile(item, profile) {
 			available[model] = struct{}{}
 		}
 	}
@@ -1538,6 +1700,41 @@ func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, 
 		)
 	}
 	return nil
+}
+
+func catalogModelSupportsProfile(item managementprovidermodels.ModelCatalogItem, profile port.PublicAccountProviderProfile) bool {
+	if len(item.SupportedAPIProtocols) == 0 {
+		return true
+	}
+	allowed := map[string]struct{}{}
+	for _, mode := range profile.EnabledEndpointModes {
+		switch strings.TrimSpace(mode) {
+		case "chat_json", "chat_sse":
+			allowed["chat_completions"] = struct{}{}
+		case "responses_json", "responses_sse":
+			allowed["responses"] = struct{}{}
+		case "messages_json", "messages_sse":
+			allowed["messages"] = struct{}{}
+		case "message_token_counting":
+			allowed["message_token_counting"] = struct{}{}
+		case "generate_content_json":
+			allowed["generate_content"] = struct{}{}
+		case "generate_content_sse":
+			allowed["stream_generate_content"] = struct{}{}
+		case "count_tokens":
+			allowed["count_tokens"] = struct{}{}
+		case "embed_content":
+			allowed["embed_content"] = struct{}{}
+		case "interactions_json", "interactions_sse":
+			allowed["interactions"] = struct{}{}
+		}
+	}
+	for _, protocol := range item.SupportedAPIProtocols {
+		if _, ok := allowed[strings.TrimSpace(protocol)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func unorderedStringListsEqual(left []string, right []string) bool {

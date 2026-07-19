@@ -536,6 +536,7 @@ SELECT
   cache_write_1h_usd_per_1m,
   service_tier_prices_json,
   long_context_input_token_threshold,
+  long_context_input_token_threshold_inclusive,
   long_context_input_cost_multiplier,
   long_context_output_cost_multiplier,
   image_input_usd_per_1m,
@@ -593,6 +594,7 @@ SELECT
   cache_write_1h_usd_per_1m,
   service_tier_prices_json,
   NULL::integer AS long_context_input_token_threshold,
+  false AS long_context_input_token_threshold_inclusive,
   NULL::double precision AS long_context_input_cost_multiplier,
   NULL::double precision AS long_context_output_cost_multiplier,
   image_input_usd_per_1m,
@@ -633,52 +635,53 @@ type ListManagementProviderModelCatalogParams struct {
 }
 
 type ListManagementProviderModelCatalogRow struct {
-	ID                                string
-	ProviderCode                      string
-	Model                             string
-	Scope                             string
-	SystemAccountID                   pgtype.Text
-	Status                            string
-	Mode                              pgtype.Text
-	CatalogOrder                      pgtype.Int4
-	ReleaseDate                       pgtype.Text
-	ShutdownDate                      pgtype.Text
-	SupportedApiProtocolsJson         string
-	SupportedServiceTiersJson         string
-	SupportedReasoningEffortsJson     string
-	DefaultReasoningEffort            pgtype.Text
-	CodexSupportedReasoningLevelsJson string
-	CodexDefaultReasoningLevel        pgtype.Text
-	CodexMultiAgentVersion            pgtype.Text
-	ContextWindowTokens               pgtype.Int4
-	MaxInputTokens                    pgtype.Int4
-	MaxOutputTokens                   pgtype.Int4
-	MaxTokens                         pgtype.Int4
-	InputUsdPer1m                     pgtype.Float8
-	OutputUsdPer1m                    pgtype.Float8
-	CachedInputUsdPer1m               pgtype.Float8
-	CacheWriteUsdPer1m                pgtype.Float8
-	CacheWrite1hUsdPer1m              pgtype.Float8
-	ServiceTierPricesJson             string
-	LongContextInputTokenThreshold    pgtype.Int4
-	LongContextInputCostMultiplier    pgtype.Float8
-	LongContextOutputCostMultiplier   pgtype.Float8
-	ImageInputUsdPer1m                pgtype.Float8
-	ImageOutputUsdPer1m               pgtype.Float8
-	AudioInputUsdPer1m                pgtype.Float8
-	AudioOutputUsdPer1m               pgtype.Float8
-	OutputUsdPerImage                 pgtype.Float8
-	SupportsPromptCaching             bool
-	SupportsServiceTier               bool
-	CatalogVisible                    bool
-	PricingNotes                      pgtype.Text
-	CapabilityNotes                   pgtype.Text
-	Notes                             pgtype.Text
-	CreatedBy                         string
-	UpdatedBy                         pgtype.Text
-	Source                            string
-	CreatedAt                         pgtype.Timestamptz
-	UpdatedAt                         pgtype.Timestamptz
+	ID                                      string
+	ProviderCode                            string
+	Model                                   string
+	Scope                                   string
+	SystemAccountID                         pgtype.Text
+	Status                                  string
+	Mode                                    pgtype.Text
+	CatalogOrder                            pgtype.Int4
+	ReleaseDate                             pgtype.Text
+	ShutdownDate                            pgtype.Text
+	SupportedApiProtocolsJson               string
+	SupportedServiceTiersJson               string
+	SupportedReasoningEffortsJson           string
+	DefaultReasoningEffort                  pgtype.Text
+	CodexSupportedReasoningLevelsJson       string
+	CodexDefaultReasoningLevel              pgtype.Text
+	CodexMultiAgentVersion                  pgtype.Text
+	ContextWindowTokens                     pgtype.Int4
+	MaxInputTokens                          pgtype.Int4
+	MaxOutputTokens                         pgtype.Int4
+	MaxTokens                               pgtype.Int4
+	InputUsdPer1m                           pgtype.Float8
+	OutputUsdPer1m                          pgtype.Float8
+	CachedInputUsdPer1m                     pgtype.Float8
+	CacheWriteUsdPer1m                      pgtype.Float8
+	CacheWrite1hUsdPer1m                    pgtype.Float8
+	ServiceTierPricesJson                   string
+	LongContextInputTokenThreshold          pgtype.Int4
+	LongContextInputTokenThresholdInclusive bool
+	LongContextInputCostMultiplier          pgtype.Float8
+	LongContextOutputCostMultiplier         pgtype.Float8
+	ImageInputUsdPer1m                      pgtype.Float8
+	ImageOutputUsdPer1m                     pgtype.Float8
+	AudioInputUsdPer1m                      pgtype.Float8
+	AudioOutputUsdPer1m                     pgtype.Float8
+	OutputUsdPerImage                       pgtype.Float8
+	SupportsPromptCaching                   bool
+	SupportsServiceTier                     bool
+	CatalogVisible                          bool
+	PricingNotes                            pgtype.Text
+	CapabilityNotes                         pgtype.Text
+	Notes                                   pgtype.Text
+	CreatedBy                               string
+	UpdatedBy                               pgtype.Text
+	Source                                  string
+	CreatedAt                               pgtype.Timestamptz
+	UpdatedAt                               pgtype.Timestamptz
 }
 
 func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg ListManagementProviderModelCatalogParams) ([]ListManagementProviderModelCatalogRow, error) {
@@ -724,6 +727,7 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.CacheWrite1hUsdPer1m,
 			&i.ServiceTierPricesJson,
 			&i.LongContextInputTokenThreshold,
+			&i.LongContextInputTokenThresholdInclusive,
 			&i.LongContextInputCostMultiplier,
 			&i.LongContextOutputCostMultiplier,
 			&i.ImageInputUsdPer1m,

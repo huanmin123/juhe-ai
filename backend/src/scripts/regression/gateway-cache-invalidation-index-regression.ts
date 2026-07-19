@@ -92,8 +92,8 @@ assertFunctionIncludes(hybridScoringSource, 'getHybridScoringSharedCacheEntry', 
 assert(modelCatalogSource.includes('createSharedJsonCache<ProviderModelCatalogItem[]>'), '模型目录服务缓存应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(modelCatalogSource, 'listProviderModelCatalogAsync', 'getProviderModelCatalogSharedCacheEntry(cacheKey)', '模型目录服务异步读取应先读取 Redis 共享缓存')
 assertFunctionIncludes(modelCatalogSource, 'listProviderModelCatalogAsync', 'setProviderModelCatalogCacheEntryAsync(cacheKey', '模型目录服务 DB 命中后应写 Redis 共享缓存')
-assertFunctionIncludes(modelCatalogSource, 'clearProviderModelCatalogCaches', 'clearProviderModelCatalogSharedCache()', '模型目录服务失效应清理 Redis 共享缓存命名空间')
-assert(modelCatalogSource.includes('registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)'), '模型目录服务应复用网关运行态失效事件清理本地和 Redis shared cache')
+assertFunctionIncludes(modelCatalogSource, 'clearProviderModelCatalogCaches', 'clearProviderModelCatalogSharedCacheAsync()', '模型目录服务失效应清理 Redis 共享缓存命名空间')
+assert(modelCatalogSource.includes('shouldInvalidateProviderModelCatalog(reason)'), '模型目录服务只应响应模型目录变更事件')
 
 assert(groupReadLoadersSource.includes('createSharedJsonCache<string[]>'), '分组账号 ID lookup 应声明 Redis JSON 共享缓存')
 assertFunctionIncludes(groupReadLoadersSource, 'loadGroupAccountIdsByGroupIdsAsync', 'getGroupAccountIdsSharedCacheEntry(id)', '分组账号 ID async lookup 应先读取 Redis 共享缓存')

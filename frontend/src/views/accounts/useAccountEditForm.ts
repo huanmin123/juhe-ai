@@ -61,6 +61,7 @@ import {
   buildAccountEditFormLoad
 } from './accountEditFormLoaders'
 import { useAccountProviderModelOptions } from './useAccountProviderModelOptions'
+import { providerModelsForProtocolProfile } from './accountEditFormPayload'
 import { useAccountEditTagOptions } from './useAccountEditTagOptions'
 import { useAccountEditSaveFlow } from './useAccountEditSaveFlow'
 import type { AccountGroupOptionsLoadOptions, AccountGroupOptionsScope } from './useAccountGroupOptions'
@@ -107,7 +108,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const allProviderModelScopeParams = computed<AccountScopeParams>(() => editingId.value ? editingAccountScopeParams() : createScopeParams.value)
   const {
     loadProviderModelOptions,
-    providerModelOptions,
+    providerModelOptions: loadedProviderModelOptions,
     providerModelsLoading,
     resetProviderModelOptions
   } = useAccountProviderModelOptions({
@@ -178,11 +179,16 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       ?? selectedProvider.value.protocolProfiles.find((profile) => profile.id === selectedProvider.value?.defaultProtocolProfileId)
       ?? selectedProvider.value.protocolProfiles[0]
     : undefined)
+  const providerModelOptions = computed(() => providerModelsForProtocolProfile(
+    loadedProviderModelOptions.value,
+    selectedProtocolProfile.value
+  ))
   const accountTypeChoices = computed(() => accountTypeChoicesForProvider(selectedProvider.value, availableProviders.value))
   const selectedAccountTypeChoice = computed(() => accountTypeChoices.value.find((choice) => choice.type === form.type && choice.providerProtocolProfileId === form.providerProtocolProfileId))
   const hasAccountType = computed(() => Boolean(form.providerCode && form.providerProtocolProfileId && form.type))
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
+  const isTokenCredentialForm = computed(() => hasAccountType.value && ['oauth', 'google_oauth'].includes(form.type))
   const isOpenAIOAuthForm = computed(() => form.type === 'oauth' && canCreateOAuthAccount({
     provider: selectedProvider.value,
     profile: selectedProtocolProfile.value
@@ -785,6 +791,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     isApiKeyForm,
     isOAuthForm,
     isOpenAIOAuthForm,
+    isTokenCredentialForm,
     mappingAnthropicSourceModelOptions,
     mappingGeminiSourceModelOptions,
     mappingSourceModelOptions,

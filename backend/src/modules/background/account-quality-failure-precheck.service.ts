@@ -6,7 +6,7 @@ import type { AccountQualityFailurePrecheckCandidate } from '../../storage/repos
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 
@@ -73,7 +73,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
   }
 
   const groupId = account.boundGroupId
-  let upstreamAttemptObserved = false
+  let upstreamResponseObserved = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
@@ -83,7 +83,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     disableAccountStateMutation: true,
     retryAllFailures: true,
     onUpstreamAttempt: (attempt) => {
-      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
     },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -93,7 +93,7 @@ async function runAccountQualityFailurePrecheckQueueItem(
     }
   })
   rememberQualityFailurePrechecked(item.accountId)
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
 
   if (probeOutcome === 'complete_success') {
     logger.info({

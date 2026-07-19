@@ -44,6 +44,7 @@ export const apiProtocolLabels: Record<string, string> = {
   stream_generate_content: 'Stream Generate Content',
   count_tokens: 'Count Tokens',
   embed_content: 'Embed Content',
+  interactions: 'Interactions',
   completions: 'Completions',
   images: 'Images API',
   audio: 'Audio API',
@@ -232,6 +233,8 @@ export function getApiProtocolTagColor(protocol?: string): string {
     case 'generate_content':
     case 'stream_generate_content':
       return 'geekblue'
+    case 'interactions':
+      return 'magenta'
     case 'count_tokens':
     case 'embed_content':
       return 'gold'
@@ -316,6 +319,7 @@ function apiProtocolMatchesModelCategory(protocol: ProviderModelApiProtocol, cat
     || protocol === 'stream_generate_content'
     || protocol === 'count_tokens'
     || protocol === 'embed_content'
+    || protocol === 'interactions'
     || protocol === 'completions'
 }
 

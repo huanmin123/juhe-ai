@@ -5,8 +5,9 @@ import { nowIso } from '../../storage/database.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
+import { runRedisEnqueueWithBoundedRetry } from '../../shared/redis-enqueue-retry.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
@@ -31,8 +32,8 @@ const auditLogEstimateMaxStringChars = 16 * 1024
 const auditLogInlineTransportMaxBytes = 256 * 1024
 const auditLogPostgresFlushBatchSize = 25
 const auditLogPostgresRedisConsumerConcurrency = 1
-const auditLogRedisStreamKey = 'juhe-ai:queue:audit-logs'
-const auditLogRedisStreamGroup = 'juhe-ai:audit-log-writers'
+const auditLogRedisStreamKey = redisStreamQueueContracts.auditLogs.streamKey
+const auditLogRedisStreamGroup = redisStreamQueueContracts.auditLogs.groupName
 const auditLogRedisConsumerErrorRetryMs = 1000
 
 let pendingAuditLogs: QueuedAuditLog[] = []
@@ -176,9 +177,9 @@ export function enqueueAuditLog(input: AuditLogInput): void {
   if (shouldEnqueueAuditLogToRedisStream()) {
     const dispatch = enqueueAuditLogToRedisStream(queuedInput)
     if (runtimeConfig.processRole === 'server') {
-      trackAuditLogServerDispatch(dispatch, scheduleProcessFatalError)
+      trackAuditLogServerDispatch(dispatch, (error) => handleAuditLogServerDispatchError(queuedInput, error))
     } else {
-      void dispatch.catch(scheduleProcessFatalError)
+      void dispatch.catch((error) => handleAuditLogServerDispatchError(queuedInput, error))
     }
     return
   }
@@ -259,7 +260,13 @@ function handleAuditLogServerDispatchError(input: AuditLogInput, error: unknown)
     recordAuditLogDispatchFailure(input)
     return
   }
-  scheduleProcessFatalError(error)
+  logger.error(errorLogFields(error, {
+    event: 'audit_log_transport_unexpected_failure',
+    auditLogId: input.id,
+    traceId: input.traceId,
+    auditOutcome: input.auditOutcome
+  }), '审计日志传输发生未分类失败，已记录丢弃并保持进程运行')
+  recordAuditLogDispatchFailure(input)
 }
 
 async function dispatchAuditLogFromServerWithCapacityFallback(input: AuditLogInput): Promise<void> {
@@ -686,9 +693,9 @@ async function enqueueAuditLogToRedisStream(input: AuditLogInput, encodedPayload
   try {
     const queue = auditLogRedisStreamQueue()
     if (encodedPayload === undefined) {
-      await queue.enqueue(input)
+      await runRedisEnqueueWithBoundedRetry(() => queue.enqueue(input))
     } else {
-      await queue.enqueueEncoded(encodedPayload)
+      await runRedisEnqueueWithBoundedRetry(() => queue.enqueueEncoded(encodedPayload))
     }
   } catch (error) {
     logger.error(errorLogFields(error, {

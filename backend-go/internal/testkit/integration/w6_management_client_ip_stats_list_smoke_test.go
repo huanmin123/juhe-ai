@@ -43,12 +43,13 @@ const (
 	w6ManagementClientIPStatsStartDate = "2026-07-14"
 	w6ManagementClientIPStatsEndDate   = "2026-07-14"
 
-	w6ManagementClientIPStatsNormalHash      = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	w6ManagementClientIPStatsBlacklistHash   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	w6ManagementClientIPStatsAllowlistHash   = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-	w6ManagementClientIPStatsExpiredHash     = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	w6ManagementClientIPStatsFallbackHash    = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-	w6ManagementClientIPStatsEmptyMetricHash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	w6ManagementClientIPStatsNormalHash       = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	w6ManagementClientIPStatsBlacklistHash    = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	w6ManagementClientIPStatsAllowlistHash    = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	w6ManagementClientIPStatsExpiredHash      = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	w6ManagementClientIPStatsFallbackHash     = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	w6ManagementClientIPStatsEmptyMetricHash  = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	w6ManagementClientIPStatsRegistryOnlyHash = "9999999999999999999999999999999999999999999999999999999999999999"
 )
 
 func TestW6ManagementClientIPStatsListPostgresRedisSmoke(t *testing.T) {
@@ -176,7 +177,10 @@ func TestW6ManagementClientIPStatsListPostgresRedisSmoke(t *testing.T) {
 	)
 
 	setW6ManagementClientIPStatsRangeState(t, ctx, db, nil)
-	assertW6ManagementClientIPStatsUnavailable(t, request("page=1&pageSize=2"))
+	assertW6ManagementClientIPStatsUnavailableWithStatus(
+		t,
+		request("page=1&pageSize=2&keyword=203.0.113.11&status=blacklisted"),
+	)
 	emptySuccess := ""
 	setW6ManagementClientIPStatsRangeState(t, ctx, db, &emptySuccess)
 	assertW6ManagementClientIPStatsUnavailable(t, request("page=1&pageSize=2"))
@@ -278,8 +282,14 @@ func TestW6ManagementClientIPStatsListPostgresRedisSmoke(t *testing.T) {
 	assertW6ManagementClientIPStatsIDs(t, metrics.Result.Items, []string{
 		w6ManagementClientIPStatsFallbackHash,
 		w6ManagementClientIPStatsEmptyMetricHash,
+		w6ManagementClientIPStatsRegistryOnlyHash,
 	})
 	assertW6ManagementClientIPStatsOptionalMetrics(t, metrics)
+	registryOnly := request("page=1&pageSize=20&keyword=192.0.2.77&status=normal")
+	assertW6ManagementClientIPStatsIDs(t, registryOnly.Result.Items, []string{
+		w6ManagementClientIPStatsRegistryOnlyHash,
+	})
+	assertW6ManagementClientIPStatsZeroUsage(t, registryOnly.Result.Items[0])
 
 	afterLastSeenAt := w6ManagementClientIPStatsSessionLastSeenAt(t, ctx, db)
 	if !afterLastSeenAt.Equal(beforeLastSeenAt) {
@@ -546,6 +556,20 @@ func insertW6ManagementClientIPStatsFixtures(
 		INSERT INTO juhe_stats.client_ip_registry (
 			ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
 			first_seen_at, last_seen_at, created_at, updated_at
+		) VALUES ($1, 77, '192.0.2.77', '192.0.2.77', 4, $2, $3, $2, $4)
+	`,
+		w6ManagementClientIPStatsRegistryOnlyHash,
+		createdAt,
+		"2026-07-14T05:00:00.000Z",
+		updatedAt,
+	); err != nil {
+		t.Fatalf("insert registry-only client IP fixture: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO juhe_stats.client_ip_registry (
+			ip_hash, bucket_no, aggregate_ip_key, client_ip, ip_version,
+			first_seen_at, last_seen_at, created_at, updated_at
 		)
 		SELECT
 			lpad(to_hex(value), 64, '0'),
@@ -787,8 +811,8 @@ func assertW6ManagementClientIPStatsUnavailable(
 	response w6ManagementClientIPStatsResponse,
 ) {
 	t.Helper()
-	if response.Result.RangeReady || len(response.Result.Items) != 0 ||
-		response.Result.PageUpperBound != 0 || response.Result.HasMore {
+	if response.Result.RangeReady || len(response.Result.Items) != 2 ||
+		response.Result.PageUpperBound != 3 || !response.Result.HasMore {
 		t.Fatalf("unready range response = %+v", response.Result)
 	}
 	if response.Result.Page != 1 || response.Result.PageSize != 2 ||
@@ -796,6 +820,25 @@ func assertW6ManagementClientIPStatsUnavailable(
 		response.Result.Range.EndDate != w6ManagementClientIPStatsEndDate {
 		t.Fatalf("unready range metadata = %+v", response.Result)
 	}
+	for _, item := range response.Result.Items {
+		assertW6ManagementClientIPStatsZeroUsage(t, item)
+	}
+}
+
+func assertW6ManagementClientIPStatsUnavailableWithStatus(
+	t *testing.T,
+	response w6ManagementClientIPStatsResponse,
+) {
+	t.Helper()
+	if response.Result.RangeReady || response.Result.PageUpperBound != 1 ||
+		response.Result.HasMore || len(response.Result.Items) != 1 {
+		t.Fatalf("filtered unready range response = %+v", response.Result)
+	}
+	item := response.Result.Items[0]
+	if item.IPHash != w6ManagementClientIPStatsBlacklistHash || item.Status != "blacklisted" {
+		t.Fatalf("filtered unready range item = %+v", item)
+	}
+	assertW6ManagementClientIPStatsZeroUsage(t, item)
 }
 
 func assertW6ManagementClientIPStatsIDs(
@@ -818,8 +861,8 @@ func assertW6ManagementClientIPStatsOptionalMetrics(
 	response w6ManagementClientIPStatsResponse,
 ) {
 	t.Helper()
-	if len(response.Result.Items) != 2 {
-		t.Fatalf("optional metric rows = %d, want 2", len(response.Result.Items))
+	if len(response.Result.Items) != 3 {
+		t.Fatalf("optional metric rows = %d, want 3", len(response.Result.Items))
 	}
 	fallback := response.Result.Items[0].RangeUsage
 	if fallback.AverageDurationMs == nil || *fallback.AverageDurationMs != 45 ||
@@ -834,13 +877,14 @@ func assertW6ManagementClientIPStatsOptionalMetrics(
 		empty.MaxDurationMs != nil || empty.LastUsedAt != nil || empty.LastErrorAt != nil {
 		t.Fatalf("empty optional metrics = %+v", empty)
 	}
+	assertW6ManagementClientIPStatsZeroUsage(t, response.Result.Items[2])
 
 	data, ok := response.Raw["data"].(map[string]any)
 	if !ok {
 		t.Fatalf("raw data = %#v", response.Raw["data"])
 	}
 	rawItems, ok := data["items"].([]any)
-	if !ok || len(rawItems) != 2 {
+	if !ok || len(rawItems) != 3 {
 		t.Fatalf("raw items = %#v", data["items"])
 	}
 	emptyItem, ok := rawItems[1].(map[string]any)
@@ -861,6 +905,25 @@ func assertW6ManagementClientIPStatsOptionalMetrics(
 		if _, exists := rangeUsage[field]; exists {
 			t.Fatalf("raw empty range usage unexpectedly contains %s: %#v", field, rangeUsage)
 		}
+	}
+}
+
+func assertW6ManagementClientIPStatsZeroUsage(
+	t *testing.T,
+	item managementclientipstats.ListItem,
+) {
+	t.Helper()
+	usage := item.RangeUsage
+	if usage.RequestCount != 0 || usage.SuccessCount != 0 || usage.ErrorCount != 0 ||
+		usage.ErrorRate != 0 || usage.InputTokens != 0 || usage.OutputTokens != 0 ||
+		usage.CacheReadTokens != 0 || usage.CacheReadCost != 0 ||
+		usage.CacheWriteTokens != 0 || usage.CacheWrite1hTokens != 0 ||
+		usage.CacheWriteCost != 0 || usage.ThinkingTokens != 0 ||
+		usage.InputImageTokens != 0 || usage.OutputImageTokens != 0 ||
+		usage.TotalTokens != 0 || usage.TotalCost != 0 || usage.ActiveDays != 0 ||
+		usage.AverageDurationMs != nil || usage.AverageFirstTokenMs != nil ||
+		usage.MaxDurationMs != nil || usage.LastUsedAt != nil || usage.LastErrorAt != nil {
+		t.Fatalf("zero client IP usage = %+v", item)
 	}
 }
 
@@ -1062,17 +1125,25 @@ func assertW6ManagementClientIPStatsProductionPlans(
 				args,
 				planCacheMode,
 			)
-			if !strings.Contains(plan, "idx_client_ip_range_requests") {
+			for _, relation := range []string{
+				"client_ip_registry",
+				"client_ip_usage_range_windows",
+			} {
+				if strings.Contains(plan, relation) {
+					continue
+				}
 				t.Fatalf(
-					"production %s query cannot use idx_client_ip_range_requests under %s: %s",
+					"production %s query does not read %s under %s: %s",
 					scenario,
+					relation,
 					planCacheMode,
 					plan,
 				)
 			}
-			if strings.Contains(plan, `"Node Type": "Sort"`) {
+			if !strings.Contains(plan, `"Join Type": "Left"`) &&
+				!strings.Contains(plan, `"Join Type": "Right"`) {
 				t.Fatalf(
-					"production %s query adds Sort under %s: %s",
+					"production %s query does not use an outer join under %s: %s",
 					scenario,
 					planCacheMode,
 					plan,
@@ -1114,6 +1185,7 @@ func assertW6ManagementClientIPStatsStaticRequestCountQuery(t *testing.T, query 
 	assertW6ManagementClientIPStatsPreaggregatedQuery(t, query)
 	for _, required := range []string{
 		"-- name: ListManagementClientIPStatsRequestCountDesc :many",
+		"LEFT JOIN juhe_stats.client_ip_usage_range_windows",
 		"ORDER BY request_count DESC, ip_hash ASC",
 		"LIMIT $3::int",
 		"OFFSET $2::int",

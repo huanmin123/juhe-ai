@@ -90,6 +90,7 @@ export interface StreamPipeOptions {
   firstByteDeadlineMs?: number
   onFirstByteDeadline?: FirstByteDeadlineHandler
   prepareDownstream?: () => void
+  beforeDownstreamCommit?: (input: { responseResourceId?: string }) => Promise<void>
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
   downstreamCommitState?: GatewayDownstreamCommitState
@@ -103,6 +104,13 @@ const streamBackpressureLogIntervalMs = 30_000
 const maxResponseInspectionObservationCount = 20
 
 class StreamMaxLifetimeExceededError extends Error {}
+
+class StreamBeforeDownstreamCommitError extends Error {
+  constructor(readonly originalError: unknown) {
+    super('流式响应下游提交前准备失败')
+    this.name = 'StreamBeforeDownstreamCommitError'
+  }
+}
 
 export async function pipeUpstreamStream(
   upstreamBody: AsyncIterable<Uint8Array>,
@@ -153,6 +161,7 @@ export async function pipeUpstreamStream(
   let lastSseEventCount = 0
   let upstreamChunkReceived = false
   let semanticResultReceived = false
+  let responseResourceId: string | undefined
   let pendingProtocolEvent = false
   let streamParserSkipped = false
   let chunkIndex = 0
@@ -165,6 +174,7 @@ export async function pipeUpstreamStream(
   let bodyCaptureOmitted = false
   let downstreamPrepared = false
   const downstreamCommit = options.downstreamCommitState ?? new GatewayDownstreamCommitState()
+  let downstreamCommitPrepared = false
   const preCommitBuffer = createStreamPreCommitBufferState(options.retryBeforeDownstreamWriteUntilOutput === true)
   const responseInspectionObservations: ResponseInspectionDecision[] = []
   let responseInspectionObservationOmittedCount = 0
@@ -178,7 +188,17 @@ export async function pipeUpstreamStream(
     responseCapture.push(chunk)
     diagnosticCapture.push(chunk)
   }
+  const ensureBeforeDownstreamCommit = async () => {
+    if (downstreamCommitPrepared || !options.beforeDownstreamCommit) return
+    try {
+      await options.beforeDownstreamCommit({ responseResourceId })
+      downstreamCommitPrepared = true
+    } catch (error) {
+      throw new StreamBeforeDownstreamCommitError(error)
+    }
+  }
   const writeDownstreamChunk = async (chunk: Buffer, semantic = false) => {
+    await ensureBeforeDownstreamCommit()
     captureDownstreamChunk(chunk)
     prepareDownstreamForWrite()
     const writeResult = await writeResponseChunk(res, chunk)
@@ -234,6 +254,7 @@ export async function pipeUpstreamStream(
     semanticResultReceived = semanticResultReceived || streamSemanticResultReceived(inspection)
     pendingProtocolEvent = inspection.pendingEvent
     streamParserSkipped = inspection.skipped
+    responseResourceId ??= inspection.responseResourceId
   }
   const closeIterator = () => {
     clientClosed = true
@@ -301,7 +322,8 @@ export async function pipeUpstreamStream(
     downstreamCommit.downstreamBytesWritten,
     downstreamCommit.transportCommitted || res.headersSent,
     downstreamCommit.semanticCommitted,
-    uncommittedStreamResponseBody(preCommitBuffer)
+    uncommittedStreamResponseBody(preCommitBuffer),
+    responseResourceId
   )
   const finishTerminalSuccess = async (
     inspection: GatewayStreamInspection,
@@ -352,6 +374,7 @@ export async function pipeUpstreamStream(
       }, '网关在终止事件后解析到失败事件，按失败流式响应收尾')
       return finishStreamResult(false, message, errorCode, firstTokenMs, finalInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, finalInspection.outputReceived, finalInspection.estimatedOutputTokens, finalInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(finalInspection))
     }
+    await ensureBeforeDownstreamCommit()
     endResponse(res)
     if (closeIteratorAfterEnd) {
       void closeAsyncIterator(iterator)
@@ -810,6 +833,9 @@ export async function pipeUpstreamStream(
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
+    if (error instanceof StreamBeforeDownstreamCommitError) {
+      throw error.originalError
+    }
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = inspector.finish()
       omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })

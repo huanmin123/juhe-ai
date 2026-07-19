@@ -53,6 +53,11 @@ assert.match(requestOverridesSectionSource, /v-if="requestOverridesSupported"/, 
 assert.doesNotMatch(requestOverridesSectionSource, /serviceTierOptions\.length \|\| reasoningEffortOptions\.length/, '单账户配置区不能因能力为空整体隐藏')
 assert.doesNotMatch(requestOverridesSectionSource, /<a-form-item v-if=/, '服务等级和思考级别字段不能按选项数量分别隐藏')
 assert.doesNotMatch(requestOverridesSectionSource, /watch\(/, '模型能力变化不能静默清空已保存覆盖')
+assert.match(
+  requestOverridesSectionSource,
+  /requestOverridesSupported[\s\S]+serviceTierOverride \|\| props\.form\.reasoningEffortOverride/,
+  'Interactions-only 账户已有覆盖时必须保留清除入口'
+)
 assert.match(requestOverridesSectionSource, /当前已选模型未声明可用服务等级/, '服务等级无能力时必须显示中文原因')
 assert.match(requestOverridesSectionSource, /当前已选模型未声明可用思考级别/, '思考级别无能力时必须显示中文原因')
 assert.match(batchEditModalSource, /v-if="requestOverridesSupported"/, '批量编辑必须为支持供应商保留请求覆盖字段')
@@ -61,6 +66,11 @@ assert.equal(isAccountRequestOverrideProviderSupported('gpt'), true, 'GPT 账户
 assert.equal(isAccountRequestOverrideProviderSupported('openai'), true, 'OpenAI-compatible 账户必须显示请求覆盖配置区')
 assert.equal(isAccountRequestOverrideProviderSupported('anthropic'), true, 'Anthropic 账户必须显示请求覆盖配置区')
 assert.equal(isAccountRequestOverrideProviderSupported('gemini'), true, 'Gemini 账户必须显示已实现的思考级别覆盖配置区')
+assert.equal(
+  isAccountRequestOverrideProviderSupported('gemini', ['interactions_json', 'interactions_sse']),
+  false,
+  'Interactions-only Gemini 账户不得显示 GenerateContent 请求覆盖配置区'
+)
 assert.equal(isAccountRequestOverrideProviderSupported('deepseek'), false, '没有账户覆盖 wire 映射的供应商不能显示无效配置区')
 
 const modelOptions: AccountModelSelectOption[] = [
@@ -122,8 +132,17 @@ const geminiCapabilities = accountGptRequestOverrideCapabilities({
   }],
   supportedModels: ['gemini-test']
 })
-assert.deepEqual(geminiCapabilities.serviceTiers, [], 'Gemini 没有可确认的服务等级 wire 字段时必须保持服务等级不可选')
+assert.deepEqual(geminiCapabilities.serviceTiers, ['priority'], 'Gemini 服务等级控件必须读取官方 service_tier 能力')
 assert.deepEqual(geminiCapabilities.reasoningEfforts, ['low', 'high'], 'Gemini thinking level 有明确映射时应显示思考级别控件')
+assert.deepEqual(accountGptRequestOverrideCapabilities({
+  providerCode: 'gemini',
+  accountType: 'google_oauth',
+  modelOptions: geminiCapabilities ? [{
+    label: 'gemini-test', value: 'gemini-test', supportedServiceTiers: ['priority'], supportedReasoningEfforts: ['low', 'high']
+  }] : [],
+  supportedModels: ['gemini-test'],
+  supportedEndpointModes: ['interactions_json', 'interactions_sse']
+}), { serviceTiers: [], reasoningEfforts: [] }, 'Interactions-only Gemini 账户不能暴露不会生效的 GenerateContent 覆盖能力')
 
 const deepSeekCapabilities = accountGptRequestOverrideCapabilities({
   providerCode: 'deepseek',
@@ -249,8 +268,11 @@ const customModelForm = {
 }
 const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
+assert.equal(customPayload?.catalogVisible, true, '自定义模型默认必须发布到模型接口')
 assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
 assert.equal(customPayload?.defaultReasoningEffort, null, '未选择默认思考级别时应显式清空')
+customModelForm.defaultReasoningEffort = 'high'
+assert.equal(buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })?.defaultReasoningEffort, null, '自定义模型即使表单残留默认值也必须清空，不能替上游做客户端决策')
 const ordinaryUserPayload = buildCustomModelPayload(customModelForm, 'text', {
   includeRequestCapabilities: true,
   includePrices: false
@@ -269,8 +291,11 @@ applyConfigurationTemplateToCustomModelForm(customModelForm, [providerModel({
   id: 'template-pricing',
   model: 'template-pricing',
   supportedServiceTiers: ['priority', 'flex'],
+  supportedReasoningEfforts: ['low', 'high'],
+  defaultReasoningEffort: 'high',
   serviceTierPrices: { priority: { inputUsdPer1M: 3 } }
 })], 'template-pricing')
+assert.equal(customModelForm.defaultReasoningEffort, undefined, '配置模板不能把内置默认思考级别继承到新自定义模型')
 assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '价格模板应用后必须按当前档位重建价格行')
 assert.deepEqual(customModelForm.serviceTierPrices.flex, {}, '模板缺少的当前档位必须补空行，避免渲染访问 undefined')
 clearCustomModelPricesOutsideCategory(customModelForm, 'image')

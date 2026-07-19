@@ -9,7 +9,9 @@ const accountTestEndpointModeSchema = z.enum([
   'messages_json',
   'messages_sse',
   'generate_content_json',
-  'generate_content_sse'
+  'generate_content_sse',
+  'interactions_json',
+  'interactions_sse'
 ])
 
 const accountSupportedEndpointModeSchema = z.enum([
@@ -22,6 +24,8 @@ const accountSupportedEndpointModeSchema = z.enum([
   'message_token_counting',
   'generate_content_json',
   'generate_content_sse',
+  'interactions_json',
+  'interactions_sse',
   'count_tokens',
   'embed_content'
 ])
@@ -34,7 +38,9 @@ const accountHealthCheckEndpointModeSchema = z.enum([
   'messages_json',
   'messages_sse',
   'generate_content_json',
-  'generate_content_sse'
+  'generate_content_sse',
+  'interactions_json',
+  'interactions_sse'
 ])
 
 function batchUpdateFieldSchema<T extends z.ZodTypeAny>(valueSchema: T) {
@@ -209,7 +215,7 @@ export const accountBatchEditSchema = z.object({
     healthCheckModel: batchUpdateFieldSchema(z.string().trim().min(1)).optional(),
     healthCheckEndpointMode: batchUpdateFieldSchema(accountHealthCheckEndpointModeSchema).optional(),
     modelMappings: batchUpdateFieldSchema(z.array(accountModelMappingSchema).max(500)).optional(),
-    supportedEndpointModes: batchUpdateFieldSchema(z.array(accountSupportedEndpointModeSchema).min(1).max(11)).optional(),
+    supportedEndpointModes: batchUpdateFieldSchema(z.array(accountSupportedEndpointModeSchema).min(1).max(13)).optional(),
     serviceTierOverride: batchUpdateFieldSchema(
       z.enum(['default', 'priority', 'flex', '']).nullable()
     ).optional(),

@@ -65,7 +65,7 @@ const modelInsertStatement = modelInsertStatements[0]
 assert.ok(modelInsertStatement, 'PostgreSQL 默认 seed 必须写入 provider_model_catalog')
 assert.match(modelInsertStatement.sql, /ON CONFLICT DO NOTHING/i, '内建模型 seed 冲突时不得覆盖管理员已有配置')
 assert.doesNotMatch(modelInsertStatement.sql, /DO UPDATE/i, '二次 seed 不得更新管理员已有模型配置')
-const modelSeedParameterCount = 37
+const modelSeedParameterCount = 38
 assert.equal(modelInsertStatement.values.length % modelSeedParameterCount, 0, 'PostgreSQL 模型批次参数必须按完整行对齐')
 assert.equal(modelInsertStatement.values.length, expectedModelKeys.length * modelSeedParameterCount, 'PostgreSQL 模型批次参数数量必须覆盖全部行和字段')
 assert.ok(modelInsertStatement.values.length < 65_535, 'PostgreSQL 模型批次参数数量必须低于协议上限')
@@ -132,6 +132,7 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
         model.cacheWrite1hUsdPer1M ?? null,
         JSON.stringify(model.serviceTierPrices ?? {}),
         model.longContextInputTokenThreshold ?? null,
+        model.longContextInputTokenThresholdInclusive === true,
         model.longContextInputCostMultiplier ?? null,
         model.longContextOutputCostMultiplier ?? null,
         model.imageInputUsdPer1M ?? null,
@@ -139,18 +140,18 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
         model.audioInputUsdPer1M ?? null,
         model.audioOutputUsdPer1M ?? null,
         model.outputUsdPerImage ?? null,
-        model.supportsPromptCaching ? 1 : 0,
-        model.catalogVisible === false ? 0 : 1,
+        model.supportsPromptCaching === true,
+        model.catalogVisible !== false,
         model.source
       ] as readonly unknown[]
     ] as const))
 )
 for (const values of modelSeedRows) {
   const key = `${String(values[1])}\u0000${String(values[2])}`
-  assert.deepEqual(values.slice(0, 35), expectedModelValues.get(key), `${key} 的 PostgreSQL seed 字段映射必须完整`)
-  assert.equal(values.length, 37, `${key} 的 PostgreSQL seed 参数数量必须与 schema 一致`)
-  assert.equal(typeof values[35], 'string', `${key} 必须写入 created_at`)
-  assert.equal(values[36], values[35], `${key} 首次 seed 的 created_at / updated_at 必须一致`)
+  assert.deepEqual(values.slice(0, 36), expectedModelValues.get(key), `${key} 的 PostgreSQL seed 字段映射必须完整`)
+  assert.equal(values.length, 38, `${key} 的 PostgreSQL seed 参数数量必须与 schema 一致`)
+  assert.equal(typeof values[36], 'string', `${key} 必须写入 created_at`)
+  assert.equal(values[37], values[36], `${key} 首次 seed 的 created_at / updated_at 必须一致`)
 }
 
 const gpt5MiniValues = modelSeedRows.find((values) => values[1] === 'gpt' && values[2] === 'gpt-5-mini')
@@ -170,7 +171,11 @@ assert.deepEqual(JSON.parse(String(gpt5MiniValues[23])), {
     cachedInputUsdPer1M: 0.045
   }
 }, 'gpt-5-mini service tier prices 必须完整写入')
-assert.equal(gpt5MiniValues[33], 1, 'gpt-5-mini catalog_visible 必须为 true')
+assert.equal(gpt5MiniValues[34], true, 'gpt-5-mini catalog_visible 必须为 boolean true')
+const grok45Values = modelSeedRows.find((values) => values[1] === 'xai' && values[2] === 'grok-4.5')
+assert.ok(grok45Values, 'fresh PostgreSQL 必须包含 xai/grok-4.5')
+assert.equal(grok45Values[24], 200_000, 'grok-4.5 长上下文价格阈值必须写入')
+assert.equal(grok45Values[25], true, 'grok-4.5 长上下文价格阈值必须按 inclusive boolean 写入')
 
 const repeatedSeedStatements: ExecutedStatement[] = []
 await seedPostgresDefaults({

@@ -28,6 +28,9 @@ export interface AccountFormModel {
   baseUrl: string
   accessToken: string
   refreshToken: string
+  googleClientId: string
+  googleClientSecret: string
+  googleQuotaProjectId: string
   oauthMode: 'manual' | 'refresh_token'
   callbackUrl: string
   accountExpiresAt?: Dayjs | null

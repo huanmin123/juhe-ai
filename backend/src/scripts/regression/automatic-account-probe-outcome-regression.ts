@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { automaticAccountProbeOutcome } from '../../modules/accounts/automatic-account-probe-outcome.js'
-import { isRealUpstreamAttempt } from '../../modules/gateway/upstream/attempt.js'
+import { isCompletedRealUpstreamAttempt, isRealUpstreamAttempt } from '../../modules/gateway/upstream/attempt.js'
 import {
   accountPrecheckMinimumObservationMs,
   accountPrecheckProbeIntervalMs,
@@ -36,6 +36,9 @@ assert.equal(isRealUpstreamAttempt({
 assert.equal(isRealUpstreamAttempt({
   upstreamUrl: 'https://api.openai.com/v1/responses'
 }), true, '真实 HTTP(S) 上游请求应计为有效探针尝试')
+assert.equal(isCompletedRealUpstreamAttempt({ upstreamUrl: 'https://api.openai.com/v1/responses' }), false, '仅发起 URL、未收到响应头不能作为账户失败证据')
+assert.equal(isCompletedRealUpstreamAttempt({ upstreamUrl: 'https://api.openai.com/v1/responses', status: 503 }), true, '收到任意真实 HTTP 响应头才可作为后台探针失败证据')
+assert.equal(isCompletedRealUpstreamAttempt({ upstreamUrl: 'account:capacity_limited', status: 503 }), false, '本地合成状态不得冒充上游响应')
 
 const taskFailure = automaticAccountProbeOutcome({ success: false, accountFailureEligible: true }, false)
 assert.equal(taskFailure, 'probe_task_failure')
@@ -53,6 +56,7 @@ const cooldownRetestSource = readFileSync(fileURLToPath(new URL('../../modules/b
 const apiKeyRetestSource = readFileSync(fileURLToPath(new URL('../../modules/background/account-api-key-cooldown-retest.service.ts', import.meta.url)), 'utf8')
 const backgroundIpcSource = readFileSync(fileURLToPath(new URL('../../modules/background/background-ipc.ts', import.meta.url)), 'utf8')
 const inspectionRuntimeSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/response/inspection-runtime-effects.ts', import.meta.url)), 'utf8')
+const gatewayRoutesSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/routes.ts', import.meta.url)), 'utf8')
 assert.doesNotMatch(sideEffectsSource, /result\.success\s*\|\|\s*result\.accountFailureEligible\s*===\s*false/)
 assert.match(
   sideEffectsSource,
@@ -115,8 +119,9 @@ assert.match(
   '用户显式策略过滤器必须继续读取账户所有者配置的避让状态'
 )
 assert.match(sideEffectsSource, /onUpstreamAttempt:/)
-assert.match(sideEffectsSource, /isRealUpstreamAttempt\(attempt\)/, '网关后台复核只能接受真实 HTTP(S) 上游尝试')
-assert.match(sideEffectsSource, /automaticAccountProbeOutcome\(result, upstreamAttemptObserved\)/)
+assert.match(sideEffectsSource, /isCompletedRealUpstreamAttempt\(attempt\)/, '网关后台复核只能接受已返回响应头的真实 HTTP(S) 上游尝试')
+assert.match(sideEffectsSource, /automaticAccountProbeOutcome\(result, upstreamResponseObserved\)/)
+assert.match(gatewayRoutesSource, /response: upstreamResponse[\s\S]{0,900}notifyUpstreamAttemptDiagnostic\(options,[\s\S]{0,500}status: upstreamResponse\.status/, '收到上游响应头后必须立即向后台探针回传完成证据')
 assert.doesNotMatch(
   sideEffectsSource,
   /probeOutcome === 'probe_task_failure'[\s\S]{0,240}throw new Error/,
@@ -144,7 +149,7 @@ for (const [name, source] of [
   ['账户 Key 冷却复测', apiKeyRetestSource]
 ] as const) {
   assert.match(source, /automaticAccountProbeOutcome\(/, `${name}必须按是否形成真实上游尝试判断`)
-  assert.match(source, /isRealUpstreamAttempt\(attempt\)/, `${name}不能把本地合成尝试当作真实上游证据`)
+  assert.match(source, /isCompletedRealUpstreamAttempt\(attempt\)/, `${name}只能把已返回响应头的真实上游尝试作为失败证据`)
   if (name !== '账户 Key 冷却复测') {
     assert.match(source, /retryAllFailures: true/, `${name}必须完成通用后台诊断轮次，不能被错误类型提前截断`)
   }

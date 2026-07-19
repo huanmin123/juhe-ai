@@ -26,6 +26,7 @@ export interface CustomModelForm {
   scope: CustomProviderModelScope
   model: string
   status: ProviderModelStatus
+  catalogVisible: boolean
   mode: ProviderModelMode
   supportedApiProtocols: ProviderModelApiProtocol[]
   supportedServiceTiers: ProviderModelServiceTier[]
@@ -54,6 +55,7 @@ export const emptyCustomModelForm: CustomModelForm = {
   scope: 'personal',
   model: '',
   status: 'active',
+  catalogVisible: true,
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions'],
   supportedServiceTiers: [],
@@ -70,6 +72,7 @@ export function createCustomModelFormFromPricing(
     scope: record.scope === 'global' ? 'global' : 'personal',
     model: record.model,
     status: record.status ?? 'active',
+    catalogVisible: record.catalogVisible !== false,
     mode: categoryFromModeOrModel(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
@@ -101,7 +104,7 @@ export function createCustomModelFormFromPricing(
 export function buildCustomModelPayload(
   form: CustomModelForm,
   category: ModelCategoryKey,
-  options: { includeRequestCapabilities?: boolean; includePrices?: boolean } = {}
+  options: { includeRequestCapabilities?: boolean; includePrices?: boolean; includeDefaultReasoningEffort?: boolean } = {}
 ): ProviderModelUpsertPayload | undefined {
   const model = form.model.trim()
   if (!model) return undefined
@@ -109,6 +112,7 @@ export function buildCustomModelPayload(
     scope: form.scope,
     model,
     status: form.status,
+    catalogVisible: form.catalogVisible,
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],
     releaseDate: trimToNull(form.releaseDate),
@@ -132,7 +136,7 @@ export function buildCustomModelPayload(
       ? normalizeServiceTiers(form.supportedServiceTiers)
       : []
     payload.supportedReasoningEfforts = supportedReasoningEfforts
-    payload.defaultReasoningEffort = supportedReasoningEfforts.includes(form.defaultReasoningEffort ?? '')
+    payload.defaultReasoningEffort = options.includeDefaultReasoningEffort === true && supportedReasoningEfforts.includes(form.defaultReasoningEffort ?? '')
       ? form.defaultReasoningEffort
       : null
   }
@@ -168,9 +172,7 @@ export function applyConfigurationTemplateToCustomModelForm(
   form.supportedApiProtocols = [...(template.supportedApiProtocols ?? [])]
   form.supportedServiceTiers = normalizeServiceTiers(template.supportedServiceTiers)
   form.supportedReasoningEfforts = normalizeReasoningEfforts(template.supportedReasoningEfforts)
-  form.defaultReasoningEffort = form.supportedReasoningEfforts.includes(template.defaultReasoningEffort ?? '')
-    ? template.defaultReasoningEffort ?? undefined
-    : undefined
+  form.defaultReasoningEffort = undefined
   form.contextWindowTokens = template.contextWindowTokens
   form.maxInputTokens = template.maxInputTokens
   form.maxOutputTokens = template.maxOutputTokens

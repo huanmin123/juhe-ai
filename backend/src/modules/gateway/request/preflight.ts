@@ -36,6 +36,8 @@ import {
 } from '../runtime/client-ip-error-circuit.service.js'
 import {
   finalizeGatewayAuthFailureAudit,
+  sendAuthenticatedModelsGatewayResponse,
+  type OpenAIModelsResponseUsageContext,
   sendAnthropicModelsGatewayResponse,
   sendGeminiModelsGatewayResponse,
   sendOpenAIModelsGatewayResponse,
@@ -43,13 +45,24 @@ import {
 } from '../response/fixed-responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload, sendGatewayJsonError } from '../response/responses.js'
-import { extractGatewayApiKey, resolveGatewayRuntimeAsync, type GatewayRuntimeRequest } from './pre-auth.js'
+import {
+  extractGatewayApiKey,
+  resolveGatewayApiKeyForModelsAsync,
+  resolveGatewayRuntimeAsync,
+  type GatewayRuntimeRequest
+} from './pre-auth.js'
 import {
   isOpenAIModelsRequest,
   type UpstreamAccount
 } from '../protocols/openai-v1/route-helpers.js'
 import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
 import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
+import {
+  geminiInteractionResourceIdFromRequest,
+  isGeminiInteractionResourceRequest,
+  resolveGeminiInteractionAffinityAsync,
+  type GeminiInteractionAffinityBinding
+} from '../protocols/gemini-v1beta/interaction-affinity.service.js'
 import type { ResponseProtocolCode } from '../protocols/openai-v1/response-semantics.js'
 import {
   resolveOpenAIGatewaySessionAffinityKey
@@ -94,7 +107,10 @@ import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unava
 import { requestModel } from './metadata.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
-import { consumeAuthenticatedModelsRateLimit } from '../runtime/authenticated-models-rate-limit.service.js'
+import {
+  consumeAuthenticatedModelsRateLimit,
+  type AuthenticatedModelsRateLimitDecision
+} from '../runtime/authenticated-models-rate-limit.service.js'
 import {
   createSameAccountRetryBudget,
   type SameAccountRetryBudget
@@ -161,6 +177,7 @@ export interface OpenAIGatewayDispatchContext {
   serverRetryBudget: ServerRetryBudget
   downstreamCommitState: GatewayDownstreamCommitState
   sameAccountRetryBudget: SameAccountRetryBudget
+  interactionResourceAffinity?: GeminiInteractionAffinityBinding
   releaseClientIpConcurrency: () => void
 }
 
@@ -185,7 +202,9 @@ export async function prepareOpenAIGatewayDispatchContext(
       auditCapture,
       protocol: initialModelsResponseProtocol,
       startedAt,
-      clientIp
+      clientIp,
+      traceId,
+      endpoint
     })
     if (completed) {
       return undefined
@@ -319,13 +338,142 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
+  if (isDirectLoopbackDeploymentSmoke(req)) {
+    const responsePayload = gatewayErrorPayload(
+      '部署 smoke 已在网关本地完成，未派发上游',
+      'invalid_request_error',
+      'deployment_smoke_no_upstream'
+    )
+    await sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: currentGroupUsageContext(),
+      startedAt,
+      statusCode: 400,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'request_validation',
+        errorCode: 'deployment_smoke_no_upstream',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
+  let interactionResourceAffinity: GeminiInteractionAffinityBinding | undefined
+  const interactionResourceRequest = isGeminiInteractionResourceRequest(req)
+  const interactionResourceId = geminiInteractionResourceIdFromRequest(req)
+  if (interactionResourceRequest && !interactionResourceId) {
+    await sendInteractionAffinityFailure({
+      req,
+      res,
+      auditCapture,
+      usageContext: currentGroupUsageContext(),
+      startedAt,
+      statusCode: 400,
+      code: 'interaction_id_invalid',
+      message: 'Interaction 资源 ID 无效'
+    })
+    return undefined
+  }
+  if (interactionResourceId) {
+    try {
+      interactionResourceAffinity = await resolveGeminiInteractionAffinityAsync({
+        req,
+        scope: { systemAccountId, apiKeyId, groupId }
+      })
+    } catch (error) {
+      logger.warn({
+        event: 'gateway_gemini_interaction_affinity_lookup_failed',
+        interactionId: interactionResourceId,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      }, 'Gemini Interaction 账号亲和状态读取失败')
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext(),
+        startedAt,
+        statusCode: 503,
+        code: 'interaction_affinity_unavailable',
+        message: 'Interaction 资源路由状态暂不可用，请稍后重试'
+      })
+      return undefined
+    }
+    if (!interactionResourceAffinity) {
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext(),
+        startedAt,
+        statusCode: 404,
+        code: 'interaction_affinity_not_found',
+        message: '未找到该 Interaction 的本地账号路由记录'
+      })
+      return undefined
+    }
+    const affinityGroupStillBound = !apiKeyId || !apiKeyRecord || apiKeyRecord.group_bindings?.some((binding) => (
+      binding.status === 'active' && binding.group_id === interactionResourceAffinity?.groupId
+    ))
+    if (!affinityGroupStillBound) {
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext(),
+        startedAt,
+        statusCode: 404,
+        code: 'interaction_affinity_not_found',
+        message: '该 Interaction 所属分组已不再绑定当前 API Key'
+      })
+      return undefined
+    }
+
+    groupId = interactionResourceAffinity.groupId
+    identity = { systemAccountId, apiKeyId, groupId }
+    runtimeGroupAccess = await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+    const affinityCandidates = options.candidateAccounts
+      ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
+    runtimeAccounts = affinityCandidates.filter((account) => (
+      account.id === interactionResourceAffinity?.accountId
+      && account.providerCode === interactionResourceAffinity.providerCode
+      && (!interactionResourceAffinity.providerProtocolProfileId
+        || account.providerProtocolProfileId === interactionResourceAffinity.providerProtocolProfileId)
+    ))
+    runtimeAccountDispatchDiagnostics = undefined
+    if (runtimeAccounts.length !== 1) {
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext({ groupId, groupAccess: runtimeGroupAccess }),
+        startedAt,
+        statusCode: 409,
+        code: 'interaction_affinity_account_unavailable',
+        message: '创建该 Interaction 的上游账号当前不可用'
+      })
+      return undefined
+    }
+    auditCapture.bindContext({ groupId, providerCode: interactionResourceAffinity.providerCode })
+    bindRequestContextFields({ systemAccountId, apiKeyId, groupId, trafficSource })
+    auditCapture.addGatewayMetadata({
+      label: 'gemini_interaction_account_affinity',
+      metadata: {
+        interactionId: interactionResourceId,
+        groupId,
+        accountId: interactionResourceAffinity.accountId
+      }
+    })
+  }
   const initialClientStrategy = resolveOpenAIGatewayClientStrategy(req, {
     systemAccountId,
     apiKeyId,
     groupId,
     endpoint
   })
-  if (!initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
+  if (!interactionResourceAffinity && !initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
     const previousGroupId = groupId
     const previousBindingCount = apiKeyRecord.group_bindings?.length ?? 0
     const normalRoute = await resolveNormalGatewayModelRoute({
@@ -418,7 +566,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
-  if (!initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_strategy_mode === 'hybrid_smart') {
+  if (!interactionResourceAffinity && !initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_strategy_mode === 'hybrid_smart') {
     const hybridRoute = await resolveHybridGatewayRoute({
       req,
       apiKeyRecord,
@@ -617,43 +765,13 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp: gatewayClientIp
     })
     if (!authenticatedModelsRateLimitDecision.allowed) {
-      const limiterUnavailable = authenticatedModelsRateLimitDecision.unavailable === true
-      const statusCode = limiterUnavailable ? 503 : 429
-      const errorCode = limiterUnavailable
-        ? 'authenticated_models_rate_limit_unavailable'
-        : 'authenticated_models_rate_limited'
-      const retryAfterSeconds = authenticatedModelsRateLimitDecision.retryAfterSeconds ?? (limiterUnavailable ? 5 : 1)
-      if (!res.headersSent) {
-        res.setHeader('Retry-After', String(retryAfterSeconds))
-      }
-      auditCapture.addGatewayMetadata({
-        label: 'authenticated_models_rate_limit',
-        metadata: {
-          scope: authenticatedModelsRateLimitDecision.scope,
-          limit: authenticatedModelsRateLimitDecision.limit,
-          retryAfterSeconds,
-          unavailable: limiterUnavailable
-        }
-      })
-      const responsePayload = gatewayErrorPayload(
-        limiterUnavailable ? '模型列表限流服务暂不可用，请稍后重试' : '模型列表请求过于频繁，请稍后重试',
-        limiterUnavailable ? 'service_unavailable' : 'rate_limit_exceeded',
-        errorCode
-      )
-      await sendGatewayFailureResponse({
+      await sendAuthenticatedModelsRateLimitFailure({
         req,
         res,
         auditCapture,
         usageContext,
         startedAt,
-        statusCode,
-        responsePayload,
-        audit: {
-          outcome: 'gateway_failed',
-          errorPhase: limiterUnavailable ? 'security' : 'request_validation',
-          errorCode,
-          errorMessage: responsePayload.error.message
-        }
+        decision: authenticatedModelsRateLimitDecision
       })
       return undefined
     }
@@ -730,10 +848,11 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     clientIp: gatewayClientIp,
     endpoint,
-    loadModelAwareCandidateAccounts: options.candidateAccounts
+    bypassModelFilter: interactionResourceAffinity !== undefined,
+    loadModelAwareCandidateAccounts: options.candidateAccounts || interactionResourceAffinity
       ? undefined
       : (model, sourceEndpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model, requestedEndpointFamily: sourceEndpointFamily }),
-    recoverUnavailableCandidateAccounts: options.candidateAccounts
+    recoverUnavailableCandidateAccounts: options.candidateAccounts || interactionResourceAffinity
       ? undefined
       : () => waitForRecoverableOpenAIGatewayCandidateAccounts({
         req,
@@ -745,7 +864,9 @@ export async function prepareOpenAIGatewayDispatchContext(
         serverRetryBudget,
         signal
       }),
-    attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
+    attemptFallback: interactionResourceAffinity
+      ? async () => ({ attempted: false })
+      : (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
       auditCapture,
@@ -825,7 +946,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     serverRetryBudget,
     signal,
     ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
-    attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
+    attemptFallback: interactionResourceAffinity
+      ? async () => ({ attempted: false })
+      : (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
       auditCapture,
@@ -901,8 +1024,15 @@ export async function prepareOpenAIGatewayDispatchContext(
     serverRetryBudget,
     downstreamCommitState,
     sameAccountRetryBudget,
+    interactionResourceAffinity,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
+}
+
+function isDirectLoopbackDeploymentSmoke(req: Request): boolean {
+  if (req.header('x-juhe-deployment-smoke') !== 'no-upstream' || req.header('x-forwarded-for')) return false
+  const remoteAddress = req.socket.remoteAddress
+  return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
 }
 
 function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): RouteStrategySpeedFirstConfig | undefined {
@@ -919,16 +1049,62 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
   protocol: ResponseProtocolCode
   startedAt: number
   clientIp?: string
+  traceId: string
+  endpoint: string
 }): Promise<boolean> {
   if (gatewayModelsRequestHasAuthCredential(input.req)) {
-    const runtime = await resolveGatewayRuntimeAsync(input.req as GatewayRuntimeRequest, input.res)
-    if (!runtime?.apiKey) {
+    const apiKey = await resolveGatewayApiKeyForModelsAsync(input.req as GatewayRuntimeRequest, input.res)
+    if (!apiKey) {
       finalizeGatewayAuthFailureAudit(input.req, input.res, input.auditCapture)
       return true
     }
-    const gatewayRequest = input.req as GatewayRuntimeRequest
-    gatewayRequest.gatewayRuntime = runtime
-    return false
+    const usageContext: OpenAIModelsResponseUsageContext = {
+      traceId: input.traceId,
+      trafficSource: 'gateway',
+      clientIp: input.clientIp,
+      systemAccountId: apiKey.system_account_id,
+      apiKeyId: apiKey.id,
+      groupId: apiKey.selected_group_id,
+      endpoint: input.endpoint
+    }
+    input.auditCapture.bindContext({
+      systemAccountId: apiKey.system_account_id,
+      apiKeyId: apiKey.id,
+      groupId: apiKey.selected_group_id,
+      trafficSource: 'gateway'
+    })
+    const rateLimitDecision = await consumeAuthenticatedModelsRateLimit({
+      apiKeyId: apiKey.id,
+      clientIp: input.clientIp
+    })
+    if (!rateLimitDecision.allowed) {
+      await sendAuthenticatedModelsRateLimitFailure({
+        req: input.req,
+        res: input.res,
+        auditCapture: input.auditCapture,
+        usageContext,
+        startedAt: input.startedAt,
+        decision: rateLimitDecision
+      })
+      return true
+    }
+    await recordClientIpErrorCircuitSuccessAsync({
+      systemAccountId: apiKey.system_account_id,
+      apiKeyId: apiKey.id,
+      groupId: apiKey.selected_group_id,
+      clientIp: input.clientIp,
+      endpoint: input.endpoint
+    })
+    await sendAuthenticatedModelsGatewayResponse({
+      req: input.req,
+      res: input.res,
+      auditCapture: input.auditCapture,
+      usageContext,
+      providerCodes: gatewayModelsProviderCodes({ apiKeyRecord: apiKey }),
+      protocol: modelsResponseKind(input.protocol),
+      startedAt: input.startedAt
+    })
+    return true
   }
 
   const rateLimit = await consumePublicModelsRateLimit({ clientIp: input.clientIp })
@@ -945,6 +1121,52 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
     startedAt: input.startedAt
   })
   return true
+}
+
+async function sendAuthenticatedModelsRateLimitFailure(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext | OpenAIModelsResponseUsageContext
+  startedAt: number
+  decision: AuthenticatedModelsRateLimitDecision
+}): Promise<void> {
+  const limiterUnavailable = input.decision.unavailable === true
+  const statusCode = limiterUnavailable ? 503 : 429
+  const errorCode = limiterUnavailable
+    ? 'authenticated_models_rate_limit_unavailable'
+    : 'authenticated_models_rate_limited'
+  const retryAfterSeconds = input.decision.retryAfterSeconds ?? (limiterUnavailable ? 5 : 1)
+  if (!input.res.headersSent) input.res.setHeader('Retry-After', String(retryAfterSeconds))
+  input.auditCapture.addGatewayMetadata({
+    label: 'authenticated_models_rate_limit',
+    metadata: {
+      scope: input.decision.scope,
+      limit: input.decision.limit,
+      retryAfterSeconds,
+      unavailable: limiterUnavailable
+    }
+  })
+  const responsePayload = gatewayErrorPayload(
+    limiterUnavailable ? '模型列表限流服务暂不可用，请稍后重试' : '模型列表请求过于频繁，请稍后重试',
+    limiterUnavailable ? 'service_unavailable' : 'rate_limit_exceeded',
+    errorCode
+  )
+  await sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext as GatewayFailureUsageContext,
+    startedAt: input.startedAt,
+    statusCode,
+    responsePayload,
+    audit: {
+      outcome: 'gateway_failed',
+      errorPhase: limiterUnavailable ? 'security' : 'request_validation',
+      errorCode,
+      errorMessage: responsePayload.error.message
+    }
+  })
 }
 
 function gatewayModelsProviderCodes(input: {
@@ -1053,6 +1275,34 @@ function lowerHeaderToken(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim()
     ? value.trim().toLowerCase()
     : undefined
+}
+
+async function sendInteractionAffinityFailure(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  statusCode: number
+  code: string
+  message: string
+}): Promise<void> {
+  const responsePayload = gatewayErrorPayload(input.message, 'invalid_request_error', input.code)
+  await sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext,
+    startedAt: input.startedAt,
+    statusCode: input.statusCode,
+    responsePayload,
+    audit: {
+      outcome: 'gateway_failed',
+      errorPhase: input.statusCode >= 500 ? 'dispatch' : 'request_validation',
+      errorCode: input.code,
+      errorMessage: input.message
+    }
+  })
 }
 
 interface RecoverableOpenAICandidateState {

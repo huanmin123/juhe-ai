@@ -12,7 +12,8 @@
 
 - OpenAI v1：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。
 - Anthropic v1：`messages_json`、`messages_sse`、`message_token_counting`。
-- Gemini native：`generate_content_json`、`generate_content_sse`、`count_tokens`、`embed_content`。
+- Gemini native：`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`、`count_tokens`、`embed_content`。
+- xAI OpenAI v1：`chat_json`、`chat_sse`、`responses_json`、`responses_sse`。
 
 用户显式启用某项能力后，网关按该声明尝试请求上游。模型目录的 `supportedApiProtocols` 只用于模型候选、默认选择和风险提示，不覆盖账户显式能力；上游最终返回不支持路径、模型或参数时，按真实上游失败进入诊断和切号流程。
 
@@ -35,6 +36,7 @@
 - `Responses -> Chat Completions` 只要求账户启用至少一种 Chat Completions 上游能力；关闭原生 Responses 不影响该映射。
 - `Responses -> Responses` 要求账户启用至少一种 Responses 上游能力。
 - Messages 或 Gemini native 映射同样按右侧协议族检查真实上游能力。
+- Gemini Interactions 是原生 endpoint family，不参与普通 OpenAI v1 模型映射；模型目录声明 `interactions` 且账户启用对应 JSON / SSE mode 时才进入人工测试和网关候选。
 - 新建或编辑映射时，右侧协议只能选择当前上游能力允许的协议族。
 - 修改上游能力后，如果启用映射的右侧协议失去能力，保存必须失败并指出冲突；不能静默删除映射。
 - 已停用映射可以保留，之后重新启用能力时再恢复。
