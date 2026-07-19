@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import { createSharedJsonCache } from '../../shared/cache.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { canAccessAll, scopedSystemAccountId, type AccessScope } from '../../storage/access-scope.js'
@@ -33,9 +35,7 @@ export async function publishUsageRecordFirstPage(inputs: UsageRecordInput[], na
   }
   for (const [key, rows] of byKey) {
     try {
-      const existing = await cache.get(key) ?? []
-      const merged = dedupeAndSort([...rows, ...existing]).slice(0, firstPageLimit)
-      await cache.set(key, merged)
+      await mergeFirstPageCache(key, rows)
     } catch (error) {
       logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_write_failed', cacheKey: key }), '使用记录首屏热列表更新失败，已保留数据库事实')
     }
@@ -60,10 +60,29 @@ export async function seedUsageRecordFirstPage(
   const tomorrowStart = startOfZonedDateKeyIso(tomorrow, timezone)
   if (options?.startAt !== todayStart || options?.endAt !== tomorrowStart) return
   try {
-    await cache.set(firstPageCacheKey(systemAccountId, today), dedupeAndSort(result.items).slice(0, firstPageLimit))
+    await mergeFirstPageCache(firstPageCacheKey(systemAccountId, today), result.items)
   } catch (error) {
     logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_seed_failed', systemAccountId }), '使用记录首屏热列表回填失败，已保留数据库查询结果')
   }
+}
+
+async function mergeFirstPageCache(key: string, rows: UsageRecordSummary[]): Promise<void> {
+  const token = randomUUID()
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (!await cache.acquireLease(key, { ttlMs: 2_000, token })) {
+      await new Promise((resolve) => setTimeout(resolve, 10 * (attempt + 1)))
+      continue
+    }
+    try {
+      const existing = await cache.get(key) ?? []
+      const merged = dedupeAndSort([...rows, ...existing]).slice(0, firstPageLimit)
+      if (!await cache.setIfLeaseOwner(key, token, merged)) throw new Error('使用记录首屏缓存租约已失效')
+      return
+    } finally {
+      await cache.releaseLease(key, token)
+    }
+  }
+  throw new Error('使用记录首屏缓存更新竞争超时')
 }
 
 export async function getUsageRecordFirstPage(

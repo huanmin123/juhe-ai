@@ -97,6 +97,10 @@ export async function replaceGatewayModelCatalogSnapshotsAsync(
   const client = await snapshotClient()
   const now = nowIso()
   await client.transaction(async (tx) => {
+    await tx.execute(`
+      DELETE FROM ${snapshotTable(tx)}
+      WHERE system_account_id = ?
+    `, [systemAccountId])
     for (const snapshot of snapshots) {
       await tx.execute(`
         INSERT INTO ${snapshotTable(tx)} (
@@ -120,6 +124,17 @@ export async function replaceGatewayModelCatalogSnapshotsAsync(
     }
   })
   return await listGatewayModelCatalogSnapshotsAsync(systemAccountId)
+}
+
+export async function pruneGatewayModelCatalogSnapshotsAsync(activeSystemAccountIds: string[]): Promise<number> {
+  const client = await snapshotClient()
+  const keep = ['', ...new Set(activeSystemAccountIds)]
+  const placeholders = keep.map(() => '?').join(', ')
+  const result = await client.execute(`
+    DELETE FROM ${snapshotTable(client)}
+    WHERE system_account_id NOT IN (${placeholders})
+  `, keep)
+  return result.changes
 }
 
 async function snapshotClient(): Promise<DatabaseClient> {

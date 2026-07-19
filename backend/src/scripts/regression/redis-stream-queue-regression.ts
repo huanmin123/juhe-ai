@@ -154,6 +154,7 @@ assert.match(operationQueueSource, /startOperationLogRedisStreamConsumer/, 'oper
 assert.match(operationQueueSource, /queue\.ack\(messages\.map/, 'operation log Redis Stream consumer should ack only after flush')
 assert.match(operationQueueSource, /Redis Stream 操作日志落库失败，消息保持 pending 等待重投/, 'operation log Redis Stream consumer should keep failed messages pending')
 assert.match(operationQueueSource, /readCount: operationLogBatchSize/, 'operation log Redis Stream consumer should keep batches bounded')
+assert.match(operationQueueSource, /runRedisEnqueueWithBoundedRetry\(\(\) => operationLogRedisStreamQueue\(\)\.enqueue\(input\)\)/, 'operation log producer should retry transient Redis enqueue failures with the stable ID')
 assert.doesNotMatch(operationQueueSource, /AfterRedisStreamFailure/, 'operation log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const publicApiQueueSource = readFileSync(new URL('../../modules/public-api-logs/public-api-log-queue.service.ts', import.meta.url), 'utf8')
@@ -170,6 +171,7 @@ assert.match(publicApiQueueSource, /startPublicApiLogRedisStreamConsumer/, 'publ
 assert.match(publicApiQueueSource, /queue\.ack\(messages\.map/, 'public API log Redis Stream consumer should ack only after flush')
 assert.match(publicApiQueueSource, /Redis Stream 公开接口日志落库失败，消息保持 pending 等待重投/, 'public API log Redis Stream consumer should keep failed messages pending')
 assert.match(publicApiQueueSource, /readCount: publicApiLogFlushBatchSize/, 'public API log Redis Stream consumer should keep batches bounded')
+assert.match(publicApiQueueSource, /runRedisEnqueueWithBoundedRetry\(\(\) => publicApiLogRedisStreamQueue\(\)\.enqueue\(input\)\)/, 'public API log producer should retry transient Redis enqueue failures with the stable ID')
 assert.doesNotMatch(publicApiQueueSource, /AfterRedisStreamFailure/, 'public API log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const recordMaintenanceQueueSource = readFileSync(new URL('../../modules/record-maintenance/record-maintenance-queue.service.ts', import.meta.url), 'utf8')

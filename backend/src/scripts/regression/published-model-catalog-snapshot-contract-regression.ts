@@ -16,6 +16,29 @@ assert.match(snapshotService, /findGatewayModelCatalogSnapshotAsync/, 'Redis mis
 assert.doesNotMatch(snapshotService, /listCachedProviderModelCatalogAsync/, '请求读取服务不得调用运行态模型目录构建')
 assert.match(snapshotService, /rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync/, '写路径必须提供系统账户级快照重建入口')
 assert.match(snapshotService, /OPENAI_COMPATIBLE_PROVIDER_CODE/, 'OpenAI 静态目录必须覆盖所有 OpenAI-compatible 供应商模型')
+assert.match(snapshotService, /pruneGatewayModelCatalogSnapshotsAsync/, '全量重建必须清理已停用或删除 owner 的旧快照')
+assert.match(snapshotService, /rebuildPublishedModelCatalogSnapshotsBestEffortAsync/, '模型事实提交后快照失败必须有界后台重试，不能把已提交事实返回成失败')
+assert.match(
+  snapshotService,
+  /rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync[\s\S]*publishedCatalogRebuildChain\.then\(\(\) => rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync/,
+  '全量 prune 与 owner 重建必须整体进入同一串行队列'
+)
+assert.match(snapshotService, /clearPublishedModelCatalogOwnerCacheAsync/, '单 owner 重建必须只失效该 owner 的固定快照键')
+assert.match(snapshotService, /publishedModelCatalogCache\.delete\(publishedModelCatalogCacheKey/, '单 owner 缓存失效必须使用精确 key delete')
+assert.equal(
+  (snapshotService.match(/publishedModelCatalogCache\.clear\(\)/g) ?? []).length,
+  1,
+  '全量模型重建只能统一清空一次缓存，owner 并行重建不得互相驱逐'
+)
+assert.match(
+  snapshotService,
+  /rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync[\s\S]*listGatewayModelCatalogSystemAccountIdsAsync[\s\S]*pruneGatewayModelCatalogSnapshotsAsync[\s\S]*rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync/,
+  '串行全量重建必须在读取 active owner、prune 后直接执行内部 owner 重建，不能重新排队形成竞态或死锁'
+)
+
+const snapshotRepository = readFileSync(new URL('../../storage/gateway-model-catalog-snapshot.repository.ts', import.meta.url), 'utf8')
+assert.match(snapshotRepository, /DELETE FROM \$\{snapshotTable\(tx\)\}[\s\S]*WHERE system_account_id = \?/, 'owner 快照替换前必须删除旧 variant')
+assert.match(snapshotRepository, /WHERE system_account_id NOT IN/, '全量重建必须删除 inactive owner 残留快照')
 
 const fixedResponses = readFileSync(new URL('../../modules/gateway/response/fixed-responses.ts', import.meta.url), 'utf8')
 assert.match(fixedResponses, /readPublishedModelCatalogResponseAsync/, '/v1/models 必须直读已发布最终响应')

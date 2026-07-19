@@ -3,6 +3,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
+import { runRedisEnqueueWithBoundedRetry } from '../../shared/redis-enqueue-retry.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
 import { createOperationLogsBatch, createOperationLogsBatchAsync, type OperationLogInput } from '../../storage/repositories.js'
@@ -314,7 +315,7 @@ function recordOperationLogDispatchFailure(error: unknown, input?: OperationLogI
 
 async function enqueueOperationLogToRedisStream(input: OperationLogInput): Promise<void> {
   try {
-    await operationLogRedisStreamQueue().enqueue(input)
+    await runRedisEnqueueWithBoundedRetry(() => operationLogRedisStreamQueue().enqueue(input))
   } catch (error) {
     logger.error(errorLogFields(error, {
       event: 'operation_log_redis_stream_enqueue_failed',

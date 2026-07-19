@@ -48,6 +48,7 @@ import {
   handleFailedUpstreamResponse,
   handleOpaqueFailedUpstreamResponse,
   handleUpstreamRequestError,
+  isOpaqueUpstreamFailoverAllowed,
   type PendingAccountApiKeyFailure
 } from '../response/failure-dispatch.js'
 import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -119,15 +120,28 @@ export interface SameAccountRetryBudget {
   remainingAttempts: number
 }
 
+export interface OpaqueFailoverBudget {
+  remainingAccounts: number
+  attemptedAccountIds: Set<string>
+}
+
 const accountConcurrencyRetryBudgetMs = 1200
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
 const maxAccountApiKeyAttemptsPerAccountPerRequest = 2
+const maxOpaqueFailoverAccountsPerRequest = 4
 
 export function createSameAccountRetryBudget(maxRetries: number): SameAccountRetryBudget {
   const attempts = Math.max(0, Math.trunc(maxRetries))
   return {
     initialAttempts: attempts,
     remainingAttempts: attempts
+  }
+}
+
+export function createOpaqueFailoverBudget(maxAccounts = maxOpaqueFailoverAccountsPerRequest): OpaqueFailoverBudget {
+  return {
+    remainingAccounts: Math.max(1, Math.min(Math.trunc(maxAccounts), maxOpaqueFailoverAccountsPerRequest)),
+    attemptedAccountIds: new Set<string>()
   }
 }
 
@@ -150,7 +164,8 @@ export async function fetchFirstAvailableUpstream(
   allowPrecheckHalfOpen = false,
   serverRetryBudget = new ServerRetryBudget(settings.noAvailableAccountWaitTimeoutSeconds * 1000),
   interpretUpstreamResponseSemantics = false,
-  waitForRecoverableFailures = true
+  waitForRecoverableFailures = true,
+  opaqueFailoverBudget = createOpaqueFailoverBudget()
 ): Promise<OpenAIUpstreamDispatchResult> {
   const sameAccountRetryPolicy = fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
@@ -161,11 +176,16 @@ export async function fetchFirstAvailableUpstream(
   const timeoutProfile = gatewayTimeoutProfileForLane(settings, requestLane)
   const requestSameAccountRetryBudget = sameAccountRetryBudget
     ?? createSameAccountRetryBudget(maxAttemptCount - 1)
+  // Explicit user policies remain available for gateway clients. Automatic
+  // suppression and health state transitions are reserved for background probes.
+  const automaticAccountStateMutationAllowed = accountStateMutationEnabled
+    && isAccountProbeTrafficSource(usageContext.trafficSource)
   let lastAttempt: UpstreamAttempt | undefined
   let agentGuidanceResponse: GatewayAgentGuidanceResponse | undefined
   let auditAttemptIndex = 0
   let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
   let highConcurrencyDispatchQueueWaitCount = 0
+  let opaqueFailoverBudgetExhausted = false
   const failedProxyDispatchKeys = new Map<string, string>()
   const failedAccountIds = new Set<string>()
   const recoverableFailedAccountIds = new Set<string>()
@@ -229,7 +249,7 @@ export async function fetchFirstAvailableUpstream(
         originalAccount,
         settings,
         failedProxyDispatchKeys,
-        accountStateMutationEnabled,
+        automaticAccountStateMutationAllowed,
         undefined,
         auditCapture,
         unavailableProxyAuditAttemptIndex
@@ -399,7 +419,7 @@ export async function fetchFirstAvailableUpstream(
               failedProxyDispatchKeys,
               error,
               clientIpAccountAvoidanceTracker,
-              accountStateMutationEnabled
+              accountStateMutationEnabled: automaticAccountStateMutationAllowed
             })
             lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
             failedAccountIds.add(account.id)
@@ -410,6 +430,15 @@ export async function fetchFirstAvailableUpstream(
           }
           for (const upstreamUrl of upstreamUrls) {
             for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
+              if (!interpretUpstreamResponseSemantics && !opaqueFailoverBudget.attemptedAccountIds.has(originalAccount.id)) {
+                if (opaqueFailoverBudget.remainingAccounts <= 0) {
+                  opaqueFailoverBudgetExhausted = true
+                  skipAccount = true
+                  break
+                }
+                opaqueFailoverBudget.attemptedAccountIds.add(originalAccount.id)
+                opaqueFailoverBudget.remainingAccounts -= 1
+              }
               const attemptStartedAt = Date.now()
               auditAttemptIndex += 1
               const auditAttemptId = auditCapture.startAttempt({
@@ -445,12 +474,23 @@ export async function fetchFirstAvailableUpstream(
                   upstreamUrl,
                   status: response.status
                 }
-                if (response.ok) {
-                  await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
-                    systemAccountId: usageContext.systemAccountId,
-                    apiKeyId: usageContext.apiKeyId,
-                    groupId: usageContext.groupId
-                  })
+                if (response.ok || (!interpretUpstreamResponseSemantics && !isOpaqueUpstreamFailoverAllowed(req))) {
+                  if (!response.ok) {
+                    auditCapture.completeAttempt(auditAttemptId, {
+                      statusCode: response.status,
+                      responseHeaders: response.headers,
+                      success: false,
+                      errorPhase: 'upstream_response',
+                      errorMessage: '上游返回非成功 HTTP 响应'
+                    })
+                  }
+                  if (response.ok) {
+                    await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
+                      systemAccountId: usageContext.systemAccountId,
+                      apiKeyId: usageContext.apiKeyId,
+                      groupId: usageContext.groupId
+                    })
+                  }
                   keepConcurrencySlot = true
                   return {
                     account,
@@ -463,7 +503,9 @@ export async function fetchFirstAvailableUpstream(
                     releaseConcurrency: releaseAccountDispatchSlot(concurrencySlot.release),
                     markFirstOutput: concurrencySlot.markFirstOutput,
                     confirmSameAccountApiKeyFailures: () => recordConfirmedSameAccountApiKeyFailures(pendingApiKeyFailures, account, usageContext),
-                    confirmHalfOpenSuccess: () => completeHalfOpenLeaseSuccess(halfOpenLease),
+                    confirmHalfOpenSuccess: () => automaticAccountStateMutationAllowed
+                      ? completeHalfOpenLeaseSuccess(halfOpenLease)
+                      : Promise.resolve(false),
                     releaseHalfOpenLease: () => releaseHalfOpenLease(halfOpenLease)
                   }
                 }
@@ -485,7 +527,8 @@ export async function fetchFirstAvailableUpstream(
                   lastAttempt,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
-                  retrySameAccount: halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
+                  automaticAccountStateMutationEnabled: automaticAccountStateMutationAllowed,
+                  retrySameAccount: interpretUpstreamResponseSemantics && halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
                     account,
                     attemptIndex,
                     sameAccountRetryPolicy,
@@ -570,7 +613,7 @@ export async function fetchFirstAvailableUpstream(
                   failedProxyDispatchKeys,
                   error,
                   clientIpAccountAvoidanceTracker,
-                  accountStateMutationEnabled,
+                  accountStateMutationEnabled: automaticAccountStateMutationAllowed,
                   retrySameAccount: halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
                     account,
                     attemptIndex,
@@ -582,7 +625,7 @@ export async function fetchFirstAvailableUpstream(
                 failedAccountIds.add(account.id)
                 if (
                   requestErrorResult.action === 'skip_account'
-                  && accountStateMutationEnabled
+                  && automaticAccountStateMutationAllowed
                   && shouldRetainTransportFailureForRecovery(upstreamUrl, signal)
                 ) {
                   recoverableFailedAccountIds.add(account.id)
@@ -623,6 +666,8 @@ export async function fetchFirstAvailableUpstream(
         }
       }
     }
+
+    if (opaqueFailoverBudgetExhausted) break
 
     if (capacityLimitFailures.length > 0 && canUseHighConcurrencyDispatchQueue(groupSchedulingPolicy)) {
       const queueWaitStartedAtMs = Date.now()

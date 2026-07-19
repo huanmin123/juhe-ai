@@ -4,6 +4,7 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
+import { runRedisEnqueueWithBoundedRetry } from '../../shared/redis-enqueue-retry.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createPublicApiLogsBatch, createPublicApiLogsBatchAsync, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
@@ -313,7 +314,7 @@ function flushPublicApiLogQueueBatch(): boolean {
 
 async function enqueuePublicApiLogToRedisStream(input: PublicApiLogInput): Promise<void> {
   try {
-    await publicApiLogRedisStreamQueue().enqueue(input)
+    await runRedisEnqueueWithBoundedRetry(() => publicApiLogRedisStreamQueue().enqueue(input))
   } catch (error) {
     logger.error(errorLogFields(error, {
       event: 'public_api_log_redis_stream_enqueue_failed',

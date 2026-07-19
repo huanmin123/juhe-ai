@@ -54,6 +54,17 @@ import {
 } from '../protocols/registry.js'
 import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
 
+/** Generic takeover is limited to inference endpoints. Resource creation must not be replayed. */
+export function isOpaqueUpstreamFailoverAllowed(req: Request): boolean {
+  const method = req.method.toUpperCase()
+  const path = (req.originalUrl || req.path || '').split('?', 1)[0]
+  if (method === 'GET' || method === 'HEAD') return true
+  if (method !== 'POST') return false
+  return /\/(?:chat\/completions|responses|messages|embeddings|images\/(?:generations|edits))$/i.test(path)
+    || /\/models\/[^/]+:(?:generateContent|streamGenerateContent|countTokens|embedContent)$/i.test(path)
+    || /\/interactions\/[^/]+$/i.test(path)
+}
+
 export type AccountFailureInput = {
   success: false
   statusCode: number
@@ -81,6 +92,7 @@ interface HandleFailedUpstreamResponseInput {
   lastAttempt?: UpstreamAttempt
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
+  automaticAccountStateMutationEnabled?: boolean
   retrySameAccount?: boolean
 }
 
@@ -251,11 +263,12 @@ export async function handleFailedUpstreamResponse(
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
 
   const accountStateMutationEnabled = input.accountStateMutationEnabled !== false
+  const automaticAccountStateMutationEnabled = input.automaticAccountStateMutationEnabled ?? accountStateMutationEnabled
   const explicitPolicyDecision = accountStateMutationEnabled && usageContext.trafficSource === 'gateway'
     ? decideAccountErrorPolicy(account, response.status, response.headers, responseBody, settings)
     : undefined
   const isolateAccountApiKeyFailure = hasAlternativeAccountApiKeys(account)
-  const responseKeyFailoverEligible = accountStateMutationEnabled
+  const responseKeyFailoverEligible = automaticAccountStateMutationEnabled
     && !explicitPolicyDecision
     && isolateAccountApiKeyFailure
     && !isAccountProbeTrafficSource(usageContext.trafficSource)
@@ -267,7 +280,7 @@ export async function handleFailedUpstreamResponse(
       errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined
     })
   }
-  if (accountStateMutationEnabled && usageContext.trafficSource === 'gateway') {
+  if (automaticAccountStateMutationEnabled && usageContext.trafficSource === 'gateway') {
     await recordGatewayUpstreamBucketFailureAsync(account, '上游响应失败')
   }
   if (explicitPolicyDecision) {
@@ -286,7 +299,7 @@ export async function handleFailedUpstreamResponse(
         policyDecision: explicitPolicyDecision
       })
     }
-  } else if (accountStateMutationEnabled && !isAccountProbeTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
+  } else if (automaticAccountStateMutationEnabled && !isAccountProbeTrafficSource(usageContext.trafficSource) && !isolateAccountApiKeyFailure) {
     const reason = responseBodyRead.truncated
       ? `上游账号返回非成功状态：HTTP ${response.status}`
       : parsedErrorMessage || diagnosticErrorMessage || `上游账号返回非成功状态：HTTP ${response.status}`
@@ -352,7 +365,8 @@ export async function handleOpaqueFailedUpstreamResponse(
     attemptIndex,
     auditAttemptIndex,
     sessionAffinityKey,
-    signal
+    signal,
+    settings
   } = input
   const responseBodyRead = await readUpstreamBodyLimited(response.body, {
     startedAt: attemptStartedAt,
@@ -418,10 +432,34 @@ export async function handleOpaqueFailedUpstreamResponse(
   }
 
   await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+  const explicitPolicyDecision = input.accountStateMutationEnabled !== false && usageContext.trafficSource === 'gateway'
+    ? decideAccountErrorPolicy(account, response.status, response.headers, responseBodyRead.body, settings)
+    : undefined
+  if (explicitPolicyDecision) {
+    auditCapture.addGatewayMetadata({
+      label: 'account_error_policy_matched',
+      metadata: {
+        accountId: account.id,
+        ruleName: explicitPolicyDecision.ruleName,
+        action: explicitPolicyDecision.action,
+        cooldownStatus: explicitPolicyDecision.cooldownStatus
+      }
+    })
+    if (explicitPolicyDecision.action !== 'retry_next') {
+      await applyAccountErrorHandlingWithCacheInvalidation(account, {
+        success: false,
+        statusCode: response.status,
+        headers: response.headers,
+        bodyText: responseBodyRead.diagnosticBodyText,
+        settings,
+        trafficSource: usageContext.trafficSource,
+        policyDecision: explicitPolicyDecision
+      })
+    }
+  }
   return {
     action: 'skip_account',
-    lastAttempt,
-    tryNextApiKeyForRequest: true
+    lastAttempt
   }
 }
 

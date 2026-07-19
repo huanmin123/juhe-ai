@@ -21,6 +21,7 @@ import { logger } from '../../shared/logger.js'
 
 type ScenarioName =
   | 'chat_json'
+  | 'chat_malformed'
   | 'chat_sse'
   | 'responses_json'
   | 'responses_sse'
@@ -108,6 +109,7 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await runScenario(baseUrl, upstreamBaseUrl, 'chat_json')
+    await runScenario(baseUrl, upstreamBaseUrl, 'chat_malformed')
     await runScenario(baseUrl, upstreamBaseUrl, 'chat_sse')
     await runScenario(baseUrl, upstreamBaseUrl, 'responses_json')
     await runScenario(baseUrl, upstreamBaseUrl, 'responses_sse')
@@ -201,16 +203,15 @@ async function runScenario(baseUrl: string, upstreamBaseUrl: string, scenario: S
     body: JSON.stringify(requestBodyForScenario(scenario, stream))
   })
   const responseText = await response.text()
-  if (!isCodexScenario(scenario)) {
-    assert.equal(response.status, 200, `${scenario} 通用客户端应收到上游原始响应，实际 HTTP ${response.status}: ${responseText}`)
-    assert.equal(upstreamHits.length, 1, `${scenario} 通用客户端不得因响应内容策略切换账号：${JSON.stringify({ upstreamHits, responseText })}`)
-    assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-polluted-${scenario}`, `${scenario} 应保持首次调度账号`)
-    assert.equal(upstreamHits.some((hit) => hit.bodyText.includes('公益服务器压力很大')), false, `${scenario} 客户端请求体不应携带污染文本`)
-    assert(responseText.includes('公益服务器压力很大') || responseText.includes('dc.hhhl.cc'), `${scenario} 通用响应不得被管理策略拦截或改写：${responseText}`)
-    assert.match(response.headers.get('content-type') ?? '', stream ? /text\/event-stream|application\/json/ : /application\/json/, `${scenario} 应保留明确 content-type`)
+  if (scenario === 'chat_malformed') {
+    assert.equal(response.status, 200, `通用客户端的内置协议校验不得改写未命中显式策略的响应：${responseText}`)
+    assert.equal(upstreamHits.length, 1, '通用客户端显式策略未命中时不得因内置协议结构校验切换账号')
+    assert.deepEqual(JSON.parse(responseText), { id: 'chatcmpl-chat_malformed', object: 'chat.completion', choices: [] })
+    const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
+    assert.equal(runtimeSnapshot[pollutedAccount.id], undefined, '通用客户端显式策略未命中时不得写账户运行态')
     return
   }
-  assert.equal(response.status, 200, `${scenario} 应在污染账号命中策略后切到干净账号成功，实际 HTTP ${response.status}: ${responseText}`)
+  assert.equal(response.status, 200, `${scenario} 应在显式污染拦截策略命中后切到干净账号成功，实际 HTTP ${response.status}: ${responseText}`)
   assert.equal(upstreamHits.length, 2, `${scenario} 应先命中污染账号再服务端切到干净账号：${JSON.stringify({ upstreamHits, responseText })}`)
   assert.equal(upstreamHits[0]?.authorization, `Bearer sk-upstream-polluted-${scenario}`, `${scenario} 第一次请求应命中污染账号`)
   assert.equal(upstreamHits[1]?.authorization, `Bearer sk-upstream-clean-${scenario}`, `${scenario} 第二次请求应命中干净账号`)
@@ -438,6 +439,10 @@ function pollutedText(): string {
 
 function sendChatJson(res: http.ServerResponse, scenario: ScenarioName, polluted: boolean): void {
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+  if (scenario === 'chat_malformed' && polluted) {
+    res.end(JSON.stringify({ id: 'chatcmpl-chat_malformed', object: 'chat.completion', choices: [] }))
+    return
+  }
   res.end(JSON.stringify({
     id: `chatcmpl-${scenario}`,
     object: 'chat.completion',

@@ -71,6 +71,8 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   responseInspectionPolicies?: ResponseInspectionPolicySummary[]
   clientStrategy?: OpenAIGatewayClientStrategyContext
   accountStateMutationEnabled: boolean
+  automaticAccountStateMutationEnabled: boolean
+  protocolValidationEnabled: boolean
   sessionAffinityKey?: string
 }): Promise<UpstreamResponseHandlingResult | undefined> {
   let parsedJson: unknown
@@ -81,9 +83,14 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   } catch {
     return undefined
   }
-  const protocolFailure = validateBufferedJsonProtocolResponse(parsedJson, input)
+  const protocolFailure = input.protocolValidationEnabled
+    ? validateBufferedJsonProtocolResponse(parsedJson, input)
+    : undefined
   if (protocolFailure) {
-    return finalizeBufferedJsonProtocolFailure(input, protocolFailure)
+    return finalizeBufferedJsonProtocolFailure({
+      ...input,
+      accountStateMutationEnabled: input.automaticAccountStateMutationEnabled
+    }, protocolFailure)
   }
   if (isGatewayGeneratedResponsesFailure(parsedJson, input)) return undefined
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(input.req, input.account)

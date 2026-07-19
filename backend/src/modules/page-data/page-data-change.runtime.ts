@@ -332,10 +332,8 @@ export function createRecoveringPageDataChangeStore(
         if (shouldRecover) scheduleRecovery()
         return result
       } catch (error) {
-        for (const domain of Object.keys(domains)) {
-          if ((pageDataDomains as readonly string[]).includes(domain)) await dirtyState.markDirty(domain as PageDataDomain)
-        }
-        scheduleRecovery()
+        // A read-only confirm failure is not a publish failure. Marking every
+        // domain dirty here turns a Redis outage into a PostgreSQL write storm.
         throw error
       }
     },
