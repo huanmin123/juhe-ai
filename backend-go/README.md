@@ -7,6 +7,8 @@
 
 ## 当前范围
 
+- Redis 角色校验按规范化 URL 的 `host:port` 文本判重并拒绝 `localhost` / `::1`，不解析 DNS；部署预检仍必须确认 cache/state/queue 映射到不同 Redis 进程。
+
 - Go module、命令入口、配置读取、结构化日志、HTTP 路由和健康检查。
 - PostgreSQL health、baseline migration、sqlc catalog 查询、事务封装和 store adapter 基线。
 - Redis cache / state client 基线：namespace key、TTL set、pipeline、`IncrWithTTL` 原子计数、`GETDEL` 一次性消费、fixed-window 原子限流、W1b penalty-window 原子限流和 cache / state / queue Redis 物理端点去重、loopback 别名拒绝校验。
