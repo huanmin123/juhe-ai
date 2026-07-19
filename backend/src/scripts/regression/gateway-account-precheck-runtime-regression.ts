@@ -13,6 +13,7 @@ import { decideAccountErrorPolicy, type GatewaySettings } from '../../modules/ga
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 import type { AccountErrorHandlingRule, AccountErrorHandlingRuleAction } from '../../modules/accounts/account-error-policy-validation.js'
 import type { OpenAIGatewayClientStrategyContext } from '../../modules/gateway/client-profiles/strategy.js'
+import { automaticAccountProbeObservation } from '../../modules/accounts/automatic-account-probe-outcome.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-precheck-runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -67,9 +68,11 @@ try {
   gatewaySideEffects.clearGatewayLocalAccountSuppressionsForTest()
   testPrecheckSummaryMapperBoundary()
   testLocalSuppressionStoreBoundary()
+  testAutomaticProbeObservationContract()
   testRuntimeDegradationOrderingAndSuccessRecovery()
   await testRuntimeDegradationDispatchPreparationFallback()
   testGatewayFailuresDoNotCreateAccountSuppression()
+  testRuntimeProbeScheduleRequiresActualTask()
   await testRecoveryWaitRemainsDispatchable()
   await testPrecheckPendingBlocksMemoryDispatch()
   await testRedisHalfOpenAcquireFailureReleasesGroupGate()
@@ -131,6 +134,65 @@ function testPrecheckSummaryMapperBoundary(): void {
     mapperSource.includes('boundGroupId') && mapperSource.includes('gatewayAccountSummaryBoundGroupId(account)'),
     '授权账户测试摘要应使用绑定分组维度'
   )
+}
+
+function testAutomaticProbeObservationContract(): void {
+  const observation = automaticAccountProbeObservation({
+    runtimeKey: 'account-runtime-key',
+    generation: 7,
+    attemptCount: 2,
+    attemptedAt: '2026-07-20T00:36:58.000Z',
+    probeOutcome: 'upstream_failure',
+    success: false,
+    statusCode: 503,
+    errorCode: 'model_not_found',
+    reason: '最近事前确认探针失败；HTTP 503；model_not_found；No available channel',
+    traceId: 'trace-runtime-probe'
+  })
+  assert.equal(observation?.result, 'failed')
+  assert.equal(observation?.attemptedAt, '2026-07-20T00:36:58.000Z')
+  assert.equal(observation?.httpStatus, 503)
+  assert.equal(observation?.errorCode, 'model_not_found')
+  assert.equal(observation?.traceId, 'trace-runtime-probe')
+  assert.match(observation?.observationId ?? '', /^[a-f0-9]{24}$/, 'observationId 应稳定标识同一 generation 与 attempt')
+  assert.equal(automaticAccountProbeObservation({
+    runtimeKey: 'account-runtime-key',
+    generation: 7,
+    attemptCount: 3,
+    attemptedAt: '2026-07-20T00:37:58.000Z',
+    probeOutcome: 'probe_task_failure',
+    success: false
+  }), undefined, '没有形成真实上游响应时不得伪造失败 observation')
+}
+
+function testRuntimeProbeScheduleRequiresActualTask(): void {
+  const account = createRuntimeAccount('runtime-probe-schedule-contract')
+  const nextAttemptAtMs = Date.now() + 60_000
+  gatewaySideEffects.setGatewayAccountPrecheckRuntimeForTest(account, {
+    systemAccountId: 'sys_admin',
+    groupId: 'group-runtime-probe-schedule',
+    reason: '最近事前确认探针失败；HTTP 503；model_not_found',
+    nextAttemptAtMs,
+    lastObservation: {
+      observationId: 'runtime_probe:contract',
+      attemptedAt: '2026-07-20T00:36:58.000Z',
+      result: 'failed',
+      httpStatus: 503,
+      errorCode: 'model_not_found',
+      reason: '最近事前确认探针失败；HTTP 503；model_not_found',
+      traceId: 'trace-runtime-probe'
+    }
+  })
+  const scheduled = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]
+  assert.equal(scheduled?.probePresentation?.lastObservation?.traceId, 'trace-runtime-probe')
+  assert.equal(scheduled?.probePresentation?.schedule.state, 'scheduled')
+  assert.equal(scheduled?.probePresentation?.schedule.nextAttemptAt, new Date(nextAttemptAtMs).toISOString())
+
+  gatewaySideEffects.dropGatewayAccountPrecheckTaskForTest(account)
+  const taskMissing = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[account.id]
+  assert.equal(taskMissing?.probePresentation?.lastObservation?.traceId, 'trace-runtime-probe', '任务丢失后仍应保留最近真实检查')
+  assert.deepEqual(taskMissing?.probePresentation?.schedule, { state: 'none' }, '只有状态时间而没有真实 timer 时不得显示下次检查')
+  gatewaySideEffects.clearGatewayAccountRuntimeAvailability(account)
 }
 
 function testLocalSuppressionStoreBoundary(): void {
@@ -583,6 +645,9 @@ async function testPrecheckPendingBlocksMemoryDispatch(): Promise<void> {
   const halfOpen = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([blocked, secondBlocked], acquireOptions)
   assert.equal(halfOpen.accounts.length, 1, '最后一跳应只允许一个 precheck 账户受控半开')
   assert.equal(halfOpen.acquiredHalfOpenLeases.length, 1, '受控半开必须返回 generation 租约')
+  const halfOpenRuntime = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[blocked.id]
+  assert.equal(halfOpenRuntime?.probePresentation?.schedule.state, 'running', '半开真实请求应显示正在检查')
+  assert.equal(halfOpenRuntime?.probePresentation?.schedule.nextAttemptAt, undefined, '半开租约截止不得冒充下次检查时间')
   const concurrentHalfOpen = await gatewaySideEffects.filterGatewayAccountRuntimeSuppressionsAsync([blocked, secondBlocked], acquireOptions)
   assert.equal(concurrentHalfOpen.accounts.length, 0, '同组另一账户空闲时也不得突破分组半开上限')
   const lease = halfOpen.acquiredHalfOpenLeases[0] as unknown as { release: () => boolean | Promise<boolean>; completeSuccess?: () => Promise<boolean> }
@@ -609,6 +674,8 @@ async function testConfiguredResponsePolicyAvoidance(): Promise<void> {
   const runtime = gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()[avoided.id]
   assert.equal(runtime?.status, 'local_suppressed', '显式响应策略应进入独立账户运行态避让')
   assert(runtime?.until, '显式响应策略运行态应展示预计释放时间')
+  assert.equal(runtime?.probePresentation?.recoveryAtKind, 'policy_ttl_expiry', '显式策略 TTL 只能标识为策略释放边界')
+  assert.deepEqual(runtime?.probePresentation?.schedule, { state: 'none' }, '显式策略 TTL 不是探针计划')
   assert(
     Date.parse(runtime.until) - Date.now() > 20 * 60_000,
     '显式响应策略配置 30 分钟时不得被旧的 10 分钟本地上限截断'

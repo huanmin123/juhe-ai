@@ -21,6 +21,9 @@ interface ProbeState {
   halfOpenLeaseId?: string
   halfOpenLeaseUntilMs?: number
   halfOpenPreviousNextProbeAtMs?: number
+  probeRunId?: string
+  probeRunUntilMs?: number
+  probeRunPreviousNextProbeAtMs?: number
 }
 
 const store = createRuntimeProbeStateStore<ProbeState>(`runtime-probe-state-regression-${Date.now()}`)
@@ -71,12 +74,14 @@ assert.equal(await store.set({
 }, 60_000), true, '第二个探针状态应写入成功')
 
 assert.deepEqual(await store.listDue(now, 10), ['acct_a'], 'due 索引只应返回到期 runtimeKey')
+assert.deepEqual(await store.scheduledRuntimeKeys(['acct_a', 'acct_b', 'acct_missing']), new Set(['acct_a', 'acct_b']), '批量调度查询应只返回 due index 中仍有效的 runtimeKey')
 assert.equal((await store.get('acct_a'))?.generation, generation2, '探针状态应能按 runtimeKey 读取')
 
 assert.equal(await store.deleteGeneration('acct_a', generation1), false, '旧 generation 不能删除新 generation 状态')
 assert.equal((await store.get('acct_a'))?.generation, generation2, '旧 generation 删除失败后应保留新状态')
 assert.equal(await store.deleteGeneration('acct_a', generation2), true, '当前 generation 应允许条件删除状态')
 assert.equal(await store.get('acct_a'), undefined, '条件删除状态后不应再读取到探针状态')
+assert.deepEqual(await store.scheduledRuntimeKeys(['acct_a', 'acct_b']), new Set(['acct_b']), '条件删除必须同步移除 due membership')
 assert.deepEqual(await store.listDue(now + 120_000, 10), ['acct_b'], '删除状态后 due 索引不应残留旧 runtimeKey')
 
 await store.delete('acct_b')
@@ -199,5 +204,57 @@ assert.equal(await leaseStore.get('acct_half_open'), undefined, '完整成功条
 const wrongPhaseGeneration = await leaseStore.nextGeneration('acct_wrong_phase', 60_000)
 await leaseStore.set({ runtimeKey: 'acct_wrong_phase', generation: wrongPhaseGeneration, nextProbeAtMs: now, accountId: 'acct_wrong_phase', phase: 'recovery_wait' }, 60_000)
 assert.equal(await leaseStore.acquireGenerationLease('acct_wrong_phase', wrongPhaseGeneration, 'lease-wrong-phase', now + 10_000, 60_000), undefined, '原子 acquire 必须拒绝非 precheck_pending phase')
+
+const runStore = store as typeof store & {
+  acquireGenerationRun(runtimeKey: string, generation: number, runId: string, runUntilMs: number, ttlMs: number): Promise<ProbeState | undefined>
+  commitGenerationRun(state: ProbeState, runId: string, ttlMs: number): Promise<boolean>
+  deleteGenerationRun(runtimeKey: string, generation: number, runId: string): Promise<boolean>
+}
+const runGeneration = await runStore.nextGeneration('acct_probe_run', 60_000)
+await runStore.set({
+  runtimeKey: 'acct_probe_run',
+  generation: runGeneration,
+  nextProbeAtMs: now,
+  accountId: 'acct_probe_run',
+  phase: 'precheck_pending'
+}, 60_000)
+const activeRun = await runStore.acquireGenerationRun('acct_probe_run', runGeneration, 'run-a', now + 10_000, 60_000)
+assert.equal(activeRun?.probeRunId, 'run-a', '到期状态应能按 generation 原子取得后台执行令牌')
+assert.equal(activeRun?.nextProbeAtMs, now + 10_000, '后台执行期间应把内部 due 推迟到 runUntil')
+assert.equal(await runStore.acquireGenerationRun('acct_probe_run', runGeneration, 'run-b', now + 20_000, 60_000), undefined, '有效后台 run 必须拒绝其他节点重复执行')
+assert.equal(await leaseStore.acquireGenerationLease('acct_probe_run', runGeneration, 'lease-during-run', now + 20_000, 60_000), undefined, '有效后台 run 期间必须拒绝用户 half-open 租约')
+assert.equal(await runStore.commitGenerationRun({ ...activeRun!, nextProbeAtMs: now + 30_000, accountId: 'acct_probe_run_committed' }, 'run-wrong', 60_000), false, '非当前 runId 不得提交后台执行结果')
+assert.equal(await runStore.commitGenerationRun({ ...activeRun!, nextProbeAtMs: now + 30_000, accountId: 'acct_probe_run_committed' }, 'run-a', 60_000), true, '当前 generation + runId 应能原子提交状态与下一个 due')
+const committedRun = await runStore.get('acct_probe_run')
+assert.equal(committedRun?.accountId, 'acct_probe_run_committed', '后台 run 提交应保存新状态')
+assert.equal(committedRun?.probeRunId, undefined, '后台 run 提交后不应残留执行令牌')
+assert.equal(committedRun?.nextProbeAtMs, now + 30_000, '后台 run 提交应恢复真实下一次 due')
+
+const expiredTakeoverGeneration = await runStore.nextGeneration('acct_expired_run_takeover', 60_000)
+await runStore.set({ runtimeKey: 'acct_expired_run_takeover', generation: expiredTakeoverGeneration, nextProbeAtMs: now, accountId: 'acct_expired_run_takeover' }, 60_000)
+assert(await runStore.acquireGenerationRun('acct_expired_run_takeover', expiredTakeoverGeneration, 'run-old', now - 1, 60_000), '应能建立已过期后台 run')
+const replacementRun = await runStore.acquireGenerationRun('acct_expired_run_takeover', expiredTakeoverGeneration, 'run-new', now + 10_000, 60_000)
+assert.equal(replacementRun?.probeRunId, 'run-new', '已过期后台 run 必须允许新 runId 接管')
+assert.equal(await runStore.commitGenerationRun({ ...replacementRun!, nextProbeAtMs: now + 20_000 }, 'run-new', 60_000), true, '接管后的新 run 应能正常提交')
+
+const expiredRun = await runStore.acquireGenerationRun('acct_probe_run', runGeneration, 'run-expired', now - 1, 60_000)
+assert.equal(expiredRun?.probeRunId, 'run-expired', '测试应能建立已过期 run 以模拟节点中断')
+const takeoverLease = await leaseStore.acquireGenerationLease('acct_probe_run', runGeneration, 'lease-after-expired-run', now + 20_000, 60_000)
+assert.equal(takeoverLease?.halfOpenLeaseId, 'lease-after-expired-run', '后台 run 过期后应允许 half-open 接管')
+assert.equal(takeoverLease?.probeRunId, undefined, 'half-open 接管必须清理过期 runId，防止迟到提交')
+assert.equal(await runStore.commitGenerationRun({ ...expiredRun!, nextProbeAtMs: now + 40_000 }, 'run-expired', 60_000), false, 'half-open 接管后的迟到 run 结果不得覆盖新租约')
+assert.equal(await leaseStore.releaseGenerationLease('acct_probe_run', runGeneration, 'lease-after-expired-run', 60_000), true, '接管的 half-open 租约应可正常释放')
+
+const blockingLease = await leaseStore.acquireGenerationLease('acct_probe_run', runGeneration, 'lease-blocks-run', now + 20_000, 60_000)
+assert.equal(blockingLease?.halfOpenLeaseId, 'lease-blocks-run', '应能建立有效 half-open 租约')
+assert.equal(await runStore.acquireGenerationRun('acct_probe_run', runGeneration, 'run-during-lease', now + 30_000, 60_000), undefined, '有效 half-open 租约期间必须拒绝后台 run')
+assert.equal(await leaseStore.releaseGenerationLease('acct_probe_run', runGeneration, 'lease-blocks-run', 60_000), true, '阻塞 run 的租约应可正常释放')
+
+const deletableRun = await runStore.acquireGenerationRun('acct_probe_run', runGeneration, 'run-delete', now + 10_000, 60_000)
+assert.equal(deletableRun?.probeRunId, 'run-delete', '删除测试前应取得 run')
+assert.equal(await runStore.deleteGenerationRun('acct_probe_run', runGeneration, 'run-wrong'), false, '错误 runId 不得删除当前状态')
+assert.equal(await runStore.deleteGenerationRun('acct_probe_run', runGeneration - 1, 'run-delete'), false, '旧 generation 的 run 不得删除当前状态')
+assert.equal(await runStore.deleteGenerationRun('acct_probe_run', runGeneration, 'run-delete'), true, '当前 generation + runId 应能原子删除状态与 due')
+assert.deepEqual(await runStore.scheduledRuntimeKeys(['acct_probe_run']), new Set(), '按 run 删除后 due membership 不应残留')
 
 console.log('runtime-probe-state-store-regression passed')

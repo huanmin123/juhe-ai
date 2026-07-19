@@ -8,7 +8,8 @@ import { createAccountAsync, createGroupAsync } from '../../storage/repositories
 import {
   listAccountApiKeyRuntimeStatesDueForProbeAsync,
   recordAccountApiKeyRuntimeFailureAsync,
-  recordAccountApiKeyRuntimeSuccessAsync
+  recordAccountApiKeyRuntimeSuccessAsync,
+  loadAccountApiKeyRuntimeDetailsByAccountIdsAsync
 } from '../../storage/account-api-key-runtime-state.repository.js'
 import { accountApiKeyEntries } from '../../storage/account-api-key-rotation.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
@@ -50,6 +51,7 @@ try {
     supportedModels: ['gpt-5-mini']
   }, access)
   createdAccountIds.push(account.id)
+  await activateSmokeAccount(account.id)
 
   const entries = accountApiKeyEntries(credentials)
   assert.equal(entries.length, 2, '测试账号必须启用多 API Key runtime isolation')
@@ -92,7 +94,8 @@ try {
     statusCode: 429,
     errorCode: 'rate_limit_smoke',
     errorMessage: 'PG runtime state smoke',
-    cooldownUntil: dueAt
+    cooldownUntil: dueAt,
+    traceId: 'pg-runtime-trace'
   })
   assert.equal(failure.changed, true, 'PG failure 写回应创建 runtime state')
 
@@ -100,6 +103,8 @@ try {
   const candidate = candidates.find((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint)
   assert.ok(candidate, 'PG due-for-probe 读取应返回刚写入的 key')
   assert.equal(candidate.apiKey, selected.key, 'PG due-for-probe 应能从加密凭据恢复目标 API Key')
+  const details = await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id])
+  assert.equal(details.get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))?.lastTraceId, 'pg-runtime-trace', 'PG runtime state 应返回最近失败 traceId')
 
   const dirty = await readDirtyReason(group.id)
   assert.equal(dirty, 'account_api_key_runtime', 'PG runtime state 写回应标记分组账号统计 dirty')
@@ -108,6 +113,8 @@ try {
   assert.equal(success.changed, true, 'PG success 写回应恢复 key 到 active')
   const afterSuccess = await listAccountApiKeyRuntimeStatesDueForProbeAsync(20)
   assert.equal(afterSuccess.some((item) => item.accountId === account.id && item.keyFingerprint === selected.fingerprint), false, 'PG success 后 key 不应继续进入 probe 候选')
+  const detailsAfterSuccess = await loadAccountApiKeyRuntimeDetailsByAccountIdsAsync([account.id])
+  assert.equal(detailsAfterSuccess.get(account.id)?.find((item) => item.keyFingerprintPrefix === selected.fingerprint.slice(0, 12))?.lastTraceId, undefined, 'PG success 后应清空最近失败 traceId')
 
   await assertProbeExplainUsesIndex(dueAt)
 
@@ -130,6 +137,17 @@ async function readDirtyReason(groupId: string): Promise<string | undefined> {
   )
   const row = result.rows[0] as { reason?: unknown } | undefined
   return typeof row?.reason === 'string' ? row.reason : undefined
+}
+
+async function activateSmokeAccount(accountId: string): Promise<void> {
+  const pool = await getPostgresPool()
+  await pool.query(
+    `UPDATE juhe_business.accounts
+     SET status = 'active', schedulable = 1, cooldown_until = NULL,
+         last_error_code = NULL, last_error_message = NULL, updated_at = NOW()
+     WHERE id = $1`,
+    [accountId]
+  )
 }
 
 async function assertProbeExplainUsesIndex(dueAt: string): Promise<void> {

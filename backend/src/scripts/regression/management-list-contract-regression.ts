@@ -71,6 +71,7 @@ try {
   assert.equal(listedAccount.usage.inputTokens, 1200, 'AI 账户列表 usage 应读取预聚合真实输入 token')
   assert.equal(listedAccount.usage.outputTokens, 800, 'AI 账户列表 usage 应读取预聚合真实输出 token')
   assert.equal(typeof listedAccount.currentConcurrency, 'number', 'AI 账户列表 currentConcurrency 字段应保持数字')
+  assert.equal(listedAccount.availabilityPresentation?.status, 'available', 'AI 账户列表必须返回统一用户状态 presentation')
   assertUsageContract(listedAccount.usage, 'AI 账户列表 usage')
   assertUsageContract(listedAccount.todayUsage, 'AI 账户列表 todayUsage')
 

@@ -6,6 +6,7 @@ import { getBusinessDatabase } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 import { scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountGroupBindingFromRow, loadAuthorizationQuotaExceededByAuthorizationIdAsync } from './account-summary.repository.js'
+import { authorizationRuntimeBlockingStatus } from './account-runtime-status.js'
 import { loadAccountApiKeyRuntimeSummariesByAccountIdsAsync } from './account-api-key-runtime-state.repository.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopesAsync, loadAuthorizationUsageSummariesForScopesAsync, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
@@ -22,9 +23,15 @@ interface AccountStatusProjectionRow {
   cooldown_until: string | null
   last_error_code: string | null
   last_error_message: string | null
+  last_error_trace_id: string | null
   last_health_check_at: string | null
+  next_health_check_at: string | null
+  last_health_check_status_code: number | null
   last_health_check_error_code: string | null
   last_health_check_error_message: string | null
+  last_health_check_trace_id: string | null
+  cooldown_retest_last_at: string | null
+  cooldown_retest_last_status_code: number | null
   last_used_at: string | null
   authorization_instance_source_account_id: string | null
   authorization_id: string | null
@@ -39,6 +46,15 @@ interface AccountStatusProjectionRow {
   source_cooldown_until: string | null
   source_last_error_code: string | null
   source_last_error_message: string | null
+  source_last_error_trace_id: string | null
+  source_cooldown_retest_last_at: string | null
+  source_cooldown_retest_last_status_code: number | null
+  source_last_health_check_at: string | null
+  source_next_health_check_at: string | null
+  source_last_health_check_status_code: number | null
+  source_last_health_check_error_code: string | null
+  source_last_health_check_error_message: string | null
+  source_last_health_check_trace_id: string | null
   binding_system_account_id: string | null
   bound_group_id: string | null
   bound_group_name: string | null
@@ -94,8 +110,10 @@ async function listAccountStatusProjectionsDirect(
   const rows = await client.query<AccountStatusProjectionRow>(`
     SELECT
       accounts.id, accounts.system_account_id, accounts.status, accounts.schedulable,
-      accounts.account_expires_at, accounts.cooldown_until, accounts.last_error_code, accounts.last_error_message,
-      accounts.last_health_check_at, accounts.last_health_check_error_code, accounts.last_health_check_error_message,
+      accounts.account_expires_at, accounts.cooldown_until, accounts.last_error_code, accounts.last_error_message, accounts.last_error_trace_id,
+      accounts.last_health_check_at, accounts.next_health_check_at, accounts.last_health_check_status_code,
+      accounts.last_health_check_error_code, accounts.last_health_check_error_message, accounts.last_health_check_trace_id,
+      accounts.cooldown_retest_last_at, accounts.cooldown_retest_last_status_code,
       accounts.last_used_at, accounts.authorization_instance_source_account_id,
       ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at,
       ra.limits_json AS authorization_limits_json,
@@ -106,6 +124,15 @@ async function listAccountStatusProjectionsDirect(
       source_accounts.cooldown_until AS source_cooldown_until,
       source_accounts.last_error_code AS source_last_error_code,
       source_accounts.last_error_message AS source_last_error_message,
+      source_accounts.last_error_trace_id AS source_last_error_trace_id,
+      source_accounts.cooldown_retest_last_at AS source_cooldown_retest_last_at,
+      source_accounts.cooldown_retest_last_status_code AS source_cooldown_retest_last_status_code,
+      source_accounts.last_health_check_at AS source_last_health_check_at,
+      source_accounts.next_health_check_at AS source_next_health_check_at,
+      source_accounts.last_health_check_status_code AS source_last_health_check_status_code,
+      source_accounts.last_health_check_error_code AS source_last_health_check_error_code,
+      source_accounts.last_health_check_error_message AS source_last_health_check_error_message,
+      source_accounts.last_health_check_trace_id AS source_last_health_check_trace_id,
       group_bindings.system_account_id AS binding_system_account_id,
       group_bindings.group_id AS bound_group_id, bound_groups.name AS bound_group_name,
       group_bindings.account_authorization_id AS bound_group_account_authorization_id,
@@ -157,6 +184,9 @@ async function listAccountStatusProjectionsDirect(
     const usage = isAuthorized
       ? authorizationToday.get(row.id) ?? emptyAccountUsageSummary()
       : ownerToday.get(row.id) ?? emptyAccountUsageSummary()
+    const effectiveStatus = isAuthorized
+      ? authorizationRuntimeBlockingStatus(row.authorization_status, row.authorization_expires_at) ?? row.status
+      : row.status
     return [{
       id: row.id,
       runtimeKey,
@@ -175,15 +205,30 @@ async function listAccountStatusProjectionsDirect(
       authorizationInstanceSourceAccountCooldownUntil: row.source_cooldown_until ?? undefined,
       authorizationInstanceSourceAccountLastErrorCode: row.source_last_error_code ?? undefined,
       authorizationInstanceSourceAccountLastErrorMessage: row.source_last_error_message ?? undefined,
+      authorizationInstanceSourceAccountLastErrorTraceId: row.source_last_error_trace_id ?? undefined,
+      authorizationInstanceSourceAccountCooldownRetestLastAt: row.source_cooldown_retest_last_at ?? undefined,
+      authorizationInstanceSourceAccountCooldownRetestLastStatusCode: row.source_cooldown_retest_last_status_code ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckAt: row.source_last_health_check_at ?? undefined,
+      authorizationInstanceSourceAccountNextHealthCheckAt: row.source_next_health_check_at ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckStatusCode: row.source_last_health_check_status_code ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckErrorCode: row.source_last_health_check_error_code ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckErrorMessage: row.source_last_health_check_error_message ?? undefined,
+      authorizationInstanceSourceAccountLastHealthCheckTraceId: row.source_last_health_check_trace_id ?? undefined,
       accountExpiresAt: row.account_expires_at ?? undefined,
-      status: row.status,
+      status: effectiveStatus,
       schedulable: row.schedulable === 1,
       cooldownUntil: row.cooldown_until ?? undefined,
-      lastErrorCode: row.last_error_code ?? undefined,
+      lastErrorCode: row.authorization_id ? undefined : row.last_error_code ?? undefined,
       lastErrorMessage: row.last_error_message ?? undefined,
+      lastErrorTraceId: row.authorization_id ? undefined : row.last_error_trace_id ?? undefined,
       lastHealthCheckAt: row.last_health_check_at ?? undefined,
+      nextHealthCheckAt: row.next_health_check_at ?? undefined,
+      lastHealthCheckStatusCode: row.last_health_check_status_code ?? undefined,
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
+      lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
+      cooldownRetestLastAt: row.authorization_id ? undefined : row.cooldown_retest_last_at ?? undefined,
+      cooldownRetestLastStatusCode: row.authorization_id ? undefined : row.cooldown_retest_last_status_code ?? undefined,
       apiKeyRuntime: apiKeyRuntime.get(row.id),
       todayUsage: usage,
       lastUsedAt: isAuthorized ? authorizationTotal.get(row.id)?.lastUsedAt : row.last_used_at ?? undefined
