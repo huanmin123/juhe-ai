@@ -160,16 +160,6 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	if err != nil {
 		return ListResult{}, err
 	}
-	if !pageValue.RangeReady {
-		return ListResult{
-			Items:      []ListItem{},
-			Page:       page,
-			PageSize:   pageSize,
-			Range:      rangeValue,
-			RangeReady: false,
-		}, nil
-	}
-
 	items := make([]ListItem, 0, len(pageValue.Rows))
 	for _, row := range pageValue.Rows {
 		items = append(items, listItem(row))
@@ -185,7 +175,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		Page:           page,
 		PageSize:       pageSize,
 		Range:          rangeValue,
-		RangeReady:     true,
+		RangeReady:     pageValue.RangeReady,
 	}, nil
 }
 

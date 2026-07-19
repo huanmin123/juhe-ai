@@ -45,10 +45,10 @@
 ## 核心结论
 
 - IP 统计不再支撑公开来源接口；如后续重新评估对外聚合读取，需要重新立项并同步接口契约、鉴权和日志边界。
-- 页面和接口只读预聚合表或窗口表，不能为了 IP 列表临时扫描 `usage_records`。
+- `client_ip_registry` 是 IP 管理列表成员的事实源；页面时间范围只选择每行统计窗口，不能决定 IP 是否出现在列表中。页面和接口不能为了 IP 列表临时扫描 `usage_records`。
 - IP 注册 Set 是懒加载性能优化，不是事实源；启动时不全量读取注册表，最终正确性依赖 SQLite 唯一约束和 `INSERT OR IGNORE`。
 - 首期只为 IP 写 `daily` 和范围窗口，避免把 IP 维度直接接入全套 `minute / hourly / weekly / monthly / totals` 造成写放大。
-- 统计 scope 使用 `ip_hash`，列表接口再关联 IP 注册表返回可展示 IP。
+- 统计 scope 使用 `ip_hash`；列表接口从 IP 注册表出发，按 `ip_hash + start_date + end_date` 左连接统计窗口。窗口内无用量的已注册 IP 仍返回，范围统计字段为零。
 - 当前 IP 管理只识别 IPv4；非 IPv4 来源不进入 IP 注册、统计和封禁策略。
 - IP 封禁是网关运行前置判断；standalone 请求路径只读 server 内存中的 active 策略快照和来源级运行态缓存，高性能 Redis cache driver 下按当前 `ip_hash` 读取单 IP shared cache，cache miss 只能走 `ip_hash` 索引回源，禁止加载全量 active 策略，也禁止把策略数组塞进 API Key runtime 响应。
 
@@ -64,10 +64,11 @@
   -> 写入 client_ip_stats_daily
   -> 有 account_id 时同步写入 client_ip_account_stats_daily
   -> 按 dirty IP 增量刷新 client_ip_usage_range_windows 和 client_ip_account_usage_range_windows
-  -> 管理页面只读 IP 维度窗口表；IP 详情只读 IP+账号窗口表
+  -> 管理列表以 client_ip_registry 为成员全集，左连接 IP 维度窗口表
+  -> IP 详情只读 IP+账号窗口表
 ```
 
-Node / Go 共存期仍由 Node 的 `client-ip-stats-aggregation` 与 range refresh 生产上述事实；Go `GET /ip-stats` 只消费已经 ready 的列表窗口，不写注册表、daily、range、dirty 或 stats state。
+Node / Go 共存期仍由 Node 的 `client-ip-stats-aggregation` 与 range refresh 生产上述事实；Go `GET /ip-stats` 只读注册表、策略表和 Node worker 生成的列表窗口，不写注册表、daily、range、dirty 或 stats state。窗口未 ready 时仍返回注册表成员与策略状态，但不读取部分窗口统计。
 
 封禁流程：
 
@@ -405,7 +406,7 @@ else:
 | 字段 | 说明 |
 | --- | --- |
 | IP | 规范化 IPv4 |
-| 状态 | 正常 / 已封禁 |
+| 状态 | 正常 / 白名单 / 已封禁 |
 | 请求次数 | 范围内请求数 |
 | 成功次数 | 范围内成功请求数 |
 | 失败次数 | 范围内失败请求数 |
@@ -428,7 +429,7 @@ else:
 
 - 统计范围：今天、最近 7 天、最近 31 天；页面默认最近 7 天。请求数、Token、成本、失败率、活跃天数和速度指标都跟随统计范围读取对应的 `client_ip_usage_range_windows` 预聚合窗口。
 - IP 关键词，精确或右侧前缀匹配。
-- 状态：全部、正常、已封禁。
+- 状态：全部、正常、白名单、已封禁。
 - 高消耗：成本或 token 大于阈值。
 - 高失败率：失败率大于阈值且请求数达到最小样本。
 - 最近活跃：最近 N 小时 / N 天有请求。
@@ -441,7 +442,7 @@ else:
 - 失败率降序
 - 最近使用时间降序；管理页按注册表全局 `last_seen_at` 排序。
 
-列表默认按请求次数降序，再按 IP hash 稳定排序；状态是否正常通过状态筛选解决，不参与默认排序。
+列表成员始终来自全部 `client_ip_registry`。IP 关键词、状态和分页作用于这个全量成员集合；时间范围只改变统计列及其排序值，不过滤窗口内无用量的 IP。列表默认按所选范围请求次数降序，再按 IP hash 稳定排序；状态是否正常通过状态筛选解决，不参与默认排序。
 
 ## 管理 API
 
@@ -456,7 +457,7 @@ POST /__aisys__/api/ip-stats/:ipHash/allowlist
 POST /__aisys__/api/ip-stats/:ipHash/unallowlist
 ```
 
-Node 当前仍保留上述六条完整产品接口作为未切流回退 owner。Go 渐进迁移已将 `GET /ip-stats` 列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条 admin-only 写接口纳入 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；详情继续由 Node 提供。Go 列表使用只读鉴权且不 touch session，只消费 Node worker 写入的 ready 预聚合范围窗口；四条 Go 写路由使用 `256 KiB` strict JSON、写 session touch、两层 write limiter、进程内 mutation guard、PostgreSQL 注册表行锁和提交后 `gateway:client-ip-policy-by-ip` shared cache version 失效。blacklist 支持永久、分钟或按固定 24 小时天数封禁，unallowlist / unblock 在无活动策略时返回 `disabledCount=0` 成功。策略 created / updated / disabled / expires 时间统一写成 Node `Date.toISOString()` 等价的 UTC 三位毫秒文本。详细门禁见 [W6 管理端客户端 IP 统计与策略迁移记录](../migration/W6-管理端客户端IP策略迁移记录.md)。
+Node 当前仍保留上述六条完整产品接口作为未切流回退 owner。Go 渐进迁移已将 `GET /ip-stats` 列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条 admin-only 写接口纳入 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；详情继续由 Node 提供。Go 列表使用只读鉴权且不 touch session，从注册表读取全量成员和策略状态，并仅在范围窗口 ready 时消费 Node worker 写入的完整预聚合统计；四条 Go 写路由使用 `256 KiB` strict JSON、写 session touch、两层 write limiter、进程内 mutation guard、PostgreSQL 注册表行锁和提交后 `gateway:client-ip-policy-by-ip` shared cache version 失效。blacklist 支持永久、分钟或按固定 24 小时天数封禁，unallowlist / unblock 在无活动策略时返回 `disabledCount=0` 成功。策略 created / updated / disabled / expires 时间统一写成 Node `Date.toISOString()` 等价的 UTC 三位毫秒文本。详细门禁见 [W6 管理端客户端 IP 统计与策略迁移记录](../migration/W6-管理端客户端IP策略迁移记录.md)。
 
 列表查询参数：
 
@@ -576,7 +577,7 @@ interface ClientIpBlacklistRequest {
 }
 ```
 
-`pageUpperBound` 是当前 offset、已返回行数和 `hasMore` probe 形成的渐进分页上界，不是精确总数。窗口未 ready、两张 dirty 表仍有待处理项或对应 state 尚未成功时，接口固定返回空 `items`、`pageUpperBound=0`、`hasMore=false`、`rangeReady=false`，并保留规范化后的 `page/pageSize/range`；列表请求不触发同步刷新。
+`pageUpperBound` 是当前 offset、已返回行数和 `hasMore` probe 形成的渐进分页上界，不是精确总数。窗口未 ready、两张 dirty 表仍有待处理项或对应 state 尚未成功时，接口继续从注册表返回全量 IP 成员和当前策略状态，使用空窗口连接保证统计字段统一为零，并返回 `rangeReady=false`；页面据此提示统计暂不可用。列表请求不触发同步刷新，也不暴露部分或过期窗口值。
 
 加入 / 移出白名单请求只允许可选原因：
 
@@ -620,11 +621,12 @@ GET /__aipublic__/access/info
 
 ### 查询影响
 
-- IP 列表按范围窗口表查询，默认和显式请求数降序使用固定 `ORDER BY request_count DESC, ip_hash ASC` 及 `idx_client_ip_range_requests`；其他排序使用静态 `CASE` 白名单查询。管理页按最后使用排序读取注册表全局 `last_seen_at`。
+- IP 列表从 `client_ip_registry` 出发，按 `ip_hash + start_date + end_date` 左连接 `client_ip_usage_range_windows`；状态与关键词在注册表全集上筛选，统计排序对缺失窗口行按零值处理。查询只读注册表、策略表和预聚合窗口，不扫描或聚合 `usage_records`。管理页按最后使用排序读取注册表全局 `last_seen_at`。
+- 全量成员语义下，按范围统计字段排序可能需要对筛选后的注册表候选集执行排序，范围窗口索引不能直接覆盖缺失窗口行的零值顺序。当前以正确返回全量成员为优先；高基数容量验收必须覆盖该排序成本，后续优化不能重新把窗口表变成列表成员源。
 - IP 详情按 `client_ip_account_usage_range_windows(ip_hash, start_date, end_date, 排序字段, account_id)` 读取当前页账号用量，再按当前页账号 ID 批量查业务库名称；详情请求不能读取 `usage_records`、不能实时聚合 daily，也不能为了精确总数执行大范围 `COUNT(*)`。
 - IP 管理不展示范围总统计卡片，也不在后端维护范围总聚合。
 - IP 速度指标只读窗口表中已经落表的 `average_first_token_ms`、`average_duration_ms` 和 `duration_ms_max`；`sum/count` 只作为后台刷新单个 IP 窗口行派生字段的输入，不回扫 `usage_records`。
-- 列表请求不触发窗口重建；未命中窗口或窗口已被新 daily 标记为 stale 时返回空列表和 `rangeReady=false`，等待后台 worker 生成。
+- 列表请求不触发窗口重建；未命中窗口或窗口已被新 daily 标记为 stale 时仍返回全量 IP 与状态，统计统一为零并标记 `rangeReady=false`，等待后台 worker 生成完整窗口。
 - `pageUpperBound` 只作为分页器上界，不能作为数量或范围总统计展示，不能为了精确总数额外执行大范围 `COUNT(*)` 或维护范围总聚合。
 - 服务端限制 IP 列表最大页码，避免恶意或误操作的超大 `OFFSET` 在高基数窗口上长时间跳行。
 - IP keyword 只按明文 IP / 聚合 IP 做精确或右侧前缀匹配，不支持 hash 搜索，也不支持任意前导通配符全表扫描。
@@ -694,7 +696,8 @@ GET /__aipublic__/access/info
 - Set 为空或冷 IP 未命中时，数据库唯一约束仍能保证注册正确。
 - 非 IPv4 来源不会进入 IP 注册、统计或封禁策略。
 - IP 列表可以按成本、Token、请求数、失败率和最近使用排序。
-- Go opt-in 列表只读 Node 生产的 ready 预聚合窗口，不写 daily、range、dirty 或 stats state；`000040` 不能被当作 writer / 详情迁移证据。
+- Node 与 Go 列表都以注册表为全量成员源，状态筛选覆盖窗口内无用量的 IP；时间范围只决定左连接的统计窗口。
+- Go opt-in 列表只读注册表、策略和 Node 生产的预聚合窗口，不写 daily、range、dirty 或 stats state；`000040` 不能被当作 writer / 详情迁移证据。
 - 封禁后网关请求被本地拒绝，解封后恢复。
 - IP 管理策略只表达封禁、解封、加入白名单和移出白名单，不承载 API Key、账户或分组路由配置。
 - 普通用户无法访问 IP 统计接口和页面。
