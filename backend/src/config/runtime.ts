@@ -242,7 +242,6 @@ const configuredRedisStateUrl = optionalStringConfig('JUHE_AI_REDIS_STATE_URL')
 const configuredRedisQueueUrl = optionalStringConfig('JUHE_AI_REDIS_QUEUE_URL')
 const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
-const configuredAllowSharedRedisUrls = booleanConfig('JUHE_AI_ALLOW_SHARED_REDIS_URLS', false)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
 const configuredDevelopmentAutoLoginUsername = optionalStringConfig('JUHE_AI_DEV_AUTO_LOGIN_USERNAME')
 
@@ -261,8 +260,7 @@ assertRuntimeModeDrivers({
   postgresUrl: configuredPostgresUrl,
   redisCacheUrl: configuredRedisCacheUrl,
   redisStateUrl: configuredRedisStateUrl,
-  redisQueueUrl: configuredRedisQueueUrl,
-  allowSharedRedisUrls: configuredAllowSharedRedisUrls
+  redisQueueUrl: configuredRedisQueueUrl
 })
 
 export const runtimeConfig: RuntimeConfig = {
@@ -524,7 +522,6 @@ function assertRuntimeModeDrivers(config: {
   redisCacheUrl?: string
   redisStateUrl?: string
   redisQueueUrl?: string
-  allowSharedRedisUrls: boolean
 }): void {
   if (config.runtimeMode === 'standalone') {
     if (config.databaseDriver !== 'sqlite') {
@@ -558,13 +555,11 @@ function assertRuntimeModeDrivers(config: {
   assertUrlConfig('JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl, ['redis:', 'rediss:'])
   assertUrlConfig('JUHE_AI_REDIS_STATE_URL', config.redisStateUrl, ['redis:', 'rediss:'])
   assertUrlConfig('JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl, ['redis:', 'rediss:'])
-  if (!config.allowSharedRedisUrls) {
-    assertDistinctRedisUrls([
-      ['JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl],
-      ['JUHE_AI_REDIS_STATE_URL', config.redisStateUrl],
-      ['JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl]
-    ])
-  }
+  assertCanonicalProductionRedisUrls([
+    ['JUHE_AI_REDIS_CACHE_URL', config.redisCacheUrl],
+    ['JUHE_AI_REDIS_STATE_URL', config.redisStateUrl],
+    ['JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl]
+  ])
 }
 
 function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {
@@ -582,29 +577,35 @@ function assertUrlConfig(name: string, value: string | undefined, protocols: str
   }
 }
 
-function assertDistinctRedisUrls(values: Array<[string, string | undefined]>): void {
+function assertCanonicalProductionRedisUrls(values: Array<[string, string | undefined]>): void {
   const seen = new Map<string, string>()
   for (const [name, value] of values) {
     if (!value) continue
+    const url = parseRedisUrl(value)
+    if (url.hostname === 'localhost' || url.hostname === '::1' || url.hostname === '[::1]') {
+      throw new Error(`${name} 在高性能模式下不能使用 localhost 或 ::1 loopback 别名，请使用 canonical 127.0.0.1`)
+    }
     const key = redisUrlResourceKey(value)
     const existing = seen.get(key)
     if (existing) {
-      throw new Error(`${name} 不能与 ${existing} 指向同一个 Redis DB；如明确接受共享风险，请设置 JUHE_AI_ALLOW_SHARED_REDIS_URLS=true`)
+      throw new Error(`${name} 不能与 ${existing} 指向同一个 Redis 进程；cache/state/queue 必须使用不同 host:port`)
     }
     seen.set(key, name)
   }
 }
 
 function redisUrlResourceKey(value: string): string {
-  let url: URL
+  const url = parseRedisUrl(value)
+  const port = url.port || '6379'
+  return `${url.protocol}//${url.hostname}:${port}`
+}
+
+function parseRedisUrl(value: string): URL {
   try {
-    url = new URL(value)
+    return new URL(value)
   } catch {
     throw new Error('Redis URL 必须是有效 URL')
   }
-  const port = url.port || '6379'
-  const db = url.pathname && url.pathname !== '/' ? url.pathname : '/0'
-  return `${url.protocol}//${url.hostname}:${port}${db}`
 }
 
 function logLevelConfig(name: string, fallback: LogLevel): LogLevel {

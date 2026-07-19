@@ -216,6 +216,7 @@
     "test:performance-mode-isolation": "tsx src/scripts/regression/performance-mode-isolation-regression.ts",
     "test:performance-no-sqlite-fallback": "tsx src/scripts/regression/performance-no-sqlite-fallback-regression.ts",
     "test:performance-redis-boundary": "tsx src/scripts/regression/performance-redis-boundary-regression.ts",
+    "test:redis-role-config": "tsx src/scripts/regression/redis-role-config-regression.ts",
     "test:repository-lookup-redis-cache-boundary": "tsx src/scripts/regression/repository-lookup-redis-cache-boundary-regression.ts",
     "test:storage-adapter-boundary": "tsx src/scripts/regression/storage-adapter-boundary-regression.ts",
     "test:performance-boundary": "pnpm test:performance-mode-isolation && pnpm test:performance-no-sqlite-fallback && pnpm test:performance-redis-boundary && pnpm test:repository-lookup-redis-cache-boundary && pnpm test:storage-adapter-boundary && pnpm test:db-service-operation-access-mode && pnpm test:postgres-client-boundary && pnpm test:sqlite-writer-boundary && pnpm test:provider-repository-driver && pnpm test:account-test-task-boundary && pnpm test:external-public-account-push-async-boundary && pnpm test:temporary-maintenance-worker",

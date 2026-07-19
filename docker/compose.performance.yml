@@ -73,7 +73,7 @@ services:
         exec redis-server
         --appendonly no
         --save ""
-        --maxmemory "$${REDIS_CACHE_MAXMEMORY:-512mb}"
+        --maxmemory "$${REDIS_CACHE_MAXMEMORY:-768mb}"
         --maxmemory-policy allkeys-lru
         --requirepass "$${REDIS_CACHE_PASSWORD}"
     environment:
@@ -98,14 +98,14 @@ services:
       - -c
       - >
         exec redis-server
-        --appendonly yes
-        --appendfsync everysec
-        --maxmemory "$${REDIS_STATE_MAXMEMORY:-512mb}"
+        --appendonly no
+        --save ""
+        --maxmemory "$${REDIS_STATE_MAXMEMORY:-2048mb}"
         --maxmemory-policy noeviction
         --requirepass "$${REDIS_STATE_PASSWORD}"
     environment:
       REDIS_STATE_PASSWORD: ${JUHE_AI_REDIS_STATE_PASSWORD:?JUHE_AI_REDIS_STATE_PASSWORD is required}
-      REDIS_STATE_MAXMEMORY: ${JUHE_AI_REDIS_STATE_MAXMEMORY:-512mb}
+      REDIS_STATE_MAXMEMORY: ${JUHE_AI_REDIS_STATE_MAXMEMORY:-2048mb}
     ports:
       - "${JUHE_AI_MIDDLEWARE_BIND:-127.0.0.1}:${JUHE_AI_REDIS_STATE_PORT:-6380}:6379"
     volumes:
@@ -127,12 +127,15 @@ services:
         exec redis-server
         --appendonly yes
         --appendfsync everysec
-        --maxmemory "$${REDIS_QUEUE_MAXMEMORY:-1024mb}"
+        --save ""
+        --auto-aof-rewrite-min-size "$${REDIS_QUEUE_AOF_REWRITE_MIN_SIZE:-1gb}"
+        --maxmemory "$${REDIS_QUEUE_MAXMEMORY:-2048mb}"
         --maxmemory-policy noeviction
         --requirepass "$${REDIS_QUEUE_PASSWORD}"
     environment:
       REDIS_QUEUE_PASSWORD: ${JUHE_AI_REDIS_QUEUE_PASSWORD:?JUHE_AI_REDIS_QUEUE_PASSWORD is required}
-      REDIS_QUEUE_MAXMEMORY: ${JUHE_AI_REDIS_QUEUE_MAXMEMORY:-1024mb}
+      REDIS_QUEUE_AOF_REWRITE_MIN_SIZE: ${JUHE_AI_REDIS_QUEUE_AOF_REWRITE_MIN_SIZE:-1gb}
+      REDIS_QUEUE_MAXMEMORY: ${JUHE_AI_REDIS_QUEUE_MAXMEMORY:-2048mb}
     ports:
       - "${JUHE_AI_MIDDLEWARE_BIND:-127.0.0.1}:${JUHE_AI_REDIS_QUEUE_PORT:-6381}:6379"
     volumes:
