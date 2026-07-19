@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -24,9 +25,9 @@ func TestServiceUpdateTagsPublishesScopedAccountStaticChangeAfterCommit(t *testi
 	if got, want := grantees.accountIDs, []string{"account-1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("grantee lookup account ids = %#v, want %#v", got, want)
 	}
-	if got, want := publisher.inputs, []AccountStaticChangeInput{{
+	if got, want := publisher.inputs, []accountpagedata.ChangeInput{{
 		AccountID: "account-1", OwnerSystemAccountIDs: []string{"grantee-a", "grantee-b", "owner-1", "sys_request"},
-		FieldMask: []string{"tags"}, FilterChanged: true, PageChanged: true,
+		Operation: accountpagedata.OperationUpsert, FieldMask: []string{"tags"}, FilterChanged: true, PageChanged: true,
 	}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("published inputs = %#v, want %#v", got, want)
 	}
@@ -45,9 +46,9 @@ func TestServiceUpdateTagsFallsBackToAllScopesWhenGranteeLookupFails(t *testing.
 	}); err != nil {
 		t.Fatalf("post-commit lookup and publish failures must not fail UpdateTags(): %v", err)
 	}
-	if got, want := publisher.inputs, []AccountStaticChangeInput{{
+	if got, want := publisher.inputs, []accountpagedata.ChangeInput{{
 		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-1", "sys_request"},
-		FieldMask: []string{"tags"}, FilterChanged: true, PageChanged: true, AllScopes: true,
+		Operation: accountpagedata.OperationUpsert, FieldMask: []string{"tags"}, FilterChanged: true, PageChanged: true, AllScopes: true,
 	}}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("published fallback inputs = %#v, want %#v", got, want)
 	}
@@ -118,15 +119,19 @@ func (s *accountAuthorizationGranteeReaderStub) ListAccountAuthorizationGranteeI
 }
 
 type accountStaticChangePublisherStub struct {
-	inputs     []AccountStaticChangeInput
+	inputs     []accountpagedata.ChangeInput
 	err        error
 	contextErr error
 }
 
-func (s *accountStaticChangePublisherStub) PublishAccountStaticChange(ctx context.Context, input AccountStaticChangeInput) error {
+func (s *accountStaticChangePublisherStub) PublishAccountStaticChange(ctx context.Context, input accountpagedata.ChangeInput) error {
 	s.contextErr = ctx.Err()
 	input.OwnerSystemAccountIDs = append([]string(nil), input.OwnerSystemAccountIDs...)
 	input.FieldMask = append([]string(nil), input.FieldMask...)
 	s.inputs = append(s.inputs, input)
 	return s.err
+}
+
+func (s *accountStaticChangePublisherStub) PublishAccountRuntimeChange(context.Context, accountpagedata.ChangeInput) error {
+	return nil
 }

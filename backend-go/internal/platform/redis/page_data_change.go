@@ -18,8 +18,10 @@ import (
 
 const (
 	pageDataAccountsStaticDomain  = "accounts.static"
+	pageDataAccountsRuntimeDomain = "accounts.runtime"
 	pageDataAccountsOptionsDomain = "accounts.options"
 	pageDataUpsertOperation       = "upsert"
+	pageDataDeleteOperation       = "delete"
 	pageDataRangeResetOperation   = "range_reset"
 	pageDataMaxEventOwners        = 256
 	pageDataMaxFieldMask          = 32
@@ -31,7 +33,7 @@ var (
 	pageDataRedisNamespaceRule = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,64}$`)
 	pageDataDomains            = map[string]struct{}{
 		pageDataAccountsStaticDomain:  {},
-		"accounts.runtime":            {},
+		pageDataAccountsRuntimeDomain: {},
 		pageDataAccountsOptionsDomain: {},
 		"usage.records":               {},
 		"announcements.public":        {},
@@ -81,8 +83,8 @@ type PageDataChangePublisher struct {
 	epoch   string
 }
 
-// AccountStaticUpsertInput describes an accounts.static upsert event.
-type AccountStaticUpsertInput struct {
+// AccountChangeInput describes one account entity change event.
+type AccountChangeInput struct {
 	AccountID             string
 	OwnerSystemAccountIDs []string
 	FieldMask             []string
@@ -153,15 +155,29 @@ func (p *PageDataChangePublisher) NewRangeResetEvents(domain string, ownerIDs []
 // NewAccountStaticUpsertEvent creates one Node-compatible accounts.static
 // upsert event. Unlike range resets, entity events are intentionally not split
 // because each event represents one account mutation.
-func (p *PageDataChangePublisher) NewAccountStaticUpsertEvent(input AccountStaticUpsertInput) (PageDataChangeEvent, error) {
+func (p *PageDataChangePublisher) NewAccountStaticUpsertEvent(input AccountChangeInput) (PageDataChangeEvent, error) {
+	return p.newAccountChangeEvent(pageDataAccountsStaticDomain, pageDataUpsertOperation, input)
+}
+
+// NewAccountStaticDeleteEvent creates one accounts.static delete event.
+func (p *PageDataChangePublisher) NewAccountStaticDeleteEvent(input AccountChangeInput) (PageDataChangeEvent, error) {
+	return p.newAccountChangeEvent(pageDataAccountsStaticDomain, pageDataDeleteOperation, input)
+}
+
+// NewAccountRuntimeUpsertEvent creates one accounts.runtime upsert event.
+func (p *PageDataChangePublisher) NewAccountRuntimeUpsertEvent(input AccountChangeInput) (PageDataChangeEvent, error) {
+	return p.newAccountChangeEvent(pageDataAccountsRuntimeDomain, pageDataUpsertOperation, input)
+}
+
+func (p *PageDataChangePublisher) newAccountChangeEvent(domain string, operation string, input AccountChangeInput) (PageDataChangeEvent, error) {
 	if p == nil {
 		return PageDataChangeEvent{}, errors.New("page data publisher is required")
 	}
 	event := PageDataChangeEvent{
 		EventID:               p.newEventID(),
-		Domain:                pageDataAccountsStaticDomain,
+		Domain:                domain,
 		EntityID:              strings.TrimSpace(input.AccountID),
-		Operation:             pageDataUpsertOperation,
+		Operation:             operation,
 		FieldMask:             append([]string(nil), input.FieldMask...),
 		OwnerSystemAccountIDs: normalizePageDataOwners(input.OwnerSystemAccountIDs),
 		MembershipChanged:     input.MembershipChanged,
@@ -306,12 +322,12 @@ func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 		if !event.MembershipChanged || !event.OrderChanged || !event.FilterChanged || !event.PageChanged {
 			return fmt.Errorf("%s range_reset change flags must all be true", event.Domain)
 		}
-	case pageDataUpsertOperation:
-		if event.Domain != pageDataAccountsStaticDomain {
-			return fmt.Errorf("unsupported page data upsert domain %q", event.Domain)
+	case pageDataUpsertOperation, pageDataDeleteOperation:
+		if event.Domain != pageDataAccountsStaticDomain && event.Domain != pageDataAccountsRuntimeDomain {
+			return fmt.Errorf("unsupported page data entity domain %q", event.Domain)
 		}
 		if event.EntityID == "" || event.EntityID != strings.TrimSpace(event.EntityID) {
-			return errors.New("accounts.static upsert entityId must be non-empty and trimmed")
+			return errors.New("account page data entityId must be non-empty and trimmed")
 		}
 		if len(event.FieldMask) > pageDataMaxFieldMask {
 			return fmt.Errorf("page data fieldMask count exceeds %d", pageDataMaxFieldMask)
