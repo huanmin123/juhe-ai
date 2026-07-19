@@ -8,6 +8,7 @@ export function accountCredentialFingerprint(credentials: unknown): string {
   const record = credentials as Record<string, unknown>
   return sensitiveFingerprint(
     apiKeyCredentialFingerprintSource(record)
+      ?? record.identity_token
       ?? record.refresh_token
       ?? record.access_token
       ?? record.email
@@ -37,8 +38,17 @@ export function mergeAccountCredentialsForUpdate(account: AccountSummary, reques
       preserveCredentialText(credentials, account.credentials, 'api_key_strategy')
       preserveCredentialArray(credentials, account.credentials, 'api_key_weights')
     }
-  } else if (account.type === 'oauth') {
-    for (const key of [
+  } else if (account.type === 'oauth' || account.type === 'google_oauth') {
+    for (const key of account.type === 'google_oauth'
+        ? [
+            'access_token',
+            'refresh_token',
+            'expires_at',
+            'client_id',
+            'client_secret',
+            'quota_project_id'
+          ]
+        : [
       'access_token',
       'refresh_token',
       'expires_at',
@@ -48,7 +58,7 @@ export function mergeAccountCredentialsForUpdate(account: AccountSummary, reques
       'account_id',
       'chatgpt_user_id',
       'plan_type'
-    ]) {
+        ]) {
       preserveCredentialText(credentials, account.credentials, key)
     }
   }

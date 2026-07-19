@@ -2,6 +2,8 @@ import type { AccountModelMapping, AccountSupportedEndpointMode } from '../domai
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../modules/model-pricing/model-catalog.service.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
+  GEMINI_COUNT_TOKENS_FAMILY,
+  GEMINI_EMBED_CONTENT_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
@@ -10,6 +12,7 @@ import {
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION,
   OPENAI_RESPONSES_FAMILY,
+  isGptVendorCode,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
   isHybridProviderCode,
@@ -26,36 +29,82 @@ import {
 import { normalizeAccountSupportedModelsInput } from './account-supported-models.repository.js'
 import { isOpenAIProtocolProviderCode, isOpenAIProtocolProviderCodeAsync, listAnthropicProtocolProviderCodes, listAnthropicProtocolProviderCodesAsync, listGeminiProtocolProviderCodes, listGeminiProtocolProviderCodesAsync, listOpenAIProtocolProviderCodes, listOpenAIProtocolProviderCodesAsync } from './provider.repository.js'
 
-export function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string, systemAccountId: string): string[] | undefined {
+export function normalizeAccountSupportedModelsForProvider(
+  value: unknown,
+  providerCode: string,
+  systemAccountId: string,
+  providerProfile?: ProviderProtocolProfileDefinition,
+  filterIncompatibleDefaults = false
+): string[] | undefined {
   const models = normalizeAccountSupportedModelsInput(value)
   if (!models?.length) return models
   if (isHybridProviderCode(providerCode)) return models
 
-  const providerModels = new Set(listProviderModelCatalog({
+  const allProviderModels = listProviderModelCatalog({
     providerCode,
-    systemAccountId
-  }).map((item) => item.model))
-  const invalidModels = models.filter((model) => !providerModels.has(model))
+    systemAccountId,
+    includeUnpriced: true
+  })
+  const providerModels = new Set(allProviderModels.filter((item) => providerModelSupportsProtocolProfile(item.supportedApiProtocols, providerProfile)).map((item) => item.model))
+  const allModelIds = new Set(allProviderModels.map((item) => item.model))
+  const invalidModels = models.filter((model) => !providerModels.has(model) && !(filterIncompatibleDefaults && allModelIds.has(model)))
   if (invalidModels.length > 0) {
     throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
   }
-  return models
+  return filterIncompatibleDefaults ? models.filter((model) => providerModels.has(model)) : models
 }
 
-export async function normalizeAccountSupportedModelsForProviderAsync(value: unknown, providerCode: string, systemAccountId: string): Promise<string[] | undefined> {
+export async function normalizeAccountSupportedModelsForProviderAsync(
+  value: unknown,
+  providerCode: string,
+  systemAccountId: string,
+  providerProfile?: ProviderProtocolProfileDefinition,
+  filterIncompatibleDefaults = false
+): Promise<string[] | undefined> {
   const models = normalizeAccountSupportedModelsInput(value)
   if (!models?.length) return models
   if (isHybridProviderCode(providerCode)) return models
 
-  const providerModels = new Set((await listProviderModelCatalogAsync({
+  const allProviderModels = await listProviderModelCatalogAsync({
     providerCode,
-    systemAccountId
-  })).map((item) => item.model))
-  const invalidModels = models.filter((model) => !providerModels.has(model))
+    systemAccountId,
+    includeUnpriced: true
+  })
+  const providerModels = new Set(allProviderModels.filter((item) => providerModelSupportsProtocolProfile(item.supportedApiProtocols, providerProfile)).map((item) => item.model))
+  const allModelIds = new Set(allProviderModels.map((item) => item.model))
+  const invalidModels = models.filter((model) => !providerModels.has(model) && !(filterIncompatibleDefaults && allModelIds.has(model)))
   if (invalidModels.length > 0) {
     throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
   }
-  return models
+  return filterIncompatibleDefaults ? models.filter((model) => providerModels.has(model)) : models
+}
+
+export function providerModelSupportsProtocolProfile(
+  modelProtocols: readonly string[],
+  providerProfile?: ProviderProtocolProfileDefinition
+): boolean {
+  if (!providerProfile || modelProtocols.length === 0) return true
+  if (isGptVendorCode(providerProfile.providerCode)) return true
+  const profileProtocols = new Set<string>(
+    (providerProfile.endpointFamilies ?? [])
+      .map((family) => typeof family === 'string' ? family : family.code)
+      .filter((value): value is string => Boolean(value))
+  )
+  if (profileProtocols.size === 0) {
+    if (isOpenAIProtocolProfile(providerProfile)) {
+      profileProtocols.add(OPENAI_CHAT_COMPLETIONS_FAMILY)
+      profileProtocols.add(OPENAI_RESPONSES_FAMILY)
+    } else if (isAnthropicProtocolProfile(providerProfile)) {
+      profileProtocols.add(ANTHROPIC_MESSAGES_FAMILY)
+    } else if (isGeminiProtocolProfile(providerProfile)) {
+      profileProtocols.add(GEMINI_GENERATE_CONTENT_FAMILY)
+      profileProtocols.add(GEMINI_STREAM_GENERATE_CONTENT_FAMILY)
+      profileProtocols.add(GEMINI_COUNT_TOKENS_FAMILY)
+      profileProtocols.add(GEMINI_EMBED_CONTENT_FAMILY)
+      profileProtocols.add('interactions')
+    }
+  }
+  return modelProtocols.some((protocol) => profileProtocols.has(protocol))
 }
 
 export function normalizeAccountModelMappingsForProvider(

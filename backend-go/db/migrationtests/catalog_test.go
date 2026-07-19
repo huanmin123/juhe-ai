@@ -3,7 +3,6 @@ package migrationtests
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -42,23 +41,44 @@ func TestDeepSeekProviderOptionsMigrationMatchesCurrentContract(t *testing.T) {
 		}
 	}
 
-	catalog, err := migrationcatalog.Inspect(os.DirFS(migrationPath(".")))
+}
+
+func TestProviderAuthProtocolCatchUpMigrationUpgradesVersion59Databases(t *testing.T) {
+	const migrationName = "000060_w2_provider_auth_protocol_schema_20260718.sql"
+	source, err := os.ReadFile(migrationPath(migrationName))
 	if err != nil {
-		t.Fatalf("inspect migration catalog: %v", err)
+		t.Fatalf("read %s: %v", migrationName, err)
 	}
-	gotTail := catalog.Entries[len(catalog.Entries)-4:]
-	wantTail := []migrationcatalog.Entry{
-		{Version: 56, Name: "000056_w7_page_data_dirty_domains.sql"},
-		{Version: 57, Name: "000057_w1b_account_temporary_unavailable_continuous_probe.sql"},
-		{Version: 58, Name: "000058_w8_announcements.sql"},
-		{Version: 59, Name: "000059_w2_published_gateway_model_catalog_snapshots.sql"},
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+
+	for _, want := range []string{
+		"ADD COLUMN IF NOT EXISTS long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false",
+		"DROP CONSTRAINT IF EXISTS accounts_type_check",
+		"ADD CONSTRAINT accounts_type_check CHECK (type IN ('api_key', 'oauth', 'google_oauth'))",
+		"DROP CONSTRAINT IF EXISTS accounts_health_check_endpoint_mode_check",
+		"'interactions_json', 'interactions_sse'",
+		"'xai', 'xai', 'xAI / Grok', 'openai'",
+		"'profile_xai_openai_v1'",
+		"'profile_gemini_native_v1beta'",
+		"'[\"api_key\",\"google_oauth\"]'",
+		"'gemini_v1beta_interactions'",
+		"('profile_gemini_native_v1beta', 'interactions'",
+		"'grp_default_xai_sys_admin'",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
 	}
-	if !reflect.DeepEqual(gotTail, wantTail) {
-		t.Fatalf("migration catalog tail = %+v, want %+v", gotTail, wantTail)
+
+	providerPosition := strings.Index(sql, "'xai', 'xai', 'xAI / Grok', 'openai'")
+	profilePosition := strings.Index(sql, "'profile_xai_openai_v1'")
+	groupPosition := strings.Index(sql, "'grp_default_xai_sys_admin'")
+	if providerPosition < 0 || profilePosition <= providerPosition || groupPosition <= providerPosition {
+		t.Fatalf("%s must seed xAI provider before its profile and default group", migrationName)
 	}
 }
 
-func TestMigrationCatalogContainsOnlyUniqueVersionedSQLFiles(t *testing.T) {
+func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testing.T) {
 	catalog, err := migrationcatalog.Inspect(os.DirFS(migrationPath(".")))
 	if err != nil {
 		t.Fatalf("inspect migration catalog: %v", err)
@@ -66,11 +86,18 @@ func TestMigrationCatalogContainsOnlyUniqueVersionedSQLFiles(t *testing.T) {
 	if len(catalog.Entries) == 0 {
 		t.Fatal("migration catalog must not be empty")
 	}
-	if got := catalog.Entries[len(catalog.Entries)-1].Version; got != migrationcatalog.CurrentSchemaVersion {
-		t.Fatalf(
-			"latest migration version = %d, current schema version = %d",
-			got,
-			migrationcatalog.CurrentSchemaVersion,
-		)
+	for index, entry := range catalog.Entries {
+		wantVersion := int64(index + 1)
+		if entry.Version != wantVersion {
+			t.Fatalf("migration catalog entry %d has version %d, want contiguous version %d", index, entry.Version, wantVersion)
+		}
+	}
+
+	wantLatest := migrationcatalog.Entry{
+		Version: migrationcatalog.CurrentSchemaVersion,
+		Name:    "000061_w2_sync_provider_model_catalog_20260718.sql",
+	}
+	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
+		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)
 	}
 }

@@ -102,13 +102,17 @@ function isOpenAIOAuthGroupSummary(group: Awaited<ReturnType<typeof findGroupSum
     && isGptVendorCode(group.providerCode))
 }
 
-openAIOAuthRouter.post('/auth-url', async (req, res) => {
+openAIOAuthRouter.post('/auth-url', async (req, res, next) => {
   const parsed = authUrlSchema.safeParse(req.body ?? {})
   if (!parsed.success) {
     res.status(400).json(badRequest('OpenAI 授权链接参数无效'))
     return
   }
-  res.json(ok(await generateOpenAIAuthURL()))
+  try {
+    res.json(ok(await generateOpenAIAuthURL(getRequestAccessScope()?.systemAccountId)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 openAIOAuthRouter.post('/create-from-code', mutationGuard({
@@ -161,6 +165,7 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       sessionId: parsed.data.sessionId,
       code,
       state,
+      ownerSystemAccountId: requestAccess?.systemAccountId,
       proxyUrl: await resolveProxyUrlForProfileAsync(parsed.data.proxyProfileId)
     })
     const account = await runLoggedOperationAsync(async () => {
@@ -371,6 +376,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
       sessionId: parsed.data.sessionId,
       code,
       state,
+      ownerSystemAccountId: requestAccess?.systemAccountId,
       proxyUrl: account.proxyProfileId ? await resolveProxyUrlForProfileAsync(account.proxyProfileId) : undefined
     })
     const updated = await runLoggedOperationAsync(async () => {

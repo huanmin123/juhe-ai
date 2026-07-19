@@ -7,6 +7,7 @@ export type ProviderModelApiProtocol =
   | 'stream_generate_content'
   | 'count_tokens'
   | 'embed_content'
+  | 'interactions'
   | 'completions'
   | 'images'
   | 'audio'
@@ -51,12 +52,15 @@ export interface RawModelPricing {
   output_cost_per_image?: number
   output_cost_per_image_token?: number
   input_cost_per_audio_token?: number
+  input_cost_per_audio_token_priority?: number
+  input_cost_per_audio_token_flex?: number
   output_cost_per_audio_token?: number
   context_window_tokens?: number
   max_input_tokens?: number
   max_output_tokens?: number
   max_tokens?: number
   long_context_input_token_threshold?: number
+  long_context_input_token_threshold_inclusive?: boolean
   long_context_input_cost_multiplier?: number
   long_context_output_cost_multiplier?: number
   shutdown_date?: string

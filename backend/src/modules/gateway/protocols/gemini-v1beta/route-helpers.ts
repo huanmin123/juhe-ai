@@ -2,7 +2,7 @@ import type { Request } from 'express'
 
 import type { DispatchAccountSecret } from '../../../../storage/repositories.js'
 import type { ProviderModelCatalogItem } from '../../../model-pricing/model-catalog.service.js'
-import { geminiEndpointFamilyFromPath } from '../../../../domain/gemini-endpoint-modes.js'
+import { GEMINI_INTERACTIONS_FAMILY, geminiEndpointFamilyFromPath } from '../../../../domain/gemini-endpoint-modes.js'
 import {
   GEMINI_COUNT_TOKENS_FAMILY,
   GEMINI_EMBED_CONTENT_FAMILY,
@@ -28,7 +28,7 @@ export interface GeminiModelsListResponse {
 }
 
 export function buildGeminiUpstreamUrlsForAccount(account: GeminiUpstreamAccount, req: Request): string[] {
-  if (account.type !== 'api_key') {
+  if (account.type !== 'api_key' && account.type !== 'google_oauth') {
     return []
   }
   if (!isGeminiNativeRequest(req)) {
@@ -37,16 +37,28 @@ export function buildGeminiUpstreamUrlsForAccount(account: GeminiUpstreamAccount
   if (isGeminiModelsRequest(req)) {
     return []
   }
-  return [buildGeminiUpstreamUrl(account.baseUrl, req.originalUrl)]
+  const family = geminiEndpointFamilyFromPath(req.originalUrl || req.path)
+  const stream = family === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+    || (family === GEMINI_INTERACTIONS_FAMILY && requestIndicatesSse(req))
+  return [buildGeminiUpstreamUrl(account.baseUrl, req.originalUrl, { stream })]
 }
 
-export function buildGeminiUpstreamUrl(baseUrl: string, pathAndQuery: string): string {
+export function buildGeminiUpstreamUrl(baseUrl: string, pathAndQuery: string, options: { stream?: boolean } = {}): string {
   const { path, query } = normalizedGeminiPathAndQuery(pathAndQuery)
   const base = normalizedGeminiBaseUrl(baseUrl)
   const basePath = base.pathname.replace(/\/+$/, '')
   const suffixPath = basePath.endsWith('/v1beta') ? path.replace(/^\/v1beta(?=\/|$)/, '') : path
   base.pathname = `${basePath}${suffixPath === '/' ? '' : suffixPath}`.replace(/\/{2,}/g, '/')
-  mergeGeminiQuery(base.searchParams, query, geminiEndpointFamilyFromPath(path) === GEMINI_STREAM_GENERATE_CONTENT_FAMILY)
+  const endpointFamily = geminiEndpointFamilyFromPath(path)
+  if (endpointFamily === GEMINI_INTERACTIONS_FAMILY) {
+    query.delete('alt')
+  }
+  mergeGeminiQuery(
+    base.searchParams,
+    query,
+    endpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+      || (options.stream === true && endpointFamily !== GEMINI_INTERACTIONS_FAMILY)
+  )
   return base.toString()
 }
 
@@ -61,11 +73,17 @@ export function isGeminiNativeRequest(req: Request): boolean {
   const method = req.method.toUpperCase()
   const family = geminiEndpointFamilyFromPath(req.originalUrl || req.path)
   if (method === 'GET' && family === GEMINI_MODELS_FAMILY) return true
+  if ((method === 'GET' || method === 'DELETE') && family === GEMINI_INTERACTIONS_FAMILY) return true
   if (method !== 'POST') return false
   return family === GEMINI_GENERATE_CONTENT_FAMILY
     || family === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
     || family === GEMINI_COUNT_TOKENS_FAMILY
     || family === GEMINI_EMBED_CONTENT_FAMILY
+    || family === GEMINI_INTERACTIONS_FAMILY
+}
+
+export function isGeminiInteractionsRequest(req: Request): boolean {
+  return geminiEndpointFamilyFromPath(req.originalUrl || req.path) === GEMINI_INTERACTIONS_FAMILY
 }
 
 export function buildGeminiModelsResponse(catalog: ProviderModelCatalogItem[]): GeminiModelsListResponse {
@@ -107,6 +125,14 @@ function mergeGeminiQuery(target: URLSearchParams, source: URLSearchParams, stre
   if (stream && !target.has('alt')) {
     target.set('alt', 'sse')
   }
+}
+
+function requestIndicatesSse(req: Request): boolean {
+  const query = new URLSearchParams((req.originalUrl || req.path || '').split('?', 2)[1] ?? '')
+  if (query.get('stream')?.toLowerCase() === 'true') return true
+  if (req.body && typeof req.body === 'object' && (req.body as Record<string, unknown>).stream === true) return true
+  const accept = req.headers.accept
+  return typeof accept === 'string' && accept.toLowerCase().includes('text/event-stream')
 }
 
 function supportedGenerationMethods(item: ProviderModelCatalogItem): string[] {

@@ -20,6 +20,7 @@ import {
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_RESPONSES_FAMILY,
   isGptVendorCode,
+  isXaiProviderCode,
   isAnthropicProtocolProfile,
   isGeminiProtocolProfile,
   isHybridProviderCode,
@@ -54,7 +55,7 @@ export const chatEndpointModes: AccountSupportedEndpointMode[] = ['chat_json', '
 export const responsesEndpointModes: AccountSupportedEndpointMode[] = ['responses_json', 'responses_sse']
 export const openAIEndpointModes: AccountSupportedEndpointMode[] = [...chatEndpointModes, ...responsesEndpointModes]
 export const anthropicAccountEndpointModes: AccountSupportedEndpointMode[] = ['messages_json', 'messages_sse', 'message_token_counting']
-export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content']
+export const geminiAccountEndpointModes: AccountSupportedEndpointMode[] = ['generate_content_json', 'generate_content_sse', 'count_tokens', 'embed_content', 'interactions_json', 'interactions_sse']
 export const allAccountEndpointModes: AccountSupportedEndpointMode[] = [
   ...openAIEndpointModes,
   ...anthropicAccountEndpointModes,
@@ -114,6 +115,7 @@ export function canSelectClientCompatibility(account: AccountProviderProfileLike
     && accountProviderProtocolKind(account) === 'openai_v1'
     && (
       isGptVendorCode(account.providerCode)
+      || isXaiProviderCode(account.providerCode)
       || profileSupportsCodexResponsesChatBridge(account)
     )
 }
@@ -135,6 +137,7 @@ export function accountClientCompatibilityCapabilities(account: AccountProviderP
     return ['codex_responses']
   }
   return isGptVendorCode(account.providerCode)
+    || isXaiProviderCode(account.providerCode)
     || profileSupportsCodexResponsesChatBridge(account)
     ? ['openai_standard', 'codex_responses']
     : ['openai_standard']
@@ -199,7 +202,8 @@ export function endpointModesForProfile(profile?: AccountProviderProfileLike): A
     { family: GEMINI_GENERATE_CONTENT_FAMILY, modes: ['generate_content_json'] },
     { family: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, modes: ['generate_content_sse'] },
     { family: GEMINI_COUNT_TOKENS_FAMILY, modes: ['count_tokens'] },
-    { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] }
+    { family: GEMINI_EMBED_CONTENT_FAMILY, modes: ['embed_content'] },
+    { family: 'interactions', modes: ['interactions_json', 'interactions_sse'] }
   ])
   if (protocolKind === 'openai_v1') return endpointModesForFamilies(
     profile,

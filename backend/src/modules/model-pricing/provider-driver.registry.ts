@@ -3,6 +3,7 @@ import {
   DEEPSEEK_PROVIDER_CODE,
   GEMINI_PROVIDER_CODE,
   GLM_PROVIDER_CODE,
+  XAI_PROVIDER_CODE,
   isOpenAICompatibleProviderCode,
   normalizeProviderToken
 } from '../../domain/provider-protocol.js'
@@ -11,6 +12,7 @@ import { deepSeekModelPricingData } from './deepseek-model-pricing.data.js'
 import { geminiModelPricingData } from './gemini-model-pricing.data.js'
 import { glmModelPricingData } from './glm-model-pricing.data.js'
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
+import { xAIModelPricingData } from './xai-model-pricing.data.js'
 import type {
   ModelPricingProviderDriver,
   ModelPricingProviderDriverHelpers,
@@ -23,6 +25,7 @@ const anthropicModels = anthropicModelPricingData as readonly RawModelPricing[]
 const deepSeekModels = deepSeekModelPricingData as readonly RawModelPricing[]
 const geminiModels = geminiModelPricingData as readonly RawModelPricing[]
 const glmModels = glmModelPricingData as readonly RawModelPricing[]
+const xAIModels = xAIModelPricingData as readonly RawModelPricing[]
 
 const openAIModelPricingDriver: ModelPricingProviderDriver = {
   id: 'openai-compatible',
@@ -110,12 +113,30 @@ const geminiModelPricingDriver: ModelPricingProviderDriver = {
   }
 }
 
+const xAIModelPricingDriver: ModelPricingProviderDriver = {
+  id: 'xai',
+  pricingSource: 'xai-official-pricing-2026-07-18',
+  rawModels: xAIModels,
+  usesIncludedCacheReadUsage: true,
+  supportsProvider(providerCode) {
+    return normalizeProviderToken(providerCode) === XAI_PROVIDER_CODE
+  },
+  buildModelCandidates: buildXAIModelCandidates,
+  getModelReleaseDate(item, helpers) {
+    return item.release_date ?? helpers.extractModelReleaseDate(item.model)
+  },
+  inferModelApiProtocols(item) {
+    return item.supported_api_protocols?.length ? [...item.supported_api_protocols] : []
+  }
+}
+
 const modelPricingProviderDrivers: readonly ModelPricingProviderDriver[] = [
   openAIModelPricingDriver,
   deepSeekModelPricingDriver,
   glmModelPricingDriver,
   anthropicModelPricingDriver,
-  geminiModelPricingDriver
+  geminiModelPricingDriver,
+  xAIModelPricingDriver
 ]
 
 export function listModelPricingProviderDrivers(): readonly ModelPricingProviderDriver[] {
@@ -198,6 +219,11 @@ function buildGeminiModelCandidates(model: string): string[] {
   }
 
   return Array.from(candidates)
+}
+
+function buildXAIModelCandidates(model: string): string[] {
+  const withoutDate = model.replace(modelDateSuffixPattern, '')
+  return withoutDate === model ? [] : [withoutDate]
 }
 
 const modelDateSuffixPattern = /-(?:\d{4}-\d{2}-\d{2}|\d{8})$/

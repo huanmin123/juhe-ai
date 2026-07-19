@@ -123,12 +123,12 @@ export function findOpenAIAccountForGroup(
         AND accounts.provider_code = ?
         AND accounts.deleted_at IS NULL
         AND (
-          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
             AND source_accounts.deleted_at IS NULL
             AND source_accounts.provider_code = ?
-            AND source_accounts.type IN ('api_key', 'oauth')
+            AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
           )
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
@@ -211,12 +211,12 @@ export async function findOpenAIAccountForGroupAsync(
       AND accounts.provider_code = ?
       AND accounts.deleted_at IS NULL
       AND (
-        (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+        (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
         OR (
           accounts.authorization_instance_authorization_id IS NOT NULL
           AND source_accounts.deleted_at IS NULL
           AND source_accounts.provider_code = ?
-          AND source_accounts.type IN ('api_key', 'oauth')
+          AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
         )
       )
       AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
@@ -371,6 +371,16 @@ export function listRecoverableUnavailableOpenAIAccountsForGroup(
 
 export function runtimeOpenAIAccountCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
   const output: Record<string, unknown> = {}
+  for (const key of [
+    'access_token',
+    'refresh_token',
+    'expires_at',
+    'client_id',
+    'client_secret',
+    'quota_project_id'
+  ]) {
+    copyRuntimeCredentialText(credentials, output, key)
+  }
   copyRuntimeCredentialText(credentials, output, 'account_id')
   copyRuntimeCredentialText(credentials, output, 'api_key_strategy')
   copyRuntimeCredentialText(credentials, output, 'service_tier_override')
@@ -641,9 +651,7 @@ function openAIAccountSecretFromRow(
     return undefined
   }
   const apiKeyEntries = accountApiKeyEntries(credentials)
-  const apiKey = resourceType === 'oauth'
-    ? typeof credentials.access_token === 'string' ? credentials.access_token : ''
-    : apiKeyEntries[0]?.key ?? ''
+  const apiKey = runtimeCredentialSource(resourceType, credentials, apiKeyEntries[0]?.key)
   if (!apiKey) {
     return undefined
   }
@@ -746,6 +754,19 @@ function openAIAccountSecretFromRow(
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
     credentials: runtimeOpenAIAccountCredentials(credentials)
   }
+}
+
+function runtimeCredentialSource(
+  accountType: AccountType,
+  credentials: Record<string, unknown>,
+  apiKey: string | undefined
+): string {
+  if (accountType === 'oauth' || accountType === 'google_oauth') {
+    return typeof credentials.access_token === 'string' && credentials.access_token
+      ? credentials.access_token
+      : typeof credentials.refresh_token === 'string' ? credentials.refresh_token : ''
+  }
+  return apiKey ?? ''
 }
 
 function normalizeGatewayEndpointModesForRuntime(

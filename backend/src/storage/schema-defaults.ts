@@ -28,6 +28,8 @@ import {
   GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
+  XAI_OPENAI_V1_PROFILE_ID,
+  XAI_PROVIDER_CODE,
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID,
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
@@ -49,6 +51,14 @@ export const DEFAULT_OPENAI_COMPATIBLE_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 OpenAI 兼容分组',
   providerCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+  description: ''
+} as const
+
+export const DEFAULT_XAI_GROUP = {
+  id: 'grp_default_xai_sys_admin',
+  systemAccountId: 'sys_admin',
+  name: '默认 xAI 分组',
+  providerCode: XAI_PROVIDER_CODE,
   description: ''
 } as const
 
@@ -95,6 +105,7 @@ export const DEFAULT_HYBRID_OPENAI_CHAT_GROUP = {
 export const DEFAULT_BUILT_IN_GROUPS = [
   DEFAULT_OPENAI_COMPATIBLE_GROUP,
   DEFAULT_GPT_GROUP,
+  DEFAULT_XAI_GROUP,
   DEFAULT_DEEPSEEK_GROUP,
   DEFAULT_ANTHROPIC_GROUP,
   DEFAULT_GEMINI_GROUP,
@@ -108,6 +119,7 @@ export const DEFAULT_GLOBAL_SETTINGS = [
 ] as const
 
 export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2'] as const
+export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.3'] as const
 export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'] as const
 export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'] as const
 export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro'] as const
@@ -134,12 +146,22 @@ export const OPENAI_COMPATIBLE_PROVIDER_SEED = {
   defaultSupportedModels: DEFAULT_OPENAI_SUPPORTED_MODELS
 } as const
 
+export const XAI_PROVIDER_SEED = {
+  id: XAI_PROVIDER_CODE,
+  code: XAI_PROVIDER_CODE,
+  name: 'xAI / Grok',
+  parentCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+  description: 'xAI 官方供应商，使用官方 API Key 接入 OpenAI v1 Chat Completions 与 Responses 文本协议',
+  enabled: 1,
+  defaultSupportedModels: DEFAULT_XAI_SUPPORTED_MODELS
+} as const
+
 export const ANTHROPIC_PROVIDER_SEED = {
   id: ANTHROPIC_PROVIDER_CODE,
   code: ANTHROPIC_PROVIDER_CODE,
   name: 'Anthropic',
   parentCode: null,
-  description: 'Anthropic 官方供应商，当前支持官方 API Key 与 Anthropic Messages 原生协议直连',
+  description: 'Anthropic 官方供应商，使用 API Key 接入 Anthropic Messages 原生协议',
   enabled: 1,
   defaultSupportedModels: DEFAULT_ANTHROPIC_SUPPORTED_MODELS
 } as const
@@ -149,7 +171,7 @@ export const GEMINI_PROVIDER_SEED = {
   code: GEMINI_PROVIDER_CODE,
   name: 'Gemini',
   parentCode: null,
-  description: 'Google Gemini 官方供应商，默认使用 Gemini v1beta 原生协议；Codex / OpenAI 客户端通过 Gemini OpenAI Chat 兼容档案接入',
+  description: 'Google Gemini 官方供应商，支持 API Key 或 Google OAuth 接入 Gemini v1beta Generate Content 与 Interactions；OpenAI 客户端可使用兼容档案',
   enabled: 1,
   defaultSupportedModels: DEFAULT_GEMINI_SUPPORTED_MODELS
 } as const
@@ -187,6 +209,7 @@ export const HYBRID_PROVIDER_SEED = {
 export const DEFAULT_PROVIDER_SEEDS = [
   OPENAI_COMPATIBLE_PROVIDER_SEED,
   GPT_PROVIDER_SEED,
+  XAI_PROVIDER_SEED,
   DEEPSEEK_PROVIDER_SEED,
   ANTHROPIC_PROVIDER_SEED,
   GEMINI_PROVIDER_SEED,
@@ -362,6 +385,21 @@ export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED = {
   endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
 } as const
 
+export const XAI_OPENAI_V1_PROFILE_SEED = {
+  id: XAI_OPENAI_V1_PROFILE_ID,
+  providerCode: XAI_PROVIDER_CODE,
+  name: 'xAI / OpenAI v1',
+  description: 'xAI 官方 API Key 协议档案，原生承载 OpenAI v1 Chat Completions 与 Responses 文本接口',
+  enabled: 1,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://api.x.ai/v1',
+  defaultHealthCheckModel: 'grok-4.3',
+  accountTypes: ['api_key'],
+  capabilities: ['responses', 'chat', 'passthrough'],
+  endpointFamilies: [OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY]
+} as const
+
 export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
   id: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
   providerCode: ANTHROPIC_PROVIDER_CODE,
@@ -387,14 +425,15 @@ export const GEMINI_NATIVE_V1BETA_PROFILE_SEED = {
   protocolVersion: GEMINI_PROTOCOL_VERSION,
   baseUrl: 'https://generativelanguage.googleapis.com',
   defaultHealthCheckModel: 'gemini-3.5-flash',
-  accountTypes: ['api_key'],
-  capabilities: ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'models', 'passthrough'],
+  accountTypes: ['api_key', 'google_oauth'],
+  capabilities: ['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'interactions', 'models', 'passthrough'],
   endpointFamilies: [
     GEMINI_MODELS_FAMILY,
     GEMINI_GENERATE_CONTENT_FAMILY,
     GEMINI_STREAM_GENERATE_CONTENT_FAMILY,
     GEMINI_COUNT_TOKENS_FAMILY,
-    GEMINI_EMBED_CONTENT_FAMILY
+    GEMINI_EMBED_CONTENT_FAMILY,
+    'interactions'
   ]
 } as const
 
@@ -529,6 +568,7 @@ export const HYBRID_ANTHROPIC_MESSAGES_V1_PROFILE_SEED = {
 export const DEFAULT_PROVIDER_PROTOCOL_PROFILE_SEEDS = [
   OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_SEED,
   GPT_OPENAI_V1_PROFILE_SEED,
+  XAI_OPENAI_V1_PROFILE_SEED,
   DEEPSEEK_ANTHROPIC_V1_PROFILE_SEED,
   DEEPSEEK_OPENAI_V1_PROFILE_SEED,
   ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED,

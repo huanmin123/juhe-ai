@@ -177,7 +177,7 @@
                 @change="normalizeCustomModelRequestCapabilities(customModelForm)"
               />
             </a-form-item>
-            <a-form-item label="默认思考级别" class="custom-model-grid-wide">
+          <a-form-item v-if="editingBuiltInModel && activeProvider?.code !== 'gpt'" label="默认思考级别" class="custom-model-grid-wide">
               <a-select
                 v-model:value="customModelForm.defaultReasoningEffort"
                 allow-clear
@@ -570,7 +570,7 @@ async function reloadActiveProviderModels(force = false) {
   modelLoadError.value = ''
   try {
     const scopedProviders = await loadProviderOptionsResource({
-      force,
+      force: force || !isManagementView.value,
       includeDisabled: isManagementView.value,
       isManagementView: isManagementView.value,
       systemAccountId: modelQuery.systemAccountId
@@ -632,7 +632,8 @@ function currentUserSystemAccountId(): string {
 function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefined {
   const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value, {
     includeRequestCapabilities: true,
-    includePrices: canManageModelPrices.value
+    includePrices: canManageModelPrices.value,
+    includeDefaultReasoningEffort: false
   })
   if (!payload) {
     message.warning('请填写模型 ID')
@@ -648,7 +649,8 @@ function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefine
 function buildBuiltInModelPayload(): Partial<ProviderModelUpsertPayload> | undefined {
   const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value, {
     includeRequestCapabilities: true,
-    includePrices: true
+    includePrices: true,
+    includeDefaultReasoningEffort: true
   })
   if (!payload) return undefined
   const { model: _model, scope: _scope, configurationTemplateId: _configurationTemplateId, ...configuration } = payload

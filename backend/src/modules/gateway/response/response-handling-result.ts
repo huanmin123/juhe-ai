@@ -24,6 +24,7 @@ export type UpstreamResponseHandlingResult =
     usage: ParsedUsage
     firstTokenMs?: number
     responseBodyText?: string
+    responseResourceId?: string
     bodyOmission?: StreamBodyOmissionSummary
     errorPayload: Record<string, unknown>
   }

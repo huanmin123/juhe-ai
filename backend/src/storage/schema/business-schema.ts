@@ -139,6 +139,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cache_write_1h_usd_per_1m REAL,
       service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
       long_context_input_token_threshold INTEGER,
+      long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
       long_context_input_cost_multiplier REAL,
       long_context_output_cost_multiplier REAL,
       image_input_usd_per_1m REAL,
@@ -338,7 +339,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_last_status_code INTEGER,
       temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model TEXT NOT NULL,
-      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')),
+      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')),
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,
@@ -928,13 +929,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE deleted_at IS NULL
         AND status IN ('active', 'pending_test')
         AND (status = 'pending_test' OR schedulable = 1)
-        AND type IN ('api_key', 'oauth');
+        AND type IN ('api_key', 'oauth', 'google_oauth');
     CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_candidate_order
       ON accounts(cooldown_until ASC, priority ASC, created_at ASC, id ASC, health_check_endpoint_mode)
       WHERE deleted_at IS NULL
         AND cooldown_until IS NOT NULL
         AND schedulable = 1
-        AND type IN ('api_key', 'oauth')
+        AND type IN ('api_key', 'oauth', 'google_oauth')
         AND status IN ('temporary_unavailable', 'rate_limited');
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)

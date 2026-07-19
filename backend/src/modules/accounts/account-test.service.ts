@@ -484,7 +484,7 @@ function isMessagesTestEndpointMode(mode: AccountSupportedEndpointMode | undefin
 }
 
 function isGeminiTestEndpointMode(mode: AccountSupportedEndpointMode | undefined): boolean {
-  return mode === 'generate_content_json' || mode === 'generate_content_sse'
+  return mode === 'generate_content_json' || mode === 'generate_content_sse' || mode === 'interactions_json' || mode === 'interactions_sse'
 }
 
 function accountTestDiagnosticStatusCode(downstreamStatusCode: number, success: boolean, lastAttempt?: UpstreamAttempt): number | undefined {

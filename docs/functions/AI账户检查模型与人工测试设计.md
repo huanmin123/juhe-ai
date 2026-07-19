@@ -14,7 +14,7 @@
 
 ## 健康检查请求形态
 
-- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`。
+- 当前账户必须保存不可空 `healthCheckEndpointMode`，数据库字段为 `health_check_endpoint_mode`。允许 `chat_json`、`chat_sse`、`responses_json`、`responses_sse`、`messages_json`、`messages_sse`、`generate_content_json`、`generate_content_sse`、`interactions_json`、`interactions_sse`。
 - 后台激活、周期健康、冷却恢复、质量确认、运行态恢复和账户默认测试直接使用账户保存的精确 mode，不再从协议族推导 JSON / SSE。
 - 新账户默认：GPT 官方 API Key / OAuth 使用 `responses_sse`；通用 OpenAI-compatible、DeepSeek、GLM 和 Gemini OpenAI profile 使用 `chat_json`；Anthropic profile 使用 `messages_json`；Gemini Native 使用 `generate_content_json`。
 - 首选 mode 未启用时，优先取 `supported_endpoint_modes` 中第一个已启用 JSON mode，再取第一个可检查 mode；没有任何可检查 mode 时拒绝保存，不做旧字段兼容或运行时协议猜测。
@@ -70,7 +70,7 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 
 账户向用户暴露必填的“健康检查请求形态”，只能选择账户已经启用的 JSON / Streaming mode。保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。
 
-混合供应商账户可以从自身上游接口能力中选择 Chat Completions、Responses、Messages 或 GenerateContent 的 JSON / Streaming 生成形态，不受账户初始协议档案裁剪。人工测试和后台检查必须按本次选中的精确 mode 构造下游诊断请求，再由混合账户模型映射决定实际上游协议和模型；`message_token_counting`、`count_tokens`、`embed_content` 等工具接口不进入检查协议选项。
+Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent 或 Interactions 的 JSON / Streaming 生成形态；混合供应商账户可以选择 Chat Completions、Responses、Messages 或 GenerateContent。人工测试和后台检查必须按本次选中的精确 mode 构造下游诊断请求，再由混合账户模型映射决定实际上游协议和模型；`message_token_counting`、`count_tokens`、`embed_content` 等工具接口不进入检查协议选项。
 
 ## 4. 默认检查模型
 

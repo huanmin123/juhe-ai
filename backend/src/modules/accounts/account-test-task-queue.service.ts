@@ -878,9 +878,17 @@ async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal:
     : undefined
   const apiKey = draft.type === 'oauth'
     ? stringCredential(credentials.access_token)
-    : selectedApiKeyEntry?.key
+    : draft.type === 'google_oauth'
+      ? stringCredential(credentials.access_token) || stringCredential(credentials.refresh_token)
+      : selectedApiKeyEntry?.key
   if (!apiKey) {
-    throw new DraftAccountConfigurationError(draft.type === 'oauth' ? 'OAuth 草稿缺少 Access Token' : '账户草稿缺少 API Key')
+    throw new DraftAccountConfigurationError(
+      draft.type === 'oauth'
+        ? 'OAuth 草稿缺少 Access Token'
+        : draft.type === 'google_oauth'
+          ? 'Google OAuth 草稿缺少 Access Token 或 Refresh Token'
+          : '账户草稿缺少 API Key'
+    )
   }
   const runtimeCredentials = runtimeOpenAIAccountCredentials({
     ...credentials,

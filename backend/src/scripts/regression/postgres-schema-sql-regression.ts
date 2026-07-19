@@ -1,17 +1,21 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 
 import { buildPostgresSchemaSql, collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
+import { applyBusinessSchema } from '../../storage/schema/business-schema.js'
 
 const statements = collectPostgresSchemaStatements()
 const sql = buildPostgresSchemaSql()
 const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/000005_w1b_public_accounts.sql', 'utf8')
+const providerAuthProtocolCatchUpMigration = readFileSync('../backend-go/db/migrations/000060_w2_provider_auth_protocol_schema_20260718.sql', 'utf8')
 const healthCheckEndpointModeOfflineMigration = readFileSync(
   'src/scripts/maintenance/account-health-check-endpoint-mode-migration.ts',
   'utf8'
 )
 const customProviderModelRepositorySource = readFileSync('src/storage/custom-provider-models.repository.ts', 'utf8')
 const providerModelCatalogRepositorySource = readFileSync('src/storage/provider-model-catalog.repository.ts', 'utf8')
+const postgresSeedDefaultsSource = readFileSync('src/storage/postgres-seed-defaults.ts', 'utf8')
 const dataRetentionSource = readFileSync('src/storage/data-retention.repository.ts', 'utf8')
 const usagePartitionSource = readFileSync('src/storage/postgres-usage-record-partitions.ts', 'utf8')
 const tableMonitorSource = readFileSync('src/storage/table-monitor.repository.ts', 'utf8')
@@ -65,6 +69,8 @@ const listBuiltInProviderModelsAsyncSqlMatch = listBuiltInProviderModelsAsyncSou
 assert.ok(listBuiltInProviderModelsAsyncSqlMatch, '必须精确提取 listBuiltInProviderModelsAsync 的 PostgreSQL SQL 模板')
 const listBuiltInProviderModelsAsyncSql = listBuiltInProviderModelsAsyncSqlMatch[1]
 
+assertFreshSqliteAllowsGeminiInteractionsHealthModes()
+
 assert.ok(statements.length > 100, 'PostgreSQL schema 应从现有 SQLite DDL 收集到完整建表和索引语句')
 assert.deepEqual(
   [...schemaNames].sort(),
@@ -93,16 +99,38 @@ for (const schemaName of schemaNames) {
 }
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
-assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false[\s\S]+catalog_visible boolean NOT NULL DEFAULT true/, 'Node PG 内置模型布尔字段必须与 Goose 保持一致')
-assert.match(customProviderModelsCreateSql, /catalog_visible boolean NOT NULL DEFAULT true/, 'Node PG 自定义模型发布字段必须与 Goose 58 保持 boolean')
+assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG 长上下文阈值边界字段必须与 Go migration 保持 boolean')
+assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
+assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')
+assert.match(customProviderModelsCreateSql, /catalog_visible boolean NOT NULL DEFAULT true/, 'Node PG 自定义模型发布字段必须与 Goose 59 保持 boolean')
 assert.match(pageDataDirtyDomainsCreateSql, /generation bigint NOT NULL[\s\S]+is_dirty boolean NOT NULL DEFAULT TRUE[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 页面数据脏域必须与 Goose 56 保持一致')
-assert.match(gatewayModelCatalogSnapshotsCreateSql, /created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 发布模型快照时间字段必须与 Goose 58 保持一致')
+assert.match(gatewayModelCatalogSnapshotsCreateSql, /created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 发布模型快照时间字段必须与 Goose 59 保持一致')
 assert.match(listBuiltInProviderModelsAsyncSql, /FROM juhe_business\.provider_model_catalog\b/, '必须提取 Node PG 模型目录查询的目标 SQL 模板')
 assert.match(
   listBuiltInProviderModelsAsyncSql,
-  /catalog_visible = true\b/i,
-  'Node PG 模型目录查询必须对 PostgreSQL boolean 可见性字段使用布尔谓词'
+  /catalog_visible = TRUE(?=\s|,|\)|;|$)/,
+  'Node PG 模型目录查询必须对 boolean 可见性字段使用 boolean 谓词'
 )
+assert.doesNotMatch(listBuiltInProviderModelsAsyncSql, /catalog_visible = 1\b/, 'Node PG 模型目录查询不得对 boolean 字段使用整数谓词')
+assert.match(
+  postgresSeedDefaultsSource,
+  /model\.longContextInputTokenThreshold \?\? null,\s*model\.longContextInputTokenThresholdInclusive === true,\s*model\.longContextInputCostMultiplier \?\? null/,
+  'Node PG 模型目录 seed 必须在长上下文阈值后写入 inclusive boolean'
+)
+assert.match(
+  postgresSeedDefaultsSource,
+  /long_context_input_token_threshold, long_context_input_token_threshold_inclusive, long_context_input_cost_multiplier/,
+  'Node PG 模型目录 INSERT 必须包含长上下文阈值 inclusive 列'
+)
+assert.match(postgresSeedDefaultsSource, /Array\.from\(\{ length: 38 \}/, 'Node PG 模型目录 seed 必须为 38 个参数生成占位符')
+assert.match(postgresSeedDefaultsSource, /model\.supportsPromptCaching === true,\s*model\.catalogVisible !== false,/, 'Node PG 模型目录 seed 必须向 boolean 字段传递 boolean，不能传 0/1')
+assert.match(sql, /health_check_endpoint_mode text NOT NULL CHECK \(health_check_endpoint_mode IN \([^)]*'interactions_json', 'interactions_sse'\)\)/, 'PG 当前 accounts schema 必须允许 Gemini Interactions 健康检查模式')
+assert.match(`${goPublicAccountsMigration}\n${providerAuthProtocolCatchUpMigration}`, /health_check_endpoint_mode text NOT NULL[\s\S]+?'interactions_json', 'interactions_sse'/, 'Go/PG baseline 与追赶迁移组合后必须允许 Gemini Interactions 健康检查模式')
+assert.match(providerAuthProtocolCatchUpMigration, /ADD COLUMN IF NOT EXISTS long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false/, '000059 后升级必须独立补齐长上下文阈值边界列')
+assert.match(providerAuthProtocolCatchUpMigration, /DROP CONSTRAINT IF EXISTS accounts_type_check[\s\S]+ADD CONSTRAINT accounts_type_check CHECK \(type IN \('api_key', 'oauth', 'google_oauth'\)\)/, '000059 后升级必须独立扩展账户认证类型约束')
+assert.match(providerAuthProtocolCatchUpMigration, /DROP CONSTRAINT IF EXISTS accounts_health_check_endpoint_mode_check[\s\S]+interactions_json[\s\S]+interactions_sse/, '000059 后升级必须独立扩展 Gemini Interactions 健康检查约束')
+assert.match(providerAuthProtocolCatchUpMigration, /'xai', 'xai', 'xAI \/ Grok', 'openai'[\s\S]+'profile_xai_openai_v1'[\s\S]+'grp_default_xai_sys_admin'/, '000059 后升级补齐的 xAI 元数据必须与 Node 默认种子一致')
+assert.match(providerAuthProtocolCatchUpMigration, /'profile_gemini_native_v1beta'[\s\S]+'\["api_key","google_oauth"\]'[\s\S]+'gemini_v1beta_interactions'[\s\S]+\('profile_gemini_native_v1beta', 'interactions'/, '000059 后升级必须独立补齐 Gemini Google OAuth 与 Interactions 元数据')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
 assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')
@@ -168,10 +196,10 @@ assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_model text NOT NULL/, 'AI 账户新建 schema 应直接包含账户检查模型字段')
-assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse'\)\)/, 'AI 账户新建 schema 应直接包含受约束的健康检查请求形态')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse'\)\)/, 'AI 账户新建 schema 应直接包含受约束的健康检查请求形态')
 assert.doesNotMatch(sql, /CREATE TABLE IF NOT EXISTS accounts[\s\S]+last_successful_test_model text/, 'AI 账户新建 schema 不应继续包含旧的最后成功测试模型字段')
 assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_model text NOT NULL/, 'Go 公开账户 baseline 应包含账户检查模型字段')
-assert.match(goPublicAccountsMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.accounts[\s\S]+health_check_endpoint_mode text NOT NULL[\s\S]+CHECK \(health_check_endpoint_mode IN \('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse'\)\)/, 'Go 公开账户 baseline 应包含受约束的健康检查请求形态')
+assert.match(`${goPublicAccountsMigration}\n${providerAuthProtocolCatchUpMigration}`, /health_check_endpoint_mode text NOT NULL[\s\S]+?interactions_json[\s\S]+?interactions_sse/, 'Go 公开账户 baseline 与追赶迁移组合后应包含完整健康检查请求形态')
 assert.match(healthCheckEndpointModeOfflineMigration, /LOCK TABLE juhe_business\.accounts IN ACCESS EXCLUSIVE MODE/, '历史字段切换必须通过停服离线事务锁定账户表')
 assert.match(healthCheckEndpointModeOfflineMigration, /RENAME COLUMN health_check_endpoint_family TO health_check_endpoint_mode/, '离线迁移必须直接替换旧列，不能双字段兼容')
 assert.match(healthCheckEndpointModeOfflineMigration, /if \(input\.providerCode === 'gpt'\) return 'responses_sse'/, '离线迁移必须把全部 GPT 账户切到 Responses Streaming')
@@ -265,6 +293,55 @@ for (const statement of statements) {
 }
 
 console.log('postgres-schema-sql-regression passed')
+
+function assertFreshSqliteAllowsGeminiInteractionsHealthModes(): void {
+  const database = new DatabaseSync(':memory:')
+  try {
+    applyBusinessSchema(database)
+    database.exec(`
+      INSERT INTO system_accounts (
+        id, username, display_name, password_hash, created_at, updated_at
+      ) VALUES (
+        'system-gemini-interactions', 'gemini-interactions', 'Gemini Interactions', 'test-hash', '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z'
+      );
+      INSERT INTO providers (
+        id, code, name, created_at, updated_at
+      ) VALUES (
+        'provider-gemini-interactions', 'gemini', 'Gemini', '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z'
+      );
+      INSERT INTO protocols (
+        id, code, version, name, created_at, updated_at
+      ) VALUES (
+        'protocol-gemini-interactions', 'gemini', 'v1beta', 'Gemini v1beta', '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z'
+      );
+      INSERT INTO provider_protocol_profiles (
+        id, provider_code, name, protocol_code, protocol_version, base_url,
+        default_health_check_model, account_types_json, capabilities_json, created_at, updated_at
+      ) VALUES (
+        'profile-gemini-interactions', 'gemini', 'Gemini Interactions', 'gemini', 'v1beta',
+        'https://generativelanguage.googleapis.com', 'gemini-3.5-flash', '["api_key"]', '["interactions"]',
+        '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z'
+      );
+      INSERT INTO accounts (
+        id, system_account_id, provider_code, provider_protocol_profile_id, protocol_code, protocol_version,
+        name, type, credentials_encrypted, health_check_model, health_check_endpoint_mode, created_at, updated_at
+      ) VALUES
+        (
+          'account-gemini-interactions-json', 'system-gemini-interactions', 'gemini', 'profile-gemini-interactions', 'gemini', 'v1beta',
+          'Gemini Interactions JSON', 'api_key', 'encrypted-json', 'gemini-3.5-flash', 'interactions_json',
+          '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z'
+        ),
+        (
+          'account-gemini-interactions-sse', 'system-gemini-interactions', 'gemini', 'profile-gemini-interactions', 'gemini', 'v1beta',
+          'Gemini Interactions SSE', 'api_key', 'encrypted-sse', 'gemini-3.5-flash', 'interactions_sse',
+          '2026-07-18T00:00:00.000Z', '2026-07-18T00:00:00.000Z'
+        );
+    `)
+    assert.equal(database.prepare("SELECT count(*) AS count FROM accounts WHERE health_check_endpoint_mode IN ('interactions_json', 'interactions_sse')").get()?.count, 2)
+  } finally {
+    database.close()
+  }
+}
 
 function assertPostgresCreateTableOrder(input: typeof statements): void {
   const tableNamesBySchema = new Map<string, Set<string>>()

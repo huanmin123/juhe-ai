@@ -22,7 +22,7 @@ export function requestModel(req: Request): string | undefined {
 
 export function requestStream(req: Request): boolean {
   const bodyState = getGatewayRequestBodyState(req)
-  return bodyState?.stream ?? req.body?.stream === true
+  return (bodyState?.stream ?? req.body?.stream === true) || requestGeminiInteractionStreamQuery(req)
 }
 
 export function requestEndpoint(req: Request): string {
@@ -55,4 +55,11 @@ function requestModelFromGeminiPath(req: Request): string | undefined {
   } catch {
     return match[1]
   }
+}
+
+function requestGeminiInteractionStreamQuery(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'GET') return false
+  const [path, query = ''] = (req.originalUrl || req.path || '').split('?', 2)
+  if (!/^\/(?:v1beta\/)?interactions\/[^/]+$/i.test(path)) return false
+  return new URLSearchParams(query).get('stream')?.toLowerCase() === 'true'
 }

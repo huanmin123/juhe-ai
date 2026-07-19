@@ -316,7 +316,7 @@ function finalizeGeminiBody(
     if (toolConfig) output.toolConfig = toolConfig
   }
   const serviceTier = geminiServiceTierFromSource(body)
-  if (serviceTier) output.serviceTier = serviceTier
+  if (serviceTier) output.service_tier = serviceTier
   return output
 }
 
@@ -573,7 +573,7 @@ function geminiThinkingLevelFromSource(body: JsonRecord): string | undefined {
   const reasoning = objectValue(body.reasoning)
   const effort = stringValue(reasoning?.effort) ?? stringValue(body.reasoning_effort)
   if (effort === 'minimal' || effort === 'low' || effort === 'medium' || effort === 'high') {
-    return effort.toUpperCase()
+    return effort
   }
   return undefined
 }

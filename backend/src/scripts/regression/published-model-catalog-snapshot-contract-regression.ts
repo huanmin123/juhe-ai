@@ -15,6 +15,7 @@ assert.match(snapshotService, /createSharedJsonCache<PublishedModelCatalogCacheE
 assert.match(snapshotService, /findGatewayModelCatalogSnapshotAsync/, 'Redis miss 只能读取一行持久化快照')
 assert.doesNotMatch(snapshotService, /listCachedProviderModelCatalogAsync/, '请求读取服务不得调用运行态模型目录构建')
 assert.match(snapshotService, /rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync/, '写路径必须提供系统账户级快照重建入口')
+assert.match(snapshotService, /OPENAI_COMPATIBLE_PROVIDER_CODE/, 'OpenAI 静态目录必须覆盖所有 OpenAI-compatible 供应商模型')
 
 const fixedResponses = readFileSync(new URL('../../modules/gateway/response/fixed-responses.ts', import.meta.url), 'utf8')
 assert.match(fixedResponses, /readPublishedModelCatalogResponseAsync/, '/v1/models 必须直读已发布最终响应')

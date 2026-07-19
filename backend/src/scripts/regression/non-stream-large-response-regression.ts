@@ -7,6 +7,7 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { gatewayRawBodyHardLimit } from '../../modules/gateway/request/body.js'
 import { logger } from '../../shared/logger.js'
 
@@ -28,14 +29,16 @@ const [
   databaseModule,
   repositories,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const largeFieldSizeBytes = 8 * 1024 * 1024
@@ -79,6 +82,7 @@ async function main(): Promise<void> {
     const group = repositories.createGroup({ name: '大响应回归分组', providerCode: 'gpt' }, access)
     const account = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: '大响应回归账户',
       type: 'api_key',
       credentials: {
@@ -87,8 +91,16 @@ async function main(): Promise<void> {
       },
       groupId: group.id,
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      supportedModels: ['gpt-4o-mini'],
+      healthCheckModel: 'gpt-4o-mini'
     }, access)
+    assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }), '大响应回归账户应由后台健康成功激活')
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '大响应回归 Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -138,8 +150,8 @@ async function main(): Promise<void> {
     usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
     await closeServer(appServer)
     await closeServer(upstreamServer)
+    await sqliteReadWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
     try {
-      databaseModule.getBusinessDatabase().close()
       databaseModule.closeStorageDatabases()
     } catch {
     }

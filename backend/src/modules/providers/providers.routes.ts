@@ -264,6 +264,7 @@ const customModelSchema = z.object({
     'stream_generate_content',
     'count_tokens',
     'embed_content',
+    'interactions',
     'completions',
     'images',
     'audio',
@@ -352,7 +353,7 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       }
       inherited = customModelInputFromConfigurationTemplate(template)
     }
-    const effectiveInput = { ...inherited, ...submitted }
+    const effectiveInput = { ...inherited, ...submitted, defaultReasoningEffort: null }
     const validation = await validateCustomModelPricing({
       providerCode: provider.code,
       ownerSystemAccountId,
@@ -362,9 +363,11 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       res.status(400).json(badRequest(validation.message))
       return
     }
+    // 自定义模型是中转目录，不替上游选择 reasoning 默认值。
+    const saveInput = effectiveInput
     try {
       const saved = await saveCustomProviderModelAsync({
-        ...effectiveInput,
+        ...saveInput,
         scope,
         providerCode: provider.code,
         systemAccountId: ownerSystemAccountId,
@@ -403,13 +406,16 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         res.status(400).json(badRequest('内置模型配置参数无效'))
         return
       }
-      const next = { ...builtIn, ...parsedConfiguration.data }
+      const configurationPatch = builtIn.providerCode === 'gpt'
+        ? { ...parsedConfiguration.data, defaultReasoningEffort: null }
+        : parsedConfiguration.data
+      const next = { ...builtIn, ...configurationPatch }
       const capabilityMessage = validateCustomModelCapabilities(builtIn.providerCode, next)
       if (capabilityMessage) {
         res.status(400).json(badRequest(capabilityMessage))
         return
       }
-      const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, parsedConfiguration.data)
+      const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, configurationPatch)
       if (!saved) {
         sendNotFound(res, '模型不存在')
         return
@@ -446,6 +452,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
     const next = {
       ...existing,
       ...parsed.data,
+      defaultReasoningEffort: null,
       scope: existing.scope
     }
     const validation = await validateCustomModelPricing({
@@ -817,7 +824,7 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
     supportedApiProtocols: [...(template.supportedApiProtocols ?? [])],
     supportedServiceTiers: [...(template.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(template.supportedReasoningEfforts ?? [])],
-    defaultReasoningEffort: template.defaultReasoningEffort ?? null,
+    defaultReasoningEffort: null,
     releaseDate: template.releaseDate ?? null,
     shutdownDate: template.shutdownDate ?? null,
     contextWindowTokens: template.contextWindowTokens ?? null,

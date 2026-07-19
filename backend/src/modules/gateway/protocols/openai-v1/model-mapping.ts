@@ -125,7 +125,7 @@ export function anthropicMessagesRequestEndpointFamily(req: Request): typeof ANT
   return normalizedPath === '/messages' ? ANTHROPIC_MESSAGES_FAMILY : undefined
 }
 
-export function geminiRequestEndpointFamily(req: Request): Exclude<Extract<GatewayRequestEndpointFamily, 'generate_content' | 'stream_generate_content' | 'count_tokens' | 'embed_content'>, never> | undefined {
+export function geminiRequestEndpointFamily(req: Request): Exclude<Extract<GatewayRequestEndpointFamily, 'generate_content' | 'stream_generate_content' | 'count_tokens' | 'embed_content' | 'interactions'>, never> | undefined {
   if (req.method.toUpperCase() !== 'POST') return undefined
   const endpoint = (req.originalUrl || req.path || '').split('?', 1)[0]
   const family = geminiEndpointFamilyFromPath(endpoint)

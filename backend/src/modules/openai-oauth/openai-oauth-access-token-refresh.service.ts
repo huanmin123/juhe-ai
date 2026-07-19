@@ -158,11 +158,13 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
     }
 
     try {
+      // Once a refresh starts, the provider may rotate the refresh token before
+      // persistence completes. Do not let a disconnected client cancel that
+      // exchange and leave the account with the old token.
       const tokenInfo = await openAIOAuthTokenRefresher({
         refreshToken,
         clientId: stringCredential(credentials, 'client_id'),
-        proxyUrl: resolveRefreshProxyUrl(current, persistMode),
-        signal: options.signal
+        proxyUrl: resolveRefreshProxyUrl(current, persistMode)
       })
       const nextCredentials = {
         ...credentials,

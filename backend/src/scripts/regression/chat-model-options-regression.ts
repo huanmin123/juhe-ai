@@ -75,7 +75,6 @@ assert.deepEqual(options, [
     id: 'gpt-test',
     supportsPromptCaching: true,
     supportedReasoningEfforts: ['medium', 'high'],
-    defaultReasoningEffort: 'medium',
     supportedServiceTiers: ['default', 'priority'],
     contextWindowTokens: 64_000,
     maxInputTokens: 4_000,
@@ -99,7 +98,6 @@ assert.deepEqual(options, [
     id: 'vendor-model',
     supportsPromptCaching: false,
     supportedReasoningEfforts: ['medium'],
-    defaultReasoningEffort: 'medium',
     supportedServiceTiers: ['default', 'priority'],
     supportedApiProtocols: ['responses'],
     inputModalities: ['text'],
@@ -121,11 +119,9 @@ assert.deepEqual(options, [
 const model = options[0]
 assert(model)
 assert.deepEqual(resolveChatModelRequestOptions(model, {}), {
-  reasoningEffort: 'medium',
-  serviceTier: 'default',
   contextWindowTokens: 64_000,
   maxInputTokens: 4_000
-})
+}, '中转请求未显式选择时不得主动补思考级别或服务等级')
 assert.deepEqual(resolveChatModelRequestOptions(model, { reasoningEffort: 'high', serviceTier: 'priority' }), {
   reasoningEffort: 'high',
   serviceTier: 'priority',

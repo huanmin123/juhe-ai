@@ -104,7 +104,7 @@ export function createCustomModelFormFromPricing(
 export function buildCustomModelPayload(
   form: CustomModelForm,
   category: ModelCategoryKey,
-  options: { includeRequestCapabilities?: boolean; includePrices?: boolean } = {}
+  options: { includeRequestCapabilities?: boolean; includePrices?: boolean; includeDefaultReasoningEffort?: boolean } = {}
 ): ProviderModelUpsertPayload | undefined {
   const model = form.model.trim()
   if (!model) return undefined
@@ -136,7 +136,7 @@ export function buildCustomModelPayload(
       ? normalizeServiceTiers(form.supportedServiceTiers)
       : []
     payload.supportedReasoningEfforts = supportedReasoningEfforts
-    payload.defaultReasoningEffort = supportedReasoningEfforts.includes(form.defaultReasoningEffort ?? '')
+    payload.defaultReasoningEffort = options.includeDefaultReasoningEffort === true && supportedReasoningEfforts.includes(form.defaultReasoningEffort ?? '')
       ? form.defaultReasoningEffort
       : null
   }
@@ -172,9 +172,7 @@ export function applyConfigurationTemplateToCustomModelForm(
   form.supportedApiProtocols = [...(template.supportedApiProtocols ?? [])]
   form.supportedServiceTiers = normalizeServiceTiers(template.supportedServiceTiers)
   form.supportedReasoningEfforts = normalizeReasoningEfforts(template.supportedReasoningEfforts)
-  form.defaultReasoningEffort = form.supportedReasoningEfforts.includes(template.defaultReasoningEffort ?? '')
-    ? template.defaultReasoningEffort ?? undefined
-    : undefined
+  form.defaultReasoningEffort = undefined
   form.contextWindowTokens = template.contextWindowTokens
   form.maxInputTokens = template.maxInputTokens
   form.maxOutputTokens = template.maxOutputTokens

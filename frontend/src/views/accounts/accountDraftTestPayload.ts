@@ -125,7 +125,9 @@ function accountDraftTestCredentials(credentials: Record<string, unknown>, accou
     preserveCredentialText(output, accountDetail.credentials, 'api_key')
     return output
   }
-  for (const key of [
+  for (const key of accountDetail.type === 'google_oauth'
+    ? ['access_token', 'refresh_token', 'expires_at', 'client_id', 'client_secret', 'quota_project_id']
+    : [
     'access_token',
     'refresh_token',
     'expires_at',
@@ -135,7 +137,7 @@ function accountDraftTestCredentials(credentials: Record<string, unknown>, accou
     'account_id',
     'chatgpt_user_id',
     'plan_type'
-  ]) {
+        ]) {
     preserveCredentialText(output, accountDetail.credentials, key)
   }
   return output

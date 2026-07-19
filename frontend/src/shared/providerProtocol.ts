@@ -4,6 +4,7 @@ export const OPENAI_PROTOCOL_CODE = 'openai'
 export const OPENAI_PROTOCOL_VERSION = 'v1'
 export const OPENAI_COMPATIBLE_PROVIDER_CODE = 'openai'
 export const GPT_VENDOR_CODE = 'gpt'
+export const XAI_PROVIDER_CODE = 'xai'
 export const DEEPSEEK_PROVIDER_CODE = 'deepseek'
 export const GLM_PROVIDER_CODE = 'glm'
 export const ANTHROPIC_PROTOCOL_CODE = 'anthropic'
@@ -15,6 +16,7 @@ export const GEMINI_PROVIDER_CODE = 'gemini'
 export const HYBRID_PROVIDER_CODE = 'hybrid'
 export const OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID = 'profile_openai_openai_v1'
 export const GPT_OPENAI_V1_PROFILE_ID = 'profile_gpt_openai_v1'
+export const XAI_OPENAI_V1_PROFILE_ID = 'profile_xai_openai_v1'
 export const DEEPSEEK_OPENAI_V1_PROFILE_ID = 'profile_deepseek_openai_v1'
 export const DEEPSEEK_ANTHROPIC_V1_PROFILE_ID = 'profile_deepseek_anthropic_v1'
 export const GLM_GENERAL_OPENAI_V1_PROFILE_ID = 'profile_glm_general_openai_v1'
@@ -33,6 +35,7 @@ export const ANTHROPIC_MODELS_FAMILY = 'models'
 export const ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY = 'message_token_counting'
 export const GEMINI_GENERATE_CONTENT_FAMILY = 'generate_content'
 export const GEMINI_STREAM_GENERATE_CONTENT_FAMILY = 'stream_generate_content'
+export const GEMINI_INTERACTIONS_FAMILY = 'interactions'
 export const GEMINI_COUNT_TOKENS_FAMILY = 'count_tokens'
 export const GEMINI_EMBED_CONTENT_FAMILY = 'embed_content'
 
@@ -66,6 +69,10 @@ export function isGatewaySupportedProtocolProfile(profile?: { protocolCode?: str
 
 export function isGptVendorCode(value: unknown): boolean {
   return normalizeProviderToken(value) === GPT_VENDOR_CODE
+}
+
+export function isXaiProviderCode(value: unknown): boolean {
+  return normalizeProviderToken(value) === XAI_PROVIDER_CODE
 }
 
 export function isDeepSeekProviderCode(value: unknown): boolean {

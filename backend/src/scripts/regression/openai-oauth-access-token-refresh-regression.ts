@@ -29,6 +29,7 @@ const [
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const refreshedByToken = new Set<string>()
+let observedClientAbortSignal: AbortSignal | undefined
 let oauthGroupId = ''
 
 async function main(): Promise<void> {
@@ -38,7 +39,8 @@ async function main(): Promise<void> {
       providerCode: GPT_VENDOR_CODE
     }, access)
     oauthGroupId = group.id
-    oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
+    oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId, signal }) => {
+      observedClientAbortSignal = signal
       refreshedByToken.add(refreshToken)
       return {
         accessToken: `access-refreshed-${refreshToken}`,
@@ -95,6 +97,26 @@ async function main(): Promise<void> {
     assert(!refreshedByToken.has('sk-not-oauth'), 'API Key 账户不应参与 OAuth 刷新')
     assert(repositories.listAccounts(access).some((account) => account.id === apiKeyAccount.id), 'API Key 对照账户应仍存在')
     assert(repositories.listAccounts(access).some((account) => account.id === freshOAuthAccount.id), '未到期 OAuth 对照账户应仍存在')
+
+    const manualRefreshAccount = repositories.createAccount({
+      providerCode: GPT_VENDOR_CODE,
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+      name: '客户端断开后仍应完成刷新的账户',
+      type: 'oauth',
+      credentials: oauthCredentials('manual-client-abort-token', new Date(Date.now() - 60_000).toISOString()),
+      status: 'active',
+      schedulable: true,
+      groupId: oauthGroupId
+    }, access)
+    const clientAbortController = new AbortController()
+    clientAbortController.abort()
+    observedClientAbortSignal = undefined
+    await oauthRefreshService.refreshOpenAIOAuthAccountAccessToken(manualRefreshAccount, {
+      force: true,
+      persistMode: 'sync',
+      signal: clientAbortController.signal
+    })
+    assert(observedClientAbortSignal === undefined, '客户端断开信号不得取消已开始的 OAuth token 刷新')
 
     for (const account of dueAccounts) {
       const latest = repositories.findAccountForTest(account.id, access)

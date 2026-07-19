@@ -57,6 +57,7 @@ const (
 	glmCodingOpenAIProfileID                  = "profile_glm_coding_openai_v1"
 	glmCodingAnthropicProfileID               = "profile_glm_coding_anthropic_v1"
 	geminiOpenAIChatProfileID                 = "profile_gemini_openai_chat_v1beta"
+	xAIOpenAIProfileID                        = "profile_xai_openai_v1"
 )
 
 var (
@@ -82,12 +83,16 @@ var (
 	geminiEndpointModes = []string{
 		"generate_content_json",
 		"generate_content_sse",
+		"interactions_json",
+		"interactions_sse",
 		"count_tokens",
 		"embed_content",
 	}
 	geminiDefaultEndpointModes = []string{
 		"generate_content_json",
 		"generate_content_sse",
+		"interactions_json",
+		"interactions_sse",
 		"count_tokens",
 	}
 	hybridEndpointModes = []string{
@@ -537,7 +542,7 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 		if err != nil {
 			return err
 		}
-		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, models); err != nil {
+		if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, input.ProviderCode, profile, models); err != nil {
 			return err
 		}
 		healthCheckModel, err := normalizeAccountHealthCheckModel(profile.DefaultHealthCheckModel, models)
@@ -715,7 +720,7 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		}
 		supportedModelsChanged := input.SupportedModels.Set() && !unorderedStringListsEqual(models, current.SupportedModels)
 		if supportedModelsChanged {
-			if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, current.ProviderCode, models); err != nil {
+			if err := s.validateSupportedModelsInProviderCatalog(ctx, target.ID, current.ProviderCode, profile, models); err != nil {
 				return err
 			}
 		}
@@ -1295,6 +1300,10 @@ func credentialEndpointModePolicy(
 		if protocolCode == "openai" && protocolVersion == "v1" {
 			return openAIEndpointModes, openAIEndpointModes, nil
 		}
+	case "xai":
+		if profileID == xAIOpenAIProfileID && protocolCode == "openai" && protocolVersion == "v1" {
+			return openAIEndpointModes, openAIEndpointModes, nil
+		}
 	case "deepseek":
 		if profileID == deepSeekOpenAIProfileID && protocolCode == "openai" && protocolVersion == "v1" {
 			return openAIChatEndpointModes, openAIChatEndpointModes, nil
@@ -1637,7 +1646,7 @@ func preferredHealthCheckEndpointMode(providerCode string, profileID string) str
 
 func isHealthCheckEndpointMode(mode string) bool {
 	switch strings.TrimSpace(mode) {
-	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse":
+	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse":
 		return true
 	default:
 		return false
@@ -1653,7 +1662,7 @@ func stringListContains(values []string, want string) bool {
 	return false
 }
 
-func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, models []string) error {
+func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, systemAccountID string, providerCode string, profile port.PublicAccountProviderProfile, models []string) error {
 	providerCode = strings.TrimSpace(providerCode)
 	if strings.EqualFold(providerCode, hybridProviderCode) {
 		return nil
@@ -1665,7 +1674,7 @@ func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, 
 		ProviderCode:    providerCode,
 		SystemAccountID: strings.TrimSpace(systemAccountID),
 		IncludeInactive: false,
-		IncludeUnpriced: false,
+		IncludeUnpriced: true,
 	})
 	if err != nil {
 		return err
@@ -1673,7 +1682,7 @@ func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, 
 	available := make(map[string]struct{}, len(catalog))
 	for _, item := range catalog {
 		model := strings.TrimSpace(item.Model)
-		if model != "" {
+		if model != "" && catalogModelSupportsProfile(item, profile) {
 			available[model] = struct{}{}
 		}
 	}
@@ -1691,6 +1700,41 @@ func (s *Service) validateSupportedModelsInProviderCatalog(ctx context.Context, 
 		)
 	}
 	return nil
+}
+
+func catalogModelSupportsProfile(item managementprovidermodels.ModelCatalogItem, profile port.PublicAccountProviderProfile) bool {
+	if len(item.SupportedAPIProtocols) == 0 {
+		return true
+	}
+	allowed := map[string]struct{}{}
+	for _, mode := range profile.EnabledEndpointModes {
+		switch strings.TrimSpace(mode) {
+		case "chat_json", "chat_sse":
+			allowed["chat_completions"] = struct{}{}
+		case "responses_json", "responses_sse":
+			allowed["responses"] = struct{}{}
+		case "messages_json", "messages_sse":
+			allowed["messages"] = struct{}{}
+		case "message_token_counting":
+			allowed["message_token_counting"] = struct{}{}
+		case "generate_content_json":
+			allowed["generate_content"] = struct{}{}
+		case "generate_content_sse":
+			allowed["stream_generate_content"] = struct{}{}
+		case "count_tokens":
+			allowed["count_tokens"] = struct{}{}
+		case "embed_content":
+			allowed["embed_content"] = struct{}{}
+		case "interactions_json", "interactions_sse":
+			allowed["interactions"] = struct{}{}
+		}
+	}
+	for _, protocol := range item.SupportedAPIProtocols {
+		if _, ok := allowed[strings.TrimSpace(protocol)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func unorderedStringListsEqual(left []string, right []string) bool {

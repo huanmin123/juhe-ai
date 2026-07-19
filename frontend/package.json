@@ -61,6 +61,8 @@
     "test:account-test-run-session": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-run-session-regression.ts",
     "test:account-provider-model-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-provider-model-cache-regression.ts",
     "test:account-gpt-request-overrides": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-gpt-request-overrides-regression.ts",
+    "test:xai-account-capability": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/xai-account-capability-regression.ts",
+    "test:provider-auth-account-capability": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/provider-auth-account-capability-regression.ts",
     "test:account-balance-query": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-balance-query-regression.ts",
     "test:account-api-key-runtime-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-api-key-runtime-display-regression.ts",
     "test:temporary-unavailable-probe-toggle": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/temporary-unavailable-probe-toggle-regression.ts",

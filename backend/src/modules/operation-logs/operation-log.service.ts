@@ -214,7 +214,7 @@ export function safeChange(field: string, label: string, before: unknown, after:
   return { field, label, before: normalizeSafeValue(before), after: normalizeSafeValue(after) }
 }
 
-function sanitizeOperationChanges(changes: OperationLogChange[], maxChanges: number): OperationLogChange[] {
+export function sanitizeOperationChanges(changes: OperationLogChange[], maxChanges: number): OperationLogChange[] {
   const normalized = changes.map((change) => isSensitiveField(change.field) || change.sensitive
     ? {
         field: change.field,
@@ -261,8 +261,35 @@ function normalizeSafeValue(value: unknown): unknown {
   }
 }
 
-function isSensitiveField(_field: string): boolean {
-  return false
+const sensitiveOperationChangeContainers = new Set([
+  'credentials',
+  'credential',
+  'token',
+  'key',
+  'secret',
+  'password',
+  'apikey',
+  'api_key',
+  'apikeys',
+  'api_keys',
+  'accesstoken',
+  'access_token',
+  'refreshtoken',
+  'refresh_token',
+  'idtoken',
+  'id_token',
+  'identitytoken',
+  'identity_token',
+  'clientsecret',
+  'client_secret',
+  'sessiontoken',
+  'session_token',
+  'proxypassword',
+  'proxy_password'
+])
+
+function isSensitiveField(field: string): boolean {
+  return sensitiveOperationChangeContainers.has(field.trim().toLowerCase())
 }
 
 function operationLogMaxChangesPerRecord(settings: Record<string, unknown>): number {

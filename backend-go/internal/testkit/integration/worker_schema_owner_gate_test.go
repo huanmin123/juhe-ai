@@ -94,8 +94,8 @@ func TestWorkerSchemaOwnerGatePostgresSmoke(t *testing.T) {
 		t.Fatalf("set goose dialect: %v", err)
 	}
 	migrationDir := filepath.Join(repoRoot(t), "db", "migrations")
-	if err := goose.UpTo(db, migrationDir, 56); err != nil {
-		t.Fatalf("goose up to 56: %v", err)
+	if err := goose.UpTo(db, migrationDir, version.SchemaVersion-1); err != nil {
+		t.Fatalf("goose up to %d: %v", version.SchemaVersion-1, err)
 	}
 
 	cfg := config.Config{
@@ -111,11 +111,11 @@ func TestWorkerSchemaOwnerGatePostgresSmoke(t *testing.T) {
 		runnerCalled = true
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "expected 58") {
-		t.Fatalf("schema 56 gate error = %v, want expected 58 rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "expected 61") {
+		t.Fatalf("schema %d gate error = %v, want expected 61 rejection", version.SchemaVersion-1, err)
 	}
 	if runnerCalled {
-		t.Fatal("runner called with schema 56")
+		t.Fatalf("runner called with schema %d", version.SchemaVersion-1)
 	}
 	releasedLock, err := ownerlock.Acquire(cfg.OwnerLockPath, ownerlock.Metadata{RouteOwner: "worker"})
 	if err != nil {
@@ -141,10 +141,10 @@ func TestWorkerSchemaOwnerGatePostgresSmoke(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("schema 58 worker gate: %v", err)
+		t.Fatalf("schema %d worker gate: %v", version.SchemaVersion, err)
 	}
 	if !runnerCalled {
-		t.Fatal("runner was not called with schema 58")
+		t.Fatalf("runner was not called with schema %d", version.SchemaVersion)
 	}
 	lock, err := ownerlock.Acquire(cfg.OwnerLockPath, ownerlock.Metadata{DeploymentEpoch: "after", RouteOwner: "worker", PID: os.Getpid()})
 	if err != nil {

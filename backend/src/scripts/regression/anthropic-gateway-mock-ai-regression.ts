@@ -103,12 +103,15 @@ const repositories = {
         ? { healthCheckModel: supportedModels[0] }
         : {})
     }, actor)
-    rawRepositories.recordAccountHealthCheckSuccess(account.id, {
-      intervalHours: 12,
-      jitterMinutes: 0,
-      failureThreshold: 3,
-      statusCode: 200
-    })
+    if (input.status === 'active') {
+      assert(rawRepositories.recordAccountHealthCheckSuccess(account.id, {
+        intervalHours: 12,
+        jitterMinutes: 0,
+        failureThreshold: 3,
+        statusCode: 200
+      }), `测试账户 ${account.id} 应通过后台检查激活`)
+      return rawRepositories.findAccountSummary(account.id, actor) ?? account
+    }
     return account
   }
 }

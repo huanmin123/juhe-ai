@@ -820,7 +820,7 @@ function assertSqliteCooldownCandidatePlan(): void {
     SELECT accounts.id
     FROM accounts INDEXED BY idx_accounts_cooldown_retest_candidate_order
     WHERE accounts.health_check_endpoint_mode IN (${endpointModes.map(() => '?').join(', ')})
-      AND accounts.type IN ('api_key', 'oauth')
+      AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('temporary_unavailable', 'rate_limited')
       AND accounts.schedulable = 1

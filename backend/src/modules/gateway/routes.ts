@@ -98,6 +98,7 @@ import {
   type SpeedFirstCutoverReservation
 } from './runtime/speed-first-cutover-reservation.service.js'
 import { gatewayAccountConcurrencyAccountId } from './dispatch/account-concurrency-identity.js'
+import { GeminiInteractionAffinityUnavailableError } from './protocols/gemini-v1beta/interaction-affinity.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -238,6 +239,9 @@ export async function handleOpenAIGatewayRequest(
     reason: string,
     input: { allowCandidateWrap?: boolean } = {}
   ): Promise<'none' | 'switched' | 'completed'> => {
+    if (currentPreflight.interactionResourceAffinity) {
+      return 'none'
+    }
     const fallbackApiKeyRecord = reason === 'account_scoped_agent_guidance_exhausted'
       ? currentPreflight.groupFallbackApiKeyRecord ?? currentPreflight.apiKeyRecord
       : currentPreflight.apiKeyRecord
@@ -693,6 +697,9 @@ export async function handleOpenAIGatewayRequest(
               downstreamCommitState: currentPreflight.downstreamCommitState
             })
           } catch (error) {
+            if (error instanceof GeminiInteractionAffinityUnavailableError) {
+              throw error
+            }
             if (res.headersSent || res.writableEnded || res.destroyed) {
               throw error
             }

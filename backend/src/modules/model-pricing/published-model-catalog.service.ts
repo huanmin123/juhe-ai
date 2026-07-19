@@ -13,7 +13,7 @@ import { requestGatewayDbService } from '../gateway/runtime/gateway-db-service-r
 import { buildAnthropicModelsResponse } from '../gateway/protocols/anthropic-v1/route-helpers.js'
 import { buildGeminiModelsResponse } from '../gateway/protocols/gemini-v1beta/route-helpers.js'
 import { buildChatModelOptions, type ChatModelOption } from '../chat/chat-model-options.js'
-import { GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
+import { OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import {
   buildCodexModelsResponseFromCatalog,
   buildOpenAIModelsResponseFromCatalog,
@@ -56,7 +56,7 @@ export async function rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync
   systemAccountId: string
 ): Promise<GatewayModelCatalogSnapshot[]> {
   const [openaiCatalog, anthropicCatalog, geminiCatalog] = await Promise.all([
-    publishedCatalog(GPT_VENDOR_CODE, systemAccountId),
+    publishedCatalog(OPENAI_COMPATIBLE_PROVIDER_CODE, systemAccountId),
     publishedCatalog('anthropic', systemAccountId),
     publishedCatalog('gemini', systemAccountId)
   ])

@@ -23,7 +23,9 @@ assert.deepEqual(ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES, [
   'messages_json',
   'messages_sse',
   'generate_content_json',
-  'generate_content_sse'
+  'generate_content_sse',
+  'interactions_json',
+  'interactions_sse'
 ])
 
 assert.equal(resolveDefaultHealthCheckEndpointMode({
@@ -154,6 +156,19 @@ assert.deepEqual(accountManualTestEndpointModes({
 }), ['generate_content_sse', 'generate_content_json'], 'Gemini 保存流式检查时仍应返回已启用 JSON，并排除计数和嵌入接口')
 
 assert.deepEqual(accountManualTestEndpointModes({
+  providerCode: 'gemini',
+  providerProtocolProfileId: 'profile_gemini_native_v1beta',
+  protocolCode: 'gemini',
+  protocolVersion: 'v1beta',
+  type: 'google_oauth',
+  clientCompatibility: 'openai_standard',
+  healthCheckEndpointMode: 'interactions_sse',
+  credentials: {
+    supported_endpoint_modes: ['interactions_json', 'interactions_sse', 'generate_content_json', 'generate_content_sse']
+  }
+}), ['interactions_sse', 'interactions_json', 'generate_content_json', 'generate_content_sse'], 'Gemini Interactions 检查应优先返回保存的精确 mode，并保留同账户的 Generate Content mode')
+
+assert.deepEqual(accountManualTestEndpointModes({
   providerCode: 'gpt',
   providerProtocolProfileId: 'profile_gpt_openai_v1',
   protocolCode: 'openai',
@@ -210,6 +225,27 @@ assert.deepEqual(
   accountManualTestEndpointModesForModel(hybridModelAccount, modelCatalog[2]!, modelCatalog),
   ['responses_sse'],
   '无映射模型只能展示模型目录和账户能力共同支持的 mode'
+)
+
+const geminiInteractionsAccount = {
+  providerCode: 'gemini',
+  providerProtocolProfileId: 'profile_gemini_native_v1beta',
+  protocolCode: 'gemini',
+  protocolVersion: 'v1beta',
+  type: 'google_oauth',
+  clientCompatibility: 'openai_standard',
+  healthCheckEndpointMode: 'interactions_sse',
+  credentials: { supported_endpoint_modes: ['interactions_json', 'interactions_sse'] }
+} as AccountSummary
+const geminiInteractionsModel = {
+  model: 'gemini-interactions-only',
+  status: 'active',
+  supportedApiProtocols: ['interactions']
+} as ProviderModelCatalogItem
+assert.deepEqual(
+  accountManualTestEndpointModesForModel(geminiInteractionsAccount, geminiInteractionsModel, [geminiInteractionsModel]),
+  ['interactions_sse', 'interactions_json'],
+  'Gemini Interactions-only 模型必须保留 Interactions 人工测试 mode'
 )
 
 assert.deepEqual(normalizeGptHealthCheckCredentials({}, 'oauth'), {

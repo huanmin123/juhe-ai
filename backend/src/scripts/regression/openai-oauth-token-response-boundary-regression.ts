@@ -1,20 +1,38 @@
 import { strict as assert } from 'node:assert'
+import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
+import type { ClientRequest, IncomingMessage, RequestOptions } from 'node:http'
+import https from 'node:https'
+import { syncBuiltinESMExports } from 'node:module'
 import { resolve } from 'node:path'
+import { PassThrough } from 'node:stream'
+import { mock } from 'node:test'
 
-import { openAIOAuthTokenRequestTimeoutMs, openAIOAuthTokenResponseMaxBytes, sanitizeOpenAIOAuthErrorMessage } from '../../modules/openai-oauth/openai-oauth.service.js'
+import { openAIOAuthTokenRequestTimeoutMs, openAIOAuthTokenResponseMaxBytes, parseOpenAIOAuthExpiresIn, refreshOpenAIOAuthToken, sanitizeOpenAIOAuthErrorMessage } from '../../modules/openai-oauth/openai-oauth.service.js'
 
 assert.equal(openAIOAuthTokenResponseMaxBytes, 256 * 1024, 'OAuth token 响应体上限应固定为 256KB')
 assert.equal(openAIOAuthTokenRequestTimeoutMs, 25_000, 'OAuth token 请求超时必须短于 DB service HTTP proxy 30s 超时')
+assert.equal(parseOpenAIOAuthExpiresIn(3600), 3600, 'OAuth expires_in 正数应保留')
+assert.throws(() => parseOpenAIOAuthExpiresIn(0), /expires_in/, 'OAuth expires_in 为 0 时必须拒绝')
+assert.throws(() => parseOpenAIOAuthExpiresIn(-1), /expires_in/, 'OAuth expires_in 为负数时必须拒绝')
+assert.throws(() => parseOpenAIOAuthExpiresIn('not-a-number'), /expires_in/, 'OAuth expires_in 非数字时必须拒绝')
 
 const source = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.service.ts'), 'utf8')
 assert.match(source, /new BoundedBufferCollector\(openAIOAuthTokenResponseMaxBytes\)/, 'OAuth token 响应必须使用有界 buffer 收集')
-assert.match(source, /body\.truncated[\s\S]*request\.destroy\(new Error\('OpenAI OAuth 令牌响应体过大'\)\)/, 'OAuth token 响应超限时必须主动中断请求')
+assert.match(source, /body\.truncated[\s\S]*const error = new Error\('OpenAI OAuth 令牌响应体过大'\)[\s\S]*settleResponse\(error\)[\s\S]*request\.destroy\(error\)/, 'OAuth token 响应超限时必须先拒绝并主动中断请求')
 assert.match(source, /sanitizeOpenAIOAuthErrorMessage\(normalizeString\(payload\.error_description\)[\s\S]*\|\|\s*text\)/, 'OAuth token endpoint 非 2xx 错误描述必须先脱敏再进入 Error.message')
 assert.match(source, /timeout:\s*openAIOAuthTokenRequestTimeoutMs/, 'OAuth token endpoint 请求必须使用命名短超时，避免系统 API 504')
 assert.doesNotMatch(source, /timeout:\s*120000/, 'OAuth token endpoint 不能继续使用 120s 长超时')
 assert.doesNotMatch(source, /const chunks: Buffer\[\]/, 'OAuth token 响应不能无界保存 chunk 数组')
 assert.doesNotMatch(source, /Buffer\.concat\(chunks\)/, 'OAuth token 响应不能无界拼接完整响应体')
+
+const interruptedResponseResults = []
+for (const scenario of ['aborted', 'error', 'close'] as const) {
+  interruptedResponseResults.push(await runInterruptedTokenResponse(scenario))
+}
+assert.match(interruptedResponseResults[0], /中断|aborted/i, 'OAuth token 响应 aborted 时必须拒绝，不能永久 pending')
+assert.match(interruptedResponseResults[1], /mock token response error/, 'OAuth token 响应 error 时必须保留原始失败原因并拒绝')
+assert.match(interruptedResponseResults[2], /提前关闭|closed/i, 'OAuth token 响应在 end 前 close 时必须拒绝，不能永久 pending')
 
 const sanitizedMessage = sanitizeOpenAIOAuthErrorMessage(
   'token endpoint failed Authorization: Bearer oauth-boundary-bearer-token sk-oauth-boundary-secret-token refresh_token=oauth-boundary-refresh-token client_secret=oauth-boundary-client-secret proxy=https://oauth-proxy-user:oauth-proxy-password@example.com'
@@ -31,6 +49,8 @@ assertNoLeak(sanitizedMessage, [
 const refreshSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth-access-token-refresh.service.ts'), 'utf8')
 assert.match(refreshSource, /sanitizeOpenAIOAuthErrorMessage\(error instanceof Error \? error\.message : 'OpenAI OAuth 访问令牌刷新失败'\)/, 'OAuth 后台刷新失败写入账户异常前必须清洗错误消息')
 const routesSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.routes.ts'), 'utf8')
+assert.match(routesSource, /post\('\/auth-url', async \(req, res, next\) => \{[\s\S]*try \{[\s\S]*generateOpenAIAuthURL\([^)]*\)[\s\S]*catch \(error\) \{[\s\S]*next\(error\)/, 'OAuth auth-url session 写入失败必须进入 Express next 错误链路')
+assert.match(routesSource, /generateOpenAIAuthURL\(getRequestAccessScope\(\)\?\.systemAccountId\)/, 'OAuth auth-url session 必须绑定当前登录系统账户')
 assert.match(routesSource, /function oauthErrorMessage[\s\S]*sanitizeOpenAIOAuthErrorMessage/, 'OAuth 路由返回 502 错误前必须统一清洗错误消息')
 assert.match(routesSource, /createAccountAsync/, 'OAuth 管理端创建账户必须走 async repository，避免高性能模式误入同步写库')
 assert.match(routesSource, /findAccountForTestAsync/, 'OAuth 管理端读取账户必须走 async repository，避免阻塞系统 API')
@@ -53,5 +73,59 @@ console.log('OpenAI OAuth token 响应边界回归通过：token endpoint 响应
 function assertNoLeak(text: string, markers: string[], message: string): void {
   for (const marker of markers) {
     assert(!text.includes(marker), `${message}：${marker}`)
+  }
+}
+
+async function runInterruptedTokenResponse(scenario: 'aborted' | 'error' | 'close'): Promise<string> {
+  const response = new PassThrough()
+  Object.assign(response, { statusCode: 200, complete: false })
+  // The production listener must handle the error; this fallback prevents an
+  // unhandled EventEmitter error from terminating the regression before timeout.
+  response.on('error', () => undefined)
+
+  const request = new EventEmitter() as EventEmitter & {
+    destroy: ClientRequest['destroy']
+    end: ClientRequest['end']
+  }
+  let responseCallback: ((incoming: IncomingMessage) => void) | undefined
+  request.destroy = ((error?: Error) => {
+    if (error) queueMicrotask(() => request.emit('error', error))
+    return request as unknown as ClientRequest
+  }) as ClientRequest['destroy']
+  request.end = (() => {
+    queueMicrotask(() => {
+      responseCallback?.(response as unknown as IncomingMessage)
+      request.emit('response', response)
+      if (scenario === 'error') {
+        response.emit('error', new Error('mock token response error'))
+      } else {
+        response.emit(scenario)
+      }
+    })
+    return request as unknown as ClientRequest
+  }) as ClientRequest['end']
+
+  const requestMock = mock.method(https, 'request', ((
+    _url: string | URL,
+    _options: RequestOptions,
+    callback?: (incoming: IncomingMessage) => void
+  ) => {
+    responseCallback = callback
+    return request as unknown as ClientRequest
+  }) as typeof https.request)
+  syncBuiltinESMExports()
+
+  try {
+    const outcome = await Promise.race([
+      refreshOpenAIOAuthToken({ refreshToken: 'mock-refresh-token' }).then(
+        () => 'unexpected success',
+        (error: unknown) => error instanceof Error ? error.message : String(error)
+      ),
+      new Promise<string>((resolvePromise) => setTimeout(() => resolvePromise('timed out while pending'), 150))
+    ])
+    return outcome
+  } finally {
+    requestMock.mock.restore()
+    syncBuiltinESMExports()
   }
 }

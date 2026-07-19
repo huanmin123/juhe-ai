@@ -20,7 +20,6 @@ export const openAIReasoningModelPricingData = [
     shutdown_date: "2026-10-23",
     supports_prompt_caching: true,
     supported_reasoning_efforts: ["low", "medium", "high"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "o1-pro",
@@ -57,7 +56,6 @@ export const openAIReasoningModelPricingData = [
     cache_read_input_token_cost_priority: 8.75e-7,
     supports_prompt_caching: true,
     supported_reasoning_efforts: ["low", "medium", "high"],
-    default_reasoning_effort: "medium",
     supported_service_tiers: ["priority", "flex"]
   },
   {
@@ -92,7 +90,6 @@ export const openAIReasoningModelPricingData = [
     shutdown_date: "2026-10-23",
     supports_prompt_caching: true,
     supported_reasoning_efforts: ["low", "medium", "high"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "o4-mini",
@@ -114,7 +111,6 @@ export const openAIReasoningModelPricingData = [
     shutdown_date: "2026-10-23",
     supports_prompt_caching: true,
     supported_reasoning_efforts: ["low", "medium", "high"],
-    default_reasoning_effort: "medium",
     supported_service_tiers: ["priority", "flex"]
   }
 ] as const

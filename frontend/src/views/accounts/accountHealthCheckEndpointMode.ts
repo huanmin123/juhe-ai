@@ -8,7 +8,9 @@ const options: Array<{ label: string; value: AccountHealthCheckEndpointMode }> =
   { label: 'Messages API（JSON）', value: 'messages_json' },
   { label: 'Messages API（Streaming）', value: 'messages_sse' },
   { label: 'GenerateContent（JSON）', value: 'generate_content_json' },
-  { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' }
+  { label: 'GenerateContent（Streaming）', value: 'generate_content_sse' },
+  { label: 'Interactions API（JSON）', value: 'interactions_json' },
+  { label: 'Interactions API（SSE）', value: 'interactions_sse' }
 ]
 
 const endpointModeSet = new Set<AccountHealthCheckEndpointMode>(options.map((option) => option.value))

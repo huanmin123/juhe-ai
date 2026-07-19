@@ -18,6 +18,8 @@ export type AccountSupportedEndpointMode =
   | 'generate_content_sse'
   | 'count_tokens'
   | 'embed_content'
+  | 'interactions_json'
+  | 'interactions_sse'
 export type AccountHealthCheckEndpointMode = Extract<
   AccountSupportedEndpointMode,
   | 'chat_json'
@@ -28,6 +30,8 @@ export type AccountHealthCheckEndpointMode = Extract<
   | 'messages_sse'
   | 'generate_content_json'
   | 'generate_content_sse'
+  | 'interactions_json'
+  | 'interactions_sse'
 >
 export type AccountApiKeyRuntimeStatus = 'active' | 'temporary_unavailable' | 'rate_limited' | 'error' | 'disabled'
 

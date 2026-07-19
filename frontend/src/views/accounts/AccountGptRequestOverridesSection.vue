@@ -60,9 +60,11 @@ const capabilities = computed(() => accountGptRequestOverrideCapabilities({
   providerCode: props.form.providerCode,
   accountType: props.form.type,
   modelOptions: props.modelOptions,
-  supportedModels: props.form.supportedModels
+  supportedModels: props.form.supportedModels,
+  supportedEndpointModes: props.form.supportedEndpointModes
 }))
-const requestOverridesSupported = computed(() => isAccountRequestOverrideProviderSupported(props.form.providerCode))
+const requestOverridesSupported = computed(() => isAccountRequestOverrideProviderSupported(props.form.providerCode, props.form.supportedEndpointModes)
+  || Boolean(props.form.serviceTierOverride || props.form.reasoningEffortOverride))
 const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(capabilities.value, props.form.serviceTierOverride))
 const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(capabilities.value, props.form.reasoningEffortOverride))
 const serviceTierUnavailable = computed(() => !isAccountGptServiceTierOverrideAvailable(props.form.serviceTierOverride, capabilities.value))
