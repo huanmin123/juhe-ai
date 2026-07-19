@@ -150,8 +150,8 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
           model.audioInputUsdPer1M ?? null,
           model.audioOutputUsdPer1M ?? null,
           model.outputUsdPerImage ?? null,
-          model.supportsPromptCaching ? 1 : 0,
-          model.catalogVisible === false ? 0 : 1,
+          model.supportsPromptCaching === true,
+          model.catalogVisible !== false,
           model.source,
           now,
           now

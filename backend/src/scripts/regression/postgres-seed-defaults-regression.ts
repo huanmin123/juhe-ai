@@ -139,8 +139,8 @@ const expectedModelValues = new Map<string, readonly unknown[]>(
         model.audioInputUsdPer1M ?? null,
         model.audioOutputUsdPer1M ?? null,
         model.outputUsdPerImage ?? null,
-        model.supportsPromptCaching ? 1 : 0,
-        model.catalogVisible === false ? 0 : 1,
+        model.supportsPromptCaching === true,
+        model.catalogVisible !== false,
         model.source
       ] as readonly unknown[]
     ] as const))
@@ -170,7 +170,7 @@ assert.deepEqual(JSON.parse(String(gpt5MiniValues[23])), {
     cachedInputUsdPer1M: 0.045
   }
 }, 'gpt-5-mini service tier prices 必须完整写入')
-assert.equal(gpt5MiniValues[33], 1, 'gpt-5-mini catalog_visible 必须为 true')
+assert.equal(gpt5MiniValues[33], true, 'gpt-5-mini catalog_visible 必须为 true')
 
 const repeatedSeedStatements: ExecutedStatement[] = []
 await seedPostgresDefaults({
