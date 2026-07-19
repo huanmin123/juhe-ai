@@ -188,6 +188,20 @@ try {
   await delay(50)
   assert.equal(runtimeStatus(account.id, selectedB.selectedApiKeyFingerprint), undefined, '网关 error 状态也不能直接写成全局 Key 错误')
 
+  await apiKeyEffects.recordGatewayAccountApiKeyFailure(selectedB, {
+    status: 'temporary_unavailable',
+    statusCode: 503,
+    errorCode: 'confirmed_probe_failure',
+    errorMessage: '后台确认探针失败',
+    traceId: 'trace-confirmed-probe',
+    trafficSource: 'cooldown_retest',
+    source: 'confirmed_probe_regression'
+  })
+  assert.equal(runtimeTraceId(account.id, selectedB.selectedApiKeyFingerprint), 'trace-confirmed-probe', '确认探针失败的 traceId 应通过网关副作用写入 Key 运行态')
+  apiKeyEffects.recordGatewayAccountApiKeySuccess(selectedB, 'confirmed_probe_recovered')
+  await delay(50)
+  assert.equal(runtimeTraceId(account.id, selectedB.selectedApiKeyFingerprint), undefined, '真实成功应清理 Key 最近失败 traceId')
+
   runtimeConfig.runtimeStateDriver = 'redis'
   const transientStore = new RegressionRuntimeStateStore()
   apiKeyFailureGuard.setGatewayAccountApiKeyTransientStateStoreForTest(transientStore)
@@ -249,6 +263,13 @@ function runtimeRows(accountId: string): Array<{ key_fingerprint: string; status
 
 function runtimeStatus(accountId: string, keyFingerprint: string): string | undefined {
   return runtimeRows(accountId).find((row) => row.key_fingerprint === keyFingerprint)?.status
+}
+
+function runtimeTraceId(accountId: string, keyFingerprint: string): string | undefined {
+  const row = databaseModule.getBusinessDatabase()
+    .prepare('SELECT last_trace_id FROM account_api_key_runtime_states WHERE account_id = ? AND key_fingerprint = ? LIMIT 1')
+    .get(accountId, keyFingerprint) as { last_trace_id: string | null } | undefined
+  return row?.last_trace_id ?? undefined
 }
 
 function assertNoPersistedFailure(accountId: string, keyFingerprint: string, message: string): void {

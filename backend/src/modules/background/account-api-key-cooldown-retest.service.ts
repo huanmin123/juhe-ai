@@ -146,7 +146,8 @@ async function runAccountApiKeyCooldownRetestQueueItem(
       status: 'temporary_unavailable',
       statusCode: result.statusCode,
       errorCode: result.errorCode,
-      errorMessage: result.message
+      errorMessage: result.message,
+      traceId: result.traceId
     }
   }, backgroundProbeDbServiceTimeoutMs)
   logger.debug({

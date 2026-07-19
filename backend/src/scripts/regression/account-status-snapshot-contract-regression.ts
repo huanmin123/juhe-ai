@@ -88,6 +88,20 @@ try {
   const lastUsedAt = '2026-07-16T02:03:04.000Z'
   databaseModule.getBusinessDatabase().prepare("UPDATE accounts SET status = 'active', schedulable = 1, last_used_at = CASE WHEN id = ? THEN ? ELSE last_used_at END WHERE id IN (?, ?)")
     .run(account.id, lastUsedAt, account.id, foreignAccount.id)
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET last_health_check_at = ?, next_health_check_at = ?, last_health_check_status_code = ?,
+        last_health_check_error_code = ?, last_health_check_error_message = ?, last_health_check_trace_id = ?
+    WHERE id = ?
+  `).run(
+    '2026-07-20T00:30:00.000Z',
+    '2026-07-20T12:30:00.000Z',
+    503,
+    'model_not_found',
+    '测试探针失败',
+    'trace-snapshot-latest',
+    account.id
+  )
   const today = todayDateKey(await usageStatsTimezoneAsync())
   databaseModule.getStatsDatabase().prepare(`
     INSERT INTO usage_stats_daily (
@@ -102,6 +116,8 @@ try {
   assert.equal(result.items[0]?.effectiveAvailability.label, '可调度')
   assert.equal(result.items[0]?.todayUsage.requestCount, 7, '状态快照必须读取今日账户预聚合用量')
   assert.equal(result.items[0]?.lastUsedAt, lastUsedAt, '状态快照必须返回账户最近使用时间')
+  assert.equal(result.items[0]?.availabilityPresentation?.probe?.lastObservation?.traceId, 'trace-snapshot-latest', '状态快照必须返回最近检查 traceId')
+  assert.equal(result.items[0]?.availabilityPresentation?.probe?.schedule.nextAttemptAt, '2026-07-20T12:30:00.000Z', '状态快照必须返回下次检查时间')
   assert.equal('credentials' in (result.items[0] ?? {}), false, '状态快照响应不得包含凭据')
 } finally {
   try {

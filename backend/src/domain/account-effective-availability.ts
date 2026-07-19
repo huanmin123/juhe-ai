@@ -5,9 +5,11 @@ import type {
   AccountSummary,
   AuthorizationStatus
 } from './types.js'
+import { accountAvailabilityPresentation } from './account-status-presentation.js'
 
 export type AccountEffectiveAvailabilityInput = Pick<
   AccountSummary,
+  | 'id'
   | 'permissions'
   | 'accessType'
   | 'boundGroupId'
@@ -22,6 +24,15 @@ export type AccountEffectiveAvailabilityInput = Pick<
   | 'authorizationInstanceSourceAccountCooldownUntil'
   | 'authorizationInstanceSourceAccountLastErrorCode'
   | 'authorizationInstanceSourceAccountLastErrorMessage'
+  | 'authorizationInstanceSourceAccountLastErrorTraceId'
+  | 'authorizationInstanceSourceAccountCooldownRetestLastAt'
+  | 'authorizationInstanceSourceAccountCooldownRetestLastStatusCode'
+  | 'authorizationInstanceSourceAccountLastHealthCheckAt'
+  | 'authorizationInstanceSourceAccountNextHealthCheckAt'
+  | 'authorizationInstanceSourceAccountLastHealthCheckStatusCode'
+  | 'authorizationInstanceSourceAccountLastHealthCheckErrorCode'
+  | 'authorizationInstanceSourceAccountLastHealthCheckErrorMessage'
+  | 'authorizationInstanceSourceAccountLastHealthCheckTraceId'
   | 'accountExpiresAt'
   | 'status'
   | 'schedulable'
@@ -33,15 +44,28 @@ export type AccountEffectiveAvailabilityInput = Pick<
   | 'lastHealthCheckErrorMessage'
   | 'apiKeyRuntime'
   | 'runtimeAvailability'
+  | 'nextHealthCheckAt'
+  | 'lastHealthCheckStatusCode'
+  | 'lastHealthCheckTraceId'
+  | 'lastHealthSuccessAt'
+  | 'lastErrorTraceId'
+  | 'cooldownRetestLastAt'
+  | 'cooldownRetestLastStatusCode'
 >
 
 export function accountSummaryWithEffectiveAvailability<T extends AccountEffectiveAvailabilityInput>(
   account: T,
   now = Date.now()
-): T & { effectiveAvailability: AccountEffectiveAvailability } {
+): T & { effectiveAvailability: AccountEffectiveAvailability; availabilityPresentation: import('./types.js').AccountAvailabilityPresentation } {
+  const effectiveAvailability = accountEffectiveAvailability(account, now)
   return {
     ...account,
-    effectiveAvailability: accountEffectiveAvailability(account, now)
+    effectiveAvailability,
+    runtimeProbe: account.runtimeAvailability?.probePresentation,
+    availabilityPresentation: accountAvailabilityPresentation({
+      ...account,
+      effectiveAvailability
+    } as unknown as import('./account-status-presentation.js').AccountStatusPresentationInput, new Date(now))
   }
 }
 

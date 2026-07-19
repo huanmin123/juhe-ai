@@ -23,6 +23,7 @@ export async function recordGatewayAccountApiKeyFailure(
     statusCode?: number
     errorCode?: string
     errorMessage?: string
+    traceId?: string
     cooldownUntil?: string
     trafficSource?: OpenAIGatewayTrafficSource
     clientIp?: string
@@ -74,6 +75,7 @@ export async function recordGatewayAccountApiKeyFailure(
         statusCode: input.statusCode,
         errorCode: input.errorCode,
         errorMessage: input.errorMessage,
+        traceId: input.traceId,
         cooldownUntil: input.cooldownUntil,
         observedAt
       }
@@ -102,6 +104,7 @@ export async function recordGatewayAccountApiKeyFailure(
         statusCode: input.statusCode,
         errorCode: input.errorCode,
         errorMessage: input.errorMessage,
+        traceId: input.traceId,
         cooldownUntil: input.cooldownUntil,
         observedAt
       }

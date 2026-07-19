@@ -132,6 +132,7 @@ export async function handleStreamFailure(
       status: 'temporary_unavailable',
       errorCode,
       errorMessage: reasonWithCode,
+      traceId: usageContext.traceId,
       trafficSource: usageContext.trafficSource,
       clientIp: usageContext.clientIp,
       apiKeyId: usageContext.apiKeyId,
@@ -157,6 +158,7 @@ export async function handleStreamFailure(
       status: 'temporary_unavailable',
       errorCode,
       errorMessage: reasonWithCode,
+      traceId: usageContext?.traceId,
       trafficSource: usageContext?.trafficSource,
       source: 'stream_failure'
     })

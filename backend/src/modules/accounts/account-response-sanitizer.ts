@@ -128,7 +128,8 @@ export function sanitizeAccountApiKeyRuntimeResponse(value: AccountApiKeyRuntime
       lastSuccessAt: item.lastSuccessAt,
       lastFailureAt: item.lastFailureAt,
       lastErrorCode: item.lastErrorCode,
-      lastErrorMessage: item.lastErrorMessage
+      lastErrorMessage: item.lastErrorMessage,
+      lastTraceId: item.lastTraceId
     }))
   }
 }
