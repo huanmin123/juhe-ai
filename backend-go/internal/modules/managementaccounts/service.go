@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
+	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -27,34 +27,15 @@ const (
 
 type Service struct {
 	store             port.ManagementAccountOptionReader
-	granteeReader     AccountAuthorizationGranteeReader
-	pageDataPublisher AccountStaticChangePublisher
+	granteeReader     accountpagedata.GranteeReader
+	pageDataPublisher accountpagedata.Publisher
 	logger            *slog.Logger
-}
-
-type AccountAuthorizationGranteeReader interface {
-	ListAccountAuthorizationGranteeIDs(ctx context.Context, accountID string) ([]string, error)
-}
-
-type AccountStaticChangePublisher interface {
-	PublishAccountStaticChange(ctx context.Context, input AccountStaticChangeInput) error
-}
-
-type AccountStaticChangeInput struct {
-	AccountID             string
-	OwnerSystemAccountIDs []string
-	FieldMask             []string
-	MembershipChanged     bool
-	OrderChanged          bool
-	FilterChanged         bool
-	PageChanged           bool
-	AllScopes             bool
 }
 
 type ServiceOptions struct {
 	Store             port.ManagementAccountOptionReader
-	GranteeReader     AccountAuthorizationGranteeReader
-	PageDataPublisher AccountStaticChangePublisher
+	GranteeReader     accountpagedata.GranteeReader
+	PageDataPublisher accountpagedata.Publisher
 	Logger            *slog.Logger
 }
 
@@ -319,35 +300,22 @@ func (s *Service) publishTagPageData(ctx context.Context, account port.Managemen
 	if s.pageDataPublisher == nil {
 		return
 	}
-	owners := normalizedSortedStrings([]string{
-		account.SystemAccountID,
-		account.OwnerSystemAccountID,
-		requestSystemAccountID,
+	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
+	owners, allScopes, lookupErr := accountpagedata.ResolveOwners(lookupCtx, s.granteeReader, account.ID, []string{
+		account.SystemAccountID, account.OwnerSystemAccountID, requestSystemAccountID,
 	})
-	allScopes := false
-	if s.granteeReader == nil {
-		allScopes = true
-		s.logger.WarnContext(context.WithoutCancel(ctx), "account page data grantee lookup unavailable",
+	cancel()
+	if lookupErr != nil {
+		s.logger.WarnContext(context.WithoutCancel(ctx), "account page data grantee lookup failed",
 			"accountId", account.ID,
+			"error", lookupErr,
 		)
-	} else {
-		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
-		granteeIDs, err := s.granteeReader.ListAccountAuthorizationGranteeIDs(lookupCtx, account.ID)
-		cancel()
-		if err != nil {
-			allScopes = true
-			s.logger.WarnContext(context.WithoutCancel(ctx), "account page data grantee lookup failed",
-				"accountId", account.ID,
-				"error", err,
-			)
-		} else {
-			owners = normalizedSortedStrings(append(owners, granteeIDs...))
-		}
 	}
 	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
 	defer cancel()
-	if err := s.pageDataPublisher.PublishAccountStaticChange(publishCtx, AccountStaticChangeInput{
+	if err := s.pageDataPublisher.PublishAccountStaticChange(publishCtx, accountpagedata.ChangeInput{
 		AccountID:             strings.TrimSpace(account.ID),
+		Operation:             accountpagedata.OperationUpsert,
 		OwnerSystemAccountIDs: owners,
 		FieldMask:             []string{"tags"},
 		FilterChanged:         true,
@@ -359,24 +327,6 @@ func (s *Service) publishTagPageData(ctx context.Context, account port.Managemen
 			"error", err,
 		)
 	}
-}
-
-func normalizedSortedStrings(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	sort.Strings(result)
-	return result
 }
 
 func optionLimit(limit int) int {
