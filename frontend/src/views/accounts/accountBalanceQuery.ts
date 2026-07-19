@@ -1,5 +1,11 @@
-import type { AccountBalanceSnapshot } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
+
+export function canManuallyRefreshAccountBalance(
+  account: Pick<AccountSummary, 'balanceQueryEnabled' | 'accessType'>
+): boolean {
+  return account.balanceQueryEnabled === true && account.accessType !== 'authorized'
+}
 
 export function formatAccountBalance(snapshot?: AccountBalanceSnapshot): {
   text: string

@@ -1,8 +1,9 @@
-import { onMounted, onUnmounted, readonly, shallowRef, type DeepReadonly, type ShallowRef } from 'vue'
+import { onActivated, onDeactivated, onMounted, onUnmounted, readonly, shallowRef, type DeepReadonly, type ShallowRef } from 'vue'
 
 import {
   PageDataCacheController,
   PageDataVisibleConfirmScheduler,
+  createPageDataActivationController,
   getDefaultPageDataTabCoordinator,
   type PageDataCacheControllerOptions,
   type PageDataConfirmOutcome,
@@ -43,6 +44,11 @@ export function usePageDataCache<T>(options: UsePageDataCacheOptions<T>): UsePag
     confirm: () => { void confirmCurrent() },
     intervalMs: options.confirmIntervalMs
   })
+  const activationController = createPageDataActivationController({
+    start: () => scheduler.start(),
+    stop: () => scheduler.stop(),
+    onActivate: () => { void confirmCurrent().catch(() => undefined) }
+  })
   let operationGeneration = 0
   let removeSubscription: (() => void) | undefined
   let disposed = false
@@ -74,14 +80,17 @@ export function usePageDataCache<T>(options: UsePageDataCacheOptions<T>): UsePag
     removeSubscription = controller.subscribe((record) => {
       if (!disposed) data.value = record?.value
     })
-    scheduler.start()
+    activationController.mount()
     if (options.immediate !== false) void load().catch(() => undefined)
   })
+
+  onActivated(() => activationController.activate())
+  onDeactivated(() => activationController.deactivate())
 
   onUnmounted(() => {
     disposed = true
     operationGeneration += 1
-    scheduler.stop()
+    activationController.dispose()
     removeSubscription?.()
     removeSubscription = undefined
     controller.close()

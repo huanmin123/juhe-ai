@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import {
   accountBalanceWillAutoDisable,
   buildAccountBalancePayload,
+  canManuallyRefreshAccountBalance,
   formatAccountBalance,
   validateAccountBalanceForm
 } from '@/views/accounts/accountBalanceQuery'
@@ -27,6 +28,9 @@ assert.deepEqual(formatAccountBalance(undefined), {
 })
 assert.equal(formatAccountBalance({ status: 'pending' }).visible, false)
 assert.equal(formatAccountBalance({ status: 'refreshing' }).visible, false)
+assert.equal(canManuallyRefreshAccountBalance({ balanceQueryEnabled: true, status: 'disabled', accessType: 'owner' }), true, '停用的自有账户仍可人工刷新余额')
+assert.equal(canManuallyRefreshAccountBalance({ balanceQueryEnabled: true, status: 'error', accessType: 'owner' }), true, '异常的自有账户仍可人工刷新余额')
+assert.equal(canManuallyRefreshAccountBalance({ balanceQueryEnabled: true, status: 'active', accessType: 'authorized' }), false, '授权实例不能越权刷新来源账户余额')
 assert.deepEqual(formatAccountBalance({ status: 'refreshing', remainingUsd: '3.210000' } as never), {
   text: '$3.21', tone: 'fresh', tooltip: undefined, refreshing: true, visible: true
 })
@@ -115,7 +119,9 @@ const accountsApiSource = readFileSync('../frontend/src/api/domains/accounts.ts'
 assert.match(usageCellSource, /ReloadOutlined/, '余额刷新必须使用裸刷新图标')
 assert.match(balanceHelperSource, /查询失败/, '失败状态必须统一显示查询失败')
 assert.match(usageCellSource, /balanceDisplay\.tooltip/, '失败原因必须通过 tooltip 展示')
-assert.match(usageCellSource, /account\.balanceQueryEnabled && balanceDisplay\.visible/, '非最终余额状态必须隐藏整行')
+assert.match(usageCellSource, /v-if="account\.balanceQueryEnabled" class="balance-row"/, '余额开启后必须始终保留人工刷新入口')
+assert.match(usageCellSource, /<a-tooltip v-if="balanceDisplay\.visible"[^>]*>[\s\S]*?<span class="balance-text"/, '只有余额文本按快照可见性控制')
+assert.doesNotMatch(usageCellSource, /props\.account\.status === 'active'/, '人工刷新不得依赖账户状态')
 assert.match(usageCellSource, /v-if="balanceDisplay\.tone !== 'failed'" class="balance-label"/, '余额查询失败不能带“剩余：”前缀')
 assert.match(editSectionSource, /balance-query-header/, '余额查询开关应放在标题行右侧')
 assert.match(editSectionSource, /QuestionCircleOutlined/, '余额查询应提供帮助说明')

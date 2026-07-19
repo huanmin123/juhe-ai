@@ -74,7 +74,7 @@ func TestNewAccountStaticResetEventsUsesProvidedTime(t *testing.T) {
 func TestPageDataChangePublisherBuildsNodeCompatibleAccountStaticUpsertEvent(t *testing.T) {
 	publisher, _ := testPageDataChangePublisher()
 
-	event, err := publisher.NewAccountStaticUpsertEvent(AccountStaticUpsertInput{
+	event, err := publisher.NewAccountStaticUpsertEvent(AccountChangeInput{
 		AccountID:             "account-1",
 		OwnerSystemAccountIDs: []string{" owner-b ", "owner-a", "owner-a", ""},
 		FieldMask:             []string{"tags"},
@@ -110,7 +110,7 @@ func TestPageDataChangePublisherRejectsInvalidAccountStaticUpsertInput(t *testin
 		tooManyFields[index] = fmt.Sprintf("field-%02d", index)
 	}
 
-	for _, input := range []AccountStaticUpsertInput{
+	for _, input := range []AccountChangeInput{
 		{AccountID: " ", FieldMask: []string{"tags"}},
 		{AccountID: "account-1", FieldMask: []string{""}},
 		{AccountID: "account-1", FieldMask: tooManyFields},
@@ -119,6 +119,36 @@ func TestPageDataChangePublisherRejectsInvalidAccountStaticUpsertInput(t *testin
 		if _, err := publisher.NewAccountStaticUpsertEvent(input); err == nil {
 			t.Fatalf("NewAccountStaticUpsertEvent(%#v) error = nil", input)
 		}
+	}
+}
+
+func TestPageDataChangePublisherBuildsAccountDeleteAndRuntimeUpsertEvents(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+
+	deleted, err := publisher.NewAccountStaticDeleteEvent(AccountChangeInput{
+		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-1"},
+		MembershipChanged: true, OrderChanged: true, FilterChanged: true, PageChanged: true,
+	})
+	if err != nil {
+		t.Fatalf("NewAccountStaticDeleteEvent() error = %v", err)
+	}
+	if deleted.Domain != pageDataAccountsStaticDomain || deleted.Operation != pageDataDeleteOperation ||
+		deleted.EntityID != "account-1" || len(deleted.FieldMask) != 0 || !deleted.MembershipChanged ||
+		!deleted.OrderChanged || !deleted.FilterChanged || !deleted.PageChanged {
+		t.Fatalf("delete event = %#v", deleted)
+	}
+
+	runtime, err := publisher.NewAccountRuntimeUpsertEvent(AccountChangeInput{
+		AccountID: "account-1", OwnerSystemAccountIDs: []string{"owner-1"},
+		FieldMask: []string{"status", "schedulable"},
+	})
+	if err != nil {
+		t.Fatalf("NewAccountRuntimeUpsertEvent() error = %v", err)
+	}
+	if runtime.Domain != pageDataAccountsRuntimeDomain || runtime.Operation != pageDataUpsertOperation ||
+		runtime.EntityID != "account-1" || !reflect.DeepEqual(runtime.FieldMask, []string{"status", "schedulable"}) ||
+		runtime.MembershipChanged || runtime.OrderChanged || runtime.FilterChanged || runtime.PageChanged {
+		t.Fatalf("runtime event = %#v", runtime)
 	}
 }
 
