@@ -241,7 +241,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
   function refreshData() {
     resetSystemAccountOptionsSearch()
-    void loadData({ forceOptions: true, forceData: true })
+    void loadData({ forceData: true })
   }
 
   async function refreshMobileAccounts(): Promise<void> {

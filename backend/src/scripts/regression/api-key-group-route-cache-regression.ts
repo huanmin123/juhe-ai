@@ -302,6 +302,9 @@ try {
   closeGatewayUpstreamAgentsForTest?.()
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
+  await import('../../storage/sqlite-read-worker-pool.js')
+    .then((module) => module.closeSqliteReadWorkerPool())
+    .catch(() => undefined)
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -330,7 +333,7 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
     providerCode: 'deepseek',
     groupType: 'personal'
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存跨供应商 GPT 账号',
@@ -343,10 +346,11 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
     groupId: gptGroup.id,
     status: 'active',
     schedulable: true,
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
   const deepSeekUpstreamKey = 'sk-route-cache-cross-provider-deepseek'
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'deepseek',
     providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
     name: '路由缓存跨供应商 DeepSeek 账号',
@@ -396,7 +400,7 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
   }, access)
   const firstUpstreamKey = 'sk-route-cache-round-robin-a'
   const secondUpstreamKey = 'sk-route-cache-round-robin-b'
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存轮询 A 账号',
@@ -410,7 +414,7 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
     status: 'active',
     schedulable: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存轮询 B 账号',
@@ -473,7 +477,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     providerCode: 'gpt',
     groupType: 'personal'
   }, granteeAccess)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存主 OAuth 账号',
@@ -488,7 +492,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     schedulable: true
   }, granteeAccess)
   const fallbackUpstreamKey = 'sk-route-cache-fallback'
-  const ownerAccount = repositories.createAccount({
+  const ownerAccount = createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存后备授权账号',
@@ -538,6 +542,20 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     fallbackAccountAuthorizationId: authorizationRow.id,
     fallbackUpstreamKey
   }
+}
+
+function createActiveAccount(
+  input: Parameters<typeof repositories.createAccount>[0],
+  access: Parameters<typeof repositories.createAccount>[1]
+) {
+  const account = repositories.createAccount(input, access)
+  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, `路由缓存测试账户 ${account.id} 应由后台探针激活`)
+  return account
 }
 
 function createGatewayServer(
