@@ -67,9 +67,9 @@
 - Integrate: `master`
 - Integrate: `feature/20260706-go`
 
-- [ ] 在干净的 master 集成 worktree 合并修复分支，执行要求级回归后推送 `origin/master`。
-- [ ] 将最新 master 反向合并到 `feature/20260706-go`；如果当前 feature 工作区的用户未提交修改阻止安全合并，不 stash、不覆盖、不提交无关内容，改为明确报告阻塞并只执行可安全完成的远端集成步骤。
-- [ ] 推送成功集成的 feature 分支，核对本地/远端提交图与分支指向。
+- [x] 在干净的 master 集成 worktree 合并修复分支，执行要求级回归后推送 `origin/master`。
+- [x] 将最新 master 反向合并到 `feature/20260706-go`；保留原 dirty feature 工作区，仅在隔离 worktree 完成远端集成。
+- [x] 推送成功集成的 feature 分支，核对本地/远端提交图与分支指向。
 
 ## Task 6：按临时服务接管方案发布 macOS 生产
 
@@ -77,9 +77,9 @@
 - Create: `F:\服务部署\juhe-ai\09-上线计划\2026-07-19-冷却复测PostgreSQL写回热修.md`
 - Follow: `F:\服务部署\juhe-ai\03-部署流程\macOS临时服务接管发布方案.md`
 
-- [ ] 先落地正式上线计划、回滚点和验证矩阵，构建并核对基于已推送 master 的发布包。
-- [ ] 只读检查生产版本、主/临时服务状态、端口、磁盘、数据库/Redis 连通性和 WireGuard/Caddy/Nginx 入口，不做生产写入。
-- [ ] 第一次生产写操作前执行 `deployment-plan-lock.ps1 acquire`；锁不可用时等待或退出，不绕过互斥机制。
-- [ ] 完成数据库与 Redis 配对备份、临时服务候选部署、3101/3102 与 3099 入口验证；不运行 schema 变更，不清理业务 Redis。
-- [ ] 候选验证通过后切换主服务，检查 API/worker/DB service、冷却复测日志、目标账号重新参与调度以及外部入口；持续观察至少 60 秒。
-- [ ] 验收失败则按计划回滚程序与入口并复验；成功后清理本次临时资源、记录 `VERIFY_SUCCESS`，最后释放部署计划锁。
+- [x] 先落地正式上线计划、回滚点和验证矩阵，构建并核对基于已推送 master 的发布包。
+- [x] 只读检查生产版本、主/临时服务状态、端口、磁盘、数据库/Redis 连通性和 WireGuard/Caddy/Nginx 入口，不做生产写入。
+- [x] 第一次生产写操作前执行 `deployment-plan-lock.ps1 acquire`；锁不可用时持续等待，释放后正常领取，未绕过互斥机制。
+- [x] 完成 project/business 配对备份、临时服务候选部署、3101/3102 与 3099 入口验证；未运行 schema 变更，未清理生产 Redis。
+- [x] 候选验证通过后切换主服务，检查 API/worker/DB service、冷却复测日志、目标账号重新参与调度以及外部入口；完成 60 秒观察。
+- [x] 清理本次临时资源，统一终验输出 `VERIFY_SUCCESS`；部署计划锁在文档与复核收口后释放。
