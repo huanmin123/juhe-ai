@@ -280,6 +280,17 @@
 - [x] TDD：strict body、201/400/500、Pragma/no-store、operation log 脱敏、raw-name fingerprint、router/app 三态测试与 HTTP 接线已完成。
 - [~] 前端独立 create 路径 regression、真实 PostgreSQL HTTP POST -> 持久化 / hash / 密文回解证据和专属真实 listener 安全门禁已完成；真实目标 URL / Cookie listener、operation log ingest、生产单 owner 切流与回滚仍待执行，生产切流前不删除 Node create 路由。
 
+#### W2 内置测试 Token 重置切片（2026-07-19）
+
+- 目标：迁移管理员 `POST /__aisys__/api/external-integration-sources/built-in-test-token/reset`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；生产 owner 仍为 Node，真实依赖、前端和切流门禁闭合前不删除 Node 路由。
+- API 契约：空 body 合法，非法 JSON 与超过 `256 KiB` 继续由管理写入 transport middleware 拒绝；写鉴权 touch、IP/user write limiter、管理员权限和 `external_integration_sources.reset_builtin_test_token` mutation guard 先于 handler，fingerprint 固定为 `{ target: "built_in_test_token" }`。成功返回 `200 { data: { token, source } }`、`Cache-Control: no-store` 和 `Pragma: no-cache`；内置记录缺失返回 `400 内置测试 Token 不存在`，未知内部错误统一 `500` 且不泄漏实现细节。
+- 凭据与存储契约：服务端生成新的 `juis_` 明文，数据库只保存 domain-separated SHA-256 hash、Node 兼容 AES-256-GCM `{"token": ...}` 密文和前后 8 字符预览；明文只在成功响应返回。PostgreSQL 单事务固定按 source -> token 顺序锁定内置记录，更新 hash、密文、preview、`status=active`、`revoked_at=NULL` 和更新时间，保留名称、scope、到期时间、最近使用时间等其他字段，并在同一事务回读安全详情；hash 冲突最多重试 3 次。
+- 副作用：提交后 best-effort 写 Node 等价 `action=reset_builtin_test_token`、`operationKey=external_integration_sources.reset_builtin_test_token`、`admin_only/full` operation log，changes 只记录 `tokenPreview`，不记录明文、hash 或密文；日志队列失败不得覆盖业务成功，不新增 Node 当前不存在的缓存副作用。
+- [x] TDD：一次性明文、密文 / hash / preview、字段保留、内置缺失、hash 冲突重试上限和 source -> token 事务锁顺序，以及 service/port/PostgreSQL/sqlc 已完成。
+- [x] TDD：空 body、非法 / 超限 JSON、管理员权限、200/400/500、secret headers、operation log 脱敏与 best-effort、静态路由优先级、mutation guard、router/app opt-in 接线已完成。
+- [ ] 真实 PostgreSQL/Redis/Asynq integration、真实 Go listener / Cookie、前端 reset/复制/回读、operation log ingest、生产单 owner 切流与回滚仍待执行。
+- 当前提交：`2d8f77b58` 完成 store/service，`18e66432f` 补三次 hash 冲突停止边界，`1ad486029` 完成 HTTP/router/app 接线；定向 Go test、相关包完整 test 和 vet 已通过。
+
 #### W2 外部来源 Token 创建切片（2026-07-16）
 
 - 目标：迁移管理员 `POST /__aisys__/api/external-integration-sources/{id}/tokens`，继续由 `JUHE_AI_MANAGEMENT_API_ENABLED` opt-in；Token PATCH 已由后续切片进入 Go opt-in，内置 reset 继续由 Node owner。Node 当前不存在 Token DELETE，撤销必须通过 PATCH `status=revoked`，Go 不新增物理删除语义。
