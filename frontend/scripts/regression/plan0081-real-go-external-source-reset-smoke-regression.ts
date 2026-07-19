@@ -8,6 +8,7 @@ import { promisify } from 'node:util'
 
 import {
   externalSourceResetConfirmationHash,
+  loadRealGoExternalSourceResetSmokeConfig,
   realGoExternalSourceResetSmokeEnv
 } from '../smoke/plan0081-real-go-external-source-reset-smoke'
 
@@ -61,6 +62,14 @@ await listen(server)
 try {
   const baseUrl = `${serverBaseUrl(server)}${sensitiveBasePath}`
   await assertConfigurationGates(baseUrl)
+  assert.throws(
+    () => loadRealGoExternalSourceResetSmokeConfig({
+      ...smokeEnvironment('https://management.example.test')
+    }),
+    /loopback/i,
+    'remote HTTPS must fail during configuration parsing'
+  )
+  await assertReadOnlyConfirmationSequence(baseUrl)
   await assertSuccessfulChildSequence(baseUrl)
 } finally {
   await close(server)
@@ -103,6 +112,26 @@ async function assertConfigurationGates(baseUrl: string): Promise<void> {
   ])
 }
 
+async function assertReadOnlyConfirmationSequence(baseUrl: string): Promise<void> {
+  resetRequests()
+  const environment = without(
+    without(smokeEnvironment(baseUrl), realGoExternalSourceResetSmokeEnv.enabled),
+    realGoExternalSourceResetSmokeEnv.confirmation
+  )
+  const result = await runSmokeChild(environment, ['--print-confirmation'])
+  assert.equal(result.exitCode, 0, result.stderr || result.stdout)
+  assert.equal(result.stderr, '')
+  assert.equal(
+    result.stdout.trim(),
+    `confirmationHash=${externalSourceResetConfirmationHash(baseUrl, oldPrefix, oldSuffix)}`
+  )
+  assert.equal(postCalls, 0, 'confirmation mode must never POST')
+  assert.deepEqual(records.map(requestSignature), [
+    `GET /__aisys__/api/external-integration-sources/${sourceId}`,
+    `GET /__aisys__/api/external-integration-sources/${sourceId}/tokens/${tokenId}/secret`
+  ])
+}
+
 async function assertSuccessfulChildSequence(baseUrl: string): Promise<void> {
   resetRequests()
   const result = await runSmokeChild(smokeEnvironment(baseUrl))
@@ -129,13 +158,14 @@ async function assertSuccessfulChildSequence(baseUrl: string): Promise<void> {
   assertNoSensitiveOutput(`${result.stdout}\n${result.stderr}`, baseUrl, rawResetResponse)
 }
 
-async function runSmokeChild(environment: NodeJS.ProcessEnv): Promise<ChildResult> {
+async function runSmokeChild(environment: NodeJS.ProcessEnv, args: string[] = []): Promise<ChildResult> {
   try {
     const result = await execFileAsync(process.execPath, [
       tsxCliPath,
       '--tsconfig',
       fileURLToPath(new URL('../../../frontend/tsconfig.json', import.meta.url)),
-      smokePath
+      smokePath,
+      ...args
     ], {
       cwd: repositoryRoot,
       env: environment,

@@ -350,7 +350,23 @@ func TestConfigRejectsSameRedisDBWithDefaultPort(t *testing.T) {
 	}
 }
 
-func TestConfigAllowsDifferentRedisDBs(t *testing.T) {
+func TestConfigAllowsDifferentRedisProcesses(t *testing.T) {
+	cfg := Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://127.0.0.1:6380/1",
+		RedisQueueURL:              "redis://127.0.0.1:6381/2",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigRejectsDifferentRedisDBsOnSameRedisProcess(t *testing.T) {
 	cfg := Config{
 		Host:                       "127.0.0.1",
 		Port:                       3000,
@@ -361,8 +377,56 @@ func TestConfigAllowsDifferentRedisDBs(t *testing.T) {
 		NodeInternalRequestTimeout: 2 * time.Second,
 		ShutdownTimeout:            time.Second,
 	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want same Redis process error")
+	}
+}
+
+func TestConfigRejectsLoopbackRedisAlias(t *testing.T) {
+	cfg := Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://localhost:6380/1",
+		RedisQueueURL:              "redis://127.0.0.1:6381/2",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want loopback Redis alias error")
+	}
+}
+
+func TestConfigRejectsIPv6LoopbackRedisAlias(t *testing.T) {
+	cfg := Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "redis://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://[::1]:6380/1",
+		RedisQueueURL:              "redis://127.0.0.1:6381/2",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want IPv6 loopback Redis alias error")
+	}
+}
+
+func TestConfigRejectsRedissSameRedisProcess(t *testing.T) {
+	cfg := Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		RedisCacheURL:              "rediss://127.0.0.1:6379/0",
+		RedisStateURL:              "redis://127.0.0.1:6379/1",
+		RedisQueueURL:              "redis://127.0.0.1:6381/2",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() error = nil, want same Redis process error across redis schemes")
 	}
 }
 
@@ -375,8 +439,8 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		PublicAPIEnabled:           true,
 		PostgresURL:                "postgres://127.0.0.1:5432/juhe_ai",
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
-		RedisStateURL:              "redis://127.0.0.1:6379/1",
-		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		RedisStateURL:              "redis://127.0.0.1:6380/1",
+		RedisQueueURL:              "redis://127.0.0.1:6381/2",
 		Secret:                     "12345678901234567890123456789012",
 		NodeInternalBaseURL:        "http://127.0.0.1:3001",
 		NodeInternalRequestTimeout: 2 * time.Second,
@@ -451,8 +515,8 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		ManagementAPIEnabled:       true,
 		PostgresURL:                "postgres://127.0.0.1:5432/juhe_ai",
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
-		RedisStateURL:              "redis://127.0.0.1:6379/1",
-		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		RedisStateURL:              "redis://127.0.0.1:6380/1",
+		RedisQueueURL:              "redis://127.0.0.1:6381/2",
 		Secret:                     "12345678901234567890123456789012",
 		NodeInternalRequestTimeout: 2 * time.Second,
 		ShutdownTimeout:            time.Second,
@@ -590,8 +654,8 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_PUBLIC_API_ENABLED", "true")
 	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://127.0.0.1:5432/juhe_ai")
 	t.Setenv("JUHE_AI_REDIS_CACHE_URL", "redis://127.0.0.1:6379/0")
-	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
-	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
+	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6380/1")
+	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6381/2")
 	t.Setenv("JUHE_AI_SECRET", "12345678901234567890123456789012")
 	t.Setenv("JUHE_AI_NODE_INTERNAL_BASE_URL", "http://127.0.0.1:3001")
 	t.Setenv("JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT", "750ms")
@@ -622,8 +686,8 @@ func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_MANAGEMENT_API_ENABLED", "true")
 	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://127.0.0.1:5432/juhe_ai")
 	t.Setenv("JUHE_AI_REDIS_CACHE_URL", "redis://127.0.0.1:6379/0")
-	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
-	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
+	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6380/1")
+	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6381/2")
 	t.Setenv("JUHE_AI_SECRET", "12345678901234567890123456789012")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
