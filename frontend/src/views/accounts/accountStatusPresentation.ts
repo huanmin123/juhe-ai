@@ -28,7 +28,6 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     : (presentation?.reason ?? observation?.reason ?? effective?.reason)
   if (reason) lines.push(`原因：${reason}`)
   if (observation?.traceId) lines.push(`traceId：${observation.traceId}`)
-  if (presentation?.statusBoundary) lines.push(`预计恢复：${formatDateTime(presentation.statusBoundary.at)}`)
   return lines
 }
 

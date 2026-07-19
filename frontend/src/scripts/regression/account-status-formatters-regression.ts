@@ -478,6 +478,17 @@ const frequentFailureTooltip = accountStatusTooltipLines(accountFixture({
   qualityLastErrorMessage: 'mock upstream 504 failure for formatter regression'
 }))
 assertTrue(!frequentFailureTooltip.some((line) => line.includes('账户状态：数据库仍为正常') || line.includes('仅统计真实上游失败') || line.includes('并发满') || line.includes('最后质量原因')), '质量内部统计不应出现在状态 tooltip')
+assertTrue(
+  !accountStatusTooltipLines(accountFixture({
+    availabilityPresentation: {
+      status: 'temporarily_unavailable',
+      label: '临时不可调用',
+      statusBoundary: { at: '2099-01-01T00:00:00.000Z', kind: 'cooldown_expiry' },
+      probe: { kind: 'cooldown_retest', schedule: { state: 'none' } }
+    }
+  })).some((line) => line.includes('预计恢复') || line.includes('预计释放')),
+  '业务边界时间不应伪装成探针计划或预计释放'
+)
 
 const precheckTooltip = accountStatusTooltipLines(accountFixture({
   runtimeAvailability: {

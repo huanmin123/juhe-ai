@@ -62,14 +62,7 @@ const fallbackTooltip = computed(() => dispatchFlagActive.value
 )
 
 const tooltipLines = computed(() => {
-  const lines = accountStatusTooltipLines(props.account)
-  if (props.account.superPriorityEnabled) {
-    lines.push(superPriorityTooltip.value)
-  }
-  if (props.account.fallbackEnabled) {
-    lines.push(fallbackTooltip.value)
-  }
-  return lines
+  return accountStatusTooltipLines(props.account)
 })
 
 async function copyTraceId(): Promise<void> {
