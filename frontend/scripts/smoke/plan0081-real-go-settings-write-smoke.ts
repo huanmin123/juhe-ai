@@ -44,10 +44,7 @@ export function normalizeManagementApiBaseUrl(value: string): string {
   try { url = new URL(value) } catch { throw new SmokeError('base URL must be valid') }
   expect(url.protocol === 'http:' || url.protocol === 'https:', 'base URL protocol is invalid')
   expect(!url.username && !url.password && !url.search && !url.hash, 'base URL must not include userinfo, query, or fragment')
-  if (url.protocol === 'http:') {
-    const hostname = url.hostname.replace(/^\[|\]$/g, '')
-    expect(isIP(hostname) > 0 && (hostname === '127.0.0.1' || hostname === '::1'), 'HTTP settings smoke requires loopback')
-  }
+  expect(isLoopbackHost(url.hostname), 'settings write smoke requires loopback')
   expect(url.pathname === '' || url.pathname === '/' || url.pathname === apiPrefix, 'base URL path must target the management API')
   url.pathname = apiPrefix
   url.search = ''
@@ -78,6 +75,7 @@ export async function runRealGoSettingsWriteSmoke(
   runtime: RealGoSettingsWriteSmokeRuntime = {}
 ): Promise<RealGoSettingsWriteSmokeSummary> {
   const normalized = normalizeConfig(config, runtime)
+  await verifyGoReadiness(normalized)
   const initial = await getSettings(normalized)
   const original = initial[field]
   expect(typeof original === 'number' && Number.isInteger(original) && original >= minValue && original <= maxValue, 'retention setting is outside the supported range')
@@ -118,14 +116,14 @@ export function formatRealGoSettingsWriteSmokeSummary(summary: RealGoSettingsWri
 }
 
 async function getSettings(config: NormalizedConfig): Promise<Record<string, unknown>> {
-  const response = await request(config, 'GET', undefined, 'settings GET')
+  const response = await request(config, 'GET', settingsPath, undefined, 'settings GET')
   expect(response.status === 200, `settings GET failed with HTTP ${response.status}`)
   assertNoStore(response, 'settings GET')
   return parseSnapshot(await parseResponseJson(response))
 }
 
 async function patchSettings(config: NormalizedConfig, value: number): Promise<Record<string, unknown>> {
-  const response = await request(config, 'PATCH', { [field]: value }, 'settings PATCH')
+  const response = await request(config, 'PATCH', settingsPath, { [field]: value }, 'settings PATCH')
   expect(response.status === 200, `settings PATCH failed with HTTP ${response.status}`)
   assertNoStore(response, 'settings PATCH')
   return parseSnapshot(await parseResponseJson(response))
@@ -138,15 +136,33 @@ function assertSnapshot(actual: Record<string, unknown>, initial: Record<string,
   for (const key of initialKeys) if (key !== field) expect(JSON.stringify(actual[key]) === JSON.stringify(initial[key]), `settings response changed ${key}`)
 }
 
-async function request(config: NormalizedConfig, method: 'GET' | 'PATCH', body: unknown, label: string): Promise<Response> {
+async function verifyGoReadiness(config: NormalizedConfig): Promise<void> {
+  const response = await request(config, 'GET', '/readyz', undefined, 'Go readiness', false)
+  expect(response.status === 200, `Go readiness failed with HTTP ${response.status}`)
+  assertNoStore(response, 'Go readiness')
+  const value = await parseResponseJson(response)
+  expect(
+    isRecord(value) && value.success === true && value.status === 'ok' && value.service === 'juhe-ai-go',
+    'Go readiness identity is invalid'
+  )
+}
+
+async function request(
+  config: NormalizedConfig,
+  method: 'GET' | 'PATCH',
+  path: string,
+  body: unknown,
+  label: string,
+  authenticated = true
+): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), config.timeoutMs)
   try {
-    return await config.fetch(`${config.baseUrl}${settingsPath}`, {
+    return await config.fetch(`${config.baseUrl}${path}`, {
       method,
       redirect: 'manual',
       signal: controller.signal,
-      headers: { Cookie: config.cookie, 'User-Agent': userAgent, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      headers: { ...(authenticated ? { Cookie: config.cookie } : {}), 'User-Agent': userAgent, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined
     })
   } catch { throw new SmokeError(`${label} request failed`) } finally { clearTimeout(timer) }
@@ -171,6 +187,7 @@ function normalizeConfig(config: RealGoSettingsWriteSmokeConfig, runtime: RealGo
 }
 function required(env: RealGoSettingsWriteSmokeEnvironment, name: string): string { const value = env[name]; expect(typeof value === 'string' && value.length > 0, `Missing required environment variable: ${name}`); return value }
 function optionalTimeout(value: string | undefined): number | undefined { if (value === undefined) return undefined; const parsed = Number(value); expect(Number.isInteger(parsed) && parsed > 0 && parsed <= 2_147_483_647, 'timeout must be a positive integer'); return parsed }
+function isLoopbackHost(hostname: string): boolean { const normalized = hostname.replace(/^\[|\]$/g, '').toLowerCase(); return normalized === 'localhost' || normalized === '::1' || (isIP(normalized) === 4 && normalized.startsWith('127.')) }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function expect(condition: unknown, message: string): asserts condition { if (!condition) throw new SmokeError(message) }
 function combineErrors(primary: unknown, cleanup: unknown): Error { const errors = [primary, cleanup].filter(Boolean).map(error => error instanceof Error ? error.message : String(error)); return new Error(errors.join('; ')) }

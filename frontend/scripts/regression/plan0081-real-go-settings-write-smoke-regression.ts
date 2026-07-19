@@ -12,8 +12,8 @@ import {
   type RealGoSettingsWriteSmokeEnvironment
 } from '../smoke/plan0081-real-go-settings-write-smoke'
 
-type Scenario = 'success' | 'patch-status' | 'missing-header' | 'invalid-json' | 'redirect' | 'disconnect' | 'restore-status'
-interface RecordItem { method: string; pathname: string; body: unknown }
+type Scenario = 'success' | 'ready-service' | 'patch-status' | 'missing-header' | 'invalid-json' | 'redirect' | 'disconnect' | 'restore-status'
+interface RecordItem { method: string; pathname: string; body: unknown; cookie?: string }
 
 const cookie = 'juhe_ai_session=plan0081-settings-cookie-secret'
 const settings: Record<string, unknown> = {
@@ -31,6 +31,27 @@ await listen(server)
 try {
   const baseUrl = serverBaseUrl(server)
   await gateTests(baseUrl)
+  assert.throws(
+    () => loadRealGoSettingsWriteSmokeConfig(environment('https://management.example.test')),
+    /loopback/i,
+    'remote HTTPS must fail during configuration parsing'
+  )
+  let remoteFetchCalls = 0
+  await assert.rejects(
+    runRealGoSettingsWriteSmoke({
+      baseUrl: 'https://management.example.test',
+      cookie,
+      allow: true,
+      confirmation: 'unused'
+    }, {
+      fetch: async () => {
+        remoteFetchCalls += 1
+        return new Response()
+      }
+    }),
+    /loopback/i
+  )
+  assert.equal(remoteFetchCalls, 0, 'remote HTTPS must fail before fetch')
   await successTest(baseUrl)
   await failureTests(baseUrl)
   assertNoLeak(formatRealGoSettingsWriteSmokeSummary({ settingsWriteChecked: true, settingsRestored: true }), baseUrl)
@@ -64,6 +85,7 @@ async function successTest(baseUrl: string): Promise<void> {
   assert.deepEqual(summary, { settingsWriteChecked: true, settingsRestored: true })
   assert.deepEqual(output, ['settingsWriteChecked=true settingsRestored=true'])
   assert.deepEqual(records.map(item => `${item.method} ${item.pathname}`), [
+    'GET /__aisys__/api/readyz',
     'GET /__aisys__/api/settings', 'PATCH /__aisys__/api/settings',
     'GET /__aisys__/api/settings', 'GET /__aisys__/api/settings',
     'PATCH /__aisys__/api/settings', 'GET /__aisys__/api/settings'
@@ -71,10 +93,13 @@ async function successTest(baseUrl: string): Promise<void> {
   assert.deepEqual(records.filter(item => item.method === 'PATCH').map(item => item.body), [
     { systemMetricsHourlyRetentionDays: 19 }, { systemMetricsHourlyRetentionDays: 20 }
   ])
+  assert.equal(records[0]?.cookie, undefined, 'readiness must not send the management Cookie')
+  for (const record of records.slice(1)) assert.equal(record.cookie, cookie)
 }
 
 async function failureTests(baseUrl: string): Promise<void> {
   for (const [name, expected] of [
+    ['ready-service', /Go readiness/],
     ['patch-status', /settings PATCH failed with HTTP 500/],
     ['missing-header', /Cache-Control/],
     ['invalid-json', /settings response DTO/],
@@ -84,10 +109,26 @@ async function failureTests(baseUrl: string): Promise<void> {
     reset(name)
     await assert.rejects(runRealGoSettingsWriteSmokeFromEnvironment(environment(baseUrl), () => undefined), expected)
     assert.equal(settings.systemMetricsHourlyRetentionDays, 20, `${name} must restore the setting`)
+    if (name === 'missing-header' || name === 'invalid-json' || name === 'disconnect') {
+      assert.deepEqual(records.map(item => `${item.method} ${item.pathname}`), [
+        'GET /__aisys__/api/readyz',
+        'GET /__aisys__/api/settings',
+        'PATCH /__aisys__/api/settings',
+        'GET /__aisys__/api/settings',
+        'PATCH /__aisys__/api/settings',
+        'GET /__aisys__/api/settings'
+      ])
+      assert.equal(patchNumber, 2, `${name} must complete one temporary and one restore PATCH`)
+    }
+    if (name === 'ready-service') {
+      assert.deepEqual(records.map(item => `${item.method} ${item.pathname}`), ['GET /__aisys__/api/readyz'])
+      assert.equal(records[0]?.cookie, undefined)
+    }
   }
   reset('restore-status')
   await assert.rejects(runRealGoSettingsWriteSmokeFromEnvironment(environment(baseUrl), () => undefined), /settings PATCH failed with HTTP 500/)
   assert.equal(patchNumber, 2)
+  assert.equal(settings.systemMetricsHourlyRetentionDays, 19, 'failed restore must leave an explicit temporary-value signal')
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -95,19 +136,34 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const method = req.method ?? 'GET'
   let body: unknown
   if (method === 'PATCH') body = await readJson(req)
-  records.push({ method, pathname: url.pathname, body })
+  records.push({ method, pathname: url.pathname, body, cookie: req.headers.cookie })
+  if (url.pathname === '/__aisys__/api/readyz') {
+    return respond(res, 200, {
+      success: true,
+      status: 'ok',
+      service: scenario === 'ready-service' ? 'juhe-ai-node' : 'juhe-ai-go',
+      version: '0.1.0',
+      dependencies: {}
+    })
+  }
   if (method === 'GET') {
     if (scenario === 'redirect') return respond(res, 302, {}, { location: '/redirect' })
     return respond(res, 200, { data: { ...settings } })
   }
-  if (scenario === 'disconnect') return res.destroy()
+  if (scenario === 'disconnect' && patchNumber === 0) {
+    patchNumber += 1
+    const value = (body as Record<string, unknown>)?.systemMetricsHourlyRetentionDays
+    assert.equal(Object.keys(body as object).join(','), 'systemMetricsHourlyRetentionDays')
+    settings.systemMetricsHourlyRetentionDays = value
+    return res.destroy()
+  }
   patchNumber += 1
   if (scenario === 'patch-status' || (scenario === 'restore-status' && patchNumber === 2)) return respond(res, 500, { error: 'failed' })
-  if (scenario === 'missing-header') return respond(res, 200, { data: { ...settings } }, undefined, false)
-  if (scenario === 'invalid-json') return respondRaw(res, 200, '{invalid')
   const value = (body as Record<string, unknown>)?.systemMetricsHourlyRetentionDays
   assert.equal(Object.keys(body as object).join(','), 'systemMetricsHourlyRetentionDays')
   settings.systemMetricsHourlyRetentionDays = value
+  if (scenario === 'missing-header' && patchNumber === 1) return respond(res, 200, { data: { ...settings } }, undefined, false)
+  if (scenario === 'invalid-json' && patchNumber === 1) return respondRaw(res, 200, '{invalid')
   return respond(res, 200, { data: { ...settings } })
 }
 
