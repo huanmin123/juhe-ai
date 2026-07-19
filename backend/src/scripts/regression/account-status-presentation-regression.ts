@@ -335,6 +335,7 @@ const localSuppressed = accountAvailabilityPresentation({
   }
 }, now)
 assert.equal(localSuppressed.action, 'restore_account')
+assert.equal(localSuppressed.statusBoundary, undefined, '自动短暂避让的内部 TTL 不应显示为用户策略释放时间')
 
 const invalidCredentialError = accountAvailabilityPresentation({
   id: 'account-invalid-credential',

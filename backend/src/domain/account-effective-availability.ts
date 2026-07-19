@@ -61,6 +61,7 @@ export function accountSummaryWithEffectiveAvailability<T extends AccountEffecti
   return {
     ...account,
     effectiveAvailability,
+    runtimeProbe: account.runtimeAvailability?.probePresentation,
     availabilityPresentation: accountAvailabilityPresentation({
       ...account,
       effectiveAvailability

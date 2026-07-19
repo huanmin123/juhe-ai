@@ -161,7 +161,11 @@ export function accountAvailabilityPresentation(account: AccountStatusPresentati
   else if (effective.status === 'authorization_quota_exceeded' && hasValidDateTime(account.quotaResetAt)) presentation.statusBoundary = { at: account.quotaResetAt, kind: 'quota_reset' }
   else if (effective.status === 'source_cooldown' && !hasProbeFact(account.sourceAccountProbe ?? sourceAccountProbe(account, now)) && hasValidDateTime(account.authorizationInstanceSourceAccountCooldownUntil)) presentation.statusBoundary = { at: account.authorizationInstanceSourceAccountCooldownUntil, kind: 'cooldown_expiry' }
   else if (effective.status === 'instance_cooldown' && cooldownProbeSchedule.state === 'none' && hasValidDateTime(account.cooldownUntil)) presentation.statusBoundary = { at: account.cooldownUntil, kind: 'cooldown_expiry' }
-  else if (effective.status === 'runtime_local_suppressed' && hasValidDateTime(effective.retryAt)) presentation.statusBoundary = { at: effective.retryAt, kind: 'policy_ttl_expiry' }
+  else if (
+    effective.status === 'runtime_local_suppressed'
+    && account.runtimeProbe?.recoveryAtKind === 'policy_ttl_expiry'
+    && hasValidDateTime(account.runtimeProbe.recoveryAt)
+  ) presentation.statusBoundary = { at: account.runtimeProbe.recoveryAt, kind: 'policy_ttl_expiry' }
 
   if (presentation.statusBoundary) return presentation
   if (effective.status === 'instance_disabled' || effective.status === 'source_disabled' || effective.status === 'binding_missing' || effective.status === 'permission_denied' || effective.status === 'authorization_paused' || effective.status === 'authorization_unavailable' || effective.status === 'source_deleted' || effective.status === 'source_unschedulable' || effective.status === 'instance_unschedulable') return presentation
