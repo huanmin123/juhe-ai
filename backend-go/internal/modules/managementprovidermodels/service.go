@@ -622,11 +622,13 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 		return CustomModelUpdateResult{}, ErrCustomProviderModelNotFound
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	s.publishModelPageDataResets(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
+	var cleanupErr error
 	if persisted.After.Status != "active" {
-		if err := s.clearDefaultHealthCheckModelReferences(ctx, persisted.After); err != nil {
-			return CustomModelUpdateResult{}, err
-		}
+		cleanupErr = s.clearDefaultHealthCheckModelReferences(ctx, persisted.After)
+	}
+	s.publishModelPageDataResets(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
+	if cleanupErr != nil {
+		return CustomModelUpdateResult{}, cleanupErr
 	}
 	return CustomModelUpdateResult{Before: catalogItemFromPort(persisted.Before), After: catalogItemFromPort(persisted.After)}, nil
 }
@@ -888,9 +890,10 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 	}
 	if deleted {
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
+		cleanupErr := s.clearDefaultHealthCheckModelReferences(ctx, existing)
 		s.publishModelPageDataResets(ctx, existing.Scope, existing.SystemAccountID)
-		if err := s.clearDefaultHealthCheckModelReferences(ctx, existing); err != nil {
-			return CustomModelDeleteResult{}, err
+		if cleanupErr != nil {
+			return CustomModelDeleteResult{}, cleanupErr
 		}
 	}
 	return CustomModelDeleteResult{Deleted: deleted}, nil

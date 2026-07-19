@@ -621,7 +621,12 @@ func newManagementAPIHandlerWithPageData(
 		PageDataPublisher:       accountsStaticResetPublisher,
 		Logger:                  logger,
 	})
-	accountService := managementaccounts.NewService(store)
+	accountService := managementaccounts.NewServiceWithOptions(managementaccounts.ServiceOptions{
+		Store:             store,
+		GranteeReader:     store,
+		PageDataPublisher: accountsStaticResetPublisher,
+		Logger:            logger,
+	})
 	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
 		ModelCatalog:    providerModelService,
