@@ -157,7 +157,21 @@ assert(providerModelCatalogSnapshotSQL.includes('service_tier_prices_json'), 'ge
 for (const legacy of ['pricing_model', 'priority_input_usd_per_1m', 'flex_input_usd_per_1m']) {
   assert.equal(providerModelCatalogSnapshotSQL.includes(legacy), false, `generated catalog must not use ${legacy}`)
 }
-assert.equal(providerModelCatalogSnapshotSQL.includes('input_usd_per_1m = EXCLUDED.input_usd_per_1m'), false, 'catalog sync must not overwrite administrator prices')
+for (const pricingAssignment of [
+  'input_usd_per_1m = COALESCE(provider_model_catalog.input_usd_per_1m, EXCLUDED.input_usd_per_1m)',
+  'output_usd_per_1m = COALESCE(provider_model_catalog.output_usd_per_1m, EXCLUDED.output_usd_per_1m)',
+  'cached_input_usd_per_1m = COALESCE(provider_model_catalog.cached_input_usd_per_1m, EXCLUDED.cached_input_usd_per_1m)',
+  'cache_write_usd_per_1m = COALESCE(provider_model_catalog.cache_write_usd_per_1m, EXCLUDED.cache_write_usd_per_1m)',
+  'cache_write_1h_usd_per_1m = COALESCE(provider_model_catalog.cache_write_1h_usd_per_1m, EXCLUDED.cache_write_1h_usd_per_1m)',
+  "service_tier_prices_json = CASE WHEN provider_model_catalog.service_tier_prices_json IS NULL OR btrim(provider_model_catalog.service_tier_prices_json) IN ('', '{}')",
+  'image_input_usd_per_1m = COALESCE(provider_model_catalog.image_input_usd_per_1m, EXCLUDED.image_input_usd_per_1m)',
+  'image_output_usd_per_1m = COALESCE(provider_model_catalog.image_output_usd_per_1m, EXCLUDED.image_output_usd_per_1m)',
+  'audio_input_usd_per_1m = COALESCE(provider_model_catalog.audio_input_usd_per_1m, EXCLUDED.audio_input_usd_per_1m)',
+  'audio_output_usd_per_1m = COALESCE(provider_model_catalog.audio_output_usd_per_1m, EXCLUDED.audio_output_usd_per_1m)',
+  'output_usd_per_image = COALESCE(provider_model_catalog.output_usd_per_image, EXCLUDED.output_usd_per_image)'
+]) {
+  assert(providerModelCatalogSnapshotSQL.includes(pricingAssignment), `catalog sync must fill missing built-in pricing without overwriting administrator values: ${pricingAssignment}`)
+}
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated catalog SQL must not contain whitespace-only value rows')
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(

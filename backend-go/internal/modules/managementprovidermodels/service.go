@@ -546,15 +546,16 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 		}
 		template = &resolved
 	}
-	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, input.Fields, template)
+	fields := input.Fields
+	fields.DefaultReasoningEffort = OptionalString{Set: true, Value: ""}
+	saveInput, err := customModelSaveInputFromCreate(provider.Code, scope, ownerSystemAccountID, actorSystemAccountID, fields, template)
 	if err != nil {
 		return ModelCatalogItem{}, err
 	}
 	if err := s.validateCustomModelPricing(ctx, saveInput, ownerSystemAccountID); err != nil {
 		return ModelCatalogItem{}, err
 	}
-	// 新建自定义模型不替上游选择默认思考级别；显式值先经过上面的能力校验。
-	saveInput.DefaultReasoningEffort = ""
+	// 新建自定义模型不替上游选择默认思考级别。
 	existing, found, err := s.store.FindManagementCustomProviderModelByScope(ctx, port.ManagementCustomProviderModelScopeInput{
 		ProviderCode:    saveInput.ProviderCode,
 		Scope:           saveInput.Scope,
@@ -595,18 +596,26 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 		return CustomModelUpdateResult{}, err
 	}
 	if foundBuiltIn {
+		if input.Fields.Invalid || !builtInModelConfigurationMutationOnly(input.Fields) {
+			return CustomModelUpdateResult{}, &CustomModelValidationError{Message: "内置模型配置参数无效"}
+		}
+		if strings.TrimSpace(input.ProviderCode) == "gpt" {
+			input.Fields.DefaultReasoningEffort = OptionalString{Set: true, Value: ""}
+		}
 		result, err := s.updateBuiltInModelConfiguration(ctx, builtIn, input)
 		if err != nil {
 			return CustomModelUpdateResult{}, err
 		}
 		return result, nil
 	}
+	hasRequestedMutation := customModelMutationHasAnyField(input.Fields)
+	input.Fields.DefaultReasoningEffort = OptionalString{Set: true, Value: ""}
 	persisted, found, err := s.store.UpdateManagementCustomProviderModel(ctx, customProviderModelUpdateInput(input), func(result port.ManagementCustomProviderModelUpdateResult) error {
 		existing := result.Before
 		if !canMutateCustomProviderModel(existing.Scope, existing.SystemAccountID, input.ActorSystemAccountID, input.ActorRole) {
 			return &CustomModelForbiddenError{Message: "无权修改该自定义模型"}
 		}
-		if input.Fields.Invalid || !customModelMutationHasAnyField(input.Fields) {
+		if input.Fields.Invalid || !hasRequestedMutation {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		if input.Fields.ConfigurationTemplateID.Set {

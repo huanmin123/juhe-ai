@@ -57,7 +57,7 @@ func TestProviderAuthProtocolCatchUpMigrationUpgradesVersion57Databases(t *testi
 		"ADD CONSTRAINT accounts_type_check CHECK (type IN ('api_key', 'oauth', 'google_oauth'))",
 		"DROP CONSTRAINT IF EXISTS accounts_health_check_endpoint_mode_check",
 		"'interactions_json', 'interactions_sse'",
-		"'xai', 'xai', 'xAI', NULL",
+		"'xai', 'xai', 'xAI / Grok', 'openai'",
 		"'profile_xai_openai_v1'",
 		"'profile_gemini_native_v1beta'",
 		"'[\"api_key\",\"google_oauth\"]'",
@@ -70,7 +70,7 @@ func TestProviderAuthProtocolCatchUpMigrationUpgradesVersion57Databases(t *testi
 		}
 	}
 
-	providerPosition := strings.Index(sql, "'xai', 'xai', 'xAI', NULL")
+	providerPosition := strings.Index(sql, "'xai', 'xai', 'xAI / Grok', 'openai'")
 	profilePosition := strings.Index(sql, "'profile_xai_openai_v1'")
 	groupPosition := strings.Index(sql, "'grp_default_xai_sys_admin'")
 	if providerPosition < 0 || profilePosition <= providerPosition || groupPosition <= providerPosition {

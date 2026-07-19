@@ -40,6 +40,8 @@ const googleOAuth = normalizeAccountCredentialsForWrite('google_oauth', {
   client_id: 'client.apps.googleusercontent.com',
   client_secret: 'google-client-secret',
   quota_project_id: 'quota-project',
+  service_tier_override: 'priority',
+  reasoning_effort_override: 'high',
   base_url: 'https://generativelanguage.googleapis.com/v1beta'
 }, {
   accountType: 'google_oauth',
@@ -50,6 +52,8 @@ const googleOAuth = normalizeAccountCredentialsForWrite('google_oauth', {
 })
 assert.equal(googleOAuth.client_secret, 'google-client-secret')
 assert.equal(googleOAuth.quota_project_id, 'quota-project')
+assert.equal(googleOAuth.service_tier_override, 'priority')
+assert.equal(googleOAuth.reasoning_effort_override, 'high')
 assert.deepEqual(googleOAuth.supported_endpoint_modes, ['generate_content_json', 'generate_content_sse', 'count_tokens', 'interactions_json', 'interactions_sse'])
 assert.equal(requiredAccountCredentialSource('google_oauth', googleOAuth), 'google-refresh')
 

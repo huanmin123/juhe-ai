@@ -951,11 +951,10 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 			wantMessage:  "自定义模型参数无效",
 		},
 		{
-			name:          "reject default outside supported efforts",
+			name:          "ignore default outside supported efforts",
 			providerCode:  "gpt",
 			efforts:       []string{"low"},
 			defaultEffort: OptionalString{Set: true, Value: "high"},
-			wantMessage:   "默认思考级别必须属于支持的思考级别",
 		},
 		{
 			name:         "reject invalid generic capability token",
@@ -994,7 +993,10 @@ func TestServiceCreateCustomModelValidatesGPTRequestCapabilities(t *testing.T) {
 				},
 			})
 			message, ok := CustomModelValidationMessage(err)
-			if !ok || message != tt.wantMessage {
+			if tt.wantMessage == "" && (err != nil || store.saveInput.DefaultReasoningEffort != "") {
+				t.Fatalf("default reasoning should be ignored before validation: err=%v save=%+v", err, store.saveInput)
+			}
+			if tt.wantMessage != "" && (!ok || message != tt.wantMessage) {
 				t.Fatalf("error = %v, message = %q, want %q", err, message, tt.wantMessage)
 			}
 		})
@@ -1076,8 +1078,22 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		t.Fatalf("UpdateCustomModel() clone error = %v", err)
 	}
 	if store.customUpdateCalls != 1 || store.saveCalls != 0 || store.customUpdateInput.Notes.Value != "updated" ||
-		store.customUpdateInput.SupportedServiceTiers.Present || store.customUpdateInput.SupportedReasoningEfforts.Present {
+		store.customUpdateInput.SupportedServiceTiers.Present || store.customUpdateInput.SupportedReasoningEfforts.Present ||
+		!store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
 		t.Fatalf("atomic update input = %+v", store.customUpdateInput)
+	}
+
+	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+		ProviderCode:         "gpt",
+		ID:                   "custom_model_1",
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		Fields: CustomModelMutation{
+			DefaultReasoningEffort: OptionalString{Set: true, Value: "high"},
+		},
+	})
+	if err != nil || !store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
+		t.Fatalf("non-empty default reasoning must normalize to upstream default err = %v, update = %+v", err, store.customUpdateInput)
 	}
 
 	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
@@ -1089,8 +1105,8 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low"}},
 		},
 	})
-	if message, ok := CustomModelValidationMessage(err); !ok || message != "默认思考级别必须属于支持的思考级别" {
-		t.Fatalf("reducing supported reasoning efforts message = %q, ok = %v, err = %v", message, ok, err)
+	if err != nil || !store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
+		t.Fatalf("reducing supported reasoning efforts must clear stale default: err=%v update=%+v", err, store.customUpdateInput)
 	}
 
 	_, err = service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
@@ -1518,7 +1534,7 @@ func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.
 		t.Fatalf("UpdateCustomModel() error = %v", err)
 	}
 	if result.Status != "disabled" || !slices.Equal(result.SupportedAPIProtocols, []string{"responses", "chat_completions"}) ||
-		!slices.Equal(result.SupportedServiceTiers, []string{"priority"}) || result.DefaultReasoningEffort != "high" ||
+		!slices.Equal(result.SupportedServiceTiers, []string{"priority"}) || result.DefaultReasoningEffort != "" ||
 		result.ContextWindowTokens == nil || *result.ContextWindowTokens != contextTokens || result.MaxInputTokens == nil || *result.MaxInputTokens != maxInputTokens {
 		t.Fatalf("result = %+v", result)
 	}
@@ -1758,6 +1774,9 @@ func TestServiceUpdateBuiltInModelPersistsNormalizedStringLists(t *testing.T) {
 	got := store.builtInUpdateInputs[0].SupportedAPIProtocols.Value
 	if !slices.Equal(got, []string{"responses", "chat_completions"}) {
 		t.Fatalf("stored protocols = %#v", got)
+	}
+	if !store.builtInUpdateInputs[0].DefaultReasoningEffort.Present || store.builtInUpdateInputs[0].DefaultReasoningEffort.Value != "" {
+		t.Fatalf("GPT built-in update must clear default reasoning: %+v", store.builtInUpdateInputs[0].DefaultReasoningEffort)
 	}
 }
 

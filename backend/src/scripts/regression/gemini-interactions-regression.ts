@@ -170,6 +170,27 @@ async function assertDriverPassThrough(): Promise<void> {
   assert.equal(parts.headers.get('api-revision'), '2026-05-20', 'Interactions 请求必须补充缺省 Api-Revision')
   assert.deepEqual(JSON.parse(Buffer.from(parts.body ?? '').toString('utf8')), request.body)
 
+  const googleOAuthAccount = {
+    ...(account as unknown as Record<string, unknown>),
+    type: 'google_oauth',
+    credentials: {
+      supported_endpoint_modes: ['interactions_json', 'interactions_sse'],
+      service_tier_override: 'priority',
+      reasoning_effort_override: 'high'
+    }
+  } as never
+  const googleOAuthParts = await geminiProviderDriver.buildUpstreamRequestParts(request, googleOAuthAccount, {
+    systemAccountId: 'system-account',
+    groupId: 'group'
+  })
+  assert.equal(googleOAuthParts.headers.get('authorization'), 'Bearer sk-gemini-interactions')
+  assert.equal(googleOAuthParts.headers.get('x-goog-api-key'), null)
+  assert.deepEqual(
+    JSON.parse(Buffer.from(googleOAuthParts.body ?? '').toString('utf8')),
+    request.body,
+    'Interactions 目前保持原生透明转发，账户级 GenerateContent 覆盖不得误写入未知字段'
+  )
+
   const customRevisionRequest = fakeRequest('POST', '/v1beta/interactions', {
     model: 'gemini-3.5-flash',
     input: 'hello'

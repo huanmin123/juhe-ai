@@ -801,11 +801,6 @@ function normalizeCustomProviderModelCapabilities(
     customProviderModelCapabilityTokens,
     '思考级别'
   )
-  const defaultReasoningEffort = optionalEnumInput(
-    input.defaultReasoningEffort,
-    customProviderModelCapabilityTokens,
-    '默认思考级别'
-  )
   if (providerCode === 'gpt') {
     const gptServiceTiers = new Set(['priority', 'flex'])
     const gptReasoningEfforts = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
@@ -818,7 +813,7 @@ function normalizeCustomProviderModelCapabilities(
   }
   const isTextModel = (optionalText(input.mode) ?? 'text') === 'text'
   const serviceTierPriceKeys = Object.keys(normalizeServiceTierPrices(input.serviceTierPrices))
-  if (!isTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length || defaultReasoningEffort)) {
+  if (!isTextModel && (supportedServiceTiers.length || supportedReasoningEfforts.length)) {
     throw new Error('只有文本自定义模型支持服务等级和思考能力配置')
   }
   if (!isTextModel && serviceTierPriceKeys.length) {
@@ -827,13 +822,10 @@ function normalizeCustomProviderModelCapabilities(
   if (serviceTierPriceKeys.some((tier) => !supportedServiceTiers.includes(tier))) {
     throw new Error('服务档位价格必须属于模型支持的服务等级')
   }
-  if (defaultReasoningEffort && !supportedReasoningEfforts.includes(defaultReasoningEffort)) {
-    throw new Error('默认思考级别必须属于支持的思考级别')
-  }
   return {
     supportedServiceTiers,
     supportedReasoningEfforts,
-    defaultReasoningEffort
+    defaultReasoningEffort: undefined
   }
 }
 
@@ -854,19 +846,6 @@ function normalizeEnumArray<TValue extends string>(
     output.push(value as TValue)
   }
   return output
-}
-
-function optionalEnumInput<TValue extends string>(
-  value: string | null | undefined,
-  allowedValues: ReadonlySet<TValue>,
-  label: string
-): TValue | undefined {
-  if (value === undefined || value === null || value === '') return undefined
-  const normalized = value.trim()
-  if (!allowedValues.has(normalized as TValue)) {
-    throw new Error(`${label}无效`)
-  }
-  return normalized as TValue
 }
 
 function parseEnumArray<TValue extends string>(

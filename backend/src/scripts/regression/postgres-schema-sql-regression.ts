@@ -117,7 +117,7 @@ assert.match(`${goPublicAccountsMigration}\n${providerAuthProtocolCatchUpMigrati
 assert.match(providerAuthProtocolCatchUpMigration, /ADD COLUMN IF NOT EXISTS long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false/, '000057 后升级必须独立补齐长上下文阈值边界列')
 assert.match(providerAuthProtocolCatchUpMigration, /DROP CONSTRAINT IF EXISTS accounts_type_check[\s\S]+ADD CONSTRAINT accounts_type_check CHECK \(type IN \('api_key', 'oauth', 'google_oauth'\)\)/, '000057 后升级必须独立扩展账户认证类型约束')
 assert.match(providerAuthProtocolCatchUpMigration, /DROP CONSTRAINT IF EXISTS accounts_health_check_endpoint_mode_check[\s\S]+interactions_json[\s\S]+interactions_sse/, '000057 后升级必须独立扩展 Gemini Interactions 健康检查约束')
-assert.match(providerAuthProtocolCatchUpMigration, /'xai', 'xai', 'xAI', NULL[\s\S]+'profile_xai_openai_v1'[\s\S]+'grp_default_xai_sys_admin'/, '000057 后升级必须独立补齐 xAI 供应商、协议档案和默认分组')
+assert.match(providerAuthProtocolCatchUpMigration, /'xai', 'xai', 'xAI \/ Grok', 'openai'[\s\S]+'profile_xai_openai_v1'[\s\S]+'grp_default_xai_sys_admin'/, '000057 后升级补齐的 xAI 元数据必须与 Node 默认种子一致')
 assert.match(providerAuthProtocolCatchUpMigration, /'profile_gemini_native_v1beta'[\s\S]+'\["api_key","google_oauth"\]'[\s\S]+'gemini_v1beta_interactions'[\s\S]+\('profile_gemini_native_v1beta', 'interactions'/, '000057 后升级必须独立补齐 Gemini Google OAuth 与 Interactions 元数据')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')

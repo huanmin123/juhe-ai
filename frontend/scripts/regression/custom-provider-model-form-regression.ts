@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   applyConfigurationTemplateToCustomModelForm,
@@ -91,6 +92,12 @@ const userPayload = buildCustomModelPayload(form, 'text', { includeRequestCapabi
 assert.equal(userPayload?.configurationTemplateId, template.id, '普通用户请求应提交配置模板 ID')
 assert.equal('inputUsdPer1M' in (userPayload ?? {}), false, '普通用户请求仍不得提交价格')
 assert.equal(userPayload?.defaultReasoningEffort, null, '创建契约必须明确由上游决定默认思考级别')
+const providersViewSource = readFileSync(new URL('../../src/views/providers/ProvidersView.vue', import.meta.url), 'utf8')
+assert.match(
+  providersViewSource,
+  /function buildCurrentCustomModelPayload\(\)[\s\S]+?includeDefaultReasoningEffort: false/,
+  '自定义模型编辑提交也必须固定清空默认思考级别'
+)
 assert(availableCustomModelStatusOptions(false).some((option) => option.value === 'active'), '普通用户新增模型必须可以选择启用')
 
 const capabilityOptions = buildCustomModelCapabilityOptions('gpt', [], [])

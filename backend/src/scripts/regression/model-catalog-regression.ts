@@ -360,7 +360,7 @@ try {
   const personalCapabilityModel = publicCatalog.find((item) => item.model === 'gpt-regression-capabilities')
   assert.deepEqual(personalCapabilityModel?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级能力必须完成 SQLite 往返')
   assert.deepEqual(personalCapabilityModel?.supportedReasoningEfforts, ['low', 'medium', 'high'], '自定义模型思考能力必须完成 SQLite 往返')
-  assert.equal(personalCapabilityModel?.defaultReasoningEffort, 'medium', '自定义模型默认思考级别必须完成 SQLite 往返')
+  assert.equal(personalCapabilityModel?.defaultReasoningEffort, null, '自定义模型默认思考级别必须保持为空并由上游决定')
   assert.equal(personalCapabilityModel?.supportsServiceTier, true, '自定义模型 supportsServiceTier 必须由精确能力数组派生')
   assert(publicModels.has('gpt-regression-alias'), '带直接价格的个人模型应进入个人公开模型目录')
   assert(publicModels.has('gpt-regression-upstream-target'), '自定义上游目标模型应直接进入公开模型目录')
@@ -404,7 +404,7 @@ try {
   assert.equal(gpt56Terra.codexMultiAgentVersion, 'v2')
   assert.equal(gpt56Luna.codexMultiAgentVersion, undefined)
 
-  assert.throws(() => catalogService.saveCustomProviderModel({
+  const ignoredCustomDefaultReasoning = catalogService.saveCustomProviderModel({
     providerCode: 'gpt',
     model: 'gpt-regression-invalid-default-reasoning',
     scope: 'personal',
@@ -415,7 +415,8 @@ try {
     inputUsdPer1M: 1,
     outputUsdPer1M: 2,
     actorSystemAccountId: 'sys_admin'
-  }), /默认思考级别必须属于支持的思考级别/)
+  })
+  assert.equal(ignoredCustomDefaultReasoning.defaultReasoningEffort, null, '自定义模型应忽略默认思考级别输入')
 
   assert.throws(() => customProviderModelsRepository.upsertCustomProviderModel({
     providerCode: 'gpt',
@@ -1373,13 +1374,13 @@ async function assertProviderModelHttpContracts(): Promise<void> {
 	  { defaultReasoningEffort: null }
 	)
 	assert.equal(userAGptClearedDefault.defaultReasoningEffort, null, 'null PATCH 必须在响应中显式清空默认思考级别')
-	const userAGptRestoredDefault = await patchEnvelope<{ defaultReasoningEffort?: string }>(
+	const userAGptRestoredDefault = await patchEnvelope<{ defaultReasoningEffort?: string | null }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
 	  userACookie,
 	  { defaultReasoningEffort: 'high' }
 	)
-	assert.equal(userAGptRestoredDefault.defaultReasoningEffort, 'high', 'string PATCH 必须恢复默认思考级别')
+	assert.equal(userAGptRestoredDefault.defaultReasoningEffort, null, 'string PATCH 也必须保持默认思考级别为空并交给上游决定')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/gpt/models`,
       adminCookie,
@@ -1436,8 +1437,8 @@ async function assertProviderModelHttpContracts(): Promise<void> {
         inputUsdPer1M: 1,
         outputUsdPer1M: 2
       },
-      400,
-	  'GPT 自定义模型 API 必须拒绝不在支持列表中的默认思考级别'
+      201,
+	  'GPT 自定义模型 API 必须忽略默认思考级别并交给上游决定'
     )
     const userAGptClearableModel = await postEnvelope<{ id: string; model: string }>(
       baseUrl,
@@ -1775,7 +1776,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       supportedApiProtocols?: string[]
       supportedServiceTiers?: string[]
       supportedReasoningEfforts?: string[]
-      defaultReasoningEffort?: string
+      defaultReasoningEffort?: string | null
     }>>(
       baseUrl,
       '/__aisys__/api/providers/models/options',
@@ -1787,7 +1788,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(userAGptGlobalOption?.supportedApiProtocols?.includes('responses'), '全局模型选项必须返回模型协议能力，供账号模型别名按协议过滤')
     assert.deepEqual(userAGptGlobalOption?.supportedServiceTiers, ['priority'], '全局模型选项必须返回服务等级能力')
     assert.deepEqual(userAGptGlobalOption?.supportedReasoningEfforts, ['low', 'high'], '全局模型选项必须返回思考能力')
-	assert.equal(userAGptGlobalOption?.defaultReasoningEffort, 'high', '自定义模型选项必须返回默认思考级别')
+	assert.equal(userAGptGlobalOption?.defaultReasoningEffort, null, '自定义模型选项不得返回客户端默认思考级别')
     assert.equal(userAGlobalModelOptions.some((item) => item.providerCode === 'hybrid'), false, '全局模型选项不应把 hybrid 当作真实供应商目录')
     assert.equal(userAGlobalModelOptions.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '全局模型选项不应返回 hybrid 自身模型')
 

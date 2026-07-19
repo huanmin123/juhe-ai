@@ -28,7 +28,7 @@ ALTER TABLE juhe_business.accounts
 INSERT INTO juhe_business.providers (
   id, code, name, parent_code, description, enabled, default_supported_models_json, created_at, updated_at
 ) VALUES (
-  'xai', 'xai', 'xAI', NULL,
+  'xai', 'xai', 'xAI / Grok', 'openai',
   'xAI 官方供应商，支持官方 API Key、OpenAI Chat Completions 与 Responses 兼容协议',
   true, '["grok-4.3"]', now(), now()
 )

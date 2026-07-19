@@ -47,6 +47,8 @@ const googleOAuthAccountCredentialKeys = new Set([
   'quota_project_id',
   'base_url',
   'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
   'error_handling_rules',
   'response_inspection_rules'
 ])
@@ -246,6 +248,7 @@ function normalizeGoogleOAuthAccountCredentials(
   if (expiresAt) credentials.expires_at = expiresAt
   copyOptionalCredentialText(input, credentials, 'quota_project_id', 'Google Quota Project ID', accountCredentialMetadataMaxBytes)
   normalizeAccountCredentialPolicies(input, credentials)
+  normalizeGptAccountRequestOverrides(input, credentials, endpointModeDefaults)
   assertAccountCredentialsJsonSize(credentials)
   return credentials
 }

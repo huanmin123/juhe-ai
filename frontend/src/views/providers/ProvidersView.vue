@@ -627,7 +627,7 @@ function buildCurrentCustomModelPayload(): ProviderModelUpsertPayload | undefine
   const payload = buildCustomModelUpsertPayload(customModelForm, customModelPricingCategory.value, {
     includeRequestCapabilities: true,
     includePrices: canManageModelPrices.value,
-    includeDefaultReasoningEffort: customModelEditing.value
+    includeDefaultReasoningEffort: false
   })
   if (!payload) {
     message.warning('请填写模型 ID')

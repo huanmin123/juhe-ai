@@ -274,7 +274,7 @@ func TestPublicAccountGoFreshSeedIncludesProviderAuthAndInteractionsProfiles(t *
 	}
 	sql := string(baseline) + "\n" + string(catchUp)
 	for _, required := range []string{
-		"'xai', 'xai', 'xAI', NULL",
+		"'xai', 'xai', 'xAI / Grok', 'openai'",
 		"('profile_xai_openai_v1', 'xai'",
 		"('profile_anthropic_anthropic_v1', 'anthropic'",
 		"'[\"api_key\"]'",

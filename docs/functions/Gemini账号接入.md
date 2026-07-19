@@ -107,6 +107,7 @@ type GeminiAccountType = 'api_key' | 'google_oauth'
 - API Key 加密保存；列表不展示，编辑弹窗可查看和修改。
 - Gemini native `base_url` 默认 `https://generativelanguage.googleapis.com`；Gemini OpenAI Chat `base_url` 默认 `https://generativelanguage.googleapis.com/v1beta/openai`。二者都允许修改为同协议代理地址，但必须通过 SSRF 防护。
 - Gemini native API Key / Google OAuth 的 `credentials.supported_endpoint_modes` 省略时默认 `['generate_content_json', 'generate_content_sse', 'count_tokens', 'interactions_json', 'interactions_sse']`；Gemini OpenAI Chat 省略时默认 `['chat_json', 'chat_sse']`。模型列表由本地目录响应，不写入账户 endpoint mode。
+- 账户凭据中的 `service_tier_override` / `reasoning_effort_override` 当前只在 GenerateContent（含 OpenAI / Anthropic 到 Gemini 的 GenerateContent bridge）请求体中按 Gemini 原生字段应用；Interactions 是独立原生资源协议，保持透明转发并保留上游返回的 `service_tier` / usage，不把 GenerateContent 专用覆盖字段猜测性写入 Interactions。需要 Interactions 专属生成参数时由调用方按 Google 官方请求体提交。
 - 新建账户默认写入 `pending_test`，测试通过后才允许调度。
 - Gemini native API Key / Google OAuth 账户不展示 OpenAI Organization、OpenAI Project、Anthropic Version、Anthropic Beta、Codex Responses、Claude Code 客户端兼容或 GPT OAuth 字段。
 - Gemini OpenAI Chat 档案当前只开放 API Key，账户只保存真实上游能力 `chat_json`、`chat_sse`。如果要承接 Codex / Responses，可在普通账号 `modelMappings` 中显式声明 `responses -> chat_completions`；如果要承接 Gemini native 下游，必须通过混合供应商账户表达跨协议转换。
