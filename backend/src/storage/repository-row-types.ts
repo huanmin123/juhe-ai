@@ -215,6 +215,15 @@ export type AccountListRow = AccountRow & {
   source_temporary_unavailable_continuous_probe_enabled?: number | null
   source_last_error_code?: string | null
   source_last_error_message?: string | null
+  source_last_error_trace_id?: string | null
+  source_cooldown_retest_last_at?: string | null
+  source_cooldown_retest_last_status_code?: number | null
+  source_last_health_check_at?: string | null
+  source_next_health_check_at?: string | null
+  source_last_health_check_status_code?: number | null
+  source_last_health_check_error_code?: string | null
+  source_last_health_check_error_message?: string | null
+  source_last_health_check_trace_id?: string | null
   source_health_check_model?: string | null
   source_health_check_endpoint_mode?: import('../domain/types.js').AccountHealthCheckEndpointMode | null
   source_credential_mask?: string | null

@@ -231,6 +231,26 @@ assert.equal(sourceCooldown.statusBoundary?.kind, 'cooldown_expiry')
 assert.equal(sourceCooldown.statusBoundary?.at, '2026-07-20T01:09:00.000Z', '来源冷却必须使用来源账户时间')
 assert.equal(sourceCooldown.action, 'contact_authorizer')
 
+const sourceRateLimitedWithObservation = accountAvailabilityPresentation({
+  id: 'authorized-source-rate-limited',
+  authorizationInstanceSourceAccountId: 'source-rate-limited',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'source_rate_limited',
+    label: '来源限流中',
+    reason: '来源复测失败'
+  },
+  authorizationInstanceSourceAccountCooldownUntil: '2026-07-20T01:12:00.000Z',
+  authorizationInstanceSourceAccountCooldownRetestLastAt: '2026-07-20T00:12:00.000Z',
+  authorizationInstanceSourceAccountCooldownRetestLastStatusCode: 429,
+  authorizationInstanceSourceAccountLastErrorCode: 'rate_limit_exceeded',
+  authorizationInstanceSourceAccountLastErrorMessage: '来源仍受限流',
+  authorizationInstanceSourceAccountLastErrorTraceId: 'trace-source-rate-limit'
+}, now)
+assert.equal(sourceRateLimitedWithObservation.probe?.lastObservation?.traceId, 'trace-source-rate-limit')
+assert.equal(sourceRateLimitedWithObservation.probe?.schedule.state, 'none', '来源 cooldownUntil 不是已确认复测计划，不得标为下次检查')
+
 const terminalError = accountAvailabilityPresentation({
   id: 'account-terminal-error',
   status: 'error',
@@ -262,6 +282,26 @@ const instanceCooldownWithoutProbe = accountAvailabilityPresentation({
 assert.equal(instanceCooldownWithoutProbe.probe, undefined)
 assert.equal(instanceCooldownWithoutProbe.statusBoundary?.kind, 'cooldown_expiry')
 assert.equal(instanceCooldownWithoutProbe.statusBoundary?.at, '2026-07-20T01:11:00.000Z')
+
+const derivedSourcePending = accountAvailabilityPresentation({
+  id: 'authorized-source-pending',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'source_pending_test',
+    label: '来源待检查',
+    reason: '来源账户等待检查'
+  },
+  authorizationInstanceSourceAccountLastHealthCheckAt: '2026-07-20T00:20:00.000Z',
+  authorizationInstanceSourceAccountNextHealthCheckAt: '2026-07-20T12:20:00.000Z',
+  authorizationInstanceSourceAccountLastHealthCheckStatusCode: 503,
+  authorizationInstanceSourceAccountLastHealthCheckErrorCode: 'model_not_found',
+  authorizationInstanceSourceAccountLastHealthCheckErrorMessage: '来源模型不存在',
+  authorizationInstanceSourceAccountLastHealthCheckTraceId: 'trace-source-pending'
+}, now)
+assert.equal(derivedSourcePending.probe?.kind, 'source_account_probe')
+assert.equal(derivedSourcePending.probe?.lastObservation?.traceId, 'trace-source-pending')
+assert.equal(derivedSourcePending.probe?.schedule.nextAttemptAt, '2026-07-20T12:20:00.000Z')
 
 const halfOpen = accountAvailabilityPresentation({
   id: 'account-half-open',

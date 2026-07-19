@@ -154,6 +154,37 @@ export interface AccountEffectiveAvailability {
   retryAt?: string
 }
 
+export interface AccountProbeObservation {
+  observationId: string
+  attemptedAt: string
+  result: 'success' | 'failed'
+  httpStatus?: number
+  errorCode?: string
+  reason?: string
+  traceId?: string
+}
+
+export interface AccountProbeSummary {
+  kind: 'health_check' | 'activation_check' | 'cooldown_retest' | 'runtime_probe' | 'api_key_retest' | 'source_account_probe'
+  lastObservation?: AccountProbeObservation
+  schedule: {
+    state: 'scheduled' | 'due_waiting' | 'running' | 'none'
+    nextAttemptAt?: string
+  }
+}
+
+export interface AccountAvailabilityPresentation {
+  status: string
+  label: string
+  reason?: string
+  action?: string
+  statusBoundary?: {
+    at: string
+    kind: 'policy_ttl_expiry' | 'quota_reset' | 'cooldown_expiry' | 'account_expired' | 'authorization_expired' | 'source_expired'
+  }
+  probe?: AccountProbeSummary
+}
+
 export type AccountAvailabilityScheduleMode = 'allow_windows'
 export type AccountAvailabilityScheduleExceptionAction = 'allow' | 'deny'
 
@@ -270,6 +301,7 @@ export interface AccountSummary {
   accountRuntimeAvailabilityAvailable?: boolean
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability?: AccountEffectiveAvailability
+  availabilityPresentation?: AccountAvailabilityPresentation
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -376,6 +408,7 @@ export interface AccountStatusSnapshotItem {
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability: AccountEffectiveAvailability
+  availabilityPresentation?: AccountAvailabilityPresentation
   lastUsedAt?: string
   todayUsage: AccountUsageSummary
 }

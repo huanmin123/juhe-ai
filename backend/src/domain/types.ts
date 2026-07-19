@@ -594,6 +594,7 @@ export interface AccountSummary {
   currentConcurrencyAvailable?: boolean
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability: AccountEffectiveAvailability
+  availabilityPresentation?: AccountAvailabilityPresentation
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -660,6 +661,15 @@ export interface AccountSummary {
   authorizationInstanceSourceAccountCooldownUntil?: string
   authorizationInstanceSourceAccountLastErrorCode?: string
   authorizationInstanceSourceAccountLastErrorMessage?: string
+  authorizationInstanceSourceAccountLastErrorTraceId?: string
+  authorizationInstanceSourceAccountCooldownRetestLastAt?: string
+  authorizationInstanceSourceAccountCooldownRetestLastStatusCode?: number
+  authorizationInstanceSourceAccountLastHealthCheckAt?: string
+  authorizationInstanceSourceAccountNextHealthCheckAt?: string
+  authorizationInstanceSourceAccountLastHealthCheckStatusCode?: number
+  authorizationInstanceSourceAccountLastHealthCheckErrorCode?: string
+  authorizationInstanceSourceAccountLastHealthCheckErrorMessage?: string
+  authorizationInstanceSourceAccountLastHealthCheckTraceId?: string
   boundGroupId?: string
   boundGroupName?: string
   groupBindStatus?: AccountGroupBindStatus
@@ -700,6 +710,7 @@ export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'apiKeyRuntime'
   | 'runtimeAvailability'
   | 'effectiveAvailability'
+  | 'availabilityPresentation'
   | 'lastUsedAt'
   | 'todayUsage'
 > {}
