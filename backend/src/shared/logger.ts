@@ -14,6 +14,7 @@ import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { emitRuntimeLogLine, RuntimeLogIndexStream } from '../modules/runtime-logs/runtime-log-stream.js'
+import { writeProcessFatalDiagnostic } from './process-fatal-diagnostic.js'
 
 interface RotatingFileLogStreamOptions {
   directory: string
@@ -489,14 +490,38 @@ export function startLogMaintenance(): void {
   timer.unref()
 }
 
+let fatalProcessExitStarted = false
+
 export function installProcessLogHandlers(): void {
   process.on('unhandledRejection', (reason) => {
     logger.error(errorLogFields(reason, { event: 'process_unhandled_rejection' }), '未处理的 Promise 拒绝')
   })
 
   process.on('uncaughtException', (error) => {
-    logger.fatal(errorLogFields(error, { event: 'process_uncaught_exception' }), '未捕获异常')
-    setImmediate(() => process.exit(1))
+    if (fatalProcessExitStarted) return
+    fatalProcessExitStarted = true
+    try {
+      writeProcessFatalDiagnostic({
+        event: 'process_uncaught_exception',
+        error,
+        processRole: runtimeConfig.processRole,
+        pid: process.pid,
+        secrets: [runtimeConfig.secret]
+      })
+      try {
+        logger.fatal(errorLogFields(error, { event: 'process_uncaught_exception' }), '未捕获异常')
+      } catch (loggingError) {
+        writeProcessFatalDiagnostic({
+          event: 'process_uncaught_exception_logging_failed',
+          error: loggingError,
+          processRole: runtimeConfig.processRole,
+          pid: process.pid,
+          secrets: [runtimeConfig.secret]
+        })
+      }
+    } finally {
+      setImmediate(() => process.exit(1))
+    }
   })
 }
 

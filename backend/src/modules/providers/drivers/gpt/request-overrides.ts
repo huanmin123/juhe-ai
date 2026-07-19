@@ -90,24 +90,18 @@ export function effectiveGptAccountRequestOverrides(
   capabilities: GptRequestOverrideModelCapabilities | undefined
 ): GptAccountRequestOverrides {
   if (!overrides.serviceTier && !overrides.reasoningEffort) return {}
-  if (!capabilities) {
-    throw new GptAccountRequestOverrideError('账户请求覆盖缺少目标模型能力，无法精确生效')
-  }
+  if (!capabilities) return {}
+  const effective: GptAccountRequestOverrides = {}
   if (overrides.serviceTier) {
     const supported = overrides.serviceTier === 'default'
       ? capabilities.supportedServiceTiers.length > 0
       : capabilities.supportedServiceTiers.includes(overrides.serviceTier)
-    if (!supported) {
-      throw new GptAccountRequestOverrideError(`账户请求覆盖 service_tier_override=${overrides.serviceTier} 不受目标模型支持`)
-    }
+    if (supported) effective.serviceTier = overrides.serviceTier
   }
-  if (overrides.reasoningEffort && !capabilities.supportedReasoningEfforts.includes(overrides.reasoningEffort)) {
-    throw new GptAccountRequestOverrideError(`账户请求覆盖 reasoning_effort_override=${overrides.reasoningEffort} 不受目标模型支持`)
+  if (overrides.reasoningEffort && capabilities.supportedReasoningEfforts.includes(overrides.reasoningEffort)) {
+    effective.reasoningEffort = overrides.reasoningEffort
   }
-  return {
-    serviceTier: overrides.serviceTier,
-    reasoningEffort: overrides.reasoningEffort
-  }
+  return effective
 }
 
 function optionalCredentialToken(

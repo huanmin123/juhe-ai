@@ -26,7 +26,11 @@ export function shouldRetryResponseInspectionOnServer(
   response: StreamRetryResponseState
 ): streamResult is StreamPipeResult & { responseInspection: ResponseInspectionDecision } {
   const decision = streamResult.responseInspection
-  return shouldRetryResponseInspectionDecisionOnServer(decision, response)
+  return !streamResult.semanticCommitted
+    && shouldRetryResponseInspectionDecisionOnServer(decision, {
+      ...response,
+      headersSent: false
+    })
 }
 
 export function shouldRetryResponseInspectionDecisionOnServer(
@@ -57,9 +61,8 @@ export function shouldRetryPreCommitStreamFailureOnServer(
   response: StreamRetryResponseState
 ): boolean {
   return !streamResult.completed
-    && streamResult.downstreamBytesWritten === 0
+    && !streamResult.semanticCommitted
     && streamResult.errorCode !== undefined
-    && !response.headersSent
     && !response.writableEnded
     && !response.destroyed
 }

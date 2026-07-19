@@ -17,6 +17,8 @@ export interface StreamPipeResult {
   auditResponseBody?: Buffer
   auditUpstreamBody?: Buffer
   downstreamBytesWritten: number
+  transportCommitted: boolean
+  semanticCommitted: boolean
   uncommittedResponseBody?: Buffer
   responseInspection?: ResponseInspectionDecision
   responseInspectionObservations?: ResponseInspectionDecision[]
@@ -65,6 +67,8 @@ export function streamResult(
   responseInspectionObservations: ResponseInspectionDecision[] = [],
   responseInspectionObservationOmittedCount = 0,
   downstreamBytesWritten = 0,
+  transportCommitted = downstreamBytesWritten > 0,
+  semanticCommitted = outputReceived || imageOutputReceived,
   uncommittedResponseBody?: Buffer
 ): StreamPipeResult {
   const responseBodyText = bodyOmission || (completed && !captureSuccessPayloads)
@@ -88,6 +92,8 @@ export function streamResult(
     auditResponseBody,
     auditUpstreamBody: auditUpstreamBodyForResult(upstreamCapture, completed, captureSuccessPayloads, bodyOmission),
     downstreamBytesWritten,
+    transportCommitted,
+    semanticCommitted,
     uncommittedResponseBody,
     responseInspection,
     responseInspectionObservations: responseInspectionObservations.length ? [...responseInspectionObservations] : undefined,

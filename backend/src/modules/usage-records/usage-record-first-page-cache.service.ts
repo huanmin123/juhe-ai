@@ -6,15 +6,21 @@ import type { UsageRecordInput, UsageRecordListOptions, UsageRecordListResult, U
 
 const firstPageLimit = 50
 const firstPageResponseSize = 20
+export interface UsageRecordFirstPageNameMaps {
+  apiKeyNames: ReadonlyMap<string, string>
+  groupNames: ReadonlyMap<string, string>
+  accountNames: ReadonlyMap<string, string>
+}
+
 const cache = createSharedJsonCache<UsageRecordSummary[]>({
-  name: 'usage_record_first_page',
+  name: 'usage_record_first_page_v2',
   max: 512,
   ttlMs: 36 * 60 * 60 * 1000,
-  version: 'v1'
+  version: 'v2'
 })
 
-export async function publishUsageRecordFirstPage(inputs: UsageRecordInput[]): Promise<void> {
-  const gatewayInputs = inputs.filter((input) => input.trafficSource === 'gateway' && input.systemAccountId && input.id && input.createdAt)
+export async function publishUsageRecordFirstPage(inputs: UsageRecordInput[], names: UsageRecordFirstPageNameMaps): Promise<void> {
+  const gatewayInputs = usageRecordFirstPageCandidateInputs(inputs)
   if (gatewayInputs.length === 0) return
   const timezone = await usageStatsTimezoneAsync()
   const byKey = new Map<string, UsageRecordSummary[]>()
@@ -22,7 +28,7 @@ export async function publishUsageRecordFirstPage(inputs: UsageRecordInput[]): P
     const date = dateKey(new Date(input.createdAt!), timezone)
     const key = firstPageCacheKey(input.systemAccountId!, date)
     const rows = byKey.get(key) ?? []
-    rows.push(summaryFromInput(input))
+    rows.push(usageRecordFirstPageSummaryFromInput(input, names))
     byKey.set(key, rows)
   }
   for (const [key, rows] of byKey) {
@@ -34,6 +40,10 @@ export async function publishUsageRecordFirstPage(inputs: UsageRecordInput[]): P
       logger.warn(errorLogFields(error, { event: 'usage_record_first_page_cache_write_failed', cacheKey: key }), '使用记录首屏热列表更新失败，已保留数据库事实')
     }
   }
+}
+
+export function usageRecordFirstPageCandidateInputs(inputs: UsageRecordInput[]): UsageRecordInput[] {
+  return inputs.filter((input) => input.trafficSource === 'gateway' && input.systemAccountId && input.id && input.createdAt)
 }
 
 export async function seedUsageRecordFirstPage(
@@ -96,7 +106,7 @@ function firstPageCacheKey(systemAccountId: string, date: string): string {
   return `${systemAccountId}:${date}`
 }
 
-function summaryFromInput(input: UsageRecordInput): UsageRecordSummary {
+export function usageRecordFirstPageSummaryFromInput(input: UsageRecordInput, names: UsageRecordFirstPageNameMaps): UsageRecordSummary {
   return {
     id: input.id!,
     systemAccountId: input.systemAccountId,
@@ -104,8 +114,11 @@ function summaryFromInput(input: UsageRecordInput): UsageRecordSummary {
     trafficSource: input.trafficSource,
     clientIp: input.clientIp,
     apiKeyId: input.apiKeyId,
+    apiKeyName: input.apiKeyId ? names.apiKeyNames.get(input.apiKeyId) : undefined,
     groupId: input.groupId,
+    groupName: input.groupId ? names.groupNames.get(input.groupId) : undefined,
     accountId: input.accountId,
+    accountName: input.accountId ? names.accountNames.get(input.accountId) : undefined,
     endpoint: input.endpoint,
     providerCode: input.providerCode,
     providerProtocolProfileId: input.providerProtocolProfileId,

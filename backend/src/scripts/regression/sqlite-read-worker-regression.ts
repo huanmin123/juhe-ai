@@ -306,7 +306,7 @@ try {
   const dbServiceReadHandledJobsBefore = readWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
   assert.equal(typeof (await dbServiceHandlers.handleDbServiceOperation({
     type: 'read_gateway_settings'
-  })).streamRequestTimeoutSeconds, 'number', 'DB service gateway settings 读应经 read worker 返回真实数据')
+  })).textFirstResponseTimeoutSeconds, 'number', 'DB service gateway settings 读应经 read worker 返回真实数据')
   assert.equal((await dbServiceHandlers.handleDbServiceOperation({
     type: 'validate_gateway_api_key',
     key: apiKey.key

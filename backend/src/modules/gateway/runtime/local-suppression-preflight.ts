@@ -11,6 +11,7 @@ import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { waitForRecoverableUnavailableState } from './recoverable-unavailable-wait.js'
+import type { ServerRetryBudget } from './server-retry-budget.js'
 
 export async function resolveLocalSuppressionFilter(input: {
   req: Request
@@ -22,7 +23,7 @@ export async function resolveLocalSuppressionFilter(input: {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
-  requestDeadlineAtMs: number
+  serverRetryBudget: ServerRetryBudget
   signal?: AbortSignal
 }): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
   let filter = await filterGatewayAccountRuntimeSuppressionsAsync(input.accounts)
@@ -53,20 +54,27 @@ export async function resolveLocalSuppressionFilter(input: {
   }
 
   if (filter.allSuppressed) {
-    const wait = await waitForRecoverableUnavailableState({
-      scopeKey: recoverableSuppressionScopeKey(input.systemAccountId, input.apiKeyId, input.groupId),
-      reason: 'local_account_suppression',
-      initialState: filter,
-      refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(input.accounts),
-      isReady: (state) => !state.allSuppressed,
-      nextRetryAfterMs: (state) => state.nextRetryAfterMs,
-      waitWithoutRetryAfter: true,
-      auditCapture: input.auditCapture,
-      requestStartedAtMs: input.startedAt,
-      deadlineAtMs: input.requestDeadlineAtMs,
-      signal: input.signal
-    })
-    filter = wait.state
+    const waitStartedAtMs = Date.now()
+    const deadlineAtMs = input.serverRetryBudget.deadlineAtMs(waitStartedAtMs)
+    try {
+      const wait = await waitForRecoverableUnavailableState({
+        scopeKey: recoverableSuppressionScopeKey(input.systemAccountId, input.apiKeyId, input.groupId),
+        reason: 'local_account_suppression',
+        initialState: filter,
+        refresh: () => filterGatewayAccountRuntimeSuppressionsAsync(input.accounts),
+        isReady: (state) => !state.allSuppressed,
+        nextRetryAfterMs: (state) => state.nextRetryAfterMs,
+        waitWithoutRetryAfter: true,
+        auditCapture: input.auditCapture,
+        maxWaitMs: input.serverRetryBudget.remainingMs(waitStartedAtMs),
+        requestStartedAtMs: waitStartedAtMs,
+        deadlineAtMs,
+        signal: input.signal
+      })
+      filter = wait.state
+    } finally {
+      input.serverRetryBudget.pauseNoAvailableWait()
+    }
   }
 
   if (!filter.allSuppressed) {

@@ -27,6 +27,21 @@ const (
 var (
 	pageDataOccurredAtPattern  = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`)
 	pageDataRedisNamespaceRule = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,64}$`)
+	pageDataDomains            = map[string]struct{}{
+		pageDataAccountsStaticDomain:  {},
+		"accounts.runtime":            {},
+		pageDataAccountsOptionsDomain: {},
+		"usage.records":               {},
+		"announcements.public":        {},
+		"providers.catalog":           {},
+		"groups.static":               {},
+		"systemAccounts.options":      {},
+		"teams.options":               {},
+		"routeStrategies.options":     {},
+		"stats.overview":              {},
+		"stats.accountUsage":          {},
+		"stats.aiPerformance":         {},
+	}
 )
 
 // PageDataChangeEvent is the Node page-data protocol v2 event shape.
@@ -255,7 +270,8 @@ func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 }
 
 func isSupportedPageDataDomain(domain string) bool {
-	return domain == pageDataAccountsStaticDomain || domain == pageDataAccountsOptionsDomain
+	_, ok := pageDataDomains[domain]
+	return ok
 }
 
 func normalizePageDataOwners(ownerIDs []string) []string {

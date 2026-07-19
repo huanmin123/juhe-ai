@@ -582,19 +582,21 @@ func newManagementAPIHandlerWithPageData(
 	})
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
+		Store:             store,
+		Invalidator:       systemAccountInvalidator,
+		PageDataPublisher: accountsStaticResetPublisher,
+		Logger:            logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{
-			OptionReader: store,
-			ListReader:   store,
-			DetailReader: store,
-			CreateStore:  store,
-			Transactor:   store,
-			Invalidator:  systemAccountInvalidator,
-			Logger:       logger,
+			OptionReader:      store,
+			ListReader:        store,
+			DetailReader:      store,
+			CreateStore:       store,
+			Transactor:        store,
+			Invalidator:       systemAccountInvalidator,
+			PageDataPublisher: accountsStaticResetPublisher,
+			Logger:            logger,
 		},
 	)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
@@ -616,6 +618,7 @@ func newManagementAPIHandlerWithPageData(
 		UsageStatsTimezoneStore: store,
 		AccountConcurrency:      accountConcurrencyReader,
 		Invalidator:             systemAccountInvalidator,
+		PageDataPublisher:       accountsStaticResetPublisher,
 		Logger:                  logger,
 	})
 	accountService := managementaccounts.NewService(store)
@@ -628,6 +631,8 @@ func newManagementAPIHandlerWithPageData(
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		SystemAccountInvalidator: systemAccountInvalidator,
+		PageDataPublisher:        accountsStaticResetPublisher,
+		Logger:                   logger,
 	})
 	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
 		Store:                    store,

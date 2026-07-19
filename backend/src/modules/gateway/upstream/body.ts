@@ -78,6 +78,8 @@ export async function pipeNonStreamUpstreamResponse(
     firstByteDeadlineMs?: number
     onFirstByteDeadline?: FirstByteDeadlineHandler
     prepareDownstream?: () => void
+    onChunkWritten?: (bytesWritten: number) => void
+    onBodyCompleted?: (transferredBytes: number) => void
   }
 ): Promise<NonStreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
@@ -128,6 +130,7 @@ export async function pipeNonStreamUpstreamResponse(
       capture.push(buffer)
       usageTailCapture.push(buffer)
       await writeResponseChunk(res, buffer)
+      input.onChunkWritten?.(buffer.length)
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
@@ -154,6 +157,7 @@ export async function pipeNonStreamUpstreamResponse(
     input.prepareDownstream?.()
   }
   endResponse(res)
+  input.onBodyCompleted?.(transferredBytes)
   return buildNonStreamPipeResult(capture, usageTailCapture, firstByteMs, transferredBytes)
 }
 
@@ -172,6 +176,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     firstByteDeadlineMs?: number
     onFirstByteDeadline?: FirstByteDeadlineHandler
     prepareDownstream?: () => void
+    onChunkWritten?: (bytesWritten: number) => void
   }
 ): Promise<InspectableNonStreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
@@ -200,6 +205,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     prepareDownstreamForWrite()
     for (const chunk of inspectionChunks.splice(0)) {
       await writeResponseChunk(res, chunk)
+      input.onChunkWritten?.(chunk.length)
     }
   }
   res.once('close', closeIterator)
@@ -246,6 +252,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
       }
       prepareDownstreamForWrite()
       await writeResponseChunk(res, buffer)
+      input.onChunkWritten?.(buffer.length)
     }
   } catch (error) {
     await closeAsyncIterator(iterator)

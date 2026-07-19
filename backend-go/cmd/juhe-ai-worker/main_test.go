@@ -2,12 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"juhe-ai/backend-go/internal/app"
+	"juhe-ai/backend-go/internal/config"
 )
 
 func TestExecuteCommandWritesOneSanitizedFatalAndReturnsOne(t *testing.T) {
@@ -37,6 +43,57 @@ func TestExecuteCommandSuccessDoesNotWriteFatal(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestFiveWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
+	var gated []string
+	deps := workerCommandDependencies{
+		loadConfig: func() (config.Config, error) { return config.Config{}, nil },
+		newLogger: func(string, io.Writer) (*slog.Logger, error) {
+			return slog.New(slog.NewTextHandler(io.Discard, nil)), nil
+		},
+		runWithRuntimeGate: func(_ context.Context, _ config.Config, _ *slog.Logger, runner app.WorkerRunner) error {
+			if runner == nil {
+				t.Fatal("runtime gate received nil runner")
+			}
+			gated = append(gated, "gate")
+			return nil
+		},
+	}
+	root := newRootCommand(deps)
+	for _, name := range []string{
+		"ingest",
+		"authorization-expiry-sweep",
+		"operation-log-retention-cleanup",
+		"authorization-usage-range-windows-refresh",
+		"gateway-quota-snapshot-build",
+	} {
+		command, _, err := root.Find([]string{name})
+		if err != nil {
+			t.Fatalf("find %s: %v", name, err)
+		}
+		if command.RunE == nil {
+			t.Fatalf("%s RunE is nil", name)
+		}
+		command.SetContext(t.Context())
+		before := len(gated)
+		if err := command.RunE(command, nil); err != nil {
+			t.Fatalf("run %s: %v", name, err)
+		}
+		if len(gated) != before+1 {
+			t.Fatalf("%s runtime gate calls = %d, want one additional call", name, len(gated)-before)
+		}
+	}
+
+	versionCommand, _, err := root.Find([]string{"version"})
+	if err != nil {
+		t.Fatalf("find version: %v", err)
+	}
+	before := len(gated)
+	versionCommand.Run(versionCommand, nil)
+	if len(gated) != before {
+		t.Fatal("version command used worker runtime gate")
 	}
 }
 

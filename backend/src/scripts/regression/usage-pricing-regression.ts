@@ -1306,7 +1306,7 @@ const accountDiagnosticRetrySource = readSource('modules/accounts/account-diagno
 assert.match(accountDiagnosticRetrySource, /accountDiagnosticRetryTimeoutMs\s*=\s*\[10_000,\s*20_000,\s*30_000\]/)
 assert.match(accountDiagnosticRetrySource, /temporaryUnschedulableRetryAttempts:\s*0/)
 assert.match(accountDiagnosticRetrySource, /temporaryUnschedulableRetryIntervalSeconds:\s*0/)
-assert.match(accountDiagnosticRetrySource, /streamRequestTimeoutSeconds:\s*timeoutSeconds/)
+assert.match(accountDiagnosticRetrySource, /textFirstResponseTimeoutSeconds:\s*timeoutSeconds/)
 const diagnosticRetrySource = sourceBetween(accountTestSource, 'export async function testOpenAIAccountWithDiagnosticRetries', 'export async function testOpenAIAccount')
 assert.doesNotMatch(diagnosticRetrySource, /statusCode|errorCode/, '账号诊断重试不能按上游状态码或错误码分支')
 const accountTestTaskQueueSource = readSource('modules/accounts/account-test-task-queue.service.ts')
@@ -1732,7 +1732,7 @@ assert.match(gatewayStreamSource, /responseBackpressureWarnThresholdMs/)
 
 const gatewayUpstreamSource = readSource('modules/gateway/upstream/request.ts')
 const upstreamRequestTimeoutSource = sourceFunctionBlock(gatewayUpstreamSource, 'export function upstreamRequestTimeoutMs')
-assert.match(upstreamRequestTimeoutSource, /settings\.streamRequestTimeoutSeconds/, '首包等待上限应统一用于上游首个响应等待')
+assert.match(upstreamRequestTimeoutSource, /settings\.textFirstResponseTimeoutSeconds/, '首包等待上限应统一用于上游首个响应等待')
 assert.doesNotMatch(upstreamRequestTimeoutSource, /isEffectiveOpenAIStreamRequest|streamCircuitBreakerEnabled/, '非流式请求也必须应用首包等待上限，不能只在流式熔断开启时生效')
 
 const releaseStartScriptSource = readFileSync(resolve(backendSrcDirectory, '../../deploy/start.sh'), 'utf8')
