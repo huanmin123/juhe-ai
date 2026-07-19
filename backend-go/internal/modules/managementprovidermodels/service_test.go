@@ -867,6 +867,28 @@ func TestServiceCreateCustomModelChecksProviderBeforeInvalidFields(t *testing.T)
 	}
 }
 
+func TestCustomModelEnumsRejectWhitespacePadding(t *testing.T) {
+	price := 1.25
+	tests := []struct {
+		name   string
+		fields CustomModelMutation
+	}{
+		{name: "scope", fields: CustomModelMutation{Scope: OptionalString{Set: true, Value: " personal "}, Model: OptionalString{Set: true, Value: "custom-chat"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+		{name: "status", fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, Status: OptionalString{Set: true, Value: " active "}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+		{name: "mode", fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, Mode: OptionalString{Set: true, Value: " text "}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+		{name: "protocol", fields: CustomModelMutation{Model: OptionalString{Set: true, Value: "custom-chat"}, SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{" responses "}}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}}}
+			_, err := NewService(store).CreateCustomModel(context.Background(), CustomModelCreateInput{ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", TargetSystemAccountID: "sys_user", Fields: tt.fields})
+			if message, ok := CustomModelValidationMessage(err); !ok || message != "自定义模型参数无效" {
+				t.Fatalf("error = %v, message = %q, ok = %t", err, message, ok)
+			}
+		})
+	}
+}
+
 func TestServiceCreateCustomModelLogsCommittedCacheInvalidationFailureWithoutFailingWrite(t *testing.T) {
 	t.Parallel()
 	logger, logs := cacheWarningLogger()
@@ -1767,7 +1789,7 @@ func TestServiceUpdateBuiltInModelRevalidatesDefaultReasoningEffortAgainstLocked
 	}
 }
 
-func TestServiceUpdateBuiltInModelPersistsNormalizedStringLists(t *testing.T) {
+func TestServiceUpdateBuiltInModelRejectsWhitespacePaddedProtocols(t *testing.T) {
 	store := &providerModelStoreStub{catalog: []port.ManagementProviderModelCatalogItem{{
 		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active", Mode: "text",
 	}}}
@@ -1775,15 +1797,8 @@ func TestServiceUpdateBuiltInModelPersistsNormalizedStringLists(t *testing.T) {
 		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
 		Fields: CustomModelMutation{SupportedAPIProtocols: OptionalStringList{Set: true, Value: []string{" responses ", "responses", "chat_completions"}}},
 	})
-	if err != nil {
-		t.Fatalf("UpdateCustomModel() error = %v", err)
-	}
-	got := store.builtInUpdateInputs[0].SupportedAPIProtocols.Value
-	if !slices.Equal(got, []string{"responses", "chat_completions"}) {
-		t.Fatalf("stored protocols = %#v", got)
-	}
-	if !store.builtInUpdateInputs[0].DefaultReasoningEffort.Present || store.builtInUpdateInputs[0].DefaultReasoningEffort.Value != "" {
-		t.Fatalf("GPT built-in update must clear default reasoning: %+v", store.builtInUpdateInputs[0].DefaultReasoningEffort)
+	if message, ok := CustomModelValidationMessage(err); !ok || message != "自定义模型参数无效" {
+		t.Fatalf("validation = %q/%t, err = %v", message, ok, err)
 	}
 }
 

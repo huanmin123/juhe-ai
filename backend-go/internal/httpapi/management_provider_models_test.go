@@ -815,6 +815,14 @@ func TestManagementProviderCustomModelHandlersMapErrors(t *testing.T) {
 			wantMsg:    "自定义模型参数无效",
 		},
 		{
+			name:       "create rejects unknown nested tier price field",
+			method:     http.MethodPost,
+			target:     "/__aisys__/api/providers/gpt/models",
+			body:       `{"model":"custom-chat","serviceTierPrices":{"priority":{"inputUsdPer1M":1,"bogus":2}}}`,
+			wantStatus: http.StatusBadRequest,
+			wantMsg:    "自定义模型参数无效",
+		},
+		{
 			name:   "create rejects built in tier pricing metadata",
 			method: http.MethodPost,
 			target: "/__aisys__/api/providers/gpt/models",

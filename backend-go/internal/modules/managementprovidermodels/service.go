@@ -1110,7 +1110,7 @@ func createCustomModelScope(scope OptionalString) (string, error) {
 		return "personal", nil
 	}
 	value := strings.TrimSpace(scope.Value)
-	if value != "personal" && value != "global" {
+	if scope.Value != value || (value != "personal" && value != "global") {
 		return "", &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	return value, nil
@@ -1131,6 +1131,9 @@ func customModelSaveInputFromCreate(
 	status := "active"
 	if fields.Status.Set {
 		status = strings.TrimSpace(fields.Status.Value)
+		if fields.Status.Value != status {
+			return port.ManagementCustomProviderModelSaveInput{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
 	}
 	if !validCustomModelStatus(status) {
 		return port.ManagementCustomProviderModelSaveInput{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
@@ -1288,7 +1291,7 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 func applyCustomModelMutableFieldsWithValidation(input *port.ManagementCustomProviderModelSaveInput, fields CustomModelMutation, create bool, validateFinal bool) error {
 	if fields.Status.Set {
 		status := strings.TrimSpace(fields.Status.Value)
-		if !validCustomModelStatus(status) {
+		if fields.Status.Value != status || !validCustomModelStatus(status) {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		input.Status = status
@@ -1301,7 +1304,7 @@ func applyCustomModelMutableFieldsWithValidation(input *port.ManagementCustomPro
 	}
 	if fields.Mode.Set {
 		mode := strings.TrimSpace(fields.Mode.Value)
-		if mode != "" && mode != "text" && mode != "image" && mode != "audio" {
+		if fields.Mode.Value != mode || (mode != "" && mode != "text" && mode != "image" && mode != "audio") {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		input.Mode = mode
@@ -1473,6 +1476,9 @@ func normalizeCustomModelProtocols(values []string) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, value := range values {
 		protocol := strings.TrimSpace(value)
+		if value != protocol {
+			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
 		if _, ok := customProviderModelAPIProtocols[protocol]; !ok {
 			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -438,9 +439,11 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 			var value map[string]managementprovidermodels.ModelPriceSet
 			if string(raw) == "null" {
 				value = map[string]managementprovidermodels.ModelPriceSet{}
-			} else if err := json.Unmarshal(raw, &value); err != nil || !validManagementProviderModelPriceMap(value) {
+			} else if decoded, ok := decodeManagementProviderModelPriceMap(raw); !ok {
 				fields.Invalid = true
 				continue
+			} else {
+				value = decoded
 			}
 			fields.ServiceTierPrices = managementprovidermodels.OptionalProviderModelPriceMap{Set: true, Value: value}
 		case "releaseDate":
@@ -591,6 +594,28 @@ func validManagementProviderModelPriceMap(value map[string]managementprovidermod
 		}
 	}
 	return true
+}
+
+func decodeManagementProviderModelPriceMap(raw json.RawMessage) (map[string]managementprovidermodels.ModelPriceSet, bool) {
+	var encoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &encoded); err != nil || encoded == nil {
+		return nil, false
+	}
+	value := make(map[string]managementprovidermodels.ModelPriceSet, len(encoded))
+	for tier, priceRaw := range encoded {
+		decoder := json.NewDecoder(bytes.NewReader(priceRaw))
+		decoder.DisallowUnknownFields()
+		var prices managementprovidermodels.ModelPriceSet
+		if err := decoder.Decode(&prices); err != nil {
+			return nil, false
+		}
+		var extra struct{}
+		if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+			return nil, false
+		}
+		value[tier] = prices
+	}
+	return value, validManagementProviderModelPriceMap(value)
 }
 
 func decodeManagementProviderCustomModelRequiredString(raw json.RawMessage) (string, bool) {
