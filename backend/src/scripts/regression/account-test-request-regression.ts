@@ -13,9 +13,31 @@ import {
   testPathFromEndpointMode
 } from '../../modules/accounts/account-test-request.js'
 import { hasAccountTestProtocolSuccessEvidence } from '../../modules/accounts/account-test-success-evidence.js'
+import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
+
+for (const mode of ['interactions_json', 'interactions_sse'] as const) {
+  assert.equal(accountCreateSchema.safeParse({
+    providerCode: 'gemini',
+    providerProtocolProfileId: 'profile_gemini_native_v1beta',
+    name: `Gemini ${mode}`,
+    type: 'api_key',
+    healthCheckEndpointMode: mode
+  }).success, true, `账户创建契约必须接受 ${mode}`)
+  assert.equal(accountUpdateSchema.safeParse({ healthCheckEndpointMode: mode }).success, true, `账户更新契约必须接受 ${mode}`)
+  assert.equal(accountTestSchema.safeParse({ testEndpointMode: mode }).success, true, `账户测试契约必须接受 ${mode}`)
+}
+assert.equal(accountBatchEditSchema.safeParse({
+  targets: [{ accountId: 'account-a', configRevision: 1 }, { accountId: 'account-b', configRevision: 1 }],
+  updates: {
+    supportedEndpointModes: {
+      enabled: true,
+      value: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content']
+    }
+  }
+}).success, true, '批量编辑契约必须接受完整 13 种 endpoint mode')
 
 const protocolSuccessFixtures = [
   ['chat_json', JSON.stringify({ object: 'chat.completion', choices: [{ finish_reason: 'stop', message: { content: 'OK' } }] })],
