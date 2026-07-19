@@ -1,4 +1,4 @@
-import type { AccountSummary, AccountTestResult, GatewayRequestEndpointFamily } from '../../domain/types.js'
+import type { AccountRuntimeProbePresentation, AccountSummary, AccountTestResult, GatewayRequestEndpointFamily } from '../../domain/types.js'
 import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.repository.js'
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
@@ -72,6 +72,7 @@ export interface AccountRuntimeAvailability {
   distinctApiKeyCount?: number
   precheckAttemptCount?: number
   localFailureCount?: number
+  probePresentation?: AccountRuntimeProbePresentation
 }
 
 export interface AccountRuntimeAvailabilityClearTarget {
@@ -622,6 +623,7 @@ export type DbServiceOperation =
         statusCode?: number
         errorCode?: string
         errorMessage?: string
+        traceId?: string
         cooldownUntil?: string
         observedAt?: string
       }

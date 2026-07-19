@@ -13,6 +13,7 @@ import {
   splitAccountDiagnosticMessage,
   type AccountDiagnosticMessageParts
 } from './accountDiagnosticMessages'
+import { accountStatusTooltipLines as accountStatusPresentationTooltipLines } from './accountStatusPresentation'
 
 export {
   accountClientCompatibilityText,
@@ -207,87 +208,7 @@ function accountCooldownRetestText(account: AccountSummary): string {
 }
 
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
-  const lines: string[] = []
-  const effectiveAvailability = account.effectiveAvailability
-  const conciseOwnStatus = isAccountInstanceEffectiveAvailability(account)
-    && isConciseAccountStatus(account.effectiveAvailability.status)
-  if (conciseOwnStatus) {
-    return conciseAccountStatusTooltipLines(account)
-  }
-  if (effectiveAvailability?.available) {
-    lines.push('账户当前没有已知的账户级阻断，可以进入调度候选；是否承接具体请求仍取决于模型、协议、额度和并发条件。')
-  }
-  if (effectiveAvailability && shouldShowEffectiveAvailabilitySummary(account)) {
-    lines.push(`实际状态：${effectiveAvailability.label}`)
-    if (effectiveAvailability.reason && effectiveAvailability.reason !== effectiveAvailability.label) {
-      lines.push(`实际原因：${effectiveAvailability.reason}`)
-    }
-    if (effectiveAvailability.retryAt) {
-      lines.push(`预计恢复：${formatDateTime(effectiveAvailability.retryAt)}`)
-    }
-  }
-  if (isAuthorizedAccount(account) && account.authorizationExpiresAt) {
-    lines.push(`授权到期时间：${formatDateTime(account.authorizationExpiresAt)}`)
-  }
-  lines.push(...authorizationSourceAccountTooltipLines(account))
-  lines.push(...authorizedInstanceLocalStatusTooltipLines(account))
-  if (account.accountExpiresAt) {
-    lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
-  }
-  const accountExpired = isAccountPackageExpiredStatus(account)
-  if (isAuthorizationExpired(account)) {
-    lines.push('授权已到期，当前不可用')
-  }
-  if (isAuthorizationPaused(account)) {
-    lines.push('授权已暂停，当前不可用')
-  }
-  if (accountExpired) {
-    lines.push('账户已到期，当前不可用')
-  }
-  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
-    lines.push('授权额度已用完，当前调用会被拦截')
-  }
-  lines.push(...accountRuntimeAvailabilityTooltipLines(account))
-  const qualityStatus = accountQualityStatusInfo(account)
-  if (qualityStatus) {
-    lines.push(...qualityStatus.tooltipLines)
-  }
-  lines.push(...accountHealthCheckTooltipLines(account))
-  if (isAuthorizationBindingUnavailable(account)) {
-    lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
-  }
-  if (!isAuthorizedInstanceLocalStatusHandledAsContext(account)) {
-    const retestText = isTemporaryAccountStatus(account) ? accountCooldownRetestText(account) : ''
-    const cooldownText = retestText || accountCooldownText(account)
-    if (cooldownText) {
-      lines.push(cooldownText)
-    } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
-      lines.push(accountCooldownRetestText(account))
-      lines.push(isAuthorizedAccount(account)
-        ? '可手动测试诊断；恢复状态请在更多菜单中操作'
-        : '可手动测试诊断；恢复状态请等待后台复测或在更多菜单中操作')
-    } else if (account.status === 'disabled' && !accountExpired) {
-      lines.push('停用账户可手动测试诊断，但不会被测试结果或后台任务自动恢复')
-    } else if (account.status === 'pending_test') {
-      lines.push(pendingHealthCheckStatusText(account))
-    } else if (account.status === 'error') {
-      lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
-      if (account.cooldownRetestFailureCount) {
-        lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
-      }
-      lines.push(account.lastErrorCode === 'oauth_token_refresh_failed'
-        ? 'OAuth 刷新失败异常会在后台刷新成功后自动恢复，也可手动测试诊断或手动异常恢复'
-        : '异常账户不会参与调度；可手动测试诊断，恢复状态请手动异常恢复')
-    }
-    if (account.cooldownRetestObservationStartedAt && isTemporaryAccountStatus(account)) {
-      lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
-    }
-    if (isLongTermUnavailableAccount(account)) {
-      lines.push('已进入长期不可用每 1 小时复测；从观察开始满 7 天仍失败时转为异常')
-    }
-    lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, { reasonLabel: '原因' }))
-  }
-  return lines
+  return accountStatusPresentationTooltipLines(account)
 }
 
 function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {

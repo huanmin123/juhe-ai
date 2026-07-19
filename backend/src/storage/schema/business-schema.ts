@@ -407,6 +407,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       last_failure_at TEXT,
       last_error_code TEXT,
       last_error_message TEXT,
+      last_trace_id TEXT,
       last_probe_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,

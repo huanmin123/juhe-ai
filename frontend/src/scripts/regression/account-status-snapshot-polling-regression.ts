@@ -32,6 +32,15 @@ const account = {
   currentConcurrencyAvailable: true,
   lastUsedAt: '2026-07-16T00:00:00.000Z',
   cooldownUntil: '2026-07-16T00:30:00.000Z',
+  availabilityPresentation: {
+    status: 'verification_failed',
+    label: '旧状态',
+    probe: {
+      kind: 'health_check',
+      lastObservation: { observationId: 'old', attemptedAt: '2026-07-16T00:10:00.000Z', result: 'failed', traceId: 'trace-old' },
+      schedule: { state: 'scheduled', nextAttemptAt: '2026-07-16T00:20:00.000Z' }
+    }
+  },
   todayUsage: usage(1),
   notes: '不可被快照覆盖'
 } as AccountSummary
@@ -48,7 +57,8 @@ const snapshot: AccountStatusSnapshotResult = {
     currentConcurrency: 4,
     lastUsedAt: '2026-07-16T00:59:00.000Z',
     todayUsage: usage(8),
-    effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' }
+    effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' },
+    availabilityPresentation: { status: 'available', label: '可调度', probe: { kind: 'health_check', schedule: { state: 'none' } } }
   }]
 }
 const originalAccounts = [account]
@@ -70,6 +80,8 @@ assert.equal(merged[0]?.todayUsage.requestCount, 8)
 assert.equal(merged[0]?.lastUsedAt, '2026-07-16T00:59:00.000Z')
 assert.equal(merged[0]?.notes, '不可被快照覆盖')
 assert.equal(merged[0]?.cooldownUntil, undefined, '快照缺失 optional 状态字段时应清除旧值')
+assert.equal(merged[0]?.availabilityPresentation?.status, 'available', '快照必须整体替换 presentation')
+assert.equal(merged[0]?.availabilityPresentation?.probe?.lastObservation, undefined, '快照必须清除旧 observation 与 traceId')
 assert.notEqual(merged, originalAccounts)
 
 const rowUpdated = replaceAccountListRow(originalAccounts, {
@@ -176,6 +188,7 @@ const previousRuntimeAccount = {
     color: 'gold',
     blockerScope: 'runtime'
   },
+  availabilityPresentation: { status: 'avoided', label: '短暂避让', reason: '旧运行态卡片' },
   accountRuntimeAvailabilityAvailable: true
 } as AccountSummary
 const refreshedWithoutRuntime = {
@@ -188,6 +201,7 @@ assert.equal(preservedRefresh[0]?.runtimeAvailability?.status, 'local_suppressed
 assert.equal(preservedRefresh[0]?.accountRuntimeAvailabilityAvailable, true)
 
 assert.equal(preservedRefresh[0]?.effectiveAvailability, previousRuntimeAccount.effectiveAvailability)
+assert.equal(preservedRefresh[0]?.availabilityPresentation, previousRuntimeAccount.availabilityPresentation, '完整列表保留旧运行态时必须同步保留 presentation')
 
 const allRuntimeStatuses = [
   'normal',
@@ -257,11 +271,13 @@ const disabledRefresh = {
   ...refreshedWithoutRuntime,
   status: 'disabled',
   schedulable: false,
-  effectiveAvailability: disabledEffectiveAvailability
+  effectiveAvailability: disabledEffectiveAvailability,
+  availabilityPresentation: { status: 'disabled', label: '已停用' }
 } as AccountSummary
 const preservedRuntimeWithDisabledAccount = mergeAccountListRuntimeSnapshot([previousRuntimeAccount], [disabledRefresh], false)
 assert.equal(preservedRuntimeWithDisabledAccount[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(preservedRuntimeWithDisabledAccount[0]?.effectiveAvailability?.status, 'disabled', '新账户级阻断必须优先于旧运行态派生状态')
+assert.equal(preservedRuntimeWithDisabledAccount[0]?.availabilityPresentation?.status, 'disabled', '完整列表新账户级阻断必须替换旧运行态 presentation')
 
 const unavailablePollingSnapshot = mergeAccountStatusSnapshot([previousRuntimeAccount], {
   generatedAt: '2026-07-17T00:02:00.000Z',
@@ -275,11 +291,13 @@ const unavailablePollingSnapshot = mergeAccountStatusSnapshot([previousRuntimeAc
     schedulable: true,
     currentConcurrency: 0,
     todayUsage: usage(0),
-    effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' }
+    effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' },
+    availabilityPresentation: { status: 'available', label: '可调度' }
   }]
 })
 assert.equal(unavailablePollingSnapshot[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(unavailablePollingSnapshot[0]?.effectiveAvailability?.status, 'runtime_local_suppressed')
+assert.equal(unavailablePollingSnapshot[0]?.availabilityPresentation?.status, 'avoided', '保留旧运行态时必须同步保留对应 presentation')
 assert.equal(unavailablePollingSnapshot[0]?.accountRuntimeAvailabilityAvailable, true)
 
 const unavailablePollingWithDisabledAccount = mergeAccountStatusSnapshot([previousRuntimeAccount], {
@@ -294,18 +312,50 @@ const unavailablePollingWithDisabledAccount = mergeAccountStatusSnapshot([previo
     schedulable: false,
     currentConcurrency: 0,
     todayUsage: usage(0),
-    effectiveAvailability: disabledEffectiveAvailability
+    effectiveAvailability: disabledEffectiveAvailability,
+    availabilityPresentation: { status: 'disabled', label: '已停用' }
   }]
 })
 assert.equal(unavailablePollingWithDisabledAccount[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(unavailablePollingWithDisabledAccount[0]?.effectiveAvailability?.status, 'disabled', '轮询更新的账户级阻断必须优先于旧运行态派生状态')
+assert.equal(unavailablePollingWithDisabledAccount[0]?.availabilityPresentation?.status, 'disabled', '新账户级阻断必须替换旧运行态 presentation')
 
 const rowRuntimePreserved = replaceAccountListRow([previousRuntimeAccount], refreshedWithoutRuntime)
 assert.equal(rowRuntimePreserved[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(rowRuntimePreserved[0]?.effectiveAvailability?.status, 'runtime_local_suppressed')
+assert.equal(rowRuntimePreserved[0]?.availabilityPresentation, previousRuntimeAccount.availabilityPresentation, '行级更新保留旧运行态时必须同步保留 presentation')
 
 const rowRuntimeWithDisabledAccount = replaceAccountListRow([previousRuntimeAccount], disabledRefresh)
 assert.equal(rowRuntimeWithDisabledAccount[0]?.runtimeAvailability?.status, 'local_suppressed')
 assert.equal(rowRuntimeWithDisabledAccount[0]?.effectiveAvailability?.status, 'disabled', '行级更新的账户级阻断必须优先于旧运行态派生状态')
+assert.equal(rowRuntimeWithDisabledAccount[0]?.availabilityPresentation?.status, 'disabled', '行级更新的新账户级阻断必须替换旧运行态 presentation')
+
+const unavailableRuntimeAccount = { ...previousRuntimeAccount, accountRuntimeAvailabilityAvailable: false } as AccountSummary
+const refreshedAvailable = {
+  ...refreshedWithoutRuntime,
+  effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' },
+  availabilityPresentation: { status: 'available', label: '可调度' }
+} as AccountSummary
+const rowAfterUnavailableRuntime = replaceAccountListRow([unavailableRuntimeAccount], refreshedAvailable)
+assert.equal(rowAfterUnavailableRuntime[0]?.runtimeAvailability, undefined, '行级更新不得保留不可用运行态的旧 runtime')
+assert.equal(rowAfterUnavailableRuntime[0]?.effectiveAvailability?.status, 'available', '行级更新不得保留不可用运行态的旧 effective')
+assert.equal(rowAfterUnavailableRuntime[0]?.availabilityPresentation?.status, 'available', '行级更新不得保留不可用运行态的旧 presentation')
+
+const refreshedWithNewRuntime = {
+  ...refreshedWithoutRuntime,
+  runtimeAvailability: { status: 'precheck_pending', reason: '新的运行态' },
+  effectiveAvailability: {
+    available: false,
+    status: 'runtime_precheck_pending',
+    label: '等待确认',
+    color: 'gold',
+    blockerScope: 'runtime'
+  },
+  availabilityPresentation: { status: 'pending_verification', label: '等待确认', reason: '新的运行态卡片' }
+} as AccountSummary
+const rowWithNewRuntime = replaceAccountListRow([unavailableRuntimeAccount], refreshedWithNewRuntime)
+assert.equal(rowWithNewRuntime[0]?.runtimeAvailability?.status, 'precheck_pending')
+assert.equal(rowWithNewRuntime[0]?.effectiveAvailability?.status, 'runtime_precheck_pending')
+assert.equal(rowWithNewRuntime[0]?.availabilityPresentation?.status, 'pending_verification', '行级更新必须采用新的运行态 presentation')
 
 console.log('账户状态快照前端回归通过：全部运行态稳定合并、100 ID 分块全覆盖、递归周期、hidden 与非重叠约束生效')

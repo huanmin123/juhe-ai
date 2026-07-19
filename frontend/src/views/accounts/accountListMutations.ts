@@ -17,10 +17,12 @@ export function mergeAccountListRuntimeSnapshot(
   return incoming.map((account) => {
     const previous = currentByIdentity.get(accountRuntimeIdentity(account))
     if (!previous || previous.accountRuntimeAvailabilityAvailable !== true) return account
+    const effectiveAvailability = effectiveAvailabilityWithPreservedRuntime(previous, account)
     return {
       ...account,
       runtimeAvailability: previous.runtimeAvailability,
-      effectiveAvailability: effectiveAvailabilityWithPreservedRuntime(previous, account),
+      effectiveAvailability,
+      availabilityPresentation: presentationWithPreservedRuntime(previous, account, effectiveAvailability),
       accountRuntimeAvailabilityAvailable: true
     }
   })
@@ -45,6 +47,16 @@ function effectiveAvailabilityWithPreservedRuntime(previous: AccountSummary, inc
   return previous.effectiveAvailability
 }
 
+function presentationWithPreservedRuntime(
+  previous: AccountSummary,
+  incoming: AccountSummary,
+  effectiveAvailability: AccountSummary['effectiveAvailability']
+) {
+  return effectiveAvailability?.blockerScope === 'runtime'
+    ? previous.availabilityPresentation
+    : incoming.availabilityPresentation
+}
+
 export function replaceAccountListRow(
   accounts: AccountSummary[],
   updated: AccountSummary
@@ -53,14 +65,22 @@ export function replaceAccountListRow(
   if (accountIndex < 0) return accounts
 
   const current = accounts[accountIndex]
+  const preserveRuntime = current.accountRuntimeAvailabilityAvailable === true
+  const effectiveAvailability = preserveRuntime
+    ? effectiveAvailabilityWithPreservedRuntime(current, updated)
+    : updated.effectiveAvailability
+  const availabilityPresentation = preserveRuntime
+    ? presentationWithPreservedRuntime(current, updated, effectiveAvailability)
+    : updated.availabilityPresentation
   const nextAccounts = [...accounts]
   nextAccounts[accountIndex] = {
     ...updated,
     currentConcurrency: current.currentConcurrency,
     currentConcurrencyAvailable: current.currentConcurrencyAvailable,
     accountRuntimeAvailabilityAvailable: current.accountRuntimeAvailabilityAvailable,
-    runtimeAvailability: current.runtimeAvailability,
-    effectiveAvailability: effectiveAvailabilityWithPreservedRuntime(current, updated),
+    runtimeAvailability: preserveRuntime ? current.runtimeAvailability : updated.runtimeAvailability,
+    effectiveAvailability,
+    availabilityPresentation,
     qualityScore: current.qualityScore,
     qualityState: current.qualityState,
     qualityEwmaFirstTokenMs: current.qualityEwmaFirstTokenMs,
@@ -107,6 +127,10 @@ export function mergeAccountStatusSnapshot(
     const item = itemsById.get(account.id)
     if (!item) return account
     changed = true
+    const mergedAccount = { ...account, ...item } as AccountSummary
+    const effectiveAvailability = runtimeSnapshotAvailable
+      ? item.effectiveAvailability
+      : effectiveAvailabilityWithPreservedRuntime(account, mergedAccount)
     return {
       ...account,
       status: item.status,
@@ -130,9 +154,10 @@ export function mergeAccountStatusSnapshot(
       authorizationInstanceSourceAccountLastErrorMessage: item.authorizationInstanceSourceAccountLastErrorMessage,
       apiKeyRuntime: item.apiKeyRuntime,
       runtimeAvailability: runtimeSnapshotAvailable ? item.runtimeAvailability : account.runtimeAvailability,
-      effectiveAvailability: runtimeSnapshotAvailable
-        ? item.effectiveAvailability
-        : effectiveAvailabilityWithPreservedRuntime(account, { ...account, ...item } as AccountSummary),
+      effectiveAvailability,
+      availabilityPresentation: runtimeSnapshotAvailable
+        ? item.availabilityPresentation
+        : presentationWithPreservedRuntime(account, mergedAccount, effectiveAvailability),
       lastUsedAt: item.lastUsedAt,
       todayUsage: item.todayUsage,
       accountRuntimeAvailabilityAvailable: runtimeSnapshotAvailable

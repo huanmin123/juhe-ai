@@ -18,6 +18,7 @@ export interface AccountApiKeyRuntimeFailureInput {
   statusCode?: number
   errorCode?: string
   errorMessage?: string
+  traceId?: string
   cooldownUntil?: string
   observedAt?: string
 }
@@ -47,6 +48,10 @@ export interface AccountApiKeyRuntimeSummary {
   unavailable: number
   allUnavailable: boolean
   nextProbeAt?: string
+  lastFailureAt?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
+  lastTraceId?: string
 }
 
 interface AccountApiKeyRuntimeRow {
@@ -74,6 +79,7 @@ interface AccountApiKeyRuntimeDetailRow {
   last_failure_at: string | null
   last_error_code: string | null
   last_error_message: string | null
+  last_trace_id: string | null
 }
 
 interface AccountApiKeyRuntimeTarget {
@@ -279,7 +285,7 @@ export function loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds: string
   const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
   if (!ids.length) return new Map<string, AccountApiKeyRuntimeSummary>()
   const rows = accountApiKeyRuntimeSummaryRows(ids)
-  const statesByAccountId = loadAccountApiKeyRuntimeStatesByAccountIds(rows.map((row) => row.sourceAccountId))
+  const statesByAccountId = loadAccountApiKeyRuntimeDetailRowsByAccountIds(rows.map((row) => row.sourceAccountId))
   return accountApiKeyRuntimeSummariesFromRows(rows, statesByAccountId)
 }
 
@@ -290,13 +296,13 @@ export async function loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(account
   const ids = [...new Set(accountIds.map((id) => id.trim()).filter(Boolean))]
   if (!ids.length) return new Map<string, AccountApiKeyRuntimeSummary>()
   const rows = await accountApiKeyRuntimeSummaryRowsAsync(ids)
-  const statesByAccountId = await loadAccountApiKeyRuntimeStatesByAccountIdsAsync(rows.map((row) => row.sourceAccountId))
+  const statesByAccountId = await loadAccountApiKeyRuntimeDetailRowsByAccountIdsAsync(rows.map((row) => row.sourceAccountId))
   return accountApiKeyRuntimeSummariesFromRows(rows, statesByAccountId)
 }
 
 function accountApiKeyRuntimeSummariesFromRows(
   rows: AccountApiKeyRuntimeSummarySourceRow[],
-  statesByAccountId: Map<string, AccountApiKeyRuntimeSelectionState[]>
+  statesByAccountId: Map<string, AccountApiKeyRuntimeDetailRow[]>
 ): Map<string, AccountApiKeyRuntimeSummary> {
   const output = new Map<string, AccountApiKeyRuntimeSummary>()
   for (const row of rows) {
@@ -320,7 +326,7 @@ function accountApiKeyRuntimeSummariesFromRows(
       continue
     }
     const statesByFingerprint = new Map(
-      (statesByAccountId.get(row.sourceAccountId) ?? []).map((state) => [state.keyFingerprint, state])
+      (statesByAccountId.get(row.sourceAccountId) ?? []).map((state) => [state.key_fingerprint, state])
     )
     const summary: AccountApiKeyRuntimeSummary = {
       total: entries.length,
@@ -343,9 +349,28 @@ function accountApiKeyRuntimeSummariesFromRows(
       if (state.status === 'rate_limited') summary.rateLimited += 1
       if (state.status === 'error') summary.error += 1
       if (state.status === 'disabled') summary.disabled += 1
-      if (state.nextProbeAt && (!summary.nextProbeAt || state.nextProbeAt < summary.nextProbeAt)) {
-        summary.nextProbeAt = state.nextProbeAt
+      if (
+        state.next_probe_at
+        && (state.status === 'temporary_unavailable' || state.status === 'rate_limited' || state.status === 'error')
+        && (!summary.nextProbeAt || state.next_probe_at < summary.nextProbeAt)
+      ) {
+        summary.nextProbeAt = state.next_probe_at
       }
+    }
+    const latestFailure = entries
+      .map((entry) => statesByFingerprint.get(entry.fingerprint))
+      .filter((state): state is AccountApiKeyRuntimeDetailRow => Boolean(state?.last_failure_at))
+      .sort((left, right) => {
+        const byTime = right.last_failure_at!.localeCompare(left.last_failure_at!)
+        if (byTime !== 0) return byTime
+        const byIndex = left.key_index - right.key_index
+        return byIndex !== 0 ? byIndex : left.key_fingerprint.localeCompare(right.key_fingerprint)
+      })[0]
+    if (latestFailure?.last_failure_at) {
+      summary.lastFailureAt = latestFailure.last_failure_at
+      summary.lastErrorCode = latestFailure.last_error_code ?? undefined
+      summary.lastErrorMessage = runtimeErrorMessageForResponse(latestFailure.last_error_message)
+      summary.lastTraceId = runtimeTraceIdForResponse(latestFailure.last_trace_id)
     }
     summary.allUnavailable = summary.total > 0 && summary.active === 0
     output.set(row.viewAccountId, summary)
@@ -417,7 +442,8 @@ function accountApiKeyRuntimeDetailsFromRows(
         lastSuccessAt: state?.last_success_at ?? undefined,
         lastFailureAt: state?.last_failure_at ?? undefined,
         lastErrorCode: state?.last_error_code ?? undefined,
-        lastErrorMessage: runtimeErrorMessageForResponse(state?.last_error_message)
+        lastErrorMessage: runtimeErrorMessageForResponse(state?.last_error_message),
+        lastTraceId: runtimeTraceIdForResponse(state?.last_trace_id)
       }
     }))
   }
@@ -470,6 +496,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
               last_failure_at = ?,
               last_error_code = ?,
               last_error_message = ?,
+              last_trace_id = ?,
               updated_at = ?
           WHERE account_id = ?
             AND key_fingerprint = ?
@@ -488,6 +515,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           observedAt,
           errorCode,
           errorMessage,
+          normalizeRuntimeTraceId(input.traceId),
           now,
           target.accountId,
           target.keyFingerprint,
@@ -500,9 +528,10 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
             status, failure_count, consecutive_failures, success_count,
             cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
             last_attempt_at, last_failure_at, last_error_code, last_error_message,
+            last_trace_id,
             created_at, updated_at
           )
-          VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `)
         .run(
           newId('account_api_key_runtime_state'),
@@ -519,6 +548,7 @@ export function recordAccountApiKeyRuntimeFailure(input: AccountApiKeyRuntimeFai
           observedAt,
           errorCode,
           errorMessage,
+          normalizeRuntimeTraceId(input.traceId),
           now,
           now
         )
@@ -567,9 +597,10 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       status, failure_count, consecutive_failures, success_count,
       cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
       last_attempt_at, last_failure_at, last_error_code, last_error_message,
+      last_trace_id,
       created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (account_id, key_fingerprint) DO UPDATE SET
       system_account_id = excluded.system_account_id,
       key_index = excluded.key_index,
@@ -584,6 +615,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
       last_failure_at = excluded.last_failure_at,
       last_error_code = excluded.last_error_code,
       last_error_message = excluded.last_error_message,
+      last_trace_id = excluded.last_trace_id,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
       AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
@@ -602,6 +634,7 @@ export async function recordAccountApiKeyRuntimeFailureAsync(input: AccountApiKe
     observedAt,
     errorCode,
     errorMessage,
+    normalizeRuntimeTraceId(input.traceId),
     now,
     now
   ])
@@ -627,9 +660,10 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, 
         status, failure_count, consecutive_failures, success_count,
         cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
         last_attempt_at, last_success_at, last_error_code, last_error_message,
+        last_trace_id,
         created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 1, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, ?, ?)
+      VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 1, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?)
       ON CONFLICT(account_id, key_fingerprint) DO UPDATE SET
         system_account_id = excluded.system_account_id,
         key_index = excluded.key_index,
@@ -644,6 +678,7 @@ export function recordAccountApiKeyRuntimeSuccess(account: OpenAIAccountSecret, 
         last_success_at = excluded.last_success_at,
         last_error_code = NULL,
         last_error_message = NULL,
+        last_trace_id = NULL,
         updated_at = excluded.updated_at
       WHERE account_api_key_runtime_states.status <> 'disabled'
         AND (account_api_key_runtime_states.last_attempt_at IS NULL OR account_api_key_runtime_states.last_attempt_at <= excluded.last_attempt_at)
@@ -683,9 +718,10 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
       status, failure_count, consecutive_failures, success_count,
       cooldown_until, next_probe_at, probe_backoff_seconds, recovery_started_at,
       last_attempt_at, last_success_at, last_error_code, last_error_message,
+      last_trace_id,
       created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 1, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, ?, ?)
+    VALUES (?, ?, ?, ?, ?, 'active', 0, 0, 1, NULL, NULL, 0, NULL, ?, ?, NULL, NULL, NULL, ?, ?)
     ON CONFLICT (account_id, key_fingerprint) DO UPDATE SET
       system_account_id = excluded.system_account_id,
       key_index = excluded.key_index,
@@ -700,6 +736,7 @@ export async function recordAccountApiKeyRuntimeSuccessAsync(account: OpenAIAcco
       last_success_at = excluded.last_success_at,
       last_error_code = NULL,
       last_error_message = NULL,
+      last_trace_id = NULL,
       updated_at = excluded.updated_at
     WHERE current_state.status <> 'disabled'
       AND (current_state.last_attempt_at IS NULL OR current_state.last_attempt_at <= excluded.last_attempt_at)
@@ -873,7 +910,7 @@ function loadAccountApiKeyRuntimeDetailRowsByAccountIds(accountIds: string[]): M
       .prepare(`
         SELECT account_id, key_fingerprint, key_index, status, failure_count, consecutive_failures,
           success_count, cooldown_until, next_probe_at, last_attempt_at, last_success_at, last_failure_at,
-          last_error_code, last_error_message
+          last_error_code, last_error_message, last_trace_id
         FROM account_api_key_runtime_states
         WHERE account_id IN (${sqlPlaceholders(chunk.length)})
       `)
@@ -896,7 +933,7 @@ async function loadAccountApiKeyRuntimeDetailRowsByAccountIdsAsync(accountIds: s
     const rows = await client.query<AccountApiKeyRuntimeDetailRow>(`
       SELECT account_id, key_fingerprint, key_index, status, failure_count, consecutive_failures,
         success_count, cooldown_until, next_probe_at, last_attempt_at, last_success_at, last_failure_at,
-        last_error_code, last_error_message
+        last_error_code, last_error_message, last_trace_id
       FROM ${accountApiKeyRuntimeStatesTable(client)}
       WHERE account_id IN (${chunk.map(() => '?').join(', ')})
     `, chunk)
@@ -1011,6 +1048,15 @@ function sanitizeRuntimeErrorMessage(value: string): string {
 function runtimeErrorMessageForResponse(value: string | null | undefined): string | undefined {
   const text = value?.replace(/\s+/g, ' ').trim()
   return text ? text.slice(0, 240) : undefined
+}
+
+function normalizeRuntimeTraceId(value: string | undefined): string | null {
+  const text = value?.trim()
+  return text ? text.slice(0, 200) : null
+}
+
+function runtimeTraceIdForResponse(value: string | null | undefined): string | undefined {
+  return normalizeRuntimeTraceId(value ?? undefined) ?? undefined
 }
 
 function keySuffixForRuntimeDisplay(key: string): string | undefined {

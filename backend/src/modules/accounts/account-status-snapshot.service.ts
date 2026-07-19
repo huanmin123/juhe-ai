@@ -44,6 +44,7 @@ export async function getAccountStatusSnapshot(
         ...projection,
         currentConcurrency: concurrency.values[concurrencyAccountId] ?? 0,
         runtimeAvailability: withAvailability.runtimeAvailability,
+        availabilityPresentation: withAvailability.availabilityPresentation,
         effectiveAvailability: withAvailability.effectiveAvailability
       }
     })
