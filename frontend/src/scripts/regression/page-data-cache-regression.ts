@@ -219,6 +219,35 @@ assert.equal(sharedRefreshResult.superseded, false, '并发 confirmNow 不得把
 assert.equal(sharedConfirmResult.state, 'updated', '并发 confirmNow 必须共享 refresh 的确认链结果')
 assert.equal(sharedChainConfirmCalls, 1, 'refresh 与 confirmNow 共享确认链时不得重复确认')
 
+const lifecycleRefreshStorage = createMemoryPageDataCacheStorage()
+const lifecycleRefreshKey = createPageDataCacheKey({ scope: 'self:lifecycle-refresh', route: '/accounts', query: {}, version: 1, domain: 'accounts.runtime' })
+await lifecycleRefreshStorage.writeIfCurrent(cacheRecord(lifecycleRefreshKey, ['cached'], { token: token(1), confirmedAt: '2026-07-17T12:00:00.000Z' }))
+const lifecycleConfirmGate = deferred<PageDataConfirmResult>()
+let lifecycleConfirmCalls = 0
+let lifecycleNetworkCalls = 0
+const lifecycleController = new PageDataCacheController<string[]>({
+  cacheKey: { scope: 'self:lifecycle-refresh', route: '/accounts', query: {}, version: 1 },
+  domain: 'accounts.runtime', viewScope: 'self', storage: lifecycleRefreshStorage,
+  confirm: async (request) => {
+    lifecycleConfirmCalls += 1
+    return lifecycleConfirmGate.promise
+  },
+  loadNetwork: async () => {
+    lifecycleNetworkCalls += 1
+    return ['manual-refresh-network']
+  }
+})
+const lifecycleConfirm = lifecycleController.confirmNow()
+await microtask()
+const lifecycleRefresh = lifecycleController.refresh()
+lifecycleConfirmGate.resolve(confirmResult(token(1)))
+const lifecycleResult = await lifecycleRefresh
+await lifecycleConfirm
+assert.equal(lifecycleConfirmCalls, 1, '生命周期确认在途时手动刷新不得再发第二次确认')
+assert.equal(lifecycleNetworkCalls, 1, '生命周期确认在途时手动刷新仍应只读取一次业务列表')
+assert.deepEqual(lifecycleResult.data, ['manual-refresh-network'])
+lifecycleController.close()
+
 await testMicrotaskConfirmBatching()
 
 const followerSharedStorage = createMemoryPageDataCacheStorage()

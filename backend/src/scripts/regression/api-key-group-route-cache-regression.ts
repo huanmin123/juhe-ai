@@ -190,6 +190,20 @@ try {
   await listen(gatewayServer)
   const gatewayBaseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
+  const deploymentSmokeUpstreamStart = upstreamRequests.length
+  const deploymentSmokeResponse = await requestChatCompletion(
+    gatewayBaseUrl,
+    seededRoute.apiKey,
+    'trace-deployment-smoke-no-upstream',
+    'gpt-5.5',
+    { 'x-juhe-deployment-smoke': 'no-upstream' }
+  )
+  assert.equal(deploymentSmokeResponse.status, 400, `部署 smoke 应在网关本地拒绝，实际 ${deploymentSmokeResponse.status}: ${deploymentSmokeResponse.text}`)
+  const deploymentSmokePayload = parseJsonObject(deploymentSmokeResponse.text)
+  const deploymentSmokeError = isRecord(deploymentSmokePayload.error) ? deploymentSmokePayload.error : {}
+  assert.equal(deploymentSmokeError.code, 'deployment_smoke_no_upstream')
+  assert.equal(upstreamRequests.length, deploymentSmokeUpstreamStart, '部署 smoke 硬门禁不得命中任何上游')
+
   const firstResponse = await requestChatCompletion(gatewayBaseUrl, seededRoute.apiKey, 'trace-route-cache-first')
   assert.equal(firstResponse.status, 200, `首次请求应完成主分组到后备分组的预派发切换，实际 ${firstResponse.status}: ${firstResponse.text}`)
   assert.equal(upstreamRequests.at(-1)?.accountKey, seededRoute.fallbackUpstreamKey, '首次请求应命中后备授权账号')
@@ -597,13 +611,20 @@ function createMockOpenAIUpstream(): http.Server {
   })
 }
 
-async function requestChatCompletion(baseUrl: string, apiKey: string, traceId: string, model = 'gpt-5.5'): Promise<{ status: number; text: string }> {
+async function requestChatCompletion(
+  baseUrl: string,
+  apiKey: string,
+  traceId: string,
+  model = 'gpt-5.5',
+  extraHeaders: Record<string, string> = {}
+): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
-      'x-trace-id': traceId
+      'x-trace-id': traceId,
+      ...extraHeaders
     },
     body: JSON.stringify({
       model,

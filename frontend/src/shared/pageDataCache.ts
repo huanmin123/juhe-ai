@@ -269,11 +269,27 @@ export class PageDataCacheController<T> {
   }
 
   refresh(): Promise<PageDataLoadResult<T>> {
-    const operation = this.refreshCurrent(true).finally(() => {
+    const operation = (this.confirmInFlight
+      ? this.refreshAfterPendingConfirm(this.confirmInFlight)
+      : this.refreshCurrent(true)).finally(() => {
       if (this.refreshInFlight === operation) this.refreshInFlight = undefined
     })
     this.refreshInFlight = operation
     return operation
+  }
+
+  private async refreshAfterPendingConfirm(
+    pendingConfirm: Promise<PageDataConfirmOutcome<T>>
+  ): Promise<PageDataLoadResult<T>> {
+    const outcome = await pendingConfirm.catch((): PageDataConfirmOutcome<T> => ({ state: 'unavailable' }))
+    if (this.closed) return { source: 'cache', data: outcome.data as T, confirmed: false, cached: false, superseded: true }
+    if (outcome.state === 'updated' && outcome.data !== undefined) {
+      return { source: 'cache', data: outcome.data, confirmed: true, cached: true, superseded: false }
+    }
+    const generation = ++this.generation
+    const data = await this.options.loadNetwork()
+    if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+    return { source: 'network', data, confirmed: false, cached: false, superseded: false }
   }
 
   private async refreshCurrent(forceNetwork: boolean): Promise<PageDataLoadResult<T>> {
