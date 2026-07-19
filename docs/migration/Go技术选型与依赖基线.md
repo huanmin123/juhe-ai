@@ -47,7 +47,7 @@ Go 目标不再手写通用 Redis Streams 队列。默认采用 Asynq 作为 Red
 
 - 适合当前项目的使用记录、审计、操作日志、公开接口日志、运行日志索引、账号探测、OAuth 保活、统计刷新和维护清理。
 - 由 Asynq 承接任务入队、worker 并发、失败重试、延迟任务、周期任务、worker crash 恢复、暂停队列、队列指标和管理检查。
-- Redis queue 仍必须独立于 cache / state，生产建议 `noeviction + AOF`，不能和可淘汰缓存共用淘汰策略。
+- Redis queue 必须使用独立于 cache / state 的 Redis 进程和物理 `host:port`，生产建议 `noeviction + AOF`，不能和可淘汰缓存共用淘汰策略；Asynq 不使用 `JUHE_AI_REDIS_NAMESPACE` 隔离部署实例。
 - 任务 payload 必须有版本号、幂等 key、trace ID、创建时间、来源模块和最小必要字段；不得把完整敏感 payload 放进任务体。
 - 任务 handler 成功写入 PostgreSQL 或完成业务副作用后才返回成功；失败由 Asynq 重试或进入死信 / archived 状态。
 - 网关已经可返回响应时，副作用入队失败必须记录结构化错误和指标；是否中断请求由该副作用的重要性在功能文档中固定。
@@ -114,7 +114,7 @@ W0 当前只表示工程和基础设施 PoC 的版本基线；后续升级依赖
 | 配置 | `github.com/caarlos0/env/v11 v11.4.1` + `github.com/joho/godotenv v1.5.1` | 配置单测已通过 |
 | Request ID | `github.com/google/uuid v1.6.0` | HTTP request ID 中间件已落地 |
 | PostgreSQL | `github.com/jackc/pgx/v5 v5.10.0` | health adapter、goose baseline / W1a / W1b migration、sqlc catalog / W1b auth-log 查询已落地；integration 用例已补，当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑 |
-| Redis | `github.com/redis/go-redis/v9 v9.21.0` | cache / state health adapter、namespace key 封装、TTL set、pipeline、`IncrWithTTL` 原子计数、fixed-window 和 W1b penalty-window Lua 限频、Redis DB 去重校验已落地；W1b penalty-window integration 用例已补，需 Docker 环境复跑 |
+| Redis | `github.com/redis/go-redis/v9 v9.21.0` | cache / state health adapter、namespace key 封装、TTL set、pipeline、`IncrWithTTL` 原子计数、fixed-window 和 W1b penalty-window Lua 限频、Redis 物理端点去重与 loopback 别名拒绝已落地；W1b penalty-window integration 用例已补，需 Docker 环境复跑 |
 | Job / queue | `github.com/hibiken/asynq v0.26.0` | Asynq client ping health、`rediss` TLS、显式 Redis timeout、enqueue 封装、inspector、pending smoke、retry / archive / retry exhaustion integration 代码已落地；W1b `public-api-log:write` payload/enqueue/handler、`juhe-ai-worker ingest` runtime、invalid payload `SkipRetry` 映射已补；真实 Redis/Asynq/PG smoke 当前主线程 Docker 不可用时 `SKIP`，需 Docker 环境复跑；periodic / crash recover / 长任务 drain / 队列指标待补 |
 | 指标 | 标准库 `runtime/metrics` + `github.com/prometheus/client_golang v1.23.2` | `/__aisys__/metrics` loopback smoke 已通过；Go runtime / PG / Redis / Asynq / worker lag 的完整采样口径见 [Go 迁移指标与观测规划](Go迁移指标与观测规划.md)，后续 W6/W7 落地 |
 | SQL CLI | `sqlc v1.31.1` | CLI 已安装，已生成 `internal/store/postgres/postgresqueries` |

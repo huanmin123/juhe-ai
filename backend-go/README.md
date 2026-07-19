@@ -9,7 +9,7 @@
 
 - Go module、命令入口、配置读取、结构化日志、HTTP 路由和健康检查。
 - PostgreSQL health、baseline migration、sqlc catalog 查询、事务封装和 store adapter 基线。
-- Redis cache / state client 基线：namespace key、TTL set、pipeline、`IncrWithTTL` 原子计数、`GETDEL` 一次性消费、fixed-window 原子限流、W1b penalty-window 原子限流和 cache / state / queue Redis DB 去重校验。
+- Redis cache / state client 基线：namespace key、TTL set、pipeline、`IncrWithTTL` 原子计数、`GETDEL` 一次性消费、fixed-window 原子限流、W1b penalty-window 原子限流和 cache / state / queue Redis 物理端点去重、loopback 别名拒绝校验。
 - Asynq queue 基线：Redis URL 解析、`rediss` TLS、显式 Redis timeout、client ping、enqueue、inspector 和 pending smoke。
 - 诊断端点基线：`/__aisys__/health`、`/__aisys__/api/health` 和受 `JUHE_AI_METRICS_ENABLED` 控制的 `/__aisys__/metrics`；pprof 只允许通过 `JUHE_AI_PPROF_ENABLED` 在受控 / loopback 场景启用。后续系统监控指标按 `../docs/migration/Go迁移指标与观测规划.md` 落地，不能沿用 Node event-loop / DB service / SQLite 文件指标。
 - W1a 公开设置读接口：`GET /__aisys__/api/settings/public`，读取 `juhe_business.global_settings`，返回 `{ data: { appName, appIcon } }`，并按 `system_settings` 读取限流配置，按 `JUHE_AI_TRUST_PROXY` 识别客户端 IP，生产 server 路径使用 Redis state 原子 minute / burst IP read rate limit。
@@ -20,7 +20,7 @@
 - W2 外部来源 Token secret 由 `04c08744d`（service/store）、`ea3069060`（HTTP/router/integration）和 `5459ae57d`（frontend smoke）分块落地。targeted tests / race / vet / sqlc、`go test -p=1 ./...`、`go vet ./...`、`go mod tidy -diff`、integration compile，以及前端 regression / typecheck / build 已通过。该通用 secret 切片当时的精确 PostgreSQL 测试因本机 Docker 不可用而 `SKIP`，通用管理 smoke 的可选 secret reveal 尚未在真实 URL / Cookie 上执行；后续内置 reset 专用 listener 已实际覆盖固定内置 Token 的 secret 回读，但不等同于任意来源 Token secret、生产切流或 Node 删除。
 - W5 代理管理写接口切片：`POST /__aisys__/api/proxies`、`PATCH /__aisys__/api/proxies/{id}`、`DELETE /__aisys__/api/proxies/{id}` 和 `POST /__aisys__/api/proxies/{id}/test` 已进入 Go opt-in。创建 / 更新使用 Node 兼容 AES-256-GCM `v1` 密文保存代理密码，密码不进入响应或操作日志明文；连接参数变化会重置最近检测缓存；删除只读取 4 条绑定账户窗口并在占用时返回 `409`；手动检测复刻 Node `ProxyTestReport`、诊断并发闸门、25 秒总 deadline、15 秒单次探测、512KB 响应体上限、出口信息保留语义和 `proxies.test` 操作日志；写入后发布 gateway runtime cache 失效。管理 API 启用时现在必须配置不少于 32 字符的稳定 `JUHE_AI_SECRET`。该切片不包含前端真实 Go 后端 smoke、生产切流、自动代理检测 worker 或 Node `/proxies` 删除。
 - W5 管理端全局品牌设置读写切片：`GET /__aisys__/api/settings/global` 与 `PATCH /__aisys__/api/settings/global` 已进入 Go opt-in，只返回精确 `{ data: { appName, appIcon } }`。两条路径都要求 `admin` / `super_admin`；GET 使用只读 session 和 read limiter，PATCH 使用写鉴权 touch、write limiter、strict partial update 和 PostgreSQL 事务，提交后 best-effort 写 `settings:global` shared cache version 与 `settings.update_global` operation log。已迁移管理写 handler 统一通过共享 operation log 入口执行设置驱动的 changes 清洗和敏感值归一化。默认 `JUHE_AI_MANAGEMENT_API_ENABLED=false` 时不注册。该切片不代表生产切流或 Node settings 删除，详细边界见 `../docs/migration/W5-管理端全局品牌设置读取记录.md`。
-- W5 管理端系统运行设置读写切片：`GET /__aisys__/api/settings` 与 `PATCH /__aisys__/api/settings` 已进入 Go opt-in。当前固定 53 key；GPT Priority / Flex 只使用模型目录精确档位价格，不再提供通用倍率设置。PATCH body 上限为 `256 KiB`，超限返回 `413`，JSON parser 位于 system API IP limiter 后且 auth / touch / authenticated user limiter 前。GET 使用 read auth 不 touch，PATCH 使用 write auth touch。PostgreSQL GET 固定白名单有界读取，PATCH 在事务内按 `ORDER BY key ASC FOR UPDATE` 锁定完整 snapshot 并按稳定 key 更新；migration `000024_w5_system_settings.sql` 初始化 53 项设置并按 `JUHE_AI_USAGE_STATS_TIMEZONE`、PostgreSQL `TimeZone`、`UTC` 顺序 seed 时区，`000043_w5_remove_gpt_service_tier_multipliers.sql` 删除历史倍率设置行。Node / Go 共存期要求统计时区与 Node `Intl` 部署时区一致，在线 PATCH 禁止修改统计时区。提交后 best-effort 执行 `settings:system` shared cache version、reason=`settings_updated` 的 gateway runtime 失效和 `settings.update` / `action=update_settings` operation log。真实依赖 smoke 仍受本机无 Docker 阻塞，不代表生产接管，详细边界见 `../docs/migration/W5-管理端系统运行设置迁移记录.md`。
+- W5 管理端系统运行设置读写切片：`GET /__aisys__/api/settings` 与 `PATCH /__aisys__/api/settings` 已进入 Go opt-in。当前固定 53 key；GPT Priority / Flex 只使用模型目录精确档位价格，不再提供通用倍率设置。PATCH body 上限为 `256 KiB`，超限返回 `413`，JSON parser 位于 system API IP limiter 后且 auth / touch / authenticated user limiter 前。GET 使用 read auth 不 touch，PATCH 使用 write auth touch。PostgreSQL GET 固定白名单有界读取，PATCH 在事务内按 `ORDER BY key ASC FOR UPDATE` 锁定完整 snapshot 并按稳定 key 更新；migration `000024_w5_system_settings.sql` 初始化 53 项设置并按 `JUHE_AI_USAGE_STATS_TIMEZONE`、PostgreSQL `TimeZone`、`UTC` 顺序 seed 时区，`000043_w5_remove_gpt_service_tier_multipliers.sql` 删除历史倍率设置行。Node / Go 共存期要求统计时区与 Node `Intl` 部署时区一致，在线 PATCH 禁止修改统计时区。提交后 best-effort 执行 `settings:system` shared cache version、reason=`settings_updated` 的 gateway runtime 失效和 `settings.update` / `action=update_settings` operation log。真实依赖 smoke 与 loopback listener 写 smoke 已有记录，但仍不代表生产接管，详细边界见 `../docs/migration/W5-管理端系统运行设置迁移记录.md`。
 - W5 管理端分组 CRUD 切片：管理端与个人端的 `POST /groups`、`GET /groups`、`GET /groups/{id}`、`PATCH /groups/{id}`、`DELETE /groups/{id}` 及对应 `my-groups` 路径已进入 Go opt-in。创建固定 `personal` / `high_concurrency` 契约，列表固定 progressive pagination 与 owner / authorized union，详情固定 owner 账户 ID / Redis 实时并发和 authorized 隐藏边界，更新固定 owner / authorized 可写字段与路由策略保护，删除固定 owner-only、默认分组保护、级联和统计脏标记。完整记录见 `../docs/migration/W5-管理端分组创建迁移记录.md`、`../docs/migration/W5-管理端分组列表迁移记录.md`、`../docs/migration/W5-管理端分组详情迁移记录.md`、`../docs/migration/W5-管理端分组更新迁移记录.md` 和 `../docs/migration/W5-管理端分组删除迁移记录.md`。
 - W6 统计窗口只读切片：`GET /__aisys__/api/stats/usage-window` 和 `GET /__aisys__/api/my-stats/usage-window` 已进入 Go opt-in。两条路径只读取 `usageStatsTimezone` 系统设置，按配置时区返回当天向前包含当天的固定 31 天窗口；管理侧要求管理员，个人侧允许任意已认证账户，均使用只读鉴权且不 touch session。时区解析兼容 Node 大小写不敏感的 IANA 名称和必要历史别名，显式拒绝 Go-only `Local` / `Factory`，并缓存已验证配置 60 秒；设置缺失、空白或非法时区返回通用 500，不回退 UTC；请求路径不读取使用记录或统计明细，不执行实时聚合。该切片不包含其他 W6 记录 / 日志 / 统计接口、真实 Go 后端前端 smoke、生产切流或 Node 同名路由删除，详细边界见 `../docs/migration/W6-记录与统计读接口迁移记录.md`。
 - W6 公开接口日志只读切片：`GET /__aisys__/api/public-api-logs` 和 `GET /__aisys__/api/public-api-logs/{id}` 已进入 Go opt-in。两条路径 admin-only、只读 session 不 touch、`no-store`；列表保持 Node 筛选和 progressive pagination，只选择摘要列，不读取 payload；详情按 ID 单行读取两个有界 JSON，不存在返回 404。Node PostgreSQL 旧表使用 integer/text，fresh Goose 使用 boolean/bigint/timestamptz，生产切流前必须离线同步并确定单一写入 owner，运行时不做兼容。本批未新增索引，只在 integration 中为已有 created/source 常用索引设置 EXPLAIN 门禁，trace/clientIp 无 EXPLAIN 证据。详细边界见 `../docs/migration/W6-记录与统计读接口迁移记录.md`。
@@ -92,7 +92,7 @@ go test -v -tags=integration ./internal/testkit/integration -run TestW1bPublicAc
 
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
-$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6380/1'
 $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
 $env:JUHE_AI_TRUST_PROXY = 'false'
 $env:JUHE_AI_PUBLIC_API_ENABLED = 'false'
@@ -113,7 +113,7 @@ go run ./cmd/juhe-ai server
 ```powershell
 $env:JUHE_AI_PUBLIC_API_ENABLED = 'true'
 $env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
-$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6381/2'
 $env:JUHE_AI_SECRET = 'replace-with-at-least-32-random-characters'
 go run ./cmd/juhe-ai server
 ```
@@ -146,7 +146,7 @@ go run ./cmd/juhe-ai server
 
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
-$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6381/2'
 $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
 go run ./cmd/juhe-ai-worker ingest
 ```
@@ -166,7 +166,7 @@ go run ./cmd/juhe-ai-worker operation-log-retention-cleanup
 
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
-$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6380/1'
 $env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
 $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
 go run ./cmd/juhe-ai-worker authorization-expiry-sweep
@@ -223,13 +223,13 @@ go run ./cmd/juhe-ai-maintenance migration-catalog-preflight --dir db/migrations
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
 $env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
-$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
-$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6380/1'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6381/2'
 $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
 go run ./cmd/juhe-ai-maintenance w0-smoke
 ```
 
-未配置上述 URL 时，`w0-smoke` 会直接失败，避免把依赖 `skipped` 误判成真实 smoke 通过。cache / state / queue 必须指向不同 Redis DB 或不同实例；当前本机没有 Docker 时，testcontainers 容器测试会明确跳过。
+未配置上述 URL 时，`w0-smoke` 会直接失败，避免把依赖 `skipped` 误判成真实 smoke 通过。cache / state / queue 必须分别指向三个不同 Redis 进程的 `host:port`；不同 DB、namespace、密码或淘汰策略不能替代物理进程隔离，`localhost` / `::1` 也不能作为 Redis URL host。当前本机没有 Docker 时，testcontainers 容器测试会明确跳过。
 
 真实 W1a public settings smoke：
 
@@ -248,8 +248,8 @@ go run ./cmd/juhe-ai-maintenance w1a-public-settings-smoke
 ```powershell
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
 $env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
-$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
-$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6380/1'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6381/2'
 $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
 $env:JUHE_AI_SECRET = 'replace-with-at-least-32-random-characters'
 go run ./cmd/juhe-ai-maintenance w1b-public-api-smoke

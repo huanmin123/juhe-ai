@@ -95,8 +95,9 @@ Go 后端必须按 server、gateway hot path、management API、ingest、stats�
 | Asynq queue | `queue`、pending、active、retry、dead、archived、oldestTaskAgeSeconds | 判断 worker lag 和死信积压 |
 | Asynq task | `taskType`、processed、failed、retried、durationP95Ms | `taskType` 必须是固定枚举，payload ID 不能入 label |
 | Worker lifecycle | role ready、shutdown drain duration、last heartbeat | 部署和 watchdog 观测 |
+| 并发与背压 | task type、dependency、in-flight、waiting、admission rejected / delayed、limit reason、recovery state | 证明并发预算来自真实依赖容量，并观察自适应降载与恢复；不得只报 goroutine 总数 |
 
-Redis cache、state 和 queue 仍必须使用不同 DB 或实例。指标中如果发现三者指向同一个 Redis DB，应视为配置错误，而不是运行优化问题。
+Redis cache、state 和 queue 必须使用三个不同 Redis 进程的物理 `host:port`；不同 DB、namespace、密码或淘汰策略不能替代进程隔离。指标中如果发现三者指向同一个物理端点，应视为配置错误，而不是运行优化问题。
 
 ### 5.5 网关与上游
 
