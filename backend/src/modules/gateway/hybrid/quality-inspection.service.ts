@@ -6,6 +6,7 @@ import type {
   ApiKeyHybridRoutingConfig
 } from '../../../domain/types.js'
 import type { GatewayApiKeyRow } from '../../../storage/repositories.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from '../request/body.js'
 import { parseGatewayJsonBodyInWorker } from '../request/json-parser.js'
 import { requestModel } from '../request/metadata.js'
@@ -159,6 +160,7 @@ export async function inspectHybridGatewayQuality(input: {
         parsed = parseHybridQualityResponse(dispatch.responseBody)
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error)
+        await finishDispatch({ success: false, errorCode: 'hybrid_quality_scoring_failed', errorMessage })
         await recordHybridScoringAttempt({
           traceId: input.traceId,
           clientIp: input.clientIp,
@@ -178,7 +180,6 @@ export async function inspectHybridGatewayQuality(input: {
           responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) },
           trafficSource: 'hybrid_quality_scoring'
         })
-        await finishDispatch({ success: false, errorCode: 'hybrid_quality_scoring_failed', errorMessage })
         return qualityInspectionUnavailable(
           'hybrid_quality_scoring_failed',
           errorMessage,
@@ -188,24 +189,32 @@ export async function inspectHybridGatewayQuality(input: {
         )
       }
       const actualAction = resolveHybridQualityAction(parsed, qualityConfig)
-      await recordHybridScoringAttempt({
-        traceId: input.traceId,
-        clientIp: input.clientIp,
-        systemAccountId: input.apiKeyRecord.system_account_id,
-        apiKeyId: input.apiKeyRecord.id,
-        groupId: dispatch.groupId,
-        account: dispatch.account,
-        endpoint: `${input.endpoint}#hybrid-quality-scoring`,
-        statusCode: dispatch.statusCode,
-        success: true,
-        startedAt,
-        scoringModel: qualityConfig.scoringModel,
-        usage: dispatch.usage,
-        requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-        responseSnapshot: { statusCode: dispatch.statusCode, parsed },
-        trafficSource: 'hybrid_quality_scoring'
-      })
       await finishDispatch({ success: true })
+      try {
+        await recordHybridScoringAttempt({
+          traceId: input.traceId,
+          clientIp: input.clientIp,
+          systemAccountId: input.apiKeyRecord.system_account_id,
+          apiKeyId: input.apiKeyRecord.id,
+          groupId: dispatch.groupId,
+          account: dispatch.account,
+          endpoint: `${input.endpoint}#hybrid-quality-scoring`,
+          statusCode: dispatch.statusCode,
+          success: true,
+          startedAt,
+          scoringModel: qualityConfig.scoringModel,
+          usage: dispatch.usage,
+          requestSnapshot: { model: qualityConfig.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+          responseSnapshot: { statusCode: dispatch.statusCode, parsed },
+          trafficSource: 'hybrid_quality_scoring'
+        })
+      } catch (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'hybrid_quality_scoring_success_usage_record_failed',
+          traceId: input.traceId,
+          accountId: dispatch.account.id
+        }), '混合路由质量评分已完成，成功使用记录写入失败')
+      }
       return {
         triggered: true,
         triggerReason: trigger.reason,

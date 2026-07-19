@@ -320,34 +320,58 @@ function createFinish(input: {
   return async (finish) => {
     if (finished) return
     finished = true
-    input.auditCapture.completeAttempt(input.auditAttemptId, {
-      statusCode: input.statusCode,
-      responseHeaders: input.headers,
-      responseBody: input.body,
-      success: finish.success,
-      errorPhase: finish.success ? undefined : 'upstream_response',
-      errorCode: finish.errorCode,
-      errorMessage: finish.errorMessage
-    })
-    if (finish.success) {
-      await input.confirmHalfOpenSuccess()
-      await input.confirmSameAccountApiKeyFailures()
-    } else {
-      await input.releaseHalfOpenLease()
+    let leaseSettled = false
+    let finishError: unknown
+    try {
+      input.auditCapture.completeAttempt(input.auditAttemptId, {
+        statusCode: input.statusCode,
+        responseHeaders: input.headers,
+        responseBody: input.body,
+        success: finish.success,
+        errorPhase: finish.success ? undefined : 'upstream_response',
+        errorCode: finish.errorCode,
+        errorMessage: finish.errorMessage
+      })
+      if (finish.success) {
+        await input.confirmHalfOpenSuccess()
+        leaseSettled = true
+        await input.confirmSameAccountApiKeyFailures()
+      } else {
+        await input.releaseHalfOpenLease()
+        leaseSettled = true
+      }
+    } catch (error) {
+      finishError = error
+    } finally {
+      if (!leaseSettled) {
+        try {
+          await input.releaseHalfOpenLease()
+          leaseSettled = true
+        } catch (error) {
+          finishError ??= error
+        }
+      }
+      try {
+        input.auditCapture.finalize({
+          outcome: finish.success ? 'success' : 'upstream_failed',
+          success: finish.success,
+          statusCode: input.statusCode,
+          responseHeaders: input.headers,
+          responseBody: input.body,
+          responsePartType: finish.success ? 'gateway_response' : 'gateway_error',
+          errorPhase: finish.success ? undefined : 'upstream_response',
+          errorCode: finish.errorCode,
+          errorMessage: finish.errorMessage,
+          accountId: input.account.id,
+          firstTokenMs: input.firstTokenMs
+        })
+      } catch (error) {
+        finishError ??= error
+      }
     }
-    input.auditCapture.finalize({
-      outcome: finish.success ? 'success' : 'upstream_failed',
-      success: finish.success,
-      statusCode: input.statusCode,
-      responseHeaders: input.headers,
-      responseBody: input.body,
-      responsePartType: finish.success ? 'gateway_response' : 'gateway_error',
-      errorPhase: finish.success ? undefined : 'upstream_response',
-      errorCode: finish.errorCode,
-      errorMessage: finish.errorMessage,
-      accountId: input.account.id,
-      firstTokenMs: input.firstTokenMs
-    })
+    if (finishError) {
+      throw finishError
+    }
   }
 }
 

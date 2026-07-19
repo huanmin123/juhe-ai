@@ -48,11 +48,21 @@ assert.match(
 assert.match(auxiliarySource, /confirmHalfOpenSuccess[\s\S]*releaseHalfOpenLease/, '混合辅助必须沿用网关派发器的半开租约确认与释放')
 assert.match(auxiliarySource, /await input\.confirmHalfOpenSuccess\(\)/, '混合辅助成功完成后必须确认半开租约')
 assert.match(auxiliarySource, /await input\.releaseHalfOpenLease\(\)/, '混合辅助失败完成后必须释放半开租约')
+assert.match(
+  auxiliarySource,
+  /let leaseSettled = false[\s\S]*finally \{[\s\S]*if \(!leaseSettled\)[\s\S]*releaseHalfOpenLease[\s\S]*auditCapture\.finalize/,
+  '混合辅助 finish 内部异常也必须释放未结租约并最终化审计'
+)
 for (const [label, source] of [['scoring', hybridScoringSource], ['quality', hybridQualitySource]] as const) {
   assert.match(
     source,
     /let dispatchFinished = false[\s\S]*finally \{[\s\S]*if \(!dispatchFinished\)[\s\S]*dispatch\.finish\(/,
     `混合 ${label} 调用方异常时必须在 finally 结束辅助 dispatch`
+  )
+  assert.match(
+    source,
+    /await finishDispatch\(\{ success: true \}\)[\s\S]*recordHybridScoringAttempt/,
+    `混合 ${label} 必须先完成 dispatch，再写成功 usage/cache`
   )
 }
 
