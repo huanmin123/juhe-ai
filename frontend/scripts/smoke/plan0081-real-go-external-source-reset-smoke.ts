@@ -34,6 +34,12 @@ export interface RealGoExternalSourceResetSmokeConfig {
   confirmation: string
 }
 
+export interface RealGoExternalSourceResetConfirmationConfig {
+  baseUrl: string
+  cookie: string
+  timeoutMs?: number
+}
+
 export interface RealGoExternalSourceResetSmokeSummary {
   externalIntegrationSourceResetChecked: true
   confirmationHash: string
@@ -43,10 +49,12 @@ export interface RealGoExternalSourceResetSmokeRuntime {
   fetch?: typeof fetch
 }
 
-interface NormalizedConfig extends RealGoExternalSourceResetSmokeConfig {
+interface NormalizedConfirmationConfig extends RealGoExternalSourceResetConfirmationConfig {
   timeoutMs: number
   fetch: typeof fetch
 }
+
+interface NormalizedConfig extends NormalizedConfirmationConfig, RealGoExternalSourceResetSmokeConfig {}
 
 interface TokenPreview {
   tokenPrefix: string
@@ -78,21 +86,30 @@ class SanitizedHttpStatusError extends Error {
 export function loadRealGoExternalSourceResetSmokeConfig(
   env: ExternalSourceResetSmokeEnvironment = process.env
 ): RealGoExternalSourceResetSmokeConfig {
-  const baseUrl = requiredEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.baseUrl)
-  const cookie = requiredEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.cookie)
+  const readConfig = loadRealGoExternalSourceResetConfirmationConfig(env)
   const enabled = requiredEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.enabled)
   const confirmation = requiredEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.confirmation)
 
-  expect(!/[\r\n]/.test(cookie), `${realGoExternalSourceResetSmokeEnv.cookie} must be a single Cookie header line`)
   expect(enabled === '1', `${realGoExternalSourceResetSmokeEnv.enabled} must equal 1`)
   expect(/^[0-9a-f]{64}$/.test(confirmation), `${realGoExternalSourceResetSmokeEnv.confirmation} must be a lowercase SHA-256 hash`)
 
   return {
-    baseUrl: normalizeManagementApiBaseUrl(baseUrl),
-    cookie,
-    timeoutMs: optionalPositiveIntegerEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.timeoutMs),
+    ...readConfig,
     enabled: true,
     confirmation
+  }
+}
+
+export function loadRealGoExternalSourceResetConfirmationConfig(
+  env: ExternalSourceResetSmokeEnvironment = process.env
+): RealGoExternalSourceResetConfirmationConfig {
+  const baseUrl = requiredEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.baseUrl)
+  const cookie = requiredEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.cookie)
+  expect(!/[\r\n]/.test(cookie), `${realGoExternalSourceResetSmokeEnv.cookie} must be a single Cookie header line`)
+  return {
+    baseUrl: normalizeManagementApiBaseUrl(baseUrl),
+    cookie,
+    timeoutMs: optionalPositiveIntegerEnvironmentValue(env, realGoExternalSourceResetSmokeEnv.timeoutMs)
   }
 }
 
@@ -149,6 +166,19 @@ export async function runRealGoExternalSourceResetSmoke(
   }
 }
 
+export async function readRealGoExternalSourceResetConfirmationHash(
+  config: RealGoExternalSourceResetConfirmationConfig,
+  runtime: RealGoExternalSourceResetSmokeRuntime = {}
+): Promise<string> {
+  const normalized = normalizeConfirmationConfig(config, runtime)
+  const snapshot = await readFixtureSnapshot(normalized, 'old')
+  return externalSourceResetConfirmationHash(
+    normalized.baseUrl,
+    snapshot.tokenPrefix,
+    snapshot.tokenSuffix
+  )
+}
+
 export async function runRealGoExternalSourceResetSmokeFromEnvironment(
   env: ExternalSourceResetSmokeEnvironment = process.env,
   writeSummary: (message: string) => void = console.log
@@ -166,7 +196,7 @@ export function formatRealGoExternalSourceResetSmokeSummary(
   return `externalIntegrationSourceResetChecked=true confirmationHash=${summary.confirmationHash}`
 }
 
-async function readFixtureSnapshot(config: NormalizedConfig, phase: 'old' | 'new'): Promise<FixtureSnapshot> {
+async function readFixtureSnapshot(config: NormalizedConfirmationConfig, phase: 'old' | 'new'): Promise<FixtureSnapshot> {
   const detailResponse = await request(
     config,
     `${collectionPath}/${builtInExternalSourceResetFixture.sourceId}`,
@@ -276,6 +306,17 @@ function normalizeConfig(
 ): NormalizedConfig {
   expect(config.enabled === true, `${realGoExternalSourceResetSmokeEnv.enabled} must equal 1`)
   expect(/^[0-9a-f]{64}$/.test(config.confirmation), 'confirmation must be a lowercase SHA-256 hash')
+  return {
+    ...normalizeConfirmationConfig(config, runtime),
+    enabled: true,
+    confirmation: config.confirmation
+  }
+}
+
+function normalizeConfirmationConfig(
+  config: RealGoExternalSourceResetConfirmationConfig,
+  runtime: RealGoExternalSourceResetSmokeRuntime
+): NormalizedConfirmationConfig {
   expect(!/[\r\n]/.test(config.cookie) && config.cookie.trim().length > 0, 'management cookie is invalid')
   const timeoutMs = config.timeoutMs ?? defaultTimeoutMs
   expect(
@@ -302,7 +343,7 @@ function normalizeManagementApiBaseUrl(rawValue: string): string {
   expect(url.protocol === 'http:' || url.protocol === 'https:', `${realGoExternalSourceResetSmokeEnv.baseUrl} must use HTTP or HTTPS`)
   expect(!url.username && !url.password, `${realGoExternalSourceResetSmokeEnv.baseUrl} must not contain credentials`)
   expect(!url.search && !url.hash, `${realGoExternalSourceResetSmokeEnv.baseUrl} must not contain query or fragment`)
-  expect(url.protocol === 'https:' || isLoopbackHost(url.hostname), `${realGoExternalSourceResetSmokeEnv.baseUrl} must use HTTPS unless the host is loopback`)
+  expect(isLoopbackHost(url.hostname), `${realGoExternalSourceResetSmokeEnv.baseUrl} must target a loopback host`)
   const pathname = url.pathname.replace(/\/+$/, '')
   url.pathname = pathname.endsWith(managementApiPrefix) ? pathname : `${pathname}${managementApiPrefix}`
   return url.toString().replace(/\/$/, '')
@@ -390,7 +431,19 @@ const isDirectExecution = process.argv[1]
 
 if (isDirectExecution) {
   try {
-    await runRealGoExternalSourceResetSmokeFromEnvironment()
+    const args = process.argv.slice(2)
+    expect(
+      args.length === 0 || (args.length === 1 && args[0] === '--print-confirmation'),
+      'Only --print-confirmation is supported'
+    )
+    if (args[0] === '--print-confirmation') {
+      const confirmationHash = await readRealGoExternalSourceResetConfirmationHash(
+        loadRealGoExternalSourceResetConfirmationConfig()
+      )
+      console.log(`confirmationHash=${confirmationHash}`)
+    } else {
+      await runRealGoExternalSourceResetSmokeFromEnvironment()
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.message : 'External source reset smoke failed')
     process.exitCode = 1
