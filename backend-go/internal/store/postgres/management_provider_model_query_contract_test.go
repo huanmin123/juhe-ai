@@ -25,6 +25,14 @@ func TestManagementProviderModelCatalogUsesPostgresBooleanVisibility(t *testing.
 	if integerVisibility.MatchString(sql) {
 		t.Fatal("built-in provider model catalog must not compare PostgreSQL boolean catalog_visible with integer 1")
 	}
+	unionParts := strings.Split(sql, "UNION ALL")
+	if len(unionParts) < 2 {
+		t.Fatal("provider model catalog union is missing")
+	}
+	customSelect := strings.Split(unionParts[1], "FROM juhe_business.custom_provider_models")[0]
+	if strings.Count(customSelect, "catalog_visible") != 1 || !regexp.MustCompile(`(?s)system_account_id,\s+status,\s+mode,`).MatchString(customSelect) {
+		t.Fatal("custom provider model catalog must align catalog_visible with the built-in UNION column order")
+	}
 }
 
 func TestManagementProviderModelQueryLocksFullConfigurationBeforeFullUpdate(t *testing.T) {

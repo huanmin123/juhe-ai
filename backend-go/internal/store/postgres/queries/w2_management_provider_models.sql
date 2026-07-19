@@ -90,7 +90,6 @@ SELECT
   scope,
   system_account_id,
   status,
-  catalog_visible,
   mode,
   NULL::integer AS catalog_order,
   release_date,
