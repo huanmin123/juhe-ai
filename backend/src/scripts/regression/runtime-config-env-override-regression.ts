@@ -271,7 +271,62 @@ assertRegressionFailure(spawnRegression({
   JUHE_AI_REDIS_CACHE_URL: 'redis://:shared-secret@127.0.0.1:6379/0',
   JUHE_AI_REDIS_STATE_URL: 'redis://:shared-secret@127.0.0.1:6379/0',
   JUHE_AI_REDIS_QUEUE_URL: 'redis://:shared-secret@127.0.0.1:6379/0'
-}), /不能与 .* 指向同一个 Redis DB/, '高性能模式默认必须拒绝 cache/state/queue 共享同一个 Redis DB')
+}), /不能与 .* 指向同一个 Redis 进程/, '高性能模式默认必须拒绝 cache/state/queue 共享同一个 Redis 进程')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6380/1'
+}), /不能与 .* 指向同一个 Redis/, '同一 Redis 进程不同 DB 也必须拒绝，不能把 DB 隔离当作物理隔离')
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:state-secret@127.0.0.1:6380/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'rediss://:queue-secret@127.0.0.1:6380/1'
+}), /不能与 .* 指向同一个 Redis/, '同一 host:port 即使协议不同也必须拒绝，不能用 redis/rediss 绕过物理隔离')
+
+for (const alias of ['localhost', '[::1]']) {
+  assertRegressionFailure(spawnRegression({
+    JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+    JUHE_AI_RUNTIME_MODE: 'performance',
+    JUHE_AI_DATABASE_DRIVER: 'postgres',
+    JUHE_AI_CACHE_DRIVER: 'redis',
+    JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+    JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+    JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+    JUHE_AI_REDIS_CACHE_URL: 'redis://:cache-secret@127.0.0.1:6379/0',
+    JUHE_AI_REDIS_STATE_URL: `redis://:state-secret@${alias}:6380/0`,
+    JUHE_AI_REDIS_QUEUE_URL: 'redis://:queue-secret@127.0.0.1:6381/0'
+  }), /不能使用 localhost 或 ::1/, `生产 loopback Redis URL ${alias} 必须拒绝`)
+}
+
+assertRegressionFailure(spawnRegression({
+  JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',
+  JUHE_AI_RUNTIME_MODE: 'performance',
+  JUHE_AI_DATABASE_DRIVER: 'postgres',
+  JUHE_AI_CACHE_DRIVER: 'redis',
+  JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
+  JUHE_AI_QUEUE_DRIVER: 'redis_stream',
+  JUHE_AI_POSTGRES_URL: 'postgres://juhe_ai:secret@127.0.0.1:5432/juhe_ai',
+  JUHE_AI_REDIS_CACHE_URL: 'redis://:shared-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_STATE_URL: 'redis://:shared-secret@127.0.0.1:6379/0',
+  JUHE_AI_REDIS_QUEUE_URL: 'redis://:shared-secret@127.0.0.1:6379/0',
+  JUHE_AI_ALLOW_SHARED_REDIS_URLS: 'true'
+}), /不能与 .* 指向同一个 Redis/, '高性能模式不能通过 JUHE_AI_ALLOW_SHARED_REDIS_URLS 绕过三实例隔离')
 
 assertRegressionFailure(spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD: '1',

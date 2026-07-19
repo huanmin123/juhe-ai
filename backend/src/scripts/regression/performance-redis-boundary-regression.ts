@@ -264,7 +264,7 @@ function assertQueueContracts(): void {
       assert.match(content, /commandsQueueMaxLength: runtimeLogRedisProducerCommandQueueMaxLength/, '运行日志专用 Redis producer 必须限制底层命令队列')
       assert.doesNotMatch(content, /scheduleProcessFatalError/, '派生运行日志索引单次入队失败不得终止业务主进程')
     } else {
-      assert.match(content, /catch\(scheduleProcessFatalError\)/, `${contract.file} 同步入口 Redis Stream 入队失败必须进入受控 fail-fast，不能退化为未处理 Promise`)
+      assert.doesNotMatch(content, /scheduleProcessFatalError/, `${contract.file} Redis Stream 瞬时入队失败不得升级为主进程 fatal`)
     }
     assert.doesNotMatch(content, /AfterRedisStreamFailure/, `${contract.file} Redis Stream 入队失败后不能回退到进程内队列作为事实源`)
     assert.doesNotMatch(content, /shouldEnqueue\w+ToRedisStream[\s\S]*&&\s*!is\w+IngestWorker/, `${contract.file} redis_stream driver 下不能因为当前是 ingest-worker 而绕过 Redis Stream`)
@@ -312,11 +312,8 @@ function assertStrictRedisCacheBoundaries(): void {
     /gateway_cache_invalidation_runtime_state_sync_failed[\s\S]*throw error/,
     'Redis runtime state 失效同步失败必须抛错，不能继续使用本地缓存'
   )
-  assert.match(
-    invalidationSource,
-    /gateway_cache_invalidation_runtime_state_publish_failed[\s\S]*runtimeConfig\.runtimeMode === 'performance'[\s\S]*(throw error|scheduleProcessFatalError\(error\))/,
-    'performance 模式发布 Redis runtime state 失效版本失败必须 fail-fast'
-  )
+  assert.match(invalidationSource, /gateway_cache_invalidation_runtime_state_publish_failed/, 'performance 模式发布 Redis runtime state 失效版本失败必须记录受控错误')
+  assert.doesNotMatch(invalidationSource, /scheduleProcessFatalError/, 'performance 模式发布 Redis runtime state 失效版本失败不得终止主进程')
 
   const gatewayApiKeySource = source('storage/gateway-api-key.repository.ts')
   assert.match(
