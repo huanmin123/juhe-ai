@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
@@ -36,19 +38,28 @@ let publicApiLogRedisConsumerStopping = false
 let publicApiLogRedisConsumerPromise: Promise<void> | undefined
 
 export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
+  const stableInput = ensurePublicApiLogQueueId(input)
   if (shouldEnqueuePublicApiLogToRedisStream()) {
-    void enqueuePublicApiLogToRedisStream(input).catch((error) => {
-      recordPublicApiLogDispatchFailure(error, input)
+    void enqueuePublicApiLogToRedisStream(stableInput).catch((error) => {
+      recordPublicApiLogDispatchFailure(error, stableInput)
     })
     return true
   }
   if (runtimeConfig.processRole === 'server') {
-    return sendPublicApiLogsToWorker([input])
+    return sendPublicApiLogsToWorker([stableInput])
   }
   if (runtimeConfig.processRole === 'db-service') {
-    return sendPublicApiLogToParent(input)
+    return sendPublicApiLogToParent(stableInput)
   }
-  return enqueuePublicApiLogsLocal([input])
+  return enqueuePublicApiLogsLocal([stableInput])
+}
+
+function ensurePublicApiLogQueueId(input: PublicApiLogInput): PublicApiLogInput {
+  if (input.id !== undefined) return input
+  return {
+    ...input,
+    id: `publog_${Date.now()}_${randomUUID()}`
+  }
 }
 
 export function startPublicApiLogRedisStreamConsumer(): void {
@@ -85,7 +96,7 @@ export function enqueuePublicApiLogsLocal(inputs: PublicApiLogInput[]): boolean 
   assertLocalPublicApiLogWriteAllowed('enqueuePublicApiLogsLocal')
   let queued = true
   for (const input of inputs) {
-    queued = enqueuePublicApiLogLocal(input) && queued
+    queued = enqueuePublicApiLogLocal(ensurePublicApiLogQueueId(input)) && queued
   }
   return queued
 }

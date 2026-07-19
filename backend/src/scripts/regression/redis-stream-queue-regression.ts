@@ -92,8 +92,9 @@ assert.match(redisStreamQueueSource, /isRedisNoGroupError/, 'Redis Stream queue 
 assert.match(redisStreamQueueSource, /recreateGroupAfterNoGroup/, 'Redis Stream queue should recreate deleted stream groups')
 assert.match(redisStreamQueueSource, /readNewUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*readNewUnsafe/, 'XREADGROUP should retry once after recreating a missing group')
 assert.match(redisStreamQueueSource, /claimPendingUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*claimPendingUnsafe/, 'XAUTOCLAIM should retry once after recreating a missing group')
-assert.match(redisStreamQueueSource, /parseEntries[\s\S]*try[\s\S]*this\.decode\(payload\)[\s\S]*catch[\s\S]*ackPoisonMessage/, 'Redis Stream parser should skip and ack poison messages instead of throwing forever')
-assert.match(redisStreamQueueSource, /redis_stream_message_decode_failed[\s\S]*redis_stream_poison_message_ack_failed/, 'Redis Stream poison message path should log decode and ack failures')
+assert.match(redisStreamQueueSource, /parseEntries[\s\S]*try[\s\S]*this\.decode\(payload\)[\s\S]*catch[\s\S]*recordPoisonMessage/, 'Redis Stream parser should retain poison messages pending and record decode failures')
+assert.doesNotMatch(redisStreamQueueSource, /ackPoisonMessage|redis_stream_poison_message_ack_failed/, '坏消息不得自动 XACK/XDEL，否则 one-shot 会在未落库时丢失唯一现场')
+assert.match(redisStreamQueueSource, /Redis Stream 消息解码失败，消息保留 pending 并阻断排空/, '坏消息日志必须明确其保留和门禁语义')
 assert.match(redisStreamQueueSource, /this\.streamKey = redisNamespacedKey\(options\.streamKey\)/, 'Redis Stream queue should namespace stream keys')
 assert.match(redisStreamQueueSource, /this\.groupName = redisNamespacedGroup\(options\.groupName\)/, 'Redis Stream queue should namespace consumer groups')
 assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = `[\s\S]*XPENDING[\s\S]*XRANGE/, 'Redis Stream backlog inspection should fetch pending ids and payloads in one Lua call')
@@ -156,6 +157,9 @@ assert.match(operationQueueSource, /readCount: operationLogBatchSize/, 'operatio
 assert.doesNotMatch(operationQueueSource, /AfterRedisStreamFailure/, 'operation log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
 const publicApiQueueSource = readFileSync(new URL('../../modules/public-api-logs/public-api-log-queue.service.ts', import.meta.url), 'utf8')
+assert.match(publicApiQueueSource, /const stableInput = ensurePublicApiLogQueueId\(input\)/, '公开接口日志必须在 Redis/IPС/本地队列分流前生成稳定 ID')
+assert.match(publicApiQueueSource, /enqueuePublicApiLogToRedisStream\(stableInput\)/, 'Redis Stream 重放必须携带首次入队生成的稳定 ID')
+assert.match(publicApiQueueSource, /enqueuePublicApiLogLocal\(ensurePublicApiLogQueueId\(input\)\)/, 'IPC/本地公开接口日志入队也必须在首次排队时固化稳定 ID')
 assert.match(publicApiQueueSource, /shouldEnqueuePublicApiLogToRedisStream/, 'public API log queue should route producers through Redis Stream in redis_stream mode')
 assertProducerPrefersRedisStream(publicApiQueueSource, 'enqueuePublicApiLog', 'shouldEnqueuePublicApiLogToRedisStream()', [
   'sendPublicApiLogsToWorker',

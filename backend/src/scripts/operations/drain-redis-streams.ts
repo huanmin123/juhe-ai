@@ -27,6 +27,7 @@ import { closeRedisClients, getRedisClient } from '../../shared/redis-client.js'
 import { redisQueueFenceKey } from '../../shared/redis-queue-fence.js'
 import {
   inspectRedisStreamDrain,
+  redisStreamDrainContracts,
   RedisStreamDrainStabilityTracker
 } from '../../shared/redis-stream-drain.js'
 
@@ -58,6 +59,9 @@ async function drainRedisStreams(): Promise<void> {
     throw new Error('Redis queue fence token 不匹配，拒绝启动排空消费者')
   }
 
+  const preflightSnapshot = await inspectRedisStreamDrain(client)
+  assertRequiredConsumerGroupsPresent(preflightSnapshot)
+
   const tracker = new RedisStreamDrainStabilityTracker(requiredStableWindows)
   const deadline = Date.now() + timeoutMs
   startConsumers()
@@ -83,6 +87,18 @@ async function drainRedisStreams(): Promise<void> {
   } finally {
     await stopConsumers()
     await closeRedisClients()
+  }
+}
+
+function assertRequiredConsumerGroupsPresent(
+  snapshot: Awaited<ReturnType<typeof inspectRedisStreamDrain>>
+): void {
+  const missing = redisStreamDrainContracts.filter((contract) => {
+    const stream = snapshot.streams.find((candidate) => candidate.streamKey === contract.streamKey)
+    return !stream?.groups.some((group) => group.name === contract.groupName)
+  })
+  if (missing.length > 0) {
+    throw new Error(`Redis Stream 排空缺少既有 consumer group：${missing.map((contract) => `${contract.name}:${contract.groupName}`).join(', ')}`)
   }
 }
 

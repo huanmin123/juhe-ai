@@ -325,7 +325,7 @@ export class RedisStreamQueue<T> {
           payload: this.decode(payload)
         })
       } catch (error) {
-        this.ackPoisonMessage(id, error)
+        this.recordPoisonMessage(id, error)
       }
     }
     return output
@@ -343,21 +343,13 @@ export class RedisStreamQueue<T> {
     return { ids, entries }
   }
 
-  private ackPoisonMessage(id: string, error: unknown): void {
+  private recordPoisonMessage(id: string, error: unknown): void {
     logger.error(errorLogFields(error, {
       event: 'redis_stream_message_decode_failed',
       streamKey: this.streamKey,
       groupName: this.groupName,
       messageId: id
-    }), 'Redis Stream 消息解码失败，已跳过坏消息并尝试 ack')
-    void this.ack([id]).catch((ackError) => {
-      logger.error(errorLogFields(ackError, {
-        event: 'redis_stream_poison_message_ack_failed',
-        streamKey: this.streamKey,
-        groupName: this.groupName,
-        messageId: id
-      }), 'Redis Stream 坏消息 ack 失败，后续消费将再次尝试')
-    })
+    }), 'Redis Stream 消息解码失败，消息保留 pending 并阻断排空')
   }
 }
 

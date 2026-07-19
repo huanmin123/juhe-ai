@@ -597,7 +597,7 @@ function assertCanonicalProductionRedisUrls(values: Array<[string, string | unde
 function redisUrlResourceKey(value: string): string {
   const url = parseRedisUrl(value)
   const port = url.port || '6379'
-  return `${url.protocol}//${url.hostname}:${port}`
+  return `${url.hostname}:${port}`
 }
 
 function parseRedisUrl(value: string): URL {

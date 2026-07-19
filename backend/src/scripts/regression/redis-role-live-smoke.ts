@@ -4,7 +4,6 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { closeRedisClients, createDedicatedRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
 import {
   acquireRedisQueueFence,
-  redisQueueFenceKey,
   releaseRedisQueueFence
 } from '../../shared/redis-queue-fence.js'
 import { redisNamespacedGroup, redisNamespacedKey } from '../../shared/redis-namespace.js'
@@ -56,7 +55,6 @@ try {
   await releaseRedisQueueFence(runtimeConfig.redis.queueUrl, fenceToken).catch(() => false)
   for (const client of clients) {
     await client.del(streamKey).catch(() => 0)
-    await client.del(redisQueueFenceKey()).catch(() => 0)
     await client.quit?.().catch(() => undefined)
   }
   await closeRedisClients()

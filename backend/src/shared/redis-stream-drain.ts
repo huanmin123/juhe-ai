@@ -12,8 +12,8 @@ export interface RedisStreamDrainContract {
 
 export interface RedisStreamDrainGroupSnapshot {
   name: string
-  pending: number
-  lag: number
+  pending: number | null
+  lag: number | null
   lastDeliveredId?: string
   oldestPendingIdleMs?: number
 }
@@ -21,7 +21,7 @@ export interface RedisStreamDrainGroupSnapshot {
 export interface RedisStreamDrainStreamSnapshot {
   name: string
   streamKey: string
-  length: number
+  length: number | null
   groups: RedisStreamDrainGroupSnapshot[]
   drained: boolean
 }
@@ -98,7 +98,7 @@ async function inspectStream(
   client: RedisStreamDrainCommandClient,
   contract: RedisStreamDrainContract
 ): Promise<RedisStreamDrainStreamSnapshot> {
-  const length = nonNegativeInteger(await client.sendCommand(['XLEN', contract.streamKey]))
+  const length = optionalNonNegativeInteger(await client.sendCommand(['XLEN', contract.streamKey])) ?? null
   const rawGroups = await client.sendCommand(['XINFO', 'GROUPS', contract.streamKey]).catch((error) => {
     if (isMissingStreamError(error)) return []
     throw error
@@ -111,7 +111,7 @@ async function inspectStream(
       ? await client.sendCommand(['XPENDING', contract.streamKey, name])
       : undefined
     const pending = pendingCount(pendingSummary, fields.get('pending'))
-    const oldestPending = name && pending > 0
+    const oldestPending = name && pending !== null && pending > 0
       ? await client.sendCommand(['XPENDING', contract.streamKey, name, '-', '+', '1'])
       : undefined
     const lastDeliveredId = optionalString(fields.get('last-delivered-id'))
@@ -119,7 +119,7 @@ async function inspectStream(
     return {
       name,
       pending,
-      lag: nonNegativeInteger(fields.get('lag')),
+      lag: optionalNonNegativeInteger(fields.get('lag')) ?? null,
       ...(lastDeliveredId === undefined ? {} : { lastDeliveredId }),
       ...(oldestPendingIdleMs === undefined ? {} : { oldestPendingIdleMs })
     }
@@ -146,16 +146,16 @@ function redisFieldMap(row: unknown): Map<string, unknown> {
   return fields
 }
 
-function pendingCount(summary: unknown, fallback: unknown): number {
+function pendingCount(summary: unknown, fallback: unknown): number | null {
   if (Array.isArray(summary) && summary.length > 0) {
-    return nonNegativeInteger(summary[0])
+    return optionalNonNegativeInteger(summary[0]) ?? null
   }
-  return nonNegativeInteger(fallback)
+  return optionalNonNegativeInteger(fallback) ?? null
 }
 
 function oldestPendingIdle(summary: unknown): number | undefined {
   if (!Array.isArray(summary) || !Array.isArray(summary[0]) || summary[0].length < 3) return undefined
-  return nonNegativeInteger(summary[0][2])
+  return optionalNonNegativeInteger(summary[0][2])
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -165,12 +165,13 @@ function optionalString(value: unknown): string | undefined {
 function parseXaddCalls(info: unknown): number | undefined {
   if (typeof info !== 'string') return undefined
   const match = /^cmdstat_xadd:calls=(\d+)/m.exec(info)
-  return match?.[1] === undefined ? 0 : nonNegativeInteger(match[1])
+  return match?.[1] === undefined ? 0 : optionalNonNegativeInteger(match[1])
 }
 
-function nonNegativeInteger(value: unknown): number {
+function optionalNonNegativeInteger(value: unknown): number | undefined {
+  if (value === null || value === undefined || value === '') return undefined
   const parsed = typeof value === 'number' ? value : Number(value)
-  return Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined
 }
 
 function isMissingStreamError(error: unknown): boolean {

@@ -223,6 +223,7 @@
 ## 验证记录
 
 - 2026-07-19 已完成三 URL 物理门禁、Docker 角色持久化、原子 queue fence、usage/audit 三次有界入队、六类瞬时错误不触发 process fatal、共享 Stream 契约和独立 one-shot drain CLI 的定向回归与类型检查。
+- 2026-07-19 独立复核加固：物理端点按 canonical host:port 判重，unknown lag/pending fail-closed，one-shot 启动消费者前检查既有 group，坏消息保留 pending，公开接口日志在首次分流前固化幂等 ID；macOS root 服务操作与普通发布阶段分离。
 - macOS 角色安装/只读验证脚本及 temporary 三实例接入已完成静态门禁；真实 macOS LaunchDaemon、生产三 PID、AOF rewrite 与性能指标仍待正式上线阶段验证，不提前声明通过。
 - 现场依据见 `docs/reports/生产管理端卡顿根因与性能优先治理报告-2026-07-16.md`。
 - 实施后把实际命令、A/B 数据、drop 数量和功能冒烟结果回填本节。

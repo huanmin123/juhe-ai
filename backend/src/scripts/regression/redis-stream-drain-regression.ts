@@ -92,6 +92,25 @@ emptyWithoutGroupReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, [])
 const emptyWithoutGroup = await inspectRedisStreamDrain(new FakeRedisClient(emptyWithoutGroupReplies))
 assert.equal(emptyWithoutGroup.drained, false, '空流但目标 consumer group 缺失时也必须阻断完成')
 
+const unknownLagReplies = new Map(drainedReplies)
+unknownLagReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, [[
+  'name', activeContract.groupName,
+  'consumers', 0,
+  'pending', 0,
+  'last-delivered-id', '0-0',
+  'entries-read', null,
+  'lag', null
+]])
+const unknownLag = await inspectRedisStreamDrain(new FakeRedisClient(unknownLagReplies))
+assert.equal(unknownLag.drained, false, 'Redis 返回未知 lag 时必须阻断，不能把 null 当成 0')
+assert.equal(unknownLag.streams[0]?.groups[0]?.lag, null, '未知 lag 必须在快照中显式保留为 null')
+
+const unknownPendingReplies = new Map(drainedReplies)
+unknownPendingReplies.set(`XPENDING ${activeContract.streamKey} ${activeContract.groupName}`, [null, null, null, []])
+const unknownPending = await inspectRedisStreamDrain(new FakeRedisClient(unknownPendingReplies))
+assert.equal(unknownPending.drained, false, 'Redis 返回未知 pending 时必须阻断，不能把 null 当成 0')
+assert.equal(unknownPending.streams[0]?.groups[0]?.pending, null, '未知 pending 必须在快照中显式保留为 null')
+
 const tracker = new RedisStreamDrainStabilityTracker(2)
 assert.equal(tracker.observe({ ...drained, xaddCalls: 42 }), false, '第一个空闲窗口不得立即宣告完成')
 assert.equal(tracker.observe({ ...drained, xaddCalls: 43 }), false, 'XADD 计数增长时必须重新累计稳定窗口')

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   acquireRedisQueueFenceWithClient,
+  releaseRedisQueueFenceIdempotentlyWithClient,
   redisQueueFenceKey,
   releaseRedisQueueFenceWithClient
 } from '../../shared/redis-queue-fence.js'
@@ -33,6 +34,7 @@ const client: RedisCommandClient = {
       return `${nextId}-0`
     }
     if (script.includes("redis.call('GET'")) {
+      if (script.includes('if not current') && fenceToken === null) return 1
       if (fenceToken !== options.arguments[0]) return 0
       fenceToken = null
       return 1
@@ -61,6 +63,10 @@ assert.equal(await queue.enqueue({ id: 'accepted' }), '1-0', '解除 fence 后�
 assert.equal(await acquireRedisQueueFenceWithClient(client, 'release-c'), true)
 assert.equal(await releaseRedisQueueFenceWithClient(client, 'release-a'), false, '旧 owner token 不得释放新 fence')
 assert.equal(await releaseRedisQueueFenceWithClient(client, 'release-c'), true)
+assert.equal(await releaseRedisQueueFenceIdempotentlyWithClient(client, 'release-c'), true, '同一 owner 在 fence 已不存在时重复恢复释放应成功')
+assert.equal(await acquireRedisQueueFenceWithClient(client, 'release-d'), true)
+assert.equal(await releaseRedisQueueFenceIdempotentlyWithClient(client, 'release-c'), false, '幂等恢复释放仍不得删除其他 owner fence')
+assert.equal(await releaseRedisQueueFenceIdempotentlyWithClient(client, 'release-d'), true)
 
 assert.match(redisQueueFenceKey(), /^juhe-ai:[^:]+:queue:fence$/, 'fence key 必须使用部署 namespace')
 assert.ok(evalCalls.some((call) => call.script.includes("redis.call('XADD'") && call.keys.length === 2), 'XADD 必须与 fence 检查处于同一 Lua')

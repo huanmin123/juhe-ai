@@ -89,7 +89,7 @@ redis-state  127.0.0.1:6380/0  -> 并发、限流、锁、探针、路由运行�
 redis-queue  127.0.0.1:6381/0  -> usage/audit/operation/public/runtime/maintenance Streams
 ```
 
-- 高性能模式不再接受 `JUHE_AI_ALLOW_SHARED_REDIS_URLS=true` 绕过；`assertDistinctRedisUrls` 按 `protocol + host + port + db` 判断，任意两个资源相同即启动失败。
+- 高性能模式不再接受 `JUHE_AI_ALLOW_SHARED_REDIS_URLS=true` 绕过；`assertDistinctRedisUrls` 按 canonical `host + port` 判断，协议、凭据和 DB 编号都不能把同一 Redis 进程伪装成不同物理资源。
 - queue Redis 关闭与 cache/state 的共享客户端；每个进程内的 producer、blocking consumer、ACK/inspect 管理命令分别使用独立连接。
 - queue Redis 的大 key、慢命令或 consumer 阻塞只影响记录副作用，不得拖慢 state Redis 的限流、并发与锁。
 
