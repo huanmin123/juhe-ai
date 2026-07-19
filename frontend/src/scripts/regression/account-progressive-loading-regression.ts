@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import { computed, createApp } from 'vue'
 import { routeLocationKey } from 'vue-router'
 
-import { api } from '../../api/client.js'
+import { api, pageDataApi } from '../../api/client.js'
+import type { PageDataConfirmRequest, PageDataConfirmResult } from '../../api/domains/pageData.js'
+import { authState } from '../../composables/useAuth.js'
 import { message } from '../../lib/antd.js'
 import type { AccountSummary, ProviderDefinition } from '../../types/domain/index.js'
 import { useAccountListData } from '../../views/accounts/useAccountListData.js'
@@ -28,6 +30,7 @@ interface AccountListPage {
 const originalProviderOptions = mutableApi.providers.options
 const originalProxyOptions = mutableApi.proxies.options
 const originalAccountList = mutableApi.myAccounts.list
+const originalConfirm = pageDataApi.confirm
 const originalMessageError = message.error
 const originalConsoleError = console.error
 const originalConsoleWarn = console.warn
@@ -41,6 +44,18 @@ console.error = () => undefined
 console.warn = () => undefined
 
 try {
+  authState.currentUser.value = {
+    id: 'account-refresh-admin',
+    username: 'account-refresh-admin',
+    displayName: '账户刷新管理员',
+    role: 'admin',
+    mustChangePassword: false
+  }
+  const confirmDomains: string[][] = []
+  pageDataApi.confirm = async (request: PageDataConfirmRequest): Promise<PageDataConfirmResult> => {
+    confirmDomains.push(Object.keys(request.domains).sort())
+    return confirmResult(request)
+  }
   let resolveProviderOptions: ((value: ProviderDefinition[]) => void) | undefined
   let listStarted = false
   mutableApi.providers.options = () => new Promise((resolve) => {
@@ -54,7 +69,8 @@ try {
 
   const listData = await createListData()
   const firstLoad = listData.loadData()
-  await flushPromises()
+  await waitFor(() => listStarted, '账户列表未在 options 完成前发起')
+  await waitFor(() => listData.accounts.value[0]?.name === '并行账户', 'options 未完成时账户列表结果未及时可见')
 
   assert.equal(listStarted, true, '账户列表必须在 provider / proxy options 完成前发起')
   assert.equal(listData.accounts.value[0]?.name, '并行账户', 'options 尚未完成时列表结果必须已经可见')
@@ -68,7 +84,7 @@ try {
   }
   mutableApi.myAccounts.list = async () => accountPage(accountFixture('account_options_failed', '选项失败后账户'))
 
-  const loadedAfterOptionsFailure = await listData.loadData({ forceOptions: true })
+  const loadedAfterOptionsFailure = await listData.loadData({ forceOptions: true, forceData: true })
   await flushPromises()
 
   assert.equal(loadedAfterOptionsFailure, true, 'options 失败不能让账户列表加载失败')
@@ -80,10 +96,32 @@ try {
   assert(current)
   assert.equal(listData.updateLoadedAccount({ ...current, name: '账户仍可操作' }), true)
   assert.equal(listData.accounts.value[0]?.name, '账户仍可操作', 'options 失败后行级操作仍应可用')
+
+  let refreshAccountCalls = 0
+  let refreshProviderCalls = 0
+  mutableApi.myAccounts.list = async () => {
+    refreshAccountCalls += 1
+    return accountPage(accountFixture('account_refresh', '手动刷新账户'))
+  }
+  mutableApi.providers.options = async () => {
+    refreshProviderCalls += 1
+    return []
+  }
+  await listData.loadAccountOptions(undefined, true)
+  const confirmCountBeforeRefresh = confirmDomains.length
+  const providerCallsBeforeRefresh = refreshProviderCalls
+  const accountCallsBeforeRefresh = refreshAccountCalls
+  listData.refreshData()
+  await waitFor(() => refreshAccountCalls > accountCallsBeforeRefresh, '手动刷新未发起账户列表请求')
+  await flushPromises()
+  assert.equal(refreshProviderCalls, providerCallsBeforeRefresh, '手动刷新列表不应失效并重查供应商筛选项')
+  assert.deepEqual(confirmDomains.slice(confirmCountBeforeRefresh), [['accounts.static']], '手动刷新只应为账户列表执行一次轻量确认')
 } finally {
   mutableApi.providers.options = originalProviderOptions
   mutableApi.proxies.options = originalProxyOptions
   mutableApi.myAccounts.list = originalAccountList
+  pageDataApi.confirm = originalConfirm
+  authState.currentUser.value = undefined
   message.error = originalMessageError
   console.error = originalConsoleError
   console.warn = originalConsoleWarn
@@ -166,4 +204,29 @@ function emptyUsage() {
 async function flushPromises(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
+}
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  for (let index = 0; index < 50; index += 1) {
+    if (predicate()) return
+    await flushPromises()
+  }
+  throw new Error(message)
+}
+
+function confirmResult(request: PageDataConfirmRequest): PageDataConfirmResult {
+  return {
+    serverTime: '2026-07-19T12:00:00.000Z',
+    domains: Object.fromEntries(Object.entries(request.domains).map(([domain, known]) => [domain, {
+      action: known ? 'unchanged' : 'reload',
+      token: known ?? {
+        protocolVersion: 2,
+        epoch: 'account-refresh-epoch',
+        scope: `scope:${request.viewScope}:${request.targetSystemAccountId ?? 'self'}`,
+        domain,
+        sequence: 1,
+        resetSequence: 0
+      }
+    }])) as PageDataConfirmResult['domains']
+  }
 }
