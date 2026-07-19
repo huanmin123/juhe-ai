@@ -72,19 +72,48 @@ func TestW5ManagementSystemSettingsPostgresRedisAsynqSmoke(t *testing.T) {
 	defer closeSQLDB(t, db)
 	runGooseMigrations(t, db)
 
-	redisContainer, err := tcredis.Run(ctx, redisImage)
+	redisQueueContainer, err := tcredis.Run(ctx, redisImage)
 	if err != nil {
-		t.Fatalf("start redis container: %v", err)
+		t.Fatalf("start queue redis container: %v", err)
 	}
-	defer terminateContainer(t, ctx, redisContainer)
+	defer terminateContainer(t, ctx, redisQueueContainer)
 
-	redisURL, err := redisContainer.ConnectionString(ctx)
+	redisStateContainer, err := tcredis.Run(ctx, redisImage)
 	if err != nil {
-		t.Fatalf("redis connection string: %v", err)
+		t.Fatalf("start state redis container: %v", err)
 	}
-	redisQueueURL := w3RedisURLWithDB(t, redisURL, 0)
-	redisStateURL := w3RedisURLWithDB(t, redisURL, 1)
-	redisCacheURL := w3RedisURLWithDB(t, redisURL, 2)
+	defer terminateContainer(t, ctx, redisStateContainer)
+
+	redisCacheContainer, err := tcredis.Run(ctx, redisImage)
+	if err != nil {
+		t.Fatalf("start cache redis container: %v", err)
+	}
+	defer terminateContainer(t, ctx, redisCacheContainer)
+
+	redisQueueURL, err := redisQueueContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("queue redis connection string: %v", err)
+	}
+	redisStateURL, err := redisStateContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("state redis connection string: %v", err)
+	}
+	redisCacheURL, err := redisCacheContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("cache redis connection string: %v", err)
+	}
+	if err := (config.Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             w5SystemSettingsNamespace,
+		RedisCacheURL:              redisCacheURL,
+		RedisStateURL:              redisStateURL,
+		RedisQueueURL:              redisQueueURL,
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+	}).Validate(); err != nil {
+		t.Fatalf("validate isolated redis roles: %v", err)
+	}
 	redisOpts, err := queue.ParseRedisURL(redisQueueURL)
 	if err != nil {
 		t.Fatalf("parse redis queue url: %v", err)
