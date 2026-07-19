@@ -45,6 +45,7 @@ assert.match(balanceRoutesSource, /post\('\/balance\/test-draft'/, '新增和编
 assert.match(balanceRoutesSource, /prepareAccountDraftTestSnapshotAsync/, '草稿余额测试必须使用当前表单账户快照')
 assert.match(balanceRoutesSource, /testAccountBalanceCandidate/, '草稿余额测试必须调用无持久化查询入口')
 assert.match(balanceRoutesSource, /refreshAccountBalanceCandidate\(candidate, \{ mode: 'manual' \}\)/, '列表人工刷新必须使用独立 manual 模式')
+assert.match(balanceRoutesSource, /findAccountBalanceManualRefreshCandidateAsync/, '列表人工刷新必须使用不受账户运行状态限制的候选入口')
 assert.ok(!balanceRoutesSource.includes('saveAccountBalanceConfigurationAsync'), '余额路由不能在查询时保存账户配置')
 assert.ok(!balanceRoutesSource.includes('delete_account_balance_snapshot'), '余额测试不能删除或替换已保存快照')
 assert.match(balanceRepositorySource, /balance_query_config_json::jsonb = \?::jsonb/, 'PostgreSQL 偏好条件更新必须按 JSON 语义比较配置')
@@ -104,6 +105,7 @@ try {
     groupId: group.id, balanceQueryEnabled: true,
     balanceQueryConfig: { adapter: 'builtin', intervalMinutes: 5 }
   }, access)
+  const database = databaseModule.getBusinessDatabase()
   databaseModule.getBusinessDatabase().prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(persistenceFailure.id)
   const persistenceFailureCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(persistenceFailure.id)
   assert.ok(persistenceFailureCandidate)
@@ -154,6 +156,55 @@ try {
   assert.equal(partialRefresh.candidateFailureCount, 1)
   assert.equal(partialRefresh.processedCount, 0)
 
+  const callableDueAt = new Date().toISOString()
+  const runtimeCandidate = {
+    id: dueA.id,
+    systemAccountId: 'sys_admin',
+    configRevision: dueA.configRevision ?? 1,
+    credentials: { api_key: 'sk-due-a' },
+    config: { adapter: 'builtin', intervalMinutes: 5 } as const,
+    nextRefreshAt: callableDueAt,
+    stateUpdatedAt: callableDueAt
+  }
+  const executableRuntimeCases = [
+    { name: 'runtime absent', available: true, values: {} },
+    { name: 'normal', available: true, values: { [dueA.id]: { status: 'normal' as const } } },
+    { name: 'degraded', available: true, values: { [dueA.id]: { status: 'degraded' as const } } },
+    { name: 'runtime unavailable fail-open', available: false, values: {} }
+  ]
+  for (const runtimeCase of executableRuntimeCases) {
+    const refreshedIds: string[] = []
+    const summary = await balanceRefreshJob.runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [runtimeCandidate],
+      loadRuntimeAvailability: async (runtimeKeys) => {
+        assert.deepEqual(runtimeKeys, [dueA.id], `${runtimeCase.name} 必须按候选账户 ID 加载运行态`)
+        return { available: runtimeCase.available, values: runtimeCase.values }
+      },
+      refreshCandidate: async (candidate) => { refreshedIds.push(candidate.id) }
+    })
+    assert.deepEqual(refreshedIds, [dueA.id], `${runtimeCase.name} 账户必须执行自动余额查询`)
+    assert.equal(summary.selectedCount, 1)
+    assert.equal(summary.processedCount, 1)
+    assert.equal(summary.deferredCount, 0)
+  }
+  for (const status of ['local_suppressed', 'precheck_pending', 'half_open', 'precheck_failed'] as const) {
+    const refreshedIds: string[] = []
+    const nextRefreshBefore = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(dueA.id)?.balance_query_next_refresh_at
+    const summary = await balanceRefreshJob.runAccountBalanceRefresh({
+      listRecoveryCandidates: async () => [],
+      listDueCandidates: async () => [runtimeCandidate],
+      loadRuntimeAvailability: async () => ({ available: true, values: { [dueA.id]: { status } } }),
+      refreshCandidate: async (candidate) => { refreshedIds.push(candidate.id) }
+    })
+    const nextRefreshAfter = database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(dueA.id)?.balance_query_next_refresh_at
+    assert.deepEqual(refreshedIds, [], `${status} 账户必须延后且不得调用余额刷新`)
+    assert.equal(summary.selectedCount, 1)
+    assert.equal(summary.processedCount, 0)
+    assert.equal(summary.deferredCount, 1)
+    assert.equal(nextRefreshAfter, nextRefreshBefore, `${status} 账户延后时不得推进余额刷新周期`)
+  }
+
   await assert.rejects(
     balanceRefreshJob.runAccountBalanceRefresh({
       listRecoveryCandidates: async () => [],
@@ -182,7 +233,6 @@ try {
   )
   assert.equal(configured.balanceQueryEnabled, true)
   assert.deepEqual(configured.balanceQueryConfig, { adapter: 'builtin', intervalMinutes: 10, preferredBuiltinAdapter: 'sub2api' })
-  const database = databaseModule.getBusinessDatabase()
   const recoveryConfig = JSON.stringify({ adapter: 'builtin', intervalMinutes: 5 })
   database.prepare(`
     UPDATE accounts
@@ -209,13 +259,13 @@ try {
   })
   assert.deepEqual(
     (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id),
-    [recoverMissing.id],
-    '自愈只应领取活动且缺少当前快照的账户，unsupported 暂停和非活动账户不得反复查询'
+    [recoverMissing.id, recoverPaused.id].sort(),
+    '历史 unsupported 停止计划必须进入自愈，余额失败不能永久移出调度'
   )
   database.prepare(`UPDATE accounts SET status = 'active', schedulable = 1 WHERE id = ?`).run(recoverInactive.id)
   assert.deepEqual(
     new Set((await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 100 })).map((item: { id: string }) => item.id)),
-    new Set([recoverMissing.id, recoverInactive.id]),
+    new Set([recoverMissing.id, recoverPaused.id, recoverInactive.id]),
     '非活动缺快照账户恢复活动后应进入自愈候选'
   )
   const nullGenerationCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(recoverMissing.id)
@@ -252,11 +302,38 @@ try {
     })
   }
   configureRecovery.run(recoveryConfig, recoverAfterPausedPrefix.id)
+  const firstPausedRecoveryPage = await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 10 })
   assert.ok(
-    (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 10 }))
-      .some((item: { id: string }) => item.id === recoverAfterPausedPrefix.id),
-    'SQLite 自愈游标必须越过前缀暂停账户，不能固定扫描最前一页'
+    firstPausedRecoveryPage.some((item: { id: string }) => pausedPrefix.some((account) => account.id === item.id)),
+    '历史 unsupported 暂停账户必须进入恢复调度'
   )
+  let reachedRecoveryAfterPausedPrefix = firstPausedRecoveryPage.some((item: { id: string }) => item.id === recoverAfterPausedPrefix.id)
+  for (let round = 1; round < 5 && !reachedRecoveryAfterPausedPrefix; round += 1) {
+    reachedRecoveryAfterPausedPrefix = (await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 10 }))
+      .some((item: { id: string }) => item.id === recoverAfterPausedPrefix.id)
+  }
+  assert.ok(reachedRecoveryAfterPausedPrefix, 'SQLite 自愈游标必须按实际消费位置分轮越过前缀，不能固定扫描最前一页')
+  database.prepare(`
+    UPDATE accounts
+    SET balance_query_enabled = 0
+    WHERE balance_query_enabled = 1 AND balance_query_next_refresh_at IS NULL
+  `).run()
+  const recoveryCursorCandidates = Array.from({ length: 6 }, (_, index) => create(`recovery-cursor-${index}`))
+  for (const account of recoveryCursorCandidates) configureRecovery.run(recoveryConfig, account.id)
+  const recoveredAcrossSmallPages = new Set<string>()
+  for (let round = 0; round < 3; round += 1) {
+    for (const candidate of await balanceRepository.listAccountsNeedingBalanceRefreshRecoveryAsync({ limit: 2 })) {
+      recoveredAcrossSmallPages.add(candidate.id)
+    }
+  }
+  assert.deepEqual(
+    recoveredAcrossSmallPages,
+    new Set(recoveryCursorCandidates.map((account) => account.id)),
+    'recovery 游标必须停在实际消费位置，连续小批领取不得饿死同一扫描页后续候选'
+  )
+  for (const account of recoveryCursorCandidates) {
+    database.prepare(`UPDATE accounts SET balance_query_enabled = 0 WHERE id = ?`).run(account.id)
+  }
   const unconfiguredMultiRow = database.prepare(`SELECT balance_query_enabled, balance_query_config_json FROM accounts WHERE id = ?`).get(multi.id) as Record<string, unknown>
   assert.equal(unconfiguredMultiRow.balance_query_enabled, 0)
   assert.deepEqual(JSON.parse(String(unconfiguredMultiRow.balance_query_config_json)), { adapter: 'builtin', intervalMinutes: 5 }, '多 Key 新建即使未提交余额配置，也必须写入已配置关闭标记')
@@ -451,6 +528,36 @@ try {
     database.prepare(`UPDATE accounts SET balance_query_enabled = 0, balance_query_next_refresh_at = NULL WHERE id = ?`).run(account.id)
   }
 
+  const dueCursorCandidates = Array.from({ length: 6 }, (_, index) => create(`due-cursor-${index}`))
+  const cursorStarvationDueAt = '2026-07-09T00:00:00.000Z'
+  for (const account of dueCursorCandidates) configure.run('active', builtinConfig, cursorStarvationDueAt, account.id)
+  const dueAcrossSmallPages = new Set<string>()
+  for (let round = 0; round < 4; round += 1) {
+    for (const candidate of balanceRepository.listAccountsDueForBalanceRefresh({ now: '2026-07-11T12:00:00.000Z', limit: 2 })) {
+      dueAcrossSmallPages.add(candidate.id)
+    }
+  }
+  assert.ok(
+    dueCursorCandidates.every((account) => dueAcrossSmallPages.has(account.id)),
+    'due 游标必须停在实际消费位置，连续小批领取不得饿死同一扫描页后续候选'
+  )
+  for (const account of dueCursorCandidates) {
+    database.prepare(`UPDATE accounts SET balance_query_enabled = 0, balance_query_next_refresh_at = NULL WHERE id = ?`).run(account.id)
+  }
+
+  assert.equal(
+    [...balanceRepositorySource.matchAll(/appendUniqueBalanceCandidates\(/g)].length,
+    5,
+    'SQLite/PostgreSQL 的 due/recovery 四条路径必须统一复用逐行消费 helper'
+  )
+  assert.match(balanceRepositorySource, /lastExamined/, '候选追加 helper 必须返回最后实际检查行')
+  assert.match(balanceRepositorySource, /consumedAll/, '候选追加 helper 必须说明扫描页是否全部消费')
+  assert.doesNotMatch(
+    balanceRepositorySource,
+    /(?:sqlite|postgres)Balance(?:DueCursor|RecoveryAfterId)\s*=\s*(?:balanceDueCursorFromRow\()?rows\.at\(-1\)/,
+    'SQLite/PostgreSQL 游标不得直接推进到扫描页末'
+  )
+
   assert.equal(await balanceRepository.commitAccountBalanceRefreshAsync({
     accountId: dueA.id,
     expectedConfigRevision: dueA.configRevision ?? 1,
@@ -568,11 +675,13 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 30))
     return { status: 'fresh', remainingUsd: '9.990000', rawRemaining: '9.99', rawUnit: 'usd', basis: 'wallet' } as const
   }
+  assertAccountDispatchState(database, candidate.id, 'active', 1, '成功刷新前')
   await Promise.all([
     balanceQueryService.refreshAccountBalanceCandidate(candidate, { query }),
     balanceQueryService.refreshAccountBalanceCandidate(candidate, { query })
   ])
   assert.equal(queryCount, 1, '同一账户并发刷新必须通过租约只查询一次上游')
+  assertAccountDispatchState(database, candidate.id, 'active', 1, '成功刷新后')
 
   balanceRepository.replaceAccountBalanceSnapshot({
     accountId: transientFailure.id,
@@ -585,7 +694,9 @@ try {
   const timeoutQuery = async () => {
     throw new UpstreamRequestTimeoutError('上游余额查询超时')
   }
+  assertAccountDispatchState(database, transientFailure.id, 'active', 1, 'transient 失败前')
   await balanceQueryService.refreshAccountBalanceCandidate(transientCandidate, { query: timeoutQuery })
+  assertAccountDispatchState(database, transientFailure.id, 'active', 1, 'transient 失败后')
   let transientSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([transientFailure.id]).get(transientFailure.id)
   assert.ok(transientSnapshot)
   assert.equal(transientSnapshot.status, 'fresh', '第一次临时失败必须保留上次成功状态')
@@ -634,17 +745,19 @@ try {
   })
   const deterministicCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(deterministicFailure.id)
   assert.ok(deterministicCandidate)
+  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, 'deterministic 失败前')
   await balanceQueryService.refreshAccountBalanceCandidate(deterministicCandidate, {
     query: async () => { throw new Error('上游鉴权失败（HTTP 401）') }
   })
+  assertAccountDispatchState(database, deterministicFailure.id, 'active', 1, 'deterministic 失败后')
   const deterministicSnapshot = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([deterministicFailure.id]).get(deterministicFailure.id)
   assert.ok(deterministicSnapshot)
-  assert.equal(deterministicSnapshot.status, 'unsupported', '确定性鉴权错误必须暂停余额能力而不是反复轮询')
+  assert.equal(deterministicSnapshot.status, 'unsupported', '确定性鉴权错误必须保留诊断状态')
   assert.equal(deterministicSnapshot.remainingUsd, undefined)
   assert.equal(deterministicSnapshot.consecutiveTransientFailures, undefined)
   const deterministicRow = database.prepare(`SELECT balance_query_enabled, balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(deterministicFailure.id) as Record<string, unknown>
   assert.equal(deterministicRow.balance_query_enabled, 1, '能力暂停不能替用户关闭余额开关')
-  assert.equal(deterministicRow.balance_query_next_refresh_at, null, '确定性不支持必须停止后台余额调度')
+  assertBalanceRetryDelay(database, deterministicFailure.id, deterministicSnapshot.lastAttemptAt, 5)
   const invalidBaseUrlResult = await balanceQueryService.refreshAccountBalanceCandidate({
     ...deterministicCandidate,
     credentials: { api_key: 'sk-invalid-base-url', base_url: 'not-a-valid-url' }
@@ -673,10 +786,12 @@ try {
   })
   const manualCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(manualRefresh.id)
   assert.ok(manualCandidate)
+  assertAccountDispatchState(database, manualRefresh.id, 'active', 1, 'manual 失败前')
   const manualResult = await balanceQueryService.refreshAccountBalanceCandidate(manualCandidate, {
     mode: 'manual',
     query: timeoutQuery
   })
+  assertAccountDispatchState(database, manualRefresh.id, 'active', 1, 'manual 失败后')
   assert.equal(manualResult.status, 'failed', '人工刷新失败必须立即返回本次错误')
   const storedAfterManualFailure = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([manualRefresh.id]).get(manualRefresh.id)
   assert.ok(storedAfterManualFailure)
@@ -690,11 +805,16 @@ try {
   const storedAfterManualUnsupported = balanceRepository.loadAccountBalanceSnapshotsByAccountIds([manualRefresh.id]).get(manualRefresh.id)
   assert.equal(storedAfterManualUnsupported?.status, 'unsupported', '人工能力探测失败必须保存失败语义')
   assert.equal(storedAfterManualUnsupported?.remainingUsd, undefined, '人工能力探测失败不能继续展示旧金额')
-  assert.equal(
-    database.prepare(`SELECT balance_query_next_refresh_at FROM accounts WHERE id = ?`).get(manualRefresh.id)?.balance_query_next_refresh_at,
-    null,
-    '人工能力不支持必须暂停自动刷新，避免后台重复查询'
-  )
+  assertBalanceRetryDelay(database, manualRefresh.id, storedAfterManualUnsupported?.lastAttemptAt, 5)
+
+  database.prepare(`
+    UPDATE accounts
+    SET status = 'disabled', schedulable = 0, balance_query_enabled = 1,
+        balance_query_config_json = ?, balance_query_next_refresh_at = NULL
+    WHERE id = ?
+  `).run(recoveryConfig, disabled.id)
+  assert.equal(await balanceRepository.findAccountBalanceRefreshCandidateAsync(disabled.id), undefined, '停用账户不得进入自动余额查询')
+  assert.ok(await balanceRepository.findAccountBalanceManualRefreshCandidateAsync(disabled.id), '停用的自有账户仍必须允许人工余额查询')
   const manualSuccessCandidate = await balanceRepository.findAccountBalanceRefreshCandidateAsync(manualRefresh.id)
   assert.ok(manualSuccessCandidate)
   await balanceQueryService.refreshAccountBalanceCandidate(manualSuccessCandidate, {
@@ -752,4 +872,19 @@ function assertBalanceRetryDelay(
     Math.abs(delayMs - expectedMinutes * 60_000) < 1_500,
     `余额临时失败应在约 ${expectedMinutes} 分钟后重试，实际 ${delayMs}ms`
   )
+}
+
+function assertAccountDispatchState(
+  database: ReturnType<typeof databaseModule.getBusinessDatabase>,
+  accountId: string,
+  expectedStatus: string,
+  expectedSchedulable: number,
+  phase: string
+): void {
+  const row = database.prepare(`SELECT status, schedulable FROM accounts WHERE id = ?`).get(accountId) as {
+    status?: string
+    schedulable?: number
+  } | undefined
+  assert.equal(row?.status, expectedStatus, `${phase}不得改变账户 status`)
+  assert.equal(row?.schedulable, expectedSchedulable, `${phase}不得改变账户 schedulable`)
 }

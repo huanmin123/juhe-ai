@@ -22,6 +22,12 @@ app.use((req, _res, next) => {
   }, next)
 })
 app.use('/data-changes', createPageDataChangesRouter({ store }))
+app.use('/failing-data-changes', createPageDataChangesRouter({
+  store: {
+    confirm: async () => { throw new Error('redis unavailable') },
+    publish: async () => undefined
+  }
+}))
 
 const server = http.createServer(app)
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -58,6 +64,13 @@ try {
   })
   assert.equal(tooMany.status, 400)
   assert.match(String(tooMany.body.message), /最多确认 32 个数据域/)
+
+  const unavailable = await postJson(baseUrl, {}, {
+    viewScope: 'self',
+    domains: { 'accounts.runtime': null }
+  }, '/failing-data-changes/confirm')
+  assert.equal(unavailable.status, 503)
+  assert.equal(unavailable.headers.get('retry-after'), '5', 'Redis confirm 异常必须保留 Retry-After: 5')
 } finally {
   await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
 }
@@ -67,12 +80,13 @@ console.log('页面数据变更确认 HTTP 回归通过')
 async function postJson(
   baseUrl: string,
   headers: Record<string, string>,
-  body: object
-): Promise<{ status: number; body: any }> {
-  const response = await fetch(`${baseUrl}/data-changes/confirm`, {
+  body: object,
+  path = '/data-changes/confirm'
+): Promise<{ status: number; body: any; headers: Headers }> {
+  const response = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
     body: JSON.stringify(body)
   })
-  return { status: response.status, body: await response.json() }
+  return { status: response.status, body: await response.json(), headers: response.headers }
 }

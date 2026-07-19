@@ -41,6 +41,11 @@ function assertAccessModeMetadata(): void {
     'POST /accounts/import/preview 是导入预览，必须允许显式标记为 read'
   )
   assert.equal(
+    resolveSystemApiDbAccessMode(requestFor('POST', '/__aisys__/api/data-changes/confirm'), '/__aisys__/api'),
+    'read',
+    'POST /data-changes/confirm 只读取页面变更流，必须精确标记为 read'
+  )
+  assert.equal(
     resolveSystemApiDbAccessMode(requestFor('POST', '/__aisys__/api/my-accounts/import/preview'), '/__aisys__/api'),
     'read',
     'POST /my-accounts/import/preview 是用户作用域导入预览，也必须允许显式标记为 read'
@@ -120,6 +125,13 @@ function assertAccessModeMetadata(): void {
   setSystemApiDbAccessMode(readResponse as unknown as Response, 'read')
   assert.equal(shouldTouchSessionForSystemApiRequest(readResponse as unknown as Response), false, '显式 read 请求不能被 requireAuth 重新 touch 成写请求')
 
+  const pageDataConfirmResponse = new FakeResponse()
+  setSystemApiDbAccessMode(pageDataConfirmResponse as unknown as Response, resolveSystemApiDbAccessMode(
+    requestFor('POST', '/__aisys__/api/data-changes/confirm'),
+    '/__aisys__/api'
+  ))
+  assert.equal(shouldTouchSessionForSystemApiRequest(pageDataConfirmResponse as unknown as Response), false, '页面变更确认不能 touch session')
+
   const authMeResponse = new FakeResponse()
   setSystemApiDbAccessMode(authMeResponse as unknown as Response, 'read')
   assert.equal(shouldTouchSessionForSystemApiRequest(authMeResponse as unknown as Response), false, 'auth/me 当前用户资料读取不能 touch session')
@@ -141,6 +153,12 @@ function assertSqliteAdmissionByAccessMode(): void {
   const readResult = runAdmission('POST', '/__aisys__/api/accounts/import/preview')
   assert.equal(readResult.nextCalled, true, '显式 read 路由不应被 SQLite 写 admission 拦截')
   assert.equal(readResult.response.statusCode, undefined, '显式 read 路由不应返回 busy 响应')
+
+  clearSystemApiDbAccessAdmissionStateForTest()
+  setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
+  const pageDataConfirmResult = runAdmission('POST', '/__aisys__/api/data-changes/confirm')
+  assert.equal(pageDataConfirmResult.nextCalled, true, '页面变更确认不应被 SQLite 写 admission 拦截')
+  assert.equal(pageDataConfirmResult.response.statusCode, undefined, '页面变更确认不应返回 busy 响应')
 
   clearSystemApiDbAccessAdmissionStateForTest()
   setSystemApiDbAccessAdmissionStateForTest({ writeInFlight: systemApiDbServiceMaxInFlight })
