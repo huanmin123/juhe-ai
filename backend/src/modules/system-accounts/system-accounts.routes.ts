@@ -8,9 +8,16 @@ import { hashPasswordAsync } from '../../storage/crypto.js'
 import { createSystemAccountWithPasswordHashAsync, findSystemAccountByIdAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, revokeAllSessionsForAccountAsync, updateSystemAccountWithPasswordHashAsync } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
+import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
 
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
+
+const systemAccountOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listSystemAccountOptionsAsync>>>('systemAccounts.options', {
+  max: 256,
+  ttlMs: 6 * 60 * 60 * 1000
+})
 
 const createSchema = z.object({
   username: z.string().min(2),
@@ -43,7 +50,13 @@ systemAccountsRouter.get('/', requireAdmin, async (req, res, next) => {
 
 systemAccountsRouter.get('/options', requireAdmin, async (req, res, next) => {
   try {
-    res.json(ok(await listSystemAccountOptionsAsync(parseSystemAccountOptionListOptions(req.query))))
+    const query = parseSystemAccountOptionListOptions(req.query)
+    const options = await systemAccountOptionsReadCache.load(pageDataReadCacheKey({
+      scope: { role: 'admin' },
+      route: '/system-accounts/options',
+      query
+    }), () => listSystemAccountOptionsAsync(query))
+    res.json(ok(options))
   } catch (error) {
     next(error)
   }
@@ -114,6 +127,10 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
         }
       }
     }, req)
+    await Promise.all([
+      publishPageDataDomainGlobalReset('systemAccounts.options'),
+      publishPageDataDomainGlobalReset('accounts.options')
+    ])
     res.status(201).json(ok(account))
   } catch (error) {
     res.status(409).json({ message: error instanceof Error ? error.message : '创建系统账户失败' })
@@ -173,6 +190,10 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
         }
       }
     }, req)
+    await Promise.all([
+      publishPageDataDomainGlobalReset('systemAccounts.options'),
+      publishPageDataDomainGlobalReset('accounts.options')
+    ])
     res.json(ok(account))
   } catch (error) {
     if (error instanceof Error && error.message === '系统账户不存在') {

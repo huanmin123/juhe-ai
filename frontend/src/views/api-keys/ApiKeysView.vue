@@ -150,6 +150,7 @@ import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -158,7 +159,6 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatNumber } from '@/shared/formatters'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { routeStrategySelectionFromOption } from '@/shared/routeStrategyLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { defaultApiKeysPageState, type ApiKeyRouteStrategyFilterSelection, type ApiKeysPageState } from './apiKeyPageState'
@@ -195,7 +195,6 @@ const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)
-const routeStrategyOptionsCache = createShortLivedQueryCache<RouteStrategyOptionSummary[]>({ ttlMs: 10_000 })
 let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let routeStrategyOptionsKeyword = ''
 let routeStrategyOptionsRequestToken = 0
@@ -348,32 +347,22 @@ async function loadRouteStrategyOptions(keyword = routeStrategyOptionsKeyword, f
     return routeStrategyOptionsLoadingPromise
   }
   const requestToken = ++routeStrategyOptionsRequestToken
-  if (!force) {
-    const cachedOptions = routeStrategyOptionsCache.get(requestKey)
-    if (cachedOptions) {
-      routeStrategyOptionsLoadingKey = undefined
-      routeStrategyOptionsLoadingPromise = undefined
-      routeStrategyOptionsRaw.value = cachedOptions
-      routeStrategyOptionsLoading.value = false
-      return
-    }
-  }
   routeStrategyOptionsLoading.value = true
   routeStrategyOptionsLoadingKey = requestKey
   routeStrategyOptionsLoadingPromise = (async () => {
     try {
-      const nextOptions = await routeStrategiesApi.options({
+      await loadRouteStrategyOptionsResource({
+        api: routeStrategiesApi,
+        apply: (nextOptions) => {
+          routeStrategyOptionsRaw.value = nextOptions
+          if (force) routeStrategyFilterSelection.value = selectedRouteStrategySelection(routeStrategyFilterSelection.value?.id)
+        },
+        force,
+        isCurrent: () => requestToken === routeStrategyOptionsRequestToken,
+        isManagementView: isManagementView.value,
         keyword: requestKeyword,
-        limit: 50,
-        activeOnly: false,
         systemAccountId
       })
-      routeStrategyOptionsCache.set(requestKey, nextOptions)
-      if (requestToken !== routeStrategyOptionsRequestToken) return
-      routeStrategyOptionsRaw.value = nextOptions
-      if (force) {
-        routeStrategyFilterSelection.value = selectedRouteStrategySelection(routeStrategyFilterSelection.value?.id)
-      }
     } catch (error) {
       if (requestToken !== routeStrategyOptionsRequestToken) return
       message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))

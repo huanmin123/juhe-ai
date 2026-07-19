@@ -40,12 +40,15 @@ export interface ChatMessage {
 }
 
 export type ChatMessageContentBlock =
-  | { type: 'reasoning'; text: string }
-  | { type: 'tool_call'; id: string; toolType: string; status: ChatToolStatus; item?: Record<string, unknown> }
   | { type: 'input_text'; text: string; order: number }
   | { type: 'input_image'; assetId: string; order: number }
+  | { type: 'output_text'; blockId: string; order: number; text: string }
+  | { type: 'reasoning'; text: string; blockId?: string; order?: number; status?: ChatContentBlockStatus }
+  | { type: 'tool_call'; id: string; toolType: string; status: ChatToolStatus; blockId?: string; order?: number; callId?: string; item?: Record<string, unknown> }
+  | { type: 'output_image'; blockId: string; order: number; assetId: string; status: ChatContentBlockStatus; mimeType?: string; width?: number; height?: number; revisedPrompt?: string }
 
-export type ChatToolStatus = 'started' | 'updated' | 'completed' | 'failed'
+export type ChatContentBlockStatus = 'started' | 'updated' | 'completed' | 'failed' | 'canceled'
+export type ChatToolStatus = ChatContentBlockStatus
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }
 
 export interface ChatApiKeyOption { id: string; name: string; status: string }
@@ -123,6 +126,10 @@ export type ChatStreamEvent =
   | { type: 'message.delta'; data: { messageId: string; delta: string; eventVersion: number } }
   | { type: 'reasoning.delta'; data: { messageId: string; delta: string; eventVersion: number } }
   | { type: 'tool.started' | 'tool.updated' | 'tool.completed'; data: { messageId: string; item: Record<string, unknown>; eventVersion: number } }
+  | { type: 'content_block.started'; data: { messageId: string; block: ChatMessageContentBlock; eventVersion: number } }
+  | { type: 'content_block.delta'; data: { messageId: string; blockId: string; delta: string; eventVersion: number } }
+  | { type: 'content_block.updated'; data: { messageId: string; blockId: string; patch: Record<string, unknown>; eventVersion: number } }
+  | { type: 'content_block.completed'; data: { messageId: string; block: ChatMessageContentBlock; eventVersion: number } }
   | { type: 'message.completed'; data: { messageId: string; finishReason?: string; traceId?: string; eventVersion: number } }
   | { type: 'message.failed'; data: { messageId: string; code: string; message: string; eventVersion: number } }
   | { type: 'message.canceled'; data: { messageId: string; traceId?: string; eventVersion: number } }

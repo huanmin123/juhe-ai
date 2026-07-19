@@ -37,9 +37,27 @@ assert.ok(toolSnapshot, '真实 snapshot 必须接受 toolEvents.type 与 conten
 applyChatStreamEvent(messages, toolSnapshot)
 assert.equal(messages[0].toolEvents?.[0]?.type, 'web_search_call')
 
-applyChatStreamEvent(messages, { type: 'message.canceled', data: { messageId: 'msg_2', eventVersion: 6 } })
+const imageStarted = parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"output_image","blockId":"block_image","order":1,"assetId":"asset_1","status":"started","mimeType":"image/png","width":320,"height":200},"eventVersion":6}')
+assert.ok(imageStarted, 'output_image content block started 必须接受资产元数据')
+applyChatStreamEvent(messages, imageStarted)
+assert.deepEqual(messages[0].contentBlocks?.find((block) => block.type === 'output_image'), {
+  type: 'output_image', blockId: 'block_image', order: 1, assetId: 'asset_1', status: 'started', mimeType: 'image/png', width: 320, height: 200
+})
+assert.equal(parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"output_image","blockId":"block_bad","order":2,"assetId":"asset_2","status":"started","data":"data:image/png;base64,AAAA"},"eventVersion":7}'), undefined, '图片事件不得携带 Base64 或 data 字段')
+const imageDelta = parseChatSseBlock('event: content_block.updated\ndata: {"messageId":"msg_2","blockId":"block_image","patch":{"status":"completed","revisedPrompt":"a safe prompt"},"eventVersion":7}')
+assert.ok(imageDelta, 'content block updated 必须接受局部状态补丁')
+applyChatStreamEvent(messages, imageDelta)
+assert.equal((messages[0].contentBlocks?.find((block) => block.type === 'output_image') as { status?: string })?.status, 'completed')
+applyChatStreamEvent(messages, { ...imageDelta, data: { ...imageDelta.data, eventVersion: 6 } })
+assert.equal((messages[0].contentBlocks?.find((block) => block.type === 'output_image') as { revisedPrompt?: string })?.revisedPrompt, 'a safe prompt', '低版本 content block 事件不得回退投影')
+const authoritativeBlocks = parseChatSseBlock('event: message.snapshot\ndata: {"turnId":"turn_1","assistant":{"id":"msg_2","status":"streaming","contentText":"权威快照","reasoningText":"","toolEvents":[],"contentBlocks":[{"type":"output_text","blockId":"text_1","order":0,"text":"最终正文"}]},"eventVersion":8}')
+assert.ok(authoritativeBlocks)
+applyChatStreamEvent(messages, authoritativeBlocks)
+assert.deepEqual(messages[0].contentBlocks, [{ type: 'output_text', blockId: 'text_1', order: 0, text: '最终正文' }], 'snapshot 必须覆盖 content block partial')
+
+applyChatStreamEvent(messages, { type: 'message.canceled', data: { messageId: 'msg_2', eventVersion: 9 } })
 assert.equal(messages[0].status, 'canceled')
-applyChatStreamEvent(messages, { type: 'message.completed', data: { messageId: 'msg_2', finishReason: 'stop', eventVersion: 7 } })
+applyChatStreamEvent(messages, { type: 'message.completed', data: { messageId: 'msg_2', finishReason: 'stop', eventVersion: 10 } })
 assert.equal(messages[0].status, 'completed')
 assert.equal(messages[0].finishReason, 'stop')
 

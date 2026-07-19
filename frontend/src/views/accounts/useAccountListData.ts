@@ -5,6 +5,7 @@ import { api, pageDataApi, type AccountListParams, type AccountListSortParam } f
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { usePageDataRequestCache } from '@/composables/usePageDataRequestCache'
+import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -330,7 +331,14 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
       const [providerList, proxyList] = await Promise.all([
-        api.providers.options(systemAccountId ? { systemAccountId } : undefined),
+        loadProviderOptionsResource({
+          apply: (nextProviders) => {
+            if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+          },
+          force,
+          isManagementView: options.isManagementView.value,
+          systemAccountId
+        }),
         api.proxies.options({ limit: 50 })
       ])
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {

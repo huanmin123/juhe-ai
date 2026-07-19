@@ -220,7 +220,7 @@ function resolveGroupStatus(statuses: ChatToolStatus[]): ChatToolStatus {
 
 function mergeLifecycleStatus(previous: ChatToolStatus | undefined, current: ChatToolStatus): ChatToolStatus {
   if (!previous) return current
-  const priority: Record<ChatToolStatus, number> = { started: 0, updated: 1, completed: 2, failed: 3 }
+  const priority: Record<ChatToolStatus, number> = { started: 0, updated: 1, completed: 2, failed: 3, canceled: 4 }
   return priority[current] > priority[previous] ? current : previous
 }
 

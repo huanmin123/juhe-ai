@@ -71,6 +71,57 @@ func TestNewAccountStaticResetEventsUsesProvidedTime(t *testing.T) {
 	}
 }
 
+func TestPageDataChangePublisherBuildsNodeCompatibleAccountStaticUpsertEvent(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+
+	event, err := publisher.NewAccountStaticUpsertEvent(AccountStaticUpsertInput{
+		AccountID:             "account-1",
+		OwnerSystemAccountIDs: []string{" owner-b ", "owner-a", "owner-a", ""},
+		FieldMask:             []string{"tags"},
+		FilterChanged:         true,
+		PageChanged:           true,
+	})
+	if err != nil {
+		t.Fatalf("NewAccountStaticUpsertEvent() error = %v", err)
+	}
+	if got, want := event, (PageDataChangeEvent{
+		EventID:               "event-1",
+		Domain:                pageDataAccountsStaticDomain,
+		EntityID:              "account-1",
+		Operation:             pageDataUpsertOperation,
+		FieldMask:             []string{"tags"},
+		OwnerSystemAccountIDs: []string{"owner-a", "owner-b"},
+		FilterChanged:         true,
+		PageChanged:           true,
+		OccurredAt:            "2026-07-18T01:02:03.456Z",
+	}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("event = %#v, want %#v", got, want)
+	}
+}
+
+func TestPageDataChangePublisherRejectsInvalidAccountStaticUpsertInput(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	tooManyOwners := make([]string, pageDataMaxEventOwners+1)
+	for index := range tooManyOwners {
+		tooManyOwners[index] = fmt.Sprintf("owner-%03d", index)
+	}
+	tooManyFields := make([]string, pageDataMaxFieldMask+1)
+	for index := range tooManyFields {
+		tooManyFields[index] = fmt.Sprintf("field-%02d", index)
+	}
+
+	for _, input := range []AccountStaticUpsertInput{
+		{AccountID: " ", FieldMask: []string{"tags"}},
+		{AccountID: "account-1", FieldMask: []string{""}},
+		{AccountID: "account-1", FieldMask: tooManyFields},
+		{AccountID: "account-1", FieldMask: []string{"tags"}, OwnerSystemAccountIDs: tooManyOwners},
+	} {
+		if _, err := publisher.NewAccountStaticUpsertEvent(input); err == nil {
+			t.Fatalf("NewAccountStaticUpsertEvent(%#v) error = nil", input)
+		}
+	}
+}
+
 func TestPageDataChangePublisherPublishesExactKeysJSONAndFanout(t *testing.T) {
 	publisher, capture := testPageDataChangePublisher()
 	var calls []pageDataPublishCall

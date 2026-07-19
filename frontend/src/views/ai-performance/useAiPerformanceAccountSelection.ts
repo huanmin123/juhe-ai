@@ -1,6 +1,7 @@
 import { computed, ref, watch, type Ref } from 'vue'
 
-import { api } from '@/api/client'
+import { api, pageDataApi } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import {
@@ -11,7 +12,7 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
 import { chartColors, orderedAiPerformanceSeries } from './aiPerformanceChartOptions'
 
@@ -27,6 +28,8 @@ interface UseAiPerformanceAccountSelectionOptions {
   selectedSystemAccountId: () => string | undefined
 }
 
+const aiPerformanceAccountOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
+
 export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccountSelectionOptions) {
   const addedAccountIds = ref<string[]>([])
   const addedAccountSelections = ref<AccountSelection[]>([])
@@ -36,10 +39,8 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
   const accountSearchKeyword = ref('')
   let accountSearchTimer: ReturnType<typeof window.setTimeout> | undefined
   let accountSearchSeq = 0
-  let loadedAccountOptionsKey: string | undefined
   let loadingAccountOptionsKey: string | undefined
   let loadingAccountOptionsPromise: Promise<void> | undefined
-  const accountOptionsCache = createShortLivedQueryCache<AiPerformanceAccountOption[]>({ ttlMs: 10_000 })
 
   const responseAccounts = computed(() => options.overview.value?.accounts ?? [])
   const responseAccountById = computed(() => new Map(responseAccounts.value.map((account) => [account.id, account])))
@@ -139,21 +140,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
       return loadingAccountOptionsPromise
     }
     const requestSeq = ++accountSearchSeq
-    if (loadedAccountOptionsKey === request.key) {
-      loadingAccountOptionsKey = undefined
-      loadingAccountOptionsPromise = undefined
-      accountsLoading.value = false
-      return
-    }
-    const cachedAccounts = accountOptionsCache.get(request.key)
-    if (cachedAccounts) {
-      accounts.value = cachedAccounts
-      loadedAccountOptionsKey = request.key
-      loadingAccountOptionsKey = undefined
-      loadingAccountOptionsPromise = undefined
-      accountsLoading.value = false
-      return
-    }
     accountsLoading.value = true
     loadingAccountOptionsKey = request.key
     const loadingPromise = (async () => {
@@ -164,13 +150,25 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
           accountIds: request.accountIds,
           limit: 50
         }
-        const nextAccounts = options.isManagementView.value
-          ? await api.stats.aiPerformanceAccounts(accountParams)
-          : await api.myStats.aiPerformanceAccounts(accountParams)
-        accountOptionsCache.set(request.key, nextAccounts)
-        if (requestSeq !== accountSearchSeq) return
-        accounts.value = nextAccounts
-        loadedAccountOptionsKey = request.key
+        const route = options.isManagementView.value ? '/stats/ai-performance/accounts' : '/my-stats/ai-performance/accounts'
+        const result = await aiPerformanceAccountOptionsResourceCache.load<AiPerformanceAccountOption[]>({
+          cacheKey: {
+            scope: accountOptionsScope(options.isManagementView.value, request.systemAccountId),
+            route,
+            query: accountParams,
+            version: 1
+          },
+          domain: 'accounts.options',
+          viewScope: options.isManagementView.value ? 'admin' : 'self',
+          ...(options.isManagementView.value && request.systemAccountId ? { targetSystemAccountId: request.systemAccountId } : {}),
+          loadNetwork: () => options.isManagementView.value
+            ? api.stats.aiPerformanceAccounts(accountParams)
+            : api.myStats.aiPerformanceAccounts(accountParams)
+        })
+        applyAccountOptions(result.data, requestSeq)
+        void result.confirmation?.then((outcome) => {
+          if (outcome.data) applyAccountOptions(outcome.data, requestSeq)
+        })
       } catch (error) {
         console.error(error)
         message.error(extractApiErrorMessage(error, 'AI 账户列表加载失败'))
@@ -186,6 +184,11 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     })()
     loadingAccountOptionsPromise = loadingPromise
     return loadingPromise
+  }
+
+  function applyAccountOptions(nextAccounts: AiPerformanceAccountOption[], requestSeq: number): void {
+    if (requestSeq !== accountSearchSeq) return
+    accounts.value = nextAccounts
   }
 
   function handleAddedAccountsChange(value: string[], previousValue: string[]) {
@@ -384,4 +387,14 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     visibleHourlySeries,
     visibleOverview
   }
+}
+
+function accountOptionsScope(isManagementView: boolean, systemAccountId?: string): string {
+  const viewer = authState.currentUser.value
+  return [
+    isManagementView ? 'admin' : 'self',
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    systemAccountId ?? (isManagementView ? 'all' : 'self')
+  ].join(':')
 }

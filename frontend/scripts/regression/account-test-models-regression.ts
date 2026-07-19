@@ -83,8 +83,9 @@ assertNotIncludes(accountApiSource, 'default-test-model', '账户 API 不应保�
 assertIncludes(accountTestModelsSource, 'loadAccountTestOptionsCached({', '保存账户测试应通过短时缓存加载 test-options')
 assertIncludes(accountTestOptionsCacheSource, 'api.accounts.testOptions(', '管理端测试模型应来自账户 test-options')
 assertIncludes(accountTestOptionsCacheSource, 'api.myAccounts.testOptions(input.account.id)', '个人端测试模型应来自个人账户 test-options')
-assertIncludes(accountTestOptionsCacheSource, 'maxEntries: 100', '账户测试选项缓存容量应限制为 100')
-assertIncludes(accountTestOptionsCacheSource, 'ttlMs: 5 * 60_000', '账户测试选项缓存 TTL 应为 5 分钟')
+assertIncludes(accountTestOptionsCacheSource, 'getDefaultPageDataResourceCache', '账户测试选项必须复用统一 IndexedDB resource cache')
+assertIncludes(accountTestOptionsCacheSource, "domain: 'accounts.options'", '账户测试选项必须绑定 accounts.options revision')
+assertNotIncludes(accountTestOptionsCacheSource, 'createShortLivedRequestCache', '账户测试选项不得继续维护独立 5 分钟内存缓存')
 assertIncludes(accountTestOptionsCacheSource, 'authState.currentUser.value?.id', '账户测试选项缓存应按当前登录用户隔离')
 assertIncludes(accountTestOptionsCacheSource, 'Number.isInteger(configRevision)', '缺少有效配置版本时不应缓存账户测试选项')
 assertIncludes(accountTestOptionsCacheSource, 'cacheGeneration', '缓存失效后旧请求不得回填当前代次')
@@ -126,6 +127,15 @@ assertNotIncludes(accountTestModalSource, 'options.loadData', '人工测试成�
 assertNotIncludes(accountTestModalSource, 'openBatchTestModal', '测试 composable 不应保留批量测试入口')
 assertNotIncludes(accountTestModalSource, 'runBatchAccountTest', '测试 composable 不应保留批量执行编排')
 assertNotIncludes(accountTestModalSource, 'batchTestItems', '测试 composable 不应保留批量结果状态')
+assertNotIncludes(accountTestModalSource, 'message.error(accountTestErrorMessage(account, result))', '人工测试失败结果已经进入终端，不应重复弹出全局错误 toast')
+assertNotIncludes(accountTestModalSource, 'message.error(`${account.name}: 测试失败`)', '人工测试异常已经转换为终端结果，不应重复弹出全局错误 toast')
+assertNotIncludes(accountTestModalSource, 'message.error(`${account.name}: 测试选项加载失败，请重试`)', '测试选项加载失败也应进入弹窗终端，不应弹出全局错误 toast')
+assertNotIncludes(accountTestModalSource, "message.warning('测试进度恢复中断，后台任务仍会继续执行')", '测试恢复异常也应进入弹窗终端，不应弹出全局 warning toast')
+assert.equal(
+  accountTestModalSource.match(/failedAccountTestResult\(\{/g)?.length,
+  3,
+  '运行异常、测试选项加载异常和恢复异常都必须转换为终端 AccountTestResult'
+)
 
 assertIncludes(detachCurrentTestViewSource, 'persistAccountTestRunSession(run, true)', '关闭视图前应保留当前账户单任务快照')
 assertIncludes(detachCurrentTestViewSource, 'run.controller.abort()', '关闭视图应只终止当前前端轮询绑定')

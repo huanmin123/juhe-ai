@@ -9,51 +9,52 @@ import (
 )
 
 type JuheBusinessAccount struct {
-	ID                                        string
-	SystemAccountID                           string
-	ProviderCode                              string
-	ProviderProtocolProfileID                 string
-	ProtocolCode                              string
-	ProtocolVersion                           string
-	Name                                      string
-	Type                                      string
-	Status                                    string
-	CredentialsEncrypted                      string
-	CredentialFingerprint                     pgtype.Text
-	CredentialMask                            string
-	ConcurrencyLimit                          int32
-	Priority                                  int32
-	SuperPriorityEnabled                      bool
-	FallbackEnabled                           bool
-	ClientCompatibility                       string
-	Schedulable                               bool
-	AvailabilityScheduleJson                  pgtype.Text
-	AvailabilityScheduleNextCheckAt           pgtype.Timestamptz
-	Notes                                     pgtype.Text
-	AccountExpiresAt                          pgtype.Timestamptz
-	LastUsedAt                                pgtype.Timestamptz
-	CooldownUntil                             pgtype.Timestamptz
-	LastErrorCode                             pgtype.Text
-	LastErrorMessage                          pgtype.Text
-	HealthCheckModel                          string
-	HealthCheckEndpointMode                   string
-	DeletedAt                                 pgtype.Timestamptz
-	DeletedBy                                 pgtype.Text
-	CreatedAt                                 pgtype.Timestamptz
-	UpdatedAt                                 pgtype.Timestamptz
-	AuthorizationInstanceSourceAccountID      pgtype.Text
-	AuthorizationInstanceAuthorizationID      pgtype.Text
-	AuthorizationInstanceOwnerSystemAccountID pgtype.Text
-	ProxyProfileID                            pgtype.Text
-	NextHealthCheckAt                         pgtype.Timestamptz
-	HealthCheckFailureCount                   int32
-	LastHealthCheckStatusCode                 pgtype.Int4
-	LastHealthCheckErrorCode                  pgtype.Text
-	LastHealthCheckErrorMessage               pgtype.Text
-	ConfigRevision                            int32
-	HealthCheckFailureStartedAt               pgtype.Timestamptz
-	LastErrorTraceID                          pgtype.Text
-	LastHealthCheckTraceID                    pgtype.Text
+	ID                                         string
+	SystemAccountID                            string
+	ProviderCode                               string
+	ProviderProtocolProfileID                  string
+	ProtocolCode                               string
+	ProtocolVersion                            string
+	Name                                       string
+	Type                                       string
+	Status                                     string
+	CredentialsEncrypted                       string
+	CredentialFingerprint                      pgtype.Text
+	CredentialMask                             string
+	ConcurrencyLimit                           int32
+	Priority                                   int32
+	SuperPriorityEnabled                       bool
+	FallbackEnabled                            bool
+	ClientCompatibility                        string
+	Schedulable                                bool
+	AvailabilityScheduleJson                   pgtype.Text
+	AvailabilityScheduleNextCheckAt            pgtype.Timestamptz
+	Notes                                      pgtype.Text
+	AccountExpiresAt                           pgtype.Timestamptz
+	LastUsedAt                                 pgtype.Timestamptz
+	CooldownUntil                              pgtype.Timestamptz
+	LastErrorCode                              pgtype.Text
+	LastErrorMessage                           pgtype.Text
+	HealthCheckModel                           string
+	HealthCheckEndpointMode                    string
+	DeletedAt                                  pgtype.Timestamptz
+	DeletedBy                                  pgtype.Text
+	CreatedAt                                  pgtype.Timestamptz
+	UpdatedAt                                  pgtype.Timestamptz
+	AuthorizationInstanceSourceAccountID       pgtype.Text
+	AuthorizationInstanceAuthorizationID       pgtype.Text
+	AuthorizationInstanceOwnerSystemAccountID  pgtype.Text
+	ProxyProfileID                             pgtype.Text
+	NextHealthCheckAt                          pgtype.Timestamptz
+	HealthCheckFailureCount                    int32
+	LastHealthCheckStatusCode                  pgtype.Int4
+	LastHealthCheckErrorCode                   pgtype.Text
+	LastHealthCheckErrorMessage                pgtype.Text
+	ConfigRevision                             int32
+	HealthCheckFailureStartedAt                pgtype.Timestamptz
+	LastErrorTraceID                           pgtype.Text
+	LastHealthCheckTraceID                     pgtype.Text
+	TemporaryUnavailableContinuousProbeEnabled int32
 }
 
 type JuheBusinessAccountModelMapping struct {
@@ -241,6 +242,13 @@ type JuheBusinessGroupAuthorizationSetting struct {
 	SchedulingPolicyJson pgtype.Text
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
+}
+
+type JuheBusinessPageDataDirtyDomain struct {
+	Domain     string
+	Generation int64
+	IsDirty    bool
+	UpdatedAt  pgtype.Timestamptz
 }
 
 type JuheBusinessProtocol struct {

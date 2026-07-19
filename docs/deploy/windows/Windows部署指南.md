@@ -8,7 +8,7 @@
 | 长期运行 | NSSM / 任务计划程序 | 本文第 4 节 |
 | Docker 部署 | Docker Desktop + Compose | [Docker 部署指南](../Docker部署指南.md) |
 | 公网 HTTPS | 宿主机 Caddy | [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) |
-| 自动恢复 | Windows Service + 内部 supervisor | [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) |
+| 常驻恢复 | Windows Service / NSSM；外部探针默认只告警 | 本文第 7 节 |
 | 上游代理 | sing-box + 后台代理绑定 | [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md) |
 
 ## 2. 部署前检查
@@ -156,19 +156,11 @@ JUHE_AI_COOKIE_SECURE=true
 JUHE_AI_TRUST_PROXY=true
 ```
 
-## 7. 自动恢复
+## 7. 状态检测和恢复
 
-用 NSSM / Windows Service 守护主服务进程退出；DB service 和 worker 由内部 supervisor 独立恢复。外部 PowerShell HTTP watchdog 已退役，本机和公网 health 只用于观察、告警和发布门禁。
+默认由 NSSM / Windows Service 守护主服务；外部 health 探针只告警，不自动执行 `Restart-Service` 或 `nssm restart`，避免与发布和受控重启冲突。公网域名失败但本机 health 正常时先查 Caddy、DNS、证书和防火墙，不重启应用。
 
-重启目标：
-
-```powershell
-Restart-Service JuheAI
-# 或
-nssm restart JuheAI
-```
-
-完整防抖和限频见 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
+确有无人值守自动恢复需求时，再按 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) 单独评审防抖、限频和发布互斥。
 
 ## 8. 上游网络代理
 

@@ -406,9 +406,17 @@ async function publishExpiredAccountAuthorizationPageData(
         for (const member of members) ownerSystemAccountIds.add(member.system_account_id)
       }
     }
-    if (ownerSystemAccountIds.size === 0) return
-    const { publishAccountStaticReset } = await import('../modules/page-data/page-data-change.publisher.js')
-    await publishAccountStaticReset([...ownerSystemAccountIds])
+    const groupAuthorizationExpired = grants.some((grant) => grant.resource_type === 'group')
+    const {
+      publishAccountStaticReset,
+      publishPageDataDomainGlobalReset,
+      publishStatsPageDataGlobalReset
+    } = await import('../modules/page-data/page-data-change.publisher.js')
+    await Promise.all([
+      ...(ownerSystemAccountIds.size > 0 ? [publishAccountStaticReset([...ownerSystemAccountIds])] : []),
+      ...(groupAuthorizationExpired ? [publishPageDataDomainGlobalReset('groups.static')] : []),
+      ...(ownerSystemAccountIds.size > 0 || groupAuthorizationExpired ? [publishStatsPageDataGlobalReset()] : [])
+    ])
   } catch (error) {
     const { reportPageDataPublishFailure } = await import('../modules/page-data/page-data-change.publisher.js')
     reportPageDataPublishFailure(error, { domain: 'accounts.static', operation: 'authorization_expired' })
