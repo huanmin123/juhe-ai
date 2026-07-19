@@ -527,11 +527,12 @@ const gptCapabilities = computed(() => accountGptRequestOverrideCapabilities({
   providerCode: homogeneousAccount.value?.providerCode,
   accountType: homogeneousAccount.value?.type ?? 'api_key',
   modelOptions: modelOptions.value,
-  supportedModels: effectiveBatchModels.value
+  supportedModels: effectiveBatchModels.value,
+  supportedEndpointModes: effectiveBatchEndpointModes.value
 }))
 const requestOverridesSupported = computed(() => Boolean(
   homogeneousAccount.value
-  && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode)
+  && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode, effectiveBatchEndpointModes.value)
 ))
 const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(gptCapabilities.value))
 const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(gptCapabilities.value))

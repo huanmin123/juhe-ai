@@ -12,6 +12,7 @@ import {
 import type { DispatchAccountSecret } from '../../storage/openai-account-selector.types.js'
 import { anthropicProviderDriver } from '../../modules/providers/drivers/anthropic/driver.js'
 import { geminiProviderDriver } from '../../modules/providers/drivers/gemini/driver.js'
+import { assertAccountGptRequestOverridesSupportedByCatalog } from '../../modules/accounts/account-gpt-request-overrides.validation.js'
 
 assert(GEMINI_NATIVE_V1BETA_PROFILE_SEED.accountTypes.includes('google_oauth'))
 assert.deepEqual(
@@ -54,6 +55,21 @@ assert.equal(googleOAuth.client_secret, 'google-client-secret')
 assert.equal(googleOAuth.quota_project_id, 'quota-project')
 assert.equal(googleOAuth.service_tier_override, 'priority')
 assert.equal(googleOAuth.reasoning_effort_override, 'high')
+assert.throws(
+  () => assertAccountGptRequestOverridesSupportedByCatalog({
+    providerCode: 'gemini',
+    accountType: 'google_oauth',
+    overrides: { serviceTier: 'priority', reasoningEffort: 'high' },
+    supportedEndpointModes: ['interactions_json', 'interactions_sse'],
+    supportedModels: ['gemini-3.5-flash'],
+    catalog: [{
+      providerCode: 'gemini', model: 'gemini-3.5-flash', status: 'active', scope: 'built_in',
+      supportedServiceTiers: ['priority'], supportedReasoningEfforts: ['high']
+    } as never]
+  }),
+  /Interactions-only Gemini 账户不能配置 GenerateContent 请求覆盖/,
+  'Interactions-only Gemini 账户必须拒绝永远不会生效的请求覆盖'
+)
 assert.deepEqual(googleOAuth.supported_endpoint_modes, ['generate_content_json', 'generate_content_sse', 'count_tokens', 'interactions_json', 'interactions_sse'])
 assert.equal(requiredAccountCredentialSource('google_oauth', googleOAuth), 'google-refresh')
 

@@ -61,6 +61,11 @@ assert.equal(isAccountRequestOverrideProviderSupported('gpt'), true, 'GPT 账户
 assert.equal(isAccountRequestOverrideProviderSupported('openai'), true, 'OpenAI-compatible 账户必须显示请求覆盖配置区')
 assert.equal(isAccountRequestOverrideProviderSupported('anthropic'), true, 'Anthropic 账户必须显示请求覆盖配置区')
 assert.equal(isAccountRequestOverrideProviderSupported('gemini'), true, 'Gemini 账户必须显示已实现的思考级别覆盖配置区')
+assert.equal(
+  isAccountRequestOverrideProviderSupported('gemini', ['interactions_json', 'interactions_sse']),
+  false,
+  'Interactions-only Gemini 账户不得显示 GenerateContent 请求覆盖配置区'
+)
 assert.equal(isAccountRequestOverrideProviderSupported('deepseek'), false, '没有账户覆盖 wire 映射的供应商不能显示无效配置区')
 
 const modelOptions: AccountModelSelectOption[] = [
@@ -124,6 +129,15 @@ const geminiCapabilities = accountGptRequestOverrideCapabilities({
 })
 assert.deepEqual(geminiCapabilities.serviceTiers, ['priority'], 'Gemini 服务等级控件必须读取官方 service_tier 能力')
 assert.deepEqual(geminiCapabilities.reasoningEfforts, ['low', 'high'], 'Gemini thinking level 有明确映射时应显示思考级别控件')
+assert.deepEqual(accountGptRequestOverrideCapabilities({
+  providerCode: 'gemini',
+  accountType: 'google_oauth',
+  modelOptions: geminiCapabilities ? [{
+    label: 'gemini-test', value: 'gemini-test', supportedServiceTiers: ['priority'], supportedReasoningEfforts: ['low', 'high']
+  }] : [],
+  supportedModels: ['gemini-test'],
+  supportedEndpointModes: ['interactions_json', 'interactions_sse']
+}), { serviceTiers: [], reasoningEfforts: [] }, 'Interactions-only Gemini 账户不能暴露不会生效的 GenerateContent 覆盖能力')
 
 const deepSeekCapabilities = accountGptRequestOverrideCapabilities({
   providerCode: 'deepseek',

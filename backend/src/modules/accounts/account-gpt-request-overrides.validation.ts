@@ -28,7 +28,8 @@ export function assertAccountGptRequestOverridesSupported(input: {
     accountType: input.accountType,
     overrides,
     supportedModels: input.supportedModels,
-    catalog
+    catalog,
+    supportedEndpointModes: endpointModesFromCredentials(input.credentials)
   })
 }
 
@@ -51,7 +52,8 @@ export async function assertAccountGptRequestOverridesSupportedAsync(input: {
     accountType: input.accountType,
     overrides,
     supportedModels: input.supportedModels,
-    catalog
+    catalog,
+    supportedEndpointModes: endpointModesFromCredentials(input.credentials)
   })
 }
 
@@ -61,8 +63,13 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
   overrides: GptAccountRequestOverrides
   supportedModels: readonly string[]
   catalog: readonly ProviderModelCatalogItem[]
+  supportedEndpointModes?: readonly string[]
 }): void {
   assertProviderSupportsAccountRequestOverrides(input.providerCode ?? 'gpt', input.overrides)
+  if (input.providerCode === 'gemini' && input.supportedEndpointModes
+    && !input.supportedEndpointModes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
+    throw new Error('Interactions-only Gemini 账户不能配置 GenerateContent 请求覆盖')
+  }
   const supportedModels = uniqueTextList(input.supportedModels)
   if (!supportedModels.length) {
     throw new Error('请求覆盖要求账户至少配置一个支持模型')
@@ -91,6 +98,11 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
       throw new Error(`所选支持模型中没有模型支持思考级别 ${input.overrides.reasoningEffort}`)
     }
   }
+}
+
+function endpointModesFromCredentials(credentials: Record<string, unknown> | undefined): string[] | undefined {
+  const value = credentials?.supported_endpoint_modes
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
 }
 
 function uniqueTextList(values: readonly string[]): string[] {

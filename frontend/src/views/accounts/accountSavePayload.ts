@@ -348,7 +348,8 @@ function validateAccountGptRequestOverrides(
     providerCode: form.providerCode,
     accountType: form.type,
     modelOptions,
-    supportedModels
+    supportedModels,
+    supportedEndpointModes: form.supportedEndpointModes
   })
   if (!isAccountGptServiceTierOverrideAvailable(form.serviceTierOverride, capabilities)) {
     return '所选支持模型中没有模型支持当前服务等级覆盖'

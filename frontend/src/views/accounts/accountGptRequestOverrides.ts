@@ -49,8 +49,13 @@ export function accountGptRequestOverrideCapabilities(input: {
   accountType: AccountType
   modelOptions: AccountGptModelCapabilityOption[]
   supportedModels: string[]
+  supportedEndpointModes?: string[]
 }): AccountGptRequestOverrideCapabilities {
   const providerCode = input.providerCode ?? 'gpt'
+  if (providerCode === 'gemini' && input.supportedEndpointModes
+    && !input.supportedEndpointModes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
+    return { serviceTiers: [], reasoningEfforts: [] }
+  }
   const supportedModels = uniqueTextList(input.supportedModels)
   const serviceTiers = serviceTierOverrideProviders.has(providerCode)
     ? unionModelCapability(supportedModels, input.modelOptions, (option) => option.supportedServiceTiers)
@@ -61,8 +66,12 @@ export function accountGptRequestOverrideCapabilities(input: {
   return { serviceTiers, reasoningEfforts }
 }
 
-export function isAccountRequestOverrideProviderSupported(providerCode: string | undefined): boolean {
+export function isAccountRequestOverrideProviderSupported(providerCode: string | undefined, supportedEndpointModes?: string[]): boolean {
   const normalized = providerCode?.trim() || 'gpt'
+  if (normalized === 'gemini' && supportedEndpointModes
+    && !supportedEndpointModes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
+    return false
+  }
   return serviceTierOverrideProviders.has(normalized) || reasoningEffortOverrideProviders.has(normalized)
 }
 
