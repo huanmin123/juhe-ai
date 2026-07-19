@@ -12,12 +12,14 @@ import (
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 type pageDataCorePublisher interface {
 	NewAccountStaticUpsertEvent(input redisplatform.AccountChangeInput) (redisplatform.PageDataChangeEvent, error)
 	NewAccountStaticDeleteEvent(input redisplatform.AccountChangeInput) (redisplatform.PageDataChangeEvent, error)
 	NewAccountRuntimeUpsertEvent(input redisplatform.AccountChangeInput) (redisplatform.PageDataChangeEvent, error)
+	NewAnnouncementPublicChangeEvent(announcementID string, operation string, fieldMask []string) (redisplatform.PageDataChangeEvent, error)
 	NewRangeResetEvents(domain string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error)
 	Publish(ctx context.Context, event redisplatform.PageDataChangeEvent) error
 }
@@ -36,6 +38,7 @@ type managementPageDataPublisher interface {
 	accountpagedata.Publisher
 	PublishAccountsStaticReset(ctx context.Context, ownerSystemAccountIDs []string, allScopes bool) error
 	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
+	PublishAnnouncementPublicChange(ctx context.Context, announcementID string, operation string, fieldMask []string) error
 }
 
 type accountsStaticResetPublisherAdapter struct {
@@ -59,6 +62,25 @@ func newAccountsStaticResetPublisher(
 		adapter.cache = redisPageDataCacheVersionWriter{client: cacheClient}
 	}
 	return adapter, nil
+}
+
+func newRecoveringAccountsStaticResetPublisher(
+	ctx context.Context,
+	client *redisplatform.Client,
+	cacheClient *redisplatform.Client,
+	redisNamespace string,
+	dirtyStore port.PageDataDirtyDomainStore,
+	logger *slog.Logger,
+) (accountsStaticResetPublisherAdapter, func(), error) {
+	adapter, err := newAccountsStaticResetPublisher(client, cacheClient, redisNamespace)
+	if err != nil {
+		return accountsStaticResetPublisherAdapter{}, nil, err
+	}
+	recovering := newRecoveringPageDataCorePublisher(adapter.publisher, dirtyStore, logger)
+	recovering.Start(ctx)
+	adapter.publisher = recovering
+	adapter.logger = logger
+	return adapter, recovering.Close, nil
 }
 
 func (p accountsStaticResetPublisherAdapter) PublishAccountsStaticReset(
@@ -103,6 +125,22 @@ func (p accountsStaticResetPublisherAdapter) PublishPageDataReset(
 		}
 	}
 	return nil
+}
+
+func (p accountsStaticResetPublisherAdapter) PublishAnnouncementPublicChange(
+	ctx context.Context,
+	announcementID string,
+	operation string,
+	fieldMask []string,
+) error {
+	if p.publisher == nil {
+		return fmt.Errorf("page data change publisher is required")
+	}
+	event, err := p.publisher.NewAnnouncementPublicChangeEvent(announcementID, operation, fieldMask)
+	if err != nil {
+		return err
+	}
+	return p.publisher.Publish(ctx, event)
 }
 
 func (p accountsStaticResetPublisherAdapter) PublishAccountStaticChange(

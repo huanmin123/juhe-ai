@@ -111,8 +111,8 @@ func TestWorkerSchemaOwnerGatePostgresSmoke(t *testing.T) {
 		runnerCalled = true
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "expected 57") {
-		t.Fatalf("schema 56 gate error = %v, want expected 57 rejection", err)
+	if err == nil || !strings.Contains(err.Error(), "expected 58") {
+		t.Fatalf("schema 56 gate error = %v, want expected 58 rejection", err)
 	}
 	if runnerCalled {
 		t.Fatal("runner called with schema 56")
@@ -141,10 +141,10 @@ func TestWorkerSchemaOwnerGatePostgresSmoke(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("schema 57 worker gate: %v", err)
+		t.Fatalf("schema 58 worker gate: %v", err)
 	}
 	if !runnerCalled {
-		t.Fatal("runner was not called with schema 57")
+		t.Fatal("runner was not called with schema 58")
 	}
 	lock, err := ownerlock.Acquire(cfg.OwnerLockPath, ownerlock.Metadata{DeploymentEpoch: "after", RouteOwner: "worker", PID: os.Getpid()})
 	if err != nil {

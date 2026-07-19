@@ -105,6 +105,25 @@ type JuheBusinessAccountTagBinding struct {
 	CreatedAt       pgtype.Timestamptz
 }
 
+type JuheBusinessAnnouncement struct {
+	ID          string
+	Title       string
+	Content     string
+	Level       string
+	Status      string
+	CreatedBy   string
+	UpdatedBy   pgtype.Text
+	PublishedAt pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
+type JuheBusinessAnnouncementRead struct {
+	AnnouncementID  string
+	SystemAccountID string
+	ReadAt          pgtype.Timestamptz
+}
+
 type JuheBusinessApiKey struct {
 	ID                              string
 	SystemAccountID                 string

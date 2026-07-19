@@ -431,6 +431,15 @@ func managementExternalIntegrationSourceDeleteMutationGuardConfig() mutationGuar
 	}
 }
 
+func managementExternalIntegrationSourceBuiltInResetMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "external_integration_sources.reset_builtin_test_token",
+		fingerprint: func(http.ResponseWriter, *http.Request) (any, error) {
+			return map[string]any{"target": "built_in_test_token"}, nil
+		},
+	}
+}
+
 func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {

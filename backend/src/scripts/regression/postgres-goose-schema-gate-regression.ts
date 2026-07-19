@@ -25,7 +25,7 @@ const postgresConfig = {
   }
 }
 
-assert.equal(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION, 57)
+assert.equal(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION, 58)
 assertOwnerLockEnabledParsing()
 
 await assertDoesNotQueryWhenDisabled()
@@ -81,7 +81,7 @@ async function assertAcceptsExpectedSchemaAndClosesPool(): Promise<void> {
   let receivedPoolConfig: PostgresGooseSchemaGatePoolConfig | undefined
   let ended = false
   const results: QueryResult[] = [
-    { rows: [{ version_id: '57', is_applied: true }] },
+    { rows: [{ version_id: '58', is_applied: true }] },
     { rows: [] }
   ]
 
@@ -124,14 +124,14 @@ async function assertAcceptsExpectedSchemaAndClosesPool(): Promise<void> {
 async function assertAcceptsRolledBackNewerVersion(): Promise<void> {
   let ended = false
   const pool = createSequencedPool([
-    { rows: [{ version_id: '57', is_applied: true }] },
+    { rows: [{ version_id: '58', is_applied: true }] },
     { rows: [] }
   ], () => {
     ended = true
   })
 
   await enforcePostgresGooseSchemaGate(postgresConfig, () => pool)
-  assert.equal(ended, true, '57 up, 58 up, 58 down 折叠后必须允许启动并关闭连接池')
+  assert.equal(ended, true, '58 up, 59 up, 59 down 折叠后必须允许启动并关闭连接池')
 }
 
 function assertRejectsInvalidCurrentStates(): void {
@@ -140,8 +140,9 @@ function assertRejectsInvalidCurrentStates(): void {
     currentRows: QueryResult['rows']
   }> = [
     { label: 'version 56', currentRows: [{ version_id: '56', is_applied: true }] },
-    { label: 'version 58', currentRows: [{ version_id: '58', is_applied: true }] },
-    { label: 'not applied', currentRows: [{ version_id: '57', is_applied: false }] },
+    { label: 'version 57', currentRows: [{ version_id: '57', is_applied: true }] },
+    { label: 'version 59', currentRows: [{ version_id: '59', is_applied: true }] },
+    { label: 'not applied', currentRows: [{ version_id: '58', is_applied: false }] },
     { label: 'empty result', currentRows: [] }
   ]
 
@@ -160,15 +161,15 @@ function assertRejectsInvalidCurrentStates(): void {
 async function assertRejectsAppliedVersionAboveExpected(): Promise<void> {
   let ended = false
   const pool = createSequencedPool([
-    { rows: [{ version_id: '57', is_applied: true }] },
-    { rows: [{ version_id: '58', is_applied: true }] }
+    { rows: [{ version_id: '58', is_applied: true }] },
+    { rows: [{ version_id: '59', is_applied: true }] }
   ], () => {
     ended = true
   })
 
   await assert.rejects(
     enforcePostgresGooseSchemaGate(postgresConfig, () => pool),
-    /58/
+    /59/
   )
   assert.equal(ended, true, '发现高版本记录后必须关闭连接池')
 }
@@ -195,7 +196,7 @@ async function assertPreservesOperationErrorWhenCloseSucceeds(): Promise<void> {
 async function assertThrowsCloseErrorWhenOperationSucceeds(): Promise<void> {
   const closeError = new Error('synthetic close failure')
   const pool = createSequencedPool([
-    { rows: [{ version_id: '57', is_applied: true }] },
+    { rows: [{ version_id: '58', is_applied: true }] },
     { rows: [] }
   ], () => {
     throw closeError
