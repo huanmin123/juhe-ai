@@ -86,8 +86,11 @@ for (let index = 0; index < roles.length; index += 1) {
     if (await client.ping() !== 'PONG') throw new Error(`${role} PING failed`)
     const config = await client.sendCommand(['CONFIG', 'GET',
       'appendonly', 'appendfsync', 'save', 'maxmemory-policy', 'dir', 'logfile'])
-    const map = new Map()
-    for (let i = 0; i + 1 < config.length; i += 2) map.set(String(config[i]), String(config[i + 1]))
+    const map = config && typeof config === 'object' && !Array.isArray(config)
+      ? new Map(Object.entries(config).map(([key, value]) => [key, String(value)]))
+      : new Map(Array.from({ length: Math.floor(config.length / 2) }, (_, index) => [
+          String(config[index * 2]), String(config[index * 2 + 1])
+        ]))
     const persistence = await client.info('persistence')
     const server = await client.info('server')
     const processId = Number(/^process_id:(\d+)/m.exec(server)?.[1])

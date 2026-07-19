@@ -35,6 +35,7 @@ foreach ($step in @('launchctl bootout', 'launchctl bootstrap', 'launchctl kicks
 if ($install -notmatch 'MODE=dry-run' -or $install -notmatch '--apply') { throw 'installer must default to dry-run and require --apply' }
 if ($verify -notmatch 'new Set\(physicalEndpoints\)\.size') { throw 'read-only gate must reject shared physical Redis endpoints' }
 if ($verify -notmatch 'processId' -or $verify -notmatch 'new Set\(processIds\)\.size') { throw 'read-only gate must reject shared Redis PIDs' }
+if ($verify -notmatch 'Object\.entries\(config\)') { throw 'read-only gate must support node-redis object CONFIG GET replies' }
 
 $bash = Get-Command bash -ErrorAction SilentlyContinue
 if ($bash) {

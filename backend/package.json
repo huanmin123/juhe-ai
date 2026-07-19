@@ -217,6 +217,7 @@
     "test:performance-no-sqlite-fallback": "tsx src/scripts/regression/performance-no-sqlite-fallback-regression.ts",
     "test:performance-redis-boundary": "tsx src/scripts/regression/performance-redis-boundary-regression.ts",
     "test:redis-role-config": "tsx src/scripts/regression/redis-role-config-regression.ts",
+    "test:redis-role-live-smoke": "tsx src/scripts/regression/redis-role-live-smoke.ts",
     "test:redis-queue-fence": "tsx src/scripts/regression/redis-queue-fence-regression.ts",
     "test:redis-queue-fence-cli": "tsx src/scripts/regression/redis-queue-fence-cli-regression.ts",
     "test:redis-runtime-failure-boundary": "tsx src/scripts/regression/redis-runtime-failure-boundary-regression.ts",
