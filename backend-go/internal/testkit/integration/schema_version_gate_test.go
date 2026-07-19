@@ -18,14 +18,14 @@ import (
 	"juhe-ai/backend-go/internal/version"
 )
 
-func TestGoServerSchemaVersionGateSmokeUsesGooseForVersion58(t *testing.T) {
+func TestGoServerSchemaVersionGateSmokeUsesGooseForFutureVersion(t *testing.T) {
 	source, err := os.ReadFile("schema_version_gate_test.go")
 	if err != nil {
 		t.Fatalf("read schema version gate smoke source: %v", err)
 	}
 	sourceText := string(source)
 	if strings.Contains(sourceText, "db."+"ExecContext") {
-		t.Fatal("version 58 setup must use Goose instead of directly writing goose_db_version")
+		t.Fatal("future-version setup must use Goose instead of directly writing goose_db_version")
 	}
 	for _, want := range []string{
 		"os." + "WriteFile",
@@ -33,7 +33,7 @@ func TestGoServerSchemaVersionGateSmokeUsesGooseForVersion58(t *testing.T) {
 		"goose." + "UpTo(db, schemaGateMigrationDir, version.SchemaVersion+1)",
 	} {
 		if !strings.Contains(sourceText, want) {
-			t.Fatalf("version 58 setup source missing %q", want)
+			t.Fatalf("future-version setup source missing %q", want)
 		}
 	}
 }
@@ -75,7 +75,7 @@ func TestGoServerSchemaVersionGatePostgresSmoke(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), "expected 57") {
+	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), "expected 58") {
 		t.Fatalf("schema gate at version 56 error = %v, want version mismatch", err)
 	}
 	if err := goose.UpTo(db, migrationDir, version.SchemaVersion); err != nil {
@@ -93,11 +93,11 @@ SELECT 1;
 SELECT 1;
 `
 	if err := os.WriteFile(
-		filepath.Join(schemaGateMigrationDir, "000058_schema_gate_test.sql"),
+		filepath.Join(schemaGateMigrationDir, "000059_schema_gate_test.sql"),
 		[]byte(schemaGateMigration),
 		0o600,
 	); err != nil {
-		t.Fatalf("write schema gate version 58 migration: %v", err)
+		t.Fatalf("write schema gate future-version migration: %v", err)
 	}
 	if err := goose.UpTo(db, schemaGateMigrationDir, version.SchemaVersion+1); err != nil {
 		t.Fatalf("goose up to %d with schema gate test migration: %v", version.SchemaVersion+1, err)
@@ -106,7 +106,7 @@ SELECT 1;
 		t.Fatalf("goose down to %d with schema gate test migration: %v", version.SchemaVersion, err)
 	}
 	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err != nil {
-		t.Fatalf("schema gate after version 58 rollback to %d: %v", version.SchemaVersion, err)
+		t.Fatalf("schema gate after future-version rollback to %d: %v", version.SchemaVersion, err)
 	}
 	if err := goose.UpTo(db, schemaGateMigrationDir, version.SchemaVersion+1); err != nil {
 		t.Fatalf("goose reapply version %d with schema gate test migration: %v", version.SchemaVersion+1, err)
