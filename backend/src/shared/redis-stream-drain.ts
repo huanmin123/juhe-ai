@@ -14,6 +14,8 @@ export interface RedisStreamDrainGroupSnapshot {
   name: string
   pending: number
   lag: number
+  lastDeliveredId?: string
+  oldestPendingIdleMs?: number
 }
 
 export interface RedisStreamDrainStreamSnapshot {
@@ -108,15 +110,23 @@ async function inspectStream(
     const pendingSummary = name
       ? await client.sendCommand(['XPENDING', contract.streamKey, name])
       : undefined
+    const pending = pendingCount(pendingSummary, fields.get('pending'))
+    const oldestPending = name && pending > 0
+      ? await client.sendCommand(['XPENDING', contract.streamKey, name, '-', '+', '1'])
+      : undefined
+    const lastDeliveredId = optionalString(fields.get('last-delivered-id'))
+    const oldestPendingIdleMs = oldestPendingIdle(oldestPending)
     return {
       name,
-      pending: pendingCount(pendingSummary, fields.get('pending')),
-      lag: nonNegativeInteger(fields.get('lag'))
+      pending,
+      lag: nonNegativeInteger(fields.get('lag')),
+      ...(lastDeliveredId === undefined ? {} : { lastDeliveredId }),
+      ...(oldestPendingIdleMs === undefined ? {} : { oldestPendingIdleMs })
     }
   }))
   const expectedGroup = groups.find((group) => group.name === contract.groupName)
   const drained = length === 0
-    && (groups.length === 0 || Boolean(expectedGroup))
+    && Boolean(expectedGroup)
     && groups.every((group) => group.pending === 0 && group.lag === 0)
   return {
     name: contract.name,
@@ -141,6 +151,15 @@ function pendingCount(summary: unknown, fallback: unknown): number {
     return nonNegativeInteger(summary[0])
   }
   return nonNegativeInteger(fallback)
+}
+
+function oldestPendingIdle(summary: unknown): number | undefined {
+  if (!Array.isArray(summary) || !Array.isArray(summary[0]) || summary[0].length < 3) return undefined
+  return nonNegativeInteger(summary[0][2])
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined
 }
 
 function parseXaddCalls(info: unknown): number | undefined {

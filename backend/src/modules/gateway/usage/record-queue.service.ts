@@ -14,6 +14,7 @@ import { errorLogFields, logger } from '../../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../../shared/redis-stream-queue.js'
 import { redisStreamQueueContracts } from '../../../shared/redis-stream-drain.js'
+import { runRedisEnqueueWithBoundedRetry } from '../../../shared/redis-enqueue-retry.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
@@ -464,7 +465,7 @@ function sendUsageRecordFromDbServiceToServer(input: UsageRecordInput): boolean 
 
 async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise<void> {
   try {
-    await usageRecordRedisStreamQueue().enqueue(input)
+    await runRedisEnqueueWithBoundedRetry(() => usageRecordRedisStreamQueue().enqueue(input))
   } catch (error) {
     logger.error(errorLogFields(error, {
       event: 'usage_record_redis_stream_enqueue_failed',

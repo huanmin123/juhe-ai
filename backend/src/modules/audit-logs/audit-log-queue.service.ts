@@ -7,6 +7,7 @@ import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/r
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
+import { runRedisEnqueueWithBoundedRetry } from '../../shared/redis-enqueue-retry.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
@@ -692,9 +693,9 @@ async function enqueueAuditLogToRedisStream(input: AuditLogInput, encodedPayload
   try {
     const queue = auditLogRedisStreamQueue()
     if (encodedPayload === undefined) {
-      await queue.enqueue(input)
+      await runRedisEnqueueWithBoundedRetry(() => queue.enqueue(input))
     } else {
-      await queue.enqueueEncoded(encodedPayload)
+      await runRedisEnqueueWithBoundedRetry(() => queue.enqueueEncoded(encodedPayload))
     }
   } catch (error) {
     logger.error(errorLogFields(error, {

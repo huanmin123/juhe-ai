@@ -8,6 +8,7 @@
 - [macOS 部署指南](macOS部署指南.md)：macOS 发布包、launchd、Docker Desktop、HTTPS、反向代理和代理配置入口。
 - [macOS 部署流程示例](macOS部署流程示例.md)：一次从 tar 包到 launchd 和代理绑定的示例流程。
 - [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)：macOS 作为 WireGuard 回源节点时的 Caddy/Nginx、launchd、系统参数和切换回滚。
+- [macOS 运维脚本](operations/README.md)：包含 Redis cache/state/queue 三进程安装、只读角色验证、主服务 launchd 与临时切流模板。
 
 ## 适用边界
 
@@ -15,4 +16,5 @@
 - Docker 部署依赖 Docker Desktop 或等价容器环境。
 - 公网 HTTPS 默认优先用 [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md)。
 - 长期运行默认由 launchd 负责常驻，外部探针只告警；确有无人值守自动恢复需求时再看 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
+- 高性能模式在 macOS 固定使用 main `6379/6380/6381` 三个 system LaunchDaemon；临时接管使用独立 `16379/16380/16381`，namespace 不能替代物理 PID 隔离。
 - 如果上游 API 需要代理访问，先看 [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md)。

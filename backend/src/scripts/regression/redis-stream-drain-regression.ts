@@ -40,7 +40,16 @@ for (const [relativePath, contractName] of [
 const drainedReplies = new Map<string, unknown>()
 for (const contract of redisStreamDrainContracts) {
   drainedReplies.set(`XLEN ${contract.streamKey}`, 0)
-  drainedReplies.set(`XINFO GROUPS ${contract.streamKey}`, [])
+  drainedReplies.set(`XINFO GROUPS ${contract.streamKey}`, [[
+    'name', contract.groupName,
+    'consumers', 0,
+    'pending', 0,
+    'last-delivered-id', '0-0',
+    'entries-read', 0,
+    'lag', 0
+  ]])
+  drainedReplies.set(`XPENDING ${contract.streamKey} ${contract.groupName}`, [0, null, null, []])
+  drainedReplies.set(`XPENDING ${contract.streamKey} ${contract.groupName} - + 1`, [])
 }
 drainedReplies.set('INFO commandstats', '# Commandstats\r\ncmdstat_xadd:calls=42,usec=10,usec_per_call=0.24\r\n')
 const drainedClient = new FakeRedisClient(drainedReplies)
@@ -61,12 +70,15 @@ activeReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, [[
   'lag', 1
 ]])
 activeReplies.set(`XPENDING ${activeContract.streamKey} ${activeContract.groupName}`, [1, '1-0', '1-0', []])
+activeReplies.set(`XPENDING ${activeContract.streamKey} ${activeContract.groupName} - + 1`, [['1-0', 'consumer-a', 1234, 1]])
 const active = await inspectRedisStreamDrain(new FakeRedisClient(activeReplies))
 assert.equal(active.drained, false, '存在 pending、lag 或未删除条目时不得误判排空完成')
 assert.deepEqual(active.streams[0]?.groups[0], {
   name: activeContract.groupName,
   pending: 1,
-  lag: 1
+  lag: 1,
+  lastDeliveredId: '1-0',
+  oldestPendingIdleMs: 1234
 })
 
 const missingReplies = new Map(drainedReplies)
@@ -74,6 +86,11 @@ missingReplies.set(`XLEN ${activeContract.streamKey}`, 2)
 missingReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, new Error('ERR no such key'))
 const missingGroup = await inspectRedisStreamDrain(new FakeRedisClient(missingReplies))
 assert.equal(missingGroup.drained, false, '流非空但 consumer group 缺失时必须阻断完成')
+
+const emptyWithoutGroupReplies = new Map(drainedReplies)
+emptyWithoutGroupReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, [])
+const emptyWithoutGroup = await inspectRedisStreamDrain(new FakeRedisClient(emptyWithoutGroupReplies))
+assert.equal(emptyWithoutGroup.drained, false, '空流但目标 consumer group 缺失时也必须阻断完成')
 
 const tracker = new RedisStreamDrainStabilityTracker(2)
 assert.equal(tracker.observe({ ...drained, xaddCalls: 42 }), false, '第一个空闲窗口不得立即宣告完成')
