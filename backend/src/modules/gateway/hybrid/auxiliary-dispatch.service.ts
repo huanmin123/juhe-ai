@@ -4,6 +4,7 @@ import type { Request, Response } from 'express'
 
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { GatewayApiKeyRow, OpenAIAccountSecret } from '../../../storage/repositories.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
 import { responseHeadersToObject, type AuditCaptureContext, createAuditCapture } from '../audit/capture.service.js'
 import { resolveOpenAIGatewayClientStrategy } from '../client-profiles/strategy.js'
 import { prepareOpenAIGatewayDispatchAccounts } from '../dispatch/preparation.js'
@@ -370,7 +371,12 @@ function createFinish(input: {
       }
     }
     if (finishError) {
-      throw finishError
+      logger.warn(errorLogFields(finishError, {
+        event: 'hybrid_auxiliary_finish_side_effect_failed',
+        accountId: input.account.id,
+        auditAttemptId: input.auditAttemptId,
+        success: finish.success
+      }), '混合辅助上游结果已收尾，但部分运行态/审计副作用失败')
     }
   }
 }

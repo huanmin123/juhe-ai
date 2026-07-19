@@ -53,6 +53,7 @@ assert.match(
   /let leaseSettled = false[\s\S]*finally \{[\s\S]*if \(!leaseSettled\)[\s\S]*releaseHalfOpenLease[\s\S]*auditCapture\.finalize/,
   '混合辅助 finish 内部异常也必须释放未结租约并最终化审计'
 )
+assert.doesNotMatch(auxiliarySource, /throw finishError/, '混合辅助收尾副作用异常不得推翻已完成的有效模型结果')
 for (const [label, source] of [['scoring', hybridScoringSource], ['quality', hybridQualitySource]] as const) {
   assert.match(
     source,
