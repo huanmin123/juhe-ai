@@ -138,11 +138,50 @@ export async function scoreHybridGatewayRequest(input: {
       }
       return failedScoringResult(input.config, dispatch.errorCode, dispatch.errorMessage, dispatch.account?.id, dispatch.statusCode)
     }
-    let parsed: { level: number; confidence?: number; factors?: string[]; reason?: string }
+    let dispatchFinished = false
+    const finishDispatch = async (finish: Parameters<typeof dispatch.finish>[0]) => {
+      await dispatch.finish(finish)
+      dispatchFinished = true
+    }
     try {
-      parsed = parseHybridScoringResponse(dispatch.responseBody)
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error)
+      let parsed: { level: number; confidence?: number; factors?: string[]; reason?: string }
+      try {
+        parsed = parseHybridScoringResponse(dispatch.responseBody)
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        await recordHybridScoringAttempt({
+          traceId: input.traceId,
+          clientIp: input.clientIp,
+          systemAccountId: input.apiKeyRecord.system_account_id,
+          apiKeyId: input.apiKeyRecord.id,
+          groupId: dispatch.groupId,
+          account: dispatch.account,
+          endpoint: `${input.endpoint}#hybrid-scoring`,
+          statusCode: dispatch.statusCode,
+          success: false,
+          startedAt,
+          scoringModel: input.config.scoringModel,
+          usage: dispatch.usage,
+          errorCode: 'hybrid_scoring_failed',
+          errorMessage,
+          requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
+          responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) }
+        })
+        await finishDispatch({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
+        return failedScoringResult(input.config, 'hybrid_scoring_failed', errorMessage, dispatch.account.id, dispatch.statusCode)
+      }
+      const scoringResult: HybridScoringResult = {
+        level: clampHybridLevel(parsed.level),
+        confidence: parsed.confidence,
+        factors: parsed.factors,
+        reason: parsed.reason,
+        defaulted: false,
+        cacheHit: false,
+        scoringAccountId: dispatch.account.id,
+        scoringGroupId: dispatch.groupId,
+        statusCode: dispatch.statusCode
+      }
+      await rememberHybridScoringCacheResult(cacheKey, scoringResult, input.config.scoringCacheTtlSeconds)
       await recordHybridScoringAttempt({
         traceId: input.traceId,
         clientIp: input.clientIp,
@@ -152,48 +191,20 @@ export async function scoreHybridGatewayRequest(input: {
         account: dispatch.account,
         endpoint: `${input.endpoint}#hybrid-scoring`,
         statusCode: dispatch.statusCode,
-        success: false,
+        success: true,
         startedAt,
         scoringModel: input.config.scoringModel,
         usage: dispatch.usage,
-        errorCode: 'hybrid_scoring_failed',
-        errorMessage,
         requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-        responseSnapshot: { statusCode: dispatch.statusCode, body: responseBodySnippet(dispatch.responseBody) }
+        responseSnapshot: { statusCode: dispatch.statusCode, parsed }
       })
-      await dispatch.finish({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage })
-      return failedScoringResult(input.config, 'hybrid_scoring_failed', errorMessage, dispatch.account.id, dispatch.statusCode)
+      await finishDispatch({ success: true })
+      return scoringResult
+    } finally {
+      if (!dispatchFinished) {
+        await dispatch.finish({ success: false, errorCode: 'hybrid_scoring_failed', errorMessage: '混合路由评分调用未完成收尾' })
+      }
     }
-    const scoringResult: HybridScoringResult = {
-      level: clampHybridLevel(parsed.level),
-      confidence: parsed.confidence,
-      factors: parsed.factors,
-      reason: parsed.reason,
-      defaulted: false,
-      cacheHit: false,
-      scoringAccountId: dispatch.account.id,
-      scoringGroupId: dispatch.groupId,
-      statusCode: dispatch.statusCode
-    }
-    await rememberHybridScoringCacheResult(cacheKey, scoringResult, input.config.scoringCacheTtlSeconds)
-    await recordHybridScoringAttempt({
-      traceId: input.traceId,
-      clientIp: input.clientIp,
-      systemAccountId: input.apiKeyRecord.system_account_id,
-      apiKeyId: input.apiKeyRecord.id,
-      groupId: dispatch.groupId,
-      account: dispatch.account,
-      endpoint: `${input.endpoint}#hybrid-scoring`,
-      statusCode: dispatch.statusCode,
-      success: true,
-      startedAt,
-      scoringModel: input.config.scoringModel,
-      usage: dispatch.usage,
-      requestSnapshot: { model: input.config.scoringModel, contextBytes: Buffer.byteLength(context, 'utf8') },
-      responseSnapshot: { statusCode: dispatch.statusCode, parsed }
-    })
-    await dispatch.finish({ success: true })
-    return scoringResult
   } catch (error) {
     return failedScoringResult(
       input.config,
