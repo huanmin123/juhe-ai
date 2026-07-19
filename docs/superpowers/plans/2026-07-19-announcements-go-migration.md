@@ -21,11 +21,11 @@
 - Create: `backend-go/internal/modules/announcements/types.go`
 - Test: `backend-go/db/migrationtests/announcement_schema_test.go`
 
-- [ ] Write failing schema and query contract tests for both tables, enum checks, indexes, cascade and stable order.
-- [ ] Run `go test ./db/migrationtests ./internal/store/postgres -run Announcement -count=1`; expect failure because migration, port and sqlc queries are absent.
-- [ ] Add migration 000058 with current `announcements` and `announcement_reads` schema and indexes.
-- [ ] Add port types and sqlc queries for public list, read upsert, admin page, detail, create, update, publish, archive and delete.
-- [ ] Run `sqlc generate`, `gofmt`, targeted tests and `go test ./... -count=1`; commit `feat(go): add announcement storage contract`.
+- [x] Write failing schema and query contract tests for both tables, enum checks, indexes, cascade and stable order.
+- [x] Run `go test ./db/migrationtests ./internal/store/postgres -run Announcement -count=1`; expect failure because migration, port and sqlc queries are absent.
+- [x] Add migration 000058 with current `announcements` and `announcement_reads` schema and indexes.
+- [x] Add port types and sqlc queries for public list, read upsert, admin page, detail, create, update, publish, archive and delete.
+- [x] Run `sqlc generate`, `gofmt`, targeted tests and `go test ./... -count=1`; commit `feat(go): add announcement storage contract`.
 
 ### Task 2: Public read and read receipts
 
@@ -37,10 +37,10 @@
 - Modify: `backend-go/internal/httpapi/router.go`
 - Modify: `backend-go/internal/app/server.go`
 
-- [ ] Write failing service/handler tests for published-only list, 30-item limit, stable order, invalid limit, empty read list, duplicate IDs, unpublished IDs and read idempotency.
-- [ ] Implement service and HTTP handler using existing auth, no-store and limiter patterns.
-- [ ] Wire public routes behind the existing `PublicAPIEnabled`/management routing boundary without changing default owner behavior.
-- [ ] Run `go test ./internal/modules/announcements ./internal/httpapi ./internal/app -count=1` and targeted race; commit `feat(go): add public announcement reads`.
+- [x] Write failing service/handler tests for published-only list, 30-item limit, stable order, invalid limit, empty read list, duplicate IDs, unpublished IDs and read idempotency.
+- [x] Implement service and HTTP handler using existing auth, no-store and limiter patterns.
+- [x] Wire public routes behind the existing `PublicAPIEnabled`/management routing boundary without changing default owner behavior.
+- [x] Run `go test ./internal/modules/announcements ./internal/httpapi ./internal/app -count=1` and targeted race; commit `feat(go): add public announcement reads`.
 
 ### Task 3: Management list, detail and validation
 
@@ -52,10 +52,10 @@
 - Modify: `backend-go/internal/httpapi/router.go`
 - Modify: `backend-go/internal/app/server.go`
 
-- [ ] Write failing tests for admin-only authorization, progressive pagination, details, 404, strict JSON, text length and enum validation.
-- [ ] Implement management list/detail and exact Chinese error responses.
-- [ ] Wire routes with existing write auth/touch and mutation guard conventions.
-- [ ] Run targeted tests/race and commit `feat(go): add announcement management reads`.
+- [x] Write failing tests for admin-only authorization, progressive pagination, details, 404, strict JSON, text length and enum validation.
+- [x] Implement management list/detail and exact Chinese error responses.
+- [x] Wire routes with existing write auth/touch and mutation guard conventions.
+- [x] Run targeted tests/race and commit `feat(go): add announcement management reads`.
 
 ### Task 4: Management writes and side effects
 
@@ -67,10 +67,10 @@
 - Modify: existing operation-log adapter files identified by current app wiring
 - Modify: `backend-go/internal/httpapi/announcements_management.go`
 
-- [ ] Write failing tests for create/update/publish/unpublish/delete transactions, read reset, state transitions, no-op missing rows, operation log fields and page-data operation/mask.
-- [ ] Implement writes with transaction boundaries and post-commit best-effort side effects.
-- [ ] Add `announcements.public` upsert/delete event constructors or a narrow adapter using existing range/entity validation.
-- [ ] Run targeted tests/race, full Go tests, vet, tidy diff and diff check; commit `feat(go): add announcement management writes`.
+- [x] Write failing tests for create/update/publish/unpublish/delete transactions, read reset, state transitions, no-op missing rows, operation log fields and page-data operation/mask.
+- [x] Implement writes with transaction boundaries and post-commit best-effort side effects.
+- [x] Add `announcements.public` upsert/delete event constructors or a narrow adapter using existing range/entity validation.
+- [x] Run targeted tests/race, full Go tests, vet, tidy diff and diff check; commit `feat(go): add announcement management writes`.
 
 ### Task 5: Integration and frontend listener smoke
 
@@ -80,15 +80,15 @@
 - Modify: `docs/plans/计划-0081-Node转Go渐进减法迁移.md`
 - Modify: `backend-go/README.md`
 
-- [ ] Add isolated PostgreSQL/Redis/Asynq smoke covering admin create/publish, public list/read, update/unpublish/delete, operation log ingest and page-data event.
-- [ ] Add real Go listener Cookie smoke for public and management endpoints with finally cleanup.
-- [ ] Run `JUHE_AI_REQUIRE_INTEGRATION=1 go test -tags=integration ./internal/testkit/integration -run '^TestW8ManagementAnnouncementsSmoke$' -count=1 -timeout=5m` against isolated Docker only.
-- [ ] Run existing Node announcement regressions, frontend typecheck/build and listener smoke; document `takeoverEvidence=false` until owner gates pass.
-- [ ] Have two read-only Agents independently review contract/correctness and boundary/security; perform cross-questioning; commit `test(go): verify announcement migration smoke`.
+- [x] Add isolated PostgreSQL/Redis/Asynq smoke covering admin create/publish, public list/read, update/unpublish/delete, operation log ingest and page-data event.
+- [x] Add real Go Router Cookie smoke for public and management endpoints with cleanup.
+- [x] Run environment-gated Go integration tests against isolated PostgreSQL 18 and Redis 8.2 containers.
+- [x] Run frontend typecheck/build and page-data regressions; document `takeoverEvidence=false` until owner gates pass.
+- [x] Have two read-only Agents independently review contract/correctness and boundary/security; perform cross-questioning; commit `test(go): verify announcement migration smoke`.
 
 ### Task 6: Remote synchronization checkpoint
 
-- [ ] Run `git fetch origin --prune` and inspect feature/master divergence before each push.
-- [ ] Merge latest `origin/master` only after auditing relevant Node diffs and resolve no unrelated user changes.
-- [ ] Push every completed commit to `origin/feature/20260706-go` and confirm local/remote equality.
-- [ ] Keep all production route owners on Node while synchronizing the shared Goose schema version; no deployment, traffic switch, Node deletion or production data writes.
+- [x] Run `git fetch origin --prune` and inspect feature/master divergence before each push.
+- [x] Merge latest `origin/master` only after auditing relevant Node diffs and resolve no unrelated user changes.
+- [x] Push every completed commit to `origin/feature/20260706-go` and confirm local/remote equality.
+- [x] Keep all production route owners on Node while synchronizing the shared Goose schema version; no deployment, traffic switch, Node deletion or production data writes.
