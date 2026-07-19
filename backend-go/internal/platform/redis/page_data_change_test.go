@@ -601,6 +601,49 @@ func TestPageDataChangePublisherRedisIntegration(t *testing.T) {
 	if epoch, getErr := client.client.Get(t.Context(), epochKey).Result(); getErr != nil || strings.TrimSpace(epoch) == "" {
 		t.Fatalf("epoch = %q, error = %v", epoch, getErr)
 	}
+
+	announcementEvent, err := publisher.NewAnnouncementPublicChangeEvent(
+		"ann-integration",
+		pageDataUpsertOperation,
+		[]string{"title", "content", "status", "publishedAt"},
+	)
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent() error = %v", err)
+	}
+	if err := publisher.Publish(t.Context(), announcementEvent); err != nil {
+		t.Fatalf("Publish(announcement) error = %v", err)
+	}
+	announcementSequenceKey := prefix + "sequence:global:announcements.public"
+	announcementLogKey := prefix + "log:global:announcements.public"
+	if got, getErr := client.client.Get(t.Context(), announcementSequenceKey).Int64(); getErr != nil || got != 1 {
+		t.Fatalf("announcement sequence = %d, error = %v, want 1", got, getErr)
+	}
+	announcementEntries, err := client.client.LRange(t.Context(), announcementLogKey, 0, 0).Result()
+	if err != nil || len(announcementEntries) != 1 {
+		t.Fatalf("announcement log entries = %#v, error = %v", announcementEntries, err)
+	}
+	separator := strings.IndexByte(announcementEntries[0], '\t')
+	if separator < 1 {
+		t.Fatalf("invalid announcement log entry %q", announcementEntries[0])
+	}
+	var publishedAnnouncement PageDataChangeEvent
+	if err := json.Unmarshal([]byte(announcementEntries[0][separator+1:]), &publishedAnnouncement); err != nil {
+		t.Fatalf("decode announcement event: %v", err)
+	}
+	if publishedAnnouncement.Domain != pageDataAnnouncementsPublicDomain || publishedAnnouncement.EntityID != "ann-integration" || publishedAnnouncement.Operation != pageDataUpsertOperation {
+		t.Fatalf("published announcement event = %+v", publishedAnnouncement)
+	}
+
+	resets, err := publisher.NewRangeResetEvents(pageDataAnnouncementsPublicDomain, nil, true)
+	if err != nil || len(resets) != 1 {
+		t.Fatalf("announcement reset events = %+v, error = %v", resets, err)
+	}
+	if err := publisher.Publish(t.Context(), resets[0]); err != nil {
+		t.Fatalf("Publish(announcement reset) error = %v", err)
+	}
+	if got, getErr := client.client.Get(t.Context(), announcementSequenceKey).Int64(); getErr != nil || got != 2 {
+		t.Fatalf("announcement sequence after reset = %d, error = %v, want 2", got, getErr)
+	}
 }
 
 func integrationPageDataEvent(index int) PageDataChangeEvent {
