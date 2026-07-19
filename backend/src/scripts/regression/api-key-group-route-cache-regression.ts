@@ -190,6 +190,20 @@ try {
   await listen(gatewayServer)
   const gatewayBaseUrl = `http://127.0.0.1:${serverPort(gatewayServer)}`
 
+  const deploymentSmokeUpstreamStart = upstreamRequests.length
+  const deploymentSmokeResponse = await requestChatCompletion(
+    gatewayBaseUrl,
+    seededRoute.apiKey,
+    'trace-deployment-smoke-no-upstream',
+    'gpt-5.5',
+    { 'x-juhe-deployment-smoke': 'no-upstream' }
+  )
+  assert.equal(deploymentSmokeResponse.status, 400, `部署 smoke 应在网关本地拒绝，实际 ${deploymentSmokeResponse.status}: ${deploymentSmokeResponse.text}`)
+  const deploymentSmokePayload = parseJsonObject(deploymentSmokeResponse.text)
+  const deploymentSmokeError = isRecord(deploymentSmokePayload.error) ? deploymentSmokePayload.error : {}
+  assert.equal(deploymentSmokeError.code, 'deployment_smoke_no_upstream')
+  assert.equal(upstreamRequests.length, deploymentSmokeUpstreamStart, '部署 smoke 硬门禁不得命中任何上游')
+
   const firstResponse = await requestChatCompletion(gatewayBaseUrl, seededRoute.apiKey, 'trace-route-cache-first')
   assert.equal(firstResponse.status, 200, `首次请求应完成主分组到后备分组的预派发切换，实际 ${firstResponse.status}: ${firstResponse.text}`)
   assert.equal(upstreamRequests.at(-1)?.accountKey, seededRoute.fallbackUpstreamKey, '首次请求应命中后备授权账号')
@@ -302,6 +316,9 @@ try {
   closeGatewayUpstreamAgentsForTest?.()
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
+  await import('../../storage/sqlite-read-worker-pool.js')
+    .then((module) => module.closeSqliteReadWorkerPool())
+    .catch(() => undefined)
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -330,7 +347,7 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
     providerCode: 'deepseek',
     groupType: 'personal'
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存跨供应商 GPT 账号',
@@ -343,10 +360,11 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
     groupId: gptGroup.id,
     status: 'active',
     schedulable: true,
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
   const deepSeekUpstreamKey = 'sk-route-cache-cross-provider-deepseek'
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'deepseek',
     providerProtocolProfileId: DEEPSEEK_OPENAI_V1_PROFILE_ID,
     name: '路由缓存跨供应商 DeepSeek 账号',
@@ -396,7 +414,7 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
   }, access)
   const firstUpstreamKey = 'sk-route-cache-round-robin-a'
   const secondUpstreamKey = 'sk-route-cache-round-robin-b'
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存轮询 A 账号',
@@ -410,7 +428,7 @@ function seedRoundRobinRoute(upstreamBaseUrl: string): SeededRoundRobinRoute {
     status: 'active',
     schedulable: true
   }, access)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存轮询 B 账号',
@@ -473,7 +491,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     providerCode: 'gpt',
     groupType: 'personal'
   }, granteeAccess)
-  repositories.createAccount({
+  createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存主 OAuth 账号',
@@ -488,7 +506,7 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
     schedulable: true
   }, granteeAccess)
   const fallbackUpstreamKey = 'sk-route-cache-fallback'
-  const ownerAccount = repositories.createAccount({
+  const ownerAccount = createActiveAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '路由缓存后备授权账号',
@@ -540,6 +558,20 @@ function seedRoute(upstreamBaseUrl: string): SeededRoute {
   }
 }
 
+function createActiveAccount(
+  input: Parameters<typeof repositories.createAccount>[0],
+  access: Parameters<typeof repositories.createAccount>[1]
+) {
+  const account = repositories.createAccount(input, access)
+  assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, `路由缓存测试账户 ${account.id} 应由后台探针激活`)
+  return account
+}
+
 function createGatewayServer(
   openAIGatewayRouter: express.Router,
   captureGatewayRawBody: express.RequestHandler,
@@ -579,13 +611,20 @@ function createMockOpenAIUpstream(): http.Server {
   })
 }
 
-async function requestChatCompletion(baseUrl: string, apiKey: string, traceId: string, model = 'gpt-5.5'): Promise<{ status: number; text: string }> {
+async function requestChatCompletion(
+  baseUrl: string,
+  apiKey: string,
+  traceId: string,
+  model = 'gpt-5.5',
+  extraHeaders: Record<string, string> = {}
+): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
-      'x-trace-id': traceId
+      'x-trace-id': traceId,
+      ...extraHeaders
     },
     body: JSON.stringify({
       model,

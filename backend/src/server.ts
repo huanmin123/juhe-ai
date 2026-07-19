@@ -45,7 +45,7 @@ import { errorLogFields, installProcessLogHandlers, logger } from './shared/logg
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
-import { createCorsOriginDelegate } from './shared/http-security.js'
+import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
@@ -170,7 +170,9 @@ if (runtimeConfig.httpSecurity.trustProxy !== false) {
   app.set('trust proxy', runtimeConfig.httpSecurity.trustProxy)
 }
 
+app.disable('x-powered-by')
 app.use(requestContextMiddleware)
+app.use(systemPrefix, managementSecurityHeadersMiddleware)
 const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
 mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,

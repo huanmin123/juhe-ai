@@ -110,6 +110,7 @@ interface PageDataStreamSnapshot {
 }
 
 const redisPublishScript = `
+-- page_data_publish_v1
 local sequenceKey = KEYS[1]
 local logKey = KEYS[2]
 local dedupeKey = KEYS[3]
@@ -127,6 +128,37 @@ redis.call('LTRIM', logKey, -maxEvents, -1)
 redis.call('EXPIRE', logKey, ttlSeconds)
 redis.call('EXPIRE', dedupeKey, ttlSeconds)
 return sequence
+`
+
+const redisConfirmScript = `
+-- page_data_confirm_v1
+local epoch = redis.call('GET', KEYS[1])
+if not epoch then
+  redis.call('SET', KEYS[1], ARGV[1], 'NX')
+  epoch = redis.call('GET', KEYS[1]) or ARGV[1]
+end
+local domainCount = tonumber(ARGV[2])
+local result = { epoch }
+local keyIndex = 2
+local argumentIndex = 3
+for _ = 1, domainCount do
+  local sequence = tonumber(redis.call('GET', KEYS[keyIndex]) or '0')
+  local resetSequence = tonumber(redis.call('GET', KEYS[keyIndex + 2]) or '0')
+  local knownEpoch = ARGV[argumentIndex]
+  local knownSequence = tonumber(ARGV[argumentIndex + 1])
+  local knownResetSequence = tonumber(ARGV[argumentIndex + 2])
+  local rawLog = {}
+  if knownEpoch == epoch
+    and knownSequence >= 0
+    and knownSequence < sequence
+    and knownResetSequence == resetSequence then
+    rawLog = redis.call('LRANGE', KEYS[keyIndex + 1], 0, -1)
+  end
+  table.insert(result, { sequence, resetSequence, rawLog })
+  keyIndex = keyIndex + 3
+  argumentIndex = argumentIndex + 3
+end
+return result
 `
 
 export function pageDataScope(input: {
@@ -234,18 +266,35 @@ export function createRedisPageDataChangeStore(options: {
 
   return {
     async confirm(scope, requestedDomains) {
-      const epoch = await sharedEpoch()
       const domains = validatedConfirmDomains(requestedDomains)
+      const redisKeys = [epochKey]
+      const redisArguments = [proposedEpoch, String(domains.length)]
+      for (const [domain, knownToken] of domains) {
+        const streamKeys = redisStreamKeys(keyPrefix, confirmStreamKey(scope, domain), domain)
+        const resetKeys = redisStreamKeys(keyPrefix, 'all', domain)
+        redisKeys.push(streamKeys.sequenceKey, streamKeys.logKey, resetKeys.sequenceKey)
+        const structurallyValidToken = knownToken && validKnownTokenExceptEpoch(knownToken, { scope, domain })
+          ? knownToken
+          : undefined
+        redisArguments.push(
+          structurallyValidToken?.epoch ?? '',
+          String(structurallyValidToken?.sequence ?? -1),
+          String(structurallyValidToken?.resetSequence ?? -1)
+        )
+      }
+      const snapshots = parseRedisConfirmSnapshots(
+        await options.client.eval(redisConfirmScript, { keys: redisKeys, arguments: redisArguments }),
+        domains.length
+      )
+      const epoch = snapshots.epoch
       const result: PageDataConfirmResult = {
         serverTime: now().toISOString(),
         domains: {}
       }
-      await Promise.all(domains.map(async ([domain, knownToken]) => {
-        const [snapshot, resetSnapshot] = await Promise.all([
-          readRedisStreamSnapshot(options.client, redisStreamKeys(keyPrefix, confirmStreamKey(scope, domain), domain)),
-          readRedisStreamSnapshot(options.client, redisStreamKeys(keyPrefix, 'all', domain))
-        ])
-        const token = revisionToken(epoch, scope, domain, snapshot.sequence, resetSnapshot.sequence)
+      domains.forEach(([domain, knownToken], index) => {
+        const snapshot = snapshots.domains[index]
+        if (!snapshot) throw new Error('页面数据 Redis confirm 快照缺少数据域')
+        const token = revisionToken(epoch, scope, domain, snapshot.sequence, snapshot.resetSequence)
         result.domains[domain] = confirmDomainResult({
           epoch,
           scope,
@@ -253,9 +302,9 @@ export function createRedisPageDataChangeStore(options: {
           token,
           knownToken,
           stream: snapshot,
-          resetStream: resetSnapshot
+          resetStream: { sequence: snapshot.resetSequence, events: [] }
         })
-      }))
+      })
       return result
     },
     async publish(event) {
@@ -296,7 +345,9 @@ function confirmDomainResult(input: {
     return { action: 'reset', token }
   }
   const events = stream?.events.filter((item) => item.sequence > knownToken.sequence) ?? []
-  if (!events.length || events[0]?.sequence !== knownToken.sequence + 1) {
+  if (!events.length
+    || events.some((item, index) => item.sequence !== knownToken.sequence + index + 1)
+    || events[events.length - 1]?.sequence !== token.sequence) {
     return { action: 'reset', token }
   }
   if (events.some((item) => item.event.operation === 'range_reset')) {
@@ -325,19 +376,30 @@ async function ensureRedisEpoch(
   return (await client.get(key)) ?? proposedEpoch
 }
 
-async function readRedisStreamSnapshot(
-  client: PageDataRedisClient,
-  keys: { sequenceKey: string; logKey: string; dedupeKey: string }
-): Promise<PageDataStreamSnapshot> {
-  const [rawSequence, rawLog] = await Promise.all([
-    client.get(keys.sequenceKey),
-    client.sendCommand(['LRANGE', keys.logKey, '0', '-1'])
-  ])
-  const sequence = nonNegativeInteger(rawSequence)
-  const events = Array.isArray(rawLog)
-    ? rawLog.flatMap((value) => parseRedisSequencedEvent(value))
-    : []
-  return { sequence, events }
+function parseRedisConfirmSnapshots(value: unknown, expectedDomains: number): {
+  epoch: string
+  domains: Array<PageDataStreamSnapshot & { resetSequence: number }>
+} {
+  if (!Array.isArray(value) || value.length !== expectedDomains + 1) {
+    throw new Error('页面数据 Redis confirm 快照格式无效')
+  }
+  const epoch = redisString(value[0])
+  if (!epoch) throw new Error('页面数据 Redis epoch 无效')
+  const domains = value.slice(1).map((rawSnapshot) => {
+    if (!Array.isArray(rawSnapshot) || rawSnapshot.length !== 3 || !Array.isArray(rawSnapshot[2])) {
+      throw new Error('页面数据 Redis domain 快照格式无效')
+    }
+    return {
+      sequence: nonNegativeInteger(rawSnapshot[0]),
+      resetSequence: nonNegativeInteger(rawSnapshot[1]),
+      events: rawSnapshot[2].flatMap((rawEvent) => parseRedisSequencedEvent(rawEvent))
+    }
+  })
+  return { epoch, domains }
+}
+
+function redisString(value: unknown): string {
+  return typeof value === 'string' ? value : value instanceof Buffer ? value.toString('utf8') : ''
 }
 
 function parseRedisSequencedEvent(value: unknown): SequencedEvent[] {
@@ -377,8 +439,15 @@ function validKnownToken(token: PageDataRevisionToken, input: {
   scope: PageDataScope
   domain: PageDataDomain
 }): boolean {
-  return token.protocolVersion === PAGE_DATA_PROTOCOL_VERSION
+  return validKnownTokenExceptEpoch(token, input)
     && token.epoch === input.epoch
+}
+
+function validKnownTokenExceptEpoch(token: PageDataRevisionToken, input: {
+  scope: PageDataScope
+  domain: PageDataDomain
+}): boolean {
+  return token.protocolVersion === PAGE_DATA_PROTOCOL_VERSION
     && token.scope === input.scope.fingerprint
     && token.domain === input.domain
     && Number.isSafeInteger(token.sequence)

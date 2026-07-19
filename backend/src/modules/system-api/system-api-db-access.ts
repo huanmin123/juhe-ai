@@ -29,6 +29,7 @@ const explicitSystemApiDbAccessRules: readonly SystemApiDbAccessRouteRule[] = [
   { methods: ['POST'], pattern: /^\/auth\/logout\/?$/, mode: 'write' },
   { methods: ['PATCH'], pattern: /^\/auth\/me\/?$/, mode: 'write' },
   { methods: ['POST'], pattern: /^\/auth\/change-password\/?$/, mode: 'write' },
+  { methods: ['POST'], pattern: /^\/data-changes\/confirm\/?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/runtime-logs\/?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/runtime-logs\/facets\/?$/, mode: 'read' },
   { methods: ['GET'], pattern: /^\/runtime-logs\/grep\/?$/, mode: 'longRead' },

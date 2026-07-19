@@ -188,7 +188,7 @@ async function main(): Promise<void> {
       .prepare('SELECT stream_failure_count FROM accounts WHERE id = ?')
       .get(noFirstChunkCredential.account.id) as { stream_failure_count?: number } | undefined
     const noFirstChunkRuntime = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[noFirstChunkCredential.account.id]
-    assert.notEqual(noFirstChunkRuntime?.status, 'local_suppressed', '单次首段前失败只能触发后台核实，不能直接屏蔽仍可用账户')
+    assert.equal(noFirstChunkRuntime?.status, undefined, '单次用户请求流失败不得直接改变账户运行态，应等待后台探针确认')
     assert.equal(Number(noFirstChunkFailureState?.stream_failure_count ?? 0), 0, '首段前失败未产生可见输出，不应累计账号流失败计数')
 
     settingsRepository.updateSettings({
@@ -294,7 +294,7 @@ async function main(): Promise<void> {
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const missingTerminalAccount = repositories.listAccounts(scenarioCredentialAccess()).find((item) => item.id === missingTerminalCredential.account.id)
     const missingTerminalRuntime = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[missingTerminalCredential.account.id]
-    assert.notEqual(missingTerminalRuntime?.status, 'local_suppressed', '缺少终止事件但未产生可见输出时只能触发后台核实，不能直接屏蔽账户')
+    assert.equal(missingTerminalRuntime?.status, undefined, '缺少终止事件但未产生可见输出时不得由用户请求直接改变账户运行态')
     assert.equal(missingTerminalAccount?.status, 'active', '缺少终止事件但仅有 response.created 时不应把账号置为临时不可调用')
     assert.equal(missingTerminalAccount?.streamFailureCount, 0, '缺少终止事件但未产生可见输出时不应累计账号流失败计数')
 
@@ -434,11 +434,11 @@ async function main(): Promise<void> {
     assert(contextWindowResult.streamText.includes('upstream_retryable_error'), `未输出前 context_length_exceeded 应改写为可重试错误：${contextWindowResult.streamText}`)
 
     const nonCodexErrorEventResult = await requestGenericStreamFailureBeforeOutput(baseUrl, nonCodexErrorEventCredential.apiKey.key, 'generic-error-event-before-output')
-    assert.equal(nonCodexErrorEventResult.status, 200, `普通客户端应原样保留已提交的上游 HTTP 状态：${nonCodexErrorEventResult.status} ${nonCodexErrorEventResult.streamText}`)
-    assert(nonCodexErrorEventResult.contentType.includes('text/event-stream'), `普通客户端应原样保留上游 SSE 类型：${nonCodexErrorEventResult.contentType}`)
-    assert(nonCodexErrorEventResult.streamText.includes('response.created'), `普通客户端应原样转发上游完整响应：${nonCodexErrorEventResult.streamText}`)
-    assert(nonCodexErrorEventResult.streamText.includes('internal_server_error'), `普通客户端不能按未知上游错误类型做语义改写：${nonCodexErrorEventResult.streamText}`)
-    assert(!nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端不能伪造网关可重试错误：${nonCodexErrorEventResult.streamText}`)
+    assert.equal(nonCodexErrorEventResult.status, 200, `普通客户端必须保持上游 SSE 状态：${nonCodexErrorEventResult.status} ${nonCodexErrorEventResult.streamText}`)
+    assert(nonCodexErrorEventResult.contentType.includes('text/event-stream'), `普通客户端必须保持上游 SSE content-type：${nonCodexErrorEventResult.contentType}`)
+    assert(nonCodexErrorEventResult.streamText.includes('response.created'), `普通客户端必须收到上游原始创建事件：${nonCodexErrorEventResult.streamText}`)
+    assert(nonCodexErrorEventResult.streamText.includes('internal_server_error'), `普通客户端必须透明接收上游错误事件：${nonCodexErrorEventResult.streamText}`)
+    assert(!nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `普通客户端不得被改写为网关专用可重试码：${nonCodexErrorEventResult.streamText}`)
 
     const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
     assert(!overloadedNoBoundaryResult.streamText.includes('server_is_overloaded'), `EOF 尾包未输出前不应把原始容量错误发给客户端：${overloadedNoBoundaryResult.streamText}`)
@@ -475,7 +475,7 @@ async function main(): Promise<void> {
     assert(jsonResponseForStreamResult.text.includes('json response ok'), `stream:true 的明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
     assert(!jsonResponseForStreamResult.text.includes('response.failed'), `stream:true 的明确 JSON 响应不应被 SSE 解析器追加失败事件：${jsonResponseForStreamResult.text}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、Codex 错误按写出边界兜底、普通客户端对上游错误保持不透明、单次用户请求失败不直接屏蔽账户、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、任意错误统一按写出边界兜底、未知 error 事件兜底、普通客户端透明转发上游 SSE 错误、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -602,9 +602,7 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
     schedulable: true,
     priority: index * 10
   }, access))
-  for (const account of accounts) {
-    activateScenarioAccount(account.id)
-  }
+  accounts.forEach((account) => activateScenarioAccount(account.id))
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `流式超时回归多账号 Key-${label}`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -612,6 +610,16 @@ function createMultiAccountScenarioCredential(upstreamBaseUrl: string, label: st
   }, access)
   assert(apiKey.key, '临时 API Key 未返回明文密钥')
   return { accounts, apiKey }
+}
+
+function activateScenarioAccount(accountId: string): void {
+  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  assert.equal(changed, true, `后台健康检查激活流式超时回归账户失败：${accountId}`)
 }
 
 function scenarioCredentialAccess(): { systemAccountId: string; role: 'user' } {
@@ -627,15 +635,6 @@ function scenarioCredentialAccess(): { systemAccountId: string; role: 'user' } {
     scenarioCredentialOwnerAccess = { systemAccountId: owner.id, role: 'user' }
   }
   return scenarioCredentialOwnerAccess
-}
-
-function activateScenarioAccount(accountId: string): void {
-  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
-    intervalHours: 12,
-    jitterMinutes: 0,
-    failureThreshold: 3,
-    statusCode: 200
-  }), `流式超时回归账户应通过后台健康检查激活：${accountId}`)
 }
 
 function createStreamTimeoutRegressionUpstream(): http.Server {
@@ -1041,7 +1040,7 @@ async function assertPreCommitFuzzServerRetryScenarios(
   assert.equal(
     primaryFailedCount,
     preCommitFuzzServerRetryScenarios.length,
-    '单次用户请求失败不能直接屏蔽主账号，每个独立场景仍应从主账号开始并由服务端切号救回'
+    `用户请求不得跨请求封禁主账号，每个 fuzz 场景都应独立验证主失败后切备用；实际失败次数 ${primaryFailedCount}`
   )
   assertUsageRecordCountAtLeast(credential.backupAccount.id, true, preCommitFuzzServerRetryScenarios.length)
 }

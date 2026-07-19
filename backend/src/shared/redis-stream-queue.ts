@@ -4,6 +4,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from './logger.js'
 import { createDedicatedRedisClient, getRedisClient, type RedisCommandClient } from './redis-client.js'
 import { redisNamespacedGroup, redisNamespacedKey } from './redis-namespace.js'
+import { redisQueueFenceKey } from './redis-queue-fence.js'
 
 export interface RedisStreamQueueOptions<T> {
   streamKey: string
@@ -49,6 +50,7 @@ export class RedisStreamQueue<T> {
   private readonly blockMs: number
   private readonly claimIdleMs: number
   private readonly redisUrl: string
+  private readonly fenceKey: string
   private readonly encode: (payload: T) => string
   private readonly decode: (payload: string) => T
   private readonly producerClient: () => Promise<RedisCommandClient>
@@ -65,6 +67,7 @@ export class RedisStreamQueue<T> {
     this.blockMs = options.blockMs ?? runtimeConfig.queue.redisStreamBlockMs
     this.claimIdleMs = options.claimIdleMs ?? runtimeConfig.queue.redisStreamClaimIdleMs
     this.redisUrl = options.redisUrl ?? requiredRedisQueueUrl()
+    this.fenceKey = redisQueueFenceKey()
     this.encode = options.encode ?? ((payload) => JSON.stringify(payload))
     this.decode = options.decode ?? ((payload) => JSON.parse(payload) as T)
     this.producerClient = options.producerClient ?? (() => getRedisClient(this.redisUrl))
@@ -76,8 +79,10 @@ export class RedisStreamQueue<T> {
 
   async enqueueEncoded(encodedPayload: string): Promise<string> {
     const client = await this.producerClient()
-    const command = ['XADD', this.streamKey, '*', 'payload', encodedPayload]
-    const id = await client.sendCommand(command)
+    const id = await client.eval(redisEnqueueWithFenceScript, {
+      keys: [this.fenceKey, this.streamKey],
+      arguments: ['payload', encodedPayload]
+    })
     return String(id ?? '')
   }
 
@@ -320,7 +325,7 @@ export class RedisStreamQueue<T> {
           payload: this.decode(payload)
         })
       } catch (error) {
-        this.ackPoisonMessage(id, error)
+        this.recordPoisonMessage(id, error)
       }
     }
     return output
@@ -338,21 +343,13 @@ export class RedisStreamQueue<T> {
     return { ids, entries }
   }
 
-  private ackPoisonMessage(id: string, error: unknown): void {
+  private recordPoisonMessage(id: string, error: unknown): void {
     logger.error(errorLogFields(error, {
       event: 'redis_stream_message_decode_failed',
       streamKey: this.streamKey,
       groupName: this.groupName,
       messageId: id
-    }), 'Redis Stream 消息解码失败，已跳过坏消息并尝试 ack')
-    void this.ack([id]).catch((ackError) => {
-      logger.error(errorLogFields(ackError, {
-        event: 'redis_stream_poison_message_ack_failed',
-        streamKey: this.streamKey,
-        groupName: this.groupName,
-        messageId: id
-      }), 'Redis Stream 坏消息 ack 失败，后续消费将再次尝试')
-    })
+    }), 'Redis Stream 消息解码失败，消息保留 pending 并阻断排空')
   }
 }
 
@@ -400,6 +397,13 @@ for _, item in ipairs(pending) do
   output[#output + 1] = redis.call('XRANGE', KEYS[1], id, id, 'COUNT', 1)
 end
 return output
+`
+
+const redisEnqueueWithFenceScript = `
+if redis.call('GET', KEYS[1]) then
+  return redis.error_reply('QUEUE_QUIESCED')
+end
+return redis.call('XADD', KEYS[2], '*', ARGV[1], ARGV[2])
 `
 
 const redisAckAndDeleteMessagesScript = `

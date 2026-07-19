@@ -1,7 +1,7 @@
 import type { Router } from 'express'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { findAccountBalanceRefreshCandidateAsync } from '../../storage/account-balance.repository.js'
+import { findAccountBalanceManualRefreshCandidateAsync } from '../../storage/account-balance.repository.js'
 import { findAccountForTestAsync } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -70,9 +70,9 @@ export function registerAccountBalanceRoutes(router: Router): void {
         res.status(403).json({ message: '无权刷新该账户的上游余额' })
         return
       }
-      const candidate = await findAccountBalanceRefreshCandidateAsync(account.id)
+      const candidate = await findAccountBalanceManualRefreshCandidateAsync(account.id)
       if (!candidate) {
-        res.status(400).json(badRequest('账户未开启余额查询，或当前不可用'))
+        res.status(400).json(badRequest('账户未开启余额查询或当前账户类型不支持'))
         return
       }
       res.json(ok(await refreshAccountBalanceCandidate(candidate, { mode: 'manual' })))

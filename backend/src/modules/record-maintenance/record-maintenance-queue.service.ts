@@ -7,6 +7,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { forwardSupervisorOutput } from '../../shared/supervisor-output.js'
 import {
@@ -99,8 +100,8 @@ const recordMaintenanceBatchSize = 10
 const recordMaintenanceShutdownFlushMaxBatches = 1
 const recordMaintenanceQueueMaxItems = 5_000
 const recordMaintenanceQueueMaxBytes = 32 * 1024 * 1024
-const recordMaintenanceRedisStreamKey = 'juhe-ai:queue:record-maintenance'
-const recordMaintenanceRedisStreamGroup = 'juhe-ai:record-maintenance-writers'
+const recordMaintenanceRedisStreamKey = redisStreamQueueContracts.recordMaintenance.streamKey
+const recordMaintenanceRedisStreamGroup = redisStreamQueueContracts.recordMaintenance.groupName
 const recordMaintenanceRedisConsumerErrorRetryMs = 1000
 const recordMaintenanceRedisStopWaitMs = 2000
 const auditRetainedDataCleanupBatchPauseMs = 10
