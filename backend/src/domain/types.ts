@@ -734,6 +734,10 @@ export interface AccountApiKeyRuntimeSummary {
   unavailable: number
   allUnavailable: boolean
   nextProbeAt?: string
+  lastFailureAt?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
+  lastTraceId?: string
 }
 
 export interface AccountApiKeyRuntimeDetail {
@@ -752,6 +756,7 @@ export interface AccountApiKeyRuntimeDetail {
   lastFailureAt?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  lastTraceId?: string
 }
 
 export type AccountOptionSummary = Pick<

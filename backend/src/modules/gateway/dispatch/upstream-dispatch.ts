@@ -1072,6 +1072,7 @@ async function recordConfirmedSameAccountApiKeyFailures(
       statusCode: failure.statusCode,
       errorCode: failure.errorCode,
       errorMessage: failure.errorMessage,
+      traceId: usageContext.traceId,
       cooldownUntil: failure.cooldownUntil,
       trafficSource: usageContext.trafficSource,
       clientIp: usageContext.clientIp,

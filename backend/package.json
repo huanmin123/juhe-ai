@@ -140,6 +140,7 @@
     "test:speed-first-lane": "tsx src/scripts/regression/speed-first-lane-regression.ts",
     "test:gateway-capacity-order": "tsx src/scripts/regression/gateway-capacity-order-regression.ts",
     "test:account-api-key-failure-guard": "tsx src/scripts/regression/account-api-key-failure-guard-regression.ts",
+    "test:account-api-key-runtime-observation": "tsx src/scripts/regression/account-api-key-runtime-observation-regression.ts",
     "test:account-api-key-redis-transient-avoidance": "tsx src/scripts/regression/account-api-key-redis-transient-avoidance-regression.ts",
     "test:gateway-failure-classification-observation": "tsx src/scripts/regression/gateway-failure-classification-observation-regression.ts",
     "test:account-api-key-runtime-state-postgres-smoke": "tsx src/scripts/regression/account-api-key-runtime-state-postgres-smoke.ts",

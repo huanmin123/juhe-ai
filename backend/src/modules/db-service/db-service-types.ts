@@ -622,6 +622,7 @@ export type DbServiceOperation =
         statusCode?: number
         errorCode?: string
         errorMessage?: string
+        traceId?: string
         cooldownUntil?: string
         observedAt?: string
       }
