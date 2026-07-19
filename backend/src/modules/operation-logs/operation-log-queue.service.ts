@@ -2,6 +2,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
 import { createOperationLogsBatch, createOperationLogsBatchAsync, type OperationLogInput } from '../../storage/repositories.js'
@@ -13,8 +14,8 @@ const operationLogBatchSize = 200
 const operationLogShutdownFlushMaxBatches = 100
 const operationLogQueueMaxItems = 5_000
 const operationLogQueueMaxBytes = 32 * 1024 * 1024
-const operationLogRedisStreamKey = 'juhe-ai:queue:operation-logs'
-const operationLogRedisStreamGroup = 'juhe-ai:operation-log-writers'
+const operationLogRedisStreamKey = redisStreamQueueContracts.operationLogs.streamKey
+const operationLogRedisStreamGroup = redisStreamQueueContracts.operationLogs.groupName
 const operationLogRedisConsumerErrorRetryMs = 1000
 
 interface QueuedOperationLog {

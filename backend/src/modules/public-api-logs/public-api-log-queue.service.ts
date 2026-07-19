@@ -1,6 +1,7 @@
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createPublicApiLogsBatch, createPublicApiLogsBatchAsync, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
@@ -12,8 +13,8 @@ const publicApiLogFlushBatchSize = 50
 const publicApiLogShutdownFlushMaxBatches = 100
 const publicApiLogDropWarnInterval = 100
 const publicApiLogRetryDelayMs = 1000
-const publicApiLogRedisStreamKey = 'juhe-ai:queue:public-api-logs'
-const publicApiLogRedisStreamGroup = 'juhe-ai:public-api-log-writers'
+const publicApiLogRedisStreamKey = redisStreamQueueContracts.publicApiLogs.streamKey
+const publicApiLogRedisStreamGroup = redisStreamQueueContracts.publicApiLogs.groupName
 const publicApiLogRedisConsumerErrorRetryMs = 1000
 const publicApiLogRedisStopWaitMs = 2000
 

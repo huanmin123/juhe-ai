@@ -6,6 +6,7 @@ import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
@@ -30,8 +31,8 @@ const auditLogEstimateMaxStringChars = 16 * 1024
 const auditLogInlineTransportMaxBytes = 256 * 1024
 const auditLogPostgresFlushBatchSize = 25
 const auditLogPostgresRedisConsumerConcurrency = 1
-const auditLogRedisStreamKey = 'juhe-ai:queue:audit-logs'
-const auditLogRedisStreamGroup = 'juhe-ai:audit-log-writers'
+const auditLogRedisStreamKey = redisStreamQueueContracts.auditLogs.streamKey
+const auditLogRedisStreamGroup = redisStreamQueueContracts.auditLogs.groupName
 const auditLogRedisConsumerErrorRetryMs = 1000
 
 let pendingAuditLogs: QueuedAuditLog[] = []

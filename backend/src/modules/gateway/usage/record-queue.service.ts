@@ -13,6 +13,7 @@ import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecor
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../../shared/redis-stream-drain.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
@@ -26,8 +27,8 @@ const usageRecordQueueMaxItems = 10_000
 const usageRecordQueueMaxBytes = 64 * 1024 * 1024
 const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
 const slowUsageRecordFlushMs = 500
-const usageRecordRedisStreamKey = 'juhe-ai:queue:usage-records'
-const usageRecordRedisStreamGroup = 'juhe-ai:usage-record-writers'
+const usageRecordRedisStreamKey = redisStreamQueueContracts.usageRecords.streamKey
+const usageRecordRedisStreamGroup = redisStreamQueueContracts.usageRecords.groupName
 const usageRecordRedisConsumerErrorRetryMs = 1000
 
 interface QueuedUsageRecord {
