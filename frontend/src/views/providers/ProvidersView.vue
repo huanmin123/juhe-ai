@@ -564,7 +564,7 @@ async function reloadActiveProviderModels(force = false) {
   modelLoadError.value = ''
   try {
     const scopedProviders = await loadProviderOptionsResource({
-      force,
+      force: force || !isManagementView.value,
       includeDisabled: isManagementView.value,
       isManagementView: isManagementView.value,
       systemAccountId: modelQuery.systemAccountId
