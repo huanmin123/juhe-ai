@@ -72,6 +72,30 @@ func TestBuiltInResetServiceRetriesHashCollisionAndMapsNotFound(t *testing.T) {
 	}
 }
 
+func TestBuiltInResetServiceStopsAfterThreeHashCollisions(t *testing.T) {
+	store := &builtInResetStoreStub{errors: []error{
+		port.ErrManagementExternalIntegrationSourceTokenHashExists,
+		port.ErrManagementExternalIntegrationSourceTokenHashExists,
+		port.ErrManagementExternalIntegrationSourceTokenHashExists,
+	}}
+	generated := 0
+	service := NewBuiltInResetServiceWithOptions(BuiltInResetServiceOptions{
+		Store: store,
+		NewToken: func() (string, error) {
+			generated++
+			return "juis_collision_123456789012345678901234567890", nil
+		},
+		Codec: builtInResetCodecStub{encrypted: "encrypted"},
+	})
+
+	if _, err := service.Reset(t.Context()); !errors.Is(err, ErrTokenExists) {
+		t.Fatalf("Reset() error = %v, want ErrTokenExists", err)
+	}
+	if generated != 3 || len(store.inputs) != 3 {
+		t.Fatalf("generated=%d storeCalls=%d, want 3/3", generated, len(store.inputs))
+	}
+}
+
 func builtInResetStoreResult(now time.Time) port.ManagementExternalIntegrationSourceBuiltInResetResult {
 	return port.ManagementExternalIntegrationSourceBuiltInResetResult{
 		Source: port.ManagementExternalIntegrationSourceListRow{ID: "extsrc_builtin_test", Name: "内置测试来源", Status: "active", ScopesJSON: `["juhe_ai_public:group_list:read"]`, RateLimitsJSON: `[]`, CreatedAt: now.Add(-time.Hour), UpdatedAt: now},
