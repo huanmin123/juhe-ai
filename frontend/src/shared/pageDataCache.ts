@@ -107,6 +107,18 @@ export type PageDataConfirmOutcome<T> =
   | { state: 'superseded'; data?: T }
 
 type ConfirmedPageDataDomain = PageDataConfirmDomainResult & { serverTime: string }
+type PageDataConfirm = (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
+type PendingConfirm = {
+  resolve: (result: PageDataConfirmResult) => void
+  reject: (error: unknown) => void
+}
+type PendingConfirmBatch = {
+  domains: PageDataConfirmRequest['domains']
+  pending: PendingConfirm[]
+  started: boolean
+}
+
+const pendingConfirmBatches = new WeakMap<PageDataConfirm, Map<string, PendingConfirmBatch[]>>()
 
 export function createPageDataCacheKey(input: PageDataCacheKeyInput): string {
   const scope = requiredKeyPart(input.scope, 'scope')
@@ -173,6 +185,36 @@ export function createMemoryPageDataCacheStorage(options: { maxEntries?: number;
   }
 }
 
+export function createPageDataActivationController(options: {
+  start: () => void
+  stop: () => void
+  onActivate?: () => void
+}): { mount: () => void; activate: () => void; deactivate: () => void; dispose: () => void } {
+  let active = false
+  let disposed = false
+  const start = (notifyActivation: boolean) => {
+    if (active || disposed) return
+    active = true
+    options.start()
+    if (notifyActivation) options.onActivate?.()
+  }
+  const deactivate = () => {
+    if (!active) return
+    active = false
+    options.stop()
+  }
+  return {
+    mount: () => start(false),
+    activate: () => start(true),
+    deactivate,
+    dispose() {
+      if (disposed) return
+      deactivate()
+      disposed = true
+    }
+  }
+}
+
 export class PageDataCacheController<T> {
   readonly key: string
   private readonly options: PageDataCacheControllerOptions<T>
@@ -182,6 +224,7 @@ export class PageDataCacheController<T> {
   private readonly removeTabListeners: Array<() => void> = []
   private generation = 0
   private confirmInFlight?: Promise<PageDataConfirmOutcome<T>>
+  private refreshInFlight?: Promise<PageDataLoadResult<T>>
   private closed = false
 
   constructor(options: PageDataCacheControllerOptions<T>) {
@@ -222,12 +265,21 @@ export class PageDataCacheController<T> {
         confirmation: this.requestConfirm()
       }
     }
-    return this.refresh()
+    return this.refreshCurrent(false)
   }
 
-  async refresh(): Promise<PageDataLoadResult<T>> {
+  refresh(): Promise<PageDataLoadResult<T>> {
+    const operation = this.refreshCurrent(true).finally(() => {
+      if (this.refreshInFlight === operation) this.refreshInFlight = undefined
+    })
+    this.refreshInFlight = operation
+    return operation
+  }
+
+  private async refreshCurrent(forceNetwork: boolean): Promise<PageDataLoadResult<T>> {
     const generation = ++this.generation
     const cached = await this.storage.read<T>(this.key)
+    if (forceNetwork && cached?.token) return this.refreshFromToken(generation, cached)
     let baseline: ConfirmedPageDataDomain | undefined
     try {
       baseline = await this.confirmDomain(cached?.token)
@@ -269,6 +321,7 @@ export class PageDataCacheController<T> {
 
   async requestConfirm(): Promise<PageDataConfirmOutcome<T>> {
     if (this.closed) return Promise.resolve({ state: 'superseded' })
+    if (this.refreshInFlight) return this.confirmNow()
     const tab = this.options.tabCoordinator
     if (tab && !tab.isLeader()) {
       const handled = await tab.requestConfirm(this.key)
@@ -282,6 +335,14 @@ export class PageDataCacheController<T> {
   }
 
   confirmNow(): Promise<PageDataConfirmOutcome<T>> {
+    if (this.refreshInFlight) {
+      return this.refreshInFlight.then(
+        (result) => result.superseded
+          ? { state: 'superseded', data: result.data }
+          : { state: 'updated', data: result.data },
+        () => ({ state: 'unavailable' })
+      )
+    }
     if (this.confirmInFlight) return this.confirmInFlight
     const operation = this.confirmCurrent().finally(() => {
       if (this.confirmInFlight === operation) this.confirmInFlight = undefined
@@ -345,6 +406,30 @@ export class PageDataCacheController<T> {
     return { state: 'updated', data: stable.data }
   }
 
+  private async refreshFromToken(generation: number, cached: PageDataCacheRecord<T>): Promise<PageDataLoadResult<T>> {
+    const data = await this.options.loadNetwork()
+    let after: ConfirmedPageDataDomain
+    try {
+      after = await this.confirmDomain(cached.token)
+    } catch {
+      if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+      return { source: 'network', data, confirmed: false, cached: false, superseded: false }
+    }
+    if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+    if (after.action === 'unchanged' && sameRevisionToken(after.token, cached.token)) {
+      const record = this.record(data, after.token, after.serverTime)
+      if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+      const written = await this.storage.writeIfCurrent(record)
+      if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+      if (written) this.publish(record)
+      return { source: 'network', data, confirmed: written, cached: written, superseded: false }
+    }
+    if (after.action === 'reset') await this.invalidateCache()
+    const stable = await this.reloadStable(generation, after)
+    if (generation !== this.generation || this.closed) return await this.supersededLoadResult(stable.data)
+    return { source: 'network', data: stable.data, confirmed: stable.confirmed, cached: stable.cached, superseded: false }
+  }
+
   private async reloadStable(generation: number, initial: ConfirmedPageDataDomain): Promise<{ data: T; confirmed: boolean; cached: boolean }> {
     let baseline = initial
     let latest = await this.options.loadNetwork()
@@ -370,7 +455,7 @@ export class PageDataCacheController<T> {
   }
 
   private async confirmDomain(token?: PageDataRevisionToken): Promise<ConfirmedPageDataDomain> {
-    const result = await this.options.confirm({
+    const result = await requestBatchedConfirm(this.options.confirm, {
       viewScope: this.options.viewScope,
       ...(this.options.targetSystemAccountId ? { targetSystemAccountId: this.options.targetSystemAccountId } : {}),
       domains: { [this.options.domain]: token ?? null }
@@ -428,6 +513,81 @@ export class PageDataCacheController<T> {
       try { listener(record ? cloneRecord(record) as PageDataCacheRecord<T> : undefined) } catch { /* listeners are isolated */ }
     }
   }
+}
+
+function requestBatchedConfirm(confirm: PageDataConfirm, request: PageDataConfirmRequest): Promise<PageDataConfirmResult> {
+  const contextKey = `${request.viewScope}:${request.targetSystemAccountId ?? ''}`
+  let contexts = pendingConfirmBatches.get(confirm)
+  if (!contexts) {
+    contexts = new Map()
+    pendingConfirmBatches.set(confirm, contexts)
+  }
+  let batches = contexts.get(contextKey)
+  if (!batches) {
+    batches = []
+    contexts.set(contextKey, batches)
+  }
+  let batch = batches.find((candidate) => confirmDomainsCompatible(candidate, request.domains))
+  let created = false
+  if (!batch) {
+    batch = { domains: {}, pending: [], started: false }
+    batches.push(batch)
+    created = true
+  }
+  Object.assign(batch.domains, request.domains)
+  const promise = new Promise<PageDataConfirmResult>((resolve, reject) => {
+    batch!.pending.push({ resolve, reject })
+  })
+  if (created) {
+    queueMicrotask(() => flushConfirmBatches(confirm, contextKey, request))
+  }
+  return promise
+}
+
+function confirmDomainsCompatible(
+  batch: PendingConfirmBatch,
+  right: PageDataConfirmRequest['domains']
+): boolean {
+  return Object.entries(right).every(([domain, token]) => {
+    if (!(domain in batch.domains)) return !batch.started
+    const existing = batch.domains[domain as PageDataDomain]
+    return existing === null ? token === null : token !== null && sameRevisionToken(existing, token)
+  })
+}
+
+function flushConfirmBatches(confirm: PageDataConfirm, contextKey: string, request: PageDataConfirmRequest): void {
+  const contexts = pendingConfirmBatches.get(confirm)
+  const batches = contexts?.get(contextKey)
+  if (!batches) return
+  for (const batch of batches) {
+    if (batch.started) continue
+    batch.started = true
+    void Promise.resolve().then(() => confirm({
+      viewScope: request.viewScope,
+      ...(request.targetSystemAccountId ? { targetSystemAccountId: request.targetSystemAccountId } : {}),
+      domains: batch.domains
+    })).then(
+      (result) => settleConfirmBatch(confirm, contextKey, batch, (pending) => pending.resolve(result)),
+      (error) => settleConfirmBatch(confirm, contextKey, batch, (pending) => pending.reject(error))
+    )
+  }
+}
+
+function settleConfirmBatch(
+  confirm: PageDataConfirm,
+  contextKey: string,
+  batch: PendingConfirmBatch,
+  settle: (pending: PendingConfirm) => void
+): void {
+  const contexts = pendingConfirmBatches.get(confirm)
+  const batches = contexts?.get(contextKey)
+  if (batches) {
+    const index = batches.indexOf(batch)
+    if (index >= 0) batches.splice(index, 1)
+    if (batches.length === 0) contexts!.delete(contextKey)
+    if (contexts!.size === 0) pendingConfirmBatches.delete(confirm)
+  }
+  batch.pending.forEach(settle)
 }
 
 export class PageDataRequestCacheManager<T> {

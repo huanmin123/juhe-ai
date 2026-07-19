@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { ref } from 'vue'
 
 import type { AccountListResult, AccountRuntimeAvailabilityStatus, AccountStatusSnapshotResult, AccountSummary } from '../../types/domain/accounts.js'
@@ -152,6 +154,12 @@ await Promise.resolve()
 assert.equal(maxConcurrent, 1)
 assert.equal(delays[0], 30_000)
 polling.stop()
+
+const accountListDataSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountListData.ts', import.meta.url)), 'utf8')
+assert.match(accountListDataSource, /onActivated[\s\S]*snapshotPollingLifecycle\.activate\(\)/, 'KeepAlive 账户页恢复时必须激活轮询生命周期')
+assert.match(accountListDataSource, /onDeactivated[\s\S]*snapshotPollingLifecycle\.deactivate\(\)/, 'KeepAlive 账户页隐藏时必须停用状态快照轮询')
+assert.match(accountListDataSource, /onBeforeUnmount[\s\S]*snapshotPollingLifecycle\.dispose\(\)/, '账户页卸载时必须销毁状态快照轮询')
+assert.match(accountListDataSource, /onActivate:\s*\(\)\s*=>\s*snapshotPolling\.refreshNow\(\)/, '账户页每次恢复必须立即请求状态快照')
 
 const previousRuntimeAccount = {
   id: 'acc_runtime_refresh',

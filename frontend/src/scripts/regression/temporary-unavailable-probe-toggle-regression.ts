@@ -27,6 +27,10 @@ assert.equal(buildAccountUpdatePayload(savePayload).temporaryUnavailableContinuo
 const modalSource = readFileSync(fileURLToPath(new URL('../../views/accounts/AccountEditModal.vue', import.meta.url)), 'utf8')
 assert.match(modalSource, /持续恢复探活/, '高级配置必须展示持续恢复探活开关')
 assert.match(modalSource, /前 10 分钟/, '开关说明必须明确十分钟有界窗口')
+assert.match(modalSource, /class="[^"]*probe-toggle-row[^"]*"/, '恢复探活必须使用单行设置布局')
+assert.match(modalSource, /class="probe-toggle-label"[\s\S]*temporaryUnavailableContinuousProbeEnabled/, '恢复探活必须左侧说明、右侧开关')
+assert.match(modalSource, /QuestionCircleOutlined/, '恢复探活说明必须使用标准帮助图标')
+assert.doesNotMatch(modalSource, /<a-form-item label="持续恢复探活">/, '恢复探活不能继续占用独立表单行')
 assert.match(modalSource, /:disabled="authorizedEditing"/, '授权实例只能只读查看来源账户策略')
 assert.match(modalSource, /temporaryUnavailableContinuousProbeEnabled === false/, '关闭值必须计入高级配置项数量')
 

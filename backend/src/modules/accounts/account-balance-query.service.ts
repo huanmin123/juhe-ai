@@ -136,16 +136,16 @@ async function resolveAccountBalanceRefreshAttempt(
         snapshot: {
           ...snapshot,
           status: 'unsupported',
-          errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口，后台查询已暂停'
+          errorMessage: snapshot.errorMessage ?? '当前配置未找到可用余额接口'
         },
         nextConfig: resolvedBalanceConfig(candidate.config, undefined),
-        nextRefreshAfter: null
+        nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
       }
     }
     return {
       snapshot,
       nextConfig: resolvedBalanceConfig(candidate.config, resolution.preferredBuiltinAdapter),
-      nextRefreshAfter: new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+      nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
     }
   } catch (error) {
     const completedAt = new Date().toISOString()
@@ -160,29 +160,33 @@ async function resolveAccountBalanceRefreshAttempt(
         return {
           snapshot: { ...failedSnapshot, status: 'unsupported' },
           nextConfig: resolvedBalanceConfig(candidate.config, undefined),
-          nextRefreshAfter: null
+          nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
         }
       }
       return {
         snapshot: failedSnapshot,
         nextConfig: candidate.config,
-        nextRefreshAfter: new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+        nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
       }
     }
     if (accountBalanceFailureKind(error) === 'deterministic') {
       return {
         snapshot: { status: 'unsupported', errorMessage, lastAttemptAt: completedAt },
         nextConfig: resolvedBalanceConfig(candidate.config, undefined),
-        nextRefreshAfter: null
+        nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
       }
     }
     const previousSnapshot = await loadCurrentGenerationBalanceSnapshot(candidate)
     return {
       snapshot: nextTransientFailureSnapshot(previousSnapshot, errorMessage, completedAt),
       nextConfig: candidate.config,
-      nextRefreshAfter: new Date(Date.now() + candidate.config.intervalMinutes * 60_000).toISOString()
+      nextRefreshAfter: nextBalanceRefreshAfter(candidate.config.intervalMinutes)
     }
   }
+}
+
+function nextBalanceRefreshAfter(intervalMinutes: number): string {
+  return new Date(Date.now() + intervalMinutes * 60_000).toISOString()
 }
 
 export async function queryAccountBalance(candidate: AccountBalanceQueryCandidate): Promise<AccountBalanceSnapshot> {
