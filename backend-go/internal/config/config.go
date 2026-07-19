@@ -278,8 +278,13 @@ func validateDistinctRedisURLs(cfg Config) error {
 		if err != nil {
 			return fmt.Errorf("%s 无效: %w", item.name, err)
 		}
+		parsed, _ := url.Parse(item.raw)
+		host := strings.ToLower(parsed.Hostname())
+		if host == "localhost" || host == "::1" {
+			return fmt.Errorf("%s 不能使用 localhost 或 ::1，请使用 canonical 127.0.0.1", item.name)
+		}
 		if prev, ok := seen[identity]; ok {
-			return fmt.Errorf("%s 不能与 %s 指向同一个 Redis DB", item.name, prev)
+			return fmt.Errorf("%s 不能与 %s 指向同一个 Redis 进程；cache/state/queue 必须使用不同 host:port", item.name, prev)
 		}
 		seen[identity] = item.name
 	}
@@ -370,5 +375,5 @@ func redisIdentity(rawURL string) (string, error) {
 	}
 
 	host := strings.ToLower(parsed.Hostname())
-	return net.JoinHostPort(host, port) + "/" + db, nil
+	return net.JoinHostPort(host, port), nil
 }

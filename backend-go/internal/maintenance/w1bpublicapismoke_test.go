@@ -54,8 +54,8 @@ func TestW1bPublicAPISmokeConfigUsesSafeNodeDummyURL(t *testing.T) {
 		RedisNamespace:             "juhe-ai",
 		PostgresURL:                "postgres://127.0.0.1:5432/juhe_ai",
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
-		RedisStateURL:              "redis://127.0.0.1:6379/1",
-		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		RedisStateURL:              "redis://127.0.0.1:6380/1",
+		RedisQueueURL:              "redis://127.0.0.1:6381/2",
 		Secret:                     "12345678901234567890123456789012",
 		NodeInternalRequestTimeout: 2 * time.Second,
 		ShutdownTimeout:            time.Second,
@@ -121,8 +121,8 @@ func TestMissingW1bPublicAPIConfigRequiresLongSecret(t *testing.T) {
 	missing := missingW1bPublicAPIConfig(config.Config{
 		PostgresURL:   "postgres://user:pass@127.0.0.1:5432/app",
 		RedisCacheURL: "redis://127.0.0.1:6379/0",
-		RedisStateURL: "redis://127.0.0.1:6379/1",
-		RedisQueueURL: "redis://127.0.0.1:6379/2",
+		RedisStateURL: "redis://127.0.0.1:6380/1",
+		RedisQueueURL: "redis://127.0.0.1:6381/2",
 		Secret:        "short",
 	})
 
