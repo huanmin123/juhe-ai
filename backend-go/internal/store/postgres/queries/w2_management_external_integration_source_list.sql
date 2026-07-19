@@ -233,3 +233,90 @@ SET
   expires_at = sqlc.narg(expires_at)::timestamptz,
   updated_at = sqlc.arg(updated_at)::timestamptz
 WHERE source_ref_id = sqlc.arg(source_id)::text;
+
+-- name: LockBuiltInExternalIntegrationSourceForReset :one
+SELECT
+  sources.id,
+  sources.name,
+  sources.status,
+  sources.scopes_json,
+  sources.rate_limits_json,
+  sources.expires_at,
+  sources.notes,
+  sources.last_used_at,
+  sources.created_at,
+  sources.updated_at
+FROM juhe_business.external_integration_sources AS sources
+WHERE sources.id = 'extsrc_builtin_test'
+FOR UPDATE;
+
+-- name: LockBuiltInExternalIntegrationSourceTokenForReset :one
+SELECT
+  tokens.token_hash,
+  tokens.source_ref_id,
+  tokens.id,
+  tokens.name,
+  tokens.token_prefix,
+  tokens.token_suffix,
+  tokens.status,
+  tokens.scopes_json,
+  tokens.expires_at,
+  tokens.last_used_at,
+  tokens.created_at,
+  tokens.updated_at,
+  tokens.revoked_at
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.id = 'exttok_builtin_test'
+  AND tokens.source_ref_id = 'extsrc_builtin_test'
+FOR UPDATE;
+
+-- name: ResetBuiltInExternalIntegrationSourceToken :execrows
+UPDATE juhe_business.external_integration_source_tokens
+SET
+  token_hash = sqlc.arg(token_hash)::text,
+  token_secret_encrypted = sqlc.arg(token_secret_encrypted)::text,
+  token_prefix = sqlc.arg(token_prefix)::text,
+  token_suffix = sqlc.arg(token_suffix)::text,
+  status = 'active',
+  revoked_at = NULL,
+  updated_at = sqlc.arg(updated_at)::timestamptz
+WHERE id = 'exttok_builtin_test'
+  AND source_ref_id = 'extsrc_builtin_test';
+
+-- name: TouchBuiltInExternalIntegrationSource :execrows
+UPDATE juhe_business.external_integration_sources
+SET updated_at = sqlc.arg(updated_at)::timestamptz
+WHERE id = 'extsrc_builtin_test';
+
+-- name: ReadBuiltInExternalIntegrationSourceAfterReset :one
+SELECT
+  sources.id,
+  sources.name,
+  sources.status,
+  sources.scopes_json,
+  sources.rate_limits_json,
+  sources.expires_at,
+  sources.notes,
+  sources.last_used_at,
+  sources.created_at,
+  sources.updated_at
+FROM juhe_business.external_integration_sources AS sources
+WHERE sources.id = 'extsrc_builtin_test';
+
+-- name: ReadBuiltInExternalIntegrationSourceTokenAfterReset :one
+SELECT
+  tokens.source_ref_id,
+  tokens.id,
+  tokens.name,
+  tokens.token_prefix,
+  tokens.token_suffix,
+  tokens.status,
+  tokens.scopes_json,
+  tokens.expires_at,
+  tokens.last_used_at,
+  tokens.created_at,
+  tokens.updated_at,
+  tokens.revoked_at
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.id = 'exttok_builtin_test'
+  AND tokens.source_ref_id = 'extsrc_builtin_test';

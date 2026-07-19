@@ -557,6 +557,223 @@ func (q *Queries) ListManagementExternalIntegrationSources(ctx context.Context, 
 	return items, nil
 }
 
+const lockBuiltInExternalIntegrationSourceForReset = `-- name: LockBuiltInExternalIntegrationSourceForReset :one
+SELECT
+  sources.id,
+  sources.name,
+  sources.status,
+  sources.scopes_json,
+  sources.rate_limits_json,
+  sources.expires_at,
+  sources.notes,
+  sources.last_used_at,
+  sources.created_at,
+  sources.updated_at
+FROM juhe_business.external_integration_sources AS sources
+WHERE sources.id = 'extsrc_builtin_test'
+FOR UPDATE
+`
+
+func (q *Queries) LockBuiltInExternalIntegrationSourceForReset(ctx context.Context) (JuheBusinessExternalIntegrationSource, error) {
+	row := q.db.QueryRow(ctx, lockBuiltInExternalIntegrationSourceForReset)
+	var i JuheBusinessExternalIntegrationSource
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.ScopesJson,
+		&i.RateLimitsJson,
+		&i.ExpiresAt,
+		&i.Notes,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const lockBuiltInExternalIntegrationSourceTokenForReset = `-- name: LockBuiltInExternalIntegrationSourceTokenForReset :one
+SELECT
+  tokens.token_hash,
+  tokens.source_ref_id,
+  tokens.id,
+  tokens.name,
+  tokens.token_prefix,
+  tokens.token_suffix,
+  tokens.status,
+  tokens.scopes_json,
+  tokens.expires_at,
+  tokens.last_used_at,
+  tokens.created_at,
+  tokens.updated_at,
+  tokens.revoked_at
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.id = 'exttok_builtin_test'
+  AND tokens.source_ref_id = 'extsrc_builtin_test'
+FOR UPDATE
+`
+
+type LockBuiltInExternalIntegrationSourceTokenForResetRow struct {
+	TokenHash   string
+	SourceRefID string
+	ID          string
+	Name        string
+	TokenPrefix string
+	TokenSuffix string
+	Status      string
+	ScopesJson  string
+	ExpiresAt   pgtype.Timestamptz
+	LastUsedAt  pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	RevokedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) LockBuiltInExternalIntegrationSourceTokenForReset(ctx context.Context) (LockBuiltInExternalIntegrationSourceTokenForResetRow, error) {
+	row := q.db.QueryRow(ctx, lockBuiltInExternalIntegrationSourceTokenForReset)
+	var i LockBuiltInExternalIntegrationSourceTokenForResetRow
+	err := row.Scan(
+		&i.TokenHash,
+		&i.SourceRefID,
+		&i.ID,
+		&i.Name,
+		&i.TokenPrefix,
+		&i.TokenSuffix,
+		&i.Status,
+		&i.ScopesJson,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const readBuiltInExternalIntegrationSourceAfterReset = `-- name: ReadBuiltInExternalIntegrationSourceAfterReset :one
+SELECT
+  sources.id,
+  sources.name,
+  sources.status,
+  sources.scopes_json,
+  sources.rate_limits_json,
+  sources.expires_at,
+  sources.notes,
+  sources.last_used_at,
+  sources.created_at,
+  sources.updated_at
+FROM juhe_business.external_integration_sources AS sources
+WHERE sources.id = 'extsrc_builtin_test'
+`
+
+func (q *Queries) ReadBuiltInExternalIntegrationSourceAfterReset(ctx context.Context) (JuheBusinessExternalIntegrationSource, error) {
+	row := q.db.QueryRow(ctx, readBuiltInExternalIntegrationSourceAfterReset)
+	var i JuheBusinessExternalIntegrationSource
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Status,
+		&i.ScopesJson,
+		&i.RateLimitsJson,
+		&i.ExpiresAt,
+		&i.Notes,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const readBuiltInExternalIntegrationSourceTokenAfterReset = `-- name: ReadBuiltInExternalIntegrationSourceTokenAfterReset :one
+SELECT
+  tokens.source_ref_id,
+  tokens.id,
+  tokens.name,
+  tokens.token_prefix,
+  tokens.token_suffix,
+  tokens.status,
+  tokens.scopes_json,
+  tokens.expires_at,
+  tokens.last_used_at,
+  tokens.created_at,
+  tokens.updated_at,
+  tokens.revoked_at
+FROM juhe_business.external_integration_source_tokens AS tokens
+WHERE tokens.id = 'exttok_builtin_test'
+  AND tokens.source_ref_id = 'extsrc_builtin_test'
+`
+
+type ReadBuiltInExternalIntegrationSourceTokenAfterResetRow struct {
+	SourceRefID string
+	ID          string
+	Name        string
+	TokenPrefix string
+	TokenSuffix string
+	Status      string
+	ScopesJson  string
+	ExpiresAt   pgtype.Timestamptz
+	LastUsedAt  pgtype.Timestamptz
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	RevokedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) ReadBuiltInExternalIntegrationSourceTokenAfterReset(ctx context.Context) (ReadBuiltInExternalIntegrationSourceTokenAfterResetRow, error) {
+	row := q.db.QueryRow(ctx, readBuiltInExternalIntegrationSourceTokenAfterReset)
+	var i ReadBuiltInExternalIntegrationSourceTokenAfterResetRow
+	err := row.Scan(
+		&i.SourceRefID,
+		&i.ID,
+		&i.Name,
+		&i.TokenPrefix,
+		&i.TokenSuffix,
+		&i.Status,
+		&i.ScopesJson,
+		&i.ExpiresAt,
+		&i.LastUsedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const resetBuiltInExternalIntegrationSourceToken = `-- name: ResetBuiltInExternalIntegrationSourceToken :execrows
+UPDATE juhe_business.external_integration_source_tokens
+SET
+  token_hash = $1::text,
+  token_secret_encrypted = $2::text,
+  token_prefix = $3::text,
+  token_suffix = $4::text,
+  status = 'active',
+  revoked_at = NULL,
+  updated_at = $5::timestamptz
+WHERE id = 'exttok_builtin_test'
+  AND source_ref_id = 'extsrc_builtin_test'
+`
+
+type ResetBuiltInExternalIntegrationSourceTokenParams struct {
+	TokenHash            string
+	TokenSecretEncrypted string
+	TokenPrefix          string
+	TokenSuffix          string
+	UpdatedAt            pgtype.Timestamptz
+}
+
+func (q *Queries) ResetBuiltInExternalIntegrationSourceToken(ctx context.Context, arg ResetBuiltInExternalIntegrationSourceTokenParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resetBuiltInExternalIntegrationSourceToken,
+		arg.TokenHash,
+		arg.TokenSecretEncrypted,
+		arg.TokenPrefix,
+		arg.TokenSuffix,
+		arg.UpdatedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const syncManagementExternalIntegrationSourceTokens = `-- name: SyncManagementExternalIntegrationSourceTokens :execrows
 UPDATE juhe_business.external_integration_source_tokens
 SET
@@ -586,6 +803,20 @@ func (q *Queries) SyncManagementExternalIntegrationSourceTokens(ctx context.Cont
 		arg.UpdatedAt,
 		arg.SourceID,
 	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const touchBuiltInExternalIntegrationSource = `-- name: TouchBuiltInExternalIntegrationSource :execrows
+UPDATE juhe_business.external_integration_sources
+SET updated_at = $1::timestamptz
+WHERE id = 'extsrc_builtin_test'
+`
+
+func (q *Queries) TouchBuiltInExternalIntegrationSource(ctx context.Context, updatedAt pgtype.Timestamptz) (int64, error) {
+	result, err := q.db.Exec(ctx, touchBuiltInExternalIntegrationSource, updatedAt)
 	if err != nil {
 		return 0, err
 	}
