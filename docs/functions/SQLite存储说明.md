@@ -199,6 +199,8 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 
 standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，standalone 模式不引入 Redis 等分布式依赖。performance 模式显式引入 Redis 作为跨进程短 TTL 缓存和运行态 state store，具体见 [PostgreSQL 与 Redis 高性能模式设计](PostgreSQL与Redis高性能模式设计.md)。缓存只用于降低请求链路反查成本，standalone 模式事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
 
+`PLAN-0115` 待实现的页面统一确认在 standalone 中不能每 30 秒查询 SQLite。目标方案由各事实 owner 在事务内写紧凑 outbox / dirty generation，DB service 作为页面 revision 和 epoch 的内存 owner，server、ingest-worker、stats-worker 与 ops-worker 通过有界 IPC 加速通知；IPC 失败后由持久 outbox 重放，无法证明连续时返回 `resetRequired`。DB service 重启时更换 standalone epoch 并让前端重建当前域。最近 7 天登录用户预热也必须把结果送到 DB service owner，不能只写 worker 自己的 Map。完整契约见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
+
 高性能模式下，缓存、运行态和队列的全局边界是 Redis / Redis Streams，而不是进程内 memory：
 
 - `JUHE_AI_RUNTIME_MODE=performance` 必须搭配 `JUHE_AI_CACHE_DRIVER=redis`、`JUHE_AI_RUNTIME_STATE_DRIVER=redis` 和 `JUHE_AI_QUEUE_DRIVER=redis_stream`；不能用 `memory` driver 作为高性能模式兜底。

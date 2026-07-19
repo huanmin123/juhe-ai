@@ -361,7 +361,7 @@ Anthropic usage 与 OpenAI usage 不同，必须单独维护语义。
 
 价格口径：
 
-- 成本估算按 Anthropic 官方模型价格维护在 `providerCode = anthropic` 的模型价格目录下。
+- Anthropic 官方价格直接维护在 `providerCode=anthropic + model` 对应模型行，由管理员修改当前价格；现有 usage cost breakdown 保存请求当次实际单价和成本，后续改价不重算历史记录。
 - Long context、prompt cache 读写、1h cache、batch 折扣等价格差异必须有明确模型价格字段支撑；没有字段前只记录 token，不编造成本。`thinking_tokens` 是 `output_tokens` 的分解字段，不单独重复计费。
 - Anthropic-compatible 国产入口的价格按对应供应商维护，不能套用 Anthropic 官方价格。
 
@@ -391,18 +391,27 @@ Anthropic 模型目录必须单独维护在 `anthropic` 供应商下。
 - `claude-haiku-4-5`
 - `claude-haiku-4-5-20251001`
 - `claude-sonnet-5`
+- `best`
+- `fable`
+- `opus`
+- `opus[1m]`
+- `opusplan`
+- `sonnet`
+- `sonnet[1m]`
+- `haiku`
 
 模型目录字段要求：
 
 - `providerCode = anthropic`
-- `model` 优先使用 Anthropic 官方模型 ID，保留官方大小写和连字符写法；Claude Code 客户端配置别名与兼容网关 / 代理专用别名只能作为隐藏计价别名或客户端解析规则，不能混入官方 Anthropic 模型发现目录。
+- `model` 优先使用 Anthropic 官方模型 ID，保留官方大小写和连字符写法；Claude Code 官方模型配置别名必须通过显式模型别名或账户模型映射落到 `providerCode=anthropic + model`，兼容网关 / 代理专用别名不能混入官方 Anthropic 模型发现目录。
 - 当前内置目录补充保留官方 current / dated ID：`claude-mythos-preview`、`claude-haiku-4-5-20251001`、`claude-sonnet-4-5-20250929`、`claude-opus-4-5-20251101`、`claude-opus-4-1`、`claude-opus-4-1-20250805`。其中 `claude-opus-4-1*` 已有 `shutdown_date = 2026-08-05`，到期后自动不再展示和计价。
-- Claude Code 模型配置别名 `best`、`fable`、`opus`、`opus[1m]`、`opusplan`、`sonnet`、`sonnet[1m]`、`haiku` 只保留隐藏解析 / 计价能力，不进入模型发现目录。`default` 是清除模型覆盖并回到推荐模型的控制值，也不进入目录。
-- `claude-opus-4-6-thinking`、`claude-sonnet-4-6-thinking` 按同族模型价格口径计价并可进入模型发现目录；Antigravity 前缀 / 后缀 / `google-antigravity` 等兼容代理写法只保留隐藏计价能力，不进入官方 Anthropic 模型发现目录。
-- Antigravity 的 `-low`、`-medium`、`-high`、`-max` 等 effort 后缀不作为单独模型展示，但计价解析会回落到基础 thinking 模型；旧的 `claude-opus-4-5-thinking` / `google/antigravity-claude-opus-4-5-thinking` 不收录。以上 Antigravity 名称不代表 Anthropic 官方直连模型 ID。
-- `claude-fake-5` 是本项目真实 Anthropic-compatible 代理联调用过的模型 ID，仅保留隐藏计价能力，不进入官方 Anthropic 模型发现目录；后续如果该代理拆成独立供应商，应迁移到对应供应商目录。
+- Claude Code 模型配置别名进入目录：`best`、`fable`、`opus`、`opus[1m]`、`opusplan`、`sonnet`、`sonnet[1m]`、`haiku`。`default` 只是 Claude Code 用来清除模型覆盖并回到推荐模型的控制值，不是模型别名，不进入目录。
+- `claude-opus-4-6-thinking`、`claude-sonnet-4-6-thinking` 如进入模型发现目录，必须各自拥有明确的 `providerCode + model` 模型行；管理员可以在价格编辑表单中复制同族模型当前价格作为录入起点，但保存的是该模型行自己的完整当前价格，运行时不能按名称寻找同族价格。Antigravity 前缀 / 后缀 / `google-antigravity` 等兼容代理写法不进入官方 Anthropic 模型发现目录。
+- Antigravity 的 `-low`、`-medium`、`-high`、`-max` 等 effort 后缀不作为单独模型展示；可信 driver 必须在计价前将其显式规范化为最终上游模型和思考级别，再按 `providerCode + model` 查当前价格，不允许字符串价格回落。旧的 `claude-opus-4-5-thinking` / `google/antigravity-claude-opus-4-5-thinking` 不收录。以上 Antigravity 名称不代表 Anthropic 官方直连模型 ID。
+- `claude-fake-5` 是本项目真实 Anthropic-compatible 代理联调用过的模型 ID；如需继续使用，应保存为明确的供应商模型行，由管理员直接维护当前价格，或保持 `unpriced`。它不能按名称继承 Claude 族价格，也不进入官方 Anthropic 模型发现目录；后续如果该代理拆成独立供应商，应迁移到对应供应商目录。
 - 已退休或 shutdown date 已过的模型不进入目录，例如 `claude-opus-4-20250514`、`claude-sonnet-4-20250514`、`claude-3-7-sonnet-20250219`、`claude-3-5-haiku-20241022`。
 - `supportedApiProtocols` 填 Anthropic Messages 对应能力。
+- 服务等级和思考级别只复用模型行现有 `supportedServiceTiers`、`supportedReasoningEfforts` 和账户现有 `service_tier_override`、`reasoning_effort_override`；只填写已核验值，没有可登记值时保持空数组，由 Anthropic driver 负责目标协议字段转换，模型能力继续直接维护在当前模型行。
 - `contextWindowTokens`、`releaseDate`、`displayName` 以官方 Models API 或官方模型文档为准；不确定时留空，不为了排序编造；同一代或无精确发布日期的模型使用内置目录顺序字段保持下拉框从新到旧。
 - `ownedBy` 或等价展示字段应明确为 Anthropic，不跟第三方 Anthropic-compatible 模型混在一起。
 - `GET /v1/models` 对 Anthropic native 客户端返回本地 Anthropic 模型目录，不请求上游；如需增加“同步上游模型”能力，必须限制响应体大小并按当前性能底线分块读取。

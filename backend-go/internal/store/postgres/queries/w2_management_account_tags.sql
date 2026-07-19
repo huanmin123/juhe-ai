@@ -133,6 +133,13 @@ WHERE accounts.id = sqlc.arg(account_id)::text
   )
 LIMIT 1;
 
+-- name: ListAccountAuthorizationGranteeIDs :many
+SELECT DISTINCT grantee_system_account_id
+FROM juhe_business.resource_authorizations
+WHERE resource_type = 'account'
+  AND resource_id = sqlc.arg(account_id)::text
+ORDER BY grantee_system_account_id;
+
 -- name: ListManagementAccountTagsForAccount :many
 SELECT
   account_tags.id,

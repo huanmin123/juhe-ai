@@ -90,7 +90,7 @@ async function verifyConcurrentLoadsAndCacheIsolation(): Promise<void> {
   const second = testModels(true, 'owner-a')
   const firstLoad = first.loadSavedAccountTestOptions(account)
   const secondLoad = second.loadSavedAccountTestOptions(account)
-  await Promise.resolve()
+  await waitFor(() => managementCalls === 1, '账户测试选项请求未进入 loader')
   assert.equal(managementCalls, 1, '相同用户、视图、范围、账户和配置版本的并发请求应合并')
   releaseFirstLoad()
   await Promise.all([firstLoad, secondLoad])
@@ -180,4 +180,12 @@ function currentUser(id: string) {
     role: 'admin' as const,
     mustChangePassword: false
   }
+}
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  for (let index = 0; index < 50; index += 1) {
+    if (predicate()) return
+    await Promise.resolve()
+  }
+  throw new Error(message)
 }

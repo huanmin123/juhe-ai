@@ -1,14 +1,19 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/modules/managementauthorizations"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestRunIngestWorkerRequiresPostgresURL(t *testing.T) {
@@ -92,6 +97,46 @@ func TestRunAuthorizationExpirySweepWorkerValidatesInterval(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "扫描间隔") {
 		t.Fatalf("RunAuthorizationExpirySweepWorker() error = %v, want invalid interval", err)
+	}
+}
+
+func TestNewAuthorizationExpirySweepServiceWiresPageDataDependencies(t *testing.T) {
+	store := &authorizationExpiryWorkerStoreStub{
+		expiryResult: port.ManagementResourceAuthorizationExpirySweepResult{
+			Expired: 1,
+			Authorizations: []port.ManagementResourceAuthorizationExpiryFanout{{
+				AuthorizationID:              "rauthgrant_team",
+				ResourceType:                 "account",
+				ResourceID:                   "acct_main",
+				ResourceOwnerSystemAccountID: "owner",
+				GranteeType:                  "team",
+				GranteeTeamID:                "team_main",
+			}},
+		},
+		teamFound: true,
+		teamResult: port.ManagementSystemTeamDetail{Members: []port.ManagementSystemTeamMemberSummary{
+			{SystemAccountID: "member_active", Status: "active"},
+			{SystemAccountID: "member_disabled", Status: "disabled"},
+		}},
+	}
+	publisher := &authorizationExpiryWorkerPublisherStub{err: errors.New("redis unavailable")}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	service := newAuthorizationExpirySweepService(store, nil, publisher, store, logger)
+
+	result, err := service.ExpireDue(context.Background(), managementauthorizations.ExpirySweepInput{Limit: 1})
+
+	if err != nil || result.Expired != 1 {
+		t.Fatalf("ExpireDue() result=%+v error=%v", result, err)
+	}
+	if store.teamCalls != 1 || store.teamID != "team_main" {
+		t.Fatalf("team lookup calls=%d teamID=%q", store.teamCalls, store.teamID)
+	}
+	if publisher.calls != 1 || !reflect.DeepEqual(publisher.owners, []string{"member_active", "owner"}) || publisher.allScopes {
+		t.Fatalf("publisher calls=%d owners=%#v allScopes=%v", publisher.calls, publisher.owners, publisher.allScopes)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "redis unavailable") {
+		t.Fatalf("warning log = %q", logs.String())
 	}
 }
 
@@ -250,4 +295,42 @@ func TestRunGatewayQuotaSnapshotBuildWorkerValidatesSnapshotTTLWhenPublishing(t 
 	if err == nil || !strings.Contains(err.Error(), "Redis TTL") {
 		t.Fatalf("RunGatewayQuotaSnapshotBuildWorker() error = %v, want invalid redis ttl", err)
 	}
+}
+
+type authorizationExpiryWorkerStoreStub struct {
+	expiryResult port.ManagementResourceAuthorizationExpirySweepResult
+	expiryErr    error
+	teamCalls    int
+	teamID       string
+	teamResult   port.ManagementSystemTeamDetail
+	teamFound    bool
+	teamErr      error
+}
+
+func (s *authorizationExpiryWorkerStoreStub) ExpireDueManagementResourceAuthorizations(_ context.Context, _ port.ManagementResourceAuthorizationExpirySweepInput) (port.ManagementResourceAuthorizationExpirySweepResult, error) {
+	return s.expiryResult, s.expiryErr
+}
+
+func (s *authorizationExpiryWorkerStoreStub) FindManagementSystemTeam(_ context.Context, teamID string, _ string) (port.ManagementSystemTeamDetail, bool, error) {
+	s.teamCalls++
+	s.teamID = teamID
+	return s.teamResult, s.teamFound, s.teamErr
+}
+
+type authorizationExpiryWorkerPublisherStub struct {
+	calls     int
+	owners    []string
+	allScopes bool
+	err       error
+}
+
+func (s *authorizationExpiryWorkerPublisherStub) PublishAccountsStaticReset(_ context.Context, owners []string, allScopes bool) error {
+	s.calls++
+	s.owners = append([]string(nil), owners...)
+	s.allScopes = allScopes
+	return s.err
+}
+
+func (s *authorizationExpiryWorkerPublisherStub) PublishPageDataReset(_ context.Context, _ string, _ []string, _ bool) error {
+	return s.err
 }

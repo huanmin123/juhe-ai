@@ -36,8 +36,19 @@ import {
   updateBuiltInProviderModelConfigurationAsync
 } from '../../storage/provider-model-catalog.repository.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
+import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
+import { publishPageDataDomainReset } from '../page-data/page-data-change.publisher.js'
 
 export const providersRouter = Router()
+
+const providerOptionsReadCache = createPageDataDomainReadCache<ProviderDefinition[]>('providers.catalog', {
+  max: 128,
+  ttlMs: 24 * 60 * 60 * 1000
+})
+const providerModelOptionsReadCache = createPageDataDomainReadCache<ProviderModelOption[]>('providers.catalog', {
+  max: 128,
+  ttlMs: 24 * 60 * 60 * 1000
+})
 
 interface ProviderModelOption {
   providerCode: string
@@ -54,7 +65,13 @@ type ProviderModelOptionInput = Omit<ProviderModelOption, 'defaultReasoningEffor
 
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
-    res.json(ok(await listProvidersForRequestAsync()))
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const providers = await providerOptionsReadCache.load(pageDataReadCacheKey({
+      scope: access,
+      route: '/providers',
+      query: { enabledOnly: false }
+    }), () => listProvidersForRequestAsync())
+    res.json(ok(providers))
   } catch (error) {
     next(error)
   }
@@ -63,7 +80,13 @@ providersRouter.get('/', requireAdmin, async (req, res, next) => {
 providersRouter.get('/options', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
-    res.json(ok((await listProvidersForRequestAsync(providerModelRequestSystemAccountId(access))).filter((provider) => provider.enabled)))
+    const systemAccountId = providerModelRequestSystemAccountId(access)
+    const providers = await providerOptionsReadCache.load(pageDataReadCacheKey({
+      scope: access,
+      route: '/providers/options',
+      query: { systemAccountId }
+    }), async () => (await listProvidersForRequestAsync(systemAccountId)).filter((provider) => provider.enabled))
+    res.json(ok(providers))
   } catch (error) {
     next(error)
   }
@@ -73,23 +96,30 @@ providersRouter.get('/models/options', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const systemAccountId = providerModelRequestSystemAccountId(access)
-    const providerCodes = await providerModelOptionProviderCodesAsync(req.query.protocol)
-    const providers = (await listProvidersAsync()).filter((provider) => provider.enabled && providerCodes.has(provider.code))
-    const catalogs = await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
-      providerCode: provider.code,
-      systemAccountId,
-      includeUnpriced: true
-    })))
-    const options = dedupeProviderModelOptions(
-      catalogs.flatMap((catalog) => catalog.map((item) => ({
-        providerCode: item.providerCode,
-        model: item.model,
-        supportedApiProtocols: item.supportedApiProtocols,
-        supportedServiceTiers: item.supportedServiceTiers,
-        supportedReasoningEfforts: item.supportedReasoningEfforts,
-        defaultReasoningEffort: item.defaultReasoningEffort
+    const protocol = Array.isArray(req.query.protocol) ? req.query.protocol[0] : req.query.protocol
+    const options = await providerModelOptionsReadCache.load(pageDataReadCacheKey({
+      scope: access,
+      route: '/providers/models/options',
+      query: { protocol, systemAccountId }
+    }), async () => {
+      const providerCodes = await providerModelOptionProviderCodesAsync(protocol)
+      const providers = (await listProvidersAsync()).filter((provider) => provider.enabled && providerCodes.has(provider.code))
+      const catalogs = await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
+        providerCode: provider.code,
+        systemAccountId,
+        includeUnpriced: true
       })))
-    )
+      return dedupeProviderModelOptions(
+        catalogs.flatMap((catalog) => catalog.map((item) => ({
+          providerCode: item.providerCode,
+          model: item.model,
+          supportedApiProtocols: item.supportedApiProtocols,
+          supportedServiceTiers: item.supportedServiceTiers,
+          supportedReasoningEfforts: item.supportedReasoningEfforts,
+          defaultReasoningEffort: item.defaultReasoningEffort
+        })))
+      )
+    })
     res.json(ok(options))
   } catch (error) {
     next(error)
@@ -182,6 +212,12 @@ providersRouter.put('/:code/default-health-check-model', async (req, res, next) 
           systemAccountId: targetSystemAccountId!,
           model: validation.model
         })
+    const affectedOwnerSystemAccountIds = targetSystemAccountId ? [targetSystemAccountId] : []
+    const allScopes = affectedOwnerSystemAccountIds.length === 0
+    await Promise.all([
+      publishPageDataDomainReset('providers.catalog', affectedOwnerSystemAccountIds, allScopes),
+      publishPageDataDomainReset('accounts.options', affectedOwnerSystemAccountIds, allScopes)
+    ])
     res.json(ok({
       providerCode: saved.providerCode,
       defaultHealthCheckModel: saved.model
@@ -335,6 +371,7 @@ providersRouter.post('/:code/models', async (req, res, next) => {
         systemAccountId: ownerSystemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
+      await publishProviderModelPageDataReset(saved)
       res.status(201).json(ok(saved))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
@@ -383,6 +420,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         summary: `更新模型配置：${saved.model}`, detailLevel: 'full', visibilityScope: 'admin_only',
         changes: [safeChange('configuration', '模型配置', providerModelConfigurationSnapshot(builtIn), providerModelConfigurationSnapshot(saved))]
       }, req)
+      await publishProviderModelPageDataReset({ scope: 'global' })
       res.json(ok(saved))
       return
     }
@@ -438,6 +476,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
           })
         }
       }
+      await publishProviderModelPageDataReset(saved)
       res.json(ok(saved))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
@@ -488,6 +527,7 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
           model: existing.model
         })
       }
+      await publishProviderModelPageDataReset(existing)
     }
     res.json(ok({ deleted }))
   } catch (error) {
@@ -497,6 +537,15 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
 
 function providerModelRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
   return access?.systemAccountFilterId ?? access?.systemAccountId
+}
+
+async function publishProviderModelPageDataReset(model: { scope?: string; systemAccountId?: string }): Promise<void> {
+  const ownerSystemAccountIds = model.scope === 'personal' && model.systemAccountId ? [model.systemAccountId] : []
+  const allScopes = ownerSystemAccountIds.length === 0
+  await Promise.all([
+    publishPageDataDomainReset('providers.catalog', ownerSystemAccountIds, allScopes),
+    publishPageDataDomainReset('accounts.options', ownerSystemAccountIds, allScopes)
+  ])
 }
 
 async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {

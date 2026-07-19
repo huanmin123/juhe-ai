@@ -246,29 +246,32 @@ func TestPublicSettingsRouteTrustProxySharesRateLimitBucket(t *testing.T) {
 	}
 }
 
-func TestRouterSkipsSystemAPIRateLimitForHealth(t *testing.T) {
-	limiter := &publicSettingsRateLimiterStub{
-		decision: SystemAPIRateLimitDecision{
-			Allowed:           false,
-			RetryAfterSeconds: 7,
-		},
-	}
-	router := NewRouter(RouterOptions{
-		Config:                   config.Config{Host: "127.0.0.1", Port: 3000},
-		SystemAPIRateLimitReader: systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{IPReadPerMinute: 1, IPReadBurstPer10Seconds: 1}},
-		SystemAPIIPRateLimiter:   limiter,
-	})
+func TestRouterSkipsSystemAPIRateLimitForHealthAndReadiness(t *testing.T) {
+	for _, path := range []string{"/__aisys__/api/health", "/__aisys__/api/readyz"} {
+		t.Run(path, func(t *testing.T) {
+			limiter := &publicSettingsRateLimiterStub{
+				decision: SystemAPIRateLimitDecision{
+					Allowed:           false,
+					RetryAfterSeconds: 7,
+				},
+			}
+			router := NewRouter(RouterOptions{
+				Config:                   config.Config{Host: "127.0.0.1", Port: 3000},
+				SystemAPIRateLimitReader: systemAPIRateLimitReaderStub{settings: port.SystemAPIRateLimitSettings{IPReadPerMinute: 1, IPReadBurstPer10Seconds: 1}},
+				SystemAPIIPRateLimiter:   limiter,
+			})
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/health", nil)
-	rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
 
-	router.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
-	}
-	if limiter.calls != 0 {
-		t.Fatalf("system API limiter calls = %d, want 0 for health", limiter.calls)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s, want 200", rec.Code, rec.Body.String())
+			}
+			if limiter.calls != 0 {
+				t.Fatalf("system API limiter calls = %d, want 0", limiter.calls)
+			}
+		})
 	}
 }
 

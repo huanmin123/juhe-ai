@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadProviders" />
+    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadProviders(true)" />
     <ResponsiveDataList table-class="page-table provider-table" :columns="providerColumns" :data-source="providers" row-key="code" :loading="loading" :scroll-x="providerScrollX" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
       <template #emptyText>
         <a-empty class="page-empty-card" :description="providerEmptyDescription" />
@@ -270,6 +270,8 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
+import { loadProviderModelCatalogResource } from '@/composables/useProviderModelCatalogResource'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
 import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/useAccountProviderModelOptions'
@@ -333,6 +335,7 @@ const editingCustomModelId = ref<string>()
 const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
 const editingOriginalStatus = ref<ProviderModelPricing['status']>()
+let modelRequestSequence = 0
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canManageModelPrices = computed(() => canManageModelPricesForView(isManagementView.value, authState.isAdmin.value))
@@ -436,10 +439,15 @@ function formatDefaultSupportedModels(provider: ProviderDefinition): string {
   return hiddenCount > 0 ? `${visible.join(' / ')} / +${hiddenCount}` : visible.join(' / ')
 }
 
-async function loadProviders() {
+async function loadProviders(force = false) {
   loading.value = true
   try {
-    providers.value = isManagementView.value ? await api.providers.list() : await api.providers.options()
+    providers.value = await loadProviderOptionsResource({
+      apply: (nextProviders) => { providers.value = nextProviders },
+      force,
+      includeDisabled: isManagementView.value,
+      isManagementView: isManagementView.value
+    })
   } catch (error) {
     console.error(error)
     message.error('加载供应商失败')
@@ -467,6 +475,7 @@ function handleProviderAction(key: string, provider: ProviderDefinition) {
 }
 
 function resetModelModal() {
+  modelRequestSequence += 1
   activeProvider.value = null
   modelKeyword.value = ''
   modelLoadError.value = ''
@@ -520,7 +529,7 @@ async function saveCustomModel() {
     invalidateAccountProviderModelOptionsCache()
     customModelModalOpen.value = false
     resetCustomModelForm()
-    await reloadActiveProviderModels()
+    await reloadActiveProviderModels(true)
   } catch (error) {
     console.error(error)
     message.error(extractModelErrorMessage(error, '自定义模型保存失败'))
@@ -536,7 +545,7 @@ async function deleteCustomModel(record: ProviderModelPricing) {
     await api.providers.deleteModel(record.providerCode, record.id)
     invalidateAccountProviderModelOptionsCache()
     message.success('自定义模型已删除')
-    await reloadActiveProviderModels()
+    await reloadActiveProviderModels(true)
   } catch (error) {
     console.error(error)
     message.error(extractModelErrorMessage(error, '自定义模型删除失败'))
@@ -545,29 +554,50 @@ async function deleteCustomModel(record: ProviderModelPricing) {
   }
 }
 
-async function reloadActiveProviderModels() {
+async function reloadActiveProviderModels(force = false) {
   const provider = activeProvider.value
   if (!provider) return
   ensureModelSystemAccountFilter()
+  const requestSequence = ++modelRequestSequence
+  const modelQuery = modelCatalogQueryParams()
   modelLoading.value = true
   modelLoadError.value = ''
   try {
-    const scopedProviders = isManagementView.value
-      ? await api.providers.list(modelProviderQueryParams())
-      : await api.providers.options()
+    const scopedProviders = await loadProviderOptionsResource({
+      force,
+      includeDisabled: isManagementView.value,
+      isManagementView: isManagementView.value,
+      systemAccountId: modelQuery.systemAccountId
+    })
+    if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
     const scopedProvider = scopedProviders.find((item) => item.code === provider.code)
     if (scopedProvider) {
       activeProvider.value = scopedProvider
     }
-    providerModels.value = await api.providers.models(provider.code, modelCatalogQueryParams())
-    selectedModelCategory.value = findFirstModelCategory(providerModels.value)
+    const modelResult = await loadProviderModelCatalogResource({
+      force,
+      isManagementView: isManagementView.value,
+      providerCode: provider.code,
+      query: modelQuery
+    })
+    applyProviderModelResult(modelResult.data, requestSequence, provider.code)
+    void modelResult.confirmation?.then((outcome) => {
+      if (outcome.data) applyProviderModelResult(outcome.data, requestSequence, provider.code)
+    })
   } catch (error) {
+    if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
     console.error(error)
     modelLoadError.value = extractModelErrorMessage(error, '加载模型价格失败')
     message.error(modelLoadError.value)
   } finally {
-    modelLoading.value = false
+    if (requestSequence === modelRequestSequence) modelLoading.value = false
   }
+}
+
+function applyProviderModelResult(models: ProviderModelPricing[], requestSequence: number, providerCode: string): void {
+  if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== providerCode) return
+  providerModels.value = models
+  selectedModelCategory.value = findFirstModelCategory(models)
 }
 
 function resetCustomModelForm() {

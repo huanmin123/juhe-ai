@@ -52,6 +52,8 @@ winget install CaddyServer.Caddy
 
 Windows 如果不用 `winget`，也可以下载官方 release 包，把 `caddy.exe` 放到固定目录后用 NSSM 或任务计划程序守护。
 
+以上标准安装方式适合 Caddy 直接终止 HTTPS 的 HTTP 反向代理。公网 Edge 做 L4 TLS 透传、或回源 listener 接收 PROXY protocol 时，需要对应的 layer4 / proxy_protocol 模块；标准包不保证包含。必须用实际运行的同一个 binary 执行 `caddy list-modules`、`adapt` 和 `validate`。完整边界见 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)。
+
 ## 4. 配置 juhe-ai 环境变量
 
 发布包部署时修改 `backend/.env`：
@@ -180,6 +182,19 @@ sudo apt install -y nginx certbot python3-certbot-nginx
 
 Nginx 站点示例：
 
+高并发长连接还应在主 `nginx.conf` 中为 worker 设置起步上限，并同步保证 Nginx 服务的实际 `nofile` 不低于 `65536`：
+
+```nginx
+worker_processes auto;
+worker_rlimit_nofile 65536;
+
+events {
+    worker_connections 16384;
+}
+```
+
+不要无证据开启 `multi_accept on`。
+
 ```nginx
 server {
     listen 80;
@@ -190,7 +205,11 @@ server {
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_cache off;
+        proxy_socket_keepalive on;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
         proxy_set_header Host $host;
@@ -211,55 +230,15 @@ systemctl list-timers | grep certbot || true
 
 Certbot 通常会安装 systemd timer 或 cron 来自动续期；上线前必须用 `renew --dry-run` 验证续期链路。
 
-## 9. 家庭宽带 edge / 隧道回源模式
+## 9. 家庭宽带 Edge / WireGuard 回源模式
 
-普通服务器部署通常让 Caddy 直接监听公网 `80/443`。家庭宽带或家用 Mac 部署时，也可能是：
+普通服务器部署通常让 Caddy 直接监听公网 `80/443` 并终止 TLS。高并发家庭 / 内网回源使用另一种互斥模式：
 
 ```text
-公网 edge / 隧道 -> 家里主机 Caddy 127.0.0.1:8081/8443 -> juhe-ai 127.0.0.1:3000
+公网 Edge Caddy layer4 -> WireGuard -> 家里主机 Caddy 终止 TLS -> Nginx/juhe-ai
 ```
 
-这种情况下，Caddy 可以只绑定本机地址和非标准端口：
-
-```caddyfile
-{
-    admin off
-    default_bind 127.0.0.1
-    http_port 8081
-    https_port 8443
-}
-
-http://ai.example.com {
-    redir https://ai.example.com{uri} 308
-}
-
-https://ai.example.com {
-    reverse_proxy 127.0.0.1:3000 {
-        flush_interval -1
-    }
-}
-```
-
-如果前置 edge 会传递 PROXY protocol，需要在 TLS listener 上启用 wrapper，并只允许可信来源：
-
-```caddyfile
-{
-    default_bind 127.0.0.1
-    https_port 8443
-    servers 127.0.0.1:8443 {
-        listener_wrappers {
-            proxy_protocol {
-                timeout 5s
-                allow 127.0.0.1/32
-                fallback_policy require
-            }
-            tls
-        }
-    }
-}
-```
-
-只有确认前置链路真的发送 PROXY protocol 时才启用这段；普通直连 Caddy 不需要。`fallback_policy require` 用于避免配置错误时静默退化成 edge / 隧道 IP。`allow` 必须换成真实可信回源 CIDR。
+Edge 不写 HTTP `reverse_proxy`，否则 TLS 会在 Edge 终止并与回源 TLS + PROXY v2 模式冲突。回源 Caddy 的 listener 只绑定精确 WireGuard 地址；wrapper 顺序固定为 `proxy_protocol` 再 `tls`，`allow` 只放 Edge peer `/32`，并使用 `fallback_policy require`。WireGuard、Caddy layer4、五 Edge 正式拓扑、完整示例、系统参数、切换和回滚统一见 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)。
 
 ## 10. 真实客户端 IP
 
@@ -310,7 +289,7 @@ ai.example.com {
 
 把 `203.0.113.10/32`、`100.64.0.0/10` 换成真实可信的前置代理、隧道或内网回源地址段。不要为了省事信任 `0.0.0.0/0`。
 
-如果前置入口通过 PROXY protocol 把真实来源传给家庭 Mac 或内网 Caddy，按第 9 节启用 `listener_wrappers.proxy_protocol`，并用 `allow` 限制可信来源。不要同时让普通公网请求绕过 PROXY protocol 入口直连 Caddy。
+如果前置入口通过 PROXY v2 把真实来源传给家庭 Mac 或内网 Caddy，按 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md) 配置精确 WireGuard listener。不要同时让普通公网请求绕过 PROXY protocol 入口直连 Caddy。
 
 验证方式：
 

@@ -3,6 +3,7 @@
 > 本文定义当前 Node 过渡阶段从默认 SQLite + 内存缓存扩展到 PostgreSQL + Redis 高性能模式的边界。执行计划见 [PLAN-0066 PostgreSQL 与 Redis 高性能模式](../plans/计划-0066-PostgreSQL与Redis高性能模式.md)。
 > 数据库、缓存、运行态和队列的业务语义适配边界见 [存储适配接口设计](存储适配接口设计.md)。
 > 统计准确性、读写资源隔离、Redis 清理和压测验收的细化规则见 [可靠统计与读写资源隔离设计](可靠统计与读写资源隔离设计.md)。
+> 管理后台页面 revision、字段投影、统一确认、IndexedDB 和最近登录用户预热见 [页面数据缓存与增量更新设计](页面数据缓存与增量更新设计.md)。
 
 > 迁移方向更新：自 [PLAN-0081 Node 转 Go 渐进减法迁移](../plans/计划-0081-Node转Go渐进减法迁移.md) 起，Go 后端目标不再保留 SQLite standalone / PostgreSQL performance 两套模式。本文中 `standalone`、SQLite 和 performance 模式的内容只描述当前 Node 过渡事实；迁移完成后的长期目标以 [存储目标与 SQLite 移除](../migration/存储目标与SQLite移除.md) 为准，PostgreSQL + Redis 将成为唯一正式存储模式。
 
@@ -152,7 +153,7 @@ PostgreSQL 模式不再模拟多个 SQLite 文件，而是把当前事实域映�
 - 所有时间统一保存为 `timestamptz`，接口返回继续使用 ISO 字符串。
 - 金额和成本如果需要精确累加，优先使用 `numeric`；只作为展示缓存且已有浮点口径的字段可以保持 `double precision`，但统计总量字段必须固定类型并写清楚。
 - `juhe_business.accounts` 使用 `health_check_model` 保存账户必填检查模型，不保留 `default_test_model` 或 `health_check_enabled`；`provider_default_health_check_models` 保存个人供应商默认，`provider_system_default_health_check_models` 保存管理员系统默认，协议档案保留内置默认。三层默认只初始化新账户。
-- `juhe_business.custom_provider_models` 为 GPT 模型保存 `supported_service_tiers_json`、`supported_reasoning_efforts_json` 和 `default_reasoning_effort`；GPT 账户凭据 JSON 可选保存 `service_tier_override`、`reasoning_effort_override`。`ultra` 与 Responses Multi-agent Beta 不属于这两个账户覆盖字段。
+- `juhe_business.provider_model_catalog` 和 `juhe_business.custom_provider_models` 复用 `supported_service_tiers_json`、`supported_reasoning_efforts_json` 和 `default_reasoning_effort`，并各用一个 `service_tier_prices_json` 保存非标准实际档位价格；标准价继续使用现有扁平字段，不新增价格表。支持请求覆盖的供应商账户凭据 JSON 可选保存现有 `service_tier_override`、`reasoning_effort_override`。字段值由所属供应商模型共同能力和目标 driver 校验，`ultra` 与 Responses Multi-agent Beta 不属于这两个账户覆盖字段。
 
 ### 约束与并发
 
@@ -321,6 +322,17 @@ juhe-ai:{namespace}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - 调度运行态、并发占用、IP 级错误熔断、登录失败窗口、验证码挑战、会话亲和和 cache invalidation index 在 performance 模式下进入 Redis state。
 - 当前已落地 `RuntimeStateStore` Redis driver、`RuntimeProbeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放、账号并发列表展示 Redis 批量读取、网关缓存失效 runtime state 版本广播、AI 账户运行态探针 due / generation、上游桶避让、IP 级账号回避、IP 错误熔断、Codex turn retry 和记录型 Redis Streams 队列；不能在 performance 模式下把跨进程事实绑定到进程内 memory。
 - 账户页展示的当前并发是列表加载时的瞬时 in-flight 快照，不是累计请求数。performance 模式下管理端和用户侧账户列表必须在列表响应中读取当前可见账户在 Redis state 中的并发槽，并保留 `currentConcurrencyAvailable` 可用性标记；授权实例必须按来源账号 ID 读取同一个硬并发槽，不能按授权实例 ID 另算一份并发；Redis state 不可用时显示不可用状态，不能把默认 `0` 误当成真实无并发。前端不得为账户当前并发额外开启定时轮询。
+
+### 页面数据 revision 与投影缓存
+
+以下是 `PLAN-0115` 待实现目标，不表示当前 performance 模式已经提供统一页面 confirm：
+
+- `redis-state` 保存稳定有限的数据域 revision、epoch、运行态字段投影和变更日志水位；`redis-cache` 保存静态实体、规范化查询结果、默认页面和统计响应投影；`redis-queue` 承接持久变更 outbox 发布任务。三类 Redis 不得混用职责。
+- 统一页面变更确认接口只读 Redis state，业务数据库查询次数必须为 0。Redis state 不可用时返回轻量 503 和 `Retry-After`，禁止回源 PostgreSQL 承接全部页面轮询。
+- PostgreSQL 持久变更在原业务事务内追加有界 outbox，提交后至少一次发布到 Redis；运行态值和对应 revision 使用同一 state Redis Lua 原子更新。不同 Redis 实例之间不假设原子事务。
+- Redis 健康但具体投影 key miss 时，只允许对当前实体 ID、当前页或已有预聚合窗口执行有界回填，并使用 singleflight、短租约分布式锁、并发上限和 TTL 抖动防止击穿。
+- 最近 7 天登录用户的首页默认窗口和“我的 AI 账户”默认第一页由 worker 分批预热；不预热任意筛选、任意日志 grep 或全量历史明细。
+- Node / Go performance 共存期必须共享 revision token、事件 schema、field mask 和测试夹具；Go 不实现 standalone / memory adapter。
 
 ### Redis 运行态一致性分级
 

@@ -8,8 +8,17 @@ const PAGE_DATA_MAX_FIELD_MASK = 32
 export const pageDataDomains = [
   'accounts.static',
   'accounts.runtime',
+  'accounts.options',
   'usage.records',
-  'announcements.public'
+  'announcements.public',
+  'providers.catalog',
+  'groups.static',
+  'systemAccounts.options',
+  'teams.options',
+  'routeStrategies.options',
+  'stats.overview',
+  'stats.accountUsage',
+  'stats.aiPerformance'
 ] as const
 
 const globalPageDataDomains = new Set<PageDataDomain>(['announcements.public'])

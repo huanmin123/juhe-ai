@@ -94,7 +94,7 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 	}
 
 	wantLatest := migrationcatalog.Entry{
-		Version: 59,
+		Version: migrationcatalog.CurrentSchemaVersion,
 		Name:    "000059_w2_sync_provider_model_catalog_20260718.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {

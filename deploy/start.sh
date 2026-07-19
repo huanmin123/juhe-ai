@@ -106,13 +106,8 @@ ensure_deployment_defaults() {
 }
 
 if [ ! -f backend/.env ]; then
-  if [ -f backend/.env.example.local ]; then
-    cp backend/.env.example.local backend/.env
-    echo "Created backend/.env from backend/.env.example.local"
-  else
-    cp backend/.env.example backend/.env
-    echo "Created backend/.env from backend/.env.example"
-  fi
+  cp backend/.env.example backend/.env
+  echo "Created backend/.env from backend/.env.example"
   echo "Please review backend/.env before production use, especially JUHE_AI_SECRET."
 fi
 
@@ -133,4 +128,30 @@ PORT="${PORT:-3000}"
 
 echo "Starting juhe-ai at http://${HOST}:${PORT}"
 echo "The Web/API process will supervise separate background worker and DB service processes."
+OWNER_LOCK_ENABLED="${JUHE_AI_OWNER_LOCK_ENABLED:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_ENABLED false)}"
+OWNER_LOCK_ENABLED_NORMALIZED="$(printf '%s' "$OWNER_LOCK_ENABLED" | tr '[:upper:]' '[:lower:]')"
+if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = "true" ]; then
+  MANIFEST_EPOCH="$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('deploy/owner-manifest.json','utf8')).deploymentEpoch)")"
+  if [ -z "$MANIFEST_EPOCH" ]; then
+    echo "Unable to read deploy/owner-manifest.json deploymentEpoch." >&2
+    exit 1
+  fi
+  node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json
+  OWNER_LOCK_PATH="${JUHE_AI_OWNER_LOCK_PATH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_PATH '')}"
+  case "$OWNER_LOCK_PATH" in
+    /*) ;;
+    *)
+      echo "JUHE_AI_OWNER_LOCK_PATH must be an absolute shared path outside the release directory." >&2
+      exit 1
+      ;;
+  esac
+  OWNER_LOCK_EPOCH="${JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH:-$(read_dotenv_value JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH "$MANIFEST_EPOCH")}"
+  if [ "$OWNER_LOCK_EPOCH" != "$MANIFEST_EPOCH" ]; then
+    echo "JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json." >&2
+    exit 1
+  fi
+  NODE_VERSION="$(node -p "require('./package.json').version")"
+  node scripts/validate-owner-manifest.mjs --require-deployment-epoch="$OWNER_LOCK_EPOCH" --require-node-version="$NODE_VERSION" --require-schema-version=59 deploy/owner-manifest.json
+  exec node scripts/run-with-owner-lock.mjs --lock-path "$OWNER_LOCK_PATH" --release-root "$APP_DIR" --deployment-epoch "$OWNER_LOCK_EPOCH" --role server --version "$NODE_VERSION" -- node backend/dist/server.js
+fi
 exec node backend/dist/server.js

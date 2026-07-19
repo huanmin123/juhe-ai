@@ -381,4 +381,17 @@ func managementAccountTagsFromRows(rows []postgresqueries.ListManagementAccountT
 	return tags
 }
 
+func (s *Store) ListAccountAuthorizationGranteeIDs(ctx context.Context, accountID string) ([]string, error) {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return []string{}, nil
+	}
+	rows, err := s.queries().ListAccountAuthorizationGranteeIDs(ctx, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("list account authorization grantee ids: %w", err)
+	}
+	return append([]string(nil), rows...), nil
+}
+
 var _ port.ManagementAccountOptionReader = (*Store)(nil)
+var _ port.AccountAuthorizationGranteeReader = (*Store)(nil)

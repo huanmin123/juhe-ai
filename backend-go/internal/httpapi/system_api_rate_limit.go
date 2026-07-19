@@ -813,7 +813,7 @@ func shouldApplySystemAPIIPRateLimit(r *http.Request) bool {
 	if path == "" {
 		path = "/"
 	}
-	return path != "/__aisys__/api/health"
+	return path != "/__aisys__/api/health" && path != "/__aisys__/api/readyz"
 }
 
 func systemAPIMethodClassFor(method string) systemAPIMethodClass {

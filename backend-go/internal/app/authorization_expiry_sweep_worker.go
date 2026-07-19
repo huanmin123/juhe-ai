@@ -10,6 +10,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
@@ -94,10 +95,11 @@ func RunAuthorizationExpirySweepWorker(ctx context.Context, cfg config.Config, l
 	if err != nil {
 		return err
 	}
-	service := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
-		ExpirySweepStore:         store,
-		AuthorizationInvalidator: invalidator,
-	})
+	publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
+	if err != nil {
+		return err
+	}
+	service := newAuthorizationExpirySweepService(store, invalidator, publisher, store, logger)
 	sweep := func() error {
 		result, err := service.ExpireDue(ctx, managementauthorizations.ExpirySweepInput{Limit: opts.Limit})
 		if err != nil {
@@ -126,6 +128,22 @@ func RunAuthorizationExpirySweepWorker(ctx context.Context, cfg config.Config, l
 			return nil
 		}
 	}
+}
+
+func newAuthorizationExpirySweepService(
+	expiryStore port.ManagementResourceAuthorizationExpirySweeper,
+	invalidator managementauthorizations.AuthorizationInvalidator,
+	publisher managementauthorizations.AuthorizationPageDataPublisher,
+	teamReader managementauthorizations.TeamReader,
+	logger *slog.Logger,
+) *managementauthorizations.Service {
+	return managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
+		ExpirySweepStore:         expiryStore,
+		AuthorizationInvalidator: invalidator,
+		Publisher:                publisher,
+		TeamReader:               teamReader,
+		Logger:                   logger,
+	})
 }
 
 func waitAuthorizationExpirySweepWorker(ctx context.Context, duration time.Duration) error {

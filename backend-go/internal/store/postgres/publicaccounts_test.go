@@ -264,13 +264,17 @@ func TestPublicAccountGoFreshSeedIncludesGPT56DefaultModels(t *testing.T) {
 }
 
 func TestPublicAccountGoFreshSeedIncludesProviderAuthAndInteractionsProfiles(t *testing.T) {
-	source, err := os.ReadFile("../../../db/migrations/000008_w2_management_provider_options.sql")
+	baseline, err := os.ReadFile("../../../db/migrations/000008_w2_management_provider_options.sql")
 	if err != nil {
-		t.Fatalf("read Go fresh provider seed: %v", err)
+		t.Fatalf("read Go fresh provider baseline: %v", err)
 	}
-	sql := string(source)
+	catchUp, err := os.ReadFile("../../../db/migrations/000058_w2_provider_auth_protocol_schema_20260718.sql")
+	if err != nil {
+		t.Fatalf("read Go provider auth catch-up: %v", err)
+	}
+	sql := string(baseline) + "\n" + string(catchUp)
 	for _, required := range []string{
-		"('xai', 'xai', 'xAI'",
+		"'xai', 'xai', 'xAI', NULL",
 		"('profile_xai_openai_v1', 'xai'",
 		"('profile_anthropic_anthropic_v1', 'anthropic'",
 		"'[\"api_key\"]'",
@@ -288,11 +292,15 @@ func TestPublicAccountGoFreshSeedIncludesProviderAuthAndInteractionsProfiles(t *
 }
 
 func TestPublicAccountSchemaAllowsCurrentAccountTypesAndInteractionsHealthModes(t *testing.T) {
-	source, err := os.ReadFile("../../../db/migrations/000005_w1b_public_accounts.sql")
+	baseline, err := os.ReadFile("../../../db/migrations/000005_w1b_public_accounts.sql")
 	if err != nil {
-		t.Fatalf("read Go public account schema: %v", err)
+		t.Fatalf("read Go public account baseline: %v", err)
 	}
-	sql := string(source)
+	catchUp, err := os.ReadFile("../../../db/migrations/000058_w2_provider_auth_protocol_schema_20260718.sql")
+	if err != nil {
+		t.Fatalf("read Go public account catch-up: %v", err)
+	}
+	sql := string(baseline) + "\n" + string(catchUp)
 	for _, required := range []string{
 		"CHECK (type IN ('api_key', 'oauth', 'google_oauth'))",
 		"'interactions_json', 'interactions_sse'",

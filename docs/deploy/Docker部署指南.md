@@ -1,6 +1,6 @@
 # Docker 部署指南
 
-> 本文只说明 Docker 单容器部署。还没确定入口场景时，先看 [服务器部署方案](scenarios/服务器部署方案.md) 或 [家庭宽带反向代理方案](scenarios/家庭宽带反向代理方案.md)。发布包部署见 `部署指南.md`。Linux、Windows、macOS 的 Docker Desktop / Docker Engine 差异见对应平台目录；公网 HTTPS 入口见 [Caddy 自动 HTTPS 部署指南](https/Caddy自动HTTPS部署指南.md)；状态检测和自动恢复见 [状态检测与自动恢复指南](watchdog/状态检测与自动恢复指南.md)；上游网络代理见 [sing-box 网络代理部署指南](proxy/sing-box网络代理部署指南.md)。
+> 本文只说明 Docker 单容器部署。还没确定入口场景时，先看 [服务器部署方案](scenarios/服务器部署方案.md) 或 [家庭宽带反向代理方案](scenarios/家庭宽带反向代理方案.md)。发布包部署见 `部署指南.md`。Linux、Windows、macOS 的 Docker Desktop / Docker Engine 差异见对应平台目录；公网 HTTPS 入口见 [Caddy 自动 HTTPS 部署指南](https/Caddy自动HTTPS部署指南.md)；容器常驻默认使用 Compose restart policy，外部探针只告警；上游网络代理见 [sing-box 网络代理部署指南](proxy/sing-box网络代理部署指南.md)。
 
 ## 1. 适用方式
 
@@ -121,7 +121,8 @@ JUHE_AI_TRUST_PROXY=false
 说明：
 
 - `JUHE_AI_PUBLIC_BIND` 是宿主机绑定地址；宿主机 Caddy 反代时建议 `127.0.0.1`，需要局域网 HTTP 临时访问时才用 `0.0.0.0`。
-- `JUHE_AI_SECRET` 留空时，容器首次启动会在数据卷里生成 `/app/backend/data/.juhe-ai-secret` 并复用。
+- `JUHE_AI_SECRET` 留空时，容器首次启动会在数据卷里生成 `/app/backend/data/.juhe-ai-secret` 并复用；生产建议在宿主机 env 显式保存稳定密钥。
+- 如果现有部署使用容器自动生成的密钥，创建 `business-*` 业务备份时必须把容器内当前有效 `JUHE_AI_SECRET` 单独写入受限权限的恢复 env / secret 文件。不得为了保留这个密钥备份整个数据卷；缺少有效密钥时，业务库中的上游凭据无法恢复。
 - 迁移已有业务库时必须填写原来的 `JUHE_AI_SECRET`。
 - 直接 HTTP 访问时 `JUHE_AI_COOKIE_SECURE=false`；HTTPS 反向代理后建议改为 `true`。
 - `JUHE_AI_PUBLIC_ORIGIN` 是 Docker entrypoint 的便捷变量，会在 `JUHE_AI_ALLOWED_ORIGINS` 留空时转换成后端 CORS 白名单；直接运行 `backend/dist/server.js`、PM2、systemd 或托管平台注入环境变量时，必须配置 `JUHE_AI_ALLOWED_ORIGINS`。
@@ -165,23 +166,11 @@ docker compose logs --tail=100 juhe-ai
 - `/__aisys__/` 返回前端页面。
 - 日志中能看到主服务、DB service 和 background worker 启动记录。
 
-## 7. 自动恢复
+## 7. 状态检测和恢复
 
-Compose `restart: unless-stopped` 在容器主进程退出时恢复；Docker healthcheck 只报告状态。不要再配置宿主机 HTTP watchdog 自动重启容器，公网和本机 health 只用于观察、告警和发布门禁。完整策略见 [状态检测与自动恢复指南](watchdog/状态检测与自动恢复指南.md)。
+Compose `restart: unless-stopped` 负责容器进程退出后的恢复；Docker healthcheck 负责报告 `unhealthy`，但不保证自动重启。默认不再配置会执行 `docker compose restart` 的宿主机 watchdog，避免与发布、迁移和候选配置验证冲突。
 
-容器进程退出恢复目标是：
-
-```bash
-cd /opt/juhe-ai/docker
-docker compose restart juhe-ai
-```
-
-高性能模式是：
-
-```bash
-cd /opt/juhe-ai/docker
-docker compose --env-file .env.performance -f compose.performance.yml restart juhe-ai
-```
+外部 health 探针可以只告警。确有无人值守自动恢复需求时，再按 [状态检测与自动恢复指南](watchdog/状态检测与自动恢复指南.md) 单独评审，并且只允许重启应用容器，不能因为公网入口或上游 API 故障重启整组中间件。
 
 不要因为 PostgreSQL、Redis 或上游模型 API 短暂失败就重启所有容器；先按 health 分层判断，避免中间件被反复重启造成更长恢复时间。
 

@@ -52,6 +52,7 @@ func TestW1bPublicAPISmokeConfigUsesSafeNodeDummyURL(t *testing.T) {
 		Host:                       "127.0.0.1",
 		Port:                       3000,
 		RedisNamespace:             "juhe-ai",
+		PostgresURL:                "postgres://127.0.0.1:5432/juhe_ai",
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
 		RedisStateURL:              "redis://127.0.0.1:6379/1",
 		RedisQueueURL:              "redis://127.0.0.1:6379/2",

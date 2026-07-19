@@ -373,6 +373,7 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		RedisNamespace:             "juhe-ai",
 		TrustProxy:                 "false",
 		PublicAPIEnabled:           true,
+		PostgresURL:                "postgres://127.0.0.1:5432/juhe_ai",
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
 		RedisStateURL:              "redis://127.0.0.1:6379/1",
 		RedisQueueURL:              "redis://127.0.0.1:6379/2",
@@ -387,6 +388,11 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		edit func(*Config)
 		want string
 	}{
+		{
+			name: "postgres",
+			edit: func(cfg *Config) { cfg.PostgresURL = "" },
+			want: "JUHE_AI_POSTGRES_URL",
+		},
 		{
 			name: "state redis",
 			edit: func(cfg *Config) { cfg.RedisStateURL = "" },
@@ -443,6 +449,7 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		RedisNamespace:             "juhe-ai",
 		TrustProxy:                 "false",
 		ManagementAPIEnabled:       true,
+		PostgresURL:                "postgres://127.0.0.1:5432/juhe_ai",
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
 		RedisStateURL:              "redis://127.0.0.1:6379/1",
 		RedisQueueURL:              "redis://127.0.0.1:6379/2",
@@ -456,6 +463,11 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		edit func(*Config)
 		want string
 	}{
+		{
+			name: "postgres",
+			edit: func(cfg *Config) { cfg.PostgresURL = "" },
+			want: "JUHE_AI_POSTGRES_URL",
+		},
 		{
 			name: "state redis",
 			edit: func(cfg *Config) { cfg.RedisStateURL = "" },
@@ -500,13 +512,14 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 	}
 }
 
-func TestConfigManagementAuthSessionsEnabledRequiresOnlyStateRedis(t *testing.T) {
+func TestConfigManagementAuthSessionsEnabledRequiresPostgresAndStateRedis(t *testing.T) {
 	base := Config{
 		Host:                          "127.0.0.1",
 		Port:                          3000,
 		RedisNamespace:                "juhe-ai",
 		TrustProxy:                    "false",
 		ManagementAuthSessionsEnabled: true,
+		PostgresURL:                   "postgres://127.0.0.1:5432/juhe_ai",
 		RedisStateURL:                 "redis://127.0.0.1:6379/1",
 		NodeInternalRequestTimeout:    2 * time.Second,
 		ShutdownTimeout:               time.Second,
@@ -524,10 +537,58 @@ func TestConfigManagementAuthSessionsEnabledRequiresOnlyStateRedis(t *testing.T)
 	if got := err.Error(); !strings.Contains(got, "JUHE_AI_REDIS_STATE_URL") {
 		t.Fatalf("Validate() error = %q, want contains JUHE_AI_REDIS_STATE_URL", got)
 	}
+
+	base.RedisStateURL = "redis://127.0.0.1:6379/1"
+	base.PostgresURL = ""
+	err = base.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want PostgreSQL dependency error")
+	}
+	if got := err.Error(); !strings.Contains(got, "JUHE_AI_POSTGRES_URL") {
+		t.Fatalf("Validate() error = %q, want contains JUHE_AI_POSTGRES_URL", got)
+	}
+}
+
+func TestConfigOwnerLockRequiresExplicitRuntimeFields(t *testing.T) {
+	base := Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "juhe-ai",
+		TrustProxy:                 "false",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+		OwnerLockEnabled:           true,
+		OwnerLockPath:              "runtime/owner.lock",
+		OwnerLockDeploymentEpoch:   "epoch-1",
+		OwnerLockRole:              "server",
+	}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		edit func(*Config)
+		want string
+	}{
+		{name: "path", edit: func(cfg *Config) { cfg.OwnerLockPath = "" }, want: "JUHE_AI_OWNER_LOCK_PATH"},
+		{name: "epoch", edit: func(cfg *Config) { cfg.OwnerLockDeploymentEpoch = "" }, want: "JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"},
+		{name: "role", edit: func(cfg *Config) { cfg.OwnerLockRole = "management" }, want: "JUHE_AI_OWNER_LOCK_ROLE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			tc.edit(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate() error = %v, want contains %q", err, tc.want)
+			}
+		})
+	}
 }
 
 func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_PUBLIC_API_ENABLED", "true")
+	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://127.0.0.1:5432/juhe_ai")
 	t.Setenv("JUHE_AI_REDIS_CACHE_URL", "redis://127.0.0.1:6379/0")
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
 	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
@@ -559,6 +620,7 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 
 func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_MANAGEMENT_API_ENABLED", "true")
+	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://127.0.0.1:5432/juhe_ai")
 	t.Setenv("JUHE_AI_REDIS_CACHE_URL", "redis://127.0.0.1:6379/0")
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
 	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6379/2")
@@ -575,6 +637,7 @@ func TestLoadParsesManagementAPIEnv(t *testing.T) {
 
 func TestLoadParsesManagementAuthSessionsEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED", "true")
+	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://127.0.0.1:5432/juhe_ai")
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})

@@ -7,7 +7,7 @@
       :refresh-loading="loading"
       @search="applySearch"
       @reset="resetSearch"
-      @refresh="loadPageData"
+      @refresh="loadPageData(true)"
     >
       <template #actions>
         <a-button @click="guideOpen = true">
@@ -24,7 +24,7 @@
       :providers="policyProviders"
       @delete="removePolicy"
       @edit="openEdit"
-      @refresh="loadPageData"
+      @refresh="loadPageData(true)"
       @view="openView"
     />
 
@@ -56,6 +56,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
 import { isAnthropicProtocolProfile, isOpenAIProtocolProfile, preferredDefaultProviderCode } from '@/shared/providerProtocol'
@@ -129,12 +130,17 @@ async function loadPolicies(): Promise<void> {
   }
 }
 
-async function loadPageData(): Promise<void> {
+async function loadPageData(force = false): Promise<void> {
   loading.value = true
   try {
     const [policyResult, providerResult] = await Promise.all([
       api.responseInspectionPolicies.list(),
-      api.providers.options()
+      loadProviderOptionsResource({
+        apply: (nextProviders) => { providers.value = nextProviders },
+        force,
+        includeDisabled: false,
+        isManagementView: true
+      })
     ])
     defaultRules.value = policyResult.defaultRules
     policies.value = policyResult.policies

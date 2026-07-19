@@ -96,6 +96,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
@@ -266,9 +267,13 @@ async function loadGroupOptions(force = false): Promise<void> {
     return
   }
 
-  const [providerList] = await Promise.all([
-    api.providers.options()
-  ])
+  const providerList = await loadProviderOptionsResource({
+    apply: (nextProviders) => {
+      providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+    },
+    force,
+    isManagementView: isManagementView.value
+  })
   providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey

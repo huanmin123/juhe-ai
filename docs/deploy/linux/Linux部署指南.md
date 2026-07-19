@@ -8,7 +8,8 @@
 | 单机容器部署 | Docker Compose 单容器 | [Docker 部署指南](../Docker部署指南.md) |
 | 高并发部署 | Docker Compose + PostgreSQL + Redis | [高性能模式部署指南](../高性能模式部署指南.md) |
 | 公网 HTTPS | Caddy 自动 HTTPS | [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) |
-| 自动恢复 | systemd + 内部 supervisor | [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) |
+| 公网 Edge / 高并发隧道 | Caddy layer4 + WireGuard | [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md) |
+| 常驻恢复 | systemd；外部探针默认只告警 | 本文第 8 节 |
 | 上游需要代理 | sing-box 本机代理 + 后台代理管理 | [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md) |
 
 ## 2. 部署前检查
@@ -98,6 +99,7 @@ WorkingDirectory=/opt/juhe-ai-lite/current
 ExecStart=/usr/bin/env bash /opt/juhe-ai-lite/bin/run.sh
 Restart=always
 RestartSec=5
+LimitNOFILE=1048576
 User=juhe
 Environment=NODE_ENV=production
 
@@ -165,6 +167,10 @@ JUHE_AI_TRUST_PROXY=true
 
 只有 Caddy、Nginx 或可信负载均衡能访问 `127.0.0.1:3000` 时才开启 `JUHE_AI_TRUST_PROXY=true`。如果后端端口直接对公网开放，必须保持 `false`。
 
+Linux 作为公网 Edge、通过 WireGuard 回源时，不使用本节的标准 HTTP 反代模式；改看 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)，确认 layer4 / proxy_protocol 模块、精确 peer、PROXY v2 和五 Edge 正式切换门禁。
+
+高并发长连接的保守系统起步值是 `net.core.somaxconn=4096`、`net.ipv4.tcp_max_syn_backlog=4096`。Caddy 建议使用 `LimitNOFILE=1048576`，并在受控重启后从 `/proc/<PID>/limits` 验证实际值。UDP buffer、netdev backlog、conntrack、softnet/IRQ 和 BBR 只在当前内核能力与区间指标证明需要时调整，不作为无条件部署项。
+
 ## 6. 端口和防火墙
 
 公网服务器建议只放行：
@@ -184,7 +190,7 @@ sudo firewall-cmd --permanent --add-service=https
 sudo firewall-cmd --reload
 ```
 
-PostgreSQL、PgBouncer、Redis 和 sing-box 如果确实需要跨机器访问，只允许内网、VPN 或安全组白名单；不要用 `0.0.0.0/0` 放行。
+PostgreSQL、PgBouncer、Redis 和 sing-box 如果确实需要跨机器访问，只允许内网、WireGuard 私网或安全组白名单；不要用 `0.0.0.0/0` 放行。
 
 真实客户端 IP 验证：
 
@@ -204,6 +210,10 @@ juhe-ai 中转请求上游时，推荐在后台“代理管理”中新增代理
 
 `JUHE_AI_OAUTH_PROXY_URL` 只作为 OpenAI OAuth token 换取 / 刷新的兜底代理；普通上游模型请求应优先使用账号绑定代理。
 
-## 8. 状态检测和自动恢复
+## 8. 状态检测和恢复
 
-Linux 生产使用 systemd 守护主服务进程退出，DB service 和 worker 由内部 supervisor 独立恢复。外部 HTTP watchdog 已退役；本机和公网 health 只用于观察、告警和发布门禁。完整策略见 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
+Linux 生产默认只由 systemd 守护主服务；主进程继续看护 DB service 和 worker。默认不部署会自动执行 `systemctl restart` 的外部 watchdog，避免与发布、候选配置验证和受控重启冲突。
+
+CentOS 7 等旧内核无法加载 WireGuard 内核模块时，只允许从 WireGuard 官方源码固定提交构建 `wireguard-go`，记录源码提交和 SHA-256，并由 `wg-quick@<interface>.service` 托管；不得使用来源不明的预编译二进制。必须以真实握手、收发计数和 HTTP/TLS 请求验证用户态实现。
+
+外部 health 探针可以只告警。公网失败但本机 health 正常时，先按 DNS、Caddy、WireGuard、证书和 Nginx 分层排查，不重启应用。确有无人值守自动恢复需求时，再按 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) 单独评审防抖、限频和发布互斥。

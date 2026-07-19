@@ -37,7 +37,7 @@ function toolLabel(type: string): string {
   return ({ web_search_call: '联网搜索', file_search_call: '文件检索', function_call: '函数调用', computer_call: '计算机操作' }[type] ?? '工具调用')
 }
 function statusLabel(status: ChatToolStatus): string {
-  return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败' })[status]
+  return ({ started: '准备中', updated: '执行中', completed: '已完成', failed: '失败', canceled: '已取消' })[status]
 }
 </script>
 

@@ -56,11 +56,11 @@ import type { Dayjs } from 'dayjs'
 import type { useScopedApiKeysApi, useScopedRouteStrategiesApi } from '@/composables/useScopedDomainApi'
 import RouteStrategySelect from '@/components/RouteStrategySelect.vue'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { loadRouteStrategyOptionsResource } from '@/composables/useRouteStrategyOptionsResource'
 import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatServerDateTimeInput, parseStrictDatePickerValue } from '@/shared/formatters'
 import { routeStrategySelectionFromOption, type RouteStrategySelection } from '@/shared/routeStrategyLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { ApiKeyAvailabilitySchedule, ApiKeyQuotaLimits, ApiKeySummary, RouteStrategyOptionSummary } from '@/types/domain'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
@@ -107,7 +107,6 @@ const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const routeStrategyOptionsRaw = ref<RouteStrategyOptionSummary[]>([])
 const routeStrategyOptionsLoading = ref(false)
-const routeStrategyOptionsCache = createShortLivedQueryCache<RouteStrategyOptionSummary[]>({ ttlMs: 10_000 })
 let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
@@ -282,41 +281,19 @@ async function loadRouteStrategyOptions(keyword = '', selectedIds: string[] = []
     return routeStrategyOptionsLoadingPromise
   }
   const requestToken = ++routeStrategyOptionsRequestToken
-  const cachedOptions = routeStrategyOptionsCache.get(requestKey)
-  if (cachedOptions) {
-    routeStrategyOptionsLoadingKey = undefined
-    routeStrategyOptionsLoadingPromise = undefined
-    routeStrategyOptionsRaw.value = cachedOptions
-    routeStrategyOptionsLoading.value = false
-    return
-  }
   routeStrategyOptionsLoading.value = true
   routeStrategyOptionsLoadingKey = requestKey
   routeStrategyOptionsLoadingPromise = (async () => {
     try {
-      const windowStrategies = await props.routeStrategiesApi.options({
+      await loadRouteStrategyOptionsResource({
+        api: props.routeStrategiesApi,
+        apply: (nextOptions) => { routeStrategyOptionsRaw.value = nextOptions },
+        isCurrent: () => requestToken === routeStrategyOptionsRequestToken,
+        isManagementView: props.isManagementView,
         keyword: requestKeyword,
-        limit: 50,
-        activeOnly: false,
+        selectedIds: normalizedSelectedIds,
         systemAccountId: operationScopeParams?.systemAccountId
       })
-      if (requestToken !== routeStrategyOptionsRequestToken) return
-      const missingSelectedIds = normalizedSelectedIds.filter((id) => !windowStrategies.some((strategy) => strategy.id === id))
-      if (!missingSelectedIds.length) {
-        routeStrategyOptionsCache.set(requestKey, windowStrategies)
-        routeStrategyOptionsRaw.value = windowStrategies
-        return
-      }
-      const selectedStrategies = await props.routeStrategiesApi.options({
-        ids: missingSelectedIds,
-        limit: missingSelectedIds.length,
-        activeOnly: false,
-        systemAccountId: operationScopeParams?.systemAccountId
-      })
-      if (requestToken !== routeStrategyOptionsRequestToken) return
-      const mergedStrategies = mergeRouteStrategyOptionsById(selectedStrategies, windowStrategies)
-      routeStrategyOptionsCache.set(requestKey, mergedStrategies)
-      routeStrategyOptionsRaw.value = mergedStrategies
     } catch (error) {
       if (requestToken !== routeStrategyOptionsRequestToken) return
       message.error(extractApiErrorMessage(error, '策略路由选项加载失败'))
