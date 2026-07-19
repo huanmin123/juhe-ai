@@ -392,6 +392,13 @@ func decodeManagementProviderCustomModelBody(w http.ResponseWriter, r *http.Requ
 				continue
 			}
 			fields.Status = managementprovidermodels.OptionalString{Set: true, Value: value}
+		case "catalogVisible":
+			value, ok := decodeManagementProviderCustomModelBool(raw)
+			if !ok {
+				fields.Invalid = true
+				continue
+			}
+			fields.CatalogVisible = managementprovidermodels.OptionalBool{Set: true, Value: value}
 		case "mode":
 			value, ok := decodeManagementProviderCustomModelNullableString(raw, false)
 			if !ok {
@@ -592,6 +599,14 @@ func decodeManagementProviderCustomModelRequiredString(raw json.RawMessage) (str
 		return "", false
 	}
 	return *value, true
+}
+
+func decodeManagementProviderCustomModelBool(raw json.RawMessage) (bool, bool) {
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false, false
+	}
+	return value, true
 }
 
 func decodeManagementProviderCustomModelNullableString(raw json.RawMessage, allowEmptyString bool) (string, bool) {

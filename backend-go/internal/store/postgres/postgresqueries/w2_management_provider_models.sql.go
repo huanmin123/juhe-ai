@@ -75,6 +75,7 @@ SELECT
   scope,
   system_account_id,
   status,
+  catalog_visible,
   mode,
   supported_api_protocols_json,
   supported_service_tiers_json,
@@ -115,6 +116,7 @@ type FindManagementCustomProviderModelRow struct {
 	Scope                         string
 	SystemAccountID               pgtype.Text
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -155,6 +157,7 @@ func (q *Queries) FindManagementCustomProviderModel(ctx context.Context, id stri
 		&i.Scope,
 		&i.SystemAccountID,
 		&i.Status,
+		&i.CatalogVisible,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
 		&i.SupportedServiceTiersJson,
@@ -195,6 +198,7 @@ SELECT
   scope,
   system_account_id,
   status,
+  catalog_visible,
   mode,
   supported_api_protocols_json,
   supported_service_tiers_json,
@@ -251,6 +255,7 @@ type FindManagementCustomProviderModelByScopeRow struct {
 	Scope                         string
 	SystemAccountID               pgtype.Text
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -296,6 +301,7 @@ func (q *Queries) FindManagementCustomProviderModelByScope(ctx context.Context, 
 		&i.Scope,
 		&i.SystemAccountID,
 		&i.Status,
+		&i.CatalogVisible,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
 		&i.SupportedServiceTiersJson,
@@ -572,6 +578,7 @@ SELECT
   scope,
   system_account_id,
   status,
+  catalog_visible,
   mode,
   NULL::integer AS catalog_order,
   release_date,
@@ -604,7 +611,7 @@ SELECT
   output_usd_per_image,
   (cached_input_usd_per_1m IS NOT NULL) AS supports_prompt_caching,
   (jsonb_array_length(supported_service_tiers_json::jsonb) > 0) AS supports_service_tier,
-  true AS catalog_visible,
+  catalog_visible,
   pricing_notes,
   capability_notes,
   notes,
@@ -758,7 +765,7 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 }
 
 const lockManagementBuiltInProviderModelConfiguration = `-- name: LockManagementBuiltInProviderModelConfiguration :one
-SELECT id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+SELECT id, provider_code, status, catalog_visible, mode, supported_api_protocols_json, supported_service_tiers_json,
        supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
        context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
        cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
@@ -778,6 +785,7 @@ type LockManagementBuiltInProviderModelConfigurationRow struct {
 	ID                            string
 	ProviderCode                  string
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -809,6 +817,7 @@ func (q *Queries) LockManagementBuiltInProviderModelConfiguration(ctx context.Co
 		&i.ID,
 		&i.ProviderCode,
 		&i.Status,
+		&i.CatalogVisible,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
 		&i.SupportedServiceTiersJson,
@@ -837,7 +846,7 @@ func (q *Queries) LockManagementBuiltInProviderModelConfiguration(ctx context.Co
 
 const lockManagementCustomProviderModel = `-- name: LockManagementCustomProviderModel :one
 SELECT
-  id, provider_code, model, scope, system_account_id, status, mode,
+  id, provider_code, model, scope, system_account_id, status, catalog_visible, mode,
   supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
   default_reasoning_effort, release_date, shutdown_date,
   context_window_tokens, max_input_tokens, max_output_tokens,
@@ -863,6 +872,7 @@ type LockManagementCustomProviderModelRow struct {
 	Scope                         string
 	SystemAccountID               pgtype.Text
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -903,6 +913,7 @@ func (q *Queries) LockManagementCustomProviderModel(ctx context.Context, arg Loc
 		&i.Scope,
 		&i.SystemAccountID,
 		&i.Status,
+		&i.CatalogVisible,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
 		&i.SupportedServiceTiersJson,
@@ -937,22 +948,22 @@ func (q *Queries) LockManagementCustomProviderModel(ctx context.Context, arg Loc
 
 const updateManagementBuiltInProviderModelConfiguration = `-- name: UpdateManagementBuiltInProviderModelConfiguration :one
 UPDATE juhe_business.provider_model_catalog
-SET status = $1, mode = $2,
-    supported_api_protocols_json = $3,
-    supported_service_tiers_json = $4,
-    supported_reasoning_efforts_json = $5,
-    default_reasoning_effort = $6,
-    release_date = $7, shutdown_date = $8,
-    context_window_tokens = $9, max_input_tokens = $10,
-    max_output_tokens = $11, input_usd_per_1m = $12,
-    output_usd_per_1m = $13, cached_input_usd_per_1m = $14,
-    cache_write_usd_per_1m = $15, cache_write_1h_usd_per_1m = $16,
-    service_tier_prices_json = $17, image_input_usd_per_1m = $18,
-    image_output_usd_per_1m = $19, audio_input_usd_per_1m = $20,
-    audio_output_usd_per_1m = $21, output_usd_per_image = $22,
-    updated_at = $23
-WHERE id = $24 AND provider_code = $25
-RETURNING id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+SET status = $1, catalog_visible = $2, mode = $3,
+    supported_api_protocols_json = $4,
+    supported_service_tiers_json = $5,
+    supported_reasoning_efforts_json = $6,
+    default_reasoning_effort = $7,
+    release_date = $8, shutdown_date = $9,
+    context_window_tokens = $10, max_input_tokens = $11,
+    max_output_tokens = $12, input_usd_per_1m = $13,
+    output_usd_per_1m = $14, cached_input_usd_per_1m = $15,
+    cache_write_usd_per_1m = $16, cache_write_1h_usd_per_1m = $17,
+    service_tier_prices_json = $18, image_input_usd_per_1m = $19,
+    image_output_usd_per_1m = $20, audio_input_usd_per_1m = $21,
+    audio_output_usd_per_1m = $22, output_usd_per_image = $23,
+    updated_at = $24
+WHERE id = $25 AND provider_code = $26
+RETURNING id, provider_code, status, catalog_visible, mode, supported_api_protocols_json, supported_service_tiers_json,
           supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
           context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
           cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
@@ -962,6 +973,7 @@ RETURNING id, provider_code, status, mode, supported_api_protocols_json, support
 
 type UpdateManagementBuiltInProviderModelConfigurationParams struct {
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -992,6 +1004,7 @@ type UpdateManagementBuiltInProviderModelConfigurationRow struct {
 	ID                            string
 	ProviderCode                  string
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -1019,6 +1032,7 @@ type UpdateManagementBuiltInProviderModelConfigurationRow struct {
 func (q *Queries) UpdateManagementBuiltInProviderModelConfiguration(ctx context.Context, arg UpdateManagementBuiltInProviderModelConfigurationParams) (UpdateManagementBuiltInProviderModelConfigurationRow, error) {
 	row := q.db.QueryRow(ctx, updateManagementBuiltInProviderModelConfiguration,
 		arg.Status,
+		arg.CatalogVisible,
 		arg.Mode,
 		arg.SupportedApiProtocolsJson,
 		arg.SupportedServiceTiersJson,
@@ -1049,6 +1063,7 @@ func (q *Queries) UpdateManagementBuiltInProviderModelConfiguration(ctx context.
 		&i.ID,
 		&i.ProviderCode,
 		&i.Status,
+		&i.CatalogVisible,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
 		&i.SupportedServiceTiersJson,
@@ -1077,24 +1092,24 @@ func (q *Queries) UpdateManagementBuiltInProviderModelConfiguration(ctx context.
 
 const updateManagementCustomProviderModel = `-- name: UpdateManagementCustomProviderModel :one
 UPDATE juhe_business.custom_provider_models
-SET status = $1, mode = $2,
-    supported_api_protocols_json = $3,
-    supported_service_tiers_json = $4,
-    supported_reasoning_efforts_json = $5,
-    default_reasoning_effort = $6,
-    release_date = $7, shutdown_date = $8,
-    context_window_tokens = $9, max_input_tokens = $10,
-    max_output_tokens = $11, input_usd_per_1m = $12,
-    output_usd_per_1m = $13, cached_input_usd_per_1m = $14,
-    cache_write_usd_per_1m = $15, cache_write_1h_usd_per_1m = $16,
-    service_tier_prices_json = $17, image_input_usd_per_1m = $18,
-    image_output_usd_per_1m = $19, audio_input_usd_per_1m = $20,
-    audio_output_usd_per_1m = $21, output_usd_per_image = $22,
-    pricing_notes = $23, capability_notes = $24, notes = $25,
-    updated_by = $26, updated_at = $27
-WHERE id = $28 AND provider_code = $29
+SET status = $1, catalog_visible = $2, mode = $3,
+    supported_api_protocols_json = $4,
+    supported_service_tiers_json = $5,
+    supported_reasoning_efforts_json = $6,
+    default_reasoning_effort = $7,
+    release_date = $8, shutdown_date = $9,
+    context_window_tokens = $10, max_input_tokens = $11,
+    max_output_tokens = $12, input_usd_per_1m = $13,
+    output_usd_per_1m = $14, cached_input_usd_per_1m = $15,
+    cache_write_usd_per_1m = $16, cache_write_1h_usd_per_1m = $17,
+    service_tier_prices_json = $18, image_input_usd_per_1m = $19,
+    image_output_usd_per_1m = $20, audio_input_usd_per_1m = $21,
+    audio_output_usd_per_1m = $22, output_usd_per_image = $23,
+    pricing_notes = $24, capability_notes = $25, notes = $26,
+    updated_by = $27, updated_at = $28
+WHERE id = $29 AND provider_code = $30
 RETURNING
-  id, provider_code, model, scope, system_account_id, status, mode,
+  id, provider_code, model, scope, system_account_id, status, catalog_visible, mode,
   supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
   default_reasoning_effort, release_date, shutdown_date,
   context_window_tokens, max_input_tokens, max_output_tokens,
@@ -1107,6 +1122,7 @@ RETURNING
 
 type UpdateManagementCustomProviderModelParams struct {
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -1144,6 +1160,7 @@ type UpdateManagementCustomProviderModelRow struct {
 	Scope                         string
 	SystemAccountID               pgtype.Text
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -1177,6 +1194,7 @@ type UpdateManagementCustomProviderModelRow struct {
 func (q *Queries) UpdateManagementCustomProviderModel(ctx context.Context, arg UpdateManagementCustomProviderModelParams) (UpdateManagementCustomProviderModelRow, error) {
 	row := q.db.QueryRow(ctx, updateManagementCustomProviderModel,
 		arg.Status,
+		arg.CatalogVisible,
 		arg.Mode,
 		arg.SupportedApiProtocolsJson,
 		arg.SupportedServiceTiersJson,
@@ -1214,6 +1232,7 @@ func (q *Queries) UpdateManagementCustomProviderModel(ctx context.Context, arg U
 		&i.Scope,
 		&i.SystemAccountID,
 		&i.Status,
+		&i.CatalogVisible,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
 		&i.SupportedServiceTiersJson,
@@ -1248,7 +1267,7 @@ func (q *Queries) UpdateManagementCustomProviderModel(ctx context.Context, arg U
 
 const upsertManagementCustomProviderModel = `-- name: UpsertManagementCustomProviderModel :one
 INSERT INTO juhe_business.custom_provider_models (
-  id, provider_code, model, scope, system_account_id, status,
+  id, provider_code, model, scope, system_account_id, status, catalog_visible,
   mode, supported_api_protocols_json, supported_service_tiers_json,
   supported_reasoning_efforts_json, default_reasoning_effort,
   release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
@@ -1257,14 +1276,14 @@ INSERT INTO juhe_business.custom_provider_models (
   output_usd_per_image, currency, pricing_notes, capability_notes, notes,
   created_by, updated_by, created_at, updated_at
 ) VALUES (
-  $1, $2, $3, $4, $5, $6,
-  $7, $8, $9,
-  $10, $11,
-  $12, $13, $14, $15, $16,
-  $17, $18, $19, $20, $21, $22,
-  $23, $24, $25, $26,
-  $27, 'USD', $28, $29, $30,
-  $31, $31, now(), now()
+  $1, $2, $3, $4, $5, $6, $7,
+  $8, $9, $10,
+  $11, $12,
+  $13, $14, $15, $16, $17,
+  $18, $19, $20, $21, $22, $23,
+  $24, $25, $26, $27,
+  $28, 'USD', $29, $30, $31,
+  $32, $32, now(), now()
 )
 ON CONFLICT (id) DO UPDATE SET
   provider_code = EXCLUDED.provider_code,
@@ -1272,6 +1291,7 @@ ON CONFLICT (id) DO UPDATE SET
   scope = EXCLUDED.scope,
   system_account_id = EXCLUDED.system_account_id,
   status = EXCLUDED.status,
+  catalog_visible = EXCLUDED.catalog_visible,
   mode = EXCLUDED.mode,
   supported_api_protocols_json = EXCLUDED.supported_api_protocols_json,
   supported_service_tiers_json = EXCLUDED.supported_service_tiers_json,
@@ -1305,6 +1325,7 @@ RETURNING
   scope,
   system_account_id,
   status,
+  catalog_visible,
   mode,
   supported_api_protocols_json,
   supported_service_tiers_json,
@@ -1342,6 +1363,7 @@ type UpsertManagementCustomProviderModelParams struct {
 	Scope                         string
 	SystemAccountID               pgtype.Text
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -1376,6 +1398,7 @@ type UpsertManagementCustomProviderModelRow struct {
 	Scope                         string
 	SystemAccountID               pgtype.Text
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -1414,6 +1437,7 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		arg.Scope,
 		arg.SystemAccountID,
 		arg.Status,
+		arg.CatalogVisible,
 		arg.Mode,
 		arg.SupportedApiProtocolsJson,
 		arg.SupportedServiceTiersJson,
@@ -1448,6 +1472,7 @@ func (q *Queries) UpsertManagementCustomProviderModel(ctx context.Context, arg U
 		&i.Scope,
 		&i.SystemAccountID,
 		&i.Status,
+		&i.CatalogVisible,
 		&i.Mode,
 		&i.SupportedApiProtocolsJson,
 		&i.SupportedServiceTiersJson,

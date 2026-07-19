@@ -91,6 +91,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	createRec := serveW3ProviderModelCRUDRequest(router, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options", sessionToken, `{
 		"model":"w3-crud-model",
 		"scope":"global",
+		"catalogVisible":false,
 		"mode":"text",
 		"supportedApiProtocols":["responses","chat_completions"],
 		"supportedServiceTiers":["priority","flex"],
@@ -110,7 +111,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(createRec.Body).Decode(&createBody); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if createBody.Data.ID == "" || createBody.Data.Model != "w3-crud-model" || createBody.Data.Scope != "global" || createBody.Data.SystemAccountID != "" || createBody.Data.PricingNotes != "W3 CRUD 价格说明" {
+	if createBody.Data.ID == "" || createBody.Data.Model != "w3-crud-model" || createBody.Data.Scope != "global" || createBody.Data.SystemAccountID != "" || createBody.Data.PricingNotes != "W3 CRUD 价格说明" || createBody.Data.CatalogVisible {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
@@ -140,6 +141,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 
 	patchRec := serveW3ProviderModelCRUDRequest(router, http.MethodPatch, "/__aisys__/api/providers/gpt/models/"+createBody.Data.ID, sessionToken, `{
 		"status":"disabled",
+		"catalogVisible":true,
 		"supportedServiceTiers":["flex"],
 		"supportedReasoningEfforts":["minimal","medium","xhigh"],
 		"defaultReasoningEffort":"medium",
@@ -154,7 +156,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(patchRec.Body).Decode(&patchBody); err != nil {
 		t.Fatalf("decode patch response: %v", err)
 	}
-	if patchBody.Data.Status != "disabled" || patchBody.Data.Notes != "" {
+	if patchBody.Data.Status != "disabled" || patchBody.Data.Notes != "" || !patchBody.Data.CatalogVisible {
 		t.Fatalf("patch response = %+v", patchBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, &patchBody.Data, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium", []string{}, "", "")
@@ -172,7 +174,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("decode updated list response: %v", err)
 	}
 	updatedItem := findW2ProviderModel(updatedListBody.Data, "w3-crud-model")
-	if updatedItem == nil || updatedItem.Status != "disabled" || updatedItem.Notes != "" {
+	if updatedItem == nil || updatedItem.Status != "disabled" || updatedItem.Notes != "" || !updatedItem.CatalogVisible {
 		t.Fatalf("updated list response missing patched custom model: %+v", updatedListBody.Data)
 	}
 	assertW2ProviderModelRequestCapabilities(t, updatedItem, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium", []string{}, "", "")

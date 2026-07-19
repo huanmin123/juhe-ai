@@ -93,6 +93,7 @@ type CustomModelMutation struct {
 	Scope                     OptionalString
 	Model                     OptionalString
 	Status                    OptionalString
+	CatalogVisible            OptionalBool
 	Mode                      OptionalString
 	SupportedAPIProtocols     OptionalStringList
 	SupportedServiceTiers     OptionalStringList
@@ -137,6 +138,11 @@ type OptionalInt struct {
 type OptionalFloat struct {
 	Set   bool
 	Value *float64
+}
+
+type OptionalBool struct {
+	Set   bool
+	Value bool
 }
 
 type OptionalProviderModelPriceMap struct {
@@ -650,7 +656,9 @@ func customProviderModelUpdateInput(input CustomModelUpdateInput) port.Managemen
 	return port.ManagementCustomProviderModelUpdateInput{
 		ID: strings.TrimSpace(input.ID), ProviderCode: strings.TrimSpace(input.ProviderCode),
 		ActorSystemAccountID: strings.TrimSpace(input.ActorSystemAccountID), ActorRole: input.ActorRole,
-		Status: optionalProviderModelString(fields.Status), Mode: optionalProviderModelString(fields.Mode),
+		Status:                    optionalProviderModelString(fields.Status),
+		CatalogVisible:            port.ManagementProviderModelOptionalBool{Present: fields.CatalogVisible.Set, Value: fields.CatalogVisible.Value},
+		Mode:                      optionalProviderModelString(fields.Mode),
 		SupportedAPIProtocols:     optionalProviderModelStringList(fields.SupportedAPIProtocols, false),
 		SupportedServiceTiers:     optionalProviderModelStringList(fields.SupportedServiceTiers, true),
 		SupportedReasoningEfforts: optionalProviderModelStringList(fields.SupportedReasoningEfforts, true),
@@ -732,6 +740,7 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 	persisted, found, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: existing.ID, ProviderCode: existing.ProviderCode,
 		Status:                    port.ManagementProviderModelOptionalString{Present: input.Fields.Status.Set, Value: configuration.Status},
+		CatalogVisible:            port.ManagementProviderModelOptionalBool{Present: input.Fields.CatalogVisible.Set, Value: configuration.CatalogVisible},
 		Mode:                      port.ManagementProviderModelOptionalString{Present: input.Fields.Mode.Set, Value: configuration.Mode},
 		SupportedAPIProtocols:     port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedAPIProtocols.Set, Value: append([]string(nil), configuration.SupportedAPIProtocols...)},
 		SupportedServiceTiers:     port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedServiceTiers.Set, Value: append([]string(nil), configuration.SupportedServiceTiers...)},
@@ -780,6 +789,7 @@ func validateBuiltInProviderModelFinalConfiguration(snapshot port.ManagementProv
 	normalized := port.ManagementCustomProviderModelSaveInput{ProviderCode: snapshot.ProviderCode}
 	err := applyCustomModelMutableFields(&normalized, CustomModelMutation{
 		Status:                    OptionalString{Set: true, Value: snapshot.Status},
+		CatalogVisible:            OptionalBool{Set: true, Value: snapshot.CatalogVisible},
 		Mode:                      OptionalString{Set: true, Value: snapshot.Mode},
 		SupportedAPIProtocols:     OptionalStringList{Set: true, Value: snapshot.SupportedAPIProtocols},
 		SupportedServiceTiers:     OptionalStringList{Set: true, Value: snapshot.SupportedServiceTiers},
@@ -820,6 +830,7 @@ func builtInCatalogItemWithConfigurationSnapshot(existing port.ManagementProvide
 	item.ID = snapshot.ID
 	item.ProviderCode = snapshot.ProviderCode
 	item.Status = snapshot.Status
+	item.CatalogVisible = snapshot.CatalogVisible
 	item.Mode = snapshot.Mode
 	item.SupportedAPIProtocols = append([]string(nil), snapshot.SupportedAPIProtocols...)
 	item.SupportedServiceTiers = append([]string(nil), snapshot.SupportedServiceTiers...)
@@ -1130,6 +1141,7 @@ func customModelSaveInputFromCreate(
 		Scope:                scope,
 		SystemAccountID:      strings.TrimSpace(systemAccountID),
 		Status:               status,
+		CatalogVisible:       true,
 		ActorSystemAccountID: strings.TrimSpace(actorSystemAccountID),
 	}
 	if template != nil {
@@ -1222,6 +1234,7 @@ func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogIt
 		Scope:                     item.Scope,
 		SystemAccountID:           item.SystemAccountID,
 		Status:                    item.Status,
+		CatalogVisible:            item.CatalogVisible,
 		Mode:                      item.Mode,
 		SupportedAPIProtocols:     append([]string(nil), item.SupportedAPIProtocols...),
 		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
@@ -1279,6 +1292,9 @@ func applyCustomModelMutableFieldsWithValidation(input *port.ManagementCustomPro
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		input.Status = status
+	}
+	if fields.CatalogVisible.Set {
+		input.CatalogVisible = fields.CatalogVisible.Value
 	}
 	if input.Status == "" {
 		input.Status = "active"
@@ -1421,6 +1437,7 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.Scope.Set ||
 		fields.Model.Set ||
 		fields.Status.Set ||
+		fields.CatalogVisible.Set ||
 		fields.Mode.Set ||
 		fields.SupportedAPIProtocols.Set ||
 		fields.SupportedServiceTiers.Set ||

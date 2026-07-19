@@ -181,6 +181,7 @@ type JuheBusinessCustomProviderModel struct {
 	CacheWrite1hUsdPer1m          pgtype.Float8
 	ServiceTierPricesJson         string
 	MaxInputTokens                pgtype.Int4
+	CatalogVisible                bool
 }
 
 type JuheBusinessExternalIntegrationSource struct {
@@ -211,6 +212,17 @@ type JuheBusinessExternalIntegrationSourceToken struct {
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
 	RevokedAt            pgtype.Timestamptz
+}
+
+type JuheBusinessGatewayModelCatalogSnapshot struct {
+	SystemAccountID string
+	Protocol        string
+	Variant         string
+	PayloadJson     string
+	ModelCount      int32
+	Revision        string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type JuheBusinessGlobalSetting struct {
@@ -349,10 +361,10 @@ type JuheBusinessProviderModelCatalog struct {
 	CodexDefaultReasoningLevel              pgtype.Text
 	CodexMultiAgentVersion                  pgtype.Text
 	LongContextInputTokenThreshold          pgtype.Int4
-	LongContextInputTokenThresholdInclusive bool
 	LongContextInputCostMultiplier          pgtype.Float8
 	LongContextOutputCostMultiplier         pgtype.Float8
 	ServiceTierPricesJson                   string
+	LongContextInputTokenThresholdInclusive bool
 }
 
 type JuheBusinessProviderProtocolProfile struct {

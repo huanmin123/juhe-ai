@@ -808,6 +808,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		TargetSystemAccountID: " sys_user ",
 		Fields: CustomModelMutation{
 			Model:                     OptionalString{Set: true, Value: " custom-chat "},
+			CatalogVisible:            OptionalBool{Set: true, Value: false},
 			SupportedAPIProtocols:     OptionalStringList{Set: true, Value: []string{"responses", "responses"}},
 			SupportedServiceTiers:     OptionalStringList{Set: true, Value: []string{"priority", "flex"}},
 			SupportedReasoningEfforts: OptionalStringList{Set: true, Value: []string{"low", "high", "high"}},
@@ -827,6 +828,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		store.saveInput.Scope != "personal" ||
 		store.saveInput.SystemAccountID != "sys_user" ||
 		store.saveInput.Status != "active" ||
+		store.saveInput.CatalogVisible ||
 		len(store.saveInput.SupportedAPIProtocols) != 1 ||
 		store.saveInput.SupportedAPIProtocols[0] != "responses" ||
 		len(store.saveInput.SupportedServiceTiers) != 2 ||
@@ -1056,6 +1058,7 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		Scope:                     "personal",
 		SystemAccountID:           "sys_user",
 		Status:                    "active",
+		CatalogVisible:            true,
 		Mode:                      "text",
 		SupportedServiceTiers:     []string{"priority"},
 		SupportedReasoningEfforts: []string{"low", "high"},
@@ -1072,12 +1075,16 @@ func TestServiceUpdateCustomModelClonesAndValidatesRequestCapabilities(t *testin
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
 		ActorRole:            "user",
-		Fields:               CustomModelMutation{Notes: OptionalString{Set: true, Value: "updated"}},
+		Fields: CustomModelMutation{
+			CatalogVisible: OptionalBool{Set: true, Value: false},
+			Notes:          OptionalString{Set: true, Value: "updated"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("UpdateCustomModel() clone error = %v", err)
 	}
 	if store.customUpdateCalls != 1 || store.saveCalls != 0 || store.customUpdateInput.Notes.Value != "updated" ||
+		!store.customUpdateInput.CatalogVisible.Present || store.customUpdateInput.CatalogVisible.Value ||
 		store.customUpdateInput.SupportedServiceTiers.Present || store.customUpdateInput.SupportedReasoningEfforts.Present ||
 		!store.customUpdateInput.DefaultReasoningEffort.Present || store.customUpdateInput.DefaultReasoningEffort.Value != "" {
 		t.Fatalf("atomic update input = %+v", store.customUpdateInput)
@@ -2197,6 +2204,9 @@ func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ co
 			original := s.catalog[index]
 			before := builtInProviderModelConfigurationSnapshotFromCatalog(s.catalog[index])
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Status, input.Status)
+			if input.CatalogVisible.Present {
+				s.catalog[index].CatalogVisible = input.CatalogVisible.Value
+			}
 			applyBuiltInProviderModelOptionalString(&s.catalog[index].Mode, input.Mode)
 			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedAPIProtocols, input.SupportedAPIProtocols)
 			applyBuiltInProviderModelOptionalStringList(&s.catalog[index].SupportedServiceTiers, input.SupportedServiceTiers)
@@ -2246,6 +2256,7 @@ func builtInProviderModelConfigurationSnapshotFromCatalog(item port.ManagementPr
 		ID:                        item.ID,
 		ProviderCode:              item.ProviderCode,
 		Status:                    item.Status,
+		CatalogVisible:            item.CatalogVisible,
 		Mode:                      item.Mode,
 		SupportedAPIProtocols:     append([]string(nil), item.SupportedAPIProtocols...),
 		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
@@ -2420,7 +2431,7 @@ func (s *providerModelStoreStub) SaveManagementCustomProviderModel(_ context.Con
 		AudioOutputUSDPer1M:       input.AudioOutputUSDPer1M,
 		OutputUSDPerImage:         input.OutputUSDPerImage,
 		SupportsPromptCaching:     input.CachedInputUSDPer1M != nil,
-		CatalogVisible:            true,
+		CatalogVisible:            input.CatalogVisible,
 		PricingNotes:              input.PricingNotes,
 		CapabilityNotes:           input.CapabilityNotes,
 		Notes:                     input.Notes,
@@ -2452,6 +2463,9 @@ func (s *providerModelStoreStub) UpdateManagementCustomProviderModel(_ context.C
 
 func applyCustomProviderModelUpdateStub(item *port.ManagementProviderModelCatalogItem, input port.ManagementCustomProviderModelUpdateInput) {
 	applyBuiltInProviderModelOptionalString(&item.Status, input.Status)
+	if input.CatalogVisible.Present {
+		item.CatalogVisible = input.CatalogVisible.Value
+	}
 	applyBuiltInProviderModelOptionalString(&item.Mode, input.Mode)
 	applyBuiltInProviderModelOptionalStringList(&item.SupportedAPIProtocols, input.SupportedAPIProtocols)
 	applyBuiltInProviderModelOptionalStringList(&item.SupportedServiceTiers, input.SupportedServiceTiers)

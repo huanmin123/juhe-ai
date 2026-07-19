@@ -327,6 +327,7 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_user", strings.NewReader(`{
 		"configurationTemplateId":"provider_model_gpt_5_6_sol",
 		"model":" custom-chat ",
+		"catalogVisible":false,
 		"supportedApiProtocols":["responses"],
 		"supportedServiceTiers":["priority","flex"],
 		"supportedReasoningEfforts":["low","high"],
@@ -349,6 +350,8 @@ func TestManagementProviderCustomModelCreateHandlerParsesBodyAndTargetScope(t *t
 		service.createInput.Fields.ConfigurationTemplateID.Value != "provider_model_gpt_5_6_sol" ||
 		!service.createInput.Fields.Model.Set ||
 		service.createInput.Fields.Model.Value != " custom-chat " ||
+		!service.createInput.Fields.CatalogVisible.Set ||
+		service.createInput.Fields.CatalogVisible.Value ||
 		service.createInput.Fields.InputUSDPer1M.Value == nil ||
 		*service.createInput.Fields.InputUSDPer1M.Value != 1.25 ||
 		!service.createInput.Fields.SupportedServiceTiers.Set ||
