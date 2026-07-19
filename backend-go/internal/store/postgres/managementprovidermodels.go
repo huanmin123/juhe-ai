@@ -24,6 +24,7 @@ type managementBuiltInProviderModelPriceUpdateQueries interface {
 		ctx context.Context,
 		input postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams,
 	) (postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow, error)
+	MarkManagementModelCatalogSnapshotRebuildDirty(context.Context, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error
 }
 
 func (s *Store) FindManagementProviderModelProvider(ctx context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
@@ -67,7 +68,7 @@ func (s *Store) FindManagementCustomProviderModelByScope(ctx context.Context, in
 }
 
 func (s *Store) SaveManagementCustomProviderModel(ctx context.Context, input port.ManagementCustomProviderModelSaveInput) (port.ManagementProviderModelCatalogItem, error) {
-	return saveManagementCustomProviderModel(ctx, s.queries(), input)
+	return saveManagementCustomProviderModelInTx(ctx, s.pool.BeginTx, input)
 }
 
 func (s *Store) UpdateManagementCustomProviderModel(ctx context.Context, input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
@@ -114,6 +115,7 @@ func updateManagementBuiltInProviderModelPricesInTx(ctx context.Context, beginTx
 type managementCustomProviderModelUpdateQueries interface {
 	LockManagementCustomProviderModel(context.Context, postgresqueries.LockManagementCustomProviderModelParams) (postgresqueries.LockManagementCustomProviderModelRow, error)
 	UpdateManagementCustomProviderModel(context.Context, postgresqueries.UpdateManagementCustomProviderModelParams) (postgresqueries.UpdateManagementCustomProviderModelRow, error)
+	MarkManagementModelCatalogSnapshotRebuildDirty(context.Context, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error
 }
 
 func updateManagementCustomProviderModelInTx(ctx context.Context, beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error), input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
@@ -179,6 +181,9 @@ func updateManagementCustomProviderModelTx(ctx context.Context, q managementCust
 	}
 	if before.ID != input.ID || before.ProviderCode != input.ProviderCode || after.ID != before.ID || after.ProviderCode != before.ProviderCode {
 		return port.ManagementCustomProviderModelUpdateResult{}, false, errors.New("custom provider model update identity mismatch")
+	}
+	if err := markManagementModelCatalogSnapshotDirty(ctx, q, after.Scope, after.SystemAccountID); err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, err
 	}
 	return port.ManagementCustomProviderModelUpdateResult{Before: before, After: after}, true, nil
 }
@@ -384,6 +389,9 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 	}
 	if before.ID != input.ID || before.ProviderCode != input.ProviderCode || after.ID != before.ID || after.ProviderCode != before.ProviderCode {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, errors.New("built-in provider model update identity mismatch")
+	}
+	if err := markManagementModelCatalogSnapshotDirty(ctx, q, "all", ""); err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
 	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: after}, true, nil
 }
@@ -745,6 +753,39 @@ func findManagementCustomProviderModelByScope(
 	return item, true, nil
 }
 
+func saveManagementCustomProviderModelInTx(
+	ctx context.Context,
+	beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error),
+	input port.ManagementCustomProviderModelSaveInput,
+) (port.ManagementProviderModelCatalogItem, error) {
+	tx, err := beginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("begin custom provider model create: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+	q := postgresqueries.New(tx)
+	saved, err := saveManagementCustomProviderModel(ctx, q, input)
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	if err := markManagementModelCatalogSnapshotDirty(ctx, q, saved.Scope, saved.SystemAccountID); err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("commit custom provider model create: %w", err)
+	}
+	committed = true
+	return saved, nil
+}
+
 func saveManagementCustomProviderModel(
 	ctx context.Context,
 	q *postgresqueries.Queries,
@@ -804,6 +845,33 @@ func saveManagementCustomProviderModel(
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("save management custom provider model: %w", err)
 	}
 	return managementCustomProviderModelFromData(customProviderModelDataFromUpsertRow(row))
+}
+
+type managementModelCatalogSnapshotDirtyMarker interface {
+	MarkManagementModelCatalogSnapshotRebuildDirty(context.Context, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error
+}
+
+func markManagementModelCatalogSnapshotDirty(
+	ctx context.Context,
+	q managementModelCatalogSnapshotDirtyMarker,
+	scope string,
+	systemAccountID string,
+) error {
+	dirtyScope := "all"
+	dirtySystemAccountID := ""
+	if strings.TrimSpace(scope) == "personal" {
+		dirtyScope = "personal"
+		dirtySystemAccountID = strings.TrimSpace(systemAccountID)
+		if dirtySystemAccountID == "" {
+			return errors.New("personal model catalog snapshot dirty request requires system account ID")
+		}
+	}
+	if err := q.MarkManagementModelCatalogSnapshotRebuildDirty(ctx, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams{
+		Scope: dirtyScope, SystemAccountID: dirtySystemAccountID, UpdatedAt: pgTimestamptz(time.Now().UTC()),
+	}); err != nil {
+		return fmt.Errorf("mark model catalog snapshot rebuild dirty: %w", err)
+	}
+	return nil
 }
 
 func marshalManagementProviderModelPriceMap(prices map[string]port.ManagementProviderModelPriceSet) ([]byte, error) {

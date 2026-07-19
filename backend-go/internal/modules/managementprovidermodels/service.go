@@ -52,10 +52,15 @@ type PageDataPublisher interface {
 	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
+type CatalogSnapshotRebuilder interface {
+	Rebuild(ctx context.Context, scope string, systemAccountID string) error
+}
+
 type ServiceOptions struct {
 	Store             Store
 	Invalidator       CustomProviderModelInvalidator
 	PageDataPublisher PageDataPublisher
+	CatalogRebuilder  CatalogSnapshotRebuilder
 	NewID             func(prefix string) string
 	Logger            *slog.Logger
 }
@@ -64,6 +69,7 @@ type Service struct {
 	store             Store
 	invalidator       CustomProviderModelInvalidator
 	pageDataPublisher PageDataPublisher
+	catalogRebuilder  CatalogSnapshotRebuilder
 	newID             func(prefix string) string
 	logger            *slog.Logger
 }
@@ -368,7 +374,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		logger = slog.Default()
 	}
 	return &Service{
-		store: opts.Store, invalidator: opts.Invalidator, pageDataPublisher: opts.PageDataPublisher,
+		store: opts.Store, invalidator: opts.Invalidator, pageDataPublisher: opts.PageDataPublisher, catalogRebuilder: opts.CatalogRebuilder,
 		newID: newID, logger: logger,
 	}
 }
@@ -582,6 +588,9 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	s.publishModelPageDataResets(ctx, saved.Scope, saved.SystemAccountID)
+	if err := s.rebuildCatalogSnapshot(ctx, saved.Scope, saved.SystemAccountID); err != nil {
+		return ModelCatalogItem{}, err
+	}
 	return catalogItemFromPort(saved), nil
 }
 
@@ -645,8 +654,12 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 		cleanupErr = s.clearDefaultHealthCheckModelReferences(ctx, persisted.After)
 	}
 	s.publishModelPageDataResets(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
+	rebuildErr := s.rebuildCatalogSnapshot(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
 	if cleanupErr != nil {
 		return CustomModelUpdateResult{}, cleanupErr
+	}
+	if rebuildErr != nil {
+		return CustomModelUpdateResult{}, rebuildErr
 	}
 	return CustomModelUpdateResult{Before: catalogItemFromPort(persisted.Before), After: catalogItemFromPort(persisted.After)}, nil
 }
@@ -776,6 +789,9 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	s.publishModelPageDataResets(ctx, "built_in", "")
+	if err := s.rebuildCatalogSnapshot(ctx, "all", ""); err != nil {
+		return CustomModelUpdateResult{}, err
+	}
 	return CustomModelUpdateResult{
 		Before: builtInCatalogItemWithConfigurationSnapshot(existing, persisted.Before),
 		After:  builtInCatalogItemWithConfigurationSnapshot(existing, persisted.After),
@@ -915,8 +931,12 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
 		cleanupErr := s.clearDefaultHealthCheckModelReferences(ctx, existing)
 		s.publishModelPageDataResets(ctx, existing.Scope, existing.SystemAccountID)
+		rebuildErr := s.rebuildCatalogSnapshot(ctx, existing.Scope, existing.SystemAccountID)
 		if cleanupErr != nil {
 			return CustomModelDeleteResult{}, cleanupErr
+		}
+		if rebuildErr != nil {
+			return CustomModelDeleteResult{}, rebuildErr
 		}
 	}
 	return CustomModelDeleteResult{Deleted: deleted}, nil
@@ -1678,6 +1698,17 @@ func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason stri
 			slog.Any("error", err),
 		)
 	}
+}
+
+func (s *Service) rebuildCatalogSnapshot(ctx context.Context, scope string, systemAccountID string) error {
+	if s.catalogRebuilder == nil {
+		return nil
+	}
+	rebuildCtx := context.WithoutCancel(ctx)
+	if strings.TrimSpace(scope) == "personal" {
+		return s.catalogRebuilder.Rebuild(rebuildCtx, "personal", strings.TrimSpace(systemAccountID))
+	}
+	return s.catalogRebuilder.Rebuild(rebuildCtx, "all", "")
 }
 
 func (s *Service) publishModelPageDataResets(ctx context.Context, scope string, systemAccountID string) {

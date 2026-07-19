@@ -275,6 +275,13 @@ type JuheBusinessGroupAuthorizationSetting struct {
 	UpdatedAt            pgtype.Timestamptz
 }
 
+type JuheBusinessModelCatalogSnapshotRebuildRequest struct {
+	Scope           string
+	SystemAccountID string
+	Generation      int64
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type JuheBusinessPageDataDirtyDomain struct {
 	Domain     string
 	Generation int64
