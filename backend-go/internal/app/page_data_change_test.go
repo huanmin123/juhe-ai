@@ -251,8 +251,11 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 		t.Fatalf("read server.go: %v", err)
 	}
 	text := string(source)
-	if !strings.Contains(text, "newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)") {
-		t.Fatal("server must construct page data publisher with state and cache Redis plus the root namespace")
+	if !strings.Contains(text, "newRecoveringAccountsStaticResetPublisher(") {
+		t.Fatal("server must construct the recovering page data publisher")
+	}
+	if !strings.Contains(text, "ctx, stateRedis, cacheRedis, cfg.RedisNamespace, store, logger") {
+		t.Fatal("server must wire page data recovery with Redis, the root namespace, PostgreSQL store, and logger")
 	}
 	if strings.Contains(text, `newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace+":state")`) {
 		t.Fatal("server must not pass the state client namespace to the page data publisher")

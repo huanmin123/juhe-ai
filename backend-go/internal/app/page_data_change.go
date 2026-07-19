@@ -12,6 +12,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 type pageDataCorePublisher interface {
@@ -59,6 +60,25 @@ func newAccountsStaticResetPublisher(
 		adapter.cache = redisPageDataCacheVersionWriter{client: cacheClient}
 	}
 	return adapter, nil
+}
+
+func newRecoveringAccountsStaticResetPublisher(
+	ctx context.Context,
+	client *redisplatform.Client,
+	cacheClient *redisplatform.Client,
+	redisNamespace string,
+	dirtyStore port.PageDataDirtyDomainStore,
+	logger *slog.Logger,
+) (accountsStaticResetPublisherAdapter, func(), error) {
+	adapter, err := newAccountsStaticResetPublisher(client, cacheClient, redisNamespace)
+	if err != nil {
+		return accountsStaticResetPublisherAdapter{}, nil, err
+	}
+	recovering := newRecoveringPageDataCorePublisher(adapter.publisher, dirtyStore, logger)
+	recovering.Start(ctx)
+	adapter.publisher = recovering
+	adapter.logger = logger
+	return adapter, recovering.Close, nil
 }
 
 func (p accountsStaticResetPublisherAdapter) PublishAccountsStaticReset(

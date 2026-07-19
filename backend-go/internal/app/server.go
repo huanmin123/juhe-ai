@@ -162,10 +162,13 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 	var accountsStaticResetPublisher managementPageDataPublisher
 	if cfg.ManagementAPIEnabled || cfg.PublicAPIEnabled {
-		publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
+		publisher, closePublisher, err := newRecoveringAccountsStaticResetPublisher(
+			ctx, stateRedis, cacheRedis, cfg.RedisNamespace, store, logger,
+		)
 		if err != nil {
 			return err
 		}
+		defer closePublisher()
 		accountsStaticResetPublisher = publisher
 	}
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
