@@ -326,6 +326,29 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
+  if (isDirectLoopbackDeploymentSmoke(req)) {
+    const responsePayload = gatewayErrorPayload(
+      '部署 smoke 已在网关本地完成，未派发上游',
+      'invalid_request_error',
+      'deployment_smoke_no_upstream'
+    )
+    await sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: currentGroupUsageContext(),
+      startedAt,
+      statusCode: 400,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'request_validation',
+        errorCode: 'deployment_smoke_no_upstream',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
   let interactionResourceAffinity: GeminiInteractionAffinityBinding | undefined
   const interactionResourceRequest = isGeminiInteractionResourceRequest(req)
   const interactionResourceId = geminiInteractionResourceIdFromRequest(req)
@@ -1022,6 +1045,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     interactionResourceAffinity,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
+}
+
+function isDirectLoopbackDeploymentSmoke(req: Request): boolean {
+  if (req.header('x-juhe-deployment-smoke') !== 'no-upstream' || req.header('x-forwarded-for')) return false
+  const remoteAddress = req.socket.remoteAddress
+  return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
 }
 
 function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): RouteStrategySpeedFirstConfig | undefined {
