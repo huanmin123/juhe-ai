@@ -406,6 +406,76 @@ export interface AccountRuntimeAvailability {
   distinctApiKeyCount?: number
   precheckAttemptCount?: number
   localFailureCount?: number
+  probePresentation?: AccountRuntimeProbePresentation
+}
+
+export type AccountProbeKind =
+  | 'health_check'
+  | 'activation_check'
+  | 'cooldown_retest'
+  | 'runtime_probe'
+  | 'api_key_retest'
+  | 'source_account_probe'
+
+export type AccountProbeResult = 'success' | 'failed'
+export type AccountProbeScheduleState = 'scheduled' | 'due_waiting' | 'running' | 'none'
+
+export interface AccountProbeObservation {
+  observationId: string
+  attemptedAt: string
+  result: AccountProbeResult
+  httpStatus?: number
+  errorCode?: string
+  reason?: string
+  traceId?: string
+}
+
+export interface AccountProbeSchedule {
+  state: AccountProbeScheduleState
+  nextAttemptAt?: string
+}
+
+export interface AccountProbeSummary {
+  kind: AccountProbeKind
+  lastObservation?: AccountProbeObservation
+  schedule: AccountProbeSchedule
+}
+
+export type AccountPresentationStatus =
+  | 'available' | 'pending_check' | 'check_failed' | 'rate_limited'
+  | 'temporarily_unavailable' | 'error' | 'degraded' | 'verifying'
+  | 'verification_failed' | 'avoided' | 'key_pool_unavailable' | 'disabled'
+  | 'expired' | 'authorization_blocked' | 'binding_missing' | 'permission_denied'
+  | 'source_blocked'
+
+export type AccountPresentationAction =
+  | 'none' | 'retry_check' | 'restore_account' | 'enable_account' | 'bind_group'
+  | 'renew_authorization' | 'contact_authorizer' | 'contact_admin'
+  | 'fix_configuration'
+
+export interface AccountAvailabilityPresentation {
+  status: AccountPresentationStatus
+  label: string
+  reason?: string
+  action?: AccountPresentationAction
+  statusBoundary?: {
+    at: string
+    kind: 'policy_ttl_expiry' | 'quota_reset' | 'cooldown_expiry' | 'account_expired' | 'authorization_expired' | 'source_expired'
+  }
+  probe?: AccountProbeSummary
+}
+
+export interface AccountLifecyclePresentation {
+  accountExpiresAt?: string
+  authorizationExpiresAt?: string
+  quotaResetAt?: string
+}
+
+export interface AccountRuntimeProbePresentation {
+  lastObservation?: AccountProbeObservation
+  schedule: AccountProbeSchedule
+  recoveryAt?: string
+  recoveryAtKind?: 'policy_ttl_expiry'
 }
 
 export type AccountEffectiveAvailabilityStatus =
@@ -524,6 +594,7 @@ export interface AccountSummary {
   currentConcurrencyAvailable?: boolean
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability: AccountEffectiveAvailability
+  availabilityPresentation?: AccountAvailabilityPresentation
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -590,6 +661,15 @@ export interface AccountSummary {
   authorizationInstanceSourceAccountCooldownUntil?: string
   authorizationInstanceSourceAccountLastErrorCode?: string
   authorizationInstanceSourceAccountLastErrorMessage?: string
+  authorizationInstanceSourceAccountLastErrorTraceId?: string
+  authorizationInstanceSourceAccountCooldownRetestLastAt?: string
+  authorizationInstanceSourceAccountCooldownRetestLastStatusCode?: number
+  authorizationInstanceSourceAccountLastHealthCheckAt?: string
+  authorizationInstanceSourceAccountNextHealthCheckAt?: string
+  authorizationInstanceSourceAccountLastHealthCheckStatusCode?: number
+  authorizationInstanceSourceAccountLastHealthCheckErrorCode?: string
+  authorizationInstanceSourceAccountLastHealthCheckErrorMessage?: string
+  authorizationInstanceSourceAccountLastHealthCheckTraceId?: string
   boundGroupId?: string
   boundGroupName?: string
   groupBindStatus?: AccountGroupBindStatus
@@ -630,6 +710,7 @@ export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'apiKeyRuntime'
   | 'runtimeAvailability'
   | 'effectiveAvailability'
+  | 'availabilityPresentation'
   | 'lastUsedAt'
   | 'todayUsage'
 > {}
@@ -664,6 +745,10 @@ export interface AccountApiKeyRuntimeSummary {
   unavailable: number
   allUnavailable: boolean
   nextProbeAt?: string
+  lastFailureAt?: string
+  lastErrorCode?: string
+  lastErrorMessage?: string
+  lastTraceId?: string
 }
 
 export interface AccountApiKeyRuntimeDetail {
@@ -682,6 +767,7 @@ export interface AccountApiKeyRuntimeDetail {
   lastFailureAt?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  lastTraceId?: string
 }
 
 export type AccountOptionSummary = Pick<

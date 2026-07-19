@@ -3,7 +3,20 @@
     <a-tooltip v-if="tooltipLines.length" placement="topLeft">
       <template #title>
         <div class="status-tooltip">
-          <div v-for="line in tooltipLines" :key="line">{{ line }}</div>
+          <div v-for="line in tooltipLines" :key="line" class="status-tooltip-line">
+            <span>{{ line }}</span>
+            <a-button
+              v-if="line.startsWith('traceId：')"
+              class="trace-copy-button"
+              type="text"
+              size="small"
+              aria-label="复制 traceId"
+              title="复制 traceId"
+              @click.stop="copyTraceId"
+            >
+              <CopyOutlined />
+            </a-button>
+          </div>
         </div>
       </template>
       <span class="status-tag-group">
@@ -26,10 +39,13 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import { message } from 'ant-design-vue'
+import { CopyOutlined } from '@ant-design/icons-vue'
 
 import StatusTag from '@/components/StatusTag.vue'
 import type { AccountSummary } from '@/types/domain'
 import { accountStatusColor, accountStatusText, accountStatusTooltipLines } from './accountFormatters'
+import { accountStatusTooltipTraceId } from './accountStatusPresentation'
 
 const props = defineProps<{
   account: AccountSummary
@@ -46,15 +62,19 @@ const fallbackTooltip = computed(() => dispatchFlagActive.value
 )
 
 const tooltipLines = computed(() => {
-  const lines = accountStatusTooltipLines(props.account)
-  if (props.account.superPriorityEnabled) {
-    lines.push(superPriorityTooltip.value)
-  }
-  if (props.account.fallbackEnabled) {
-    lines.push(fallbackTooltip.value)
-  }
-  return lines
+  return accountStatusTooltipLines(props.account)
 })
+
+async function copyTraceId(): Promise<void> {
+  const traceId = accountStatusTooltipTraceId(props.account)
+  if (!traceId) return
+  try {
+    await navigator.clipboard.writeText(traceId)
+    message.success('traceId 已复制')
+  } catch {
+    message.error('复制 traceId 失败')
+  }
+}
 </script>
 
 <style scoped>
@@ -86,5 +106,19 @@ const tooltipLines = computed(() => {
   max-width: 320px;
   line-height: 1.7;
   white-space: pre-wrap;
+}
+
+.status-tooltip-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.trace-copy-button {
+  flex: none;
+  color: inherit;
+  padding: 0 2px;
+  height: 22px;
 }
 </style>

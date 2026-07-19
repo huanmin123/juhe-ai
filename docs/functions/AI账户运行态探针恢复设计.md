@@ -294,6 +294,16 @@ performance 模式默认可能有多个 server 节点，同一账号的运行态
 
 ## 日志和排障
 
+## 用户状态摘要契约
+
+运行态内部字段与用户提示卡片严格分离。对外状态只通过 `AccountRuntimeAvailability.probePresentation` 提供：
+
+- `lastObservation`：最近一次真正形成上游结果的探针时间、成功/失败、HTTP 状态、错误码、原因和 `traceId`；未形成真实上游响应的任务失败不伪造 observation。
+- `schedule`：只表示真实探针任务的 `scheduled`、`due_waiting`、`running` 或 `none`。内存态以实际 timer 存在为准，Redis 以 due ZSET membership 为准；任务丢失时必须返回 `none`。
+- `recoveryAt`：仅用于用户显式策略 TTL，`recoveryAtKind` 固定为 `policy_ttl_expiry`，不能作为探针下次时间。
+
+`until`、失败次数、来源 IP、API Key 数量、探针轮次、半开租约截止和 Redis 内部 `nextProbeAtMs` 都是调度实现字段，不得直接渲染到账户状态卡片。Redis 多节点探针通过 generation + runId 原子取得、提交和清理，旧执行结果不能覆盖新的 observation 或半开租约。
+
 建议保留这些事件语义：
 
 - `gateway_account_failure_observed`：真实请求失败已记录为样本。

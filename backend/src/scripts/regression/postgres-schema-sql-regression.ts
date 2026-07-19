@@ -99,6 +99,7 @@ for (const schemaName of schemaNames) {
 }
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
+assert.match(sql, /account_api_key_runtime_states[\s\S]+last_trace_id text/, 'Key 运行态 PostgreSQL schema 必须包含最近失败 traceId')
 assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG 长上下文阈值边界字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')
