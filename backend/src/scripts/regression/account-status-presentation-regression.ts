@@ -1,0 +1,313 @@
+import assert from 'node:assert/strict'
+
+import { accountAvailabilityPresentation } from '../../domain/account-status-presentation.js'
+
+const now = new Date('2026-07-20T01:05:00.000Z')
+
+const active = {
+  id: 'account-active',
+  status: 'active' as const,
+  effectiveAvailability: {
+    available: true,
+    status: 'available' as const,
+    label: '正常',
+    color: 'green'
+  },
+  lastHealthCheckAt: '2026-07-20T01:02:03.000Z',
+  nextHealthCheckAt: '2026-07-20T01:12:03.000Z',
+  lastHealthSuccessAt: '2026-07-20T01:02:03.000Z',
+  lastErrorCode: 'stale_error',
+  lastErrorMessage: '历史错误不应泄漏',
+  lastErrorTraceId: 'trace-stale'
+}
+const activePresentation = accountAvailabilityPresentation(active, now)
+assert.equal(activePresentation.status, 'available')
+assert.equal(activePresentation.probe?.kind, 'health_check')
+assert.equal(activePresentation.probe?.lastObservation?.attemptedAt, active.lastHealthCheckAt)
+assert.equal(activePresentation.probe?.lastObservation?.result, 'success')
+assert.equal(activePresentation.probe?.lastObservation?.reason, undefined, '正常状态不应展示历史失败原因')
+assert.equal(activePresentation.probe?.lastObservation?.traceId, undefined, '正常状态不应展示历史 traceId')
+assert.equal(activePresentation.probe?.schedule.nextAttemptAt, active.nextHealthCheckAt)
+assert.equal(activePresentation.probe?.schedule.state, 'scheduled')
+assert.equal(activePresentation.statusBoundary, undefined)
+
+const pending = accountAvailabilityPresentation({
+  id: 'account-pending',
+  status: 'pending_test',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_pending_test',
+    label: '账户待检查',
+    color: 'orange',
+    reason: '等待首次激活检查'
+  },
+  nextHealthCheckAt: '2026-07-20T01:04:00.000Z'
+}, now)
+assert.equal(pending.status, 'pending_check')
+assert.equal(pending.probe?.kind, 'activation_check')
+assert.equal(pending.probe?.lastObservation, undefined)
+assert.equal(pending.probe?.schedule.state, 'due_waiting')
+
+const pendingWithInvalidSchedule = accountAvailabilityPresentation({
+  id: 'account-pending-invalid-schedule',
+  status: 'pending_test',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_pending_test',
+    label: '账户待检查',
+    color: 'orange'
+  },
+  nextHealthCheckAt: 'not-a-date'
+}, now)
+assert.deepEqual(pendingWithInvalidSchedule.probe, undefined, '非法时间不得伪造等待调度任务')
+
+const temporaryUnavailable = accountAvailabilityPresentation({
+  id: 'account-temporary',
+  status: 'temporary_unavailable',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_temporary_unavailable',
+    label: '账户临时不可用',
+    color: 'red',
+    reason: '上游连接失败'
+  },
+  cooldownRetestLastAt: '2026-07-20T01:03:00.000Z',
+  cooldownRetestLastStatusCode: 503,
+  cooldownNextProbeAt: '2026-07-20T01:08:00.000Z',
+  lastErrorCode: 'upstream_unavailable',
+  lastErrorMessage: '上游连接失败',
+  lastErrorTraceId: 'trace-current'
+}, now)
+assert.equal(temporaryUnavailable.status, 'temporarily_unavailable')
+assert.equal(temporaryUnavailable.probe?.kind, 'cooldown_retest')
+assert.equal(temporaryUnavailable.probe?.lastObservation?.result, 'failed')
+assert.equal(temporaryUnavailable.probe?.lastObservation?.traceId, 'trace-current')
+assert.equal(temporaryUnavailable.probe?.schedule.nextAttemptAt, '2026-07-20T01:08:00.000Z')
+assert.equal(temporaryUnavailable.statusBoundary, undefined)
+
+const disabled = accountAvailabilityPresentation({
+  id: 'account-disabled',
+  status: 'disabled',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_disabled',
+    label: '账户已停用',
+    color: 'default',
+    reason: '管理员已停用账户'
+  },
+  lastHealthCheckAt: '2026-07-19T01:00:00.000Z',
+  nextHealthCheckAt: '2026-07-20T01:10:00.000Z',
+  lastHealthCheckErrorMessage: '旧检查失败',
+  lastHealthCheckTraceId: 'trace-old'
+}, now)
+assert.equal(disabled.status, 'disabled')
+assert.equal(disabled.probe, undefined, '动作驱动的停用状态不得伪造自动检查')
+assert.equal(disabled.action, 'enable_account')
+
+const authorizationExpired = accountAvailabilityPresentation({
+  id: 'account-authorization-expired',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'authorization_expired',
+    label: '授权到期',
+    color: 'red',
+    reason: '授权已到期'
+  },
+  authorizationExpiresAt: '2026-07-20T00:00:00.000Z',
+  nextHealthCheckAt: '2026-07-20T01:10:00.000Z'
+}, now)
+assert.equal(authorizationExpired.status, 'expired')
+assert.equal(authorizationExpired.statusBoundary?.kind, 'authorization_expired')
+assert.equal(authorizationExpired.statusBoundary?.at, '2026-07-20T00:00:00.000Z')
+assert.equal(authorizationExpired.probe, undefined, '业务到期边界不得写入探测时间线')
+
+const runtimeWithoutProbe = accountAvailabilityPresentation({
+  id: 'account-runtime-pending',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'runtime_precheck_pending',
+    label: '正在复核',
+    color: 'orange',
+    reason: '等待运行态探针'
+  },
+  lastHealthCheckAt: '2026-07-20T00:00:00.000Z',
+  lastHealthCheckErrorMessage: '旧健康检查失败',
+  lastHealthCheckTraceId: 'trace-unrelated'
+}, now)
+assert.equal(runtimeWithoutProbe.status, 'verifying')
+assert.equal(runtimeWithoutProbe.probe, undefined, '缺少真实运行探针时不得用健康检查补位')
+assert.equal(runtimeWithoutProbe.reason, '等待运行态探针')
+
+const apiKeyPoolUnavailable = accountAvailabilityPresentation({
+  id: 'account-key-pool',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'api_key_pool_unavailable',
+    label: 'API Key 暂不可用',
+    color: 'red',
+    reason: '所有 Key 都暂不可用'
+  },
+  apiKeyProbe: {
+    kind: 'api_key_retest',
+    lastObservation: {
+      observationId: 'api-key-observation',
+      attemptedAt: '2026-07-20T01:01:00.000Z',
+      result: 'failed',
+      errorCode: 'rate_limit_exceeded',
+      reason: 'Key 限流',
+      traceId: 'trace-key'
+    },
+    schedule: {
+      state: 'scheduled',
+      nextAttemptAt: '2026-07-20T01:06:00.000Z'
+    }
+  }
+}, now)
+assert.equal(apiKeyPoolUnavailable.status, 'key_pool_unavailable')
+assert.equal(apiKeyPoolUnavailable.probe?.kind, 'api_key_retest')
+assert.equal(apiKeyPoolUnavailable.probe?.lastObservation?.traceId, 'trace-key')
+assert.equal(apiKeyPoolUnavailable.probe?.schedule.nextAttemptAt, '2026-07-20T01:06:00.000Z')
+assert.equal(apiKeyPoolUnavailable.statusBoundary, undefined)
+
+const sourcePending = accountAvailabilityPresentation({
+  id: 'authorized-instance-source-pending',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'source_pending_test',
+    label: '来源待检查',
+    color: 'orange',
+    reason: '来源账户尚未通过检查'
+  }
+}, now)
+assert.equal(sourcePending.action, 'contact_authorizer', '授权实例不得对来源账户执行当前实例的恢复动作')
+assert.equal(sourcePending.probe, undefined)
+
+const sourceExpired = accountAvailabilityPresentation({
+  id: 'authorized-instance-source-expired',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'source_expired',
+    label: '来源已到期',
+    color: 'red'
+  },
+  authorizationInstanceSourceAccountExpiresAt: '2026-07-20T00:30:00.000Z'
+}, now)
+assert.deepEqual(sourceExpired.statusBoundary, {
+  at: '2026-07-20T00:30:00.000Z',
+  kind: 'source_expired'
+})
+
+const stoppedInstance = accountAvailabilityPresentation({
+  id: 'account-stopped',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_unschedulable',
+    label: '账户已停调',
+    color: 'default'
+  }
+}, now)
+assert.equal(stoppedInstance.status, 'disabled')
+assert.equal(stoppedInstance.action, 'enable_account')
+
+const sourceCooldown = accountAvailabilityPresentation({
+  id: 'authorized-source-cooldown',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'source_cooldown',
+    label: '来源冷却中',
+    reason: '授权来源正在冷却'
+  },
+  cooldownUntil: '2026-07-20T01:07:00.000Z',
+  authorizationInstanceSourceAccountCooldownUntil: '2026-07-20T01:09:00.000Z'
+}, now)
+assert.equal(sourceCooldown.statusBoundary?.kind, 'cooldown_expiry')
+assert.equal(sourceCooldown.statusBoundary?.at, '2026-07-20T01:09:00.000Z', '来源冷却必须使用来源账户时间')
+assert.equal(sourceCooldown.action, 'contact_authorizer')
+
+const terminalError = accountAvailabilityPresentation({
+  id: 'account-terminal-error',
+  status: 'error',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_error',
+    label: '账户异常',
+    reason: '凭据已失效'
+  },
+  lastErrorCode: 'invalid_credentials',
+  lastErrorMessage: '凭据已失效',
+  lastErrorTraceId: 'trace-terminal',
+  lastHealthCheckAt: '2026-07-19T01:00:00.000Z',
+  nextHealthCheckAt: '2026-07-20T01:10:00.000Z'
+}, now)
+assert.equal(terminalError.probe, undefined, '无法绑定检查来源的终态异常不得套用旧健康检查')
+
+const instanceCooldownWithoutProbe = accountAvailabilityPresentation({
+  id: 'account-instance-cooldown',
+  status: 'temporary_unavailable',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_cooldown',
+    label: '账户冷却中',
+    reason: '等待冷却结束'
+  },
+  cooldownUntil: '2026-07-20T01:11:00.000Z'
+}, now)
+assert.equal(instanceCooldownWithoutProbe.probe, undefined)
+assert.equal(instanceCooldownWithoutProbe.statusBoundary?.kind, 'cooldown_expiry')
+assert.equal(instanceCooldownWithoutProbe.statusBoundary?.at, '2026-07-20T01:11:00.000Z')
+
+const halfOpen = accountAvailabilityPresentation({
+  id: 'account-half-open',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'runtime_half_open',
+    label: '正在确认',
+    reason: '正在进行恢复确认'
+  },
+  runtimeProbe: {
+    lastObservation: undefined,
+    schedule: { state: 'running' },
+    recoveryAt: '2026-07-20T01:20:00.000Z',
+    recoveryAtKind: 'policy_ttl_expiry'
+  }
+}, now)
+assert.equal(halfOpen.action, 'none')
+assert.equal(halfOpen.probe?.kind, 'runtime_probe')
+assert.equal('recoveryAt' in (halfOpen.probe ?? {}), false, '运行态恢复时间不得泄漏进探针摘要')
+
+const localSuppressed = accountAvailabilityPresentation({
+  id: 'account-local-suppressed',
+  status: 'active',
+  effectiveAvailability: {
+    available: false,
+    status: 'runtime_local_suppressed',
+    label: '暂时避让',
+    reason: '用户策略暂时避让',
+    retryAt: '2026-07-20T01:15:00.000Z'
+  }
+}, now)
+assert.equal(localSuppressed.action, 'restore_account')
+
+const invalidCredentialError = accountAvailabilityPresentation({
+  id: 'account-invalid-credential',
+  status: 'error',
+  effectiveAvailability: {
+    available: false,
+    status: 'instance_error',
+    label: '账户异常',
+    reason: '凭据无效'
+  },
+  lastErrorCode: 'invalid_credentials',
+  lastErrorMessage: '凭据无效'
+}, now)
+assert.equal(invalidCredentialError.action, 'fix_configuration')
+
+console.log('account status presentation regression passed')

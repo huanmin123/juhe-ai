@@ -373,6 +373,7 @@
     "test:authorized-account-dispatch-flags": "tsx src/scripts/regression/authorized-account-dispatch-flags-regression.ts",
     "test:authorized-account-admin-dispatch": "tsx src/scripts/regression/authorized-account-admin-dispatch-regression.ts",
     "test:account-pending-test": "tsx src/scripts/regression/account-pending-test-regression.ts",
+    "test:account-status-presentation": "tsx src/scripts/regression/account-status-presentation-regression.ts",
     "test:account-health-check-dispatch": "tsx src/scripts/regression/account-health-check-dispatch-regression.ts",
     "test:account-health-check-dispatch-http": "tsx src/scripts/regression/account-health-check-dispatch-http-regression.ts",
     "test:account-api-key-draft-activation": "tsx src/scripts/regression/account-api-key-draft-activation-regression.ts",
