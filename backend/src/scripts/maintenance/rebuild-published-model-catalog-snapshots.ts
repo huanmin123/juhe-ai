@@ -6,6 +6,9 @@ const startedAt = Date.now()
 
 async function main(): Promise<void> {
   const snapshotOwners = await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync()
+  if (snapshotOwners < 1) {
+    throw new Error('发布模型目录快照重建失败：未生成任何目录归属')
+  }
   console.log(`发布模型目录快照重建完成：目录归属 ${snapshotOwners} 个，耗时 ${Date.now() - startedAt}ms`)
 }
 

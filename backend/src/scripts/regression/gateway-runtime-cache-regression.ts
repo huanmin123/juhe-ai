@@ -116,7 +116,11 @@ try {
     database.prepare = originalPrepare
   }
   assert(first.apiKey?.id === apiKey.id, '首次读取应返回 API Key 运行配置')
-  assert.equal(first.accounts.length, 2, '首次读取应返回同一分组内 OAuth/API Key 混合候选账号')
+  assert.equal(
+    first.accounts.length,
+    2,
+    `首次读取应返回同一分组内 OAuth/API Key 混合候选账号：${JSON.stringify(first.accountDispatchDiagnostics)}`
+  )
   assert.deepEqual(sortedAccountTypes(first.accounts), ['api_key', 'oauth'], '运行配置缓存不应按上游账号类型拆分候选账号')
   assertRuntimeCredentialsAreSlim(first.accounts, apiKey)
   assert.equal(fakeChild.sentOperationCount, 1, '首次读取应请求 DB service')
@@ -142,21 +146,32 @@ try {
     credentials: updatedCredentials
   }))
   assert.equal(updateResult.updated, true, 'DB service 直写账号凭据应成功')
+  const healthResult = await runWithDbServiceParentMessageBridge(fakeChild, () => dbServiceIpc.requestDbService({
+    type: 'record_account_health_check_success',
+    accountId: apiKey.apiKeyAccountId,
+    input: {
+      intervalHours: 24,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    }
+  }))
+  assert.equal(healthResult.changed, true, '连接凭据变更后应由后台探针重新激活测试账号')
   await delay(10)
   const reloadedAfterDbServiceStorageWrite = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.apiKeyAccountId)?.apiKey, updatedCredentials.api_key, 'DB service 仓储写入后应清掉 server 本地运行配置缓存')
   assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.oauthAccountId)?.apiKey, 'access-runtime-cache-oauth', 'API Key 账号刷新不应影响同一缓存边界内的 OAuth 候选账号')
-  assert.equal(fakeChild.sentOperationCount, 3, 'DB service 仓储写入触发失效后应重新请求 DB service')
+  assert.equal(fakeChild.sentOperationCount, 4, 'DB service 凭据写入和探针激活触发失效后应重新请求 DB service')
 
   await simulateDbServiceRuntimeCacheInvalidation(fakeChild)
   const reloadedAfterDbServiceInvalidation = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(reloadedAfterDbServiceInvalidation.apiKey?.id === apiKey.id, 'DB service 触发失效后读取应返回 API Key 运行配置')
-  assert.equal(fakeChild.sentOperationCount, 4, 'DB service 触发失效后应清掉 server 本地运行配置缓存')
+  assert.equal(fakeChild.sentOperationCount, 5, 'DB service 触发失效后应清掉 server 本地运行配置缓存')
 
   gatewayCache.clearGatewayRuntimeCacheLocal()
   const third = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(third.apiKey?.id === apiKey.id, '清缓存后读取应返回 API Key 运行配置')
-  assert.equal(fakeChild.sentOperationCount, 5, '清缓存后应重新请求 DB service')
+  assert.equal(fakeChild.sentOperationCount, 6, '清缓存后应重新请求 DB service')
 
   const invalidOperationCount = fakeChild.sentOperationCount
   const invalidFirst = await gatewayCache.readCachedGatewayRuntimeAsync('sk-runtime-cache-invalid')
@@ -543,6 +558,21 @@ function seedGatewayRuntime(): {
       { groupId: multiGroupAccountScheduledFallbackGroup.id, priority: 2, status: 'active' }
     ]
   }, { systemAccountId: 'sys_admin', role: 'admin' })
+  // createAccount intentionally starts every non-disabled account at pending_test;
+  // this cache fixture represents accounts already accepted by the background probe.
+  const pendingAccounts = databaseModule.getBusinessDatabase()
+    .prepare("SELECT id FROM accounts WHERE system_account_id = 'sys_admin' AND status = 'pending_test'")
+    .all() as unknown as Array<{ id: string }>
+  for (const account of pendingAccounts) {
+    const changed = repositories.recordAccountHealthCheckSuccess(account.id, {
+      checkedAt: '2099-06-01T00:00:30.000Z',
+      intervalHours: 24,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
+    assert.equal(changed, true, `后台探针应激活测试账号 ${account.id}`)
+  }
   return {
     apiKeyAccountId: apiKeyAccount.id,
     oauthAccountId: oauthAccount.id,
@@ -580,11 +610,14 @@ function assertRuntimeCredentialsAreSlim(
   assert.equal(apiKeyAccount.apiKey, 'sk-runtime-cache-account', '运行时账号顶层仍应保留转发所需 API Key')
   assert.equal(oauthAccount.apiKey, 'access-runtime-cache-oauth', '运行时 OAuth 账号顶层仍应保留转发所需 Access Token')
   assert.equal(oauthAccount.credentials.account_id, 'acct_runtime_cache_oauth', '运行时 OAuth 账号应保留 Codex 必需 account_id')
-  for (const [account, label] of [[apiKeyAccount, 'API Key'], [oauthAccount, 'OAuth']] as const) {
-    for (const field of ['api_key', 'access_token', 'refresh_token', 'base_url', 'client_id', 'expires_at']) {
-      assert.equal(Object.prototype.hasOwnProperty.call(account.credentials, field), false, `运行时 ${label} credentials 不应携带完整 ${field}`)
-    }
+  for (const field of ['api_key', 'access_token', 'refresh_token', 'base_url', 'client_id', 'client_secret', 'expires_at']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(apiKeyAccount.credentials, field), false, `运行时 API Key credentials 不应携带完整 ${field}`)
   }
+  assert.equal(oauthAccount.credentials.access_token, 'access-runtime-cache-oauth', 'OAuth provider adapter 应取得运行时 access_token')
+  assert.equal(oauthAccount.credentials.refresh_token, 'refresh-runtime-cache-oauth', 'OAuth provider adapter 应取得运行时 refresh_token')
+  assert.equal(oauthAccount.credentials.expires_at, '2100-01-01T00:00:00.000Z', 'OAuth provider adapter 应取得 token 到期时间')
+  assert.equal(Object.prototype.hasOwnProperty.call(oauthAccount.credentials, 'api_key'), false, 'OAuth 运行时投影不应包含 API Key 字段')
+  assert.equal(Object.prototype.hasOwnProperty.call(oauthAccount.credentials, 'base_url'), false, 'OAuth 运行时投影不应重复包含 Base URL')
 }
 
 function assertReadGatewayRuntimeDefersPolicyLists(): void {
