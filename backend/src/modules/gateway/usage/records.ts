@@ -133,12 +133,14 @@ export async function recordFailedUpstreamAttempt(
     bodyText?: string
     errorMessage?: string
     failureAttribution?: UsageFailureAttribution
+    interpretUpstreamSemantics?: boolean
   }
 ): Promise<void> {
   const model = requestModel(req)
   const catalogSystemAccountId = account.accountOwnerSystemAccountId || usageContext.systemAccountId
   const modelAccounting = accountUsageModelAccounting(account, model, catalogSystemAccountId, gatewayRequestEndpointFamily(req))
-  const errorPayload = input.bodyText && input.headers instanceof Headers
+  const interpretUpstreamSemantics = input.interpretUpstreamSemantics !== false
+  const errorPayload = interpretUpstreamSemantics && input.bodyText && input.headers instanceof Headers
     ? parseGatewayProtocolErrorPayload(account, input.bodyText, input.headers)
     : {}
   const errorCode = sanitizeOptionalDiagnosticMessage(typeof errorPayload.code === 'string' ? errorPayload.code : undefined)
@@ -146,17 +148,19 @@ export async function recordFailedUpstreamAttempt(
   const errorMessage = input.errorMessage
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
     ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
-  const failureObservation = classifyGatewayUpstreamFailure({
-    phase: input.failureAttribution === 'client_lifecycle'
-      ? 'client_lifecycle'
-      : typeof input.statusCode === 'number'
-        ? 'upstream_response'
-        : 'upstream_request',
-    statusCode: input.statusCode,
-    errorCode,
-    errorType,
-    hasAlternativeApiKeys: Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
-  })
+  const failureObservation = interpretUpstreamSemantics
+    ? classifyGatewayUpstreamFailure({
+        phase: input.failureAttribution === 'client_lifecycle'
+          ? 'client_lifecycle'
+          : typeof input.statusCode === 'number'
+            ? 'upstream_response'
+            : 'upstream_request',
+        statusCode: input.statusCode,
+        errorCode,
+        errorType,
+        hasAlternativeApiKeys: Boolean(account.selectedApiKeyFingerprint) && (account.apiKeys?.length ?? 0) > 1
+      })
+    : {}
 
   logGatewayAttemptFailure(usageContext, {
     event: 'gateway_upstream_attempt_failed',

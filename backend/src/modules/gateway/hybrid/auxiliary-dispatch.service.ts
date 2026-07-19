@@ -204,7 +204,9 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
           headers: dispatch.response.headers,
           body: body.body,
           firstTokenMs: body.firstByteMs,
-          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures
+          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures,
+          confirmHalfOpenSuccess: dispatch.confirmHalfOpenSuccess,
+          releaseHalfOpenLease: dispatch.releaseHalfOpenLease
         })
         await finish({ success: false, errorCode: input.dispatchErrorCode, errorMessage: input.responseTooLargeMessage })
         return {
@@ -234,11 +236,14 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
           headers: dispatch.response.headers,
           body: body.body,
           firstTokenMs: body.firstByteMs,
-          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures
+          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures,
+          confirmHalfOpenSuccess: dispatch.confirmHalfOpenSuccess,
+          releaseHalfOpenLease: dispatch.releaseHalfOpenLease
         })
       }
     } catch (error) {
       release()
+      await dispatch.releaseHalfOpenLease()
       const message = error instanceof Error ? error.message : String(error)
       auditCapture.completeAttempt(dispatch.auditAttemptId, {
         statusCode: dispatch.response.status,
@@ -308,6 +313,8 @@ function createFinish(input: {
   body: Buffer
   firstTokenMs?: number
   confirmSameAccountApiKeyFailures: () => Promise<void>
+  confirmHalfOpenSuccess: () => Promise<boolean>
+  releaseHalfOpenLease: () => Promise<boolean>
 }): (finish: HybridAuxiliaryDispatchFinishInput) => Promise<void> {
   let finished = false
   return async (finish) => {
@@ -323,7 +330,10 @@ function createFinish(input: {
       errorMessage: finish.errorMessage
     })
     if (finish.success) {
+      await input.confirmHalfOpenSuccess()
       await input.confirmSameAccountApiKeyFailures()
+    } else {
+      await input.releaseHalfOpenLease()
     }
     input.auditCapture.finalize({
       outcome: finish.success ? 'success' : 'upstream_failed',

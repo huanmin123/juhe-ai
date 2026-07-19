@@ -379,7 +379,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     statusCode: upstreamResponse.status,
     responseHeaders: upstreamResponse.headers,
     responseBody: streamResult.auditUpstreamBody,
-    success: streamResult.completed && (!interpretUpstreamResponseSemantics || upstreamResponse.ok),
+    success: streamResult.completed && upstreamResponse.ok,
     errorPhase: streamResult.completed ? undefined : 'stream',
     errorCode: streamResult.completed ? undefined : streamResult.errorCode,
     errorMessage: streamResult.completed ? undefined : streamResult.message
@@ -663,7 +663,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
-  const forwardedResponseSuccessful = !interpretUpstreamResponseSemantics || upstreamResponse.ok
+  const forwardedResponseSuccessful = upstreamResponse.ok
   try {
     if (!upstreamResponse.body && interpretUpstreamResponseSemantics) {
       const errorMessage = '上游响应体为空'
@@ -1407,7 +1407,7 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
-  const forwardedResponseSuccessful = !interpretUpstreamResponseSemantics || upstreamResponse.ok
+  const forwardedResponseSuccessful = upstreamResponse.ok
   if (interpretUpstreamResponseSemantics && upstreamResponse.ok) {
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)

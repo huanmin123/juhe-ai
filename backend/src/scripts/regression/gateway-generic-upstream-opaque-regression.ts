@@ -52,6 +52,7 @@ app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const hits: string[] = []
+const upstreamAuthorizations: string[] = []
 let upstreamServer: http.Server | undefined
 let appServer: http.Server | undefined
 
@@ -61,6 +62,7 @@ try {
 
   upstreamServer = http.createServer((req, res) => {
     hits.push(req.url ?? '')
+    upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
     const path = req.url?.split('?', 1)[0] ?? ''
     if (req.url?.includes('mock_sse_wait_non_stream=1')) {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
@@ -75,6 +77,13 @@ try {
         '',
         ''
       ].join('\n'))
+      return
+    }
+    if (req.headers.authorization === 'Bearer sk-generic-opaque-good' || req.headers.authorization === 'Bearer sk-generic-image-good') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(path === '/v1/images/generations'
+        ? '{"created":1,"data":[{"b64_json":"aW1hZ2U="}]}'
+        : '{"id":"generic_fallback_success","choices":[{"message":{"role":"assistant","content":"server failover completed"}}]}')
       return
     }
     res.writeHead(418, {
@@ -92,14 +101,40 @@ try {
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '通用响应透传账号',
     type: 'api_key',
-    credentials: { api_key: 'sk-generic-opaque', base_url: upstreamBaseUrl },
+    credentials: {
+      api_key: 'sk-generic-opaque-bad-a',
+      api_keys: ['sk-generic-opaque-bad-a', 'sk-generic-opaque-bad-b'],
+      api_key_strategy: 'round_robin',
+      base_url: upstreamBaseUrl
+    },
     groupId: group.id,
     status: 'active',
     schedulable: true,
     concurrencyLimit: 1,
+    priority: 0,
     supportedModels: ['gpt-5.5', 'gpt-5.6-sol']
   }, access)
   repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  const fallbackAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '通用响应后备账号',
+    type: 'api_key',
+    credentials: { api_key: 'sk-generic-opaque-good', base_url: upstreamBaseUrl },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true,
+    concurrencyLimit: 1,
+    priority: 10,
+    fallbackEnabled: true,
+    supportedModels: ['gpt-5.5', 'gpt-5.6-sol']
+  }, access)
+  repositories.recordAccountHealthCheckSuccess(fallbackAccount.id, {
     intervalHours: 12,
     jitterMinutes: 0,
     failureThreshold: 3,
@@ -111,6 +146,49 @@ try {
     status: 'active'
   }, access)
   assert(apiKey.key)
+  const imageGroup = repositories.createGroup({ name: '通用图片接管分组', providerCode: GPT_VENDOR_CODE, enabled: true }, access)
+  const imageBadAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '通用图片首选失败账号',
+    type: 'api_key',
+    credentials: { api_key: 'sk-generic-image-bad', base_url: upstreamBaseUrl },
+    groupId: imageGroup.id,
+    supportedModels: ['gpt-image-1'],
+    healthCheckModel: 'gpt-image-1',
+    status: 'active',
+    schedulable: true,
+    priority: 0
+  }, access)
+  const imageGoodAccount = repositories.createAccount({
+    providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '通用图片后备成功账号',
+    type: 'api_key',
+    credentials: { api_key: 'sk-generic-image-good', base_url: upstreamBaseUrl },
+    groupId: imageGroup.id,
+    supportedModels: ['gpt-image-1'],
+    healthCheckModel: 'gpt-image-1',
+    status: 'active',
+    schedulable: true,
+    priority: 10,
+    fallbackEnabled: true
+  }, access)
+  for (const imageAccount of [imageBadAccount, imageGoodAccount]) {
+    repositories.recordAccountHealthCheckSuccess(imageAccount.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
+  }
+  const imageApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '通用图片接管 Key',
+    groupBindings: [{ groupId: imageGroup.id, priority: 1, status: 'active' }],
+    status: 'active'
+  }, access)
+  assert(imageApiKey.key)
+  repositories.updateSystemAccount(access.systemAccountId, { imageGenerationEnabled: true })
 
   appServer = http.createServer(app)
   await listen(appServer)
@@ -122,31 +200,47 @@ try {
     body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'opaque status' }], stream: false })
   })
   const nonStreamText = await nonStream.text()
-  assert.equal(nonStream.status, 418, `通用客户端必须收到上游原始状态，实际 ${nonStream.status}: ${nonStreamText}`)
-  assert.equal(nonStream.headers.get('x-vendor-error'), 'invented')
-  assert.equal(nonStreamText, '{"error":{"type":"vendor_invented_error","code":"made_up_418","message":"opaque non-stream failure"}}')
-  assert.equal(hits.length, 1, '通用非流式响应不得因状态码再次派发')
+  assert.equal(nonStream.status, 200, `通用客户端应由服务端完成 HTTP 失败接管，实际 ${nonStream.status}: ${nonStreamText}`)
+  assert.match(nonStreamText, /server failover completed/)
+  assert.deepEqual(upstreamAuthorizations, [
+    'Bearer sk-generic-opaque-bad-a',
+    'Bearer sk-generic-opaque-bad-b',
+    'Bearer sk-generic-opaque-good'
+  ], '通用 HTTP 失败必须依次尝试同账户下一 Key，再尝试下一账户')
 
-  const heldSlot = tryAcquireAccountConcurrency(account.id, 1)
-  assert.equal(heldSlot.acquired, true, 'SSE 心跳回归前应占用账号并发槽')
-  const releaseTimer = setTimeout(() => heldSlot.release(), 250)
+  const imageHitOffset = upstreamAuthorizations.length
+  const image = await fetch(`${baseUrl}/v1/images/generations`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${imageApiKey.key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-image-1', prompt: 'server side failover' })
+  })
+  const imageText = await image.text()
+  assert.equal(image.status, 200, `图片请求应复用通用服务端接管，实际 ${image.status}: ${imageText}`)
+  assert.match(imageText, /aW1hZ2U=/)
+  assert.deepEqual(upstreamAuthorizations.slice(imageHitOffset), [
+    'Bearer sk-generic-image-bad',
+    'Bearer sk-generic-image-good'
+  ], '图片 HTTP 失败必须与文本一样切换后备账号')
+
   const stream = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json', accept: 'text/event-stream' },
     body: JSON.stringify({ model: 'gpt-5.5', input: 'opaque stream event', stream: true })
   })
   const streamText = await stream.text()
-  clearTimeout(releaseTimer)
-  heldSlot.release()
   assert.equal(stream.status, 200)
-  assert.match(streamText, /^: juhe-ai waiting for upstream capacity\n\n/, '并发槽暂不可用时应先发送 SSE 注释心跳')
-  assert.equal(hits.length, 2, `SSE 心跳后必须继续派发上游，实际响应：${streamText}`)
+  assert.equal(hits.length, 6, `通用 SSE 必须继续派发上游，实际响应：${streamText}`)
   assert.match(streamText, /vendor_invented_stream_error/, '通用 SSE 必须原样保留上游失败事件')
   assert.doesNotMatch(streamText, /upstream_retryable_error/, '通用 SSE 不得改写成专用客户端错误码')
 
   const heldConflictSlot = tryAcquireAccountConcurrency(account.id, 1)
-  assert.equal(heldConflictSlot.acquired, true, 'SSE/非流式传输冲突回归前应占用账号并发槽')
-  const conflictReleaseTimer = setTimeout(() => heldConflictSlot.release(), 250)
+  const heldFallbackConflictSlot = tryAcquireAccountConcurrency(fallbackAccount.id, 1)
+  assert.equal(heldConflictSlot.acquired, true, 'SSE/非流式传输冲突回归前应占用首账号并发槽')
+  assert.equal(heldFallbackConflictSlot.acquired, true, 'SSE/非流式传输冲突回归前应占用后备账号并发槽')
+  const conflictReleaseTimer = setTimeout(() => {
+    heldConflictSlot.release()
+    heldFallbackConflictSlot.release()
+  }, 250)
   const transportConflict = await fetch(`${baseUrl}/v1/chat/completions?mock_sse_wait_non_stream=1`, {
     method: 'POST',
     headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -160,11 +254,13 @@ try {
   )
   clearTimeout(conflictReleaseTimer)
   heldConflictSlot.release()
-  assert.equal(hits.length, 3, 'SSE/非流式传输冲突不得按响应类型切换上游账户')
+  heldFallbackConflictSlot.release()
+  assert.equal(hits.length, 7, 'SSE/非流式传输冲突不得按响应类型切换上游账户')
 
   const accountAfter = repositories.findAccountForTest(account.id, access)
   assert.equal(accountAfter?.status, 'active', '通用响应状态和错误类型不得修改账号状态')
   assert.equal(accountAfter?.schedulable, true, '通用响应不得把账号改为不可调度')
+  assert.equal(accountAfter?.apiKeyRuntime?.temporaryUnavailable ?? 0, 0, '通用未知错误不得持久化 Key 临时不可用状态')
 
   const codexStream = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -179,7 +275,7 @@ try {
   const codexStreamText = await codexStream.text()
   assert.equal(codexStream.status, 200)
   assert.match(codexStreamText, /upstream_retryable_error/, '明确 Codex 画像应继续使用专用协议可重试信号')
-  assert.equal(hits.length, 4, '明确客户端语义处理也不得在账号耗尽后无限重派')
+  assert.equal(hits.length, 9, '明确客户端语义处理应尝试两个账号，耗尽后不得无限重派')
 
   console.log('gateway generic upstream opaque regression passed')
 } finally {
