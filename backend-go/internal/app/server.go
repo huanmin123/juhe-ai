@@ -357,6 +357,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
 		ManagementExternalIntegrationSourceUpdateHandler:  managementHandlers.ExternalIntegrationSourceUpdateHandler,
 		ManagementExternalIntegrationSourceDeleteHandler:  managementHandlers.ExternalIntegrationSourceDeleteHandler,
+		ManagementExternalSourceBuiltInResetHandler:       managementHandlers.ExternalSourceBuiltInResetHandler,
 		ManagementExternalSourceTokenCreateHandler:        managementHandlers.ExternalSourceTokenCreateHandler,
 		ManagementExternalSourceTokenUpdateHandler:        managementHandlers.ExternalSourceTokenUpdateHandler,
 		ManagementExternalSourceTokenSecretHandler:        managementHandlers.ExternalSourceTokenSecretHandler,
@@ -530,6 +531,7 @@ type managementAPIHandlers struct {
 	ExternalIntegrationSourceCreateHandler  http.Handler
 	ExternalIntegrationSourceUpdateHandler  http.Handler
 	ExternalIntegrationSourceDeleteHandler  http.Handler
+	ExternalSourceBuiltInResetHandler       http.Handler
 	ExternalSourceTokenCreateHandler        http.Handler
 	ExternalSourceTokenUpdateHandler        http.Handler
 	ExternalSourceTokenSecretHandler        http.Handler
@@ -683,6 +685,7 @@ func newManagementAPIHandlerWithPageData(
 	externalIntegrationSourceUpdateService := managementexternalintegrationsources.NewUpdateService(store)
 	externalIntegrationSourceDeleteService := managementexternalintegrationsources.NewDeleteService(store)
 	externalIntegrationSourceCreateService := managementexternalintegrationsources.NewCreateService(store, cfg.Secret)
+	externalIntegrationSourceBuiltInResetService := managementexternalintegrationsources.NewBuiltInResetService(store, cfg.Secret)
 	externalIntegrationSourceTokenCreateService := managementexternalintegrationsources.NewTokenCreateService(store, cfg.Secret)
 	externalIntegrationSourceTokenUpdateService := managementexternalintegrationsources.NewTokenUpdateService(store)
 	publicAPILogService := managementpublicapilogs.NewService(store)
@@ -851,6 +854,7 @@ func newManagementAPIHandlerWithPageData(
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),
 		ExternalIntegrationSourceUpdateHandler:  httpapi.NewManagementExternalIntegrationSourceUpdateHandlerWithOperationLog(externalIntegrationSourceUpdateService, operationLogOptions),
 		ExternalIntegrationSourceDeleteHandler:  httpapi.NewManagementExternalIntegrationSourceDeleteHandlerWithOperationLog(externalIntegrationSourceDeleteService, operationLogOptions),
+		ExternalSourceBuiltInResetHandler:       httpapi.NewManagementExternalIntegrationSourceBuiltInResetHandlerWithOperationLog(externalIntegrationSourceBuiltInResetService, operationLogOptions),
 		ExternalSourceTokenCreateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenCreateHandlerWithOperationLog(externalIntegrationSourceTokenCreateService, operationLogOptions),
 		ExternalSourceTokenUpdateHandler:        httpapi.NewManagementExternalIntegrationSourceTokenUpdateHandlerWithOperationLog(externalIntegrationSourceTokenUpdateService, operationLogOptions),
 		ExternalSourceTokenSecretHandler:        httpapi.NewManagementExternalIntegrationSourceTokenSecretHandler(externalIntegrationSourceService),

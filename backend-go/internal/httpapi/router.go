@@ -156,6 +156,7 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceCreateHandler  http.Handler
 	ManagementExternalIntegrationSourceUpdateHandler  http.Handler
 	ManagementExternalIntegrationSourceDeleteHandler  http.Handler
+	ManagementExternalSourceBuiltInResetHandler       http.Handler
 	ManagementExternalSourceTokenCreateHandler        http.Handler
 	ManagementExternalSourceTokenUpdateHandler        http.Handler
 	ManagementExternalSourceTokenSecretHandler        http.Handler
@@ -390,6 +391,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceUpdateHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDeleteHandler == nil &&
+				opts.ManagementExternalSourceBuiltInResetHandler == nil &&
 				opts.ManagementExternalSourceTokenCreateHandler == nil &&
 				opts.ManagementExternalSourceTokenUpdateHandler == nil &&
 				opts.ManagementExternalSourceTokenSecretHandler == nil &&
@@ -885,7 +887,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 					opts.ManagementExternalIntegrationSourceListHandler.ServeHTTP,
 				)
 			} else if opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
-				opts.ManagementExternalSourceTokenCreateHandler != nil {
+				opts.ManagementExternalSourceTokenCreateHandler != nil ||
+				opts.ManagementExternalSourceBuiltInResetHandler != nil {
 				system.Get("/external-integration-sources", func(w http.ResponseWriter, _ *http.Request) {
 					writeError(w, http.StatusNotFound, "接口不存在")
 				})
@@ -915,6 +918,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
 					"/external-integration-sources/api-docs",
 					opts.ManagementExternalIntegrationSourceAPIDocsHandler.ServeHTTP,
+				)
+			}
+			if opts.ManagementExternalSourceBuiltInResetHandler != nil {
+				system.With(
+					managementGroupCreateJSONBodyMiddleware,
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementExternalIntegrationSourceBuiltInResetMutationGuardConfig()),
+				).Post(
+					"/external-integration-sources/built-in-test-token/reset",
+					opts.ManagementExternalSourceBuiltInResetHandler.ServeHTTP,
 				)
 			}
 			if opts.ManagementExternalIntegrationSourceDetailHandler != nil {
@@ -1221,6 +1235,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
+		opts.ManagementExternalSourceBuiltInResetHandler != nil ||
 		opts.ManagementExternalSourceTokenCreateHandler != nil ||
 		opts.ManagementExternalSourceTokenUpdateHandler != nil ||
 		opts.ManagementExternalSourceTokenSecretHandler != nil ||
@@ -1299,6 +1314,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
+		opts.ManagementExternalSourceBuiltInResetHandler != nil ||
 		opts.ManagementExternalSourceTokenCreateHandler != nil ||
 		opts.ManagementExternalSourceTokenUpdateHandler != nil
 }
