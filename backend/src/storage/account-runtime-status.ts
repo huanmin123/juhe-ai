@@ -61,6 +61,7 @@ export function disableExpiredAccounts(access?: AccessScope, limit = maxAccountE
   if (changed > 0) {
     markAllGroupAccountStatsDirty('account_expired')
     notifyGatewayRuntimeCacheInvalidation('account_expired')
+    void publishExpiredAccountPageData()
   }
   return changed
 }
@@ -110,8 +111,19 @@ export async function disableExpiredAccountsAsync(access?: AccessScope, limit = 
   if (changed > 0) {
     await markAllGroupAccountStatsDirtyAsync('account_expired', databaseClient)
     notifyGatewayRuntimeCacheInvalidation('account_expired')
+    await publishExpiredAccountPageData()
   }
   return changed
+}
+
+async function publishExpiredAccountPageData(): Promise<void> {
+  try {
+    const { publishAccountRuntimeReset } = await import('../modules/page-data/page-data-change.publisher.js')
+    await publishAccountRuntimeReset([], true)
+  } catch (error) {
+    const { reportPageDataPublishFailure } = await import('../modules/page-data/page-data-change.publisher.js')
+    reportPageDataPublishFailure(error, { domain: 'accounts.runtime', operation: 'account_expired' })
+  }
 }
 
 function accountRuntimeStatusTable(client: DatabaseClient, tableName: string): string {

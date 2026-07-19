@@ -1,16 +1,13 @@
 import { onBeforeUnmount, ref } from 'vue'
 
-import { api } from '@/api/client'
+import { api, pageDataApi } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { message } from '@/lib/antd'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import {
-  localSelectStorageKey,
-  readLocalSelectOptionWindow,
-  removeLocalSelectOptionWindowValues,
   removeLocalSelectPreferenceValues,
-  writeLocalSelectOptionWindow,
   type LocalSelectStorageKeyPart
 } from '@/shared/selectLocalPreferenceCache'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -26,12 +23,13 @@ interface RemoteSystemAccountOptionsConfig {
   selectedIds?: () => Array<string | undefined>
 }
 
+const systemAccountOptionResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
+
 export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptionsConfig = {}) {
   const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
   const loading = ref(false)
   const keyword = ref('')
   const limit = optionLimitValue(config.limit)
-  const optionCache = createShortLivedQueryCache<SystemAccountPrincipalSummary[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
   let loadingKey: string | undefined
@@ -53,34 +51,39 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
       return loadingPromise
     }
     const currentRequestId = ++requestId
-    const optionWindowKey = localOptionWindowKey(requestKeyword)
-    const localWindowOptions = readLocalSelectOptionWindow<SystemAccountPrincipalSummary>(optionWindowKey)
-    if (localWindowOptions?.length) {
-      systemAccounts.value = localWindowOptions
-      loading.value = false
-    }
-    const cachedOptions = optionCache.get(requestKey)
-    if (cachedOptions) {
-      loadingKey = undefined
-      loadingPromise = undefined
-      loading.value = false
-      writeLocalSelectOptionWindow(optionWindowKey, cachedOptions)
-      systemAccounts.value = cachedOptions
-      return
-    }
-    loading.value = !localWindowOptions?.length
+    loading.value = true
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        let options = await api.systemAccounts.options({
-          keyword: requestKeyword,
-          limit
+        const result = await systemAccountOptionResourceCache.load<SystemAccountPrincipalSummary[]>({
+          cacheKey: {
+            scope: systemAccountOptionScope(),
+            route: '/system-accounts/options',
+            query: {
+              keyword: requestKeyword,
+              selectedIds,
+              limit,
+              localScope: config.localCacheKeyParts?.() ?? []
+            },
+            version: 1
+          },
+          domain: 'systemAccounts.options',
+          viewScope: 'admin',
+          loadNetwork: async () => {
+            let options = await api.systemAccounts.options({
+              keyword: requestKeyword,
+              limit
+            })
+            options = await ensureSelectedSystemAccountOptions(options, selectedIds)
+            return options
+          }
         })
-        options = await ensureSelectedSystemAccountOptions(options, selectedIds, optionWindowKey)
-        optionCache.set(requestKey, options)
-        writeLocalSelectOptionWindow(optionWindowKey, options)
+        const options = result.data
         if (currentRequestId !== requestId) return
         systemAccounts.value = options
+        void result.confirmation?.then((outcome) => {
+          if (outcome.data && currentRequestId === requestId) systemAccounts.value = outcome.data
+        })
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
@@ -125,7 +128,7 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     }
   }
 
-  async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[], optionWindowKey: string): Promise<SystemAccountPrincipalSummary[]> {
+  async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[]): Promise<SystemAccountPrincipalSummary[]> {
     const missingSelectedIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
     if (!missingSelectedIds.length) return options
     try {
@@ -135,17 +138,16 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
       })
       const foundIds = new Set(selectedOptions.map((option) => option.id))
       const invalidSelectedIds = missingSelectedIds.filter((id) => !foundIds.has(id))
-      handleMissingSelectedIds(invalidSelectedIds, optionWindowKey)
+      handleMissingSelectedIds(invalidSelectedIds)
       return mergeOptionsById(selectedOptions, options)
     } catch {
       return options
     }
   }
 
-  function handleMissingSelectedIds(ids: string[], optionWindowKey: string): void {
+  function handleMissingSelectedIds(ids: string[]): void {
     const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
     if (!missingIds.length) return
-    removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
     for (const preferenceKey of config.preferenceKeys?.() ?? ['system-principal:system_account']) {
       removeLocalSelectPreferenceValues(preferenceKey, missingIds)
     }
@@ -163,12 +165,9 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
       .sort())]
   }
 
-  function localOptionWindowKey(requestKeyword: string | undefined): string {
-    return localSelectStorageKey([
-      'system-account-options',
-      ...(config.localCacheKeyParts?.() ?? []),
-      requestKeyword ?? ''
-    ])
+  function systemAccountOptionScope(): string {
+    const viewer = authState.currentUser.value
+    return `admin:${viewer?.id ?? 'anonymous'}:${viewer?.role ?? 'anonymous'}`
   }
 
   onBeforeUnmount(clearSearchTimer)

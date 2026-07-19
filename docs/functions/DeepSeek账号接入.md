@@ -111,17 +111,15 @@ DeepSeek Anthropic-compatible 档案面向“客户端发送 Anthropic Messages�
 请求头：
 
 - 上游统一写入 `x-api-key: <DeepSeek API Key>`
-- `anthropic-version` 和 `anthropic-beta` 在 DeepSeek 官方兼容面中会被忽略，因此不作为 DeepSeek 账户配置字段，也不能作为能力开关依据
+- DeepSeek 官方兼容面可能不消费 `anthropic-version` 和 `anthropic-beta` 的语义，因此它们不作为 DeepSeek 账户配置字段或能力开关依据；是否透传继续沿用现有 Anthropic-compatible header 过滤规则
 - Claude Code、Anthropic SDK 或其他客户端带来的版本 / beta header 可以进入审计摘要，但 DeepSeek 调度不能依赖这些 header 判断真实能力
 
 模型映射：
 
 - DeepSeek 模型 ID，例如 `deepseek-v4-flash`、`deepseek-v4-pro`，应作为上游真实模型和计价模型保留
-- Claude 模型别名需要本地显式映射，不能完全依赖 DeepSeek 上游自动 fallback：
-  - `claude-opus*` -> `deepseek-v4-pro`
-  - `claude-haiku*`、`claude-sonnet*` -> `deepseek-v4-flash`
+- Claude 模型名需要逐个建立本地精确目录模型或账户一跳映射，不能使用通配符，也不能依赖 DeepSeek 上游自动 fallback。例如某个已登记的 Opus 模型名可以映射到 `deepseek-v4-pro`，Haiku / Sonnet 模型名可以映射到 `deepseek-v4-flash`；每个名称都必须明确落到 `providerCode=deepseek + model`，同一调用方命中多个供应商时本地拒绝。
 - DeepSeek 官方说明未知 Anthropic 模型名会自动映射到 `deepseek-v4-flash`；本项目不应静默接受任意未知 Claude 模型，否则使用记录、价格和用户预期会被上游 fallback 掩盖
-- 如果请求已经由分组或客户端入口明确命中 `profile_deepseek_anthropic_v1`，可以把未知 `claude-*` 按显式配置 fallback 到 `deepseek-v4-flash`，但必须记录 `model_mapping_source = deepseek_anthropic_fallback`；全局模型路由不能仅凭未知 Claude 名称自动选择 DeepSeek
+- 即使请求已经命中 `profile_deepseek_anthropic_v1`，未知 `claude-*` 也必须返回本地模型不可用；只有逐个已登记、可见且精确匹配的 alias 才能进入 DeepSeek mapping。上游自身 fallback 只作为不得依赖的外部行为，不能成为本地路由或计价分支
 - 使用记录必须保留下游模型、上游模型、计价模型、模型映射来源和目标 `provider_protocol_profile_id`
 
 内容与能力限制：
@@ -130,8 +128,8 @@ DeepSeek Anthropic-compatible 档案面向“客户端发送 Anthropic Messages�
 - 文本消息、`system`、`temperature`、`top_p`、`max_tokens`、`stop_sequences`、`stream` 等基础 Messages 能力可按 Anthropic 协议层处理
 - `tools`、`tool_choice`、`tool_use`、`tool_result` 可以作为协议字段透传候选，但不能默认标记为所有上游稳定能力；`2026-06-20` 真实验证中，`https://vsllm.com` + `deepseek-ai-v4-flash` 的 OpenAI tool calls 返回 `choices:null`，Anthropic tool use 返回空 content。`2026-06-24` 使用当前 vsllm 账号复测 OpenAI Chat function wrapper，`deepseek-v4-flash` 强制 `tool_choice=function:web_search` 可返回 `finish_reason=tool_calls` 和 JSON query 参数；这只证明普通 Chat function 调用能力，不代表 DeepSeek 上游具备 Codex / Responses 原生搜索能力，仍需按上游和模型单独验证后再开放为稳定能力。
 - `image`、`document`、MCP、code execution、container upload、部分 search / server tool 扩展和 content block cache control 不作为默认支持能力
-- DeepSeek 兼容面中 `container`、`mcp_servers`、`service_tier`、`top_k`、`anthropic-beta`、`anthropic-version` 等字段会被忽略，文档和 UI 不能宣称这些字段对 DeepSeek 生效
-- `thinking` 可以透传，但 `budget_tokens` 会被忽略；`output_config` 只按官方确认的 `effort` 范围处理
+- `service_tier` 和 `budget_tokens` 在 DeepSeek Anthropic surface 明确为 `unsupported`；客户端显式发送时返回现有本地 `400` 请求错误，不能依赖上游静默忽略
+- `thinking` 可以透传；`output_config` 只按官方确认的 `effort` 范围规范化。任何已识别 thinking / effort 值都必须在 mock upstream 可见或被明确拒绝
 
 统计、错误与恢复：
 
@@ -226,7 +224,7 @@ DeepSeek 的 Chat Prefix Completion 是 beta 能力：
 
 - 不作为默认 `chat_json` / `chat_sse` 能力自动开启
 - 如后续支持，应作为 DeepSeek beta 子能力或账户能力开关
-- `prefix` 字段只在 DeepSeek beta Chat Completions 透传，不进入通用 OpenAI v1 请求体白名单
+- `prefix` 只由 DeepSeek beta Chat Completions surface 的现有 driver 白名单声明；普通 OpenAI Chat surface 不声明该 beta 能力
 
 ### FIM Completion Beta
 
@@ -317,6 +315,7 @@ DeepSeek 模型目录必须单独维护在 `deepseek` 供应商下，不要混�
 - `providerCode = deepseek`
 - `model` 使用 DeepSeek 官方模型 ID，小写和连字符按官方写法保留
 - `supportedApiProtocols` 至少覆盖 OpenAI-compatible 档案对应的 `chat_completions`；新增 Anthropic-compatible 后应补 `anthropic_messages` 或等价本地协议标识，但仍归属 `providerCode=deepseek`
+- 服务等级和思考级别只复用模型行现有 `supportedServiceTiers`、`supportedReasoningEfforts` 和账户现有 `service_tier_override`、`reasoning_effort_override`。DeepSeek 当前没有可登记的请求级服务档位，`supportedServiceTiers` 保持空数组；思考级别只登记已核验的离散值，其他 thinking 字段继续按目标 driver 的现有白名单透传或明确拒绝，模型能力继续直接维护在当前模型行。
 - `contextWindowTokens` 和 `releaseDate` 以官方模型页或官方文档为准；同一发布日期的模型使用内置目录顺序字段保持下拉框稳定
 - 价格只采信 DeepSeek 官方文档或官方 API 文档；第三方价格库和社区表格只能作为线索
 
@@ -334,17 +333,17 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 
 ### 模型路由与模型映射
 
-- DeepSeek 内置模型 ID 必须在全系统维度唯一，避免后续跨供应商 API Key 用 `model` 路由时发生歧义
+- DeepSeek 可请求模型必须登记在 `providerCode=deepseek` 的调用方可见模型目录中；真实上游模型由模型行或账户一跳映射明确指定，不靠全系统字符串猜测，同名命中多个供应商时本地拒绝。
 - `deepseek-v4-flash` 和 `deepseek-v4-pro` 作为新建账户和账户测试优先模型；不要默认使用 `deepseek-chat`、`deepseek-reasoner`
 - DeepSeek Anthropic-compatible 的 Claude 模型名必须在本地显式映射到 DeepSeek V4 模型，避免上游未知模型自动 fallback 掩盖路由和计价错误
 - 账号模型映射仍按一跳精确匹配执行：下游模型用于路由和候选过滤，选中 DeepSeek 账号后才改写上游 `model`
 - 使用记录必须同时保留下游模型、上游模型、计价模型、是否命中映射和目标 `provider_protocol_profile_id`
-- 成本估算优先按 DeepSeek 上游实际模型或其 `pricingModel` 计算，不能按 GPT 同名或相似模型价格兜底
+- 成本估算只按模型映射后的 `providerCode=deepseek + model` 和管理员保存在该模型行上的当前价格计算；现有 usage cost breakdown 保存本次实际使用的单价和成本，后续改价不重算历史记录，不使用独立价格引用或 GPT 同名 / 相似模型字符串兜底
 
 ### 账户、分组与 API Key 路由
 
 - DeepSeek 账户只允许加入 `providerCode=deepseek` 的分组；OpenAI-compatible 与 Anthropic-compatible 的差异由账户 `provider_protocol_profile_id`、endpoint mode、支持模型和模型映射表达
-- 默认 DeepSeek 分组承接 DeepSeek Chat Completions 请求；当普通 DeepSeek OpenAI v1 账户显式配置 `responses -> chat_completions` 模型别名，且请求为流式 Responses / Codex Responses 时，可通过本地 bridge 承接 `/responses`
+- 默认 DeepSeek 分组可容纳两个 profile 的 DeepSeek 账户但不承接协议语义。OpenAI Chat / Responses bridge 只筛 `profile_deepseek_openai_v1`；Anthropic Messages 只筛 `profile_deepseek_anthropic_v1`。普通 DeepSeek OpenAI v1 账户显式配置精确 `responses -> chat_completions` 模型映射后，流式 Responses / Codex Responses 才可通过本地 bridge 承接
 - DeepSeek 分组本身不承接协议语义；OpenAI-compatible 账户不承接 Anthropic Messages、FIM 或 Chat Prefix beta，DeepSeek Claude Code 账户只承接 Anthropic v1 Messages / Models，不承接 OpenAI Chat 或 Count Tokens
 - API Key 只绑定策略路由；每次请求先由策略路由选择分组，再由账户模型别名、模型目录和协议档案定位真实 DeepSeek 上游能力。
 - 会话亲和、IP 级账号回避、本地账号屏蔽、上游桶避让和高并发队列继续使用现有运行态，不为 DeepSeek 另起一套调度状态
@@ -386,7 +385,7 @@ DeepSeek 开源模型，例如 `DeepSeek-R1`、`DeepSeek-V3` 以及相关公开�
 | endpoint mode 误放开 | 普通 `/responses`、FIM、Prefix beta、Images、count_tokens 被路由到 DeepSeek | OpenAI 档案默认只开 `chat_json`、`chat_sse`；Responses bridge 只在普通账号显式模型别名命中时接收 `/responses` |
 | 通用 OpenAI 层丢字段 | `thinking` 被 sanitizer 删除，`reasoning_content` 或 cache usage 解析不到 | DeepSeek 扩展字段由供应商层保留 |
 | Anthropic header 误配置 | 把 `anthropic-version`、`anthropic-beta` 做成 DeepSeek 账户必填项或能力开关 | DeepSeek 官方会忽略这些 header，账户不配置、不依赖 |
-| Claude 模型名静默 fallback | 任意未知 `claude-*` 被上游自动映射到 flash | 本地显式映射已知前缀，未知模型拒绝或按配置映射并记录 |
+| Claude 模型名静默 fallback | 任意未知 `claude-*` 被上游自动映射到 flash | 只接受逐个登记的目录模型或账户一跳映射；未知模型一律本地拒绝，不使用前缀或通配 fallback |
 | Anthropic 多模态误宣称 | image/document/MCP/code execution 被 UI 或公开推送标为支持 | DeepSeek Anthropic 当前只声明 Messages JSON/SSE；未验证能力不得标为支持 |
 | reasoning 误入正文 | 把 `reasoning_content` 拼入普通 `content` 或列表页完整展示 | 可审计 / 摘要，不进入普通回答文本 |
 | keep-alive 误判 | SSE comment 被当成可见输出，非流式空行被当成非法 JSON | 只作为传输保活刷新活跃时间 |
@@ -464,8 +463,7 @@ DeepSeek 账户测试必须复用真实网关链路：
 - DeepSeek 作为独立供应商，不复用 GPT 供应商编码
 - DeepSeek OpenAI-compatible 账户保存后落到 `profile_deepseek_openai_v1`
 - DeepSeek Claude Code 账户保存后落到 `profile_deepseek_anthropic_v1`
-- DeepSeek 默认分组绑定 `profile_deepseek_openai_v1`
-- DeepSeek Claude Code 默认分组绑定 `profile_deepseek_anthropic_v1`
+- 只创建一个默认 DeepSeek 供应商分组；分组不绑定 protocol profile，可同时容纳两个档案的 DeepSeek 账户，候选由账户 `providerProtocolProfileId`、endpoint mode、支持模型和模型映射精确过滤
 - OpenAI-compatible 面只声明 Chat Completions；Codex bridge 只作为显式客户端兼容适配
 - 不创建 DeepSeek native 协议档案
 - 不把普通 `/responses`、`/completions`、FIM 或 beta prefix 作为默认测试能力

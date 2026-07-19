@@ -10,7 +10,6 @@ import type {
 } from '@/types/domain'
 import {
   type AccountTestForm,
-  accountTestErrorMessage,
   accountTestSuccessMessage,
   buildAccountTestPayload,
   failedAccountTestResult,
@@ -117,6 +116,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
     const viewToken = beginTestView(account)
     testModalOpen.value = true
+    const startedAt = Date.now()
     try {
       const testOptions = await loadSavedAccountTestOptions(account)
       if (!testOptions || !isCurrentTestView(viewToken, account.id)) return
@@ -132,7 +132,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     } catch (error) {
       if (!isCurrentTestView(viewToken, account.id)) return
       console.error(error)
-      message.error(`${account.name}: 测试选项加载失败，请重试`)
+      testResult.value = failedAccountTestResult({
+        account,
+        error: new Error(`测试选项加载失败：${error instanceof Error ? error.message : '未知错误'}`),
+        model: account.healthCheckModel,
+        testEndpointMode: account.healthCheckEndpointMode,
+        startedAt
+      })
     }
   }
 
@@ -237,8 +243,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       syncDraftApiKeyTestSnapshot(run.draftPayload, result)
       if (result.success) {
         message.success(accountTestSuccessMessage(account, result))
-      } else {
-        message.error(accountTestErrorMessage(account, result))
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -259,7 +263,6 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       run.result = result
       testResult.value = result
       syncDraftApiKeyTestSnapshot(run.draftPayload, result)
-      message.error(`${account.name}: 测试失败`)
     } finally {
       await finishAccountTestRunLifecycle(run)
     }
@@ -388,6 +391,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       task: snapshot.activeTask,
       viewToken
     })
+    const restoreStartedAt = Date.now()
     startAccountTestSessionHeartbeat(run)
     try {
       const latestTask = await fetchAccountTestTask(run, snapshot.activeTask.id)
@@ -405,14 +409,20 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       testResult.value = result
       if (result.success) {
         message.success(accountTestSuccessMessage(account, result))
-      } else {
-        message.error(accountTestErrorMessage(account, result))
       }
     } catch (error) {
       if (isAbortError(error)) return
       console.error(error)
       if (isRunAttached(run)) {
-        message.warning('测试进度恢复中断，后台任务仍会继续执行')
+        const result = failedAccountTestResult({
+          account,
+          error: new Error(`测试进度恢复中断，后台任务仍会继续执行：${error instanceof Error ? error.message : '未知错误'}`),
+          model: snapshot.model,
+          testEndpointMode: snapshot.testEndpointMode,
+          startedAt: restoreStartedAt
+        })
+        run.result = result
+        testResult.value = result
       }
     } finally {
       await finishAccountTestRunLifecycle(run)

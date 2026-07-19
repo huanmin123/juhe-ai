@@ -8,9 +8,9 @@ import type {
   PageDataViewScope
 } from '@/api/domains/pageData'
 
-const PAGE_DATA_CACHE_DATABASE = 'juhe-ai-page-data-cache-v1'
+const PAGE_DATA_CACHE_DATABASE = 'juhe-ai-page-data-cache-v2'
 const PAGE_DATA_CACHE_STORE = 'snapshots'
-const PAGE_DATA_BROADCAST_CHANNEL = 'juhe-ai-page-data-cache-v1'
+const PAGE_DATA_BROADCAST_CHANNEL = 'juhe-ai-page-data-cache-v2'
 const DEFAULT_CONFIRM_INTERVAL_MS = 30_000
 const DEFAULT_PEER_TTL_MS = 15_000
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5_000
@@ -23,10 +23,14 @@ export interface PageDataCacheKeyInput {
   route: string
   query: unknown
   version: string | number
+  domain?: PageDataDomain
 }
 
 export interface PageDataCacheRecord<T> {
   key: string
+  domain: PageDataDomain
+  scope: string
+  route: string
   value: T
   token?: PageDataRevisionToken
   confirmedAt?: string
@@ -40,6 +44,7 @@ export interface PageDataCacheStorage {
   writeIfCurrent<T>(record: PageDataCacheRecord<T>): Promise<boolean>
   touch(key: string, token: PageDataRevisionToken, confirmedAt: string): Promise<boolean>
   remove(key: string): Promise<void>
+  removeDomain(domain: PageDataDomain, scope?: string, route?: string): Promise<void>
 }
 
 export interface PageDataTabCoordinator {
@@ -47,9 +52,17 @@ export interface PageDataTabCoordinator {
   requestConfirm(key: string): Promise<boolean>
   notifyUpdated(key: string): void
   notifyInvalidated(key: string): void
+  notifyDomainInvalidated(domain: PageDataDomain, scope?: string, route?: string): void
   onConfirmRequested(listener: (key: string) => boolean | void | Promise<boolean | void>): () => void
   onCacheUpdated(listener: (key: string) => void): () => void
   onCacheInvalidated(listener: (key: string) => void): () => void
+  onDomainInvalidated(listener: (invalidation: PageDataDomainInvalidation) => void): () => void
+}
+
+export interface PageDataDomainInvalidation {
+  domain: PageDataDomain
+  scope?: string
+  route?: string
 }
 
 export interface PageDataCacheControllerOptions<T> {
@@ -111,7 +124,8 @@ export function createPageDataCacheKey(input: PageDataCacheKeyInput): string {
   const scope = requiredKeyPart(input.scope, 'scope')
   const route = requiredKeyPart(input.route, 'route')
   const version = requiredKeyPart(String(input.version), 'version')
-  return `page-data:${encodeURIComponent(version)}:${encodeURIComponent(scope)}:${encodeURIComponent(route)}:${canonicalValue(input.query)}`
+  const domain = requiredKeyPart(input.domain ?? 'shared', 'domain')
+  return `page-data:${encodeURIComponent(version)}:${encodeURIComponent(domain)}:${encodeURIComponent(scope)}:${encodeURIComponent(route)}:${canonicalValue(input.query)}`
 }
 
 export function createPageDataCacheStorage(options: { indexedDB?: IDBFactory; ttlMs?: number; maxEntries?: number; now?: () => Date } = {}): PageDataCacheStorage {
@@ -158,6 +172,15 @@ export function createMemoryPageDataCacheStorage(options: { maxEntries?: number;
     },
     async remove(key) {
       records.delete(key)
+    },
+    async removeDomain(domain, scope, route) {
+      for (const [key, record] of records) {
+        if (
+          record.domain === domain
+          && (!scope || record.scope === scope)
+          && (!route || record.route === route)
+        ) records.delete(key)
+      }
     }
   }
 }
@@ -206,7 +229,7 @@ export class PageDataCacheController<T> {
 
   constructor(options: PageDataCacheControllerOptions<T>) {
     this.options = options
-    this.key = createPageDataCacheKey(options.cacheKey)
+    this.key = createPageDataCacheKey({ ...options.cacheKey, domain: options.domain })
     this.storage = options.storage ?? createPageDataCacheStorage()
     this.now = options.now ?? (() => new Date())
     if (options.tabCoordinator) {
@@ -242,21 +265,21 @@ export class PageDataCacheController<T> {
         confirmation: this.requestConfirm()
       }
     }
-    return this.refresh()
+    return this.refreshCurrent(false)
   }
 
   refresh(): Promise<PageDataLoadResult<T>> {
-    const operation = this.refreshCurrent().finally(() => {
+    const operation = this.refreshCurrent(true).finally(() => {
       if (this.refreshInFlight === operation) this.refreshInFlight = undefined
     })
     this.refreshInFlight = operation
     return operation
   }
 
-  private async refreshCurrent(): Promise<PageDataLoadResult<T>> {
+  private async refreshCurrent(forceNetwork: boolean): Promise<PageDataLoadResult<T>> {
     const generation = ++this.generation
     const cached = await this.storage.read<T>(this.key)
-    if (cached?.token) return this.refreshFromToken(generation, cached)
+    if (forceNetwork && cached?.token) return this.refreshFromToken(generation, cached)
     let baseline: ConfirmedPageDataDomain | undefined
     try {
       baseline = await this.confirmDomain(cached?.token)
@@ -270,6 +293,20 @@ export class PageDataCacheController<T> {
       const written = await this.storage.writeIfCurrent(record)
       if (written) this.publish(record)
       return { source: 'network', data, confirmed: false, cached: written, superseded: false }
+    }
+    if (cached && baseline.action === 'unchanged' && sameRevisionToken(baseline.token, cached.token)) {
+      const touched = generation === this.generation
+        && !this.closed
+        && await this.storage.touch(this.key, baseline.token, baseline.serverTime)
+      if (touched) {
+        return {
+          source: 'cache',
+          data: cached.value,
+          confirmed: true,
+          cached: true,
+          superseded: false
+        }
+      }
     }
     const stable = await this.reloadStable(generation, baseline)
     if (generation !== this.generation || this.closed) return await this.supersededLoadResult(stable.data)
@@ -434,6 +471,9 @@ export class PageDataCacheController<T> {
     const ttlMs = Math.max(60_000, Math.min(Math.trunc(this.options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS), DEFAULT_CACHE_TTL_MS))
     return {
       key: this.key,
+      domain: this.options.domain,
+      scope: this.options.cacheKey.scope,
+      route: this.options.cacheKey.route,
       value,
       ...(token ? { token: { ...token }, confirmedAt: confirmedAt ?? now } : {}),
       writtenAt: now,
@@ -604,7 +644,7 @@ export class PageDataRequestCacheManager<T> {
 
   private activate(request: PageDataRequestCacheDefinition<T>): NonNullable<PageDataRequestCacheManager<T>['active']> {
     if (this.closed) throw new Error('页面请求缓存 manager 已关闭')
-    const key = createPageDataCacheKey(request.cacheKey)
+    const key = createPageDataCacheKey({ ...request.cacheKey, domain: request.domain })
     if (this.active?.key === key) return this.active
     this.activationGeneration += 1
     this.disposeActive()
@@ -686,8 +726,11 @@ type PageDataBroadcastMessage = {
   protocolVersion: 1
   sender: string
   sentAt: number
-  type: 'hello' | 'heartbeat' | 'bye' | 'confirm-request' | 'confirm-response' | 'cache-updated' | 'cache-invalidated'
+  type: 'hello' | 'heartbeat' | 'bye' | 'confirm-request' | 'confirm-response' | 'cache-updated' | 'cache-invalidated' | 'domain-invalidated'
   key?: string
+  domain?: PageDataDomain
+  scope?: string
+  route?: string
   requestId?: string
   handled?: boolean
 }
@@ -701,6 +744,7 @@ export class BrowserPageDataTabCoordinator implements PageDataTabCoordinator {
   private readonly confirmListeners = new Set<(key: string) => boolean | void | Promise<boolean | void>>()
   private readonly updateListeners = new Set<(key: string) => void>()
   private readonly invalidationListeners = new Set<(key: string) => void>()
+  private readonly domainInvalidationListeners = new Set<(invalidation: PageDataDomainInvalidation) => void>()
   private readonly pendingConfirmRequests = new Map<string, { resolve: (handled: boolean) => void; timer: ReturnType<typeof setTimeout> }>()
   private heartbeat?: ReturnType<typeof setInterval>
   private closed = false
@@ -718,13 +762,18 @@ export class BrowserPageDataTabCoordinator implements PageDataTabCoordinator {
     this.peerTtlMs = Math.max(1_000, Math.trunc(options.peerTtlMs ?? DEFAULT_PEER_TTL_MS))
     const factory = 'channelFactory' in options
       ? options.channelFactory
-      : typeof BroadcastChannel === 'function' ? (name: string) => new BroadcastChannel(name) : undefined
+      : typeof window !== 'undefined' && typeof BroadcastChannel === 'function'
+        ? (name: string) => new BroadcastChannel(name)
+        : undefined
     try {
       this.channel = factory?.(options.channelName ?? PAGE_DATA_BROADCAST_CHANNEL)
       if (this.channel) {
+        ;(this.channel as PageDataChannelLike & { unref?: () => void }).unref?.()
         this.channel.onmessage = (event) => this.receive(event.data)
         this.send('hello')
-        this.heartbeat = setInterval(() => this.send('heartbeat'), Math.max(1_000, Math.trunc(options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS)))
+        const heartbeat = setInterval(() => this.send('heartbeat'), Math.max(1_000, Math.trunc(options.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS)))
+        ;(heartbeat as { unref?: () => void }).unref?.()
+        this.heartbeat = heartbeat
       }
     } catch {
       this.channel = undefined
@@ -755,6 +804,10 @@ export class BrowserPageDataTabCoordinator implements PageDataTabCoordinator {
     this.send('cache-invalidated', key)
   }
 
+  notifyDomainInvalidated(domain: PageDataDomain, scope?: string, route?: string): void {
+    this.send('domain-invalidated', undefined, { domain, scope, route })
+  }
+
   onConfirmRequested(listener: (key: string) => boolean | void | Promise<boolean | void>): () => void {
     if (!this.closed) this.confirmListeners.add(listener)
     return () => this.confirmListeners.delete(listener)
@@ -770,6 +823,11 @@ export class BrowserPageDataTabCoordinator implements PageDataTabCoordinator {
     return () => this.invalidationListeners.delete(listener)
   }
 
+  onDomainInvalidated(listener: (invalidation: PageDataDomainInvalidation) => void): () => void {
+    if (!this.closed) this.domainInvalidationListeners.add(listener)
+    return () => this.domainInvalidationListeners.delete(listener)
+  }
+
   close(): void {
     if (this.closed) return
     this.send('bye')
@@ -779,6 +837,7 @@ export class BrowserPageDataTabCoordinator implements PageDataTabCoordinator {
     this.confirmListeners.clear()
     this.updateListeners.clear()
     this.invalidationListeners.clear()
+    this.domainInvalidationListeners.clear()
     for (const requestId of [...this.pendingConfirmRequests.keys()]) this.resolveConfirmRequest(requestId, false)
     if (this.channel) {
       this.channel.onmessage = null
@@ -806,12 +865,20 @@ export class BrowserPageDataTabCoordinator implements PageDataTabCoordinator {
     if (value.type === 'cache-invalidated' && value.key) {
       for (const listener of this.invalidationListeners) listener(value.key)
     }
+    if (value.type === 'domain-invalidated' && value.domain) {
+      const invalidation: PageDataDomainInvalidation = {
+        domain: value.domain,
+        ...(value.scope ? { scope: value.scope } : {}),
+        ...(value.route ? { route: value.route } : {})
+      }
+      for (const listener of this.domainInvalidationListeners) listener(invalidation)
+    }
   }
 
   private send(
     type: PageDataBroadcastMessage['type'],
     key?: string,
-    details: Pick<PageDataBroadcastMessage, 'requestId' | 'handled'> = {}
+    details: Pick<PageDataBroadcastMessage, 'requestId' | 'handled' | 'domain' | 'scope' | 'route'> = {}
   ): void {
     if (!this.channel || this.closed) return
     try {
@@ -822,7 +889,10 @@ export class BrowserPageDataTabCoordinator implements PageDataTabCoordinator {
         type,
         ...(key ? { key } : {}),
         ...(details.requestId ? { requestId: details.requestId } : {}),
-        ...(details.handled !== undefined ? { handled: details.handled } : {})
+        ...(details.handled !== undefined ? { handled: details.handled } : {}),
+        ...(details.domain ? { domain: details.domain } : {}),
+        ...(details.scope ? { scope: details.scope } : {}),
+        ...(details.route ? { route: details.route } : {})
       } satisfies PageDataBroadcastMessage)
     } catch { /* BroadcastChannel failure falls back to per-tab confirms */ }
   }
@@ -940,26 +1010,47 @@ function createIndexedDbPageDataCacheStorage(factory: IDBFactory, options: { max
       const transaction = db.transaction(PAGE_DATA_CACHE_STORE, 'readwrite')
       transaction.objectStore(PAGE_DATA_CACHE_STORE).delete(key)
       await idbTransaction(transaction)
+    },
+    async removeDomain(domain, scope, route) {
+      const db = await database()
+      const transaction = db.transaction(PAGE_DATA_CACHE_STORE, 'readwrite')
+      const store = transaction.objectStore(PAGE_DATA_CACHE_STORE)
+      const request = store.getAll()
+      request.onsuccess = () => {
+        for (const record of request.result as PageDataCacheRecord<unknown>[]) {
+          if (
+            record.domain === domain
+            && (!scope || record.scope === scope)
+            && (!route || record.route === route)
+          ) store.delete(record.key)
+        }
+      }
+      await idbTransaction(transaction)
     }
   }
 }
 
 function createResilientStorage(primary: PageDataCacheStorage, fallback: PageDataCacheStorage): PageDataCacheStorage {
-  let primaryAvailable = true
   const use = async <T>(primaryCall: () => Promise<T>, fallbackCall: () => Promise<T>): Promise<T> => {
-    if (!primaryAvailable) return fallbackCall()
     try {
       return await primaryCall()
     } catch {
-      primaryAvailable = false
       return fallbackCall()
     }
+  }
+  const removeBoth = async (primaryCall: () => Promise<void>, fallbackCall: () => Promise<void>): Promise<void> => {
+    const [primaryResult, fallbackResult] = await Promise.allSettled([primaryCall(), fallbackCall()])
+    if (primaryResult.status === 'rejected' && fallbackResult.status === 'rejected') throw primaryResult.reason
   }
   return {
     read: <T>(key: string) => use(() => primary.read<T>(key), () => fallback.read<T>(key)),
     writeIfCurrent: <T>(record: PageDataCacheRecord<T>) => use(() => primary.writeIfCurrent(record), () => fallback.writeIfCurrent(record)),
     touch: (key, token, confirmedAt) => use(() => primary.touch(key, token, confirmedAt), () => fallback.touch(key, token, confirmedAt)),
-    remove: (key) => use(() => primary.remove(key), () => fallback.remove(key))
+    remove: (key) => removeBoth(() => primary.remove(key), () => fallback.remove(key)),
+    removeDomain: (domain, scope, route) => removeBoth(
+      () => primary.removeDomain(domain, scope, route),
+      () => fallback.removeDomain(domain, scope, route)
+    )
   }
 }
 
@@ -1083,8 +1174,11 @@ function isPageDataBroadcastMessage(value: unknown): value is PageDataBroadcastM
     && Boolean(message.sender)
     && typeof message.sentAt === 'number'
     && Number.isFinite(message.sentAt)
-    && ['hello', 'heartbeat', 'bye', 'confirm-request', 'confirm-response', 'cache-updated', 'cache-invalidated'].includes(message.type ?? '')
+    && ['hello', 'heartbeat', 'bye', 'confirm-request', 'confirm-response', 'cache-updated', 'cache-invalidated', 'domain-invalidated'].includes(message.type ?? '')
     && (message.key === undefined || typeof message.key === 'string')
     && (message.requestId === undefined || typeof message.requestId === 'string')
     && (message.handled === undefined || typeof message.handled === 'boolean')
+    && (message.domain === undefined || typeof message.domain === 'string')
+    && (message.scope === undefined || typeof message.scope === 'string')
+    && (message.route === undefined || typeof message.route === 'string')
 }

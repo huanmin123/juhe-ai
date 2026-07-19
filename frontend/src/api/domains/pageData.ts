@@ -3,8 +3,17 @@ import { http, unwrap } from '../http'
 export const pageDataDomains = [
   'accounts.static',
   'accounts.runtime',
+  'accounts.options',
   'usage.records',
-  'announcements.public'
+  'announcements.public',
+  'providers.catalog',
+  'groups.static',
+  'systemAccounts.options',
+  'teams.options',
+  'routeStrategies.options',
+  'stats.overview',
+  'stats.accountUsage',
+  'stats.aiPerformance'
 ] as const
 
 export type PageDataDomain = typeof pageDataDomains[number]

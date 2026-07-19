@@ -8,7 +8,8 @@
 | 长期运行 | release 目录 + user `launchd` | 本文第 4 节 |
 | Docker 部署 | Docker Desktop + Compose | [Docker 部署指南](../Docker部署指南.md) |
 | 公网 HTTPS | 宿主机 Caddy | [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) |
-| 自动恢复 | `launchd KeepAlive` + 内部 supervisor | [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) |
+| 公网 Edge / 高并发隧道 | WireGuard + Caddy + launchd | [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md) |
+| 常驻恢复 | `launchd`；外部探针默认只告警 | 本文第 7 节 |
 | 上游代理 | sing-box + 后台代理绑定 | [sing-box 网络代理部署指南](../proxy/sing-box网络代理部署指南.md) |
 
 ## 2. 部署前检查
@@ -27,7 +28,7 @@ lsof -iTCP:3000 -sTCP:LISTEN || true
 要求：
 
 - Node.js 使用官方 LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`。
-- 生产只暴露 Caddy `80/443` 或 edge / 隧道回源端口；不要暴露 juhe-ai `3000`、sing-box `7890`、PostgreSQL 或 Redis。
+- 生产只暴露 Caddy `80/443` 或 WireGuard 回源 listener；不要暴露 juhe-ai `3000`、sing-box `7890`、PostgreSQL 或 Redis。
 - 远端 SSH、launchd 和手工预检必须使用同一条 Node LTS PATH。
 
 ## 3. 发布包目录
@@ -107,6 +108,16 @@ cat > ~/Library/LaunchAgents/com.juhe-ai.plist <<EOF
   <true/>
   <key>RunAtLoad</key>
   <true/>
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>65536</integer>
+  </dict>
+  <key>HardResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>131072</integer>
+  </dict>
   <key>StandardOutPath</key>
   <string>$HOME/juhe-ai-lite/logs/launchd.out.log</string>
   <key>StandardErrorPath</key>
@@ -119,6 +130,8 @@ launchctl bootout "gui/$UID" ~/Library/LaunchAgents/com.juhe-ai.plist 2>/dev/nul
 launchctl bootstrap "gui/$UID" ~/Library/LaunchAgents/com.juhe-ai.plist
 launchctl kickstart -k "gui/$UID/com.juhe-ai"
 ```
+
+执行 `bootout` 前先用 `plutil -lint` 验证新 plist，并准备一次性、有超时的恢复助手：旧 job 退出后由助手 bootstrap 已验证的 plist；发布脚本中断或新服务 health 失败时恢复旧 plist。恢复助手成功后立即清理，不作为长期 watchdog。Caddy 等长连接服务的 `bootout` 可能等待优雅退出，发布脚本不得无限等待。完整流程见 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)。
 
 验证：
 
@@ -150,9 +163,24 @@ macOS 生产建议宿主机 Caddy 监听 `80/443`，反向代理到 `127.0.0.1:3
 - 家庭路由器或云安全组只转发 `80/443` 到 Caddy。
 - juhe-ai 绑定 `127.0.0.1:3000`。
 - sing-box mixed / socks 端口只监听本机或受信内网。
-- macOS Application Firewall 不是精确端口防火墙；端口边界优先靠绑定地址、路由器映射、Caddy 和隧道白名单。
+- macOS Application Firewall 不是精确端口防火墙；端口边界优先靠绑定地址、路由器映射、Caddy 和 WireGuard peer 白名单。
 
-真实客户端 IP 需要 `JUHE_AI_TRUST_PROXY=true`，且后端端口不能被客户端绕过反代直连。多层 edge / 隧道见 [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) 的真实 IP 段落。
+真实客户端 IP 需要 `JUHE_AI_TRUST_PROXY=true`，且后端端口不能被客户端绕过反代直连。多层 Edge / WireGuard 见 [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md) 的真实 IP 段落。
+
+公网 Edge + WireGuard 的高并发模式不直接把 Caddy 固定到 loopback：Caddy 的回源 listener 绑定精确 WireGuard 地址，juhe-ai 仍绑定 `127.0.0.1`。模块、PROXY v2 和切换方式见 [反向代理与高并发隧道部署指南](../反向代理与高并发隧道部署指南.md)。
+
+高并发长连接的 macOS 内核起步值是 `kern.ipc.somaxconn=4096`、`kern.maxfiles=524288`、`kern.maxfilesperproc=131072`。使用 root LaunchDaemon 持久设置并在重启后复核；Caddy、Nginx、Node 和 WireGuard 的 plist 还要分别设置 `65536/131072` 文件句柄软硬上限。plist 和 sysctl 只代表目标配置，必须受控重启后验证 live PID 实际值。
+
+macOS Application Firewall 必须保持开启。自定义或 xcaddy 构建的 Caddy 二进制替换后，先备份并执行本机 ad-hoc 签名，再将同一绝对路径加入防火墙允许列表：
+
+```bash
+sudo codesign --force --deep --sign - /usr/local/bin/caddy-l4
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --add /usr/local/bin/caddy-l4
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --unblockapp /usr/local/bin/caddy-l4
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --getappblocked /usr/local/bin/caddy-l4
+```
+
+签名或替换二进制后必须重新验证版本、模块、SHA-256、每个 WireGuard listener、TLS、PROXY v2 和长连接；不允许用关闭 Application Firewall 规避 RST。
 
 ## 6. Docker Desktop 差异
 
@@ -174,9 +202,11 @@ JUHE_AI_COOKIE_SECURE=true
 JUHE_AI_TRUST_PROXY=true
 ```
 
-## 7. 自动恢复
+## 7. 状态检测和恢复
 
-长期运行由 launchd `KeepAlive` 在主进程退出后拉起；DB service 和 worker 由内部 supervisor 独立恢复。外部 HTTP watchdog 已退役，公网域名只观察告警。策略见 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md)。
+长期运行默认只由 launchd `KeepAlive` 维护主服务；主进程继续看护 DB service 和 worker。默认不部署会终止 server 的外部 watchdog，避免与发布和受控切换冲突。
+
+外部 health 探针可以只告警。公网失败但本机 health 正常时，先检查 Edge、WireGuard、Caddy、证书和 Nginx，不重启主服务。确有无人值守自动恢复需求时，再按 [状态检测与自动恢复指南](../watchdog/状态检测与自动恢复指南.md) 单独评审。
 
 ## 8. 上游网络代理
 

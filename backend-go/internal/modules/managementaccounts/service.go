@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,10 +22,40 @@ const (
 	maxOptionFilterItemSize = 50
 	maxTagsPerAccount       = 24
 	maxTagNameLength        = 40
+	pageDataPublishTimeout  = 5 * time.Second
 )
 
 type Service struct {
-	store port.ManagementAccountOptionReader
+	store             port.ManagementAccountOptionReader
+	granteeReader     AccountAuthorizationGranteeReader
+	pageDataPublisher AccountStaticChangePublisher
+	logger            *slog.Logger
+}
+
+type AccountAuthorizationGranteeReader interface {
+	ListAccountAuthorizationGranteeIDs(ctx context.Context, accountID string) ([]string, error)
+}
+
+type AccountStaticChangePublisher interface {
+	PublishAccountStaticChange(ctx context.Context, input AccountStaticChangeInput) error
+}
+
+type AccountStaticChangeInput struct {
+	AccountID             string
+	OwnerSystemAccountIDs []string
+	FieldMask             []string
+	MembershipChanged     bool
+	OrderChanged          bool
+	FilterChanged         bool
+	PageChanged           bool
+	AllScopes             bool
+}
+
+type ServiceOptions struct {
+	Store             port.ManagementAccountOptionReader
+	GranteeReader     AccountAuthorizationGranteeReader
+	PageDataPublisher AccountStaticChangePublisher
+	Logger            *slog.Logger
 }
 
 type OptionListInput struct {
@@ -139,7 +171,20 @@ type TagUpdateAccount struct {
 }
 
 func NewService(store port.ManagementAccountOptionReader) *Service {
-	return &Service{store: store}
+	return NewServiceWithOptions(ServiceOptions{Store: store})
+}
+
+func NewServiceWithOptions(opts ServiceOptions) *Service {
+	logger := opts.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Service{
+		store:             opts.Store,
+		granteeReader:     opts.GranteeReader,
+		pageDataPublisher: opts.PageDataPublisher,
+		logger:            logger,
+	}
 }
 
 func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option, error) {
@@ -263,10 +308,75 @@ func (s *Service) UpdateTags(ctx context.Context, input TagUpdateInput) (TagUpda
 	if !ok {
 		return TagUpdateResult{}, ErrAccountNotFound
 	}
+	s.publishTagPageData(ctx, saved.Account, systemAccountID)
 	return TagUpdateResult{
 		Account:      tagUpdateAccountFromPort(saved.Account),
 		PreviousTags: tagUpdateTagsFromPort(saved.PreviousTags),
 	}, nil
+}
+
+func (s *Service) publishTagPageData(ctx context.Context, account port.ManagementAccountTagUpdateAccount, requestSystemAccountID string) {
+	if s.pageDataPublisher == nil {
+		return
+	}
+	owners := normalizedSortedStrings([]string{
+		account.SystemAccountID,
+		account.OwnerSystemAccountID,
+		requestSystemAccountID,
+	})
+	allScopes := false
+	if s.granteeReader == nil {
+		allScopes = true
+		s.logger.WarnContext(context.WithoutCancel(ctx), "account page data grantee lookup unavailable",
+			"accountId", account.ID,
+		)
+	} else {
+		lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
+		granteeIDs, err := s.granteeReader.ListAccountAuthorizationGranteeIDs(lookupCtx, account.ID)
+		cancel()
+		if err != nil {
+			allScopes = true
+			s.logger.WarnContext(context.WithoutCancel(ctx), "account page data grantee lookup failed",
+				"accountId", account.ID,
+				"error", err,
+			)
+		} else {
+			owners = normalizedSortedStrings(append(owners, granteeIDs...))
+		}
+	}
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
+	defer cancel()
+	if err := s.pageDataPublisher.PublishAccountStaticChange(publishCtx, AccountStaticChangeInput{
+		AccountID:             strings.TrimSpace(account.ID),
+		OwnerSystemAccountIDs: owners,
+		FieldMask:             []string{"tags"},
+		FilterChanged:         true,
+		PageChanged:           true,
+		AllScopes:             allScopes,
+	}); err != nil {
+		s.logger.WarnContext(context.WithoutCancel(ctx), "account page data publish failed",
+			"accountId", account.ID,
+			"error", err,
+		)
+	}
+}
+
+func normalizedSortedStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func optionLimit(limit int) int {

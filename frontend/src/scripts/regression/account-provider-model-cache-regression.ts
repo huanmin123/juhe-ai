@@ -1,4 +1,6 @@
 import { computed, ref } from 'vue'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import { api } from '@/api/client'
 import type { ProviderModelOption, ProviderModelPricing, ProviderModelsParams } from '@/types/domain'
@@ -10,6 +12,14 @@ import {
 
 type ModelsLoader = (code: string, params?: ProviderModelsParams) => Promise<ProviderModelPricing[]>
 type ModelOptionsLoader = typeof api.providers.modelOptions
+
+const accountProviderModelSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountProviderModelOptions.ts', import.meta.url)), 'utf8')
+const globalProviderModelSource = readFileSync(fileURLToPath(new URL('../../composables/useProviderModelSelectOptions.ts', import.meta.url)), 'utf8')
+assertIncludes(accountProviderModelSource, 'getDefaultPageDataResourceCache', '账户供应商模型必须复用统一 IndexedDB resource cache')
+assertIncludes(accountProviderModelSource, "domain: 'providers.catalog'", '账户供应商模型必须绑定 providers.catalog revision')
+assertNotIncludes(accountProviderModelSource, 'providerModelOptionsCache = new Map', '账户供应商模型不得继续维护独立模块 Map')
+assertIncludes(globalProviderModelSource, 'getDefaultPageDataResourceCache', '全局模型下拉必须复用统一 IndexedDB resource cache')
+assertIncludes(globalProviderModelSource, "domain: 'providers.catalog'", '全局模型下拉必须绑定 providers.catalog revision')
 
 const originalModels = api.providers.models
 const originalModelOptions = api.providers.modelOptions
@@ -154,6 +164,7 @@ try {
   const providerScopeA = racedProviderModels.loadProviderModelOptions('openai')
   providerScopeId.value = 'sys_scope_b'
   const providerScopeB = racedProviderModels.loadProviderModelOptions('openai')
+  await waitFor(() => providerScopeCalls.length === 2, '不同系统账户模型目录请求未进入 loader')
   assertDeepEqual(providerScopeCalls, ['sys_scope_a', 'sys_scope_b'], '不同系统账户作用域必须各自发起模型目录请求')
   providerScopeRequests.get('sys_scope_b')?.resolve([providerModel('scope-b-model', ['responses'])])
   await providerScopeB
@@ -183,6 +194,7 @@ try {
   const globalScopeA = racedGlobalModels.loadModelOptions()
   globalScopeId.value = 'sys_global_b'
   const globalScopeB = racedGlobalModels.loadModelOptions()
+  await waitFor(() => globalScopeCalls.length === 2, '不同系统账户全局模型请求未进入 loader')
   assertDeepEqual(globalScopeCalls, ['sys_global_a', 'sys_global_b'], '全局模型选项切换作用域时不得复用旧 scope Promise')
   globalScopeRequests.get('sys_global_b')?.resolve([
     { providerCode: 'gpt', model: 'global-b-model', supportedApiProtocols: ['responses'] }
@@ -241,6 +253,14 @@ function assertDeepEqual(actual: unknown, expected: unknown, message: string): v
   }
 }
 
+function assertIncludes(source: string, expected: string, message: string): void {
+  if (!source.includes(expected)) throw new Error(`${message}，缺少 ${expected}`)
+}
+
+function assertNotIncludes(source: string, unexpected: string, message: string): void {
+  if (source.includes(unexpected)) throw new Error(`${message}，不应包含 ${unexpected}`)
+}
+
 type Deferred<T> = {
   promise: Promise<T>
   resolve: (value: T) => void
@@ -252,6 +272,14 @@ function deferred<T>(): Deferred<T> {
     resolve = nextResolve
   })
   return { promise, resolve }
+}
+
+async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+  for (let index = 0; index < 50; index += 1) {
+    if (predicate()) return
+    await Promise.resolve()
+  }
+  throw new Error(message)
 }
 
 function providerModel(model: string, supportedApiProtocols: ProviderModelPricing['supportedApiProtocols']): ProviderModelPricing {

@@ -220,7 +220,7 @@ async function main(): Promise<void> {
     assert(fragmentedSseEventResult.streamText.includes('response.completed'), `碎片化 SSE 事件持续有原始字节时应等到上游完成：${fragmentedSseEventResult.streamText}`)
     assert(!fragmentedSseEventResult.streamText.includes('response.failed'), `碎片化 SSE 事件持续有原始字节时不应补发失败事件：${fragmentedSseEventResult.streamText}`)
     assert(
-      fragmentedSseEventResult.durationMs >= 10_000 && fragmentedSseEventResult.durationMs < 18_000,
+      fragmentedSseEventResult.durationMs >= 4000 && fragmentedSseEventResult.durationMs < 9000,
       `碎片化 SSE 事件没有持续等待到上游完成，耗时 ${fragmentedSseEventResult.durationMs}ms`
     )
     usageRecordQueue.flushAllUsageRecordQueue()
@@ -780,7 +780,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         res.write('data: {"type":"response.created"')
         const chunks = [
           ',"response":{"id":"resp_regression","status":"in_progress","metadata":{"fragment":"',
-          ...Array.from({ length: 30 }, () => 'xxxxxxxxxx'),
+          ...Array.from({ length: 12 }, () => 'xxxxxxxxxx'),
           '"}}}\n\n',
           'event: response.completed\n',
           'data: {"type":"response.completed","response":{"id":"resp_regression","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n'

@@ -1,16 +1,19 @@
 import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, ref } from 'vue'
 
-import { api } from '@/api/client'
+import { api, pageDataApi } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { rememberAccountLabels, rememberAccountSelection } from '@/shared/accountLabelCache'
 import { mergeSelectedGroupOptions, rememberGroupLabels } from '@/shared/groupLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { AccountOptionSummary, GroupOptionSummary } from '@/types/domain'
 import { normalizeSearchKeyword, selectedAccountFromOptions, selectedGroupFromOptions } from './authorizationOptionHelpers'
 import { createAuthorizationSearchScheduler } from './authorizationSearchScheduler'
 import { ensureSelectedAccountOption, ensureSelectedGroupOption } from './authorizationSelectedOptionLoaders'
 import type { AuthorizationUsageResourceFilters } from './authorizationUsageFilters'
+
+const authorizationUsageOptionResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsageResourceFilters) {
   const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -19,8 +22,6 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   const resourceOptionsLoading = ref(false)
   const resourceOptionLimit = 50
   const searchDelayMs = 250
-  const accountOptionCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
-  const groupOptionCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
   let requestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
@@ -74,58 +75,41 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
       return loadingPromise
     }
     const currentRequestId = ++requestId
-    if (filters.resourceType === 'account') {
-      const cachedAccounts = accountOptionCache.get(requestKey)
-      if (cachedAccounts) {
-        loadingKey = undefined
-        loadingPromise = undefined
-        resourceOptionsLoading.value = false
-        accounts.value = cachedAccounts
-        rememberAccountLabels(cachedAccounts)
-        syncResourceAccount(cachedAccounts)
-        groups.value = []
-        return
-      }
-    } else {
-      const cachedGroups = groupOptionCache.get(requestKey)
-      if (cachedGroups) {
-        loadingKey = undefined
-        loadingPromise = undefined
-        resourceOptionsLoading.value = false
-        rememberGroupLabels(cachedGroups)
-        syncResourceGroup(cachedGroups)
-        groups.value = cachedGroups
-        accounts.value = []
-        return
-      }
-    }
     resourceOptionsLoading.value = true
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        if (filters.resourceType === 'account') {
-          let nextAccounts = isManagementView.value
-            ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
-            : await api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
-          nextAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, ownerSystemAccountId, isManagementView.value)
-          rememberAccountLabels(nextAccounts)
-          syncResourceAccount(nextAccounts)
-          accountOptionCache.set(requestKey, nextAccounts)
-          if (currentRequestId !== requestId) return
-          accounts.value = nextAccounts
-          groups.value = []
-        } else {
-          let nextGroups = isManagementView.value
-            ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
-            : await api.myGroups.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
-          nextGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, ownerSystemAccountId, isManagementView.value)
-          rememberGroupLabels(nextGroups)
-          syncResourceGroup(nextGroups)
-          groupOptionCache.set(requestKey, nextGroups)
-          if (currentRequestId !== requestId) return
-          groups.value = nextGroups
-          accounts.value = []
-        }
+        const resourceType: 'account' | 'group' = filters.resourceType === 'account' ? 'account' : 'group'
+        const route = resourceType === 'account'
+          ? (isManagementView.value ? '/accounts/options' : '/my-accounts/options')
+          : (isManagementView.value ? '/groups/options' : '/my-groups/options')
+        const result = await authorizationUsageOptionResourceCache.load<AccountOptionSummary[] | GroupOptionSummary[]>({
+          cacheKey: {
+            scope: authorizationUsageOptionScope(isManagementView.value, ownerSystemAccountId),
+            route,
+            query: { keyword: normalizedKeyword, ownerSystemAccountId, resourceId: filters.resourceId, limit: resourceOptionLimit },
+            version: 1
+          },
+          domain: filters.resourceType === 'account' ? 'accounts.options' : 'groups.static',
+          viewScope: isManagementView.value ? 'admin' : 'self',
+          ...(isManagementView.value && ownerSystemAccountId ? { targetSystemAccountId: ownerSystemAccountId } : {}),
+          loadNetwork: async () => {
+            if (resourceType === 'account') {
+              let nextAccounts = isManagementView.value
+                ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
+                : await api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
+              return await ensureSelectedAccountOption(nextAccounts, filters.resourceId, ownerSystemAccountId, isManagementView.value)
+            }
+            let nextGroups = isManagementView.value
+              ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
+              : await api.myGroups.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
+            return await ensureSelectedGroupOption(nextGroups, filters.resourceId, ownerSystemAccountId, isManagementView.value)
+          }
+        })
+        applyResourceOptions(resourceType, result.data, currentRequestId)
+        void result.confirmation?.then((outcome) => {
+          if (outcome.data) applyResourceOptions(resourceType, outcome.data, currentRequestId)
+        })
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
@@ -141,6 +125,27 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
       }
     })()
     return loadingPromise
+  }
+
+  function applyResourceOptions(
+    resourceType: 'account' | 'group',
+    nextOptions: AccountOptionSummary[] | GroupOptionSummary[],
+    currentRequestId: number
+  ): void {
+    if (currentRequestId !== requestId || filters.resourceType !== resourceType) return
+    if (resourceType === 'account') {
+      const nextAccounts = nextOptions as AccountOptionSummary[]
+      rememberAccountLabels(nextAccounts)
+      syncResourceAccount(nextAccounts)
+      accounts.value = nextAccounts
+      groups.value = []
+      return
+    }
+    const nextGroups = nextOptions as GroupOptionSummary[]
+    rememberGroupLabels(nextGroups)
+    syncResourceGroup(nextGroups)
+    groups.value = nextGroups
+    accounts.value = []
   }
 
   function resetResourceId() {
@@ -210,4 +215,14 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     resetResourceId,
     resetResourceOptionsSearch
   }
+}
+
+function authorizationUsageOptionScope(isManagementView: boolean, ownerSystemAccountId?: string): string {
+  const viewer = authState.currentUser.value
+  return [
+    isManagementView ? 'admin' : 'self',
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    ownerSystemAccountId ?? (isManagementView ? 'all' : 'self')
+  ].join(':')
 }

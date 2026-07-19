@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict'
 
+import { pageDataDomains } from '../../api/domains/pageData'
 import { pageDataDomainRegistry, pageDataSpecsForRoute } from '../../shared/pageDataDomainRegistry'
+
+const firstBatchDomains = [
+  'providers.catalog',
+  'groups.static',
+  'accounts.options',
+  'systemAccounts.options',
+  'teams.options',
+  'routeStrategies.options',
+  'stats.overview',
+  'stats.accountUsage',
+  'stats.aiPerformance'
+] as const
 
 const businessRoutes = [
   '/my-chat', '/my-stats', '/my-accounts', '/my-groups', '/my-api-keys', '/my-route-strategies',
@@ -28,4 +41,8 @@ for (const entry of pageDataDomainRegistry) {
 assert.equal(pageDataDomainRegistry.find((entry) => entry.domain === 'chat.specialized')?.implementation, 'specialized')
 assert.equal(pageDataDomainRegistry.find((entry) => entry.domain === 'logs.audit')?.implementation, 'no-store')
 assert.equal(pageDataDomainRegistry.find((entry) => entry.domain === 'accounts.static')?.implementation, 'active')
+for (const domain of firstBatchDomains) {
+  assert.ok(pageDataDomains.includes(domain), `前端 page-data API 必须支持第一批数据域 ${domain}`)
+  assert.equal(pageDataDomainRegistry.find((entry) => entry.domain === domain)?.implementation, 'active', `${domain} 必须从 planned 进入 active`)
+}
 console.log('页面数据域 registry 回归通过：全部业务路由均有 active/planned/specialized/no-store 明确结论')

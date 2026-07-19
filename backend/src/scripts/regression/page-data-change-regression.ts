@@ -5,6 +5,7 @@ import { resolve } from 'node:path'
 import {
   createMemoryPageDataChangeStore,
   createRedisPageDataChangeStore,
+  pageDataDomains,
   pageDataScope,
   type PageDataChangeEvent,
   type PageDataRedisClient
@@ -17,6 +18,7 @@ import {
   createPageDataDirtyDomainState,
   createPageDataPublishRetryQueue,
   createRecoveringPageDataChangeStore,
+  acceptPageDataChangeFromIpc,
   acceptPageDataDirtyDomainsParentAck,
   dispatchPageDataDirtyDomainsForProcess,
   dispatchPageDataChangeForProcess,
@@ -24,6 +26,20 @@ import {
 } from '../../modules/page-data/page-data-change.runtime.js'
 
 const now = new Date('2026-07-17T00:00:00.000Z')
+const firstBatchDomains = [
+  'providers.catalog',
+  'groups.static',
+  'accounts.options',
+  'systemAccounts.options',
+  'teams.options',
+  'routeStrategies.options',
+  'stats.overview',
+  'stats.accountUsage',
+  'stats.aiPerformance'
+] as const
+for (const domain of firstBatchDomains) {
+  assert.ok(pageDataDomains.includes(domain), `Node page-data store 必须支持第一批数据域 ${domain}`)
+}
 let recoveringConfirmCalls = 0
 const recoveringStore = createRecoveringPageDataChangeStore({
   confirm: async () => {
@@ -601,6 +617,17 @@ await dispatchPageDataChangeForProcess(event, {
   sendToDbService: async () => undefined
 })
 assert.deepEqual(redisFallback, ['server-ipc'], 'performance worker Redis publish 失败必须 fallback 到 server IPC')
+
+const acceptedIpcSteps: string[] = []
+await acceptPageDataChangeFromIpc(event, {
+  invalidateDomain: async (domain) => { acceptedIpcSteps.push(`invalidate:${domain}`) },
+  publishLocal: async (acceptedEvent) => { acceptedIpcSteps.push(`publish:${acceptedEvent.domain}`) }
+})
+assert.deepEqual(
+  acceptedIpcSteps,
+  [`invalidate:${event.domain}`, `publish:${event.domain}`],
+  'DB service 接收 worker page-data IPC 时必须先清理后端 read-through 缓存，再推进 revision'
+)
 
 const dirtyHandoffs: string[] = []
 await dispatchPageDataDirtyDomainsForProcess(['accounts.runtime'], {

@@ -81,6 +81,7 @@ import {
   acquireBackgroundJobLeaseAsync,
   releaseBackgroundJobLeaseAsync
 } from '../../storage/background-task-runs.repository.js'
+import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
 
 const statsAggregationBatchPauseMs = 25
 const usageStatsAggregationOnlineBatchSizeCap = 1000
@@ -262,8 +263,11 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
   switch (operation.type) {
     case 'aggregate_model_trust_observations':
       return { processed: await aggregateModelTrustObservationsAsync(operation.batchSize) }
-    case 'aggregate_usage_stats':
-      return await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)
+    case 'aggregate_usage_stats': {
+      const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)
+      if (result.processed > 0) await publishStatsPageDataReset()
+      return result
+    }
     case 'aggregate_client_ip_stats':
       return await aggregateClientIpStats(operation.batchSize, operation.maxBatches, operation.maxRunMs)
     case 'refresh_group_account_stats':
@@ -286,19 +290,25 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         }
       }
       return { recorded: true }
-    case 'refresh_usage_rank_snapshots':
-      return await refreshUsageRankSnapshotsInStages({
+    case 'refresh_usage_rank_snapshots': {
+      const result = await refreshUsageRankSnapshotsInStages({
         yieldToEventLoop,
         stageNames: operation.stageNames,
         skipIfUnchanged: true,
         jobName: operation.jobName
       })
-    case 'refresh_hot_usage_windows':
-      return await refreshHotUsageWindowSnapshots({
+      if (!result.skipped) await publishStatsPageDataReset()
+      return result
+    }
+    case 'refresh_hot_usage_windows': {
+      const result = await refreshHotUsageWindowSnapshots({
         yieldToEventLoop,
         skipIfUnchanged: true,
         jobName: operation.jobName
       })
+      if (!result.skipped) await publishStatsPageDataReset()
+      return result
+    }
     case 'check_usage_stats_consistency':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await checkUsageStatsConsistencyAsync(operation.limit)
@@ -382,6 +392,14 @@ function postgresStatsWriterOperationNotImplemented(operationType: string): Erro
 
 function currentProcessOwnsStatsWriter(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'stats-worker'
+}
+
+async function publishStatsPageDataReset(): Promise<void> {
+  await Promise.all([
+    publishPageDataDomainGlobalReset('stats.overview'),
+    publishPageDataDomainGlobalReset('stats.accountUsage'),
+    publishPageDataDomainGlobalReset('stats.aiPerformance')
+  ])
 }
 
 async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRunMs: number, safeCreatedBefore?: string): Promise<{ processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number }> {

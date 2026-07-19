@@ -1,16 +1,12 @@
 import { ref, type Ref } from 'vue'
 import { message } from '@/lib/antd'
 
+import { pageDataApi } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
-import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import {
-  localSelectStorageKey,
-  readLocalSelectOptionWindow,
-  removeLocalSelectOptionWindowValues,
-  removeLocalSelectPreferenceValues,
-  writeLocalSelectOptionWindow
-} from '@/shared/selectLocalPreferenceCache'
+import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
+import { removeLocalSelectPreferenceValues } from '@/shared/selectLocalPreferenceCache'
 import type { GroupOptionSummary } from '@/types/domain'
 
 interface UsageRecordGroupOptionsApi {
@@ -31,10 +27,11 @@ interface UseUsageRecordGroupOptionsInput {
   systemAccountId: () => string | undefined
 }
 
+const usageRecordGroupOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
+
 export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInput) {
   const groups = ref<GroupOptionSummary[]>([])
   const loading = ref(false)
-  const cache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
   let requestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
@@ -45,48 +42,43 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
     keyword = nextKeyword
     const systemAccountId = input.isManagementView.value ? input.systemAccountId() : undefined
     const requestKeyword = normalizeOptionKeyword(nextKeyword)
+    const scope = groupOptionsScope(input.isManagementView.value, systemAccountId)
+    const route = input.isManagementView.value ? '/groups/options' : '/my-groups/options'
+    const selectedIds = [input.selectedGroupId()].filter((id): id is string => Boolean(id))
     const requestKey = JSON.stringify([
-      input.isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self',
+      scope,
       requestKeyword ?? '',
-      input.selectedGroupId() ?? ''
+      selectedIds
     ])
     if (!force && loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
     const currentRequestId = ++requestId
-    const optionWindowKey = groupOptionWindowKey(input.isManagementView.value, systemAccountId, requestKeyword)
-    const localWindowGroups = !force ? readLocalSelectOptionWindow<GroupOptionSummary>(optionWindowKey) : undefined
-    if (localWindowGroups?.length) {
-      loading.value = false
-      rememberGroupLabels(localWindowGroups)
-      syncSelectedGroupSelection(localWindowGroups)
-      groups.value = localWindowGroups
-    }
-    if (!force) {
-      const cachedGroups = cache.get(requestKey)
-      if (cachedGroups) {
-        loadingKey = undefined
-        loadingPromise = undefined
-        loading.value = false
-        rememberGroupLabels(cachedGroups)
-        syncSelectedGroupSelection(cachedGroups)
-        writeLocalSelectOptionWindow(optionWindowKey, cachedGroups)
-        groups.value = cachedGroups
-        return
-      }
-    }
-    loading.value = !localWindowGroups?.length
+    loading.value = true
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        let nextGroups = await input.groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-        nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId, optionWindowKey)
-        rememberGroupLabels(nextGroups)
-        syncSelectedGroupSelection(nextGroups)
-        cache.set(requestKey, nextGroups)
-        writeLocalSelectOptionWindow(optionWindowKey, nextGroups)
-        if (currentRequestId !== requestId) return
-        groups.value = nextGroups
+        if (force) await usageRecordGroupOptionsResourceCache.invalidate('groups.static', scope, route)
+        const result = await usageRecordGroupOptionsResourceCache.load<GroupOptionSummary[]>({
+          cacheKey: {
+            scope,
+            route,
+            query: { systemAccountId, keyword: requestKeyword, selectedIds, limit: 50 },
+            version: 1
+          },
+          domain: 'groups.static',
+          viewScope: input.isManagementView.value ? 'admin' : 'self',
+          ...(input.isManagementView.value && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
+          loadNetwork: async () => {
+            let nextGroups = await input.groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+            nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+            return nextGroups
+          }
+        })
+        applyGroups(result.data, currentRequestId)
+        void result.confirmation?.then((outcome) => {
+          if (outcome.data) applyGroups(outcome.data, currentRequestId)
+        })
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
@@ -102,6 +94,13 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
       }
     })()
     return loadingPromise
+  }
+
+  function applyGroups(nextGroups: GroupOptionSummary[], currentRequestId: number): void {
+    if (currentRequestId !== requestId) return
+    rememberGroupLabels(nextGroups)
+    syncSelectedGroupSelection(nextGroups)
+    groups.value = nextGroups
   }
 
   function handleDropdown(open: boolean): void {
@@ -148,8 +147,7 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
 
   async function ensureSelectedGroupOptions(
     nextGroups: GroupOptionSummary[],
-    systemAccountId: string | undefined,
-    optionWindowKey: string
+    systemAccountId: string | undefined
   ): Promise<GroupOptionSummary[]> {
     const selectedIds = [input.selectedGroupId()]
       .map((id) => id?.trim())
@@ -164,14 +162,13 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
       }
     }))
     const foundIds = new Set(selectedGroups.flat().map((group) => group.id))
-    handleMissingGroupOptions(missingIds.filter((id) => !foundIds.has(id)), optionWindowKey)
+    handleMissingGroupOptions(missingIds.filter((id) => !foundIds.has(id)))
     return mergeOptionsById(selectedGroups.flat(), nextGroups)
   }
 
-  function handleMissingGroupOptions(ids: string[], optionWindowKey: string): void {
+  function handleMissingGroupOptions(ids: string[]): void {
     const missingIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
     if (!missingIds.length) return
-    removeLocalSelectOptionWindowValues(optionWindowKey, missingIds)
     removeLocalSelectPreferenceValues('groups', missingIds)
     const selectedGroupId = input.selectedGroupId()?.trim()
     if (selectedGroupId && missingIds.includes(selectedGroupId)) {
@@ -194,18 +191,14 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
   }
 }
 
-function groupOptionWindowKey(
-  isManagementView: boolean,
-  systemAccountId: string | undefined,
-  requestKeyword: string | undefined
-): string {
-  return localSelectStorageKey([
-    'group-options',
-    isManagementView ? 'management' : 'self',
-    systemAccountId ?? 'all',
-    'usage-records',
-    requestKeyword ?? ''
-  ])
+function groupOptionsScope(isManagementView: boolean, systemAccountId?: string): string {
+  const viewer = authState.currentUser.value
+  return [
+    isManagementView ? 'admin' : 'self',
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    systemAccountId ?? (isManagementView ? 'all' : 'self')
+  ].join(':')
 }
 
 function selectedGroupFromOptions(
