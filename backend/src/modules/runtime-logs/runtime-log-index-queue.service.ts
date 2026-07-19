@@ -4,6 +4,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { createDedicatedRedisClient, type RedisCommandClient } from '../../shared/redis-client.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { nowIso } from '../../storage/database.js'
 import {
@@ -31,8 +32,8 @@ const runtimeLogQueueMaxItems = 5_000
 const runtimeLogQueueMaxBytes = 32 * 1024 * 1024
 const runtimeLogQueueSampleDropItemHighWater = Math.floor(runtimeLogQueueMaxItems * 0.8)
 const runtimeLogQueueSampleDropByteHighWater = Math.floor(runtimeLogQueueMaxBytes * 0.8)
-const runtimeLogRedisStreamKey = 'juhe-ai:queue:runtime-log-index'
-const runtimeLogRedisStreamGroup = 'juhe-ai:runtime-log-index-writers'
+const runtimeLogRedisStreamKey = redisStreamQueueContracts.runtimeLogIndex.streamKey
+const runtimeLogRedisStreamGroup = redisStreamQueueContracts.runtimeLogIndex.groupName
 const runtimeLogRedisConsumerErrorRetryMs = 1000
 const runtimeLogRedisStopWaitMs = 2000
 const runtimeLogRedisProducerMaxInFlightCount = 64

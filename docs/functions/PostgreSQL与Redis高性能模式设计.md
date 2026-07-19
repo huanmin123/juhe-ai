@@ -74,7 +74,6 @@ JUHE_AI_REDIS_CACHE_URL=redis://:<缓存密码URL编码>@redis-cache:6379/0
 JUHE_AI_REDIS_STATE_URL=redis://:<运行态密码URL编码>@redis-state:6379/0
 JUHE_AI_REDIS_QUEUE_URL=redis://:<队列密码URL编码>@redis-queue:6379/0
 JUHE_AI_REDIS_NAMESPACE=prod
-JUHE_AI_ALLOW_SHARED_REDIS_URLS=false
 JUHE_AI_REDIS_STREAM_READ_COUNT=1000
 JUHE_AI_REDIS_STREAM_BLOCK_MS=1000
 JUHE_AI_REDIS_STREAM_CLAIM_IDLE_MS=60000
@@ -94,7 +93,7 @@ JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS=30000
 - `JUHE_AI_CACHE_DRIVER=redis` 只表示可丢弃缓存；需要硬并发槽、限流计数或短 TTL 调度运行态时必须走 `JUHE_AI_RUNTIME_STATE_DRIVER`。
 - `JUHE_AI_QUEUE_DRIVER=redis_stream` 使用 Redis Streams 承接高性能模式队列缓冲；`JUHE_AI_REDIS_QUEUE_URL` 默认应指向独立 `redis-queue`，不再复用 `redis-state`。Redis Stream 入队失败不回退 IPC 或本地内存队列，避免掩盖队列基础设施故障；可靠队列入队不使用 `MAXLEN ~` 自动裁剪，消息成功 `XACK` 后同步 `XDEL` 删除已落库条目。
 - `JUHE_AI_REDIS_NAMESPACE` 是 Redis key 的部署隔离前缀，生产建议显式配置并保持稳定；压测、回归和多套环境共用 Redis 实例时必须使用不同 namespace。
-- 高性能模式默认禁止 cache/state/queue 指向同一个 Redis DB / 实例地址，防止清理、淘汰策略和队列事实互相污染；临时 smoke 需要复用时必须显式设置 `JUHE_AI_ALLOW_SHARED_REDIS_URLS=true`。
+- 高性能模式强制 cache/state/queue 指向三个不同的物理 Redis `host:port`；同一进程的不同 DB 也不算隔离，且不存在共享开关。生产本机 loopback 必须写成 `127.0.0.1`，Docker service name 或明确的远端内网 host 仍可使用，但三个物理 endpoint 必须不同。
 - 普通单条 SQL 使用数据库或应用 role 默认的 `statement_timeout`、`lock_timeout` 和 `idle_in_transaction_session_timeout`；显式多语句事务再按 `JUHE_AI_POSTGRES_*_TIMEOUT_MS` 执行 `SET LOCAL`。上线必须通过 PgBouncer 新连接 `SHOW` 三项默认值，不能把 timeout 追加到 URL startup parameter。
 - 生产环境不使用 `latest` 镜像；PostgreSQL 和 Redis 镜像必须固定 major / patch 或 digest。
 - 高性能模式不能为了吞吐自行降低原始审计保留语义，必须和 standalone 使用相同的显式部署配置。默认完全成功请求先进入最近 `1` 小时热保留窗口，超过热窗口后只保留 `10%` 稳定采样；运维可按统一环境变量契约显式调整或关闭成功审计，失败、异常、中断和重试后成功链路仍全量进入审计。程序不因容量压力自动降采样，容量和吞吐问题通过 Redis Streams 背压、PG 小批次写入、热窗口清理、payload 摘要 / 压缩 / 去重治理。
@@ -109,9 +108,9 @@ JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS=30000
 | --- | --- | --- |
 | `postgres` | 主事实库 | 使用 PostgreSQL 18 当前稳定版本线；PostgreSQL 19 仍处 beta 阶段，不作为生产默认。 |
 | `pgbouncer` | 连接池网关 | 应用进程和 worker 连接 PgBouncer，避免多进程各自连接池把 PostgreSQL 连接打爆。 |
-| `redis-cache` | 可丢弃缓存 | `maxmemory-policy=allkeys-lru` 或 `volatile-lru`，只放可重建缓存。 |
-| `redis-state` | 运行态和原子计数 | `maxmemory-policy=noeviction`；运行态 key 必须有 TTL 或容量上限。 |
-| `redis-queue` | Redis Streams 可靠队列 | `maxmemory-policy=noeviction`，开启 AOF everysec；队列默认不自动裁剪，按 backlog、pending 和磁盘增长监控扩容。 |
+| `redis-cache` | 可丢弃缓存 | `appendonly no`、`save ""`、`maxmemory-policy=allkeys-lru`，只放可重建缓存。 |
+| `redis-state` | 运行态和原子计数 | `appendonly no`、`save ""`、`maxmemory-policy=noeviction`；重启后从 PostgreSQL 和请求流量重建。 |
+| `redis-queue` | Redis Streams 可靠队列 | `appendonly yes`、`appendfsync everysec`、`save ""`、`maxmemory-policy=noeviction`；未 ACK 消息不可按缓存丢弃。 |
 | `juhe-ai` | 后端服务 | 按现有 server / DB service / worker 拓扑启动，连接 PostgreSQL 和 Redis。 |
 
 版本参考：

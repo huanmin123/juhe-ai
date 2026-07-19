@@ -196,6 +196,8 @@ function Copy-ReleaseBackendPackageJson {
   $packageJson.scripts = [ordered]@{
     'check:runtime' = 'node dist/scripts/preflight/check-node-sqlite.js'
     'maintenance:backfill-account-balance' = 'node dist/scripts/maintenance/run-account-balance-backfill.js'
+    'ops:drain-redis-streams' = 'node dist/scripts/operations/drain-redis-streams.js'
+    'ops:redis-queue-fence' = 'node dist/scripts/operations/manage-redis-queue-fence.js'
     'start' = 'node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js'
   }
   Write-Utf8NoBom -Path $Destination -Content (($packageJson | ConvertTo-Json -Depth 20) + "`n")

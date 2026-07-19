@@ -11,9 +11,10 @@ import {
 import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
 import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { scheduleProcessFatalError } from '../../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../../shared/redis-stream-drain.js'
+import { runRedisEnqueueWithBoundedRetry } from '../../../shared/redis-enqueue-retry.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
@@ -27,8 +28,8 @@ const usageRecordQueueMaxItems = 10_000
 const usageRecordQueueMaxBytes = 64 * 1024 * 1024
 const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
 const slowUsageRecordFlushMs = 500
-const usageRecordRedisStreamKey = 'juhe-ai:queue:usage-records'
-const usageRecordRedisStreamGroup = 'juhe-ai:usage-record-writers'
+const usageRecordRedisStreamKey = redisStreamQueueContracts.usageRecords.streamKey
+const usageRecordRedisStreamGroup = redisStreamQueueContracts.usageRecords.groupName
 const usageRecordRedisConsumerErrorRetryMs = 1000
 
 interface QueuedUsageRecord {
@@ -69,7 +70,7 @@ export async function enqueueUsageRecord(input: UsageRecordInput): Promise<void>
   const queuedInput = normalizeUsageRecordInput(input)
   if (shouldEnqueueUsageRecordToRedisStream()) {
     const frozenInput = await freezeUsageRecordPricingFactsAsync(queuedInput)
-    await enqueueUsageRecordToRedisStream(frozenInput).catch(scheduleProcessFatalError)
+    await enqueueUsageRecordToRedisStream(frozenInput)
     return
   }
   if (shouldDispatchUsageRecordToIngestWorker()) {
@@ -464,7 +465,7 @@ function sendUsageRecordFromDbServiceToServer(input: UsageRecordInput): boolean 
 
 async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise<void> {
   try {
-    await usageRecordRedisStreamQueue().enqueue(input)
+    await runRedisEnqueueWithBoundedRetry(() => usageRecordRedisStreamQueue().enqueue(input))
   } catch (error) {
     logger.error(errorLogFields(error, {
       event: 'usage_record_redis_stream_enqueue_failed',

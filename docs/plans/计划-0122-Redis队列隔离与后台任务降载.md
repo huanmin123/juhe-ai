@@ -13,9 +13,9 @@
 ## 基本信息
 
 - 编号：PLAN-0122
-- 状态：待开始
+- 状态：进行中
 - 创建时间：2026-07-16
-- 更新时间：2026-07-16
+- 更新时间：2026-07-19
 - 父计划：`docs/plans/计划-0120-生产管理端性能优先治理.md`
 - 需求来源：生产 Redis state / queue 共享引发管理端和网关长尾；用户接受非核心记录偶发丢失，但要求功能不删减。
 - 关联模块：Redis / Redis Streams / 网关副作用 / ingest-worker / stats-worker / record maintenance / 部署 / 监控 / 验证
@@ -75,12 +75,11 @@
 - Modify: `docker/.env.performance.example`
 - Modify: `deploy/*`
 
-- [ ] 回归构造 cache/state 相同、state/queue 相同、cache/queue 相同和仅 DB 不同的 URL。
-- [ ] performance / production 配置必须拒绝相同 host:port；同一 Redis 进程不同 DB 也视为共享。
-- [ ] 测试环境只有显式 test-only 开关可以共享，生产不得使用 `JUHE_AI_ALLOW_SHARED_REDIS_URLS=true`。
-- [ ] 目标生产端口：cache `6379`、state `6380`、queue `6381`。
-- [ ] 运行：`pnpm --filter juhe-ai-backend test:runtime-config-env-override`。
-- [ ] 运行：`pnpm --filter juhe-ai-backend test:performance-redis-boundary`。
+- [x] 回归构造 cache/state 相同、state/queue 相同、cache/queue 相同、仅 DB 不同和 loopback 别名 URL。
+- [x] performance 配置拒绝相同 host:port；同一 Redis 进程不同 DB 也视为共享。
+- [x] 移除共享绕过开关，测试和生产使用相同物理隔离门禁。
+- [x] 目标生产端口固定为 cache `6379`、state `6380`、queue `6381`；temporary 固定为 `16379/16380/16381`。
+- [x] `test:runtime-config-env-override` 与 `test:performance-redis-boundary` 已通过；生产实际三 PID 验证仍待上线阶段完成。
 
 ## Task 2：拆分 Redis 连接角色
 
@@ -89,11 +88,11 @@
 - Modify: `backend/src/shared/redis-stream-queue.ts`
 - Modify: `backend/src/scripts/regression/redis-stream-queue-regression.ts`
 
-- [ ] state command client 不与任何 Stream producer、blocking consumer 或 queue admin 命令共享连接。
+- [x] state URL 与 Stream queue URL 物理隔离，Stream producer、blocking consumer 和 ACK/inspect 全部只使用 queue URL。
 - [ ] producer、blocking XREADGROUP consumer 和 ACK / inspect admin 使用三类 dedicated client。
 - [ ] producer 禁用 offline queue，连接不可用时快速失败，不在客户端 FIFO 堆积。
 - [ ] ACK 按一批 message IDs 执行 XACK；XDEL 为 best-effort 批量删除，不使用逐条大 Lua 循环阻塞 Redis。
-- [ ] 运行：`pnpm --filter juhe-ai-backend test:redis-stream-queue`。
+- [x] `test:redis-stream-queue` 已通过；真实 macOS 6380/6381 commandstats 隔离待上线验证。
 
 ## Task 3：通用有界 best-effort producer
 
@@ -223,7 +222,9 @@
 
 ## 验证记录
 
-- 当前只完成方案，不声明代码、构建、Redis 拓扑或性能指标已经通过。
+- 2026-07-19 已完成三 URL 物理门禁、Docker 角色持久化、原子 queue fence、usage/audit 三次有界入队、六类瞬时错误不触发 process fatal、共享 Stream 契约和独立 one-shot drain CLI 的定向回归与类型检查。
+- 2026-07-19 独立复核加固：物理端点按 canonical host:port 判重，unknown lag/pending fail-closed，one-shot 启动消费者前检查既有 group，坏消息保留 pending，公开接口日志在首次分流前固化幂等 ID；macOS root 服务操作与普通发布阶段分离。
+- macOS 角色安装/只读验证脚本及 temporary 三实例接入已完成静态门禁；真实 macOS LaunchDaemon、生产三 PID、AOF rewrite 与性能指标仍待正式上线阶段验证，不提前声明通过。
 - 现场依据见 `docs/reports/生产管理端卡顿根因与性能优先治理报告-2026-07-16.md`。
 - 实施后把实际命令、A/B 数据、drop 数量和功能冒烟结果回填本节。
 

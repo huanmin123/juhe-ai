@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto'
+
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
+import { redisStreamQueueContracts } from '../../shared/redis-stream-drain.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { createPublicApiLogsBatch, createPublicApiLogsBatchAsync, type PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import { sendPublicApiLogsToWorker } from '../background/background-ipc.js'
@@ -13,8 +15,8 @@ const publicApiLogFlushBatchSize = 50
 const publicApiLogShutdownFlushMaxBatches = 100
 const publicApiLogDropWarnInterval = 100
 const publicApiLogRetryDelayMs = 1000
-const publicApiLogRedisStreamKey = 'juhe-ai:queue:public-api-logs'
-const publicApiLogRedisStreamGroup = 'juhe-ai:public-api-log-writers'
+const publicApiLogRedisStreamKey = redisStreamQueueContracts.publicApiLogs.streamKey
+const publicApiLogRedisStreamGroup = redisStreamQueueContracts.publicApiLogs.groupName
 const publicApiLogRedisConsumerErrorRetryMs = 1000
 const publicApiLogRedisStopWaitMs = 2000
 
@@ -36,17 +38,28 @@ let publicApiLogRedisConsumerStopping = false
 let publicApiLogRedisConsumerPromise: Promise<void> | undefined
 
 export function enqueuePublicApiLog(input: PublicApiLogInput): boolean {
+  const stableInput = ensurePublicApiLogQueueId(input)
   if (shouldEnqueuePublicApiLogToRedisStream()) {
-    void enqueuePublicApiLogToRedisStream(input).catch(scheduleProcessFatalError)
+    void enqueuePublicApiLogToRedisStream(stableInput).catch((error) => {
+      recordPublicApiLogDispatchFailure(error, stableInput)
+    })
     return true
   }
   if (runtimeConfig.processRole === 'server') {
-    return sendPublicApiLogsToWorker([input])
+    return sendPublicApiLogsToWorker([stableInput])
   }
   if (runtimeConfig.processRole === 'db-service') {
-    return sendPublicApiLogToParent(input)
+    return sendPublicApiLogToParent(stableInput)
   }
-  return enqueuePublicApiLogsLocal([input])
+  return enqueuePublicApiLogsLocal([stableInput])
+}
+
+function ensurePublicApiLogQueueId(input: PublicApiLogInput): PublicApiLogInput {
+  if (input.id !== undefined) return input
+  return {
+    ...input,
+    id: `publog_${Date.now()}_${randomUUID()}`
+  }
 }
 
 export function startPublicApiLogRedisStreamConsumer(): void {
@@ -83,7 +96,7 @@ export function enqueuePublicApiLogsLocal(inputs: PublicApiLogInput[]): boolean 
   assertLocalPublicApiLogWriteAllowed('enqueuePublicApiLogsLocal')
   let queued = true
   for (const input of inputs) {
-    queued = enqueuePublicApiLogLocal(input) && queued
+    queued = enqueuePublicApiLogLocal(ensurePublicApiLogQueueId(input)) && queued
   }
   return queued
 }
