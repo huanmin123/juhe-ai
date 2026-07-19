@@ -170,6 +170,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 	r := chi.NewRouter()
 	r.Use(requestIDMiddleware)
 	r.Use(recoverMiddleware(opts.Logger))
+	r.Use(managementSecurityHeadersMiddleware)
 	clientIPs := newClientIPResolver(opts.Config)
 	systemAPIClientIPAllowlist := newSystemAPIClientIPAllowlistInspector(
 		opts.SystemAPIClientIPAllowlistReader,
