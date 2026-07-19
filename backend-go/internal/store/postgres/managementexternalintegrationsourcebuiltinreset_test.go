@@ -45,7 +45,7 @@ func TestBuiltInExternalIntegrationSourceResetSQLContract(t *testing.T) {
 		}
 	}
 	if !strings.Contains(allSQL, "WHERE sources.id = 'extsrc_builtin_test'\nFOR UPDATE") ||
-		!strings.Contains(allSQL, "WHERE tokens.id = 'exttok_builtin_test'") {
+		!strings.Contains(allSQL, "WHERE tokens.id = 'exttok_builtin_test'\n  AND tokens.source_ref_id = 'extsrc_builtin_test'\nFOR UPDATE") {
 		t.Fatal("built-in reset must lock fixed source before fixed token")
 	}
 }
