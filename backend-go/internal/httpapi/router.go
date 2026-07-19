@@ -1048,6 +1048,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementAnnouncementsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Patch("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/publish", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/unpublish", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Delete("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
 			}
 			if opts.ManagementStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
@@ -1243,6 +1248,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
 		opts.ManagementAPIKeyDeleteHandler != nil ||
+		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementMyAPIKeyDeleteHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||

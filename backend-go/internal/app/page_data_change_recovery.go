@@ -99,6 +99,10 @@ func (p *recoveringPageDataCorePublisher) NewAccountRuntimeUpsertEvent(input red
 	return p.delegate.NewAccountRuntimeUpsertEvent(input)
 }
 
+func (p *recoveringPageDataCorePublisher) NewAnnouncementPublicChangeEvent(announcementID string, operation string, fieldMask []string) (redisplatform.PageDataChangeEvent, error) {
+	return p.delegate.NewAnnouncementPublicChangeEvent(announcementID, operation, fieldMask)
+}
+
 func (p *recoveringPageDataCorePublisher) NewRangeResetEvents(domain string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
 	return p.delegate.NewRangeResetEvents(domain, ownerIDs, allScopes)
 }

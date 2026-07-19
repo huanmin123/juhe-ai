@@ -99,6 +99,75 @@ func TestPageDataChangePublisherBuildsNodeCompatibleAccountStaticUpsertEvent(t *
 	}
 }
 
+func TestPageDataChangePublisherBuildsAnnouncementPublicChangeEvent(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	event, err := publisher.NewAnnouncementPublicChangeEvent(" announcement-1 ", pageDataUpsertOperation, []string{"title", "publishedAt"})
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent() error = %v", err)
+	}
+	want := PageDataChangeEvent{
+		EventID: "event-1", Domain: pageDataAnnouncementsPublicDomain, EntityID: "announcement-1",
+		Operation: pageDataUpsertOperation, FieldMask: []string{"title", "publishedAt"}, OwnerSystemAccountIDs: []string{},
+		MembershipChanged: true, OrderChanged: true, PageChanged: true,
+		OccurredAt: "2026-07-18T01:02:03.456Z",
+	}
+	if !reflect.DeepEqual(event, want) {
+		t.Fatalf("event = %#v, want %#v", event, want)
+	}
+
+	fieldMask := []string{"status"}
+	created, err := publisher.NewAnnouncementPublicChangeEvent("announcement-2", pageDataDeleteOperation, fieldMask)
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent(delete) error = %v", err)
+	}
+	fieldMask[0] = "mutated"
+	if !reflect.DeepEqual(created.FieldMask, []string{"status"}) || len(created.OwnerSystemAccountIDs) != 0 {
+		t.Fatalf("event slices were not copied/defaulted: %#v", created)
+	}
+}
+
+func TestPageDataChangePublisherRejectsInvalidAnnouncementPublicChangeEvent(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	tooManyFields := make([]string, pageDataMaxFieldMask+1)
+	for index := range tooManyFields {
+		tooManyFields[index] = fmt.Sprintf("field-%02d", index)
+	}
+	for _, test := range []struct {
+		name      string
+		id        string
+		operation string
+		fields    []string
+	}{
+		{name: "empty id", id: " ", operation: pageDataUpsertOperation},
+		{name: "invalid operation", id: "announcement-1", operation: pageDataRangeResetOperation},
+		{name: "empty operation", id: "announcement-1"},
+		{name: "empty field", id: "announcement-1", operation: pageDataUpsertOperation, fields: []string{" "}},
+		{name: "too many fields", id: "announcement-1", operation: pageDataDeleteOperation, fields: tooManyFields},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := publisher.NewAnnouncementPublicChangeEvent(test.id, test.operation, test.fields); err == nil {
+				t.Fatal("NewAnnouncementPublicChangeEvent() error = nil")
+			}
+		})
+	}
+}
+
+func TestPageDataChangePublisherMarshalsAnnouncementPublicChangeProtocol(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	event, err := publisher.NewAnnouncementPublicChangeEvent("announcement-1", pageDataDeleteOperation, nil)
+	if err != nil {
+		t.Fatalf("NewAnnouncementPublicChangeEvent() error = %v", err)
+	}
+	raw, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	want := `{"eventId":"event-1","domain":"announcements.public","entityId":"announcement-1","operation":"delete","fieldMask":[],"ownerSystemAccountIds":[],"membershipChanged":true,"orderChanged":true,"filterChanged":false,"pageChanged":true,"occurredAt":"2026-07-18T01:02:03.456Z"}`
+	if string(raw) != want {
+		t.Fatalf("JSON = %s, want %s", raw, want)
+	}
+}
+
 func TestPageDataChangePublisherRejectsInvalidAccountStaticUpsertInput(t *testing.T) {
 	publisher, _ := testPageDataChangePublisher()
 	tooManyOwners := make([]string, pageDataMaxEventOwners+1)
@@ -285,6 +354,9 @@ func TestPageDataChangePublisherValidatesConstructorAndEvents(t *testing.T) {
 		}
 		if len(events) != 1 || events[0].Domain != domain {
 			t.Fatalf("NewRangeResetEvents(%s) events = %#v", domain, events)
+		}
+		if err := validatePageDataChangeEvent(events[0]); err != nil {
+			t.Fatalf("NewRangeResetEvents(%s) validation error = %v", domain, err)
 		}
 	}
 	cases := []PageDataChangeEvent{

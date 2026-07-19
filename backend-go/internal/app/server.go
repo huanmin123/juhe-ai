@@ -859,7 +859,7 @@ func newManagementAPIHandlerWithPageData(
 		PublicAPILogsHandler:                    httpapi.NewManagementPublicAPILogsHandler(publicAPILogService),
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
-		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandler(announcementService),
+		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}

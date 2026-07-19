@@ -19,6 +19,7 @@ type pageDataCorePublisher interface {
 	NewAccountStaticUpsertEvent(input redisplatform.AccountChangeInput) (redisplatform.PageDataChangeEvent, error)
 	NewAccountStaticDeleteEvent(input redisplatform.AccountChangeInput) (redisplatform.PageDataChangeEvent, error)
 	NewAccountRuntimeUpsertEvent(input redisplatform.AccountChangeInput) (redisplatform.PageDataChangeEvent, error)
+	NewAnnouncementPublicChangeEvent(announcementID string, operation string, fieldMask []string) (redisplatform.PageDataChangeEvent, error)
 	NewRangeResetEvents(domain string, ownerIDs []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error)
 	Publish(ctx context.Context, event redisplatform.PageDataChangeEvent) error
 }
@@ -37,6 +38,7 @@ type managementPageDataPublisher interface {
 	accountpagedata.Publisher
 	PublishAccountsStaticReset(ctx context.Context, ownerSystemAccountIDs []string, allScopes bool) error
 	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
+	PublishAnnouncementPublicChange(ctx context.Context, announcementID string, operation string, fieldMask []string) error
 }
 
 type accountsStaticResetPublisherAdapter struct {
@@ -123,6 +125,22 @@ func (p accountsStaticResetPublisherAdapter) PublishPageDataReset(
 		}
 	}
 	return nil
+}
+
+func (p accountsStaticResetPublisherAdapter) PublishAnnouncementPublicChange(
+	ctx context.Context,
+	announcementID string,
+	operation string,
+	fieldMask []string,
+) error {
+	if p.publisher == nil {
+		return fmt.Errorf("page data change publisher is required")
+	}
+	event, err := p.publisher.NewAnnouncementPublicChangeEvent(announcementID, operation, fieldMask)
+	if err != nil {
+		return err
+	}
+	return p.publisher.Publish(ctx, event)
 }
 
 func (p accountsStaticResetPublisherAdapter) PublishAccountStaticChange(

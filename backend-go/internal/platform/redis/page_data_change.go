@@ -17,15 +17,16 @@ import (
 )
 
 const (
-	pageDataAccountsStaticDomain  = "accounts.static"
-	pageDataAccountsRuntimeDomain = "accounts.runtime"
-	pageDataAccountsOptionsDomain = "accounts.options"
-	pageDataUpsertOperation       = "upsert"
-	pageDataDeleteOperation       = "delete"
-	pageDataRangeResetOperation   = "range_reset"
-	pageDataMaxEventOwners        = 256
-	pageDataMaxFieldMask          = 32
-	pageDataEventLogTTLSeconds    = 8 * 24 * 60 * 60
+	pageDataAccountsStaticDomain      = "accounts.static"
+	pageDataAccountsRuntimeDomain     = "accounts.runtime"
+	pageDataAccountsOptionsDomain     = "accounts.options"
+	pageDataAnnouncementsPublicDomain = "announcements.public"
+	pageDataUpsertOperation           = "upsert"
+	pageDataDeleteOperation           = "delete"
+	pageDataRangeResetOperation       = "range_reset"
+	pageDataMaxEventOwners            = 256
+	pageDataMaxFieldMask              = 32
+	pageDataEventLogTTLSeconds        = 8 * 24 * 60 * 60
 )
 
 var (
@@ -168,6 +169,37 @@ func (p *PageDataChangePublisher) NewAccountStaticDeleteEvent(input AccountChang
 // NewAccountRuntimeUpsertEvent creates one accounts.runtime upsert event.
 func (p *PageDataChangePublisher) NewAccountRuntimeUpsertEvent(input AccountChangeInput) (PageDataChangeEvent, error) {
 	return p.newAccountChangeEvent(pageDataAccountsRuntimeDomain, pageDataUpsertOperation, input)
+}
+
+// NewAnnouncementPublicChangeEvent creates a Node-compatible public
+// announcement entity event with the fixed public page-data flags.
+func (p *PageDataChangePublisher) NewAnnouncementPublicChangeEvent(
+	announcementID string,
+	operation string,
+	fieldMask []string,
+) (PageDataChangeEvent, error) {
+	if p == nil {
+		return PageDataChangeEvent{}, errors.New("page data publisher is required")
+	}
+	event := PageDataChangeEvent{
+		EventID:               p.newEventID(),
+		Domain:                pageDataAnnouncementsPublicDomain,
+		EntityID:              strings.TrimSpace(announcementID),
+		Operation:             operation,
+		FieldMask:             append([]string(nil), fieldMask...),
+		OwnerSystemAccountIDs: []string{},
+		MembershipChanged:     true,
+		OrderChanged:          true,
+		PageChanged:           true,
+		OccurredAt:            p.now().UTC().Format("2006-01-02T15:04:05.000Z"),
+	}
+	if event.FieldMask == nil {
+		event.FieldMask = []string{}
+	}
+	if err := validatePageDataChangeEvent(event); err != nil {
+		return PageDataChangeEvent{}, err
+	}
+	return event, nil
 }
 
 func (p *PageDataChangePublisher) newAccountChangeEvent(domain string, operation string, input AccountChangeInput) (PageDataChangeEvent, error) {
@@ -340,11 +372,16 @@ func validatePageDataChangeEvent(event PageDataChangeEvent) error {
 			return fmt.Errorf("%s range_reset change flags must all be true", event.Domain)
 		}
 	case pageDataUpsertOperation, pageDataDeleteOperation:
-		if event.Domain != pageDataAccountsStaticDomain && event.Domain != pageDataAccountsRuntimeDomain {
+		if event.Domain != pageDataAccountsStaticDomain && event.Domain != pageDataAccountsRuntimeDomain && event.Domain != pageDataAnnouncementsPublicDomain {
 			return fmt.Errorf("unsupported page data entity domain %q", event.Domain)
 		}
+		if event.Domain == pageDataAnnouncementsPublicDomain {
+			if len(event.OwnerSystemAccountIDs) != 0 || !event.MembershipChanged || !event.OrderChanged || event.FilterChanged || !event.PageChanged {
+				return errors.New("announcements.public entity flags must match the Node protocol")
+			}
+		}
 		if event.EntityID == "" || event.EntityID != strings.TrimSpace(event.EntityID) {
-			return errors.New("account page data entityId must be non-empty and trimmed")
+			return errors.New("page data entityId must be non-empty and trimmed")
 		}
 		if len(event.FieldMask) > pageDataMaxFieldMask {
 			return fmt.Errorf("page data fieldMask count exceeds %d", pageDataMaxFieldMask)

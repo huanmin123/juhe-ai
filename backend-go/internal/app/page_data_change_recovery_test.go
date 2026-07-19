@@ -41,6 +41,23 @@ func TestRecoveringPageDataPublisherMarksAndRecoversFailedDomain(t *testing.T) {
 	}
 }
 
+func TestRecoveringPageDataPublisherRecoversAnnouncementPublicDomainWithRangeReset(t *testing.T) {
+	cause := errors.New("redis unavailable")
+	core := &recoveringPageDataCoreStub{publishErrors: []error{cause, nil}}
+	store := newPageDataDirtyDomainStoreStub()
+	publisher := newRecoveringPageDataCorePublisher(core, store, slog.Default())
+
+	if err := publisher.Publish(t.Context(), redisplatform.PageDataChangeEvent{EventID: "event-1", Domain: "announcements.public"}); !errors.Is(err, cause) {
+		t.Fatalf("Publish() error = %v, want %v", err, cause)
+	}
+	if publisher.recoverOnce(t.Context()) {
+		t.Fatal("recoverOnce() failed = true, want false")
+	}
+	if got, want := core.resetDomains(), []string{"announcements.public"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("reset domains = %#v, want %#v", got, want)
+	}
+}
+
 func TestRecoveringPageDataPublisherLoadsPersistentDirtyDomains(t *testing.T) {
 	core := &recoveringPageDataCoreStub{}
 	store := newPageDataDirtyDomainStoreStub()
@@ -301,6 +318,9 @@ func (s *recoveringPageDataCoreStub) NewAccountStaticDeleteEvent(redisplatform.A
 }
 func (s *recoveringPageDataCoreStub) NewAccountRuntimeUpsertEvent(redisplatform.AccountChangeInput) (redisplatform.PageDataChangeEvent, error) {
 	return redisplatform.PageDataChangeEvent{EventID: "runtime-upsert", Domain: "accounts.runtime"}, nil
+}
+func (s *recoveringPageDataCoreStub) NewAnnouncementPublicChangeEvent(string, string, []string) (redisplatform.PageDataChangeEvent, error) {
+	return redisplatform.PageDataChangeEvent{EventID: "announcement-change", Domain: "announcements.public"}, nil
 }
 func (s *recoveringPageDataCoreStub) NewRangeResetEvents(domain string, _ []string, allScopes bool) ([]redisplatform.PageDataChangeEvent, error) {
 	s.mu.Lock()
