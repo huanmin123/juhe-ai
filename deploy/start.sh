@@ -151,7 +151,7 @@ if [ "$OWNER_LOCK_ENABLED_NORMALIZED" = "true" ]; then
     exit 1
   fi
   NODE_VERSION="$(node -p "require('./package.json').version")"
-  node scripts/validate-owner-manifest.mjs --require-deployment-epoch="$OWNER_LOCK_EPOCH" --require-node-version="$NODE_VERSION" --require-schema-version=57 deploy/owner-manifest.json
+  node scripts/validate-owner-manifest.mjs --require-deployment-epoch="$OWNER_LOCK_EPOCH" --require-node-version="$NODE_VERSION" --require-schema-version=59 deploy/owner-manifest.json
   exec node scripts/run-with-owner-lock.mjs --lock-path "$OWNER_LOCK_PATH" --release-root "$APP_DIR" --deployment-epoch "$OWNER_LOCK_EPOCH" --role server --version "$NODE_VERSION" -- node backend/dist/server.js
 fi
 exec node backend/dist/server.js

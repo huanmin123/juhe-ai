@@ -6,7 +6,7 @@ assert.match(schema, /CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots
 assert.match(schema, /PRIMARY KEY \(system_account_id, protocol, variant\)/, '发布快照必须按系统账户、协议和变体唯一')
 assert.match(schema, /custom_provider_models[\s\S]*catalog_visible INTEGER NOT NULL DEFAULT 1/, '自定义模型必须有独立发布开关')
 
-const postgresSchema = readFileSync(new URL('../../../../backend-go/db/migrations/000058_w2_published_gateway_model_catalog_snapshots.sql', import.meta.url), 'utf8')
+const postgresSchema = readFileSync(new URL('../../../../backend-go/db/migrations/000059_w2_published_gateway_model_catalog_snapshots.sql', import.meta.url), 'utf8')
 assert.match(postgresSchema, /gateway_model_catalog_snapshots/, 'PostgreSQL 当前 schema 必须包含发布快照表')
 assert.match(postgresSchema, /custom_provider_models[\s\S]*catalog_visible boolean NOT NULL DEFAULT true/i, 'PostgreSQL 自定义模型必须有发布开关')
 

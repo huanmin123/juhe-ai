@@ -46,11 +46,12 @@ func TestDeepSeekProviderOptionsMigrationMatchesCurrentContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect migration catalog: %v", err)
 	}
-	gotTail := catalog.Entries[len(catalog.Entries)-3:]
+	gotTail := catalog.Entries[len(catalog.Entries)-4:]
 	wantTail := []migrationcatalog.Entry{
 		{Version: 56, Name: "000056_w7_page_data_dirty_domains.sql"},
 		{Version: 57, Name: "000057_w1b_account_temporary_unavailable_continuous_probe.sql"},
-		{Version: 58, Name: "000058_w2_published_gateway_model_catalog_snapshots.sql"},
+		{Version: 58, Name: "000058_w8_announcements.sql"},
+		{Version: 59, Name: "000059_w2_published_gateway_model_catalog_snapshots.sql"},
 	}
 	if !reflect.DeepEqual(gotTail, wantTail) {
 		t.Fatalf("migration catalog tail = %+v, want %+v", gotTail, wantTail)
