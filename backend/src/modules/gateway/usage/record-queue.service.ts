@@ -11,7 +11,6 @@ import {
 import { generateUsageRecordId } from '../../../storage/usage-record-shards.js'
 import { closeUsageRecordWriterPool, getUsageRecordWriterPoolRuntime, usageRecordWriterPoolEnabled } from '../../../storage/usage-record-writer-pool.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { scheduleProcessFatalError } from '../../../shared/process-fatal.js'
 import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../../shared/redis-stream-queue.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
@@ -69,7 +68,7 @@ export async function enqueueUsageRecord(input: UsageRecordInput): Promise<void>
   const queuedInput = normalizeUsageRecordInput(input)
   if (shouldEnqueueUsageRecordToRedisStream()) {
     const frozenInput = await freezeUsageRecordPricingFactsAsync(queuedInput)
-    await enqueueUsageRecordToRedisStream(frozenInput).catch(scheduleProcessFatalError)
+    await enqueueUsageRecordToRedisStream(frozenInput)
     return
   }
   if (shouldDispatchUsageRecordToIngestWorker()) {

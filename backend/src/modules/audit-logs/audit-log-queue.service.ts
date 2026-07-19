@@ -5,7 +5,6 @@ import { nowIso } from '../../storage/database.js'
 import type { AuditLogInput } from '../../storage/audit-log-types.js'
 import { createAuditLogsBatch, createAuditLogsBatchAsync } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { scheduleProcessFatalError } from '../../shared/process-fatal.js'
 import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime } from '../../shared/redis-stream-queue.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -176,9 +175,9 @@ export function enqueueAuditLog(input: AuditLogInput): void {
   if (shouldEnqueueAuditLogToRedisStream()) {
     const dispatch = enqueueAuditLogToRedisStream(queuedInput)
     if (runtimeConfig.processRole === 'server') {
-      trackAuditLogServerDispatch(dispatch, scheduleProcessFatalError)
+      trackAuditLogServerDispatch(dispatch, (error) => handleAuditLogServerDispatchError(queuedInput, error))
     } else {
-      void dispatch.catch(scheduleProcessFatalError)
+      void dispatch.catch((error) => handleAuditLogServerDispatchError(queuedInput, error))
     }
     return
   }
@@ -259,7 +258,13 @@ function handleAuditLogServerDispatchError(input: AuditLogInput, error: unknown)
     recordAuditLogDispatchFailure(input)
     return
   }
-  scheduleProcessFatalError(error)
+  logger.error(errorLogFields(error, {
+    event: 'audit_log_transport_unexpected_failure',
+    auditLogId: input.id,
+    traceId: input.traceId,
+    auditOutcome: input.auditOutcome
+  }), '审计日志传输发生未分类失败，已记录丢弃并保持进程运行')
+  recordAuditLogDispatchFailure(input)
 }
 
 async function dispatchAuditLogFromServerWithCapacityFallback(input: AuditLogInput): Promise<void> {
