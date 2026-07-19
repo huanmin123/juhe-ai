@@ -91,4 +91,4 @@
 - [ ] Run `git fetch origin --prune` and inspect feature/master divergence before each push.
 - [ ] Merge latest `origin/master` only after auditing relevant Node diffs and resolve no unrelated user changes.
 - [ ] Push every completed commit to `origin/feature/20260706-go` and confirm local/remote equality.
-- [ ] Keep production owner manifest unchanged; no deployment, traffic switch, Node deletion or production data writes.
+- [ ] Keep all production route owners on Node while synchronizing the shared Goose schema version; no deployment, traffic switch, Node deletion or production data writes.
