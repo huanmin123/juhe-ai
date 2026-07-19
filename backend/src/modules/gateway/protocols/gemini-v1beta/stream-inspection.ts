@@ -40,6 +40,7 @@ export interface GeminiStreamInspection {
   skipReason?: string
   errorCode?: string
   errorMessage?: string
+  responseResourceId?: string
   usage: ParsedUsage
 }
 
@@ -242,12 +243,13 @@ export class GeminiStreamInspector {
     }
 
     const error = data ? extractGeminiStreamEventError(data) : undefined
-    const failed = Boolean(error)
+    const failed = Boolean(error) || eventType === 'interaction.failed'
     const outputText = data ? outputTextFromGeminiStreamEvent(data) : undefined
     const output = Boolean(outputText)
-    const finishReason = data ? firstGeminiFinishReason(data) : undefined
-    const terminal = failed || Boolean(finishReason)
-    const usage = data ? extractGeminiUsage(data.usageMetadata) : emptyUsage()
+    const finishReason = data ? firstGeminiFinishReason(data, eventType) : undefined
+    const terminal = failed || Boolean(finishReason) || isGeminiTerminalEventType(eventType)
+    const usage = data ? extractGeminiUsage(data) : emptyUsage()
+    const responseResourceId = data ? interactionResourceId(data, eventType) : undefined
 
     if (failed) {
       this.inspection.failedReceived = true
@@ -264,6 +266,9 @@ export class GeminiStreamInspector {
     }
     if (hasAnyUsageValue(usage)) {
       this.inspection.usage = mergeUsage(this.inspection.usage, usage)
+    }
+    if (!this.inspection.responseResourceId && responseResourceId) {
+      this.inspection.responseResourceId = responseResourceId
     }
 
     return {
@@ -289,22 +294,39 @@ export class GeminiStreamInspector {
   }
 }
 
+function interactionResourceId(data: Record<string, unknown>, eventType: string): string | undefined {
+  if (!eventType.startsWith('interaction.')) return undefined
+  return stringValue(objectValue(data.interaction)?.id) || stringValue(data.interaction_id) || undefined
+}
+
 function outputTextFromGeminiStreamEvent(data: Record<string, unknown>): string | undefined {
   const parts = candidateParts(data)
   const text = parts
     .map((part) => stringValue(objectValue(part)?.text))
     .filter((value): value is string => Boolean(value))
     .join('')
-  return text || undefined
+  if (text) return text
+  const delta = objectValue(data.delta)
+  return stringValue(delta?.text) || undefined
 }
 
-function firstGeminiFinishReason(data: Record<string, unknown>): string | undefined {
+function firstGeminiFinishReason(data: Record<string, unknown>, eventType?: string): string | undefined {
+  if (eventType === 'interaction.completed') {
+    return stringValue(objectValue(data.interaction)?.status) ?? 'completed'
+  }
+  if (eventType === 'interaction.failed') {
+    return stringValue(objectValue(data.interaction)?.status) ?? 'failed'
+  }
   const candidates = Array.isArray(data.candidates) ? data.candidates : []
   for (const candidate of candidates) {
     const reason = stringValue(objectValue(candidate)?.finishReason)
     if (reason) return reason
   }
   return undefined
+}
+
+function isGeminiTerminalEventType(eventType: string): boolean {
+  return eventType === 'finish' || eventType === 'done' || eventType === '[DONE]'
 }
 
 function candidateParts(data: Record<string, unknown>): unknown[] {

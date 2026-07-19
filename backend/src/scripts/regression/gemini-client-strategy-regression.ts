@@ -49,6 +49,7 @@ function main(): void {
   testGeminiCliHeaderDoesNotAffectOpenAIProtocol()
   testGeminiCliHeaderDoesNotAffectAnthropicProtocol()
   testGeminiStreamGenerateContentPathIsStream()
+  testGeminiInteractionsPathIsStream()
   testGeminiCliRetryEventShape()
   console.log('Gemini CLI 客户端画像回归通过：显式 header、真实 CLI User-Agent、通用 Gemini 隔离、跨协议不污染、Gemini SSE 可重试错误事件格式正确')
 }
@@ -170,6 +171,17 @@ function testGeminiStreamGenerateContentPathIsStream(): void {
 
   assert.equal(strategy.clientProfile, 'generic_gemini')
   assert.equal(strategy.downstreamProtocol, 'gemini_stream_generate_content_sse')
+}
+
+function testGeminiInteractionsPathIsStream(): void {
+  const strategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1beta/interactions', {
+    model: 'gemini-3.5-flash',
+    input: 'hello',
+    stream: true
+  }), geminiIdentity)
+
+  assert.equal(strategy.clientProfile, 'generic_gemini')
+  assert.equal(strategy.downstreamProtocol, 'gemini_interactions_sse')
 }
 
 function testGeminiCliRetryEventShape(): void {

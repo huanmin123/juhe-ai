@@ -112,7 +112,4 @@ function assertProviderSupportsAccountRequestOverrides(
   if (!new Set(['gpt', 'openai', 'anthropic', 'gemini']).has(providerCode)) {
     throw new Error(`供应商 ${providerCode} 没有可确认的账户请求覆盖 wire 映射`)
   }
-  if (providerCode === 'gemini' && overrides.serviceTier) {
-    throw new Error('Gemini 原生请求没有可确认的服务等级 wire 字段，不能保存账户服务等级覆盖')
-  }
 }

@@ -25,6 +25,7 @@ const customProviderModelApiProtocols = new Set<CustomProviderModelApiProtocol>(
   'stream_generate_content',
   'count_tokens',
   'embed_content',
+  'interactions',
   'completions',
   'images',
   'audio',

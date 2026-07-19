@@ -273,50 +273,51 @@ func CustomModelBoundMessage(err error) (string, bool) {
 }
 
 type ModelCatalogItem struct {
-	ID                              string                                          `json:"id,omitempty"`
-	ProviderCode                    string                                          `json:"providerCode"`
-	Model                           string                                          `json:"model"`
-	Scope                           string                                          `json:"scope"`
-	Status                          string                                          `json:"status"`
-	SystemAccountID                 string                                          `json:"systemAccountId,omitempty"`
-	Mode                            string                                          `json:"mode,omitempty"`
-	CatalogOrder                    *int                                            `json:"catalogOrder,omitempty"`
-	ReleaseDate                     string                                          `json:"releaseDate,omitempty"`
-	ShutdownDate                    string                                          `json:"shutdownDate,omitempty"`
-	ContextWindowTokens             *int                                            `json:"contextWindowTokens,omitempty"`
-	SupportedAPIProtocols           []string                                        `json:"supportedApiProtocols"`
-	SupportedServiceTiers           []string                                        `json:"supportedServiceTiers"`
-	SupportedReasoningEfforts       []string                                        `json:"supportedReasoningEfforts"`
-	DefaultReasoningEffort          string                                          `json:"defaultReasoningEffort,omitempty"`
-	CodexSupportedReasoningLevels   []string                                        `json:"codexSupportedReasoningLevels"`
-	CodexDefaultReasoningLevel      string                                          `json:"codexDefaultReasoningLevel,omitempty"`
-	CodexMultiAgentVersion          string                                          `json:"codexMultiAgentVersion,omitempty"`
-	InputUSDPer1M                   *float64                                        `json:"inputUsdPer1M,omitempty"`
-	OutputUSDPer1M                  *float64                                        `json:"outputUsdPer1M,omitempty"`
-	CachedInputUSDPer1M             *float64                                        `json:"cachedInputUsdPer1M,omitempty"`
-	CacheWriteUSDPer1M              *float64                                        `json:"cacheWriteUsdPer1M,omitempty"`
-	CacheWrite1hUSDPer1M            *float64                                        `json:"cacheWrite1hUsdPer1M,omitempty"`
-	ServiceTierPrices               map[string]port.ManagementProviderModelPriceSet `json:"serviceTierPrices,omitempty"`
-	LongContextInputTokenThreshold  *int                                            `json:"longContextInputTokenThreshold,omitempty"`
-	LongContextInputCostMultiplier  *float64                                        `json:"longContextInputCostMultiplier,omitempty"`
-	LongContextOutputCostMultiplier *float64                                        `json:"longContextOutputCostMultiplier,omitempty"`
-	ImageInputUSDPer1M              *float64                                        `json:"imageInputUsdPer1M,omitempty"`
-	ImageOutputUSDPer1M             *float64                                        `json:"imageOutputUsdPer1M,omitempty"`
-	AudioInputUSDPer1M              *float64                                        `json:"audioInputUsdPer1M,omitempty"`
-	AudioOutputUSDPer1M             *float64                                        `json:"audioOutputUsdPer1M,omitempty"`
-	OutputUSDPerImage               *float64                                        `json:"outputUsdPerImage,omitempty"`
-	MaxInputTokens                  *int                                            `json:"maxInputTokens,omitempty"`
-	MaxOutputTokens                 *int                                            `json:"maxOutputTokens,omitempty"`
-	MaxTokens                       *int                                            `json:"maxTokens,omitempty"`
-	SupportsPromptCaching           bool                                            `json:"supportsPromptCaching"`
-	SupportsServiceTier             bool                                            `json:"supportsServiceTier"`
-	CatalogVisible                  bool                                            `json:"catalogVisible"`
-	PricingNotes                    string                                          `json:"pricingNotes,omitempty"`
-	CapabilityNotes                 string                                          `json:"capabilityNotes,omitempty"`
-	Notes                           string                                          `json:"notes,omitempty"`
-	CreatedAt                       string                                          `json:"createdAt,omitempty"`
-	UpdatedAt                       string                                          `json:"updatedAt,omitempty"`
-	Source                          string                                          `json:"source"`
+	ID                                      string                                          `json:"id,omitempty"`
+	ProviderCode                            string                                          `json:"providerCode"`
+	Model                                   string                                          `json:"model"`
+	Scope                                   string                                          `json:"scope"`
+	Status                                  string                                          `json:"status"`
+	SystemAccountID                         string                                          `json:"systemAccountId,omitempty"`
+	Mode                                    string                                          `json:"mode,omitempty"`
+	CatalogOrder                            *int                                            `json:"catalogOrder,omitempty"`
+	ReleaseDate                             string                                          `json:"releaseDate,omitempty"`
+	ShutdownDate                            string                                          `json:"shutdownDate,omitempty"`
+	ContextWindowTokens                     *int                                            `json:"contextWindowTokens,omitempty"`
+	SupportedAPIProtocols                   []string                                        `json:"supportedApiProtocols"`
+	SupportedServiceTiers                   []string                                        `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts               []string                                        `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort                  string                                          `json:"defaultReasoningEffort,omitempty"`
+	CodexSupportedReasoningLevels           []string                                        `json:"codexSupportedReasoningLevels"`
+	CodexDefaultReasoningLevel              string                                          `json:"codexDefaultReasoningLevel,omitempty"`
+	CodexMultiAgentVersion                  string                                          `json:"codexMultiAgentVersion,omitempty"`
+	InputUSDPer1M                           *float64                                        `json:"inputUsdPer1M,omitempty"`
+	OutputUSDPer1M                          *float64                                        `json:"outputUsdPer1M,omitempty"`
+	CachedInputUSDPer1M                     *float64                                        `json:"cachedInputUsdPer1M,omitempty"`
+	CacheWriteUSDPer1M                      *float64                                        `json:"cacheWriteUsdPer1M,omitempty"`
+	CacheWrite1hUSDPer1M                    *float64                                        `json:"cacheWrite1hUsdPer1M,omitempty"`
+	ServiceTierPrices                       map[string]port.ManagementProviderModelPriceSet `json:"serviceTierPrices,omitempty"`
+	LongContextInputTokenThreshold          *int                                            `json:"longContextInputTokenThreshold,omitempty"`
+	LongContextInputTokenThresholdInclusive bool                                            `json:"longContextInputTokenThresholdInclusive"`
+	LongContextInputCostMultiplier          *float64                                        `json:"longContextInputCostMultiplier,omitempty"`
+	LongContextOutputCostMultiplier         *float64                                        `json:"longContextOutputCostMultiplier,omitempty"`
+	ImageInputUSDPer1M                      *float64                                        `json:"imageInputUsdPer1M,omitempty"`
+	ImageOutputUSDPer1M                     *float64                                        `json:"imageOutputUsdPer1M,omitempty"`
+	AudioInputUSDPer1M                      *float64                                        `json:"audioInputUsdPer1M,omitempty"`
+	AudioOutputUSDPer1M                     *float64                                        `json:"audioOutputUsdPer1M,omitempty"`
+	OutputUSDPerImage                       *float64                                        `json:"outputUsdPerImage,omitempty"`
+	MaxInputTokens                          *int                                            `json:"maxInputTokens,omitempty"`
+	MaxOutputTokens                         *int                                            `json:"maxOutputTokens,omitempty"`
+	MaxTokens                               *int                                            `json:"maxTokens,omitempty"`
+	SupportsPromptCaching                   bool                                            `json:"supportsPromptCaching"`
+	SupportsServiceTier                     bool                                            `json:"supportsServiceTier"`
+	CatalogVisible                          bool                                            `json:"catalogVisible"`
+	PricingNotes                            string                                          `json:"pricingNotes,omitempty"`
+	CapabilityNotes                         string                                          `json:"capabilityNotes,omitempty"`
+	Notes                                   string                                          `json:"notes,omitempty"`
+	CreatedAt                               string                                          `json:"createdAt,omitempty"`
+	UpdatedAt                               string                                          `json:"updatedAt,omitempty"`
+	Source                                  string                                          `json:"source"`
 }
 
 func (item ModelCatalogItem) MarshalJSON() ([]byte, error) {
@@ -537,6 +538,8 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	if err := s.validateCustomModelPricing(ctx, saveInput, ownerSystemAccountID); err != nil {
 		return ModelCatalogItem{}, err
 	}
+	// 新建自定义模型不替上游选择默认思考级别；显式值先经过上面的能力校验。
+	saveInput.DefaultReasoningEffort = ""
 	existing, found, err := s.store.FindManagementCustomProviderModelByScope(ctx, port.ManagementCustomProviderModelScopeInput{
 		ProviderCode:    saveInput.ProviderCode,
 		Scope:           saveInput.Scope,
@@ -1051,6 +1054,7 @@ var customProviderModelAPIProtocols = map[string]struct{}{
 	"message_token_counting":  {},
 	"generate_content":        {},
 	"stream_generate_content": {},
+	"interactions":            {},
 	"count_tokens":            {},
 	"embed_content":           {},
 	"completions":             {},
@@ -1872,45 +1876,46 @@ func catalogItemFromPort(item port.ManagementProviderModelCatalogItem) ModelCata
 		defaultReasoningEffort = ""
 	}
 	output := ModelCatalogItem{
-		ID:                              item.ID,
-		ProviderCode:                    item.ProviderCode,
-		Model:                           item.Model,
-		Scope:                           item.Scope,
-		Status:                          item.Status,
-		SystemAccountID:                 item.SystemAccountID,
-		Mode:                            item.Mode,
-		CatalogOrder:                    cloneIntPtr(item.CatalogOrder),
-		ReleaseDate:                     item.ReleaseDate,
-		ShutdownDate:                    item.ShutdownDate,
-		ContextWindowTokens:             cloneIntPtr(item.ContextWindowTokens),
-		SupportedAPIProtocols:           dedupeStrings(item.SupportedAPIProtocols),
-		SupportedServiceTiers:           supportedServiceTiers,
-		SupportedReasoningEfforts:       supportedReasoningEfforts,
-		DefaultReasoningEffort:          defaultReasoningEffort,
-		InputUSDPer1M:                   cloneFloatPtr(item.InputUSDPer1M),
-		OutputUSDPer1M:                  cloneFloatPtr(item.OutputUSDPer1M),
-		CachedInputUSDPer1M:             cloneFloatPtr(item.CachedInputUSDPer1M),
-		CacheWriteUSDPer1M:              cloneFloatPtr(item.CacheWriteUSDPer1M),
-		CacheWrite1hUSDPer1M:            cloneFloatPtr(item.CacheWrite1hUSDPer1M),
-		ServiceTierPrices:               cloneProviderModelPriceMap(item.ServiceTierPrices),
-		LongContextInputTokenThreshold:  cloneIntPtr(item.LongContextInputTokenThreshold),
-		LongContextInputCostMultiplier:  cloneFloatPtr(item.LongContextInputCostMultiplier),
-		LongContextOutputCostMultiplier: cloneFloatPtr(item.LongContextOutputCostMultiplier),
-		ImageInputUSDPer1M:              cloneFloatPtr(item.ImageInputUSDPer1M),
-		ImageOutputUSDPer1M:             cloneFloatPtr(item.ImageOutputUSDPer1M),
-		AudioInputUSDPer1M:              cloneFloatPtr(item.AudioInputUSDPer1M),
-		AudioOutputUSDPer1M:             cloneFloatPtr(item.AudioOutputUSDPer1M),
-		OutputUSDPerImage:               cloneFloatPtr(item.OutputUSDPerImage),
-		MaxInputTokens:                  cloneIntPtr(item.MaxInputTokens),
-		MaxOutputTokens:                 cloneIntPtr(item.MaxOutputTokens),
-		MaxTokens:                       cloneIntPtr(item.MaxTokens),
-		SupportsPromptCaching:           item.SupportsPromptCaching,
-		SupportsServiceTier:             len(supportedServiceTiers) > 0,
-		CatalogVisible:                  item.CatalogVisible,
-		PricingNotes:                    item.PricingNotes,
-		CapabilityNotes:                 item.CapabilityNotes,
-		Notes:                           item.Notes,
-		Source:                          item.Source,
+		ID:                                      item.ID,
+		ProviderCode:                            item.ProviderCode,
+		Model:                                   item.Model,
+		Scope:                                   item.Scope,
+		Status:                                  item.Status,
+		SystemAccountID:                         item.SystemAccountID,
+		Mode:                                    item.Mode,
+		CatalogOrder:                            cloneIntPtr(item.CatalogOrder),
+		ReleaseDate:                             item.ReleaseDate,
+		ShutdownDate:                            item.ShutdownDate,
+		ContextWindowTokens:                     cloneIntPtr(item.ContextWindowTokens),
+		SupportedAPIProtocols:                   dedupeStrings(item.SupportedAPIProtocols),
+		SupportedServiceTiers:                   supportedServiceTiers,
+		SupportedReasoningEfforts:               supportedReasoningEfforts,
+		DefaultReasoningEffort:                  defaultReasoningEffort,
+		InputUSDPer1M:                           cloneFloatPtr(item.InputUSDPer1M),
+		OutputUSDPer1M:                          cloneFloatPtr(item.OutputUSDPer1M),
+		CachedInputUSDPer1M:                     cloneFloatPtr(item.CachedInputUSDPer1M),
+		CacheWriteUSDPer1M:                      cloneFloatPtr(item.CacheWriteUSDPer1M),
+		CacheWrite1hUSDPer1M:                    cloneFloatPtr(item.CacheWrite1hUSDPer1M),
+		ServiceTierPrices:                       cloneProviderModelPriceMap(item.ServiceTierPrices),
+		LongContextInputTokenThreshold:          cloneIntPtr(item.LongContextInputTokenThreshold),
+		LongContextInputTokenThresholdInclusive: item.LongContextInputTokenThresholdInclusive,
+		LongContextInputCostMultiplier:          cloneFloatPtr(item.LongContextInputCostMultiplier),
+		LongContextOutputCostMultiplier:         cloneFloatPtr(item.LongContextOutputCostMultiplier),
+		ImageInputUSDPer1M:                      cloneFloatPtr(item.ImageInputUSDPer1M),
+		ImageOutputUSDPer1M:                     cloneFloatPtr(item.ImageOutputUSDPer1M),
+		AudioInputUSDPer1M:                      cloneFloatPtr(item.AudioInputUSDPer1M),
+		AudioOutputUSDPer1M:                     cloneFloatPtr(item.AudioOutputUSDPer1M),
+		OutputUSDPerImage:                       cloneFloatPtr(item.OutputUSDPerImage),
+		MaxInputTokens:                          cloneIntPtr(item.MaxInputTokens),
+		MaxOutputTokens:                         cloneIntPtr(item.MaxOutputTokens),
+		MaxTokens:                               cloneIntPtr(item.MaxTokens),
+		SupportsPromptCaching:                   item.SupportsPromptCaching,
+		SupportsServiceTier:                     len(supportedServiceTiers) > 0,
+		CatalogVisible:                          item.CatalogVisible,
+		PricingNotes:                            item.PricingNotes,
+		CapabilityNotes:                         item.CapabilityNotes,
+		Notes:                                   item.Notes,
+		Source:                                  item.Source,
 	}
 	if item.Scope == "built_in" {
 		output.CodexSupportedReasoningLevels = dedupeStrings(item.CodexSupportedReasoningLevels)

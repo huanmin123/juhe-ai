@@ -63,7 +63,7 @@ assert.doesNotThrow(() => assertAccountGptRequestOverridesSupportedByCatalog({
   catalog
 }), 'OAuth 与 API Key 必须按相同模型能力允许 Flex')
 
-assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
+assert.doesNotThrow(() => assertAccountGptRequestOverridesSupportedByCatalog({
   providerCode: 'gemini',
   accountType: 'api_key',
   overrides: { serviceTier: 'priority' },
@@ -74,7 +74,7 @@ assert.throws(() => assertAccountGptRequestOverridesSupportedByCatalog({
     supportedServiceTiers: ['priority'],
     supportedReasoningEfforts: ['low']
   } as unknown as ProviderModelCatalogItem]
-}), /Gemini.*没有可确认的服务等级 wire 字段/, 'Gemini 服务等级必须在账户保存时拒绝，不能延迟到运行时失败')
+}), 'Gemini Priority 服务等级有官方 service_tier wire 映射时应允许保存')
 
 assert.doesNotThrow(() => assertAccountGptRequestOverridesSupportedByCatalog({
   providerCode: 'gemini',

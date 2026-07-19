@@ -593,14 +593,14 @@ func TestManagementSystemAccountCreateSQLFansOutDefaultResources(t *testing.T) {
 }
 
 func TestManagementSystemAccountCreateDefaultGroupsMatchSeedProviders(t *testing.T) {
-	if len(defaultBuiltInGroups) != 7 {
-		t.Fatalf("default built-in groups = %d, want 7", len(defaultBuiltInGroups))
+	if len(defaultBuiltInGroups) != 8 {
+		t.Fatalf("default built-in groups = %d, want 8", len(defaultBuiltInGroups))
 	}
 	got := make([]string, 0, len(defaultBuiltInGroups))
 	for _, group := range defaultBuiltInGroups {
 		got = append(got, group.ProviderCode)
 	}
-	want := []string{"openai", "gpt", "deepseek", "anthropic", "gemini", "glm", "hybrid"}
+	want := []string{"openai", "gpt", "xai", "deepseek", "anthropic", "gemini", "glm", "hybrid"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("default provider codes = %#v, want %#v", got, want)
 	}
@@ -612,8 +612,8 @@ func TestManagementSystemAccountCreateDefaultGroupsMatchSeedProviders(t *testing
 }
 
 func TestManagementSystemAccountCreateDefaultRouteResourcesExcludeHybrid(t *testing.T) {
-	if defaultRouteGroupCount() != 6 {
-		t.Fatalf("default route group count = %d, want 6", defaultRouteGroupCount())
+	if defaultRouteGroupCount() != 7 {
+		t.Fatalf("default route group count = %d, want 7", defaultRouteGroupCount())
 	}
 	if got := defaultRouteStrategyNameForGroup("默认 OpenAI 兼容分组"); got != "默认 OpenAI 兼容路由" {
 		t.Fatalf("route strategy name = %q", got)

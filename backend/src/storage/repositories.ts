@@ -1281,7 +1281,8 @@ export function updateAccountHealthCheckModel(
     const supportedModels = normalizeAccountSupportedModelsForProvider(
       [normalizedModel],
       current.providerCode,
-      systemAccountId
+      systemAccountId,
+      current
     ) ?? []
     if (!supportedModels.includes(normalizedModel)) {
       return current
@@ -1688,16 +1689,25 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
     ? input.supportedModels
     : findProviderDefaultSupportedModels(providerCode)
-  const supportedModels = normalizeAccountSupportedModelsForProvider(supportedModelsInput, providerCode, systemAccountId) ?? []
+  const supportedModels = normalizeAccountSupportedModelsForProvider(
+    supportedModelsInput,
+    providerCode,
+    systemAccountId,
+    providerProfile,
+    !hasOwnInput(input, 'supportedModels')
+  ) ?? []
   const modelMappings = normalizeAccountModelMappingsForProvider(input.modelMappings, providerCode, systemAccountId, providerProfile, {
     supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
   }) ?? []
   assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
+  const configuredHealthCheckModel = (input.healthCheckModel
+    ?? findProviderDefaultHealthCheckModel(providerCode, systemAccountId)
+    ?? providerProfile.defaultHealthCheckModel) as string
   const healthCheckModel = normalizedAccountHealthCheckModelInput(
-    input.healthCheckModel
-      ?? findProviderDefaultHealthCheckModel(providerCode, systemAccountId)
-      ?? providerProfile.defaultHealthCheckModel,
+    input.healthCheckModel === undefined && !supportedModels.includes(configuredHealthCheckModel)
+      ? supportedModels[0]
+      : configuredHealthCheckModel,
     supportedModels
   )
   const healthCheckEndpointMode = resolveHealthCheckEndpointMode({
@@ -1929,16 +1939,25 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   const supportedModelsInput = hasOwnInput(input, 'supportedModels') && input.supportedModels !== undefined
     ? input.supportedModels
     : await findProviderDefaultSupportedModelsAsync(providerCode)
-  const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(supportedModelsInput, providerCode, systemAccountId) ?? []
+  const supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
+    supportedModelsInput,
+    providerCode,
+    systemAccountId,
+    providerProfile,
+    !hasOwnInput(input, 'supportedModels')
+  ) ?? []
   const modelMappings = await normalizeAccountModelMappingsForProviderAsync(input.modelMappings, providerCode, systemAccountId, providerProfile, {
     supportedEndpointModes: credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
   }) ?? []
   assertAccountSupportedModelsRequired(supportedModels)
   assertAccountModelMappingUpstreamsAllowedBySupportedModels(modelMappings, supportedModels)
+  const configuredHealthCheckModel = (input.healthCheckModel
+    ?? await findProviderDefaultHealthCheckModelAsync(providerCode, systemAccountId)
+    ?? providerProfile.defaultHealthCheckModel) as string
   const healthCheckModel = normalizedAccountHealthCheckModelInput(
-    input.healthCheckModel
-      ?? await findProviderDefaultHealthCheckModelAsync(providerCode, systemAccountId)
-      ?? providerProfile.defaultHealthCheckModel,
+    input.healthCheckModel === undefined && !supportedModels.includes(configuredHealthCheckModel)
+      ? supportedModels[0]
+      : configuredHealthCheckModel,
     supportedModels
   )
   const healthCheckEndpointMode = resolveHealthCheckEndpointMode({
@@ -2178,7 +2197,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     ? normalizeSupportedModelsIfUnchanged(input.supportedModels, current.supportedModels)
     : undefined
   const nextSupportedModels = hasSupportedModelsInput
-    ? unchangedSupportedModelsInput ?? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId) ?? []
+    ? unchangedSupportedModelsInput ?? normalizeAccountSupportedModelsForProvider(input.supportedModels, current.providerCode, systemAccountId, current) ?? []
     : current.supportedModels ?? []
   const nextHealthCheckModel = normalizedAccountHealthCheckModelInput(
     hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,
@@ -2669,7 +2688,7 @@ export async function updateAccountAsync(
     ? normalizeSupportedModelsIfUnchanged(input.supportedModels, current.supportedModels)
     : undefined
   const nextSupportedModels = hasSupportedModelsInput
-    ? unchangedSupportedModelsInput ?? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId) ?? []
+    ? unchangedSupportedModelsInput ?? await normalizeAccountSupportedModelsForProviderAsync(input.supportedModels, current.providerCode, systemAccountId, current) ?? []
     : current.supportedModels ?? []
   const nextHealthCheckModel = normalizedAccountHealthCheckModelInput(
     hasOwnInput(input, 'healthCheckModel') ? input.healthCheckModel : current.healthCheckModel,

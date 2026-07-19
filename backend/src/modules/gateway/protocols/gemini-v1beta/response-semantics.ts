@@ -8,7 +8,7 @@ import type {
 import type {
   ResponseSemanticFrame
 } from '../openai-v1/response-semantics.js'
-import { geminiEndpointFamilyFromPath, type GeminiEndpointFamily } from '../../../../domain/gemini-endpoint-modes.js'
+import { GEMINI_INTERACTIONS_FAMILY, geminiEndpointFamilyFromPath, type GeminiEndpointFamily } from '../../../../domain/gemini-endpoint-modes.js'
 import {
   GEMINI_GENERATE_CONTENT_FAMILY
 } from '../../../../domain/provider-protocol.js'
@@ -33,10 +33,14 @@ export function extractGeminiJsonSemanticFrames(
   if (rootError) {
     frames.push(errorFrame(rootError, endpointFamily, 'json', ['error']))
   }
-  frames.push(...extractGenerateContentFrames(root, endpointFamily, 'json'))
-  const usage = extractGeminiUsage(root.usageMetadata)
+  if (endpointFamily === GEMINI_INTERACTIONS_FAMILY) {
+    frames.push(...extractInteractionsJsonFrames(root, endpointFamily))
+  } else {
+    frames.push(...extractGenerateContentFrames(root, endpointFamily, 'json'))
+  }
+  const usage = extractGeminiUsage(root)
   if (hasAnyUsageValue(usage)) {
-    frames.push(usageFrame(usage, endpointFamily, 'json', ['usageMetadata']))
+    frames.push(usageFrame(usage, endpointFamily, 'json', geminiUsageRawJsonPaths(endpointFamily)))
   }
   frames.push(rawJsonFrame(root, endpointFamily, 'json'))
   return attachRawJson(frames, root)
@@ -55,13 +59,89 @@ export function extractGeminiSseSemanticFrames(
   if (error) {
     frames.push(errorFrame(error, endpointFamily, 'sse', ['error'], eventType, rawText))
   }
-  frames.push(...extractGenerateContentFrames(data, endpointFamily, 'sse', eventType, rawText))
-  const usage = extractGeminiUsage(data.usageMetadata)
+  if (endpointFamily === GEMINI_INTERACTIONS_FAMILY) {
+    frames.push(...extractInteractionsSseFrames(data, endpointFamily, eventType, rawText))
+  } else {
+    frames.push(...extractGenerateContentFrames(data, endpointFamily, 'sse', eventType, rawText))
+  }
+  const usage = extractGeminiUsage(data)
   if (hasAnyUsageValue(usage)) {
-    frames.push(usageFrame(usage, endpointFamily, 'sse', ['usageMetadata'], eventType, rawText))
+    frames.push(usageFrame(usage, endpointFamily, 'sse', geminiUsageRawJsonPaths(endpointFamily), eventType, rawText))
   }
   frames.push(rawJsonFrame(data, endpointFamily, 'sse', eventType, rawText))
   return attachRawJson(frames, data, rawText, eventType)
+}
+
+function extractInteractionsJsonFrames(
+  root: Record<string, unknown>,
+  endpointFamily: GeminiResponseEndpointFamily
+): ResponseSemanticFrame[] {
+  const frames: ResponseSemanticFrame[] = []
+  const steps = Array.isArray(root.steps) ? root.steps : []
+  steps.forEach((step, stepIndex) => {
+    const row = objectValue(step)
+    if (!row) return
+    const content = Array.isArray(row.content) ? row.content : []
+    content.forEach((item, contentIndex) => {
+      const part = objectValue(item)
+      const text = stringValue(part?.text)
+      if (!text) return
+      const visibleOutput = row.type !== 'thought' && row.type !== 'thought_summary'
+      frames.push({
+        frameType: 'output_text_done',
+        protocol: 'gemini_v1beta',
+        endpointFamily,
+        transport: 'json',
+        text,
+        status: stringValue(root.status),
+        rawJsonPaths: [`steps.${stepIndex}.content.${contentIndex}.text`],
+        stepIndex,
+        contentIndex,
+        visibleOutput
+      })
+    })
+  })
+  const status = stringValue(root.status)
+  if (status) frames.push(completedFrame(endpointFamily, 'json', status))
+  return frames
+}
+
+function extractInteractionsSseFrames(
+  data: Record<string, unknown>,
+  endpointFamily: GeminiResponseEndpointFamily,
+  eventType: string,
+  rawText?: string
+): ResponseSemanticFrame[] {
+  const frames: ResponseSemanticFrame[] = []
+  if (eventType === 'step.delta') {
+    const delta = objectValue(data.delta)
+    const text = stringValue(delta?.text)
+    if (text) {
+      frames.push({
+        frameType: 'output_text_delta',
+        protocol: 'gemini_v1beta',
+        endpointFamily,
+        transport: 'sse',
+        text,
+        rawJsonPaths: ['delta.text'],
+        rawText,
+        eventType,
+        visibleOutput: delta?.type === 'text'
+      })
+    }
+  }
+  if (eventType === 'interaction.completed' || eventType === 'interaction.failed') {
+    const interaction = objectValue(data.interaction)
+    const status = stringValue(interaction?.status) ?? eventType.replace(/^interaction\./, '')
+    if (eventType === 'interaction.failed' || status === 'failed') {
+      const error = objectValue(interaction?.error) ?? objectValue(data.error)
+      if (error) {
+        frames.push(errorFrame(error, endpointFamily, 'sse', ['interaction.error'], eventType, rawText))
+      }
+    }
+    if (status) frames.push(completedFrame(endpointFamily, 'sse', status, eventType, rawText))
+  }
+  return frames
 }
 
 export function extractGeminiStreamEventError(data: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -164,6 +244,12 @@ function usageFrame(
     rawText,
     eventType
   }
+}
+
+function geminiUsageRawJsonPaths(endpointFamily: GeminiResponseEndpointFamily): string[] {
+  return endpointFamily === GEMINI_INTERACTIONS_FAMILY
+    ? ['metadata.total_usage']
+    : ['usageMetadata']
 }
 
 function attachRawJson(

@@ -434,7 +434,7 @@ import {
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
-import type { AccountModelSelectOption } from './accountEditFormPayload'
+import { providerModelsForProtocolProfile, type AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountGptRequestOverrideCapabilities,
   availableAccountGptReasoningEffortOptions,
@@ -630,14 +630,14 @@ async function loadModelOptions(token: number): Promise<void> {
       ? await api.providers.modelOptions(scope)
       : await api.providers.models(account.providerCode, scope)
     if (token !== loadToken || !open.value) return
-    modelOptions.value = dedupeModelOptions(models.map((item) => ({
+    modelOptions.value = providerModelsForProtocolProfile(dedupeModelOptions(models.map((item) => ({
       label: item.model,
       value: item.model,
       supportedApiProtocols: item.supportedApiProtocols,
       supportedServiceTiers: item.supportedServiceTiers,
       supportedReasoningEfforts: item.supportedReasoningEfforts,
       defaultReasoningEffort: item.defaultReasoningEffort
-    })))
+    }))), selectedProtocolProfile.value)
   } finally {
     if (token === loadToken) modelsLoading.value = false
   }

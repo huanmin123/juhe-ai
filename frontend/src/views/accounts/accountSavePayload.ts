@@ -116,6 +116,11 @@ export function validateAccountSaveForm(input: {
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
     if (baseUrlValidation) return baseUrlValidation
   }
+  if (!editingId && form.type === 'google_oauth') {
+    if (!form.baseUrl.trim()) return '请填写 Base URL'
+    if (!form.accessToken.trim() && !form.refreshToken.trim()) return '请填写 Google Access Token 或 Refresh Token'
+    if (form.refreshToken.trim() && (!form.googleClientId.trim() || !form.googleClientSecret.trim())) return 'Refresh Token 需要 Client ID 和 Client Secret'
+  }
   const formProviderProfile = resolveFormProviderProfile(form, input.providers)
   if (!editingId && form.type === 'oauth' && !canCreateOAuthAccount(formProviderProfile)) return '当前供应商协议不支持创建 OAuth 账户'
   if (!editingId && form.type === 'oauth' && form.oauthMode === 'manual' && !input.hasAuthSession) return '请先生成授权链接'

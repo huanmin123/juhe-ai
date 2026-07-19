@@ -177,6 +177,7 @@ export async function pipeNonStreamUpstreamResponseForInspection(
     onFirstByteDeadline?: FirstByteDeadlineHandler
     prepareDownstream?: () => void
     onChunkWritten?: (bytesWritten: number) => void
+    beforeDownstreamCommit?: (inspectionBody: Buffer) => Promise<void>
   }
 ): Promise<InspectableNonStreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
@@ -247,6 +248,13 @@ export async function pipeNonStreamUpstreamResponseForInspection(
       }
 
       if (!downstreamWriting) {
+        const inspectionBody = inspectionBytes + buffer.length <= inspectBytes
+          ? Buffer.concat([...inspectionChunks, buffer], inspectionBytes + buffer.length)
+          : Buffer.concat([
+            ...inspectionChunks,
+            buffer.subarray(0, Math.max(0, inspectBytes - inspectionBytes))
+          ], inspectBytes)
+        await input.beforeDownstreamCommit?.(inspectionBody)
         downstreamWriting = true
         await writeBufferedInspectionChunks()
       }

@@ -79,7 +79,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 155, '当前 Node 权威模型目录应包含 155 个模型键')
+  assert.equal(expectedSqliteModelKeys.length, 164, '当前 Node 权威模型目录应包含 164 个模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -272,8 +272,26 @@ try {
     providerCode: 'gpt',
     systemAccountId: 'sys_admin'
   })
+  const gptCatalogIncludingUnpriced = catalogService.listProviderModelCatalog({
+    providerCode: 'gpt',
+    systemAccountId: 'sys_admin',
+    includeUnpriced: true
+  })
   assertCatalogReleaseDateDescending(publicCatalog, 'GPT 公开模型目录')
   const publicModels = new Set(publicCatalog.map((item) => item.model))
+  const codexAutoReview = gptCatalogIncludingUnpriced.find((item) => item.model === 'codex-auto-review')
+  assert(codexAutoReview, 'GPT 模型目录必须包含 codex-auto-review')
+  assert.deepEqual(codexAutoReview.supportedApiProtocols, ['responses'], 'codex-auto-review 只应声明已确认的 Responses 协议')
+  assert.deepEqual(codexAutoReview.inputModalities, ['text'], 'codex-auto-review 输入能力应为文本')
+  assert.equal(codexAutoReview.inputUsdPer1M, undefined, 'codex-auto-review 未有官方独立价格时必须保持 unpriced')
+  const gptProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
+    SELECT default_supported_models_json
+    FROM providers
+    WHERE code = 'gpt'
+  `).get() as { default_supported_models_json?: string }
+  const gptDefaultModels = JSON.parse(gptProviderDefaults.default_supported_models_json ?? '[]') as string[]
+  assert.equal(gptDefaultModels.includes('codex-auto-review'), false, 'codex-auto-review 不得自动加入 GPT AI 账户默认模型')
+  assert.equal(publicModels.has('codex-auto-review'), false, '无价格模型不应进入默认有价公开目录')
   assert(publicCatalog.some((item) => item.model === 'gpt-regression-global' && item.scope === 'global'), '全局自定义模型应进入当前账号模型目录')
   assert(publicModels.has('gpt-regression-personal'), '当前账号个人自定义模型应进入模型目录')
   const personalCapabilityModel = publicCatalog.find((item) => item.model === 'gpt-regression-capabilities')
@@ -596,6 +614,9 @@ try {
     assert(geminiModels.has(id), `Gemini 模型目录应包含 Google 官方模型 ${id}`)
   }
   assert.equal(geminiModels.has('gemini-embedding-001'), false, '已于 2026-07-14 关闭的 Gemini Embedding 001 不得进入当前可用目录')
+  assert(geminiCatalog.find((item) => item.model === 'gemini-3.5-flash')?.supportedApiProtocols.includes('interactions'), 'Gemini 3.5 Flash 应声明官方 Interactions 协议')
+  assert(geminiCatalog.find((item) => item.model === 'gemini-2.5-pro')?.supportedApiProtocols.includes('interactions'), 'Gemini 2.5 Pro 应声明官方 Interactions 协议')
+  assert.equal(geminiCatalog.find((item) => item.model === 'gemini-3.1-pro-preview-customtools')?.supportedApiProtocols.includes('interactions'), false, '未在官方 Interactions 模型表列出的 customtools 别名不得推断为支持')
   for (const id of [
     'gemini-3.5-flash-antigravity',
     'gemini-3.5-flash-antigravity-ultra'
@@ -748,8 +769,8 @@ try {
   assert.equal(codexPersonalModel.shell_type, 'shell_command', 'Codex /models shell_type 必须匹配 Codex ModelInfo')
   assert.equal(codexPersonalModel.visibility, 'list', 'Codex /models visibility 必须可进入列表')
   assert.equal(codexPersonalModel.supported_in_api, true, 'Codex /models 模型必须标记 API 可用')
-  assert.equal(codexPersonalModel.default_reasoning_level, 'medium', 'Codex /models 默认 reasoning 应为 medium')
-  assert.deepEqual(codexPersonalModel.supported_reasoning_levels, [], '能力未知的自定义模型不能伪造统一 reasoning 选项')
+  assert.equal(Object.prototype.hasOwnProperty.call(codexPersonalModel, 'default_reasoning_level'), false, '能力未知的自定义模型不能伪造默认 reasoning')
+  assert.equal(Object.prototype.hasOwnProperty.call(codexPersonalModel, 'supported_reasoning_levels'), false, '能力未知的自定义模型不能伪造统一 reasoning 选项')
   assert.deepEqual(codexPersonalModel.service_tiers, [], '能力未知的自定义模型不能伪造服务等级')
   assert.equal(typeof codexPersonalModel.base_instructions, 'string', 'Codex /models 必须提供 base_instructions')
   assert.equal(codexPersonalModel.truncation_policy.mode, 'bytes', 'Codex /models 必须提供 truncation_policy')
@@ -758,9 +779,9 @@ try {
   const codexTerra = codexResponse.models.find((item) => item.slug === 'gpt-5.6-terra')
   const codexLuna = codexResponse.models.find((item) => item.slug === 'gpt-5.6-luna')
   assert(codexSol && codexTerra && codexLuna, 'Codex /models 必须包含 GPT-5.6 三个模型')
-  assert.deepEqual(codexSol.supported_reasoning_levels.map((item) => item.effort), [...gpt56CodexReasoning, 'ultra'])
-  assert.deepEqual(codexTerra.supported_reasoning_levels.map((item) => item.effort), [...gpt56CodexReasoning, 'ultra'])
-  assert.deepEqual(codexLuna.supported_reasoning_levels.map((item) => item.effort), gpt56CodexReasoning)
+  assert.deepEqual((codexSol.supported_reasoning_levels ?? []).map((item) => item.effort), [...gpt56CodexReasoning, 'ultra'])
+  assert.deepEqual((codexTerra.supported_reasoning_levels ?? []).map((item) => item.effort), [...gpt56CodexReasoning, 'ultra'])
+  assert.deepEqual((codexLuna.supported_reasoning_levels ?? []).map((item) => item.effort), gpt56CodexReasoning)
   assert.deepEqual(codexSol.additional_speed_tiers, ['fast'])
   assert.deepEqual(codexTerra.additional_speed_tiers, ['fast'])
   assert.deepEqual(codexLuna.additional_speed_tiers, ['fast'])
@@ -768,6 +789,18 @@ try {
   assert.equal(codexSol.multi_agent_version, 'v2')
   assert.equal(codexTerra.multi_agent_version, 'v2')
   assert.equal(codexLuna.multi_agent_version, null)
+
+  catalogService.saveCustomProviderModel({
+    providerCode: 'gemini',
+    model: 'gemini-regression-missing-tier-prices',
+    scope: 'personal',
+    systemAccountId: 'sys_admin',
+    supportedApiProtocols: ['generate_content'],
+    supportedServiceTiers: ['priority', 'flex'],
+    inputUsdPer1M: 2,
+    outputUsdPer1M: 8,
+    actorSystemAccountId: 'sys_admin'
+  })
 
   const aliasCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
@@ -800,6 +833,26 @@ try {
     outputTokens: 1_000_000
   })
   assert.equal(tierOnlyCost, 20, '只有精确档位价格的模型必须按 serviceTierPrices 计价')
+  for (const serviceTier of ['priority', 'flex'] as const) {
+    const missingGeminiTierCost = catalogService.estimateCatalogCostUsd({
+      providerCode: 'gemini',
+      systemAccountId: 'sys_admin',
+      model: 'gemini-regression-missing-tier-prices',
+      serviceTier,
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000
+    })
+    assert.equal(missingGeminiTierCost, undefined, `Gemini SQLite 目录缺少 ${serviceTier} 精确价格时不得回退 Standard`)
+    const geminiAudioCapableMissingTierCost = catalogService.estimateCatalogCostUsd({
+      providerCode: 'gemini',
+      systemAccountId: 'sys_admin',
+      model: 'gemini-2.5-flash',
+      serviceTier,
+      inputTokens: 1_000,
+      outputTokens: 100
+    })
+    assert.equal(geminiAudioCapableMissingTierCost, serviceTier === 'priority' ? 0.00099 : 0.000275, `Gemini 2.5 Flash SQLite 目录必须按 ${serviceTier} token 价格计费，不能把普通 token 误算为音频`)
+  }
   const lowerCaseModelCost = catalogService.estimateCatalogCostUsd({
     providerCode: 'gpt',
     systemAccountId: 'sys_admin',
@@ -1116,7 +1169,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       contextWindowTokens?: number
       maxInputTokens?: number
       maxOutputTokens?: number
-	  defaultReasoningEffort?: string
+	  defaultReasoningEffort?: string | null
     }>>(
       baseUrl,
       '/__aisys__/api/providers/gpt/models?includeInactive=true&includeUnpriced=true',
@@ -1133,7 +1186,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       maxOutputTokens?: number
       inputUsdPer1M?: number
       supportedServiceTiers?: string[]
-	  defaultReasoningEffort?: string
+	  defaultReasoningEffort?: string | null
     }>(
       baseUrl,
       '/__aisys__/api/providers/gpt/models',
@@ -1151,7 +1204,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(copiedUserModel.maxOutputTokens, userATemplate.maxOutputTokens, '配置复制应继承最大输出')
     assert.equal(typeof copiedUserModel.inputUsdPer1M, 'number', '普通用户未提交价格时应由服务端可信继承价格')
     assert.deepEqual(copiedUserModel.supportedServiceTiers, ['priority', 'flex'], '配置复制应继承服务等级')
-    assert.equal(copiedUserModel.defaultReasoningEffort, userATemplate.defaultReasoningEffort, '配置复制应继承默认思考级别')
+    assert.equal(copiedUserModel.defaultReasoningEffort, null, '配置复制不得继承默认思考级别，新增模型应由上游决定')
 
     const userAModel = await postEnvelope<{ id: string; model: string; scope: string }>(
       baseUrl,
@@ -1165,6 +1218,19 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       }
     )
     assert.equal(userAModel.scope, 'personal', '普通用户创建的模型应固定为个人模型')
+
+    const geminiInteractionsModel = await postEnvelope<{ model: string; supportedApiProtocols: string[] }>(
+      baseUrl,
+      '/__aisys__/api/providers/gemini/models',
+      userACookie,
+      {
+        model: 'gemini-http-interactions-custom',
+        supportedApiProtocols: ['interactions'],
+        inputUsdPer1M: 1,
+        outputUsdPer1M: 2
+      }
+    )
+    assert.deepEqual(geminiInteractionsModel.supportedApiProtocols, ['interactions'], 'Gemini 自定义模型应允许保存 Interactions 协议')
 
     const userAUpstreamTarget = await postEnvelope<{ id: string; model: string }>(
       baseUrl,
@@ -1209,7 +1275,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       providerCode: string
       supportedServiceTiers: string[]
       supportedReasoningEfforts: string[]
-      defaultReasoningEffort?: string
+      defaultReasoningEffort?: string | null
     }>(
       baseUrl,
       '/__aisys__/api/providers/gpt/models',
@@ -1227,14 +1293,14 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAGptModel.providerCode, 'gpt', 'GPT 目录新建的个人模型应归属 GPT 供应商')
     assert.deepEqual(userAGptModel.supportedServiceTiers, ['priority'], 'GPT 自定义模型 API 应返回服务等级能力')
     assert.deepEqual(userAGptModel.supportedReasoningEfforts, ['low', 'high'], 'GPT 自定义模型 API 应返回思考能力')
-    assert.equal(userAGptModel.defaultReasoningEffort, 'high', 'GPT 自定义模型创建契约必须保存默认思考级别')
-    const userAGptUnrelatedPatch = await patchEnvelope<{ defaultReasoningEffort?: string }>(
+    assert.equal(userAGptModel.defaultReasoningEffort, null, 'GPT 新增自定义模型必须忽略默认思考级别并交给上游决定')
+    const userAGptUnrelatedPatch = await patchEnvelope<{ defaultReasoningEffort?: string | null }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,
 	  userACookie,
 	  { notes: 'round-trip' }
 	)
-	assert.equal(userAGptUnrelatedPatch.defaultReasoningEffort, 'high', '无关 PATCH 必须保留默认思考级别')
+	assert.equal(userAGptUnrelatedPatch.defaultReasoningEffort, null, '无关 PATCH 必须保持新增模型默认思考级别为空')
 	const userAGptClearedDefault = await patchEnvelope<{ defaultReasoningEffort: string | null }>(
 	  baseUrl,
 	  `/__aisys__/api/providers/gpt/models/${userAGptModel.id}`,

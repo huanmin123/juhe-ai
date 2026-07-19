@@ -835,7 +835,7 @@ func TestServiceCreateCustomModelPersistsPersonalModelAndInvalidates(t *testing.
 		len(store.saveInput.SupportedReasoningEfforts) != 2 ||
 		store.saveInput.SupportedReasoningEfforts[0] != "low" ||
 		store.saveInput.SupportedReasoningEfforts[1] != "high" ||
-		store.saveInput.DefaultReasoningEffort != "high" {
+		store.saveInput.DefaultReasoningEffort != "" {
 		t.Fatalf("save input = %+v", store.saveInput)
 	}
 	if invalidator.reason != CustomProviderModelSavedReason {
@@ -1327,7 +1327,7 @@ func TestServiceCreateCustomModelCopiesVisibleConfigurationTemplateForOrdinaryUs
 		store.saveInput.MaxOutputTokens == nil || *store.saveInput.MaxOutputTokens != maxOutput ||
 		!slices.Equal(store.saveInput.SupportedServiceTiers, []string{"priority", "flex"}) ||
 		!slices.Equal(store.saveInput.SupportedReasoningEfforts, []string{"none", "low", "medium", "high", "xhigh", "max"}) ||
-		store.saveInput.DefaultReasoningEffort != "high" ||
+		store.saveInput.DefaultReasoningEffort != "" ||
 		store.saveInput.ReleaseDate != "2026-06-26" || store.saveInput.ShutdownDate != "2027-06-26" ||
 		store.saveInput.PricingNotes != "trusted pricing" || store.saveInput.CapabilityNotes != "trusted capability" || store.saveInput.Notes != "trusted internal" {
 		t.Fatalf("save input did not copy template configuration: %+v", store.saveInput)

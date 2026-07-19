@@ -10,7 +10,9 @@ export const ACCOUNT_HEALTH_CHECK_ENDPOINT_MODES = [
   'messages_json',
   'messages_sse',
   'generate_content_json',
-  'generate_content_sse'
+  'generate_content_sse',
+  'interactions_json',
+  'interactions_sse'
 ] as const
 
 export function resolveDefaultHealthCheckEndpointMode(input: {

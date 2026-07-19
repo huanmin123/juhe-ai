@@ -239,25 +239,20 @@ async function assertSharedWireMappings(
     temperature: 0.2
   })
 
-  await assert.rejects(
-    () => applyOverrides('{}', {
-      account: account({
-        providerCode: 'gemini',
-        profileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
-        protocolCode: GEMINI_PROTOCOL_CODE,
-        protocolVersion: GEMINI_PROTOCOL_VERSION,
-        model: 'gemini-test',
-        credentials: { service_tier_override: 'priority' }
-      }),
-      upstreamModel: 'gemini-test',
-      wireFormat: 'gemini_generate_content',
-      modelCapabilities: { supportedServiceTiers: ['priority'], supportedReasoningEfforts: [] }
+  const geminiPriorityBody = await applyOverrides('{}', {
+    account: account({
+      providerCode: 'gemini',
+      profileId: GEMINI_NATIVE_V1BETA_PROFILE_ID,
+      protocolCode: GEMINI_PROTOCOL_CODE,
+      protocolVersion: GEMINI_PROTOCOL_VERSION,
+      model: 'gemini-test',
+      credentials: { service_tier_override: 'priority' }
     }),
-    (error: unknown) => error instanceof Error
-      && 'code' in error
-      && error.code === 'account_request_override_unsupported'
-      && /没有可确认的服务等级 wire 字段/.test(error.message)
-  )
+    upstreamModel: 'gemini-test',
+    wireFormat: 'gemini_generate_content',
+    modelCapabilities: { supportedServiceTiers: ['priority'], supportedReasoningEfforts: [] }
+  })
+  assert.equal(bodyJson(geminiPriorityBody).service_tier, 'priority', 'Gemini 服务等级覆盖必须写入原生 service_tier')
 }
 
 function account(input: {

@@ -798,7 +798,7 @@ function queryAccountsDueForHealthCheck(limit: number, accountId: string | undef
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
       WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('active', 'pending_test')
         AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)
@@ -888,7 +888,7 @@ async function queryAccountsDueForHealthCheckAsync(client: DatabaseClient, limit
     LEFT JOIN ${healthCheckTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
     WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-      AND accounts.type IN ('api_key', 'oauth')
+      AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('active', 'pending_test')
       AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)

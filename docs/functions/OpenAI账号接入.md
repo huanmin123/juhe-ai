@@ -5,13 +5,13 @@
 当前版本启用两个使用 OpenAI v1 协议的供应商，并通过 OpenAI-compatible 入口对外提供兼容网关：
 
 - `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传；模型目录聚合自身和显式纳入聚合的 OpenAI-compatible 子供应商模型，不自动包含 DeepSeek 等独立供应商。
-- `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。
+- `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。`codex-auto-review` 是上游 Codex 审核专用 Responses 模型，作为未定价、非默认账户模型的目录项保留；只有用户在 GPT 账户支持模型中主动选择时才会参与调度。
 
 Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropic 账号接入](Anthropic账号接入.md)、[Gemini 账号接入](Gemini账号接入.md)、[智谱 GLM 账号接入](智谱GLM账号接入.md) 和 [DeepSeek 账号接入](DeepSeek账号接入.md)。本文只维护 OpenAI 与 GPT 语义，避免把其他厂商兼容差异和 OpenAI / GPT 账户接入混在一起。
 
 这里的 `openai` 有两种层级语义：`protocolCode=openai` 表示客户端入口和上游适配遵循 OpenAI-compatible / v1 形态；`providerCode=openai` 表示通用 OpenAI-compatible 供应商。两者同名但字段不同，不能混淆。AI 账户、分组、模型目录和价格目录归属在供应商层；后续如果增加 Qwen 等 OpenAI-compatible 厂商，应新增各自供应商编码并声明 `protocolCode=openai`、`protocolVersion=v1`。Gemini OpenAI Chat、智谱 GLM 和 DeepSeek 虽然都提供 OpenAI-compatible surface，但已按独立专题接入。
 
-本文覆盖的可创建和可调度供应商协议档案只有 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。Anthropic、Gemini、GLM、DeepSeek 档案以各自专题为准。AI 账户、账号测试任务、导入协议和公开账号推送接口按账户类型带上或由供应商解析出档案；后端会把账户档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。分组只绑定 `providerCode`，不定义协议档案、协议版本或跨协议转换语义。
+本文覆盖的可创建和可调度供应商协议档案只有 `profile_openai_openai_v1` 和 `profile_gpt_openai_v1`。xAI、Anthropic、Gemini、GLM、DeepSeek 档案以各自专题为准。AI 账户、账号测试任务、导入协议和公开账号推送接口按账户类型带上或由供应商解析出档案；后端会把账户档案冗余为 `providerProtocolProfileId`、`protocolCode` 和 `protocolVersion` 返回给前端和外部接口。分组只绑定 `providerCode`，不定义协议档案、协议版本或跨协议转换语义。
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 `API Key 管理` 或 `我的 API Key` 页面生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
@@ -71,7 +71,7 @@ type GptAccountType = 'api_key' | 'oauth'
 
 默认检查模型：
 
-- `gpt-5.5` 作为 `profile_gpt_openai_v1` 的内置默认检查模型。新账户按“当前系统账户个人默认 > 管理员维护的 GPT 系统默认 > 协议档案内置默认”初始化 `healthCheckModel`；个人默认保存到 `provider_default_health_check_models`。默认值只影响新账户，已有账户和后台系统检查始终读取账户自己的检查模型。
+- `gpt-5.5` 作为 `profile_gpt_openai_v1` 的内置默认检查模型。`codex-auto-review` 不加入 `DEFAULT_OPENAI_SUPPORTED_MODELS`，不会自动配置到新账户，也不作为默认健康检查模型；用户需要在账户支持模型中显式选择后才能调用。新账户按“当前系统账户个人默认 > 管理员维护的 GPT 系统默认 > 协议档案内置默认”初始化 `healthCheckModel`；个人默认保存到 `provider_default_health_check_models`。默认值只影响新账户，已有账户和后台系统检查始终读取账户自己的检查模型。
 
 ## GPT OAuth 创建方式
 
@@ -105,6 +105,13 @@ type GptAccountType = 'api_key' | 'oauth'
 - 时间计划和人工启停共用账户 `status`。后台只在计划开始 / 结束边界自动写入 `active` 或 `disabled`；时段外手动启用、计划内手动停用也只提交 `status`，后续到下一次计划边界再由计划接管。计划不会把 `pending_test`、`error`、`rate_limited`、`temporary_unavailable` 自动恢复为正常。时区跟随系统默认值，用户表单不提供时区配置。
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
+
+OAuth 运行时修复口径：
+
+- Access Token 刷新使用与下游模型请求独立的取消边界；触发刷新请求的客户端断开不会取消共享 token 交换，其他并发请求可以复用已完成结果。
+- OAuth 授权 session 绑定创建者系统账户，回调成功后按原子 compare-delete 消费 `state`，不能跨账户重放；授权 URL 路由的异步异常统一进入 API 错误处理。
+- token 响应的 `expires_in` 必须是正整数并在当前字段契约内计算 `expires_at`；无效或缺失值拒绝写入，不以默认时长掩盖上游错误。
+- 授权回调、Refresh Token 兑换和后台预刷新只保存必要的脱敏诊断，不记录完整授权码、Access Token、Refresh Token 或上游响应正文。
 
 ## GPT API Key 创建方式
 
@@ -217,6 +224,12 @@ GPT API Key 和 OAuth 账户的 `credentials` 可选保存 `service_tier_overrid
 6. 创建 GPT OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和可选的 `account_expires_at`。
 7. 账户落库后不主动请求模型接口获取额度；额度快照只等待真实网关请求返回 Codex rate-limit 响应头后被动更新，人工测试不更新生产额度快照。
 8. 创建接口允许通过客户端补丁写入账户本地错误处理规则；`access_token`、`refresh_token`、`expires_at`、`client_id` 和 `base_url` 必须以 OpenAI token endpoint 返回或服务端 fallback 为准，不能被请求体覆盖。账户错误处理规则只进入 `credentials.error_handling_rules`。
+
+授权会话安全边界：
+
+- 授权 session 默认 TTL 为 30 分钟，校验 state 和 owner 后以 compare-delete 单次消费；owner 不匹配不会提前删除合法 session。
+- memory runtime state 使用主动清扫定时器，最多保存 1024 个 session，单个 owner 最多保留 8 个活跃 session；达到上限时淘汰最旧会话，避免反复生成授权链接造成无界内存增长。
+- Redis runtime state 继续使用带 TTL 的共享 key 和原子 compare-delete，供多进程部署共享授权 session。
 
 ### Refresh Token 授权
 

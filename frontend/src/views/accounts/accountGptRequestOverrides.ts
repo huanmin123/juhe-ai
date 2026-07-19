@@ -24,7 +24,7 @@ export interface AccountRequestOverrideOption {
   disabled?: boolean
 }
 
-const serviceTierOverrideProviders = new Set(['gpt', 'openai', 'anthropic'])
+const serviceTierOverrideProviders = new Set(['gpt', 'openai', 'anthropic', 'gemini'])
 const reasoningEffortOverrideProviders = new Set(['gpt', 'openai', 'anthropic', 'gemini'])
 
 const localizedCapabilityLabels: Record<string, string> = {

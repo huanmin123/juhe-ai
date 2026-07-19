@@ -1,6 +1,10 @@
 import { strict as assert } from 'node:assert'
 
 import * as openAIOAuthService from '../../modules/openai-oauth/openai-oauth.service.js'
+import {
+  OpenAIOAuthMemorySessionStore,
+  type OpenAIOAuthSession
+} from '../../modules/openai-oauth/openai-oauth.service.js'
 
 interface TokenHttpRequestContract {
   body: string
@@ -15,6 +19,73 @@ type BuildAuthorizeUrl = (input: {
 }) => string
 
 type BuildTokenHttpRequest = (form: Record<string, string>) => TokenHttpRequestContract
+
+let memoryNow = 1_000
+const memoryStore = new OpenAIOAuthMemorySessionStore({
+  now: () => memoryNow,
+  maxEntries: 3,
+  maxOwnerSessions: 2,
+  cleanupIntervalMs: 5
+})
+const memorySession = (state: string, ownerSystemAccountId: string): OpenAIOAuthSession => ({
+  state,
+  codeVerifier: `verifier-${state}`,
+  redirectUri: 'http://localhost:1455/auth/callback',
+  clientId: 'memory-contract-client',
+  ownerSystemAccountId,
+  createdAt: memoryNow
+})
+try {
+  await memoryStore.setJson('owner-a-1', memorySession('owner-a-1', 'owner-a'), 100)
+  memoryNow += 1
+  await memoryStore.setJson('owner-a-2', memorySession('owner-a-2', 'owner-a'), 100)
+  memoryNow += 1
+  await memoryStore.setJson('owner-a-3', memorySession('owner-a-3', 'owner-a'), 100)
+  assert.equal(await memoryStore.getJson('owner-a-1'), undefined, 'owner 达到活跃 session 上限时必须淘汰最旧会话')
+  assert.ok(await memoryStore.getJson('owner-a-2'))
+  assert.ok(await memoryStore.getJson('owner-a-3'))
+
+  memoryNow += 1
+  await memoryStore.setJson('owner-b-1', memorySession('owner-b-1', 'owner-b'), 100)
+  memoryNow += 1
+  await memoryStore.setJson('owner-c-1', memorySession('owner-c-1', 'owner-c'), 100)
+  assert.equal(await memoryStore.getJson('owner-a-2'), undefined, '达到全局容量时必须淘汰最旧会话')
+  assert.equal(memoryStore.size, 3, '内存 OAuth session 容量必须保持有界')
+
+  memoryNow += 200
+  await new Promise<void>((resolve) => setTimeout(resolve, 20))
+  assert.equal(memoryStore.size, 0, 'TTL 到期后必须由主动维护定时器清扫，无需再次命中过期 key')
+} finally {
+  memoryStore.close()
+}
+
+const generatedSession = await openAIOAuthService.generateOpenAIAuthURL('oauth-owner-a')
+const generatedState = new URL(generatedSession.authUrl).searchParams.get('state')
+assert.ok(generatedState, '生成的 OAuth 授权链接必须包含 state')
+await assert.rejects(
+  () => openAIOAuthService.consumeOpenAIOAuthSession({
+    sessionId: generatedSession.sessionId,
+    state: generatedState,
+    ownerSystemAccountId: 'oauth-owner-b'
+  }),
+  /owner|所有者|归属/,
+  'OAuth session 所有者不匹配时必须拒绝且保留 session'
+)
+const consumedSession = await openAIOAuthService.consumeOpenAIOAuthSession({
+  sessionId: generatedSession.sessionId,
+  state: generatedState,
+  ownerSystemAccountId: 'oauth-owner-a'
+})
+assert.equal(consumedSession.state, generatedState, '正确 owner/state 应能消费 OAuth session')
+await assert.rejects(
+  () => openAIOAuthService.consumeOpenAIOAuthSession({
+    sessionId: generatedSession.sessionId,
+    state: generatedState,
+    ownerSystemAccountId: 'oauth-owner-a'
+  }),
+  /不存在|过期|已消费/,
+  'OAuth session 正确消费后不得再次使用'
+)
 
 const serviceExports = openAIOAuthService as unknown as Record<string, unknown>
 assert.equal(

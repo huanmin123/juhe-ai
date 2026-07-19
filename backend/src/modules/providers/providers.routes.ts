@@ -226,6 +226,7 @@ const customModelSchema = z.object({
     'stream_generate_content',
     'count_tokens',
     'embed_content',
+    'interactions',
     'completions',
     'images',
     'audio',
@@ -324,9 +325,11 @@ providersRouter.post('/:code/models', async (req, res, next) => {
       res.status(400).json(badRequest(validation.message))
       return
     }
+    // 自定义模型是中转目录，不替上游选择 reasoning 默认值；显式提交的值仍先经过能力校验。
+    const saveInput = { ...effectiveInput, defaultReasoningEffort: null }
     try {
       const saved = await saveCustomProviderModelAsync({
-        ...effectiveInput,
+        ...saveInput,
         scope,
         providerCode: provider.code,
         systemAccountId: ownerSystemAccountId,
@@ -762,7 +765,7 @@ function customModelInputFromConfigurationTemplate(template: ProviderModelCatalo
     supportedApiProtocols: [...(template.supportedApiProtocols ?? [])],
     supportedServiceTiers: [...(template.supportedServiceTiers ?? [])],
     supportedReasoningEfforts: [...(template.supportedReasoningEfforts ?? [])],
-    defaultReasoningEffort: template.defaultReasoningEffort ?? null,
+    defaultReasoningEffort: null,
     releaseDate: template.releaseDate ?? null,
     shutdownDate: template.shutdownDate ?? null,
     contextWindowTokens: template.contextWindowTokens ?? null,

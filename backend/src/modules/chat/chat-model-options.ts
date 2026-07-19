@@ -58,14 +58,7 @@ export function buildChatModelOptions(modelIds: readonly string[], catalog: read
     const supportedReasoningEfforts = intersectCapabilities(
       items.map((item) => item.supportedReasoningEfforts.filter(isChatReasoningEffort))
     )
-    const catalogDefaultReasoningEffort = items
-      .map((item) => item.defaultReasoningEffort)
-      .find((value): value is ChatReasoningEffort => Boolean(value && isChatReasoningEffort(value) && supportedReasoningEfforts.includes(value)))
-    const defaultReasoningEffort = supportedReasoningEfforts.includes('medium')
-      ? 'medium'
-      : catalogDefaultReasoningEffort
-        ? catalogDefaultReasoningEffort
-        : supportedReasoningEfforts[0]
+    const defaultReasoningEffort = commonReasoningDefault(items, supportedReasoningEfforts)
     const catalogServiceTiers = intersectCapabilities(items.map((item) => item.supportedServiceTiers.filter(isChatServiceTier)))
     const supportedServiceTiers = catalogServiceTiers.length
       ? [...new Set<ChatServiceTier>(['default', ...catalogServiceTiers])]
@@ -111,6 +104,21 @@ function minimumKnownCapability(values: readonly (number | undefined)[]): number
     : undefined
 }
 
+function commonReasoningDefault(
+  items: readonly ChatModelCatalogCapability[],
+  supportedReasoningEfforts: readonly ChatReasoningEffort[]
+): ChatReasoningEffort | undefined {
+  if (!items.length) return undefined
+  const defaults = items.map((item) => item.defaultReasoningEffort)
+  const first = defaults[0]
+  return first
+    && isChatReasoningEffort(first)
+    && supportedReasoningEfforts.includes(first)
+    && defaults.every((value) => value === first)
+    ? first
+    : undefined
+}
+
 function intersectCapabilities<TValue extends string>(values: readonly (readonly TValue[])[]): TValue[] {
   if (!values.length) return []
   const [first, ...rest] = values
@@ -127,11 +135,9 @@ export function resolveChatModelRequestOptions(
   if (input.serviceTier && !model.supportedServiceTiers.includes(input.serviceTier)) {
     throw new ChatModelCapabilityError('当前模型不支持所选服务等级，请重新选择')
   }
-  const reasoningEffort = input.reasoningEffort ?? model.defaultReasoningEffort
-  const serviceTier = input.serviceTier ?? (model.supportedServiceTiers.includes('default') ? 'default' : undefined)
   return {
-    ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...(serviceTier ? { serviceTier } : {}),
+    ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+    ...(input.serviceTier ? { serviceTier: input.serviceTier } : {}),
     ...(model.contextWindowTokens ? { contextWindowTokens: model.contextWindowTokens } : {}),
     ...(model.maxInputTokens ? { maxInputTokens: model.maxInputTokens } : {})
   }

@@ -453,10 +453,10 @@ function explainDispatchCandidateWindowQuery(
         AND accounts.schedulable = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (
-          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
-            AND source_accounts.type IN ('api_key', 'oauth')
+            AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
           )
         )
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)

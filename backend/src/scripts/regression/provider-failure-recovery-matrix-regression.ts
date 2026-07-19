@@ -72,7 +72,8 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -83,7 +84,8 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -183,6 +185,7 @@ try {
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
@@ -202,10 +205,10 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     credentials: credentialsForCase(item, upstreamOrigin, 'primary'),
     groupId: group.id,
     supportedModels: [item.model],
-    status: 'active',
-    schedulable: true,
+    healthCheckModel: item.model,
     priority: 0
   }, access)
+  activateMatrixAccount(primary.id, item.label, '主账号')
   const rescue = repositories.createAccount({
     providerCode: item.providerCode,
     providerProtocolProfileId: item.providerProtocolProfileId,
@@ -214,10 +217,10 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     credentials: credentialsForCase(item, upstreamOrigin, 'rescue'),
     groupId: group.id,
     supportedModels: [item.model],
-    status: 'active',
-    schedulable: true,
+    healthCheckModel: item.model,
     priority: 100
   }, access)
+  activateMatrixAccount(rescue.id, item.label, '备用账号')
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: `${item.label} 异常交替矩阵 Key`,
     groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -231,6 +234,18 @@ function createCaseRuntime(item: MatrixCase, upstreamOrigin: string): CaseRuntim
     primaryAccountId: primary.id,
     rescueAccountId: rescue.id
   }
+}
+
+function activateMatrixAccount(accountId: string, label: string, lane: string): void {
+  assert.equal(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, `${label} ${lane}后台激活检查应成功`)
+  const activated = repositories.findAccountSummary(accountId, access)
+  assert.equal(activated?.status, 'active', `${label} ${lane}后台激活检查后应为正常状态`)
+  assert.equal(activated?.schedulable, true, `${label} ${lane}后台激活检查后应参与调度`)
 }
 
 function ensureMatrixCaseModelCatalogEntry(item: MatrixCase): void {
@@ -264,20 +279,19 @@ async function assertFailureRecoveryCase(baseUrl: string, runtime: CaseRuntime):
   const { item } = runtime
   const start = upstreamHits.length
   const first = await requestCase(baseUrl, runtime, 'failover')
-  assert.equal(first.status, 200, `${item.label} 首次主账号失败应由备用账号救回，实际 HTTP ${first.status}: ${first.text}`)
-  assertOutput(first.text, item, 'rescue')
+  assert.equal(first.status, item.protocolKind === 'anthropic' ? 529 : 503, `${item.label} 通用客户端应原样收到主账号完整失败响应`)
+  assert.match(first.text, new RegExp(`${item.label} primary failed`), `${item.label} 通用客户端失败正文必须保持上游语义`)
   assert.deepEqual(caseAuthorizations(start, item.label), [
-    item.protocolKind === 'anthropic' ? `x-api-key sk-${item.label}-primary-upstream` : `Bearer sk-${item.label}-primary-upstream`,
-    item.protocolKind === 'anthropic' ? `x-api-key sk-${item.label}-rescue-upstream` : `Bearer sk-${item.label}-rescue-upstream`
-  ], `${item.label} 首次请求应先命中主账号再命中备用账号`)
+    item.protocolKind === 'anthropic' ? `x-api-key sk-${item.label}-primary-upstream` : `Bearer sk-${item.label}-primary-upstream`
+  ], `${item.label} 通用客户端完整失败响应不得触发语义切号`)
 
   const secondStart = upstreamHits.length
   const second = await requestCase(baseUrl, runtime, 'failover')
-  assert.equal(second.status, 200, `${item.label} 主账号短期屏蔽后第二次请求应由备用账号救回，实际 HTTP ${second.status}: ${second.text}`)
-  assertOutput(second.text, item, 'rescue')
+  assert.equal(second.status, item.protocolKind === 'anthropic' ? 529 : 503, `${item.label} 第二次通用请求仍应原样返回主账号失败响应`)
+  assert.match(second.text, new RegExp(`${item.label} primary failed`), `${item.label} 第二次失败正文必须保持上游语义`)
   assert.deepEqual(caseAuthorizations(secondStart, item.label), [
-    item.protocolKind === 'anthropic' ? `x-api-key sk-${item.label}-rescue-upstream` : `Bearer sk-${item.label}-rescue-upstream`
-  ], `${item.label} 第二次请求应避开刚失败的主账号`)
+    item.protocolKind === 'anthropic' ? `x-api-key sk-${item.label}-primary-upstream` : `Bearer sk-${item.label}-primary-upstream`
+  ], `${item.label} 通用客户端完整失败响应不得建立跨请求账号屏蔽`)
 
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   gatewayCache.clearGatewayRuntimeCache()
@@ -346,12 +360,13 @@ function assertUsageRecords(runtimes: CaseRuntime[]): void {
   for (const runtime of runtimes) {
     const { item } = runtime
     const providerRecords = records.filter((record) => record.providerCode === item.providerCode && record.groupId === runtime.groupId)
-    assert(providerRecords.length >= 4, `${item.label} 应写入失败和成功 usage 记录，实际 ${providerRecords.length}`)
+    assert(providerRecords.length >= 3, `${item.label} 应写入两次透明失败和一次恢复成功 usage 记录，实际 ${providerRecords.length}`)
     assert(providerRecords.every((record) => record.providerProtocolProfileId === item.providerProtocolProfileId), `${item.label} usage provider_protocol_profile_id 不应串供应商`)
     assert(providerRecords.every((record) => record.usageSemantic === item.usageSemantic), `${item.label} usage_semantic 应为 ${item.usageSemantic}`)
-    assert(providerRecords.some((record) => record.accountId === runtime.primaryAccountId && record.success === false && /primary failed/.test(record.errorMessage ?? '')), `${item.label} 主账号失败 usage 应保留归一化错误消息`)
-    assert(providerRecords.some((record) => record.accountId === runtime.rescueAccountId && record.success === true), `${item.label} 备用账号成功 usage 应存在`)
-    assert(providerRecords.some((record) => record.accountId === runtime.primaryAccountId && record.success === true), `${item.label} 主账号恢复成功 usage 应存在`)
+    const transparentStatusCode = item.protocolKind === 'anthropic' ? 529 : 503
+    assert(providerRecords.filter((record) => record.accountId === runtime.primaryAccountId && record.success === true && record.statusCode === transparentStatusCode).length >= 2, `${item.label} usage 应把完整失败记录为成功透明转发并保留上游状态码`)
+    assert(providerRecords.every((record) => record.accountId !== runtime.rescueAccountId), `${item.label} 通用客户端完整失败不得产生备用账号 usage`)
+    assert(providerRecords.some((record) => record.accountId === runtime.primaryAccountId && record.success === true && record.statusCode === 200), `${item.label} 主账号恢复成功 usage 应存在`)
   }
 }
 
@@ -367,9 +382,10 @@ function assertAuditLogs(runtimes: CaseRuntime[]): void {
   `).all() as Array<{ provider_code: string | null; group_id: string | null; account_id: string | null; success: number; upstream_status_code: number | null }>
   for (const runtime of runtimes) {
     const { item } = runtime
+    const transparentStatusCode = item.protocolKind === 'anthropic' ? 529 : 503
     assert(logs.some((log) => log.provider_code === item.providerCode && log.group_id === runtime.groupId && log.success === 1), `${item.label} 应写入成功审计日志`)
-    assert(attempts.some((attempt) => attempt.provider_code === item.providerCode && attempt.group_id === runtime.groupId && attempt.account_id === runtime.primaryAccountId && attempt.success === 0), `${item.label} 应写入主账号失败审计 attempt`)
-    assert(attempts.some((attempt) => attempt.provider_code === item.providerCode && attempt.group_id === runtime.groupId && attempt.account_id === runtime.rescueAccountId && attempt.success === 1), `${item.label} 应写入备用账号成功审计 attempt`)
+    assert(attempts.filter((attempt) => attempt.provider_code === item.providerCode && attempt.group_id === runtime.groupId && attempt.account_id === runtime.primaryAccountId && attempt.success === 1 && attempt.upstream_status_code === transparentStatusCode).length >= 2, `${item.label} 审计 attempt 应保留成功透明转发与上游状态码`)
+    assert(!attempts.some((attempt) => attempt.provider_code === item.providerCode && attempt.group_id === runtime.groupId && attempt.account_id === runtime.rescueAccountId), `${item.label} 通用客户端完整失败不得产生备用账号审计 attempt`)
   }
 }
 

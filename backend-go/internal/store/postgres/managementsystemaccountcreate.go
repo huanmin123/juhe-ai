@@ -23,6 +23,7 @@ var (
 	}{
 		{Name: "默认 OpenAI 兼容分组", ProviderCode: "openai", Description: ""},
 		{Name: "默认 GPT 分组", ProviderCode: "gpt", Description: ""},
+		{Name: "默认 xAI 分组", ProviderCode: "xai", Description: ""},
 		{Name: "默认 DeepSeek 分组", ProviderCode: "deepseek", Description: ""},
 		{Name: "默认 Anthropic 分组", ProviderCode: "anthropic", Description: ""},
 		{Name: "默认 Gemini 分组", ProviderCode: "gemini", Description: ""},

@@ -4,17 +4,12 @@ export function selectableChatReasoningEfforts(model?: ChatModelOption): ChatRea
   return [...(model?.supportedReasoningEfforts ?? [])]
 }
 
-export function defaultChatReasoningEffort(model?: ChatModelOption): ChatReasoningEffort | '' {
-  const supported = selectableChatReasoningEfforts(model)
-  if (supported.includes('medium')) return 'medium'
-  if (model?.defaultReasoningEffort && supported.includes(model.defaultReasoningEffort)) return model.defaultReasoningEffort
-  return supported[0] ?? ''
+export function defaultChatReasoningEffort(_model?: ChatModelOption): ChatReasoningEffort | '' {
+  return ''
 }
 
-export function defaultChatServiceTier(model?: ChatModelOption): ChatServiceTier | '' {
-  const supported = model?.supportedServiceTiers ?? []
-  if (supported.includes('default')) return 'default'
-  return supported[0] ?? ''
+export function defaultChatServiceTier(_model?: ChatModelOption): ChatServiceTier | '' {
+  return ''
 }
 
 export function normalizeChatModelControls(input: {

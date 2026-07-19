@@ -47,7 +47,9 @@ export const accountEndpointModeOptions: Array<{ label: string; value: AccountSu
   { label: 'generateContent (JSON)', value: 'generate_content_json' },
   { label: 'streamGenerateContent (SSE)', value: 'generate_content_sse' },
   { label: 'countTokens', value: 'count_tokens' },
-  { label: 'embedContent', value: 'embed_content' }
+  { label: 'embedContent', value: 'embed_content' },
+  { label: 'Interactions API (JSON)', value: 'interactions_json' },
+  { label: 'Interactions API (SSE)', value: 'interactions_sse' }
 ]
 
 export function defaultAccountEndpointModes(
@@ -113,9 +115,10 @@ export function validateAccountEndpointModes(input: {
     return `Anthropic API Key 上游接口能力至少需要启用 ${accountEndpointModeLabel('messages_json', input.profile)} 或 ${accountEndpointModeLabel('messages_sse', input.profile)}`
   }
   if (hasGeminiMode) {
-    if (input.type !== 'api_key') return 'Gemini 原生协议当前仅支持 API Key 账户'
-    if (!input.modes.includes('generate_content_json') && !input.modes.includes('generate_content_sse')) {
-      return `Gemini API Key 上游接口能力至少需要启用 ${accountEndpointModeLabel('generate_content_json', input.profile)} 或 ${accountEndpointModeLabel('generate_content_sse', input.profile)}`
+    if (input.type !== 'api_key' && input.type !== 'google_oauth') return 'Gemini 原生协议当前仅支持 API Key 或 Google OAuth 账户'
+    if (!input.modes.includes('generate_content_json') && !input.modes.includes('generate_content_sse')
+      && !input.modes.includes('interactions_json') && !input.modes.includes('interactions_sse')) {
+      return `Gemini 上游接口能力至少需要启用 ${accountEndpointModeLabel('generate_content_json', input.profile)}、${accountEndpointModeLabel('generate_content_sse', input.profile)} 或 Interactions`
     }
     return undefined
   }
@@ -168,6 +171,10 @@ export function accountEndpointModeLabel(mode: AccountSupportedEndpointMode, con
       return 'countTokens'
     case 'embed_content':
       return 'embedContent'
+    case 'interactions_json':
+      return 'Interactions API (JSON)'
+    case 'interactions_sse':
+      return 'Interactions API (SSE)'
     default:
       return accountEndpointModeOptions.find((item) => item.value === mode)?.label ?? mode
   }
@@ -240,7 +247,7 @@ export function accountTestEndpointModeOrder(account?: AccountProviderProfileLik
   }
   const protocolKind = accountProviderProtocolKind(account)
   if (protocolKind === 'anthropic_v1') return ['messages_json', 'messages_sse']
-  if (protocolKind === 'gemini_v1beta') return ['generate_content_json', 'generate_content_sse']
+  if (protocolKind === 'gemini_v1beta') return ['generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse']
   if (account?.type === 'oauth') return ['responses_json', 'responses_sse']
   return ['chat_json', 'responses_json', 'chat_sse', 'responses_sse']
 }
@@ -276,7 +283,7 @@ function contextProfileId(context?: AccountEndpointModeLabelContext): string | u
 }
 
 function normalizedAccountType(value: unknown): AccountType {
-  return value === 'oauth' ? 'oauth' : 'api_key'
+  return typeof value === 'string' && value.trim() ? value.trim() : 'api_key'
 }
 
 function stableEndpointModeKey(value: AccountSupportedEndpointMode[]): string {

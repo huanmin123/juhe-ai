@@ -100,11 +100,12 @@ export function seedDefaults(database: DatabaseSync): void {
       codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
       input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
       cache_write_1h_usd_per_1m, service_tier_prices_json,
-      long_context_input_token_threshold, long_context_input_cost_multiplier, long_context_output_cost_multiplier,
+      long_context_input_token_threshold, long_context_input_token_threshold_inclusive,
+      long_context_input_cost_multiplier, long_context_output_cost_multiplier,
       image_input_usd_per_1m, image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m,
       output_usd_per_image, supports_prompt_caching, catalog_visible, source, created_at, updated_at
     ) VALUES (
-      ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
     )
   `)
   for (const provider of DEFAULT_PROVIDER_SEEDS) {
@@ -136,6 +137,7 @@ export function seedDefaults(database: DatabaseSync): void {
         model.cacheWrite1hUsdPer1M ?? null,
         JSON.stringify(model.serviceTierPrices ?? {}),
         model.longContextInputTokenThreshold ?? null,
+        model.longContextInputTokenThresholdInclusive ? 1 : 0,
         model.longContextInputCostMultiplier ?? null,
         model.longContextOutputCostMultiplier ?? null,
         model.imageInputUsdPer1M ?? null,

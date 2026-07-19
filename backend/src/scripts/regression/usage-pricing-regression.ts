@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
-import { ANTHROPIC_PROVIDER_CODE, DEEPSEEK_PROVIDER_CODE, GEMINI_PROVIDER_CODE, GLM_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { ANTHROPIC_PROVIDER_CODE, DEEPSEEK_PROVIDER_CODE, GEMINI_PROVIDER_CODE, GLM_PROVIDER_CODE, GPT_VENDOR_CODE, OPENAI_COMPATIBLE_PROVIDER_CODE, XAI_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { getExternalPublicApiCatalog } from '../../modules/external-integrations/external-public-api-catalog.js'
 import {
   parseOpenAIUsageFromJsonBuffer
@@ -527,6 +527,42 @@ const gemini35FlashCost = estimateProviderCostUsd({
   cacheReadTokens: 400
 })
 assert.equal(gemini35FlashCost, 0.00186, 'Gemini 3.5 Flash 成本应按官方 Standard 价格和 cache read 拆分')
+assert.equal(estimateProviderCostUsd({
+  providerCode: GEMINI_PROVIDER_CODE,
+  model: 'gemini-3.1-pro-preview',
+  inputTokens: 200_000,
+  outputTokens: 0
+}), 0.4, 'Gemini 长上下文价格必须在输入超过 200k 后才启用')
+assert.equal(estimateProviderCostUsd({
+  providerCode: GEMINI_PROVIDER_CODE,
+  model: 'gemini-3.1-pro-preview',
+  inputTokens: 200_001,
+  outputTokens: 0
+}), 0.800004, 'Gemini 输入超过 200k 后应按长上下文价格计费')
+for (const serviceTier of ['priority', 'flex'] as const) {
+  const gemini31ProTierCost = estimateProviderCostUsd({
+    providerCode: GEMINI_PROVIDER_CODE,
+    model: 'gemini-3.1-pro-preview',
+    serviceTier,
+    inputTokens: 1_000,
+    outputTokens: 100
+  })
+  assert.equal(gemini31ProTierCost, serviceTier === 'priority' ? 0.00576 : 0.0016, `Gemini ${serviceTier} 必须使用官方专用 token 价格`)
+  const gemini25FlashTierCost = estimateProviderCostUsd({
+    providerCode: GEMINI_PROVIDER_CODE,
+    model: 'gemini-2.5-flash',
+    serviceTier,
+    inputTokens: 1_000,
+    outputTokens: 100
+  })
+  assert.equal(gemini25FlashTierCost, serviceTier === 'priority' ? 0.00099 : 0.000275, `Gemini 2.5 Flash ${serviceTier} 必须使用官方 token 价格，而不是把音频价混入 token 价`)
+}
+assert.equal(estimateProviderCostUsd({
+  providerCode: XAI_PROVIDER_CODE,
+  model: 'grok-4.3',
+  inputTokens: 200_000,
+  outputTokens: 0
+}), 0.5, 'xAI 输入达到 200k 阈值时必须对全量输入启用长上下文价格')
 const geminiModelPricingList = listProviderModelPricing(GEMINI_PROVIDER_CODE)
 assert.deepEqual(geminiModelPricingList.map((item) => item.model), [
   'gemini-3.5-flash',
@@ -551,12 +587,33 @@ for (const id of [
   'gemini-2.5-flash-lite'
 ]) {
   assert(geminiPricingById.has(id), `Gemini 模型价格目录应包含 ${id}`)
-  assert.deepEqual(geminiPricingById.get(id)?.supportedApiProtocols, ['chat_completions', 'generate_content', 'stream_generate_content', 'count_tokens'])
+  assert.deepEqual(
+    geminiPricingById.get(id)?.supportedApiProtocols,
+    [
+      'chat_completions',
+      'generate_content',
+      'stream_generate_content',
+      'count_tokens',
+      ...(id === 'gemini-3.1-pro-preview-customtools' ? [] : ['interactions'] as const)
+    ]
+  )
   assert.equal(geminiPricingById.get(id)?.maxInputTokens, 1_048_576)
   assert.equal(geminiPricingById.get(id)?.maxOutputTokens, 65_536)
-  assert.equal(geminiPricingById.get(id)?.defaultReasoningEffort, 'medium')
+  assert.deepEqual(geminiPricingById.get(id)?.supportedServiceTiers, ['priority', 'flex'])
   assert.deepEqual(geminiPricingById.get(id)?.outputModalities, ['text'])
 }
+assert.equal(geminiPricingById.get('gemini-3.5-flash')?.defaultReasoningEffort, 'medium')
+assert.equal(geminiPricingById.get('gemini-3.1-pro-preview')?.defaultReasoningEffort, 'high')
+assert.equal(geminiPricingById.get('gemini-3-flash-preview')?.defaultReasoningEffort, 'high')
+for (const id of ['gemini-3.1-flash-lite', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite']) {
+  assert.equal(geminiPricingById.get(id)?.defaultReasoningEffort, undefined, `${id} 未公开离散默认级别时必须交给上游决定`)
+}
+assert.deepEqual(geminiPricingById.get('gemini-3.1-pro-preview')?.serviceTierPrices?.flex, {
+  inputUsdPer1M: 1,
+  outputUsdPer1M: 6,
+  cachedInputUsdPer1M: 0.2
+})
+assert.equal(geminiPricingById.get('gemini-2.5-flash')?.serviceTierPrices?.priority?.audioInputUsdPer1M, 1.8)
 assert.deepEqual(geminiPricingById.get('gemini-embedding-2')?.supportedApiProtocols, ['embed_content'])
 assert.equal(geminiPricingById.get('gemini-3.5-flash')?.inputUsdPer1M, 1.5)
 assert.equal(geminiPricingById.get('gemini-3.5-flash')?.cachedInputUsdPer1M, 0.15)
@@ -703,18 +760,19 @@ assert.equal(anthropicPricingById.get('claude-fable-5')?.contextWindowTokens, un
 assert.equal(anthropicPricingById.get('claude-fable-5')?.maxInputTokens, 1_000_000)
 assert.equal(anthropicPricingById.get('claude-fable-5')?.maxOutputTokens, 128_000)
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
-assert.equal(anthropicPricingById.get('claude-fable-5')?.defaultReasoningEffort, 'medium')
+assert.equal(anthropicPricingById.get('claude-fable-5')?.defaultReasoningEffort, 'high')
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedServiceTiers, [])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.inputModalities, ['text', 'image'])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.outputModalities, ['text'])
 assert.deepEqual(anthropicPricingById.get('claude-fable-5')?.supportedTools, ['function_calling', 'code_execution'])
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.inputUsdPer1M, 2)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.outputUsdPer1M, 10)
-assert.equal(anthropicPricingById.get('claude-sonnet-5')?.contextWindowTokens, 200_000)
+assert.equal(anthropicPricingById.get('claude-sonnet-5')?.contextWindowTokens, 1_000_000)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.maxInputTokens, undefined)
 assert.equal(anthropicPricingById.get('claude-sonnet-5')?.maxOutputTokens, 128_000)
 assert.deepEqual(anthropicPricingById.get('claude-sonnet-5')?.supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh', 'max'])
-assert.equal(anthropicPricingById.get('claude-sonnet-5')?.defaultReasoningEffort, 'medium')
+assert.equal(anthropicPricingById.get('claude-sonnet-5')?.defaultReasoningEffort, 'high')
+assert.deepEqual(anthropicPricingById.get('claude-opus-4-5')?.supportedReasoningEfforts, ['low', 'medium', 'high'])
 assert.equal(anthropicPricingById.get('claude-mythos-5')?.inputUsdPer1M, 10)
 assert.equal(anthropicPricingById.get('claude-mythos-5')?.outputUsdPer1M, 50)
 assert.equal(anthropicPricingById.get('claude-mythos-5')?.catalogVisible, true)
@@ -891,12 +949,11 @@ assert.equal(buildProviderCostBreakdown({
 })?.thinkingTokens, 12)
 const availableOpenAIModels = new Set(openAIModelPricingList.map((item) => item.model))
 const openAIModelPricingById = new Map(openAIModelPricingList.map((item) => [item.model, item]))
-for (const item of openAIModelPricingList) {
-  assert.ok(item.releaseDate, `${item.model} should expose release date`)
-}
-for (let index = 1; index < openAIModelPricingList.length; index += 1) {
-  const previous = openAIModelPricingList[index - 1]
-  const current = openAIModelPricingList[index]
+assert.equal(openAIModelPricingById.get('codex-auto-review')?.releaseDate, undefined, '未确认发布时间的 Codex 自动审查模型必须保持未知')
+const datedOpenAIModelPricingList = openAIModelPricingList.filter((item) => item.releaseDate)
+for (let index = 1; index < datedOpenAIModelPricingList.length; index += 1) {
+  const previous = datedOpenAIModelPricingList[index - 1]
+  const current = datedOpenAIModelPricingList[index]
   assert.ok(
     (previous.releaseDate ?? '') >= (current.releaseDate ?? ''),
     `${previous.model} (${previous.releaseDate}) should sort before ${current.model} (${current.releaseDate})`
@@ -970,15 +1027,15 @@ assert.equal(openAIModelPricingById.get('gpt-4.1')?.contextWindowTokens, 1_047_5
 assert.equal(openAIModelPricingById.get('o3')?.maxInputTokens, undefined)
 assert.equal(openAIModelPricingById.get('o3')?.contextWindowTokens, 200_000)
 assert.deepEqual(openAIModelPricingById.get('gpt-5.6-sol')?.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh', 'max'])
-assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.defaultReasoningEffort, 'medium')
+assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.defaultReasoningEffort, undefined)
 assert.deepEqual(openAIModelPricingById.get('gpt-5.5-pro')?.supportedServiceTiers, ['priority', 'flex'])
-assert.equal(openAIModelPricingById.get('gpt-5.5-pro')?.defaultReasoningEffort, 'high')
+assert.equal(openAIModelPricingById.get('gpt-5.5-pro')?.defaultReasoningEffort, undefined)
 assert.deepEqual(openAIModelPricingById.get('gpt-5.4-nano')?.supportedServiceTiers, ['priority', 'flex'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.4-pro')?.supportedServiceTiers, ['priority', 'flex'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2')?.supportedServiceTiers, ['priority'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5.2-pro')?.supportedServiceTiers, ['priority'])
 assert.deepEqual(openAIModelPricingById.get('gpt-5-pro')?.supportedReasoningEfforts, ['high'])
-assert.equal(openAIModelPricingById.get('gpt-5-pro')?.defaultReasoningEffort, 'high')
+assert.equal(openAIModelPricingById.get('gpt-5-pro')?.defaultReasoningEffort, undefined)
 assert.equal(openAIModelPricingById.get('gpt-5.5')?.releaseDate, '2026-04-23')
 assert.equal(openAIModelPricingById.get('gpt-5.4-mini')?.releaseDate, '2026-03-17')
 assert.equal(openAIModelPricingById.get('gpt-5.3-codex')?.releaseDate, '2026-02-01')
@@ -1732,7 +1789,10 @@ assert.match(gatewayStreamSource, /responseBackpressureWarnThresholdMs/)
 
 const gatewayUpstreamSource = readSource('modules/gateway/upstream/request.ts')
 const upstreamRequestTimeoutSource = sourceFunctionBlock(gatewayUpstreamSource, 'export function upstreamRequestTimeoutMs')
-assert.match(upstreamRequestTimeoutSource, /settings\.textFirstResponseTimeoutSeconds/, '首包等待上限应统一用于上游首个响应等待')
+const gatewayTimeoutProfileSource = readSource('modules/gateway/policy/timeout-profile.ts')
+const buildGatewayTimeoutProfileSource = sourceFunctionBlock(gatewayTimeoutProfileSource, 'export function gatewayTimeoutProfileForLane')
+assert.match(buildGatewayTimeoutProfileSource, /settings\.textFirstResponseTimeoutSeconds/, '文本首包等待上限必须进入统一 timeout profile')
+assert.match(upstreamRequestTimeoutSource, /return profile\.firstResponseTimeoutMs/, '上游首个响应等待必须消费统一 timeout profile')
 assert.doesNotMatch(upstreamRequestTimeoutSource, /isEffectiveOpenAIStreamRequest|streamCircuitBreakerEnabled/, '非流式请求也必须应用首包等待上限，不能只在流式熔断开启时生效')
 
 const releaseStartScriptSource = readFileSync(resolve(backendSrcDirectory, '../../deploy/start.sh'), 'utf8')

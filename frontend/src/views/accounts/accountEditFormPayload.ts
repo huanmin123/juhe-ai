@@ -1,5 +1,6 @@
 import type {
   AccountSummary,
+  ProviderProtocolProfileDefinition,
   ProviderModelApiProtocol,
   ProviderModelPricing,
   ProviderModelReasoningEffort,
@@ -26,6 +27,31 @@ export function providerModelsToOptions(models: ProviderModelPricing[]): Account
     supportedReasoningEfforts: item.supportedReasoningEfforts,
     defaultReasoningEffort: item.defaultReasoningEffort
   }))
+}
+
+export function providerModelsForProtocolProfile(
+  models: AccountModelSelectOption[],
+  profile?: ProviderProtocolProfileDefinition
+): AccountModelSelectOption[] {
+  const allowedProtocols = providerProfileModelProtocols(profile)
+  if (!allowedProtocols.size) return models
+  return models.filter((item) => {
+    const protocols = item.supportedApiProtocols ?? []
+    return protocols.length === 0 || protocols.some((protocol) => allowedProtocols.has(protocol))
+  })
+}
+
+function providerProfileModelProtocols(profile?: ProviderProtocolProfileDefinition): Set<ProviderModelApiProtocol> {
+  const endpointProtocols = (profile?.endpointFamilies ?? [])
+    .map((family) => typeof family === 'string' ? family : family.code)
+    .filter((value): value is ProviderModelApiProtocol => Boolean(value))
+  if (endpointProtocols.length) return new Set(endpointProtocols)
+  if (profile?.protocolCode === 'openai') return new Set(['chat_completions', 'responses'])
+  if (profile?.protocolCode === 'anthropic') return new Set(['messages', 'message_token_counting'])
+  if (profile?.protocolCode === 'gemini') {
+    return new Set(['generate_content', 'stream_generate_content', 'count_tokens', 'embed_content', 'interactions'])
+  }
+  return new Set()
 }
 
 export function cloneAccountName(name: string): string {

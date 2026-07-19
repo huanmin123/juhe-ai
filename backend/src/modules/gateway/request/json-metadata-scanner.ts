@@ -103,6 +103,16 @@ export function extractGatewayJsonBodyMetadata(rawBody: Buffer): GatewayJsonBody
       metadata.reasoningEffort = normalizeUsageReasoningEffort(result.value) ?? metadata.reasoningEffort
       metadata.invalidJson = metadata.invalidJson || !result.ok
       index = result.nextIndex
+    } else if (key.value === 'output_config') {
+      const result = readJsonObjectStringProperty(rawBody, index, 'effort')
+      metadata.reasoningEffort = normalizeUsageReasoningEffort(result.value) ?? metadata.reasoningEffort
+      metadata.invalidJson = metadata.invalidJson || !result.ok
+      index = result.nextIndex
+    } else if (key.value === 'generationConfig') {
+      const result = readJsonObjectNestedStringProperty(rawBody, index, ['thinkingConfig', 'thinkingLevel'])
+      metadata.reasoningEffort = normalizeUsageReasoningEffort(result.value) ?? metadata.reasoningEffort
+      metadata.invalidJson = metadata.invalidJson || !result.ok
+      index = result.nextIndex
     } else if (key.value === 'stream') {
       const booleanValue = readJsonBoolean(rawBody, index)
       if (booleanValue) {
@@ -195,8 +205,16 @@ function readJsonObjectStringProperty(
   index: number,
   propertyName: string
 ): { nextIndex: number; value?: string; ok: boolean } {
+  return readJsonObjectNestedStringProperty(rawBody, index, [propertyName])
+}
+
+function readJsonObjectNestedStringProperty(
+  rawBody: Buffer,
+  index: number,
+  propertyPath: readonly string[]
+): { nextIndex: number; value?: string; ok: boolean } {
   index = skipJsonWhitespace(rawBody, index)
-  if (rawBody[index] !== jsonObjectOpenByte) {
+  if (!propertyPath.length || rawBody[index] !== jsonObjectOpenByte) {
     const skipped = skipJsonValue(rawBody, index)
     return { nextIndex: skipped.nextIndex, ok: skipped.ok }
   }
@@ -217,11 +235,19 @@ function readJsonObjectStringProperty(
     index = skipJsonWhitespace(rawBody, key.nextIndex)
     if (rawBody[index] !== jsonColonByte) return { nextIndex: rawBody.length, value, ok: false }
     index = skipJsonWhitespace(rawBody, index + 1)
-    if (key.value === propertyName) {
-      const propertyValue = readJsonStringToken(rawBody, index)
-      if (propertyValue) {
-        value = propertyValue.value
-        index = propertyValue.nextIndex
+    if (key.value === propertyPath[0]) {
+      if (propertyPath.length === 1) {
+        const propertyValue = readJsonStringToken(rawBody, index)
+        if (propertyValue) {
+          value = propertyValue.value
+          index = propertyValue.nextIndex
+          continue
+        }
+      } else {
+        const nested = readJsonObjectNestedStringProperty(rawBody, index, propertyPath.slice(1))
+        if (!nested.ok) return { nextIndex: nested.nextIndex, value, ok: false }
+        value = nested.value ?? value
+        index = nested.nextIndex
         continue
       }
     }

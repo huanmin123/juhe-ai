@@ -37,7 +37,7 @@ assert.notEqual(
 
 assert.equal(
   PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE,
-  '2026-07-15',
+  '2026-07-18',
   'W2 provider model catalog snapshot as-of date must remain explicit and fixed'
 )
 
@@ -60,6 +60,41 @@ for (const item of listProviderModelPricingAsOf('deepseek', PROVIDER_MODEL_CATAL
 const geminiModels = new Set(listProviderModelPricingAsOf('gemini', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE).map((item) => item.model))
 assert.equal(geminiModels.has('gemini-embedding-001'), false, 'Gemini embedding 001 shut down on 2026-07-14')
 assert.equal(modelAtSnapshot('gemini', 'gemini-embedding-2').inputUsdPer1M, 0.2, 'Gemini Embedding 2 text price must match official pricing')
+assert(modelAtSnapshot('gemini', 'gemini-3.5-flash').supportedApiProtocols.includes('interactions'), 'Gemini 3.5 Flash must expose the official Interactions protocol')
+assert(modelAtSnapshot('gemini', 'gemini-2.5-pro').supportedApiProtocols.includes('interactions'), 'Gemini 2.5 Pro must expose the official Interactions protocol')
+
+const grok43 = modelAtSnapshot('xai', 'grok-4.3')
+assert.equal(grok43.contextWindowTokens, 1_000_000, 'Grok 4.3 context window must match official xAI models')
+assert.equal(grok43.inputUsdPer1M, 1.25, 'Grok 4.3 input price must match official xAI pricing')
+assert.equal(grok43.cachedInputUsdPer1M, 0.2, 'Grok 4.3 cached input price must match official xAI pricing')
+assert.equal(grok43.outputUsdPer1M, 2.5, 'Grok 4.3 output price must match official xAI pricing')
+assert.deepEqual(grok43.supportedApiProtocols, ['chat_completions', 'responses'])
+assert.deepEqual(grok43.supportedServiceTiers, ['priority'])
+assert.equal(grok43.serviceTierPrices.priority?.inputUsdPer1M, 2.5, 'xAI priority pricing is 2x standard input')
+assert.equal(grok43.longContextInputTokenThreshold, 200_000, 'xAI long-context threshold must be explicit')
+assert.equal(grok43.longContextInputTokenThresholdInclusive, true, 'xAI long-context pricing starts at the 200k boundary')
+assert.equal(grok43.longContextInputCostMultiplier, 2, 'xAI long-context input multiplier must be explicit')
+assert.equal(grok43.longContextOutputCostMultiplier, 2, 'xAI long-context output multiplier must be explicit')
+assert.equal(modelAtSnapshot('xai', 'grok-imagine-image').outputUsdPerImage, 0.02, 'xAI standard image price must match official pricing')
+for (const model of [
+  'grok-4.5',
+  'grok-4.3',
+  'grok-4.20-0309-reasoning',
+  'grok-4.20-0309-non-reasoning',
+  'grok-build-0.1',
+  'grok-4.20-multi-agent-0309'
+]) {
+  const item = modelAtSnapshot('xai', model)
+  assert.deepEqual(item.inputModalities, ['text', 'image'], `${model} must retain official text and image input capability`)
+  assert.deepEqual(item.supportedReasoningEfforts, [], `${model} must not invent unverified reasoning_effort values`)
+  assert.equal(item.defaultReasoningEffort, undefined, `${model} must not invent a default reasoning effort`)
+  assert.deepEqual(item.supportedTools, [], `${model} must not expose unmetered server-side paid tools`)
+}
+assert.equal(
+  modelAtSnapshot('gemini', 'gemini-3.1-pro-preview').longContextInputTokenThresholdInclusive,
+  false,
+  'Gemini long-context pricing remains strictly above 200k'
+)
 
 for (const [model, context, output] of [
   ['glm-5.1', 200_000, 128_000],
@@ -92,7 +127,10 @@ for (const [model, context] of [
 
 const anthropicModels = listProviderModelPricingAsOf('anthropic', PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE)
 assert(anthropicModels.every((item) => item.supportedServiceTiers.length === 0), 'Anthropic supports_service_tier boolean must not invent an OpenAI service tier token')
-assert(anthropicModels.some((item) => item.model === 'claude-sonnet-5' && item.catalogVisible !== false), 'Claude Sonnet 5 must be public')
+const claudeSonnet5 = modelAtSnapshot('anthropic', 'claude-sonnet-5')
+assert(claudeSonnet5.catalogVisible !== false, 'Claude Sonnet 5 must be public')
+assert.equal(claudeSonnet5.contextWindowTokens, 1_000_000, 'Claude Sonnet 5 context window must match the current official model overview')
+assert.equal(claudeSonnet5.defaultReasoningEffort, 'high', 'Claude Sonnet 5 effort default must match the official effort documentation')
 for (const alias of ['best', 'fable', 'opus', 'opus[1m]', 'opusplan', 'sonnet', 'sonnet[1m]', 'haiku']) {
   assert.equal(anthropicModels.find((item) => item.model === alias)?.catalogVisible, false, `Claude Code alias ${alias} must remain hidden pricing metadata`)
 }
@@ -124,7 +162,7 @@ assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated ca
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(
   normalizeSnapshotLineEndings(
-    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000054_w2_sync_provider_model_catalog_20260716.sql'), 'utf8')
+    readFileSync(resolve(process.cwd(), '../backend-go/db/migrations/000059_w2_sync_provider_model_catalog_20260718.sql'), 'utf8')
   ),
   normalizeSnapshotLineEndings(providerModelCatalogSnapshotSQL),
   'unified provider catalog seed migration must match the generated current-schema snapshot'

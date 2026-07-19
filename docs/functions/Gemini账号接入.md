@@ -5,12 +5,13 @@
 
 ## 范围
 
-本文记录 Google Gemini 供应商的接入设计、协议档案、账户创建类型、网关透传边界、`gemini-cli` 兼容方式、模型目录、usage 统计和后续验证要求。后端和前端 mock 阶段实现已落地；后续真实联调以本文和 [Gemini 协议兼容设计](Gemini协议兼容设计.md) 为长期功能事实。
+本文记录 Google Gemini 供应商的接入设计、协议档案、账户创建类型、网关透传边界、`gemini-cli` 兼容方式、Interactions API、模型目录、usage 统计和后续验证要求。后端和前端 mock 阶段实现已落地；后续真实联调以本文和 [Gemini 协议兼容设计](Gemini协议兼容设计.md) 为长期功能事实。
 
-本次目标包含两个 Gemini 供应商档案：默认 Gemini 原生协议直连，以及 Gemini 官方 OpenAI Chat 兼容直连。Gemini 官方 OpenAI compatibility 已可承接 OpenAI Chat Completions 客户端，因此本项目不为 Gemini 单独实现 OpenAI Chat / Responses 到 Gemini native 的协议映射，也不把 Gemini native 伪装成 OpenAI Responses。客户端发送什么协议，网关就按对应协议档案直连对应上游：
+本次目标包含两个 Gemini 协议档案和三个请求面：Gemini 原生 GenerateContent / Interactions 直连共用 native 档案，另有 Gemini 官方 OpenAI Chat 兼容直连档案。Gemini 官方 OpenAI compatibility 已可承接 OpenAI Chat Completions 客户端，因此本项目不把 Gemini native 或 Interactions 伪装成 OpenAI Responses；只有混合供应商账户才负责显式跨协议桥接。客户端发送什么协议，网关就按对应协议档案直连对应上游：
 
 - Gemini native 客户端：走 `gemini/v1beta` 原生协议档案。
 - OpenAI Chat 客户端：走 Gemini 供应商下的 `profile_gemini_openai_chat_v1beta`，上游为 Gemini 官方 OpenAI compatibility endpoint。
+- Interactions 客户端：走 `profile_gemini_native_v1beta` 的 `/v1beta/interactions` 资源族；创建流式 Interaction 时在 POST body 发送 `stream: true` 并使用 `Accept: text/event-stream`，读取既有 Interaction 的流时使用 `GET /v1beta/interactions/{id}?stream=true`，SSE 事件类型来自 JSON `event_type`。
 - Codex / OpenAI Responses 客户端：如果要使用 Gemini OpenAI Chat，可命中显式配置 `responses -> chat_completions` 的普通 Gemini OpenAI Chat 账户；如果要使用 Gemini native 转换，必须命中混合供应商账户。不允许走 Gemini native 自动转换，也不允许 Anthropic Messages 自动转到 Gemini。
 - Gemini CLI / Gemini SDK 如果要调用 GLM、DeepSeek、OpenAI-compatible 或 Gemini OpenAI Chat 的 Chat 模型，或者调用 Claude / Anthropic Messages 模型，必须命中混合供应商账户；不做基于模型名或客户端画像的自动转换。
 
@@ -25,21 +26,22 @@
 
 - 新增供应商：`gemini`。
 - 新增原生协议：`gemini/v1beta`，优先支持 Gemini API Developer API 的 REST / SSE 形态。
-- 默认账户类型：Gemini API Key，底层仍为 `accounts.type = api_key`。
+- 默认账户类型：Gemini API Key，底层仍为 `accounts.type = api_key`；另外支持用户授权的 Google OAuth，底层为 `accounts.type = google_oauth`。
 - 默认协议档案：`profile_gemini_native_v1beta`。
 - 默认 Base URL：`https://generativelanguage.googleapis.com`。
-- 默认本地调用路径支持 `/v1beta/models/{model}:generateContent`、`/v1beta/models/{model}:streamGenerateContent`、`/v1beta/models/{model}:countTokens`、`/v1beta/models/{model}:embedContent`、`/v1beta/models`。
-- Files、Cached Contents、Batch / long-running operations、Live API / Interactions 等能力按 Gemini native endpoint family 预留；实现时必须逐项落到 endpoint mode，不能把未验证能力默认标为稳定。
+- 默认本地调用路径支持 `/v1beta/models/{model}:generateContent`、`/v1beta/models/{model}:streamGenerateContent`、`/v1beta/models/{model}:countTokens`、`/v1beta/models/{model}:embedContent`、`/v1beta/interactions`、`/v1beta/interactions/{id}`、`/v1beta/interactions/{id}/cancel`、`/v1beta/models`。
+- Files、Cached Contents、Batch / long-running operations、Live API 等能力按 Gemini native endpoint family 预留；Interactions 已落地，但仍按独立 endpoint mode 管理，不能与 GenerateContent 的 JSON / SSE 语义混用。
 - `gemini-cli` 验收主路径使用 `GOOGLE_GEMINI_BASE_URL` 指向本项目本地网关，并用 `GEMINI_API_KEY` 填本地 API Key；不要使用 Gemini CLI 的 Google 登录 / Code Assist 内部接口作为本次目标。
 
 ## 当前落地状态
 
-截至 `2026-06-25`：
+截至 `2026-07-18`：
 
 - 已完成设计文档、计划文档、后端 Gemini native 协议 / 供应商驱动、Gemini OpenAI Chat 兼容档案、默认种子、模型目录、usage / error / SSE 解析和 mockai 回归。
 - 已完成前端 Gemini fallback provider、协议识别、endpoint mode 默认值与校验。
 - 已完成 Gemini OpenAI Chat mockai 覆盖：OpenAI Chat 直连、普通 Gemini OpenAI Chat 账号通过显式 `responses -> chat_completions` 承接 Codex / Responses、Anthropic Messages 映射禁用。
-- 已完成 Gemini native mockai 覆盖：`generateContent` / `streamGenerateContent` 原生直连、普通 Gemini native / OpenAI-compatible / Anthropic 账号不再通过旧显式混合映射承接跨协议请求。
+- 已完成 Gemini native mockai 覆盖：`generateContent` / `streamGenerateContent` / `Interactions` 原生直连、普通 Gemini native / OpenAI-compatible / Anthropic 账号不再通过旧显式混合映射承接跨协议请求。
+- 已完成 Google OAuth 账户凭据准备：可使用已有 `access_token`，或用 `refresh_token + client_id + client_secret` 通过官方 Google OAuth token endpoint 刷新；token 交换使用单飞缓存并与下游请求取消解耦，复用账户绑定代理、独立 20 秒超时、请求时 DNS SSRF 校验和 `256 KiB` 有界 JSON 读取，可选透传 `x-goog-user-project`，不发送 API key。
 - 已按 Google 官方 Gemini API Models / Pricing 页面核对内置 Gemini 模型目录；内置目录只收录 Google 官方模型 ID，不收录 `vsllm.com` 等中转商自定义的 `*-antigravity*` 型号。
 - 已安装本机 `gemini` CLI `0.47.0`。
 - 已使用真实 `vsllm.com` 账号执行 Gemini OpenAI Chat E2E，覆盖 `/v1/models`、Chat JSON 和 Chat SSE；Responses -> Chat bridge 通过普通账号显式模型别名验收。
@@ -56,7 +58,7 @@ type NativeProtocolVersion = 'v1beta'
 type OpenAIChatProtocolCode = 'openai'
 type OpenAIChatProtocolVersion = 'v1'
 type ProviderProtocolProfileId = 'profile_gemini_native_v1beta' | 'profile_gemini_openai_chat_v1beta'
-type GeminiAccountType = 'api_key'
+type GeminiAccountType = 'api_key' | 'google_oauth'
 ```
 
 建议显示名称为 `Google Gemini`。`gemini` 是 Gemini 官方 API Key 账号池、分组、模型目录、价格目录和响应策略归属。它不能复用 `openai`、`gpt`、`anthropic`、`deepseek` 或 `glm` 的账号池、默认分组和价格目录。
@@ -65,7 +67,7 @@ type GeminiAccountType = 'api_key'
 
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | 默认能力 |
 | --- | --- | --- | --- | --- | --- |
-| `profile_gemini_native_v1beta` | `gemini` | `gemini/v1beta` | `https://generativelanguage.googleapis.com` | Gemini API Key | `generate_content_json`、`generate_content_sse`、`count_tokens` |
+| `profile_gemini_native_v1beta` | `gemini` | `gemini/v1beta` | `https://generativelanguage.googleapis.com` | Gemini API Key / Google OAuth | `generate_content_json`、`generate_content_sse`、`count_tokens`、`interactions_json`、`interactions_sse` |
 | `profile_gemini_openai_chat_v1beta` | `gemini` | `openai/v1` | `https://generativelanguage.googleapis.com/v1beta/openai` | Gemini API Key | `chat_json`、`chat_sse` |
 
 可选 endpoint modes：
@@ -75,6 +77,8 @@ type GeminiAccountType = 'api_key'
 | `generate_content_json` | `POST /v1beta/models/{model}:generateContent` | 默认启用 |
 | `generate_content_sse` | `POST /v1beta/models/{model}:streamGenerateContent?alt=sse` | 默认启用 |
 | `count_tokens` | `POST /v1beta/models/{model}:countTokens` | 默认启用 |
+| `interactions_json` | `POST /v1beta/interactions`、`GET /v1beta/interactions/{id}`、`DELETE /v1beta/interactions/{id}`、`POST /v1beta/interactions/{id}/cancel` | 可选启用；使用 Interaction JSON / 资源操作语义 |
+| `interactions_sse` | `POST /v1beta/interactions` + body `stream: true`、`GET /v1beta/interactions/{id}?stream=true`，均使用 `Accept: text/event-stream` | 可选启用；事件类型读取 JSON `event_type`，不追加 `alt=sse` |
 | `models` | `GET /v1beta/models`、`GET /v1beta/models/{model}` | 本地目录响应，不作为账户 endpoint mode 保存 |
 | `embed_content` | `POST /v1beta/models/{model}:embedContent`、`batchEmbedContents` | 账号可选启用，先 mock 验证 |
 | `files` | `/upload/v1beta/files`、`/v1beta/files/*` | 账号可选启用，必须流式处理上传 |
@@ -95,21 +99,30 @@ type GeminiAccountType = 'api_key'
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 |
 | --- | --- | --- | --- | --- |
 | Gemini API Key | `api_key` | `profile_gemini_native_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes` | `gemini-3.5-flash` |
+| Gemini Google OAuth | `google_oauth` | `profile_gemini_native_v1beta` | `access_token`（可选 `expires_at`）或 `refresh_token` + `client_id` + `client_secret`、可选 `quota_project_id` / `base_url` | `gemini-3.5-flash` |
 | Gemini OpenAI Chat API Key | `api_key` | `profile_gemini_openai_chat_v1beta` | `api_key`、`base_url`、`supported_endpoint_modes`、可选同协议 `modelMappings` | `gemini-3.5-flash` |
 
 保存规则：
 
 - API Key 加密保存；列表不展示，编辑弹窗可查看和修改。
 - Gemini native `base_url` 默认 `https://generativelanguage.googleapis.com`；Gemini OpenAI Chat `base_url` 默认 `https://generativelanguage.googleapis.com/v1beta/openai`。二者都允许修改为同协议代理地址，但必须通过 SSRF 防护。
-- Gemini native `credentials.supported_endpoint_modes` 省略时默认 `['generate_content_json', 'generate_content_sse', 'count_tokens']`；Gemini OpenAI Chat 省略时默认 `['chat_json', 'chat_sse']`。模型列表由本地目录响应，不写入账户 endpoint mode。
+- Gemini native API Key / Google OAuth 的 `credentials.supported_endpoint_modes` 省略时默认 `['generate_content_json', 'generate_content_sse', 'count_tokens', 'interactions_json', 'interactions_sse']`；Gemini OpenAI Chat 省略时默认 `['chat_json', 'chat_sse']`。模型列表由本地目录响应，不写入账户 endpoint mode。
 - 新建账户默认写入 `pending_test`，测试通过后才允许调度。
-- Gemini native API Key 账户不展示 OpenAI Organization、OpenAI Project、Anthropic Version、Anthropic Beta、Codex Responses、Claude Code 客户端兼容或 GPT OAuth 字段。
-- Gemini OpenAI Chat API Key 账户只保存真实上游能力 `chat_json`、`chat_sse`。如果要承接 Codex / Responses，可在普通账号 `modelMappings` 中显式声明 `responses -> chat_completions`；如果要承接 Gemini native 下游，必须通过混合供应商账户表达跨协议转换。
+- Gemini native API Key / Google OAuth 账户不展示 OpenAI Organization、OpenAI Project、Anthropic Version、Anthropic Beta、Codex Responses、Claude Code 客户端兼容或 GPT OAuth 字段。
+- Gemini OpenAI Chat 档案当前只开放 API Key，账户只保存真实上游能力 `chat_json`、`chat_sse`。如果要承接 Codex / Responses，可在普通账号 `modelMappings` 中显式声明 `responses -> chat_completions`；如果要承接 Gemini native 下游，必须通过混合供应商账户表达跨协议转换。
 - 同一上游 Gemini Key 如需同时给 Gemini native 直连和 OpenAI-compatible 客户端使用，建议创建两个本地账户：一个走 `profile_gemini_native_v1beta`，另一个走 `profile_gemini_openai_chat_v1beta`。跨协议桥接由混合供应商账户决定，不把同一个普通账户同时伪装成 Gemini native 上游和 OpenAI Chat 上游。
+
+### Google OAuth 认证边界
+
+- `google_oauth` 不是 Gemini CLI 的 `LOGIN_WITH_GOOGLE` 或 Code Assist 内部登录；它只接受用户已经取得的 Google OAuth access / refresh token，并在本地进程内按 60 秒提前量刷新。
+- 只有已有有效 `access_token` 时可以省略刷新字段；没有 `refresh_token` 的 access-only 账户按静态 token 使用，不会自动刷新。配置 `refresh_token` 时必须同时提供 `client_id` 与 `client_secret`。刷新请求发送到官方 `https://oauth2.googleapis.com/token`，使用 `application/x-www-form-urlencoded`，不会把 token 写入 URL 或错误文本。
+- Google token refresh 复用账户绑定代理，使用独立 20 秒超时、请求时 DNS SSRF 校验和 `256 KiB` 响应上限；超限或非 JSON 响应直接失败，不把响应原文或 refresh token 拼入错误消息。
+- 可选 `quota_project_id` 会作为 `x-goog-user-project` 发送；Google OAuth 账户不发送 `x-goog-api-key`。请求链路只缓存短期 access token，进程重启后按保存凭据重新准备，不把 OAuth token 写入模型目录或日志。
+- 当前不实现 Google Cloud ADC 文件发现、Service Account JWT、Workspace 管理授权、Vertex AI 或 Code Assist 内部 `cloudcode-pa.googleapis.com` 接口；这些应另立供应商 / 协议档案。
 
 当前不纳入目标：
 
-- Google 个人账号 OAuth / Gemini CLI `LOGIN_WITH_GOOGLE`。
+- Gemini CLI `LOGIN_WITH_GOOGLE` 的完整登录编排和 Google 个人账号订阅 OAuth UI。
 - Code Assist 内部接口 `https://cloudcode-pa.googleapis.com/v1internal:*`。
 - Vertex AI Gemini。
 - Google Workspace / 企业授权。
@@ -131,6 +144,10 @@ Gemini native 入口使用 Google Gemini API 路径，不复用 OpenAI Chat / Re
 | `/v1beta/models/{model}:streamGenerateContent` | `POST` | SSE 流式生成 | `<base_url>/v1beta/models/{model}:streamGenerateContent?alt=sse` |
 | `/v1beta/models/{model}:countTokens` | `POST` | Token 计数 | `<base_url>/v1beta/models/{model}:countTokens` |
 | `/v1beta/models/{model}:embedContent` | `POST` | Embedding | `<base_url>/v1beta/models/{model}:embedContent` |
+| `/v1beta/interactions` | `POST` | Interactions JSON；body `stream: true` + SSE Accept 时为流式创建 | `<base_url>/v1beta/interactions` |
+| `/v1beta/interactions/{id}?stream=true` | `GET` | 流式读取 Interaction 资源 | `<base_url>/v1beta/interactions/{id}?stream=true` |
+| `/v1beta/interactions/{id}` | `GET` / `DELETE` | 查询 / 删除 Interaction 资源 | `<base_url>/v1beta/interactions/{id}` |
+| `/v1beta/interactions/{id}/cancel` | `POST` | 取消 Interaction | `<base_url>/v1beta/interactions/{id}/cancel` |
 
 本地认证：
 
@@ -138,7 +155,7 @@ Gemini native 入口使用 Google Gemini API 路径，不复用 OpenAI Chat / Re
 - 同时支持 Gemini SDK 常见的 `x-goog-api-key: <本地 API Key>`。
 - 兼容官方 curl 示例中的 `?key=<本地 API Key>`，但进入上游前必须移除本地 query key。
 - 如果多种凭据同时存在，优先级为 `Authorization` -> `x-goog-api-key` -> query `key`，并在审计摘要记录本地认证来源。
-- 上游请求必须替换为命中账户的 Gemini API Key，优先写 `x-goog-api-key`；不能把本地 API Key 或本地 query `key` 透传上游。
+- API Key 账户的上游请求必须替换为账户 Gemini API Key，优先写 `x-goog-api-key`；Google OAuth 账户改用 `Authorization: Bearer <access_token>`，并在配置时可附带 `x-goog-user-project`。任何账户都不能把本地 API Key 或本地 query `key` 透传上游。
 
 请求体：
 
@@ -151,6 +168,11 @@ Gemini native 入口使用 Google Gemini API 路径，不复用 OpenAI Chat / Re
 
 - JSON 响应保留 Gemini `GenerateContentResponse` 形态。
 - SSE 响应按 `data: <GenerateContentResponse JSON>` 逐块透传；不要改成 OpenAI `chat.completion.chunk` 或 Responses 事件。
+- Interactions JSON 保留官方 `interaction` 对象、`steps`、`status` 和 `metadata.total_usage` 字段；Interactions SSE 从每个 `data:` JSON 的 `event_type` 读取 `step.delta`、`interaction.completed` 或 `interaction.failed`，同时保留 payload 自身的 `type` 字段，不合成 GenerateContent chunk。`metadata.total_usage` 是累计快照，流式检查只保留最新已报告累计值，不能把多帧重复相加。
+- `DELETE /v1beta/interactions/{id}` 的任意 2xx（包括 204）允许空响应体，按零 usage 成功完成，不触发空响应惩罚、账号切换或重试；该例外不扩散到 GET、collection、cancel 或非 2xx 响应。
+- Interactions 请求未显式提供 `Api-Revision` 时，上游默认使用 `2026-05-20`；客户端显式值保持不变。POST body 的 `stream: true` 会强制上游 `Accept: text/event-stream`，反过来 SSE Accept 也会在上游 body 补 `stream: true`。
+- 创建成功后，网关只提取 Interaction ID 作为协议内部元数据，不依赖成功响应审计正文是否开启；映射按系统账户和 API Key 隔离，并记录实际分组、provider、协议档案和创建账号。普通模式使用最多 20000 条、7 天 TTL 的进程内 LRU，进程重启会丢失该亲和状态；performance 模式使用 Redis runtime state 并在资源访问时续期，Redis 状态保留时可跨网关进程重启继续命中。
+- `GET`、`cancel` 和 `DELETE` 必须命中创建该资源的账号；亲和记录缺失（包括普通模式进程重启后）返回 `404 interaction_affinity_not_found`，创建账号不可用返回 `interaction_affinity_account_unavailable`，不能切换到其他账号或后备分组。DELETE 成功后移除映射；通过其他 API Key 创建或直接在上游创建的资源不能由当前 API Key 猜测账号访问。
 - 本地错误使用 Google API error shape：`{ "error": { "code": number, "message": string, "status": string, "details": [] } }`。
 
 ## gemini-cli 兼容方式
@@ -238,10 +260,10 @@ Gemini 模型目录必须单独维护在 `providerCode = gemini` 下。
 
 - `providerCode = gemini`。
 - `model` 使用官方模型 ID，保留连字符和大小写。
-- 文本生成模型的 `supportedApiProtocols` 同时包含 `chat_completions`、`generate_content`、`stream_generate_content`、`count_tokens`；`chat_completions` 仅表示可作为 Gemini OpenAI Chat 档案上游，不表示 Gemini native 可接收 OpenAI 请求。
+- 文本生成模型的 `supportedApiProtocols` 按 Google 官方端点表记录 `chat_completions`、`generate_content`、`stream_generate_content`、`count_tokens` 和已确认支持的 `interactions`；`chat_completions` 仅表示可作为 Gemini OpenAI Chat 档案上游，不表示 Gemini native 可接收 OpenAI 请求。`gemini-3.1-pro-preview-customtools` 当前不因同族名称自动继承 `interactions`。
 - Embedding 模型按能力填 `embed_content`。
 - `contextWindowTokens`、`maxOutputTokens`、`releaseDate`、`shutdownDate` 以官方模型文档或 Models API 为准；不确定时留空，不编造。
-- 官方价格按 Google Pricing 页 Standard 价记录；当前本项目价格模型无法表达 Gemini Pro 的 `<=200k` / `>200k` 分档，内置基础价只用于目录展示和普通估算，后续需要分档计费时应扩展价格结构。
+- 官方价格按 Google Pricing 页 Standard / Priority / Flex 分档记录；Gemini Pro 的 `<=200k` / `>200k` 输入分档通过长上下文阈值和倍率计费。Interactions 的 token usage 复用 Gemini 语义，但远端步骤 / 工具执行费用若有单独价格，当前 schema 不能单独落账。
 - Gemini native 模型不进入官方 Anthropic 目录；Gemini OpenAI Chat 档案作为 `protocolCode = openai` 的直连档案，会进入 OpenAI-compatible 协议模型池，供普通 Chat 直连和后续混合供应商账户选择真实上游模型。
 - `GET /v1beta/models` 默认由本地目录返回，不在网关热路径请求上游。
 
@@ -261,6 +283,7 @@ Gemini native usage 语义不能按 OpenAI `prompt_tokens/completion_tokens` 或
 | `usageMetadata.toolUsePromptTokenCount` | 工具相关输入 token |
 | `usageMetadata.promptTokensDetails[]` | 多模态输入明细 |
 | `usageMetadata.candidatesTokensDetails[]` | 多模态输出明细 |
+| `metadata.total_usage.input_tokens` / `output_tokens` / `thought_tokens` / `cached_tokens` | Interactions JSON / SSE 的累计输入、输出、思考和缓存 token 快照 |
 
 策略：
 
@@ -268,6 +291,7 @@ Gemini native usage 语义不能按 OpenAI `prompt_tokens/completion_tokens` 或
 - 保存 Gemini 原生 usage 摘要，保留未知 usage 字段的有界 raw 片段用于后续修正。
 - 成本按 `providerCode = gemini` 和实际计价模型查找。
 - 缓存、thinking、多模态 token 不要折叠成普通 input / output 后丢失来源。
+- Interactions 的 `total_*_tokens` 与 GenerateContent `usageMetadata` 统一归一到 Gemini usage semantic；步骤事件和终止状态只作为响应语义，不重复计费。
 - 业务统计、授权额度、趋势和 TopN 仍必须由 worker 增量聚合，不在 API 路由扫描明细。
 
 ## 分组、授权与 API Key 路由
@@ -339,14 +363,16 @@ Gemini 账户测试必须复用真实网关链路。
 - 新增 `profile_gemini_native_v1beta`、`profile_gemini_openai_chat_v1beta` 和默认 Gemini 分组。
 - 新增 Gemini native ProtocolDriver：路径识别、模型提取、本地错误 shape、JSON / SSE 语义帧、Gemini 模型列表响应。
 - 新增 Gemini ProviderDriver：凭据归一化、Base URL 拼接、`x-goog-api-key` 上游认证、query `key` 清理、账号测试请求。
-- 前端账户创建支持 Gemini API Key、Base URL、endpoint modes，并区分 Gemini 原生和 Gemini OpenAI Chat。
+- 新增 Google OAuth 凭据准备：access token 直用、refresh token 官方交换、60 秒提前量缓存和单飞刷新；OAuth 账户按 `x-goog-user-project` 发送 quota project，不发送上游 API Key。
+- 前端账户创建支持 Gemini API Key、Google OAuth、Base URL、endpoint modes，并区分 Gemini 原生和 Gemini OpenAI Chat。
 - 网关本地认证支持 `Authorization`、`x-goog-api-key`、query `key`。
 - 新增 Gemini native response semantic：文本、thought、functionCall、functionResponse、inlineData、fileData、finishReason、safetyRatings、promptFeedback、usageMetadata。
+- 新增 Gemini Interactions response semantic：JSON `interaction/steps`、SSE JSON `event_type`、`interaction.completed` / `interaction.failed` 和 `metadata.total_usage` 累计 usage。
 - 新增 Gemini 模型目录和价格目录。
 - 新增 `usage_semantic = gemini`。
 - Gemini OpenAI Chat 档案使用 OpenAI usage semantic；普通 Gemini OpenAI Chat 账号可通过显式 `responses -> chat_completions` 模型别名启用 Responses-to-Chat bridge。Gemini native 到 Chat bridge 仅在后续混合供应商账户命中时生效，并在下游还原 Gemini JSON / SSE。
 - mockai 覆盖 JSON、SSE、countTokens、模型列表、Gemini error object、流内坏 chunk、usage。
-- 新增真实 Gemini OpenAI Chat E2E 脚本和真实 `gemini-cli` E2E 脚本，并已用真实 `vsllm.com` 账号执行通过。
+- 新增 Google OAuth / Interactions 定向回归，以及真实 Gemini OpenAI Chat E2E 脚本和真实 `gemini-cli` E2E 脚本；真实 E2E 仍需用户提供可用账号和网络条件，不能用 mock 结果替代。
 - 更新导入协议、接口契约、SQLite 存储说明、模型目录清洗、模型价格和测试说明。
 
 ## 验证要求
@@ -354,13 +380,14 @@ Gemini 账户测试必须复用真实网关链路。
 正式落地后至少覆盖：
 
 - 默认创建 Gemini API Key 账户后落到 `profile_gemini_native_v1beta`；显式选择 Gemini OpenAI Chat 时落到 `profile_gemini_openai_chat_v1beta`。
-- 新 Gemini native 账户默认 `supported_endpoint_modes = generate_content_json/generate_content_sse/count_tokens`；新 Gemini OpenAI Chat 账户默认 `chat_json/chat_sse`。
+- 新 Gemini native API Key / Google OAuth 账户默认 `supported_endpoint_modes = generate_content_json/generate_content_sse/count_tokens/interactions_json/interactions_sse`；新 Gemini OpenAI Chat 账户默认 `chat_json/chat_sse`。
 - Gemini 账户只能加入相同供应商的分组，协议档案由账户接入类型决定。
 - 本地 `x-goog-api-key`、`Authorization` 和 query `key` 都可作为本地 API Key 认证来源。
-- 上游请求使用账户 `x-goog-api-key`，不泄漏本地 Key。
+- API Key 账户上游请求使用账户 `x-goog-api-key`，Google OAuth 账户使用 Bearer token 和可选 `x-goog-user-project`，均不泄漏本地 Key 或 refresh token。
 - `POST /v1beta/models/gemini-3.5-flash:generateContent` JSON 返回 Gemini 原生 response。
 - `POST /v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse` 能增量转发 SSE。
 - `POST /v1beta/models/gemini-3.5-flash:countTokens` 返回 Gemini token count shape。
+- `POST /v1beta/interactions` 返回 Interaction JSON；body `stream: true` + `Accept: text/event-stream` 时返回带 JSON `event_type` 的 SSE，且上游 URL 不追加 `alt=sse`。`GET /v1beta/interactions/{id}?stream=true` 进入 SSE 请求元数据、客户端协议画像和 `interactions_sse` endpoint mode；DELETE 2xx 空 body 成功，`POST /v1beta/interactions/{id}/cancel` 可透传。
 - `GET /v1beta/models` 返回本地 Gemini 模型目录。
 - Function calling、thought、inlineData、fileData、safetyRatings、promptFeedback、usageMetadata 不被 OpenAI / Anthropic 适配器破坏。
 - OpenAI Chat 请求不会自动路由到 Gemini native。
@@ -370,6 +397,7 @@ Gemini 账户测试必须复用真实网关链路。
 ## 官方资料
 
 - Gemini API 文档入口：<https://ai.google.dev/gemini-api/docs>
+- Interactions API：<https://ai.google.dev/api/interactions>
 - Generate content API：<https://ai.google.dev/api/generate-content>
 - Text generation：<https://ai.google.dev/gemini-api/docs/text-generation>
 - Function calling：<https://ai.google.dev/gemini-api/docs/function-calling>
@@ -379,5 +407,7 @@ Gemini 账户测试必须复用真实网关链路。
 - Embeddings：<https://ai.google.dev/gemini-api/docs/embeddings>
 - Token counting：<https://ai.google.dev/gemini-api/docs/token-counting>
 - Models：<https://ai.google.dev/gemini-api/docs/models>
+- OAuth：<https://ai.google.dev/gemini-api/docs/oauth>
+- Interactions API：<https://ai.google.dev/gemini-api/docs/interactions-overview>
 - Live API：<https://ai.google.dev/gemini-api/docs/live>
 - Gemini CLI GitHub：<https://github.com/google-gemini/gemini-cli>

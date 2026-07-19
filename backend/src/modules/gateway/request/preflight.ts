@@ -50,6 +50,12 @@ import {
 } from '../protocols/openai-v1/route-helpers.js'
 import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
 import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
+import {
+  geminiInteractionResourceIdFromRequest,
+  isGeminiInteractionResourceRequest,
+  resolveGeminiInteractionAffinityAsync,
+  type GeminiInteractionAffinityBinding
+} from '../protocols/gemini-v1beta/interaction-affinity.service.js'
 import type { ResponseProtocolCode } from '../protocols/openai-v1/response-semantics.js'
 import {
   resolveOpenAIGatewaySessionAffinityKey
@@ -161,6 +167,7 @@ export interface OpenAIGatewayDispatchContext {
   serverRetryBudget: ServerRetryBudget
   downstreamCommitState: GatewayDownstreamCommitState
   sameAccountRetryBudget: SameAccountRetryBudget
+  interactionResourceAffinity?: GeminiInteractionAffinityBinding
   releaseClientIpConcurrency: () => void
 }
 
@@ -319,13 +326,119 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
+  let interactionResourceAffinity: GeminiInteractionAffinityBinding | undefined
+  const interactionResourceRequest = isGeminiInteractionResourceRequest(req)
+  const interactionResourceId = geminiInteractionResourceIdFromRequest(req)
+  if (interactionResourceRequest && !interactionResourceId) {
+    await sendInteractionAffinityFailure({
+      req,
+      res,
+      auditCapture,
+      usageContext: currentGroupUsageContext(),
+      startedAt,
+      statusCode: 400,
+      code: 'interaction_id_invalid',
+      message: 'Interaction 资源 ID 无效'
+    })
+    return undefined
+  }
+  if (interactionResourceId) {
+    try {
+      interactionResourceAffinity = await resolveGeminiInteractionAffinityAsync({
+        req,
+        scope: { systemAccountId, apiKeyId, groupId }
+      })
+    } catch (error) {
+      logger.warn({
+        event: 'gateway_gemini_interaction_affinity_lookup_failed',
+        interactionId: interactionResourceId,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      }, 'Gemini Interaction 账号亲和状态读取失败')
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext(),
+        startedAt,
+        statusCode: 503,
+        code: 'interaction_affinity_unavailable',
+        message: 'Interaction 资源路由状态暂不可用，请稍后重试'
+      })
+      return undefined
+    }
+    if (!interactionResourceAffinity) {
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext(),
+        startedAt,
+        statusCode: 404,
+        code: 'interaction_affinity_not_found',
+        message: '未找到该 Interaction 的本地账号路由记录'
+      })
+      return undefined
+    }
+    const affinityGroupStillBound = !apiKeyId || !apiKeyRecord || apiKeyRecord.group_bindings?.some((binding) => (
+      binding.status === 'active' && binding.group_id === interactionResourceAffinity?.groupId
+    ))
+    if (!affinityGroupStillBound) {
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext(),
+        startedAt,
+        statusCode: 404,
+        code: 'interaction_affinity_not_found',
+        message: '该 Interaction 所属分组已不再绑定当前 API Key'
+      })
+      return undefined
+    }
+
+    groupId = interactionResourceAffinity.groupId
+    identity = { systemAccountId, apiKeyId, groupId }
+    runtimeGroupAccess = await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+    const affinityCandidates = options.candidateAccounts
+      ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
+    runtimeAccounts = affinityCandidates.filter((account) => (
+      account.id === interactionResourceAffinity?.accountId
+      && account.providerCode === interactionResourceAffinity.providerCode
+      && (!interactionResourceAffinity.providerProtocolProfileId
+        || account.providerProtocolProfileId === interactionResourceAffinity.providerProtocolProfileId)
+    ))
+    runtimeAccountDispatchDiagnostics = undefined
+    if (runtimeAccounts.length !== 1) {
+      await sendInteractionAffinityFailure({
+        req,
+        res,
+        auditCapture,
+        usageContext: currentGroupUsageContext({ groupId, groupAccess: runtimeGroupAccess }),
+        startedAt,
+        statusCode: 409,
+        code: 'interaction_affinity_account_unavailable',
+        message: '创建该 Interaction 的上游账号当前不可用'
+      })
+      return undefined
+    }
+    auditCapture.bindContext({ groupId, providerCode: interactionResourceAffinity.providerCode })
+    bindRequestContextFields({ systemAccountId, apiKeyId, groupId, trafficSource })
+    auditCapture.addGatewayMetadata({
+      label: 'gemini_interaction_account_affinity',
+      metadata: {
+        interactionId: interactionResourceId,
+        groupId,
+        accountId: interactionResourceAffinity.accountId
+      }
+    })
+  }
   const initialClientStrategy = resolveOpenAIGatewayClientStrategy(req, {
     systemAccountId,
     apiKeyId,
     groupId,
     endpoint
   })
-  if (!initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
+  if (!interactionResourceAffinity && !initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord && apiKeyRecord.route_strategy_mode !== 'hybrid_smart') {
     const previousGroupId = groupId
     const previousBindingCount = apiKeyRecord.group_bindings?.length ?? 0
     const normalRoute = await resolveNormalGatewayModelRoute({
@@ -418,7 +531,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
-  if (!initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_strategy_mode === 'hybrid_smart') {
+  if (!interactionResourceAffinity && !initialModelsResponseProtocol && !options.identity && trafficSource === 'gateway' && apiKeyRecord?.route_strategy_mode === 'hybrid_smart') {
     const hybridRoute = await resolveHybridGatewayRoute({
       req,
       apiKeyRecord,
@@ -730,10 +843,11 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     clientIp: gatewayClientIp,
     endpoint,
-    loadModelAwareCandidateAccounts: options.candidateAccounts
+    bypassModelFilter: interactionResourceAffinity !== undefined,
+    loadModelAwareCandidateAccounts: options.candidateAccounts || interactionResourceAffinity
       ? undefined
       : (model, sourceEndpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model, requestedEndpointFamily: sourceEndpointFamily }),
-    recoverUnavailableCandidateAccounts: options.candidateAccounts
+    recoverUnavailableCandidateAccounts: options.candidateAccounts || interactionResourceAffinity
       ? undefined
       : () => waitForRecoverableOpenAIGatewayCandidateAccounts({
         req,
@@ -745,7 +859,9 @@ export async function prepareOpenAIGatewayDispatchContext(
         serverRetryBudget,
         signal
       }),
-    attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
+    attemptFallback: interactionResourceAffinity
+      ? async () => ({ attempted: false })
+      : (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
       auditCapture,
@@ -825,7 +941,9 @@ export async function prepareOpenAIGatewayDispatchContext(
     serverRetryBudget,
     signal,
     ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
-    attemptFallback: (reason) => prepareApiKeyGroupFallbackDispatchContext({
+    attemptFallback: interactionResourceAffinity
+      ? async () => ({ attempted: false })
+      : (reason) => prepareApiKeyGroupFallbackDispatchContext({
       req,
       res,
       auditCapture,
@@ -901,6 +1019,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     serverRetryBudget,
     downstreamCommitState,
     sameAccountRetryBudget,
+    interactionResourceAffinity,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
 }
@@ -1053,6 +1172,34 @@ function lowerHeaderToken(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim()
     ? value.trim().toLowerCase()
     : undefined
+}
+
+async function sendInteractionAffinityFailure(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  statusCode: number
+  code: string
+  message: string
+}): Promise<void> {
+  const responsePayload = gatewayErrorPayload(input.message, 'invalid_request_error', input.code)
+  await sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext,
+    startedAt: input.startedAt,
+    statusCode: input.statusCode,
+    responsePayload,
+    audit: {
+      outcome: 'gateway_failed',
+      errorPhase: input.statusCode >= 500 ? 'dispatch' : 'request_validation',
+      errorCode: input.code,
+      errorMessage: input.message
+    }
+  })
 }
 
 interface RecoverableOpenAICandidateState {

@@ -303,6 +303,8 @@ function isAccountSupportedEndpointMode(value: unknown): value is AccountSupport
     || value === 'message_token_counting'
     || value === 'generate_content_json'
     || value === 'generate_content_sse'
+    || value === 'interactions_json'
+    || value === 'interactions_sse'
     || value === 'count_tokens'
     || value === 'embed_content'
 }

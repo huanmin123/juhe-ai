@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
+import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-oauth-refresh-hot-path-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -25,14 +25,16 @@ const [
   dbServiceHandlers,
   dbServiceIpc,
   oauthRefreshService,
-  accountPreparation
+  accountPreparation,
+  readWorkerPool
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/db-service/db-service-handlers.js'),
   import('../../modules/db-service/db-service-ipc.js'),
   import('../../modules/openai-oauth/openai-oauth-access-token-refresh.service.js'),
-  import('../../modules/gateway/dispatch/account-preparation.js')
+  import('../../modules/gateway/dispatch/account-preparation.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 class FakeDbServiceChild extends EventEmitter {
@@ -93,6 +95,7 @@ try {
   }, access)
   const account = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '请求链路 OAuth 临期刷新账号',
     type: 'oauth',
     credentials: {
@@ -163,6 +166,7 @@ try {
 
   const nearExpiryAccount = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '请求链路 OAuth 临近过期预热账号',
     type: 'oauth',
     credentials: {
@@ -176,6 +180,7 @@ try {
     schedulable: true,
     groupId: group.id
   }, access)
+  activateAccountForGatewayFixture(nearExpiryAccount.id)
   const nearRuntimeAccount = runtimeAccount(group.id, nearExpiryAccount.id)
   refreshCallCount = 0
   const beforeNearFindCount = fakeChild.count('find_openai_oauth_account_for_refresh')
@@ -214,6 +219,7 @@ try {
 
   const expiredAccount = repositories.createAccount({
     providerCode: GPT_VENDOR_CODE,
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '请求链路 OAuth 已过期阻塞刷新账号',
     type: 'oauth',
     credentials: {
@@ -227,6 +233,7 @@ try {
     schedulable: true,
     groupId: group.id
   }, access)
+  activateAccountForGatewayFixture(expiredAccount.id)
   const expiredRuntimeAccount = runtimeAccount(group.id, expiredAccount.id)
   refreshCallCount = 0
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest(async ({ refreshToken, clientId }) => {
@@ -248,12 +255,18 @@ try {
 } finally {
   oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
   oauthRefreshService.clearOpenAIOAuthRecentRefreshCache()
+  await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
-  rmSync(tempRoot, { recursive: true, force: true })
+  try {
+    rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    if (code !== 'EBUSY' && code !== 'EPERM') throw error
+  }
 }
 
 function runtimeAccount(groupId: string, accountId: string): ReturnType<typeof repositories.listOpenAIAccountsForGroup>[number] {
@@ -261,6 +274,14 @@ function runtimeAccount(groupId: string, accountId: string): ReturnType<typeof r
     .find((item) => item.id === accountId)
   assert(account, '应能读取已可调度 OAuth 账号运行时快照')
   return account
+}
+
+function activateAccountForGatewayFixture(accountId: string): void {
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE accounts
+    SET status = 'active', schedulable = 1
+    WHERE id = ?
+  `).run(accountId)
 }
 
 function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0] } {

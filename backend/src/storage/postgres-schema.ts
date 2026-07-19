@@ -367,11 +367,21 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
       : match
   })
   transformed = transformed.replace(/\bTEXT\b/gi, 'text')
+  transformed = transformProviderModelCatalogTableForPostgres(transformed, schemaName)
   transformed = transformUsageRecordsTableForPostgres(transformed, schemaName)
   transformed = transformChatMessagesTableForPostgres(transformed, schemaName)
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')
   return transformed
+}
+
+function transformProviderModelCatalogTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {
+  if (schemaName !== 'juhe_business') return sql
+  if (!/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+provider_model_catalog\s*\(/i.test(sql.trim())) return sql
+  return sql
+    .replace(/\blong_context_input_token_threshold_inclusive\s+integer\s+NOT\s+NULL\s+DEFAULT\s+0\b/i, 'long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false')
+    .replace(/\bsupports_prompt_caching\s+integer\s+NOT\s+NULL\s+DEFAULT\s+0\b/i, 'supports_prompt_caching boolean NOT NULL DEFAULT false')
+    .replace(/\bcatalog_visible\s+integer\s+NOT\s+NULL\s+DEFAULT\s+1\b/i, 'catalog_visible boolean NOT NULL DEFAULT true')
 }
 
 function transformChatMessagesTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {

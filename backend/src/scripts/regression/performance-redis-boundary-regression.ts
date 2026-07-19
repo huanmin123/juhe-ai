@@ -195,6 +195,11 @@ assert.doesNotMatch(hybridAffinitySource, /createAppCache/, 'hybrid route affini
 assert.match(functionBody(hybridAffinitySource, 'applyHybridRouteAffinityAsync'), /hybridRouteAffinityStateStore\.getJson[\s\S]*rememberHybridRouteAffinityAsync/, 'Redis hybrid route affinity 必须读取并写入共享状态')
 assert.match(source('modules/gateway/hybrid/routing.service.ts'), /await applyHybridRouteAffinityAsync/, 'hybrid routing 必须等待 Redis affinity 状态')
 
+const geminiInteractionAffinitySource = source('modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.ts')
+assert.match(geminiInteractionAffinitySource, /createRuntimeStateStore\('gateway-gemini-interaction-affinity'\)/, 'Redis runtime state 下 Gemini Interaction 账号亲和必须写共享运行态')
+assert.match(functionBody(geminiInteractionAffinitySource, 'resolveGeminiInteractionAffinityAsync'), /interactionAffinityStateStore\.getJson/, 'Redis Gemini Interaction 资源路由必须读取共享亲和状态')
+assert.match(functionBody(geminiInteractionAffinitySource, 'setBinding'), /runtimeStateDriver === 'redis'[\s\S]*interactionAffinityStateStore\.setJson/, 'Redis Gemini Interaction 资源路由必须把绑定写入共享亲和状态')
+
 const normalRouteLatencySource = source('modules/gateway/runtime/normal-route-latency-degradation.service.ts')
 assert.match(normalRouteLatencySource, /createRuntimeStateStore\('gateway-normal-route-latency-degradation'\)/, 'Redis runtime state 下普通路由速度优先降级必须写共享运行态')
 assert.doesNotMatch(normalRouteLatencySource, /createAppCache/, '普通路由速度优先降级不能依赖 createAppCache 作为 performance 事实源')
@@ -231,6 +236,7 @@ function assertRuntimeStateStoreCallsites(): void {
       'modules/auth/login-guard.service.ts:auth_login_guard',
       'modules/gateway/client-profiles/codex-turn-retry.service.ts:gateway-codex-turn-retry',
       'modules/gateway/hybrid/affinity.service.ts:gateway-hybrid-route-affinity',
+      'modules/gateway/protocols/gemini-v1beta/interaction-affinity.service.ts:gateway-gemini-interaction-affinity',
       'modules/gateway/quota/quota-snapshot-cache.service.ts:gateway_quota_snapshot',
       'modules/gateway/runtime/account-side-effects.service.ts:gateway-configured-account-policy-avoidance',
       'modules/gateway/runtime/client-ip-account-avoidance.service.ts:gateway-client-ip-account-avoidance',
@@ -614,7 +620,7 @@ function assertRedisRuntimeQueuesAndLimits(): void {
 function assertOAuthAndRateLimitRedisBoundaries(): void {
   const oauthSource = source('modules/openai-oauth/openai-oauth.service.ts')
   assert.match(functionBody(oauthSource, 'generateOpenAIAuthURL'), /oauthSessionStore\(\)\.setJson[\s\S]*sessionTtlMs/, 'OAuth 授权会话必须写 RuntimeStateStore，Redis 模式共享且带 TTL')
-  assert.match(functionBody(oauthSource, 'exchangeOpenAIAuthCode'), /oauthSessionStore\(\)\.getDeleteJson/, 'OAuth 授权会话兑换必须用 GETDEL 防重放，不能读本机 Map')
+  assert.match(functionBody(oauthSource, 'consumeOpenAIOAuthSession'), /oauthSessionStore\(\)[\s\S]*\.getJson<[\s\S]*\.compareDeleteJson\(/, 'OAuth 授权会话必须校验 state/owner 后再用 compare-delete 原子消费，不能提前 GETDEL')
   assert.doesNotMatch(oauthSource, /const sessions = new Map/, 'OAuth 授权会话不能使用进程内 Map')
 
   const oauthRefreshSource = source('modules/openai-oauth/openai-oauth-access-token-refresh.service.ts')

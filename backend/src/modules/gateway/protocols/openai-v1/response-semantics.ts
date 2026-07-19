@@ -22,6 +22,7 @@ export type ResponseEndpointFamily =
   | 'stream_generate_content'
   | 'count_tokens'
   | 'embed_content'
+  | 'interactions'
 export type OpenAIResponseTransport = 'json' | 'sse'
 export type ResponseProtocolCode = 'openai_v1' | 'anthropic_v1' | 'gemini_v1beta'
 export type ResponseSemanticFrameType = 'output_text_delta' | 'output_text_done' | 'error' | 'completed' | 'usage' | 'raw_json_path'
@@ -44,6 +45,7 @@ export interface ResponseSemanticFrame {
   eventType?: string
   choiceIndex?: number
   outputIndex?: number
+  stepIndex?: number
   contentIndex?: number
   visibleOutput?: boolean
 }

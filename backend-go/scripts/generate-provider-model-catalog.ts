@@ -8,9 +8,9 @@ import {
   type ProviderModelPricing
 } from '../../backend/src/modules/model-pricing/model-pricing.service.js'
 
-export const PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE = '2026-07-15'
+export const PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE = '2026-07-18'
 
-const providerCodes = ['gpt', 'anthropic', 'gemini', 'deepseek', 'glm'] as const
+const providerCodes = ['gpt', 'anthropic', 'gemini', 'deepseek', 'glm', 'xai'] as const
 
 const rows = providerCodes.flatMap((providerCode) => (
   listProviderModelPricingAsOf(providerCode, PROVIDER_MODEL_CATALOG_SNAPSHOT_AS_OF_DATE)
@@ -46,7 +46,8 @@ export const providerModelCatalogSnapshotSQL = [
   '  input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m,',
   '  cache_write_usd_per_1m, cache_write_1h_usd_per_1m,',
   '  service_tier_prices_json,',
-  '  long_context_input_token_threshold, long_context_input_cost_multiplier,',
+  '  long_context_input_token_threshold, long_context_input_token_threshold_inclusive,',
+  '  long_context_input_cost_multiplier,',
   '  long_context_output_cost_multiplier,',
   '  image_input_usd_per_1m, image_output_usd_per_1m,',
   '  audio_input_usd_per_1m, audio_output_usd_per_1m, output_usd_per_image,',
@@ -69,6 +70,7 @@ export const providerModelCatalogSnapshotSQL = [
   '  codex_multi_agent_version = EXCLUDED.codex_multi_agent_version,',
   '  context_window_tokens = EXCLUDED.context_window_tokens,',
   '  long_context_input_token_threshold = EXCLUDED.long_context_input_token_threshold,',
+  '  long_context_input_token_threshold_inclusive = EXCLUDED.long_context_input_token_threshold_inclusive,',
   '  long_context_input_cost_multiplier = EXCLUDED.long_context_input_cost_multiplier,',
   '  long_context_output_cost_multiplier = EXCLUDED.long_context_output_cost_multiplier,',
   '  max_input_tokens = EXCLUDED.max_input_tokens,',
@@ -185,6 +187,7 @@ function catalogRowSQL(row: ProviderModelPricing): string {
     sqlNullableNumber(row.cacheWrite1hUsdPer1M),
     sqlJSON(row.serviceTierPrices ?? {}),
     sqlNullableNumber(row.longContextInputTokenThreshold),
+    sqlBoolean(row.longContextInputTokenThresholdInclusive === true),
     sqlNullableNumber(row.longContextInputCostMultiplier),
     sqlNullableNumber(row.longContextOutputCostMultiplier),
     sqlNullableNumber(row.imageInputUsdPer1M),
@@ -207,10 +210,10 @@ function catalogRowSQL(row: ProviderModelPricing): string {
     `    ${values.slice(0, 8).join(', ')},`,
     `    ${values.slice(8, 15).join(', ')},`,
     `    ${values.slice(15, 22).join(', ')},`,
-    `    ${values.slice(22, 27).join(', ')},`,
-    `    ${values.slice(27, 32).join(', ')},`,
-    `    ${values.slice(32, 35).join(', ')},`,
-    `    ${values.slice(35).join(', ')}`,
+    `    ${values.slice(22, 28).join(', ')},`,
+    `    ${values.slice(28, 33).join(', ')},`,
+    `    ${values.slice(33, 36).join(', ')},`,
+    `    ${values.slice(36).join(', ')}`,
     '  )'
   ].join('\n')
 }

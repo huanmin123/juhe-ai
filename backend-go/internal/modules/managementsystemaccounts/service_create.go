@@ -133,7 +133,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 }
 
 func (s *Service) defaultAPIKeyInputs() ([]port.ManagementDefaultAPIKeyCreateInput, error) {
-	const defaultRouteResourceCount = 6
+	const defaultRouteResourceCount = 7
 	items := make([]port.ManagementDefaultAPIKeyCreateInput, 0, defaultRouteResourceCount)
 	codec := secretcrypto.NewJSONCodec(s.secret)
 	for i := 0; i < defaultRouteResourceCount; i++ {

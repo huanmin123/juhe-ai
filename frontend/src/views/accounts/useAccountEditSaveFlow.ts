@@ -341,13 +341,16 @@ type AccountBasicEditPayload = {
   balanceQueryConfig?: Record<string, unknown>
 }
 
-function validateBasicEditCredentialFields(form: AccountFormModel): string | undefined {
+export function validateBasicEditCredentialFields(form: AccountFormModel): string | undefined {
   if (form.type === 'api_key') {
     if (!form.baseUrl.trim()) return '请填写 Base URL'
     const baseUrlValidation = validateOpenAICompatibleBaseUrl(form.baseUrl)
     if (baseUrlValidation) return baseUrlValidation
     const apiKeyCount = normalizedAccountApiKeys(form).length
     if (apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
+  }
+  if (form.type === 'google_oauth') {
+    if (!form.baseUrl.trim()) return '请填写 Base URL'
   }
   return undefined
 }
@@ -393,6 +396,13 @@ function buildBasicEditCredentialsPatch(form: AccountFormModel): Record<string, 
   } else if (form.type === 'oauth') {
     if (form.accessToken.trim()) credentials.access_token = form.accessToken.trim()
     if (form.refreshToken.trim()) credentials.refresh_token = form.refreshToken.trim()
+  } else if (form.type === 'google_oauth') {
+    if (form.accessToken.trim()) credentials.access_token = form.accessToken.trim()
+    if (form.refreshToken.trim()) credentials.refresh_token = form.refreshToken.trim()
+    if (form.googleClientId.trim()) credentials.client_id = form.googleClientId.trim()
+    if (form.googleClientSecret.trim()) credentials.client_secret = form.googleClientSecret.trim()
+    if (form.googleQuotaProjectId.trim()) credentials.quota_project_id = form.googleQuotaProjectId.trim()
+    credentials.base_url = form.baseUrl.trim()
   }
   return credentials
 }

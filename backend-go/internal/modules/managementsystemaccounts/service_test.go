@@ -1206,8 +1206,8 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 	if input.PasswordHash != "hashed:Pass1234" || !input.CreatedAt.Equal(now) || !input.UpdatedAt.Equal(now) {
 		t.Fatalf("password/time input = %+v", input)
 	}
-	if len(input.DefaultAPIKeys) != 6 {
-		t.Fatalf("default api keys = %d, want 6", len(input.DefaultAPIKeys))
+	if len(input.DefaultAPIKeys) != 7 {
+		t.Fatalf("default api keys = %d, want 7", len(input.DefaultAPIKeys))
 	}
 	seen := map[string]bool{}
 	codec := secretcrypto.NewJSONCodec(credentialSecret)

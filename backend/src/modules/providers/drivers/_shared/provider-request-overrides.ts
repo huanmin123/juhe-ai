@@ -61,13 +61,8 @@ export async function applyProviderAccountRequestOverridesToBody(
       output.output_config = { ...outputConfig, effort: effective.reasoningEffort }
     }
   } else {
-    if (effective.serviceTier) {
-      throw new GatewayRequestValidationError(
-        'Gemini 原生请求没有可确认的服务等级 wire 字段，无法应用账户覆盖',
-        'account_request_override_unsupported',
-        { accountScoped: true }
-      )
-    }
+    if (effective.serviceTier === 'default') delete output.service_tier
+    else if (effective.serviceTier) output.service_tier = effective.serviceTier
     if (effective.reasoningEffort) {
       const generationConfig = isPlainObject(output.generationConfig) ? output.generationConfig : {}
       const thinkingConfig = isPlainObject(generationConfig.thinkingConfig) ? generationConfig.thinkingConfig : {}

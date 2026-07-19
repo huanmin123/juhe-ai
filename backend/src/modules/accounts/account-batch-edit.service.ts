@@ -200,7 +200,8 @@ async function prepareAccountUpdateAsync(
     ? await normalizeAccountSupportedModelsForProviderAsync(
         updates.supportedModels,
         account.providerCode,
-        account.systemAccountId
+        account.systemAccountId,
+        account
       ) ?? []
     : account.supportedModels
   assertAccountSupportedModelsRequired(nextSupportedModels)

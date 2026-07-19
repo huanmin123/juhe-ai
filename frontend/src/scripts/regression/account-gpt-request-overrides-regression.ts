@@ -122,7 +122,7 @@ const geminiCapabilities = accountGptRequestOverrideCapabilities({
   }],
   supportedModels: ['gemini-test']
 })
-assert.deepEqual(geminiCapabilities.serviceTiers, [], 'Gemini 没有可确认的服务等级 wire 字段时必须保持服务等级不可选')
+assert.deepEqual(geminiCapabilities.serviceTiers, ['priority'], 'Gemini 服务等级控件必须读取官方 service_tier 能力')
 assert.deepEqual(geminiCapabilities.reasoningEfforts, ['low', 'high'], 'Gemini thinking level 有明确映射时应显示思考级别控件')
 
 const deepSeekCapabilities = accountGptRequestOverrideCapabilities({
@@ -251,6 +251,8 @@ const customPayload = buildCustomModelPayload(customModelForm, 'text', { include
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
 assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
 assert.equal(customPayload?.defaultReasoningEffort, null, '未选择默认思考级别时应显式清空')
+customModelForm.defaultReasoningEffort = 'high'
+assert.equal(buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })?.defaultReasoningEffort, null, '自定义模型即使表单残留默认值也必须清空，不能替上游做客户端决策')
 const ordinaryUserPayload = buildCustomModelPayload(customModelForm, 'text', {
   includeRequestCapabilities: true,
   includePrices: false
@@ -269,8 +271,11 @@ applyConfigurationTemplateToCustomModelForm(customModelForm, [providerModel({
   id: 'template-pricing',
   model: 'template-pricing',
   supportedServiceTiers: ['priority', 'flex'],
+  supportedReasoningEfforts: ['low', 'high'],
+  defaultReasoningEffort: 'high',
   serviceTierPrices: { priority: { inputUsdPer1M: 3 } }
 })], 'template-pricing')
+assert.equal(customModelForm.defaultReasoningEffort, undefined, '配置模板不能把内置默认思考级别继承到新自定义模型')
 assert.deepEqual(Object.keys(customModelForm.serviceTierPrices), ['priority', 'flex'], '价格模板应用后必须按当前档位重建价格行')
 assert.deepEqual(customModelForm.serviceTierPrices.flex, {}, '模板缺少的当前档位必须补空行，避免渲染访问 undefined')
 clearCustomModelPricesOutsideCategory(customModelForm, 'image')

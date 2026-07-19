@@ -69,7 +69,7 @@ func TestExistingGooseDoBlockMigrationsUseStatementMarkers(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		text := string(source)
+		text := strings.ReplaceAll(string(source), "\r\n", "\n")
 		if strings.Count(text, "-- +goose StatementBegin") != strings.Count(text, "-- +goose StatementEnd") {
 			t.Fatalf("%s has unbalanced Goose statement markers", name)
 		}

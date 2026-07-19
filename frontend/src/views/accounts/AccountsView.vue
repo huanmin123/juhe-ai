@@ -189,6 +189,7 @@
       :is-api-key-form="isApiKeyForm"
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
+      :is-token-credential-form="isTokenCredentialForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
       :loading="accountEditDetailLoading"
       :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
@@ -589,6 +590,7 @@ const {
   hasAccountType,
   isApiKeyForm,
   isOAuthForm,
+  isTokenCredentialForm,
   isOpenAIOAuthForm,
   mappingAnthropicSourceModelOptions,
   mappingGeminiSourceModelOptions,
