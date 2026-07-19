@@ -313,6 +313,7 @@ func NewClient(rawURL string, namespace string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse redis url: %w", err)
 	}
+	opts.ContextTimeoutEnabled = true
 
 	return &Client{
 		client:    goredis.NewClient(opts),

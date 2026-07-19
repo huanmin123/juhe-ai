@@ -343,6 +343,21 @@ func TestPageDataChangePublisherEpochUsesPersistentGetAndSetNX(t *testing.T) {
 	}
 }
 
+func TestPageDataChangePublisherEpochLockRespectsCanceledContext(t *testing.T) {
+	publisher, _ := testPageDataChangePublisher()
+	release, err := publisher.acquireEpochLock(t.Context())
+	if err != nil {
+		t.Fatalf("first acquireEpochLock() error = %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := publisher.acquireEpochLock(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("second acquireEpochLock() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestPageDataChangeLuaMatchesNodeV2RetentionContract(t *testing.T) {
 	wants := []string{
 		`redis.call('SISMEMBER', dedupeKey, eventId)`,

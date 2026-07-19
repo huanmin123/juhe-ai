@@ -13,6 +13,7 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
@@ -159,12 +160,23 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAPIRateLimitSettingsVersionReader,
 	)
 
+	var accountsStaticResetPublisher managementPageDataPublisher
+	if cfg.ManagementAPIEnabled || cfg.PublicAPIEnabled {
+		publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
+		if err != nil {
+			return err
+		}
+		accountsStaticResetPublisher = publisher
+	}
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
 		logger,
 		store,
 		stateRedis,
-		PublicAPIHandlerOptions{APIKeyInvalidator: systemAccountInvalidator},
+		PublicAPIHandlerOptions{
+			APIKeyInvalidator: systemAccountInvalidator,
+			PageDataPublisher: accountsStaticResetPublisher,
+		},
 	)
 	if err != nil {
 		return err
@@ -182,17 +194,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
-	var accountsStaticResetPublisher managementPageDataPublisher
 	if cfg.ManagementAPIEnabled {
 		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
 		if err != nil {
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
-		publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
-		if err != nil {
-			return err
-		}
-		accountsStaticResetPublisher = publisher
 	}
 	managementHandlers := newManagementAPIHandlerWithPageData(
 		cfg,
@@ -920,6 +926,7 @@ type PublicAPIHandlerOptions struct {
 	NewLogID                     func() string
 	APIKeyInvalidator            publicapikeys.APIKeyGatewayCacheInvalidator
 	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
+	PageDataPublisher            accountpagedata.Publisher
 }
 
 func NewPublicAPIHandler(
@@ -983,6 +990,7 @@ func newPublicAPIHandlerWithOptions(
 		cfg.UpstreamBaseURLPrivateAllowlist,
 		opts.APIKeyInvalidator,
 		accountHealthCheckDispatcher,
+		opts.PageDataPublisher,
 		logger,
 		cfg.NodeInternalRequestTimeout,
 		nil,
@@ -1013,6 +1021,7 @@ func newPublicAPIHandlers(
 	privateBaseURLAllowlist []string,
 	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
 	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
+	pageDataPublisher accountpagedata.Publisher,
 	logger *slog.Logger,
 	healthCheckDispatchTimeout time.Duration,
 	accountServiceFactory publicAccountServiceFactory,
@@ -1033,6 +1042,8 @@ func newPublicAPIHandlers(
 		Transactor:                 store,
 		ProviderModels:             providerModelService,
 		HealthCheckDispatcher:      accountHealthCheckDispatcher,
+		GranteeReader:              store,
+		PageDataPublisher:          pageDataPublisher,
 		HealthCheckDispatchTimeout: healthCheckDispatchTimeout,
 		Logger:                     logger,
 		Secret:                     credentialSecret,

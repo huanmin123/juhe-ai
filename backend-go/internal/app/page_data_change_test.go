@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -255,6 +256,25 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 	}
 	if strings.Contains(text, `newAccountsStaticResetPublisher(stateRedis, cfg.RedisNamespace+":state")`) {
 		t.Fatal("server must not pass the state client namespace to the page data publisher")
+	}
+	if !strings.Contains(text, "if cfg.ManagementAPIEnabled || cfg.PublicAPIEnabled") {
+		t.Fatal("server must initialize page data publishing when either write API is enabled")
+	}
+	publicAPIBlock := sourceBlockBetween(t, text,
+		"publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions",
+		"if err != nil",
+	)
+	if !strings.Contains(publicAPIBlock, "PageDataPublisher: accountsStaticResetPublisher") {
+		t.Fatal("server must inject the shared page data publisher into the public API")
+	}
+	publicAccountBlock := sourceBlockBetween(t, text,
+		"accountService := accountServiceFactory(publicaccounts.Options",
+		"handlers := map[string]http.Handler{}",
+	)
+	for _, want := range []string{`GranteeReader:\s+store`, `PageDataPublisher:\s+pageDataPublisher`} {
+		if !regexp.MustCompile(want).MatchString(publicAccountBlock) {
+			t.Fatalf("public account service wiring missing pattern %q", want)
+		}
 	}
 	groupBlock := sourceBlockBetween(t, text,
 		"groupService := managementgroups.NewServiceWithOptions",

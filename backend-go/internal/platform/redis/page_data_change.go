@@ -79,8 +79,9 @@ type PageDataChangePublisher struct {
 	runPublish   func(context.Context, []string, ...interface{}) error
 	marshalEvent func(PageDataChangeEvent) ([]byte, error)
 
-	epochMu sync.Mutex
-	epoch   string
+	epochLockOnce sync.Once
+	epochLock     chan struct{}
+	epoch         string
 }
 
 // AccountChangeInput describes one account entity change event.
@@ -266,8 +267,11 @@ func (p *PageDataChangePublisher) Publish(ctx context.Context, event PageDataCha
 }
 
 func (p *PageDataChangePublisher) ensureEpoch(ctx context.Context) (string, error) {
-	p.epochMu.Lock()
-	defer p.epochMu.Unlock()
+	release, err := p.acquireEpochLock(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	if p.epoch != "" {
 		return p.epoch, nil
 	}
@@ -297,6 +301,19 @@ func (p *PageDataChangePublisher) ensureEpoch(ctx context.Context) (string, erro
 	}
 	p.epoch = existing
 	return existing, nil
+}
+
+func (p *PageDataChangePublisher) acquireEpochLock(ctx context.Context) (func(), error) {
+	p.epochLockOnce.Do(func() {
+		p.epochLock = make(chan struct{}, 1)
+		p.epochLock <- struct{}{}
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-p.epochLock:
+		return func() { p.epochLock <- struct{}{} }, nil
+	}
 }
 
 func validatePageDataChangeEvent(event PageDataChangeEvent) error {
