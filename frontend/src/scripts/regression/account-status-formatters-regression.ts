@@ -36,19 +36,37 @@ const pendingHealthCheckFailedAccount = accountFixture({
     color: 'red',
     blockerScope: 'account',
     reason: '后台健康检查未通过，系统将自动重试'
+  },
+  availabilityPresentation: {
+    status: 'check_failed',
+    label: '检查失败',
+    reason: 'Invalid API key',
+    probe: {
+      kind: 'health_check',
+      lastObservation: {
+        observationId: 'health-check-regression',
+        attemptedAt: '2026-07-11T01:00:00.000Z',
+        result: 'failed',
+        httpStatus: 401,
+        errorCode: 'invalid_api_key',
+        reason: 'Invalid API key',
+        traceId: 'trace-health-check-failed'
+      },
+      schedule: { state: 'scheduled', nextAttemptAt: '2099-07-11T01:15:00.000Z' }
+    }
   }
 })
 assertStatus('待检查账户后台检查失败', pendingHealthCheckFailedAccount, '检查失败', 'red')
 assertTrue(
-  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('每 1 小时自动重试')),
-  '待检查账户失败 tooltip 应说明固定每 1 小时自动重试'
+  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('最近检查：')),
+  '待检查账户失败 tooltip 应显示最近检查时间'
 )
 assertTrue(
-  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('持续 24 小时')),
-  '待检查账户失败 tooltip 应说明 24 小时异常收敛窗口'
+  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('下次检查：')),
+  '待检查账户失败 tooltip 应显示下次检查时间'
 )
 assertTrue(
-  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('Invalid API key')),
+  accountStatusTooltipLines(pendingHealthCheckFailedAccount).some((line) => line.includes('原因：Invalid API key')),
   '待检查账户失败 tooltip 应显示后台检查原因'
 )
 assertTrue(
@@ -83,9 +101,16 @@ assertTrue(
 assertTrue(
   accountStatusTooltipLines(accountFixture({
     status: 'pending_test',
-    lastHealthCheckAt: '2026-07-15T01:00:00.000Z',
-    lastHealthCheckTraceId: 'trace-health-check-regression'
-  })).some((line) => line.includes('健康检查 traceId：trace-health-check-regression')),
+    availabilityPresentation: {
+      status: 'check_failed',
+      label: '检查失败',
+      probe: {
+        kind: 'health_check',
+        lastObservation: { observationId: 'trace-test', attemptedAt: '2026-07-15T01:00:00.000Z', result: 'failed', traceId: 'trace-health-check-regression' },
+        schedule: { state: 'none' }
+      }
+    }
+  })).some((line) => line.includes('traceId：trace-health-check-regression')),
   '账户状态提示应直接展示结构化健康检查 traceId'
 )
 assertTrue(
@@ -93,24 +118,34 @@ assertTrue(
   '检查失败的自有待检查账户应允许停用'
 )
 const activeHealthTimeline = accountStatusTooltipLines(accountFixture({
-  lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
-  lastHealthSuccessAt: '2026-07-11T01:05:00.000Z',
-  nextHealthCheckAt: '2099-07-11T02:00:00.000Z'
+  availabilityPresentation: {
+    status: 'available',
+    label: '可调度',
+    probe: {
+      kind: 'health_check',
+      lastObservation: { observationId: 'active-health', attemptedAt: '2026-07-11T01:05:00.000Z', result: 'success' },
+      schedule: { state: 'scheduled', nextAttemptAt: '2099-07-11T02:00:00.000Z' }
+    }
+  }
 }))
-assertTrue(activeHealthTimeline.some((line) => line.includes('最近主动健康检查')), '正常账户应区分主动健康检查时间')
-assertTrue(activeHealthTimeline.some((line) => line.includes('最近健康成功信号')), '正常账户应保留健康成功信号文案')
-assertTrue(activeHealthTimeline.some((line) => line.includes('下次健康复核')), '正常账户应显示下次健康复核')
+assertTrue(activeHealthTimeline.some((line) => line.includes('最近检查：')), '正常账户应显示最近检查时间')
+assertTrue(activeHealthTimeline.some((line) => line.includes('下次检查：')), '正常账户应显示下次检查时间')
 
 const coolingHealthTimeline = accountStatusTooltipLines(accountFixture({
   status: 'temporary_unavailable',
-  lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
-  lastHealthSuccessAt: '2026-07-11T01:05:00.000Z',
-  nextHealthCheckAt: '2020-07-11T02:00:00.000Z',
-  cooldownUntil: '2099-07-11T03:00:00.000Z'
+  availabilityPresentation: {
+    status: 'temporarily_unavailable',
+    label: '临时不可调用',
+    reason: '上游暂时不可用',
+    probe: {
+      kind: 'cooldown_retest',
+      lastObservation: { observationId: 'cooldown', attemptedAt: '2026-07-11T01:00:00.000Z', result: 'failed', reason: '上游暂时不可用' },
+      schedule: { state: 'scheduled', nextAttemptAt: '2099-07-11T03:00:00.000Z' }
+    }
+  }
 }))
-assertTrue(coolingHealthTimeline.some((line) => line.includes('下次冷却复测')), '冷却账户应显示冷却复测时间')
-assertTrue(!coolingHealthTimeline.some((line) => line.includes('下次健康复核')), '冷却账户不得混入周期健康复核计划')
-assertTrue(!coolingHealthTimeline.some((line) => line.includes('等待复核')), '冷却账户的过期健康计划不得显示为等待复核')
+assertTrue(coolingHealthTimeline.some((line) => line.includes('下次检查：')), '冷却账户应显示下一次实际检查时间')
+assertTrue(!coolingHealthTimeline.some((line) => line.includes('健康')), '冷却账户不得混入健康检查内部文案')
 
 for (const status of ['disabled', 'error'] as const) {
   const terminalTimeline = accountStatusTooltipLines(accountFixture({
@@ -250,8 +285,8 @@ assertEqual(
   '运行态调度降级仍应归入正常状态筛选'
 )
 assertTrue(
-  accountStatusTooltipLines(runtimeDegradedAccount).some((line) => line.includes('普通候选不足时才会兜底尝试')),
-  '运行态调度降级 tooltip 应说明只作为兜底候选'
+  accountStatusTooltipLines(runtimeDegradedAccount).some((line) => line.includes('原因：mock runtime degraded')),
+  '运行态调度降级 tooltip 应只显示用户关心的原因'
 )
 assertStatus('运行态事前确认', accountFixture({
   effectiveAvailability: {
@@ -270,9 +305,45 @@ assertStatus('运行态事前确认', accountFixture({
     failureCount: 6,
     distinctClientIpCount: 2,
     distinctApiKeyCount: 3,
-    precheckAttemptCount: 1
+    precheckAttemptCount: 1,
+    probePresentation: {
+      lastObservation: {
+        observationId: 'precheck-pending',
+        attemptedAt: '2026-06-16T00:00:05.000Z',
+        result: 'failed',
+        reason: 'mock precheck pending',
+        traceId: 'trace-precheck-pending'
+      },
+      schedule: { state: 'scheduled', nextAttemptAt: '2099-06-16T00:01:00.000Z' }
+    }
   }
 }), '待探针确认', 'blue')
+const precheckPresentationLines = accountStatusTooltipLines(accountFixture({
+  effectiveAvailability: { available: false, status: 'runtime_precheck_pending', label: '待探针确认', color: 'blue', blockerScope: 'runtime', reason: 'mock precheck pending' },
+  runtimeAvailability: {
+    status: 'precheck_pending',
+    reason: 'mock precheck pending',
+    probePresentation: {
+      lastObservation: { observationId: 'precheck-pending', attemptedAt: '2026-06-16T00:00:05.000Z', result: 'failed', reason: 'mock precheck pending', traceId: 'trace-precheck-pending' },
+      schedule: { state: 'scheduled', nextAttemptAt: '2099-06-16T00:01:00.000Z' }
+    }
+  },
+  availabilityPresentation: {
+    status: 'verifying',
+    label: '待探针确认',
+    reason: 'mock precheck pending',
+    probe: {
+      kind: 'runtime_probe',
+      lastObservation: { observationId: 'precheck-pending', attemptedAt: '2026-06-16T00:00:05.000Z', result: 'failed', reason: 'mock precheck pending', traceId: 'trace-precheck-pending' },
+      schedule: { state: 'scheduled', nextAttemptAt: '2099-06-16T00:01:00.000Z' }
+    }
+  }
+}))
+assertTrue(precheckPresentationLines.some((line) => line.includes('状态：待探针确认')), '事前确认 tooltip 应展示用户状态')
+assertTrue(precheckPresentationLines.some((line) => line.includes('最近检查：')), '事前确认 tooltip 应展示最近检查')
+assertTrue(precheckPresentationLines.some((line) => line.includes('下次检查：')), '事前确认 tooltip 应展示下次检查')
+assertTrue(precheckPresentationLines.some((line) => line.includes('traceId：trace-precheck-pending')), '事前确认 tooltip 应展示 traceId')
+assertTrue(!precheckPresentationLines.some((line) => line.includes('短窗口失败') || line.includes('来源 IP') || line.includes('API Key') || line.includes('数据库状态')), '事前确认 tooltip 不应展示内部统计字段')
 assertStatus('运行态半开探测', accountFixture({
   effectiveAvailability: {
     available: false,
@@ -327,17 +398,17 @@ const longTermUnavailableAccount = accountFixture({
     label: '账户临时不可调用',
     color: 'gold',
     blockerScope: 'account',
-    reason: '进入长期不可用每 1 小时复测'
+    reason: '账户进入长期不可用，等待后续检查'
   }
 })
 assertStatus('长期不可用', longTermUnavailableAccount, '长期不可用', 'gold')
 assertTrue(
-  accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('每 1 小时复测')),
-  '长期不可用 tooltip 应说明后台每 1 小时复测'
+  accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('原因：账户进入长期不可用')),
+  '长期不可用 tooltip 应显示用户可理解的原因'
 )
 assertTrue(
-  accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('满 7 天')),
-  '长期不可用 tooltip 应说明 7 天异常收敛窗口'
+  !accountStatusTooltipLines(longTermUnavailableAccount).some((line) => line.includes('满 7 天') || line.includes('每 1 小时')),
+  '长期不可用 tooltip 不应展示后台复测机制细节'
 )
 assertEqual(
   filterAccounts({ accounts: [longTermUnavailableAccount], filters: accountFilters(['temporary_unavailable']), isManagementView: false }).length,
@@ -406,10 +477,7 @@ const frequentFailureTooltip = accountStatusTooltipLines(accountFixture({
   qualityRecentSuccessRate: 1 / 6,
   qualityLastErrorMessage: 'mock upstream 504 failure for formatter regression'
 }))
-assertTrue(frequentFailureTooltip.some((line) => line.includes('账户状态：数据库仍为正常')), '质量反馈 tooltip 应说明不参与持久状态筛选')
-assertTrue(frequentFailureTooltip.some((line) => line.includes('仅统计真实上游失败和账号依赖失败')), '质量反馈 tooltip 应说明账号质量归因范围')
-assertTrue(frequentFailureTooltip.some((line) => line.includes('并发满') && line.includes('客户端断开')), '质量反馈 tooltip 应说明本地容量和客户端生命周期不计入账号质量')
-assertTrue(frequentFailureTooltip.some((line) => line.includes('最后质量原因') && line.includes('mock upstream 504')), '质量反馈 tooltip 应展示最后质量失败原因')
+assertTrue(!frequentFailureTooltip.some((line) => line.includes('账户状态：数据库仍为正常') || line.includes('仅统计真实上游失败') || line.includes('并发满') || line.includes('最后质量原因')), '质量内部统计不应出现在状态 tooltip')
 
 const precheckTooltip = accountStatusTooltipLines(accountFixture({
   runtimeAvailability: {
@@ -421,9 +489,7 @@ const precheckTooltip = accountStatusTooltipLines(accountFixture({
     precheckAttemptCount: 1
   }
 }))
-assertTrue(precheckTooltip.some((line) => line.includes('运行态状态：待探针确认')), '事前确认 tooltip 应展示运行态状态')
-assertTrue(precheckTooltip.some((line) => line.includes('数据库状态仍为正常')), '事前确认 tooltip 应说明数据库状态未被写死')
-assertTrue(precheckTooltip.some((line) => line.includes('短窗口失败：6 次')), '事前确认 tooltip 应展示短窗口失败次数')
+assertTrue(!precheckTooltip.some((line) => line.includes('运行态状态') || line.includes('数据库状态') || line.includes('短窗口失败')), '事前确认 tooltip 不应展示内部机制')
 
 const effectiveAvailabilityStatusFilterExpectations = {
   available: 'active',

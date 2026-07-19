@@ -100,6 +100,17 @@ export interface AccountRuntimeAvailability {
   distinctApiKeyCount?: number
   precheckAttemptCount?: number
   localFailureCount?: number
+  probePresentation?: AccountRuntimeProbePresentation
+}
+
+export interface AccountRuntimeProbePresentation {
+  lastObservation?: AccountProbeObservation
+  schedule: {
+    state: 'scheduled' | 'due_waiting' | 'running' | 'none'
+    nextAttemptAt?: string
+  }
+  recoveryAt?: string
+  recoveryAtKind?: 'policy_ttl_expiry'
 }
 
 export type AccountEffectiveAvailabilityStatus =
