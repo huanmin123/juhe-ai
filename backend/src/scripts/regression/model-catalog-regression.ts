@@ -70,7 +70,7 @@ try {
   databaseModule.getBusinessDatabase()
   runtimeConfig.processRole = 'db-service'
   assert.equal(sqliteReadWorkerPool.sqliteReadWorkerPoolEnabled(), true, '模型目录缓存回归必须真实启用 SQLite read worker')
-  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('model_catalog_cache_regression_start')
+  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('provider_model_configuration_updated')
   const sequentialHandledBefore = sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
   await catalogService.listProviderModelCatalogAsync({
     providerCode: 'gpt',
@@ -88,7 +88,7 @@ try {
     'SQLite read worker 模式相同模型目录连续读取只能在首次 cache miss 时执行一次 worker job'
   )
 
-  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('model_catalog_cache_regression_concurrent')
+  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('provider_model_configuration_updated')
   const concurrentHandledBefore = sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
   await Promise.all([
     catalogService.listProviderModelCatalogAsync({ providerCode: 'gpt', systemAccountId: 'sys_model_cache', includeUnpriced: true }),
@@ -111,7 +111,7 @@ try {
     '不同系统账户 scope 的个人模型目录不能共享后端缓存'
   )
 
-  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('model_catalog_cache_regression_invalidate')
+  await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('provider_model_configuration_updated')
   const invalidatedHandledBefore = sqliteReadWorkerPool.getSqliteReadWorkerPoolRuntime().handledJobs
   await catalogService.listProviderModelCatalogAsync({
     providerCode: 'gpt',

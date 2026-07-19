@@ -78,6 +78,7 @@ export interface ProviderModelPricePatch {
 
 export interface ProviderModelConfigurationPatch extends ProviderModelPricePatch {
   status?: 'active' | 'disabled'
+  catalogVisible?: boolean
   mode?: 'text' | 'image' | 'audio' | null
   supportedApiProtocols?: string[]
   supportedServiceTiers?: string[]
@@ -159,6 +160,7 @@ function configurationPatchAssignments(patch: ProviderModelConfigurationPatch): 
     params.push(normalize(patch[field]))
   }
   addValue('status', 'status')
+  addValue('catalogVisible', 'catalog_visible', (value) => value ? 1 : 0)
   addValue('mode', 'mode', nullableText)
   addValue('supportedApiProtocols', 'supported_api_protocols_json', stringListJSON)
   addValue('supportedServiceTiers', 'supported_service_tiers_json', stringListJSON)

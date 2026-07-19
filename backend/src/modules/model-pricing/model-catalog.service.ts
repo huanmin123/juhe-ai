@@ -48,6 +48,7 @@ import {
 } from '../../storage/provider.repository.js'
 import { createAppCache, createSharedJsonCache } from '../../shared/cache.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
+import { shouldInvalidateProviderModelCatalog } from '../gateway/response/model-catalog-cache-policy.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
@@ -140,7 +141,7 @@ export interface SaveCustomProviderModelInput extends Omit<UpsertCustomProviderM
   actorSystemAccountId: string
 }
 
-const modelCatalogCacheTtlMs = 60_000
+const modelCatalogCacheTtlMs = 24 * 60 * 60_000
 const providerModelCatalogCache = createAppCache<string, ProviderModelCatalogItem[]>({
   name: 'model-pricing:provider-model-catalog',
   max: 1000,
@@ -613,7 +614,7 @@ function toCustomCatalogItem(item: CustomProviderModelRecord): ProviderModelCata
     defaultReasoningEffort: item.defaultReasoningEffort ?? null,
     codexSupportedReasoningLevels: [],
     supportsServiceTier: item.supportedServiceTiers.length > 0,
-    catalogVisible: true,
+    catalogVisible: item.catalogVisible,
     source: item.scope === 'global' ? 'custom-global' : 'custom-personal',
     scope: item.scope,
     status: item.status,
@@ -998,4 +999,6 @@ async function clearProviderModelCatalogCaches(): Promise<void> {
   return await operation
 }
 
-registerGatewayRuntimeCacheInvalidator(clearProviderModelCatalogCaches)
+registerGatewayRuntimeCacheInvalidator((reason) => shouldInvalidateProviderModelCatalog(reason)
+  ? clearProviderModelCatalogCaches()
+  : undefined)

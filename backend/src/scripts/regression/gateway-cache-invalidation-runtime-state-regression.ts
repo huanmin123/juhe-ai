@@ -693,7 +693,7 @@ function assertDeferredRuntimeStatePublishBoundary(source: string): void {
   )
   const publishBlock = sourceFunctionBlock(
     source,
-    'function publishGatewayCacheInvalidationToRuntimeState'
+    'async function publishGatewayCacheInvalidationToRuntimeStateAsync'
   )
   assert.match(
     publishBlock,

@@ -141,6 +141,12 @@
           <a-form-item label="状态">
             <a-select v-model:value="customModelForm.status" :options="customModelStatusOptions" />
           </a-form-item>
+          <a-form-item label="发布到模型接口" class="custom-model-grid-wide">
+            <div class="custom-model-switch-row">
+              <span class="custom-model-switch-label">在 /v1/models 和 AI Chat 模型选择中显示</span>
+              <a-switch v-model:checked="customModelForm.catalogVisible" />
+            </div>
+          </a-form-item>
           <a-form-item label="用途">
             <a-select v-model:value="customModelForm.mode" :options="customModelModeOptions" @change="handleCustomModelModeChange" />
           </a-form-item>
@@ -822,6 +828,18 @@ onMounted(loadProviders)
 
 .custom-model-grid-wide {
   grid-column: 1 / -1;
+}
+
+.custom-model-switch-row {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.custom-model-switch-label {
+  color: rgba(0, 0, 0, 0.65);
 }
 
 @media (max-width: 768px) {

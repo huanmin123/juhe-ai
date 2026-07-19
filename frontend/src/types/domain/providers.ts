@@ -79,6 +79,7 @@ export interface ProviderModelPricing {
   id?: string
   scope?: ProviderModelScope
   status?: ProviderModelStatus
+  catalogVisible?: boolean
   systemAccountId?: string
   mode?: string
   catalogOrder?: number
@@ -144,6 +145,7 @@ export interface ProviderModelUpsertPayload {
   scope?: CustomProviderModelScope
   model: string
   status?: ProviderModelStatus
+  catalogVisible?: boolean
   mode?: ProviderModelMode | null
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]

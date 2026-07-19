@@ -31,6 +31,7 @@ import {
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
+import { rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync } from '../model-pricing/published-model-catalog.service.js'
 import {
   findBuiltInProviderModelByIdAsync,
   updateBuiltInProviderModelConfigurationAsync
@@ -252,6 +253,7 @@ const customModelSchema = z.object({
   scope: z.enum(['personal', 'global']).optional(),
   model: z.string().trim().min(1),
   status: z.enum(['draft', 'active', 'disabled']).optional(),
+  catalogVisible: z.boolean().optional(),
   mode: nullableModelModeSchema,
   supportedApiProtocols: z.array(z.enum([
     'chat_completions',
@@ -368,6 +370,7 @@ providersRouter.post('/:code/models', async (req, res, next) => {
         systemAccountId: ownerSystemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(saved.scope === 'personal' ? saved.systemAccountId : undefined)
       await publishProviderModelPageDataReset(saved)
       res.status(201).json(ok(saved))
     } catch (error) {
@@ -411,6 +414,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         sendNotFound(res, '模型不存在')
         return
       }
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync()
       await recordOperationLogAsync({
         module: 'providers', action: 'update_model_configuration', operationKey: 'providers.update_model_configuration',
         resourceType: 'provider_model', resourceId: saved.id, resourceName: saved.model,
@@ -460,6 +464,7 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         systemAccountId: existing.systemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(saved.scope === 'personal' ? saved.systemAccountId : undefined)
       if (saved.status !== 'active') {
         await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
           providerCode: saved.providerCode,
@@ -513,6 +518,7 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
     }
     const deleted = await removeCustomProviderModelAsync(existing.id)
     if (deleted) {
+      await rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(existing.scope === 'personal' ? existing.systemAccountId : undefined)
       await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
         providerCode: existing.providerCode,
         systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,

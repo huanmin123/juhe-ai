@@ -23,7 +23,7 @@ import {
   diagnosticAccountTestGatewaySettingsOverride
 } from '../../accounts/account-diagnostic-retry-policy.js'
 import { automaticAccountProbeOutcome } from '../../accounts/automatic-account-probe-outcome.js'
-import { isRealUpstreamAttempt } from '../upstream/attempt.js'
+import { isCompletedRealUpstreamAttempt } from '../upstream/attempt.js'
 import {
   accountPrecheckMinimumObservationMs,
   nextAccountPrecheckProbeAtMs
@@ -2511,7 +2511,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     groupId: state.groupId,
     systemAccountId: state.systemAccountId
   })
-  let upstreamAttemptObserved = false
+  let upstreamResponseObserved = false
   const result = await testOpenAIAccount(account, {
     diagnostics: 'full',
     groupId: state.groupId,
@@ -2521,7 +2521,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     signal,
     disableAccountStateMutation: true,
     onUpstreamAttempt: (attempt) => {
-      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
     },
     candidateAccount: state.account,
     findAccountForTest: (accountId, access) => requestGatewayDbService({
@@ -2539,7 +2539,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     }, { timeoutMs: 10_000 }),
     gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(state.settings, timeoutMs)
   })
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
   return { ...result, probeOutcome }
 }
 

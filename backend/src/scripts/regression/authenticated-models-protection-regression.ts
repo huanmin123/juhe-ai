@@ -7,12 +7,6 @@ import {
   clearAuthenticatedModelsRateLimitForTest,
   consumeAuthenticatedModelsRateLimit
 } from '../../modules/gateway/runtime/authenticated-models-rate-limit.service.js'
-import {
-  clearAuthenticatedModelsResponseCache,
-  getAuthenticatedModelsResponseCache,
-  modelsResponseCacheRemainingTtlMs,
-  setAuthenticatedModelsResponseCache
-} from '../../modules/gateway/response/models-response-cache.js'
 
 runtimeConfig.cacheDriver = 'memory'
 runtimeConfig.runtimeStateDriver = 'memory'
@@ -103,66 +97,21 @@ assert.equal(decision.unavailable, true, 'Redis limiter 异常必须返回可区
 assert.equal(decision.retryAfterSeconds, 5, 'Redis limiter 不可用应提供有界 Retry-After')
 runtimeConfig.runtimeStateDriver = 'memory'
 
-await clearAuthenticatedModelsResponseCache()
-const cacheInput = {
-  systemAccountId: 'system-a',
-  providerCodes: ['openai-compatible', 'anthropic', 'openai-compatible'],
-  protocol: 'openai' as const,
-  variant: 'openai' as const
-}
-await setAuthenticatedModelsResponseCache(cacheInput, { object: 'list', data: [{ id: 'gpt-test' }] })
-assert.deepEqual(
-  await getAuthenticatedModelsResponseCache({ ...cacheInput, providerCodes: ['anthropic', 'openai-compatible'] }),
-  { object: 'list', data: [{ id: 'gpt-test' }] },
-  'provider codes 排序与去重后必须命中同一 30 秒缓存'
-)
-assert.equal(
-  await getAuthenticatedModelsResponseCache({ ...cacheInput, systemAccountId: 'system-b' }),
-  undefined,
-  '不同系统账户不得串用模型响应'
-)
-assert.equal(
-  await getAuthenticatedModelsResponseCache({ ...cacheInput, variant: 'codex' }),
-  undefined,
-  'Codex 与普通 OpenAI 响应不得串用'
-)
-assert.equal(
-  await getAuthenticatedModelsResponseCache({ ...cacheInput, protocol: 'anthropic', variant: 'default' }),
-  undefined,
-  '不同协议不得串用'
-)
-await clearAuthenticatedModelsResponseCache()
-assert.equal(await getAuthenticatedModelsResponseCache(cacheInput), undefined, 'runtime invalidator 必须能清空最终响应缓存')
-assert.equal(modelsResponseCacheRemainingTtlMs(10_000, 10_000), 30_000)
-assert.equal(modelsResponseCacheRemainingTtlMs(10_000, 35_000), 5_000, '缓存 TTL 必须从构建开始计时')
-assert.equal(modelsResponseCacheRemainingTtlMs(10_000, 40_000), 0, '构建达到 30 秒后不得重新写入 stale payload')
-await setAuthenticatedModelsResponseCache(cacheInput, { object: 'list', data: [{ id: 'stale-model' }] }, {
-  buildStartedAtMs: 10_000,
-  nowMs: 40_000
-})
-assert.equal(await getAuthenticatedModelsResponseCache(cacheInput), undefined, '慢构建完成后不得重新获得 30 秒缓存期限')
-
-const cacheSource = readFileSync(new URL('../../modules/gateway/response/models-response-cache.ts', import.meta.url), 'utf8')
-assert.match(cacheSource, /ttlMs:\s*30_000/, '最终响应缓存 TTL 必须固定为 30 秒')
-assert.match(cacheSource, /registerGatewayRuntimeCacheInvalidator/, '最终响应缓存必须注册现有 runtime invalidator')
-assert.match(cacheSource, /authenticated_models_response_cache_read_failed/, '最终响应缓存读取失败必须回源，不能阻断模型列表')
-assert.match(cacheSource, /authenticated_models_response_cache_write_failed/, '最终响应缓存写入失败不得阻断模型列表响应')
-assert.match(cacheSource, /authenticated_models_response_cache_clear_failed/, '最终响应缓存清理失败必须结构化记录')
-assert.match(cacheSource, /clearAuthenticatedModelsResponseCache[\s\S]*try[\s\S]*catch/, '最终响应缓存清理异常不得向 runtime invalidator 传播')
-
 const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
 assert.match(preflightSource, /consumeAuthenticatedModelsRateLimit/, '认证成功后的 models 路径必须执行双层 limiter')
+assert.match(preflightSource, /resolveGatewayApiKeyForModelsAsync/, '认证 models 必须使用轻量 API Key 校验，不能加载完整网关运行时')
+assert.match(preflightSource, /sendAuthenticatedModelsGatewayResponse/, '认证 models 必须在轻量认证后直接返回发布快照')
 assert.match(preflightSource, /Retry-After/, '认证 models 429 必须返回 Retry-After')
 assert.match(preflightSource, /authenticated_models_rate_limited/, '认证 models 429 必须有独立审计错误码')
 assert.match(preflightSource, /authenticated_models_rate_limit_unavailable/, 'Redis limiter 异常必须返回独立 audited 503')
 assert.match(preflightSource, /statusCode = limiterUnavailable \? 503 : 429/, 'Redis limiter 异常必须明确返回 503，普通超限保持 429')
 assert.match(preflightSource, /sendGatewayFailureResponse/, 'limiter 拒绝必须写失败 usage，不能落入成功 usage')
 assert.match(preflightSource, /sendGatewayFailureResponse/, '认证 models 429 必须进入失败审计和失败 usage，不得写成功 usage')
-const earlyLimiterIndex = preflightSource.indexOf('const authenticatedModelsRateLimitDecision')
-assert(earlyLimiterIndex > preflightSource.indexOf('await rejectMissingGatewayGroupAccess'), '分组缺失 403 必须优先于认证 models limiter')
-assert(earlyLimiterIndex > preflightSource.indexOf('await rejectGatewayApiKeyQuotaIfExceeded'), 'API Key 额度错误必须优先于认证 models limiter')
-assert(earlyLimiterIndex > preflightSource.indexOf('await rejectGatewayAuthorizationQuotaIfExceeded'), '授权额度错误必须优先于认证 models limiter')
-assert(earlyLimiterIndex < preflightSource.indexOf('await recordClientIpErrorCircuitSuccessAsync'), 'limiter 必须在模型目录成功路径前执行')
+const earlyHandlerStart = preflightSource.indexOf('async function handleGatewayModelsRequestBeforeRequiredAuth')
+const earlyHandlerEnd = preflightSource.indexOf('function gatewayModelsProviderCodes', earlyHandlerStart)
+const earlyHandlerSource = preflightSource.slice(earlyHandlerStart, earlyHandlerEnd)
+assert.doesNotMatch(earlyHandlerSource, /resolveGatewayRuntimeAsync/, '认证 models 快路径不得加载账户、分组和响应检查策略')
+assert.doesNotMatch(earlyHandlerSource, /rejectGatewayApiKeyQuotaIfExceeded|rejectGatewayAuthorizationQuotaIfExceeded/, '固定模型目录不得依赖额度统计链路')
 
 const authenticatedModelsLimiterSource = readFileSync(new URL('../../modules/gateway/runtime/authenticated-models-rate-limit.service.ts', import.meta.url), 'utf8')
 assert(
@@ -187,12 +136,7 @@ for (const varyHeader of [
 ]) {
   assert(fixedResponseSource.includes(varyHeader), `认证 models Vary 缺少实际判别头：${varyHeader}`)
 }
-assert.match(fixedResponseSource, /getAuthenticatedModelsResponseCache/, '最终 payload 必须在目录构建前读取缓存')
-assert.match(fixedResponseSource, /setAuthenticatedModelsResponseCache/, '目录构建后必须写入最终 payload 缓存')
-assert.match(
-  fixedResponseSource,
-  /function listProviderScopedModelCatalog[\s\S]*normalizedProviderCodeList\(input\.providerCodes\)\.sort\(\)/,
-  '目录构建必须使用与缓存键一致的 provider codes 确定性排序'
-)
+assert.match(fixedResponseSource, /readPublishedModelCatalogResponseAsync/, '认证 models 必须读取写时生成的发布快照')
+assert.doesNotMatch(fixedResponseSource, /listProviderScopedModelCatalog/, '认证 models 请求路径不得按供应商重建目录')
 
 console.log('认证模型列表双层限流与最终响应缓存回归通过')

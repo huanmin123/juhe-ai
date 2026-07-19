@@ -60,7 +60,8 @@ import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
 import { createChatSseSubscriber, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
-import { createChatModelOptionsSnapshotCache, loadChatModelOptionsFromProviderCatalogs } from './chat-model-availability.js'
+import { createChatModelOptionsSnapshotCache } from './chat-model-availability.js'
+import { readPublishedChatModelOptionsAsync } from '../model-pricing/published-model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 
 export const chatRouter = Router()
@@ -391,17 +392,7 @@ chatRouter.get('/conversations/:conversationId/models', async (req, res, next) =
         await validateGatewayApiKeyAsync(String(apiKey.key))
       ))
       if (!gatewayKey) throw new Error('API Key 不存在或不可用')
-      return loadChatModelOptionsFromProviderCatalogs({
-        bindings: (gatewayKey.group_bindings ?? []).map((binding) => ({
-          status: binding.status,
-          providerCode: normalizeProviderToken(binding.provider_code) ?? ''
-        })),
-        loadCatalog: (providerCode) => listCachedProviderModelCatalogAsync({
-          providerCode,
-          systemAccountId: auth.systemAccountId,
-          includeUnpriced: true
-        })
-      })
+      return readPublishedChatModelOptionsAsync(auth.systemAccountId)
     })
     res.json(ok(modelOptions))
   } catch (error) { handleChatRouteError(error, res, next) }

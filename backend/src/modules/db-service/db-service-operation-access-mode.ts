@@ -28,6 +28,8 @@ export const dbServiceOperationAccessModeByType = {
   search_openai_compatible_vector_store: 'read',
   list_openai_compatible_vector_store_file_chunks: 'read',
   list_provider_model_catalog: 'read',
+  find_gateway_model_catalog_snapshot: 'read',
+  list_gateway_model_catalog_snapshots: 'read',
   check_api_key_quota: 'read',
   read_api_key_quota_costs: 'read',
   check_authorization_quota: 'read',

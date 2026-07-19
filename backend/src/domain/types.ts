@@ -198,6 +198,7 @@ export interface ProviderModelPricing {
   id?: string
   scope?: 'built_in' | 'global' | 'personal'
   status?: 'draft' | 'active' | 'disabled'
+  catalogVisible?: boolean
   systemAccountId?: string
   mode?: string
   catalogOrder?: number

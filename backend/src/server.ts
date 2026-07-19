@@ -61,6 +61,7 @@ import {
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
 import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
+import { prewarmPublishedModelCatalogSnapshotsAsync } from './modules/model-pricing/published-model-catalog.service.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -155,15 +156,22 @@ backgroundWorkerStartupFallbackTimer = setTimeout(() => {
 backgroundWorkerStartupFallbackTimer.unref()
 
 function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
-  if (backgroundWorkerSupervisorStarted) {
-    return
+  if (!backgroundWorkerSupervisorStarted) {
+    backgroundWorkerSupervisorStarted = true
+    if (backgroundWorkerStartupFallbackTimer) {
+      clearTimeout(backgroundWorkerStartupFallbackTimer)
+      backgroundWorkerStartupFallbackTimer = undefined
+    }
+    startBackgroundWorkerSupervisor()
   }
-  backgroundWorkerSupervisorStarted = true
-  if (backgroundWorkerStartupFallbackTimer) {
-    clearTimeout(backgroundWorkerStartupFallbackTimer)
-    backgroundWorkerStartupFallbackTimer = undefined
-  }
-  startBackgroundWorkerSupervisor()
+  void prewarmPublishedModelCatalogSnapshotsAsync()
+    .then((snapshotCount) => logger.info({
+      event: 'published_model_catalog_prewarmed',
+      snapshotCount
+    }, '发布模型目录快照已预热'))
+    .catch((error) => logger.warn(errorLogFields(error, {
+      event: 'published_model_catalog_prewarm_failed'
+    }), '发布模型目录快照预热失败，模型接口将回退单行持久化快照'))
 }
 
 if (runtimeConfig.httpSecurity.trustProxy !== false) {

@@ -26,6 +26,7 @@ export interface CustomModelForm {
   scope: CustomProviderModelScope
   model: string
   status: ProviderModelStatus
+  catalogVisible: boolean
   mode: ProviderModelMode
   supportedApiProtocols: ProviderModelApiProtocol[]
   supportedServiceTiers: ProviderModelServiceTier[]
@@ -54,6 +55,7 @@ export const emptyCustomModelForm: CustomModelForm = {
   scope: 'personal',
   model: '',
   status: 'active',
+  catalogVisible: true,
   mode: 'text',
   supportedApiProtocols: ['responses', 'chat_completions'],
   supportedServiceTiers: [],
@@ -70,6 +72,7 @@ export function createCustomModelFormFromPricing(
     scope: record.scope === 'global' ? 'global' : 'personal',
     model: record.model,
     status: record.status ?? 'active',
+    catalogVisible: record.catalogVisible !== false,
     mode: categoryFromModeOrModel(record.mode, record.model),
     supportedApiProtocols: [...(record.supportedApiProtocols ?? [])],
     supportedServiceTiers: normalizeServiceTiers(record.supportedServiceTiers),
@@ -109,6 +112,7 @@ export function buildCustomModelPayload(
     scope: form.scope,
     model,
     status: form.status,
+    catalogVisible: form.catalogVisible,
     mode: form.mode,
     supportedApiProtocols: [...form.supportedApiProtocols],
     releaseDate: trimToNull(form.releaseDate),

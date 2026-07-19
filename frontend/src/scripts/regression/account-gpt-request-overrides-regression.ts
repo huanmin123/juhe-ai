@@ -249,6 +249,7 @@ const customModelForm = {
 }
 const customPayload = buildCustomModelPayload(customModelForm, 'text', { includeRequestCapabilities: true })
 assert.deepEqual(customPayload?.supportedServiceTiers, ['priority', 'flex'], '自定义模型服务等级应去重并限制 wire 枚举')
+assert.equal(customPayload?.catalogVisible, true, '自定义模型默认必须发布到模型接口')
 assert.deepEqual(customPayload?.supportedReasoningEfforts, ['high', 'ultra', 'max'], '通用模型能力表单应保留供应商原生字符串，具体值域由后端按供应商校验')
 assert.equal(customPayload?.defaultReasoningEffort, null, '未选择默认思考级别时应显式清空')
 const ordinaryUserPayload = buildCustomModelPayload(customModelForm, 'text', {

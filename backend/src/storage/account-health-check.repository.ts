@@ -328,6 +328,7 @@ function accountHealthCheckFailureDecision(
     failureCount: number
     intervalHours: number
     errorMessage: string
+    countTowardsThreshold: boolean
   }
 ): AccountHealthCheckFailureDecision {
   if (row.status !== 'pending_test') {
@@ -338,6 +339,14 @@ function accountHealthCheckFailureDecision(
         Math.max(1, input.failureCount),
         input.intervalHours
       ),
+      transitionedToError: false
+    }
+  }
+  if (!input.countTowardsThreshold) {
+    return {
+      accountStatus: 'pending_test',
+      nextHealthCheckAt: new Date(Date.parse(input.checkedAt) + pendingHealthCheckRetryIntervalMs).toISOString(),
+      failureStartedAt: normalizedIso(row.health_check_failure_started_at),
       transitionedToError: false
     }
   }
@@ -404,7 +413,8 @@ export function recordAccountHealthCheckFailure(accountId: string, input: Accoun
         checkedAt,
         failureCount,
         intervalHours: input.intervalHours,
-        errorMessage
+        errorMessage,
+        countTowardsThreshold
       })
       nextHealthCheckAt = decision.nextHealthCheckAt
       failureStartedAt = decision.failureStartedAt
@@ -539,7 +549,8 @@ export async function recordAccountHealthCheckFailureAsync(accountId: string, in
       checkedAt,
       failureCount,
       intervalHours: input.intervalHours,
-      errorMessage
+      errorMessage,
+      countTowardsThreshold
     })
     const result = await tx.execute(`
       UPDATE ${healthCheckTable(tx, 'accounts')}

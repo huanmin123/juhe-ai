@@ -36,6 +36,8 @@ import {
 } from '../runtime/client-ip-error-circuit.service.js'
 import {
   finalizeGatewayAuthFailureAudit,
+  sendAuthenticatedModelsGatewayResponse,
+  type OpenAIModelsResponseUsageContext,
   sendAnthropicModelsGatewayResponse,
   sendGeminiModelsGatewayResponse,
   sendOpenAIModelsGatewayResponse,
@@ -43,7 +45,12 @@ import {
 } from '../response/fixed-responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import { gatewayErrorPayload, sendGatewayJsonError } from '../response/responses.js'
-import { extractGatewayApiKey, resolveGatewayRuntimeAsync, type GatewayRuntimeRequest } from './pre-auth.js'
+import {
+  extractGatewayApiKey,
+  resolveGatewayApiKeyForModelsAsync,
+  resolveGatewayRuntimeAsync,
+  type GatewayRuntimeRequest
+} from './pre-auth.js'
 import {
   isOpenAIModelsRequest,
   type UpstreamAccount
@@ -94,7 +101,10 @@ import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unava
 import { requestModel } from './metadata.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
-import { consumeAuthenticatedModelsRateLimit } from '../runtime/authenticated-models-rate-limit.service.js'
+import {
+  consumeAuthenticatedModelsRateLimit,
+  type AuthenticatedModelsRateLimitDecision
+} from '../runtime/authenticated-models-rate-limit.service.js'
 import {
   createSameAccountRetryBudget,
   type SameAccountRetryBudget
@@ -185,7 +195,9 @@ export async function prepareOpenAIGatewayDispatchContext(
       auditCapture,
       protocol: initialModelsResponseProtocol,
       startedAt,
-      clientIp
+      clientIp,
+      traceId,
+      endpoint
     })
     if (completed) {
       return undefined
@@ -640,43 +652,13 @@ export async function prepareOpenAIGatewayDispatchContext(
       clientIp: gatewayClientIp
     })
     if (!authenticatedModelsRateLimitDecision.allowed) {
-      const limiterUnavailable = authenticatedModelsRateLimitDecision.unavailable === true
-      const statusCode = limiterUnavailable ? 503 : 429
-      const errorCode = limiterUnavailable
-        ? 'authenticated_models_rate_limit_unavailable'
-        : 'authenticated_models_rate_limited'
-      const retryAfterSeconds = authenticatedModelsRateLimitDecision.retryAfterSeconds ?? (limiterUnavailable ? 5 : 1)
-      if (!res.headersSent) {
-        res.setHeader('Retry-After', String(retryAfterSeconds))
-      }
-      auditCapture.addGatewayMetadata({
-        label: 'authenticated_models_rate_limit',
-        metadata: {
-          scope: authenticatedModelsRateLimitDecision.scope,
-          limit: authenticatedModelsRateLimitDecision.limit,
-          retryAfterSeconds,
-          unavailable: limiterUnavailable
-        }
-      })
-      const responsePayload = gatewayErrorPayload(
-        limiterUnavailable ? '模型列表限流服务暂不可用，请稍后重试' : '模型列表请求过于频繁，请稍后重试',
-        limiterUnavailable ? 'service_unavailable' : 'rate_limit_exceeded',
-        errorCode
-      )
-      await sendGatewayFailureResponse({
+      await sendAuthenticatedModelsRateLimitFailure({
         req,
         res,
         auditCapture,
         usageContext,
         startedAt,
-        statusCode,
-        responsePayload,
-        audit: {
-          outcome: 'gateway_failed',
-          errorPhase: limiterUnavailable ? 'security' : 'request_validation',
-          errorCode,
-          errorMessage: responsePayload.error.message
-        }
+        decision: authenticatedModelsRateLimitDecision
       })
       return undefined
     }
@@ -948,16 +930,62 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
   protocol: ResponseProtocolCode
   startedAt: number
   clientIp?: string
+  traceId: string
+  endpoint: string
 }): Promise<boolean> {
   if (gatewayModelsRequestHasAuthCredential(input.req)) {
-    const runtime = await resolveGatewayRuntimeAsync(input.req as GatewayRuntimeRequest, input.res)
-    if (!runtime?.apiKey) {
+    const apiKey = await resolveGatewayApiKeyForModelsAsync(input.req as GatewayRuntimeRequest, input.res)
+    if (!apiKey) {
       finalizeGatewayAuthFailureAudit(input.req, input.res, input.auditCapture)
       return true
     }
-    const gatewayRequest = input.req as GatewayRuntimeRequest
-    gatewayRequest.gatewayRuntime = runtime
-    return false
+    const usageContext: OpenAIModelsResponseUsageContext = {
+      traceId: input.traceId,
+      trafficSource: 'gateway',
+      clientIp: input.clientIp,
+      systemAccountId: apiKey.system_account_id,
+      apiKeyId: apiKey.id,
+      groupId: apiKey.selected_group_id,
+      endpoint: input.endpoint
+    }
+    input.auditCapture.bindContext({
+      systemAccountId: apiKey.system_account_id,
+      apiKeyId: apiKey.id,
+      groupId: apiKey.selected_group_id,
+      trafficSource: 'gateway'
+    })
+    const rateLimitDecision = await consumeAuthenticatedModelsRateLimit({
+      apiKeyId: apiKey.id,
+      clientIp: input.clientIp
+    })
+    if (!rateLimitDecision.allowed) {
+      await sendAuthenticatedModelsRateLimitFailure({
+        req: input.req,
+        res: input.res,
+        auditCapture: input.auditCapture,
+        usageContext,
+        startedAt: input.startedAt,
+        decision: rateLimitDecision
+      })
+      return true
+    }
+    await recordClientIpErrorCircuitSuccessAsync({
+      systemAccountId: apiKey.system_account_id,
+      apiKeyId: apiKey.id,
+      groupId: apiKey.selected_group_id,
+      clientIp: input.clientIp,
+      endpoint: input.endpoint
+    })
+    await sendAuthenticatedModelsGatewayResponse({
+      req: input.req,
+      res: input.res,
+      auditCapture: input.auditCapture,
+      usageContext,
+      providerCodes: gatewayModelsProviderCodes({ apiKeyRecord: apiKey }),
+      protocol: modelsResponseKind(input.protocol),
+      startedAt: input.startedAt
+    })
+    return true
   }
 
   const rateLimit = await consumePublicModelsRateLimit({ clientIp: input.clientIp })
@@ -974,6 +1002,52 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
     startedAt: input.startedAt
   })
   return true
+}
+
+async function sendAuthenticatedModelsRateLimitFailure(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext | OpenAIModelsResponseUsageContext
+  startedAt: number
+  decision: AuthenticatedModelsRateLimitDecision
+}): Promise<void> {
+  const limiterUnavailable = input.decision.unavailable === true
+  const statusCode = limiterUnavailable ? 503 : 429
+  const errorCode = limiterUnavailable
+    ? 'authenticated_models_rate_limit_unavailable'
+    : 'authenticated_models_rate_limited'
+  const retryAfterSeconds = input.decision.retryAfterSeconds ?? (limiterUnavailable ? 5 : 1)
+  if (!input.res.headersSent) input.res.setHeader('Retry-After', String(retryAfterSeconds))
+  input.auditCapture.addGatewayMetadata({
+    label: 'authenticated_models_rate_limit',
+    metadata: {
+      scope: input.decision.scope,
+      limit: input.decision.limit,
+      retryAfterSeconds,
+      unavailable: limiterUnavailable
+    }
+  })
+  const responsePayload = gatewayErrorPayload(
+    limiterUnavailable ? '模型列表限流服务暂不可用，请稍后重试' : '模型列表请求过于频繁，请稍后重试',
+    limiterUnavailable ? 'service_unavailable' : 'rate_limit_exceeded',
+    errorCode
+  )
+  await sendGatewayFailureResponse({
+    req: input.req,
+    res: input.res,
+    auditCapture: input.auditCapture,
+    usageContext: input.usageContext as GatewayFailureUsageContext,
+    startedAt: input.startedAt,
+    statusCode,
+    responsePayload,
+    audit: {
+      outcome: 'gateway_failed',
+      errorPhase: limiterUnavailable ? 'security' : 'request_validation',
+      errorCode,
+      errorMessage: responsePayload.error.message
+    }
+  })
 }
 
 function gatewayModelsProviderCodes(input: {

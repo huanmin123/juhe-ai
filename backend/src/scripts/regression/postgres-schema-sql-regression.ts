@@ -39,6 +39,15 @@ const usageRecordsCreateSql = statements.find((statement) => statement.schemaNam
 const providerModelCatalogCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS provider_model_catalog\b/i.test(statement.sql)
 )?.sql ?? ''
+const customProviderModelsCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS custom_provider_models\b/i.test(statement.sql)
+)?.sql ?? ''
+const pageDataDirtyDomainsCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS page_data_dirty_domains\b/i.test(statement.sql)
+)?.sql ?? ''
+const gatewayModelCatalogSnapshotsCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots\b/i.test(statement.sql)
+)?.sql ?? ''
 const listBuiltInProviderModelsAsyncStart = providerModelCatalogRepositorySource.indexOf('export async function listBuiltInProviderModelsAsync')
 const listBuiltInProviderModelsAsyncEnd = providerModelCatalogRepositorySource.indexOf(
   'export async function findBuiltInProviderModelByIdAsync',
@@ -84,14 +93,16 @@ for (const schemaName of schemaNames) {
 }
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
-assert.match(providerModelCatalogCreateSql, /catalog_visible integer NOT NULL DEFAULT 1(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须保持 integer')
+assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false[\s\S]+catalog_visible boolean NOT NULL DEFAULT true/, 'Node PG 内置模型布尔字段必须与 Goose 保持一致')
+assert.match(customProviderModelsCreateSql, /catalog_visible boolean NOT NULL DEFAULT true/, 'Node PG 自定义模型发布字段必须与 Goose 58 保持 boolean')
+assert.match(pageDataDirtyDomainsCreateSql, /generation bigint NOT NULL[\s\S]+is_dirty boolean NOT NULL DEFAULT TRUE[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 页面数据脏域必须与 Goose 56 保持一致')
+assert.match(gatewayModelCatalogSnapshotsCreateSql, /created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 发布模型快照时间字段必须与 Goose 58 保持一致')
 assert.match(listBuiltInProviderModelsAsyncSql, /FROM juhe_business\.provider_model_catalog\b/, '必须提取 Node PG 模型目录查询的目标 SQL 模板')
 assert.match(
   listBuiltInProviderModelsAsyncSql,
-  /catalog_visible = 1(?=\s|,|\)|;|$)/,
-  'Node PG 模型目录查询必须对 integer 可见性字段使用整数谓词'
+  /catalog_visible = true\b/i,
+  'Node PG 模型目录查询必须对 PostgreSQL boolean 可见性字段使用布尔谓词'
 )
-assert.doesNotMatch(listBuiltInProviderModelsAsyncSql, /catalog_visible = true\b/, 'Node PG 模型目录查询不得对 integer 字段使用 boolean 谓词')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS audit_logs/, '应包含数据集库 schema')
 assert.match(sql, /audit_logs[\s\S]+model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+model_mapping_source text[\s\S]+source_endpoint_family text[\s\S]+upstream_endpoint_family text/, 'PG 审计日志必须包含模型映射可观测字段')
 assert.match(sql, /audit_log_attempts[\s\S]+attempt_model_mapping_applied integer NOT NULL DEFAULT 0[\s\S]+attempt_model_mapping_source text[\s\S]+attempt_source_endpoint_family text[\s\S]+attempt_upstream_endpoint_family text/, 'PG 审计尝试表必须包含每次尝试的模型映射可观测字段')

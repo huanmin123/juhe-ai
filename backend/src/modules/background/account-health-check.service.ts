@@ -6,7 +6,7 @@ import type { AccountHealthCheckSettings } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService, sendAccountRuntimeClearToServer } from './background-ipc.js'
 import {
   accountHealthCheckTriggerPriority,
@@ -117,7 +117,7 @@ async function runAccountHealthCheckQueueItem(
 
   const groupId = account.boundGroupId
   const observedAt = new Date().toISOString()
-  let upstreamAttemptObserved = false
+  let upstreamResponseObserved = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'limited',
     groupId,
@@ -126,7 +126,7 @@ async function runAccountHealthCheckQueueItem(
     disableAccountStateMutation: true,
     retryAllFailures: true,
     onUpstreamAttempt: (attempt) => {
-      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
     },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -135,7 +135,7 @@ async function runAccountHealthCheckQueueItem(
       temporaryUnschedulableRetryIntervalSeconds: 0
     }
   })
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
 
   if (probeOutcome === 'complete_success') {
     const healthCheckResult = await requestBackgroundWorkerDbService({

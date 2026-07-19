@@ -558,6 +558,15 @@ export const router = createRouter({
         public: true
       }
     },
+    {
+      path: '/service-recovering',
+      component: () => import('@/views/login/ServiceRecoveringView.vue'),
+      meta: {
+        title: '服务正在恢复',
+        description: '发布切换期间认证服务暂不可用，请稍后重试',
+        public: true
+      }
+    },
     ...menuRoutes,
     {
       path: '/:pathMatch(.*)*',
@@ -573,8 +582,36 @@ export const router = createRouter({
 
 installRouteLoadRecovery(router)
 
+const AUTH_RETRY_DELAYS_MS = [200, 400, 800, 1600] as const
+let navigationGeneration = 0
+
+async function loadCurrentUserForNavigation(generation: number) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const user = await loadCurrentUser()
+      if (generation !== navigationGeneration) throw new Error('navigation superseded')
+      return user
+    } catch (error: unknown) {
+      if (generation !== navigationGeneration) throw error
+      const delay = AUTH_RETRY_DELAYS_MS[attempt]
+      if (delay === undefined) throw error
+      await new Promise((resolve) => setTimeout(resolve, delay))
+      if (generation !== navigationGeneration) throw error
+    }
+  }
+}
+
 router.beforeEach(async (to) => {
-  const user = await loadCurrentUser()
+  const generation = ++navigationGeneration
+  let user
+  try {
+    user = to.meta.public ? await loadCurrentUser() : await loadCurrentUserForNavigation(generation)
+  } catch {
+    if (generation !== navigationGeneration) return false
+    if (to.meta.public) return true
+    return { path: '/service-recovering', query: { redirect: to.fullPath } }
+  }
+  if (generation !== navigationGeneration) return false
   if (to.name === 'not-found') {
     if (user) return getPreferredEntryPath(user)
     return { path: '/login', query: { redirect: '/' } }
@@ -616,6 +653,7 @@ setMustChangePasswordHandler(() => {
         void router.replace(getPreferredEntryPath(user))
       }
     })
+    .catch(() => undefined)
     .finally(() => {
       mustChangePasswordRefreshRunning = false
     })

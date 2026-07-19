@@ -43,6 +43,7 @@ export interface CustomProviderModelRecord {
   scope: CustomProviderModelScope
   systemAccountId?: string
   status: CustomProviderModelStatus
+  catalogVisible: boolean
   mode?: string
   supportedApiProtocols: CustomProviderModelApiProtocol[]
   supportedServiceTiers: CustomProviderModelServiceTier[]
@@ -88,6 +89,7 @@ export interface UpsertCustomProviderModelInput {
   scope?: CustomProviderModelScope
   systemAccountId?: string
   status?: CustomProviderModelStatus
+  catalogVisible?: boolean
   mode?: string | null
   supportedApiProtocols?: string[] | null
   supportedServiceTiers?: string[] | null
@@ -122,6 +124,7 @@ interface CustomProviderModelRow {
   scope: CustomProviderModelScope
   system_account_id?: string | null
   status: CustomProviderModelStatus
+  catalog_visible: number | boolean
   mode?: string | null
   supported_api_protocols_json?: string | null
   supported_service_tiers_json?: string | null
@@ -247,6 +250,7 @@ export function upsertCustomProviderModel(
   const existing = input.id
     ? findCustomProviderModelById(input.id)
     : findCustomProviderModelByScope(providerCode, scope, systemAccountId, model)
+  const catalogVisible = input.catalogVisible ?? existing?.catalogVisible ?? true
   if (existing && existing.model.trim() !== model) {
     throw new Error('模型 ID 创建后不能修改')
   }
@@ -256,7 +260,7 @@ export function upsertCustomProviderModel(
   getBusinessDatabase()
     .prepare(`
       INSERT INTO custom_provider_models (
-        id, provider_code, model, scope, system_account_id, status,
+        id, provider_code, model, scope, system_account_id, status, catalog_visible,
         mode, supported_api_protocols_json, supported_service_tiers_json,
         supported_reasoning_efforts_json, default_reasoning_effort,
         release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
@@ -265,13 +269,14 @@ export function upsertCustomProviderModel(
         output_usd_per_image, currency, pricing_notes, capability_notes, notes,
         created_by, updated_by, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         provider_code = excluded.provider_code,
         model = excluded.model,
         scope = excluded.scope,
         system_account_id = excluded.system_account_id,
         status = excluded.status,
+        catalog_visible = excluded.catalog_visible,
         mode = excluded.mode,
         supported_api_protocols_json = excluded.supported_api_protocols_json,
         supported_service_tiers_json = excluded.supported_service_tiers_json,
@@ -306,6 +311,7 @@ export function upsertCustomProviderModel(
       scope,
       systemAccountId ?? null,
       status,
+      catalogVisible ? 1 : 0,
       optionalText(input.mode) ?? null,
       JSON.stringify(normalizeProtocols(input.supportedApiProtocols)),
       JSON.stringify(capabilities.supportedServiceTiers),
@@ -363,6 +369,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   const existing = input.id
     ? await findCustomProviderModelByIdAsync(input.id)
     : await findCustomProviderModelByScopeAsync(providerCode, scope, systemAccountId, model)
+  const catalogVisible = input.catalogVisible ?? existing?.catalogVisible ?? true
   if (existing && existing.model.trim() !== model) {
     throw new Error('模型 ID 创建后不能修改')
   }
@@ -372,7 +379,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
   const client = await getCustomProviderModelsDatabaseClient()
   await client.execute(`
     INSERT INTO ${customProviderModelsTable(client)} (
-      id, provider_code, model, scope, system_account_id, status,
+      id, provider_code, model, scope, system_account_id, status, catalog_visible,
       mode, supported_api_protocols_json, supported_service_tiers_json,
       supported_reasoning_efforts_json, default_reasoning_effort,
       release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
@@ -381,13 +388,14 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
       output_usd_per_image, currency, pricing_notes, capability_notes, notes,
       created_by, updated_by, created_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       provider_code = excluded.provider_code,
       model = excluded.model,
       scope = excluded.scope,
       system_account_id = excluded.system_account_id,
       status = excluded.status,
+      catalog_visible = excluded.catalog_visible,
       mode = excluded.mode,
       supported_api_protocols_json = excluded.supported_api_protocols_json,
       supported_service_tiers_json = excluded.supported_service_tiers_json,
@@ -421,6 +429,7 @@ export async function upsertCustomProviderModelAsync(input: UpsertCustomProvider
     scope,
     systemAccountId ?? null,
     status,
+    runtimeConfig.databaseDriver === 'postgres' ? Boolean(catalogVisible) : (catalogVisible ? 1 : 0),
     optionalText(input.mode) ?? null,
     JSON.stringify(normalizeProtocols(input.supportedApiProtocols)),
     JSON.stringify(capabilities.supportedServiceTiers),
@@ -689,7 +698,7 @@ async function countDistinctBoundAccountsAsync(client: DatabaseClient, sql: stri
 
 function customProviderModelColumns(): string {
   return `
-    id, provider_code, model, scope, system_account_id, status,
+    id, provider_code, model, scope, system_account_id, status, catalog_visible,
     mode, supported_api_protocols_json, supported_service_tiers_json,
     supported_reasoning_efforts_json, default_reasoning_effort,
     release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
@@ -725,6 +734,7 @@ function customProviderModelFromRow(row: CustomProviderModelRow): CustomProvider
     scope: row.scope,
     systemAccountId: optionalText(row.system_account_id),
     status: row.status,
+    catalogVisible: Boolean(row.catalog_visible),
     mode: optionalText(row.mode),
     supportedApiProtocols: parseStringArray(row.supported_api_protocols_json),
     supportedServiceTiers: parseEnumArray(row.supported_service_tiers_json, customProviderModelCapabilityTokens),
