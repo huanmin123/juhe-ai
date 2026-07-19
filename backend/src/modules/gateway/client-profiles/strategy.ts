@@ -10,7 +10,7 @@ import { codexCompactionExpectedForRequest } from '../response/codex-compaction-
 export const gatewayClientProfileHeader = 'x-juhe-client-profile'
 
 export type OpenAIGatewayClientProfile = 'codex' | 'generic_openai' | 'claude_code' | 'generic_anthropic' | 'gemini_cli' | 'generic_gemini'
-export type OpenAIGatewayDownstreamProtocol = 'responses_sse' | 'chat_completions_sse' | 'messages_sse' | 'gemini_stream_generate_content_sse' | 'json' | 'unknown_stream'
+export type OpenAIGatewayDownstreamProtocol = 'responses_sse' | 'chat_completions_sse' | 'messages_sse' | 'gemini_stream_generate_content_sse' | 'gemini_interactions_sse' | 'json' | 'unknown_stream'
 export type OpenAIGatewayUpstreamAdapter = 'openai_api_key' | 'openai_oauth_codex' | 'openai_mixed' | 'anthropic_api_key' | 'gemini_api_key'
 export type GatewayPreCommitFailureSignal = 'protocol_error_event' | 'http_error'
 export type GatewayCommittedFailureSignal = 'protocol_error_event' | 'disconnect'
@@ -156,7 +156,7 @@ export function resolveGatewayClientRetryCoordination(
   const protocolEventSupported = (
     (clientProfile === 'codex' && downstreamProtocol === 'responses_sse')
     || (clientProfile === 'claude_code' && downstreamProtocol === 'messages_sse')
-    || (clientProfile === 'gemini_cli' && downstreamProtocol === 'gemini_stream_generate_content_sse')
+    || (clientProfile === 'gemini_cli' && (downstreamProtocol === 'gemini_stream_generate_content_sse' || downstreamProtocol === 'gemini_interactions_sse'))
   )
   return protocolEventSupported
     ? {
@@ -201,12 +201,19 @@ export function resolveAnthropicGatewayDownstreamProtocol(req: Request): OpenAIG
 export function resolveGeminiGatewayDownstreamProtocol(req: Request): OpenAIGatewayDownstreamProtocol {
   const normalizedPath = normalizedGeminiRequestPath(req)
   const acceptsEventStream = requestAcceptsEventStream(req)
-  const streamRequested = requestStream(req) || acceptsEventStream || geminiAltSseQuery(req)
+  const interactionStreamRequested = requestStream(req) || acceptsEventStream
+  const streamRequested = interactionStreamRequested || geminiAltSseQuery(req)
   if (req.method.toUpperCase() === 'POST' && /^\/models\/[^/]+:streamgeneratecontent$/.test(normalizedPath)) {
     return 'gemini_stream_generate_content_sse'
   }
   if (req.method.toUpperCase() === 'POST' && /^\/models\/[^/]+:generatecontent$/.test(normalizedPath) && streamRequested) {
     return 'gemini_stream_generate_content_sse'
+  }
+  if (req.method.toUpperCase() === 'POST' && normalizedPath === '/interactions') {
+    return interactionStreamRequested ? 'gemini_interactions_sse' : 'json'
+  }
+  if (req.method.toUpperCase() === 'GET' && /^\/interactions\/[^/]+$/.test(normalizedPath)) {
+    return interactionStreamRequested ? 'gemini_interactions_sse' : 'json'
   }
   if (streamRequested || acceptsEventStream) {
     return 'unknown_stream'

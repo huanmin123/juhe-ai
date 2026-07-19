@@ -434,7 +434,7 @@ import {
 } from './accountBatchEditForm'
 import { accountEndpointModeOptionsForProfile } from './accountEndpointModes'
 import { accountHealthCheckEndpointModeOptions } from './accountHealthCheckEndpointMode'
-import type { AccountModelSelectOption } from './accountEditFormPayload'
+import { providerModelsForProtocolProfile, type AccountModelSelectOption } from './accountEditFormPayload'
 import {
   accountGptRequestOverrideCapabilities,
   availableAccountGptReasoningEffortOptions,
@@ -527,11 +527,12 @@ const gptCapabilities = computed(() => accountGptRequestOverrideCapabilities({
   providerCode: homogeneousAccount.value?.providerCode,
   accountType: homogeneousAccount.value?.type ?? 'api_key',
   modelOptions: modelOptions.value,
-  supportedModels: effectiveBatchModels.value
+  supportedModels: effectiveBatchModels.value,
+  supportedEndpointModes: effectiveBatchEndpointModes.value
 }))
 const requestOverridesSupported = computed(() => Boolean(
   homogeneousAccount.value
-  && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode)
+  && isAccountRequestOverrideProviderSupported(homogeneousAccount.value.providerCode, effectiveBatchEndpointModes.value)
 ))
 const serviceTierOptions = computed(() => availableAccountGptServiceTierOptions(gptCapabilities.value))
 const reasoningEffortOptions = computed(() => availableAccountGptReasoningEffortOptions(gptCapabilities.value))
@@ -632,7 +633,7 @@ async function loadModelOptions(token: number): Promise<void> {
       scopeParams: scope
     })
     if (token !== loadToken || !open.value) return
-    modelOptions.value = models.data
+    modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)
   } finally {
     if (token === loadToken) modelsLoading.value = false
   }

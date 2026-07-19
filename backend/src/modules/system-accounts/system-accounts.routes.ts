@@ -10,6 +10,7 @@ import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutat
 import { diffSafeFields, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
 import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
+import { rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync } from '../model-pricing/published-model-catalog.service.js'
 
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
@@ -131,6 +132,7 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
       publishPageDataDomainGlobalReset('systemAccounts.options'),
       publishPageDataDomainGlobalReset('accounts.options')
     ])
+    await rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(account.id)
     res.status(201).json(ok(account))
   } catch (error) {
     res.status(409).json({ message: error instanceof Error ? error.message : '创建系统账户失败' })

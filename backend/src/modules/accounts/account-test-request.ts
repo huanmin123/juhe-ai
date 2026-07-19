@@ -14,6 +14,7 @@ const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
 const gatewayAnthropicMessagesPath = '/v1/messages'
 const gatewayGeminiVersionPrefix = '/v1beta'
+const gatewayGeminiInteractionsPath = '/v1beta/interactions'
 const gatewayClientProfileHeader = 'x-juhe-client-profile'
 const claudeCodeVersion = '2.1.201'
 const claudeCodeBuildId = 'eb7'
@@ -81,7 +82,20 @@ export function createGeminiTestRequest(input: {
   testEndpointMode: AccountSupportedEndpointMode
 }): AccountTestRequest {
   const model = stringValue(input.explicitModel) || input.fallbackModel
-  const stream = input.testEndpointMode === 'generate_content_sse'
+  const interactions = input.testEndpointMode === 'interactions_json' || input.testEndpointMode === 'interactions_sse'
+  const stream = input.testEndpointMode === 'generate_content_sse' || input.testEndpointMode === 'interactions_sse'
+  if (interactions) {
+    return {
+      path: gatewayGeminiInteractionsPath,
+      body: {
+        model,
+        input: input.prompt,
+        stream
+      },
+      headers: stream ? { accept: 'text/event-stream' } : undefined,
+      model
+    }
+  }
   const method = stream ? 'streamGenerateContent' : 'generateContent'
   return {
     path: `${gatewayGeminiVersionPrefix}/${geminiModelPath(model)}:${method}${stream ? '?alt=sse' : ''}`,
@@ -103,6 +117,8 @@ export function testPathFromEndpointMode(mode: AccountSupportedEndpointMode, mod
   if (mode === 'generate_content_sse') {
     return `${gatewayGeminiVersionPrefix}/${geminiModelPath(model)}:streamGenerateContent?alt=sse`
   }
+  if (mode === 'interactions_json') return gatewayGeminiInteractionsPath
+  if (mode === 'interactions_sse') return gatewayGeminiInteractionsPath
   return gatewayTestPath
 }
 

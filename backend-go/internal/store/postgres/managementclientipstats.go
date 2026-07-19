@@ -58,17 +58,17 @@ func listManagementClientIPStats(
 			err,
 		)
 	}
-	if !ready {
-		return port.ManagementClientIPStatsListPage{
-			Rows:       []port.ManagementClientIPStatsListRow{},
-			RangeReady: false,
-		}, nil
-	}
 	if input.Limit <= 0 {
 		return port.ManagementClientIPStatsListPage{
 			Rows:       []port.ManagementClientIPStatsListRow{},
-			RangeReady: true,
+			RangeReady: ready,
 		}, nil
+	}
+	queryStartDate := input.StartDate
+	queryEndDate := input.EndDate
+	if !ready {
+		queryStartDate = ""
+		queryEndDate = ""
 	}
 
 	lastUsedStartAt, lastUsedEndExclusiveAt, hasLastUsedRange, err :=
@@ -96,8 +96,8 @@ func listManagementClientIPStats(
 			ctx,
 			postgresqueries.ListManagementClientIPStatsRequestCountDescParams{
 				PolicyNow:              policyNow,
-				StartDate:              input.StartDate,
-				EndDate:                input.EndDate,
+				StartDate:              queryStartDate,
+				EndDate:                queryEndDate,
 				HasLastUsedRange:       hasLastUsedRange,
 				LastUsedStartAt:        lastUsedStartAt,
 				LastUsedEndExclusiveAt: lastUsedEndExclusiveAt,
@@ -120,8 +120,8 @@ func listManagementClientIPStats(
 			ctx,
 			postgresqueries.ListManagementClientIPStatsParams{
 				PolicyNow:              policyNow,
-				StartDate:              input.StartDate,
-				EndDate:                input.EndDate,
+				StartDate:              queryStartDate,
+				EndDate:                queryEndDate,
 				HasLastUsedRange:       hasLastUsedRange,
 				LastUsedStartAt:        lastUsedStartAt,
 				LastUsedEndExclusiveAt: lastUsedEndExclusiveAt,
@@ -154,7 +154,7 @@ func listManagementClientIPStats(
 	return port.ManagementClientIPStatsListPage{
 		Rows:       items,
 		HasMore:    hasMore,
-		RangeReady: true,
+		RangeReady: ready,
 	}, nil
 }
 

@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue'
+import axios from 'axios'
 
 import { api } from '@/api/client'
 import { isAdminRole, isSuperAdminRole } from '@/shared/systemAccountRoles'
@@ -10,6 +11,8 @@ import { drainChatConversationSyncAccount, invalidateChatConversationSyncAccount
 
 const currentUser = ref<CurrentUserSummary>()
 const authChecked = ref(false)
+let authStateVersion = 0
+let authLoadGeneration = 0
 
 export const authState = {
   currentUser,
@@ -23,14 +26,22 @@ export async function loadCurrentUser(force = false): Promise<CurrentUserSummary
   if (authChecked.value && !force) {
     return currentUser.value
   }
+  const requestVersion = authStateVersion
+  const loadGeneration = ++authLoadGeneration
   try {
-    currentUser.value = await api.auth.me()
-    return currentUser.value
-  } catch {
-    currentUser.value = undefined
-    return undefined
-  } finally {
+    const user = await api.auth.me()
+    if (requestVersion !== authStateVersion || loadGeneration !== authLoadGeneration) return currentUser.value
+    currentUser.value = user
     authChecked.value = true
+    return currentUser.value
+  } catch (error: unknown) {
+    if (requestVersion !== authStateVersion || loadGeneration !== authLoadGeneration) return currentUser.value
+    if (isExplicitUnauthorized(error)) {
+      clearAuthState()
+      return undefined
+    }
+    if (currentUser.value) return currentUser.value
+    throw error
   }
 }
 
@@ -39,19 +50,25 @@ export async function loadCaptcha(): Promise<CaptchaChallengeSummary> {
 }
 
 export async function login(payload: { username: string; password: string; captchaId?: string; captchaCode?: string }): Promise<CurrentUserSummary> {
-  currentUser.value = await api.auth.login(payload)
-  authChecked.value = true
-  return currentUser.value
+  const operationVersion = ++authStateVersion
+  const user = await api.auth.login(payload)
+  if (operationVersion === authStateVersion) {
+    currentUser.value = user
+    authChecked.value = true
+  }
+  return user
 }
 
 export async function logout(): Promise<void> {
   const systemAccountId = currentUser.value?.id
-  try {
-    await api.auth.logout()
-  } finally {
-    await clearCurrentAccountChatState(systemAccountId)
-    clearAuthState()
-  }
+  authStateVersion += 1
+  await api.auth.logout()
+  clearAuthState()
+  await clearCurrentAccountChatState(systemAccountId)
+}
+
+function isExplicitUnauthorized(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.response?.status === 401
 }
 
 export async function clearCurrentAccountChatState(systemAccountId = currentUser.value?.id): Promise<void> {
@@ -64,16 +81,21 @@ export async function clearCurrentAccountChatState(systemAccountId = currentUser
 }
 
 export async function changePassword(payload: { oldPassword?: string; newPassword: string }): Promise<CurrentUserSummary> {
-  currentUser.value = await api.auth.changePassword(payload)
-  return currentUser.value
+  const operationVersion = ++authStateVersion
+  const user = await api.auth.changePassword(payload)
+  if (operationVersion === authStateVersion) currentUser.value = user
+  return user
 }
 
 export async function updateProfile(payload: { displayName: string }): Promise<CurrentUserSummary> {
-  currentUser.value = await api.auth.updateProfile(payload)
-  return currentUser.value
+  const operationVersion = ++authStateVersion
+  const user = await api.auth.updateProfile(payload)
+  if (operationVersion === authStateVersion) currentUser.value = user
+  return user
 }
 
 export function clearAuthState(): void {
+  authStateVersion += 1
   currentUser.value = undefined
   authChecked.value = true
 }

@@ -446,6 +446,24 @@ try {
   assert.equal(pendingAfterInflightSuccess?.status, 'pending_test', '旧在途成功请求不得激活新配置')
   assert.equal(pendingAfterInflightSuccess?.nextHealthCheckAt, undefined, '旧在途成功请求不得把待检查推迟到正常周期')
   assert(repositories.listAccountsDueForHealthCheck({ limit: 100, ...healthSettings }).some((item) => item.id === credentialChangedAccount.id), '修改 Key 的待检查账户应立即进入健康检查候选')
+  repositories.recordAccountHealthCheckFailure(credentialChangedAccount.id, {
+    ...healthSettings,
+    errorCode: 'probe_task_failure',
+    errorMessage: '未收到上游响应头',
+    countTowardsThreshold: false
+  })
+  const pendingAfterInconclusiveProbe = repositories.findAccountSummary(credentialChangedAccount.id, access)
+  assert.equal(pendingAfterInconclusiveProbe?.status, 'pending_test', '无结论探针不得改变待检查账户状态')
+  assert.equal(pendingAfterInconclusiveProbe?.healthCheckFailureStartedAt, undefined, '无结论探针不得启动 24 小时失败窗口')
+  const oldPendingFailureStartedAt = new Date(Date.now() - 25 * 60 * 60_000).toISOString()
+  database.prepare('UPDATE accounts SET health_check_failure_started_at = ? WHERE id = ?').run(oldPendingFailureStartedAt, credentialChangedAccount.id)
+  repositories.recordAccountHealthCheckFailure(credentialChangedAccount.id, {
+    ...healthSettings,
+    errorCode: 'probe_task_failure',
+    errorMessage: '仍未收到上游响应头',
+    countTowardsThreshold: false
+  })
+  assert.equal(repositories.findAccountSummary(credentialChangedAccount.id, access)?.status, 'pending_test', '既有失败窗口超过 24 小时时，无结论探针也不得把账户转为异常')
 
   const cooldownProbeAt = trafficAfterSuccess?.lastHealthSuccessAt
   repositories.createUsageRecordsBatch([{

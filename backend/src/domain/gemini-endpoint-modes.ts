@@ -11,8 +11,12 @@ export const GEMINI_ENDPOINT_MODE_VALUES: readonly AccountSupportedEndpointMode[
   'generate_content_json',
   'generate_content_sse',
   'count_tokens',
-  'embed_content'
+  'embed_content',
+  'interactions_json',
+  'interactions_sse'
 ] as const
+
+export const GEMINI_INTERACTIONS_FAMILY = 'interactions' as const
 
 const geminiEndpointModeSet = new Set<string>(GEMINI_ENDPOINT_MODE_VALUES)
 
@@ -30,9 +34,10 @@ export type GeminiEndpointFamily =
   | typeof GEMINI_COUNT_TOKENS_FAMILY
   | typeof GEMINI_EMBED_CONTENT_FAMILY
   | typeof GEMINI_MODELS_FAMILY
+  | typeof GEMINI_INTERACTIONS_FAMILY
 
 export function defaultGeminiEndpointModes(_input: GeminiEndpointModeDefaultContext = {}): AccountSupportedEndpointMode[] {
-  return ['generate_content_json', 'generate_content_sse', 'count_tokens']
+  return ['generate_content_json', 'generate_content_sse', 'count_tokens', 'interactions_json', 'interactions_sse']
 }
 
 export function normalizeGeminiEndpointModesForWrite(
@@ -100,6 +105,9 @@ export function geminiEndpointModeForRequestShape(input: {
   if (endpointFamily === GEMINI_EMBED_CONTENT_FAMILY) {
     return 'embed_content'
   }
+  if (endpointFamily === GEMINI_INTERACTIONS_FAMILY) {
+    return input.stream ? 'interactions_sse' : 'interactions_json'
+  }
   return undefined
 }
 
@@ -109,6 +117,7 @@ export function geminiEndpointFamilyFromPath(value: unknown): GeminiEndpointFami
   if (!path) return undefined
   const normalizedPath = normalizedGeminiPath(path)
   if (normalizedPath === '/models') return GEMINI_MODELS_FAMILY
+  if (/^\/interactions(?:\/[^/]+(?:\/cancel)?)?$/.test(normalizedPath)) return GEMINI_INTERACTIONS_FAMILY
   const match = /^\/models\/[^/]+:(generatecontent|streamgeneratecontent|counttokens|embedcontent)$/.exec(normalizedPath)
   if (!match) return undefined
   switch (match[1]) {
@@ -151,15 +160,16 @@ export function assertGeminiEndpointModesCompatible(input: {
   modes: readonly AccountSupportedEndpointMode[]
   accountType?: string
 }): void {
-  if (input.accountType !== 'api_key') {
-    throw new Error('Gemini 原生协议当前仅支持 API Key 账户')
+  if (input.accountType !== 'api_key' && input.accountType !== 'google_oauth') {
+    throw new Error('Gemini 原生协议当前仅支持 API Key 或 Google OAuth 账户')
   }
   const unsupported = input.modes.filter((mode) => !GEMINI_ENDPOINT_MODE_VALUES.includes(mode))
   if (unsupported.length) {
-    throw new Error(`Gemini API Key 账户上游接口能力不支持：${unsupported.join(', ')}`)
+    throw new Error(`Gemini 账户上游接口能力不支持：${unsupported.join(', ')}`)
   }
-  if (!input.modes.includes('generate_content_json') && !input.modes.includes('generate_content_sse')) {
-    throw new Error('Gemini API Key 账户上游接口能力必须至少启用 generateContent JSON 或 streamGenerateContent')
+  if (!input.modes.includes('generate_content_json') && !input.modes.includes('generate_content_sse')
+    && !input.modes.includes('interactions_json') && !input.modes.includes('interactions_sse')) {
+    throw new Error('Gemini 账户上游接口能力必须至少启用 generateContent、streamGenerateContent 或 Interactions')
   }
 }
 

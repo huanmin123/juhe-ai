@@ -81,7 +81,7 @@ function accountTestEndpointModeOrder(account: AccountTestEndpointModeSource): A
     return uniqueEndpointModes(defaultMode, 'messages_json', 'messages_sse')
   }
   if (isGeminiProtocolProfile(account)) {
-    return uniqueEndpointModes(defaultMode, 'generate_content_json', 'generate_content_sse')
+    return uniqueEndpointModes(defaultMode, 'interactions_json', 'interactions_sse', 'generate_content_json', 'generate_content_sse')
   }
   if (account.type === 'oauth') {
     return uniqueEndpointModes(defaultMode, 'responses_json', 'responses_sse')

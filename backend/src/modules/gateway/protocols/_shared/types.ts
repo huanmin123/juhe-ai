@@ -54,6 +54,7 @@ export interface GatewayStreamInspection {
   skipReason?: string
   errorCode?: string
   errorMessage?: string
+  responseResourceId?: string
   usage: ParsedUsage
 }
 

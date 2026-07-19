@@ -17,34 +17,34 @@ WITH client_ip_rows AS (
     registry.ip_hash,
     registry.aggregate_ip_key,
     registry.last_seen_at AS registry_last_seen_at,
-    range_stats.request_count,
-    range_stats.success_count,
-    range_stats.error_count,
+    COALESCE(range_stats.request_count, 0::bigint) AS request_count,
+    COALESCE(range_stats.success_count, 0::bigint) AS success_count,
+    COALESCE(range_stats.error_count, 0::bigint) AS error_count,
     CASE
-      WHEN range_stats.request_count > 0
+      WHEN COALESCE(range_stats.request_count, 0::bigint) > 0
         THEN range_stats.error_count::double precision / range_stats.request_count
       ELSE 0::double precision
     END AS error_rate,
-    range_stats.input_tokens,
-    range_stats.output_tokens,
-    (range_stats.input_tokens + range_stats.output_tokens)::bigint AS total_tokens,
-    range_stats.cache_read_tokens,
-    range_stats.cache_read_cost_usd,
-    range_stats.cache_write_tokens,
-    range_stats.cache_write_1h_tokens,
-    range_stats.cache_write_cost_usd,
-    range_stats.thinking_tokens,
-    range_stats.input_image_tokens,
-    range_stats.output_image_tokens,
-    range_stats.total_cost_usd,
-    range_stats.duration_ms_sum,
-    range_stats.duration_ms_count,
-    range_stats.duration_ms_max,
+    COALESCE(range_stats.input_tokens, 0::bigint) AS input_tokens,
+    COALESCE(range_stats.output_tokens, 0::bigint) AS output_tokens,
+    (COALESCE(range_stats.input_tokens, 0::bigint) + COALESCE(range_stats.output_tokens, 0::bigint))::bigint AS total_tokens,
+    COALESCE(range_stats.cache_read_tokens, 0::bigint) AS cache_read_tokens,
+    COALESCE(range_stats.cache_read_cost_usd, 0::double precision) AS cache_read_cost_usd,
+    COALESCE(range_stats.cache_write_tokens, 0::bigint) AS cache_write_tokens,
+    COALESCE(range_stats.cache_write_1h_tokens, 0::bigint) AS cache_write_1h_tokens,
+    COALESCE(range_stats.cache_write_cost_usd, 0::double precision) AS cache_write_cost_usd,
+    COALESCE(range_stats.thinking_tokens, 0::bigint) AS thinking_tokens,
+    COALESCE(range_stats.input_image_tokens, 0::bigint) AS input_image_tokens,
+    COALESCE(range_stats.output_image_tokens, 0::bigint) AS output_image_tokens,
+    COALESCE(range_stats.total_cost_usd, 0::double precision) AS total_cost_usd,
+    COALESCE(range_stats.duration_ms_sum, 0::bigint) AS duration_ms_sum,
+    COALESCE(range_stats.duration_ms_count, 0::bigint) AS duration_ms_count,
+    COALESCE(range_stats.duration_ms_max, 0::bigint) AS duration_ms_max,
     range_stats.average_duration_ms,
-    range_stats.first_token_ms_sum,
-    range_stats.first_token_ms_count,
+    COALESCE(range_stats.first_token_ms_sum, 0::bigint) AS first_token_ms_sum,
+    COALESCE(range_stats.first_token_ms_count, 0::bigint) AS first_token_ms_count,
     range_stats.average_first_token_ms,
-    range_stats.active_days,
+    COALESCE(range_stats.active_days, 0::bigint) AS active_days,
     range_stats.last_used_at,
     range_stats.last_error_at,
     EXISTS (
@@ -71,12 +71,12 @@ WITH client_ip_rows AS (
         )
       LIMIT 1
     ) AS allowlisted
-  FROM juhe_stats.client_ip_usage_range_windows AS range_stats
-  INNER JOIN juhe_stats.client_ip_registry AS registry
-    ON registry.ip_hash = range_stats.ip_hash
-  WHERE range_stats.start_date = $7::text
+  FROM juhe_stats.client_ip_registry AS registry
+  LEFT JOIN juhe_stats.client_ip_usage_range_windows AS range_stats
+    ON range_stats.ip_hash = registry.ip_hash
+    AND range_stats.start_date = $7::text
     AND range_stats.end_date = $8::text
-    AND (
+  WHERE (
       NOT $9::boolean
       OR (
         registry.last_seen_at >= $10::text
@@ -285,34 +285,34 @@ WITH client_ip_rows AS (
     registry.ip_hash,
     registry.aggregate_ip_key,
     registry.last_seen_at AS registry_last_seen_at,
-    range_stats.request_count,
-    range_stats.success_count,
-    range_stats.error_count,
+    COALESCE(range_stats.request_count, 0::bigint) AS request_count,
+    COALESCE(range_stats.success_count, 0::bigint) AS success_count,
+    COALESCE(range_stats.error_count, 0::bigint) AS error_count,
     CASE
-      WHEN range_stats.request_count > 0
+      WHEN COALESCE(range_stats.request_count, 0::bigint) > 0
         THEN range_stats.error_count::double precision / range_stats.request_count
       ELSE 0::double precision
     END AS error_rate,
-    range_stats.input_tokens,
-    range_stats.output_tokens,
-    (range_stats.input_tokens + range_stats.output_tokens)::bigint AS total_tokens,
-    range_stats.cache_read_tokens,
-    range_stats.cache_read_cost_usd,
-    range_stats.cache_write_tokens,
-    range_stats.cache_write_1h_tokens,
-    range_stats.cache_write_cost_usd,
-    range_stats.thinking_tokens,
-    range_stats.input_image_tokens,
-    range_stats.output_image_tokens,
-    range_stats.total_cost_usd,
-    range_stats.duration_ms_sum,
-    range_stats.duration_ms_count,
-    range_stats.duration_ms_max,
+    COALESCE(range_stats.input_tokens, 0::bigint) AS input_tokens,
+    COALESCE(range_stats.output_tokens, 0::bigint) AS output_tokens,
+    (COALESCE(range_stats.input_tokens, 0::bigint) + COALESCE(range_stats.output_tokens, 0::bigint))::bigint AS total_tokens,
+    COALESCE(range_stats.cache_read_tokens, 0::bigint) AS cache_read_tokens,
+    COALESCE(range_stats.cache_read_cost_usd, 0::double precision) AS cache_read_cost_usd,
+    COALESCE(range_stats.cache_write_tokens, 0::bigint) AS cache_write_tokens,
+    COALESCE(range_stats.cache_write_1h_tokens, 0::bigint) AS cache_write_1h_tokens,
+    COALESCE(range_stats.cache_write_cost_usd, 0::double precision) AS cache_write_cost_usd,
+    COALESCE(range_stats.thinking_tokens, 0::bigint) AS thinking_tokens,
+    COALESCE(range_stats.input_image_tokens, 0::bigint) AS input_image_tokens,
+    COALESCE(range_stats.output_image_tokens, 0::bigint) AS output_image_tokens,
+    COALESCE(range_stats.total_cost_usd, 0::double precision) AS total_cost_usd,
+    COALESCE(range_stats.duration_ms_sum, 0::bigint) AS duration_ms_sum,
+    COALESCE(range_stats.duration_ms_count, 0::bigint) AS duration_ms_count,
+    COALESCE(range_stats.duration_ms_max, 0::bigint) AS duration_ms_max,
     range_stats.average_duration_ms,
-    range_stats.first_token_ms_sum,
-    range_stats.first_token_ms_count,
+    COALESCE(range_stats.first_token_ms_sum, 0::bigint) AS first_token_ms_sum,
+    COALESCE(range_stats.first_token_ms_count, 0::bigint) AS first_token_ms_count,
     range_stats.average_first_token_ms,
-    range_stats.active_days,
+    COALESCE(range_stats.active_days, 0::bigint) AS active_days,
     range_stats.last_used_at,
     range_stats.last_error_at,
     EXISTS (
@@ -339,12 +339,12 @@ WITH client_ip_rows AS (
         )
       LIMIT 1
     ) AS allowlisted
-  FROM juhe_stats.client_ip_usage_range_windows AS range_stats
-  INNER JOIN juhe_stats.client_ip_registry AS registry
-    ON registry.ip_hash = range_stats.ip_hash
-  WHERE range_stats.start_date = $5::text
+  FROM juhe_stats.client_ip_registry AS registry
+  LEFT JOIN juhe_stats.client_ip_usage_range_windows AS range_stats
+    ON range_stats.ip_hash = registry.ip_hash
+    AND range_stats.start_date = $5::text
     AND range_stats.end_date = $6::text
-    AND (
+  WHERE (
       NOT $7::boolean
       OR (
         registry.last_seen_at >= $8::text

@@ -13,9 +13,31 @@ import {
   testPathFromEndpointMode
 } from '../../modules/accounts/account-test-request.js'
 import { hasAccountTestProtocolSuccessEvidence } from '../../modules/accounts/account-test-success-evidence.js'
+import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
+
+for (const mode of ['interactions_json', 'interactions_sse'] as const) {
+  assert.equal(accountCreateSchema.safeParse({
+    providerCode: 'gemini',
+    providerProtocolProfileId: 'profile_gemini_native_v1beta',
+    name: `Gemini ${mode}`,
+    type: 'api_key',
+    healthCheckEndpointMode: mode
+  }).success, true, `账户创建契约必须接受 ${mode}`)
+  assert.equal(accountUpdateSchema.safeParse({ healthCheckEndpointMode: mode }).success, true, `账户更新契约必须接受 ${mode}`)
+  assert.equal(accountTestSchema.safeParse({ testEndpointMode: mode }).success, true, `账户测试契约必须接受 ${mode}`)
+}
+assert.equal(accountBatchEditSchema.safeParse({
+  targets: [{ accountId: 'account-a', configRevision: 1 }, { accountId: 'account-b', configRevision: 1 }],
+  updates: {
+    supportedEndpointModes: {
+      enabled: true,
+      value: ['chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'message_token_counting', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse', 'count_tokens', 'embed_content']
+    }
+  }
+}).success, true, '批量编辑契约必须接受完整 13 种 endpoint mode')
 
 const protocolSuccessFixtures = [
   ['chat_json', JSON.stringify({ object: 'chat.completion', choices: [{ finish_reason: 'stop', message: { content: 'OK' } }] })],
@@ -25,7 +47,9 @@ const protocolSuccessFixtures = [
   ['messages_json', JSON.stringify({ type: 'message', stop_reason: 'end_turn', content: [] })],
   ['messages_sse', `event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`],
   ['generate_content_json', JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'OK' }] } }] })],
-  ['generate_content_sse', `data: ${JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'OK' }] } }] })}\n\n`]
+  ['generate_content_sse', `data: ${JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'OK' }] } }] })}\n\n`],
+  ['interactions_json', JSON.stringify({ object: 'interaction', status: 'completed', steps: [{ type: 'model_output', content: [{ type: 'text', text: 'OK' }] }] })],
+  ['interactions_sse', `data: ${JSON.stringify({ event_type: 'interaction.completed', interaction: { status: 'completed' } })}\n\n`]
 ] as const
 for (const [mode, body] of protocolSuccessFixtures) {
   assert.equal(hasAccountTestProtocolSuccessEvidence(mode, body), true, `${mode} 应识别协议完成证据`)
@@ -53,6 +77,8 @@ assert.equal(testPathFromEndpointMode('responses_sse'), '/v1/responses', 'Respon
 assert.equal(testPathFromEndpointMode('messages_sse'), '/v1/messages', 'Anthropic Messages 测试应使用 Messages 路径')
 assert.equal(testPathFromEndpointMode('generate_content_json', 'gemini-2.5-pro'), '/v1beta/models/gemini-2.5-pro:generateContent', 'Gemini JSON 测试应使用 generateContent 路径')
 assert.equal(testPathFromEndpointMode('generate_content_sse', 'gemini-2.5-pro'), '/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse', 'Gemini SSE 测试应使用 streamGenerateContent 路径')
+assert.equal(testPathFromEndpointMode('interactions_json', 'gemini-3.5-flash'), '/v1beta/interactions', 'Gemini Interactions JSON 测试应使用统一资源路径')
+assert.equal(testPathFromEndpointMode('interactions_sse', 'gemini-3.5-flash'), '/v1beta/interactions', 'Gemini Interactions SSE 测试应使用统一资源路径，不追加 alt=sse')
 
 const chatRequest = createOpenAITestRequest({
   explicitModel: '  gpt-5.5-chat  ',
@@ -187,6 +213,32 @@ assert.deepEqual(geminiRequest.body, {
     maxOutputTokens: 1
   }
 }, 'Gemini 测试 payload 应使用 generateContent 原生结构')
+
+const geminiInteractionsJsonRequest = createGeminiTestRequest({
+  fallbackModel: 'gemini-3.5-flash',
+  prompt: 'ok',
+  testEndpointMode: 'interactions_json'
+})
+assert.equal(geminiInteractionsJsonRequest.path, '/v1beta/interactions', 'Gemini Interactions JSON 测试应使用统一资源路径')
+assert.deepEqual(geminiInteractionsJsonRequest.body, {
+  model: 'gemini-3.5-flash',
+  input: 'ok',
+  stream: false
+}, 'Gemini Interactions JSON 测试应使用官方 model/input/stream 请求结构')
+
+const geminiInteractionsSseRequest = createGeminiTestRequest({
+  explicitModel: ' gemini-3.5-flash ',
+  fallbackModel: 'fallback-model',
+  prompt: 'stream ok',
+  testEndpointMode: 'interactions_sse'
+})
+assert.equal(geminiInteractionsSseRequest.path, '/v1beta/interactions', 'Gemini Interactions SSE 测试应使用统一资源路径，不追加 alt=sse')
+assert.equal(geminiInteractionsSseRequest.headers?.accept, 'text/event-stream', 'Gemini Interactions SSE 测试应使用 Accept 协商流式响应')
+assert.deepEqual(geminiInteractionsSseRequest.body, {
+  model: 'gemini-3.5-flash',
+  input: 'stream ok',
+  stream: true
+}, 'Gemini Interactions SSE 测试应启用官方 stream 字段')
 
 const requestSource = readFileSync(resolve('src/modules/accounts/account-test-request.ts'), 'utf8')
 assert.doesNotMatch(requestSource, /handleOpenAIGatewayRequest|findAccountForTest|flushGatewayAccountSideEffects/, '测试请求 payload 模块不能依赖真实网关编排或账号解析')

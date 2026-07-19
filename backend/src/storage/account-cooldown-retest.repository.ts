@@ -545,7 +545,7 @@ function queryAccountsDueForCooldownRetest(
       LEFT JOIN resource_authorizations ra
         ON ra.id = accounts.authorization_instance_authorization_id
       WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('temporary_unavailable', 'rate_limited')
         AND accounts.schedulable = 1
@@ -637,7 +637,7 @@ async function queryAccountsDueForCooldownRetestAsync(
     LEFT JOIN ${cooldownRetestTable(client, 'groups')} bound_groups
       ON bound_groups.id = group_bindings.group_id
     WHERE accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-      AND accounts.type IN ('api_key', 'oauth')
+      AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
       AND accounts.deleted_at IS NULL
       AND accounts.status IN ('temporary_unavailable', 'rate_limited')
       AND accounts.schedulable = 1
@@ -701,7 +701,7 @@ function queryAccountCooldownRetestState(accountId: string): AccountListRow[] {
         ON ra.id = accounts.authorization_instance_authorization_id
       WHERE accounts.id = ?
         AND accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
         AND accounts.deleted_at IS NULL
       LIMIT 1
     `)
@@ -741,7 +741,7 @@ async function queryAccountCooldownRetestStateAsync(
       ON bound_groups.id = group_bindings.group_id
     WHERE accounts.id = ?
       AND accounts.health_check_endpoint_mode IN (${sqlPlaceholders(endpointModes.length)})
-      AND accounts.type IN ('api_key', 'oauth')
+      AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
       AND accounts.deleted_at IS NULL
     LIMIT 1
     ${options.forUpdate ? 'FOR UPDATE OF accounts' : ''}

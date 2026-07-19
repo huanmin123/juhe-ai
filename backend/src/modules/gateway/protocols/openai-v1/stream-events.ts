@@ -64,7 +64,9 @@ export function parseOpenAIStreamEventData(
 
   try {
     const data = JSON.parse(dataText) as Record<string, unknown>
-    const eventType = typeof data.type === 'string' ? data.type : eventName
+    const eventType = typeof data.type === 'string'
+      ? data.type
+      : typeof data.event_type === 'string' ? data.event_type : eventName
     const error = extractOpenAIStreamEventError(data)
     return {
       rawText,

@@ -603,8 +603,8 @@ async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
       EXPLAIN (COSTS OFF)
       SELECT accounts.id
       FROM juhe_business.accounts accounts
-      WHERE accounts.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')
-        AND accounts.type IN ('api_key', 'oauth')
+      WHERE accounts.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
+        AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('active', 'pending_test')
         AND (accounts.status = 'pending_test' OR accounts.schedulable = 1)
@@ -627,8 +627,8 @@ async function assertProbeExplainUsesIndexes(dueAt: string): Promise<void> {
       EXPLAIN (COSTS OFF)
       SELECT accounts.id
       FROM juhe_business.accounts accounts
-      WHERE accounts.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')
-        AND accounts.type IN ('api_key', 'oauth')
+      WHERE accounts.health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')
+        AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
         AND accounts.deleted_at IS NULL
         AND accounts.status IN ('temporary_unavailable', 'rate_limited')
         AND accounts.schedulable = 1

@@ -62,12 +62,13 @@
         />
 
         <AccountOAuthSection
-          v-else-if="isOAuthForm && !authorizedEditing"
+          v-else-if="isTokenCredentialForm && !authorizedEditing"
           :auth-loading="authLoading"
           :auth-result="authResult"
           :editing="editing"
           :form="form"
           :is-open-a-i="isOpenAIOAuthForm"
+          :is-google-o-auth="form.type === 'google_oauth'"
           :model-options="modelOptions"
           :models-loading="modelsLoading"
           :title="credentialTitle"
@@ -277,6 +278,7 @@ const props = withDefaults(defineProps<{
   isApiKeyForm: boolean
   isManagementView: boolean
   isOAuthForm: boolean
+  isTokenCredentialForm: boolean
   isOpenAIOAuthForm: boolean
   loading?: boolean
   mappingAnthropicSourceModelOptions: SelectOption[]

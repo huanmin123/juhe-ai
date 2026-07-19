@@ -82,8 +82,11 @@ func TestW6ManagementClientIPStatsSQLIsPreaggregatedBoundedAndStatic(t *testing.
 
 	listSQL := managementClientIPStatsNamedSQLSection(t, sql, "ListManagementClientIPStats")
 	for _, required := range []string{
-		"FROM juhe_stats.client_ip_usage_range_windows AS range_stats",
-		"INNER JOIN juhe_stats.client_ip_registry AS registry",
+		"FROM juhe_stats.client_ip_registry AS registry",
+		"LEFT JOIN juhe_stats.client_ip_usage_range_windows AS range_stats",
+		"range_stats.start_date = sqlc.arg(start_date)::text",
+		"range_stats.end_date = sqlc.arg(end_date)::text",
+		"COALESCE(range_stats.request_count, 0::bigint)",
 		"active_policies.status = 'active'",
 		"active_policies.expires_at > sqlc.arg(policy_now)::text",
 		"starts_with(registry.aggregate_ip_key, sqlc.arg(keyword)::text)",
@@ -123,8 +126,11 @@ func TestW6ManagementClientIPStatsSQLIsPreaggregatedBoundedAndStatic(t *testing.
 		t.Fatal("static request-count list SQL fields or filters differ from the parameterized query")
 	}
 	for _, required := range []string{
-		"FROM juhe_stats.client_ip_usage_range_windows AS range_stats",
-		"INNER JOIN juhe_stats.client_ip_registry AS registry",
+		"FROM juhe_stats.client_ip_registry AS registry",
+		"LEFT JOIN juhe_stats.client_ip_usage_range_windows AS range_stats",
+		"range_stats.start_date = sqlc.arg(start_date)::text",
+		"range_stats.end_date = sqlc.arg(end_date)::text",
+		"COALESCE(range_stats.request_count, 0::bigint)",
 		"active_policies.status = 'active'",
 		"active_policies.expires_at > sqlc.arg(policy_now)::text",
 		"starts_with(registry.aggregate_ip_key, sqlc.arg(keyword)::text)",
@@ -162,8 +168,17 @@ func TestW6ManagementClientIPStatsSQLIsPreaggregatedBoundedAndStatic(t *testing.
 	}
 }
 
-func TestListManagementClientIPStatsShortCircuitsWhenRangeIsNotReady(t *testing.T) {
-	q := &managementClientIPStatsQueriesStub{ready: false}
+func TestListManagementClientIPStatsReturnsRegistryRowsWhenRangeIsNotReady(t *testing.T) {
+	q := &managementClientIPStatsQueriesStub{
+		ready: false,
+		requestCountDescRows: []postgresqueries.ListManagementClientIPStatsRequestCountDescRow{
+			{
+				IpHash:             "registry_only",
+				AggregateIpKey:     "192.0.2.77",
+				RegistryLastSeenAt: "2026-06-30T05:00:00.000Z",
+			},
+		},
+	}
 	page, err := listManagementClientIPStats(
 		context.Background(),
 		q,
@@ -176,10 +191,12 @@ func TestListManagementClientIPStatsShortCircuitsWhenRangeIsNotReady(t *testing.
 	if err != nil {
 		t.Fatalf("listManagementClientIPStats() error = %v", err)
 	}
-	if page.RangeReady || page.HasMore || len(page.Rows) != 0 {
+	if page.RangeReady || page.HasMore || len(page.Rows) != 1 ||
+		page.Rows[0].IPHash != "registry_only" ||
+		page.Rows[0].RangeUsage.RequestCount != 0 {
 		t.Fatalf("not-ready page = %+v", page)
 	}
-	if len(q.readyCalls) != 1 || len(q.listCalls) != 0 || len(q.requestCountDescCalls) != 0 {
+	if len(q.readyCalls) != 1 || len(q.listCalls) != 0 || len(q.requestCountDescCalls) != 1 {
 		t.Fatalf(
 			"ready/list/static calls = %d/%d/%d",
 			len(q.readyCalls),
@@ -189,6 +206,9 @@ func TestListManagementClientIPStatsShortCircuitsWhenRangeIsNotReady(t *testing.
 	}
 	if q.readyCalls[0].StartDate != "2026-07-01" || q.readyCalls[0].EndDate != "2026-07-07" {
 		t.Fatalf("ready params = %+v", q.readyCalls[0])
+	}
+	if q.requestCountDescCalls[0].StartDate != "" || q.requestCountDescCalls[0].EndDate != "" {
+		t.Fatalf("not-ready list must suppress partial range stats: %+v", q.requestCountDescCalls[0])
 	}
 }
 

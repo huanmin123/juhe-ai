@@ -11,7 +11,8 @@ import { closePostgresPool, getPostgresPool } from '../../storage/postgres-clien
 import {
   createAccountAsync,
   createGroupAsync,
-  findAccountForTestAsync
+  findAccountForTestAsync,
+  recordAccountHealthCheckSuccessAsync
 } from '../../storage/repositories.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', 'OpenAI OAuth access token refresh PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
@@ -133,6 +134,16 @@ async function createOAuthAccount(
     supportedModels: ['gpt-5-mini']
   }, access)
   createdAccountIds.push(account.id)
+  assert.equal(account.status, 'pending_test', 'PG OAuth 刷新回归账户创建后必须遵守 pending_test 契约')
+  assert.equal(await recordAccountHealthCheckSuccessAsync(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), true, 'PG OAuth 刷新回归账户应显式通过后台健康成功激活')
+  const activated = await findAccountForTestAsync(account.id, access)
+  assert.equal(activated?.status, 'active', 'PG OAuth 刷新回归账户健康成功后必须激活')
+  assert.equal(activated?.schedulable, true, 'PG OAuth 刷新回归账户健康成功后必须恢复调度')
   return { id: account.id }
 }
 

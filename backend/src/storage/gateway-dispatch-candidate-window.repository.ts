@@ -180,12 +180,12 @@ export function listGatewayDispatchCandidateRows(
         AND accounts.schedulable = 1
         AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (
-          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
             AND source_accounts.deleted_at IS NULL
             AND source_accounts.provider_code = ?
-            AND source_accounts.type IN ('api_key', 'oauth')
+            AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
             AND source_accounts.status IN (${statusSetSql})
             AND source_accounts.schedulable = 1
             AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
@@ -269,12 +269,12 @@ export async function listGatewayDispatchCandidateRowsAsync(
       AND accounts.schedulable = 1
       AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
       AND (
-        (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+        (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
         OR (
           accounts.authorization_instance_authorization_id IS NOT NULL
           AND source_accounts.deleted_at IS NULL
           AND source_accounts.provider_code = ?
-          AND source_accounts.type IN ('api_key', 'oauth')
+          AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
           AND source_accounts.status IN (${statusSetSql})
           AND source_accounts.schedulable = 1
           AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
@@ -364,12 +364,12 @@ export function listGatewayDispatchModelCandidateRows(
           AND accounts.schedulable = 1
           AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
           AND (
-            (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+            (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
             OR (
               accounts.authorization_instance_authorization_id IS NOT NULL
               AND source_accounts.deleted_at IS NULL
               AND source_accounts.provider_code = ?
-              AND source_accounts.type IN ('api_key', 'oauth')
+              AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
               AND source_accounts.status IN (${statusSetSql})
               AND source_accounts.schedulable = 1
               AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)
@@ -535,12 +535,12 @@ export async function listGatewayDispatchModelCandidateRowsAsync(
         AND accounts.schedulable = 1
         AND (? = 1 OR accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (
-          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth'))
+          (accounts.authorization_instance_authorization_id IS NULL AND accounts.type IN ('api_key', 'oauth', 'google_oauth'))
           OR (
             accounts.authorization_instance_authorization_id IS NOT NULL
             AND source_accounts.deleted_at IS NULL
             AND source_accounts.provider_code = ?
-            AND source_accounts.type IN ('api_key', 'oauth')
+            AND source_accounts.type IN ('api_key', 'oauth', 'google_oauth')
             AND source_accounts.status IN (${statusSetSql})
             AND source_accounts.schedulable = 1
             AND (? = 1 OR source_accounts.cooldown_until IS NULL OR source_accounts.cooldown_until <= ?)

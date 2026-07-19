@@ -106,7 +106,7 @@ interface HandleUpstreamRequestErrorInput {
 }
 
 type HandleFailedUpstreamResponseResult =
-  | { action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt; keyScopedFailure?: boolean; pendingApiKeyFailure?: PendingAccountApiKeyFailure }
+  | { action: 'retry' | 'skip_account'; lastAttempt: UpstreamAttempt; keyScopedFailure?: boolean; pendingApiKeyFailure?: PendingAccountApiKeyFailure; tryNextApiKeyForRequest?: boolean }
 
 export interface PendingAccountApiKeyFailure {
   account: UpstreamAccount
@@ -334,6 +334,94 @@ export async function handleFailedUpstreamResponse(
           errorMessage: parsedErrorMessage || diagnosticErrorMessage || undefined,
         }
       : undefined
+  }
+}
+
+export async function handleOpaqueFailedUpstreamResponse(
+  input: HandleFailedUpstreamResponseInput
+): Promise<HandleFailedUpstreamResponseResult> {
+  const {
+    req,
+    usageContext,
+    auditCapture,
+    auditAttemptId,
+    account,
+    upstreamUrl,
+    response,
+    attemptStartedAt,
+    attemptIndex,
+    auditAttemptIndex,
+    sessionAffinityKey,
+    signal
+  } = input
+  const responseBodyRead = await readUpstreamBodyLimited(response.body, {
+    startedAt: attemptStartedAt,
+    signal
+  })
+  const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
+  const lastAttempt: UpstreamAttempt = {
+    ...(input.lastAttempt ?? {
+      accountId: account.id,
+      accountName: account.name,
+      providerCode: account.providerCode,
+      providerProtocolProfileId: account.providerProtocolProfileId,
+      protocolCode: account.protocolCode,
+      protocolVersion: account.protocolVersion,
+      upstreamUrl,
+      status: response.status
+    }),
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    responseHeaders: headersToObject(response.headers),
+    responseBodyText: responseBodyRead.diagnosticBodyText
+  }
+
+  logGatewayFailureWarning(usageContext, {
+    event: 'gateway_opaque_upstream_response_failed',
+    accountId: account.id,
+    accountType: account.type,
+    upstreamUrl: safeUpstreamUrl,
+    attemptIndex,
+    auditAttemptIndex,
+    statusCode: response.status,
+    elapsedMs: Date.now() - attemptStartedAt,
+    responseBodyBytes: responseBodyRead.body.byteLength,
+    responseBodyTruncated: responseBodyRead.truncated
+  }, '通用客户端上游返回非成功响应，服务端继续尝试可用候选')
+
+  auditCapture.completeAttempt(auditAttemptId, {
+    statusCode: response.status,
+    responseHeaders: response.headers,
+    responseBody: responseBodyRead.body,
+    success: false,
+    errorPhase: 'upstream_response',
+    errorMessage: responseBodyRead.diagnosticBodyText
+  })
+  await recordFailedUpstreamAttempt(req, usageContext, account, {
+    upstreamUrl,
+    startedAt: attemptStartedAt,
+    statusCode: response.status,
+    headers: response.headers,
+    bodyText: responseBodyRead.diagnosticBodyText,
+    errorMessage: '上游返回非成功 HTTP 响应',
+    interpretUpstreamSemantics: false
+  })
+
+  if (input.retrySameAccount) {
+    auditCapture.addGatewayMetadata({
+      label: 'same_account_retry_opaque_response_failed',
+      metadata: { accountId: account.id, attemptIndex, auditAttemptIndex }
+    })
+    return { action: 'retry', lastAttempt }
+  }
+
+  await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
+  return {
+    action: 'skip_account',
+    lastAttempt,
+    tryNextApiKeyForRequest: true
   }
 }
 

@@ -45,6 +45,7 @@ export interface ProviderModelPricing {
   maxOutputTokens?: number
   maxTokens?: number
   longContextInputTokenThreshold?: number
+  longContextInputTokenThresholdInclusive?: boolean
   longContextInputCostMultiplier?: number
   longContextOutputCostMultiplier?: number
   supportsPromptCaching: boolean
@@ -164,11 +165,11 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
   const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
   const cacheWritePrice = tokenPrices.cacheWritePrice
   const cacheWrite1hPrice = tokenPrices.cacheWrite1hPrice ?? cacheWritePrice
-  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
-  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
-  const inputAudioPrice = normalizePrice(pricing.input_cost_per_audio_token)
-  const outputAudioPrice = normalizePrice(pricing.output_cost_per_audio_token)
-  const outputImageUnitPrice = normalizePrice(pricing.output_cost_per_image)
+  const inputImagePrice = tokenPrices.inputImagePrice
+  const outputImagePrice = tokenPrices.outputImagePrice
+  const inputAudioPrice = tokenPrices.inputAudioPrice
+  const outputAudioPrice = tokenPrices.outputAudioPrice
+  const outputImageUnitPrice = tokenPrices.outputImageUnitPrice
   if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, cacheWritePrice, cacheWrite1hPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
@@ -183,6 +184,18 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
   const cacheReadTokensIncludedInInput = usesIncludedCacheReadUsage(input.providerCode) ? cacheReadTokens : 0
   const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokensIncludedInInput - inputImageTokens - inputAudioTokens, 0)
   const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens - outputAudioTokens, 0)
+  if (hasUnpricedTokenUsage({
+    uncachedInputTokens,
+    inputPrice,
+    outputTokens,
+    outputPrice,
+    cacheReadTokens,
+    cachedInputPrice,
+    cacheWriteStandardTokens,
+    cacheWritePrice,
+    cacheWrite1hTokens,
+    cacheWrite1hPrice
+  })) return undefined
 
   const cost = uncachedInputTokens * (inputPrice ?? 0)
     + cacheReadTokens * (cachedInputPrice ?? 0)
@@ -248,11 +261,11 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   const cachedInputPrice = tokenPrices.cachedInputPrice ?? inputPrice
   const cacheWritePrice = tokenPrices.cacheWritePrice
   const cacheWrite1hPrice = tokenPrices.cacheWrite1hPrice ?? cacheWritePrice
-  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
-  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
-  const inputAudioPrice = normalizePrice(pricing.input_cost_per_audio_token)
-  const outputAudioPrice = normalizePrice(pricing.output_cost_per_audio_token)
-  const outputImageUnitPrice = normalizePrice(pricing.output_cost_per_image)
+  const inputImagePrice = tokenPrices.inputImagePrice
+  const outputImagePrice = tokenPrices.outputImagePrice
+  const inputAudioPrice = tokenPrices.inputAudioPrice
+  const outputAudioPrice = tokenPrices.outputAudioPrice
+  const outputImageUnitPrice = tokenPrices.outputImageUnitPrice
   if (!hasAnyPrice(inputPrice, outputPrice, cachedInputPrice, cacheWritePrice, cacheWrite1hPrice, inputImagePrice, outputImagePrice, inputAudioPrice, outputAudioPrice, outputImageUnitPrice)) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
@@ -267,6 +280,18 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   const cacheReadTokensIncludedInInput = usesIncludedCacheReadUsage(input.providerCode) ? cacheReadTokens : 0
   const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokensIncludedInInput - inputImageTokens - inputAudioTokens, 0)
   const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens - outputAudioTokens, 0)
+  if (hasUnpricedTokenUsage({
+    uncachedInputTokens,
+    inputPrice,
+    outputTokens,
+    outputPrice,
+    cacheReadTokens,
+    cachedInputPrice,
+    cacheWriteStandardTokens,
+    cacheWritePrice,
+    cacheWrite1hTokens,
+    cacheWrite1hPrice
+  })) return undefined
   const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)
   const outputCostUsd = outputPrice === undefined ? undefined : roundCost(outputTokens * outputPrice)
   const cacheReadCostUsd = cachedInputPrice === undefined ? undefined : roundCost(cacheReadTokens * cachedInputPrice)
@@ -374,6 +399,25 @@ function hasAnyPrice(...prices: Array<number | undefined>): boolean {
   return prices.some((price) => price !== undefined)
 }
 
+function hasUnpricedTokenUsage(input: {
+  uncachedInputTokens: number
+  inputPrice?: number
+  outputTokens: number
+  outputPrice?: number
+  cacheReadTokens: number
+  cachedInputPrice?: number
+  cacheWriteStandardTokens: number
+  cacheWritePrice?: number
+  cacheWrite1hTokens: number
+  cacheWrite1hPrice?: number
+}): boolean {
+  return (input.uncachedInputTokens > 0 && input.inputPrice === undefined)
+    || (input.outputTokens > 0 && input.outputPrice === undefined)
+    || (input.cacheReadTokens > 0 && input.cachedInputPrice === undefined)
+    || (input.cacheWriteStandardTokens > 0 && input.cacheWritePrice === undefined)
+    || (input.cacheWrite1hTokens > 0 && input.cacheWrite1hPrice === undefined)
+}
+
 function normalizedCacheWrite1hTokens(input: CostInput, cacheWriteTokens: number): number {
   const cacheWrite1hTokens = Math.max(input.cacheWrite1hTokens ?? 0, 0)
   return cacheWriteTokens > 0 ? Math.min(cacheWrite1hTokens, cacheWriteTokens) : cacheWrite1hTokens
@@ -385,6 +429,11 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
   cachedInputPrice?: number
   cacheWritePrice?: number
   cacheWrite1hPrice?: number
+  inputImagePrice?: number
+  outputImagePrice?: number
+  inputAudioPrice?: number
+  outputAudioPrice?: number
+  outputImageUnitPrice?: number
   serviceTierPricingSource: ProviderCostBreakdown['serviceTierPricingSource']
   serviceTierMultiplier?: number
 } {
@@ -394,11 +443,16 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
     : false
   const tierPrice = (standard: number | undefined, priority: number | undefined, flex: number | undefined): number | undefined => {
     const specific = tier === 'priority' ? priority : tier === 'flex' ? flex : undefined
-    if (tierSupported) return normalizePrice(specific)
+    if (tier === 'priority' || tier === 'flex') {
+      return tierSupported ? normalizePrice(specific) : undefined
+    }
     return normalizePrice(standard)
   }
+  const inputTokens = Math.max(input.inputTokens ?? 0, 0)
   const longContext = typeof pricing.long_context_input_token_threshold === 'number'
-    && Math.max(input.inputTokens ?? 0, 0) > pricing.long_context_input_token_threshold
+    && (pricing.long_context_input_token_threshold_inclusive === true
+      ? inputTokens >= pricing.long_context_input_token_threshold
+      : inputTokens > pricing.long_context_input_token_threshold)
   const inputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_input_cost_multiplier) : 1
   const outputMultiplier = longContext ? normalizeMultiplier(pricing.long_context_output_cost_multiplier) : 1
   const serviceTierPricing = rawServiceTierPricingMetadata(pricing, input, tierSupported)
@@ -408,6 +462,11 @@ function effectiveRawTokenPrices(pricing: RawModelPricing, input: CostInput): {
     cachedInputPrice: multiplyPrice(tierPrice(pricing.cache_read_input_token_cost, pricing.cache_read_input_token_cost_priority, pricing.cache_read_input_token_cost_flex), inputMultiplier),
     cacheWritePrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost, pricing.cache_creation_input_token_cost_priority, pricing.cache_creation_input_token_cost_flex), inputMultiplier),
     cacheWrite1hPrice: multiplyPrice(tierPrice(pricing.cache_creation_input_token_cost_above_1hr, pricing.cache_creation_input_token_cost_above_1hr_priority, pricing.cache_creation_input_token_cost_above_1hr_flex), inputMultiplier),
+    inputImagePrice: normalizePrice(pricing.input_cost_per_image_token),
+    outputImagePrice: normalizePrice(pricing.output_cost_per_image_token),
+    inputAudioPrice: tierPrice(pricing.input_cost_per_audio_token, pricing.input_cost_per_audio_token_priority, pricing.input_cost_per_audio_token_flex),
+    outputAudioPrice: normalizePrice(pricing.output_cost_per_audio_token),
+    outputImageUnitPrice: normalizePrice(pricing.output_cost_per_image),
     ...serviceTierPricing
   }
 }
@@ -426,7 +485,9 @@ function rawServiceTierPricingMetadata(
     [pricing.output_cost_per_token, tier === 'priority' ? pricing.output_cost_per_token_priority : pricing.output_cost_per_token_flex],
     [pricing.cache_read_input_token_cost, tier === 'priority' ? pricing.cache_read_input_token_cost_priority : pricing.cache_read_input_token_cost_flex],
     [pricing.cache_creation_input_token_cost, tier === 'priority' ? pricing.cache_creation_input_token_cost_priority : pricing.cache_creation_input_token_cost_flex],
-    [pricing.cache_creation_input_token_cost_above_1hr, tier === 'priority' ? pricing.cache_creation_input_token_cost_above_1hr_priority : pricing.cache_creation_input_token_cost_above_1hr_flex]
+    [pricing.cache_creation_input_token_cost_above_1hr, tier === 'priority' ? pricing.cache_creation_input_token_cost_above_1hr_priority : pricing.cache_creation_input_token_cost_above_1hr_flex],
+    [pricing.input_cost_per_audio_token, tier === 'priority' ? pricing.input_cost_per_audio_token_priority : pricing.input_cost_per_audio_token_flex],
+    [pricing.output_cost_per_audio_token, pricing.output_cost_per_audio_token]
   ] as const
   return serviceTierPricingMetadataFromPairs(pairs)
 }
@@ -497,6 +558,7 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
     maxOutputTokens: item.max_output_tokens,
     maxTokens: item.max_tokens,
     longContextInputTokenThreshold: item.long_context_input_token_threshold,
+    longContextInputTokenThresholdInclusive: item.long_context_input_token_threshold_inclusive === true,
     longContextInputCostMultiplier: item.long_context_input_cost_multiplier,
     longContextOutputCostMultiplier: item.long_context_output_cost_multiplier,
     supportsPromptCaching: item.supports_prompt_caching === true,
@@ -517,21 +579,28 @@ function toProviderModelPricing(item: RawModelPricing, providerCode: string): Pr
 function rawServiceTierPrices(item: RawModelPricing): ServiceTierPrices | undefined {
   const tiers: ServiceTierPrices = {}
   const add = (tier: string, prices: ModelPriceSet): void => {
-    if (Object.values(prices).some((value) => value !== undefined)) tiers[tier] = prices
+    const definedPrices = Object.fromEntries(
+      Object.entries(prices).filter(([, value]) => value !== undefined)
+    ) as ModelPriceSet
+    if (Object.keys(definedPrices).length > 0) tiers[tier] = definedPrices
   }
   add('priority', {
     inputUsdPer1M: perMillion(item.input_cost_per_token_priority),
     outputUsdPer1M: perMillion(item.output_cost_per_token_priority),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_priority),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_priority),
-    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority)
+    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_priority),
+    audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token_priority),
+    audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token)
   })
   add('flex', {
     inputUsdPer1M: perMillion(item.input_cost_per_token_flex),
     outputUsdPer1M: perMillion(item.output_cost_per_token_flex),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost_flex),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost_flex),
-    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex)
+    cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr_flex),
+    audioInputUsdPer1M: perMillion(item.input_cost_per_audio_token_flex),
+    audioOutputUsdPer1M: perMillion(item.output_cost_per_audio_token)
   })
   return Object.keys(tiers).length ? tiers : undefined
 }

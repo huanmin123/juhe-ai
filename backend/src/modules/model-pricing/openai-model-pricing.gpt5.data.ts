@@ -4,6 +4,15 @@
 
 export const openAIGPT5ModelPricingData = [
   {
+    model: "codex-auto-review",
+    litellm_provider: "openai",
+    mode: "responses",
+    catalog_order: 3,
+    supported_api_protocols: ["responses"],
+    input_modalities: ["text"],
+    output_modalities: ["text"]
+  },
+  {
     model: "gpt-5.6-sol",
     litellm_provider: "openai",
     mode: "chat",
@@ -38,7 +47,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp","tool_search"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.6-terra",
@@ -75,7 +83,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp","tool_search"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.6-luna",
@@ -111,7 +118,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp","tool_search"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-search-api",
@@ -146,7 +152,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.5-2026-04-23",
@@ -169,7 +174,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.5-pro",
@@ -188,7 +192,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","mcp"],
-    default_reasoning_effort: "high"
   },
   {
     model: "gpt-5.5-pro-2026-04-23",
@@ -207,7 +210,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","mcp"],
-    default_reasoning_effort: "high"
   },
   {
     model: "gpt-5.4",
@@ -230,7 +232,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-2026-03-05",
@@ -253,7 +254,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-mini",
@@ -277,7 +277,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-mini-2026-03-17",
@@ -301,7 +300,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-nano",
@@ -322,7 +320,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-nano-2026-03-17",
@@ -343,7 +340,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.4-pro",
@@ -363,7 +359,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","apply_patch","computer_use","mcp"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.4-pro-2026-03-05",
@@ -383,7 +378,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","tool_search","image_generation","apply_patch","computer_use","mcp"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5.3-chat-latest",
@@ -449,7 +443,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.2-2025-12-11",
@@ -472,7 +465,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.2-pro",
@@ -571,7 +563,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","apply_patch","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.1-2025-11-13",
@@ -594,7 +585,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","apply_patch","mcp"],
-    default_reasoning_effort: "none"
   },
   {
     model: "gpt-5.1-chat-latest",
@@ -699,7 +689,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-2025-08-07",
@@ -723,7 +712,6 @@ export const openAIGPT5ModelPricingData = [
     input_modalities: ["text","image"],
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-chat-latest",
@@ -787,7 +775,6 @@ export const openAIGPT5ModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","code_interpreter","mcp"],
     supported_reasoning_efforts: ["minimal","low","medium","high"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-mini-2025-08-07",
@@ -811,7 +798,6 @@ export const openAIGPT5ModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","code_interpreter","mcp"],
     supported_reasoning_efforts: ["minimal","low","medium","high"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-nano",
@@ -835,7 +821,6 @@ export const openAIGPT5ModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
     supported_reasoning_efforts: ["minimal","low","medium","high"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-nano-2025-08-07",
@@ -859,7 +844,6 @@ export const openAIGPT5ModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","mcp"],
     supported_reasoning_efforts: ["minimal","low","medium","high"],
-    default_reasoning_effort: "medium"
   },
   {
     model: "gpt-5-pro",
@@ -878,7 +862,6 @@ export const openAIGPT5ModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","file_search","image_generation","mcp","web_search"],
     supported_reasoning_efforts: ["high"],
-    default_reasoning_effort: "high"
   },
   {
     model: "gpt-5-pro-2025-10-06",
@@ -897,6 +880,5 @@ export const openAIGPT5ModelPricingData = [
     output_modalities: ["text"],
     supported_tools: ["function_calling","file_search","image_generation","mcp","web_search"],
     supported_reasoning_efforts: ["high"],
-    default_reasoning_effort: "high"
   }
 ] as const

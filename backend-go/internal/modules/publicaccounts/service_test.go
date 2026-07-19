@@ -342,6 +342,44 @@ func TestServiceHealthDispatchTimeoutStopsBlockingDispatcher(t *testing.T) {
 	)
 }
 
+func TestCredentialEndpointModePolicySupportsXAIOpenAIProfile(t *testing.T) {
+	allowed, defaults, err := credentialEndpointModePolicy(
+		"xai",
+		"profile_xai_openai_v1",
+		"openai",
+		"v1",
+	)
+	if err != nil {
+		t.Fatalf("resolve xAI endpoint mode policy: %v", err)
+	}
+	if !slices.Equal(allowed, openAIEndpointModes) {
+		t.Fatalf("xAI allowed endpoint modes = %#v, want %#v", allowed, openAIEndpointModes)
+	}
+	if !slices.Equal(defaults, openAIEndpointModes) {
+		t.Fatalf("xAI default endpoint modes = %#v, want %#v", defaults, openAIEndpointModes)
+	}
+}
+
+func TestCredentialEndpointModePolicyPersistsGeminiInteractionsByDefault(t *testing.T) {
+	allowed, defaults, err := credentialEndpointModePolicy(
+		"gemini",
+		"profile_gemini_native_v1beta",
+		"gemini",
+		"v1beta",
+	)
+	if err != nil {
+		t.Fatalf("resolve Gemini endpoint mode policy: %v", err)
+	}
+	for _, mode := range []string{"interactions_json", "interactions_sse"} {
+		if !slices.Contains(allowed, mode) {
+			t.Fatalf("Gemini allowed endpoint modes = %#v, want %s", allowed, mode)
+		}
+		if !slices.Contains(defaults, mode) {
+			t.Fatalf("Gemini default endpoint modes = %#v, want %s", defaults, mode)
+		}
+	}
+}
+
 func TestServiceAddCreatesTargetGroupPendingTestAndDoesNotExposeCredentials(t *testing.T) {
 	store := newPublicAccountStoreFake()
 	service := newPublicAccountServiceForTest(store, nil)
@@ -497,6 +535,19 @@ func TestResolveHealthCheckEndpointModeFallsBackToFirstEnabledJSONMode(t *testin
 	)
 	if err != nil || mode != "generate_content_json" {
 		t.Fatalf("resolve fallback mode = %q, %v; want generate_content_json", mode, err)
+	}
+}
+
+func TestResolveHealthCheckEndpointModeAllowsGeminiInteractions(t *testing.T) {
+	value := "interactions_sse"
+	mode, err := resolveHealthCheckEndpointMode(
+		&value,
+		"gemini",
+		"profile_gemini_native_v1beta",
+		[]string{"interactions_json", "interactions_sse"},
+	)
+	if err != nil || mode != value {
+		t.Fatalf("resolve Gemini Interactions mode = %q, %v; want %s", mode, err, value)
 	}
 }
 
@@ -929,8 +980,124 @@ func TestServiceAddPassesTargetOwnerAndProviderToModelCatalog(t *testing.T) {
 	if input.SystemAccountID != response.Target.SystemAccountID ||
 		input.ProviderCode != "gpt" ||
 		input.IncludeInactive ||
-		input.IncludeUnpriced {
+		!input.IncludeUnpriced {
 		t.Fatalf("provider model input = %+v, target = %+v", input, response.Target)
+	}
+}
+
+func TestServiceAddAndUpdateAcceptActiveUnpricedCodexAutoReview(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	reader := providerModelReaderWithItems(
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: defaultGPTHealthCheckModel, Scope: "built_in", Status: "active"},
+		managementprovidermodels.ModelCatalogItem{ProviderCode: "gpt", Model: "codex-auto-review", Scope: "built_in", Status: "active"},
+	)
+	service := newPublicAccountServiceForTest(store, reader)
+
+	created, err := service.Add(context.Background(), validPublicAccountAddInput(
+		"Codex 自动审查创建账号",
+		defaultGPTHealthCheckModel,
+		"codex-auto-review",
+	))
+	if err != nil {
+		t.Fatalf("add Codex auto review account: %v", err)
+	}
+	if created.Account == nil || !slices.Contains(created.Account.SupportedModels, "codex-auto-review") {
+		t.Fatalf("created account = %+v, want codex-auto-review", created.Account)
+	}
+	if reader.calls != 1 || !reader.inputs[0].IncludeUnpriced || reader.inputs[0].IncludeInactive {
+		t.Fatalf("create catalog query = %+v, want active unpriced-inclusive catalog", reader.inputs)
+	}
+
+	reader.resetCalls()
+	updated, err := service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		SupportedModels: NewStringListValue([]string{
+			defaultGPTHealthCheckModel,
+		}, true),
+	})
+	if err != nil {
+		t.Fatalf("remove Codex auto review model: %v", err)
+	}
+	if updated.Account == nil || slices.Contains(updated.Account.SupportedModels, "codex-auto-review") {
+		t.Fatalf("updated account = %+v, want model removed", updated.Account)
+	}
+	if reader.calls != 1 || !reader.inputs[0].IncludeUnpriced || reader.inputs[0].IncludeInactive {
+		t.Fatalf("update catalog query = %+v, want active unpriced-inclusive catalog", reader.inputs)
+	}
+
+	reader.resetCalls()
+	updated, err = service.Update(context.Background(), UpdateInput{
+		AccountID: created.Account.ID,
+		SupportedModels: NewStringListValue([]string{
+			defaultGPTHealthCheckModel,
+			"codex-auto-review",
+		}, true),
+	})
+	if err != nil {
+		t.Fatalf("restore Codex auto review model: %v", err)
+	}
+	if updated.Account == nil || !slices.Contains(updated.Account.SupportedModels, "codex-auto-review") {
+		t.Fatalf("updated account = %+v, want codex-auto-review restored", updated.Account)
+	}
+	if reader.calls != 1 || !reader.inputs[0].IncludeUnpriced || reader.inputs[0].IncludeInactive {
+		t.Fatalf("restore catalog query = %+v, want active unpriced-inclusive catalog", reader.inputs)
+	}
+}
+
+func TestServiceAddPersistsGeminiInteractionsEndpointModes(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	store.profiles["gemini|profile_gemini_native_v1beta"] = port.PublicAccountProviderProfile{
+		ID:                      "profile_gemini_native_v1beta",
+		ProviderCode:            "gemini",
+		Name:                    "Gemini / Native v1beta",
+		Enabled:                 true,
+		ProviderEnabled:         true,
+		ProtocolCode:            "gemini",
+		ProtocolVersion:         "v1beta",
+		AccountTypesJSON:        `["api_key"]`,
+		EnabledEndpointModes:    []string{"generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse"},
+		DefaultSupportedModels:  []string{"gemini-2.5-flash"},
+		DefaultHealthCheckModel: "gemini-2.5-flash",
+	}
+	reader := providerModelReaderWithItems(managementprovidermodels.ModelCatalogItem{
+		ProviderCode: "gemini", Model: "gemini-2.5-flash", Scope: "built_in", Status: "active",
+		SupportedAPIProtocols: []string{"generate_content", "stream_generate_content", "interactions"},
+	})
+	service := newPublicAccountServiceForTest(store, reader)
+	input := validPublicAccountAddInput("Gemini Interactions 账号", "gemini-2.5-flash")
+	input.ProviderCode = "gemini"
+	input.ProviderProtocolProfileID = "profile_gemini_native_v1beta"
+	input.BaseURL = "https://generativelanguage.googleapis.com/v1beta"
+	input.HealthCheckEndpointMode = "interactions_sse"
+
+	created, err := service.Add(context.Background(), input)
+	if err != nil {
+		t.Fatalf("add Gemini Interactions account: %v", err)
+	}
+	stored := store.accounts[created.Account.ID]
+	credentials, err := service.codec.DecryptJSON(stored.CredentialsEncrypted)
+	if err != nil {
+		t.Fatalf("decrypt Gemini account credentials: %v", err)
+	}
+	rawModes, ok := credentials["supported_endpoint_modes"].([]any)
+	if !ok {
+		t.Fatalf("stored endpoint modes = %#v, want JSON array", credentials["supported_endpoint_modes"])
+	}
+	modes := make([]string, 0, len(rawModes))
+	for _, rawMode := range rawModes {
+		mode, ok := rawMode.(string)
+		if !ok {
+			t.Fatalf("stored endpoint mode = %#v, want string", rawMode)
+		}
+		modes = append(modes, mode)
+	}
+	for _, mode := range []string{"interactions_json", "interactions_sse"} {
+		if !slices.Contains(modes, mode) {
+			t.Fatalf("stored endpoint modes = %#v, want %s", modes, mode)
+		}
+	}
+	if stored.HealthCheckEndpointMode != "interactions_sse" {
+		t.Fatalf("stored health check endpoint mode = %q, want interactions_sse", stored.HealthCheckEndpointMode)
 	}
 }
 
@@ -957,6 +1124,37 @@ func TestServiceAddAcceptsBuiltInGlobalAndPersonalModels(t *testing.T) {
 	}
 	if store.createCalls != 1 {
 		t.Fatalf("store create calls = %d, want 1", store.createCalls)
+	}
+}
+
+func TestServiceAddRejectsImageOnlyModelForXAITextProfile(t *testing.T) {
+	store := newPublicAccountStoreFake()
+	store.profiles["xai|profile_xai_openai_v1"] = port.PublicAccountProviderProfile{
+		ID:                      "profile_xai_openai_v1",
+		ProviderCode:            "xai",
+		Name:                    "xAI / OpenAI v1",
+		Enabled:                 true,
+		ProviderEnabled:         true,
+		ProtocolCode:            "openai",
+		ProtocolVersion:         "v1",
+		AccountTypesJSON:        `["api_key"]`,
+		EnabledEndpointModes:    []string{"chat_json", "chat_sse", "responses_json", "responses_sse"},
+		DefaultSupportedModels:  []string{"grok-imagine-image"},
+		DefaultHealthCheckModel: "grok-imagine-image",
+	}
+	reader := providerModelReaderWithItems(managementprovidermodels.ModelCatalogItem{
+		ProviderCode: "xai", Model: "grok-imagine-image", Scope: "built_in", Mode: "image",
+		SupportedAPIProtocols: []string{"images"},
+	})
+	service := newPublicAccountServiceForTest(store, reader)
+	input := validPublicAccountAddInput("xAI 图片误入文本账号", "grok-imagine-image")
+	input.ProviderCode = "xai"
+	input.ProviderProtocolProfileID = "profile_xai_openai_v1"
+
+	_, err := service.Add(context.Background(), input)
+	assertInvalidSupportedModelsCatalog(t, err, "grok-imagine-image")
+	if store.createCalls != 0 {
+		t.Fatalf("store create calls = %d, want 0", store.createCalls)
 	}
 }
 
@@ -1336,8 +1534,8 @@ func TestServiceUpdateWithoutGPTRequestOverridesDoesNotAddCatalogQuery(t *testin
 		t.Fatalf("provider model reader calls = %d, want only the membership query", reader.calls)
 	}
 	input := reader.inputs[0]
-	if input.IncludeInactive || input.IncludeUnpriced {
-		t.Fatalf("membership query = %+v, want active priced models only", input)
+	if input.IncludeInactive || !input.IncludeUnpriced {
+		t.Fatalf("membership query = %+v, want active unpriced-inclusive models", input)
 	}
 }
 
@@ -1455,8 +1653,8 @@ func TestServiceUpdateCompatibleGPTOverrideModelChangeQueriesCapabilitiesThenMem
 	if !reader.inputs[0].IncludeUnpriced {
 		t.Fatalf("first query = %+v, want override capability catalog", reader.inputs[0])
 	}
-	if reader.inputs[1].IncludeUnpriced {
-		t.Fatalf("second query = %+v, want priced membership catalog", reader.inputs[1])
+	if !reader.inputs[1].IncludeUnpriced {
+		t.Fatalf("second query = %+v, want active unpriced-inclusive membership catalog", reader.inputs[1])
 	}
 	if store.updateCalls != 1 {
 		t.Fatalf("store update calls = %d, want 1", store.updateCalls)

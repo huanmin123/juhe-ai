@@ -49,6 +49,14 @@
       </template>
     </ResponsiveListToolbar>
 
+    <a-alert
+      v-if="!rangeReady"
+      class="ip-stats-range-alert"
+      type="info"
+      show-icon
+      :message="`${currentUsageWindowLabel}统计窗口尚未完成预聚合，当前仅展示全部 IP 与状态，统计数据暂为 0。`"
+    />
+
     <IpStatsList
       :empty-description="emptyDescription"
       :loading="loading"
@@ -360,7 +368,7 @@ const detailTablePagination = computed(() => ({
 }))
 
 const currentUsageWindowLabel = computed(() => usageWindowOptions.find((option) => option.value === usageWindow.value)?.label ?? '当前范围')
-const emptyDescription = computed(() => rangeReady.value ? '当前筛选下没有 IP 统计数据。' : `${currentUsageWindowLabel.value}用量窗口尚未完成预聚合，请稍后刷新。`)
+const emptyDescription = '当前筛选下没有 IP。'
 const detailDrawerTitle = computed(() => detailTarget.value ? `IP 详情：${detailTarget.value.aggregateIpKey}` : 'IP 详情')
 const detailEmptyDescription = computed(() => detailRangeReady.value ? '当前统计范围内没有关联账号。' : `${currentUsageWindowLabel.value}用量窗口尚未完成预聚合，请稍后刷新。`)
 
@@ -663,6 +671,10 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
 
 .ip-stats-status {
   width: 130px;
+}
+
+.ip-stats-range-alert {
+  margin-bottom: 12px;
 }
 
 .policy-duration-input {

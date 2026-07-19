@@ -10,7 +10,7 @@
           data-form-type="other"
           :disabled="authorizedEditing"
           :maxlength="maxAccountNameLength"
-          :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'"
+          :placeholder="['oauth', 'google_oauth'].includes(form.type) ? '凭据账户可使用授权信息作为名称' : '例如 openai-main'"
         />
       </a-form-item>
       <a-form-item label="加入分组" required>

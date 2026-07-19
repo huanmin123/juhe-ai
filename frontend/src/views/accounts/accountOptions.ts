@@ -9,6 +9,7 @@ import {
   ANTHROPIC_PROVIDER_CODE,
   GEMINI_COUNT_TOKENS_FAMILY,
   GEMINI_EMBED_CONTENT_FAMILY,
+  GEMINI_INTERACTIONS_FAMILY,
   GEMINI_GENERATE_CONTENT_FAMILY,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
@@ -29,6 +30,8 @@ import {
   OPENAI_COMPATIBLE_PROVIDER_CODE,
   GPT_OPENAI_V1_PROFILE_ID,
   GPT_VENDOR_CODE,
+  XAI_OPENAI_V1_PROFILE_ID,
+  XAI_PROVIDER_CODE,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
   OPENAI_PROTOCOL_CODE,
   OPENAI_PROTOCOL_VERSION,
@@ -38,6 +41,7 @@ import {
 export { GPT_VENDOR_CODE }
 
 export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2']
+export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.3']
 export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5']
 export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']
 export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro']
@@ -111,6 +115,40 @@ export const GPT_PROVIDER: ProviderDefinition = {
   ]
 }
 
+export const XAI_PROVIDER: ProviderDefinition = {
+  id: XAI_PROVIDER_CODE,
+  code: XAI_PROVIDER_CODE,
+  name: 'xAI / Grok',
+  parentCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
+  enabled: true,
+  defaultProtocolProfileId: XAI_OPENAI_V1_PROFILE_ID,
+  protocolCode: OPENAI_PROTOCOL_CODE,
+  protocolVersion: OPENAI_PROTOCOL_VERSION,
+  baseUrl: 'https://api.x.ai/v1',
+  defaultHealthCheckModel: 'grok-4.3',
+  defaultSupportedModels: DEFAULT_XAI_SUPPORTED_MODELS,
+  accountTypes: ['api_key'],
+  capabilities: ['responses', 'chat', 'passthrough'],
+  protocolProfiles: [
+    {
+      id: XAI_OPENAI_V1_PROFILE_ID,
+      providerCode: XAI_PROVIDER_CODE,
+      name: 'xAI / OpenAI v1',
+      enabled: true,
+      protocolCode: OPENAI_PROTOCOL_CODE,
+      protocolVersion: OPENAI_PROTOCOL_VERSION,
+      baseUrl: 'https://api.x.ai/v1',
+      defaultHealthCheckModel: 'grok-4.3',
+      accountTypes: ['api_key'],
+      capabilities: ['responses', 'chat', 'passthrough'],
+      endpointFamilies: [
+        { code: OPENAI_CHAT_COMPLETIONS_FAMILY, name: 'Chat Completions' },
+        { code: OPENAI_RESPONSES_FAMILY, name: 'Responses' }
+      ]
+    }
+  ]
+}
+
 export const ANTHROPIC_PROVIDER: ProviderDefinition = {
   id: ANTHROPIC_PROVIDER_CODE,
   code: ANTHROPIC_PROVIDER_CODE,
@@ -156,8 +194,8 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
   baseUrl: 'https://generativelanguage.googleapis.com',
   defaultHealthCheckModel: 'gemini-3.5-flash',
   defaultSupportedModels: DEFAULT_GEMINI_SUPPORTED_MODELS,
-  accountTypes: ['api_key'],
-  capabilities: ['generate_content', 'count_tokens', 'embed_content', 'passthrough'],
+  accountTypes: ['api_key', 'google_oauth'],
+  capabilities: ['generate_content', 'count_tokens', 'embed_content', 'interactions', 'passthrough'],
   protocolProfiles: [
     {
       id: GEMINI_NATIVE_V1BETA_PROFILE_ID,
@@ -168,13 +206,14 @@ export const GEMINI_PROVIDER: ProviderDefinition = {
       protocolVersion: GEMINI_PROTOCOL_VERSION,
       baseUrl: 'https://generativelanguage.googleapis.com',
       defaultHealthCheckModel: 'gemini-3.5-flash',
-      accountTypes: ['api_key'],
-      capabilities: ['generate_content', 'count_tokens', 'embed_content', 'passthrough'],
+      accountTypes: ['api_key', 'google_oauth'],
+      capabilities: ['generate_content', 'count_tokens', 'embed_content', 'interactions', 'passthrough'],
       endpointFamilies: [
         { code: GEMINI_GENERATE_CONTENT_FAMILY, name: 'Generate Content' },
         { code: GEMINI_STREAM_GENERATE_CONTENT_FAMILY, name: 'Stream Generate Content' },
         { code: GEMINI_COUNT_TOKENS_FAMILY, name: 'Count Tokens' },
-        { code: GEMINI_EMBED_CONTENT_FAMILY, name: 'Embed Content' }
+        { code: GEMINI_EMBED_CONTENT_FAMILY, name: 'Embed Content' },
+        { code: GEMINI_INTERACTIONS_FAMILY, name: 'Interactions' }
       ]
     },
     {
@@ -341,7 +380,7 @@ export const GLM_PROVIDER: ProviderDefinition = {
   ]
 }
 
-export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, HYBRID_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER]
+export const FALLBACK_PROVIDERS: ProviderDefinition[] = [GPT_PROVIDER, XAI_PROVIDER, GLM_PROVIDER, DEEPSEEK_PROVIDER, HYBRID_PROVIDER, OPENAI_COMPATIBLE_PROVIDER, ANTHROPIC_PROVIDER, GEMINI_PROVIDER]
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20

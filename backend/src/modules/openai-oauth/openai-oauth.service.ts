@@ -4,7 +4,7 @@ import { request as httpsRequest } from 'node:https'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
-import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
+import { createRuntimeStateStore, type RuntimeStateStore } from '../../shared/runtime-state-store.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
@@ -21,11 +21,12 @@ export const OPENAI_OAUTH_DEFAULT_SCOPES = 'openid profile email offline_access 
 export const openAIOAuthTokenResponseMaxBytes = 256 * 1024
 export const openAIOAuthTokenRequestTimeoutMs = 25_000
 
-interface OAuthSession {
+export interface OpenAIOAuthSession {
   state: string
   codeVerifier: string
   redirectUri: string
   clientId: string
+  ownerSystemAccountId?: string
   createdAt: number
 }
 
@@ -48,8 +49,121 @@ export interface OpenAITokenInfo {
 }
 
 const sessionTtlMs = 30 * 60 * 1000
+export const openAIOAuthMemorySessionMaxEntries = 1024
+export const openAIOAuthOwnerSessionMaxEntries = 8
+const openAIOAuthMemorySessionCleanupIntervalMs = 60 * 1000
 
-export async function generateOpenAIAuthURL(): Promise<OpenAIAuthURLResult> {
+type OpenAIOAuthSessionStore = Pick<RuntimeStateStore, 'getJson' | 'setJson' | 'compareDeleteJson'>
+
+interface OpenAIOAuthMemorySessionStoreOptions {
+  now?: () => number
+  maxEntries?: number
+  maxOwnerSessions?: number
+  cleanupIntervalMs?: number
+}
+
+interface OpenAIOAuthMemorySessionEntry {
+  value: OpenAIOAuthSession
+  expiresAt: number
+}
+
+export class OpenAIOAuthMemorySessionStore implements OpenAIOAuthSessionStore {
+  private readonly entries = new Map<string, OpenAIOAuthMemorySessionEntry>()
+  private readonly now: () => number
+  private readonly maxEntries: number
+  private readonly maxOwnerSessions: number
+  private readonly cleanupTimer: NodeJS.Timeout
+
+  constructor(options: OpenAIOAuthMemorySessionStoreOptions = {}) {
+    this.now = options.now ?? Date.now
+    this.maxEntries = positiveInteger(options.maxEntries, openAIOAuthMemorySessionMaxEntries, 'maxEntries')
+    this.maxOwnerSessions = positiveInteger(options.maxOwnerSessions, openAIOAuthOwnerSessionMaxEntries, 'maxOwnerSessions')
+    const cleanupIntervalMs = positiveInteger(
+      options.cleanupIntervalMs,
+      openAIOAuthMemorySessionCleanupIntervalMs,
+      'cleanupIntervalMs'
+    )
+    this.cleanupTimer = setInterval(() => this.maintain(), cleanupIntervalMs)
+    this.cleanupTimer.unref()
+  }
+
+  get size(): number {
+    this.maintain()
+    return this.entries.size
+  }
+
+  async getJson<T>(key: string): Promise<T | undefined> {
+    const entry = this.freshEntry(key)
+    return entry?.value as T | undefined
+  }
+
+  async setJson<T>(key: string, value: T, ttlMs: number): Promise<void> {
+    const session = value as OpenAIOAuthSession
+    this.maintain()
+    this.entries.delete(key)
+    const owner = openAIOAuthSessionOwner(session)
+    while (this.ownerSessionCount(owner) >= this.maxOwnerSessions) {
+      if (!this.deleteOldest((entry) => openAIOAuthSessionOwner(entry.value) === owner)) break
+    }
+    while (this.entries.size >= this.maxEntries) {
+      if (!this.deleteOldest()) break
+    }
+    this.entries.set(key, {
+      value: session,
+      expiresAt: this.now() + normalizeSessionTtlMs(ttlMs)
+    })
+  }
+
+  async compareDeleteJson<T>(key: string, expectedValue: T): Promise<boolean> {
+    const current = this.freshEntry(key)
+    if (!current || JSON.stringify(current.value) !== JSON.stringify(expectedValue)) {
+      return false
+    }
+    this.entries.delete(key)
+    return true
+  }
+
+  maintain(): void {
+    const now = this.now()
+    for (const [key, entry] of this.entries) {
+      if (entry.expiresAt <= now) this.entries.delete(key)
+    }
+  }
+
+  close(): void {
+    clearInterval(this.cleanupTimer)
+    this.entries.clear()
+  }
+
+  private freshEntry(key: string): OpenAIOAuthMemorySessionEntry | undefined {
+    const entry = this.entries.get(key)
+    if (!entry) return undefined
+    if (entry.expiresAt <= this.now()) {
+      this.entries.delete(key)
+      return undefined
+    }
+    return entry
+  }
+
+  private ownerSessionCount(owner: string): number {
+    let count = 0
+    for (const entry of this.entries.values()) {
+      if (openAIOAuthSessionOwner(entry.value) === owner) count += 1
+    }
+    return count
+  }
+
+  private deleteOldest(predicate: (entry: OpenAIOAuthMemorySessionEntry) => boolean = () => true): boolean {
+    for (const [key, entry] of this.entries) {
+      if (!predicate(entry)) continue
+      this.entries.delete(key)
+      return true
+    }
+    return false
+  }
+}
+
+export async function generateOpenAIAuthURL(ownerSystemAccountId?: string): Promise<OpenAIAuthURLResult> {
   const state = randomBytes(32).toString('hex')
   const codeVerifier = randomBytes(64).toString('hex')
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
@@ -57,11 +171,12 @@ export async function generateOpenAIAuthURL(): Promise<OpenAIAuthURLResult> {
   const redirectUri = OPENAI_OAUTH_DEFAULT_REDIRECT_URI
   const clientId = OPENAI_OAUTH_CLIENT_ID
 
-  await oauthSessionStore().setJson<OAuthSession>(sessionId, {
+  await oauthSessionStore().setJson<OpenAIOAuthSession>(sessionId, {
     state,
     codeVerifier,
     redirectUri,
     clientId,
+    ownerSystemAccountId: normalizeString(ownerSystemAccountId) || undefined,
     createdAt: Date.now()
   }, sessionTtlMs)
 
@@ -96,16 +211,11 @@ export async function exchangeOpenAIAuthCode(input: {
   sessionId: string
   code: string
   state: string
+  ownerSystemAccountId?: string
   proxyUrl?: string
   signal?: AbortSignal
 }): Promise<OpenAITokenInfo> {
-  const session = await oauthSessionStore().getDeleteJson<OAuthSession>(input.sessionId)
-  if (!session) {
-    throw new Error('OAuth 会话不存在或已过期')
-  }
-  if (!input.state || input.state !== session.state) {
-    throw new Error('OAuth state 无效')
-  }
+  const session = await consumeOpenAIOAuthSession(input)
   const tokenInfo = await requestOpenAIToken({
     grant_type: 'authorization_code',
     client_id: session.clientId,
@@ -114,6 +224,30 @@ export async function exchangeOpenAIAuthCode(input: {
     code_verifier: session.codeVerifier
   }, input.proxyUrl, input.signal)
   return tokenInfo
+}
+
+export async function consumeOpenAIOAuthSession(input: {
+  sessionId: string
+  state: string
+  ownerSystemAccountId?: string
+}): Promise<OpenAIOAuthSession> {
+  const sessionStore = oauthSessionStore()
+  const session = await sessionStore.getJson<OpenAIOAuthSession>(input.sessionId)
+  if (!session) {
+    throw new Error('OAuth 会话不存在或已过期')
+  }
+  if (!input.state || input.state !== session.state) {
+    throw new Error('OAuth state 无效')
+  }
+  const expectedOwner = normalizeString(session.ownerSystemAccountId)
+  const actualOwner = normalizeString(input.ownerSystemAccountId)
+  if (expectedOwner && actualOwner !== expectedOwner) {
+    throw new Error('OAuth session owner 归属无效')
+  }
+  if (!await sessionStore.compareDeleteJson(input.sessionId, session)) {
+    throw new Error('OAuth 会话已消费，请重新发起授权')
+  }
+  return session
 }
 
 export async function refreshOpenAIOAuthToken(input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }): Promise<OpenAITokenInfo> {
@@ -170,6 +304,18 @@ export function shouldRefreshOpenAIOAuthCredentials(credentials: Record<string, 
   return expiresAt - Date.now() < 60_000
 }
 
+export function parseOpenAIOAuthExpiresIn(value: unknown): number {
+  const expiresIn = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(expiresIn) || expiresIn <= 0) {
+    throw new Error('OpenAI OAuth 令牌响应的 expires_in 必须是有限正数')
+  }
+  const normalized = Math.trunc(expiresIn)
+  if (normalized <= 0) {
+    throw new Error('OpenAI OAuth 令牌响应的 expires_in 必须是至少 1 秒')
+  }
+  return normalized
+}
+
 export function sanitizeOpenAIOAuthErrorMessage(message: string): string {
   return sanitizeDiagnosticPayload(message)
 }
@@ -197,7 +343,7 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
   if (!accessToken) {
     throw new Error('OpenAI OAuth 令牌响应缺少访问令牌')
   }
-  const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : Number(payload.expires_in ?? 0)
+  const expiresIn = parseOpenAIOAuthExpiresIn(payload.expires_in)
   const idToken = normalizeString(payload.id_token)
   const refreshToken = normalizeString(payload.refresh_token)
   const clientId = normalizeString(form.client_id) || OPENAI_OAUTH_CLIENT_ID
@@ -209,7 +355,7 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
     refreshToken,
     idToken,
     expiresIn,
-    expiresAt: new Date(Date.now() + Math.max(expiresIn, 0) * 1000).toISOString(),
+    expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
     clientId,
     email: normalizeString(claims?.email),
     accountId: normalizeString(openAIAuth?.chatgpt_account_id),
@@ -258,14 +404,36 @@ async function performTokenRequest(
       timeout: openAIOAuthTokenRequestTimeoutMs
     }, (response) => {
       const body = new BoundedBufferCollector(openAIOAuthTokenResponseMaxBytes)
+      let responseSettled = false
+      const settleResponse = (error?: Error) => {
+        if (responseSettled) return
+        responseSettled = true
+        if (error) {
+          reject(error)
+          return
+        }
+        resolve({ statusCode: response.statusCode ?? 0, body: body.text() })
+      }
       response.on('data', (chunk: Buffer) => {
+        if (responseSettled) return
         body.append(chunk)
         if (body.truncated) {
-          request.destroy(new Error('OpenAI OAuth 令牌响应体过大'))
+          const error = new Error('OpenAI OAuth 令牌响应体过大')
+          settleResponse(error)
+          request.destroy(error)
         }
       })
-      response.on('end', () => {
-        resolve({ statusCode: response.statusCode ?? 0, body: body.text() })
+      response.once('aborted', () => {
+        settleResponse(new Error('OpenAI OAuth 令牌响应被中断'))
+      })
+      response.once('error', (error) => {
+        settleResponse(error)
+      })
+      response.once('end', () => {
+        settleResponse()
+      })
+      response.once('close', () => {
+        settleResponse(new Error('OpenAI OAuth 令牌响应提前关闭'))
       })
     })
 
@@ -311,6 +479,28 @@ function normalizeString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function oauthSessionStore() {
-  return createRuntimeStateStore('openai-oauth:sessions')
+let memoryOpenAIOAuthSessionStore: OpenAIOAuthMemorySessionStore | undefined
+
+function oauthSessionStore(): OpenAIOAuthSessionStore {
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    return createRuntimeStateStore('openai-oauth:sessions')
+  }
+  memoryOpenAIOAuthSessionStore = memoryOpenAIOAuthSessionStore ?? new OpenAIOAuthMemorySessionStore()
+  return memoryOpenAIOAuthSessionStore
+}
+
+function openAIOAuthSessionOwner(session: OpenAIOAuthSession): string {
+  return normalizeString(session.ownerSystemAccountId) || '__anonymous__'
+}
+
+function normalizeSessionTtlMs(ttlMs: number): number {
+  return Number.isFinite(ttlMs) ? Math.max(1, Math.trunc(ttlMs)) : 1
+}
+
+function positiveInteger(value: number | undefined, fallback: number, field: string): number {
+  const normalized = value === undefined ? fallback : Math.trunc(value)
+  if (!Number.isFinite(normalized) || normalized < 1) {
+    throw new Error(`OpenAI OAuth memory session ${field} 必须是正整数`)
+  }
+  return normalized
 }

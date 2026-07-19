@@ -28,6 +28,7 @@ export type ProviderModelApiProtocol =
   | 'stream_generate_content'
   | 'count_tokens'
   | 'embed_content'
+  | 'interactions'
   | 'completions'
   | 'images'
   | 'audio'
@@ -79,6 +80,7 @@ export interface ProviderModelPricing {
   id?: string
   scope?: ProviderModelScope
   status?: ProviderModelStatus
+  catalogVisible?: boolean
   systemAccountId?: string
   mode?: string
   catalogOrder?: number
@@ -103,6 +105,10 @@ export interface ProviderModelPricing {
   maxInputTokens?: number
   maxOutputTokens?: number
   maxTokens?: number
+  longContextInputTokenThreshold?: number
+  longContextInputTokenThresholdInclusive?: boolean
+  longContextInputCostMultiplier?: number
+  longContextOutputCostMultiplier?: number
   supportsPromptCaching: boolean
   supportsServiceTier: boolean
   supportedServiceTiers?: ProviderModelServiceTier[]
@@ -144,6 +150,7 @@ export interface ProviderModelUpsertPayload {
   scope?: CustomProviderModelScope
   model: string
   status?: ProviderModelStatus
+  catalogVisible?: boolean
   mode?: ProviderModelMode | null
   supportedApiProtocols?: ProviderModelApiProtocol[]
   supportedServiceTiers?: ProviderModelServiceTier[]

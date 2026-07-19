@@ -13,6 +13,7 @@ export function hasAccountTestProtocolSuccessEvidence(
   if (mode === 'responses_json') return hasCompletedResponsesPayload(payload)
   if (mode === 'messages_json') return hasCompletedMessagesPayload(payload)
   if (mode === 'generate_content_json') return hasCompletedGeminiPayload(payload)
+  if (mode === 'interactions_json') return hasCompletedInteractionsPayload(payload)
   return false
 }
 
@@ -36,6 +37,7 @@ function hasStreamingSuccessEvidence(mode: AccountSupportedEndpointMode, bodyTex
       || hasCompletedMessagesPayload(objectValue(payload.message) ?? payload)
     )) return true
     if (mode === 'generate_content_sse' && hasCompletedGeminiPayload(payload)) return true
+    if (mode === 'interactions_sse' && (eventType === 'interaction.completed' || objectValue(payload.interaction)?.status === 'completed')) return true
   }
   return false
 }
@@ -67,6 +69,11 @@ function hasCompletedMessagesPayload(payload: Record<string, unknown>): boolean 
 function hasCompletedGeminiPayload(payload: Record<string, unknown>): boolean {
   const candidates = Array.isArray(payload.candidates) ? payload.candidates : []
   return candidates.some((candidate) => Boolean(stringValue(objectValue(candidate)?.finishReason)))
+}
+
+function hasCompletedInteractionsPayload(payload: Record<string, unknown>): boolean {
+  return payload.status === 'completed'
+    && (payload.object === 'interaction' || Array.isArray(payload.steps))
 }
 
 function parseServerSentEvents(bodyText: string): Array<{ event?: string; data: string }> {

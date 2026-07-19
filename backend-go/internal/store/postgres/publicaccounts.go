@@ -262,6 +262,8 @@ func publicAccountEnabledEndpointModes(capabilities []string) []string {
 			modes = append(modes, "messages_json", "messages_sse")
 		case "generate_content":
 			modes = append(modes, "generate_content_json", "generate_content_sse")
+		case "interactions":
+			modes = append(modes, "interactions_json", "interactions_sse")
 		}
 	}
 	return modes

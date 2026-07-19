@@ -19,10 +19,11 @@ runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, gatewayCache] = await Promise.all([
+const [databaseModule, repositories, gatewayCache, readWorkerPool] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/gateway/runtime/runtime-cache.service.js')
+  import('../../modules/gateway/runtime/runtime-cache.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 try {
@@ -75,6 +76,7 @@ try {
     credentials: { api_key: 'sk-cache-invalidation-owner', base_url: 'https://api.openai.com/v1' },
     proxyProfileId: proxy.id
   }, ownerAccess)
+  activateAccountAfterBackgroundCheck(account.id)
   const ownerGroupId = ownerGroup.id
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '缓存失效 API Key',
@@ -102,10 +104,12 @@ try {
     databaseModule.rollbackDatabaseTransaction(databaseModule.getBusinessDatabase(), transactionStarted)
     throw error
   }
+  activateAccountAfterBackgroundCheck(account.id)
   assert.equal(gatewayCache.listCachedOpenAIAccountsForGroup(ownerGroupId, owner.id)[0]?.proxyUrl, 'http://127.0.0.1:18183', '事务提交后应统一清理分组账号缓存')
 
   repositories.updateProxy(proxy.id, { port: 18_181 })
   repositories.updateAccount(account.id, { proxyProfileId: proxy.id }, ownerAccess)
+  activateAccountAfterBackgroundCheck(account.id)
   const afterProxyUpdate = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert.equal(afterProxyUpdate.accounts[0]?.proxyUrl, 'http://127.0.0.1:18181', '直接更新代理并切回绑定后运行配置缓存应立即刷新')
 
@@ -134,6 +138,7 @@ try {
     enabled: true
   }, ownerAccess)
   repositories.updateAccount(account.id, { proxyProfileId: lateProxy.id }, ownerAccess)
+  activateAccountAfterBackgroundCheck(account.id)
   const afterLateProxyBinding = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert.equal(afterLateProxyBinding.accounts[0]?.proxyUrl, 'http://127.0.0.1:18182', '直接新建代理并绑定账号后运行配置应立即包含新代理')
 
@@ -192,6 +197,7 @@ try {
     groupId: ownerGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-shared', base_url: 'https://api.openai.com/v1' }
   }, ownerAccess)
+  activateAccountAfterBackgroundCheck(sharedAccount.id)
   const accountAuthorization = repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: sharedAccount.id,
@@ -215,8 +221,10 @@ try {
       api_key: 'sk-cache-invalidation-shared-updated',
       base_url: 'https://cache-source-updated.example/v1'
     },
-    supportedModels: ['gpt-5.5']
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, ownerAccess)
+  activateAccountAfterBackgroundCheck(sharedAccount.id)
   const sharedRuntimeAfterSourceUpdate = await gatewayCache.readCachedGatewayRuntimeAsync(granteeApiKey.key)
   const sharedRuntimeAccount = sharedRuntimeAfterSourceUpdate.accounts.find((item) => item.id === sharedAuthorizedInstance.id)
   assert.equal(sharedRuntimeAccount?.apiKey, 'sk-cache-invalidation-shared-updated', '父账户 API Key 更新后授权实例运行配置缓存应立即刷新')
@@ -272,6 +280,7 @@ try {
     groupId: statusGroup.id,
     credentials: { api_key: 'sk-cache-invalidation-status', base_url: 'https://api.openai.com/v1' }
   }, statusOwnerAccess)
+  activateAccountAfterBackgroundCheck(statusAccount.id)
   const statusGroupId = statusGroup.id
   const statusApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '缓存失效状态 API Key',
@@ -284,6 +293,7 @@ try {
 
   console.log('网关仓储直写缓存失效回归通过')
 } finally {
+  await readWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -301,4 +311,14 @@ function authorizedInstanceForSource(sourceAccountId: string, access: { systemAc
     .find((item) => item.authorizationInstanceSourceAccountId === sourceAccountId)
   assert(account, `被授权用户视角应能读取来源账户 ${sourceAccountId} 的授权实例`)
   return account
+}
+
+function activateAccountAfterBackgroundCheck(accountId: string): void {
+  const changed = repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
+  assert.equal(changed, true, `后台探针应激活测试账号 ${accountId}`)
 }

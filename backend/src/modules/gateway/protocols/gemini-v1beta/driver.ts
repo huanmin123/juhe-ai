@@ -59,6 +59,7 @@ function geminiEndpointFamilyOrGenerateContent(endpointFamily?: ResponseEndpoint
     || endpointFamily === 'count_tokens'
     || endpointFamily === 'embed_content'
     || endpointFamily === 'models'
+    || endpointFamily === 'interactions'
     ? endpointFamily
     : 'generate_content'
 }

@@ -92,6 +92,9 @@ export function accountManualTestEndpointModesForModel(
   accountEndpointModes = accountManualTestEndpointModes(account)
 ): AccountSupportedEndpointMode[] {
   return accountEndpointModes.filter((mode) => {
+    if (mode === 'interactions_json' || mode === 'interactions_sse') {
+      return modelSupportsProtocol(model, 'interactions')
+    }
     const sourceFamily = endpointModeProtocol(mode)
     const mapping = resolveOpenAIAccountModelMapping(account, model.model, sourceFamily)
     if (!mapping) return modelSupportsProtocol(model, sourceFamily)
@@ -133,7 +136,7 @@ function isAccountManualTestModel(item: ProviderModelCatalogItem, account: Accou
     return protocols.includes('messages')
   }
   if (isGeminiProtocolProfile(account)) {
-    return protocols.some((protocol) => protocol === 'generate_content' || protocol === 'stream_generate_content')
+    return protocols.some((protocol) => protocol === 'generate_content' || protocol === 'stream_generate_content' || protocol === 'interactions')
   }
   return false
 }

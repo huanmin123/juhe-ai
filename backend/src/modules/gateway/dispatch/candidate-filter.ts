@@ -7,7 +7,9 @@ import {
 } from './account-capability-filter.js'
 import {
   filterGatewayAccountsByRequestedModel,
+  gatewayAccountModelPriorityRank,
   type GatewayAccountModelPriority,
+  type GatewayModelAccountFilterResult,
   gatewayModelFilterFailureMessage
 } from './model-filter.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
@@ -41,6 +43,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   groupId: string
   clientIp?: string
   endpoint: string
+  bypassModelFilter?: boolean
   attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
   recoverUnavailableCandidateAccounts?: () => Promise<UpstreamAccount[] | undefined>
   loadModelAwareCandidateAccounts?: (requestedModel: string, sourceEndpointFamily?: ReturnType<typeof gatewayRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>
@@ -100,7 +103,9 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     return { outcome: 'completed' }
   }
 
-  let modelFilter = filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel, sourceEndpointFamily)
+  let modelFilter = input.bypassModelFilter
+    ? bypassGatewayModelFilter(capabilityFilter.accounts, sourceEndpointFamily)
+    : filterGatewayAccountsByRequestedModel(capabilityFilter.accounts, requestedModel, sourceEndpointFamily)
   if (shouldReloadModelAwareCandidates(requestedModel, modelFilter, input.loadModelAwareCandidateAccounts)) {
     const modelAwareRawAccounts = await input.loadModelAwareCandidateAccounts!(requestedModel!, sourceEndpointFamily)
     if (modelAwareRawAccounts?.length) {
@@ -175,6 +180,25 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     outcome: 'accounts',
     accounts: modelFilter.accounts,
     modelPriority: modelFilter.modelPriority
+  }
+}
+
+function bypassGatewayModelFilter(
+  accounts: UpstreamAccount[],
+  sourceEndpointFamily: ReturnType<typeof gatewayRequestEndpointFamily>
+): GatewayModelAccountFilterResult {
+  return {
+    accounts,
+    skippedCount: 0,
+    limitedAccountCount: accounts.filter((account) => (account.supportedModels?.length ?? 0) > 0).length,
+    unrestrictedAccountCount: accounts.filter((account) => (account.supportedModels?.length ?? 0) === 0).length,
+    directMatchedCount: accounts.length,
+    mappingMatchedCount: 0,
+    sourceEndpointFamily,
+    modelPriority: {
+      sourceEndpointFamily,
+      rankByAccountId: new Map(accounts.map((account) => [account.id, gatewayAccountModelPriorityRank.direct]))
+    }
   }
 }
 

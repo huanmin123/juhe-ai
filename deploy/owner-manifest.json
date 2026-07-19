@@ -4,7 +4,7 @@
   "release": {
     "nodeVersion": "0.1.0",
     "goVersion": "0.1.0-w0",
-    "schemaVersion": 58
+    "schemaVersion": 61
   },
   "routeOwners": {
     "management": "node",

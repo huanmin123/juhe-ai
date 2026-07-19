@@ -33,10 +33,12 @@ export function validateAccountModelCatalogFields(
   }
   try {
     const provider = context.providerByCode.get(account.providerCode)
+    const providerProfile = provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId)
     account.supportedModels = normalizeAccountSupportedModelsForProvider(
       account.supportedModels?.length ? account.supportedModels : provider?.defaultSupportedModels,
       account.providerCode,
-      context.targetSystemAccountId
+      context.targetSystemAccountId,
+      providerProfile
     )
     assertAccountSupportedModelsRequired(account.supportedModels ?? [])
     assertImportedAccountHealthCheckModel(account.healthCheckModel, account.supportedModels ?? [])
@@ -44,7 +46,7 @@ export function validateAccountModelCatalogFields(
       account.modelMappings,
       account.providerCode,
       context.targetSystemAccountId,
-      provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId),
+      providerProfile,
       {
         supportedEndpointModes: Array.isArray(account.credentials?.supported_endpoint_modes)
           ? account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]
@@ -66,10 +68,12 @@ export async function validateAccountModelCatalogFieldsAsync(
   }
   try {
     const provider = context.providerByCode.get(account.providerCode)
+    const providerProfile = provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId)
     account.supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
       account.supportedModels?.length ? account.supportedModels : provider?.defaultSupportedModels,
       account.providerCode,
-      context.targetSystemAccountId
+      context.targetSystemAccountId,
+      providerProfile
     )
     assertAccountSupportedModelsRequired(account.supportedModels ?? [])
     assertImportedAccountHealthCheckModel(account.healthCheckModel, account.supportedModels ?? [])
@@ -77,7 +81,7 @@ export async function validateAccountModelCatalogFieldsAsync(
       account.modelMappings,
       account.providerCode,
       context.targetSystemAccountId,
-      provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId),
+      providerProfile,
       {
         supportedEndpointModes: Array.isArray(account.credentials?.supported_endpoint_modes)
           ? account.credentials.supported_endpoint_modes as AccountSupportedEndpointMode[]

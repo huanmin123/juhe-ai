@@ -248,8 +248,8 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - 编辑器输出转换为 `input_text` / `input_image` 内容块；纯文本请求仍可降级为现有 `content` 字段。
 - 输入框不显示独立工具栏；撤销/重做使用编辑器原生快捷键，图片通过粘贴或 `/image`，交互说明合并到 placeholder。
 - 模型、思考级别和服务等级放在输入框底部左侧，发送/停止放在右侧。选项只来自服务端模型目录；未知能力不按模型名猜测，也不补“自动”选项。
-- 思考级别不提供“无思考”和“自动”；模型返回能力包含 `medium` 时默认选择“中”，否则使用模型目录的有效默认值或第一项能力。
-- 服务等级不提供“自动”；模型声明服务等级能力时显式提供并默认选择 `default`，请求必须发送 `service_tier: "default"`，避免省略字段后被上游按 `auto` 处理。
+- 思考级别不提供“无思考”和“自动”；目录默认值只用于能力说明，页面初始不选择任何档位。用户可以清除已选值回到空状态；未显式选择时不发送思考级别。
+- 服务等级不提供“自动”；模型声明服务等级能力时显示真实可选项，但页面初始不选择任何档位。用户可以清除已选值回到空状态；未显式选择时省略 `service_tier` 并由上游决定。
 - 思考级别、服务等级、输入/输出模态和工具按“上游可用模型 ID 与本地官方能力快照”返回；同名模型存在多个可达供应商候选时取共同能力。模型未声明对应能力时不显示控件，也不发送字段。
 - 图片命令、粘贴提示和服务端验收同时读取模型 `inputModalities`；仅凭 Responses 协议可用不能推导图片能力。
 - 上下文不再由客户端提交 `contextWindowTokens`；服务端区分模型目录的总窗口、最大输入和最大输出。官方没有独立最大输入时，按 `contextWindowTokens - maxOutputTokens` 派生保守输入预算。
@@ -260,7 +260,7 @@ MVP 使用 `@tanstack/vue-virtual`，不复制参考客户端中与 Agent 状态
 - Responses 请求保留上游支持的 `tools`、`tool_choice`、`parallel_tool_calls` 等字段，由网关做协议适配和安全校验。
 - Chat 模块解析 `response.output_item.added`、`response.function_call_arguments.delta`、`response.output_text.delta`、`response.completed` 等事件，并将工具过程投影为消息时间线中的 `tool_call` / `tool_result` 内容块。
 - 只有模型目录明确声明 `web_search` 且最终走 Responses 时才注入联网搜索；不能因为使用 Responses 就给所有模型强塞工具。
-- OpenAI Chat / Responses 映射到 Gemini native 时，思考级别转换为 `generationConfig.thinkingConfig.thinkingLevel`，服务等级转换为 Gemini 顶层 `serviceTier`；不能只在下游请求保留无效的 OpenAI 字段。
+- OpenAI Chat / Responses 映射到 Gemini native 时，思考级别转换为 `generationConfig.thinkingConfig.thinkingLevel`，服务等级转换为 Gemini 顶层 `service_tier`；不能只在下游请求保留无效的 OpenAI 字段。
 - 上游自行执行的内置工具只展示状态和结果；Chat 模块不重复执行、不伪造工具结果。
 - 模型要求本地未注册的 function tool 时，返回明确的“不支持此工具”状态并结束本轮，不能静默当作普通文本。
 - 工具调用参数、结果和错误均有字节上限、超时和审计 trace；不得把工具原始 JSON 无界写入 SSE 或聊天正文。
@@ -399,9 +399,9 @@ DELETE /__aisys__/api/my-chat/conversations/:id
 - 模型列表先校验会话归属和绑定 Key，再从网关 API Key 共享缓存取得有效路由分组的供应商合集，并从供应商模型目录共享缓存构建能力摘要；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。请求成本只与供应商数和必须返回的模型数有关，不随账户数增长。
 - 模型列表表达稳定配置能力，不因账户临时冷却、并发占满或短时不可用而抖动；实际发送仍由网关按实时账户状态、模型限制和协议能力完成最终校验与调度。
 - 前端按 API Key 缓存模型能力：首次进入且无快照时加载，新建会话主动刷新一次，切换会话直接复用已有快照；只有用户展开模型下拉且快照已过期时重新请求。未重新选择时优先沿用会话 `lastModel`。
-- 能力摘要只保留模型目录真实声明：思考列表移除产品不开放的 `none`，存在 `medium` 时把它作为页面默认；服务列表在模型声明 Priority/Flex 能力时显式加入标准 `default`；上下文返回 `maxInputTokens`，缺少时才使用 `contextWindowTokens`。
+- 能力摘要只保留模型目录真实声明：思考列表移除产品不开放的 `none`；服务列表在模型声明 Priority/Flex 能力时显式加入可供用户手动选择的标准 `default`；上下文返回 `maxInputTokens`，缺少时才使用 `contextWindowTokens`。能力摘要中的默认值不触发页面或服务端自动选择。
 - 同一模型 ID 可命中多个实际供应商时，思考级别和服务档位取能力交集，最大输入窗口取所有候选的最小值；任一候选缺少窗口事实时不伪造窗口。这样切号后仍不会把某个账户不支持的字段发送给上游。
-- 发送接口按最新能力摘要再次校验并补默认值，不能只信前端；不支持的思考/服务值返回 `422 chat_model_capability_mismatch`。
+- 发送接口按最新能力摘要再次校验用户显式提交的值，不能只信前端，也不得在字段缺失时补默认值；不支持的思考/服务值返回 `422 chat_model_capability_mismatch`。
 - DELETE 返回 `204`，不删除网关使用记录或原始审计。
 
 ### 10.3 消息列表
@@ -426,11 +426,11 @@ Content-Type: application/json
   "replaceTurnId": "turn_xxx",
   "content": "用户问题",
   "contentBlocks": [{ "type": "input_text", "text": "用户问题" }],
-  "model": "gpt-xxx",
-  "reasoningEffort": "medium",
-  "serviceTier": "default"
+  "model": "gpt-xxx"
 }
 ```
+
+`reasoningEffort` 与 `serviceTier` 都是可选字段，仅在用户明确选择后提交。
 
 - `clientMessageId` 必填且最长 100 字符；重复 ID 返回 `409 chat_message_already_exists`，不得再次请求上游。
 - `replaceTurnId` 可选，只允许最近完整成功、失败或已停止的成对轮次；生成中或旧轮次冲突返回 `409 chat_replace_conflict`。

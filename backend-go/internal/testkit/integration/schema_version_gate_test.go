@@ -65,8 +65,8 @@ func TestGoServerSchemaVersionGatePostgresSmoke(t *testing.T) {
 		t.Fatalf("set goose dialect: %v", err)
 	}
 	migrationDir := filepath.Join(repoRoot(t), "db", "migrations")
-	if err := goose.UpTo(db, migrationDir, 56); err != nil {
-		t.Fatalf("goose up to 56: %v", err)
+	if err := goose.UpTo(db, migrationDir, version.SchemaVersion-1); err != nil {
+		t.Fatalf("goose up to %d: %v", version.SchemaVersion-1, err)
 	}
 
 	store, err := postgresstore.Open(ctx, connString)
@@ -75,8 +75,8 @@ func TestGoServerSchemaVersionGatePostgresSmoke(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), "expected 58") {
-		t.Fatalf("schema gate at version 56 error = %v, want version mismatch", err)
+	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), "expected 61") {
+		t.Fatalf("schema gate at version %d error = %v, want version mismatch", version.SchemaVersion-1, err)
 	}
 	if err := goose.UpTo(db, migrationDir, version.SchemaVersion); err != nil {
 		t.Fatalf("goose up to %d: %v", version.SchemaVersion, err)
@@ -93,7 +93,7 @@ SELECT 1;
 SELECT 1;
 `
 	if err := os.WriteFile(
-		filepath.Join(schemaGateMigrationDir, "000059_schema_gate_test.sql"),
+		filepath.Join(schemaGateMigrationDir, "000062_schema_gate_test.sql"),
 		[]byte(schemaGateMigration),
 		0o600,
 	); err != nil {

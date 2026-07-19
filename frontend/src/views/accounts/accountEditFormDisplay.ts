@@ -8,10 +8,12 @@ import {
   GLM_GENERAL_OPENAI_V1_PROFILE_ID,
   GEMINI_NATIVE_V1BETA_PROFILE_ID,
   GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID,
+  XAI_OPENAI_V1_PROFILE_ID,
   isHybridProviderCode,
   isDeepSeekProviderCode,
   isGeminiProviderCode,
-  isGlmProviderCode
+  isGlmProviderCode,
+  isXaiProviderCode
 } from '@/shared/providerProtocol'
 
 import {
@@ -193,6 +195,10 @@ function accountTypeChoiceLabel(
     if (providerProtocolProfileId === GEMINI_NATIVE_V1BETA_PROFILE_ID) return 'Gemini 原生 API Key'
     if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'Gemini OpenAI Chat API Key'
   }
+  if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Gemini Google OAuth'
+  if (isXaiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === XAI_OPENAI_V1_PROFILE_ID) {
+    return 'xAI 官方 API Key'
+  }
   return accountEditAccountTypeTitle(providerCode, type, providers)
 }
 
@@ -213,6 +219,10 @@ function accountTypeChoiceTag(
   if (isGeminiProviderCode(providerCode) && type === 'api_key') {
     if (providerProtocolProfileId === GEMINI_OPENAI_CHAT_V1BETA_PROFILE_ID) return 'OpenAI Chat'
     return 'Gemini API'
+  }
+  if (isGeminiProviderCode(providerCode) && type === 'google_oauth') return 'Google OAuth'
+  if (isXaiProviderCode(providerCode) && type === 'api_key' && providerProtocolProfileId === XAI_OPENAI_V1_PROFILE_ID) {
+    return 'OpenAI v1'
   }
   return accountTypeText(type)
 }

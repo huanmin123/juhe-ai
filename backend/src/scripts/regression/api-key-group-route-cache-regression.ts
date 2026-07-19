@@ -377,7 +377,8 @@ function seedCrossProviderRoute(upstreamBaseUrl: string): SeededCrossProviderRou
     groupId: deepSeekGroup.id,
     status: 'active',
     schedulable: true,
-    supportedModels: ['deepseek-v4-flash']
+    supportedModels: ['deepseek-v4-flash'],
+    healthCheckModel: 'deepseek-v4-flash'
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '路由缓存跨供应商 API Key',

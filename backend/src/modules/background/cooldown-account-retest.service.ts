@@ -5,7 +5,7 @@ import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccountWithDiagnosticRetries } from '../accounts/account-test.service.js'
 import { automaticAccountProbeOutcome } from '../accounts/automatic-account-probe-outcome.js'
-import { isRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
+import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
 import { accountPageDataOwnerIds, publishAccountRuntimeChange } from '../page-data/page-data-change.publisher.js'
@@ -78,7 +78,7 @@ async function runCooldownAccountRetestQueueItem(
 
   const groupId = account.boundGroupId
   const diagnosticStartedAt = Date.now()
-  let upstreamAttemptObserved = false
+  let upstreamResponseObserved = false
   const result = await testOpenAIAccountWithDiagnosticRetries(account, {
     diagnostics: 'full',
     groupId,
@@ -87,7 +87,7 @@ async function runCooldownAccountRetestQueueItem(
     disableAccountStateMutation: true,
     retryAllFailures: true,
     onUpstreamAttempt: (attempt) => {
-      if (isRealUpstreamAttempt(attempt)) upstreamAttemptObserved = true
+      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
     },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
@@ -105,7 +105,7 @@ async function runCooldownAccountRetestQueueItem(
     errorCode: undefined,
     traceId: undefined
   }))
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamAttemptObserved)
+  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
   if (probeOutcome === 'complete_success') {
     const restored = await requestBackgroundWorkerDbService({
       type: 'record_cooldown_account_retest_success',
@@ -154,7 +154,7 @@ async function runCooldownAccountRetestQueueItem(
       attemptIndex: context.attemptIndex,
       retryNumber: context.retryNumber,
       probeOutcome,
-      upstreamAttemptObserved,
+      upstreamResponseObserved,
       durationMs: result.durationMs,
       nextCooldownUntil: deferred?.cooldownUntil,
       message: result.message
@@ -203,7 +203,7 @@ async function runCooldownAccountRetestQueueItem(
     errorCode: result.errorCode,
     accountFailureEligible: result.accountFailureEligible,
     probeOutcome,
-    upstreamAttemptObserved,
+    upstreamResponseObserved,
     durationMs: result.durationMs,
     retestFailureCount: failure?.failureCount ?? 0,
     retestAction: failure?.action,

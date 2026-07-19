@@ -6,6 +6,7 @@ import {
 } from '../dispatch/account-concurrency-identity.js'
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { registerGatewayRuntimeCacheInvalidator, syncGatewayCacheInvalidationsFromRuntimeState } from '../../../shared/gateway-cache-invalidation.js'
+import { shouldInvalidateProviderModelCatalog } from '../response/model-catalog-cache-policy.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import type { GatewayRequestEndpointFamily } from '../../../domain/types.js'
 import { isDynamicRouteStrategyMode } from '../../../domain/route-strategy.js'
@@ -42,7 +43,7 @@ const groupUsageAccessTtlMs = 60_000
 const groupUsageAccessRetainTtlMs = 10 * 60_000
 const openAIAccountsTtlMs = 60_000
 const openAIAccountsRetainTtlMs = 10 * 60_000
-const providerModelCatalogTtlMs = 60_000
+const providerModelCatalogTtlMs = 24 * 60 * 60_000
 const responseInspectionPolicyRetainTtlMs = 10 * 60_000
 export const gatewayRuntimeDbServiceTimeoutMs = 10_000
 
@@ -168,8 +169,10 @@ const responseInspectionPolicySharedCache = createSharedJsonCache<ResponseInspec
 const pendingGatewayRuntimeLoads = new Map<string, Promise<DbServiceGatewayRuntime>>()
 const pendingGroupUsageAccessRefreshes = new Map<string, Promise<void>>()
 const pendingOpenAIAccountsRefreshes = new Map<string, Promise<void>>()
+const pendingProviderModelCatalogLoads = new Map<string, Promise<ProviderModelCatalogItem[]>>()
 const pendingResponseInspectionPolicyRefreshes = new Map<string, Promise<void>>()
 let gatewayRuntimeCacheGeneration = 0
+let providerModelCatalogCacheGeneration = 0
 
 function isGatewayRuntimeCacheGenerationCurrent(generation: number): boolean {
   return generation === gatewayRuntimeCacheGeneration
@@ -365,7 +368,7 @@ export async function listCachedProviderModelCatalogAsync(input: {
   includeUnpriced?: boolean
 }): Promise<ProviderModelCatalogItem[]> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
-  const generation = gatewayRuntimeCacheGeneration
+  const generation = providerModelCatalogCacheGeneration
   const useLocalPostgres = shouldUseLocalPostgresGatewayRuntimeDataAccess()
   if (!useLocalPostgres && !shouldUseGatewayRuntimeDbService()) {
     return listProviderModelCatalog(input)
@@ -384,24 +387,38 @@ export async function listCachedProviderModelCatalogAsync(input: {
   }
   const sharedCached = await getProviderModelCatalogSharedCacheEntry(cacheKey)
   if (sharedCached) {
-    if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+    if (generation === providerModelCatalogCacheGeneration) {
       providerModelCatalogCache.set(cacheKey, sharedCached.map((item) => ({ ...item })))
     }
     return sharedCached.map((item) => ({ ...item }))
   }
-  const value = useLocalPostgres
-    ? await listProviderModelCatalogAsync(input)
-    : await requestGatewayDbService({
-        type: 'list_provider_model_catalog',
-        providerCode: input.providerCode,
-        systemAccountId: input.systemAccountId,
-        includeInactive: input.includeInactive,
-        includeUnpriced: input.includeUnpriced
-      })
-  if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
-    await setProviderModelCatalogCacheEntryAsync(cacheKey, value.map((item) => ({ ...item })))
+  const pending = pendingProviderModelCatalogLoads.get(cacheKey)
+  if (pending) {
+    return (await pending).map((item) => ({ ...item }))
   }
-  return value.map((item) => ({ ...item }))
+  const load = (async () => {
+    const value = useLocalPostgres
+      ? await listProviderModelCatalogAsync(input)
+      : await requestGatewayDbService({
+          type: 'list_provider_model_catalog',
+          providerCode: input.providerCode,
+          systemAccountId: input.systemAccountId,
+          includeInactive: input.includeInactive,
+          includeUnpriced: input.includeUnpriced
+        })
+    if (generation === providerModelCatalogCacheGeneration) {
+      await setProviderModelCatalogCacheEntryAsync(cacheKey, value.map((item) => ({ ...item })))
+    }
+    return value.map((item) => ({ ...item }))
+  })()
+  pendingProviderModelCatalogLoads.set(cacheKey, load)
+  try {
+    return (await load).map((item) => ({ ...item }))
+  } finally {
+    if (pendingProviderModelCatalogLoads.get(cacheKey) === load) {
+      pendingProviderModelCatalogLoads.delete(cacheKey)
+    }
+  }
 }
 
 export async function resolveCachedProviderModelRouteAsync(input: {
@@ -411,7 +428,7 @@ export async function resolveCachedProviderModelRouteAsync(input: {
   includeUnpriced?: boolean
 }): Promise<ProviderModelRouteResolution> {
   if (runtimeConfig.runtimeStateDriver === 'redis') await syncGatewayCacheInvalidationsFromRuntimeState()
-  const generation = gatewayRuntimeCacheGeneration
+  const generation = providerModelCatalogCacheGeneration
   const modelKey = normalizeProviderModelRouteKey(input.model)
   const providerCodes = normalizedProviderRouteCodes(input.providerCodes)
   if (!modelKey || !providerCodes.length) {
@@ -429,7 +446,7 @@ export async function resolveCachedProviderModelRouteAsync(input: {
     const sharedCached = await getProviderModelRouteIndexSharedCacheEntry(cacheKey)
     if (sharedCached) {
       cached = sharedCached
-      if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+      if (generation === providerModelCatalogCacheGeneration) {
         providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(sharedCached))
       }
     }
@@ -440,7 +457,7 @@ export async function resolveCachedProviderModelRouteAsync(input: {
       systemAccountId: input.systemAccountId,
       includeUnpriced: input.includeUnpriced
     }))
-    if (isGatewayRuntimeCacheGenerationCurrent(generation)) {
+    if (generation === providerModelCatalogCacheGeneration) {
       await setProviderModelRouteIndexSharedCacheEntry(cacheKey, cached)
       providerModelRouteIndexCache.set(cacheKey, cloneProviderModelRouteIndexCacheEntry(cached))
     }
@@ -563,7 +580,8 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
 
 export function clearGatewayRuntimeCache(reason?: string): void {
   clearGatewayRuntimeCacheLocal({
-    clearSettings: shouldClearSettingsCacheForGatewayInvalidation(reason)
+    clearSettings: shouldClearSettingsCacheForGatewayInvalidation(reason),
+    clearModelCatalog: shouldInvalidateProviderModelCatalog(reason)
   })
   if (runtimeConfig.processRole === 'server') {
     clearDbServiceGatewayRuntimeCache()
@@ -578,7 +596,7 @@ export function clearGatewayRuntimeCache(reason?: string): void {
   }
 }
 
-export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean } = {}): void {
+export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean; clearModelCatalog?: boolean } = {}): void {
   gatewayRuntimeCacheGeneration += 1
   pendingGatewayRuntimeLoads.clear()
   pendingGroupUsageAccessRefreshes.clear()
@@ -588,13 +606,17 @@ export function clearGatewayRuntimeCacheLocal(options: { clearSettings?: boolean
   gatewaySettingsCache.clear()
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
-  providerModelCatalogCache.clear()
-  providerModelRouteIndexCache.clear()
   responseInspectionPolicyCache.clear()
   clearGatewaySettingsSharedCache()
   clearGroupUsageAccessSharedCache()
-  clearProviderModelCatalogSharedCache()
-  clearProviderModelRouteIndexSharedCache()
+  if (options.clearModelCatalog === true) {
+    providerModelCatalogCacheGeneration += 1
+    pendingProviderModelCatalogLoads.clear()
+    providerModelCatalogCache.clear()
+    providerModelRouteIndexCache.clear()
+    clearProviderModelCatalogSharedCache()
+    clearProviderModelRouteIndexSharedCache()
+  }
   clearResponseInspectionPolicySharedCache()
   if (options.clearSettings ?? true) {
     clearSettingsRepositoryCache()

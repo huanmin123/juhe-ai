@@ -139,6 +139,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cache_write_1h_usd_per_1m REAL,
       service_tier_prices_json TEXT NOT NULL DEFAULT '{}',
       long_context_input_token_threshold INTEGER,
+      long_context_input_token_threshold_inclusive INTEGER NOT NULL DEFAULT 0,
       long_context_input_cost_multiplier REAL,
       long_context_output_cost_multiplier REAL,
       image_input_usd_per_1m REAL,
@@ -167,6 +168,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       scope TEXT NOT NULL DEFAULT 'personal',
       system_account_id TEXT,
       status TEXT NOT NULL DEFAULT 'active',
+      catalog_visible INTEGER NOT NULL DEFAULT 1,
       mode TEXT,
       supported_api_protocols_json TEXT NOT NULL DEFAULT '[]',
       supported_service_tiers_json TEXT NOT NULL DEFAULT '[]',
@@ -337,7 +339,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_retest_last_status_code INTEGER,
       temporary_unavailable_continuous_probe_enabled INTEGER NOT NULL DEFAULT 1 CHECK (temporary_unavailable_continuous_probe_enabled IN (0, 1)),
       health_check_model TEXT NOT NULL,
-      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse')),
+      health_check_endpoint_mode TEXT NOT NULL CHECK (health_check_endpoint_mode IN ('chat_json', 'chat_sse', 'responses_json', 'responses_sse', 'messages_json', 'messages_sse', 'generate_content_json', 'generate_content_sse', 'interactions_json', 'interactions_sse')),
       last_health_check_at TEXT,
       next_health_check_at TEXT,
       last_health_success_at TEXT,
@@ -800,6 +802,25 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots (
+      system_account_id TEXT NOT NULL,
+      protocol TEXT NOT NULL,
+      variant TEXT NOT NULL,
+      payload_json TEXT NOT NULL,
+      model_count INTEGER NOT NULL DEFAULT 0,
+      revision TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, protocol, variant),
+      CHECK (protocol IN ('openai', 'anthropic', 'gemini')),
+      CHECK (variant IN ('default', 'codex', 'chat')),
+      CHECK (model_count >= 0),
+      CHECK (json_valid(payload_json) AND json_type(payload_json) = 'object')
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_gateway_model_catalog_snapshots_updated
+      ON gateway_model_catalog_snapshots(updated_at, system_account_id, protocol, variant);
+
     CREATE TABLE IF NOT EXISTS page_data_dirty_domains (
       domain TEXT PRIMARY KEY,
       generation INTEGER NOT NULL,
@@ -908,13 +929,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       WHERE deleted_at IS NULL
         AND status IN ('active', 'pending_test')
         AND (status = 'pending_test' OR schedulable = 1)
-        AND type IN ('api_key', 'oauth');
+        AND type IN ('api_key', 'oauth', 'google_oauth');
     CREATE INDEX IF NOT EXISTS idx_accounts_cooldown_retest_candidate_order
       ON accounts(cooldown_until ASC, priority ASC, created_at ASC, id ASC, health_check_endpoint_mode)
       WHERE deleted_at IS NULL
         AND cooldown_until IS NOT NULL
         AND schedulable = 1
-        AND type IN ('api_key', 'oauth')
+        AND type IN ('api_key', 'oauth', 'google_oauth')
         AND status IN ('temporary_unavailable', 'rate_limited');
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
@@ -940,7 +961,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       ON custom_provider_models(provider_code, model)
       WHERE scope = 'global';
     CREATE INDEX IF NOT EXISTS idx_custom_provider_models_catalog_lookup
-      ON custom_provider_models(provider_code, status, scope, system_account_id, model);
+      ON custom_provider_models(provider_code, status, catalog_visible, scope, system_account_id, model);
     CREATE INDEX IF NOT EXISTS idx_provider_default_health_check_models_model
       ON provider_default_health_check_models(provider_code, model, system_account_id);
     CREATE INDEX IF NOT EXISTS idx_provider_system_default_health_check_models_model

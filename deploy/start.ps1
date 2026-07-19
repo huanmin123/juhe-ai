@@ -166,7 +166,7 @@ if ($ownerLockEnabled.Trim().Equals('true', [System.StringComparison]::OrdinalIg
   if ($ownerLockEpoch -ne $manifestEpoch) { throw 'JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH does not match deploy/owner-manifest.json.' }
   $nodeVersion = node -p "require('./package.json').version"
   if ($LASTEXITCODE -ne 0 -or -not $nodeVersion) { throw 'Unable to read Node release version.' }
-  node scripts/validate-owner-manifest.mjs --require-deployment-epoch=$ownerLockEpoch --require-node-version=$nodeVersion --require-schema-version=58 deploy/owner-manifest.json
+  node scripts/validate-owner-manifest.mjs --require-deployment-epoch=$ownerLockEpoch --require-node-version=$nodeVersion --require-schema-version=61 deploy/owner-manifest.json
   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
   $previousNativeErrorPreference = $PSNativeCommandUseErrorActionPreference
   $PSNativeCommandUseErrorActionPreference = $false

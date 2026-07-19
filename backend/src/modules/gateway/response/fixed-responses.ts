@@ -3,10 +3,7 @@ import type { Request, Response } from 'express'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import { gatewayErrorPayload } from './responses.js'
-import { buildOpenAIModelsResponse, isCodexModelsRequest } from '../protocols/openai-v1/route-helpers.js'
-import { buildAnthropicModelsResponse } from '../protocols/anthropic-v1/route-helpers.js'
-import { buildGeminiModelsResponse } from '../protocols/gemini-v1beta/route-helpers.js'
-import { listCachedProviderModelCatalogAsync } from '../runtime/runtime-cache.service.js'
+import { isCodexModelsRequest } from '../protocols/openai-v1/route-helpers.js'
 import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { enqueueUsageRecord } from '../usage/record-queue.service.js'
@@ -21,16 +18,9 @@ import {
   defaultGatewayUsageProviderCode,
   usageSemanticForProfile
 } from '../../providers/drivers/registry.js'
-import {
-  compareProviderModelCatalogItems,
-  type ProviderModelCatalogItem
-} from '../../model-pricing/model-catalog.service.js'
-import {
-  getAuthenticatedModelsResponseCache,
-  setAuthenticatedModelsResponseCache
-} from './models-response-cache.js'
+import { readPublishedModelCatalogResponseAsync } from '../../model-pricing/published-model-catalog.service.js'
 
-interface OpenAIModelsResponseUsageContext {
+export interface OpenAIModelsResponseUsageContext {
   traceId: string
   trafficSource: OpenAIGatewayTrafficSource
   clientIp?: string
@@ -64,6 +54,10 @@ interface SendPublicModelsGatewayResponseInput {
   auditCapture: AuditCaptureContext
   protocol: 'openai' | 'anthropic' | 'gemini'
   startedAt: number
+}
+
+export interface SendAuthenticatedModelsGatewayResponseInput extends SendOpenAIModelsGatewayResponseInput {
+  protocol: 'openai' | 'anthropic' | 'gemini'
 }
 
 export function finalizeGatewayAuthFailureAudit(
@@ -112,6 +106,12 @@ export async function sendPublicModelsGatewayResponse(input: SendPublicModelsGat
   })
 }
 
+export async function sendAuthenticatedModelsGatewayResponse(
+  input: SendAuthenticatedModelsGatewayResponseInput
+): Promise<void> {
+  await sendModelsGatewayResponse(input, input.protocol)
+}
+
 async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput, protocol: 'openai' | 'anthropic' | 'gemini'): Promise<void> {
   const { req, res, auditCapture, usageContext, providerCodes, startedAt } = input
   const normalizedProviderCodes = normalizedProviderCodeList(providerCodes)
@@ -153,41 +153,13 @@ async function sendModelsGatewayResponsePayload(input: {
   providerCodes?: string[]
   startedAt: number
 }): Promise<unknown> {
-  const { req, res, auditCapture, protocol, providerCode, systemAccountId, providerCodes, startedAt } = input
-  const cacheKey = systemAccountId
-    ? {
-        systemAccountId,
-        providerCodes: providerCodes?.length ? providerCodes : [providerCode],
-        protocol,
-        variant: protocol === 'openai' ? (isCodexModelsRequest(req) ? 'codex' as const : 'openai' as const) : 'default' as const
-      }
-    : undefined
-  let responsePayload = cacheKey
-    ? await getAuthenticatedModelsResponseCache(cacheKey)
-    : undefined
-  if (!responsePayload) {
-    const cacheBuildStartedAtMs = Date.now()
-    const catalog = providerCodes?.length
-      ? await listProviderScopedModelCatalog({
-          providerCodes,
-          systemAccountId
-        })
-      : await listCachedProviderModelCatalogAsync({
-          providerCode,
-          systemAccountId
-        })
-    responsePayload = protocol === 'anthropic'
-      ? buildAnthropicModelsResponse(catalog)
-      : protocol === 'gemini'
-        ? buildGeminiModelsResponse(catalog)
-        : buildOpenAIModelsResponse(catalog, req)
-    if (cacheKey) {
-      await setAuthenticatedModelsResponseCache(cacheKey, responsePayload, {
-        buildStartedAtMs: cacheBuildStartedAtMs
-      })
-    }
-  }
-  if (cacheKey) {
+  const { req, res, auditCapture, protocol, systemAccountId, startedAt } = input
+  const responsePayload = await readPublishedModelCatalogResponseAsync({
+    systemAccountId: systemAccountId ?? '',
+    protocol,
+    variant: protocol === 'openai' && isCodexModelsRequest(req) ? 'codex' : 'default'
+  })
+  if (systemAccountId) {
     setAuthenticatedModelsClientCacheHeaders(res)
   }
   res.status(200).json(responsePayload)
@@ -229,22 +201,6 @@ export function setAuthenticatedModelsClientCacheHeaders(res: Response): void {
   res.setHeader('Vary', [...merged.values()].join(', '))
 }
 
-async function listProviderScopedModelCatalog(input: {
-  providerCodes: string[]
-  systemAccountId?: string
-}): Promise<ProviderModelCatalogItem[]> {
-  const providerCodes = normalizedProviderCodeList(input.providerCodes).sort()
-  if (!providerCodes.length) {
-    return []
-  }
-  const catalogGroups = await Promise.all(providerCodes.map((providerCode) =>
-    listCachedProviderModelCatalogAsync({
-      providerCode,
-      systemAccountId: input.systemAccountId
-    })))
-  return mergeModelCatalogItems(catalogGroups.flat())
-}
-
 function normalizedProviderCodeList(providerCodes: readonly string[] | undefined): string[] {
   const codes = new Set<string>()
   for (const item of providerCodes ?? []) {
@@ -254,24 +210,6 @@ function normalizedProviderCodeList(providerCodes: readonly string[] | undefined
     }
   }
   return [...codes]
-}
-
-function mergeModelCatalogItems(items: ProviderModelCatalogItem[]): ProviderModelCatalogItem[] {
-  const merged = new Map<string, ProviderModelCatalogItem>()
-  for (const item of items) {
-    const model = item.model.trim()
-    if (!model) continue
-    const previous = merged.get(model)
-    if (!previous || modelCatalogPriority(item) >= modelCatalogPriority(previous)) {
-      merged.set(model, item)
-    }
-  }
-  return [...merged.values()].sort(compareProviderModelCatalogItems)
-}
-
-function modelCatalogPriority(item: ProviderModelCatalogItem): number {
-  if (item.scope === 'personal') return 3
-  return 1
 }
 
 function modelsUsageProviderCode(providerCodes: readonly string[], fallback: string | undefined): string {

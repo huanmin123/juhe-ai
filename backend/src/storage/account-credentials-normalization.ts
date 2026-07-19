@@ -38,6 +38,21 @@ const oauthAccountCredentialKeys = new Set([
   'response_inspection_rules'
 ])
 
+const googleOAuthAccountCredentialKeys = new Set([
+  'access_token',
+  'refresh_token',
+  'expires_at',
+  'client_id',
+  'client_secret',
+  'quota_project_id',
+  'base_url',
+  'supported_endpoint_modes',
+  'service_tier_override',
+  'reasoning_effort_override',
+  'error_handling_rules',
+  'response_inspection_rules'
+])
+
 const accountCredentialBaseUrlMaxBytes = 2048
 const accountCredentialSecretMaxBytes = 16 * 1024
 const accountCredentialMetadataMaxBytes = 4096
@@ -57,6 +72,9 @@ export function normalizeAccountCredentialsForWrite(
   if (accountType === 'oauth') {
     return normalizeOAuthAccountCredentials(input, endpointModeDefaults)
   }
+  if (accountType === 'google_oauth') {
+    return normalizeGoogleOAuthAccountCredentials(input, endpointModeDefaults)
+  }
   throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
 }
 
@@ -66,6 +84,9 @@ export function requiredAccountCredentialSource(accountType: string, credentials
   }
   if (accountType === 'api_key') {
     return requiredTextInput(accountApiKeys(credentials)[0], 'API Key')
+  }
+  if (accountType === 'google_oauth') {
+    return requiredTextInput(credentials.refresh_token ?? credentials.access_token, 'Google OAuth 凭据')
   }
   return requiredTextInput(credentials.api_key ?? credentials.refresh_token ?? credentials.access_token, '账户凭据')
 }
@@ -81,6 +102,7 @@ function accountCredentialsRecord(value: unknown): Record<string, unknown> {
 function accountCredentialAllowedKeys(accountType: string): ReadonlySet<string> {
   if (accountType === 'api_key') return apiKeyAccountCredentialKeys
   if (accountType === 'oauth') return oauthAccountCredentialKeys
+  if (accountType === 'google_oauth') return googleOAuthAccountCredentialKeys
   throw new Error(`账户类型 ${accountType} 不支持凭据写入`)
 }
 
@@ -196,6 +218,41 @@ function normalizeOAuthAccountCredentials(
   return credentials
 }
 
+function normalizeGoogleOAuthAccountCredentials(
+  input: Record<string, unknown>,
+  endpointModeDefaults: AccountEndpointModeDefaultContext
+): Record<string, unknown> {
+  const accessToken = optionalCredentialText(input.access_token, 'Google Access Token', accountCredentialSecretMaxBytes)
+  const refreshToken = optionalCredentialText(input.refresh_token, 'Google Refresh Token', accountCredentialSecretMaxBytes)
+  if (!accessToken && !refreshToken) {
+    throw new Error('Google OAuth 凭据不能为空')
+  }
+  const clientId = optionalCredentialText(input.client_id, 'Google OAuth Client ID', accountCredentialMetadataMaxBytes)
+  const clientSecret = optionalCredentialText(input.client_secret, 'Google OAuth Client Secret', accountCredentialSecretMaxBytes)
+  if (refreshToken && (!clientId || !clientSecret)) {
+    throw new Error('Google Refresh Token 需要同时配置 Client ID 和 Client Secret')
+  }
+  const credentials: Record<string, unknown> = {
+    base_url: requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes),
+    supported_endpoint_modes: normalizeEndpointModesForWrite(input.supported_endpoint_modes, {
+      ...endpointModeDefaults,
+      accountType: 'google_oauth'
+    })
+  }
+  assertSafeUpstreamBaseUrl(String(credentials.base_url))
+  if (accessToken) credentials.access_token = accessToken
+  if (refreshToken) credentials.refresh_token = refreshToken
+  if (clientId) credentials.client_id = clientId
+  if (clientSecret) credentials.client_secret = clientSecret
+  const expiresAt = optionalCredentialDateTime(input.expires_at, 'Google Access Token 到期时间')
+  if (expiresAt) credentials.expires_at = expiresAt
+  copyOptionalCredentialText(input, credentials, 'quota_project_id', 'Google Quota Project ID', accountCredentialMetadataMaxBytes)
+  normalizeAccountCredentialPolicies(input, credentials)
+  normalizeGptAccountRequestOverrides(input, credentials, endpointModeDefaults)
+  assertAccountCredentialsJsonSize(credentials)
+  return credentials
+}
+
 function normalizeEndpointModesForWrite(value: unknown, context: AccountEndpointModeDefaultContext): string[] {
   const driver = providerAccountCredentialDriverForContext(context)
   if (!driver) {
@@ -221,6 +278,11 @@ function normalizeGptAccountRequestOverrides(
   const hasServiceTier = Object.prototype.hasOwnProperty.call(input, 'service_tier_override')
   const hasReasoningEffort = Object.prototype.hasOwnProperty.call(input, 'reasoning_effort_override')
   if (!hasServiceTier && !hasReasoningEffort) return
+  if (context.providerCode === 'gemini'
+    && Array.isArray(credentials.supported_endpoint_modes)
+    && !credentials.supported_endpoint_modes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
+    return
+  }
   const serviceTier = optionalCredentialToken(
     input.service_tier_override,
     '服务等级覆盖'

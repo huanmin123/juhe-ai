@@ -276,11 +276,11 @@ func TestServiceListOnlyEnablesLastUsedFilterWhenBoundaryIsProvided(t *testing.T
 	}
 }
 
-func TestServiceListReturnsFixedEmptyPageWhenRangeIsNotReady(t *testing.T) {
+func TestServiceListKeepsRegistryRowsWhenRangeIsNotReady(t *testing.T) {
 	store := readyClientIPStatsStore("UTC")
 	store.listPage = port.ManagementClientIPStatsListPage{
 		Rows: []port.ManagementClientIPStatsListRow{
-			{IPHash: "must-not-leak"},
+			{IPHash: "registry_only", AggregateIPKey: "192.0.2.77"},
 		},
 		HasMore:    true,
 		RangeReady: false,
@@ -291,7 +291,10 @@ func TestServiceListReturnsFixedEmptyPageWhenRangeIsNotReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List() error = %v", err)
 	}
-	if result.Items == nil || len(result.Items) != 0 || result.PageUpperBound != 0 || result.HasMore || result.RangeReady {
+	if result.Items == nil || len(result.Items) != 1 ||
+		result.Items[0].IPHash != "registry_only" ||
+		result.Items[0].RangeUsage.RequestCount != 0 ||
+		result.PageUpperBound != 12 || !result.HasMore || result.RangeReady {
 		t.Fatalf("List() not-ready result = %+v", result)
 	}
 	if result.Page != 2 || result.PageSize != 10 {

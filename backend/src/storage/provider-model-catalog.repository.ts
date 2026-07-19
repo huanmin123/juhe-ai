@@ -34,6 +34,7 @@ interface ProviderModelCatalogRow {
   cache_write_1h_usd_per_1m?: number | null
   service_tier_prices_json: string
   long_context_input_token_threshold?: number | null
+  long_context_input_token_threshold_inclusive: number | boolean
   long_context_input_cost_multiplier?: number | null
   long_context_output_cost_multiplier?: number | null
   image_input_usd_per_1m?: number | null
@@ -58,6 +59,7 @@ export interface BuiltInProviderModelRecord extends ProviderModelPricing {
   codexDefaultReasoningLevel?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra'
   codexMultiAgentVersion?: 'v2'
   longContextInputTokenThreshold?: number
+  longContextInputTokenThresholdInclusive?: boolean
   longContextInputCostMultiplier?: number
   longContextOutputCostMultiplier?: number
 }
@@ -78,6 +80,7 @@ export interface ProviderModelPricePatch {
 
 export interface ProviderModelConfigurationPatch extends ProviderModelPricePatch {
   status?: 'active' | 'disabled'
+  catalogVisible?: boolean
   mode?: 'text' | 'image' | 'audio' | null
   supportedApiProtocols?: string[]
   supportedServiceTiers?: string[]
@@ -159,6 +162,7 @@ function configurationPatchAssignments(patch: ProviderModelConfigurationPatch): 
     params.push(normalize(patch[field]))
   }
   addValue('status', 'status')
+  addValue('catalogVisible', 'catalog_visible', (value) => value ? 1 : 0)
   addValue('mode', 'mode', nullableText)
   addValue('supportedApiProtocols', 'supported_api_protocols_json', stringListJSON)
   addValue('supportedServiceTiers', 'supported_service_tiers_json', stringListJSON)
@@ -236,6 +240,7 @@ function columns(): string {
     codex_multi_agent_version, context_window_tokens, max_input_tokens, max_output_tokens, max_tokens,
     input_usd_per_1m, output_usd_per_1m, cached_input_usd_per_1m, cache_write_usd_per_1m,
     cache_write_1h_usd_per_1m, service_tier_prices_json, long_context_input_token_threshold,
+    long_context_input_token_threshold_inclusive,
     long_context_input_cost_multiplier, long_context_output_cost_multiplier, image_input_usd_per_1m,
     image_output_usd_per_1m, audio_input_usd_per_1m, audio_output_usd_per_1m, output_usd_per_image,
     supports_prompt_caching, catalog_visible, source, created_at, updated_at`
@@ -261,6 +266,7 @@ function fromRow(row: ProviderModelCatalogRow): BuiltInProviderModelRecord {
     outputUsdPerImage: number(row.output_usd_per_image), contextWindowTokens: integer(row.context_window_tokens),
     maxInputTokens: integer(row.max_input_tokens), maxOutputTokens: integer(row.max_output_tokens), maxTokens: integer(row.max_tokens),
     longContextInputTokenThreshold: integer(row.long_context_input_token_threshold),
+    longContextInputTokenThresholdInclusive: Boolean(row.long_context_input_token_threshold_inclusive),
     longContextInputCostMultiplier: number(row.long_context_input_cost_multiplier),
     longContextOutputCostMultiplier: number(row.long_context_output_cost_multiplier),
     supportsPromptCaching: Boolean(row.supports_prompt_caching), supportsServiceTier: serviceTiers.length > 0,
