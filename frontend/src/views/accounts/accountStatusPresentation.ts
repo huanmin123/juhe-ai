@@ -23,7 +23,9 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push('下次检查：暂无计划')
   }
 
-  const reason = presentation?.reason ?? observation?.reason ?? effective?.reason
+  const reason = observation?.result === 'failed'
+    ? (observation.reason ?? presentation?.reason ?? effective?.reason)
+    : (presentation?.reason ?? observation?.reason ?? effective?.reason)
   if (reason) lines.push(`原因：${reason}`)
   if (observation?.traceId) lines.push(`traceId：${observation.traceId}`)
   if (presentation?.statusBoundary) lines.push(`预计恢复：${formatDateTime(presentation.statusBoundary.at)}`)
