@@ -4,6 +4,7 @@ import type { Request, Response } from 'express'
 
 import type { ClientCompatibilityCapability } from '../../../domain/types.js'
 import type { GatewayApiKeyRow, OpenAIAccountSecret } from '../../../storage/repositories.js'
+import { errorLogFields, logger } from '../../../shared/logger.js'
 import { responseHeadersToObject, type AuditCaptureContext, createAuditCapture } from '../audit/capture.service.js'
 import { resolveOpenAIGatewayClientStrategy } from '../client-profiles/strategy.js'
 import { prepareOpenAIGatewayDispatchAccounts } from '../dispatch/preparation.js'
@@ -204,7 +205,9 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
           headers: dispatch.response.headers,
           body: body.body,
           firstTokenMs: body.firstByteMs,
-          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures
+          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures,
+          confirmHalfOpenSuccess: dispatch.confirmHalfOpenSuccess,
+          releaseHalfOpenLease: dispatch.releaseHalfOpenLease
         })
         await finish({ success: false, errorCode: input.dispatchErrorCode, errorMessage: input.responseTooLargeMessage })
         return {
@@ -234,11 +237,14 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
           headers: dispatch.response.headers,
           body: body.body,
           firstTokenMs: body.firstByteMs,
-          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures
+          confirmSameAccountApiKeyFailures: dispatch.confirmSameAccountApiKeyFailures,
+          confirmHalfOpenSuccess: dispatch.confirmHalfOpenSuccess,
+          releaseHalfOpenLease: dispatch.releaseHalfOpenLease
         })
       }
     } catch (error) {
       release()
+      await dispatch.releaseHalfOpenLease()
       const message = error instanceof Error ? error.message : String(error)
       auditCapture.completeAttempt(dispatch.auditAttemptId, {
         statusCode: dispatch.response.status,
@@ -308,36 +314,70 @@ function createFinish(input: {
   body: Buffer
   firstTokenMs?: number
   confirmSameAccountApiKeyFailures: () => Promise<void>
+  confirmHalfOpenSuccess: () => Promise<boolean>
+  releaseHalfOpenLease: () => Promise<boolean>
 }): (finish: HybridAuxiliaryDispatchFinishInput) => Promise<void> {
   let finished = false
   return async (finish) => {
     if (finished) return
     finished = true
-    input.auditCapture.completeAttempt(input.auditAttemptId, {
-      statusCode: input.statusCode,
-      responseHeaders: input.headers,
-      responseBody: input.body,
-      success: finish.success,
-      errorPhase: finish.success ? undefined : 'upstream_response',
-      errorCode: finish.errorCode,
-      errorMessage: finish.errorMessage
-    })
-    if (finish.success) {
-      await input.confirmSameAccountApiKeyFailures()
+    let leaseSettled = false
+    let finishError: unknown
+    try {
+      input.auditCapture.completeAttempt(input.auditAttemptId, {
+        statusCode: input.statusCode,
+        responseHeaders: input.headers,
+        responseBody: input.body,
+        success: finish.success,
+        errorPhase: finish.success ? undefined : 'upstream_response',
+        errorCode: finish.errorCode,
+        errorMessage: finish.errorMessage
+      })
+      if (finish.success) {
+        await input.confirmHalfOpenSuccess()
+        leaseSettled = true
+        await input.confirmSameAccountApiKeyFailures()
+      } else {
+        await input.releaseHalfOpenLease()
+        leaseSettled = true
+      }
+    } catch (error) {
+      finishError = error
+    } finally {
+      if (!leaseSettled) {
+        try {
+          await input.releaseHalfOpenLease()
+          leaseSettled = true
+        } catch (error) {
+          finishError ??= error
+        }
+      }
+      try {
+        input.auditCapture.finalize({
+          outcome: finish.success ? 'success' : 'upstream_failed',
+          success: finish.success,
+          statusCode: input.statusCode,
+          responseHeaders: input.headers,
+          responseBody: input.body,
+          responsePartType: finish.success ? 'gateway_response' : 'gateway_error',
+          errorPhase: finish.success ? undefined : 'upstream_response',
+          errorCode: finish.errorCode,
+          errorMessage: finish.errorMessage,
+          accountId: input.account.id,
+          firstTokenMs: input.firstTokenMs
+        })
+      } catch (error) {
+        finishError ??= error
+      }
     }
-    input.auditCapture.finalize({
-      outcome: finish.success ? 'success' : 'upstream_failed',
-      success: finish.success,
-      statusCode: input.statusCode,
-      responseHeaders: input.headers,
-      responseBody: input.body,
-      responsePartType: finish.success ? 'gateway_response' : 'gateway_error',
-      errorPhase: finish.success ? undefined : 'upstream_response',
-      errorCode: finish.errorCode,
-      errorMessage: finish.errorMessage,
-      accountId: input.account.id,
-      firstTokenMs: input.firstTokenMs
-    })
+    if (finishError) {
+      logger.warn(errorLogFields(finishError, {
+        event: 'hybrid_auxiliary_finish_side_effect_failed',
+        accountId: input.account.id,
+        auditAttemptId: input.auditAttemptId,
+        success: finish.success
+      }), '混合辅助上游结果已收尾，但部分运行态/审计副作用失败')
+    }
   }
 }
 

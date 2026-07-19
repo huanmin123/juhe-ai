@@ -46,6 +46,7 @@ import {
 import type { ClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
 import {
   handleFailedUpstreamResponse,
+  handleOpaqueFailedUpstreamResponse,
   handleUpstreamRequestError,
   type PendingAccountApiKeyFailure
 } from '../response/failure-dispatch.js'
@@ -444,7 +445,7 @@ export async function fetchFirstAvailableUpstream(
                   upstreamUrl,
                   status: response.status
                 }
-                if (!interpretUpstreamResponseSemantics || response.ok) {
+                if (response.ok) {
                   await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
                     systemAccountId: usageContext.systemAccountId,
                     apiKeyId: usageContext.apiKeyId,
@@ -467,7 +468,7 @@ export async function fetchFirstAvailableUpstream(
                   }
                 }
 
-                const failedResponseResult = await handleFailedUpstreamResponse({
+                const failedResponseInput = {
                   req,
                   usageContext,
                   auditCapture,
@@ -490,7 +491,10 @@ export async function fetchFirstAvailableUpstream(
                     sameAccountRetryPolicy,
                     requestSameAccountRetryBudget
                   )
-                })
+                }
+                const failedResponseResult = interpretUpstreamResponseSemantics
+                  ? await handleFailedUpstreamResponse(failedResponseInput)
+                  : await handleOpaqueFailedUpstreamResponse(failedResponseInput)
                 lastAttempt = failedResponseResult.lastAttempt
                 failedAccountIds.add(account.id)
                 recoverableFailedAccountIds.delete(account.id)
@@ -509,7 +513,11 @@ export async function fetchFirstAvailableUpstream(
                 }
                 if (
                   halfOpenLease?.generation === undefined
-                  && shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                  && (
+                    failedResponseResult.tryNextApiKeyForRequest
+                      ? shouldTryAnotherAccountApiKeyForRequest(account, accountApiKeyAttemptCount, auditCapture)
+                      : shouldRetryAnotherAccountApiKey(account, failedResponseResult.keyScopedFailure, accountApiKeyAttemptCount, auditCapture)
+                  )
                 ) {
                   if (failedResponseResult.pendingApiKeyFailure) {
                     pendingApiKeyFailures.push(failedResponseResult.pendingApiKeyFailure)
@@ -1001,6 +1009,40 @@ function shouldRetryAnotherAccountApiKey(
     metadata: {
       accountId: account.id,
       accountName: account.name,
+      selectedApiKeyIndex: account.selectedApiKeyIndex,
+      accountApiKeyAttemptCount,
+      maxAccountApiKeyAttemptsPerAccountPerRequest
+    }
+  })
+  return true
+}
+
+function shouldTryAnotherAccountApiKeyForRequest(
+  account: UpstreamAccount,
+  accountApiKeyAttemptCount: number,
+  auditCapture: AuditCaptureContext
+): boolean {
+  if (!account.selectedApiKeyFingerprint) {
+    return false
+  }
+  if ((account.apiKeys?.length ?? 0) <= accountApiKeyAttemptCount) {
+    return false
+  }
+  if (accountApiKeyAttemptCount >= maxAccountApiKeyAttemptsPerAccountPerRequest) {
+    return false
+  }
+  getRequestLogger().warn({
+    event: 'gateway_account_api_key_opaque_request_failover_scheduled',
+    accountId: account.id,
+    accountName: account.name,
+    selectedApiKeyIndex: account.selectedApiKeyIndex,
+    accountApiKeyAttemptCount,
+    maxAccountApiKeyAttemptsPerAccountPerRequest
+  }, '通用上游失败，本次请求尝试同账户下一个 Key')
+  auditCapture.addGatewayMetadata({
+    label: 'account_api_key_opaque_request_failover_scheduled',
+    metadata: {
+      accountId: account.id,
       selectedApiKeyIndex: account.selectedApiKeyIndex,
       accountApiKeyAttemptCount,
       maxAccountApiKeyAttemptsPerAccountPerRequest
