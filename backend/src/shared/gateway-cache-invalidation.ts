@@ -1,7 +1,6 @@
 import { errorLogFields, logger } from './logger.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, runAfterDatabaseCommit } from '../storage/database.js'
-import { scheduleProcessFatalError } from './process-fatal.js'
 import { createRuntimeStateStore } from './runtime-state-store.js'
 import { clearLocalApiKeyLookupCache } from '../storage/repository-lookups.js'
 
@@ -207,9 +206,6 @@ function publishGatewayCacheInvalidationToRuntimeState(
       reason,
       apiKeyId: fields.apiKeyId
     }), '发布 Redis runtime state 网关缓存失效版本失败')
-    if (runtimeConfig.runtimeMode === 'performance') {
-      scheduleProcessFatalError(error)
-    }
   })
 }
 

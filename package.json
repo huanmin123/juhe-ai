@@ -12,6 +12,7 @@
     "package:release:mac": "bash ./scripts/package-release.sh",
     "package:release:linux": "bash ./scripts/package-release.sh",
     "test:macos-operations": "pwsh -File ./scripts/regression/validate-macos-operations.ps1",
+    "test:redis-role-operations": "pwsh -File ./scripts/regression/validate-redis-role-operations.ps1",
     "test:release-source-preflight": "pwsh -NoProfile -File ./scripts/regression/validate-release-source-preflight.ps1",
     "test:owner-manifest": "node scripts/validate-owner-manifest.test.mjs",
     "test:owner-lock": "node --test scripts/run-with-owner-lock.test.mjs",

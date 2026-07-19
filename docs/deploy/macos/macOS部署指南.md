@@ -154,6 +154,19 @@ pgrep -af 'node|juhe-ai' | grep 'juhe-ai-lite' || true
 
 主进程会看护 DB service 和 worker；不要把 `worker.js` 或 `db-service.js` 单独注册为 launchd 服务。升级后必须确认只有当前 release 的主进程监听 `3000`，没有旧 release 路径下的 node 子进程残留。持续 SQLite `database is locked`、PG 连接数异常或管理接口忽快忽慢时，先查旧子进程残留和端口监听，再查数据库。
 
+### 4.1 高性能模式 Redis 三角色
+
+macOS 裸机高性能模式固定使用三个物理进程：
+
+| 范围 | cache | state | queue |
+| --- | --- | --- | --- |
+| main | `127.0.0.1:6379`，无 AOF/RDB，`allkeys-lru` | `127.0.0.1:6380`，无 AOF/RDB，`noeviction` | `127.0.0.1:6381`，AOF everysec、无 RDB、`noeviction` |
+| temporary | `127.0.0.1:16379` | `127.0.0.1:16380` | `127.0.0.1:16381` |
+
+使用 [macOS 运维脚本](operations/README.md) 中的 `install-redis-role-services.sh` 和 `verify-redis-role-isolation.sh`。安装器默认 dry-run；apply 只能在临时服务接管、已留存 plist/config 哈希与恢复副本后执行。temporary 的三个 PID、PostgreSQL 数据库和 namespace 必须都与 main 不同，不能复制 main env 后只换 namespace。
+
+queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空六条 Stream。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
+
 ## 5. HTTPS 和端口边界
 
 macOS 生产建议宿主机 Caddy 监听 `80/443`，反向代理到 `127.0.0.1:3000`。完整 Caddyfile 见 [Caddy 自动 HTTPS 部署指南](../https/Caddy自动HTTPS部署指南.md)。
