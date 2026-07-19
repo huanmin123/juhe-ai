@@ -6,27 +6,27 @@ import (
 )
 
 type Announcement struct {
-	ID            string
-	Title         string
-	Content       string
-	Level         string
-	Status        string
-	CreatedBy     string
-	CreatedByName string
-	UpdatedBy     *string
-	UpdatedByName *string
-	PublishedAt   *time.Time
-	ReadAt        *time.Time
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ID            string     `json:"id"`
+	Title         string     `json:"title"`
+	Content       string     `json:"content"`
+	Level         string     `json:"level"`
+	Status        string     `json:"status"`
+	CreatedBy     string     `json:"createdBy,omitempty"`
+	CreatedByName string     `json:"createdByName,omitempty"`
+	UpdatedBy     *string    `json:"updatedBy,omitempty"`
+	UpdatedByName *string    `json:"updatedByName,omitempty"`
+	PublishedAt   *time.Time `json:"publishedAt,omitempty"`
+	ReadAt        *time.Time `json:"readAt,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
 type AnnouncementPage struct {
-	Items          []Announcement
-	Page           int
-	PageSize       int
-	PageUpperBound int
-	HasMore        bool
+	Items          []Announcement `json:"items"`
+	Page           int            `json:"page"`
+	PageSize       int            `json:"pageSize"`
+	PageUpperBound int            `json:"total"`
+	HasMore        bool           `json:"hasMore"`
 }
 
 type AnnouncementCreateInput struct {

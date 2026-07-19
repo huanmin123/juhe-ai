@@ -162,6 +162,8 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
 	ManagementPublicAPILogsHandler                    http.Handler
+	ManagementAnnouncementPublicListHandler           http.Handler
+	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
 }
@@ -393,6 +395,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
 				opts.ManagementPublicAPILogsHandler == nil &&
+				opts.ManagementAnnouncementPublicListHandler == nil &&
+				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
 				opts.ManagementMyStatsUsageWindowHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
@@ -1033,6 +1037,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs", opts.ManagementPublicAPILogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/public-api-logs/{id}", opts.ManagementPublicAPILogsHandler.ServeHTTP)
 			}
+			if opts.ManagementAnnouncementPublicListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/public", opts.ManagementAnnouncementPublicListHandler.ServeHTTP)
+			}
+			if opts.ManagementAnnouncementPublicReadHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/announcements/public/read", opts.ManagementAnnouncementPublicReadHandler.ServeHTTP)
+			}
 			if opts.ManagementStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
 			}
@@ -1206,6 +1216,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
 		opts.ManagementPublicAPILogsHandler != nil ||
+		opts.ManagementAnnouncementPublicListHandler != nil ||
+		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
 		opts.ManagementMyStatsUsageWindowHandler != nil
 }
