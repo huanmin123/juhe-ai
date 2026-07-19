@@ -92,6 +92,7 @@ func TestManagementExternalIntegrationSourceBuiltInResetHandlerChecksBoundaryAnd
 		{name: "ordinary user", auth: &managementauth.Context{SystemAccountID: "sys_user", Role: "user"}, wantStatus: http.StatusForbidden, wantMessage: "需要管理员权限"},
 		{name: "nil service", auth: &managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}, nilService: true, wantStatus: http.StatusInternalServerError, wantMessage: "服务器内部错误"},
 		{name: "not found", auth: &managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}, serviceErr: managementexternalintegrationsources.ErrBuiltInResetNotFound, wantStatus: http.StatusBadRequest, wantMessage: "内置测试 Token 不存在", wantCalls: 1},
+		{name: "token hash conflict", auth: &managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}, serviceErr: managementexternalintegrationsources.ErrTokenExists, wantStatus: http.StatusBadRequest, wantMessage: "来源系统 token 已存在，请重新生成", wantCalls: 1},
 		{name: "internal", auth: &managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}, serviceErr: errors.New("database secret leaked"), wantStatus: http.StatusInternalServerError, wantMessage: "服务器内部错误", forbidText: "database secret leaked", wantCalls: 1},
 	}
 	for _, test := range tests {

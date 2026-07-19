@@ -47,11 +47,14 @@ func newManagementExternalIntegrationSourceBuiltInResetHandler(
 
 		result, err := service.Reset(r.Context())
 		if err != nil {
-			if errors.Is(err, managementexternalintegrationsources.ErrBuiltInResetNotFound) {
+			switch {
+			case errors.Is(err, managementexternalintegrationsources.ErrBuiltInResetNotFound):
 				writeMessageError(w, http.StatusBadRequest, "内置测试 Token 不存在")
-				return
+			case errors.Is(err, managementexternalintegrationsources.ErrTokenExists):
+				writeMessageError(w, http.StatusBadRequest, managementexternalintegrationsources.ErrTokenExists.Error())
+			default:
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			}
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
 
