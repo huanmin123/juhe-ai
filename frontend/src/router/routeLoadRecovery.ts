@@ -1,6 +1,7 @@
 import type { Router } from 'vue-router'
 
 import { message } from '@/lib/antd'
+import { classifyFrontendBuild, loadRemoteFrontendBuildId } from './frontendBuildInfo'
 
 const routeAssetReloadStorageKey = 'juhe-ai:route-asset-reload'
 const routeAssetReloadCooldownMs = 30_000
@@ -55,7 +56,7 @@ export function recoverRouteAssetLoadError(error: unknown, router: Router, targe
     message.error('页面资源加载失败，请手动刷新页面后重试')
     showRouteAssetLoadOverlay({
       title: '页面资源加载失败',
-      description: '系统资源可能仍在发布或缓存未同步，请刷新页面后重试。',
+      description: '自动恢复未成功，请手动刷新页面后重试。',
       actionLabel: '刷新页面',
       onAction: () => window.location.reload()
     })
@@ -65,18 +66,33 @@ export function recoverRouteAssetLoadError(error: unknown, router: Router, targe
   routeAssetReloadScheduled = true
   markRouteAssetReload(reloadPath)
   const reloadHref = router.resolve(reloadPath).href
-  console.warn('页面资源加载失败，正在刷新前端入口。', error)
-  message.warning('检测到系统前端已更新，正在刷新页面')
+  void showRouteAssetRecoveryAndReload(reloadHref, error).catch((recoveryError) => {
+    console.error('页面资源自动恢复失败，正在直接重新加载。', recoveryError)
+    window.location.assign(reloadHref)
+  })
+  return true
+}
+
+async function showRouteAssetRecoveryAndReload(reloadHref: string, originalError: unknown): Promise<void> {
+  const status = await classifyFrontendBuild(
+    __JUHE_AI_FRONTEND_BUILD_ID__,
+    () => loadRemoteFrontendBuildId()
+  )
+  const updated = status === 'changed'
+
+  console.warn('页面资源加载失败，正在刷新前端入口。', originalError)
+  message.warning(updated ? '系统前端已更新，正在刷新页面' : '页面资源加载失败，正在重新加载页面')
   showRouteAssetLoadOverlay({
-    title: '系统已更新',
-    description: '正在刷新页面以加载最新版本，请稍候。',
-    actionLabel: '立即刷新',
+    title: updated ? '系统已更新' : '页面资源加载失败',
+    description: updated
+      ? '正在刷新页面以加载最新版本，请稍候。'
+      : '正在重新加载页面，请稍候。',
+    actionLabel: updated ? '立即刷新' : '立即重新加载',
     onAction: () => window.location.assign(reloadHref)
   })
   window.setTimeout(() => {
     window.location.assign(reloadHref)
   }, routeAssetReloadDelayMs)
-  return true
 }
 
 function showRouteAssetLoadOverlay(options: {

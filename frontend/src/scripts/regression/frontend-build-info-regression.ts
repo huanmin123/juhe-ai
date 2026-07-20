@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 
-import { classifyFrontendBuild } from '../../router/frontendBuildInfo'
+import { classifyFrontendBuild, loadRemoteFrontendBuildId } from '../../router/frontendBuildInfo'
 import { normalizeFrontendBuildId } from '../../shared/frontendBuildId'
 
 const currentBuildId = '0123456789abcdef0123456789abcdef01234567'
@@ -53,5 +53,76 @@ assert.match(viteConfigSource, /fileName:\s*['"]build-info\.json['"]/, 'Vite 必
 assert.match(powerShellReleaseSource, /VITE_JUHE_AI_BUILD_ID\s*=\s*\$releaseSourceCommit/, 'PowerShell 发布必须注入冻结提交')
 assert.match(shellReleaseSource, /VITE_JUHE_AI_BUILD_ID=["']?\$RELEASE_SOURCE_COMMIT/, 'POSIX 发布必须注入冻结提交')
 assert.match(serverSource, /build-info\.json/, '后端静态服务必须显式设置 Build ID 清单缓存规则')
+
+let requestedUrl = ''
+let requestedCache: RequestCache | undefined
+const loadedBuildId = await loadRemoteFrontendBuildId({
+  baseUrl: '/__aisys__/',
+  now: () => 123456,
+  timeoutMs: 1500,
+  fetcher: async (input, init) => {
+    requestedUrl = String(input)
+    requestedCache = init?.cache
+    return new Response(JSON.stringify({ buildId: changedBuildId }), { status: 200 })
+  }
+})
+assert.equal(loadedBuildId, changedBuildId, '合法静态清单必须返回规范化 Build ID')
+assert.equal(requestedUrl, '/__aisys__/build-info.json?t=123456', '静态清单必须带时间参数绕过中间缓存')
+assert.equal(requestedCache, 'no-store', '静态清单请求必须禁用浏览器缓存')
+
+assert.equal(
+  await loadRemoteFrontendBuildId({
+    baseUrl: '/__aisys__/',
+    fetcher: async () => new Response(JSON.stringify({ buildId: 'invalid' }), { status: 200 })
+  }),
+  undefined,
+  '非法静态清单必须受控回落'
+)
+assert.equal(
+  await loadRemoteFrontendBuildId({
+    baseUrl: '/__aisys__/',
+    fetcher: async () => {
+      throw new Error('connection refused')
+    }
+  }),
+  undefined,
+  '静态清单请求失败必须受控回落'
+)
+assert.equal(
+  await loadRemoteFrontendBuildId({
+    baseUrl: '/__aisys__/',
+    fetcher: async () => new Response('', { status: 503 })
+  }),
+  undefined,
+  '静态清单非成功响应必须受控回落'
+)
+
+let timeoutSignalObserved = false
+let timeoutAbortObserved = false
+assert.equal(
+  await loadRemoteFrontendBuildId({
+    baseUrl: '/__aisys__/',
+    timeoutMs: 5,
+    fetcher: async (_input, init) => new Promise<Response>((resolve) => {
+      const signal = init?.signal
+      timeoutSignalObserved = signal instanceof AbortSignal
+      const keepAliveTimer = setTimeout(() => {
+        resolve(new Response(JSON.stringify({ buildId: changedBuildId }), { status: 200 }))
+      }, 100)
+      if (!signal) {
+        return
+      }
+      signal.addEventListener('abort', () => {
+        clearTimeout(keepAliveTimer)
+        timeoutAbortObserved = true
+        resolve(new Response('', { status: 503 }))
+      }, { once: true })
+    })
+  }),
+  undefined,
+  '静态清单超时必须受控回落'
+)
+assert.equal(timeoutSignalObserved, true, '静态清单请求必须携带超时 signal')
+assert.equal(timeoutAbortObserved, true, '静态清单请求必须在超时后中止')
 
 console.log('前端 Build ID 分类回归通过：变化、相同、非法和未知状态符合契约')
