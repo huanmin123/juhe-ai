@@ -13,7 +13,6 @@ import type {
 } from './background-stats-writer.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
-import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
 import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 import type { PageDataChangeEvent, PageDataDomain } from '../page-data/page-data-change.service.js'
@@ -91,7 +90,6 @@ export interface BackgroundWorkerIpcQueuesRuntime {
   operationLogs: BackgroundWorkerIpcQueueRuntime
   publicApiLogs: BackgroundWorkerIpcQueueRuntime
   recordMaintenance: BackgroundWorkerIpcQueueRuntime
-  runtimeLogLines: BackgroundWorkerIpcQueueRuntime
   statusRequests: BackgroundWorkerIpcQueueRuntime
   processEventLoopRequests: BackgroundWorkerIpcQueueRuntime
   processEventLoopResponses: BackgroundWorkerIpcQueueRuntime
@@ -157,7 +155,6 @@ export type BackgroundWorkerMessage =
   | { type: 'background_worker_account_test_tasks'; taskIds: string[] }
   | { type: 'background_worker_account_test_cancel'; taskId: string }
   | { type: 'background_worker_account_health_check_trigger'; accountId: string; reason: AccountHealthCheckTriggerReason }
-  | ({ type: 'background_worker_runtime_log_line'; line: string } & RuntimeLogLineIndexOptions)
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
   | { type: 'background_worker_ingest_status_request'; requestId: string }

@@ -89,7 +89,6 @@ interface IpcQueueSpec {
     | 'operationLogs'
     | 'publicApiLogs'
     | 'recordMaintenance'
-    | 'runtimeLogLines'
     | 'statusRequests'
     | 'processEventLoopRequests'
     | 'processEventLoopResponses'
@@ -116,7 +115,6 @@ const ipcQueueSpecs: IpcQueueSpec[] = [
   { key: 'operationLogs', label: '操作日志 IPC', snapshotKey: 'operationLogs' },
   { key: 'publicApiLogs', label: '公开接口日志 IPC', snapshotKey: 'publicApiLogs' },
   { key: 'recordMaintenance', label: '数据维护 IPC', snapshotKey: 'recordMaintenance' },
-  { key: 'runtimeLogLines', label: '运行日志 IPC', snapshotKey: 'runtimeLogLines' },
   { key: 'statusRequests', label: '后台快照请求 IPC', snapshotKey: 'statusRequests' },
   { key: 'processEventLoopRequests', label: '事件循环采样请求 IPC', snapshotKey: 'processEventLoopRequests' },
   { key: 'processEventLoopResponses', label: '事件循环采样响应 IPC', snapshotKey: 'processEventLoopResponses' },

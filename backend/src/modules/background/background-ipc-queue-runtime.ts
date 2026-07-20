@@ -13,7 +13,6 @@ export function clonePendingQueueRuntime(input: BackgroundWorkerIpcQueuesRuntime
     operationLogs: { ...input.operationLogs },
     publicApiLogs: { ...input.publicApiLogs },
     recordMaintenance: { ...input.recordMaintenance },
-    runtimeLogLines: { ...input.runtimeLogLines },
     statusRequests: { ...input.statusRequests },
     processEventLoopRequests: { ...input.processEventLoopRequests },
     processEventLoopResponses: { ...input.processEventLoopResponses },
@@ -37,8 +36,6 @@ export function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueu
     case 'background_worker_account_test_tasks':
     case 'background_worker_account_test_cancel':
       return 'other'
-    case 'background_worker_runtime_log_line':
-      return 'runtimeLogLines'
     case 'background_worker_status_request':
       return 'statusRequests'
     case 'background_worker_process_event_loop_request':
@@ -69,7 +66,6 @@ export function emptyIpcQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
     operationLogs: emptyQueueRuntime(),
     publicApiLogs: emptyQueueRuntime(),
     recordMaintenance: emptyQueueRuntime(),
-    runtimeLogLines: emptyQueueRuntime(),
     statusRequests: emptyQueueRuntime(),
     processEventLoopRequests: emptyQueueRuntime(),
     processEventLoopResponses: emptyQueueRuntime(),
@@ -85,7 +81,6 @@ export function ipcQueueKeys(): IpcQueueKey[] {
     'operationLogs',
     'publicApiLogs',
     'recordMaintenance',
-    'runtimeLogLines',
     'statusRequests',
     'processEventLoopRequests',
     'processEventLoopResponses',

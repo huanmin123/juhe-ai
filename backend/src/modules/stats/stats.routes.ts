@@ -27,7 +27,6 @@ import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.
 import { getOperationLogRedisStreamRuntime } from '../operation-logs/operation-log-queue.service.js'
 import { getPublicApiLogRedisStreamRuntime } from '../public-api-logs/public-api-log-queue.service.js'
 import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/record-maintenance-queue.service.js'
-import { getRuntimeLogRedisStreamRuntime } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
 
 export const statsRouter = Router()
@@ -351,7 +350,6 @@ async function redisStreamRuntimeQueueRows(): Promise<BackgroundJobRuntimeRow[]>
     redisStreamRuntime('Redis Stream 操作日志', getOperationLogRedisStreamRuntime),
     redisStreamRuntime('Redis Stream 公开接口日志', getPublicApiLogRedisStreamRuntime),
     redisStreamRuntime('Redis Stream 数据维护', getRecordMaintenanceRedisStreamRuntime),
-    redisStreamRuntime('Redis Stream 运行日志索引', getRuntimeLogRedisStreamRuntime)
   ])
   return runtimes.filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
 }

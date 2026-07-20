@@ -38,15 +38,7 @@ import {
   startRecordMaintenanceRedisStreamConsumer,
   stopRecordMaintenanceRedisStreamConsumer
 } from './modules/record-maintenance/record-maintenance-queue.service.js'
-import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
-import {
-  enqueueRuntimeLogLineLocal,
-  flushRuntimeLogIndexQueueForShutdownAsync,
-  getRuntimeLogIndexRuntime,
-  installRuntimeLogIndexQueueShutdownHooks,
-  startRuntimeLogRedisStreamConsumer,
-  stopRuntimeLogRedisStreamConsumer
-} from './modules/runtime-logs/runtime-log-index-queue.service.js'
+import { getRuntimeLogFileImportRuntime, startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
   enqueueUsageRecordsLocal,
   flushUsageRecordQueueForShutdown,
@@ -83,7 +75,6 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_account_test_tasks'; taskIds: unknown[] }
   | { type: 'background_worker_account_test_cancel'; taskId: unknown }
   | { type: 'background_worker_account_health_check_trigger'; accountId: unknown; reason: unknown }
-  | { type: 'background_worker_runtime_log_line'; line: unknown; sourceKey?: unknown; logFile?: unknown; logOffset?: unknown; lineNumber?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
   | { type: 'background_worker_dataset_write_request'; requestId: unknown; operation: unknown }
   | { type: 'background_worker_stats_write_request'; requestId: unknown; operation: unknown }
@@ -100,9 +91,6 @@ if (isIngestWorker()) {
   startLogMaintenance()
   installUsageRecordQueueShutdownHooks()
   installOperationLogQueueShutdownHooks()
-  if (runtimeConfig.databaseDriver === 'sqlite') {
-    installRuntimeLogIndexQueueShutdownHooks()
-  }
   installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
@@ -110,7 +98,6 @@ if (isIngestWorker()) {
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
   startRecordMaintenanceRedisStreamConsumer()
-  startRuntimeLogRedisStreamConsumer()
   startAuditLogRedisStreamConsumer()
   startRuntimeLogFileImport()
 } else if (isOpsWorker()) {
@@ -173,11 +160,6 @@ process.on('message', (message: unknown) => {
         })
       }
       break
-    case 'background_worker_runtime_log_line':
-      if (typeof message.line === 'string') {
-        enqueueRuntimeLogLineLocal(message.line, runtimeLogLineOptionsFromMessage(message))
-      }
-      break
     case 'background_worker_status_request':
       if (typeof message.requestId === 'string') {
         sendWorkerMessage({
@@ -230,7 +212,7 @@ logger.info({
 
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
   const auditRuntime = getAuditLogQueueRuntime()
-  const runtimeLogRuntime = getRuntimeLogIndexRuntime()
+  const runtimeLogRuntime = getRuntimeLogFileImportRuntime()
   return {
     pid: process.pid,
     ready: true,
@@ -421,13 +403,11 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
     await stopOperationLogRedisStreamConsumer()
     await stopPublicApiLogRedisStreamConsumer()
     await stopRecordMaintenanceRedisStreamConsumer()
-    await stopRuntimeLogRedisStreamConsumer()
     await stopAuditLogRedisStreamConsumer()
     await flushUsageRecordQueueForShutdown()
     await closeUsageRecordWriterPool()
     flushOperationLogQueueForShutdown()
     flushPublicApiLogQueueForShutdown()
-    await flushRuntimeLogIndexQueueForShutdownAsync()
     await flushRecordMaintenanceQueueForShutdown()
     await flushAuditLogQueueForShutdown()
     return
@@ -460,7 +440,6 @@ function isIngestWorkerMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
     || message.type === 'background_worker_dataset_write_request'
-    || message.type === 'background_worker_runtime_log_line'
 }
 
 function assertLocalQueueIpcAllowed(message: WorkerIncomingMessage): void {
@@ -475,7 +454,6 @@ function isLocalQueueIpcMessage(message: WorkerIncomingMessage): boolean {
     || message.type === 'background_worker_operation_logs'
     || message.type === 'background_worker_public_api_logs'
     || message.type === 'background_worker_record_maintenance'
-    || message.type === 'background_worker_runtime_log_line'
 }
 
 function isOpsWorkerMessage(message: WorkerIncomingMessage): boolean {
@@ -490,15 +468,6 @@ function workerStartedMessage(): string {
   if (isStatsWorker()) return '后台 stats-worker 已启动'
   if (isOpsWorker()) return '后台 ops-worker 已启动'
   return '后台 worker 已启动'
-}
-
-function runtimeLogLineOptionsFromMessage(message: Extract<WorkerIncomingMessage, { type: 'background_worker_runtime_log_line' }>): Parameters<typeof enqueueRuntimeLogLineLocal>[1] {
-  return {
-    sourceKey: typeof message.sourceKey === 'string' ? message.sourceKey : undefined,
-    logFile: typeof message.logFile === 'string' ? message.logFile : undefined,
-    logOffset: typeof message.logOffset === 'number' ? message.logOffset : undefined,
-    lineNumber: typeof message.lineNumber === 'number' ? message.lineNumber : undefined
-  }
 }
 
 function isWorkerIncomingMessage(message: unknown): message is WorkerIncomingMessage {

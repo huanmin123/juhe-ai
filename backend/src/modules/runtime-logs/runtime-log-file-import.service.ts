@@ -10,12 +10,13 @@ import {
   getRuntimeLogFileCursorAsync,
   getRuntimeLogFileCursorByIdentityAsync,
   upsertRuntimeLogFileCursorAsync,
+  runtimeLogIndexRetentionDays,
   type RuntimeLogFileCursor,
   type RuntimeLogFileCursorInput,
   type RuntimeLogIndexInput
 } from '../../storage/runtime-logs.repository.js'
 import { setRotatedLogCleanupProtectionPredicate } from '../../shared/logger.js'
-import { parseRuntimeLogLineForIndex } from './runtime-log-index-queue.service.js'
+import { parseRuntimeLogLineForIndex } from './runtime-log-line-parser.js'
 
 let importStarted = false
 let pollTimer: NodeJS.Timeout | undefined
@@ -23,7 +24,6 @@ let activePollPromise: Promise<void> | undefined
 
 const runtimeLogTailPollIntervalMs = 1000
 const runtimeLogTailMaxBytesPerFile = 1024 * 1024
-const runtimeLogTailMaxOversizedLineScanBytes = 1024 * 1024
 const runtimeLogTailMaxLinesPerFile = 5000
 const runtimeLogImportBatchSize = 500
 const runtimeLogDiscoveryMaxFiles = 2048
@@ -42,6 +42,33 @@ let runtimeLogDiscoveryDirectory: string | undefined
 let runtimeLogDiscoveryHandle: Dir | undefined
 let runtimeLogDiscoveryLastReadCount = 0
 let runtimeLogDiscoveryPendingEntry: Dirent | undefined
+
+export interface RuntimeLogFileImportRuntime {
+  queueLength: number
+  queueBytes: number
+  retentionDays: number
+  discoveredFileCount: number
+  pendingFileCount: number
+  pendingBytes: number
+  oldestPendingMtime?: string
+  currentFile?: string
+  currentOffset: number
+  lastReadAt?: string
+  lastCommitAt?: string
+  lastError?: string
+  protectedRotatedFileCount: number
+}
+
+const runtimeLogFileImportRuntime: RuntimeLogFileImportRuntime = {
+  queueLength: 0,
+  queueBytes: 0,
+  retentionDays: runtimeLogIndexRetentionDays,
+  discoveredFileCount: 0,
+  pendingFileCount: 0,
+  pendingBytes: 0,
+  currentOffset: 0,
+  protectedRotatedFileCount: 0
+}
 
 export interface ActiveRuntimeLogFile {
   path: string
@@ -96,9 +123,17 @@ function pollRuntimeLogFiles(): Promise<void> {
 async function runRuntimeLogFilePoll(): Promise<void> {
   try {
     const files = await discoverRuntimeLogFiles()
+    runtimeLogFileImportRuntime.discoveredFileCount = files.length
+    runtimeLogFileImportRuntime.pendingFileCount = 0
+    runtimeLogFileImportRuntime.pendingBytes = 0
+    runtimeLogFileImportRuntime.oldestPendingMtime = undefined
+    runtimeLogFileImportRuntime.protectedRotatedFileCount = 0
     for (const file of files) await importRuntimeLogFileDelta(file)
+    runtimeLogFileImportRuntime.lastError = undefined
   } catch (error) {
-    process.stderr.write(`[runtime-log-index] 日志目录发现失败：${error instanceof Error ? error.message : String(error)}\n`)
+    const message = error instanceof Error ? error.message : String(error)
+    runtimeLogFileImportRuntime.lastError = message
+    process.stderr.write(`[runtime-log-index] 日志目录发现失败：${message}\n`)
   }
 }
 
@@ -182,8 +217,13 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
     const identity = runtimeLogFileIdentity(stats)
     const cursor = await resolveRuntimeLogFileCursor(file, stats, identity, dependencies)
     const startOffset = cursor.cursorOffset
+    observeRuntimeLogFile(file, stats, cursor)
     if (stats.size <= startOffset) {
       await persistCursor({ ...cursor, fileIdentity: identity, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: undefined }, dependencies)
+      runtimeLogFileImportRuntime.currentFile = file.path
+      runtimeLogFileImportRuntime.currentOffset = startOffset
+      runtimeLogFileImportRuntime.lastReadAt = nowIso()
+      runtimeLogFileImportRuntime.lastCommitAt = nowIso()
       return
     }
 
@@ -199,23 +239,20 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
       stats
     })
     if (result.flushFailed) {
+      runtimeLogFileImportRuntime.lastError = '运行日志索引写入失败，游标已保留在最近一次成功写入位置，等待下一轮重试'
       await persistCursor({ ...cursor, fileIdentity: identity, cursorOffset: result.flushedOffset, lineNumber: result.flushedLineNumber, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: '运行日志索引写入失败，游标已保留在最近一次成功写入位置，等待下一轮重试' }, dependencies)
       return
     }
-    if (result.nextOffset === startOffset && endOffset < stats.size) {
-      const skippedLine = await skipOversizedRuntimeLogFileLine(file.path, { searchOffset: endOffset, fileSize: stats.size, initialLineNumber: cursor.lineNumber, maxScanBytes: runtimeLogTailMaxOversizedLineScanBytes })
-      if (skippedLine) {
-        await persistCursor({ ...cursor, fileIdentity: identity, cursorOffset: skippedLine.nextOffset, lineNumber: skippedLine.nextLineNumber, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: '单行日志超过运行日志增量读取窗口，已跳过完整超长行后继续追尾' }, dependencies)
-      } else {
-        await persistCursor({ ...cursor, fileIdentity: identity, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: '单行日志超过运行日志增量读取窗口，等待完整换行后继续追尾' }, dependencies)
-      }
-      return
-    }
-
     await persistCursor({ ...cursor, fileIdentity: identity, cursorOffset: result.nextOffset, lineNumber: result.nextLineNumber, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: undefined }, dependencies)
+    runtimeLogFileImportRuntime.currentFile = file.path
+    runtimeLogFileImportRuntime.currentOffset = result.nextOffset
+    runtimeLogFileImportRuntime.lastReadAt = nowIso()
+    runtimeLogFileImportRuntime.lastCommitAt = nowIso()
   } catch (error) {
     if (isMissingFileError(error)) return
-    process.stderr.write(`[runtime-log-index] 增量读取日志文件失败 ${file.path}：${error instanceof Error ? error.message : String(error)}\n`)
+    const message = error instanceof Error ? error.message : String(error)
+    runtimeLogFileImportRuntime.lastError = message
+    process.stderr.write(`[runtime-log-index] 增量读取日志文件失败 ${file.path}：${message}\n`)
   }
 }
 
@@ -285,12 +322,16 @@ async function readRuntimeLogFileLines(file: ActiveRuntimeLogFile, identity: str
   cursor: RuntimeLogFileCursor
   stats: Stats
 }): Promise<{ nextOffset: number; nextLineNumber: number; flushedOffset: number; flushedLineNumber: number; flushFailed: boolean }> {
-  const stream = createReadStream(file.path, { start: input.startOffset, end: Math.max(input.startOffset, input.endOffset - 1) })
+  const stream = createReadStream(file.path, {
+    start: input.startOffset,
+    end: Math.max(input.startOffset, input.stats.size - 1)
+  })
   let nextOffset = input.startOffset
   let nextLineNumber = input.initialLineNumber
   let flushedOffset = input.startOffset
   let flushedLineNumber = input.initialLineNumber
-  let pendingLine: Buffer<ArrayBufferLike> = Buffer.alloc(0)
+  let pendingLineChunks: Buffer<ArrayBufferLike>[] = []
+  let pendingLineBytes = 0
   let batch: RuntimeLogIndexInput[] = []
   let completeLines = 0
 
@@ -315,13 +356,24 @@ async function readRuntimeLogFileLines(file: ActiveRuntimeLogFile, identity: str
     while (cursor < buffer.length) {
       const newlineIndex = buffer.indexOf(10, cursor)
       if (newlineIndex < 0) {
-        pendingLine = concatLineBuffer(pendingLine, buffer.subarray(cursor))
+        const fragment = buffer.subarray(cursor)
+        if (fragment.length > 0) {
+          pendingLineChunks.push(fragment)
+          pendingLineBytes += fragment.length
+        }
         break
       }
-      pendingLine = concatLineBuffer(pendingLine, buffer.subarray(cursor, newlineIndex))
+      const fragment = buffer.subarray(cursor, newlineIndex)
+      if (fragment.length > 0) {
+        pendingLineChunks.push(fragment)
+        pendingLineBytes += fragment.length
+      }
+      const pendingLine = pendingLineChunks.length === 1
+        ? pendingLineChunks[0]
+        : Buffer.concat(pendingLineChunks, pendingLineBytes)
       const lineStartOffset = nextOffset
       const lineNumber = nextLineNumber + 1
-      nextOffset += pendingLine.length + 1
+      nextOffset += pendingLineBytes + 1
       nextLineNumber = lineNumber
       completeLines += 1
       const parsed = parseRuntimeLogLineForIndex(trimTrailingCarriageReturn(pendingLine).toString('utf8'), {
@@ -333,14 +385,15 @@ async function readRuntimeLogFileLines(file: ActiveRuntimeLogFile, identity: str
         lineNumber
       })
       if (parsed) batch.push(parsed)
-      pendingLine = Buffer.alloc(0)
+      pendingLineChunks = []
+      pendingLineBytes = 0
       cursor = newlineIndex + 1
       if (completeLines % Math.max(1, input.batchSize) === 0) {
         if (!(await flushBatch())) return { nextOffset, nextLineNumber, flushedOffset, flushedLineNumber, flushFailed: true }
       }
-      if (completeLines >= runtimeLogTailMaxLinesPerFile) break
+      if (completeLines >= runtimeLogTailMaxLinesPerFile || nextOffset >= input.endOffset) break
     }
-    if (completeLines >= runtimeLogTailMaxLinesPerFile) break
+    if (completeLines >= runtimeLogTailMaxLinesPerFile || nextOffset >= input.endOffset) break
   }
   if (completeLines > 0 && (nextOffset !== flushedOffset || batch.length > 0)) {
     if (!(await flushBatch())) return { nextOffset, nextLineNumber, flushedOffset, flushedLineNumber, flushFailed: true }
@@ -352,18 +405,16 @@ async function persistCursor(input: RuntimeLogFileCursorInput, dependencies: Run
   await (dependencies.upsertCursor ?? upsertRuntimeLogFileCursorAsync)(input)
 }
 
-async function skipOversizedRuntimeLogFileLine(logPath: string, input: { searchOffset: number; fileSize: number; initialLineNumber: number; maxScanBytes: number }): Promise<{ nextOffset: number; nextLineNumber: number } | undefined> {
-  if (input.searchOffset >= input.fileSize) return undefined
-  const endOffset = Math.min(input.fileSize, input.searchOffset + Math.max(1, input.maxScanBytes))
-  const stream = createReadStream(logPath, { start: input.searchOffset, end: endOffset - 1 })
-  let chunkStartOffset = input.searchOffset
-  for await (const chunk of stream) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-    const newlineIndex = buffer.indexOf(10)
-    if (newlineIndex >= 0) return { nextOffset: chunkStartOffset + newlineIndex + 1, nextLineNumber: input.initialLineNumber + 1 }
-    chunkStartOffset += buffer.length
+function observeRuntimeLogFile(file: ActiveRuntimeLogFile, stats: Stats, cursor: RuntimeLogFileCursor): void {
+  const pendingBytes = Math.max(0, stats.size - cursor.cursorOffset)
+  if (pendingBytes <= 0) return
+  runtimeLogFileImportRuntime.pendingFileCount += 1
+  runtimeLogFileImportRuntime.pendingBytes += pendingBytes
+  if (isRotatedRuntimeLogFile(file)) runtimeLogFileImportRuntime.protectedRotatedFileCount += 1
+  const mtime = new Date(stats.mtimeMs).toISOString()
+  if (!runtimeLogFileImportRuntime.oldestPendingMtime || mtime < runtimeLogFileImportRuntime.oldestPendingMtime) {
+    runtimeLogFileImportRuntime.oldestPendingMtime = mtime
   }
-  return undefined
 }
 
 function runtimeLogFileIdentity(stats: Stats): string {
@@ -372,12 +423,6 @@ function runtimeLogFileIdentity(stats: Stats): string {
 
 function isMissingFileError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && (error as { code?: unknown }).code === 'ENOENT'
-}
-
-function concatLineBuffer(left: Buffer<ArrayBufferLike>, right: Buffer<ArrayBufferLike>): Buffer<ArrayBufferLike> {
-  if (right.length === 0) return left
-  if (left.length === 0) return right
-  return Buffer.concat([left, right], left.length + right.length)
 }
 
 function trimTrailingCarriageReturn(buffer: Buffer<ArrayBufferLike>): Buffer<ArrayBufferLike> {
@@ -407,6 +452,10 @@ export async function resetRuntimeLogFileDiscoveryForTest(): Promise<void> {
 
 export function getRuntimeLogDiscoveryReadCountForTest(): number {
   return runtimeLogDiscoveryLastReadCount
+}
+
+export function getRuntimeLogFileImportRuntime(): RuntimeLogFileImportRuntime {
+  return { ...runtimeLogFileImportRuntime }
 }
 
 export async function importRuntimeLogFileDeltaForTest(file: ActiveRuntimeLogFile, dependencies?: RuntimeLogFileImportTestDependencies): Promise<void> {

@@ -21,16 +21,15 @@ class FakeRedisClient implements RedisStreamDrainCommandClient {
   }
 }
 
-assert.equal(redisStreamDrainContracts.length, 6, '排空工具必须覆盖六条可靠队列流')
-assert.equal(new Set(redisStreamDrainContracts.map((item) => item.streamKey)).size, 6, '六条流 key 不得重复')
-assert.equal(new Set(redisStreamDrainContracts.map((item) => item.groupName)).size, 6, '六个 consumer group 不得重复')
+assert.equal(redisStreamDrainContracts.length, 5, '排空工具必须覆盖五条可靠队列流')
+assert.equal(new Set(redisStreamDrainContracts.map((item) => item.streamKey)).size, 5, '五条流 key 不得重复')
+assert.equal(new Set(redisStreamDrainContracts.map((item) => item.groupName)).size, 5, '五个 consumer group 不得重复')
 
 for (const [relativePath, contractName] of [
   ['../../modules/gateway/usage/record-queue.service.ts', 'usageRecords'],
   ['../../modules/audit-logs/audit-log-queue.service.ts', 'auditLogs'],
   ['../../modules/operation-logs/operation-log-queue.service.ts', 'operationLogs'],
   ['../../modules/public-api-logs/public-api-log-queue.service.ts', 'publicApiLogs'],
-  ['../../modules/runtime-logs/runtime-log-index-queue.service.ts', 'runtimeLogIndex'],
   ['../../modules/record-maintenance/record-maintenance-queue.service.ts', 'recordMaintenance']
 ] as const) {
   const source = readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8')
@@ -54,7 +53,7 @@ for (const contract of redisStreamDrainContracts) {
 drainedReplies.set('INFO commandstats', '# Commandstats\r\ncmdstat_xadd:calls=42,usec=10,usec_per_call=0.24\r\n')
 const drainedClient = new FakeRedisClient(drainedReplies)
 const drained = await inspectRedisStreamDrain(drainedClient)
-assert.equal(drained.drained, true, '六条流都为空时应允许完成排空')
+assert.equal(drained.drained, true, '五条流都为空时应允许完成排空')
 assert.equal(drained.xaddCalls, 42, '应记录 XADD 调用总数用于稳定窗口判断')
 
 const activeContract = redisStreamDrainContracts[0]

@@ -206,7 +206,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 - `JUHE_AI_RUNTIME_MODE=performance` 必须搭配 `JUHE_AI_CACHE_DRIVER=redis`、`JUHE_AI_RUNTIME_STATE_DRIVER=redis` 和 `JUHE_AI_QUEUE_DRIVER=redis_stream`；不能用 `memory` driver 作为高性能模式兜底。
 - `SharedJsonCache` 在 Redis cache driver 下必须读写 Redis；同文件的 `createAppCache` 只能作为本地 L1，缓存 miss、清理版本、跨进程复用和失效事实必须能回到 Redis、PostgreSQL 或已落表窗口。
 - 登录限流、验证码、账号并发槽、网关缓存失效版本等运行态必须通过 `RuntimeStateStore` 或等价 Redis state 路径保存；进程内 Map / LRU 只能服务 standalone 或单进程内观测，不能决定跨进程是否允许登录、是否占用并发、是否已失效。
-- 使用记录、审计日志、操作日志、公开接口日志、数据维护和运行日志索引这类记录型队列，在 performance 模式必须写入 Redis Streams，由 ingest-worker consumer 成功落库后 `XACK` 并 `XDEL` 已处理条目；入队失败不能回退到本地 memory 队列后继续声明已接收。
+- 使用记录、审计日志、操作日志和数据维护这类记录型队列，在 performance 模式必须写入 Redis Streams，由 ingest-worker consumer 成功落库后 `XACK` 并 `XDEL` 已处理条目；普通运行日志不属于 Redis Stream，业务进程只追加 JSONL 文件，由 ingest-worker file importer 按 cursor 索引；入队失败不能回退到本地 memory 队列后继续声明已接收。
 - 新增缓存、运行态或队列实现时，必须同步更新 `pnpm --filter juhe-ai-backend test:performance-redis-boundary` 的分类或断言；未分类的进程内缓存视为潜在跨进程事实源风险。
 
 ## 大文件与频繁读取底线
@@ -439,7 +439,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 - 所有定时和批处理任务都必须在独立 background worker 进程内调度和执行，不能在 Web/API 主进程里用 `setInterval`、cron 或调度框架直接执行任务函数。
 - 调度框架只负责 worker 进程内的注册、不可重入、错误隔离和触发时机；worker 不能通过 IPC 回到主进程执行统计、清理、刷新或批量落库。
-- 主进程和 DB service 可以把请求链路产生的待处理记录投递给 worker，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求；server / DB service 角色下使用记录、操作日志、审计记录和运行日志索引都只能进入 worker IPC 队列，不能因为 worker 未就绪而回退到本地 SQLite 队列。
+- 主进程和 DB service 可以把请求链路产生的待处理记录投递给 worker，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求；server / DB service 角色下使用记录、操作日志和审计记录只能进入 worker IPC 队列，普通运行日志不进入 IPC，也不能因为 worker 未就绪回退到本地 SQLite 逐行索引队列。
 - SQLite writer boundary strict 模式是常规运行时默认状态：非 owner 进程打开非所属 SQLite 文件时只允许 `query_only` 读取，生产环境不能关闭；只有 `src/scripts/` / `dist/scripts/` 下离线维护、回归和造数脚本按停机 / 离线边界默认关闭 strict，不得作为常驻运行路径。
 - worker 本地队列 flush 失败时必须保持原队列等待重试，不能用 `pending = [...batch, ...pending]` 或全量 reduce 字节数的方式把失败 batch 拼回队头；成功写入后再从队头移除已提交 batch，避免数据库异常期间按积压量复制数组阻塞 worker 事件循环。
 - DB service 负责系统管理 API 与数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、操作日志落库、审计、运行日志索引、数据保留、代理检测和 OAuth 后台刷新。server 角色下 DB service 未就绪、队列满、IPC 超时或内部系统 API 不可用时，请求链路返回可读错误并等待 supervisor 重启，不能在主进程同步执行 DB service 操作，也不能恢复主进程管理 CRUD。业务库写入必须通过 DB service 短事务同步提交；DB service 父进程 IPC 请求按优先级 drain，管理面、网关请求链路、账号状态、API Key、授权和会话等用户可感知写入默认高优先级，过期清理、dirty 标记、后台维护和全量刷新游标等定时任务写入低优先级，且每个 IPC 请求后必须让出事件循环，避免维护写入让后台管理体感卡顿。统计数据集域记录型写入优先投递对应 writer 队列，由单写者消费端使用短事务、优先级和 blocked 重试控制 SQLite 写锁等待。`busy_timeout` 只是最后一道短等待保护，不能作为多 writer 抢锁的常态方案。

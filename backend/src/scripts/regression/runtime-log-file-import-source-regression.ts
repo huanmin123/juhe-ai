@@ -26,9 +26,8 @@ type RuntimeLogSourceRow = {
   line_number: number | null
 }
 
-const [databaseModule, runtimeLogIndexQueue, runtimeLogFileImport, runtimeLogsRepository] = await Promise.all([
+const [databaseModule, runtimeLogFileImport, runtimeLogsRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../modules/runtime-logs/runtime-log-index-queue.service.js'),
   import('../../modules/runtime-logs/runtime-log-file-import.service.js'),
   import('../../storage/runtime-logs.repository.js')
 ])
@@ -36,70 +35,6 @@ const [databaseModule, runtimeLogIndexQueue, runtimeLogFileImport, runtimeLogsRe
 try {
   const database = databaseModule.getDatasetDatabase()
   const now = new Date().toISOString()
-  const repeatedLine = JSON.stringify({
-    time: now,
-    level: 30,
-    event: 'duplicate_runtime_log_source_event',
-    msg: '相同内容的两条运行日志'
-  })
-
-  runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(repeatedLine, {
-    sourceKey: 'test-source-a:0',
-    logFile: 'source-a.log',
-    logOffset: 0,
-    lineNumber: 1
-  })
-  runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(repeatedLine, {
-    sourceKey: 'test-source-b:10',
-    logFile: 'source-b.log',
-    logOffset: 10,
-    lineNumber: 2
-  })
-  runtimeLogIndexQueue.flushAllRuntimeLogIndexQueue()
-
-  const duplicateRows = database
-    .prepare(`
-      SELECT log_file, log_offset, line_number
-      FROM runtime_logs
-      WHERE event = ?
-      ORDER BY log_file ASC
-    `)
-    .all('duplicate_runtime_log_source_event') as RuntimeLogSourceRow[]
-  assert.equal(duplicateRows.length, 2, '相同原始日志只要来源键不同就都应写入索引')
-  assert.deepEqual(
-    duplicateRows.map((row) => [row.log_file, row.log_offset, row.line_number]),
-    [
-      ['source-a.log', 0, 1],
-      ['source-b.log', 10, 2]
-    ],
-    '运行日志索引应保留来源文件、offset 和行号'
-  )
-
-  const dedupeLine = JSON.stringify({
-    time: now,
-    level: 30,
-    event: 'same_runtime_log_source_event',
-    msg: '同一来源的 live 与 file tail 不应重复'
-  })
-  const dedupeSourceKey = 'same-source.log:0'
-  runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(dedupeLine, {
-    sourceKey: dedupeSourceKey,
-    logFile: 'same-source.log',
-    logOffset: 0,
-    lineNumber: 1
-  })
-  runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(dedupeLine, {
-    sourceKey: dedupeSourceKey,
-    logFile: 'same-source.log',
-    logOffset: 0,
-    lineNumber: 1
-  })
-  runtimeLogIndexQueue.flushAllRuntimeLogIndexQueue()
-  const sameSourceCount = database
-    .prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event = ?')
-    .get('same_runtime_log_source_event') as { count: number }
-  assert.equal(Number(sameSourceCount.count ?? 0), 1, 'live 与 file tail 传入同一来源键时应保持幂等')
-
   const activeFileNames = runtimeLogFileImport.activeRuntimeLogFilesForTest()
     .map((file) => basename(file.path))
   assert(activeFileNames.includes('juhe-ai.db-service.log'), '运行日志文件导入应覆盖 DB service 当前日志')
@@ -112,7 +47,7 @@ try {
     time: now,
     level: 30,
     event: 'oversized_runtime_log_line',
-    msg: '这条超长单行应被跳过',
+    msg: '这条超长单行必须完整写入',
     body: 'x'.repeat(1024 * 1024 + 128)
   })
   const normalLine = JSON.stringify({
@@ -125,15 +60,16 @@ try {
 
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
   const expectedNormalOffset = Buffer.byteLength(`${longLine}\n`, 'utf8')
-  const cursorAfterSkip = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
-  assert.equal(cursorAfterSkip?.cursorOffset, expectedNormalOffset, '超长单行只应在找到完整换行后推进到下一行开头')
-  assert.equal(cursorAfterSkip?.lineNumber, 1, '跳过完整超长单行后行号应推进一行')
-  assert.match(cursorAfterSkip?.lastErrorMessage ?? '', /超长行/, '跳过超长单行应留下可排查的游标错误信息')
+  const cursorAfterOversized = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
+  assert.equal(cursorAfterOversized?.cursorOffset, expectedNormalOffset, '字节预算落在超长行中间时必须继续读到换行并提交完整行')
+  assert.equal(cursorAfterOversized?.lineNumber, 1, '完整写入超长行后行号应推进一行')
+  assert.equal(cursorAfterOversized?.lastErrorMessage, undefined, '完整写入超长行不应留下跳过错误')
 
   const oversizedCount = database
-    .prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event = ?')
-    .get('oversized_runtime_log_line') as { count: number }
-  assert.equal(Number(oversizedCount.count ?? 0), 0, '超长单行被跳过时不应把半行写入索引')
+    .prepare('SELECT COUNT(*) AS count, MAX(LENGTH(raw_json)) AS raw_json_length FROM runtime_logs WHERE event = ?')
+    .get('oversized_runtime_log_line') as { count: number; raw_json_length: number }
+  assert.equal(Number(oversizedCount.count ?? 0), 1, '超长单行必须完整写入索引')
+  assert.equal(Number(oversizedCount.raw_json_length ?? 0), longLine.length, '超过 1MB 的 raw_json 不得截断')
 
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
   const cursorAfterNormal = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
@@ -166,7 +102,7 @@ try {
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
   const cursorAfterUnfinishedOversizedLine = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
   assert.equal(cursorAfterUnfinishedOversizedLine?.cursorOffset, 0, '未换行超长日志行不应推进主游标')
-  assert.match(cursorAfterUnfinishedOversizedLine?.lastErrorMessage ?? '', /等待完整换行/, '未换行超长日志行应留下等待换行的游标提示')
+  assert.equal(cursorAfterUnfinishedOversizedLine?.lastErrorMessage, undefined, '未换行超长日志行等待下轮继续读取时不应伪造跳过错误')
 
   writeFileSync(logPath, `${longLine}\n${normalLine}\n`)
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
@@ -208,7 +144,7 @@ try {
     .get('runtime_log_cursor_flush_failure') as { count: number }
   assert.equal(Number(recoveredFlushCount.count ?? 0), 1, '运行日志索引恢复后应重读并写入之前失败的日志行且保持幂等')
 
-  console.log('运行日志文件导入来源回归通过：重复来源、DB service tail 和超长单行游标均符合预期')
+  console.log('运行日志文件导入来源回归通过：DB service tail、超长单行完整写入和游标恢复均符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

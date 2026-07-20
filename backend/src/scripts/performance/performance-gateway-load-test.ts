@@ -123,7 +123,6 @@ interface RedisStreamsSnapshot {
   operationLogs: RedisStreamSnapshot
   publicApiLogs: RedisStreamSnapshot
   recordMaintenance: RedisStreamSnapshot
-  runtimeLogs: RedisStreamSnapshot
   error?: string
 }
 
@@ -147,7 +146,6 @@ interface RedisStreamsDeltaSnapshot extends RedisStreamDeltaSnapshot {
   operationLogs: RedisStreamDeltaSnapshot
   publicApiLogs: RedisStreamDeltaSnapshot
   recordMaintenance: RedisStreamDeltaSnapshot
-  runtimeLogs: RedisStreamDeltaSnapshot
 }
 
 interface RedisSampleClient {
@@ -240,8 +238,6 @@ const publicApiLogRedisStreamKey = redisNamespacedKey('juhe-ai:queue:public-api-
 const publicApiLogRedisStreamGroup = redisNamespacedGroup('juhe-ai:public-api-log-writers')
 const recordMaintenanceRedisStreamKey = redisNamespacedKey('juhe-ai:queue:record-maintenance')
 const recordMaintenanceRedisStreamGroup = redisNamespacedGroup('juhe-ai:record-maintenance-writers')
-const runtimeLogRedisStreamKey = redisNamespacedKey('juhe-ai:queue:runtime-log-index')
-const runtimeLogRedisStreamGroup = redisNamespacedGroup('juhe-ai:runtime-log-index-writers')
 const redisAccountConcurrencySampleScript = `
 local now_ms = tonumber(ARGV[1])
 local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', now_ms)
@@ -1082,32 +1078,29 @@ async function sampleRedisStreams(): Promise<RedisStreamsSnapshot> {
       operationLogs: emptyRedisStreamSnapshot(error),
       publicApiLogs: emptyRedisStreamSnapshot(error),
       recordMaintenance: emptyRedisStreamSnapshot(error),
-      runtimeLogs: emptyRedisStreamSnapshot(error),
       error
     }
   }
   let client: RedisSampleClient | undefined
   try {
     client = await createRedisSampleClient(url)
-    const [usageRecords, auditLogs, operationLogs, publicApiLogs, recordMaintenance, runtimeLogs] = await Promise.all([
+    const [usageRecords, auditLogs, operationLogs, publicApiLogs, recordMaintenance] = await Promise.all([
       sampleRedisStream(client, usageRecordRedisStreamKey, usageRecordRedisStreamGroup),
       sampleRedisStream(client, auditLogRedisStreamKey, auditLogRedisStreamGroup),
       sampleRedisStream(client, operationLogRedisStreamKey, operationLogRedisStreamGroup),
       sampleRedisStream(client, publicApiLogRedisStreamKey, publicApiLogRedisStreamGroup),
-      sampleRedisStream(client, recordMaintenanceRedisStreamKey, recordMaintenanceRedisStreamGroup),
-      sampleRedisStream(client, runtimeLogRedisStreamKey, runtimeLogRedisStreamGroup)
+      sampleRedisStream(client, recordMaintenanceRedisStreamKey, recordMaintenanceRedisStreamGroup)
     ])
     return {
       sampledAt: new Date().toISOString(),
-      pendingCount: usageRecords.pendingCount + auditLogs.pendingCount + operationLogs.pendingCount + publicApiLogs.pendingCount + recordMaintenance.pendingCount + runtimeLogs.pendingCount,
-      backlogCount: usageRecords.backlogCount + auditLogs.backlogCount + operationLogs.backlogCount + publicApiLogs.backlogCount + recordMaintenance.backlogCount + runtimeLogs.backlogCount,
+      pendingCount: usageRecords.pendingCount + auditLogs.pendingCount + operationLogs.pendingCount + publicApiLogs.pendingCount + recordMaintenance.pendingCount,
+      backlogCount: usageRecords.backlogCount + auditLogs.backlogCount + operationLogs.backlogCount + publicApiLogs.backlogCount + recordMaintenance.backlogCount,
       usageRecords,
       auditLogs,
       operationLogs,
       publicApiLogs,
       recordMaintenance,
-      runtimeLogs,
-      error: usageRecords.error ?? auditLogs.error ?? operationLogs.error ?? publicApiLogs.error ?? recordMaintenance.error ?? runtimeLogs.error
+      error: usageRecords.error ?? auditLogs.error ?? operationLogs.error ?? publicApiLogs.error ?? recordMaintenance.error
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
@@ -1120,7 +1113,6 @@ async function sampleRedisStreams(): Promise<RedisStreamsSnapshot> {
       operationLogs: emptyRedisStreamSnapshot(message),
       publicApiLogs: emptyRedisStreamSnapshot(message),
       recordMaintenance: emptyRedisStreamSnapshot(message),
-      runtimeLogs: emptyRedisStreamSnapshot(message),
       error: message
     }
   } finally {
@@ -1551,14 +1543,13 @@ function printReport(report: Record<string, unknown> & { pass: boolean; violatio
   const operationStream = redisAfter?.operationLogs
   const publicApiStream = redisAfter?.publicApiLogs
   const recordMaintenanceStream = redisAfter?.recordMaintenance
-  const runtimeLogStream = redisAfter?.runtimeLogs
   console.log('\n高性能网关压测汇总')
   console.log(`- pass=${report.pass}`)
   console.log(`- requests started=${requests.started} total=${requests.total} success=${requests.success} inFlight=${requests.inFlight} peakInFlight=${requests.peakInFlight} qps=${requests.successQps} p95=${(requests.latencyMs as LatencySummary).p95}ms errorRate=${requests.errorRate}`)
   console.log(`- upstream total=${upstream?.totalRequests ?? 0} peakActive=${upstream?.peakActiveRequests ?? 0} stream=${upstream?.streamRequests ?? 0} peakActiveStream=${upstream?.peakActiveStreamRequests ?? 0} completedStream=${upstream?.completedStreamRequests ?? 0} abortedStream=${upstream?.abortedStreamRequests ?? 0}`)
   console.log(`- storage delta=${JSON.stringify((storage.delta as Record<string, unknown>) ?? {})}`)
   console.log(`- postgres deadlocksDelta=${postgres.deadlocksDelta} maxLockWaiters=${postgres.maxLockWaiters} maxXactAge=${postgres.maxXactAgeSeconds}s maxActiveQuery=${postgres.maxActiveQuerySeconds}s`)
-  console.log(`- redis usageStream length=${usageStream?.length ?? 0} pending=${usageStream?.pendingCount ?? 0} lag=${usageStream?.lagCount ?? 0}; auditStream length=${auditStream?.length ?? 0} pending=${auditStream?.pendingCount ?? 0} lag=${auditStream?.lagCount ?? 0}; operationStream length=${operationStream?.length ?? 0} pending=${operationStream?.pendingCount ?? 0} lag=${operationStream?.lagCount ?? 0}; publicApiStream length=${publicApiStream?.length ?? 0} pending=${publicApiStream?.pendingCount ?? 0} lag=${publicApiStream?.lagCount ?? 0}; recordMaintenanceStream length=${recordMaintenanceStream?.length ?? 0} pending=${recordMaintenanceStream?.pendingCount ?? 0} lag=${recordMaintenanceStream?.lagCount ?? 0}; runtimeLogStream length=${runtimeLogStream?.length ?? 0} pending=${runtimeLogStream?.pendingCount ?? 0} lag=${runtimeLogStream?.lagCount ?? 0}; totalPending=${redisAfter?.pendingCount ?? 0} totalBacklog=${redisAfter?.backlogCount ?? 0}`)
+  console.log(`- redis usageStream length=${usageStream?.length ?? 0} pending=${usageStream?.pendingCount ?? 0} lag=${usageStream?.lagCount ?? 0}; auditStream length=${auditStream?.length ?? 0} pending=${auditStream?.pendingCount ?? 0} lag=${auditStream?.lagCount ?? 0}; operationStream length=${operationStream?.length ?? 0} pending=${operationStream?.pendingCount ?? 0} lag=${operationStream?.lagCount ?? 0}; publicApiStream length=${publicApiStream?.length ?? 0} pending=${publicApiStream?.pendingCount ?? 0} lag=${publicApiStream?.lagCount ?? 0}; recordMaintenanceStream length=${recordMaintenanceStream?.length ?? 0} pending=${recordMaintenanceStream?.pendingCount ?? 0} lag=${recordMaintenanceStream?.lagCount ?? 0}; totalPending=${redisAfter?.pendingCount ?? 0} totalBacklog=${redisAfter?.backlogCount ?? 0}`)
   console.log(`- redis delta positivePending=${redisDelta?.positivePendingDelta ?? 0} positiveBacklog=${redisDelta?.positiveBacklogDelta ?? 0} netBacklogDelta=${redisDelta?.backlogDelta ?? 0}`)
   console.log(`- accountConcurrency maxRedisSlots=${redisAccountConcurrency?.maxTotal ?? 0}/${redisAccountConcurrency?.capacity ?? 0} assert=${redisAccountConcurrency?.assertEnabled === true}`)
   if (report.violations.length > 0) {
@@ -1572,8 +1563,7 @@ function redisStreamsDelta(before: RedisStreamsSnapshot, after: RedisStreamsSnap
   const operationLogs = redisStreamDelta(before.operationLogs, after.operationLogs)
   const publicApiLogs = redisStreamDelta(before.publicApiLogs, after.publicApiLogs)
   const recordMaintenance = redisStreamDelta(before.recordMaintenance, after.recordMaintenance)
-  const runtimeLogs = redisStreamDelta(before.runtimeLogs, after.runtimeLogs)
-  const streams = [usageRecords, auditLogs, operationLogs, publicApiLogs, recordMaintenance, runtimeLogs]
+  const streams = [usageRecords, auditLogs, operationLogs, publicApiLogs, recordMaintenance]
   return {
     pendingDelta: after.pendingCount - before.pendingCount,
     backlogDelta: after.backlogCount - before.backlogCount,
@@ -1583,8 +1573,7 @@ function redisStreamsDelta(before: RedisStreamsSnapshot, after: RedisStreamsSnap
     auditLogs,
     operationLogs,
     publicApiLogs,
-    recordMaintenance,
-    runtimeLogs
+    recordMaintenance
   }
 }
 

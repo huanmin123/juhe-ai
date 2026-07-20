@@ -123,7 +123,6 @@ export const runtimeLogIndexRetentionMaxDays = 90
 const runtimeLogKeywordDefaultWindowHours = 6
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
-const runtimeLogMaxRawJsonChars = 128 * 1024
 
 export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
   if (inputs.length === 0) return
@@ -702,11 +701,6 @@ function escapeSqlLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
-function truncateRuntimeLogRawJson(value: string): string {
-  if (value.length <= runtimeLogMaxRawJsonChars) return value
-  return `${value.slice(0, runtimeLogMaxRawJsonChars)}...[truncated]`
-}
-
 function runtimeLogListSelectColumns(alias: string): string {
   return [
     'id',
@@ -792,7 +786,7 @@ function normalizeRuntimeLogIndexInput(input: RuntimeLogIndexInput): NormalizedR
     event: input.event,
     message: input.message,
     errorMessage: input.errorMessage,
-    rawJson: truncateRuntimeLogRawJson(input.rawJson),
+    rawJson: input.rawJson,
     createdAt: normalizeRuntimeLogTimestamp(input.createdAt) ?? fallbackNowIso
   }
 }
