@@ -12,7 +12,18 @@ const storage = {
 }
 assert.equal(markRouteAssetReload('/accounts', { storage, now: () => 1_000 }), true)
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 30_999 }), false)
+assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 31_000 }), false)
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 31_001 }), true)
+assert.equal(
+  shouldReloadRouteAsset('/accounts', {
+    storage: {
+      getItem: () => { throw new Error('storage read disabled') },
+      setItem: () => undefined
+    }
+  }),
+  false,
+  '无法读取冷却记录时必须禁止自动刷新'
+)
 assert.equal(
   markRouteAssetReload('/accounts', {
     storage: {
