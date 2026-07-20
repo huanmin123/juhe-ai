@@ -40,7 +40,6 @@ import {
 } from './modules/record-maintenance/record-maintenance-queue.service.js'
 import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
-  enqueueRuntimeLogLine,
   enqueueRuntimeLogLineLocal,
   flushRuntimeLogIndexQueueForShutdownAsync,
   getRuntimeLogIndexRuntime,
@@ -73,7 +72,6 @@ import {
 import { datasetDatabasePath, getDatasetDatabase, getUsageCatalogDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
-import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { isAccountHealthCheckTriggerReason } from './modules/accounts/account-health-check-trigger.js'
 
 type WorkerIncomingMessage =
@@ -108,9 +106,6 @@ if (isIngestWorker()) {
   installAuditLogQueueShutdownHooks()
   installPublicApiLogQueueShutdownHooks()
   installRecordMaintenanceQueueShutdownHooks()
-  setRuntimeLogLineSink(runtimeConfig.queueDriver === 'redis_stream'
-    ? (line, options) => enqueueRuntimeLogLine(line, options)
-    : (line, options) => enqueueRuntimeLogLineLocal(line, options))
   startUsageRecordRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()

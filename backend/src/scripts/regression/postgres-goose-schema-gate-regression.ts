@@ -237,16 +237,15 @@ async function assertServerStartupOrder(): Promise<void> {
   const installIndex = source.indexOf('installProcessLogHandlers()')
   const gateIndex = source.indexOf('await enforcePostgresGooseSchemaGate()', installIndex)
   const eventLoopIndex = source.indexOf('startProcessEventLoopMonitor()', installIndex)
-  const sinkIndex = source.indexOf('setRuntimeLogLineSink(', installIndex)
   const dbSupervisorIndex = source.indexOf('startDbServiceSupervisor(', installIndex)
   const workerSupervisorIndex = source.indexOf('startBackgroundWorkerSupervisor()', installIndex)
   const listenIndex = source.indexOf('const server = app.listen(', installIndex)
 
   assert(installIndex >= 0, 'server 必须安装进程日志处理器')
   assert(gateIndex > installIndex, 'schema gate 必须位于进程日志处理器之后')
+  assert.equal(source.includes('setRuntimeLogLineSink('), false, 'server 不得注册 runtime log index sink')
   for (const [label, index] of [
     ['event loop monitor', eventLoopIndex],
-    ['runtime log sink', sinkIndex],
     ['DB service supervisor', dbSupervisorIndex],
     ['background worker supervisor', workerSupervisorIndex],
     ['HTTP listen', listenIndex]
