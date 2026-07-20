@@ -329,6 +329,8 @@
     "test:runtime-log-file-consumer-contract": "tsx src/scripts/regression/runtime-log-file-consumer-contract-regression.ts",
     "test:runtime-log-file-consumer": "tsx src/scripts/regression/runtime-log-file-consumer-regression.ts",
     "test:runtime-log-file-rotation": "tsx src/scripts/regression/runtime-log-file-rotation-regression.ts",
+    "test:runtime-log-file-consumer-pressure": "tsx src/scripts/regression/runtime-log-file-consumer-pressure-regression.ts",
+    "test:runtime-log-postgres-consumer-smoke": "tsx src/scripts/regression/runtime-log-postgres-consumer-smoke.ts",
     "test:runtime-log-redis-removal": "tsx src/scripts/regression/runtime-log-redis-removal-regression.ts",
     "test:runtime-snapshot-unavailable-contract": "tsx src/scripts/regression/runtime-snapshot-unavailable-contract-regression.ts",
     "test:background-ipc-snapshot-current-only": "tsx src/scripts/regression/background-ipc-snapshot-current-only-regression.ts",
