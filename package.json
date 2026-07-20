@@ -17,7 +17,7 @@
     "test:owner-manifest": "node scripts/validate-owner-manifest.test.mjs",
     "test:owner-lock": "node --test scripts/run-with-owner-lock.test.mjs",
     "validate:owner-manifest": "node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json",
-    "validate:owner-manifest:node": "node scripts/validate-owner-manifest.mjs --require-owners=management=node,public=node,gateway=node,worker=node --require-node-version=0.1.0 --require-schema-version=63 deploy/owner-manifest.json",
+    "validate:owner-manifest:node": "node scripts/validate-owner-manifest.mjs --require-owners=management=node,public=node,gateway=node,worker=node --require-node-version=0.1.0 --require-schema-version=66 deploy/owner-manifest.json",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test:smoke": "pnpm --filter juhe-ai-backend test:smoke",

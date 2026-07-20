@@ -111,8 +111,8 @@ func TestWorkerSchemaOwnerGatePostgresSmoke(t *testing.T) {
 		runnerCalled = true
 		return nil
 	})
-	if err == nil || !strings.Contains(err.Error(), "expected 63") {
-		t.Fatalf("schema %d gate error = %v, want expected 63 rejection", version.SchemaVersion-1, err)
+	if err == nil || !strings.Contains(err.Error(), "expected 66") {
+		t.Fatalf("schema %d gate error = %v, want expected 66 rejection", version.SchemaVersion-1, err)
 	}
 	if runnerCalled {
 		t.Fatalf("runner called with schema %d", version.SchemaVersion-1)

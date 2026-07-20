@@ -118,7 +118,7 @@ func TestProbeSendsAuthenticatedReadOnlyRequestAndValidatesContract(t *testing.T
 		method, path = r.Method, r.URL.Path
 		requestSignature = r.Header.Get("X-Juhe-AI-Signature")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63}`))
+		_, _ = w.Write([]byte(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":66}`))
 	}))
 	defer server.Close()
 
@@ -151,9 +151,9 @@ func TestProbeClassifiesFailuresWithoutLeakingResponseOrEndpoint(t *testing.T) {
 		{name: "other status", statusCode: http.StatusBadGateway, want: ProbeFailureHTTPStatus},
 		{name: "wrong content type", statusCode: http.StatusOK, body: `{}`, contentType: "text/plain", want: ProbeFailureInvalidResponse},
 		{name: "invalid json", statusCode: http.StatusOK, body: `{`, want: ProbeFailureInvalidResponse},
-		{name: "wrong owner contract", statusCode: http.StatusOK, body: `{"ready":true,"component":"other","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63}`, want: ProbeFailureInvalidResponse},
+		{name: "wrong owner contract", statusCode: http.StatusOK, body: `{"ready":true,"component":"other","contractVersion":1,"databaseDriver":"postgres","schemaVersion":66}`, want: ProbeFailureInvalidResponse},
 		{name: "wrong schema", statusCode: http.StatusOK, body: `{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":62}`, want: ProbeFailureInvalidResponse},
-		{name: "unknown field", statusCode: http.StatusOK, body: `{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63,"extra":true}`, want: ProbeFailureInvalidResponse},
+		{name: "unknown field", statusCode: http.StatusOK, body: `{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":66,"extra":true}`, want: ProbeFailureInvalidResponse},
 	}
 
 	for _, test := range tests {
@@ -187,7 +187,7 @@ func TestProbeClassifiesFailuresWithoutLeakingResponseOrEndpoint(t *testing.T) {
 func TestProbeRejectsRedirectOversizedResponseAndTimeout(t *testing.T) {
 	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63}`))
+		_, _ = w.Write([]byte(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":66}`))
 	}))
 	defer redirectTarget.Close()
 
