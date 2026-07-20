@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import { classifyFrontendBuild } from '../../router/frontendBuildInfo'
 import { normalizeFrontendBuildId } from '../../shared/frontendBuildId'
@@ -41,5 +42,16 @@ assert.equal(
   'unknown',
   '版本清单读取失败时必须受控回落为未知'
 )
+
+const viteConfigSource = readFileSync(new URL('../../../vite.config.ts', import.meta.url), 'utf8')
+const powerShellReleaseSource = readFileSync(new URL('../../../../scripts/package-release.ps1', import.meta.url), 'utf8')
+const shellReleaseSource = readFileSync(new URL('../../../../scripts/package-release.sh', import.meta.url), 'utf8')
+const serverSource = readFileSync(new URL('../../../../backend/src/server.ts', import.meta.url), 'utf8')
+
+assert.match(viteConfigSource, /__JUHE_AI_FRONTEND_BUILD_ID__/, 'Vite 必须注入当前页面 Build ID')
+assert.match(viteConfigSource, /fileName:\s*['"]build-info\.json['"]/, 'Vite 必须输出静态 Build ID 清单')
+assert.match(powerShellReleaseSource, /VITE_JUHE_AI_BUILD_ID\s*=\s*\$releaseSourceCommit/, 'PowerShell 发布必须注入冻结提交')
+assert.match(shellReleaseSource, /VITE_JUHE_AI_BUILD_ID=["']?\$RELEASE_SOURCE_COMMIT/, 'POSIX 发布必须注入冻结提交')
+assert.match(serverSource, /build-info\.json/, '后端静态服务必须显式设置 Build ID 清单缓存规则')
 
 console.log('前端 Build ID 分类回归通过：变化、相同、非法和未知状态符合契约')
