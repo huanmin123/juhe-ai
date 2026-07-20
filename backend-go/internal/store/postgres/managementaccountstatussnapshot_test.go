@@ -13,9 +13,15 @@ func TestManagementAccountStatusSnapshotSQLKeepsScopeAndInputOrder(t *testing.T)
 		"juhe_stats.usage_stats_daily",
 		"ga.account_authorization_id",
 		"authorization_unavailable",
+		"a.authorization_instance_authorization_id IS NULL OR ra.status IN ('active', 'paused', 'expired')",
 	} {
 		if !strings.Contains(managementAccountStatusSnapshotSQL, fragment) {
 			t.Fatalf("query missing %q", fragment)
+		}
+	}
+	for _, terminalStatus := range []string{"'revoked'", "'returned'"} {
+		if strings.Contains(managementAccountStatusSnapshotSQL, "ra.status IN ('active', 'paused', 'expired', "+terminalStatus) {
+			t.Fatalf("query allows terminal authorization status %s", terminalStatus)
 		}
 	}
 	for _, forbidden := range []string{"usage_records", "credentials_encrypted", "credential_mask"} {

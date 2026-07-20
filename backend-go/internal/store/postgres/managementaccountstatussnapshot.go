@@ -32,6 +32,7 @@ LEFT JOIN juhe_business.accounts source ON source.id = a.authorization_instance_
 LEFT JOIN LATERAL (SELECT ga.group_id, ga.account_authorization_id FROM juhe_business.group_accounts ga WHERE ga.account_id = a.id AND ga.system_account_id = a.system_account_id AND ga.enabled = true ORDER BY ga.updated_at DESC, ga.group_id LIMIT 1) gb ON true
 LEFT JOIN juhe_business.groups g ON g.id = gb.group_id AND g.system_account_id = a.system_account_id
 WHERE a.deleted_at IS NULL AND a.id = ANY($1::text[]) AND ($2 = '' OR a.system_account_id = $2)
+  AND (a.authorization_instance_authorization_id IS NULL OR ra.status IN ('active', 'paused', 'expired'))
 ORDER BY array_position($1::text[], a.id)`
 
 func (s *Store) ListManagementAccountStatusProjections(ctx context.Context, input port.ManagementAccountStatusSnapshotInput) ([]port.ManagementAccountStatusProjection, error) {
