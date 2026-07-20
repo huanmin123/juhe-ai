@@ -62,6 +62,7 @@ import {
 } from './modules/gateway/usage/failure-finalization.service.js'
 import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
 import { prewarmPublishedModelCatalogSnapshotsAsync } from './modules/model-pricing/published-model-catalog.service.js'
+import { prewarmGatewayApiKeyValidationCacheAsync } from './storage/gateway-api-key.repository.js'
 
 const app = express()
 const host = runtimeConfig.host
@@ -164,11 +165,15 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     }
     startBackgroundWorkerSupervisor()
   }
-  void prewarmPublishedModelCatalogSnapshotsAsync()
-    .then((snapshotCount) => logger.info({
+  void Promise.all([
+    prewarmPublishedModelCatalogSnapshotsAsync(),
+    prewarmGatewayApiKeyValidationCacheAsync()
+  ])
+    .then(([snapshotCount, apiKeyCount]) => logger.info({
       event: 'published_model_catalog_prewarmed',
-      snapshotCount
-    }, '发布模型目录快照已预热'))
+      snapshotCount,
+      apiKeyCount
+    }, '发布模型目录快照和 API Key 校验缓存已预热'))
     .catch((error) => logger.warn(errorLogFields(error, {
       event: 'published_model_catalog_prewarm_failed'
     }), '发布模型目录快照预热失败，模型接口将回退单行持久化快照'))
