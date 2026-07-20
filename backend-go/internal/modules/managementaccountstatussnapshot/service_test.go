@@ -32,9 +32,33 @@ func TestServiceSelfScopeAndEffectiveAvailability(t *testing.T) {
 	}
 }
 
+func TestServiceLoadsCurrentConcurrencyWhenReaderIsAvailable(t *testing.T) {
+	reader := &statusReaderStub{rows: []port.ManagementAccountStatusProjection{{ID: "a1", SystemAccountID: "u1", Name: "A", Status: "active", Schedulable: true}}}
+	concurrency := &statusConcurrencyReaderStub{values: map[string]int{"a1": 3}}
+	s := NewServiceWithOptions(ServiceOptions{Reader: reader, AccountConcurrency: concurrency})
+
+	result, err := s.Get(context.Background(), Input{ActorSystemAccountID: "u1", ActorRole: "user", SelfOnly: true, AccountIDs: []string{"a1"}})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !result.RuntimeSnapshot.AccountConcurrencyAvailable || result.Items[0].CurrentConcurrency != 3 || len(concurrency.ids) != 1 || concurrency.ids[0] != "a1" {
+		t.Fatalf("runtime=%+v item=%+v ids=%v", result.RuntimeSnapshot, result.Items[0], concurrency.ids)
+	}
+}
+
 type statusReaderStub struct {
 	input port.ManagementAccountStatusSnapshotInput
 	rows  []port.ManagementAccountStatusProjection
+}
+
+type statusConcurrencyReaderStub struct {
+	ids    []string
+	values map[string]int
+}
+
+func (s *statusConcurrencyReaderStub) LoadAccountCurrentConcurrencyByIDs(_ context.Context, ids []string, _ time.Time) (map[string]int, error) {
+	s.ids = append([]string(nil), ids...)
+	return s.values, nil
 }
 
 func (s *statusReaderStub) ListManagementAccountStatusProjections(_ context.Context, input port.ManagementAccountStatusSnapshotInput) ([]port.ManagementAccountStatusProjection, error) {

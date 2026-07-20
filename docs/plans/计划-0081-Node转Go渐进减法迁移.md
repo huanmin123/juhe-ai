@@ -804,3 +804,9 @@
 - 合并 `origin/master=a577fe3bf` 后复核已迁移账户模块，确认 Go 的管理端、自助端 `POST /(my-)accounts/{id}/balance/refresh` 错误复用了余额快照 GET handler；Refresh handler 和 service 已存在，但未进入 RouterOptions 与 app 装配，导致生产路径只读旧快照而不执行上游刷新。
 - 已为读 handler 与刷新 handler 建立独立 RouterOptions/app 字段，GET 继续使用读限流与 `Get`，POST 使用写限流、touch auth 与 `Refresh`。路由级回归同时覆盖管理端和自助端，并断言 POST 不调用 `Get`。
 - 最小验证已通过：`go test ./internal/httpapi ./internal/app -count=1`。未执行真实上游余额查询或生产操作；上游 adapter、快照写入和真实凭据链路仍由后续 smoke 验收，不阻塞本次确定接线修复。
+
+## 2026-07-21 账户状态快照实时并发首轮对齐
+
+- Go 状态快照服务已接入现有 Redis `AccountConcurrencyReader`，复用与 Node 一致的 namespace、`account-concurrency-v2` key 和过期占用清理脚本；批量快照不再固定返回 `currentConcurrency=0`。
+- Redis 读取成功时 `runtimeSnapshot.accountConcurrencyAvailable=true` 并按账户返回当前并发；读取器未配置或读取失败时保持能力 false、值 0，不把缺失运行态伪装为真实零值。`accountRuntimeAvailabilityAvailable` 继续为 false，因为 Go 尚未迁移 Node runtime availability owner。
+- 最小验证已通过：`go test ./internal/modules/managementaccountstatussnapshot -count=1` 和 `go test ./internal/app ./internal/httpapi -run 'AccountStatusSnapshot|TestNonExistent' -count=1`。真实 Redis 双运行时读、runtime availability、API Key probe/source probe 和完整 availability presentation 继续后置，不能据此声明账户状态摘要完整迁移。

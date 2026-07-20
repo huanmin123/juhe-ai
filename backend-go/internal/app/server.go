@@ -827,7 +827,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	accountBatchEditService := managementaccountbatchedit.NewService(store, store)
 	accountBalanceService := managementaccountbalance.NewService(managementaccountbalance.ServiceOptions{Reader: store, Writer: store})
-	accountStatusSnapshotService := managementaccountstatussnapshot.NewService(store)
+	accountStatusSnapshotService := managementaccountstatussnapshot.NewServiceWithOptions(managementaccountstatussnapshot.ServiceOptions{
+		Reader:             store,
+		AccountConcurrency: accountConcurrencyReader,
+	})
 	accountListService := managementaccountlist.NewService(store)
 	accountExportService := managementaccountexport.NewService(managementaccountexport.ServiceOptions{
 		Reader:          store,

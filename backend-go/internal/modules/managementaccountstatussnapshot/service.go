@@ -27,6 +27,10 @@ type RuntimeSnapshot struct {
 	AccountRuntimeAvailabilityAvailable bool `json:"accountRuntimeAvailabilityAvailable"`
 }
 
+type AccountConcurrencyReader interface {
+	LoadAccountCurrentConcurrencyByIDs(context.Context, []string, time.Time) (map[string]int, error)
+}
+
 type EffectiveAvailability struct {
 	Available bool   `json:"available"`
 	Status    string `json:"status"`
@@ -81,12 +85,27 @@ type Input struct {
 }
 
 type Service struct {
-	reader port.ManagementAccountStatusSnapshotReader
-	now    func() time.Time
+	reader             port.ManagementAccountStatusSnapshotReader
+	accountConcurrency AccountConcurrencyReader
+	now                func() time.Time
+}
+
+type ServiceOptions struct {
+	Reader             port.ManagementAccountStatusSnapshotReader
+	AccountConcurrency AccountConcurrencyReader
+	Now                func() time.Time
 }
 
 func NewService(reader port.ManagementAccountStatusSnapshotReader) *Service {
-	return &Service{reader: reader, now: time.Now}
+	return NewServiceWithOptions(ServiceOptions{Reader: reader})
+}
+
+func NewServiceWithOptions(opts ServiceOptions) *Service {
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	return &Service{reader: opts.Reader, accountConcurrency: opts.AccountConcurrency, now: now}
 }
 
 func ParseAccountIDs(raw string) ([]string, error) {
@@ -137,11 +156,32 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	currentConcurrency := make(map[string]int)
+	concurrencyAvailable := false
+	if s.accountConcurrency != nil {
+		accountIDs := make([]string, 0, len(rows))
+		for _, row := range rows {
+			accountIDs = append(accountIDs, row.ID)
+		}
+		values, readErr := s.accountConcurrency.LoadAccountCurrentConcurrencyByIDs(ctx, accountIDs, s.now())
+		if readErr == nil {
+			currentConcurrency = values
+			concurrencyAvailable = true
+		}
+	}
 	items := make([]Item, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, snapshotItem(row))
+		item := snapshotItem(row)
+		item.CurrentConcurrency = currentConcurrency[row.ID]
+		items = append(items, item)
 	}
-	return Result{GeneratedAt: s.now().UTC().Format(time.RFC3339Nano), RuntimeSnapshot: RuntimeSnapshot{}, Items: items}, nil
+	return Result{
+		GeneratedAt: s.now().UTC().Format(time.RFC3339Nano),
+		RuntimeSnapshot: RuntimeSnapshot{
+			AccountConcurrencyAvailable: concurrencyAvailable,
+		},
+		Items: items,
+	}, nil
 }
 
 func normalizeIDs(ids []string) ([]string, error) { return ParseAccountIDs(strings.Join(ids, ",")) }
