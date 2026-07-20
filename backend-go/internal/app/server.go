@@ -18,6 +18,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
+	"juhe-ai/backend-go/internal/modules/managementaccountcreate"
 	"juhe-ai/backend-go/internal/modules/managementaccountdelete"
 	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
 	"juhe-ai/backend-go/internal/modules/managementaccountexport"
@@ -27,6 +28,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementaccountstatussnapshot"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
+	"juhe-ai/backend-go/internal/modules/managementaccountupdate"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
@@ -382,6 +384,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountListHandler:                    managementHandlers.MyAccountListHandler,
 		ManagementAccountExportHandler:                    managementHandlers.AccountExportHandler,
 		ManagementMyAccountExportHandler:                  managementHandlers.MyAccountExportHandler,
+		ManagementAccountCreateHandler:                    managementHandlers.AccountCreateHandler,
+		ManagementMyAccountCreateHandler:                  managementHandlers.MyAccountCreateHandler,
+		ManagementAccountUpdateHandler:                    managementHandlers.AccountUpdateHandler,
+		ManagementMyAccountUpdateHandler:                  managementHandlers.MyAccountUpdateHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -580,6 +586,10 @@ type managementAPIHandlers struct {
 	MyAccountListHandler                    http.Handler
 	AccountExportHandler                    http.Handler
 	MyAccountExportHandler                  http.Handler
+	AccountCreateHandler                    http.Handler
+	MyAccountCreateHandler                  http.Handler
+	AccountUpdateHandler                    http.Handler
+	MyAccountUpdateHandler                  http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -752,6 +762,17 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Reader:          store,
 		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
 	})
+	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
+	accountCreateService := managementaccountcreate.NewService(managementaccountcreate.Options{
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
+		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
+	})
+	accountUpdateService := managementaccountupdate.NewService(managementaccountupdate.Options{
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
+		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
+	})
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
 		Details:            accountDetailService,
@@ -760,7 +781,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		GatewayInvalidator: systemAccountInvalidator,
 		Logger:             logger,
 	})
-	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
 	accountDeleteService := managementaccountdelete.NewService(managementaccountdelete.Options{
 		Store:                      store,
 		PageDataPublisher:          accountsStaticResetPublisher,
@@ -992,6 +1012,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountListHandler:                    httpapi.NewManagementMyAccountListHandler(accountListService),
 		AccountExportHandler:                    httpapi.NewManagementAccountExportHandler(accountExportService),
 		MyAccountExportHandler:                  httpapi.NewManagementMyAccountExportHandler(accountExportService),
+		AccountCreateHandler:                    httpapi.NewManagementAccountCreateHandler(accountCreateService),
+		MyAccountCreateHandler:                  httpapi.NewManagementMyAccountCreateHandler(accountCreateService),
+		AccountUpdateHandler:                    httpapi.NewManagementAccountUpdateHandler(accountUpdateService),
+		MyAccountUpdateHandler:                  httpapi.NewManagementMyAccountUpdateHandler(accountUpdateService),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
