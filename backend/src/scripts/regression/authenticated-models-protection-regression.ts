@@ -112,6 +112,8 @@ const earlyHandlerEnd = preflightSource.indexOf('function gatewayModelsProviderC
 const earlyHandlerSource = preflightSource.slice(earlyHandlerStart, earlyHandlerEnd)
 assert.doesNotMatch(earlyHandlerSource, /resolveGatewayRuntimeAsync/, '认证 models 快路径不得加载账户、分组和响应检查策略')
 assert.doesNotMatch(earlyHandlerSource, /rejectGatewayApiKeyQuotaIfExceeded|rejectGatewayAuthorizationQuotaIfExceeded/, '固定模型目录不得依赖额度统计链路')
+assert.match(earlyHandlerSource, /resolveGatewayApiKeyForModelsAsync\([\s\S]*inspectClientIpPolicyAfterRuntime: false/, '认证 models 已在认证前检查 IP 策略，不得重复读取同一策略')
+assert.doesNotMatch(earlyHandlerSource, /recordClientIpErrorCircuitSuccessAsync/, 'GET models 不产生请求体错误，不得读写请求体错误熔断状态')
 
 const authenticatedModelsLimiterSource = readFileSync(new URL('../../modules/gateway/runtime/authenticated-models-rate-limit.service.ts', import.meta.url), 'utf8')
 assert(

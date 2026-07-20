@@ -547,7 +547,36 @@ async function setGatewayApiKeyCacheEntryAsync(
   })
 }
 
-registerGatewayRuntimeCacheInvalidator(() => gatewayApiKeyProcessCache.clear())
+registerGatewayRuntimeCacheInvalidator((reason) => {
+  if (shouldInvalidateGatewayApiKeyProcessCache(reason)) {
+    gatewayApiKeyProcessCache.clear()
+  }
+})
+
+function shouldInvalidateGatewayApiKeyProcessCache(reason: string): boolean {
+  return new Set([
+    'api_key_created',
+    'api_key_updated',
+    'api_key_secret_refreshed',
+    'api_key_deleted',
+    'route_strategy_created',
+    'route_strategy_updated',
+    'route_strategy_deleted',
+    'group_created',
+    'group_updated',
+    'group_deleted',
+    'group_authorization_settings_updated',
+    'resource_authorization_created',
+    'resource_authorization_updated',
+    'resource_authorization_revoked',
+    'resource_authorization_returned',
+    'authorization_expired',
+    'team_authorization_changed',
+    'team_members_changed',
+    'system_account_status_changed',
+    'system_account_image_generation_changed'
+  ]).has(reason)
+}
 
 function addGatewayApiKeyCacheIndex(apiKeyId: string, keyHash: string): void {
   const keyHashes = gatewayApiKeyCacheKeysById.get(apiKeyId) ?? new Set<string>()
