@@ -138,8 +138,14 @@ async function inspectStream(
 }
 
 function redisFieldMap(row: unknown): Map<string, unknown> {
-  if (!Array.isArray(row)) return new Map()
   const fields = new Map<string, unknown>()
+  if (typeof row === 'object' && row !== null && !Array.isArray(row)) {
+    for (const [key, value] of Object.entries(row)) {
+      fields.set(key, value)
+    }
+    return fields
+  }
+  if (!Array.isArray(row)) return fields
   for (let index = 0; index + 1 < row.length; index += 2) {
     fields.set(String(row[index]), row[index + 1])
   }
