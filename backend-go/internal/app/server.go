@@ -29,6 +29,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementaccountlist"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementaccountstatussnapshot"
+	"juhe-ai/backend-go/internal/modules/managementaccounttestdispatch"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestsession"
 	"juhe-ai/backend-go/internal/modules/managementaccountteststatus"
@@ -419,6 +420,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTestSessionTasksHandler:        managementHandlers.MyAccountTestSessionTasksHandler,
 		ManagementAccountTestTaskStatusHandler:            managementHandlers.AccountTestTaskStatusHandler,
 		ManagementMyAccountTestTaskStatusHandler:          managementHandlers.MyAccountTestTaskStatusHandler,
+		ManagementAccountTestDispatchHandler:              managementHandlers.AccountTestDispatchHandler,
+		ManagementMyAccountTestDispatchHandler:            managementHandlers.MyAccountTestDispatchHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -647,6 +650,8 @@ type managementAPIHandlers struct {
 	MyAccountTestSessionTasksHandler        http.Handler
 	AccountTestTaskStatusHandler            http.Handler
 	MyAccountTestTaskStatusHandler          http.Handler
+	AccountTestDispatchHandler              http.Handler
+	MyAccountTestDispatchHandler            http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -843,6 +848,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	accountTestSessionService := managementaccounttestsession.NewService(store, nil)
 	accountTestStatusService := managementaccountteststatus.NewService(store)
+	accountTestDispatchService := managementaccounttestdispatch.NewService(managementaccounttestdispatch.Options{Store: store, EnqueueClient: operationLogQueue, Codec: secretcrypto.NewJSONCodec(cfg.Secret)})
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
 		Details:            accountDetailService,
@@ -1112,6 +1118,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountTestSessionTasksHandler:        httpapi.NewManagementMyAccountTestSessionTasksHandler(accountTestStatusService),
 		AccountTestTaskStatusHandler:            httpapi.NewManagementAccountTestTaskStatusHandler(accountTestStatusService),
 		MyAccountTestTaskStatusHandler:          httpapi.NewManagementMyAccountTestTaskStatusHandler(accountTestStatusService),
+		AccountTestDispatchHandler:              httpapi.NewManagementAccountTestDispatchHandler(accountTestDispatchService),
+		MyAccountTestDispatchHandler:            httpapi.NewManagementMyAccountTestDispatchHandler(accountTestDispatchService),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),

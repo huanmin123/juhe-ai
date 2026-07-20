@@ -193,6 +193,8 @@ type RouterOptions struct {
 	ManagementMyAccountTestSessionTasksHandler        http.Handler
 	ManagementAccountTestTaskStatusHandler            http.Handler
 	ManagementMyAccountTestTaskStatusHandler          http.Handler
+	ManagementAccountTestDispatchHandler              http.Handler
+	ManagementMyAccountTestDispatchHandler            http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -481,6 +483,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountTestSessionTasksHandler == nil &&
 				opts.ManagementAccountTestTaskStatusHandler == nil &&
 				opts.ManagementMyAccountTestTaskStatusHandler == nil &&
+				opts.ManagementAccountTestDispatchHandler == nil &&
+				opts.ManagementMyAccountTestDispatchHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -1092,6 +1096,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountTestTaskStatusHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-tasks/{taskId}", opts.ManagementMyAccountTestTaskStatusHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountTestDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/test", opts.ManagementAccountTestDispatchHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/test", opts.ManagementMyAccountTestDispatchHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -1652,6 +1662,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTestSessionCancelHandler != nil ||
 		opts.ManagementAccountTestTaskCancelHandler != nil ||
 		opts.ManagementMyAccountTestTaskCancelHandler != nil ||
+		opts.ManagementAccountTestDispatchHandler != nil ||
+		opts.ManagementMyAccountTestDispatchHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||
