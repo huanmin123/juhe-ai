@@ -187,8 +187,8 @@ async function listProtocolProviderCodesAsync(protocolCode: string, protocolVers
     FROM ${profilesTable} ppp
     INNER JOIN ${providersTable} p
       ON p.code = ppp.provider_code
-    WHERE p.enabled = 1
-      AND ppp.enabled = 1
+    WHERE ${providerEnabledPredicate(client, 'p.enabled')}
+      AND ${providerEnabledPredicate(client, 'ppp.enabled')}
       AND ppp.protocol_code = ?
       AND ppp.protocol_version = ?
     ORDER BY p.code ASC
@@ -228,8 +228,8 @@ export async function listOpenAIProtocolProfileIdsAsync(): Promise<string[]> {
     FROM ${profilesTable} ppp
     INNER JOIN ${providersTable} p
       ON p.code = ppp.provider_code
-    WHERE p.enabled = 1
-      AND ppp.enabled = 1
+    WHERE ${providerEnabledPredicate(client, 'p.enabled')}
+      AND ${providerEnabledPredicate(client, 'ppp.enabled')}
       AND ppp.protocol_code = ?
       AND ppp.protocol_version = ?
     ORDER BY ppp.id ASC
@@ -303,8 +303,8 @@ export async function isProtocolProviderCodeAsync(providerCode: string, protocol
     INNER JOIN ${providersTable} p
       ON p.code = ppp.provider_code
     WHERE ppp.provider_code = ?
-      AND p.enabled = 1
-      AND ppp.enabled = 1
+      AND ${providerEnabledPredicate(client, 'p.enabled')}
+      AND ${providerEnabledPredicate(client, 'ppp.enabled')}
       AND ppp.protocol_code = ?
       ${versionClause}
     LIMIT 1
@@ -362,8 +362,8 @@ export async function findProviderDefaultHealthCheckModelAsync(providerCode: str
     INNER JOIN ${providersTable} p
       ON p.code = ppp.provider_code
     WHERE ppp.provider_code = ?
-      AND p.enabled = 1
-      AND ppp.enabled = 1
+      AND ${providerEnabledPredicate(client, 'p.enabled')}
+      AND ${providerEnabledPredicate(client, 'ppp.enabled')}
     ORDER BY ppp.updated_at DESC, ppp.id ASC
     LIMIT 1
   `, [code])
@@ -427,7 +427,7 @@ export async function findProviderDefaultSupportedModelsAsync(providerCode: stri
     SELECT default_supported_models_json
     FROM ${providerTable(client, 'providers')}
     WHERE code = ?
-      AND enabled = 1
+      AND ${providerEnabledPredicate(client, 'enabled')}
     LIMIT 1
   `, [code])
   return providerDefaultSupportedModels(row?.default_supported_models_json)
@@ -662,8 +662,8 @@ async function providerEndpointFamiliesByProfileIdAsync(client: DatabaseClient, 
       AND f.protocol_version = ppp.protocol_version
       AND f.family_code = ppf.family_code
     WHERE ppf.profile_id IN (${client.dialect.bindPlaceholders(ids.length)})
-      AND ppf.enabled = 1
-      AND f.enabled = 1
+      AND ${providerEnabledPredicate(client, 'ppf.enabled')}
+      AND ${providerEnabledPredicate(client, 'f.enabled')}
     ORDER BY ppf.profile_id ASC, f.family_code ASC
   `, ids)
   const result = new Map<string, ProtocolEndpointFamilyDefinition[]>()
@@ -690,6 +690,10 @@ function providerTable(client: DatabaseClient, tableName: string): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, tableName)
     : client.dialect.quoteIdentifier(tableName)
+}
+
+function providerEnabledPredicate(client: DatabaseClient, column: string): string {
+  return `${column} = ${client.driver === 'postgres' ? 'TRUE' : '1'}`
 }
 
 function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinition[]): Omit<ProviderDefinition, 'id' | 'code' | 'name' | 'parentCode' | 'description' | 'enabled' | 'defaultSupportedModels' | 'protocolProfiles'> {

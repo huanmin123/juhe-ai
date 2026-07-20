@@ -1,0 +1,364 @@
+//go:build integration
+
+package integration
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
+
+	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/httpapi"
+	"juhe-ai/backend-go/internal/modules/managementauth"
+	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
+	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
+	postgresstore "juhe-ai/backend-go/internal/store/postgres"
+)
+
+const (
+	w3NodeBridgeReadyPrefix = "JUHE_AI_MODEL_CATALOG_BRIDGE_READY "
+	w3NodeBridgeSecret      = "w3-node-bridge-secret-0123456789abcdef"
+	w3NodeBridgeOutputLimit = 64 * 1024
+)
+
+func TestW3ManagementProviderModelSnapshotNodeBridgePostgresRedisSmoke(t *testing.T) {
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+	nodePath, backendDir, helperPath := w3ModelCatalogNodeBridgePrerequisites(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	postgresContainer, err := tcpostgres.Run(ctx, postgresImage,
+		tcpostgres.WithDatabase("juhe_ai"),
+		tcpostgres.WithUsername("juhe_ai"),
+		tcpostgres.WithPassword("juhe_ai_password"),
+		tcpostgres.BasicWaitStrategies(),
+	)
+	if err != nil {
+		t.Fatalf("start postgres container: %v", err)
+	}
+	defer terminateW3NodeBridgeContainer(t, postgresContainer)
+	postgresURL, err := postgresContainer.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		t.Fatalf("postgres connection string: %v", err)
+	}
+
+	redisCacheContainer := startW3NodeBridgeRedis(t, ctx, "cache")
+	defer terminateW3NodeBridgeContainer(t, redisCacheContainer)
+	redisStateContainer := startW3NodeBridgeRedis(t, ctx, "state")
+	defer terminateW3NodeBridgeContainer(t, redisStateContainer)
+	redisQueueContainer := startW3NodeBridgeRedis(t, ctx, "queue")
+	defer terminateW3NodeBridgeContainer(t, redisQueueContainer)
+	redisCacheURL, err := redisCacheContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("redis cache connection string: %v", err)
+	}
+	redisStateURL, err := redisStateContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("redis state connection string: %v", err)
+	}
+	redisQueueURL, err := redisQueueContainer.ConnectionString(ctx)
+	if err != nil {
+		t.Fatalf("redis queue connection string: %v", err)
+	}
+
+	db := openSQLDB(t, postgresURL)
+	defer closeSQLDB(t, db)
+	runGooseMigrations(t, db)
+	now := time.Date(2026, 7, 20, 9, 0, 0, 0, time.UTC)
+	insertW2ProxyOptionsFixture(t, ctx, db, now)
+	sessionToken := "w3-model-catalog-node-bridge-session-token"
+	insertW2ManagementSessionFixture(t, ctx, db, sessionToken, now)
+
+	bridge := startW3ModelCatalogNodeBridge(t, ctx, nodePath, backendDir, helperPath, postgresURL, redisCacheURL, redisStateURL, redisQueueURL)
+	defer bridge.Close(t)
+	client, err := modelcatalogsnapshotrebuild.NewClientWithTimeout(bridge.BaseURL(), w3NodeBridgeSecret, 60*time.Second)
+	if err != nil {
+		t.Fatalf("create Go model catalog snapshot client: %v", err)
+	}
+	store, err := postgresstore.Open(ctx, postgresURL)
+	if err != nil {
+		t.Fatalf("open postgres store: %v", err)
+	}
+	defer store.Close()
+	service := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
+		Store:            store,
+		CatalogRebuilder: client,
+	})
+	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
+		Store: store,
+		Now:   func() time.Time { return now },
+	})
+	router := httpapi.NewRouter(httpapi.RouterOptions{
+		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                           slog.Default(),
+		ManagementAPIAuthMiddleware:      httpapi.NewManagementAPIAuthMiddleware(authenticator),
+		ManagementAPIAuthTouchMiddleware: httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
+		ManagementProviderCustomModelCreateHandler: httpapi.NewManagementProviderCustomModelCreateHandler(service),
+	})
+
+	rec := serveW3ProviderModelCRUDRequest(router, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options", sessionToken, `{
+		"model":"w3-node-bridge-model",
+		"scope":"global",
+		"catalogVisible":true,
+		"mode":"text",
+		"supportedApiProtocols":["responses","chat_completions"],
+		"inputUsdPer1M":1,
+		"outputUsdPer1M":2
+	}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("global create status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertW3NodeBridgeDirtyAcknowledged(t, ctx, db)
+	assertW3NodeBridgeGlobalSnapshots(t, ctx, db, "w3-node-bridge-model")
+}
+
+type w3ModelCatalogNodeBridgeProcess struct {
+	command  *exec.Cmd
+	stdin    io.WriteCloser
+	wait     <-chan error
+	port     int
+	stdout   *w6ManagementClientIPStatsBoundedOutput
+	stderr   *w6ManagementClientIPStatsBoundedOutput
+	redacted []string
+}
+
+func w3ModelCatalogNodeBridgePrerequisites(t *testing.T) (string, string, string) {
+	t.Helper()
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		w6ManagementClientIPStatsNodeWriterDependencyUnavailable(t, "node executable is unavailable: %v", err)
+		return "", "", ""
+	}
+	nodePath, err = filepath.Abs(nodePath)
+	if err != nil {
+		t.Fatalf("resolve node path: %v", err)
+	}
+	backendDir := filepath.Join(filepath.Dir(repoRoot(t)), "backend")
+	helperPath := filepath.Join(backendDir, "src", "scripts", "regression", "model-catalog-snapshot-node-bridge-server.ts")
+	if info, statErr := os.Stat(helperPath); statErr != nil {
+		t.Fatalf("stat Node model catalog bridge helper: %v", statErr)
+	} else if info.IsDir() {
+		t.Fatal("Node model catalog bridge helper path is a directory")
+	}
+	probeCtx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	probe := exec.CommandContext(probeCtx, nodePath, "--import", "tsx", "--eval", "")
+	probe.Dir = backendDir
+	probe.Env = w6ManagementClientIPStatsNodeWriterBaseEnvironment()
+	probeStdout := newW6ManagementClientIPStatsBoundedOutput(w3NodeBridgeOutputLimit)
+	probeStderr := newW6ManagementClientIPStatsBoundedOutput(w3NodeBridgeOutputLimit)
+	probe.Stdout = probeStdout
+	probe.Stderr = probeStderr
+	if probeErr := probe.Run(); probeErr != nil {
+		w6ManagementClientIPStatsNodeWriterDependencyUnavailable(t, "tsx loader unavailable: %v; stdout=%q stderr=%q", probeErr, probeStdout.String(), probeStderr.String())
+		return "", "", ""
+	}
+	if probeStdout.Truncated() || probeStderr.Truncated() {
+		w6ManagementClientIPStatsNodeWriterDependencyUnavailable(t, "tsx loader probe output exceeded bounded capture")
+		return "", "", ""
+	}
+	return nodePath, backendDir, helperPath
+}
+
+func startW3ModelCatalogNodeBridge(
+	t *testing.T,
+	ctx context.Context,
+	nodePath string,
+	backendDir string,
+	helperPath string,
+	postgresURL string,
+	redisCacheURL string,
+	redisStateURL string,
+	redisQueueURL string,
+) *w3ModelCatalogNodeBridgeProcess {
+	t.Helper()
+	command := exec.CommandContext(ctx, nodePath, "--import", "tsx", helperPath)
+	command.Dir = backendDir
+	command.Env = append(w6ManagementClientIPStatsNodeWriterBaseEnvironment(),
+		"NODE_ENV=test",
+		"JUHE_AI_RUNTIME_MODE=performance",
+		"JUHE_AI_DATABASE_DRIVER=postgres",
+		"JUHE_AI_CACHE_DRIVER=redis",
+		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
+		"JUHE_AI_QUEUE_DRIVER=redis_stream",
+		"JUHE_AI_POSTGRES_URL="+postgresURL,
+		"JUHE_AI_REDIS_CACHE_URL="+redisCacheURL,
+		"JUHE_AI_REDIS_STATE_URL="+redisStateURL,
+		"JUHE_AI_REDIS_QUEUE_URL="+redisQueueURL,
+		"JUHE_AI_PROCESS_ROLE=worker",
+		"JUHE_AI_WORKER_ROLE=ingest-worker",
+		"JUHE_AI_SECRET="+w3NodeBridgeSecret,
+		"JUHE_AI_LOG_FILE_ENABLED=false",
+		"JUHE_AI_LOG_CONSOLE_ENABLED=false",
+	)
+	stdout := newW6ManagementClientIPStatsBoundedOutput(w3NodeBridgeOutputLimit)
+	stderr := newW6ManagementClientIPStatsBoundedOutput(w3NodeBridgeOutputLimit)
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatalf("create Node bridge stdin: %v", err)
+	}
+	command.Stdout = stdout
+	command.Stderr = stderr
+	command.WaitDelay = 5 * time.Second
+	if err := command.Start(); err != nil {
+		t.Fatalf("start Node model catalog bridge: %v", err)
+	}
+	wait := make(chan error, 1)
+	go func() { wait <- command.Wait() }()
+	process := &w3ModelCatalogNodeBridgeProcess{
+		command: command, stdin: stdin, wait: wait, stdout: stdout, stderr: stderr,
+		redacted: []string{postgresURL, redisCacheURL, redisStateURL, redisQueueURL},
+	}
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if port, ok := w3NodeBridgeReadyPort(stdout.String()); ok {
+			process.port = port
+			return process
+		}
+		select {
+		case err := <-wait:
+			t.Fatalf("Node model catalog bridge exited before ready: %v; stdout=%q stderr=%q", err, process.safeOutput(stdout.String()), process.safeOutput(stderr.String()))
+		case <-deadline.C:
+			_ = command.Process.Kill()
+			select {
+			case <-wait:
+			case <-time.After(5 * time.Second):
+			}
+			t.Fatalf("Node model catalog bridge ready timeout; stdout=%q stderr=%q", process.safeOutput(stdout.String()), process.safeOutput(stderr.String()))
+		case <-ticker.C:
+		}
+	}
+}
+
+func (p *w3ModelCatalogNodeBridgeProcess) BaseURL() string {
+	return "http://127.0.0.1:" + strconv.Itoa(p.port)
+}
+
+func (p *w3ModelCatalogNodeBridgeProcess) Close(t *testing.T) {
+	t.Helper()
+	_ = p.stdin.Close()
+	select {
+	case err := <-p.wait:
+		if err != nil {
+			t.Errorf("Node model catalog bridge shutdown: %v; stdout=%q stderr=%q", err, p.safeOutput(p.stdout.String()), p.safeOutput(p.stderr.String()))
+		}
+	case <-time.After(10 * time.Second):
+		_ = p.command.Process.Kill()
+		select {
+		case <-p.wait:
+			t.Errorf("Node model catalog bridge required force kill after stdin close; stdout=%q stderr=%q", p.safeOutput(p.stdout.String()), p.safeOutput(p.stderr.String()))
+		case <-time.After(5 * time.Second):
+			t.Errorf("Node model catalog bridge did not reap after force kill; stdout=%q stderr=%q", p.safeOutput(p.stdout.String()), p.safeOutput(p.stderr.String()))
+		}
+	}
+}
+
+func (p *w3ModelCatalogNodeBridgeProcess) safeOutput(output string) string {
+	for _, secret := range p.redacted {
+		output = strings.ReplaceAll(output, secret, "<redacted>")
+	}
+	return output
+}
+
+func w3NodeBridgeReadyPort(output string) (int, bool) {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSuffix(line, "\r")
+		if !strings.HasPrefix(line, w3NodeBridgeReadyPrefix) {
+			continue
+		}
+		var ready struct {
+			Port int `json:"port"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, w3NodeBridgeReadyPrefix)), &ready); err == nil && ready.Port > 0 && ready.Port <= 65535 {
+			return ready.Port, true
+		}
+	}
+	return 0, false
+}
+
+func startW3NodeBridgeRedis(t *testing.T, ctx context.Context, role string) *tcredis.RedisContainer {
+	t.Helper()
+	container, err := tcredis.Run(ctx, redisImage)
+	if err != nil {
+		t.Fatalf("start redis %s container: %v", role, err)
+	}
+	return container
+}
+
+func terminateW3NodeBridgeContainer(t *testing.T, container testcontainers.Container) {
+	t.Helper()
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	terminateContainer(t, cleanupCtx, container)
+}
+
+func assertW3NodeBridgeDirtyAcknowledged(t *testing.T, ctx context.Context, db *sql.DB) {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM juhe_business.model_catalog_snapshot_rebuild_requests`).Scan(&count); err != nil {
+		t.Fatalf("count model catalog dirty requests: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("model catalog dirty request count = %d, want 0 after Node generation ack", count)
+	}
+}
+
+func assertW3NodeBridgeGlobalSnapshots(t *testing.T, ctx context.Context, db *sql.DB, model string) {
+	t.Helper()
+	rows, err := db.QueryContext(ctx, `
+		SELECT protocol, variant
+		FROM juhe_business.gateway_model_catalog_snapshots
+		WHERE system_account_id = ''
+		ORDER BY protocol, variant
+	`)
+	if err != nil {
+		t.Fatalf("query global model catalog snapshot variants: %v", err)
+	}
+	defer rows.Close()
+	var variants []string
+	for rows.Next() {
+		var protocol string
+		var variant string
+		if err := rows.Scan(&protocol, &variant); err != nil {
+			t.Fatalf("scan global model catalog snapshot variant: %v", err)
+		}
+		variants = append(variants, protocol+"/"+variant)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate global model catalog snapshot variants: %v", err)
+	}
+	wantVariants := []string{"anthropic/default", "gemini/default", "openai/chat", "openai/codex", "openai/default"}
+	if !slices.Equal(variants, wantVariants) {
+		t.Fatalf("global model catalog snapshot variants = %v, want %v", variants, wantVariants)
+	}
+	var payload string
+	if err := db.QueryRowContext(ctx, `
+		SELECT payload_json
+		FROM juhe_business.gateway_model_catalog_snapshots
+		WHERE system_account_id = '' AND protocol = 'openai' AND variant = 'default'
+	`).Scan(&payload); err != nil {
+		t.Fatalf("query global OpenAI model catalog snapshot: %v", err)
+	}
+	if !strings.Contains(payload, `"id":"`+model+`"`) {
+		t.Fatalf("global OpenAI model catalog snapshot missing %q", model)
+	}
+}
