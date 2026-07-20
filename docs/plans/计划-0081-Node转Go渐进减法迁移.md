@@ -563,6 +563,7 @@
 - 启动顺序：Node 必须先完成自身 PostgreSQL schema gate 并开始监听，再启动 Go 管理 server。Node 在监听前失败只能由 supervisor / Node 启动日志给出 schema 根因，Go 对该情形稳定报告 Node 不可达，不伪造远端失败原因。现有 `deploy/start.*` 仍是 Node 单进程入口，本切片不擅自改造成双进程 supervisor，也不改变 owner manifest 的生产 owner。
 - 验证顺序：先以 Node HTTP 回归固定只读、HMAC、strict path、driver/schema/relation 错误；再以 Go client 单测和跨运行时回归固定分类与契约；最后验证 Go 启动 fail-fast、readiness 缓存/脱敏，并在隔离 PostgreSQL/Redis 环境启动真实 `backend/dist/server.js` 与真实 Go TCP listener。所有测试使用临时端口、临时 owner lock 和隔离数据库，禁止连接生产。
 - 提交策略：Node route、Go client、Go app/readiness/真实服务证据分别形成小提交并及时推送；每块完成后重新 fetch `origin/master`，只同步已迁移 Go owner 的新语义漂移。
+- 实现状态：`65bb0acad` 先修 Node Goose gate `61 -> 63` 漂移；`4648124ed` 增加 Node 只读 readiness、实际 schema / relation / privilege 检查；`9d62f5e2c` 增加 Go 双 timeout Probe client；`6a58be129` 增加 bridge-aware readiness singleflight、请求取消隔离和 panic 自愈；`60a9754d5` 完成 Go 监听前 fail-fast 与同 client 持续 Probe。Node HTTP / schema / model catalog、Go targeted / race / full / vet / tidy 和 integration 编译已通过；真实 `server.ts` + `app.RunServer` 双进程 listener、错误 secret 不监听和 frontend 只读真实 management smoke 仍待独立隔离环境执行，不据此声明生产接管。
 
 ## 当前 W0 验收状态
 
