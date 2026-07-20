@@ -798,3 +798,9 @@
 - 首轮已对齐当天统计时区默认窗口、无效非空日期抑制默认窗口、前缀/精确筛选、`50/200` 分页、管理员系统账户字段、详情原始 request/response snapshot 和成功记录 `costBreakdown`；未新增脱敏、日志清洗或 sanitizer。
 - Node 继续持有 raw usage schema、分区、写入队列、writer、首屏 Redis 缓存和页面增量发布；Go 本块只接管 opt-in 读取，不据此切换 writer、删除 Node 或声明生产接管。账户授权名称搜索的完整 Node 多来源查询、分区详情 pruning、真实 Node writer -> Go reader PostgreSQL smoke、真实 listener/browser/反向代理验收留到后续核对轮。
 - 最小验证已通过：`go test ./internal/modules/managementusagerecords ./internal/store/postgres ./internal/httpapi ./internal/app -count=1`；本块未执行 Docker/testcontainers，不能记录为真实 PostgreSQL 或生产数据通过。
+
+## 2026-07-21 已迁移账户余额刷新漂移修复
+
+- 合并 `origin/master=a577fe3bf` 后复核已迁移账户模块，确认 Go 的管理端、自助端 `POST /(my-)accounts/{id}/balance/refresh` 错误复用了余额快照 GET handler；Refresh handler 和 service 已存在，但未进入 RouterOptions 与 app 装配，导致生产路径只读旧快照而不执行上游刷新。
+- 已为读 handler 与刷新 handler 建立独立 RouterOptions/app 字段，GET 继续使用读限流与 `Get`，POST 使用写限流、touch auth 与 `Refresh`。路由级回归同时覆盖管理端和自助端，并断言 POST 不调用 `Get`。
+- 最小验证已通过：`go test ./internal/httpapi ./internal/app -count=1`。未执行真实上游余额查询或生产操作；上游 adapter、快照写入和真实凭据链路仍由后续 smoke 验收，不阻塞本次确定接线修复。

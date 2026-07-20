@@ -157,6 +157,8 @@ type RouterOptions struct {
 	ManagementMyAccountDeleteHandler                  http.Handler
 	ManagementAccountBalanceHandler                   http.Handler
 	ManagementMyAccountBalanceHandler                 http.Handler
+	ManagementAccountBalanceRefreshHandler            http.Handler
+	ManagementMyAccountBalanceRefreshHandler          http.Handler
 	ManagementAccountStatusSnapshotHandler            http.Handler
 	ManagementMyAccountStatusSnapshotHandler          http.Handler
 	ManagementAccountListHandler                      http.Handler
@@ -449,6 +451,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountDeleteHandler == nil &&
 				opts.ManagementAccountBalanceHandler == nil &&
 				opts.ManagementMyAccountBalanceHandler == nil &&
+				opts.ManagementAccountBalanceRefreshHandler == nil &&
+				opts.ManagementMyAccountBalanceRefreshHandler == nil &&
 				opts.ManagementAccountStatusSnapshotHandler == nil &&
 				opts.ManagementMyAccountStatusSnapshotHandler == nil &&
 				opts.ManagementAccountListHandler == nil &&
@@ -986,11 +990,15 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementAccountBalanceHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/balance", opts.ManagementAccountBalanceHandler.ServeHTTP)
-				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/balance/refresh", opts.ManagementAccountBalanceHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAccountBalanceHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/balance", opts.ManagementMyAccountBalanceHandler.ServeHTTP)
-				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/balance/refresh", opts.ManagementMyAccountBalanceHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountBalanceRefreshHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/balance/refresh", opts.ManagementAccountBalanceRefreshHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountBalanceRefreshHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/balance/refresh", opts.ManagementMyAccountBalanceRefreshHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountStatusSnapshotHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/status-snapshot", opts.ManagementAccountStatusSnapshotHandler.ServeHTTP)
@@ -1532,6 +1540,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountDeleteHandler != nil ||
 		opts.ManagementAccountBalanceHandler != nil ||
 		opts.ManagementMyAccountBalanceHandler != nil ||
+		opts.ManagementAccountBalanceRefreshHandler != nil ||
+		opts.ManagementMyAccountBalanceRefreshHandler != nil ||
 		opts.ManagementAccountStatusSnapshotHandler != nil ||
 		opts.ManagementMyAccountStatusSnapshotHandler != nil ||
 		opts.ManagementAccountListHandler != nil ||
@@ -1650,8 +1660,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountForceActivateHandler != nil ||
 		opts.ManagementAccountDeleteHandler != nil ||
 		opts.ManagementMyAccountDeleteHandler != nil ||
-		opts.ManagementAccountBalanceHandler != nil ||
-		opts.ManagementMyAccountBalanceHandler != nil ||
+		opts.ManagementAccountBalanceRefreshHandler != nil ||
+		opts.ManagementMyAccountBalanceRefreshHandler != nil ||
 		opts.ManagementAccountExportHandler != nil ||
 		opts.ManagementMyAccountExportHandler != nil ||
 		opts.ManagementAccountCreateHandler != nil ||

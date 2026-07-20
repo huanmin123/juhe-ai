@@ -385,6 +385,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountDeleteHandler:                  managementHandlers.MyAccountDeleteHandler,
 		ManagementAccountBalanceHandler:                   managementHandlers.AccountBalanceHandler,
 		ManagementMyAccountBalanceHandler:                 managementHandlers.MyAccountBalanceHandler,
+		ManagementAccountBalanceRefreshHandler:            managementHandlers.AccountBalanceRefreshHandler,
+		ManagementMyAccountBalanceRefreshHandler:          managementHandlers.MyAccountBalanceRefreshHandler,
 		ManagementAccountStatusSnapshotHandler:            managementHandlers.AccountStatusSnapshotHandler,
 		ManagementMyAccountStatusSnapshotHandler:          managementHandlers.MyAccountStatusSnapshotHandler,
 		ManagementAccountListHandler:                      managementHandlers.AccountListHandler,
@@ -617,6 +619,8 @@ type managementAPIHandlers struct {
 	MyAccountDeleteHandler                  http.Handler
 	AccountBalanceHandler                   http.Handler
 	MyAccountBalanceHandler                 http.Handler
+	AccountBalanceRefreshHandler            http.Handler
+	MyAccountBalanceRefreshHandler          http.Handler
 	AccountStatusSnapshotHandler            http.Handler
 	MyAccountStatusSnapshotHandler          http.Handler
 	AccountListHandler                      http.Handler
@@ -1088,6 +1092,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountDeleteHandler:                  httpapi.NewManagementMyAccountDeleteHandlerWithOperationLog(accountDeleteService, operationLogOptions),
 		AccountBalanceHandler:                   httpapi.NewManagementAccountBalanceHandler(accountBalanceService),
 		MyAccountBalanceHandler:                 httpapi.NewManagementMyAccountBalanceHandler(accountBalanceService),
+		AccountBalanceRefreshHandler:            httpapi.NewManagementAccountBalanceRefreshHandler(accountBalanceService),
+		MyAccountBalanceRefreshHandler:          httpapi.NewManagementMyAccountBalanceRefreshHandler(accountBalanceService),
 		AccountStatusSnapshotHandler:            httpapi.NewManagementAccountStatusSnapshotHandler(accountStatusSnapshotService),
 		MyAccountStatusSnapshotHandler:          httpapi.NewManagementMyAccountStatusSnapshotHandler(accountStatusSnapshotService),
 		AccountListHandler:                      httpapi.NewManagementAccountListHandler(accountListService),

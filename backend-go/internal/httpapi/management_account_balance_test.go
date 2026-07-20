@@ -3,12 +3,14 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
+	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 )
@@ -106,6 +108,40 @@ func TestManagementAccountBalanceRefreshHandlerReturnsSnapshot(t *testing.T) {
 
 	if rec.Code != http.StatusOK || service.refreshInput.AccountID != "acct" || service.refreshInput.SystemAccountID != "" {
 		t.Fatalf("status=%d input=%+v body=%s", rec.Code, service.refreshInput, rec.Body.String())
+	}
+}
+
+func TestRouterUsesDedicatedManagementAccountBalanceRefreshHandler(t *testing.T) {
+	service := &managementAccountBalanceServiceStub{snapshot: managementaccountbalance.Snapshot{Status: "fresh"}, found: true}
+	router := NewRouter(RouterOptions{
+		Config:                                   config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                                   slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementAccountBalanceHandler:          newManagementAccountBalanceHandler(service, managementAccountBalanceScopeAdmin),
+		ManagementAccountBalanceRefreshHandler:   newManagementAccountBalanceRefreshHandler(service, managementAccountBalanceScopeAdmin),
+		ManagementMyAccountBalanceHandler:        newManagementAccountBalanceHandler(service, managementAccountBalanceScopeSelf),
+		ManagementMyAccountBalanceRefreshHandler: newManagementAccountBalanceRefreshHandler(service, managementAccountBalanceScopeSelf),
+		ManagementAPIAuthTouchMiddleware: NewManagementAPIAuthTouchMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"},
+		}),
+		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"},
+		}),
+	})
+	for _, path := range []string{
+		"/__aisys__/api/accounts/acct/balance/refresh?systemAccountId=all",
+		"/__aisys__/api/my-accounts/acct/balance/refresh",
+	} {
+		service.getInput = managementaccountbalance.Input{}
+		service.refreshInput = managementaccountbalance.Input{}
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("Cookie", "juhe_ai_session=session-token")
+		rec := httptest.NewRecorder()
+
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK || service.refreshInput.AccountID != "acct" || service.getInput.AccountID != "" {
+			t.Fatalf("%s status=%d get=%+v refresh=%+v body=%s", path, rec.Code, service.getInput, service.refreshInput, rec.Body.String())
+		}
 	}
 }
 
