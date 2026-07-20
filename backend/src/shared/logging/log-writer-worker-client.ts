@@ -11,10 +11,15 @@ export interface LogWriterWorkerOptions {
   maxFiles: number
 }
 
+export interface LogWriterWorkerClientOptions extends LogWriterWorkerOptions {
+  onLine?: (chunk: Buffer) => void
+}
+
 interface WorkerReply {
   id?: number
-  type: 'ack' | 'closed' | 'error'
+  type: 'ack' | 'closed' | 'error' | 'line'
   error?: string
+  chunk?: Uint8Array
 }
 
 const currentModulePath = fileURLToPath(import.meta.url)
@@ -26,9 +31,12 @@ export class LogWriterWorkerClient {
   private closeResolve?: () => void
   private closeReject?: (error: Error) => void
   private closed = false
+  private readonly onLine?: (chunk: Buffer) => void
 
-  constructor(options: LogWriterWorkerOptions) {
-    this.worker = new Worker(resolveWorkerPath(), { execArgv: workerExecArgv(), workerData: options })
+  constructor(options: LogWriterWorkerClientOptions) {
+    const { onLine, ...workerOptions } = options
+    this.onLine = onLine
+    this.worker = new Worker(resolveWorkerPath(), { execArgv: workerExecArgv(), workerData: workerOptions })
     this.worker.on('message', (message: WorkerReply) => this.handleMessage(message))
     this.worker.on('error', (error) => this.fail(error))
     this.worker.on('exit', (code) => {
@@ -65,6 +73,10 @@ export class LogWriterWorkerClient {
   }
 
   private handleMessage(message: WorkerReply): void {
+    if (message.type === 'line' && message.chunk) {
+      this.onLine?.(Buffer.from(message.chunk.buffer, message.chunk.byteOffset, message.chunk.byteLength))
+      return
+    }
     if (message.type === 'ack' && message.id !== undefined) {
       const callback = this.callbacks.get(message.id)
       if (!callback) return

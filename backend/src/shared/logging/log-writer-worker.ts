@@ -1,4 +1,5 @@
 import { appendFile, mkdir, opendir, rename, stat, unlink } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 
@@ -24,6 +25,7 @@ port.on('message', (message: WorkerMessage) => {
   chain = chain.then(async () => {
     const chunk = Buffer.from(message.chunk.buffer, message.chunk.byteOffset, message.chunk.byteLength)
     await writeChunk(chunk)
+    port.postMessage({ type: 'line', chunk })
     port.postMessage({ type: 'ack', id: message.id })
   }).catch((error) => {
     port.postMessage({ type: 'ack', id: message.id, error: error instanceof Error ? error.message : String(error) })
@@ -56,7 +58,7 @@ async function writeChunk(chunk: Buffer): Promise<void> {
 
 async function rotate(): Promise<void> {
   const timestamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z')
-  const rotatedPath = join(options.directory, `${options.fileName}.${timestamp}.${process.pid}.${Date.now()}.log`)
+  const rotatedPath = join(options.directory, `juhe-ai.${timestamp}.${randomUUID()}.log`)
   try {
     await rename(currentPath, rotatedPath)
   } catch (error) {
@@ -73,7 +75,7 @@ async function cleanupRotatedFiles(): Promise<void> {
   try {
     const directory = await opendir(options.directory)
     for await (const entry of directory) {
-      if (!entry.isFile() || !entry.name.startsWith(`${options.fileName}.`) || !entry.name.endsWith('.log')) continue
+      if (!entry.isFile() || !isRotatedLogFileName(entry.name)) continue
       const path = join(options.directory, entry.name)
       const file = await stat(path).catch(() => undefined)
       if (file) entries.push({ path, mtimeMs: file.mtimeMs })
@@ -87,6 +89,10 @@ async function cleanupRotatedFiles(): Promise<void> {
     if (index < maxRotated && entry.mtimeMs >= expiresBefore) return
     await unlink(entry.path).catch(() => undefined)
   }))
+}
+
+function isRotatedLogFileName(fileName: string): boolean {
+  return /^juhe-ai\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName)
 }
 
 function reportError(error: unknown): void {

@@ -8,6 +8,7 @@ import { LogWriterWorkerClient } from '../../shared/logging/log-writer-worker-cl
 const directory = join(tmpdir(), `juhe-ai-log-writer-${process.pid}-${Date.now()}`)
 mkdirSync(directory, { recursive: true })
 try {
+  const indexedChunks: Buffer[] = []
   const client = new LogWriterWorkerClient({
     directory,
     fileName: 'worker-test.log',
@@ -15,7 +16,8 @@ try {
     consoleEnabled: false,
     maxFileBytes: 1024,
     retentionDays: 1,
-    maxFiles: 3
+    maxFiles: 3,
+    onLine: (chunk) => indexedChunks.push(chunk)
   })
   await write(client, Buffer.from('{"event":"one"}\n'))
   await write(client, Buffer.from('{"event":"two"}\n'))
@@ -23,6 +25,7 @@ try {
   const content = readFileSync(join(directory, 'worker-test.log'), 'utf8')
   assert.match(content, /"event":"one"/)
   assert.match(content, /"event":"two"/)
+  assert.equal(indexedChunks.length, 2)
   console.log('日志 writer worker 回归通过')
 } finally {
   rmSync(directory, { recursive: true, force: true })

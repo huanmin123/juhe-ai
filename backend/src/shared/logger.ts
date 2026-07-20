@@ -474,6 +474,7 @@ const logFileName = runtimeConfig.processRole === 'worker'
   : runtimeConfig.processRole === 'db-service'
     ? 'juhe-ai.db-service.log'
     : 'juhe-ai.log'
+const fileRuntimeLogIndexStream = runtimeConfig.log.fileEnabled ? new RuntimeLogIndexStream() : undefined
 const logWriterWorker = runtimeConfig.log.fileEnabled || runtimeConfig.log.consoleEnabled
   ? new LogWriterWorkerClient({
     directory: runtimeConfig.log.directory,
@@ -482,7 +483,10 @@ const logWriterWorker = runtimeConfig.log.fileEnabled || runtimeConfig.log.conso
     consoleEnabled: runtimeConfig.log.consoleEnabled,
     maxFileBytes: runtimeConfig.log.maxFileBytes,
     retentionDays: runtimeConfig.log.retentionDays,
-    maxFiles: runtimeConfig.log.maxFiles
+    maxFiles: runtimeConfig.log.maxFiles,
+    onLine: fileRuntimeLogIndexStream
+      ? (chunk) => fileRuntimeLogIndexStream.write(chunk, () => undefined)
+      : undefined
   })
   : undefined
 const runtimeLogIndexStream = runtimeConfig.log.fileEnabled ? undefined : new RuntimeLogIndexStream()
