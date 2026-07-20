@@ -40,8 +40,9 @@ func TestManagementAccountStatusSnapshotRuntimeQueriesReuseSourceAccount(t *test
 		t.Fatal("runtime source query falls back to instance credentials when the source account is deleted")
 	}
 	for _, fragment := range []string{
-		"account_id = ANY($1::text[])",
-		"ORDER BY account_id, key_index, key_fingerprint",
+		"unnest($1::text[], $2::text[])",
+		"requested.key_fingerprint = states.key_fingerprint",
+		"ORDER BY states.account_id, states.key_index, states.key_fingerprint",
 	} {
 		if !strings.Contains(managementAccountAPIKeyRuntimeStatesSQL, fragment) {
 			t.Fatalf("runtime state query missing %q", fragment)

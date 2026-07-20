@@ -95,8 +95,8 @@ func TestServiceAddsAPIKeyRuntimeSummaryFromSourceAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if result.RuntimeSnapshot.AccountRuntimeAvailabilityAvailable || len(runtime.ids) != 1 || runtime.ids[0] != "source_1" {
-		t.Fatalf("runtime snapshot=%+v ids=%v", result.RuntimeSnapshot, runtime.ids)
+	if result.RuntimeSnapshot.AccountRuntimeAvailabilityAvailable || len(runtime.requests["source_1"]) != 3 {
+		t.Fatalf("runtime snapshot=%+v requests=%v", result.RuntimeSnapshot, runtime.requests)
 	}
 	summary := result.Items[0].APIKeyRuntime
 	if summary == nil {
@@ -206,8 +206,8 @@ type statusConcurrencyReaderStub struct {
 }
 
 type statusAPIKeyRuntimeReaderStub struct {
-	ids    []string
-	values map[string][]port.ManagementAccountAPIKeyRuntimeState
+	requests map[string][]string
+	values   map[string][]port.ManagementAccountAPIKeyRuntimeState
 }
 
 type statusAPIKeyRuntimeSourceReaderStub struct {
@@ -220,8 +220,8 @@ func (s *statusAPIKeyRuntimeSourceReaderStub) ListManagementAccountAPIKeyRuntime
 	return s.values, nil
 }
 
-func (s *statusAPIKeyRuntimeReaderStub) ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(_ context.Context, ids []string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error) {
-	s.ids = append([]string(nil), ids...)
+func (s *statusAPIKeyRuntimeReaderStub) ListManagementAccountAPIKeyRuntimeStatesByFingerprints(_ context.Context, requests map[string][]string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error) {
+	s.requests = requests
 	return s.values, nil
 }
 

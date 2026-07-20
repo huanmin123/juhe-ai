@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,11 +27,15 @@ WHERE account.id = ANY($1::text[])
 ORDER BY array_position($1::text[], account.id)`
 
 const managementAccountAPIKeyRuntimeStatesSQL = `
-SELECT account_id, key_fingerprint, key_index, status,
+WITH requested(account_id, key_fingerprint) AS (
+  SELECT * FROM unnest($1::text[], $2::text[])
+)
+SELECT states.account_id, states.key_fingerprint, states.key_index, states.status,
        next_probe_at, last_failure_at, last_error_code, last_error_message, last_trace_id
-FROM juhe_business.account_api_key_runtime_states
-WHERE account_id = ANY($1::text[])
-ORDER BY account_id, key_index, key_fingerprint`
+FROM juhe_business.account_api_key_runtime_states AS states
+JOIN requested ON requested.account_id = states.account_id
+              AND requested.key_fingerprint = states.key_fingerprint
+ORDER BY states.account_id, states.key_index, states.key_fingerprint`
 
 func (s *Store) ListManagementAccountAPIKeyRuntimeSourcesByAccountIDs(ctx context.Context, accountIDs []string) (map[string]port.ManagementAccountAPIKeyRuntimeSource, error) {
 	ids := normalizedRuntimeAccountIDs(accountIDs)
@@ -56,13 +61,13 @@ func (s *Store) ListManagementAccountAPIKeyRuntimeSourcesByAccountIDs(ctx contex
 	return result, nil
 }
 
-func (s *Store) ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(ctx context.Context, accountIDs []string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error) {
-	ids := normalizedRuntimeAccountIDs(accountIDs)
-	result := make(map[string][]port.ManagementAccountAPIKeyRuntimeState, len(ids))
-	if len(ids) == 0 {
+func (s *Store) ListManagementAccountAPIKeyRuntimeStatesByFingerprints(ctx context.Context, fingerprintsByAccountID map[string][]string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error) {
+	accountIDs, fingerprints := normalizedRuntimeFingerprints(fingerprintsByAccountID)
+	result := make(map[string][]port.ManagementAccountAPIKeyRuntimeState, len(accountIDs))
+	if len(accountIDs) == 0 {
 		return result, nil
 	}
-	rows, err := s.pool.Query(ctx, managementAccountAPIKeyRuntimeStatesSQL, ids)
+	rows, err := s.pool.Query(ctx, managementAccountAPIKeyRuntimeStatesSQL, accountIDs, fingerprints)
 	if err != nil {
 		return nil, fmt.Errorf("list management account api key runtime states: %w", err)
 	}
@@ -85,6 +90,40 @@ func (s *Store) ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(ctx context
 		return nil, fmt.Errorf("iterate management account api key runtime states: %w", err)
 	}
 	return result, nil
+}
+
+func normalizedRuntimeFingerprints(values map[string][]string) ([]string, []string) {
+	normalized := make(map[string][]string, len(values))
+	for accountID, accountFingerprints := range values {
+		accountID = strings.TrimSpace(accountID)
+		if accountID == "" {
+			continue
+		}
+		normalized[accountID] = append(normalized[accountID], accountFingerprints...)
+	}
+	accountIDs := make([]string, 0, len(normalized))
+	for accountID := range normalized {
+		accountIDs = append(accountIDs, accountID)
+	}
+	sort.Strings(accountIDs)
+	accounts := make([]string, 0)
+	fingerprints := make([]string, 0)
+	for _, accountID := range accountIDs {
+		seen := make(map[string]struct{}, len(normalized[accountID]))
+		for _, fingerprint := range normalized[accountID] {
+			fingerprint = strings.TrimSpace(fingerprint)
+			if fingerprint == "" {
+				continue
+			}
+			if _, exists := seen[fingerprint]; exists {
+				continue
+			}
+			seen[fingerprint] = struct{}{}
+			accounts = append(accounts, accountID)
+			fingerprints = append(fingerprints, fingerprint)
+		}
+	}
+	return accounts, fingerprints
 }
 
 func normalizedRuntimeAccountIDs(accountIDs []string) []string {

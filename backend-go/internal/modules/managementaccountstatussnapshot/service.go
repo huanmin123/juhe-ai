@@ -52,7 +52,7 @@ type AccountConcurrencyReader interface {
 }
 
 type APIKeyRuntimeReader interface {
-	ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(context.Context, []string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error)
+	ListManagementAccountAPIKeyRuntimeStatesByFingerprints(context.Context, map[string][]string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error)
 }
 
 type APIKeyRuntimeSourceReader interface {
@@ -296,8 +296,7 @@ func (s *Service) loadAPIKeyRuntimeSummaries(ctx context.Context, rows []port.Ma
 	if err != nil {
 		return nil, false, err
 	}
-	sourceIDs := make([]string, 0, len(rows))
-	seenSourceIDs := make(map[string]struct{}, len(rows))
+	fingerprintsBySource := make(map[string][]string, len(rows))
 	candidates := make(map[string]runtimeSummaryCandidate, len(rows))
 	for _, row := range rows {
 		source := sources[row.ID]
@@ -305,22 +304,19 @@ func (s *Service) loadAPIKeyRuntimeSummaries(ctx context.Context, rows []port.Ma
 		if sourceID == "" {
 			continue
 		}
-		if _, exists := seenSourceIDs[sourceID]; !exists {
-			seenSourceIDs[sourceID] = struct{}{}
-			sourceIDs = append(sourceIDs, sourceID)
-		}
 		credentials, err := s.credentialCodec.DecryptJSON(source.CredentialsEncrypted)
 		if err != nil {
 			continue
 		}
 		fingerprints := runtimeAPIKeyFingerprints(credentials, s.fingerprintSecret)
+		fingerprintsBySource[sourceID] = append(fingerprintsBySource[sourceID], fingerprints...)
 		if !runtimeAPIKeyPoolSupported(source, len(fingerprints)) {
 			continue
 		}
 		candidates[row.ID] = runtimeSummaryCandidate{sourceAccountID: sourceID, fingerprints: fingerprints}
 	}
 
-	statesByAccountID, err := s.apiKeyRuntime.ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(ctx, sourceIDs)
+	statesByAccountID, err := s.apiKeyRuntime.ListManagementAccountAPIKeyRuntimeStatesByFingerprints(ctx, fingerprintsBySource)
 	if err != nil {
 		return nil, false, err
 	}
