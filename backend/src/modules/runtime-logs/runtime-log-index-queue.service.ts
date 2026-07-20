@@ -38,6 +38,7 @@ const runtimeLogRedisConsumerErrorRetryMs = 1000
 const runtimeLogRedisStopWaitMs = 2000
 const runtimeLogRedisProducerMaxInFlightCount = 64
 const runtimeLogRedisProducerMaxInFlightBytes = 4 * 1024 * 1024
+const runtimeLogRedisProducerReadinessTimeoutMs = 10_000
 const runtimeLogRedisProducerCommandTimeoutMs = 1500
 const runtimeLogRedisProducerConnectTimeoutMs = 1000
 const runtimeLogRedisProducerCommandQueueMaxLength = 64
@@ -569,6 +570,7 @@ function runtimeLogRedisErrorText(error: unknown): string {
 const runtimeLogRedisProducer = new BoundedRuntimeLogRedisProducer<RuntimeLogIndexInput>({
   maxInFlightCount: runtimeLogRedisProducerMaxInFlightCount,
   maxInFlightBytes: runtimeLogRedisProducerMaxInFlightBytes,
+  readinessTimeoutMs: runtimeLogRedisProducerReadinessTimeoutMs,
   commandTimeoutMs: runtimeLogRedisProducerCommandTimeoutMs,
   isReady: async () => (await runtimeLogRedisProducerClient()).isReady === true,
   send: async (input) => await runtimeLogRedisStreamQueue().enqueue(input),

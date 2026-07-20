@@ -24,6 +24,7 @@ export interface RuntimeLogRedisProducerSnapshot {
 interface BoundedRuntimeLogRedisProducerOptions<T> {
   maxInFlightCount: number
   maxInFlightBytes: number
+  readinessTimeoutMs?: number
   commandTimeoutMs: number
   isReady: () => boolean | Promise<boolean>
   send: (payload: T) => Promise<unknown>
@@ -40,9 +41,17 @@ class RuntimeLogRedisCommandTimeoutError extends Error {
   }
 }
 
+class RuntimeLogRedisReadinessTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`runtime log Redis readiness timed out after ${timeoutMs}ms`)
+    this.name = 'RuntimeLogRedisReadinessTimeoutError'
+  }
+}
+
 export class BoundedRuntimeLogRedisProducer<T> {
   private readonly maxInFlightCount: number
   private readonly maxInFlightBytes: number
+  private readonly readinessTimeoutMs: number
   private readonly commandTimeoutMs: number
   private readonly options: BoundedRuntimeLogRedisProducerOptions<T>
   private generation = 0
@@ -60,6 +69,7 @@ export class BoundedRuntimeLogRedisProducer<T> {
     this.options = options
     this.maxInFlightCount = positiveInteger(options.maxInFlightCount)
     this.maxInFlightBytes = positiveInteger(options.maxInFlightBytes)
+    this.readinessTimeoutMs = positiveInteger(options.readinessTimeoutMs ?? options.commandTimeoutMs)
     this.commandTimeoutMs = positiveInteger(options.commandTimeoutMs)
   }
 
@@ -113,24 +123,34 @@ export class BoundedRuntimeLogRedisProducer<T> {
 
   private async run(payload: T, bytes: number, generation: number): Promise<void> {
     try {
-      const ready = await withDeadline(Promise.resolve(this.options.isReady()), this.commandTimeoutMs)
+      const ready = await withDeadline(
+        Promise.resolve(this.options.isReady()),
+        this.readinessTimeoutMs,
+        () => new RuntimeLogRedisReadinessTimeoutError(this.readinessTimeoutMs)
+      )
       if (!ready) {
         if (generation === this.generation) {
           this.recordDrop({ payload, bytes, reason: 'disconnected' })
         }
         return
       }
-      await withDeadline(this.options.send(payload), this.commandTimeoutMs)
+      await withDeadline(
+        this.options.send(payload),
+        this.commandTimeoutMs,
+        () => new RuntimeLogRedisCommandTimeoutError(this.commandTimeoutMs)
+      )
       if (generation === this.generation) {
         this.successCount += 1
         this.options.onSuccess?.(payload)
       }
     } catch (error) {
       if (generation !== this.generation) return
-      const reason = error instanceof RuntimeLogRedisCommandTimeoutError
-        ? 'timeout'
-        : this.options.classifyError?.(error) ?? 'command_failed'
-      if (reason === 'timeout') {
+      const reason = error instanceof RuntimeLogRedisReadinessTimeoutError
+        ? 'disconnected'
+        : error instanceof RuntimeLogRedisCommandTimeoutError
+          ? 'timeout'
+          : this.options.classifyError?.(error) ?? 'command_failed'
+      if (error instanceof RuntimeLogRedisCommandTimeoutError) {
         this.options.onTimeout?.()
       }
       this.recordDrop({ payload, bytes, reason, error })
@@ -152,13 +172,13 @@ export class BoundedRuntimeLogRedisProducer<T> {
   }
 }
 
-async function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, createTimeoutError = () => new RuntimeLogRedisCommandTimeoutError(timeoutMs)): Promise<T> {
   let timeout: NodeJS.Timeout | undefined
   try {
     return await Promise.race([
       promise,
       new Promise<T>((_resolve, reject) => {
-        timeout = setTimeout(() => reject(new RuntimeLogRedisCommandTimeoutError(timeoutMs)), timeoutMs)
+        timeout = setTimeout(() => reject(createTimeoutError()), timeoutMs)
       })
     ])
   } finally {

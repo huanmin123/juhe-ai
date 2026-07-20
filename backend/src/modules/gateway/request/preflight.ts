@@ -1066,7 +1066,6 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
       clientIp: input.clientIp,
       systemAccountId: apiKey.system_account_id,
       apiKeyId: apiKey.id,
-      groupId: apiKey.selected_group_id,
       endpoint: input.endpoint
     }
     input.auditCapture.bindContext({
