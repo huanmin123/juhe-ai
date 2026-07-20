@@ -588,9 +588,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	s.publishModelPageDataResets(ctx, saved.Scope, saved.SystemAccountID)
-	if err := s.rebuildCatalogSnapshot(ctx, saved.Scope, saved.SystemAccountID); err != nil {
-		return ModelCatalogItem{}, err
-	}
+	s.rebuildCatalogSnapshot(ctx, saved.Scope, saved.SystemAccountID)
 	return catalogItemFromPort(saved), nil
 }
 
@@ -654,12 +652,9 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 		cleanupErr = s.clearDefaultHealthCheckModelReferences(ctx, persisted.After)
 	}
 	s.publishModelPageDataResets(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
-	rebuildErr := s.rebuildCatalogSnapshot(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
+	s.rebuildCatalogSnapshot(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
 	if cleanupErr != nil {
 		return CustomModelUpdateResult{}, cleanupErr
-	}
-	if rebuildErr != nil {
-		return CustomModelUpdateResult{}, rebuildErr
 	}
 	return CustomModelUpdateResult{Before: catalogItemFromPort(persisted.Before), After: catalogItemFromPort(persisted.After)}, nil
 }
@@ -789,9 +784,7 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	s.publishModelPageDataResets(ctx, "built_in", "")
-	if err := s.rebuildCatalogSnapshot(ctx, "all", ""); err != nil {
-		return CustomModelUpdateResult{}, err
-	}
+	s.rebuildCatalogSnapshot(ctx, "all", "")
 	return CustomModelUpdateResult{
 		Before: builtInCatalogItemWithConfigurationSnapshot(existing, persisted.Before),
 		After:  builtInCatalogItemWithConfigurationSnapshot(existing, persisted.After),
@@ -931,12 +924,9 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
 		cleanupErr := s.clearDefaultHealthCheckModelReferences(ctx, existing)
 		s.publishModelPageDataResets(ctx, existing.Scope, existing.SystemAccountID)
-		rebuildErr := s.rebuildCatalogSnapshot(ctx, existing.Scope, existing.SystemAccountID)
+		s.rebuildCatalogSnapshot(ctx, existing.Scope, existing.SystemAccountID)
 		if cleanupErr != nil {
 			return CustomModelDeleteResult{}, cleanupErr
-		}
-		if rebuildErr != nil {
-			return CustomModelDeleteResult{}, rebuildErr
 		}
 	}
 	return CustomModelDeleteResult{Deleted: deleted}, nil
@@ -1700,15 +1690,25 @@ func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason stri
 	}
 }
 
-func (s *Service) rebuildCatalogSnapshot(ctx context.Context, scope string, systemAccountID string) error {
+func (s *Service) rebuildCatalogSnapshot(ctx context.Context, scope string, systemAccountID string) {
 	if s.catalogRebuilder == nil {
-		return nil
+		return
 	}
 	rebuildCtx := context.WithoutCancel(ctx)
+	rebuildScope := "all"
+	rebuildSystemAccountID := ""
 	if strings.TrimSpace(scope) == "personal" {
-		return s.catalogRebuilder.Rebuild(rebuildCtx, "personal", strings.TrimSpace(systemAccountID))
+		rebuildScope = "personal"
+		rebuildSystemAccountID = strings.TrimSpace(systemAccountID)
 	}
-	return s.catalogRebuilder.Rebuild(rebuildCtx, "all", "")
+	if err := s.catalogRebuilder.Rebuild(rebuildCtx, rebuildScope, rebuildSystemAccountID); err != nil {
+		s.logger.WarnContext(rebuildCtx, "模型事实已保存，但发布快照重建失败，保留 dirty generation 等待后台重试",
+			slog.String("event", "model_catalog_snapshot_rebuild_failed_after_commit"),
+			slog.String("scope", rebuildScope),
+			slog.String("system_account_id", rebuildSystemAccountID),
+			slog.Any("error", err),
+		)
+	}
 }
 
 func (s *Service) publishModelPageDataResets(ctx context.Context, scope string, systemAccountID string) {
