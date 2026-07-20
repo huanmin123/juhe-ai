@@ -1,17 +1,12 @@
 import type { Router } from 'vue-router'
 
 import { message } from '@/lib/antd'
+import { classifyFrontendBuild, loadRemoteFrontendBuildId } from './frontendBuildInfo'
+import { markRouteAssetReload, shouldReloadRouteAsset } from './routeAssetReloadState'
 
-const routeAssetReloadStorageKey = 'juhe-ai:route-asset-reload'
-const routeAssetReloadCooldownMs = 30_000
 const routeAssetReloadDelayMs = 900
 const routeAssetOverlayId = 'juhe-ai-route-asset-reload-overlay'
 let routeAssetReloadScheduled = false
-
-interface RouteAssetReloadRecord {
-  path: string
-  at: number
-}
 
 const routeAssetLoadErrorPatterns = [
   /failed to fetch dynamically imported module/i,
@@ -20,7 +15,8 @@ const routeAssetLoadErrorPatterns = [
   /chunkloaderror/i,
   /loading chunk [\w-]+ failed/i,
   /unable to preload css/i,
-  /css_chunk_load_failed/i
+  /css_chunk_load_failed/i,
+  /couldn't resolve component/i
 ]
 
 export function installRouteLoadRecovery(router: Router): void {
@@ -51,32 +47,55 @@ export function recoverRouteAssetLoadError(error: unknown, router: Router, targe
 
   const reloadPath = targetPath || router.currentRoute.value.fullPath || '/'
   if (!shouldReloadRouteAsset(reloadPath)) {
-    console.error(error)
-    message.error('页面资源加载失败，请手动刷新页面后重试')
-    showRouteAssetLoadOverlay({
-      title: '页面资源加载失败',
-      description: '系统资源可能仍在发布或缓存未同步，请刷新页面后重试。',
-      actionLabel: '刷新页面',
-      onAction: () => window.location.reload()
-    })
+    routeAssetReloadScheduled = true
+    showManualRouteAssetRecovery(error)
     return true
   }
 
   routeAssetReloadScheduled = true
-  markRouteAssetReload(reloadPath)
+  if (!markRouteAssetReload(reloadPath)) {
+    showManualRouteAssetRecovery(error)
+    return true
+  }
   const reloadHref = router.resolve(reloadPath).href
-  console.warn('页面资源加载失败，正在刷新前端入口。', error)
-  message.warning('检测到系统前端已更新，正在刷新页面')
+  void showRouteAssetRecoveryAndReload(reloadHref, error).catch((recoveryError) => {
+    console.error('页面资源自动恢复失败，正在直接重新加载。', recoveryError)
+    window.location.assign(reloadHref)
+  })
+  return true
+}
+
+async function showRouteAssetRecoveryAndReload(reloadHref: string, originalError: unknown): Promise<void> {
+  const status = await classifyFrontendBuild(
+    __JUHE_AI_FRONTEND_BUILD_ID__,
+    () => loadRemoteFrontendBuildId()
+  )
+  const updated = status === 'changed'
+
+  console.warn('页面资源加载失败，正在刷新前端入口。', originalError)
+  message.warning(updated ? '系统前端已更新，正在刷新页面' : '页面资源加载失败，正在重新加载页面')
   showRouteAssetLoadOverlay({
-    title: '系统已更新',
-    description: '正在刷新页面以加载最新版本，请稍候。',
-    actionLabel: '立即刷新',
+    title: updated ? '系统已更新' : '页面资源加载失败',
+    description: updated
+      ? '正在刷新页面以加载最新版本，请稍候。'
+      : '正在重新加载页面，请稍候。',
+    actionLabel: updated ? '立即刷新' : '立即重新加载',
     onAction: () => window.location.assign(reloadHref)
   })
   window.setTimeout(() => {
     window.location.assign(reloadHref)
   }, routeAssetReloadDelayMs)
-  return true
+}
+
+function showManualRouteAssetRecovery(error: unknown): void {
+  console.error(error)
+  message.error('页面资源加载失败，请手动刷新页面后重试')
+  showRouteAssetLoadOverlay({
+    title: '页面资源加载失败',
+    description: '自动恢复未成功，请手动刷新页面后重试。',
+    actionLabel: '刷新页面',
+    onAction: () => window.location.reload()
+  })
 }
 
 function showRouteAssetLoadOverlay(options: {
@@ -160,30 +179,4 @@ function routeErrorText(error: unknown): string {
       .join('\n')
   }
   return ''
-}
-
-function shouldReloadRouteAsset(path: string): boolean {
-  const lastReload = readRouteAssetReloadRecord()
-  if (!lastReload) return true
-  return lastReload.path !== path || Date.now() - lastReload.at > routeAssetReloadCooldownMs
-}
-
-function markRouteAssetReload(path: string): void {
-  try {
-    window.sessionStorage.setItem(routeAssetReloadStorageKey, JSON.stringify({ path, at: Date.now() }))
-  } catch {
-    // sessionStorage may be disabled; reloading once is still the correct recovery path.
-  }
-}
-
-function readRouteAssetReloadRecord(): RouteAssetReloadRecord | undefined {
-  try {
-    const text = window.sessionStorage.getItem(routeAssetReloadStorageKey)
-    if (!text) return undefined
-    const value = JSON.parse(text) as Partial<RouteAssetReloadRecord>
-    if (typeof value.path !== 'string' || typeof value.at !== 'number') return undefined
-    return { path: value.path, at: value.at }
-  } catch {
-    return undefined
-  }
 }

@@ -273,6 +273,7 @@ pnpm --filter juhe-ai-backend check:runtime
 
 export VITE_JUHE_AI_API_BASE_URL="$FRONTEND_API_BASE_URL"
 export VITE_JUHE_AI_GATEWAY_BASE_URL="$FRONTEND_GATEWAY_BASE_URL"
+export VITE_JUHE_AI_BUILD_ID="$RELEASE_SOURCE_COMMIT"
 
 echo "==> Building workspace"
 echo "==> Frontend API base URL: $FRONTEND_API_BASE_URL"
