@@ -20,8 +20,10 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
 	"juhe-ai/backend-go/internal/modules/managementaccountdelete"
 	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
+	"juhe-ai/backend-go/internal/modules/managementaccountexport"
 	"juhe-ai/backend-go/internal/modules/managementaccountforceactivate"
 	"juhe-ai/backend-go/internal/modules/managementaccountgroupbinding"
+	"juhe-ai/backend-go/internal/modules/managementaccountlist"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementaccountstatussnapshot"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
@@ -376,6 +378,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountBalanceHandler:                 managementHandlers.MyAccountBalanceHandler,
 		ManagementAccountStatusSnapshotHandler:            managementHandlers.AccountStatusSnapshotHandler,
 		ManagementMyAccountStatusSnapshotHandler:          managementHandlers.MyAccountStatusSnapshotHandler,
+		ManagementAccountListHandler:                      managementHandlers.AccountListHandler,
+		ManagementMyAccountListHandler:                    managementHandlers.MyAccountListHandler,
+		ManagementAccountExportHandler:                    managementHandlers.AccountExportHandler,
+		ManagementMyAccountExportHandler:                  managementHandlers.MyAccountExportHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -570,6 +576,10 @@ type managementAPIHandlers struct {
 	MyAccountBalanceHandler                 http.Handler
 	AccountStatusSnapshotHandler            http.Handler
 	MyAccountStatusSnapshotHandler          http.Handler
+	AccountListHandler                      http.Handler
+	MyAccountListHandler                    http.Handler
+	AccountExportHandler                    http.Handler
+	MyAccountExportHandler                  http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -737,6 +747,11 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	accountBatchEditService := managementaccountbatchedit.NewService(store, store)
 	accountBalanceService := managementaccountbalance.NewService(managementaccountbalance.ServiceOptions{Reader: store, Writer: store})
 	accountStatusSnapshotService := managementaccountstatussnapshot.NewService(store)
+	accountListService := managementaccountlist.NewService(store)
+	accountExportService := managementaccountexport.NewService(managementaccountexport.ServiceOptions{
+		Reader:          store,
+		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+	})
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
 		Details:            accountDetailService,
@@ -973,6 +988,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountBalanceHandler:                 httpapi.NewManagementMyAccountBalanceHandler(accountBalanceService),
 		AccountStatusSnapshotHandler:            httpapi.NewManagementAccountStatusSnapshotHandler(accountStatusSnapshotService),
 		MyAccountStatusSnapshotHandler:          httpapi.NewManagementMyAccountStatusSnapshotHandler(accountStatusSnapshotService),
+		AccountListHandler:                      httpapi.NewManagementAccountListHandler(accountListService),
+		MyAccountListHandler:                    httpapi.NewManagementMyAccountListHandler(accountListService),
+		AccountExportHandler:                    httpapi.NewManagementAccountExportHandler(accountExportService),
+		MyAccountExportHandler:                  httpapi.NewManagementMyAccountExportHandler(accountExportService),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),

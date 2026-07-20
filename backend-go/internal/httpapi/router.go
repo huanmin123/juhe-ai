@@ -159,6 +159,10 @@ type RouterOptions struct {
 	ManagementMyAccountBalanceHandler                 http.Handler
 	ManagementAccountStatusSnapshotHandler            http.Handler
 	ManagementMyAccountStatusSnapshotHandler          http.Handler
+	ManagementAccountListHandler                      http.Handler
+	ManagementMyAccountListHandler                    http.Handler
+	ManagementAccountExportHandler                    http.Handler
+	ManagementMyAccountExportHandler                  http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -413,6 +417,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountBalanceHandler == nil &&
 				opts.ManagementAccountStatusSnapshotHandler == nil &&
 				opts.ManagementMyAccountStatusSnapshotHandler == nil &&
+				opts.ManagementAccountListHandler == nil &&
+				opts.ManagementMyAccountListHandler == nil &&
+				opts.ManagementAccountExportHandler == nil &&
+				opts.ManagementMyAccountExportHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -922,6 +930,18 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountStatusSnapshotHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/status-snapshot", opts.ManagementMyAccountStatusSnapshotHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts", opts.ManagementAccountListHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts", opts.ManagementMyAccountListHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountExportHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/export", opts.ManagementAccountExportHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountExportHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/export", opts.ManagementMyAccountExportHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -1342,6 +1362,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountBalanceHandler != nil ||
 		opts.ManagementAccountStatusSnapshotHandler != nil ||
 		opts.ManagementMyAccountStatusSnapshotHandler != nil ||
+		opts.ManagementAccountListHandler != nil ||
+		opts.ManagementMyAccountListHandler != nil ||
+		opts.ManagementAccountExportHandler != nil ||
+		opts.ManagementMyAccountExportHandler != nil ||
 		opts.ManagementSystemSettingsHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
@@ -1440,6 +1464,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountDeleteHandler != nil ||
 		opts.ManagementAccountBalanceHandler != nil ||
 		opts.ManagementMyAccountBalanceHandler != nil ||
+		opts.ManagementAccountExportHandler != nil ||
+		opts.ManagementMyAccountExportHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||
