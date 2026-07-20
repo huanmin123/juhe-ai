@@ -220,6 +220,8 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
 	ManagementPublicAPILogsHandler                    http.Handler
+	ManagementUsageRecordsHandler                     http.Handler
+	ManagementMyUsageRecordsHandler                   http.Handler
 	ManagementAnnouncementPublicListHandler           http.Handler
 	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementAnnouncementsHandler                    http.Handler
@@ -511,6 +513,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
 				opts.ManagementPublicAPILogsHandler == nil &&
+				opts.ManagementUsageRecordsHandler == nil &&
+				opts.ManagementMyUsageRecordsHandler == nil &&
 				opts.ManagementAnnouncementPublicListHandler == nil &&
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementAnnouncementsHandler == nil &&
@@ -1162,6 +1166,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementUsageRecordsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records", opts.ManagementUsageRecordsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records/{id}", opts.ManagementUsageRecordsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyUsageRecordsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-usage-records", opts.ManagementMyUsageRecordsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-usage-records/{id}", opts.ManagementMyUsageRecordsHandler.ServeHTTP)
+			}
 			if opts.ManagementRuntimeLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
@@ -1565,6 +1577,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
 		opts.ManagementPublicAPILogsHandler != nil ||
+		opts.ManagementUsageRecordsHandler != nil ||
+		opts.ManagementMyUsageRecordsHandler != nil ||
 		opts.ManagementAnnouncementPublicListHandler != nil ||
 		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementAnnouncementsHandler != nil ||

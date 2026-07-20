@@ -790,3 +790,11 @@
 - 后续建议：客户端 IP 列表与详情都不再是待迁移项，当前均为 Go opt-in 已实现。列表真实 PG/Redis / EXPLAIN、列表与详情 Node writer -> Go reader 跨运行时 integration，以及策略 PG/Redis/Asynq production-component smoke 均已通过；仍需真实 Go listener、页面浏览器、allowlist 隔离 fixture、跨 runtime 失效、反向代理单 owner 和回滚证据，统计生产 writer / worker 继续由 Node 单 owner。并行补 blacklist / unblock 安全真实前端 smoke。所有结果仍需与生产单 owner 切流和回滚证据合并评估，不能单独触发 Node 删除。
 - 2026-07-14 GPT 档位计价收口：系统设置从 55 key 恢复为 53 key，Go catalog、service、HTTP、PostgreSQL 固定白名单和 integration smoke 同步删除两项通用倍率；新增 `000043_w5_remove_gpt_service_tier_multipliers.sql` 清理历史设置行并保留可逆 Down。模型缺少精确档位价格时保持未定价，不允许用通用倍率猜测；通用 decimal infrastructure 保留。
 - W2 外部来源 Token secret 该历史切片验证结果：提交 `04c08744d`、`ea3069060`、`5459ae57d` 已记录；targeted tests / race / vet / sqlc、`go test -p=1 ./...`、`go vet ./...`、`go mod tidy -diff`、integration compile、前端 PLAN-0081 regression / typecheck / build 均通过。该切片当时的 `TestW2ManagementExternalIntegrationSourceListPostgresSmoke` 因 Windows Docker 不可用输出 `SKIP`，通用管理 smoke 的任意来源 secret reveal 也未在真实 URL / Cookie 上执行；后续内置 reset 专用 integration 和 loopback Go listener 已覆盖固定内置 Token 的 secret 回读。生产切流和 Node 删除仍待完成。
+
+## 2026-07-21 W6 使用记录只读首轮迁移
+
+- Go 已新增管理端与自助端 `GET /__aisys__/api/(my-)usage-records` 列表、详情路由，复用现有 management session、管理员权限、系统账户读限流和 `no-store` 边界；自助端强制当前系统账户，管理端未指定系统账户时保持 Node 的筛选保护。
+- PostgreSQL reader 直读 Node 当前单写的 `juhe_usage.usage_records`，列表一次关联系统账户、API Key、分组和 AI 账户名称，不做逐行补数；查询固定最多 1000 行窗口、`created_at + id` 稳定排序、多取一条计算 `hasMore`，不执行 `COUNT/SUM/GROUP BY`。
+- 首轮已对齐当天统计时区默认窗口、无效非空日期抑制默认窗口、前缀/精确筛选、`50/200` 分页、管理员系统账户字段、详情原始 request/response snapshot 和成功记录 `costBreakdown`；未新增脱敏、日志清洗或 sanitizer。
+- Node 继续持有 raw usage schema、分区、写入队列、writer、首屏 Redis 缓存和页面增量发布；Go 本块只接管 opt-in 读取，不据此切换 writer、删除 Node 或声明生产接管。账户授权名称搜索的完整 Node 多来源查询、分区详情 pruning、真实 Node writer -> Go reader PostgreSQL smoke、真实 listener/browser/反向代理验收留到后续核对轮。
+- 最小验证已通过：`go test ./internal/modules/managementusagerecords ./internal/store/postgres ./internal/httpapi ./internal/app -count=1`；本块未执行 Docker/testcontainers，不能记录为真实 PostgreSQL 或生产数据通过。
