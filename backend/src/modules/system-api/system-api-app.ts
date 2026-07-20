@@ -73,7 +73,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
   app.use(systemApiPrefix, systemApiReadOnlyMethodMiddleware)
-  app.use(publicApiPrefix, systemApiReadOnlyMethodMiddleware)
   if (!options.bypassSystemApiRateLimitForTest) {
     app.use(systemApiPrefix, systemApiIpRateLimit)
     app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
