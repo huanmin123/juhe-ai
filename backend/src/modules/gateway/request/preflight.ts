@@ -1053,7 +1053,9 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
   endpoint: string
 }): Promise<boolean> {
   if (gatewayModelsRequestHasAuthCredential(input.req)) {
-    const apiKey = await resolveGatewayApiKeyForModelsAsync(input.req as GatewayRuntimeRequest, input.res)
+    const apiKey = await resolveGatewayApiKeyForModelsAsync(input.req as GatewayRuntimeRequest, input.res, {
+      inspectClientIpPolicyAfterRuntime: false
+    })
     if (!apiKey) {
       finalizeGatewayAuthFailureAudit(input.req, input.res, input.auditCapture)
       return true
@@ -1088,13 +1090,6 @@ async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
       })
       return true
     }
-    await recordClientIpErrorCircuitSuccessAsync({
-      systemAccountId: apiKey.system_account_id,
-      apiKeyId: apiKey.id,
-      groupId: apiKey.selected_group_id,
-      clientIp: input.clientIp,
-      endpoint: input.endpoint
-    })
     await sendAuthenticatedModelsGatewayResponse({
       req: input.req,
       res: input.res,
