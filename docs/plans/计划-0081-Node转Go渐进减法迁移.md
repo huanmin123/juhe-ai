@@ -809,4 +809,5 @@
 
 - Go 状态快照服务已接入现有 Redis `AccountConcurrencyReader`，复用与 Node 一致的 namespace、`account-concurrency-v2` key 和过期占用清理脚本；批量快照不再固定返回 `currentConcurrency=0`。
 - Redis 读取成功时 `runtimeSnapshot.accountConcurrencyAvailable=true` 并按账户返回当前并发；读取器未配置或读取失败时保持能力 false、值 0，不把缺失运行态伪装为真实零值。`accountRuntimeAvailabilityAvailable` 继续为 false，因为 Go 尚未迁移 Node runtime availability owner。
+- 授权实例不拥有独立上游并发槽，读取 key 使用 `authorizationInstanceSourceAccountId`；普通账户继续使用自身 ID，避免授权实例错误显示零并发。
 - 最小验证已通过：`go test ./internal/modules/managementaccountstatussnapshot -count=1` 和 `go test ./internal/app ./internal/httpapi -run 'AccountStatusSnapshot|TestNonExistent' -count=1`。真实 Redis 双运行时读、runtime availability、API Key probe/source probe 和完整 availability presentation 继续后置，不能据此声明账户状态摘要完整迁移。

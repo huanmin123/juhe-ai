@@ -161,7 +161,7 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 	if s.accountConcurrency != nil {
 		accountIDs := make([]string, 0, len(rows))
 		for _, row := range rows {
-			accountIDs = append(accountIDs, row.ID)
+			accountIDs = append(accountIDs, concurrencyAccountID(row))
 		}
 		values, readErr := s.accountConcurrency.LoadAccountCurrentConcurrencyByIDs(ctx, accountIDs, s.now())
 		if readErr == nil {
@@ -172,7 +172,7 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 	items := make([]Item, 0, len(rows))
 	for _, row := range rows {
 		item := snapshotItem(row)
-		item.CurrentConcurrency = currentConcurrency[row.ID]
+		item.CurrentConcurrency = currentConcurrency[concurrencyAccountID(row)]
 		items = append(items, item)
 	}
 	return Result{
@@ -182,6 +182,13 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 		},
 		Items: items,
 	}, nil
+}
+
+func concurrencyAccountID(row port.ManagementAccountStatusProjection) string {
+	if sourceID := strings.TrimSpace(row.AuthorizationInstanceSourceAccountID); sourceID != "" {
+		return sourceID
+	}
+	return row.ID
 }
 
 func normalizeIDs(ids []string) ([]string, error) { return ParseAccountIDs(strings.Join(ids, ",")) }

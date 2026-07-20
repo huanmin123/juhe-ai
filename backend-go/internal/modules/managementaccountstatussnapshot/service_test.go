@@ -46,6 +46,23 @@ func TestServiceLoadsCurrentConcurrencyWhenReaderIsAvailable(t *testing.T) {
 	}
 }
 
+func TestServiceLoadsAuthorizedInstanceConcurrencyFromSourceAccount(t *testing.T) {
+	reader := &statusReaderStub{rows: []port.ManagementAccountStatusProjection{{
+		ID: "instance_1", SystemAccountID: "u1", Name: "授权实例", Status: "active", Schedulable: true,
+		AuthorizationInstanceSourceAccountID: "source_1",
+	}}}
+	concurrency := &statusConcurrencyReaderStub{values: map[string]int{"source_1": 4}}
+	s := NewServiceWithOptions(ServiceOptions{Reader: reader, AccountConcurrency: concurrency})
+
+	result, err := s.Get(context.Background(), Input{ActorSystemAccountID: "u1", ActorRole: "user", SelfOnly: true, AccountIDs: []string{"instance_1"}})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(concurrency.ids) != 1 || concurrency.ids[0] != "source_1" || result.Items[0].CurrentConcurrency != 4 {
+		t.Fatalf("ids=%v item=%+v", concurrency.ids, result.Items[0])
+	}
+}
+
 type statusReaderStub struct {
 	input port.ManagementAccountStatusSnapshotInput
 	rows  []port.ManagementAccountStatusProjection
