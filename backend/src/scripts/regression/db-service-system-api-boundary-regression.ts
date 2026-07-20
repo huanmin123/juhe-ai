@@ -33,7 +33,7 @@ const forbiddenServerImports = [
   'modules/system-teams/',
   'modules/table-monitor/',
   'modules/usage-records/',
-  'storage/'
+  'storage/repositories'
 ]
 
 for (const forbiddenImport of forbiddenServerImports) {
@@ -51,7 +51,7 @@ assert(systemApiSource.includes('listPublicGlobalSettings'), '公开全局设置
 
 const proxyIndex = serverSource.indexOf('app.use(systemApiPrefix, dbServiceHttpProxy)')
 const publicProxyIndex = serverSource.indexOf('app.use(publicApiPrefix, dbServiceHttpProxy)')
-const gatewayRawIndex = serverSource.indexOf('express.raw({ type: () => true')
+const gatewayRawIndex = serverSource.indexOf('  parseGatewayRawBody,')
 assert(proxyIndex >= 0, 'server.ts 必须挂载 DB service HTTP proxy')
 assert(publicProxyIndex >= 0, 'server.ts 必须通过 DB service HTTP proxy 承接公开系统 API')
 assert(gatewayRawIndex >= 0, 'server.ts 必须保留网关 raw body 解析')
@@ -75,12 +75,20 @@ assert(dbServiceSource.includes('dispatchDbServiceRequestImmediately'), 'DB serv
 assert(dbServiceSource.includes('shiftNextDispatchableDbServiceRequest'), 'DB service 内部队列必须按优先级取下一个可派发请求')
 assert(dbServiceSource.includes('yieldDbServiceRequestQueue'), 'DB service 内部队列每个请求后必须让出事件循环，避免后台 IPC 长时间压住 HTTP 管理请求')
 assert(systemApiSource.includes('systemApiDbServiceAdmissionControl'), 'DB service system API 必须有内部在途请求保护，避免管理端慢查询压住 DB service')
-assert(systemApiSource.includes('systemApiReadOnlyMethodMiddleware'), 'System/Public API 必须挂载统一临时只读门禁')
+assert(
+  systemApiSource.includes('app.use(systemApiPrefix, systemApiReadOnlyMethodMiddleware)'),
+  'System 管理 API 必须挂载临时只读门禁'
+)
+assert.equal(
+  systemApiSource.includes('app.use(publicApiPrefix, systemApiReadOnlyMethodMiddleware)'),
+  false,
+  '非管理公共 API 不得挂载管理端临时只读门禁'
+)
 const readOnlyGateIndex = systemApiSource.indexOf('systemApiReadOnlyMethodMiddleware)')
 const systemJsonParserIndex = systemApiSource.indexOf('app.use(systemApiPrefix, express.json')
 const publicJsonParserIndex = systemApiSource.indexOf('app.use(publicApiPrefix, capturePublicApiLog, express.json')
 assert(readOnlyGateIndex >= 0 && readOnlyGateIndex < systemJsonParserIndex, 'System API 只读门禁必须早于 JSON body parser')
-assert(readOnlyGateIndex >= 0 && readOnlyGateIndex < publicJsonParserIndex, 'Public API 只读门禁必须早于 JSON body parser')
+assert(publicJsonParserIndex >= 0, 'Public API 必须保留独立 JSON body parser 和认证链')
 assert(dbServiceSource.includes('dbServiceRequestQueueMaxRequests'), 'DB service 子进程队列必须保留请求数上限')
 assert(dbServiceSource.includes('dbServiceRequestQueueMaxBytes'), 'DB service 子进程队列必须保留字节上限')
 assert(

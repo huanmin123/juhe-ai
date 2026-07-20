@@ -223,7 +223,7 @@ JUHE_AI_TRUST_PROXY=true
 
 ## 8. 上游网络代理
 
-临时接管发布时，在候选服务环境显式设置 `JUHE_AI_SYSTEM_API_READ_ONLY=true`，阻止管理端和 Public API 非读取请求写入临时数据库；客户端 `/v1` 继续由候选网关提供服务。正式服务保持 `false`，回切前先验证配置并复核 Nginx/Caddy 入口。
+临时接管发布时，在候选服务环境显式设置 `JUHE_AI_SYSTEM_API_READ_ONLY=true`，只阻止 System 管理 API 的管理写操作；账户测试、测试会话、余额探测/刷新、Public API、客户端 `/v1` 和 `/__aiinternal__` 内部桥接继续由各自链路处理。正式服务保持 `false`，回切前先验证配置并复核 Nginx/Caddy 入口。
 
 裸机同机 sing-box：
 
