@@ -45,6 +45,8 @@ async function main(): Promise<void> {
   app.disable('x-powered-by')
   app.use(modelCatalogSnapshotRebuildInternalPrefix, createModelCatalogSnapshotRebuildRouter({
     secret,
+    schemaVersion: 63,
+    checkReady: async () => {},
     rebuildAll: async () => {
       const result = await reconcileModelCatalogSnapshotScopeAsync({ scope: 'all' })
       if (result && !result.acknowledged) {

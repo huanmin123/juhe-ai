@@ -16,14 +16,23 @@ import {
 } from '../../modules/internal-api/model-catalog-snapshot-rebuild.routes.js'
 
 const secret = 'model-catalog-snapshot-rebuild-http-secret'
+const readinessSignatureDomain = 'juhe-ai:model-catalog-snapshot-readiness:v1\n'
+const readinessPath = '/__aiinternal__/v1/model-catalog-snapshots/readyz'
 const rebuildCalls: Array<{ scope: 'all' | 'personal'; systemAccountId?: string }> = []
 const handledErrors: unknown[] = []
+let readinessChecks = 0
+let readinessFailure: Error | undefined
 let deferNextAll = false
 let resolveDeferredAll: (() => void) | undefined
 const app = express()
 
-app.use(modelCatalogSnapshotRebuildInternalPrefix, createModelCatalogSnapshotRebuildRouter({
+const routerOptions = {
   secret,
+  schemaVersion: 63,
+  checkReady: async () => {
+    readinessChecks += 1
+    if (readinessFailure) throw readinessFailure
+  },
   rebuildAll: async () => {
     rebuildCalls.push({ scope: 'all' })
     if (deferNextAll) {
@@ -33,11 +42,12 @@ app.use(modelCatalogSnapshotRebuildInternalPrefix, createModelCatalogSnapshotReb
       })
     }
   },
-  rebuildPersonal: async (systemAccountId) => {
+  rebuildPersonal: async (systemAccountId: string) => {
     rebuildCalls.push({ scope: 'personal', systemAccountId })
     if (systemAccountId === 'throws') throw new Error('snapshot rebuild failed')
   }
-}))
+}
+app.use(modelCatalogSnapshotRebuildInternalPrefix, createModelCatalogSnapshotRebuildRouter(routerOptions))
 app.use((_req, res) => {
   res.status(404).json({ message: '资源不存在' })
 })
@@ -56,6 +66,10 @@ nonLoopbackApp.use(modelCatalogSnapshotRebuildInternalPrefix, (req, _res, next) 
   next()
 }, createModelCatalogSnapshotRebuildRouter({
   secret,
+  schemaVersion: 63,
+  checkReady: async () => {
+    nonLoopbackCalls.push('ready')
+  },
   rebuildAll: async () => {
     nonLoopbackCalls.push('all')
   },
@@ -74,6 +88,49 @@ try {
   const nonLoopbackBaseUrl = `http://127.0.0.1:${serverPort(nonLoopbackServer)}`
 
   assertSignatureGoldenVector()
+
+  const rebuildCallsBeforeReady = rebuildCalls.length
+  const ready = await readinessRequest(baseUrl)
+  assert.equal(ready.statusCode, 200)
+  assert.equal(ready.headers['cache-control'], 'no-store')
+  assert.deepEqual(parseJson(ready), {
+    ready: true,
+    component: 'model-catalog-snapshot-rebuild',
+    contractVersion: 1,
+    databaseDriver: 'postgres',
+    schemaVersion: 63
+  })
+  assert.equal(readinessChecks, 1)
+  assert.equal(rebuildCalls.length, rebuildCallsBeforeReady, 'readiness 不得触发快照重建')
+
+  assert.equal((await readinessRequest(baseUrl, { omitSignature: true })).statusCode, 401)
+  assert.equal((await readinessRequest(baseUrl, { signature: `v1=${'0'.repeat(64)}` })).statusCode, 401)
+  assert.equal(readinessChecks, 1, '认证失败不得执行依赖检查')
+
+  assert.equal((await readinessRequest(nonLoopbackBaseUrl)).statusCode, 403)
+  assert.deepEqual(nonLoopbackCalls, [], '非 loopback readiness 不得执行依赖检查或重建')
+
+  for (const requestOptions of [
+    { method: 'POST' },
+    { method: 'HEAD' },
+    { method: 'OPTIONS' },
+    { path: '/__AIINTERNAL__/v1/model-catalog-snapshots/readyz' },
+    { path: '/__aiinternal__/v1/Model-catalog-snapshots/readyz' },
+    { path: '/__aiinternal__/v1/model-catalog-snapshots/readyz/' }
+  ]) {
+    assert.equal((await readinessRequest(baseUrl, requestOptions)).statusCode, 404)
+  }
+  assert.equal(readinessChecks, 1, 'strict path 与未知 method 不得执行依赖检查')
+
+  readinessFailure = new Error('sensitive postgres readiness detail')
+  const unavailable = await readinessRequest(baseUrl)
+  readinessFailure = undefined
+  assert.equal(unavailable.statusCode, 503)
+  assert.equal(unavailable.headers['cache-control'], 'no-store')
+  assert.deepEqual(parseJson(unavailable), { ready: false, code: 'dependency_unavailable' })
+  assert.equal(unavailable.body.includes(Buffer.from('sensitive')), false, '503 不得暴露原始错误')
+  assert.equal(handledErrors.length, 0, 'readiness 依赖失败不得进入通用 500 middleware')
+  assert.equal(rebuildCalls.length, rebuildCallsBeforeReady, '失败 readiness 不得触发快照重建')
   assertServerWiring()
 
   const all = await request(baseUrl, Buffer.from('{"scope":"all"}'))
@@ -199,16 +256,51 @@ function assertSignatureGoldenVector(): void {
   const independent = `v1=${createHmac('sha256', goldenSecret).update(domain, 'utf8').update(body).digest('hex')}`
   assert.equal(modelCatalogSnapshotRebuildSignatureDomain, domain)
   assert.equal(createModelCatalogSnapshotRebuildSignature(goldenSecret, body), independent)
+  const readinessSignature = createReadinessSignature(goldenSecret)
+  assert.equal(readinessSignature, `v1=${createHmac('sha256', goldenSecret)
+    .update(readinessSignatureDomain, 'utf8')
+    .update(Buffer.alloc(0))
+    .digest('hex')}`)
+  assert.notEqual(readinessSignature, createModelCatalogSnapshotRebuildSignature(goldenSecret, Buffer.alloc(0)))
 }
 
 function assertServerWiring(): void {
   const source = readFileSync(new URL('../../server.ts', import.meta.url), 'utf8')
+  const routeSource = readFileSync(new URL('../../modules/internal-api/model-catalog-snapshot-rebuild.routes.ts', import.meta.url), 'utf8')
   const snapshotServiceSource = readFileSync(new URL('../../modules/model-pricing/published-model-catalog.service.ts', import.meta.url), 'utf8')
   const snapshotMountIndex = source.indexOf('createModelCatalogSnapshotRebuildRouter({')
   const accountMountIndex = source.indexOf('mountAccountHealthCheckDispatchBridge(app, {')
   assert(snapshotMountIndex >= 0, 'server.ts 必须装配模型目录快照重建路由')
   assert(accountMountIndex > snapshotMountIndex, '模型目录快照重建路由必须先于旧 internal router 装配')
   assert(source.includes("if (runtimeConfig.databaseDriver === 'postgres')"), '快照重建 bridge 只能在 PostgreSQL 共存迁移场景挂载')
+  assert(source.includes('checkReady: async () => {'), 'server.ts 必须注入 readiness 只读检查')
+  assert(source.includes('schemaVersion: EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION'), 'server.ts 必须从 Goose schema gate 常量注入 readiness schemaVersion')
+  assert(routeSource.includes('schemaVersion: options.schemaVersion'), 'readiness 成功体必须使用 route options 注入的 schemaVersion')
+  assert.equal(routeSource.includes('schemaVersion: 63'), false, 'route 不得硬编码 Goose schema 版本')
+  assert.equal(routeSource.includes('ModelCatalogSnapshotRebuildOnlyRouterOptions'), false, 'route options 不得保留 rebuild-only 向下兼容分支')
+  assert.equal(routeSource.includes('schemaVersion?: never'), false, 'schemaVersion 必须始终为必填依赖')
+  assert.equal(routeSource.includes('checkReady?: never'), false, 'checkReady 必须始终为必填依赖')
+  assert(source.includes('getPostgresPool()'), 'readiness 必须复用运行期 PostgreSQL pool')
+  assert(source.includes('checkPostgresGooseSchemaVersion(pool)'), 'readiness 必须复用 Goose schema 精确校验 helper')
+  const relationQueryStart = source.indexOf('const relations = await pool.query(`')
+  const relationQueryEnd = source.indexOf('`)', relationQueryStart)
+  assert(relationQueryStart >= 0 && relationQueryEnd > relationQueryStart, 'readiness 必须使用单条 relation SELECT')
+  const relationQuery = source.slice(relationQueryStart, relationQueryEnd)
+  for (const [relation, privilege, alias] of [
+    ['juhe_business.model_catalog_snapshot_rebuild_requests', 'SELECT', 'rebuild_requests_can_select'],
+    ['juhe_business.model_catalog_snapshot_rebuild_requests', 'DELETE', 'rebuild_requests_can_delete'],
+    ['juhe_business.gateway_model_catalog_snapshots', 'SELECT', 'snapshots_can_select'],
+    ['juhe_business.gateway_model_catalog_snapshots', 'INSERT', 'snapshots_can_insert'],
+    ['juhe_business.gateway_model_catalog_snapshots', 'UPDATE', 'snapshots_can_update'],
+    ['juhe_business.gateway_model_catalog_snapshots', 'DELETE', 'snapshots_can_delete']
+  ] as const) {
+    assert(
+      relationQuery.includes(`COALESCE(has_table_privilege(to_regclass('${relation}'), '${privilege}'), FALSE) AS ${alias}`),
+      `${relation} 必须在同一只读 SELECT 中校验 ${privilege} 权限`
+    )
+    assert(source.includes(`relationState.${alias} !== true`), `${alias} 非 true 时 readiness 必须失败`)
+  }
+  assert.doesNotMatch(relationQuery, /\b(?:INSERT\s+INTO|UPDATE\s+juhe_|DELETE\s+FROM)\b/i, 'readiness 不得执行写探针')
   assert(source.includes("reconcileModelCatalogSnapshotScopeAsync({ scope: 'all' })"), 'all 必须消费持久 dirty generation')
   assert(source.includes("reconcileModelCatalogSnapshotScopeAsync({ scope: 'personal', systemAccountId })"), 'personal 必须消费对应 owner 的持久 dirty generation')
   assert(source.includes('if (result && !result.acknowledged) throw new Error'), 'generation 未确认时 bridge 不得返回成功')
@@ -245,6 +337,27 @@ interface RequestOptions {
   omitSignature?: boolean
   omitContentType?: boolean
   headers?: http.OutgoingHttpHeaders
+}
+
+function createReadinessSignature(signatureSecret: string): string {
+  return `v1=${createHmac('sha256', signatureSecret)
+    .update(readinessSignatureDomain, 'utf8')
+    .update(Buffer.alloc(0))
+    .digest('hex')}`
+}
+
+function readinessRequest(baseUrl: string, options: RequestOptions = {}): Promise<{
+  statusCode: number
+  headers: http.IncomingHttpHeaders
+  body: Buffer
+}> {
+  return request(baseUrl, Buffer.alloc(0), {
+    path: readinessPath,
+    method: 'GET',
+    omitContentType: true,
+    signature: createReadinessSignature(secret),
+    ...options
+  })
 }
 
 function request(baseUrl: string, body: Buffer, options: RequestOptions = {}): Promise<{

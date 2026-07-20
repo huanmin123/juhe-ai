@@ -11,8 +11,10 @@ import { isLoopbackRemoteAddress } from './account-health-check-dispatch.routes.
 
 export const modelCatalogSnapshotRebuildInternalPrefix = '/__aiinternal__'
 export const modelCatalogSnapshotRebuildSignatureDomain = 'juhe-ai:model-catalog-snapshot-rebuild:v1\n'
+export const modelCatalogSnapshotRebuildReadinessSignatureDomain = 'juhe-ai:model-catalog-snapshot-readiness:v1\n'
 
 const modelCatalogSnapshotRebuildPath = '/v1/model-catalog-snapshots/rebuild'
+const modelCatalogSnapshotRebuildReadinessPath = '/v1/model-catalog-snapshots/readyz'
 const rawBodyLimitBytes = 1024
 const signaturePattern = /^v1=([0-9a-f]{64})$/
 
@@ -24,6 +26,8 @@ type BodyParserError = Error & {
 
 export interface ModelCatalogSnapshotRebuildRouterOptions {
   secret: string
+  schemaVersion: number
+  checkReady: () => Promise<void>
   rebuildAll: () => Promise<unknown>
   rebuildPersonal: (systemAccountId: string) => Promise<unknown>
 }
@@ -36,6 +40,13 @@ export function createModelCatalogSnapshotRebuildSignature(secret: string, rawBo
   return `v1=${createHmac('sha256', secret)
     .update(modelCatalogSnapshotRebuildSignatureDomain, 'utf8')
     .update(rawBody)
+    .digest('hex')}`
+}
+
+export function createModelCatalogSnapshotRebuildReadinessSignature(secret: string): string {
+  return `v1=${createHmac('sha256', secret)
+    .update(modelCatalogSnapshotRebuildReadinessSignatureDomain, 'utf8')
+    .update(Buffer.alloc(0))
     .digest('hex')}`
 }
 
@@ -52,6 +63,47 @@ export function createModelCatalogSnapshotRebuildRouter(
     }
     next()
   })
+
+  router.all(
+    modelCatalogSnapshotRebuildReadinessPath,
+    (req, res, next) => {
+      if (req.method !== 'GET') {
+        res.status(404).json({ message: '资源不存在' })
+        return
+      }
+      next()
+    },
+    requireLoopback,
+    (req: Request, res: Response) => {
+      if (!hasValidReadinessSignature(req, options.secret)) {
+        res.status(401).json({ message: '认证失败' })
+        return
+      }
+
+      let readiness: Promise<void>
+      try {
+        readiness = options.checkReady()
+      } catch {
+        res.status(503).json({ ready: false, code: 'dependency_unavailable' })
+        return
+      }
+      void readiness.then(() => {
+        if (!res.headersSent && !res.writableEnded) {
+          res.status(200).json({
+            ready: true,
+            component: 'model-catalog-snapshot-rebuild',
+            contractVersion: 1,
+            databaseDriver: 'postgres',
+            schemaVersion: options.schemaVersion
+          })
+        }
+      }).catch(() => {
+        if (!res.headersSent && !res.writableEnded) {
+          res.status(503).json({ ready: false, code: 'dependency_unavailable' })
+        }
+      })
+    }
+  )
 
   router.post(
     modelCatalogSnapshotRebuildPath,
@@ -154,6 +206,16 @@ function hasValidSignature(req: Request, secret: string, rawBody: Buffer): boole
   if (!match) return false
   const providedDigest = Buffer.from(match[1]!, 'hex')
   const expectedDigest = Buffer.from(createModelCatalogSnapshotRebuildSignature(secret, rawBody).slice(3), 'hex')
+  return timingSafeEqual(providedDigest, expectedDigest)
+}
+
+function hasValidReadinessSignature(req: Request, secret: string): boolean {
+  const signature = req.headers['x-juhe-ai-signature']
+  if (typeof signature !== 'string') return false
+  const match = signaturePattern.exec(signature)
+  if (!match) return false
+  const providedDigest = Buffer.from(match[1]!, 'hex')
+  const expectedDigest = Buffer.from(createModelCatalogSnapshotRebuildReadinessSignature(secret).slice(3), 'hex')
   return timingSafeEqual(providedDigest, expectedDigest)
 }
 

@@ -64,7 +64,12 @@ import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
-import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
+import {
+  EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
+  checkPostgresGooseSchemaVersion,
+  enforcePostgresGooseSchemaGate
+} from './storage/postgres-goose-schema-gate.js'
+import { getPostgresPool } from './storage/postgres-client.js'
 import {
   prewarmPublishedModelCatalogSnapshotsAsync
 } from './modules/model-pricing/published-model-catalog.service.js'
@@ -220,6 +225,35 @@ const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegat
 if (runtimeConfig.databaseDriver === 'postgres') {
   app.use(modelCatalogSnapshotRebuildInternalPrefix, createModelCatalogSnapshotRebuildRouter({
     secret: runtimeConfig.secret,
+    schemaVersion: EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
+    checkReady: async () => {
+      const pool = await getPostgresPool()
+      await checkPostgresGooseSchemaVersion(pool)
+      const relations = await pool.query(`
+        SELECT
+          to_regclass('juhe_business.model_catalog_snapshot_rebuild_requests') IS NOT NULL AS rebuild_requests_exists,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.model_catalog_snapshot_rebuild_requests'), 'SELECT'), FALSE) AS rebuild_requests_can_select,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.model_catalog_snapshot_rebuild_requests'), 'DELETE'), FALSE) AS rebuild_requests_can_delete,
+          to_regclass('juhe_business.gateway_model_catalog_snapshots') IS NOT NULL AS snapshots_exists,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'SELECT'), FALSE) AS snapshots_can_select,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'INSERT'), FALSE) AS snapshots_can_insert,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'UPDATE'), FALSE) AS snapshots_can_update,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'DELETE'), FALSE) AS snapshots_can_delete
+      `)
+      const relationState = relations.rows[0]
+      if (
+        relationState?.rebuild_requests_exists !== true
+        || relationState.rebuild_requests_can_select !== true
+        || relationState.rebuild_requests_can_delete !== true
+        || relationState.snapshots_exists !== true
+        || relationState.snapshots_can_select !== true
+        || relationState.snapshots_can_insert !== true
+        || relationState.snapshots_can_update !== true
+        || relationState.snapshots_can_delete !== true
+      ) {
+        throw new Error('模型目录快照重建依赖关系或权限不可用')
+      }
+    },
     rebuildAll: async () => {
       const result = await reconcileModelCatalogSnapshotScopeAsync({ scope: 'all' })
       if (result && !result.acknowledged) throw new Error('模型目录快照 dirty generation 已变化，当前重建未确认')

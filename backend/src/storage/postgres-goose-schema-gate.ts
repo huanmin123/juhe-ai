@@ -66,6 +66,13 @@ export interface PostgresGooseSchemaGatePool {
   end(): Promise<void>
 }
 
+export interface PostgresGooseSchemaReadPool {
+  query(
+    text: string,
+    values?: readonly unknown[]
+  ): Promise<{ rows: unknown[] }>
+}
+
 type PostgresGooseSchemaGatePoolFactory = (
   config: PostgresGooseSchemaGatePoolConfig
 ) => PostgresGooseSchemaGatePool | Promise<PostgresGooseSchemaGatePool>
@@ -92,6 +99,20 @@ export function validatePostgresGooseSchemaState(state: PostgresGooseSchemaState
   }
 }
 
+export async function checkPostgresGooseSchemaVersion(
+  pool: PostgresGooseSchemaReadPool
+): Promise<void> {
+  const currentResult = await pool.query(POSTGRES_GOOSE_CURRENT_VERSION_QUERY)
+  const newerAppliedResult = await pool.query(
+    POSTGRES_GOOSE_NEWER_APPLIED_VERSION_QUERY,
+    [EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION]
+  )
+  validatePostgresGooseSchemaState({
+    currentRows: currentResult.rows as PostgresGooseSchemaRow[],
+    newerAppliedRows: newerAppliedResult.rows as PostgresGooseSchemaRow[]
+  })
+}
+
 export async function enforcePostgresGooseSchemaGate(
   config: PostgresGooseSchemaGateConfig = runtimeConfig,
   createPool: PostgresGooseSchemaGatePoolFactory = createPostgresGooseSchemaGatePool
@@ -116,15 +137,7 @@ export async function enforcePostgresGooseSchemaGate(
   let operationFailed = false
   let operationError: unknown
   try {
-    const currentResult = await pool.query(POSTGRES_GOOSE_CURRENT_VERSION_QUERY)
-    const newerAppliedResult = await pool.query(
-      POSTGRES_GOOSE_NEWER_APPLIED_VERSION_QUERY,
-      [EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION]
-    )
-    validatePostgresGooseSchemaState({
-      currentRows: currentResult.rows,
-      newerAppliedRows: newerAppliedResult.rows
-    })
+    await checkPostgresGooseSchemaVersion(pool)
   } catch (error) {
     operationFailed = true
     operationError = error
