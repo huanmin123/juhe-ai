@@ -913,7 +913,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   logRequestStage('model.capability_filter', {
     traceId,
     groupId,
-    outcome: candidateFilter.outcome,
+    filterOutcome: candidateFilter.outcome,
     candidateAccountCount: candidateFilter.outcome === 'accounts' ? candidateFilter.accounts.length : 0,
     requestedModel: requestModel(req),
     endpointFamily: gatewayRequestEndpointFamily(req)

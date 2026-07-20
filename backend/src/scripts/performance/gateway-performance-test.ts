@@ -9,8 +9,9 @@ import cors from 'cors'
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { logger } from '../../shared/logger.js'
+import { closeLogger, logger, logPublisherStats } from '../../shared/logger.js'
 import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes } from '../../modules/gateway/request/body.js'
+import { setRuntimeLogLineSink } from '../../modules/runtime-logs/runtime-log-stream.js'
 
 type ScenarioName = 'models' | 'responses' | 'chat' | 'responses_stream'
 
@@ -31,6 +32,7 @@ interface PerfConfig {
   promptBytes: number
   p95TargetMs: number
   auditCaptureMode: 'default' | 'metadata_only'
+  logLevel: string
   reportPath?: string
 }
 
@@ -205,9 +207,12 @@ const [
 
 usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
 auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
+let indexedRuntimeLogLines = 0
+setRuntimeLogLineSink(() => { indexedRuntimeLogLines += 1 })
 
 async function main(): Promise<void> {
   const config = loadConfig()
+  logger.level = config.logLevel
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
   const upstreamRuntime: UpstreamRuntime = {
@@ -263,6 +268,7 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
     closeDatabases()
+    await closeLogger()
     await removeTempRootWithRetry(tempRoot)
   }
 }
@@ -285,6 +291,7 @@ function loadConfig(): PerfConfig {
     promptBytes: envInteger('JUHE_AI_PERF_PROMPT_BYTES', 64, 1, Math.max(1, gatewayRawBodyHardLimitBytes - 64 * 1024)),
     p95TargetMs: envInteger('JUHE_AI_PERF_P95_TARGET_MS', 1000, 1, 600000),
     auditCaptureMode: auditCaptureMode(envText('JUHE_AI_PERF_AUDIT_CAPTURE_MODE', 'default')),
+    logLevel: envText('JUHE_AI_PERF_LOG_LEVEL', 'silent'),
     reportPath: optionalEnvText('JUHE_AI_PERF_REPORT_PATH')
   }
 }
@@ -833,6 +840,8 @@ function buildSummary(
     gateway: {
       connections: connectionStats(gatewayConnections)
     },
+    logging: logPublisherStats(),
+    indexedRuntimeLogLines,
     datasetDatabase: {
       usageRecords: countRows('usage_records'),
       auditLogs: countRows('audit_logs'),

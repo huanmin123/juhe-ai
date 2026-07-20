@@ -9,6 +9,7 @@ import {
   captureExpectedFailureContext,
   captureUnexpectedFailureContext
 } from '../../shared/logging/log-failure-context.js'
+import { buildRequestStageLogFields } from '../../shared/request-context.js'
 
 const event: LogEventEnvelope = createLogEventEnvelope({
   level: 'info',
@@ -61,5 +62,17 @@ const expected = captureExpectedFailureContext('quota_exceeded', {
 })
 assert.equal(expected.failureClass, 'expected')
 assert.equal(expected.decisionInputs.current, 101)
+
+const reserved = buildRequestStageLogFields(undefined, 'model.capability_filter', {
+  traceId: 'trace-stage-1',
+  event: 'overridden',
+  stage: 'overridden',
+  outcome: 'accounts'
+}, 'success', 100, 110)
+assert.equal(reserved.event, 'gateway.request.stage')
+assert.equal(reserved.stage, 'model.capability_filter')
+assert.equal(reserved.outcome, 'success')
+assert.equal(reserved.traceId, 'trace-stage-1')
+assert.equal(reserved.durationMs, 10)
 
 console.log('日志事件契约回归通过')

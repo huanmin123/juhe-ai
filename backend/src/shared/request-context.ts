@@ -111,21 +111,40 @@ export function logRequestStage(
 ): void {
   const context = getRequestContext()
   const endedAt = Date.now()
-  ;(context?.logger ?? logger).info({
+  ;(context?.logger ?? logger).info(buildRequestStageLogFields(
+    context,
+    stage,
+    fields,
+    outcome,
+    stageStartedAt,
+    endedAt
+  ), '请求阶段完成')
+}
+
+export function buildRequestStageLogFields(
+  context: RequestContext | undefined,
+  stage: string,
+  fields: Record<string, unknown>,
+  outcome: 'success' | 'expected_failure' | 'unexpected_failure' | 'aborted',
+  stageStartedAt: number,
+  endedAt: number
+): Record<string, unknown> {
+  const suppliedTraceId = typeof fields.traceId === 'string' ? fields.traceId : undefined
+  return {
+    ...fields,
     event: 'gateway.request.stage',
     version: LOG_EVENT_VERSION,
     service: 'juhe-ai',
     role: runtimeConfig.processRole,
-    traceId: context?.traceId,
+    traceId: context?.traceId ?? suppliedTraceId,
     stage,
     outcome,
     durationMs: Math.max(0, endedAt - stageStartedAt),
     ...(context ? {
       startedOffsetMs: Math.max(0, stageStartedAt - context.startedAt),
       endedOffsetMs: Math.max(0, endedAt - context.startedAt)
-    } : {}),
-    ...fields
-  }, '请求阶段完成')
+    } : {})
+  }
 }
 
 export function withRequestContext<T>(context: RequestContext, handler: () => T): T {

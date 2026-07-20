@@ -21,11 +21,13 @@ try {
   })
   await write(client, Buffer.from('{"event":"one"}\n'))
   await write(client, Buffer.from('{"event":"two"}\n'))
+  await writeBatch(client, [Buffer.from('{"event":"three"}\n'), Buffer.from('{"event":"four"}\n')])
   await client.close()
   const content = readFileSync(join(directory, 'worker-test.log'), 'utf8')
   assert.match(content, /"event":"one"/)
   assert.match(content, /"event":"two"/)
-  assert.equal(indexedChunks.length, 2)
+  assert.match(content, /"event":"four"/)
+  assert.equal(indexedChunks.length, 4)
   console.log('日志 writer worker 回归通过')
 } finally {
   rmSync(directory, { recursive: true, force: true })
@@ -33,4 +35,8 @@ try {
 
 function write(client: LogWriterWorkerClient, chunk: Buffer): Promise<void> {
   return new Promise((resolve, reject) => client.write(chunk, (error) => error ? reject(error) : resolve()))
+}
+
+function writeBatch(client: LogWriterWorkerClient, chunks: Buffer[]): Promise<void> {
+  return new Promise((resolve, reject) => client.writeBatch(chunks, (error) => error ? reject(error) : resolve()))
 }

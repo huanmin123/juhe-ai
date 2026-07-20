@@ -374,7 +374,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   logRequestStage('account.dispatch_candidates', {
     traceId: input.usageContext.traceId,
     groupId: input.groupId,
-    outcome: readyPreparation.outcome,
+    preparationOutcome: readyPreparation.outcome,
     candidateAccountCount: readyPreparation.outcome === 'ready' ? readyPreparation.accounts.length : 0
   }, readyPreparation.outcome === 'ready' ? 'success' : 'expected_failure', candidatePreparationStartedAt)
   if (readyPreparation.outcome !== 'ready') {

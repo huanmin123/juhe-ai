@@ -288,11 +288,7 @@ class MultiDestinationLogStream extends Writable {
       maxFailureEvents: 2_000,
       maxBytes: 64 * 1024 * 1024,
       maxFailureBytes: 8 * 1024 * 1024,
-      destinations: destinations.map((destination) => ({
-        write: (chunk, callback) => {
-          destination.write(chunk, (error?: Error | null) => callback(error ?? undefined))
-        }
-      }))
+      destinations
     })
   }
 

@@ -4,6 +4,7 @@ export type LogPriority = 'normal' | 'failure'
 
 export interface AsyncLogDestination {
   write(chunk: Buffer, callback: (error?: Error | null) => void): void
+  writeBatch?(chunks: Buffer[], callback: (error?: Error | null) => void): void
 }
 
 export interface AsyncLogPublisherOptions {
@@ -98,10 +99,8 @@ export class AsyncLogPublisher {
     this.flushing = true
     try {
       while (this.failureQueue.length > 0 || this.normalQueue.length > 0) {
-        const item = this.failureQueue.shift() ?? this.normalQueue.shift()!
-        this.pendingBytes -= item.chunk.byteLength
-        if (item.priority === 'failure') this.pendingFailureBytes -= item.chunk.byteLength
-        await this.writeToDestinations(item.chunk)
+        const items = this.takeBatch(256)
+        await this.writeBatchToDestinations(items.map((item) => item.chunk))
       }
     } finally {
       this.flushing = false
@@ -112,19 +111,48 @@ export class AsyncLogPublisher {
     }
   }
 
-  private async writeToDestinations(chunk: Buffer): Promise<void> {
-    for (const destination of this.options.destinations) {
-      await new Promise<void>((resolve) => {
-        try {
-          destination.write(chunk, (error) => {
-            if (error) this.destinationErrors += 1
-            resolve()
-          })
-        } catch {
-          this.destinationErrors += 1
-          resolve()
-        }
-      })
+  private takeBatch(maxItems: number): QueueItem[] {
+    const items: QueueItem[] = []
+    while (items.length < maxItems && (this.failureQueue.length > 0 || this.normalQueue.length > 0)) {
+      const item = this.failureQueue.shift() ?? this.normalQueue.shift()!
+      items.push(item)
+      this.pendingBytes -= item.chunk.byteLength
+      if (item.priority === 'failure') this.pendingFailureBytes -= item.chunk.byteLength
     }
+    return items
+  }
+
+  private async writeBatchToDestinations(chunks: Buffer[]): Promise<void> {
+    for (const destination of this.options.destinations) {
+      if (destination.writeBatch) {
+        await new Promise<void>((resolve) => {
+          try {
+            destination.writeBatch!(chunks, (error) => {
+              if (error) this.destinationErrors += 1
+              resolve()
+            })
+          } catch {
+            this.destinationErrors += 1
+            resolve()
+          }
+        })
+        continue
+      }
+      for (const chunk of chunks) await this.writeToDestination(destination, chunk)
+    }
+  }
+
+  private async writeToDestination(destination: AsyncLogDestination, chunk: Buffer): Promise<void> {
+    await new Promise<void>((resolve) => {
+      try {
+        destination.write(chunk, (error) => {
+          if (error) this.destinationErrors += 1
+          resolve()
+        })
+      } catch {
+        this.destinationErrors += 1
+        resolve()
+      }
+    })
   }
 }

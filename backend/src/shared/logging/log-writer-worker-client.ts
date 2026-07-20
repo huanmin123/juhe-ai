@@ -20,6 +20,7 @@ interface WorkerReply {
   type: 'ack' | 'closed' | 'error' | 'line'
   error?: string
   chunk?: Uint8Array
+  chunks?: Uint8Array[]
 }
 
 const currentModulePath = fileURLToPath(import.meta.url)
@@ -46,6 +47,21 @@ export class LogWriterWorkerClient {
   }
 
   write(chunk: Buffer, callback: (error?: Error | null) => void): void {
+    this.postWriteMessage({ type: 'write', chunk }, callback)
+  }
+
+  writeBatch(chunks: Buffer[], callback: (error?: Error | null) => void): void {
+    if (chunks.length === 0) {
+      callback()
+      return
+    }
+    this.postWriteMessage({ type: 'write_batch', chunks }, callback)
+  }
+
+  private postWriteMessage(
+    payload: { type: 'write'; chunk: Buffer } | { type: 'write_batch'; chunks: Buffer[] },
+    callback: (error?: Error | null) => void
+  ): void {
     if (this.closed) {
       callback(new Error('日志 writer worker 已关闭'))
       return
@@ -54,7 +70,7 @@ export class LogWriterWorkerClient {
     this.worker.ref()
     this.callbacks.set(id, callback)
     try {
-      this.worker.postMessage({ type: 'write', id, chunk })
+      this.worker.postMessage({ ...payload, id })
     } catch (error) {
       this.callbacks.delete(id)
       callback(error instanceof Error ? error : new Error(String(error)))
@@ -75,6 +91,12 @@ export class LogWriterWorkerClient {
   private handleMessage(message: WorkerReply): void {
     if (message.type === 'line' && message.chunk) {
       this.onLine?.(Buffer.from(message.chunk.buffer, message.chunk.byteOffset, message.chunk.byteLength))
+      return
+    }
+    if (message.type === 'line' && message.chunks) {
+      for (const chunk of message.chunks) {
+        this.onLine?.(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+      }
       return
     }
     if (message.type === 'ack' && message.id !== undefined) {
