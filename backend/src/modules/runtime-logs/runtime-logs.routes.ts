@@ -12,6 +12,20 @@ import { requireAdmin } from '../auth/auth.middleware.js'
 export const runtimeLogsRouter = Router()
 const runtimeLogRouteTimeoutMs = 120_000
 
+export interface RuntimeLogFileConsumerHttpDto {
+  retentionDays: number
+  discoveredFileCount: number
+  pendingFileCount: number
+  pendingBytes: number
+  oldestPendingMtime?: string
+  currentFile?: string
+  currentOffset: number
+  lastReadAt?: string
+  lastCommitAt?: string
+  lastError?: string
+  protectedRotatedFileCount: number
+}
+
 runtimeLogsRouter.use((req, res, next) => {
   req.setTimeout(runtimeLogRouteTimeoutMs)
   res.setTimeout(runtimeLogRouteTimeoutMs)
@@ -128,10 +142,9 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
 
 export function runtimeLogFileConsumerRuntimeDto(
   runtime: Partial<BackgroundWorkerRuntimeLogQueueRuntime> | undefined
-): BackgroundWorkerRuntimeLogQueueRuntime | null {
+): RuntimeLogFileConsumerHttpDto | null {
   if (!runtime) return null
   return {
-    queueLength: runtime.queueLength ?? 0,
     retentionDays: runtime.retentionDays ?? 0,
     discoveredFileCount: runtime.discoveredFileCount ?? 0,
     pendingFileCount: runtime.pendingFileCount ?? 0,

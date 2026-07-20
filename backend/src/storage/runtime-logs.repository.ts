@@ -90,6 +90,11 @@ export interface RuntimeLogFileCursorInput {
   lastErrorMessage?: string
 }
 
+export interface RuntimeLogFileCursorAsyncDependencies {
+  getPostgresClient?: () => Promise<DatabaseClient>
+  now?: () => string
+}
+
 type RuntimeLogRow = Record<string, unknown>
 type RuntimeLogFilterValue = string | number
 type RuntimeLogFacetInput = { time: string; level: string; event?: string }
@@ -505,11 +510,14 @@ export function getRuntimeLogFileCursor(logFile: string): RuntimeLogFileCursor |
   return row ? runtimeLogFileCursorFromRow(row) : undefined
 }
 
-export async function getRuntimeLogFileCursorAsync(logFile: string): Promise<RuntimeLogFileCursor | undefined> {
+export async function getRuntimeLogFileCursorAsync(
+  logFile: string,
+  dependencies: RuntimeLogFileCursorAsyncDependencies = {}
+): Promise<RuntimeLogFileCursor | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return getRuntimeLogFileCursor(logFile)
   }
-  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const client = await runtimeLogFileCursorPostgresClient(dependencies)
   const rows = await client.query<RuntimeLogRow>(
     'SELECT * FROM juhe_dataset.runtime_log_file_cursors WHERE log_file = ?',
     [logFile]
@@ -550,13 +558,16 @@ export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): vo
     )
 }
 
-export async function upsertRuntimeLogFileCursorAsync(input: RuntimeLogFileCursorInput): Promise<void> {
+export async function upsertRuntimeLogFileCursorAsync(
+  input: RuntimeLogFileCursorInput,
+  dependencies: RuntimeLogFileCursorAsyncDependencies = {}
+): Promise<void> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     upsertRuntimeLogFileCursor(input)
     return
   }
-  const now = nowIso()
-  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const now = dependencies.now?.() ?? nowIso()
+  const client = await runtimeLogFileCursorPostgresClient(dependencies)
   await client.execute(`
     INSERT INTO juhe_dataset.runtime_log_file_cursors (
       log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
@@ -583,6 +594,15 @@ export async function upsertRuntimeLogFileCursorAsync(input: RuntimeLogFileCurso
     now,
     now
   ])
+}
+
+async function runtimeLogFileCursorPostgresClient(
+  dependencies: RuntimeLogFileCursorAsyncDependencies
+): Promise<DatabaseClient> {
+  if (dependencies.getPostgresClient) {
+    return dependencies.getPostgresClient()
+  }
+  return createPostgresDatabaseClient(await getPostgresPool())
 }
 
 function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: string; params: RuntimeLogFilterValue[] } {

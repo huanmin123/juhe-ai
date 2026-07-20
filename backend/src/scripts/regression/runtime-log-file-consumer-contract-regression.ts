@@ -46,6 +46,7 @@ for (const redisField of [
 
 assert.match(repositorySource, /export async function getRuntimeLogFileCursorAsync\(/, '运行日志游标必须提供 async 读取入口')
 assert.match(repositorySource, /export async function upsertRuntimeLogFileCursorAsync\(/, '运行日志游标必须提供 async 写入入口')
+assert.match(repositorySource, /export interface RuntimeLogFileCursorAsyncDependencies/, 'async 游标 PostgreSQL 分支必须提供可控 client/时钟依赖端口')
 assert.match(repositorySource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]+getRuntimeLogFileCursor\(logFile\)/, 'SQLite async 游标读取必须复用同步语义')
 assert.match(repositorySource, /SELECT \* FROM juhe_dataset\.runtime_log_file_cursors WHERE log_file = \?/, 'PostgreSQL async 游标读取必须访问 dataset schema')
 assert.match(repositorySource, /ON CONFLICT\(log_file\) DO UPDATE SET/, 'PostgreSQL async 游标写入必须保持按 log_file upsert 语义')
@@ -140,6 +141,7 @@ const routeRuntime = {
 const runtimeRouteDto = runtimeRoutes.runtimeLogFileConsumerRuntimeDto(routeRuntime)
 assert.equal(runtimeRouteDto?.pendingFileCount, 3, '运行日志 facets 路由 DTO 必须返回文件积压数量')
 assert.equal(runtimeRouteDto?.pendingBytes, 8192, '运行日志 facets 路由 DTO 必须返回文件积压字节数')
+assert.equal('queueLength' in (runtimeRouteDto ?? {}), false, '运行日志 HTTP DTO 不得继续输出 IPC queueLength 兼容字段')
 assert.equal('redisEnqueueTimeoutDropCount' in (runtimeRouteDto ?? {}), false, '运行日志 facets 路由 DTO 不得透传 Redis producer timeout/drop 字段')
 
 const routeQueueHealth = buildBackgroundQueueHealthSnapshot({
@@ -165,5 +167,74 @@ const statsRouteRow = statsRoutes.backgroundQueueHealthRuntimeRow(statsHealthIte
 assert.equal(statsRouteRow?.localQueue?.pendingFileCount, 3, 'stats 路由 DTO 必须返回文件积压数量')
 assert.equal(statsRouteRow?.localQueue?.currentFile, 'juhe-ai.log.2', 'stats 路由 DTO 必须返回当前消费文件')
 assert.equal(statsRouteRow?.localQueue?.protectedRotatedFileCount, 2, 'stats 路由 DTO 必须返回轮转文件保护数量')
+
+runtimeConfig.databaseDriver = 'postgres'
+let pgQueryCall: { sql: string; params: unknown[] } | undefined
+const pgReadClient = {
+  query: async (sql: string, params: unknown[]) => {
+    pgQueryCall = { sql, params }
+    return [{
+      log_file: 'pg-contract.log',
+      file_identity: 'pg-identity',
+      cursor_offset: 32,
+      line_number: 4,
+      file_size: 64,
+      file_mtime_ms: 123,
+      last_read_at: '2026-07-20T02:00:00.000Z',
+      last_error_message: null,
+      created_at: '2026-07-20T01:00:00.000Z',
+      updated_at: '2026-07-20T02:00:00.000Z'
+    }]
+  }
+}
+const pgCursor = await repository.getRuntimeLogFileCursorAsync('pg-contract.log', {
+  getPostgresClient: async () => pgReadClient as never
+})
+assert.match(pgQueryCall?.sql ?? '', /juhe_dataset\.runtime_log_file_cursors/, 'PG async cursor 读取必须查询 dataset schema')
+assert.deepEqual(pgQueryCall?.params, ['pg-contract.log'], 'PG async cursor 读取必须按 logFile 绑定参数')
+assert.equal(pgCursor?.cursorOffset, 32, 'PG async cursor 读取必须映射真实查询行')
+
+let pgExecuteCall: { sql: string; params: unknown[] } | undefined
+const pgWriteClient = {
+  execute: async (sql: string, params: unknown[]) => {
+    pgExecuteCall = { sql, params }
+    return { changes: 1 }
+  }
+}
+await repository.upsertRuntimeLogFileCursorAsync({
+  logFile: 'pg-contract.log',
+  cursorOffset: -2,
+  lineNumber: 5.9,
+  fileSize: Number.NaN,
+  fileMtimeMs: Number.POSITIVE_INFINITY
+}, {
+  getPostgresClient: async () => pgWriteClient as never,
+  now: () => '2026-07-20T03:00:00.000Z'
+})
+assert.match(pgExecuteCall?.sql ?? '', /ON CONFLICT\(log_file\) DO UPDATE SET/, 'PG async cursor 写入必须执行 upsert')
+assert.deepEqual(pgExecuteCall?.params, [
+  'pg-contract.log', null, 0, 5, 0, null,
+  '2026-07-20T03:00:00.000Z', null,
+  '2026-07-20T03:00:00.000Z', '2026-07-20T03:00:00.000Z'
+], 'PG async cursor 写入必须绑定规范化参数和统一默认时间')
+
+const pgReadFailure = new Error('forced pg cursor query failure')
+await assert.rejects(
+  repository.getRuntimeLogFileCursorAsync('pg-failure.log', {
+    getPostgresClient: async () => ({ query: async () => { throw pgReadFailure } }) as never
+  }),
+  (error) => error === pgReadFailure,
+  'PG async cursor 读取必须原样传播 client rejection'
+)
+const pgWriteFailure = new Error('forced pg cursor execute failure')
+await assert.rejects(
+  repository.upsertRuntimeLogFileCursorAsync({
+    logFile: 'pg-failure.log', cursorOffset: 0, lineNumber: 0, fileSize: 0
+  }, {
+    getPostgresClient: async () => ({ execute: async () => { throw pgWriteFailure } }) as never
+  }),
+  (error) => error === pgWriteFailure,
+  'PG async cursor 写入必须原样传播 client rejection'
+)
 
 console.log('运行日志文件消费领域契约回归通过')
