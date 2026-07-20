@@ -25,6 +25,7 @@ type RouterOptions struct {
 	SystemAPIClientIPAllowlistVersionReader           SystemAPIClientIPAllowlistVersionReader
 	SystemAPIIPRateLimiter                            SystemAPIIPRateLimiter
 	SystemAPIAuthenticatedRateLimiter                 SystemAPIAuthenticatedRateLimiter
+	NodeModelCatalogBridgeReadinessProber             ReadinessProber
 	PublicAPIHandler                                  http.Handler
 	ManagementAPIAuthMiddleware                       func(http.Handler) http.Handler
 	ManagementAPIAuthTouchMiddleware                  func(http.Handler) http.Handler
@@ -188,8 +189,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 	}
 	mutationGuards := newMutationGuardStore()
 
-	health := NewHealthHandler(opts.Config, opts.Logger)
-	readiness := NewReadinessHandler(opts.Config, opts.Logger)
+	health := NewHealthHandler(opts.Config, opts.Logger, opts.NodeModelCatalogBridgeReadinessProber)
+	readiness := NewReadinessHandler(opts.Config, opts.Logger, opts.NodeModelCatalogBridgeReadinessProber)
 	r.Get("/__aisys__/health", health.ServeHTTP)
 	r.Get("/__aisys__/readyz", readiness.ServeHTTP)
 	r.Route("/__aisys__/api", func(system chi.Router) {
