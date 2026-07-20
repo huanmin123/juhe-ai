@@ -1,4 +1,4 @@
-import { createSharedJsonCache } from '../../shared/cache.js'
+import { createProcessLocalResourceCache, createSharedJsonCache } from '../../shared/cache.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import {
   findGatewayModelCatalogSnapshotAsync,
@@ -35,6 +35,14 @@ const publishedModelCatalogCache = createSharedJsonCache<PublishedModelCatalogCa
   ttlMs: 10 * 60_000,
   version: 'v1'
 })
+// The published snapshot is immutable between explicit catalog rebuilds. Keep the
+// response object in-process so the hot path does not pay a Redis round trip or
+// JSON parse for every /v1/models request.
+const publishedModelCatalogLocalCache = createProcessLocalResourceCache<string, PublishedModelCatalogCacheEntry>({
+  name: 'gateway:published-model-catalog:local',
+  max: 50_000,
+  ttlMs: 10 * 60_000
+})
 const pendingRebuildRetries = new Map<string, { timer: NodeJS.Timeout; attempt: number }>()
 
 export async function readPublishedModelCatalogResponseAsync(input: {
@@ -43,13 +51,18 @@ export async function readPublishedModelCatalogResponseAsync(input: {
   variant: GatewayModelCatalogVariant
 }): Promise<object> {
   const cacheKey = publishedModelCatalogCacheKey(input)
+  const localCached = publishedModelCatalogLocalCache.get(cacheKey)
+  if (localCached?.payload) return localCached.payload
   let cached: PublishedModelCatalogCacheEntry | undefined
   try {
     cached = await publishedModelCatalogCache.get(cacheKey)
   } catch (error) {
     logger.warn({ event: 'published_model_catalog_cache_read_failed', cacheKey, error }, '模型目录缓存读取失败，回源持久化快照')
   }
-  if (cached?.payload) return cached.payload
+  if (cached?.payload) {
+    publishedModelCatalogLocalCache.set(cacheKey, cached)
+    return cached.payload
+  }
 
   return enqueueSnapshotRebuild(async () => {
     let current: PublishedModelCatalogCacheEntry | undefined
@@ -179,6 +192,7 @@ async function rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync(
   if (!systemAccountId) {
     await pruneGatewayModelCatalogSnapshotsAsync(activeSystemAccountIds ?? [])
     await publishedModelCatalogCache.clear()
+    publishedModelCatalogLocalCache.clear()
   }
   let rebuilt = 0
   for (let index = 0; index < accountIds.length; index += 4) {
@@ -250,12 +264,14 @@ async function readPersistedSnapshotAsync(input: {
 }
 
 async function cachePublishedSnapshot(snapshot: GatewayModelCatalogSnapshot, strict = false): Promise<void> {
+  const entry = {
+    payload: snapshot.payload,
+    revision: snapshot.revision,
+    modelCount: snapshot.modelCount
+  }
+  publishedModelCatalogLocalCache.set(publishedModelCatalogCacheKey(snapshot), entry)
   try {
-    await publishedModelCatalogCache.set(publishedModelCatalogCacheKey(snapshot), {
-      payload: snapshot.payload,
-      revision: snapshot.revision,
-      modelCount: snapshot.modelCount
-    })
+    await publishedModelCatalogCache.set(publishedModelCatalogCacheKey(snapshot), entry)
   } catch (error) {
     logger.warn({ event: 'published_model_catalog_cache_write_failed', systemAccountId: snapshot.systemAccountId, protocol: snapshot.protocol, variant: snapshot.variant, error }, '模型目录 Redis 缓存写入失败，保留数据库快照')
     if (strict) throw error
@@ -265,9 +281,11 @@ async function cachePublishedSnapshot(snapshot: GatewayModelCatalogSnapshot, str
 async function clearPublishedModelCatalogOwnerCacheAsync(systemAccountId: string): Promise<void> {
   const protocols: GatewayModelCatalogProtocol[] = ['openai', 'anthropic', 'gemini']
   const variants: GatewayModelCatalogVariant[] = ['default', 'codex', 'chat']
-  await Promise.all(protocols.flatMap((protocol) => variants.map((variant) =>
-    publishedModelCatalogCache.delete(publishedModelCatalogCacheKey({ systemAccountId, protocol, variant }))
-  )))
+  const cacheKeys = protocols.flatMap((protocol) => variants.map((variant) =>
+    publishedModelCatalogCacheKey({ systemAccountId, protocol, variant })
+  ))
+  for (const cacheKey of cacheKeys) publishedModelCatalogLocalCache.delete(cacheKey)
+  await Promise.all(cacheKeys.map((cacheKey) => publishedModelCatalogCache.delete(cacheKey)))
 }
 
 function snapshotInput(
