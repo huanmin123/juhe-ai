@@ -2,6 +2,9 @@ package managementaccountstatussnapshot
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -27,8 +30,36 @@ type RuntimeSnapshot struct {
 	AccountRuntimeAvailabilityAvailable bool `json:"accountRuntimeAvailabilityAvailable"`
 }
 
+type APIKeyRuntimeSummary struct {
+	Total                int    `json:"total"`
+	Active               int    `json:"active"`
+	TemporaryUnavailable int    `json:"temporaryUnavailable"`
+	RateLimited          int    `json:"rateLimited"`
+	Error                int    `json:"error"`
+	Disabled             int    `json:"disabled"`
+	Unavailable          int    `json:"unavailable"`
+	AllUnavailable       bool   `json:"allUnavailable"`
+	NextProbeAt          string `json:"nextProbeAt,omitempty"`
+	LastFailureAt        string `json:"lastFailureAt,omitempty"`
+	LastErrorCode        string `json:"lastErrorCode,omitempty"`
+	LastErrorMessage     string `json:"lastErrorMessage,omitempty"`
+	LastTraceID          string `json:"lastTraceId,omitempty"`
+}
+
 type AccountConcurrencyReader interface {
 	LoadAccountCurrentConcurrencyByIDs(context.Context, []string, time.Time) (map[string]int, error)
+}
+
+type APIKeyRuntimeReader interface {
+	ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(context.Context, []string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error)
+}
+
+type APIKeyRuntimeSourceReader interface {
+	ListManagementAccountAPIKeyRuntimeSourcesByAccountIDs(context.Context, []string) (map[string]port.ManagementAccountAPIKeyRuntimeSource, error)
+}
+
+type CredentialCodec interface {
+	DecryptJSON(string) (map[string]any, error)
 }
 
 type EffectiveAvailability struct {
@@ -89,6 +120,7 @@ type Item struct {
 	TodayUsage                                         map[string]any           `json:"todayUsage"`
 	CurrentConcurrency                                 int                      `json:"currentConcurrency"`
 	RuntimeAvailability                                any                      `json:"runtimeAvailability,omitempty"`
+	APIKeyRuntime                                      *APIKeyRuntimeSummary    `json:"apiKeyRuntime,omitempty"`
 	AvailabilityPresentation                           AvailabilityPresentation `json:"availabilityPresentation"`
 	EffectiveAvailability                              EffectiveAvailability    `json:"effectiveAvailability"`
 }
@@ -110,12 +142,20 @@ type Input struct {
 type Service struct {
 	reader             port.ManagementAccountStatusSnapshotReader
 	accountConcurrency AccountConcurrencyReader
+	apiKeyRuntime      APIKeyRuntimeReader
+	apiKeySources      APIKeyRuntimeSourceReader
+	credentialCodec    CredentialCodec
+	fingerprintSecret  string
 	now                func() time.Time
 }
 
 type ServiceOptions struct {
 	Reader             port.ManagementAccountStatusSnapshotReader
 	AccountConcurrency AccountConcurrencyReader
+	APIKeyRuntime      APIKeyRuntimeReader
+	APIKeySources      APIKeyRuntimeSourceReader
+	CredentialCodec    CredentialCodec
+	FingerprintSecret  string
 	Now                func() time.Time
 }
 
@@ -128,7 +168,15 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{reader: opts.Reader, accountConcurrency: opts.AccountConcurrency, now: now}
+	return &Service{
+		reader:             opts.Reader,
+		accountConcurrency: opts.AccountConcurrency,
+		apiKeyRuntime:      opts.APIKeyRuntime,
+		apiKeySources:      opts.APIKeySources,
+		credentialCodec:    opts.CredentialCodec,
+		fingerprintSecret:  opts.FingerprintSecret,
+		now:                now,
+	}
 }
 
 func ParseAccountIDs(raw string) ([]string, error) {
@@ -193,16 +241,22 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 			concurrencyAvailable = true
 		}
 	}
+	runtimeSummaries, runtimeAvailable, err := s.loadAPIKeyRuntimeSummaries(ctx, rows)
+	if err != nil {
+		return Result{}, err
+	}
 	items := make([]Item, 0, len(rows))
 	for _, row := range rows {
 		item := snapshotItem(row, now)
 		item.CurrentConcurrency = currentConcurrency[concurrencyAccountID(row)]
+		item.APIKeyRuntime = runtimeSummaries[row.ID]
 		items = append(items, item)
 	}
 	return Result{
 		GeneratedAt: now.UTC().Format(time.RFC3339Nano),
 		RuntimeSnapshot: RuntimeSnapshot{
-			AccountConcurrencyAvailable: concurrencyAvailable,
+			AccountConcurrencyAvailable:         concurrencyAvailable,
+			AccountRuntimeAvailabilityAvailable: runtimeAvailable,
 		},
 		Items: items,
 	}, nil
@@ -213,6 +267,153 @@ func concurrencyAccountID(row port.ManagementAccountStatusProjection) string {
 		return sourceID
 	}
 	return row.ID
+}
+
+type runtimeSummaryCandidate struct {
+	sourceAccountID string
+	fingerprints    []string
+}
+
+func (s *Service) loadAPIKeyRuntimeSummaries(ctx context.Context, rows []port.ManagementAccountStatusProjection) (map[string]*APIKeyRuntimeSummary, bool, error) {
+	result := make(map[string]*APIKeyRuntimeSummary)
+	if s.apiKeyRuntime == nil || s.apiKeySources == nil || s.credentialCodec == nil {
+		return result, false, nil
+	}
+
+	viewIDs := make([]string, 0, len(rows))
+	for _, row := range rows {
+		viewIDs = append(viewIDs, row.ID)
+	}
+	sources, err := s.apiKeySources.ListManagementAccountAPIKeyRuntimeSourcesByAccountIDs(ctx, viewIDs)
+	if err != nil {
+		return nil, false, err
+	}
+	sourceIDs := make([]string, 0, len(rows))
+	seenSourceIDs := make(map[string]struct{}, len(rows))
+	candidates := make(map[string]runtimeSummaryCandidate, len(rows))
+	for _, row := range rows {
+		source := sources[row.ID]
+		sourceID := strings.TrimSpace(source.SourceAccountID)
+		if sourceID == "" {
+			continue
+		}
+		if _, exists := seenSourceIDs[sourceID]; !exists {
+			seenSourceIDs[sourceID] = struct{}{}
+			sourceIDs = append(sourceIDs, sourceID)
+		}
+		credentials, err := s.credentialCodec.DecryptJSON(source.CredentialsEncrypted)
+		if err != nil {
+			continue
+		}
+		fingerprints := runtimeAPIKeyFingerprints(credentials, s.fingerprintSecret)
+		if !runtimeAPIKeyPoolSupported(source, len(fingerprints)) {
+			continue
+		}
+		candidates[row.ID] = runtimeSummaryCandidate{sourceAccountID: sourceID, fingerprints: fingerprints}
+	}
+
+	statesByAccountID, err := s.apiKeyRuntime.ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(ctx, sourceIDs)
+	if err != nil {
+		return nil, false, err
+	}
+	for viewAccountID, candidate := range candidates {
+		result[viewAccountID] = summarizeAPIKeyRuntime(candidate.fingerprints, statesByAccountID[candidate.sourceAccountID])
+	}
+	return result, true, nil
+}
+
+func runtimeAPIKeyFingerprints(credentials map[string]any, secret string) []string {
+	rawKeys := []any{credentials["api_key"]}
+	if values, ok := credentials["api_keys"].([]any); ok && len(values) > 0 {
+		rawKeys = values
+	} else if values, ok := credentials["api_keys"].([]string); ok && len(values) > 0 {
+		rawKeys = make([]any, len(values))
+		for index, value := range values {
+			rawKeys[index] = value
+		}
+	}
+	seen := make(map[string]struct{}, len(rawKeys))
+	fingerprints := make([]string, 0, len(rawKeys))
+	for _, raw := range rawKeys {
+		key, ok := raw.(string)
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			continue
+		}
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write([]byte(key))
+		fingerprints = append(fingerprints, hex.EncodeToString(mac.Sum(nil)))
+	}
+	return fingerprints
+}
+
+func runtimeAPIKeyPoolSupported(source port.ManagementAccountAPIKeyRuntimeSource, keyCount int) bool {
+	if strings.TrimSpace(source.Type) != "api_key" || keyCount < 2 {
+		return false
+	}
+	provider := strings.ToLower(strings.TrimSpace(source.ProviderCode))
+	if provider == "openai" || provider == "gpt" || provider == "deepseek" || provider == "glm" || provider == "gemini" || provider == "anthropic" {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(source.ProtocolCode), "anthropic") &&
+		strings.EqualFold(strings.TrimSpace(source.ProtocolVersion), "v1")
+}
+
+func summarizeAPIKeyRuntime(fingerprints []string, states []port.ManagementAccountAPIKeyRuntimeState) *APIKeyRuntimeSummary {
+	stateByFingerprint := make(map[string]port.ManagementAccountAPIKeyRuntimeState, len(states))
+	for _, state := range states {
+		stateByFingerprint[state.KeyFingerprint] = state
+	}
+	summary := &APIKeyRuntimeSummary{Total: len(fingerprints)}
+	var latestFailure *port.ManagementAccountAPIKeyRuntimeState
+	for _, fingerprint := range fingerprints {
+		state, exists := stateByFingerprint[fingerprint]
+		if !exists || state.Status == "active" {
+			summary.Active++
+		} else {
+			summary.Unavailable++
+			switch state.Status {
+			case "temporary_unavailable":
+				summary.TemporaryUnavailable++
+			case "rate_limited":
+				summary.RateLimited++
+			case "error":
+				summary.Error++
+			case "disabled":
+				summary.Disabled++
+			}
+			if state.NextProbeAt != "" && (state.Status == "temporary_unavailable" || state.Status == "rate_limited" || state.Status == "error") &&
+				(summary.NextProbeAt == "" || state.NextProbeAt < summary.NextProbeAt) {
+				summary.NextProbeAt = state.NextProbeAt
+			}
+		}
+		if state.LastFailureAt != "" && (latestFailure == nil || runtimeFailureBefore(state, *latestFailure)) {
+			copy := state
+			latestFailure = &copy
+		}
+	}
+	if latestFailure != nil {
+		summary.LastFailureAt = latestFailure.LastFailureAt
+		summary.LastErrorCode = latestFailure.LastErrorCode
+		summary.LastErrorMessage = latestFailure.LastErrorMessage
+		summary.LastTraceID = latestFailure.LastTraceID
+	}
+	summary.AllUnavailable = summary.Total > 0 && summary.Active == 0
+	return summary
+}
+
+func runtimeFailureBefore(left, right port.ManagementAccountAPIKeyRuntimeState) bool {
+	if left.LastFailureAt != right.LastFailureAt {
+		return left.LastFailureAt > right.LastFailureAt
+	}
+	if left.KeyIndex != right.KeyIndex {
+		return left.KeyIndex < right.KeyIndex
+	}
+	return left.KeyFingerprint < right.KeyFingerprint
 }
 
 func normalizeIDs(ids []string) ([]string, error) { return ParseAccountIDs(strings.Join(ids, ",")) }

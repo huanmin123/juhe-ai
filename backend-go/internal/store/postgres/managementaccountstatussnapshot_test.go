@@ -24,3 +24,27 @@ func TestManagementAccountStatusSnapshotSQLKeepsScopeAndInputOrder(t *testing.T)
 		}
 	}
 }
+
+func TestManagementAccountStatusSnapshotRuntimeQueriesReuseSourceAccount(t *testing.T) {
+	for _, fragment := range []string{
+		"COALESCE(source.id, account.id)",
+		"COALESCE(source.credentials_encrypted, account.credentials_encrypted)",
+		"account.id = ANY($1::text[])",
+		"source.id IS NULL OR source.deleted_at IS NULL",
+	} {
+		if !strings.Contains(managementAccountAPIKeyRuntimeSourcesSQL, fragment) {
+			t.Fatalf("runtime source query missing %q", fragment)
+		}
+	}
+	if strings.Contains(managementAccountAPIKeyRuntimeSourcesSQL, "ON source.id = account.authorization_instance_source_account_id\n AND source.deleted_at IS NULL") {
+		t.Fatal("runtime source query falls back to instance credentials when the source account is deleted")
+	}
+	for _, fragment := range []string{
+		"account_id = ANY($1::text[])",
+		"ORDER BY account_id, key_index, key_fingerprint",
+	} {
+		if !strings.Contains(managementAccountAPIKeyRuntimeStatesSQL, fragment) {
+			t.Fatalf("runtime state query missing %q", fragment)
+		}
+	}
+}

@@ -830,6 +830,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	accountStatusSnapshotService := managementaccountstatussnapshot.NewServiceWithOptions(managementaccountstatussnapshot.ServiceOptions{
 		Reader:             store,
 		AccountConcurrency: accountConcurrencyReader,
+		APIKeyRuntime:      store,
+		APIKeySources:      store,
+		CredentialCodec:    secretcrypto.NewJSONCodec(cfg.Secret),
+		FingerprintSecret:  cfg.Secret,
 	})
 	accountListService := managementaccountlist.NewService(store)
 	accountExportService := managementaccountexport.NewService(managementaccountexport.ServiceOptions{

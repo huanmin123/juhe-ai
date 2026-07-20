@@ -42,6 +42,16 @@ type ManagementAccountStatusProjection struct {
 	TodayUsageJSON                              string
 }
 
+type ManagementAccountAPIKeyRuntimeSource struct {
+	ViewAccountID        string
+	SourceAccountID      string
+	ProviderCode         string
+	ProtocolCode         string
+	ProtocolVersion      string
+	Type                 string
+	CredentialsEncrypted string
+}
+
 type ManagementAccountStatusSnapshotReader interface {
 	ListManagementAccountStatusProjections(ctx context.Context, input ManagementAccountStatusSnapshotInput) ([]ManagementAccountStatusProjection, error)
 }

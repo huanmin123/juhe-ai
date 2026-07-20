@@ -2,6 +2,9 @@ package managementaccountstatussnapshot
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 	"time"
@@ -63,6 +66,50 @@ func TestServiceLoadsAuthorizedInstanceConcurrencyFromSourceAccount(t *testing.T
 	}
 }
 
+func TestServiceAddsAPIKeyRuntimeSummaryFromSourceAccount(t *testing.T) {
+	secret := "runtime-secret"
+	firstFingerprint := statusTestFingerprint(secret, "sk-first")
+	secondFingerprint := statusTestFingerprint(secret, "sk-second")
+	reader := &statusReaderStub{rows: []port.ManagementAccountStatusProjection{{
+		ID: "instance_1", SystemAccountID: "u1", Name: "授权实例", Status: "active", Schedulable: true,
+		AuthorizationInstanceSourceAccountID: "source_1",
+	}}}
+	sources := &statusAPIKeyRuntimeSourceReaderStub{values: map[string]port.ManagementAccountAPIKeyRuntimeSource{
+		"instance_1": {ViewAccountID: "instance_1", SourceAccountID: "source_1", ProviderCode: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key", CredentialsEncrypted: "source-cipher"},
+	}}
+	runtime := &statusAPIKeyRuntimeReaderStub{values: map[string][]port.ManagementAccountAPIKeyRuntimeState{
+		"source_1": {
+			{KeyFingerprint: firstFingerprint, KeyIndex: 0, Status: "rate_limited", NextProbeAt: "2026-07-21T10:00:00Z", LastFailureAt: "2026-07-21T09:00:00Z", LastErrorCode: "rate_limit", LastErrorMessage: "raw upstream failure", LastTraceID: "trace-first"},
+			{KeyFingerprint: secondFingerprint, KeyIndex: 1, Status: "disabled", NextProbeAt: "2026-07-21T08:00:00Z", LastFailureAt: "2026-07-21T09:30:00Z", LastErrorCode: "disabled", LastTraceID: "trace-second"},
+		},
+	}}
+	service := NewServiceWithOptions(ServiceOptions{
+		Reader: reader, APIKeyRuntime: runtime, APIKeySources: sources,
+		CredentialCodec: &statusCredentialCodecStub{values: map[string]any{
+			"api_keys": []any{"sk-first", "sk-second", "sk-third"},
+		}},
+		FingerprintSecret: secret,
+	})
+
+	result, err := service.Get(t.Context(), Input{ActorSystemAccountID: "u1", ActorRole: "user", SelfOnly: true, AccountIDs: []string{"instance_1"}})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !result.RuntimeSnapshot.AccountRuntimeAvailabilityAvailable || len(runtime.ids) != 1 || runtime.ids[0] != "source_1" {
+		t.Fatalf("runtime snapshot=%+v ids=%v", result.RuntimeSnapshot, runtime.ids)
+	}
+	summary := result.Items[0].APIKeyRuntime
+	if summary == nil {
+		t.Fatal("APIKeyRuntime = nil")
+	}
+	if summary.Total != 3 || summary.Active != 1 || summary.Unavailable != 2 || summary.RateLimited != 1 || summary.Disabled != 1 || summary.AllUnavailable {
+		t.Fatalf("APIKeyRuntime = %+v", summary)
+	}
+	if summary.NextProbeAt != "2026-07-21T10:00:00Z" || summary.LastFailureAt != "2026-07-21T09:30:00Z" || summary.LastErrorCode != "disabled" || summary.LastTraceID != "trace-second" {
+		t.Fatalf("APIKeyRuntime timing/error = %+v", summary)
+	}
+}
+
 func TestEffectiveAvailabilityUsesNodeStaticBlockerPriority(t *testing.T) {
 	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
 	tests := []struct {
@@ -118,6 +165,40 @@ type statusReaderStub struct {
 type statusConcurrencyReaderStub struct {
 	ids    []string
 	values map[string]int
+}
+
+type statusAPIKeyRuntimeReaderStub struct {
+	ids    []string
+	values map[string][]port.ManagementAccountAPIKeyRuntimeState
+}
+
+type statusAPIKeyRuntimeSourceReaderStub struct {
+	ids    []string
+	values map[string]port.ManagementAccountAPIKeyRuntimeSource
+}
+
+func (s *statusAPIKeyRuntimeSourceReaderStub) ListManagementAccountAPIKeyRuntimeSourcesByAccountIDs(_ context.Context, ids []string) (map[string]port.ManagementAccountAPIKeyRuntimeSource, error) {
+	s.ids = append([]string(nil), ids...)
+	return s.values, nil
+}
+
+func (s *statusAPIKeyRuntimeReaderStub) ListManagementAccountAPIKeyRuntimeStatesByAccountIDs(_ context.Context, ids []string) (map[string][]port.ManagementAccountAPIKeyRuntimeState, error) {
+	s.ids = append([]string(nil), ids...)
+	return s.values, nil
+}
+
+type statusCredentialCodecStub struct {
+	values map[string]any
+}
+
+func (s *statusCredentialCodecStub) DecryptJSON(_ string) (map[string]any, error) {
+	return s.values, nil
+}
+
+func statusTestFingerprint(secret string, key string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(key))
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func (s *statusConcurrencyReaderStub) LoadAccountCurrentConcurrencyByIDs(_ context.Context, ids []string, _ time.Time) (map[string]int, error) {

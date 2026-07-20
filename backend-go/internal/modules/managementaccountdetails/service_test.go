@@ -121,6 +121,22 @@ func TestServiceAPIKeyRuntimeMergesCredentialEntriesAndStoredState(t *testing.T)
 	}
 }
 
+func TestAPIKeyPoolSupportedMatchesNodeProviderContract(t *testing.T) {
+	for _, provider := range []string{"openai", "gpt", "deepseek", "glm", "gemini", "anthropic"} {
+		if !apiKeyPoolSupported(port.ManagementAccountDetailSource{ProviderCode: provider, Type: "api_key"}, 2) {
+			t.Fatalf("provider %q should support API key pool", provider)
+		}
+	}
+	if !apiKeyPoolSupported(port.ManagementAccountDetailSource{ProviderCode: "custom", ProtocolCode: "anthropic", ProtocolVersion: "v1", Type: "api_key"}, 2) {
+		t.Fatal("anthropic protocol profile should support API key pool")
+	}
+	for _, provider := range []string{"xai", "hybrid", "custom"} {
+		if apiKeyPoolSupported(port.ManagementAccountDetailSource{ProviderCode: provider, Type: "api_key"}, 2) {
+			t.Fatalf("provider %q should not support API key pool", provider)
+		}
+	}
+}
+
 func ownerDetailSource() port.ManagementAccountDetailSource {
 	return port.ManagementAccountDetailSource{
 		ID: "account-1", SourceAccountID: "account-1", AccessType: "owner", ProviderCode: "gpt",

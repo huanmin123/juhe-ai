@@ -352,7 +352,7 @@ func apiKeyPoolSupported(source port.ManagementAccountDetailSource, keyCount int
 		return true
 	}
 	switch provider {
-	case "openai", "gpt", "deepseek", "glm", "gemini", "xai", "anthropic", "hybrid":
+	case "openai", "gpt", "deepseek", "glm", "gemini", "anthropic":
 		return true
 	default:
 		return false
