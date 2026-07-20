@@ -574,11 +574,11 @@ export async function upsertRuntimeLogFileCursorAsync(input: RuntimeLogFileCurso
   `, [
     input.logFile,
     input.fileIdentity ?? null,
-    input.cursorOffset,
-    input.lineNumber,
-    input.fileSize,
-    input.fileMtimeMs ?? null,
-    input.lastReadAt ?? null,
+    positiveInteger(input.cursorOffset),
+    positiveInteger(input.lineNumber),
+    positiveInteger(input.fileSize),
+    integerOrNull(input.fileMtimeMs),
+    input.lastReadAt ?? now,
     input.lastErrorMessage ?? null,
     now,
     now
