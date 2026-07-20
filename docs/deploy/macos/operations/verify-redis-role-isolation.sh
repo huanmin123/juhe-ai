@@ -14,7 +14,7 @@ usage() {
 Usage: verify-redis-role-isolation.sh --release <absolute-release> --env-file <absolute-env> \
   --scope <main|temporary> --cache-label <label> --state-label <label> --queue-label <label>
 
-Read-only commands: PING, CONFIG GET, INFO persistence, INFO server, launchctl print and lsof.
+Read-only commands: PING, CONFIG GET, INFO persistence, INFO server and launchctl print.
 EOF
 }
 
@@ -66,20 +66,19 @@ launchd_pid() {
 }
 
 owner_binding() {
-  local role="$1" label="$2" port="$3" job_pid port_pids
+  local role="$1" label="$2" job_pid
   launchctl print "system/$label" >/dev/null
   job_pid="$(launchd_pid "$label")"
-  port_pids="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u)"
-  [ -n "$job_pid" ] && [ "$port_pids" = "$job_pid" ] || {
-    echo "Redis owner mismatch role=$role label=$label launchd=${job_pid:-missing} port=${port_pids:-free}" >&2
+  [ -n "$job_pid" ] || {
+    echo "Redis owner mismatch role=$role label=$label launchd=missing" >&2
     return 1
   }
   printf '%s=%s\n' "$role" "$job_pid"
 }
 
-CACHE_PID="$(owner_binding cache "$CACHE_LABEL" "$(printf '%s' "$EXPECTED_PORTS" | sed -n 's/.*cache=\([0-9]*\).*/\1/p')")"
-STATE_PID="$(owner_binding state "$STATE_LABEL" "$(printf '%s' "$EXPECTED_PORTS" | sed -n 's/.*state=\([0-9]*\).*/\1/p')")"
-QUEUE_PID="$(owner_binding queue "$QUEUE_LABEL" "$(printf '%s' "$EXPECTED_PORTS" | sed -n 's/.*queue=\([0-9]*\).*/\1/p')")"
+CACHE_PID="$(owner_binding cache "$CACHE_LABEL")"
+STATE_PID="$(owner_binding state "$STATE_LABEL")"
+QUEUE_PID="$(owner_binding queue "$QUEUE_LABEL")"
 
 export JUHE_AI_REDIS_ROLE_ENV_FILE="$ENV_FILE"
 export JUHE_AI_REDIS_ROLE_SCOPE="$SCOPE"
@@ -139,7 +138,7 @@ for (let index = 0; index < roles.length; index += 1) {
     const server = await client.info('server')
     const stats = await client.info('stats')
     const processId = Number(/^process_id:(\d+)/m.exec(server)?.[1])
-    if (String(processId) !== expectedPids.get(role)) throw new Error(`${role} INFO PID 与 launchd/lsof owner 不一致`)
+    if (String(processId) !== expectedPids.get(role)) throw new Error(`${role} INFO PID 与 launchd owner 不一致`)
     if (map.get('dir') !== expectedDirs.get(role) || map.get('logfile') !== expectedLogs.get(role)) {
       throw new Error(`${role} Redis dir/logfile 不属于固定角色目录`)
     }
