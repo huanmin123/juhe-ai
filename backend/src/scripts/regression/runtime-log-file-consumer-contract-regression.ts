@@ -52,7 +52,7 @@ assert.match(repositorySource, /ON CONFLICT\(log_file\) DO UPDATE SET/, 'Postgre
 assert.match(repositorySource, /upsertRuntimeLogFileCursorAsync[\s\S]+positiveInteger\(input\.cursorOffset\)[\s\S]+positiveInteger\(input\.lineNumber\)[\s\S]+positiveInteger\(input\.fileSize\)[\s\S]+integerOrNull\(input\.fileMtimeMs\)[\s\S]+input\.lastReadAt \?\? now/, 'PostgreSQL async 游标写入必须复用 SQLite 参数规范化和 lastReadAt 默认值')
 assert.match(queueHealthSource, /protectedRotatedFileCount|pendingFileCount/, '队列健康映射必须传播文件消费指标')
 assert.match(statsRoutesSource, /discoveredFileCount|pendingFileCount|protectedRotatedFileCount/, 'stats 运行态必须返回文件消费指标')
-assert.match(runtimeRoutesSource, /runtime:\s*runtimeLogIndexQueue/, '运行日志 facets 路由必须返回文件消费运行态')
+assert.match(runtimeRoutesSource, /runtime:\s*runtimeLogFileConsumerRuntimeDto\(runtimeLogIndexQueue\)/, '运行日志 facets 路由必须返回文件消费运行态')
 assert.match(frontendFacetsSource, /facets\.runtime\?\.lastError/, '前端 facets 映射必须识别文件消费错误状态')
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-ai-runtime-log-contract-'))
@@ -120,5 +120,50 @@ try {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
 }
+
+const runtimeRoutes = await import('../../modules/runtime-logs/runtime-logs.routes.js')
+const statsRoutes = await import('../../modules/stats/stats.routes.js')
+assert.equal(typeof runtimeRoutes.runtimeLogFileConsumerRuntimeDto, 'function', '运行日志路由必须导出并调用文件消费 DTO 映射')
+assert.equal(typeof statsRoutes.backgroundQueueHealthRuntimeRow, 'function', 'stats 路由必须导出并调用队列健康 DTO 映射')
+const routeRuntime = {
+  queueLength: 99,
+  retentionDays: 14,
+  discoveredFileCount: 4,
+  pendingFileCount: 3,
+  pendingBytes: 8192,
+  currentFile: 'juhe-ai.log.2',
+  currentOffset: 2048,
+  lastCommitAt: '2026-07-20T01:00:00.000Z',
+  protectedRotatedFileCount: 2,
+  redisEnqueueTimeoutDropCount: 7
+}
+const runtimeRouteDto = runtimeRoutes.runtimeLogFileConsumerRuntimeDto(routeRuntime)
+assert.equal(runtimeRouteDto?.pendingFileCount, 3, '运行日志 facets 路由 DTO 必须返回文件积压数量')
+assert.equal(runtimeRouteDto?.pendingBytes, 8192, '运行日志 facets 路由 DTO 必须返回文件积压字节数')
+assert.equal('redisEnqueueTimeoutDropCount' in (runtimeRouteDto ?? {}), false, '运行日志 facets 路由 DTO 不得透传 Redis producer timeout/drop 字段')
+
+const routeQueueHealth = buildBackgroundQueueHealthSnapshot({
+  ingestWorker: {
+    ready: true,
+    snapshot: {
+      pid: 2,
+      ready: true,
+      workerRole: 'ingest-worker',
+      jobs: [],
+      usageRecordQueue: {},
+      auditLogQueue: {},
+      operationLogQueue: {},
+      publicApiLogQueue: {},
+      recordMaintenanceQueue: {},
+      runtimeLogIndexQueue: routeRuntime
+    }
+  }
+} as never)
+const statsHealthItem = routeQueueHealth.workerQueues.find((item) => item.key === 'runtimeLogIndex')
+assert(statsHealthItem, 'stats 路由验证必须构造运行日志健康项')
+const statsRouteRow = statsRoutes.backgroundQueueHealthRuntimeRow(statsHealthItem)
+assert.equal(statsRouteRow?.localQueue?.pendingFileCount, 3, 'stats 路由 DTO 必须返回文件积压数量')
+assert.equal(statsRouteRow?.localQueue?.currentFile, 'juhe-ai.log.2', 'stats 路由 DTO 必须返回当前消费文件')
+assert.equal(statsRouteRow?.localQueue?.protectedRotatedFileCount, 2, 'stats 路由 DTO 必须返回轮转文件保护数量')
 
 console.log('运行日志文件消费领域契约回归通过')

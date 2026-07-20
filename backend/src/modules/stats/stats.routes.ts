@@ -387,11 +387,11 @@ async function redisStreamRuntime(
 function queueHealthRuntimeRows(runtime: DbServiceServerRuntimeSnapshot): BackgroundJobRuntimeRow[] {
   const queueHealth = buildBackgroundQueueHealthSnapshot(runtime)
   return [...queueHealth.workerQueues, ...queueHealth.serverIpcQueues]
-    .map(queueHealthRuntimeRow)
+    .map(backgroundQueueHealthRuntimeRow)
     .filter((row): row is BackgroundJobRuntimeRow => Boolean(row))
 }
 
-function queueHealthRuntimeRow(item: BackgroundQueueHealthItem): BackgroundJobRuntimeRow | undefined {
+export function backgroundQueueHealthRuntimeRow(item: BackgroundQueueHealthItem): BackgroundJobRuntimeRow | undefined {
   if (item.status === 'unavailable' && item.queueLength === null && item.queueBytes === null) return undefined
   return localQueueBackgroundJobRow(item.label, workerRoleFromQueueHealthItem(item), {
     queueLength: item.queueLength ?? undefined,
