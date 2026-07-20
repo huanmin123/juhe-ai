@@ -169,6 +169,30 @@ type RouterOptions struct {
 	ManagementMyAccountUpdateHandler                  http.Handler
 	ManagementAccountAuthorizedDispatchHandler        http.Handler
 	ManagementMyAccountAuthorizedDispatchHandler      http.Handler
+	ManagementAccountImportPreviewHandler             http.Handler
+	ManagementMyAccountImportPreviewHandler           http.Handler
+	ManagementAccountImportConfirmHandler             http.Handler
+	ManagementMyAccountImportConfirmHandler           http.Handler
+	ManagementAccountTrafficMigrationHandler          http.Handler
+	ManagementMyAccountTrafficMigrationHandler        http.Handler
+	ManagementAccountTestSessionCreateHandler         http.Handler
+	ManagementMyAccountTestSessionCreateHandler       http.Handler
+	ManagementAccountTestSessionHeartbeatHandler      http.Handler
+	ManagementMyAccountTestSessionHeartbeatHandler    http.Handler
+	ManagementAccountTestSessionCompleteHandler       http.Handler
+	ManagementMyAccountTestSessionCompleteHandler     http.Handler
+	ManagementAccountTestSessionCancelHandler         http.Handler
+	ManagementMyAccountTestSessionCancelHandler       http.Handler
+	ManagementAccountTestTaskCancelHandler            http.Handler
+	ManagementMyAccountTestTaskCancelHandler          http.Handler
+	ManagementAccountTestTaskListHandler              http.Handler
+	ManagementMyAccountTestTaskListHandler            http.Handler
+	ManagementAccountTestSessionStatusHandler         http.Handler
+	ManagementMyAccountTestSessionStatusHandler       http.Handler
+	ManagementAccountTestSessionTasksHandler          http.Handler
+	ManagementMyAccountTestSessionTasksHandler        http.Handler
+	ManagementAccountTestTaskStatusHandler            http.Handler
+	ManagementMyAccountTestTaskStatusHandler          http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -433,6 +457,30 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountUpdateHandler == nil &&
 				opts.ManagementAccountAuthorizedDispatchHandler == nil &&
 				opts.ManagementMyAccountAuthorizedDispatchHandler == nil &&
+				opts.ManagementAccountImportPreviewHandler == nil &&
+				opts.ManagementMyAccountImportPreviewHandler == nil &&
+				opts.ManagementAccountImportConfirmHandler == nil &&
+				opts.ManagementMyAccountImportConfirmHandler == nil &&
+				opts.ManagementAccountTrafficMigrationHandler == nil &&
+				opts.ManagementMyAccountTrafficMigrationHandler == nil &&
+				opts.ManagementAccountTestSessionCreateHandler == nil &&
+				opts.ManagementMyAccountTestSessionCreateHandler == nil &&
+				opts.ManagementAccountTestSessionHeartbeatHandler == nil &&
+				opts.ManagementMyAccountTestSessionHeartbeatHandler == nil &&
+				opts.ManagementAccountTestSessionCompleteHandler == nil &&
+				opts.ManagementMyAccountTestSessionCompleteHandler == nil &&
+				opts.ManagementAccountTestSessionCancelHandler == nil &&
+				opts.ManagementMyAccountTestSessionCancelHandler == nil &&
+				opts.ManagementAccountTestTaskCancelHandler == nil &&
+				opts.ManagementMyAccountTestTaskCancelHandler == nil &&
+				opts.ManagementAccountTestTaskListHandler == nil &&
+				opts.ManagementMyAccountTestTaskListHandler == nil &&
+				opts.ManagementAccountTestSessionStatusHandler == nil &&
+				opts.ManagementMyAccountTestSessionStatusHandler == nil &&
+				opts.ManagementAccountTestSessionTasksHandler == nil &&
+				opts.ManagementMyAccountTestSessionTasksHandler == nil &&
+				opts.ManagementAccountTestTaskStatusHandler == nil &&
+				opts.ManagementMyAccountTestTaskStatusHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -972,6 +1020,78 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountAuthorizedDispatchHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/authorized-dispatch", opts.ManagementMyAccountAuthorizedDispatchHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountImportPreviewHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/preview", opts.ManagementAccountImportPreviewHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountImportPreviewHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/import/preview", opts.ManagementMyAccountImportPreviewHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountImportConfirmHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/confirm", opts.ManagementAccountImportConfirmHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountImportConfirmHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/import/confirm", opts.ManagementMyAccountImportConfirmHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTrafficMigrationHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/traffic-migration", opts.ManagementAccountTrafficMigrationHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTrafficMigrationHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/traffic-migration", opts.ManagementMyAccountTrafficMigrationHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionCreateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions", opts.ManagementAccountTestSessionCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionCreateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions", opts.ManagementMyAccountTestSessionCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionHeartbeatHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions/{sessionId}/heartbeat", opts.ManagementAccountTestSessionHeartbeatHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionHeartbeatHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions/{sessionId}/heartbeat", opts.ManagementMyAccountTestSessionHeartbeatHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionCompleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions/{sessionId}/complete", opts.ManagementAccountTestSessionCompleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionCompleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions/{sessionId}/complete", opts.ManagementMyAccountTestSessionCompleteHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions/{sessionId}/cancel", opts.ManagementAccountTestSessionCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions/{sessionId}/cancel", opts.ManagementMyAccountTestSessionCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestTaskCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-tasks/{taskId}/cancel", opts.ManagementAccountTestTaskCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestTaskCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-tasks/{taskId}/cancel", opts.ManagementMyAccountTestTaskCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestTaskListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-tasks", opts.ManagementAccountTestTaskListHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestTaskListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-tasks", opts.ManagementMyAccountTestTaskListHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-sessions/{sessionId}", opts.ManagementAccountTestSessionStatusHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-sessions/{sessionId}", opts.ManagementMyAccountTestSessionStatusHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionTasksHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-sessions/{sessionId}/tasks", opts.ManagementAccountTestSessionTasksHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionTasksHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-sessions/{sessionId}/tasks", opts.ManagementMyAccountTestSessionTasksHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestTaskStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-tasks/{taskId}", opts.ManagementAccountTestTaskStatusHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestTaskStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-tasks/{taskId}", opts.ManagementMyAccountTestTaskStatusHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -1402,6 +1522,14 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountUpdateHandler != nil ||
 		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementAccountTestTaskListHandler != nil ||
+		opts.ManagementMyAccountTestTaskListHandler != nil ||
+		opts.ManagementAccountTestSessionStatusHandler != nil ||
+		opts.ManagementMyAccountTestSessionStatusHandler != nil ||
+		opts.ManagementAccountTestSessionTasksHandler != nil ||
+		opts.ManagementMyAccountTestSessionTasksHandler != nil ||
+		opts.ManagementAccountTestTaskStatusHandler != nil ||
+		opts.ManagementMyAccountTestTaskStatusHandler != nil ||
 		opts.ManagementSystemSettingsHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
@@ -1508,6 +1636,22 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountUpdateHandler != nil ||
 		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementAccountImportPreviewHandler != nil ||
+		opts.ManagementMyAccountImportPreviewHandler != nil ||
+		opts.ManagementAccountImportConfirmHandler != nil ||
+		opts.ManagementMyAccountImportConfirmHandler != nil ||
+		opts.ManagementAccountTrafficMigrationHandler != nil ||
+		opts.ManagementMyAccountTrafficMigrationHandler != nil ||
+		opts.ManagementAccountTestSessionCreateHandler != nil ||
+		opts.ManagementMyAccountTestSessionCreateHandler != nil ||
+		opts.ManagementAccountTestSessionHeartbeatHandler != nil ||
+		opts.ManagementMyAccountTestSessionHeartbeatHandler != nil ||
+		opts.ManagementAccountTestSessionCompleteHandler != nil ||
+		opts.ManagementMyAccountTestSessionCompleteHandler != nil ||
+		opts.ManagementAccountTestSessionCancelHandler != nil ||
+		opts.ManagementMyAccountTestSessionCancelHandler != nil ||
+		opts.ManagementAccountTestTaskCancelHandler != nil ||
+		opts.ManagementMyAccountTestTaskCancelHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||

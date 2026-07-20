@@ -100,6 +100,9 @@ func decodeManagementAccountAuthorizedDispatch(w http.ResponseWriter, r *http.Re
 			if json.Unmarshal(value, &v) != nil {
 				return out, false
 			}
+			if v != "active" && v != "disabled" {
+				return out, false
+			}
 			out.Status = &v
 		case "priority":
 			var v int
