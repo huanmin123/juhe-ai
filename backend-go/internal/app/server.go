@@ -16,11 +16,14 @@ import (
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
+	"juhe-ai/backend-go/internal/modules/managementaccountdelete"
 	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
 	"juhe-ai/backend-go/internal/modules/managementaccountforceactivate"
 	"juhe-ai/backend-go/internal/modules/managementaccountgroupbinding"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
+	"juhe-ai/backend-go/internal/modules/managementaccountstatussnapshot"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
@@ -367,6 +370,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountBatchEditHandler:               managementHandlers.MyAccountBatchEditHandler,
 		ManagementAccountForceActivateHandler:             managementHandlers.AccountForceActivateHandler,
 		ManagementMyAccountForceActivateHandler:           managementHandlers.MyAccountForceActivateHandler,
+		ManagementAccountDeleteHandler:                    managementHandlers.AccountDeleteHandler,
+		ManagementMyAccountDeleteHandler:                  managementHandlers.MyAccountDeleteHandler,
+		ManagementAccountBalanceHandler:                   managementHandlers.AccountBalanceHandler,
+		ManagementMyAccountBalanceHandler:                 managementHandlers.MyAccountBalanceHandler,
+		ManagementAccountStatusSnapshotHandler:            managementHandlers.AccountStatusSnapshotHandler,
+		ManagementMyAccountStatusSnapshotHandler:          managementHandlers.MyAccountStatusSnapshotHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -555,6 +564,12 @@ type managementAPIHandlers struct {
 	MyAccountBatchEditHandler               http.Handler
 	AccountForceActivateHandler             http.Handler
 	MyAccountForceActivateHandler           http.Handler
+	AccountDeleteHandler                    http.Handler
+	MyAccountDeleteHandler                  http.Handler
+	AccountBalanceHandler                   http.Handler
+	MyAccountBalanceHandler                 http.Handler
+	AccountStatusSnapshotHandler            http.Handler
+	MyAccountStatusSnapshotHandler          http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -720,6 +735,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		FingerprintSecret: cfg.Secret,
 	})
 	accountBatchEditService := managementaccountbatchedit.NewService(store, store)
+	accountBalanceService := managementaccountbalance.NewService(managementaccountbalance.ServiceOptions{Reader: store, Writer: store})
+	accountStatusSnapshotService := managementaccountstatussnapshot.NewService(store)
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
 		Details:            accountDetailService,
@@ -729,6 +746,14 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Logger:             logger,
 	})
 	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
+	accountDeleteService := managementaccountdelete.NewService(managementaccountdelete.Options{
+		Store:                      store,
+		PageDataPublisher:          accountsStaticResetPublisher,
+		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		AuthorizationInvalidator:   systemAccountInvalidator,
+		GatewayRuntimeInvalidator:  systemAccountInvalidator,
+		Logger:                     logger,
+	})
 	accountGroupBindingService := managementaccountgroupbinding.NewService(managementaccountgroupbinding.Options{
 		Store:                      store,
 		GranteeReader:              store,
@@ -942,6 +967,12 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountBatchEditHandler:               httpapi.NewManagementMyAccountBatchEditHandler(accountBatchEditService),
 		AccountForceActivateHandler:             httpapi.NewManagementAccountForceActivateHandlerWithOperationLog(accountForceActivateService, operationLogOptions),
 		MyAccountForceActivateHandler:           httpapi.NewManagementMyAccountForceActivateHandlerWithOperationLog(accountForceActivateService, operationLogOptions),
+		AccountDeleteHandler:                    httpapi.NewManagementAccountDeleteHandlerWithOperationLog(accountDeleteService, operationLogOptions),
+		MyAccountDeleteHandler:                  httpapi.NewManagementMyAccountDeleteHandlerWithOperationLog(accountDeleteService, operationLogOptions),
+		AccountBalanceHandler:                   httpapi.NewManagementAccountBalanceHandler(accountBalanceService),
+		MyAccountBalanceHandler:                 httpapi.NewManagementMyAccountBalanceHandler(accountBalanceService),
+		AccountStatusSnapshotHandler:            httpapi.NewManagementAccountStatusSnapshotHandler(accountStatusSnapshotService),
+		MyAccountStatusSnapshotHandler:          httpapi.NewManagementMyAccountStatusSnapshotHandler(accountStatusSnapshotService),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),

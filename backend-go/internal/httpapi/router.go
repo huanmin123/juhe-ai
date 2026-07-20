@@ -153,6 +153,12 @@ type RouterOptions struct {
 	ManagementMyAccountBatchEditHandler               http.Handler
 	ManagementAccountForceActivateHandler             http.Handler
 	ManagementMyAccountForceActivateHandler           http.Handler
+	ManagementAccountDeleteHandler                    http.Handler
+	ManagementMyAccountDeleteHandler                  http.Handler
+	ManagementAccountBalanceHandler                   http.Handler
+	ManagementMyAccountBalanceHandler                 http.Handler
+	ManagementAccountStatusSnapshotHandler            http.Handler
+	ManagementMyAccountStatusSnapshotHandler          http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -401,6 +407,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountBatchEditHandler == nil &&
 				opts.ManagementAccountForceActivateHandler == nil &&
 				opts.ManagementMyAccountForceActivateHandler == nil &&
+				opts.ManagementAccountDeleteHandler == nil &&
+				opts.ManagementMyAccountDeleteHandler == nil &&
+				opts.ManagementAccountBalanceHandler == nil &&
+				opts.ManagementMyAccountBalanceHandler == nil &&
+				opts.ManagementAccountStatusSnapshotHandler == nil &&
+				opts.ManagementMyAccountStatusSnapshotHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -890,6 +902,26 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountForceActivateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/force-activate", opts.ManagementMyAccountForceActivateHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountDeleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Delete("/accounts/{id}", opts.ManagementAccountDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountDeleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Delete("/my-accounts/{id}", opts.ManagementMyAccountDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountBalanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/balance", opts.ManagementAccountBalanceHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/balance/refresh", opts.ManagementAccountBalanceHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountBalanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/balance", opts.ManagementMyAccountBalanceHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/balance/refresh", opts.ManagementMyAccountBalanceHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountStatusSnapshotHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/status-snapshot", opts.ManagementAccountStatusSnapshotHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountStatusSnapshotHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/status-snapshot", opts.ManagementMyAccountStatusSnapshotHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -1304,6 +1336,12 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountBatchEditHandler != nil ||
 		opts.ManagementAccountForceActivateHandler != nil ||
 		opts.ManagementMyAccountForceActivateHandler != nil ||
+		opts.ManagementAccountDeleteHandler != nil ||
+		opts.ManagementMyAccountDeleteHandler != nil ||
+		opts.ManagementAccountBalanceHandler != nil ||
+		opts.ManagementMyAccountBalanceHandler != nil ||
+		opts.ManagementAccountStatusSnapshotHandler != nil ||
+		opts.ManagementMyAccountStatusSnapshotHandler != nil ||
 		opts.ManagementSystemSettingsHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
@@ -1398,6 +1436,10 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountBatchEditHandler != nil ||
 		opts.ManagementAccountForceActivateHandler != nil ||
 		opts.ManagementMyAccountForceActivateHandler != nil ||
+		opts.ManagementAccountDeleteHandler != nil ||
+		opts.ManagementMyAccountDeleteHandler != nil ||
+		opts.ManagementAccountBalanceHandler != nil ||
+		opts.ManagementMyAccountBalanceHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||
