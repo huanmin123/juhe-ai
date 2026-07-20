@@ -16,6 +16,8 @@ import (
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
+	"juhe-ai/backend-go/internal/modules/managementaccountgroupbinding"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
@@ -349,6 +351,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTagDeleteHandler:               managementHandlers.MyAccountTagDeleteHandler,
 		ManagementAccountTagUpdateHandler:                 managementHandlers.AccountTagUpdateHandler,
 		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
+		ManagementAccountDetailHandler:                    managementHandlers.AccountDetailHandler,
+		ManagementMyAccountDetailHandler:                  managementHandlers.MyAccountDetailHandler,
+		ManagementAccountEditBasicDetailHandler:           managementHandlers.AccountEditBasicDetailHandler,
+		ManagementMyAccountEditBasicDetailHandler:         managementHandlers.MyAccountEditBasicDetailHandler,
+		ManagementAccountAdvancedDetailHandler:            managementHandlers.AccountAdvancedDetailHandler,
+		ManagementMyAccountAdvancedDetailHandler:          managementHandlers.MyAccountAdvancedDetailHandler,
+		ManagementAccountAPIKeyRuntimeHandler:             managementHandlers.AccountAPIKeyRuntimeHandler,
+		ManagementMyAccountAPIKeyRuntimeHandler:           managementHandlers.MyAccountAPIKeyRuntimeHandler,
+		ManagementAccountGroupBindingHandler:              managementHandlers.AccountGroupBindingHandler,
+		ManagementMyAccountGroupBindingHandler:            managementHandlers.MyAccountGroupBindingHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -523,6 +535,16 @@ type managementAPIHandlers struct {
 	MyAccountTagDeleteHandler               http.Handler
 	AccountTagUpdateHandler                 http.Handler
 	MyAccountTagUpdateHandler               http.Handler
+	AccountDetailHandler                    http.Handler
+	MyAccountDetailHandler                  http.Handler
+	AccountEditBasicDetailHandler           http.Handler
+	MyAccountEditBasicDetailHandler         http.Handler
+	AccountAdvancedDetailHandler            http.Handler
+	MyAccountAdvancedDetailHandler          http.Handler
+	AccountAPIKeyRuntimeHandler             http.Handler
+	MyAccountAPIKeyRuntimeHandler           http.Handler
+	AccountGroupBindingHandler              http.Handler
+	MyAccountGroupBindingHandler            http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -681,6 +703,20 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		GranteeReader:     store,
 		PageDataPublisher: accountsStaticResetPublisher,
 		Logger:            logger,
+	})
+	accountDetailService := managementaccountdetails.NewService(managementaccountdetails.ServiceOptions{
+		Reader:            store,
+		CredentialCodec:   secretcrypto.NewJSONCodec(cfg.Secret),
+		FingerprintSecret: cfg.Secret,
+	})
+	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
+	accountGroupBindingService := managementaccountgroupbinding.NewService(managementaccountgroupbinding.Options{
+		Store:                      store,
+		GranteeReader:              store,
+		PageDataPublisher:          accountsStaticResetPublisher,
+		RuntimeInvalidator:         systemAccountInvalidator,
+		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		Logger:                     logger,
 	})
 	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
@@ -873,6 +909,16 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountTagDeleteHandler:               httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
 		AccountTagUpdateHandler:                 httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		AccountDetailHandler:                    httpapi.NewManagementAccountDetailHandler(accountDetailService),
+		MyAccountDetailHandler:                  httpapi.NewManagementMyAccountDetailHandler(accountDetailService),
+		AccountEditBasicDetailHandler:           httpapi.NewManagementAccountEditBasicDetailHandler(accountDetailService),
+		MyAccountEditBasicDetailHandler:         httpapi.NewManagementMyAccountEditBasicDetailHandler(accountDetailService),
+		AccountAdvancedDetailHandler:            httpapi.NewManagementAccountAdvancedDetailHandler(accountDetailService),
+		MyAccountAdvancedDetailHandler:          httpapi.NewManagementMyAccountAdvancedDetailHandler(accountDetailService),
+		AccountAPIKeyRuntimeHandler:             httpapi.NewManagementAccountAPIKeyRuntimeHandler(accountDetailService),
+		MyAccountAPIKeyRuntimeHandler:           httpapi.NewManagementMyAccountAPIKeyRuntimeHandler(accountDetailService),
+		AccountGroupBindingHandler:              httpapi.NewManagementAccountGroupBindingHandlerWithOperationLog(accountGroupBindingService, operationLogOptions),
+		MyAccountGroupBindingHandler:            httpapi.NewManagementMyAccountGroupBindingHandlerWithOperationLog(accountGroupBindingService, operationLogOptions),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),

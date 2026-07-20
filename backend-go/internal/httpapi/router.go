@@ -139,6 +139,16 @@ type RouterOptions struct {
 	ManagementMyAccountTagDeleteHandler               http.Handler
 	ManagementAccountTagUpdateHandler                 http.Handler
 	ManagementMyAccountTagUpdateHandler               http.Handler
+	ManagementAccountDetailHandler                    http.Handler
+	ManagementMyAccountDetailHandler                  http.Handler
+	ManagementAccountEditBasicDetailHandler           http.Handler
+	ManagementMyAccountEditBasicDetailHandler         http.Handler
+	ManagementAccountAdvancedDetailHandler            http.Handler
+	ManagementMyAccountAdvancedDetailHandler          http.Handler
+	ManagementAccountAPIKeyRuntimeHandler             http.Handler
+	ManagementMyAccountAPIKeyRuntimeHandler           http.Handler
+	ManagementAccountGroupBindingHandler              http.Handler
+	ManagementMyAccountGroupBindingHandler            http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -373,6 +383,16 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAccountTagDeleteHandler == nil &&
 				opts.ManagementMyAccountTagDeleteHandler == nil &&
 				opts.ManagementAccountTagUpdateHandler == nil &&
+				opts.ManagementAccountDetailHandler == nil &&
+				opts.ManagementMyAccountDetailHandler == nil &&
+				opts.ManagementAccountEditBasicDetailHandler == nil &&
+				opts.ManagementMyAccountEditBasicDetailHandler == nil &&
+				opts.ManagementAccountAdvancedDetailHandler == nil &&
+				opts.ManagementMyAccountAdvancedDetailHandler == nil &&
+				opts.ManagementAccountAPIKeyRuntimeHandler == nil &&
+				opts.ManagementMyAccountAPIKeyRuntimeHandler == nil &&
+				opts.ManagementAccountGroupBindingHandler == nil &&
+				opts.ManagementMyAccountGroupBindingHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -818,6 +838,36 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountTagUpdateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}", opts.ManagementAccountDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}", opts.ManagementMyAccountDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountEditBasicDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/edit-basic", opts.ManagementAccountEditBasicDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountEditBasicDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/edit-basic", opts.ManagementMyAccountEditBasicDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountAdvancedDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/advanced", opts.ManagementAccountAdvancedDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountAdvancedDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/advanced", opts.ManagementMyAccountAdvancedDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountAPIKeyRuntimeHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/api-key-runtime", opts.ManagementAccountAPIKeyRuntimeHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountAPIKeyRuntimeHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/api-key-runtime", opts.ManagementMyAccountAPIKeyRuntimeHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountGroupBindingHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/group", opts.ManagementAccountGroupBindingHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountGroupBindingHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/group", opts.ManagementMyAccountGroupBindingHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -1218,6 +1268,16 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementAccountDetailHandler != nil ||
+		opts.ManagementMyAccountDetailHandler != nil ||
+		opts.ManagementAccountEditBasicDetailHandler != nil ||
+		opts.ManagementMyAccountEditBasicDetailHandler != nil ||
+		opts.ManagementAccountAdvancedDetailHandler != nil ||
+		opts.ManagementMyAccountAdvancedDetailHandler != nil ||
+		opts.ManagementAccountAPIKeyRuntimeHandler != nil ||
+		opts.ManagementMyAccountAPIKeyRuntimeHandler != nil ||
+		opts.ManagementAccountGroupBindingHandler != nil ||
+		opts.ManagementMyAccountGroupBindingHandler != nil ||
 		opts.ManagementSystemSettingsHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
@@ -1306,6 +1366,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementAccountGroupBindingHandler != nil ||
+		opts.ManagementMyAccountGroupBindingHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||

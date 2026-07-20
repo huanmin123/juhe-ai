@@ -1,0 +1,300 @@
+-- name: GetManagementAccountDetailSource :one
+WITH visible_accounts AS (
+  SELECT
+    accounts.id,
+    accounts.id AS source_account_id,
+    accounts.system_account_id,
+    system_accounts.display_name AS system_account_name,
+    accounts.system_account_id AS owner_system_account_id,
+    system_accounts.display_name AS owner_system_account_name,
+    accounts.provider_code,
+    accounts.provider_protocol_profile_id,
+    accounts.protocol_code,
+    accounts.protocol_version,
+    accounts.name,
+    accounts.notes,
+    accounts.type,
+    accounts.status,
+    accounts.credentials_encrypted,
+    accounts.concurrency_limit,
+    accounts.priority,
+    accounts.super_priority_enabled,
+    accounts.fallback_enabled,
+    accounts.client_compatibility,
+    accounts.health_check_model,
+    accounts.health_check_endpoint_mode,
+    accounts.proxy_profile_id,
+    accounts.schedulable,
+    accounts.availability_schedule_json,
+    accounts.account_expires_at,
+    accounts.cooldown_until,
+    accounts.last_error_code,
+    accounts.last_error_message,
+    accounts.last_error_trace_id,
+    accounts.next_health_check_at,
+    accounts.health_check_failure_count,
+    accounts.health_check_failure_started_at,
+    accounts.last_health_check_status_code,
+    accounts.last_health_check_error_code,
+    accounts.last_health_check_error_message,
+    accounts.last_health_check_trace_id,
+    accounts.temporary_unavailable_continuous_probe_enabled,
+    accounts.last_used_at,
+    accounts.config_revision,
+    'owner'::text AS access_type,
+    NULL::text AS account_authorization_id,
+    NULL::text AS authorization_status,
+    NULL::timestamptz AS authorization_expires_at,
+    NULL::text AS authorization_limits_json,
+    NULL::text AS authorization_instance_source_account_id,
+    NULL::text AS authorization_instance_owner_system_account_id,
+    NULL::text AS source_status,
+    NULL::boolean AS source_schedulable,
+    NULL::text AS source_availability_schedule_json,
+    NULL::timestamptz AS source_account_expires_at,
+    NULL::timestamptz AS source_cooldown_until,
+    NULL::text AS source_last_error_code,
+    NULL::text AS source_last_error_message,
+    NULL::text AS source_last_error_trace_id,
+    false AS has_active_manual_source
+  FROM juhe_business.accounts AS accounts
+  INNER JOIN juhe_business.system_accounts AS system_accounts
+    ON system_accounts.id = accounts.system_account_id
+  WHERE accounts.id = sqlc.arg(account_id)::text
+    AND accounts.deleted_at IS NULL
+    AND accounts.authorization_instance_source_account_id IS NULL
+    AND accounts.authorization_instance_authorization_id IS NULL
+    AND accounts.authorization_instance_owner_system_account_id IS NULL
+    AND (
+      sqlc.arg(system_account_id)::text = ''
+      OR accounts.system_account_id = sqlc.arg(system_account_id)::text
+    )
+
+  UNION ALL
+
+  SELECT
+    accounts.id,
+    source_accounts.id AS source_account_id,
+    accounts.system_account_id,
+    grantee_accounts.display_name AS system_account_name,
+    source_accounts.system_account_id AS owner_system_account_id,
+    owner_accounts.display_name AS owner_system_account_name,
+    source_accounts.provider_code,
+    source_accounts.provider_protocol_profile_id,
+    source_accounts.protocol_code,
+    source_accounts.protocol_version,
+    accounts.name,
+    accounts.notes,
+    source_accounts.type,
+    accounts.status,
+    ''::text AS credentials_encrypted,
+    source_accounts.concurrency_limit,
+    accounts.priority,
+    accounts.super_priority_enabled,
+    accounts.fallback_enabled,
+    source_accounts.client_compatibility,
+    accounts.health_check_model,
+    accounts.health_check_endpoint_mode,
+    source_accounts.proxy_profile_id,
+    accounts.schedulable,
+    accounts.availability_schedule_json,
+    accounts.account_expires_at,
+    accounts.cooldown_until,
+    accounts.last_error_code,
+    accounts.last_error_message,
+    accounts.last_error_trace_id,
+    accounts.next_health_check_at,
+    accounts.health_check_failure_count,
+    accounts.health_check_failure_started_at,
+    accounts.last_health_check_status_code,
+    accounts.last_health_check_error_code,
+    accounts.last_health_check_error_message,
+    accounts.last_health_check_trace_id,
+    accounts.temporary_unavailable_continuous_probe_enabled,
+    accounts.last_used_at,
+    accounts.config_revision,
+    'authorized'::text AS access_type,
+    resource_authorizations.id AS account_authorization_id,
+    resource_authorizations.status AS authorization_status,
+    resource_authorizations.expires_at AS authorization_expires_at,
+    resource_authorizations.limits_json AS authorization_limits_json,
+    source_accounts.id AS authorization_instance_source_account_id,
+    source_accounts.system_account_id AS authorization_instance_owner_system_account_id,
+    source_accounts.status AS source_status,
+    source_accounts.schedulable AS source_schedulable,
+    source_accounts.availability_schedule_json AS source_availability_schedule_json,
+    source_accounts.account_expires_at AS source_account_expires_at,
+    source_accounts.cooldown_until AS source_cooldown_until,
+    source_accounts.last_error_code AS source_last_error_code,
+    source_accounts.last_error_message AS source_last_error_message,
+    source_accounts.last_error_trace_id AS source_last_error_trace_id,
+    EXISTS (
+      SELECT 1
+      FROM juhe_business.resource_authorization_sources AS authorization_sources
+      WHERE authorization_sources.authorization_id = resource_authorizations.id
+        AND authorization_sources.source_type = 'manual'
+        AND authorization_sources.status = 'active'
+    ) AS has_active_manual_source
+  FROM juhe_business.accounts AS accounts
+  INNER JOIN juhe_business.accounts AS source_accounts
+    ON source_accounts.id = accounts.authorization_instance_source_account_id
+    AND source_accounts.deleted_at IS NULL
+    AND source_accounts.authorization_instance_source_account_id IS NULL
+    AND source_accounts.authorization_instance_authorization_id IS NULL
+    AND source_accounts.authorization_instance_owner_system_account_id IS NULL
+  INNER JOIN juhe_business.resource_authorizations AS resource_authorizations
+    ON resource_authorizations.id = accounts.authorization_instance_authorization_id
+    AND resource_authorizations.resource_type = 'account'
+    AND resource_authorizations.resource_id = source_accounts.id
+    AND resource_authorizations.resource_owner_system_account_id = source_accounts.system_account_id
+    AND resource_authorizations.grantee_system_account_id = accounts.system_account_id
+    AND resource_authorizations.status IN ('active', 'paused', 'expired')
+  INNER JOIN juhe_business.system_accounts AS grantee_accounts
+    ON grantee_accounts.id = accounts.system_account_id
+  INNER JOIN juhe_business.system_accounts AS owner_accounts
+    ON owner_accounts.id = source_accounts.system_account_id
+  WHERE accounts.id = sqlc.arg(account_id)::text
+    AND accounts.deleted_at IS NULL
+    AND (
+      sqlc.arg(system_account_id)::text = ''
+      OR accounts.system_account_id = sqlc.arg(system_account_id)::text
+    )
+)
+SELECT
+  visible_accounts.id,
+  visible_accounts.source_account_id,
+  visible_accounts.access_type,
+  visible_accounts.provider_code,
+  visible_accounts.protocol_code,
+  visible_accounts.protocol_version,
+  visible_accounts.type,
+  visible_accounts.config_revision,
+  visible_accounts.credentials_encrypted,
+  visible_accounts.has_active_manual_source,
+  jsonb_strip_nulls(jsonb_build_object(
+    'id', visible_accounts.id,
+    'configRevision', visible_accounts.config_revision,
+    'systemAccountId', visible_accounts.system_account_id,
+    'systemAccountName', visible_accounts.system_account_name,
+    'ownerSystemAccountId', visible_accounts.owner_system_account_id,
+    'ownerSystemAccountName', visible_accounts.owner_system_account_name,
+    'providerCode', visible_accounts.provider_code,
+    'providerProtocolProfileId', visible_accounts.provider_protocol_profile_id,
+    'protocolCode', visible_accounts.protocol_code,
+    'protocolVersion', visible_accounts.protocol_version,
+    'name', visible_accounts.name,
+    'notes', visible_accounts.notes,
+    'type', visible_accounts.type,
+    'status', visible_accounts.status,
+    'concurrencyLimit', visible_accounts.concurrency_limit,
+    'currentConcurrency', 0,
+    'currentConcurrencyAvailable', false,
+    'priority', visible_accounts.priority,
+    'superPriorityEnabled', visible_accounts.super_priority_enabled,
+    'fallbackEnabled', visible_accounts.fallback_enabled,
+    'clientCompatibility', visible_accounts.client_compatibility,
+    'supportedModels', COALESCE((
+      SELECT jsonb_agg(supported_models.model ORDER BY supported_models.model)
+      FROM juhe_business.account_supported_models AS supported_models
+      WHERE supported_models.account_id = visible_accounts.source_account_id
+    ), '[]'::jsonb),
+    'modelMappings', COALESCE((
+      SELECT jsonb_agg(jsonb_build_object(
+        'sourceModel', mappings.source_model,
+        'sourceEndpointFamily', mappings.source_endpoint_family,
+        'upstreamModel', mappings.upstream_model,
+        'upstreamEndpointFamily', mappings.upstream_endpoint_family,
+        'enabled', mappings.enabled
+      ) ORDER BY mappings.source_model, mappings.source_endpoint_family)
+      FROM juhe_business.account_model_mappings AS mappings
+      WHERE mappings.account_id = visible_accounts.source_account_id
+    ), '[]'::jsonb),
+    'tags', COALESCE((
+      SELECT jsonb_agg(jsonb_build_object(
+        'id', account_tags.id,
+        'name', account_tags.name,
+        'createdAt', account_tags.created_at,
+        'updatedAt', account_tags.updated_at
+      ) ORDER BY account_tags.name, account_tags.id)
+      FROM juhe_business.account_tag_bindings AS tag_bindings
+      INNER JOIN juhe_business.account_tags AS account_tags
+        ON account_tags.id = tag_bindings.tag_id
+      WHERE tag_bindings.account_id = visible_accounts.id
+        AND tag_bindings.system_account_id = visible_accounts.system_account_id
+    ), '[]'::jsonb),
+    'healthCheckModel', visible_accounts.health_check_model,
+    'healthCheckEndpointMode', visible_accounts.health_check_endpoint_mode,
+    'proxyProfileId', visible_accounts.proxy_profile_id,
+    'schedulable', visible_accounts.schedulable,
+    'availabilitySchedule', visible_accounts.availability_schedule_json::jsonb,
+    'accountExpiresAt', visible_accounts.account_expires_at,
+    'cooldownUntil', visible_accounts.cooldown_until,
+    'lastErrorCode', visible_accounts.last_error_code,
+    'lastErrorMessage', visible_accounts.last_error_message,
+    'lastErrorTraceId', visible_accounts.last_error_trace_id,
+    'nextHealthCheckAt', visible_accounts.next_health_check_at,
+    'healthCheckFailureCount', visible_accounts.health_check_failure_count,
+    'healthCheckFailureStartedAt', visible_accounts.health_check_failure_started_at,
+    'lastHealthCheckStatusCode', visible_accounts.last_health_check_status_code,
+    'lastHealthCheckErrorCode', visible_accounts.last_health_check_error_code,
+    'lastHealthCheckErrorMessage', visible_accounts.last_health_check_error_message,
+    'lastHealthCheckTraceId', visible_accounts.last_health_check_trace_id,
+    'temporaryUnavailableContinuousProbeEnabled', visible_accounts.temporary_unavailable_continuous_probe_enabled = 1,
+    'lastUsedAt', visible_accounts.last_used_at,
+    'accessType', visible_accounts.access_type,
+    'accountAuthorizationId', visible_accounts.account_authorization_id,
+    'authorizationInstanceSourceAccountId', visible_accounts.authorization_instance_source_account_id,
+    'authorizationInstanceOwnerSystemAccountId', visible_accounts.authorization_instance_owner_system_account_id,
+    'authorizationInstanceSourceAccountStatus', visible_accounts.source_status,
+    'authorizationInstanceSourceAccountSchedulable', visible_accounts.source_schedulable,
+    'authorizationInstanceSourceAccountAvailabilitySchedule', visible_accounts.source_availability_schedule_json::jsonb,
+    'authorizationInstanceSourceAccountExpiresAt', visible_accounts.source_account_expires_at,
+    'authorizationInstanceSourceAccountCooldownUntil', visible_accounts.source_cooldown_until,
+    'authorizationInstanceSourceAccountLastErrorCode', visible_accounts.source_last_error_code,
+    'authorizationInstanceSourceAccountLastErrorMessage', visible_accounts.source_last_error_message,
+    'authorizationInstanceSourceAccountLastErrorTraceId', visible_accounts.source_last_error_trace_id,
+    'authorizationStatus', visible_accounts.authorization_status,
+    'authorizationExpiresAt', visible_accounts.authorization_expires_at,
+    'authorizationLimits', visible_accounts.authorization_limits_json::jsonb,
+    'boundGroupId', group_binding.group_id,
+    'boundGroupName', group_binding.group_name,
+    'bindingSystemAccountId', group_binding.system_account_id,
+    'groupBindStatus', CASE WHEN group_binding.group_id IS NULL THEN 'unbound' ELSE 'bound' END
+  ))::text AS detail_json
+FROM visible_accounts
+LEFT JOIN LATERAL (
+  SELECT
+    group_accounts.group_id,
+    groups.name AS group_name,
+    group_accounts.system_account_id
+  FROM juhe_business.group_accounts AS group_accounts
+  INNER JOIN juhe_business.groups AS groups
+    ON groups.id = group_accounts.group_id
+    AND groups.system_account_id = group_accounts.system_account_id
+  WHERE group_accounts.account_id = visible_accounts.id
+    AND group_accounts.system_account_id = visible_accounts.system_account_id
+    AND group_accounts.enabled = true
+  ORDER BY group_accounts.updated_at DESC, group_accounts.group_id
+  LIMIT 1
+) AS group_binding ON true
+LIMIT 1;
+
+-- name: ListManagementAccountAPIKeyRuntimeStates :many
+SELECT
+  key_fingerprint,
+  key_index,
+  status,
+  failure_count,
+  consecutive_failures,
+  success_count,
+  cooldown_until,
+  next_probe_at,
+  last_attempt_at,
+  last_success_at,
+  last_failure_at,
+  last_error_code,
+  last_error_message,
+  last_trace_id
+FROM juhe_business.account_api_key_runtime_states
+WHERE account_id = sqlc.arg(account_id)::text
+ORDER BY key_index, key_fingerprint;

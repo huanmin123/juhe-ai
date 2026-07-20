@@ -57,6 +57,32 @@ type JuheBusinessAccount struct {
 	TemporaryUnavailableContinuousProbeEnabled int32
 }
 
+type JuheBusinessAccountApiKeyRuntimeState struct {
+	ID                  string
+	SystemAccountID     string
+	AccountID           string
+	KeyFingerprint      string
+	KeyIndex            int32
+	CredentialRevision  pgtype.Text
+	Status              string
+	FailureCount        int32
+	ConsecutiveFailures int32
+	SuccessCount        int64
+	CooldownUntil       pgtype.Text
+	NextProbeAt         pgtype.Text
+	ProbeBackoffSeconds int32
+	RecoveryStartedAt   pgtype.Text
+	LastAttemptAt       pgtype.Text
+	LastSuccessAt       pgtype.Text
+	LastFailureAt       pgtype.Text
+	LastErrorCode       pgtype.Text
+	LastErrorMessage    pgtype.Text
+	LastTraceID         pgtype.Text
+	LastProbeAt         pgtype.Text
+	CreatedAt           string
+	UpdatedAt           string
+}
+
 type JuheBusinessAccountModelMapping struct {
 	AccountID              string
 	ProviderCode           string
