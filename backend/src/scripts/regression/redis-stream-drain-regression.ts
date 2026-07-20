@@ -57,8 +57,52 @@ const drained = await inspectRedisStreamDrain(drainedClient)
 assert.equal(drained.drained, true, '六条流都为空时应允许完成排空')
 assert.equal(drained.xaddCalls, 42, '应记录 XADD 调用总数用于稳定窗口判断')
 
+const objectGroupReplies = new Map(drainedReplies)
+for (const contract of redisStreamDrainContracts) {
+  objectGroupReplies.set(`XINFO GROUPS ${contract.streamKey}`, [{
+    name: contract.groupName,
+    consumers: 0,
+    pending: 0,
+    'last-delivered-id': '0-0',
+    'entries-read': 0,
+    lag: 0
+  }])
+}
+const objectGroupSnapshot = await inspectRedisStreamDrain(new FakeRedisClient(objectGroupReplies))
+assert.equal(objectGroupSnapshot.drained, true, 'node-redis 6 的对象形态 XINFO GROUPS 也必须正确识别为空')
+assert.equal(objectGroupSnapshot.streams[0]?.groups[0]?.name, redisStreamDrainContracts[0]?.groupName)
+
 const activeContract = redisStreamDrainContracts[0]
 assert(activeContract)
+const objectActiveReplies = new Map(objectGroupReplies)
+objectActiveReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, [{
+  name: activeContract.groupName,
+  consumers: 1,
+  pending: 1,
+  'last-delivered-id': '1-0',
+  'entries-read': 1,
+  lag: 1
+}])
+objectActiveReplies.set(`XPENDING ${activeContract.streamKey} ${activeContract.groupName}`, [1, '1-0', '1-0', []])
+objectActiveReplies.set(`XPENDING ${activeContract.streamKey} ${activeContract.groupName} - + 1`, [['1-0', 'consumer-a', 1234, 1]])
+const objectActive = await inspectRedisStreamDrain(new FakeRedisClient(objectActiveReplies))
+assert.equal(objectActive.drained, false, '对象形态 XINFO GROUPS 存在 pending 或 lag 时必须阻断排空')
+assert.equal(objectActive.streams[0]?.groups[0]?.pending, 1)
+assert.equal(objectActive.streams[0]?.groups[0]?.lag, 1)
+
+const objectUnknownReplies = new Map(objectGroupReplies)
+objectUnknownReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, [{
+  name: activeContract.groupName,
+  consumers: 0,
+  pending: 0,
+  'last-delivered-id': '0-0',
+  'entries-read': null,
+  lag: null
+}])
+const objectUnknown = await inspectRedisStreamDrain(new FakeRedisClient(objectUnknownReplies))
+assert.equal(objectUnknown.drained, false, '对象形态 XINFO GROUPS 的未知字段必须保守阻断排空')
+assert.equal(objectUnknown.streams[0]?.groups[0]?.lag, null)
+
 const activeReplies = new Map(drainedReplies)
 activeReplies.set(`XLEN ${activeContract.streamKey}`, 3)
 activeReplies.set(`XINFO GROUPS ${activeContract.streamKey}`, [[
