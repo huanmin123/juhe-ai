@@ -26,7 +26,7 @@ const runtimeLogTailMaxBytesPerFile = 1024 * 1024
 const runtimeLogTailMaxOversizedLineScanBytes = 1024 * 1024
 const runtimeLogTailMaxLinesPerFile = 5000
 const runtimeLogImportBatchSize = 500
-const runtimeLogDiscoveryMaxEntries = 2048
+const runtimeLogDiscoveryMaxFiles = 2048
 const runtimeLogDiscoveryYieldEvery = 100
 const runtimeLogCurrentRoles: Record<string, string> = {
   'juhe-ai.log': 'server',
@@ -37,6 +37,8 @@ const runtimeLogCurrentRoles: Record<string, string> = {
   'juhe-ai.ops-worker.log': 'ops-worker',
   'juhe-ai.temporary-maintenance-worker.log': 'temporary-maintenance-worker'
 }
+let runtimeLogDiscoveryDirectory: string | undefined
+let runtimeLogDiscoveryMatchedOffset = 0
 
 export interface ActiveRuntimeLogFile {
   path: string
@@ -109,20 +111,34 @@ function scheduleNextPoll(): void {
 async function discoverRuntimeLogFiles(): Promise<ActiveRuntimeLogFile[]> {
   const discovered: ActiveRuntimeLogFile[] = []
   let scanned = 0
+  let matched = 0
+  let hasMoreMatchedFiles = false
+  if (runtimeLogDiscoveryDirectory !== runtimeConfig.log.directory) {
+    runtimeLogDiscoveryDirectory = runtimeConfig.log.directory
+    runtimeLogDiscoveryMatchedOffset = 0
+  }
   const directory = await opendir(runtimeConfig.log.directory)
   try {
     for await (const entry of directory) {
       scanned += 1
       if (scanned % runtimeLogDiscoveryYieldEvery === 0) await yieldImmediate()
-      if (scanned > runtimeLogDiscoveryMaxEntries) break
       if (!entry.isFile()) continue
       const match = runtimeLogFileRole(entry.name)
       if (!match) continue
+      matched += 1
+      if (matched <= runtimeLogDiscoveryMatchedOffset) continue
+      if (discovered.length >= runtimeLogDiscoveryMaxFiles) {
+        hasMoreMatchedFiles = true
+        break
+      }
       discovered.push({ path: join(runtimeConfig.log.directory, entry.name), role: match.role, kind: match.kind })
     }
   } finally {
     await directory.close().catch(() => undefined)
   }
+  runtimeLogDiscoveryMatchedOffset = hasMoreMatchedFiles
+    ? runtimeLogDiscoveryMatchedOffset + discovered.length
+    : 0
   return discovered.sort((left, right) => {
     if (left.kind !== right.kind) return left.kind === 'rotated' ? -1 : 1
     return left.path.localeCompare(right.path)
@@ -186,9 +202,17 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
 
 async function resolveRuntimeLogFileCursor(file: ActiveRuntimeLogFile, stats: Stats, identity: string, dependencies: RuntimeLogFileImportTestDependencies): Promise<RuntimeLogFileCursor> {
   const existing = await (dependencies.getCursor ?? getRuntimeLogFileCursorAsync)(file.path)
-  if (existing && existing.fileIdentity === identity && stats.size >= existing.cursorOffset) return existing
+  if (existing && existing.fileIdentity === identity) {
+    return stats.size < existing.cursorOffset
+      ? resetRuntimeLogFileCursor(existing, file.path, identity, stats)
+      : existing
+  }
   const identityCursor = await (dependencies.getCursorByIdentity ?? getRuntimeLogFileCursorByIdentityAsync)(identity)
-  if (identityCursor && stats.size >= identityCursor.cursorOffset) return { ...identityCursor, logFile: file.path }
+  if (identityCursor) {
+    return stats.size < identityCursor.cursorOffset
+      ? resetRuntimeLogFileCursor(identityCursor, file.path, identity, stats)
+      : { ...identityCursor, logFile: file.path }
+  }
   const timestamp = nowIso()
   const offset = isRotatedRuntimeLogFile(file) ? 0 : stats.size
   const initial: RuntimeLogFileCursor = {
@@ -205,6 +229,23 @@ async function resolveRuntimeLogFileCursor(file: ActiveRuntimeLogFile, stats: St
   }
   await persistCursor(initial, dependencies)
   return initial
+}
+
+function resetRuntimeLogFileCursor(
+  cursor: RuntimeLogFileCursor,
+  logFile: string,
+  fileIdentity: string,
+  stats: Stats
+): RuntimeLogFileCursor {
+  return {
+    ...cursor,
+    logFile,
+    fileIdentity,
+    cursorOffset: 0,
+    lineNumber: 0,
+    fileSize: stats.size,
+    fileMtimeMs: Math.trunc(stats.mtimeMs)
+  }
 }
 
 function isRotatedRuntimeLogFile(file: ActiveRuntimeLogFile): boolean {

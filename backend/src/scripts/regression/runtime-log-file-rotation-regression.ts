@@ -31,6 +31,35 @@ try {
     /if \(runtimeConfig\.databaseDriver === 'sqlite'\) \{\s*startRuntimeLogFileImport\(\)/,
     'PostgreSQL ingest-worker 不得跳过 file importer'
   )
+
+  const crowdedLogDir = join(root, 'crowded-logs')
+  mkdirSync(crowdedLogDir)
+  for (let index = 0; index < 2050; index += 1) {
+    writeFileSync(join(crowdedLogDir, `aaa-unrelated-${String(index).padStart(4, '0')}.txt`), '')
+  }
+  const crowdedCurrentPath = join(crowdedLogDir, 'juhe-ai.ops-worker.log')
+  const crowdedRotatedPath = join(crowdedLogDir, 'juhe-ai.ops-worker.20260721T000000Z.00000000-0000-0000-0000-000000000099.log')
+  writeFileSync(crowdedCurrentPath, 'current\n')
+  writeFileSync(crowdedRotatedPath, 'rotated\n')
+  runtimeConfig.log.directory = crowdedLogDir
+  const crowdedDiscovery = await importerModule.discoverRuntimeLogFilesForTest()
+  assert.ok(crowdedDiscovery.some((file) => file.path === crowdedCurrentPath), '超过 2048 个非日志目录项后仍必须发现受控 current 文件')
+  assert.ok(crowdedDiscovery.some((file) => file.path === crowdedRotatedPath), '超过 2048 个非日志目录项后仍必须发现受控 rotated 文件')
+
+  const fairnessLogDir = join(root, 'fairness-logs')
+  mkdirSync(fairnessLogDir)
+  for (let index = 0; index < 2050; index += 1) {
+    const uniqueId = index.toString(16).padStart(32, '0')
+    writeFileSync(join(fairnessLogDir, `juhe-ai.ops-worker.20260721T000000Z.${uniqueId}.log`), '')
+  }
+  runtimeConfig.log.directory = fairnessLogDir
+  const firstWindow = await importerModule.discoverRuntimeLogFilesForTest()
+  const secondWindow = await importerModule.discoverRuntimeLogFilesForTest()
+  assert.equal(firstWindow.length, 2048, '单轮只允许返回有界数量的受控日志文件')
+  assert.equal(secondWindow.length, 2, '下一轮必须从受控匹配进度继续，不能永久饿死窗口外文件')
+  assert.equal(new Set([...firstWindow, ...secondWindow].map((file) => file.path)).size, 2050, '跨轮询发现必须完整且不重复')
+  runtimeConfig.log.directory = logDir
+
   const currentPath = join(logDir, 'juhe-ai.stats-worker.log')
   writeFileSync(currentPath, 'one\n')
   const discovered = await importerModule.discoverRuntimeLogFilesForTest()

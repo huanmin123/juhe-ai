@@ -52,6 +52,18 @@ try {
   const partialCursor = repositoryModule.getRuntimeLogFileCursor(currentPath)
   assert.equal(partialCursor?.cursorOffset, Buffer.byteLength(`${line('existing-before-start')}\n${line('after-start')}\n`), 'partial line 不得推进游标')
 
+  const truncatedLine = `${line('after-same-identity-truncate')}\n`
+  writeFileSync(currentPath, truncatedLine)
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: currentPath, role: 'ingest-worker-current' })
+  assert.equal(
+    (database.prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event = ?').get('after-same-identity-truncate') as { count: number }).count,
+    1,
+    '同一 identity 的当前文件原地截断后必须从 offset 0 读取新完整行'
+  )
+  const truncatedCursor = repositoryModule.getRuntimeLogFileCursor(currentPath)
+  assert.equal(truncatedCursor?.cursorOffset, Buffer.byteLength(truncatedLine), '同 identity 截断重读后游标必须落在新文件尾')
+  assert.equal(truncatedCursor?.lineNumber, 1, '同 identity 截断后行号必须从 0 重新累计')
+
   const rotatedPath = join(logDir, 'juhe-ai.ingest-worker.20260721T010203Z.00000000-0000-0000-0000-000000000001.log')
   writeFileSync(rotatedPath, `${line('rotated-first')}\n`)
   await importerModule.importRuntimeLogFileDeltaForTest({ path: rotatedPath, role: 'ingest-worker-rotated' })
