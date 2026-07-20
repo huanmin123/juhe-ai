@@ -21,7 +21,8 @@ const routeAssetLoadErrorPatterns = [
   /chunkloaderror/i,
   /loading chunk [\w-]+ failed/i,
   /unable to preload css/i,
-  /css_chunk_load_failed/i
+  /css_chunk_load_failed/i,
+  /couldn't resolve component/i
 ]
 
 export function installRouteLoadRecovery(router: Router): void {
