@@ -13,6 +13,12 @@ assert.match(postgresSchema, /custom_provider_models[\s\S]*catalog_visible boole
 const snapshotService = readFileSync(new URL('../../modules/model-pricing/published-model-catalog.service.ts', import.meta.url), 'utf8')
 const rebuildScript = readFileSync(new URL('../maintenance/rebuild-published-model-catalog-snapshots.ts', import.meta.url), 'utf8')
 assert.match(snapshotService, /createSharedJsonCache<PublishedModelCatalogCacheEntry>/, '发布快照必须镜像到 Redis 单 key')
+assert.match(snapshotService, /createProcessLocalResourceCache<string, PublishedModelCatalogCacheEntry>/, '发布快照必须保留进程内只读热路径')
+assert.match(
+  snapshotService,
+  /const localCached = publishedModelCatalogLocalCache\.get\(cacheKey\)[\s\S]*if \(localCached\?\.payload\) return localCached\.payload[\s\S]*publishedModelCatalogCache\.get\(cacheKey\)/,
+  '模型目录请求必须先命中进程内快照，再回退 Redis'
+)
 assert.match(snapshotService, /findGatewayModelCatalogSnapshotAsync/, 'Redis miss 只能读取一行持久化快照')
 assert.doesNotMatch(snapshotService, /listCachedProviderModelCatalogAsync/, '请求读取服务不得调用运行态模型目录构建')
 assert.match(snapshotService, /rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync/, '写路径必须提供系统账户级快照重建入口')
@@ -26,7 +32,9 @@ assert.match(
 )
 assert.match(rebuildScript, /await closeRedisClients\(\)/, '模型目录离线重建完成后必须关闭 Redis 客户端，避免维护进程挂起')
 assert.match(snapshotService, /clearPublishedModelCatalogOwnerCacheAsync/, '单 owner 重建必须只失效该 owner 的固定快照键')
-assert.match(snapshotService, /publishedModelCatalogCache\.delete\(publishedModelCatalogCacheKey/, '单 owner 缓存失效必须使用精确 key delete')
+assert.match(snapshotService, /publishedModelCatalogCache\.delete\(cacheKey\)/, '单 owner 缓存失效必须使用精确 key delete')
+assert.match(snapshotService, /publishedModelCatalogLocalCache\.delete\(cacheKey\)/, '单 owner 重建必须同步精确失效进程内快照')
+assert.match(snapshotService, /publishedModelCatalogLocalCache\.set\(publishedModelCatalogCacheKey\(snapshot\)/, 'Redis 或数据库回源后必须回填进程内快照')
 assert.equal(
   (snapshotService.match(/publishedModelCatalogCache\.clear\(\)/g) ?? []).length,
   1,
