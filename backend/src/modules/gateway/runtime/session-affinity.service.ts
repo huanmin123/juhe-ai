@@ -207,14 +207,15 @@ export async function orderOpenAIAccountsBySessionAffinityAsync(
     return orderOpenAIAccountsBySessionAffinity(accounts, sessionAffinityKey, options)
   }
   const modelOrderedAccounts = orderOpenAIAccountsByModelPriority(accounts, options.modelPriority)
-  const trafficMigrationPreference = runtimeConfig.cacheDriver === 'redis'
-    ? await trafficMigrationPreferenceForAccountsAsync(modelOrderedAccounts, options.trafficMigrationScope)
-    : trafficMigrationPreferenceForAccounts(modelOrderedAccounts, options.trafficMigrationScope)
-  const sessionBinding = runtimeConfig.cacheDriver === 'redis'
-    ? await getRedisSessionAffinityBindingForOrdering(sessionAffinityKey)
-    : sessionAffinityKey
-      ? sessionAffinityCache.get(sessionAffinityKey)
-      : undefined
+  const [trafficMigrationPreference, sessionBinding] = runtimeConfig.cacheDriver === 'redis'
+    ? await Promise.all([
+        trafficMigrationPreferenceForAccountsAsync(modelOrderedAccounts, options.trafficMigrationScope),
+        getRedisSessionAffinityBindingForOrdering(sessionAffinityKey)
+      ])
+    : [
+        trafficMigrationPreferenceForAccounts(modelOrderedAccounts, options.trafficMigrationScope),
+        sessionAffinityKey ? sessionAffinityCache.get(sessionAffinityKey) : undefined
+      ]
   const sessionTrafficMigrationTargetAccountId = trafficMigrationPreference
     ? undefined
     : sessionTrafficMigrationTargetForAccountsFromBinding(modelOrderedAccounts, sessionBinding)
@@ -281,10 +282,12 @@ export async function areOpenAIHighConcurrencyAccountsBusyForLaneAsync(
     return false
   }
   const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
-  const totalConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
-  const imageLaneConcurrency = options.requestLane === 'image'
-    ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
-    : undefined
+  const [totalConcurrency, imageLaneConcurrency] = await Promise.all([
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    options.requestLane === 'image'
+      ? loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
+      : Promise.resolve(undefined)
+  ])
   return accounts.every((account) => {
     const hardLimit = accountHardConcurrencyLimit(account)
     const concurrencyAccountId = gatewayAccountConcurrencyAccountId(account)
