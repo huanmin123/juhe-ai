@@ -53,10 +53,12 @@ export async function orderGatewayAccountsByLaneCapacityAvailabilityAsync(
     return accounts
   }
   const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
-  const currentConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
-  const imageLaneConcurrency = requestLane === 'image'
-    ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
-    : undefined
+  const [currentConcurrency, imageLaneConcurrency] = await Promise.all([
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    requestLane === 'image'
+      ? loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
+      : Promise.resolve(undefined)
+  ])
   return orderAccountsByLaneCapacityBusyState(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy, modelPriority)
 }
 
@@ -85,10 +87,12 @@ export async function areGatewayAccountsCapacityBusyForLaneAsync(
     return false
   }
   const accountIds = gatewayAccountConcurrencyAccountIds(accounts)
-  const currentConcurrency = await loadAccountCurrentConcurrencyByIdsAsync(accountIds)
-  const imageLaneConcurrency = requestLane === 'image'
-    ? await loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
-    : undefined
+  const [currentConcurrency, imageLaneConcurrency] = await Promise.all([
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    requestLane === 'image'
+      ? loadAccountCurrentConcurrencyByIdsAsync(accountIds, 'image')
+      : Promise.resolve(undefined)
+  ])
   return areAccountsCapacityBusyForLane(accounts, requestLane, currentConcurrency, imageLaneConcurrency, schedulingPolicy)
 }
 
