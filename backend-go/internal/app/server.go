@@ -910,7 +910,12 @@ func newManagementCatalogSnapshotRebuilder(cfg config.Config) (managementprovide
 	if timeout == 0 {
 		timeout = time.Minute
 	}
-	return modelcatalogsnapshotrebuild.NewClientWithTimeout(cfg.NodeInternalBaseURL, cfg.Secret, timeout)
+	return modelcatalogsnapshotrebuild.NewClientWithTimeouts(
+		cfg.NodeInternalBaseURL,
+		cfg.Secret,
+		timeout,
+		cfg.NodeInternalRequestTimeout,
+	)
 }
 
 type operationLogEnqueueClient interface {

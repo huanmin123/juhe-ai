@@ -305,7 +305,7 @@ func newW3ModelCatalogSnapshotBridge(t *testing.T) *w3ModelCatalogSnapshotBridge
 		}
 		w.WriteHeader(http.StatusAccepted)
 	}))
-	client, err := modelcatalogsnapshotrebuild.NewClientWithTimeout(bridge.server.URL, w3ModelCatalogSnapshotBridgeSecret, 5*time.Second)
+	client, err := modelcatalogsnapshotrebuild.NewClientWithTimeouts(bridge.server.URL, w3ModelCatalogSnapshotBridgeSecret, 5*time.Second, 2*time.Second)
 	if err != nil {
 		bridge.server.Close()
 		t.Fatalf("create model catalog snapshot bridge client: %v", err)

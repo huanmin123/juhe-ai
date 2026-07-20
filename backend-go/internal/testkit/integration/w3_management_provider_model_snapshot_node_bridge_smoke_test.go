@@ -87,7 +87,7 @@ func TestW3ManagementProviderModelSnapshotNodeBridgePostgresRedisSmoke(t *testin
 
 	bridge := startW3ModelCatalogNodeBridge(t, ctx, nodePath, backendDir, helperPath, postgresURL, redisCacheURL, redisStateURL, redisQueueURL)
 	defer bridge.Close(t)
-	client, err := modelcatalogsnapshotrebuild.NewClientWithTimeout(bridge.BaseURL(), w3NodeBridgeSecret, 60*time.Second)
+	client, err := modelcatalogsnapshotrebuild.NewClientWithTimeouts(bridge.BaseURL(), w3NodeBridgeSecret, 60*time.Second, 2*time.Second)
 	if err != nil {
 		t.Fatalf("create Go model catalog snapshot client: %v", err)
 	}

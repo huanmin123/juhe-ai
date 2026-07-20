@@ -1,9 +1,11 @@
 package modelcatalogsnapshotrebuild
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -90,13 +92,134 @@ func TestNewClientRejectsUnsafeBaseURLAndUnexpectedStatus(t *testing.T) {
 	}
 }
 
-func TestNewClientWithTimeoutUsesSnapshotSpecificBounds(t *testing.T) {
-	if _, err := NewClientWithTimeout("http://127.0.0.1:3001", "snapshot-secret", 60*time.Second); err != nil {
-		t.Fatalf("NewClientWithTimeout(60s) error = %v", err)
+func TestNewClientWithTimeoutsUseIndependentBounds(t *testing.T) {
+	if _, err := NewClientWithTimeouts("http://127.0.0.1:3001", "snapshot-secret", 60*time.Second, 2*time.Second); err != nil {
+		t.Fatalf("NewClientWithTimeouts(60s, 2s) error = %v", err)
 	}
-	for _, timeout := range []time.Duration{time.Second - time.Nanosecond, 5*time.Minute + time.Nanosecond} {
-		if _, err := NewClientWithTimeout("http://127.0.0.1:3001", "snapshot-secret", timeout); err == nil {
-			t.Fatalf("NewClientWithTimeout(%s) error = nil", timeout)
+	for _, test := range []struct {
+		rebuild time.Duration
+		probe   time.Duration
+	}{
+		{time.Second - time.Nanosecond, 2 * time.Second},
+		{5*time.Minute + time.Nanosecond, 2 * time.Second},
+		{time.Minute, 100*time.Millisecond - time.Nanosecond},
+		{time.Minute, 10*time.Second + time.Nanosecond},
+	} {
+		if _, err := NewClientWithTimeouts("http://127.0.0.1:3001", "snapshot-secret", test.rebuild, test.probe); err == nil {
+			t.Fatalf("NewClientWithTimeouts(%s, %s) error = nil", test.rebuild, test.probe)
 		}
+	}
+}
+
+func TestProbeSendsAuthenticatedReadOnlyRequestAndValidatesContract(t *testing.T) {
+	var method, path, requestSignature string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		requestSignature = r.Header.Get("X-Juhe-AI-Signature")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_, _ = w.Write([]byte(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClientWithTimeouts(server.URL, "snapshot-secret", time.Minute, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Probe(t.Context()); err != nil {
+		t.Fatalf("Probe() error = %v", err)
+	}
+	if method != http.MethodGet || path != readinessPath {
+		t.Fatalf("request = %s %s", method, path)
+	}
+	if requestSignature != "v1=29ff4948f16ba2cdbfede5ae852914cda14a4ce7aef2f9e179ea45c6d412c7c4" {
+		t.Fatalf("signature = %q", requestSignature)
+	}
+}
+
+func TestProbeClassifiesFailuresWithoutLeakingResponseOrEndpoint(t *testing.T) {
+	tests := []struct {
+		name        string
+		statusCode  int
+		body        string
+		contentType string
+		want        ProbeFailureKind
+	}{
+		{name: "unauthorized", statusCode: http.StatusUnauthorized, body: `{"message":"secret marker"}`, want: ProbeFailureUnauthorized},
+		{name: "route missing", statusCode: http.StatusNotFound, want: ProbeFailureNotFound},
+		{name: "node dependency", statusCode: http.StatusServiceUnavailable, body: `{"code":"private marker"}`, want: ProbeFailureDependencyUnavailable},
+		{name: "other status", statusCode: http.StatusBadGateway, want: ProbeFailureHTTPStatus},
+		{name: "wrong content type", statusCode: http.StatusOK, body: `{}`, contentType: "text/plain", want: ProbeFailureInvalidResponse},
+		{name: "invalid json", statusCode: http.StatusOK, body: `{`, want: ProbeFailureInvalidResponse},
+		{name: "wrong owner contract", statusCode: http.StatusOK, body: `{"ready":true,"component":"other","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63}`, want: ProbeFailureInvalidResponse},
+		{name: "wrong schema", statusCode: http.StatusOK, body: `{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":62}`, want: ProbeFailureInvalidResponse},
+		{name: "unknown field", statusCode: http.StatusOK, body: `{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63,"extra":true}`, want: ProbeFailureInvalidResponse},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if test.contentType != "" {
+					w.Header().Set("Content-Type", test.contentType)
+				} else {
+					w.Header().Set("Content-Type", "application/json")
+				}
+				w.WriteHeader(test.statusCode)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			client, err := NewClientWithTimeouts(server.URL, "snapshot-secret", time.Minute, 2*time.Second)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.Probe(t.Context())
+			var probeError *ProbeError
+			if !errors.As(err, &probeError) || probeError.Kind != test.want {
+				t.Fatalf("Probe() error = %#v, want kind %q", err, test.want)
+			}
+			if strings.Contains(err.Error(), "marker") || strings.Contains(err.Error(), server.URL) {
+				t.Fatalf("Probe() leaked internal detail: %q", err)
+			}
+		})
+	}
+}
+
+func TestProbeRejectsRedirectOversizedResponseAndTimeout(t *testing.T) {
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":63}`))
+	}))
+	defer redirectTarget.Close()
+
+	for _, test := range []struct {
+		name    string
+		handler http.HandlerFunc
+		kind    ProbeFailureKind
+		timeout time.Duration
+	}{
+		{name: "redirect", kind: ProbeFailureHTTPStatus, timeout: time.Second, handler: func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, redirectTarget.URL, http.StatusFound)
+		}},
+		{name: "oversized", kind: ProbeFailureInvalidResponse, timeout: time.Second, handler: func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(strings.Repeat("x", 4097)))
+		}},
+		{name: "timeout", kind: ProbeFailureUnreachable, timeout: 100 * time.Millisecond, handler: func(w http.ResponseWriter, _ *http.Request) {
+			time.Sleep(200 * time.Millisecond)
+			w.WriteHeader(http.StatusOK)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(test.handler)
+			defer server.Close()
+			client, err := NewClientWithTimeouts(server.URL, "snapshot-secret", time.Minute, test.timeout)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = client.Probe(t.Context())
+			var probeError *ProbeError
+			if !errors.As(err, &probeError) || probeError.Kind != test.kind {
+				t.Fatalf("Probe() error = %#v, want kind %q", err, test.kind)
+			}
+		})
 	}
 }
