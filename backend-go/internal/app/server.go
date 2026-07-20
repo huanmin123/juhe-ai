@@ -16,6 +16,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/managementaccountauthorizeddispatch"
 	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
 	"juhe-ai/backend-go/internal/modules/managementaccountcreate"
@@ -388,6 +389,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountCreateHandler:                  managementHandlers.MyAccountCreateHandler,
 		ManagementAccountUpdateHandler:                    managementHandlers.AccountUpdateHandler,
 		ManagementMyAccountUpdateHandler:                  managementHandlers.MyAccountUpdateHandler,
+		ManagementAccountAuthorizedDispatchHandler:        managementHandlers.AccountAuthorizedDispatchHandler,
+		ManagementMyAccountAuthorizedDispatchHandler:      managementHandlers.MyAccountAuthorizedDispatchHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -590,6 +593,8 @@ type managementAPIHandlers struct {
 	MyAccountCreateHandler                  http.Handler
 	AccountUpdateHandler                    http.Handler
 	MyAccountUpdateHandler                  http.Handler
+	AccountAuthorizedDispatchHandler        http.Handler
+	MyAccountAuthorizedDispatchHandler      http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -772,6 +777,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
 		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
+	})
+	accountAuthorizedDispatchService := managementaccountauthorizeddispatch.NewService(managementaccountauthorizeddispatch.Options{
+		Store: store, GatewayInvalidator: systemAccountInvalidator,
+		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
 	})
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
@@ -1016,6 +1025,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountCreateHandler:                  httpapi.NewManagementMyAccountCreateHandler(accountCreateService),
 		AccountUpdateHandler:                    httpapi.NewManagementAccountUpdateHandler(accountUpdateService),
 		MyAccountUpdateHandler:                  httpapi.NewManagementMyAccountUpdateHandler(accountUpdateService),
+		AccountAuthorizedDispatchHandler:        httpapi.NewManagementAccountAuthorizedDispatchHandler(accountAuthorizedDispatchService),
+		MyAccountAuthorizedDispatchHandler:      httpapi.NewManagementMyAccountAuthorizedDispatchHandler(accountAuthorizedDispatchService),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),

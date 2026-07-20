@@ -167,6 +167,8 @@ type RouterOptions struct {
 	ManagementMyAccountCreateHandler                  http.Handler
 	ManagementAccountUpdateHandler                    http.Handler
 	ManagementMyAccountUpdateHandler                  http.Handler
+	ManagementAccountAuthorizedDispatchHandler        http.Handler
+	ManagementMyAccountAuthorizedDispatchHandler      http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -429,6 +431,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountCreateHandler == nil &&
 				opts.ManagementAccountUpdateHandler == nil &&
 				opts.ManagementMyAccountUpdateHandler == nil &&
+				opts.ManagementAccountAuthorizedDispatchHandler == nil &&
+				opts.ManagementMyAccountAuthorizedDispatchHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -962,6 +966,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountUpdateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}", opts.ManagementMyAccountUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountAuthorizedDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Patch("/accounts/{id}/authorized-dispatch", opts.ManagementAccountAuthorizedDispatchHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountAuthorizedDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/authorized-dispatch", opts.ManagementMyAccountAuthorizedDispatchHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -1390,6 +1400,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountCreateHandler != nil ||
 		opts.ManagementAccountUpdateHandler != nil ||
 		opts.ManagementMyAccountUpdateHandler != nil ||
+		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementSystemSettingsHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
@@ -1494,6 +1506,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountCreateHandler != nil ||
 		opts.ManagementAccountUpdateHandler != nil ||
 		opts.ManagementMyAccountUpdateHandler != nil ||
+		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||
