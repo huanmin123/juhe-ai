@@ -327,6 +327,7 @@
     "test:runtime-log-redis-enqueue-failure-boundary": "tsx src/scripts/regression/runtime-log-redis-enqueue-failure-boundary-regression.ts",
     "test:runtime-log-file-import-source": "tsx src/scripts/regression/runtime-log-file-import-source-regression.ts",
     "test:runtime-log-search-guard": "tsx src/scripts/regression/runtime-log-search-guard-regression.ts",
+    "test:runtime-log-file-consumer-contract": "tsx src/scripts/regression/runtime-log-file-consumer-contract-regression.ts",
     "test:runtime-snapshot-unavailable-contract": "tsx src/scripts/regression/runtime-snapshot-unavailable-contract-regression.ts",
     "test:background-ipc-snapshot-current-only": "tsx src/scripts/regression/background-ipc-snapshot-current-only-regression.ts",
     "test:table-monitor-default-scan": "tsx src/scripts/regression/table-monitor-default-scan-regression.ts",

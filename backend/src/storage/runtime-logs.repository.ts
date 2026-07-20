@@ -505,6 +505,19 @@ export function getRuntimeLogFileCursor(logFile: string): RuntimeLogFileCursor |
   return row ? runtimeLogFileCursorFromRow(row) : undefined
 }
 
+export async function getRuntimeLogFileCursorAsync(logFile: string): Promise<RuntimeLogFileCursor | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getRuntimeLogFileCursor(logFile)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const rows = await client.query<RuntimeLogRow>(
+    'SELECT * FROM juhe_dataset.runtime_log_file_cursors WHERE log_file = ?',
+    [logFile]
+  )
+  const row = rows[0]
+  return row ? runtimeLogFileCursorFromRow(row) : undefined
+}
+
 export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): void {
   const now = nowIso()
   getDatasetDatabase()
@@ -535,6 +548,41 @@ export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): vo
       now,
       now
     )
+}
+
+export async function upsertRuntimeLogFileCursorAsync(input: RuntimeLogFileCursorInput): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    upsertRuntimeLogFileCursor(input)
+    return
+  }
+  const now = nowIso()
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  await client.execute(`
+    INSERT INTO juhe_dataset.runtime_log_file_cursors (
+      log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
+      last_read_at, last_error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(log_file) DO UPDATE SET
+      file_identity = excluded.file_identity,
+      cursor_offset = excluded.cursor_offset,
+      line_number = excluded.line_number,
+      file_size = excluded.file_size,
+      file_mtime_ms = excluded.file_mtime_ms,
+      last_read_at = excluded.last_read_at,
+      last_error_message = excluded.last_error_message,
+      updated_at = excluded.updated_at
+  `, [
+    input.logFile,
+    input.fileIdentity ?? null,
+    input.cursorOffset,
+    input.lineNumber,
+    input.fileSize,
+    input.fileMtimeMs ?? null,
+    input.lastReadAt ?? null,
+    input.lastErrorMessage ?? null,
+    now,
+    now
+  ])
 }
 
 function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: string; params: RuntimeLogFilterValue[] } {

@@ -35,6 +35,16 @@ export interface BackgroundQueueHealthItem {
   writerPoolMaxRunMs: number | null
   pendingWriteRequestCount: number | null
   oldestPendingWriteMs: number | null
+  discoveredFileCount: number | null
+  pendingFileCount: number | null
+  pendingBytes: number | null
+  oldestPendingMtime?: string
+  currentFile?: string
+  currentOffset: number | null
+  lastReadAt?: string
+  lastCommitAt?: string
+  lastError?: string
+  protectedRotatedFileCount: number | null
 }
 
 export interface BackgroundQueueHealthSnapshot {
@@ -268,7 +278,12 @@ function buildQueueHealthItem(input: {
       writerPoolMaxQueueWaitMs: null,
       writerPoolMaxRunMs: null,
       pendingWriteRequestCount: null,
-      oldestPendingWriteMs: null
+      oldestPendingWriteMs: null,
+      discoveredFileCount: null,
+      pendingFileCount: null,
+      pendingBytes: null,
+      currentOffset: null,
+      protectedRotatedFileCount: null
     }
   }
 
@@ -295,6 +310,11 @@ function buildQueueHealthItem(input: {
   const writerPoolOldestQueuedMs = nullableNumber(snapshot.writerPoolOldestQueuedMs)
   const pendingWriteRequestCount = nullableNumber(input.roleState?.pendingWriteRequestCount)
   const oldestPendingWriteMs = nullableNumber(input.roleState?.oldestPendingWriteMs)
+  const discoveredFileCount = nullableNumber(snapshot.discoveredFileCount)
+  const pendingFileCount = nullableNumber(snapshot.pendingFileCount)
+  const pendingBytes = nullableNumber(snapshot.pendingBytes)
+  const currentOffset = nullableNumber(snapshot.currentOffset)
+  const protectedRotatedFileCount = nullableNumber(snapshot.protectedRotatedFileCount)
   const reasons: string[] = []
   if ((droppedCount ?? 0) > 0) reasons.push('queue_dropped')
   if ((rejectedCount ?? 0) > 0) reasons.push('ipc_rejected')
@@ -337,7 +357,17 @@ function buildQueueHealthItem(input: {
     writerPoolMaxQueueWaitMs: nullableNumber(snapshot.writerPoolMaxQueueWaitMs),
     writerPoolMaxRunMs: nullableNumber(snapshot.writerPoolMaxRunMs),
     pendingWriteRequestCount,
-    oldestPendingWriteMs
+    oldestPendingWriteMs,
+    discoveredFileCount,
+    pendingFileCount,
+    pendingBytes,
+    oldestPendingMtime: typeof snapshot.oldestPendingMtime === 'string' ? snapshot.oldestPendingMtime : undefined,
+    currentFile: typeof snapshot.currentFile === 'string' ? snapshot.currentFile : undefined,
+    currentOffset,
+    lastReadAt: typeof snapshot.lastReadAt === 'string' ? snapshot.lastReadAt : undefined,
+    lastCommitAt: typeof snapshot.lastCommitAt === 'string' ? snapshot.lastCommitAt : undefined,
+    lastError: typeof snapshot.lastError === 'string' ? snapshot.lastError : undefined,
+    protectedRotatedFileCount
   }
 }
 

@@ -364,7 +364,17 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
 function runtimeLogQueueRuntime(input: BackgroundWorkerRuntimeLogQueueRuntime): BackgroundWorkerRuntimeLogQueueRuntime {
   return {
     ...queueRuntime(input),
-    retentionDays: input.retentionDays
+    retentionDays: input.retentionDays,
+    discoveredFileCount: typeof input.discoveredFileCount === 'number' ? input.discoveredFileCount : 0,
+    pendingFileCount: typeof input.pendingFileCount === 'number' ? input.pendingFileCount : 0,
+    pendingBytes: typeof input.pendingBytes === 'number' ? input.pendingBytes : 0,
+    oldestPendingMtime: typeof input.oldestPendingMtime === 'string' ? input.oldestPendingMtime : undefined,
+    currentFile: typeof input.currentFile === 'string' ? input.currentFile : undefined,
+    currentOffset: typeof input.currentOffset === 'number' ? input.currentOffset : 0,
+    lastReadAt: typeof input.lastReadAt === 'string' ? input.lastReadAt : undefined,
+    lastCommitAt: typeof input.lastCommitAt === 'string' ? input.lastCommitAt : undefined,
+    lastError: typeof input.lastError === 'string' ? input.lastError : undefined,
+    protectedRotatedFileCount: typeof input.protectedRotatedFileCount === 'number' ? input.protectedRotatedFileCount : 0
   }
 }
 

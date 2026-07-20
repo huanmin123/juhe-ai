@@ -28,6 +28,7 @@ export function isRuntimeLogsAlertVisible(facets?: RuntimeLogFacets): boolean {
     !facets.runtimeAvailable
     || !facets.workerSnapshotAvailable
     || !facets.runtimeLogIndexQueueAvailable
+    || Boolean(facets.runtime?.lastError)
     || !facets.dbService.statusAvailable
     || !facets.dbService.stateAvailable
     || !facets.gatewayAccountSideEffectsAvailable
@@ -37,11 +38,12 @@ export function isRuntimeLogsAlertVisible(facets?: RuntimeLogFacets): boolean {
 export function runtimeLogsAlertDescription(facets?: RuntimeLogFacets): string {
   if (!facets) return ''
   const reasons: string[] = []
+  if (facets.runtime?.lastError) reasons.push('运行日志文件消费最近一次提交失败')
   if (!facets.runtimeAvailable) {
     reasons.push('服务运行态不可用')
   } else {
     if (!facets.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
-    if (!facets.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
+    if (!facets.runtimeLogIndexQueueAvailable) reasons.push('运行日志文件消费状态不可用')
     if (!facets.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
   }
   if (!facets.dbService.statusAvailable) {

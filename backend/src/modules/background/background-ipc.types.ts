@@ -62,6 +62,16 @@ export interface BackgroundWorkerQueueRuntime {
 
 export interface BackgroundWorkerRuntimeLogQueueRuntime extends BackgroundWorkerQueueRuntime {
   retentionDays: number
+  discoveredFileCount?: number
+  pendingFileCount?: number
+  pendingBytes?: number
+  oldestPendingMtime?: string
+  currentFile?: string
+  currentOffset?: number
+  lastReadAt?: string
+  lastCommitAt?: string
+  lastError?: string
+  protectedRotatedFileCount?: number
 }
 
 export interface BackgroundWorkerRetryQueueRuntime {

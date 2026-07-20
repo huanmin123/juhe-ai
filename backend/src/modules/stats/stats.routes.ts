@@ -420,7 +420,17 @@ function queueHealthRuntimeRow(item: BackgroundQueueHealthItem): BackgroundJobRu
     writerPoolMaxQueueWaitMs: item.writerPoolMaxQueueWaitMs ?? undefined,
     writerPoolMaxRunMs: item.writerPoolMaxRunMs ?? undefined,
     pendingWriteRequestCount: item.pendingWriteRequestCount ?? undefined,
-    pendingWriteOldestQueuedMs: item.oldestPendingWriteMs ?? undefined
+    pendingWriteOldestQueuedMs: item.oldestPendingWriteMs ?? undefined,
+    discoveredFileCount: item.discoveredFileCount ?? undefined,
+    pendingFileCount: item.pendingFileCount ?? undefined,
+    pendingBytes: item.pendingBytes ?? undefined,
+    oldestPendingMtime: item.oldestPendingMtime,
+    currentFile: item.currentFile,
+    currentOffset: item.currentOffset ?? undefined,
+    lastReadAt: item.lastReadAt,
+    lastCommitAt: item.lastCommitAt,
+    lastError: item.lastError,
+    protectedRotatedFileCount: item.protectedRotatedFileCount ?? undefined
   }, { queueType: item.source === 'server_ipc' ? 'ipc' : 'local' })
 }
 
