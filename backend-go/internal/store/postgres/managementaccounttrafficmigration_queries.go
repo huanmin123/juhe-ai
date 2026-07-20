@@ -5,6 +5,7 @@ SELECT accounts.id, accounts.system_account_id,
   COALESCE(source_accounts.system_account_id, accounts.system_account_id), accounts.name,
   COALESCE(source_accounts.provider_code, accounts.provider_code), COALESCE(source_accounts.type, accounts.type),
   accounts.status, accounts.schedulable, accounts.cooldown_until, group_accounts.group_id,
+  group_accounts.account_authorization_id,
   accounts.authorization_instance_authorization_id,
   CASE WHEN accounts.authorization_instance_authorization_id IS NULL THEN 'owner' ELSE 'authorized' END,
   CASE WHEN accounts.authorization_instance_authorization_id IS NULL THEN
@@ -30,7 +31,7 @@ LEFT JOIN juhe_business.resource_authorizations AS resource_authorizations
   AND resource_authorizations.resource_owner_system_account_id = source_accounts.system_account_id
   AND resource_authorizations.grantee_system_account_id = accounts.system_account_id
 INNER JOIN LATERAL (
-  SELECT bindings.group_id FROM juhe_business.group_accounts AS bindings
+  SELECT bindings.group_id, bindings.account_authorization_id FROM juhe_business.group_accounts AS bindings
   WHERE bindings.account_id = accounts.id AND bindings.system_account_id = accounts.system_account_id
     AND bindings.enabled = true
     AND bindings.account_authorization_id IS NOT DISTINCT FROM accounts.authorization_instance_authorization_id

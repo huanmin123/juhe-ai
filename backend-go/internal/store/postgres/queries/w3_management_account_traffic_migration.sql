@@ -10,6 +10,7 @@ SELECT
   accounts.schedulable,
   accounts.cooldown_until,
   group_accounts.group_id,
+  group_accounts.account_authorization_id,
   accounts.authorization_instance_authorization_id,
   CASE WHEN accounts.authorization_instance_authorization_id IS NULL THEN 'owner' ELSE 'authorized' END AS access_type,
   CASE
@@ -41,11 +42,13 @@ LEFT JOIN juhe_business.resource_authorizations AS resource_authorizations
   AND resource_authorizations.resource_owner_system_account_id = source_accounts.system_account_id
   AND resource_authorizations.grantee_system_account_id = accounts.system_account_id
 INNER JOIN LATERAL (
-  SELECT bindings.group_id
+  SELECT bindings.group_id, bindings.account_authorization_id
   FROM juhe_business.group_accounts AS bindings
   WHERE bindings.account_id = accounts.id
     AND bindings.system_account_id = accounts.system_account_id
     AND bindings.enabled = true
+    -- Equivalent to the projected group_accounts authorization binding guard.
+    -- group_accounts.account_authorization_id IS NOT DISTINCT FROM accounts.authorization_instance_authorization_id
     AND bindings.account_authorization_id IS NOT DISTINCT FROM accounts.authorization_instance_authorization_id
   ORDER BY bindings.updated_at DESC, bindings.group_id ASC
   LIMIT 1

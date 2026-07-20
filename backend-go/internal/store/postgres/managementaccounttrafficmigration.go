@@ -108,12 +108,13 @@ func lockTrafficMigrationAccount(ctx context.Context, tx pgx.Tx, accountID strin
 	var row migrationAccountRow
 	var cooldown pgtype.Timestamptz
 	var authorizationID pgtype.Text
+	var bindingAuthorizationID pgtype.Text
 	err := tx.QueryRow(ctx, lockManagementAccountTrafficMigrationAccountSQL,
 		accountID, input.CanAccessAll, strings.TrimSpace(input.EffectiveSystemAccountID), input.UpdatedAt.UTC(),
 	).Scan(
 		&row.account.ID, &row.account.SystemAccountID, &row.account.OwnerSystemAccountID, &row.account.Name,
 		&row.account.ProviderCode, &row.account.Type, &row.account.Status, &row.account.Schedulable,
-		&cooldown, &row.account.BoundGroupID, &authorizationID, &row.account.AccessType, &row.effectiveAvailable,
+		&cooldown, &row.account.BoundGroupID, &bindingAuthorizationID, &authorizationID, &row.account.AccessType, &row.effectiveAvailable,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return migrationAccountRow{}, false, nil
