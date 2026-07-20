@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -241,7 +242,7 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 			concurrencyAvailable = true
 		}
 	}
-	runtimeSummaries, runtimeAvailable, err := s.loadAPIKeyRuntimeSummaries(ctx, rows)
+	runtimeSummaries, _, err := s.loadAPIKeyRuntimeSummaries(ctx, rows)
 	if err != nil {
 		return Result{}, err
 	}
@@ -250,13 +251,20 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 		item := snapshotItem(row, now)
 		item.CurrentConcurrency = currentConcurrency[concurrencyAccountID(row)]
 		item.APIKeyRuntime = runtimeSummaries[row.ID]
+		if item.APIKeyRuntime != nil && item.APIKeyRuntime.AllUnavailable && item.EffectiveAvailability.Available {
+			item.EffectiveAvailability = blocked(
+				"api_key_pool_unavailable", "Key 全部不可用", "red", "api_key_pool",
+				fmt.Sprintf("账户内 %d 个 API Key 均不可用，后台探测恢复前不会参与调度", item.APIKeyRuntime.Total),
+				item.APIKeyRuntime.NextProbeAt,
+			)
+			item.AvailabilityPresentation = availabilityPresentation(item.EffectiveAvailability, row)
+		}
 		items = append(items, item)
 	}
 	return Result{
 		GeneratedAt: now.UTC().Format(time.RFC3339Nano),
 		RuntimeSnapshot: RuntimeSnapshot{
-			AccountConcurrencyAvailable:         concurrencyAvailable,
-			AccountRuntimeAvailabilityAvailable: runtimeAvailable,
+			AccountConcurrencyAvailable: concurrencyAvailable,
 		},
 		Items: items,
 	}, nil
@@ -576,6 +584,8 @@ func presentationStatusAction(status string) (string, string) {
 		return "disabled", "enable_account"
 	case "source_error":
 		return "error", "contact_authorizer"
+	case "api_key_pool_unavailable":
+		return "key_pool_unavailable", "retry_check"
 	default:
 		return "error", "fix_configuration"
 	}

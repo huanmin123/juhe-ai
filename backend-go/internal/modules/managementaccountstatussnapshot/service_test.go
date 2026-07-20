@@ -95,7 +95,7 @@ func TestServiceAddsAPIKeyRuntimeSummaryFromSourceAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if !result.RuntimeSnapshot.AccountRuntimeAvailabilityAvailable || len(runtime.ids) != 1 || runtime.ids[0] != "source_1" {
+	if result.RuntimeSnapshot.AccountRuntimeAvailabilityAvailable || len(runtime.ids) != 1 || runtime.ids[0] != "source_1" {
 		t.Fatalf("runtime snapshot=%+v ids=%v", result.RuntimeSnapshot, runtime.ids)
 	}
 	summary := result.Items[0].APIKeyRuntime
@@ -107,6 +107,44 @@ func TestServiceAddsAPIKeyRuntimeSummaryFromSourceAccount(t *testing.T) {
 	}
 	if summary.NextProbeAt != "2026-07-21T10:00:00Z" || summary.LastFailureAt != "2026-07-21T09:30:00Z" || summary.LastErrorCode != "disabled" || summary.LastTraceID != "trace-second" {
 		t.Fatalf("APIKeyRuntime timing/error = %+v", summary)
+	}
+}
+
+func TestServiceBlocksAvailabilityWhenAllAPIKeysAreUnavailable(t *testing.T) {
+	secret := "runtime-secret"
+	firstFingerprint := statusTestFingerprint(secret, "sk-first")
+	secondFingerprint := statusTestFingerprint(secret, "sk-second")
+	reader := &statusReaderStub{rows: []port.ManagementAccountStatusProjection{{
+		ID: "account_1", SystemAccountID: "u1", Name: "账户", Status: "active", Schedulable: true,
+	}}}
+	sources := &statusAPIKeyRuntimeSourceReaderStub{values: map[string]port.ManagementAccountAPIKeyRuntimeSource{
+		"account_1": {ViewAccountID: "account_1", SourceAccountID: "account_1", ProviderCode: "gpt", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key", CredentialsEncrypted: "cipher"},
+	}}
+	runtime := &statusAPIKeyRuntimeReaderStub{values: map[string][]port.ManagementAccountAPIKeyRuntimeState{
+		"account_1": {
+			{KeyFingerprint: firstFingerprint, Status: "rate_limited", NextProbeAt: "2026-07-21T10:00:00Z"},
+			{KeyFingerprint: secondFingerprint, Status: "disabled"},
+		},
+	}}
+	service := NewServiceWithOptions(ServiceOptions{
+		Reader: reader, APIKeyRuntime: runtime, APIKeySources: sources,
+		CredentialCodec:   &statusCredentialCodecStub{values: map[string]any{"api_keys": []any{"sk-first", "sk-second"}}},
+		FingerprintSecret: secret,
+	})
+
+	result, err := service.Get(t.Context(), Input{ActorSystemAccountID: "u1", ActorRole: "user", SelfOnly: true, AccountIDs: []string{"account_1"}})
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	item := result.Items[0]
+	if item.APIKeyRuntime == nil || !item.APIKeyRuntime.AllUnavailable {
+		t.Fatalf("APIKeyRuntime = %+v", item.APIKeyRuntime)
+	}
+	if item.EffectiveAvailability.Available || item.EffectiveAvailability.Status != "api_key_pool_unavailable" || item.EffectiveAvailability.BlockerScope != "api_key_pool" || item.EffectiveAvailability.RetryAt != "2026-07-21T10:00:00Z" {
+		t.Fatalf("EffectiveAvailability = %+v", item.EffectiveAvailability)
+	}
+	if item.AvailabilityPresentation.Status != "key_pool_unavailable" || item.AvailabilityPresentation.Action != "retry_check" {
+		t.Fatalf("AvailabilityPresentation = %+v", item.AvailabilityPresentation)
 	}
 }
 
