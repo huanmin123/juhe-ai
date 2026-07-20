@@ -195,9 +195,6 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     }
     return validateGatewayApiKey(key)
   }
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
-    await syncGatewayCacheInvalidationsFromRuntimeState()
-  }
   if (!key.startsWith('sk-')) {
     return undefined
   }
@@ -209,7 +206,13 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
     && processCached.forceRevalidateAtMs > now
     && !isGatewayApiKeyRowExpired(processCached.row, now)
   ) {
+    if (runtimeConfig.runtimeStateDriver === 'redis') {
+      void syncGatewayCacheInvalidationsFromRuntimeState().catch(() => undefined)
+    }
     return cloneGatewayApiKeyRow(processCached.row)
+  }
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    await syncGatewayCacheInvalidationsFromRuntimeState()
   }
   if (runtimeConfig.cacheDriver !== 'redis') {
     const cached = gatewayApiKeyCache.get(keyHash)

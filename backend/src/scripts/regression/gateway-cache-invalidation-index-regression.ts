@@ -27,6 +27,7 @@ assert(gatewayApiKeyRepositorySource.includes('createSharedJsonCache<GatewayApiK
 assert(gatewayApiKeyRepositorySource.includes('createProcessLocalResourceCache<string, GatewayApiKeyCacheEntry>'), '网关 API Key 校验应保留进程内只读热路径')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'syncGatewayCacheInvalidationsFromRuntimeState()', '网关 API Key 异步校验应先同步 Redis runtime state 失效版本')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'gatewayApiKeyProcessCache.get(keyHash)', '网关 API Key 异步校验应先读取进程内热缓存')
+assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'void syncGatewayCacheInvalidationsFromRuntimeState()', 'API Key 进程内命中时失效版本同步不得阻塞模型目录响应')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'getGatewayApiKeySharedCacheEntry(keyHash)', '网关 API Key 异步校验应读取 Redis 共享缓存')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'validateGatewayApiKeyAsync', 'setGatewayApiKeyCacheEntryAsync(keyHash', '网关 API Key 异步校验 DB 命中后应写 Redis 共享缓存')
 assertFunctionIncludes(gatewayApiKeyRepositorySource, 'clearGatewayApiKeyValidationCache', 'clearGatewayApiKeySharedCache()', '网关 API Key 校验全量失效应清理 Redis 共享缓存命名空间')
