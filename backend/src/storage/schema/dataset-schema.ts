@@ -352,6 +352,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           cursor_offset INTEGER NOT NULL DEFAULT 0,
           line_number INTEGER NOT NULL DEFAULT 0,
           file_size INTEGER NOT NULL DEFAULT 0,
+          truncation_generation INTEGER NOT NULL DEFAULT 0,
           file_mtime_ms INTEGER,
           last_read_at TEXT,
           last_error_message TEXT,

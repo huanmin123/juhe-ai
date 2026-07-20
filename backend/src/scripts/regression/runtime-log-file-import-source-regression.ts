@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -19,6 +20,7 @@ runtimeConfig.log.fileEnabled = true
 runtimeConfig.log.consoleEnabled = false
 
 type RuntimeLogSourceRow = {
+  id?: string
   log_file: string | null
   log_offset: number | null
   line_number: number | null
@@ -141,13 +143,16 @@ try {
 
   const normalRows = database
     .prepare(`
-      SELECT log_file, log_offset, line_number
+      SELECT id, log_file, log_offset, line_number
       FROM runtime_logs
       WHERE event = ?
       ORDER BY log_offset ASC
     `)
     .all('normal_after_oversized_runtime_log_line') as RuntimeLogSourceRow[]
   assert.equal(normalRows.length, 1, '超长单行后的正常日志应在下一轮导入')
+  const legacySourceKey = `${cursorAfterNormal?.fileIdentity}:${expectedNormalOffset}`
+  const expectedGenerationZeroId = `rtlog_${createHash('sha256').update(legacySourceKey).digest('hex').slice(0, 32)}`
+  assert.equal(normalRows[0]?.id, expectedGenerationZeroId, 'generation 0 必须保留旧 identity:offset sourceKey，避免升级重放重复')
   assert.deepEqual(
     [normalRows[0]?.log_file, normalRows[0]?.log_offset, normalRows[0]?.line_number],
     [logPath, expectedNormalOffset, 2],

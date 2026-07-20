@@ -72,6 +72,7 @@ export interface RuntimeLogFileCursor {
   cursorOffset: number
   lineNumber: number
   fileSize: number
+  truncationGeneration: number
   fileMtimeMs?: number
   lastReadAt?: string
   lastErrorMessage?: string
@@ -85,6 +86,7 @@ export interface RuntimeLogFileCursorInput {
   cursorOffset: number
   lineNumber: number
   fileSize: number
+  truncationGeneration?: number
   fileMtimeMs?: number
   lastReadAt?: string
   lastErrorMessage?: string
@@ -558,14 +560,15 @@ export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): vo
   getDatasetDatabase()
     .prepare(`
       INSERT INTO runtime_log_file_cursors (
-        log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
-        last_read_at, last_error_message, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation,
+        file_mtime_ms, last_read_at, last_error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(log_file) DO UPDATE SET
         file_identity = excluded.file_identity,
         cursor_offset = excluded.cursor_offset,
         line_number = excluded.line_number,
         file_size = excluded.file_size,
+        truncation_generation = excluded.truncation_generation,
         file_mtime_ms = excluded.file_mtime_ms,
         last_read_at = excluded.last_read_at,
         last_error_message = excluded.last_error_message,
@@ -577,6 +580,7 @@ export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): vo
       positiveInteger(input.cursorOffset),
       positiveInteger(input.lineNumber),
       positiveInteger(input.fileSize),
+      positiveInteger(input.truncationGeneration),
       integerOrNull(input.fileMtimeMs),
       input.lastReadAt ?? now,
       input.lastErrorMessage ?? null,
@@ -597,14 +601,15 @@ export async function upsertRuntimeLogFileCursorAsync(
   const client = await runtimeLogFileCursorPostgresClient(dependencies)
   await client.execute(`
     INSERT INTO juhe_dataset.runtime_log_file_cursors (
-      log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
-      last_read_at, last_error_message, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation,
+      file_mtime_ms, last_read_at, last_error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(log_file) DO UPDATE SET
       file_identity = excluded.file_identity,
       cursor_offset = excluded.cursor_offset,
       line_number = excluded.line_number,
       file_size = excluded.file_size,
+      truncation_generation = excluded.truncation_generation,
       file_mtime_ms = excluded.file_mtime_ms,
       last_read_at = excluded.last_read_at,
       last_error_message = excluded.last_error_message,
@@ -615,6 +620,7 @@ export async function upsertRuntimeLogFileCursorAsync(
     positiveInteger(input.cursorOffset),
     positiveInteger(input.lineNumber),
     positiveInteger(input.fileSize),
+    positiveInteger(input.truncationGeneration),
     integerOrNull(input.fileMtimeMs),
     input.lastReadAt ?? now,
     input.lastErrorMessage ?? null,
@@ -764,6 +770,7 @@ function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
     cursorOffset: positiveInteger(row.cursor_offset),
     lineNumber: positiveInteger(row.line_number),
     fileSize: positiveInteger(row.file_size),
+    truncationGeneration: positiveInteger(row.truncation_generation),
     fileMtimeMs: integerOrNull(row.file_mtime_ms) ?? undefined,
     lastReadAt: optionalString(row.last_read_at),
     lastErrorMessage: optionalString(row.last_error_message),

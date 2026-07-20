@@ -179,6 +179,7 @@ const pgReadClient = {
       cursor_offset: 32,
       line_number: 4,
       file_size: 64,
+      truncation_generation: 3,
       file_mtime_ms: 123,
       last_read_at: '2026-07-20T02:00:00.000Z',
       last_error_message: null,
@@ -193,6 +194,7 @@ const pgCursor = await repository.getRuntimeLogFileCursorAsync('pg-contract.log'
 assert.match(pgQueryCall?.sql ?? '', /juhe_dataset\.runtime_log_file_cursors/, 'PG async cursor 读取必须查询 dataset schema')
 assert.deepEqual(pgQueryCall?.params, ['pg-contract.log'], 'PG async cursor 读取必须按 logFile 绑定参数')
 assert.equal(pgCursor?.cursorOffset, 32, 'PG async cursor 读取必须映射真实查询行')
+assert.equal(pgCursor?.truncationGeneration, 3, 'PG async cursor 读取必须映射截断 generation')
 
 let pgExecuteCall: { sql: string; params: unknown[] } | undefined
 const pgWriteClient = {
@@ -206,6 +208,7 @@ await repository.upsertRuntimeLogFileCursorAsync({
   cursorOffset: -2,
   lineNumber: 5.9,
   fileSize: Number.NaN,
+  truncationGeneration: -3,
   fileMtimeMs: Number.POSITIVE_INFINITY
 }, {
   getPostgresClient: async () => pgWriteClient as never,
@@ -213,7 +216,7 @@ await repository.upsertRuntimeLogFileCursorAsync({
 })
 assert.match(pgExecuteCall?.sql ?? '', /ON CONFLICT\(log_file\) DO UPDATE SET/, 'PG async cursor 写入必须执行 upsert')
 assert.deepEqual(pgExecuteCall?.params, [
-  'pg-contract.log', null, 0, 5, 0, null,
+  'pg-contract.log', null, 0, 5, 0, 0, null,
   '2026-07-20T03:00:00.000Z', null,
   '2026-07-20T03:00:00.000Z', '2026-07-20T03:00:00.000Z'
 ], 'PG async cursor 写入必须绑定规范化参数和统一默认时间')

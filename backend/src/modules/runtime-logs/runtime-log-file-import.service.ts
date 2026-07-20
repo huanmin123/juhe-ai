@@ -1,4 +1,4 @@
-import { createReadStream, type Stats } from 'node:fs'
+import { createReadStream, type Dir, type Dirent, type Stats } from 'node:fs'
 import { opendir, stat as statFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { setImmediate as yieldImmediate } from 'node:timers/promises'
@@ -27,6 +27,7 @@ const runtimeLogTailMaxOversizedLineScanBytes = 1024 * 1024
 const runtimeLogTailMaxLinesPerFile = 5000
 const runtimeLogImportBatchSize = 500
 const runtimeLogDiscoveryMaxFiles = 2048
+const runtimeLogDiscoveryMaxEntriesPerPoll = 2048
 const runtimeLogDiscoveryYieldEvery = 100
 const runtimeLogCurrentRoles: Record<string, string> = {
   'juhe-ai.log': 'server',
@@ -38,7 +39,9 @@ const runtimeLogCurrentRoles: Record<string, string> = {
   'juhe-ai.temporary-maintenance-worker.log': 'temporary-maintenance-worker'
 }
 let runtimeLogDiscoveryDirectory: string | undefined
-let runtimeLogDiscoveryMatchedOffset = 0
+let runtimeLogDiscoveryHandle: Dir | undefined
+let runtimeLogDiscoveryLastReadCount = 0
+let runtimeLogDiscoveryPendingEntry: Dirent | undefined
 
 export interface ActiveRuntimeLogFile {
   path: string
@@ -110,39 +113,55 @@ function scheduleNextPoll(): void {
 
 async function discoverRuntimeLogFiles(): Promise<ActiveRuntimeLogFile[]> {
   const discovered: ActiveRuntimeLogFile[] = []
-  let scanned = 0
-  let matched = 0
-  let hasMoreMatchedFiles = false
   if (runtimeLogDiscoveryDirectory !== runtimeConfig.log.directory) {
+    await closeRuntimeLogDiscoveryHandle()
     runtimeLogDiscoveryDirectory = runtimeConfig.log.directory
-    runtimeLogDiscoveryMatchedOffset = 0
   }
-  const directory = await opendir(runtimeConfig.log.directory)
+  if (!runtimeLogDiscoveryHandle) {
+    runtimeLogDiscoveryHandle = await opendir(runtimeConfig.log.directory)
+  }
+  let readCount = 0
+  let reachedEof = false
   try {
-    for await (const entry of directory) {
-      scanned += 1
-      if (scanned % runtimeLogDiscoveryYieldEvery === 0) await yieldImmediate()
+    while (readCount < runtimeLogDiscoveryMaxEntriesPerPoll) {
+      const entry = runtimeLogDiscoveryPendingEntry ?? await runtimeLogDiscoveryHandle.read()
+      runtimeLogDiscoveryPendingEntry = undefined
+      if (!entry) {
+        reachedEof = true
+        break
+      }
+      readCount += 1
+      if (readCount % runtimeLogDiscoveryYieldEvery === 0) await yieldImmediate()
       if (!entry.isFile()) continue
       const match = runtimeLogFileRole(entry.name)
       if (!match) continue
-      matched += 1
-      if (matched <= runtimeLogDiscoveryMatchedOffset) continue
       if (discovered.length >= runtimeLogDiscoveryMaxFiles) {
-        hasMoreMatchedFiles = true
         break
       }
       discovered.push({ path: join(runtimeConfig.log.directory, entry.name), role: match.role, kind: match.kind })
     }
-  } finally {
-    await directory.close().catch(() => undefined)
+    if (readCount >= runtimeLogDiscoveryMaxEntriesPerPoll) {
+      const lookahead = await runtimeLogDiscoveryHandle.read()
+      if (lookahead) runtimeLogDiscoveryPendingEntry = lookahead
+      else reachedEof = true
+    }
+  } catch (error) {
+    await closeRuntimeLogDiscoveryHandle()
+    throw error
   }
-  runtimeLogDiscoveryMatchedOffset = hasMoreMatchedFiles
-    ? runtimeLogDiscoveryMatchedOffset + discovered.length
-    : 0
+  runtimeLogDiscoveryLastReadCount = readCount
+  if (reachedEof) await closeRuntimeLogDiscoveryHandle()
   return discovered.sort((left, right) => {
     if (left.kind !== right.kind) return left.kind === 'rotated' ? -1 : 1
     return left.path.localeCompare(right.path)
   })
+}
+
+async function closeRuntimeLogDiscoveryHandle(): Promise<void> {
+  const handle = runtimeLogDiscoveryHandle
+  runtimeLogDiscoveryHandle = undefined
+  runtimeLogDiscoveryPendingEntry = undefined
+  if (handle) await handle.close().catch(() => undefined)
 }
 
 function runtimeLogFileRole(fileName: string): { role: string; kind: 'current' | 'rotated' } | undefined {
@@ -203,13 +222,13 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
 async function resolveRuntimeLogFileCursor(file: ActiveRuntimeLogFile, stats: Stats, identity: string, dependencies: RuntimeLogFileImportTestDependencies): Promise<RuntimeLogFileCursor> {
   const existing = await (dependencies.getCursor ?? getRuntimeLogFileCursorAsync)(file.path)
   if (existing && existing.fileIdentity === identity) {
-    return stats.size < existing.cursorOffset
+    return stats.size < existing.cursorOffset || stats.size < existing.fileSize
       ? resetRuntimeLogFileCursor(existing, file.path, identity, stats)
       : existing
   }
   const identityCursor = await (dependencies.getCursorByIdentity ?? getRuntimeLogFileCursorByIdentityAsync)(identity)
   if (identityCursor) {
-    return stats.size < identityCursor.cursorOffset
+    return stats.size < identityCursor.cursorOffset || stats.size < identityCursor.fileSize
       ? resetRuntimeLogFileCursor(identityCursor, file.path, identity, stats)
       : { ...identityCursor, logFile: file.path }
   }
@@ -221,6 +240,7 @@ async function resolveRuntimeLogFileCursor(file: ActiveRuntimeLogFile, stats: St
     cursorOffset: offset,
     lineNumber: 0,
     fileSize: stats.size,
+    truncationGeneration: 0,
     fileMtimeMs: Math.trunc(stats.mtimeMs),
     lastReadAt: timestamp,
     lastErrorMessage: undefined,
@@ -244,6 +264,7 @@ function resetRuntimeLogFileCursor(
     cursorOffset: 0,
     lineNumber: 0,
     fileSize: stats.size,
+    truncationGeneration: cursor.truncationGeneration + 1,
     fileMtimeMs: Math.trunc(stats.mtimeMs)
   }
 }
@@ -304,7 +325,9 @@ async function readRuntimeLogFileLines(file: ActiveRuntimeLogFile, identity: str
       nextLineNumber = lineNumber
       completeLines += 1
       const parsed = parseRuntimeLogLineForIndex(trimTrailingCarriageReturn(pendingLine).toString('utf8'), {
-        sourceKey: `${identity}:${lineStartOffset}`,
+        sourceKey: input.cursor.truncationGeneration > 0
+          ? `${identity}:${input.cursor.truncationGeneration}:${lineStartOffset}`
+          : `${identity}:${lineStartOffset}`,
         logFile: file.path,
         logOffset: lineStartOffset,
         lineNumber
@@ -374,6 +397,16 @@ export function activeRuntimeLogFilesForTest(): ActiveRuntimeLogFile[] {
 
 export async function discoverRuntimeLogFilesForTest(): Promise<ActiveRuntimeLogFile[]> {
   return await discoverRuntimeLogFiles()
+}
+
+export async function resetRuntimeLogFileDiscoveryForTest(): Promise<void> {
+  await closeRuntimeLogDiscoveryHandle()
+  runtimeLogDiscoveryDirectory = undefined
+  runtimeLogDiscoveryLastReadCount = 0
+}
+
+export function getRuntimeLogDiscoveryReadCountForTest(): number {
+  return runtimeLogDiscoveryLastReadCount
 }
 
 export async function importRuntimeLogFileDeltaForTest(file: ActiveRuntimeLogFile, dependencies?: RuntimeLogFileImportTestDependencies): Promise<void> {
