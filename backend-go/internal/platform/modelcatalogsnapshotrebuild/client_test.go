@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -221,5 +222,19 @@ func TestProbeRejectsRedirectOversizedResponseAndTimeout(t *testing.T) {
 				t.Fatalf("Probe() error = %#v, want kind %q", err, test.kind)
 			}
 		})
+	}
+}
+
+func TestProbeUsesCurrentGooseSchemaVersion(t *testing.T) {
+	source, err := os.ReadFile("client.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	if !strings.Contains(text, "result.SchemaVersion != version.SchemaVersion") {
+		t.Fatal("Probe must validate schema with version.SchemaVersion")
+	}
+	if strings.Contains(text, "result.SchemaVersion != 63") {
+		t.Fatal("Probe must not hard-code Goose schema version")
 	}
 }

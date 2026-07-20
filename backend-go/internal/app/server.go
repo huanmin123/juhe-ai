@@ -196,8 +196,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if managementOperationLogQueue != nil {
 		defer func() { _ = managementOperationLogQueue.Close() }()
 	}
-	catalogSnapshotRebuilder, err := newManagementCatalogSnapshotRebuilder(cfg)
+	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
 	if err != nil {
+		return err
+	}
+	if err := probeManagementCatalogSnapshotBridge(ctx, cfg, catalogSnapshotBridge); err != nil {
 		return err
 	}
 
@@ -219,7 +222,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
-		catalogSnapshotRebuilder,
+		catalogSnapshotBridge,
 	)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
@@ -233,6 +236,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
 		SystemAPIAuthenticatedRateLimiter:                 httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, cfg.RedisNamespace),
 		PublicAPIHandler:                                  publicAPIHandler,
+		NodeModelCatalogBridgeReadinessProber:             catalogSnapshotBridge,
 		ManagementAPIAuthMiddleware:                       managementHandlers.AuthMiddleware,
 		ManagementAPIAuthTouchMiddleware:                  managementHandlers.AuthTouchMiddleware,
 		ManagementCaptchaHandler:                          managementHandlers.CaptchaHandler,
@@ -902,7 +906,12 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	}
 }
 
-func newManagementCatalogSnapshotRebuilder(cfg config.Config) (managementprovidermodels.CatalogSnapshotRebuilder, error) {
+type managementCatalogSnapshotBridge interface {
+	managementprovidermodels.CatalogSnapshotRebuilder
+	httpapi.ReadinessProber
+}
+
+func newManagementCatalogSnapshotRebuilder(cfg config.Config) (managementCatalogSnapshotBridge, error) {
 	if !cfg.ManagementAPIEnabled {
 		return nil, nil
 	}
@@ -916,6 +925,26 @@ func newManagementCatalogSnapshotRebuilder(cfg config.Config) (managementprovide
 		timeout,
 		cfg.NodeInternalRequestTimeout,
 	)
+}
+
+func probeManagementCatalogSnapshotBridge(
+	ctx context.Context,
+	cfg config.Config,
+	bridge managementCatalogSnapshotBridge,
+) error {
+	if bridge == nil {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, cfg.NodeInternalRequestTimeout)
+	defer cancel()
+	if err := bridge.Probe(probeCtx); err != nil {
+		var probeError *modelcatalogsnapshotrebuild.ProbeError
+		if errors.As(err, &probeError) {
+			return fmt.Errorf("Node 模型目录快照 bridge readiness 启动门禁失败: %s", probeError.Kind)
+		}
+		return errors.New("Node 模型目录快照 bridge readiness 启动门禁失败")
+	}
+	return nil
 }
 
 type operationLogEnqueueClient interface {

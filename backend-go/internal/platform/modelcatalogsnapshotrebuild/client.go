@@ -17,6 +17,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"juhe-ai/backend-go/internal/version"
 )
 
 const (
@@ -201,7 +203,7 @@ func (c *Client) Probe(ctx context.Context) error {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return &ProbeError{Kind: ProbeFailureInvalidResponse}
 	}
-	if !result.Ready || result.Component != "model-catalog-snapshot-rebuild" || result.ContractVersion != 1 || result.DatabaseDriver != "postgres" || result.SchemaVersion != 63 {
+	if !result.Ready || result.Component != "model-catalog-snapshot-rebuild" || result.ContractVersion != 1 || result.DatabaseDriver != "postgres" || result.SchemaVersion != version.SchemaVersion {
 		return &ProbeError{Kind: ProbeFailureInvalidResponse}
 	}
 	return nil
