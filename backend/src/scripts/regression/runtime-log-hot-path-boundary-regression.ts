@@ -44,6 +44,9 @@ console.log('运行日志热路径边界回归通过：业务进程只追加文�
 function forbidEntrypoint(source: string, name: string): void {
   forbid(source, /setRuntimeLogLineSink/, `${name} 仍在注册 runtime log index sink`)
   forbid(source, /\benqueueRuntimeLogLine\b/, `${name} 仍在直接注册 runtime log Redis producer`)
+  forbid(source, /\bRuntimeLogIndexStream\b/, `${name} 仍在直接构造 RuntimeLogIndexStream`)
+  forbid(source, /\bBoundedRuntimeLogRedisProducer\b/, `${name} 仍在直接构造 BoundedRuntimeLogRedisProducer`)
+  forbid(source, /\bnew\s+\w*RuntimeLog(?:Redis)?Producer\b/, `${name} 仍在直接构造 runtime log Redis producer`)
 }
 
 function forbid(source: string, pattern: RegExp, message: string): void {
