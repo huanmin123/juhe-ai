@@ -4,9 +4,9 @@ SELECT id, system_account_id, config_revision, credentials_encrypted,
        updated_at, proxy_profile_id
 FROM juhe_business.accounts
 WHERE status = 'active'
-  AND schedulable = 1
+  AND schedulable = true
   AND type = 'api_key'
-  AND balance_query_enabled = 1
+  AND balance_query_enabled = true
   AND balance_query_next_refresh_at IS NULL
   AND deleted_at IS NULL
   AND authorization_instance_authorization_id IS NULL
@@ -19,9 +19,9 @@ SELECT id, system_account_id, config_revision, credentials_encrypted,
        updated_at, proxy_profile_id
 FROM juhe_business.accounts
 WHERE status = 'active'
-  AND schedulable = 1
+  AND schedulable = true
   AND type = 'api_key'
-  AND balance_query_enabled = 1
+  AND balance_query_enabled = true
   AND balance_query_next_refresh_at IS NOT NULL
   AND balance_query_next_refresh_at <= $1
   AND deleted_at IS NULL
