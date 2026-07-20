@@ -110,6 +110,10 @@ assert.match(preflightSource, /sendGatewayFailureResponse/, '认证 models 429 �
 const earlyHandlerStart = preflightSource.indexOf('async function handleGatewayModelsRequestBeforeRequiredAuth')
 const earlyHandlerEnd = preflightSource.indexOf('function gatewayModelsProviderCodes', earlyHandlerStart)
 const earlyHandlerSource = preflightSource.slice(earlyHandlerStart, earlyHandlerEnd)
+const earlyUsageContextStart = earlyHandlerSource.indexOf('const usageContext: OpenAIModelsResponseUsageContext')
+const earlyUsageContextEnd = earlyHandlerSource.indexOf('input.auditCapture.bindContext', earlyUsageContextStart)
+const earlyUsageContextSource = earlyHandlerSource.slice(earlyUsageContextStart, earlyUsageContextEnd)
+assert.doesNotMatch(earlyUsageContextSource, /groupId:/, '固定模型目录 usage 不得写入未解析归属快照的分组维度')
 assert.doesNotMatch(earlyHandlerSource, /resolveGatewayRuntimeAsync/, '认证 models 快路径不得加载账户、分组和响应检查策略')
 assert.doesNotMatch(earlyHandlerSource, /rejectGatewayApiKeyQuotaIfExceeded|rejectGatewayAuthorizationQuotaIfExceeded/, '固定模型目录不得依赖额度统计链路')
 assert.match(earlyHandlerSource, /resolveGatewayApiKeyForModelsAsync\([\s\S]*inspectClientIpPolicyAfterRuntime: false/, '认证 models 已在认证前检查 IP 策略，不得重复读取同一策略')
@@ -140,5 +144,7 @@ for (const varyHeader of [
 }
 assert.match(fixedResponseSource, /readPublishedModelCatalogResponseAsync/, '认证 models 必须读取写时生成的发布快照')
 assert.doesNotMatch(fixedResponseSource, /listProviderScopedModelCatalog/, '认证 models 请求路径不得按供应商重建目录')
+const usageRecordsSource = readFileSync(new URL('../../modules/gateway/usage/records.ts', import.meta.url), 'utf8')
+assert.match(usageRecordsSource, /hasResolvedGroupUsageMetadata/, '网关失败 usage 缺少分组归属快照时必须去掉分组维度，不能写入毒化记录')
 
 console.log('认证模型列表双层限流与最终响应缓存回归通过')

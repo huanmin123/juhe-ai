@@ -25,6 +25,7 @@ try {
   assert.match(source, /commandsQueueMaxLength: runtimeLogRedisProducerCommandQueueMaxLength/, '运行日志生产者必须限制 node-redis 命令队列')
   assert.match(source, /runtimeLogRedisProducerMaxInFlightCount/, '运行日志生产者必须限制应用层并发命令数')
   assert.match(source, /runtimeLogRedisProducerMaxInFlightBytes/, '运行日志生产者必须限制应用层在途字节数')
+  assert.match(source, /readinessTimeoutMs: runtimeLogRedisProducerReadinessTimeoutMs/, '首次 Redis 连接必须使用独立于 XADD 的就绪窗口')
   assert.match(redisClientSource, /disableOfflineQueue\?: boolean/, '专用 Redis client 必须支持关闭离线队列')
   assert.match(redisClientSource, /commandsQueueMaxLength\?: number/, '专用 Redis client 必须支持限制命令队列长度')
   assert.doesNotMatch(source, /scheduleProcessFatalError/, '单次运行日志索引入队失败不得触发进程级 fatal')
@@ -75,6 +76,41 @@ try {
   assert.equal(disconnectedSendCount, 0, '连接已断开时不得把 XADD 交给 node-redis offline queue')
   assert.deepEqual(disconnectedDrops, ['disconnected'])
   assert.equal(disconnectedProducer.snapshot().disconnectedDropCount, 1)
+
+  let readinessSendCount = 0
+  const delayedReadinessProducer = new BoundedRuntimeLogRedisProducer<string>({
+    maxInFlightCount: 1,
+    maxInFlightBytes: 100,
+    readinessTimeoutMs: 100,
+    commandTimeoutMs: 20,
+    isReady: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      return true
+    },
+    send: async () => { readinessSendCount += 1 }
+  })
+  assert.equal(delayedReadinessProducer.enqueue('cold-start', 10), true)
+  await waitFor(() => delayedReadinessProducer.snapshot().successCount === 1, 500)
+  assert.equal(readinessSendCount, 1, '首次连接慢于 XADD 截止时，仍应在独立 readiness 窗口内完成入队')
+  assert.equal(delayedReadinessProducer.snapshot().timeoutDropCount, 0)
+
+  let readinessTimeoutCallbackCount = 0
+  const readinessDrops: Array<{ reason: string; error?: unknown }> = []
+  const readinessTimeoutProducer = new BoundedRuntimeLogRedisProducer<string>({
+    maxInFlightCount: 1,
+    maxInFlightBytes: 100,
+    readinessTimeoutMs: 20,
+    commandTimeoutMs: 100,
+    isReady: async () => await new Promise(() => undefined),
+    send: async () => undefined,
+    onDrop: (event) => readinessDrops.push({ reason: event.reason, error: event.error }),
+    onTimeout: () => { readinessTimeoutCallbackCount += 1 }
+  })
+  assert.equal(readinessTimeoutProducer.enqueue('readiness-timeout', 10), true)
+  await waitFor(() => readinessTimeoutProducer.snapshot().disconnectedDropCount === 1, 500)
+  assert.equal(readinessTimeoutCallbackCount, 0, '连接就绪超时不能冒充 XADD 超时并销毁已连接客户端')
+  assert.equal(readinessDrops[0]?.reason, 'disconnected')
+  assert.match(readinessDrops[0]?.error instanceof Error ? readinessDrops[0].error.message : '', /readiness timed out/)
 
   let timeoutCallbackCount = 0
   const timeoutProducer = new BoundedRuntimeLogRedisProducer<string>({
