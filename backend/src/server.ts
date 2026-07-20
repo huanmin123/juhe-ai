@@ -218,7 +218,11 @@ if (existsSync(frontendIndexPath)) {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
         return
       }
-      if (basename(filePath) === 'index.html' || basename(filePath) === 'brand-icon.svg') {
+      if (
+        basename(filePath) === 'index.html'
+        || basename(filePath) === 'brand-icon.svg'
+        || basename(filePath) === 'build-info.json'
+      ) {
         res.setHeader('Cache-Control', 'no-cache')
       }
     }

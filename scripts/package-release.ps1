@@ -233,6 +233,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host '==> Building workspace'
 $env:VITE_JUHE_AI_API_BASE_URL = $FrontendApiBaseUrl
 $env:VITE_JUHE_AI_GATEWAY_BASE_URL = $FrontendGatewayBaseUrl
+$env:VITE_JUHE_AI_BUILD_ID = $releaseSourceCommit
 Write-Host "==> Frontend API base URL: $FrontendApiBaseUrl"
 if ($FrontendGatewayBaseUrl) {
   Write-Host "==> Frontend gateway base URL: $FrontendGatewayBaseUrl"

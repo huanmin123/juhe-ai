@@ -1,16 +1,56 @@
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath, URL } from 'node:url';
 import vue from '@vitejs/plugin-vue';
 import { defineConfig, loadEnv } from 'vite';
 import Components from 'unplugin-vue-components/vite';
 import { AntDesignVueResolver } from 'unplugin-vue-components/resolvers';
+var repositoryRoot = fileURLToPath(new URL('..', import.meta.url));
+var frontendBuildIdPattern = /^[0-9a-f]{40}$/;
+function normalizeBuildConfigId(value) {
+    var normalized = value.trim().toLowerCase();
+    return frontendBuildIdPattern.test(normalized) ? normalized : undefined;
+}
+function resolveFrontendBuildId(explicitBuildId) {
+    if (explicitBuildId === null || explicitBuildId === void 0 ? void 0 : explicitBuildId.trim()) {
+        var normalizedBuildId_1 = normalizeBuildConfigId(explicitBuildId);
+        if (!normalizedBuildId_1)
+            throw new Error('VITE_JUHE_AI_BUILD_ID 必须是完整的 40 位 Git commit');
+        return normalizedBuildId_1;
+    }
+    var gitBuildId = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: repositoryRoot,
+        encoding: 'utf8'
+    });
+    var normalizedBuildId = normalizeBuildConfigId(gitBuildId);
+    if (!normalizedBuildId)
+        throw new Error('无法从 Git HEAD 解析完整的前端 Build ID');
+    return normalizedBuildId;
+}
+function frontendBuildInfoPlugin(buildId) {
+    return {
+        name: 'juhe-ai-frontend-build-info',
+        generateBundle: function () {
+            this.emitFile({
+                type: 'asset',
+                fileName: 'build-info.json',
+                source: "".concat(JSON.stringify({ buildId: buildId }), "\n")
+            });
+        }
+    };
+}
 export default defineConfig(function (_a) {
     var mode = _a.mode;
     var env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), '');
     var backendTarget = env.VITE_JUHE_AI_BACKEND_TARGET || 'http://127.0.0.1:3000';
+    var buildId = resolveFrontendBuildId(env.VITE_JUHE_AI_BUILD_ID);
     return {
         base: '/__aisys__/',
+        define: {
+            __JUHE_AI_FRONTEND_BUILD_ID__: JSON.stringify(buildId)
+        },
         plugins: [
             vue(),
+            frontendBuildInfoPlugin(buildId),
             Components({
                 dts: false,
                 resolvers: [

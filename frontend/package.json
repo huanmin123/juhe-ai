@@ -69,6 +69,7 @@
     "test:table-monitor-display": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/table-monitor-display-regression.ts",
     "test:account-batch-edit": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-batch-edit-regression.ts",
     "test:account-health-check-endpoint-mode": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-health-check-endpoint-mode-regression.ts",
+    "test:frontend-build-info": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/frontend-build-info-regression.ts",
     "test:route-load-recovery": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/route-load-recovery-regression.ts",
     "test:account-model-mapping-model-options": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-model-mapping-model-options-regression.ts",
     "test:account-test-protocols": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-test-protocols-regression.ts",
