@@ -1,7 +1,28 @@
 import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 
+import { markRouteAssetReload, shouldReloadRouteAsset } from '../../router/routeAssetReloadState'
+
 const source = readFileSync(new URL('../../router/routeLoadRecovery.ts', import.meta.url), 'utf8')
+
+const storedValues = new Map<string, string>()
+const storage = {
+  getItem: (key: string) => storedValues.get(key) ?? null,
+  setItem: (key: string, value: string) => storedValues.set(key, value)
+}
+assert.equal(markRouteAssetReload('/accounts', { storage, now: () => 1_000 }), true)
+assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 30_999 }), false)
+assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 31_001 }), true)
+assert.equal(
+  markRouteAssetReload('/accounts', {
+    storage: {
+      getItem: () => null,
+      setItem: () => { throw new Error('storage disabled') }
+    }
+  }),
+  false,
+  '无法持久化冷却记录时必须禁止自动刷新'
+)
 
 assert.match(source, /addEventListener\(['"]vite:preloadError['"]/, '异步组件 chunk 加载失败必须监听 Vite preload error')
 assert.match(source, /recoverRouteAssetLoadError\(/, 'Vite preload error 必须复用前端资源恢复流程')

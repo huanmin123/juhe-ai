@@ -2,17 +2,11 @@ import type { Router } from 'vue-router'
 
 import { message } from '@/lib/antd'
 import { classifyFrontendBuild, loadRemoteFrontendBuildId } from './frontendBuildInfo'
+import { markRouteAssetReload, shouldReloadRouteAsset } from './routeAssetReloadState'
 
-const routeAssetReloadStorageKey = 'juhe-ai:route-asset-reload'
-const routeAssetReloadCooldownMs = 30_000
 const routeAssetReloadDelayMs = 900
 const routeAssetOverlayId = 'juhe-ai-route-asset-reload-overlay'
 let routeAssetReloadScheduled = false
-
-interface RouteAssetReloadRecord {
-  path: string
-  at: number
-}
 
 const routeAssetLoadErrorPatterns = [
   /failed to fetch dynamically imported module/i,
@@ -53,19 +47,16 @@ export function recoverRouteAssetLoadError(error: unknown, router: Router, targe
 
   const reloadPath = targetPath || router.currentRoute.value.fullPath || '/'
   if (!shouldReloadRouteAsset(reloadPath)) {
-    console.error(error)
-    message.error('页面资源加载失败，请手动刷新页面后重试')
-    showRouteAssetLoadOverlay({
-      title: '页面资源加载失败',
-      description: '自动恢复未成功，请手动刷新页面后重试。',
-      actionLabel: '刷新页面',
-      onAction: () => window.location.reload()
-    })
+    routeAssetReloadScheduled = true
+    showManualRouteAssetRecovery(error)
     return true
   }
 
   routeAssetReloadScheduled = true
-  markRouteAssetReload(reloadPath)
+  if (!markRouteAssetReload(reloadPath)) {
+    showManualRouteAssetRecovery(error)
+    return true
+  }
   const reloadHref = router.resolve(reloadPath).href
   void showRouteAssetRecoveryAndReload(reloadHref, error).catch((recoveryError) => {
     console.error('页面资源自动恢复失败，正在直接重新加载。', recoveryError)
@@ -94,6 +85,17 @@ async function showRouteAssetRecoveryAndReload(reloadHref: string, originalError
   window.setTimeout(() => {
     window.location.assign(reloadHref)
   }, routeAssetReloadDelayMs)
+}
+
+function showManualRouteAssetRecovery(error: unknown): void {
+  console.error(error)
+  message.error('页面资源加载失败，请手动刷新页面后重试')
+  showRouteAssetLoadOverlay({
+    title: '页面资源加载失败',
+    description: '自动恢复未成功，请手动刷新页面后重试。',
+    actionLabel: '刷新页面',
+    onAction: () => window.location.reload()
+  })
 }
 
 function showRouteAssetLoadOverlay(options: {
@@ -177,30 +179,4 @@ function routeErrorText(error: unknown): string {
       .join('\n')
   }
   return ''
-}
-
-function shouldReloadRouteAsset(path: string): boolean {
-  const lastReload = readRouteAssetReloadRecord()
-  if (!lastReload) return true
-  return lastReload.path !== path || Date.now() - lastReload.at > routeAssetReloadCooldownMs
-}
-
-function markRouteAssetReload(path: string): void {
-  try {
-    window.sessionStorage.setItem(routeAssetReloadStorageKey, JSON.stringify({ path, at: Date.now() }))
-  } catch {
-    // sessionStorage may be disabled; reloading once is still the correct recovery path.
-  }
-}
-
-function readRouteAssetReloadRecord(): RouteAssetReloadRecord | undefined {
-  try {
-    const text = window.sessionStorage.getItem(routeAssetReloadStorageKey)
-    if (!text) return undefined
-    const value = JSON.parse(text) as Partial<RouteAssetReloadRecord>
-    if (typeof value.path !== 'string' || typeof value.at !== 'number') return undefined
-    return { path: value.path, at: value.at }
-  } catch {
-    return undefined
-  }
 }
