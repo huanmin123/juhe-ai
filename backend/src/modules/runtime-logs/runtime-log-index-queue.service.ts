@@ -422,6 +422,13 @@ function runtimeLogInputFromLine(rawLine: string, options: RuntimeLogLineIndexOp
   }
 }
 
+export function parseRuntimeLogLineForIndex(
+  rawLine: string,
+  options: RuntimeLogLineIndexOptions = {}
+): RuntimeLogIndexInput | undefined {
+  return runtimeLogInputFromLine(rawLine, options)
+}
+
 function fallbackRuntimeLogInput(rawJson: string, sourceKey: string, metadata: Pick<RuntimeLogIndexInput, 'logFile' | 'logOffset' | 'lineNumber'>): RuntimeLogIndexInput {
   const createdAt = nowIso()
   return {

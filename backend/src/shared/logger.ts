@@ -30,6 +30,14 @@ interface LogFileMtime {
   mtimeMs: number
 }
 
+type RotatedLogCleanupProtectionPredicate = (
+  path: string,
+  fileSize: number,
+  fileIdentity: string
+) => Promise<boolean>
+
+let rotatedLogCleanupProtectionPredicate: RotatedLogCleanupProtectionPredicate | undefined
+
 export interface LogMaintenanceResult {
   scannedFileCount: number
   currentFileCount: number
@@ -46,7 +54,11 @@ class RotatingFileLogStream extends Writable {
   private readonly protectedCurrentFileNames = new Set([
     'juhe-ai.log',
     'juhe-ai.worker.log',
-    'juhe-ai.db-service.log'
+    'juhe-ai.db-service.log',
+    'juhe-ai.ingest-worker.log',
+    'juhe-ai.stats-worker.log',
+    'juhe-ai.ops-worker.log',
+    'juhe-ai.temporary-maintenance-worker.log'
   ])
 
   constructor(private readonly options: RotatingFileLogStreamOptions) {
@@ -78,7 +90,8 @@ class RotatingFileLogStream extends Writable {
       directory: this.options.directory,
       protectedCurrentFileNames: this.protectedCurrentFileNames,
       maxFiles: this.options.maxFiles,
-      retentionDays: this.options.retentionDays
+      retentionDays: this.options.retentionDays,
+      canDeleteRotatedFile: rotatedLogCleanupProtectionPredicate
     })
   }
 
@@ -186,13 +199,18 @@ class RotatingFileLogStream extends Writable {
   }
 
   private nextRotatedPath(): string {
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[-:]/g, '')
-      .replace(/\.\d{3}Z$/, 'Z')
-    return join(this.options.directory, `juhe-ai.${timestamp}.${randomUUID()}.log`)
+    return join(this.options.directory, rotatedLogFileName(this.options.fileName, new Date(), randomUUID()))
   }
 
+}
+
+export function rotatedLogFileName(fileName: string, timestamp: Date, uniqueId: string): string {
+  const timestampText = timestamp
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z')
+  const baseName = fileName.endsWith('.log') ? fileName.slice(0, -'.log'.length) : fileName
+  return `${baseName}.${timestampText}.${uniqueId}.log`
 }
 
 class MultiDestinationLogStream extends Writable {
@@ -226,11 +244,13 @@ async function cleanupRotatedLogFiles(options: {
   protectedCurrentFileNames: ReadonlySet<string>
   maxFiles: number
   retentionDays: number
+  canDeleteRotatedFile?: RotatedLogCleanupProtectionPredicate
 }): Promise<LogMaintenanceResult> {
   const currentFileCount = await countCurrentLogFiles(options.directory, options.protectedCurrentFileNames)
   const maxRotatedFiles = Math.max(0, options.maxFiles - currentFileCount)
   const expiresBefore = Date.now() - options.retentionDays * 24 * 60 * 60 * 1000
   const retainedRotatedFiles: LogFileMtime[] = []
+  let protectedRotatedFileCount = 0
   let scannedFileCount = 0
   let deletedFileCount = 0
 
@@ -246,13 +266,30 @@ async function cleanupRotatedLogFiles(options: {
       }
       const path = join(options.directory, entry.name)
       let mtimeMs: number
+      let fileSize: number
+      let fileIdentity: string
       try {
         const fileStats = await stat(path)
         if (!fileStats.isFile()) {
           continue
         }
         mtimeMs = fileStats.mtimeMs
+        fileSize = fileStats.size
+        fileIdentity = [fileStats.dev, fileStats.ino, Math.trunc(fileStats.birthtimeMs)].join(':')
       } catch {
+        continue
+      }
+
+      const canDelete = options.canDeleteRotatedFile
+        ? await options.canDeleteRotatedFile(path, fileSize, fileIdentity).catch(() => false)
+        : false
+      if (!canDelete) {
+        protectedRotatedFileCount += 1
+        const allowedDeletableFiles = Math.max(0, maxRotatedFiles - protectedRotatedFileCount)
+        while (retainedRotatedFiles.length > allowedDeletableFiles) {
+          const overflow = retainedRotatedFiles.pop()
+          if (overflow) deletedFileCount += await unlinkIfExists(overflow.path)
+        }
         continue
       }
 
@@ -261,7 +298,11 @@ async function cleanupRotatedLogFiles(options: {
         continue
       }
 
-      const overflow = retainNewestFile(retainedRotatedFiles, { path, mtimeMs }, maxRotatedFiles)
+      const overflow = retainNewestFile(
+        retainedRotatedFiles,
+        { path, mtimeMs },
+        Math.max(0, maxRotatedFiles - protectedRotatedFileCount)
+      )
       if (overflow) {
         deletedFileCount += await unlinkIfExists(overflow.path)
       }
@@ -272,7 +313,7 @@ async function cleanupRotatedLogFiles(options: {
   return {
     scannedFileCount,
     currentFileCount,
-    retainedRotatedFileCount: retainedRotatedFiles.length,
+    retainedRotatedFileCount: protectedRotatedFileCount + retainedRotatedFiles.length,
     deletedFileCount
   }
 }
@@ -325,7 +366,11 @@ async function unlinkIfExists(path: string): Promise<number> {
 }
 
 function isRotatedJuheLogFileName(fileName: string): boolean {
-  return /^juhe-ai\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName)
+  return /^juhe-ai(?:\.(?:worker|db-service|ingest-worker|stats-worker|ops-worker|temporary-maintenance-worker))?\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName)
+}
+
+export function setRotatedLogCleanupProtectionPredicate(predicate: RotatedLogCleanupProtectionPredicate): void {
+  rotatedLogCleanupProtectionPredicate = predicate
 }
 
 export async function cleanupRotatedLogFilesForTest(options: {
@@ -333,16 +378,22 @@ export async function cleanupRotatedLogFilesForTest(options: {
   protectedCurrentFileNames?: Iterable<string>
   maxFiles: number
   retentionDays: number
+  canDeleteRotatedFile?: RotatedLogCleanupProtectionPredicate
 }): Promise<LogMaintenanceResult> {
   return cleanupRotatedLogFiles({
     directory: options.directory,
     protectedCurrentFileNames: new Set(options.protectedCurrentFileNames ?? [
       'juhe-ai.log',
       'juhe-ai.worker.log',
-      'juhe-ai.db-service.log'
+      'juhe-ai.db-service.log',
+      'juhe-ai.ingest-worker.log',
+      'juhe-ai.stats-worker.log',
+      'juhe-ai.ops-worker.log',
+      'juhe-ai.temporary-maintenance-worker.log'
     ]),
     maxFiles: options.maxFiles,
-    retentionDays: options.retentionDays
+    retentionDays: options.retentionDays,
+    canDeleteRotatedFile: options.canDeleteRotatedFile ?? (async () => true)
   })
 }
 
@@ -350,7 +401,9 @@ const fileLogStream = runtimeConfig.log.fileEnabled
   ? new RotatingFileLogStream({
     directory: runtimeConfig.log.directory,
     fileName: runtimeConfig.processRole === 'worker'
-      ? 'juhe-ai.worker.log'
+      ? runtimeConfig.workerRole === 'worker'
+        ? 'juhe-ai.worker.log'
+        : `juhe-ai.${runtimeConfig.workerRole}.log`
       : runtimeConfig.processRole === 'db-service'
         ? 'juhe-ai.db-service.log'
         : 'juhe-ai.log',

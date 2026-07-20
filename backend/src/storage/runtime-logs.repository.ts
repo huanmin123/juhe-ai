@@ -478,6 +478,8 @@ export function cleanupRuntimeLogFileCursorsBefore(cutoffIso: string, limit = 10
       SELECT rowid
       FROM runtime_log_file_cursors
       WHERE updated_at < ?
+        AND cursor_offset >= file_size
+        AND last_error_message IS NULL
       ORDER BY updated_at ASC, rowid ASC
       LIMIT ?
     )
@@ -496,6 +498,8 @@ export async function cleanupRuntimeLogFileCursorsBeforeAsync(cutoffIso: string,
       SELECT ctid
       FROM juhe_dataset.runtime_log_file_cursors
       WHERE updated_at < ?
+        AND cursor_offset >= file_size
+        AND last_error_message IS NULL
       ORDER BY updated_at ASC, ctid ASC
       LIMIT ?
     )
@@ -521,6 +525,29 @@ export async function getRuntimeLogFileCursorAsync(
   const rows = await client.query<RuntimeLogRow>(
     'SELECT * FROM juhe_dataset.runtime_log_file_cursors WHERE log_file = ?',
     [logFile]
+  )
+  const row = rows[0]
+  return row ? runtimeLogFileCursorFromRow(row) : undefined
+}
+
+export function getRuntimeLogFileCursorByIdentity(fileIdentity: string): RuntimeLogFileCursor | undefined {
+  const row = getDatasetDatabase()
+    .prepare('SELECT * FROM runtime_log_file_cursors WHERE file_identity = ? ORDER BY updated_at DESC LIMIT 1')
+    .get(fileIdentity) as RuntimeLogRow | undefined
+  return row ? runtimeLogFileCursorFromRow(row) : undefined
+}
+
+export async function getRuntimeLogFileCursorByIdentityAsync(
+  fileIdentity: string,
+  dependencies: RuntimeLogFileCursorAsyncDependencies = {}
+): Promise<RuntimeLogFileCursor | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getRuntimeLogFileCursorByIdentity(fileIdentity)
+  }
+  const client = await runtimeLogFileCursorPostgresClient(dependencies)
+  const rows = await client.query<RuntimeLogRow>(
+    'SELECT * FROM juhe_dataset.runtime_log_file_cursors WHERE file_identity = ? ORDER BY updated_at DESC LIMIT 1',
+    [fileIdentity]
   )
   const row = rows[0]
   return row ? runtimeLogFileCursorFromRow(row) : undefined

@@ -112,9 +112,7 @@ if (isIngestWorker()) {
   startRecordMaintenanceRedisStreamConsumer()
   startRuntimeLogRedisStreamConsumer()
   startAuditLogRedisStreamConsumer()
-  if (runtimeConfig.databaseDriver === 'sqlite') {
-    startRuntimeLogFileImport()
-  }
+  startRuntimeLogFileImport()
 } else if (isOpsWorker()) {
   startAccountTestTaskQueue()
 }
