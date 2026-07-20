@@ -172,6 +172,7 @@ interface HandleUpstreamResponseInput {
   markFirstOutput?: () => void
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
+  automaticAccountStateMutationEnabled?: boolean
   codexTurnAccountAvoidanceApplied?: boolean
   downstreamCommitState: GatewayDownstreamCommitState
 }
@@ -200,7 +201,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     clientStrategy,
     markFirstOutput,
     clientIpAccountAvoidanceTracker,
-    accountStateMutationEnabled
+    accountStateMutationEnabled,
+    automaticAccountStateMutationEnabled = accountStateMutationEnabled
   } = input
 
   const clientErrorProtocol = gatewayProtocolClientErrorProtocolForRequest(req, account)
@@ -258,7 +260,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       errorMessage,
       endpoint: usageContext.endpoint
     })
-    if (accountStateMutationEnabled !== false) {
+    if (automaticAccountStateMutationEnabled !== false) {
       const localSuppression = suppressGatewayAccountLocally(account, settings, errorMessage)
       if (usageContext.trafficSource === 'gateway') {
         recordGatewayAccountFailureForPrecheck(account, settings, {
@@ -289,7 +291,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     errorCode: string | undefined,
     context: StreamFailureContext
   ): boolean => {
-    if (accountStateMutationEnabled === false) return false
+    if (automaticAccountStateMutationEnabled === false) return false
     return !(
       (input.firstByteTimeoutMs !== undefined || input.firstByteDeadlineMs !== undefined)
       && errorCode === 'first_byte_timeout'
@@ -315,12 +317,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         firstByteTimeoutMs: input.firstByteTimeoutMs,
         firstByteDeadlineMs: input.firstByteDeadlineMs,
         onFirstByteDeadline: input.onFirstByteDeadline,
-        responseInspectionPolicies: interpretUpstreamResponseSemantics
-          ? resolveRuntimeResponseInspectionPolicies({
-              account,
-              managementPolicies: input.responseInspectionPolicies
-            })
-          : [],
+        responseInspectionPolicies: runtimeResponseInspectionPoliciesForInput(input),
         responseInspectionContext: {
           clientProfile: clientStrategy?.clientProfile ?? defaultClientProfile,
           accountClientCompatibility: account.clientCompatibility,
@@ -531,13 +528,6 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         })
       }
     }
-    const clientFailureResponseBody = writePreCommitStreamFailureToClient(
-      res,
-      upstreamResponse,
-      streamResult,
-      clientErrorProtocol,
-      clientStrategy
-    )
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterFinalFailureAsync(
         clientIpAccountAvoidanceTracker,
@@ -552,7 +542,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
           apiKeyId: usageContext.apiKeyId,
           groupId: usageContext.groupId,
           clientIp: usageContext.clientIp
-        }, '流式失败已返回客户端，客户端 IP 级账号回避状态已立即确认')
+        }, '流式失败即将返回客户端，客户端 IP 级账号回避状态已确认')
         auditCapture.addGatewayMetadata({
           label: 'client_ip_account_avoidance_update',
           metadata: {
@@ -562,6 +552,13 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         })
       }
     }
+    const clientFailureResponseBody = writePreCommitStreamFailureToClient(
+      res,
+      upstreamResponse,
+      streamResult,
+      clientErrorProtocol,
+      clientStrategy
+    )
     auditCapture.finalize({
       outcome: 'stream_failed',
       success: false,
@@ -751,7 +748,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         errorMessage,
         endpoint: usageContext.endpoint
       })
-      if (accountStateMutationEnabled !== false) {
+      if (input.automaticAccountStateMutationEnabled !== false) {
         const localSuppression = suppressGatewayAccountLocally(account, settings, errorMessage)
         if (usageContext.trafficSource === 'gateway') {
           recordGatewayAccountFailureForPrecheck(account, settings, {
@@ -833,9 +830,11 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             responseBody: completeBody,
             responseBodyText: completeBodyText,
             firstTokenMs,
-            responseInspectionPolicies: input.responseInspectionPolicies,
+            responseInspectionPolicies: managementResponseInspectionPoliciesForInput(input),
             clientStrategy: input.clientStrategy,
             accountStateMutationEnabled: accountStateMutationEnabled !== false,
+            automaticAccountStateMutationEnabled: input.automaticAccountStateMutationEnabled !== false,
+            protocolValidationEnabled: interpretUpstreamResponseSemantics,
             sessionAffinityKey
           })
           if (jsonInspectionResult) {
@@ -1031,7 +1030,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         errorMessage
       }, '上游非流式响应正文已输出后中断，下游连接已按网络失败关闭')
       await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-      if (accountStateMutationEnabled !== false) {
+      if (input.automaticAccountStateMutationEnabled !== false) {
         const runtimeReason = `上游非流式响应正文中断：${errorMessage}`
         const localSuppression = suppressGatewayAccountLocally(account, settings, runtimeReason)
         if (usageContext.trafficSource === 'gateway') {
@@ -1165,11 +1164,11 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
   return Boolean(
-    (
+    runtimeResponseInspectionPoliciesForInput(input).length > 0
+    || (
       interpretUpstreamResponseSemantics
       && (
-        (input.responseInspectionPolicies?.length ?? 0) > 0
-        || input.clientStrategy?.codexCompactionExpected === true
+        input.clientStrategy?.codexCompactionExpected === true
         || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
       )
     )
@@ -1178,6 +1177,24 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
       && isGeminiInteractionCreateRequest(input.req)
     )
   )
+}
+
+function managementResponseInspectionPoliciesForInput(
+  input: HandleUpstreamResponseInput
+): ResponseInspectionPolicySummary[] | undefined {
+  const interpretUpstreamResponseSemantics = input.clientStrategy
+    ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
+    : false
+  return interpretUpstreamResponseSemantics
+    ? input.responseInspectionPolicies
+    : input.responseInspectionPolicies?.filter((policy) => policy.defaultRule !== true)
+}
+
+function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponseInput) {
+  return resolveRuntimeResponseInspectionPolicies({
+    account: input.account,
+    managementPolicies: managementResponseInspectionPoliciesForInput(input)
+  })
 }
 
 async function finalizeNonStreamResponseAfterSseHeartbeat(
@@ -1593,19 +1610,21 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
   const forwardedResponseSuccessful = upstreamResponse.ok
   if (interpretUpstreamResponseSemantics && upstreamResponse.ok) {
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
-      const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
-      if (clearedProxyFailure) {
-        getRequestLogger().info({
-          event: 'gateway_upstream_failure_bucket_recovered',
-          accountId: account.id,
-          accountName: account.name
-        }, '上游桶运行态失败已按成功响应恢复')
-        auditCapture.addGatewayMetadata({
-          label: 'upstream_bucket_health',
-          metadata: {
-            recovered: true
-          }
-        })
+      if (input.automaticAccountStateMutationEnabled !== false) {
+        const clearedProxyFailure = await recordGatewayUpstreamBucketSuccessAsync(account)
+        if (clearedProxyFailure) {
+          getRequestLogger().info({
+            event: 'gateway_upstream_failure_bucket_recovered',
+            accountId: account.id,
+            accountName: account.name
+          }, '上游桶运行态失败已按后台确认恢复')
+          auditCapture.addGatewayMetadata({
+            label: 'upstream_bucket_health',
+            metadata: {
+              recovered: true
+            }
+          })
+        }
       }
       const clearedClientIpErrorCircuit = await recordClientIpErrorCircuitSuccessAsync({
         systemAccountId: usageContext.systemAccountId,
@@ -1651,14 +1670,14 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
         })
       }
     }
-    if (input.accountStateMutationEnabled !== false) {
+    if (input.automaticAccountStateMutationEnabled !== false) {
       await applyAccountErrorHandlingWithCacheInvalidation(account, {
         success: true,
         settings,
         trafficSource: usageContext.trafficSource
       })
     }
-    if (input.accountStateMutationEnabled !== false
+    if (input.automaticAccountStateMutationEnabled !== false
       && usageContext.trafficSource !== 'gateway'
       && (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage)) {
       clearAccountStreamFailureStateWithCacheInvalidation(account)

@@ -72,6 +72,7 @@ export interface PageDataCacheControllerOptions<T> {
   targetSystemAccountId?: string
   storage?: PageDataCacheStorage
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
+  confirmBatchKey?: string
   loadNetwork: () => Promise<T>
   applyDelta?: (current: T, changes: PageDataChangeProjection[]) => T | undefined
   tabCoordinator?: PageDataTabCoordinator
@@ -86,6 +87,7 @@ export type PageDataRequestCacheDefinition<T> = Omit<PageDataCacheControllerOpti
 export interface PageDataRequestCacheManagerOptions {
   storage?: PageDataCacheStorage
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
+  confirmBatchKey?: string
   tabCoordinator?: PageDataTabCoordinator
   now?: () => Date
 }
@@ -118,7 +120,8 @@ type PendingConfirmBatch = {
   started: boolean
 }
 
-const pendingConfirmBatches = new WeakMap<PageDataConfirm, Map<string, PendingConfirmBatch[]>>()
+const pendingConfirmBatchesByFunction = new WeakMap<PageDataConfirm, Map<string, PendingConfirmBatch[]>>()
+const pendingConfirmBatchesByKey = new Map<string, Map<string, PendingConfirmBatch[]>>()
 
 export function createPageDataCacheKey(input: PageDataCacheKeyInput): string {
   const scope = requiredKeyPart(input.scope, 'scope')
@@ -289,6 +292,15 @@ export class PageDataCacheController<T> {
     const generation = ++this.generation
     const data = await this.options.loadNetwork()
     if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+    if (outcome.state === 'unchanged') {
+      const current = await this.storage.read<T>(this.key)
+      if (current?.token && generation === this.generation && !this.closed) {
+        const record = this.record(data, current.token, current.confirmedAt)
+        const written = await this.storage.writeIfCurrent(record)
+        if (written) this.publish(record)
+        return { source: 'network', data, confirmed: written, cached: written, superseded: false }
+      }
+    }
     return { source: 'network', data, confirmed: false, cached: false, superseded: false }
   }
 
@@ -471,7 +483,7 @@ export class PageDataCacheController<T> {
   }
 
   private async confirmDomain(token?: PageDataRevisionToken): Promise<ConfirmedPageDataDomain> {
-    const result = await requestBatchedConfirm(this.options.confirm, {
+    const result = await requestBatchedConfirm(this.options.confirm, this.options.confirmBatchKey, {
       viewScope: this.options.viewScope,
       ...(this.options.targetSystemAccountId ? { targetSystemAccountId: this.options.targetSystemAccountId } : {}),
       domains: { [this.options.domain]: token ?? null }
@@ -520,7 +532,6 @@ export class PageDataCacheController<T> {
   private async invalidateCache(): Promise<void> {
     await this.storage.remove(this.key)
     if (this.closed) return
-    this.emit(undefined)
     this.options.tabCoordinator?.notifyInvalidated(this.key)
   }
 
@@ -531,13 +542,9 @@ export class PageDataCacheController<T> {
   }
 }
 
-function requestBatchedConfirm(confirm: PageDataConfirm, request: PageDataConfirmRequest): Promise<PageDataConfirmResult> {
+function requestBatchedConfirm(confirm: PageDataConfirm, batchKey: string | undefined, request: PageDataConfirmRequest): Promise<PageDataConfirmResult> {
   const contextKey = `${request.viewScope}:${request.targetSystemAccountId ?? ''}`
-  let contexts = pendingConfirmBatches.get(confirm)
-  if (!contexts) {
-    contexts = new Map()
-    pendingConfirmBatches.set(confirm, contexts)
-  }
+  const contexts = confirmBatchContexts(confirm, batchKey)
   let batches = contexts.get(contextKey)
   if (!batches) {
     batches = []
@@ -555,7 +562,7 @@ function requestBatchedConfirm(confirm: PageDataConfirm, request: PageDataConfir
     batch!.pending.push({ resolve, reject })
   })
   if (created) {
-    queueMicrotask(() => flushConfirmBatches(confirm, contextKey, request))
+    queueMicrotask(() => flushConfirmBatches(confirm, batchKey, contextKey, request))
   }
   return promise
 }
@@ -571,9 +578,8 @@ function confirmDomainsCompatible(
   })
 }
 
-function flushConfirmBatches(confirm: PageDataConfirm, contextKey: string, request: PageDataConfirmRequest): void {
-  const contexts = pendingConfirmBatches.get(confirm)
-  const batches = contexts?.get(contextKey)
+function flushConfirmBatches(confirm: PageDataConfirm, batchKey: string | undefined, contextKey: string, request: PageDataConfirmRequest): void {
+  const batches = confirmBatchContexts(confirm, batchKey).get(contextKey)
   if (!batches) return
   for (const batch of batches) {
     if (batch.started) continue
@@ -583,27 +589,44 @@ function flushConfirmBatches(confirm: PageDataConfirm, contextKey: string, reque
       ...(request.targetSystemAccountId ? { targetSystemAccountId: request.targetSystemAccountId } : {}),
       domains: batch.domains
     })).then(
-      (result) => settleConfirmBatch(confirm, contextKey, batch, (pending) => pending.resolve(result)),
-      (error) => settleConfirmBatch(confirm, contextKey, batch, (pending) => pending.reject(error))
+      (result) => settleConfirmBatch(confirm, batchKey, contextKey, batch, (pending) => pending.resolve(result)),
+      (error) => settleConfirmBatch(confirm, batchKey, contextKey, batch, (pending) => pending.reject(error))
     )
   }
 }
 
 function settleConfirmBatch(
   confirm: PageDataConfirm,
+  batchKey: string | undefined,
   contextKey: string,
   batch: PendingConfirmBatch,
   settle: (pending: PendingConfirm) => void
 ): void {
-  const contexts = pendingConfirmBatches.get(confirm)
-  const batches = contexts?.get(contextKey)
+  const contexts = confirmBatchContexts(confirm, batchKey)
+  const batches = contexts.get(contextKey)
   if (batches) {
     const index = batches.indexOf(batch)
     if (index >= 0) batches.splice(index, 1)
-    if (batches.length === 0) contexts!.delete(contextKey)
-    if (contexts!.size === 0) pendingConfirmBatches.delete(confirm)
+    if (batches.length === 0) contexts.delete(contextKey)
   }
   batch.pending.forEach(settle)
+}
+
+function confirmBatchContexts(confirm: PageDataConfirm, batchKey?: string): Map<string, PendingConfirmBatch[]> {
+  if (batchKey) {
+    let contexts = pendingConfirmBatchesByKey.get(batchKey)
+    if (!contexts) {
+      contexts = new Map()
+      pendingConfirmBatchesByKey.set(batchKey, contexts)
+    }
+    return contexts
+  }
+  let contexts = pendingConfirmBatchesByFunction.get(confirm)
+  if (!contexts) {
+    contexts = new Map()
+    pendingConfirmBatchesByFunction.set(confirm, contexts)
+  }
+  return contexts
 }
 
 export class PageDataRequestCacheManager<T> {
@@ -668,6 +691,7 @@ export class PageDataRequestCacheManager<T> {
       ...request,
       storage: this.storage,
       confirm: this.options.confirm,
+      confirmBatchKey: this.options.confirmBatchKey,
       tabCoordinator: this.options.tabCoordinator,
       now: this.options.now
     })

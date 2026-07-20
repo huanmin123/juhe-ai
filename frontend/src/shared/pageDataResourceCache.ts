@@ -17,6 +17,7 @@ import { pageDataDomainRegistry } from './pageDataDomainRegistry'
 
 interface PageDataResourceCacheOptions {
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
+  confirmBatchKey?: string
   storage?: PageDataCacheStorage
   tabCoordinator?: PageDataTabCoordinator
   now?: () => Date
@@ -33,6 +34,7 @@ interface ResourceEntry {
 
 export class PageDataResourceCache {
   private readonly confirm: PageDataResourceCacheOptions['confirm']
+  private readonly confirmBatchKey?: string
   private readonly storage: PageDataCacheStorage
   private readonly tabCoordinator: PageDataTabCoordinator
   private readonly now?: () => Date
@@ -44,6 +46,7 @@ export class PageDataResourceCache {
 
   constructor(options: PageDataResourceCacheOptions) {
     this.confirm = options.confirm
+    this.confirmBatchKey = options.confirmBatchKey
     this.storage = options.storage ?? createPageDataCacheStorage()
     this.tabCoordinator = options.tabCoordinator ?? getDefaultPageDataTabCoordinator()
     this.now = options.now
@@ -109,6 +112,7 @@ export class PageDataResourceCache {
         maxStaleMs: request.maxStaleMs ?? domainSpec?.maxStaleMs,
         storage: this.storage,
         confirm: this.confirm,
+        confirmBatchKey: this.confirmBatchKey,
         tabCoordinator: this.tabCoordinator,
         now: this.now
       } as PageDataRequestCacheDefinition<unknown> & {

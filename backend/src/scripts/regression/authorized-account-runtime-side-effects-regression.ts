@@ -23,7 +23,7 @@ logger.level = 'silent'
 const [
   databaseModule,
   repositories,
-  { applyAccountErrorHandling },
+  { applyAccountErrorHandling, decideAccountErrorPolicy },
   { requestDbService }
 ] = await Promise.all([
   import('../../storage/database.js'),
@@ -80,11 +80,21 @@ try {
   const streamAccount = createAuthorizedAccount('授权副作用流式失败账户', 'sk-runtime-side-effect-stream', ownerAccess, grantee.id, granteeGroup.id, granteeAccess)
 
   const cooldownGatewayAccount = authorizedGatewayAccount(cooldownAccount.instanceId, granteeGroup.id, grantee.id)
+  const cooldownBody = JSON.stringify({ error: { code: 'insufficient_quota', message: 'runtime side effect cooldown' } })
+  const cooldownPolicyDecision = decideAccountErrorPolicy(
+    cooldownGatewayAccount,
+    500,
+    new Headers({ 'content-type': 'application/json' }),
+    Buffer.from(cooldownBody),
+    gatewaySettings
+  )
+  assert(cooldownPolicyDecision, '授权副本显式 500 规则必须生成策略决策')
   const cooldownResult = applyAccountErrorHandling(cooldownGatewayAccount, {
     success: false,
     statusCode: 500,
-    bodyText: JSON.stringify({ error: { code: 'insufficient_quota', message: 'runtime side effect cooldown' } }),
-    settings: gatewaySettings
+    bodyText: cooldownBody,
+    settings: gatewaySettings,
+    policyDecision: cooldownPolicyDecision
   })
   assert.equal(cooldownResult.action, 'cooldown', '授权副本命中账户错误处理规则后应进入本地临时不可调用')
   assert.equal(cooldownResult.changed, true, '授权副本账户错误处理规则应写入本地绑定状态')
@@ -100,12 +110,11 @@ try {
     bodyText: JSON.stringify({ error: { code: 'server_is_overloaded', message: 'runtime side effect generic failure' } }),
     settings: gatewaySettings
   })
-  assert.equal(genericFailureResult.action, 'cooldown', '授权副本泛化上游失败应进入本地临时不可调用')
-  assert.equal(genericFailureResult.changed, true, '授权副本泛化上游失败应写入本地绑定状态')
-  assert.match(genericFailureResult.reason ?? '', /server_is_overloaded；runtime side effect generic failure/, '泛化上游失败返回原因应带上真实上游错误摘要')
-  assertOwnerStillActive(genericFailureAccount.sourceId, ownerAccess, '账户错误处理临时不可调用不应修改归属人原账户')
-  assertAuthorizedInstanceStatus(genericFailureAccount.instanceId, granteeAccess, 'temporary_unavailable', '账户错误处理临时不可调用应只写入被授权实例状态')
-  assertAuthorizedInstanceError(genericFailureAccount.instanceId, granteeAccess, /server_is_overloaded；runtime side effect generic failure/, '账户错误处理临时不可调用应保留真实上游错误摘要')
+  assert.equal(genericFailureResult.action, 'none', '没有显式规则的用户请求失败不得改变授权副本状态')
+  assert.equal(genericFailureResult.changed, false, '没有显式规则的用户请求失败不得写入本地绑定状态')
+  assertOwnerStillActive(genericFailureAccount.sourceId, ownerAccess, '泛化用户请求失败不应修改归属人原账户')
+  assertAuthorizedInstanceStatus(genericFailureAccount.instanceId, granteeAccess, 'active', '泛化用户请求失败不应修改被授权实例状态')
+  assertAuthorizedInstanceError(genericFailureAccount.instanceId, granteeAccess, /^$/, '泛化用户请求失败不应写入被授权实例错误状态')
 
   const streamGatewayAccount = authorizedGatewayAccount(streamAccount.instanceId, granteeGroup.id, grantee.id)
   const streamResult = await withDbServiceRole(() => requestDbService({
@@ -182,6 +191,12 @@ function createAuthorizedAccount(
     },
     groupId: ownerSourceGroup.id
   }, ownerAccess)
+  repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: account.id,

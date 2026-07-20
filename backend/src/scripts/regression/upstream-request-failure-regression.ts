@@ -172,6 +172,14 @@ async function main(): Promise<void> {
       schedulable: true
     }, access)
     const singleFailureApiKey = createRegressionApiKey(singleFailureGroup.id, 'sk-single-upstream-failure-key')
+    for (const account of [firstAccount, secondAccount, thirdAccount, fastFailAccount, cooldownRecoverAccount, singleFailureAccount]) {
+      repositories.recordAccountHealthCheckSuccess(account.id, {
+        intervalHours: 12,
+        jitterMinutes: 0,
+        failureThreshold: 3,
+        statusCode: 200
+      })
+    }
     closedTransportServer = http.createServer()
     await listen(closedTransportServer)
     const closedTransportBaseUrl = `http://127.0.0.1:${serverAddress(closedTransportServer).port}/v1`
@@ -194,6 +202,12 @@ async function main(): Promise<void> {
         status: 'active',
         schedulable: true
       }, access)
+      repositories.recordAccountHealthCheckSuccess(account.id, {
+        intervalHours: 12,
+        jitterMinutes: 0,
+        failureThreshold: 3,
+        statusCode: 200
+      })
       directTransportFailureAccounts.push(account)
     }
     const directTransportFailureApiKey = createRegressionApiKey(directTransportFailureGroup.id, 'sk-direct-transport-failure-key')
@@ -218,7 +232,11 @@ async function main(): Promise<void> {
     assert.equal(directTransportFailureResponse.status, 503, `直连上游传输失败仍应返回统一网关错误，实际 HTTP ${directTransportFailureResponse.status}: ${directTransportFailureText}`)
     assert.match(directTransportFailureText, /上游暂时不可用，请重试/, `直连上游传输失败应返回网关统一可重试错误：${directTransportFailureText}`)
     assert.match(directTransportFailureText, /upstream_retryable_error/, `直连上游传输失败应返回稳定可重试码：${directTransportFailureText}`)
-    assertAccountsRuntimeSuppressedActive(directTransportFailureAccounts, /上游账号请求异常/, '直连上游传输失败应进入运行态屏障')
+    assertAccountsActive(directTransportFailureAccounts, '直连上游传输失败不得改变账户状态')
+    const directRuntimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
+    for (const account of directTransportFailureAccounts) {
+      assert.equal(directRuntimeSnapshot[account.id], undefined, '未收到上游响应头的用户请求失败不得写运行态屏障')
+    }
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
 
     const invalidJsonHitsBefore = totalUpstreamHitCount()
@@ -367,10 +385,10 @@ async function main(): Promise<void> {
     const sameAccountRetryResponseText = await sameAccountRetryResponse.text()
 
     assert.equal(sameAccountRetryResponse.status, 200, `同账号原地重试成功时应直接返回成功，实际 HTTP ${sameAccountRetryResponse.status}: ${sameAccountRetryResponseText}`)
-    assert.equal(sameAccountRetryResponseText, sameAccountRetrySuccessBody, `同账号原地重试成功响应体异常：${sameAccountRetryResponseText}`)
-    assert.equal(sameAccountRetryFirstAccountHitCount, 2, `同账号原地重试成功场景首账号应命中 2 次，实际 ${sameAccountRetryFirstAccountHitCount}`)
-    assert.equal(sameAccountRetrySecondAccountHitCount, 0, `同账号原地重试成功后不应切到第二账号，实际 ${sameAccountRetrySecondAccountHitCount}`)
-    assertAccountsActive([firstAccount, secondAccount], '同账号原地重试救回后不应写账号状态或切号')
+    assert.equal(sameAccountRetryResponseText, JSON.stringify({ id: 'should-not-switch-after-same-account-retry' }), `完整 HTTP 失败不得同账号原地重放，应切到下一账号：${sameAccountRetryResponseText}`)
+    assert.equal(sameAccountRetryFirstAccountHitCount, 1, `完整 HTTP 失败的首账号只应命中 1 次，实际 ${sameAccountRetryFirstAccountHitCount}`)
+    assert.equal(sameAccountRetrySecondAccountHitCount, 1, `完整 HTTP 失败应切到第二账号 1 次，实际 ${sameAccountRetrySecondAccountHitCount}`)
+    assertAccountsActive([firstAccount, secondAccount], '完整 HTTP 失败切号后不应写账号状态')
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
     currentScenario = 'unknown_failure_switch_account_success'
@@ -389,11 +407,10 @@ async function main(): Promise<void> {
     const switchResponseText = await switchResponse.text()
 
     assert.equal(switchResponse.status, 200, `未知失败切到后续账号成功时应返回成功响应，实际 HTTP ${switchResponse.status}: ${switchResponseText}`)
-    assert.equal(unknownSwitchFirstAccountHitCount, 4, `未知失败应先消费 3 次请求级共享确认预算，实际首账号命中 ${unknownSwitchFirstAccountHitCount} 次`)
+    assert.equal(unknownSwitchFirstAccountHitCount, 1, `完整 HTTP 失败的首账号只应命中 1 次，实际 ${unknownSwitchFirstAccountHitCount} 次`)
     assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
     assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
-    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号返回非成功状态：HTTP 502|temporary first account upstream error/, '未知失败切到后续账号成功后应保留首账号运行态屏障')
-    assertAccountsActive([secondAccount], '未知失败切号成功账号应保持正常')
+    assertAccountsActive([firstAccount, secondAccount], '未知失败切号不得由用户请求改变账户状态')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -413,11 +430,10 @@ async function main(): Promise<void> {
     const sharedRetryBudgetResponseText = await sharedRetryBudgetResponse.text()
     assert.equal(sharedRetryBudgetResponse.status, 200, `请求级共享确认预算耗尽后仍应继续扫描到第三账号成功，实际 HTTP ${sharedRetryBudgetResponse.status}: ${sharedRetryBudgetResponseText}`)
     assert.equal(sharedRetryBudgetResponseText, thirdAccountSuccessBody, `请求级共享确认预算场景第三账号响应体异常：${sharedRetryBudgetResponseText}`)
-    assert.equal(sharedRetryBudgetFirstAccountHitCount, 4, `配置 3 次确认时首个持续失败账号应共命中 4 次，实际 ${sharedRetryBudgetFirstAccountHitCount}`)
+    assert.equal(sharedRetryBudgetFirstAccountHitCount, 1, `完整 HTTP 失败的首账号只应命中 1 次，实际 ${sharedRetryBudgetFirstAccountHitCount}`)
     assert.equal(sharedRetryBudgetSecondAccountHitCount, 1, `共享预算耗尽后第二个失败账号不应重新获得 3 次确认，实际 ${sharedRetryBudgetSecondAccountHitCount}`)
     assert.equal(sharedRetryBudgetThirdAccountHitCount, 1, `共享预算耗尽后仍必须继续扫描第三账号，实际 ${sharedRetryBudgetThirdAccountHitCount}`)
-    assertAccountsRuntimeSuppressedActive([firstAccount, secondAccount], /shared retry budget account failed/, '共享预算场景失败账号应进入运行态屏障')
-    assertAccountsActive([thirdAccount], '共享预算场景成功账号应保持正常')
+    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '完整 HTTP 失败切号不得改变失败账号运行态')
     restoreRegressionAccounts([firstAccount, secondAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -437,7 +453,7 @@ async function main(): Promise<void> {
     const sharedRetryBudgetStreamText = await sharedRetryBudgetStreamResponse.text()
     assert.equal(sharedRetryBudgetStreamResponse.status, 200, `流式切号后共享确认预算仍应继续扫描到第三账号成功，实际 HTTP ${sharedRetryBudgetStreamResponse.status}: ${sharedRetryBudgetStreamText}`)
     assert.match(sharedRetryBudgetStreamText, /ok after stream redispatch/, `流式切号后第三账号成功内容异常：${sharedRetryBudgetStreamText}`)
-    assert.equal(sharedRetryBudgetStreamFirstAccountHitCount, 4, `首账号应在前三次 HTTP 失败耗尽共享预算后第四次进入流内失败，实际 ${sharedRetryBudgetStreamFirstAccountHitCount}`)
+    assert.equal(sharedRetryBudgetStreamFirstAccountHitCount, 1, `流式请求的完整 HTTP 失败首账号只应命中 1 次，实际 ${sharedRetryBudgetStreamFirstAccountHitCount}`)
     assert.equal(sharedRetryBudgetStreamSecondAccountHitCount, 1, `流式重新进入调度后第二账号不应重新获得确认预算，实际 ${sharedRetryBudgetStreamSecondAccountHitCount}`)
     assert.equal(sharedRetryBudgetStreamThirdAccountHitCount, 1, `流式重新进入调度后仍必须继续扫描第三账号，实际 ${sharedRetryBudgetStreamThirdAccountHitCount}`)
     restoreRegressionAccounts([firstAccount, secondAccount])
@@ -468,8 +484,8 @@ async function main(): Promise<void> {
     assert.equal(nonStreamFirstByteTimeoutFirstAccountHitCount, 1, `非流式首账号首字节超时应命中 1 次，实际 ${nonStreamFirstByteTimeoutFirstAccountHitCount}`)
     assert.equal(nonStreamFirstByteTimeoutSecondAccountHitCount, 1, `非流式首字节超时后应切到第二账号，实际 ${nonStreamFirstByteTimeoutSecondAccountHitCount}`)
     assert(Date.now() - nonStreamFirstByteTimeoutStartedAt >= 9000, '非流式首字节超时应受首包等待上限控制，不应立即切号')
-    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号请求异常|仍未返回首个响应/, '非流式首字节超时应进入首账号运行态屏障')
-    assertAccountsActive([secondAccount], '非流式首字节超时切号成功账号应保持正常')
+    assertAccountsActive([firstAccount, secondAccount], '非流式首字节超时不得由用户请求改变账户运行态')
+    assert.equal(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[firstAccount.id], undefined, 'generic 首字节超时不得写账户运行态')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
 
@@ -480,7 +496,8 @@ async function main(): Promise<void> {
         method: 'POST',
         headers: {
           authorization: `Bearer ${apiKey.key}`,
-          'content-type': 'application/json'
+          'content-type': 'application/json',
+          'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_non_stream_body_interrupted' })
         },
         body: JSON.stringify({
           model: 'gpt-4o-mini',
@@ -496,24 +513,26 @@ async function main(): Promise<void> {
     assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 1, `非流式正文中断首请求应命中首账号 1 次，实际 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
     assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 0, `非流式正文已输出后不应在同一 HTTP 响应里透明切到第二账号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
 
-    const interruptedRetryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'client retry after non stream body interruption should switch account' }],
-        stream: false
-      })
-    })
-    const interruptedRetryText = await interruptedRetryResponse.text()
-    assert.equal(interruptedRetryResponse.status, 200, `客户端重试后应避开刚中断账号并成功，实际 HTTP ${interruptedRetryResponse.status}: ${interruptedRetryText}`)
-    assert.equal(interruptedRetryText, nonStreamBodyInterruptedRetrySuccessBody, `非流式正文中断客户端重试响应体异常：${interruptedRetryText}`)
-    assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 1, `客户端重试应避开已本地避让的首账号，实际首账号命中 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
-    assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 1, `客户端重试应命中第二账号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
-    assertAccountsRuntimeSuppressedActive([firstAccount], /上游非流式响应正文中断|non stream body interrupted/, '非流式正文已输出后中断应进入首账号运行态屏障')
+    for (const message of ['first client retry should not globally suppress account', 'repeated client retry should remain request-scoped']) {
+      try {
+        const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${apiKey.key}`,
+            'content-type': 'application/json',
+            'x-codex-turn-metadata': JSON.stringify({ turn_id: `turn_${message.replaceAll(' ', '_')}` })
+          },
+          body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: message }], stream: false })
+        })
+        await response.text()
+      } catch {
+        // A client lifecycle interruption is expected for each request.
+      }
+    }
+    assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 3, `客户端重试不得把账号写成全局不可调度，实际首账号命中 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
+    assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 0, `客户端正文中断不得在同一响应内透明切号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
+    assertAccountsActive([firstAccount], '非流式正文中断不得由用户请求改变账户运行态')
+    assert.equal(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[firstAccount.id], undefined, '精确客户端正文中断也不得写账户运行态')
     assertAccountsActive([secondAccount], '非流式正文中断后客户端重试成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -538,7 +557,7 @@ async function main(): Promise<void> {
     assert.equal(dispatchRaceSecondAccountHitCount, 0, `第二账号在首账号失败后被本地屏蔽，不应继续命中，实际 ${dispatchRaceSecondAccountHitCount}`)
     assert.equal(dispatchRaceThirdAccountHitCount, 1, `第二账号被屏蔽后应切到第三账号成功，实际 ${dispatchRaceThirdAccountHitCount}`)
     assert(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount >= 1, '调度竞态后显式中途屏蔽账号应处于本地短期屏蔽')
-    assertAccountsRuntimeSuppressedActive([firstAccount], /上游账号返回非成功状态：HTTP 502|first account failed before dispatch race/, '调度竞态中真正上游失败的首账号应进入运行态屏障')
+    assertAccountsActive([firstAccount], '调度竞态中的上游失败不得由用户请求改变账户运行态')
     assertAccountsActive([secondAccount, thirdAccount], '调度竞态中未命中或成功账号应保持正常')
     restoreRegressionAccounts([firstAccount])
     clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
@@ -620,12 +639,12 @@ async function main(): Promise<void> {
     assert.match(singleFailureResponseText, /上游暂时不可用，请重试/, `单账号上游失败网关响应应保持统一可重试错误：${singleFailureResponseText}`)
     assert.match(singleFailureResponseText, /upstream_retryable_error/, `单账号上游失败应返回稳定可重试码：${singleFailureResponseText}`)
     assert.equal(singleFailureHitCount, 1, `单账号上游失败默认冷却场景应命中上游一次，实际 ${singleFailureHitCount}`)
-    assertAccountsRuntimeSuppressedActive([singleFailureAccount], /上游账号返回非成功状态：HTTP 418|generic upstream failure/, '单账号普通上游失败应进入运行态屏障而不是立即写库')
+    assertAccountsActive([singleFailureAccount], '单账号普通上游失败不得由用户请求改变账户运行态')
 
     usageRecordQueue.flushAllUsageRecordQueue()
     assertAccountsActive([firstAccount, secondAccount, thirdAccount, fastFailAccount, cooldownRecoverAccount], '已恢复的主测试账号最终应保持正常')
 
-    console.log('上游失败回归通过：普通上游失败按请求级共享确认预算吸收波动，预算不会按账号或流式重新调度重置，耗尽后仍扫描全部后续账号；失败账号保留运行态屏障，单账号本地屏蔽耗尽时会短等释放并恢复调度')
+    console.log('上游失败回归通过：普通上游失败只影响当前请求，不写账户运行态；共享确认预算不会按账号或流式重新调度重置，耗尽后仍扫描全部后续账号，账户状态交由后台探针确认')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -1040,25 +1059,6 @@ function createRegressionApiKey(groupId: string, key: string): { id: string; key
   }, access)
   assert(apiKey.key, '回归 API Key 未返回明文密钥')
   return { id: apiKey.id, key: apiKey.key }
-}
-
-function assertAccountsRuntimeSuppressedActive(accounts: RegressionAccount[], messagePattern: RegExp, reason: string): void {
-  const runtimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
-  for (const account of accounts) {
-    const updated = repositories.findAccountSummary(account.id, access)
-    assert(updated, `账号 ${account.name} 不存在`)
-    assert.equal(updated.status, 'active', `${reason}：${account.name} 数据库状态应保持正常`)
-    assert.equal(updated.schedulable, true, `${reason}：${account.name} 数据库可调度状态应保持正常`)
-    assert.equal(updated.cooldownUntil, undefined, `${reason}：${account.name} 不应写入冷却结束时间`)
-    assert.equal(updated.lastErrorMessage, undefined, `${reason}：${account.name} 不应写入最近错误`)
-    const runtime = runtimeSnapshot[account.id]
-    assert(runtime, `${reason}：${account.name} 应存在账号运行态屏障`)
-    assert(
-      runtime.status === 'local_suppressed' || runtime.status === 'half_open' || runtime.status === 'precheck_pending' || runtime.status === 'precheck_failed',
-      `${reason}：${account.name} 运行态应为本地避让或事前确认，实际 ${runtime.status}`
-    )
-    assert.match(runtime.reason ?? '', messagePattern, `${reason}：${account.name} 运行态原因应保留真实上游摘要，实际 ${runtime.reason ?? ''}`)
-  }
 }
 
 function assertAccountsActive(accounts: RegressionAccount[], reason: string): void {

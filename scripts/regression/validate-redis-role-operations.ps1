@@ -29,6 +29,15 @@ foreach ($token in @('main/cache)', 'main/state|main/queue)', 'temporary/cache|t
 if ([regex]::Matches($install, 'ROLE_ROOT="\$BASE_DIR/redis/migration/state-scratch"').Count -ne 1) { throw 'migration scratch root must appear in exactly one path branch' }
 if ($install -match 'elif \[ "\$SCOPE" = main \]') { throw 'Redis role mapping must use one explicit case without duplicate main branches' }
 if ($install -notmatch 'if \[ "\$SCOPE" = temporary \] \|\| \[ "\$SCOPE" = migration \]; then rm -rf -- "\$ROLE_ROOT"; fi') { throw 'remove may recursively delete only the already mapped temporary/migration role root' }
+if ($install -notmatch [regex]::Escape('"$ROLE_ROOT/redis.pid"')) { throw 'installer must place each pidfile in the fixed role root' }
+if ($install -match [regex]::Escape('"$DATA_DIR/redis.pid"')) { throw 'installer must not place pidfiles in Redis data directories' }
+foreach ($pidfileMap in @(
+  'EXPECTED_PIDFILES="cache=$BASE_DIR/shared/redis-cache/redis.pid,state=$BASE_DIR/redis/main/state/redis.pid,queue=$BASE_DIR/redis/main/queue/redis.pid"',
+  'EXPECTED_PIDFILES="cache=$BASE_DIR/redis/temporary/cache/redis.pid,state=$BASE_DIR/redis/temporary/state/redis.pid,queue=$BASE_DIR/redis/temporary/queue/redis.pid"'
+)) {
+  if ($verify -notmatch [regex]::Escape($pidfileMap)) { throw "read-only gate lacks exact role pidfile mapping: $pidfileMap" }
+}
+if ($verify -match '\$BASE_DIR/redis/(?:main|temporary)/(?:cache|state|queue)/data/redis\.pid') { throw 'read-only gate must not derive pidfiles from Redis data directories' }
 foreach ($command in @('PING', 'CONFIG GET', 'INFO persistence', 'INFO server', 'launchctl print')) {
   if (($verify + $install) -notmatch [regex]::Escape($command)) { throw "Redis role gate is missing $command" }
 }

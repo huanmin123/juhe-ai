@@ -53,10 +53,12 @@ if [ "$SCOPE" = main ]; then
   EXPECTED_PORTS='cache=6379,state=6380,queue=6381'
   EXPECTED_DIRS="cache=$BASE_DIR/shared/redis-cache,state=$BASE_DIR/redis/main/state/data,queue=$BASE_DIR/redis/main/queue/data"
   EXPECTED_LOGS="cache=$BASE_DIR/logs/redis-cache.log,state=$BASE_DIR/redis/main/state/logs/redis.log,queue=$BASE_DIR/redis/main/queue/logs/redis.log"
+  EXPECTED_PIDFILES="cache=$BASE_DIR/shared/redis-cache/redis.pid,state=$BASE_DIR/redis/main/state/redis.pid,queue=$BASE_DIR/redis/main/queue/redis.pid"
 else
   EXPECTED_PORTS='cache=16379,state=16380,queue=16381'
   EXPECTED_DIRS="cache=$BASE_DIR/redis/temporary/cache/data,state=$BASE_DIR/redis/temporary/state/data,queue=$BASE_DIR/redis/temporary/queue/data"
   EXPECTED_LOGS="cache=$BASE_DIR/redis/temporary/cache/logs/redis.log,state=$BASE_DIR/redis/temporary/state/logs/redis.log,queue=$BASE_DIR/redis/temporary/queue/logs/redis.log"
+  EXPECTED_PIDFILES="cache=$BASE_DIR/redis/temporary/cache/redis.pid,state=$BASE_DIR/redis/temporary/state/redis.pid,queue=$BASE_DIR/redis/temporary/queue/redis.pid"
 fi
 
 launchd_pid() {
@@ -85,6 +87,7 @@ export JUHE_AI_EXPECTED_REDIS_PORTS="$EXPECTED_PORTS"
 export JUHE_AI_EXPECTED_REDIS_PIDS="$CACHE_PID,$STATE_PID,$QUEUE_PID"
 export JUHE_AI_EXPECTED_REDIS_DIRS="$EXPECTED_DIRS"
 export JUHE_AI_EXPECTED_REDIS_LOGS="$EXPECTED_LOGS"
+export JUHE_AI_EXPECTED_REDIS_PIDFILES="$EXPECTED_PIDFILES"
 (
   cd "$RELEASE/backend"
   node --input-type=module <<'NODE'
@@ -102,6 +105,12 @@ const expectedPorts = keyValueMap(process.env.JUHE_AI_EXPECTED_REDIS_PORTS)
 const expectedPids = keyValueMap(process.env.JUHE_AI_EXPECTED_REDIS_PIDS)
 const expectedDirs = keyValueMap(process.env.JUHE_AI_EXPECTED_REDIS_DIRS)
 const expectedLogs = keyValueMap(process.env.JUHE_AI_EXPECTED_REDIS_LOGS)
+const expectedPidfiles = keyValueMap(process.env.JUHE_AI_EXPECTED_REDIS_PIDFILES)
+const expectedMaxmemory = new Map([
+  ['cache', 768 * 1024 * 1024],
+  ['state', 2 * 1024 * 1024 * 1024],
+  ['queue', 2 * 1024 * 1024 * 1024]
+])
 const roles = ['cache', 'state', 'queue']
 const urls = [env.JUHE_AI_REDIS_CACHE_URL, env.JUHE_AI_REDIS_STATE_URL, env.JUHE_AI_REDIS_QUEUE_URL]
 if (urls.some((url) => !url)) throw new Error('Redis role URL 配置不完整')
@@ -122,16 +131,20 @@ for (let index = 0; index < roles.length; index += 1) {
   await client.connect()
   try {
     if (await client.ping() !== 'PONG') throw new Error(`${role} PING failed`)
-    const config = await client.sendCommand(['CONFIG', 'GET', 'appendonly', 'appendfsync', 'save', 'maxmemory-policy', 'dir', 'logfile'])
+    const config = await client.sendCommand(['CONFIG', 'GET', 'appendonly', 'appendfsync', 'save', 'maxmemory-policy', 'maxmemory', 'dir', 'logfile', 'pidfile'])
     const map = config && typeof config === 'object' && !Array.isArray(config)
       ? new Map(Object.entries(config).map(([key, value]) => [key, String(value)]))
       : new Map(Array.from({ length: Math.floor(config.length / 2) }, (_, entryIndex) => [String(config[entryIndex * 2]), String(config[entryIndex * 2 + 1])]))
     const persistence = await client.info('persistence')
     const server = await client.info('server')
+    const stats = await client.info('stats')
     const processId = Number(/^process_id:(\d+)/m.exec(server)?.[1])
     if (String(processId) !== expectedPids.get(role)) throw new Error(`${role} INFO PID 与 launchd/lsof owner 不一致`)
     if (map.get('dir') !== expectedDirs.get(role) || map.get('logfile') !== expectedLogs.get(role)) {
       throw new Error(`${role} Redis dir/logfile 不属于固定角色目录`)
+    }
+    if (map.get('pidfile') !== expectedPidfiles.get(role)) {
+      throw new Error(`${role} Redis pidfile 不属于固定角色目录`)
     }
     processIds.push(processId)
     const expected = role === 'cache' ? { appendonly: 'no', policy: 'allkeys-lru' }
@@ -143,7 +156,25 @@ for (let index = 0; index < roles.length; index += 1) {
     if (role === 'queue' && map.get('appendfsync') !== 'everysec') throw new Error('queue Redis appendfsync 必须为 everysec')
     const aofEnabled = /^aof_enabled:(\d+)/m.exec(persistence)?.[1]
     if (aofEnabled !== (role === 'queue' ? '1' : '0')) throw new Error(`${role} Redis AOF live 状态错误`)
-    results.push({ role, endpoint: physicalEndpoints[index], processId, dir: map.get('dir'), logfile: map.get('logfile') })
+    const loading = /^loading:(\d+)/m.exec(persistence)?.[1]
+    if (loading !== '0') throw new Error(`${role} Redis 仍处于 loading 状态`)
+    const maxmemory = Number(map.get('maxmemory'))
+    if (!Number.isFinite(maxmemory) || maxmemory !== expectedMaxmemory.get(role)) {
+      throw new Error(`${role} Redis maxmemory 不符合固定角色容量`)
+    }
+    const evictedKeys = Number(/^evicted_keys:(\d+)/m.exec(stats)?.[1] ?? 0)
+    const rejectedConnections = Number(/^rejected_connections:(\d+)/m.exec(stats)?.[1] ?? 0)
+    if (!Number.isFinite(evictedKeys) || !Number.isFinite(rejectedConnections)) throw new Error(`${role} Redis eviction/rejection 指标无效`)
+    if (role === 'queue') {
+      const aofLastWriteStatus = /^aof_last_write_status:(\w+)/m.exec(persistence)?.[1]
+      const aofLastBgrewriteStatus = /^aof_last_bgrewrite_status:(\w+)/m.exec(persistence)?.[1]
+      const aofRewriteInProgress = /^aof_rewrite_in_progress:(\d+)/m.exec(persistence)?.[1]
+      const rdbBgsaveInProgress = /^rdb_bgsave_in_progress:(\d+)/m.exec(persistence)?.[1]
+      if (aofLastWriteStatus !== 'ok' || aofLastBgrewriteStatus !== 'ok' || aofRewriteInProgress !== '0' || rdbBgsaveInProgress !== '0') {
+        throw new Error('queue Redis AOF/RDB live 持久化状态异常')
+      }
+    }
+    results.push({ role, endpoint: physicalEndpoints[index], processId, dir: map.get('dir'), logfile: map.get('logfile'), maxmemory, evictedKeys, rejectedConnections })
   } finally {
     await client.quit()
   }
@@ -153,5 +184,6 @@ console.log(JSON.stringify({ scope, roles: results }))
 NODE
 )
 unset JUHE_AI_REDIS_ROLE_ENV_FILE JUHE_AI_REDIS_ROLE_SCOPE JUHE_AI_EXPECTED_REDIS_PORTS \
-  JUHE_AI_EXPECTED_REDIS_PIDS JUHE_AI_EXPECTED_REDIS_DIRS JUHE_AI_EXPECTED_REDIS_LOGS
+  JUHE_AI_EXPECTED_REDIS_PIDS JUHE_AI_EXPECTED_REDIS_DIRS JUHE_AI_EXPECTED_REDIS_LOGS \
+  JUHE_AI_EXPECTED_REDIS_PIDFILES
 printf 'REDIS_ROLE_ISOLATION_OK scope=%s\n' "$SCOPE"

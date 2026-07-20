@@ -59,6 +59,7 @@ import {
 import { resolveNextHybridGatewayRoute } from './hybrid/routing.service.js'
 import { appendHybridQualityRepairInstruction } from './hybrid/quality-repair.service.js'
 import {
+  createOpaqueFailoverBudget,
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
 } from './dispatch/upstream-dispatch.js'
@@ -232,6 +233,7 @@ export async function handleOpenAIGatewayRequest(
   let speedFirstCutoverReservation: SpeedFirstCutoverReservation | undefined
   let codexTurnAvoidedFallbackEnabled = false
   let fallbackSwitchCount = 0
+  const opaqueFailoverBudget = createOpaqueFailoverBudget()
   let forceRecoverableFailureWait = false
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
@@ -493,7 +495,8 @@ export async function handleOpenAIGatewayRequest(
           gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy),
           forceRecoverableFailureWait
             || (currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0) <= 1
-            || fallbackSwitchCount >= (currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0) - 1
+            || fallbackSwitchCount >= (currentPreflight.apiKeyRecord?.group_bindings?.length ?? 0) - 1,
+          opaqueFailoverBudget
         )
       } catch (error) {
         if (error instanceof UpstreamAttemptError) {
@@ -667,6 +670,7 @@ export async function handleOpenAIGatewayRequest(
             markFirstOutput,
             clientIpAccountAvoidanceTracker,
             accountStateMutationEnabled: options.disableAccountStateMutation !== true,
+            automaticAccountStateMutationEnabled: false,
             codexTurnAccountAvoidanceApplied,
             downstreamCommitState: currentPreflight.downstreamCommitState
           })
@@ -694,6 +698,7 @@ export async function handleOpenAIGatewayRequest(
               markFirstOutput,
               clientIpAccountAvoidanceTracker,
               accountStateMutationEnabled: options.disableAccountStateMutation !== true,
+              automaticAccountStateMutationEnabled: false,
               downstreamCommitState: currentPreflight.downstreamCommitState
             })
           } catch (error) {
@@ -729,7 +734,7 @@ export async function handleOpenAIGatewayRequest(
               failedProxyDispatchKeys: new Map(),
               error,
               clientIpAccountAvoidanceTracker,
-              accountStateMutationEnabled: options.disableAccountStateMutation !== true
+              accountStateMutationEnabled: false
             })
             nonStreamResponseStartedFailedAccountIds.add(account.id)
             if (requestErrorResult.action === 'skip_account') {
@@ -1082,10 +1087,13 @@ export async function handleOpenAIGatewayRequest(
           result: handledResponse,
           clientIpAccountAvoidanceTracker,
           accountStateMutationEnabled: options.disableAccountStateMutation !== true,
+          automaticAccountStateMutationEnabled: false,
           downstreamCommitState: currentPreflight.downstreamCommitState
         })
-        await confirmHalfOpenSuccess()
-        await confirmSameAccountApiKeyFailures()
+        if (upstreamResponse.ok) {
+          await confirmHalfOpenSuccess()
+          await confirmSameAccountApiKeyFailures()
+        }
         return
       } finally {
         await releaseHalfOpenLease()
@@ -1162,11 +1170,8 @@ export async function handleOpenAIGatewayRequest(
       ? buildDiagnosticUpstreamError(lastAttempt, message)
       : undefined
     const statusCode = diagnosticError?.statusCode ?? 503
-    const responsePayload = diagnosticError?.payload ?? (
-      error instanceof UpstreamAttemptError && !error.agentGuidanceResponse
-        ? gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', gatewayStreamClientRetryErrorCode)
-        : gatewayErrorPayload('没有可用的上游账户', 'service_unavailable')
-    )
+    const responsePayload = diagnosticError?.payload
+      ?? gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', gatewayStreamClientRetryErrorCode)
     await confirmCurrentClientIpAccountAvoidanceAfterFinalFailure(currentPreflight, auditCapture, 'gateway_failure_response')
     await sendGatewayFailureResponse({
       req,

@@ -16,6 +16,7 @@ import {
 export interface UsePageDataRequestCacheOptions<T> {
   resolveRequest: () => PageDataRequestCacheDefinition<T>
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
+  confirmBatchKey?: string
   storage?: PageDataCacheStorage
   tabCoordinator?: PageDataTabCoordinator
   now?: () => Date
@@ -40,6 +41,7 @@ export function usePageDataRequestCache<T>(options: UsePageDataRequestCacheOptio
   const error = shallowRef<unknown>()
   const manager = new PageDataRequestCacheManager<T>({
     confirm: options.confirm,
+    confirmBatchKey: options.confirmBatchKey,
     storage: options.storage,
     tabCoordinator: options.tabCoordinator ?? getDefaultPageDataTabCoordinator(),
     now: options.now

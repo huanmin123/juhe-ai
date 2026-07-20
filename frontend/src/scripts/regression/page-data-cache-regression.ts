@@ -246,6 +246,7 @@ await lifecycleConfirm
 assert.equal(lifecycleConfirmCalls, 1, '生命周期确认在途时手动刷新不得再发第二次确认')
 assert.equal(lifecycleNetworkCalls, 1, '生命周期确认在途时手动刷新仍应只读取一次业务列表')
 assert.deepEqual(lifecycleResult.data, ['manual-refresh-network'])
+assert.deepEqual((await lifecycleRefreshStorage.read<string[]>(lifecycleRefreshKey))?.value, ['manual-refresh-network'], '手动刷新拿到的新首屏不得在下一次 confirm 时被旧缓存覆盖')
 lifecycleController.close()
 
 await testMicrotaskConfirmBatching()
@@ -605,6 +606,76 @@ async function testMicrotaskConfirmBatching(): Promise<void> {
   assert.equal(requests.length, 1, '同 domain 同 token 必须共享一次 confirm')
   sameA.close()
   sameB.close()
+
+  const distinctTransportCalls: string[] = []
+  const createTransportConfirm = (name: string) => async (request: PageDataConfirmRequest): Promise<PageDataConfirmResult> => {
+    distinctTransportCalls.push(name)
+    return {
+      serverTime: '2026-07-17T12:00:00.000Z',
+      domains: Object.fromEntries(Object.entries(request.domains).map(([domain, known]) => [domain, {
+        action: 'unchanged',
+        token: known
+      }])) as PageDataConfirmResult['domains']
+    }
+  }
+  const createTransportController = async (
+    route: string,
+    domain: PageDataRevisionToken['domain'],
+    sequence: number,
+    confirmTransport: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>,
+    confirmBatchKey?: string
+  ) => {
+    const input = { scope: 'self:transport-isolation', route, query: {}, version: 1, domain }
+    await storage.writeIfCurrent(cacheRecord(createPageDataCacheKey(input), [route], {
+      token: domainToken(domain, sequence),
+      confirmedAt: '2026-07-17T12:00:00.000Z'
+    }))
+    return new PageDataCacheController<string[]>({
+      cacheKey: input,
+      domain,
+      viewScope: 'self',
+      storage,
+      confirm: confirmTransport,
+      confirmBatchKey,
+      loadNetwork: async () => [route]
+    })
+  }
+  const isolatedTransportA = await createTransportController(
+    '/transport-a',
+    'accounts.runtime',
+    4,
+    createTransportConfirm('transport-a')
+  )
+  const isolatedTransportB = await createTransportController(
+    '/transport-b',
+    'usage.records',
+    5,
+    createTransportConfirm('transport-b')
+  )
+  await Promise.all([isolatedTransportA.confirmNow(), isolatedTransportB.confirmNow()])
+  assert.deepEqual(distinctTransportCalls.sort(), ['transport-a', 'transport-b'], '没有显式 batch key 时不同 confirm transport 不得误合批')
+  isolatedTransportA.close()
+  isolatedTransportB.close()
+
+  distinctTransportCalls.length = 0
+  const sharedTransportA = await createTransportController(
+    '/shared-transport-a',
+    'accounts.runtime',
+    4,
+    createTransportConfirm('shared-transport-a'),
+    'shared-page-data-http-client'
+  )
+  const sharedTransportB = await createTransportController(
+    '/shared-transport-b',
+    'usage.records',
+    5,
+    createTransportConfirm('shared-transport-b'),
+    'shared-page-data-http-client'
+  )
+  await Promise.all([sharedTransportA.confirmNow(), sharedTransportB.confirmNow()])
+  assert.equal(distinctTransportCalls.length, 1, '显式相同 batch key 时不同组件包装函数必须合并为一次 confirm')
+  sharedTransportA.close()
+  sharedTransportB.close()
 
   requests.length = 0
   const inFlightConfirm = deferred<PageDataConfirmResult>()

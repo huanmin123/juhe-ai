@@ -172,6 +172,11 @@ for (const pricingAssignment of [
 ]) {
   assert(providerModelCatalogSnapshotSQL.includes(pricingAssignment), `catalog sync must fill missing built-in pricing without overwriting administrator values: ${pricingAssignment}`)
 }
+const insertIndex = providerModelCatalogSnapshotSQL.indexOf('INSERT INTO juhe_business.provider_model_catalog')
+const staleDisableIndex = providerModelCatalogSnapshotSQL.indexOf('UPDATE juhe_business.provider_model_catalog AS existing')
+assert(insertIndex >= 0 && staleDisableIndex > insertIndex, 'stale generated rows must be disabled only after current snapshot upsert preserves administrator overrides')
+assert(providerModelCatalogSnapshotSQL.includes('AND NOT EXISTS ('), 'stale generated row cleanup must exclude every model still present in the current snapshot')
+assert(providerModelCatalogSnapshotSQL.includes('AS snapshot(provider_code, model)'), 'stale generated row cleanup must compare provider/model snapshot identity')
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /\n[ \t]+\n/, 'generated catalog SQL must not contain whitespace-only value rows')
 assert.doesNotMatch(providerModelCatalogSnapshotSQL, /,\n\s*\n\s*\)/, 'generated catalog SQL must not leave a trailing comma before a tuple closes')
 assert.equal(

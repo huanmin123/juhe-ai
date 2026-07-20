@@ -59,7 +59,7 @@ const recoveringStore = createRecoveringPageDataChangeStore({
 })
 await assert.rejects(() => recoveringStore.confirm({ streamKey: 'owner:a', fingerprint: 'scope' }, { 'accounts.static': undefined }))
 const recoveredConfirm = await recoveringStore.confirm({ streamKey: 'owner:a', fingerprint: 'scope' }, { 'accounts.static': undefined })
-assert.equal(recoveredConfirm.domains['accounts.static']?.action, 'reset', '运行态存储恢复后的首个 confirm 必须 reset')
+assert.equal(recoveredConfirm.domains['accounts.static']?.action, 'unchanged', '只读 confirm 失败不得把数据域写成 dirty')
 
 const persistedDirty = new Map<string, number>()
 let persistenceLoadCount = 0
