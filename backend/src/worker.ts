@@ -71,7 +71,7 @@ import {
   startAccountTestTaskQueue
 } from './modules/accounts/account-test-task-queue.service.js'
 import { datasetDatabasePath, getDatasetDatabase, getUsageCatalogDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
-import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { buildProcessEventLoopSample, startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { isAccountHealthCheckTriggerReason } from './modules/accounts/account-health-check-trigger.js'
@@ -427,8 +427,10 @@ async function flushWorkerQueuesForShutdown(): Promise<void> {
     await flushRuntimeLogIndexQueueForShutdownAsync()
     await flushRecordMaintenanceQueueForShutdown()
     await flushAuditLogQueueForShutdown()
+    await closeLogger()
     return
   }
+  await closeLogger()
 }
 
 function isIngestWorker(): boolean {

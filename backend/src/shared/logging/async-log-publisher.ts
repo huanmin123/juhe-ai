@@ -3,7 +3,7 @@ import { setImmediate } from 'node:timers'
 export type LogPriority = 'normal' | 'failure'
 
 export interface AsyncLogDestination {
-  write(chunk: Buffer, callback: (error?: Error) => void): void
+  write(chunk: Buffer, callback: (error?: Error | null) => void): void
 }
 
 export interface AsyncLogPublisherOptions {
@@ -38,6 +38,7 @@ export class AsyncLogPublisher {
   private normalDropped = 0
   private failureDropped = 0
   private destinationErrors = 0
+  private readonly flushWaiters: Array<() => void> = []
 
   constructor(private readonly options: AsyncLogPublisherOptions) {}
 
@@ -70,12 +71,17 @@ export class AsyncLogPublisher {
     }
   }
 
-  close(): void {
+  async flush(): Promise<void> {
+    if (!this.flushing && this.normalQueue.length === 0 && this.failureQueue.length === 0) return
+    const completed = new Promise<void>((resolve) => this.flushWaiters.push(resolve))
+    if (!this.flushing) void this.drain()
+    await completed
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) return
     this.closed = true
-    this.normalQueue.length = 0
-    this.failureQueue.length = 0
-    this.pendingBytes = 0
-    this.pendingFailureBytes = 0
+    await this.flush()
   }
 
   private scheduleFlush(): void {
@@ -83,11 +89,11 @@ export class AsyncLogPublisher {
     this.scheduled = true
     setImmediate(() => {
       this.scheduled = false
-      void this.flush()
+      void this.drain()
     })
   }
 
-  private async flush(): Promise<void> {
+  private async drain(): Promise<void> {
     if (this.flushing) return
     this.flushing = true
     try {
@@ -100,6 +106,9 @@ export class AsyncLogPublisher {
     } finally {
       this.flushing = false
       if (!this.closed && (this.failureQueue.length > 0 || this.normalQueue.length > 0)) this.scheduleFlush()
+      if (this.normalQueue.length === 0 && this.failureQueue.length === 0) {
+        for (const resolve of this.flushWaiters.splice(0)) resolve()
+      }
     }
   }
 

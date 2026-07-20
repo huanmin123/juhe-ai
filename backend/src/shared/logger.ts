@@ -14,7 +14,9 @@ import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { emitRuntimeLogLine, RuntimeLogIndexStream } from '../modules/runtime-logs/runtime-log-stream.js'
-import { AsyncLogPublisher, type AsyncLogPublisherStats } from './logging/async-log-publisher.js'
+import { AsyncLogPublisher, type AsyncLogDestination, type AsyncLogPublisherStats } from './logging/async-log-publisher.js'
+import { LogWriterWorkerClient } from './logging/log-writer-worker-client.js'
+import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
 import { writeProcessFatalDiagnostic } from './process-fatal-diagnostic.js'
 
 interface RotatingFileLogStreamOptions {
@@ -279,7 +281,7 @@ class RotatingFileLogStream extends Writable {
 class MultiDestinationLogStream extends Writable {
   private readonly publisher: AsyncLogPublisher
 
-  constructor(private readonly destinations: Writable[]) {
+  constructor(private readonly destinations: AsyncLogDestination[]) {
     super()
     this.publisher = new AsyncLogPublisher({
       maxNormalEvents: 20_000,
@@ -302,6 +304,13 @@ class MultiDestinationLogStream extends Writable {
 
   stats(): AsyncLogPublisherStats {
     return this.publisher.stats()
+  }
+
+  async close(): Promise<void> {
+    await this.publisher.close()
+    for (const destination of this.destinations) {
+      if (destination instanceof LogWriterWorkerClient) await destination.close()
+    }
   }
 }
 
@@ -460,24 +469,26 @@ export async function cleanupRotatedLogFilesForTest(options: {
   })
 }
 
-const fileLogStream = runtimeConfig.log.fileEnabled
-  ? new RotatingFileLogStream({
+const logFileName = runtimeConfig.processRole === 'worker'
+  ? 'juhe-ai.worker.log'
+  : runtimeConfig.processRole === 'db-service'
+    ? 'juhe-ai.db-service.log'
+    : 'juhe-ai.log'
+const logWriterWorker = runtimeConfig.log.fileEnabled || runtimeConfig.log.consoleEnabled
+  ? new LogWriterWorkerClient({
     directory: runtimeConfig.log.directory,
-    fileName: runtimeConfig.processRole === 'worker'
-      ? 'juhe-ai.worker.log'
-      : runtimeConfig.processRole === 'db-service'
-        ? 'juhe-ai.db-service.log'
-        : 'juhe-ai.log',
+    fileName: logFileName,
+    fileEnabled: runtimeConfig.log.fileEnabled,
+    consoleEnabled: runtimeConfig.log.consoleEnabled,
     maxFileBytes: runtimeConfig.log.maxFileBytes,
     retentionDays: runtimeConfig.log.retentionDays,
     maxFiles: runtimeConfig.log.maxFiles
   })
   : undefined
-const runtimeLogIndexStream = fileLogStream ? undefined : new RuntimeLogIndexStream()
+const runtimeLogIndexStream = runtimeConfig.log.fileEnabled ? undefined : new RuntimeLogIndexStream()
 
-const logDestinations: Writable[] = [
-  ...(runtimeConfig.log.consoleEnabled ? [process.stdout] : []),
-  ...(fileLogStream ? [fileLogStream] : []),
+const logDestinations: AsyncLogDestination[] = [
+  ...(logWriterWorker ? [logWriterWorker] : []),
   ...(runtimeLogIndexStream ? [runtimeLogIndexStream] : [])
 ]
 
@@ -485,6 +496,11 @@ const loggerOptions: LoggerOptions = {
   level: runtimeConfig.log.level,
   base: undefined,
   timestamp: pino.stdTimeFunctions.isoTime,
+  mixin: () => ({
+    version: LOG_EVENT_VERSION,
+    service: 'juhe-ai',
+    role: runtimeConfig.processRole
+  }),
   formatters: {
     level: (label) => ({ level: label })
   },
@@ -505,13 +521,7 @@ export function logPublisherStats(): AsyncLogPublisherStats | undefined {
 }
 
 export function startLogMaintenance(): void {
-  if (!fileLogStream) {
-    return
-  }
-
-  fileLogStream.cleanup()
-  const timer = setInterval(() => fileLogStream.cleanup(), runtimeConfig.log.cleanupIntervalMinutes * 60 * 1000)
-  timer.unref()
+  // writer worker 在启动和轮转时执行有界保留清理，避免主进程扫描日志目录。
 }
 
 let fatalProcessExitStarted = false
@@ -547,6 +557,10 @@ export function installProcessLogHandlers(): void {
       setImmediate(() => process.exit(1))
     }
   })
+}
+
+export async function closeLogger(): Promise<void> {
+  await multiDestinationLogStream?.close()
 }
 
 export function errorLogFields(error: unknown, fields: Record<string, unknown> = {}): Record<string, unknown> {

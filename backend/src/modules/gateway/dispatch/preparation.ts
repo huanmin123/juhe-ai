@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 
 import { logger } from '../../../shared/logger.js'
+import { logRequestStage } from '../../../shared/request-context.js'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import {
   AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
@@ -100,6 +101,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   ignoreAccountRuntimeSuppression?: boolean
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
 }): Promise<DispatchPreparationResult> {
+  const sessionAffinityStartedAt = Date.now()
   const dispatchOrderingOptions = {
     groupType: input.groupAccess.groupType,
     schedulingPolicy: input.groupAccess.schedulingPolicy,
@@ -116,10 +118,24 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     input.sessionAffinityKey,
     dispatchOrderingOptions
   )
+  logRequestStage('account.session_affinity', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: orderedCandidateAccounts.length,
+    applied: Boolean(input.sessionAffinityKey)
+  }, 'success', sessionAffinityStartedAt)
+  const suppressionStartedAt = Date.now()
   const bypassLocalSuppression = input.ignoreAccountRuntimeSuppression === true || isAccountProbeTrafficSource(input.usageContext.trafficSource)
   const initialLocalSuppressionFilter = bypassLocalSuppression
     ? localSuppressionBypassResult(orderedCandidateAccounts)
     : await filterGatewayAccountRuntimeSuppressionsAsync(orderedCandidateAccounts)
+  logRequestStage('account.runtime_suppression', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: initialLocalSuppressionFilter.accounts.length,
+    suppressedCount: initialLocalSuppressionFilter.suppressedCount,
+    bypassed: bypassLocalSuppression
+  }, 'success', suppressionStartedAt)
   let precheckHalfOpenEligible = false
   if (initialLocalSuppressionFilter.allSuppressed) {
     const fallback = await input.attemptFallback('local_account_suppressed')
@@ -206,6 +222,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     }
   }
 
+  const latencyDegradationStartedAt = Date.now()
   const latencyDegradationOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
     runtimeDegradationOrder.accounts,
     normalRouteLatencyDegradationScope({
@@ -216,6 +233,13 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     input.normalRouteSpeedFirstConfig,
     input.modelPriority
   )
+  logRequestStage('account.latency_degradation', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: latencyDegradationOrder.accounts.length,
+    applied: latencyDegradationOrder.applied,
+    bypassedAllDegraded: latencyDegradationOrder.bypassedAllDegraded
+  }, 'success', latencyDegradationStartedAt)
   if (latencyDegradationOrder.applied || latencyDegradationOrder.bypassedAllDegraded) {
     logger.warn({
       event: latencyDegradationOrder.applied
@@ -241,7 +265,15 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
+  const proxyHealthStartedAt = Date.now()
   const proxyHealthOrder = await orderGatewayAccountsByUpstreamBucketHealthAsync(latencyDegradationOrder.accounts, input.modelPriority)
+  logRequestStage('account.proxy_health', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: proxyHealthOrder.accounts.length,
+    applied: proxyHealthOrder.applied,
+    bypassedAllAvoided: proxyHealthOrder.bypassedAllAvoided
+  }, 'success', proxyHealthStartedAt)
   if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
     logger.warn({
       event: proxyHealthOrder.applied
@@ -333,11 +365,18 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
+  const candidatePreparationStartedAt = Date.now()
   const readyPreparation = await prepareQuotaAndCapacityReadyAccounts({
     ...input,
     accounts: codexTurnAvoidance.accounts,
     dispatchOrderingOptions
   })
+  logRequestStage('account.dispatch_candidates', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    outcome: readyPreparation.outcome,
+    candidateAccountCount: readyPreparation.outcome === 'ready' ? readyPreparation.accounts.length : 0
+  }, readyPreparation.outcome === 'ready' ? 'success' : 'expected_failure', candidatePreparationStartedAt)
   if (readyPreparation.outcome !== 'ready') {
     return readyPreparation
   }
@@ -368,6 +407,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   dispatchOrderingOptions: OpenAIAccountDispatchOrderingOptions
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
 }): Promise<DispatchPreparationResult> {
+  const quotaStartedAt = Date.now()
   let authorizationQuotaDeniedAccountCount = 0
   let accounts: UpstreamAccount[] = []
   const accountQuotaDecisions = await checkGatewayAuthorizationQuotaBatchAsync({ groupAccess: input.groupAccess, accounts: input.accounts })
@@ -379,9 +419,23 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     }
     accounts.push(account)
   }
+  logRequestStage('quota.batch_decision', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: input.accounts.length,
+    allowedAccountCount: accounts.length,
+    deniedAccountCount: authorizationQuotaDeniedAccountCount
+  }, authorizationQuotaDeniedAccountCount > 0 ? 'expected_failure' : 'success', quotaStartedAt)
+  const capacityStartedAt = Date.now()
   if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
     accounts = await refreshGatewayAccountCurrentConcurrencyAsync(accounts)
   }
+  logRequestStage('capacity.account_snapshot', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: accounts.length,
+    groupType: input.dispatchOrderingOptions.groupType
+  }, 'success', capacityStartedAt)
 
   if (accounts.length === 0) {
     if (authorizationQuotaDeniedAccountCount > 0) {

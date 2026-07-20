@@ -5,6 +5,8 @@ import type { NextFunction, Request, Response } from 'express'
 import type { Logger } from 'pino'
 
 import type { SystemAccountRole } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
+import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
 import { logger } from './logger.js'
 
 export interface RequestContext {
@@ -55,6 +57,17 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
   res.setHeader('x-trace-id', traceId)
 
   requestContextStorage.run(context, () => {
+    context.logger.info({
+      event: 'http_request_started',
+      version: LOG_EVENT_VERSION,
+      service: 'juhe-ai',
+      role: runtimeConfig.processRole,
+      traceId,
+      method: req.method,
+      path: req.path,
+      originalUrl: context.originalUrl,
+      clientIp
+    }, 'HTTP 请求开始')
     res.once('finish', () => logRequestFinished(req, res, context))
     res.once('close', () => {
       if (!res.writableEnded) {
@@ -100,6 +113,9 @@ export function logRequestStage(
   const endedAt = Date.now()
   ;(context?.logger ?? logger).info({
     event: 'gateway.request.stage',
+    version: LOG_EVENT_VERSION,
+    service: 'juhe-ai',
+    role: runtimeConfig.processRole,
     traceId: context?.traceId,
     stage,
     outcome,
