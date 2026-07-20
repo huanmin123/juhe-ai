@@ -64,6 +64,8 @@ foreach ($token in @('BACKUP_RETENTION=6', 'rotate_successful_backups', 'backup_
 if ($verify -notmatch 'new Set\(physicalEndpoints\)\.size') { throw 'read-only gate must reject shared physical Redis endpoints' }
 if ($verify -notmatch '\$\{url\.hostname\}:\$\{url\.port') { throw 'read-only gate physical endpoint identity must ignore redis/rediss protocol and DB' }
 if ($verify -notmatch 'processId' -or $verify -notmatch 'new Set\(processIds\)\.size') { throw 'read-only gate must reject shared Redis PIDs' }
+if ($verify -notmatch 'INFO PID 与 launchd owner 不一致') { throw 'read-only gate must bind Redis INFO PID to the launchd PID' }
+if ($verify -match 'lsof -tiTCP') { throw 'read-only gate must not depend on root Redis lsof visibility from the deployment user' }
 if ($verify -notmatch 'Object\.entries\(config\)') { throw 'read-only gate must support node-redis object CONFIG GET replies' }
 
 $bash = Get-Command bash -ErrorAction SilentlyContinue
