@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
+	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -23,7 +24,14 @@ func batchEditHandler(service *managementaccountbatchedit.Service, self bool) ht
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
+		if !self && !managementauth.IsAdminRole(auth.Role) {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
 		systemID := auth.SystemAccountID
+		if !self {
+			systemID = ""
+		}
 		if !self && strings.TrimSpace(r.URL.Query().Get("systemAccountId")) != "" {
 			systemID = strings.TrimSpace(r.URL.Query().Get("systemAccountId"))
 		}

@@ -149,6 +149,10 @@ type RouterOptions struct {
 	ManagementMyAccountAPIKeyRuntimeHandler           http.Handler
 	ManagementAccountGroupBindingHandler              http.Handler
 	ManagementMyAccountGroupBindingHandler            http.Handler
+	ManagementAccountBatchEditHandler                 http.Handler
+	ManagementMyAccountBatchEditHandler               http.Handler
+	ManagementAccountForceActivateHandler             http.Handler
+	ManagementMyAccountForceActivateHandler           http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -393,6 +397,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountAPIKeyRuntimeHandler == nil &&
 				opts.ManagementAccountGroupBindingHandler == nil &&
 				opts.ManagementMyAccountGroupBindingHandler == nil &&
+				opts.ManagementAccountBatchEditHandler == nil &&
+				opts.ManagementMyAccountBatchEditHandler == nil &&
+				opts.ManagementAccountForceActivateHandler == nil &&
+				opts.ManagementMyAccountForceActivateHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -868,6 +876,20 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountGroupBindingHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/group", opts.ManagementMyAccountGroupBindingHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountBatchEditHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/batch-edit-context", opts.ManagementAccountBatchEditHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/batch-update", opts.ManagementAccountBatchEditHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountBatchEditHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/batch-edit-context", opts.ManagementMyAccountBatchEditHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/batch-update", opts.ManagementMyAccountBatchEditHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountForceActivateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/force-activate", opts.ManagementAccountForceActivateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountForceActivateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/force-activate", opts.ManagementMyAccountForceActivateHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -1278,6 +1300,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountAPIKeyRuntimeHandler != nil ||
 		opts.ManagementAccountGroupBindingHandler != nil ||
 		opts.ManagementMyAccountGroupBindingHandler != nil ||
+		opts.ManagementAccountBatchEditHandler != nil ||
+		opts.ManagementMyAccountBatchEditHandler != nil ||
+		opts.ManagementAccountForceActivateHandler != nil ||
+		opts.ManagementMyAccountForceActivateHandler != nil ||
 		opts.ManagementSystemSettingsHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
@@ -1368,6 +1394,10 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
 		opts.ManagementAccountGroupBindingHandler != nil ||
 		opts.ManagementMyAccountGroupBindingHandler != nil ||
+		opts.ManagementAccountBatchEditHandler != nil ||
+		opts.ManagementMyAccountBatchEditHandler != nil ||
+		opts.ManagementAccountForceActivateHandler != nil ||
+		opts.ManagementMyAccountForceActivateHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||

@@ -16,7 +16,9 @@ import (
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
 	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
+	"juhe-ai/backend-go/internal/modules/managementaccountforceactivate"
 	"juhe-ai/backend-go/internal/modules/managementaccountgroupbinding"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
@@ -361,6 +363,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountAPIKeyRuntimeHandler:           managementHandlers.MyAccountAPIKeyRuntimeHandler,
 		ManagementAccountGroupBindingHandler:              managementHandlers.AccountGroupBindingHandler,
 		ManagementMyAccountGroupBindingHandler:            managementHandlers.MyAccountGroupBindingHandler,
+		ManagementAccountBatchEditHandler:                 managementHandlers.AccountBatchEditHandler,
+		ManagementMyAccountBatchEditHandler:               managementHandlers.MyAccountBatchEditHandler,
+		ManagementAccountForceActivateHandler:             managementHandlers.AccountForceActivateHandler,
+		ManagementMyAccountForceActivateHandler:           managementHandlers.MyAccountForceActivateHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -545,6 +551,10 @@ type managementAPIHandlers struct {
 	MyAccountAPIKeyRuntimeHandler           http.Handler
 	AccountGroupBindingHandler              http.Handler
 	MyAccountGroupBindingHandler            http.Handler
+	AccountBatchEditHandler                 http.Handler
+	MyAccountBatchEditHandler               http.Handler
+	AccountForceActivateHandler             http.Handler
+	MyAccountForceActivateHandler           http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -708,6 +718,15 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Reader:            store,
 		CredentialCodec:   secretcrypto.NewJSONCodec(cfg.Secret),
 		FingerprintSecret: cfg.Secret,
+	})
+	accountBatchEditService := managementaccountbatchedit.NewService(store, store)
+	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
+		Store:              store,
+		Details:            accountDetailService,
+		GranteeReader:      store,
+		PageDataPublisher:  accountsStaticResetPublisher,
+		GatewayInvalidator: systemAccountInvalidator,
+		Logger:             logger,
 	})
 	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
 	accountGroupBindingService := managementaccountgroupbinding.NewService(managementaccountgroupbinding.Options{
@@ -919,6 +938,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountAPIKeyRuntimeHandler:           httpapi.NewManagementMyAccountAPIKeyRuntimeHandler(accountDetailService),
 		AccountGroupBindingHandler:              httpapi.NewManagementAccountGroupBindingHandlerWithOperationLog(accountGroupBindingService, operationLogOptions),
 		MyAccountGroupBindingHandler:            httpapi.NewManagementMyAccountGroupBindingHandlerWithOperationLog(accountGroupBindingService, operationLogOptions),
+		AccountBatchEditHandler:                 httpapi.NewManagementAccountBatchEditHandler(accountBatchEditService),
+		MyAccountBatchEditHandler:               httpapi.NewManagementMyAccountBatchEditHandler(accountBatchEditService),
+		AccountForceActivateHandler:             httpapi.NewManagementAccountForceActivateHandlerWithOperationLog(accountForceActivateService, operationLogOptions),
+		MyAccountForceActivateHandler:           httpapi.NewManagementMyAccountForceActivateHandlerWithOperationLog(accountForceActivateService, operationLogOptions),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
