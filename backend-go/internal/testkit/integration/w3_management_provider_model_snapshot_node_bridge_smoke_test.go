@@ -6,8 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -22,6 +25,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"
 
+	"juhe-ai/backend-go/internal/app"
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/modules/managementauth"
@@ -91,6 +95,9 @@ func TestW3ManagementProviderModelSnapshotNodeBridgePostgresRedisSmoke(t *testin
 	if err != nil {
 		t.Fatalf("create Go model catalog snapshot client: %v", err)
 	}
+	if err := client.Probe(ctx); err != nil {
+		t.Fatalf("probe real Node model catalog bridge: %v", err)
+	}
 	store, err := postgresstore.Open(ctx, postgresURL)
 	if err != nil {
 		t.Fatalf("open postgres store: %v", err)
@@ -126,6 +133,7 @@ func TestW3ManagementProviderModelSnapshotNodeBridgePostgresRedisSmoke(t *testin
 	}
 	assertW3NodeBridgeDirtyAcknowledged(t, ctx, db)
 	assertW3NodeBridgeGlobalSnapshots(t, ctx, db, "w3-node-bridge-model")
+	assertW3RealGoServerBridgeReadiness(t, ctx, bridge.BaseURL(), postgresURL, redisCacheURL, redisStateURL, redisQueueURL)
 }
 
 type w3ModelCatalogNodeBridgeProcess struct {
@@ -150,7 +158,7 @@ func w3ModelCatalogNodeBridgePrerequisites(t *testing.T) (string, string, string
 		t.Fatalf("resolve node path: %v", err)
 	}
 	backendDir := filepath.Join(filepath.Dir(repoRoot(t)), "backend")
-	helperPath := filepath.Join(backendDir, "src", "scripts", "regression", "model-catalog-snapshot-node-bridge-server.ts")
+	helperPath := filepath.Join(backendDir, "src", "scripts", "regression", "model-catalog-snapshot-real-node-server.ts")
 	if info, statErr := os.Stat(helperPath); statErr != nil {
 		t.Fatalf("stat Node model catalog bridge helper: %v", statErr)
 	} else if info.IsDir() {
@@ -188,6 +196,7 @@ func startW3ModelCatalogNodeBridge(
 	redisQueueURL string,
 ) *w3ModelCatalogNodeBridgeProcess {
 	t.Helper()
+	port := w3ReserveLoopbackPort(t)
 	command := exec.CommandContext(ctx, nodePath, "--import", "tsx", helperPath)
 	command.Dir = backendDir
 	command.Env = append(w6ManagementClientIPStatsNodeWriterBaseEnvironment(),
@@ -197,12 +206,15 @@ func startW3ModelCatalogNodeBridge(
 		"JUHE_AI_CACHE_DRIVER=redis",
 		"JUHE_AI_RUNTIME_STATE_DRIVER=redis",
 		"JUHE_AI_QUEUE_DRIVER=redis_stream",
+		"JUHE_AI_HOST=127.0.0.1",
+		"JUHE_AI_PORT="+strconv.Itoa(port),
 		"JUHE_AI_POSTGRES_URL="+postgresURL,
 		"JUHE_AI_REDIS_CACHE_URL="+redisCacheURL,
 		"JUHE_AI_REDIS_STATE_URL="+redisStateURL,
 		"JUHE_AI_REDIS_QUEUE_URL="+redisQueueURL,
 		"JUHE_AI_PROCESS_ROLE=worker",
 		"JUHE_AI_WORKER_ROLE=ingest-worker",
+		"JUHE_AI_OWNER_LOCK_ENABLED=true",
 		"JUHE_AI_SECRET="+w3NodeBridgeSecret,
 		"JUHE_AI_LOG_FILE_ENABLED=false",
 		"JUHE_AI_LOG_CONSOLE_ENABLED=false",
@@ -223,16 +235,21 @@ func startW3ModelCatalogNodeBridge(
 	go func() { wait <- command.Wait() }()
 	process := &w3ModelCatalogNodeBridgeProcess{
 		command: command, stdin: stdin, wait: wait, stdout: stdout, stderr: stderr,
-		redacted: []string{postgresURL, redisCacheURL, redisStateURL, redisQueueURL},
+		port: port, redacted: []string{postgresURL, redisCacheURL, redisStateURL, redisQueueURL},
 	}
 	deadline := time.NewTimer(20 * time.Second)
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if port, ok := w3NodeBridgeReadyPort(stdout.String()); ok {
-			process.port = port
-			return process
+		if readyPort, ok := w3NodeBridgeReadyPort(stdout.String()); ok && readyPort == port {
+			client, clientErr := modelcatalogsnapshotrebuild.NewClientWithTimeouts(process.BaseURL(), w3NodeBridgeSecret, 60*time.Second, 2*time.Second)
+			if clientErr != nil {
+				t.Fatalf("create Node readiness client: %v", clientErr)
+			}
+			if probeErr := client.Probe(ctx); probeErr == nil {
+				return process
+			}
 		}
 		select {
 		case err := <-wait:
@@ -245,6 +262,157 @@ func startW3ModelCatalogNodeBridge(
 			}
 			t.Fatalf("Node model catalog bridge ready timeout; stdout=%q stderr=%q", process.safeOutput(stdout.String()), process.safeOutput(stderr.String()))
 		case <-ticker.C:
+		}
+	}
+}
+
+func w3ReserveLoopbackPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve loopback port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release loopback port reservation: %v", err)
+	}
+	return port
+}
+
+func assertW3RealGoServerBridgeReadiness(
+	t *testing.T,
+	ctx context.Context,
+	nodeBaseURL string,
+	postgresURL string,
+	redisCacheURL string,
+	redisStateURL string,
+	redisQueueURL string,
+) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	goPort := w3ReserveLoopbackPort(t)
+	cfg := w3RealGoServerConfig(goPort, nodeBaseURL, postgresURL, redisCacheURL, redisStateURL, redisQueueURL, w3NodeBridgeSecret)
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var runErr error
+	go func() {
+		runErr = app.RunServer(serverCtx, cfg, logger)
+		close(done)
+	}()
+	var stopServerOnce sync.Once
+	var serverStopErr error
+	stopServer := func() {
+		stopServerOnce.Do(func() {
+			cancelServer()
+			select {
+			case <-done:
+				serverStopErr = runErr
+			case <-time.After(10 * time.Second):
+				serverStopErr = errors.New("shutdown timeout")
+			}
+		})
+	}
+	t.Cleanup(stopServer)
+	w3WaitForGoReadiness(t, done, &runErr, goPort)
+	stopServer()
+	if serverStopErr != nil {
+		t.Fatalf("real Go server shutdown: %v", serverStopErr)
+	}
+
+	wrongListener := w3ListenLoopback(t)
+	t.Cleanup(func() { _ = wrongListener.Close() })
+	wrongPort := wrongListener.Addr().(*net.TCPAddr).Port
+	wrongCfg := w3RealGoServerConfig(wrongPort, nodeBaseURL, postgresURL, redisCacheURL, redisStateURL, redisQueueURL, "wrong-node-bridge-secret-0123456789")
+	wrongCtx, cancelWrong := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelWrong()
+	wrongResult := make(chan error, 1)
+	go func() {
+		wrongResult <- app.RunServer(wrongCtx, wrongCfg, logger)
+	}()
+	select {
+	case err := <-wrongResult:
+		if err == nil || !strings.Contains(err.Error(), string(modelcatalogsnapshotrebuild.ProbeFailureUnauthorized)) {
+			t.Fatalf("wrong-secret Go startup error = %v, want unauthorized", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("wrong-secret Go startup did not fail fast")
+	}
+	if err := wrongListener.Close(); err != nil {
+		t.Fatalf("close wrong-secret listener: %v", err)
+	}
+}
+
+func w3ListenLoopback(t *testing.T) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen loopback port: %v", err)
+	}
+	return listener
+}
+
+func w3RealGoServerConfig(
+	port int,
+	nodeBaseURL string,
+	postgresURL string,
+	redisCacheURL string,
+	redisStateURL string,
+	redisQueueURL string,
+	secret string,
+) config.Config {
+	return config.Config{
+		Host:                               "127.0.0.1",
+		Port:                               port,
+		Env:                                "test",
+		LogLevel:                           "error",
+		PostgresURL:                        postgresURL,
+		RedisCacheURL:                      redisCacheURL,
+		RedisStateURL:                      redisStateURL,
+		RedisQueueURL:                      redisQueueURL,
+		RedisNamespace:                     "w3-real-server-bridge",
+		Secret:                             secret,
+		NodeInternalBaseURL:                nodeBaseURL,
+		NodeInternalRequestTimeout:         2 * time.Second,
+		NodeInternalSnapshotRebuildTimeout: 60 * time.Second,
+		ManagementAPIEnabled:               true,
+		TrustProxy:                         "false",
+		CookieSameSite:                     "lax",
+		ShutdownTimeout:                    5 * time.Second,
+	}
+}
+
+func w3WaitForGoReadiness(t *testing.T, done <-chan struct{}, runErr *error, port int) {
+	t.Helper()
+	url := "http://127.0.0.1:" + strconv.Itoa(port) + "/__aisys__/readyz"
+	deadline := time.NewTimer(20 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			t.Fatalf("real Go server exited before ready: %v", *runErr)
+		case <-deadline.C:
+			t.Fatalf("real Go server readiness timeout: %s", url)
+		case <-ticker.C:
+			requestCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+			request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, url, nil)
+			if err != nil {
+				cancel()
+				t.Fatal(err)
+			}
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				cancel()
+				continue
+			}
+			var body httpapi.HealthResponse
+			decodeErr := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&body)
+			_ = response.Body.Close()
+			cancel()
+			if response.StatusCode == http.StatusOK && decodeErr == nil && body.Dependencies["nodeModelCatalogBridge"].Status == "ok" {
+				return
+			}
 		}
 	}
 }
