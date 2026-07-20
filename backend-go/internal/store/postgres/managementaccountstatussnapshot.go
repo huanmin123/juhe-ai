@@ -18,12 +18,18 @@ SELECT a.id, a.system_account_id, a.name, a.status, a.schedulable,
        COALESCE(a.last_health_check_error_message, ''), COALESCE(a.last_health_check_trace_id, ''), COALESCE(a.last_used_at::text, ''),
        COALESCE(ra.id, ''), COALESCE(ra.status, ''), COALESCE(ra.expires_at::text, ''),
        COALESCE(a.authorization_instance_source_account_id, ''), COALESCE(source.schedulable, false), COALESCE(source.account_expires_at::text, ''), COALESCE(source.status, ''),
-       COALESCE(gb.group_id, ''), COALESCE(g.name, ''), CASE WHEN gb.group_id IS NULL THEN 'unbound' ELSE 'bound' END,
+       COALESCE(source.cooldown_until::text, ''), COALESCE(source.last_error_code, ''), COALESCE(source.last_error_message, ''), COALESCE(source.last_error_trace_id, ''),
+       COALESCE(gb.group_id, ''), COALESCE(g.name, ''),
+       CASE
+         WHEN gb.group_id IS NULL THEN 'unbound'
+         WHEN a.authorization_instance_authorization_id IS NOT NULL AND COALESCE(gb.account_authorization_id, '') <> COALESCE(ra.id, '') THEN 'authorization_unavailable'
+         ELSE 'bound'
+       END,
        COALESCE((SELECT jsonb_build_object('requestCount', usd.request_count, 'successCount', usd.success_count, 'errorCount', usd.error_count, 'inputTokens', usd.input_tokens, 'outputTokens', usd.output_tokens, 'totalCost', usd.total_cost_usd)::text FROM juhe_stats.usage_stats_daily usd WHERE usd.scope_type = 'account' AND usd.scope_id = a.id ORDER BY usd.stat_date DESC LIMIT 1), '{}')
 FROM juhe_business.accounts a
 LEFT JOIN juhe_business.resource_authorizations ra ON ra.id = a.authorization_instance_authorization_id
 LEFT JOIN juhe_business.accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL
-LEFT JOIN LATERAL (SELECT ga.group_id FROM juhe_business.group_accounts ga WHERE ga.account_id = a.id AND ga.system_account_id = a.system_account_id AND ga.enabled = true ORDER BY ga.updated_at DESC, ga.group_id LIMIT 1) gb ON true
+LEFT JOIN LATERAL (SELECT ga.group_id, ga.account_authorization_id FROM juhe_business.group_accounts ga WHERE ga.account_id = a.id AND ga.system_account_id = a.system_account_id AND ga.enabled = true ORDER BY ga.updated_at DESC, ga.group_id LIMIT 1) gb ON true
 LEFT JOIN juhe_business.groups g ON g.id = gb.group_id AND g.system_account_id = a.system_account_id
 WHERE a.deleted_at IS NULL AND a.id = ANY($1::text[]) AND ($2 = '' OR a.system_account_id = $2)
 ORDER BY array_position($1::text[], a.id)`
@@ -43,7 +49,7 @@ func (s *Store) ListManagementAccountStatusProjections(ctx context.Context, inpu
 	result := make([]port.ManagementAccountStatusProjection, 0, len(ids))
 	for rows.Next() {
 		var row port.ManagementAccountStatusProjection
-		if err := rows.Scan(&row.ID, &row.SystemAccountID, &row.Name, &row.Status, &row.Schedulable, &row.AccountExpiresAt, &row.CooldownUntil, &row.LastErrorCode, &row.LastErrorMessage, &row.LastErrorTraceID, &row.LastHealthCheckAt, &row.NextHealthCheckAt, &row.LastHealthCheckStatusCode, &row.LastHealthCheckErrorCode, &row.LastHealthCheckErrorMessage, &row.LastHealthCheckTraceID, &row.LastUsedAt, &row.AuthorizationID, &row.AuthorizationStatus, &row.AuthorizationExpiresAt, &row.AuthorizationInstanceSourceAccountID, &row.AuthorizationInstanceSourceSchedulable, &row.AuthorizationInstanceSourceExpiresAt, &row.AuthorizationInstanceSourceAccountStatus, &row.BoundGroupID, &row.BoundGroupName, &row.GroupBindStatus, &row.TodayUsageJSON); err != nil {
+		if err := rows.Scan(&row.ID, &row.SystemAccountID, &row.Name, &row.Status, &row.Schedulable, &row.AccountExpiresAt, &row.CooldownUntil, &row.LastErrorCode, &row.LastErrorMessage, &row.LastErrorTraceID, &row.LastHealthCheckAt, &row.NextHealthCheckAt, &row.LastHealthCheckStatusCode, &row.LastHealthCheckErrorCode, &row.LastHealthCheckErrorMessage, &row.LastHealthCheckTraceID, &row.LastUsedAt, &row.AuthorizationID, &row.AuthorizationStatus, &row.AuthorizationExpiresAt, &row.AuthorizationInstanceSourceAccountID, &row.AuthorizationInstanceSourceSchedulable, &row.AuthorizationInstanceSourceExpiresAt, &row.AuthorizationInstanceSourceAccountStatus, &row.AuthorizationInstanceSourceCooldownUntil, &row.AuthorizationInstanceSourceLastErrorCode, &row.AuthorizationInstanceSourceLastErrorMessage, &row.AuthorizationInstanceSourceLastErrorTraceID, &row.BoundGroupID, &row.BoundGroupName, &row.GroupBindStatus, &row.TodayUsageJSON); err != nil {
 			return nil, fmt.Errorf("scan management account status projection: %w", err)
 		}
 		result = append(result, row)

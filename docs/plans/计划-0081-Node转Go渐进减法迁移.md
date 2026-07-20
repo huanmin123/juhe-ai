@@ -811,3 +811,10 @@
 - Redis 读取成功时 `runtimeSnapshot.accountConcurrencyAvailable=true` 并按账户返回当前并发；读取器未配置或读取失败时保持能力 false、值 0，不把缺失运行态伪装为真实零值。`accountRuntimeAvailabilityAvailable` 继续为 false，因为 Go 尚未迁移 Node runtime availability owner。
 - 授权实例不拥有独立上游并发槽，读取 key 使用 `authorizationInstanceSourceAccountId`；普通账户继续使用自身 ID，避免授权实例错误显示零并发。
 - 最小验证已通过：`go test ./internal/modules/managementaccountstatussnapshot -count=1` 和 `go test ./internal/app ./internal/httpapi -run 'AccountStatusSnapshot|TestNonExistent' -count=1`。真实 Redis 双运行时读、runtime availability、API Key probe/source probe 和完整 availability presentation 继续后置，不能据此声明账户状态摘要完整迁移。
+
+### W6-A 静态有效状态补齐
+
+- Go 状态快照已按 Node 的静态优先级补齐：绑定缺失/绑定授权失效、授权到期/暂停/失效、来源账户缺失/到期/停用/待检查/异常/限流/临时不可用/冷却/停调，以及实例到期/停用/待检查/异常/限流/临时不可用/冷却/停调。
+- `effectiveAvailability` 现在带 `blockerScope/reason/retryAt`，并生成对应的 `availabilityPresentation` 状态、动作和静态边界时间；来源账户展示动作统一联系授权人，实例问题按 Node 语义恢复/重试/启用。
+- PostgreSQL 投影补读来源账户 cooldown/error/trace，并按 `group_accounts.account_authorization_id` 校验授权实例分组绑定是否仍指向当前授权；今日统计、授权额度、API Key 全不可用和 runtime probe 仍未接入，不在本块伪造。
+- 定向验证已通过：`go test ./internal/modules/managementaccountstatussnapshot ./internal/store/postgres ./internal/httpapi ./internal/app -count=1`；Go migration 链与现有状态 SQL 的健康检查字段差异仍是后续 schema 对照项，真实 PostgreSQL 列扫描尚未执行。

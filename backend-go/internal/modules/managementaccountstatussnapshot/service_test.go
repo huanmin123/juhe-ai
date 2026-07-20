@@ -63,6 +63,53 @@ func TestServiceLoadsAuthorizedInstanceConcurrencyFromSourceAccount(t *testing.T
 	}
 }
 
+func TestEffectiveAvailabilityUsesNodeStaticBlockerPriority(t *testing.T) {
+	now := time.Date(2026, 7, 21, 0, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		row        port.ManagementAccountStatusProjection
+		wantStatus string
+		wantScope  string
+	}{
+		{
+			name: "authorization expired before source and instance",
+			row: port.ManagementAccountStatusProjection{
+				Status: "disabled", Schedulable: false, AuthorizationID: "auth_1", AuthorizationStatus: "expired",
+				AuthorizationInstanceSourceAccountID: "source_1", AuthorizationInstanceSourceAccountStatus: "disabled", BoundGroupID: "group_1", GroupBindStatus: "bound",
+			},
+			wantStatus: "authorization_expired", wantScope: "authorization",
+		},
+		{
+			name: "source cooldown before instance",
+			row: port.ManagementAccountStatusProjection{
+				Status: "active", Schedulable: true, AuthorizationID: "auth_1", AuthorizationStatus: "active",
+				AuthorizationInstanceSourceAccountID: "source_1", AuthorizationInstanceSourceAccountStatus: "active", AuthorizationInstanceSourceSchedulable: true,
+				AuthorizationInstanceSourceCooldownUntil: now.Add(time.Hour).Format(time.RFC3339), BoundGroupID: "group_1", GroupBindStatus: "bound",
+			},
+			wantStatus: "source_cooldown", wantScope: "source_account",
+		},
+		{
+			name: "pending health check failure",
+			row: port.ManagementAccountStatusProjection{
+				Status: "pending_test", Schedulable: true, LastHealthCheckAt: now.Add(-time.Minute).Format(time.RFC3339), LastHealthCheckErrorCode: "probe_failed",
+			},
+			wantStatus: "instance_pending_test", wantScope: "account",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := effective(test.row, now)
+			if got.Status != test.wantStatus || got.BlockerScope != test.wantScope || got.Available || got.Reason == "" {
+				t.Fatalf("effective = %+v", got)
+			}
+			presentation := availabilityPresentation(got, test.row)
+			if presentation.Status == "" || presentation.Label == "" || presentation.Action == "" {
+				t.Fatalf("presentation = %+v", presentation)
+			}
+		})
+	}
+}
+
 type statusReaderStub struct {
 	input port.ManagementAccountStatusSnapshotInput
 	rows  []port.ManagementAccountStatusProjection

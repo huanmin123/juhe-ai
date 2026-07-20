@@ -11,6 +11,8 @@ func TestManagementAccountStatusSnapshotSQLKeepsScopeAndInputOrder(t *testing.T)
 		"$2 = '' OR a.system_account_id = $2",
 		"ORDER BY array_position($1::text[], a.id)",
 		"juhe_stats.usage_stats_daily",
+		"ga.account_authorization_id",
+		"authorization_unavailable",
 	} {
 		if !strings.Contains(managementAccountStatusSnapshotSQL, fragment) {
 			t.Fatalf("query missing %q", fragment)
