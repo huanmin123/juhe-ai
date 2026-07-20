@@ -14,6 +14,7 @@ import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { emitRuntimeLogLine, RuntimeLogIndexStream } from '../modules/runtime-logs/runtime-log-stream.js'
+import { AsyncLogPublisher, type AsyncLogPublisherStats } from './logging/async-log-publisher.js'
 import { writeProcessFatalDiagnostic } from './process-fatal-diagnostic.js'
 
 interface RotatingFileLogStreamOptions {
@@ -276,20 +277,37 @@ class RotatingFileLogStream extends Writable {
 }
 
 class MultiDestinationLogStream extends Writable {
+  private readonly publisher: AsyncLogPublisher
+
   constructor(private readonly destinations: Writable[]) {
     super()
+    this.publisher = new AsyncLogPublisher({
+      maxNormalEvents: 20_000,
+      maxFailureEvents: 2_000,
+      maxBytes: 64 * 1024 * 1024,
+      maxFailureBytes: 8 * 1024 * 1024,
+      destinations: destinations.map((destination) => ({
+        write: (chunk, callback) => {
+          destination.write(chunk, (error?: Error | null) => callback(error ?? undefined))
+        }
+      }))
+    })
   }
 
   _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     const rawChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding)
-    for (const destination of this.destinations) {
-      try {
-        destination.write(rawChunk)
-      } catch {
-      }
-    }
+    this.publisher.enqueue(rawChunk, isFailureLogChunk(rawChunk) ? 'failure' : 'normal')
     callback()
   }
+
+  stats(): AsyncLogPublisherStats {
+    return this.publisher.stats()
+  }
+}
+
+function isFailureLogChunk(chunk: Buffer): boolean {
+  const prefix = chunk.subarray(0, Math.min(chunk.length, 512)).toString('utf8')
+  return /"level":"(?:error|fatal)"/.test(prefix)
 }
 
 function runtimeLogFileSourceKey(logPath: string, lineStartOffset: number): string {
@@ -475,10 +493,16 @@ const loggerOptions: LoggerOptions = {
   }
 }
 
+const multiDestinationLogStream = logDestinations.length > 0 ? new MultiDestinationLogStream(logDestinations) : undefined
+
 export const logger: Logger = pino(
   loggerOptions,
-  logDestinations.length > 0 ? new MultiDestinationLogStream(logDestinations) : new Writable({ write: (_chunk, _encoding, callback) => callback() })
+  multiDestinationLogStream ?? new Writable({ write: (_chunk, _encoding, callback) => callback() })
 )
+
+export function logPublisherStats(): AsyncLogPublisherStats | undefined {
+  return multiDestinationLogStream?.stats()
+}
 
 export function startLogMaintenance(): void {
   if (!fileLogStream) {

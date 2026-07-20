@@ -5,7 +5,7 @@ import {
   type Response,
 } from 'express'
 
-import { createTraceId, getRequestLogger, getTraceId } from '../../shared/request-context.js'
+import { createTraceId, getRequestLogger, getTraceId, logRequestStage } from '../../shared/request-context.js'
 import { errorLogFields } from '../../shared/logger.js'
 import {
   extractClientIp,
@@ -165,6 +165,13 @@ export async function handleOpenAIGatewayRequest(
   const endpoint = requestEndpoint(req)
   const requestLane = resolveOpenAIGatewayRequestLane(req)
   const trafficSource = normalizeOpenAIGatewayTrafficSource(options.trafficSource)
+  logRequestStage('request.accepted', {
+    traceId,
+    method: req.method,
+    endpoint,
+    requestLane,
+    trafficSource
+  }, 'success', startedAt)
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
   const auditCapture = createAuditCapture({
     req,
@@ -202,6 +209,7 @@ export async function handleOpenAIGatewayRequest(
   })
 
   let preflight: Awaited<ReturnType<typeof prepareOpenAIGatewayDispatchContext>>
+  const preflightStartedAt = Date.now()
   try {
     preflight = await prepareOpenAIGatewayDispatchContext({
       req,
@@ -216,13 +224,25 @@ export async function handleOpenAIGatewayRequest(
       signal: abortController.signal
     })
   } catch (error) {
+    logRequestStage('preflight.failed', {
+      traceId,
+      errorName: error instanceof Error ? error.name : 'NonErrorThrown'
+    }, 'unexpected_failure', preflightStartedAt)
     auditCapture.cancel()
     throw error
   }
   if (!preflight) {
+    logRequestStage('preflight.rejected', { traceId }, 'expected_failure', preflightStartedAt)
     auditCapture.cancel()
     return
   }
+  logRequestStage('preflight.completed', {
+    traceId,
+    groupId: preflight.usageContext.groupId,
+    apiKeyId: preflight.usageContext.apiKeyId,
+    candidateAccountCount: preflight.accounts.length,
+    routeStrategyId: preflight.apiKeyRecord?.route_strategy_id
+  }, 'success', preflightStartedAt)
   let currentPreflight = preflight
   const requestExecutionSignal = abortController.signal
   let releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
@@ -473,6 +493,7 @@ export async function handleOpenAIGatewayRequest(
       let upstreamResult: Awaited<ReturnType<typeof fetchFirstAvailableUpstream>>
       const dispatchCutoverReservation = speedFirstCutoverReservation
       speedFirstCutoverReservation = undefined
+      const upstreamDispatchStartedAt = Date.now()
       try {
         upstreamResult = await fetchFirstAvailableUpstream(
           req,
@@ -499,6 +520,12 @@ export async function handleOpenAIGatewayRequest(
           opaqueFailoverBudget
         )
       } catch (error) {
+        logRequestStage('upstream.dispatch.failed', {
+          traceId,
+          candidateAccountCount: dispatchAccounts.length,
+          errorName: error instanceof Error ? error.name : 'NonErrorThrown',
+          expectedFailure: error instanceof UpstreamAttemptError
+        }, error instanceof UpstreamAttemptError ? 'expected_failure' : 'unexpected_failure', upstreamDispatchStartedAt)
         if (error instanceof UpstreamAttemptError) {
           const recoverableAccountIds = new Set(error.recoverableAccountIds)
           for (const accountId of nonStreamResponseStartedFailedAccountIds) {
@@ -550,6 +577,13 @@ export async function handleOpenAIGatewayRequest(
         }
       }
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease } = upstreamResult
+      logRequestStage('upstream.dispatch.completed', {
+        traceId,
+        accountId: account.id,
+        providerCode: account.providerCode,
+        statusCode: upstreamResponse.status,
+        upstreamHost: (() => { try { return new URL(upstreamUrl).host } catch { return undefined } })()
+      }, 'success', upstreamDispatchStartedAt)
       notifyUpstreamAttemptDiagnostic(options, {
         accountId: account.id,
         accountName: account.name,
@@ -646,6 +680,7 @@ export async function handleOpenAIGatewayRequest(
           persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
         }
 
+        const responseHandlingStartedAt = Date.now()
         let handledResponse: Awaited<ReturnType<typeof handleStreamUpstreamResponse>>
         if (shouldHandleAsStream) {
           handledResponse = await handleStreamUpstreamResponse({
@@ -744,6 +779,15 @@ export async function handleOpenAIGatewayRequest(
             throw error
           }
         }
+        const responseRetryUpstream = 'retryUpstream' in handledResponse && handledResponse.retryUpstream
+        const responseErrorCode = 'errorCode' in handledResponse ? handledResponse.errorCode : undefined
+        logRequestStage('downstream.response.completed', {
+          traceId,
+          accountId: account.id,
+          stream: shouldHandleAsStream,
+          retryUpstream: responseRetryUpstream,
+          errorCode: responseErrorCode
+        }, responseRetryUpstream ? 'expected_failure' : 'success', responseHandlingStartedAt)
         activeDownstreamSessionAffinity = undefined
         if (handledResponse.alreadyFinalized) {
           return

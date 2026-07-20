@@ -90,6 +90,28 @@ export function getTraceId(): string | undefined {
   return getRequestContext()?.traceId
 }
 
+export function logRequestStage(
+  stage: string,
+  fields: Record<string, unknown> = {},
+  outcome: 'success' | 'expected_failure' | 'unexpected_failure' | 'aborted' = 'success',
+  stageStartedAt = Date.now()
+): void {
+  const context = getRequestContext()
+  const endedAt = Date.now()
+  ;(context?.logger ?? logger).info({
+    event: 'gateway.request.stage',
+    traceId: context?.traceId,
+    stage,
+    outcome,
+    durationMs: Math.max(0, endedAt - stageStartedAt),
+    ...(context ? {
+      startedOffsetMs: Math.max(0, stageStartedAt - context.startedAt),
+      endedOffsetMs: Math.max(0, endedAt - context.startedAt)
+    } : {}),
+    ...fields
+  }, '请求阶段完成')
+}
+
 export function withRequestContext<T>(context: RequestContext, handler: () => T): T {
   return requestContextStorage.run(context, handler)
 }

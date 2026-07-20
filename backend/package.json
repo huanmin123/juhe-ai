@@ -282,6 +282,8 @@
     "test:http-security-production-guard": "tsx src/scripts/regression/http-security-production-guard-regression.ts",
     "test:http-security-management": "tsx src/scripts/regression/http-security-management-regression.ts",
     "test:logger-redaction": "tsx src/scripts/regression/logger-redaction-regression.ts",
+    "test:log-event-contract": "tsx src/scripts/regression/log-event-contract-regression.ts",
+    "test:async-log-publisher": "tsx src/scripts/regression/async-log-publisher-regression.ts",
     "test:process-fatal-diagnostic": "tsx src/scripts/regression/process-fatal-diagnostic-regression.ts",
     "test:request-context-url-sanitizer": "tsx src/scripts/regression/request-context-url-sanitizer-regression.ts",
     "test:request-context-client-ip": "tsx src/scripts/regression/request-context-client-ip-regression.ts",

@@ -22,6 +22,6 @@ func New(level string, output io.Writer) (*slog.Logger, error) {
 		return nil, fmt.Errorf("未知日志级别: %s", level)
 	}
 
-	handler := slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parsed})
+	handler := newAsyncLogHandler(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parsed}))
 	return slog.New(handler), nil
 }
