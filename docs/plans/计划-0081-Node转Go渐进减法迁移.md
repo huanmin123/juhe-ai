@@ -553,6 +553,17 @@
 - [ ] AI Chat 排在其他业务模块和 Go 网关稳定之后实施；完成单 owner、真实链路、双向 cross-read、切流和回滚验证后先删除 Node Chat，再把 `chatgateway.Client` 切到 Go gateway，重验真实 Chat / Responses、恢复链路和 usage / audit，最后删除 Node gateway 回滚入口。
 - [ ] W11 仅在 AI Chat 与网关均完成切流后执行；发布收尾完成后，开发、部署、Docker、watchdog 和 env 文档不再把 SQLite / standalone 当正式路径。
 
+### 模型目录 bridge readiness 门禁（2026-07-20）
+
+- 目标：在 Go 已迁移管理写接口依赖 Node 模型目录快照重建期间，监听前主动发现 Node 未启动、secret 不一致、internal route / contract 不匹配、Node 非 PostgreSQL 模式、共享 Goose schema 不为 `63` 或必需关系缺失；不等到第一次模型写入才暴露问题。
+- Node 契约：在现有 strict、case-sensitive 的 `/__aiinternal__` router 中新增 `GET /v1/model-catalog-snapshots/readyz`。该路由只允许 loopback，使用独立 HMAC domain 对空 body 签名，成功固定返回 component、contractVersion、databaseDriver 和 schemaVersion；`401` 表示认证不匹配，`403` 表示非 loopback，未知 method / 大小写 / 尾斜杠保持 `404`，依赖检查失败返回脱敏 `503`。
+- Node 只读检查：复用运行期 PostgreSQL pool，执行当前 Goose version 精确校验和 `to_regclass` 必需关系检查；只验证 `juhe_business.model_catalog_snapshot_rebuild_requests` 与 `juhe_business.gateway_model_catalog_snapshots` 存在。禁止触发 rebuild、dirty generation ACK、快照写入、模型扫描、上游探测、Redis/worker backlog 或 owner 切流判断。
+- Go client：新增有界 `Probe(ctx)`，严格校验 `200` JSON contract，并把网络不可达、`401`、`404`、`503` 和响应契约错误映射为稳定内部类别；不得回显 secret、签名、数据库 URL 或 Node 原始响应 body。
+- Go 启动与持续状态：仅 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 时要求该 bridge。`RunServer` 在监听前使用短 timeout 执行一次 Probe，失败即 fail-fast；同一 client 注入 `/__aisys__/readyz`，由现有 2 秒缓存持续检查。对外 readiness 统一 `503` 和脱敏 dependency error，不把内部地址或原始错误暴露给调用方；session-only 开关不要求模型目录 bridge。
+- 启动顺序：Node 必须先完成自身 PostgreSQL schema gate 并开始监听，再启动 Go 管理 server。Node 在监听前失败只能由 supervisor / Node 启动日志给出 schema 根因，Go 对该情形稳定报告 Node 不可达，不伪造远端失败原因。现有 `deploy/start.*` 仍是 Node 单进程入口，本切片不擅自改造成双进程 supervisor，也不改变 owner manifest 的生产 owner。
+- 验证顺序：先以 Node HTTP 回归固定只读、HMAC、strict path、driver/schema/relation 错误；再以 Go client 单测和跨运行时回归固定分类与契约；最后验证 Go 启动 fail-fast、readiness 缓存/脱敏，并在隔离 PostgreSQL/Redis 环境启动真实 `backend/dist/server.js` 与真实 Go TCP listener。所有测试使用临时端口、临时 owner lock 和隔离数据库，禁止连接生产。
+- 提交策略：Node route、Go client、Go app/readiness/真实服务证据分别形成小提交并及时推送；每块完成后重新 fetch `origin/master`，只同步已迁移 Go owner 的新语义漂移。
+
 ## 当前 W0 验收状态
 
 - [x] 本机 Go 版本固定到 `go1.26.5 windows/amd64`，`GOROOT=E:\gosdk\go1.26.5`。
