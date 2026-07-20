@@ -13,7 +13,7 @@ import (
 
 var filenamePattern = regexp.MustCompile(`^([0-9]{6})_[a-z0-9_]+\.sql$`)
 
-const CurrentSchemaVersion int64 = 62
+const CurrentSchemaVersion int64 = 63
 
 const (
 	annotationUp             = "Up"
