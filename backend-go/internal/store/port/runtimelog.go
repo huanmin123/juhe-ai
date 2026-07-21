@@ -44,10 +44,25 @@ type ManagementRuntimeLogListResult struct {
 	HasMore bool
 }
 
+type ManagementRuntimeLogFacetLevel struct {
+	Value string
+	Count int64
+}
+
+type ManagementRuntimeLogFacets struct {
+	RetentionDays     int
+	EarliestIndexedAt string
+	LatestIndexedAt   string
+	TotalIndexed      int64
+	Levels            []ManagementRuntimeLogFacetLevel
+	Events            []string
+}
+
 type ManagementRuntimeLogReader interface {
 	ListManagementRuntimeLogs(
 		ctx context.Context,
 		input ManagementRuntimeLogListInput,
 	) (ManagementRuntimeLogListResult, error)
 	GetManagementRuntimeLog(ctx context.Context, id string) (ManagementRuntimeLog, bool, error)
+	ManagementRuntimeLogFacets(ctx context.Context) (ManagementRuntimeLogFacets, error)
 }
