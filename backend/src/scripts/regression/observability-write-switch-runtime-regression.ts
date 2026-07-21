@@ -40,11 +40,10 @@ interface AuditRuntime {
   worker: { available: boolean }
 }
 
-interface RuntimeLogRuntime {
+interface RuntimeLogFacets {
   indexEnabled: boolean
   unavailableReason?: string
   runtimeAvailable: boolean
-  ingestWorkerAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean
   dbService: { statusAvailable: boolean; stateAvailable: boolean }
 }
@@ -104,7 +103,7 @@ try {
   assert.equal(auditRuntime.unavailableReason, 'audit_disabled')
   assert.equal(auditRuntime.runtimeAvailable, false, '禁用原因不得伪造 server runtime 可用')
 
-  const runtimeLogRuntime = await getEnvelope<RuntimeLogRuntime>(baseUrl, '/__aisys__/api/runtime-logs/runtime', cookie)
+  const runtimeLogRuntime = await getEnvelope<RuntimeLogFacets>(baseUrl, '/__aisys__/api/runtime-logs/facets', cookie)
   assert.equal(runtimeConfig.log.indexEnabled, false)
   assert.equal(runtimeLogRuntime.indexEnabled, false)
   assert.equal(runtimeLogRuntime.unavailableReason, 'index_disabled')
