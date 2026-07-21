@@ -486,7 +486,7 @@ standalone 模式的轻量缓存优先使用 `backend/src/shared/cache.ts` 的�
 
 | 表 | 数据类型 | 保留策略 | 是否已有统一定时清理 | 注意事项 |
 | --- | --- | --- | --- | --- |
-| `runtime_logs` | 普通运行日志搜索索引 | 固定最近 3 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只删除 SQLite 搜索索引，不删除后端 `.log` 文件 |
+| `runtime_logs` | 普通运行日志搜索索引 | 默认最近 3 天；部署开关关闭后停止新增 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只删除搜索索引，不删除后端 `.log` 文件；关闭索引不影响文件日志与 grep |
 | `runtime_log_file_cursors` | 当前日志文件增量读取游标 | 固定最近 3 天未更新游标 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 当前存在的日志文件会被追尾任务持续刷新；缺失或长期未更新的过期文件游标会自动删除 |
 | `model_check_runs`、`model_check_items`、`model_check_observations` | 模型检测历史、诊断明细和受控 observation | 默认 30 天，最多 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | observation 通过 run 外键级联删除，只保留 HMAC 桶、Token 数值和固定 8 维身份特征，不保存题面、回答正文或普通流量正文 |
 | `operation_logs`、`operation_log_targets`、`operation_log_viewers`、`operation_log_summary_search_terms` | 业务操作追溯日志 | 默认 365 天 | 是，`data-retention-cleanup` 按清理间隔由 ingest-worker 清理 | 只按时间清理，不因资源删除级联删除历史日志；摘要词项随操作日志级联删除 |
@@ -1019,7 +1019,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 每次请求事实由 `usage_records` 保底，原始审计不替代使用记录。
 - 失败、异常、重试后成功、客户端中断和流式中断默认进入原始审计，并按策略保全可捕获正文。
 - 默认正文保全按成功样本 `512KB`、问题链路 `2MB` 分档；超限后写 `summary_only` 摘要，不把摘要伪装成完整原文。
-- 默认启用最近 1 小时热保留窗口，审计日志页面可直接搜索热窗口内的原始内容。普通成功请求超过热窗口后只保留命中默认 10% 稳定采样的记录；未命中长期采样的成功记录由后台热窗口清理任务删除。部署环境变量可以调整或关闭成功热窗口与长期采样，但不能关闭问题链路审计。
+- 默认启用最近 1 小时热保留窗口，审计日志页面可直接搜索热窗口内的原始内容。普通成功请求超过热窗口后只保留命中默认 10% 稳定采样的记录；未命中长期采样的成功记录由后台热窗口清理任务删除。成功采样参数可以调整或关闭成功热窗口与长期采样，但不能单独关闭问题链路审计；部署级 `JUHE_AI_AUDIT_LOG_ENABLED=false` 会临时关闭全部原始审计新写入，历史读取保留。
 - 正文 blob 压缩后按原始 hash 精确去重，并通过 payload 引用关联到事件。
 - 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
 - 问题列表 / 审计事件列表不新增 payload 字节列；`raw_payload_bytes` 和 `compressed_payload_bytes` 只用于后端报表、容量分析和内部接口字段。
