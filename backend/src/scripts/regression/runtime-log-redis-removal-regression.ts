@@ -49,7 +49,7 @@ for (const relativePath of [
   'docs/deploy/macos/macOS部署指南.md'
 ]) {
   const document = readProject(relativePath)
-  for (const forbidden of ['runtime-log-index', '六类 consumer', '六个目标 group', '六条 Stream']) {
+  for (const forbidden of ['runtime-log-index', '六类 consumer', '六个目标 group', '六条 Stream', '六条 Redis Stream']) {
     assert.equal(document.includes(forbidden), false, `${relativePath} 不得保留已删除的运行日志 Redis drain 契约：${forbidden}`)
   }
 }
@@ -59,6 +59,11 @@ assert.doesNotMatch(
   performanceStorageDesign,
   /Redis queue[^\n]*runtime log/,
   'PostgreSQL/Redis 高性能模式设计不得把普通运行日志声明为 Redis queue 消息'
+)
+assert.equal(
+  performanceStorageDesign.includes('公开接口日志、运行日志和维护队列'),
+  false,
+  'PostgreSQL/Redis 高性能模式设计不得把普通运行日志列入 Redis Streams driver 覆盖范围'
 )
 
 const fileImporterSource = read('modules/runtime-logs/runtime-log-file-import.service.ts')
