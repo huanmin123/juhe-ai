@@ -209,6 +209,7 @@ type RouterOptions struct {
 	ManagementClientIPUnblockHandler                  http.Handler
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
+	ManagementAuditLogsHandler                        http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
@@ -505,6 +506,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementClientIPUnblockHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
+				opts.ManagementAuditLogsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
@@ -1175,6 +1177,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementAuditLogsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs", opts.ManagementAuditLogsHandler.ServeHTTP)
+			}
 			if opts.ManagementUsageRecordsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records", opts.ManagementUsageRecordsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records/{id}", opts.ManagementUsageRecordsHandler.ServeHTTP)
@@ -1579,6 +1584,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPUnblockHandler != nil ||
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
+		opts.ManagementAuditLogsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
