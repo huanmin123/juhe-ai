@@ -42,7 +42,6 @@ export interface RuntimeConfig {
   dbServiceHttpPort: number
   systemApi: {
     dbServiceMaxInFlight: number
-    readOnly: boolean
   }
   ownerLock: {
     enabled: boolean
@@ -289,8 +288,7 @@ export const runtimeConfig: RuntimeConfig = {
       defaultSystemApiDbServiceMaxInFlight,
       1,
       5000
-    ),
-    readOnly: booleanConfig('JUHE_AI_SYSTEM_API_READ_ONLY', false)
+    )
   },
   ownerLock: {
     enabled: parseOwnerLockEnabled(rawStringConfig('JUHE_AI_OWNER_LOCK_ENABLED'))
