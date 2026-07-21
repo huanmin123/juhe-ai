@@ -791,6 +791,7 @@ function auditLogRedisStreamQueue(consumerIndex?: number): RedisStreamQueue<Audi
 }
 
 export async function getAuditLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!readAuditLogSettings().enabled) return undefined
   if (!shouldUseRedisStreamAuditLogQueue()) return undefined
   return await auditLogRedisStreamQueue().inspectRuntime()
 }
