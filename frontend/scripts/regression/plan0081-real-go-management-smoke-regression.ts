@@ -31,20 +31,12 @@ type MockScenario =
   | 'api_keys_sensitive_field'
   | 'api_keys_nested_preview_field'
   | 'api_keys_pagination_invalid'
-  | 'account_test_options_not_object'
-  | 'account_test_options_account_mismatch'
-  | 'account_test_options_default_model_empty'
-  | 'account_test_options_models_empty'
-  | 'account_test_options_model_empty'
-  | 'account_test_options_protocols_invalid'
-  | 'account_test_options_model_endpoint_modes_missing'
-  | 'account_test_options_model_endpoint_modes_empty'
-  | 'account_test_options_model_endpoint_mode_invalid'
-  | 'account_test_options_default_model_missing'
-  | 'account_test_options_endpoint_modes_empty'
-  | 'account_test_options_endpoint_mode_invalid'
-  | 'account_test_options_default_model_modes_mismatch'
-  | 'account_test_options_default_endpoint_mode_mismatch'
+  | 'account_test_options_not_array'
+  | 'account_test_options_empty'
+  | 'account_test_options_id_empty'
+  | 'account_test_options_name_empty'
+  | 'account_test_options_extra_field'
+  | 'account_test_options_duplicate_id'
   | 'external_integration_source_scopes_missing_item'
   | 'external_integration_source_scopes_invalid_field'
   | 'external_integration_source_api_docs_base_path_invalid'
@@ -770,10 +762,6 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
       /external integration source detail.*id.*list/i
     ],
     [
-      'external_integration_source_detail_edit_field_mismatch',
-      /external integration source detail.*notes.*list/i
-    ],
-    [
       'external_integration_source_detail_unknown_field',
       /external integration source detail.*undocumented field debugMetadata/i
     ],
@@ -927,7 +915,7 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
   const listCases = [
     [
       'external_integration_source_list_missing_field',
-      /external integration source list item 0\.primaryToken must be present when tokenCount is positive/
+      /external integration source list item 0\.name must be a non-empty string/
     ],
     [
       'external_integration_source_list_rate_limits_unsorted',
@@ -936,18 +924,6 @@ async function assertExternalIntegrationSourceCatalogReadScenarios(baseUrl: stri
     [
       'external_integration_source_list_sensitive_field',
       /external integration source list item 0\.primaryToken must not contain undocumented field TokenHash/
-    ],
-    [
-      'external_integration_source_list_primary_status_invalid',
-      /external integration source list item 0\.primaryToken\.status must be active, disabled, or revoked/
-    ],
-    [
-      'external_integration_source_list_primary_not_active',
-      /external integration source list item 0\.primaryToken\.status must be active when activeTokenCount is positive/
-    ],
-    [
-      'external_integration_source_list_primary_time_invalid',
-      /external integration source list item 0\.primaryToken\.createdAt must be a canonical UTC ISO timestamp/
     ]
   ] as const
   for (const [requestScenario, expectedMessage] of listCases) {
@@ -1216,20 +1192,12 @@ async function assertAccountTestOptionsReadSmoke(baseUrl: string): Promise<void>
 
 async function assertAccountTestOptionsResponseRequirements(baseUrl: string): Promise<void> {
   const cases = [
-    ['account_test_options_not_object', /account test options data must be an object/],
-    ['account_test_options_account_mismatch', /account test options data\.accountId must match the configured account/],
-    ['account_test_options_default_model_empty', /account test options data\.defaultModel must be a non-empty string/],
-    ['account_test_options_models_empty', /account test options data\.models must be a non-empty array/],
-    ['account_test_options_model_empty', /account test options data\.models item 0\.model must be a non-empty string/],
-    ['account_test_options_protocols_invalid', /account test options data\.models item 0\.supportedApiProtocols must contain only strings/],
-    ['account_test_options_model_endpoint_modes_missing', /account test options data\.models item 0\.testEndpointModes must be a non-empty array/],
-    ['account_test_options_model_endpoint_modes_empty', /account test options data\.models item 0\.testEndpointModes must be a non-empty array/],
-    ['account_test_options_model_endpoint_mode_invalid', /account test options data\.models item 0\.testEndpointModes must contain only legal account test endpoint modes/],
-    ['account_test_options_default_model_missing', /account test options data\.defaultModel must reference a model/],
-    ['account_test_options_endpoint_modes_empty', /account test options data\.testEndpointModes must be a non-empty array/],
-    ['account_test_options_endpoint_mode_invalid', /account test options data\.testEndpointModes must contain only legal account test endpoint modes/],
-    ['account_test_options_default_model_modes_mismatch', /account test options data\.testEndpointModes must equal the default model testEndpointModes/],
-    ['account_test_options_default_endpoint_mode_mismatch', /account test options data\.defaultTestEndpointMode must equal the first testEndpointModes item/]
+    ['account_test_options_not_array', /account test options data must be a non-empty array/],
+    ['account_test_options_empty', /account test options data must be a non-empty array/],
+    ['account_test_options_id_empty', /account test options data item 0\.id must be a non-empty string/],
+    ['account_test_options_name_empty', /account test options data item 0\.name must be a non-empty string/],
+    ['account_test_options_extra_field', /account test options data item 0 must contain only id\/name/],
+    ['account_test_options_duplicate_id', /account test options data contains duplicate model id/]
   ] as const
 
   for (const [requestScenario, expectedMessage] of cases) {
@@ -1732,7 +1700,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
     const firstSource = fixtureRecord(list.items[0])
     switch (scenario) {
       case 'external_integration_source_list_missing_field':
-        delete firstSource.primaryToken
+        delete firstSource.name
         break
       case 'external_integration_source_list_rate_limits_unsorted':
         firstSource.rateLimits = [
@@ -1742,15 +1710,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
         break
       case 'external_integration_source_list_sensitive_field':
         fixtureRecord(firstSource.primaryToken).TokenHash = 'plan0081-token-hash'
-        break
-      case 'external_integration_source_list_primary_status_invalid':
-        fixtureRecord(firstSource.primaryToken).status = 'pending'
-        break
-      case 'external_integration_source_list_primary_not_active':
-        fixtureRecord(firstSource.primaryToken).status = 'disabled'
-        break
-      case 'external_integration_source_list_primary_time_invalid':
-        fixtureRecord(firstSource.primaryToken).createdAt = 'not-an-iso-timestamp'
         break
     }
     sendEnvelope(res, list)
@@ -1826,7 +1785,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       res.end(JSON.stringify({ message: 'forced external source patch failure' }))
       return
     }
-    sendEnvelope(res, temporaryExternalIntegrationSourceDetail)
+    sendEnvelope(res, { id: temporaryExternalIntegrationSourceId })
     return
   }
   if (req.method === 'GET' && externalIntegrationSourceId !== undefined) {
@@ -1856,6 +1815,10 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
       : paginationScenario
       ? {
           ...externalIntegrationSourcePaginationItem(1),
+          createdAt: '2026-07-14T01:00:00.000Z',
+          updatedAt: '2026-07-15T08:00:00.000Z',
+          tokenCount: 0,
+          activeTokenCount: 0,
           tokens: []
         }
       : externalIntegrationSourceDetailFixture(externalIntegrationSourceId)
@@ -2315,88 +2278,30 @@ function providerFixture(code: string, name: string): Record<string, unknown> {
   }
 }
 
-function accountTestOptionsFixture(accountId: string, requestScenario: MockScenario): unknown {
-  if (requestScenario === 'account_test_options_not_object') {
-    return []
+function accountTestOptionsFixture(_accountId: string, requestScenario: MockScenario): unknown {
+  if (requestScenario === 'account_test_options_not_array') {
+    return {}
   }
 
-  const result: Record<string, unknown> = {
-    accountId,
-    defaultModel: 'gpt-test-options-sensitive',
-    models: [
-      {
-        model: 'gpt-test-options-sensitive',
-        supportedApiProtocols: ['responses'],
-        testEndpointModes: ['responses_json', 'responses_sse']
-      },
-      {
-        model: 'gpt-test-options-secondary',
-        supportedApiProtocols: [],
-        testEndpointModes: ['chat_json', 'chat_sse']
-      }
-    ],
-    testEndpointModes: ['responses_json', 'responses_sse'],
-    defaultTestEndpointMode: 'responses_json'
-  }
+  const result: Array<Record<string, unknown>> = [
+    { id: 'gpt-test-options-sensitive', name: 'gpt-test-options-sensitive' },
+    { id: 'gpt-test-options-secondary', name: 'gpt-test-options-secondary' }
+  ]
 
   switch (requestScenario) {
-    case 'account_test_options_account_mismatch':
-      result.accountId = mismatchedAccountId
+    case 'account_test_options_empty':
+      return []
+    case 'account_test_options_id_empty':
+      result[0] = { id: '', name: 'gpt-test-options-sensitive' }
       break
-    case 'account_test_options_default_model_empty':
-      result.defaultModel = '   '
+    case 'account_test_options_name_empty':
+      result[0] = { id: 'gpt-test-options-sensitive', name: '   ' }
       break
-    case 'account_test_options_models_empty':
-      result.models = []
+    case 'account_test_options_extra_field':
+      result[0] = { id: 'gpt-test-options-sensitive', name: 'gpt-test-options-sensitive', testEndpointModes: ['responses_json'] }
       break
-    case 'account_test_options_model_empty':
-      result.models = [{
-        model: '',
-        supportedApiProtocols: ['responses'],
-        testEndpointModes: ['responses_json']
-      }]
-      break
-    case 'account_test_options_protocols_invalid':
-      result.models = [{
-        model: 'gpt-test-options-sensitive',
-        supportedApiProtocols: ['responses', 1],
-        testEndpointModes: ['responses_json']
-      }]
-      break
-    case 'account_test_options_model_endpoint_modes_missing':
-      result.models = [{
-        model: 'gpt-test-options-sensitive',
-        supportedApiProtocols: ['responses']
-      }]
-      break
-    case 'account_test_options_model_endpoint_modes_empty':
-      result.models = [{
-        model: 'gpt-test-options-sensitive',
-        supportedApiProtocols: ['responses'],
-        testEndpointModes: []
-      }]
-      break
-    case 'account_test_options_model_endpoint_mode_invalid':
-      result.models = [{
-        model: 'gpt-test-options-sensitive',
-        supportedApiProtocols: ['responses'],
-        testEndpointModes: ['responses_json', 'invalid_mode']
-      }]
-      break
-    case 'account_test_options_default_model_missing':
-      result.defaultModel = 'gpt-test-options-missing'
-      break
-    case 'account_test_options_endpoint_modes_empty':
-      result.testEndpointModes = []
-      break
-    case 'account_test_options_endpoint_mode_invalid':
-      result.testEndpointModes = ['responses_json', 'invalid_mode']
-      break
-    case 'account_test_options_default_model_modes_mismatch':
-      result.testEndpointModes = ['responses_sse']
-      break
-    case 'account_test_options_default_endpoint_mode_mismatch':
-      result.defaultTestEndpointMode = 'responses_sse'
+    case 'account_test_options_duplicate_id':
+      result[1] = { id: 'gpt-test-options-sensitive', name: '重复模型' }
       break
   }
   return result
@@ -2750,22 +2655,10 @@ function externalIntegrationSourceListFixture(includeNonBuiltInDetailTarget = fa
       expiresAt: '2026-08-15T00:00:00.000Z',
       notes: 'PLAN-0081 external integration source list fixture',
       lastUsedAt: '2026-07-15T08:00:00.000Z',
-      createdAt: '2026-07-14T01:00:00.000Z',
-      updatedAt: '2026-07-15T08:00:00.000Z',
-      tokenCount: 3,
-      activeTokenCount: 1,
       primaryToken: {
         id: 'exttok_builtin_test',
-        name: 'PLAN-0081 primary token',
         tokenPrefix: 'juis_Bi1',
-        tokenSuffix: 'active01',
-        status: 'active',
-        scopes: ['juhe_ai_public:group_list:read'],
-        expiresAt: '2026-07-31T00:00:00.000Z',
-        lastUsedAt: '2026-07-15T08:00:00.000Z',
-        createdAt: '2026-07-14T01:05:00.000Z',
-        updatedAt: '2026-07-15T08:00:00.000Z',
-        isBuiltIn: true
+        tokenSuffix: 'active01'
       },
       isBuiltIn: true
     },
@@ -2784,13 +2677,10 @@ function externalIntegrationSourceListFixture(includeNonBuiltInDetailTarget = fa
       expiresAt: '2026-09-01T00:00:00.000Z',
       notes: 'PLAN-0081 external integration source detail fixture',
       lastUsedAt: '2026-07-15T10:30:00.000Z',
-      createdAt: '2026-07-13T02:00:00.000Z',
-      updatedAt: '2026-07-15T07:00:00.000Z',
-      tokenCount: 3,
-      activeTokenCount: 1,
       primaryToken: {
-        ...detailPrimaryToken,
-        isBuiltIn: selectedSourceIsBuiltIn
+        id: detailPrimaryToken.id,
+        tokenPrefix: detailPrimaryToken.tokenPrefix,
+        tokenSuffix: detailPrimaryToken.tokenSuffix
       },
       isBuiltIn: selectedSourceIsBuiltIn
     }
@@ -2802,10 +2692,6 @@ function externalIntegrationSourceListFixture(includeNonBuiltInDetailTarget = fa
       status: 'disabled',
       scopes: [],
       rateLimits: [],
-      createdAt: '2026-07-12T02:00:00.000Z',
-      updatedAt: '2026-07-15T06:00:00.000Z',
-      tokenCount: 0,
-      activeTokenCount: 0,
       isBuiltIn: false
     })
   }
@@ -2825,6 +2711,8 @@ function externalIntegrationSourceDetailFixture(sourceId: string): Record<string
       ...source,
       id: sourceId,
       status: 'disabled',
+      createdAt: '2026-07-13T02:00:00.000Z',
+      updatedAt: '2026-07-15T07:00:00.000Z',
       tokenCount: 1,
       activeTokenCount: 0,
       tokens: [{
@@ -2842,6 +2730,10 @@ function externalIntegrationSourceDetailFixture(sourceId: string): Record<string
   assert(source)
   const detail = {
     ...source,
+    createdAt: '2026-07-13T02:00:00.000Z',
+    updatedAt: '2026-07-15T07:00:00.000Z',
+    tokenCount: 3,
+    activeTokenCount: 1,
     tokens: externalIntegrationSourceDetailTokensFixture()
   }
   delete detail.primaryToken
@@ -2979,10 +2871,6 @@ function externalIntegrationSourcePaginationItem(index: number): Record<string, 
     status: index % 2 === 0 ? 'disabled' : 'active',
     scopes: [],
     rateLimits: [],
-    createdAt: '2026-07-14T01:00:00.000Z',
-    updatedAt: '2026-07-15T08:00:00.000Z',
-    tokenCount: 0,
-    activeTokenCount: 0,
     isBuiltIn: false
   }
 }

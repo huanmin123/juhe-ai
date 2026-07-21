@@ -33,11 +33,14 @@ import type {
   AccountUsageStatsOverview,
   AccountUsageStatsRange,
   AnnouncementSummary,
+  PublicAnnouncementDetail,
+  PublicAnnouncementListItem,
   AiPerformanceAccountOption,
   AiPerformanceOverview,
   ApiKeySummary,
   AuthorizationTeamUsageOverview,
   AuthorizationUserUsageOverview,
+  AuthorizationGranteeGroupOptionSummary,
   GatewayRequestEndpointFamily,
   GroupListResult,
   GroupOptionSummary,
@@ -50,6 +53,8 @@ import type {
   ResourceAuthorizationListResult,
   ResourceAuthorizationSummary,
   SystemTeamListResult,
+  SystemTeamListItem,
+  SystemTeamDetail,
   SystemTeamPrincipalSummary,
   SystemTeamSummary,
   RouteStrategyListItemResult,
@@ -150,6 +155,11 @@ export type SqliteReadWorkerOperation =
     options?: AccountListOptions
   }
   | {
+    type: 'list_account_items_page_read_only'
+    access?: AccessScope
+    options?: AccountListOptions
+  }
+  | {
     type: 'list_account_status_snapshots_read_only'
     accountIds: string[]
     access?: AccessScope
@@ -244,6 +254,10 @@ export type SqliteReadWorkerOperation =
     limit?: number
   }
   | {
+    type: 'find_public_announcement_read_only'
+    id: string
+  }
+  | {
     type: 'list_announcements_page_read_only'
     options?: AnnouncementListOptions
   }
@@ -262,6 +276,11 @@ export type SqliteReadWorkerOperation =
   }
   | {
     type: 'find_system_team_summary_read_only'
+    id: string
+    access?: AccessScope
+  }
+  | {
+    type: 'find_system_team_detail_read_only'
     id: string
     access?: AccessScope
   }
@@ -338,7 +357,7 @@ export type SqliteReadWorkerOperation =
   }
   | {
     type: 'get_table_storage_overview_read_only'
-    input?: { startAt?: string; endAt?: string; limit?: number }
+    input?: { limit?: number }
   }
   | {
     type: 'list_table_storage_history_read_only'
@@ -704,6 +723,7 @@ export type SqliteReadWorkerOperation =
 
 export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation> =
   T extends { type: 'list_accounts_page_read_only' } ? AccountListResult :
+  T extends { type: 'list_account_items_page_read_only' } ? AccountListResult :
   T extends { type: 'list_account_status_snapshots_read_only' } ? AccountStatusProjection[] :
   T extends { type: 'find_account_summary_read_only' } ? AccountSummary | undefined :
   T extends { type: 'list_account_options_read_only' } ? AccountOptionSummary[] :
@@ -718,15 +738,17 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_resource_authorization_usage_read_only' } ? ResourceAuthorizationSummary | undefined :
   T extends { type: 'list_authorization_grantee_accounts_read_only' } ? SystemAccountPrincipalSummary[] :
   T extends { type: 'list_authorization_grantee_teams_read_only' } ? SystemTeamPrincipalSummary[] :
-  T extends { type: 'list_authorization_grantee_groups_read_only' } ? GroupOptionSummary[] :
+  T extends { type: 'list_authorization_grantee_groups_read_only' } ? AuthorizationGranteeGroupOptionSummary[] :
   T extends { type: 'get_authorization_team_usage_overview_read_only' } ? AuthorizationTeamUsageOverview :
   T extends { type: 'get_authorization_user_usage_overview_read_only' } ? AuthorizationUserUsageOverview :
-  T extends { type: 'list_public_announcements_read_only' } ? AnnouncementSummary[] :
+  T extends { type: 'list_public_announcements_read_only' } ? PublicAnnouncementListItem[] :
+  T extends { type: 'find_public_announcement_read_only' } ? PublicAnnouncementDetail | undefined :
   T extends { type: 'list_announcements_page_read_only' } ? AnnouncementListResult :
   T extends { type: 'find_announcement_read_only' } ? AnnouncementSummary | undefined :
-  T extends { type: 'list_system_teams_read_only' } ? SystemTeamSummary[] :
+  T extends { type: 'list_system_teams_read_only' } ? SystemTeamListItem[] :
   T extends { type: 'list_system_teams_page_read_only' } ? SystemTeamListResult :
   T extends { type: 'find_system_team_summary_read_only' } ? SystemTeamSummary | undefined :
+  T extends { type: 'find_system_team_detail_read_only' } ? SystemTeamDetail | undefined :
   T extends { type: 'list_usage_records_read_only' } ? UsageRecordListResult :
   T extends { type: 'get_usage_record_detail_read_only' } ? UsageRecordSummary | undefined :
   T extends { type: 'list_operation_logs_read_only' } ? OperationLogListResult :

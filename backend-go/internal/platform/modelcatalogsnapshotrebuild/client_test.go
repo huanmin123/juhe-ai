@@ -2,6 +2,7 @@ package modelcatalogsnapshotrebuild
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"juhe-ai/backend-go/internal/version"
 )
 
 func TestRebuildSendsNodeCompatiblePersonalRequest(t *testing.T) {
@@ -118,7 +121,7 @@ func TestProbeSendsAuthenticatedReadOnlyRequestAndValidatesContract(t *testing.T
 		method, path = r.Method, r.URL.Path
 		requestSignature = r.Header.Get("X-Juhe-AI-Signature")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":67}`))
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"ready":true,"component":"model-catalog-snapshot-rebuild","contractVersion":1,"databaseDriver":"postgres","schemaVersion":%d}`, version.SchemaVersion)))
 	}))
 	defer server.Close()
 

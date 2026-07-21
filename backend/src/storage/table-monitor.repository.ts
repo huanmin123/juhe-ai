@@ -67,13 +67,32 @@ export interface DatabaseStorageSnapshotSummary {
   indexCount?: number
 }
 
+export interface TableStorageOverviewSummary {
+  databaseRole: MonitoredDatabaseRole
+  tableName: string
+  sampledAt: string
+  tableKind?: string
+  parentTableName?: string
+  isPartition?: boolean
+  isArchive?: boolean
+  rowCount?: number
+  tableBytes?: number
+  indexBytes?: number
+  indexToTableRatio?: number
+  totalBytes?: number
+  growthBytes1h?: number
+  growthRows1h?: number
+  growthBytes24h?: number
+  growthRows24h?: number
+}
+
 export interface TableStorageOverview {
   sampledAt?: string
   databases: DatabaseStorageSnapshotSummary[]
-  tables: TableStorageSnapshotSummary[]
+  tables: TableStorageOverviewSummary[]
 }
 
-type TableStorageOverviewInput = { startAt?: string; endAt?: string; limit?: number }
+type TableStorageOverviewInput = { limit?: number }
 
 export interface CollectTableStorageSnapshotOptions {
   tableScanMode?: 'full' | 'cursor' | 'none'
@@ -269,47 +288,47 @@ export async function collectTableStorageSnapshotAsync(sampledAt = nowIso(), opt
 
 export function getTableStorageOverview(input: TableStorageOverviewInput = {}): TableStorageOverview {
   const database = getStatsDatabase()
-  const range = normalizeDateRange(input.startAt, input.endAt)
   const databaseSnapshotStatement = database
     .prepare(`
-      SELECT ${databaseStorageSnapshotSelectColumns()}
+      SELECT ${databaseStorageOverviewSelectColumns()}
       FROM database_storage_snapshots
       WHERE database_role = ?
-        AND sampled_at >= ?
-        AND sampled_at <= ?
       ORDER BY sampled_at DESC, id DESC
       LIMIT 1
     `)
   const databases = monitoredDatabaseRoles
-    .map((databaseRole) => databaseSnapshotStatement.get(databaseRole, range.startAt, range.endAt) as unknown as LatestDatabaseSnapshotRow | undefined)
+    .map((databaseRole) => databaseSnapshotStatement.get(databaseRole) as unknown as LatestDatabaseSnapshotRow | undefined)
     .filter((row): row is LatestDatabaseSnapshotRow => Boolean(row))
     .sort(compareDatabaseSnapshotsByRole)
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
-  const tables = database
-    .prepare(`
-      SELECT ${tableStorageSnapshotSelectColumns()}
-      FROM (
-        SELECT
-          ${tableStorageSnapshotSelectColumns()},
-          ROW_NUMBER() OVER (
-            PARTITION BY database_role, table_name
-            ORDER BY sampled_at DESC, id DESC
-          ) AS rank
-        FROM table_storage_snapshots INDEXED BY idx_table_storage_snapshots_latest_id
-        WHERE sampled_at >= ?
-          AND sampled_at <= ?
-          AND database_role IN (${sqlPlaceholders(monitoredDatabaseRoles.length)})
-      )
-      WHERE rank = 1
-    `)
-    .all(range.startAt, range.endAt, ...monitoredDatabaseRoles) as unknown as LatestTableSnapshotRow[]
+  const latestTableSampleStatement = database.prepare(`
+    SELECT sampled_at
+    FROM table_storage_snapshots INDEXED BY idx_table_storage_snapshots_time
+    WHERE database_role = ?
+    ORDER BY sampled_at DESC
+    LIMIT 1
+  `)
+  const latestTableRowsStatement = database.prepare(`
+    SELECT ${tableStorageOverviewSelectColumns()}
+    FROM table_storage_snapshots INDEXED BY idx_table_storage_snapshots_time
+    WHERE database_role = ?
+      AND sampled_at = ?
+    ORDER BY total_bytes DESC, row_count DESC, table_name ASC
+    LIMIT ?
+  `)
+  const limit = normalizeLimit(input.limit ?? 200)
+  const tables = monitoredDatabaseRoles.flatMap((databaseRole) => {
+    const latestSample = latestTableSampleStatement.get(databaseRole) as { sampled_at?: string } | undefined
+    if (!latestSample?.sampled_at) return []
+    return latestTableRowsStatement.all(databaseRole, latestSample.sampled_at, limit) as unknown as LatestTableSnapshotRow[]
+  })
   return {
     sampledAt,
-    databases: databases.map(databaseSnapshotFromRow),
+    databases: databases.map(databaseOverviewSnapshotFromRow),
     tables: tables
       .sort(compareTableSnapshotsForOverview)
-      .slice(0, normalizeLimit(input.limit ?? 200))
-      .map(tableSnapshotFromRow)
+      .slice(0, limit)
+      .map(tableOverviewSnapshotFromRow)
   }
 }
 
@@ -332,49 +351,38 @@ export async function getTableStorageOverviewAsync(input: TableStorageOverviewIn
     return overview
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const range = normalizeDateRange(input.startAt, input.endAt)
   const databaseRows = await Promise.all(monitoredDatabaseRoles.map((databaseRole) => client.one<LatestDatabaseSnapshotRow>(`
-    SELECT ${databaseStorageSnapshotSelectColumns()}
+    SELECT ${databaseStorageOverviewSelectColumns()}
     FROM ${statsTable(client, 'database_storage_snapshots')}
     WHERE database_role = ?
-      AND sampled_at >= ?
-      AND sampled_at <= ?
     ORDER BY sampled_at DESC, id DESC
     LIMIT 1
-  `, [databaseRole, range.startAt, range.endAt])))
+  `, [databaseRole])))
   const databases = databaseRows
     .filter((row): row is LatestDatabaseSnapshotRow => Boolean(row))
     .sort(compareDatabaseSnapshotsByRole)
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
-  const tables = await client.query<LatestTableSnapshotRow>(`
-    WITH table_keys AS (
-      SELECT database_role, table_name
-      FROM ${statsTable(client, 'table_storage_snapshots')}
-      WHERE sampled_at >= ?
-        AND sampled_at <= ?
-        AND database_role = ANY(?::text[])
-      GROUP BY database_role, table_name
-    )
-    SELECT ${tableStorageSnapshotSelectColumns('latest')}
-    FROM table_keys key
-    CROSS JOIN LATERAL (
-      SELECT ${tableStorageSnapshotSelectColumns()}
-      FROM ${statsTable(client, 'table_storage_snapshots')} latest
-      WHERE latest.database_role = key.database_role
-        AND latest.table_name = key.table_name
-        AND latest.sampled_at >= ?
-        AND latest.sampled_at <= ?
-      ORDER BY latest.sampled_at DESC, latest.id DESC
-      LIMIT 1
-    ) latest
-  `, [range.startAt, range.endAt, monitoredDatabaseRoles, range.startAt, range.endAt])
+  const limit = normalizeLimit(input.limit ?? 200)
+  const tableRowsByRole = await Promise.all(monitoredDatabaseRoles.map((databaseRole) => client.query<LatestTableSnapshotRow>(`
+    SELECT ${tableStorageOverviewSelectColumns()}
+    FROM ${statsTable(client, 'table_storage_snapshots')}
+    WHERE database_role = ?
+      AND sampled_at = (
+        SELECT MAX(sampled_at)
+        FROM ${statsTable(client, 'table_storage_snapshots')}
+        WHERE database_role = ?
+      )
+    ORDER BY total_bytes DESC NULLS LAST, row_count DESC NULLS LAST, table_name ASC
+    LIMIT ?
+  `, [databaseRole, databaseRole, limit])))
+  const tables = tableRowsByRole.flat()
   overview = {
     sampledAt,
-    databases: databases.map(databaseSnapshotFromRow),
+    databases: databases.map(databaseOverviewSnapshotFromRow),
     tables: tables
       .sort(compareTableSnapshotsForOverview)
-      .slice(0, normalizeLimit(input.limit ?? 200))
-      .map(tableSnapshotFromRow)
+      .slice(0, limit)
+      .map(tableOverviewSnapshotFromRow)
   }
   setCachedTableStorageOverview(input, overview)
   return overview
@@ -398,8 +406,6 @@ function setCachedTableStorageOverview(input: TableStorageOverviewInput, value: 
 
 function tableStorageOverviewCacheKey(input: TableStorageOverviewInput): string {
   return JSON.stringify({
-    startAt: input.startAt ?? '',
-    endAt: input.endAt ?? '',
     limit: input.limit ?? ''
   })
 }
@@ -1259,6 +1265,20 @@ function databaseStorageSnapshotSelectColumns(alias?: string): string {
   ].map((column) => `${prefix}${column}`).join(', ')
 }
 
+function databaseStorageOverviewSelectColumns(alias?: string): string {
+  const prefix = alias ? `${alias}.` : ''
+  return [
+    'database_role',
+    'database_path',
+    'sampled_at',
+    'file_bytes',
+    'wal_bytes',
+    'shm_bytes',
+    'free_bytes',
+    'table_count'
+  ].map((column) => `${prefix}${column}`).join(', ')
+}
+
 function tableStorageSnapshotSelectColumns(alias?: string): string {
   const prefix = alias ? `${alias}.` : ''
   return [
@@ -1275,6 +1295,27 @@ function tableStorageSnapshotSelectColumns(alias?: string): string {
     'total_bytes',
     'page_count',
     'index_count',
+    'growth_bytes_1h',
+    'growth_rows_1h',
+    'growth_bytes_24h',
+    'growth_rows_24h'
+  ].map((column) => `${prefix}${column}`).join(', ')
+}
+
+function tableStorageOverviewSelectColumns(alias?: string): string {
+  const prefix = alias ? `${alias}.` : ''
+  return [
+    'database_role',
+    'table_name',
+    'sampled_at',
+    'table_kind',
+    'parent_table_name',
+    'is_partition',
+    'is_archive',
+    'row_count',
+    'table_bytes',
+    'index_bytes',
+    'total_bytes',
     'growth_bytes_1h',
     'growth_rows_1h',
     'growth_bytes_24h',
@@ -1423,6 +1464,19 @@ function databaseSnapshotFromRow(row: LatestDatabaseSnapshotRow): DatabaseStorag
   }
 }
 
+function databaseOverviewSnapshotFromRow(row: LatestDatabaseSnapshotRow): DatabaseStorageSnapshotSummary {
+  return {
+    databaseRole: row.database_role,
+    databasePath: basename(row.database_path),
+    sampledAt: row.sampled_at,
+    fileBytes: optionalNumber(row.file_bytes),
+    walBytes: optionalNumber(row.wal_bytes),
+    shmBytes: optionalNumber(row.shm_bytes),
+    freeBytes: optionalNumber(row.free_bytes),
+    tableCount: optionalNumber(row.table_count)
+  }
+}
+
 function tableSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageSnapshotSummary {
   const tableBytes = optionalNumber(row.table_bytes)
   const indexBytes = optionalNumber(row.index_bytes)
@@ -1443,6 +1497,29 @@ function tableSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageSnapshot
     totalBytes,
     pageCount: optionalNumber(row.page_count),
     indexCount: Number(row.index_count ?? 0),
+    growthBytes1h: optionalNumber(row.growth_bytes_1h),
+    growthRows1h: optionalNumber(row.growth_rows_1h),
+    growthBytes24h: optionalNumber(row.growth_bytes_24h),
+    growthRows24h: optionalNumber(row.growth_rows_24h)
+  }
+}
+
+function tableOverviewSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageOverviewSummary {
+  const tableBytes = optionalNumber(row.table_bytes)
+  const indexBytes = optionalNumber(row.index_bytes)
+  return {
+    databaseRole: row.database_role,
+    tableName: row.table_name,
+    sampledAt: row.sampled_at,
+    tableKind: row.table_kind ?? undefined,
+    parentTableName: row.parent_table_name ?? undefined,
+    isPartition: booleanFromSnapshot(row.is_partition),
+    isArchive: booleanFromSnapshot(row.is_archive),
+    rowCount: optionalNumber(row.row_count),
+    tableBytes,
+    indexBytes,
+    indexToTableRatio: ratio(indexBytes, tableBytes),
+    totalBytes: optionalNumber(row.total_bytes),
     growthBytes1h: optionalNumber(row.growth_bytes_1h),
     growthRows1h: optionalNumber(row.growth_rows_1h),
     growthBytes24h: optionalNumber(row.growth_bytes_24h),

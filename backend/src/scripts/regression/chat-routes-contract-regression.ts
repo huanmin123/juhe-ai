@@ -26,6 +26,7 @@ for (const contract of [
   /chatRouter\.post\('\/conversations\/:conversationId\/assets'/,
   /chatRouter\.get\('\/conversations\/:conversationId\/assets\/:assetId\/content'/,
   /chatRouter\.get\('\/conversations\/:conversationId\/models'/,
+  /chatRouter\.get\('\/conversations\/:conversationId\/models\/:modelId'/,
   /chatRouter\.post\('\/conversations\/:conversationId\/stream'/,
   /chatRouter\.get\('\/conversations\/:conversationId\/streams\/:turnId'/,
   /chatRouter\.post\('\/conversations\/:conversationId\/stop'/,
@@ -43,11 +44,21 @@ const modelsRouteSource = routesSource.slice(
   routesSource.indexOf("chatRouter.get('/conversations/:conversationId/models'"),
   routesSource.indexOf("chatRouter.post('/conversations/:conversationId/stream'")
 )
+const modelsLoadSource = routesSource.slice(
+  routesSource.indexOf('async function loadOwnedChatModelListAsync'),
+  routesSource.indexOf('function gatewayUrl')
+)
 assert.doesNotMatch(modelsRouteSource, /fetch\(gatewayUrl\('\/v1\/models'\)/, '聊天模型列表不得通过内部 HTTP 重走完整网关模型链路')
 assert.doesNotMatch(modelsRouteSource, /listCachedOpenAIAccountsForGroupAsync|loadChatModelCatalogSnapshot/, '聊天模型列表不得读取分组账户快照，耗时不能随账户数量增长')
-assert.match(modelsRouteSource, /readPublishedChatModelOptionsAsync/, '聊天模型列表必须读取已发布模型目录快照')
+assert.match(modelsLoadSource, /readPublishedChatModelListAsync/, '聊天模型列表必须只读取轻量列表快照')
+assert.match(modelsRouteSource, /readPublishedChatModelCapabilitiesAsync[\s\S]*req\.params\.modelId/, '聊天模型能力必须按 modelId 定点读取')
+assert.doesNotMatch(modelsLoadSource, /readPublishedChatModelOptionsAsync/, '聊天列表和详情不得读取同一个完整能力快照')
 assert.doesNotMatch(modelsRouteSource, /listCachedProviderModelCatalogAsync/, '聊天模型列表不得按供应商重新构建模型目录')
+assert.match(modelsRouteSource, /res\.json\(ok\(modelOptions\)\)/, '聊天模型列表响应必须直接返回轻量 id 和 name 列表')
+assert.match(modelsRouteSource, /chatRouter\.get\('\/conversations\/:conversationId\/models\/:modelId'[\s\S]*chat_model_not_found/, '聊天模型能力必须通过独立接口读取并保留稳定 404')
 assert.match(routesSource, /buildChatTransportRequest/, 'AI 问答模型调用必须通过 Chat\/Responses transport 重新进入现有网关')
+assert.match(routesSource, /readPublishedChatModelListAsync[\s\S]{0,800}defaultModel/, '新会话必须从轻量列表快照取得默认模型')
+assert.match(routesSource, /chatConversationResponse\(conversation, defaultModel\)/, '创建响应必须携带轻量默认模型引用')
 assert.match(routesSource, /collectChatResponsesSse\([\s\S]{0,1400}maxMessageBytes,\s*runtimeConfig\.chat\.upstreamSseMaxEvents\s*\)/, 'Responses collector 必须显式接收运行时 SSE 事件预算')
 assert.match(routesSource, /collectOpenAIChatSse\([\s\S]{0,500}runtimeConfig\.chat\.upstreamSseMaxEvents\s*\)/, 'Chat Completions collector 必须显式接收同一运行时 SSE 事件预算')
 const streamRouteIndex = routesSource.indexOf("chatRouter.post('/conversations/:conversationId/stream'")

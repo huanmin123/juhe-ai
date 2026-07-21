@@ -47,7 +47,7 @@ interface UseAccountTestModalOptions {
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
 }
 
-const accountTestSessionHeartbeatIntervalMs = 2000
+const accountTestSessionHeartbeatIntervalMs = 5000
 
 interface AccountTestRunContext {
   account: AccountSummary
@@ -82,12 +82,14 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const draftApiKeyTestSnapshot = options.draftApiKeyTestSnapshot ?? ref<DraftApiKeyTestSnapshot>()
   const testForm = reactive<AccountTestForm>({ model: '', testEndpointMode: 'account_default' })
   const {
-    loadSavedAccountTestOptions,
+    initializeSavedAccountTestOptions,
+    loadTestModelOptions,
     resetTestModels,
     restoreTestSelection,
     testEndpointModes,
     testModelOptions,
     testModelReadonly,
+    testModelsError,
     testModelsLoading,
     updateSelectableTestModel,
     useFixedTestModel
@@ -115,31 +117,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
 
     const viewToken = beginTestView(account)
+    initializeSavedAccountTestOptions(
+      account,
+      account.healthCheckModel,
+      account.healthCheckEndpointMode
+    )
     testModalOpen.value = true
-    const startedAt = Date.now()
-    try {
-      const testOptions = await loadSavedAccountTestOptions(account)
-      if (!testOptions || !isCurrentTestView(viewToken, account.id)) return
-      if (!testOptions.models.length) {
-        message.warning(`${account.name}: 当前没有可用的人工测试模型`)
-        return
-      }
-      if (!testEndpointModes.value.length) {
-        message.warning(`${account.name}: 当前没有可用的人工测试请求形态`)
-        return
-      }
-      void restoreSavedAccountTestRun(account, viewToken)
-    } catch (error) {
-      if (!isCurrentTestView(viewToken, account.id)) return
-      console.error(error)
-      testResult.value = failedAccountTestResult({
-        account,
-        error: new Error(`测试选项加载失败：${error instanceof Error ? error.message : '未知错误'}`),
-        model: account.healthCheckModel,
-        testEndpointMode: account.healthCheckEndpointMode,
-        startedAt
-      })
-    }
+    void restoreSavedAccountTestRun(account, viewToken)
   }
 
   function openDraftTestModal(
@@ -268,13 +252,27 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
   }
 
-  function updateAccountTestModel(model: string): void {
-    updateSelectableTestModel(model)
+  async function loadAccountTestModelOptions(open: boolean, keyword = ''): Promise<void> {
+    const account = testingAccount.value
+    if (!open || !account || testModelReadonly.value) return
+    try {
+      await loadTestModelOptions(account, keyword)
+    } catch (error) {
+      if (isAbortError(error)) return
+      console.error(error)
+    }
   }
 
-  function stopAccountTest(): void {
+  function updateAccountTestModel(model: string): void {
+    void updateSelectableTestModel(model).catch((error) => {
+      if (isAbortError(error)) return
+      console.error(error)
+    })
+  }
+
+  function terminateAttachedTestRun(notify: boolean): boolean {
     const run = activeTestRun
-    if (!run || !isRunAttached(run)) return
+    if (!run || !isRunAttached(run)) return false
     run.stopRequested = true
     if (run.task?.status === 'queued' || run.task?.status === 'running') {
       run.task = {
@@ -289,14 +287,24 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testRunning.value = false
     stopAccountTestSessionHeartbeat(run)
     run.controller.abort()
-    message.info(stoppedAccountTestMessage(run.account))
+    if (notify) {
+      message.info(stoppedAccountTestMessage(run.account))
+    }
     void cancelAccountTestRunBackend(run)
+    return true
+  }
+
+  function stopAccountTest(): void {
+    terminateAttachedTestRun(true)
   }
 
   function closeTestModal(): void {
+    const canceled = terminateAttachedTestRun(true)
+    if (!canceled) {
+      detachCurrentTestView()
+    }
     nextTestViewToken()
     resetTestModels()
-    detachCurrentTestView()
     testModalOpen.value = false
   }
 
@@ -647,6 +655,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     activeSingleTestTask,
     closeTestModal,
     draftTestingAccountPayload,
+    loadAccountTestModelOptions,
     openDraftTestModal,
     openSavedDraftTestModal,
     openTestModal,
@@ -657,6 +666,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testModalOpen,
     testModelOptions,
     testModelReadonly,
+    testModelsError,
     testModelsLoading,
     testResult,
     testRunning,

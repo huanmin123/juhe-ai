@@ -6,13 +6,14 @@ import { integerQueryValue, optionalQueryText } from '../../shared/query-values.
 import {
   addSystemTeamMembersAsync,
   createSystemTeamAsync,
+  findSystemTeamDetailAsync,
   findSystemTeamSummaryAsync,
   listSystemTeamsPageAsync,
   removeSystemTeamMemberAsync,
   updateSystemTeamAsync
 } from '../../storage/repositories.js'
 import { maxSystemTeamMemberBatchSize } from '../../storage/system-team-limits.js'
-import type { SystemTeamSummary } from '../../domain/types.js'
+import type { SystemTeamDetail, SystemTeamSummary } from '../../domain/types.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -72,7 +73,7 @@ myTeamsRouter.get('/:id', async (req, res, next) => {
     return
   }
   try {
-    const team = await findSystemTeamSummaryAsync(paramsParsed.data.id, currentUserTeamScope())
+    const team = await findSystemTeamDetailAsync(paramsParsed.data.id, currentUserTeamScope())
     if (!team) {
       sendNotFound(res, '团队不存在')
       return
@@ -108,7 +109,7 @@ systemTeamsRouter.get('/:id', requireAdmin, async (req, res, next) => {
     return
   }
   try {
-    const team = await findSystemTeamSummaryAsync(paramsParsed.data.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    const team = await findSystemTeamDetailAsync(paramsParsed.data.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!team) {
       sendNotFound(res, '团队不存在')
       return
@@ -171,7 +172,7 @@ systemTeamsRouter.post('/', requireAdmin, mutationGuard({
       }
     }, req)
     await publishTeamDependentPageDataReset()
-    res.status(201).json(ok(team))
+    res.status(201).json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建团队失败'))
   }
@@ -233,7 +234,7 @@ systemTeamsRouter.patch('/:id', requireAdmin, async (req, res) => {
       await publishAccountStaticReset(authorizationAffectedOwnerSystemAccountIds)
     }
     await publishTeamDependentPageDataReset()
-    res.json(ok(team))
+    res.json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     if (error instanceof Error && error.message === '团队不存在') {
       sendNotFound(res, '团队不存在')
@@ -307,7 +308,7 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
     }, req)
     if (affectedOwnerSystemAccountIds.length > 0) await publishAccountStaticReset(affectedOwnerSystemAccountIds)
     await publishTeamDependentPageDataReset()
-    res.json(ok(team))
+    res.json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     if (error instanceof Error && error.message === '团队不存在或已停用') {
       sendNotFound(res, '团队不存在或已停用')
@@ -367,7 +368,7 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, async (req, res
     }, req)
     if (affectedOwnerSystemAccountId) await publishAccountStaticReset([affectedOwnerSystemAccountId])
     await publishTeamDependentPageDataReset()
-    res.json(ok(team))
+    res.json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     if (error instanceof Error && error.message === '团队成员不存在') {
       sendNotFound(res, '团队成员不存在')
@@ -385,6 +386,25 @@ function teamMemberTargets(team: SystemTeamSummary) {
     ownerSystemAccountId: member.systemAccountId,
     relation: 'team_member'
   }))
+}
+
+function compactSystemTeamResult(team: SystemTeamSummary): SystemTeamDetail {
+  return {
+    id: team.id,
+    name: team.name,
+    description: team.description,
+    status: team.status,
+    memberCount: (team.members ?? []).filter((member) => member.status === 'active').length,
+    members: (team.members ?? [])
+      .filter((member) => member.status === 'active')
+      .map((member) => ({
+        id: member.id,
+        systemAccountId: member.systemAccountId,
+        systemAccountName: member.systemAccountName,
+        joinedAt: member.joinedAt
+      })),
+    createdAt: team.createdAt
+  }
 }
 
 async function publishTeamDependentPageDataReset(): Promise<void> {

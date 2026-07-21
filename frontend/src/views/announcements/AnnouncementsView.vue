@@ -21,7 +21,7 @@
           <a-tag :color="announcementStatusColor(record.status)">{{ announcementStatusText(record.status) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'content'">
-          <span class="announcement-content-cell" :title="record.content">{{ record.content }}</span>
+          <span class="announcement-content-cell" :title="record.contentPreview">{{ record.contentPreview }}</span>
         </template>
         <template v-else-if="column.key === 'publishedAt'">
           <span class="muted-cell">{{ formatDateTime(record.publishedAt) }}</span>
@@ -56,7 +56,7 @@
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>内容</span>
-              <strong>{{ record.content }}</strong>
+              <strong>{{ record.contentPreview }}</strong>
             </div>
           </div>
           <div class="mobile-list-card-actions">
@@ -108,7 +108,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { invalidateEntityDetailCache, loadEntityDetailCached } from '@/shared/entityDetailCache'
 import { formatDateTime } from '@/shared/formatters'
 import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
-import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '@/types/domain'
+import type { AnnouncementLevel, AnnouncementListItem, AnnouncementStatus } from '@/types/domain'
 import {
   announcementLevelColor,
   announcementLevelText,
@@ -125,6 +125,7 @@ const announcementSaving = submittingRef('announcements.save')
 const modalOpen = ref(false)
 const detailLoading = ref(false)
 const editingId = ref<string>()
+let announcementDetailRequestGeneration = 0
 const pageSize = 50
 const pageStateCache = usePageStateCache<AnnouncementsPageState>(undefined, defaultAnnouncementsPageState, {
   sanitize: sanitizeAnnouncementsPageState,
@@ -142,7 +143,7 @@ const {
   loadData,
   loadMoreMobile: loadMoreMobileAnnouncements,
   refreshMobile: refreshMobileAnnouncements
-} = useResponsivePagedList<AnnouncementSummary>({
+} = useResponsivePagedList<AnnouncementListItem>({
   pageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -220,7 +221,7 @@ const columns = [
   { title: '操作', key: 'actions', fixed: 'right' }
 ]
 
-function rowActions(record: AnnouncementSummary): RowActionItem[] {
+function rowActions(record: AnnouncementListItem): RowActionItem[] {
   const publishAction: RowActionItem = record.status === 'published'
     ? { key: 'unpublish', label: '下线', icon: 'disable', tone: 'warning' }
     : { key: 'publish', label: '发布', icon: 'enable', tone: 'success' }
@@ -260,20 +261,25 @@ function snapshotPageState(): AnnouncementsPageState {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 function openCreate() {
+  announcementDetailRequestGeneration += 1
+  detailLoading.value = false
   editingId.value = undefined
   Object.assign(form, { title: '', content: '', level: 'info', status: 'draft' })
   modalOpen.value = true
 }
 
-async function openEdit(record: AnnouncementSummary) {
+async function openEdit(record: AnnouncementListItem) {
+  const requestGeneration = ++announcementDetailRequestGeneration
   detailLoading.value = true
   editingId.value = record.id
   try {
     const detail = await loadEntityDetailCached({
+      force: true,
       id: record.id,
       load: () => api.announcements.detail(record.id),
       namespace: 'announcement-detail'
     })
+    if (requestGeneration !== announcementDetailRequestGeneration || editingId.value !== record.id) return
     Object.assign(form, {
       title: detail.title,
       content: detail.content,
@@ -282,12 +288,24 @@ async function openEdit(record: AnnouncementSummary) {
     })
     modalOpen.value = true
   } catch (error) {
+    if (requestGeneration !== announcementDetailRequestGeneration || editingId.value !== record.id) return
     editingId.value = undefined
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载公告详情失败'))
   } finally {
-    detailLoading.value = false
+    if (requestGeneration === announcementDetailRequestGeneration) {
+      detailLoading.value = false
+    }
   }
+}
+
+function invalidatePendingAnnouncementDetail(id: string): void {
+  invalidateEntityDetailCache('announcement-detail', id)
+  if (editingId.value !== id) return
+  announcementDetailRequestGeneration += 1
+  editingId.value = undefined
+  detailLoading.value = false
+  modalOpen.value = false
 }
 
 const saveAnnouncement = submitAction('announcements.save', async () => {
@@ -300,8 +318,9 @@ const saveAnnouncement = submitAction('announcements.save', async () => {
   try {
     const payload = { title, content, level: form.level, status: form.status }
     if (editingId.value) {
-      await api.announcements.update(editingId.value, payload)
-      invalidateEntityDetailCache('announcement-detail', editingId.value)
+      const targetId = editingId.value
+      await api.announcements.update(targetId, payload)
+      invalidatePendingAnnouncementDetail(targetId)
       message.success('公告已更新')
     } else {
       await api.announcements.create(payload)
@@ -319,6 +338,7 @@ const saveAnnouncement = submitAction('announcements.save', async () => {
 async function publishAnnouncement(id: string) {
   try {
     await api.announcements.publish(id)
+    invalidatePendingAnnouncementDetail(id)
     message.success('公告已发布')
     await loadData()
   } catch (error) {
@@ -330,6 +350,7 @@ async function publishAnnouncement(id: string) {
 async function unpublishAnnouncement(id: string) {
   try {
     await api.announcements.unpublish(id)
+    invalidatePendingAnnouncementDetail(id)
     message.success('公告已下线')
     await loadData()
   } catch (error) {
@@ -341,6 +362,7 @@ async function unpublishAnnouncement(id: string) {
 async function removeAnnouncement(id: string) {
   try {
     await api.announcements.delete(id)
+    invalidatePendingAnnouncementDetail(id)
     message.success('公告已删除')
     await loadData()
   } catch (error) {
@@ -349,7 +371,7 @@ async function removeAnnouncement(id: string) {
   }
 }
 
-function handleAction(key: string, record: AnnouncementSummary) {
+function handleAction(key: string, record: AnnouncementListItem) {
   if (key === 'edit') {
     void openEdit(record)
     return

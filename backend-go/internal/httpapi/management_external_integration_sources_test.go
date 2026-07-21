@@ -22,7 +22,7 @@ import (
 
 func TestManagementExternalIntegrationSourceListHandlerReturnsDataForAdminRoles(t *testing.T) {
 	wantResult := managementexternalintegrationsources.ListResult{
-		Items:          []managementexternalintegrationsources.Source{},
+		Items:          []managementexternalintegrationsources.ListItem{},
 		Page:           1,
 		PageSize:       10,
 		PageUpperBound: 0,
@@ -113,7 +113,7 @@ func TestManagementExternalIntegrationSourceListHandlerPreservesDefaultsAndSingl
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			service := &managementExternalIntegrationSourceListServiceStub{
-				result: managementexternalintegrationsources.ListResult{Items: []managementexternalintegrationsources.Source{}},
+				result: managementexternalintegrationsources.ListResult{Items: []managementexternalintegrationsources.ListItem{}},
 			}
 			handler := newManagementExternalIntegrationSourceListHandler(service)
 			req := withManagementExternalIntegrationSourceAuth(httptest.NewRequest(http.MethodGet, test.target, nil), "admin")

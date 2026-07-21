@@ -141,6 +141,9 @@ interface AccountSummary {
   priority?: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
+  permissions?: {
+    canReturnAuthorization?: boolean
+  }
 }
 
 interface AccountListResult {
@@ -217,6 +220,7 @@ try {
   const authorizedAccount = adminGranteeAccounts.items.find((account) => account.id === seed.ownerAccountId)
   assert(authorizedAccount, '管理员按用户筛选时应能看到该用户可用的授权账户')
   assert.equal(authorizedAccount.accessType, 'authorized', '授权账户在被授权用户作用域下应保持 authorized 视角')
+  assert.equal(authorizedAccount.permissions?.canReturnAuthorization, true, '手工授权账户列表应允许被授权用户归还授权')
   assert.equal(authorizedAccount.boundGroupId, seed.granteeGroupId, '授权账户应返回被授权用户自己的绑定分组')
   assert.equal(authorizedAccount.bindingSystemAccountId, seed.granteeId, '授权账户应返回本地绑定所属系统账户，供管理侧代操作写入同一作用域')
 

@@ -14,7 +14,6 @@ import (
 )
 
 type managementExternalIntegrationSourceTokenCreateQueries interface {
-	managementExternalIntegrationSourceDetailQueries
 	FindManagementExternalIntegrationSourceForUpdate(
 		ctx context.Context,
 		sourceID string,
@@ -96,7 +95,7 @@ func createManagementExternalIntegrationSourceToken(
 			port.ErrManagementExternalIntegrationSourceBuiltInTokenCreateRestricted
 	}
 
-	_, err = q.InsertManagementExternalIntegrationSourceToken(
+	createdRow, err := q.InsertManagementExternalIntegrationSourceToken(
 		ctx,
 		postgresqueries.InsertManagementExternalIntegrationSourceTokenParams{
 			TokenID:              input.TokenID,
@@ -124,45 +123,29 @@ func createManagementExternalIntegrationSourceToken(
 		)
 	}
 
-	source, found, err := findManagementExternalIntegrationSource(ctx, q, input.SourceID)
+	source, err := managementExternalIntegrationSourceRow(current)
 	if err != nil {
 		return port.ManagementExternalIntegrationSourceTokenCreateResult{}, err
 	}
-	if !found {
-		return port.ManagementExternalIntegrationSourceTokenCreateResult{}, fmt.Errorf(
-			"read back management external integration source token create source %q: source missing after locked insert",
-			input.SourceID,
-		)
-	}
-	tokens, err := listManagementExternalIntegrationSourceTokens(ctx, q, input.SourceID)
+	createdAt, err := managementExternalIntegrationSourceRequiredTime(createdRow.CreatedAt, createdRow.ID, "created_at")
 	if err != nil {
 		return port.ManagementExternalIntegrationSourceTokenCreateResult{}, err
 	}
-	createdTokenCount := 0
-	for _, token := range tokens {
-		if token.SourceRefID != input.SourceID {
-			return port.ManagementExternalIntegrationSourceTokenCreateResult{}, fmt.Errorf(
-				"validate management external integration source token create readback: token %q has unexpected source_ref_id %q, want %q",
-				token.ID,
-				token.SourceRefID,
-				input.SourceID,
-			)
-		}
-		if token.ID == input.TokenID {
-			createdTokenCount++
-		}
+	updatedAt, err := managementExternalIntegrationSourceRequiredTime(createdRow.UpdatedAt, createdRow.ID, "updated_at")
+	if err != nil {
+		return port.ManagementExternalIntegrationSourceTokenCreateResult{}, err
 	}
-	if createdTokenCount != 1 {
-		return port.ManagementExternalIntegrationSourceTokenCreateResult{}, fmt.Errorf(
-			"validate management external integration source token create readback: created token ID readback count = %d, want 1 for %q",
-			createdTokenCount,
-			input.TokenID,
-		)
+	createdToken := port.ManagementExternalIntegrationSourcePrimaryTokenRow{
+		SourceRefID: createdRow.SourceRefID, ID: createdRow.ID, Name: createdRow.Name,
+		TokenPrefix: createdRow.TokenPrefix, TokenSuffix: createdRow.TokenSuffix, Status: createdRow.Status,
+		ScopesJSON: createdRow.ScopesJson, ExpiresAt: timestamptzPtr(createdRow.ExpiresAt),
+		LastUsedAt: timestamptzPtr(createdRow.LastUsedAt), CreatedAt: createdAt, UpdatedAt: updatedAt,
+		RevokedAt: timestamptzPtr(createdRow.RevokedAt),
 	}
 
 	return port.ManagementExternalIntegrationSourceTokenCreateResult{
 		Source:         source,
-		Tokens:         tokens,
+		Tokens:         []port.ManagementExternalIntegrationSourcePrimaryTokenRow{createdToken},
 		CreatedTokenID: input.TokenID,
 	}, nil
 }

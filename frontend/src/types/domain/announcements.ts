@@ -17,12 +17,39 @@ export interface AnnouncementSummary {
   updatedAt: string
 }
 
-export type PublishedAnnouncementSummary = AnnouncementSummary & {
+export interface AnnouncementListItem {
+  id: string
+  title: string
+  contentPreview: string
+  level: AnnouncementLevel
+  status: AnnouncementStatus
+  createdBy?: string
+  createdByName?: string
+  updatedBy?: string
+  updatedByName?: string
+  publishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface PublishedAnnouncementListItem {
+  id: string
+  title: string
+  level: AnnouncementLevel
+  publishedAt: string
+  readAt?: string
+}
+
+export interface PublishedAnnouncementDetail {
+  id: string
+  title: string
+  content: string
+  level: AnnouncementLevel
   publishedAt: string
 }
 
 export interface AnnouncementListResult {
-  items: AnnouncementSummary[]
+  items: AnnouncementListItem[]
   total: number
   hasMore: boolean
   page: number

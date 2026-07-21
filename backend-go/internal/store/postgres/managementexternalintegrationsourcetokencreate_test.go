@@ -47,11 +47,11 @@ func TestCreateManagementExternalIntegrationSourceToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create external integration source token: %v", err)
 	}
-	if got, want := q.calls, []string{"lock", "insert", "source", "tokens"}; !reflect.DeepEqual(got, want) {
+	if got, want := q.calls, []string{"lock", "insert"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("query order = %#v, want %#v", got, want)
 	}
-	if q.lockSourceID != input.SourceID || q.sourceID != input.SourceID || q.tokensSourceID != input.SourceID {
-		t.Fatalf("source-specific query IDs = lock %q source %q tokens %q", q.lockSourceID, q.sourceID, q.tokensSourceID)
+	if q.lockSourceID != input.SourceID {
+		t.Fatalf("source-specific query IDs = lock %q", q.lockSourceID)
 	}
 	wantInsert := postgresqueries.InsertManagementExternalIntegrationSourceTokenParams{
 		TokenID:              input.TokenID,
@@ -78,8 +78,7 @@ func TestCreateManagementExternalIntegrationSourceToken(t *testing.T) {
 		result.Source.ExpiresAt == nil || !result.Source.ExpiresAt.Equal(expiresAt.UTC()) {
 		t.Fatalf("source result = %#v", result.Source)
 	}
-	if len(result.Tokens) != 2 || result.Tokens[0].ID != "exttok_existing" ||
-		result.Tokens[1].ID != input.TokenID || result.Tokens[1].TokenPrefix != input.TokenPrefix {
+	if len(result.Tokens) != 1 || result.Tokens[0].ID != input.TokenID || result.Tokens[0].TokenPrefix != input.TokenPrefix {
 		t.Fatalf("token result = %#v", result.Tokens)
 	}
 }
@@ -173,8 +172,6 @@ func TestCreateManagementExternalIntegrationSourceTokenMapsOnlyExactTokenHashCon
 
 func TestCreateManagementExternalIntegrationSourceTokenPreservesQueryFailures(t *testing.T) {
 	lockErr := errors.New("lock unavailable")
-	sourceErr := errors.New("source read unavailable")
-	tokensErr := errors.New("tokens read unavailable")
 	tests := []struct {
 		name      string
 		configure func(*managementExternalIntegrationSourceTokenCreateQueriesStub)
@@ -188,22 +185,6 @@ func TestCreateManagementExternalIntegrationSourceTokenPreservesQueryFailures(t 
 			},
 			wantErr:   lockErr,
 			wantCalls: []string{"lock"},
-		},
-		{
-			name: "source read",
-			configure: func(q *managementExternalIntegrationSourceTokenCreateQueriesStub) {
-				q.sourceErr = sourceErr
-			},
-			wantErr:   sourceErr,
-			wantCalls: []string{"lock", "insert", "source"},
-		},
-		{
-			name: "tokens read",
-			configure: func(q *managementExternalIntegrationSourceTokenCreateQueriesStub) {
-				q.tokensErr = tokensErr
-			},
-			wantErr:   tokensErr,
-			wantCalls: []string{"lock", "insert", "source", "tokens"},
 		},
 	}
 	for _, test := range tests {
@@ -258,10 +239,10 @@ func TestCreateManagementExternalIntegrationSourceTokenValidatesReadback(t *test
 			q := successfulManagementExternalIntegrationSourceTokenCreateQueries(input, "notes")
 			test.configure(q, input)
 			_, err := createManagementExternalIntegrationSourceToken(context.Background(), q, input)
-			if err == nil || !strings.Contains(err.Error(), test.wantText) {
-				t.Fatalf("error = %v, want text %q", err, test.wantText)
+			if err != nil {
+				t.Fatalf("error = %v, want lightweight insert result", err)
 			}
-			if !reflect.DeepEqual(q.calls, []string{"lock", "insert", "source", "tokens"}) {
+			if !reflect.DeepEqual(q.calls, []string{"lock", "insert"}) {
 				t.Fatalf("calls = %#v", q.calls)
 			}
 		})
@@ -296,7 +277,7 @@ func TestCreateManagementExternalIntegrationSourceTokenTransactionCommitsSuccess
 func TestCreateManagementExternalIntegrationSourceTokenTransactionRollsBackFailures(t *testing.T) {
 	now := time.Date(2026, 7, 16, 2, 3, 4, 0, time.UTC)
 	input := managementExternalIntegrationSourceTokenCreateTestInput(now, nil)
-	operationErr := errors.New("tokens read unavailable")
+	operationErr := errors.New("insert unavailable")
 	commitErr := errors.New("commit unavailable")
 	tests := []struct {
 		name      string
@@ -318,7 +299,7 @@ func TestCreateManagementExternalIntegrationSourceTokenTransactionRollsBackFailu
 			defer cancel()
 			tx := &managementExternalIntegrationSourceTokenCreateTxStub{commitErr: test.commitErr}
 			q := successfulManagementExternalIntegrationSourceTokenCreateQueries(input, "notes")
-			q.tokensErr = test.queryErr
+			q.insertErr = test.queryErr
 			_, err := createManagementExternalIntegrationSourceTokenInTx(
 				ctx,
 				func(context.Context, pgx.TxOptions) (pgx.Tx, error) {
@@ -372,18 +353,19 @@ func successfulManagementExternalIntegrationSourceTokenCreateQueries(
 	input port.ManagementExternalIntegrationSourceTokenCreateInput,
 	notes string,
 ) *managementExternalIntegrationSourceTokenCreateQueriesStub {
+	sourceRow := postgresqueries.JuheBusinessExternalIntegrationSource{
+		ID: input.SourceID, Name: "Partner", Status: "active", ScopesJson: `["responses:write"]`,
+		RateLimitsJson: `[]`, ExpiresAt: pgTimestamptzPtr(input.ExpiresAt), Notes: pgTextFromStringPtr(&notes),
+		CreatedAt: pgTimestamptz(input.CreatedAt), UpdatedAt: pgTimestamptz(input.UpdatedAt),
+	}
 	return &managementExternalIntegrationSourceTokenCreateQueriesStub{
-		lockRow: postgresqueries.JuheBusinessExternalIntegrationSource{ID: input.SourceID},
-		sourceRow: postgresqueries.JuheBusinessExternalIntegrationSource{
-			ID:             input.SourceID,
-			Name:           "Partner",
-			Status:         "active",
-			ScopesJson:     `["responses:write"]`,
-			RateLimitsJson: `[]`,
-			ExpiresAt:      pgTimestamptzPtr(input.ExpiresAt),
-			Notes:          pgTextFromStringPtr(&notes),
-			CreatedAt:      pgTimestamptz(input.CreatedAt),
-			UpdatedAt:      pgTimestamptz(input.UpdatedAt),
+		lockRow:   sourceRow,
+		sourceRow: sourceRow,
+		insertRow: postgresqueries.InsertManagementExternalIntegrationSourceTokenRow{
+			SourceRefID: input.SourceID, ID: input.TokenID, Name: input.Name,
+			TokenPrefix: input.TokenPrefix, TokenSuffix: input.TokenSuffix, Status: input.Status,
+			ScopesJson: input.ScopesJSON, ExpiresAt: pgTimestamptzPtr(input.ExpiresAt),
+			CreatedAt: pgTimestamptz(input.CreatedAt), UpdatedAt: pgTimestamptz(input.UpdatedAt),
 		},
 		tokenRows: []postgresqueries.ListManagementExternalIntegrationSourceTokensRow{
 			{

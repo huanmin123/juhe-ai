@@ -118,13 +118,9 @@ try {
   }) as typeof statsDatabase.prepare
 
   try {
-    const page = repositories.listResourceAuthorizationsPage({ status: 'all' }, ownerAccess, {
-      usageRange: range,
-      page: 1,
-      pageSize: grantCount
-    })
-    assert.equal(page.items.length, grantCount, '授权列表应返回当前页全部团队授权')
-    const byId = new Map(page.items.map((item) => [item.id, item]))
+    const items = repositories.listResourceAuthorizations({ status: 'all' }, ownerAccess, { usageRange: range })
+    assert.equal(items.length, grantCount, '授权用量摘要读取应返回全部团队授权')
+    const byId = new Map(items.map((item) => [item.id, item]))
     assert.equal(byId.get(grants[0]?.id ?? '')?.usage.requestCount, grants[0]?.requestCount, '团队授权列表应读取第一页首条报表窗口用量')
     assert.equal(byId.get(grants.at(-1)?.id ?? '')?.usage.requestCount, grants.at(-1)?.requestCount, '团队授权列表应读取第一页末条报表窗口用量')
     assert.equal(rangeWindowGetCalls, 0, `团队授权列表不应逐条 get 查询报表窗口，实际 ${rangeWindowGetCalls}`)

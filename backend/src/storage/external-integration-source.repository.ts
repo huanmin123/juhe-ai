@@ -4,7 +4,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { getBusinessDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { isBuiltInExternalIntegrationTestSourceId } from './external-integration-source-constants.js'
-import { mapSourceListItem, mapSourceSummary } from './external-integration-source-mappers.js'
+import { mapSourceListItem, mapSourceRecord, mapSourceSummary } from './external-integration-source-mappers.js'
 import {
   encodeRateLimits,
   encodeScopes,
@@ -18,8 +18,6 @@ import {
   createExternalIntegrationSourceTokenInClientAsync,
   loadExternalIntegrationSourcePrimaryTokensBySourceIds,
   loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync,
-  loadExternalIntegrationSourceTokenStatsBySourceIds,
-  loadExternalIntegrationSourceTokenStatsBySourceIdsAsync,
   loadExternalIntegrationSourceTokensBySourceIds,
   loadExternalIntegrationSourceTokensBySourceIdsAsync,
   syncExternalIntegrationSourceTokenState,
@@ -30,7 +28,9 @@ import type {
   ExternalIntegrationSourceInput,
   ExternalIntegrationSourceListOptions,
   ExternalIntegrationSourceListResult,
+  ExternalIntegrationSourceListProjectionRow,
   ExternalIntegrationSourceListRow,
+  ExternalIntegrationSourceRecord,
   ExternalIntegrationSourceRow,
   ExternalIntegrationSourceSummary,
   ExternalIntegrationSourceUpdateInput
@@ -92,6 +92,9 @@ export type {
   ExternalIntegrationSourceInput,
   ExternalIntegrationSourceListOptions,
   ExternalIntegrationSourceListResult,
+  ExternalIntegrationSourceListItem,
+  ExternalIntegrationSourcePrimaryTokenSummary,
+  ExternalIntegrationSourceRecord,
   ExternalIntegrationSourceListRow,
   ExternalIntegrationSourceRow,
   ExternalIntegrationSourceStatus,
@@ -135,28 +138,18 @@ export function listExternalIntegrationSources(options: ExternalIntegrationSourc
       sources.rate_limits_json,
       sources.expires_at,
       sources.notes,
-      sources.last_used_at,
-      sources.created_at,
-      sources.updated_at
+      sources.last_used_at
     FROM external_integration_sources AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
     LIMIT ? OFFSET ?
-  `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceRow[]
+  `).all(...params, pageSize + 1, offset) as unknown as ExternalIntegrationSourceListProjectionRow[]
 
   const pageRows = rows.slice(0, pageSize)
   const pageSourceIds = pageRows.map((row) => row.id)
-  const tokenStatsBySourceId = loadExternalIntegrationSourceTokenStatsBySourceIds(pageSourceIds)
   const primaryTokensBySourceId = loadExternalIntegrationSourcePrimaryTokensBySourceIds(pageSourceIds)
   return {
-    items: pageRows.map((row) => {
-      const stats = tokenStatsBySourceId.get(row.id)
-      return mapSourceListItem({
-        ...row,
-        token_count: stats?.tokenCount ?? 0,
-        active_token_count: stats?.activeTokenCount ?? 0
-      }, primaryTokensBySourceId.get(row.id))
-    }),
+    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),
@@ -190,7 +183,7 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : ''
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await client.query<ExternalIntegrationSourceRow>(`
+  const rows = await client.query<ExternalIntegrationSourceListProjectionRow>(`
     SELECT
       sources.id,
       sources.name,
@@ -199,9 +192,7 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
       sources.rate_limits_json,
       sources.expires_at,
       sources.notes,
-      sources.last_used_at,
-      sources.created_at,
-      sources.updated_at
+      sources.last_used_at
     FROM ${externalIntegrationSourceBusinessTable(client, 'external_integration_sources')} AS sources
     ${whereSql}
     ORDER BY sources.updated_at DESC, sources.id DESC
@@ -210,17 +201,9 @@ export async function listExternalIntegrationSourcesAsync(options: ExternalInteg
 
   const pageRows = rows.slice(0, pageSize)
   const pageSourceIds = pageRows.map((row) => row.id)
-  const tokenStatsBySourceId = await loadExternalIntegrationSourceTokenStatsBySourceIdsAsync(pageSourceIds, client)
   const primaryTokensBySourceId = await loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(pageSourceIds, client)
   return {
-    items: pageRows.map((row) => {
-      const stats = tokenStatsBySourceId.get(row.id)
-      return mapSourceListItem({
-        ...row,
-        token_count: stats?.tokenCount ?? 0,
-        active_token_count: stats?.activeTokenCount ?? 0
-      }, primaryTokensBySourceId.get(row.id))
-    }),
+    items: pageRows.map((row) => mapSourceListItem(row, primaryTokensBySourceId.get(row.id))),
     page,
     pageSize,
     pageUpperBound: offset + pageRows.length + (rows.length > pageSize ? 1 : 0),
@@ -274,7 +257,7 @@ async function findExternalIntegrationSourceInClientAsync(client: DatabaseClient
   }, tokens)
 }
 
-export function createExternalIntegrationSource(input: ExternalIntegrationSourceInput): ExternalIntegrationSourceSummary {
+export function createExternalIntegrationSource(input: ExternalIntegrationSourceInput): ExternalIntegrationSourceRecord {
   assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
   const name = normalizeNameOrThrow(input.name, '来源系统名称不能为空')
   const now = nowIso()
@@ -302,16 +285,16 @@ export function createExternalIntegrationSource(input: ExternalIntegrationSource
     }
     throw error
   }
-  return requiredSource(id)
+  return requiredSourceRecord(id)
 }
 
-export async function createExternalIntegrationSourceAsync(input: ExternalIntegrationSourceInput): Promise<ExternalIntegrationSourceSummary> {
+export async function createExternalIntegrationSourceAsync(input: ExternalIntegrationSourceInput): Promise<ExternalIntegrationSourceRecord> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return createExternalIntegrationSource(input)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const source = await createExternalIntegrationSourceInClientAsync(client, input)
-  return requiredSourceAsync(client, source.id)
+  return requiredSourceRecordAsync(client, source.id)
 }
 
 async function createExternalIntegrationSourceInClientAsync(client: DatabaseClient, input: ExternalIntegrationSourceInput): Promise<{ id: string }> {
@@ -358,7 +341,7 @@ export function createExternalIntegrationSourceAuthorization(input: ExternalInte
       expiresAt: source.expiresAt ?? null
     })
     return {
-      source: requiredSource(source.id),
+      source,
       token
     }
   })
@@ -371,7 +354,7 @@ export async function createExternalIntegrationSourceAuthorizationAsync(input: E
   const client = createPostgresDatabaseClient(await getPostgresPool())
   return client.transaction(async (tx) => {
     const createdSource = await createExternalIntegrationSourceInClientAsync(tx, input)
-    const source = await requiredSourceAsync(tx, createdSource.id)
+    const source = await requiredSourceRecordAsync(tx, createdSource.id)
     const token = await createExternalIntegrationSourceTokenInClientAsync(tx, {
       sourceRefId: source.id,
       name: `${source.name} 生产 Token`,
@@ -380,7 +363,7 @@ export async function createExternalIntegrationSourceAuthorizationAsync(input: E
       expiresAt: source.expiresAt ?? null
     })
     return {
-      source: await requiredSourceAsync(tx, source.id),
+      source,
       token
     }
   })
@@ -480,7 +463,7 @@ export async function upsertExternalIntegrationSourceAsync(input: ExternalIntegr
   return { id, name }
 }
 
-export function updateExternalIntegrationSource(id: string, input: ExternalIntegrationSourceUpdateInput): ExternalIntegrationSourceSummary | undefined {
+export function updateExternalIntegrationSource(id: string, input: ExternalIntegrationSourceUpdateInput): ExternalIntegrationSourceRecord | undefined {
   assertKnownInputKeys(input, externalIntegrationSourceInputKeys, '来源系统')
   const existing = findSourceRow(id)
   if (!existing) {
@@ -506,10 +489,10 @@ export function updateExternalIntegrationSource(id: string, input: ExternalInteg
   if (!isBuiltInExternalIntegrationTestSourceId(id)) {
     syncExternalIntegrationSourceTokenState(id)
   }
-  return requiredSource(id)
+  return requiredSourceRecord(id)
 }
 
-export async function updateExternalIntegrationSourceAsync(id: string, input: ExternalIntegrationSourceUpdateInput): Promise<ExternalIntegrationSourceSummary | undefined> {
+export async function updateExternalIntegrationSourceAsync(id: string, input: ExternalIntegrationSourceUpdateInput): Promise<ExternalIntegrationSourceRecord | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return updateExternalIntegrationSource(id, input)
   }
@@ -540,7 +523,7 @@ export async function updateExternalIntegrationSourceAsync(id: string, input: Ex
     if (!isBuiltInExternalIntegrationTestSourceId(id)) {
       await syncExternalIntegrationSourceTokenStateAsync(id, tx)
     }
-    return requiredSourceAsync(tx, id)
+    return requiredSourceRecordAsync(tx, id)
   })
 }
 
@@ -583,20 +566,34 @@ export async function deleteExternalIntegrationSourceAsync(id: string): Promise<
   })
 }
 
-function requiredSource(id: string): ExternalIntegrationSourceSummary {
-  const source = findExternalIntegrationSource(id)
+export function findExternalIntegrationSourceRecord(id: string): ExternalIntegrationSourceRecord | undefined {
+  const row = findSourceRow(id)
+  return row ? mapSourceRecord(row) : undefined
+}
+
+export async function findExternalIntegrationSourceRecordAsync(id: string): Promise<ExternalIntegrationSourceRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findExternalIntegrationSourceRecord(id)
+  }
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const row = await findSourceRowAsync(client, id)
+  return row ? mapSourceRecord(row) : undefined
+}
+
+function requiredSourceRecord(id: string): ExternalIntegrationSourceRecord {
+  const source = findExternalIntegrationSourceRecord(id)
   if (!source) {
     throw new Error('来源系统不存在')
   }
   return source
 }
 
-async function requiredSourceAsync(client: DatabaseClient, id: string): Promise<ExternalIntegrationSourceSummary> {
-  const source = await findExternalIntegrationSourceInClientAsync(client, id)
-  if (!source) {
+async function requiredSourceRecordAsync(client: DatabaseClient, id: string): Promise<ExternalIntegrationSourceRecord> {
+  const row = await findSourceRowAsync(client, id)
+  if (!row) {
     throw new Error('来源系统不存在')
   }
-  return source
+  return mapSourceRecord(row)
 }
 
 function findSourceRow(id: string): ExternalIntegrationSourceRow | undefined {

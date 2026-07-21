@@ -841,3 +841,10 @@
 - 返回 `retentionDays`、索引最早/最新时间、总数、levels 与 events；空快照保持 `0` 与空数组、时间字段省略。retention days 从当前系统设置读取，缺失时使用 Node 同源默认值 14。
 - 本块只迁移静态 PostgreSQL facet 数据。Node 继续单独拥有日志文件 consumer、writer cursor、server/worker/queue/grep 与 gateway side-effect runtime owner；Go 返回 Node DTO 兼容的 unavailable / null 运行态形状，明确不伪造实时值，也不据此切换 owner。
 - 最小验证已通过：`go test -p=1 ./internal/httpapi ./internal/modules/managementruntimelogs ./internal/store/postgres ./internal/app -count=1`。Windows 默认并发编译曾在 Go compiler SSA 阶段崩溃，`-p=1` 同一目标包验证通过；未执行 Docker 或真实 Node writer -> Go reader smoke。
+
+## 2026-07-21 W6 审计日志列表只读首轮迁移
+
+- Go 已新增管理员 `GET /__aisys__/api/audit-logs` 精确列表路由，使用只读 session、管理端读限流与 `no-store`；普通用户保持 403，依赖错误只返回通用 500。
+- PostgreSQL reader 只选择 `juhe_dataset.audit_logs` 摘要列并一次关联名称，支持 Node 当前筛选与 1000 行 progressive window，固定 `created_at DESC, id DESC`，不执行 `COUNT`，不读取 payload、attempt 或热搜索文件，也未新增脱敏、日志清洗或 sanitizer。
+- migration `000069` 保留 Node writer 继续运行所需的 audit logs / attempts / payload blobs / payload refs / error groups 五张表和索引。Go 不接管捕获、Redis Stream / IPC、ingest worker、详情、payload、error groups、hot search、runtime 或保留清理；这些路径仍由 Node 单 owner。
+- 定向 Go、migration catalog 和 integration package 编译已通过；真实 Node writer -> Go reader PostgreSQL、查询计划、真实 listener / browser、反向代理单 owner、回滚和 Node 删除尚未执行，不宣称生产接管。

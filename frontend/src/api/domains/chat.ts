@@ -1,5 +1,5 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
@@ -10,7 +10,8 @@ export const chatApi = {
   listMessages: (conversationId: string, params?: ChatMessageListParams) => unwrap<ChatMessage[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/messages`, { params })),
   getConversationSync: (conversationId: string, knownRevision?: number) => unwrap<ChatConversationSyncHead>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/sync`, { params: { knownRevision: knownRevision ?? 0 } })),
   getSubmissionStatus: (conversationId: string, clientMessageId: string) => unwrap<ChatSubmissionStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/submissions/${encodeURIComponent(clientMessageId)}`)),
-  listModels: (conversationId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelOption[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models`, { signal: options?.signal })),
+  listModels: (conversationId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelListOption[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models`, { signal: options?.signal })),
+  getModelCapabilities: (conversationId: string, modelId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models/${encodeURIComponent(modelId)}`, { signal: options?.signal })),
   getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context-status`)),
   uploadAsset: (
     conversationId: string,

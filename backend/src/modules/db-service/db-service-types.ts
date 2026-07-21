@@ -142,6 +142,12 @@ export interface DbServiceRuntimeSnapshot {
 
 export interface DbServiceServerRuntimeSnapshot {
   observedAt?: string
+  runtimeLogAvailability?: {
+    ingestWorkerAvailable: boolean
+    runtimeLogIndexQueueAvailable: boolean
+    dbServiceStateAvailable: boolean
+    gatewayAccountSideEffectsAvailable: boolean
+  }
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
   accountBalanceSnapshotCleanup?: {
@@ -383,7 +389,7 @@ export interface DbServiceServerRuntimeSnapshot {
   }
 }
 
-export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'
+export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime' | 'runtime_logs'
 
 export interface DbServiceRuntimeQueueSnapshot {
   queueLength?: number
@@ -1054,6 +1060,10 @@ export type DbServiceParentMessage =
   | {
     type: 'db_service_request'
     requestId: string
+    jobId?: string
+    operationId?: string
+    parentId?: string
+    traceId?: string
     operation: DbServiceOperation
     priority?: DbServiceRequestPriority
     deadlineAtMs?: number
@@ -1142,12 +1152,14 @@ export type DbServiceChildMessage =
   | {
     type: 'db_service_response'
     requestId: string
+    jobId?: string
     ok: true
     result: unknown
   }
   | {
     type: 'db_service_response'
     requestId: string
+    jobId?: string
     ok: false
     errorMessage: string
   }

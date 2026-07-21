@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { runtimeConfig } from '../../config/runtime.js'
 import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { getRequestId, getTraceId } from '../../shared/request-context.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
 import { invalidateGatewayAuthorizationQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
@@ -43,6 +44,7 @@ class DbServiceRequestQueueFullError extends Error {
 export interface RequestDbServiceOptions {
   timeoutMs?: number
   priority?: DbServiceRequestPriority
+  traceId?: string
 }
 
 interface DbServiceState {
@@ -187,11 +189,17 @@ export async function requestDbService<T extends DbServiceOperation>(
     rejectedRequestCount += 1
     throw new DbServiceRequestQueueFullError('本地数据库服务请求队列已满，请稍后重试')
   }
-  const requestId = randomUUID()
+  const jobId = randomUUID()
+  const rootRequestId = getRequestId()
+  const requestId = rootRequestId ?? jobId
   const timeoutMs = options.timeoutMs ?? requestTimeoutMs
   const message: Extract<DbServiceParentMessage, { type: 'db_service_request' }> = {
     type: 'db_service_request',
     requestId,
+    jobId,
+    operationId: jobId,
+    parentId: rootRequestId,
+    traceId: options.traceId ?? getTraceId(),
     operation,
     deadlineAtMs: Date.now() + timeoutMs
   }
@@ -201,23 +209,23 @@ export async function requestDbService<T extends DbServiceOperation>(
   try {
     return await new Promise<DbServiceOperationResult<T>>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        const pending = pendingRequests.get(requestId)
+        const pending = pendingRequests.get(jobId)
         if (!pending) {
           return
         }
         timedOutRequestCount += 1
-        pendingRequests.delete(requestId)
+        pendingRequests.delete(jobId)
         const timeoutError = new DbServiceRequestTimedOutError('本地数据库服务请求超时，请稍后重试')
         pending.reject(timeoutError)
       }, timeoutMs)
-      pendingRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
+      pendingRequests.set(jobId, { resolve: resolve as (value: unknown) => void, reject, timeout })
       const failSend = (error: unknown): void => {
-        const pending = pendingRequests.get(requestId)
+        const pending = pendingRequests.get(jobId)
         if (!pending) {
           return
         }
         clearTimeout(pending.timeout)
-        pendingRequests.delete(requestId)
+        pendingRequests.delete(jobId)
         markDbServiceIpcBroken(error, child)
         pending.reject(error instanceof Error ? error : new Error(String(error)))
       }
@@ -294,6 +302,12 @@ export function getDbServiceState(): DbServiceState {
 
 export async function requestServerRuntimeSnapshot(timeoutMs = 1000): Promise<DbServiceServerRuntimeSnapshot | undefined> {
   return await requestServerRuntimeSnapshotByScope('full', timeoutMs)
+}
+
+export async function requestServerRuntimeLogAvailabilitySnapshot(
+  timeoutMs = 1000
+): Promise<DbServiceServerRuntimeSnapshot['runtimeLogAvailability'] | undefined> {
+  return (await requestServerRuntimeSnapshotByScope('runtime_logs', timeoutMs))?.runtimeLogAvailability
 }
 
 export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): Promise<Record<string, number> | undefined> {
@@ -717,7 +731,7 @@ function handleDbServiceMessage(message: unknown): void {
       break
     case 'db_service_response':
       if (typeof record.requestId !== 'string') break
-      finishPendingRequest(record.requestId, record)
+      finishPendingRequest(typeof record.jobId === 'string' ? record.jobId : record.requestId, record)
       break
     case 'db_service_process_event_loop_response':
       if (typeof record.requestId !== 'string') break
@@ -727,7 +741,11 @@ function handleDbServiceMessage(message: unknown): void {
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
         void respondToServerRuntimeRequest(
           record.requestId,
-          record.scope === 'account_concurrency' || record.scope === 'account_runtime' ? record.scope : 'full'
+          record.scope === 'account_concurrency'
+          || record.scope === 'account_runtime'
+          || record.scope === 'runtime_logs'
+            ? record.scope
+            : 'full'
         )
       }
       break
@@ -978,7 +996,9 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
       ? await buildServerAccountConcurrencySnapshot()
       : scope === 'account_runtime'
         ? await buildServerAccountRuntimeSnapshot()
-        : await buildServerRuntimeSnapshot()
+        : scope === 'runtime_logs'
+          ? await buildServerRuntimeLogAvailabilitySnapshot()
+          : await buildServerRuntimeSnapshot()
     sendToDbServiceProcess(child, {
       type: 'db_service_server_runtime_response',
       requestId,
@@ -1531,6 +1551,21 @@ async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRunti
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
     accountRuntimeAvailability: gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()
+  }
+}
+
+async function buildServerRuntimeLogAvailabilitySnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
+  const [backgroundIpc, gatewaySideEffects] = await Promise.all([
+    import('../background/background-ipc.js'),
+    import('../gateway/runtime/account-side-effects.service.js')
+  ])
+  const ingestAvailability = backgroundIpc.getIngestWorkerRuntimeLogAvailability()
+  return {
+    runtimeLogAvailability: {
+      ...ingestAvailability,
+      dbServiceStateAvailable: Boolean(getDbServiceState()),
+      gatewayAccountSideEffectsAvailable: Boolean(gatewaySideEffects)
+    }
   }
 }
 

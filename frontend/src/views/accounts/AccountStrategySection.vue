@@ -35,6 +35,8 @@
               :options="mappingSourceModelOptionsFor(mapping)"
               placeholder="来源模型"
               show-search
+              @dropdown-visible-change="handleSourceModelDropdown(mapping.sourceEndpointFamily, $event)"
+              @search="handleSourceModelSearch(mapping.sourceEndpointFamily, $event)"
             />
           </div>
           <SwapRightOutlined class="model-mapping-arrow" />
@@ -54,6 +56,8 @@
               :options="mappingUpstreamModelOptionsFor(mapping.upstreamEndpointFamily)"
               placeholder="目标模型"
               show-search
+              @dropdown-visible-change="emit('current-provider-model-options-open', $event)"
+              @search="emit('current-provider-model-options-search', $event)"
             />
           </div>
           <div class="model-mapping-actions">
@@ -128,6 +132,13 @@ const props = defineProps<{
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
 }>()
 
+const emit = defineEmits<{
+  (event: 'current-provider-model-options-open', open: boolean): void
+  (event: 'current-provider-model-options-search', value: string): void
+  (event: 'mapping-source-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
+  (event: 'mapping-source-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
+}>()
+
 type ModelMappingSourceModelOption = AccountModelMappingModelOption
 
 const activeProfile = computed(() => props.selectedProtocolProfile ?? props.form)
@@ -195,6 +206,30 @@ function rawMappingSourceModelOptionsFor(sourceEndpointFamily: AccountFormModel[
     return props.mappingGeminiSourceModelOptions
   }
   return props.mappingSourceModelOptions
+}
+
+function handleSourceModelDropdown(
+  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
+  open: boolean
+): void {
+  const protocol = sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
+    ? 'anthropic'
+    : sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+      ? 'gemini'
+      : 'openai'
+  emit('mapping-source-model-options-open', protocol, open)
+}
+
+function handleSourceModelSearch(
+  sourceEndpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily'],
+  value: string
+): void {
+  const protocol = sourceEndpointFamily === ANTHROPIC_MESSAGES_FAMILY
+    ? 'anthropic'
+    : sourceEndpointFamily === GEMINI_GENERATE_CONTENT_FAMILY || sourceEndpointFamily === GEMINI_STREAM_GENERATE_CONTENT_FAMILY
+      ? 'gemini'
+      : 'openai'
+  emit('mapping-source-model-options-search', protocol, value)
 }
 
 function mappingUpstreamModelOptionsFor(upstreamEndpointFamily: AccountFormModel['modelMappings'][number]['upstreamEndpointFamily']) {

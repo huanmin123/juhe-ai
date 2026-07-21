@@ -68,27 +68,18 @@ func TestManagementRuntimeLogsHandlerParsesNodeCompatibleQueryAndMetadata(t *tes
 
 	var body struct {
 		Data struct {
-			Items                         []map[string]any `json:"items"`
-			Total                         int              `json:"total"`
-			HasMore                       bool             `json:"hasMore"`
-			Page                          int              `json:"page"`
-			PageSize                      int              `json:"pageSize"`
-			ElapsedMS                     int64            `json:"elapsedMs"`
-			RetentionDays                 *int             `json:"retentionDays"`
-			RetentionDaysSource           string           `json:"retentionDaysSource"`
-			RuntimeAvailable              bool             `json:"runtimeAvailable"`
-			WorkerSnapshotAvailable       bool             `json:"workerSnapshotAvailable"`
-			RuntimeLogIndexQueueAvailable bool             `json:"runtimeLogIndexQueueAvailable"`
+			Items    []map[string]any `json:"items"`
+			Total    int              `json:"total"`
+			HasMore  bool             `json:"hasMore"`
+			Page     int              `json:"page"`
+			PageSize int              `json:"pageSize"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if body.Data.Total != 22 || !body.Data.HasMore || body.Data.Page != 2 || body.Data.PageSize != 20 || body.Data.ElapsedMS != 2 {
+	if body.Data.Total != 22 || !body.Data.HasMore || body.Data.Page != 2 || body.Data.PageSize != 20 {
 		t.Fatalf("data = %+v", body.Data)
-	}
-	if body.Data.RetentionDays != nil || body.Data.RetentionDaysSource != "unavailable" || body.Data.RuntimeAvailable || body.Data.WorkerSnapshotAvailable || body.Data.RuntimeLogIndexQueueAvailable {
-		t.Fatalf("runtime metadata = %+v", body.Data)
 	}
 	if len(body.Data.Items) != 1 {
 		t.Fatalf("items = %+v", body.Data.Items)
@@ -145,10 +136,6 @@ func TestManagementRuntimeLogsHandlerReturnsStaticFacets(t *testing.T) {
 			TotalIndexed      int64                              `json:"totalIndexed"`
 			Levels            []managementruntimelogs.FacetLevel `json:"levels"`
 			Events            []string                           `json:"events"`
-			RuntimeAvailable  bool                               `json:"runtimeAvailable"`
-			DBService         map[string]any                     `json:"dbService"`
-			QueueHealth       map[string]any                     `json:"queueHealth"`
-			Grep              map[string]any                     `json:"grep"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
@@ -158,8 +145,36 @@ func TestManagementRuntimeLogsHandlerReturnsStaticFacets(t *testing.T) {
 		body.Data.TotalIndexed != 3 || len(body.Data.Levels) != 1 || len(body.Data.Events) != 1 {
 		t.Fatalf("facets = %+v", body.Data)
 	}
-	if body.Data.RuntimeAvailable || body.Data.DBService["statusAvailable"] != false || body.Data.QueueHealth["status"] != "unavailable" || body.Data.Grep["defaultRangeDays"] != float64(3) {
-		t.Fatalf("unavailable runtime contract = %+v", body.Data)
+}
+
+func TestManagementRuntimeLogsHandlerReturnsProgressiveRuntimeContracts(t *testing.T) {
+	service := &managementRuntimeLogServiceStub{}
+	clock := time.Date(2026, 7, 14, 10, 0, 0, 123_000_000, time.UTC)
+	handler := newManagementRuntimeLogsHandler(service, func() time.Time { return clock })
+
+	for _, testCase := range []struct {
+		path  string
+		check func(t *testing.T, data map[string]any)
+	}{
+		{path: "/__aisys__/api/runtime-logs/runtime", check: func(t *testing.T, data map[string]any) {
+			if data["runtimeAvailable"] != false || data["ingestWorkerAvailable"] != false || data["runtimeLogIndexQueueAvailable"] != false || data["gatewayAccountSideEffectsAvailable"] != false {
+				t.Fatalf("runtime = %#v", data)
+			}
+		}},
+	} {
+		req := withManagementRuntimeLogAuth(httptest.NewRequest(http.MethodGet, testCase.path, nil), "admin")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d; body = %s", testCase.path, rec.Code, rec.Body.String())
+		}
+		var envelope struct {
+			Data map[string]any `json:"data"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+			t.Fatalf("%s decode: %v", testCase.path, err)
+		}
+		testCase.check(t, envelope.Data)
 	}
 }
 
@@ -388,6 +403,8 @@ func TestRouterRegistersW6ManagementRuntimeLogsOnlyWhenEnabled(t *testing.T) {
 	}{
 		{path: "/__aisys__/api/runtime-logs/facets", wantStatus: http.StatusOK},
 		{path: "/__aisys__/api/runtime-logs/facets/", wantStatus: http.StatusOK},
+		{path: "/__aisys__/api/runtime-logs/runtime", wantStatus: http.StatusOK},
+		{path: "/__aisys__/api/runtime-logs/grep-options", wantStatus: http.StatusNotFound},
 		{path: "/__aisys__/api/runtime-logs/grep", wantStatus: http.StatusNotFound},
 	} {
 		req := httptest.NewRequest(http.MethodGet, testCase.path, nil)

@@ -121,7 +121,7 @@ const emit = defineEmits<{
 
 const descriptionColumn = { xs: 1, sm: 1, md: 2 }
 const fullSpan = 2
-const grepRawText = computed(() => props.grepItem ? prettyRawJson(props.grepItem.rawJson || props.grepItem.line) : '')
+const grepRawText = computed(() => props.grepItem ? prettyRawJson(props.grepItem.line) : '')
 </script>
 
 <style scoped>

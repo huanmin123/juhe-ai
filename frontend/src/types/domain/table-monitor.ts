@@ -16,6 +16,25 @@ export interface DatabaseStorageSnapshotSummary {
   indexCount?: number
 }
 
+export interface TableStorageOverviewSummary {
+  databaseRole: MonitoredDatabaseRole
+  tableName: string
+  sampledAt: string
+  tableKind?: string
+  parentTableName?: string
+  isPartition?: boolean
+  isArchive?: boolean
+  rowCount?: number
+  tableBytes?: number
+  indexBytes?: number
+  indexToTableRatio?: number
+  totalBytes?: number
+  growthBytes1h?: number
+  growthRows1h?: number
+  growthBytes24h?: number
+  growthRows24h?: number
+}
+
 export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
   tableName: string
@@ -41,7 +60,7 @@ export interface TableStorageSnapshotSummary {
 export interface TableStorageOverview {
   sampledAt?: string
   databases: DatabaseStorageSnapshotSummary[]
-  tables: TableStorageSnapshotSummary[]
+  tables: TableStorageOverviewSummary[]
 }
 
 export interface NonBusinessDataCleanupResult {

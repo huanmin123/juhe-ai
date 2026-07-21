@@ -36,6 +36,21 @@ export interface AccountUsageDailyPoint extends AccountUsageSummary {
   statDate: string
 }
 
+export interface AccountUsageStatsTrendOverview {
+  range: AccountUsageStatsRange
+  rows: Array<{
+    id: string
+    name: string
+    providerCode: ProviderCode
+    systemAccountId?: string
+    systemAccountName?: string
+    ownerSystemAccountId: string
+    ownerSystemAccountName?: string
+    accessType?: ResourceAccessType
+    dailyUsage: AccountUsageDailyPoint[]
+  }>
+}
+
 export interface AiPerformanceAccount {
   id: string
   name: string
@@ -144,23 +159,6 @@ export interface UsageStatsOverview {
 }
 
 export interface SystemMetricsOverview {
-  latest?: {
-    sampledAt: string
-    cpuPercent?: number
-    memoryUsedPercent?: number
-    memoryTotalBytes?: number
-    memoryFreeBytes?: number
-    processRssBytes?: number
-    processHeapUsedBytes?: number
-    processHeapTotalBytes?: number
-    eventLoopLagMs?: number
-    networkRxBytesPerSecond?: number
-    networkTxBytesPerSecond?: number
-    networkRxTotalBytes?: number
-    networkTxTotalBytes?: number
-    dbFileBytes?: number
-    statsLagSeconds?: number
-  }
   hourlyTrend: Array<{
     statHour: string
     sampleCount: number
@@ -221,6 +219,9 @@ export interface SystemMetricsOverview {
     processHeapTotalBytesAvg?: number
     processHeapTotalBytesMax?: number
   }>
+}
+
+export interface SystemMetricsRuntimeOverview {
   runtimeSnapshotAvailable: boolean
   runtimeSnapshotSource?: 'live'
   runtimeSnapshotObservedAt?: string

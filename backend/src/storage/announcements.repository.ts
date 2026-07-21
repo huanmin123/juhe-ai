@@ -1,4 +1,11 @@
-import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '../domain/types.js'
+import type {
+  AnnouncementLevel,
+  AnnouncementListItem,
+  AnnouncementStatus,
+  AnnouncementSummary,
+  PublicAnnouncementDetail,
+  PublicAnnouncementListItem
+} from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import type { DatabaseClient } from './database-client.js'
@@ -23,7 +30,23 @@ export interface AnnouncementInput {
   status?: AnnouncementStatus
 }
 
-type PublicAnnouncementRow = AnnouncementRow & { read_at: string | null }
+interface PublicAnnouncementListRow {
+  id: string
+  title: string
+  level: AnnouncementLevel
+  published_at: string
+  read_at: string | null
+}
+
+interface PublicAnnouncementDetailRow {
+  id: string
+  title: string
+  content: string
+  level: AnnouncementLevel
+  published_at: string
+}
+
+type AnnouncementListRow = Omit<AnnouncementRow, 'content'> & { content_preview: string }
 
 export interface AnnouncementReadResult {
   readAt: string
@@ -36,19 +59,22 @@ export interface AnnouncementListOptions {
 }
 
 export interface AnnouncementListResult {
-  items: AnnouncementSummary[]
+  items: AnnouncementListItem[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
 }
 
-export function listPublicAnnouncements(systemAccountId: string, limit = publicAnnouncementLimit): AnnouncementSummary[] {
+export function listPublicAnnouncements(systemAccountId: string, limit = publicAnnouncementLimit): PublicAnnouncementListItem[] {
   const safeLimit = normalizePublicLimit(limit)
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT
-        announcements.*,
+        announcements.id,
+        announcements.title,
+        announcements.level,
+        announcements.published_at,
         announcement_reads.read_at
       FROM announcements
       LEFT JOIN announcement_reads
@@ -59,11 +85,11 @@ export function listPublicAnnouncements(systemAccountId: string, limit = publicA
       ORDER BY announcements.published_at DESC, announcements.created_at DESC, announcements.id DESC
       LIMIT ?
     `)
-    .all(systemAccountId, safeLimit) as unknown as PublicAnnouncementRow[]
-  return announcementSummaries(rows, false)
+    .all(systemAccountId, safeLimit) as unknown as PublicAnnouncementListRow[]
+  return publicAnnouncementListItems(rows)
 }
 
-export async function listPublicAnnouncementsAsync(systemAccountId: string, limit = publicAnnouncementLimit): Promise<AnnouncementSummary[]> {
+export async function listPublicAnnouncementsAsync(systemAccountId: string, limit = publicAnnouncementLimit): Promise<PublicAnnouncementListItem[]> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
       type: 'list_public_announcements_read_only',
@@ -76,9 +102,12 @@ export async function listPublicAnnouncementsAsync(systemAccountId: string, limi
   }
   const safeLimit = normalizePublicLimit(limit)
   const client = await announcementDatabaseClient()
-  const rows = await client.query<PublicAnnouncementRow>(`
+  const rows = await client.query<PublicAnnouncementListRow>(`
     SELECT
-      announcements.*,
+      announcements.id,
+      announcements.title,
+      announcements.level,
+      announcements.published_at,
       announcement_reads.read_at
     FROM ${announcementTable(client, 'announcements')} announcements
     LEFT JOIN ${announcementTable(client, 'announcement_reads')} announcement_reads
@@ -89,7 +118,39 @@ export async function listPublicAnnouncementsAsync(systemAccountId: string, limi
     ORDER BY announcements.published_at DESC, announcements.created_at DESC, announcements.id DESC
     LIMIT ?
   `, [systemAccountId, safeLimit])
-  return announcementSummaries(rows, false)
+  return publicAnnouncementListItems(rows)
+}
+
+export function findPublicAnnouncement(id: string): PublicAnnouncementDetail | undefined {
+  const row = getBusinessDatabase().prepare(`
+    SELECT id, title, content, level, published_at
+    FROM announcements
+    WHERE id = ?
+      AND status = 'published'
+      AND published_at IS NOT NULL
+  `).get(id) as unknown as PublicAnnouncementDetailRow | undefined
+  return row ? publicAnnouncementDetail(row) : undefined
+}
+
+export async function findPublicAnnouncementAsync(id: string): Promise<PublicAnnouncementDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'find_public_announcement_read_only',
+      id
+    })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return findPublicAnnouncement(id)
+  }
+  const client = await announcementDatabaseClient()
+  const row = await client.one<PublicAnnouncementDetailRow>(`
+    SELECT id, title, content, level, published_at
+    FROM ${announcementTable(client, 'announcements')}
+    WHERE id = ?
+      AND status = 'published'
+      AND published_at IS NOT NULL
+  `, [id])
+  return row ? publicAnnouncementDetail(row) : undefined
 }
 
 export function markPublicAnnouncementsRead(systemAccountId: string, announcementIds: string[]): AnnouncementReadResult {
@@ -165,11 +226,11 @@ export async function markPublicAnnouncementsReadAsync(systemAccountId: string, 
   return { readAt, count: publishedRows.length }
 }
 
-export function listAnnouncements(): AnnouncementSummary[] {
+export function listAnnouncements(): AnnouncementListItem[] {
   return listAnnouncementsPage({ page: 1, pageSize: maxAnnouncementPageSize }).items
 }
 
-export async function listAnnouncementsAsync(): Promise<AnnouncementSummary[]> {
+export async function listAnnouncementsAsync(): Promise<AnnouncementListItem[]> {
   return (await listAnnouncementsPageAsync({ page: 1, pageSize: maxAnnouncementPageSize })).items
 }
 
@@ -182,9 +243,9 @@ export function listAnnouncementsPage(options: AnnouncementListOptions = {}): An
       ORDER BY updated_at DESC, created_at DESC, id DESC
       LIMIT ? OFFSET ?
     `)
-    .all(normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as AnnouncementRow[]
+    .all(normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as AnnouncementListRow[]
   const pageRows = takePageRows(rows, normalized.pageSize)
-  const items = announcementSummaries(pageRows.rows, true)
+  const items = announcementListItems(pageRows.rows)
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -206,14 +267,14 @@ export async function listAnnouncementsPageAsync(options: AnnouncementListOption
   }
   const normalized = normalizeAnnouncementListOptions(options)
   const client = await announcementDatabaseClient()
-  const rows = await client.query<AnnouncementRow>(`
+  const rows = await client.query<AnnouncementListRow>(`
     SELECT ${announcementListSelectColumns()}
     FROM ${announcementTable(client, 'announcements')} announcements
     ORDER BY updated_at DESC, created_at DESC, id DESC
     LIMIT ? OFFSET ?
   `, [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
   const pageRows = takePageRows(rows, normalized.pageSize)
-  const items = await announcementSummariesAsync(pageRows.rows, true, client)
+  const items = await announcementListItemsAsync(pageRows.rows, client)
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -524,7 +585,7 @@ function announcementListSelectColumns(): string {
   return [
     'id',
     'title',
-    "CASE WHEN length(content) > 240 THEN substr(content, 1, 240) || '...' ELSE content END AS content",
+    "CASE WHEN length(content) > 240 THEN substr(content, 1, 240) || '...' ELSE content END AS content_preview",
     'level',
     'status',
     'created_by',
@@ -547,7 +608,59 @@ async function getAnnouncementOrThrowAsync(id: string, client: DatabaseClient): 
   return (await announcementSummariesAsync([row], true, client))[0]
 }
 
-function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementRow>, includeActors: boolean): AnnouncementSummary[] {
+function publicAnnouncementListItems(rows: PublicAnnouncementListRow[]): PublicAnnouncementListItem[] {
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    level: row.level,
+    publishedAt: row.published_at,
+    readAt: row.read_at ?? undefined
+  }))
+}
+
+function publicAnnouncementDetail(row: PublicAnnouncementDetailRow): PublicAnnouncementDetail {
+  return {
+    id: row.id,
+    title: row.title,
+    content: row.content,
+    level: row.level,
+    publishedAt: row.published_at
+  }
+}
+
+function announcementListItems(rows: AnnouncementListRow[]): AnnouncementListItem[] {
+  const accountMap = loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.created_by, row.updated_by ?? '']).filter(Boolean))
+  return rows.map((row) => announcementListItem(row, accountMap))
+}
+
+async function announcementListItemsAsync(rows: AnnouncementListRow[], client: DatabaseClient): Promise<AnnouncementListItem[]> {
+  const accountMap = await loadSystemAccountPrincipalMapByIdsAsync(client, rows.flatMap((row) => [row.created_by, row.updated_by ?? '']).filter(Boolean))
+  return rows.map((row) => announcementListItem(row, accountMap))
+}
+
+function announcementListItem(
+  row: AnnouncementListRow,
+  accountMap: Map<string, { displayName: string }>
+): AnnouncementListItem {
+  const createdBy = accountMap.get(row.created_by)
+  const updatedBy = row.updated_by ? accountMap.get(row.updated_by) : undefined
+  return {
+    id: row.id,
+    title: row.title,
+    contentPreview: row.content_preview,
+    level: row.level,
+    status: row.status,
+    createdBy: row.created_by,
+    createdByName: createdBy?.displayName,
+    updatedBy: row.updated_by ?? undefined,
+    updatedByName: updatedBy?.displayName,
+    publishedAt: row.published_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function announcementSummaries(rows: AnnouncementRow[], includeActors: boolean): AnnouncementSummary[] {
   const accountMap = includeActors
     ? loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.created_by, row.updated_by ?? '']).filter(Boolean))
     : new Map()
@@ -561,7 +674,6 @@ function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementR
       level: row.level,
       status: row.status,
       publishedAt: row.published_at ?? undefined,
-      readAt: 'read_at' in row ? row.read_at ?? undefined : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }
@@ -575,7 +687,7 @@ function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementR
   })
 }
 
-async function announcementSummariesAsync(rows: Array<AnnouncementRow | PublicAnnouncementRow>, includeActors: boolean, client: DatabaseClient): Promise<AnnouncementSummary[]> {
+async function announcementSummariesAsync(rows: AnnouncementRow[], includeActors: boolean, client: DatabaseClient): Promise<AnnouncementSummary[]> {
   const accountMap = includeActors
     ? await loadSystemAccountPrincipalMapByIdsAsync(client, rows.flatMap((row) => [row.created_by, row.updated_by ?? '']).filter(Boolean))
     : new Map()
@@ -589,7 +701,6 @@ async function announcementSummariesAsync(rows: Array<AnnouncementRow | PublicAn
       level: row.level,
       status: row.status,
       publishedAt: row.published_at ?? undefined,
-      readAt: 'read_at' in row ? row.read_at ?? undefined : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at
     }

@@ -1,7 +1,7 @@
 import type { Request, Response } from 'express'
 
 import { logger } from '../../../shared/logger.js'
-import { bindRequestContextFields } from '../../../shared/request-context.js'
+import { bindRequestContextFields, logRequestStage } from '../../../shared/request-context.js'
 import { type GatewayApiKeyRow, type GroupUsageAccessMetadata, type OpenAIAccountsForGroupDiagnostics } from '../../../storage/repositories.js'
 import {
   listCachedActiveResponseInspectionPoliciesForAccountsAsync,
@@ -668,7 +668,20 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
+  const groupAccessStartedAt = performance.now()
   const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
+  logRequestStage('route.group_access', {
+    traceId,
+    groupId,
+    systemAccountId,
+    apiKeyId,
+    providerCode: groupAccess?.providerCode,
+    resolved: Boolean(groupAccess),
+    ...(groupAccess ? {} : {
+      failureReason: 'group_access_unavailable',
+      decisionInputs: { groupId, systemAccountId, apiKeyId }
+    })
+  }, groupAccess ? 'success' : 'expected_failure', groupAccessStartedAt)
   if (groupAccess) {
     auditCapture.bindContext({ providerCode: groupAccess.providerCode })
   }
@@ -678,6 +691,19 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     endpoint,
     providerCode: groupAccess?.providerCode
+  })
+  logRequestStage('client.profile', {
+    traceId,
+    clientProfile: clientStrategy.clientProfile,
+    downstreamProtocol: clientStrategy.downstreamProtocol,
+    requestClientCompatibility: clientStrategy.requestClientCompatibility
+  })
+  logRequestStage('protocol.bridge', {
+    traceId,
+    downstreamProtocol: clientStrategy.downstreamProtocol,
+    clientProfile: clientStrategy.clientProfile,
+    providerCode: groupAccess?.providerCode,
+    bridgeDecisionDeferredToAccount: true
   })
   serverRetryBudget.setWaitObserver(createGatewaySseWaitHeartbeatObserver({
     res,
@@ -810,7 +836,14 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId
   })
   const sessionAffinityKey = options.disableSessionAffinity ? undefined : rawSessionAffinityKey
+  const accountLoadStartedAt = performance.now()
   const rawCandidateAccounts = options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
+  logRequestStage('account.load_candidates', {
+    traceId,
+    groupId,
+    source: options.candidateAccounts ? 'provided' : runtimeAccounts ? 'runtime' : 'cache',
+    candidateAccountCount: rawCandidateAccounts.length
+  }, 'success', accountLoadStartedAt)
   if (!options.candidateAccounts && runtimeAccountDispatchDiagnostics) {
     auditCapture.addGatewayMetadata({
       label: 'account_dispatch_candidate_window',
@@ -835,6 +868,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (codexBridgeStatePreflight === 'completed') {
     return undefined
   }
+  const candidateFilterStartedAt = performance.now()
   const candidateFilter = await filterOpenAIGatewayRequestCandidateAccounts({
     req,
     res,
@@ -887,6 +921,22 @@ export async function prepareOpenAIGatewayDispatchContext(
       requestClientCompatibility: clientStrategy.requestClientCompatibility
     })
   })
+  logRequestStage('model.capability_filter', {
+    traceId,
+    groupId,
+    filterOutcome: candidateFilter.outcome,
+    candidateAccountCount: candidateFilter.outcome === 'accounts' ? candidateFilter.accounts.length : 0,
+    requestedModel: requestModel(req),
+    endpointFamily: gatewayRequestEndpointFamily(req),
+    ...(candidateFilter.outcome === 'accounts' ? {} : {
+      failureReason: `model_capability_filter_${candidateFilter.outcome}`,
+      decisionInputs: {
+        requestedModel: requestModel(req),
+        endpointFamily: gatewayRequestEndpointFamily(req),
+        candidateAccountCount: rawCandidateAccounts.length
+      }
+    })
+  }, candidateFilter.outcome === 'accounts' ? 'success' : 'expected_failure', candidateFilterStartedAt)
   if (candidateFilter.outcome === 'fallback') {
     return candidateFilter.context
   }

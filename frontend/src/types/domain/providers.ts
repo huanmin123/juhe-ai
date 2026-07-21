@@ -53,6 +53,13 @@ export interface ProviderDefinition {
   protocolProfiles: ProviderProtocolProfileDefinition[]
 }
 
+export interface ProviderOption {
+  id: string
+  code: ProviderCode
+  name: string
+  enabled: boolean
+}
+
 export interface ProtocolEndpointFamilyDefinition {
   code: string
   name: string
@@ -126,12 +133,18 @@ export interface ProviderModelPricing {
 }
 
 export interface ProviderModelOption {
-  providerCode: ProviderCode
-  model: string
-  supportedApiProtocols?: ProviderModelApiProtocol[]
-  supportedServiceTiers?: ProviderModelServiceTier[]
-  supportedReasoningEfforts?: ProviderModelReasoningEffort[]
-  defaultReasoningEffort: ProviderModelReasoningEffort | null
+  id: string
+  name: string
+  providerCode?: ProviderCode
+}
+
+export interface ProviderModelCapabilities {
+  id: string
+  name: string
+  supportedApiProtocols: ProviderModelApiProtocol[]
+  supportedServiceTiers: ProviderModelServiceTier[]
+  supportedReasoningEfforts: ProviderModelReasoningEffort[]
+  defaultReasoningEffort?: ProviderModelReasoningEffort
 }
 
 export interface ProviderDefaultHealthCheckModelResult {

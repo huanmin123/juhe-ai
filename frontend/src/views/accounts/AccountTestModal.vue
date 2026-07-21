@@ -39,12 +39,16 @@
               v-else
               :value="model"
               show-search
+              :filter-option="false"
               :loading="modelsLoading"
               :disabled="running"
               :options="modelOptions"
               placeholder="选择测试模型"
+              @dropdown-visible-change="$emit('load-model-options', $event)"
+              @search="$emit('search-model-options', $event)"
               @update:value="$emit('update:model', String($event))"
             />
+            <div v-if="modelsError" class="test-field-error">{{ modelsError }}</div>
           </a-form-item>
           <a-form-item class="test-config-field" label="测试请求形态">
             <a-select
@@ -130,6 +134,7 @@ const props = defineProps<{
   model: string
   modelOptions: Array<{ label: string; value: string }>
   modelReadonly: boolean
+  modelsError: string
   modelsLoading: boolean
   open: boolean
   providerName?: (providerCode?: string) => string
@@ -142,6 +147,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'close'): void
   (event: 'copy-result', value: string): void
+  (event: 'load-model-options', open: boolean): void
+  (event: 'search-model-options', keyword: string): void
   (event: 'run'): void
   (event: 'stop'): void
   (event: 'update:model', value: string): void
@@ -290,6 +297,13 @@ function handleTestEndpointModeUpdate(value: string | number | undefined): void 
 
 .readonly-model-input {
   font-family: Consolas, 'Courier New', monospace;
+}
+
+.test-field-error {
+  margin-top: 6px;
+  color: #ff4d4f;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .test-terminal {

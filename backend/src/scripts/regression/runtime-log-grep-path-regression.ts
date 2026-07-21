@@ -45,7 +45,13 @@ try {
   assert.equal(result.available, true, '测试环境应可用 rg 搜索')
   assert.equal(result.items.length, 1, '日志搜索应过滤自身请求日志，并跳过超过安全行长的命中')
   assert(result.items.some((item) => item.event === 'gateway_test_event'), '应保留非 runtime-logs 路径的业务日志')
-  assert(!result.items.some((item) => item.rawJson.includes('大日志 needle')), '超长命中日志不应由 rg 输出到 Node 侧解析')
+  assert(!result.items.some((item) => item.line.includes('大日志 needle')), '超长命中日志不应由 rg 输出到 Node 侧解析')
+  const grepItemKeys = Object.keys(result.items[0]!)
+  assert(!grepItemKeys.includes('rawJson'), 'grep 响应不得重复返回 rawJson')
+  assert(
+    grepItemKeys.every((key) => ['errorMessage', 'event', 'file', 'fileName', 'id', 'level', 'line', 'lineNumber', 'message', 'time', 'traceId'].includes(key)),
+    `grep 响应出现未定义字段：${grepItemKeys.join(', ')}`
+  )
 
   runtimeConfig.log.directory = resolve(tempRoot, 'missing-log-dir')
   await assert.rejects(

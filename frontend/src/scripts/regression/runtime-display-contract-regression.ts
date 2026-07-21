@@ -5,7 +5,7 @@ import { runAccountBalanceRefresh } from '../../../../backend/src/modules/backgr
 import { WorkerScheduler } from '../../../../backend/src/modules/background/worker-scheduler'
 import { logger } from '../../../../backend/src/shared/logger'
 import { formatDateTime, parseStrictDatePickerValue, serverDateTimeTimestamp } from '../../shared/formatters'
-import type { SystemMetricsOverview } from '../../types/domain'
+import type { SystemMetricsRuntimeOverview } from '../../types/domain'
 import { auditLogEmptyDescription } from '../../views/audit-logs/auditLogRetentionText'
 import {
   backgroundJobStatusColor,
@@ -89,8 +89,15 @@ assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 
 assert.match(auditLogEmptyDescription(auditSettings({ successHotRetentionHours: 1, successSampleRate: 0.1, successRetentionDays: 0 })), /最近 1 小时.*不长期保留/)
 
 const jobsCardSource = readFileSync(new URL('../../views/stats/StatsBackgroundJobsCard.vue', import.meta.url), 'utf8')
+const systemMetricsViewSource = readFileSync(new URL('../../views/stats/SystemMetricsStatsView.vue', import.meta.url), 'utf8')
+const statsApiSource = readFileSync(new URL('../../api/domains/stats.ts', import.meta.url), 'utf8')
 const statsRoutesSource = readFileSync(new URL('../../../../backend/src/modules/stats/stats.routes.ts', import.meta.url), 'utf8')
 assert.match(statsRoutesSource, /statsRouter\.get\('\/system-metrics'/, '跨层门禁必须绑定真实 system-metrics 接口')
+assert.match(statsApiSource, /systemMetricsRuntime:[\s\S]*\/stats\/system-metrics\/runtime/, '后台运行态必须使用独立 API')
+assert.match(systemMetricsViewSource, /void loadRuntimeData\(\)[\s\S]*return loadData\(\)/, '运行态卡片加载不得阻塞趋势首屏')
+assert.match(systemMetricsViewSource, /Promise\.all\(\[[\s\S]*api\.stats\.systemMetrics\(rangeParams\)[\s\S]*loadUsageStatsWindow\(\)/, '窗口配置应与趋势业务请求并行')
+assert.doesNotMatch(systemMetricsViewSource, /loadUsageStatsWindow\(\{\s*force:\s*true\s*\}\)/, '系统指标页不得每次强制绕过窗口缓存')
+assert.match(systemMetricsViewSource, /if \(!dateRangeExplicit\.value\) return \{\}/, '未显式选日期时不得提交浏览器本地日期')
 assert.match(
   statsRoutesSource,
   /function backgroundJobsFromSnapshot[\s\S]+\.map\(\(job\) => \(\{ \.\.\.job, workerRole: snapshot\.workerRole \}\)\)/,
@@ -162,7 +169,7 @@ async function testAccountBalancePartialAndRecoveryAcrossRuntimeDto(): Promise<v
 
 function systemMetricsJobDto(
   snapshot: ReturnType<WorkerScheduler['snapshots']>[number]
-): Pick<SystemMetricsOverview, 'backgroundJobsAvailable' | 'backgroundJobs'> {
+): Pick<SystemMetricsRuntimeOverview, 'backgroundJobsAvailable' | 'backgroundJobs'> {
   return {
     backgroundJobsAvailable: true,
     backgroundJobs: [{ ...snapshot, workerRole: 'ops-worker' }]

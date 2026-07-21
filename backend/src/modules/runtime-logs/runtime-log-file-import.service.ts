@@ -16,6 +16,7 @@ import {
   type RuntimeLogIndexInput
 } from '../../storage/runtime-logs.repository.js'
 import { setRotatedLogCleanupProtectionPredicate } from '../../shared/logger.js'
+import { writeBoundedProcessDiagnosticLineAsync } from '../../shared/process-fatal-diagnostic.js'
 import { parseRuntimeLogLineForIndex } from './runtime-log-line-parser.js'
 
 let importStarted = false
@@ -31,6 +32,10 @@ const runtimeLogDiscoveryMaxEntriesPerPoll = 2048
 const runtimeLogDiscoveryYieldEvery = 100
 const runtimeLogCompletedCacheRenewalMs = 60 * 60 * 1000
 const runtimeLogCompletedCacheMaxEntries = 4096
+const runtimeLogFailureDiagnosticMaxBytes = 32 * 1024
+const runtimeLogFailureDiagnosticTextMaxBytes = 8 * 1024
+const runtimeLogFailureDiagnosticPathMaxBytes = 4 * 1024
+const runtimeLogFailureDiagnosticMaxCauseDepth = 4
 const runtimeLogCurrentRoles: Record<string, string> = {
   'juhe-ai.log': 'server',
   'juhe-ai.worker.log': 'worker',
@@ -88,6 +93,23 @@ export interface RuntimeLogFileImportTestDependencies {
   nowMs?: () => number
 }
 
+interface RuntimeLogFileImportFailureSnapshot {
+  path?: string
+  fileRole?: string
+  kind?: ActiveRuntimeLogFile['kind']
+  fileIdentity?: string
+  truncationGeneration?: number
+  cursorOffset?: number
+  lineNumber?: number
+  fileSize?: number
+  fileMtimeMs?: number
+  batchConfiguredSize?: number
+  batchPendingCount?: number
+  batchFlushedOffset?: number
+  batchFlushedLineNumber?: number
+  phase: string
+}
+
 export function createRuntimeLogFileImportTestDependencies(
   dependencies: RuntimeLogFileImportTestDependencies
 ): RuntimeLogFileImportTestDependencies {
@@ -139,9 +161,15 @@ async function runRuntimeLogFilePoll(): Promise<void> {
     }
     runtimeLogFileImportRuntime.lastError = pollError
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = runtimeLogFailureMessage(error)
     runtimeLogFileImportRuntime.lastError = message
-    process.stderr.write(`[runtime-log-index] 日志目录发现失败：${message}\n`)
+    writeRuntimeLogFileImportFailureDiagnostic(error, {
+      path: runtimeConfig.log.directory,
+      kind: 'current',
+      cursorOffset: runtimeLogFileImportRuntime.currentOffset,
+      batchConfiguredSize: runtimeLogImportBatchSize,
+      phase: 'directory.discover'
+    })
   }
 }
 
@@ -220,10 +248,27 @@ function runtimeLogFileRole(fileName: string): { role: string; kind: 'current' |
 
 async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencies: RuntimeLogFileImportTestDependencies = {}): Promise<boolean> {
   let cursorOffsetForMetrics = 0
+  const failureSnapshot: RuntimeLogFileImportFailureSnapshot = {
+    path: file.path,
+    fileRole: file.role,
+    kind: file.kind,
+    truncationGeneration: 0,
+    cursorOffset: 0,
+    lineNumber: 0,
+    batchConfiguredSize: dependencies.batchSize ?? runtimeLogImportBatchSize,
+    batchPendingCount: 0,
+    phase: 'file.stat'
+  }
   try {
     const stats = await statFile(file.path)
     if (!stats.isFile()) return true
     const identity = runtimeLogFileIdentity(stats)
+    Object.assign(failureSnapshot, {
+      fileIdentity: identity,
+      fileSize: stats.size,
+      fileMtimeMs: Math.trunc(stats.mtimeMs),
+      phase: 'cursor.resolve'
+    })
     const completed = completedRuntimeLogFiles.get(file.path)
     const completedCacheMissing = completed === undefined
     const nowMs = dependencies.nowMs?.() ?? Date.now()
@@ -236,8 +281,17 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
     const cursor = await resolveRuntimeLogFileCursor(file, stats, identity, dependencies)
     const startOffset = cursor.cursorOffset
     cursorOffsetForMetrics = startOffset
+    Object.assign(failureSnapshot, {
+      truncationGeneration: cursor.truncationGeneration,
+      cursorOffset: startOffset,
+      lineNumber: cursor.lineNumber,
+      batchFlushedOffset: startOffset,
+      batchFlushedLineNumber: cursor.lineNumber,
+      phase: 'file.read'
+    })
     if (stats.size <= startOffset) {
       if (completedCacheMissing || completedCacheExpired || cursor.fileSize !== stats.size || cursor.fileMtimeMs !== Math.trunc(stats.mtimeMs) || cursor.lastErrorMessage) {
+        failureSnapshot.phase = 'cursor.renew'
         await persistCursor({ ...cursor, fileIdentity: identity, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: undefined }, dependencies)
       }
       runtimeLogFileImportRuntime.currentFile = file.path
@@ -256,15 +310,18 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
       createBatch: dependencies.createBatch ?? createRuntimeLogsBatchAsync,
       upsertCursor: dependencies.upsertCursor ?? upsertRuntimeLogFileCursorAsync,
       cursor,
-      stats
+      stats,
+      failureSnapshot
     })
     if (result.staleFile) return true
     if (result.flushFailed) {
       runtimeLogFileImportRuntime.lastError = '运行日志索引写入失败，游标已保留在最近一次成功写入位置，等待下一轮重试'
+      failureSnapshot.phase = 'cursor.persist_failure_state'
       await persistCursor({ ...cursor, fileIdentity: identity, cursorOffset: result.flushedOffset, lineNumber: result.flushedLineNumber, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: '运行日志索引写入失败，游标已保留在最近一次成功写入位置，等待下一轮重试' }, dependencies)
       recordPendingRuntimeLogFile(file, stats, result.flushedOffset)
       return false
     }
+    failureSnapshot.phase = 'cursor.finalize'
     await persistCursor({ ...cursor, fileIdentity: identity, cursorOffset: result.nextOffset, lineNumber: result.nextLineNumber, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: undefined }, dependencies)
     runtimeLogFileImportRuntime.currentFile = file.path
     runtimeLogFileImportRuntime.currentOffset = result.nextOffset
@@ -275,7 +332,7 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
     return true
   } catch (error) {
     if (isMissingFileError(error)) return true
-    const message = error instanceof Error ? error.message : String(error)
+    const message = runtimeLogFailureMessage(error)
     runtimeLogFileImportRuntime.lastError = message
     completedRuntimeLogFiles.delete(file.path)
     try {
@@ -283,7 +340,7 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
       recordPendingRuntimeLogFile(file, stats, cursorOffsetForMetrics)
     } catch {
     }
-    process.stderr.write(`[runtime-log-index] 增量读取日志文件失败 ${file.path}：${message}\n`)
+    writeRuntimeLogFileImportFailureDiagnostic(error, failureSnapshot)
     return false
   }
 }
@@ -387,9 +444,12 @@ async function readRuntimeLogFileLines(file: ActiveRuntimeLogFile, identity: str
   upsertCursor: (input: RuntimeLogFileCursorInput) => Promise<void>
   cursor: RuntimeLogFileCursor
   stats: Stats
+  failureSnapshot: RuntimeLogFileImportFailureSnapshot
 }): Promise<{ nextOffset: number; nextLineNumber: number; flushedOffset: number; flushedLineNumber: number; flushFailed: boolean; staleFile?: boolean }> {
+  input.failureSnapshot.phase = 'file.open'
   const handle = await open(file.path, 'r')
   try {
+    input.failureSnapshot.phase = 'file.identity.verify'
     const openedStats = await handle.stat()
     if (runtimeLogFileIdentity(openedStats) !== identity) {
       return { nextOffset: input.startOffset, nextLineNumber: input.initialLineNumber, flushedOffset: input.startOffset, flushedLineNumber: input.initialLineNumber, flushFailed: false, staleFile: true }
@@ -410,16 +470,28 @@ async function readRuntimeLogFileLines(file: ActiveRuntimeLogFile, identity: str
 
   const flushBatch = async (): Promise<boolean> => {
     if (batch.length > 0) {
+      input.failureSnapshot.phase = 'batch.store'
+      input.failureSnapshot.batchPendingCount = batch.length
       try {
         await input.createBatch(batch)
-      } catch {
+      } catch (error) {
+        writeRuntimeLogFileImportFailureDiagnostic(error, input.failureSnapshot)
         return false
       }
       batch = []
+      input.failureSnapshot.batchPendingCount = 0
     }
     flushedOffset = nextOffset
     flushedLineNumber = nextLineNumber
+    Object.assign(input.failureSnapshot, {
+      phase: 'cursor.persist',
+      cursorOffset: flushedOffset,
+      lineNumber: flushedLineNumber,
+      batchFlushedOffset: flushedOffset,
+      batchFlushedLineNumber: flushedLineNumber
+    })
     await input.upsertCursor({ ...input.cursor, logFile: file.path, fileIdentity: identity, cursorOffset: flushedOffset, lineNumber: flushedLineNumber, fileSize: input.stats.size, fileMtimeMs: Math.trunc(input.stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: undefined })
+    input.failureSnapshot.phase = 'file.read'
     return true
   }
 
@@ -478,6 +550,177 @@ async function readRuntimeLogFileLines(file: ActiveRuntimeLogFile, identity: str
     return { nextOffset, nextLineNumber, flushedOffset, flushedLineNumber, flushFailed: false }
   } finally {
     await handle.close().catch(() => undefined)
+  }
+}
+
+function writeRuntimeLogFileImportFailureDiagnostic(error: unknown, snapshot: RuntimeLogFileImportFailureSnapshot): void {
+  let line: string
+  try {
+    line = boundedRuntimeLogFailureJsonLine({
+      version: 1,
+      service: 'juhe-ai',
+      role: 'ingest-worker',
+      event: 'runtime_log_file_import_failed',
+      time: nowIso(),
+    path: boundedRuntimeLogFailureText(snapshot.path, runtimeLogFailureDiagnosticPathMaxBytes),
+      fileRole: boundedRuntimeLogFailureText(snapshot.fileRole, 128),
+      kind: snapshot.kind,
+      fileIdentity: boundedRuntimeLogFailureText(snapshot.fileIdentity, 512),
+      truncationGeneration: snapshot.truncationGeneration,
+      cursorOffset: snapshot.cursorOffset,
+      lineNumber: snapshot.lineNumber,
+      fileSize: snapshot.fileSize,
+      fileMtimeMs: snapshot.fileMtimeMs,
+      batch: {
+        configuredSize: snapshot.batchConfiguredSize,
+        pendingCount: snapshot.batchPendingCount,
+        flushedOffset: snapshot.batchFlushedOffset,
+        flushedLineNumber: snapshot.batchFlushedLineNumber
+      },
+      phase: boundedRuntimeLogFailureText(snapshot.phase, 128),
+      error: boundedRuntimeLogFailureError(error)
+    })
+  } catch {
+    line = `${JSON.stringify({
+      version: 1,
+      service: 'juhe-ai',
+      role: 'ingest-worker',
+      event: 'runtime_log_file_import_failed',
+      time: new Date().toISOString(),
+      path: '[unavailable]',
+      kind: null,
+      fileRole: null,
+      fileIdentity: null,
+      truncationGeneration: null,
+      cursorOffset: null,
+      batch: null,
+      phase: 'diagnostic.serialize',
+      error: { name: 'Error', message: 'runtime log importer diagnostic serialization failed', stack: null, cause: null, code: 'DIAGNOSTIC_SERIALIZE_FAILED' }
+    })}\n`
+  }
+  try {
+    writeBoundedProcessDiagnosticLineAsync(line)
+  } catch {
+    // The bounded stderr fallback must not route its own failure back into the consumed spool.
+  }
+}
+
+function boundedRuntimeLogFailureError(error: unknown, depth = 0): Record<string, unknown> {
+  const value = error instanceof Error ? error : undefined
+  const objectValue = typeof error === 'object' && error !== null ? error as Record<string, unknown> : undefined
+  const cause = safeRuntimeLogFailureProperty(objectValue, 'cause')
+  return {
+    name: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'name') ?? (value ? 'Error' : 'NonErrorThrown'), 128) ?? 'Error',
+    message: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'message') ?? runtimeLogFailureMessage(error), runtimeLogFailureDiagnosticTextMaxBytes) ?? '',
+    stack: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'stack'), runtimeLogFailureDiagnosticTextMaxBytes) ?? null,
+    code: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'code'), 256) ?? null,
+    cause: cause !== undefined && depth < runtimeLogFailureDiagnosticMaxCauseDepth
+      ? boundedRuntimeLogFailureError(cause, depth + 1)
+      : null
+  }
+}
+
+function stringErrorProperty(value: Record<string, unknown> | undefined, key: string): string | undefined {
+  const property = safeRuntimeLogFailureProperty(value, key)
+  return typeof property === 'string' || typeof property === 'number' ? String(property) : undefined
+}
+
+function safeRuntimeLogFailureProperty(value: Record<string, unknown> | undefined, key: string): unknown {
+  if (!value) return undefined
+  let current: object | null = value
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key)
+      if (descriptor) {
+        if ('value' in descriptor) return descriptor.value
+        try {
+          return descriptor.get?.call(value)
+        } catch {
+          return `[unreadable ${key}: accessor threw]`
+        }
+      }
+      current = Object.getPrototypeOf(current) as object | null
+    } catch {
+      return `[unreadable ${key}]`
+    }
+  }
+  return undefined
+}
+
+function runtimeLogFailureMessage(error: unknown): string {
+  const objectValue = typeof error === 'object' && error !== null ? error as Record<string, unknown> : undefined
+  const message = stringErrorProperty(objectValue, 'message')
+  if (message !== undefined) return message
+  try {
+    return String(error)
+  } catch {
+    return '[unprintable thrown value]'
+  }
+}
+
+function boundedRuntimeLogFailureText(value: string | undefined, maxBytes: number): string | undefined {
+  if (value === undefined) return undefined
+  if (value.length <= maxBytes && Buffer.byteLength(value, 'utf8') <= maxBytes) return value
+  const suffix = '...[truncated]'
+  const prefixBytes = Math.max(0, maxBytes - Buffer.byteLength(suffix))
+  let low = 0
+  let high = Math.min(value.length, prefixBytes)
+  while (low < high) {
+    const midpoint = Math.ceil((low + high) / 2)
+    if (Buffer.byteLength(value.slice(0, midpoint), 'utf8') <= prefixBytes) low = midpoint
+    else high = midpoint - 1
+  }
+  let end = low
+  if (end > 0) {
+    const last = value.charCodeAt(end - 1)
+    if (last >= 0xD800 && last <= 0xDBFF) end -= 1
+  }
+  return value.slice(0, end) + suffix
+}
+
+function boundedRuntimeLogFailureJsonLine(event: Record<string, unknown>): string {
+  let line = `${JSON.stringify(event)}\n`
+  if (Buffer.byteLength(line, 'utf8') <= runtimeLogFailureDiagnosticMaxBytes) return line
+  const reduced = {
+    ...event,
+    path: boundedRuntimeLogFailureText(typeof event.path === 'string' ? event.path : undefined, 1024),
+    error: compactRuntimeLogFailureError(event.error),
+    diagnosticTruncated: true
+  }
+  line = `${JSON.stringify(reduced)}\n`
+  if (Buffer.byteLength(line, 'utf8') <= runtimeLogFailureDiagnosticMaxBytes) return line
+  const minimal = {
+    ...reduced,
+    path: '[truncated]',
+    error: compactRuntimeLogFailureError(event.error, 1, 1024, 512),
+    diagnosticTruncated: true
+  }
+  line = `${JSON.stringify(minimal)}\n`
+  if (Buffer.byteLength(line, 'utf8') <= runtimeLogFailureDiagnosticMaxBytes) return line
+  return `${JSON.stringify({
+    version: 1,
+    service: 'juhe-ai',
+    role: 'ingest-worker',
+    event: 'runtime_log_file_import_failed',
+    time: nowIso(),
+    path: '[truncated]',
+    phase: 'diagnostic.serialize',
+    error: { name: 'Error', message: '[truncated]', stack: '[truncated]', code: 'DIAGNOSTIC_SERIALIZE_LIMIT', cause: undefined },
+    diagnosticTruncated: true
+  })}\n`
+}
+
+function compactRuntimeLogFailureError(value: unknown, maxDepth = 4, stackBytes = 2 * 1024, messageBytes = 1024): Record<string, unknown> {
+  const error = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
+  const cause = safeRuntimeLogFailureProperty(error, 'cause')
+  return {
+    name: boundedRuntimeLogFailureText(stringErrorProperty(error, 'name') ?? 'Error', 128) ?? 'Error',
+    message: boundedRuntimeLogFailureText(stringErrorProperty(error, 'message'), messageBytes) ?? '',
+    stack: boundedRuntimeLogFailureText(stringErrorProperty(error, 'stack'), stackBytes) ?? null,
+    code: boundedRuntimeLogFailureText(stringErrorProperty(error, 'code'), 256) ?? null,
+    cause: cause !== undefined && maxDepth > 0
+      ? compactRuntimeLogFailureError(cause, maxDepth - 1, stackBytes, messageBytes)
+      : null
   }
 }
 

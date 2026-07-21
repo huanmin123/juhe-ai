@@ -1,0 +1,67 @@
+package managementauditlogs
+
+import (
+	"context"
+	"testing"
+
+	"juhe-ai/backend-go/internal/store/port"
+)
+
+func TestListNormalizesNodeCompatibleFiltersAndProgressiveWindow(t *testing.T) {
+	status := 503
+	store := &auditLogReaderStub{result: port.ManagementAuditLogListResult{
+		Items: []port.ManagementAuditLogSummary{{
+			ID: "audit_1", TraceID: "trace_1", TrafficSource: "gateway", Method: "POST", Path: "/v1/responses",
+			AuditOutcome: "upstream_failed", FinalStatusCode: &status, SampleBucket: 3, SampleReason: "problem",
+			AttemptCount: 2, PayloadCount: 1, RawPayloadBytes: 100, CompressedPayloadBytes: 60,
+			CompressionSavedBytes: 40, CaptureStatus: "complete", StartedAt: "2026-07-21T01:02:03.004Z",
+			EndedAt: "2026-07-21T01:02:04.004Z", CreatedAt: "2026-07-21T01:02:05.004Z",
+		}}, HasMore: true,
+	}}
+	service := NewService(store)
+	result, err := service.List(context.Background(), ListInput{
+		TraceID: " trace_", ErrorGroupID: " err_1 ", Outcome: "upstream_failed", StatusCode: 503,
+		Path: " POST /v1/responses?stream=true ", Model: " gpt-5 ", SystemAccountID: " sys_1 ",
+		APIKeyID: " key_1 ", GroupID: " group_1 ", AccountID: " account_1 ", ClientIP: " 203.0.113. ",
+		StartAt: "2026-07-21T00:00:00.000Z", EndAt: "2026-07-21T23:59:59.000Z", TrafficSource: "gateway",
+		Page: 20, PageSize: 100, PageSizeProvided: true,
+	})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if store.input.Path != "/v1/responses" || store.input.Model != "gpt-5" || store.input.Offset != 900 || store.input.Limit != 100 {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if result.Page != 10 || result.PageSize != 100 || result.Total != 902 || !result.HasMore || len(result.Items) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	item := result.Items[0]
+	if item.ID != "audit_1" || item.FinalStatusCode == nil || *item.FinalStatusCode != 503 || item.CreatedAt != "2026-07-21T01:02:05.004Z" {
+		t.Fatalf("item = %+v", item)
+	}
+}
+
+func TestListIgnoresInvalidEnumsAndStatus(t *testing.T) {
+	store := &auditLogReaderStub{}
+	service := NewService(store)
+	_, err := service.List(context.Background(), ListInput{Outcome: "unknown", StatusCode: 99, TrafficSource: "unknown"})
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if store.input.Outcome != "" || store.input.StatusCode != nil || store.input.TrafficSource != "" {
+		t.Fatalf("invalid filters reached store: %+v", store.input)
+	}
+}
+
+type auditLogReaderStub struct {
+	input  port.ManagementAuditLogListInput
+	result port.ManagementAuditLogListResult
+}
+
+func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input port.ManagementAuditLogListInput) (port.ManagementAuditLogListResult, error) {
+	s.input = input
+	if s.result.Items == nil {
+		s.result.Items = []port.ManagementAuditLogSummary{}
+	}
+	return s.result, nil
+}

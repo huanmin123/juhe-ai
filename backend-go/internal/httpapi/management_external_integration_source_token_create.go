@@ -62,7 +62,9 @@ func newManagementExternalIntegrationSourceTokenCreateHandler(
 		}
 
 		w.Header().Set("Pragma", "no-cache")
-		writeData(w, http.StatusCreated, result)
+		writeData(w, http.StatusCreated, struct {
+			Token managementexternalintegrationsources.CreatedToken `json:"token"`
+		}{Token: result.Token})
 		recordManagementExternalIntegrationSourceTokenCreateOperationLog(r, authContext, result, logOptions)
 	})
 }

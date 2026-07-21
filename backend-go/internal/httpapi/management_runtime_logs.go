@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -38,32 +37,15 @@ func (s managementRuntimeLogServiceAdapter) Facets(r *http.Request) (managementr
 	return s.service.Facets(r.Context())
 }
 
-type managementRuntimeLogListResponse struct {
-	Items                         []managementruntimelogs.Summary `json:"items"`
-	Total                         int                             `json:"total"`
-	HasMore                       bool                            `json:"hasMore"`
-	Page                          int                             `json:"page"`
-	PageSize                      int                             `json:"pageSize"`
-	ElapsedMS                     int64                           `json:"elapsedMs"`
-	RetentionDays                 *int                            `json:"retentionDays"`
-	RetentionDaysSource           string                          `json:"retentionDaysSource"`
-	RuntimeAvailable              bool                            `json:"runtimeAvailable"`
-	WorkerSnapshotAvailable       bool                            `json:"workerSnapshotAvailable"`
-	RuntimeLogIndexQueueAvailable bool                            `json:"runtimeLogIndexQueueAvailable"`
-}
-
-type managementRuntimeLogFacetsResponse struct {
-	managementruntimelogs.FacetsResult
-	RuntimeAvailable                   bool `json:"runtimeAvailable"`
-	WorkerSnapshotAvailable            bool `json:"workerSnapshotAvailable"`
-	RuntimeLogIndexQueueAvailable      bool `json:"runtimeLogIndexQueueAvailable"`
-	Runtime                            any  `json:"runtime"`
-	Worker                             any  `json:"worker"`
-	DBService                          any  `json:"dbService"`
-	QueueHealth                        any  `json:"queueHealth"`
-	Grep                               any  `json:"grep"`
+type managementRuntimeLogRuntimeResponse struct {
+	RuntimeAvailable              bool `json:"runtimeAvailable"`
+	IngestWorkerAvailable         bool `json:"ingestWorkerAvailable"`
+	RuntimeLogIndexQueueAvailable bool `json:"runtimeLogIndexQueueAvailable"`
+	DBService                     struct {
+		StatusAvailable bool `json:"statusAvailable"`
+		StateAvailable  bool `json:"stateAvailable"`
+	} `json:"dbService"`
 	GatewayAccountSideEffectsAvailable bool `json:"gatewayAccountSideEffectsAvailable"`
-	GatewayAccountSideEffects          any  `json:"gatewayAccountSideEffects"`
 }
 
 func NewManagementRuntimeLogsHandler(service *managementruntimelogs.Service) http.Handler {
@@ -90,20 +72,22 @@ func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now fu
 		r = r.WithContext(ctx)
 
 		rawID := chi.URLParam(r, "id")
-		if rawID == "" && strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/runtime-logs/facets") {
-			rawID = "facets"
-		}
-		if rawID != "" {
-			if rawID == "facets" {
-				facets, err := service.Facets(r)
-				if err != nil {
-					writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-					return
-				}
-				writeData(w, http.StatusOK, managementRuntimeLogFacetsUnavailableRuntime(facets, now()))
+		path := strings.TrimRight(r.URL.Path, "/")
+		if rawID == "" && strings.HasSuffix(path, "/runtime-logs/facets") {
+			facets, err := service.Facets(r)
+			if err != nil {
+				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 				return
 			}
-			if rawID == "grep" {
+			writeData(w, http.StatusOK, facets)
+			return
+		}
+		if rawID == "" && strings.HasSuffix(path, "/runtime-logs/runtime") {
+			writeData(w, http.StatusOK, managementRuntimeLogRuntimeResponse{})
+			return
+		}
+		if rawID != "" {
+			if rawID == "grep" || rawID == "grep-options" {
 				writeError(w, http.StatusNotFound, "接口不存在")
 				return
 			}
@@ -125,68 +109,13 @@ func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now fu
 			return
 		}
 
-		startedAt := now()
 		result, err := service.List(r, parseManagementRuntimeLogListQuery(r.URL.Query()))
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		elapsedMS := int64(math.Round(float64(now().Sub(startedAt)) / float64(time.Millisecond)))
-		if elapsedMS < 0 {
-			elapsedMS = 0
-		}
-		writeData(w, http.StatusOK, managementRuntimeLogListResponse{
-			Items:                         result.Items,
-			Total:                         result.Total,
-			HasMore:                       result.HasMore,
-			Page:                          result.Page,
-			PageSize:                      result.PageSize,
-			ElapsedMS:                     elapsedMS,
-			RetentionDays:                 nil,
-			RetentionDaysSource:           "unavailable",
-			RuntimeAvailable:              false,
-			WorkerSnapshotAvailable:       false,
-			RuntimeLogIndexQueueAvailable: false,
-		})
+		writeData(w, http.StatusOK, result)
 	})
-}
-
-func managementRuntimeLogFacetsUnavailableRuntime(facets managementruntimelogs.FacetsResult, now time.Time) managementRuntimeLogFacetsResponse {
-	if facets.Levels == nil {
-		facets.Levels = []managementruntimelogs.FacetLevel{}
-	}
-	if facets.Events == nil {
-		facets.Events = []string{}
-	}
-	endAt := now.UTC().Truncate(time.Millisecond)
-	startAt := endAt.Add(-3 * 24 * time.Hour)
-	return managementRuntimeLogFacetsResponse{
-		FacetsResult:                  facets,
-		RuntimeAvailable:              false,
-		WorkerSnapshotAvailable:       false,
-		RuntimeLogIndexQueueAvailable: false,
-		Runtime:                       nil,
-		Worker: map[string]any{
-			"available": false, "snapshotAvailable": false, "ready": nil, "pendingMessageCount": nil,
-		},
-		DBService: map[string]any{
-			"statusAvailable": false, "stateAvailable": false, "ready": nil, "pendingRequestCount": nil,
-			"timedOutRequestCount": nil, "failedRequestCount": nil,
-		},
-		QueueHealth: map[string]any{
-			"available": false, "workerSnapshotAvailable": false, "serverIpcQueueAvailable": false,
-			"status": "unavailable", "reasons": []string{"go_runtime_unavailable"},
-			"summary":      map[string]int{"degradedCount": 0, "backloggedCount": 0, "unavailableCount": 0, "droppedCount": 0, "rejectedCount": 0, "flushFailureCount": 0, "queuedCount": 0, "queuedBytes": 0, "pendingWriteRequestCount": 0, "writerPoolQueuedCount": 0, "writerPoolActiveJobs": 0},
-			"workerQueues": []any{}, "serverIpcQueues": []any{},
-		},
-		Grep: map[string]any{
-			"defaultStartAt": startAt.Format(time.RFC3339Nano), "defaultEndAt": endAt.Format(time.RFC3339Nano),
-			"defaultRangeDays": 3, "maxRangeDays": 7, "fileRetentionDays": facets.RetentionDays,
-			"activeSearchCount": 0, "maxConcurrentSearches": 0,
-		},
-		GatewayAccountSideEffectsAvailable: false,
-		GatewayAccountSideEffects:          nil,
-	}
 }
 
 func parseManagementRuntimeLogListQuery(values url.Values) managementruntimelogs.ListInput {

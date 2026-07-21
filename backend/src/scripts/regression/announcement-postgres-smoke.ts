@@ -7,6 +7,7 @@ import {
   createAnnouncementAsync,
   deleteAnnouncementAsync,
   findAnnouncementAsync,
+  findPublicAnnouncementAsync,
   listAnnouncementsPageAsync,
   listPublicAnnouncementsAsync,
   markPublicAnnouncementsReadAsync,
@@ -50,6 +51,8 @@ try {
 
   const publicList = await listPublicAnnouncementsAsync(actor, 30)
   assert.ok(publicList.some((announcement) => announcement.id === created.id), 'PG 公开公告列表应返回已发布公告')
+  const publicDetail = await findPublicAnnouncementAsync(created.id)
+  assert.equal(publicDetail?.content, `公告 PG smoke 已更新 ${marker}`, 'PG 公共公告详情应按 ID 返回完整正文')
 
   const readResult = await markPublicAnnouncementsReadAsync(actor, [created.id, created.id])
   assert.equal(readResult.count, 1, 'PG 公告已读写入应按 ID 去重')
@@ -70,6 +73,7 @@ try {
   const unpublished = await unpublishAnnouncementAsync(created.id, actor)
   assert.equal(unpublished?.status, 'archived', 'PG 下线公告应归档')
   assert.equal((await listPublicAnnouncementsAsync(actor, 30)).some((announcement) => announcement.id === created.id), false, 'PG 下线公告不应出现在公开列表')
+  assert.equal(await findPublicAnnouncementAsync(created.id), undefined, 'PG 下线公告不能通过公共详情读取')
 
   assert.equal(await deleteAnnouncementAsync(created.id), true, 'PG 删除公告应成功')
   assert.equal(await findAnnouncementAsync(created.id), undefined, 'PG 删除后公告详情应不存在')

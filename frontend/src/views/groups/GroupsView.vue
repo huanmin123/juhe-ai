@@ -135,6 +135,7 @@ const providers = ref<ProviderDefinition[]>([])
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
+let groupSnapshotRequestSequence = 0
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -193,11 +194,45 @@ const {
       groupsListParams(systemAccountId, pageState)
     ]
   },
+  onLoaded: () => {
+    void refreshGroupStatusSnapshot()
+  },
   onError: (error) => {
     console.error(error)
     message.error('加载分组失败')
   }
 })
+
+async function refreshGroupStatusSnapshot(): Promise<void> {
+  const groupIds = [...new Set(groups.value.map((group) => group.id).filter(Boolean))]
+  if (!groupIds.length) return
+  const sequence = ++groupSnapshotRequestSequence
+  const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
+  try {
+    const snapshot = await groupsApi.statusSnapshot(groupIds, systemAccountId ? { systemAccountId } : undefined)
+    if (sequence !== groupSnapshotRequestSequence) return
+    const byId = new Map(snapshot.items.map((item) => [item.id, item]))
+    updateGroupItems(
+      (group) => byId.has(group.id),
+      (group) => {
+        const item = byId.get(group.id)
+        if (!item) return group
+        return {
+          ...group,
+          accountStats: {
+            ...group.accountStats,
+            currentConcurrency: item.currentConcurrency,
+            currentConcurrencyAvailable: true,
+            todayUsage: item.todayUsage
+          }
+        }
+      }
+    )
+  } catch (error) {
+    if (sequence !== groupSnapshotRequestSequence) return
+    console.error(error)
+  }
+}
 
 const rawColumns = computed(() => groupsTableColumns(isManagementView.value))
 const columnStorageKey = computed(() => (isManagementView.value ? 'groups:management' : 'groups:self'))

@@ -47,7 +47,7 @@ import { replaceEditorContentWithoutHistory } from './chatEditorDocumentBoundary
 import { maxChatImageCount, selectChatImageFiles, selectChatImageFileSlots } from './chatImageSelection'
 import { createChatImagePreparationState } from './chatImagePreparationState'
 import { prepareChatImageForUpload } from './chatImageProcessing'
-import type { ChatContextStatus, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
 const props = defineProps<{
   contextStatus?: ChatContextStatus
@@ -57,9 +57,11 @@ const props = defineProps<{
   turnLimitReached: boolean
   turnLimitMessage: string
   imageInputSupported: boolean
-  modelOptions: ChatModelOption[]
+  modelOptions: ChatModelListOption[]
+  modelCapabilities?: ChatModelCapabilities
   modelValue?: string
   modelsLoading: boolean
+  modelCapabilitiesLoading: boolean
   reasoningEffort: ChatReasoningEffort | ''
   serviceTier: ChatServiceTier | ''
   showConversationButton: boolean
@@ -168,8 +170,8 @@ watch(() => props.disabled, (disabled) => editor.value?.setEditable(!disabled), 
 
 const commandItems = computed(() => (commandOpen.value ? filterChatComposerCommands(commandQuery.value) : chatComposerCommands)
   .filter((item) => props.imageInputSupported || item.key !== 'image'))
-const selectedModelOption = computed(() => props.modelOptions.find((item) => item.id === props.modelValue))
-const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.id, value: item.id, title: item.id })))
+const selectedModelOption = computed(() => props.modelCapabilities?.id === props.modelValue ? props.modelCapabilities : undefined)
+const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))
 const reasoningOptions = computed(() => selectableChatReasoningEfforts(selectedModelOption.value).map((value) => {
   const label = `思考 ${reasoningEffortLabel(value)}`
   return { label, value, title: label }
@@ -213,7 +215,7 @@ const hasContent = computed(() => {
   return Boolean(editor.value && (editor.value.getText().trim() || imageItems.value.length))
 })
 const imagesReady = computed(() => imageItems.value.every((item) => item.uploadStatus === 'uploaded' && Boolean(item.assetId)))
-const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && !props.modelsLoading && imagesReady.value && pendingImagePreparationCount.value === 0 && !props.disabled && !props.turnLimitReached && (props.imageInputSupported || imageItems.value.length === 0)))
+const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue && props.modelCapabilities && !props.modelsLoading && !props.modelCapabilitiesLoading && imagesReady.value && pendingImagePreparationCount.value === 0 && !props.disabled && !props.turnLimitReached && (props.imageInputSupported || imageItems.value.length === 0)))
 const sendTooltip = computed(() => {
   if (props.turnLimitReached) return props.turnLimitMessage
   if (pendingImagePreparationCount.value > 0) return '图片正在压缩，请稍候'

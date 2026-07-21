@@ -1,8 +1,10 @@
 import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
 import type { NextFunction, Request, Response } from 'express'
+import type { Logger } from 'pino'
 import type { AuditCaptureContext } from '../../modules/gateway/audit/capture.service.js'
 import type { GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
+import type { RequestContext } from '../../shared/request-context.js'
 
 process.env.JUHE_AI_PROCESS_ROLE = 'worker'
 process.env.JUHE_AI_WORKER_ROLE = 'ingest-worker'
@@ -15,9 +17,11 @@ const {
   getGatewayRequestBodyInFlightState
 } = await import('../../modules/gateway/request/body.js')
 const { attachAccountSlotRelease } = await import('../../modules/gateway/routes.js')
-const { observeGatewayHttpCompletion } = await import('../../modules/gateway/audit/capture.service.js')
+const { createAuditCapture, observeGatewayHttpCompletion } = await import('../../modules/gateway/audit/capture.service.js')
+const { withRequestContext } = await import('../../shared/request-context.js')
 const { sendGatewayFailureResponse } = await import('../../modules/gateway/response/failure-response.js')
 const { gatewayErrorPayload } = await import('../../modules/gateway/response/responses.js')
+const auditLogQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
 const usageRecordQueue = await import('../../modules/gateway/usage/record-queue.service.js')
 const failureUsageFinalization = await import('../../modules/gateway/usage/failure-finalization.service.js')
 
@@ -102,6 +106,61 @@ timingResponse.emit('finish')
 const observedCompletedAtMs = httpCompletion.completedAtMs()
 await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 10))
 assert.equal(await httpCompletion.wait(), observedCompletedAtMs, '监听后再等待必须复用真实 HTTP finish 时间，不能混入后置副作用耗时')
+
+const auditStageEvents: Record<string, unknown>[] = []
+const auditStageLogger = {
+  info(fields: Record<string, unknown>) {
+    if (fields.event === 'gateway.request.stage' && fields.stage === 'audit.finalize') {
+      auditStageEvents.push(fields)
+    }
+  }
+} as unknown as Logger
+const auditResponse = new MockResponse() as unknown as Response
+const auditContextStartedAt = performance.now()
+const auditRequestContext: RequestContext = {
+  traceId: 'trace-audit-finalize-http-boundary',
+  startedAt: Date.now(),
+  monotonicStartedAt: auditContextStartedAt,
+  method: 'POST',
+  path: '/v1/responses',
+  originalUrl: '/v1/responses',
+  logger: auditStageLogger
+}
+withRequestContext(auditRequestContext, () => {
+  const delayedAuditCapture = createAuditCapture({
+    req: {
+      body: { model: 'gpt-5.6-sol', stream: false },
+      headers: {},
+      method: 'POST',
+      path: '/v1/responses',
+      originalUrl: '/v1/responses',
+      header: () => undefined
+    } as unknown as Request,
+    res: auditResponse,
+    traceId: auditRequestContext.traceId,
+    startedAtMs: auditRequestContext.startedAt,
+    captureMode: 'metadata_only'
+  })
+  delayedAuditCapture.finalize({ outcome: 'success', success: true, statusCode: 200 })
+})
+await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 60))
+let auditHttpFinishOffsetMs = 0
+withRequestContext(auditRequestContext, () => {
+  auditHttpFinishOffsetMs = performance.now() - auditContextStartedAt
+  auditResponse.emit('finish')
+})
+assert.equal(auditStageEvents.length, 1, '延迟 HTTP finish 后必须且只能记录一次 audit.finalize 阶段')
+const auditFinalizeStage = auditStageEvents[0]!
+assert(
+  Number(auditFinalizeStage.startedOffsetMs) >= auditHttpFinishOffsetMs - 2,
+  'audit.finalize 必须在真实 HTTP finish 后才开始计时，不能把客户端发送等待计入阶段耗时'
+)
+assert(
+  Number(auditFinalizeStage.durationMs)
+    <= Number(auditFinalizeStage.endedOffsetMs) - auditHttpFinishOffsetMs + 2,
+  'audit.finalize 阶段耗时只能覆盖组装与入队，不能包含延迟的 HTTP completion 等待'
+)
+auditLogQueue.clearAuditLogQueueForTest()
 
 usageRecordQueue.clearUsageRecordQueueForTest()
 const failureRequest = {

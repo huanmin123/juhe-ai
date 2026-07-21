@@ -1,16 +1,13 @@
-import type { GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '../domain/types.js'
+import type { AuthorizationGranteeGroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import type { AccessScope } from './access-scope.js'
 import { getBusinessDatabase } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
-import { buildGroupOptionSummaries, buildGroupOptionSummariesAsync } from './group-summary.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { sqlPlaceholders } from './query-utils.js'
-import type { GroupListRow, SystemTeamRow } from './repository-row-types.js'
-import { authorizedPermissions } from './resource-permissions.js'
+import type { SystemTeamRow } from './repository-row-types.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { systemAccountPrincipalSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
-import { findSystemAccountById } from './system-accounts.repository.js'
 import { optionalString } from './value-utils.js'
 
 export interface AuthorizationPrincipalOptionListOptions {
@@ -107,30 +104,25 @@ export async function listAuthorizationGranteeTeamsAsync(access?: AccessScope, o
   return rows.map(systemTeamPrincipalSummaryFromRow)
 }
 
-export function listAuthorizationGranteeGroups(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): GroupOptionSummary[] {
+export function listAuthorizationGranteeGroups(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): AuthorizationGranteeGroupOptionSummary[] {
   void access
   const granteeSystemAccountId = optionalString(options.granteeSystemAccountId)
   if (!granteeSystemAccountId) return []
-  const grantee = findSystemAccountById(granteeSystemAccountId)
-  if (!grantee || grantee.status !== 'active') return []
   const filter = buildAuthorizationGranteeGroupFilter(options, granteeSystemAccountId)
   const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT ${authorizationGranteeGroupSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+      SELECT groups.id, groups.name
       FROM groups
       ${filter.clause}
       ${options.preferDefault === false ? 'ORDER BY groups.updated_at DESC, groups.id DESC' : 'ORDER BY groups.is_default DESC, groups.updated_at DESC, groups.id DESC'}
       ${limitClause.clause}
     `)
-    .all(...filter.params, ...limitClause.params) as unknown as GroupListRow[]
-  return buildGroupOptionSummaries(rows, access).map((group) => ({
-    ...group,
-    permissions: authorizedPermissions()
-  }))
+    .all(...filter.params, ...limitClause.params) as unknown as AuthorizationGranteeGroupOptionSummary[]
+  return rows
 }
 
-export async function listAuthorizationGranteeGroupsAsync(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): Promise<GroupOptionSummary[]> {
+export async function listAuthorizationGranteeGroupsAsync(access?: AccessScope, options: AuthorizationGranteeGroupOptionListOptions = {}): Promise<AuthorizationGranteeGroupOptionSummary[]> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
       type: 'list_authorization_grantee_groups_read_only',
@@ -145,42 +137,15 @@ export async function listAuthorizationGranteeGroupsAsync(access?: AccessScope, 
   const granteeSystemAccountId = optionalString(options.granteeSystemAccountId)
   if (!granteeSystemAccountId) return []
   const client = await getAuthorizationOptionsDatabaseClient()
-  const grantee = await client.one<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>(`
-    SELECT id, username, display_name, status
-    FROM ${authorizationOptionsTable(client, 'system_accounts')}
-    WHERE id = ?
-    LIMIT 1
-  `, [granteeSystemAccountId])
-  if (!grantee || grantee.status !== 'active') return []
   const filter = buildAuthorizationGranteeGroupFilterForClient(client, options, granteeSystemAccountId)
   const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
-  const rows = await client.query<GroupListRow>(`
-    SELECT ${authorizationGranteeGroupSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+  return client.query<AuthorizationGranteeGroupOptionSummary>(`
+    SELECT groups.id, groups.name
     FROM ${authorizationOptionsTable(client, 'groups')} groups
     ${filter.clause}
     ${options.preferDefault === false ? 'ORDER BY groups.updated_at DESC, groups.id DESC' : 'ORDER BY groups.is_default DESC, groups.updated_at DESC, groups.id DESC'}
     ${limitClause.clause}
   `, [...filter.params, ...limitClause.params])
-  return (await buildGroupOptionSummariesAsync(rows, access)).map((group) => ({
-    ...group,
-    permissions: authorizedPermissions()
-  }))
-}
-
-function authorizationGranteeGroupSelectColumns(): string {
-  return [
-    'id',
-    'system_account_id',
-    'name',
-    'provider_code',
-    'description',
-    'enabled',
-    'is_default',
-    'group_type',
-    'scheduling_policy_json',
-    'created_at',
-    'updated_at'
-  ].map((column) => `groups.${column}`).join(', ')
 }
 
 function buildSystemAccountPrincipalFilter(options: AuthorizationPrincipalOptionListOptions): { clause: string; params: string[] } {
@@ -200,8 +165,12 @@ function buildSystemTeamPrincipalFilterForClient(client: DatabaseClient, options
 }
 
 function buildAuthorizationGranteeGroupFilter(options: AuthorizationGranteeGroupOptionListOptions, granteeSystemAccountId: string): { clause: string; params: string[] } {
-  const clauses = ['groups.system_account_id = ?', 'groups.enabled = 1']
-  const params = [granteeSystemAccountId]
+  const clauses = [
+    'groups.system_account_id = ?',
+    'groups.enabled = 1',
+    "EXISTS (SELECT 1 FROM system_accounts grantee WHERE grantee.id = ? AND grantee.status = 'active')"
+  ]
+  const params = [granteeSystemAccountId, granteeSystemAccountId]
   const ids = normalizeTextList(options.ids)
   if (ids.length) {
     clauses.push(`groups.id IN (${sqlPlaceholders(ids.length)})`)
@@ -224,8 +193,12 @@ function buildAuthorizationGranteeGroupFilter(options: AuthorizationGranteeGroup
 }
 
 function buildAuthorizationGranteeGroupFilterForClient(client: DatabaseClient, options: AuthorizationGranteeGroupOptionListOptions, granteeSystemAccountId: string): { clause: string; params: string[] } {
-  const clauses = ['groups.system_account_id = ?', 'groups.enabled = 1']
-  const params = [granteeSystemAccountId]
+  const clauses = [
+    'groups.system_account_id = ?',
+    'groups.enabled = 1',
+    `EXISTS (SELECT 1 FROM ${authorizationOptionsTable(client, 'system_accounts')} grantee WHERE grantee.id = ? AND grantee.status = 'active')`
+  ]
+  const params = [granteeSystemAccountId, granteeSystemAccountId]
   const ids = normalizeTextList(options.ids)
   if (ids.length) {
     clauses.push(`groups.id IN (${sqlPlaceholders(ids.length)})`)

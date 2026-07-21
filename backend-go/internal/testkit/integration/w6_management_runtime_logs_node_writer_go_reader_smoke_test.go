@@ -438,17 +438,10 @@ func w6RuntimeLogsAssertDefaultList(
 func w6RuntimeLogsAssertListMetadata(t *testing.T, data map[string]any) {
 	t.Helper()
 
-	if data["retentionDays"] != nil || data["retentionDaysSource"] != "unavailable" {
-		t.Fatalf("runtime log progressive retention metadata = %#v / %#v", data["retentionDays"], data["retentionDaysSource"])
-	}
-	for _, key := range []string{"runtimeAvailable", "workerSnapshotAvailable", "runtimeLogIndexQueueAvailable"} {
-		value, found := data[key]
-		if !found || value != false {
-			t.Fatalf("runtime log fixed unavailable field %s = %#v, found %v", key, value, found)
+	for _, key := range []string{"elapsedMs", "retentionDays", "retentionDaysSource", "runtimeAvailable", "workerSnapshotAvailable", "runtimeLogIndexQueueAvailable"} {
+		if _, found := data[key]; found {
+			t.Fatalf("runtime log list must not expose progressive runtime field %s: %#v", key, data[key])
 		}
-	}
-	if elapsed, ok := data["elapsedMs"].(float64); !ok || elapsed < 0 {
-		t.Fatalf("runtime log elapsedMs = %#v", data["elapsedMs"])
 	}
 	if data["page"] != float64(1) || data["pageSize"] != float64(100) || data["hasMore"] != false || data["total"] != float64(8) {
 		t.Fatalf("runtime log pagination metadata = %#v", data)

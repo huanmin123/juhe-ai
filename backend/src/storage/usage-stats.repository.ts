@@ -2492,18 +2492,17 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
   const statsScope = usageOverviewStatsScope(access)
   const windowKey = rangeWindowKey(range)
 
-  const summaryRow = await loadUsageOverviewSummaryRowAsync(client, statsScope, range)
-
-  const hourlyRows = await client.query<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
+  const [summaryRow, hourlyRows, modelRows, errorRows] = await Promise.all([
+    loadUsageOverviewSummaryRowAsync(client, statsScope, range),
+    client.query<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
     SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
       CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd,
       thinking_tokens, input_image_tokens, output_image_tokens, CAST(total_cost_usd AS double precision) AS total_cost, duration_ms_sum, duration_ms_count
     FROM juhe_stats.usage_overview_trend_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
-  `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
-
-  const modelRows = await client.query<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
+  `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate]),
+    client.query<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>(`
     SELECT provider_code, model,
       request_count, input_tokens, output_tokens, cache_read_tokens, CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd,
       cache_write_tokens, cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd, thinking_tokens, input_image_tokens, output_image_tokens,
@@ -2511,14 +2510,14 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
     FROM juhe_stats.usage_model_rank_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
-  `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
-
-  const errorRows = await client.query<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>(`
+  `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate]),
+    client.query<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>(`
     SELECT provider_code, error_code, status_code, error_message, error_count
     FROM juhe_stats.usage_error_rank_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
   `, [statsScope.systemAccountId, windowKey, range.startDate, range.endDate])
+  ])
 
   return {
     range,

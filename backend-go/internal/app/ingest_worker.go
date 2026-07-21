@@ -52,5 +52,6 @@ func RunIngestWorker(ctx context.Context, cfg config.Config, logger *slog.Logger
 		OperationLogStore: store,
 		ShutdownTimeout:   cfg.ShutdownTimeout,
 		LogLevel:          cfg.LogLevel,
+		Logger:            logger,
 	})
 }

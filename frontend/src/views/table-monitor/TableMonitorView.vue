@@ -18,7 +18,7 @@
             class="table-history-range responsive-list-inline-filter"
             :disabled="loading"
             :placeholder="['开始日期', '结束日期']"
-            @change="loadData"
+            @change="handleHistoryRangeChange"
           />
         </template>
         <template #filters>
@@ -30,7 +30,7 @@
                 class="drawer-range-picker"
                 :disabled="loading"
                 :placeholder="['开始日期', '结束日期']"
-                @change="loadData"
+                @change="handleHistoryRangeChange"
               />
             </a-form-item>
           </a-form>
@@ -76,22 +76,25 @@
       </a-card>
     </div>
 
-    <a-card class="page-card history-card" title="存储增长趋势">
-      <DeferredRender
-        v-if="hasHistoryRows"
-        :active="pageActive"
-        :delay-frames="2"
-        :min-height="340"
-        :reset-key="historyChartResetKey"
-        reset-on-deactivate
-        @ready="renderHistoryChart"
-      >
-        <div ref="historyChartElement" class="history-chart" />
-      </DeferredRender>
-      <div v-else class="page-empty-card">
-        <a-empty description="暂无增长历史" />
-      </div>
-    </a-card>
+    <div ref="historyCardElement" class="history-card-shell">
+      <a-card class="page-card history-card" title="存储增长趋势">
+        <DeferredRender
+          v-if="hasHistoryRows"
+          :active="pageActive"
+          :delay-frames="2"
+          :min-height="340"
+          :reset-key="historyChartResetKey"
+          reset-on-deactivate
+          @ready="renderHistoryChart"
+        >
+          <div ref="historyChartElement" class="history-chart" />
+        </DeferredRender>
+        <div v-else class="page-empty-card">
+          <a-spin v-if="historyLoading" size="small" />
+          <a-empty v-else description="趋势图将在进入可视区域后加载" />
+        </div>
+      </a-card>
+    </div>
 
     <a-card class="page-card">
       <DeferredRender :active="pageActive" :delay-frames="1" :min-height="360" reset-on-deactivate>
@@ -199,7 +202,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { DeleteOutlined } from '@ant-design/icons-vue'
@@ -259,14 +262,18 @@ const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
 const cleanupResult = ref<NonBusinessDataCleanupResult>()
 const databaseSummaryRoles = tableMonitorDatabaseRoles
 const historyChartPointLimit = 720
+const historyLoaded = ref(false)
+const historyLoading = ref(false)
 const databaseHistoryRows = ref<DatabaseStorageSnapshotSummary[]>([])
+const historyCardElement = ref<HTMLDivElement>()
 const historyChartElement = ref<HTMLDivElement>()
 const historyChart = shallowRef<ECharts>()
+let historyObserver: IntersectionObserver | undefined
 const { pageActive } = useEchartsPageLifecycle({
   renderCharts: renderHistoryCharts,
   resizeCharts: resizeHistoryChart,
   disposeCharts: disposeHistoryCharts,
-  onMounted: loadData,
+  onMounted: onTableMonitorMounted,
   renderOnActivated: 'always'
 })
 
@@ -305,22 +312,50 @@ const historyChartResetKey = computed(() => {
 async function loadData() {
   loading.value = true
   try {
-    const [nextOverview, nextDatabaseHistory] = await Promise.all([
-      api.tableMonitor.overview(historyRangeParams()),
-      api.tableMonitor.databaseHistory({
-        ...historyRangeParams(),
-        limit: historyChartPointLimit
-      })
-    ])
-    overview.value = nextOverview
-    databaseHistoryRows.value = nextDatabaseHistory
-    renderHistoryChart()
+    overview.value = await api.tableMonitor.overview()
+    if (historyLoaded.value) await loadHistoryData()
   } catch (error) {
     console.error(error)
     message.error('表监控加载失败')
   } finally {
     loading.value = false
   }
+}
+
+async function loadHistoryData() {
+  if (historyLoading.value) return
+  historyLoading.value = true
+  try {
+    databaseHistoryRows.value = await api.tableMonitor.databaseHistory({
+      ...historyRangeParams(),
+      limit: historyChartPointLimit
+    })
+    await renderHistoryChart()
+  } catch (error) {
+    console.error(error)
+    message.error('表监控趋势加载失败')
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+async function onTableMonitorMounted() {
+  await loadData()
+  await nextTick()
+  if (!historyCardElement.value) return
+  if (typeof IntersectionObserver === 'undefined') {
+    historyLoaded.value = true
+    await loadHistoryData()
+    return
+  }
+  historyObserver = new IntersectionObserver((entries) => {
+    if (!entries.some((entry) => entry.isIntersecting)) return
+    historyLoaded.value = true
+    void loadHistoryData()
+    historyObserver?.disconnect()
+    historyObserver = undefined
+  }, { rootMargin: '240px 0px' })
+  historyObserver.observe(historyCardElement.value)
 }
 
 function openCleanupModal() {
@@ -363,6 +398,10 @@ async function submitNonBusinessDataCleanup() {
 
 function handleFilterChange() {
   renderHistoryChart()
+}
+
+function handleHistoryRangeChange() {
+  if (historyLoaded.value) void loadHistoryData()
 }
 
 function resetFilters() {
@@ -468,6 +507,11 @@ function disposeHistoryCharts() {
 function resizeHistoryChart() {
   resizeEcharts([historyChart.value])
 }
+
+onBeforeUnmount(() => {
+  historyObserver?.disconnect()
+  historyObserver = undefined
+})
 </script>
 
 <style scoped>

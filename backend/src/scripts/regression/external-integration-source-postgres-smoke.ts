@@ -42,8 +42,9 @@ try {
     pageSize: 10
   })
   assert.equal(listed.items.length, 1, 'PG 外部来源系统列表应按名称前缀命中临时来源')
-  assert.equal(listed.items[0]?.tokenCount, 1, 'PG 外部来源系统列表应批量回填 tokenCount')
-  assert.equal(listed.items[0]?.activeTokenCount, 1, 'PG 外部来源系统列表应批量回填 activeTokenCount')
+  assert.deepEqual(Object.keys(listed.items[0] ?? {}).sort(), [
+    'id', 'name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes', 'lastUsedAt', 'primaryToken', 'isBuiltIn'
+  ].sort(), 'PG 外部来源系统列表应保持轻量字段契约')
 
   const secret = await findExternalIntegrationSourceTokenSecretAsync(sourceId, tokenId)
   assert.equal(secret?.token, created.token.token, 'PG 外部来源系统 token secret 应可解密完整 token')
@@ -71,7 +72,7 @@ try {
 
   const disabled = await updateExternalIntegrationSourceAsync(sourceId, { status: 'disabled' })
   assert.equal(disabled?.status, 'disabled', 'PG 外部来源系统应可禁用')
-  assert.equal(disabled?.tokens?.[0]?.status, 'disabled', 'PG 外部来源系统禁用后应同步禁用非 revoked token')
+  assert.equal((await findExternalIntegrationSourceAsync(sourceId))?.tokens[0]?.status, 'disabled', 'PG 外部来源系统禁用后应同步禁用非 revoked token')
 
   const authDisabled = await validateExternalIntegrationSourceTokenAsync({
     token: created.token.token,

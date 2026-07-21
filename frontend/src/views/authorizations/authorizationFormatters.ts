@@ -12,6 +12,7 @@ import type {
   AccountUsageSummary,
   AuthorizationSourceSummary,
   AuthorizationStatus,
+  ResourceAuthorizationListItem,
   ResourceAuthorizationSummary
 } from '@/types/domain'
 export { extractApiErrorMessage } from '@/shared/apiError'
@@ -49,7 +50,7 @@ export function sourceTagColor(source: AuthorizationSourceSummary): string {
   return source.sourceType === 'manual' ? 'cyan' : 'gold'
 }
 
-export function granteeSourceLabel(item: ResourceAuthorizationSummary): string | undefined {
+export function granteeSourceLabel(item: ResourceAuthorizationListItem): string | undefined {
   if (item.granteeType === 'team') return '团队'
   if (item.effectiveSourceType === 'manual') return '个人'
   if (item.effectiveSourceType === 'team') {
@@ -64,14 +65,14 @@ export function granteeSourceLabel(item: ResourceAuthorizationSummary): string |
   return undefined
 }
 
-export function granteeSourceTagColor(item: ResourceAuthorizationSummary): string {
+export function granteeSourceTagColor(item: ResourceAuthorizationListItem): string {
   if (item.granteeType === 'team') return 'gold'
   if (item.effectiveSourceType === 'team') return 'gold'
   if (item.effectiveSourceType === 'manual') return 'cyan'
   return activeTeamSources(item).length > 0 ? 'gold' : 'cyan'
 }
 
-export function granteeTargetName(item: ResourceAuthorizationSummary): string {
+export function granteeTargetName(item: ResourceAuthorizationListItem): string {
   if (item.granteeType === 'team') {
     return item.granteeTeamName
       ?? item.effectiveSourceTeamName
@@ -87,36 +88,36 @@ export function granteeTargetName(item: ResourceAuthorizationSummary): string {
   return item.granteeSystemAccountName ?? '-'
 }
 
-export function authorizationDirection(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): 'outbound' | 'inbound' {
+export function authorizationDirection(item: ResourceAuthorizationListItem, currentSystemAccountId?: string): 'outbound' | 'inbound' {
   if (currentSystemAccountId && item.resourceOwnerSystemAccountId !== currentSystemAccountId) {
     return 'inbound'
   }
   return 'outbound'
 }
 
-export function authorizationDirectionText(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): string {
+export function authorizationDirectionText(item: ResourceAuthorizationListItem, currentSystemAccountId?: string): string {
   return authorizationDirection(item, currentSystemAccountId) === 'inbound' ? '授权给我' : '我授权出去'
 }
 
-export function authorizationDirectionColor(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): string {
+export function authorizationDirectionColor(item: ResourceAuthorizationListItem, currentSystemAccountId?: string): string {
   return authorizationDirection(item, currentSystemAccountId) === 'inbound' ? 'blue' : 'purple'
 }
 
-export function hasManualSource(item: ResourceAuthorizationSummary): boolean {
+export function hasManualSource(item: ResourceAuthorizationListItem): boolean {
   if (item.granteeType === 'team') return false
   return authorizationSourceSummary(item).hasManual
 }
 
-export function canRevokeAuthorization(item: ResourceAuthorizationSummary): boolean {
+export function canRevokeAuthorization(item: ResourceAuthorizationListItem): boolean {
   return item.status !== 'revoked' && item.status !== 'returned'
 }
 
-export function activeTeamSources(item: ResourceAuthorizationSummary): Array<Pick<AuthorizationSourceSummary, 'sourceTeamId' | 'sourceTeamName'>> {
+export function activeTeamSources(item: ResourceAuthorizationListItem): Array<Pick<AuthorizationSourceSummary, 'sourceTeamId' | 'sourceTeamName'>> {
   if (item.granteeType === 'team') return []
   return authorizationSourceSummary(item).teamSources
 }
 
-export function authorizationRevokeActionCount(item: ResourceAuthorizationSummary): number {
+export function authorizationRevokeActionCount(item: ResourceAuthorizationListItem): number {
   if (!canRevokeAuthorization(item)) return 0
   if (item.granteeType === 'team') return 1
   const sourceActionCount = (hasManualSource(item) ? 1 : 0) + activeTeamSources(item).length
@@ -208,9 +209,11 @@ function numberValue(value: unknown): number {
   return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : 0
 }
 
-function authorizationSourceSummary(item: ResourceAuthorizationSummary) {
+function authorizationSourceSummary(item: ResourceAuthorizationListItem | ResourceAuthorizationSummary) {
   if (item.sourceSummary) return item.sourceSummary
-  const activeSources = item.authorizationSources?.filter((source) => source.status === 'active') ?? []
+  const activeSources = 'authorizationSources' in item
+    ? item.authorizationSources?.filter((source) => source.status === 'active') ?? []
+    : []
   return {
     activeSourceCount: activeSources.length,
     hasManual: activeSources.some((source) => source.sourceType === 'manual'),

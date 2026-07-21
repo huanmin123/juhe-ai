@@ -1,6 +1,6 @@
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
-import type { AccountGroupOptionSummary, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType } from '../domain/types.js'
+import type { AccountGroupOptionSummary, GroupAuthorizationOption, GroupListItem, GroupListPageResult, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSelectOption, GroupSummary, GroupType, ResourceAuthorizationSourceSummary } from '../domain/types.js'
 import { includeSystemAccountFields, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationSourcesByAuthorizationIdsAsync } from './authorization-read-loaders.js'
 import { groupAccountStatsFromRow } from './group-account-stats.mapper.js'
@@ -28,7 +28,8 @@ import {
   loadGroupAccountIdsByGroupIds,
   loadGroupAccountIdsByGroupIdsAsync,
   loadGroupAccountStatsByGroupIds,
-  loadGroupAccountStatsByGroupIdsAsync
+  loadGroupAccountStatsByGroupIdsAsync,
+  type GroupAccountStatsRow
 } from './group-read-loaders.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { chunkValues } from './query-utils.js'
@@ -119,8 +120,173 @@ export async function listGroupOptionsAsync(access?: AccessScope, options?: Grou
   return buildGroupOptionSummariesAsync(await listGroupOptionRowsForAccessAsync(access, options), access)
 }
 
+export function listGroupItemsPageReadOnly(access?: AccessScope, options?: GroupListOptions): GroupListPageResult {
+  const page = listGroupRowsPageForAccess(access, options)
+  return {
+    items: buildGroupListItems(page.rows, access),
+    total: page.total,
+    hasMore: page.hasMore,
+    page: page.page,
+    pageSize: page.pageSize
+  }
+}
+
+export async function listGroupItemsPageAsync(access?: AccessScope, options?: GroupListOptions): Promise<GroupListPageResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listGroupItemsPageReadOnly(access, options)
+  }
+  const page = await listGroupRowsPageForAccessAsync(access, options)
+  return {
+    items: await buildGroupListItemsAsync(page.rows, access),
+    total: page.total,
+    hasMore: page.hasMore,
+    page: page.page,
+    pageSize: page.pageSize
+  }
+}
+
+/** Build the groups table projection without usage, authorization source, quota or policy reads. */
+export function buildGroupListItems(rows: GroupListRow[], access?: AccessScope): GroupListItem[] {
+  const statsByGroup = loadGroupAccountStatsByGroupIds(rows.map((row) => row.id))
+  const authorizationSourcesById = loadResourceAuthorizationSourcesByAuthorizationIds(
+    rows.map((row) => row.authorization_id ?? '').filter(Boolean)
+  )
+  const accountNames = includeSystemAccountFields(access) || rows.some((row) => row.access_type === 'authorized')
+    ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
+    : new Map<string, string>()
+  return rows.map((row) => groupListItemFromRow(
+    row,
+    access,
+    statsByGroup.get(row.id),
+    accountNames,
+    authorizationSourcesById.get(row.authorization_id ?? '')
+  ))
+}
+
+export async function buildGroupListItemsAsync(rows: GroupListRow[], access?: AccessScope): Promise<GroupListItem[]> {
+  const [statsByGroup, client, authorizationSourcesById] = await Promise.all([
+    loadGroupAccountStatsByGroupIdsAsync(rows.map((row) => row.id)),
+    getGroupSummaryDatabaseClient(),
+    loadResourceAuthorizationSourcesByAuthorizationIdsAsync(
+      rows.map((row) => row.authorization_id ?? '').filter(Boolean)
+    )
+  ])
+  const accountNames = includeSystemAccountFields(access) || rows.some((row) => row.access_type === 'authorized')
+    ? await loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
+    : new Map<string, string>()
+  return rows.map((row) => groupListItemFromRow(
+    row,
+    access,
+    statsByGroup.get(row.id),
+    accountNames,
+    authorizationSourcesById.get(row.authorization_id ?? '')
+  ))
+}
+
+function groupListItemFromRow(
+  row: GroupListRow,
+  access: AccessScope | undefined,
+  statsRow: GroupAccountStatsRow | undefined,
+  accountNames: Map<string, string>,
+  authorizationSources: ResourceAuthorizationSourceSummary[] | undefined
+): GroupListItem {
+  const authorized = row.access_type === 'authorized'
+  const permissions = authorized && row.system_account_id !== userVisibleSystemAccountId(access)
+    ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row))
+    : ownerPermissions()
+  return {
+    id: row.id,
+    systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
+    systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
+    ownerSystemAccountId: row.system_account_id,
+    ownerSystemAccountName: accountNames.get(row.system_account_id),
+    name: row.name,
+    providerCode: row.provider_code,
+    description: row.description ?? undefined,
+    enabled: Number(row.enabled) === 1,
+    isDefault: authorized ? false : Number(row.is_default) === 1,
+    groupType: groupTypeFromRow(row),
+    accessType: row.access_type ?? 'owner',
+    groupAuthorizationId: row.authorization_id ?? undefined,
+    authorizationStatus: row.authorization_status ?? undefined,
+    authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+    authorizationSourceSummary: authorized
+      ? summarizeGroupAuthorizationSources(authorizationSources ?? [])
+      : undefined,
+    accountStats: {
+      total: Number(statsRow?.total ?? 0),
+      available: Number(statsRow?.available ?? 0),
+      active: Number(statsRow?.active ?? 0),
+      disabled: Number(statsRow?.disabled ?? 0),
+      error: Number(statsRow?.error ?? 0),
+      rateLimited: Number(statsRow?.rate_limited ?? 0),
+      concurrencyLimit: Number(statsRow?.concurrency_limit ?? 0)
+    },
+    canEdit: !Number(row.is_default ?? 0) && permissions.canEdit !== false,
+    canDelete: !Number(row.is_default ?? 0) && permissions.canDelete !== false,
+    canReturn: authorized && permissions.canReturnAuthorization === true
+  }
+}
+
+function summarizeGroupAuthorizationSources(
+  sources: ResourceAuthorizationSourceSummary[]
+): NonNullable<GroupListItem['authorizationSourceSummary']> {
+  const activeSources = sources.filter((source) => source.status === 'active')
+  const teamNames = [...new Set(activeSources
+    .map((source) => source.sourceTeamName?.trim())
+    .filter((name): name is string => Boolean(name)))]
+  return {
+    activeSourceCount: activeSources.length,
+    hasManual: activeSources.some((source) => source.sourceType === 'manual'),
+    hasTeam: activeSources.some((source) => source.sourceType === 'team')
+      || sources.some((source) => source.sourceType === 'team'),
+    teamNames
+  }
+}
+
 export async function listGroupOptionsInClientAsync(client: DatabaseClient, access?: AccessScope, options?: GroupOptionListOptions): Promise<GroupOptionSummary[]> {
   return buildGroupOptionSummariesInClientAsync(client, await listGroupOptionRowsForAccessInClientAsync(client, access, options), access)
+}
+
+export function listGroupSelectOptions(access?: AccessScope, options?: GroupOptionListOptions): GroupSelectOption[] {
+  return listGroupOptionRowsForAccess(access, options).map(groupSelectOptionFromRow)
+}
+
+export async function listGroupSelectOptionsAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<GroupSelectOption[]> {
+  const rows = runtimeConfig.databaseDriver === 'postgres'
+    ? await listGroupOptionRowsForAccessAsync(access, options)
+    : listGroupOptionRowsForAccess(access, options)
+  return rows.map(groupSelectOptionFromRow)
+}
+
+export function listGroupAuthorizationOptions(access?: AccessScope, options?: GroupOptionListOptions): GroupAuthorizationOption[] {
+  return buildGroupAuthorizationOptions(listGroupOptionRowsForAccess(access, options), access)
+}
+
+export async function listGroupAuthorizationOptionsAsync(access?: AccessScope, options?: GroupOptionListOptions): Promise<GroupAuthorizationOption[]> {
+  const rows = runtimeConfig.databaseDriver === 'postgres'
+    ? await listGroupOptionRowsForAccessAsync(access, options)
+    : listGroupOptionRowsForAccess(access, options)
+  return buildGroupAuthorizationOptions(rows, access)
+}
+
+function groupSelectOptionFromRow(row: GroupListRow): GroupSelectOption {
+  return { id: row.id, name: row.name }
+}
+
+function buildGroupAuthorizationOptions(rows: GroupListRow[], access?: AccessScope): GroupAuthorizationOption[] {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  return rows.map((row) => {
+    const authorized = row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId
+    const permissions = authorized
+      ? authorizedGroupPermissions(canBindAuthorizedGroupRowToApiKey(row))
+      : ownerPermissions()
+    return {
+      id: row.id,
+      name: row.name,
+      canAuthorize: permissions.canAuthorize !== false
+    }
+  })
 }
 
 export function listAccountGroupOptions(access?: AccessScope, options?: GroupOptionListOptions): AccountGroupOptionSummary[] {

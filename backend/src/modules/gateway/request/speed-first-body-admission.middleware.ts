@@ -1,6 +1,7 @@
 import type { NextFunction, Response } from 'express'
 
 import { DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY, resolveGroupSchedulingPolicy } from '../../../domain/group-scheduling.js'
+import { logRequestStage } from '../../../shared/request-context.js'
 import { gatewayAccountConcurrencyLimitsByAccountId } from '../dispatch/account-concurrency-identity.js'
 import { gatewayErrorPayload, sendGatewayJsonError } from '../response/responses.js'
 import { acquireSpeedFirstBodyAdmission } from '../runtime/speed-first-body-admission.service.js'
@@ -12,6 +13,7 @@ export async function admitSpeedFirstRequestBody(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  const stageStartedAt = performance.now()
   const runtime = req.gatewayRuntime
   const apiKey = runtime?.apiKey
   const groupAccess = runtime?.groupAccess
@@ -22,6 +24,10 @@ export async function admitSpeedFirstRequestBody(
     || groupAccess?.groupType !== 'high_concurrency'
     || runtime.accounts.length === 0
   ) {
+    logRequestStage('body.speed_first_admission', {
+      admissionMode: 'speed_first_high_concurrency',
+      applicable: false
+    }, 'skipped', stageStartedAt)
     next()
     return
   }
@@ -47,7 +53,13 @@ export async function admitSpeedFirstRequestBody(
     req.off('aborted', abortWait)
     res.off('close', abortWait)
     if (!decision.acquired) {
-      if (decision.reason === 'aborted' || req.aborted || res.destroyed) return
+      if (decision.reason === 'aborted' || req.aborted || res.destroyed) {
+        logRequestStage('body.speed_first_admission', {
+          admissionMode: 'speed_first_high_concurrency',
+          reason: decision.reason
+        }, 'aborted', stageStartedAt)
+        return
+      }
       const responsePayload = gatewayErrorPayload('当前分组繁忙，请稍后重试或增加可用账户。', 'rate_limit_error')
       res.setHeader('Connection', 'close')
       await recordGatewayBodyRejection(req, {
@@ -59,6 +71,17 @@ export async function admitSpeedFirstRequestBody(
         errorMessage: responsePayload.error.message
       })
       sendGatewayJsonError(res, 429, responsePayload)
+      logRequestStage('body.speed_first_admission', {
+        admissionMode: 'speed_first_high_concurrency',
+        failureReason: `speed_first_body_admission_${decision.reason}`,
+        decisionInputs: {
+          reason: decision.reason,
+          capacity: bodyAdmissionCapacity(runtime.accounts),
+          maxQueueWaitMs: policy.maxQueueWaitMs,
+          maxQueueSize: policy.maxQueueSize,
+          perApiKeyQueueLimit: policy.perApiKeyQueueLimit
+        }
+      }, 'expected_failure', stageStartedAt)
       return
     }
 
@@ -72,12 +95,24 @@ export async function admitSpeedFirstRequestBody(
     res.once('close', release)
     if (req.aborted || res.destroyed) {
       release()
+      logRequestStage('body.speed_first_admission', {
+        admissionMode: 'speed_first_high_concurrency'
+      }, 'aborted', stageStartedAt)
       return
     }
+    logRequestStage('body.speed_first_admission', {
+      admissionMode: 'speed_first_high_concurrency',
+      acquired: true,
+      capacity: bodyAdmissionCapacity(runtime.accounts)
+    }, 'success', stageStartedAt)
     next()
   } catch (error) {
     req.off('aborted', abortWait)
     res.off('close', abortWait)
+    logRequestStage('body.speed_first_admission', {
+      admissionMode: 'speed_first_high_concurrency',
+      error
+    }, 'unexpected_failure', stageStartedAt)
     next(error)
   }
 }

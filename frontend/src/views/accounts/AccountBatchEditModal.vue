@@ -630,7 +630,9 @@ async function loadModelOptions(token: number): Promise<void> {
     const models = await loadAccountProviderModelOptionsResource({
       isManagementView: props.isManagementView,
       providerCode: account.providerCode,
-      scopeParams: scope
+      scopeParams: scope,
+      selectedIds: effectiveBatchModels.value,
+      includeCapabilities: requestOverridesSupported.value
     })
     if (token !== loadToken || !open.value) return
     modelOptions.value = providerModelsForProtocolProfile(models.data, selectedProtocolProfile.value)

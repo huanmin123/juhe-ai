@@ -5,8 +5,11 @@ import { resolve } from 'node:path'
 const root = resolve('src')
 
 const groupsRoutes = readSource('modules/groups/groups.routes.ts')
-assertIncludes(groupsRoutes, 'const { accountIds, authorizationSources, ...item } = group', '分组列表 DTO 必须剥离 accountIds 和 authorizationSources')
-assertIncludes(groupsRoutes, 'authorizationSourceSummary', '分组列表必须用授权来源摘要替代完整来源数组')
+const groupSummaryRepository = readSource('storage/group-summary.repository.ts')
+assertIncludes(groupsRoutes, 'listGroupItemsPageAsync', '分组列表必须使用专用列表 repository 投影')
+assertIncludes(groupSummaryRepository, 'buildGroupListItems', '分组列表 DTO 必须由专用映射构造')
+assertIncludes(groupSummaryRepository, 'authorizationSourceSummary', '分组列表必须用授权来源摘要替代完整来源数组')
+assertIncludes(groupSummaryRepository, 'loadResourceAuthorizationSourcesByAuthorizationIds', '分组列表必须按授权 ID 批量读取来源，不能逐行查询')
 assertIncludes(groupsRoutes, "groupsRouter.get('/:id'", '分组编辑必须有单条详情接口支撑渐进式加载')
 
 const systemTeamRepository = readSource('storage/system-team.repository.ts')
@@ -38,19 +41,14 @@ assertIncludes(runtimeLogRepository, 'includeRawJson: false', '运行日志列�
 assertIncludes(runtimeLogRepository, 'runtimeLogDetailFromRow', '运行日志详情必须保留 rawJson 单独读取')
 
 const authorizationRoutes = readSource('modules/authorizations/authorizations.routes.ts')
-assertIncludes(authorizationRoutes, 'toAuthorizationListResponse', '授权列表必须经过轻量 DTO 映射')
-assertIncludes(authorizationRoutes, 'sourceSummary: summarizeAuthorizationSources(authorizationSources)', '授权列表必须用来源摘要替代完整来源数组')
-for (const field of [
-  'authorizationSources',
-  'limits',
-  'resourceAccountExpiresAt',
-  'usage',
-  'usageBySystemAccount',
-  'usageRange'
-]) {
-  assertIncludes(authorizationRoutes, `'${field}'`, `授权列表轻量 DTO 必须剥离 ${field}`)
-}
+assertIncludes(authorizationRoutes, 'res.json(ok(result))', '授权路由必须直接返回 repository 构造的轻量列表 DTO')
 assertIncludes(authorizationRoutes, "authorizationsRouter.get('/:id'", '授权编辑必须有单条详情接口支撑渐进式加载')
+
+const authorizationRepository = readSource('storage/resource-authorization-read.repository.ts')
+assertIncludes(authorizationRepository, 'resourceAuthorizationListSelectColumns', '授权分页列表必须使用窄字段投影')
+assertIncludes(authorizationRepository, 'resourceAuthorizationListItemFromRow', '授权分页列表必须直接构造列表 DTO')
+assertFunctionExcludes(authorizationRepository, 'resourceAuthorizationListItemFromRow', 'parseRequestQuotaLimitsJson', '授权列表 DTO 不得解析额度详情')
+assertFunctionExcludes(authorizationRepository, 'resourceAuthorizationListItemFromRow', 'authorizationSources', '授权列表 DTO 不得先构造完整来源数组')
 
 const authorizationActions = readSource('../frontend/src/views/authorizations/useAuthorizationActions.ts', false)
 assertIncludes(authorizationActions, 'api.authorizations.detail', '授权编辑弹窗必须先加载管理侧单条详情')

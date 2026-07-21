@@ -12,7 +12,7 @@ import { computed } from 'vue'
 
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { ResourceAuthorizationSummary } from '@/types/domain'
+import type { ResourceAuthorizationListItem } from '@/types/domain'
 import type { AuthorizationDirectionFilter } from './authorizationTableColumns'
 import { activeTeamSources, canRevokeAuthorization, hasManualSource } from './authorizationFormatters'
 
@@ -21,7 +21,7 @@ const emit = defineEmits<{
 }>()
 
 const props = defineProps<{
-  authorization: ResourceAuthorizationSummary
+  authorization: ResourceAuthorizationListItem
   compact?: boolean
   direction: AuthorizationDirectionFilter
   isManagementView: boolean

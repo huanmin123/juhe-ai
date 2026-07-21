@@ -128,7 +128,7 @@ import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { rememberAccountSelection } from '@/shared/accountLabelCache'
 import { mergeSelectedGroupOptions } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { ResourceAuthorizationSummary } from '@/types/domain'
+import type { ResourceAuthorizationListItem, ResourceAuthorizationSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
@@ -230,7 +230,7 @@ const {
   removeItems: removeAuthorizationItems,
   resetPagination,
   updateItems: updateAuthorizationItems
-} = useResponsivePagedList<ResourceAuthorizationSummary>({
+} = useResponsivePagedList<ResourceAuthorizationListItem>({
   pageSize: authorizationsPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: authorizationListTotalText,
@@ -389,11 +389,11 @@ const createAuthorizationScopeParams = computed(() => {
   const systemAccountId = createForm.ownerSystemAccountId
   return systemAccountId ? { systemAccountId } : undefined
 })
-function canManageAuthorization(authorization: ResourceAuthorizationSummary): boolean {
+function canManageAuthorization(authorization: ResourceAuthorizationListItem): boolean {
   return isManagementView.value || authorization.permissions?.canEdit === true
 }
 
-function canReturnAuthorization(authorization: ResourceAuthorizationSummary): boolean {
+function canReturnAuthorization(authorization: ResourceAuthorizationListItem): boolean {
   if (isManagementView.value || filters.direction !== 'inbound') return false
   if (authorization.granteeType !== 'system_account') return false
   if (!hasManualSource(authorization)) return false
