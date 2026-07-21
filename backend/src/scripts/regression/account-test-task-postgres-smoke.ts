@@ -125,11 +125,13 @@ try {
   assert.equal(raceCompleted?.status, 'canceled', 'PG cancel must win over complete')
   assert.equal((await getAccountTestTaskRecordAsync(raceCompleteTask.id))?.status, 'canceled', 'PG complete race final status must stay canceled')
 
+  const raceFailSession = await createAccountTestSessionAsync(access)
+  sessionIds.push(raceFailSession.id)
   const raceFailTask = await createAccountTestTaskAsync({
     account,
     access,
     diagnostics: 'limited',
-    sessionId: raceSession.id
+    sessionId: raceFailSession.id
   })
   taskIds.push(raceFailTask.id)
   assert.equal((await markAccountTestTaskRunningAsync(raceFailTask.id))?.status, 'running', 'PG race fail task should start')

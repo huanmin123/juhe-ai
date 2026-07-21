@@ -510,7 +510,10 @@ export function markAccountTestTaskCanceled(id: string, message: string): Accoun
   getBusinessDatabase().prepare(`
     UPDATE account_test_tasks
     SET status = 'canceled',
-        status_message = ?,
+        status_message = CASE
+          WHEN cancel_requested = 1 AND status_message IS NOT NULL AND TRIM(status_message) != '' THEN status_message
+          ELSE ?
+        END,
         cancel_requested = 1,
         finished_at = COALESCE(finished_at, ?),
         updated_at = ?
@@ -1059,7 +1062,10 @@ export async function markAccountTestTaskCanceledAsync(id: string, message: stri
   await client.execute(`
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = 'canceled',
-        status_message = ?,
+        status_message = CASE
+          WHEN cancel_requested = true AND NULLIF(BTRIM(status_message), '') IS NOT NULL THEN status_message
+          ELSE ?
+        END,
         cancel_requested = true,
         finished_at = COALESCE(finished_at, ?),
         updated_at = ?

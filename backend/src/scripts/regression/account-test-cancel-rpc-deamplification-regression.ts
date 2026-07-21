@@ -38,6 +38,7 @@ const account = sampleAccount('acc_cancel_rpc')
 try {
   await assertCancelWinsOverComplete()
   await assertCancelWinsOverFail()
+  await assertSessionCancelReasonSurvivesWorkerFinalization()
   await assertHundredTaskCompletionDoesNotNeedCancelReads()
   assertQueueHasNoCancelPolling()
   console.log('account-test-cancel-rpc-deamplification-regression passed')
@@ -84,6 +85,22 @@ async function assertCancelWinsOverFail(): Promise<void> {
   assert.equal(finalRecord?.status, 'canceled', '取消后 fail 不得覆盖为 failed')
   assert.equal(finalRecord?.cancelRequested, true, '取消后 fail 必须保留 cancel_requested')
   assert.equal(failed?.status, 'canceled', 'fail 返回值也应反映最终 canceled')
+}
+
+async function assertSessionCancelReasonSurvivesWorkerFinalization(): Promise<void> {
+  const session = accountTestTasks.createAccountTestSession(access)
+  const task = accountTestTasks.createAccountTestTask({
+    account: sampleAccount('acc_session_cancel_reason'),
+    access,
+    diagnostics: 'limited',
+    sessionId: session.id
+  })
+  assert.equal(accountTestTasks.markAccountTestTaskRunning(task.id)?.status, 'running')
+  const canceled = accountTestTasks.cancelAccountTestSession(session.id, access, 'custom session cancel reason')
+  assert.ok(canceled?.taskIds.includes(task.id))
+
+  const finalized = accountTestTasks.markAccountTestTaskCanceled(task.id, '已停止测试')
+  assert.equal(finalized?.message, 'custom session cancel reason', 'worker finalization must preserve the persisted session cancel reason')
 }
 
 async function assertHundredTaskCompletionDoesNotNeedCancelReads(): Promise<void> {
