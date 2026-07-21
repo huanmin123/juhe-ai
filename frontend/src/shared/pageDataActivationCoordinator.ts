@@ -99,6 +99,7 @@ export class PageDataActivationCoordinator implements PageDataActivationHandle {
   private readonly batchWindowMs: number
   private readonly timer: PageDataActivationTimer
   private readonly now: () => number
+  private readonly manifestDomains: ReadonlySet<PageDataDomain>
   private nextActivationId = 0
   private active?: Activation
   private disposed = false
@@ -111,12 +112,16 @@ export class PageDataActivationCoordinator implements PageDataActivationHandle {
     this.batchWindowMs = Math.max(0, Math.min(Math.trunc(options.batchWindowMs ?? DEFAULT_BATCH_WINDOW_MS), 1_000))
     this.timer = options.timer ?? defaultTimer
     this.now = options.now ?? (() => Date.now())
+    this.manifestDomains = new Set(options.manifest.domains)
   }
 
   register(input: PageDataActivationParticipant): Promise<PageDataActivationDecision> {
     const participant = cloneParticipant(input)
     const activation = this.active
     if (this.disposed || !activation) return Promise.resolve(decision('superseded', 'pre', participant))
+    if (!this.manifestDomains.has(participant.domain)) {
+      return Promise.resolve(decision('unavailable', 'pre', participant))
+    }
     if (participant.token && participant.token.domain !== participant.domain) {
       return Promise.resolve(decision('token_conflict', 'pre', participant))
     }
@@ -127,6 +132,9 @@ export class PageDataActivationCoordinator implements PageDataActivationHandle {
     const participant = cloneParticipant(input)
     const activation = this.active
     if (this.disposed || !activation) return Promise.resolve(decision('superseded', 'post', participant))
+    if (!this.manifestDomains.has(participant.domain)) {
+      return Promise.resolve(decision('unavailable', 'post', participant))
+    }
     if (input.baseline.domain !== participant.domain) {
       return Promise.resolve(decision('token_conflict', 'post', participant))
     }
@@ -212,10 +220,8 @@ export class PageDataActivationCoordinator implements PageDataActivationHandle {
 
     void Promise.resolve()
       .then(() => this.confirm(request))
-      .then(
-        (result) => this.complete(phase, domains, result),
-        () => this.fail(phase, domains)
-      )
+      .then((result) => this.complete(phase, domains, result))
+      .catch(() => this.fail(phase, domains))
   }
 
   private complete(

@@ -236,6 +236,110 @@ async function testPostConfirmationRequiresStableBaseline(): Promise<void> {
   assert.deepEqual(decisions, cases.map(({ label }) => ({ label, state: 'unavailable' })))
 }
 
+async function testMalformedConfirmationSettlesEveryParticipant(): Promise<void> {
+  const unhandledRejections: unknown[] = []
+  const captureUnhandledRejection = (reason: unknown): void => {
+    unhandledRejections.push(reason)
+  }
+  const malformedResults: Array<{ label: string; result: PageDataConfirmResult }> = [
+    {
+      label: 'missing token',
+      result: {
+        serverTime: '2026-07-22T00:00:00.000Z',
+        domains: {
+          'accounts.static': { action: 'unchanged' }
+        }
+      } as unknown as PageDataConfirmResult
+    },
+    {
+      label: 'invalid changes projection',
+      result: {
+        serverTime: '2026-07-22T00:00:00.000Z',
+        domains: {
+          'accounts.static': {
+            action: 'delta',
+            token: token('accounts.static', 2),
+            changes: [{
+              operation: 'upsert',
+              fieldMask: null,
+              membershipChanged: false,
+              orderChanged: false,
+              filterChanged: false,
+              pageChanged: false
+            }]
+          }
+        }
+      } as unknown as PageDataConfirmResult
+    }
+  ]
+
+  process.on('unhandledRejection', captureUnhandledRejection)
+  try {
+    for (const testCase of malformedResults) {
+      const clock = new FakeClock()
+      const handle = createPageDataActivationCoordinator({
+        manifest: myAccountsPageDataActivationManifest,
+        viewScope: 'self',
+        confirm: async () => testCase.result,
+        timer: clock.timer,
+        now: () => clock.nowMs
+      })
+      handle.trigger('interval')
+      const first = handle.register(participant(`${testCase.label}-list`, 'accounts.static'))
+      const second = handle.register(participant(`${testCase.label}-summary`, 'accounts.static'))
+
+      await clock.advanceTo(50)
+      const decisions = await settleWithin(Promise.all([first, second]))
+      assert.deepEqual(
+        decisions.map(({ state }) => state),
+        ['unavailable', 'unavailable'],
+        `${testCase.label} must settle every participant as unavailable`
+      )
+      await nextEventLoopTurn()
+    }
+  } finally {
+    process.off('unhandledRejection', captureUnhandledRejection)
+  }
+
+  assert.deepEqual(unhandledRejections, [], 'malformed confirmations must not produce unhandled rejections')
+}
+
+async function testManifestDomainBoundary(): Promise<void> {
+  const clock = new FakeClock()
+  const requests: PageDataConfirmRequest[] = []
+  const handle = createPageDataActivationCoordinator({
+    manifest: myAccountsPageDataActivationManifest,
+    viewScope: 'self',
+    confirm: async (request) => {
+      requests.push(request)
+      return confirmationFor(request)
+    },
+    timer: clock.timer,
+    now: () => clock.nowMs
+  })
+  handle.trigger('mount')
+
+  const included = handle.register(participant('accounts-list', 'accounts.static'))
+  const excludedPre = handle.register(participant('accounts-runtime', 'accounts.runtime'))
+  const excludedPost = handle.stabilize({
+    ...participant('accounts-runtime-stable', 'accounts.runtime'),
+    baseline: token('accounts.runtime', 1)
+  })
+  const excludedDecisions = await settleWithin(Promise.all([excludedPre, excludedPost]))
+
+  assert.deepEqual(excludedDecisions.map(({ state }) => state), ['unavailable', 'unavailable'])
+  assert.equal(requests.length, 0, 'out-of-manifest domains must settle before any confirm batch')
+
+  await clock.advanceTo(50)
+  assert.equal((await included).state, 'confirmed')
+  assert.equal(requests.length, 1)
+  assert.deepEqual(
+    Object.keys(requests[0]?.domains ?? {}),
+    ['accounts.static'],
+    'accounts.runtime must not be mixed into the my-accounts confirm batch'
+  )
+}
+
 async function testDeactivateSupersedesPendingResult(): Promise<void> {
   const clock = new FakeClock()
   const gate = deferred<PageDataConfirmResult>()
@@ -257,7 +361,12 @@ async function testDeactivateSupersedesPendingResult(): Promise<void> {
 
   handle.deactivate()
   assert.equal((await pending).state, 'superseded', 'deactivation must supersede every unresolved decision')
-  gate.resolve(confirmationFor(request))
+  gate.resolve({
+    serverTime: '2026-07-22T00:00:00.000Z',
+    domains: {
+      'accounts.static': { action: 'unchanged' }
+    }
+  } as unknown as PageDataConfirmResult)
   await flushMicrotasks()
 
   handle.dispose()
@@ -275,6 +384,8 @@ await testCollectionWindow()
 await testTokenDeduplicationAndConflict()
 await testFreezeAndPostBarrier()
 await testPostConfirmationRequiresStableBaseline()
+await testMalformedConfirmationSettlesEveryParticipant()
+await testManifestDomainBoundary()
 await testDeactivateSupersedesPendingResult()
 
 console.log('Page data activation coordinator regression passed')
@@ -288,6 +399,22 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 async function flushMicrotasks(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
+}
+
+async function settleWithin<T>(promise: Promise<T>, timeoutMs = 100): Promise<T> {
+  let timeoutHandle: ReturnType<typeof globalThis.setTimeout> | undefined
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timeoutHandle = globalThis.setTimeout(() => reject(new Error(`promise did not settle within ${timeoutMs}ms`)), timeoutMs)
+  })
+  try {
+    return await Promise.race([promise, timeout])
+  } finally {
+    if (timeoutHandle !== undefined) globalThis.clearTimeout(timeoutHandle)
+  }
+}
+
+async function nextEventLoopTurn(): Promise<void> {
+  await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0))
 }
 
 void (undefined as PageDataActivationDecision | undefined)
