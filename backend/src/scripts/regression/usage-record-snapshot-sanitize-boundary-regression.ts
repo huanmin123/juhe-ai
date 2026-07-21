@@ -53,6 +53,65 @@ try {
   assert.equal(runtime.queueLength, 1, '带大 snapshot 的 usage 记录应可入队')
   usageRecordQueue.clearUsageRecordQueueForTest()
 
+  usageRecordQueue.enqueueUsageRecordsLocal([{
+    traceId: 'trace-usage-complete-access-snapshot',
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_admin',
+    accountId: '  acc_complete_snapshot  ',
+    accountOwnerSystemAccountId: '  sys_admin  ',
+    accountAccessType: 'owner',
+    groupId: '  grp_complete_snapshot  ',
+    groupOwnerSystemAccountId: '  sys_admin  ',
+    groupAccessType: 'owner',
+    accountAuthorizationSourceType: 'team',
+    groupAuthorizationSourceType: 'team',
+    endpoint: 'POST /v1/responses',
+    success: true
+  }])
+  const normalizedCompleteScope = usageRecordQueue.peekPendingUsageRecordForTest()
+  assert.equal(normalizedCompleteScope?.accountId, 'acc_complete_snapshot', '完整账户快照应保留并 trim accountId')
+  assert.equal(normalizedCompleteScope?.accountOwnerSystemAccountId, 'sys_admin', '完整账户快照应保留并 trim owner')
+  assert.equal(normalizedCompleteScope?.accountAccessType, 'owner', '完整账户快照应保留 accessType')
+  assert.equal(normalizedCompleteScope?.groupId, 'grp_complete_snapshot', '完整分组快照应保留并 trim groupId')
+  assert.equal(normalizedCompleteScope?.groupOwnerSystemAccountId, 'sys_admin', '完整分组快照应保留并 trim owner')
+  assert.equal(normalizedCompleteScope?.groupAccessType, 'owner', '完整分组快照应保留 accessType')
+  assert.equal(normalizedCompleteScope?.accountAuthorizationSourceType, undefined, '无账户授权 ID 时应剥离授权来源字段')
+  assert.equal(normalizedCompleteScope?.groupAuthorizationSourceType, undefined, '无分组授权 ID 时应剥离授权来源字段')
+  usageRecordQueue.clearUsageRecordQueueForTest()
+
+  usageRecordQueue.enqueueUsageRecordsLocal([{
+    traceId: 'trace-usage-incomplete-group-authorization',
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_admin',
+    accountId: 'acc_group_authorized_without_group_auth',
+    accountOwnerSystemAccountId: 'sys_owner',
+    accountAccessType: 'group_authorized',
+    groupId: 'grp_owner_without_authorization',
+    groupOwnerSystemAccountId: 'sys_admin',
+    groupAccessType: 'owner',
+    endpoint: 'POST /v1/responses',
+    success: true
+  }])
+  const normalizedIncompleteAuthorization = usageRecordQueue.peekPendingUsageRecordForTest()
+  assert.equal(normalizedIncompleteAuthorization?.accountId, undefined, 'group_authorized 缺少完整分组授权时应剥离账户维度')
+  assert.equal(normalizedIncompleteAuthorization?.groupId, 'grp_owner_without_authorization', '剥离异常账户维度时应保留独立合法分组维度')
+  usageRecordQueue.clearUsageRecordQueueForTest()
+
+  usageRecordQueue.enqueueUsageRecordsLocal([{
+    traceId: 'trace-usage-team-source-without-team-id',
+    trafficSource: 'gateway',
+    systemAccountId: 'sys_admin',
+    accountId: 'acc_team-source-without-team-id',
+    accountOwnerSystemAccountId: 'sys_owner',
+    accountAccessType: 'account_authorized',
+    accountAuthorizationId: 'auth_team-source-without-team-id',
+    accountAuthorizationSourceType: 'team',
+    endpoint: 'POST /v1/responses',
+    success: true
+  }])
+  assert.equal(usageRecordQueue.peekPendingUsageRecordForTest()?.accountId, undefined, 'team 授权来源缺团队 ID 时应剥离账户维度')
+  usageRecordQueue.clearUsageRecordQueueForTest()
+
   const createdAt = '2000-01-01T00:00:00.000Z'
   const recordId = usageRecordShards.generateUsageRecordId(createdAt, 'sanitize-test')
   usageRecordQueue.enqueueUsageRecordsLocal([{
@@ -61,6 +120,13 @@ try {
     trafficSource: 'gateway',
     systemAccountId: 'sys_admin',
     groupId: 'grp_sensitive_snapshot',
+    groupAuthorizationId: 'auth_incomplete_group',
+    groupAuthorizationSourceType: 'team',
+    groupAuthorizationSourceTeamId: 'team_incomplete_group',
+    accountId: 'acc_incomplete_usage_scope',
+    accountAuthorizationId: 'auth_incomplete_account',
+    accountAuthorizationSourceType: 'team',
+    accountAuthorizationSourceTeamId: 'team_incomplete_account',
     endpoint: 'POST /v1/responses',
     providerCode: 'gpt',
     success: false,
@@ -85,11 +151,19 @@ try {
     },
     createdAt
   }])
-  usageRecordQueue.flushAllUsageRecordQueue()
+  const normalizedIncompleteScope = usageRecordQueue.peekPendingUsageRecordForTest()
+  assert.equal(normalizedIncompleteScope?.groupId, undefined, '缺少分组归属快照时应剥离 groupId')
+  assert.equal(normalizedIncompleteScope?.groupAuthorizationId, undefined, '剥离 groupId 时应同步剥离分组授权字段')
+  assert.equal(normalizedIncompleteScope?.groupAuthorizationSourceType, undefined, '剥离 groupId 时应同步剥离分组授权来源类型')
+  assert.equal(normalizedIncompleteScope?.groupAuthorizationSourceTeamId, undefined, '剥离 groupId 时应同步剥离分组授权团队')
+  assert.equal(normalizedIncompleteScope?.accountId, undefined, '缺少账户归属快照时应剥离 accountId')
+  assert.equal(normalizedIncompleteScope?.accountAuthorizationId, undefined, '剥离 accountId 时应同步剥离账户授权字段')
+  assert.equal(normalizedIncompleteScope?.accountAuthorizationSourceType, undefined, '剥离 accountId 时应同步剥离账户授权来源类型')
+  assert.equal(normalizedIncompleteScope?.accountAuthorizationSourceTeamId, undefined, '剥离 accountId 时应同步剥离账户授权团队')
+  await usageRecordQueue.flushAllUsageRecordQueueAsync()
   const flushedRuntime = usageRecordQueue.getUsageRecordQueueRuntime()
   assert.equal(flushedRuntime.flushFailureCount, 0, '使用记录 flush 不应失败')
   assert.equal(flushedRuntime.queueLength, 0, '使用记录 flush 后队列应清空')
-
   const detail = repositories.getUsageRecordDetail(recordId)
   assert(detail, '应能读回写入的使用记录详情')
   const detailText = JSON.stringify(detail)
