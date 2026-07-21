@@ -159,7 +159,7 @@ func (s *Service) Facets(ctx context.Context) (FacetsResult, error) {
 		LatestIndexedAt:   result.LatestIndexedAt,
 		TotalIndexed:      result.TotalIndexed,
 		Levels:            levels,
-		Events:            append([]string(nil), result.Events...),
+		Events:            append([]string{}, result.Events...),
 	}, nil
 }
 
