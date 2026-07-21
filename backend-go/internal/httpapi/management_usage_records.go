@@ -55,10 +55,6 @@ func newManagementUsageRecordsHandler(service managementUsageRecordService, scop
 			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
 			return
 		}
-		if scope == managementUsageRecordScopeAdmin && input.ScopeSystemAccountID == "" && managementUsageRecordHasUnsupportedAllAccountFilters(r.URL.Query()) {
-			writeMessageError(w, http.StatusBadRequest, "请先选择系统账户后筛选")
-			return
-		}
 		if id := chi.URLParam(r, "id"); id != "" {
 			detail, found, err := service.Detail(r, managementusagerecords.DetailInput{
 				ID: id, ScopeSystemAccountID: input.ScopeSystemAccountID, IncludeSystemAccount: input.IncludeSystemAccount,
@@ -72,6 +68,10 @@ func newManagementUsageRecordsHandler(service managementUsageRecordService, scop
 				return
 			}
 			writeData(w, http.StatusOK, detail)
+			return
+		}
+		if scope == managementUsageRecordScopeAdmin && input.ScopeSystemAccountID == "" && managementUsageRecordHasUnsupportedAllAccountFilters(r.URL.Query()) {
+			writeMessageError(w, http.StatusBadRequest, "请先选择系统账户后筛选")
 			return
 		}
 		result, err := service.List(r, input)

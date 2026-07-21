@@ -848,3 +848,9 @@
 - PostgreSQL reader 只选择 `juhe_dataset.audit_logs` 摘要列并一次关联名称，支持 Node 当前筛选与 1000 行 progressive window，固定 `created_at DESC, id DESC`，不执行 `COUNT`，不读取 payload、attempt 或热搜索文件，也未新增脱敏、日志清洗或 sanitizer。
 - migration `000069` 保留 Node writer 继续运行所需的 audit logs / attempts / payload blobs / payload refs / error groups 五张表和索引。Go 不接管捕获、Redis Stream / IPC、ingest worker、详情、payload、error groups、hot search、runtime 或保留清理；这些路径仍由 Node 单 owner。
 - 定向 Go、migration catalog 和 integration package 编译已通过；真实 Node writer -> Go reader PostgreSQL、查询计划、真实 listener / browser、反向代理单 owner、回滚和 Node 删除尚未执行，不宣称生产接管。
+
+## 2026-07-22 W6 使用记录已迁移语义漂移修复
+
+- 对照最新 Node 后，Go 账户关键字候选已按自有账户、授权实例、直接账户授权、启用的分组授权四段优先级生成，限定当前系统账户；每段先按名称 / ID 排序并限制 200，再按账户 ID 去重并保持最终 200 条上限，不新增 Node 未使用的授权状态或过期过滤。
+- 标准 `usage_YYYYMMDD_sN_*` 详情 ID 已解析真实 UTC 日期并追加单日 `[start, end)` 分区条件；非法日期、自定义和旧格式 ID 保持原 ID-only 回退。详情同时补齐 request snapshot 的 endpoint 回退、ECMAScript snapshot 空白判定、request / response snapshot 非空时必须为 JSON 对象、合法空对象必须保留、`modelMappingApplied: false` 必需字段和列表专用全账户筛选门禁不拦截详情。
+- store / service / HTTP 回归覆盖授权 SQL、候选优先级结构、合法与非法 ID、endpoint 优先级、管理员未知 query 和个人详情强制自身范围。真实 PostgreSQL 多分区 `EXPLAIN`、Node writer -> Go reader、真实 listener / browser / 反向代理、生产切流和 Node 删除继续作为未完成门禁。
