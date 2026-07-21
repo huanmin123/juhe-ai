@@ -189,7 +189,7 @@ docs/plans/
 
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
-| PLAN-0148 | 账户测试取消查询无放大 | 进行中 / 禁止上线 | 2026-07-21 | 账号测试 / worker / DB service / SQLite / PostgreSQL | `docs/plans/计划-0148-账户测试取消查询无放大.md` |
+| PLAN-0148 | 账户测试取消查询无放大 | 已完成 / 已合入 master / 禁止上线 | 2026-07-21 | 账号测试 / worker / DB service / SQLite / PostgreSQL | `docs/plans/计划-0148-账户测试取消查询无放大.md` |
 | PLAN-0146 | 全系统日志治理 | 实现与最终性能复跑完成 / 合并交付待完成 / 禁止上线 | 2026-07-20 | Node / Go / worker / DB service / 网关 / runtime-log file spool / PostgreSQL / 其他 Redis 事实队列 | `docs/plans/计划-0146-全系统日志治理.md` |
 | PLAN-0147 | 账户状态刷新与测试弹窗生命周期 | 已完成（未上线） | 2026-07-21 | 前端 / 账户测试 / Go 管理账户列表 | `docs/plans/计划-0147-账户状态刷新与测试弹窗生命周期.md` |
 | PLAN-0145 | 全局请求阻塞等待治理 | 部分已发布 / 剩余专项进行中 | 2026-07-20 | 网关 / Redis / DB service / 审计 / usage / 管理接口 / 部署 | `docs/plans/计划-0145-全局请求阻塞等待治理.md` || PLAN-0143 | 供应商认证协议与计价目录扩展 | 已发布 / 真实上游付费 E2E 未执行 | 2026-07-18 | OAuth / 供应商 / 协议 / 模型目录 / 计价 | `docs/plans/计划-0143-供应商认证协议与计价目录扩展.md` |
