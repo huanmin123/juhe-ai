@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementusagerecords"
@@ -44,6 +46,49 @@ func TestManagementUsageRecordsHandlerRequiresAccountBeforeFilteringAllAccounts(
 	}
 }
 
+func TestManagementUsageRecordDetailIgnoresListOnlyAllAccountFilterGate(t *testing.T) {
+	service := &managementUsageRecordServiceStub{
+		detailResult: managementusagerecords.Summary{ID: "usage_1", TraceID: "trace_1", TrafficSource: "gateway"},
+		detailFound:  true,
+	}
+	handler := newManagementUsageRecordsHandler(service, managementUsageRecordScopeAdmin)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/usage-records/usage_1?model=gpt-5.5&unknown=value", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("id", "usage_1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !service.detailCalled || service.listCalled {
+		t.Fatalf("status = %d detailCalled = %v listCalled = %v body = %s", rec.Code, service.detailCalled, service.listCalled, rec.Body.String())
+	}
+	if service.detailInput.ID != "usage_1" || service.detailInput.ScopeSystemAccountID != "" || !service.detailInput.IncludeSystemAccount {
+		t.Fatalf("detail input = %+v", service.detailInput)
+	}
+}
+
+func TestManagementMyUsageRecordDetailForcesSelfScope(t *testing.T) {
+	service := &managementUsageRecordServiceStub{
+		detailResult: managementusagerecords.Summary{ID: "usage_1", TraceID: "trace_1", TrafficSource: "gateway"},
+		detailFound:  true,
+	}
+	handler := newManagementUsageRecordsHandler(service, managementUsageRecordScopeSelf)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/my-usage-records/usage_1?systemAccountId=sys_other", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("id", "usage_1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_user", Role: "user"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || service.detailInput.ScopeSystemAccountID != "sys_user" || service.detailInput.IncludeSystemAccount {
+		t.Fatalf("status = %d detail input = %+v body = %s", rec.Code, service.detailInput, rec.Body.String())
+	}
+}
+
 func TestRouterRegistersManagementAndSelfUsageRecordRoutes(t *testing.T) {
 	service := &managementUsageRecordServiceStub{listResult: managementusagerecords.ListResult{Items: []managementusagerecords.Summary{}, Page: 1, PageSize: 50}}
 	router := NewRouter(RouterOptions{
@@ -67,10 +112,13 @@ func TestRouterRegistersManagementAndSelfUsageRecordRoutes(t *testing.T) {
 }
 
 type managementUsageRecordServiceStub struct {
-	listCalled  bool
-	listInput   managementusagerecords.ListInput
-	listResult  managementusagerecords.ListResult
-	detailInput managementusagerecords.DetailInput
+	listCalled   bool
+	listInput    managementusagerecords.ListInput
+	listResult   managementusagerecords.ListResult
+	detailCalled bool
+	detailInput  managementusagerecords.DetailInput
+	detailResult managementusagerecords.Summary
+	detailFound  bool
 }
 
 func (s *managementUsageRecordServiceStub) List(_ *http.Request, input managementusagerecords.ListInput) (managementusagerecords.ListResult, error) {
@@ -80,6 +128,7 @@ func (s *managementUsageRecordServiceStub) List(_ *http.Request, input managemen
 }
 
 func (s *managementUsageRecordServiceStub) Detail(_ *http.Request, input managementusagerecords.DetailInput) (managementusagerecords.Summary, bool, error) {
+	s.detailCalled = true
 	s.detailInput = input
-	return managementusagerecords.Summary{}, false, nil
+	return s.detailResult, s.detailFound, nil
 }
