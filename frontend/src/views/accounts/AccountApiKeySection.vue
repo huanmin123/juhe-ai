@@ -97,6 +97,9 @@
         placeholder="选择这个 Base URL 支持的模型"
         :options="modelOptions"
         show-search
+        @dropdown-visible-change="$emit('model-options-open', $event)"
+        @search="$emit('model-options-search', $event)"
+        @change="$emit('model-capabilities-load', form.supportedModels)"
       />
     </a-form-item>
     <AccountHealthCheckModelField
@@ -135,6 +138,9 @@ const props = defineProps<{
 
 defineEmits<{
   (event: 'delete-tag', tagId: string): void
+  (event: 'model-options-open', open: boolean): void
+  (event: 'model-options-search', value: string): void
+  (event: 'model-capabilities-load', modelIds: string[]): void
 }>()
 
 const filledApiKeyCount = computed(() => normalizedAccountApiKeys(props.form).length)

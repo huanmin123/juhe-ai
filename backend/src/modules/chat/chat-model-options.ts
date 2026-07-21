@@ -22,6 +22,28 @@ export interface ChatModelOption {
   supportedTools: string[]
 }
 
+export interface ChatModelListOption {
+  id: string
+  name: string
+}
+
+export type ChatModelCapabilities = ChatModelOption & { name: string }
+
+export function chatModelListOptions(models: readonly ChatModelOption[]): ChatModelListOption[] {
+  return models.map((model) => ({ id: model.id, name: model.id }))
+}
+
+export function chatModelCapabilities(model: ChatModelOption): ChatModelCapabilities {
+  return { ...model, name: model.id }
+}
+
+export function mergeChatModelCapabilities(models: readonly ChatModelOption[]): ChatModelCapabilities | undefined {
+  const first = models[0]
+  if (!first) return undefined
+  const merged = buildChatModelOptions([first.id], models.map((model) => ({ model: model.id, ...model })))[0]
+  return merged ? chatModelCapabilities(merged) : undefined
+}
+
 export class ChatModelCapabilityError extends Error {
   readonly code = 'chat_model_capability_mismatch'
 

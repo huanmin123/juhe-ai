@@ -135,7 +135,7 @@ authorizationsRouter.get('/', async (req, res, next) => {
       ? { ...filters, ...sourceTypeFilter, direction }
       : { ...filters, ...sourceTypeFilter }
     const result = await listResourceAuthorizationsPageAsync(routeFilters, getRequestAccessScope(systemAccountId), { includeUsage: false, page, pageSize })
-    res.json(ok(toAuthorizationListResponse(result)))
+    res.json(ok(result))
   } catch (error) {
     next(error)
   }
@@ -537,95 +537,6 @@ authorizationsRouter.get('/:id/usage', async (req, res, next) => {
     next(error)
   }
 })
-
-type ResourceAuthorizationListResponse = {
-  items: ResourceAuthorizationListItem[]
-  total: number
-  hasMore: boolean
-  page: number
-  pageSize: number
-}
-
-type ResourceAuthorizationListItem = Omit<
-  ResourceAuthorizationSummary,
-  | 'authorizationSources'
-  | 'limits'
-  | 'resourceAccountExpiresAt'
-  | 'usage'
-  | 'usageBySystemAccount'
-  | 'usageBySystemAccountTotal'
-  | 'usageBySystemAccountPage'
-  | 'usageBySystemAccountPageSize'
-  | 'usageBySystemAccountHasMore'
-  | 'usageRange'
-> & {
-  sourceSummary?: {
-    activeSourceCount: number
-    hasManual: boolean
-    hasTeam: boolean
-    teamSources: Array<{
-      sourceTeamId: string
-      sourceTeamName?: string
-    }>
-  }
-}
-
-function toAuthorizationListResponse(result: {
-  items: ResourceAuthorizationSummary[]
-  total: number
-  hasMore: boolean
-  page: number
-  pageSize: number
-}): ResourceAuthorizationListResponse {
-  return {
-    ...result,
-    items: result.items.map(toAuthorizationListItem)
-  }
-}
-
-function toAuthorizationListItem(authorization: ResourceAuthorizationSummary): ResourceAuthorizationListItem {
-  const {
-    authorizationSources,
-    limits,
-    resourceAccountExpiresAt,
-    usage,
-    usageBySystemAccount,
-    usageBySystemAccountTotal,
-    usageBySystemAccountPage,
-    usageBySystemAccountPageSize,
-    usageBySystemAccountHasMore,
-    usageRange,
-    ...item
-  } = authorization
-  void limits
-  void resourceAccountExpiresAt
-  void usage
-  void usageBySystemAccount
-  void usageBySystemAccountTotal
-  void usageBySystemAccountPage
-  void usageBySystemAccountPageSize
-  void usageBySystemAccountHasMore
-  void usageRange
-  return {
-    ...item,
-    sourceSummary: summarizeAuthorizationSources(authorizationSources)
-  }
-}
-
-function summarizeAuthorizationSources(sources: ResourceAuthorizationSummary['authorizationSources']): ResourceAuthorizationListItem['sourceSummary'] {
-  const activeSources = sources.filter((source) => source.status === 'active')
-  return {
-    activeSourceCount: activeSources.length,
-    hasManual: activeSources.some((source) => source.sourceType === 'manual'),
-    hasTeam: activeSources.some((source) => source.sourceType === 'team'),
-    teamSources: activeSources
-      .filter((source) => source.sourceType === 'team' && Boolean(source.sourceTeamId))
-      .map((source) => ({
-        sourceTeamId: source.sourceTeamId!,
-        sourceTeamName: source.sourceTeamName
-      }))
-  }
-}
 
 function authorizationTargets(authorization: ResourceAuthorizationSummary) {
   const targets = [

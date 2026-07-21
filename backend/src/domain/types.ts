@@ -101,6 +101,37 @@ export interface AnnouncementSummary {
   updatedAt: string
 }
 
+export interface PublicAnnouncementListItem {
+  id: string
+  title: string
+  level: AnnouncementLevel
+  publishedAt: string
+  readAt?: string
+}
+
+export interface PublicAnnouncementDetail {
+  id: string
+  title: string
+  content: string
+  level: AnnouncementLevel
+  publishedAt: string
+}
+
+export interface AnnouncementListItem {
+  id: string
+  title: string
+  contentPreview: string
+  level: AnnouncementLevel
+  status: AnnouncementStatus
+  createdBy?: string
+  createdByName?: string
+  updatedBy?: string
+  updatedByName?: string
+  publishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface SystemTeamMemberSummary {
   id: string
   teamId: string
@@ -129,11 +160,39 @@ export interface SystemTeamSummary {
 }
 
 export interface SystemTeamListResult {
-  items: SystemTeamSummary[]
+  items: SystemTeamListItem[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
+}
+
+/** Fields needed by the paged management list only. */
+export interface SystemTeamListItem {
+  id: string
+  name: string
+  description?: string
+  status: SystemTeamStatus
+  memberCount: number
+  createdAt: string
+}
+
+/** Fields needed by the member drawer only; details are loaded explicitly. */
+export interface SystemTeamMemberDetail {
+  id: string
+  systemAccountId: string
+  systemAccountName?: string
+  joinedAt: string
+}
+
+export interface SystemTeamDetail {
+  id: string
+  name: string
+  description?: string
+  status: SystemTeamStatus
+  memberCount: number
+  members: SystemTeamMemberDetail[]
+  createdAt: string
 }
 
 export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
@@ -687,6 +746,27 @@ export interface AccountSummary {
   authorizationTeamCount?: number
 }
 
+export type AccountListItem = Omit<AccountSummary,
+  | 'credentials'
+  | 'supportedModels'
+  | 'modelMappings'
+  | 'apiKeyRuntimeDetails'
+  | 'usage'
+  | 'oauthUsage'
+  | 'authorizationSources'
+  | 'authorizationCount'
+  | 'authorizationTeamCount'
+  | 'authorizationUsageAvailable'
+  | 'currentConcurrency'
+  | 'currentConcurrencyAvailable'
+  | 'runtimeAvailability'
+  | 'effectiveAvailability'
+  | 'availabilityPresentation'
+  | 'apiKeyRuntime'
+  | 'todayUsage'
+  | 'lastUsedAt'
+>
+
 export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'id'
   | 'status'
@@ -695,9 +775,15 @@ export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'cooldownUntil'
   | 'lastErrorCode'
   | 'lastErrorMessage'
+  | 'lastErrorTraceId'
+  | 'cooldownRetestLastAt'
+  | 'cooldownRetestLastStatusCode'
   | 'lastHealthCheckAt'
+  | 'nextHealthCheckAt'
+  | 'lastHealthCheckStatusCode'
   | 'lastHealthCheckErrorCode'
   | 'lastHealthCheckErrorMessage'
+  | 'lastHealthCheckTraceId'
   | 'authorizationStatus'
   | 'authorizationExpiresAt'
   | 'authorizationQuotaExceeded'
@@ -707,6 +793,15 @@ export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'authorizationInstanceSourceAccountCooldownUntil'
   | 'authorizationInstanceSourceAccountLastErrorCode'
   | 'authorizationInstanceSourceAccountLastErrorMessage'
+  | 'authorizationInstanceSourceAccountLastErrorTraceId'
+  | 'authorizationInstanceSourceAccountCooldownRetestLastAt'
+  | 'authorizationInstanceSourceAccountCooldownRetestLastStatusCode'
+  | 'authorizationInstanceSourceAccountLastHealthCheckAt'
+  | 'authorizationInstanceSourceAccountNextHealthCheckAt'
+  | 'authorizationInstanceSourceAccountLastHealthCheckStatusCode'
+  | 'authorizationInstanceSourceAccountLastHealthCheckErrorCode'
+  | 'authorizationInstanceSourceAccountLastHealthCheckErrorMessage'
+  | 'authorizationInstanceSourceAccountLastHealthCheckTraceId'
   | 'apiKeyRuntime'
   | 'runtimeAvailability'
   | 'effectiveAvailability'
@@ -816,6 +911,13 @@ export interface AccountUsageStatsRow {
   authorizationUsageAvailable: boolean
   authorizationCount: number
   authorizationTeamCount: number
+}
+
+export interface AccountUsageStatsTrendOverview {
+  range: AccountUsageStatsRange
+  rows: Array<Pick<AccountUsageStatsRow, 'id' | 'name' | 'providerCode' | 'systemAccountId' | 'systemAccountName' | 'ownerSystemAccountId' | 'ownerSystemAccountName' | 'accessType'> & {
+    dailyUsage: AccountUsageDailyPoint[]
+  }>
 }
 
 export interface AccountUsageStatsOverview {
@@ -1075,12 +1177,52 @@ export interface GroupSummary {
   permissions?: ResourcePermissions
 }
 
+/** Fields needed by the groups table. Details and edit forms use GroupSummary. */
+export interface GroupListItem extends Omit<GroupSummary, 'accountIds' | 'schedulingPolicy' | 'authorizationLimits' | 'authorizationSources' | 'accountStats' | 'permissions'> {
+  accountStats: Pick<GroupAccountStats, 'total' | 'available' | 'active' | 'disabled' | 'error' | 'rateLimited' | 'concurrencyLimit'> & {
+    currentConcurrency?: number
+    currentConcurrencyAvailable?: boolean
+    todayUsage?: AccountUsageSummary
+  }
+  canEdit: boolean
+  canDelete: boolean
+  canReturn: boolean
+  authorizationSourceSummary?: {
+    activeSourceCount: number
+    hasManual: boolean
+    hasTeam: boolean
+    teamNames: string[]
+  }
+}
+
 export interface GroupListResult {
   items: GroupSummary[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
+}
+
+export interface GroupListPageResult extends Omit<GroupListResult, 'items'> {
+  items: GroupListItem[]
+}
+
+export interface GroupSelectOption {
+  id: string
+  name: string
+}
+
+export interface GroupAuthorizationOption extends GroupSelectOption {
+  canAuthorize: boolean
+}
+
+export interface GroupStatusSnapshotResult {
+  generatedAt: string
+  items: Array<{
+    id: string
+    currentConcurrency: number
+    todayUsage: AccountUsageSummary
+  }>
 }
 
 export type GroupOptionSummary = Pick<
@@ -1106,6 +1248,11 @@ export type GroupOptionSummary = Pick<
 
 export interface AccountGroupOptionSummary extends GroupOptionSummary {
   accountIds: string[]
+}
+
+export interface AuthorizationGranteeGroupOptionSummary {
+  id: string
+  name: string
 }
 
 export interface ResourceAuthorizationUsageDetail {
@@ -1171,8 +1318,40 @@ export interface ResourceAuthorizationSummary {
   updatedAt: string
 }
 
+export interface ResourceAuthorizationListItem {
+  id: string
+  resourceType: ResourceAuthorizationResourceType
+  resourceId: string
+  resourceName?: string
+  resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccountName?: string
+  granteeType: ResourceAuthorizationGranteeType
+  granteeSystemAccountId?: string
+  granteeSystemAccountName?: string
+  granteeUsername?: string
+  granteeTeamId?: string
+  granteeTeamName?: string
+  status: AuthorizationStatus
+  remark?: string
+  expiresAt?: string
+  effectiveSourceType: ResourceAuthorizationSourceType
+  effectiveSourceTeamId?: string
+  effectiveSourceTeamName?: string
+  createdAt: string
+  sourceSummary: {
+    activeSourceCount: number
+    hasManual: boolean
+    hasTeam: boolean
+    teamSources: Array<{
+      sourceTeamId: string
+      sourceTeamName?: string
+    }>
+  }
+  permissions: Pick<ResourcePermissions, 'canEdit' | 'canAuthorize'>
+}
+
 export interface ResourceAuthorizationListResult {
-  items: ResourceAuthorizationSummary[]
+  items: ResourceAuthorizationListItem[]
   total: number
   hasMore: boolean
   page: number

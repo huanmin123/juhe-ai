@@ -12,6 +12,7 @@ import {
   createExternalIntegrationSourceTokenAsync,
   deleteExternalIntegrationSourceAsync,
   findExternalIntegrationSourceAsync,
+  findExternalIntegrationSourceRecordAsync,
   findExternalIntegrationSourceTokenSecretAsync,
   listExternalIntegrationSourcesAsync,
   resetBuiltInExternalIntegrationTestTokenAsync,
@@ -100,7 +101,7 @@ externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuar
 }), async (req, res) => {
   try {
     const token = await resetBuiltInExternalIntegrationTestTokenAsync()
-    const source = await findExternalIntegrationSourceAsync(builtInExternalIntegrationTestSourceId)
+    const source = await findExternalIntegrationSourceRecordAsync(builtInExternalIntegrationTestSourceId)
     await recordSourceOperation(req, {
       action: 'reset_builtin_test_token',
       operationKey: 'external_integration_sources.reset_builtin_test_token',
@@ -112,10 +113,7 @@ externalIntegrationSourcesRouter.post('/built-in-test-token/reset', mutationGuar
       ]
     })
     setSecretResponseHeaders(res)
-    res.json(ok({
-      token,
-      source
-    }))
+    res.json(ok({ token }))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '重置内置测试 Token 失败'))
   }
@@ -149,7 +147,7 @@ externalIntegrationSourcesRouter.post('/', mutationGuard({
       ]
     })
     setSecretResponseHeaders(res)
-    res.status(201).json(ok(created))
+    res.status(201).json(ok({ token: created.token }))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '来源系统创建失败'))
   }
@@ -193,7 +191,7 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(body.error, '来源系统参数无效')))
     return
   }
-  const before = await findExternalIntegrationSourceAsync(params.data.id)
+  const before = await findExternalIntegrationSourceRecordAsync(params.data.id)
   let source: Awaited<ReturnType<typeof updateExternalIntegrationSourceAsync>>
   try {
     source = await updateExternalIntegrationSourceAsync(params.data.id, body.data)
@@ -218,7 +216,7 @@ externalIntegrationSourcesRouter.patch('/:id', mutationGuard({
       safeChange('rateLimits', '限频规则', formatRateLimits(before?.rateLimits ?? []), formatRateLimits(source.rateLimits))
     ]
   })
-  res.json(ok(source))
+  res.json(ok({ id: source.id }))
 })
 
 externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
@@ -232,7 +230,7 @@ externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(params.error, '来源系统不存在')))
     return
   }
-  const before = await findExternalIntegrationSourceAsync(params.data.id)
+  const before = await findExternalIntegrationSourceRecordAsync(params.data.id)
   try {
     if (!await deleteExternalIntegrationSourceAsync(params.data.id)) {
       res.status(404).json({ message: '来源系统不存在' })
@@ -249,8 +247,7 @@ externalIntegrationSourcesRouter.delete('/:id', mutationGuard({
     sourceName: before?.name ?? params.data.id,
     summary: `删除外部来源系统：${before?.name ?? params.data.id}`,
     changes: [
-      safeChange('deleted', '删除状态', false, true),
-      safeChange('tokenCount', '关联 Token 数量', before?.tokenCount ?? 0, 0)
+      safeChange('deleted', '删除状态', false, true)
     ]
   })
   res.status(204).send()
@@ -279,7 +276,7 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
       sourceRefId: params.data.id,
       ...body.data
     })
-    const source = await findExternalIntegrationSourceAsync(params.data.id)
+    const source = await findExternalIntegrationSourceRecordAsync(params.data.id)
     await recordSourceOperation(req, {
       action: 'create_token',
       operationKey: 'external_integration_sources.create_token',
@@ -293,10 +290,7 @@ externalIntegrationSourcesRouter.post('/:id/tokens', mutationGuard({
       ]
     })
     setSecretResponseHeaders(res)
-    res.status(201).json(ok({
-      token,
-      source
-    }))
+    res.status(201).json(ok({ token }))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Token 创建失败'))
   }
@@ -352,7 +346,7 @@ externalIntegrationSourcesRouter.patch('/:id/tokens/:tokenId', mutationGuard({
     res.status(404).json({ message: 'Token 不存在' })
     return
   }
-  const source = await findExternalIntegrationSourceAsync(params.data.id)
+  const source = await findExternalIntegrationSourceRecordAsync(params.data.id)
   await recordSourceOperation(req, {
     action: 'update_token',
     operationKey: 'external_integration_sources.update_token',

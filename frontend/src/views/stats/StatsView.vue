@@ -246,7 +246,7 @@ async function loadData(options: { force?: boolean } = {}) {
         route: isManagementView.value ? '/stats/usage-overview' : '/my-stats/usage-overview',
         targetSystemAccountId: systemAccountId
       }),
-      loadUsageStatsWindow({ force: true })
+      loadUsageStatsWindow()
     ])
     if (requestSeq !== statsRequestSeq) return
   } catch (error) {
@@ -363,7 +363,7 @@ function selectedRangeParams(): { startDate?: string; endDate?: string } {
 }
 
 async function handleQuickRangeChange(value: string | number) {
-  await loadUsageStatsWindow({ force: true })
+  await loadUsageStatsWindow()
   const range = quickRangeDateRange(value as QuickRange)
   if (!range) return
   dateRange.value = parseDateRange({

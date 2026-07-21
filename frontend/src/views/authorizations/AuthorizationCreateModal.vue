@@ -116,7 +116,7 @@ import type { Dayjs } from 'dayjs'
 import AccountSelect from '@/components/AccountSelect.vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { AuthorizationGranteeGroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import RequestQuotaFields from '../shared/RequestQuotaFields.vue'
 import type { AuthorizationCreateFormModel } from './authorizationFormTypes'
 
@@ -141,7 +141,7 @@ const props = defineProps<{
   targetGroupPlaceholder: string
   targetGroupTip: string
   targetGroupVisible: boolean
-  targetGroups: GroupOptionSummary[]
+  targetGroups: AuthorizationGranteeGroupOptionSummary[]
   teams: SystemTeamPrincipalSummary[]
   granteeLoading?: boolean
   users: SystemAccountPrincipalSummary[]

@@ -227,9 +227,9 @@ interface AiPerformanceOverview {
 
 interface SystemTeamMemberSummary {
   id: string
-  teamId: string
   systemAccountId: string
-  status: string
+  systemAccountName?: string
+  joinedAt: string
 }
 
 interface SystemTeamSummary {
@@ -237,7 +237,6 @@ interface SystemTeamSummary {
   name: string
   status: string
   memberCount?: number
-  activeMemberCount?: number
   members?: SystemTeamMemberSummary[]
 }
 
@@ -574,12 +573,13 @@ async function main(): Promise<void> {
     assert(userBAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控拥有者应能看到自己的账户')
     assert(userBAiPerformance.summary.requestCount === 3, `AI性能监控归属人原账户不应混入授权实例调用，实际 ${userBAiPerformance.summary.requestCount}`)
     await assertForbidden(`${baseUrl}/__aisys__/api/my-stats/system-metrics`, seed.userACookie, '用户侧统计命名空间里的系统指标仍是管理员能力，普通用户不可访问')
+    await assertForbidden(`${baseUrl}/__aisys__/api/stats/system-metrics/runtime`, seed.userACookie, '系统指标运行态端点只允许管理员访问')
     summary.push('AI性能监控授权实例独立统计检查通过')
 
     const userATeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userACookie)
     const userATeams = userATeamsPage.items
     assert(userATeams.length === 1 && userATeams[0]?.id === seed.teamSharedId, '用户 A 我的团队没有只返回自己加入的团队')
-    assert(userATeams[0]?.activeMemberCount === 2, '用户 A 我的团队成员计数异常')
+    assert(userATeams[0]?.memberCount === 2, '用户 A 我的团队成员计数异常')
     const userASharedTeamDetail = await getEnvelope<SystemTeamSummary>(baseUrl, `/__aisys__/api/my-teams/${seed.teamSharedId}`, seed.userACookie)
     assert((userASharedTeamDetail.members ?? []).some((member) => member.systemAccountId === seed.userAId), '用户 A 我的团队详情缺少自己')
     assert((userASharedTeamDetail.members ?? []).some((member) => member.systemAccountId === seed.userBId), '用户 A 我的团队详情缺少同团队成员')
@@ -611,9 +611,13 @@ async function main(): Promise<void> {
     assert(userAGranteeTeams.some((team) => team.id === seed.teamUserBOnlyId), '授权候选团队应包含当前用户未加入但同团队成员加入的团队')
     assert(userAGranteeTeams.some((team) => team.id === seed.teamNoUserAId), '授权候选团队应包含当前用户完全无关的系统团队')
     assert(userAGranteeTeams.every((team) => !Object.prototype.hasOwnProperty.call(team, 'members')), '授权候选团队不应返回成员明细')
-    const userAGranteeGroups = await getEnvelope<GroupSummary[]>(baseUrl, `/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=${seed.userAId}&providerCode=gpt&preferDefault=true`, seed.userBCookie)
+    const userAGranteeGroups = await getEnvelope<Array<Pick<GroupSummary, 'id' | 'name'>>>(baseUrl, `/__aisys__/api/my-authorization-options/grantee-groups?granteeSystemAccountId=${seed.userAId}&providerCode=gpt&preferDefault=true`, seed.userBCookie)
     assert(userAGranteeGroups.some((group) => group.id === seed.userATargetGroupId), '授权目标分组选项应返回被授权用户自己的同供应商分组')
-    assert(userAGranteeGroups.every((group) => group.ownerSystemAccountId === seed.userAId), '授权目标分组选项不应混入其他用户分组')
+    const userAOwnedGroupIds = new Set((databaseModule.getBusinessDatabase()
+      .prepare("SELECT id FROM groups WHERE system_account_id = ? AND provider_code = 'gpt' AND enabled = 1")
+      .all(seed.userAId) as unknown as Array<{ id: string }>).map((group) => group.id))
+    assert(userAGranteeGroups.every((group) => userAOwnedGroupIds.has(group.id)), '授权目标分组选项不应混入其他用户分组')
+    assert(userAGranteeGroups.every((group) => Object.keys(group).sort().join(',') === 'id,name'), '授权目标分组选项只能返回 id/name')
     const selectedBinding = databaseModule.getBusinessDatabase()
       .prepare('SELECT group_id, account_authorization_id FROM group_accounts WHERE account_id = ? AND system_account_id = ? AND enabled = 1 LIMIT 1')
       .get(seed.userAAuthorizedUserBAccountId, seed.userAId) as unknown as { group_id?: string; account_authorization_id?: string | null } | undefined

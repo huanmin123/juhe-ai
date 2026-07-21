@@ -17,12 +17,11 @@ import (
 )
 
 func TestListManagementExternalIntegrationSourcesUsesBoundedLiteralPrefixParams(t *testing.T) {
-	createdAt := time.Date(2026, 7, 15, 8, 1, 2, 345678000, time.FixedZone("UTC+8", 8*60*60))
-	updatedAt := createdAt.Add(time.Hour)
+	updatedAt := time.Date(2026, 7, 15, 9, 1, 2, 345678000, time.FixedZone("UTC+8", 8*60*60))
 	expiresAt := updatedAt.Add(24 * time.Hour)
 	lastUsedAt := updatedAt.Add(-time.Minute)
 	q := &managementExternalIntegrationSourceListQueriesStub{
-		sourceRows: []postgresqueries.JuheBusinessExternalIntegrationSource{{
+		sourceRows: []postgresqueries.ListManagementExternalIntegrationSourcesRow{{
 			ID:             "source_1",
 			Name:           "Name",
 			Status:         "active",
@@ -31,8 +30,6 @@ func TestListManagementExternalIntegrationSourcesUsesBoundedLiteralPrefixParams(
 			ExpiresAt:      pgtype.Timestamptz{Time: expiresAt, Valid: true},
 			Notes:          pgtype.Text{String: "notes", Valid: true},
 			LastUsedAt:     pgtype.Timestamptz{Time: lastUsedAt, Valid: true},
-			CreatedAt:      pgtype.Timestamptz{Time: createdAt, Valid: true},
-			UpdatedAt:      pgtype.Timestamptz{Time: updatedAt, Valid: true},
 		}},
 	}
 	tests := []struct {
@@ -78,9 +75,6 @@ func TestListManagementExternalIntegrationSourcesUsesBoundedLiteralPrefixParams(
 	if row.ID != "source_1" || row.Notes == nil || *row.Notes != "notes" {
 		t.Fatalf("mapped source row = %#v", row)
 	}
-	if !row.CreatedAt.Equal(createdAt.UTC()) || !row.UpdatedAt.Equal(updatedAt.UTC()) {
-		t.Fatalf("mapped required times = %v / %v", row.CreatedAt, row.UpdatedAt)
-	}
 	if row.ExpiresAt == nil || !row.ExpiresAt.Equal(expiresAt.UTC()) || row.LastUsedAt == nil || !row.LastUsedAt.Equal(lastUsedAt.UTC()) {
 		t.Fatalf("mapped optional times = %#v / %#v", row.ExpiresAt, row.LastUsedAt)
 	}
@@ -97,26 +91,13 @@ func TestManagementExternalIntegrationSourceIDsPreserveNonECMAScriptWhitespace(t
 	}
 }
 
-func TestManagementExternalIntegrationSourceTokenReadersUseOneBoundedQueryEach(t *testing.T) {
-	now := time.Date(2026, 7, 15, 12, 0, 0, 999999999, time.FixedZone("UTC+8", 8*60*60))
-	expiredAt := now.Add(-time.Hour)
+func TestManagementExternalIntegrationSourcePrimaryTokenReaderUsesOneBoundedQuery(t *testing.T) {
 	q := &managementExternalIntegrationSourceListQueriesStub{
-		statsRows: []postgresqueries.ListManagementExternalIntegrationSourceTokenStatsRow{{
-			SourceRefID:      "source_1",
-			TokenCount:       3,
-			ActiveTokenCount: 2,
-		}},
 		primaryRows: []postgresqueries.ListManagementExternalIntegrationSourcePrimaryTokensRow{{
 			SourceRefID: "source_1",
 			ID:          "token_active_expired",
-			Name:        "Expired Active",
 			TokenPrefix: "juis_pre",
 			TokenSuffix: "suffix01",
-			Status:      "active",
-			ScopesJson:  `[]`,
-			ExpiresAt:   pgtype.Timestamptz{Time: expiredAt, Valid: true},
-			CreatedAt:   pgtype.Timestamptz{Time: now, Valid: true},
-			UpdatedAt:   pgtype.Timestamptz{Time: now, Valid: true},
 		}},
 	}
 	ids := make([]string, 0, 104)
@@ -125,37 +106,23 @@ func TestManagementExternalIntegrationSourceTokenReadersUseOneBoundedQueryEach(t
 		ids = append(ids, fmt.Sprintf("source_%03d", i))
 	}
 
-	stats, err := listManagementExternalIntegrationSourceTokenStats(context.Background(), q, ids)
-	if err != nil {
-		t.Fatalf("list token stats: %v", err)
-	}
 	primary, err := listManagementExternalIntegrationSourcePrimaryTokens(context.Background(), q, ids)
 	if err != nil {
 		t.Fatalf("list primary tokens: %v", err)
 	}
-	if len(q.statsCalls) != 1 || len(q.primaryCalls) != 1 {
-		t.Fatalf("token query calls = stats:%d primary:%d", len(q.statsCalls), len(q.primaryCalls))
+	if len(q.primaryCalls) != 1 {
+		t.Fatalf("primary token query calls = %d", len(q.primaryCalls))
 	}
-	if len(q.statsCalls[0]) != maxManagementExternalIntegrationSourceIDs || !reflect.DeepEqual(q.statsCalls[0], q.primaryCalls[0]) {
-		t.Fatalf("bounded token IDs = stats:%#v primary:%#v", q.statsCalls[0], q.primaryCalls[0])
+	if len(q.primaryCalls[0]) != maxManagementExternalIntegrationSourceIDs {
+		t.Fatalf("bounded token IDs = %#v", q.primaryCalls[0])
 	}
-	if len(stats) != 1 || stats[0].TokenCount != 3 || stats[0].ActiveTokenCount != 2 {
-		t.Fatalf("token stats = %#v", stats)
-	}
-	if len(primary) != 1 || primary[0].ID != "token_active_expired" || primary[0].Status != "active" {
+	if len(primary) != 1 || primary[0].ID != "token_active_expired" || primary[0].TokenPrefix != "juis_pre" {
 		t.Fatalf("primary tokens = %#v", primary)
-	}
-	if primary[0].ExpiresAt == nil || !primary[0].ExpiresAt.Equal(expiredAt.UTC()) {
-		t.Fatalf("expired active primary expiry = %#v", primary[0].ExpiresAt)
-	}
-
-	if _, err := listManagementExternalIntegrationSourceTokenStats(context.Background(), q, []string{"", "  "}); err != nil {
-		t.Fatalf("empty token stats: %v", err)
 	}
 	if _, err := listManagementExternalIntegrationSourcePrimaryTokens(context.Background(), q, nil); err != nil {
 		t.Fatalf("empty primary tokens: %v", err)
 	}
-	if len(q.statsCalls) != 1 || len(q.primaryCalls) != 1 {
+	if len(q.primaryCalls) != 1 {
 		t.Fatal("empty source ID batches must not execute token queries")
 	}
 }
@@ -171,17 +138,6 @@ func TestManagementExternalIntegrationSourceStorePropagatesQueryAndInvalidTimeEr
 		t.Fatalf("source query error = %v, want wrapped postgres error", err)
 	}
 
-	q = &managementExternalIntegrationSourceListQueriesStub{sourceRows: []postgresqueries.JuheBusinessExternalIntegrationSource{{
-		ID:        "source_invalid_time",
-		CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
-	}}}
-	_, err = listManagementExternalIntegrationSources(context.Background(), q, port.ManagementExternalIntegrationSourceListInput{
-		Status: "all",
-		Limit:  21,
-	})
-	if err == nil || !strings.Contains(err.Error(), "updated_at") {
-		t.Fatalf("invalid required time error = %v", err)
-	}
 }
 
 func TestManagementExternalIntegrationSourceListSQLIsSafeAndKeepsExpiredActiveSemantics(t *testing.T) {
@@ -194,7 +150,7 @@ func TestManagementExternalIntegrationSourceListSQLIsSafeAndKeepsExpiredActiveSe
 		t,
 		sql,
 		"-- name: ListManagementExternalIntegrationSources :many",
-		"-- name: ListManagementExternalIntegrationSourceTokenStats :many",
+		"-- name: ListManagementExternalIntegrationSourcePrimaryTokens :many",
 	)
 	for _, required := range []string{
 		"sources.id,",
@@ -216,18 +172,6 @@ func TestManagementExternalIntegrationSourceListSQLIsSafeAndKeepsExpiredActiveSe
 		}
 	}
 
-	statsQuery := managementExternalIntegrationSourceSQLSection(
-		t,
-		sql,
-		"-- name: ListManagementExternalIntegrationSourceTokenStats :many",
-		"-- name: ListManagementExternalIntegrationSourcePrimaryTokens :many",
-	)
-	if !strings.Contains(statsQuery, "COUNT(*) AS token_count") ||
-		!strings.Contains(statsQuery, "COUNT(*) FILTER (WHERE tokens.status = 'active') AS active_token_count") ||
-		strings.Contains(strings.ToLower(statsQuery), "expires_at") {
-		t.Fatalf("token stats query changed all-status/active-status semantics:\n%s", statsQuery)
-	}
-
 	primaryQuery := managementExternalIntegrationSourceSQLSection(
 		t,
 		sql,
@@ -242,6 +186,11 @@ func TestManagementExternalIntegrationSourceListSQLIsSafeAndKeepsExpiredActiveSe
 	if !strings.Contains(strings.Join(strings.Fields(primaryQuery), " "), primaryOrder) {
 		t.Fatalf("primary token ordering must prefer active status before newest token:\n%s", primaryQuery)
 	}
+	for _, forbidden := range []string{"tokens.name", "tokens.scopes_json", "tokens.expires_at", "tokens.last_used_at", "tokens.revoked_at"} {
+		if strings.Contains(primaryQuery, forbidden) {
+			t.Fatalf("primary token list must not project %s:\n%s", forbidden, primaryQuery)
+		}
+	}
 	for _, forbidden := range []string{
 		"expires_at <",
 		"expires_at >",
@@ -254,10 +203,10 @@ func TestManagementExternalIntegrationSourceListSQLIsSafeAndKeepsExpiredActiveSe
 		}
 	}
 
-	lowerSQL := strings.ToLower(statsQuery + primaryQuery)
+	lowerSQL := strings.ToLower(primaryQuery)
 	for _, forbidden := range []string{"token_hash", "token_secret_encrypted"} {
 		if strings.Contains(lowerSQL, forbidden) {
-			t.Fatalf("token summary queries must not select sensitive column %q", forbidden)
+			t.Fatalf("primary token query must not select sensitive column %q", forbidden)
 		}
 	}
 }
@@ -280,12 +229,9 @@ func managementExternalIntegrationSourceSQLSection(t *testing.T, source string, 
 }
 
 type managementExternalIntegrationSourceListQueriesStub struct {
-	sourceRows   []postgresqueries.JuheBusinessExternalIntegrationSource
+	sourceRows   []postgresqueries.ListManagementExternalIntegrationSourcesRow
 	sourceErr    error
 	sourceCalls  []postgresqueries.ListManagementExternalIntegrationSourcesParams
-	statsRows    []postgresqueries.ListManagementExternalIntegrationSourceTokenStatsRow
-	statsErr     error
-	statsCalls   [][]string
 	primaryRows  []postgresqueries.ListManagementExternalIntegrationSourcePrimaryTokensRow
 	primaryErr   error
 	primaryCalls [][]string
@@ -294,17 +240,9 @@ type managementExternalIntegrationSourceListQueriesStub struct {
 func (s *managementExternalIntegrationSourceListQueriesStub) ListManagementExternalIntegrationSources(
 	_ context.Context,
 	arg postgresqueries.ListManagementExternalIntegrationSourcesParams,
-) ([]postgresqueries.JuheBusinessExternalIntegrationSource, error) {
+) ([]postgresqueries.ListManagementExternalIntegrationSourcesRow, error) {
 	s.sourceCalls = append(s.sourceCalls, arg)
 	return s.sourceRows, s.sourceErr
-}
-
-func (s *managementExternalIntegrationSourceListQueriesStub) ListManagementExternalIntegrationSourceTokenStats(
-	_ context.Context,
-	sourceIDs []string,
-) ([]postgresqueries.ListManagementExternalIntegrationSourceTokenStatsRow, error) {
-	s.statsCalls = append(s.statsCalls, append([]string(nil), sourceIDs...))
-	return s.statsRows, s.statsErr
 }
 
 func (s *managementExternalIntegrationSourceListQueriesStub) ListManagementExternalIntegrationSourcePrimaryTokens(

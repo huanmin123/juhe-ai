@@ -105,6 +105,8 @@ export function mergeAuditPayloadWindow(
   return {
     ...next,
     headers: current.headers ?? next.headers,
+    headersIncluded: current.headersIncluded,
+    headersStorageStatus: current.headersStorageStatus,
     bodyText: body.bodyText,
     bodyBase64: body.bodyBase64,
     bodyOffset: current.bodyOffset,
@@ -136,9 +138,8 @@ function mergePayloadBody(
   }
   const currentBase64 = payloadBodyWindowBase64(current)
   const nextBase64 = payloadBodyWindowBase64(next)
-  return currentBase64 || nextBase64
-    ? { bodyBase64: `${currentBase64}${nextBase64}` }
-    : {}
+  if (!currentBase64 && !nextBase64) return {}
+  return { bodyBase64: mergeBase64Bytes(currentBase64, nextBase64) }
 }
 
 function payloadBodyWindowBase64(payload: AuditLogPayloadDetail): string {
@@ -168,4 +169,32 @@ function base64ToUtf8Text(base64: string): string | undefined {
   } catch {
     return undefined
   }
+}
+
+function mergeBase64Bytes(currentBase64: string, nextBase64: string): string {
+  const currentBytes = base64ToBytes(currentBase64)
+  const nextBytes = base64ToBytes(nextBase64)
+  const mergedBytes = new Uint8Array(currentBytes.length + nextBytes.length)
+  mergedBytes.set(currentBytes)
+  mergedBytes.set(nextBytes, currentBytes.length)
+  return bytesToBase64(mergedBytes)
+}
+
+function base64ToBytes(base64: string): Uint8Array {
+  if (!base64) return new Uint8Array()
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index)
+  }
+  return bytes
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize))
+  }
+  return btoa(binary)
 }

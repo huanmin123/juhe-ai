@@ -25,6 +25,8 @@ import type {
   ExternalIntegrationSourceRow,
   ExternalIntegrationSourceTokenInput,
   ExternalIntegrationSourceTokenListRow,
+  ExternalIntegrationSourcePrimaryTokenRow,
+  ExternalIntegrationSourcePrimaryTokenSummary,
   ExternalIntegrationSourceTokenSecret,
   ExternalIntegrationSourceTokenStats,
   ExternalIntegrationSourceTokenSummary,
@@ -450,8 +452,8 @@ export function loadExternalIntegrationSourceTokensBySourceIds(sourceIds: string
   return result
 }
 
-export function loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds: string[]): Map<string, ExternalIntegrationSourceTokenSummary> {
-  const result = new Map<string, ExternalIntegrationSourceTokenSummary>()
+export function loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds: string[]): Map<string, ExternalIntegrationSourcePrimaryTokenSummary> {
+  const result = new Map<string, ExternalIntegrationSourcePrimaryTokenSummary>()
   const ids = [...new Set(sourceIds.filter(Boolean))]
   if (!ids.length) {
     return result
@@ -461,30 +463,16 @@ export function loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds:
     SELECT
       id,
       source_ref_id,
-      name,
       token_prefix,
-      token_suffix,
-      status,
-      scopes_json,
-      expires_at,
-      last_used_at,
-      created_at,
-      updated_at,
-      revoked_at
+      token_suffix
     FROM (
       SELECT
         tokens.id,
         tokens.source_ref_id,
-        tokens.name,
         tokens.token_prefix,
         tokens.token_suffix,
         tokens.status,
-        tokens.scopes_json,
-        tokens.expires_at,
-        tokens.last_used_at,
         tokens.created_at,
-        tokens.updated_at,
-        tokens.revoked_at,
         ROW_NUMBER() OVER (
           PARTITION BY tokens.source_ref_id
           ORDER BY CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC, tokens.created_at DESC, tokens.id DESC
@@ -493,9 +481,9 @@ export function loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds:
       WHERE tokens.source_ref_id IN (${placeholders})
     )
     WHERE token_rank = 1
-  `).all(...ids) as unknown as ExternalIntegrationSourceTokenListRow[]
+  `).all(...ids) as unknown as ExternalIntegrationSourcePrimaryTokenRow[]
   for (const row of rows) {
-    result.set(row.source_ref_id, mapTokenSummary(row))
+    result.set(row.source_ref_id, mapPrimaryTokenSummary(row))
   }
   return result
 }
@@ -556,44 +544,30 @@ export async function loadExternalIntegrationSourceTokensBySourceIdsAsync(source
   return result
 }
 
-export async function loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(sourceIds: string[], clientInput?: DatabaseClient): Promise<Map<string, ExternalIntegrationSourceTokenSummary>> {
+export async function loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync(sourceIds: string[], clientInput?: DatabaseClient): Promise<Map<string, ExternalIntegrationSourcePrimaryTokenSummary>> {
   if (runtimeConfig.databaseDriver !== 'postgres' && !clientInput) {
     return loadExternalIntegrationSourcePrimaryTokensBySourceIds(sourceIds)
   }
-  const result = new Map<string, ExternalIntegrationSourceTokenSummary>()
+  const result = new Map<string, ExternalIntegrationSourcePrimaryTokenSummary>()
   const ids = [...new Set(sourceIds.filter(Boolean))]
   if (!ids.length) {
     return result
   }
   const client = clientInput ?? createPostgresDatabaseClient(await getPostgresPool())
-  const rows = await client.query<ExternalIntegrationSourceTokenListRow>(`
+  const rows = await client.query<ExternalIntegrationSourcePrimaryTokenRow>(`
     SELECT
       id,
       source_ref_id,
-      name,
       token_prefix,
-      token_suffix,
-      status,
-      scopes_json,
-      expires_at,
-      last_used_at,
-      created_at,
-      updated_at,
-      revoked_at
+      token_suffix
     FROM (
       SELECT
         tokens.id,
         tokens.source_ref_id,
-        tokens.name,
         tokens.token_prefix,
         tokens.token_suffix,
         tokens.status,
-        tokens.scopes_json,
-        tokens.expires_at,
-        tokens.last_used_at,
         tokens.created_at,
-        tokens.updated_at,
-        tokens.revoked_at,
         ROW_NUMBER() OVER (
           PARTITION BY tokens.source_ref_id
           ORDER BY CASE WHEN tokens.status = 'active' THEN 0 ELSE 1 END ASC, tokens.created_at DESC, tokens.id DESC
@@ -604,9 +578,17 @@ export async function loadExternalIntegrationSourcePrimaryTokensBySourceIdsAsync
     WHERE token_rank = 1
   `, ids)
   for (const row of rows) {
-    result.set(row.source_ref_id, mapTokenSummary(row))
+    result.set(row.source_ref_id, mapPrimaryTokenSummary(row))
   }
   return result
+}
+
+function mapPrimaryTokenSummary(row: ExternalIntegrationSourcePrimaryTokenRow): ExternalIntegrationSourcePrimaryTokenSummary {
+  return {
+    id: row.id,
+    tokenPrefix: row.token_prefix,
+    tokenSuffix: row.token_suffix
+  }
 }
 
 export async function loadExternalIntegrationSourceTokenStatsBySourceIdsAsync(

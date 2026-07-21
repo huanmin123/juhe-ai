@@ -88,6 +88,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { sanitizePaginationState, stringOrFallback, stringUnionOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type {
   ExternalIntegrationScopeOption,
+  ExternalIntegrationSourceListItem,
   ExternalIntegrationSourceStatus,
   ExternalIntegrationSourceSummary
 } from '@/types/domain'
@@ -120,7 +121,7 @@ const initialPageState = pageStateCache.read()
 const loading = ref(false)
 const keyword = ref(initialPageState.keyword)
 const statusFilter = ref<ExternalIntegrationSourceStatus | 'all'>(initialPageState.statusFilter)
-const rows = ref<ExternalIntegrationSourceSummary[]>([])
+const rows = ref<ExternalIntegrationSourceListItem[]>([])
 const paginationUpperBound = ref(0)
 const pagination = reactive({ ...initialPageState.pagination })
 const scopeOptions = ref<ExternalIntegrationScopeOption[]>([])
@@ -275,7 +276,7 @@ function openCreateSource(): void {
   sourceModalOpen.value = true
 }
 
-async function openEditSource(record: ExternalIntegrationSourceSummary): Promise<void> {
+async function openEditSource(record: ExternalIntegrationSourceListItem): Promise<void> {
   let detail: ExternalIntegrationSourceSummary
   try {
     detail = await api.externalIntegrationSources.detail(record.id)
@@ -330,7 +331,7 @@ function removeRateLimit(index: number): void {
   sourceForm.rateLimits.splice(index, 1)
 }
 
-function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[] {
+function sourceActions(record: ExternalIntegrationSourceListItem): RowActionItem[] {
   const statusAction: RowActionItem = record.status === 'active'
     ? { key: 'disable', label: '停用', icon: 'disable', tone: 'danger' as const, confirmTitle: `确认停用来源授权 ${record.name}？停用后该来源的公开接口请求会被拒绝。`, confirmOkText: '停用' }
     : { key: 'enable', label: '启用', icon: 'enable', tone: 'success' as const, confirmTitle: `确认启用来源授权 ${record.name}？`, confirmOkText: '启用' }
@@ -366,7 +367,7 @@ function sourceActions(record: ExternalIntegrationSourceSummary): RowActionItem[
   ]
 }
 
-function handleSourceAction(key: string, record: ExternalIntegrationSourceSummary): void {
+function handleSourceAction(key: string, record: ExternalIntegrationSourceListItem): void {
   if (key === 'edit') {
     void openEditSource(record)
     return
@@ -388,7 +389,7 @@ function handleSourceAction(key: string, record: ExternalIntegrationSourceSummar
   }
 }
 
-async function updateSourceStatus(record: ExternalIntegrationSourceSummary, status: ExternalIntegrationSourceStatus): Promise<void> {
+async function updateSourceStatus(record: ExternalIntegrationSourceListItem, status: ExternalIntegrationSourceStatus): Promise<void> {
   try {
     await api.externalIntegrationSources.update(record.id, { status })
     message.success(status === 'active' ? '来源授权已启用' : '来源授权已停用')
@@ -398,7 +399,7 @@ async function updateSourceStatus(record: ExternalIntegrationSourceSummary, stat
   }
 }
 
-async function deleteSource(record: ExternalIntegrationSourceSummary): Promise<void> {
+async function deleteSource(record: ExternalIntegrationSourceListItem): Promise<void> {
   try {
     await api.externalIntegrationSources.delete(record.id)
     if (rows.value.length <= 1 && pagination.current > 1) {
@@ -411,7 +412,7 @@ async function deleteSource(record: ExternalIntegrationSourceSummary): Promise<v
   }
 }
 
-function sourceNotes(record: ExternalIntegrationSourceSummary): string {
+function sourceNotes(record: ExternalIntegrationSourceListItem): string {
   if (record.isBuiltIn) {
     return builtInSourceDescription
   }

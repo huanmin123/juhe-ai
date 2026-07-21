@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -72,15 +72,26 @@ try {
   assert.equal(listed.items.length, 1)
   const item = listed.items[0]
   assert(item)
-  assert.equal(item.tokenCount, 3, '列表应只对当前页批量统计全部 Token')
-  assert.equal(item.activeTokenCount, 1, 'activeTokenCount 不应排除已过期但状态仍为 active 的 Token')
+  assert.deepEqual(
+    Object.keys(item).sort(),
+    ['expiresAt', 'id', 'isBuiltIn', 'lastUsedAt', 'name', 'notes', 'primaryToken', 'rateLimits', 'scopes', 'status'].sort(),
+    '列表只应返回页面展示和操作所需字段'
+  )
   assert.equal(item.primaryToken?.id, activeExpired.id, 'active Token 应优先于创建时间更晚的 disabled/revoked Token')
-  assert.equal(item.primaryToken?.expiresAt, '2020-01-01T00:00:00.000Z')
   assert.equal(item.primaryToken?.tokenPrefix, 'juis_ext')
   assert.equal(item.primaryToken?.tokenSuffix, 'ed_token')
-  for (const sensitiveField of ['token', 'tokenHash', 'tokenSecretEncrypted']) {
-    assert.equal(Object.hasOwn(item.primaryToken ?? {}, sensitiveField), false, `主 Token 摘要不应返回 ${sensitiveField}`)
-  }
+  assert.deepEqual(
+    Object.keys(item.primaryToken ?? {}).sort(),
+    ['id', 'tokenPrefix', 'tokenSuffix'].sort(),
+    '列表主 Token 只能投影复制动作需要的 id/prefix/suffix'
+  )
+
+  const repositorySource = readFileSync(resolve('src/storage/external-integration-source.repository.ts'), 'utf8')
+  const listImplementation = repositorySource.slice(
+    repositorySource.indexOf('export function listExternalIntegrationSources('),
+    repositorySource.indexOf('export function findExternalIntegrationSource(')
+  )
+  assert(!listImplementation.includes('loadExternalIntegrationSourceTokenStatsBySourceIds'), '列表实现不得执行 Token COUNT/SUM/GROUP BY 聚合')
 
   const emptyPage = externalSources.listExternalIntegrationSources({
     keyword: '不存在的外部来源',
@@ -90,7 +101,7 @@ try {
   assert.deepEqual(emptyPage.items, [])
   assert.equal(emptyPage.page, 10, '空页也应保持 1000 行分页窗口上界')
 
-  console.log('外部来源列表批量摘要回归通过：先分页、当前页计数、active 主 Token 优先和敏感字段边界符合契约')
+  console.log('外部来源轻量列表回归通过：不做 Token 聚合，主 Token 只返回 id/prefix/suffix')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

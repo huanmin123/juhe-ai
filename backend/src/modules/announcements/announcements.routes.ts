@@ -6,6 +6,7 @@ import {
   createAnnouncementAsync,
   deleteAnnouncementAsync,
   findAnnouncementAsync,
+  findPublicAnnouncementAsync,
   listAnnouncementsPageAsync,
   listPublicAnnouncementsAsync,
   markPublicAnnouncementsReadAsync,
@@ -68,6 +69,19 @@ announcementsRouter.post('/public/read', async (req, res) => {
     return
   }
   res.json(ok(await markPublicAnnouncementsReadAsync(requireActor(), parsed.data.announcementIds)))
+})
+
+announcementsRouter.get('/public/:id', async (req, res, next) => {
+  try {
+    const announcement = await findPublicAnnouncementAsync(req.params.id)
+    if (!announcement) {
+      res.status(404).json({ message: '公告不存在' })
+      return
+    }
+    res.json(ok(announcement))
+  } catch (error) {
+    next(error)
+  }
 })
 
 announcementsRouter.get('/', requireAdmin, async (req, res, next) => {

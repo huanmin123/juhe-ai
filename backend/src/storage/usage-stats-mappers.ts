@@ -43,26 +43,6 @@ export function emptyStatsAggregateMathRow(): AccountUsageAggregateRow & StatsAg
   }
 }
 
-export function mapSystemMetricsLatest(row: Record<string, unknown>): SystemMetricsOverview['latest'] {
-  return {
-    sampledAt: String(row.sampled_at),
-    cpuPercent: numberFromUnknown(row.cpu_percent),
-    memoryUsedPercent: numberFromUnknown(row.memory_used_percent),
-    memoryTotalBytes: numberFromUnknown(row.memory_total_bytes),
-    memoryFreeBytes: numberFromUnknown(row.memory_free_bytes),
-    processRssBytes: numberFromUnknown(row.process_rss_bytes),
-    processHeapUsedBytes: numberFromUnknown(row.process_heap_used_bytes),
-    processHeapTotalBytes: numberFromUnknown(row.process_heap_total_bytes),
-    eventLoopLagMs: numberFromUnknown(row.event_loop_lag_ms),
-    networkRxBytesPerSecond: numberFromUnknown(row.network_rx_bytes_per_sec),
-    networkTxBytesPerSecond: numberFromUnknown(row.network_tx_bytes_per_sec),
-    networkRxTotalBytes: numberFromUnknown(row.network_rx_total_bytes),
-    networkTxTotalBytes: numberFromUnknown(row.network_tx_total_bytes),
-    dbFileBytes: numberFromUnknown(row.db_file_bytes),
-    statsLagSeconds: numberFromUnknown(row.stats_lag_seconds)
-  }
-}
-
 export function mapSystemMetricsHourly(row: Record<string, unknown>): SystemMetricsOverview['hourlyTrend'][number] {
   const sampleCount = Number(row.sample_count ?? 0)
   const eventLoopLagMsSampleCount = Number(row.event_loop_lag_ms_count ?? 0)

@@ -12,6 +12,8 @@ import {
   createResourceAuthorizationAsync,
   createRouteStrategyAsync,
   expireDueResourceAuthorizationsAsync,
+  listAuthorizationGranteeGroupsAsync,
+  listResourceAuthorizationsPageAsync,
   syncAccountAvailabilityScheduleStatusesAsync,
   syncApiKeyAvailabilityScheduleStatusesAsync
 } from '../../storage/repositories.js'
@@ -97,6 +99,12 @@ try {
   const granteeId = `sysacc_${marker}`
   await insertSmokeSystemAccount(granteeId)
   createdSystemAccountIds.push(granteeId)
+  const granteeGroup = await createGroupAsync({
+    name: `时间计划授权 PG smoke 目标分组 ${marker}`,
+    providerCode: 'gpt',
+    enabled: true
+  }, { systemAccountId: granteeId, role: 'user' })
+  createdGroupIds.push(granteeGroup.id)
   const authorization = await createResourceAuthorizationAsync({
     resourceType: 'group',
     resourceId: group.id,
@@ -104,6 +112,27 @@ try {
     granteeId,
     expiresAt: '2999-01-01T00:00:00.000Z'
   }, access)
+  const targetGroups = await listAuthorizationGranteeGroupsAsync(access, {
+    granteeSystemAccountId: granteeId,
+    providerCode: 'gpt',
+    limit: 20,
+    preferDefault: true
+  })
+  assert(targetGroups.some((item) => item.id === granteeGroup.id), 'PG 授权目标分组选项应返回被授权用户自己的同供应商分组')
+  assert(targetGroups.every((item) => Object.keys(item).sort().join(',') === 'id,name'), 'PG 授权目标分组选项只能返回 id/name')
+
+  const authorizationPage = await listResourceAuthorizationsPageAsync(
+    { id: authorization.id, status: 'all' },
+    access,
+    { page: 1, pageSize: 10, includeUsage: false }
+  )
+  const authorizationListItem = authorizationPage.items[0]
+  assert.equal(authorizationListItem?.id, authorization.id, 'PG 授权轻量列表应返回新建授权')
+  for (const forbiddenField of ['authorizationSources', 'limits', 'resourceAccountExpiresAt', 'usage', 'usageBySystemAccount', 'usageRange']) {
+    assert(!Object.prototype.hasOwnProperty.call(authorizationListItem, forbiddenField), `PG 授权轻量列表不应返回 ${forbiddenField}`)
+  }
+  assert.deepEqual(Object.keys(authorizationListItem?.permissions ?? {}).sort(), ['canAuthorize', 'canEdit'], 'PG 授权轻量列表应保留操作权限')
+  assert.deepEqual(Object.keys(authorizationListItem?.sourceSummary ?? {}).sort(), ['activeSourceCount', 'hasManual', 'hasTeam', 'teamSources'], 'PG 授权轻量列表应保留来源摘要')
   await forceAuthorizationGrantExpired(group.id, granteeId)
   const expired = await expireDueResourceAuthorizationsAsync(5)
   assert.equal(expired, 1, 'PG 授权过期扫描应处理到期 grant')
@@ -116,6 +145,8 @@ try {
     apiKeyId: apiKey.id,
     accountId: account.id,
     authorizationId: authorization.id,
+    lightweightAuthorizationList: authorizationListItem?.id === authorization.id,
+    lightweightGranteeGroups: targetGroups.length,
     expired,
     explainIndexed: true
   }))

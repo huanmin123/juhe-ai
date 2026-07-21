@@ -66,6 +66,18 @@ interface GroupOptionSummary {
   accountStats?: unknown
 }
 
+interface GroupListResult {
+  items: Array<GroupOptionSummary & {
+    accessType?: string
+    authorizationSourceSummary?: {
+      activeSourceCount: number
+      hasManual: boolean
+      hasTeam: boolean
+      teamNames: string[]
+    }
+  }>
+}
+
 interface SeedState {
   adminCookie: string
   adminAuthorizedAccountId: string
@@ -188,11 +200,23 @@ try {
   assertBusinessIndexExists('idx_groups_provider_name_lookup')
   assertBusinessIndexExists('idx_groups_system_account_provider_name_lookup')
 
+  runtimeConfig.statsDatabasePath = join(tempRoot, 'group-list-stats.sqlite3')
+  const adminGroups = await getEnvelope<GroupListResult>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userId}&page=1&pageSize=50`, seed.adminCookie)
+  const adminAuthorizedListItem = adminGroups.items.find((group) => group.id === seed.adminAuthorizedGroupId)
+  assert(adminAuthorizedListItem, '管理侧分组列表应包含授权分组')
+  assert.equal(adminAuthorizedListItem.accessType, 'authorized', '管理侧分组列表应保留授权访问类型')
+  assert.equal(adminAuthorizedListItem.authorizationSourceSummary?.hasTeam, true, '分组列表必须保留团队授权来源摘要')
+  assert.deepEqual(adminAuthorizedListItem.authorizationSourceSummary?.teamNames, ['分组选项团队'], '分组列表团队来源摘要必须保留团队名称')
+
   console.log('分组选项轻量回归通过：options/account-options 接口不读取统计结果库统计，关键词仅支持精确/前缀匹配，账户表单分组候选按供应商和可管理范围小窗口返回')
 } finally {
   await closeServer(server)
   try {
     databaseModule.getBusinessDatabase().close()
+  } catch {
+  }
+  try {
+    databaseModule.getStatsDatabase().close()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -321,6 +345,13 @@ function seedData(): SeedState {
 
 function seedActiveGroupAuthorization(resourceId: string, ownerSystemAccountId: string, granteeSystemAccountId: string): void {
   const now = new Date().toISOString()
+  const teamId = `team_group_options_${resourceId}`
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at)
+      VALUES (?, '分组选项团队', NULL, 'active', ?, ?, ?)
+    `)
+    .run(teamId, ownerSystemAccountId, now, now)
   databaseModule.getBusinessDatabase()
     .prepare(`
       INSERT INTO resource_authorizations (
@@ -328,9 +359,16 @@ function seedActiveGroupAuthorization(resourceId: string, ownerSystemAccountId: 
         scope, status, effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
         remark, expires_at, limits_json, created_by, created_at, revoked_by, revoked_at,
         revoked_reason, updated_at
-      ) VALUES (?, 'group', ?, ?, ?, 'use', 'active', 'manual', NULL, ?, ?, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL, ?)
+      ) VALUES (?, 'group', ?, ?, ?, 'use', 'active', 'team', ?, ?, ?, NULL, NULL, NULL, ?, ?, NULL, NULL, NULL, ?)
     `)
-    .run(`ra_group_options_${resourceId}`, resourceId, ownerSystemAccountId, granteeSystemAccountId, now, now, ownerSystemAccountId, now, now)
+    .run(`ra_group_options_${resourceId}`, resourceId, ownerSystemAccountId, granteeSystemAccountId, teamId, now, now, ownerSystemAccountId, now, now)
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      INSERT INTO resource_authorization_sources (
+        id, authorization_id, source_type, source_team_id, status, activated_at, created_by, created_at, updated_at
+      ) VALUES (?, ?, 'team', ?, 'active', ?, ?, ?, ?)
+    `)
+    .run(`ras_group_options_${resourceId}`, `ra_group_options_${resourceId}`, teamId, now, ownerSystemAccountId, now, now)
 }
 
 function seedProvider(code: string): void {

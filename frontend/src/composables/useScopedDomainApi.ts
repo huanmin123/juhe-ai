@@ -60,6 +60,9 @@ export function useScopedGroupsApi(isManagementView: Ref<boolean>) {
     listPage: (params?: GroupListParams) => isManagementView.value
       ? api.groups.listPage(params)
       : api.myGroups.listPage(params),
+    statusSnapshot: (groupIds: string[], params?: GroupMutationScopeParams) => isManagementView.value
+      ? api.groups.statusSnapshot(groupIds, params)
+      : api.myGroups.statusSnapshot(groupIds),
     detail: (id: string, params?: GroupMutationScopeParams) => isManagementView.value
       ? api.groups.detail(id, params)
       : api.myGroups.detail(id),

@@ -139,6 +139,7 @@ async function loadPageData(force = false): Promise<void> {
         apply: (nextProviders) => { providers.value = nextProviders },
         force,
         includeDisabled: false,
+        includeDefinitions: true,
         isManagementView: true
       })
     ])

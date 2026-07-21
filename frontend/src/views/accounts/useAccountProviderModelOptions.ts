@@ -5,7 +5,6 @@ import { api, pageDataApi } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { PageDataLoadResult } from '@/shared/pageDataCache'
-import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import type { AccountScopeParams } from './accountOperationScope'
 import { invalidateAccountTestOptionsCache } from './accountTestOptionsCache'
@@ -25,6 +24,8 @@ interface ProviderAccountModelResourceOptions {
   isManagementView: boolean
   providerCode: string
   scopeParams?: AccountScopeParams
+  selectedIds?: string[]
+  includeCapabilities?: boolean
 }
 
 export async function loadAccountProviderModelOptionsResource(
@@ -33,7 +34,8 @@ export async function loadAccountProviderModelOptionsResource(
   const code = options.providerCode.trim()
   if (!code) return { data: [], source: 'network', confirmed: false, cached: false, superseded: false }
   const scopeParams = options.scopeParams ? { ...options.scopeParams } : undefined
-  const route = isHybridProviderCode(code) ? '/providers/models/options' : `/providers/${code}/models`
+  const selectedIds = normalizedSelectedModelIds(options.selectedIds)
+  const route = '/providers/models/options'
   const scope = buildProviderModelViewerScope(options.isManagementView, scopeParams?.systemAccountId)
   return providerModelResourceCache.load<AccountModelSelectOption[]>({
     cacheKey: {
@@ -42,6 +44,7 @@ export async function loadAccountProviderModelOptionsResource(
       query: {
         providerCode: code,
         systemAccountId: scopeParams?.systemAccountId,
+        selectedIds,
         view: options.isManagementView ? 'management' : 'self'
       },
       version: `${providerCacheGlobalGeneration}:${providerCacheGenerations.get(code) ?? 0}:1`
@@ -52,17 +55,7 @@ export async function loadAccountProviderModelOptionsResource(
       ? { targetSystemAccountId: scopeParams.systemAccountId }
       : {}),
     loadNetwork: async () => {
-      const models = isHybridProviderCode(code)
-        ? await api.providers.modelOptions(scopeParams)
-        : await api.providers.models(code, scopeParams)
-      return dedupeAccountModelOptions(models.map((item) => ({
-        label: item.model,
-        value: item.model,
-        supportedApiProtocols: item.supportedApiProtocols,
-        supportedServiceTiers: item.supportedServiceTiers,
-        supportedReasoningEfforts: item.supportedReasoningEfforts,
-        defaultReasoningEffort: item.defaultReasoningEffort
-      })))
+      return loadAccountModelOptions(code, scopeParams, selectedIds, undefined, options.includeCapabilities === true)
     }
   })
 }
@@ -77,7 +70,7 @@ export function invalidateAccountProviderModelOptionsCache(providerCode?: string
     return
   }
   providerCacheGenerations.set(code, (providerCacheGenerations.get(code) ?? 0) + 1)
-  const route = isHybridProviderCode(code) ? '/providers/models/options' : `/providers/${code}/models`
+  const route = '/providers/models/options'
   void providerModelResourceCache.invalidate('providers.catalog', undefined, route)
 }
 
@@ -96,13 +89,15 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     loadingPromise = undefined
   }
 
-  async function loadProviderModelOptions(providerCode: string): Promise<void> {
+  async function loadProviderModelOptions(providerCode: string, request: { keyword?: string; selectedIds?: string[] } = {}): Promise<void> {
     const code = providerCode.trim()
     if (!code) {
       resetProviderModelOptions()
       return
     }
-    const cacheKey = providerModelCacheKey(code)
+    const selectedIds = normalizedSelectedModelIds(request.selectedIds)
+    const keyword = request.keyword?.trim() || undefined
+    const cacheKey = providerModelCacheKey(code, keyword, selectedIds)
     if (loadingKey === cacheKey && loadingPromise) return loadingPromise
 
     const requestId = latestRequestId + 1
@@ -116,7 +111,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     providerModelsLoading.value = true
     const promise = (async () => {
       try {
-        const route = isHybridProviderCode(code) ? '/providers/models/options' : `/providers/${code}/models`
+        const route = '/providers/models/options'
         const result = await providerModelResourceCache.load<AccountModelSelectOption[]>({
           cacheKey: {
             scope: providerModelViewerScope(),
@@ -124,6 +119,8 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
             query: {
               providerCode: code,
               systemAccountId: scopeParams?.systemAccountId,
+              selectedIds,
+              keyword,
               view: options.isManagementView.value ? 'management' : 'self'
             },
             version: `${providerCacheGlobalGeneration}:${providerCacheGenerations.get(code) ?? 0}:1`
@@ -134,17 +131,7 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
             ? { targetSystemAccountId: scopeParams.systemAccountId }
             : {}),
           loadNetwork: async () => {
-            const models = isHybridProviderCode(code)
-              ? await api.providers.modelOptions(scopeParams)
-              : await api.providers.models(code, scopeParams)
-            return dedupeModelOptions(models.map((item) => ({
-              label: item.model,
-              value: item.model,
-              supportedApiProtocols: item.supportedApiProtocols,
-              supportedServiceTiers: item.supportedServiceTiers,
-              supportedReasoningEfforts: item.supportedReasoningEfforts,
-              defaultReasoningEffort: item.defaultReasoningEffort
-            })))
+            return loadAccountModelOptions(code, scopeParams, selectedIds, keyword, false)
           }
         })
         const modelOptions = result.data
@@ -173,8 +160,8 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     return promise
   }
 
-  function providerModelCacheKey(providerCode: string): string {
-    return `${providerModelViewerScope()}:${providerCode}:${providerCacheGlobalGeneration}:${providerCacheGenerations.get(providerCode) ?? 0}`
+  function providerModelCacheKey(providerCode: string, keyword?: string, selectedIds: string[] = []): string {
+    return `${providerModelViewerScope()}:${providerCode}:${keyword ?? ''}:${selectedIds.join(',')}:${providerCacheGlobalGeneration}:${providerCacheGenerations.get(providerCode) ?? 0}`
   }
 
   function providerModelViewerScope(): string {
@@ -185,19 +172,99 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     const currentProviderCode = options.currentProviderCode().trim()
     return requestId === latestRequestId
       && Boolean(currentProviderCode)
-      && providerModelCacheKey(currentProviderCode) === cacheKey
+      && cacheKey.startsWith(`${providerModelViewerScope()}:${currentProviderCode}:`)
   }
 
   function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
     return dedupeAccountModelOptions(options)
   }
 
+  async function loadSelectedModelCapabilities(providerCode: string, modelIds: string[]): Promise<void> {
+    const code = providerCode.trim()
+    const selectedIds = normalizedSelectedModelIds(modelIds)
+    if (!code || !selectedIds.length) return
+    const scopeParams = options.modelScopeParams.value ? { ...options.modelScopeParams.value } : undefined
+    const capabilities = await mapWithConcurrency(selectedIds, 4, (modelId) => (
+      api.providers.modelCapabilities(code, modelId, scopeParams)
+    ))
+    const capabilitiesById = new Map(capabilities.map((item) => [item.id, item]))
+    const existingById = new Map(providerModelOptions.value.map((item) => [item.value, item]))
+    for (const modelId of selectedIds) {
+      const capability = capabilitiesById.get(modelId)
+      if (!capability) continue
+      existingById.set(modelId, {
+        label: capability.name,
+        value: capability.id,
+        supportedApiProtocols: capability.supportedApiProtocols,
+        supportedServiceTiers: capability.supportedServiceTiers,
+        supportedReasoningEfforts: capability.supportedReasoningEfforts,
+        defaultReasoningEffort: capability.defaultReasoningEffort
+      })
+    }
+    providerModelOptions.value = [...existingById.values()]
+  }
+
   return {
     loadProviderModelOptions,
+    loadSelectedModelCapabilities,
     providerModelOptions,
     providerModelsLoading,
     resetProviderModelOptions
   }
+}
+
+async function mapWithConcurrency<TInput, TOutput>(
+  input: TInput[],
+  concurrency: number,
+  mapper: (item: TInput) => Promise<TOutput>
+): Promise<TOutput[]> {
+  const output = new Array<TOutput>(input.length)
+  let nextIndex = 0
+  await Promise.all(Array.from({ length: Math.min(concurrency, input.length) }, async () => {
+    while (nextIndex < input.length) {
+      const index = nextIndex
+      nextIndex += 1
+      output[index] = await mapper(input[index])
+    }
+  }))
+  return output
+}
+
+async function loadAccountModelOptions(
+  providerCode: string,
+  scopeParams: AccountScopeParams | undefined,
+  selectedIds: string[],
+  keyword?: string,
+  includeCapabilities = false
+): Promise<AccountModelSelectOption[]> {
+  const [models, capabilities] = await Promise.all([
+    api.providers.modelOptions({
+      ...scopeParams,
+      providerCode,
+      limit: 50,
+      ...(keyword ? { keyword } : {}),
+      ...(selectedIds.length ? { selectedIds } : {})
+    }),
+    includeCapabilities
+      ? mapWithConcurrency(selectedIds, 4, (modelId) => api.providers.modelCapabilities(providerCode, modelId, scopeParams))
+      : Promise.resolve([])
+  ])
+  const capabilitiesById = new Map(capabilities.map((item) => [item.id, item]))
+  return dedupeAccountModelOptions(models.map((item) => {
+    const capability = capabilitiesById.get(item.id)
+    return {
+      label: item.name,
+      value: item.id,
+      supportedApiProtocols: capability?.supportedApiProtocols,
+      supportedServiceTiers: capability?.supportedServiceTiers,
+      supportedReasoningEfforts: capability?.supportedReasoningEfforts,
+      defaultReasoningEffort: capability?.defaultReasoningEffort
+    }
+  }))
+}
+
+function normalizedSelectedModelIds(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, 50)
 }
 
 function buildProviderModelViewerScope(isManagementView: boolean, systemAccountId?: string): string {
@@ -215,55 +282,16 @@ function dedupeAccountModelOptions(options: AccountModelSelectOption[]): Account
   const output: AccountModelSelectOption[] = []
   for (const option of options) {
     const model = option.value.trim()
-    if (!model) continue
-    if (seen.has(model)) {
-      const existing = output.find((item) => item.value === model)
-      if (existing) {
-        existing.supportedApiProtocols = mergeModelProtocols(existing.supportedApiProtocols, option.supportedApiProtocols)
-        existing.supportedServiceTiers = mergeOptionalLists(existing.supportedServiceTiers, option.supportedServiceTiers)
-        existing.supportedReasoningEfforts = mergeOptionalLists(existing.supportedReasoningEfforts, option.supportedReasoningEfforts)
-        existing.defaultReasoningEffort ??= option.defaultReasoningEffort
-      }
-      continue
-    }
+    if (!model || seen.has(model)) continue
     seen.add(model)
     output.push({
-      label: model,
+      label: option.label.trim() || model,
       value: model,
-      supportedApiProtocols: mergeModelProtocols(undefined, option.supportedApiProtocols),
-      supportedServiceTiers: cloneOptionalList(option.supportedServiceTiers),
-      supportedReasoningEfforts: cloneOptionalList(option.supportedReasoningEfforts),
-      defaultReasoningEffort: option.defaultReasoningEffort
+      ...(option.supportedApiProtocols?.length ? { supportedApiProtocols: [...option.supportedApiProtocols] } : {}),
+      ...(option.supportedServiceTiers?.length ? { supportedServiceTiers: [...option.supportedServiceTiers] } : {}),
+      ...(option.supportedReasoningEfforts?.length ? { supportedReasoningEfforts: [...option.supportedReasoningEfforts] } : {}),
+      ...(option.defaultReasoningEffort ? { defaultReasoningEffort: option.defaultReasoningEffort } : {})
     })
   }
   return output
-}
-
-function cloneOptionalList<TValue>(value: TValue[] | undefined): TValue[] | undefined {
-  return value ? [...value] : undefined
-}
-
-function mergeOptionalLists<TValue>(left: TValue[] | undefined, right: TValue[] | undefined): TValue[] | undefined {
-  const output = [...(left ?? [])]
-  const seen = new Set(output)
-  for (const value of right ?? []) {
-    if (seen.has(value)) continue
-    seen.add(value)
-    output.push(value)
-  }
-  return output.length ? output : undefined
-}
-
-function mergeModelProtocols(
-  left: AccountModelSelectOption['supportedApiProtocols'],
-  right: AccountModelSelectOption['supportedApiProtocols']
-): AccountModelSelectOption['supportedApiProtocols'] {
-  const output = [...(left ?? [])]
-  const seen = new Set(output)
-  for (const protocol of right ?? []) {
-    if (seen.has(protocol)) continue
-    seen.add(protocol)
-    output.push(protocol)
-  }
-  return output.length ? output : undefined
 }

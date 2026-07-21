@@ -23,6 +23,7 @@
     :view-mode="viewMode"
     :view-mode-options="viewModeOptions"
     @apply-index="emit('applyIndex')"
+    @facets-open="emit('facetsOpen')"
     @grep-range-change="emit('grepRangeChange')"
     @index-range-change="emit('indexRangeChange')"
     @mode-change="emit('modeChange', $event)"
@@ -128,6 +129,7 @@ defineProps<{
 const emit = defineEmits<{
   (event: 'applyIndex'): void
   (event: 'change', paginationInfo: unknown): void
+  (event: 'facetsOpen'): void
   (event: 'grepDetail', record: RuntimeLogListRecord): void
   (event: 'grepMobileRefresh'): void
   (event: 'grepRangeChange'): void

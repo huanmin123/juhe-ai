@@ -387,14 +387,15 @@ export async function readAuditPayloadBlobWindow(
   const bytes = meta.compression === 'gzip'
     ? await readGzipPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
     : await readPlainPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
-  const nextOffset = offset + (bytes?.byteLength ?? 0)
+  const bytesReturned = bytes?.byteLength ?? 0
+  const nextOffset = offset + bytesReturned
   const truncated = nextOffset < meta.rawSizeBytes
   return {
     bytes,
     offset,
     limit,
     totalBytes: meta.rawSizeBytes,
-    nextOffset: truncated ? nextOffset : undefined,
+    nextOffset: truncated && bytesReturned > 0 ? nextOffset : undefined,
     truncated,
     storageStatus: 'available'
   }
@@ -475,14 +476,15 @@ export async function readAuditPayloadBlobWindowWithClient(
   const bytes = meta.compression === 'gzip'
     ? await readGzipPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
     : await readPlainPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
-  const nextOffset = offset + (bytes?.byteLength ?? 0)
+  const bytesReturned = bytes?.byteLength ?? 0
+  const nextOffset = offset + bytesReturned
   const truncated = nextOffset < meta.rawSizeBytes
   return {
     bytes,
     offset,
     limit,
     totalBytes: meta.rawSizeBytes,
-    nextOffset: truncated ? nextOffset : undefined,
+    nextOffset: truncated && bytesReturned > 0 ? nextOffset : undefined,
     truncated,
     storageStatus: 'available'
   }

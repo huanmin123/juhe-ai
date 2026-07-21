@@ -31,14 +31,39 @@ export interface SystemTeamSummary {
 }
 
 export interface SystemTeamListResult {
-  items: SystemTeamSummary[]
+  items: SystemTeamListItem[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
 }
 
+export interface SystemTeamListItem {
+  id: string
+  name: string
+  description?: string
+  status: TeamStatus
+  memberCount: number
+  createdAt: string
+}
+
+export interface SystemTeamMemberDetail {
+  id: string
+  systemAccountId: string
+  systemAccountName?: string
+  joinedAt: string
+}
+
+export interface SystemTeamDetail extends SystemTeamListItem {
+  members: SystemTeamMemberDetail[]
+}
+
 export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
+
+export interface AuthorizationGranteeGroupOptionSummary {
+  id: string
+  name: string
+}
 
 export interface AuthorizationSourceSummary {
   id: string
@@ -134,8 +159,35 @@ export interface ResourceAuthorizationSummary {
   }
 }
 
+export interface ResourceAuthorizationListItem {
+  id: string
+  resourceType: AuthorizationResourceType
+  resourceId: string
+  resourceName?: string
+  resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccountName?: string
+  granteeType?: AuthorizationGranteeType
+  granteeSystemAccountId?: string
+  granteeSystemAccountName?: string
+  granteeUsername?: string
+  granteeTeamId?: string
+  granteeTeamName?: string
+  status: AuthorizationStatus
+  remark?: string
+  expiresAt?: string
+  effectiveSourceType?: AuthorizationSourceType
+  effectiveSourceTeamId?: string
+  effectiveSourceTeamName?: string
+  createdAt: string
+  sourceSummary?: AuthorizationSourceListSummary
+  permissions?: {
+    canEdit: boolean
+    canAuthorize: boolean
+  }
+}
+
 export interface ResourceAuthorizationListResult {
-  items: ResourceAuthorizationSummary[]
+  items: ResourceAuthorizationListItem[]
   total: number
   hasMore: boolean
   page: number

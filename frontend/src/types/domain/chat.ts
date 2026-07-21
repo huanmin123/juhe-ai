@@ -6,6 +6,7 @@ export interface ChatConversation {
   systemAccountId: string
   apiKeyId?: string
   apiKeyNameSnapshot: string
+  defaultModel?: ChatModelListOption
   title: string
   isPinned: boolean
   lastModel?: string
@@ -105,8 +106,14 @@ export type ChatSubmissionStatus =
 
 export type ChatReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ChatServiceTier = 'default' | 'priority' | 'flex'
-export interface ChatModelOption {
+export interface ChatModelListOption {
   id: string
+  name: string
+}
+
+export interface ChatModelCapabilities {
+  id: string
+  name: string
   supportsPromptCaching: boolean
   supportedReasoningEfforts: ChatReasoningEffort[]
   defaultReasoningEffort?: ChatReasoningEffort

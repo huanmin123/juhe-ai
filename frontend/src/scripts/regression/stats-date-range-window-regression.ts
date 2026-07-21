@@ -10,6 +10,7 @@ const usageStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'usage-
 const usageStatsPageConfigSource = readFileSync(resolve(frontendRoot, 'views', 'usage-stats', 'usageStatsPageConfig.ts'), 'utf8')
 const aiPerformanceViewSource = readFileSync(resolve(frontendRoot, 'views', 'ai-performance', 'AiPerformanceView.vue'), 'utf8')
 const ipStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
+const statsRoutesSource = readFileSync(resolve(frontendRoot, '..', '..', 'backend', 'src', 'modules', 'stats', 'stats.routes.ts'), 'utf8')
 
 assert.match(
   usageStatsWindowSource,
@@ -19,8 +20,14 @@ assert.match(
 
 assert.match(
   usageStatsWindowSource,
-  /Date\.now\(\)\s*-\s*windowLoadedAtMs\s*<\s*windowCacheTtlMs/,
-  'usage stats window cache must expire instead of staying process-lifetime stale'
+  /Date\.now\(\)\s*-\s*scopeState\.loadedAtMs\s*<\s*windowCacheTtlMs/,
+  'each usage stats window scope cache must expire instead of staying process-lifetime stale'
+)
+
+assert.match(
+  usageStatsWindowSource,
+  /const\s+scopeStates:\s*Record<UsageStatsWindowScope,\s*UsageStatsWindowScopeState>/,
+  'usage stats window cache must isolate self and admin view scopes'
 )
 
 assert.match(
@@ -31,14 +38,14 @@ assert.match(
 
 assert.match(
   statsViewSource,
-  /loadUsageStatsWindow\(\{ force: true \}\)/,
-  'stats overview loads must force-refresh the stats window'
+  /loadUsageStatsWindow\(\)/,
+  'stats overview loads must reuse the shared stats window cache'
 )
 
 assert.match(
   statsViewSource,
-  /async\s+function\s+handleQuickRangeChange\(value: string \| number\)\s*\{[\s\S]*await\s+loadUsageStatsWindow\(\{ force: true \}\)[\s\S]*quickRangeDateRange/,
-  'stats overview quick ranges must refresh the window before calculating today'
+  /async\s+function\s+handleQuickRangeChange\(value: string \| number\)\s*\{[\s\S]*await\s+loadUsageStatsWindow\(\)[\s\S]*quickRangeDateRange/,
+  'stats overview quick ranges must resolve the shared window before calculating today'
 )
 
 for (const [name, source] of [
@@ -54,14 +61,26 @@ for (const [name, source] of [
 
 assert.match(
   systemMetricsViewSource,
-  /await\s+loadUsageStatsWindow\(\{ force: true \}\)[\s\S]*const rangeParams = selectedRangeParams\(\)/,
-  'system metrics must refresh the stats window before building default date params'
+  /Promise\.all\(\[[\s\S]*api\.stats\.systemMetrics\(rangeParams\)[\s\S]*loadUsageStatsWindow\(\)/,
+  'system metrics must load the cached window and business data in parallel'
 )
 
 assert.match(
   systemMetricsViewSource,
-  /function\s+selectedRangeParams\(\):\s*\{ startDate\?: string; endDate\?: string \}\s*\{[\s\S]*if\s*\(!dateRangeExplicit\.value\)[\s\S]*statsWindowEndDate/,
-  'system metrics default range must use the server stats window end date'
+  /function\s+selectedRangeParams\(\):\s*\{ startDate\?: string; endDate\?: string \}\s*\{[\s\S]*if\s*\(!dateRangeExplicit\.value\)\s*return\s*\{\}/,
+  'system metrics must omit browser-local dates when the range is not explicit'
+)
+
+assert.match(
+  systemMetricsViewSource,
+  /syncImplicitDateRangeToStatsWindow\(\)[\s\S]*systemMetrics\.value = metrics/,
+  'system metrics must align the displayed implicit range after the server window is available'
+)
+
+assert.match(
+  statsRoutesSource,
+  /function normalizeSystemMetricsDateRangeAsync[\s\S]*const today = dateKey\(new Date\(\), timezone\)[\s\S]*startDate = input\.startDate \?\? input\.endDate \?\? today[\s\S]*endDate = input\.endDate \?\? input\.startDate \?\? today/,
+  'system metrics omitted dates must resolve to one server-timezone day'
 )
 
 assert.match(

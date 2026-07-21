@@ -5,8 +5,8 @@ import { message } from '@/lib/antd'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import type {
-  ExternalIntegrationSourceSummary,
-  ExternalIntegrationSourceTokenSummary
+  ExternalIntegrationSourceListItem,
+  ExternalIntegrationSourcePrimaryTokenSummary
 } from '@/types/domain'
 
 export interface UseExternalSourceTokenActionsOptions {
@@ -43,7 +43,7 @@ export function useExternalSourceTokenActions(options: UseExternalSourceTokenAct
     }
   }
 
-  async function generateSourceToken(record: ExternalIntegrationSourceSummary): Promise<void> {
+  async function generateSourceToken(record: ExternalIntegrationSourceListItem): Promise<void> {
     if (record.isBuiltIn || primaryToken(record) || generatingTokenSourceId.value) return
     generatingTokenSourceId.value = record.id
     try {
@@ -65,7 +65,7 @@ export function useExternalSourceTokenActions(options: UseExternalSourceTokenAct
     }
   }
 
-  async function copyTokenPreview(record: ExternalIntegrationSourceSummary): Promise<void> {
+  async function copyTokenPreview(record: ExternalIntegrationSourceListItem): Promise<void> {
     const token = primaryToken(record)
     if (!token || tokenCopyingKey.value) return
     const copyingKey = tokenCopyKey(record)
@@ -100,12 +100,12 @@ export function useExternalSourceTokenActions(options: UseExternalSourceTokenAct
   }
 }
 
-function formatTokenPreview(token: ExternalIntegrationSourceTokenSummary | undefined): string {
+function formatTokenPreview(token: ExternalIntegrationSourcePrimaryTokenSummary | undefined): string {
   if (!token) return '未生成'
   return maskSecretPreview('', token.tokenPrefix, token.tokenSuffix)
 }
 
-function tokenDisplayTitle(token: ExternalIntegrationSourceTokenSummary | undefined): string {
+function tokenDisplayTitle(token: ExternalIntegrationSourcePrimaryTokenSummary | undefined): string {
   return token ? '列表仅显示 Token 标识，点击复制按钮复制完整 Token' : '未生成'
 }
 
@@ -120,11 +120,11 @@ function maskSecretPreview(value: string | undefined, prefix?: string, suffix?: 
   return '未生成'
 }
 
-function primaryToken(record: ExternalIntegrationSourceSummary): ExternalIntegrationSourceTokenSummary | undefined {
-  return record.primaryToken ?? record.tokens?.[0]
+function primaryToken(record: ExternalIntegrationSourceListItem): ExternalIntegrationSourcePrimaryTokenSummary | undefined {
+  return record.primaryToken
 }
 
-function tokenCopyKey(record: ExternalIntegrationSourceSummary): string {
+function tokenCopyKey(record: ExternalIntegrationSourceListItem): string {
   const token = primaryToken(record)
   return token ? `${record.id}:${token.id}` : ''
 }

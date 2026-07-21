@@ -144,10 +144,22 @@ async function listAccountStatusProjectionsDirect(
     LEFT JOIN ${accounts} source_accounts
       ON source_accounts.id = accounts.authorization_instance_source_account_id
       AND source_accounts.deleted_at IS NULL
-    LEFT JOIN ${groupAccounts} group_bindings
+    LEFT JOIN (
+      SELECT account_id, system_account_id, group_id, account_authorization_id,
+        local_priority, local_super_priority_enabled, local_fallback_enabled
+      FROM (
+        SELECT group_accounts.*,
+          ROW_NUMBER() OVER (
+            PARTITION BY group_accounts.account_id, group_accounts.system_account_id
+            ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
+          ) AS binding_rank
+        FROM ${groupAccounts} group_accounts
+        WHERE group_accounts.enabled = 1
+      ) ranked_group_bindings
+      WHERE binding_rank = 1
+    ) group_bindings
       ON group_bindings.account_id = accounts.id
       AND group_bindings.system_account_id = accounts.system_account_id
-      AND group_bindings.enabled = 1
     LEFT JOIN ${groups} bound_groups ON bound_groups.id = group_bindings.group_id
     WHERE accounts.deleted_at IS NULL
       AND accounts.id IN (${ids.map(() => '?').join(', ')})

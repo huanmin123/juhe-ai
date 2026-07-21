@@ -212,23 +212,6 @@ export interface UsageStatsOverview {
 }
 
 export interface SystemMetricsOverview {
-  latest?: {
-    sampledAt: string
-    cpuPercent?: number
-    memoryUsedPercent?: number
-    memoryTotalBytes?: number
-    memoryFreeBytes?: number
-    processRssBytes?: number
-    processHeapUsedBytes?: number
-    processHeapTotalBytes?: number
-    eventLoopLagMs?: number
-    networkRxBytesPerSecond?: number
-    networkTxBytesPerSecond?: number
-    networkRxTotalBytes?: number
-    networkTxTotalBytes?: number
-    dbFileBytes?: number
-    statsLagSeconds?: number
-  }
   hourlyTrend: Array<{
     statHour: string
     sampleCount: number
@@ -288,47 +271,5 @@ export interface SystemMetricsOverview {
     processHeapUsedBytesMax?: number
     processHeapTotalBytesAvg?: number
     processHeapTotalBytesMax?: number
-  }>
-  backgroundJobs: Array<{
-    name: string
-    workerRole?: ProcessEventLoopRole
-    intervalMs: number
-    running: boolean
-    lastStartedAt?: string
-    lastFinishedAt?: string
-    lastSuccessAt?: string
-    lastErrorAt?: string
-    lastError?: string
-    lastWarningAt?: string
-    lastWarning?: string
-    lastDurationMs?: number
-    maxDurationMs?: number
-    runCount: number
-    successCount: number
-    failureCount: number
-    partialCount: number
-    skippedCount: number
-    retryQueue?: {
-      name: string
-      pendingCount: number
-      runningCount: number
-      nextRunAt?: string
-    }
-    localQueue?: {
-      name: string
-      queueLength?: number
-      queueBytes?: number
-      flushLastSuccessAt?: string
-      flushLastError?: string
-      completedCount?: number
-      droppedCount?: number
-      droppedSuccessCount?: number
-      droppedFailureCount?: number
-      droppedOverflowCount?: number
-      droppedOversizeCount?: number
-      retainedOverflowWarningCount?: number
-      flushFailureCount?: number
-      [key: string]: unknown
-    }
   }>
 }

@@ -22,6 +22,7 @@
         :options="eventOptions"
         :filter-option="filterEventOption"
         @change="emit('applyIndex')"
+        @dropdown-visible-change="handleFacetsOpen"
       />
     </template>
     <template #advanced-filters>
@@ -38,6 +39,7 @@
             :disabled-date="disabledIndexDate"
             :placeholder="['索引开始时间', '索引结束时间']"
             @change="emit('indexRangeChange')"
+            @open-change="handleFacetsOpen"
           />
         </a-form-item>
       </a-form>
@@ -58,7 +60,7 @@
           <a-select v-model:value="levelFilterModel" :options="levelOptions" />
         </a-form-item>
         <a-form-item label="事件">
-          <a-select v-model:value="eventFilterModel" allow-clear show-search :options="eventOptions" :filter-option="filterEventOption" placeholder="选择或输入事件" />
+          <a-select v-model:value="eventFilterModel" allow-clear show-search :options="eventOptions" :filter-option="filterEventOption" placeholder="选择或输入事件" @dropdown-visible-change="handleFacetsOpen" />
         </a-form-item>
         <a-form-item label="关键字">
           <a-input v-model:value="keywordFilterModel" allow-clear placeholder="模糊匹配消息列" />
@@ -72,6 +74,7 @@
             :disabled-date="disabledIndexDate"
             :placeholder="['索引开始时间', '索引结束时间']"
             @change="emit('indexRangeChange')"
+            @open-change="handleFacetsOpen"
           />
         </a-form-item>
       </a-form>
@@ -175,6 +178,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'applyIndex'): void
+  (event: 'facetsOpen'): void
   (event: 'grepRangeChange'): void
   (event: 'indexRangeChange'): void
   (event: 'modeChange', value: string | number): void
@@ -231,6 +235,10 @@ const viewModeModel = computed({
 
 function handleModeChange(value: string | number): void {
   emit('modeChange', value)
+}
+
+function handleFacetsOpen(open: boolean): void {
+  if (open) emit('facetsOpen')
 }
 </script>
 

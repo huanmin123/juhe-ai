@@ -49,10 +49,12 @@
             :turn-limit-message="turnLimitMessage"
             :image-input-supported="Boolean(selectedModelOption?.inputModalities.includes('image') && selectedModelOption.supportedApiProtocols.includes('responses'))"
             :model-options="models"
+            :model-capabilities="selectedModelOption"
             :models-loading="modelsLoading"
+            :model-capabilities-loading="modelCapabilitiesLoading"
             :show-conversation-button="mobile"
             @open-conversations="conversationDrawerOpen = true"
-            @models-open="refreshSelectedModelsIfExpired"
+            @models-open="loadModelsOnOpen"
             @submit="handleComposerSubmit"
             @stop="stopGeneration"
           />
@@ -111,7 +113,7 @@ import { chatApi, ChatStreamHttpError } from '@/api/domains/chat'
 import { authState } from '@/composables/useAuth'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
-import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 import { beginLatestTurnEdit, isDefinitiveChatHttpRejection, resolveChatReconciliationNotice, resolveChatSubmitFailure } from './chatTurnEditing'
 import {
   applyChatReconciliationIfActive,
@@ -122,7 +124,7 @@ import {
 } from './chatTurnReconciliation'
 import { createChatConversationSummaryRefresher, mergeChatConversationSummary } from './chatConversationSummary'
 import { canSubmitChatTurn, chatTurnLimitMessage, isChatTurnLimitReached, markChatConversationTurnLimitReached } from './chatTurnLimit'
-import { isCurrentChatConversationLoad, startChatConversationLoad } from './chatConversationLoad'
+import { isCurrentChatConversationLoad } from './chatConversationLoad'
 import { resolveChatStopTarget, stopActiveChatGeneration } from './chatStopGeneration'
 import {
   clearChatPendingSubmission,
@@ -141,7 +143,7 @@ import { getDefaultChatLocalCache } from './chatLocalCache'
 import { ChatCacheBroadcast } from './chatCacheBroadcast'
 import { createDefaultChatConversationSyncDependencies, hasOlderChatMessages, projectChatMessagesWithRuntime, restoreChatActiveTurnFromSync, synchronizeChatConversation } from './chatConversationSync'
 import { ChatRuntimeReconciliationScheduler } from './chatRuntimeReconciliation'
-import { applyDeletedChatConversation, ChatModelLoadCoordinator, ChatSingleFlightCoordinator } from './chatConversationPerformance'
+import { applyDeletedChatConversation, ChatModelCapabilitiesLoadCoordinator, ChatModelLoadCoordinator, ChatSingleFlightCoordinator } from './chatConversationPerformance'
 
 interface ChatTurnEditingState {
   conversationId: string
@@ -175,8 +177,9 @@ const conversationsLoadingMore = ref(false)
 const hasMoreConversations = ref(false)
 const selectedConversationId = ref<string>()
 const messages = ref<ChatMessage[]>([])
-const models = ref<ChatModelOption[]>([])
+const models = ref<ChatModelListOption[]>([])
 const selectedModel = ref<string>()
+const selectedModelCapabilities = ref<ChatModelCapabilities>()
 const selectedReasoningEffort = ref<ChatReasoningEffort | ''>('')
 const selectedServiceTier = ref<ChatServiceTier | ''>('')
 const contextStatus = ref<ChatContextStatus>()
@@ -184,6 +187,7 @@ const messagesLoading = ref(false)
 const olderMessagesLoading = ref(false)
 const hasOlderMessages = ref(false)
 const modelsLoading = ref(false)
+const modelCapabilitiesLoading = ref(false)
 const creating = ref(false)
 const generating = ref(false)
 const conversationAccessEpoch = ref(0)
@@ -222,8 +226,11 @@ let lastRuntimeTerminalKey: string | undefined
 let conversationMenuTrigger: HTMLElement | undefined
 
 const localCache = getDefaultChatLocalCache()
-const modelLoadCoordinator = new ChatModelLoadCoordinator<ChatModelOption>({
+const modelLoadCoordinator = new ChatModelLoadCoordinator<ChatModelListOption>({
   load: ({ conversationId }, signal) => chatApi.listModels(conversationId, { signal })
+})
+const modelCapabilitiesLoadCoordinator = new ChatModelCapabilitiesLoadCoordinator<ChatModelCapabilities>({
+  load: ({ conversationId, modelId }, signal) => chatApi.getModelCapabilities(conversationId, modelId, { signal })
 })
 const contextStatusCoordinator = new ChatSingleFlightCoordinator<ChatContextStatus>()
 const syncDependencies = createDefaultChatConversationSyncDependencies({
@@ -239,7 +246,7 @@ const conversationForbidden = computed(() => {
 })
 const turnLimitReached = computed(() => Boolean(selectedConversation.value && isChatTurnLimitReached(selectedConversation.value.userTurnCount, selectedConversation.value.userTurnLimit)))
 const turnLimitMessage = computed(() => chatTurnLimitMessage(selectedConversation.value?.userTurnLimit ?? 0))
-const selectedModelOption = computed(() => models.value.find((item) => item.id === selectedModel.value))
+const selectedModelOption = computed(() => selectedModelCapabilities.value?.id === selectedModel.value ? selectedModelCapabilities.value : undefined)
 const editableUserMessageId = computed(() => {
   const candidate = messages.value[messages.value.length - 2]
   return candidate && beginLatestTurnEdit(messages.value, candidate.id)?.userMessageId
@@ -331,7 +338,6 @@ async function loadMoreConversations(): Promise<void> {
 async function selectConversation(id: string, options: {
   allowPendingRecovery?: boolean
   forceReload?: boolean
-  refreshModels?: boolean
   silentLoadError?: boolean
 } = {}): Promise<boolean> {
   if (selectedConversationId.value === id && !options.forceReload) return true
@@ -340,28 +346,30 @@ async function selectConversation(id: string, options: {
   const previousModelCacheKey = previousConversation ? previousConversation.apiKeyId ?? previousConversation.id : undefined
   const nextModelCacheKey = nextConversation ? nextConversation.apiKeyId ?? nextConversation.id : undefined
   if (previousModelCacheKey !== nextModelCacheKey) modelLoadCoordinator.cancel(previousModelCacheKey)
+  modelCapabilitiesLoadCoordinator.cancel()
   await cancelTurnEdit()
   const loadEpoch = ++conversationLoadEpoch
   selectedConversationId.value = id
   messages.value = []
   models.value = []
   selectedModel.value = undefined
+  selectedModelCapabilities.value = undefined
   contextStatus.value = undefined
   hasOlderMessages.value = false
   olderMessagesLoading.value = false
   showJumpToBottom.value = false
   messagesLoading.value = true
-  modelsLoading.value = true
+  modelsLoading.value = false
+  modelCapabilitiesLoading.value = false
   try {
     subscribeSelectedRuntime()
     const conversation = conversations.value.find((item) => item.id === id)
     if (!conversation) throw new Error('会话不存在')
     if (authState.currentUser.value?.id !== conversation.systemAccountId) return false
+    selectedModel.value = conversation.lastModel ?? conversation.defaultModel?.id
+    if (selectedModel.value) void loadSelectedModelCapabilities(selectedModel.value)
     let loadedSyncHead: ChatConversationSyncHead | undefined
-    const modelRequest = { apiKeyId: conversation.apiKeyId ?? conversation.id, conversationId: id }
-    const cachedModels = modelLoadCoordinator.peek(modelRequest.apiKeyId)
-    const conversationLoad = startChatConversationLoad({
-      loadMessages: async () => {
+    const messageItems = await (async () => {
         const blockedBeforeSync = chatGenerationRuntime.isConversationBlocked(conversation.systemAccountId, id)
         const cached = blockedBeforeSync ? undefined : await localCache.readConversation(conversation.systemAccountId, id)
         if (cached?.ok && cached.value?.messages.length) {
@@ -389,6 +397,7 @@ async function selectConversation(id: string, options: {
           conversationAccessEpoch.value += 1
           models.value = []
           selectedModel.value = undefined
+          selectedModelCapabilities.value = undefined
           return []
         }
         if (synchronized.state === 'superseded') return messages.value
@@ -408,45 +417,18 @@ async function selectConversation(id: string, options: {
           attachActiveTurnFromSync(conversation, synchronized.syncHead, synchronized.messages, user?.clientMessageId, synchronized.projectionEventVersion)
         }
         return synchronized.messages
-      },
-      loadModels: () => (options.refreshModels
-        ? modelLoadCoordinator.refresh(modelRequest)
-        : cachedModels
-          ? Promise.resolve(cachedModels)
-          : modelLoadCoordinator.load(modelRequest)).then((items) => [...items])
-    })
-    const messageItems = await conversationLoad.messages
+    })()
     if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return false
     messages.value = messageItems
     if (loadedSyncHead) messages.value = projectRuntimeMessages(conversation.systemAccountId, id, messageItems, loadedSyncHead).messages
     hasOlderMessages.value = hasOlderChatMessages(messageItems)
     void refreshContextStatus(id)
-    void conversationLoad.models.then((modelResult) => {
-      if (!isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) return
-      if (modelResult.ok) {
-        if (chatGenerationRuntime.isConversationBlocked(conversation.systemAccountId, id)) {
-          models.value = []
-          selectedModel.value = undefined
-          modelsLoading.value = false
-          return
-        }
-        models.value = modelResult.value
-        const latestConversation = conversations.value.find((item) => item.id === id)
-        selectedModel.value = latestConversation?.lastModel && modelResult.value.some((item) => item.id === latestConversation.lastModel)
-          ? latestConversation.lastModel
-          : modelResult.value[0]?.id
-      } else if (!options.silentLoadError) {
-        message.error(extractApiErrorMessage(modelResult.error, '加载可用模型失败'))
-      }
-      modelsLoading.value = false
-    }).catch(() => {
-      if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) modelsLoading.value = false
-    })
     return true
   } catch (error) {
     if (isCurrentChatConversationLoad({ conversationId: id, selectedConversationId: selectedConversationId.value, epoch: loadEpoch, currentEpoch: conversationLoadEpoch, disposed })) {
       if (!options.silentLoadError) message.error(extractApiErrorMessage(error, '加载对话失败'))
       modelsLoading.value = false
+      modelCapabilitiesLoading.value = false
     }
     return false
   } finally {
@@ -528,7 +510,7 @@ async function createConversation(): Promise<void> {
       pageActive
       && conversationLoadEpoch === selectionEpochAtStart
       && selectedConversationId.value === selectedConversationIdAtStart
-      && await selectConversation(item.id, { refreshModels: true })
+      && await selectConversation(item.id)
     ) conversationDrawerOpen.value = false
   }
   catch (error) { message.error(extractApiErrorMessage(error, '创建对话失败')) }
@@ -711,6 +693,7 @@ function applyRuntimeTurn(turn: RunningTurn | undefined): void {
       messages.value = []
       models.value = []
       selectedModel.value = undefined
+      selectedModelCapabilities.value = undefined
     }
     const failure = turn.error?.status
       ? new ChatStreamHttpError(turn.error.status, turn.error.code, turn.error.message || '发送失败')
@@ -753,6 +736,7 @@ async function refreshConversationFromSync(conversationId: string): Promise<void
         messages.value = []
         models.value = []
         selectedModel.value = undefined
+        selectedModelCapabilities.value = undefined
       }
       return
     }
@@ -848,14 +832,15 @@ async function removeConversation(id: string): Promise<void> {
     messages.value = []
     models.value = []
     selectedModel.value = undefined
+    selectedModelCapabilities.value = undefined
     contextStatus.value = undefined
   }
   if (conversation) void localCache.deleteConversation(conversation.systemAccountId, id).catch(() => undefined)
   if (deleted.nextConversationId) void selectConversation(deleted.nextConversationId)
 }
-async function refreshSelectedModelsIfExpired(): Promise<void> {
+async function loadModelsOnOpen(): Promise<void> {
   const conversation = selectedConversation.value
-  if (!conversation) return
+  if (!conversation || modelsLoading.value) return
   const request = { apiKeyId: conversation.apiKeyId ?? conversation.id, conversationId: conversation.id }
   modelsLoading.value = true
   try {
@@ -867,6 +852,9 @@ async function refreshSelectedModelsIfExpired(): Promise<void> {
         ? conversation.lastModel
         : items[0]?.id
     }
+    if (selectedModel.value && selectedModelCapabilities.value?.id !== selectedModel.value) {
+      void loadSelectedModelCapabilities(selectedModel.value)
+    }
     normalizeCurrentModelControls()
   } catch (error) {
     if (selectedConversationId.value === conversation.id) message.error(extractApiErrorMessage(error, '刷新可用模型失败'))
@@ -874,11 +862,31 @@ async function refreshSelectedModelsIfExpired(): Promise<void> {
     if (selectedConversationId.value === conversation.id) modelsLoading.value = false
   }
 }
+
+async function loadSelectedModelCapabilities(modelId: string): Promise<void> {
+  const conversation = selectedConversation.value
+  if (!conversation) return
+  const conversationId = conversation.id
+  modelCapabilitiesLoading.value = true
+  selectedModelCapabilities.value = undefined
+  try {
+    const capabilities = await modelCapabilitiesLoadCoordinator.load({ conversationId, modelId })
+    if (selectedConversationId.value !== conversationId || selectedModel.value !== modelId) return
+    selectedModelCapabilities.value = capabilities
+    normalizeCurrentModelControls()
+  } catch (error) {
+    if (!isAbortError(error) && selectedConversationId.value === conversationId && selectedModel.value === modelId) {
+      message.error(extractApiErrorMessage(error, '加载模型能力失败'))
+    }
+  } finally {
+    if (selectedConversationId.value === conversationId && selectedModel.value === modelId) modelCapabilitiesLoading.value = false
+  }
+}
 function handleComposerSubmit(payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void {
   if (generating.value || submissionBlocked.value) { composer.value?.restore(payload.snapshot); return }
-  if (!selectedConversation.value || !selectedModel.value || modelsLoading.value) {
+  if (!selectedConversation.value || !selectedModel.value || !selectedModelOption.value || modelsLoading.value || modelCapabilitiesLoading.value) {
     composer.value?.restore(payload.snapshot)
-    message.warning(modelsLoading.value ? '模型仍在加载，请稍后发送' : '当前没有可用模型')
+    message.warning(modelsLoading.value || modelCapabilitiesLoading.value ? '模型仍在加载，请稍后发送' : selectedModel.value ? '当前模型能力不可用，请重新选择' : '当前没有可用模型')
     return
   }
   const content = payload.blocks.map((item) => item.type === 'input_image' ? '[图片]' : item.text).join('\n')
@@ -1194,7 +1202,19 @@ function normalizeCurrentModelControls(): void {
   selectedReasoningEffort.value = normalized.reasoningEffort
   selectedServiceTier.value = normalized.serviceTier
 }
-watch(selectedModel, resetModelControls)
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError'
+    || (error as { name?: unknown } | undefined)?.name === 'AbortError'
+}
+watch(selectedModel, (modelId) => {
+  resetModelControls()
+  if (!modelId) {
+    selectedModelCapabilities.value = undefined
+    modelCapabilitiesLoading.value = false
+    return
+  }
+  if (selectedModelCapabilities.value?.id !== modelId) void loadSelectedModelCapabilities(modelId)
+})
 function activateChatPage(): void {
   if (pageActive || disposed) return
   pageActive = true
@@ -1241,6 +1261,7 @@ onDeactivated(deactivateChatPage)
 onBeforeUnmount(() => {
   disposed = true
   conversationLoadEpoch += 1
+  modelCapabilitiesLoadCoordinator.cancel()
   deactivateChatPage()
   cacheBroadcast.close()
 })

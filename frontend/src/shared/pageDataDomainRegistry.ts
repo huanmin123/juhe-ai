@@ -50,6 +50,7 @@ export const pageDataDomainRegistry = [
   spec('logs.runtime', 'P3', ['/runtime-logs'], ['/runtime-logs'], ['admin-global'], 'no-store', 0, true, 'no-store', ['runtime-log-append', 'runtime-log-rotation']),
   spec('system.storage', 'P3', ['/table-monitor'], ['/table-monitor'], ['admin-global'], 'memory', 60_000, true, 'planned', ['table-monitor-snapshot']),
   spec('system.metrics', 'P3', ['/system-metrics-stats'], ['/stats/system-metrics'], ['admin-global'], 'memory', 15_000, true, 'planned', ['system-metrics-sample']),
+  spec('system.metrics.runtime', 'P3', ['/system-metrics-stats'], ['/stats/system-metrics/runtime'], ['admin-global'], 'no-store', 0, true, 'no-store', ['system-runtime-snapshot']),
   spec('ip.stats', 'P3', ['/ip-stats'], ['/ip-stats'], ['admin-global'], 'session', 15_000, true, 'planned', ['ip-stats-aggregate', 'ip-policy-write']),
 ] as const satisfies readonly PageDataDomainSpec[]
 

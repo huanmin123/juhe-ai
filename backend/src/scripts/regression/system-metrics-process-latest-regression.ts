@@ -95,7 +95,6 @@ try {
   assert.equal(latestStatusByRole.get('ops-worker')?.eventLoopLagMs, 12, 'ops-worker 应返回自身最新样本')
   assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本应按自身角色读取')
-  assert.deepEqual(overview.backgroundJobs, [], 'repository 层系统指标应提供空后台任务数组，路由层再补运行时快照')
 
   const recentMinute = new Date(Date.now() - 60_000)
   recentMinute.setSeconds(0, 0)
