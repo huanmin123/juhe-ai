@@ -11,7 +11,6 @@ import express, { type NextFunction, type Request, type Response as ExpressRespo
 import { runtimeConfig } from '../../config/runtime.js'
 import { closeLogger, logger, logPublisherStats } from '../../shared/logger.js'
 import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes } from '../../modules/gateway/request/body.js'
-import { setRuntimeLogLineSink } from '../../modules/runtime-logs/runtime-log-stream.js'
 
 type ScenarioName = 'models' | 'responses' | 'chat' | 'responses_stream'
 
@@ -207,8 +206,6 @@ const [
 
 usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
 auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
-let indexedRuntimeLogLines = 0
-setRuntimeLogLineSink(() => { indexedRuntimeLogLines += 1 })
 
 async function main(): Promise<void> {
   const config = loadConfig()
@@ -844,7 +841,6 @@ function buildSummary(
       connections: connectionStats(gatewayConnections)
     },
     logging: logPublisherStats(),
-    indexedRuntimeLogLines,
     datasetDatabase: {
       usageRecords: countRows('usage_records'),
       auditLogs: countRows('audit_logs'),

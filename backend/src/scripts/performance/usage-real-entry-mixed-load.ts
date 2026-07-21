@@ -640,7 +640,7 @@ function startBackendServer(port: number): ChildProcess {
       JUHE_AI_SECRET: runtimeConfig.secret,
       JUHE_AI_LOG_LEVEL: process.env.JUHE_AI_MIXED_LOAD_CHILD_LOG_LEVEL ?? 'warn',
       JUHE_AI_LOG_CONSOLE_ENABLED: process.env.JUHE_AI_MIXED_LOAD_CHILD_LOG_CONSOLE_ENABLED ?? 'false',
-      JUHE_AI_LOG_FILE_ENABLED: process.env.JUHE_AI_MIXED_LOAD_CHILD_LOG_FILE_ENABLED ?? 'false',
+      JUHE_AI_LOG_FILE_ENABLED: process.env.JUHE_AI_MIXED_LOAD_CHILD_LOG_FILE_ENABLED ?? 'true',
       JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true'
     },
     stdio: ['ignore', 'pipe', 'pipe']

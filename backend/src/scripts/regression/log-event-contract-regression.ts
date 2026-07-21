@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { spawnSync } from 'node:child_process'
 import type { Logger } from 'pino'
 
 import {
@@ -164,5 +165,37 @@ assert.equal(resolveRequestSummaryOutcome({
   stageSummaries: [{ sequence: 1, stage: 'upstream.dispatch.failed', outcome: 'expected_failure', durationMs: 1 }]
 }, 503), 'expected_failure')
 assert.equal(resolveRequestSummaryOutcome({ ...clockSafeContext, stageSummaries: [] }, 200), 'success')
+
+const rawLoggerProbe = spawnSync(process.execPath, [
+  '--import',
+  'tsx',
+  '--input-type=module',
+  '-e',
+  [
+    "const { logger, closeLogger } = await import('./src/shared/logger.ts')",
+    "logger.child({ traceId: 'trace-raw-json-1', requestId: 'request-raw-json-1' }).info({ version: 1, service: 'juhe-ai', role: 'server', event: 'logger_raw_json_key_probe' }, 'probe')",
+    'await closeLogger()'
+  ].join(';')
+], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    NODE_ENV: 'test',
+    JUHE_AI_LOG_CONSOLE_ENABLED: 'true',
+    JUHE_AI_LOG_FILE_ENABLED: 'false',
+    JUHE_AI_LOG_LEVEL: 'info',
+    JUHE_AI_PROCESS_ROLE: 'server'
+  }
+})
+assert.equal(rawLoggerProbe.status, 0, rawLoggerProbe.stderr)
+const rawProbeLine = rawLoggerProbe.stdout
+  .split(/\r?\n/)
+  .find((line) => line.includes('"event":"logger_raw_json_key_probe"'))
+assert(rawProbeLine, `未找到真实 logger JSON 行：${rawLoggerProbe.stdout}`)
+for (const key of ['version', 'service', 'role', 'traceId', 'requestId']) {
+  const occurrenceCount: number = rawProbeLine.match(new RegExp(`"${key}":`, 'g'))?.length ?? 0
+  assert.equal(occurrenceCount, 1, `真实 logger JSON 行中的 ${key} 出现 ${occurrenceCount} 次：${rawProbeLine}`)
+}
 
 console.log('日志事件契约回归通过')

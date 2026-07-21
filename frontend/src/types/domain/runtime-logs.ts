@@ -59,10 +59,16 @@ export interface RuntimeLogGrepResult {
 }
 
 export interface RuntimeLogIndexRuntime {
-  queueLength: number
-  droppedCount: number
-  flushLastSuccessAt?: string
-  flushLastError?: string
+  discoveredFileCount: number
+  pendingFileCount: number
+  pendingBytes: number
+  oldestPendingMtime?: string
+  currentFile?: string
+  currentOffset: number
+  lastReadAt?: string
+  lastCommitAt?: string
+  lastError?: string
+  protectedRotatedFileCount: number
   retentionDays: number
 }
 

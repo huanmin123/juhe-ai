@@ -141,8 +141,8 @@ try {
   )
 
   const largeDetail = runtimeLogsRepository.getRuntimeLogDetail('rtlog_short_keyword_guard')
-  assert(largeDetail?.rawJson.includes('[truncated]'), '仓储层直接写入大 rawJson 也应兜底截断')
-  assert((largeDetail?.rawJson.length ?? 0) < 140 * 1024, '仓储层兜底截断应限制 rawJson 入库尺寸')
+  assert.equal(largeDetail?.rawJson.includes('[truncated]'), false, '仓储层不得截断大 rawJson')
+  assert((largeDetail?.rawJson.length ?? 0) > 150 * 1024, '仓储层必须完整保存大 rawJson')
 
   writeFileSync(join(logDir, 'juhe-ai.log'), [
     JSON.stringify({

@@ -18,16 +18,14 @@ const [
   recordMaintenanceQueue,
   auditLogQueue,
   auditLogSettings,
-  publicApiLogQueue,
-  runtimeLogIndexQueue
+  publicApiLogQueue
 ] = await Promise.all([
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/operation-logs/operation-log-queue.service.js'),
   import('../../modules/record-maintenance/record-maintenance-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/audit-logs/audit-log-settings.js'),
-  import('../../modules/public-api-logs/public-api-log-queue.service.js'),
-  import('../../modules/runtime-logs/runtime-log-index-queue.service.js')
+  import('../../modules/public-api-logs/public-api-log-queue.service.js')
 ])
 
 try {
@@ -108,32 +106,13 @@ try {
   assert.equal(publicApiAfterOverflow.droppedCount, 1, '公开接口日志 worker 本地队列满后应记录丢弃')
   publicApiLogQueue.clearPublicApiLogQueueForTest()
 
-  runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
-  for (let index = 0; index < 5000; index += 1) {
-    runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(index), { sourceKey: `worker-local-rtlog-${index}` })
-  }
-  const sampledRuntimeLog = runtimeLogIndexQueue.getRuntimeLogIndexRuntime()
-  assert.equal(sampledRuntimeLog.queueLength, 4000, '低优先级运行日志索引队列应在高水位开始采样保护')
-  assert.equal(sampledRuntimeLog.droppedSampledCount, 1000, '低优先级运行日志索引高水位后应记录采样丢弃')
-  runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
-  for (let index = 0; index < 5000; index += 1) {
-    runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(index, 40), { sourceKey: `worker-local-rtlog-warn-${index}` })
-  }
-  assert.equal(runtimeLogIndexQueue.getRuntimeLogIndexRuntime().queueLength, 5000, '高优先级运行日志索引 worker 本地队列应达到硬上限')
-  runtimeLogIndexQueue.enqueueRuntimeLogLineLocal(runtimeLogLine(5000, 40), { sourceKey: 'worker-local-rtlog-overflow' })
-  const runtimeLogAfterOverflow = runtimeLogIndexQueue.getRuntimeLogIndexRuntime()
-  assert.equal(runtimeLogAfterOverflow.queueLength, 5000, '高优先级运行日志索引 worker 本地队列满后不应继续增长')
-  assert.equal(runtimeLogAfterOverflow.droppedOverflowCount, 1, '高优先级运行日志索引 worker 本地队列满后应记录溢出丢弃')
-  runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
-
-  console.log('worker 本地队列回归通过：使用记录、操作日志、ingest 数据维护、审计、公开接口日志和运行日志索引队列均有硬上限，非 owner worker 不能本地维护写库')
+  console.log('worker 本地队列回归通过：使用记录、操作日志、ingest 数据维护、审计和公开接口日志队列均有硬上限，运行日志不进入有损本地队列')
 } finally {
   usageRecordQueue.clearUsageRecordQueueForTest()
   operationLogQueue.clearOperationLogQueueForTest()
   recordMaintenanceQueue.clearRecordMaintenanceQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
   publicApiLogQueue.clearPublicApiLogQueueForTest()
-  runtimeLogIndexQueue.clearRuntimeLogIndexQueueForTest()
 }
 
 function buildUsageRecord(index: number) {
@@ -229,22 +208,12 @@ function buildPublicApiLog(index: number) {
   }
 }
 
-function runtimeLogLine(index: number, level = 30): string {
-  return JSON.stringify({
-    time: '2000-01-01T00:00:00.000Z',
-    level,
-    event: 'worker_local_queue_limit',
-    msg: `worker 本地队列上限回归 ${index}`
-  })
-}
-
 function assertQueueShutdownFlushIsBounded(): void {
   const queueFiles = [
     '../../modules/gateway/usage/record-queue.service.ts',
     '../../modules/operation-logs/operation-log-queue.service.ts',
     '../../modules/record-maintenance/record-maintenance-queue.service.ts',
     '../../modules/public-api-logs/public-api-log-queue.service.ts',
-    '../../modules/runtime-logs/runtime-log-index-queue.service.ts',
     '../../modules/audit-logs/audit-log-queue.service.ts'
   ]
 

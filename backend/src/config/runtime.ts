@@ -42,7 +42,6 @@ export interface RuntimeConfig {
   dbServiceHttpPort: number
   systemApi: {
     dbServiceMaxInFlight: number
-    readOnly: boolean
   }
   ownerLock: {
     enabled: boolean
@@ -244,6 +243,7 @@ const configuredSecret = secretConfig('JUHE_AI_SECRET', defaultRuntimeSecret)
 const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE', configuredSecret)
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
 const configuredDevelopmentAutoLoginUsername = optionalStringConfig('JUHE_AI_DEV_AUTO_LOGIN_USERNAME')
+const configuredLogFileEnabled = booleanConfig('JUHE_AI_LOG_FILE_ENABLED', true)
 
 assertDevelopmentAutoLoginConfig({
   username: configuredDevelopmentAutoLoginUsername,
@@ -261,6 +261,10 @@ assertRuntimeModeDrivers({
   redisCacheUrl: configuredRedisCacheUrl,
   redisStateUrl: configuredRedisStateUrl,
   redisQueueUrl: configuredRedisQueueUrl
+})
+assertRuntimeLogFileIndexingConfig({
+  runtimeMode: configuredRuntimeMode,
+  fileEnabled: configuredLogFileEnabled
 })
 
 export const runtimeConfig: RuntimeConfig = {
@@ -284,8 +288,7 @@ export const runtimeConfig: RuntimeConfig = {
       defaultSystemApiDbServiceMaxInFlight,
       1,
       5000
-    ),
-    readOnly: booleanConfig('JUHE_AI_SYSTEM_API_READ_ONLY', false)
+    )
   },
   ownerLock: {
     enabled: parseOwnerLockEnabled(rawStringConfig('JUHE_AI_OWNER_LOCK_ENABLED'))
@@ -388,7 +391,7 @@ export const runtimeConfig: RuntimeConfig = {
   log: {
     level: logLevelConfig('JUHE_AI_LOG_LEVEL', 'info'),
     directory: pathConfig('JUHE_AI_LOG_DIR', resolve(backendRoot, 'logs')),
-    fileEnabled: booleanConfig('JUHE_AI_LOG_FILE_ENABLED', true),
+    fileEnabled: configuredLogFileEnabled,
     consoleEnabled: booleanConfig('JUHE_AI_LOG_CONSOLE_ENABLED', true),
     maxFileBytes: numberConfig('JUHE_AI_LOG_MAX_FILE_MB', 100, 1, 1024) * 1024 * 1024,
     retentionDays: numberConfig('JUHE_AI_LOG_RETENTION_DAYS', 30, 1, 30),
@@ -560,6 +563,15 @@ function assertRuntimeModeDrivers(config: {
     ['JUHE_AI_REDIS_STATE_URL', config.redisStateUrl],
     ['JUHE_AI_REDIS_QUEUE_URL', config.redisQueueUrl]
   ])
+}
+
+export function assertRuntimeLogFileIndexingConfig(config: {
+  runtimeMode: RuntimeMode
+  fileEnabled: boolean
+}): void {
+  if (config.runtimeMode === 'performance' && !config.fileEnabled) {
+    throw new Error('JUHE_AI_RUNTIME_MODE=performance 时必须启用 JUHE_AI_LOG_FILE_ENABLED，否则 runtime_logs 没有耐久索引来源')
+  }
 }
 
 function assertUrlConfig(name: string, value: string | undefined, protocols: string[]): void {

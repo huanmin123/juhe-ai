@@ -13,6 +13,7 @@ import (
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/ownerlock"
+	"juhe-ai/backend-go/internal/version"
 )
 
 func TestRunWorkerWithRuntimeGateDisabledCallsRunnerWithoutDependencies(t *testing.T) {
@@ -81,8 +82,8 @@ func TestRunWorkerWithRuntimeGateOrdersAdmissionAndReleasesAfterRunner(t *testin
 		},
 		requireSchema: func(ctx context.Context, expected int64) error {
 			assertDeadlineWithin(t, ctx, 5*time.Second)
-			if expected != 62 {
-				t.Fatalf("schema version = %d, want 62", expected)
+			if expected != version.SchemaVersion {
+				t.Fatalf("schema version = %d, want %d", expected, version.SchemaVersion)
 			}
 			calls = append(calls, "schema")
 			return nil

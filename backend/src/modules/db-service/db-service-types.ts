@@ -3,7 +3,6 @@ import type { AccountTestTaskRecord } from '../../storage/account-test-tasks.rep
 import type { AuditLogInput, GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OpenAIAccountsForGroupDiagnostics, OpenAIAccountsForGroupResult, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
-import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { ActiveClientIpPolicy, ClientIpPolicyHitInput } from '../../storage/client-ip-stats.repository.js'
 import type { ResponseInspectionPolicySummary } from '../../storage/response-inspection-policy.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
@@ -1188,10 +1187,6 @@ export type DbServiceChildMessage =
     type: 'background_worker_public_api_logs'
     items: PublicApiLogInput[]
   }
-  | ({
-    type: 'background_worker_runtime_log_line'
-    line: string
-  } & RuntimeLogLineIndexOptions)
   | {
     type: 'background_worker_record_maintenance'
     items: RecordMaintenanceJob[]

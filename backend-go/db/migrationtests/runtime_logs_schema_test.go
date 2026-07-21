@@ -32,6 +32,7 @@ func TestRuntimeLogsMigrationMatchesNodeReadContract(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_file_cursors",
 		"cursor_offset bigint NOT NULL DEFAULT 0",
 		"file_size bigint NOT NULL DEFAULT 0",
+		"truncation_generation integer NOT NULL DEFAULT 0",
 		"CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_facet_summary",
 		"total_count bigint NOT NULL DEFAULT 0",
 		"CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_level_facets",
@@ -63,5 +64,21 @@ func TestRuntimeLogsMigrationMatchesNodeReadContract(t *testing.T) {
 	}
 	if !strings.Contains(down, "-- no-op:") || strings.Contains(down, "DROP TABLE") {
 		t.Fatal("migration Down section must remain a non-destructive no-op")
+	}
+
+	upgradeSource, err := os.ReadFile(migrationPath("000063_w6_runtime_log_cursor_generation.sql"))
+	if err != nil {
+		t.Fatalf("read runtime log cursor generation migration: %v", err)
+	}
+	upgradeUp, upgradeDown, found := strings.Cut(string(upgradeSource), "-- +goose Down")
+	if !found {
+		t.Fatal("runtime log cursor generation migration is missing goose Down marker")
+	}
+	if !strings.Contains(upgradeUp, "ALTER TABLE juhe_dataset.runtime_log_file_cursors") ||
+		!strings.Contains(upgradeUp, "ADD COLUMN IF NOT EXISTS truncation_generation") {
+		t.Fatal("runtime log cursor generation migration must add the column for existing PostgreSQL databases")
+	}
+	if !strings.Contains(upgradeDown, "-- no-op:") || strings.Contains(upgradeDown, "DROP COLUMN") {
+		t.Fatal("runtime log cursor generation migration Down section must remain non-destructive")
 	}
 }

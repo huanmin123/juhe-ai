@@ -24,7 +24,7 @@ process.env.JUHE_AI_USAGE_SHARD_ROOT = join(tempRoot, 'usage-shards')
 process.env.JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT = join(tempRoot, 'codex-state-shards')
 process.env.JUHE_AI_PROCESS_ROLE = 'db-service'
 process.env.JUHE_AI_LOG_CONSOLE_ENABLED = 'false'
-process.env.JUHE_AI_LOG_FILE_ENABLED = 'false'
+process.env.JUHE_AI_LOG_FILE_ENABLED = 'true'
 
 try {
   const databaseModule = await import('../../storage/database.js')

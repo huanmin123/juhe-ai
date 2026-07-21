@@ -10,7 +10,6 @@ import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../s
 import type { PublicApiLogInput } from '../../storage/public-api-logs.repository.js'
 import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
-import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { dbServiceOperationAccessMode } from '../db-service/db-service-operation-access-mode.js'
 import type { AccountRuntimeAvailabilityClearTarget } from '../db-service/db-service-types.js'
 import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
@@ -323,17 +322,6 @@ export function sendAccountHealthCheckTriggerToWorker(
     type: 'background_worker_account_health_check_trigger',
     accountId: normalizedId,
     reason
-  })
-}
-
-export function sendRuntimeLogLineToWorker(line: string, options: RuntimeLogLineIndexOptions = {}): boolean {
-  return sendBackgroundWorkerMessageToWorker({
-    type: 'background_worker_runtime_log_line',
-    line,
-    sourceKey: options.sourceKey,
-    logFile: options.logFile,
-    logOffset: options.logOffset,
-    lineNumber: options.lineNumber
   })
 }
 
@@ -668,7 +656,6 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
     case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
     case 'background_worker_record_maintenance':
-    case 'background_worker_runtime_log_line':
       if (runtimeConfig.processRole === 'server') {
         queueWorkerMessage(record as BackgroundWorkerMessage)
       }
@@ -1510,7 +1497,6 @@ function isRedisStreamManagedIngestQueueMessage(message: BackgroundWorkerMessage
     case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
     case 'background_worker_record_maintenance':
-    case 'background_worker_runtime_log_line':
       return true
     default:
       return false

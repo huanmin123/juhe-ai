@@ -4,12 +4,27 @@ import { ok } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
 import { buildBackgroundQueueHealthSnapshot } from '../background/background-queue-health.service.js'
+import type { BackgroundWorkerRuntimeLogQueueRuntime } from '../background/background-ipc.types.js'
 import { requestDbService, requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 
 export const runtimeLogsRouter = Router()
 const runtimeLogRouteTimeoutMs = 120_000
+
+export interface RuntimeLogFileConsumerHttpDto {
+  retentionDays: number
+  discoveredFileCount: number
+  pendingFileCount: number
+  pendingBytes: number
+  oldestPendingMtime?: string
+  currentFile?: string
+  currentOffset: number
+  lastReadAt?: string
+  lastCommitAt?: string
+  lastError?: string
+  protectedRotatedFileCount: number
+}
 
 runtimeLogsRouter.use((req, res, next) => {
   req.setTimeout(runtimeLogRouteTimeoutMs)
@@ -58,7 +73,7 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
       runtimeAvailable: Boolean(serverRuntime),
       workerSnapshotAvailable: Boolean(workerSnapshot),
       runtimeLogIndexQueueAvailable: Boolean(runtimeLogIndexQueue),
-      runtime: runtimeLogIndexQueue ?? null,
+      runtime: runtimeLogFileConsumerRuntimeDto(runtimeLogIndexQueue),
       worker: {
         available: Boolean(workerSnapshot ?? workerRuntime),
         snapshotAvailable: Boolean(workerSnapshot),
@@ -124,6 +139,25 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
     next(error)
   }
 })
+
+export function runtimeLogFileConsumerRuntimeDto(
+  runtime: Partial<BackgroundWorkerRuntimeLogQueueRuntime> | undefined
+): RuntimeLogFileConsumerHttpDto | null {
+  if (!runtime) return null
+  return {
+    retentionDays: runtime.retentionDays ?? 0,
+    discoveredFileCount: runtime.discoveredFileCount ?? 0,
+    pendingFileCount: runtime.pendingFileCount ?? 0,
+    pendingBytes: runtime.pendingBytes ?? 0,
+    oldestPendingMtime: runtime.oldestPendingMtime,
+    currentFile: runtime.currentFile,
+    currentOffset: runtime.currentOffset ?? 0,
+    lastReadAt: runtime.lastReadAt,
+    lastCommitAt: runtime.lastCommitAt,
+    lastError: runtime.lastError,
+    protectedRotatedFileCount: runtime.protectedRotatedFileCount ?? 0
+  }
+}
 
 runtimeLogsRouter.get('/grep', async (req, res, next) => {
   try {
