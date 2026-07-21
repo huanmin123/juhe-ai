@@ -43,6 +43,19 @@ try {
   writeFileSync(logPath, '')
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
 
+  const invalidLogPath = join(logDir, 'juhe-ai.worker.20260721T010000Z.invalid-json.log')
+  const invalidLine = 'not-json-but-must-remain-indexed'
+  writeFileSync(invalidLogPath, `${invalidLine}\n`)
+  await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: invalidLogPath, role: 'worker', kind: 'rotated' })
+  const invalidRow = database.prepare(`
+    SELECT event, error_message, raw_json, log_file, log_offset, line_number
+    FROM runtime_logs
+    WHERE event = 'runtime_log_parse_failed'
+  `).get() as { event: string; error_message: string; raw_json: string; log_file: string; log_offset: number; line_number: number }
+  assert.equal(invalidRow.raw_json, invalidLine, '非法 JSON 完整行必须原文进入 fallback 索引')
+  assert.match(invalidRow.error_message, /有效 JSON/, '非法 JSON fallback 必须记录明确解析错误')
+  assert.deepEqual([invalidRow.log_file, invalidRow.log_offset, invalidRow.line_number], [invalidLogPath, 0, 1], '非法 JSON fallback 必须保留来源位置')
+
   const longLine = JSON.stringify({
     time: now,
     level: 30,
@@ -144,7 +157,7 @@ try {
     .get('runtime_log_cursor_flush_failure') as { count: number }
   assert.equal(Number(recoveredFlushCount.count ?? 0), 1, '运行日志索引恢复后应重读并写入之前失败的日志行且保持幂等')
 
-  console.log('运行日志文件导入来源回归通过：DB service tail、超长单行完整写入和游标恢复均符合预期')
+  console.log('运行日志文件导入来源回归通过：非法 JSON fallback、DB service tail、超长单行完整写入和游标恢复均符合预期')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

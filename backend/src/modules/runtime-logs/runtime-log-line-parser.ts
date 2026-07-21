@@ -22,10 +22,12 @@ export function parseRuntimeLogLineForIndex(
   let parsed: Record<string, unknown>
   try {
     const value = JSON.parse(line) as unknown
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return fallbackRuntimeLogInput(rawJson, options.sourceKey ?? line, metadata, '运行日志行不是 JSON 对象')
+    }
     parsed = value as Record<string, unknown>
   } catch {
-    return undefined
+    return fallbackRuntimeLogInput(rawJson, options.sourceKey ?? line, metadata, '运行日志行不是有效 JSON')
   }
 
   const time = stringValue(parsed.time) ?? nowIso()
@@ -40,6 +42,26 @@ export function parseRuntimeLogLineForIndex(
     errorMessage: stringValue(parsed.errorMessage) ?? errorMessageFromErr(parsed.err),
     rawJson,
     createdAt: time
+  }
+}
+
+function fallbackRuntimeLogInput(
+  rawJson: string,
+  sourceKey: string,
+  metadata: Pick<RuntimeLogIndexInput, 'logFile' | 'logOffset' | 'lineNumber'>,
+  errorMessage: string
+): RuntimeLogIndexInput {
+  const createdAt = nowIso()
+  return {
+    id: stableRuntimeLogId(sourceKey),
+    ...metadata,
+    time: createdAt,
+    level: 'warn',
+    event: 'runtime_log_parse_failed',
+    message: '运行日志文件包含无法解析的完整行',
+    errorMessage,
+    rawJson,
+    createdAt
   }
 }
 
