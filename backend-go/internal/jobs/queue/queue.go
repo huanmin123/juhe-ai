@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -45,7 +46,11 @@ type EnqueueOptions struct {
 	MaxRetry  *int
 	Timeout   time.Duration
 	Retention time.Duration
+	TaskID    string
+	UniqueTTL time.Duration
 }
+
+var ErrTaskConflict = errors.New("queue task conflict")
 
 type TaskInfo struct {
 	ID       string
@@ -97,6 +102,9 @@ func (c *Client) Enqueue(ctx context.Context, taskType string, payload []byte, o
 
 	info, err := c.client.EnqueueContext(ctx, asynq.NewTask(taskType, payload), asynqOptions(opts)...)
 	if err != nil {
+		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
+			return TaskInfo{}, fmt.Errorf("%w: %v", ErrTaskConflict, err)
+		}
 		return TaskInfo{}, err
 	}
 
@@ -104,7 +112,7 @@ func (c *Client) Enqueue(ctx context.Context, taskType string, payload []byte, o
 }
 
 func asynqOptions(opts EnqueueOptions) []asynq.Option {
-	taskOptions := make([]asynq.Option, 0, 4)
+	taskOptions := make([]asynq.Option, 0, 6)
 	if opts.Queue != "" {
 		taskOptions = append(taskOptions, asynq.Queue(opts.Queue))
 	}
@@ -116,6 +124,12 @@ func asynqOptions(opts EnqueueOptions) []asynq.Option {
 	}
 	if opts.Retention > 0 {
 		taskOptions = append(taskOptions, asynq.Retention(opts.Retention))
+	}
+	if opts.TaskID != "" {
+		taskOptions = append(taskOptions, asynq.TaskID(opts.TaskID))
+	}
+	if opts.UniqueTTL > 0 {
+		taskOptions = append(taskOptions, asynq.Unique(opts.UniqueTTL))
 	}
 	return taskOptions
 }

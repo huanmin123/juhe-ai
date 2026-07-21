@@ -15,7 +15,7 @@ import { createSystemApiApp } from './modules/system-api/system-api-app.js'
 import { shutdownChatGenerationRegistry } from './modules/chat/chat-generation-runtime.js'
 import { isCodexContextStateWriterPoolOperation } from './storage/codex-context-state-writer-pool.js'
 import { closeStorageDatabases, datasetDatabasePath, getBusinessDatabase, statsDatabasePath, usageCatalogDatabasePath } from './storage/database.js'
-import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
 const systemApiPrefix = '/__aisys__/api'
@@ -134,6 +134,7 @@ async function shutdownDbService(httpEndpoint: DbServiceHttpEndpoint, exitCode: 
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'db_service_storage_shutdown_failed' }), 'DB service 退出时关闭数据库连接失败')
   }
+  await closeLogger()
   process.exit(exitCode)
 }
 
@@ -433,18 +434,66 @@ async function yieldDbServiceRequestQueue(): Promise<void> {
 }
 
 async function respondToDbServiceRequest(message: DbServiceRequestParentMessage): Promise<void> {
+  const startedAt = Date.now()
+  const operationType = typeof message.operation.type === 'string' ? message.operation.type : 'unknown'
+  const traceId = message.traceId
+    ?? ('traceId' in message.operation && typeof message.operation.traceId === 'string'
+      ? message.operation.traceId
+      : undefined)
+  const jobId = message.jobId ?? message.requestId
+  const operationId = message.operationId ?? jobId
+  logger.info({
+    event: 'db_service.request.start',
+    service: 'juhe-ai',
+    role: 'db-service',
+    traceId,
+    requestId: message.requestId,
+    jobId,
+    operationId,
+    parentId: message.parentId,
+    operation: operationType,
+    databaseDriver: runtimeConfig.databaseDriver
+  }, 'DB service 请求开始')
   try {
     const result = await handleDbServiceOperation(message.operation)
+    logger.info({
+      event: 'db_service.request.complete',
+      service: 'juhe-ai',
+      role: 'db-service',
+      traceId,
+      requestId: message.requestId,
+      jobId,
+      operationId,
+      parentId: message.parentId,
+      operation: operationType,
+      outcome: 'success',
+      durationMs: Date.now() - startedAt
+    }, 'DB service 请求完成')
     sendDbServiceMessage({
       type: 'db_service_response',
       requestId: message.requestId,
+      jobId,
       ok: true,
       result
     })
   } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'db_service.request.failed',
+      service: 'juhe-ai',
+      role: 'db-service',
+      traceId,
+      requestId: message.requestId,
+      jobId,
+      operationId,
+      parentId: message.parentId,
+      operation: operationType,
+      outcome: 'unexpected_failure',
+      durationMs: Date.now() - startedAt
+    }), 'DB service 请求失败')
     sendDbServiceMessage({
       type: 'db_service_response',
       requestId: message.requestId,
+      jobId,
       ok: false,
       errorMessage: error instanceof Error ? error.message : String(error)
     })
@@ -455,6 +504,7 @@ function rejectDbServiceRequest(message: DbServiceRequestParentMessage, errorMes
   sendDbServiceMessage({
     type: 'db_service_response',
     requestId: message.requestId,
+    jobId: message.jobId ?? message.requestId,
     ok: false,
     errorMessage
   })

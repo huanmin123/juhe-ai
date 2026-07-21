@@ -31,6 +31,51 @@ func TestEncodeDecodeWriteTaskPayload(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeWriteTaskEnvelopePreservesDistinctCorrelation(t *testing.T) {
+	input := publicAPILogFixture()
+	payload, err := EncodeWriteTaskPayloadWithCorrelation(input, TaskCorrelation{
+		TraceID:   "trace-envelope-1",
+		RequestID: "request-envelope-1",
+	})
+	if err != nil {
+		t.Fatalf("EncodeWriteTaskPayloadWithCorrelation() error = %v", err)
+	}
+	envelope, err := DecodeWriteTaskEnvelope(payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskEnvelope() error = %v", err)
+	}
+	if envelope.Correlation == nil || envelope.Correlation.TraceID != "trace-envelope-1" || envelope.Correlation.RequestID != "request-envelope-1" {
+		t.Fatalf("correlation = %+v", envelope.Correlation)
+	}
+	if envelope.Log.ID != input.ID {
+		t.Fatalf("log = %+v", envelope.Log)
+	}
+}
+
+func TestDecodeWriteTaskEnvelopeAcceptsLegacyV1WithoutCorrelation(t *testing.T) {
+	payload, err := EncodeWriteTaskPayload(publicAPILogFixture())
+	if err != nil {
+		t.Fatalf("EncodeWriteTaskPayload() error = %v", err)
+	}
+	envelope, err := DecodeWriteTaskEnvelope(payload)
+	if err != nil {
+		t.Fatalf("DecodeWriteTaskEnvelope() error = %v", err)
+	}
+	if envelope.Correlation != nil {
+		t.Fatalf("legacy correlation = %+v, want nil", envelope.Correlation)
+	}
+}
+
+func TestDecodeWriteTaskEnvelopeReturnsCorrelationWithInvalidLog(t *testing.T) {
+	envelope, err := DecodeWriteTaskEnvelope([]byte(`{"version":1,"correlation":{"traceId":"trace-invalid-1","requestId":"request-invalid-1"},"log":{"id":"publog_invalid_1"}}`))
+	if err == nil {
+		t.Fatal("DecodeWriteTaskEnvelope() error = nil, want invalid log")
+	}
+	if envelope.Correlation == nil || envelope.Correlation.TraceID != "trace-invalid-1" || envelope.Correlation.RequestID != "request-invalid-1" {
+		t.Fatalf("correlation = %+v", envelope.Correlation)
+	}
+}
+
 func TestDecodeWriteTaskPayloadRejectsBadInput(t *testing.T) {
 	if _, err := DecodeWriteTaskPayload([]byte(`{bad json`)); err == nil {
 		t.Fatal("DecodeWriteTaskPayload() error = nil, want json error")

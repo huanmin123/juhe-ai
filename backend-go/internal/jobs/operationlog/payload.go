@@ -17,17 +17,30 @@ const (
 var ErrInvalidPayload = errors.New("invalid operation log write task payload")
 
 type WriteTaskPayload struct {
-	Version int                    `json:"version"`
-	Log     port.OperationLogInput `json:"log"`
+	Version     int                    `json:"version"`
+	Correlation *TaskCorrelation       `json:"correlation,omitempty"`
+	Log         port.OperationLogInput `json:"log"`
+}
+
+type TaskCorrelation struct {
+	TraceID   string `json:"traceId,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
 }
 
 func EncodeWriteTaskPayload(input port.OperationLogInput) ([]byte, error) {
+	return EncodeWriteTaskPayloadWithCorrelation(input, TaskCorrelation{})
+}
+
+func EncodeWriteTaskPayloadWithCorrelation(input port.OperationLogInput, correlation TaskCorrelation) ([]byte, error) {
 	if err := validateOperationLogTaskInput(input); err != nil {
 		return nil, err
 	}
 	payload := WriteTaskPayload{
 		Version: PayloadVersion,
 		Log:     input,
+	}
+	if correlation.TraceID != "" || correlation.RequestID != "" {
+		payload.Correlation = &correlation
 	}
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -37,17 +50,25 @@ func EncodeWriteTaskPayload(input port.OperationLogInput) ([]byte, error) {
 }
 
 func DecodeWriteTaskPayload(data []byte) (port.OperationLogInput, error) {
-	var payload WriteTaskPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return port.OperationLogInput{}, fmt.Errorf("%w: decode operation log write task payload: %w", ErrInvalidPayload, err)
-	}
-	if payload.Version != PayloadVersion {
-		return port.OperationLogInput{}, fmt.Errorf("%w: unsupported operation log write task payload version: %d", ErrInvalidPayload, payload.Version)
-	}
-	if err := validateOperationLogTaskInput(payload.Log); err != nil {
-		return port.OperationLogInput{}, fmt.Errorf("%w: %w", ErrInvalidPayload, err)
+	payload, err := DecodeWriteTaskEnvelope(data)
+	if err != nil {
+		return port.OperationLogInput{}, err
 	}
 	return payload.Log, nil
+}
+
+func DecodeWriteTaskEnvelope(data []byte) (WriteTaskPayload, error) {
+	var payload WriteTaskPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return WriteTaskPayload{}, fmt.Errorf("%w: decode operation log write task payload: %w", ErrInvalidPayload, err)
+	}
+	if payload.Version != PayloadVersion {
+		return WriteTaskPayload{}, fmt.Errorf("%w: unsupported operation log write task payload version: %d", ErrInvalidPayload, payload.Version)
+	}
+	if err := validateOperationLogTaskInput(payload.Log); err != nil {
+		return payload, fmt.Errorf("%w: %w", ErrInvalidPayload, err)
+	}
+	return payload, nil
 }
 
 func validateOperationLogTaskInput(input port.OperationLogInput) error {

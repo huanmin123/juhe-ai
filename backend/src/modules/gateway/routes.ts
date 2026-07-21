@@ -5,11 +5,13 @@ import {
   type Response,
 } from 'express'
 
-import { createTraceId, getRequestLogger, getTraceId } from '../../shared/request-context.js'
+import { createTraceId, getRequestLogger, getTraceId, logRequestStage } from '../../shared/request-context.js'
 import { errorLogFields } from '../../shared/logger.js'
 import {
   extractClientIp,
-  requestEndpoint
+  requestEndpoint,
+  requestModel,
+  requestStream
 } from './request/metadata.js'
 import {
   buildUsageRequestSnapshot
@@ -161,10 +163,35 @@ export async function handleOpenAIGatewayRequest(
   const httpCompletion = observeGatewayHttpCompletion(res)
   const abortController = new AbortController()
   const traceId = getTraceId() ?? createTraceId()
+  let downstreamLifecycleStartedAt = performance.now()
+  let downstreamLifecycleLogged = false
+  const logDownstreamLifecycle = (outcome: 'success' | 'aborted') => {
+    if (downstreamLifecycleLogged) return
+    downstreamLifecycleLogged = true
+    logRequestStage('downstream.finish', {
+      traceId,
+      statusCode: res.statusCode,
+      writableEnded: res.writableEnded,
+      headersSent: res.headersSent
+    }, outcome, downstreamLifecycleStartedAt)
+  }
+  res.once('finish', () => logDownstreamLifecycle('success'))
+  res.once('close', () => {
+    if (!res.writableEnded) logDownstreamLifecycle('aborted')
+  })
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
   const requestLane = resolveOpenAIGatewayRequestLane(req)
   const trafficSource = normalizeOpenAIGatewayTrafficSource(options.trafficSource)
+  logRequestStage('request.accepted', {
+    traceId,
+    method: req.method,
+    endpoint,
+    requestLane,
+    trafficSource,
+    model: requestModel(req),
+    stream: requestStream(req)
+  })
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
   const auditCapture = createAuditCapture({
     req,
@@ -202,6 +229,7 @@ export async function handleOpenAIGatewayRequest(
   })
 
   let preflight: Awaited<ReturnType<typeof prepareOpenAIGatewayDispatchContext>>
+  const preflightStartedAt = performance.now()
   try {
     preflight = await prepareOpenAIGatewayDispatchContext({
       req,
@@ -216,13 +244,30 @@ export async function handleOpenAIGatewayRequest(
       signal: abortController.signal
     })
   } catch (error) {
+    logRequestStage('preflight.failed', {
+      traceId,
+      error,
+      errorName: error instanceof Error ? error.name : 'NonErrorThrown'
+    }, 'unexpected_failure', preflightStartedAt)
     auditCapture.cancel()
     throw error
   }
   if (!preflight) {
+    logRequestStage('preflight.rejected', {
+      traceId,
+      failureReason: 'preflight_rejected',
+      decisionInputs: { endpoint, requestLane }
+    }, 'expected_failure', preflightStartedAt)
     auditCapture.cancel()
     return
   }
+  logRequestStage('preflight.completed', {
+    traceId,
+    groupId: preflight.usageContext.groupId,
+    apiKeyId: preflight.usageContext.apiKeyId,
+    candidateAccountCount: preflight.accounts.length,
+    routeStrategyId: preflight.apiKeyRecord?.route_strategy_id
+  }, 'success', preflightStartedAt)
   let currentPreflight = preflight
   const requestExecutionSignal = abortController.signal
   let releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
@@ -473,6 +518,7 @@ export async function handleOpenAIGatewayRequest(
       let upstreamResult: Awaited<ReturnType<typeof fetchFirstAvailableUpstream>>
       const dispatchCutoverReservation = speedFirstCutoverReservation
       speedFirstCutoverReservation = undefined
+      const upstreamDispatchStartedAt = performance.now()
       try {
         upstreamResult = await fetchFirstAvailableUpstream(
           req,
@@ -499,6 +545,20 @@ export async function handleOpenAIGatewayRequest(
           opaqueFailoverBudget
         )
       } catch (error) {
+        logRequestStage('upstream.dispatch.failed', {
+          traceId,
+          error,
+          failureReason: error instanceof UpstreamAttemptError ? 'upstream_accounts_exhausted' : 'upstream_dispatch_unexpected',
+          candidateAccountCount: dispatchAccounts.length,
+          errorName: error instanceof Error ? error.name : 'NonErrorThrown',
+          expectedFailure: error instanceof UpstreamAttemptError,
+          decisionInputs: {
+            candidateAccountCount: dispatchAccounts.length,
+            fallbackSwitchCount,
+            opaqueFailoverBudget,
+            serverRetryBudgetMs: currentPreflight.serverRetryBudget.remainingMs()
+          }
+        }, error instanceof UpstreamAttemptError ? 'expected_failure' : 'unexpected_failure', upstreamDispatchStartedAt)
         if (error instanceof UpstreamAttemptError) {
           const recoverableAccountIds = new Set(error.recoverableAccountIds)
           for (const accountId of nonStreamResponseStartedFailedAccountIds) {
@@ -550,6 +610,25 @@ export async function handleOpenAIGatewayRequest(
         }
       }
       const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease } = upstreamResult
+      let firstOutputLogged = false
+      const markFirstOutputWithTiming = () => {
+        if (!firstOutputLogged) {
+          firstOutputLogged = true
+          logRequestStage('upstream.first_output', {
+            traceId,
+            accountId: account.id,
+            providerCode: account.providerCode
+          }, 'success', upstreamDispatchStartedAt)
+        }
+        markFirstOutput()
+      }
+      logRequestStage('upstream.dispatch.completed', {
+        traceId,
+        accountId: account.id,
+        providerCode: account.providerCode,
+        statusCode: upstreamResponse.status,
+        upstreamHost: (() => { try { return new URL(upstreamUrl).host } catch { return undefined } })()
+      }, 'success', upstreamDispatchStartedAt)
       notifyUpstreamAttemptDiagnostic(options, {
         accountId: account.id,
         accountName: account.name,
@@ -646,6 +725,9 @@ export async function handleOpenAIGatewayRequest(
           persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
         }
 
+        const responseHandlingStartedAt = performance.now()
+        downstreamLifecycleStartedAt = responseHandlingStartedAt
+        const upstreamBodyStartedAt = performance.now()
         let handledResponse: Awaited<ReturnType<typeof handleStreamUpstreamResponse>>
         if (shouldHandleAsStream) {
           handledResponse = await handleStreamUpstreamResponse({
@@ -667,7 +749,7 @@ export async function handleOpenAIGatewayRequest(
             clientStrategy,
             responseInspectionPolicies,
             hybridRoute: currentPreflight.hybridRoute,
-            markFirstOutput,
+            markFirstOutput: markFirstOutputWithTiming,
             clientIpAccountAvoidanceTracker,
             accountStateMutationEnabled: options.disableAccountStateMutation !== true,
             automaticAccountStateMutationEnabled: false,
@@ -695,7 +777,7 @@ export async function handleOpenAIGatewayRequest(
               responseInspectionPolicies,
               hybridRoute: currentPreflight.hybridRoute,
               clientStrategy,
-              markFirstOutput,
+              markFirstOutput: markFirstOutputWithTiming,
               clientIpAccountAvoidanceTracker,
               accountStateMutationEnabled: options.disableAccountStateMutation !== true,
               automaticAccountStateMutationEnabled: false,
@@ -744,6 +826,22 @@ export async function handleOpenAIGatewayRequest(
             throw error
           }
         }
+        const responseRetryUpstream = 'retryUpstream' in handledResponse && handledResponse.retryUpstream
+        const responseErrorCode = 'errorCode' in handledResponse ? handledResponse.errorCode : undefined
+        logRequestStage('upstream.body.completed', {
+          traceId,
+          accountId: account.id,
+          stream: shouldHandleAsStream,
+          retryUpstream: responseRetryUpstream,
+          errorCode: responseErrorCode
+        }, responseRetryUpstream ? 'expected_failure' : 'success', upstreamBodyStartedAt)
+        logRequestStage('downstream.response.completed', {
+          traceId,
+          accountId: account.id,
+          stream: shouldHandleAsStream,
+          retryUpstream: responseRetryUpstream,
+          errorCode: responseErrorCode
+        }, responseRetryUpstream ? 'expected_failure' : 'success', responseHandlingStartedAt)
         activeDownstreamSessionAffinity = undefined
         if (handledResponse.alreadyFinalized) {
           return

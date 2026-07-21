@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,6 +26,7 @@ func main() {
 type workerCommandDependencies struct {
 	loadConfig         func() (config.Config, error)
 	newLogger          func(string, io.Writer) (*slog.Logger, error)
+	newLoggerRuntime   func(string, io.Writer) (*logging.Runtime, error)
 	runWithRuntimeGate func(context.Context, config.Config, *slog.Logger, app.WorkerRunner) error
 }
 
@@ -35,7 +37,10 @@ func defaultWorkerCommandDependencies() workerCommandDependencies {
 		loadConfig: func() (config.Config, error) {
 			return config.Load(config.LoadOptions{LoadDotEnv: true})
 		},
-		newLogger:          logging.New,
+		newLogger: logging.New,
+		newLoggerRuntime: func(level string, output io.Writer) (*logging.Runtime, error) {
+			return logging.NewRuntime(level, output, logging.RuntimeOptions{Role: "go-worker"})
+		},
 		runWithRuntimeGate: app.RunWorkerWithRuntimeGate,
 	}
 }
@@ -157,13 +162,29 @@ func newWorkerCommandRunE(deps workerCommandDependencies, factory workerRunnerFa
 		if err != nil {
 			return err
 		}
-		logger, err := deps.newLogger(cfg.LogLevel, cmd.ErrOrStderr())
-		if err != nil {
-			return err
+		var logger *slog.Logger
+		var loggerRuntime *logging.Runtime
+		if deps.newLoggerRuntime != nil {
+			loggerRuntime, err = deps.newLoggerRuntime(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+			logger = loggerRuntime.Logger
+		} else {
+			logger, err = deps.newLogger(cfg.LogLevel, cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
 		}
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
-		return deps.runWithRuntimeGate(ctx, cfg, logger, factory(cfg, logger))
+		runErr := deps.runWithRuntimeGate(ctx, cfg, logger, factory(cfg, logger))
+		if loggerRuntime == nil {
+			return runErr
+		}
+		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+		defer cancelShutdown()
+		return errors.Join(runErr, loggerRuntime.Shutdown(shutdownCtx))
 	}
 }
 
