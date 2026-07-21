@@ -550,7 +550,7 @@ function delay(ms: number): Promise<void> {
 
 function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
   const createdAt = normalizeUsageRecordCreatedAt(input.createdAt)
-  return {
+  const normalized: UsageRecordInput = {
     ...input,
     id: input.id ?? generateUsageRecordId(createdAt, randomUUID()),
     errorCode: sanitizeUsageRecordErrorMessage(input.errorCode),
@@ -559,6 +559,101 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
     responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
     createdAt
   }
+  const accountId = normalizedUsageScopeValue(input.accountId)
+  const accountOwnerSystemAccountId = normalizedUsageScopeValue(input.accountOwnerSystemAccountId)
+  const accountAccessType = normalizedAccountAccessType(input.accountAccessType)
+  const accountAuthorizationId = accountAccessType === 'account_authorized'
+    ? normalizedUsageScopeValue(input.accountAuthorizationId)
+    : undefined
+  const accountAuthorizationSourceType = normalizedAuthorizationSourceType(input.accountAuthorizationSourceType)
+  const accountAuthorizationSourceTeamId = normalizedUsageScopeValue(input.accountAuthorizationSourceTeamId)
+  if (!accountId || !accountOwnerSystemAccountId || !accountAccessType || (accountAccessType === 'account_authorized' && !accountAuthorizationId)
+    || (accountAuthorizationId && !authorizationSourcePairIsValid(accountAuthorizationSourceType, accountAuthorizationSourceTeamId))) {
+    normalized.accountId = undefined
+    normalized.accountOwnerSystemAccountId = undefined
+    normalized.accountAccessType = undefined
+    normalized.accountAuthorizationId = undefined
+    normalized.accountAuthorizationSourceType = undefined
+    normalized.accountAuthorizationSourceTeamId = undefined
+  } else {
+    normalized.accountId = accountId
+    normalized.accountOwnerSystemAccountId = accountOwnerSystemAccountId
+    normalized.accountAccessType = accountAccessType
+    normalized.accountAuthorizationId = accountAuthorizationId
+    normalized.accountAuthorizationSourceType = accountAuthorizationId
+      ? accountAuthorizationSourceType
+      : undefined
+    normalized.accountAuthorizationSourceTeamId = accountAuthorizationId
+      ? accountAuthorizationSourceTeamId
+      : undefined
+  }
+  const groupId = normalizedUsageScopeValue(input.groupId)
+  const groupOwnerSystemAccountId = normalizedUsageScopeValue(input.groupOwnerSystemAccountId)
+  const groupAccessType = normalizedGroupAccessType(input.groupAccessType)
+  const groupAuthorizationId = groupAccessType === 'authorized'
+    ? normalizedUsageScopeValue(input.groupAuthorizationId)
+    : undefined
+  const groupAuthorizationSourceType = normalizedAuthorizationSourceType(input.groupAuthorizationSourceType)
+  const groupAuthorizationSourceTeamId = normalizedUsageScopeValue(input.groupAuthorizationSourceTeamId)
+  if (!groupId || !groupOwnerSystemAccountId || !groupAccessType || (groupAccessType === 'authorized' && !groupAuthorizationId)
+    || (groupAuthorizationId && !authorizationSourcePairIsValid(groupAuthorizationSourceType, groupAuthorizationSourceTeamId))) {
+    normalized.groupId = undefined
+    normalized.groupOwnerSystemAccountId = undefined
+    normalized.groupAccessType = undefined
+    normalized.groupAuthorizationId = undefined
+    normalized.groupAuthorizationSourceType = undefined
+    normalized.groupAuthorizationSourceTeamId = undefined
+  } else {
+    normalized.groupId = groupId
+    normalized.groupOwnerSystemAccountId = groupOwnerSystemAccountId
+    normalized.groupAccessType = groupAccessType
+    normalized.groupAuthorizationId = groupAuthorizationId
+    normalized.groupAuthorizationSourceType = groupAuthorizationId
+      ? groupAuthorizationSourceType
+      : undefined
+    normalized.groupAuthorizationSourceTeamId = groupAuthorizationId
+      ? groupAuthorizationSourceTeamId
+      : undefined
+  }
+  if (normalized.accountAccessType === 'group_authorized'
+    && (!normalized.groupId || normalized.groupAccessType !== 'authorized' || !normalized.groupAuthorizationId)) {
+    normalized.accountId = undefined
+    normalized.accountOwnerSystemAccountId = undefined
+    normalized.accountAccessType = undefined
+    normalized.accountAuthorizationId = undefined
+    normalized.accountAuthorizationSourceType = undefined
+    normalized.accountAuthorizationSourceTeamId = undefined
+  }
+  return normalized
+}
+
+function normalizedUsageScopeValue(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  return normalized || undefined
+}
+
+function normalizedAccountAccessType(value: UsageRecordInput['accountAccessType']): UsageRecordInput['accountAccessType'] {
+  return value === 'owner' || value === 'account_authorized' || value === 'group_authorized'
+    ? value
+    : undefined
+}
+
+function normalizedGroupAccessType(value: UsageRecordInput['groupAccessType']): UsageRecordInput['groupAccessType'] {
+  return value === 'owner' || value === 'authorized' ? value : undefined
+}
+
+function normalizedAuthorizationSourceType(
+  value: UsageRecordInput['accountAuthorizationSourceType']
+): UsageRecordInput['accountAuthorizationSourceType'] {
+  return value === 'manual' || value === 'team' ? value : undefined
+}
+
+function authorizationSourcePairIsValid(
+  sourceType: UsageRecordInput['accountAuthorizationSourceType'],
+  sourceTeamId: string | undefined
+): boolean {
+  if (sourceType === 'team') return Boolean(sourceTeamId)
+  return !sourceTeamId
 }
 
 function normalizeUsageRecordCreatedAt(value: unknown): string {
