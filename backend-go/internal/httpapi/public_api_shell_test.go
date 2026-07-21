@@ -49,6 +49,7 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 	req.Header.Set("Cookie", "session=secret")
 	req.Header.Set("User-Agent", "shell-test")
 	req.Header.Set("X-Request-Id", "trace_public_shell")
+	req.Header.Set("X-Trace-Id", "trace_public_shell")
 	req.Header.Set("X-Forwarded-For", "198.51.100.9")
 	req.RemoteAddr = "10.0.0.1:12345"
 	rec := httptest.NewRecorder()
@@ -144,7 +145,7 @@ func TestPublicAPIShellPreservesJSONNumberShapeInSnapshots(t *testing.T) {
 	}
 }
 
-func TestPublicAPIShellCanUseOuterRequestIDMiddleware(t *testing.T) {
+func TestPublicAPIShellUsesOuterTraceIDForPublicAPILog(t *testing.T) {
 	now := time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC)
 	authenticator := &publicAPIShellAuthStub{ctx: publicAPIShellAuthContext()}
 	limiter := &publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}}
@@ -166,6 +167,7 @@ func TestPublicAPIShellCanUseOuterRequestIDMiddleware(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list", nil)
 	req.Header.Set("Authorization", "Bearer juis_plain")
 	req = req.WithContext(context.WithValue(req.Context(), requestIDKey, "outer_request_id"))
+	req = req.WithContext(context.WithValue(req.Context(), traceIDKey, "outer_trace_id"))
 	rec := httptest.NewRecorder()
 
 	shell.ServeHTTP(rec, req)
@@ -174,8 +176,8 @@ func TestPublicAPIShellCanUseOuterRequestIDMiddleware(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	log := singlePublicAPILog(t, logQueue)
-	if log.TraceID != "outer_request_id" {
-		t.Fatalf("trace id = %q, want outer request id", log.TraceID)
+	if log.TraceID != "outer_trace_id" {
+		t.Fatalf("trace id = %q, want outer trace id", log.TraceID)
 	}
 }
 
@@ -516,6 +518,7 @@ func TestPublicAPIShellCanceledRequestLogs499(t *testing.T) {
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/__aipublic__/group/list", nil)
 	req.Header.Set("Authorization", "Bearer juis_plain")
 	req.Header.Set("X-Request-Id", "trace_client_closed")
+	req.Header.Set("X-Trace-Id", "trace_client_closed")
 	rec := httptest.NewRecorder()
 
 	router.ServeHTTP(rec, req)

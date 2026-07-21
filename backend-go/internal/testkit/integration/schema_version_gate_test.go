@@ -4,6 +4,7 @@ package integration
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,7 +76,7 @@ func TestGoServerSchemaVersionGatePostgresSmoke(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), "expected 68") {
+	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), fmt.Sprintf("expected %d", version.SchemaVersion)) {
 		t.Fatalf("schema gate at version %d error = %v, want version mismatch", version.SchemaVersion-1, err)
 	}
 	if err := goose.UpTo(db, migrationDir, version.SchemaVersion); err != nil {

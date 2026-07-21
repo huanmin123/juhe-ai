@@ -24,3 +24,4 @@ Thumbs.db
 /backend/logs/
 /.codex-artifacts/
 /.codex-tmp/
+.worktrees/

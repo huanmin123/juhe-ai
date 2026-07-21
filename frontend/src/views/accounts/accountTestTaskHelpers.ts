@@ -2,7 +2,7 @@ import axios from 'axios'
 
 import type { AccountTestTask } from '@/types/domain'
 
-export const accountTestPollIntervalMs = 1000
+export const accountTestPollIntervalMs = 3000
 export const accountDiagnosticAttemptTimeoutsMs = [10_000, 20_000, 30_000] as const
 export const accountTestTaskMaxWaitMs = accountDiagnosticAttemptTimeoutsMs.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
 
