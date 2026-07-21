@@ -53,6 +53,18 @@ const pageDataDirtyDomainsCreateSql = statements.find(
 const gatewayModelCatalogSnapshotsCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots\b/i.test(statement.sql)
 )?.sql ?? ''
+const accountTestTasksCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_test_tasks\b/i.test(statement.sql)
+)?.sql ?? ''
+const accountTestSessionsCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_test_sessions\b/i.test(statement.sql)
+)?.sql ?? ''
+const accountTestSessionTasksCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_test_session_tasks\b/i.test(statement.sql)
+)?.sql ?? ''
+const accountUsageSnapshotsCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_stats' && /^CREATE TABLE IF NOT EXISTS account_usage_snapshots\b/i.test(statement.sql)
+)?.sql ?? ''
 const listBuiltInProviderModelsAsyncStart = providerModelCatalogRepositorySource.indexOf('export async function listBuiltInProviderModelsAsync')
 const listBuiltInProviderModelsAsyncEnd = providerModelCatalogRepositorySource.indexOf(
   'export async function findBuiltInProviderModelByIdAsync',
@@ -94,6 +106,11 @@ assert.equal(
   'PostgreSQL schema 不应再生成补列类 supplemental 语句'
 )
 assertPostgresCreateTableOrder(statements)
+assert.match(accountTestTasksCreateSql, /cancel_requested boolean NOT NULL DEFAULT false/, 'PG 账户测试任务取消标记必须使用 boolean')
+assert.match(accountTestTasksCreateSql, /queued_at timestamptz NOT NULL[\s\S]+started_at timestamptz[\s\S]+finished_at timestamptz[\s\S]+created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'PG 账户测试任务时间必须使用 timestamptz')
+assert.match(accountTestSessionsCreateSql, /last_heartbeat_at timestamptz NOT NULL[\s\S]+cancel_requested_at timestamptz[\s\S]+finished_at timestamptz[\s\S]+created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'PG 账户测试会话时间必须使用 timestamptz')
+assert.match(accountTestSessionTasksCreateSql, /created_at timestamptz NOT NULL/, 'PG 账户测试会话任务关联时间必须使用 timestamptz')
+assert.match(accountUsageSnapshotsCreateSql, /last_attempt_at timestamptz[\s\S]+last_success_at timestamptz[\s\S]+next_refresh_after timestamptz[\s\S]+updated_at timestamptz NOT NULL[\s\S]+created_at timestamptz NOT NULL/, 'PG 账户用量快照时间必须使用 timestamptz')
 
 for (const schemaName of schemaNames) {
   assert.match(sql, new RegExp(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`), `${schemaName} 应生成 CREATE SCHEMA`)

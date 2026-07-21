@@ -81,8 +81,8 @@ func TestRunWorkerWithRuntimeGateOrdersAdmissionAndReleasesAfterRunner(t *testin
 		},
 		requireSchema: func(ctx context.Context, expected int64) error {
 			assertDeadlineWithin(t, ctx, 5*time.Second)
-			if expected != 66 {
-				t.Fatalf("schema version = %d, want 66", expected)
+			if expected != 67 {
+				t.Fatalf("schema version = %d, want 67", expected)
 			}
 			calls = append(calls, "schema")
 			return nil

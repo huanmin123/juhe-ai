@@ -37,3 +37,23 @@ func TestManagementAccountTestDispatchPersistsRequestRole(t *testing.T) {
 		t.Fatal("account test dispatch does not persist request_role")
 	}
 }
+
+func TestAccountTestPostgresTypeUpgradeMigrationUsesGoRuntimeTypes(t *testing.T) {
+	source, err := os.ReadFile("../../../db/migrations/000067_w2_account_test_postgres_types.sql")
+	if err != nil {
+		t.Fatalf("read account test postgres type upgrade migration: %v", err)
+	}
+
+	sql := string(source)
+	for _, want := range []string{
+		"ALTER COLUMN cancel_requested TYPE boolean",
+		"ALTER COLUMN queued_at TYPE timestamptz",
+		"ALTER COLUMN last_heartbeat_at TYPE timestamptz",
+		"ALTER COLUMN updated_at TYPE timestamptz",
+		"idx_account_test_session_tasks_task",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("account test postgres type migration missing %q", want)
+		}
+	}
+}

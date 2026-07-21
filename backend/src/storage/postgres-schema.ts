@@ -373,8 +373,40 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
   transformed = transformGatewayModelCatalogSnapshotsTableForPostgres(transformed, schemaName)
   transformed = transformUsageRecordsTableForPostgres(transformed, schemaName)
   transformed = transformChatMessagesTableForPostgres(transformed, schemaName)
+  transformed = transformAccountRuntimeTablesForPostgres(transformed, schemaName)
   transformed = transformed.replace(/[ \t]+\n/g, '\n')
   transformed = transformed.replace(/\n{3,}/g, '\n\n')
+  return transformed
+}
+
+function transformAccountRuntimeTablesForPostgres(sql: string, schemaName: PostgresSchemaName): string {
+  const normalized = sql.trim()
+  if (schemaName === 'juhe_business' && /^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+account_test_tasks\s*\(/i.test(normalized)) {
+    return postgresTimestampColumns(
+      sql.replace(/\bcancel_requested\s+integer\s+NOT\s+NULL\s+DEFAULT\s+0\b/i, 'cancel_requested boolean NOT NULL DEFAULT false'),
+      ['queued_at', 'started_at', 'finished_at', 'created_at', 'updated_at']
+    )
+  }
+  if (schemaName === 'juhe_business' && /^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+account_test_sessions\s*\(/i.test(normalized)) {
+    return postgresTimestampColumns(sql, ['last_heartbeat_at', 'cancel_requested_at', 'finished_at', 'created_at', 'updated_at'])
+  }
+  if (schemaName === 'juhe_business' && /^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+account_test_session_tasks\s*\(/i.test(normalized)) {
+    return postgresTimestampColumns(sql, ['created_at'])
+  }
+  if (schemaName === 'juhe_stats' && /^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+account_usage_snapshots\s*\(/i.test(normalized)) {
+    return postgresTimestampColumns(sql, ['last_attempt_at', 'last_success_at', 'next_refresh_after', 'updated_at', 'created_at'])
+  }
+  return sql
+}
+
+function postgresTimestampColumns(sql: string, columnNames: string[]): string {
+  let transformed = sql
+  for (const columnName of columnNames) {
+    transformed = transformed.replace(
+      new RegExp(`\\b${columnName}\\s+text\\b`, 'i'),
+      `${columnName} timestamptz`
+    )
+  }
   return transformed
 }
 

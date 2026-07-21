@@ -75,7 +75,7 @@ func TestGoServerSchemaVersionGatePostgresSmoke(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), "expected 66") {
+	if err := store.RequireGooseSchemaVersion(ctx, version.SchemaVersion); err == nil || !strings.Contains(err.Error(), "expected 67") {
 		t.Fatalf("schema gate at version %d error = %v, want version mismatch", version.SchemaVersion-1, err)
 	}
 	if err := goose.UpTo(db, migrationDir, version.SchemaVersion); err != nil {
