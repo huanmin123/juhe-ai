@@ -86,8 +86,8 @@ try {
   } as never
   auditQueue.enqueueAuditLog(directInput)
   auditQueue.enqueueAuditLogsLocal([directInput])
-  auditQueue.startAuditLogRedisStreamConsumer()
   runtimeConfig.queueDriver = 'redis_stream'
+  auditQueue.startAuditLogRedisStreamConsumer()
   assert.equal(await auditQueue.getAuditLogRedisStreamRuntime(), undefined, '审计关闭后运行态查询不得创建 Redis Stream 连接')
   auditQueue.flushAllAuditLogQueue()
   await assert.rejects(
