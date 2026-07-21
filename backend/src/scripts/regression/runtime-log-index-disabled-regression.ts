@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -23,6 +23,8 @@ runtimeConfig.workerRole = 'ingest-worker'
 runtimeConfig.log.directory = logDir
 runtimeConfig.log.fileEnabled = true
 runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.retentionDays = 1
+runtimeConfig.log.maxFiles = 8
 assert.equal(runtimeConfig.log.indexEnabled, false)
 const backgroundJobsSource = readFileSync(resolve('src/modules/background/background-jobs.ts'), 'utf8')
 const retentionSource = readFileSync(resolve('src/modules/background/data-retention-cleanup.service.ts'), 'utf8')
@@ -42,13 +44,19 @@ try {
   database.getDatasetDatabase()
   const marker = `runtime-log-index-disabled-${Date.now()}`
   const logPath = join(logDir, 'juhe-ai.ingest-worker.log')
+  const rotatedPath = join(logDir, 'juhe-ai.ingest-worker.20200101T000000Z.00000000-0000-0000-0000-000000000001.log')
+  writeFileSync(rotatedPath, 'expired rotated log\n', 'utf8')
+  const expiredAt = new Date('2020-01-01T00:00:00.000Z')
+  utimesSync(rotatedPath, expiredAt, expiredAt)
   loggerModule.logger.info({ event: 'runtime_log_index_disabled_marker', marker }, '运行日志索引关闭时仍应写入文件')
   await sleep(100)
 
   importer.startRuntimeLogFileImport()
+  loggerModule.startLogMaintenance()
   await sleep(2200)
 
   assert.match(readFileSync(logPath, 'utf8'), new RegExp(marker))
+  assert.equal(existsSync(rotatedPath), false, '索引关闭后过期轮转文件仍应按普通保留策略清理')
   assert.equal(repository.listRuntimeLogs({ page: 1, pageSize: 20 }).total, 0, '索引关闭后不得入库 runtime_logs')
   const cursorCount = database.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS count FROM runtime_log_file_cursors')
