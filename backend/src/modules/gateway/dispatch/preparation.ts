@@ -526,46 +526,124 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   }
 
   let releaseClientIpConcurrency = noop
-  if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
-    const clientIpConcurrencyStartedAt = performance.now()
-    const clientIpConcurrency = await acquireHighConcurrencyClientIpSlot({
-      systemAccountId: input.systemAccountId,
-      groupId: input.groupId,
-      apiKeyId: input.apiKeyId,
-      clientIp: input.clientIp,
-      policy: input.groupAccess.schedulingPolicy,
-      signal: input.signal
-    })
-    logRequestStage('capacity.client_ip_concurrency', {
-      traceId: input.usageContext.traceId,
-      groupId: input.groupId,
-      enabled: clientIpConcurrency.enabled,
-      acquired: clientIpConcurrency.acquired,
-      ...(clientIpConcurrency.enabled ? {
-        current: clientIpConcurrency.current,
-        limit: clientIpConcurrency.limit
-      } : {}),
-      ...(!clientIpConcurrency.acquired ? {
-        failureReason: `client_ip_concurrency_${clientIpConcurrency.reason}`,
-        decisionInputs: clientIpConcurrencyAuditMetadata(clientIpConcurrency)
-      } : {})
-    }, input.signal?.aborted
-      ? 'aborted'
-      : clientIpConcurrency.acquired
-        ? 'success'
-        : 'expected_failure', clientIpConcurrencyStartedAt)
-    if (clientIpConcurrency.enabled) {
-      input.auditCapture.addGatewayMetadata({
-        label: 'high_concurrency_client_ip',
-        metadata: clientIpConcurrencyAuditMetadata(clientIpConcurrency)
+  let clientIpConcurrencyReleased = false
+  const releaseClientIpConcurrencyOnce = (): void => {
+    if (clientIpConcurrencyReleased) return
+    clientIpConcurrencyReleased = true
+    releaseClientIpConcurrency()
+  }
+  try {
+    if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
+      const clientIpConcurrencyStartedAt = performance.now()
+      const clientIpConcurrency = await acquireHighConcurrencyClientIpSlot({
+        systemAccountId: input.systemAccountId,
+        groupId: input.groupId,
+        apiKeyId: input.apiKeyId,
+        clientIp: input.clientIp,
+        policy: input.groupAccess.schedulingPolicy,
+        signal: input.signal
       })
-    }
-    if (!clientIpConcurrency.acquired) {
-      if (input.signal?.aborted || input.res.writableEnded) {
+      if (clientIpConcurrency.acquired) {
+        releaseClientIpConcurrency = clientIpConcurrency.release
+      }
+      logRequestStage('capacity.client_ip_concurrency', {
+        traceId: input.usageContext.traceId,
+        groupId: input.groupId,
+        enabled: clientIpConcurrency.enabled,
+        acquired: clientIpConcurrency.acquired,
+        ...(clientIpConcurrency.enabled ? {
+          current: clientIpConcurrency.current,
+          limit: clientIpConcurrency.limit
+        } : {}),
+        ...(!clientIpConcurrency.acquired ? {
+          failureReason: `client_ip_concurrency_${clientIpConcurrency.reason}`,
+          decisionInputs: clientIpConcurrencyAuditMetadata(clientIpConcurrency)
+        } : {})
+      }, input.signal?.aborted
+        ? 'aborted'
+        : clientIpConcurrency.acquired
+          ? 'success'
+          : 'expected_failure', clientIpConcurrencyStartedAt)
+      if (clientIpConcurrency.enabled) {
+        input.auditCapture.addGatewayMetadata({
+          label: 'high_concurrency_client_ip',
+          metadata: clientIpConcurrencyAuditMetadata(clientIpConcurrency)
+        })
+      }
+      if (!clientIpConcurrency.acquired) {
+        if (input.signal?.aborted || input.res.writableEnded) {
+          return { outcome: 'completed' }
+        }
+        const statusCode = 429
+        const responsePayload = gatewayErrorPayload(clientIpConcurrencyFailureMessage(clientIpConcurrency), 'rate_limit_exceeded')
+        await sendGatewayFailureResponse({
+          req: input.req,
+          res: input.res,
+          auditCapture: input.auditCapture,
+          usageContext: input.usageContext,
+          startedAt: input.startedAt,
+          statusCode,
+          responsePayload,
+          audit: {
+            outcome: 'gateway_failed',
+            errorPhase: 'dispatch',
+            errorCode: 'rate_limit_exceeded',
+            errorMessage: responsePayload.error.message
+          },
+          failureAttribution: 'gateway_capacity'
+        })
         return { outcome: 'completed' }
       }
+      if (input.signal?.aborted || input.res.writableEnded) {
+        releaseClientIpConcurrencyOnce()
+        return { outcome: 'completed' }
+      }
+    } else {
+      logRequestStage('capacity.client_ip_concurrency', {
+        traceId: input.usageContext.traceId,
+        groupId: input.groupId,
+        groupType: input.dispatchOrderingOptions.groupType
+      }, 'skipped')
+    }
+
+    if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
+      const queueWait = await waitForHighConcurrencyGroupCapacity({
+        systemAccountId: input.systemAccountId,
+        groupId: input.groupId,
+        apiKeyId: input.apiKeyId,
+        accountIds: gatewayAccountConcurrencyAccountIds(accounts),
+        accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(accounts),
+        lane: input.requestLane,
+        policy: input.groupAccess.schedulingPolicy,
+        signal: input.signal
+      })
+      input.auditCapture.addGatewayMetadata({
+        label: 'high_concurrency_group_queue',
+        metadata: {
+          ...queueWait,
+          lane: input.requestLane
+        }
+      })
+      if (input.signal?.aborted || input.res.writableEnded) {
+        releaseClientIpConcurrencyOnce()
+        return { outcome: 'completed' }
+      }
+      accounts = await orderOpenAIAccountsBySessionAffinityAsync(
+        await refreshGatewayAccountCurrentConcurrencyAsync(accounts),
+        input.sessionAffinityKey,
+        input.dispatchOrderingOptions
+      )
+    }
+
+    if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
+      const fallback = await input.attemptFallback('high_concurrency_group_busy')
+      if (fallback.attempted) {
+        releaseClientIpConcurrencyOnce()
+        return { outcome: 'fallback', context: fallback.context }
+      }
       const statusCode = 429
-      const responsePayload = gatewayErrorPayload(clientIpConcurrencyFailureMessage(clientIpConcurrency), 'rate_limit_exceeded')
+      const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
+      releaseClientIpConcurrencyOnce()
       await sendGatewayFailureResponse({
         req: input.req,
         res: input.res,
@@ -584,80 +662,15 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       })
       return { outcome: 'completed' }
     }
-    releaseClientIpConcurrency = clientIpConcurrency.release
-    if (input.signal?.aborted || input.res.writableEnded) {
-      releaseClientIpConcurrency()
-      return { outcome: 'completed' }
-    }
-  } else {
-    logRequestStage('capacity.client_ip_concurrency', {
-      traceId: input.usageContext.traceId,
-      groupId: input.groupId,
-      groupType: input.dispatchOrderingOptions.groupType
-    }, 'skipped')
-  }
 
-  if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
-    const queueWait = await waitForHighConcurrencyGroupCapacity({
-      systemAccountId: input.systemAccountId,
-      groupId: input.groupId,
-      apiKeyId: input.apiKeyId,
-      accountIds: gatewayAccountConcurrencyAccountIds(accounts),
-      accountConcurrencyLimits: gatewayAccountConcurrencyLimitsByAccountId(accounts),
-      lane: input.requestLane,
-      policy: input.groupAccess.schedulingPolicy,
-      signal: input.signal
-    })
-    input.auditCapture.addGatewayMetadata({
-      label: 'high_concurrency_group_queue',
-      metadata: {
-        ...queueWait,
-        lane: input.requestLane
-      }
-    })
-    if (input.signal?.aborted || input.res.writableEnded) {
-      releaseClientIpConcurrency()
-      return { outcome: 'completed' }
+    return {
+      outcome: 'ready',
+      accounts,
+      releaseClientIpConcurrency: releaseClientIpConcurrencyOnce
     }
-    accounts = await orderOpenAIAccountsBySessionAffinityAsync(
-      await refreshGatewayAccountCurrentConcurrencyAsync(accounts),
-      input.sessionAffinityKey,
-      input.dispatchOrderingOptions
-    )
-  }
-
-  if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
-    const fallback = await input.attemptFallback('high_concurrency_group_busy')
-    if (fallback.attempted) {
-      releaseClientIpConcurrency()
-      return { outcome: 'fallback', context: fallback.context }
-    }
-    const statusCode = 429
-    const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
-    releaseClientIpConcurrency()
-    await sendGatewayFailureResponse({
-      req: input.req,
-      res: input.res,
-      auditCapture: input.auditCapture,
-      usageContext: input.usageContext,
-      startedAt: input.startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'dispatch',
-        errorCode: 'rate_limit_exceeded',
-        errorMessage: responsePayload.error.message
-      },
-      failureAttribution: 'gateway_capacity'
-    })
-    return { outcome: 'completed' }
-  }
-
-  return {
-    outcome: 'ready',
-    accounts,
-    releaseClientIpConcurrency
+  } catch (error) {
+    releaseClientIpConcurrencyOnce()
+    throw error
   }
 }
 

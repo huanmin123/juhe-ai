@@ -484,37 +484,48 @@ function assertPostgresAsyncRuntimeFactReads(): void {
   const asyncConcurrencyReaders = [
     {
       file: 'storage/account-health-check.repository.ts',
-      functions: ['healthCheckAccountSummariesAsync']
+      functions: [{ name: 'healthCheckAccountSummariesAsync', readsConcurrencyDirectly: true }]
     },
     {
       file: 'storage/account-cooldown-retest.repository.ts',
-      functions: ['cooldownRetestAccountSummariesAsync']
+      functions: [{ name: 'cooldownRetestAccountSummariesAsync', readsConcurrencyDirectly: true }]
     },
     {
       file: 'storage/account-summary.repository.ts',
-      functions: ['authorizedAccountSummaryFromRowAsync', 'ownerAccountSummariesFromRowsAsync']
+      functions: [
+        { name: 'authorizedAccountSummaryFromRowAsync', readsConcurrencyDirectly: false },
+        { name: 'ownerAccountSummariesFromRowsAsync', readsConcurrencyDirectly: true }
+      ]
     },
     {
       file: 'storage/group-summary.repository.ts',
-      functions: ['buildGroupSummariesInClientAsync']
+      functions: [{ name: 'buildGroupSummariesInClientAsync', readsConcurrencyDirectly: true }]
     }
   ]
   for (const item of asyncConcurrencyReaders) {
     const fileSource = source(item.file)
-    for (const functionName of item.functions) {
-      const body = functionBody(fileSource, functionName)
-      assert.match(
-        body,
-        /loadAccountCurrentConcurrencyByIdsAsync/,
-        `${item.file}:${functionName} 在 PG+Redis 下必须读取 Redis runtime state 并发事实源`
-      )
+    for (const functionSpec of item.functions) {
+      const body = functionBody(fileSource, functionSpec.name)
+      if (functionSpec.readsConcurrencyDirectly) {
+        assert.match(
+          body,
+          /loadAccountCurrentConcurrencyByIdsAsync/,
+          `${item.file}:${functionSpec.name} 在 PG+Redis 下必须读取 Redis runtime state 并发事实源`
+        )
+      }
       assert.doesNotMatch(
         body,
         /(?<!Async)\bloadAccountCurrentConcurrencyByIds\(/,
-        `${item.file}:${functionName} 在 PG+Redis 下禁止读取同步本机并发 Map`
+        `${item.file}:${functionSpec.name} 在 PG+Redis 下禁止读取同步本机并发 Map`
       )
     }
   }
+  const accountSummarySource = source('storage/account-summary.repository.ts')
+  assert.match(
+    functionBody(accountSummarySource, 'loadAuthorizedAccountSummaryContextAsync'),
+    /loadAccountCurrentConcurrencyByIdsAsync/,
+    '授权账户摘要共享 context 必须读取 Redis runtime state 并发事实源'
+  )
 }
 
 function assertNoPerformanceLocalFactQueues(): void {

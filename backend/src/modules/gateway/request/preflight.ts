@@ -211,6 +211,41 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
+  if (isDirectLoopbackDeploymentSmoke(req)) {
+    const responsePayload = gatewayErrorPayload(
+      '部署 smoke 已在网关本地完成，未派发上游',
+      'invalid_request_error',
+      'deployment_smoke_no_upstream'
+    )
+    await sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: buildGatewayUsageContext({
+        traceId,
+        clientIp,
+        identity: {
+          systemAccountId: 'deployment-smoke',
+          groupId: 'deployment-smoke'
+        },
+        trafficSource: options.trafficSource ?? 'gateway',
+        endpoint,
+        requestSnapshot
+      }),
+      startedAt,
+      statusCode: 400,
+      responsePayload,
+      recordUsage: false,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'request_validation',
+        errorCode: 'deployment_smoke_no_upstream',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
+
   let identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
     if (!runtime?.apiKey) {
@@ -333,29 +368,6 @@ export async function prepareOpenAIGatewayDispatchContext(
       groupId,
       clientIp: gatewayClientIp,
       endpoint
-    })
-    return undefined
-  }
-  if (isDirectLoopbackDeploymentSmoke(req)) {
-    const responsePayload = gatewayErrorPayload(
-      '部署 smoke 已在网关本地完成，未派发上游',
-      'invalid_request_error',
-      'deployment_smoke_no_upstream'
-    )
-    await sendGatewayFailureResponse({
-      req,
-      res,
-      auditCapture,
-      usageContext: currentGroupUsageContext(),
-      startedAt,
-      statusCode: 400,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'request_validation',
-        errorCode: 'deployment_smoke_no_upstream',
-        errorMessage: responsePayload.error.message
-      }
     })
     return undefined
   }
