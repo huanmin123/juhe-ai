@@ -834,3 +834,10 @@
 ## 2026-07-21 远端同步
 
 - 已先合并远端 `feature/20260706-go` 的运行日志单写改造，再合并最新 `origin/master=5434ce2f7` 的临时 System API 只读模式移除。两次合并均无冲突；运行日志仍由 Node 持有生产 writer / consumer，本轮没有把该未迁移 owner 错误复制到 Go。
+
+## 2026-07-21 W6 运行日志 facets 只读首轮迁移
+
+- Go 已新增管理员 `GET /__aisys__/api/runtime-logs/facets`。读取固定 `current` bucket 的 summary、level 和 event facet 表，保留 Node 排序：level 按 `count DESC, level ASC`，event 按 `latest_time DESC, event ASC`，最多 80 条。
+- 返回 `retentionDays`、索引最早/最新时间、总数、levels 与 events；空快照保持 `0` 与空数组、时间字段省略。retention days 从当前系统设置读取，缺失时使用 Node 同源默认值 14。
+- 本块只迁移静态 PostgreSQL facet 数据。Node 继续单独拥有日志文件 consumer、writer cursor、server/worker/queue/grep 与 gateway side-effect runtime DTO；Go 不伪造这些运行态字段，也不据此切换 owner。
+- 最小验证已通过：`go test -p=1 ./internal/httpapi ./internal/modules/managementruntimelogs ./internal/store/postgres ./internal/app -count=1`。Windows 默认并发编译曾在 Go compiler SSA 阶段崩溃，`-p=1` 同一目标包验证通过；未执行 Docker 或真实 Node writer -> Go reader smoke。

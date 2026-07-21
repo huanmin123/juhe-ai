@@ -155,6 +155,9 @@ func TestServiceDetailAndDependencyErrors(t *testing.T) {
 	if _, _, err := NewService(nil).Detail(context.Background(), "runtime_1"); err == nil {
 		t.Fatal("Detail without store should fail")
 	}
+	if _, err := NewService(nil).Facets(context.Background()); err == nil {
+		t.Fatal("Facets without store should fail")
+	}
 }
 
 func TestServicePropagatesStoreErrors(t *testing.T) {
@@ -177,6 +180,8 @@ type managementRuntimeLogReaderStub struct {
 	detail      port.ManagementRuntimeLog
 	detailFound bool
 	detailErr   error
+	facets      port.ManagementRuntimeLogFacets
+	facetsErr   error
 }
 
 func (s *managementRuntimeLogReaderStub) ListManagementRuntimeLogs(_ context.Context, input port.ManagementRuntimeLogListInput) (port.ManagementRuntimeLogListResult, error) {
@@ -187,6 +192,10 @@ func (s *managementRuntimeLogReaderStub) ListManagementRuntimeLogs(_ context.Con
 func (s *managementRuntimeLogReaderStub) GetManagementRuntimeLog(_ context.Context, id string) (port.ManagementRuntimeLog, bool, error) {
 	s.detailID = id
 	return s.detail, s.detailFound, s.detailErr
+}
+
+func (s *managementRuntimeLogReaderStub) ManagementRuntimeLogFacets(context.Context) (port.ManagementRuntimeLogFacets, error) {
+	return s.facets, s.facetsErr
 }
 
 func stringPointer(value string) *string {

@@ -19,6 +19,7 @@ const managementRuntimeLogRequestTimeout = 120 * time.Second
 type managementRuntimeLogService interface {
 	List(r *http.Request, input managementruntimelogs.ListInput) (managementruntimelogs.ListResult, error)
 	Detail(r *http.Request, id string) (managementruntimelogs.Detail, bool, error)
+	Facets(r *http.Request) (managementruntimelogs.FacetsResult, error)
 }
 
 type managementRuntimeLogServiceAdapter struct {
@@ -31,6 +32,10 @@ func (s managementRuntimeLogServiceAdapter) List(r *http.Request, input manageme
 
 func (s managementRuntimeLogServiceAdapter) Detail(r *http.Request, id string) (managementruntimelogs.Detail, bool, error) {
 	return s.service.Detail(r.Context(), id)
+}
+
+func (s managementRuntimeLogServiceAdapter) Facets(r *http.Request) (managementruntimelogs.FacetsResult, error) {
+	return s.service.Facets(r.Context())
 }
 
 type managementRuntimeLogListResponse struct {
@@ -71,8 +76,20 @@ func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now fu
 		r = r.WithContext(ctx)
 
 		rawID := chi.URLParam(r, "id")
+		if rawID == "" && strings.HasSuffix(r.URL.Path, "/runtime-logs/facets") {
+			rawID = "facets"
+		}
 		if rawID != "" {
-			if rawID == "facets" || rawID == "grep" {
+			if rawID == "facets" {
+				facets, err := service.Facets(r)
+				if err != nil {
+					writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+					return
+				}
+				writeData(w, http.StatusOK, facets)
+				return
+			}
+			if rawID == "grep" {
 				writeError(w, http.StatusNotFound, "接口不存在")
 				return
 			}
