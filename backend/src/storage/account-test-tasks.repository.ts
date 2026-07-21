@@ -438,7 +438,7 @@ export function updateAccountTestTaskMessage(id: string, message: string): Accou
 export function completeAccountTestTask(id: string, result: AccountTestResult): AccountTestTaskRecord | undefined {
   const now = nowIso()
   const status: AccountTestTaskStatus = result.success ? 'success' : 'failed'
-  getBusinessDatabase().prepare(`
+  const write = getBusinessDatabase().prepare(`
     UPDATE account_test_tasks
     SET status = ?,
         status_message = ?,
@@ -448,6 +448,7 @@ export function completeAccountTestTask(id: string, result: AccountTestResult): 
         updated_at = ?
     WHERE id = ?
       AND status = 'running'
+      AND cancel_requested = 0
   `).run(
     status,
     result.message,
@@ -457,12 +458,15 @@ export function completeAccountTestTask(id: string, result: AccountTestResult): 
     now,
     id
   )
+  if (Number(write.changes ?? 0) === 0) {
+    return finalizeAccountTestTaskIfCanceled(id)
+  }
   return getAccountTestTaskRecord(id)
 }
 
 export function failAccountTestTask(id: string, message: string, result?: AccountTestResult): AccountTestTaskRecord | undefined {
   const now = nowIso()
-  getBusinessDatabase().prepare(`
+  const write = getBusinessDatabase().prepare(`
     UPDATE account_test_tasks
     SET status = 'failed',
         status_message = ?,
@@ -472,7 +476,11 @@ export function failAccountTestTask(id: string, message: string, result?: Accoun
         updated_at = ?
     WHERE id = ?
       AND status IN ('queued', 'running')
+      AND cancel_requested = 0
   `).run(message, result ? JSON.stringify(result) : null, message, now, now, id)
+  if (Number(write.changes ?? 0) === 0) {
+    return finalizeAccountTestTaskIfCanceled(id)
+  }
   return getAccountTestTaskRecord(id)
 }
 
@@ -510,6 +518,15 @@ export function markAccountTestTaskCanceled(id: string, message: string): Accoun
       AND status IN ('queued', 'running')
   `).run(message, now, now, id)
   return getAccountTestTaskRecord(id)
+}
+
+function finalizeAccountTestTaskIfCanceled(id: string): AccountTestTaskRecord | undefined {
+  const current = getAccountTestTaskRecord(id)
+  if (!current) return undefined
+  if (current.cancelRequested && (current.status === 'queued' || current.status === 'running')) {
+    return markAccountTestTaskCanceled(id, current.message ?? '已停止测试')
+  }
+  return current
 }
 
 export function isAccountTestTaskCancelRequested(id: string): boolean {
@@ -958,7 +975,7 @@ export async function completeAccountTestTaskAsync(id: string, result: AccountTe
   const client = await accountTestTaskDatabaseClient()
   const now = nowIso()
   const status: AccountTestTaskStatus = result.success ? 'success' : 'failed'
-  await client.execute(`
+  const write = await client.execute(`
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = ?,
         status_message = ?,
@@ -968,6 +985,7 @@ export async function completeAccountTestTaskAsync(id: string, result: AccountTe
         updated_at = ?
     WHERE id = ?
       AND status = 'running'
+      AND cancel_requested = false
   `, [
     status,
     result.message,
@@ -977,6 +995,9 @@ export async function completeAccountTestTaskAsync(id: string, result: AccountTe
     now,
     id
   ])
+  if (Number(write.changes ?? 0) === 0) {
+    return finalizeAccountTestTaskIfCanceledAsync(id)
+  }
   return getAccountTestTaskRecordAsync(id)
 }
 
@@ -986,7 +1007,7 @@ export async function failAccountTestTaskAsync(id: string, message: string, resu
   }
   const client = await accountTestTaskDatabaseClient()
   const now = nowIso()
-  await client.execute(`
+  const write = await client.execute(`
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = 'failed',
         status_message = ?,
@@ -996,7 +1017,11 @@ export async function failAccountTestTaskAsync(id: string, message: string, resu
         updated_at = ?
     WHERE id = ?
       AND status IN ('queued', 'running')
+      AND cancel_requested = false
   `, [message, result ? JSON.stringify(result) : null, message, now, now, id])
+  if (Number(write.changes ?? 0) === 0) {
+    return finalizeAccountTestTaskIfCanceledAsync(id)
+  }
   return getAccountTestTaskRecordAsync(id)
 }
 
@@ -1042,6 +1067,18 @@ export async function markAccountTestTaskCanceledAsync(id: string, message: stri
       AND status IN ('queued', 'running')
   `, [message, now, now, id])
   return getAccountTestTaskRecordAsync(id)
+}
+
+async function finalizeAccountTestTaskIfCanceledAsync(id: string): Promise<AccountTestTaskRecord | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return finalizeAccountTestTaskIfCanceled(id)
+  }
+  const current = await getAccountTestTaskRecordAsync(id)
+  if (!current) return undefined
+  if (current.cancelRequested && (current.status === 'queued' || current.status === 'running')) {
+    return markAccountTestTaskCanceledAsync(id, current.message ?? '已停止测试')
+  }
+  return current
 }
 
 export async function isAccountTestTaskCancelRequestedAsync(id: string): Promise<boolean> {
