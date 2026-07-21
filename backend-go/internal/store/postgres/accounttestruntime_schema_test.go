@@ -47,6 +47,7 @@ func TestAccountTestPostgresTypeUpgradeMigrationUsesGoRuntimeTypes(t *testing.T)
 	sql := string(source)
 	for _, want := range []string{
 		"ALTER COLUMN cancel_requested TYPE boolean",
+		"ELSE NULL",
 		"ALTER COLUMN queued_at TYPE timestamptz",
 		"ALTER COLUMN last_heartbeat_at TYPE timestamptz",
 		"ALTER COLUMN updated_at TYPE timestamptz",

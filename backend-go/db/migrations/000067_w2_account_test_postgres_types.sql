@@ -2,7 +2,15 @@
 ALTER TABLE juhe_business.account_test_tasks
   ALTER COLUMN cancel_requested DROP DEFAULT,
   ALTER COLUMN cancel_requested TYPE boolean
-    USING lower(cancel_requested::text) IN ('1', 't', 'true'),
+    USING CASE lower(cancel_requested::text)
+      WHEN '0' THEN false
+      WHEN 'f' THEN false
+      WHEN 'false' THEN false
+      WHEN '1' THEN true
+      WHEN 't' THEN true
+      WHEN 'true' THEN true
+      ELSE NULL
+    END,
   ALTER COLUMN cancel_requested SET DEFAULT false,
   ALTER COLUMN queued_at TYPE timestamptz USING NULLIF(queued_at::text, '')::timestamptz,
   ALTER COLUMN started_at TYPE timestamptz USING NULLIF(started_at::text, '')::timestamptz,

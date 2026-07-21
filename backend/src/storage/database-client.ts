@@ -332,6 +332,11 @@ function normalizePostgresRows(rows: Array<Record<string, unknown>>): Array<Reco
   return rows.map((row) => {
     let normalized: Record<string, unknown> | undefined
     for (const [key, value] of Object.entries(row)) {
+      if (value instanceof Date && Number.isFinite(value.getTime())) {
+        normalized ??= { ...row }
+        normalized[key] = value.toISOString()
+        continue
+      }
       const numericValue = postgresNumericResultValue(key, value)
       if (numericValue === value) continue
       normalized ??= { ...row }
