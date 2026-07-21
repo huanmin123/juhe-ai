@@ -51,6 +51,8 @@ interface ApiEnvelope<T> {
 }
 
 interface AuditLogRuntimeResponse {
+  enabled: boolean
+  unavailableReason?: string
   runtimeAvailable: boolean
   workerSnapshotAvailable: boolean
   auditLogQueueAvailable: boolean
@@ -73,6 +75,8 @@ interface RuntimeLogSearchResponse {
 }
 
 interface RuntimeLogFacetsResponse {
+  indexEnabled: boolean
+  unavailableReason?: string
   runtimeAvailable: boolean
   workerSnapshotAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean
@@ -163,6 +167,8 @@ try {
   const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
 
   const auditRuntime = await getEnvelope<AuditLogRuntimeResponse>(baseUrl, '/__aisys__/api/audit-logs/runtime', seed.adminCookie)
+  assert.equal(auditRuntime.enabled, true, '未配置总开关时审计运行态必须标记启用')
+  assert.equal(auditRuntime.unavailableReason, 'server_runtime_unavailable', '启用态必须保留原有运行态不可用原因')
   assert.equal(auditRuntime.runtimeAvailable, false, '审计运行态应标记 server runtime 不可用')
   assert.equal(auditRuntime.workerSnapshotAvailable, false, '审计运行态应标记 worker snapshot 不可用')
   assert.equal(auditRuntime.auditLogQueueAvailable, false, '审计运行态应标记审计队列不可用')
@@ -180,6 +186,8 @@ try {
   assert.equal(runtimeLogSearch.retentionDaysSource, 'unavailable', 'worker snapshot 不可用时应标记 retentionDays 来源不可用')
 
   const runtimeLogFacets = await getEnvelope<RuntimeLogFacetsResponse>(baseUrl, '/__aisys__/api/runtime-logs/facets', seed.adminCookie)
+  assert.equal(runtimeLogFacets.indexEnabled, true, '未配置总开关时运行日志索引必须标记启用')
+  assert.equal(runtimeLogFacets.unavailableReason, undefined)
   assert.equal(runtimeLogFacets.runtimeAvailable, false, '运行日志 facets 应标记 server runtime 不可用')
   assert.equal(runtimeLogFacets.workerSnapshotAvailable, false, '运行日志 facets 应标记 worker snapshot 不可用')
   assert.equal(runtimeLogFacets.runtimeLogIndexQueueAvailable, false, '运行日志 facets 应标记索引队列不可用')

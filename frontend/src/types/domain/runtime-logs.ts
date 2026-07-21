@@ -150,6 +150,8 @@ export interface RuntimeLogFacets {
   totalIndexed: number
   levels: Array<{ value: string; count: number }>
   events: string[]
+  indexEnabled?: boolean
+  unavailableReason?: string
   runtimeAvailable: boolean
   workerSnapshotAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean

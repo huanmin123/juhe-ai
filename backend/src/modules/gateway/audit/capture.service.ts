@@ -178,25 +178,35 @@ export class AuditCaptureContext {
   constructor(input: AuditCaptureContextInput) {
     const settings = readAuditLogSettings()
     this.enabled = settings.enabled
-    this.successSampleRate = settings.successSampleRate
-    this.activeCaptureMaxBytes = Math.min(settings.activeCaptureMaxBytes, auditActiveCaptureHardLimitBytes)
-    this.successFullBodyLimitBytes = settings.successFullBodyLimitBytes
-    this.problemFullBodyLimitBytes = settings.problemFullBodyLimitBytes
     this.req = input.req
-    this.httpCompletion = input.httpCompletion ?? (input.res ? observeGatewayHttpCompletion(input.res) : undefined)
     this.traceId = input.traceId
     this.clientIp = input.clientIp
     this.startedAtMs = input.startedAtMs
     this.startedAtIso = new Date(input.startedAtMs).toISOString()
     this.trafficSource = normalizeOpenAIGatewayTrafficSource(input.trafficSource)
+    this.metadataOnly = input.captureMode === 'metadata_only'
+    if (!this.enabled) {
+      // 关闭态仍保留调用方接口，但不能注册 response 监听、计算采样 hash 或保存捕获配置。
+      this.httpCompletion = undefined
+      this.sampleBucket = 0
+      this.successCaptureSelected = false
+      this.successHotRetentionEnabled = false
+      this.capturePayloadBodies = false
+      this.successSampleRate = 0
+      this.activeCaptureMaxBytes = 0
+      this.successFullBodyLimitBytes = 0
+      this.problemFullBodyLimitBytes = 0
+      return
+    }
+    this.successSampleRate = settings.successSampleRate
+    this.activeCaptureMaxBytes = Math.min(settings.activeCaptureMaxBytes, auditActiveCaptureHardLimitBytes)
+    this.successFullBodyLimitBytes = settings.successFullBodyLimitBytes
+    this.problemFullBodyLimitBytes = settings.problemFullBodyLimitBytes
+    this.httpCompletion = input.httpCompletion ?? (input.res ? observeGatewayHttpCompletion(input.res) : undefined)
     this.sampleBucket = sampleBucketForTraceId(this.traceId)
     this.successCaptureSelected = this.sampleBucket < Math.round(this.successSampleRate * 10000)
     this.successHotRetentionEnabled = settings.successHotRetentionHours > 0
-    this.metadataOnly = input.captureMode === 'metadata_only'
     this.capturePayloadBodies = settings.fullBodyCaptureEnabled && !this.metadataOnly
-    if (!this.enabled) {
-      return
-    }
     this.gatewayContext.trafficSource = this.trafficSource
     if (this.metadataOnly) {
       this.addPayload({

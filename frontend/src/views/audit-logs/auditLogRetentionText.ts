@@ -4,6 +4,7 @@ type AuditRetentionSettings = AuditLogRuntime['settings']
 
 export function auditLogEmptyDescription(settings?: AuditRetentionSettings): string {
   if (!settings) return '暂无审计日志。'
+  if (!settings.enabled) return '原始审计已通过部署配置临时关闭。'
   const samplePercent = settings.successSampleRate * 100
   const keepsLongTermSamples = samplePercent > 0 && settings.successRetentionDays > 0
   const sampleText = keepsLongTermSamples

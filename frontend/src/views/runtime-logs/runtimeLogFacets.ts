@@ -25,7 +25,8 @@ export function runtimeLogGrepRangeLimitText(runtime?: RuntimeLogGrepRuntime): s
 
 export function isRuntimeLogsAlertVisible(facets?: RuntimeLogFacets): boolean {
   return Boolean(facets && (
-    !facets.runtimeAvailable
+    facets.indexEnabled === false
+    || !facets.runtimeAvailable
     || !facets.workerSnapshotAvailable
     || !facets.runtimeLogIndexQueueAvailable
     || Boolean(facets.runtime?.lastError)
@@ -37,6 +38,9 @@ export function isRuntimeLogsAlertVisible(facets?: RuntimeLogFacets): boolean {
 
 export function runtimeLogsAlertDescription(facets?: RuntimeLogFacets): string {
   if (!facets) return ''
+  if (facets.indexEnabled === false) {
+    return '运行日志数据库搜索索引已临时关闭，日志文件写入与 grep 搜索仍正常。'
+  }
   const reasons: string[] = []
   if (facets.runtime?.lastError) reasons.push('运行日志文件消费最近一次提交失败')
   if (!facets.runtimeAvailable) {

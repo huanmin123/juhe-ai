@@ -1,6 +1,7 @@
 import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
 import { buildBackgroundQueueHealthSnapshot } from '../background/background-queue-health.service.js'
@@ -70,9 +71,10 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
     const queueHealth = buildBackgroundQueueHealthSnapshot(serverRuntime)
     res.json(ok({
       ...facets,
+      indexEnabled: runtimeConfig.log.indexEnabled,
       runtimeAvailable: Boolean(serverRuntime),
       workerSnapshotAvailable: Boolean(workerSnapshot),
-      runtimeLogIndexQueueAvailable: Boolean(runtimeLogIndexQueue),
+      runtimeLogIndexQueueAvailable: runtimeConfig.log.indexEnabled && Boolean(runtimeLogIndexQueue),
       runtime: runtimeLogFileConsumerRuntimeDto(runtimeLogIndexQueue),
       worker: {
         available: Boolean(workerSnapshot ?? workerRuntime),
@@ -133,7 +135,8 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
             localSuppressedAccountCount: numberField(gatewayAccountSideEffects, 'localSuppressedAccountCount'),
             nextAttemptAt: stringField(gatewayAccountSideEffects, 'nextAttemptAt')
           }
-        : null
+        : null,
+      unavailableReason: runtimeConfig.log.indexEnabled ? undefined : 'index_disabled'
     }))
   } catch (error) {
     next(error)
