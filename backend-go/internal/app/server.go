@@ -863,9 +863,19 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Store: store, GatewayInvalidator: systemAccountInvalidator, GranteeReader: store,
 		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
 	})
+	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
+		Reader:          store,
+		ModelCatalog:    providerModelService,
+		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+	})
 	accountTestSessionService := managementaccounttestsession.NewService(store, nil)
 	accountTestStatusService := managementaccountteststatus.NewService(store)
-	accountTestDispatchService := managementaccounttestdispatch.NewService(managementaccounttestdispatch.Options{Store: store, EnqueueClient: operationLogQueue, Codec: secretcrypto.NewJSONCodec(cfg.Secret)})
+	accountTestDispatchService := managementaccounttestdispatch.NewService(managementaccounttestdispatch.Options{
+		Store:         store,
+		EnqueueClient: operationLogQueue,
+		Codec:         secretcrypto.NewJSONCodec(cfg.Secret),
+		TestOptions:   accountTestOptionsService,
+	})
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
 		Details:            accountDetailService,
@@ -889,11 +899,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		RuntimeInvalidator:         systemAccountInvalidator,
 		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		Logger:                     logger,
-	})
-	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
-		Reader:          store,
-		ModelCatalog:    providerModelService,
-		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
 	})
 	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
 		Store:                    store,

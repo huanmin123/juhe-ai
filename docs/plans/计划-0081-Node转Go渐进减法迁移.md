@@ -822,3 +822,15 @@
 - `effectiveAvailability` 现在带 `blockerScope/reason/retryAt`，并生成对应的 `availabilityPresentation` 状态、动作和静态边界时间；来源账户展示动作统一联系授权人，实例问题按 Node 语义恢复/重试/启用。
 - PostgreSQL 投影补读来源账户 cooldown/error/trace，并按 `group_accounts.account_authorization_id` 校验授权实例分组绑定是否仍指向当前授权；今日统计、授权额度、API Key 全不可用和 runtime probe 仍未接入，不在本块伪造。
 - 定向验证已通过：`go test ./internal/modules/managementaccountstatussnapshot ./internal/store/postgres ./internal/httpapi ./internal/app -count=1`；Go migration 链与现有状态 SQL 的健康检查字段差异仍是后续 schema 对照项，真实 PostgreSQL 列扫描尚未执行。
+
+## 2026-07-21 账户手动测试 dispatch 首轮迁移
+
+- Go 已补管理端账户测试任务的已保存账户选择语义：请求必须显式选择当前账户可用的模型，测试 endpoint 必须属于该模型的精确 endpoint 集合；不再静默回退到健康检查默认模型或 endpoint。
+- 授权账户实例现在可按请求方 scope 创建测试任务。查询同时校验授权实例、来源账户、授权资源、有效 `active` 状态和未过期授权；非管理员任务固定 `diagnostics=limited`，管理员保持完整诊断。
+- Go 继续只创建任务并通过 Asynq bridge 调用 Node 内部 dispatch 入口；Node 仍是任务状态、OAuth / proxy / API Key pool、实际上游调用和诊断结果的唯一 owner。本块不切换生产 worker，也不删除 Node 实现。
+- 未保存草稿测试暂不由 Go 接管：Go 路由明确返回校验错误，不写入任务或草稿快照。Node 路由仍保留完整草稿校验与执行路径；草稿字段、凭据、映射和 provider 校验将作为独立后续切片迁移，不能以不完整快照替代。
+- 最小验证已通过：`go test ./internal/modules/managementaccounttestdispatch ./internal/store/postgres ./internal/httpapi ./internal/app -count=1`，以及随后 `go test ./internal/modules/managementaccounttestdispatch ./internal/app -count=1`。本轮未执行 Docker、真实上游账户或生产切流验证。
+
+## 2026-07-21 远端同步
+
+- 已先合并远端 `feature/20260706-go` 的运行日志单写改造，再合并最新 `origin/master=5434ce2f7` 的临时 System API 只读模式移除。两次合并均无冲突；运行日志仍由 Node 持有生产 writer / consumer，本轮没有把该未迁移 owner 错误复制到 Go。
