@@ -415,6 +415,7 @@
     "test:account-test-task-boundary": "tsx src/scripts/regression/account-test-task-boundary-regression.ts",
     "test:account-test-node-bridge-boundary": "tsx src/scripts/regression/account-test-node-bridge-boundary-regression.ts",
     "test:account-test-task-postgres-smoke": "tsx src/scripts/regression/account-test-task-postgres-smoke.ts",
+    "test:account-test-cancel-rpc-deamplification": "tsx src/scripts/regression/account-test-cancel-rpc-deamplification-regression.ts",
     "test:account-model-filter": "tsx src/scripts/regression/account-model-filter-regression.ts",
     "test:account-test-response-limit": "tsx src/scripts/regression/account-test-response-limit-regression.ts",
     "test:diagnostic-task-boundary": "tsx src/scripts/regression/diagnostic-task-boundary-regression.ts",
