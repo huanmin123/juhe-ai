@@ -51,7 +51,6 @@ func (s *Store) UpdateManagementExternalIntegrationSource(
 }
 
 type managementExternalIntegrationSourceUpdateQueries interface {
-	managementExternalIntegrationSourceDetailQueries
 	FindManagementExternalIntegrationSourceForUpdate(
 		ctx context.Context,
 		sourceID string,
@@ -88,11 +87,6 @@ func updateManagementExternalIntegrationSourceTx(
 	if err != nil {
 		return port.ManagementExternalIntegrationSourceUpdateResult{}, err
 	}
-	beforeTokens, err := listManagementExternalIntegrationSourceTokens(ctx, q, input.SourceID)
-	if err != nil {
-		return port.ManagementExternalIntegrationSourceUpdateResult{}, err
-	}
-
 	name := current.Name
 	if input.HasName {
 		name = input.Name
@@ -159,15 +153,9 @@ func updateManagementExternalIntegrationSourceTx(
 	if err != nil {
 		return port.ManagementExternalIntegrationSourceUpdateResult{}, err
 	}
-	afterTokens, err := listManagementExternalIntegrationSourceTokens(ctx, q, input.SourceID)
-	if err != nil {
-		return port.ManagementExternalIntegrationSourceUpdateResult{}, err
-	}
 	result := port.ManagementExternalIntegrationSourceUpdateResult{
 		BeforeSource: beforeSource,
-		BeforeTokens: beforeTokens,
 		AfterSource:  afterSource,
-		AfterTokens:  afterTokens,
 	}
 	if validate != nil {
 		if err := validate(result); err != nil {

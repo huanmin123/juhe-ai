@@ -57,9 +57,9 @@ const selectOptions = computed<ModelSelectOption[]>(() => (
   props.options.length
     ? props.options
     : props.models.map((item) => ({
-      label: item.model,
-      value: item.model,
-      providerCode: item.providerCode
+      label: item.name,
+      value: item.id,
+      providerCode: item.providerCode ?? ''
     }))
 ))
 const displayValue = computed(() => props.value?.trim() ? props.value : undefined)

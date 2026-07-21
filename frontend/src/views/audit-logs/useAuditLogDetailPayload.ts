@@ -13,9 +13,16 @@ import {
   mergeAuditPayloadWindow
 } from './auditPayloadDetails'
 
-const auditPayloadFullReadWindowBytes = 768 * 1024
+const auditPayloadReadWindowBytes = 256 * 1024
 
-export function useAuditLogDetailPayload() {
+type AuditLogDetailPayloadDependencies = {
+  loadDetail?: (id: string) => Promise<AuditLogDetail>
+  loadPayload?: typeof api.auditLogs.payload
+  reportError?: (text: string) => void
+  reportWarning?: (text: string) => void
+}
+
+export function useAuditLogDetailPayload(dependencies: AuditLogDetailPayloadDependencies = {}) {
   const detailLoading = ref(false)
   const payloadLoadingId = ref('')
   const detail = ref<AuditLogDetail>()
@@ -27,21 +34,26 @@ export function useAuditLogDetailPayload() {
   async function openDetail(record: AuditLogSummary): Promise<void> {
     const requestId = detailRequestId + 1
     detailRequestId = requestId
+    payloadRequestId += 1
+    payloadLoadingId.value = ''
+    detail.value = undefined
     detailOpen.value = true
     detailLoading.value = true
     selectedPayload.value = undefined
     try {
       const nextDetail = await loadEntityDetailCached({
         id: record.id,
-        load: () => api.auditLogs.detail(record.id),
+        load: () => dependencies.loadDetail?.(record.id) ?? api.auditLogs.detail(record.id),
         namespace: 'audit-log-detail'
       })
       if (requestId === detailRequestId) {
         detail.value = nextDetail
       }
     } catch (error) {
-      console.error(error)
-      message.error('加载审计详情失败')
+      if (requestId === detailRequestId) {
+        console.error(error)
+        reportError('加载审计详情失败')
+      }
     } finally {
       if (requestId === detailRequestId) {
         detailLoading.value = false
@@ -56,14 +68,16 @@ export function useAuditLogDetailPayload() {
     payloadLoadingId.value = payloadId
     selectedPayload.value = undefined
     try {
-      const nextPayload = await loadCompletePayload(payloadId, requestId)
+      const nextPayload = await loadPayloadWindow(payloadId, 0, requestId)
       if (!nextPayload) return
       if (requestId === payloadRequestId) {
-        selectedPayload.value = nextPayload
+        selectedPayload.value = finalizeMergedPayloadBody(nextPayload)
       }
     } catch (error) {
-      console.error(error)
-      message.error('加载原始请求失败')
+      if (requestId === payloadRequestId) {
+        console.error(error)
+        reportError('加载原始请求失败')
+      }
     } finally {
       if (requestId === payloadRequestId) {
         payloadLoadingId.value = ''
@@ -71,35 +85,63 @@ export function useAuditLogDetailPayload() {
     }
   }
 
-  async function loadCompletePayload(
+  async function loadNextPayloadWindow(): Promise<void> {
+    if (!detail.value || !selectedPayload.value?.bodyTruncated) return
+    const payloadId = selectedPayload.value.id
+    const requestedOffset = selectedPayload.value.bodyNextOffset
+    if (requestedOffset === undefined) return
+    const requestId = payloadRequestId + 1
+    payloadRequestId = requestId
+    payloadLoadingId.value = payloadId
+    try {
+      const nextPayload = await loadPayloadWindow(payloadId, requestedOffset, requestId)
+      if (!nextPayload || requestId !== payloadRequestId || !selectedPayload.value) return
+      if (
+        nextPayload.bodyBytesReturned <= 0
+        || (nextPayload.bodyNextOffset !== undefined && nextPayload.bodyNextOffset <= requestedOffset)
+      ) {
+        selectedPayload.value = { ...selectedPayload.value, bodyNextOffset: undefined }
+        reportWarning('未读取到更多正文，已停止继续加载')
+        return
+      }
+      selectedPayload.value = finalizeMergedPayloadBody(
+        mergeAuditPayloadWindow(selectedPayload.value, nextPayload)
+      )
+    } catch (error) {
+      if (requestId === payloadRequestId) {
+        console.error(error)
+        reportError('加载下一段原始请求失败')
+      }
+    } finally {
+      if (requestId === payloadRequestId) {
+        payloadLoadingId.value = ''
+      }
+    }
+  }
+
+  async function loadPayloadWindow(
     payloadId: string,
+    offset: number,
     requestId: number
   ): Promise<AuditLogPayloadDetail | undefined> {
     if (!detail.value) return undefined
     const auditLogId = detail.value.id
-    let mergedPayload = await api.auditLogs.payload(auditLogId, payloadId, {
-      offset: 0,
-      limit: auditPayloadFullReadWindowBytes
+    const payload = await (dependencies.loadPayload ?? api.auditLogs.payload)(auditLogId, payloadId, {
+      offset,
+      limit: auditPayloadReadWindowBytes
     })
     if (requestId !== payloadRequestId) return undefined
-    while (mergedPayload.bodyTruncated && mergedPayload.bodyNextOffset !== undefined) {
-      const requestedOffset = mergedPayload.bodyNextOffset
-      const nextPayload = await api.auditLogs.payload(auditLogId, payloadId, {
-        offset: requestedOffset,
-        limit: auditPayloadFullReadWindowBytes
-      })
-      if (requestId !== payloadRequestId) return undefined
-      if (nextPayload.bodyBytesReturned <= 0) break
-      mergedPayload = mergeAuditPayloadWindow(mergedPayload, nextPayload)
-      if (
-        nextPayload.bodyTruncated
-        && nextPayload.bodyNextOffset !== undefined
-        && nextPayload.bodyNextOffset <= requestedOffset
-      ) {
-        break
-      }
-    }
-    return finalizeMergedPayloadBody(mergedPayload)
+    return payload
+  }
+
+  function reportError(text: string): void {
+    if (dependencies.reportError) dependencies.reportError(text)
+    else message.error(text)
+  }
+
+  function reportWarning(text: string): void {
+    if (dependencies.reportWarning) dependencies.reportWarning(text)
+    else message.warning(text)
   }
 
   function closeTransientDetails(): void {
@@ -117,6 +159,7 @@ export function useAuditLogDetailPayload() {
     detail,
     detailLoading,
     detailOpen,
+    loadNextPayloadWindow,
     loadPayload,
     openDetail,
     payloadLoadingId,

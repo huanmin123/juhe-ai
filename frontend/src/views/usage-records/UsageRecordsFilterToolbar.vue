@@ -73,6 +73,8 @@
             :disabled="businessFiltersDisabled"
             placeholder="全部模型"
             @change="handleModelChange"
+            @dropdown-visible-change="emit('model-options-dropdown', $event)"
+            @search="emit('model-options-search', $event)"
             @update:value="handleModelUpdate"
           />
         </a-form-item>
@@ -140,6 +142,8 @@
           :disabled="businessFiltersDisabled"
           placeholder="全部模型"
           @change="handleModelChange"
+          @dropdown-visible-change="emit('model-options-dropdown', $event)"
+          @search="emit('model-options-search', $event)"
           @update:value="handleModelUpdate"
         />
       </label>
@@ -224,6 +228,8 @@ const emit = defineEmits<{
   (event: 'group-change'): void
   (event: 'group-dropdown', open: boolean): void
   (event: 'group-search', value: string): void
+  (event: 'model-options-dropdown', open: boolean): void
+  (event: 'model-options-search', value: string): void
   (event: 'refresh'): void
   (event: 'reset'): void
   (event: 'search'): void

@@ -276,7 +276,7 @@ function assertAccountListRouteBoundary(): void {
   assert(
     accountListRoutesSource.includes("router.get('/',")
       && accountListRoutesSource.includes("router.get('/options'")
-      && accountListRoutesSource.includes('listAccountsPageAsync(')
+      && (accountListRoutesSource.includes('listAccountsPageAsync(') || accountListRoutesSource.includes('listAccountItemsPageAsync('))
       && accountListRoutesSource.includes('listAccountOptionsAsync('),
     '账户列表只读子路由应承接列表和 options 查询'
   )
@@ -289,8 +289,23 @@ function assertAccountListRouteBoundary(): void {
   )
   assert.match(
     accountListRoutesSource,
-    /accountListNeedsRuntimeStatusFilter\(listOptions\)[\s\S]*listAccountsPageWithRuntimeStatusFilter\(requestAccess, listOptions\)[\s\S]*if \(!filteredResult\) \{[\s\S]*listAccountsPageAsync\(requestAccess, listOptions\)/,
+    /accountListNeedsRuntimeStatusFilter\(listOptions\)[\s\S]*listAccountsPageWithRuntimeStatusFilter\(requestAccess, listOptions\)[\s\S]*if \(!filteredResult\) \{[\s\S]*listAccount(?:s|Items)PageAsync\(requestAccess, listOptions\)/,
     '账户列表运行态状态过滤应先走单次运行态分页，快照不可用时才回退普通列表，避免 PG 状态过滤重复昂贵查询'
+  )
+  assert.match(
+    accountSummaryRepositorySource,
+    /loadAuthorizedAccountSummaryContextAsync\(client, authorizedRows, access, options\)/,
+    'PG 授权账户列表必须先按整页批量加载标签、名称、额度和动态装饰'
+  )
+  assert.match(
+    accountSummaryRepositorySource,
+    /authorizedContext[\s\S]*authorizedAccountSummaryFromRowAsync/,
+    'PG 授权账户逐行装配必须复用页级批量上下文，不能逐账户查询'
+  )
+  assert.match(
+    accountSummaryRepositorySource,
+    /authorizedAccountPermissions\(authorizedAccountCanReturnAuthorization\(row, options\)\)/,
+    'PG 授权账户列表必须与 SQLite 共用手工授权归还权限判定'
   )
   assert(
     accountListRuntimeStatusFilterSource.includes('export function accountListNeedsRuntimeStatusFilter')

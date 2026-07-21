@@ -4,7 +4,8 @@ import type {
   AccountType,
   AccountUsageStatsRange,
   AccountUsageStatsOverview,
-  AccountUsageStatsRow
+  AccountUsageStatsRow,
+  AccountUsageStatsTrendOverview
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
@@ -168,18 +169,9 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
   const sourceRows = mergeAccountUsageSourceRows(pageRows.rows, selectedRows)
   const metadataRows = loadAccountUsageMetadataRows(input.access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
   const metadataById = new Map(metadataRows.map((row) => [row.id, row]))
-  const scopes = sourceRows.map((row): UsageScopeRequest => ({
-    rowKey: accountUsageStatsRowKey({ id: row.scope_id, accountAuthorizationId: metadataById.get(row.scope_id)?.authorization_id ?? undefined }),
-    systemAccountId: usageScope.systemAccountId,
-    scopeType: usageScope.scopeType,
-    scopeId: row.scope_id
-  }))
-  const dailySeriesByRowKey = loadUsageDailySeriesForScopeRequests(scopes, input.range)
   const overviewRows = sourceRows.flatMap((row): AccountUsageStatsRow[] => {
     const metadata = metadataById.get(row.scope_id)
     if (!metadata) return []
-    const accountAuthorizationId = metadata.authorization_id ?? undefined
-    const rowKey = accountUsageStatsRowKey({ id: row.scope_id, accountAuthorizationId })
     const rangeUsage = usageSummaryFromAggregate(row)
     return [{
       id: metadata.id,
@@ -193,7 +185,7 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
       status: metadata.status,
       accessType: metadata.access_type,
       rangeUsage,
-      dailyUsage: dailySeriesByRowKey.get(rowKey)?.dailyUsage ?? [],
+      dailyUsage: [],
       authorizationUsageAvailable: false,
       authorizationCount: 0,
       authorizationTeamCount: 0
@@ -273,21 +265,10 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
   const sourceRows = mergeAccountUsageSourceRows(pageRows.rows, selectedRows)
   const metadataRows = await loadAccountUsageMetadataRowsAsync(client, input.access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
   const metadataById = new Map(metadataRows.map((row) => [row.id, row]))
-  const scopes = sourceRows.map((row): UsageScopeRequest => ({
-    rowKey: accountUsageStatsRowKey({ id: row.scope_id, accountAuthorizationId: metadataById.get(row.scope_id)?.authorization_id ?? undefined }),
-    systemAccountId: usageScope.systemAccountId,
-    scopeType: usageScope.scopeType,
-    scopeId: row.scope_id
-  }))
-  const [dailySeriesByRowKey, summary] = await Promise.all([
-    loadUsageDailySeriesForScopeRequestsAsync(scopes, input.range),
-    loadAccountUsageOverviewSummaryAsync(client, input.access, input.range)
-  ])
+  const summary = await loadAccountUsageOverviewSummaryAsync(client, input.access, input.range)
   const overviewRows = sourceRows.flatMap((row): AccountUsageStatsRow[] => {
     const metadata = metadataById.get(row.scope_id)
     if (!metadata) return []
-    const accountAuthorizationId = metadata.authorization_id ?? undefined
-    const rowKey = accountUsageStatsRowKey({ id: row.scope_id, accountAuthorizationId })
     const rangeUsage = usageSummaryFromAggregate(row)
     return [{
       id: metadata.id,
@@ -301,7 +282,7 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
       status: metadata.status,
       accessType: metadata.access_type,
       rangeUsage,
-      dailyUsage: dailySeriesByRowKey.get(rowKey)?.dailyUsage ?? [],
+      dailyUsage: [],
       authorizationUsageAvailable: false,
       authorizationCount: 0,
       authorizationTeamCount: 0
@@ -317,6 +298,72 @@ export async function getAccountUsageStatsOverviewPageFromWindowsAsync(input: Ac
     hasMore: pageRows.hasMore,
     page,
     pageSize
+  }
+}
+
+export async function getAccountUsageStatsTrendAsync(
+  access: AccessScope | undefined,
+  range: AccountUsageStatsRange,
+  accountIds: string[]
+): Promise<AccountUsageStatsTrendOverview> {
+  const ids = [...new Set(accountIds.filter(Boolean))].slice(0, 10)
+  if (!ids.length) return { range, rows: [] }
+  const input: AccountUsageStatsPageOptions = { access, range, page: 1, pageSize: 10, accountIds: ids }
+  const usageScope = accountUsageListScope(access)
+
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const sourceRows = loadSelectedAccountUsageRows({
+      database: getStatsDatabase(),
+      excludeAccountIds: [],
+      input,
+      usageScope
+    })
+    const metadataRows = loadAccountUsageMetadataRows(access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
+    return accountUsageTrendOverview(range, usageScope, metadataRows, loadUsageDailySeriesForScopeRequests(
+      accountUsageTrendScopes(usageScope, metadataRows),
+      range
+    ), access)
+  }
+
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const sourceRows = await loadSelectedAccountUsageRowsAsync({ client, excludeAccountIds: [], input, usageScope })
+  const metadataRows = await loadAccountUsageMetadataRowsAsync(client, access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
+  const dailySeries = await loadUsageDailySeriesForScopeRequestsAsync(accountUsageTrendScopes(usageScope, metadataRows), range)
+  return accountUsageTrendOverview(range, usageScope, metadataRows, dailySeries, access)
+}
+
+function accountUsageTrendScopes(
+  usageScope: { systemAccountId: string; scopeType: AccountUsageScopeType },
+  metadataRows: AccountUsageMetadataRow[]
+): UsageScopeRequest[] {
+  return metadataRows.map((metadata) => ({
+    rowKey: metadata.id,
+    systemAccountId: usageScope.systemAccountId,
+    scopeType: usageScope.scopeType,
+    scopeId: metadata.id
+  }))
+}
+
+function accountUsageTrendOverview(
+  range: AccountUsageStatsRange,
+  _usageScope: { systemAccountId: string; scopeType: AccountUsageScopeType },
+  metadataRows: AccountUsageMetadataRow[],
+  dailySeries: Map<string, UsageStatsDailySeries>,
+  access: AccessScope | undefined
+): AccountUsageStatsTrendOverview {
+  return {
+    range,
+    rows: metadataRows.map((metadata) => ({
+      id: metadata.id,
+      systemAccountId: canAccessAll(access) ? metadata.system_account_id : undefined,
+      systemAccountName: canAccessAll(access) ? metadata.system_account_name ?? undefined : undefined,
+      ownerSystemAccountId: metadata.system_account_id,
+      ownerSystemAccountName: metadata.system_account_name ?? undefined,
+      providerCode: metadata.provider_code,
+      name: metadata.name,
+      accessType: metadata.access_type,
+      dailyUsage: dailySeries.get(metadata.id)?.dailyUsage ?? []
+    }))
   }
 }
 

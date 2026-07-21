@@ -90,7 +90,10 @@
     <AnnouncementModal
       v-model:open="announcementModalOpen"
       :announcements="announcements"
+      :content-by-id="announcementContentById"
       :loading="announcementsLoading"
+      :loading-ids="announcementContentLoadingIds"
+      @load-content="loadAnnouncementContent"
     />
     <DisplayNameModal v-model:open="displayNameModalOpen" :form="displayNameForm" :saving="displayNameSaving" @ok="handleUpdateDisplayName" />
     <ChangePasswordModal v-model:open="passwordModalOpen" :forced="mustChangePassword" :form="passwordForm" :require-old-password="requireOldPasswordForPasswordChange" :saving="passwordSaving" @ok="handleChangePassword" />
@@ -156,7 +159,7 @@ import {
 import { menuRoutes, recoverRouteAssetLoadError } from '@/router'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { isAdminRole, systemAccountRoleLabel } from '@/shared/systemAccountRoles'
-import type { AuthSessionSummary, PublishedAnnouncementSummary } from '@/types/domain'
+import type { AuthSessionSummary, PublishedAnnouncementListItem } from '@/types/domain'
 import { resolveChatViewportHeight } from '@/views/chat/chatViewport'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
@@ -185,7 +188,12 @@ const whitespacePattern = /\s/
 const keepAliveMax = 48
 const announcementModalOpen = ref(false)
 const announcementsLoading = ref(false)
-const announcements = ref<PublishedAnnouncementSummary[]>([])
+const announcements = ref<PublishedAnnouncementListItem[]>([])
+const announcementContentById = ref<Record<string, string | undefined>>({})
+const announcementContentLoadingIds = ref(new Set<string>())
+const announcementContentRequestIds = new Map<string, number>()
+let announcementContentSessionId = 0
+let announcementContentRequestId = 0
 let announcementsRefreshTimer: number | undefined
 let announcementsRefreshRunning = false
 let announcementsRequestId = 0
@@ -199,7 +207,7 @@ interface AnnouncementLoadOptions {
 }
 
 interface AnnouncementLoadResult {
-  items: PublishedAnnouncementSummary[]
+  items: PublishedAnnouncementListItem[]
   loaded: boolean
 }
 
@@ -449,6 +457,7 @@ async function openAnnouncements() {
     openPasswordModal(false)
     return
   }
+  resetAnnouncementContentSession()
   announcementModalOpen.value = true
   const result = await loadAnnouncements({ notifyError: true })
   if (result.loaded) {
@@ -506,6 +515,56 @@ async function loadAnnouncements(options: AnnouncementLoadOptions = {}): Promise
       announcementsLoading.value = false
     }
   }
+}
+
+async function loadAnnouncementContent(id: string): Promise<void> {
+  if (announcementContentById.value[id] || announcementContentLoadingIds.value.has(id)) return
+  const requestUserKey = currentAnnouncementUserKey()
+  if (!requestUserKey || !announcements.value.some((announcement) => announcement.id === id)) return
+  const requestSessionId = announcementContentSessionId
+  const requestId = ++announcementContentRequestId
+  announcementContentRequestIds.set(id, requestId)
+
+  const nextLoadingIds = new Set(announcementContentLoadingIds.value)
+  nextLoadingIds.add(id)
+  announcementContentLoadingIds.value = nextLoadingIds
+  try {
+    const detail = await api.announcements.publicDetail(id)
+    if (
+      requestUserKey !== currentAnnouncementUserKey()
+      || requestSessionId !== announcementContentSessionId
+      || announcementContentRequestIds.get(id) !== requestId
+    ) return
+    announcementContentById.value = {
+      ...announcementContentById.value,
+      [id]: detail.content
+    }
+  } catch (error) {
+    if (
+      requestUserKey !== currentAnnouncementUserKey()
+      || requestSessionId !== announcementContentSessionId
+      || announcementContentRequestIds.get(id) !== requestId
+    ) return
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载公告内容失败'))
+  } finally {
+    if (
+      requestSessionId === announcementContentSessionId
+      && announcementContentRequestIds.get(id) === requestId
+    ) {
+      announcementContentRequestIds.delete(id)
+      const remainingLoadingIds = new Set(announcementContentLoadingIds.value)
+      remainingLoadingIds.delete(id)
+      announcementContentLoadingIds.value = remainingLoadingIds
+    }
+  }
+}
+
+function resetAnnouncementContentSession(): void {
+  announcementContentSessionId += 1
+  announcementContentRequestIds.clear()
+  announcementContentById.value = {}
+  announcementContentLoadingIds.value = new Set()
 }
 
 function currentAnnouncementUserKey(): string {
@@ -812,6 +871,10 @@ onBeforeUnmount(() => {
 
 watch(immersiveLayout, syncImmersiveBodyLock, { immediate: true })
 
+watch(announcementModalOpen, (open) => {
+  if (!open) resetAnnouncementContentSession()
+})
+
 watch(
   () => route.path,
   () => {
@@ -827,6 +890,7 @@ watch(
     if (user?.mustChangePassword) {
       announcementsRequestId += 1
       announcements.value = []
+      resetAnnouncementContentSession()
       announcementsLoading.value = false
       openPasswordModal()
     } else if (user) {
@@ -834,6 +898,7 @@ watch(
     } else {
       announcementsRequestId += 1
       announcements.value = []
+      resetAnnouncementContentSession()
       announcementsLoading.value = false
       resetAuthSessions()
       sessionModalOpen.value = false

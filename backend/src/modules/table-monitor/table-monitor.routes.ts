@@ -15,8 +15,6 @@ const defaultCleanupBatchSize = 5000
 const defaultCleanupMaxBatches = 100
 
 const overviewQuerySchema = z.object({
-  startAt: z.string().trim().optional(),
-  endAt: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(1000).optional()
 })
 
@@ -62,8 +60,6 @@ tableMonitorRouter.get('/overview', async (req, res, next) => {
   }
   try {
     res.json(ok(await getTableStorageOverviewAsync({
-      startAt: parsed.data.startAt,
-      endAt: parsed.data.endAt,
       limit: parsed.data.limit
     })))
   } catch (error) {

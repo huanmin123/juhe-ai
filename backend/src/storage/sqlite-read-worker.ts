@@ -10,7 +10,7 @@ import { readGatewaySettingsReadOnly } from '../modules/gateway/policy/account-e
 import { orderGatewayApiKeyGroupBindingsForDispatch } from '../modules/gateway/routing/api-key-group-route-selector.service.js'
 import { listProviderModelCatalogReadOnly } from '../modules/model-pricing/model-catalog.service.js'
 import { logger } from '../shared/logger.js'
-import { findAccountSummary, listAccountsPageReadOnly } from './account-summary.repository.js'
+import { findAccountSummary, listAccountItemsPageReadOnly, listAccountsPageReadOnly } from './account-summary.repository.js'
 import { listAccountStatusProjectionsReadOnly } from './account-status-snapshot.repository.js'
 import { listAccountOptions } from './account-options.repository.js'
 import { listAccountTags } from './account-tags.repository.js'
@@ -21,7 +21,7 @@ import {
   isAccountTestTaskCancelRequested,
   listAccountTestTasks
 } from './account-test-tasks.repository.js'
-import { findAnnouncement, listAnnouncementsPage, listPublicAnnouncements } from './announcements.repository.js'
+import { findAnnouncement, findPublicAnnouncement, listAnnouncementsPage, listPublicAnnouncements } from './announcements.repository.js'
 import {
   findApiKeySecretReadOnly,
   findApiKeySummaryReadOnly,
@@ -136,7 +136,7 @@ import {
   listSystemAccountOptionsReadOnly,
   listSystemAccountsPageReadOnly
 } from './system-accounts.repository.js'
-import { findSystemTeamSummary, listSystemTeams, listSystemTeamsPage } from './system-team.repository.js'
+import { findSystemTeamDetail, findSystemTeamSummary, listSystemTeams, listSystemTeamsPage } from './system-team.repository.js'
 import { getSystemMetricsOverview } from './system-metrics.repository.js'
 import { getUsageStatsOverview } from './usage-stats.repository.js'
 import { getAiPerformanceOverview, listAiPerformanceAccountOptions } from './usage-stats-ai-performance.repository.js'
@@ -178,6 +178,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
   switch (operation.type) {
     case 'list_accounts_page_read_only':
       return listAccountsPageReadOnly(operation.access, operation.options)
+    case 'list_account_items_page_read_only':
+      return listAccountItemsPageReadOnly(operation.access, operation.options)
     case 'list_account_status_snapshots_read_only':
       return listAccountStatusProjectionsReadOnly(operation.access, operation.accountIds)
     case 'find_account_summary_read_only':
@@ -214,6 +216,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return getAuthorizationUserUsageOverview(operation.filters, operation.access, operation.range, operation.options)
     case 'list_public_announcements_read_only':
       return listPublicAnnouncements(operation.systemAccountId, operation.limit)
+    case 'find_public_announcement_read_only':
+      return findPublicAnnouncement(operation.id)
     case 'list_announcements_page_read_only':
       return listAnnouncementsPage(operation.options)
     case 'find_announcement_read_only':
@@ -224,6 +228,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listSystemTeamsPage(operation.access, operation.options)
     case 'find_system_team_summary_read_only':
       return findSystemTeamSummary(operation.id, operation.access)
+    case 'find_system_team_detail_read_only':
+      return findSystemTeamDetail(operation.id, operation.access)
     case 'list_audit_logs_read_only':
       return listAuditLogs(operation.options)
     case 'list_audit_logs_by_ids_read_only':

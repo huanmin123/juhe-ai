@@ -4,7 +4,7 @@ import { getBusinessDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 
 export type GatewayModelCatalogProtocol = 'openai' | 'anthropic' | 'gemini'
-export type GatewayModelCatalogVariant = 'default' | 'codex' | 'chat'
+export type GatewayModelCatalogVariant = 'default' | 'codex' | `chat_list:${string}` | `chat_model:${string}`
 
 export interface GatewayModelCatalogSnapshot {
   systemAccountId: string

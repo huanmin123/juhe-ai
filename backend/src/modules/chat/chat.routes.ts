@@ -33,7 +33,7 @@ import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { ChatContextBudgetError, estimateChatInputTokens, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
-import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, resolveChatModelRequestOptions, type ChatModelOption } from './chat-model-options.js'
+import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, mergeChatModelCapabilities, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import {
   beginActiveChatAcceptance,
@@ -61,7 +61,7 @@ import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-gene
 import { createChatSseSubscriber, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
 import { createChatModelOptionsSnapshotCache } from './chat-model-availability.js'
-import { readPublishedChatModelOptionsAsync } from '../model-pricing/published-model-catalog.service.js'
+import { readPublishedChatModelCapabilitiesAsync, readPublishedChatModelListAsync } from '../model-pricing/published-model-catalog.service.js'
 import { logger } from '../../shared/logger.js'
 
 export const chatRouter = Router()
@@ -119,7 +119,7 @@ const maxInternalChatRequestBytes = 15 * 1024 * 1024
 const storageQuotaBytes = 2 * 1024 * 1024 * 1024
 const chatModelOptionsCacheTtlMs = 30_000
 const chatModelOptionsSlowStageMs = 1_000
-const chatModelOptionsSnapshotCache = createChatModelOptionsSnapshotCache<ChatModelOption[]>({ ttlMs: chatModelOptionsCacheTtlMs })
+const chatModelOptionsSnapshotCache = createChatModelOptionsSnapshotCache<ChatModelListOption[]>({ ttlMs: chatModelOptionsCacheTtlMs })
 
 class ChatRequestError extends Error {
   constructor(public readonly code: 'chat_image_not_supported' | 'chat_request_body_too_large', message: string) {
@@ -163,7 +163,7 @@ chatRouter.get('/conversations', async (req, res, next) => {
       beforeId: textQuery(req.query.beforeId),
       limit: integerQuery(req.query.limit, 30, 1, 50)
     })
-    res.json(ok(conversations.map(chatConversationResponse)))
+    res.json(ok(conversations.map((conversation) => chatConversationResponse(conversation))))
   } catch (error) { next(error) }
 })
 
@@ -174,15 +174,18 @@ chatRouter.post('/conversations', async (req, res, next) => {
     const apiKey = body.apiKeyId
       ? await requireOwnedApiKey(body.apiKeyId, auth.systemAccountId)
       : await requireDefaultChatApiKey(auth.systemAccountId)
+    const modelAccess = await loadChatModelAccessAsync(apiKey, auth.systemAccountId)
+    const defaultModel = (await loadChatModelListsAsync(auth.systemAccountId, modelAccess.providerCodes)).defaultModel
     const client = await getChatDatabaseClient()
     const conversation = await createChatConversation(client, {
       systemAccountId: auth.systemAccountId,
       apiKeyId: apiKey.id,
       apiKeyNameSnapshot: apiKey.name,
+      defaultModel: defaultModel?.id,
       now: new Date().toISOString(),
       maxConversationsPerUser: runtimeConfig.chat.maxConversationsPerUser
     })
-    res.status(201).json(ok(chatConversationResponse(conversation)))
+    res.status(201).json(ok(chatConversationResponse(conversation, defaultModel)))
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -384,17 +387,25 @@ chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, 
 chatRouter.get('/conversations/:conversationId/models', async (req, res, next) => {
   try {
     const auth = requireChatAuth()
-    const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
-    const apiKey = await requireOwnedApiKey(conversation.apiKeyId, auth.systemAccountId)
-    const cacheIdentity = `${auth.systemAccountId}:${apiKey.id}`
-    const modelOptions = await chatModelOptionsSnapshotCache.getOrLoad(cacheIdentity, async () => {
-      const gatewayKey = await measureChatModelOptionsStage('api_key_route', auth.systemAccountId, apiKey.id, async () => (
-        await validateGatewayApiKeyAsync(String(apiKey.key))
-      ))
-      if (!gatewayKey) throw new Error('API Key 不存在或不可用')
-      return readPublishedChatModelOptionsAsync(auth.systemAccountId)
-    })
+    const modelOptions = await loadOwnedChatModelListAsync(req.params.conversationId, auth.systemAccountId)
     res.json(ok(modelOptions))
+  } catch (error) { handleChatRouteError(error, res, next) }
+})
+
+chatRouter.get('/conversations/:conversationId/models/:modelId', async (req, res, next) => {
+  try {
+    const auth = requireChatAuth()
+    const modelAccess = await requireOwnedChatModelAccessAsync(req.params.conversationId, auth.systemAccountId)
+    const capabilities = await Promise.all(modelAccess.providerCodes.map((providerCode) => (
+      readPublishedChatModelCapabilitiesAsync(auth.systemAccountId, providerCode, req.params.modelId)
+    )))
+    const availableCapabilities = capabilities.filter((item): item is ChatModelCapabilities => Boolean(item))
+    const model = mergeChatModelCapabilities(availableCapabilities)
+    if (!model) {
+      res.status(404).json({ message: '当前会话没有可用的该模型', code: 'chat_model_not_found' })
+      return
+    }
+    res.json(ok(model))
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -1060,8 +1071,42 @@ function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFu
   next(error)
 }
 
-function chatConversationResponse(conversation: Awaited<ReturnType<typeof getChatConversation>> extends infer T ? Exclude<T, undefined> : never) {
-  return { ...conversation, userTurnLimit: runtimeConfig.chat.maxTurnsPerConversation }
+function chatConversationResponse(
+  conversation: Awaited<ReturnType<typeof getChatConversation>> extends infer T ? Exclude<T, undefined> : never,
+  defaultModel?: ChatModelListOption
+) {
+  return { ...conversation, ...(defaultModel ? { defaultModel } : {}), userTurnLimit: runtimeConfig.chat.maxTurnsPerConversation }
+}
+
+async function loadOwnedChatModelListAsync(conversationId: string, systemAccountId: string): Promise<ChatModelListOption[]> {
+  const modelAccess = await requireOwnedChatModelAccessAsync(conversationId, systemAccountId)
+  const cacheIdentity = `${systemAccountId}:${modelAccess.apiKey.id}`
+  return chatModelOptionsSnapshotCache.getOrLoad(cacheIdentity, async () => (await loadChatModelListsAsync(systemAccountId, modelAccess.providerCodes)).models)
+}
+
+async function requireOwnedChatModelAccessAsync(conversationId: string, systemAccountId: string) {
+  const conversation = await requireOwnedConversation(conversationId, systemAccountId)
+  const apiKey = await requireOwnedApiKey(conversation.apiKeyId, systemAccountId)
+  return loadChatModelAccessAsync(apiKey, systemAccountId)
+}
+
+async function loadChatModelAccessAsync(apiKey: Awaited<ReturnType<typeof requireOwnedApiKey>>, systemAccountId: string) {
+  const gatewayKey = await measureChatModelOptionsStage('api_key_route', systemAccountId, apiKey.id, async () => (
+    await validateGatewayApiKeyAsync(String(apiKey.key))
+  ))
+  if (!gatewayKey) throw new Error('API Key 不存在或不可用')
+  const providerCodes = [...new Set((gatewayKey.group_bindings ?? [])
+    .filter((binding) => binding.status === 'active' && binding.group_enabled !== 0)
+    .map((binding) => binding.provider_code.trim())
+    .filter(Boolean))]
+  return { apiKey, providerCodes }
+}
+
+async function loadChatModelListsAsync(systemAccountId: string, providerCodes: readonly string[]) {
+  const lists = await Promise.all(providerCodes.map((providerCode) => readPublishedChatModelListAsync(systemAccountId, providerCode)))
+  const models = new Map<string, ChatModelListOption>()
+  for (const list of lists) for (const model of list.models) if (!models.has(model.id)) models.set(model.id, model)
+  return { defaultModel: lists.find((list) => list.defaultModel)?.defaultModel, models: [...models.values()] }
 }
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }

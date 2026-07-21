@@ -1,6 +1,6 @@
-import type { SystemMetricsOverview } from '@/types/domain'
+import type { SystemMetricsRuntimeOverview } from '@/types/domain'
 
-type BackgroundRuntimeRow = NonNullable<SystemMetricsOverview['backgroundJobs']>[number]
+type BackgroundRuntimeRow = NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number]
 
 export type BackgroundQueueType = 'retry' | 'local' | 'ipc' | 'request' | 'gateway' | 'concurrency' | 'redis' | 'writer'
 
@@ -34,7 +34,7 @@ export interface BackgroundQueueRow {
   lastError?: string
 }
 
-export function buildBackgroundQueueRows(metrics?: SystemMetricsOverview): BackgroundQueueRow[] {
+export function buildBackgroundQueueRows(metrics?: SystemMetricsRuntimeOverview): BackgroundQueueRow[] {
   return (metrics?.backgroundJobs ?? [])
     .flatMap(backgroundQueueRowsFromRuntimeRow)
     .sort(compareBackgroundQueueRows)

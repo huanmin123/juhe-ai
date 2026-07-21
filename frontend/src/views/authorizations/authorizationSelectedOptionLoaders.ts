@@ -1,5 +1,5 @@
 import { api } from '@/api/client'
-import type { AccountOptionSummary, GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { AccountOptionSummary, AuthorizationGranteeGroupOptionSummary, GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { mergeOptionsById } from './authorizationOptionHelpers'
 
 export async function ensureSelectedAccountOption(
@@ -30,8 +30,8 @@ export async function ensureSelectedGroupOption(
   if (!id || options.some((item) => item.id === id)) return options
   try {
     const selected = isManagementView
-      ? await api.groups.options({ systemAccountId, ids: [id], limit: 1 })
-      : await api.myGroups.options({ ids: [id], limit: 1 })
+      ? await api.groups.authorizationOptions({ systemAccountId, ids: [id], limit: 1 })
+      : await api.myGroups.authorizationOptions({ ids: [id], limit: 1 })
     return mergeOptionsById(selected, options)
   } catch {
     return options
@@ -39,12 +39,12 @@ export async function ensureSelectedGroupOption(
 }
 
 export async function ensureSelectedAuthorizationGranteeGroupOption(
-  options: GroupOptionSummary[],
+  options: AuthorizationGranteeGroupOptionSummary[],
   selectedId: string | undefined,
   granteeSystemAccountId: string,
   providerCode: string,
   isManagementView: boolean
-): Promise<GroupOptionSummary[]> {
+): Promise<AuthorizationGranteeGroupOptionSummary[]> {
   const id = selectedId?.trim()
   if (!id || options.some((item) => item.id === id)) return options
   try {

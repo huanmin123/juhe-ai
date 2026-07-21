@@ -22,7 +22,6 @@ export function useAuditLogModeBridge(input: {
   mobileHasMore: Ref<boolean>
   mobileLoadingMore: Ref<boolean>
   records: Ref<AuditLogSummary[]>
-  refreshAuditRuntimeQuietly: () => void | Promise<void>
   refreshMobileRecords: () => void
   resetFilters: () => void
   resetHotSearch: () => void
@@ -66,7 +65,6 @@ export function useAuditLogModeBridge(input: {
   function refreshCurrentMode(): void {
     if (input.viewMode.value === 'search') {
       void input.searchHotAuditLogs()
-      void input.refreshAuditRuntimeQuietly()
       return
     }
     void input.loadData({ forceOptions: true })

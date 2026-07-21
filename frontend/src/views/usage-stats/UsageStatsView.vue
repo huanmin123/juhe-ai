@@ -44,7 +44,7 @@
             max-tag-count="responsive"
             placeholder="输入账户名称添加账户"
             @change="handleAddedTrendAccountsChange"
-            @dropdown-visible-change="handleAccountOptionsDropdown"
+            @dropdown-visible-change="handleProviderAwareAccountOptionsDropdown"
             @search="handleAccountOptionsSearch"
           />
         </div>
@@ -139,7 +139,7 @@ import { loadProviderOptionsResource } from '@/composables/useProviderOptionsRes
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageStatsTrendOverview, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -204,6 +204,7 @@ const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initi
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedTrendAccountIds = ref<string[]>([])
 let usageStatsResourceRequestSeq = 0
+let usageStatsTrendRequestSeq = 0
 const {
   applyResult: applyAccountUsageResult,
   items: accountUsageRows,
@@ -229,12 +230,13 @@ const {
     await Promise.all([
       loadStatsPageDataResource<AccountUsageStatsOverview>({
         apply: (nextOverview, phase) => {
-          usageOverview = nextOverview
-          overview.value = nextOverview
-          syncDateRangeFromResponse(nextOverview.range)
-          pruneLoadedTrendAccounts(nextOverview.rows)
+          const normalizedOverview = normalizeAccountUsageListOverview(nextOverview)
+          usageOverview = normalizedOverview
+          overview.value = normalizedOverview
+          syncDateRangeFromResponse(normalizedOverview.range)
+          pruneLoadedTrendAccounts(normalizedOverview.rows)
           if (phase === 'confirmation') {
-            applyAccountUsageResult(accountUsagePageResult(nextOverview), options)
+            applyAccountUsageResult(accountUsagePageResult(normalizedOverview), options)
             renderChart()
           }
         },
@@ -249,10 +251,10 @@ const {
         route: isManagementView.value ? '/stats/account-usage' : '/my-stats/account-usage',
         targetSystemAccountId: systemAccountId
       }),
-      loadUsageStatsOptions(options.forceOptions === true),
-      loadUsageStatsWindow({ force: true })
+      loadUsageStatsWindow()
     ])
     if (!usageOverview) throw new Error('账户用量统计缓存未返回数据')
+    void loadAccountUsageTrend(usageOverview, systemAccountId)
     return accountUsagePageResult(usageOverview)
   },
   requestSignature: (_options, pageState) => {
@@ -367,9 +369,16 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
   usageStatsOptionsScopeKey.value = scopeKey
 }
 
+function handleProviderAwareAccountOptionsDropdown(open: boolean): void {
+  handleAccountOptionsDropdown(open)
+  if (open) {
+    void loadUsageStatsOptions()
+  }
+}
+
 function refreshUsageStats() {
   resetAccountUsagePagination()
-  void loadData({ forceOptions: true, forceCache: true })
+  void loadData({ forceCache: true })
 }
 
 function resetFilters() {
@@ -382,7 +391,7 @@ function resetFilters() {
   resetAccountUsagePagination()
   resetSystemAccountOptionsSearch()
   pageStateCache.clear()
-  void loadData({ forceOptions: true })
+  void loadData()
 }
 
 function handleSystemAccountFilterChange() {
@@ -396,7 +405,7 @@ function handleSystemAccountFilterChange() {
 
 async function refreshMobileRows() {
   resetAccountUsagePagination()
-  await loadData({ forceOptions: true, forceCache: true })
+  await loadData({ forceCache: true })
 }
 
 function accountUsagePageResult(usageOverview: AccountUsageStatsOverview): ResponsivePagedListResult<AccountUsageStatsRow> {
@@ -407,6 +416,67 @@ function accountUsagePageResult(usageOverview: AccountUsageStatsOverview): Respo
     total: usageOverview.total,
     hasMore: usageOverview.hasMore
   }
+}
+
+function normalizeAccountUsageListOverview(nextOverview: AccountUsageStatsOverview): AccountUsageStatsOverview {
+  const previousDailyUsageById = new Map((overview.value?.rows ?? []).map((row) => [row.id, row.dailyUsage]))
+  const defaultTrendAccountIds = nextOverview.rows
+    .map((row) => row.id)
+    .filter((id) => !addedTrendAccountIds.value.includes(id))
+    .slice(0, 10)
+  return {
+    ...nextOverview,
+    defaultTrendAccountIds,
+    rows: nextOverview.rows.map((row) => ({
+      ...row,
+      dailyUsage: previousDailyUsageById.get(row.id) ?? []
+    }))
+  }
+}
+
+async function loadAccountUsageTrend(usageOverview: AccountUsageStatsOverview, systemAccountId?: string): Promise<void> {
+  const requestSeq = ++usageStatsTrendRequestSeq
+  const accountIds = [...new Set([
+    ...addedTrendAccountIds.value,
+    ...usageOverview.defaultTrendAccountIds
+  ])].slice(0, 10)
+  if (!accountIds.length) {
+    renderChart()
+    return
+  }
+  try {
+    const params = {
+      systemAccountId,
+      startDate: usageOverview.range.startDate,
+      endDate: usageOverview.range.endDate,
+      accountIds
+    }
+    const trend = isManagementView.value
+      ? await api.stats.accountUsageTrend(params)
+      : await api.myStats.accountUsageTrend(params)
+    if (requestSeq !== usageStatsTrendRequestSeq) return
+    applyAccountUsageTrend(trend)
+  } catch (error) {
+    if (requestSeq !== usageStatsTrendRequestSeq) return
+    console.error(error)
+    message.error('账户趋势加载失败')
+  }
+}
+
+function applyAccountUsageTrend(trend: AccountUsageStatsTrendOverview): void {
+  const dailyUsageById = new Map(trend.rows.map((row) => [row.id, row.dailyUsage]))
+  const mergeDailyUsage = (row: AccountUsageStatsRow): AccountUsageStatsRow => ({
+    ...row,
+    dailyUsage: dailyUsageById.get(row.id) ?? row.dailyUsage
+  })
+  accountUsageRows.value = accountUsageRows.value.map(mergeDailyUsage)
+  if (overview.value) {
+    overview.value = {
+      ...overview.value,
+      rows: overview.value.rows.map(mergeDailyUsage)
+    }
+  }
+  renderChart()
 }
 
 function accountUsageParams(systemAccountId: string | undefined, pageState: AccountUsagePageState) {

@@ -3,18 +3,22 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
-import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupOptionsAsync, listGroupsPageAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroupAsync, deleteGroupAsync, findGroupSummaryAsync, listAccountGroupOptionsAsync, listGroupAuthorizationOptionsAsync, listGroupItemsPageAsync, listGroupOptionsAsync, listProvidersAsync, returnGroupAuthorizationForGranteeAsync, updateGroupAsync, type DeletedGroupRouteStrategyChange } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { applyServerAccountConcurrencyToGroupList } from '../gateway/runtime/runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
 import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
+import { getGroupStatusSnapshot, parseGroupStatusSnapshotGroupIds } from './group-status-snapshot.service.js'
 
 export const groupsRouter = Router()
 
 const groupOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listGroupOptionsAsync>>>('groups.static', {
+  max: 512,
+  ttlMs: 6 * 60 * 60 * 1000
+})
+const groupAuthorizationOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listGroupAuthorizationOptionsAsync>>>('groups.static', {
   max: 512,
   ttlMs: 6 * 60 * 60 * 1000
 })
@@ -43,12 +47,8 @@ const groupPatchSchema = groupSchema.partial().refine((value) => Object.keys(val
 
 groupsRouter.get('/', async (req, res, next) => {
   try {
-    const page = await listGroupsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
-    const withRuntime = await applyServerAccountConcurrencyToGroupList(page)
-    res.json(ok({
-      ...withRuntime,
-      items: withRuntime.items.map(toGroupListItem)
-    }))
+    const page = await listGroupItemsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
+    res.json(ok(page))
   } catch (error) {
     next(error)
   }
@@ -76,6 +76,21 @@ groupsRouter.get('/options', async (req, res, next) => {
   }
 })
 
+groupsRouter.get('/authorization-options', async (req, res, next) => {
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const query = parseGroupOptionListOptions(req.query)
+    const options = await groupAuthorizationOptionsReadCache.load(pageDataReadCacheKey({
+      scope: access,
+      route: '/groups/authorization-options',
+      query
+    }), () => listGroupAuthorizationOptionsAsync(access, query))
+    res.json(ok(options))
+  } catch (error) {
+    next(error)
+  }
+})
+
 groupsRouter.get('/account-options', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
@@ -87,6 +102,20 @@ groupsRouter.get('/account-options', async (req, res, next) => {
     }), () => listAccountGroupOptionsAsync(access, query))
     res.json(ok(options))
   } catch (error) {
+    next(error)
+  }
+})
+
+groupsRouter.get('/status-snapshot', async (req, res, next) => {
+  try {
+    const groupIds = parseGroupStatusSnapshotGroupIds(req.query.groupIds)
+    const result = await getGroupStatusSnapshot(getRequestAccessScope(req.query.systemAccountId), groupIds)
+    res.json(ok(result))
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('分组状态快照')) {
+      res.status(400).json(badRequest(error.message))
+      return
+    }
     next(error)
   }
 })
@@ -133,38 +162,6 @@ function booleanQueryValue(value: unknown): boolean | undefined {
   if (['1', 'true', 'yes'].includes(normalized)) return true
   if (['0', 'false', 'no'].includes(normalized)) return false
   return undefined
-}
-
-type GroupListItem = Omit<NonNullable<Awaited<ReturnType<typeof findGroupSummaryAsync>>>, 'accountIds' | 'authorizationSources'> & {
-  accountCount: number
-  authorizationSourceSummary?: {
-    activeSourceCount: number
-    hasManual: boolean
-    hasTeam: boolean
-    teamNames: string[]
-  }
-}
-
-function toGroupListItem(group: NonNullable<Awaited<ReturnType<typeof findGroupSummaryAsync>>>): GroupListItem {
-  const { accountIds, authorizationSources, ...item } = group
-  return {
-    ...item,
-    accountCount: group.accessType === 'authorized' ? 0 : group.accountStats.total,
-    authorizationSourceSummary: authorizationSources ? summarizeAuthorizationSources(authorizationSources) : undefined
-  }
-}
-
-function summarizeAuthorizationSources(sources: NonNullable<NonNullable<Awaited<ReturnType<typeof findGroupSummaryAsync>>>['authorizationSources']>): GroupListItem['authorizationSourceSummary'] {
-  const activeSources = sources.filter((source) => source.status === 'active')
-  const teamNames = [...new Set(activeSources
-    .map((source) => source.sourceTeamName?.trim())
-    .filter((name): name is string => Boolean(name)))]
-  return {
-    activeSourceCount: activeSources.length,
-    hasManual: activeSources.some((source) => source.sourceType === 'manual'),
-    hasTeam: activeSources.some((source) => source.sourceType === 'team') || sources.some((source) => source.sourceType === 'team'),
-    teamNames
-  }
 }
 
 groupsRouter.post('/', mutationGuard({

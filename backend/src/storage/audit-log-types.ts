@@ -199,6 +199,7 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   headers?: Record<string, string | string[]>
   bodyText?: string
   bodyBase64?: string
+  headersIncluded: boolean
   headersStorageStatus: AuditPayloadBlobStorageStatus
   bodyStorageStatus: AuditPayloadBlobStorageStatus
   bodyOffset: number
@@ -236,6 +237,7 @@ export interface AuditLogListOptions {
 export interface AuditLogPayloadReadOptions {
   offset?: number
   limit?: number
+  includeHeaders?: boolean
 }
 
 export interface AuditLogListResult {

@@ -3,10 +3,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { AccountTestModelOption } from '../../src/api/domains/accounts'
 import type { AccountSummary } from '../../src/types/domain'
 import { buildAccountTestPayload } from '../../src/views/accounts/accountTestFlow'
-import { accountTestEndpointModesForModelOption } from '../../src/views/accounts/useAccountTestModels'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
@@ -40,12 +38,12 @@ const accountsViewSource = readFileSync(accountsViewPath, 'utf8')
 const accountManualTestModelOptionSource = sourceSection(
   accountApiSource,
   'export interface AccountManualTestModelOption',
-  'export interface AccountTestOptions'
+  'export interface AccountTestModelCapabilities'
 )
-const accountTestOptionsSource = sourceSection(
-  accountApiSource,
-  'export interface AccountTestOptions',
-  'export const accountsApi'
+const openTestModalSource = sourceSection(
+  accountTestModalSource,
+  'async function openTestModal',
+  'function openDraftTestModal'
 )
 const detachCurrentTestViewSource = sourceSection(
   accountTestModalSource,
@@ -62,27 +60,38 @@ const updateSelectableTestModelSource = sourceSection(
   'function updateSelectableTestModel',
   'function resetTestModels'
 )
-const endpointModesForModelOptionSource = sourceSection(
-  accountTestModelsSource,
-  'export function accountTestEndpointModesForModelOption',
-  'function normalizeEndpointModes'
-)
 
 assertIncludes(accountApiSource, '`/accounts/${id}/test-options`', '管理端列表测试应调用账户 test-options')
 assertIncludes(accountApiSource, '`/my-accounts/${id}/test-options`', '个人端列表测试应调用个人账户 test-options')
-assertIncludes(accountApiSource, 'defaultModel: string', 'test-options 契约应返回默认模型')
-assertIncludes(accountApiSource, 'models: AccountManualTestModelOption[]', 'test-options 契约应返回按模型划分的选项')
-assertIncludes(accountApiSource, 'supportedApiProtocols: ProviderModelApiProtocol[]', 'test-options 模型应携带支持协议')
-assertIncludes(accountManualTestModelOptionSource, 'testEndpointModes: AccountSupportedEndpointMode[]', 'test-options 每个模型应携带自己的可测试请求形态')
-assertIncludes(accountTestOptionsSource, 'testEndpointModes: AccountSupportedEndpointMode[]', 'test-options 顶层请求形态只保留默认模型兼容回退')
-assertIncludes(accountTestOptionsSource, 'defaultTestEndpointMode: AccountSupportedEndpointMode', 'test-options 契约应返回默认模型的稳定请求形态')
+assertIncludes(accountApiSource, 'export type AccountTestOptions = AccountManualTestModelOption[]', 'test-options 契约应只返回轻量模型摘要数组')
+assertIncludes(accountManualTestModelOptionSource, 'id: string', 'test-options 模型摘要必须返回模型 ID')
+assertIncludes(accountManualTestModelOptionSource, 'name: string', 'test-options 模型摘要必须返回展示名称')
+assertNotIncludes(accountManualTestModelOptionSource, 'supportedApiProtocols', 'test-options 模型摘要不得返回支持协议数组')
+assertNotIncludes(accountManualTestModelOptionSource, 'testEndpointModes', 'test-options 模型摘要不得返回请求形态数组')
+assertNotIncludes(accountApiSource, 'defaultModel: string', 'test-options 不得重复返回账户默认模型')
+assertNotIncludes(accountApiSource, 'defaultTestEndpointMode: AccountSupportedEndpointMode', 'test-options 不得重复返回账户默认请求形态')
+assertIncludes(accountApiSource, 'testModelCapabilities', '模型切换应通过独立能力 API 按模型读取请求形态')
+assertIncludes(accountApiSource, 'test-options/models/${encodeURIComponent(modelId)}', '模型能力 API 路径必须包含 URL 编码后的模型 ID')
 assertNotIncludes(accountApiSource, 'healthCheckModel: string', '前端 test-options 契约不应猜测后端返回 healthCheckModel 字段')
 assertNotIncludes(accountApiSource, 'setDefaultTestModel', '账户 API 不应保留人工测试成功后的默认模型写接口')
 assertNotIncludes(accountApiSource, 'default-test-model', '账户 API 不应保留默认测试模型路径')
 
 assertIncludes(accountTestModelsSource, 'loadAccountTestOptionsCached({', '保存账户测试应通过短时缓存加载 test-options')
+assertIncludes(accountTestModelsSource, 'loadTestModelOptions', '候选模型列表必须提供独立的按需加载入口')
+assertNotIncludes(openTestModalSource, 'loadSavedAccountTestOptions(', '打开测试弹窗时不得请求候选模型列表')
+assertIncludes(openTestModalSource, 'account.healthCheckModel', '测试弹窗默认模型必须直接使用当前账户检查模型')
+assertIncludes(openTestModalSource, 'account.healthCheckEndpointMode', '测试弹窗默认请求形态必须直接使用当前账户检查形态')
+assertIncludes(accountTestComponentSource, '@dropdown-visible-change', '模型选择器首次展开时才应触发候选模型列表加载')
 assertIncludes(accountTestOptionsCacheSource, 'api.accounts.testOptions(', '管理端测试模型应来自账户 test-options')
-assertIncludes(accountTestOptionsCacheSource, 'api.myAccounts.testOptions(input.account.id)', '个人端测试模型应来自个人账户 test-options')
+assertIncludes(accountTestOptionsCacheSource, 'api.myAccounts.testOptions(input.account.id, input.params, input.options)', '个人端测试模型应来自个人账户 test-options 并传递查询参数与取消信号')
+assertIncludes(accountTestOptionsCacheSource, 'api.accounts.testModelCapabilities(', '管理端模型能力应走独立能力接口')
+assertIncludes(accountTestOptionsCacheSource, 'api.myAccounts.testModelCapabilities(', '个人端模型能力应走独立能力接口')
+assertIncludes(accountTestOptionsCacheSource, 'input.options?.signal', '测试选项缓存 loader 必须接收 AbortSignal')
+assertIncludes(accountTestModelsSource, 'limit: 50', '测试模型下拉每次最多请求 50 条')
+assertIncludes(accountTestModelsSource, 'selectedIds', '测试模型搜索必须保留检查模型和当前选中模型')
+assertIncludes(accountTestComponentSource, "@search=\"$emit('search-model-options', $event)\"", '模型选择器搜索必须触发服务端按需加载')
+assertIncludes(accountTestModelsSource, 'optionsAbortController?.abort()', '关闭或切换账户时必须取消候选模型请求')
+assertIncludes(accountTestModelsSource, 'modelAbortController?.abort()', '关闭或切换账户时必须取消模型能力请求')
 assertIncludes(accountTestOptionsCacheSource, 'getDefaultPageDataResourceCache', '账户测试选项必须复用统一 IndexedDB resource cache')
 assertIncludes(accountTestOptionsCacheSource, "domain: 'accounts.options'", '账户测试选项必须绑定 accounts.options revision')
 assertNotIncludes(accountTestOptionsCacheSource, 'createShortLivedRequestCache', '账户测试选项不得继续维护独立 5 分钟内存缓存')
@@ -91,18 +100,9 @@ assertIncludes(accountTestOptionsCacheSource, 'Number.isInteger(configRevision)'
 assertIncludes(accountTestOptionsCacheSource, 'cacheGeneration', '缓存失效后旧请求不得回填当前代次')
 assertIncludes(accountDetailCacheSource, 'invalidateAccountTestOptionsCache()', '账户写操作清理详情缓存时应同步清理测试选项')
 assertIncludes(accountRemovalActionsSource, 'invalidateAccountTestOptionsCache()', '删除或归还账户后应清理测试选项')
-assertIncludes(accountTestModelsSource, 'response.defaultModel.trim()', '列表测试默认模型应使用 test-options 返回默认模型')
-assertIncludes(accountTestModelsSource, 'normalizeModelOptions(response.models)', '列表测试下拉应直接使用 test-options 返回模型')
-assertIncludes(accountTestModelsSource, 'option.supportedApiProtocols', '列表模型应保留 test-options 返回的支持协议')
-assertIncludes(accountTestModelsSource, 'testEndpointModes: normalizeEndpointModes(option.testEndpointModes)', '列表模型应保留并清洗后端返回的模型级请求形态')
-assertIncludes(accountTestModelsSource, 'accountTestEndpointModesForModelOption(testModelOptions.value, input.testForm.model, response.testEndpointModes)', '默认模型应优先使用模型级请求形态，顶层字段仅作兼容回退')
-assertIncludes(accountTestModelsSource, 'prioritizeAccountTestEndpointModes(', '默认模型请求形态应按账户精确健康检查 mode 排序')
-assertIncludes(accountTestModelsSource, "input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'", '保存账户默认请求形态应使用当前模型首个有效 mode')
-assertIncludes(endpointModesForModelOptionSource, 'option?.testEndpointModes ?? fallbackModes', '只有找不到模型选项时才允许使用顶层兼容回退')
-assertNotIncludes(endpointModesForModelOptionSource, 'supportedApiProtocols', '前端不得根据协议标签二次推导模型请求形态')
-assertIncludes(updateSelectableTestModelSource, 'accountTestEndpointModesForModelOption(testModelOptions.value, normalizedModel)', '切换模型必须重新读取该模型的请求形态')
-assertIncludes(updateSelectableTestModelSource, '!testEndpointModes.value.includes(input.testForm.testEndpointMode)', '切换模型必须识别前一模型遗留的无效 mode')
-assertIncludes(updateSelectableTestModelSource, "input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'", '切换模型后必须清理无效 mode 并选中当前模型首项')
+assertIncludes(accountTestModelsSource, 'testModelCapabilities', '切换非默认模型时应按模型 ID 请求能力')
+assertNotIncludes(accountTestModelsSource, 'supportedApiProtocols', '前端不得从轻量模型摘要读取支持协议数组')
+assertIncludes(updateSelectableTestModelSource, 'testModelCapabilities', '切换模型必须按模型 ID 重新读取请求形态')
 assertNotIncludes(accountTestModelsSource, 'accountTestEndpointModesForAccount', '保存账户测试不得从裁剪后的列表账户推导请求形态')
 assertNotIncludes(accountTestModelsSource, 'endpointModesForProtocol', '模型协议标签不得决定保存账户可测试请求形态')
 assertIncludes(accountTestModelsSource, 'let modelRequestToken = 0', '模型请求应使用独立 token 隔离旧结果')
@@ -112,7 +112,6 @@ assertNotIncludes(accountTestModelsSource, 'supportedModels', '列表人工测�
 assertNotIncludes(accountTestModelsSource, 'api.providers.options', '列表人工测试不应再加载完整供应商选项')
 assertNotIncludes(accountTestModelsSource, 'api.providers.models', '列表人工测试不应自行拼供应商模型目录')
 
-assertIncludes(accountTestModalSource, 'const testOptions = await loadSavedAccountTestOptions(account)', '列表点击测试后才应加载最小 test-options')
 assertIncludes(accountTestModalSource, 'fixedHealthCheckModel: string', '草稿测试入口应要求调用者传入固定检查模型')
 assertIncludes(accountTestModalSource, 'useFixedTestModel(model, accountTestEndpointModesForAccount(account, draftPayload))', '草稿测试应固定使用调用者传入的检查模型')
 assertIncludes(accountTestModalSource, 'let testViewToken = 0', '测试弹窗应使用视图 token 隔离 A/B 账户')
@@ -129,12 +128,11 @@ assertNotIncludes(accountTestModalSource, 'runBatchAccountTest', '测试 composa
 assertNotIncludes(accountTestModalSource, 'batchTestItems', '测试 composable 不应保留批量结果状态')
 assertNotIncludes(accountTestModalSource, 'message.error(accountTestErrorMessage(account, result))', '人工测试失败结果已经进入终端，不应重复弹出全局错误 toast')
 assertNotIncludes(accountTestModalSource, 'message.error(`${account.name}: 测试失败`)', '人工测试异常已经转换为终端结果，不应重复弹出全局错误 toast')
-assertNotIncludes(accountTestModalSource, 'message.error(`${account.name}: 测试选项加载失败，请重试`)', '测试选项加载失败也应进入弹窗终端，不应弹出全局错误 toast')
 assertNotIncludes(accountTestModalSource, "message.warning('测试进度恢复中断，后台任务仍会继续执行')", '测试恢复异常也应进入弹窗终端，不应弹出全局 warning toast')
 assert.equal(
   accountTestModalSource.match(/failedAccountTestResult\(\{/g)?.length,
-  3,
-  '运行异常、测试选项加载异常和恢复异常都必须转换为终端 AccountTestResult'
+  2,
+  '运行异常和恢复异常都必须转换为终端 AccountTestResult；候选列表失败使用局部加载状态'
 )
 
 assertIncludes(detachCurrentTestViewSource, 'persistAccountTestRunSession(run, true)', '关闭视图前应保留当前账户单任务快照')
@@ -170,38 +168,6 @@ assertNotIncludes(accountsViewSource, ':accounts="batchTestingAccounts"', '账�
 assertIncludes(accountsViewSource, 'openDraftTestModalWithHealthCheckModel(', '账户页应作为调用者传入草稿检查模型')
 assertIncludes(accountsViewSource, 'draftHealthCheckModel(draftPayload)', '账户页应从当前草稿提取固定检查模型')
 assert.equal(existsSync(retiredSaveQueuePath), false, '账户默认测试模型保存队列文件应删除')
-
-const modelTestOptions: AccountTestModelOption[] = [
-  {
-    label: 'chat-model',
-    value: 'chat-model',
-    supportedApiProtocols: ['chat_completions'],
-    testEndpointModes: ['chat_json', 'chat_sse']
-  },
-  {
-    label: 'responses-model',
-    value: 'responses-model',
-    supportedApiProtocols: ['responses'],
-    testEndpointModes: ['responses_sse']
-  }
-]
-assert.deepEqual(
-  accountTestEndpointModesForModelOption(modelTestOptions, 'responses-model', ['chat_json']),
-  ['responses_sse'],
-  '已知模型必须忽略顶层兼容字段并使用自己的 testEndpointModes'
-)
-const legacyModelTestOptions = [
-  {
-    label: 'legacy-model',
-    value: 'legacy-model',
-    supportedApiProtocols: ['chat_completions']
-  }
-] as unknown as AccountTestModelOption[]
-assert.deepEqual(
-  accountTestEndpointModesForModelOption(legacyModelTestOptions, 'legacy-model', ['chat_json', 'chat_json', 'chat_sse']),
-  ['chat_json', 'chat_sse'],
-  '已知旧模型缺少模型级字段时才允许使用去重后的顶层兼容回退'
-)
 
 const account = accountFixture()
 assert.deepEqual(

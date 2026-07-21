@@ -73,6 +73,7 @@ import {
   createApiKeyTimeScheduleForm,
   type ApiKeyAvailabilityScheduleForm
 } from './apiKeyFormModel'
+import { createApiKeyEditOpenOperationGuard } from './apiKeyEditOpenOperation'
 import type { ApiKeyScopeParams } from './apiKeyScope'
 import { apiKeyStatusOptions as statusOptions } from './apiKeyTableConfig'
 
@@ -111,6 +112,11 @@ let routeStrategyOptionsRequestToken = 0
 let routeStrategyOptionsLoadingKey: string | undefined
 let routeStrategyOptionsLoadingPromise: Promise<void> | undefined
 let routeStrategyOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+const {
+  beginOpenOperation,
+  invalidateOpenOperation,
+  isCurrentOpenOperation
+} = createApiKeyEditOpenOperationGuard()
 
 const form = reactive({
   name: '',
@@ -124,6 +130,8 @@ const form = reactive({
 })
 
 async function openCreate() {
+  const openScopeKey = apiKeyEditOpenScopeKey()
+  const openOperation = beginOpenOperation(openScopeKey)
   if (props.isManagementView && !props.scopeParams?.systemAccountId) {
     message.warning('请先在右侧选择目标系统账户，再创建 API Key')
     return
@@ -143,6 +151,7 @@ async function openCreate() {
   })
   resetRouteStrategyOptions()
   await loadRouteStrategyOptions()
+  if (!isCurrentOpenOperation(openOperation, apiKeyEditOpenScopeKey())) return
   const activeStrategies = routeStrategyOptionsRaw.value.filter((strategy) => strategy.status === 'active')
   const defaultStrategy = activeStrategies.find((strategy) => strategy.isDefault)
   if (defaultStrategy) {
@@ -156,6 +165,8 @@ async function openCreate() {
 }
 
 async function openEdit(apiKey: ApiKeySummary) {
+  const openScopeKey = apiKeyEditOpenScopeKey(apiKey)
+  const openOperation = beginOpenOperation(openScopeKey)
   const editScopeParams = apiKeyOperationScopeParams(apiKey)
   if (props.isManagementView && !editScopeParams?.systemAccountId) {
     message.warning('无法确定 API Key 归属系统账户，请刷新后重试')
@@ -187,8 +198,18 @@ async function openEdit(apiKey: ApiKeySummary) {
   })
   resetRouteStrategyOptions()
   await loadRouteStrategyOptions('', [apiKey.routeStrategyId])
+  if (!isCurrentOpenOperation(openOperation, apiKeyEditOpenScopeKey(apiKey))) return
   form.routeStrategy = selectedRouteStrategySelection(apiKey.routeStrategyId) ?? form.routeStrategy
   modalOpen.value = true
+}
+
+function apiKeyEditOpenScopeKey(apiKey?: Pick<ApiKeySummary, 'id' | 'systemAccountId'>): string {
+  return JSON.stringify([
+    props.isManagementView ? 'management' : 'self',
+    props.scopeParams?.systemAccountId?.trim() ?? '',
+    apiKey?.id ?? 'create',
+    apiKey?.systemAccountId?.trim() ?? ''
+  ])
 }
 
 function apiKeyOperationScopeParams(apiKey?: Pick<ApiKeySummary, 'systemAccountId'>): ApiKeyScopeParams {
@@ -365,7 +386,10 @@ function apiKeyRouteStrategySelection(apiKey: ApiKeySummary): RouteStrategySelec
   }
 }
 
-onBeforeUnmount(clearRouteStrategyOptionsSearchTimer)
+onBeforeUnmount(() => {
+  invalidateOpenOperation()
+  clearRouteStrategyOptionsSearchTimer()
+})
 
 defineExpose({ openCreate, openEdit })
 </script>

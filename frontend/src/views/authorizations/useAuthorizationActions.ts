@@ -5,7 +5,7 @@ import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { message } from '@/lib/antd'
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationListItem, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import {
   extractApiErrorMessage,
   formatDateTime,
@@ -33,11 +33,11 @@ interface UseAuthorizationActionsOptions {
   expireModalOpen: Ref<boolean>
   isManagementView: ComputedRef<boolean>
   loadData: (options?: { quiet?: boolean }) => Promise<boolean>
-  removeAuthorizationItems: (predicate: (item: ResourceAuthorizationSummary) => boolean) => number
+  removeAuthorizationItems: (predicate: (item: ResourceAuthorizationListItem) => boolean) => number
   selectedCreateAccount: ComputedRef<AccountOptionSummary | undefined>
   updateAuthorizationItems: (
-    predicate: (item: ResourceAuthorizationSummary) => boolean,
-    updater: (item: ResourceAuthorizationSummary) => ResourceAuthorizationSummary
+    predicate: (item: ResourceAuthorizationListItem) => boolean,
+    updater: (item: ResourceAuthorizationListItem) => ResourceAuthorizationListItem
   ) => number
 }
 
@@ -118,15 +118,15 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
   })
 
-  async function revokeManualSource(item: ResourceAuthorizationSummary) {
+  async function revokeManualSource(item: ResourceAuthorizationListItem) {
     await revokeWithMessage(item, '个人授权来源已回收', '回收个人授权失败')
   }
 
-  async function revokeTeamSource(item: ResourceAuthorizationSummary) {
+  async function revokeTeamSource(item: ResourceAuthorizationListItem) {
     await revokeWithMessage(item, '团队授权来源已回收', '回收团队授权失败')
   }
 
-  async function revokeAuthorization(item: ResourceAuthorizationSummary) {
+  async function revokeAuthorization(item: ResourceAuthorizationListItem) {
     await revokeWithMessage(
       item,
       item.granteeType === 'team' ? '团队授权已回收' : '授权已回收',
@@ -134,7 +134,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     )
   }
 
-  async function revokeWithMessage(item: ResourceAuthorizationSummary, successMessage: string, errorMessage: string) {
+  async function revokeWithMessage(item: ResourceAuthorizationListItem, successMessage: string, errorMessage: string) {
     try {
       const updated = isManagementView.value
         ? await api.authorizations.revoke(item.id, authorizationOperationScopeParams(item))
@@ -148,7 +148,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
   }
 
-  async function returnAuthorization(item: ResourceAuthorizationSummary) {
+  async function returnAuthorization(item: ResourceAuthorizationListItem) {
     try {
       await api.myAuthorizations.returnAuthorization(item.id)
       removeAuthorizationItems((authorization) => authorization.id === item.id)
@@ -160,7 +160,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
   }
 
-  function handleActionMenuClick(event: { key: string | number }, item: ResourceAuthorizationSummary) {
+  function handleActionMenuClick(event: { key: string | number }, item: ResourceAuthorizationListItem) {
     const key = String(event.key)
     if (key === 'return') {
       void returnAuthorization(item)
@@ -198,7 +198,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
   }
 
-  async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, status: 'active' | 'paused') {
+  async function updateAuthorizationStatus(item: ResourceAuthorizationListItem, status: 'active' | 'paused') {
     try {
       const payload: { status: 'active' | 'paused'; expiresAt?: string | null } = { status }
       if (status === 'active' && item.expiresAt) {
@@ -219,7 +219,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     }
   }
 
-  async function openExpireModal(item: ResourceAuthorizationSummary) {
+  async function openExpireModal(item: ResourceAuthorizationListItem) {
     let detail: ResourceAuthorizationSummary
     try {
       detail = isManagementView.value
@@ -290,7 +290,7 @@ export function useAuthorizationActions(options: UseAuthorizationActionsOptions)
     return true
   }
 
-  function authorizationOperationScopeParams(item: ResourceAuthorizationSummary) {
+  function authorizationOperationScopeParams(item: Pick<ResourceAuthorizationListItem, 'resourceOwnerSystemAccountId'>) {
     if (!isManagementView.value || !item.resourceOwnerSystemAccountId) return undefined
     return { systemAccountId: item.resourceOwnerSystemAccountId }
   }

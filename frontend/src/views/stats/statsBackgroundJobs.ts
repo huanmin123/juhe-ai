@@ -1,6 +1,6 @@
-import type { SystemMetricsOverview } from '@/types/domain'
+import type { SystemMetricsRuntimeOverview } from '@/types/domain'
 
-export type BackgroundJobRow = NonNullable<SystemMetricsOverview['backgroundJobs']>[number]
+export type BackgroundJobRow = NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number]
 
 export function backgroundJobStatusText(row: BackgroundJobRow): string {
   if (row.running) return '运行中'

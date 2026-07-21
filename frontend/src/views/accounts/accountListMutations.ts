@@ -1,9 +1,9 @@
 import { toRaw } from 'vue'
 
-import type { AccountBalanceSnapshot, AccountListResult, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
 
-export function cloneAccountListCacheResult(value: unknown): AccountListResult {
-  return structuredClone(toRaw(value as object)) as AccountListResult
+export function cloneAccountListCacheResult<T>(value: T): T {
+  return structuredClone(toRaw(value as object)) as T
 }
 
 export function mergeAccountListRuntimeSnapshot(
@@ -127,7 +127,7 @@ export function mergeAccountStatusSnapshot(
     const item = itemsById.get(account.id)
     if (!item) return account
     changed = true
-    const mergedAccount = { ...account, ...item } as AccountSummary
+    const mergedAccount: AccountSummary = { ...account, ...item }
     const effectiveAvailability = runtimeSnapshotAvailable
       ? item.effectiveAvailability
       : effectiveAvailabilityWithPreservedRuntime(account, mergedAccount)
@@ -140,9 +140,15 @@ export function mergeAccountStatusSnapshot(
       cooldownUntil: item.cooldownUntil,
       lastErrorCode: item.lastErrorCode,
       lastErrorMessage: item.lastErrorMessage,
+      lastErrorTraceId: item.lastErrorTraceId,
+      cooldownRetestLastAt: item.cooldownRetestLastAt,
+      cooldownRetestLastStatusCode: item.cooldownRetestLastStatusCode,
       lastHealthCheckAt: item.lastHealthCheckAt,
+      nextHealthCheckAt: item.nextHealthCheckAt,
+      lastHealthCheckStatusCode: item.lastHealthCheckStatusCode,
       lastHealthCheckErrorCode: item.lastHealthCheckErrorCode,
       lastHealthCheckErrorMessage: item.lastHealthCheckErrorMessage,
+      lastHealthCheckTraceId: item.lastHealthCheckTraceId,
       authorizationStatus: item.authorizationStatus,
       authorizationExpiresAt: item.authorizationExpiresAt,
       authorizationQuotaExceeded: item.authorizationQuotaExceeded,
@@ -152,6 +158,15 @@ export function mergeAccountStatusSnapshot(
       authorizationInstanceSourceAccountCooldownUntil: item.authorizationInstanceSourceAccountCooldownUntil,
       authorizationInstanceSourceAccountLastErrorCode: item.authorizationInstanceSourceAccountLastErrorCode,
       authorizationInstanceSourceAccountLastErrorMessage: item.authorizationInstanceSourceAccountLastErrorMessage,
+      authorizationInstanceSourceAccountLastErrorTraceId: item.authorizationInstanceSourceAccountLastErrorTraceId,
+      authorizationInstanceSourceAccountCooldownRetestLastAt: item.authorizationInstanceSourceAccountCooldownRetestLastAt,
+      authorizationInstanceSourceAccountCooldownRetestLastStatusCode: item.authorizationInstanceSourceAccountCooldownRetestLastStatusCode,
+      authorizationInstanceSourceAccountLastHealthCheckAt: item.authorizationInstanceSourceAccountLastHealthCheckAt,
+      authorizationInstanceSourceAccountNextHealthCheckAt: item.authorizationInstanceSourceAccountNextHealthCheckAt,
+      authorizationInstanceSourceAccountLastHealthCheckStatusCode: item.authorizationInstanceSourceAccountLastHealthCheckStatusCode,
+      authorizationInstanceSourceAccountLastHealthCheckErrorCode: item.authorizationInstanceSourceAccountLastHealthCheckErrorCode,
+      authorizationInstanceSourceAccountLastHealthCheckErrorMessage: item.authorizationInstanceSourceAccountLastHealthCheckErrorMessage,
+      authorizationInstanceSourceAccountLastHealthCheckTraceId: item.authorizationInstanceSourceAccountLastHealthCheckTraceId,
       apiKeyRuntime: item.apiKeyRuntime,
       runtimeAvailability: runtimeSnapshotAvailable ? item.runtimeAvailability : account.runtimeAvailability,
       effectiveAvailability,

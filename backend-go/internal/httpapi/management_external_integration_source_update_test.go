@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -56,9 +55,9 @@ func TestManagementExternalIntegrationSourceUpdateHandlerSuccessAndOperationLog(
 		t.Fatalf("service input = %#v", input)
 	}
 	var response struct {
-		Data managementexternalintegrationsources.Detail `json:"data"`
+		Data map[string]any `json:"data"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || !reflect.DeepEqual(response.Data, result.After) {
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || len(response.Data) != 1 || response.Data["id"] != result.After.ID {
 		t.Fatalf("response=%#v err=%v", response, err)
 	}
 	logInput, err := operationlogjob.DecodeWriteTaskPayload(queueStub.payload)

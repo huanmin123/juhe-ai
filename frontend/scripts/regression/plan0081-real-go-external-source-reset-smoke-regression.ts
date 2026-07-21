@@ -266,8 +266,7 @@ function resetEnvelope(): Record<string, unknown> {
         tokenPrefix: newPrefix,
         tokenSuffix: newSuffix,
         scopes: []
-      },
-      source: sourceDetail()
+      }
     }
   }
 }

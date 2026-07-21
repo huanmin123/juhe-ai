@@ -40,7 +40,9 @@ export async function loadCurrentUser(force = false): Promise<CurrentUserSummary
       clearAuthState()
       return undefined
     }
-    if (currentUser.value) return currentUser.value
+    if (currentUser.value) {
+      return currentUser.value
+    }
     throw error
   }
 }

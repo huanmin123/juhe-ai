@@ -1,7 +1,7 @@
 import type { EChartsOption } from 'echarts'
 
 import { serverDateTimeTimestamp } from '@/shared/formatters'
-import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageSnapshotSummary } from '@/types/domain'
+import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverviewSummary } from '@/types/domain'
 
 export const tableMonitorColumns = [
   { title: '库', key: 'databaseRole', width: 168, fixed: 'left' },
@@ -18,7 +18,7 @@ export const tableMonitorColumns = [
 
 export const tableMonitorDatabaseRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'usage-catalog', 'stats', 'codex-context-state']
 
-export function tableMonitorRowKey(row: TableStorageSnapshotSummary) {
+export function tableMonitorRowKey(row: TableStorageOverviewSummary) {
   return `${row.databaseRole}:${row.tableName}`
 }
 
@@ -52,7 +52,7 @@ export function databaseRoleColor(role: MonitoredDatabaseRole) {
   }[role]
 }
 
-export function tableStateLabel(row: TableStorageSnapshotSummary) {
+export function tableStateLabel(row: TableStorageOverviewSummary) {
   if (row.isArchive) return '归档表'
   if (row.isPartition) return '分区子表'
   if (row.tableKind === 'partitioned_table') return '分区父表'
@@ -60,7 +60,7 @@ export function tableStateLabel(row: TableStorageSnapshotSummary) {
   return '普通表'
 }
 
-export function tableStateColor(row: TableStorageSnapshotSummary) {
+export function tableStateColor(row: TableStorageOverviewSummary) {
   if (row.isArchive) return 'magenta'
   if (row.isPartition) return 'cyan'
   if (row.tableKind === 'partitioned_table') return 'blue'

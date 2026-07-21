@@ -28,7 +28,7 @@ export interface AccountQualityFailurePrecheckCandidate {
   updatedAt: string
 }
 
-interface AccountQualityRow {
+export interface AccountQualityRow {
   account_id: string
   system_account_id: string
   provider_code: string
@@ -537,7 +537,7 @@ async function loadQualityAccountMetadataByIdsAsync(client: DatabaseClient, acco
   return new Map(rows.map((row) => [row.id, { systemAccountId: row.system_account_id, providerCode: row.provider_code }]))
 }
 
-function loadAccountQualityRowsByAccountIds(accountIds: string[]): Map<string, AccountQualityRow> {
+export function loadAccountQualityRowsByAccountIds(accountIds: string[]): Map<string, AccountQualityRow> {
   if (accountIds.length === 0) return new Map()
   const rows: AccountQualityRow[] = []
   const database = getStatsDatabase()
@@ -553,7 +553,7 @@ function loadAccountQualityRowsByAccountIds(accountIds: string[]): Map<string, A
   return new Map(rows.map((row) => [row.account_id, row]))
 }
 
-async function loadAccountQualityRowsByAccountIdsAsync(client: DatabaseClient, accountIds: string[]): Promise<Map<string, AccountQualityRow>> {
+export async function loadAccountQualityRowsByAccountIdsAsync(client: DatabaseClient, accountIds: string[]): Promise<Map<string, AccountQualityRow>> {
   if (!accountIds.length) return new Map()
   const rows: AccountQualityRow[] = []
   for (const chunk of chunkValues(accountIds, qualityLookupChunkSize)) {

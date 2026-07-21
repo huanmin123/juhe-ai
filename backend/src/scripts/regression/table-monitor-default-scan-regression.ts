@@ -81,35 +81,45 @@ try {
     capturedSql.push(sql)
     return originalPrepare(sql)
   }) as typeof statsDatabase.prepare
+  let latestOverview: ReturnType<typeof tableMonitorRepository.getTableStorageOverview>
   try {
-    tableMonitorRepository.getTableStorageOverview({
-      startAt: '2026-01-01T00:00:00.000Z',
-      endAt: '2026-01-01T00:00:00.000Z',
+    latestOverview = tableMonitorRepository.getTableStorageOverview({
       limit: 200
     })
   } finally {
     statsDatabase.prepare = originalPrepare as typeof statsDatabase.prepare
   }
   assert(capturedSql.length > 0, '表监控概览应查询统计结果库采样表')
+  assert.deepEqual(
+    Object.keys(latestOverview.databases[0] ?? {}).sort(),
+    ['databasePath', 'databaseRole', 'fileBytes', 'freeBytes', 'sampledAt', 'shmBytes', 'tableCount', 'walBytes'].sort(),
+    '表监控概览数据库卡片不应返回页、索引等未展示字段'
+  )
+  assert.deepEqual(
+    Object.keys(latestOverview.tables[0] ?? {}).sort(),
+    [
+      'databaseRole', 'growthBytes1h', 'growthBytes24h', 'growthRows1h', 'growthRows24h',
+      'indexBytes', 'indexToTableRatio', 'isArchive', 'isPartition', 'parentTableName',
+      'rowCount', 'sampledAt', 'tableBytes', 'tableKind', 'tableName', 'totalBytes'
+    ].sort(),
+    '表监控概览表列表不应返回页、索引计数等未展示字段'
+  )
   assert(capturedSql.every((sql) => !/\bJOIN\b/i.test(sql)), '表监控概览不应使用关联查询拼接采样结果')
   const overviewDatabaseSql = capturedSql.find((sql) => sql.includes('FROM database_storage_snapshots'))
-  const overviewTableSql = capturedSql.find((sql) => sql.includes('FROM table_storage_snapshots') && sql.includes('ROW_NUMBER() OVER'))
+  const overviewTableSampleSql = capturedSql.find((sql) => sql.includes('FROM table_storage_snapshots') && sql.includes('SELECT sampled_at'))
+  const overviewTableSql = capturedSql.find((sql) => sql.includes('FROM table_storage_snapshots') && sql.includes('sampled_at = ?'))
   assert(overviewDatabaseSql, '表监控概览应按库角色读取最新数据库快照')
-  assert(overviewTableSql, '表监控概览应读取每张表的最新采样')
-  const overviewDatabasePlan = explainQueryPlan(statsDatabase, overviewDatabaseSql, ['business', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'])
+  assert(overviewTableSampleSql, '表监控概览应先读取每个库角色的最新表采样时间')
+  assert(overviewTableSql, '表监控概览应只读取最新采样批次')
+  const overviewDatabasePlan = explainQueryPlan(statsDatabase, overviewDatabaseSql, ['business'])
   assertNoTempBtree(overviewDatabasePlan, '表监控概览数据库快照查询')
   assert(overviewDatabasePlan.includes('idx_database_storage_snapshots_role_time_id'), `表监控概览数据库快照应使用 role+time+id 索引，实际计划：${overviewDatabasePlan}`)
-  const overviewTablePlan = explainQueryPlan(statsDatabase, overviewTableSql, ['2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z'])
-  assertNoTempBtree(overviewTablePlan, '表监控概览表快照查询')
-  assert(overviewTablePlan.includes('idx_table_storage_snapshots_latest_id'), `表监控概览表快照应使用 latest+id 索引，实际计划：${overviewTablePlan}`)
+  const overviewTableSamplePlan = explainQueryPlan(statsDatabase, overviewTableSampleSql, ['business'])
+  assert(overviewTableSamplePlan.includes('idx_table_storage_snapshots_time'), `表监控概览最新批次查询应使用 time 索引，实际计划：${overviewTableSamplePlan}`)
   const asyncOverview = await tableMonitorRepository.getTableStorageOverviewAsync({
-    startAt: '2026-01-01T00:00:00.000Z',
-    endAt: '2026-01-01T00:00:00.000Z',
     limit: 200
   })
   assert.deepEqual(asyncOverview, tableMonitorRepository.getTableStorageOverview({
-    startAt: '2026-01-01T00:00:00.000Z',
-    endAt: '2026-01-01T00:00:00.000Z',
     limit: 200
   }), 'SQLite 模式下表监控概览 async 入口应回退同步读取并保持结果一致')
 
@@ -202,7 +212,7 @@ function assertTableMonitorAsyncSourceGuard(): void {
   assert(repositorySource.includes("statsTable(client, 'table_storage_snapshots')"), '表监控表快照 PG 读路径应使用 juhe_stats schema 表名')
   assert(repositorySource.includes('tableStorageOverviewCacheTtlMs'), '表监控 overview async 入口应有短 TTL 缓存，避免管理端重复刷新反复扫描快照')
   assert(repositorySource.includes('getCachedTableStorageOverview(input)'), '表监控 overview async 入口应先读缓存')
-  assert(repositorySource.includes('CROSS JOIN LATERAL'), '表监控 PG overview 表快照查询应使用 LATERAL latest lookup，避免窗口排序扫描所有历史快照')
+  assert(repositorySource.includes('SELECT MAX(sampled_at)'), '表监控 PG overview 应先定位最新采样批次，避免扫描整段历史窗口')
   assert(routesSource.includes('await getTableStorageOverviewAsync('), '表监控 overview 路由必须 await async 读入口')
   assert(routesSource.includes('await listTableStorageHistoryAsync('), '表监控 history 路由必须 await async 读入口')
   assert(routesSource.includes('await listDatabaseStorageHistoryAsync('), '表监控 database-history 路由必须 await async 读入口')

@@ -130,6 +130,14 @@
                   </a-tabs>
                 </div>
                 <div class="payload-viewer-actions">
+                  <a-button
+                    v-if="selectedPayload.bodyTruncated && selectedPayload.bodyNextOffset !== undefined"
+                    size="small"
+                    :loading="payloadLoadingId === selectedPayload.id"
+                    @click="emit('load-next-payload')"
+                  >
+                    加载下一段
+                  </a-button>
                   <a-tooltip title="搜索当前内容">
                     <a-button size="small" :disabled="!selectedPayloadCurrentText" @click="openSelectedPayloadSearch">
                       <template #icon><SearchOutlined /></template>
@@ -201,6 +209,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  (event: 'load-next-payload'): void
   (event: 'load-payload', payloadId: string): void
   (event: 'update:open', value: boolean): void
 }>()

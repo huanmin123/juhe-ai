@@ -188,8 +188,6 @@ const statusFilter = ref(initialPageState.statusFilter)
 const routeStrategyFilterSelection = ref<ApiKeyRouteStrategyFilterSelection | undefined>(initialPageState.routeStrategyFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
-const apiKeyOptionsLoaded = ref(false)
-const apiKeyOptionsScopeKey = ref('')
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const apiKeysApi = useScopedApiKeysApi(isManagementView)
 const routeStrategiesApi = useScopedRouteStrategiesApi(isManagementView)
@@ -224,9 +222,9 @@ const {
     systemAccountFilterSelection.value = undefined
     routeStrategyFilterSelection.value = undefined
     resetSystemAccountOptionsSearch()
-    resetRouteStrategyOptionsSearch()
+    resetRouteStrategyOptionsSearch(true)
     resetPagination()
-    void loadData({ forceOptions: true })
+    void loadData()
   },
   selectedIds: () => [systemAccountFilter.value]
 })
@@ -243,19 +241,15 @@ const {
   removeItems: removeApiKeyItems,
   resetPagination,
   updateItems: updateApiKeyItems
-} = useResponsivePagedList<ApiKeySummary, { forceOptions?: boolean }>({
+} = useResponsivePagedList<ApiKeySummary>({
   pageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 个 API Key，还有更多`
     : `共 ${formatNumber(total)} 个 API Key`,
-  fetchPage: async (options, pageState) => {
+  fetchPage: async (_options, pageState) => {
     const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
-    const [keyList] = await Promise.all([
-      apiKeysApi.list(apiKeyListParams(systemAccountId, pageState)),
-      loadApiKeyOptions(systemAccountId, options.forceOptions === true)
-    ])
-    return keyList
+    return apiKeysApi.list(apiKeyListParams(systemAccountId, pageState))
   },
   requestSignature: (_options, pageState) => {
     const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
@@ -327,17 +321,6 @@ const targetSystemAccountLabel = computed(() => {
     || ''
 })
 
-async function loadApiKeyOptions(systemAccountId: string | undefined, force = false): Promise<void> {
-  const scopeKey = isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
-  if (!force && apiKeyOptionsLoaded.value && apiKeyOptionsScopeKey.value === scopeKey) {
-    return
-  }
-
-  await loadRouteStrategyOptions('', force)
-  apiKeyOptionsLoaded.value = true
-  apiKeyOptionsScopeKey.value = scopeKey
-}
-
 async function loadRouteStrategyOptions(keyword = routeStrategyOptionsKeyword, force = false): Promise<void> {
   routeStrategyOptionsKeyword = keyword
   const requestKeyword = keyword.trim() || undefined
@@ -399,12 +382,13 @@ function handleRouteStrategyOptionsSearch(value: string) {
   }, 250)
 }
 
-function resetRouteStrategyOptionsSearch() {
+function resetRouteStrategyOptionsSearch(clearOptions = false) {
   routeStrategyOptionsKeyword = ''
   routeStrategyOptionsRequestToken += 1
   routeStrategyOptionsLoadingKey = undefined
   routeStrategyOptionsLoadingPromise = undefined
   routeStrategyOptionsLoading.value = false
+  if (clearOptions) routeStrategyOptionsRaw.value = []
   clearRouteStrategyOptionsSearchTimer()
 }
 
@@ -431,10 +415,10 @@ function resetFilters() {
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
   resetSystemAccountOptionsSearch()
-  resetRouteStrategyOptionsSearch()
+  resetRouteStrategyOptionsSearch(true)
   resetPagination()
   pageStateCache.clear()
-  void loadData({ forceOptions: true })
+  void loadData()
 }
 
 function applyFilters() {
@@ -444,9 +428,9 @@ function applyFilters() {
 
 function refreshApiKeys() {
   resetSystemAccountOptionsSearch()
-  resetRouteStrategyOptionsSearch()
+  resetRouteStrategyOptionsSearch(true)
   resetPagination()
-  void loadData({ forceOptions: true })
+  void loadData()
 }
 
 function handleSystemAccountFilterChange() {
@@ -455,20 +439,20 @@ function handleSystemAccountFilterChange() {
     systemAccountFilterSelection.value = undefined
   }
   resetSystemAccountOptionsSearch()
-  resetRouteStrategyOptionsSearch()
+  resetRouteStrategyOptionsSearch(true)
   resetPagination()
-  void loadData({ forceOptions: true })
+  void loadData()
 }
 
 async function refreshMobileApiKeys() {
   resetSystemAccountOptionsSearch()
-  resetRouteStrategyOptionsSearch()
+  resetRouteStrategyOptionsSearch(true)
   resetPagination()
-  await loadData({ forceOptions: true })
+  await loadData()
 }
 
 function handleRouteStrategyFilterChange() {
-  resetRouteStrategyOptionsSearch()
+  resetRouteStrategyOptionsSearch(true)
   applyFilters()
 }
 

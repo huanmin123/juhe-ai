@@ -28,7 +28,7 @@ const missingManualTestModel = 'account-test-missing-default'
 
 const [
   { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries },
-  { accountManualTestOptionsAsync },
+  { accountManualTestModelCapabilitiesAsync, accountManualTestOptionsAsync, resolveAccountManualTestSelectionAsync },
   { saveCustomProviderModel },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
@@ -140,12 +140,48 @@ try {
   const fullAccountForManualTest = repositories.findAccountForTest(account.id, access)
   assert.equal(fullAccountForManualTest?.credentials.api_key, 'sk-account-test-responses-contract', '人工测试受控读取应取得完整保存凭据')
   const manualTestOptions = await accountManualTestOptionsAsync(fullAccountForManualTest!)
-  assert.deepEqual(
-    manualTestOptions.testEndpointModes,
-    ['responses_sse', 'chat_sse', 'chat_json', 'responses_json'],
-    '人工测试选项应按完整保存账户能力返回稳定顺序，不能依赖列表摘要或模型协议标签'
+  assert(Array.isArray(manualTestOptions), '人工测试选项响应数据必须直接是轻量模型数组')
+  for (const option of manualTestOptions) {
+    assert.deepEqual(
+      Object.keys(option).sort(),
+      ['id', 'name'],
+      '人工测试模型下拉只允许返回 id/name，不得携带模型能力或请求形态数组'
+    )
+    assert(option.id.trim(), '模型下拉 ID 不得为空')
+    assert(option.name.trim(), `模型 ${option.id} 的下拉展示名称不得为空`)
+  }
+  assert(manualTestOptions.some((option) => option.id === providerDefaultHealthCheckModel), '模型下拉必须保留当前账户检查模型的 ID 映射')
+  const manualTestModelCapabilities = await accountManualTestModelCapabilitiesAsync(
+    fullAccountForManualTest!,
+    'gpt-5.5'
   )
-  assert.equal(manualTestOptions.defaultTestEndpointMode, 'responses_sse', 'GPT 账户默认测试应使用保存的 Responses 流式检查协议')
+  assert.deepEqual(
+    Object.keys(manualTestModelCapabilities).sort(),
+    ['id', 'name', 'testEndpointModes'],
+    '单模型能力接口只返回模型标识、展示名称和可用请求形态'
+  )
+  assert.equal(manualTestModelCapabilities.id, 'gpt-5.5', '单模型能力应保留请求的模型 ID')
+  assert.equal(manualTestModelCapabilities.name, 'gpt-5.5', '单模型能力展示名称应与模型 ID 保持稳定映射')
+  assert.deepEqual(
+    manualTestModelCapabilities.testEndpointModes,
+    ['responses_sse', 'chat_sse', 'chat_json', 'responses_json'],
+    '单模型能力应复用账户和模型能力计算，并保持稳定请求形态顺序'
+  )
+  assert.deepEqual(
+    await resolveAccountManualTestSelectionAsync(fullAccountForManualTest!, 'gpt-5.5', 'responses_sse'),
+    { model: 'gpt-5.5', testEndpointMode: 'responses_sse' },
+    'POST 人工测试必须复用定点模型能力校验并保留有效选择'
+  )
+  await assert.rejects(
+    () => resolveAccountManualTestSelectionAsync(fullAccountForManualTest!, 'gpt-5.5', 'messages_json'),
+    /不支持本次检查协议/,
+    'POST 人工测试必须在后端拒绝模型不支持的请求形态'
+  )
+  await assert.rejects(
+    () => resolveAccountManualTestSelectionAsync(fullAccountForManualTest!, 'missing/manual-test-model', 'responses_sse'),
+    /模型不在当前账户供应商可用目录中/,
+    'POST 人工测试必须在后端拒绝目录外模型'
+  )
   assert.equal('credentials' in manualTestOptions, false, '人工测试选项不得暴露账户凭据')
 
   const chatOnlyManualTestAccount: AccountSummary = {
@@ -157,37 +193,16 @@ try {
   }
   const chatOnlyManualTestOptions = await accountManualTestOptionsAsync(chatOnlyManualTestAccount)
   assert.equal(
-    chatOnlyManualTestOptions.models.some((item) => item.model === responsesOnlyManualTestModel),
-    false,
-    '人工测试响应 models 仍应过滤账户能力下没有可用 endpoint mode 的模型'
+    chatOnlyManualTestOptions.some((item) => item.id === responsesOnlyManualTestModel),
+    true,
+    '人工测试模型列表只按供应商协议档案做基础过滤，不应逐模型计算账户请求形态'
   )
-  await assert.rejects(
-    () => accountManualTestOptionsAsync({
-      ...chatOnlyManualTestAccount,
-      healthCheckModel: responsesOnlyManualTestModel
-    }),
-    (error: unknown) => {
-      assert(error instanceof Error)
-      assert.equal(error.message, '账户上游接口能力中没有可用于连接测试的请求形态')
-      return true
-    },
-    'active 且可人工测试的默认模型存在但没有可用 endpoint mode 时应优先返回能力错误'
-  )
-  await assert.rejects(
-    () => accountManualTestOptionsAsync({
-      ...chatOnlyManualTestAccount,
-      healthCheckModel: missingManualTestModel
-    }),
-    (error: unknown) => {
-      assert(error instanceof Error)
-      assert.equal(
-        error.message,
-        `账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：${missingManualTestModel}`
-      )
-      return true
-    },
-    '默认模型不在 active 且可人工测试目录中时应保持目录错误'
-  )
+  const missingDefaultManualTestAccount: AccountSummary = {
+    ...chatOnlyManualTestAccount,
+    healthCheckModel: missingManualTestModel
+  }
+  const missingDefaultManualTestOptions = await accountManualTestOptionsAsync(missingDefaultManualTestAccount)
+  assert(missingDefaultManualTestOptions.length > 0, '轻量模型列表不得依赖账户检查模型仍位于目录中')
 
   assert.equal(account.healthCheckModel, providerDefaultHealthCheckModel, '新账户应按协议档案系统默认值初始化检查模型')
   assert.equal(await resolveAccountTestModelAsync(account), providerDefaultHealthCheckModel, '系统复测应严格使用已保存的账户检查模型')
@@ -288,6 +303,11 @@ try {
     await resolveAccountTestModelAsync(mappedAccount, { sourceFamilies: ['responses'] }),
     mappedSourceModel,
     '系统复测应严格使用账户检查模型，映射左侧模型可作为检查模型'
+  )
+  const mappedModelCapabilities = await accountManualTestModelCapabilitiesAsync(mappedAccount, mappedSourceModel)
+  assert(
+    mappedModelCapabilities.testEndpointModes.includes('responses_sse'),
+    '模型能力定点查询必须在命中映射时补查上游模型并保留可用请求形态'
   )
   const mappedModelTested = await testOpenAIAccountWithDiagnosticRetries(mappedAccount, { testEndpointMode: 'responses_sse' })
   await flushGatewayAccountSideEffects()
@@ -397,7 +417,7 @@ try {
   assert.equal(systemFallbackAccount.healthCheckModel, providerDefaultHealthCheckModel, '显式检查模型应按账户支持模型保存')
   assert.equal(systemFallbackTested.model, providerDefaultHealthCheckModel, '系统复测应使用账户已保存的系统默认初始化值')
 
-  console.log('账户测试 Responses 当前契约回归通过：人工显式模型不持久化，系统复测严格使用账户检查模型，初始化优先级、模型映射、人工测试选项错误优先级与响应过滤符合预期')
+  console.log('账户测试 Responses 当前契约回归通过：人工显式模型不持久化，系统复测严格使用账户检查模型，轻量模型选项、定点能力与 POST 最终校验符合预期')
 } finally {
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
   await closeServer(mockOpenAIServer)

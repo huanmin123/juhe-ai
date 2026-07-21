@@ -14,6 +14,7 @@ const postgresTaskRepository = taskRepository.slice(
   taskRepository.indexOf('function getAccountTestTaskRow(')
 )
 const testService = source(backendRoot, 'modules', 'accounts', 'account-test.service.ts')
+const testOptionsService = source(backendRoot, 'modules', 'accounts', 'account-test-options.service.ts')
 const gatewayRoutes = source(backendRoot, 'modules', 'gateway', 'routes.ts')
 const failureDispatch = source(backendRoot, 'modules', 'gateway', 'response', 'failure-dispatch.ts')
 const usageRepository = source(backendRoot, 'storage', 'usage-records.repository.ts')
@@ -21,6 +22,7 @@ const accountApi = source(frontendRoot, 'api', 'domains', 'accounts.ts')
 const accountsView = source(frontendRoot, 'views', 'accounts', 'AccountsView.vue')
 const accountTestModal = source(frontendRoot, 'views', 'accounts', 'useAccountTestModal.ts')
 const accountTestModels = source(frontendRoot, 'views', 'accounts', 'useAccountTestModels.ts')
+const accountTestModalComponent = source(frontendRoot, 'views', 'accounts', 'AccountTestModal.vue')
 const accountTestRunSession = source(frontendRoot, 'views', 'accounts', 'accountTestRunSession.ts')
 const accountEditSaveFlow = source(frontendRoot, 'views', 'accounts', 'useAccountEditSaveFlow.ts')
 const batchToolbar = source(frontendRoot, 'views', 'accounts', 'AccountBatchToolbar.vue')
@@ -32,9 +34,50 @@ assert.match(
 )
 assert.match(
   dispatchRoutes,
-  /accountManualTestOptionsAsync\(account\)/,
-  '列表测试选项必须由后端按账户供应商和用户作用域解析'
+  /findAccountManualTestListContextAsync\(req\.params\.id, requestAccess\)/,
+  '列表测试选项必须读取最小可见账户上下文'
 )
+const listRouteSource = dispatchRoutes.slice(
+  dispatchRoutes.indexOf("router.get('/:id/test-options'"),
+  dispatchRoutes.indexOf("router.get('/:id/test-options/models/:modelId'")
+)
+assert.doesNotMatch(listRouteSource, /findAccountForTestAsync|credentials/, '列表测试选项不得读取或解密完整账户凭据')
+assert.match(
+  listRouteSource,
+  /accountManualTestOptionsAsync\(account,\s*optionQuery\)/,
+  '列表测试选项必须按最小账户上下文和规范化查询解析模型摘要'
+)
+const listOptionsFunctionSource = testOptionsService.slice(
+  testOptionsService.indexOf('export async function accountManualTestOptionsAsync'),
+  testOptionsService.indexOf('export async function resolveAccountManualTestSelectionAsync')
+)
+assert.match(listOptionsFunctionSource, /listProviderModelOptionRowsAsync/, '模型列表必须读取带窗口和已选项补齐的轻量模型目录投影')
+assert.doesNotMatch(
+  listOptionsFunctionSource,
+  /listProviderModelCatalogAsync|accountManualTestEndpointModesForModel|accountManualTestEndpointModes\(/,
+  '模型列表不得克隆完整目录或逐模型计算账户请求形态'
+)
+assert.match(
+  dispatchRoutes,
+  /router\.get\('\/:id\/test-options\/models\/:modelId'/,
+  '切换测试模型时必须按模型 ID 独立加载请求形态'
+)
+assert.match(
+  dispatchRoutes,
+  /findAccountManualTestCapabilitiesContextAsync\(req\.params\.id, requestAccess\)/,
+  '模型能力端点必须读取单行最小账户能力上下文'
+)
+assert.match(
+  dispatchRoutes,
+  /accountManualTestModelCapabilitiesAsync\(account, req\.params\.modelId\)/,
+  '模型能力端点必须复用后端账户和模型能力计算'
+)
+const modelCapabilitiesFunctionSource = testOptionsService.slice(
+  testOptionsService.indexOf('export async function accountManualTestModelCapabilitiesAsync'),
+  testOptionsService.indexOf('export function accountManualTestEndpointModesForModel')
+)
+assert.match(modelCapabilitiesFunctionSource, /findProviderModelTestCatalogItemAsync/, '模型能力必须按 provider、owner 和 modelId 定点读取目录')
+assert.doesNotMatch(modelCapabilitiesFunctionSource, /listProviderModelCatalogAsync/, '模型能力不得克隆完整模型目录')
 assert.doesNotMatch(
   dispatchRoutes,
   /default-test-model|defaultTestModel/,
@@ -120,8 +163,18 @@ assert.doesNotMatch(
 )
 assert.match(
   accountTestModels,
-  /loadSavedAccountTestOptions/,
-  '列表测试弹窗必须在打开时加载当前账户测试选项'
+  /loadTestModelOptions/,
+  '列表测试弹窗必须提供候选模型按需加载入口'
+)
+assert.doesNotMatch(
+  section(accountTestModal, 'function openTestModal', 'function openDraftTestModal'),
+  /loadSavedAccountTestOptions|loadTestModelOptions/,
+  '打开列表测试弹窗时不得请求候选模型列表'
+)
+assert.match(
+  accountTestModalComponent,
+  /@dropdown-visible-change/,
+  '候选模型列表必须由模型选择器展开交互触发'
 )
 assert.match(
   accountTestModels,
@@ -158,4 +211,11 @@ console.log('account-test-task-boundary-regression passed')
 
 function source(root: string, ...segments: string[]): string {
   return readFileSync(resolve(root, ...segments), 'utf8')
+}
+
+function section(input: string, startMarker: string, endMarker: string): string {
+  const start = input.indexOf(startMarker)
+  const end = input.indexOf(endMarker, start)
+  assert(start >= 0 && end > start, `无法提取源码片段：${startMarker} -> ${endMarker}`)
+  return input.slice(start, end)
 }

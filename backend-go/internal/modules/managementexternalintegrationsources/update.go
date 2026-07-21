@@ -82,11 +82,13 @@ func (s *UpdateService) Update(ctx context.Context, input UpdateInput) (UpdateRe
 	var result UpdateResult
 	_, err = s.store.UpdateManagementExternalIntegrationSource(ctx, normalized, func(stored port.ManagementExternalIntegrationSourceUpdateResult) error {
 		var mapErr error
-		result.Before, mapErr = updateDetailFromStore(stored.BeforeSource, stored.BeforeTokens)
+		before, sourceErr := sourceFromStore(stored.BeforeSource)
+		result.Before, mapErr = Detail{Source: before}, sourceErr
 		if mapErr != nil {
 			return mapErr
 		}
-		result.After, mapErr = updateDetailFromStore(stored.AfterSource, stored.AfterTokens)
+		after, sourceErr := sourceFromStore(stored.AfterSource)
+		result.After, mapErr = Detail{Source: after}, sourceErr
 		return mapErr
 	})
 	if err != nil {

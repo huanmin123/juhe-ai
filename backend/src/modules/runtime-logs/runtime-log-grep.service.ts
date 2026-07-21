@@ -34,7 +34,6 @@ export interface RuntimeLogGrepItem {
   event?: string
   message?: string
   errorMessage?: string
-  rawJson: string
   line: string
 }
 
@@ -685,7 +684,6 @@ function stripOrderFields(item: OrderedRuntimeLogGrepItem): RuntimeLogGrepItem {
     event: item.event,
     message: item.message,
     errorMessage: item.errorMessage,
-    rawJson: item.rawJson,
     line: item.line
   }
 }
@@ -710,16 +708,16 @@ function trimLine(value: string, length = maxLineLength): string {
   return value.length > length ? `${value.slice(0, length)}...` : value
 }
 
-function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'traceId' | 'event' | 'message' | 'errorMessage' | 'rawJson' | 'line'> {
-  const rawJson = trimLine(line)
+function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'traceId' | 'event' | 'message' | 'errorMessage' | 'line'> {
+  const rawLine = trimLine(line)
   if (line.length > maxLineLength) {
-    return fallbackRuntimeLogFields(rawJson)
+    return fallbackRuntimeLogFields(rawLine)
   }
 
   try {
     const parsed = JSON.parse(line) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return fallbackRuntimeLogFields(rawJson)
+      return fallbackRuntimeLogFields(rawLine)
     }
     const record = parsed as Record<string, unknown>
     return {
@@ -729,20 +727,18 @@ function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time'
       event: stringValue(record.event),
       message: stringValue(record.msg) ?? stringValue(record.message),
       errorMessage: stringValue(record.errorMessage) ?? errorMessageFromErr(record.err),
-      rawJson,
-      line: rawJson
+      line: rawLine
     }
   } catch {
-    return fallbackRuntimeLogFields(rawJson)
+    return fallbackRuntimeLogFields(rawLine)
   }
 }
 
-function fallbackRuntimeLogFields(rawJson: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'rawJson' | 'line'> {
+function fallbackRuntimeLogFields(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'line'> {
   return {
     time: '',
     level: 'info',
-    rawJson,
-    line: rawJson
+    line
   }
 }
 

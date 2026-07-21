@@ -57,6 +57,7 @@ logger.level = 'silent'
 const databaseModule = await import('../../storage/database.js')
 const repositories = await import('../../storage/repositories.js')
 const modelCatalogService = await import('../../modules/model-pricing/model-catalog.service.js')
+const publishedModelCatalogService = await import('../../modules/model-pricing/published-model-catalog.service.js')
 
 try {
   if (!realCredential) {
@@ -135,6 +136,7 @@ try {
     assert.equal(chatOnlySelection.accounts.length, 1, `Chat-only 账户应进入调度候选：${JSON.stringify(chatOnlySelection.diagnostics)}`)
     assert.deepEqual(chatOnlySelection.accounts[0]?.supportedEndpointModes, ['chat_json', 'chat_sse'])
   }
+  await publishedModelCatalogService.rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(access.systemAccountId)
   const session = repositories.createSession('sys_admin', 1)
   const cookie = `juhe_ai_session=${session.token}`
   if (Number(process.env.JUHE_AI_CHAT_UI_BULK_MESSAGES ?? 0) > 0) {
@@ -198,15 +200,22 @@ try {
   }, limitedCountsBefore, '第 51 轮必须在主上游、压缩、图片观察、消息、幂等和容量副作用前拒绝')
   const limitedSubmission = await apiJson<{ data: { state: string } }>(baseUrl, `/__aisys__/api/my-chat/conversations/${limitedConversation.data.id}/submissions/mock-client-turn-limit`, cookie)
   assert.equal(limitedSubmission.data.state, 'not_found', '轮次上限早拒绝不得留下 active preparation')
-  const created = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
+  const created = await apiJson<{ data: { id: string; lastModel?: string; defaultModel?: { id: string; name: string } } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
   const conversationId = created.data.id
-  const models = await apiJson<{ data: Array<{ id: string; supportsPromptCaching: boolean; supportedApiProtocols: string[]; supportedTools: string[] }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
+  assert(created.data.defaultModel, '创建会话必须返回该 Key 首个可用模型的轻量引用')
+  assert.equal(created.data.lastModel, created.data.defaultModel.id, '新会话必须持久化默认选择，无需先请求全量模型列表')
+  const models = await apiJson<{ data: Array<{ id: string; name: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)
   const selectedModel = models.data.find((item) => item.id === testModel)
   assert(selectedModel, 'AI 问答模型列表应来自绑定 Key 路由供应商的稳定模型目录')
-  assert(selectedModel.supportedApiProtocols.includes('responses'), '聊天模型目录能力必须包含 Responses 路由')
-  assert(selectedModel.supportedTools.includes('web_search'), '聊天模型目录能力必须保留联网搜索工具')
-  assert.equal(selectedModel.supportsPromptCaching, true, '支持缓存计费的目录模型必须向聊天层透出 prompt caching 能力')
+  assert(models.data.some((item) => item.id === created.data.defaultModel?.id), '创建响应默认模型必须属于同一 Key 的轻量模型列表')
+  assert.deepEqual(Object.keys(selectedModel).sort(), ['id', 'name'], '聊天模型列表项只能返回 id 和 name')
   assert(models.data.length >= (realCredential?.models.length ?? 1), '聊天模型列表必须稳定展示路由供应商目录，不能随账户临时状态收缩')
+  const selectedCapabilities = await apiJson<{ data: { id: string; name: string; supportsPromptCaching: boolean; supportedApiProtocols: string[]; supportedTools: string[] } }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models/${encodeURIComponent(testModel)}`, cookie)
+  assert(selectedCapabilities.data.supportedApiProtocols.includes('responses'), '单模型能力详情必须包含 Responses 路由')
+  assert(selectedCapabilities.data.supportedTools.includes('web_search'), '单模型能力详情必须保留联网搜索工具')
+  assert.equal(selectedCapabilities.data.supportsPromptCaching, true, '支持缓存计费的目录模型必须由能力详情透出 prompt caching 能力')
+  const slashModelResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/models/${encodeURIComponent(`${testModel}/missing`)}`, { headers: { cookie } })
+  assert.deepEqual([slashModelResponse.status, (await slashModelResponse.json() as { code?: string }).code], [404, 'chat_model_not_found'], '含斜杠模型 ID 必须安全到达能力路由并返回稳定错误')
 
   const streamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/stream`, {
     method: 'POST',
@@ -232,12 +241,15 @@ try {
   if (!realCredential) {
     assert(chatOnlyGatewayKeyId)
     assert(chatOnlyGroupId)
-    const chatConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: chatOnlyGatewayKeyId })
-    const chatModels = await apiJson<{ data: Array<{ id: string; supportsPromptCaching: boolean; supportedApiProtocols: string[] }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/models`, cookie)
+    const chatConversation = await apiJson<{ data: { id: string; defaultModel?: { id: string; name: string } } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: chatOnlyGatewayKeyId })
+    assert.deepEqual(chatConversation.data.defaultModel, { id: chatOnlyTestModel, name: chatOnlyTestModel }, 'Chat-only Key 必须选择自身供应商首个模型，不能拿系统全局默认')
+    const chatModels = await apiJson<{ data: Array<{ id: string; name: string }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/models`, cookie)
     const chatOnlyModel = chatModels.data.find((item) => item.id === chatOnlyTestModel)
     assert(chatOnlyModel, 'Chat-only 会话必须列出绑定账户模型')
-    assert.deepEqual(chatOnlyModel.supportedApiProtocols, ['chat_completions'], '聊天模型能力必须只暴露当前 API Key 真正可用的协议')
-    assert.equal(chatOnlyModel.supportsPromptCaching, false, '目录未声明缓存能力的模型不得注入 prompt cache key')
+    assert.deepEqual(Object.keys(chatOnlyModel).sort(), ['id', 'name'])
+    const chatOnlyCapabilities = await apiJson<{ data: { supportedApiProtocols: string[]; supportsPromptCaching: boolean } }>(baseUrl, `/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/models/${encodeURIComponent(chatOnlyTestModel)}`, cookie)
+    assert.deepEqual(chatOnlyCapabilities.data.supportedApiProtocols, ['chat_completions'], '聊天模型能力必须只暴露当前 API Key 真正可用的协议')
+    assert.equal(chatOnlyCapabilities.data.supportsPromptCaching, false, '目录未声明缓存能力的模型不得注入 prompt cache key')
     const chatStreamResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${chatConversation.data.id}/stream`, {
       method: 'POST',
       headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream', 'x-trace-id': 'chat-mock-trace-chat' },

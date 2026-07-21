@@ -81,14 +81,14 @@ try {
   assertNoTempBtree(teamListPlan, '系统团队列表')
   assert(teamListPlan.includes('idx_system_teams_list_order'), `系统团队列表应使用完整排序索引，实际计划：${teamListPlan}`)
 
-  const memberWindowCall = capturedCalls.find((call) => /\bROW_NUMBER\(\)\s+OVER\b/i.test(call.sql) && /\bFROM\s+system_team_members\b/i.test(call.sql))
-  assert(memberWindowCall, '系统团队列表应按团队窗口读取成员摘要')
-  assert(!/\bORDER\s+BY\s+team_id\s+ASC,\s+status\s+ASC,\s+joined_at\s+ASC,\s+id\s+ASC\b/i.test(memberWindowCall.sql), '团队成员窗口不应在 SQL 末端再次排序')
-  const memberWindowPlan = explainQueryPlan(database, memberWindowCall.sql, memberWindowCall.params)
-  assertNoTempBtree(memberWindowPlan, '系统团队成员窗口')
-  assert(memberWindowPlan.includes('idx_system_team_members_team_status_joined'), `系统团队成员窗口应使用 team/status/joined_at/id 索引，实际计划：${memberWindowPlan}`)
+  const memberCountCall = capturedCalls.find((call) => /\bCOUNT\(\*\)\s+AS\s+member_count\b/i.test(call.sql) && /\bFROM\s+system_team_members\b/i.test(call.sql))
+  assert(memberCountCall, '系统团队列表应只批量读取有效成员计数')
+  assert.match(memberCountCall.sql, /\bstatus\s*=\s*'active'/i, '系统团队列表成员数只统计有效成员')
+  const memberCountPlan = explainQueryPlan(database, memberCountCall.sql, memberCountCall.params)
+  assertNoTempBtree(memberCountPlan, '系统团队成员计数')
+  assert(/idx_system_team_members_team(?:_status_joined)?/.test(memberCountPlan), `系统团队成员计数应使用 team/status 索引，实际计划：${memberCountPlan}`)
 
-  console.log('系统团队查询防护回归通过：列表和成员窗口均命中排序索引且不创建临时排序树')
+  console.log('系统团队查询防护回归通过：列表和有效成员计数均命中索引且不创建临时排序树')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

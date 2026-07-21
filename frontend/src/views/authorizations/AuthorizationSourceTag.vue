@@ -5,11 +5,11 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { ResourceAuthorizationSummary } from '@/types/domain'
+import type { ResourceAuthorizationListItem } from '@/types/domain'
 import { granteeSourceLabel, granteeSourceTagColor } from './authorizationFormatters'
 
 const props = defineProps<{
-  authorization: ResourceAuthorizationSummary
+  authorization: ResourceAuthorizationListItem
 }>()
 
 const label = computed(() => granteeSourceLabel(props.authorization))

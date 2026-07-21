@@ -64,7 +64,9 @@ func newManagementExternalIntegrationSourceUpdateHandler(
 			return
 		}
 		recordManagementExternalIntegrationSourceUpdateOperationLog(r, authContext, result, logOptions)
-		writeData(w, http.StatusOK, result.After)
+		writeData(w, http.StatusOK, struct {
+			ID string `json:"id"`
+		}{ID: result.After.ID})
 	})
 }
 

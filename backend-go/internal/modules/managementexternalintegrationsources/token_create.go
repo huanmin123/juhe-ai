@@ -45,7 +45,7 @@ type TokenCreateInput struct {
 }
 
 type TokenCreateResult struct {
-	Source Detail       `json:"source"`
+	Source Detail       `json:"-"`
 	Token  CreatedToken `json:"token"`
 }
 
@@ -179,7 +179,7 @@ func (s *TokenCreateService) createOnce(
 	if err != nil {
 		return TokenCreateResult{}, err
 	}
-	source, err := updateDetailFromStore(stored.Source, stored.Tokens)
+	source, err := sourceFromStore(stored.Source)
 	if err != nil {
 		return TokenCreateResult{}, err
 	}
@@ -188,7 +188,7 @@ func (s *TokenCreateService) createOnce(
 		return TokenCreateResult{}, err
 	}
 	return TokenCreateResult{
-		Source: source,
+		Source: Detail{Source: source},
 		Token: CreatedToken{
 			ID:          tokenSummary.ID,
 			Name:        tokenSummary.Name,

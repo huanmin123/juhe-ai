@@ -95,6 +95,7 @@ try {
     if (/\bLIKE\s+\?/i.test(call.sql)) {
       assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'SQLite 授权列表 keyword 前缀搜索应显式转义 LIKE 通配符')
     }
+    assert.doesNotMatch(call.sql, /\brag\.(?:scope|limits_json|created_by|revoked_by|revoked_at|updated_at)\b/i, '授权分页列表主查询不应读取详情、额度或审计宽字段')
   }
 
   console.log('资源授权查询防护回归通过：授权列表窗口、keyword 前缀和通配符字面量语义已固定')

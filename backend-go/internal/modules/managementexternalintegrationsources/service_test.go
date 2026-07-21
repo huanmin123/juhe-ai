@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -368,17 +369,17 @@ func TestServiceListTruncatesSentinelBeforeTokenEnrichment(t *testing.T) {
 	if got := store.sourceCalls[0]; got.Status != "all" || got.Keyword != "mixed%_" || got.Limit != 21 || got.Offset != 0 {
 		t.Fatalf("source list input = %#v", got)
 	}
-	if len(store.statsCalls) != 1 || len(store.primaryCalls) != 1 {
+	if len(store.statsCalls) != 0 || len(store.primaryCalls) != 1 {
 		t.Fatalf("token enrichment calls = stats:%d primary:%d", len(store.statsCalls), len(store.primaryCalls))
 	}
 	wantIDs := make([]string, 0, defaultPageSize)
 	for _, row := range rows[:defaultPageSize] {
 		wantIDs = append(wantIDs, row.ID)
 	}
-	if !reflect.DeepEqual(store.statsCalls[0], wantIDs) || !reflect.DeepEqual(store.primaryCalls[0], wantIDs) {
-		t.Fatalf("token enrichment IDs = stats:%#v primary:%#v, want %#v", store.statsCalls[0], store.primaryCalls[0], wantIDs)
+	if !reflect.DeepEqual(store.primaryCalls[0], wantIDs) {
+		t.Fatalf("primary token IDs = %#v, want %#v", store.primaryCalls[0], wantIDs)
 	}
-	if containsString(store.statsCalls[0], "source_sentinel") || containsString(store.primaryCalls[0], "source_sentinel") {
+	if containsString(store.primaryCalls[0], "source_sentinel") {
 		t.Fatal("pageSize+1 sentinel must not enter token enrichment queries")
 	}
 	if len(result.Items) != defaultPageSize || !result.HasMore || result.Page != 1 || result.PageSize != 20 || result.PageUpperBound != 21 {
@@ -394,13 +395,12 @@ func TestServiceListTruncatesSentinelBeforeTokenEnrichment(t *testing.T) {
 	if !reflect.DeepEqual(item.RateLimits, wantRateLimits) {
 		t.Fatalf("rate limits = %#v, want %#v", item.RateLimits, wantRateLimits)
 	}
-	if item.TokenCount != 3 || item.ActiveTokenCount != 2 || !item.IsBuiltIn {
+	if !item.IsBuiltIn {
 		t.Fatalf("source summary = %#v", item)
 	}
 	if item.ExpiresAt == nil || *item.ExpiresAt != "2026-07-16T00:09:10.345Z" ||
 		item.LastUsedAt == nil || *item.LastUsedAt != "2026-07-15T00:08:10.345Z" ||
-		item.CreatedAt != "2026-07-15T00:09:10.345Z" ||
-		item.UpdatedAt != "2026-07-15T00:09:10.345Z" {
+		false {
 		t.Fatalf("source times = %#v", item)
 	}
 	if item.Notes == nil || *item.Notes != notes {
@@ -410,19 +410,33 @@ func TestServiceListTruncatesSentinelBeforeTokenEnrichment(t *testing.T) {
 		t.Fatal("primary token is nil")
 	}
 	primary := item.PrimaryToken
-	if primary.ID != publicapi.BuiltInTestTokenID || primary.Status != publicapi.TokenStatusActive || !primary.IsBuiltIn {
+	if primary.ID != publicapi.BuiltInTestTokenID || primary.TokenPrefix != "juis_pre" || primary.TokenSuffix != "suffix01" {
 		t.Fatalf("primary token = %#v", primary)
-	}
-	if primary.ExpiresAt == nil || *primary.ExpiresAt != "2026-07-14T23:09:10.345Z" {
-		t.Fatalf("expired active primary token expiry = %#v", primary.ExpiresAt)
-	}
-	if !reflect.DeepEqual(primary.Scopes, []string{publicapi.ScopeGroupListRead}) {
-		t.Fatalf("primary token scopes = %#v", primary.Scopes)
 	}
 
 	encoded, err := json.Marshal(result)
 	if err != nil {
 		t.Fatalf("marshal list result: %v", err)
+	}
+	var payload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil || len(payload.Items) == 0 {
+		t.Fatalf("decode list JSON: %v payload=%s", err, encoded)
+	}
+	wantFields := []string{"expiresAt", "id", "isBuiltIn", "lastUsedAt", "name", "notes", "primaryToken", "rateLimits", "scopes", "status"}
+	gotFields := make([]string, 0, len(payload.Items[0]))
+	for field := range payload.Items[0] {
+		gotFields = append(gotFields, field)
+	}
+	sort.Strings(gotFields)
+	sort.Strings(wantFields)
+	if !reflect.DeepEqual(gotFields, wantFields) {
+		t.Fatalf("list item fields = %#v, want %#v", gotFields, wantFields)
+	}
+	primaryJSON, ok := payload.Items[0]["primaryToken"].(map[string]any)
+	if !ok || len(primaryJSON) != 3 || primaryJSON["id"] != publicapi.BuiltInTestTokenID {
+		t.Fatalf("primary token JSON = %#v", payload.Items[0]["primaryToken"])
 	}
 	for _, forbidden := range []string{"tokenHash", "tokenSecretEncrypted", "\"token\":"} {
 		if strings.Contains(string(encoded), forbidden) {
@@ -564,7 +578,6 @@ func TestServiceListReturnsSourceJSONAndStatusErrorsWithoutTokenFallback(t *test
 			row.RateLimitsJSON = `[{"windowSeconds":1,"maxRequests":2},{"windowSeconds":1,"maxRequests":3}]`
 		}, wantError: "窗口不能重复"},
 		{name: "malformed JSON", mutate: func(row *port.ManagementExternalIntegrationSourceListRow) { row.ScopesJSON = `[` }, wantError: "unexpected EOF"},
-		{name: "invalid required time", mutate: func(row *port.ManagementExternalIntegrationSourceListRow) { row.UpdatedAt = time.Time{} }, wantError: "updatedAt"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -589,10 +602,7 @@ func TestServiceListReturnsPrimaryTokenJSONStatusAndTimeErrors(t *testing.T) {
 		mutate    func(*port.ManagementExternalIntegrationSourcePrimaryTokenRow)
 		wantError string
 	}{
-		{name: "invalid token status", mutate: func(row *port.ManagementExternalIntegrationSourcePrimaryTokenRow) { row.Status = "pending" }, wantError: "token 状态无效"},
-		{name: "token scopes must be array", mutate: func(row *port.ManagementExternalIntegrationSourcePrimaryTokenRow) { row.ScopesJSON = `{}` }, wantError: "scopes_json 必须是数组"},
-		{name: "token scope must be string", mutate: func(row *port.ManagementExternalIntegrationSourcePrimaryTokenRow) { row.ScopesJSON = `[false]` }, wantError: "scopes_json 必须是字符串数组"},
-		{name: "invalid token time", mutate: func(row *port.ManagementExternalIntegrationSourcePrimaryTokenRow) { row.CreatedAt = time.Time{} }, wantError: "createdAt"},
+		{name: "primary metadata is not list contract", mutate: func(row *port.ManagementExternalIntegrationSourcePrimaryTokenRow) { row.Status = "pending" }, wantError: ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -603,10 +613,10 @@ func TestServiceListReturnsPrimaryTokenJSONStatusAndTimeErrors(t *testing.T) {
 				primaryRows: []port.ManagementExternalIntegrationSourcePrimaryTokenRow{primary},
 			}
 			_, err := NewService(store).List(context.Background(), ListInput{})
-			if err == nil || !strings.Contains(err.Error(), test.wantError) {
-				t.Fatalf("List() error = %v, want %q", err, test.wantError)
+			if err != nil {
+				t.Fatalf("List() error = %v, want lightweight primary projection", err)
 			}
-			if len(store.statsCalls) != 1 || len(store.primaryCalls) != 1 {
+			if len(store.statsCalls) != 0 || len(store.primaryCalls) != 1 {
 				t.Fatalf("token calls = stats:%d primary:%d", len(store.statsCalls), len(store.primaryCalls))
 			}
 		})
@@ -624,14 +634,8 @@ func TestServiceListPropagatesStorageErrors(t *testing.T) {
 	}{
 		{name: "source", store: &externalIntegrationSourceStoreStub{sourceErr: wantErr}},
 		{
-			name:           "stats",
-			store:          &externalIntegrationSourceStoreStub{sourceRows: []port.ManagementExternalIntegrationSourceListRow{validSourceRow("source_1", now)}, statsErr: wantErr},
-			wantStatsCalls: 1,
-		},
-		{
 			name:             "primary",
 			store:            &externalIntegrationSourceStoreStub{sourceRows: []port.ManagementExternalIntegrationSourceListRow{validSourceRow("source_1", now)}, primaryErr: wantErr},
-			wantStatsCalls:   1,
 			wantPrimaryCalls: 1,
 		},
 	}

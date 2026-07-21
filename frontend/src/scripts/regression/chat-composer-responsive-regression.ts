@@ -23,7 +23,7 @@ assert.match(source, /aria-label="选择模型"[^>]*:style="\{ width: `\$\{model
 assert.match(source, /aria-label="思考级别"[^>]*:style="\{ width: `\$\{reasoningControlWidths\.triggerWidth\}px` \}"[^>]*:dropdown-match-select-width="reasoningControlWidths\.popupWidth"/)
 assert.match(source, /aria-label="服务等级"[^>]*:style="\{ width: `\$\{serviceTierControlWidths\.triggerWidth\}px` \}"[^>]*:dropdown-match-select-width="serviceTierControlWidths\.popupWidth"/)
 assert.doesNotMatch(source, /popup-match-select-width/, 'Ant Design Vue 4.2.6 不支持 React API 的 popupMatchSelectWidth')
-assert.match(source, /modelOptions\.map\(\(item\) => \(\{ label: item\.id, value: item\.id, title: item\.id \}\)\)/, '模型长选项必须保留完整 title')
+assert.match(source, /modelOptions\.map\(\(item\) => \(\{ label: item\.name, value: item\.id, title: item\.name \}\)\)/, '模型长选项必须使用轻量 name 并保留完整 title')
 assert.match(source, /reasoningEffortLabel\(value\)[\s\S]{0,100}title:/, '思考选项必须保留完整 title')
 assert.match(source, /supportedServiceTiers[\s\S]{0,220}title:/, '服务选项必须保留完整 title')
 assert.match(source, /<\/div>\s*<a-tooltip :title="contextTooltip">[\s\S]*?<\/a-tooltip>\s*<a-tooltip v-if="stoppable"/, '上下文圆环必须位于模型控件之后、发送或停止按钮之前')

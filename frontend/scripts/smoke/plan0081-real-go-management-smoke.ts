@@ -70,10 +70,6 @@ const externalIntegrationSourceListItemFieldSet = new Set([
   'expiresAt',
   'notes',
   'lastUsedAt',
-  'createdAt',
-  'updatedAt',
-  'tokenCount',
-  'activeTokenCount',
   'primaryToken',
   'isBuiltIn'
 ])
@@ -92,6 +88,11 @@ const externalIntegrationSourceDetailFieldSet = new Set([
   'activeTokenCount',
   'tokens',
   'isBuiltIn'
+])
+const externalIntegrationSourceListPrimaryTokenFieldSet = new Set([
+  'id',
+  'tokenPrefix',
+  'tokenSuffix'
 ])
 const externalIntegrationSourcePrimaryTokenFieldSet = new Set([
   'id',
@@ -130,17 +131,6 @@ const apiKeyListItemFieldSet = new Set([
 const externalIntegrationSourceApiDocContracts = externalIntegrationSourceScopeOptions.map((option) =>
   externalIntegrationSourceApiDocContract(option.value)
 )
-const accountTestEndpointModeValues = [
-  'chat_json',
-  'chat_sse',
-  'responses_json',
-  'responses_sse',
-  'messages_json',
-  'messages_sse',
-  'generate_content_json',
-  'generate_content_sse'
-] as const
-const accountTestEndpointModeSet = new Set<string>(accountTestEndpointModeValues)
 const builtInProviderCodes = new Set([
   'openai',
   'gpt',
@@ -276,21 +266,12 @@ interface ModelOptionRecord {
   model: string
 }
 
-type AccountTestEndpointMode = typeof accountTestEndpointModeValues[number]
-
 interface AccountTestOptionModel {
-  model: string
-  supportedApiProtocols: string[]
-  testEndpointModes: AccountTestEndpointMode[]
+  id: string
+  name: string
 }
 
-interface AccountTestOptionsRecord {
-  accountId: string
-  defaultModel: string
-  models: AccountTestOptionModel[]
-  testEndpointModes: AccountTestEndpointMode[]
-  defaultTestEndpointMode: AccountTestEndpointMode
-}
+type AccountTestOptionsRecord = AccountTestOptionModel[]
 
 type ExternalIntegrationSourceStatus = 'active' | 'disabled'
 type ExternalIntegrationSourceTokenStatus = 'active' | 'disabled' | 'revoked'
@@ -322,11 +303,7 @@ interface ExternalIntegrationSourceListItem {
   expiresAt?: string
   notes?: string
   lastUsedAt?: string
-  createdAt: string
-  updatedAt: string
-  tokenCount: number
-  activeTokenCount: number
-  primaryToken?: ExternalIntegrationSourcePrimaryToken
+  primaryToken?: Pick<ExternalIntegrationSourcePrimaryToken, 'id' | 'tokenPrefix' | 'tokenSuffix'>
   isBuiltIn: boolean
 }
 
@@ -339,6 +316,10 @@ interface ExternalIntegrationSourceListResult {
 }
 
 type ExternalIntegrationSourceDetail = Omit<ExternalIntegrationSourceListItem, 'primaryToken'> & {
+  createdAt: string
+  updatedAt: string
+  tokenCount: number
+  activeTokenCount: number
   tokens: ExternalIntegrationSourcePrimaryToken[]
 }
 
@@ -748,7 +729,7 @@ async function runReadOnlySmoke(
       config,
       'account test options'
     )
-    assertAccountTestOptions(accountTestOptionsData, config.accountId)
+    assertAccountTestOptions(accountTestOptionsData)
     accountTestOptionsChecked = true
   }
 
@@ -904,7 +885,7 @@ async function runExternalIntegrationSourceMutationSmoke(
   let primaryError: unknown
   try {
     mutationAttempted = true
-    const patched = assertExternalIntegrationSourceDetail(
+    const patched = assertExternalIntegrationSourceMutationAck(
       await requestEnvelopeData(detailUrl, config, 'temporary external integration source PATCH', {
         method: 'PATCH',
         body: externalIntegrationSourceMutationPayload(patchedSnapshot),
@@ -912,11 +893,6 @@ async function runExternalIntegrationSourceMutationSmoke(
       })
     )
     expect(patched.id === sourceId, 'Temporary external integration source PATCH response ID does not match')
-    assertExternalIntegrationSourceMutableSnapshot(
-      patched,
-      patchedSnapshot,
-      'temporary external integration source PATCH response'
-    )
     const readBack = assertExternalIntegrationSourceDetail(
       await getEnvelopeData(detailUrl, config, 'temporary external integration source detail after PATCH')
     )
@@ -934,7 +910,7 @@ async function runExternalIntegrationSourceMutationSmoke(
   if (mutationAttempted) {
     try {
       const restoreFingerprintName = `${originalSnapshot.name}${externalIntegrationSourceRestoreFingerprintWhitespace()}`
-      const restored = assertExternalIntegrationSourceDetail(
+      const restored = assertExternalIntegrationSourceMutationAck(
         await requestEnvelopeData(detailUrl, config, 'temporary external integration source restore PATCH', {
           method: 'PATCH',
           body: externalIntegrationSourceMutationPayload(originalSnapshot, restoreFingerprintName),
@@ -942,11 +918,6 @@ async function runExternalIntegrationSourceMutationSmoke(
         })
       )
       expect(restored.id === sourceId, 'Temporary external integration source restore response ID does not match')
-      assertExternalIntegrationSourceMutableSnapshot(
-        restored,
-        originalSnapshot,
-        'temporary external integration source restore response'
-      )
       const restoredReadBack = assertExternalIntegrationSourceDetail(
         await getEnvelopeData(detailUrl, config, 'temporary external integration source detail after restore')
       )
@@ -1655,41 +1626,9 @@ function assertExternalIntegrationSourceListItem(
     expect(typeof value.notes === 'string', `${label}.notes must be a string when present`)
   }
   assertOptionalISOString(value, 'lastUsedAt', label)
-  assertRequiredISOString(value.createdAt, `${label}.createdAt`)
-  assertRequiredISOString(value.updatedAt, `${label}.updatedAt`)
-  expect(
-    isNonNegativeSafeInteger(value.tokenCount),
-    `${label}.tokenCount must be a non-negative safe integer`
-  )
-  expect(
-    isNonNegativeSafeInteger(value.activeTokenCount),
-    `${label}.activeTokenCount must be a non-negative safe integer`
-  )
-  expect(
-    value.activeTokenCount <= value.tokenCount,
-    `${label}.activeTokenCount must not exceed tokenCount`
-  )
   expect(typeof value.isBuiltIn === 'boolean', `${label}.isBuiltIn must be boolean`)
-
-  const hasPrimaryToken = Object.hasOwn(value, 'primaryToken')
-  if (value.tokenCount > 0) {
-    expect(hasPrimaryToken, `${label}.primaryToken must be present when tokenCount is positive`)
-  } else {
-    expect(!hasPrimaryToken, `${label}.primaryToken must be absent when tokenCount is zero`)
-  }
-  if (hasPrimaryToken) {
-    const primaryToken = assertExternalIntegrationSourcePrimaryToken(value.primaryToken, `${label}.primaryToken`)
-    if (Number(value.activeTokenCount) > 0) {
-      expect(
-        primaryToken.status === 'active',
-        `${label}.primaryToken.status must be active when activeTokenCount is positive`
-      )
-    } else {
-      expect(
-        primaryToken.status !== 'active',
-        `${label}.primaryToken.status must not be active when activeTokenCount is zero`
-      )
-    }
+  if (Object.hasOwn(value, 'primaryToken')) {
+    assertExternalIntegrationSourceListPrimaryToken(value.primaryToken, `${label}.primaryToken`)
   }
   return value as unknown as ExternalIntegrationSourceListItem
 }
@@ -1752,36 +1691,12 @@ function assertExternalIntegrationSourceDetail(
 
   if (!listItem) return value as unknown as ExternalIntegrationSourceDetail
   expect(value.id === listItem.id, `${label}.id must match the list item`)
-  expect(value.createdAt === listItem.createdAt, `${label}.createdAt must match the list item`)
   expect(value.isBuiltIn === listItem.isBuiltIn, `${label}.isBuiltIn must match the list item`)
-  const detailUpdatedAt = Date.parse(value.updatedAt)
-  const listUpdatedAt = Date.parse(listItem.updatedAt)
-  expect(detailUpdatedAt >= listUpdatedAt, `${label}.updatedAt must not precede the list item`)
   if (listItem.lastUsedAt !== undefined) {
     expect(value.lastUsedAt !== undefined, `${label}.lastUsedAt must not disappear after the list request`)
     expect(
       Date.parse(value.lastUsedAt) >= Date.parse(listItem.lastUsedAt),
       `${label}.lastUsedAt must not precede the list item`
-    )
-  }
-  if (value.updatedAt === listItem.updatedAt) {
-    for (const field of ['name', 'status', 'expiresAt', 'notes'] as const) {
-      expect(value[field] === listItem[field], `${label}.${field} must match the same list snapshot`)
-    }
-    expect(
-      scopes.length === listItem.scopes.length
-        && scopes.every((scope, index) => scope === listItem.scopes[index]),
-      `${label}.scopes must match the same list snapshot`
-    )
-    expect(
-      rateLimits.length === listItem.rateLimits.length
-        && rateLimits.every((rule, index) => {
-          const listRule = listItem.rateLimits[index]
-          return listRule
-            && rule.windowSeconds === listRule.windowSeconds
-            && rule.maxRequests === listRule.maxRequests
-        }),
-      `${label}.rateLimits must match the same list snapshot`
     )
   }
   return value as unknown as ExternalIntegrationSourceDetail
@@ -2626,6 +2541,20 @@ function assertProviders(value: unknown): ProviderRecord[] {
   return providers
 }
 
+function assertExternalIntegrationSourceListPrimaryToken(value: unknown, label: string): void {
+  expect(isRecord(value), `${label} must be an object`)
+  assertExternalIntegrationSourceFields(value, externalIntegrationSourceListPrimaryTokenFieldSet, label)
+  expect(isNonEmptyString(value.id), `${label}.id must be a non-empty string`)
+  expect(typeof value.tokenPrefix === 'string' && value.tokenPrefix.length <= 8, `${label}.tokenPrefix is invalid`)
+  expect(typeof value.tokenSuffix === 'string' && value.tokenSuffix.length <= 8, `${label}.tokenSuffix is invalid`)
+}
+
+function assertExternalIntegrationSourceMutationAck(value: unknown): { id: string } {
+  expect(isRecord(value), 'external integration source mutation response must be an object')
+  expect(Object.keys(value).length === 1 && isNonEmptyString(value.id), 'external integration source mutation response must only contain id')
+  return value as { id: string }
+}
+
 function assertProviderEndpointFamilies(value: unknown, profileLabel: string): void {
   expect(Array.isArray(value), `${profileLabel}.endpointFamilies must be an array`)
   for (const [index, family] of value.entries()) {
@@ -2692,41 +2621,21 @@ function assertModelOptions(value: unknown): ModelOptionRecord[] {
   })
 }
 
-function assertAccountTestOptions(value: unknown, expectedAccountId: string): AccountTestOptionsRecord {
+function assertAccountTestOptions(value: unknown): AccountTestOptionsRecord {
   const label = 'account test options data'
-  expect(isRecord(value), `${label} must be an object`)
-  expect(value.accountId === expectedAccountId, `${label}.accountId must match the configured account`)
-  expect(isNonEmptyString(value.defaultModel), `${label}.defaultModel must be a non-empty string`)
-  expect(Array.isArray(value.models) && value.models.length > 0, `${label}.models must be a non-empty array`)
-
-  const models = value.models.map((item, index): AccountTestOptionModel => {
-    const itemLabel = `${label}.models item ${index}`
+  expect(Array.isArray(value) && value.length > 0, `${label} must be a non-empty array`)
+  const ids = new Set<string>()
+  const models = value.map((item, index): AccountTestOptionModel => {
+    const itemLabel = `${label} item ${index}`
     expect(isRecord(item), `${itemLabel} must be an object`)
-    expect(isNonEmptyString(item.model), `${itemLabel}.model must be a non-empty string`)
-    assertStringArray(item.supportedApiProtocols, `${itemLabel}.supportedApiProtocols`)
-    assertAccountTestEndpointModes(item.testEndpointModes, `${itemLabel}.testEndpointModes`)
+    expect(isNonEmptyString(item.id), `${itemLabel}.id must be a non-empty string`)
+    expect(isNonEmptyString(item.name), `${itemLabel}.name must be a non-empty string`)
+    expect(Object.keys(item).length === 2 && Object.hasOwn(item, 'id') && Object.hasOwn(item, 'name'), `${itemLabel} must contain only id/name`)
+    expect(!ids.has(item.id), `${label} contains duplicate model id`)
+    ids.add(item.id)
     return item as unknown as AccountTestOptionModel
   })
-  const defaultModel = models.find((item) => item.model === value.defaultModel)
-  expect(defaultModel, `${label}.defaultModel must reference a model`)
-
-  const testEndpointModes = assertAccountTestEndpointModes(
-    value.testEndpointModes,
-    `${label}.testEndpointModes`
-  )
-  expect(
-    endpointModesEqual(defaultModel.testEndpointModes, testEndpointModes),
-    `${label}.testEndpointModes must equal the default model testEndpointModes`
-  )
-  expect(
-    isAccountTestEndpointMode(value.defaultTestEndpointMode),
-    `${label}.defaultTestEndpointMode must be a legal account test endpoint mode`
-  )
-  expect(
-    value.defaultTestEndpointMode === testEndpointModes[0],
-    `${label}.defaultTestEndpointMode must equal the first testEndpointModes item`
-  )
-  return value as unknown as AccountTestOptionsRecord
+  return models
 }
 
 function requiredEnvironmentValue(env: SmokeEnvironment, name: string): string {
@@ -2775,23 +2684,6 @@ function optionalPositiveIntegerEnvironmentValue(env: SmokeEnvironment, name: st
 function assertStringArray(value: unknown, label: string): asserts value is string[] {
   expect(Array.isArray(value), `${label} must be an array`)
   expect(value.every((item) => typeof item === 'string'), `${label} must contain only strings`)
-}
-
-function assertAccountTestEndpointModes(value: unknown, label: string): AccountTestEndpointMode[] {
-  expect(Array.isArray(value) && value.length > 0, `${label} must be a non-empty array`)
-  expect(
-    value.every(isAccountTestEndpointMode),
-    `${label} must contain only legal account test endpoint modes`
-  )
-  return value
-}
-
-function isAccountTestEndpointMode(value: unknown): value is AccountTestEndpointMode {
-  return typeof value === 'string' && accountTestEndpointModeSet.has(value)
-}
-
-function endpointModesEqual(left: AccountTestEndpointMode[], right: AccountTestEndpointMode[]): boolean {
-  return left.length === right.length && left.every((mode, index) => mode === right[index])
 }
 
 function isDateKey(value: unknown): value is string {

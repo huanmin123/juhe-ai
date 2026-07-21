@@ -23,9 +23,10 @@
               </div>
               <time>{{ formatRelativeDateTime(item.publishedAt) }}</time>
             </header>
-            <p :class="{ expanded: expandedIds.has(item.id) }">{{ item.content }}</p>
-            <a-button v-if="isLongContent(item.content)" type="link" size="small" class="expand-button" @click="toggleExpand(item.id)">
-              {{ expandedIds.has(item.id) ? '收起' : '展开' }}
+            <a-spin v-if="expandedIds.has(item.id) && loadingIds.has(item.id)" size="small" class="content-loading" />
+            <p v-else-if="expandedIds.has(item.id) && contentById[item.id]" class="expanded">{{ contentById[item.id] }}</p>
+            <a-button type="link" size="small" class="expand-button" :loading="loadingIds.has(item.id)" @click="toggleExpand(item.id)">
+              {{ contentActionLabel(item.id) }}
             </a-button>
           </article>
         </a-timeline-item>
@@ -39,7 +40,7 @@ import { CloseOutlined } from '@ant-design/icons-vue'
 import { ref, watch } from 'vue'
 
 import { formatRelativeDateTime } from '@/shared/formatters'
-import type { PublishedAnnouncementSummary } from '@/types/domain'
+import type { PublishedAnnouncementListItem } from '@/types/domain'
 import {
   announcementLevelColor as levelColor,
   announcementLevelText as levelText,
@@ -47,29 +48,40 @@ import {
 } from '@/views/announcements/announcementFormatters'
 
 const props = defineProps<{
-  announcements: PublishedAnnouncementSummary[]
+  announcements: PublishedAnnouncementListItem[]
+  contentById: Record<string, string | undefined>
+  loadingIds: Set<string>
   loading: boolean
   open: boolean
 }>()
 
 const emit = defineEmits<{
   (event: 'update:open', value: boolean): void
+  (event: 'load-content', id: string): void
 }>()
 
 const expandedIds = ref(new Set<string>())
 
-function isLongContent(content: string): boolean {
-  return content.length > 160 || content.includes('\n')
-}
-
 function toggleExpand(id: string) {
   const next = new Set(expandedIds.value)
   if (next.has(id)) {
+    if (!props.contentById[id]) {
+      emit('load-content', id)
+      return
+    }
     next.delete(id)
   } else {
     next.add(id)
+    if (!props.contentById[id]) {
+      emit('load-content', id)
+    }
   }
   expandedIds.value = next
+}
+
+function contentActionLabel(id: string): string {
+  if (!expandedIds.value.has(id)) return '查看内容'
+  return props.contentById[id] ? '收起' : '重试'
 }
 
 watch(
@@ -150,6 +162,11 @@ watch(
 
 .announcement-item p.expanded {
   display: block;
+}
+
+.content-loading {
+  display: block;
+  min-height: 24px;
 }
 
 .expand-button {

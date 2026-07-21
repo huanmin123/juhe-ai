@@ -76,6 +76,8 @@ import {
   findAccountSummaryAsync,
   listAccounts,
   listAccountsPageAsync,
+  listAccountItemsPageAsync,
+  listAccountItemsPageReadOnly,
   listAccountsPage,
   listAccountsPageReadOnly,
   type AccountListResult
@@ -85,6 +87,8 @@ export {
   findAccountSummaryAsync,
   listAccounts,
   listAccountsPageAsync,
+  listAccountItemsPageAsync,
+  listAccountItemsPageReadOnly,
   listAccountsPage,
   listAccountsPageReadOnly,
   type AccountListResult
@@ -108,8 +112,11 @@ import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteA
 import {
   listAccountGroupOptions,
   listAccountGroupOptionsAsync,
+  listGroupAuthorizationOptionsAsync,
   listGroupOptions,
   listGroupOptionsAsync,
+  listGroupItemsPageAsync,
+  listGroupSelectOptionsAsync,
   listGroups,
   listGroupsAsync,
   listGroupsPage,
@@ -121,9 +128,12 @@ export {
   findGroupSummaryInClientAsync,
   listAccountGroupOptions,
   listAccountGroupOptionsAsync,
+  listGroupAuthorizationOptionsAsync,
   listGroupOptions,
   listGroupOptionsAsync,
   listGroupOptionsInClientAsync,
+  listGroupItemsPageAsync,
+  listGroupSelectOptionsAsync,
   listGroups,
   listGroupsAsync,
   listGroupsPage,
@@ -199,6 +209,8 @@ export {
   createSystemTeamAsync,
   findSystemTeamSummary,
   findSystemTeamSummaryAsync,
+  findSystemTeamDetail,
+  findSystemTeamDetailAsync,
   listSystemTeams,
   listSystemTeamsAsync,
   listSystemTeamsPage,
@@ -397,6 +409,8 @@ export {
   deleteAnnouncementAsync,
   findAnnouncement,
   findAnnouncementAsync,
+  findPublicAnnouncement,
+  findPublicAnnouncementAsync,
   listAnnouncements,
   listAnnouncementsAsync,
   listAnnouncementsPage,
@@ -3239,6 +3253,7 @@ export function listResourceAuthorizationsPage(filters: Record<string, unknown> 
 
 export async function listResourceAuthorizationsPageAsync(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationListResult> {
   if (sqliteReadWorkerPoolEnabled()) {
+    await expireDueResourceAuthorizationsAsync()
     return requestSqliteReadWorker({
       type: 'list_resource_authorizations_page_read_only',
       filters,

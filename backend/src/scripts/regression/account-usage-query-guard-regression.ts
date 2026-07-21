@@ -20,9 +20,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, accountUsageRepository] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/account-usage.repository.js')
 ])
 
 const statsRoutesSource = readFileSync(new URL('../../modules/stats/stats.routes.ts', import.meta.url), 'utf8')
@@ -213,6 +214,9 @@ try {
     })
     assert.deepEqual(keywordResult.rows.map((row) => row.id), [matchedAccount.id], '账号用量关键词应先解析成账号 ID 后再筛统计窗口')
     assert.equal(keywordResult.rows[0]?.rangeUsage.requestCount, 7, '账号用量关键词结果应保留范围窗口用量')
+    assert.deepEqual(keywordResult.rows[0]?.dailyUsage, [], '账号用量列表只返回范围摘要，不返回日序列')
+    const trendResult = await accountUsageRepository.getAccountUsageStatsTrendAsync(access, range, [matchedAccount.id])
+    assert.deepEqual(trendResult.rows.map((row) => row.id), [matchedAccount.id], '账户用量趋势应通过独立接口按账户返回')
 
     const prefixResult = repositories.getAccountUsageStatsOverviewPage(access, {
       keyword: uniquePrefix(matchedAccount.id, otherAccount.id),
@@ -299,6 +303,17 @@ try {
 
   assert(businessCalls.length >= 3, '回归应捕获账号用量关键词预解析 SQL')
   const accountUsageRepositorySource = readFileSync(resolve('src/storage/account-usage.repository.ts'), 'utf8')
+  assert.match(accountUsageRepositorySource, /export async function getAccountUsageStatsTrendAsync/, '账户用量趋势必须提供独立按账户查询入口')
+  const sqlitePageSource = accountUsageRepositorySource.slice(
+    accountUsageRepositorySource.indexOf('export function getAccountUsageStatsOverviewPageFromWindows'),
+    accountUsageRepositorySource.indexOf('export async function getAccountUsageStatsOverviewPageFromWindowsAsync')
+  )
+  const postgresPageSource = accountUsageRepositorySource.slice(
+    accountUsageRepositorySource.indexOf('export async function getAccountUsageStatsOverviewPageFromWindowsAsync'),
+    accountUsageRepositorySource.indexOf('export async function getAccountUsageStatsTrendAsync')
+  )
+  assert.doesNotMatch(postgresPageSource, /loadUsageDailySeriesForScopeRequestsAsync/, '账户用量分页接口不得加载整页 dailyUsage')
+  assert.doesNotMatch(sqlitePageSource, /loadUsageDailySeriesForScopeRequests\(/, 'SQLite 账户用量分页接口不得加载整页 dailyUsage')
   const accountUsageAsyncKeywordSnippet = accountUsageRepositorySource.slice(
     accountUsageRepositorySource.indexOf('async function loadAccountUsageKeywordAccountIdsAsync'),
     accountUsageRepositorySource.indexOf('function loadAccountUsageAuthorizedInstanceIdsForSourceKeyword')

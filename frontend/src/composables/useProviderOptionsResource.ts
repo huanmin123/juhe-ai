@@ -1,12 +1,13 @@
 import { api, pageDataApi } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
-import type { ProviderDefinition } from '@/types/domain'
+import type { ProviderDefinition, ProviderOption } from '@/types/domain'
 
 interface ProviderOptionsResourceOptions {
   apply?: (providers: ProviderDefinition[]) => void
   force?: boolean
   includeDisabled?: boolean
+  includeDefinitions?: boolean
   isCurrent?: () => boolean
   isManagementView: boolean
   systemAccountId?: string
@@ -16,7 +17,7 @@ const providerOptionsResourceCache = getDefaultPageDataResourceCache((request) =
 
 export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderDefinition[]> {
   const includeDisabled = options.includeDisabled === true && options.isManagementView
-  const route = includeDisabled ? '/providers' : '/providers/options'
+  const route = includeDisabled ? '/providers' : options.includeDefinitions ? '/providers/definitions' : '/providers/options'
   const scope = providerOptionsScope(options.isManagementView, options.systemAccountId)
   if (options.force) await providerOptionsResourceCache.invalidate('providers.catalog', scope, route)
   const result = await providerOptionsResourceCache.load<ProviderDefinition[]>({
@@ -33,13 +34,33 @@ export async function loadProviderOptionsResource(options: ProviderOptionsResour
       : {}),
     loadNetwork: () => includeDisabled
       ? api.providers.list(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
-      : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
+      : options.includeDefinitions
+        ? api.providers.definitions(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
+        : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined).then((items) => items.map(providerOptionToDefinition))
   })
   applyIfCurrent(options, result.data)
   void result.confirmation?.then((outcome) => {
     if (outcome.data) applyIfCurrent(options, outcome.data)
   })
   return result.data
+}
+
+function providerOptionToDefinition(option: ProviderOption): ProviderDefinition {
+  return {
+    id: option.id,
+    code: option.code,
+    name: option.name,
+    enabled: option.enabled,
+    defaultProtocolProfileId: '',
+    protocolCode: '',
+    protocolVersion: '',
+    baseUrl: '',
+    defaultHealthCheckModel: '',
+    defaultSupportedModels: [],
+    accountTypes: [],
+    capabilities: [],
+    protocolProfiles: []
+  }
 }
 
 function applyIfCurrent(options: ProviderOptionsResourceOptions, providers: ProviderDefinition[]): void {

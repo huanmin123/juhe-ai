@@ -11,6 +11,7 @@ import { HYBRID_PROVIDER_CODE, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '..
 import { logger } from '../../shared/logger.js'
 import { providerModelCatalogId } from '../../storage/provider-model-catalog-id.js'
 import { DEFAULT_PROVIDER_SEEDS } from '../../storage/schema-defaults.js'
+import { mergeProviderModelOptionRows } from '../../modules/providers/provider-model-options.service.js'
 
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-catalog-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -28,7 +29,7 @@ const [
   databaseModule,
   catalogService,
   modelPricingService,
-  { providersRouter, dedupeProviderModelOptions },
+  { providersRouter },
   { requireAuth },
   { requestContextMiddleware },
   repositories,
@@ -521,46 +522,18 @@ try {
   assert(openAICompatibleCatalog.some((item) => item.providerCode === 'glm'), 'OpenAI 兼容模型目录应聚合 GLM OpenAI 协议模型')
   assert(openAICompatibleCatalog.some((item) => item.model === 'openai-regression-personal'), '通用 OpenAI-compatible 自身模型不要求排在其他 OpenAI 协议供应商模型之前')
 
-  const dedupedProviderModelOptions = dedupeProviderModelOptions([
-    {
-      providerCode: 'gpt',
-      model: 'shared-model',
-      supportedApiProtocols: ['chat_completions'],
-      supportedServiceTiers: ['priority', 'priority'],
-      supportedReasoningEfforts: ['low'],
-      defaultReasoningEffort: 'medium'
-    },
-    { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'] },
-    { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'] },
-    {
-      providerCode: 'gpt',
-      model: 'shared-model',
-      supportedApiProtocols: ['responses'],
-      supportedServiceTiers: ['flex', 'priority'],
-      supportedReasoningEfforts: ['high'],
-      defaultReasoningEffort: 'max'
-    },
-    {
-      providerCode: ' GPT ',
-      model: ' shared-model ',
-      supportedReasoningEfforts: ['max', 'high'],
-      defaultReasoningEffort: 'low'
-    },
-    { providerCode: '', model: 'shared-model' },
-    { providerCode: 'glm', model: ' ' }
-  ])
+  const dedupedProviderModelOptions = mergeProviderModelOptionRows([
+    { id: 'gpt-built-in', providerCode: 'gpt', model: 'shared-model', scope: 'built_in' },
+    { id: 'gpt-global', providerCode: 'gpt', model: 'shared-model', scope: 'global' },
+    { id: 'gpt-case', providerCode: 'gpt', model: 'Shared-Model', scope: 'built_in' },
+    { id: 'deepseek-built-in', providerCode: 'deepseek', model: 'shared-model', scope: 'built_in' },
+    { id: 'blank-provider', providerCode: '', model: 'shared-model', scope: 'built_in' },
+    { id: 'blank-model', providerCode: 'glm', model: ' ', scope: 'built_in' }
+  ], { limit: 50, selectedIds: [] })
   assert.deepEqual(dedupedProviderModelOptions, [
-    {
-      providerCode: 'gpt',
-      model: 'shared-model',
-      supportedApiProtocols: ['chat_completions', 'responses'],
-      supportedServiceTiers: ['priority', 'flex'],
-      supportedReasoningEfforts: ['low', 'high', 'max'],
-      defaultReasoningEffort: 'max'
-    },
-    { providerCode: 'gpt', model: 'Shared-Model', supportedApiProtocols: ['responses'], defaultReasoningEffort: null },
-    { providerCode: 'deepseek', model: 'shared-model', supportedApiProtocols: ['chat_completions'], defaultReasoningEffort: null }
-  ], '供应商模型选项必须稳定地按 providerCode + 大小写敏感 model 去重，并合并能力和选择合并后有效的默认思考级别')
+    { id: 'shared-model', name: 'shared-model' },
+    { id: 'Shared-Model', name: 'Shared-Model' }
+  ], '跨供应商模型选项必须稳定地按大小写敏感 model 去重，并只返回 id/name')
 
   const deepSeekCatalog = catalogService.listProviderModelCatalog({
     providerCode: 'deepseek',
@@ -1163,6 +1136,16 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     }
     const baseUrl = `http://127.0.0.1:${address.port}`
 
+    const invalidProtocolResponse = await fetch(`${baseUrl}/__aisys__/api/providers/models/options?protocol=invalid`, { headers: { cookie: userACookie } })
+    assert.equal(invalidProtocolResponse.status, 400, '非法 protocol 必须明确返回 400')
+    const missingProviderResponse = await fetch(`${baseUrl}/__aisys__/api/providers/models/options?providerCode=missing-provider`, { headers: { cookie: userACookie } })
+    assert.equal(missingProviderResponse.status, 404, '不存在或停用 providerCode 必须明确返回 404')
+    const lightweightProviders = await getEnvelope<Array<Record<string, unknown>>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    assert(lightweightProviders.length > 0, '供应商轻量选项不得为空')
+    assert(lightweightProviders.every((item) => Object.keys(item).sort().join(',') === 'code,enabled,id,name'), '供应商 options 只能返回 id/code/name/enabled')
+    const providerDefinitions = await getEnvelope<Array<{ code: string; protocolProfiles: unknown[] }>>(baseUrl, '/__aisys__/api/providers/definitions', userACookie)
+    assert(providerDefinitions.some((item) => item.code === 'openai' && Array.isArray(item.protocolProfiles)), '账户创建所需完整供应商定义必须走 definitions')
+
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models`,
       userACookie,
@@ -1518,10 +1501,10 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       { model: userADeletableModel.model }
     )
     assert.equal(userADefaultPreference.defaultHealthCheckModel, userADeletableModel.model, '用户应能把自己可见的个人模型设置为默认检查模型')
-    const userAProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string; systemDefaultHealthCheckModel?: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    const userAProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string; systemDefaultHealthCheckModel?: string }>>(baseUrl, '/__aisys__/api/providers/definitions', userACookie)
     assert.equal(userAProviderOptions.find((item) => item.code === 'openai')?.defaultHealthCheckModel, userADeletableModel.model, '用户默认检查模型应覆盖自己的供应商选项')
     assert.notEqual(userAProviderOptions.find((item) => item.code === 'openai')?.systemDefaultHealthCheckModel, userADeletableModel.model, '用户默认检查模型不能覆盖管理员系统默认事实')
-    const userBProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userBCookie)
+    const userBProviderOptions = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/definitions', userBCookie)
     assert.notEqual(userBProviderOptions.find((item) => item.code === 'openai')?.defaultHealthCheckModel, userADeletableModel.model, '用户默认检查模型不能泄露给其他用户')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/default-health-check-model`,
@@ -1591,7 +1574,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       code: string
       defaultHealthCheckModel: string
       systemDefaultHealthCheckModel?: string
-    }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    }>>(baseUrl, '/__aisys__/api/providers/definitions', userACookie)
     const userAOpenAIOptions = userAOptionsAfterSystemDefault.find((item) => item.code === 'openai')
     assert.equal(userAOpenAIOptions?.defaultHealthCheckModel, userADeletableModel.model, '用户 A 已有个人偏好时应继续以个人检查模型为默认')
     assert.equal(userAOpenAIOptions?.systemDefaultHealthCheckModel, adminGlobalModel.model, '用户 A 仍应看到管理员配置的系统默认检查模型')
@@ -1600,7 +1583,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       code: string
       defaultHealthCheckModel: string
       systemDefaultHealthCheckModel?: string
-    }>>(baseUrl, '/__aisys__/api/providers/options', userBCookie)
+    }>>(baseUrl, '/__aisys__/api/providers/definitions', userBCookie)
     const userBOpenAIOptions = userBOptionsAfterSystemDefault.find((item) => item.code === 'openai')
     assert.equal(userBOpenAIOptions?.defaultHealthCheckModel, adminGlobalModel.model, '用户 B 未设置个人偏好时应使用管理员系统默认检查模型')
     assert.equal(userBOpenAIOptions?.systemDefaultHealthCheckModel, adminGlobalModel.model, '用户 B 应看到管理员系统默认检查模型')
@@ -1681,7 +1664,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       200,
       '普通用户应能删除自己未绑定账户的个人模型'
     )
-    const userAProviderOptionsAfterDefaultDelete = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    const userAProviderOptionsAfterDefaultDelete = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/definitions', userACookie)
     assert.notEqual(userAProviderOptionsAfterDefaultDelete.find((item) => item.code === 'openai')?.defaultHealthCheckModel, userADeletableModel.model, '删除个人模型时应清理指向该模型的个人默认检查模型')
     await assertHttpStatus(
       `${baseUrl}/__aisys__/api/providers/openai/models/${adminPersonalModel.id}`,
@@ -1773,27 +1756,47 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-admin-personal'), false, '用户不应看到管理员个人模型')
     assert.equal(userAVisible.some((item) => item.model === 'gpt-http-user-a-draft'), false, '默认管理模型目录不应返回草稿模型')
 
-    const userAGlobalModelOptions = await getEnvelope<Array<{
-      providerCode: string
-      model: string
-      supportedApiProtocols?: string[]
-      supportedServiceTiers?: string[]
-      supportedReasoningEfforts?: string[]
-      defaultReasoningEffort?: string | null
-    }>>(
+    const userAGptModelOptions = await getEnvelope<Array<{ id: string; name: string }>>(
       baseUrl,
-      '/__aisys__/api/providers/models/options',
+      '/__aisys__/api/providers/models/options?providerCode=gpt&keyword=gpt-http-user-a-gpt&selectedIds=gpt-http-user-a-gpt&limit=10',
       userACookie
     )
-    assert(userAGlobalModelOptions.some((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt'), '全局模型选项应包含真实供应商模型')
-    assert(userAGlobalModelOptions.some((item) => item.providerCode === 'openai' && item.model === 'gpt-http-admin-global'), '模型选项应包含管理员全局模型')
-    const userAGptGlobalOption = userAGlobalModelOptions.find((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt')
-    assert(userAGptGlobalOption?.supportedApiProtocols?.includes('responses'), '全局模型选项必须返回模型协议能力，供账号模型别名按协议过滤')
-    assert.deepEqual(userAGptGlobalOption?.supportedServiceTiers, ['priority'], '全局模型选项必须返回服务等级能力')
-    assert.deepEqual(userAGptGlobalOption?.supportedReasoningEfforts, ['low', 'high'], '全局模型选项必须返回思考能力')
-	assert.equal(userAGptGlobalOption?.defaultReasoningEffort, null, '自定义模型选项不得返回客户端默认思考级别')
-    assert.equal(userAGlobalModelOptions.some((item) => item.providerCode === 'hybrid'), false, '全局模型选项不应把 hybrid 当作真实供应商目录')
-    assert.equal(userAGlobalModelOptions.some((item) => item.model === 'hybrid-regression-should-not-list'), false, '全局模型选项不应返回 hybrid 自身模型')
+    assert.deepEqual(userAGptModelOptions.find((item) => item.id === 'gpt-http-user-a-gpt'), {
+      id: 'gpt-http-user-a-gpt',
+      name: 'gpt-http-user-a-gpt'
+    }, '单供应商模型选项应包含个人模型且只返回 id/name')
+    assert(userAGptModelOptions.every((item) => Object.keys(item).sort().join(',') === 'id,name'), '单供应商模型选项不得返回能力、价格或供应商详情')
+
+    const selectedWithWindow = await getEnvelope<Array<{ id: string; name: string }>>(
+      baseUrl,
+      '/__aisys__/api/providers/models/options?providerCode=gpt&selectedIds=gpt-http-user-a-gpt&limit=1',
+      userACookie
+    )
+    assert(selectedWithWindow.some((item) => item.id === 'gpt-http-user-a-gpt'), '已选模型必须在窗口查询中补齐')
+    assert(selectedWithWindow.length > 1, 'selectedIds 不得把基础 limit 窗口误收窄为仅已选项')
+
+    const capability = await getEnvelope<{
+      id: string
+      name: string
+      supportedApiProtocols: string[]
+      supportedServiceTiers: string[]
+      supportedReasoningEfforts: string[]
+    }>(
+      baseUrl,
+      `/__aisys__/api/providers/gpt/models/${encodeURIComponent('gpt-http-user-a-gpt')}/capabilities`,
+      userACookie
+    )
+    assert.equal(capability.id, 'gpt-http-user-a-gpt', '模型能力接口必须按 providerCode/modelId 定点读取')
+    assert(Array.isArray(capability.supportedApiProtocols), '模型能力接口应返回协议能力')
+    assert(Array.isArray(capability.supportedServiceTiers), '模型能力接口应返回服务等级能力')
+
+    const userACrossProviderOptions = await getEnvelope<Array<{ id: string; name: string }>>(
+      baseUrl,
+      '/__aisys__/api/providers/models/options?keyword=gpt-http-admin-global&limit=10',
+      userACookie
+    )
+    assert(userACrossProviderOptions.some((item) => item.id === 'gpt-http-admin-global'), '跨供应商模型选项应包含管理员全局模型')
+    assert(userACrossProviderOptions.every((item) => Object.keys(item).sort().join(',') === 'id,name'), '跨供应商模型选项也只能返回 id/name')
 
     const userAHybridVisible = await getEnvelope<Array<{ model: string; providerCode: string }>>(
       baseUrl,
@@ -1810,7 +1813,7 @@ async function assertProviderModelHttpContracts(): Promise<void> {
       { model: 'gpt-http-user-a-gpt' }
     )
     assert.equal(userAHybridDefaultPreference.defaultHealthCheckModel, 'gpt-http-user-a-gpt', '混合供应商应允许把聚合目录中的真实文本模型设为默认检查模型')
-    const userAProviderOptionsAfterHybridDefault = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
+    const userAProviderOptionsAfterHybridDefault = await getEnvelope<Array<{ code: string; defaultHealthCheckModel: string }>>(baseUrl, '/__aisys__/api/providers/definitions', userACookie)
     assert.equal(userAProviderOptionsAfterHybridDefault.find((item) => item.code === 'hybrid')?.defaultHealthCheckModel, 'gpt-http-user-a-gpt', '混合供应商默认检查模型偏好应回填到用户供应商选项')
 
     const userAMaintenanceVisible = await getEnvelope<Array<{ model: string; status: string; providerCode: string }>>(
@@ -1843,14 +1846,13 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     assert(adminUserAVisible.some((item) => item.model === 'gpt-http-admin-global'), '管理员传 systemAccountId 应继续看到全局模型')
     assert.equal(adminUserAVisible.some((item) => item.model === 'gpt-http-admin-personal'), false, '管理员传 systemAccountId 时不应继续固定查看自己的个人模型')
     assert.equal(adminUserAVisible.some((item) => item.model === 'gpt-http-user-b'), false, '管理员传 systemAccountId 后不应混入其他用户个人模型')
-    const adminUserAModelOptions = await getEnvelope<Array<{ providerCode: string; model: string }>>(
+    const adminUserAModelOptions = await getEnvelope<Array<{ id: string; name: string }>>(
       baseUrl,
-      `/__aisys__/api/providers/models/options?systemAccountId=${encodeURIComponent(userA.id)}`,
+      `/__aisys__/api/providers/models/options?providerCode=gpt&keyword=gpt-http-user-a-gpt&selectedIds=gpt-http-user-a-gpt&limit=10&systemAccountId=${encodeURIComponent(userA.id)}`,
       adminCookie
     )
-    assert(adminUserAModelOptions.some((item) => item.providerCode === 'gpt' && item.model === 'gpt-http-user-a-gpt'), '管理员维护目标用户账号时模型选项应包含目标用户真实供应商个人模型')
-    assert(adminUserAModelOptions.some((item) => item.providerCode === 'openai' && item.model === 'gpt-http-admin-global'), '管理员维护目标用户账号时模型选项应包含全局模型')
-    assert.equal(adminUserAModelOptions.some((item) => item.model === 'gpt-http-admin-personal'), false, '管理员维护目标用户账号时模型选项不应混入管理员自己的个人模型')
+    assert(adminUserAModelOptions.some((item) => item.id === 'gpt-http-user-a-gpt'), '管理员维护目标用户账号时模型选项应包含目标用户真实供应商个人模型')
+    assert.equal(adminUserAModelOptions.some((item) => item.id === 'gpt-http-admin-personal'), false, '管理员维护目标用户账号时模型选项不应混入管理员自己的个人模型')
 
     const userBVisible = await getEnvelope<Array<{ model: string; providerCode: string }>>(
       baseUrl,

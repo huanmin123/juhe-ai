@@ -10,6 +10,17 @@ export interface ChatModelLoadCoordinatorOptions<T> {
   now?: () => number
 }
 
+export interface ChatModelCapabilitiesLoadRequest {
+  conversationId: string
+  modelId: string
+}
+
+export interface ChatModelCapabilitiesLoadCoordinatorOptions<T> {
+  load: (request: ChatModelCapabilitiesLoadRequest, signal: AbortSignal) => Promise<T>
+  cacheTtlMilliseconds?: number
+  now?: () => number
+}
+
 export interface DeletedChatConversationState<T extends { id: string }> {
   conversations: T[]
   selectedConversationId?: string
@@ -76,6 +87,44 @@ export class ChatModelLoadCoordinator<T> {
       if (this.retryDelayMilliseconds > 0) await wait(this.retryDelayMilliseconds, signal)
       return this.options.load(request, signal)
     }
+  }
+}
+
+export class ChatModelCapabilitiesLoadCoordinator<T> {
+  private readonly cache = new Map<string, { value: T; expiresAt: number }>()
+  private active?: { key: string; controller: AbortController; promise: Promise<T> }
+  private readonly cacheTtlMilliseconds: number
+  private readonly now: () => number
+
+  constructor(private readonly options: ChatModelCapabilitiesLoadCoordinatorOptions<T>) {
+    this.cacheTtlMilliseconds = options.cacheTtlMilliseconds ?? 30_000
+    this.now = options.now ?? Date.now
+  }
+
+  load(request: ChatModelCapabilitiesLoadRequest): Promise<T> {
+    const key = JSON.stringify([request.conversationId, request.modelId])
+    const cached = this.cache.get(key)
+    if (cached && cached.expiresAt > this.now()) return Promise.resolve(cached.value)
+    if (cached) this.cache.delete(key)
+    if (this.active?.key === key) return this.active.promise
+    this.cancel()
+    const controller = new AbortController()
+    const promise = this.options.load(request, controller.signal)
+      .then((value) => {
+        if (controller.signal.aborted) throw new DOMException('Aborted', 'AbortError')
+        this.cache.set(key, { value, expiresAt: this.now() + this.cacheTtlMilliseconds })
+        return value
+      })
+      .finally(() => {
+        if (this.active?.controller === controller) this.active = undefined
+      })
+    this.active = { key, controller, promise }
+    return promise
+  }
+
+  cancel(): void {
+    this.active?.controller.abort()
+    this.active = undefined
   }
 }
 

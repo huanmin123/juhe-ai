@@ -38,7 +38,7 @@ async function verifyInvalidationRejectsPendingCacheWrites(): Promise<void> {
   api.accounts.testOptions = async (accountId) => {
     calls += 1
     if (calls === 1) await gate
-    return testOptions(accountId)
+    return testOptions()
   }
 
   const pending = testModels(true, 'invalidation-owner').loadSavedAccountTestOptions(account)
@@ -57,7 +57,7 @@ async function verifyMissingConfigRevisionBypassesCache(): Promise<void> {
   let calls = 0
   api.accounts.testOptions = async (accountId) => {
     calls += 1
-    return testOptions(accountId)
+    return testOptions()
   }
 
   await testModels(true, 'revision-owner').loadSavedAccountTestOptions(account)
@@ -79,11 +79,11 @@ async function verifyConcurrentLoadsAndCacheIsolation(): Promise<void> {
   api.accounts.testOptions = async (accountId) => {
     managementCalls += 1
     if (managementCalls <= 2) await firstLoadGate
-    return testOptions(accountId)
+    return testOptions()
   }
   api.myAccounts.testOptions = async (accountId) => {
     selfCalls += 1
-    return testOptions(accountId)
+    return testOptions()
   }
 
   const first = testModels(true, 'owner-a')
@@ -127,7 +127,7 @@ async function verifyRejectedLoadsAreRetried(): Promise<void> {
   api.accounts.testOptions = async (accountId) => {
     calls += 1
     if (calls === 1) throw new Error('expected loader failure')
-    return testOptions(accountId)
+    return testOptions()
   }
 
   await assert.rejects(
@@ -154,22 +154,16 @@ function accountFixture(configRevision: number | undefined, id = 'account-cache-
     id,
     configRevision,
     name: '缓存测试账户',
+    healthCheckModel: 'gpt-5.6-sol',
     healthCheckEndpointMode: 'responses_sse'
   } as AccountSummary
 }
 
-function testOptions(accountId: string): AccountTestOptions {
-  return {
-    accountId,
-    defaultModel: 'gpt-5.6-sol',
-    models: [{
-      model: 'gpt-5.6-sol',
-      supportedApiProtocols: ['openai_responses'],
-      testEndpointModes: ['responses_sse']
-    }],
-    testEndpointModes: ['responses_sse'],
-    defaultTestEndpointMode: 'responses_sse'
-  }
+function testOptions(): AccountTestOptions {
+  return [{
+    id: 'gpt-5.6-sol',
+    name: 'gpt-5.6-sol'
+  }]
 }
 
 function currentUser(id: string) {

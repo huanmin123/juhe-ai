@@ -6,15 +6,15 @@ export function isAuthorizedGroup(group: GroupSummary): boolean {
 }
 
 export function canEditGroup(group: GroupSummary): boolean {
-  return !group.isDefault && group.permissions?.canEdit !== false
+  return group.canEdit ?? (!group.isDefault && group.permissions?.canEdit !== false)
 }
 
 export function canDeleteGroup(group: GroupSummary): boolean {
-  return !group.isDefault && group.permissions?.canDelete !== false
+  return group.canDelete ?? (!group.isDefault && group.permissions?.canDelete !== false)
 }
 
 export function canReturnAuthorizedGroup(group: GroupSummary): boolean {
-  return isAuthorizedGroup(group) && group.permissions?.canReturnAuthorization === true
+  return group.canReturn ?? (isAuthorizedGroup(group) && group.permissions?.canReturnAuthorization === true)
 }
 
 export function groupRowActions(group: GroupSummary): RowActionItem[] {
