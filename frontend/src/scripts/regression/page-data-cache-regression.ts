@@ -3,6 +3,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import type { PageDataConfirmRequest, PageDataConfirmResult, PageDataRevisionToken } from '../../api/domains/pageData'
+import type {
+  PageDataActivationDecision,
+  PageDataActivationHandle,
+  PageDataActivationParticipant,
+  PageDataActivationPhase
+} from '../../shared/pageDataActivationCoordinator'
 import {
   BrowserPageDataTabCoordinator,
   PageDataCacheController,
@@ -250,6 +256,7 @@ assert.deepEqual((await lifecycleRefreshStorage.read<string[]>(lifecycleRefreshK
 lifecycleController.close()
 
 await testMicrotaskConfirmBatching()
+await testActivationManagedCacheFlow()
 
 const followerSharedStorage = createMemoryPageDataCacheStorage()
 const followerSharedKey = createPageDataCacheKey({ scope: 'self:follower-shared-refresh', route: '/accounts', query: {}, version: 1, domain: 'accounts.runtime' })
@@ -512,9 +519,11 @@ assert.match(composableSource, /scheduler\.start\(\)/, 'Vue composable 必须启
 assert.match(composableSource, /forceRefresh/, 'Vue composable 必须提供强制刷新入口')
 assert.match(composableSource, /onActivated[\s\S]*activationController\.activate\(\)/, 'KeepAlive 页面激活时必须恢复确认调度')
 assert.match(composableSource, /onDeactivated[\s\S]*activationController\.deactivate\(\)/, 'KeepAlive 页面隐藏时必须停止确认调度')
-assert.match(composableSource, /onActivate:\s*\(\)\s*=>\s*\{\s*void confirmCurrent\(\)\.catch\(\(\)\s*=>\s*undefined\)\s*\}/, 'KeepAlive 页面恢复必须立即确认且吞掉已处理的后台拒绝')
+assert.match(composableSource, /onActivate:[\s\S]{0,160}!options\.activationManaged[\s\S]{0,100}confirmCurrent\(\)\.catch/, '未受管 KeepAlive 页面恢复必须立即确认，受管页面不得启动私有确认')
 assert.match(composableSource, /onMounted[\s\S]*activationController\.mount\(\)/, '首次 mount 必须只启动调度，不能触发恢复确认')
 assert.match(composableSource, /onUnmounted[\s\S]*activationController\.dispose\(\)[\s\S]*controller\.close\(\)/, 'Vue composable 卸载时必须清理调度器、订阅和 controller')
+assert.match(composableSource, /activationManaged\?:\s*boolean/, '静态页面缓存 composable 必须显式声明 activationManaged')
+assert.match(composableSource, /if\s*\(!options\.activationManaged\)[\s\S]{0,300}new PageDataVisibleConfirmScheduler/, '受管静态页面缓存不得创建私有可见页 scheduler')
 const requestComposableSource = readFileSync(fileURLToPath(new URL('../../composables/usePageDataRequestCache.ts', import.meta.url)), 'utf8')
 assert.match(requestComposableSource, /resolveRequest\(\)/, '动态页面缓存每次 load 必须解析当前 scope、route、query 与 version')
 assert.match(requestComposableSource, /manager\.subscribe/, '动态页面缓存必须只订阅当前 manager 的更新')
@@ -524,9 +533,11 @@ assert.match(requestComposableSource, /getDefaultPageDataTabCoordinator\(\)/, '�
 assert.match(requestComposableSource, /forceRefresh/, '动态页面缓存必须提供当前 query 强制刷新')
 assert.match(requestComposableSource, /onActivated[\s\S]*activationController\.activate\(\)/, '动态 KeepAlive 页面激活时必须恢复确认调度')
 assert.match(requestComposableSource, /onDeactivated[\s\S]*activationController\.deactivate\(\)/, '动态 KeepAlive 页面隐藏时必须停止确认调度')
-assert.match(requestComposableSource, /onActivate:\s*\(\)\s*=>\s*\{\s*void confirmCurrent\(\)\.catch\(\(\)\s*=>\s*undefined\)\s*\}/, '动态 KeepAlive 页面恢复必须立即确认且吞掉已处理的后台拒绝')
+assert.match(requestComposableSource, /onActivate:[\s\S]{0,160}!options\.activationManaged[\s\S]{0,100}confirmCurrent\(\)\.catch/, '未受管动态 KeepAlive 页面恢复必须立即确认，受管页面不得启动私有确认')
 assert.match(requestComposableSource, /onMounted[\s\S]*activationController\.mount\(\)/, '动态页面首次 mount 必须只启动调度，不能触发恢复确认')
 assert.match(requestComposableSource, /onUnmounted[\s\S]*activationController\.dispose\(\)[\s\S]*manager\.close\(\)/, '动态页面缓存卸载必须清理当前 query controller 与订阅')
+assert.match(requestComposableSource, /activationManaged\?:\s*boolean/, '动态页面缓存 composable 必须显式声明 activationManaged')
+assert.match(requestComposableSource, /if\s*\(!options\.activationManaged\)[\s\S]{0,300}new PageDataVisibleConfirmScheduler/, '受管动态页面缓存不得创建私有可见页 scheduler')
 
 const pageDataApiSource = readFileSync(fileURLToPath(new URL('../../api/domains/pageData.ts', import.meta.url)), 'utf8')
 assert.match(pageDataApiSource, /'accounts\.static'/, '前端数据域契约必须包含账户静态列表域')
@@ -569,6 +580,327 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 async function microtask(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
+}
+
+async function testActivationManagedCacheFlow(): Promise<void> {
+  const keyInput = {
+    scope: 'self:managed',
+    route: '/accounts',
+    query: {},
+    version: 1,
+    domain: 'accounts.runtime' as const
+  }
+
+  const hotStorage = createMemoryPageDataCacheStorage()
+  const hotKey = createPageDataCacheKey(keyInput)
+  await hotStorage.writeIfCurrent(cacheRecord(hotKey, ['hot'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  let hotRegisters = 0
+  let hotLegacyConfirms = 0
+  const hotController = new PageDataCacheController<string[]>({
+    cacheKey: keyInput,
+    domain: 'accounts.runtime',
+    viewScope: 'self',
+    storage: hotStorage,
+    maxStaleMs: 300_000,
+    now: () => new Date('2026-07-17T12:00:10.000Z'),
+    activation: activationHandle({
+      register: (participant) => {
+        hotRegisters += 1
+        return confirmedActivation('pre', participant, 'unchanged', token(1))
+      }
+    }),
+    writeEpoch: () => 0,
+    confirm: async (request) => {
+      hotLegacyConfirms += 1
+      return confirmResult(request.domains['accounts.runtime'])
+    },
+    loadNetwork: async () => ['network']
+  })
+  const hot = await hotController.load()
+  await microtask()
+  assert.equal(hot.source, 'cache')
+  assert.equal(hot.confirmation, undefined, '受管模式 30 秒内热缓存必须立即返回且不启动后台确认')
+  assert.deepEqual([hotRegisters, hotLegacyConfirms], [0, 0], '受管热缓存不得调用 activation.register 或私有 confirm')
+
+  const unmanagedStorage = createMemoryPageDataCacheStorage()
+  let unmanagedConfirms = 0
+  const unmanagedController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:unmanaged' },
+    domain: 'accounts.runtime',
+    viewScope: 'self',
+    storage: unmanagedStorage,
+    confirm: async (request) => {
+      unmanagedConfirms += 1
+      return confirmResult(request.domains['accounts.runtime'])
+    },
+    loadNetwork: async () => ['network']
+  })
+  await unmanagedStorage.writeIfCurrent(cacheRecord(unmanagedController.key, ['hot'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const unmanaged = await unmanagedController.load()
+  assert.equal((await unmanaged.confirmation)?.state, 'unchanged', '未受管模式必须保留现有后台 confirm')
+  assert.equal(unmanagedConfirms, 1)
+
+  let currentWriteEpoch = 4
+  let managedLegacyConfirms = 0
+  const managedStorage = createMemoryPageDataCacheStorage()
+  await managedStorage.writeIfCurrent(cacheRecord(hotKey, ['stale'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const preParticipants: PageDataActivationParticipant[] = []
+  const postParticipants: PageDataActivationParticipant[] = []
+  const managedController = new PageDataCacheController<string[]>({
+    cacheKey: keyInput,
+    domain: 'accounts.runtime',
+    viewScope: 'self',
+    storage: managedStorage,
+    maxStaleMs: 300_000,
+    now: () => new Date('2026-07-17T12:00:31.000Z'),
+    activation: activationHandle({
+      register: (participant) => {
+        preParticipants.push(participant)
+        return confirmedActivation('pre', participant, 'reload', token(2))
+      },
+      stabilize: (participant) => {
+        postParticipants.push(participant)
+        return confirmedActivation('post', participant, 'unchanged', token(2))
+      }
+    }),
+    writeEpoch: () => currentWriteEpoch,
+    confirm: async (request) => {
+      managedLegacyConfirms += 1
+      return confirmResult(request.domains['accounts.runtime'], token(2))
+    },
+    loadNetwork: async () => ['managed-network']
+  })
+  const managed = await managedController.load()
+  assert.deepEqual([managed.confirmed, managed.cached, managed.data], [true, true, ['managed-network']])
+  assert.equal(managedLegacyConfirms, 0, '受管模式不得调用私有 requestBatchedConfirm')
+  assert.equal(preParticipants.length, 1, '受管缓存超过固定 30 秒后必须参加 aggregate pre-confirm，不能被更宽的 domain maxStaleMs 跳过')
+  assert.equal(postParticipants.length, 1, 'changed GET 完成后必须参加一次 aggregate post barrier')
+  assert.equal(preParticipants[0]?.token?.sequence, 1)
+  assert.equal(preParticipants[0]?.writeEpoch, 4)
+  assert.equal(postParticipants[0]?.writeEpoch, 4)
+  assert.equal((await managedStorage.read<string[]>(hotKey))?.token?.sequence, 2)
+
+  for (const failure of ['token-drift', 'late', 'unavailable'] as const) {
+    const storage = createMemoryPageDataCacheStorage()
+    const controller = new PageDataCacheController<string[]>({
+      cacheKey: { ...keyInput, scope: `self:${failure}` },
+      domain: 'accounts.runtime',
+      viewScope: 'self',
+      storage,
+      activation: activationHandle({
+        register: (participant) => confirmedActivation('pre', participant, 'reload', token(5)),
+        stabilize: (participant) => failure === 'token-drift'
+          ? confirmedActivation('post', participant, 'unchanged', token(6))
+          : activationFailure(failure === 'late' ? 'late' : 'unavailable', 'post', participant)
+      }),
+      writeEpoch: () => 0,
+      confirm: async (request) => confirmResult(request.domains['accounts.runtime'], token(5)),
+      loadNetwork: async () => [`visible-${failure}`]
+    })
+    const result = await controller.load()
+    assert.deepEqual(result.data, [`visible-${failure}`], `${failure} 时网络结果仍可展示`)
+    assert.equal(result.confirmed, false, `${failure} 时不得写 confirmed`)
+    assert.equal(result.cached, false, `${failure} 时不得声称结果已缓存稳定`)
+    assert.equal(await storage.read(controller.key), undefined, `${failure} 时不得写入稳定缓存`)
+    controller.close()
+  }
+
+  const failedPreStorage = createMemoryPageDataCacheStorage()
+  const failedPreController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:pre-unavailable' },
+    domain: 'accounts.runtime',
+    viewScope: 'self',
+    storage: failedPreStorage,
+    activation: activationHandle({
+      register: (participant) => activationFailure('unavailable', 'pre', participant)
+    }),
+    writeEpoch: () => 0,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime']),
+    loadNetwork: async () => ['pre-unavailable']
+  })
+  const failedPre = await failedPreController.load()
+  assert.equal(failedPre.confirmed, false)
+  assert.equal(failedPre.cached, false, '受管 pre-confirm 失败时结果只能展示，不能写入未确认缓存')
+  assert.equal(await failedPreStorage.read(failedPreController.key), undefined)
+
+  let epoch = 10
+  const epochStorage = createMemoryPageDataCacheStorage()
+  const epochKey = createPageDataCacheKey({ ...keyInput, scope: 'self:epoch-touch' })
+  await epochStorage.writeIfCurrent(cacheRecord(epochKey, ['before-mutation'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const epochPre = deferred<PageDataActivationDecision>()
+  let epochNetworkLoads = 0
+  const epochController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:epoch-touch' },
+    domain: 'accounts.runtime',
+    viewScope: 'self',
+    storage: epochStorage,
+    maxStaleMs: 30_000,
+    now: () => new Date('2026-07-17T12:00:31.000Z'),
+    activation: activationHandle({ register: () => epochPre.promise }),
+    writeEpoch: () => epoch,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime']),
+    loadNetwork: async () => { epochNetworkLoads += 1; return ['after-mutation'] }
+  })
+  const epochLoad = epochController.load()
+  await microtask()
+  epoch += 1
+  epochPre.resolve(confirmedActivation('pre', {
+    resourceKey: epochController.key,
+    domain: 'accounts.runtime',
+    token: token(1),
+    generation: 1,
+    writeEpoch: 10
+  }, 'unchanged', token(1)))
+  const epochResult = await epochLoad
+  assert.equal(epochResult.superseded, true, 'writeEpoch 变化必须 supersede 在途 pre-confirm')
+  assert.equal(epochNetworkLoads, 0, '过时 pre-confirm 不得继续 GET')
+  assert.equal((await epochStorage.read<string[]>(epochKey))?.confirmedAt, '2026-07-17T12:00:00.000Z', 'writeEpoch 变化后不得 touch')
+
+  let deltaEpoch = 20
+  let deltaApplies = 0
+  const deltaStorage = createMemoryPageDataCacheStorage()
+  const deltaKey = createPageDataCacheKey({ ...keyInput, scope: 'self:epoch-delta' })
+  await deltaStorage.writeIfCurrent(cacheRecord(deltaKey, ['delta-base'], { token: token(1) }))
+  const deltaPre = deferred<PageDataActivationDecision>()
+  const deltaController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:epoch-delta' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: deltaStorage,
+    activation: activationHandle({ register: () => deltaPre.promise }),
+    writeEpoch: () => deltaEpoch,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime']),
+    applyDelta: (data) => { deltaApplies += 1; return [...data, 'delta'] },
+    loadNetwork: async () => ['network']
+  })
+  const deltaConfirm = deltaController.confirmNow()
+  await microtask()
+  deltaEpoch += 1
+  deltaPre.resolve(confirmedActivation('pre', {
+    resourceKey: deltaController.key,
+    domain: 'accounts.runtime', token: token(1), generation: 1, writeEpoch: 20
+  }, 'delta', token(2)))
+  assert.equal((await deltaConfirm).state, 'superseded')
+  assert.equal(deltaApplies, 0, 'writeEpoch 变化后不得 apply delta')
+  assert.deepEqual((await deltaStorage.read<string[]>(deltaKey))?.value, ['delta-base'])
+
+  let postEpoch = 30
+  let postParticipant: (PageDataActivationParticipant & { baseline: PageDataRevisionToken }) | undefined
+  const postGate = deferred<PageDataActivationDecision>()
+  const postStorage = createMemoryPageDataCacheStorage()
+  const postEpochController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:post-epoch' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: postStorage,
+    activation: activationHandle({
+      register: (participant) => confirmedActivation('pre', participant, 'reload', token(4)),
+      stabilize: (participant) => {
+        postParticipant = participant
+        return postGate.promise
+      }
+    }),
+    writeEpoch: () => postEpoch,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime'], token(4)),
+    loadNetwork: async () => ['post-epoch-network']
+  })
+  const postEpochLoad = postEpochController.load()
+  for (let attempt = 0; attempt < 10 && !postParticipant; attempt += 1) await microtask()
+  assert(postParticipant, 'changed GET 完成后必须已进入 post barrier')
+  postEpoch += 1
+  postGate.resolve(confirmedActivation('post', postParticipant, 'unchanged', token(4)))
+  const postEpochResult = await postEpochLoad
+  assert.equal(postEpochResult.superseded, true, 'post barrier 在途期间 writeEpoch 变化必须 supersede 结果')
+  assert.equal(await postStorage.read(postEpochController.key), undefined, '旧 writeEpoch 的 post 结果不得写缓存')
+
+  const generationStorage = createMemoryPageDataCacheStorage()
+  const firstNetwork = deferred<string[]>()
+  const secondNetwork = deferred<string[]>()
+  let generationNetworkIndex = 0
+  let generationPostCalls = 0
+  const generationController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:generation' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: generationStorage,
+    activation: activationHandle({
+      register: (participant) => confirmedActivation('pre', participant, 'reload', token(3)),
+      stabilize: (participant) => {
+        generationPostCalls += 1
+        return confirmedActivation('post', participant, 'unchanged', token(3))
+      }
+    }),
+    writeEpoch: () => 0,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime'], token(3)),
+    loadNetwork: () => (++generationNetworkIndex === 1 ? firstNetwork.promise : secondNetwork.promise)
+  })
+  const older = generationController.load()
+  await microtask()
+  const newer = generationController.refresh()
+  await microtask()
+  secondNetwork.resolve(['newer-generation'])
+  assert.equal((await newer).confirmed, true)
+  firstNetwork.resolve(['older-generation'])
+  assert.equal((await older).superseded, true, 'generation 变化必须 supersede 旧 GET')
+  assert.equal(generationPostCalls, 1, '旧 generation 不得参加 post barrier')
+  assert.deepEqual((await generationStorage.read<string[]>(generationController.key))?.value, ['newer-generation'])
+
+  hotController.close()
+  unmanagedController.close()
+  managedController.close()
+  failedPreController.close()
+  epochController.close()
+  deltaController.close()
+  postEpochController.close()
+  generationController.close()
+}
+
+function activationHandle(options: {
+  register?: (participant: PageDataActivationParticipant) => PageDataActivationDecision | Promise<PageDataActivationDecision>
+  stabilize?: (participant: PageDataActivationParticipant & { baseline: PageDataRevisionToken }) => PageDataActivationDecision | Promise<PageDataActivationDecision>
+}): PageDataActivationHandle {
+  return {
+    register: async (participant) => options.register?.(participant)
+      ?? activationFailure('unavailable', 'pre', participant),
+    stabilize: async (participant) => options.stabilize?.(participant)
+      ?? activationFailure('unavailable', 'post', participant),
+    trigger: () => undefined,
+    deactivate: () => undefined,
+    dispose: () => undefined
+  }
+}
+
+function confirmedActivation(
+  phase: PageDataActivationPhase,
+  participant: PageDataActivationParticipant,
+  action: 'unchanged' | 'delta' | 'reload' | 'reset',
+  currentToken: PageDataRevisionToken
+): PageDataActivationDecision {
+  return {
+    state: 'confirmed',
+    phase,
+    participant: { ...participant },
+    result: {
+      action,
+      token: { ...currentToken },
+      ...(action === 'delta' ? { changes: [{ kind: 'upsert', id: 'delta', fieldMask: ['name'] }] } : {}),
+      serverTime: '2026-07-17T12:00:31.000Z'
+    }
+  }
+}
+
+function activationFailure(
+  state: 'token_conflict' | 'late' | 'superseded' | 'unavailable',
+  phase: PageDataActivationPhase,
+  participant: PageDataActivationParticipant
+): PageDataActivationDecision {
+  return { state, phase, participant: { ...participant } }
 }
 
 async function testMicrotaskConfirmBatching(): Promise<void> {

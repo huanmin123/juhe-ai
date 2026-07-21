@@ -7,6 +7,7 @@ import type {
   PageDataRevisionToken,
   PageDataViewScope
 } from '@/api/domains/pageData'
+import type { PageDataActivationHandle, PageDataActivationParticipant } from './pageDataActivationCoordinator'
 
 const PAGE_DATA_CACHE_DATABASE = 'juhe-ai-page-data-cache-v2'
 const PAGE_DATA_CACHE_STORE = 'snapshots'
@@ -80,9 +81,11 @@ export interface PageDataCacheControllerOptions<T> {
   maxStabilityAttempts?: number
   cacheTtlMs?: number
   maxStaleMs?: number
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: PageDataDomain) => number
 }
 
-export type PageDataRequestCacheDefinition<T> = Omit<PageDataCacheControllerOptions<T>, 'storage' | 'confirm' | 'tabCoordinator' | 'now'>
+export type PageDataRequestCacheDefinition<T> = Omit<PageDataCacheControllerOptions<T>, 'storage' | 'confirm' | 'tabCoordinator' | 'now' | 'activation' | 'writeEpoch'>
 
 export interface PageDataRequestCacheManagerOptions {
   storage?: PageDataCacheStorage
@@ -90,6 +93,8 @@ export interface PageDataRequestCacheManagerOptions {
   confirmBatchKey?: string
   tabCoordinator?: PageDataTabCoordinator
   now?: () => Date
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: PageDataDomain) => number
 }
 
 export interface PageDataLoadResult<T> {
@@ -258,14 +263,18 @@ export class PageDataCacheController<T> {
 
   async load(): Promise<PageDataLoadResult<T>> {
     const cached = await this.storage.read<T>(this.key)
-    if (cached && this.isUsableCachedRecord(cached)) {
+    if (
+      cached
+      && this.isUsableCachedRecord(cached)
+      && (!this.options.activation || this.isActivationHotCachedRecord(cached))
+    ) {
       return {
         source: 'cache',
         data: cached.value,
         confirmed: false,
         cached: true,
         superseded: false,
-        confirmation: this.requestConfirm()
+        ...(this.options.activation ? {} : { confirmation: this.requestConfirm() })
       }
     }
     return this.refreshCurrent(false)
@@ -290,13 +299,16 @@ export class PageDataCacheController<T> {
       return { source: 'cache', data: outcome.data, confirmed: true, cached: true, superseded: false }
     }
     const generation = ++this.generation
+    const operationWriteEpoch = this.currentWriteEpoch()
     const data = await this.options.loadNetwork()
-    if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
     if (outcome.state === 'unchanged') {
       const current = await this.storage.read<T>(this.key)
-      if (current?.token && generation === this.generation && !this.closed) {
+      if (current?.token && this.isOperationCurrent(generation, operationWriteEpoch)) {
         const record = this.record(data, current.token, current.confirmedAt)
+        if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
         const written = await this.storage.writeIfCurrent(record)
+        if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
         if (written) this.publish(record)
         return { source: 'network', data, confirmed: written, cached: written, superseded: false }
       }
@@ -306,26 +318,47 @@ export class PageDataCacheController<T> {
 
   private async refreshCurrent(forceNetwork: boolean): Promise<PageDataLoadResult<T>> {
     const generation = ++this.generation
+    const operationWriteEpoch = this.currentWriteEpoch()
     const cached = await this.storage.read<T>(this.key)
-    if (forceNetwork && cached?.token) return this.refreshFromToken(generation, cached)
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) {
+      if (cached) return await this.supersededLoadResult(cached.value)
+      const data = await this.options.loadNetwork()
+      return await this.supersededLoadResult(data)
+    }
+    if (forceNetwork && cached?.token) return this.refreshFromToken(generation, operationWriteEpoch, cached)
     let baseline: ConfirmedPageDataDomain | undefined
     try {
-      baseline = await this.confirmDomain(cached?.token)
+      baseline = await this.confirmDomain(cached?.token, generation, operationWriteEpoch)
     } catch {
-      if (cached && !this.isUsableCachedRecord(cached)) await this.invalidateCache()
-      const data = await this.options.loadNetwork()
-      if (generation !== this.generation || this.closed) {
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) {
+        if (cached) return await this.supersededLoadResult(cached.value)
+        const data = await this.options.loadNetwork()
         return await this.supersededLoadResult(data)
       }
+      if (cached && !this.isUsableCachedRecord(cached)) await this.invalidateCache()
+      const data = await this.options.loadNetwork()
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) {
+        return await this.supersededLoadResult(data)
+      }
+      if (this.options.activation) {
+        return { source: 'network', data, confirmed: false, cached: false, superseded: false }
+      }
       const record = this.record(data)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
       const written = await this.storage.writeIfCurrent(record)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
       if (written) this.publish(record)
       return { source: 'network', data, confirmed: false, cached: written, superseded: false }
     }
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) {
+      if (cached) return await this.supersededLoadResult(cached.value)
+      const data = await this.options.loadNetwork()
+      return await this.supersededLoadResult(data)
+    }
     if (cached && baseline.action === 'unchanged' && sameRevisionToken(baseline.token, cached.token)) {
-      const touched = generation === this.generation
-        && !this.closed
+      const touched = this.isOperationCurrent(generation, operationWriteEpoch)
         && await this.storage.touch(this.key, baseline.token, baseline.serverTime)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(cached.value)
       if (touched) {
         return {
           source: 'cache',
@@ -336,8 +369,8 @@ export class PageDataCacheController<T> {
         }
       }
     }
-    const stable = await this.reloadStable(generation, baseline)
-    if (generation !== this.generation || this.closed) return await this.supersededLoadResult(stable.data)
+    const stable = await this.reloadStable(generation, operationWriteEpoch, baseline)
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(stable.data)
     return {
       source: 'network',
       data: stable.data,
@@ -394,18 +427,24 @@ export class PageDataCacheController<T> {
 
   private async confirmCurrent(): Promise<PageDataConfirmOutcome<T>> {
     const generation = ++this.generation
+    const operationWriteEpoch = this.currentWriteEpoch()
     const current = await this.storage.read<T>(this.key)
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current?.value }
     let result: ConfirmedPageDataDomain
     try {
-      result = await this.confirmDomain(current?.token)
+      result = await this.confirmDomain(current?.token, generation, operationWriteEpoch)
     } catch {
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current?.value }
       if (current && !this.isUsableCachedRecord(current)) {
         await this.invalidateCache()
         try {
           const data = await this.options.loadNetwork()
-          if (generation !== this.generation || this.closed) return { state: 'superseded', data }
+          if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
+          if (this.options.activation) return { state: 'unavailable', data }
           const record = this.record(data)
+          if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
           const written = await this.storage.writeIfCurrent(record)
+          if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
           if (written) this.publish(record)
           return { state: 'updated', data }
         } catch {
@@ -414,65 +453,106 @@ export class PageDataCacheController<T> {
       }
       return { state: 'unavailable', data: current?.value }
     }
-    if (generation !== this.generation || this.closed) return { state: 'superseded', data: current?.value }
-    if (result.action === 'unchanged' && current) {
-      await this.storage.touch(this.key, result.token, result.serverTime)
-      return { state: 'unchanged', data: current.value }
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current?.value }
+    if (result.action === 'unchanged' && current && sameRevisionToken(result.token, current.token)) {
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
+      const touched = await this.storage.touch(this.key, result.token, result.serverTime)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
+      return touched ? { state: 'unchanged', data: current.value } : { state: 'superseded', data: current.value }
     }
     if (result.action === 'delta' && current && this.options.applyDelta) {
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
       const next = this.options.applyDelta(current.value, result.changes ?? [])
       if (next !== undefined) {
         const record = this.record(next, result.token, result.serverTime)
-        const written = generation === this.generation && await this.storage.writeIfCurrent(record)
+        const written = this.isOperationCurrent(generation, operationWriteEpoch)
+          && await this.storage.writeIfCurrent(record)
+        if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
         if (written) this.publish(record)
         return written ? { state: 'updated', data: next } : { state: 'superseded', data: current.value }
       }
     }
-    if (result.action === 'reset') await this.invalidateCache()
-    const stable = await this.reloadStable(generation, result)
-    if (generation !== this.generation || this.closed) return { state: 'superseded', data: stable.data }
-    return { state: 'updated', data: stable.data }
+    if (result.action === 'reset' && this.isOperationCurrent(generation, operationWriteEpoch)) await this.invalidateCache()
+    const stable = await this.reloadStable(generation, operationWriteEpoch, result)
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: stable.data }
+    return this.options.activation && !stable.confirmed
+      ? { state: 'unavailable', data: stable.data }
+      : { state: 'updated', data: stable.data }
   }
 
-  private async refreshFromToken(generation: number, cached: PageDataCacheRecord<T>): Promise<PageDataLoadResult<T>> {
+  private async refreshFromToken(
+    generation: number,
+    operationWriteEpoch: number,
+    cached: PageDataCacheRecord<T>
+  ): Promise<PageDataLoadResult<T>> {
     const data = await this.options.loadNetwork()
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
     let after: ConfirmedPageDataDomain
     try {
-      after = await this.confirmDomain(cached.token)
+      after = this.options.activation
+        ? await this.stabilizeDomain(cached.token!, generation, operationWriteEpoch)
+        : await this.confirmDomain(cached.token, generation, operationWriteEpoch)
     } catch {
-      if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
       return { source: 'network', data, confirmed: false, cached: false, superseded: false }
     }
-    if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
     if (after.action === 'unchanged' && sameRevisionToken(after.token, cached.token)) {
       const record = this.record(data, after.token, after.serverTime)
-      if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
       const written = await this.storage.writeIfCurrent(record)
-      if (generation !== this.generation || this.closed) return await this.supersededLoadResult(data)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
       if (written) this.publish(record)
       return { source: 'network', data, confirmed: written, cached: written, superseded: false }
     }
-    if (after.action === 'reset') await this.invalidateCache()
-    const stable = await this.reloadStable(generation, after)
-    if (generation !== this.generation || this.closed) return await this.supersededLoadResult(stable.data)
+    if (this.options.activation) return { source: 'network', data, confirmed: false, cached: false, superseded: false }
+    if (after.action === 'reset' && this.isOperationCurrent(generation, operationWriteEpoch)) await this.invalidateCache()
+    const stable = await this.reloadStable(generation, operationWriteEpoch, after)
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(stable.data)
     return { source: 'network', data: stable.data, confirmed: stable.confirmed, cached: stable.cached, superseded: false }
   }
 
-  private async reloadStable(generation: number, initial: ConfirmedPageDataDomain): Promise<{ data: T; confirmed: boolean; cached: boolean }> {
+  private async reloadStable(
+    generation: number,
+    operationWriteEpoch: number,
+    initial: ConfirmedPageDataDomain
+  ): Promise<{ data: T; confirmed: boolean; cached: boolean }> {
     let baseline = initial
     let latest = await this.options.loadNetwork()
-    const attempts = Math.max(1, Math.min(Math.trunc(this.options.maxStabilityAttempts ?? 3), 5))
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (generation !== this.generation || this.closed) return { data: latest, confirmed: false, cached: false }
+    if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
+    if (this.options.activation) {
       let after: ConfirmedPageDataDomain
       try {
-        after = await this.confirmDomain(baseline.token)
+        after = await this.stabilizeDomain(baseline.token, generation, operationWriteEpoch)
+      } catch {
+        return { data: latest, confirmed: false, cached: false }
+      }
+      if (
+        !this.isOperationCurrent(generation, operationWriteEpoch)
+        || after.action !== 'unchanged'
+        || !sameRevisionToken(after.token, baseline.token)
+      ) return { data: latest, confirmed: false, cached: false }
+      const record = this.record(latest, after.token, after.serverTime)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
+      const written = await this.storage.writeIfCurrent(record)
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
+      if (written) this.publish(record)
+      return { data: latest, confirmed: written, cached: written }
+    }
+    const attempts = Math.max(1, Math.min(Math.trunc(this.options.maxStabilityAttempts ?? 3), 5))
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
+      let after: ConfirmedPageDataDomain
+      try {
+        after = await this.confirmDomain(baseline.token, generation, operationWriteEpoch)
       } catch {
         return { data: latest, confirmed: false, cached: false }
       }
       if (after.action === 'unchanged' && sameRevisionToken(after.token, baseline.token)) {
         const record = this.record(latest, after.token, after.serverTime)
-        const written = generation === this.generation && await this.storage.writeIfCurrent(record)
+        const written = this.isOperationCurrent(generation, operationWriteEpoch)
+          && await this.storage.writeIfCurrent(record)
+        if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
         if (written) this.publish(record)
         return { data: latest, confirmed: written, cached: written }
       }
@@ -482,7 +562,16 @@ export class PageDataCacheController<T> {
     return { data: latest, confirmed: false, cached: false }
   }
 
-  private async confirmDomain(token?: PageDataRevisionToken): Promise<ConfirmedPageDataDomain> {
+  private async confirmDomain(
+    token: PageDataRevisionToken | undefined,
+    generation: number,
+    operationWriteEpoch: number
+  ): Promise<ConfirmedPageDataDomain> {
+    if (this.options.activation) {
+      const decision = await this.options.activation.register(this.participant(generation, operationWriteEpoch, token))
+      if (decision.state !== 'confirmed' || decision.phase !== 'pre') throw new Error('页面级前置确认不可用')
+      return this.activationResult(decision.result)
+    }
     const result = await requestBatchedConfirm(this.options.confirm, this.options.confirmBatchKey, {
       viewScope: this.options.viewScope,
       ...(this.options.targetSystemAccountId ? { targetSystemAccountId: this.options.targetSystemAccountId } : {}),
@@ -491,6 +580,54 @@ export class PageDataCacheController<T> {
     const domain = result.domains[this.options.domain]
     if (!domain || domain.token.domain !== this.options.domain) throw new Error('页面数据确认响应缺少目标数据域')
     return { ...domain, serverTime: result.serverTime }
+  }
+
+  private async stabilizeDomain(
+    baseline: PageDataRevisionToken,
+    generation: number,
+    operationWriteEpoch: number
+  ): Promise<ConfirmedPageDataDomain> {
+    const activation = this.options.activation
+    if (!activation) return this.confirmDomain(baseline, generation, operationWriteEpoch)
+    const decision = await activation.stabilize({
+      ...this.participant(generation, operationWriteEpoch, baseline),
+      baseline: { ...baseline }
+    })
+    if (decision.state !== 'confirmed' || decision.phase !== 'post') throw new Error('页面级后置确认不可用')
+    return this.activationResult(decision.result)
+  }
+
+  private activationResult(result: ConfirmedPageDataDomain): ConfirmedPageDataDomain {
+    if (result.token.domain !== this.options.domain) throw new Error('页面级确认响应缺少目标数据域')
+    return {
+      ...result,
+      token: { ...result.token },
+      ...(result.changes ? { changes: result.changes.map((change) => ({ ...change, fieldMask: [...change.fieldMask] })) } : {})
+    }
+  }
+
+  private participant(
+    generation: number,
+    operationWriteEpoch: number,
+    token?: PageDataRevisionToken
+  ): PageDataActivationParticipant {
+    return {
+      resourceKey: this.key,
+      domain: this.options.domain,
+      ...(token ? { token: { ...token } } : {}),
+      generation,
+      writeEpoch: operationWriteEpoch
+    }
+  }
+
+  private currentWriteEpoch(): number {
+    return this.options.writeEpoch?.(this.options.domain) ?? 0
+  }
+
+  private isOperationCurrent(generation: number, operationWriteEpoch: number): boolean {
+    return !this.closed
+      && generation === this.generation
+      && operationWriteEpoch === this.currentWriteEpoch()
   }
 
   private record(value: T, token?: PageDataRevisionToken, confirmedAt?: string): PageDataCacheRecord<T> {
@@ -515,6 +652,12 @@ export class PageDataCacheController<T> {
     const maxStaleMs = Math.max(1_000, Math.trunc(this.options.maxStaleMs))
     const confirmedAtMs = Date.parse(record.confirmedAt ?? record.writtenAt)
     return Number.isFinite(confirmedAtMs) && this.now().getTime() - confirmedAtMs <= maxStaleMs
+  }
+
+  private isActivationHotCachedRecord(record: PageDataCacheRecord<T>): boolean {
+    const confirmedAtMs = Date.parse(record.confirmedAt ?? record.writtenAt)
+    return Number.isFinite(confirmedAtMs)
+      && this.now().getTime() - confirmedAtMs <= DEFAULT_CONFIRM_INTERVAL_MS
   }
 
   private async supersededLoadResult(fallback: T): Promise<PageDataLoadResult<T>> {
@@ -693,7 +836,9 @@ export class PageDataRequestCacheManager<T> {
       confirm: this.options.confirm,
       confirmBatchKey: this.options.confirmBatchKey,
       tabCoordinator: this.options.tabCoordinator,
-      now: this.options.now
+      now: this.options.now,
+      activation: this.options.activation,
+      writeEpoch: this.options.writeEpoch
     })
     const active = {
       key,

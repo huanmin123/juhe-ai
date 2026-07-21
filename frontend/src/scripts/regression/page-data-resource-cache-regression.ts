@@ -7,6 +7,10 @@ import type {
   PageDataConfirmResult,
   PageDataRevisionToken
 } from '../../api/domains/pageData'
+import type {
+  PageDataActivationHandle,
+  PageDataActivationParticipant
+} from '../../shared/pageDataActivationCoordinator'
 import {
   BrowserPageDataTabCoordinator,
   createMemoryPageDataCacheStorage,
@@ -34,6 +38,8 @@ type ResourceCacheConstructor = new (options: {
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
   tabCoordinator: PageDataTabCoordinator
   now?: () => Date
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: 'providers.catalog') => number
 }) => ResourceCache
 
 const resourceModule = await import(pathToFileURL(resourceModulePath).href) as {
@@ -195,6 +201,54 @@ registryNowMs += 300_001
 assert.deepEqual((await registryCache.load(registryRequest())).data, ['registry-2'], '调用方未显式配置时必须采用 providers.catalog 注册表的 maxStaleMs，超时且确认失败后回源')
 assert.equal(registryNetworkLoads, 2)
 
+let managedRegisters = 0
+let managedStabilizes = 0
+let managedLegacyConfirms = 0
+const managedActivation: PageDataActivationHandle = {
+  register: async (participant) => {
+    managedRegisters += 1
+    assertManagedParticipant(participant)
+    return {
+      state: 'confirmed',
+      phase: 'pre',
+      participant,
+      result: { action: 'reload', token: token(8), serverTime: '2026-07-18T12:00:00.000Z' }
+    }
+  },
+  stabilize: async (participant) => {
+    managedStabilizes += 1
+    assertManagedParticipant(participant)
+    assert.equal(participant.baseline.sequence, 8)
+    return {
+      state: 'confirmed',
+      phase: 'post',
+      participant,
+      result: { action: 'unchanged', token: token(8), serverTime: '2026-07-18T12:00:00.000Z' }
+    }
+  },
+  trigger: () => undefined,
+  deactivate: () => undefined,
+  dispose: () => undefined
+}
+const managedResourceCache = new resourceModule.PageDataResourceCache({
+  storage: createMemoryPageDataCacheStorage(),
+  tabCoordinator,
+  activation: managedActivation,
+  writeEpoch: () => 12,
+  confirm: async () => {
+    managedLegacyConfirms += 1
+    throw new Error('受管 resource cache 不得调用私有 confirm')
+  }
+})
+const managedResource = await managedResourceCache.load({
+  ...request(),
+  cacheKey: { ...request().cacheKey, scope: 'self:managed-resource' },
+  loadNetwork: async () => ['managed-resource']
+})
+assert.deepEqual(managedResource.data, ['managed-resource'])
+assert.equal(managedResource.confirmed, true)
+assert.deepEqual([managedRegisters, managedStabilizes, managedLegacyConfirms], [1, 1, 0], 'resource cache 必须透传 activation/writeEpoch 并复用 pre/post barrier')
+
 const resourceSource = readFileSync(resourceModulePath, 'utf8')
 assert.match(resourceSource, /invalidateDefaultPageDataResourceCache[\s\S]{0,700}createPageDataCacheStorage\(\)/, '默认 resource cache 尚未实例化时也必须直接清理 IndexedDB domain')
 assert.match(resourceSource, /onDomainInvalidated/, 'resource cache 必须接收其他标签页发出的按域失效广播')
@@ -202,5 +256,11 @@ assert.match(resourceSource, /onDomainInvalidated/, 'resource cache 必须接收
 cache.close()
 routeCache.close()
 registryCache.close()
+managedResourceCache.close()
 tabCoordinator.close()
 console.log('页面 resource cache 回归通过：cache-first、轻量确认、并发合并、scope 隔离和 domain 失效生效')
+
+function assertManagedParticipant(participant: PageDataActivationParticipant): void {
+  assert.equal(participant.domain, 'providers.catalog')
+  assert.equal(participant.writeEpoch, 12)
+}

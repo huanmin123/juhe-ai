@@ -13,6 +13,7 @@ import {
   type PageDataRequestCacheDefinition,
   type PageDataTabCoordinator
 } from './pageDataCache'
+import type { PageDataActivationHandle } from './pageDataActivationCoordinator'
 import { pageDataDomainRegistry } from './pageDataDomainRegistry'
 
 interface PageDataResourceCacheOptions {
@@ -22,6 +23,8 @@ interface PageDataResourceCacheOptions {
   tabCoordinator?: PageDataTabCoordinator
   now?: () => Date
   maxControllers?: number
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: PageDataDomain) => number
 }
 
 interface ResourceEntry {
@@ -39,6 +42,8 @@ export class PageDataResourceCache {
   private readonly tabCoordinator: PageDataTabCoordinator
   private readonly now?: () => Date
   private readonly maxControllers: number
+  private readonly activation?: PageDataActivationHandle
+  private readonly writeEpoch?: (domain: PageDataDomain) => number
   private readonly entries = new Map<string, ResourceEntry>()
   private readonly pendingLoads = new Map<string, Promise<PageDataLoadResult<unknown>>>()
   private readonly removeDomainInvalidationListener: () => void
@@ -51,6 +56,8 @@ export class PageDataResourceCache {
     this.tabCoordinator = options.tabCoordinator ?? getDefaultPageDataTabCoordinator()
     this.now = options.now
     this.maxControllers = Math.max(1, Math.min(Math.trunc(options.maxControllers ?? 100), 500))
+    this.activation = options.activation
+    this.writeEpoch = options.writeEpoch
     this.removeDomainInvalidationListener = this.tabCoordinator.onDomainInvalidated((invalidation) => {
       void this.invalidateLocal(invalidation.domain, invalidation.scope, invalidation.route, false)
     })
@@ -114,12 +121,16 @@ export class PageDataResourceCache {
         confirm: this.confirm,
         confirmBatchKey: this.confirmBatchKey,
         tabCoordinator: this.tabCoordinator,
-        now: this.now
+        now: this.now,
+        activation: this.activation,
+        writeEpoch: this.writeEpoch
       } as PageDataRequestCacheDefinition<unknown> & {
         storage: PageDataCacheStorage
         confirm: PageDataResourceCacheOptions['confirm']
         tabCoordinator: PageDataTabCoordinator
         now?: () => Date
+        activation?: PageDataActivationHandle
+        writeEpoch?: (domain: PageDataDomain) => number
       }),
       domain: request.domain,
       scope: request.cacheKey.scope,
