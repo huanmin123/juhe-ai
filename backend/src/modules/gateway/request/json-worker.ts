@@ -138,14 +138,18 @@ function captureWorkerErrorValue(
     }
   }
 
+  const name = safeWorkerErrorProperty(error, 'name') ?? 'Error'
+  const message = safeWorkerErrorProperty(error, 'message') ?? ''
+  const stack = safeWorkerErrorProperty(error, 'stack')
   const envelope: GatewayJsonWorkerErrorEnvelope = {
-    name: captureWorkerErrorText(error.name || 'Error', state),
-    message: captureWorkerErrorText(error.message, state),
-    ...(error.stack ? { stack: captureWorkerErrorText(error.stack, state) } : {})
+    name: captureWorkerErrorText(name || 'Error', state),
+    message: captureWorkerErrorText(message, state),
+    ...(stack ? { stack: captureWorkerErrorText(stack, state) } : {})
   }
-  if (error.cause !== undefined) {
+  const cause = safeWorkerErrorValue(error, 'cause')
+  if (cause !== undefined) {
     if (depth < gatewayJsonWorkerErrorMaxCauseDepth && state.remainingBytes > 0) {
-      envelope.cause = captureWorkerErrorValue(error.cause, state, depth + 1)
+      envelope.cause = captureWorkerErrorValue(cause, state, depth + 1)
     } else {
       state.truncated = true
     }
@@ -154,15 +158,47 @@ function captureWorkerErrorValue(
 }
 
 function captureWorkerErrorText(value: string, state: GatewayJsonWorkerErrorCaptureState): string {
-  const source = Buffer.from(value, 'utf8')
-  const retainedBytes = Math.min(
-    source.byteLength,
-    gatewayJsonWorkerErrorMaxStringBytes,
-    state.remainingBytes
-  )
-  if (retainedBytes < source.byteLength) state.truncated = true
+  const maxBytes = Math.min(gatewayJsonWorkerErrorMaxStringBytes, state.remainingBytes)
+  const retained = truncateWorkerErrorText(value, maxBytes)
+  const retainedBytes = Buffer.byteLength(retained, 'utf8')
+  if (retainedBytes < Buffer.byteLength(value, 'utf8')) state.truncated = true
   state.remainingBytes = Math.max(0, state.remainingBytes - retainedBytes)
-  return source.subarray(0, retainedBytes).toString('utf8')
+  return retained
+}
+
+function safeWorkerErrorProperty(error: Error, key: 'name' | 'message' | 'stack'): string | undefined {
+  try {
+    const value = (error as unknown as Record<string, unknown>)[key]
+    return typeof value === 'string' ? value : undefined
+  } catch {
+    return `[unreadable ${key}]`
+  }
+}
+
+function safeWorkerErrorValue(error: Error, key: 'cause'): unknown {
+  try {
+    return (error as unknown as Record<string, unknown>)[key]
+  } catch {
+    return '[unreadable cause]'
+  }
+}
+
+function truncateWorkerErrorText(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return ''
+  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value
+  let low = 0
+  let high = value.length
+  while (low < high) {
+    const midpoint = Math.ceil((low + high) / 2)
+    if (Buffer.byteLength(value.slice(0, midpoint), 'utf8') <= maxBytes) low = midpoint
+    else high = midpoint - 1
+  }
+  let end = low
+  if (end > 0) {
+    const last = value.charCodeAt(end - 1)
+    if (last >= 0xD800 && last <= 0xDBFF) end -= 1
+  }
+  return value.slice(0, end)
 }
 
 function isOpenAIOAuthCodexAdapterErrorLike(error: unknown): error is {

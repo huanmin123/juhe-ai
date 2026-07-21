@@ -19,6 +19,7 @@ export interface RequestContext {
   stageSummaries?: Array<{ sequence: number; stage: string; outcome: string; durationMs: number }>
   stageSummaryDropped?: number
   timingSummaryLogged?: boolean
+  terminalExpectedFailure?: boolean
   method: string
   path: string
   originalUrl: string
@@ -184,6 +185,9 @@ export function logRequestStage(
     } else {
       context.stageSummaryDropped = (context.stageSummaryDropped ?? 0) + 1
     }
+    if (outcome === 'expected_failure' && fields.terminalExpectedFailure === true) {
+      context.terminalExpectedFailure = true
+    }
   }
   if (outcome === 'unexpected_failure') {
     requestLogger.error({ ...stageFields, event: 'gateway.request.failure' }, '请求阶段发生未预期异常')
@@ -218,6 +222,7 @@ export function buildRequestStageLogFields(
     stageSnapshot,
     queueSnapshot,
     retryState,
+    terminalExpectedFailure: _terminalExpectedFailure,
     traceId: suppliedTraceIdValue,
     ...businessFields
   } = fields
@@ -227,7 +232,11 @@ export function buildRequestStageLogFields(
     ? captureUnexpectedFailureContext(
       failureError ?? new Error(`${stage} failed without original error context`),
       {
-        stageSnapshot: recordValue(stageSnapshot) ?? businessFields,
+        stageSnapshot: recordValue(stageSnapshot) ?? {
+          currentStage: stage,
+          completedStages: context?.stageSummaries ?? [],
+          currentFields: businessFields
+        },
         queueSnapshot: recordValue(queueSnapshot),
         retryState: recordValue(retryState),
         decisionInputs: recordValue(decisionInputs)
@@ -366,8 +375,8 @@ export function resolveRequestSummaryOutcome(context: RequestContext, statusCode
   if (context.stageSummaries?.some((stage) => stage.outcome === 'unexpected_failure')) {
     return 'unexpected_failure'
   }
-  if (statusCode >= 500 && !context.stageSummaries?.some((stage) => stage.outcome === 'expected_failure')) {
-    return 'unexpected_failure'
+  if (statusCode >= 500) {
+    return context.terminalExpectedFailure ? 'expected_failure' : 'unexpected_failure'
   }
   if (statusCode >= 400) {
     return 'expected_failure'

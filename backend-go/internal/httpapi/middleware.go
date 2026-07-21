@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felixge/httpsnoop"
+	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
 	"juhe-ai/backend-go/internal/logging"
@@ -48,12 +50,19 @@ func requestLoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handl
 					slog.String("path", r.URL.Path),
 				)
 			}
-			next.ServeHTTP(w, r)
+			metrics := httpsnoop.CaptureMetrics(next, w, r)
 			if logger != nil {
+				routeTemplate := ""
+				if routeContext := chi.RouteContext(r.Context()); routeContext != nil {
+					routeTemplate = routeContext.RoutePattern()
+				}
 				logger.InfoContext(r.Context(), "HTTP 请求完成",
 					slog.String("event", "http.request.complete"),
 					slog.String("method", r.Method),
 					slog.String("path", r.URL.Path),
+					slog.String("routeTemplate", routeTemplate),
+					slog.Int("statusCode", metrics.Code),
+					slog.Int64("responseBytes", metrics.Written),
 					slog.Int64("durationMs", time.Since(started).Milliseconds()),
 				)
 			}

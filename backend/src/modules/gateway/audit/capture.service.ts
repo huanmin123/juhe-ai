@@ -567,6 +567,7 @@ export class AuditCaptureContext {
       captureStatus: auditLog.captureStatus,
       ...(!success ? {
         failureReason: outcome,
+        terminalExpectedFailure: true,
         decisionInputs: {
           statusCode: input.statusCode,
           errorPhase: input.errorPhase,

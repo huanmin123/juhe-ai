@@ -101,9 +101,16 @@ try {
   slowDestination.destroy()
 
   const failingDestination = new FailingWritable()
+  const destinationErrors: Array<{ destination: string; operation: string; code?: string }> = []
   const failedObserved = createObservedLogStreamForTest([
     { name: 'failed-file', stream: failingDestination }
-  ])
+  ], {
+    onDestinationError: (metadata) => destinationErrors.push({
+      destination: metadata.destination,
+      operation: metadata.operation,
+      code: metadata.code
+    })
+  })
   failedObserved.stream.write(Buffer.from('failed-log-line\n'))
   await new Promise<void>((resolve) => failingDestination.once('close', resolve))
   await new Promise<void>((resolve) => setImmediate(resolve))
@@ -124,6 +131,11 @@ try {
     path: 'C:\\logs\\juhe-ai.log'
   })
   assert((failedStats.lastError?.message.length ?? 0) <= 1024)
+  assert.deepEqual(destinationErrors, [{
+    destination: 'failed-file',
+    operation: 'write',
+    code: 'ENOSPC'
+  }], 'writer 首次故障必须触发独立诊断且同一目的地不递归放大')
   failedObserved.stream.destroy()
 } finally {
   process.off('uncaughtException', onUncaughtException)

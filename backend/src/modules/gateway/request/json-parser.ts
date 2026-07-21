@@ -615,6 +615,21 @@ function cancelJob(job: GatewayJsonWorkerJob): void {
   }
   clearJobTimer(job)
   removeAbortListener(job)
+  const now = Date.now()
+  logger.info({
+    event: 'gateway_json_worker_job_canceled',
+    traceId: job.traceId,
+    jobId: gatewayJsonWorkerJobId(job),
+    parentId: gatewayJsonWorkerParentId(job),
+    jobType: job.type,
+    rawBodyBytes: job.rawBody.byteLength,
+    queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : now - job.enqueuedAtMs,
+    workerDurationMs: job.startedAtMs ? now - job.startedAtMs : undefined,
+    totalMs: now - job.enqueuedAtMs,
+    queuedJobs: queuedJobs.length,
+    queuedBytes: queuedJobsBytes,
+    wasActive
+  }, '网关 JSON worker 任务已取消')
   job.reject(new Error('网关 JSON worker 任务已取消'))
   if (wasActive && activeSlot) {
     restartJsonWorker(activeSlot)
@@ -650,7 +665,9 @@ function logJobCompleted(job: GatewayJsonWorkerJob): void {
   }
   if (job.rawBody.byteLength > gatewayJsonBodyLargeWarningBytes) {
     logger.info(fields, '网关 JSON worker 任务完成')
+    return
   }
+  logger.info(fields, '网关 JSON worker 任务完成')
 }
 
 function gatewayJsonWorkerJobId(job: GatewayJsonWorkerJob): string {

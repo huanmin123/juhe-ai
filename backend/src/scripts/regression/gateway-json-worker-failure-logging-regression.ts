@@ -28,8 +28,10 @@ const {
 
 const capturedErrors: Array<Record<string, unknown>> = []
 const capturedWarnings: Array<Record<string, unknown>> = []
+const capturedInfos: Array<Record<string, unknown>> = []
 const originalError = logger.error
 const originalWarn = logger.warn
+const originalInfo = logger.info
 const originalChild = logger.child
 let requestContextBindings: Record<string, unknown> | undefined
 let requestStartedFields: Record<string, unknown> | undefined
@@ -41,6 +43,9 @@ try {
   logger.warn = ((fields: Record<string, unknown>) => {
     capturedWarnings.push(fields)
   }) as typeof logger.warn
+  logger.info = ((fields: Record<string, unknown>) => {
+    capturedInfos.push(fields)
+  }) as typeof logger.info
   logger.child = ((bindings: Record<string, unknown>, options?: unknown) => {
     const child = originalChild.call(logger, bindings, options as never)
     requestContextBindings = bindings
@@ -164,9 +169,32 @@ try {
     0,
     '基础设施故障不能落入 warn 普通日志通道'
   )
+
+  const completedValue = await withRequestContext(requestContext, () => parseGatewayJsonBodyInWorker(
+    Buffer.from('{"model":"gpt-regression"}', 'utf8')
+  )) as { model?: unknown }
+  assert.equal(completedValue.model, 'gpt-regression')
+  const completedEvent = capturedInfos.find((event) => event.event === 'gateway_json_worker_job_completed')
+  assert(completedEvent, '普通快速 worker 任务也必须记录 info 完成事件')
+  assert.equal(completedEvent.traceId, traceId)
+  assert.equal(completedEvent.parentId, requestId)
+
+  const controller = new AbortController()
+  const canceledPromise = withRequestContext(requestContext, () => parseGatewayJsonBodyInWorker(
+    Buffer.from(JSON.stringify({ input: 'x'.repeat(8 * 1024 * 1024) }), 'utf8'),
+    30_000,
+    controller.signal
+  ))
+  controller.abort()
+  await assert.rejects(canceledPromise, /任务已取消/)
+  const canceledEvent = capturedInfos.find((event) => event.event === 'gateway_json_worker_job_canceled')
+  assert(canceledEvent, 'worker 取消必须记录 info 现场')
+  assert.equal(canceledEvent.traceId, traceId)
+  assert.equal(canceledEvent.parentId, requestId)
 } finally {
   logger.error = originalError
   logger.warn = originalWarn
+  logger.info = originalInfo
   logger.child = originalChild
   await stopGatewayJsonParseWorker()
 }

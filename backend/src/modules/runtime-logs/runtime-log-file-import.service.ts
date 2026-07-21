@@ -16,6 +16,7 @@ import {
   type RuntimeLogIndexInput
 } from '../../storage/runtime-logs.repository.js'
 import { setRotatedLogCleanupProtectionPredicate } from '../../shared/logger.js'
+import { writeBoundedProcessDiagnosticLineAsync } from '../../shared/process-fatal-diagnostic.js'
 import { parseRuntimeLogLineForIndex } from './runtime-log-line-parser.js'
 
 let importStarted = false
@@ -598,9 +599,9 @@ function writeRuntimeLogFileImportFailureDiagnostic(error: unknown, snapshot: Ru
     })}\n`
   }
   try {
-    process.stderr.write(line)
+    writeBoundedProcessDiagnosticLineAsync(line)
   } catch {
-    // stderr is the terminal fallback. Never route its own failure back into a consumed spool.
+    // The bounded stderr fallback must not route its own failure back into the consumed spool.
   }
 }
 

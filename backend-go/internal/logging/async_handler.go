@@ -2,9 +2,12 @@ package logging
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
 	"reflect"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -140,6 +143,8 @@ func (h *asyncSlogHandler) Handle(ctx context.Context, record slog.Record) error
 	record.AddAttrs(logContextAttrs(ctx)...)
 	if record.Level >= slog.LevelError {
 		record = boundFailureRecord(record)
+	} else {
+		record = boundNormalRecord(record)
 	}
 	item := asyncLogItem{handler: h.base, record: record.Clone(), bytes: estimateRecordBytes(record)}
 	h.dispatcher.acceptMu.RLock()
@@ -163,11 +168,12 @@ func (h *asyncSlogHandler) Handle(ctx context.Context, record slog.Record) error
 }
 
 func (h *asyncSlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &asyncSlogHandler{base: h.base.WithAttrs(attrs), dispatcher: h.dispatcher}
+	return &asyncSlogHandler{base: h.base.WithAttrs(boundHandlerAttrs(attrs)), dispatcher: h.dispatcher}
 }
 
 func (h *asyncSlogHandler) WithGroup(name string) slog.Handler {
-	return &asyncSlogHandler{base: h.base.WithGroup(name), dispatcher: h.dispatcher}
+	boundedName, _ := boundedFailureSnapshotValue(name, maxFailureSnapshotValueBytes)
+	return &asyncSlogHandler{base: h.base.WithGroup(boundedName), dispatcher: h.dispatcher}
 }
 
 func (d *asyncLogDispatcher) tryEnqueue(queue chan asyncLogItem, pendingBytes *atomic.Int64, maxBytes int64, item asyncLogItem, lane asyncLogLane) bool {
@@ -220,8 +226,108 @@ func (d *asyncLogDispatcher) run() {
 	}
 }
 
+type recordTruncationMetadata struct {
+	truncated            bool
+	originalMessageBytes int
+	originalAttrCount    int
+	fields               []slog.Attr
+}
+
+func (metadata *recordTruncationMetadata) addString(path string, value string) {
+	metadata.truncated = true
+	if len(metadata.fields) >= 16 {
+		return
+	}
+	hash := sha256.Sum256([]byte(value))
+	metadata.fields = append(metadata.fields, slog.Group(
+		"field"+strconv.Itoa(len(metadata.fields)),
+		slog.String("path", path),
+		slog.Int("originalBytes", len(value)),
+		slog.String("sha256", hex.EncodeToString(hash[:])),
+	))
+}
+
+func (metadata *recordTruncationMetadata) addOpaque(path string, typeName string) {
+	metadata.truncated = true
+	if len(metadata.fields) >= 16 {
+		return
+	}
+	metadata.fields = append(metadata.fields, slog.Group(
+		"field"+strconv.Itoa(len(metadata.fields)),
+		slog.String("path", path),
+		slog.String("type", typeName),
+	))
+}
+
+func (metadata *recordTruncationMetadata) addAttrs(record *slog.Record) {
+	if !metadata.truncated {
+		return
+	}
+	record.AddAttrs(
+		slog.Bool("truncated", true),
+		slog.String("truncationReason", "async_log_record_budget"),
+		slog.Int("originalMessageBytes", metadata.originalMessageBytes),
+		slog.Int("originalAttrCount", metadata.originalAttrCount),
+	)
+	if len(metadata.fields) > 0 {
+		record.AddAttrs(slog.Attr{Key: "truncatedFields", Value: slog.GroupValue(metadata.fields...)})
+	}
+}
+
+func boundNormalRecord(record slog.Record) slog.Record {
+	metadata := recordTruncationMetadata{
+		originalMessageBytes: len(record.Message),
+		originalAttrCount:    record.NumAttrs(),
+	}
+	boundedMessage, messageTruncated := boundedFailureSnapshotValue(record.Message, maxFailureSnapshotMessageBytes)
+	if messageTruncated {
+		metadata.addString("message", record.Message)
+	}
+	bounded := slog.NewRecord(record.Time, record.Level, boundedMessage, record.PC)
+	attrCount := 0
+	record.Attrs(func(attr slog.Attr) bool {
+		if attrCount >= maxFailureRecordAttrs {
+			metadata.truncated = true
+			return false
+		}
+		attrCount++
+		boundedAttr, _ := boundLogAttr(attr, 0, attr.Key, &metadata)
+		bounded.AddAttrs(boundedAttr)
+		return true
+	})
+	metadata.addAttrs(&bounded)
+	return bounded
+}
+
+func boundHandlerAttrs(attrs []slog.Attr) []slog.Attr {
+	metadata := recordTruncationMetadata{originalAttrCount: len(attrs)}
+	bounded := make([]slog.Attr, 0, min(len(attrs), maxFailureRecordAttrs)+2)
+	for index, attr := range attrs {
+		if index >= maxFailureRecordAttrs {
+			metadata.truncated = true
+			break
+		}
+		boundedAttr, _ := boundLogAttr(attr, 0, attr.Key, &metadata)
+		bounded = append(bounded, boundedAttr)
+	}
+	if metadata.truncated {
+		bounded = append(bounded,
+			slog.Bool("withAttrsTruncated", true),
+			slog.String("withAttrsTruncationReason", "async_log_record_budget"),
+		)
+	}
+	return bounded
+}
+
 func boundFailureRecord(record slog.Record) slog.Record {
-	boundedMessage, _ := boundedFailureSnapshotValue(record.Message, maxFailureSnapshotMessageBytes)
+	metadata := recordTruncationMetadata{
+		originalMessageBytes: len(record.Message),
+		originalAttrCount:    record.NumAttrs(),
+	}
+	boundedMessage, messageTruncated := boundedFailureSnapshotValue(record.Message, maxFailureSnapshotMessageBytes)
+	if messageTruncated {
+		metadata.addString("message", record.Message)
+	}
 	bounded := slog.NewRecord(record.Time, record.Level, boundedMessage, record.PC)
 	hasFailureClass := false
 	failureClass := ""
@@ -237,7 +343,7 @@ func boundFailureRecord(record slog.Record) slog.Record {
 			return false
 		}
 		attrCount++
-		boundedAttr, attrError := boundFailureAttr(attr, 0)
+		boundedAttr, attrError := boundLogAttr(attr, 0, attr.Key, &metadata)
 		bounded.AddAttrs(boundedAttr)
 		switch attr.Key {
 		case "failureClass":
@@ -272,6 +378,7 @@ func boundFailureRecord(record slog.Record) slog.Record {
 		}
 	}
 	if recordedError == nil {
+		metadata.addAttrs(&bounded)
 		return bounded
 	}
 	if !hasErrorType {
@@ -279,53 +386,75 @@ func boundFailureRecord(record slog.Record) slog.Record {
 		bounded.AddAttrs(slog.String("errorType", errorType))
 	}
 	if !hasErrorMessage {
-		bounded.AddAttrs(slog.String("errorMessage", boundedErrorMessage(recordedError)))
+		errorMessage, errorMessageTruncated := boundedErrorSnapshot(recordedError)
+		if errorMessageTruncated {
+			metadata.addOpaque("errorMessage", boundedTypeName(recordedError))
+		}
+		bounded.AddAttrs(slog.String("errorMessage", errorMessage))
 	}
 	if !hasErrorCauseChain {
 		if causes := failureErrorCauseChain(recordedError); len(causes) > 0 {
 			bounded.AddAttrs(slog.Any("errorCauseChain", causes))
 		}
 	}
+	metadata.addAttrs(&bounded)
 	return bounded
 }
 
-func boundFailureAttr(attr slog.Attr, depth int) (slog.Attr, error) {
+func boundLogAttr(attr slog.Attr, depth int, path string, metadata *recordTruncationMetadata) (slog.Attr, error) {
 	value := attr.Value
 	limit := failureSnapshotLimit(attr.Key)
 	switch value.Kind() {
 	case slog.KindString:
-		bounded, _ := boundedFailureSnapshotValue(value.String(), limit)
+		original := value.String()
+		bounded, truncated := boundedFailureSnapshotValue(original, limit)
+		if truncated {
+			metadata.addString(path, original)
+		}
 		return slog.String(attr.Key, bounded), nil
 	case slog.KindBool, slog.KindDuration, slog.KindFloat64, slog.KindInt64, slog.KindTime, slog.KindUint64:
 		return attr, nil
 	case slog.KindGroup:
 		if depth >= maxFailureGroupDepth {
+			metadata.addOpaque(path, "slog.Group")
 			return slog.String(attr.Key, "[truncated slog.Group]"), nil
 		}
 		group := value.Group()
 		attrs := make([]slog.Attr, 0, min(len(group), maxFailureRecordAttrs))
 		for index, nested := range group {
 			if index >= maxFailureRecordAttrs {
+				metadata.addOpaque(path, "slog.Group")
 				break
 			}
-			bounded, _ := boundFailureAttr(nested, depth+1)
+			nestedPath := nested.Key
+			if path != "" {
+				nestedPath = path + "." + nested.Key
+			}
+			bounded, _ := boundLogAttr(nested, depth+1, nestedPath, metadata)
 			attrs = append(attrs, bounded)
 		}
 		return slog.Attr{Key: attr.Key, Value: slog.GroupValue(attrs...)}, nil
 	case slog.KindAny:
 		anyValue := value.Any()
 		if err, ok := anyValue.(error); ok {
-			return slog.String(attr.Key, "[captured error: see errorType/errorMessage/errorCauseChain]"), err
+			message, truncated := boundedErrorSnapshot(err)
+			if truncated {
+				metadata.addOpaque(path, boundedTypeName(err))
+			}
+			return slog.String(attr.Key, message), err
 		}
 		typeName := "<nil>"
 		if valueType := reflect.TypeOf(anyValue); valueType != nil {
 			typeName = valueType.String()
 		}
+		metadata.addOpaque(path, typeName)
 		bounded, _ := boundedFailureSnapshotValue("[opaque slog.Any type="+typeName+"]", maxFailureSnapshotValueBytes)
 		return slog.String(attr.Key, bounded), nil
 	case slog.KindLogValuer:
+		metadata.addOpaque(path, "slog.LogValuer")
 		return slog.String(attr.Key, "[opaque slog.LogValuer]"), nil
 	default:
+		metadata.addOpaque(path, "slog.Value")
 		return slog.String(attr.Key, "[opaque slog.Value]"), nil
 	}
 }
@@ -350,9 +479,14 @@ type failureErrorCause struct {
 	Message string `json:"message"`
 }
 
-func failureErrorCauseChain(err error) []failureErrorCause {
+func failureErrorCauseChain(err error) (causes []failureErrorCause) {
 	const maxCauseDepth = 8
-	causes := make([]failureErrorCause, 0, maxCauseDepth)
+	causes = make([]failureErrorCause, 0, maxCauseDepth)
+	defer func() {
+		if recover() != nil && len(causes) < maxCauseDepth {
+			causes = append(causes, failureErrorCause{Type: "panic", Message: "error unwrap panicked"})
+		}
+	}()
 	var appendChildren func(error)
 	var appendCause func(error)
 	appendCause = func(cause error) {

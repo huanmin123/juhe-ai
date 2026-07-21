@@ -187,12 +187,19 @@ assert((clockSafeStages[0]?.durationMs as number) < 1_000)
 assert.equal(failureLaneEvents.length, 1)
 assert.equal(failureLaneEvents[0]?.event, 'gateway.request.failure')
 assert.equal(failureLaneEvents[0]?.failureClass, 'unexpected')
+const failureStageSnapshot = failureLaneEvents[0]?.stageSnapshot as {
+  currentStage?: unknown
+  completedStages?: unknown[]
+} | undefined
+assert.equal(failureStageSnapshot?.currentStage, 'upstream.dispatch.failed')
+assert.equal(failureStageSnapshot?.completedStages?.length, 1)
+assert.equal((failureStageSnapshot?.completedStages?.[0] as { stage?: unknown })?.stage, 'request.accepted')
 assert.equal(resolveRequestSummaryOutcome(clockSafeContext, 200), 'unexpected_failure')
 assert.equal(resolveRequestSummaryOutcome({ ...clockSafeContext, stageSummaries: [] }, 503), 'unexpected_failure')
 assert.equal(resolveRequestSummaryOutcome({
   ...clockSafeContext,
   stageSummaries: [{ sequence: 1, stage: 'upstream.dispatch.failed', outcome: 'expected_failure', durationMs: 1 }]
-}, 503), 'expected_failure')
+}, 503), 'unexpected_failure')
 assert.equal(resolveRequestSummaryOutcome({ ...clockSafeContext, stageSummaries: [] }, 200), 'success')
 
 const rawLoggerProbe = spawnSync(process.execPath, [

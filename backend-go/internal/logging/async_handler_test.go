@@ -438,6 +438,85 @@ func TestRuntimeBoundsFailureRecordBeforePrimaryLaneAndSkipsOpaqueValues(t *test
 	}
 }
 
+func TestRuntimeBoundsNormalRecordAndWithAttrsBeforeQueue(t *testing.T) {
+	var output lockedBuffer
+	runtime, err := NewRuntime("info", &output, RuntimeOptions{
+		Role:             "go-test",
+		NormalQueueBytes: 16 * 1024,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logValuerCalls := 0
+	cycle := &selfReferentialValue{}
+	cycle.Self = cycle
+	large := strings.Repeat("normal-value-", 128*1024)
+	runtime.Logger.With("boundWithAttr", large).Info(
+		"normal record must be bounded before enqueue",
+		"event", "normal.primary.bounded",
+		"large", large,
+		"opaque", cycle,
+		"lazy", panicLogValuer{calls: &logValuerCalls},
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if logValuerCalls != 0 {
+		t.Fatalf("normal LogValuer resolved %d times", logValuerCalls)
+	}
+	event := findJSONEvent(t, output.String(), "normal.primary.bounded")
+	for _, key := range []string{"boundWithAttr", "large"} {
+		value, ok := event[key].(string)
+		if !ok || value == "" || len(value) > maxFailureSnapshotValueBytes {
+			t.Fatalf("%s not bounded: %#v", key, event[key])
+		}
+	}
+	if opaque, ok := event["opaque"].(string); !ok || !strings.Contains(opaque, "opaque") {
+		t.Fatalf("normal slog.Any was not replaced by a bounded marker: %#v", event["opaque"])
+	}
+	if lazy, ok := event["lazy"].(string); !ok || !strings.Contains(lazy, "LogValuer") {
+		t.Fatalf("normal LogValuer was not replaced by a bounded marker: %#v", event["lazy"])
+	}
+	if event["truncated"] != true || event["truncationReason"] == "" {
+		t.Fatalf("normal truncation facts missing: %#v", event)
+	}
+	if len(output.String()) > 16*1024 {
+		t.Fatalf("bounded normal record produced %d bytes", len(output.String()))
+	}
+}
+
+type panicUnwrapError struct{}
+
+func (panicUnwrapError) Error() string { return "panic unwrap" }
+func (panicUnwrapError) Unwrap() error { panic("unwrap getter failed") }
+
+func TestRuntimeFailureCauseCaptureDoesNotPropagateUnwrapPanic(t *testing.T) {
+	var output lockedBuffer
+	runtime, err := NewRuntime("info", &output, RuntimeOptions{Role: "go-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				t.Fatalf("logger.Error propagated Unwrap panic: %v", recovered)
+			}
+		}()
+		runtime.Logger.Error("hostile error", "event", "failure.unwrap.panic", "error", panicUnwrapError{})
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	event := findJSONEvent(t, output.String(), "failure.unwrap.panic")
+	if event["failureClass"] != "unexpected" || event["errorMessage"] != "panic unwrap" {
+		t.Fatalf("hostile error evidence missing: %#v", event)
+	}
+}
+
 type asyncFailingWriter struct {
 	err error
 }

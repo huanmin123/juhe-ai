@@ -14,7 +14,7 @@ import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
-import { writeProcessFatalDiagnostic } from './process-fatal-diagnostic.js'
+import { writeProcessDiagnosticAsync, writeProcessFatalDiagnostic } from './process-fatal-diagnostic.js'
 
 interface RotatingFileLogStreamOptions {
   directory: string
@@ -93,11 +93,12 @@ interface LogStreamBudgetOptions {
   failureReserveBytes: number
   maxFailureSnapshotBytes: number
   onFailureDrop?: (metadata: LogDropMetadata) => void
+  onDestinationError?: (metadata: LogDestinationErrorMetadata, error: unknown) => void
 }
 
 const defaultLogStreamBudgetOptions: LogStreamBudgetOptions = {
-  maxPendingBytes: 8 * 1_024 * 1_024,
-  failureReserveBytes: 1 * 1_024 * 1_024,
+  maxPendingBytes: 64 * 1_024 * 1_024,
+  failureReserveBytes: 8 * 1_024 * 1_024,
   maxFailureSnapshotBytes: 4 * 1_024
 }
 
@@ -108,8 +109,14 @@ const warnLevelMarker = Buffer.from('"level":"warn"')
 class LogStreamDiagnostics {
   private readonly destinations = new Map<string, MutableLogDestinationStats>()
   private readonly seenErrors = new WeakSet<object>()
+  private readonly diagnosedErrorDestinations = new Set<string>()
   private lastError: LogDestinationErrorMetadata | undefined
   private lastDrop: LogDropMetadata | undefined
+
+  constructor(
+    private readonly onDestinationError?: (metadata: LogDestinationErrorMetadata, error: unknown) => void
+  ) {
+  }
 
   register(destination: string): void {
     this.state(destination)
@@ -147,6 +154,13 @@ class LogStreamDiagnostics {
     state.errorCount += 1
     state.lastError = metadata
     this.lastError = metadata
+    if (!this.diagnosedErrorDestinations.has(destination)) {
+      this.diagnosedErrorDestinations.add(destination)
+      try {
+        this.onDestinationError?.(metadata, error)
+      } catch {
+      }
+    }
   }
 
   recordDrop(destination: string, level: string, chunk: Buffer, maxPreviewBytes: number): LogDropMetadata {
@@ -359,6 +373,20 @@ class RotatingFileLogStream extends Writable {
     }
   }
 
+  _writev(
+    chunks: Array<{ chunk: Buffer | string; encoding: BufferEncoding }>,
+    callback: (error?: Error | null) => void
+  ): void {
+    try {
+      const buffers = chunks.map(({ chunk, encoding }) => (
+        Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding)
+      ))
+      this.writeBufferVector(buffers, callback)
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+
   _final(callback: (error?: Error | null) => void): void {
     this.closeStream(this.stream, callback)
   }
@@ -372,6 +400,63 @@ class RotatingFileLogStream extends Writable {
     this.currentSize += buffer.byteLength
     this.stream.write(buffer, (error?: Error | null) => {
       callback(error ?? undefined)
+    })
+  }
+
+  private writeBufferVector(buffers: Buffer[], callback: (error?: Error | null) => void): void {
+    if (buffers.length === 0) {
+      callback()
+      return
+    }
+    const availableBytes = Math.max(0, this.options.maxFileBytes - this.currentSize)
+    if (this.currentSize > 0 && buffers[0]!.byteLength > availableBytes) {
+      this.rotate((error) => {
+        if (error) {
+          callback(error)
+          return
+        }
+        this.writeBufferVector(buffers, callback)
+      })
+      return
+    }
+    let selectedCount = 0
+    let selectedBytes = 0
+    const capacity = this.currentSize === 0 ? this.options.maxFileBytes : availableBytes
+    while (selectedCount < buffers.length) {
+      const nextBytes = buffers[selectedCount]!.byteLength
+      if (selectedCount > 0 && selectedBytes + nextBytes > capacity) break
+      if (selectedCount === 0 && nextBytes > capacity && this.currentSize === 0) {
+        selectedCount = 1
+        selectedBytes = nextBytes
+        break
+      }
+      if (selectedBytes + nextBytes > capacity) break
+      selectedBytes += nextBytes
+      selectedCount += 1
+    }
+    if (selectedCount === 0) {
+      this.rotate((error) => {
+        if (error) {
+          callback(error)
+          return
+        }
+        this.writeBufferVector(buffers, callback)
+      })
+      return
+    }
+    const selected = selectedCount === 1 ? buffers[0]! : Buffer.concat(buffers.slice(0, selectedCount), selectedBytes)
+    this.writeBuffer(selected, (error) => {
+      if (error || selectedCount >= buffers.length) {
+        callback(error)
+        return
+      }
+      this.rotate((rotateError) => {
+        if (rotateError) {
+          callback(rotateError)
+          return
+        }
+        this.writeBufferVector(buffers.slice(selectedCount), callback)
+      })
     })
   }
 
@@ -548,7 +633,7 @@ export function createObservedLogStreamForTest(
   stream: Writable
   stats: () => LogPublisherStats
 } {
-  const diagnostics = new LogStreamDiagnostics()
+  const diagnostics = new LogStreamDiagnostics(budgetOptions.onDestinationError)
   const stream = new MultiDestinationLogStream(destinations, diagnostics, {
     ...defaultLogStreamBudgetOptions,
     ...budgetOptions
@@ -726,7 +811,21 @@ export async function cleanupRotatedLogFilesForTest(options: {
   })
 }
 
-const logStreamDiagnostics = new LogStreamDiagnostics()
+const logStreamDiagnostics = new LogStreamDiagnostics((metadata, error) => {
+  const diagnosticError = Object.assign(
+    new Error(`日志目的地 ${metadata.destination} 在 ${metadata.operation} 阶段失败：${metadata.message}`, {
+      cause: error
+    }),
+    metadata.code ? { code: metadata.code } : {}
+  )
+  writeProcessDiagnosticAsync({
+    event: 'log_destination_failed',
+    error: diagnosticError,
+    processRole: runtimeConfig.processRole,
+    pid: process.pid,
+    maxBytes: defaultLogStreamBudgetOptions.maxFailureSnapshotBytes
+  })
+})
 
 const fileLogStream = runtimeConfig.log.fileEnabled
   ? new RotatingFileLogStream({
@@ -772,12 +871,11 @@ const multiDestinationLogStream = logDestinations.length > 0
   ? new MultiDestinationLogStream(logDestinations, logStreamDiagnostics, {
     ...defaultLogStreamBudgetOptions,
     onFailureDrop: (drop) => {
-      writeProcessFatalDiagnostic({
+      writeProcessDiagnosticAsync({
         event: 'log_failure_reserve_exhausted',
         error: new Error(drop.preview || `日志失败预留已耗尽，原始字节数 ${drop.byteLength}`),
         processRole: runtimeConfig.processRole,
         pid: process.pid,
-        secrets: [runtimeConfig.secret],
         maxBytes: defaultLogStreamBudgetOptions.maxFailureSnapshotBytes
       })
     }
@@ -840,7 +938,7 @@ export function installProcessLogHandlers(): void {
   })
 }
 
-export async function closeLogger(): Promise<void> {
+export async function closeLogger(timeoutMs = 30_000): Promise<void> {
   if (logMaintenanceTimer) {
     clearInterval(logMaintenanceTimer)
     logMaintenanceTimer = undefined
@@ -851,10 +949,21 @@ export async function closeLogger(): Promise<void> {
     const settle = () => {
       if (settled) return
       settled = true
+      clearTimeout(timeout)
       fileLogStream.off('error', settle)
       fileLogStream.off('finish', settle)
       resolve()
     }
+    const timeout = setTimeout(() => {
+      writeProcessDiagnosticAsync({
+        event: 'log_shutdown_drain_timeout',
+        error: new Error(`日志关闭排空超过 ${timeoutMs}ms`),
+        processRole: runtimeConfig.processRole,
+        pid: process.pid
+      })
+      fileLogStream.destroy()
+      settle()
+    }, Math.max(1, timeoutMs))
     fileLogStream.once('error', settle)
     fileLogStream.once('finish', settle)
     fileLogStream.end()

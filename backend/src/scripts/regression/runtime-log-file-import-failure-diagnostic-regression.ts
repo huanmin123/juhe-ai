@@ -4,6 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import {
+  drainProcessDiagnosticAsyncForTest,
+  setProcessDiagnosticAsyncWriterForTest
+} from '../../shared/process-fatal-diagnostic.js'
 
 const root = mkdtempSync(join(tmpdir(), 'juhe-ai-runtime-log-import-failure-'))
 const logDir = join(root, 'logs')
@@ -28,11 +32,10 @@ const failure = Object.assign(new Error('runtime log cursor persistence failed',
   code: 'CURSOR_WRITE_FAILED'
 })
 const stderrLines: string[] = []
-const originalStderrWrite = process.stderr.write.bind(process.stderr)
-process.stderr.write = ((chunk: Uint8Array | string) => {
-  stderrLines.push(String(chunk))
-  return true
-}) as typeof process.stderr.write
+setProcessDiagnosticAsyncWriterForTest((line, callback) => {
+  stderrLines.push(line)
+  callback()
+})
 
 try {
   const dependencies = importer.createRuntimeLogFileImportTestDependencies({
@@ -47,6 +50,7 @@ try {
     role: 'worker-rotated',
     kind: 'rotated'
   }, dependencies)
+  await drainProcessDiagnosticAsyncForTest()
 
   assert.equal(stderrLines.length, 1, '一次 importer 不可预知失败只能写一条独立 stderr 诊断，不能递归放大')
   const rawLine = stderrLines[0] ?? ''
@@ -98,6 +102,7 @@ try {
     createBatch: async () => undefined
   })
   await importer.importRuntimeLogFileDeltaForTest({ path: oversizedPath, role: 'worker-rotated', kind: 'rotated' }, oversizedDependencies)
+  await drainProcessDiagnosticAsyncForTest()
   assert.equal(stderrLines.length, 1)
   const oversizedLine = stderrLines[0] ?? ''
   assert.ok(Buffer.byteLength(oversizedLine, 'utf8') <= 32 * 1024, '超大错误链也必须遵守整行硬上限')
@@ -117,12 +122,13 @@ try {
     createBatch: async () => undefined
   })
   await importer.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'worker-rotated', kind: 'rotated' }, hostileDependencies)
+  await drainProcessDiagnosticAsyncForTest()
   assert.equal(stderrLines.length, 1, '诊断序列化失败只能退化写一次固定 stderr JSON')
   const serializationFallback = JSON.parse(stderrLines[0] ?? '') as Record<string, any>
   assert.equal(serializationFallback.error.code, 'DIAGNOSTIC_SERIALIZE_FAILED')
   assert.equal(serializationFallback.phase, 'diagnostic.serialize')
 
-  process.stderr.write = (() => { throw new Error('stderr unavailable') }) as typeof process.stderr.write
+  setProcessDiagnosticAsyncWriterForTest(() => { throw new Error('stderr unavailable') })
   await assert.doesNotReject(
     importer.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'worker-rotated', kind: 'rotated' }, dependencies),
     '独立 stderr fallback 自身失败时不得递归记录或把异常抛回 importer 轮询'
@@ -130,7 +136,7 @@ try {
 
   console.log('运行日志文件 importer 独立失败现场回归通过')
 } finally {
-  process.stderr.write = originalStderrWrite
+  setProcessDiagnosticAsyncWriterForTest()
   await importer.resetRuntimeLogFileDiscoveryForTest()
   rmSync(root, { recursive: true, force: true })
 }
