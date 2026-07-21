@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -47,10 +47,21 @@ try {
   await importerModule.importRuntimeLogFileDeltaForTest({ path: currentPath, role: 'ingest-worker-current' })
   assert.equal((database.prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event = ?').get('after-start') as { count: number }).count, 1, '追加完整行必须被索引')
 
-  writeFileSync(currentPath, `${line('existing-before-start')}\n${line('after-start')}\npartial`)
+  const replacedCurrentPath = join(logDir, 'juhe-ai.ingest-worker.20260721T010202Z.00000000-0000-0000-0000-000000000000.log')
+  renameSync(currentPath, replacedCurrentPath)
+  const replacementContent = `${line('after-current-replacement')}\n${line('after-current-replacement-padding')}\n`
+  writeFileSync(currentPath, replacementContent)
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: currentPath, role: 'ingest-worker-current', kind: 'current' })
+  assert.equal(
+    (database.prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event = ?').get('after-current-replacement') as { count: number }).count,
+    1,
+    '轮转后新 current identity 必须从 offset 0 消费，不能把首批日志当作启动前历史跳过'
+  )
+
+  writeFileSync(currentPath, `${replacementContent}partial`)
   await importerModule.importRuntimeLogFileDeltaForTest({ path: currentPath, role: 'ingest-worker-current' })
   const partialCursor = repositoryModule.getRuntimeLogFileCursor(currentPath)
-  assert.equal(partialCursor?.cursorOffset, Buffer.byteLength(`${line('existing-before-start')}\n${line('after-start')}\n`), 'partial line 不得推进游标')
+  assert.equal(partialCursor?.cursorOffset, Buffer.byteLength(replacementContent), 'partial line 不得推进游标')
 
   const truncatedLine = `${line('after-same-identity-truncate')}\n`
   writeFileSync(currentPath, truncatedLine)
@@ -130,6 +141,36 @@ try {
   failBatch = false
   await importerModule.importRuntimeLogFileDeltaForTest({ path: failurePath, role: 'ingest-worker-rotated' }, dependency)
   assert.equal(persisted.get(failurePath)?.lineNumber, 2, '重启/重试必须从最近一次成功游标继续')
+
+  const completedPath = join(logDir, 'juhe-ai.ingest-worker.20260721T010204Z.00000000-0000-0000-0000-000000000002.log')
+  writeFileSync(completedPath, `${line('completed-cache')}\n`)
+  const completedCursors = new Map<string, any>()
+  let completedCursorReadCount = 0
+  let completedCursorWriteCount = 0
+  let completedNowMs = 1_000
+  const completedDependency = importerModule.createRuntimeLogFileImportTestDependencies({
+    getCursor: async (path: string) => {
+      completedCursorReadCount += 1
+      return completedCursors.get(path)
+    },
+    getCursorByIdentity: async () => undefined,
+    upsertCursor: async (cursor: any) => {
+      completedCursorWriteCount += 1
+      completedCursors.set(cursor.logFile, cursor)
+    },
+    createBatch: async () => undefined,
+    nowMs: () => completedNowMs
+  })
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: completedPath, role: 'ingest-worker-rotated', kind: 'rotated' }, completedDependency)
+  const readsAfterCompletion = completedCursorReadCount
+  const writesAfterCompletion = completedCursorWriteCount
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: completedPath, role: 'ingest-worker-rotated', kind: 'rotated' }, completedDependency)
+  assert.equal(completedCursorReadCount, readsAfterCompletion, '未变化且已追平的文件在缓存续租期内不得重复读取 PostgreSQL cursor')
+  assert.equal(completedCursorWriteCount, writesAfterCompletion, '未变化且已追平的文件在缓存续租期内不得重复写 PostgreSQL cursor')
+  completedNowMs += 60 * 60 * 1000
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: completedPath, role: 'ingest-worker-rotated', kind: 'rotated' }, completedDependency)
+  assert.equal(completedCursorReadCount, readsAfterCompletion + 1, '完成缓存到期后必须重新读取 PostgreSQL cursor')
+  assert.equal(completedCursorWriteCount, writesAfterCompletion + 1, '完成缓存到期后必须续租 PostgreSQL cursor，避免 retention 误删')
 
   runtimeConfig.databaseDriver = 'sqlite'
   const oldTimestamp = '2000-01-01T00:00:00.000Z'

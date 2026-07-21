@@ -313,6 +313,7 @@ function buildQueueHealthItem(input: {
   const pendingBytes = nullableNumber(snapshot.pendingBytes)
   const currentOffset = nullableNumber(snapshot.currentOffset)
   const protectedRotatedFileCount = nullableNumber(snapshot.protectedRotatedFileCount)
+  const runtimeLogFileError = typeof snapshot.lastError === 'string' && snapshot.lastError.trim().length > 0
   const reasons: string[] = []
   if ((droppedCount ?? 0) > 0) reasons.push('queue_dropped')
   if ((rejectedCount ?? 0) > 0) reasons.push('ipc_rejected')
@@ -322,6 +323,9 @@ function buildQueueHealthItem(input: {
   if (isQueueBacklogged(writerPoolQueueLength, 0) || (writerPoolOldestQueuedMs ?? 0) >= 5000) reasons.push('writer_pool_backlogged')
   if ((pendingWriteRequestCount ?? 0) > 0 && (oldestPendingWriteMs ?? 0) >= 5000) reasons.push('pending_write_backlogged')
   if (isQueueBacklogged(queueLength, queueBytes)) reasons.push('queue_backlogged')
+  if (input.key === 'runtimeLogIndex' && (runtimeLogFileError || (pendingFileCount ?? 0) > 0 || (pendingBytes ?? 0) > 0)) {
+    reasons.push(runtimeLogFileError ? 'runtime_log_file_error' : 'runtime_log_file_backlogged')
+  }
 
   return {
     key: input.key,
@@ -376,6 +380,7 @@ function itemQueueHealthStatus(reasons: string[]): BackgroundQueueHealthStatus {
     || reasons.includes('queue_flush_failed')
     || reasons.includes('queue_slow_flush')
     || reasons.includes('writer_pool_degraded')
+    || reasons.includes('runtime_log_file_error')
   ) {
     return 'degraded'
   }
@@ -383,6 +388,7 @@ function itemQueueHealthStatus(reasons: string[]): BackgroundQueueHealthStatus {
     reasons.includes('queue_backlogged')
     || reasons.includes('writer_pool_backlogged')
     || reasons.includes('pending_write_backlogged')
+    || reasons.includes('runtime_log_file_backlogged')
   ) {
     return 'backlogged'
   }

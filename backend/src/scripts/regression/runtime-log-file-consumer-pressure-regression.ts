@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,11 +24,11 @@ const [databaseModule, importer, repository] = await Promise.all([
 ])
 
 const marker = `pressure_${Date.now()}_${Math.random().toString(16).slice(2)}`
-const files = ['server', 'db-service', 'stats-worker'].map((role, index) => ({
-  role,
-  path: join(logDir, `juhe-ai.${role}.log.20260721T120${index}00Z.pressure-${index}.log`),
-  kind: 'rotated' as const
-}))
+const files = [
+  { role: 'server', path: join(logDir, 'juhe-ai.20260721T120000Z.00000000-0000-0000-0000-000000000101.log'), kind: 'rotated' as const },
+  { role: 'db-service', path: join(logDir, 'juhe-ai.db-service.20260721T120100Z.00000000-0000-0000-0000-000000000102.log'), kind: 'rotated' as const },
+  { role: 'stats-worker', path: join(logDir, 'juhe-ai.stats-worker.20260721T120200Z.00000000-0000-0000-0000-000000000103.log'), kind: 'rotated' as const }
+]
 const linesPerFile = 2_000
 const expectedEvents: string[] = []
 
@@ -44,8 +44,12 @@ try {
   }
 
   let imported = 0
+  await importer.resetRuntimeLogFileDiscoveryForTest()
   for (let round = 0; round < 40; round += 1) {
-    for (const file of files) await importer.importRuntimeLogFileDeltaForTest(file)
+    const discovered = await importer.discoverRuntimeLogFilesForTest()
+    for (const file of discovered.filter((item) => files.some((expected) => expected.path === item.path))) {
+      await importer.importRuntimeLogFileDeltaForTest(file)
+    }
     imported = Number((database.prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event LIKE ?').get(`${marker}%`) as { count?: number }).count ?? 0)
     if (imported === expectedEvents.length) break
   }

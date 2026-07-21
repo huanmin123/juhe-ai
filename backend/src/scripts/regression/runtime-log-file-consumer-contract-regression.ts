@@ -117,6 +117,8 @@ try {
   assert.equal(runtimeLogHealth?.pendingFileCount, 2, '运行日志路由底层健康 DTO 必须传播 pendingFileCount')
   assert.equal(runtimeLogHealth?.currentFile, 'juhe-ai.worker.log.1', '运行日志路由底层健康 DTO 必须传播 currentFile')
   assert.equal(runtimeLogHealth?.protectedRotatedFileCount, 1, 'stats 路由底层健康 DTO 必须传播轮转文件保护数量')
+  assert.equal(runtimeLogHealth?.status, 'degraded', '运行日志文件消费错误必须进入后台队列健康状态')
+  assert.ok(runtimeLogHealth?.reasons.includes('runtime_log_file_error'), '运行日志文件消费错误必须保留可诊断原因')
 } finally {
   databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
@@ -163,6 +165,8 @@ const routeQueueHealth = buildBackgroundQueueHealthSnapshot({
 } as never)
 const statsHealthItem = routeQueueHealth.workerQueues.find((item) => item.key === 'runtimeLogIndex')
 assert(statsHealthItem, 'stats 路由验证必须构造运行日志健康项')
+assert.equal(statsHealthItem.status, 'backlogged', '运行日志文件积压必须进入后台队列健康状态')
+assert.ok(statsHealthItem.reasons.includes('runtime_log_file_backlogged'), '运行日志文件积压必须保留可诊断原因')
 const statsRouteRow = statsRoutes.backgroundQueueHealthRuntimeRow(statsHealthItem)
 assert.equal(statsRouteRow?.localQueue?.pendingFileCount, 3, 'stats 路由 DTO 必须返回文件积压数量')
 assert.equal(statsRouteRow?.localQueue?.currentFile, 'juhe-ai.log.2', 'stats 路由 DTO 必须返回当前消费文件')

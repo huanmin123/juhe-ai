@@ -110,6 +110,9 @@ try {
 
   writeFileSync(logPath, '')
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
+  const cursorAfterEmptyTruncate = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
+  assert.equal(cursorAfterEmptyTruncate?.cursorOffset, 0, '截断为空文件时必须立即持久化归零游标')
+  assert.equal(cursorAfterEmptyTruncate?.fileSize, 0, '截断为空文件时必须立即持久化归零文件大小')
   const unfinishedOversizedLine = 'x'.repeat(3 * 1024 * 1024)
   writeFileSync(logPath, unfinishedOversizedLine)
   await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
