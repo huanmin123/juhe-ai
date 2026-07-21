@@ -42,8 +42,8 @@ export interface PageDataCacheRecord<T> {
 
 export interface PageDataCacheStorage {
   read<T>(key: string): Promise<PageDataCacheRecord<T> | undefined>
-  writeIfCurrent<T>(record: PageDataCacheRecord<T>): Promise<boolean>
-  touch(key: string, token: PageDataRevisionToken, confirmedAt: string): Promise<boolean>
+  writeIfCurrent<T>(record: PageDataCacheRecord<T>, commitGuard?: () => boolean): Promise<boolean>
+  touch(key: string, token: PageDataRevisionToken, confirmedAt: string, commitGuard?: () => boolean): Promise<boolean>
   remove(key: string): Promise<void>
   removeDomain(domain: PageDataDomain, scope?: string, route?: string): Promise<void>
 }
@@ -85,7 +85,7 @@ export interface PageDataCacheControllerOptions<T> {
   writeEpoch?: (domain: PageDataDomain) => number
 }
 
-export type PageDataRequestCacheDefinition<T> = Omit<PageDataCacheControllerOptions<T>, 'storage' | 'confirm' | 'tabCoordinator' | 'now' | 'activation' | 'writeEpoch'>
+export type PageDataRequestCacheDefinition<T> = Omit<PageDataCacheControllerOptions<T>, 'storage' | 'confirm' | 'tabCoordinator' | 'now'>
 
 export interface PageDataRequestCacheManagerOptions {
   storage?: PageDataCacheStorage
@@ -165,16 +165,18 @@ export function createMemoryPageDataCacheStorage(options: { maxEntries?: number;
       records.set(key, accessed)
       return cloneRecord(accessed) as PageDataCacheRecord<T>
     },
-    async writeIfCurrent<T>(record: PageDataCacheRecord<T>) {
+    async writeIfCurrent<T>(record: PageDataCacheRecord<T>, commitGuard?: () => boolean) {
       const current = records.get(record.key)
       if (!canReplacePageDataCacheRecord(record, current)) return false
+      if (commitGuard && !commitGuard()) return false
       records.set(record.key, cloneRecord(record) as PageDataCacheRecord<unknown>)
       pruneMemoryRecords(records, maxEntries, now())
       return true
     },
-    async touch(key, token, confirmedAt) {
+    async touch(key, token, confirmedAt, commitGuard) {
       const current = records.get(key)
       if (!current || !sameRevisionToken(current.token, token)) return false
+      if (commitGuard && !commitGuard()) return false
       records.set(key, { ...current, token: { ...token }, confirmedAt })
       return true
     },
@@ -307,7 +309,7 @@ export class PageDataCacheController<T> {
       if (current?.token && this.isOperationCurrent(generation, operationWriteEpoch)) {
         const record = this.record(data, current.token, current.confirmedAt)
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
-        const written = await this.storage.writeIfCurrent(record)
+        const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
         if (written) this.publish(record)
         return { source: 'network', data, confirmed: written, cached: written, superseded: false }
@@ -345,7 +347,7 @@ export class PageDataCacheController<T> {
       }
       const record = this.record(data)
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
-      const written = await this.storage.writeIfCurrent(record)
+      const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
       if (written) this.publish(record)
       return { source: 'network', data, confirmed: false, cached: written, superseded: false }
@@ -357,7 +359,12 @@ export class PageDataCacheController<T> {
     }
     if (cached && baseline.action === 'unchanged' && sameRevisionToken(baseline.token, cached.token)) {
       const touched = this.isOperationCurrent(generation, operationWriteEpoch)
-        && await this.storage.touch(this.key, baseline.token, baseline.serverTime)
+        && await this.storage.touch(
+          this.key,
+          baseline.token,
+          baseline.serverTime,
+          () => this.isOperationCurrent(generation, operationWriteEpoch)
+        )
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(cached.value)
       if (touched) {
         return {
@@ -443,7 +450,7 @@ export class PageDataCacheController<T> {
           if (this.options.activation) return { state: 'unavailable', data }
           const record = this.record(data)
           if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
-          const written = await this.storage.writeIfCurrent(record)
+          const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
           if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
           if (written) this.publish(record)
           return { state: 'updated', data }
@@ -456,7 +463,12 @@ export class PageDataCacheController<T> {
     if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current?.value }
     if (result.action === 'unchanged' && current && sameRevisionToken(result.token, current.token)) {
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
-      const touched = await this.storage.touch(this.key, result.token, result.serverTime)
+      const touched = await this.storage.touch(
+        this.key,
+        result.token,
+        result.serverTime,
+        () => this.isOperationCurrent(generation, operationWriteEpoch)
+      )
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
       return touched ? { state: 'unchanged', data: current.value } : { state: 'superseded', data: current.value }
     }
@@ -466,7 +478,7 @@ export class PageDataCacheController<T> {
       if (next !== undefined) {
         const record = this.record(next, result.token, result.serverTime)
         const written = this.isOperationCurrent(generation, operationWriteEpoch)
-          && await this.storage.writeIfCurrent(record)
+          && await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
         if (written) this.publish(record)
         return written ? { state: 'updated', data: next } : { state: 'superseded', data: current.value }
@@ -500,7 +512,7 @@ export class PageDataCacheController<T> {
     if (after.action === 'unchanged' && sameRevisionToken(after.token, cached.token)) {
       const record = this.record(data, after.token, after.serverTime)
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
-      const written = await this.storage.writeIfCurrent(record)
+      const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
       if (written) this.publish(record)
       return { source: 'network', data, confirmed: written, cached: written, superseded: false }
@@ -534,7 +546,7 @@ export class PageDataCacheController<T> {
       ) return { data: latest, confirmed: false, cached: false }
       const record = this.record(latest, after.token, after.serverTime)
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
-      const written = await this.storage.writeIfCurrent(record)
+      const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
       if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
       if (written) this.publish(record)
       return { data: latest, confirmed: written, cached: written }
@@ -551,7 +563,7 @@ export class PageDataCacheController<T> {
       if (after.action === 'unchanged' && sameRevisionToken(after.token, baseline.token)) {
         const record = this.record(latest, after.token, after.serverTime)
         const written = this.isOperationCurrent(generation, operationWriteEpoch)
-          && await this.storage.writeIfCurrent(record)
+          && await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { data: latest, confirmed: false, cached: false }
         if (written) this.publish(record)
         return { data: latest, confirmed: written, cached: written }
@@ -1150,7 +1162,7 @@ function createIndexedDbPageDataCacheStorage(factory: IDBFactory, options: { max
         transaction.onabort = () => reject(transaction.error ?? new Error('读取页面缓存已中止'))
       })
     },
-    async writeIfCurrent<T>(record: PageDataCacheRecord<T>) {
+    async writeIfCurrent<T>(record: PageDataCacheRecord<T>, commitGuard?: () => boolean) {
       const db = await database()
       return await new Promise<boolean>((resolve, reject) => {
         const transaction = db.transaction(PAGE_DATA_CACHE_STORE, 'readwrite')
@@ -1160,6 +1172,7 @@ function createIndexedDbPageDataCacheStorage(factory: IDBFactory, options: { max
         request.onerror = () => reject(request.error ?? new Error('读取页面缓存失败'))
         request.onsuccess = () => {
           if (!canReplacePageDataCacheRecord(record, request.result as PageDataCacheRecord<unknown> | undefined)) return
+          if (commitGuard && !commitGuard()) return
           written = true
           store.put(record)
         }
@@ -1171,7 +1184,7 @@ function createIndexedDbPageDataCacheStorage(factory: IDBFactory, options: { max
         transaction.onabort = () => reject(transaction.error ?? new Error('写入页面缓存已中止'))
       })
     },
-    async touch(key, token, confirmedAt) {
+    async touch(key, token, confirmedAt, commitGuard) {
       const db = await database()
       return await new Promise<boolean>((resolve, reject) => {
         const transaction = db.transaction(PAGE_DATA_CACHE_STORE, 'readwrite')
@@ -1182,6 +1195,7 @@ function createIndexedDbPageDataCacheStorage(factory: IDBFactory, options: { max
         request.onsuccess = () => {
           const current = request.result as PageDataCacheRecord<unknown> | undefined
           if (!current || !sameRevisionToken(current.token, token)) return
+          if (commitGuard && !commitGuard()) return
           touched = true
           store.put({ ...current, token, confirmedAt })
         }
@@ -1229,8 +1243,14 @@ function createResilientStorage(primary: PageDataCacheStorage, fallback: PageDat
   }
   return {
     read: <T>(key: string) => use(() => primary.read<T>(key), () => fallback.read<T>(key)),
-    writeIfCurrent: <T>(record: PageDataCacheRecord<T>) => use(() => primary.writeIfCurrent(record), () => fallback.writeIfCurrent(record)),
-    touch: (key, token, confirmedAt) => use(() => primary.touch(key, token, confirmedAt), () => fallback.touch(key, token, confirmedAt)),
+    writeIfCurrent: <T>(record: PageDataCacheRecord<T>, commitGuard?: () => boolean) => use(
+      () => primary.writeIfCurrent(record, commitGuard),
+      () => fallback.writeIfCurrent(record, commitGuard)
+    ),
+    touch: (key, token, confirmedAt, commitGuard) => use(
+      () => primary.touch(key, token, confirmedAt, commitGuard),
+      () => fallback.touch(key, token, confirmedAt, commitGuard)
+    ),
     remove: (key) => removeBoth(() => primary.remove(key), () => fallback.remove(key)),
     removeDomain: (domain, scope, route) => removeBoth(
       () => primary.removeDomain(domain, scope, route),

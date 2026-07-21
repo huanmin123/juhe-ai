@@ -33,6 +33,13 @@ interface ResourceEntry {
   scope: string
   route: string
   lastAccessedAt: number
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: PageDataDomain) => number
+}
+
+interface ResourceBinding {
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: PageDataDomain) => number
 }
 
 export class PageDataResourceCache {
@@ -66,10 +73,11 @@ export class PageDataResourceCache {
   async load<T>(request: PageDataRequestCacheDefinition<T>): Promise<PageDataLoadResult<T>> {
     if (this.closed) throw new Error('页面资源缓存已关闭')
     const key = createPageDataCacheKey({ ...request.cacheKey, domain: request.domain })
+    const binding = this.bindingFor(request)
+    const entry = this.entryFor(key, request, binding)
     const pending = this.pendingLoads.get(key)
     if (pending) return await pending as PageDataLoadResult<T>
 
-    const entry = this.entryFor(key, request)
     entry.lastAccessedAt = Date.now()
     const operation = entry.controller.load() as Promise<PageDataLoadResult<unknown>>
     this.pendingLoads.set(key, operation)
@@ -109,9 +117,29 @@ export class PageDataResourceCache {
     this.removeDomainInvalidationListener()
   }
 
-  private entryFor<T>(key: string, request: PageDataRequestCacheDefinition<T>): ResourceEntry {
+  private bindingFor<T>(request: PageDataRequestCacheDefinition<T>): ResourceBinding {
+    return {
+      activation: request.activation ?? this.activation,
+      writeEpoch: request.writeEpoch ?? this.writeEpoch
+    }
+  }
+
+  private entryFor<T>(
+    key: string,
+    request: PageDataRequestCacheDefinition<T>,
+    binding: ResourceBinding
+  ): ResourceEntry {
     const current = this.entries.get(key)
-    if (current) return current
+    if (
+      current
+      && current.activation === binding.activation
+      && current.writeEpoch === binding.writeEpoch
+    ) return current
+    if (current) {
+      current.controller.close()
+      this.entries.delete(key)
+      this.pendingLoads.delete(key)
+    }
     const domainSpec = pageDataDomainRegistry.find((spec) => spec.domain === request.domain)
     const entry: ResourceEntry = {
       controller: new PageDataCacheController<unknown>({
@@ -122,8 +150,8 @@ export class PageDataResourceCache {
         confirmBatchKey: this.confirmBatchKey,
         tabCoordinator: this.tabCoordinator,
         now: this.now,
-        activation: this.activation,
-        writeEpoch: this.writeEpoch
+        activation: binding.activation,
+        writeEpoch: binding.writeEpoch
       } as PageDataRequestCacheDefinition<unknown> & {
         storage: PageDataCacheStorage
         confirm: PageDataResourceCacheOptions['confirm']
@@ -135,7 +163,9 @@ export class PageDataResourceCache {
       domain: request.domain,
       scope: request.cacheKey.scope,
       route: request.cacheKey.route,
-      lastAccessedAt: Date.now()
+      lastAccessedAt: Date.now(),
+      activation: binding.activation,
+      writeEpoch: binding.writeEpoch
     }
     this.entries.set(key, entry)
     this.trimControllers()

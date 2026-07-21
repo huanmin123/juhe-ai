@@ -16,6 +16,7 @@ import {
   PageDataVisibleConfirmScheduler,
   createPageDataActivationController,
   type PageDataCacheRecord,
+  type PageDataCacheStorage,
   createMemoryPageDataCacheStorage,
   createPageDataCacheKey,
   createPageDataCacheStorage
@@ -768,6 +769,91 @@ async function testActivationManagedCacheFlow(): Promise<void> {
   assert.equal(epochNetworkLoads, 0, '过时 pre-confirm 不得继续 GET')
   assert.equal((await epochStorage.read<string[]>(epochKey))?.confirmedAt, '2026-07-17T12:00:00.000Z', 'writeEpoch 变化后不得 touch')
 
+  let touchCommitEpoch = 40
+  const touchCommitBaseStorage = createMemoryPageDataCacheStorage()
+  const touchCommitKey = createPageDataCacheKey({ ...keyInput, scope: 'self:touch-commit-guard' })
+  await touchCommitBaseStorage.writeIfCurrent(cacheRecord(touchCommitKey, ['touch-before'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const touchCommitEntered = deferred<void>()
+  const touchCommitGate = deferred<void>()
+  const touchCommitStorage: PageDataCacheStorage = {
+    read: touchCommitBaseStorage.read,
+    writeIfCurrent: touchCommitBaseStorage.writeIfCurrent,
+    async touch(key, currentToken, confirmedAt, commitGuard?: () => boolean) {
+      touchCommitEntered.resolve()
+      await touchCommitGate.promise
+      return touchCommitBaseStorage.touch(key, currentToken, confirmedAt, commitGuard)
+    },
+    remove: touchCommitBaseStorage.remove,
+    removeDomain: touchCommitBaseStorage.removeDomain
+  }
+  const touchCommitController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:touch-commit-guard' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: touchCommitStorage,
+    now: () => new Date('2026-07-17T12:00:31.000Z'),
+    activation: activationHandle({
+      register: (participant) => confirmedActivation('pre', participant, 'unchanged', token(1))
+    }),
+    writeEpoch: () => touchCommitEpoch,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime']),
+    loadNetwork: async () => ['touch-after']
+  })
+  const touchCommitLoad = touchCommitController.load()
+  await touchCommitEntered.promise
+  touchCommitEpoch += 1
+  touchCommitGate.resolve()
+  const touchCommitResult = await touchCommitLoad
+  const touchCommitRecord = await touchCommitBaseStorage.read<string[]>(touchCommitKey)
+  assert.equal(touchCommitResult.superseded, true, 'touch 实际提交前 writeEpoch 变化必须返回 superseded')
+  assert.deepEqual(touchCommitRecord?.value, ['touch-before'], '失效 touch commit guard 不得改 value')
+  assert.equal(touchCommitRecord?.token?.sequence, 1, '失效 touch commit guard 不得改 token')
+  assert.equal(touchCommitRecord?.confirmedAt, '2026-07-17T12:00:00.000Z', '失效 touch commit guard 不得改 confirmedAt')
+
+  let writeCommitEpoch = 50
+  const writeCommitBaseStorage = createMemoryPageDataCacheStorage()
+  const writeCommitKey = createPageDataCacheKey({ ...keyInput, scope: 'self:write-commit-guard' })
+  await writeCommitBaseStorage.writeIfCurrent(cacheRecord(writeCommitKey, ['write-before'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const writeCommitEntered = deferred<void>()
+  const writeCommitGate = deferred<void>()
+  const writeCommitStorage: PageDataCacheStorage = {
+    read: writeCommitBaseStorage.read,
+    async writeIfCurrent<T>(record: PageDataCacheRecord<T>, commitGuard?: () => boolean) {
+      writeCommitEntered.resolve()
+      await writeCommitGate.promise
+      return writeCommitBaseStorage.writeIfCurrent(record, commitGuard)
+    },
+    touch: writeCommitBaseStorage.touch,
+    remove: writeCommitBaseStorage.remove,
+    removeDomain: writeCommitBaseStorage.removeDomain
+  }
+  const writeCommitController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:write-commit-guard' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: writeCommitStorage,
+    now: () => new Date('2026-07-17T12:00:31.000Z'),
+    activation: activationHandle({
+      register: (participant) => confirmedActivation('pre', participant, 'reload', token(2)),
+      stabilize: (participant) => confirmedActivation('post', participant, 'unchanged', token(2))
+    }),
+    writeEpoch: () => writeCommitEpoch,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime'], token(2)),
+    loadNetwork: async () => ['write-after']
+  })
+  const writeCommitLoad = writeCommitController.load()
+  await writeCommitEntered.promise
+  writeCommitEpoch += 1
+  writeCommitGate.resolve()
+  const writeCommitResult = await writeCommitLoad
+  const writeCommitRecord = await writeCommitBaseStorage.read<string[]>(writeCommitKey)
+  assert.equal(writeCommitResult.superseded, true, 'writeIfCurrent 实际提交前 writeEpoch 变化必须返回 superseded')
+  assert.deepEqual(writeCommitRecord?.value, ['write-before'], '失效 write commit guard 不得改 value')
+  assert.equal(writeCommitRecord?.token?.sequence, 1, '失效 write commit guard 不得改 token')
+  assert.equal(writeCommitRecord?.confirmedAt, '2026-07-17T12:00:00.000Z', '失效 write commit guard 不得改 confirmedAt')
+
   let deltaEpoch = 20
   let deltaApplies = 0
   const deltaStorage = createMemoryPageDataCacheStorage()
@@ -856,6 +942,8 @@ async function testActivationManagedCacheFlow(): Promise<void> {
   managedController.close()
   failedPreController.close()
   epochController.close()
+  touchCommitController.close()
+  writeCommitController.close()
   deltaController.close()
   postEpochController.close()
   generationController.close()

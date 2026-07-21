@@ -13,6 +13,7 @@ import type {
 } from '../../shared/pageDataActivationCoordinator'
 import {
   BrowserPageDataTabCoordinator,
+  createPageDataCacheKey,
   createMemoryPageDataCacheStorage,
   type PageDataLoadResult,
   type PageDataTabCoordinator
@@ -27,6 +28,8 @@ type ResourceRequest<T> = {
   viewScope: 'self'
   loadNetwork: () => Promise<T>
   maxStaleMs?: number
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: 'providers.catalog') => number
 }
 type ResourceCache = {
   load<T>(request: ResourceRequest<T>): Promise<PageDataLoadResult<T>>
@@ -249,6 +252,94 @@ assert.deepEqual(managedResource.data, ['managed-resource'])
 assert.equal(managedResource.confirmed, true)
 assert.deepEqual([managedRegisters, managedStabilizes, managedLegacyConfirms], [1, 1, 0], 'resource cache 必须透传 activation/writeEpoch 并复用 pre/post barrier')
 
+let rebindingNowMs = Date.parse('2026-07-18T12:00:00.000Z')
+let rebindingLegacyConfirms = 0
+let rebindingManagedRegisters = 0
+let rebindingManagedStabilizes = 0
+let rebindingManagedLoads = 0
+const rebindingStorage = createMemoryPageDataCacheStorage({ now: () => new Date(rebindingNowMs) })
+const rebindingRequest = (): ResourceRequest<string[]> => ({
+  ...request(),
+  cacheKey: { ...request().cacheKey, scope: 'self:rebinding' },
+  loadNetwork: async () => ['unmanaged-network']
+})
+const rebindingKey = createPageDataCacheKey({ ...rebindingRequest().cacheKey, domain: 'providers.catalog' })
+await rebindingStorage.writeIfCurrent({
+  key: rebindingKey,
+  domain: 'providers.catalog',
+  scope: rebindingRequest().cacheKey.scope,
+  route: rebindingRequest().cacheKey.route,
+  value: ['unmanaged-cache'],
+  token: token(7),
+  confirmedAt: new Date(rebindingNowMs).toISOString(),
+  writtenAt: new Date(rebindingNowMs).toISOString(),
+  expiresAt: new Date(rebindingNowMs + 60_000).toISOString(),
+  lastAccessedAt: new Date(rebindingNowMs).toISOString()
+})
+const rebindingCache = new resourceModule.PageDataResourceCache({
+  storage: rebindingStorage,
+  tabCoordinator,
+  now: () => new Date(rebindingNowMs),
+  confirm: async (input) => {
+    rebindingLegacyConfirms += 1
+    const current = token(7)
+    return {
+      serverTime: new Date(rebindingNowMs).toISOString(),
+      domains: {
+        'providers.catalog': {
+          action: input.domains['providers.catalog']?.sequence === current.sequence ? 'unchanged' : 'reload',
+          token: current
+        }
+      }
+    }
+  }
+})
+const unmanagedPending = rebindingCache.load(rebindingRequest())
+rebindingNowMs += 31_000
+const reboundActivation: PageDataActivationHandle = {
+  register: async (participant) => {
+    rebindingManagedRegisters += 1
+    assert.equal(participant.writeEpoch, 21)
+    return {
+      state: 'confirmed', phase: 'pre', participant,
+      result: { action: 'reload', token: token(8), serverTime: new Date(rebindingNowMs).toISOString() }
+    }
+  },
+  stabilize: async (participant) => {
+    rebindingManagedStabilizes += 1
+    assert.equal(participant.writeEpoch, 21)
+    return {
+      state: 'confirmed', phase: 'post', participant,
+      result: { action: 'unchanged', token: token(8), serverTime: new Date(rebindingNowMs).toISOString() }
+    }
+  },
+  trigger: () => undefined,
+  deactivate: () => undefined,
+  dispose: () => undefined
+}
+const reboundWriteEpoch = () => 21
+const reboundNetwork = deferred<string[]>()
+const reboundRequest = (): ResourceRequest<string[]> => ({
+  ...rebindingRequest(),
+  activation: reboundActivation,
+  writeEpoch: reboundWriteEpoch,
+  loadNetwork: async () => {
+    rebindingManagedLoads += 1
+    return reboundNetwork.promise
+  }
+})
+const firstRebound = rebindingCache.load(reboundRequest())
+await unmanagedPending
+const secondRebound = rebindingCache.load(reboundRequest())
+reboundNetwork.resolve(['managed-rebound'])
+const rebound = await Promise.all([firstRebound, secondRebound])
+assert.deepEqual(rebound.map((item) => item.data), [['managed-rebound'], ['managed-rebound']], 'managed 请求不得复用同 key 的 unmanaged pending/controller')
+assert.deepEqual(
+  [rebindingLegacyConfirms, rebindingManagedRegisters, rebindingManagedStabilizes, rebindingManagedLoads],
+  [0, 1, 1, 1],
+  '重绑定必须关闭旧 controller，并让相同新绑定继续合并并发'
+)
+
 const resourceSource = readFileSync(resourceModulePath, 'utf8')
 assert.match(resourceSource, /invalidateDefaultPageDataResourceCache[\s\S]{0,700}createPageDataCacheStorage\(\)/, '默认 resource cache 尚未实例化时也必须直接清理 IndexedDB domain')
 assert.match(resourceSource, /onDomainInvalidated/, 'resource cache 必须接收其他标签页发出的按域失效广播')
@@ -257,10 +348,16 @@ cache.close()
 routeCache.close()
 registryCache.close()
 managedResourceCache.close()
+rebindingCache.close()
 tabCoordinator.close()
 console.log('页面 resource cache 回归通过：cache-first、轻量确认、并发合并、scope 隔离和 domain 失效生效')
 
 function assertManagedParticipant(participant: PageDataActivationParticipant): void {
   assert.equal(participant.domain, 'providers.catalog')
   assert.equal(participant.writeEpoch, 12)
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  return { promise: new Promise<T>((next) => { resolve = next }), resolve }
 }
