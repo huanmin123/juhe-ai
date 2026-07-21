@@ -28,6 +28,7 @@ const (
 	messagesFamily              = "messages"
 	generateContentFamily       = "generate_content"
 	streamGenerateContentFamily = "stream_generate_content"
+	interactionsFamily          = "interactions"
 )
 
 var (
@@ -59,11 +60,15 @@ var (
 		"generate_content_sse",
 		"count_tokens",
 		"embed_content",
+		"interactions_json",
+		"interactions_sse",
 	}
 	geminiDefaultEndpointModes = []string{
 		"generate_content_json",
 		"generate_content_sse",
 		"count_tokens",
+		"interactions_json",
+		"interactions_sse",
 	}
 	hybridEndpointModes = []string{
 		"chat_json",
@@ -241,6 +246,12 @@ func accountManualTestEndpointModesForModel(
 ) []string {
 	output := make([]string, 0, len(accountEndpointModes))
 	for _, mode := range accountEndpointModes {
+		if mode == "interactions_json" || mode == "interactions_sse" {
+			if modelSupportsProtocol(model, interactionsFamily) {
+				output = append(output, mode)
+			}
+			continue
+		}
 		sourceFamily := endpointModeProtocol(mode)
 		mapping := resolveAccountModelMapping(account, model.Model, sourceFamily)
 		if mapping == nil {
@@ -379,7 +390,7 @@ func isAccountManualTestModel(item managementprovidermodels.ModelCatalogItem, ac
 	case isProtocol(account, anthropicProtocolCode, anthropicProtocolVersion):
 		allowed = stringSet("messages")
 	case isProtocol(account, geminiProtocolCode, geminiProtocolVersion):
-		allowed = stringSet("generate_content", "stream_generate_content")
+		allowed = stringSet("generate_content", "stream_generate_content", interactionsFamily)
 	default:
 		return false
 	}
@@ -502,7 +513,7 @@ func accountTestEndpointModeOrder(account port.ManagementAccountTestOptionsSourc
 	case isProtocol(account, anthropicProtocolCode, anthropicProtocolVersion):
 		return []string{defaultMode, "messages_json", "messages_sse"}
 	case isProtocol(account, geminiProtocolCode, geminiProtocolVersion):
-		return []string{defaultMode, "generate_content_json", "generate_content_sse"}
+		return []string{defaultMode, "interactions_json", "interactions_sse", "generate_content_json", "generate_content_sse"}
 	case account.Type == "oauth":
 		return []string{defaultMode, "responses_json", "responses_sse"}
 	default:
@@ -512,7 +523,7 @@ func accountTestEndpointModeOrder(account port.ManagementAccountTestOptionsSourc
 
 func isGenerationEndpointMode(mode string) bool {
 	switch mode {
-	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse":
+	case "chat_json", "chat_sse", "responses_json", "responses_sse", "messages_json", "messages_sse", "generate_content_json", "generate_content_sse", "interactions_json", "interactions_sse":
 		return true
 	default:
 		return false
