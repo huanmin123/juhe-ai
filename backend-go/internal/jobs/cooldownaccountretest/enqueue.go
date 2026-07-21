@@ -5,16 +5,16 @@ import (
 	"errors"
 	"time"
 
-	"github.com/hibiken/asynq"
+	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-type AsynqClient interface {
-	EnqueueContext(context.Context, *asynq.Task, ...asynq.Option) (*asynq.TaskInfo, error)
+type EnqueueClient interface {
+	Enqueue(context.Context, string, []byte, queue.EnqueueOptions) (queue.TaskInfo, error)
 }
 
 type Enqueuer struct {
-	Client      AsynqClient
+	Client      EnqueueClient
 	UniqueTTL   time.Duration
 	TaskTimeout time.Duration
 }
@@ -35,8 +35,9 @@ func (e Enqueuer) EnqueueCooldownAccountRetest(ctx context.Context, task port.Co
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	_, err = e.Client.EnqueueContext(ctx, asynq.NewTask(TaskType, payload), asynq.Queue(QueueName), asynq.TaskID(UniqueKey(task)), asynq.Unique(ttl), asynq.Timeout(timeout), asynq.MaxRetry(0))
-	if errors.Is(err, asynq.ErrTaskIDConflict) {
+	noRetry := 0
+	_, err = e.Client.Enqueue(ctx, TaskType, payload, queue.EnqueueOptions{Queue: QueueName, MaxRetry: &noRetry, Timeout: timeout, TaskID: UniqueKey(task), UniqueTTL: ttl})
+	if errors.Is(err, queue.ErrTaskConflict) {
 		return false, nil
 	}
 	return err == nil, err
