@@ -461,8 +461,9 @@ function optionalStringConfig(name: string): string | undefined {
 }
 
 function booleanConfig(name: string, fallback: boolean): boolean {
-  const value = rawStringConfig(name)?.toLowerCase()
-  if (!value) return fallback
+  const configuredValue = rawStringConfig(name)
+  if (configuredValue === undefined) return fallback
+  const value = configuredValue.toLowerCase()
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
   throw new Error(`${name} 只能配置为 true/false/1/0/yes/no/on/off`)
@@ -679,8 +680,9 @@ function integerConfig(name: string, fallback: number, min: number, max: number)
 export function parseAuditLogRuntimeConfig(values: Record<string, string | undefined>): RuntimeConfig['auditLog'] {
   const read = (name: string): string | undefined => values[name]?.trim()
   const strictBooleanValue = (name: string, fallback: boolean): boolean => {
-    const raw = read(name)?.toLowerCase()
-    if (!raw) return fallback
+    const configuredValue = read(name)
+    if (configuredValue === undefined) return fallback
+    const raw = configuredValue.toLowerCase()
     if (['true', '1', 'yes', 'on'].includes(raw)) return true
     if (['false', '0', 'no', 'off'].includes(raw)) return false
     throw new Error(`${name} 必须配置为 true/false、1/0、yes/no 或 on/off`)
