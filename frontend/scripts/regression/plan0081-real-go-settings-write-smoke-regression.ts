@@ -12,7 +12,7 @@ import {
   type RealGoSettingsWriteSmokeEnvironment
 } from '../smoke/plan0081-real-go-settings-write-smoke'
 
-type Scenario = 'success' | 'ready-service' | 'patch-status' | 'missing-header' | 'invalid-json' | 'redirect' | 'disconnect' | 'restore-status'
+type Scenario = 'success' | 'ready-service' | 'patch-status' | 'missing-header' | 'invalid-json' | 'redirect' | 'disconnect' | 'restore-status' | 'concurrent-change'
 interface RecordItem { method: string; pathname: string; body: unknown; cookie?: string }
 
 const cookie = 'juhe_ai_session=plan0081-settings-cookie-secret'
@@ -129,6 +129,11 @@ async function failureTests(baseUrl: string): Promise<void> {
   await assert.rejects(runRealGoSettingsWriteSmokeFromEnvironment(environment(baseUrl), () => undefined), /settings PATCH failed with HTTP 500/)
   assert.equal(patchNumber, 2)
   assert.equal(settings.systemMetricsHourlyRetentionDays, 19, 'failed restore must leave an explicit temporary-value signal')
+
+  reset('concurrent-change')
+  await assert.rejects(runRealGoSettingsWriteSmokeFromEnvironment(environment(baseUrl), () => undefined), /changed concurrently/)
+  assert.equal(patchNumber, 1, 'concurrent change must not be overwritten by a restore PATCH')
+  assert.equal(settings.systemMetricsHourlyRetentionDays, 18, 'concurrent value must be preserved')
 }
 
 async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -148,6 +153,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   }
   if (method === 'GET') {
     if (scenario === 'redirect') return respond(res, 302, {}, { location: '/redirect' })
+    if (scenario === 'concurrent-change' && patchNumber === 1) settings.systemMetricsHourlyRetentionDays = 18
     return respond(res, 200, { data: { ...settings } })
   }
   if (scenario === 'disconnect' && patchNumber === 0) {

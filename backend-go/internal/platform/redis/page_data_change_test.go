@@ -699,3 +699,134 @@ func testPageDataChangePublisher() (*PageDataChangePublisher, *pageDataEpochCapt
 	}
 	return publisher, capture
 }
+
+func TestNewPageDataScopeMatchesNodeV2Fingerprint(t *testing.T) {
+	scope, err := NewPageDataScope(PageDataScopeInput{
+		ViewerSystemAccountID: "viewer-1",
+		ViewScope:             PageDataViewScopeAdmin,
+		TargetSystemAccountID: "target-1",
+	})
+	if err != nil {
+		t.Fatalf("NewPageDataScope() error = %v", err)
+	}
+	if got, want := scope.StreamKey, "owner:target-1"; got != want {
+		t.Fatalf("stream key = %q, want %q", got, want)
+	}
+	if got, want := scope.Fingerprint, "XqO9A-WLdaLCaUrQg4KrKt9u"; got != want {
+		t.Fatalf("fingerprint = %q, want %q", got, want)
+	}
+
+	if _, err := NewPageDataScope(PageDataScopeInput{ViewerSystemAccountID: "viewer-1", ViewScope: PageDataViewScopeAdmin, TargetSystemAccountID: " "}); err == nil {
+		t.Fatal("NewPageDataScope() with blank admin target error = nil")
+	}
+}
+
+func TestPageDataChangeConfirmerReturnsNodeCompatibleDecisions(t *testing.T) {
+	scope, err := NewPageDataScope(PageDataScopeInput{
+		ViewerSystemAccountID: "viewer-1",
+		ViewScope:             PageDataViewScopeSelf,
+	})
+	if err != nil {
+		t.Fatalf("NewPageDataScope() error = %v", err)
+	}
+	baseEvent := `{"eventId":"event-1","domain":"accounts.static","entityId":"account-1","operation":"upsert","fieldMask":["name"],"ownerSystemAccountIds":["viewer-1"],"membershipChanged":false,"orderChanged":false,"filterChanged":false,"pageChanged":false,"occurredAt":"2026-07-18T01:02:03.456Z"}`
+	rangeResetEvent := strings.Replace(strings.Replace(baseEvent, `"operation":"upsert"`, `"operation":"range_reset"`, 1), `"fieldMask":["name"]`, `"fieldMask":[]`, 1)
+
+	for _, test := range []struct {
+		name          string
+		known         *PageDataRevisionToken
+		sequence      int64
+		resetSequence int64
+		entries       []interface{}
+		wantAction    PageDataConfirmAction
+		wantChanges   int
+	}{
+		{name: "missing token reloads", sequence: 1, wantAction: PageDataConfirmActionReload},
+		{
+			name:     "contiguous event is delta",
+			known:    &PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: "epoch-1", Scope: scope.Fingerprint, Domain: pageDataAccountsStaticDomain, Sequence: 0, ResetSequence: 0},
+			sequence: 1, entries: []interface{}{"1\t" + baseEvent}, wantAction: PageDataConfirmActionDelta, wantChanges: 1,
+		},
+		{name: "range reset resets", known: &PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: "epoch-1", Scope: scope.Fingerprint, Domain: pageDataAccountsStaticDomain, Sequence: 0, ResetSequence: 0}, sequence: 1, entries: []interface{}{"1\t" + rangeResetEvent}, wantAction: PageDataConfirmActionReset},
+		{
+			name:     "event gap resets",
+			known:    &PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: "epoch-1", Scope: scope.Fingerprint, Domain: pageDataAccountsStaticDomain, Sequence: 0, ResetSequence: 0},
+			sequence: 2, entries: []interface{}{"2\t" + baseEvent}, wantAction: PageDataConfirmActionReset,
+		},
+		{
+			name:     "global reset sequence resets",
+			known:    &PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: "epoch-1", Scope: scope.Fingerprint, Domain: pageDataAccountsStaticDomain, Sequence: 1, ResetSequence: 0},
+			sequence: 1, resetSequence: 1, wantAction: PageDataConfirmActionReset,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			confirmer := testPageDataChangeConfirmer(func(_ context.Context, keys []string, _ ...interface{}) (interface{}, error) {
+				if len(keys) != 4 || !strings.Contains(keys[1], ":owner:viewer-1:accounts.static") {
+					t.Fatalf("confirm keys = %#v", keys)
+				}
+				return []interface{}{"epoch-1", []interface{}{test.sequence, test.resetSequence, test.entries}}, nil
+			})
+			result, confirmErr := confirmer.Confirm(t.Context(), scope, map[string]*PageDataRevisionToken{pageDataAccountsStaticDomain: test.known})
+			if confirmErr != nil {
+				t.Fatalf("Confirm() error = %v", confirmErr)
+			}
+			domain := result.Domains[pageDataAccountsStaticDomain]
+			if domain.Action != test.wantAction || len(domain.Changes) != test.wantChanges {
+				t.Fatalf("domain result = %#v, want action=%q changes=%d", domain, test.wantAction, test.wantChanges)
+			}
+		})
+	}
+	for _, flag := range []string{"membershipChanged", "orderChanged", "filterChanged", "pageChanged"} {
+		t.Run(flag+" reloads", func(t *testing.T) {
+			event := strings.Replace(baseEvent, `"`+flag+`":false`, `"`+flag+`":true`, 1)
+			confirmer := testPageDataChangeConfirmer(func(_ context.Context, _ []string, _ ...interface{}) (interface{}, error) {
+				return []interface{}{"epoch-1", []interface{}{int64(1), int64(0), []interface{}{"1\t" + event}}}, nil
+			})
+			known := &PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: "epoch-1", Scope: scope.Fingerprint, Domain: pageDataAccountsStaticDomain}
+			result, confirmErr := confirmer.Confirm(t.Context(), scope, map[string]*PageDataRevisionToken{pageDataAccountsStaticDomain: known})
+			if confirmErr != nil || result.Domains[pageDataAccountsStaticDomain].Action != PageDataConfirmActionReload {
+				t.Fatalf("Confirm() result=%#v error=%v", result, confirmErr)
+			}
+		})
+	}
+}
+
+func TestPageDataChangeConfirmerValidatesInputAndUsesGlobalAnnouncementStream(t *testing.T) {
+	scope, err := NewPageDataScope(PageDataScopeInput{ViewerSystemAccountID: "viewer-1", ViewScope: PageDataViewScopeSelf})
+	if err != nil {
+		t.Fatalf("NewPageDataScope() error = %v", err)
+	}
+	confirmer := testPageDataChangeConfirmer(func(_ context.Context, keys []string, args ...interface{}) (interface{}, error) {
+		if len(keys) != 4 || !strings.Contains(keys[1], ":sequence:global:announcements.public") {
+			t.Fatalf("announcement confirm keys = %#v", keys)
+		}
+		if got, want := args[1], "1"; got != want {
+			t.Fatalf("domain count argument = %#v, want %q", got, want)
+		}
+		return []interface{}{"epoch-1", []interface{}{int64(0), int64(0), []interface{}{}}}, nil
+	})
+	if _, err := confirmer.Confirm(t.Context(), scope, map[string]*PageDataRevisionToken{pageDataAnnouncementsPublicDomain: nil}); err != nil {
+		t.Fatalf("Confirm(announcements) error = %v", err)
+	}
+	if _, err := confirmer.Confirm(t.Context(), scope, map[string]*PageDataRevisionToken{"unknown.domain": nil}); err == nil {
+		t.Fatal("Confirm(unknown domain) error = nil")
+	}
+	tooMany := make(map[string]*PageDataRevisionToken, PageDataMaxConfirmDomains+1)
+	for index := 0; index <= PageDataMaxConfirmDomains; index++ {
+		tooMany[fmt.Sprintf("unknown-%d", index)] = nil
+	}
+	if _, err := confirmer.Confirm(t.Context(), scope, tooMany); err == nil {
+		t.Fatal("Confirm(too many domains) error = nil")
+	}
+}
+
+func testPageDataChangeConfirmer(run func(context.Context, []string, ...interface{}) (interface{}, error)) *PageDataChangeConfirmer {
+	return &PageDataChangeConfirmer{
+		keyPrefix:     "juhe-ai:prod-west:page-data-change",
+		proposedEpoch: "epoch-1",
+		now: func() time.Time {
+			return time.Date(2026, 7, 18, 1, 2, 3, 456789000, time.UTC)
+		},
+		runConfirm: run,
+	}
+}

@@ -25,6 +25,14 @@ func TestManagementProviderModelCatalogUsesPostgresBooleanVisibility(t *testing.
 	if integerVisibility.MatchString(sql) {
 		t.Fatal("built-in provider model catalog must not compare PostgreSQL boolean catalog_visible with integer 1")
 	}
+	unionParts := strings.Split(sql, "UNION ALL")
+	if len(unionParts) < 2 {
+		t.Fatal("provider model catalog union is missing")
+	}
+	customSelect := strings.Split(unionParts[1], "FROM juhe_business.custom_provider_models")[0]
+	if strings.Count(customSelect, "catalog_visible") != 1 || !regexp.MustCompile(`(?s)system_account_id,\s+status,\s+mode,`).MatchString(customSelect) {
+		t.Fatal("custom provider model catalog must align catalog_visible with the built-in UNION column order")
+	}
 }
 
 func TestManagementProviderModelQueryLocksFullConfigurationBeforeFullUpdate(t *testing.T) {
@@ -48,7 +56,7 @@ func TestManagementProviderModelQueryLocksFullConfigurationBeforeFullUpdate(t *t
 		t.Fatal("built-in provider model update must lock first and write a complete candidate")
 	}
 	configurationColumns := []string{
-		"id", "provider_code", "status", "mode", "supported_api_protocols_json", "supported_service_tiers_json",
+		"id", "provider_code", "status", "catalog_visible", "mode", "supported_api_protocols_json", "supported_service_tiers_json",
 		"supported_reasoning_efforts_json", "default_reasoning_effort", "release_date", "shutdown_date",
 		"context_window_tokens", "max_input_tokens", "max_output_tokens", "input_usd_per_1m", "output_usd_per_1m",
 		"cached_input_usd_per_1m", "cache_write_usd_per_1m", "cache_write_1h_usd_per_1m", "service_tier_prices_json",
@@ -63,7 +71,7 @@ func TestManagementProviderModelQueryLocksFullConfigurationBeforeFullUpdate(t *t
 			t.Fatalf("built-in provider model update must fully assign %s", column)
 		}
 	}
-	if !strings.Contains(updateSQL, "RETURNING id, provider_code, status, mode") {
+	if !strings.Contains(updateSQL, "RETURNING id, provider_code, status, catalog_visible, mode") {
 		t.Fatal("built-in provider model update must return the stored after snapshot")
 	}
 }
@@ -88,7 +96,7 @@ func TestManagementCustomProviderModelQueryLocksFullRowBeforeExactUpdate(t *test
 	if strings.Contains(updateSQL, "ON CONFLICT") || !strings.Contains(updateSQL, "UPDATE juhe_business.custom_provider_models") || !strings.Contains(updateSQL, "RETURNING") {
 		t.Fatalf("custom provider model PATCH must use an exact UPDATE/RETURNING:\n%s", updateSQL)
 	}
-	for _, column := range []string{"status", "mode", "supported_api_protocols_json", "service_tier_prices_json", "pricing_notes", "capability_notes", "notes", "updated_by", "updated_at"} {
+	for _, column := range []string{"status", "catalog_visible", "mode", "supported_api_protocols_json", "service_tier_prices_json", "pricing_notes", "capability_notes", "notes", "updated_by", "updated_at"} {
 		if !regexp.MustCompile(regexp.QuoteMeta(column) + `\s*=\s*sqlc\.(?:n?arg)\(`).MatchString(updateSQL) {
 			t.Fatalf("custom provider model update must fully assign %s", column)
 		}

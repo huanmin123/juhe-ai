@@ -44,7 +44,6 @@ const publishedModelCatalogLocalCache = createProcessLocalResourceCache<string, 
   ttlMs: 10 * 60_000
 })
 const pendingRebuildRetries = new Map<string, { timer: NodeJS.Timeout; attempt: number }>()
-let publishedCatalogRebuildChain: Promise<unknown> = Promise.resolve()
 
 export async function readPublishedModelCatalogResponseAsync(input: {
   systemAccountId: string
@@ -65,21 +64,63 @@ export async function readPublishedModelCatalogResponseAsync(input: {
     return cached.payload
   }
 
-  const snapshot = await readPersistedSnapshotAsync(input)
-    ?? await readPersistedSnapshotAsync({ ...input, systemAccountId: '' })
-  if (!snapshot) {
-    throw new Error('网关发布模型目录尚未生成')
-  }
-  await cachePublishedSnapshot(snapshot)
-  return snapshot.payload
+  return enqueueSnapshotRebuild(async () => {
+    let current: PublishedModelCatalogCacheEntry | undefined
+    try {
+      current = await publishedModelCatalogCache.get(cacheKey)
+    } catch (error) {
+      logger.warn({ event: 'published_model_catalog_cache_read_failed', cacheKey, error }, '模型目录缓存读取失败，回源持久化快照')
+    }
+    if (current?.payload) return current.payload
+    const snapshot = await readPersistedSnapshotAsync(input)
+      ?? await readPersistedSnapshotAsync({ ...input, systemAccountId: '' })
+    if (!snapshot) {
+      throw new Error('网关发布模型目录尚未生成')
+    }
+    await cachePublishedSnapshot(snapshot)
+    return snapshot.payload
+  })
 }
 
-export async function rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(
+let snapshotRebuildTail: Promise<void> = Promise.resolve()
+let allRebuildInFlight: Promise<number> | undefined
+let allRebuildAgain = false
+const personalRebuildInFlight = new Map<string, Promise<GatewayModelCatalogSnapshot[]>>()
+const personalRebuildAgain = new Set<string>()
+const maxPersonalRebuildsInFlight = 4
+
+export function rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(
   systemAccountId: string
 ): Promise<GatewayModelCatalogSnapshot[]> {
-  const run = publishedCatalogRebuildChain.then(() => rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync(systemAccountId))
-  publishedCatalogRebuildChain = run.catch(() => undefined)
-  return run
+  const current = personalRebuildInFlight.get(systemAccountId)
+  if (current) {
+    personalRebuildAgain.add(systemAccountId)
+    return current
+  }
+  if (personalRebuildInFlight.size >= maxPersonalRebuildsInFlight) {
+    return Promise.race(personalRebuildInFlight.values())
+      .catch(() => undefined)
+      .then(() => rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(systemAccountId))
+  }
+  const run = (async () => {
+    let snapshots: GatewayModelCatalogSnapshot[] = []
+    do {
+      personalRebuildAgain.delete(systemAccountId)
+      snapshots = await enqueueSnapshotRebuild(() => rebuildPublishedModelCatalogSnapshotsForSystemAccountInternalAsync(systemAccountId))
+    } while (personalRebuildAgain.has(systemAccountId))
+    return snapshots
+  })()
+  const settled = run.finally(() => {
+    if (personalRebuildInFlight.get(systemAccountId) === settled) personalRebuildInFlight.delete(systemAccountId)
+  })
+  personalRebuildInFlight.set(systemAccountId, settled)
+  return settled
+}
+
+async function rebuildPublishedModelCatalogSnapshotsForSystemAccountInternalAsync(
+  systemAccountId: string
+): Promise<GatewayModelCatalogSnapshot[]> {
+  return rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync(systemAccountId)
 }
 
 async function rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync(
@@ -109,12 +150,36 @@ export async function readPublishedChatModelOptionsAsync(systemAccountId: string
   return Array.isArray(data) ? data as ChatModelOption[] : []
 }
 
-export async function rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(
+export function rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(
   systemAccountId?: string
 ): Promise<number> {
-  const run = publishedCatalogRebuildChain.then(() => rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync(systemAccountId))
-  publishedCatalogRebuildChain = run.catch(() => undefined)
-  return run
+  if (systemAccountId) {
+    return rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(systemAccountId)
+      .then((snapshots) => snapshots.length)
+  }
+  if (allRebuildInFlight) {
+    allRebuildAgain = true
+    return allRebuildInFlight
+  }
+  const run = (async () => {
+    let rebuilt = 0
+    do {
+      allRebuildAgain = false
+      rebuilt = await enqueueSnapshotRebuild(() => rebuildPublishedModelCatalogSnapshotsAfterModelChangeInternalAsync())
+    } while (allRebuildAgain)
+    return rebuilt
+  })()
+  const settled = run.finally(() => {
+    if (allRebuildInFlight === settled) allRebuildInFlight = undefined
+  })
+  allRebuildInFlight = settled
+  return settled
+}
+
+async function rebuildPublishedModelCatalogSnapshotsAfterModelChangeInternalAsync(
+  systemAccountId?: string
+): Promise<number> {
+  return rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync(systemAccountId)
 }
 
 async function rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync(
@@ -132,10 +197,26 @@ async function rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync(
   let rebuilt = 0
   for (let index = 0; index < accountIds.length; index += 4) {
     const batch = accountIds.slice(index, index + 4)
-    await Promise.all(batch.map((accountId) => rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync(accountId)))
+    await Promise.all(batch.map((accountId) => rebuildPublishedModelCatalogSnapshotsForSystemAccountInternalAsync(accountId)))
     rebuilt += batch.length
   }
   return rebuilt
+}
+
+function enqueueSnapshotRebuild<T>(operation: () => Promise<T>): Promise<T> {
+  const result = snapshotRebuildTail.then(operation, operation)
+  snapshotRebuildTail = result.then(() => undefined, () => undefined)
+  return result
+}
+
+export function prewarmPublishedModelCatalogSnapshotsAsync(): Promise<number> {
+  return enqueueSnapshotRebuild(async () => {
+    const snapshots = runtimeConfig.processRole === 'server'
+      ? await requestGatewayDbService({ type: 'list_gateway_model_catalog_snapshots' })
+      : await listGatewayModelCatalogSnapshotsAsync()
+    await Promise.all(snapshots.map((snapshot) => cachePublishedSnapshot(snapshot)))
+    return snapshots.length
+  })
 }
 
 export async function rebuildPublishedModelCatalogSnapshotsBestEffortAsync(systemAccountId?: string, attempt = 0): Promise<boolean> {
@@ -159,14 +240,6 @@ export async function rebuildPublishedModelCatalogSnapshotsBestEffortAsync(syste
     }
     return false
   }
-}
-
-export async function prewarmPublishedModelCatalogSnapshotsAsync(): Promise<number> {
-  const snapshots = runtimeConfig.processRole === 'server'
-    ? await requestGatewayDbService({ type: 'list_gateway_model_catalog_snapshots' })
-    : await listGatewayModelCatalogSnapshotsAsync()
-  await Promise.all(snapshots.map((snapshot) => cachePublishedSnapshot(snapshot)))
-  return snapshots.length
 }
 
 async function publishedCatalog(providerCode: string, systemAccountId: string): Promise<ProviderModelCatalogItem[]> {

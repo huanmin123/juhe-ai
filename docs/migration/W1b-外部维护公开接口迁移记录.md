@@ -103,8 +103,8 @@ W1b 已新增独立真实依赖 smoke：
 Set-Location backend-go
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
 $env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
-$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
-$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6380/1'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6381/2'
 $env:JUHE_AI_REDIS_NAMESPACE = 'juhe-ai'
 $env:JUHE_AI_SECRET = 'replace-with-at-least-32-random-characters'
 go run ./cmd/juhe-ai-maintenance w1b-public-api-smoke
@@ -113,7 +113,7 @@ go run ./cmd/juhe-ai-maintenance w1b-public-api-smoke
 前置条件：
 
 - PostgreSQL 已执行当前 Go migration，至少包含 `juhe_business.external_integration_sources`、`juhe_business.external_integration_source_tokens` 和 `juhe_dataset.public_api_logs`。
-- Redis cache、Redis state 与 Redis queue 可连接，且不能配置为同一个 Redis DB。
+- Redis cache、Redis state 与 Redis queue 可连接，且必须分别指向三个不同 Redis 进程的 `host:port`；同一进程不同 DB、namespace 或密码均不算隔离，Redis URL host 不能使用 `localhost` 或 `::1`。
 - `JUHE_AI_SECRET` 不少于 32 个字符。
 - `go run ./cmd/juhe-ai-worker ingest` 已在另一个进程启动，并连接同一个 PostgreSQL 与 Redis queue。
 
@@ -309,8 +309,8 @@ $env:JUHE_AI_RUNTIME_STATE_DRIVER = 'redis'
 $env:JUHE_AI_QUEUE_DRIVER = 'redis_stream'
 $env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
 $env:JUHE_AI_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/0'
-$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6379/1'
-$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6379/2'
+$env:JUHE_AI_REDIS_STATE_URL = 'redis://127.0.0.1:6380/1'
+$env:JUHE_AI_REDIS_QUEUE_URL = 'redis://127.0.0.1:6381/2'
 
 pnpm --filter juhe-ai-backend test:external-integration-source-postgres-smoke
 pnpm --filter juhe-ai-backend test:external-public-account-push-postgres-smoke

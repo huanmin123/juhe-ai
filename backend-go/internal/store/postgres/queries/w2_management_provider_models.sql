@@ -122,7 +122,7 @@ SELECT
   output_usd_per_image,
   (cached_input_usd_per_1m IS NOT NULL) AS supports_prompt_caching,
   (jsonb_array_length(supported_service_tiers_json::jsonb) > 0) AS supports_service_tier,
-  true AS catalog_visible,
+  catalog_visible,
   pricing_notes,
   capability_notes,
   notes,
@@ -145,7 +145,7 @@ WHERE provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
 ORDER BY provider_code ASC, scope ASC, model ASC, id ASC;
 
 -- name: LockManagementBuiltInProviderModelConfiguration :one
-SELECT id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+SELECT id, provider_code, status, catalog_visible, mode, supported_api_protocols_json, supported_service_tiers_json,
        supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
        context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
        cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
@@ -157,7 +157,7 @@ FOR UPDATE;
 
 -- name: UpdateManagementBuiltInProviderModelConfiguration :one
 UPDATE juhe_business.provider_model_catalog
-SET status = sqlc.arg(status), mode = sqlc.narg(mode),
+SET status = sqlc.arg(status), catalog_visible = sqlc.arg(catalog_visible), mode = sqlc.narg(mode),
     supported_api_protocols_json = sqlc.arg(supported_api_protocols_json),
     supported_service_tiers_json = sqlc.arg(supported_service_tiers_json),
     supported_reasoning_efforts_json = sqlc.arg(supported_reasoning_efforts_json),
@@ -172,7 +172,7 @@ SET status = sqlc.arg(status), mode = sqlc.narg(mode),
     audio_output_usd_per_1m = sqlc.narg(audio_output_usd_per_1m), output_usd_per_image = sqlc.narg(output_usd_per_image),
     updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
-RETURNING id, provider_code, status, mode, supported_api_protocols_json, supported_service_tiers_json,
+RETURNING id, provider_code, status, catalog_visible, mode, supported_api_protocols_json, supported_service_tiers_json,
           supported_reasoning_efforts_json, default_reasoning_effort, release_date, shutdown_date,
           context_window_tokens, max_input_tokens, max_output_tokens, input_usd_per_1m, output_usd_per_1m,
           cached_input_usd_per_1m, cache_write_usd_per_1m, cache_write_1h_usd_per_1m, service_tier_prices_json,
@@ -187,6 +187,7 @@ SELECT
   scope,
   system_account_id,
   status,
+  catalog_visible,
   mode,
   supported_api_protocols_json,
   supported_service_tiers_json,
@@ -227,6 +228,7 @@ SELECT
   scope,
   system_account_id,
   status,
+  catalog_visible,
   mode,
   supported_api_protocols_json,
   supported_service_tiers_json,
@@ -270,7 +272,7 @@ LIMIT 1;
 
 -- name: LockManagementCustomProviderModel :one
 SELECT
-  id, provider_code, model, scope, system_account_id, status, mode,
+  id, provider_code, model, scope, system_account_id, status, catalog_visible, mode,
   supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
   default_reasoning_effort, release_date, shutdown_date,
   context_window_tokens, max_input_tokens, max_output_tokens,
@@ -285,7 +287,7 @@ FOR UPDATE;
 
 -- name: UpdateManagementCustomProviderModel :one
 UPDATE juhe_business.custom_provider_models
-SET status = sqlc.arg(status), mode = sqlc.narg(mode),
+SET status = sqlc.arg(status), catalog_visible = sqlc.arg(catalog_visible), mode = sqlc.narg(mode),
     supported_api_protocols_json = sqlc.arg(supported_api_protocols_json),
     supported_service_tiers_json = sqlc.arg(supported_service_tiers_json),
     supported_reasoning_efforts_json = sqlc.arg(supported_reasoning_efforts_json),
@@ -302,7 +304,7 @@ SET status = sqlc.arg(status), mode = sqlc.narg(mode),
     updated_by = sqlc.arg(actor_system_account_id), updated_at = sqlc.arg(updated_at)
 WHERE id = sqlc.arg(id) AND provider_code = sqlc.arg(provider_code)
 RETURNING
-  id, provider_code, model, scope, system_account_id, status, mode,
+  id, provider_code, model, scope, system_account_id, status, catalog_visible, mode,
   supported_api_protocols_json, supported_service_tiers_json, supported_reasoning_efforts_json,
   default_reasoning_effort, release_date, shutdown_date,
   context_window_tokens, max_input_tokens, max_output_tokens,
@@ -314,7 +316,7 @@ RETURNING
 
 -- name: UpsertManagementCustomProviderModel :one
 INSERT INTO juhe_business.custom_provider_models (
-  id, provider_code, model, scope, system_account_id, status,
+  id, provider_code, model, scope, system_account_id, status, catalog_visible,
   mode, supported_api_protocols_json, supported_service_tiers_json,
   supported_reasoning_efforts_json, default_reasoning_effort,
   release_date, shutdown_date, context_window_tokens, max_input_tokens, max_output_tokens,
@@ -323,7 +325,7 @@ INSERT INTO juhe_business.custom_provider_models (
   output_usd_per_image, currency, pricing_notes, capability_notes, notes,
   created_by, updated_by, created_at, updated_at
 ) VALUES (
-  sqlc.arg(id), sqlc.arg(provider_code), sqlc.arg(model), sqlc.arg(scope), sqlc.narg(system_account_id), sqlc.arg(status),
+  sqlc.arg(id), sqlc.arg(provider_code), sqlc.arg(model), sqlc.arg(scope), sqlc.narg(system_account_id), sqlc.arg(status), sqlc.arg(catalog_visible),
   sqlc.narg(mode), sqlc.arg(supported_api_protocols_json), sqlc.arg(supported_service_tiers_json),
   sqlc.arg(supported_reasoning_efforts_json), sqlc.narg(default_reasoning_effort),
   sqlc.narg(release_date), sqlc.narg(shutdown_date), sqlc.narg(context_window_tokens), sqlc.narg(max_input_tokens), sqlc.narg(max_output_tokens),
@@ -338,6 +340,7 @@ ON CONFLICT (id) DO UPDATE SET
   scope = EXCLUDED.scope,
   system_account_id = EXCLUDED.system_account_id,
   status = EXCLUDED.status,
+  catalog_visible = EXCLUDED.catalog_visible,
   mode = EXCLUDED.mode,
   supported_api_protocols_json = EXCLUDED.supported_api_protocols_json,
   supported_service_tiers_json = EXCLUDED.supported_service_tiers_json,
@@ -371,6 +374,7 @@ RETURNING
   scope,
   system_account_id,
   status,
+  catalog_visible,
   mode,
   supported_api_protocols_json,
   supported_service_tiers_json,
@@ -400,9 +404,27 @@ RETURNING
   created_at,
   updated_at;
 
--- name: DeleteManagementCustomProviderModel :execrows
-DELETE FROM juhe_business.custom_provider_models
-WHERE id = sqlc.arg(id);
+-- name: DeleteManagementCustomProviderModel :one
+WITH deleted AS (
+  DELETE FROM juhe_business.custom_provider_models
+  WHERE id = sqlc.arg(id)
+  RETURNING scope, COALESCE(system_account_id, '') AS system_account_id
+), marked AS (
+  INSERT INTO juhe_business.model_catalog_snapshot_rebuild_requests (scope, system_account_id, generation, updated_at)
+  SELECT
+    CASE WHEN scope = 'personal' THEN 'personal' ELSE 'all' END,
+    CASE WHEN scope = 'personal' THEN system_account_id ELSE '' END,
+    1,
+    now()
+  FROM deleted
+  WHERE true
+  ON CONFLICT (scope, system_account_id) DO UPDATE SET
+    generation = juhe_business.model_catalog_snapshot_rebuild_requests.generation + 1,
+    updated_at = EXCLUDED.updated_at
+  RETURNING 1
+)
+SELECT COUNT(*)::bigint AS deleted_count
+FROM deleted;
 
 -- name: GetManagementCustomProviderModelBindingSummary :one
 WITH account_owner_scope AS (

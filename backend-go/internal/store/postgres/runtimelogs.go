@@ -14,10 +14,42 @@ import (
 )
 
 const (
-	defaultRuntimeLogListLimit = 100
-	maxRuntimeLogListLimit     = 100
-	maxRuntimeLogListRows      = 1000
+	defaultRuntimeLogListLimit     = 100
+	maxRuntimeLogListLimit         = 100
+	maxRuntimeLogListRows          = 1000
+	defaultRuntimeLogRetentionDays = 14
+	runtimeLogFacetBucketKey       = "current"
+	runtimeLogFacetMaxEvents       = 80
 )
+
+const managementRuntimeLogFacetRetentionSQL = `
+SELECT COALESCE((
+  SELECT CASE
+    WHEN value_json ~ '^[[:space:]]*[0-9]+[[:space:]]*$'
+      THEN LEAST(90, GREATEST(1, (value_json::jsonb #>> '{}')::int))
+    ELSE NULL
+  END
+  FROM juhe_business.system_settings
+  WHERE system_account_id = 'sys_admin' AND key = 'runtimeLogIndexRetentionDays'
+), $1::int)`
+
+const managementRuntimeLogFacetSummarySQL = `
+SELECT COALESCE(earliest_time, ''), COALESCE(latest_time, ''), total_count
+FROM juhe_dataset.runtime_log_facet_summary
+WHERE bucket_key = $1`
+
+const managementRuntimeLogFacetLevelsSQL = `
+SELECT level, count
+FROM juhe_dataset.runtime_log_level_facets
+WHERE bucket_key = $1 AND count > 0
+ORDER BY count DESC, level ASC`
+
+const managementRuntimeLogFacetEventsSQL = `
+SELECT event
+FROM juhe_dataset.runtime_log_event_facets
+WHERE bucket_key = $1 AND count > 0
+ORDER BY latest_time DESC, event ASC
+LIMIT $2::int`
 
 type runtimeLogQueries interface {
 	GetRuntimeLogDetail(
@@ -192,6 +224,51 @@ func (s *Store) GetManagementRuntimeLog(
 	id string,
 ) (port.ManagementRuntimeLog, bool, error) {
 	return getManagementRuntimeLog(ctx, s.queries(), id)
+}
+
+func (s *Store) ManagementRuntimeLogFacets(ctx context.Context) (port.ManagementRuntimeLogFacets, error) {
+	var result port.ManagementRuntimeLogFacets
+	if err := s.pool.QueryRow(ctx, managementRuntimeLogFacetRetentionSQL, defaultRuntimeLogRetentionDays).Scan(&result.RetentionDays); err != nil {
+		return result, fmt.Errorf("read runtime log retention days: %w", err)
+	}
+	if err := s.pool.QueryRow(ctx, managementRuntimeLogFacetSummarySQL, runtimeLogFacetBucketKey).Scan(
+		&result.EarliestIndexedAt,
+		&result.LatestIndexedAt,
+		&result.TotalIndexed,
+	); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return result, fmt.Errorf("read runtime log facet summary: %w", err)
+	}
+	rows, err := s.pool.Query(ctx, managementRuntimeLogFacetLevelsSQL, runtimeLogFacetBucketKey)
+	if err != nil {
+		return result, fmt.Errorf("read runtime log level facets: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var level port.ManagementRuntimeLogFacetLevel
+		if err := rows.Scan(&level.Value, &level.Count); err != nil {
+			return result, fmt.Errorf("scan runtime log level facet: %w", err)
+		}
+		result.Levels = append(result.Levels, level)
+	}
+	if err := rows.Err(); err != nil {
+		return result, fmt.Errorf("iterate runtime log level facets: %w", err)
+	}
+	events, err := s.pool.Query(ctx, managementRuntimeLogFacetEventsSQL, runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents)
+	if err != nil {
+		return result, fmt.Errorf("read runtime log event facets: %w", err)
+	}
+	defer events.Close()
+	for events.Next() {
+		var event string
+		if err := events.Scan(&event); err != nil {
+			return result, fmt.Errorf("scan runtime log event facet: %w", err)
+		}
+		result.Events = append(result.Events, event)
+	}
+	if err := events.Err(); err != nil {
+		return result, fmt.Errorf("iterate runtime log event facets: %w", err)
+	}
+	return result, nil
 }
 
 func getManagementRuntimeLog(

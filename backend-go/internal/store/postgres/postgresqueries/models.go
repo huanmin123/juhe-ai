@@ -57,6 +57,32 @@ type JuheBusinessAccount struct {
 	TemporaryUnavailableContinuousProbeEnabled int32
 }
 
+type JuheBusinessAccountApiKeyRuntimeState struct {
+	ID                  string
+	SystemAccountID     string
+	AccountID           string
+	KeyFingerprint      string
+	KeyIndex            int32
+	CredentialRevision  pgtype.Text
+	Status              string
+	FailureCount        int32
+	ConsecutiveFailures int32
+	SuccessCount        int64
+	CooldownUntil       pgtype.Text
+	NextProbeAt         pgtype.Text
+	ProbeBackoffSeconds int32
+	RecoveryStartedAt   pgtype.Text
+	LastAttemptAt       pgtype.Text
+	LastSuccessAt       pgtype.Text
+	LastFailureAt       pgtype.Text
+	LastErrorCode       pgtype.Text
+	LastErrorMessage    pgtype.Text
+	LastTraceID         pgtype.Text
+	LastProbeAt         pgtype.Text
+	CreatedAt           string
+	UpdatedAt           string
+}
+
 type JuheBusinessAccountModelMapping struct {
 	AccountID              string
 	ProviderCode           string
@@ -181,6 +207,7 @@ type JuheBusinessCustomProviderModel struct {
 	CacheWrite1hUsdPer1m          pgtype.Float8
 	ServiceTierPricesJson         string
 	MaxInputTokens                pgtype.Int4
+	CatalogVisible                bool
 }
 
 type JuheBusinessExternalIntegrationSource struct {
@@ -211,6 +238,17 @@ type JuheBusinessExternalIntegrationSourceToken struct {
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
 	RevokedAt            pgtype.Timestamptz
+}
+
+type JuheBusinessGatewayModelCatalogSnapshot struct {
+	SystemAccountID string
+	Protocol        string
+	Variant         string
+	PayloadJson     string
+	ModelCount      int32
+	Revision        string
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type JuheBusinessGlobalSetting struct {
@@ -261,6 +299,13 @@ type JuheBusinessGroupAuthorizationSetting struct {
 	SchedulingPolicyJson pgtype.Text
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
+}
+
+type JuheBusinessModelCatalogSnapshotRebuildRequest struct {
+	Scope           string
+	SystemAccountID string
+	Generation      int64
+	UpdatedAt       pgtype.Timestamptz
 }
 
 type JuheBusinessPageDataDirtyDomain struct {
@@ -349,10 +394,10 @@ type JuheBusinessProviderModelCatalog struct {
 	CodexDefaultReasoningLevel              pgtype.Text
 	CodexMultiAgentVersion                  pgtype.Text
 	LongContextInputTokenThreshold          pgtype.Int4
-	LongContextInputTokenThresholdInclusive bool
 	LongContextInputCostMultiplier          pgtype.Float8
 	LongContextOutputCostMultiplier         pgtype.Float8
 	ServiceTierPricesJson                   string
+	LongContextInputTokenThresholdInclusive bool
 }
 
 type JuheBusinessProviderProtocolProfile struct {

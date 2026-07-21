@@ -21,33 +21,34 @@ const defaultRuntimeSecret = "juhe-ai-dev-secret-change-me"
 var invalidRedisNamespaceChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
 
 type Config struct {
-	Host                            string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
-	Port                            int           `env:"JUHE_AI_PORT" envDefault:"3000"`
-	Env                             string        `env:"NODE_ENV" envDefault:"development"`
-	LogLevel                        string        `env:"JUHE_AI_LOG_LEVEL" envDefault:"info"`
-	PostgresURL                     string        `env:"JUHE_AI_POSTGRES_URL"`
-	RedisCacheURL                   string        `env:"JUHE_AI_REDIS_CACHE_URL"`
-	RedisStateURL                   string        `env:"JUHE_AI_REDIS_STATE_URL"`
-	RedisQueueURL                   string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
-	RedisNamespace                  string        `env:"JUHE_AI_REDIS_NAMESPACE"`
-	Secret                          string        `env:"JUHE_AI_SECRET"`
-	NodeInternalBaseURL             string        `env:"JUHE_AI_NODE_INTERNAL_BASE_URL"`
-	UpstreamBaseURLPrivateAllowlist []string      `env:"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST" envSeparator:","`
-	NodeInternalRequestTimeout      time.Duration `env:"JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT" envDefault:"2s"`
-	PublicAPIEnabled                bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
-	ManagementAPIEnabled            bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
-	ManagementAuthSessionsEnabled   bool          `env:"JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED" envDefault:"false"`
-	AuthCaptchaDisabled             bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
-	TrustProxy                      string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
-	CookieSecure                    bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
-	CookieSameSite                  string        `env:"JUHE_AI_COOKIE_SAME_SITE" envDefault:"lax"`
-	MetricsEnabled                  bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
-	PprofEnabled                    bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
-	ShutdownTimeout                 time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
-	OwnerLockEnabled                bool          `env:"JUHE_AI_OWNER_LOCK_ENABLED" envDefault:"false"`
-	OwnerLockPath                   string        `env:"JUHE_AI_OWNER_LOCK_PATH"`
-	OwnerLockDeploymentEpoch        string        `env:"JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"`
-	OwnerLockRole                   string        `env:"JUHE_AI_OWNER_LOCK_ROLE" envDefault:"server"`
+	Host                               string        `env:"JUHE_AI_HOST" envDefault:"127.0.0.1"`
+	Port                               int           `env:"JUHE_AI_PORT" envDefault:"3000"`
+	Env                                string        `env:"NODE_ENV" envDefault:"development"`
+	LogLevel                           string        `env:"JUHE_AI_LOG_LEVEL" envDefault:"info"`
+	PostgresURL                        string        `env:"JUHE_AI_POSTGRES_URL"`
+	RedisCacheURL                      string        `env:"JUHE_AI_REDIS_CACHE_URL"`
+	RedisStateURL                      string        `env:"JUHE_AI_REDIS_STATE_URL"`
+	RedisQueueURL                      string        `env:"JUHE_AI_REDIS_QUEUE_URL"`
+	RedisNamespace                     string        `env:"JUHE_AI_REDIS_NAMESPACE"`
+	Secret                             string        `env:"JUHE_AI_SECRET"`
+	NodeInternalBaseURL                string        `env:"JUHE_AI_NODE_INTERNAL_BASE_URL"`
+	UpstreamBaseURLPrivateAllowlist    []string      `env:"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST" envSeparator:","`
+	NodeInternalRequestTimeout         time.Duration `env:"JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT" envDefault:"2s"`
+	NodeInternalSnapshotRebuildTimeout time.Duration `env:"JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT" envDefault:"60s"`
+	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
+	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
+	ManagementAuthSessionsEnabled      bool          `env:"JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED" envDefault:"false"`
+	AuthCaptchaDisabled                bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
+	TrustProxy                         string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
+	CookieSecure                       bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
+	CookieSameSite                     string        `env:"JUHE_AI_COOKIE_SAME_SITE" envDefault:"lax"`
+	MetricsEnabled                     bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
+	PprofEnabled                       bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
+	ShutdownTimeout                    time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	OwnerLockEnabled                   bool          `env:"JUHE_AI_OWNER_LOCK_ENABLED" envDefault:"false"`
+	OwnerLockPath                      string        `env:"JUHE_AI_OWNER_LOCK_PATH"`
+	OwnerLockDeploymentEpoch           string        `env:"JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"`
+	OwnerLockRole                      string        `env:"JUHE_AI_OWNER_LOCK_ROLE" envDefault:"server"`
 }
 
 type TrustProxyConfig struct {
@@ -154,6 +155,10 @@ func (cfg Config) Validate() error {
 	if cfg.NodeInternalRequestTimeout < 100*time.Millisecond ||
 		cfg.NodeInternalRequestTimeout > 10*time.Second {
 		return fmt.Errorf("JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT 必须在 100ms 到 10s 之间")
+	}
+	if cfg.NodeInternalSnapshotRebuildTimeout != 0 &&
+		(cfg.NodeInternalSnapshotRebuildTimeout < time.Second || cfg.NodeInternalSnapshotRebuildTimeout > 5*time.Minute) {
+		return fmt.Errorf("JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT 必须在 1s 到 5m 之间")
 	}
 	if strings.TrimSpace(cfg.RedisNamespace) == "" {
 		return fmt.Errorf("JUHE_AI_REDIS_NAMESPACE 不能为空")
@@ -338,6 +343,9 @@ func validateManagementAPIConfig(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.RedisQueueURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_REDIS_QUEUE_URL 不能为空")
+	}
+	if strings.TrimSpace(cfg.NodeInternalBaseURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_NODE_INTERNAL_BASE_URL 不能为空")
 	}
 	secret := strings.TrimSpace(cfg.Secret)
 	if secret == "" {

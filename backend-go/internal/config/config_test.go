@@ -279,6 +279,9 @@ func TestLoadDefaultsNodeInternalRequestTimeout(t *testing.T) {
 			2*time.Second,
 		)
 	}
+	if cfg.NodeInternalSnapshotRebuildTimeout != time.Minute {
+		t.Fatalf("NodeInternalSnapshotRebuildTimeout = %s, want %s", cfg.NodeInternalSnapshotRebuildTimeout, time.Minute)
+	}
 }
 
 func TestLoadUsesExplicitRedisNamespace(t *testing.T) {
@@ -441,8 +444,8 @@ func TestConfigPublicAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
 		RedisStateURL:              "redis://127.0.0.1:6380/1",
 		RedisQueueURL:              "redis://127.0.0.1:6381/2",
-		Secret:                     "12345678901234567890123456789012",
 		NodeInternalBaseURL:        "http://127.0.0.1:3001",
+		Secret:                     "12345678901234567890123456789012",
 		NodeInternalRequestTimeout: 2 * time.Second,
 		ShutdownTimeout:            time.Second,
 	}
@@ -517,6 +520,7 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 		RedisCacheURL:              "redis://127.0.0.1:6379/0",
 		RedisStateURL:              "redis://127.0.0.1:6380/1",
 		RedisQueueURL:              "redis://127.0.0.1:6381/2",
+		NodeInternalBaseURL:        "http://127.0.0.1:3001",
 		Secret:                     "12345678901234567890123456789012",
 		NodeInternalRequestTimeout: 2 * time.Second,
 		ShutdownTimeout:            time.Second,
@@ -556,6 +560,11 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 			name: "short secret",
 			edit: func(cfg *Config) { cfg.Secret = "short-secret" },
 			want: "JUHE_AI_SECRET",
+		},
+		{
+			name: "node internal base URL",
+			edit: func(cfg *Config) { cfg.NodeInternalBaseURL = "" },
+			want: "JUHE_AI_NODE_INTERNAL_BASE_URL",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -659,6 +668,7 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_SECRET", "12345678901234567890123456789012")
 	t.Setenv("JUHE_AI_NODE_INTERNAL_BASE_URL", "http://127.0.0.1:3001")
 	t.Setenv("JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT", "750ms")
+	t.Setenv("JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT", "90s")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
 	if err != nil {
@@ -680,6 +690,9 @@ func TestLoadParsesPublicAPIEnv(t *testing.T) {
 			750*time.Millisecond,
 		)
 	}
+	if cfg.NodeInternalSnapshotRebuildTimeout != 90*time.Second {
+		t.Fatalf("NodeInternalSnapshotRebuildTimeout = %s, want %s", cfg.NodeInternalSnapshotRebuildTimeout, 90*time.Second)
+	}
 }
 
 func TestLoadParsesManagementAPIEnv(t *testing.T) {
@@ -688,6 +701,7 @@ func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_REDIS_CACHE_URL", "redis://127.0.0.1:6379/0")
 	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6380/1")
 	t.Setenv("JUHE_AI_REDIS_QUEUE_URL", "redis://127.0.0.1:6381/2")
+	t.Setenv("JUHE_AI_NODE_INTERNAL_BASE_URL", "http://127.0.0.1:3001")
 	t.Setenv("JUHE_AI_SECRET", "12345678901234567890123456789012")
 
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
@@ -741,6 +755,38 @@ func TestConfigValidatesNodeInternalRequestTimeoutRangeRegardlessOfPublicAPI(t *
 			}
 			if err != nil && !strings.Contains(err.Error(), "JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT") {
 				t.Fatalf("Validate() error = %q, want timeout env name", err)
+			}
+		})
+	}
+}
+
+func TestConfigValidatesNodeInternalSnapshotRebuildTimeoutRange(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		timeout time.Duration
+		wantErr bool
+	}{
+		{name: "zero is allowed for direct test config", timeout: 0},
+		{name: "minimum", timeout: time.Second},
+		{name: "maximum", timeout: 5 * time.Minute},
+		{name: "below minimum", timeout: time.Second - time.Nanosecond, wantErr: true},
+		{name: "above maximum", timeout: 5*time.Minute + time.Nanosecond, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Config{
+				Host:                               "127.0.0.1",
+				Port:                               3000,
+				RedisNamespace:                     "juhe-ai",
+				NodeInternalRequestTimeout:         2 * time.Second,
+				NodeInternalSnapshotRebuildTimeout: test.timeout,
+				ShutdownTimeout:                    time.Second,
+			}
+			err := cfg.Validate()
+			if test.wantErr && err == nil {
+				t.Fatal("Validate() error = nil, want timeout range error")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("Validate() error = %v", err)
 			}
 		})
 	}

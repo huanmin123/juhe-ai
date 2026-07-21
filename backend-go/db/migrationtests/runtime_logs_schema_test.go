@@ -66,7 +66,7 @@ func TestRuntimeLogsMigrationMatchesNodeReadContract(t *testing.T) {
 		t.Fatal("migration Down section must remain a non-destructive no-op")
 	}
 
-	upgradeSource, err := os.ReadFile(migrationPath("000063_w6_runtime_log_cursor_generation.sql"))
+	upgradeSource, err := os.ReadFile(migrationPath("000068_w6_runtime_log_cursor_generation.sql"))
 	if err != nil {
 		t.Fatalf("read runtime log cursor generation migration: %v", err)
 	}

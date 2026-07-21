@@ -29,6 +29,7 @@ try {
   assertAccountHealthCheckModelRuntimeBoundary()
   assertDefaultHealthCheckModelRoleLookupBoundary()
   assertModelCatalogPostgresSyncBoundary()
+  assertProviderEnabledPredicateBoundary()
   assertOpenAIAccountSelectorPostgresAuthorizationBoundary()
 
   process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
@@ -82,6 +83,21 @@ try {
 } finally {
   await closeSqliteStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertProviderEnabledPredicateBoundary(): void {
+  const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const source = readFileSync(join(srcRoot, 'storage/provider.repository.ts'), 'utf8')
+  assert.match(
+    source,
+    /function providerEnabledPredicate\(client: DatabaseClient, column: string\): string \{[\s\S]*?client\.driver === 'postgres' \? 'TRUE' : '1'/,
+    '供应商异步查询必须按 DatabaseClient driver 生成 boolean enabled predicate'
+  )
+  assert.equal(
+    source.match(/providerEnabledPredicate\(client, '[^']+'\)/g)?.length,
+    11,
+    '全部供应商异步 enabled 查询都必须复用 PostgreSQL boolean predicate'
+  )
 }
 
 function assertModelCatalogPostgresSyncBoundary(): void {

@@ -66,6 +66,13 @@ func newRootCommand(deps workerCommandDependencies) *cobra.Command {
 			return func(ctx context.Context) error { return app.RunIngestWorker(ctx, cfg, logger) }
 		}),
 	})
+	root.AddCommand(&cobra.Command{
+		Use:   "account-test",
+		Short: "Run account test bridge worker",
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error { return app.RunAccountTestWorker(ctx, cfg, logger) }
+		}),
+	})
 	expirySweepOptions := app.AuthorizationExpirySweepWorkerOptions{
 		Interval:     time.Minute,
 		InitialDelay: 54 * time.Second,

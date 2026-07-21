@@ -93,6 +93,7 @@ async function testPostgresDatabaseClient(): Promise<void> {
   })
 
   pool.nextRows = [{
+    created_at: new Date('2026-07-21T04:05:06.789Z'),
     request_count: '10',
     totalBytes: '2048',
     metric_value: '1.5',
@@ -106,6 +107,7 @@ async function testPostgresDatabaseClient(): Promise<void> {
   }]
   const normalizedRow = await client.one<Record<string, unknown>>('SELECT numeric fields FROM demo')
   assert.deepEqual(normalizedRow, {
+    created_at: '2026-07-21T04:05:06.789Z',
     request_count: 10,
     totalBytes: 2048,
     metric_value: 1.5,

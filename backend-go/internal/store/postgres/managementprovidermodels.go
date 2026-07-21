@@ -24,6 +24,7 @@ type managementBuiltInProviderModelPriceUpdateQueries interface {
 		ctx context.Context,
 		input postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams,
 	) (postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow, error)
+	MarkManagementModelCatalogSnapshotRebuildDirty(context.Context, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error
 }
 
 func (s *Store) FindManagementProviderModelProvider(ctx context.Context, code string) (port.ManagementProviderModelProvider, bool, error) {
@@ -67,7 +68,7 @@ func (s *Store) FindManagementCustomProviderModelByScope(ctx context.Context, in
 }
 
 func (s *Store) SaveManagementCustomProviderModel(ctx context.Context, input port.ManagementCustomProviderModelSaveInput) (port.ManagementProviderModelCatalogItem, error) {
-	return saveManagementCustomProviderModel(ctx, s.queries(), input)
+	return saveManagementCustomProviderModelInTx(ctx, s.pool.BeginTx, input)
 }
 
 func (s *Store) UpdateManagementCustomProviderModel(ctx context.Context, input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
@@ -114,6 +115,7 @@ func updateManagementBuiltInProviderModelPricesInTx(ctx context.Context, beginTx
 type managementCustomProviderModelUpdateQueries interface {
 	LockManagementCustomProviderModel(context.Context, postgresqueries.LockManagementCustomProviderModelParams) (postgresqueries.LockManagementCustomProviderModelRow, error)
 	UpdateManagementCustomProviderModel(context.Context, postgresqueries.UpdateManagementCustomProviderModelParams) (postgresqueries.UpdateManagementCustomProviderModelRow, error)
+	MarkManagementModelCatalogSnapshotRebuildDirty(context.Context, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error
 }
 
 func updateManagementCustomProviderModelInTx(ctx context.Context, beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error), input port.ManagementCustomProviderModelUpdateInput, validate port.ManagementCustomProviderModelUpdateValidate) (port.ManagementCustomProviderModelUpdateResult, bool, error) {
@@ -180,13 +182,16 @@ func updateManagementCustomProviderModelTx(ctx context.Context, q managementCust
 	if before.ID != input.ID || before.ProviderCode != input.ProviderCode || after.ID != before.ID || after.ProviderCode != before.ProviderCode {
 		return port.ManagementCustomProviderModelUpdateResult{}, false, errors.New("custom provider model update identity mismatch")
 	}
+	if err := markManagementModelCatalogSnapshotDirty(ctx, q, after.Scope, after.SystemAccountID); err != nil {
+		return port.ManagementCustomProviderModelUpdateResult{}, false, err
+	}
 	return port.ManagementCustomProviderModelUpdateResult{Before: before, After: after}, true, nil
 }
 
 func customModelSaveInputFromCatalogItem(item port.ManagementProviderModelCatalogItem, actor string) port.ManagementCustomProviderModelSaveInput {
 	return port.ManagementCustomProviderModelSaveInput{
 		ID: item.ID, ProviderCode: item.ProviderCode, Model: item.Model, Scope: item.Scope, SystemAccountID: item.SystemAccountID,
-		Status: item.Status, Mode: item.Mode, SupportedAPIProtocols: append([]string{}, item.SupportedAPIProtocols...), SupportedServiceTiers: append([]string{}, item.SupportedServiceTiers...), SupportedReasoningEfforts: append([]string{}, item.SupportedReasoningEfforts...), DefaultReasoningEffort: item.DefaultReasoningEffort, ReleaseDate: item.ReleaseDate, ShutdownDate: item.ShutdownDate,
+		Status: item.Status, CatalogVisible: item.CatalogVisible, Mode: item.Mode, SupportedAPIProtocols: append([]string{}, item.SupportedAPIProtocols...), SupportedServiceTiers: append([]string{}, item.SupportedServiceTiers...), SupportedReasoningEfforts: append([]string{}, item.SupportedReasoningEfforts...), DefaultReasoningEffort: item.DefaultReasoningEffort, ReleaseDate: item.ReleaseDate, ShutdownDate: item.ShutdownDate,
 		ContextWindowTokens: cloneManagementProviderModelInt(item.ContextWindowTokens), MaxInputTokens: cloneManagementProviderModelInt(item.MaxInputTokens), MaxOutputTokens: cloneManagementProviderModelInt(item.MaxOutputTokens), InputUSDPer1M: cloneManagementProviderModelFloat(item.InputUSDPer1M), OutputUSDPer1M: cloneManagementProviderModelFloat(item.OutputUSDPer1M), CachedInputUSDPer1M: cloneManagementProviderModelFloat(item.CachedInputUSDPer1M), CacheWriteUSDPer1M: cloneManagementProviderModelFloat(item.CacheWriteUSDPer1M), CacheWrite1hUSDPer1M: cloneManagementProviderModelFloat(item.CacheWrite1hUSDPer1M), ServiceTierPrices: cloneManagementProviderModelPriceMap(item.ServiceTierPrices), ImageInputUSDPer1M: cloneManagementProviderModelFloat(item.ImageInputUSDPer1M), ImageOutputUSDPer1M: cloneManagementProviderModelFloat(item.ImageOutputUSDPer1M), AudioInputUSDPer1M: cloneManagementProviderModelFloat(item.AudioInputUSDPer1M), AudioOutputUSDPer1M: cloneManagementProviderModelFloat(item.AudioOutputUSDPer1M), OutputUSDPerImage: cloneManagementProviderModelFloat(item.OutputUSDPerImage), PricingNotes: item.PricingNotes, CapabilityNotes: item.CapabilityNotes, Notes: item.Notes, ActorSystemAccountID: strings.TrimSpace(actor),
 	}
 }
@@ -194,6 +199,7 @@ func customModelSaveInputFromCatalogItem(item port.ManagementProviderModelCatalo
 func customProviderModelCatalogItemFromSaveInput(input port.ManagementCustomProviderModelSaveInput, metadata port.ManagementProviderModelCatalogItem) port.ManagementProviderModelCatalogItem {
 	result := metadata
 	result.Status = input.Status
+	result.CatalogVisible = input.CatalogVisible
 	result.Mode = input.Mode
 	result.SupportedAPIProtocols = append([]string{}, input.SupportedAPIProtocols...)
 	result.SupportedServiceTiers = append([]string{}, input.SupportedServiceTiers...)
@@ -227,6 +233,9 @@ func customProviderModelCatalogItemFromSaveInput(input port.ManagementCustomProv
 func mergeCustomProviderModelUpdate(candidate *port.ManagementCustomProviderModelSaveInput, input port.ManagementCustomProviderModelUpdateInput) {
 	if input.Status.Present {
 		candidate.Status = input.Status.Value
+	}
+	if input.CatalogVisible.Present {
+		candidate.CatalogVisible = input.CatalogVisible.Value
 	}
 	if input.Mode.Present {
 		candidate.Mode = input.Mode.Value
@@ -319,7 +328,7 @@ func customProviderModelUpdateParams(input port.ManagementProviderModelCatalogIt
 	if err != nil {
 		return postgresqueries.UpdateManagementCustomProviderModelParams{}, fmt.Errorf("marshal custom provider model prices: %w", err)
 	}
-	return postgresqueries.UpdateManagementCustomProviderModelParams{Status: input.Status, Mode: pgTextFromString(input.Mode), SupportedApiProtocolsJson: string(protocols), SupportedServiceTiersJson: string(tiers), SupportedReasoningEffortsJson: string(reasoning), DefaultReasoningEffort: pgTextFromString(input.DefaultReasoningEffort), ReleaseDate: pgTextFromString(input.ReleaseDate), ShutdownDate: pgTextFromString(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(prices), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), PricingNotes: pgTextFromString(input.PricingNotes), CapabilityNotes: pgTextFromString(input.CapabilityNotes), Notes: pgTextFromString(input.Notes), ActorSystemAccountID: pgTextFromString(actor), UpdatedAt: pgTimestamptz(time.Now().UTC()), ID: input.ID, ProviderCode: input.ProviderCode}, nil
+	return postgresqueries.UpdateManagementCustomProviderModelParams{Status: input.Status, CatalogVisible: input.CatalogVisible, Mode: pgTextFromString(input.Mode), SupportedApiProtocolsJson: string(protocols), SupportedServiceTiersJson: string(tiers), SupportedReasoningEffortsJson: string(reasoning), DefaultReasoningEffort: pgTextFromString(input.DefaultReasoningEffort), ReleaseDate: pgTextFromString(input.ReleaseDate), ShutdownDate: pgTextFromString(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(prices), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), PricingNotes: pgTextFromString(input.PricingNotes), CapabilityNotes: pgTextFromString(input.CapabilityNotes), Notes: pgTextFromString(input.Notes), ActorSystemAccountID: pgTextFromString(actor), UpdatedAt: pgTimestamptz(time.Now().UTC()), ID: input.ID, ProviderCode: input.ProviderCode}, nil
 }
 
 func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managementBuiltInProviderModelPriceUpdateQueries, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {
@@ -331,7 +340,7 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("lock built-in provider model configuration: %w", err)
 	}
 	before, err := decodeManagementProviderModelConfigurationSnapshot(managementProviderModelConfigurationRow{
-		id: locked.ID, providerCode: locked.ProviderCode, status: locked.Status, mode: locked.Mode,
+		id: locked.ID, providerCode: locked.ProviderCode, status: locked.Status, catalogVisible: locked.CatalogVisible, mode: locked.Mode,
 		supportedAPIProtocolsJSON: locked.SupportedApiProtocolsJson, supportedServiceTiersJSON: locked.SupportedServiceTiersJson,
 		supportedReasoningEffortsJSON: locked.SupportedReasoningEffortsJson, defaultReasoningEffort: locked.DefaultReasoningEffort,
 		releaseDate: locked.ReleaseDate, shutdownDate: locked.ShutdownDate, contextWindowTokens: locked.ContextWindowTokens,
@@ -364,7 +373,7 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, fmt.Errorf("update built-in provider model configuration: %w", err)
 	}
 	after, err := decodeManagementProviderModelConfigurationSnapshot(managementProviderModelConfigurationRow{
-		id: updated.ID, providerCode: updated.ProviderCode, status: updated.Status, mode: updated.Mode,
+		id: updated.ID, providerCode: updated.ProviderCode, status: updated.Status, catalogVisible: updated.CatalogVisible, mode: updated.Mode,
 		supportedAPIProtocolsJSON: updated.SupportedApiProtocolsJson, supportedServiceTiersJSON: updated.SupportedServiceTiersJson,
 		supportedReasoningEffortsJSON: updated.SupportedReasoningEffortsJson, defaultReasoningEffort: updated.DefaultReasoningEffort,
 		releaseDate: updated.ReleaseDate, shutdownDate: updated.ShutdownDate, contextWindowTokens: updated.ContextWindowTokens,
@@ -381,6 +390,9 @@ func updateManagementBuiltInProviderModelPricesTx(ctx context.Context, q managem
 	if before.ID != input.ID || before.ProviderCode != input.ProviderCode || after.ID != before.ID || after.ProviderCode != before.ProviderCode {
 		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, errors.New("built-in provider model update identity mismatch")
 	}
+	if err := markManagementModelCatalogSnapshotDirty(ctx, q, "all", ""); err != nil {
+		return port.ManagementBuiltInProviderModelPriceUpdateResult{}, false, err
+	}
 	return port.ManagementBuiltInProviderModelPriceUpdateResult{Before: before, After: after}, true, nil
 }
 
@@ -388,6 +400,9 @@ func mergeManagementProviderModelConfigurationSnapshot(before port.ManagementPro
 	result := before
 	if input.Status.Present {
 		result.Status = input.Status.Value
+	}
+	if input.CatalogVisible.Present {
+		result.CatalogVisible = input.CatalogVisible.Value
 	}
 	if input.Mode.Present {
 		result.Mode = input.Mode.Value
@@ -473,7 +488,7 @@ func managementProviderModelConfigurationUpdateParams(input port.ManagementProvi
 		return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{}, fmt.Errorf("marshal built-in provider model service tier prices: %w", err)
 	}
 	return postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams{
-		Status: input.Status, Mode: managementProviderModelNullableText(input.Mode), SupportedApiProtocolsJson: string(protocolsJSON), SupportedServiceTiersJson: string(serviceTiersJSON), SupportedReasoningEffortsJson: string(reasoningJSON), DefaultReasoningEffort: managementProviderModelNullableText(input.DefaultReasoningEffort), ReleaseDate: managementProviderModelNullableText(input.ReleaseDate), ShutdownDate: managementProviderModelNullableText(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(pricesJSON), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), UpdatedAt: pgTimestamptz(updatedAt), ID: input.ID, ProviderCode: input.ProviderCode,
+		Status: input.Status, CatalogVisible: input.CatalogVisible, Mode: managementProviderModelNullableText(input.Mode), SupportedApiProtocolsJson: string(protocolsJSON), SupportedServiceTiersJson: string(serviceTiersJSON), SupportedReasoningEffortsJson: string(reasoningJSON), DefaultReasoningEffort: managementProviderModelNullableText(input.DefaultReasoningEffort), ReleaseDate: managementProviderModelNullableText(input.ReleaseDate), ShutdownDate: managementProviderModelNullableText(input.ShutdownDate), ContextWindowTokens: pgInt4Ptr(input.ContextWindowTokens), MaxInputTokens: pgInt4Ptr(input.MaxInputTokens), MaxOutputTokens: pgInt4Ptr(input.MaxOutputTokens), InputUsdPer1m: pgFloat8Ptr(input.InputUSDPer1M), OutputUsdPer1m: pgFloat8Ptr(input.OutputUSDPer1M), CachedInputUsdPer1m: pgFloat8Ptr(input.CachedInputUSDPer1M), CacheWriteUsdPer1m: pgFloat8Ptr(input.CacheWriteUSDPer1M), CacheWrite1hUsdPer1m: pgFloat8Ptr(input.CacheWrite1hUSDPer1M), ServiceTierPricesJson: string(pricesJSON), ImageInputUsdPer1m: pgFloat8Ptr(input.ImageInputUSDPer1M), ImageOutputUsdPer1m: pgFloat8Ptr(input.ImageOutputUSDPer1M), AudioInputUsdPer1m: pgFloat8Ptr(input.AudioInputUSDPer1M), AudioOutputUsdPer1m: pgFloat8Ptr(input.AudioOutputUSDPer1M), OutputUsdPerImage: pgFloat8Ptr(input.OutputUSDPerImage), UpdatedAt: pgTimestamptz(updatedAt), ID: input.ID, ProviderCode: input.ProviderCode,
 	}, nil
 }
 
@@ -517,6 +532,7 @@ func cloneManagementProviderModelPriceMap(value map[string]port.ManagementProvid
 
 type managementProviderModelConfigurationRow struct {
 	id, providerCode, status                                    string
+	catalogVisible                                              bool
 	mode, defaultReasoningEffort, releaseDate, shutdownDate     pgtype.Text
 	supportedAPIProtocolsJSON, supportedServiceTiersJSON        string
 	supportedReasoningEffortsJSON, serviceTierPricesJSON        string
@@ -546,7 +562,7 @@ func decodeManagementProviderModelConfigurationSnapshot(row managementProviderMo
 		return port.ManagementProviderModelConfigurationSnapshot{}, err
 	}
 	return port.ManagementProviderModelConfigurationSnapshot{
-		ID: row.id, ProviderCode: row.providerCode, Status: row.status, Mode: textValue(row.mode),
+		ID: row.id, ProviderCode: row.providerCode, Status: row.status, CatalogVisible: row.catalogVisible, Mode: textValue(row.mode),
 		SupportedAPIProtocols: protocols, SupportedServiceTiers: serviceTiers, SupportedReasoningEfforts: reasoningEfforts,
 		DefaultReasoningEffort: textValue(row.defaultReasoningEffort), ReleaseDate: textValue(row.releaseDate), ShutdownDate: textValue(row.shutdownDate),
 		ContextWindowTokens: int4Ptr(row.contextWindowTokens), MaxInputTokens: int4Ptr(row.maxInputTokens), MaxOutputTokens: int4Ptr(row.maxOutputTokens),
@@ -737,6 +753,39 @@ func findManagementCustomProviderModelByScope(
 	return item, true, nil
 }
 
+func saveManagementCustomProviderModelInTx(
+	ctx context.Context,
+	beginTx func(context.Context, pgx.TxOptions) (pgx.Tx, error),
+	input port.ManagementCustomProviderModelSaveInput,
+) (port.ManagementProviderModelCatalogItem, error) {
+	tx, err := beginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("begin custom provider model create: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
+	}()
+	q := postgresqueries.New(tx)
+	saved, err := saveManagementCustomProviderModel(ctx, q, input)
+	if err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	if err := markManagementModelCatalogSnapshotDirty(ctx, q, saved.Scope, saved.SystemAccountID); err != nil {
+		return port.ManagementProviderModelCatalogItem{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("commit custom provider model create: %w", err)
+	}
+	committed = true
+	return saved, nil
+}
+
 func saveManagementCustomProviderModel(
 	ctx context.Context,
 	q *postgresqueries.Queries,
@@ -765,6 +814,7 @@ func saveManagementCustomProviderModel(
 		Scope:                         input.Scope,
 		SystemAccountID:               pgTextFromString(input.SystemAccountID),
 		Status:                        input.Status,
+		CatalogVisible:                input.CatalogVisible,
 		Mode:                          pgTextFromString(input.Mode),
 		SupportedApiProtocolsJson:     string(protocolsJSON),
 		SupportedServiceTiersJson:     string(serviceTiersJSON),
@@ -795,6 +845,33 @@ func saveManagementCustomProviderModel(
 		return port.ManagementProviderModelCatalogItem{}, fmt.Errorf("save management custom provider model: %w", err)
 	}
 	return managementCustomProviderModelFromData(customProviderModelDataFromUpsertRow(row))
+}
+
+type managementModelCatalogSnapshotDirtyMarker interface {
+	MarkManagementModelCatalogSnapshotRebuildDirty(context.Context, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams) error
+}
+
+func markManagementModelCatalogSnapshotDirty(
+	ctx context.Context,
+	q managementModelCatalogSnapshotDirtyMarker,
+	scope string,
+	systemAccountID string,
+) error {
+	dirtyScope := "all"
+	dirtySystemAccountID := ""
+	if strings.TrimSpace(scope) == "personal" {
+		dirtyScope = "personal"
+		dirtySystemAccountID = strings.TrimSpace(systemAccountID)
+		if dirtySystemAccountID == "" {
+			return errors.New("personal model catalog snapshot dirty request requires system account ID")
+		}
+	}
+	if err := q.MarkManagementModelCatalogSnapshotRebuildDirty(ctx, postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams{
+		Scope: dirtyScope, SystemAccountID: dirtySystemAccountID, UpdatedAt: pgTimestamptz(time.Now().UTC()),
+	}); err != nil {
+		return fmt.Errorf("mark model catalog snapshot rebuild dirty: %w", err)
+	}
+	return nil
 }
 
 func marshalManagementProviderModelPriceMap(prices map[string]port.ManagementProviderModelPriceSet) ([]byte, error) {
@@ -913,6 +990,7 @@ type managementCustomProviderModelData struct {
 	Scope                         string
 	SystemAccountID               pgtype.Text
 	Status                        string
+	CatalogVisible                bool
 	Mode                          pgtype.Text
 	SupportedApiProtocolsJson     string
 	SupportedServiceTiersJson     string
@@ -967,6 +1045,7 @@ func managementCustomProviderModelFromData(row managementCustomProviderModelData
 		Scope:                     row.Scope,
 		SystemAccountID:           textValue(row.SystemAccountID),
 		Status:                    row.Status,
+		CatalogVisible:            row.CatalogVisible,
 		Mode:                      textValue(row.Mode),
 		ReleaseDate:               textValue(row.ReleaseDate),
 		ShutdownDate:              textValue(row.ShutdownDate),
@@ -990,7 +1069,6 @@ func managementCustomProviderModelFromData(row managementCustomProviderModelData
 		OutputUSDPerImage:         float8Ptr(row.OutputUsdPerImage),
 		SupportsPromptCaching:     row.CachedInputUsdPer1m.Valid,
 		SupportsServiceTier:       len(serviceTiers) > 0,
-		CatalogVisible:            true,
 		PricingNotes:              textValue(row.PricingNotes),
 		CapabilityNotes:           textValue(row.CapabilityNotes),
 		Notes:                     textValue(row.Notes),
@@ -1010,6 +1088,7 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 		Scope:                         row.Scope,
 		SystemAccountID:               row.SystemAccountID,
 		Status:                        row.Status,
+		CatalogVisible:                row.CatalogVisible,
 		Mode:                          row.Mode,
 		SupportedApiProtocolsJson:     row.SupportedApiProtocolsJson,
 		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
@@ -1042,11 +1121,11 @@ func customProviderModelDataFromFindRow(row postgresqueries.FindManagementCustom
 }
 
 func customProviderModelDataFromLockRow(row postgresqueries.LockManagementCustomProviderModelRow) managementCustomProviderModelData {
-	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, CatalogVisible: row.CatalogVisible, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func customProviderModelDataFromUpdateRow(row postgresqueries.UpdateManagementCustomProviderModelRow) managementCustomProviderModelData {
-	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+	return managementCustomProviderModelData{ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope, SystemAccountID: row.SystemAccountID, Status: row.Status, CatalogVisible: row.CatalogVisible, Mode: row.Mode, SupportedApiProtocolsJson: row.SupportedApiProtocolsJson, SupportedServiceTiersJson: row.SupportedServiceTiersJson, SupportedReasoningEffortsJson: row.SupportedReasoningEffortsJson, DefaultReasoningEffort: row.DefaultReasoningEffort, ReleaseDate: row.ReleaseDate, ShutdownDate: row.ShutdownDate, ContextWindowTokens: row.ContextWindowTokens, MaxInputTokens: row.MaxInputTokens, MaxOutputTokens: row.MaxOutputTokens, InputUsdPer1m: row.InputUsdPer1m, OutputUsdPer1m: row.OutputUsdPer1m, CachedInputUsdPer1m: row.CachedInputUsdPer1m, CacheWriteUsdPer1m: row.CacheWriteUsdPer1m, CacheWrite1hUsdPer1m: row.CacheWrite1hUsdPer1m, ServiceTierPricesJson: row.ServiceTierPricesJson, ImageInputUsdPer1m: row.ImageInputUsdPer1m, ImageOutputUsdPer1m: row.ImageOutputUsdPer1m, AudioInputUsdPer1m: row.AudioInputUsdPer1m, AudioOutputUsdPer1m: row.AudioOutputUsdPer1m, OutputUsdPerImage: row.OutputUsdPerImage, PricingNotes: row.PricingNotes, CapabilityNotes: row.CapabilityNotes, Notes: row.Notes, CreatedBy: row.CreatedBy, UpdatedBy: row.UpdatedBy, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
 }
 
 func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCustomProviderModelByScopeRow) managementCustomProviderModelData {
@@ -1057,6 +1136,7 @@ func customProviderModelDataFromScopeRow(row postgresqueries.FindManagementCusto
 		Scope:                         row.Scope,
 		SystemAccountID:               row.SystemAccountID,
 		Status:                        row.Status,
+		CatalogVisible:                row.CatalogVisible,
 		Mode:                          row.Mode,
 		SupportedApiProtocolsJson:     row.SupportedApiProtocolsJson,
 		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,
@@ -1096,6 +1176,7 @@ func customProviderModelDataFromUpsertRow(row postgresqueries.UpsertManagementCu
 		Scope:                         row.Scope,
 		SystemAccountID:               row.SystemAccountID,
 		Status:                        row.Status,
+		CatalogVisible:                row.CatalogVisible,
 		Mode:                          row.Mode,
 		SupportedApiProtocolsJson:     row.SupportedApiProtocolsJson,
 		SupportedServiceTiersJson:     row.SupportedServiceTiersJson,

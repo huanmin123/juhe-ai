@@ -46,7 +46,7 @@ func TestExecuteCommandSuccessDoesNotWriteFatal(t *testing.T) {
 	}
 }
 
-func TestFiveWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
+func TestSixWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 	var gated []string
 	deps := workerCommandDependencies{
 		loadConfig: func() (config.Config, error) { return config.Config{}, nil },
@@ -64,6 +64,7 @@ func TestFiveWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 	root := newRootCommand(deps)
 	for _, name := range []string{
 		"ingest",
+		"account-test",
 		"authorization-expiry-sweep",
 		"operation-log-retention-cleanup",
 		"authorization-usage-range-windows-refresh",

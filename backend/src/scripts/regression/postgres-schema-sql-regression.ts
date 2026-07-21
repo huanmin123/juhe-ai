@@ -9,7 +9,7 @@ const statements = collectPostgresSchemaStatements()
 const sql = buildPostgresSchemaSql()
 const goPublicAccountsMigration = readFileSync('../backend-go/db/migrations/000005_w1b_public_accounts.sql', 'utf8')
 const providerAuthProtocolCatchUpMigration = readFileSync('../backend-go/db/migrations/000060_w2_provider_auth_protocol_schema_20260718.sql', 'utf8')
-const accountApiKeyRuntimeTraceMigration = readFileSync('../backend-go/db/migrations/000062_w1_account_api_key_runtime_trace_id.sql', 'utf8')
+const accountApiKeyRuntimeTraceMigration = readFileSync('../backend-go/db/migrations/000063_w1_account_api_key_runtime_trace_id.sql', 'utf8')
 const healthCheckEndpointModeOfflineMigration = readFileSync(
   'src/scripts/maintenance/account-health-check-endpoint-mode-migration.ts',
   'utf8'
@@ -53,6 +53,18 @@ const pageDataDirtyDomainsCreateSql = statements.find(
 const gatewayModelCatalogSnapshotsCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots\b/i.test(statement.sql)
 )?.sql ?? ''
+const accountTestTasksCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_test_tasks\b/i.test(statement.sql)
+)?.sql ?? ''
+const accountTestSessionsCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_test_sessions\b/i.test(statement.sql)
+)?.sql ?? ''
+const accountTestSessionTasksCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS account_test_session_tasks\b/i.test(statement.sql)
+)?.sql ?? ''
+const accountUsageSnapshotsCreateSql = statements.find(
+  (statement) => statement.schemaName === 'juhe_stats' && /^CREATE TABLE IF NOT EXISTS account_usage_snapshots\b/i.test(statement.sql)
+)?.sql ?? ''
 const listBuiltInProviderModelsAsyncStart = providerModelCatalogRepositorySource.indexOf('export async function listBuiltInProviderModelsAsync')
 const listBuiltInProviderModelsAsyncEnd = providerModelCatalogRepositorySource.indexOf(
   'export async function findBuiltInProviderModelByIdAsync',
@@ -94,6 +106,11 @@ assert.equal(
   'PostgreSQL schema 不应再生成补列类 supplemental 语句'
 )
 assertPostgresCreateTableOrder(statements)
+assert.match(accountTestTasksCreateSql, /cancel_requested boolean NOT NULL DEFAULT false/, 'PG 账户测试任务取消标记必须使用 boolean')
+assert.match(accountTestTasksCreateSql, /queued_at timestamptz NOT NULL[\s\S]+started_at timestamptz[\s\S]+finished_at timestamptz[\s\S]+created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'PG 账户测试任务时间必须使用 timestamptz')
+assert.match(accountTestSessionsCreateSql, /last_heartbeat_at timestamptz NOT NULL[\s\S]+cancel_requested_at timestamptz[\s\S]+finished_at timestamptz[\s\S]+created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'PG 账户测试会话时间必须使用 timestamptz')
+assert.match(accountTestSessionTasksCreateSql, /created_at timestamptz NOT NULL/, 'PG 账户测试会话任务关联时间必须使用 timestamptz')
+assert.match(accountUsageSnapshotsCreateSql, /last_attempt_at timestamptz[\s\S]+last_success_at timestamptz[\s\S]+next_refresh_after timestamptz[\s\S]+updated_at timestamptz NOT NULL[\s\S]+created_at timestamptz NOT NULL/, 'PG 账户用量快照时间必须使用 timestamptz')
 
 for (const schemaName of schemaNames) {
   assert.match(sql, new RegExp(`CREATE SCHEMA IF NOT EXISTS "${schemaName}"`), `${schemaName} 应生成 CREATE SCHEMA`)
@@ -101,7 +118,9 @@ for (const schemaName of schemaNames) {
 
 assert.match(sql, /CREATE TABLE IF NOT EXISTS system_accounts/, '应包含业务库 schema')
 assert.match(sql, /account_api_key_runtime_states[\s\S]+last_trace_id text/, 'Key 运行态 PostgreSQL schema 必须包含最近失败 traceId')
-assert.match(accountApiKeyRuntimeTraceMigration, /account_api_key_runtime_states[\s\S]+ADD COLUMN IF NOT EXISTS last_trace_id text/, 'Goose 62 必须为既有 PostgreSQL 业务库补齐 Key 运行态 traceId')
+assert.match(accountApiKeyRuntimeTraceMigration, /CREATE TABLE IF NOT EXISTS juhe_business\.account_api_key_runtime_states[\s\S]+credential_revision text[\s\S]+last_trace_id text[\s\S]+updated_at text NOT NULL/, 'Goose 63 必须为 fresh PostgreSQL 创建当前完整 Key 运行态表')
+assert.match(accountApiKeyRuntimeTraceMigration, /account_api_key_runtime_states[\s\S]+ADD COLUMN IF NOT EXISTS last_trace_id text/, 'Goose 63 必须为既有 PostgreSQL 业务库补齐 Key 运行态 traceId')
+assert.match(accountApiKeyRuntimeTraceMigration, /idx_account_api_key_runtime_unique[\s\S]+idx_account_api_key_runtime_status[\s\S]+idx_account_api_key_runtime_probe[\s\S]+idx_account_api_key_runtime_owner/, 'Goose 63 必须为 fresh PostgreSQL 创建 Key 运行态索引')
 assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_inclusive boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG 长上下文阈值边界字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')

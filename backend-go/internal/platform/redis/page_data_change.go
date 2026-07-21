@@ -2,6 +2,8 @@ package redis
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,10 @@ import (
 )
 
 const (
+	// PageDataProtocolVersion is the Node page-data confirm protocol version.
+	PageDataProtocolVersion = 2
+	// PageDataMaxConfirmDomains bounds one atomic confirm request.
+	PageDataMaxConfirmDomains         = 32
 	pageDataAccountsStaticDomain      = "accounts.static"
 	pageDataAccountsRuntimeDomain     = "accounts.runtime"
 	pageDataAccountsOptionsDomain     = "accounts.options"
@@ -27,6 +33,7 @@ const (
 	pageDataMaxEventOwners            = 256
 	pageDataMaxFieldMask              = 32
 	pageDataEventLogTTLSeconds        = 8 * 24 * 60 * 60
+	pageDataMaxSafeInteger            = int64(9007199254740991)
 )
 
 var (
@@ -63,6 +70,75 @@ type PageDataChangeEvent struct {
 	PageChanged           bool     `json:"pageChanged"`
 	OccurredAt            string   `json:"occurredAt"`
 	AllScopes             bool     `json:"allScopes,omitempty"`
+}
+
+type PageDataViewScope string
+
+const (
+	PageDataViewScopeSelf  PageDataViewScope = "self"
+	PageDataViewScopeAdmin PageDataViewScope = "admin"
+)
+
+type PageDataScopeInput struct {
+	ViewerSystemAccountID string
+	ViewScope             PageDataViewScope
+	TargetSystemAccountID string
+}
+
+// PageDataScope identifies a page-data stream and binds tokens to the viewer.
+type PageDataScope struct {
+	StreamKey   string
+	Fingerprint string
+}
+
+// PageDataRevisionToken is the Node page-data protocol v2 revision token.
+type PageDataRevisionToken struct {
+	ProtocolVersion int    `json:"protocolVersion"`
+	Epoch           string `json:"epoch"`
+	Scope           string `json:"scope"`
+	Domain          string `json:"domain"`
+	Sequence        int64  `json:"sequence"`
+	ResetSequence   int64  `json:"resetSequence"`
+}
+
+type PageDataChangeProjection struct {
+	EntityID          string   `json:"entityId,omitempty"`
+	Operation         string   `json:"operation"`
+	FieldMask         []string `json:"fieldMask"`
+	MembershipChanged bool     `json:"membershipChanged"`
+	OrderChanged      bool     `json:"orderChanged"`
+	FilterChanged     bool     `json:"filterChanged"`
+	PageChanged       bool     `json:"pageChanged"`
+}
+
+type PageDataConfirmAction string
+
+const (
+	PageDataConfirmActionUnchanged PageDataConfirmAction = "unchanged"
+	PageDataConfirmActionDelta     PageDataConfirmAction = "delta"
+	PageDataConfirmActionReload    PageDataConfirmAction = "reload"
+	PageDataConfirmActionReset     PageDataConfirmAction = "reset"
+)
+
+type PageDataConfirmDomainResult struct {
+	Action  PageDataConfirmAction      `json:"action"`
+	Token   PageDataRevisionToken      `json:"token"`
+	Changes []PageDataChangeProjection `json:"changes,omitempty"`
+}
+
+type PageDataConfirmResult struct {
+	ServerTime string                                 `json:"serverTime"`
+	Domains    map[string]PageDataConfirmDomainResult `json:"domains"`
+}
+
+// PageDataChangeConfirmer confirms Node-compatible page-data revisions from
+// the Redis streams written by PageDataChangePublisher.
+type PageDataChangeConfirmer struct {
+	client        *Client
+	keyPrefix     string
+	proposedEpoch string
+	now           func() time.Time
+	runConfirm    func(context.Context, []string, ...interface{}) (interface{}, error)
 }
 
 // PageDataChangePublisher publishes Node-compatible events to the Redis fanout
@@ -132,6 +208,111 @@ func NewPageDataChangePublisher(client *Client, redisNamespace string) (*PageDat
 		return pageDataChangePublishScript.Run(ctx, client.client, keys, args...).Err()
 	}
 	return publisher, nil
+}
+
+// NewPageDataScope builds the Node-compatible stream key and token fingerprint.
+func NewPageDataScope(input PageDataScopeInput) (PageDataScope, error) {
+	viewerID := strings.TrimSpace(input.ViewerSystemAccountID)
+	if viewerID == "" {
+		return PageDataScope{}, errors.New("page data viewer system account id is required")
+	}
+	var streamKey string
+	switch input.ViewScope {
+	case PageDataViewScopeSelf:
+		streamKey = "owner:" + viewerID
+	case PageDataViewScopeAdmin:
+		targetID := strings.TrimSpace(input.TargetSystemAccountID)
+		if input.TargetSystemAccountID != "" && targetID == "" {
+			return PageDataScope{}, errors.New("page data target system account id must be non-empty when provided")
+		}
+		if targetID == "" {
+			streamKey = "global"
+		} else {
+			streamKey = "owner:" + targetID
+		}
+	default:
+		return PageDataScope{}, fmt.Errorf("invalid page data view scope %q", input.ViewScope)
+	}
+	targetOrWildcard := strings.TrimSpace(input.TargetSystemAccountID)
+	if targetOrWildcard == "" {
+		targetOrWildcard = "*"
+	}
+	fingerprintSource := strings.Join([]string{
+		strconv.Itoa(PageDataProtocolVersion), viewerID, string(input.ViewScope), targetOrWildcard, streamKey,
+	}, "|")
+	sum := sha256.Sum256([]byte(fingerprintSource))
+	fingerprint := base64.RawURLEncoding.EncodeToString(sum[:])
+	return PageDataScope{StreamKey: streamKey, Fingerprint: fingerprint[:24]}, nil
+}
+
+// NewPageDataChangeConfirmer creates a confirmer over the raw Redis client.
+// It intentionally uses the same un-namespaced key prefix as the publisher.
+func NewPageDataChangeConfirmer(client *Client, redisNamespace string) (*PageDataChangeConfirmer, error) {
+	if client == nil {
+		return nil, errors.New("page data redis client is required")
+	}
+	if redisNamespace == "" {
+		return nil, errors.New("page data redis namespace is required")
+	}
+	if redisNamespace != strings.TrimSpace(redisNamespace) || !pageDataRedisNamespaceRule.MatchString(redisNamespace) {
+		return nil, fmt.Errorf("invalid page data redis namespace %q", redisNamespace)
+	}
+	confirmer := &PageDataChangeConfirmer{
+		client:        client,
+		keyPrefix:     "juhe-ai:" + redisNamespace + ":page-data-change",
+		proposedEpoch: uuid.NewString(),
+		now:           time.Now,
+	}
+	confirmer.runConfirm = func(ctx context.Context, keys []string, args ...interface{}) (interface{}, error) {
+		return pageDataChangeConfirmScript.Run(ctx, client.client, keys, args...).Result()
+	}
+	return confirmer, nil
+}
+
+// Confirm atomically snapshots all requested streams and resolves each token
+// using the Node v2 reload/reset/unchanged/delta contract.
+func (c *PageDataChangeConfirmer) Confirm(ctx context.Context, scope PageDataScope, requestedDomains map[string]*PageDataRevisionToken) (PageDataConfirmResult, error) {
+	if c == nil || c.runConfirm == nil {
+		return PageDataConfirmResult{}, errors.New("page data confirmer is required")
+	}
+	if err := validatePageDataScope(scope); err != nil {
+		return PageDataConfirmResult{}, err
+	}
+	domains, err := validatedPageDataConfirmDomains(requestedDomains)
+	if err != nil {
+		return PageDataConfirmResult{}, err
+	}
+	keys := make([]string, 1, 1+len(domains)*3)
+	keys[0] = c.keyPrefix + ":epoch:v2"
+	args := make([]interface{}, 2, 2+len(domains)*3)
+	args[0] = c.proposedEpoch
+	args[1] = strconv.Itoa(len(domains))
+	for _, domain := range domains {
+		streamScope := pageDataConfirmStreamKey(scope, domain.name)
+		streamKeys := pageDataStreamKeys(c.keyPrefix, streamScope, domain.name)
+		resetKeys := pageDataStreamKeys(c.keyPrefix, "all", domain.name)
+		keys = append(keys, streamKeys[0], streamKeys[1], resetKeys[0])
+		if validPageDataKnownTokenExceptEpoch(domain.token, scope, domain.name) {
+			args = append(args, domain.token.Epoch, strconv.FormatInt(domain.token.Sequence, 10), strconv.FormatInt(domain.token.ResetSequence, 10))
+		} else {
+			args = append(args, "", "-1", "-1")
+		}
+	}
+	raw, err := c.runConfirm(ctx, keys, args...)
+	if err != nil {
+		return PageDataConfirmResult{}, fmt.Errorf("confirm page data changes: %w", err)
+	}
+	snapshot, err := parsePageDataConfirmSnapshot(raw, len(domains))
+	if err != nil {
+		return PageDataConfirmResult{}, err
+	}
+	result := PageDataConfirmResult{ServerTime: c.now().UTC().Truncate(time.Millisecond).Format("2006-01-02T15:04:05.000Z"), Domains: make(map[string]PageDataConfirmDomainResult, len(domains))}
+	for index, domain := range domains {
+		current := snapshot.domains[index]
+		token := PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: snapshot.epoch, Scope: scope.Fingerprint, Domain: domain.name, Sequence: current.sequence, ResetSequence: current.resetSequence}
+		result.Domains[domain.name] = pageDataConfirmDomainResult(snapshot.epoch, scope, domain.name, token, domain.token, current.events)
+	}
+	return result, nil
 }
 
 // NewAccountsStaticResetEvents creates one or more independently publishable
@@ -442,6 +623,205 @@ func pageDataStreamKeys(prefix, scope, domain string) []string {
 	return []string{prefix + ":sequence:" + suffix, prefix + ":log:" + suffix, prefix + ":dedupe:" + suffix}
 }
 
+type pageDataConfirmDomain struct {
+	name  string
+	token *PageDataRevisionToken
+}
+
+type pageDataSequencedEvent struct {
+	sequence int64
+	event    PageDataChangeEvent
+}
+
+type pageDataConfirmSnapshotDomain struct {
+	sequence      int64
+	resetSequence int64
+	events        []pageDataSequencedEvent
+}
+
+type pageDataConfirmSnapshot struct {
+	epoch   string
+	domains []pageDataConfirmSnapshotDomain
+}
+
+func validatePageDataScope(scope PageDataScope) error {
+	if strings.TrimSpace(scope.StreamKey) == "" || strings.TrimSpace(scope.Fingerprint) == "" {
+		return errors.New("page data scope is required")
+	}
+	return nil
+}
+
+func validatedPageDataConfirmDomains(input map[string]*PageDataRevisionToken) ([]pageDataConfirmDomain, error) {
+	if len(input) > PageDataMaxConfirmDomains {
+		return nil, fmt.Errorf("page data confirm domain count exceeds %d", PageDataMaxConfirmDomains)
+	}
+	domains := make([]pageDataConfirmDomain, 0, len(input))
+	for domain, token := range input {
+		if !isSupportedPageDataDomain(domain) {
+			return nil, fmt.Errorf("unsupported page data domain %q", domain)
+		}
+		domains = append(domains, pageDataConfirmDomain{name: domain, token: token})
+	}
+	sort.Slice(domains, func(left, right int) bool { return domains[left].name < domains[right].name })
+	return domains, nil
+}
+
+func pageDataConfirmStreamKey(scope PageDataScope, domain string) string {
+	if domain == pageDataAnnouncementsPublicDomain {
+		return "global"
+	}
+	return scope.StreamKey
+}
+
+func validPageDataKnownTokenExceptEpoch(token *PageDataRevisionToken, scope PageDataScope, domain string) bool {
+	return token != nil && token.ProtocolVersion == PageDataProtocolVersion && token.Scope == scope.Fingerprint && token.Domain == domain &&
+		pageDataSafeNonNegativeInteger(token.Sequence) && pageDataSafeNonNegativeInteger(token.ResetSequence)
+}
+
+func validPageDataKnownToken(token *PageDataRevisionToken, epoch string, scope PageDataScope, domain string) bool {
+	return validPageDataKnownTokenExceptEpoch(token, scope, domain) && token.Epoch == epoch
+}
+
+func pageDataSafeNonNegativeInteger(value int64) bool {
+	return value >= 0 && value <= pageDataMaxSafeInteger
+}
+
+func parsePageDataConfirmSnapshot(value interface{}, expectedDomains int) (pageDataConfirmSnapshot, error) {
+	values, ok := value.([]interface{})
+	if !ok || len(values) != expectedDomains+1 {
+		return pageDataConfirmSnapshot{}, errors.New("invalid page data redis confirm snapshot")
+	}
+	epoch, err := pageDataRedisString(values[0])
+	if err != nil || strings.TrimSpace(epoch) == "" {
+		return pageDataConfirmSnapshot{}, errors.New("invalid page data redis epoch")
+	}
+	result := pageDataConfirmSnapshot{epoch: epoch, domains: make([]pageDataConfirmSnapshotDomain, 0, expectedDomains)}
+	for _, rawDomain := range values[1:] {
+		items, ok := rawDomain.([]interface{})
+		if !ok || len(items) != 3 {
+			return pageDataConfirmSnapshot{}, errors.New("invalid page data redis domain snapshot")
+		}
+		sequence, err := pageDataRedisSafeNonNegativeInteger(items[0])
+		if err != nil {
+			return pageDataConfirmSnapshot{}, fmt.Errorf("parse page data stream sequence: %w", err)
+		}
+		resetSequence, err := pageDataRedisSafeNonNegativeInteger(items[1])
+		if err != nil {
+			return pageDataConfirmSnapshot{}, fmt.Errorf("parse page data reset sequence: %w", err)
+		}
+		rawEvents, ok := items[2].([]interface{})
+		if !ok {
+			return pageDataConfirmSnapshot{}, errors.New("invalid page data redis stream log")
+		}
+		events := make([]pageDataSequencedEvent, 0, len(rawEvents))
+		for _, rawEvent := range rawEvents {
+			event, valid := parsePageDataRedisSequencedEvent(rawEvent)
+			if valid {
+				events = append(events, event)
+			}
+		}
+		result.domains = append(result.domains, pageDataConfirmSnapshotDomain{sequence: sequence, resetSequence: resetSequence, events: events})
+	}
+	return result, nil
+}
+
+func pageDataRedisSafeNonNegativeInteger(value interface{}) (int64, error) {
+	number, err := redisInt64(value)
+	if err != nil || !pageDataSafeNonNegativeInteger(number) {
+		return 0, errors.New("must be a nonnegative safe integer")
+	}
+	return number, nil
+}
+
+func pageDataRedisString(value interface{}) (string, error) {
+	return redisString(value)
+}
+
+func parsePageDataRedisSequencedEvent(value interface{}) (pageDataSequencedEvent, bool) {
+	text, err := pageDataRedisString(value)
+	if err != nil {
+		return pageDataSequencedEvent{}, false
+	}
+	separator := strings.IndexByte(text, '\t')
+	if separator <= 0 {
+		return pageDataSequencedEvent{}, false
+	}
+	sequence, err := strconv.ParseInt(text[:separator], 10, 64)
+	if err != nil || sequence <= 0 || !pageDataSafeNonNegativeInteger(sequence) {
+		return pageDataSequencedEvent{}, false
+	}
+	var event PageDataChangeEvent
+	if json.Unmarshal([]byte(text[separator+1:]), &event) != nil || validatePageDataChangeEventForConfirm(event) != nil {
+		return pageDataSequencedEvent{}, false
+	}
+	return pageDataSequencedEvent{sequence: sequence, event: event}, true
+}
+
+func validatePageDataChangeEventForConfirm(event PageDataChangeEvent) error {
+	if strings.TrimSpace(event.EventID) == "" || !isSupportedPageDataDomain(event.Domain) {
+		return errors.New("invalid page data event")
+	}
+	switch event.Operation {
+	case "upsert", "delete", "append", pageDataRangeResetOperation, "window_replace":
+	default:
+		return errors.New("invalid page data event operation")
+	}
+	if len(event.FieldMask) > pageDataMaxFieldMask || len(event.OwnerSystemAccountIDs) > pageDataMaxEventOwners {
+		return errors.New("invalid page data event fields or owners")
+	}
+	for _, field := range event.FieldMask {
+		if strings.TrimSpace(field) == "" {
+			return errors.New("invalid page data event field")
+		}
+	}
+	for _, ownerID := range event.OwnerSystemAccountIDs {
+		if strings.TrimSpace(ownerID) == "" {
+			return errors.New("invalid page data event owner")
+		}
+	}
+	if !pageDataOccurredAtPattern.MatchString(event.OccurredAt) {
+		return errors.New("invalid page data event occurrence time")
+	}
+	_, err := time.Parse("2006-01-02T15:04:05.000Z", event.OccurredAt)
+	return err
+}
+
+func pageDataConfirmDomainResult(epoch string, scope PageDataScope, domain string, token PageDataRevisionToken, known *PageDataRevisionToken, events []pageDataSequencedEvent) PageDataConfirmDomainResult {
+	if !validPageDataKnownToken(known, epoch, scope, domain) {
+		return PageDataConfirmDomainResult{Action: PageDataConfirmActionReload, Token: token}
+	}
+	if known.ResetSequence != token.ResetSequence || known.Sequence > token.Sequence {
+		return PageDataConfirmDomainResult{Action: PageDataConfirmActionReset, Token: token}
+	}
+	if known.Sequence == token.Sequence {
+		return PageDataConfirmDomainResult{Action: PageDataConfirmActionUnchanged, Token: token}
+	}
+	filtered := make([]pageDataSequencedEvent, 0, len(events))
+	for _, event := range events {
+		if event.sequence > known.Sequence {
+			filtered = append(filtered, event)
+		}
+	}
+	if len(filtered) == 0 || filtered[len(filtered)-1].sequence != token.Sequence {
+		return PageDataConfirmDomainResult{Action: PageDataConfirmActionReset, Token: token}
+	}
+	changes := make([]PageDataChangeProjection, 0, len(filtered))
+	for index, item := range filtered {
+		if item.sequence != known.Sequence+int64(index)+1 || item.event.Operation == pageDataRangeResetOperation {
+			return PageDataConfirmDomainResult{Action: PageDataConfirmActionReset, Token: token}
+		}
+		if item.event.MembershipChanged || item.event.OrderChanged || item.event.FilterChanged || item.event.PageChanged {
+			return PageDataConfirmDomainResult{Action: PageDataConfirmActionReload, Token: token}
+		}
+		changes = append(changes, PageDataChangeProjection{
+			EntityID: item.event.EntityID, Operation: item.event.Operation, FieldMask: append([]string(nil), item.event.FieldMask...),
+			MembershipChanged: item.event.MembershipChanged, OrderChanged: item.event.OrderChanged,
+			FilterChanged: item.event.FilterChanged, PageChanged: item.event.PageChanged,
+		})
+	}
+	return PageDataConfirmDomainResult{Action: PageDataConfirmActionDelta, Token: token, Changes: changes}
+}
+
 var pageDataChangePublishLua = `
 local sequenceKey = KEYS[1]
 local logKey = KEYS[2]
@@ -463,3 +843,35 @@ return sequence
 `
 
 var pageDataChangePublishScript = goredis.NewScript(pageDataChangePublishLua)
+
+var pageDataChangeConfirmLua = `
+local epoch = redis.call('GET', KEYS[1])
+if not epoch then
+  redis.call('SET', KEYS[1], ARGV[1], 'NX')
+  epoch = redis.call('GET', KEYS[1]) or ARGV[1]
+end
+local domainCount = tonumber(ARGV[2])
+local result = { epoch }
+local keyIndex = 2
+local argumentIndex = 3
+for _ = 1, domainCount do
+  local sequence = tonumber(redis.call('GET', KEYS[keyIndex]) or '0')
+  local resetSequence = tonumber(redis.call('GET', KEYS[keyIndex + 2]) or '0')
+  local knownEpoch = ARGV[argumentIndex]
+  local knownSequence = tonumber(ARGV[argumentIndex + 1])
+  local knownResetSequence = tonumber(ARGV[argumentIndex + 2])
+  local rawLog = {}
+  if knownEpoch == epoch
+    and knownSequence >= 0
+    and knownSequence < sequence
+    and knownResetSequence == resetSequence then
+    rawLog = redis.call('LRANGE', KEYS[keyIndex + 1], 0, -1)
+  end
+  table.insert(result, { sequence, resetSequence, rawLog })
+  keyIndex = keyIndex + 3
+  argumentIndex = argumentIndex + 3
+end
+return result
+`
+
+var pageDataChangeConfirmScript = goredis.NewScript(pageDataChangeConfirmLua)

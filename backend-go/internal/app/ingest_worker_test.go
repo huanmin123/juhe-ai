@@ -40,6 +40,28 @@ func TestRunIngestWorkerRequiresRedisQueueURL(t *testing.T) {
 	}
 }
 
+func TestRunAccountTestWorkerRequiresRedisQueueURL(t *testing.T) {
+	err := RunAccountTestWorker(context.Background(), config.Config{
+		NodeInternalBaseURL:        "http://127.0.0.1:3000",
+		NodeInternalRequestTimeout: time.Second,
+		Secret:                     "account-test-worker-secret",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_QUEUE_URL") {
+		t.Fatalf("RunAccountTestWorker() error = %v, want missing redis queue url", err)
+	}
+}
+
+func TestRunAccountTestWorkerRequiresNodeInternalBaseURL(t *testing.T) {
+	err := RunAccountTestWorker(context.Background(), config.Config{
+		RedisQueueURL:              "redis://127.0.0.1:6379/2",
+		NodeInternalRequestTimeout: time.Second,
+		Secret:                     "account-test-worker-secret",
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_NODE_INTERNAL_BASE_URL") {
+		t.Fatalf("RunAccountTestWorker() error = %v, want missing node internal base URL", err)
+	}
+}
+
 func TestRunAuthorizationExpirySweepWorkerRequiresPostgresURL(t *testing.T) {
 	cfg := config.Config{
 		RedisStateURL:   "redis://127.0.0.1:6379/1",

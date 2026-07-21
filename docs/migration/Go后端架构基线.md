@@ -113,14 +113,32 @@ Go 目标不是复制当前 Node 进程树。
 
 ## 4. 并发与线程安全
 
-Go 解决的是 Node 单事件循环问题，不代表可以无界并发。
+Go 解决的是 Node 单事件循环问题。迁移默认使用 Go 原生并发模型，不保留仅为 Node event loop、worker thread、`p-limit` 或 IPC pending 妥协而存在的保守串行队列和低并发常量；但 goroutine 轻量不等于外部依赖、文件描述符、CPU、网络和任务 payload 可以无界增长。
+
+### 4.1 默认高并发执行模型
+
+- 账号探针、账号探活、余额查询、代理检测、OAuth 保活、独立上游请求和可并行后台分析，拿到有界任务窗口后默认按任务 fan-out goroutine，不因 Node 历史实现保留逐条串行或任意低并发。
+- 独立任务优先采用 `errgroup.WithContext`、清晰的结果收集和取消传播；不为复刻 Node worker pool 而引入常驻自制线程池。只有需要复用昂贵资源、维持顺序、限制真实依赖或提供持久重试时才使用 channel、semaphore、Asynq 或批处理窗口。
+- 可丢失、可从数据库重新发现的瞬时工作可以由生命周期内 goroutine 执行；必须跨进程恢复、延迟、重试、去重或审计的任务必须进入 Asynq，不用裸 goroutine 伪装可靠队列。
+- 数据库候选读取仍按 cursor / `LIMIT` / claim window 有界获取，再对当前窗口 fan-out；禁止先全表加载再启动海量 goroutine。统计任务继续读取预聚合输入或按游标增量处理，不借高并发回到请求链路实时扫描明细。
+- 一万个 goroutine 可以是压测结果，不是配置目标或完成标准。是否增加并发由吞吐、P95/P99、错误率、依赖饱和度、goroutine/heap/FD 和任务积压共同决定。
+
+### 4.2 真实容量预算与自适应背压
+
+- 并发上限只为真实资源或业务约束存在：PostgreSQL / PgBouncer pool、Redis pool、共享 `http.Transport` 的连接预算、上游账号并发和速率限制、代理容量、文件描述符、CPU、网络、内存中的单任务 payload，以及第三方 `429/503` / timeout 边界。
+- 默认预算按依赖分层，不设置一个全局 goroutine 总闸门。不同 provider、代理、账号、PG role、Redis role 和任务类型使用各自容量；一个慢依赖不能把无关任务全部串行化。
+- 饱和时优先通过连接池等待、按依赖 semaphore、Asynq queue、批次 claim 大小和自适应降载形成背压。背压信号至少包含 pool wait、队列 lag、P95/P99、timeout、`429/503`、重试率、FD/handle 和 CPU；恢复必须有迟滞或渐进放量，避免抖动。
+- 旧 Node 并发字段迁移到对应 Go owner 时逐项审计：只为 event loop 稳定存在的字段直接删除，不做向下兼容；承载上游配额、账号并发、数据库容量、内存上界或业务公平性的字段保留或改名为真实资源预算，并补压测证据。
+- 禁止以“goroutine 几乎不占内存”为理由启动无 owner、无取消、无超时、无幂等、无观测或可无限积压的工作；也禁止为了形式安全把所有任务重新限制成 Node 时代的低并发。
+
+### 4.3 生命周期与共享资源
 
 - 所有请求入口必须创建或继承 `context.Context`，客户端断开、超时、上游取消和服务关闭时必须向下传递取消信号。
 - 外部请求使用共享 `http.Client` 和自定义 `Transport`，设置连接池、空闲连接、TLS、代理和超时；禁止每次请求新建无界 client。
 - 数据库访问必须受连接池、事务作用域、上下文超时和热点 key 顺序约束。
 - PostgreSQL 通过 PgBouncer / pool budget 隔离 server、gateway hot path、management API、ingest、stats 和 ops；慢管理查询、后台批量写和网关热路径不能共用一个无差别池。
 - PostgreSQL 写入必须受事务范围、`statement_timeout`、`lock_timeout`、`idle_in_transaction_session_timeout`、批量窗口、分区查询窗口、稳定排序和热点 key 顺序约束；连接必须带 `application_name` 便于定位来源。
-- Redis cache、state、queue 必须使用独立 namespace / DB / 实例或明确隔离配置；Go 配置层要拒绝 cache / state / queue 指向同一个 Redis DB，queue 不和 cache/state 共用淘汰策略。来源系统限频这类跨实例运行态必须落在 Redis state，不允许生产路径退回进程内 map。
+- Redis cache、state、queue 必须使用三个不同 Redis 进程的独立 `host:port`。Go 配置层按规范化后的 URL host 和端口做文本判重，并拒绝 `localhost` / `::1`；它不解析 DNS 或证明两个不同主机名背后一定是不同进程，部署预检仍必须验证真实 PID / 容器边界。不同 namespace、DB、密码或淘汰策略不能替代进程隔离，queue 不和 cache/state 共用淘汰策略。Asynq 不使用 `RedisNamespace` 做队列域隔离；同一部署的 server / worker / 多副本应共享 queue Redis，而不同环境或独立队列域不得仅靠 namespace 共用同一 queue Redis。不能把 Node Redis Stream fence/drain 命令机械移植到 Asynq。来源系统限频这类跨实例运行态必须落在 Redis state，不允许生产路径退回进程内 map。
 - W1b public API 生产挂载必须由 `JUHE_AI_PUBLIC_API_ENABLED` 显式控制，默认不注册 `/__aipublic__`；开启时必须显式配置 Redis state、Redis queue 和稳定 `JUHE_AI_SECRET`，不能使用开发默认密钥或本地队列兜底。
 - 临时 bridge 使用无默认的 `JUHE_AI_NODE_INTERNAL_BASE_URL` 和默认 `2s`、范围 `100ms..10s` 的 timeout；URL 仅允许 `http` loopback IP literal + 显式端口。协议为 `POST /__aiinternal__/v1/account-health-check/dispatch`、`1024 bytes` 原始 JSON、HMAC-SHA256、`activation/configuration`、仅 `202` 成功。调用在事务提交后执行，失败不回滚、不重试；internal path 不得反代公网，当前仅支持同主机、同网络命名空间。
 - W2 管理端辅助接口已经具备 `requireAuth` 级 Go 会话鉴权基线，并已覆盖管理端只读辅助、标签删除 / 独立 PATCH 和 operation log 读路径；这些路径仍不覆盖授权来源 / grant / 授权写接口、主账户写入 `tags`、OAuth / 导入标签写路径、完整账号 summary 响应、operation log 保留清理或其他写接口 operation log。W3 已补当前用户 session list / revoke、系统账户 create 和完整 mixed PATCH，但仍只是 Go opt-in 灰度能力，不反向扩大 W2 只读接管范围；其中 session list / revoke 可通过 `JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED=true` 窄开关单独灰度挂载，其他 W2 / W3 / W4 管理路径仍只随 `JUHE_AI_MANAGEMENT_API_ENABLED=true` 挂载。W3 完整登录 / session 生产接管、`requireAdmin` 和 `my-*` 作用域尚未整体迁移前，生产 server 必须默认关闭 W2 opt-in。任何 `__aisys__/api` 后台路由都不能为了联调绕过会话鉴权、初始密码修改拦截、admin / 普通用户边界、`my-*` 作用域或模型目录可见性边界。

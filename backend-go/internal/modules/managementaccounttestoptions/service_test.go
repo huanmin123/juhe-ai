@@ -125,6 +125,52 @@ func TestServiceGetGeminiRuntimeFallbackIncludesJSONAndStreaming(t *testing.T) {
 	}
 }
 
+func TestServiceGetGeminiIncludesInteractionsInNodeOrderAndFiltersByModelProtocol(t *testing.T) {
+	source := baseAccountTestOptionsSource()
+	source.ProviderCode = "gemini"
+	source.ProtocolCode = "gemini"
+	source.ProtocolVersion = "v1beta"
+	source.ProviderProtocolProfileID = "profile_gemini_native_v1beta"
+	source.HealthCheckModel = "gemini-all-generation"
+	source.HealthCheckEndpointMode = "generate_content_sse"
+	service := serviceForOptions(source, map[string]any{
+		"supported_endpoint_modes": "invalid-runtime-shape",
+	}, []managementprovidermodels.ModelCatalogItem{
+		activeCatalogModel("gemini-all-generation", "generate_content", "stream_generate_content", "interactions"),
+		activeCatalogModel("gemini-interactions-only", "interactions"),
+		activeCatalogModel("gemini-responses-only", "responses"),
+	})
+
+	got, found, err := service.Get(context.Background(), Input{AccountID: source.ID, SystemAccountID: "viewer"})
+	if err != nil || !found {
+		t.Fatalf("Get() found = %t, err = %v", found, err)
+	}
+	wantDefaultModes := []string{
+		"generate_content_sse",
+		"interactions_json",
+		"interactions_sse",
+		"generate_content_json",
+	}
+	if !reflect.DeepEqual(got.TestEndpointModes, wantDefaultModes) {
+		t.Fatalf("test endpoint modes = %#v, want %#v", got.TestEndpointModes, wantDefaultModes)
+	}
+	wantModels := []ModelOption{
+		{
+			Model:                 "gemini-all-generation",
+			SupportedAPIProtocols: []string{"generate_content", "stream_generate_content", "interactions"},
+			TestEndpointModes:     wantDefaultModes,
+		},
+		{
+			Model:                 "gemini-interactions-only",
+			SupportedAPIProtocols: []string{"interactions"},
+			TestEndpointModes:     []string{"interactions_json", "interactions_sse"},
+		},
+	}
+	if !reflect.DeepEqual(got.Models, wantModels) {
+		t.Fatalf("models = %#v, want %#v", got.Models, wantModels)
+	}
+}
+
 func TestServiceGetHybridIntersectsModelProtocolsAndExcludesToolModes(t *testing.T) {
 	source := baseAccountTestOptionsSource()
 	source.ProviderCode = " HYBRID "

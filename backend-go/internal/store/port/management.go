@@ -1293,6 +1293,7 @@ type ManagementCustomProviderModelSaveInput struct {
 	Scope                     string
 	SystemAccountID           string
 	Status                    string
+	CatalogVisible            bool
 	Mode                      string
 	SupportedAPIProtocols     []string
 	SupportedServiceTiers     []string
@@ -1326,6 +1327,7 @@ type ManagementCustomProviderModelUpdateInput struct {
 	ActorSystemAccountID      string
 	ActorRole                 string
 	Status                    ManagementProviderModelOptionalString
+	CatalogVisible            ManagementProviderModelOptionalBool
 	Mode                      ManagementProviderModelOptionalString
 	SupportedAPIProtocols     ManagementProviderModelOptionalStringList
 	SupportedServiceTiers     ManagementProviderModelOptionalStringList
@@ -1400,6 +1402,11 @@ type ManagementProviderModelOptionalInt struct {
 	Value   *int
 }
 
+type ManagementProviderModelOptionalBool struct {
+	Present bool
+	Value   bool
+}
+
 type ManagementProviderModelOptionalPriceMap struct {
 	Present bool
 	Value   map[string]ManagementProviderModelPriceSet
@@ -1409,6 +1416,7 @@ type ManagementBuiltInProviderModelPriceUpdateInput struct {
 	ID                        string
 	ProviderCode              string
 	Status                    ManagementProviderModelOptionalString
+	CatalogVisible            ManagementProviderModelOptionalBool
 	Mode                      ManagementProviderModelOptionalString
 	SupportedAPIProtocols     ManagementProviderModelOptionalStringList
 	SupportedServiceTiers     ManagementProviderModelOptionalStringList
@@ -1436,6 +1444,7 @@ type ManagementProviderModelConfigurationSnapshot struct {
 	ID                        string
 	ProviderCode              string
 	Status                    string
+	CatalogVisible            bool
 	Mode                      string
 	SupportedAPIProtocols     []string
 	SupportedServiceTiers     []string

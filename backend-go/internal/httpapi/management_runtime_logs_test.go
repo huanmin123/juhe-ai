@@ -114,6 +114,55 @@ func TestManagementRuntimeLogsHandlerRequiresAdmin(t *testing.T) {
 	}
 }
 
+func TestManagementRuntimeLogsHandlerReturnsStaticFacets(t *testing.T) {
+	service := &managementRuntimeLogServiceStub{
+		facets: managementruntimelogs.FacetsResult{
+			RetentionDays:     14,
+			EarliestIndexedAt: "2026-07-14T08:00:00.000Z",
+			LatestIndexedAt:   "2026-07-14T09:00:00.000Z",
+			TotalIndexed:      3,
+			Levels:            []managementruntimelogs.FacetLevel{{Value: "warn", Count: 2}},
+			Events:            []string{"gateway.failed"},
+		},
+	}
+	handler := newManagementRuntimeLogsHandler(service, time.Now)
+	req := withManagementRuntimeLogAuth(httptest.NewRequest(http.MethodGet, "/__aisys__/api/runtime-logs/facets", nil), "admin")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if !service.facetsCalled || !service.deadlineSet {
+		t.Fatalf("facets called=%v deadline=%v", service.facetsCalled, service.deadlineSet)
+	}
+	var body struct {
+		Data struct {
+			RetentionDays     int                                `json:"retentionDays"`
+			EarliestIndexedAt string                             `json:"earliestIndexedAt"`
+			LatestIndexedAt   string                             `json:"latestIndexedAt"`
+			TotalIndexed      int64                              `json:"totalIndexed"`
+			Levels            []managementruntimelogs.FacetLevel `json:"levels"`
+			Events            []string                           `json:"events"`
+			RuntimeAvailable  bool                               `json:"runtimeAvailable"`
+			DBService         map[string]any                     `json:"dbService"`
+			QueueHealth       map[string]any                     `json:"queueHealth"`
+			Grep              map[string]any                     `json:"grep"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.RetentionDays != 14 || body.Data.EarliestIndexedAt == "" || body.Data.LatestIndexedAt == "" ||
+		body.Data.TotalIndexed != 3 || len(body.Data.Levels) != 1 || len(body.Data.Events) != 1 {
+		t.Fatalf("facets = %+v", body.Data)
+	}
+	if body.Data.RuntimeAvailable || body.Data.DBService["statusAvailable"] != false || body.Data.QueueHealth["status"] != "unavailable" || body.Data.Grep["defaultRangeDays"] != float64(3) {
+		t.Fatalf("unavailable runtime contract = %+v", body.Data)
+	}
+}
+
 func TestParseManagementRuntimeLogQueryUsesECMAScriptWhitespaceAndJSIntegers(t *testing.T) {
 	const nonECMAScriptWhitespace = "\u0085"
 	input := parseManagementRuntimeLogListQuery(url.Values{
@@ -332,17 +381,25 @@ func TestRouterRegistersW6ManagementRuntimeLogsOnlyWhenEnabled(t *testing.T) {
 	}
 	service.listCalled = false
 	service.detailCalled = false
-	for _, path := range []string{"/__aisys__/api/runtime-logs/facets", "/__aisys__/api/runtime-logs/grep"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
+	service.facetsCalled = false
+	for _, testCase := range []struct {
+		path       string
+		wantStatus int
+	}{
+		{path: "/__aisys__/api/runtime-logs/facets", wantStatus: http.StatusOK},
+		{path: "/__aisys__/api/runtime-logs/facets/", wantStatus: http.StatusOK},
+		{path: "/__aisys__/api/runtime-logs/grep", wantStatus: http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(http.MethodGet, testCase.path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
 		rec := httptest.NewRecorder()
 		newRouter(true).ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("reserved Node path %s status = %d, want 404 from Go router", path, rec.Code)
+		if rec.Code != testCase.wantStatus {
+			t.Fatalf("runtime log path %s status = %d, want %d from Go router", testCase.path, rec.Code, testCase.wantStatus)
 		}
 	}
-	if service.listCalled || service.detailCalled {
-		t.Fatal("facets and grep must not be captured by the Go runtime log handler")
+	if service.listCalled || service.detailCalled || !service.facetsCalled {
+		t.Fatal("facets must be handled by Go without falling through to list or detail")
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/runtime-logs", nil)
@@ -378,6 +435,9 @@ type managementRuntimeLogServiceStub struct {
 	detail       managementruntimelogs.Detail
 	detailFound  bool
 	detailErr    error
+	facetsCalled bool
+	facets       managementruntimelogs.FacetsResult
+	facetsErr    error
 	deadlineSet  bool
 }
 
@@ -393,4 +453,10 @@ func (s *managementRuntimeLogServiceStub) Detail(r *http.Request, id string) (ma
 	s.detailID = id
 	_, s.deadlineSet = r.Context().Deadline()
 	return s.detail, s.detailFound, s.detailErr
+}
+
+func (s *managementRuntimeLogServiceStub) Facets(r *http.Request) (managementruntimelogs.FacetsResult, error) {
+	s.facetsCalled = true
+	_, s.deadlineSet = r.Context().Deadline()
+	return s.facets, s.facetsErr
 }

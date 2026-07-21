@@ -3,14 +3,20 @@
 package integration
 
 import (
+	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,11 +29,13 @@ import (
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
+	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	"juhe-ai/backend-go/internal/store/port"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 )
 
 const w3ProviderModelCRUDActorSystemAccountID = "sys_w2_proxy_options"
+const w3ModelCatalogSnapshotBridgeSecret = "w3-bridge-secret"
 
 func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	testcontainers.SkipIfProviderIsNotHealthy(t)
@@ -67,7 +75,12 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	}
 	defer store.Close()
 
-	service := managementprovidermodels.NewService(store)
+	snapshotBridge := newW3ModelCatalogSnapshotBridge(t)
+	defer snapshotBridge.Close()
+	service := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
+		Store:            store,
+		CatalogRebuilder: snapshotBridge.Client(),
+	})
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{
 		Store: store,
 		Now:   func() time.Time { return now },
@@ -91,6 +104,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	createRec := serveW3ProviderModelCRUDRequest(router, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options", sessionToken, `{
 		"model":"w3-crud-model",
 		"scope":"global",
+		"catalogVisible":false,
 		"mode":"text",
 		"supportedApiProtocols":["responses","chat_completions"],
 		"supportedServiceTiers":["priority","flex"],
@@ -110,10 +124,10 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(createRec.Body).Decode(&createBody); err != nil {
 		t.Fatalf("decode create response: %v", err)
 	}
-	if createBody.Data.ID == "" || createBody.Data.Model != "w3-crud-model" || createBody.Data.Scope != "global" || createBody.Data.SystemAccountID != "" || createBody.Data.PricingNotes != "W3 CRUD 价格说明" {
+	if createBody.Data.ID == "" || createBody.Data.Model != "w3-crud-model" || createBody.Data.Scope != "global" || createBody.Data.SystemAccountID != "" || createBody.Data.PricingNotes != "W3 CRUD 价格说明" || createBody.Data.CatalogVisible {
 		t.Fatalf("create response = %+v", createBody.Data)
 	}
-	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, &createBody.Data, []string{"priority", "flex"}, []string{"low", "high"}, "", []string{}, "", "")
 	runW3ProviderModelCRUDAtomicInterleavingSmoke(t, ctx, db, store, createBody.Data.ID, w3ProviderModelCRUDActorSystemAccountID)
 
 	listRec := serveW3ProviderModelCRUDRequest(router, http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", sessionToken, "")
@@ -129,7 +143,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if item := findW2ProviderModel(listBody.Data, "w3-crud-model"); item == nil || item.Notes != "first patch" || item.PricingNotes != "second patch" {
 		t.Fatalf("list response missing atomically merged custom model fields: %+v", listBody.Data)
 	} else {
-		assertW2ProviderModelRequestCapabilities(t, item, []string{"priority", "flex"}, []string{"low", "high"}, "high", []string{}, "", "")
+		assertW2ProviderModelRequestCapabilities(t, item, []string{"priority", "flex"}, []string{"low", "high"}, "", []string{}, "", "")
 	}
 	assertW3ProviderModelCRUDCapabilityValidation(t, router, sessionToken)
 
@@ -140,6 +154,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 
 	patchRec := serveW3ProviderModelCRUDRequest(router, http.MethodPatch, "/__aisys__/api/providers/gpt/models/"+createBody.Data.ID, sessionToken, `{
 		"status":"disabled",
+		"catalogVisible":true,
 		"supportedServiceTiers":["flex"],
 		"supportedReasoningEfforts":["minimal","medium","xhigh"],
 		"defaultReasoningEffort":"medium",
@@ -154,12 +169,12 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	if err := json.NewDecoder(patchRec.Body).Decode(&patchBody); err != nil {
 		t.Fatalf("decode patch response: %v", err)
 	}
-	if patchBody.Data.Status != "disabled" || patchBody.Data.Notes != "" {
+	if patchBody.Data.Status != "disabled" || patchBody.Data.Notes != "" || !patchBody.Data.CatalogVisible {
 		t.Fatalf("patch response = %+v", patchBody.Data)
 	}
-	assertW2ProviderModelRequestCapabilities(t, &patchBody.Data, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, &patchBody.Data, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "", []string{}, "", "")
 	assertW3ProviderModelCRUDDefaultPreferenceCleared(t, ctx, db, "w3-crud-model")
-	assertW3ProviderModelCRUDCapabilitiesPersisted(t, ctx, db, createBody.Data.ID, "disabled", []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium")
+	assertW3ProviderModelCRUDCapabilitiesPersisted(t, ctx, db, createBody.Data.ID, "disabled", []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "")
 
 	updatedListRec := serveW3ProviderModelCRUDRequest(router, http.MethodGet, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options&includeInactive=true&includeUnpriced=true", sessionToken, "")
 	if updatedListRec.Code != http.StatusOK {
@@ -172,10 +187,10 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("decode updated list response: %v", err)
 	}
 	updatedItem := findW2ProviderModel(updatedListBody.Data, "w3-crud-model")
-	if updatedItem == nil || updatedItem.Status != "disabled" || updatedItem.Notes != "" {
+	if updatedItem == nil || updatedItem.Status != "disabled" || updatedItem.Notes != "" || !updatedItem.CatalogVisible {
 		t.Fatalf("updated list response missing patched custom model: %+v", updatedListBody.Data)
 	}
-	assertW2ProviderModelRequestCapabilities(t, updatedItem, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "medium", []string{}, "", "")
+	assertW2ProviderModelRequestCapabilities(t, updatedItem, []string{"flex"}, []string{"minimal", "medium", "xhigh"}, "", []string{}, "", "")
 
 	deleteRec := serveW3ProviderModelCRUDRequest(router, http.MethodDelete, "/__aisys__/api/providers/gpt/models/"+createBody.Data.ID, sessionToken, "")
 	if deleteRec.Code != http.StatusOK {
@@ -191,6 +206,7 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 		t.Fatalf("delete response = %+v", deleteBody.Data)
 	}
 	assertW3ProviderModelCRUDCustomModelDeleted(t, ctx, db, createBody.Data.ID)
+	assertW3ProviderModelCRUDSnapshotDirty(t, ctx, db, "all", "", 5)
 
 	boundCreateRec := serveW3ProviderModelCRUDRequest(router, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options", sessionToken, `{
 		"model":"w3-bound-model",
@@ -213,6 +229,140 @@ func TestW3ManagementProviderModelCRUDPostgresSmoke(t *testing.T) {
 	}
 	if !strings.Contains(boundDeleteRec.Body.String(), "1 个账户支持模型") || !strings.Contains(boundDeleteRec.Body.String(), "1 个账户映射下游模型") || !strings.Contains(boundDeleteRec.Body.String(), "1 个账户映射上游模型") {
 		t.Fatalf("bound delete body = %s", boundDeleteRec.Body.String())
+	}
+	snapshotBridge.FailNext()
+	bridgeFailureCreateRec := serveW3ProviderModelCRUDRequest(router, http.MethodPost, "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options", sessionToken, `{
+		"model":"w3-bridge-failure-model",
+		"inputUsdPer1M":1,
+		"outputUsdPer1M":2
+	}`)
+	if bridgeFailureCreateRec.Code != http.StatusCreated {
+		t.Fatalf("bridge failure create status = %d, body = %s", bridgeFailureCreateRec.Code, bridgeFailureCreateRec.Body.String())
+	}
+	assertW3ProviderModelCRUDSnapshotDirty(t, ctx, db, "personal", "sys_w2_proxy_options", 2)
+	snapshotBridge.AssertCalls(t, 5, []w3ModelCatalogSnapshotBridgeCall{
+		{Scope: "all"},
+		{Scope: "all"},
+		{Scope: "all"},
+		{Scope: "personal", SystemAccountID: "sys_w2_proxy_options"},
+		{Scope: "personal", SystemAccountID: "sys_w2_proxy_options"},
+	})
+}
+
+type w3ModelCatalogSnapshotBridgeCall struct {
+	Scope           string
+	SystemAccountID string
+}
+
+type w3ModelCatalogSnapshotBridge struct {
+	server   *httptest.Server
+	client   *modelcatalogsnapshotrebuild.Client
+	mu       sync.Mutex
+	calls    []w3ModelCatalogSnapshotBridgeCall
+	failNext bool
+}
+
+func newW3ModelCatalogSnapshotBridge(t *testing.T) *w3ModelCatalogSnapshotBridge {
+	t.Helper()
+	bridge := &w3ModelCatalogSnapshotBridge{}
+	bridge.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/__aiinternal__/v1/model-catalog-snapshots/rebuild" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("Content-Type") != "application/json" || r.Header.Get("Content-Encoding") != "identity" {
+			http.Error(w, "bridge headers invalid", http.StatusBadRequest)
+			return
+		}
+		raw, err := io.ReadAll(io.LimitReader(r.Body, 1025))
+		if err != nil || len(raw) > 1024 || !w3ValidModelCatalogSnapshotBridgeSignature(raw, r.Header.Get("X-Juhe-AI-Signature")) {
+			http.Error(w, "bridge signature invalid", http.StatusBadRequest)
+			return
+		}
+		var payload struct {
+			Scope           string `json:"scope"`
+			SystemAccountID string `json:"systemAccountId"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		decodeErr := decoder.Decode(&payload)
+		trailingErr := decoder.Decode(&struct{}{})
+		if decodeErr != nil || !errors.Is(trailingErr, io.EOF) ||
+			(payload.Scope == "all" && payload.SystemAccountID != "") ||
+			(payload.Scope == "personal" && strings.TrimSpace(payload.SystemAccountID) == "") ||
+			(payload.Scope != "all" && payload.Scope != "personal") {
+			http.Error(w, "bridge payload invalid", http.StatusBadRequest)
+			return
+		}
+		bridge.mu.Lock()
+		bridge.calls = append(bridge.calls, w3ModelCatalogSnapshotBridgeCall{Scope: payload.Scope, SystemAccountID: payload.SystemAccountID})
+		fail := bridge.failNext
+		bridge.failNext = false
+		bridge.mu.Unlock()
+		if fail {
+			http.Error(w, "bridge unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	client, err := modelcatalogsnapshotrebuild.NewClientWithTimeouts(bridge.server.URL, w3ModelCatalogSnapshotBridgeSecret, 5*time.Second, 2*time.Second)
+	if err != nil {
+		bridge.server.Close()
+		t.Fatalf("create model catalog snapshot bridge client: %v", err)
+	}
+	bridge.client = client
+	return bridge
+}
+
+func w3ValidModelCatalogSnapshotBridgeSignature(raw []byte, actual string) bool {
+	mac := hmac.New(sha256.New, []byte(w3ModelCatalogSnapshotBridgeSecret))
+	_, _ = mac.Write([]byte("juhe-ai:model-catalog-snapshot-rebuild:v1\n"))
+	_, _ = mac.Write(raw)
+	expected := "v1=" + hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(actual), []byte(expected))
+}
+
+func (b *w3ModelCatalogSnapshotBridge) Client() *modelcatalogsnapshotrebuild.Client {
+	return b.client
+}
+
+func (b *w3ModelCatalogSnapshotBridge) Close() {
+	if b.server != nil {
+		b.server.Close()
+	}
+}
+
+func (b *w3ModelCatalogSnapshotBridge) FailNext() {
+	b.mu.Lock()
+	b.failNext = true
+	b.mu.Unlock()
+}
+
+func (b *w3ModelCatalogSnapshotBridge) AssertCalls(t *testing.T, wantCount int, want []w3ModelCatalogSnapshotBridgeCall) {
+	t.Helper()
+	b.mu.Lock()
+	calls := append([]w3ModelCatalogSnapshotBridgeCall(nil), b.calls...)
+	b.mu.Unlock()
+	if len(calls) != wantCount {
+		t.Fatalf("model catalog snapshot bridge calls = %d, want %d: %+v", len(calls), wantCount, calls)
+	}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("model catalog snapshot bridge calls = %+v, want %+v", calls, want)
+	}
+}
+
+func assertW3ProviderModelCRUDSnapshotDirty(t *testing.T, ctx context.Context, db *sql.DB, scope string, systemAccountID string, minimumGeneration int64) {
+	t.Helper()
+	var generation int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT generation
+		FROM juhe_business.model_catalog_snapshot_rebuild_requests
+		WHERE scope = $1 AND system_account_id = $2
+	`, scope, systemAccountID).Scan(&generation); err != nil {
+		t.Fatalf("query model catalog snapshot dirty generation: %v", err)
+	}
+	if generation < minimumGeneration {
+		t.Fatalf("model catalog snapshot dirty generation = %d, want >= %d", generation, minimumGeneration)
 	}
 }
 
@@ -335,11 +485,6 @@ func assertW3ProviderModelCRUDCapabilityValidation(t *testing.T, router http.Han
 			name:   "reject ultra wire reasoning effort",
 			target: "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options",
 			body:   `{"model":"w3-invalid-ultra","mode":"text","supportedReasoningEfforts":["ultra"],"inputUsdPer1M":1}`,
-		},
-		{
-			name:   "reject default outside supported efforts",
-			target: "/__aisys__/api/providers/gpt/models?systemAccountId=sys_w2_proxy_options",
-			body:   `{"model":"w3-invalid-default","mode":"text","supportedReasoningEfforts":["low"],"defaultReasoningEffort":"high","inputUsdPer1M":1}`,
 		},
 		{
 			name:   "reject malformed non GPT capability token",

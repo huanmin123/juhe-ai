@@ -16,8 +16,25 @@ import (
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/managementaccountauthorizeddispatch"
+	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
+	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
+	"juhe-ai/backend-go/internal/modules/managementaccountcreate"
+	"juhe-ai/backend-go/internal/modules/managementaccountdelete"
+	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
+	"juhe-ai/backend-go/internal/modules/managementaccountexport"
+	"juhe-ai/backend-go/internal/modules/managementaccountforceactivate"
+	"juhe-ai/backend-go/internal/modules/managementaccountgroupbinding"
+	"juhe-ai/backend-go/internal/modules/managementaccountimport"
+	"juhe-ai/backend-go/internal/modules/managementaccountlist"
 	"juhe-ai/backend-go/internal/modules/managementaccounts"
+	"juhe-ai/backend-go/internal/modules/managementaccountstatussnapshot"
+	"juhe-ai/backend-go/internal/modules/managementaccounttestdispatch"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
+	"juhe-ai/backend-go/internal/modules/managementaccounttestsession"
+	"juhe-ai/backend-go/internal/modules/managementaccountteststatus"
+	"juhe-ai/backend-go/internal/modules/managementaccounttrafficmigration"
+	"juhe-ai/backend-go/internal/modules/managementaccountupdate"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
@@ -37,6 +54,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementstats"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
+	"juhe-ai/backend-go/internal/modules/managementusagerecords"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	publicapiauth "juhe-ai/backend-go/internal/modules/publicapi/auth"
@@ -47,6 +65,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/ownerlock"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
+	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
@@ -195,6 +214,13 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if managementOperationLogQueue != nil {
 		defer func() { _ = managementOperationLogQueue.Close() }()
 	}
+	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
+	if err != nil {
+		return err
+	}
+	if err := probeManagementCatalogSnapshotBridge(ctx, cfg, catalogSnapshotBridge); err != nil {
+		return err
+	}
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
@@ -204,7 +230,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
 	}
-	managementHandlers := newManagementAPIHandlerWithPageData(
+	managementHandlers := newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		cfg,
 		store,
 		stateRedis,
@@ -214,6 +240,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
+		catalogSnapshotBridge,
 	)
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
@@ -227,6 +254,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
 		SystemAPIAuthenticatedRateLimiter:                 httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, cfg.RedisNamespace),
 		PublicAPIHandler:                                  publicAPIHandler,
+		NodeModelCatalogBridgeReadinessProber:             catalogSnapshotBridge,
 		ManagementAPIAuthMiddleware:                       managementHandlers.AuthMiddleware,
 		ManagementAPIAuthTouchMiddleware:                  managementHandlers.AuthTouchMiddleware,
 		ManagementCaptchaHandler:                          managementHandlers.CaptchaHandler,
@@ -339,6 +367,64 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTagDeleteHandler:               managementHandlers.MyAccountTagDeleteHandler,
 		ManagementAccountTagUpdateHandler:                 managementHandlers.AccountTagUpdateHandler,
 		ManagementMyAccountTagUpdateHandler:               managementHandlers.MyAccountTagUpdateHandler,
+		ManagementAccountDetailHandler:                    managementHandlers.AccountDetailHandler,
+		ManagementMyAccountDetailHandler:                  managementHandlers.MyAccountDetailHandler,
+		ManagementAccountEditBasicDetailHandler:           managementHandlers.AccountEditBasicDetailHandler,
+		ManagementMyAccountEditBasicDetailHandler:         managementHandlers.MyAccountEditBasicDetailHandler,
+		ManagementAccountAdvancedDetailHandler:            managementHandlers.AccountAdvancedDetailHandler,
+		ManagementMyAccountAdvancedDetailHandler:          managementHandlers.MyAccountAdvancedDetailHandler,
+		ManagementAccountAPIKeyRuntimeHandler:             managementHandlers.AccountAPIKeyRuntimeHandler,
+		ManagementMyAccountAPIKeyRuntimeHandler:           managementHandlers.MyAccountAPIKeyRuntimeHandler,
+		ManagementAccountGroupBindingHandler:              managementHandlers.AccountGroupBindingHandler,
+		ManagementMyAccountGroupBindingHandler:            managementHandlers.MyAccountGroupBindingHandler,
+		ManagementAccountBatchEditHandler:                 managementHandlers.AccountBatchEditHandler,
+		ManagementMyAccountBatchEditHandler:               managementHandlers.MyAccountBatchEditHandler,
+		ManagementAccountForceActivateHandler:             managementHandlers.AccountForceActivateHandler,
+		ManagementMyAccountForceActivateHandler:           managementHandlers.MyAccountForceActivateHandler,
+		ManagementAccountDeleteHandler:                    managementHandlers.AccountDeleteHandler,
+		ManagementMyAccountDeleteHandler:                  managementHandlers.MyAccountDeleteHandler,
+		ManagementAccountBalanceHandler:                   managementHandlers.AccountBalanceHandler,
+		ManagementMyAccountBalanceHandler:                 managementHandlers.MyAccountBalanceHandler,
+		ManagementAccountBalanceRefreshHandler:            managementHandlers.AccountBalanceRefreshHandler,
+		ManagementMyAccountBalanceRefreshHandler:          managementHandlers.MyAccountBalanceRefreshHandler,
+		ManagementAccountStatusSnapshotHandler:            managementHandlers.AccountStatusSnapshotHandler,
+		ManagementMyAccountStatusSnapshotHandler:          managementHandlers.MyAccountStatusSnapshotHandler,
+		ManagementAccountListHandler:                      managementHandlers.AccountListHandler,
+		ManagementMyAccountListHandler:                    managementHandlers.MyAccountListHandler,
+		ManagementAccountExportHandler:                    managementHandlers.AccountExportHandler,
+		ManagementMyAccountExportHandler:                  managementHandlers.MyAccountExportHandler,
+		ManagementAccountCreateHandler:                    managementHandlers.AccountCreateHandler,
+		ManagementMyAccountCreateHandler:                  managementHandlers.MyAccountCreateHandler,
+		ManagementAccountUpdateHandler:                    managementHandlers.AccountUpdateHandler,
+		ManagementMyAccountUpdateHandler:                  managementHandlers.MyAccountUpdateHandler,
+		ManagementAccountAuthorizedDispatchHandler:        managementHandlers.AccountAuthorizedDispatchHandler,
+		ManagementMyAccountAuthorizedDispatchHandler:      managementHandlers.MyAccountAuthorizedDispatchHandler,
+		ManagementAccountImportPreviewHandler:             managementHandlers.AccountImportPreviewHandler,
+		ManagementMyAccountImportPreviewHandler:           managementHandlers.MyAccountImportPreviewHandler,
+		ManagementAccountImportConfirmHandler:             managementHandlers.AccountImportConfirmHandler,
+		ManagementMyAccountImportConfirmHandler:           managementHandlers.MyAccountImportConfirmHandler,
+		ManagementAccountTrafficMigrationHandler:          managementHandlers.AccountTrafficMigrationHandler,
+		ManagementMyAccountTrafficMigrationHandler:        managementHandlers.MyAccountTrafficMigrationHandler,
+		ManagementAccountTestSessionCreateHandler:         managementHandlers.AccountTestSessionCreateHandler,
+		ManagementMyAccountTestSessionCreateHandler:       managementHandlers.MyAccountTestSessionCreateHandler,
+		ManagementAccountTestSessionHeartbeatHandler:      managementHandlers.AccountTestSessionHeartbeatHandler,
+		ManagementMyAccountTestSessionHeartbeatHandler:    managementHandlers.MyAccountTestSessionHeartbeatHandler,
+		ManagementAccountTestSessionCompleteHandler:       managementHandlers.AccountTestSessionCompleteHandler,
+		ManagementMyAccountTestSessionCompleteHandler:     managementHandlers.MyAccountTestSessionCompleteHandler,
+		ManagementAccountTestSessionCancelHandler:         managementHandlers.AccountTestSessionCancelHandler,
+		ManagementMyAccountTestSessionCancelHandler:       managementHandlers.MyAccountTestSessionCancelHandler,
+		ManagementAccountTestTaskCancelHandler:            managementHandlers.AccountTestTaskCancelHandler,
+		ManagementMyAccountTestTaskCancelHandler:          managementHandlers.MyAccountTestTaskCancelHandler,
+		ManagementAccountTestTaskListHandler:              managementHandlers.AccountTestTaskListHandler,
+		ManagementMyAccountTestTaskListHandler:            managementHandlers.MyAccountTestTaskListHandler,
+		ManagementAccountTestSessionStatusHandler:         managementHandlers.AccountTestSessionStatusHandler,
+		ManagementMyAccountTestSessionStatusHandler:       managementHandlers.MyAccountTestSessionStatusHandler,
+		ManagementAccountTestSessionTasksHandler:          managementHandlers.AccountTestSessionTasksHandler,
+		ManagementMyAccountTestSessionTasksHandler:        managementHandlers.MyAccountTestSessionTasksHandler,
+		ManagementAccountTestTaskStatusHandler:            managementHandlers.AccountTestTaskStatusHandler,
+		ManagementMyAccountTestTaskStatusHandler:          managementHandlers.MyAccountTestTaskStatusHandler,
+		ManagementAccountTestDispatchHandler:              managementHandlers.AccountTestDispatchHandler,
+		ManagementMyAccountTestDispatchHandler:            managementHandlers.MyAccountTestDispatchHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -364,6 +450,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementExternalIntegrationSourceScopesHandler:  managementHandlers.ExternalIntegrationSourceScopesHandler,
 		ManagementExternalIntegrationSourceAPIDocsHandler: managementHandlers.ExternalIntegrationSourceAPIDocsHandler,
 		ManagementPublicAPILogsHandler:                    managementHandlers.PublicAPILogsHandler,
+		ManagementUsageRecordsHandler:                     managementHandlers.UsageRecordsHandler,
+		ManagementMyUsageRecordsHandler:                   managementHandlers.MyUsageRecordsHandler,
 		ManagementAnnouncementPublicListHandler:           managementHandlers.AnnouncementPublicListHandler,
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
@@ -513,6 +601,64 @@ type managementAPIHandlers struct {
 	MyAccountTagDeleteHandler               http.Handler
 	AccountTagUpdateHandler                 http.Handler
 	MyAccountTagUpdateHandler               http.Handler
+	AccountDetailHandler                    http.Handler
+	MyAccountDetailHandler                  http.Handler
+	AccountEditBasicDetailHandler           http.Handler
+	MyAccountEditBasicDetailHandler         http.Handler
+	AccountAdvancedDetailHandler            http.Handler
+	MyAccountAdvancedDetailHandler          http.Handler
+	AccountAPIKeyRuntimeHandler             http.Handler
+	MyAccountAPIKeyRuntimeHandler           http.Handler
+	AccountGroupBindingHandler              http.Handler
+	MyAccountGroupBindingHandler            http.Handler
+	AccountBatchEditHandler                 http.Handler
+	MyAccountBatchEditHandler               http.Handler
+	AccountForceActivateHandler             http.Handler
+	MyAccountForceActivateHandler           http.Handler
+	AccountDeleteHandler                    http.Handler
+	MyAccountDeleteHandler                  http.Handler
+	AccountBalanceHandler                   http.Handler
+	MyAccountBalanceHandler                 http.Handler
+	AccountBalanceRefreshHandler            http.Handler
+	MyAccountBalanceRefreshHandler          http.Handler
+	AccountStatusSnapshotHandler            http.Handler
+	MyAccountStatusSnapshotHandler          http.Handler
+	AccountListHandler                      http.Handler
+	MyAccountListHandler                    http.Handler
+	AccountExportHandler                    http.Handler
+	MyAccountExportHandler                  http.Handler
+	AccountCreateHandler                    http.Handler
+	MyAccountCreateHandler                  http.Handler
+	AccountUpdateHandler                    http.Handler
+	MyAccountUpdateHandler                  http.Handler
+	AccountAuthorizedDispatchHandler        http.Handler
+	MyAccountAuthorizedDispatchHandler      http.Handler
+	AccountImportPreviewHandler             http.Handler
+	MyAccountImportPreviewHandler           http.Handler
+	AccountImportConfirmHandler             http.Handler
+	MyAccountImportConfirmHandler           http.Handler
+	AccountTrafficMigrationHandler          http.Handler
+	MyAccountTrafficMigrationHandler        http.Handler
+	AccountTestSessionCreateHandler         http.Handler
+	MyAccountTestSessionCreateHandler       http.Handler
+	AccountTestSessionHeartbeatHandler      http.Handler
+	MyAccountTestSessionHeartbeatHandler    http.Handler
+	AccountTestSessionCompleteHandler       http.Handler
+	MyAccountTestSessionCompleteHandler     http.Handler
+	AccountTestSessionCancelHandler         http.Handler
+	MyAccountTestSessionCancelHandler       http.Handler
+	AccountTestTaskCancelHandler            http.Handler
+	MyAccountTestTaskCancelHandler          http.Handler
+	AccountTestTaskListHandler              http.Handler
+	MyAccountTestTaskListHandler            http.Handler
+	AccountTestSessionStatusHandler         http.Handler
+	MyAccountTestSessionStatusHandler       http.Handler
+	AccountTestSessionTasksHandler          http.Handler
+	MyAccountTestSessionTasksHandler        http.Handler
+	AccountTestTaskStatusHandler            http.Handler
+	MyAccountTestTaskStatusHandler          http.Handler
+	AccountTestDispatchHandler              http.Handler
+	MyAccountTestDispatchHandler            http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -538,6 +684,8 @@ type managementAPIHandlers struct {
 	ExternalIntegrationSourceScopesHandler  http.Handler
 	ExternalIntegrationSourceAPIDocsHandler http.Handler
 	PublicAPILogsHandler                    http.Handler
+	UsageRecordsHandler                     http.Handler
+	MyUsageRecordsHandler                   http.Handler
 	AnnouncementPublicListHandler           http.Handler
 	AnnouncementPublicReadHandler           http.Handler
 	AnnouncementsHandler                    http.Handler
@@ -573,6 +721,32 @@ func newManagementAPIHandlerWithPageData(
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
+	return newManagementAPIHandlerWithCatalogSnapshotRebuilder(
+		cfg,
+		store,
+		stateRedis,
+		operationLogQueue,
+		logger,
+		systemAccountInvalidator,
+		accountsStaticResetPublisher,
+		accountConcurrencyReader,
+		systemAPIRateLimitSettingsCache,
+		nil,
+	)
+}
+
+func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
+	cfg config.Config,
+	store *postgresstore.Store,
+	stateRedis *redisplatform.Client,
+	operationLogQueue operationLogEnqueueClient,
+	logger *slog.Logger,
+	systemAccountInvalidator managementAPIInvalidator,
+	accountsStaticResetPublisher managementPageDataPublisher,
+	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
+	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
+	catalogSnapshotRebuilder managementprovidermodels.CatalogSnapshotRebuilder,
+) managementAPIHandlers {
 	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
 		return managementAPIHandlers{}
 	}
@@ -603,6 +777,7 @@ func newManagementAPIHandlerWithPageData(
 		Store:             store,
 		Invalidator:       systemAccountInvalidator,
 		PageDataPublisher: accountsStaticResetPublisher,
+		CatalogRebuilder:  catalogSnapshotRebuilder,
 		Logger:            logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
@@ -645,10 +820,85 @@ func newManagementAPIHandlerWithPageData(
 		PageDataPublisher: accountsStaticResetPublisher,
 		Logger:            logger,
 	})
+	accountDetailService := managementaccountdetails.NewService(managementaccountdetails.ServiceOptions{
+		Reader:            store,
+		CredentialCodec:   secretcrypto.NewJSONCodec(cfg.Secret),
+		FingerprintSecret: cfg.Secret,
+	})
+	accountBatchEditService := managementaccountbatchedit.NewService(store, store)
+	accountBalanceService := managementaccountbalance.NewService(managementaccountbalance.ServiceOptions{Reader: store, Writer: store})
+	accountStatusSnapshotService := managementaccountstatussnapshot.NewServiceWithOptions(managementaccountstatussnapshot.ServiceOptions{
+		Reader:             store,
+		AccountConcurrency: accountConcurrencyReader,
+		APIKeyRuntime:      store,
+		APIKeySources:      store,
+		CredentialCodec:    secretcrypto.NewJSONCodec(cfg.Secret),
+		FingerprintSecret:  cfg.Secret,
+		UsageStatsTimezone: store,
+	})
+	accountListService := managementaccountlist.NewService(store)
+	accountExportService := managementaccountexport.NewService(managementaccountexport.ServiceOptions{
+		Reader:          store,
+		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+	})
+	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
+	accountCreateService := managementaccountcreate.NewService(managementaccountcreate.Options{
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
+		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
+	})
+	accountUpdateService := managementaccountupdate.NewService(managementaccountupdate.Options{
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
+		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
+	})
+	accountAuthorizedDispatchService := managementaccountauthorizeddispatch.NewService(managementaccountauthorizeddispatch.Options{
+		Store: store, GatewayInvalidator: systemAccountInvalidator,
+		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
+	})
+	accountImportService := managementaccountimport.NewService(managementaccountimport.Options{
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+	})
+	accountTrafficMigrationService := managementaccounttrafficmigration.NewService(managementaccounttrafficmigration.Options{
+		Store: store, GatewayInvalidator: systemAccountInvalidator, GranteeReader: store,
+		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
+	})
 	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
 		ModelCatalog:    providerModelService,
 		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+	})
+	accountTestSessionService := managementaccounttestsession.NewService(store, nil)
+	accountTestStatusService := managementaccountteststatus.NewService(store)
+	accountTestDispatchService := managementaccounttestdispatch.NewService(managementaccounttestdispatch.Options{
+		Store:         store,
+		EnqueueClient: operationLogQueue,
+		Codec:         secretcrypto.NewJSONCodec(cfg.Secret),
+		TestOptions:   accountTestOptionsService,
+	})
+	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
+		Store:              store,
+		Details:            accountDetailService,
+		GranteeReader:      store,
+		PageDataPublisher:  accountsStaticResetPublisher,
+		GatewayInvalidator: systemAccountInvalidator,
+		Logger:             logger,
+	})
+	accountDeleteService := managementaccountdelete.NewService(managementaccountdelete.Options{
+		Store:                      store,
+		PageDataPublisher:          accountsStaticResetPublisher,
+		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		AuthorizationInvalidator:   systemAccountInvalidator,
+		GatewayRuntimeInvalidator:  systemAccountInvalidator,
+		Logger:                     logger,
+	})
+	accountGroupBindingService := managementaccountgroupbinding.NewService(managementaccountgroupbinding.Options{
+		Store:                      store,
+		GranteeReader:              store,
+		PageDataPublisher:          accountsStaticResetPublisher,
+		RuntimeInvalidator:         systemAccountInvalidator,
+		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		Logger:                     logger,
 	})
 	systemAccountService := managementsystemaccounts.NewServiceWithOptions(managementsystemaccounts.ServiceOptions{
 		Store:                    store,
@@ -689,6 +939,7 @@ func newManagementAPIHandlerWithPageData(
 	externalIntegrationSourceTokenCreateService := managementexternalintegrationsources.NewTokenCreateService(store, cfg.Secret)
 	externalIntegrationSourceTokenUpdateService := managementexternalintegrationsources.NewTokenUpdateService(store)
 	publicAPILogService := managementpublicapilogs.NewService(store)
+	usageRecordService := managementusagerecords.NewService(store)
 	announcementService := announcements.NewService(store)
 	statsService := managementstats.NewService(store)
 	globalSettingsService := publicsettings.NewService(store)
@@ -836,6 +1087,64 @@ func newManagementAPIHandlerWithPageData(
 		MyAccountTagDeleteHandler:               httpapi.NewManagementMyAccountTagDeleteHandler(accountService),
 		AccountTagUpdateHandler:                 httpapi.NewManagementAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
 		MyAccountTagUpdateHandler:               httpapi.NewManagementMyAccountTagUpdateHandlerWithOperationLog(accountService, operationLogOptions),
+		AccountDetailHandler:                    httpapi.NewManagementAccountDetailHandler(accountDetailService),
+		MyAccountDetailHandler:                  httpapi.NewManagementMyAccountDetailHandler(accountDetailService),
+		AccountEditBasicDetailHandler:           httpapi.NewManagementAccountEditBasicDetailHandler(accountDetailService),
+		MyAccountEditBasicDetailHandler:         httpapi.NewManagementMyAccountEditBasicDetailHandler(accountDetailService),
+		AccountAdvancedDetailHandler:            httpapi.NewManagementAccountAdvancedDetailHandler(accountDetailService),
+		MyAccountAdvancedDetailHandler:          httpapi.NewManagementMyAccountAdvancedDetailHandler(accountDetailService),
+		AccountAPIKeyRuntimeHandler:             httpapi.NewManagementAccountAPIKeyRuntimeHandler(accountDetailService),
+		MyAccountAPIKeyRuntimeHandler:           httpapi.NewManagementMyAccountAPIKeyRuntimeHandler(accountDetailService),
+		AccountGroupBindingHandler:              httpapi.NewManagementAccountGroupBindingHandlerWithOperationLog(accountGroupBindingService, operationLogOptions),
+		MyAccountGroupBindingHandler:            httpapi.NewManagementMyAccountGroupBindingHandlerWithOperationLog(accountGroupBindingService, operationLogOptions),
+		AccountBatchEditHandler:                 httpapi.NewManagementAccountBatchEditHandler(accountBatchEditService),
+		MyAccountBatchEditHandler:               httpapi.NewManagementMyAccountBatchEditHandler(accountBatchEditService),
+		AccountForceActivateHandler:             httpapi.NewManagementAccountForceActivateHandlerWithOperationLog(accountForceActivateService, operationLogOptions),
+		MyAccountForceActivateHandler:           httpapi.NewManagementMyAccountForceActivateHandlerWithOperationLog(accountForceActivateService, operationLogOptions),
+		AccountDeleteHandler:                    httpapi.NewManagementAccountDeleteHandlerWithOperationLog(accountDeleteService, operationLogOptions),
+		MyAccountDeleteHandler:                  httpapi.NewManagementMyAccountDeleteHandlerWithOperationLog(accountDeleteService, operationLogOptions),
+		AccountBalanceHandler:                   httpapi.NewManagementAccountBalanceHandler(accountBalanceService),
+		MyAccountBalanceHandler:                 httpapi.NewManagementMyAccountBalanceHandler(accountBalanceService),
+		AccountBalanceRefreshHandler:            httpapi.NewManagementAccountBalanceRefreshHandler(accountBalanceService),
+		MyAccountBalanceRefreshHandler:          httpapi.NewManagementMyAccountBalanceRefreshHandler(accountBalanceService),
+		AccountStatusSnapshotHandler:            httpapi.NewManagementAccountStatusSnapshotHandler(accountStatusSnapshotService),
+		MyAccountStatusSnapshotHandler:          httpapi.NewManagementMyAccountStatusSnapshotHandler(accountStatusSnapshotService),
+		AccountListHandler:                      httpapi.NewManagementAccountListHandler(accountListService),
+		MyAccountListHandler:                    httpapi.NewManagementMyAccountListHandler(accountListService),
+		AccountExportHandler:                    httpapi.NewManagementAccountExportHandler(accountExportService),
+		MyAccountExportHandler:                  httpapi.NewManagementMyAccountExportHandler(accountExportService),
+		AccountCreateHandler:                    httpapi.NewManagementAccountCreateHandler(accountCreateService),
+		MyAccountCreateHandler:                  httpapi.NewManagementMyAccountCreateHandler(accountCreateService),
+		AccountUpdateHandler:                    httpapi.NewManagementAccountUpdateHandler(accountUpdateService),
+		MyAccountUpdateHandler:                  httpapi.NewManagementMyAccountUpdateHandler(accountUpdateService),
+		AccountAuthorizedDispatchHandler:        httpapi.NewManagementAccountAuthorizedDispatchHandler(accountAuthorizedDispatchService),
+		MyAccountAuthorizedDispatchHandler:      httpapi.NewManagementMyAccountAuthorizedDispatchHandler(accountAuthorizedDispatchService),
+		AccountImportPreviewHandler:             httpapi.NewManagementAccountImportPreviewHandler(accountImportService),
+		MyAccountImportPreviewHandler:           httpapi.NewManagementMyAccountImportPreviewHandler(accountImportService),
+		AccountImportConfirmHandler:             httpapi.NewManagementAccountImportConfirmHandler(accountImportService),
+		MyAccountImportConfirmHandler:           httpapi.NewManagementMyAccountImportConfirmHandler(accountImportService),
+		AccountTrafficMigrationHandler:          httpapi.NewManagementAccountTrafficMigrationHandler(accountTrafficMigrationService),
+		MyAccountTrafficMigrationHandler:        httpapi.NewManagementMyAccountTrafficMigrationHandler(accountTrafficMigrationService),
+		AccountTestSessionCreateHandler:         httpapi.NewManagementAccountTestSessionCreateHandler(accountTestSessionService),
+		MyAccountTestSessionCreateHandler:       httpapi.NewManagementMyAccountTestSessionCreateHandler(accountTestSessionService),
+		AccountTestSessionHeartbeatHandler:      httpapi.NewManagementAccountTestSessionHeartbeatHandler(accountTestSessionService),
+		MyAccountTestSessionHeartbeatHandler:    httpapi.NewManagementMyAccountTestSessionHeartbeatHandler(accountTestSessionService),
+		AccountTestSessionCompleteHandler:       httpapi.NewManagementAccountTestSessionCompleteHandler(accountTestSessionService),
+		MyAccountTestSessionCompleteHandler:     httpapi.NewManagementMyAccountTestSessionCompleteHandler(accountTestSessionService),
+		AccountTestSessionCancelHandler:         httpapi.NewManagementAccountTestSessionCancelHandler(accountTestSessionService),
+		MyAccountTestSessionCancelHandler:       httpapi.NewManagementMyAccountTestSessionCancelHandler(accountTestSessionService),
+		AccountTestTaskCancelHandler:            httpapi.NewManagementAccountTestTaskCancelHandler(accountTestSessionService),
+		MyAccountTestTaskCancelHandler:          httpapi.NewManagementMyAccountTestTaskCancelHandler(accountTestSessionService),
+		AccountTestTaskListHandler:              httpapi.NewManagementAccountTestTaskListHandler(accountTestStatusService),
+		MyAccountTestTaskListHandler:            httpapi.NewManagementMyAccountTestTaskListHandler(accountTestStatusService),
+		AccountTestSessionStatusHandler:         httpapi.NewManagementAccountTestSessionStatusHandler(accountTestStatusService),
+		MyAccountTestSessionStatusHandler:       httpapi.NewManagementMyAccountTestSessionStatusHandler(accountTestStatusService),
+		AccountTestSessionTasksHandler:          httpapi.NewManagementAccountTestSessionTasksHandler(accountTestStatusService),
+		MyAccountTestSessionTasksHandler:        httpapi.NewManagementMyAccountTestSessionTasksHandler(accountTestStatusService),
+		AccountTestTaskStatusHandler:            httpapi.NewManagementAccountTestTaskStatusHandler(accountTestStatusService),
+		MyAccountTestTaskStatusHandler:          httpapi.NewManagementMyAccountTestTaskStatusHandler(accountTestStatusService),
+		AccountTestDispatchHandler:              httpapi.NewManagementAccountTestDispatchHandler(accountTestDispatchService),
+		MyAccountTestDispatchHandler:            httpapi.NewManagementMyAccountTestDispatchHandler(accountTestDispatchService),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
@@ -861,12 +1170,55 @@ func newManagementAPIHandlerWithPageData(
 		ExternalIntegrationSourceScopesHandler:  httpapi.NewManagementExternalIntegrationSourceScopesHandler(),
 		ExternalIntegrationSourceAPIDocsHandler: httpapi.NewManagementExternalIntegrationSourceAPIDocsHandler(),
 		PublicAPILogsHandler:                    httpapi.NewManagementPublicAPILogsHandler(publicAPILogService),
+		UsageRecordsHandler:                     httpapi.NewManagementUsageRecordsHandler(usageRecordService),
+		MyUsageRecordsHandler:                   httpapi.NewManagementMyUsageRecordsHandler(usageRecordService),
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
 		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}
+}
+
+type managementCatalogSnapshotBridge interface {
+	managementprovidermodels.CatalogSnapshotRebuilder
+	httpapi.ReadinessProber
+}
+
+func newManagementCatalogSnapshotRebuilder(cfg config.Config) (managementCatalogSnapshotBridge, error) {
+	if !cfg.ManagementAPIEnabled {
+		return nil, nil
+	}
+	timeout := cfg.NodeInternalSnapshotRebuildTimeout
+	if timeout == 0 {
+		timeout = time.Minute
+	}
+	return modelcatalogsnapshotrebuild.NewClientWithTimeouts(
+		cfg.NodeInternalBaseURL,
+		cfg.Secret,
+		timeout,
+		cfg.NodeInternalRequestTimeout,
+	)
+}
+
+func probeManagementCatalogSnapshotBridge(
+	ctx context.Context,
+	cfg config.Config,
+	bridge managementCatalogSnapshotBridge,
+) error {
+	if bridge == nil {
+		return nil
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, cfg.NodeInternalRequestTimeout)
+	defer cancel()
+	if err := bridge.Probe(probeCtx); err != nil {
+		var probeError *modelcatalogsnapshotrebuild.ProbeError
+		if errors.As(err, &probeError) {
+			return fmt.Errorf("Node 模型目录快照 bridge readiness 启动门禁失败: %s", probeError.Kind)
+		}
+		return errors.New("Node 模型目录快照 bridge readiness 启动门禁失败")
+	}
+	return nil
 }
 
 type operationLogEnqueueClient interface {

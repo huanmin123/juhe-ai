@@ -15,8 +15,13 @@ import (
 )
 
 type HealthHandler struct {
-	cfg    config.Config
-	logger *slog.Logger
+	cfg                          config.Config
+	logger                       *slog.Logger
+	nodeModelCatalogBridgeProber ReadinessProber
+}
+
+type ReadinessProber interface {
+	Probe(context.Context) error
 }
 
 type HealthResponse struct {
@@ -33,8 +38,12 @@ type CheckResult struct {
 	Error      string `json:"error,omitempty"`
 }
 
-func NewHealthHandler(cfg config.Config, logger *slog.Logger) HealthHandler {
-	return HealthHandler{cfg: cfg, logger: logger}
+func NewHealthHandler(cfg config.Config, logger *slog.Logger, nodeModelCatalogBridgeProber ReadinessProber) HealthHandler {
+	return HealthHandler{
+		cfg:                          cfg,
+		logger:                       logger,
+		nodeModelCatalogBridgeProber: nodeModelCatalogBridgeProber,
+	}
 }
 
 func (h HealthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,10 +69,11 @@ type ReadinessHandler struct {
 	cachedUntil       time.Time
 	cachedDeps        map[string]CheckResult
 	cachedStatus      string
+	inflight          chan struct{}
 }
 
-func NewReadinessHandler(cfg config.Config, logger *slog.Logger) *ReadinessHandler {
-	health := NewHealthHandler(cfg, logger)
+func NewReadinessHandler(cfg config.Config, logger *slog.Logger, nodeModelCatalogBridgeProber ReadinessProber) *ReadinessHandler {
+	health := NewHealthHandler(cfg, logger, nodeModelCatalogBridgeProber)
 	return &ReadinessHandler{
 		checkDependencies: health.checkDependencies,
 		now:               time.Now,
@@ -94,25 +104,61 @@ func (h *ReadinessHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *ReadinessHandler) current(ctx context.Context) (map[string]CheckResult, string) {
 	now := h.now()
 	h.cacheMu.Lock()
-	defer h.cacheMu.Unlock()
-
 	if !h.cachedUntil.IsZero() && now.Before(h.cachedUntil) {
-		return h.cachedDeps, h.cachedStatus
+		deps, status := h.cachedDeps, h.cachedStatus
+		h.cacheMu.Unlock()
+		return deps, status
 	}
+	done := h.inflight
+	if done == nil {
+		done = make(chan struct{})
+		h.inflight = done
+		go h.runCheck(done)
+	}
+	h.cacheMu.Unlock()
 
-	deps, status := h.checkDependencies(ctx)
-	h.cachedDeps = deps
-	h.cachedStatus = status
-	h.cachedUntil = now.Add(h.cacheTTL)
-	return deps, status
+	select {
+	case <-done:
+		h.cacheMu.Lock()
+		deps, status := h.cachedDeps, h.cachedStatus
+		h.cacheMu.Unlock()
+		return deps, status
+	case <-ctx.Done():
+		return map[string]CheckResult{}, "degraded"
+	}
+}
+
+func (h *ReadinessHandler) runCheck(done chan struct{}) {
+	deps := map[string]CheckResult{}
+	status := "degraded"
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	defer func() {
+		if recover() != nil {
+			deps = map[string]CheckResult{}
+			status = "degraded"
+		}
+
+		completedAt := h.now()
+		h.cacheMu.Lock()
+		h.cachedDeps = deps
+		h.cachedStatus = status
+		h.cachedUntil = completedAt.Add(h.cacheTTL)
+		h.inflight = nil
+		close(done)
+		h.cacheMu.Unlock()
+	}()
+
+	deps, status = h.checkDependencies(ctx)
 }
 
 func (h HealthHandler) checkDependencies(ctx context.Context) (map[string]CheckResult, string) {
 	deps := map[string]CheckResult{
-		"postgres":   mapCheck(postgres.Check(ctx, h.cfg.PostgresURL)),
-		"redisCache": mapCheck(redishealth.Check(ctx, h.cfg.RedisCacheURL)),
-		"redisState": mapCheck(redishealth.Check(ctx, h.cfg.RedisStateURL)),
-		"asynqQueue": mapCheck(queue.Check(ctx, h.cfg.RedisQueueURL)),
+		"postgres":               mapCheck(postgres.Check(ctx, h.cfg.PostgresURL)),
+		"redisCache":             mapCheck(redishealth.Check(ctx, h.cfg.RedisCacheURL)),
+		"redisState":             mapCheck(redishealth.Check(ctx, h.cfg.RedisStateURL)),
+		"asynqQueue":             mapCheck(queue.Check(ctx, h.cfg.RedisQueueURL)),
+		"nodeModelCatalogBridge": h.checkNodeModelCatalogBridge(ctx),
 	}
 
 	status := "ok"
@@ -138,6 +184,19 @@ func (h HealthHandler) checkDependencies(ctx context.Context) (map[string]CheckR
 		}
 	}
 	return deps, status
+}
+
+func (h HealthHandler) checkNodeModelCatalogBridge(ctx context.Context) CheckResult {
+	if !h.cfg.ManagementAPIEnabled {
+		return CheckResult{Configured: false, Status: "skipped"}
+	}
+	if h.nodeModelCatalogBridgeProber == nil {
+		return CheckResult{Configured: false, Status: "error", Error: "dependency check failed"}
+	}
+	if err := h.nodeModelCatalogBridgeProber.Probe(ctx); err != nil {
+		return CheckResult{Configured: true, Status: "error", Error: "dependency check failed"}
+	}
+	return CheckResult{Configured: true, Status: "ok"}
 }
 
 func mapCheck(result postgres.CheckResult) CheckResult {
