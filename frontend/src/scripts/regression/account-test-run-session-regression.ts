@@ -231,4 +231,3 @@ assert.doesNotMatch(
   /persistAccountTestRunSession/,
   '关闭弹窗不得把运行中测试持久化为可恢复后台任务'
 )
-
