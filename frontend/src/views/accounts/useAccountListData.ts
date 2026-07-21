@@ -12,7 +12,7 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountBalanceSnapshot, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
 import { createPageDataActivationController, type PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
@@ -124,7 +124,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       const accountList = await fetchAccountList(systemAccountId, pageState, _loadOptions.forceData === true)
       const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
       return {
-        items: accountList.items.map((account) => ({ ...account, accountRuntimeAvailabilityAvailable: runtimeAvailable })),
+        items: accountList.items.map((account) => accountListViewModel(account, runtimeAvailable)),
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
@@ -343,6 +343,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
             if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
           },
           force,
+          includeDefinitions: true,
           isManagementView: options.isManagementView.value,
           systemAccountId
         }),
@@ -380,15 +381,33 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
   }
 
+  function accountListViewModel(account: AccountListItem, runtimeAvailable: boolean): AccountSummary {
+    return {
+      ...account,
+      currentConcurrencyAvailable: false,
+      accountRuntimeAvailabilityAvailable: runtimeAvailable
+    } as AccountSummary
+  }
+
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
   watch(accountPageCache.data, (accountList) => {
-    applyAccountPageCacheResult(accountList ? cloneAccountListCacheResult(accountList) : {
+    const clonedAccountList = accountList ? cloneAccountListCacheResult(accountList as AccountListResult) : undefined
+    const cachedResult = clonedAccountList
+      ? {
+        ...clonedAccountList,
+        items: clonedAccountList.items.map((account) => accountListViewModel(
+          account as AccountListItem,
+          clonedAccountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
+        ))
+      }
+      : {
       items: [],
       page: accountPagination.current,
       pageSize: accountPagination.pageSize,
       total: 0,
       hasMore: false
-    })
+      }
+    applyAccountPageCacheResult(cachedResult)
   })
   watch(loading, (value) => {
     if (!value) snapshotPolling.refreshNow()

@@ -2,7 +2,6 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { performance } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
@@ -46,9 +45,9 @@ try {
   }, access)
 
   seedAccountUsage(account.id)
-  const baselinePage = repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
+  const baselinePage = repositories.listAccountItemsPageReadOnly(access, { page: 1, pageSize: 20 })
   const baselineAccount = baselinePage.items.find((item) => item.id === account.id)
-  assert.equal(baselineAccount?.usage.requestCount, 7, '统计库未加锁时账户列表应正常展示账号总用量')
+  assert.equal(baselineAccount?.usage.requestCount, 0, '账户基础列表不应同步读取账号累计用量')
 
   const statsDatabase = databaseModule.getStatsDatabase()
   const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
@@ -68,30 +67,17 @@ try {
     return originalPrepare(sql)
   }) as typeof statsDatabase.prepare
 
-  const startedAt = performance.now()
-  let lockedError: unknown
+  let lockedPage: typeof baselinePage | undefined
   try {
-    repositories.listAccountsPage(access, { page: 1, pageSize: 20 })
-  } catch (error) {
-    lockedError = error
+    lockedPage = repositories.listAccountItemsPageReadOnly(access, { page: 1, pageSize: 20 })
   } finally {
     statsDatabase.prepare = originalPrepare
     statsDatabase.exec = originalExec
   }
-  const durationMs = performance.now() - startedAt
+  assert(lockedPage?.items.some((item) => item.id === account.id), '统计库忙锁不应阻塞不读取统计表的账户基础列表')
+  assert.deepEqual(busyTimeouts, [], '账户基础列表不应为了累计用量修改统计库 busy_timeout')
 
-  assert(lockedError instanceof Error, '统计库忙锁时账户列表应明确失败，不能伪造空统计后成功返回')
-  assert.match(lockedError.message, /SQLite 忙锁/, '统计库忙锁错误应说明统计装饰读取失败')
-  assert.match(lockedError.message, /未返回伪造空统计/, '统计库忙锁错误应说明不会返回假空统计')
-  assert.equal((lockedError as Error & { code?: string }).code, 'SQLITE_BUSY', '统计库忙锁错误应保留 SQLITE_BUSY 语义')
-  assert(busyTimeouts.includes(60), '账户列表统计装饰读取应临时使用短 SQLite busy_timeout')
-  assert(busyTimeouts.includes(5000), '账户列表统计装饰读取结束后应恢复默认 SQLite busy_timeout')
-  assert(
-    durationMs < 500,
-    `统计库忙锁时账户列表应在短等待后失败，不能长时间阻塞，实际耗时 ${durationMs.toFixed(1)}ms`
-  )
-
-  console.log('AI 账户列表统计锁回归通过：统计库 busy 时列表短等待后明确失败，不返回伪造空统计')
+  console.log('AI 账户列表统计锁回归通过：基础列表不读取累计统计，统计库 busy 不再阻塞首屏')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

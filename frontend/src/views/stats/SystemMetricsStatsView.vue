@@ -24,7 +24,7 @@
         </div>
         <div class="page-toolbar-actions">
           <a-button :disabled="loading" @click="resetFilters">重置</a-button>
-          <a-button :loading="loading" @click="loadData">
+          <a-button :loading="loading" @click="loadPageData">
             <template #icon>
               <ReloadOutlined />
             </template>
@@ -75,7 +75,7 @@
         <StatsBackgroundJobsCard
           :empty-description="backgroundJobEmptyDescription"
           :has-data="hasBackgroundJobs"
-          :loading="initialLoading"
+          :loading="runtimeInitialLoading"
           :pagination="backgroundJobPagination"
           :rows="backgroundJobRows"
           :runtime-alert-description="systemRuntimeAlertDescription"
@@ -90,7 +90,7 @@
         <StatsBackgroundQueuesCard
           :empty-description="backgroundQueueEmptyDescription"
           :has-data="hasBackgroundQueues"
-          :loading="initialLoading"
+          :loading="runtimeInitialLoading"
           :pagination="backgroundQueuePagination"
           :rows="backgroundQueueRows"
           :runtime-alert-description="systemRuntimeAlertDescription"
@@ -113,7 +113,7 @@ import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
-import type { SystemMetricsOverview } from '@/types/domain'
+import type { SystemMetricsOverview, SystemMetricsRuntimeOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import { buildBackgroundQueueRows } from './statsBackgroundQueues'
 import { buildProcessEventLoopOption, buildProcessMemoryOption, buildSystemMetricsOption } from './statsChartOptions'
@@ -143,10 +143,12 @@ const pageStateCache = usePageStateCache<SystemMetricsPageState>('system-metrics
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
+const runtimeLoading = ref(false)
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const systemMetrics = ref<SystemMetricsOverview>()
+const systemMetricsRuntime = ref<SystemMetricsRuntimeOverview>()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
 const systemMetricsChartRef = ref<HTMLDivElement>()
@@ -160,16 +162,18 @@ const backgroundJobPage = ref(1)
 const backgroundQueuePageSize = 10
 const backgroundQueuePage = ref(1)
 let requestSeq = 0
+let runtimeRequestSeq = 0
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderSystemCharts,
   resizeCharts,
   disposeCharts,
-  onMounted: loadData
+  onMounted: loadPageData
 })
 
 const hasOverview = computed(() => Boolean(systemMetrics.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
+const runtimeInitialLoading = computed(() => runtimeLoading.value && !systemMetricsRuntime.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const quickRangeValue = computed<QuickRange | undefined>(() => {
@@ -191,9 +195,9 @@ const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
 const processEventLoopEmptyDescription = computed(() => '等待进程事件循环采样')
 const processEventLoopTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无事件循环趋势，等待后台窗口缓存刷新`)
 const processMemoryTrendEmptyDescription = computed(() => `${currentWindowLabel.value}暂无进程内存趋势，等待后台窗口缓存刷新`)
-const backgroundJobsAvailable = computed(() => systemMetrics.value?.backgroundJobsAvailable === true)
+const backgroundJobsAvailable = computed(() => systemMetricsRuntime.value?.backgroundJobsAvailable === true)
 const backgroundJobRows = computed(() => {
-  return (systemMetrics.value?.backgroundJobs ?? []).filter(isBackgroundTaskRow).sort((left, right) => {
+  return (systemMetricsRuntime.value?.backgroundJobs ?? []).filter(isBackgroundTaskRow).sort((left, right) => {
     if (left.failureCount !== right.failureCount) return right.failureCount - left.failureCount
     const leftDuration = left.maxDurationMs ?? -1
     const rightDuration = right.maxDurationMs ?? -1
@@ -209,7 +213,7 @@ const backgroundJobPagination = computed(() => ({
 }))
 const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
 const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
-const backgroundQueueRows = computed(() => buildBackgroundQueueRows(systemMetrics.value))
+const backgroundQueueRows = computed(() => buildBackgroundQueueRows(systemMetricsRuntime.value))
 const backgroundQueuePagination = computed(() => ({
   current: backgroundQueuePage.value,
   pageSize: backgroundQueuePageSize,
@@ -218,16 +222,16 @@ const backgroundQueuePagination = computed(() => ({
 }))
 const hasBackgroundQueues = computed(() => backgroundJobsAvailable.value && backgroundQueueRows.value.length > 0)
 const backgroundQueueEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台队列' : '暂时无法获取后台 worker 队列状态')
-const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
-  !systemMetrics.value.runtimeSnapshotAvailable
-  || systemMetrics.value.runtimeSnapshotStale === true
-  || systemMetrics.value.ingestWorkerSnapshotAvailable === false
-  || systemMetrics.value.statsWorkerSnapshotAvailable === false
-  || systemMetrics.value.opsWorkerSnapshotAvailable === false
-  || !systemMetrics.value.backgroundJobsAvailable
+const systemRuntimeAlertVisible = computed(() => Boolean(systemMetricsRuntime.value && (
+  !systemMetricsRuntime.value.runtimeSnapshotAvailable
+  || systemMetricsRuntime.value.runtimeSnapshotStale === true
+  || systemMetricsRuntime.value.ingestWorkerSnapshotAvailable === false
+  || systemMetricsRuntime.value.statsWorkerSnapshotAvailable === false
+  || systemMetricsRuntime.value.opsWorkerSnapshotAvailable === false
+  || !systemMetricsRuntime.value.backgroundJobsAvailable
 )))
 const systemRuntimeAlertDescription = computed(() => {
-  const metrics = systemMetrics.value
+  const metrics = systemMetricsRuntime.value
   if (!metrics) return ''
   const reasons: string[] = []
   if (metrics.runtimeSnapshotStale) reasons.push('运行态快照已过期')
@@ -246,10 +250,13 @@ async function loadData() {
   const currentRequestSeq = ++requestSeq
   loading.value = true
   try {
-    await loadUsageStatsWindow({ force: true })
     const rangeParams = selectedRangeParams()
-    const metrics = await api.stats.systemMetrics(rangeParams)
+    const [metrics] = await Promise.all([
+      api.stats.systemMetrics(rangeParams),
+      loadUsageStatsWindow()
+    ])
     if (currentRequestSeq !== requestSeq) return
+    syncImplicitDateRangeToStatsWindow()
     systemMetrics.value = metrics
   } catch (error) {
     if (currentRequestSeq !== requestSeq) return
@@ -259,6 +266,29 @@ async function loadData() {
     if (currentRequestSeq === requestSeq) {
       loading.value = false
       renderCharts()
+    }
+  }
+}
+
+function loadPageData() {
+  void loadRuntimeData()
+  return loadData()
+}
+
+async function loadRuntimeData() {
+  const currentRequestSeq = ++runtimeRequestSeq
+  runtimeLoading.value = true
+  try {
+    const runtime = await api.stats.systemMetricsRuntime()
+    if (currentRequestSeq !== runtimeRequestSeq) return
+    systemMetricsRuntime.value = runtime
+  } catch (error) {
+    if (currentRequestSeq !== runtimeRequestSeq) return
+    console.error(error)
+    message.error('后台运行状态加载失败')
+  } finally {
+    if (currentRequestSeq === runtimeRequestSeq) {
+      runtimeLoading.value = false
     }
   }
 }
@@ -283,7 +313,7 @@ function handleDateRangeOpenChange(open: boolean) {
 }
 
 async function handleQuickRangeChange(value: string | number) {
-  await loadUsageStatsWindow({ force: true })
+  await loadUsageStatsWindow()
   const range = quickRangeDateRange(value as QuickRange)
   if (!range) return
   dateRange.value = parseDateRange({
@@ -366,18 +396,19 @@ function disposeCharts() {
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
-  if (!dateRangeExplicit.value) {
-    const end = statsWindowEndDate()
-    if (end) {
-      const date = formatDateKey(end)
-      return { startDate: date, endDate: date }
-    }
-  }
+  if (!dateRangeExplicit.value) return {}
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
 }
 
-function isBackgroundTaskRow(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]): boolean {
+function syncImplicitDateRangeToStatsWindow() {
+  if (dateRangeExplicit.value) return
+  const end = statsWindowEndDate()
+  if (!end) return
+  dateRange.value = [end, end]
+}
+
+function isBackgroundTaskRow(row: NonNullable<SystemMetricsRuntimeOverview['backgroundJobs']>[number]): boolean {
   return row.intervalMs > 0 && !row.name.endsWith('-queue')
 }
 

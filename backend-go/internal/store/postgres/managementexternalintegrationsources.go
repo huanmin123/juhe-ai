@@ -23,11 +23,7 @@ type managementExternalIntegrationSourceListQueries interface {
 	ListManagementExternalIntegrationSources(
 		ctx context.Context,
 		arg postgresqueries.ListManagementExternalIntegrationSourcesParams,
-	) ([]postgresqueries.JuheBusinessExternalIntegrationSource, error)
-	ListManagementExternalIntegrationSourceTokenStats(
-		ctx context.Context,
-		sourceIDs []string,
-	) ([]postgresqueries.ListManagementExternalIntegrationSourceTokenStatsRow, error)
+	) ([]postgresqueries.ListManagementExternalIntegrationSourcesRow, error)
 	ListManagementExternalIntegrationSourcePrimaryTokens(
 		ctx context.Context,
 		sourceIDs []string,
@@ -57,13 +53,6 @@ func (s *Store) ListManagementExternalIntegrationSources(
 	input port.ManagementExternalIntegrationSourceListInput,
 ) ([]port.ManagementExternalIntegrationSourceListRow, error) {
 	return listManagementExternalIntegrationSources(ctx, s.queries(), input)
-}
-
-func (s *Store) ListManagementExternalIntegrationSourceTokenStats(
-	ctx context.Context,
-	sourceIDs []string,
-) ([]port.ManagementExternalIntegrationSourceTokenStatsRow, error) {
-	return listManagementExternalIntegrationSourceTokenStats(ctx, s.queries(), sourceIDs)
 }
 
 func (s *Store) ListManagementExternalIntegrationSourcePrimaryTokens(
@@ -148,11 +137,11 @@ func listManagementExternalIntegrationSources(
 
 	items := make([]port.ManagementExternalIntegrationSourceListRow, 0, len(rows))
 	for _, row := range rows {
-		item, err := managementExternalIntegrationSourceRow(row)
-		if err != nil {
-			return nil, err
-		}
-		items = append(items, item)
+		items = append(items, port.ManagementExternalIntegrationSourceListRow{
+			ID: row.ID, Name: row.Name, Status: row.Status, ScopesJSON: row.ScopesJson,
+			RateLimitsJSON: row.RateLimitsJson, ExpiresAt: timestamptzPtr(row.ExpiresAt),
+			Notes: textPtr(row.Notes), LastUsedAt: timestamptzPtr(row.LastUsedAt),
+		})
 	}
 	return items, nil
 }
@@ -246,30 +235,6 @@ func managementExternalIntegrationSourceRow(
 	}, nil
 }
 
-func listManagementExternalIntegrationSourceTokenStats(
-	ctx context.Context,
-	q managementExternalIntegrationSourceListQueries,
-	sourceIDs []string,
-) ([]port.ManagementExternalIntegrationSourceTokenStatsRow, error) {
-	ids := managementExternalIntegrationSourceIDs(sourceIDs)
-	if len(ids) == 0 {
-		return []port.ManagementExternalIntegrationSourceTokenStatsRow{}, nil
-	}
-	rows, err := q.ListManagementExternalIntegrationSourceTokenStats(ctx, ids)
-	if err != nil {
-		return nil, fmt.Errorf("list management external integration source token stats: %w", err)
-	}
-	items := make([]port.ManagementExternalIntegrationSourceTokenStatsRow, 0, len(rows))
-	for _, row := range rows {
-		items = append(items, port.ManagementExternalIntegrationSourceTokenStatsRow{
-			SourceRefID:      row.SourceRefID,
-			TokenCount:       row.TokenCount,
-			ActiveTokenCount: row.ActiveTokenCount,
-		})
-	}
-	return items, nil
-}
-
 func listManagementExternalIntegrationSourcePrimaryTokens(
 	ctx context.Context,
 	q managementExternalIntegrationSourceListQueries,
@@ -285,27 +250,11 @@ func listManagementExternalIntegrationSourcePrimaryTokens(
 	}
 	items := make([]port.ManagementExternalIntegrationSourcePrimaryTokenRow, 0, len(rows))
 	for _, row := range rows {
-		createdAt, err := managementExternalIntegrationSourceRequiredTime(row.CreatedAt, row.ID, "created_at")
-		if err != nil {
-			return nil, err
-		}
-		updatedAt, err := managementExternalIntegrationSourceRequiredTime(row.UpdatedAt, row.ID, "updated_at")
-		if err != nil {
-			return nil, err
-		}
 		items = append(items, port.ManagementExternalIntegrationSourcePrimaryTokenRow{
 			SourceRefID: row.SourceRefID,
 			ID:          row.ID,
-			Name:        row.Name,
 			TokenPrefix: row.TokenPrefix,
 			TokenSuffix: row.TokenSuffix,
-			Status:      row.Status,
-			ScopesJSON:  row.ScopesJson,
-			ExpiresAt:   timestamptzPtr(row.ExpiresAt),
-			LastUsedAt:  timestamptzPtr(row.LastUsedAt),
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
-			RevokedAt:   timestamptzPtr(row.RevokedAt),
 		})
 	}
 	return items, nil

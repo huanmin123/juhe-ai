@@ -18,6 +18,13 @@ const frontendBackgroundJobsSource = readSource('../../../../frontend/src/views/
 const frontendBackgroundQueuesSource = readSource('../../../../frontend/src/views/stats/StatsBackgroundQueuesCard.vue')
 const frontendBackgroundQueuesHelperSource = readSource('../../../../frontend/src/views/stats/statsBackgroundQueues.ts')
 const frontendSystemMetricsSource = readSource('../../../../frontend/src/views/stats/SystemMetricsStatsView.vue')
+const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime',[\s\S]*?\n\}\)\n/)?.[0]
+
+assert(systemMetricsRouteSource, '系统指标趋势路由必须存在')
+assert(systemMetricsRuntimeRouteSource, '系统指标运行态路由必须存在')
+assert.doesNotMatch(systemMetricsRouteSource, /requestServerRuntimeSnapshot|backgroundQueueRuntimeRows/, '趋势路由不得等待 worker / 队列运行态')
+assert.match(systemMetricsRuntimeRouteSource, /requestServerRuntimeSnapshot\(2500\)/, '运行态路由必须独立请求 server snapshot')
 
 const registryByName = new Map<string, typeof backgroundWorkerRegistry[number]>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))
 const expectedSupervisedRoles = ['ingest-worker', 'stats-worker', 'ops-worker'] as const
@@ -40,7 +47,8 @@ assertRoleBlockContainsOnly('ingest-worker', [
   'account-record-cleanup-retry',
   'audit-hot-retention-cleanup',
   'data-retention-cleanup',
-  'runtime-log-index-maintenance'
+  'runtime-log-index-maintenance',
+  'usage-record-first-page-prewarm'
 ])
 assertRoleBlockContainsOnly('stats-worker', [
   'background-task-run-reconcile',
@@ -108,9 +116,10 @@ assert(statsRoutesSource.includes('redisStreamRuntimeQueueRows()') && statsRoute
 assert(statsRoutesSource.includes('dbServiceRuntimeQueueRows(runtime)') && statsRoutesSource.includes('DB service 请求队列') && statsRoutesSource.includes('DB service dataset-writer pending') && statsRoutesSource.includes('DB service Codex 状态写入池'), '系统指标接口必须接入 DB service 请求队列和写入池队列')
 assert(statsRoutesSource.includes('gatewayAccountSideEffectQueueRows(runtime)') && statsRoutesSource.includes('网关账号副作用队列'), '系统指标接口必须接入网关账号副作用队列')
 assert(statsRoutesSource.includes('highConcurrencyRuntimeQueueRows(runtime)') && statsRoutesSource.includes('高并发短队列'), '系统指标接口必须接入高并发短队列')
+assert(frontendSystemMetricsSource.includes('api.stats.systemMetricsRuntime()') && frontendSystemMetricsSource.includes(':loading="runtimeInitialLoading"'), '前端后台任务 / 队列卡片必须独立异步加载运行态')
 assert(frontendSystemMetricsSource.includes('filter(isBackgroundTaskRow)') && frontendSystemMetricsSource.includes("row.intervalMs > 0 && !row.name.endsWith('-queue')"), '前端后台任务表必须过滤队列伪行，只展示真实定时任务')
 assert(!frontendBackgroundJobsSource.includes('队列：') && !frontendBackgroundJobsSource.includes('队列状态') && !frontendBackgroundJobsSource.includes('backgroundJobQueueSummary'), '前端后台任务表不能展示队列摘要，避免把队列误认为任务')
-assert(frontendSystemMetricsSource.includes('<StatsBackgroundQueuesCard') && frontendSystemMetricsSource.includes('buildBackgroundQueueRows(systemMetrics.value)'), '系统指标页必须把后台队列拆到独立列表')
+assert(frontendSystemMetricsSource.includes('<StatsBackgroundQueuesCard') && frontendSystemMetricsSource.includes('buildBackgroundQueueRows(systemMetricsRuntime.value)'), '系统指标页必须把后台队列拆到独立运行态列表')
 assert(frontendBackgroundQueuesHelperSource.includes('.flatMap(backgroundQueueRowsFromRuntimeRow)') && frontendBackgroundQueuesHelperSource.includes('row.retryQueue') && frontendBackgroundQueuesHelperSource.includes('row.localQueue'), '后台队列列表必须从 retryQueue 和 localQueue 独立构建')
 for (const columnTitle of ['积压', '活跃', '容量 / 处理', '异常累计', '最老等待', '调度 / 写入', 'Redis Stream']) {
   assert(frontendBackgroundQueuesSource.includes(columnTitle), `后台队列列表必须包含 ${columnTitle} 列`)

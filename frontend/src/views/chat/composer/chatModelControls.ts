@@ -1,19 +1,19 @@
-import type { ChatModelOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatModelCapabilities, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
 
-export function selectableChatReasoningEfforts(model?: ChatModelOption): ChatReasoningEffort[] {
+export function selectableChatReasoningEfforts(model?: ChatModelCapabilities): ChatReasoningEffort[] {
   return [...(model?.supportedReasoningEfforts ?? [])]
 }
 
-export function defaultChatReasoningEffort(_model?: ChatModelOption): ChatReasoningEffort | '' {
+export function defaultChatReasoningEffort(_model?: ChatModelCapabilities): ChatReasoningEffort | '' {
   return ''
 }
 
-export function defaultChatServiceTier(_model?: ChatModelOption): ChatServiceTier | '' {
+export function defaultChatServiceTier(_model?: ChatModelCapabilities): ChatServiceTier | '' {
   return ''
 }
 
 export function normalizeChatModelControls(input: {
-  model?: ChatModelOption
+  model?: ChatModelCapabilities
   reasoningEffort: ChatReasoningEffort | ''
   serviceTier: ChatServiceTier | ''
 }): { reasoningEffort: ChatReasoningEffort | ''; serviceTier: ChatServiceTier | '' } {

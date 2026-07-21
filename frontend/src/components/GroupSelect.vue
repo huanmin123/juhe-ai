@@ -27,9 +27,9 @@ import {
   rememberGroupLabels,
   rememberGroupSelections,
   type GroupSelection,
+  type GroupLabelSummary,
   type SelectOption
 } from '@/shared/groupLabelCache'
-import type { GroupOptionSummary } from '@/types/domain'
 
 type SelectValue = string | string[] | undefined
 type SelectMode = 'multiple' | 'tags' | 'combobox'
@@ -40,7 +40,7 @@ defineOptions({
 
 const props = withDefaults(defineProps<{
   value?: SelectValue
-  groups?: GroupOptionSummary[]
+  groups?: GroupLabelSummary[]
   options?: SelectOption[]
   selectedGroup?: GroupSelection
   selectedIds?: Array<string | undefined>

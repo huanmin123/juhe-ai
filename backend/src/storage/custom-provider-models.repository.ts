@@ -76,6 +76,133 @@ export interface CustomProviderModelRecord {
   updatedAt: string
 }
 
+export interface CustomProviderModelTestCatalogRecord {
+  id: string
+  providerCode: string
+  model: string
+  scope: CustomProviderModelScope
+  mode?: string
+  releaseDate?: string
+  supportedApiProtocols: CustomProviderModelApiProtocol[]
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
+}
+
+export interface CustomProviderModelOptionRow {
+  id: string
+  providerCode: string
+  model: string
+  scope: CustomProviderModelScope
+}
+
+export async function listCustomProviderModelOptionsAsync(input: {
+  providerCodes: string[]
+  systemAccountId?: string
+  keyword?: string
+  limit: number
+  selectedIds?: string[]
+}): Promise<CustomProviderModelOptionRow[]> {
+  const providerCodes = [...new Set(input.providerCodes.map((code) => code.trim()).filter(Boolean))]
+  if (!providerCodes.length) return []
+  const selectedIds = [...new Set((input.selectedIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 50)
+  const keyword = input.keyword?.trim().toLowerCase()
+  const resultLimit = Math.min(100, Math.max(1, input.limit + selectedIds.length))
+  const { clause, params: scopeParams } = customProviderModelTestCatalogScope(input)
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? await getCustomProviderModelsDatabaseClient()
+    : undefined
+  const table = client ? customProviderModelsTable(client) : 'custom_provider_models'
+  const providerFilter = client
+    ? 'provider_code = ANY(?::text[])'
+    : `provider_code IN (${providerCodes.map(() => '?').join(', ')})`
+  const selectedFilter = selectedIds.length
+    ? client ? 'model = ANY(?::text[])' : `model IN (${selectedIds.map(() => '?').join(', ')})`
+    : ''
+  const keywordFilter = keyword ? 'lower(model) LIKE ?' : ''
+  const whereParts = [
+    providerFilter,
+    "status = 'active'",
+    client ? 'catalog_visible = TRUE' : 'catalog_visible = 1',
+    client
+      ? "(shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)"
+      : "(shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))",
+    clause.replace(/^AND\s+/i, '')
+  ]
+  if (keywordFilter) {
+    whereParts.push(`(${[selectedFilter, keywordFilter].filter(Boolean).join(' OR ')})`)
+  }
+  const order = selectedIds.length
+    ? `CASE WHEN ${client ? 'model = ANY(?::text[])' : `model IN (${selectedIds.map(() => '?').join(', ')})`} THEN 0 ELSE 1 END, `
+    : ''
+  const sql = `
+    WITH ranked_options AS (
+      SELECT id, provider_code, model, scope, mode, supported_api_protocols_json,
+        ROW_NUMBER() OVER (
+          PARTITION BY model
+          ORDER BY CASE scope WHEN 'personal' THEN 0 ELSE 1 END, provider_code ASC, id ASC
+        ) AS option_rank
+      FROM ${table}
+      WHERE ${whereParts.join('\n        AND ')}
+    )
+    SELECT id, provider_code, model, scope, mode, supported_api_protocols_json
+    FROM ranked_options
+    WHERE option_rank = 1
+    ORDER BY ${order} lower(model) ASC, provider_code ASC, scope ASC, id ASC
+    LIMIT ?
+  `
+  const params: unknown[] = client ? [providerCodes] : [...providerCodes]
+  params.push(...scopeParams)
+  if (selectedFilter && keywordFilter) {
+    if (client) params.push(selectedIds)
+    else params.push(...selectedIds)
+  }
+  if (keywordFilter) params.push(`%${keyword}%`)
+  if (selectedIds.length) {
+    if (client) params.push(selectedIds)
+    else params.push(...selectedIds)
+  }
+  params.push(resultLimit)
+  const rows = client
+    ? await client.query<{
+        id: string
+        provider_code: string
+        model: string
+        scope: CustomProviderModelScope
+        mode?: string | null
+        supported_api_protocols_json?: string | null
+      }>(sql, params)
+    : getBusinessDatabase().prepare(sql).all(...params as SQLInputValue[]) as unknown as Array<{
+        id: string
+         provider_code: string
+         model: string
+         scope: CustomProviderModelScope
+         mode?: string | null
+         supported_api_protocols_json?: string | null
+       }>
+  return rows.map((row) => ({
+    id: row.id,
+    providerCode: row.provider_code,
+    model: row.model,
+    scope: row.scope,
+    mode: testCatalogOptionalText(row.mode),
+    supportedApiProtocols: testCatalogStringList(row.supported_api_protocols_json)
+  }))
+}
+
+interface CustomProviderModelTestCatalogRow {
+  id: string
+  provider_code: string
+  model: string
+  scope: CustomProviderModelScope
+  mode?: string | null
+  release_date?: string | null
+  supported_api_protocols_json?: string | null
+  supported_service_tiers_json?: string | null
+  supported_reasoning_efforts_json?: string | null
+  default_reasoning_effort?: string | null
+}
+
 export interface CustomProviderModelAccountBindingSummary {
   supportedModelAccountCount: number
   mappingSourceAccountCount: number
@@ -213,6 +340,79 @@ export async function listCustomProviderModelsForCatalogAsync(input: {
     ORDER BY scope ASC, lower(model) ASC, id ASC
   `, params)
   return rows.map(customProviderModelFromRow)
+}
+
+export async function listCustomProviderModelTestCatalogAsync(input: {
+  providerCodes: string[]
+  systemAccountId?: string
+}): Promise<CustomProviderModelTestCatalogRecord[]> {
+  const providerCodes = [...new Set(input.providerCodes.map((code) => code.trim()).filter(Boolean))]
+  if (!providerCodes.length) return []
+  const { clause, params } = customProviderModelTestCatalogScope(input)
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const placeholders = providerCodes.map(() => '?').join(', ')
+    const rows = getBusinessDatabase().prepare(`
+      SELECT id, provider_code, model, scope, mode, release_date, supported_api_protocols_json,
+        supported_service_tiers_json, supported_reasoning_efforts_json, default_reasoning_effort
+      FROM custom_provider_models
+      WHERE provider_code IN (${placeholders})
+        AND status = 'active'
+        ${clause}
+      ORDER BY provider_code ASC, scope ASC, model COLLATE NOCASE ASC, id ASC
+    `).all(...providerCodes, ...params as SQLInputValue[]) as unknown as CustomProviderModelTestCatalogRow[]
+    return rows.map(customProviderModelTestCatalogRecordFromRow)
+  }
+  const client = await getCustomProviderModelsDatabaseClient()
+  const rows = await client.query<CustomProviderModelTestCatalogRow>(`
+    SELECT id, provider_code, model, scope, mode, release_date, supported_api_protocols_json,
+      supported_service_tiers_json, supported_reasoning_efforts_json, default_reasoning_effort
+    FROM ${customProviderModelsTable(client)}
+    WHERE provider_code = ANY(?::text[])
+      AND status = 'active'
+      ${clause}
+    ORDER BY provider_code ASC, scope ASC, lower(model) ASC, id ASC
+  `, [providerCodes, ...params])
+  return rows.map(customProviderModelTestCatalogRecordFromRow)
+}
+
+export async function findCustomProviderModelTestCatalogAsync(input: {
+  providerCodes: string[]
+  systemAccountId?: string
+  model: string
+  projection?: 'test' | 'protocols'
+}): Promise<CustomProviderModelTestCatalogRecord[]> {
+  const model = input.model.trim()
+  const providerCodes = [...new Set(input.providerCodes.map((code) => code.trim()).filter(Boolean))]
+  if (!model || !providerCodes.length) return []
+  const { clause, params } = customProviderModelTestCatalogScope(input)
+  const selectedColumns = input.projection === 'protocols'
+    ? 'id, provider_code, model, scope, mode, supported_api_protocols_json'
+    : `id, provider_code, model, scope, mode, release_date, supported_api_protocols_json,
+        supported_service_tiers_json, supported_reasoning_efforts_json, default_reasoning_effort`
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    const placeholders = providerCodes.map(() => '?').join(', ')
+    const rows = getBusinessDatabase().prepare(`
+      SELECT ${selectedColumns}
+      FROM custom_provider_models
+      WHERE provider_code IN (${placeholders})
+        AND model = ?
+        AND status = 'active'
+        ${clause}
+      ORDER BY provider_code ASC, scope ASC, id ASC
+    `).all(...providerCodes, model, ...params as SQLInputValue[]) as unknown as CustomProviderModelTestCatalogRow[]
+    return rows.map(customProviderModelTestCatalogRecordFromRow)
+  }
+  const client = await getCustomProviderModelsDatabaseClient()
+  const rows = await client.query<CustomProviderModelTestCatalogRow>(`
+    SELECT ${selectedColumns}
+    FROM ${customProviderModelsTable(client)}
+    WHERE provider_code = ANY(?::text[])
+      AND model = ?
+      AND status = 'active'
+      ${clause}
+    ORDER BY provider_code ASC, scope ASC, id ASC
+  `, [providerCodes, model, ...params])
+  return rows.map(customProviderModelTestCatalogRecordFromRow)
 }
 
 export function findCustomProviderModelById(id: string): CustomProviderModelRecord | undefined {
@@ -708,6 +908,50 @@ function customProviderModelColumns(): string {
     output_usd_per_image, currency, pricing_notes, capability_notes, notes,
     created_by, updated_by, created_at, updated_at
   `
+}
+
+function customProviderModelTestCatalogScope(input: { systemAccountId?: string }): { clause: string; params: string[] } {
+  const systemAccountId = input.systemAccountId?.trim()
+  return systemAccountId
+    ? {
+        clause: "AND ((scope = 'global' AND system_account_id IS NULL) OR (scope = 'personal' AND system_account_id = ?))",
+        params: [systemAccountId]
+      }
+    : {
+        clause: "AND scope = 'global' AND system_account_id IS NULL",
+        params: []
+      }
+}
+
+function customProviderModelTestCatalogRecordFromRow(
+  row: CustomProviderModelTestCatalogRow
+): CustomProviderModelTestCatalogRecord {
+  return {
+    id: row.id,
+    providerCode: row.provider_code,
+    model: row.model,
+    scope: row.scope,
+    mode: testCatalogOptionalText(row.mode),
+    releaseDate: testCatalogOptionalText(row.release_date),
+    supportedApiProtocols: testCatalogStringList(row.supported_api_protocols_json) as CustomProviderModelApiProtocol[],
+    supportedServiceTiers: testCatalogStringList(row.supported_service_tiers_json),
+    supportedReasoningEfforts: testCatalogStringList(row.supported_reasoning_efforts_json),
+    defaultReasoningEffort: testCatalogOptionalText(row.default_reasoning_effort)
+  }
+}
+
+function testCatalogOptionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function testCatalogStringList(value: unknown): string[] {
+  if (typeof value !== 'string') return []
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
 }
 
 async function getCustomProviderModelsDatabaseClient(): Promise<DatabaseClient> {

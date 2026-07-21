@@ -109,13 +109,14 @@
       :loading="detailLoading"
       :payload-loading-id="payloadLoadingId"
       :selected-payload="selectedPayload"
+      @load-next-payload="loadNextPayloadWindow"
       @load-payload="loadPayload"
     />
   </a-card>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
 
@@ -172,6 +173,7 @@ const {
   detail,
   detailLoading,
   detailOpen,
+  loadNextPayloadWindow,
   loadPayload,
   openDetail,
   payloadLoadingId,
@@ -279,9 +281,7 @@ const {
       resetSystemAccountOptionsSearch()
       resetAccountOptionsSearch()
     }
-    const listResult = await fetchRecords(pageState)
-    void refreshAuditRuntimeQuietly()
-    return listResult
+    return await fetchRecords(pageState)
   },
   requestSignature: (_options, pageState) => auditLogRequestParams(pageState),
   onError: (error) => {
@@ -301,8 +301,7 @@ const {
   searchHotAuditLogs
 } = useAuditLogHotSearchState({
   initialKeyword: effectiveInitialPageState.hotSearchKeywordFilter,
-  pageSize: () => pagination.pageSize,
-  onSearchCompleted: refreshAuditRuntimeQuietly
+  pageSize: () => pagination.pageSize
 })
 
 const outcomeOptions = auditOutcomeOptions as Array<{ label: string; value: AuditOutcome | 'all' }>
@@ -491,7 +490,6 @@ const {
   mobileHasMore,
   mobileLoadingMore,
   records,
-  refreshAuditRuntimeQuietly,
   refreshMobileRecords,
   resetFilters,
   resetHotSearch,
@@ -514,22 +512,61 @@ watch(systemAccountSelection, (selection) => rememberPrincipalSelection(selectio
 function loadInitialModeData(): void {
   if (viewMode.value === 'search') {
     void searchHotAuditLogs()
-    void refreshAuditRuntimeQuietly()
     return
   }
   void loadData()
 }
 
-onMounted(loadInitialModeData)
+type AuditRuntimeIdleWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+  cancelIdleCallback?: (handle: number) => void
+}
+
+let auditRuntimeIdleHandle: number | undefined
+let auditRuntimeTimer: ReturnType<typeof setTimeout> | undefined
+
+function scheduleAuditRuntimeRefresh(): void {
+  cancelAuditRuntimeIdleRefresh()
+  if (typeof window === 'undefined') return
+  const idleWindow = window as AuditRuntimeIdleWindow
+  if (idleWindow.requestIdleCallback) {
+    auditRuntimeIdleHandle = idleWindow.requestIdleCallback(() => {
+      auditRuntimeIdleHandle = undefined
+      void refreshAuditRuntimeQuietly()
+    }, { timeout: 1500 })
+    return
+  }
+  auditRuntimeTimer = setTimeout(() => {
+    auditRuntimeTimer = undefined
+    void refreshAuditRuntimeQuietly()
+  }, 250)
+}
+
+function cancelAuditRuntimeIdleRefresh(): void {
+  if (typeof window !== 'undefined' && auditRuntimeIdleHandle !== undefined) {
+    ;(window as AuditRuntimeIdleWindow).cancelIdleCallback?.(auditRuntimeIdleHandle)
+  }
+  auditRuntimeIdleHandle = undefined
+  if (auditRuntimeTimer !== undefined) clearTimeout(auditRuntimeTimer)
+  auditRuntimeTimer = undefined
+}
+
+onMounted(() => {
+  loadInitialModeData()
+  scheduleAuditRuntimeRefresh()
+})
+onActivated(scheduleAuditRuntimeRefresh)
 onBeforeUnmount(() => {
   traceRoute.stop()
   clearAccountOptionsSearchTimer()
   cancelAuditRuntimeRequest()
+  cancelAuditRuntimeIdleRefresh()
   cancelHotSearchRequest()
 })
 onDeactivated(() => {
   clearAccountOptionsSearchTimer()
   cancelAuditRuntimeRequest()
+  cancelAuditRuntimeIdleRefresh()
   cancelHotSearchRequest()
   closeTransientDetails()
 })

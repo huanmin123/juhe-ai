@@ -108,6 +108,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const allProviderModelScopeParams = computed<AccountScopeParams>(() => editingId.value ? editingAccountScopeParams() : createScopeParams.value)
   const {
     loadProviderModelOptions,
+    loadSelectedModelCapabilities,
     providerModelOptions: loadedProviderModelOptions,
     providerModelsLoading,
     resetProviderModelOptions
@@ -334,10 +335,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       useLocalWindow: false
     })
     void loadAccountTagOptions(options.accountScopeParams.value)
-    void loadProviderModelOptions(form.providerCode)
-    void loadAllProviderModelOptions()
-    void loadAnthropicProviderModelOptions()
-    void loadGeminiProviderModelOptions()
     modalOpen.value = true
   }
 
@@ -403,10 +400,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (editingId.value || form.providerCode === providerCode) return
     resetForm(providerCode, '')
     void loadProviderGroupOptions(providerCode)
-    void loadProviderModelOptions(providerCode)
-    void loadAllProviderModelOptions()
-    void loadAnthropicProviderModelOptions()
-    void loadGeminiProviderModelOptions()
   }
 
   function selectAccountType(type: AccountType) {
@@ -443,10 +436,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       availabilitySchedule: form.availabilitySchedule
     })
     void loadProviderGroupOptions(providerCode)
-    void loadProviderModelOptions(providerCode)
-    void loadAllProviderModelOptions()
-    void loadAnthropicProviderModelOptions()
-    void loadGeminiProviderModelOptions()
     ensureDefaultGroupSelected(providerCode)
     authResult.value = undefined
   }
@@ -536,7 +525,12 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   async function loadAdvancedAccountDetail(): Promise<boolean> {
-    if (!editingId.value || editingAuthorizedAccount.value) return accountAdvancedDetailLoaded.value
+    if (!editingId.value) {
+      await loadProviderModelOptions(form.providerCode, { selectedIds: form.supportedModels })
+      await loadSelectedModelCapabilities(form.providerCode, form.supportedModels)
+      return true
+    }
+    if (editingAuthorizedAccount.value) return accountAdvancedDetailLoaded.value
     if (accountAdvancedDetailLoaded.value) return true
     if (accountAdvancedDetailLoading.value) {
       const requestToken = formOpenRequestToken
@@ -555,10 +549,51 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return false
     }
     if (applyLoadedAccountDetailToEditForm(sourceAccount, scopeParams, '账户高级配置结构异常，请清理后再编辑', true)) {
+      await loadProviderModelOptions(form.providerCode)
+      if (!isCurrentFormOpenRequest(requestToken)) return false
+      await loadSelectedModelCapabilities(form.providerCode, form.supportedModels)
+      if (!isCurrentFormOpenRequest(requestToken)) return false
       accountAdvancedDetailLoaded.value = true
     }
     accountAdvancedDetailLoading.value = false
     return accountAdvancedDetailLoaded.value
+  }
+
+  async function loadCurrentProviderModelOptions(keyword = ''): Promise<void> {
+    await loadProviderModelOptions(form.providerCode, {
+      keyword,
+      selectedIds: form.supportedModels
+    })
+  }
+
+  async function loadCurrentProviderModelCapabilities(modelIds: string[]): Promise<void> {
+    await loadSelectedModelCapabilities(form.providerCode, modelIds)
+  }
+
+  async function loadMappingSourceModelOptions(protocol: 'openai' | 'anthropic' | 'gemini', keyword = ''): Promise<void> {
+    const selectedIds = form.modelMappings
+      .filter((mapping) => sourceProtocol(mapping.sourceEndpointFamily) === protocol)
+      .map((mapping) => mapping.sourceModel.trim())
+      .filter(Boolean)
+    const request = {
+      ...(keyword.trim() ? { keyword: keyword.trim() } : {}),
+      selectedIds
+    }
+    if (protocol === 'anthropic') {
+      await loadAnthropicProviderModelOptions(request)
+      return
+    }
+    if (protocol === 'gemini') {
+      await loadGeminiProviderModelOptions(request)
+      return
+    }
+    await loadAllProviderModelOptions(request)
+  }
+
+  function sourceProtocol(endpointFamily: AccountFormModel['modelMappings'][number]['sourceEndpointFamily']): 'openai' | 'anthropic' | 'gemini' {
+    if (endpointFamily === 'messages') return 'anthropic'
+    if (endpointFamily === 'generate_content' || endpointFamily === 'stream_generate_content') return 'gemini'
+    return 'openai'
   }
 
   function applyLoadedAccountDetailToEditForm(
@@ -637,10 +672,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       useLocalWindow: false
     })
     void loadAccountTagOptions(editScopeParams)
-    void loadProviderModelOptions(sourceAccount.providerCode)
-    void loadAllProviderModelOptions()
-    void loadAnthropicProviderModelOptions()
-    void loadGeminiProviderModelOptions()
     return true
   }
 
@@ -693,10 +724,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       useLocalWindow: false
     })
     void loadAccountTagOptions(cloneScopeParams)
-    void loadProviderModelOptions(sourceAccount.providerCode)
-    void loadAllProviderModelOptions()
-    void loadAnthropicProviderModelOptions()
-    void loadGeminiProviderModelOptions()
   }
 
   async function loadProviderGroupOptions(providerCode: string): Promise<void> {
@@ -805,6 +832,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     openEdit,
     ensureAccountEditDetailLoaded,
     loadAdvancedAccountDetail,
+    loadCurrentProviderModelOptions,
+    loadCurrentProviderModelCapabilities,
+    loadMappingSourceModelOptions,
     providerName,
     providerModelOptions,
     providerModelsLoading,

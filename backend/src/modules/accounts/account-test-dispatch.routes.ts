@@ -5,6 +5,10 @@ import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protoco
 import { badRequest, ok } from '../../shared/http.js'
 import { accountTestUnavailableMessage, findAccountForTestAsync } from '../../storage/repositories.js'
 import {
+  findAccountManualTestCapabilitiesContextAsync,
+  findAccountManualTestListContextAsync
+} from '../../storage/account-manual-test-context.repository.js'
+import {
   createAccountTestTaskAsync,
   failAccountTestTaskAsync,
 } from '../../storage/account-test-tasks.repository.js'
@@ -14,7 +18,9 @@ import { accountTestSchema } from './account-request.schemas.js'
 import { savedAccountDraftTestSnapshotAsync } from './account-draft-test.service.js'
 import { dispatchAccountTestTasks } from './account-test-task-queue.service.js'
 import {
+  accountManualTestModelCapabilitiesAsync,
   accountManualTestOptionsAsync,
+  normalizeAccountManualTestOptionsQuery,
   resolveAccountManualTestSelectionAsync
 } from './account-test-options.service.js'
 
@@ -30,15 +36,39 @@ export function registerAccountTestDispatchRoutes(router: Router): void {
       res.status(403).json({ message: '缺少系统账户上下文' })
       return
     }
-    const account = await findAccountForTestAsync(req.params.id, requestAccess)
+    const account = await findAccountManualTestListContextAsync(req.params.id, requestAccess)
     if (!account) {
       res.status(404).json({ message: '账户不存在' })
       return
     }
     try {
-      res.json(ok(await accountManualTestOptionsAsync(account)))
+      const optionQuery = normalizeAccountManualTestOptionsQuery(req.query as Record<string, unknown>)
+      res.json(ok(await accountManualTestOptionsAsync(account, optionQuery)))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '测试模型加载失败'))
+    }
+  })
+
+  router.get('/:id/test-options/models/:modelId', async (req, res) => {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    if (!requestAccess) {
+      res.status(403).json({ message: '缺少系统账户上下文' })
+      return
+    }
+    const account = await findAccountManualTestCapabilitiesContextAsync(req.params.id, requestAccess)
+    if (!account) {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    try {
+      res.json(ok(await accountManualTestModelCapabilitiesAsync(account, req.params.modelId)))
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '测试模型能力加载失败'))
     }
   })
 

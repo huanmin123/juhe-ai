@@ -12,8 +12,8 @@ import {
 import { requestGatewayDbService } from '../gateway/runtime/gateway-db-service-request.js'
 import { buildAnthropicModelsResponse } from '../gateway/protocols/anthropic-v1/route-helpers.js'
 import { buildGeminiModelsResponse } from '../gateway/protocols/gemini-v1beta/route-helpers.js'
-import { buildChatModelOptions, type ChatModelOption } from '../chat/chat-model-options.js'
-import { OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { buildChatModelOptions, chatModelCapabilities, chatModelListOptions, type ChatModelCapabilities, type ChatModelListOption } from '../chat/chat-model-options.js'
+import { normalizeProviderToken, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import {
   buildCodexModelsResponseFromCatalog,
   buildOpenAIModelsResponseFromCatalog,
@@ -98,21 +98,73 @@ async function rebuildPublishedModelCatalogSnapshotsForSystemAccountInternalAsyn
     publishedCatalog('gemini', systemAccountId)
   ])
   const revision = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const chatCatalogsByProvider = new Map<string, ProviderModelCatalogItem[]>()
+  for (const item of openaiCatalog) {
+    const providerCode = normalizeProviderToken(item.providerCode) || item.providerCode
+    const catalog = chatCatalogsByProvider.get(providerCode)
+    if (catalog) catalog.push(item)
+    else chatCatalogsByProvider.set(providerCode, [item])
+  }
+  const chatSnapshots = [...chatCatalogsByProvider.entries()].flatMap(([providerCode, providerCatalog]) => {
+    const models = buildChatModelOptions(providerCatalog.map((item) => item.model), providerCatalog)
+    const list = chatModelListOptions(models)
+    return [
+      snapshotInput('openai', chatModelListSnapshotVariant(providerCode), { defaultModel: list[0], data: list }, list.length, revision),
+      ...models.map((model) => snapshotInput('openai', chatModelSnapshotVariant(providerCode, model.id), { data: chatModelCapabilities(model) }, 1, revision))
+    ]
+  })
   const snapshots = await replaceGatewayModelCatalogSnapshotsAsync(systemAccountId, [
     snapshotInput('openai', 'default', buildOpenAIModelsResponseFromCatalog(openaiCatalog), openaiCatalog.length, revision),
     snapshotInput('openai', 'codex', buildCodexModelsResponseFromCatalog(openaiCatalog), openaiCatalog.length, revision),
     snapshotInput('anthropic', 'default', buildAnthropicModelsResponse(anthropicCatalog), anthropicCatalog.length, revision),
     snapshotInput('gemini', 'default', buildGeminiModelsResponse(geminiCatalog), geminiCatalog.length, revision),
-    snapshotInput('openai', 'chat', { data: buildChatModelOptions(openaiCatalog.map((item) => item.model), openaiCatalog) }, openaiCatalog.length, revision)
+    ...chatSnapshots
   ])
-  await Promise.all(snapshots.map(cachePublishedSnapshot))
+  await publishedModelCatalogCache.clear()
+  await Promise.all(snapshots.filter((snapshot) => !isChatModelSnapshot(snapshot.variant)).map(cachePublishedSnapshot))
   return snapshots
 }
 
-export async function readPublishedChatModelOptionsAsync(systemAccountId: string): Promise<ChatModelOption[]> {
-  const payload = await readPublishedModelCatalogResponseAsync({ systemAccountId, protocol: 'openai', variant: 'chat' })
+export interface PublishedChatModelList {
+  defaultModel?: ChatModelListOption
+  models: ChatModelListOption[]
+}
+
+export async function readPublishedChatModelListAsync(systemAccountId: string, providerCode: string): Promise<PublishedChatModelList> {
+  let payload: object
+  try {
+    payload = await readPublishedModelCatalogResponseAsync({
+      systemAccountId,
+      protocol: 'openai',
+      variant: chatModelListSnapshotVariant(providerCode)
+    })
+  } catch (error) {
+    if (error instanceof Error && error.message === '网关发布模型目录尚未生成') return { models: [] }
+    throw error
+  }
   const data = 'data' in payload ? payload.data : undefined
-  return Array.isArray(data) ? data as ChatModelOption[] : []
+  const models = Array.isArray(data) ? data as ChatModelListOption[] : []
+  const defaultModel = 'defaultModel' in payload && payload.defaultModel && typeof payload.defaultModel === 'object'
+    ? payload.defaultModel as ChatModelListOption
+    : models[0]
+  return { ...(defaultModel ? { defaultModel } : {}), models }
+}
+
+export async function readPublishedChatModelCapabilitiesAsync(systemAccountId: string, providerCode: string, modelId: string): Promise<ChatModelCapabilities | undefined> {
+  try {
+    const payload = await readPublishedModelCatalogResponseAsync({
+      systemAccountId,
+      protocol: 'openai',
+      variant: chatModelSnapshotVariant(providerCode, modelId)
+    })
+    const data = 'data' in payload ? payload.data : undefined
+    return data && typeof data === 'object' && !Array.isArray(data) && 'id' in data && data.id === modelId
+      ? data as ChatModelCapabilities
+      : undefined
+  } catch (error) {
+    if (error instanceof Error && error.message === '网关发布模型目录尚未生成') return undefined
+    throw error
+  }
 }
 
 export function rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync(
@@ -167,7 +219,7 @@ export function prewarmPublishedModelCatalogSnapshotsAsync(): Promise<number> {
     const snapshots = runtimeConfig.processRole === 'server'
       ? await requestGatewayDbService({ type: 'list_gateway_model_catalog_snapshots' })
       : await listGatewayModelCatalogSnapshotsAsync()
-    await Promise.all(snapshots.map(cachePublishedSnapshot))
+    await Promise.all(snapshots.filter((snapshot) => !isChatModelSnapshot(snapshot.variant)).map(cachePublishedSnapshot))
     return snapshots.length
   })
 }
@@ -209,6 +261,18 @@ function snapshotInput(
   revision: string
 ) {
   return { protocol, variant, payload, modelCount, revision }
+}
+
+function chatModelListSnapshotVariant(providerCode: string): GatewayModelCatalogVariant {
+  return `chat_list:${encodeURIComponent(normalizeProviderToken(providerCode) || providerCode)}`
+}
+
+function chatModelSnapshotVariant(providerCode: string, modelId: string): GatewayModelCatalogVariant {
+  return `chat_model:${encodeURIComponent(normalizeProviderToken(providerCode) || providerCode)}:${encodeURIComponent(modelId)}`
+}
+
+function isChatModelSnapshot(variant: GatewayModelCatalogVariant): boolean {
+  return variant.startsWith('chat_model:')
 }
 
 function publishedModelCatalogCacheKey(input: {

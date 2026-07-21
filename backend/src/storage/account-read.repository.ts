@@ -427,7 +427,7 @@ function accountQualityJoinClause(includeQualityInQuery: boolean): string {
         ON quality_scores.account_id = account_rows.id`
 }
 
-function accountRowSelectColumns(includeCredentials: boolean): string {
+export function accountRowSelectColumns(includeCredentials: boolean): string {
   const columns = [
     'accounts.id',
     'accounts.config_revision',
@@ -601,18 +601,27 @@ export function hydrateAccountRowsWithRuntimeState(rows: AccountListRow[], optio
   const supportedModelAccountIds = [...new Set(rowsWithSources.map((row) => supportedModelAccountIdForRow(row)).filter(Boolean))]
   const supportedModelsByAccountId = loadSupportedModelsByAccountIds(supportedModelAccountIds)
   const modelMappingsByAccountId = loadModelMappingsByAccountIds(supportedModelAccountIds)
-  const qualityRows = loadAccountRuntimeQualityRows(ids)
-  const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
-  return rowsWithSources.map((row) => {
-    const quality = qualityByAccount.get(row.id)
+  const rowsWithQuality = hydrateAccountRowsWithQualityState(rowsWithSources)
+  return rowsWithQuality.map((row) => {
     const runtimeAccountId = supportedModelAccountIdForRow(row)
-    const supportedModels = supportedModelsByAccountId.get(runtimeAccountId) ?? []
-    const modelMappings = modelMappingsByAccountId.get(runtimeAccountId) ?? []
-    if (!quality) return { ...row, supported_models: supportedModels, model_mappings: modelMappings }
     return {
       ...row,
-      supported_models: supportedModels,
-      model_mappings: modelMappings,
+      supported_models: supportedModelsByAccountId.get(runtimeAccountId) ?? [],
+      model_mappings: modelMappingsByAccountId.get(runtimeAccountId) ?? []
+    }
+  })
+}
+
+export function hydrateAccountRowsWithQualityState(rows: AccountListRow[]): AccountListRow[] {
+  const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
+  if (!ids.length) return rows
+  const qualityRows = loadAccountRuntimeQualityRows(ids)
+  const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
+  return rows.map((row) => {
+    const quality = qualityByAccount.get(row.id)
+    if (!quality) return row
+    return {
+      ...row,
       quality_score: quality.quality_score,
       quality_state: quality.quality_state,
       quality_ewma_first_token_ms: quality.ewma_first_token_ms,

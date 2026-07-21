@@ -8,6 +8,7 @@ import {
   type AccountListOptions,
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
+import { getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
 import {
   getAiPerformanceOverviewAsync,
   getSystemMetricsOverviewAsync,
@@ -201,6 +202,22 @@ statsRouter.get('/account-usage', async (req, res, next) => {
       query
     }), () => getAccountUsageStatsOverviewPageAsync(access, query))
     res.json(ok(overview))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/account-usage/trend', async (req, res, next) => {
+  try {
+    const timezone = await usageStatsTimezoneAsync()
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const range = normalizeAccountUsageStatsRange({
+      startDate: optionalQueryText(req.query.startDate),
+      endDate: optionalQueryText(req.query.endDate)
+    }, timezone)
+    const accountIds = parseAccountIds(req.query.accountIds).slice(0, 10)
+    const trend = await getAccountUsageStatsTrendAsync(access, range, accountIds)
+    res.json(ok(trend))
   } catch (error) {
     next(error)
   }
@@ -566,7 +583,15 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
     return
   }
   try {
-    const overview = await getSystemMetricsOverviewAsync(await normalizeStatsDateRangeAsync(parsed.data))
+    const overview = await getSystemMetricsOverviewAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))
+    res.json(ok(overview))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/system-metrics/runtime', requireAdmin, async (_req, res, next) => {
+  try {
     const liveRuntime = await requestServerRuntimeSnapshot(2500).catch(() => undefined)
     const runtime = liveRuntime
     const ingestWorkerSnapshot = runtime?.ingestWorker?.snapshot
@@ -612,7 +637,6 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
       ? Math.max(0, Date.now() - Date.parse(runtimeSnapshotObservedAt))
       : undefined
     res.json(ok({
-      ...overview,
       runtimeSnapshotAvailable: Boolean(runtime),
       runtimeSnapshotSource: runtime ? 'live' as const : undefined,
       runtimeSnapshotObservedAt,
@@ -655,6 +679,14 @@ async function normalizeStatsDateRangeAsync(input: { startDate?: string; endDate
   const defaultRange = defaultAccountUsageDateRange(timezone)
   const startDate = input.startDate ?? input.endDate ?? defaultRange.startDate
   const endDate = input.endDate ?? input.startDate ?? defaultRange.endDate
+  return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
+}
+
+async function normalizeSystemMetricsDateRangeAsync(input: { startDate?: string; endDate?: string }) {
+  const timezone = await usageStatsTimezoneAsync()
+  const today = dateKey(new Date(), timezone)
+  const startDate = input.startDate ?? input.endDate ?? today
+  const endDate = input.endDate ?? input.startDate ?? today
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }
 

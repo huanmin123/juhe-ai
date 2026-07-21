@@ -3,8 +3,7 @@ import { Router } from 'express'
 import { ok } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
-import { buildBackgroundQueueHealthSnapshot } from '../background/background-queue-health.service.js'
-import { requestDbService, requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
+import { requestDbService, requestServerRuntimeLogAvailabilitySnapshot } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 
@@ -20,20 +19,11 @@ runtimeLogsRouter.use(requireAdmin)
 
 runtimeLogsRouter.get('/', async (req, res, next) => {
   try {
-    const startedAt = performance.now()
     const result = await requestDbService({
       type: 'list_runtime_logs',
       options: parseRuntimeLogListOptions(req.query)
     })
-    res.json(ok({
-      ...result,
-      elapsedMs: Math.round(performance.now() - startedAt),
-      retentionDays: null,
-      retentionDaysSource: 'unavailable',
-      runtimeAvailable: false,
-      workerSnapshotAvailable: false,
-      runtimeLogIndexQueueAvailable: false
-    }))
+    res.json(ok(result))
   } catch (error) {
     next(error)
   }
@@ -41,84 +31,35 @@ runtimeLogsRouter.get('/', async (req, res, next) => {
 
 runtimeLogsRouter.get('/facets', async (_req, res, next) => {
   try {
-    const [serverRuntime, dbServiceSnapshot, facets, grepRuntime] = await Promise.all([
-      requestServerRuntimeSnapshot(),
-      requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch(() => undefined),
-      requestDbService({ type: 'get_runtime_log_facets' }),
-      getRuntimeLogGrepRuntime()
+    res.json(ok(await requestDbService({ type: 'get_runtime_log_facets' })))
+  } catch (error) {
+    next(error)
+  }
+})
+
+runtimeLogsRouter.get('/grep-options', async (_req, res, next) => {
+  try {
+    res.json(ok(await getRuntimeLogGrepRuntime()))
+  } catch (error) {
+    next(error)
+  }
+})
+
+runtimeLogsRouter.get('/runtime', async (_req, res, next) => {
+  try {
+    const [serverRuntime, dbServiceSnapshot] = await Promise.all([
+      requestServerRuntimeLogAvailabilitySnapshot(),
+      requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch(() => undefined)
     ])
-    const workerSnapshot = serverRuntime?.ingestWorker?.snapshot
-    const workerRuntime = serverRuntime?.ingestWorker
-    const runtimeLogIndexQueue = workerSnapshot?.runtimeLogIndexQueue
-    const dbServiceState = serverRuntime?.dbService
-    const gatewayAccountSideEffects = serverRuntime?.gatewayAccountSideEffects
-    const queueHealth = buildBackgroundQueueHealthSnapshot(serverRuntime)
     res.json(ok({
-      ...facets,
       runtimeAvailable: Boolean(serverRuntime),
-      workerSnapshotAvailable: Boolean(workerSnapshot),
-      runtimeLogIndexQueueAvailable: Boolean(runtimeLogIndexQueue),
-      runtime: runtimeLogIndexQueue ?? null,
-      worker: {
-        available: Boolean(workerSnapshot ?? workerRuntime),
-        snapshotAvailable: Boolean(workerSnapshot),
-        pid: workerSnapshot?.pid ?? workerRuntime?.pid,
-        ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
-        pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
-      },
+      ingestWorkerAvailable: serverRuntime?.ingestWorkerAvailable ?? false,
+      runtimeLogIndexQueueAvailable: serverRuntime?.runtimeLogIndexQueueAvailable ?? false,
       dbService: {
         statusAvailable: Boolean(dbServiceSnapshot),
-        stateAvailable: Boolean(dbServiceState),
-        pid: dbServiceSnapshot?.pid ?? dbServiceState?.pid,
-        ready: dbServiceSnapshot?.ready ?? dbServiceState?.ready ?? null,
-        pendingRequestCount: dbServiceState?.pendingRequestCount ?? dbServiceSnapshot?.pendingRequestCount ?? null,
-        pendingDatasetWriteRequestCount: dbServiceState?.pendingDatasetWriteRequestCount,
-        oldestDatasetWriteRequestMs: dbServiceState?.oldestDatasetWriteRequestMs,
-        timedOutDatasetWriteRequestCount: dbServiceState?.timedOutDatasetWriteRequestCount,
-        rejectedDatasetWriteRequestCount: dbServiceState?.rejectedDatasetWriteRequestCount,
-        timedOutRequestCount: dbServiceState?.timedOutRequestCount ?? null,
-        failedRequestCount: dbServiceState?.failedRequestCount ?? dbServiceSnapshot?.failedRequestCount ?? null,
-        queuedRequestCount: dbServiceSnapshot?.queuedRequestCount ?? dbServiceState?.queuedRequestCount,
-        queuedRequestBytes: dbServiceSnapshot?.queuedRequestBytes ?? dbServiceState?.queuedRequestBytes,
-        queuedHighRequestCount: dbServiceSnapshot?.queuedHighRequestCount ?? dbServiceState?.queuedHighRequestCount,
-        queuedNormalRequestCount: dbServiceSnapshot?.queuedNormalRequestCount ?? dbServiceState?.queuedNormalRequestCount,
-        queuedLowRequestCount: dbServiceSnapshot?.queuedLowRequestCount ?? dbServiceState?.queuedLowRequestCount,
-        oldestQueuedMs: dbServiceSnapshot?.oldestQueuedMs ?? dbServiceState?.oldestQueuedMs,
-        lastQueueWaitMs: dbServiceSnapshot?.lastQueueWaitMs ?? dbServiceState?.lastQueueWaitMs,
-        maxQueueWaitMs: dbServiceSnapshot?.maxQueueWaitMs ?? dbServiceState?.maxQueueWaitMs,
-        queueRejectedCount: dbServiceSnapshot?.queueRejectedCount ?? dbServiceState?.queueRejectedCount,
-        queueExpiredCount: dbServiceSnapshot?.queueExpiredCount ?? dbServiceState?.queueExpiredCount,
-        activeConcurrentRequestCount: dbServiceSnapshot?.activeConcurrentRequestCount ?? dbServiceState?.activeConcurrentRequestCount,
-        maxActiveConcurrentRequestCount: dbServiceSnapshot?.maxActiveConcurrentRequestCount ?? dbServiceState?.maxActiveConcurrentRequestCount,
-        lastExecMs: dbServiceSnapshot?.lastExecMs ?? dbServiceState?.lastExecMs,
-        maxExecMs: dbServiceSnapshot?.maxExecMs ?? dbServiceState?.maxExecMs,
-        slowOpCount: dbServiceSnapshot?.slowOpCount ?? dbServiceState?.slowOpCount,
-        lastSlowOpType: dbServiceSnapshot?.lastSlowOpType ?? dbServiceState?.lastSlowOpType,
-        lastSlowOpMs: dbServiceSnapshot?.lastSlowOpMs ?? dbServiceState?.lastSlowOpMs,
-        lastSlowOpAt: dbServiceSnapshot?.lastSlowOpAt ?? dbServiceState?.lastSlowOpAt,
-        unavailableCircuitOpenUntil: dbServiceState?.unavailableCircuitOpenUntil,
-        httpHost: dbServiceSnapshot?.httpHost ?? dbServiceState?.httpHost,
-        httpPort: dbServiceSnapshot?.httpPort ?? dbServiceState?.httpPort,
-        handledRequestCount: dbServiceSnapshot?.handledRequestCount,
-        lastRequestAt: dbServiceSnapshot?.lastRequestAt,
-        lastError: dbServiceSnapshot?.lastError
+        stateAvailable: serverRuntime?.dbServiceStateAvailable ?? false
       },
-      queueHealth,
-      grep: grepRuntime,
-      gatewayAccountSideEffectsAvailable: Boolean(gatewayAccountSideEffects),
-      gatewayAccountSideEffects: gatewayAccountSideEffects
-        ? {
-            queueLength: numberField(gatewayAccountSideEffects, 'queueLength'),
-            processing: booleanField(gatewayAccountSideEffects, 'processing'),
-            enqueuedCount: numberField(gatewayAccountSideEffects, 'enqueuedCount'),
-            completedCount: numberField(gatewayAccountSideEffects, 'completedCount'),
-            failedAttemptCount: numberField(gatewayAccountSideEffects, 'failedAttemptCount'),
-            droppedCount: numberField(gatewayAccountSideEffects, 'droppedCount'),
-            expiredCount: numberField(gatewayAccountSideEffects, 'expiredCount'),
-            localSuppressedAccountCount: numberField(gatewayAccountSideEffects, 'localSuppressedAccountCount'),
-            nextAttemptAt: stringField(gatewayAccountSideEffects, 'nextAttemptAt')
-          }
-        : null
+      gatewayAccountSideEffectsAvailable: serverRuntime?.gatewayAccountSideEffectsAvailable ?? false
     }))
   } catch (error) {
     next(error)
@@ -209,18 +150,4 @@ function dateTimeQueryValue(value: unknown): string | undefined {
   if (!text) return undefined
   const time = Date.parse(text)
   return Number.isNaN(time) ? undefined : new Date(time).toISOString()
-}
-
-function numberField(record: Record<string, unknown>, key: string): number {
-  const value = record[key]
-  return typeof value === 'number' && Number.isFinite(value) ? value : 0
-}
-
-function booleanField(record: Record<string, unknown>, key: string): boolean {
-  return record[key] === true
-}
-
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key]
-  return typeof value === 'string' ? value : undefined
 }

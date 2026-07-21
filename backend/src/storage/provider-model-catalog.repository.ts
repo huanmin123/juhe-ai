@@ -64,6 +64,112 @@ export interface BuiltInProviderModelRecord extends ProviderModelPricing {
   longContextOutputCostMultiplier?: number
 }
 
+export interface ProviderModelTestCatalogRecord {
+  id: string
+  providerCode: string
+  model: string
+  mode?: string
+  catalogOrder?: number
+  releaseDate?: string
+  supportedApiProtocols: ProviderModelPricing['supportedApiProtocols']
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
+}
+
+export interface ProviderModelOptionRow {
+  id: string
+  providerCode: string
+  model: string
+  scope: 'built_in'
+}
+
+export async function listBuiltInProviderModelOptionsAsync(input: {
+  providerCodes: string[]
+  keyword?: string
+  limit: number
+  selectedIds?: string[]
+}): Promise<ProviderModelOptionRow[]> {
+  const providerCodes = [...new Set(input.providerCodes.map((code) => code.trim()).filter(Boolean))]
+  if (!providerCodes.length) return []
+  const selectedIds = [...new Set((input.selectedIds ?? []).map((id) => id.trim()).filter(Boolean))].slice(0, 50)
+  const keyword = input.keyword?.trim().toLowerCase()
+  const resultLimit = Math.min(100, Math.max(1, input.limit + selectedIds.length))
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? createPostgresDatabaseClient(await getPostgresPool())
+    : undefined
+  const table = client ? 'juhe_business.provider_model_catalog' : 'provider_model_catalog'
+  const providerFilter = client
+    ? 'provider_code = ANY(?::text[])'
+    : `provider_code IN (${providerCodes.map(() => '?').join(', ')})`
+  const selectedFilter = selectedIds.length
+    ? client ? 'model = ANY(?::text[])' : `model IN (${selectedIds.map(() => '?').join(', ')})`
+    : ''
+  const keywordFilter = keyword ? 'lower(model) LIKE ?' : ''
+  const whereParts = [providerFilter, 'status = \'active\'', client ? 'catalog_visible = TRUE' : 'catalog_visible = 1', client
+    ? '(shutdown_date IS NULL OR btrim(shutdown_date) = \'\' OR shutdown_date > CURRENT_DATE::text)'
+    : '(shutdown_date IS NULL OR trim(shutdown_date) = \'\' OR shutdown_date > date(\'now\'))']
+  if (keywordFilter) {
+    whereParts.push(`(${[selectedFilter, keywordFilter].filter(Boolean).join(' OR ')})`)
+  }
+  const order = selectedIds.length
+    ? `CASE WHEN ${client ? 'model = ANY(?::text[])' : `model IN (${selectedIds.map(() => '?').join(', ')})`} THEN 0 ELSE 1 END, `
+    : ''
+  const sql = `
+    WITH ranked_options AS (
+      SELECT provider_code, model, id, mode, supported_api_protocols_json,
+        ROW_NUMBER() OVER (PARTITION BY model ORDER BY provider_code ASC, id ASC) AS option_rank
+      FROM ${table}
+      WHERE ${whereParts.join('\n        AND ')}
+    )
+    SELECT provider_code, model, mode, supported_api_protocols_json
+    FROM ranked_options
+    WHERE option_rank = 1
+    ORDER BY ${order} lower(model) ASC, provider_code ASC, id ASC
+    LIMIT ?
+  `
+  const params: unknown[] = client ? [providerCodes] : [...providerCodes]
+  if (selectedFilter && keywordFilter) {
+    if (client) params.push(selectedIds)
+    else params.push(...selectedIds)
+  }
+  if (keywordFilter) params.push(`%${keyword}%`)
+  if (selectedIds.length) {
+    if (client) params.push(selectedIds)
+    else params.push(...selectedIds)
+  }
+  params.push(resultLimit)
+  const rows = client
+    ? await client.query<{ provider_code: string; model: string; mode?: string | null; supported_api_protocols_json?: string | null }>(sql, params)
+    : getBusinessDatabase().prepare(sql).all(...params as SQLInputValue[]) as unknown as Array<{
+        provider_code: string
+        model: string
+        mode?: string | null
+        supported_api_protocols_json?: string | null
+      }>
+  return rows.map((row) => ({
+    id: row.model,
+    providerCode: row.provider_code,
+    model: row.model,
+    scope: 'built_in' as const,
+    mode: text(row.mode),
+    supportedApiProtocols: parseProviderModelOptionProtocols(row.supported_api_protocols_json)
+  }))
+}
+
+interface ProviderModelTestCatalogRow {
+  id: string
+  provider_code: string
+  model: string
+  mode?: string | null
+  catalog_order?: number | null
+  release_date?: string | null
+  supported_api_protocols_json: string
+  supported_service_tiers_json: string
+  supported_reasoning_efforts_json: string
+  default_reasoning_effort?: string | null
+}
+
 export interface ProviderModelPricePatch {
   inputUsdPer1M?: number | null
   outputUsdPer1M?: number | null
@@ -120,6 +226,82 @@ export async function listBuiltInProviderModelsAsync(providerCodes: string[]): P
     ORDER BY provider_code, catalog_order, model, id
   `, [providerCodes])
   return rows.map(fromRow)
+}
+
+export async function listBuiltInProviderModelTestCatalogAsync(
+  providerCodes: string[]
+): Promise<ProviderModelTestCatalogRecord[]> {
+  if (!providerCodes.length) return []
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? createPostgresDatabaseClient(await getPostgresPool())
+    : undefined
+  const table = client ? 'juhe_business.provider_model_catalog' : 'provider_model_catalog'
+  const providerFilter = client ? 'provider_code = ANY(?::text[])' : `provider_code IN (${providerCodes.map(() => '?').join(', ')})`
+  const rows = client
+    ? await client.query<ProviderModelTestCatalogRow>(`
+        SELECT id, provider_code, model, mode, catalog_order, release_date,
+          supported_api_protocols_json, supported_service_tiers_json,
+          supported_reasoning_efforts_json, default_reasoning_effort
+        FROM ${table}
+        WHERE ${providerFilter}
+          AND status = 'active'
+          AND catalog_visible = TRUE
+          AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
+        ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC
+      `, [providerCodes])
+    : getBusinessDatabase().prepare(`
+        SELECT id, provider_code, model, mode, catalog_order, release_date,
+          supported_api_protocols_json, supported_service_tiers_json,
+          supported_reasoning_efforts_json, default_reasoning_effort
+        FROM ${table}
+        WHERE ${providerFilter}
+          AND status = 'active'
+          AND catalog_visible = 1
+          AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
+        ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC
+      `).all(...providerCodes as SQLInputValue[]) as unknown as ProviderModelTestCatalogRow[]
+  return rows.map(providerModelTestCatalogRecordFromRow)
+}
+
+export async function findBuiltInProviderModelTestCatalogAsync(
+  providerCodes: string[],
+  model: string,
+  projection: 'test' | 'protocols' = 'test'
+): Promise<ProviderModelTestCatalogRecord[]> {
+  if (!providerCodes.length || !model.trim()) return []
+  const client = runtimeConfig.databaseDriver === 'postgres'
+    ? createPostgresDatabaseClient(await getPostgresPool())
+    : undefined
+  const table = client ? 'juhe_business.provider_model_catalog' : 'provider_model_catalog'
+  const providerFilter = client ? 'provider_code = ANY(?::text[])' : `provider_code IN (${providerCodes.map(() => '?').join(', ')})`
+  const params: unknown[] = client ? [providerCodes, model.trim()] : [...providerCodes, model.trim()]
+  const selectedColumns = projection === 'protocols'
+    ? 'id, provider_code, model, mode, supported_api_protocols_json'
+    : `id, provider_code, model, mode, catalog_order, release_date,
+          supported_api_protocols_json, supported_service_tiers_json,
+          supported_reasoning_efforts_json, default_reasoning_effort`
+  const rows = client
+    ? await client.query<ProviderModelTestCatalogRow>(`
+        SELECT ${selectedColumns}
+        FROM ${table}
+        WHERE ${providerFilter}
+          AND model = ?
+          AND status = 'active'
+          AND catalog_visible = TRUE
+          AND (shutdown_date IS NULL OR btrim(shutdown_date) = '' OR shutdown_date > CURRENT_DATE::text)
+        ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC
+      `, params)
+    : getBusinessDatabase().prepare(`
+        SELECT ${selectedColumns}
+        FROM ${table}
+        WHERE ${providerFilter}
+          AND model = ?
+          AND status = 'active'
+          AND catalog_visible = 1
+          AND (shutdown_date IS NULL OR trim(shutdown_date) = '' OR shutdown_date > date('now'))
+        ORDER BY provider_code ASC, catalog_order ASC, model ASC, id ASC
+      `).all(...params as SQLInputValue[]) as unknown as ProviderModelTestCatalogRow[]
+  return rows.map(providerModelTestCatalogRecordFromRow)
 }
 
 export async function findBuiltInProviderModelByIdAsync(id: string): Promise<BuiltInProviderModelRecord | undefined> {
@@ -272,6 +454,27 @@ function fromRow(row: ProviderModelCatalogRow): BuiltInProviderModelRecord {
     supportsPromptCaching: Boolean(row.supports_prompt_caching), supportsServiceTier: serviceTiers.length > 0,
     catalogVisible: Boolean(row.catalog_visible), source: row.source, createdAt: row.created_at, updatedAt: row.updated_at
   }
+}
+
+function providerModelTestCatalogRecordFromRow(row: ProviderModelTestCatalogRow): ProviderModelTestCatalogRecord {
+  return {
+    id: row.id,
+    providerCode: row.provider_code,
+    model: row.model,
+    mode: text(row.mode),
+    catalogOrder: integer(row.catalog_order),
+    releaseDate: text(row.release_date),
+    supportedApiProtocols: stringArray(row.supported_api_protocols_json) as ProviderModelPricing['supportedApiProtocols'],
+    supportedServiceTiers: stringArray(row.supported_service_tiers_json),
+    supportedReasoningEfforts: stringArray(row.supported_reasoning_efforts_json),
+    defaultReasoningEffort: text(row.default_reasoning_effort)
+  }
+}
+
+function parseProviderModelOptionProtocols(value: unknown): string[] {
+  if (typeof value !== 'string') return []
+  const parsed = json(value)
+  return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
 }
 
 function json(raw: string): unknown { try { return JSON.parse(raw) } catch { return undefined } }

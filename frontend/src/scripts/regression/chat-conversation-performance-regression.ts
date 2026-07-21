@@ -1,7 +1,43 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { ChatModelLoadCoordinator, ChatSingleFlightCoordinator, applyDeletedChatConversation } from '../../views/chat/chatConversationPerformance'
+import * as performanceModule from '../../views/chat/chatConversationPerformance'
+
+const { ChatModelLoadCoordinator, ChatSingleFlightCoordinator, applyDeletedChatConversation } = performanceModule
+const ChatModelCapabilitiesLoadCoordinator = (performanceModule as unknown as { ChatModelCapabilitiesLoadCoordinator?: new <T>(input: { load: (request: { conversationId: string; modelId: string }, signal: AbortSignal) => Promise<T> }) => {
+  load: (request: { conversationId: string; modelId: string }) => Promise<T>
+  cancel: () => void
+} }).ChatModelCapabilitiesLoadCoordinator
+assert.equal(typeof ChatModelCapabilitiesLoadCoordinator, 'function', '必须提供可测试的单模型能力缓存与取消协调器')
+if (!ChatModelCapabilitiesLoadCoordinator) throw new Error('ChatModelCapabilitiesLoadCoordinator 未实现')
+
+let capabilityCalls = 0
+let resolveFirstCapability!: (value: string) => void
+let firstCapabilityAborted = false
+const capabilityCoordinator = new ChatModelCapabilitiesLoadCoordinator<string>({
+  load: ({ modelId }, signal) => {
+    capabilityCalls += 1
+    if (modelId === 'model-a') {
+      signal.addEventListener('abort', () => { firstCapabilityAborted = true }, { once: true })
+      return new Promise<string>((resolve) => { resolveFirstCapability = resolve })
+    }
+    if (modelId === 'model-error') return Promise.reject(new Error('capability failed'))
+    return Promise.resolve(`capability:${modelId}`)
+  }
+})
+const firstCapability = capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-a' })
+const duplicateCapability = capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-a' })
+assert.equal(capabilityCalls, 1, '同一会话同一模型并发能力请求必须去重')
+const switchedCapability = capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-b' })
+assert.equal(firstCapabilityAborted, true, '切换模型必须取消旧能力请求')
+assert.equal(await switchedCapability, 'capability:model-b')
+resolveFirstCapability('capability:model-a')
+await Promise.allSettled([firstCapability, duplicateCapability])
+assert.equal(await capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-b' }), 'capability:model-b')
+assert.equal(capabilityCalls, 2, '已完成能力结果必须命中缓存，不重复请求')
+await assert.rejects(() => capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-error' }), /capability failed/)
+await assert.rejects(() => capabilityCoordinator.load({ conversationId: 'conv-1', modelId: 'model-error' }), /capability failed/)
+assert.equal(capabilityCalls, 4, '能力错误不得写入成功缓存，用户重试时必须重新请求')
 
 const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve))
 

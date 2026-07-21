@@ -143,6 +143,12 @@ export interface AccountOptionParams extends ListParams {
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
 }
 
+export interface AccountTestOptionsParams extends ListParams {
+  keyword?: string
+  limit?: number
+  selectedIds?: string[]
+}
+
 export interface AccountTestPayload {
   model?: string
   testEndpointMode?: AccountSupportedEndpointMode
@@ -282,17 +288,7 @@ export interface OperationLogListParams {
   operationScopeSystemAccountId?: string
 }
 
-export interface TableMonitorHistoryParams {
-  databaseRole: MonitoredDatabaseRole
-  tableName: string
-  startAt?: string
-  endAt?: string
-  limit?: number
-}
-
 export interface TableMonitorOverviewParams {
-  startAt?: string
-  endAt?: string
   limit?: number
 }
 

@@ -57,6 +57,9 @@
         placeholder="选择这个账户支持的模型"
         :options="modelOptions"
         show-search
+        @dropdown-visible-change="$emit('model-options-open', $event)"
+        @search="$emit('model-options-search', $event)"
+        @change="$emit('model-capabilities-load', form.supportedModels)"
       />
     </a-form-item>
     <AccountHealthCheckModelField
@@ -89,6 +92,9 @@ defineEmits<{
   (event: 'copy-auth-url', value: string): void
   (event: 'generate-auth-url'): void
   (event: 'open-auth-url'): void
+  (event: 'model-options-open', open: boolean): void
+  (event: 'model-options-search', value: string): void
+  (event: 'model-capabilities-load', modelIds: string[]): void
 }>()
 </script>
 

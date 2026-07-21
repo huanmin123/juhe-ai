@@ -116,6 +116,7 @@ export async function createChatConversation(client: DatabaseClient, input: {
   systemAccountId: string
   apiKeyId: string
   apiKeyNameSnapshot: string
+  defaultModel?: string
   now: string
   maxConversationsPerUser: number
 }): Promise<ChatConversation> {
@@ -127,10 +128,10 @@ export async function createChatConversation(client: DatabaseClient, input: {
     if (Number(count?.total ?? 0) >= input.maxConversationsPerUser) throw new ChatConflictError('chat_conversation_limit_exceeded')
     await tx.execute(`
       INSERT INTO ${table} (
-        id, system_account_id, api_key_id, api_key_name_snapshot, title,
+        id, system_account_id, api_key_id, api_key_name_snapshot, title, last_model,
         next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, '新对话', 1, 0, ?, ?, ?)
-    `, [id, input.systemAccountId, input.apiKeyId, input.apiKeyNameSnapshot, input.now, input.now, input.now])
+      ) VALUES (?, ?, ?, ?, '新对话', ?, 1, 0, ?, ?, ?)
+    `, [id, input.systemAccountId, input.apiKeyId, input.apiKeyNameSnapshot, input.defaultModel ?? null, input.now, input.now, input.now])
     return requireConversation(tx, id, input.systemAccountId)
   }))
 }

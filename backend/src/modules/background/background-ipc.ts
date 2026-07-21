@@ -447,6 +447,16 @@ export async function requestIngestWorkerSnapshot(timeoutMs = 5000): Promise<Bac
   })
 }
 
+export function getIngestWorkerRuntimeLogAvailability(): {
+  ingestWorkerAvailable: boolean
+  runtimeLogIndexQueueAvailable: boolean
+} {
+  return {
+    ingestWorkerAvailable: ingestWorkerReady,
+    runtimeLogIndexQueueAvailable: ingestWorkerReady
+  }
+}
+
 export async function requestStatsWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
   return await requestSnapshotRoleWorkerSnapshot('stats-worker', {
     child: statsWorkerProcess,

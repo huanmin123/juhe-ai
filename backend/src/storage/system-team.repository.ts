@@ -1,4 +1,4 @@
-import type { SystemTeamListResult, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import type { SystemTeamDetail, SystemTeamListItem, SystemTeamListResult, SystemTeamMemberDetail, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
@@ -44,14 +44,24 @@ interface NormalizedSystemTeamListOptions {
 
 interface SystemTeamMemberCounts {
   memberCount: number
-  activeMemberCount: number
+}
+
+type SystemTeamDetailRow = Pick<SystemTeamRow, 'id' | 'name' | 'description' | 'status' | 'created_at'>
+type SystemTeamListRow = SystemTeamDetailRow
+
+interface SystemTeamMemberDetailRow {
+  id: string
+  team_id: string
+  system_account_id: string
+  display_name?: string
+  joined_at: string
 }
 
 const systemTeamInputKeys = new Set(['name', 'description', 'status'])
 const systemTeamMembersInputKeys = new Set(['systemAccountIds'])
 const businessSchemaName = 'juhe_business'
 
-export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
+export function listSystemTeams(access?: AccessScope): SystemTeamListItem[] {
   const rows = querySystemTeamRows(access, undefined, normalizeSystemTeamListOptions()).rows
   const memberCounts = listSystemTeamMemberCountsForTeamIds(rows.map((row) => row.id))
   return rows.map((row) => systemTeamListItemFromRow(row, memberCounts.get(row.id)))
@@ -75,7 +85,7 @@ export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamLis
   }
 }
 
-export async function listSystemTeamsAsync(access?: AccessScope): Promise<SystemTeamSummary[]> {
+export async function listSystemTeamsAsync(access?: AccessScope): Promise<SystemTeamListItem[]> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
       type: 'list_system_teams_read_only',
@@ -156,6 +166,25 @@ export async function findSystemTeamSummaryAsync(id: string, access?: AccessScop
   if (!row) return undefined
   const members = await listSystemTeamMembersForTeamIdsAsync(client, [row.id], true)
   return systemTeamSummaryFromRow(row, members.get(row.id) ?? [])
+}
+
+export function findSystemTeamDetail(id: string, access?: AccessScope): SystemTeamDetail | undefined {
+  const row = findSystemTeamDetailRowForAccess(id, access)
+  if (!row) return undefined
+  const members = listSystemTeamMemberDetailsForTeamIds([row.id], true).get(row.id) ?? []
+  return systemTeamDetailFromRow(row, members)
+}
+
+export async function findSystemTeamDetailAsync(id: string, access?: AccessScope): Promise<SystemTeamDetail | undefined> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'find_system_team_detail_read_only', id, access })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return findSystemTeamDetail(id, access)
+  const client = await getSystemTeamDatabaseClient()
+  const row = await findSystemTeamDetailRowForAccessAsync(client, id, access)
+  if (!row) return undefined
+  const members = await listSystemTeamMemberDetailsForTeamIdsAsync(client, [row.id], true)
+  return systemTeamDetailFromRow(row, members.get(row.id) ?? [])
 }
 
 export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
@@ -553,7 +582,7 @@ function findActiveSystemTeamMemberForAccess(teamId: string, memberId: string, a
   `).get(...params) as unknown as SystemTeamMemberRow | undefined
 }
 
-function querySystemTeamRows(access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, options: Pick<NormalizedSystemTeamListOptions, 'keyword'>): { rows: SystemTeamRow[] } {
+function querySystemTeamRows(access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, options: Pick<NormalizedSystemTeamListOptions, 'keyword'>): { rows: SystemTeamListRow[] } {
   const scopedId = scopedSystemAccountId(access)
   const clauses: string[] = []
   const params: string[] = []
@@ -576,12 +605,12 @@ function querySystemTeamRows(access: AccessScope | undefined, pagination: { limi
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   const rows = getBusinessDatabase()
-    .prepare(`SELECT id, name, description, status, created_by, created_at, updated_at FROM system_teams${whereClause} ORDER BY status ASC, updated_at DESC, name ASC, id ASC${pageClause}`)
-    .all(...params, ...pageParams) as unknown as SystemTeamRow[]
+    .prepare(`SELECT id, name, description, status, created_at FROM system_teams${whereClause} ORDER BY status ASC, updated_at DESC, name ASC, id ASC${pageClause}`)
+    .all(...params, ...pageParams) as unknown as SystemTeamListRow[]
   return { rows }
 }
 
-async function querySystemTeamRowsAsync(client: DatabaseClient, access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, options: Pick<NormalizedSystemTeamListOptions, 'keyword'>): Promise<{ rows: SystemTeamRow[] }> {
+async function querySystemTeamRowsAsync(client: DatabaseClient, access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, options: Pick<NormalizedSystemTeamListOptions, 'keyword'>): Promise<{ rows: SystemTeamListRow[] }> {
   const scopedId = scopedSystemAccountId(access)
   const clauses: string[] = []
   const params: unknown[] = []
@@ -612,8 +641,8 @@ async function querySystemTeamRowsAsync(client: DatabaseClient, access: AccessSc
   const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
-  const rows = await client.query<SystemTeamRow>(`
-    SELECT id, name, description, status, created_by, created_at, updated_at
+  const rows = await client.query<SystemTeamListRow>(`
+    SELECT id, name, description, status, created_at
     FROM ${systemTeamTable(client, 'system_teams')} system_teams
     ${whereClause}
     ORDER BY status ASC, updated_at DESC, name ASC, id ASC
@@ -699,56 +728,50 @@ function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberS
   return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
 }
 
-function systemTeamListItemFromRow(row: SystemTeamRow, counts?: SystemTeamMemberCounts): SystemTeamSummary {
+function systemTeamListItemFromRow(row: SystemTeamListRow, counts?: SystemTeamMemberCounts): SystemTeamListItem {
   return {
     id: row.id,
     name: row.name,
     description: row.description ?? undefined,
     status: row.status,
     memberCount: counts?.memberCount ?? 0,
-    activeMemberCount: counts?.activeMemberCount ?? 0,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
+    createdAt: row.created_at
   }
 }
 
 function listSystemTeamMemberCountsForTeamIds(teamIds: string[]): Map<string, SystemTeamMemberCounts> {
   const ids = [...new Set(teamIds)].filter(Boolean)
   if (!ids.length) return new Map()
-  const rows: Array<{ team_id: string; active_member_count: number }> = []
+  const rows: Array<{ team_id: string; member_count: number }> = []
   const database = getBusinessDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database.prepare(`
       SELECT team_id,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_member_count
+        COUNT(*) AS member_count
       FROM system_team_members
-      WHERE team_id IN (${sqlPlaceholders(chunk.length)})
+      WHERE team_id IN (${sqlPlaceholders(chunk.length)}) AND status = 'active'
       GROUP BY team_id
-    `).all(...chunk) as unknown as Array<{ team_id: string; active_member_count: number }>)
+    `).all(...chunk) as unknown as Array<{ team_id: string; member_count: number }>)
   }
   return new Map(rows.map((row) => {
-    const activeMemberCount = Number(row.active_member_count) || 0
-    return [row.team_id, { memberCount: activeMemberCount, activeMemberCount }]
+    return [row.team_id, { memberCount: Number(row.member_count) || 0 }]
   }))
 }
 
 async function listSystemTeamMemberCountsForTeamIdsAsync(client: DatabaseClient, teamIds: string[]): Promise<Map<string, SystemTeamMemberCounts>> {
   const ids = [...new Set(teamIds)].filter(Boolean)
   if (!ids.length) return new Map()
-  const rows: Array<{ team_id: string; active_member_count: number }> = []
+  const rows: Array<{ team_id: string; member_count: number }> = []
   for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...await client.query<{ team_id: string; active_member_count: number }>(`
-      SELECT team_id,
-        SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active_member_count
+    rows.push(...await client.query<{ team_id: string; member_count: number }>(`
+      SELECT team_id, COUNT(*) AS member_count
       FROM ${systemTeamTable(client, 'system_team_members')}
-      WHERE team_id IN (${sqlPlaceholders(chunk.length)})
+      WHERE team_id IN (${sqlPlaceholders(chunk.length)}) AND status = 'active'
       GROUP BY team_id
     `, chunk))
   }
   return new Map(rows.map((row) => {
-    const activeMemberCount = Number(row.active_member_count) || 0
-    return [row.team_id, { memberCount: activeMemberCount, activeMemberCount }]
+    return [row.team_id, { memberCount: Number(row.member_count) || 0 }]
   }))
 }
 
@@ -804,6 +827,119 @@ async function listSystemTeamMembersForTeamIdsAsync(client: DatabaseClient, team
   for (const row of rows) {
     const member: SystemTeamMemberSummary = { id: row.id, teamId: row.team_id, systemAccountId: row.system_account_id, systemAccountName: row.display_name, username: row.username, memberRole: 'member', status: row.status, joinedAt: row.joined_at, removedAt: row.removed_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at }
     result.set(row.team_id, [...(result.get(row.team_id) ?? []), member])
+  }
+  return result
+}
+
+function findSystemTeamDetailRowForAccess(id: string, access?: AccessScope): SystemTeamDetailRow | undefined {
+  const scopedId = scopedSystemAccountId(access)
+  if (scopedId) {
+    return getBusinessDatabase().prepare(`
+      SELECT system_teams.id, system_teams.name, system_teams.description, system_teams.status, system_teams.created_at
+      FROM system_teams
+      WHERE system_teams.id = ?
+        AND EXISTS (
+          SELECT 1
+          FROM system_team_members
+          WHERE system_team_members.team_id = system_teams.id
+            AND system_team_members.system_account_id = ?
+            AND system_team_members.status = 'active'
+        )
+      LIMIT 1
+    `).get(id, scopedId) as unknown as SystemTeamDetailRow | undefined
+  }
+  return getBusinessDatabase().prepare(`
+    SELECT id, name, description, status, created_at
+    FROM system_teams
+    WHERE id = ?
+    LIMIT 1
+  `).get(id) as unknown as SystemTeamDetailRow | undefined
+}
+
+async function findSystemTeamDetailRowForAccessAsync(client: DatabaseClient, id: string, access?: AccessScope): Promise<SystemTeamDetailRow | undefined> {
+  const scopedId = scopedSystemAccountId(access)
+  const scopeClause = scopedId
+    ? ` AND EXISTS (
+        SELECT 1
+        FROM ${systemTeamTable(client, 'system_team_members')} scoped_members
+        WHERE scoped_members.team_id = system_teams.id
+          AND scoped_members.system_account_id = ?
+          AND scoped_members.status = 'active'
+      )`
+    : ''
+  return client.one<SystemTeamDetailRow>(`
+    SELECT system_teams.id, system_teams.name, system_teams.description, system_teams.status, system_teams.created_at
+    FROM ${systemTeamTable(client, 'system_teams')} system_teams
+    WHERE system_teams.id = ?${scopeClause}
+    LIMIT 1
+  `, scopedId ? [id, scopedId] : [id])
+}
+
+function systemTeamDetailFromRow(row: SystemTeamDetailRow, members: SystemTeamMemberDetail[]): SystemTeamDetail {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    status: row.status,
+    memberCount: members.length,
+    members,
+    createdAt: row.created_at
+  }
+}
+
+function systemTeamMemberDetailFromRow(row: SystemTeamMemberDetailRow): SystemTeamMemberDetail {
+  return {
+    id: row.id,
+    systemAccountId: row.system_account_id,
+    systemAccountName: row.display_name,
+    joinedAt: row.joined_at
+  }
+}
+
+function listSystemTeamMemberDetailsForTeamIds(teamIds: string[], activeOnly = false): Map<string, SystemTeamMemberDetail[]> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const statusClause = activeOnly ? " AND system_team_members.status = 'active'" : ''
+  const database = getBusinessDatabase()
+  const result = new Map<string, SystemTeamMemberDetail[]>()
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = database.prepare(`
+      SELECT system_team_members.id, system_team_members.team_id, system_team_members.system_account_id,
+        system_team_members.joined_at, system_accounts.display_name
+      FROM system_team_members
+      INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id
+      WHERE system_team_members.team_id IN (${sqlPlaceholders(chunk.length)})${statusClause}
+      ORDER BY system_team_members.team_id ASC, system_team_members.joined_at ASC, system_team_members.id ASC
+    `).all(...chunk) as unknown as SystemTeamMemberDetailRow[]
+    for (const row of rows) {
+      const members = result.get(row.team_id) ?? []
+      if (members.length < maxSystemTeamMembersPerTeam) members.push(systemTeamMemberDetailFromRow(row))
+      result.set(row.team_id, members)
+    }
+  }
+  return result
+}
+
+async function listSystemTeamMemberDetailsForTeamIdsAsync(client: DatabaseClient, teamIds: string[], activeOnly = false): Promise<Map<string, SystemTeamMemberDetail[]>> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const statusClause = activeOnly ? " AND system_team_members.status = 'active'" : ''
+  const result = new Map<string, SystemTeamMemberDetail[]>()
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = await client.query<SystemTeamMemberDetailRow>(`
+      SELECT system_team_members.id, system_team_members.team_id, system_team_members.system_account_id,
+        system_team_members.joined_at, system_accounts.display_name
+      FROM ${systemTeamTable(client, 'system_team_members')} system_team_members
+      INNER JOIN ${systemTeamTable(client, 'system_accounts')} system_accounts
+        ON system_accounts.id = system_team_members.system_account_id
+      WHERE system_team_members.team_id IN (${sqlPlaceholders(chunk.length)})${statusClause}
+      ORDER BY system_team_members.team_id ASC, system_team_members.joined_at ASC, system_team_members.id ASC
+    `, chunk)
+    for (const row of rows) {
+      const members = result.get(row.team_id) ?? []
+      if (members.length < maxSystemTeamMembersPerTeam) members.push(systemTeamMemberDetailFromRow(row))
+      result.set(row.team_id, members)
+    }
   }
   return result
 }

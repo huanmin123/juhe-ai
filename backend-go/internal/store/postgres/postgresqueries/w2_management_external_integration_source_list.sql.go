@@ -312,16 +312,8 @@ const listManagementExternalIntegrationSourcePrimaryTokens = `-- name: ListManag
 SELECT DISTINCT ON (tokens.source_ref_id)
   tokens.source_ref_id,
   tokens.id,
-  tokens.name,
   tokens.token_prefix,
-  tokens.token_suffix,
-  tokens.status,
-  tokens.scopes_json,
-  tokens.expires_at,
-  tokens.last_used_at,
-  tokens.created_at,
-  tokens.updated_at,
-  tokens.revoked_at
+  tokens.token_suffix
 FROM juhe_business.external_integration_source_tokens AS tokens
 WHERE tokens.source_ref_id = ANY($1::text[])
 ORDER BY
@@ -334,16 +326,8 @@ ORDER BY
 type ListManagementExternalIntegrationSourcePrimaryTokensRow struct {
 	SourceRefID string
 	ID          string
-	Name        string
 	TokenPrefix string
 	TokenSuffix string
-	Status      string
-	ScopesJson  string
-	ExpiresAt   pgtype.Timestamptz
-	LastUsedAt  pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
-	RevokedAt   pgtype.Timestamptz
 }
 
 func (q *Queries) ListManagementExternalIntegrationSourcePrimaryTokens(ctx context.Context, sourceIds []string) ([]ListManagementExternalIntegrationSourcePrimaryTokensRow, error) {
@@ -358,53 +342,9 @@ func (q *Queries) ListManagementExternalIntegrationSourcePrimaryTokens(ctx conte
 		if err := rows.Scan(
 			&i.SourceRefID,
 			&i.ID,
-			&i.Name,
 			&i.TokenPrefix,
 			&i.TokenSuffix,
-			&i.Status,
-			&i.ScopesJson,
-			&i.ExpiresAt,
-			&i.LastUsedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.RevokedAt,
 		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listManagementExternalIntegrationSourceTokenStats = `-- name: ListManagementExternalIntegrationSourceTokenStats :many
-SELECT
-  tokens.source_ref_id,
-  COUNT(*) AS token_count,
-  COUNT(*) FILTER (WHERE tokens.status = 'active') AS active_token_count
-FROM juhe_business.external_integration_source_tokens AS tokens
-WHERE tokens.source_ref_id = ANY($1::text[])
-GROUP BY tokens.source_ref_id
-`
-
-type ListManagementExternalIntegrationSourceTokenStatsRow struct {
-	SourceRefID      string
-	TokenCount       int64
-	ActiveTokenCount int64
-}
-
-func (q *Queries) ListManagementExternalIntegrationSourceTokenStats(ctx context.Context, sourceIds []string) ([]ListManagementExternalIntegrationSourceTokenStatsRow, error) {
-	rows, err := q.db.Query(ctx, listManagementExternalIntegrationSourceTokenStats, sourceIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListManagementExternalIntegrationSourceTokenStatsRow
-	for rows.Next() {
-		var i ListManagementExternalIntegrationSourceTokenStatsRow
-		if err := rows.Scan(&i.SourceRefID, &i.TokenCount, &i.ActiveTokenCount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -491,9 +431,7 @@ SELECT
   sources.rate_limits_json,
   sources.expires_at,
   sources.notes,
-  sources.last_used_at,
-  sources.created_at,
-  sources.updated_at
+  sources.last_used_at
 FROM juhe_business.external_integration_sources AS sources
 WHERE (
     $1::text = 'all'
@@ -520,7 +458,18 @@ type ListManagementExternalIntegrationSourcesParams struct {
 	RowLimit     int32
 }
 
-func (q *Queries) ListManagementExternalIntegrationSources(ctx context.Context, arg ListManagementExternalIntegrationSourcesParams) ([]JuheBusinessExternalIntegrationSource, error) {
+type ListManagementExternalIntegrationSourcesRow struct {
+	ID             string
+	Name           string
+	Status         string
+	ScopesJson     string
+	RateLimitsJson string
+	ExpiresAt      pgtype.Timestamptz
+	Notes          pgtype.Text
+	LastUsedAt     pgtype.Timestamptz
+}
+
+func (q *Queries) ListManagementExternalIntegrationSources(ctx context.Context, arg ListManagementExternalIntegrationSourcesParams) ([]ListManagementExternalIntegrationSourcesRow, error) {
 	rows, err := q.db.Query(ctx, listManagementExternalIntegrationSources,
 		arg.Status,
 		arg.Keyword,
@@ -532,9 +481,9 @@ func (q *Queries) ListManagementExternalIntegrationSources(ctx context.Context, 
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheBusinessExternalIntegrationSource
+	var items []ListManagementExternalIntegrationSourcesRow
 	for rows.Next() {
-		var i JuheBusinessExternalIntegrationSource
+		var i ListManagementExternalIntegrationSourcesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -544,8 +493,6 @@ func (q *Queries) ListManagementExternalIntegrationSources(ctx context.Context, 
 			&i.ExpiresAt,
 			&i.Notes,
 			&i.LastUsedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

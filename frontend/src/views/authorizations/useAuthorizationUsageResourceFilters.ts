@@ -101,8 +101,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
               return await ensureSelectedAccountOption(nextAccounts, filters.resourceId, ownerSystemAccountId, isManagementView.value)
             }
             let nextGroups = isManagementView.value
-              ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
-              : await api.myGroups.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
+              ? await api.groups.authorizationOptions({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
+              : await api.myGroups.authorizationOptions({ keyword: normalizedKeyword, limit: resourceOptionLimit })
             return await ensureSelectedGroupOption(nextGroups, filters.resourceId, ownerSystemAccountId, isManagementView.value)
           }
         })

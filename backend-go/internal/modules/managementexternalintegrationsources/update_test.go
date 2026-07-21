@@ -60,8 +60,8 @@ func TestUpdateServiceFullNormalizationAndDetailMapping(t *testing.T) {
 	if !result.Committed || result.Before.ID != "source_1" || result.After.Status != publicapi.SourceStatusDisabled {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(result.Before.Tokens) != 1 || len(result.After.Tokens) != 1 ||
-		result.Before.TokenCount != 1 || result.After.ActiveTokenCount != 0 ||
+	if len(result.Before.Tokens) != 0 || len(result.After.Tokens) != 0 ||
+		result.Before.TokenCount != 0 || result.After.ActiveTokenCount != 0 ||
 		result.Before.PrimaryToken != nil || result.After.PrimaryToken != nil {
 		t.Fatalf("detail token mapping = before %#v after %#v", result.Before, result.After)
 	}

@@ -22,7 +22,12 @@ logger.level = 'silent'
 const statsRoutesSource = readFileSync(resolve('src/modules/stats/stats.routes.ts'), 'utf8')
 const dbServiceIpcSource = readFileSync(resolve('src/modules/db-service/db-service-ipc.ts'), 'utf8')
 const workerSchedulerSource = readFileSync(resolve('src/modules/background/worker-scheduler.ts'), 'utf8')
-assert.match(statsRoutesSource, /requestServerRuntimeSnapshot\(2500\)/, '外层运行态快照预算必须大于内部 worker 快照预算')
+const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics',[\s\S]*?\n\}\)\n/)?.[0]
+const systemMetricsRuntimeRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime',[\s\S]*?\n\}\)\n/)?.[0]
+assert(systemMetricsRouteSource, '应定义系统指标首屏路由')
+assert(systemMetricsRuntimeRouteSource, '应定义系统指标运行态独立路由')
+assert.doesNotMatch(systemMetricsRouteSource, /requestServerRuntimeSnapshot|get[A-Za-z]+RedisStreamRuntime|backgroundQueueRuntimeRows/, '首屏趋势路由不得采集 server / Redis 运行态')
+assert.match(systemMetricsRuntimeRouteSource, /requestServerRuntimeSnapshot\(2500\)/, '独立运行态路由快照预算必须大于内部 worker 快照预算')
 assert.match(dbServiceIpcSource, /requestIngestWorkerSnapshot\(1500\)/)
 assert.match(dbServiceIpcSource, /requestStatsWorkerSnapshot\(1500\)/)
 assert.match(dbServiceIpcSource, /requestOpsWorkerSnapshot\(1500\)/)
@@ -65,51 +70,28 @@ interface AuditLogRuntimeResponse {
 }
 
 interface RuntimeLogSearchResponse {
-  runtimeAvailable: boolean
-  workerSnapshotAvailable: boolean
-  runtimeLogIndexQueueAvailable: boolean
-  retentionDays: number | null
-  retentionDaysSource: string
+  items: unknown[]
+  page: number
+  pageSize: number
 }
 
 interface RuntimeLogFacetsResponse {
+  retentionDays: number
+  events: string[]
+}
+
+interface RuntimeLogRuntimeResponse {
   runtimeAvailable: boolean
-  workerSnapshotAvailable: boolean
+  ingestWorkerAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean
-  runtime: unknown
-  queueHealth: {
-    available: boolean
-    workerSnapshotAvailable: boolean
-    serverIpcQueueAvailable: boolean
-    status: string
-    summary: {
-      unavailableCount: number
-      droppedCount: number
-      rejectedCount: number
-    }
-  }
-  worker: {
-    available: boolean
-    ready: boolean | null
-    pendingMessageCount: number | null
-  }
   dbService: {
     statusAvailable: boolean
     stateAvailable: boolean
-    ready: boolean | null
-    pendingRequestCount: number | null
   }
   gatewayAccountSideEffectsAvailable: boolean
-  gatewayAccountSideEffects: unknown
 }
 
 interface SystemMetricsResponse {
-  runtimeSnapshotAvailable: boolean
-  ingestWorkerSnapshotAvailable: boolean
-  statsWorkerSnapshotAvailable: boolean
-  opsWorkerSnapshotAvailable: boolean
-  backgroundJobsAvailable: boolean
-  backgroundJobs: unknown
   processEventLoopLatestStatus: Array<{
     processRole: string
     sampleAvailable: boolean
@@ -124,6 +106,15 @@ interface SystemMetricsResponse {
     sampledAt: string | null
     eventLoopLagMs: number | null
   }>
+}
+
+interface SystemMetricsRuntimeResponse {
+  runtimeSnapshotAvailable: boolean
+  ingestWorkerSnapshotAvailable: boolean
+  statsWorkerSnapshotAvailable: boolean
+  opsWorkerSnapshotAvailable: boolean
+  backgroundJobsAvailable: boolean
+  backgroundJobs: unknown
 }
 
 interface AccountListResponse {
@@ -172,40 +163,52 @@ try {
   assert.equal(auditRuntime.worker.ready, null, 'worker 状态不可用时 ready 不能伪装成 false')
   assert.equal(auditRuntime.worker.pendingMessageCount, null, 'worker 状态不可用时 pendingMessageCount 不能伪装成 0')
 
-  const runtimeLogSearch = await getEnvelope<RuntimeLogSearchResponse>(baseUrl, '/__aisys__/api/runtime-logs?limit=1', seed.adminCookie)
-  assert.equal(runtimeLogSearch.runtimeAvailable, false, '运行日志列表应标记 server runtime 不可用')
-  assert.equal(runtimeLogSearch.workerSnapshotAvailable, false, '运行日志列表应标记 worker snapshot 不可用')
-  assert.equal(runtimeLogSearch.runtimeLogIndexQueueAvailable, false, '运行日志列表应标记索引队列不可用')
-  assert.equal(runtimeLogSearch.retentionDays, null, 'worker snapshot 不可用时列表 retentionDays 不能伪装成默认 3')
-  assert.equal(runtimeLogSearch.retentionDaysSource, 'unavailable', 'worker snapshot 不可用时应标记 retentionDays 来源不可用')
+  const runtimeLogSearch = await getEnvelope<RuntimeLogSearchResponse>(baseUrl, '/__aisys__/api/runtime-logs?page=1&pageSize=1', seed.adminCookie)
+  assert.deepEqual(
+    Object.keys(runtimeLogSearch).sort(),
+    ['hasMore', 'items', 'page', 'pageSize', 'total'].sort(),
+    '运行日志列表只应返回分页数据，不得夹带运行态或保留期'
+  )
 
   const runtimeLogFacets = await getEnvelope<RuntimeLogFacetsResponse>(baseUrl, '/__aisys__/api/runtime-logs/facets', seed.adminCookie)
-  assert.equal(runtimeLogFacets.runtimeAvailable, false, '运行日志 facets 应标记 server runtime 不可用')
-  assert.equal(runtimeLogFacets.workerSnapshotAvailable, false, '运行日志 facets 应标记 worker snapshot 不可用')
-  assert.equal(runtimeLogFacets.runtimeLogIndexQueueAvailable, false, '运行日志 facets 应标记索引队列不可用')
-  assert.equal(runtimeLogFacets.runtime, null, '运行日志 runtime 不可用时不能伪装成空队列')
-  assert.equal(runtimeLogFacets.worker.ready, null, 'worker 状态不可用时 facets ready 不能伪装成 false')
-  assert.equal(runtimeLogFacets.worker.pendingMessageCount, null, 'worker 状态不可用时 facets pendingMessageCount 不能伪装成 0')
-  assert.equal(runtimeLogFacets.queueHealth.available, false, '队列健康快照应标记 server runtime 不可用')
-  assert.equal(runtimeLogFacets.queueHealth.workerSnapshotAvailable, false, '队列健康快照应标记 worker snapshot 不可用')
-  assert.equal(runtimeLogFacets.queueHealth.serverIpcQueueAvailable, false, '队列健康快照应标记 server IPC 队列不可用')
-  assert.equal(runtimeLogFacets.queueHealth.status, 'unavailable', '运行态不可用时队列健康状态不能伪装成 normal')
-  assert(runtimeLogFacets.queueHealth.summary.unavailableCount > 0, '运行态不可用时队列健康应记录不可用队列数量')
-  assert.equal(runtimeLogFacets.queueHealth.summary.droppedCount, 0, '不可用不应伪造 dropped 指标')
-  assert.equal(runtimeLogFacets.queueHealth.summary.rejectedCount, 0, '不可用不应伪造 rejected 指标')
-  assert.equal(runtimeLogFacets.dbService.statusAvailable, true, 'DB service 本地 status 仍应可用')
-  assert.equal(runtimeLogFacets.dbService.stateAvailable, false, 'server runtime 缺失时 DB service 父进程状态应标记不可用')
-  assert.equal(runtimeLogFacets.dbService.ready, true, 'DB service 本地 status 可用时 ready 应来自本地 status')
-  assert.equal(runtimeLogFacets.gatewayAccountSideEffectsAvailable, false, '网关账户副作用运行态应标记不可用')
-  assert.equal(runtimeLogFacets.gatewayAccountSideEffects, null, '网关账户副作用不可用时不能伪装成 0 队列')
+  assert.deepEqual(
+    Object.keys(runtimeLogFacets).sort(),
+    ['earliestIndexedAt', 'events', 'latestIndexedAt', 'levels', 'retentionDays', 'totalIndexed']
+      .filter((key) => runtimeLogFacets[key as keyof RuntimeLogFacetsResponse] !== undefined)
+      .sort(),
+    '运行日志 facets 只应返回筛选与范围信息，不得夹带进程、队列和 DB service 运行态'
+  )
 
+  const runtimeLogGrepOptions = await getEnvelope<Record<string, unknown>>(baseUrl, '/__aisys__/api/runtime-logs/grep-options', seed.adminCookie)
+  assert('defaultRangeDays' in runtimeLogGrepOptions, 'grep 模式应通过独立接口读取文件时间范围')
+
+  const runtimeLogRuntime = await getEnvelope<RuntimeLogRuntimeResponse>(baseUrl, '/__aisys__/api/runtime-logs/runtime', seed.adminCookie)
+  assert.equal(runtimeLogRuntime.runtimeAvailable, false, '运行日志 runtime 应标记 server runtime 不可用')
+  assert.equal(runtimeLogRuntime.ingestWorkerAvailable, false, '运行日志 runtime 应标记 ingest worker 不可用')
+  assert.equal(runtimeLogRuntime.runtimeLogIndexQueueAvailable, false, '运行日志 runtime 应标记索引队列不可用')
+  assert.equal(runtimeLogRuntime.dbService.statusAvailable, true, 'DB service 本地 status 仍应可用')
+  assert.equal(runtimeLogRuntime.dbService.stateAvailable, false, 'server runtime 缺失时 DB service 父进程状态应标记不可用')
+  assert.equal(runtimeLogRuntime.gatewayAccountSideEffectsAvailable, false, '网关账户副作用运行态应标记不可用')
+  assert.deepEqual(
+    Object.keys(runtimeLogRuntime).sort(),
+    [
+      'dbService',
+      'gatewayAccountSideEffectsAvailable',
+      'runtimeAvailable',
+      'runtimeLogIndexQueueAvailable',
+      'ingestWorkerAvailable'
+    ].sort(),
+    '运行日志告警运行态只应返回页面消费的可用性字段'
+  )
+
+  const systemMetricsRuntime = await getEnvelope<SystemMetricsRuntimeResponse>(baseUrl, '/__aisys__/api/stats/system-metrics/runtime', seed.adminCookie)
+  assert.equal(systemMetricsRuntime.runtimeSnapshotAvailable, false, '系统指标应标记 runtime snapshot 不可用')
+  assert.equal(systemMetricsRuntime.ingestWorkerSnapshotAvailable, false, '系统指标应标记 ingest-worker snapshot 不可用')
+  assert.equal(systemMetricsRuntime.statsWorkerSnapshotAvailable, false, '系统指标应标记 stats-worker snapshot 不可用')
+  assert.equal(systemMetricsRuntime.opsWorkerSnapshotAvailable, false, '系统指标应标记 ops-worker snapshot 不可用')
+  assert.equal(systemMetricsRuntime.backgroundJobsAvailable, false, '后台任务不可用时应有显式标记')
+  assert.equal(systemMetricsRuntime.backgroundJobs, null, '后台任务不可用时不能伪装成空数组')
   const systemMetrics = await getEnvelope<SystemMetricsResponse>(baseUrl, '/__aisys__/api/stats/system-metrics', seed.adminCookie)
-  assert.equal(systemMetrics.runtimeSnapshotAvailable, false, '系统指标应标记 runtime snapshot 不可用')
-  assert.equal(systemMetrics.ingestWorkerSnapshotAvailable, false, '系统指标应标记 ingest-worker snapshot 不可用')
-  assert.equal(systemMetrics.statsWorkerSnapshotAvailable, false, '系统指标应标记 stats-worker snapshot 不可用')
-  assert.equal(systemMetrics.opsWorkerSnapshotAvailable, false, '系统指标应标记 ops-worker snapshot 不可用')
-  assert.equal(systemMetrics.backgroundJobsAvailable, false, '后台任务不可用时应有显式标记')
-  assert.equal(systemMetrics.backgroundJobs, null, '后台任务不可用时不能伪装成空数组')
   assert.deepEqual(
     systemMetrics.processEventLoopLatestStatus.map((item) => item.processRole),
     ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'],

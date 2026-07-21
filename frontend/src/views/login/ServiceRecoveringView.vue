@@ -1,7 +1,11 @@
 <template>
   <main class="service-recovering-page">
     <a-card class="service-recovering-card" :bordered="false">
-      <a-result status="warning" title="服务正在恢复" sub-title="发布切换期间连接短暂中断，登录状态仍然保留。请稍后重新连接。">
+      <a-result
+        status="warning"
+        title="服务正在恢复"
+        sub-title="发布切换期间连接短暂中断，登录状态仍然保留。请稍后重新连接。"
+      >
         <template #extra>
           <a-button type="primary" :loading="retrying" @click="retry">重新连接</a-button>
         </template>
@@ -34,6 +38,16 @@ async function retry(): Promise<void> {
 </script>
 
 <style scoped>
-.service-recovering-page { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: #f5f7fa; }
-.service-recovering-card { width: min(520px, 100%); box-shadow: 0 16px 48px rgb(15 23 42 / 8%); }
+.service-recovering-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #f5f7fa;
+}
+
+.service-recovering-card {
+  width: min(520px, 100%);
+  box-shadow: 0 16px 48px rgb(15 23 42 / 8%);
+}
 </style>

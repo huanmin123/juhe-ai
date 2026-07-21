@@ -5,12 +5,15 @@ import {
   deleteCustomProviderModelAsync,
   findCustomProviderModelById,
   findCustomProviderModelByIdAsync,
+  findCustomProviderModelTestCatalogAsync,
   listCustomProviderModelsForCatalog,
   listCustomProviderModelsForCatalogAsync,
+  listCustomProviderModelTestCatalogAsync,
   upsertCustomProviderModel,
   upsertCustomProviderModelAsync,
   type CustomProviderModelAccountBindingSummary,
   type CustomProviderModelRecord,
+  type CustomProviderModelTestCatalogRecord,
   type CustomProviderModelScope,
   type CustomProviderModelStatus,
   type UpsertCustomProviderModelInput
@@ -24,9 +27,12 @@ import {
   type ProviderModelPricing
 } from './model-pricing.service.js'
 import {
+  findBuiltInProviderModelTestCatalogAsync,
   listBuiltInProviderModels,
   listBuiltInProviderModelsAsync,
-  type BuiltInProviderModelRecord
+  listBuiltInProviderModelTestCatalogAsync,
+  type BuiltInProviderModelRecord,
+  type ProviderModelTestCatalogRecord
 } from '../../storage/provider-model-catalog.repository.js'
 import {
   DEEPSEEK_PROVIDER_CODE,
@@ -69,6 +75,20 @@ export interface ProviderModelCatalogItem extends Omit<ProviderModelPricing, 'de
   notes?: string
   createdAt?: string
   updatedAt?: string
+}
+
+export interface ProviderModelTestCatalogItem {
+  id: string
+  providerCode: string
+  model: string
+  scope: ModelCatalogScope
+  mode?: string
+  catalogOrder?: number
+  releaseDate?: string
+  supportedApiProtocols: ProviderModelApiProtocol[]
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
 }
 
 export interface OpenAIModelListItem {
@@ -225,6 +245,76 @@ export async function listProviderModelCatalogAsync(options: ModelCatalogListOpt
     if (pendingProviderModelCatalogLoads.get(cacheKey) === load) {
       pendingProviderModelCatalogLoads.delete(cacheKey)
     }
+  }
+}
+
+export async function listProviderModelTestCatalogAsync(options: {
+  providerCode: string
+  systemAccountId?: string
+}): Promise<ProviderModelTestCatalogItem[]> {
+  const sourceProviderCodes = await modelCatalogSourceProviderCodesAsync(options.providerCode)
+  const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
+  const [builtIn, custom] = await Promise.all([
+    listBuiltInProviderModelTestCatalogAsync(builtInSourceProviderCodes),
+    listCustomProviderModelTestCatalogAsync({
+      providerCodes: sourceProviderCodes,
+      systemAccountId: options.systemAccountId
+    })
+  ])
+  return mergeProviderModelTestCatalogItems([
+    ...builtIn.map(providerModelTestCatalogItemFromBuiltIn),
+    ...custom.map(providerModelTestCatalogItemFromCustom)
+  ], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
+    .sort(compareProviderModelTestCatalogItems)
+}
+
+export async function findProviderModelTestCatalogItemAsync(options: {
+  providerCode: string
+  systemAccountId?: string
+  model: string
+  protocolsOnly?: boolean
+}): Promise<ProviderModelTestCatalogItem | undefined> {
+  const model = options.model.trim()
+  if (!model) return undefined
+  const sourceProviderCodes = await modelCatalogSourceProviderCodesAsync(options.providerCode)
+  const builtInSourceProviderCodes = modelCatalogBuiltInSourceProviderCodes(options.providerCode, sourceProviderCodes)
+  const [builtIn, custom] = await Promise.all([
+    findBuiltInProviderModelTestCatalogAsync(builtInSourceProviderCodes, model, options.protocolsOnly ? 'protocols' : 'test'),
+    findCustomProviderModelTestCatalogAsync({
+      providerCodes: sourceProviderCodes,
+      systemAccountId: options.systemAccountId,
+      model,
+      ...(options.protocolsOnly ? { projection: 'protocols' as const } : {})
+    })
+  ])
+  return mergeProviderModelTestCatalogItems([
+    ...builtIn.map(providerModelTestCatalogItemFromBuiltIn),
+    ...custom.map(providerModelTestCatalogItemFromCustom)
+  ], normalizeProviderToken(options.providerCode) === HYBRID_PROVIDER_CODE)
+    .sort(compareProviderModelTestCatalogItems)[0]
+}
+
+export async function findProviderModelCapabilitiesAsync(options: {
+  providerCode: string
+  systemAccountId?: string
+  model: string
+}): Promise<{
+  id: string
+  name: string
+  supportedApiProtocols: ProviderModelApiProtocol[]
+  supportedServiceTiers: string[]
+  supportedReasoningEfforts: string[]
+  defaultReasoningEffort?: string
+} | undefined> {
+  const item = await findProviderModelTestCatalogItemAsync(options)
+  if (!item) return undefined
+  return {
+    id: item.model,
+    name: item.model,
+    supportedApiProtocols: [...item.supportedApiProtocols],
+    supportedServiceTiers: [...item.supportedServiceTiers],
+    supportedReasoningEfforts: [...item.supportedReasoningEfforts],
+    ...(item.defaultReasoningEffort ? { defaultReasoningEffort: item.defaultReasoningEffort } : {})
   }
 }
 
@@ -557,6 +647,57 @@ function mergeModelCatalogItems(items: ProviderModelCatalogItem[], preserveProvi
   return [...merged.values()]
 }
 
+function mergeProviderModelTestCatalogItems(
+  items: ProviderModelTestCatalogItem[],
+  preserveProviderIdentity: boolean
+): ProviderModelTestCatalogItem[] {
+  const merged = new Map<string, ProviderModelTestCatalogItem>()
+  for (const item of items) {
+    const model = item.model.trim()
+    if (!model) continue
+    const key = preserveProviderIdentity
+      ? `${normalizeProviderToken(item.providerCode) ?? ''}\n${model}`
+      : model
+    const previous = merged.get(key)
+    if (!previous || modelTestCatalogPriority(item) >= modelTestCatalogPriority(previous)) {
+      merged.set(key, item)
+    }
+  }
+  return [...merged.values()]
+}
+
+function providerModelTestCatalogItemFromBuiltIn(item: ProviderModelTestCatalogRecord): ProviderModelTestCatalogItem {
+  return { ...item, scope: 'built_in', supportedApiProtocols: [...item.supportedApiProtocols] }
+}
+
+function providerModelTestCatalogItemFromCustom(item: CustomProviderModelTestCatalogRecord): ProviderModelTestCatalogItem {
+  return { ...item, supportedApiProtocols: [...item.supportedApiProtocols] }
+}
+
+function modelTestCatalogPriority(item: ProviderModelTestCatalogItem): number {
+  if (item.scope === 'personal') return 3
+  if (item.scope === 'global') return 2
+  return 1
+}
+
+function compareProviderModelTestCatalogItems(
+  left: ProviderModelTestCatalogItem,
+  right: ProviderModelTestCatalogItem
+): number {
+  const sameProvider = normalizeProviderToken(left.providerCode) === normalizeProviderToken(right.providerCode)
+  if (sameProvider && left.catalogOrder !== undefined && right.catalogOrder !== undefined && left.catalogOrder !== right.catalogOrder) {
+    return left.catalogOrder - right.catalogOrder
+  }
+  if (left.releaseDate && right.releaseDate && left.releaseDate !== right.releaseDate) {
+    return right.releaseDate.localeCompare(left.releaseDate)
+  }
+  if (left.releaseDate && !right.releaseDate) return -1
+  if (!left.releaseDate && right.releaseDate) return 1
+  const modelOrder = left.model.localeCompare(right.model, 'en')
+  if (modelOrder !== 0) return modelOrder
+  return left.id.localeCompare(right.id, 'en')
+}
+
 function hasResolvablePrice(item: ProviderModelCatalogItem, _allItems: ProviderModelCatalogItem[]): boolean {
   return hasDirectPrice(item)
 }
@@ -791,7 +932,7 @@ function modelCatalogSourceProviderCodes(providerCode: string): string[] {
   return [...new Set([...childCodes, normalizedProviderCode])]
 }
 
-async function modelCatalogSourceProviderCodesAsync(providerCode: string): Promise<string[]> {
+export async function modelCatalogSourceProviderCodesAsync(providerCode: string): Promise<string[]> {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (!normalizedProviderCode) return []
   if (normalizedProviderCode === HYBRID_PROVIDER_CODE) {
@@ -811,7 +952,7 @@ async function modelCatalogSourceProviderCodesAsync(providerCode: string): Promi
   return [...new Set([...childCodes, normalizedProviderCode])]
 }
 
-function modelCatalogBuiltInSourceProviderCodes(providerCode: string, sourceProviderCodes: string[]): string[] {
+export function modelCatalogBuiltInSourceProviderCodes(providerCode: string, sourceProviderCodes: string[]): string[] {
   const normalizedProviderCode = normalizeProviderToken(providerCode)
   if (normalizedProviderCode !== OPENAI_COMPATIBLE_PROVIDER_CODE) return sourceProviderCodes
   return sourceProviderCodes.filter((code) => code !== normalizedProviderCode)

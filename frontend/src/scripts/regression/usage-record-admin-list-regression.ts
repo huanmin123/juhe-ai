@@ -28,6 +28,7 @@ assert.equal(allUsersParams.result, undefined, '全用户默认列表不应把�
 
 const viewSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordsView.vue'), 'utf8')
 const toolbarSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordsFilterToolbar.vue'), 'utf8')
+const modelOptionsSource = readFileSync(resolve('../frontend/src/views/usage-records/useUsageRecordModelOptions.ts'), 'utf8')
 assert.doesNotMatch(viewSource, /return emptyUsageRecordListResult\(pageState, true\)/, '管理端全用户列表不应在前端空列表短路')
 assert.match(viewSource, /visibilitychange/, 'auto 日期模式应在页面重新可见时检查跨日')
 assert.match(viewSource, /addEventListener\('focus'/, 'auto 日期模式应在窗口聚焦时检查跨日')
@@ -41,9 +42,25 @@ const fetchPageEnd = viewSource.indexOf('requestSignature:', fetchPageStart)
 const fetchPageSource = fetchPageStart >= 0 && fetchPageEnd > fetchPageStart
   ? viewSource.slice(fetchPageStart, fetchPageEnd)
   : ''
-assert.match(fetchPageSource, /void loadModelOptions\(/, '模型筛选项必须独立后台加载')
+assert.doesNotMatch(fetchPageSource, /loadModelOptions\(/, '列表请求不得自动加载模型筛选项')
+assert.match(fetchPageSource, /resetModelOptions\(\)/, '刷新或强制刷新列表时必须清除模型候选本地缓存')
 assert.match(fetchPageSource, /return await fetchRecords\(pageState\)/, '使用记录列表必须直接等待 scoped 列表请求')
 assert.doesNotMatch(fetchPageSource, /Promise\.all/, '使用记录首屏不得等待模型筛选项加载')
+assert.match(toolbarSource, /dropdown-visible-change/, '模型筛选下拉打开时应触发按需加载')
+assert.match(toolbarSource, /@search="emit\('model-options-search', \$event\)"/, '模型筛选搜索时应触发按需加载')
+assert.match(viewSource, /handleDropdown: handleModelOptionsDropdown/, '页面应接入模型筛选下拉按需加载处理器')
+assert.match(viewSource, /handleSearch: handleModelOptionsSearch/, '页面应接入模型筛选搜索按需加载处理器')
+assert.match(viewSource, /useUsageRecordModelOptions\(\{[\s\S]*scopeParams: modelOptionsScopeParams,[\s\S]*selectedModel:/, '模型候选必须使用当前系统账户作用域并保留已选模型')
+assert.match(modelOptionsSource, /loadingQueryKey === queryKey/, '相同关键词的并发搜索必须复用进行中的请求')
+assert.match(
+  viewSource,
+  /async function refreshMobileRecords\(\): Promise<void>\s*\{\s*await refreshMobileRecordsList\(\{ forceOptions: true \}\)/,
+  '移动端手动刷新必须同步清理模型候选缓存'
+)
+assert.match(modelOptionsSource, /setTimeout\([\s\S]*searchDebounceMs/, '模型搜索必须防抖，避免每次按键确认缓存')
+assert.match(modelOptionsSource, /watch\(currentScopeKey, resetModelOptions/, '切换系统账户作用域必须清除旧候选')
+assert.match(viewSource, /loadUsageStatsWindow\(\{ viewScope: 'admin' \}\)/, '管理端日期时区应复用带缓存的轻量 usage-window 接口')
+assert.doesNotMatch(viewSource, /api\.settings\.get\(\)/, '使用记录首屏不得读取完整系统设置')
 const tableChangeSource = viewSource.match(/async function handleTableChange[\s\S]*?\n}/)?.[0] ?? ''
 assert.match(tableChangeSource, /businessFiltersDisabled\.value[\s\S]*field: 'createdAt'[\s\S]*order: 'descend'/, '全用户列表处理表格排序时必须强制 createdAt 降序')
 assert.match(toolbarSource, /businessFiltersDisabled/, '全用户模式应统一禁用业务筛选')

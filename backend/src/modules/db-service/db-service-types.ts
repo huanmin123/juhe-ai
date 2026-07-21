@@ -143,6 +143,12 @@ export interface DbServiceRuntimeSnapshot {
 
 export interface DbServiceServerRuntimeSnapshot {
   observedAt?: string
+  runtimeLogAvailability?: {
+    ingestWorkerAvailable: boolean
+    runtimeLogIndexQueueAvailable: boolean
+    dbServiceStateAvailable: boolean
+    gatewayAccountSideEffectsAvailable: boolean
+  }
   accountConcurrency?: Record<string, number>
   accountRuntimeAvailability?: Record<string, AccountRuntimeAvailability>
   accountBalanceSnapshotCleanup?: {
@@ -374,7 +380,7 @@ export interface DbServiceServerRuntimeSnapshot {
   }
 }
 
-export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime'
+export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency' | 'account_runtime' | 'runtime_logs'
 
 export interface DbServiceRuntimeQueueSnapshot {
   queueLength?: number

@@ -6,62 +6,76 @@ import {
 } from '../../domain/provider-protocol.js'
 import type { AccountModelMappingSourceEndpointFamily, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
-  listProviderModelCatalogAsync,
+  findProviderModelTestCatalogItemAsync,
+  type ProviderModelTestCatalogItem,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
+import {
+  listProviderModelOptionRowsAsync,
+  mergeProviderModelOptionRows,
+  normalizeProviderModelOptionQuery,
+  type ProviderModelOptionQuery,
+  type ProviderModelOptionRow
+} from '../providers/provider-model-options.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
+import type {
+  AccountManualTestCapabilitiesContext
+} from '../../storage/account-manual-test-context.repository.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1/model-mapping.js'
 
 export interface AccountManualTestOption {
-  model: string
-  supportedApiProtocols: ProviderModelApiProtocol[]
+  id: string
+  name: string
+}
+
+export interface AccountManualTestModelCapabilities extends AccountManualTestOption {
   testEndpointModes: AccountSupportedEndpointMode[]
 }
 
-export interface AccountManualTestOptions {
-  accountId: string
-  defaultModel: string
-  models: AccountManualTestOption[]
-  testEndpointModes: AccountSupportedEndpointMode[]
-  defaultTestEndpointMode: AccountSupportedEndpointMode
-}
+export type AccountManualTestOptionsQuery = Pick<ProviderModelOptionQuery, 'keyword' | 'limit' | 'selectedIds'>
 
-export async function accountManualTestOptionsAsync(account: AccountSummary): Promise<AccountManualTestOptions> {
-  const systemAccountId = account.ownerSystemAccountId ?? account.systemAccountId
-  if (!systemAccountId) {
-    throw new Error('账户归属数据异常，无法读取测试模型')
+export function normalizeAccountManualTestOptionsQuery(query: Record<string, unknown>): AccountManualTestOptionsQuery {
+  const normalized = normalizeProviderModelOptionQuery(query)
+  return {
+    ...(normalized.keyword ? { keyword: normalized.keyword } : {}),
+    limit: normalized.limit,
+    selectedIds: normalized.selectedIds
   }
-  const catalog = await listProviderModelCatalogAsync({
+}
+
+type AccountManualTestCatalogContext = Pick<
+  AccountSummary,
+  'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'
+> & {
+  ownerSystemAccountId?: string
+  systemAccountId?: string
+  healthCheckModel?: string
+}
+
+export async function accountManualTestOptionsAsync(
+  account: AccountManualTestCatalogContext,
+  query: AccountManualTestOptionsQuery = { limit: 50, selectedIds: [] }
+): Promise<AccountManualTestOption[]> {
+  const systemAccountId = account.ownerSystemAccountId ?? account.systemAccountId
+  if (!systemAccountId) throw new Error('账户归属数据异常，无法读取测试模型')
+  const selectedIds = [...new Set([
+    ...query.selectedIds,
+    typeof account.healthCheckModel === 'string' ? account.healthCheckModel.trim() : ''
+  ].filter(Boolean))]
+  const catalog = await listProviderModelOptionRowsAsync({
     providerCode: account.providerCode,
     systemAccountId,
-    includeUnpriced: true
+    ...query,
+    selectedIds
   })
-  const accountEndpointModes = accountManualTestEndpointModes(account)
-  const eligibleModels = catalog
-    .filter((item) => item.status === 'active' && isAccountManualTestModel(item, account))
-    .map((item) => ({
-      model: item.model,
-      supportedApiProtocols: [...(item.supportedApiProtocols ?? [])],
-      testEndpointModes: accountManualTestEndpointModesForModel(account, item, catalog, accountEndpointModes)
-    }))
-  const defaultModel = eligibleModels.find((item) => item.model === account.healthCheckModel)
-  if (!defaultModel) {
-    throw new Error(`账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：${account.healthCheckModel}`)
-  }
-  const testEndpointModes = defaultModel.testEndpointModes
-  const defaultTestEndpointMode = testEndpointModes[0]
-  if (!defaultTestEndpointMode) {
-    throw new Error('账户上游接口能力中没有可用于连接测试的请求形态')
-  }
-  const models = eligibleModels.filter((item) => item.testEndpointModes.length > 0)
-  return {
-    accountId: account.id,
-    defaultModel: account.healthCheckModel,
-    models,
-    testEndpointModes,
-    defaultTestEndpointMode
-  }
+  const eligible = catalog.filter((item) => isAccountManualTestModel(item, account))
+  return mergeProviderModelOptionRows(eligible, {
+    providerCode: account.providerCode,
+    ...(query.keyword ? { keyword: query.keyword } : {}),
+    limit: query.limit,
+    selectedIds
+  })
 }
 
 export async function resolveAccountManualTestSelectionAsync(
@@ -73,16 +87,90 @@ export async function resolveAccountManualTestSelectionAsync(
   if (!model) {
     throw new Error('请选择测试模型')
   }
-  const options = await accountManualTestOptionsAsync(account)
-  const option = options.models.find((item) => item.model === model)
-  if (!option) {
-    throw new Error(`模型不在当前账户供应商可用目录中：${model}`)
-  }
+  const option = await accountManualTestModelCapabilitiesAsync(account, model)
   const resolvedTestEndpointMode = testEndpointMode ?? option.testEndpointModes[0]
   if (!resolvedTestEndpointMode || !option.testEndpointModes.includes(resolvedTestEndpointMode)) {
     throw new Error(`模型 ${model} 不支持本次检查协议：${testEndpointMode ?? '未选择'}`)
   }
   return { model, testEndpointMode: resolvedTestEndpointMode }
+}
+
+export async function accountManualTestModelCapabilitiesAsync(
+  account: AccountSummary | AccountManualTestCapabilitiesContext,
+  modelInput: string
+): Promise<AccountManualTestModelCapabilities> {
+  const model = modelInput.trim()
+  if (!model) throw new Error('请选择测试模型')
+  const systemAccountId = account.ownerSystemAccountId ?? ('systemAccountId' in account ? account.systemAccountId : undefined)
+  if (!systemAccountId) {
+    throw new Error('账户归属数据异常，无法读取测试模型')
+  }
+  const item = await findProviderModelTestCatalogItemAsync({
+    providerCode: account.providerCode,
+    systemAccountId,
+    model,
+    protocolsOnly: true
+  })
+  if (!item || !isAccountManualTestModel(item, account)) {
+    throw new Error(`模型不在当前账户供应商可用目录中：${model}`)
+  }
+  const testEndpointModes = await accountManualTestEndpointModesForTargetModelAsync(account, item, systemAccountId)
+  if (!testEndpointModes.length) {
+    throw new Error('账户上游接口能力中没有可用于连接测试的请求形态')
+  }
+  return { id: item.model, name: item.model, testEndpointModes }
+}
+
+async function accountManualTestEndpointModesForTargetModelAsync(
+  account: AccountSummary | AccountManualTestCapabilitiesContext,
+  model: ProviderModelTestCatalogItem,
+  systemAccountId: string
+): Promise<AccountSupportedEndpointMode[]> {
+  const accountEndpointModes = accountManualTestEndpointModes({
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    type: account.type,
+    clientCompatibility: account.clientCompatibility,
+    healthCheckEndpointMode: account.healthCheckEndpointMode,
+    credentials: {
+      supported_endpoint_modes: 'supportedEndpointModes' in account
+        ? account.supportedEndpointModes
+        : account.credentials.supported_endpoint_modes
+    }
+  })
+  const upstreamModels = new Map<string, ProviderModelTestCatalogItem | undefined>()
+  const output: AccountSupportedEndpointMode[] = []
+  for (const mode of accountEndpointModes) {
+    if (mode === 'interactions_json' || mode === 'interactions_sse') {
+      if (modelSupportsProtocol(model, 'interactions')) output.push(mode)
+      continue
+    }
+    const sourceFamily = endpointModeProtocol(mode)
+    const mapping = resolveOpenAIAccountModelMapping(account, model.model, sourceFamily)
+    if (!mapping) {
+      if (modelSupportsProtocol(model, sourceFamily)) output.push(mode)
+      continue
+    }
+    let upstreamModel = upstreamModels.get(mapping.upstreamModel)
+    if (!upstreamModels.has(mapping.upstreamModel)) {
+      upstreamModel = await findProviderModelTestCatalogItemAsync({
+        providerCode: account.providerCode,
+        systemAccountId,
+        model: mapping.upstreamModel,
+        protocolsOnly: true
+      })
+      upstreamModels.set(mapping.upstreamModel, upstreamModel)
+    }
+    if (
+      modelSupportsProtocol(model, sourceFamily)
+      && (!upstreamModel || modelSupportsProtocol(upstreamModel, mapping.upstreamEndpointFamily))
+    ) {
+      output.push(mode)
+    }
+  }
+  return output
 }
 
 export function accountManualTestEndpointModesForModel(
@@ -111,12 +199,18 @@ function endpointModeProtocol(mode: AccountSupportedEndpointMode): AccountModelM
   return mode === 'generate_content_sse' ? 'stream_generate_content' : 'generate_content'
 }
 
-function modelSupportsProtocol(item: ProviderModelCatalogItem, protocol: ProviderModelApiProtocol): boolean {
+function modelSupportsProtocol(
+  item: Pick<ProviderModelCatalogItem, 'supportedApiProtocols'> | ProviderModelTestCatalogItem,
+  protocol: ProviderModelApiProtocol
+): boolean {
   const protocols = item.supportedApiProtocols ?? []
   return protocols.length === 0 || protocols.includes(protocol)
 }
 
-function isAccountManualTestModel(item: ProviderModelCatalogItem, account: AccountSummary): boolean {
+function isAccountManualTestModel(
+  item: Pick<ProviderModelCatalogItem, 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
+  account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>
+): boolean {
   if (item.mode === 'image' || item.mode === 'audio') return false
   const protocols = item.supportedApiProtocols ?? []
   if (!protocols.length) return true

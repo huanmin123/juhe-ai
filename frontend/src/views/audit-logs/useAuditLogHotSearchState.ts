@@ -11,12 +11,9 @@ import {
   normalizeHotSearchKeywordInput
 } from './auditLogFilters'
 
-type SearchCompletedHandler = () => void | Promise<void>
-
 type AuditLogHotSearchStateOptions = {
   initialKeyword: string
   pageSize: () => number
-  onSearchCompleted?: SearchCompletedHandler
 }
 
 export function useAuditLogHotSearchState(options: AuditLogHotSearchStateOptions) {
@@ -68,7 +65,6 @@ export function useAuditLogHotSearchState(options: AuditLogHotSearchStateOptions
       if (requestId !== hotSearchRequestSeq) return
       hotSearchResult.value = result
       hotSearchRecords.value = result.items
-      void options.onSearchCompleted?.()
     } catch (error) {
       if (requestId !== hotSearchRequestSeq) return
       console.error(error)

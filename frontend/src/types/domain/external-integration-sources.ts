@@ -39,13 +39,31 @@ export interface ExternalIntegrationSourceSummary {
   updatedAt: string
   tokenCount: number
   activeTokenCount: number
-  tokens?: ExternalIntegrationSourceTokenSummary[]
-  primaryToken?: ExternalIntegrationSourceTokenSummary
+  tokens: ExternalIntegrationSourceTokenSummary[]
+  isBuiltIn: boolean
+}
+
+export interface ExternalIntegrationSourcePrimaryTokenSummary {
+  id: string
+  tokenPrefix: string
+  tokenSuffix: string
+}
+
+export interface ExternalIntegrationSourceListItem {
+  id: string
+  name: string
+  status: ExternalIntegrationSourceStatus
+  scopes: string[]
+  rateLimits: ExternalIntegrationRateLimitRule[]
+  expiresAt?: string
+  notes?: string
+  lastUsedAt?: string
+  primaryToken?: ExternalIntegrationSourcePrimaryTokenSummary
   isBuiltIn: boolean
 }
 
 export interface ExternalIntegrationSourceListResult {
-  items: ExternalIntegrationSourceSummary[]
+  items: ExternalIntegrationSourceListItem[]
   page: number
   pageSize: number
   pageUpperBound: number
@@ -79,7 +97,6 @@ export interface CreatedExternalIntegrationSourceToken {
 }
 
 export interface CreatedExternalIntegrationSourceAuthorization {
-  source: ExternalIntegrationSourceSummary
   token: CreatedExternalIntegrationSourceToken
 }
 

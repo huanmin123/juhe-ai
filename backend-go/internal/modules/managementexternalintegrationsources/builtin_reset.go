@@ -88,7 +88,7 @@ func (s *BuiltInResetService) resetOnce(ctx context.Context) (TokenCreateResult,
 	if err != nil {
 		return TokenCreateResult{}, err
 	}
-	source, err := updateDetailFromStore(stored.Source, []port.ManagementExternalIntegrationSourcePrimaryTokenRow{stored.Token})
+	source, err := sourceFromStore(stored.Source)
 	if err != nil {
 		return TokenCreateResult{}, fmt.Errorf("map built-in external integration source reset detail: %w", err)
 	}
@@ -96,9 +96,9 @@ func (s *BuiltInResetService) resetOnce(ctx context.Context) (TokenCreateResult,
 	if err != nil {
 		return TokenCreateResult{}, fmt.Errorf("map built-in external integration source reset token: %w", err)
 	}
-	return TokenCreateResult{Source: source, Token: CreatedToken{
+	return TokenCreateResult{Source: Detail{Source: source}, Token: CreatedToken{
 		ID: tokenSummary.ID, Name: tokenSummary.Name, Token: token,
 		TokenPrefix: tokenSummary.TokenPrefix, TokenSuffix: tokenSummary.TokenSuffix,
-		Scopes: append([]string(nil), source.Source.Scopes...),
+		Scopes: append([]string(nil), source.Scopes...),
 	}}, nil
 }

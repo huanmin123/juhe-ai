@@ -452,6 +452,7 @@ async function loadProviders(force = false) {
       apply: (nextProviders) => { providers.value = nextProviders },
       force,
       includeDisabled: isManagementView.value,
+      includeDefinitions: !isManagementView.value,
       isManagementView: isManagementView.value
     })
   } catch (error) {
@@ -572,6 +573,7 @@ async function reloadActiveProviderModels(force = false) {
     const scopedProviders = await loadProviderOptionsResource({
       force: force || !isManagementView.value,
       includeDisabled: isManagementView.value,
+      includeDefinitions: !isManagementView.value,
       isManagementView: isManagementView.value,
       systemAccountId: modelQuery.systemAccountId
     })

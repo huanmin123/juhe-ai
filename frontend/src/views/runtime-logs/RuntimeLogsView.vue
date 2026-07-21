@@ -35,6 +35,7 @@
       :view-mode-options="viewModeOptions"
       @apply-index="applyIndexFilters"
       @change="handleTableChange"
+      @facets-open="loadRuntimeLogFacets"
       @grep-detail="openRuntimeGrepDetail"
       @grep-mobile-refresh="searchGrepLogs"
       @grep-range-change="handleGrepRangeChange"
@@ -66,7 +67,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref } from 'vue'
 import type { Dayjs } from 'dayjs'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -143,7 +144,11 @@ const effectiveInitialPageState = resolveRuntimeLogInitialPageState<RuntimeLogsP
 const {
   cancelRuntimeLogFacetsRequest,
   facets,
-  loadRuntimeLogFacets
+  grepRuntime,
+  loadRuntimeLogFacets,
+  loadRuntimeLogGrepOptions,
+  loadRuntimeLogRuntime,
+  runtime
 } = useRuntimeLogFacetsState()
 const indexTimeRange = ref<RuntimeLogTimeRangeValue>(parseOptionalTimeRange(effectiveInitialPageState.indexTimeRange))
 const {
@@ -178,7 +183,6 @@ const {
   initialPagination: effectiveInitialPageState.pagination,
   keywordFilter,
   levelFilter,
-  loadRuntimeLogFacets,
   pageSize,
   traceIdFilter
 })
@@ -205,10 +209,9 @@ const {
 })
 
 const eventOptions = computed(() => buildRuntimeLogEventOptions(facets.value?.events))
-const grepRuntime = computed(() => facets.value?.grep)
 const grepRangeLimitText = computed(() => runtimeLogGrepRangeLimitText(grepRuntime.value))
-const runtimeLogsAlertVisible = computed(() => isRuntimeLogsAlertVisible(facets.value))
-const runtimeLogsAlertDescription = computed(() => buildRuntimeLogsAlertDescription(facets.value))
+const runtimeLogsAlertVisible = computed(() => isRuntimeLogsAlertVisible(runtime.value))
+const runtimeLogsAlertDescription = computed(() => buildRuntimeLogsAlertDescription(runtime.value))
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -268,7 +271,7 @@ function handleModeChange(value: string | number): void {
     }
     return
   }
-  void loadRuntimeLogFacets().then(() => {
+  void loadRuntimeLogGrepOptions().then(() => {
     grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
     if (grepKeywordFilter.value.trim()) {
       void searchGrepLogs()
@@ -304,7 +307,7 @@ function resetFilters(): void {
   indexTimeRange.value = parseOptionalTimeRange(defaults.indexTimeRange)
   resetPagination()
   pageStateCache.clear()
-  void loadData({ refreshFacets: true })
+  void loadData()
 }
 
 function filterEventOption(input: string, option?: { label?: string; rawEvent?: string; value?: string }): boolean {
@@ -312,7 +315,7 @@ function filterEventOption(input: string, option?: { label?: string; rawEvent?: 
 }
 
 function refreshIndexLogs(): void {
-  void loadData({ refreshFacets: true })
+  void loadData()
 }
 
 const { searchTrace } = useRuntimeLogTraceSearch({
@@ -354,7 +357,7 @@ const runtimeLogRouteTraceState = useRuntimeLogRouteTraceState<RuntimeLogsPageSt
   applyPageState,
   defaultPageState: defaultRuntimeLogsPageState,
   getCurrentTraceIdFilter: () => traceIdFilter.value,
-  loadRestoredPageState: () => loadCurrentRuntimeLogState({ refreshFacets: true }),
+  loadRestoredPageState: loadCurrentRuntimeLogState,
   loadRouteTraceState: () => {
     void loadData()
   },
@@ -366,9 +369,9 @@ const runtimeLogRouteTraceState = useRuntimeLogRouteTraceState<RuntimeLogsPageSt
   withTraceId: (state, traceId) => ({ ...state, traceIdFilter: traceId })
 })
 
-function loadCurrentRuntimeLogState(options: { refreshFacets?: boolean } = {}): void {
+function loadCurrentRuntimeLogState(): void {
   if (viewMode.value === 'grep') {
-    void loadRuntimeLogFacets().then(() => {
+    void loadRuntimeLogGrepOptions().then(() => {
       grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
       if (grepKeywordFilter.value.trim()) {
         void searchGrepLogs()
@@ -376,16 +379,56 @@ function loadCurrentRuntimeLogState(options: { refreshFacets?: boolean } = {}): 
     })
     return
   }
-  void loadData({ refreshFacets: options.refreshFacets === true }).then(() => {
-    grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
-  })
+  void loadData()
 }
 
-onMounted(loadCurrentRuntimeLogState)
+type RuntimeStatusIdleWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+  cancelIdleCallback?: (handle: number) => void
+}
+
+let runtimeStatusIdleHandle: number | undefined
+let runtimeStatusTimer: ReturnType<typeof setTimeout> | undefined
+
+function scheduleRuntimeStatusRefresh(): void {
+  cancelRuntimeStatusRefresh()
+  if (typeof window === 'undefined') return
+  const idleWindow = window as RuntimeStatusIdleWindow
+  if (idleWindow.requestIdleCallback) {
+    runtimeStatusIdleHandle = idleWindow.requestIdleCallback(() => {
+      runtimeStatusIdleHandle = undefined
+      void loadRuntimeLogRuntime(true)
+    }, { timeout: 1500 })
+    return
+  }
+  runtimeStatusTimer = setTimeout(() => {
+    runtimeStatusTimer = undefined
+    void loadRuntimeLogRuntime(true)
+  }, 250)
+}
+
+function cancelRuntimeStatusRefresh(): void {
+  if (typeof window !== 'undefined' && runtimeStatusIdleHandle !== undefined) {
+    ;(window as RuntimeStatusIdleWindow).cancelIdleCallback?.(runtimeStatusIdleHandle)
+  }
+  runtimeStatusIdleHandle = undefined
+  if (runtimeStatusTimer !== undefined) clearTimeout(runtimeStatusTimer)
+  runtimeStatusTimer = undefined
+}
+
+onMounted(() => {
+  loadCurrentRuntimeLogState()
+  scheduleRuntimeStatusRefresh()
+})
+onActivated(scheduleRuntimeStatusRefresh)
 
 onDeactivated(() => {
   closeTransientDetails()
   cancelRuntimeLogFacetsRequest()
+  cancelRuntimeStatusRefresh()
 })
-onBeforeUnmount(cancelRuntimeLogFacetsRequest)
+onBeforeUnmount(() => {
+  cancelRuntimeLogFacetsRequest()
+  cancelRuntimeStatusRefresh()
+})
 </script>

@@ -4,11 +4,6 @@ import { z } from 'zod'
 import { badRequest, ok, sendNotFound } from '../../shared/http.js'
 import { listProvidersAsync } from '../../storage/repositories.js'
 import { isAdminRole, type ProviderDefinition, type ProviderModelPricing } from '../../domain/types.js'
-import {
-  listAnthropicProtocolProviderCodesAsync,
-  listGeminiProtocolProviderCodesAsync,
-  listOpenAIProtocolProviderCodesAsync
-} from '../../storage/provider.repository.js'
 import { isHybridProviderCode } from '../../domain/provider-protocol.js'
 import {
   clearProviderDefaultHealthCheckModelPreferenceIfModelAsync,
@@ -24,13 +19,13 @@ import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext, type RequestAccessScope } from '../auth/request-context.js'
 import {
   findCustomProviderModelAsync,
+  findProviderModelCapabilitiesAsync,
   customProviderModelBindingsAsync,
   listProviderModelCatalogAsync,
   removeCustomProviderModelAsync,
   saveCustomProviderModelAsync,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
-import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 import { rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync } from '../model-pricing/published-model-catalog.service.js'
 import {
   findBuiltInProviderModelByIdAsync,
@@ -39,6 +34,11 @@ import {
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
 import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
 import { publishPageDataDomainReset } from '../page-data/page-data-change.publisher.js'
+import {
+  listProviderModelSelectionOptionsAsync,
+  normalizeProviderModelOptionQuery,
+  type ProviderModelSelectionOption
+} from './provider-model-options.service.js'
 
 export const providersRouter = Router()
 
@@ -46,23 +46,14 @@ const providerOptionsReadCache = createPageDataDomainReadCache<ProviderDefinitio
   max: 128,
   ttlMs: 24 * 60 * 60 * 1000
 })
-const providerModelOptionsReadCache = createPageDataDomainReadCache<ProviderModelOption[]>('providers.catalog', {
+const providerSelectOptionsReadCache = createPageDataDomainReadCache<Array<{ id: string; code: string; name: string; enabled: true }>>('providers.catalog', {
   max: 128,
   ttlMs: 24 * 60 * 60 * 1000
 })
-
-interface ProviderModelOption {
-  providerCode: string
-  model: string
-  supportedApiProtocols?: ProviderModelApiProtocol[]
-  supportedServiceTiers?: string[]
-  supportedReasoningEfforts?: string[]
-  defaultReasoningEffort: string | null
-}
-
-type ProviderModelOptionInput = Omit<ProviderModelOption, 'defaultReasoningEffort'> & {
-  defaultReasoningEffort?: string | null
-}
+const providerModelOptionsReadCache = createPageDataDomainReadCache<ProviderModelSelectionOption[]>('providers.catalog', {
+  max: 128,
+  ttlMs: 24 * 60 * 60 * 1000
+})
 
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
@@ -82,9 +73,26 @@ providersRouter.get('/options', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const systemAccountId = providerModelRequestSystemAccountId(access)
-    const providers = await providerOptionsReadCache.load(pageDataReadCacheKey({
+    const providers = await providerSelectOptionsReadCache.load(pageDataReadCacheKey({
       scope: access,
       route: '/providers/options',
+      query: { systemAccountId }
+    }), async () => (await listProvidersAsync())
+      .filter((provider) => provider.enabled)
+      .map((provider) => ({ id: provider.code, code: provider.code, name: provider.name, enabled: true as const })))
+    res.json(ok(providers))
+  } catch (error) {
+    next(error)
+  }
+})
+
+providersRouter.get('/definitions', async (req, res, next) => {
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const systemAccountId = providerModelRequestSystemAccountId(access)
+    const providers = await providerOptionsReadCache.load(pageDataReadCacheKey({
+      scope: access,
+      route: '/providers/definitions',
       query: { systemAccountId }
     }), async () => (await listProvidersForRequestAsync(systemAccountId)).filter((provider) => provider.enabled))
     res.json(ok(providers))
@@ -97,51 +105,30 @@ providersRouter.get('/models/options', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const systemAccountId = providerModelRequestSystemAccountId(access)
-    const protocol = Array.isArray(req.query.protocol) ? req.query.protocol[0] : req.query.protocol
+    let query
+    try {
+      query = normalizeProviderModelOptionQuery(req.query as Record<string, unknown>)
+    } catch (error) {
+      res.status(400).json(badRequest(error instanceof Error ? error.message : '模型选项参数无效'))
+      return
+    }
+    if (query.providerCode) {
+      const provider = (await listProvidersAsync()).find((item) => item.code === query.providerCode && item.enabled)
+      if (!provider) {
+        sendNotFound(res, '供应商不存在或已停用')
+        return
+      }
+    }
     const options = await providerModelOptionsReadCache.load(pageDataReadCacheKey({
       scope: access,
       route: '/providers/models/options',
-      query: { protocol, systemAccountId }
-    }), async () => {
-      const providerCodes = await providerModelOptionProviderCodesAsync(protocol)
-      const providers = (await listProvidersAsync()).filter((provider) => provider.enabled && providerCodes.has(provider.code))
-      const catalogs = await Promise.all(providers.map((provider) => listProviderModelCatalogAsync({
-        providerCode: provider.code,
-        systemAccountId,
-        includeUnpriced: true
-      })))
-      return dedupeProviderModelOptions(
-        catalogs.flatMap((catalog) => catalog.map((item) => ({
-          providerCode: item.providerCode,
-          model: item.model,
-          supportedApiProtocols: item.supportedApiProtocols,
-          supportedServiceTiers: item.supportedServiceTiers,
-          supportedReasoningEfforts: item.supportedReasoningEfforts,
-          defaultReasoningEffort: item.defaultReasoningEffort
-        })))
-      )
-    })
+      query: { ...query, systemAccountId }
+    }), () => listProviderModelSelectionOptionsAsync({ ...query, systemAccountId }))
     res.json(ok(options))
   } catch (error) {
     next(error)
   }
 })
-
-async function providerModelOptionProviderCodesAsync(protocol: unknown): Promise<Set<string>> {
-  const value = Array.isArray(protocol) ? protocol[0] : protocol
-  if (value === 'openai') {
-    return new Set(await listOpenAIProtocolProviderCodesAsync())
-  }
-  if (value === 'anthropic') {
-    return new Set(await listAnthropicProtocolProviderCodesAsync())
-  }
-  if (value === 'gemini') {
-    return new Set(await listGeminiProtocolProviderCodesAsync())
-  }
-  return new Set((await listProvidersAsync())
-    .filter((provider) => provider.enabled && !isHybridProviderCode(provider.code))
-    .map((provider) => provider.code))
-}
 
 providersRouter.get('/:code/models', async (req, res, next) => {
   try {
@@ -158,6 +145,29 @@ providersRouter.get('/:code/models', async (req, res, next) => {
       includeInactive: booleanQueryValue(req.query.includeInactive),
       includeUnpriced: booleanQueryValue(req.query.includeUnpriced)
     })))
+  } catch (error) {
+    next(error)
+  }
+})
+
+providersRouter.get('/:code/models/:modelId/capabilities', async (req, res, next) => {
+  try {
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const provider = (await listProvidersAsync()).find((item) => item.code === req.params.code && item.enabled)
+    if (!provider) {
+      sendNotFound(res, '供应商不存在或已停用')
+      return
+    }
+    const capabilities = await findProviderModelCapabilitiesAsync({
+      providerCode: provider.code,
+      systemAccountId: providerModelRequestSystemAccountId(access),
+      model: req.params.modelId
+    })
+    if (!capabilities) {
+      sendNotFound(res, '模型不存在')
+      return
+    }
+    res.json(ok(capabilities))
   } catch (error) {
     next(error)
   }
@@ -583,137 +593,6 @@ function providerWithDefaultHealthCheckModelPreference(
     ...provider,
     defaultHealthCheckModel: personalModel || systemModel || provider.defaultHealthCheckModel,
     systemDefaultHealthCheckModel: systemModel
-  }
-}
-
-export function dedupeProviderModelOptions(options: ProviderModelOptionInput[]): ProviderModelOption[] {
-  const seenProviderModels = new Map<string, number>()
-  const result: ProviderModelOption[] = []
-  const defaultReasoningEffortCandidates: string[][] = []
-  for (const option of options) {
-    const providerCode = option.providerCode.trim()
-    const model = option.model.trim()
-    if (!providerCode || !model) continue
-    const normalizedProviderCode = providerCode.toLowerCase()
-    const providerModelKey = `${normalizedProviderCode}\n${model}`
-    const supportedApiProtocols = normalizedProviderModelApiProtocols(option.supportedApiProtocols ?? [])
-    const supportedServiceTiers = normalizedProviderModelCapabilities(
-      option.supportedServiceTiers ?? [],
-      providerModelCapabilityToken
-    )
-    const supportedReasoningEfforts = normalizedProviderModelCapabilities(
-      option.supportedReasoningEfforts ?? [],
-      providerModelCapabilityToken
-    )
-    const defaultReasoningEffort = normalizedProviderModelCapability(
-      option.defaultReasoningEffort,
-      providerModelCapabilityToken
-    )
-    const existingIndex = seenProviderModels.get(providerModelKey)
-    if (existingIndex !== undefined) {
-      const existing = result[existingIndex]
-      assignProviderModelOptionCapabilities(existing, {
-        supportedApiProtocols: normalizedProviderModelApiProtocols([
-          ...(existing.supportedApiProtocols ?? []),
-          ...supportedApiProtocols
-        ]),
-        supportedServiceTiers: normalizedProviderModelCapabilities([
-          ...(existing.supportedServiceTiers ?? []),
-          ...supportedServiceTiers
-        ], providerModelCapabilityToken),
-        supportedReasoningEfforts: normalizedProviderModelCapabilities([
-          ...(existing.supportedReasoningEfforts ?? []),
-          ...supportedReasoningEfforts
-        ], providerModelCapabilityToken)
-      })
-      if (defaultReasoningEffort) {
-        defaultReasoningEffortCandidates[existingIndex].push(defaultReasoningEffort)
-      }
-      continue
-    }
-    const item: ProviderModelOption = { providerCode, model, defaultReasoningEffort: null }
-    assignProviderModelOptionCapabilities(item, {
-      supportedApiProtocols,
-      supportedServiceTiers,
-      supportedReasoningEfforts
-    })
-    seenProviderModels.set(providerModelKey, result.length)
-    result.push(item)
-    defaultReasoningEffortCandidates.push(defaultReasoningEffort ? [defaultReasoningEffort] : [])
-  }
-  for (let index = 0; index < result.length; index += 1) {
-    const supportedReasoningEfforts = new Set(result[index].supportedReasoningEfforts ?? [])
-    const defaultReasoningEffort = defaultReasoningEffortCandidates[index]
-      .find((candidate) => supportedReasoningEfforts.has(candidate))
-    if (defaultReasoningEffort) {
-      result[index].defaultReasoningEffort = defaultReasoningEffort
-    }
-  }
-  return result
-}
-
-function normalizedProviderModelApiProtocols(value: readonly ProviderModelApiProtocol[]): ProviderModelApiProtocol[] {
-  const seen = new Set<ProviderModelApiProtocol>()
-  const output: ProviderModelApiProtocol[] = []
-  for (const item of value) {
-    const normalized = item.trim() as ProviderModelApiProtocol
-    if (!normalized || seen.has(normalized)) continue
-    seen.add(normalized)
-    output.push(normalized)
-  }
-  return output
-}
-
-const providerModelCapabilityToken = {
-  has(value: string): boolean {
-    return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(value)
-  }
-} as ReadonlySet<string>
-
-function normalizedProviderModelCapabilities<TValue extends string>(
-  value: readonly TValue[],
-  allowedValues: ReadonlySet<TValue>
-): TValue[] {
-  const seen = new Set<TValue>()
-  const output: TValue[] = []
-  for (const item of value) {
-    const normalized = item.trim() as TValue
-    if (!allowedValues.has(normalized) || seen.has(normalized)) continue
-    seen.add(normalized)
-    output.push(normalized)
-  }
-  return output
-}
-
-function normalizedProviderModelCapability<TValue extends string>(
-  value: TValue | null | undefined,
-  allowedValues: ReadonlySet<TValue>
-): TValue | undefined {
-  const normalized = value?.trim() as TValue | undefined
-  return normalized && allowedValues.has(normalized) ? normalized : undefined
-}
-
-function assignProviderModelOptionCapabilities(
-  option: ProviderModelOption,
-  capabilities: Pick<
-    ProviderModelOption,
-    'supportedApiProtocols' | 'supportedServiceTiers' | 'supportedReasoningEfforts'
-  >
-): void {
-  if (capabilities.supportedApiProtocols?.length) {
-    option.supportedApiProtocols = capabilities.supportedApiProtocols
-  } else {
-    delete option.supportedApiProtocols
-  }
-  if (capabilities.supportedServiceTiers?.length) {
-    option.supportedServiceTiers = capabilities.supportedServiceTiers
-  } else {
-    delete option.supportedServiceTiers
-  }
-  if (capabilities.supportedReasoningEfforts?.length) {
-    option.supportedReasoningEfforts = capabilities.supportedReasoningEfforts
-  } else {
-    delete option.supportedReasoningEfforts
   }
 }
 

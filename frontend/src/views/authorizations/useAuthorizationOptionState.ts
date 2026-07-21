@@ -4,7 +4,7 @@ import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import { rememberAccountLabels, rememberAccountSelection } from '@/shared/accountLabelCache'
 import { rememberGroupLabels } from '@/shared/groupLabelCache'
-import type { AccountOptionSummary, GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { AccountOptionSummary, AuthorizationGranteeGroupOptionSummary, GroupOptionSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import type { AuthorizationCreateFormModel } from './authorizationFormModel'
 import {
   normalizeSearchKeyword,
@@ -42,7 +42,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
   const groups = ref<GroupOptionSummary[]>([])
   const createAccounts = ref<AccountOptionSummary[]>([])
   const createGroups = ref<GroupOptionSummary[]>([])
-  const createTargetGroups = ref<GroupOptionSummary[]>([])
+  const createTargetGroups = ref<AuthorizationGranteeGroupOptionSummary[]>([])
   const teams = ref<SystemTeamPrincipalSummary[]>([])
   const users = ref<SystemAccountPrincipalSummary[]>([])
   const createOwnerUsers = ref<SystemAccountPrincipalSummary[]>([])
@@ -156,8 +156,8 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
             return await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
           }
           let nextGroups = isManagementView.value
-            ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
-            : await api.myGroups.options({ keyword: search, limit: remoteOptionLimit })
+            ? await api.groups.authorizationOptions({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
+            : await api.myGroups.authorizationOptions({ keyword: search, limit: remoteOptionLimit })
           return await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId, isManagementView.value)
         },
         query: { purpose: 'create-resource', resourceType, ownerSystemAccountId, search, selectedId: createForm.resourceId, limit: remoteOptionLimit },
@@ -236,7 +236,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
     const requestId = ++createTargetGroupRequestId
     createTargetGroupOptionsLoading.value = true
     try {
-      await loadAuthorizationOptionResource<GroupOptionSummary[]>({
+      await loadAuthorizationOptionResource<AuthorizationGranteeGroupOptionSummary[]>({
         apply: (nextGroups) => {
           rememberGroupLabels(nextGroups)
           syncCreateTargetGroup(nextGroups)
@@ -318,7 +318,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
             const nextAccounts = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
             return await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId, isManagementView.value)
           }
-          const nextGroups = await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
+          const nextGroups = await api.groups.authorizationOptions({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
           return await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId, isManagementView.value)
         },
         query: { purpose: 'filter-resource', resourceType, systemAccountId, requestKeyword, selectedId: filters.resourceId, limit: remoteOptionLimit },
@@ -512,7 +512,7 @@ export function useAuthorizationOptionState(options: UseAuthorizationOptionState
 
   function selectDefaultCreateTargetGroup(nextGroups = createTargetGroups.value): void {
     if (createForm.targetGroupId || createTargetGroupSearchKeyword.value.trim()) return
-    const defaultGroup = nextGroups.find((group) => group.enabled && group.isDefault)
+    const defaultGroup = nextGroups[0]
     if (!defaultGroup) return
     createForm.targetGroupId = defaultGroup.id
     createForm.targetGroup = { id: defaultGroup.id, name: defaultGroup.name }

@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync, SQLInputValue } from 'node:sqlite'
@@ -18,6 +18,12 @@ runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
+
+const repositorySource = readFileSync(resolve('src/storage/system-metrics.repository.ts'), 'utf8')
+assert.match(repositorySource, /Promise\.all\(\[[\s\S]*processEventLoopLatestRowsAsync\(client\)[\s\S]*loadProcessEventLoopTrendWindowRowsAsync\(client, range\)[\s\S]*processEventLoopPeakRowsAsync\(client, processEventLoopStartedAt\)/, 'PG 系统指标四类读取必须并行')
+assert.match(repositorySource, /SELECT DISTINCT ON \(process_role\)[\s\S]*ORDER BY process_role, sampled_at DESC, id DESC/, 'PG latest 必须单查询按角色取最新采样')
+assert.match(repositorySource, /SELECT DISTINCT ON \(process_role\)[\s\S]*ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC/, 'PG peak 必须单查询按角色取峰值采样')
+assert.doesNotMatch(repositorySource, /for \(const role of PROCESS_EVENT_LOOP_ROLES\)[\s\S]*await client\.one/, 'PG latest / peak 不得按角色串行往返')
 
 const [databaseModule, usageStatsRepository] = await Promise.all([
   import('../../storage/database.js'),
@@ -67,11 +73,11 @@ try {
   } finally {
     database.prepare = originalPrepare
   }
-  const latestMetricsCall = capturedCalls.find((call) => /\bFROM\s+system_metrics_samples\b/i.test(call.sql) && /\bORDER\s+BY\s+sampled_at\s+DESC,\s*id\s+DESC\b/i.test(call.sql))
-  assert(latestMetricsCall, '系统指标接口应读取最新系统采样')
-  const latestMetricsPlan = explainQueryPlan(database, latestMetricsCall.sql, latestMetricsCall.params)
-  assertNoTempBtree(latestMetricsPlan, '最新系统指标采样查询')
-  assert(latestMetricsPlan.includes('idx_system_metrics_samples_latest'), `最新系统指标采样应使用 latest 索引，实际计划：${latestMetricsPlan}`)
+  assert.equal(
+    capturedCalls.some((call) => /\bFROM\s+system_metrics_samples\b/i.test(call.sql)),
+    false,
+    '系统指标首屏不应查询前端未使用的最新系统采样'
+  )
 
   const processLatestCall = capturedCalls.find((call) => /\bFROM\s+process_event_loop_samples\b/i.test(call.sql) && /\bORDER\s+BY\s+sampled_at\s+DESC,\s*id\s+DESC\b/i.test(call.sql))
   assert(processLatestCall, '系统指标接口应按进程角色读取最新事件循环采样')

@@ -10,6 +10,8 @@ import type {
   PublicApiLogListResult,
   RuntimeLogFacets,
   RuntimeLogGrepResult,
+  RuntimeLogGrepRuntime,
+  RuntimeLogRuntime,
   RuntimeLogSearchResult,
   RuntimeLogSummary
 } from '@/types/domain'
@@ -36,6 +38,8 @@ export const auditLogsApi = {
 export const runtimeLogsApi = {
   list: (params?: RuntimeLogListParams) => unwrap<RuntimeLogSearchResult>(http.get('/runtime-logs', { params })),
   facets: () => unwrap<RuntimeLogFacets>(http.get('/runtime-logs/facets')),
+  grepOptions: () => unwrap<RuntimeLogGrepRuntime>(http.get('/runtime-logs/grep-options')),
+  runtime: () => unwrap<RuntimeLogRuntime>(http.get('/runtime-logs/runtime')),
   detail: (id: string) => unwrap<RuntimeLogSummary>(http.get(`/runtime-logs/${id}`)),
   grep: (params?: RuntimeLogGrepParams) => unwrap<RuntimeLogGrepResult>(http.get('/runtime-logs/grep', { params, ...noTimeout }))
 }

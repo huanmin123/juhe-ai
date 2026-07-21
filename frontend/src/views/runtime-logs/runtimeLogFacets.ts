@@ -1,4 +1,4 @@
-import type { RuntimeLogFacets, RuntimeLogGrepRuntime } from '@/types/domain'
+import type { RuntimeLogGrepRuntime, RuntimeLogRuntime } from '@/types/domain'
 
 import { eventText } from './runtimeLogFormatters'
 
@@ -23,30 +23,30 @@ export function runtimeLogGrepRangeLimitText(runtime?: RuntimeLogGrepRuntime): s
   return `按文件时间筛选，默认最近 ${runtime.defaultRangeDays} 天，单次最多 ${runtime.maxRangeDays} 天`
 }
 
-export function isRuntimeLogsAlertVisible(facets?: RuntimeLogFacets): boolean {
-  return Boolean(facets && (
-    !facets.runtimeAvailable
-    || !facets.workerSnapshotAvailable
-    || !facets.runtimeLogIndexQueueAvailable
-    || !facets.dbService.statusAvailable
-    || !facets.dbService.stateAvailable
-    || !facets.gatewayAccountSideEffectsAvailable
+export function isRuntimeLogsAlertVisible(runtime?: RuntimeLogRuntime): boolean {
+  return Boolean(runtime && (
+    !runtime.runtimeAvailable
+    || !runtime.ingestWorkerAvailable
+    || !runtime.runtimeLogIndexQueueAvailable
+    || !runtime.dbService.statusAvailable
+    || !runtime.dbService.stateAvailable
+    || !runtime.gatewayAccountSideEffectsAvailable
   ))
 }
 
-export function runtimeLogsAlertDescription(facets?: RuntimeLogFacets): string {
-  if (!facets) return ''
+export function runtimeLogsAlertDescription(runtime?: RuntimeLogRuntime): string {
+  if (!runtime) return ''
   const reasons: string[] = []
-  if (!facets.runtimeAvailable) {
+  if (!runtime.runtimeAvailable) {
     reasons.push('服务运行态不可用')
   } else {
-    if (!facets.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
-    if (!facets.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
-    if (!facets.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
+    if (!runtime.ingestWorkerAvailable) reasons.push('日志写入进程不可用')
+    if (!runtime.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
+    if (!runtime.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
   }
-  if (!facets.dbService.statusAvailable) {
+  if (!runtime.dbService.statusAvailable) {
     reasons.push('本地数据库服务状态不可用')
-  } else if (!facets.dbService.stateAvailable) {
+  } else if (!runtime.dbService.stateAvailable) {
     reasons.push('本地数据库服务父进程状态不可用')
   }
   return `${reasons.join('；') || '运行态状态未知'}。`

@@ -60,7 +60,9 @@ func newManagementExternalIntegrationSourceBuiltInResetHandler(
 
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Pragma", "no-cache")
-		writeData(w, http.StatusOK, result)
+		writeData(w, http.StatusOK, struct {
+			Token managementexternalintegrationsources.CreatedToken `json:"token"`
+		}{Token: result.Token})
 		recordManagementExternalIntegrationSourceBuiltInResetOperationLog(r, authContext, result, logOptions)
 	})
 }

@@ -111,8 +111,9 @@ try {
   assert(keywordIds.includes(middleNameOnly.id), 'PG AI 账户列表 keyword 应命中名称中间包含值')
   assert(!keywordIds.includes(notesOnly.id), 'PG AI 账户列表 keyword 不应扫描备注字段命中')
   assert.deepEqual(keywordResult.items.find((item) => item.id === matchedByName.id)?.credentials, {}, 'PG AI 账户列表不应返回完整凭据')
-  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.usage.requestCount, 9, 'PG AI 账户列表应返回累计账号用量')
-  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.todayUsage.requestCount, 4, 'PG AI 账户列表应返回当天账号用量')
+  assert.deepEqual(keywordResult.items.find((item) => item.id === matchedByName.id)?.supportedModels, [], 'PG AI 账户基础列表不应水合支持模型')
+  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.usage.requestCount, 0, 'PG AI 账户基础列表不应同步读取累计账号用量')
+  assert.equal(keywordResult.items.find((item) => item.id === matchedByName.id)?.todayUsage.requestCount, 0, 'PG AI 账户基础列表不应同步读取当天账号用量')
 
   const wildcardResult = await listAccountsPageAsync(access, { keyword: `percent%literal ${marker}`, page: 1, pageSize: 50 })
   const wildcardIds = wildcardResult.items.map((item) => item.id)

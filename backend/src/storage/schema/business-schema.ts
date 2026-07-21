@@ -814,7 +814,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, protocol, variant),
       CHECK (protocol IN ('openai', 'anthropic', 'gemini')),
-      CHECK (variant IN ('default', 'codex', 'chat')),
+      CHECK (variant IN ('default', 'codex') OR variant LIKE 'chat_list:%' OR variant LIKE 'chat_model:%'),
       CHECK (model_count >= 0),
       CHECK (json_valid(payload_json) AND json_type(payload_json) = 'object')
     );

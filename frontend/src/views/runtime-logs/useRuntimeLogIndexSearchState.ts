@@ -6,17 +6,12 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import type { RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
 import { normalizeOptionalTimeRange, type RuntimeLogTimeRangeValue } from './runtimeLogTimeRanges'
 
-type RuntimeLogIndexSearchLoadOptions = {
-  refreshFacets?: boolean
-}
-
 type UseRuntimeLogIndexSearchStateOptions = {
   eventFilter: Ref<string | undefined>
   indexTimeRange: Ref<RuntimeLogTimeRangeValue>
   initialPagination?: { current?: number; pageSize?: number; total?: number }
   keywordFilter: Ref<string>
   levelFilter: Ref<RuntimeLogLevel | 'all'>
-  loadRuntimeLogFacets: (force?: boolean) => Promise<void>
   pageSize: number
   traceIdFilter: Ref<string>
 }
@@ -34,16 +29,13 @@ export function useRuntimeLogIndexSearchState(options: UseRuntimeLogIndexSearchS
     loadMoreMobile: loadMoreMobileRecords,
     refreshMobile: refreshMobileRecords,
     resetPagination
-  } = useResponsivePagedList<RuntimeLogSummary, RuntimeLogIndexSearchLoadOptions>({
+  } = useResponsivePagedList<RuntimeLogSummary>({
     pageSize: options.pageSize,
     initialPagination: options.initialPagination,
     showTotal: (total, range, context) => context?.hasMore
       ? `已加载到第 ${range?.[1] ?? total - 1} 条运行日志，还有更多`
       : `共 ${total} 条运行日志`,
-    fetchPage: async (loadOptions, pageState) => {
-      void options.loadRuntimeLogFacets(loadOptions.refreshFacets === true)
-      return await api.runtimeLogs.list(runtimeLogRequestParams(pageState))
-    },
+    fetchPage: async (_loadOptions, pageState) => api.runtimeLogs.list(runtimeLogRequestParams(pageState)),
     requestSignature: (_loadOptions, pageState) => runtimeLogRequestParams(pageState),
     onError: (error) => {
       console.error(error)

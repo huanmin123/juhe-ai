@@ -143,6 +143,7 @@ async function assertSuccessfulSequence(baseUrl: string): Promise<void> {
   assert.equal(output[0], 'externalIntegrationSourceCreateChecked=true')
   assert.deepEqual(records.map(signature), [
     'POST /__aisys__/api/external-integration-sources',
+    `GET /__aisys__/api/external-integration-sources?page=1&pageSize=100&keyword=${encodeURIComponent(currentName)}`,
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}/tokens/${encodeURIComponent(tokenId)}/secret`,
     `GET /__aisys__/api/external-integration-sources/${encodeURIComponent(sourceId)}`,
@@ -163,7 +164,7 @@ async function assertFailures(baseUrl: string): Promise<void> {
   const cases: Array<[Scenario, RegExp]> = [
     ['create_status', /create failed with HTTP 500/],
     ['create_header', /create must return Cache-Control: no-store/],
-    ['create_dto', /create source DTO/],
+    ['create_dto', /create token DTO/],
     ['detail_status', /detail failed with HTTP 502/],
     ['detail_dto', /detail source DTO/],
     ['detail_plaintext', /detail must not contain plaintext token/],
@@ -384,8 +385,8 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 }
 
 function createEnvelope(): Record<string, unknown> {
-  if (scenario === 'create_dto') return { data: { source: { id: sourceId }, token: { token } } }
-  return { data: { source: sourceSummary(false), token: createdToken() } }
+  if (scenario === 'create_dto') return { data: { token: { token } } }
+  return { data: { token: createdToken() } }
 }
 
 function sourceSummary(detail: boolean): Record<string, unknown> {
@@ -403,7 +404,11 @@ function sourceSummary(detail: boolean): Record<string, unknown> {
     isBuiltIn: false
   }
   if (detail) summary.tokens = [tokenSummary()]
-  else summary.primaryToken = tokenSummary()
+  else summary.primaryToken = {
+    id: tokenId,
+    tokenPrefix: token.slice(0, 8),
+    tokenSuffix: token.slice(-8)
+  }
   if (scenario === 'detail_dto' && detail && detailGetCount === 1) summary.tokens = []
   if (scenario === 'detail_plaintext' && detail && detailGetCount === 1) {
     (summary.tokens as Array<Record<string, unknown>>)[0]!.token = token

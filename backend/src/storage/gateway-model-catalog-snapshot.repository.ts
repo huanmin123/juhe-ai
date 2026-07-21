@@ -4,7 +4,7 @@ import { getBusinessDatabase, nowIso } from './database.js'
 import { getPostgresPool } from './postgres-client.js'
 
 export type GatewayModelCatalogProtocol = 'openai' | 'anthropic' | 'gemini'
-export type GatewayModelCatalogVariant = 'default' | 'codex' | 'chat'
+export type GatewayModelCatalogVariant = 'default' | 'codex' | `chat_list:${string}` | `chat_model:${string}`
 
 export interface GatewayModelCatalogSnapshot {
   systemAccountId: string
@@ -97,6 +97,7 @@ export async function replaceGatewayModelCatalogSnapshotsAsync(
   const client = await snapshotClient()
   const now = nowIso()
   await client.transaction(async (tx) => {
+    await tx.execute(`DELETE FROM ${snapshotTable(tx)} WHERE system_account_id = ?`, [systemAccountId])
     for (const snapshot of snapshots) {
       await tx.execute(`
         INSERT INTO ${snapshotTable(tx)} (

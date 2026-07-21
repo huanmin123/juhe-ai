@@ -289,13 +289,16 @@ export async function getAuditLogPayload(
     `, [auditLogId, payloadId])
     if (!row) return undefined
     const summary = auditLogPayloadSummaryFromRow(row)
-    const headers = await readAuditHeadersBlobDetailWithClient(client, optionalString(row.headers_blob_id))
+    const headers = shouldIncludeAuditPayloadHeaders(options)
+      ? await readAuditHeadersBlobDetailWithClient(client, optionalString(row.headers_blob_id))
+      : undefined
     const bodyWindow = await readAuditPayloadBlobWindowWithClient(client, optionalString(row.body_blob_id), options)
     return {
       ...summary,
-      headers: headers.headers,
+      headers: headers?.headers,
+      headersIncluded: headers !== undefined,
       ...auditPayloadBodyDetail(bodyWindow.bytes),
-      headersStorageStatus: headers.storageStatus,
+      headersStorageStatus: headers?.storageStatus ?? 'not_saved',
       bodyStorageStatus: bodyWindow.storageStatus,
       bodyOffset: bodyWindow.offset,
       bodyLimit: bodyWindow.limit,
@@ -323,13 +326,16 @@ export async function getAuditLogPayloadReadOnly(
     .get(auditLogId, payloadId) as AuditLogRow | undefined
   if (row) {
     const summary = auditLogPayloadSummaryFromRow(row)
-    const headers = await readAuditHeadersBlobDetail(optionalString(row.headers_blob_id))
+    const headers = shouldIncludeAuditPayloadHeaders(options)
+      ? await readAuditHeadersBlobDetail(optionalString(row.headers_blob_id))
+      : undefined
     const bodyWindow = await readAuditPayloadBlobWindow(optionalString(row.body_blob_id), options)
     return {
       ...summary,
-      headers: headers.headers,
+      headers: headers?.headers,
+      headersIncluded: headers !== undefined,
       ...auditPayloadBodyDetail(bodyWindow.bytes),
-      headersStorageStatus: headers.storageStatus,
+      headersStorageStatus: headers?.storageStatus ?? 'not_saved',
       bodyStorageStatus: bodyWindow.storageStatus,
       bodyOffset: bodyWindow.offset,
       bodyLimit: bodyWindow.limit,
@@ -339,6 +345,12 @@ export async function getAuditLogPayloadReadOnly(
       bodyTruncated: bodyWindow.truncated
     }
   }
+}
+
+function shouldIncludeAuditPayloadHeaders(options: AuditLogPayloadReadOptions): boolean {
+  if (options.includeHeaders !== undefined) return options.includeHeaders
+  const offset = typeof options.offset === 'number' ? options.offset : Number(options.offset ?? 0)
+  return !Number.isFinite(offset) || offset <= 0
 }
 
 function assertAuditPayloadSqliteOnly(operation: string): void {

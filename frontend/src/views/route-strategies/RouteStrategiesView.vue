@@ -336,6 +336,7 @@
                 :options="modelSelectOptions"
                 placeholder="选择评分模型"
                 @dropdown-visible-change="handleModelOptionsDropdown"
+                @search="handleModelOptionsSearch"
               />
             </a-form-item>
             <a-form-item label="质量偏好" tooltip="控制混合智能路由在成本和质量之间的倾向，会影响最终目标模型选择。">
@@ -382,6 +383,7 @@
                 :options="modelSelectOptions"
                 placeholder="选择目标模型"
                 @dropdown-visible-change="handleModelOptionsDropdown"
+                @search="handleModelOptionsSearch"
               />
               <a-button type="text" danger :disabled="form.hybrid.levelRoutes.length <= 2" @click="removeHybridLevelRoute(index)">
                 <template #icon><DeleteOutlined /></template>
@@ -414,6 +416,7 @@
                 :options="modelSelectOptions"
                 placeholder="默认使用评分模型"
                 @dropdown-visible-change="handleModelOptionsDropdown"
+                @search="handleModelOptionsSearch"
               />
             </a-form-item>
             <a-form-item label="触发模式" tooltip="决定哪些请求或响应需要进入质量检查。">
@@ -597,20 +600,13 @@ let groupOptionsRequestToken = 0
 let groupOptionsLoadingKey: string | undefined
 let groupOptionsLoadingPromise: Promise<void> | undefined
 let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let modelOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 
 const routeStrategyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
 })
 const modelOptionsScopeParams = computed(() => routeStrategyOperationScopeParams())
-const {
-  loading: modelOptionsLoading,
-  loadModelOptions,
-  selectOptions: modelSelectOptions
-} = useProviderModelSelectOptions({
-  scopeParams: modelOptionsScopeParams,
-  onLoadError: (error) => message.warning(extractApiErrorMessage(error, '模型选项加载失败'))
-})
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -630,6 +626,28 @@ const form = reactive({
   groupBindings: [] as BindingFormRow[],
   normal: defaultNormalRoutingForm(),
   hybrid: defaultHybridRoutingForm()
+})
+const modelProviderCodes = computed(() => {
+  const selectedGroupIds = new Set(form.groupBindings.map((binding) => binding.groupId).filter(Boolean))
+  return [...new Set(groupOptionsRaw.value
+    .filter((group) => selectedGroupIds.has(group.id))
+    .map((group) => group.providerCode?.trim() ?? '')
+    .filter(Boolean))]
+})
+const selectedModelIds = computed(() => [
+  form.hybrid.scoringModel,
+  form.hybrid.qualityInspection.scoringModel,
+  ...form.hybrid.levelRoutes.map((route) => route.targetModel)
+].map((model) => model?.trim()).filter((model): model is string => Boolean(model)))
+const {
+  loading: modelOptionsLoading,
+  loadModelOptions,
+  selectOptions: modelSelectOptions
+} = useProviderModelSelectOptions({
+  scopeParams: modelOptionsScopeParams,
+  providerCodes: modelProviderCodes,
+  selectedIds: selectedModelIds,
+  onLoadError: (error) => message.warning(extractApiErrorMessage(error, '模型选项加载失败'))
 })
 
 const modeOptions: Array<{ label: string; value: RouteStrategyMode }> = [
@@ -1282,7 +1300,15 @@ function clearGroupOptionsSearchTimer() {
 }
 
 function handleModelOptionsDropdown(open: boolean) {
-  if (open) void loadModelOptions()
+  if (open && modelProviderCodes.value.length) void loadModelOptions()
+}
+
+function handleModelOptionsSearch(value: string): void {
+  if (modelOptionsSearchTimer) window.clearTimeout(modelOptionsSearchTimer)
+  modelOptionsSearchTimer = window.setTimeout(() => {
+    modelOptionsSearchTimer = undefined
+    if (modelProviderCodes.value.length) void loadModelOptions({ keyword: value, selectedIds: selectedModelIds.value })
+  }, 250)
 }
 
 function normalizeBindingRowsForMode() {
