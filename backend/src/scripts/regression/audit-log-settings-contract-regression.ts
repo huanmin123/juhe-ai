@@ -32,6 +32,13 @@ assert.throws(
   /JUHE_AI_AUDIT_LOG_ENABLED/,
   '非法总开关值必须启动失败'
 )
+for (const value of ['', '   '] as const) {
+  assert.throws(
+    () => parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_ENABLED: value }),
+    /JUHE_AI_AUDIT_LOG_ENABLED/,
+    '审计总开关显式空值必须启动失败，不能静默回退为启用'
+  )
+}
 assert.equal(runtimeConfig.log.indexEnabled, true, '未配置时运行日志索引默认启用')
 for (const value of ['true', '1', 'yes', 'on'] as const) {
   assert.equal(readRuntimeLogIndexEnabled(value).indexEnabled, true, `${value} 应启用运行日志索引`)
@@ -44,6 +51,13 @@ assert.throws(
   /JUHE_AI_RUNTIME_LOG_INDEX_ENABLED/,
   '非法运行日志索引总开关值必须启动失败'
 )
+for (const value of ['', '   '] as const) {
+  assert.throws(
+    () => readRuntimeLogIndexEnabled(value),
+    /JUHE_AI_RUNTIME_LOG_INDEX_ENABLED/,
+    '运行日志索引总开关显式空值必须启动失败，不能静默回退为启用'
+  )
+}
 assert.deepEqual(
   readRuntimeLogIndexEnabled('false', { runtimeMode: 'performance', fileEnabled: 'false' }),
   { indexEnabled: false, fileEnabled: false },
