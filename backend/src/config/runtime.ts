@@ -105,6 +105,7 @@ export interface RuntimeConfig {
     probeRetryDelayMs: number
   }
   auditLog: {
+    enabled: boolean
     successHotRetentionHours: number
     successSampleRate: number
     successRetentionDays: number
@@ -154,6 +155,7 @@ export interface RuntimeConfig {
     level: LogLevel
     directory: string
     fileEnabled: boolean
+    indexEnabled: boolean
     consoleEnabled: boolean
     maxFileBytes: number
     retentionDays: number
@@ -244,6 +246,7 @@ const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE',
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
 const configuredDevelopmentAutoLoginUsername = optionalStringConfig('JUHE_AI_DEV_AUTO_LOGIN_USERNAME')
 const configuredLogFileEnabled = booleanConfig('JUHE_AI_LOG_FILE_ENABLED', true)
+const configuredRuntimeLogIndexEnabled = booleanConfig('JUHE_AI_RUNTIME_LOG_INDEX_ENABLED', true)
 
 assertDevelopmentAutoLoginConfig({
   username: configuredDevelopmentAutoLoginUsername,
@@ -264,7 +267,8 @@ assertRuntimeModeDrivers({
 })
 assertRuntimeLogFileIndexingConfig({
   runtimeMode: configuredRuntimeMode,
-  fileEnabled: configuredLogFileEnabled
+  fileEnabled: configuredLogFileEnabled,
+  indexEnabled: configuredRuntimeLogIndexEnabled
 })
 
 export const runtimeConfig: RuntimeConfig = {
@@ -392,6 +396,7 @@ export const runtimeConfig: RuntimeConfig = {
     level: logLevelConfig('JUHE_AI_LOG_LEVEL', 'info'),
     directory: pathConfig('JUHE_AI_LOG_DIR', resolve(backendRoot, 'logs')),
     fileEnabled: configuredLogFileEnabled,
+    indexEnabled: configuredRuntimeLogIndexEnabled,
     consoleEnabled: booleanConfig('JUHE_AI_LOG_CONSOLE_ENABLED', true),
     maxFileBytes: numberConfig('JUHE_AI_LOG_MAX_FILE_MB', 100, 1, 1024) * 1024 * 1024,
     retentionDays: numberConfig('JUHE_AI_LOG_RETENTION_DAYS', 30, 1, 30),
@@ -568,8 +573,9 @@ function assertRuntimeModeDrivers(config: {
 export function assertRuntimeLogFileIndexingConfig(config: {
   runtimeMode: RuntimeMode
   fileEnabled: boolean
+  indexEnabled?: boolean
 }): void {
-  if (config.runtimeMode === 'performance' && !config.fileEnabled) {
+  if (config.runtimeMode === 'performance' && config.indexEnabled !== false && !config.fileEnabled) {
     throw new Error('JUHE_AI_RUNTIME_MODE=performance 时必须启用 JUHE_AI_LOG_FILE_ENABLED，否则 runtime_logs 没有耐久索引来源')
   }
 }
@@ -672,6 +678,13 @@ function integerConfig(name: string, fallback: number, min: number, max: number)
 
 export function parseAuditLogRuntimeConfig(values: Record<string, string | undefined>): RuntimeConfig['auditLog'] {
   const read = (name: string): string | undefined => values[name]?.trim()
+  const strictBooleanValue = (name: string, fallback: boolean): boolean => {
+    const raw = read(name)?.toLowerCase()
+    if (!raw) return fallback
+    if (['true', '1', 'yes', 'on'].includes(raw)) return true
+    if (['false', '0', 'no', 'off'].includes(raw)) return false
+    throw new Error(`${name} 必须配置为 true/false、1/0、yes/no 或 on/off`)
+  }
   const successHotRetentionHours = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS', 1, 0, 168)
   const successSampleRate = strictDecimalValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE', 0.1, 0, 1, 4)
   const successRetentionDays = strictIntegerValue(read, 'JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS', 3, 0, 3650)
@@ -682,6 +695,7 @@ export function parseAuditLogRuntimeConfig(values: Record<string, string | undef
     throw new Error('JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS 必须覆盖 JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS')
   }
   return {
+    enabled: strictBooleanValue('JUHE_AI_AUDIT_LOG_ENABLED', true),
     successHotRetentionHours,
     successSampleRate,
     successRetentionDays,
@@ -693,6 +707,7 @@ export function parseAuditLogRuntimeConfig(values: Record<string, string | undef
 
 function auditLogRuntimeConfig(): RuntimeConfig['auditLog'] {
   const names = [
+    'JUHE_AI_AUDIT_LOG_ENABLED',
     'JUHE_AI_AUDIT_LOG_SUCCESS_HOT_RETENTION_HOURS',
     'JUHE_AI_AUDIT_LOG_SUCCESS_SAMPLE_RATE',
     'JUHE_AI_AUDIT_LOG_SUCCESS_RETENTION_DAYS',

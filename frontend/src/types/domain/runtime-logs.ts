@@ -146,6 +146,8 @@ export interface RuntimeLogFacets {
 }
 
 export interface RuntimeLogRuntime {
+  indexEnabled?: boolean
+  unavailableReason?: string
   runtimeAvailable: boolean
   ingestWorkerAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean

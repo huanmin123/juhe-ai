@@ -1,6 +1,7 @@
 import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
 import { requestDbService, requestServerRuntimeLogAvailabilitySnapshot } from '../db-service/db-service-ipc.js'
@@ -66,14 +67,16 @@ runtimeLogsRouter.get('/runtime', async (_req, res, next) => {
       requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch(() => undefined)
     ])
     res.json(ok({
+      indexEnabled: runtimeConfig.log.indexEnabled,
       runtimeAvailable: Boolean(serverRuntime),
       ingestWorkerAvailable: serverRuntime?.ingestWorkerAvailable ?? false,
-      runtimeLogIndexQueueAvailable: serverRuntime?.runtimeLogIndexQueueAvailable ?? false,
+      runtimeLogIndexQueueAvailable: runtimeConfig.log.indexEnabled && (serverRuntime?.runtimeLogIndexQueueAvailable ?? false),
       dbService: {
         statusAvailable: Boolean(dbServiceSnapshot),
         stateAvailable: serverRuntime?.dbServiceStateAvailable ?? false
       },
-      gatewayAccountSideEffectsAvailable: serverRuntime?.gatewayAccountSideEffectsAvailable ?? false
+      gatewayAccountSideEffectsAvailable: serverRuntime?.gatewayAccountSideEffectsAvailable ?? false,
+      unavailableReason: runtimeConfig.log.indexEnabled ? undefined : 'index_disabled'
     }))
   } catch (error) {
     next(error)

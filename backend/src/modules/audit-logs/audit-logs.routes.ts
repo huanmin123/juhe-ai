@@ -73,11 +73,12 @@ auditLogsRouter.get('/runtime', async (_req, res, next) => {
     const auditLogQueueAvailable = Boolean(auditLogQueue)
     const settings = readAuditLogSettings()
     res.json(ok({
+      enabled: settings.enabled,
       runtimeAvailable,
       workerSnapshotAvailable,
       auditLogQueueAvailable,
       activeCaptureAvailable: serverRuntime?.activeAuditCaptureCount !== undefined,
-      unavailableReason: auditLogRuntimeUnavailableReason(runtimeAvailable, workerSnapshotAvailable, auditLogQueueAvailable),
+      unavailableReason: auditLogRuntimeUnavailableReason(settings.enabled, runtimeAvailable, workerSnapshotAvailable, auditLogQueueAvailable),
       queueLength: auditLogQueue?.queueLength ?? null,
       queueBytes: auditLogQueue?.queueBytes ?? null,
       flushLastSuccessAt: auditLogQueue?.flushLastSuccessAt,
@@ -242,10 +243,12 @@ function auditTrafficSourceQueryValue(value: unknown): AuditTrafficSource | unde
 }
 
 function auditLogRuntimeUnavailableReason(
+  enabled: boolean,
   runtimeAvailable: boolean,
   workerSnapshotAvailable: boolean,
   auditLogQueueAvailable: boolean
 ): string | undefined {
+  if (!enabled) return 'audit_disabled'
   if (!runtimeAvailable) return 'server_runtime_unavailable'
   if (!workerSnapshotAvailable) return 'worker_snapshot_unavailable'
   if (!auditLogQueueAvailable) return 'audit_log_queue_unavailable'

@@ -207,16 +207,18 @@ async function cleanupPostgresDatasetRetainedData(input: {
     () => cleanupPublicApiLogsBeforeAsync(cutoffIso(input.nowMs, input.retention.publicApiLogDays), input.batchSize),
     input.batchSize
   )
-  result.runtimeLogs = await cleanupCountedRetentionBatches(
-    input.maxBatches,
-    () => cleanupRuntimeLogIndexAsync(cutoffIso(input.nowMs, input.retention.runtimeLogDays), input.batchSize),
-    input.batchSize
-  )
-  result.runtimeLogFileCursors = await cleanupCountedRetentionBatches(
-    input.maxBatches,
-    () => cleanupRuntimeLogFileCursorsBeforeAsync(cutoffIso(input.nowMs, input.retention.runtimeLogDays), input.batchSize),
-    input.batchSize
-  )
+  if (runtimeConfig.log.indexEnabled) {
+    result.runtimeLogs = await cleanupCountedRetentionBatches(
+      input.maxBatches,
+      () => cleanupRuntimeLogIndexAsync(cutoffIso(input.nowMs, input.retention.runtimeLogDays), input.batchSize),
+      input.batchSize
+    )
+    result.runtimeLogFileCursors = await cleanupCountedRetentionBatches(
+      input.maxBatches,
+      () => cleanupRuntimeLogFileCursorsBeforeAsync(cutoffIso(input.nowMs, input.retention.runtimeLogDays), input.batchSize),
+      input.batchSize
+    )
+  }
   await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await cleanupModelCheckRunsBeforeAsync(cutoffIso(input.nowMs, input.retention.modelCheckDays), input.batchSize)
     addNumberResult(result, deleted)

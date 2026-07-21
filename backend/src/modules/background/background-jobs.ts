@@ -131,7 +131,9 @@ function scheduleBackgroundJobs(): void {
         initialDelayMs: 13 * minuteMs,
         task: runDataRetentionCleanup
       })
-      scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
+      if (runtimeConfig.log.indexEnabled) {
+        scheduler.schedule({ name: backgroundScheduledJobName('runtime-log-index-maintenance'), intervalMs: 60 * minuteMs, initialDelayMs: 7 * minuteMs, task: runRuntimeLogIndexMaintenance })
+      }
       return
     case 'stats-worker':
       scheduler.schedule({
@@ -621,6 +623,9 @@ async function runProxyLatencyRefresh(): Promise<void> {
 
 async function runRuntimeLogIndexMaintenance(): Promise<void> {
   try {
+    if (!runtimeConfig.log.indexEnabled) {
+      return
+    }
     if (runtimeConfig.databaseDriver !== 'postgres') {
       ensureRuntimeLogFacetSnapshots()
     }
