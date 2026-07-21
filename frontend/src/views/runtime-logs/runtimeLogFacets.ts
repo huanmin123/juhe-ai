@@ -1,4 +1,4 @@
-import type { RuntimeLogGrepRuntime, RuntimeLogRuntime } from '@/types/domain'
+import type { RuntimeLogFacets, RuntimeLogGrepRuntime, RuntimeLogRuntime } from '@/types/domain'
 
 import { eventText } from './runtimeLogFormatters'
 
@@ -23,30 +23,46 @@ export function runtimeLogGrepRangeLimitText(runtime?: RuntimeLogGrepRuntime): s
   return `按文件时间筛选，默认最近 ${runtime.defaultRangeDays} 天，单次最多 ${runtime.maxRangeDays} 天`
 }
 
-export function isRuntimeLogsAlertVisible(runtime?: RuntimeLogRuntime): boolean {
-  return Boolean(runtime && (
-    !runtime.runtimeAvailable
-    || !runtime.ingestWorkerAvailable
-    || !runtime.runtimeLogIndexQueueAvailable
-    || !runtime.dbService.statusAvailable
-    || !runtime.dbService.stateAvailable
-    || !runtime.gatewayAccountSideEffectsAvailable
-  ))
+type RuntimeLogAlertState = RuntimeLogRuntime | RuntimeLogFacets
+
+export function isRuntimeLogsAlertVisible(state?: RuntimeLogAlertState): boolean {
+  if (!state) return false
+  const workerUnavailable = 'ingestWorkerAvailable' in state
+    ? !state.ingestWorkerAvailable
+    : !state.workerSnapshotAvailable
+  const indexError = 'runtime' in state && Boolean(state.runtime?.lastError)
+  return Boolean(
+    ('indexEnabled' in state && state.indexEnabled === false)
+    || !state.runtimeAvailable
+    || workerUnavailable
+    || !state.runtimeLogIndexQueueAvailable
+    || indexError
+    || !state.dbService.statusAvailable
+    || !state.dbService.stateAvailable
+    || !state.gatewayAccountSideEffectsAvailable
+  )
 }
 
-export function runtimeLogsAlertDescription(runtime?: RuntimeLogRuntime): string {
-  if (!runtime) return ''
+export function runtimeLogsAlertDescription(state?: RuntimeLogAlertState): string {
+  if (!state) return ''
+  if ('indexEnabled' in state && state.indexEnabled === false) {
+    return '运行日志数据库搜索索引已临时关闭，日志文件写入与 grep 搜索仍正常。'
+  }
   const reasons: string[] = []
-  if (!runtime.runtimeAvailable) {
+  if (!state.runtimeAvailable) {
     reasons.push('服务运行态不可用')
   } else {
-    if (!runtime.ingestWorkerAvailable) reasons.push('日志写入进程不可用')
-    if (!runtime.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
-    if (!runtime.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
+    const workerUnavailable = 'ingestWorkerAvailable' in state
+      ? !state.ingestWorkerAvailable
+      : !state.workerSnapshotAvailable
+    if (workerUnavailable) reasons.push('日志写入进程不可用')
+    if (!state.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
+    if ('runtime' in state && state.runtime?.lastError) reasons.push('运行日志索引出现错误')
+    if (!state.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
   }
-  if (!runtime.dbService.statusAvailable) {
+  if (!state.dbService.statusAvailable) {
     reasons.push('本地数据库服务状态不可用')
-  } else if (!runtime.dbService.stateAvailable) {
+  } else if (!state.dbService.stateAvailable) {
     reasons.push('本地数据库服务父进程状态不可用')
   }
   return `${reasons.join('；') || '运行态状态未知'}。`

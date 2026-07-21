@@ -121,6 +121,7 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
 }
 
 export interface AuditLogRuntime {
+  enabled?: boolean
   runtimeAvailable: boolean
   workerSnapshotAvailable: boolean
   auditLogQueueAvailable: boolean

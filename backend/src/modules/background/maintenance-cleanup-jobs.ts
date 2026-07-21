@@ -6,8 +6,6 @@ import { cleanupModelCheckRunsBeforeAsync } from '../../storage/data-retention.r
 import { cleanupOperationLogsBeforeAsync } from '../../storage/operation-log-cleanup.repository.js'
 import { cleanupPublicApiLogsBeforeAsync } from '../../storage/public-api-logs.repository.js'
 import {
-  cleanupRuntimeLogFileCursorsBeforeAsync,
-  cleanupRuntimeLogIndexAsync,
   runtimeLogIndexRetentionDaysFromSettings
 } from '../../storage/runtime-logs.repository.js'
 import { getSettingsAsync } from '../../storage/settings.repository.js'
@@ -25,6 +23,7 @@ import {
   DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
 } from './data-retention-cleanup.constants.js'
 import { enqueueRecordMaintenanceJobAsync, enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
+import { cleanupRuntimeLogIndexRetention } from '../runtime-logs/runtime-log-index-retention.service.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 180
@@ -207,16 +206,13 @@ async function cleanupPostgresDatasetRetainedData(input: {
     () => cleanupPublicApiLogsBeforeAsync(cutoffIso(input.nowMs, input.retention.publicApiLogDays), input.batchSize),
     input.batchSize
   )
-  result.runtimeLogs = await cleanupCountedRetentionBatches(
-    input.maxBatches,
-    () => cleanupRuntimeLogIndexAsync(cutoffIso(input.nowMs, input.retention.runtimeLogDays), input.batchSize),
-    input.batchSize
-  )
-  result.runtimeLogFileCursors = await cleanupCountedRetentionBatches(
-    input.maxBatches,
-    () => cleanupRuntimeLogFileCursorsBeforeAsync(cutoffIso(input.nowMs, input.retention.runtimeLogDays), input.batchSize),
-    input.batchSize
-  )
+  const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
+    cutoffIso: cutoffIso(input.nowMs, input.retention.runtimeLogDays),
+    batchSize: input.batchSize,
+    maxBatches: input.maxBatches
+  })
+  result.runtimeLogs = runtimeLogCleanup.runtimeLogs
+  result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
   await runRetentionBatches(input.maxBatches, async () => {
     const deleted = await cleanupModelCheckRunsBeforeAsync(cutoffIso(input.nowMs, input.retention.modelCheckDays), input.batchSize)
     addNumberResult(result, deleted)

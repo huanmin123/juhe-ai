@@ -117,6 +117,11 @@ export function createRuntimeLogFileImportTestDependencies(
 }
 
 export function startRuntimeLogFileImport(): void {
+  if (!runtimeConfig.log.indexEnabled) {
+    // 没有索引 cursor 时，轮转文件按普通保留策略清理，避免全部被永久保护。
+    setRotatedLogCleanupProtectionPredicate(async () => true)
+    return
+  }
   if (runtimeConfig.runtimeMode === 'performance' && !runtimeConfig.log.fileEnabled) {
     throw new Error('高性能模式必须启用 JUHE_AI_LOG_FILE_ENABLED，否则 runtime_logs 没有耐久索引来源')
   }
