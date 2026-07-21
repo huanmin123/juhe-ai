@@ -45,11 +45,6 @@ const queueContracts = [
     file: 'modules/record-maintenance/record-maintenance-queue.service.ts',
     functionName: 'shouldEnqueueRecordMaintenanceJobToRedisStream',
     startConsumer: 'startRecordMaintenanceRedisStreamConsumer'
-  },
-  {
-    file: 'modules/runtime-logs/runtime-log-index-queue.service.ts',
-    functionName: 'shouldEnqueueRuntimeLogToRedisStream',
-    startConsumer: 'startRuntimeLogRedisStreamConsumer'
   }
 ]
 
@@ -119,7 +114,8 @@ assert.match(redisStreamQueueSource, /const redisInspectPendingMessagesScript = 
 assert.match(redisStreamQueueSource, /async inspectBacklog\(limit = 256\)[\s\S]*inspectPendingMessages[\s\S]*remainingLimit[\s\S]*runtime\.lag !== undefined[\s\S]*remainingLimit === 0/, 'Redis Stream backlog 检查在 lag 缺失时必须按扫描窗口保守标记截断')
 
 const backgroundIpcSource = source('modules/background/background-ipc.ts')
-assert.match(backgroundIpcSource, /function isRedisStreamManagedIngestQueueMessage[\s\S]*background_worker_usage_records[\s\S]*background_worker_runtime_log_line/, 'Redis Stream 管理的记录类消息必须集中识别')
+assert.match(backgroundIpcSource, /function isRedisStreamManagedIngestQueueMessage[\s\S]*background_worker_usage_records[\s\S]*background_worker_record_maintenance/, 'Redis Stream 管理的记录类消息必须集中识别')
+assert.doesNotMatch(backgroundIpcSource, /background_worker_runtime_log_line/, '普通运行日志不得进入 Redis Stream 管理的 IPC 消息')
 assert.match(backgroundIpcSource, /function queueWorkerMessage[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下禁止记录类消息进入后台 IPC 本地队列')
 assert.match(backgroundIpcSource, /function requeueIngestWorkerMessageFirst[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下发送失败不能把记录类消息 requeue 回本地 IPC 队列')
 assert.match(backgroundIpcSource, /function sendBackgroundWorkerMessageToParent[\s\S]*runtimeConfig\.queueDriver === 'redis_stream'[\s\S]*isRedisStreamManagedIngestQueueMessage/, 'redis_stream driver 下非 ingest worker 不能把记录类消息发回父进程 IPC')
@@ -131,7 +127,6 @@ for (const functionName of [
   'forwardAuditLogsToWorker',
   'forwardOperationLogsToWorker',
   'forwardPublicApiLogsToWorker',
-  'forwardRuntimeLogLineToWorker',
   'forwardRecordMaintenanceJobsToWorker'
 ]) {
   assert.match(
@@ -270,12 +265,6 @@ function assertQueueContracts(): void {
       assert.match(content, /async function enqueueRecordMaintenanceJobWithResultAsync[\s\S]*await enqueueRecordMaintenanceJobToRedisStream/, '数据维护 Redis Stream async-with-result 必须等待 XADD 成功')
       assert.match(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*droppedReason: 'redis_stream_async_required'/, '数据维护同步 withResult 在 redis_stream 下不能假报 queued=true')
       assert.doesNotMatch(content, /export function enqueueRecordMaintenanceJobWithResult\(input: RecordMaintenanceJob\): RecordMaintenanceEnqueueResult \{[\s\S]*void enqueueRecordMaintenanceJobToRedisStream/, '数据维护同步 withResult 禁止 fire-and-forget 写 Redis Stream')
-    } else if (contract.file === 'modules/runtime-logs/runtime-log-index-queue.service.ts') {
-      assert.match(content, /runtimeLogRedisProducer\.enqueue\(input, estimateRuntimeLogBytes\(input\)\)/, '运行日志索引 Redis Stream 入队必须先经过有界 producer')
-      assert.match(content, /onDrop: recordRuntimeLogRedisStreamDrop/, '运行日志索引 Redis Stream 入队失败必须记录分类丢弃事实和可观测错误')
-      assert.match(content, /disableOfflineQueue: true/, '运行日志专用 Redis producer 必须禁用 node-redis offline queue')
-      assert.match(content, /commandsQueueMaxLength: runtimeLogRedisProducerCommandQueueMaxLength/, '运行日志专用 Redis producer 必须限制底层命令队列')
-      assert.doesNotMatch(content, /scheduleProcessFatalError/, '派生运行日志索引单次入队失败不得终止业务主进程')
     } else {
       assert.doesNotMatch(content, /scheduleProcessFatalError/, `${contract.file} Redis Stream 瞬时入队失败不得升级为主进程 fatal`)
     }

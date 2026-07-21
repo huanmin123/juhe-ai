@@ -724,16 +724,17 @@ type JuheDatasetRuntimeLogFacetSummary struct {
 }
 
 type JuheDatasetRuntimeLogFileCursor struct {
-	LogFile          string
-	FileIdentity     pgtype.Text
-	CursorOffset     int64
-	LineNumber       int32
-	FileSize         int64
-	FileMtimeMs      pgtype.Int8
-	LastReadAt       pgtype.Text
-	LastErrorMessage pgtype.Text
-	CreatedAt        string
-	UpdatedAt        string
+	LogFile              string
+	FileIdentity         pgtype.Text
+	CursorOffset         int64
+	LineNumber           int32
+	FileSize             int64
+	TruncationGeneration int32
+	FileMtimeMs          pgtype.Int8
+	LastReadAt           pgtype.Text
+	LastErrorMessage     pgtype.Text
+	CreatedAt            string
+	UpdatedAt            string
 }
 
 type JuheDatasetRuntimeLogLevelFacet struct {

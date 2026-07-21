@@ -68,7 +68,6 @@ export const redisStreamQueueContracts = {
   auditLogs: { name: 'audit-logs', streamKey: 'juhe-ai:queue:audit-logs', groupName: 'juhe-ai:audit-log-writers' },
   operationLogs: { name: 'operation-logs', streamKey: 'juhe-ai:queue:operation-logs', groupName: 'juhe-ai:operation-log-writers' },
   publicApiLogs: { name: 'public-api-logs', streamKey: 'juhe-ai:queue:public-api-logs', groupName: 'juhe-ai:public-api-log-writers' },
-  runtimeLogIndex: { name: 'runtime-log-index', streamKey: 'juhe-ai:queue:runtime-log-index', groupName: 'juhe-ai:runtime-log-index-writers' },
   recordMaintenance: { name: 'record-maintenance', streamKey: 'juhe-ai:queue:record-maintenance', groupName: 'juhe-ai:record-maintenance-writers' }
 } as const
 

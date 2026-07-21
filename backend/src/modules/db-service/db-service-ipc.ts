@@ -790,16 +790,6 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardPublicApiLogsToWorker(record.items)
       }
       break
-    case 'background_worker_runtime_log_line':
-      if (runtimeConfig.processRole === 'server' && typeof record.line === 'string') {
-        void forwardRuntimeLogLineToWorker(record.line, {
-          sourceKey: typeof record.sourceKey === 'string' ? record.sourceKey : undefined,
-          logFile: typeof record.logFile === 'string' ? record.logFile : undefined,
-          logOffset: typeof record.logOffset === 'number' ? record.logOffset : undefined,
-          lineNumber: typeof record.lineNumber === 'number' ? record.lineNumber : undefined
-        })
-      }
-      break
     case 'background_worker_record_maintenance':
       if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
         void forwardRecordMaintenanceJobsToWorker(record.items)
@@ -1618,20 +1608,6 @@ async function forwardPublicApiLogsToWorker(items: unknown[]): Promise<void> {
       event: 'db_service_public_api_logs_forward_failed',
       itemCount: publicApiLogs.length
     }, 'DB service 转发公开接口日志到后台 worker 失败')
-  }
-}
-
-async function forwardRuntimeLogLineToWorker(
-  line: string,
-  options: import('../runtime-logs/runtime-log-index-queue.service.js').RuntimeLogLineIndexOptions
-): Promise<void> {
-  if (rejectRedisStreamLocalQueueForward('background_worker_runtime_log_line', 1)) return
-  const backgroundIpc = await import('../background/background-ipc.js')
-  if (!backgroundIpc.sendRuntimeLogLineToWorker(line, options)) {
-    logger.warn({
-      event: 'db_service_runtime_log_line_forward_failed',
-      lineBytes: Buffer.byteLength(line, 'utf8')
-    }, 'DB service 转发运行日志索引到后台 worker 失败')
   }
 }
 

@@ -19,12 +19,6 @@ export function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): nu
 
   let bytes: number
   switch (message.type) {
-    case 'background_worker_runtime_log_line':
-      bytes = Buffer.byteLength(message.line, 'utf8')
-        + Buffer.byteLength(message.sourceKey ?? '', 'utf8')
-        + Buffer.byteLength(message.logFile ?? '', 'utf8')
-        + 192
-      break
     case 'background_worker_usage_records':
       bytes = message.items.reduce((sum, item) => Math.min(workerMessageEstimateMaxBytes, sum + estimateJsonBytes(item) + 256), 128)
       break

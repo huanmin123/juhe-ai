@@ -13,7 +13,6 @@ import { setImmediate as yieldImmediate } from 'node:timers/promises'
 import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { emitRuntimeLogLine, RuntimeLogIndexStream } from '../modules/runtime-logs/runtime-log-stream.js'
 import { writeProcessFatalDiagnostic } from './process-fatal-diagnostic.js'
 
 interface RotatingFileLogStreamOptions {
@@ -24,13 +23,20 @@ interface RotatingFileLogStreamOptions {
   maxFiles: number
 }
 
-const runtimeLogIndexMaxLineBytes = 256 * 1024
 const logDirectoryScanYieldEvery = 100
 
 interface LogFileMtime {
   path: string
   mtimeMs: number
 }
+
+type RotatedLogCleanupProtectionPredicate = (
+  path: string,
+  fileSize: number,
+  fileIdentity: string
+) => Promise<boolean>
+
+let rotatedLogCleanupProtectionPredicate: RotatedLogCleanupProtectionPredicate | undefined
 
 export interface LogMaintenanceResult {
   scannedFileCount: number
@@ -43,16 +49,16 @@ class RotatingFileLogStream extends Writable {
   private readonly currentPath: string
   private stream: WriteStream
   private currentSize = 0
-  private lineNumber: number | undefined
-  private pendingIndexLine: Buffer = Buffer.alloc(0)
-  private pendingIndexLineStartOffset: number | undefined
-  private pendingIndexLineTruncated = false
   private cleanupRunning = false
   private cleanupQueued = false
   private readonly protectedCurrentFileNames = new Set([
     'juhe-ai.log',
     'juhe-ai.worker.log',
-    'juhe-ai.db-service.log'
+    'juhe-ai.db-service.log',
+    'juhe-ai.ingest-worker.log',
+    'juhe-ai.stats-worker.log',
+    'juhe-ai.ops-worker.log',
+    'juhe-ai.temporary-maintenance-worker.log'
   ])
 
   constructor(private readonly options: RotatingFileLogStreamOptions) {
@@ -60,7 +66,6 @@ class RotatingFileLogStream extends Writable {
     mkdirSync(options.directory, { recursive: true })
     this.currentPath = join(options.directory, options.fileName)
     this.currentSize = this.readCurrentSize()
-    this.lineNumber = this.currentSize === 0 ? 0 : undefined
     this.stream = this.openStream()
     this.cleanup()
   }
@@ -85,7 +90,8 @@ class RotatingFileLogStream extends Writable {
       directory: this.options.directory,
       protectedCurrentFileNames: this.protectedCurrentFileNames,
       maxFiles: this.options.maxFiles,
-      retentionDays: this.options.retentionDays
+      retentionDays: this.options.retentionDays,
+      canDeleteRotatedFile: rotatedLogCleanupProtectionPredicate
     })
   }
 
@@ -118,7 +124,7 @@ class RotatingFileLogStream extends Writable {
   }
 
   private writeBuffer(buffer: Buffer, callback: (error?: Error | null) => void): void {
-    this.emitIndexedLines(buffer)
+    this.currentSize += buffer.byteLength
     this.stream.write(buffer, (error?: Error | null) => {
       callback(error ?? undefined)
     })
@@ -144,8 +150,6 @@ class RotatingFileLogStream extends Writable {
   private async rotateClosedFileAsync(): Promise<void> {
     if (!(await pathExists(this.currentPath))) {
       this.currentSize = 0
-      this.lineNumber = 0
-      this.resetPendingIndexLine()
       this.stream = this.openStream()
       return
     }
@@ -158,8 +162,6 @@ class RotatingFileLogStream extends Writable {
       await rename(this.currentPath, fallbackPath)
     }
     this.currentSize = 0
-    this.lineNumber = 0
-    this.resetPendingIndexLine()
     this.cleanup()
     this.stream = this.openStream()
   }
@@ -196,83 +198,19 @@ class RotatingFileLogStream extends Writable {
     }
   }
 
-  private emitIndexedLines(buffer: Buffer): void {
-    const bufferStartOffset = this.currentSize
-    let cursor = 0
-    while (cursor < buffer.length) {
-      if (this.pendingIndexLineStartOffset === undefined) {
-        this.pendingIndexLineStartOffset = bufferStartOffset + cursor
-      }
-      const newlineIndex = buffer.indexOf(10, cursor)
-      if (newlineIndex < 0) {
-        this.appendPendingIndexLine(buffer.subarray(cursor))
-        break
-      }
-
-      this.appendPendingIndexLine(buffer.subarray(cursor, newlineIndex))
-      this.emitPendingIndexLine()
-      cursor = newlineIndex + 1
-    }
-    this.currentSize += buffer.byteLength
-  }
-
-  private appendPendingIndexLine(segment: Buffer): void {
-    if (segment.length === 0) return
-    const remainingBytes = runtimeLogIndexMaxLineBytes - this.pendingIndexLine.length
-    if (remainingBytes <= 0) {
-      this.pendingIndexLineTruncated = true
-      return
-    }
-
-    const retainedSegment = segment.length > remainingBytes
-      ? segment.subarray(0, remainingBytes)
-      : segment
-    this.pendingIndexLine = concatLineBuffer(
-      this.pendingIndexLine,
-      retainedSegment
-    )
-    if (retainedSegment.length < segment.length) {
-      this.pendingIndexLineTruncated = true
-    }
-  }
-
-  private emitPendingIndexLine(): void {
-    const lineStartOffset = this.pendingIndexLineStartOffset
-    if (lineStartOffset === undefined) {
-      this.resetPendingIndexLine()
-      return
-    }
-
-    let line = trimTrailingCarriageReturn(this.pendingIndexLine).toString('utf8')
-    if (this.pendingIndexLineTruncated) {
-      line = `${line} [truncated: runtime log line exceeded pending buffer limit]`
-    }
-    if (this.lineNumber !== undefined) {
-      this.lineNumber += 1
-    }
-    emitRuntimeLogLine(line, {
-      sourceKey: runtimeLogFileSourceKey(this.currentPath, lineStartOffset),
-      logFile: this.currentPath,
-      logOffset: lineStartOffset,
-      lineNumber: this.lineNumber
-    })
-    this.resetPendingIndexLine()
-  }
-
-  private resetPendingIndexLine(): void {
-    this.pendingIndexLine = Buffer.alloc(0)
-    this.pendingIndexLineStartOffset = undefined
-    this.pendingIndexLineTruncated = false
-  }
-
   private nextRotatedPath(): string {
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/[-:]/g, '')
-      .replace(/\.\d{3}Z$/, 'Z')
-    return join(this.options.directory, `juhe-ai.${timestamp}.${randomUUID()}.log`)
+    return join(this.options.directory, rotatedLogFileName(this.options.fileName, new Date(), randomUUID()))
   }
 
+}
+
+export function rotatedLogFileName(fileName: string, timestamp: Date, uniqueId: string): string {
+  const timestampText = timestamp
+    .toISOString()
+    .replace(/[-:]/g, '')
+    .replace(/\.\d{3}Z$/, 'Z')
+  const baseName = fileName.endsWith('.log') ? fileName.slice(0, -'.log'.length) : fileName
+  return `${baseName}.${timestampText}.${uniqueId}.log`
 }
 
 class MultiDestinationLogStream extends Writable {
@@ -292,22 +230,6 @@ class MultiDestinationLogStream extends Writable {
   }
 }
 
-function runtimeLogFileSourceKey(logPath: string, lineStartOffset: number): string {
-  return `${logPath}:${lineStartOffset}`
-}
-
-function trimTrailingCarriageReturn(buffer: Buffer): Buffer {
-  return buffer.length > 0 && buffer[buffer.length - 1] === 13
-    ? buffer.subarray(0, buffer.length - 1)
-    : buffer
-}
-
-function concatLineBuffer(left: Buffer, right: Buffer): Buffer {
-  if (right.length === 0) return left
-  if (left.length === 0) return right
-  return Buffer.concat([left, right], left.length + right.length)
-}
-
 async function pathExists(path: string): Promise<boolean> {
   try {
     await access(path)
@@ -322,11 +244,13 @@ async function cleanupRotatedLogFiles(options: {
   protectedCurrentFileNames: ReadonlySet<string>
   maxFiles: number
   retentionDays: number
+  canDeleteRotatedFile?: RotatedLogCleanupProtectionPredicate
 }): Promise<LogMaintenanceResult> {
   const currentFileCount = await countCurrentLogFiles(options.directory, options.protectedCurrentFileNames)
   const maxRotatedFiles = Math.max(0, options.maxFiles - currentFileCount)
   const expiresBefore = Date.now() - options.retentionDays * 24 * 60 * 60 * 1000
   const retainedRotatedFiles: LogFileMtime[] = []
+  let protectedRotatedFileCount = 0
   let scannedFileCount = 0
   let deletedFileCount = 0
 
@@ -342,13 +266,30 @@ async function cleanupRotatedLogFiles(options: {
       }
       const path = join(options.directory, entry.name)
       let mtimeMs: number
+      let fileSize: number
+      let fileIdentity: string
       try {
         const fileStats = await stat(path)
         if (!fileStats.isFile()) {
           continue
         }
         mtimeMs = fileStats.mtimeMs
+        fileSize = fileStats.size
+        fileIdentity = [fileStats.dev, fileStats.ino, Math.trunc(fileStats.birthtimeMs)].join(':')
       } catch {
+        continue
+      }
+
+      const canDelete = options.canDeleteRotatedFile
+        ? await options.canDeleteRotatedFile(path, fileSize, fileIdentity).catch(() => false)
+        : false
+      if (!canDelete) {
+        protectedRotatedFileCount += 1
+        const allowedDeletableFiles = Math.max(0, maxRotatedFiles - protectedRotatedFileCount)
+        while (retainedRotatedFiles.length > allowedDeletableFiles) {
+          const overflow = retainedRotatedFiles.pop()
+          if (overflow) deletedFileCount += await unlinkIfExists(overflow.path)
+        }
         continue
       }
 
@@ -357,7 +298,11 @@ async function cleanupRotatedLogFiles(options: {
         continue
       }
 
-      const overflow = retainNewestFile(retainedRotatedFiles, { path, mtimeMs }, maxRotatedFiles)
+      const overflow = retainNewestFile(
+        retainedRotatedFiles,
+        { path, mtimeMs },
+        Math.max(0, maxRotatedFiles - protectedRotatedFileCount)
+      )
       if (overflow) {
         deletedFileCount += await unlinkIfExists(overflow.path)
       }
@@ -368,7 +313,7 @@ async function cleanupRotatedLogFiles(options: {
   return {
     scannedFileCount,
     currentFileCount,
-    retainedRotatedFileCount: retainedRotatedFiles.length,
+    retainedRotatedFileCount: protectedRotatedFileCount + retainedRotatedFiles.length,
     deletedFileCount
   }
 }
@@ -421,7 +366,11 @@ async function unlinkIfExists(path: string): Promise<number> {
 }
 
 function isRotatedJuheLogFileName(fileName: string): boolean {
-  return /^juhe-ai\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName)
+  return /^juhe-ai(?:\.(?:worker|db-service|ingest-worker|stats-worker|ops-worker|temporary-maintenance-worker))?\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName)
+}
+
+export function setRotatedLogCleanupProtectionPredicate(predicate: RotatedLogCleanupProtectionPredicate): void {
+  rotatedLogCleanupProtectionPredicate = predicate
 }
 
 export async function cleanupRotatedLogFilesForTest(options: {
@@ -429,16 +378,22 @@ export async function cleanupRotatedLogFilesForTest(options: {
   protectedCurrentFileNames?: Iterable<string>
   maxFiles: number
   retentionDays: number
+  canDeleteRotatedFile?: RotatedLogCleanupProtectionPredicate
 }): Promise<LogMaintenanceResult> {
   return cleanupRotatedLogFiles({
     directory: options.directory,
     protectedCurrentFileNames: new Set(options.protectedCurrentFileNames ?? [
       'juhe-ai.log',
       'juhe-ai.worker.log',
-      'juhe-ai.db-service.log'
+      'juhe-ai.db-service.log',
+      'juhe-ai.ingest-worker.log',
+      'juhe-ai.stats-worker.log',
+      'juhe-ai.ops-worker.log',
+      'juhe-ai.temporary-maintenance-worker.log'
     ]),
     maxFiles: options.maxFiles,
-    retentionDays: options.retentionDays
+    retentionDays: options.retentionDays,
+    canDeleteRotatedFile: options.canDeleteRotatedFile ?? (async () => true)
   })
 }
 
@@ -446,7 +401,9 @@ const fileLogStream = runtimeConfig.log.fileEnabled
   ? new RotatingFileLogStream({
     directory: runtimeConfig.log.directory,
     fileName: runtimeConfig.processRole === 'worker'
-      ? 'juhe-ai.worker.log'
+      ? runtimeConfig.workerRole === 'worker'
+        ? 'juhe-ai.worker.log'
+        : `juhe-ai.${runtimeConfig.workerRole}.log`
       : runtimeConfig.processRole === 'db-service'
         ? 'juhe-ai.db-service.log'
         : 'juhe-ai.log',
@@ -455,12 +412,10 @@ const fileLogStream = runtimeConfig.log.fileEnabled
     maxFiles: runtimeConfig.log.maxFiles
   })
   : undefined
-const runtimeLogIndexStream = fileLogStream ? undefined : new RuntimeLogIndexStream()
 
 const logDestinations: Writable[] = [
   ...(runtimeConfig.log.consoleEnabled ? [process.stdout] : []),
-  ...(fileLogStream ? [fileLogStream] : []),
-  ...(runtimeLogIndexStream ? [runtimeLogIndexStream] : [])
+  ...(fileLogStream ? [fileLogStream] : [])
 ]
 
 const loggerOptions: LoggerOptions = {

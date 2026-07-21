@@ -6,7 +6,6 @@ const queueFiles = [
   '../../modules/audit-logs/audit-log-queue.service.ts',
   '../../modules/operation-logs/operation-log-queue.service.ts',
   '../../modules/public-api-logs/public-api-log-queue.service.ts',
-  '../../modules/runtime-logs/runtime-log-index-queue.service.ts',
   '../../modules/record-maintenance/record-maintenance-queue.service.ts'
 ] as const
 

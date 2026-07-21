@@ -72,6 +72,7 @@ export interface RuntimeLogFileCursor {
   cursorOffset: number
   lineNumber: number
   fileSize: number
+  truncationGeneration: number
   fileMtimeMs?: number
   lastReadAt?: string
   lastErrorMessage?: string
@@ -85,9 +86,15 @@ export interface RuntimeLogFileCursorInput {
   cursorOffset: number
   lineNumber: number
   fileSize: number
+  truncationGeneration?: number
   fileMtimeMs?: number
   lastReadAt?: string
   lastErrorMessage?: string
+}
+
+export interface RuntimeLogFileCursorAsyncDependencies {
+  getPostgresClient?: () => Promise<DatabaseClient>
+  now?: () => string
 }
 
 type RuntimeLogRow = Record<string, unknown>
@@ -116,7 +123,6 @@ export const runtimeLogIndexRetentionMaxDays = 90
 const runtimeLogKeywordDefaultWindowHours = 6
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
-const runtimeLogMaxRawJsonChars = 128 * 1024
 
 export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
   if (inputs.length === 0) return
@@ -473,6 +479,8 @@ export function cleanupRuntimeLogFileCursorsBefore(cutoffIso: string, limit = 10
       SELECT rowid
       FROM runtime_log_file_cursors
       WHERE updated_at < ?
+        AND cursor_offset >= file_size
+        AND last_error_message IS NULL
       ORDER BY updated_at ASC, rowid ASC
       LIMIT ?
     )
@@ -491,6 +499,8 @@ export async function cleanupRuntimeLogFileCursorsBeforeAsync(cutoffIso: string,
       SELECT ctid
       FROM juhe_dataset.runtime_log_file_cursors
       WHERE updated_at < ?
+        AND cursor_offset >= file_size
+        AND last_error_message IS NULL
       ORDER BY updated_at ASC, ctid ASC
       LIMIT ?
     )
@@ -505,19 +515,59 @@ export function getRuntimeLogFileCursor(logFile: string): RuntimeLogFileCursor |
   return row ? runtimeLogFileCursorFromRow(row) : undefined
 }
 
+export async function getRuntimeLogFileCursorAsync(
+  logFile: string,
+  dependencies: RuntimeLogFileCursorAsyncDependencies = {}
+): Promise<RuntimeLogFileCursor | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getRuntimeLogFileCursor(logFile)
+  }
+  const client = await runtimeLogFileCursorPostgresClient(dependencies)
+  const rows = await client.query<RuntimeLogRow>(
+    'SELECT * FROM juhe_dataset.runtime_log_file_cursors WHERE log_file = ?',
+    [logFile]
+  )
+  const row = rows[0]
+  return row ? runtimeLogFileCursorFromRow(row) : undefined
+}
+
+export function getRuntimeLogFileCursorByIdentity(fileIdentity: string): RuntimeLogFileCursor | undefined {
+  const row = getDatasetDatabase()
+    .prepare('SELECT * FROM runtime_log_file_cursors WHERE file_identity = ? ORDER BY updated_at DESC LIMIT 1')
+    .get(fileIdentity) as RuntimeLogRow | undefined
+  return row ? runtimeLogFileCursorFromRow(row) : undefined
+}
+
+export async function getRuntimeLogFileCursorByIdentityAsync(
+  fileIdentity: string,
+  dependencies: RuntimeLogFileCursorAsyncDependencies = {}
+): Promise<RuntimeLogFileCursor | undefined> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getRuntimeLogFileCursorByIdentity(fileIdentity)
+  }
+  const client = await runtimeLogFileCursorPostgresClient(dependencies)
+  const rows = await client.query<RuntimeLogRow>(
+    'SELECT * FROM juhe_dataset.runtime_log_file_cursors WHERE file_identity = ? ORDER BY updated_at DESC LIMIT 1',
+    [fileIdentity]
+  )
+  const row = rows[0]
+  return row ? runtimeLogFileCursorFromRow(row) : undefined
+}
+
 export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): void {
   const now = nowIso()
   getDatasetDatabase()
     .prepare(`
       INSERT INTO runtime_log_file_cursors (
-        log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
-        last_read_at, last_error_message, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation,
+        file_mtime_ms, last_read_at, last_error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(log_file) DO UPDATE SET
         file_identity = excluded.file_identity,
         cursor_offset = excluded.cursor_offset,
         line_number = excluded.line_number,
         file_size = excluded.file_size,
+        truncation_generation = excluded.truncation_generation,
         file_mtime_ms = excluded.file_mtime_ms,
         last_read_at = excluded.last_read_at,
         last_error_message = excluded.last_error_message,
@@ -529,12 +579,62 @@ export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): vo
       positiveInteger(input.cursorOffset),
       positiveInteger(input.lineNumber),
       positiveInteger(input.fileSize),
+      positiveInteger(input.truncationGeneration),
       integerOrNull(input.fileMtimeMs),
       input.lastReadAt ?? now,
       input.lastErrorMessage ?? null,
       now,
       now
     )
+}
+
+export async function upsertRuntimeLogFileCursorAsync(
+  input: RuntimeLogFileCursorInput,
+  dependencies: RuntimeLogFileCursorAsyncDependencies = {}
+): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    upsertRuntimeLogFileCursor(input)
+    return
+  }
+  const now = dependencies.now?.() ?? nowIso()
+  const client = await runtimeLogFileCursorPostgresClient(dependencies)
+  await client.execute(`
+    INSERT INTO juhe_dataset.runtime_log_file_cursors (
+      log_file, file_identity, cursor_offset, line_number, file_size, truncation_generation,
+      file_mtime_ms, last_read_at, last_error_message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(log_file) DO UPDATE SET
+      file_identity = excluded.file_identity,
+      cursor_offset = excluded.cursor_offset,
+      line_number = excluded.line_number,
+      file_size = excluded.file_size,
+      truncation_generation = excluded.truncation_generation,
+      file_mtime_ms = excluded.file_mtime_ms,
+      last_read_at = excluded.last_read_at,
+      last_error_message = excluded.last_error_message,
+      updated_at = excluded.updated_at
+  `, [
+    input.logFile,
+    input.fileIdentity ?? null,
+    positiveInteger(input.cursorOffset),
+    positiveInteger(input.lineNumber),
+    positiveInteger(input.fileSize),
+    positiveInteger(input.truncationGeneration),
+    integerOrNull(input.fileMtimeMs),
+    input.lastReadAt ?? now,
+    input.lastErrorMessage ?? null,
+    now,
+    now
+  ])
+}
+
+async function runtimeLogFileCursorPostgresClient(
+  dependencies: RuntimeLogFileCursorAsyncDependencies
+): Promise<DatabaseClient> {
+  if (dependencies.getPostgresClient) {
+    return dependencies.getPostgresClient()
+  }
+  return createPostgresDatabaseClient(await getPostgresPool())
 }
 
 function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: string; params: RuntimeLogFilterValue[] } {
@@ -601,11 +701,6 @@ function escapeSqlLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
-function truncateRuntimeLogRawJson(value: string): string {
-  if (value.length <= runtimeLogMaxRawJsonChars) return value
-  return `${value.slice(0, runtimeLogMaxRawJsonChars)}...[truncated]`
-}
-
 function runtimeLogListSelectColumns(alias: string): string {
   return [
     'id',
@@ -669,6 +764,7 @@ function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
     cursorOffset: positiveInteger(row.cursor_offset),
     lineNumber: positiveInteger(row.line_number),
     fileSize: positiveInteger(row.file_size),
+    truncationGeneration: positiveInteger(row.truncation_generation),
     fileMtimeMs: integerOrNull(row.file_mtime_ms) ?? undefined,
     lastReadAt: optionalString(row.last_read_at),
     lastErrorMessage: optionalString(row.last_error_message),
@@ -690,7 +786,7 @@ function normalizeRuntimeLogIndexInput(input: RuntimeLogIndexInput): NormalizedR
     event: input.event,
     message: input.message,
     errorMessage: input.errorMessage,
-    rawJson: truncateRuntimeLogRawJson(input.rawJson),
+    rawJson: input.rawJson,
     createdAt: normalizeRuntimeLogTimestamp(input.createdAt) ?? fallbackNowIso
   }
 }

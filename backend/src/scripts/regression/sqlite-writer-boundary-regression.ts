@@ -209,9 +209,9 @@ function assertRuntimeWriteQueueSourceGuards(): void {
   assert(dbServiceIpcSource.includes('requestDbServiceDatasetWrite'), 'DB service 必须具备 dataset writer 转发入口')
   assert(dbServiceIpcSource.includes('respondToDatasetWriteRequest'), 'server 必须把 DB service dataset writer 请求转发给 ingest-worker')
 
-  const runtimeLogQueueSource = readFileSync(resolve('src/modules/runtime-logs/runtime-log-index-queue.service.ts'), 'utf8')
-  assert(runtimeLogQueueSource.includes("runtimeConfig.processRole === 'db-service'"), 'DB service 运行日志索引不能回退到本地 dataset 队列')
-  assert(runtimeLogQueueSource.includes('sendRuntimeLogLineFromDbServiceToServer'), 'DB service 运行日志索引必须投递父进程后再由 ingest-worker 写入')
+  const runtimeLogFileImporterSource = readFileSync(resolve('src/modules/runtime-logs/runtime-log-file-import.service.ts'), 'utf8')
+  assert(runtimeLogFileImporterSource.includes('createRuntimeLogsBatchAsync'), '运行日志必须由文件消费端批量写入')
+  assert(!runtimeLogFileImporterSource.includes('sendRuntimeLogLineToWorker'), '运行日志文件消费不得依赖 IPC')
 
   const accountProbeJobsSource = readFileSync(resolve('src/modules/background/account-probe-jobs.ts'), 'utf8')
   assert(accountProbeJobsSource.includes('requestBackgroundWorkerDbService'), 'ops-worker 账号探测候选扫描必须通过 DB service')

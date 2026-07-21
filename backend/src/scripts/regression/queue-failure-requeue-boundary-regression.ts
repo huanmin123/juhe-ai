@@ -15,10 +15,6 @@ const queueFiles = [
     required: ['pendingOperationLogs.slice(0, operationLogBatchSize)']
   },
   {
-    path: '../../modules/runtime-logs/runtime-log-index-queue.service.ts',
-    required: ['peekRuntimeLogFlushBatch', 'removeRuntimeLogFlushBatch']
-  },
-  {
     path: '../../modules/public-api-logs/public-api-log-queue.service.ts',
     required: ['publicApiLogQueue.slice(0, publicApiLogFlushBatchSize)', 'publicApiLogQueue.splice(0, batch.length)']
   },
