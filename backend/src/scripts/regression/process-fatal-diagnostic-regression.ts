@@ -6,6 +6,7 @@ import {
   processDiagnosticAsyncStatsForTest,
   serializeProcessFatalDiagnostic,
   setProcessDiagnosticAsyncWriterForTest,
+  writeBoundedProcessDiagnosticLineAsync,
   writeProcessDiagnosticAsync
 } from '../../shared/process-fatal-diagnostic.js'
 
@@ -85,12 +86,45 @@ assert.equal(asyncLines.length, 1, '异步 stderr writer 同时最多只能有�
 pendingCallbacks.shift()?.()
 await new Promise<void>((resolve) => setImmediate(resolve))
 assert.equal(asyncLines.length, 2, '释放后只补写最后一条有界现场')
+assert.equal(JSON.parse(asyncLines[1] ?? '{}').asyncDiagnosticDropped, 98, '下一条现场必须带出被覆盖的诊断数')
 pendingCallbacks.shift()?.()
 await drainProcessDiagnosticAsyncForTest()
 assert.deepEqual(processDiagnosticAsyncStatsForTest(), {
   active: false,
   pending: false,
   dropped: 98,
+  pendingBytes: 0
+})
+setProcessDiagnosticAsyncWriterForTest()
+
+const priorityCallbacks: Array<(error?: Error | null) => void> = []
+const priorityLines: string[] = []
+setProcessDiagnosticAsyncWriterForTest((line, callback) => {
+  priorityLines.push(line)
+  priorityCallbacks.push(callback)
+})
+writeBoundedProcessDiagnosticLineAsync('{"event":"general_active"}\n')
+writeProcessDiagnosticAsync({
+  event: 'critical_pending',
+  error: new Error('critical failure evidence'),
+  processRole: 'server',
+  pid: 123
+})
+writeBoundedProcessDiagnosticLineAsync('{"event":"general_pending_1"}\n')
+writeBoundedProcessDiagnosticLineAsync('{"event":"general_pending_2"}\n')
+priorityCallbacks.shift()?.()
+await new Promise<void>((resolve) => setImmediate(resolve))
+assert.equal(JSON.parse(priorityLines[1] ?? '{}').event, 'critical_pending', '关键现场必须先于普通诊断写出')
+assert.equal(JSON.parse(priorityLines[1] ?? '{}').asyncDiagnosticDropped, 1, '关键现场必须报告普通诊断覆盖数')
+priorityCallbacks.shift()?.()
+await new Promise<void>((resolve) => setImmediate(resolve))
+assert.equal(JSON.parse(priorityLines[2] ?? '{}').event, 'general_pending_2', '关键现场写完后仍须保留最新普通诊断')
+priorityCallbacks.shift()?.()
+await drainProcessDiagnosticAsyncForTest()
+assert.deepEqual(processDiagnosticAsyncStatsForTest(), {
+  active: false,
+  pending: false,
+  dropped: 1,
   pendingBytes: 0
 })
 setProcessDiagnosticAsyncWriterForTest()

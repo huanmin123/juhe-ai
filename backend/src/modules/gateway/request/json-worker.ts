@@ -134,7 +134,7 @@ function captureWorkerErrorValue(
   if (!(error instanceof Error)) {
     return {
       name: 'NonErrorThrown',
-      message: captureWorkerErrorText(String(error), state)
+      message: captureWorkerErrorText(safeWorkerThrownValueText(error), state)
     }
   }
 
@@ -157,11 +157,19 @@ function captureWorkerErrorValue(
   return envelope
 }
 
+function safeWorkerThrownValueText(error: unknown): string {
+  try {
+    return String(error)
+  } catch {
+    return '[unprintable thrown value]'
+  }
+}
+
 function captureWorkerErrorText(value: string, state: GatewayJsonWorkerErrorCaptureState): string {
   const maxBytes = Math.min(gatewayJsonWorkerErrorMaxStringBytes, state.remainingBytes)
   const retained = truncateWorkerErrorText(value, maxBytes)
   const retainedBytes = Buffer.byteLength(retained, 'utf8')
-  if (retainedBytes < Buffer.byteLength(value, 'utf8')) state.truncated = true
+  if (retained !== value) state.truncated = true
   state.remainingBytes = Math.max(0, state.remainingBytes - retainedBytes)
   return retained
 }
@@ -185,9 +193,9 @@ function safeWorkerErrorValue(error: Error, key: 'cause'): unknown {
 
 function truncateWorkerErrorText(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return ''
-  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value
+  if (value.length <= maxBytes && Buffer.byteLength(value, 'utf8') <= maxBytes) return value
   let low = 0
-  let high = value.length
+  let high = Math.min(value.length, maxBytes)
   while (low < high) {
     const midpoint = Math.ceil((low + high) / 2)
     if (Buffer.byteLength(value.slice(0, midpoint), 'utf8') <= maxBytes) low = midpoint

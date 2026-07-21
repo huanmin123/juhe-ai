@@ -123,10 +123,11 @@ try {
   })
   await importer.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'worker-rotated', kind: 'rotated' }, hostileDependencies)
   await drainProcessDiagnosticAsyncForTest()
-  assert.equal(stderrLines.length, 1, '诊断序列化失败只能退化写一次固定 stderr JSON')
-  const serializationFallback = JSON.parse(stderrLines[0] ?? '') as Record<string, any>
-  assert.equal(serializationFallback.error.code, 'DIAGNOSTIC_SERIALIZE_FAILED')
-  assert.equal(serializationFallback.phase, 'diagnostic.serialize')
+  assert.equal(stderrLines.length, 1, '恶意错误 getter 只能写一次有界 stderr JSON')
+  const hostileEvent = JSON.parse(stderrLines[0] ?? '') as Record<string, any>
+  assert.equal(hostileEvent.error.message, 'hostile diagnostic error')
+  assert.equal(hostileEvent.error.cause.message, '[unreadable cause: accessor threw]')
+  assert.equal(hostileEvent.phase, 'cursor.resolve')
 
   setProcessDiagnosticAsyncWriterForTest(() => { throw new Error('stderr unavailable') })
   await assert.doesNotReject(

@@ -8,7 +8,16 @@ import type { SystemAccountRole } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
 import { captureExpectedFailureContext, captureUnexpectedFailureContext } from './logging/log-failure-context.js'
-import { logger } from './logger.js'
+import { logger, logPublisherStats } from './logger.js'
+
+interface RequestStageSummary {
+  sequence: number
+  stage: string
+  outcome: string
+  durationMs: number
+  startedOffsetMs?: number
+  endedOffsetMs?: number
+}
 
 export interface RequestContext {
   traceId: string
@@ -16,7 +25,7 @@ export interface RequestContext {
   startedAt: number
   monotonicStartedAt?: number
   stageSequence?: number
-  stageSummaries?: Array<{ sequence: number; stage: string; outcome: string; durationMs: number }>
+  stageSummaries?: RequestStageSummary[]
   stageSummaryDropped?: number
   timingSummaryLogged?: boolean
   terminalExpectedFailure?: boolean
@@ -29,6 +38,14 @@ export interface RequestContext {
   apiKeyId?: string
   groupId?: string
   trafficSource?: string
+  requestLane?: string
+  model?: string
+  stream?: boolean
+  accountId?: string
+  attemptCount?: number
+  timingLogDroppedCount?: number
+  timingLogQueuePeakCount?: number
+  timingLogQueuePeakBytes?: number
   logger: Logger
 }
 
@@ -90,6 +107,7 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
   const traceId = normalizeTraceId(req) ?? createTraceId()
   const requestId = randomUUID()
   const clientIp = extractClientIp(req)
+  const initialLogStats = logPublisherStats()
   const context: RequestContext = {
     traceId,
     requestId,
@@ -99,6 +117,9 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl),
     clientIp,
+    timingLogDroppedCount: 0,
+    timingLogQueuePeakCount: initialLogStats.pendingCount,
+    timingLogQueuePeakBytes: initialLogStats.pendingBytes,
     logger: logger.child({ traceId, requestId })
   }
 
@@ -115,6 +136,7 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
       originalUrl: context.originalUrl,
       clientIp
     }, 'HTTP 请求开始')
+    captureTimingLogQueueSnapshot(context)
     res.once('finish', () => logRequestFinished(req, res, context))
     res.once('close', () => {
       if (!res.writableEnded) {
@@ -172,6 +194,7 @@ export function logRequestStage(
     endedAt
   )
   const requestLogger = context?.logger ?? logger
+  const timingDropCountBefore = context ? logPublisherStats().dropCount : 0
   requestLogger.info(stageFields, '请求阶段完成')
   if (context) {
     context.stageSummaries ??= []
@@ -180,7 +203,9 @@ export function logRequestStage(
         sequence: Number(stageFields.sequence ?? context.stageSummaries.length + 1),
         stage,
         outcome,
-        durationMs: Number(stageFields.durationMs ?? 0)
+        durationMs: Number(stageFields.durationMs ?? 0),
+        startedOffsetMs: Number(stageFields.startedOffsetMs ?? 0),
+        endedOffsetMs: Number(stageFields.endedOffsetMs ?? 0)
       })
     } else {
       context.stageSummaryDropped = (context.stageSummaryDropped ?? 0) + 1
@@ -188,9 +213,14 @@ export function logRequestStage(
     if (outcome === 'expected_failure' && fields.terminalExpectedFailure === true) {
       context.terminalExpectedFailure = true
     }
+    captureRequestTimingFields(context, fields)
   }
   if (outcome === 'unexpected_failure') {
     requestLogger.error({ ...stageFields, event: 'gateway.request.failure' }, '请求阶段发生未预期异常')
+  }
+  if (context) {
+    recordRequestTimingLogDrops(context, timingDropCountBefore, logPublisherStats().dropCount)
+    captureTimingLogQueueSnapshot(context)
   }
 }
 
@@ -357,18 +387,93 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
 function logRequestTimingSummary(context: RequestContext, statusCode: number, outcome: GatewayRequestStageOutcome): void {
   if (context.timingSummaryLogged || !context.stageSummaries?.length) return
   context.timingSummaryLogged = true
-  context.logger.info({
+  captureTimingLogQueueSnapshot(context)
+  const totalDurationMs = Math.max(0, performance.now() - (context.monotonicStartedAt ?? performance.now()))
+  const auditStage = firstStage(context, 'audit.finalize')
+  const preUpstreamStage = firstStage(context, 'upstream.fetch_headers')
+  logger.info({
+    ...requestContextLogBindings(context),
     event: 'gateway.request.timing_summary',
     version: LOG_EVENT_VERSION,
     service: 'juhe-ai',
     role: runtimeConfig.processRole,
+    method: context.method,
+    path: context.path,
+    trafficSource: context.trafficSource ?? null,
+    requestLane: context.requestLane ?? null,
+    model: context.model ?? null,
+    stream: context.stream ?? null,
     outcome,
     statusCode,
-    durationMs: Math.max(0, performance.now() - (context.monotonicStartedAt ?? performance.now())),
-    stageCount: context.stageSummaries.length,
+    accountId: context.accountId ?? null,
+    groupId: context.groupId ?? null,
+    attemptCount: context.attemptCount ?? 0,
+    totalDurationMs,
+    durationMs: totalDurationMs,
+    preAuditDurationMs: auditStage?.startedOffsetMs ?? totalDurationMs,
+    preUpstreamDurationMs: preUpstreamStage?.startedOffsetMs ?? null,
+    upstreamHeadersDurationMs: sumStageDurations(context, 'upstream.fetch_headers') ?? null,
+    firstOutputDurationMs: lastStage(context, 'upstream.first_output')?.durationMs ?? null,
+    upstreamBodyDurationMs: sumStageDurations(context, 'upstream.body.completed') ?? null,
+    downstreamFinishDurationMs: lastStage(context, 'downstream.finish')?.durationMs ?? null,
+    stageCount: context.stageSequence ?? context.stageSummaries.length,
+    timingLogDroppedCount: context.timingLogDroppedCount ?? 0,
+    timingLogQueuePeakCount: context.timingLogQueuePeakCount ?? 0,
+    timingLogQueuePeakBytes: context.timingLogQueuePeakBytes ?? 0,
     droppedStageSummaries: context.stageSummaryDropped ?? 0,
     stages: context.stageSummaries
   }, '网关请求阶段耗时汇总')
+}
+
+function captureRequestTimingFields(context: RequestContext, fields: Record<string, unknown>): void {
+  if (typeof fields.trafficSource === 'string') context.trafficSource = fields.trafficSource
+  if (typeof fields.requestLane === 'string') context.requestLane = fields.requestLane
+  if (typeof fields.model === 'string') context.model = fields.model
+  if (typeof fields.requestedModel === 'string') context.model = fields.requestedModel
+  if (typeof fields.stream === 'boolean') context.stream = fields.stream
+  if (typeof fields.accountId === 'string') context.accountId = fields.accountId
+  if (typeof fields.groupId === 'string') context.groupId = fields.groupId
+  const auditAttemptIndex = finiteNonNegativeInteger(fields.auditAttemptIndex)
+  const attemptIndex = finiteNonNegativeInteger(fields.attemptIndex)
+  const observedAttemptCount = Math.max(auditAttemptIndex ?? 0, attemptIndex === undefined ? 0 : attemptIndex + 1)
+  if (observedAttemptCount > (context.attemptCount ?? 0)) context.attemptCount = observedAttemptCount
+}
+
+function captureTimingLogQueueSnapshot(context: RequestContext): void {
+  const stats = logPublisherStats()
+  context.timingLogQueuePeakCount = Math.max(context.timingLogQueuePeakCount ?? 0, stats.pendingCount)
+  context.timingLogQueuePeakBytes = Math.max(context.timingLogQueuePeakBytes ?? 0, stats.pendingBytes)
+}
+
+export function recordRequestTimingLogDrops(context: RequestContext, before: number, after: number): void {
+  if (!Number.isFinite(before) || !Number.isFinite(after) || after <= before) return
+  context.timingLogDroppedCount = (context.timingLogDroppedCount ?? 0) + Math.trunc(after - before)
+}
+
+function finiteNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : undefined
+}
+
+function firstStage(context: RequestContext, stage: string): RequestStageSummary | undefined {
+  return context.stageSummaries?.find((item) => item.stage === stage)
+}
+
+function lastStage(context: RequestContext, stage: string): RequestStageSummary | undefined {
+  const stages = context.stageSummaries
+  if (!stages) return undefined
+  for (let index = stages.length - 1; index >= 0; index -= 1) {
+    if (stages[index]?.stage === stage) return stages[index]
+  }
+  return undefined
+}
+
+function sumStageDurations(context: RequestContext, stage: string): number | undefined {
+  const matching = context.stageSummaries?.filter((item) => item.stage === stage) ?? []
+  return matching.length > 0
+    ? matching.reduce((total, item) => total + item.durationMs, 0)
+    : undefined
 }
 
 export function resolveRequestSummaryOutcome(context: RequestContext, statusCode: number): GatewayRequestStageOutcome {

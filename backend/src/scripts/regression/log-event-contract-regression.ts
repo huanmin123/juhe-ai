@@ -17,6 +17,7 @@ import {
   logRequestStage,
   normalizeHeaderId,
   parseTraceParent,
+  recordRequestTimingLogDrops,
   resolveRequestSummaryOutcome,
   withRequestContext,
   type RequestContext
@@ -174,6 +175,9 @@ const clockSafeContext: RequestContext = {
   originalUrl: '/v1/chat/completions',
   logger: clockSafeLogger
 }
+recordRequestTimingLogDrops(clockSafeContext, 10, 12)
+recordRequestTimingLogDrops(clockSafeContext, 12, 15)
+assert.equal(clockSafeContext.timingLogDroppedCount, 5, 'timing drop 必须按本请求每次写入增量累计')
 withRequestContext(clockSafeContext, () => {
   // The guard must keep accidental Date.now() input from creating trillion-ms offsets.
   logRequestStage('request.accepted', {}, 'success', Date.now())
@@ -200,6 +204,11 @@ assert.equal(resolveRequestSummaryOutcome({
   ...clockSafeContext,
   stageSummaries: [{ sequence: 1, stage: 'upstream.dispatch.failed', outcome: 'expected_failure', durationMs: 1 }]
 }, 503), 'unexpected_failure')
+assert.equal(resolveRequestSummaryOutcome({
+  ...clockSafeContext,
+  terminalExpectedFailure: true,
+  stageSummaries: [{ sequence: 1, stage: 'body.capture', outcome: 'expected_failure', durationMs: 1 }]
+}, 503), 'expected_failure')
 assert.equal(resolveRequestSummaryOutcome({ ...clockSafeContext, stageSummaries: [] }, 200), 'success')
 
 const rawLoggerProbe = spawnSync(process.execPath, [
@@ -268,5 +277,34 @@ for (const eventName of expectedContextEvents) {
     assert.equal(occurrenceCount, 1, `${eventName} 的 ${key} 出现 ${occurrenceCount} 次：${rawLine}`)
   }
 }
+const timingSummaryLine = requestContextRawLines.find((line) => line.includes('"event":"gateway.request.timing_summary"'))
+const timingSummary = JSON.parse(timingSummaryLine ?? '{}') as Record<string, unknown>
+for (const key of [
+  'method',
+  'path',
+  'trafficSource',
+  'requestLane',
+  'model',
+  'stream',
+  'accountId',
+  'groupId',
+  'totalDurationMs',
+  'preAuditDurationMs',
+  'preUpstreamDurationMs',
+  'upstreamHeadersDurationMs',
+  'firstOutputDurationMs',
+  'upstreamBodyDurationMs',
+  'downstreamFinishDurationMs',
+  'attemptCount',
+  'stageCount',
+  'timingLogDroppedCount',
+  'timingLogQueuePeakCount',
+  'timingLogQueuePeakBytes'
+]) {
+  assert.equal(key in timingSummary, true, `timing summary 缺少 ${key}: ${timingSummaryLine}`)
+}
+assert.equal(timingSummary.stageCount, 70, 'stageCount 必须保留超过摘要数组上限后的真实阶段总数')
+assert.equal((timingSummary.stages as unknown[]).length, 64, 'summary 内嵌阶段数组必须保持有界')
+assert.equal(timingSummary.droppedStageSummaries, 6, 'summary 必须明确内嵌阶段摘要丢弃数')
 
 console.log('日志事件契约回归通过')

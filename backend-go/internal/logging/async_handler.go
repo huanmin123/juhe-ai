@@ -238,13 +238,27 @@ func (metadata *recordTruncationMetadata) addString(path string, value string) {
 	if len(metadata.fields) >= 16 {
 		return
 	}
-	hash := sha256.Sum256([]byte(value))
+	hash, hashScope := sha256Text(value)
 	metadata.fields = append(metadata.fields, slog.Group(
 		"field"+strconv.Itoa(len(metadata.fields)),
 		slog.String("path", path),
 		slog.Int("originalBytes", len(value)),
-		slog.String("sha256", hex.EncodeToString(hash[:])),
+		slog.String("sha256", hash),
+		slog.String("hashScope", hashScope),
 	))
+}
+
+func sha256Text(value string) (string, string) {
+	hasher := sha256.New()
+	const sampleBytes = 4096
+	if len(value) <= sampleBytes*2 {
+		_, _ = hasher.Write([]byte(value))
+		return hex.EncodeToString(hasher.Sum(nil)), "full"
+	}
+	_, _ = hasher.Write([]byte(value[:sampleBytes]))
+	_, _ = hasher.Write([]byte(strconv.Itoa(len(value))))
+	_, _ = hasher.Write([]byte(value[len(value)-sampleBytes:]))
+	return hex.EncodeToString(hasher.Sum(nil)), "first_last_4096_with_length"
 }
 
 func (metadata *recordTruncationMetadata) addOpaque(path string, typeName string) {
@@ -314,7 +328,14 @@ func boundHandlerAttrs(attrs []slog.Attr) []slog.Attr {
 		bounded = append(bounded,
 			slog.Bool("withAttrsTruncated", true),
 			slog.String("withAttrsTruncationReason", "async_log_record_budget"),
+			slog.Int("withAttrsOriginalCount", metadata.originalAttrCount),
 		)
+		if len(metadata.fields) > 0 {
+			bounded = append(bounded, slog.Attr{
+				Key:   "withAttrsTruncatedFields",
+				Value: slog.GroupValue(metadata.fields...),
+			})
+		}
 	}
 	return bounded
 }
@@ -340,6 +361,7 @@ func boundFailureRecord(record slog.Record) slog.Record {
 	attrCount := 0
 	record.Attrs(func(attr slog.Attr) bool {
 		if attrCount >= maxFailureRecordAttrs {
+			metadata.truncated = true
 			return false
 		}
 		attrCount++

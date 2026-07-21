@@ -161,7 +161,7 @@ async function runRuntimeLogFilePoll(): Promise<void> {
     }
     runtimeLogFileImportRuntime.lastError = pollError
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = runtimeLogFailureMessage(error)
     runtimeLogFileImportRuntime.lastError = message
     writeRuntimeLogFileImportFailureDiagnostic(error, {
       path: runtimeConfig.log.directory,
@@ -332,7 +332,7 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
     return true
   } catch (error) {
     if (isMissingFileError(error)) return true
-    const message = error instanceof Error ? error.message : String(error)
+    const message = runtimeLogFailureMessage(error)
     runtimeLogFileImportRuntime.lastError = message
     completedRuntimeLogFiles.delete(file.path)
     try {
@@ -608,11 +608,11 @@ function writeRuntimeLogFileImportFailureDiagnostic(error: unknown, snapshot: Ru
 function boundedRuntimeLogFailureError(error: unknown, depth = 0): Record<string, unknown> {
   const value = error instanceof Error ? error : undefined
   const objectValue = typeof error === 'object' && error !== null ? error as Record<string, unknown> : undefined
-  const cause = value?.cause ?? objectValue?.cause
+  const cause = safeRuntimeLogFailureProperty(objectValue, 'cause')
   return {
-    name: boundedRuntimeLogFailureText(value?.name ?? stringErrorProperty(objectValue, 'name') ?? 'Error', 128) ?? 'Error',
-    message: boundedRuntimeLogFailureText(value?.message ?? String(error), runtimeLogFailureDiagnosticTextMaxBytes) ?? '',
-    stack: boundedRuntimeLogFailureText(value?.stack, runtimeLogFailureDiagnosticTextMaxBytes) ?? null,
+    name: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'name') ?? (value ? 'Error' : 'NonErrorThrown'), 128) ?? 'Error',
+    message: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'message') ?? runtimeLogFailureMessage(error), runtimeLogFailureDiagnosticTextMaxBytes) ?? '',
+    stack: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'stack'), runtimeLogFailureDiagnosticTextMaxBytes) ?? null,
     code: boundedRuntimeLogFailureText(stringErrorProperty(objectValue, 'code'), 256) ?? null,
     cause: cause !== undefined && depth < runtimeLogFailureDiagnosticMaxCauseDepth
       ? boundedRuntimeLogFailureError(cause, depth + 1)
@@ -621,17 +621,61 @@ function boundedRuntimeLogFailureError(error: unknown, depth = 0): Record<string
 }
 
 function stringErrorProperty(value: Record<string, unknown> | undefined, key: string): string | undefined {
-  const property = value?.[key]
+  const property = safeRuntimeLogFailureProperty(value, key)
   return typeof property === 'string' || typeof property === 'number' ? String(property) : undefined
+}
+
+function safeRuntimeLogFailureProperty(value: Record<string, unknown> | undefined, key: string): unknown {
+  if (!value) return undefined
+  let current: object | null = value
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(current, key)
+      if (descriptor) {
+        if ('value' in descriptor) return descriptor.value
+        try {
+          return descriptor.get?.call(value)
+        } catch {
+          return `[unreadable ${key}: accessor threw]`
+        }
+      }
+      current = Object.getPrototypeOf(current) as object | null
+    } catch {
+      return `[unreadable ${key}]`
+    }
+  }
+  return undefined
+}
+
+function runtimeLogFailureMessage(error: unknown): string {
+  const objectValue = typeof error === 'object' && error !== null ? error as Record<string, unknown> : undefined
+  const message = stringErrorProperty(objectValue, 'message')
+  if (message !== undefined) return message
+  try {
+    return String(error)
+  } catch {
+    return '[unprintable thrown value]'
+  }
 }
 
 function boundedRuntimeLogFailureText(value: string | undefined, maxBytes: number): string | undefined {
   if (value === undefined) return undefined
-  const buffer = Buffer.from(value, 'utf8')
-  if (buffer.length <= maxBytes) return value
+  if (value.length <= maxBytes && Buffer.byteLength(value, 'utf8') <= maxBytes) return value
   const suffix = '...[truncated]'
   const prefixBytes = Math.max(0, maxBytes - Buffer.byteLength(suffix))
-  return buffer.subarray(0, prefixBytes).toString('utf8').replace(/\uFFFD+$/g, '') + suffix
+  let low = 0
+  let high = Math.min(value.length, prefixBytes)
+  while (low < high) {
+    const midpoint = Math.ceil((low + high) / 2)
+    if (Buffer.byteLength(value.slice(0, midpoint), 'utf8') <= prefixBytes) low = midpoint
+    else high = midpoint - 1
+  }
+  let end = low
+  if (end > 0) {
+    const last = value.charCodeAt(end - 1)
+    if (last >= 0xD800 && last <= 0xDBFF) end -= 1
+  }
+  return value.slice(0, end) + suffix
 }
 
 function boundedRuntimeLogFailureJsonLine(event: Record<string, unknown>): string {
@@ -668,12 +712,12 @@ function boundedRuntimeLogFailureJsonLine(event: Record<string, unknown>): strin
 
 function compactRuntimeLogFailureError(value: unknown, maxDepth = 4, stackBytes = 2 * 1024, messageBytes = 1024): Record<string, unknown> {
   const error = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
-  const cause = error.cause
+  const cause = safeRuntimeLogFailureProperty(error, 'cause')
   return {
-    name: boundedRuntimeLogFailureText(typeof error.name === 'string' ? error.name : 'Error', 128) ?? 'Error',
-    message: boundedRuntimeLogFailureText(typeof error.message === 'string' ? error.message : undefined, messageBytes) ?? '',
-    stack: boundedRuntimeLogFailureText(typeof error.stack === 'string' ? error.stack : undefined, stackBytes) ?? null,
-    code: boundedRuntimeLogFailureText(typeof error.code === 'string' || typeof error.code === 'number' ? String(error.code) : undefined, 256) ?? null,
+    name: boundedRuntimeLogFailureText(stringErrorProperty(error, 'name') ?? 'Error', 128) ?? 'Error',
+    message: boundedRuntimeLogFailureText(stringErrorProperty(error, 'message'), messageBytes) ?? '',
+    stack: boundedRuntimeLogFailureText(stringErrorProperty(error, 'stack'), stackBytes) ?? null,
+    code: boundedRuntimeLogFailureText(stringErrorProperty(error, 'code'), 256) ?? null,
     cause: cause !== undefined && maxDepth > 0
       ? compactRuntimeLogFailureError(cause, maxDepth - 1, stackBytes, messageBytes)
       : null

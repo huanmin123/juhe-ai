@@ -6,8 +6,10 @@ const asyncDiagnosticMaxBytes = 32 * 1024
 type AsyncDiagnosticWrite = (line: string, callback: (error?: Error | null) => void) => void
 
 let asyncDiagnosticActive = false
-let asyncDiagnosticPending: string | undefined
+let asyncDiagnosticPendingCritical: string | undefined
+let asyncDiagnosticPendingGeneral: string | undefined
 let asyncDiagnosticDropped = 0
+let asyncDiagnosticDropsToReport = 0
 let asyncDiagnosticWriter: AsyncDiagnosticWrite = defaultAsyncDiagnosticWrite
 const asyncDiagnosticDrainWaiters = new Set<() => void>()
 
@@ -32,7 +34,7 @@ export function serializeProcessFatalDiagnostic(input: ProcessFatalDiagnosticInp
     errorCode: error.code ? boundedOriginalField(error.code, 256) : undefined
   }
   let low = 0
-  let high = Buffer.byteLength(message, 'utf8')
+  let high = Math.min(message.length, maxBytes)
   let selected = ''
   while (low <= high) {
     const midpoint = Math.floor((low + high) / 2)
@@ -70,20 +72,19 @@ export function writeProcessFatalDiagnostic(input: ProcessFatalDiagnosticInput):
   }
 }
 
-export function writeProcessDiagnosticAsync(input: ProcessFatalDiagnosticInput): void {
+export function writeProcessDiagnosticAsync(input: ProcessFatalDiagnosticInput, priority: 'critical' | 'general' = 'critical'): void {
   try {
-    enqueueAsyncDiagnostic(serializeProcessFatalDiagnostic({
+    enqueueAsyncDiagnostic(serializeAsyncDiagnosticLine(serializeProcessFatalDiagnostic({
       ...input,
       maxBytes: Math.min(asyncDiagnosticMaxBytes, input.maxBytes ?? defaultMaxBytes)
-    }))
+    })), priority)
   } catch {
-    enqueueAsyncDiagnostic('{"event":"process_async_diagnostic_failed"}\n')
+    enqueueAsyncDiagnostic('{"event":"process_async_diagnostic_failed"}\n', priority)
   }
 }
 
 export function writeBoundedProcessDiagnosticLineAsync(line: string): void {
-  const bounded = truncateUtf8(line, asyncDiagnosticMaxBytes - 1)
-  enqueueAsyncDiagnostic(bounded.endsWith('\n') ? bounded : `${bounded}\n`)
+  enqueueAsyncDiagnostic(serializeAsyncDiagnosticLine(line), 'general')
 }
 
 export function processDiagnosticAsyncStatsForTest(): {
@@ -94,22 +95,25 @@ export function processDiagnosticAsyncStatsForTest(): {
 } {
   return {
     active: asyncDiagnosticActive,
-    pending: asyncDiagnosticPending !== undefined,
+    pending: asyncDiagnosticPendingCritical !== undefined || asyncDiagnosticPendingGeneral !== undefined,
     dropped: asyncDiagnosticDropped,
-    pendingBytes: asyncDiagnosticPending ? Buffer.byteLength(asyncDiagnosticPending, 'utf8') : 0
+    pendingBytes: Buffer.byteLength(asyncDiagnosticPendingCritical ?? '', 'utf8')
+      + Buffer.byteLength(asyncDiagnosticPendingGeneral ?? '', 'utf8')
   }
 }
 
 export function setProcessDiagnosticAsyncWriterForTest(writer?: AsyncDiagnosticWrite): void {
   asyncDiagnosticWriter = writer ?? defaultAsyncDiagnosticWrite
   asyncDiagnosticActive = false
-  asyncDiagnosticPending = undefined
+  asyncDiagnosticPendingCritical = undefined
+  asyncDiagnosticPendingGeneral = undefined
   asyncDiagnosticDropped = 0
+  asyncDiagnosticDropsToReport = 0
   notifyAsyncDiagnosticDrained()
 }
 
-export async function drainProcessDiagnosticAsyncForTest(timeoutMs = 1_000): Promise<void> {
-  if (!asyncDiagnosticActive && asyncDiagnosticPending === undefined) return
+export async function drainProcessDiagnosticAsync(timeoutMs = 250): Promise<void> {
+  if (!asyncDiagnosticActive && asyncDiagnosticPendingCritical === undefined && asyncDiagnosticPendingGeneral === undefined) return
   await new Promise<void>((resolve) => {
     const timeout = setTimeout(() => {
       asyncDiagnosticDrainWaiters.delete(finish)
@@ -124,24 +128,36 @@ export async function drainProcessDiagnosticAsyncForTest(timeoutMs = 1_000): Pro
   })
 }
 
-function enqueueAsyncDiagnostic(line: string): void {
+export const drainProcessDiagnosticAsyncForTest = drainProcessDiagnosticAsync
+
+function enqueueAsyncDiagnostic(line: string, priority: 'critical' | 'general'): void {
   if (asyncDiagnosticActive) {
-    if (asyncDiagnosticPending !== undefined) asyncDiagnosticDropped += 1
-    asyncDiagnosticPending = line
+    const target = priority === 'critical' ? asyncDiagnosticPendingCritical : asyncDiagnosticPendingGeneral
+    if (target !== undefined) {
+      asyncDiagnosticDropped += 1
+      asyncDiagnosticDropsToReport += 1
+    }
+    if (priority === 'critical') asyncDiagnosticPendingCritical = line
+    else asyncDiagnosticPendingGeneral = line
     return
   }
   writeAsyncDiagnostic(line)
 }
 
 function writeAsyncDiagnostic(line: string): void {
+  const output = addAsyncDiagnosticDropCount(line)
   asyncDiagnosticActive = true
   let callbackCalled = false
   const done = () => {
     if (callbackCalled) return
     callbackCalled = true
     asyncDiagnosticActive = false
-    const pending = asyncDiagnosticPending
-    asyncDiagnosticPending = undefined
+    const pending = asyncDiagnosticPendingCritical ?? asyncDiagnosticPendingGeneral
+    if (asyncDiagnosticPendingCritical !== undefined) {
+      asyncDiagnosticPendingCritical = undefined
+    } else {
+      asyncDiagnosticPendingGeneral = undefined
+    }
     if (pending !== undefined) {
       writeAsyncDiagnostic(pending)
       return
@@ -149,7 +165,7 @@ function writeAsyncDiagnostic(line: string): void {
     notifyAsyncDiagnosticDrained()
   }
   try {
-    asyncDiagnosticWriter(line, done)
+    asyncDiagnosticWriter(output, done)
   } catch {
     done()
   }
@@ -160,8 +176,48 @@ function defaultAsyncDiagnosticWrite(line: string, callback: (error?: Error | nu
 }
 
 function notifyAsyncDiagnosticDrained(): void {
-  if (asyncDiagnosticActive || asyncDiagnosticPending !== undefined) return
+  if (asyncDiagnosticActive || asyncDiagnosticPendingCritical !== undefined || asyncDiagnosticPendingGeneral !== undefined) return
   for (const waiter of [...asyncDiagnosticDrainWaiters]) waiter()
+}
+
+function serializeAsyncDiagnosticLine(line: string): string {
+  const normalized = line.endsWith('\n') ? line.slice(0, -1) : line
+  try {
+    const value = JSON.parse(normalized) as Record<string, unknown>
+    const bounded = JSON.stringify(value)
+    if (Buffer.byteLength(`${bounded}\n`, 'utf8') <= asyncDiagnosticMaxBytes - 512) return `${bounded}\n`
+    return `${JSON.stringify({
+      event: typeof value.event === 'string' ? value.event : 'process_async_diagnostic_oversized',
+      diagnosticTruncated: true,
+      originalBytes: Buffer.byteLength(normalized, 'utf8'),
+      message: typeof value.message === 'string' ? truncateUtf8(value.message, 256) : undefined
+    })}\n`
+  } catch {
+    return `${JSON.stringify({
+      event: 'process_async_diagnostic_invalid_line',
+      diagnosticTruncated: true,
+      originalBytes: Buffer.byteLength(normalized, 'utf8'),
+      preview: truncateUtf8(normalized, 256)
+    })}\n`
+  }
+}
+
+function addAsyncDiagnosticDropCount(line: string): string {
+  const dropped = asyncDiagnosticDropsToReport
+  if (dropped <= 0) return line
+  asyncDiagnosticDropsToReport = 0
+  try {
+    const normalized = line.endsWith('\n') ? line.slice(0, -1) : line
+    const value = JSON.parse(normalized) as Record<string, unknown>
+    value.asyncDiagnosticDropped = dropped
+    return `${JSON.stringify(value)}\n`
+  } catch {
+    return `${JSON.stringify({
+      event: 'process_async_diagnostic_drop_summary',
+      asyncDiagnosticDropped: dropped,
+      latest: truncateUtf8(line, 512)
+    })}\n`
+  }
 }
 
 function normalizeError(error: unknown): { name: string; code?: string; message: string } {
@@ -189,15 +245,19 @@ function diagnosticText(value: unknown): string {
     const serialized = JSON.stringify(value)
     return typeof serialized === 'string' ? serialized : String(value)
   } catch {
-    return String(value)
+    try {
+      return String(value)
+    } catch {
+      return '[unprintable thrown value]'
+    }
   }
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
   if (maxBytes <= 0) return ''
-  if (Buffer.byteLength(value, 'utf8') <= maxBytes) return value
+  if (value.length <= maxBytes && Buffer.byteLength(value, 'utf8') <= maxBytes) return value
   let low = 0
-  let high = value.length
+  let high = Math.min(value.length, maxBytes)
   while (low < high) {
     const midpoint = Math.ceil((low + high) / 2)
     if (Buffer.byteLength(value.slice(0, midpoint), 'utf8') <= maxBytes) {

@@ -64,6 +64,13 @@ try {
     0,
     '客户端提交无效 JSON 属于输入错误，不能记成 worker 基础设施故障'
   )
+  const invalidJsonEvent = capturedInfos.find((event) => (
+    event.event === 'gateway_json_worker_job_completed'
+      && event.outcome === 'expected_failure'
+      && event.reasonCode === 'invalid_json'
+  ))
+  assert(invalidJsonEvent, '无效 JSON 也必须保留可关联的 worker expected-failure info 现场')
+  assert.match(String(invalidJsonEvent.jobId), /^gateway-json-worker:\d+$/)
 
   await assert.rejects(
     normalizeOpenAIOAuthCodexBodyInWorker(Buffer.from('{"invalid":', 'utf8'), {
@@ -174,7 +181,10 @@ try {
     Buffer.from('{"model":"gpt-regression"}', 'utf8')
   )) as { model?: unknown }
   assert.equal(completedValue.model, 'gpt-regression')
-  const completedEvent = capturedInfos.find((event) => event.event === 'gateway_json_worker_job_completed')
+  const completedEvent = capturedInfos.find((event) => (
+    event.event === 'gateway_json_worker_job_completed'
+      && event.outcome === 'success'
+  ))
   assert(completedEvent, '普通快速 worker 任务也必须记录 info 完成事件')
   assert.equal(completedEvent.traceId, traceId)
   assert.equal(completedEvent.parentId, requestId)

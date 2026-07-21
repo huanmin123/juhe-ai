@@ -147,10 +147,14 @@ export async function captureGatewayRawBody(
   ) => {
     if (stageLogged) return
     stageLogged = true
+    const terminalExpectedFailure = outcome === 'expected_failure'
+      && res.headersSent
+      && res.statusCode >= 500
     logRequestStage('body.capture', {
       rawBodyBytes,
       contentType: String(req.headers['content-type'] ?? ''),
       jsonParseStatus: req.gatewayRequestBody?.jsonParseStatus,
+      ...(terminalExpectedFailure ? { terminalExpectedFailure: true } : {}),
       ...fields
     }, outcome, stageStartedAt)
   }

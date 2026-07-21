@@ -14,7 +14,11 @@ import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
-import { writeProcessDiagnosticAsync, writeProcessFatalDiagnostic } from './process-fatal-diagnostic.js'
+import {
+  drainProcessDiagnosticAsync,
+  writeProcessDiagnosticAsync,
+  writeProcessFatalDiagnostic
+} from './process-fatal-diagnostic.js'
 
 interface RotatingFileLogStreamOptions {
   directory: string
@@ -48,6 +52,7 @@ export interface LogDestinationStats {
   backpressureSignalCount: number
   dropCount: number
   failureDropCount: number
+  pendingCount: number
   pendingBytes: number
   failurePendingBytes: number
   needDrain: boolean
@@ -60,6 +65,7 @@ export interface LogPublisherStats {
   backpressureSignalCount: number
   dropCount: number
   failureDropCount: number
+  pendingCount: number
   pendingBytes: number
   failurePendingBytes: number
   needDrain: boolean
@@ -124,12 +130,14 @@ class LogStreamDiagnostics {
 
   writeStarted(destination: string, byteLength: number, failure: boolean): void {
     const state = this.state(destination)
+    state.pendingCount += 1
     state.pendingBytes += byteLength
     if (failure) state.failurePendingBytes += byteLength
   }
 
   writeCompleted(destination: string, byteLength: number, failure: boolean): void {
     const state = this.state(destination)
+    state.pendingCount = Math.max(0, state.pendingCount - 1)
     state.pendingBytes = Math.max(0, state.pendingBytes - byteLength)
     if (failure) state.failurePendingBytes = Math.max(0, state.failurePendingBytes - byteLength)
   }
@@ -195,6 +203,7 @@ class LogStreamDiagnostics {
     )
     const dropCount = destinations.reduce((total, state) => total + state.dropCount, 0)
     const failureDropCount = destinations.reduce((total, state) => total + state.failureDropCount, 0)
+    const pendingCount = destinations.reduce((total, state) => total + state.pendingCount, 0)
     const pendingBytes = destinations.reduce((total, state) => total + state.pendingBytes, 0)
     const failurePendingBytes = destinations.reduce((total, state) => total + state.failurePendingBytes, 0)
     const needDrain = destinations.some((state) => state.needDrain)
@@ -203,6 +212,7 @@ class LogStreamDiagnostics {
       backpressureSignalCount,
       dropCount,
       failureDropCount,
+      pendingCount,
       pendingBytes,
       failurePendingBytes,
       needDrain,
@@ -231,6 +241,7 @@ class LogStreamDiagnostics {
       backpressureSignalCount: 0,
       dropCount: 0,
       failureDropCount: 0,
+      pendingCount: 0,
       pendingBytes: 0,
       failurePendingBytes: 0,
       needDrain: false
@@ -824,7 +835,7 @@ const logStreamDiagnostics = new LogStreamDiagnostics((metadata, error) => {
     processRole: runtimeConfig.processRole,
     pid: process.pid,
     maxBytes: defaultLogStreamBudgetOptions.maxFailureSnapshotBytes
-  })
+  }, 'critical')
 })
 
 const fileLogStream = runtimeConfig.log.fileEnabled
@@ -877,7 +888,7 @@ const multiDestinationLogStream = logDestinations.length > 0
         processRole: runtimeConfig.processRole,
         pid: process.pid,
         maxBytes: defaultLogStreamBudgetOptions.maxFailureSnapshotBytes
-      })
+      }, 'critical')
     }
   })
   : undefined
@@ -943,7 +954,10 @@ export async function closeLogger(timeoutMs = 30_000): Promise<void> {
     clearInterval(logMaintenanceTimer)
     logMaintenanceTimer = undefined
   }
-  if (!fileLogStream || fileLogStream.writableEnded || fileLogStream.destroyed) return
+  if (!fileLogStream || fileLogStream.writableEnded || fileLogStream.destroyed) {
+    await drainProcessDiagnosticAsync()
+    return
+  }
   await new Promise<void>((resolve) => {
     let settled = false
     const settle = () => {
@@ -968,6 +982,7 @@ export async function closeLogger(timeoutMs = 30_000): Promise<void> {
     fileLogStream.once('finish', settle)
     fileLogStream.end()
   })
+  await drainProcessDiagnosticAsync()
 }
 
 export function errorLogFields(error: unknown, fields: Record<string, unknown> = {}): Record<string, unknown> {

@@ -482,8 +482,46 @@ func TestRuntimeBoundsNormalRecordAndWithAttrsBeforeQueue(t *testing.T) {
 	if event["truncated"] != true || event["truncationReason"] == "" {
 		t.Fatalf("normal truncation facts missing: %#v", event)
 	}
+	withAttrsFields, ok := event["withAttrsTruncatedFields"].(map[string]any)
+	if !ok {
+		t.Fatalf("withAttrs truncation field evidence missing: %#v", event)
+	}
+	withAttrsField, ok := withAttrsFields["field0"].(map[string]any)
+	if !ok || withAttrsField["originalBytes"] == nil || withAttrsField["sha256"] == nil || withAttrsField["hashScope"] != "first_last_4096_with_length" {
+		t.Fatalf("withAttrs truncation hash evidence incomplete: %#v", withAttrsFields)
+	}
+	normalFields, ok := event["truncatedFields"].(map[string]any)
+	if !ok {
+		t.Fatalf("normal record truncation field evidence missing: %#v", event)
+	}
+	normalField, ok := normalFields["field0"].(map[string]any)
+	if !ok || normalField["hashScope"] != "first_last_4096_with_length" {
+		t.Fatalf("normal record bounded hash scope missing: %#v", normalFields)
+	}
 	if len(output.String()) > 16*1024 {
 		t.Fatalf("bounded normal record produced %d bytes", len(output.String()))
+	}
+}
+
+func TestRuntimeFailureAttrLimitKeepsExplicitTruncationEvidence(t *testing.T) {
+	var output lockedBuffer
+	runtime, err := NewRuntime("info", &output, RuntimeOptions{Role: "go-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attrs := []any{"event", "failure.attr.limit", "failureClass", "expected"}
+	for index := 0; index < maxFailureRecordAttrs+16; index++ {
+		attrs = append(attrs, fmt.Sprintf("field%d", index), index)
+	}
+	runtime.Logger.Error("failure attr limit", attrs...)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	event := findJSONEvent(t, output.String(), "failure.attr.limit")
+	if event["truncated"] != true || event["originalAttrCount"] == nil || event["truncationReason"] != "async_log_record_budget" {
+		t.Fatalf("failure attr truncation evidence missing: %#v", event)
 	}
 }
 

@@ -39,13 +39,16 @@ requestContextMiddleware(req, res, () => {
     groupId: 'group-raw-probe',
     trafficSource: 'openai_compatible'
   })
-  logRequestStage('route.group_access', {
-    requestId: 'request-id-must-not-override-context',
-    systemAccountId: 'system-account-raw-probe',
-    apiKeyId: 'api-key-raw-probe',
-    groupId: 'group-raw-probe',
-    trafficSource: 'openai_compatible'
-  })
+  for (let index = 0; index < 70; index += 1) {
+    logRequestStage('route.group_access', {
+      requestId: 'request-id-must-not-override-context',
+      systemAccountId: 'system-account-raw-probe',
+      apiKeyId: 'api-key-raw-probe',
+      groupId: 'group-raw-probe',
+      trafficSource: 'openai_compatible',
+      probeIndex: index
+    })
+  }
   getRequestLogger().info({ event: 'request_logger_context_probe' }, 'probe')
   res.emit('finish')
 })

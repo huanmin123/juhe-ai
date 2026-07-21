@@ -9,7 +9,9 @@ import { createTraceId, getRequestLogger, getTraceId, logRequestStage } from '..
 import { errorLogFields } from '../../shared/logger.js'
 import {
   extractClientIp,
-  requestEndpoint
+  requestEndpoint,
+  requestModel,
+  requestStream
 } from './request/metadata.js'
 import {
   buildUsageRequestSnapshot
@@ -186,7 +188,9 @@ export async function handleOpenAIGatewayRequest(
     method: req.method,
     endpoint,
     requestLane,
-    trafficSource
+    trafficSource,
+    model: requestModel(req),
+    stream: requestStream(req)
   })
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
   const auditCapture = createAuditCapture({

@@ -438,6 +438,7 @@ function handleWorkerMessage(slot: GatewayJsonWorkerSlot, message: GatewayJsonWo
     clearJobTimer(job)
     removeAbortListener(job)
     slot.activeJob = undefined
+    logJobExpectedFailure(job, message, error)
     job.reject(error)
     pumpJsonWorkerQueue()
     return
@@ -642,24 +643,12 @@ function activeWorkerSlotForJob(job: GatewayJsonWorkerJob): GatewayJsonWorkerSlo
 }
 
 function logJobCompleted(job: GatewayJsonWorkerJob): void {
-  const now = Date.now()
-  const queuedWaitMs = job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : 0
-  const workerDurationMs = job.startedAtMs ? now - job.startedAtMs : undefined
-  const totalMs = now - job.enqueuedAtMs
   const fields = {
     event: 'gateway_json_worker_job_completed',
-    traceId: job.traceId,
-    jobId: gatewayJsonWorkerJobId(job),
-    parentId: gatewayJsonWorkerParentId(job),
-    jobType: job.type,
-    rawBodyBytes: job.rawBody.byteLength,
-    queuedWaitMs,
-    workerDurationMs,
-    totalMs,
-    queuedJobs: queuedJobs.length,
-    queuedBytes: queuedJobsBytes
+    outcome: 'success',
+    ...gatewayJsonWorkerTimingFields(job)
   }
-  if (queuedWaitMs >= gatewayJsonWorkerSlowQueueWaitMs || (workerDurationMs ?? 0) >= gatewayJsonWorkerSlowDurationMs) {
+  if (fields.queuedWaitMs >= gatewayJsonWorkerSlowQueueWaitMs || (fields.workerDurationMs ?? 0) >= gatewayJsonWorkerSlowDurationMs) {
     logger.warn(fields, '网关 JSON worker 任务耗时偏高')
     return
   }
@@ -668,6 +657,50 @@ function logJobCompleted(job: GatewayJsonWorkerJob): void {
     return
   }
   logger.info(fields, '网关 JSON worker 任务完成')
+}
+
+function logJobExpectedFailure(
+  job: GatewayJsonWorkerJob,
+  message: GatewayJsonWorkerResponse,
+  error: Error
+): void {
+  logger.info({
+    event: 'gateway_json_worker_job_completed',
+    outcome: 'expected_failure',
+    failureClass: 'expected',
+    reasonCode: message.errorCode ?? (message.error?.name === 'SyntaxError' ? 'invalid_json' : 'worker_expected_failure'),
+    errorName: message.error?.name ?? error.name,
+    errorCode: message.errorCode,
+    errorStatusCode: message.errorStatusCode,
+    ...gatewayJsonWorkerTimingFields(job)
+  }, '网关 JSON worker 任务按预期失败')
+}
+
+function gatewayJsonWorkerTimingFields(job: GatewayJsonWorkerJob): {
+  traceId?: string
+  jobId: string
+  parentId?: string
+  jobType: GatewayJsonWorkerJobType
+  rawBodyBytes: number
+  queuedWaitMs: number
+  workerDurationMs?: number
+  totalMs: number
+  queuedJobs: number
+  queuedBytes: number
+} {
+  const now = Date.now()
+  return {
+    traceId: job.traceId,
+    jobId: gatewayJsonWorkerJobId(job),
+    parentId: gatewayJsonWorkerParentId(job),
+    jobType: job.type,
+    rawBodyBytes: job.rawBody.byteLength,
+    queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : now - job.enqueuedAtMs,
+    workerDurationMs: job.startedAtMs ? now - job.startedAtMs : undefined,
+    totalMs: now - job.enqueuedAtMs,
+    queuedJobs: queuedJobs.length,
+    queuedBytes: queuedJobsBytes
+  }
 }
 
 function gatewayJsonWorkerJobId(job: GatewayJsonWorkerJob): string {
