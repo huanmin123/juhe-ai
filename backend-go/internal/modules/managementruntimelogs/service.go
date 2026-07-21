@@ -63,6 +63,20 @@ type Detail struct {
 	RawJSON string `json:"rawJson"`
 }
 
+type FacetLevel struct {
+	Value string `json:"value"`
+	Count int64  `json:"count"`
+}
+
+type FacetsResult struct {
+	RetentionDays     int          `json:"retentionDays"`
+	EarliestIndexedAt string       `json:"earliestIndexedAt,omitempty"`
+	LatestIndexedAt   string       `json:"latestIndexedAt,omitempty"`
+	TotalIndexed      int64        `json:"totalIndexed"`
+	Levels            []FacetLevel `json:"levels"`
+	Events            []string     `json:"events"`
+}
+
 func NewService(store port.ManagementRuntimeLogReader) *Service {
 	return NewServiceWithOptions(ServiceOptions{Store: store})
 }
@@ -125,6 +139,28 @@ func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
 		Summary: summaryFromStore(detail.ManagementRuntimeLogSummary),
 		RawJSON: detail.RawJSON,
 	}, true, nil
+}
+
+func (s *Service) Facets(ctx context.Context) (FacetsResult, error) {
+	if s.store == nil {
+		return FacetsResult{}, fmt.Errorf("management runtime log reader is required")
+	}
+	result, err := s.store.ManagementRuntimeLogFacets(ctx)
+	if err != nil {
+		return FacetsResult{}, err
+	}
+	levels := make([]FacetLevel, 0, len(result.Levels))
+	for _, level := range result.Levels {
+		levels = append(levels, FacetLevel{Value: level.Value, Count: level.Count})
+	}
+	return FacetsResult{
+		RetentionDays:     result.RetentionDays,
+		EarliestIndexedAt: result.EarliestIndexedAt,
+		LatestIndexedAt:   result.LatestIndexedAt,
+		TotalIndexed:      result.TotalIndexed,
+		Levels:            levels,
+		Events:            append([]string{}, result.Events...),
+	}, nil
 }
 
 func summaryFromStore(item port.ManagementRuntimeLogSummary) Summary {

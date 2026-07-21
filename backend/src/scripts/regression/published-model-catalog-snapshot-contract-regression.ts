@@ -27,7 +27,7 @@ assert.match(snapshotService, /pruneGatewayModelCatalogSnapshotsAsync/, '全量�
 assert.match(snapshotService, /rebuildPublishedModelCatalogSnapshotsBestEffortAsync/, '模型事实提交后快照失败必须有界后台重试，不能把已提交事实返回成失败')
 assert.match(
   snapshotService,
-  /rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync[\s\S]*publishedCatalogRebuildChain\.then\(\(\) => rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync/,
+  /rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync[\s\S]*enqueueSnapshotRebuild\(\(\) => rebuildPublishedModelCatalogSnapshotsAfterModelChangeInternalAsync\(\)\)/,
   '全量 prune 与 owner 重建必须整体进入同一串行队列'
 )
 assert.match(rebuildScript, /await closeRedisClients\(\)/, '模型目录离线重建完成后必须关闭 Redis 客户端，避免维护进程挂起')
@@ -42,7 +42,7 @@ assert.equal(
 )
 assert.match(
   snapshotService,
-  /rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync[\s\S]*listGatewayModelCatalogSystemAccountIdsAsync[\s\S]*pruneGatewayModelCatalogSnapshotsAsync[\s\S]*rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync/,
+  /rebuildPublishedModelCatalogSnapshotsAfterModelChangeImplAsync[\s\S]*listGatewayModelCatalogSystemAccountIdsAsync[\s\S]*pruneGatewayModelCatalogSnapshotsAsync[\s\S]*rebuildPublishedModelCatalogSnapshotsForSystemAccountInternalAsync/,
   '串行全量重建必须在读取 active owner、prune 后直接执行内部 owner 重建，不能重新排队形成竞态或死锁'
 )
 

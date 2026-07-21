@@ -155,6 +155,9 @@ func TestServiceDetailAndDependencyErrors(t *testing.T) {
 	if _, _, err := NewService(nil).Detail(context.Background(), "runtime_1"); err == nil {
 		t.Fatal("Detail without store should fail")
 	}
+	if _, err := NewService(nil).Facets(context.Background()); err == nil {
+		t.Fatal("Facets without store should fail")
+	}
 }
 
 func TestServicePropagatesStoreErrors(t *testing.T) {
@@ -169,6 +172,16 @@ func TestServicePropagatesStoreErrors(t *testing.T) {
 	}
 }
 
+func TestServiceFacetsReturnsEmptyArraysForEmptyStore(t *testing.T) {
+	result, err := NewService(&managementRuntimeLogReaderStub{}).Facets(context.Background())
+	if err != nil {
+		t.Fatalf("Facets: %v", err)
+	}
+	if result.Levels == nil || result.Events == nil {
+		t.Fatalf("empty facets must use arrays: levels=%v events=%v", result.Levels, result.Events)
+	}
+}
+
 type managementRuntimeLogReaderStub struct {
 	listInput   port.ManagementRuntimeLogListInput
 	listResult  port.ManagementRuntimeLogListResult
@@ -177,6 +190,8 @@ type managementRuntimeLogReaderStub struct {
 	detail      port.ManagementRuntimeLog
 	detailFound bool
 	detailErr   error
+	facets      port.ManagementRuntimeLogFacets
+	facetsErr   error
 }
 
 func (s *managementRuntimeLogReaderStub) ListManagementRuntimeLogs(_ context.Context, input port.ManagementRuntimeLogListInput) (port.ManagementRuntimeLogListResult, error) {
@@ -187,6 +202,10 @@ func (s *managementRuntimeLogReaderStub) ListManagementRuntimeLogs(_ context.Con
 func (s *managementRuntimeLogReaderStub) GetManagementRuntimeLog(_ context.Context, id string) (port.ManagementRuntimeLog, bool, error) {
 	s.detailID = id
 	return s.detail, s.detailFound, s.detailErr
+}
+
+func (s *managementRuntimeLogReaderStub) ManagementRuntimeLogFacets(context.Context) (port.ManagementRuntimeLogFacets, error) {
+	return s.facets, s.facetsErr
 }
 
 func stringPointer(value string) *string {

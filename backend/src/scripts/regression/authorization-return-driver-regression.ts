@@ -68,6 +68,8 @@ try {
         JUHE_AUTHORIZATION_RETURN_DRIVER_CHILD: 'postgres',
         JUHE_AI_RUNTIME_MODE: 'performance',
         JUHE_AI_DATABASE_DRIVER: 'postgres',
+        JUHE_AI_LOG_FILE_ENABLED: 'true',
+        JUHE_AI_LOG_DIR: join(tempRoot, 'postgres-logs'),
         JUHE_AI_CACHE_DRIVER: 'redis',
         JUHE_AI_RUNTIME_STATE_DRIVER: 'redis',
         JUHE_AI_QUEUE_DRIVER: 'redis_stream',

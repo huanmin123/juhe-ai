@@ -82,12 +82,12 @@ interface AccountTestTaskRow {
   status_message: string | null
   result_json: string | null
   error_message: string | null
-  cancel_requested: number
-  queued_at: string
-  started_at: string | null
-  finished_at: string | null
-  created_at: string
-  updated_at: string
+  cancel_requested: number | boolean
+  queued_at: string | Date
+  started_at: string | Date | null
+  finished_at: string | Date | null
+  created_at: string | Date
+  updated_at: string | Date
 }
 
 interface AccountTestSessionRow {
@@ -97,11 +97,11 @@ interface AccountTestSessionRow {
   request_system_account_filter_id: string | null
   status: string
   cancel_reason: string | null
-  last_heartbeat_at: string
-  cancel_requested_at: string | null
-  finished_at: string | null
-  created_at: string
-  updated_at: string
+  last_heartbeat_at: string | Date
+  cancel_requested_at: string | Date | null
+  finished_at: string | Date | null
+  created_at: string | Date
+  updated_at: string | Date
 }
 
 export interface CreateAccountTestTaskInput {
@@ -711,7 +711,7 @@ export async function createAccountTestTaskAsync(input: CreateAccountTestTaskInp
         diagnostics, model, test_endpoint_mode, draft_account_encrypted, status, status_message,
         cancel_requested, queued_at, created_at, updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', 0, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', '等待后台测试', false, ?, ?, ?)
     `, [
       id,
       input.account.id,
@@ -841,7 +841,7 @@ export async function failExpiredQueuedAccountTestTasksAsync(maxQueuedMs: number
     LEFT JOIN ${accountTestTable(client, 'account_test_session_tasks')} st ON st.task_id = t.id
     LEFT JOIN ${accountTestTable(client, 'account_test_sessions')} s ON s.id = st.session_id
     WHERE t.status = 'queued'
-      AND t.cancel_requested = 0
+      AND t.cancel_requested = false
       AND t.queued_at < ?
       AND (
         st.session_id IS NULL
@@ -867,7 +867,7 @@ export async function failExpiredQueuedAccountTestTasksAsync(maxQueuedMs: number
         updated_at = ?
     WHERE id IN (${placeholders})
       AND status = 'queued'
-      AND cancel_requested = 0
+      AND cancel_requested = false
   `, [message, message, now, now, ...taskIds])
   return taskIds
 }
@@ -885,17 +885,17 @@ export async function requeueInterruptedAccountTestTasksAsync(): Promise<string[
         finished_at = COALESCE(finished_at, ?),
         updated_at = ?
     WHERE status = 'running'
-      AND cancel_requested = 1
+      AND cancel_requested = true
   `, [now, now])
   await client.execute(`
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = 'queued',
         status_message = '后台 worker 重启后重新排队',
         started_at = NULL,
-        cancel_requested = 0,
+        cancel_requested = false,
         updated_at = ?
     WHERE status = 'running'
-      AND cancel_requested = 0
+      AND cancel_requested = false
   `, [now])
   await cleanupExpiredAccountTestTasksAsync()
   return listRunnableAccountTestTaskIdsAsync()
@@ -920,7 +920,7 @@ export async function markAccountTestTaskRunningAsync(id: string): Promise<Accou
         updated_at = ?
     WHERE id = ?
       AND status = 'queued'
-      AND cancel_requested = 0
+      AND cancel_requested = false
   `, [now, now, id])
   if (Number(result.changes ?? 0) === 0) {
     const current = await getAccountTestTaskRecordAsync(id)
@@ -946,7 +946,7 @@ export async function updateAccountTestTaskMessageAsync(id: string, message: str
         updated_at = ?
     WHERE id = ?
       AND status = 'running'
-      AND cancel_requested = 0
+      AND cancel_requested = false
   `, [normalizedMessage, now, id])
   return getAccountTestTaskRecordAsync(id)
 }
@@ -1015,7 +1015,7 @@ export async function cancelAccountTestTaskAsync(id: string, access?: AccessScop
     const now = nowIso()
     await client.execute(`
       UPDATE ${accountTestTable(client, 'account_test_tasks')}
-      SET cancel_requested = 1,
+      SET cancel_requested = true,
           status_message = '正在停止测试',
           updated_at = ?
       WHERE id = ?
@@ -1035,7 +1035,7 @@ export async function markAccountTestTaskCanceledAsync(id: string, message: stri
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = 'canceled',
         status_message = ?,
-        cancel_requested = 1,
+        cancel_requested = true,
         finished_at = COALESCE(finished_at, ?),
         updated_at = ?
     WHERE id = ?
@@ -1049,13 +1049,13 @@ export async function isAccountTestTaskCancelRequestedAsync(id: string): Promise
     return isAccountTestTaskCancelRequested(id)
   }
   const client = await accountTestTaskDatabaseClient()
-  const row = await client.one<{ cancel_requested?: number }>(`
+  const row = await client.one<{ cancel_requested?: number | boolean }>(`
     SELECT t.cancel_requested
     FROM ${accountTestTable(client, 'account_test_tasks')} t
     WHERE t.id = ?
     LIMIT 1
   `, [id])
-  return Number(row?.cancel_requested ?? 0) === 1 || Boolean(await accountTestTaskSessionCancelReasonAsync(client, id))
+  return databaseBoolean(row?.cancel_requested) || Boolean(await accountTestTaskSessionCancelReasonAsync(client, id))
 }
 
 export async function accountTestTaskCancelMessageAsync(id: string): Promise<string> {
@@ -1065,13 +1065,13 @@ export async function accountTestTaskCancelMessageAsync(id: string): Promise<str
   const client = await accountTestTaskDatabaseClient()
   const sessionReason = await accountTestTaskSessionCancelReasonAsync(client, id)
   if (sessionReason) return sessionReason
-  const row = await client.one<{ status_message?: string | null; cancel_requested?: number }>(`
+  const row = await client.one<{ status_message?: string | null; cancel_requested?: number | boolean }>(`
     SELECT status_message, cancel_requested
     FROM ${accountTestTable(client, 'account_test_tasks')}
     WHERE id = ?
     LIMIT 1
   `, [id])
-  if (Number(row?.cancel_requested ?? 0) === 1) {
+  if (databaseBoolean(row?.cancel_requested)) {
     return normalizedOptionalText(row?.status_message) ?? '已停止测试'
   }
   return '已停止测试'
@@ -1263,7 +1263,7 @@ async function cancelAccountTestSessionByRowAsync(client: DatabaseClient, row: A
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
     SET status = 'canceled',
         status_message = ?,
-        cancel_requested = 1,
+        cancel_requested = true,
         finished_at = COALESCE(finished_at, ?),
         updated_at = ?
     WHERE id IN (
@@ -1276,7 +1276,7 @@ async function cancelAccountTestSessionByRowAsync(client: DatabaseClient, row: A
 
   await client.execute(`
     UPDATE ${accountTestTable(client, 'account_test_tasks')}
-    SET cancel_requested = 1,
+    SET cancel_requested = true,
         status_message = ?,
         updated_at = ?
     WHERE id IN (
@@ -1361,13 +1361,29 @@ function accountTestTaskFromRow(row: AccountTestTaskRow): AccountTestTask {
     model: row.model ?? undefined,
     testEndpointMode: accountTestEndpointMode(row.test_endpoint_mode),
     result: accountTestResult(row.result_json),
-    cancelRequested: Number(row.cancel_requested ?? 0) === 1,
-    createdAt: row.created_at,
-    queuedAt: row.queued_at,
-    startedAt: row.started_at ?? undefined,
-    finishedAt: row.finished_at ?? undefined,
-    updatedAt: row.updated_at
+    cancelRequested: databaseBoolean(row.cancel_requested),
+    createdAt: databaseDateTimeIso(row.created_at, 'account_test_tasks.created_at'),
+    queuedAt: databaseDateTimeIso(row.queued_at, 'account_test_tasks.queued_at'),
+    startedAt: databaseOptionalDateTimeIso(row.started_at, 'account_test_tasks.started_at'),
+    finishedAt: databaseOptionalDateTimeIso(row.finished_at, 'account_test_tasks.finished_at'),
+    updatedAt: databaseDateTimeIso(row.updated_at, 'account_test_tasks.updated_at')
   }
+}
+
+function databaseBoolean(value: unknown): boolean {
+  return value === true || Number(value ?? 0) === 1
+}
+
+function databaseDateTimeIso(value: string | Date, column: string): string {
+  const timestamp = value instanceof Date ? value.getTime() : Date.parse(value)
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`${column} 必须是有效时间`)
+  }
+  return new Date(timestamp).toISOString()
+}
+
+function databaseOptionalDateTimeIso(value: string | Date | null, column: string): string | undefined {
+  return value === null ? undefined : databaseDateTimeIso(value, column)
 }
 
 function accountTestSessionFromRow(row: AccountTestSessionRow): AccountTestSession {
@@ -1375,11 +1391,11 @@ function accountTestSessionFromRow(row: AccountTestSessionRow): AccountTestSessi
     id: row.id,
     status: accountTestSessionStatus(row.status),
     message: row.cancel_reason ?? undefined,
-    lastHeartbeatAt: row.last_heartbeat_at,
-    cancelRequestedAt: row.cancel_requested_at ?? undefined,
-    finishedAt: row.finished_at ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
+    lastHeartbeatAt: databaseDateTimeIso(row.last_heartbeat_at, 'account_test_sessions.last_heartbeat_at'),
+    cancelRequestedAt: databaseOptionalDateTimeIso(row.cancel_requested_at, 'account_test_sessions.cancel_requested_at'),
+    finishedAt: databaseOptionalDateTimeIso(row.finished_at, 'account_test_sessions.finished_at'),
+    createdAt: databaseDateTimeIso(row.created_at, 'account_test_sessions.created_at'),
+    updatedAt: databaseDateTimeIso(row.updated_at, 'account_test_sessions.updated_at')
   }
 }
 

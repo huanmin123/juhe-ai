@@ -46,22 +46,40 @@ import { startProcessEventLoopMonitor } from './shared/process-event-loop-monito
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
-import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
-import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
 import { dispatchAccountHealthCheck } from './modules/internal-api/account-health-check-dispatch.service.js'
+import { dispatchAccountTestTask } from './modules/internal-api/account-test-dispatch.service.js'
+import {
+  accountTestDispatchInternalPrefix,
+  createAccountTestDispatchRouter
+} from './modules/internal-api/account-test-dispatch.routes.js'
 import {
   mountAccountHealthCheckDispatchBridge
 } from './modules/internal-api/account-health-check-dispatch.routes.js'
+import {
+  createModelCatalogSnapshotRebuildRouter,
+  modelCatalogSnapshotRebuildInternalPrefix
+} from './modules/internal-api/model-catalog-snapshot-rebuild.routes.js'
 import { stopModelCheckTokenWorker } from './modules/model-checks/model-checks-token-worker.service.js'
 import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
-import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
-import { prewarmPublishedModelCatalogSnapshotsAsync } from './modules/model-pricing/published-model-catalog.service.js'
+import {
+  EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
+  checkPostgresGooseSchemaVersion,
+  enforcePostgresGooseSchemaGate
+} from './storage/postgres-goose-schema-gate.js'
+import { getPostgresPool } from './storage/postgres-client.js'
+import {
+  prewarmPublishedModelCatalogSnapshotsAsync
+} from './modules/model-pricing/published-model-catalog.service.js'
+import {
+  reconcileDirtyModelCatalogSnapshotsOnceAsync,
+  reconcileModelCatalogSnapshotScopeAsync
+} from './modules/model-pricing/model-catalog-snapshot-reconcile.service.js'
 import { prewarmGatewayApiKeyValidationCacheAsync } from './storage/gateway-api-key.repository.js'
 
 const app = express()
@@ -81,6 +99,8 @@ const chatHttpProxy = createDbServiceHttpProxy({ maxInFlight: 128, timeoutMs: 15
 const backgroundWorkerStartupFallbackMs = 15_000
 let backgroundWorkerStartupFallbackTimer: NodeJS.Timeout | undefined
 let backgroundWorkerSupervisorStarted = false
+let modelCatalogSnapshotReconcileInFlight: Promise<void> | undefined
+let modelCatalogSnapshotReconcileTimer: NodeJS.Timeout | undefined
 let serverShutdownInProgress = false
 const serverShutdownGraceMs = 40_000
 const httpShutdownGraceMs = 10_000
@@ -138,7 +158,6 @@ if (runtimeConfig.auth.captchaDisabled) {
   }, '登录验证码已关闭：仅用于测试或临时排障，账号密码、登录限频、会话和权限校验仍然生效')
 }
 startProcessEventLoopMonitor()
-setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLine(line, options))
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
   if (runtimeConfig.runtimeMode === 'performance') {
@@ -165,6 +184,7 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     }
     startBackgroundWorkerSupervisor()
   }
+  startModelCatalogSnapshotReconcileLoop()
   void Promise.all([
     prewarmPublishedModelCatalogSnapshotsAsync(),
     prewarmGatewayApiKeyValidationCacheAsync()
@@ -179,6 +199,28 @@ function startBackgroundWorkerSupervisorAfterDbServiceReady(): void {
     }), '发布模型目录快照预热失败，模型接口将回退单行持久化快照'))
 }
 
+function startModelCatalogSnapshotReconcileLoop(): void {
+  if (runtimeConfig.databaseDriver !== 'postgres' || modelCatalogSnapshotReconcileTimer) return
+  const run = (): void => {
+    if (modelCatalogSnapshotReconcileInFlight) return
+    modelCatalogSnapshotReconcileInFlight = reconcileDirtyModelCatalogSnapshotsOnceAsync()
+      .then((result) => {
+        if (result.failedCount > 0) {
+          logger.warn({ event: 'published_model_catalog_reconcile_partial_failure', ...result }, '发布模型目录 dirty 重建未完全成功，保留请求等待下次重试')
+        }
+      })
+      .catch((error) => {
+        logger.warn(errorLogFields(error, { event: 'published_model_catalog_reconcile_failed' }), '发布模型目录 dirty 重建失败，保留请求等待下次重试')
+      })
+      .finally(() => {
+        modelCatalogSnapshotReconcileInFlight = undefined
+      })
+  }
+  run()
+  modelCatalogSnapshotReconcileTimer = setInterval(run, 5_000)
+  modelCatalogSnapshotReconcileTimer.unref()
+}
+
 if (runtimeConfig.httpSecurity.trustProxy !== false) {
   app.set('trust proxy', runtimeConfig.httpSecurity.trustProxy)
 }
@@ -187,6 +229,52 @@ app.disable('x-powered-by')
 app.use(requestContextMiddleware)
 app.use(systemPrefix, managementSecurityHeadersMiddleware)
 const corsMiddleware = cors({ credentials: true, origin: createCorsOriginDelegate() })
+if (runtimeConfig.databaseDriver === 'postgres') {
+  app.use(modelCatalogSnapshotRebuildInternalPrefix, createModelCatalogSnapshotRebuildRouter({
+    secret: runtimeConfig.secret,
+    schemaVersion: EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
+    checkReady: async () => {
+      const pool = await getPostgresPool()
+      await checkPostgresGooseSchemaVersion(pool)
+      const relations = await pool.query(`
+        SELECT
+          to_regclass('juhe_business.model_catalog_snapshot_rebuild_requests') IS NOT NULL AS rebuild_requests_exists,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.model_catalog_snapshot_rebuild_requests'), 'SELECT'), FALSE) AS rebuild_requests_can_select,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.model_catalog_snapshot_rebuild_requests'), 'DELETE'), FALSE) AS rebuild_requests_can_delete,
+          to_regclass('juhe_business.gateway_model_catalog_snapshots') IS NOT NULL AS snapshots_exists,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'SELECT'), FALSE) AS snapshots_can_select,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'INSERT'), FALSE) AS snapshots_can_insert,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'UPDATE'), FALSE) AS snapshots_can_update,
+          COALESCE(has_table_privilege(to_regclass('juhe_business.gateway_model_catalog_snapshots'), 'DELETE'), FALSE) AS snapshots_can_delete
+      `)
+      const relationState = relations.rows[0]
+      if (
+        relationState?.rebuild_requests_exists !== true
+        || relationState.rebuild_requests_can_select !== true
+        || relationState.rebuild_requests_can_delete !== true
+        || relationState.snapshots_exists !== true
+        || relationState.snapshots_can_select !== true
+        || relationState.snapshots_can_insert !== true
+        || relationState.snapshots_can_update !== true
+        || relationState.snapshots_can_delete !== true
+      ) {
+        throw new Error('模型目录快照重建依赖关系或权限不可用')
+      }
+    },
+    rebuildAll: async () => {
+      const result = await reconcileModelCatalogSnapshotScopeAsync({ scope: 'all' })
+      if (result && !result.acknowledged) throw new Error('模型目录快照 dirty generation 已变化，当前重建未确认')
+    },
+    rebuildPersonal: async (systemAccountId) => {
+      const result = await reconcileModelCatalogSnapshotScopeAsync({ scope: 'personal', systemAccountId })
+      if (result && !result.acknowledged) throw new Error('个人模型目录快照 dirty generation 已变化，当前重建未确认')
+    }
+  }))
+}
+app.use(accountTestDispatchInternalPrefix, createAccountTestDispatchRouter({
+  secret: runtimeConfig.secret,
+  dispatch: dispatchAccountTestTask
+}))
 mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,
   compressionMiddleware: createHttpCompressionMiddleware(),

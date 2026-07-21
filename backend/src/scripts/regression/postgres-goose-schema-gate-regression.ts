@@ -25,7 +25,7 @@ const postgresConfig = {
   }
 }
 
-assert.equal(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION, 61)
+assert.equal(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION, 68)
 assertOwnerLockEnabledParsing()
 
 await assertDoesNotQueryWhenDisabled()
@@ -81,7 +81,7 @@ async function assertAcceptsExpectedSchemaAndClosesPool(): Promise<void> {
   let receivedPoolConfig: PostgresGooseSchemaGatePoolConfig | undefined
   let ended = false
   const results: QueryResult[] = [
-    { rows: [{ version_id: '61', is_applied: true }] },
+    { rows: [{ version_id: '68', is_applied: true }] },
     { rows: [] }
   ]
 
@@ -124,14 +124,14 @@ async function assertAcceptsExpectedSchemaAndClosesPool(): Promise<void> {
 async function assertAcceptsRolledBackNewerVersion(): Promise<void> {
   let ended = false
   const pool = createSequencedPool([
-    { rows: [{ version_id: '61', is_applied: true }] },
+    { rows: [{ version_id: '68', is_applied: true }] },
     { rows: [] }
   ], () => {
     ended = true
   })
 
   await enforcePostgresGooseSchemaGate(postgresConfig, () => pool)
-  assert.equal(ended, true, '61 up, 62 up, 62 down 折叠后必须允许启动并关闭连接池')
+  assert.equal(ended, true, '68 up, 69 up, 69 down 折叠后必须允许启动并关闭连接池')
 }
 
 function assertRejectsInvalidCurrentStates(): void {
@@ -142,9 +142,9 @@ function assertRejectsInvalidCurrentStates(): void {
     { label: 'version 56', currentRows: [{ version_id: '56', is_applied: true }] },
     { label: 'version 57', currentRows: [{ version_id: '57', is_applied: true }] },
     { label: 'version 58', currentRows: [{ version_id: '58', is_applied: true }] },
-    { label: 'version 60', currentRows: [{ version_id: '60', is_applied: true }] },
-    { label: 'version 62', currentRows: [{ version_id: '62', is_applied: true }] },
-    { label: 'not applied', currentRows: [{ version_id: '61', is_applied: false }] },
+    { label: 'version 67', currentRows: [{ version_id: '67', is_applied: true }] },
+    { label: 'version 69', currentRows: [{ version_id: '69', is_applied: true }] },
+    { label: 'not applied', currentRows: [{ version_id: '68', is_applied: false }] },
     { label: 'empty result', currentRows: [] }
   ]
 
@@ -163,15 +163,15 @@ function assertRejectsInvalidCurrentStates(): void {
 async function assertRejectsAppliedVersionAboveExpected(): Promise<void> {
   let ended = false
   const pool = createSequencedPool([
-    { rows: [{ version_id: '61', is_applied: true }] },
-    { rows: [{ version_id: '62', is_applied: true }] }
+    { rows: [{ version_id: '68', is_applied: true }] },
+    { rows: [{ version_id: '69', is_applied: true }] }
   ], () => {
     ended = true
   })
 
   await assert.rejects(
     enforcePostgresGooseSchemaGate(postgresConfig, () => pool),
-    /62/
+    /69/
   )
   assert.equal(ended, true, '发现高版本记录后必须关闭连接池')
 }
@@ -198,7 +198,7 @@ async function assertPreservesOperationErrorWhenCloseSucceeds(): Promise<void> {
 async function assertThrowsCloseErrorWhenOperationSucceeds(): Promise<void> {
   const closeError = new Error('synthetic close failure')
   const pool = createSequencedPool([
-    { rows: [{ version_id: '61', is_applied: true }] },
+    { rows: [{ version_id: '68', is_applied: true }] },
     { rows: [] }
   ], () => {
     throw closeError
@@ -237,16 +237,15 @@ async function assertServerStartupOrder(): Promise<void> {
   const installIndex = source.indexOf('installProcessLogHandlers()')
   const gateIndex = source.indexOf('await enforcePostgresGooseSchemaGate()', installIndex)
   const eventLoopIndex = source.indexOf('startProcessEventLoopMonitor()', installIndex)
-  const sinkIndex = source.indexOf('setRuntimeLogLineSink(', installIndex)
   const dbSupervisorIndex = source.indexOf('startDbServiceSupervisor(', installIndex)
   const workerSupervisorIndex = source.indexOf('startBackgroundWorkerSupervisor()', installIndex)
   const listenIndex = source.indexOf('const server = app.listen(', installIndex)
 
   assert(installIndex >= 0, 'server 必须安装进程日志处理器')
   assert(gateIndex > installIndex, 'schema gate 必须位于进程日志处理器之后')
+  assert.equal(source.includes('setRuntimeLogLineSink('), false, 'server 不得注册 runtime log index sink')
   for (const [label, index] of [
     ['event loop monitor', eventLoopIndex],
-    ['runtime log sink', sinkIndex],
     ['DB service supervisor', dbSupervisorIndex],
     ['background worker supervisor', workerSupervisorIndex],
     ['HTTP listen', listenIndex]

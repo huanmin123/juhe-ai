@@ -25,6 +25,7 @@ type RouterOptions struct {
 	SystemAPIClientIPAllowlistVersionReader           SystemAPIClientIPAllowlistVersionReader
 	SystemAPIIPRateLimiter                            SystemAPIIPRateLimiter
 	SystemAPIAuthenticatedRateLimiter                 SystemAPIAuthenticatedRateLimiter
+	NodeModelCatalogBridgeReadinessProber             ReadinessProber
 	PublicAPIHandler                                  http.Handler
 	ManagementAPIAuthMiddleware                       func(http.Handler) http.Handler
 	ManagementAPIAuthTouchMiddleware                  func(http.Handler) http.Handler
@@ -138,6 +139,64 @@ type RouterOptions struct {
 	ManagementMyAccountTagDeleteHandler               http.Handler
 	ManagementAccountTagUpdateHandler                 http.Handler
 	ManagementMyAccountTagUpdateHandler               http.Handler
+	ManagementAccountDetailHandler                    http.Handler
+	ManagementMyAccountDetailHandler                  http.Handler
+	ManagementAccountEditBasicDetailHandler           http.Handler
+	ManagementMyAccountEditBasicDetailHandler         http.Handler
+	ManagementAccountAdvancedDetailHandler            http.Handler
+	ManagementMyAccountAdvancedDetailHandler          http.Handler
+	ManagementAccountAPIKeyRuntimeHandler             http.Handler
+	ManagementMyAccountAPIKeyRuntimeHandler           http.Handler
+	ManagementAccountGroupBindingHandler              http.Handler
+	ManagementMyAccountGroupBindingHandler            http.Handler
+	ManagementAccountBatchEditHandler                 http.Handler
+	ManagementMyAccountBatchEditHandler               http.Handler
+	ManagementAccountForceActivateHandler             http.Handler
+	ManagementMyAccountForceActivateHandler           http.Handler
+	ManagementAccountDeleteHandler                    http.Handler
+	ManagementMyAccountDeleteHandler                  http.Handler
+	ManagementAccountBalanceHandler                   http.Handler
+	ManagementMyAccountBalanceHandler                 http.Handler
+	ManagementAccountBalanceRefreshHandler            http.Handler
+	ManagementMyAccountBalanceRefreshHandler          http.Handler
+	ManagementAccountStatusSnapshotHandler            http.Handler
+	ManagementMyAccountStatusSnapshotHandler          http.Handler
+	ManagementAccountListHandler                      http.Handler
+	ManagementMyAccountListHandler                    http.Handler
+	ManagementAccountExportHandler                    http.Handler
+	ManagementMyAccountExportHandler                  http.Handler
+	ManagementAccountCreateHandler                    http.Handler
+	ManagementMyAccountCreateHandler                  http.Handler
+	ManagementAccountUpdateHandler                    http.Handler
+	ManagementMyAccountUpdateHandler                  http.Handler
+	ManagementAccountAuthorizedDispatchHandler        http.Handler
+	ManagementMyAccountAuthorizedDispatchHandler      http.Handler
+	ManagementAccountImportPreviewHandler             http.Handler
+	ManagementMyAccountImportPreviewHandler           http.Handler
+	ManagementAccountImportConfirmHandler             http.Handler
+	ManagementMyAccountImportConfirmHandler           http.Handler
+	ManagementAccountTrafficMigrationHandler          http.Handler
+	ManagementMyAccountTrafficMigrationHandler        http.Handler
+	ManagementAccountTestSessionCreateHandler         http.Handler
+	ManagementMyAccountTestSessionCreateHandler       http.Handler
+	ManagementAccountTestSessionHeartbeatHandler      http.Handler
+	ManagementMyAccountTestSessionHeartbeatHandler    http.Handler
+	ManagementAccountTestSessionCompleteHandler       http.Handler
+	ManagementMyAccountTestSessionCompleteHandler     http.Handler
+	ManagementAccountTestSessionCancelHandler         http.Handler
+	ManagementMyAccountTestSessionCancelHandler       http.Handler
+	ManagementAccountTestTaskCancelHandler            http.Handler
+	ManagementMyAccountTestTaskCancelHandler          http.Handler
+	ManagementAccountTestTaskListHandler              http.Handler
+	ManagementMyAccountTestTaskListHandler            http.Handler
+	ManagementAccountTestSessionStatusHandler         http.Handler
+	ManagementMyAccountTestSessionStatusHandler       http.Handler
+	ManagementAccountTestSessionTasksHandler          http.Handler
+	ManagementMyAccountTestSessionTasksHandler        http.Handler
+	ManagementAccountTestTaskStatusHandler            http.Handler
+	ManagementMyAccountTestTaskStatusHandler          http.Handler
+	ManagementAccountTestDispatchHandler              http.Handler
+	ManagementMyAccountTestDispatchHandler            http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -163,6 +222,8 @@ type RouterOptions struct {
 	ManagementExternalIntegrationSourceScopesHandler  http.Handler
 	ManagementExternalIntegrationSourceAPIDocsHandler http.Handler
 	ManagementPublicAPILogsHandler                    http.Handler
+	ManagementUsageRecordsHandler                     http.Handler
+	ManagementMyUsageRecordsHandler                   http.Handler
 	ManagementAnnouncementPublicListHandler           http.Handler
 	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementAnnouncementsHandler                    http.Handler
@@ -188,8 +249,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 	}
 	mutationGuards := newMutationGuardStore()
 
-	health := NewHealthHandler(opts.Config, opts.Logger)
-	readiness := NewReadinessHandler(opts.Config, opts.Logger)
+	health := NewHealthHandler(opts.Config, opts.Logger, opts.NodeModelCatalogBridgeReadinessProber)
+	readiness := NewReadinessHandler(opts.Config, opts.Logger, opts.NodeModelCatalogBridgeReadinessProber)
 	r.Get("/__aisys__/health", health.ServeHTTP)
 	r.Get("/__aisys__/readyz", readiness.ServeHTTP)
 	r.Route("/__aisys__/api", func(system chi.Router) {
@@ -372,6 +433,64 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAccountTagDeleteHandler == nil &&
 				opts.ManagementMyAccountTagDeleteHandler == nil &&
 				opts.ManagementAccountTagUpdateHandler == nil &&
+				opts.ManagementAccountDetailHandler == nil &&
+				opts.ManagementMyAccountDetailHandler == nil &&
+				opts.ManagementAccountEditBasicDetailHandler == nil &&
+				opts.ManagementMyAccountEditBasicDetailHandler == nil &&
+				opts.ManagementAccountAdvancedDetailHandler == nil &&
+				opts.ManagementMyAccountAdvancedDetailHandler == nil &&
+				opts.ManagementAccountAPIKeyRuntimeHandler == nil &&
+				opts.ManagementMyAccountAPIKeyRuntimeHandler == nil &&
+				opts.ManagementAccountGroupBindingHandler == nil &&
+				opts.ManagementMyAccountGroupBindingHandler == nil &&
+				opts.ManagementAccountBatchEditHandler == nil &&
+				opts.ManagementMyAccountBatchEditHandler == nil &&
+				opts.ManagementAccountForceActivateHandler == nil &&
+				opts.ManagementMyAccountForceActivateHandler == nil &&
+				opts.ManagementAccountDeleteHandler == nil &&
+				opts.ManagementMyAccountDeleteHandler == nil &&
+				opts.ManagementAccountBalanceHandler == nil &&
+				opts.ManagementMyAccountBalanceHandler == nil &&
+				opts.ManagementAccountBalanceRefreshHandler == nil &&
+				opts.ManagementMyAccountBalanceRefreshHandler == nil &&
+				opts.ManagementAccountStatusSnapshotHandler == nil &&
+				opts.ManagementMyAccountStatusSnapshotHandler == nil &&
+				opts.ManagementAccountListHandler == nil &&
+				opts.ManagementMyAccountListHandler == nil &&
+				opts.ManagementAccountExportHandler == nil &&
+				opts.ManagementMyAccountExportHandler == nil &&
+				opts.ManagementAccountCreateHandler == nil &&
+				opts.ManagementMyAccountCreateHandler == nil &&
+				opts.ManagementAccountUpdateHandler == nil &&
+				opts.ManagementMyAccountUpdateHandler == nil &&
+				opts.ManagementAccountAuthorizedDispatchHandler == nil &&
+				opts.ManagementMyAccountAuthorizedDispatchHandler == nil &&
+				opts.ManagementAccountImportPreviewHandler == nil &&
+				opts.ManagementMyAccountImportPreviewHandler == nil &&
+				opts.ManagementAccountImportConfirmHandler == nil &&
+				opts.ManagementMyAccountImportConfirmHandler == nil &&
+				opts.ManagementAccountTrafficMigrationHandler == nil &&
+				opts.ManagementMyAccountTrafficMigrationHandler == nil &&
+				opts.ManagementAccountTestSessionCreateHandler == nil &&
+				opts.ManagementMyAccountTestSessionCreateHandler == nil &&
+				opts.ManagementAccountTestSessionHeartbeatHandler == nil &&
+				opts.ManagementMyAccountTestSessionHeartbeatHandler == nil &&
+				opts.ManagementAccountTestSessionCompleteHandler == nil &&
+				opts.ManagementMyAccountTestSessionCompleteHandler == nil &&
+				opts.ManagementAccountTestSessionCancelHandler == nil &&
+				opts.ManagementMyAccountTestSessionCancelHandler == nil &&
+				opts.ManagementAccountTestTaskCancelHandler == nil &&
+				opts.ManagementMyAccountTestTaskCancelHandler == nil &&
+				opts.ManagementAccountTestTaskListHandler == nil &&
+				opts.ManagementMyAccountTestTaskListHandler == nil &&
+				opts.ManagementAccountTestSessionStatusHandler == nil &&
+				opts.ManagementMyAccountTestSessionStatusHandler == nil &&
+				opts.ManagementAccountTestSessionTasksHandler == nil &&
+				opts.ManagementMyAccountTestSessionTasksHandler == nil &&
+				opts.ManagementAccountTestTaskStatusHandler == nil &&
+				opts.ManagementMyAccountTestTaskStatusHandler == nil &&
+				opts.ManagementAccountTestDispatchHandler == nil &&
+				opts.ManagementMyAccountTestDispatchHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -398,6 +517,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementExternalIntegrationSourceScopesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceAPIDocsHandler == nil &&
 				opts.ManagementPublicAPILogsHandler == nil &&
+				opts.ManagementUsageRecordsHandler == nil &&
+				opts.ManagementMyUsageRecordsHandler == nil &&
 				opts.ManagementAnnouncementPublicListHandler == nil &&
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementAnnouncementsHandler == nil &&
@@ -817,6 +938,182 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountTagUpdateHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/tags", opts.ManagementMyAccountTagUpdateHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}", opts.ManagementAccountDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}", opts.ManagementMyAccountDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountEditBasicDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/edit-basic", opts.ManagementAccountEditBasicDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountEditBasicDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/edit-basic", opts.ManagementMyAccountEditBasicDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountAdvancedDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/advanced", opts.ManagementAccountAdvancedDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountAdvancedDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/advanced", opts.ManagementMyAccountAdvancedDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountAPIKeyRuntimeHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/api-key-runtime", opts.ManagementAccountAPIKeyRuntimeHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountAPIKeyRuntimeHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/api-key-runtime", opts.ManagementMyAccountAPIKeyRuntimeHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountGroupBindingHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/group", opts.ManagementAccountGroupBindingHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountGroupBindingHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/group", opts.ManagementMyAccountGroupBindingHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountBatchEditHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/batch-edit-context", opts.ManagementAccountBatchEditHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/batch-update", opts.ManagementAccountBatchEditHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountBatchEditHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/batch-edit-context", opts.ManagementMyAccountBatchEditHandler.ServeHTTP)
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/batch-update", opts.ManagementMyAccountBatchEditHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountForceActivateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/force-activate", opts.ManagementAccountForceActivateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountForceActivateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/force-activate", opts.ManagementMyAccountForceActivateHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountDeleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Delete("/accounts/{id}", opts.ManagementAccountDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountDeleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Delete("/my-accounts/{id}", opts.ManagementMyAccountDeleteHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountBalanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/balance", opts.ManagementAccountBalanceHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountBalanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/balance", opts.ManagementMyAccountBalanceHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountBalanceRefreshHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/balance/refresh", opts.ManagementAccountBalanceRefreshHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountBalanceRefreshHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/balance/refresh", opts.ManagementMyAccountBalanceRefreshHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountStatusSnapshotHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/status-snapshot", opts.ManagementAccountStatusSnapshotHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountStatusSnapshotHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/status-snapshot", opts.ManagementMyAccountStatusSnapshotHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts", opts.ManagementAccountListHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts", opts.ManagementMyAccountListHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountExportHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/export", opts.ManagementAccountExportHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountExportHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/export", opts.ManagementMyAccountExportHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountCreateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts", opts.ManagementAccountCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountCreateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts", opts.ManagementMyAccountCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountUpdateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Patch("/accounts/{id}", opts.ManagementAccountUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountUpdateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}", opts.ManagementMyAccountUpdateHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountAuthorizedDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Patch("/accounts/{id}/authorized-dispatch", opts.ManagementAccountAuthorizedDispatchHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountAuthorizedDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/authorized-dispatch", opts.ManagementMyAccountAuthorizedDispatchHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountImportPreviewHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/preview", opts.ManagementAccountImportPreviewHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountImportPreviewHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/import/preview", opts.ManagementMyAccountImportPreviewHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountImportConfirmHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/confirm", opts.ManagementAccountImportConfirmHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountImportConfirmHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/import/confirm", opts.ManagementMyAccountImportConfirmHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTrafficMigrationHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/traffic-migration", opts.ManagementAccountTrafficMigrationHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTrafficMigrationHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/traffic-migration", opts.ManagementMyAccountTrafficMigrationHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionCreateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions", opts.ManagementAccountTestSessionCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionCreateHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions", opts.ManagementMyAccountTestSessionCreateHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionHeartbeatHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions/{sessionId}/heartbeat", opts.ManagementAccountTestSessionHeartbeatHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionHeartbeatHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions/{sessionId}/heartbeat", opts.ManagementMyAccountTestSessionHeartbeatHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionCompleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions/{sessionId}/complete", opts.ManagementAccountTestSessionCompleteHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionCompleteHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions/{sessionId}/complete", opts.ManagementMyAccountTestSessionCompleteHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-sessions/{sessionId}/cancel", opts.ManagementAccountTestSessionCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-sessions/{sessionId}/cancel", opts.ManagementMyAccountTestSessionCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestTaskCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-tasks/{taskId}/cancel", opts.ManagementAccountTestTaskCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestTaskCancelHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-tasks/{taskId}/cancel", opts.ManagementMyAccountTestTaskCancelHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestTaskListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-tasks", opts.ManagementAccountTestTaskListHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestTaskListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-tasks", opts.ManagementMyAccountTestTaskListHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-sessions/{sessionId}", opts.ManagementAccountTestSessionStatusHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-sessions/{sessionId}", opts.ManagementMyAccountTestSessionStatusHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestSessionTasksHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-sessions/{sessionId}/tasks", opts.ManagementAccountTestSessionTasksHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestSessionTasksHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-sessions/{sessionId}/tasks", opts.ManagementMyAccountTestSessionTasksHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestTaskStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/test-tasks/{taskId}", opts.ManagementAccountTestTaskStatusHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestTaskStatusHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/test-tasks/{taskId}", opts.ManagementMyAccountTestTaskStatusHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountTestDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/{id}/test", opts.ManagementAccountTestDispatchHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountTestDispatchHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/test", opts.ManagementMyAccountTestDispatchHandler.ServeHTTP)
+			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
 			}
@@ -877,8 +1174,18 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementUsageRecordsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records", opts.ManagementUsageRecordsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records/{id}", opts.ManagementUsageRecordsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyUsageRecordsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-usage-records", opts.ManagementMyUsageRecordsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-usage-records/{id}", opts.ManagementMyUsageRecordsHandler.ServeHTTP)
+			}
 			if opts.ManagementRuntimeLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs", opts.ManagementRuntimeLogsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/facets", opts.ManagementRuntimeLogsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/facets/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 			}
 			if opts.ManagementExternalIntegrationSourceListHandler != nil {
@@ -1217,6 +1524,46 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementAccountDetailHandler != nil ||
+		opts.ManagementMyAccountDetailHandler != nil ||
+		opts.ManagementAccountEditBasicDetailHandler != nil ||
+		opts.ManagementMyAccountEditBasicDetailHandler != nil ||
+		opts.ManagementAccountAdvancedDetailHandler != nil ||
+		opts.ManagementMyAccountAdvancedDetailHandler != nil ||
+		opts.ManagementAccountAPIKeyRuntimeHandler != nil ||
+		opts.ManagementMyAccountAPIKeyRuntimeHandler != nil ||
+		opts.ManagementAccountGroupBindingHandler != nil ||
+		opts.ManagementMyAccountGroupBindingHandler != nil ||
+		opts.ManagementAccountBatchEditHandler != nil ||
+		opts.ManagementMyAccountBatchEditHandler != nil ||
+		opts.ManagementAccountForceActivateHandler != nil ||
+		opts.ManagementMyAccountForceActivateHandler != nil ||
+		opts.ManagementAccountDeleteHandler != nil ||
+		opts.ManagementMyAccountDeleteHandler != nil ||
+		opts.ManagementAccountBalanceHandler != nil ||
+		opts.ManagementMyAccountBalanceHandler != nil ||
+		opts.ManagementAccountBalanceRefreshHandler != nil ||
+		opts.ManagementMyAccountBalanceRefreshHandler != nil ||
+		opts.ManagementAccountStatusSnapshotHandler != nil ||
+		opts.ManagementMyAccountStatusSnapshotHandler != nil ||
+		opts.ManagementAccountListHandler != nil ||
+		opts.ManagementMyAccountListHandler != nil ||
+		opts.ManagementAccountExportHandler != nil ||
+		opts.ManagementMyAccountExportHandler != nil ||
+		opts.ManagementAccountCreateHandler != nil ||
+		opts.ManagementMyAccountCreateHandler != nil ||
+		opts.ManagementAccountUpdateHandler != nil ||
+		opts.ManagementMyAccountUpdateHandler != nil ||
+		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementAccountTestTaskListHandler != nil ||
+		opts.ManagementMyAccountTestTaskListHandler != nil ||
+		opts.ManagementAccountTestSessionStatusHandler != nil ||
+		opts.ManagementMyAccountTestSessionStatusHandler != nil ||
+		opts.ManagementAccountTestSessionTasksHandler != nil ||
+		opts.ManagementMyAccountTestSessionTasksHandler != nil ||
+		opts.ManagementAccountTestTaskStatusHandler != nil ||
+		opts.ManagementMyAccountTestTaskStatusHandler != nil ||
 		opts.ManagementSystemSettingsHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsHandler != nil ||
@@ -1242,6 +1589,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementExternalIntegrationSourceScopesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceAPIDocsHandler != nil ||
 		opts.ManagementPublicAPILogsHandler != nil ||
+		opts.ManagementUsageRecordsHandler != nil ||
+		opts.ManagementMyUsageRecordsHandler != nil ||
 		opts.ManagementAnnouncementPublicListHandler != nil ||
 		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementAnnouncementsHandler != nil ||
@@ -1305,6 +1654,42 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTagDeleteHandler != nil ||
 		opts.ManagementAccountTagUpdateHandler != nil ||
 		opts.ManagementMyAccountTagUpdateHandler != nil ||
+		opts.ManagementAccountGroupBindingHandler != nil ||
+		opts.ManagementMyAccountGroupBindingHandler != nil ||
+		opts.ManagementAccountBatchEditHandler != nil ||
+		opts.ManagementMyAccountBatchEditHandler != nil ||
+		opts.ManagementAccountForceActivateHandler != nil ||
+		opts.ManagementMyAccountForceActivateHandler != nil ||
+		opts.ManagementAccountDeleteHandler != nil ||
+		opts.ManagementMyAccountDeleteHandler != nil ||
+		opts.ManagementAccountBalanceRefreshHandler != nil ||
+		opts.ManagementMyAccountBalanceRefreshHandler != nil ||
+		opts.ManagementAccountExportHandler != nil ||
+		opts.ManagementMyAccountExportHandler != nil ||
+		opts.ManagementAccountCreateHandler != nil ||
+		opts.ManagementMyAccountCreateHandler != nil ||
+		opts.ManagementAccountUpdateHandler != nil ||
+		opts.ManagementMyAccountUpdateHandler != nil ||
+		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementAccountImportPreviewHandler != nil ||
+		opts.ManagementMyAccountImportPreviewHandler != nil ||
+		opts.ManagementAccountImportConfirmHandler != nil ||
+		opts.ManagementMyAccountImportConfirmHandler != nil ||
+		opts.ManagementAccountTrafficMigrationHandler != nil ||
+		opts.ManagementMyAccountTrafficMigrationHandler != nil ||
+		opts.ManagementAccountTestSessionCreateHandler != nil ||
+		opts.ManagementMyAccountTestSessionCreateHandler != nil ||
+		opts.ManagementAccountTestSessionHeartbeatHandler != nil ||
+		opts.ManagementMyAccountTestSessionHeartbeatHandler != nil ||
+		opts.ManagementAccountTestSessionCompleteHandler != nil ||
+		opts.ManagementMyAccountTestSessionCompleteHandler != nil ||
+		opts.ManagementAccountTestSessionCancelHandler != nil ||
+		opts.ManagementMyAccountTestSessionCancelHandler != nil ||
+		opts.ManagementAccountTestTaskCancelHandler != nil ||
+		opts.ManagementMyAccountTestTaskCancelHandler != nil ||
+		opts.ManagementAccountTestDispatchHandler != nil ||
+		opts.ManagementMyAccountTestDispatchHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||

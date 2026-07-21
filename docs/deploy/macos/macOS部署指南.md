@@ -165,7 +165,7 @@ macOS 裸机高性能模式固定使用三个物理进程：
 
 使用 [macOS 运维脚本](operations/README.md) 中的 `install-redis-role-services.sh` 和 `verify-redis-role-isolation.sh`。安装器默认 dry-run；apply 只能在临时服务接管、已留存 plist/config 哈希与恢复副本后执行。temporary 的三个 PID、PostgreSQL 数据库和 namespace 必须都与 main 不同，不能复制 main env 后只换 namespace。
 
-queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空六条 Stream。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
+queue 迁移前先建立 token fence，再用 `backend/dist/scripts/operations/drain-redis-streams.js` 独立排空 usage、audit、operation log、public API log 和 record maintenance 五条 Stream。普通运行日志不进入 Redis，必须单独确认角色 JSONL 文件 backlog 已由 ingest-worker 追平。切换到 `6381` 后它成为新的队列事实源，失败时不得直接把 URL 改回旧 `6380`；state 改为无持久化必须在 queue 连续性验证之后单独执行。
 
 ## 5. HTTPS 和端口边界
 
@@ -223,7 +223,7 @@ JUHE_AI_TRUST_PROXY=true
 
 ## 8. 上游网络代理
 
-临时接管发布时，在候选服务环境显式设置 `JUHE_AI_SYSTEM_API_READ_ONLY=true`，只阻止 System 管理 API 的管理写操作；账户测试、测试会话、余额探测/刷新、Public API、客户端 `/v1` 和 `/__aiinternal__` 内部桥接继续由各自链路处理。正式服务保持 `false`，回切前先验证配置并复核 Nginx/Caddy 入口。
+临时接管发布时，候选服务必须与正式服务保持相同 API 行为；不得设置或依赖 `JUHE_AI_SYSTEM_API_READ_ONLY`，也不得通过 HTTP 方法拦截 System、Public、网关或内部接口。临时数据库的数据同步属于后续独立方案，不能以接口禁写替代。
 
 裸机同机 sing-box：
 

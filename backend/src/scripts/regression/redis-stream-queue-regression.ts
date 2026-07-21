@@ -187,20 +187,6 @@ assert.match(recordMaintenanceQueueSource, /Redis Stream 数据维护任务执�
 assert.match(recordMaintenanceQueueSource, /readCount: recordMaintenanceBatchSize/, 'record maintenance Redis Stream consumer should keep batches bounded')
 assert.doesNotMatch(recordMaintenanceQueueSource, /AfterRedisStreamFailure/, 'record maintenance Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
 
-const runtimeLogQueueSource = readFileSync(new URL('../../modules/runtime-logs/runtime-log-index-queue.service.ts', import.meta.url), 'utf8')
-assert.match(runtimeLogQueueSource, /shouldEnqueueRuntimeLogToRedisStream/, 'runtime log index queue should route all producers through Redis Stream in redis_stream mode')
-assertProducerPrefersRedisStream(runtimeLogQueueSource, 'enqueueRuntimeLogLine', 'shouldEnqueueRuntimeLogToRedisStream()', [
-  'sendRuntimeLogLineFromDbServiceToServer',
-  'sendRuntimeLogLineToWorker',
-  'enqueueRuntimeLogLineLocal'
-], 'runtime log producer must short-circuit to Redis Stream before IPC/local queues')
-assert.match(runtimeLogQueueSource, /startRuntimeLogRedisStreamConsumer/, 'runtime log index queue should expose an ingest-worker Redis Stream consumer')
-assert.match(runtimeLogQueueSource, /createRuntimeLogsBatchAsync/, 'runtime log Redis Stream consumer should use the async PG-capable writer')
-assert.match(runtimeLogQueueSource, /queue\.ack\(messages\.map/, 'runtime log Redis Stream consumer should ack only after flush')
-assert.match(runtimeLogQueueSource, /Redis Stream 运行日志索引落库失败，消息保持 pending 等待重投/, 'runtime log Redis Stream consumer should keep failed messages pending')
-assert.match(runtimeLogQueueSource, /readCount: runtimeLogBatchSize/, 'runtime log Redis Stream consumer should keep batches bounded')
-assert.doesNotMatch(runtimeLogQueueSource, /AfterRedisStreamFailure/, 'runtime log Redis Stream producer must not fall back to IPC/local queues after enqueue failure')
-
 const runtimeLogsRepositorySource = readFileSync(new URL('../../storage/runtime-logs.repository.ts', import.meta.url), 'utf8')
 assert.match(runtimeLogsRepositorySource, /createRuntimeLogsBatchAsync/, 'runtime logs repository should expose async PG batch writes')
 assert.match(runtimeLogsRepositorySource, /juhe_dataset\.runtime_logs/, 'runtime logs async writer should target PG dataset schema')
@@ -215,19 +201,18 @@ assert.match(workerSource, /startPublicApiLogRedisStreamConsumer\(\)/, 'ingest w
 assert.match(workerSource, /await stopPublicApiLogRedisStreamConsumer\(\)/, 'worker shutdown should stop public API log Redis Stream consumer')
 assert.match(workerSource, /startRecordMaintenanceRedisStreamConsumer\(\)/, 'ingest worker should start record maintenance Redis Stream consumer')
 assert.match(workerSource, /await stopRecordMaintenanceRedisStreamConsumer\(\)/, 'worker shutdown should stop record maintenance Redis Stream consumer')
-assert.match(workerSource, /startRuntimeLogRedisStreamConsumer\(\)/, 'ingest worker should start runtime log Redis Stream consumer')
-assert.match(workerSource, /await stopRuntimeLogRedisStreamConsumer\(\)/, 'worker shutdown should stop runtime log Redis Stream consumer')
+assert.doesNotMatch(workerSource, /RuntimeLogRedisStreamConsumer/, 'ingest worker must not start a runtime log Redis Stream consumer')
 
 const gatewayLoadSource = readFileSync(new URL('../performance/performance-gateway-load-test.ts', import.meta.url), 'utf8')
 assert.match(gatewayLoadSource, /XINFO', 'GROUPS'/, 'gateway load test should sample Redis Stream group lag, not only pending')
-assert.match(gatewayLoadSource, /backlogCount: usageRecords\.backlogCount \+ auditLogs\.backlogCount \+ operationLogs\.backlogCount \+ publicApiLogs\.backlogCount \+ recordMaintenance\.backlogCount \+ runtimeLogs\.backlogCount/, 'gateway load test should gate total Redis Stream backlog')
+assert.match(gatewayLoadSource, /backlogCount: usageRecords\.backlogCount \+ auditLogs\.backlogCount \+ operationLogs\.backlogCount \+ publicApiLogs\.backlogCount \+ recordMaintenance\.backlogCount/, 'gateway load test should gate total Redis Stream backlog')
 assert.match(gatewayLoadSource, /redisStreamsDelta\(input\.redisBefore,\s*input\.redisAfter\)/, 'gateway load test should compare Redis Stream backlog against the pre-test baseline')
 assert.match(gatewayLoadSource, /redisDelta\.positiveBacklogDelta > input\.input\.maxAllowedRedisPending/, 'gateway load test should fail only on new Redis Stream backlog produced by the current run')
 assert.doesNotMatch(gatewayLoadSource, /input\.redisAfter\.backlogCount > input\.input\.maxAllowedRedisPending/, 'gateway load test should not fail on historical Redis Stream backlog alone')
 assert.match(gatewayLoadSource, /operationLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:operation-logs'\)/, 'gateway load test should sample operation log Redis Stream')
 assert.match(gatewayLoadSource, /publicApiLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:public-api-logs'\)/, 'gateway load test should sample public API log Redis Stream')
 assert.match(gatewayLoadSource, /recordMaintenanceRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:record-maintenance'\)/, 'gateway load test should sample record maintenance Redis Stream')
-assert.match(gatewayLoadSource, /runtimeLogRedisStreamKey = redisNamespacedKey\('juhe-ai:queue:runtime-log-index'\)/, 'gateway load test should sample runtime log Redis Stream')
+assert.doesNotMatch(gatewayLoadSource, /runtimeLogRedisStreamKey/, 'gateway load test must not sample a removed runtime log Redis Stream')
 
 console.log('redis-stream-queue-regression passed')
 

@@ -52,10 +52,15 @@ type PageDataPublisher interface {
 	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
+type CatalogSnapshotRebuilder interface {
+	Rebuild(ctx context.Context, scope string, systemAccountID string) error
+}
+
 type ServiceOptions struct {
 	Store             Store
 	Invalidator       CustomProviderModelInvalidator
 	PageDataPublisher PageDataPublisher
+	CatalogRebuilder  CatalogSnapshotRebuilder
 	NewID             func(prefix string) string
 	Logger            *slog.Logger
 }
@@ -64,6 +69,7 @@ type Service struct {
 	store             Store
 	invalidator       CustomProviderModelInvalidator
 	pageDataPublisher PageDataPublisher
+	catalogRebuilder  CatalogSnapshotRebuilder
 	newID             func(prefix string) string
 	logger            *slog.Logger
 }
@@ -93,6 +99,7 @@ type CustomModelMutation struct {
 	Scope                     OptionalString
 	Model                     OptionalString
 	Status                    OptionalString
+	CatalogVisible            OptionalBool
 	Mode                      OptionalString
 	SupportedAPIProtocols     OptionalStringList
 	SupportedServiceTiers     OptionalStringList
@@ -137,6 +144,11 @@ type OptionalInt struct {
 type OptionalFloat struct {
 	Set   bool
 	Value *float64
+}
+
+type OptionalBool struct {
+	Set   bool
+	Value bool
 }
 
 type OptionalProviderModelPriceMap struct {
@@ -362,7 +374,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		logger = slog.Default()
 	}
 	return &Service{
-		store: opts.Store, invalidator: opts.Invalidator, pageDataPublisher: opts.PageDataPublisher,
+		store: opts.Store, invalidator: opts.Invalidator, pageDataPublisher: opts.PageDataPublisher, catalogRebuilder: opts.CatalogRebuilder,
 		newID: newID, logger: logger,
 	}
 }
@@ -576,6 +588,7 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	s.publishModelPageDataResets(ctx, saved.Scope, saved.SystemAccountID)
+	s.rebuildCatalogSnapshot(ctx, saved.Scope, saved.SystemAccountID)
 	return catalogItemFromPort(saved), nil
 }
 
@@ -639,6 +652,7 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 		cleanupErr = s.clearDefaultHealthCheckModelReferences(ctx, persisted.After)
 	}
 	s.publishModelPageDataResets(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
+	s.rebuildCatalogSnapshot(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
 	if cleanupErr != nil {
 		return CustomModelUpdateResult{}, cleanupErr
 	}
@@ -650,7 +664,9 @@ func customProviderModelUpdateInput(input CustomModelUpdateInput) port.Managemen
 	return port.ManagementCustomProviderModelUpdateInput{
 		ID: strings.TrimSpace(input.ID), ProviderCode: strings.TrimSpace(input.ProviderCode),
 		ActorSystemAccountID: strings.TrimSpace(input.ActorSystemAccountID), ActorRole: input.ActorRole,
-		Status: optionalProviderModelString(fields.Status), Mode: optionalProviderModelString(fields.Mode),
+		Status:                    optionalProviderModelString(fields.Status),
+		CatalogVisible:            port.ManagementProviderModelOptionalBool{Present: fields.CatalogVisible.Set, Value: fields.CatalogVisible.Value},
+		Mode:                      optionalProviderModelString(fields.Mode),
 		SupportedAPIProtocols:     optionalProviderModelStringList(fields.SupportedAPIProtocols, false),
 		SupportedServiceTiers:     optionalProviderModelStringList(fields.SupportedServiceTiers, true),
 		SupportedReasoningEfforts: optionalProviderModelStringList(fields.SupportedReasoningEfforts, true),
@@ -732,6 +748,7 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 	persisted, found, err := s.store.UpdateManagementBuiltInProviderModelPrices(ctx, port.ManagementBuiltInProviderModelPriceUpdateInput{
 		ID: existing.ID, ProviderCode: existing.ProviderCode,
 		Status:                    port.ManagementProviderModelOptionalString{Present: input.Fields.Status.Set, Value: configuration.Status},
+		CatalogVisible:            port.ManagementProviderModelOptionalBool{Present: input.Fields.CatalogVisible.Set, Value: configuration.CatalogVisible},
 		Mode:                      port.ManagementProviderModelOptionalString{Present: input.Fields.Mode.Set, Value: configuration.Mode},
 		SupportedAPIProtocols:     port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedAPIProtocols.Set, Value: append([]string(nil), configuration.SupportedAPIProtocols...)},
 		SupportedServiceTiers:     port.ManagementProviderModelOptionalStringList{Present: input.Fields.SupportedServiceTiers.Set, Value: append([]string(nil), configuration.SupportedServiceTiers...)},
@@ -767,6 +784,7 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
 	s.publishModelPageDataResets(ctx, "built_in", "")
+	s.rebuildCatalogSnapshot(ctx, "all", "")
 	return CustomModelUpdateResult{
 		Before: builtInCatalogItemWithConfigurationSnapshot(existing, persisted.Before),
 		After:  builtInCatalogItemWithConfigurationSnapshot(existing, persisted.After),
@@ -780,6 +798,7 @@ func validateBuiltInProviderModelFinalConfiguration(snapshot port.ManagementProv
 	normalized := port.ManagementCustomProviderModelSaveInput{ProviderCode: snapshot.ProviderCode}
 	err := applyCustomModelMutableFields(&normalized, CustomModelMutation{
 		Status:                    OptionalString{Set: true, Value: snapshot.Status},
+		CatalogVisible:            OptionalBool{Set: true, Value: snapshot.CatalogVisible},
 		Mode:                      OptionalString{Set: true, Value: snapshot.Mode},
 		SupportedAPIProtocols:     OptionalStringList{Set: true, Value: snapshot.SupportedAPIProtocols},
 		SupportedServiceTiers:     OptionalStringList{Set: true, Value: snapshot.SupportedServiceTiers},
@@ -820,6 +839,7 @@ func builtInCatalogItemWithConfigurationSnapshot(existing port.ManagementProvide
 	item.ID = snapshot.ID
 	item.ProviderCode = snapshot.ProviderCode
 	item.Status = snapshot.Status
+	item.CatalogVisible = snapshot.CatalogVisible
 	item.Mode = snapshot.Mode
 	item.SupportedAPIProtocols = append([]string(nil), snapshot.SupportedAPIProtocols...)
 	item.SupportedServiceTiers = append([]string(nil), snapshot.SupportedServiceTiers...)
@@ -904,6 +924,7 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
 		cleanupErr := s.clearDefaultHealthCheckModelReferences(ctx, existing)
 		s.publishModelPageDataResets(ctx, existing.Scope, existing.SystemAccountID)
+		s.rebuildCatalogSnapshot(ctx, existing.Scope, existing.SystemAccountID)
 		if cleanupErr != nil {
 			return CustomModelDeleteResult{}, cleanupErr
 		}
@@ -1099,7 +1120,7 @@ func createCustomModelScope(scope OptionalString) (string, error) {
 		return "personal", nil
 	}
 	value := strings.TrimSpace(scope.Value)
-	if value != "personal" && value != "global" {
+	if scope.Value != value || (value != "personal" && value != "global") {
 		return "", &CustomModelValidationError{Message: "自定义模型参数无效"}
 	}
 	return value, nil
@@ -1120,6 +1141,9 @@ func customModelSaveInputFromCreate(
 	status := "active"
 	if fields.Status.Set {
 		status = strings.TrimSpace(fields.Status.Value)
+		if fields.Status.Value != status {
+			return port.ManagementCustomProviderModelSaveInput{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
 	}
 	if !validCustomModelStatus(status) {
 		return port.ManagementCustomProviderModelSaveInput{}, &CustomModelValidationError{Message: "自定义模型参数无效"}
@@ -1130,6 +1154,7 @@ func customModelSaveInputFromCreate(
 		Scope:                scope,
 		SystemAccountID:      strings.TrimSpace(systemAccountID),
 		Status:               status,
+		CatalogVisible:       true,
 		ActorSystemAccountID: strings.TrimSpace(actorSystemAccountID),
 	}
 	if template != nil {
@@ -1222,6 +1247,7 @@ func customModelSaveInputFromExisting(item port.ManagementProviderModelCatalogIt
 		Scope:                     item.Scope,
 		SystemAccountID:           item.SystemAccountID,
 		Status:                    item.Status,
+		CatalogVisible:            item.CatalogVisible,
 		Mode:                      item.Mode,
 		SupportedAPIProtocols:     append([]string(nil), item.SupportedAPIProtocols...),
 		SupportedServiceTiers:     append([]string(nil), item.SupportedServiceTiers...),
@@ -1275,17 +1301,20 @@ func applyCustomModelMutableFields(input *port.ManagementCustomProviderModelSave
 func applyCustomModelMutableFieldsWithValidation(input *port.ManagementCustomProviderModelSaveInput, fields CustomModelMutation, create bool, validateFinal bool) error {
 	if fields.Status.Set {
 		status := strings.TrimSpace(fields.Status.Value)
-		if !validCustomModelStatus(status) {
+		if fields.Status.Value != status || !validCustomModelStatus(status) {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		input.Status = status
+	}
+	if fields.CatalogVisible.Set {
+		input.CatalogVisible = fields.CatalogVisible.Value
 	}
 	if input.Status == "" {
 		input.Status = "active"
 	}
 	if fields.Mode.Set {
 		mode := strings.TrimSpace(fields.Mode.Value)
-		if mode != "" && mode != "text" && mode != "image" && mode != "audio" {
+		if fields.Mode.Value != mode || (mode != "" && mode != "text" && mode != "image" && mode != "audio") {
 			return &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
 		input.Mode = mode
@@ -1421,6 +1450,7 @@ func customModelMutationHasAnyField(fields CustomModelMutation) bool {
 		fields.Scope.Set ||
 		fields.Model.Set ||
 		fields.Status.Set ||
+		fields.CatalogVisible.Set ||
 		fields.Mode.Set ||
 		fields.SupportedAPIProtocols.Set ||
 		fields.SupportedServiceTiers.Set ||
@@ -1456,6 +1486,9 @@ func normalizeCustomModelProtocols(values []string) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, value := range values {
 		protocol := strings.TrimSpace(value)
+		if value != protocol {
+			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
+		}
 		if _, ok := customProviderModelAPIProtocols[protocol]; !ok {
 			return nil, &CustomModelValidationError{Message: "自定义模型参数无效"}
 		}
@@ -1652,6 +1685,27 @@ func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason stri
 			slog.String("event", "model_cache_sync_failed_after_commit"),
 			slog.String("reason", reason),
 			slog.String("trace_id", strings.TrimSpace(traceID)),
+			slog.Any("error", err),
+		)
+	}
+}
+
+func (s *Service) rebuildCatalogSnapshot(ctx context.Context, scope string, systemAccountID string) {
+	if s.catalogRebuilder == nil {
+		return
+	}
+	rebuildCtx := context.WithoutCancel(ctx)
+	rebuildScope := "all"
+	rebuildSystemAccountID := ""
+	if strings.TrimSpace(scope) == "personal" {
+		rebuildScope = "personal"
+		rebuildSystemAccountID = strings.TrimSpace(systemAccountID)
+	}
+	if err := s.catalogRebuilder.Rebuild(rebuildCtx, rebuildScope, rebuildSystemAccountID); err != nil {
+		s.logger.WarnContext(rebuildCtx, "模型事实已保存，但发布快照重建失败，保留 dirty generation 等待后台重试",
+			slog.String("event", "model_catalog_snapshot_rebuild_failed_after_commit"),
+			slog.String("scope", rebuildScope),
+			slog.String("system_account_id", rebuildSystemAccountID),
 			slog.Any("error", err),
 		)
 	}

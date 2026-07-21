@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -505,6 +506,9 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 		result.Before.ContextWindowTokens != nil || result.After.Status != "disabled" || validateCalls != 1 {
 		t.Fatalf("atomic snapshots = before=%+v after=%+v", result.Before, result.After)
 	}
+	if q.dirtyInput.Scope != "all" || q.dirtyInput.SystemAccountID != "" || !q.dirtyInput.UpdatedAt.Valid {
+		t.Fatalf("dirty input = %+v", q.dirtyInput)
+	}
 }
 
 func TestUpdateManagementBuiltInProviderModelPricesMapsNoRowsToNotFound(t *testing.T) {
@@ -599,7 +603,7 @@ func TestUpdateManagementBuiltInProviderModelPricesTransactionValidationAndCommi
 		if err != nil || !found || validateCalls != 1 || tx.commitCalls != 1 || tx.rollbackCalls != 0 {
 			t.Fatalf("result/err/found/validate/commit/rollback = %+v/%v/%t/%d/%d/%d", result, err, found, validateCalls, tx.commitCalls, tx.rollbackCalls)
 		}
-		if !reflect.DeepEqual(tx.calls, []string{"lock", "update", "commit"}) {
+		if !reflect.DeepEqual(tx.calls, []string{"lock", "update", "mark-dirty", "commit"}) {
 			t.Fatalf("transaction order = %v", tx.calls)
 		}
 	})
@@ -635,6 +639,8 @@ type managementBuiltInProviderModelPriceUpdateQueriesStub struct {
 	updateInput postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams
 	updated     postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow
 	updateErr   error
+	dirtyInput  postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams
+	dirtyErr    error
 }
 
 func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) LockManagementBuiltInProviderModelConfiguration(
@@ -651,6 +657,14 @@ func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) UpdateManagementB
 ) (postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow, error) {
 	s.updateInput = input
 	return s.updated, s.updateErr
+}
+
+func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) MarkManagementModelCatalogSnapshotRebuildDirty(
+	_ context.Context,
+	input postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams,
+) error {
+	s.dirtyInput = input
+	return s.dirtyErr
 }
 
 type managementProviderModelRollbackContextKey struct{}
@@ -682,6 +696,14 @@ func (s *managementBuiltInProviderModelUpdateTxStub) QueryRow(_ context.Context,
 	row := s.rows[0]
 	s.rows = s.rows[1:]
 	return row
+}
+
+func (s *managementBuiltInProviderModelUpdateTxStub) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "model_catalog_snapshot_rebuild_requests") {
+		s.calls = append(s.calls, "mark-dirty")
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	}
+	return pgconn.CommandTag{}, fmt.Errorf("unexpected SQL: %s", sql)
 }
 
 func (s *managementBuiltInProviderModelUpdateTxStub) Commit(context.Context) error {
@@ -717,11 +739,11 @@ func (r managementProviderModelStaticRow) Scan(dest ...any) error {
 }
 
 func managementProviderModelLockRow(row postgresqueries.LockManagementBuiltInProviderModelConfigurationRow) pgx.Row {
-	return managementProviderModelStaticRow{values: managementProviderModelConfigurationValues(row.ID, row.ProviderCode, row.Status, row.Mode, row.SupportedApiProtocolsJson, row.SupportedServiceTiersJson, row.SupportedReasoningEffortsJson, row.DefaultReasoningEffort, row.ReleaseDate, row.ShutdownDate, row.ContextWindowTokens, row.MaxInputTokens, row.MaxOutputTokens, row.InputUsdPer1m, row.OutputUsdPer1m, row.CachedInputUsdPer1m, row.CacheWriteUsdPer1m, row.CacheWrite1hUsdPer1m, row.ServiceTierPricesJson, row.ImageInputUsdPer1m, row.ImageOutputUsdPer1m, row.AudioInputUsdPer1m, row.AudioOutputUsdPer1m, row.OutputUsdPerImage, row.UpdatedAt)}
+	return managementProviderModelStaticRow{values: managementProviderModelConfigurationValues(row.ID, row.ProviderCode, row.Status, row.CatalogVisible, row.Mode, row.SupportedApiProtocolsJson, row.SupportedServiceTiersJson, row.SupportedReasoningEffortsJson, row.DefaultReasoningEffort, row.ReleaseDate, row.ShutdownDate, row.ContextWindowTokens, row.MaxInputTokens, row.MaxOutputTokens, row.InputUsdPer1m, row.OutputUsdPer1m, row.CachedInputUsdPer1m, row.CacheWriteUsdPer1m, row.CacheWrite1hUsdPer1m, row.ServiceTierPricesJson, row.ImageInputUsdPer1m, row.ImageOutputUsdPer1m, row.AudioInputUsdPer1m, row.AudioOutputUsdPer1m, row.OutputUsdPerImage, row.UpdatedAt)}
 }
 
 func managementProviderModelUpdateRow(row postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow) pgx.Row {
-	return managementProviderModelStaticRow{values: managementProviderModelConfigurationValues(row.ID, row.ProviderCode, row.Status, row.Mode, row.SupportedApiProtocolsJson, row.SupportedServiceTiersJson, row.SupportedReasoningEffortsJson, row.DefaultReasoningEffort, row.ReleaseDate, row.ShutdownDate, row.ContextWindowTokens, row.MaxInputTokens, row.MaxOutputTokens, row.InputUsdPer1m, row.OutputUsdPer1m, row.CachedInputUsdPer1m, row.CacheWriteUsdPer1m, row.CacheWrite1hUsdPer1m, row.ServiceTierPricesJson, row.ImageInputUsdPer1m, row.ImageOutputUsdPer1m, row.AudioInputUsdPer1m, row.AudioOutputUsdPer1m, row.OutputUsdPerImage, row.UpdatedAt)}
+	return managementProviderModelStaticRow{values: managementProviderModelConfigurationValues(row.ID, row.ProviderCode, row.Status, row.CatalogVisible, row.Mode, row.SupportedApiProtocolsJson, row.SupportedServiceTiersJson, row.SupportedReasoningEffortsJson, row.DefaultReasoningEffort, row.ReleaseDate, row.ShutdownDate, row.ContextWindowTokens, row.MaxInputTokens, row.MaxOutputTokens, row.InputUsdPer1m, row.OutputUsdPer1m, row.CachedInputUsdPer1m, row.CacheWriteUsdPer1m, row.CacheWrite1hUsdPer1m, row.ServiceTierPricesJson, row.ImageInputUsdPer1m, row.ImageOutputUsdPer1m, row.AudioInputUsdPer1m, row.AudioOutputUsdPer1m, row.OutputUsdPerImage, row.UpdatedAt)}
 }
 
 func managementProviderModelConfigurationValues(values ...any) []any { return values }

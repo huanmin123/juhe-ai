@@ -19,6 +19,7 @@ const managementRuntimeLogRequestTimeout = 120 * time.Second
 type managementRuntimeLogService interface {
 	List(r *http.Request, input managementruntimelogs.ListInput) (managementruntimelogs.ListResult, error)
 	Detail(r *http.Request, id string) (managementruntimelogs.Detail, bool, error)
+	Facets(r *http.Request) (managementruntimelogs.FacetsResult, error)
 }
 
 type managementRuntimeLogServiceAdapter struct {
@@ -33,6 +34,10 @@ func (s managementRuntimeLogServiceAdapter) Detail(r *http.Request, id string) (
 	return s.service.Detail(r.Context(), id)
 }
 
+func (s managementRuntimeLogServiceAdapter) Facets(r *http.Request) (managementruntimelogs.FacetsResult, error) {
+	return s.service.Facets(r.Context())
+}
+
 type managementRuntimeLogListResponse struct {
 	Items                         []managementruntimelogs.Summary `json:"items"`
 	Total                         int                             `json:"total"`
@@ -45,6 +50,20 @@ type managementRuntimeLogListResponse struct {
 	RuntimeAvailable              bool                            `json:"runtimeAvailable"`
 	WorkerSnapshotAvailable       bool                            `json:"workerSnapshotAvailable"`
 	RuntimeLogIndexQueueAvailable bool                            `json:"runtimeLogIndexQueueAvailable"`
+}
+
+type managementRuntimeLogFacetsResponse struct {
+	managementruntimelogs.FacetsResult
+	RuntimeAvailable                   bool `json:"runtimeAvailable"`
+	WorkerSnapshotAvailable            bool `json:"workerSnapshotAvailable"`
+	RuntimeLogIndexQueueAvailable      bool `json:"runtimeLogIndexQueueAvailable"`
+	Runtime                            any  `json:"runtime"`
+	Worker                             any  `json:"worker"`
+	DBService                          any  `json:"dbService"`
+	QueueHealth                        any  `json:"queueHealth"`
+	Grep                               any  `json:"grep"`
+	GatewayAccountSideEffectsAvailable bool `json:"gatewayAccountSideEffectsAvailable"`
+	GatewayAccountSideEffects          any  `json:"gatewayAccountSideEffects"`
 }
 
 func NewManagementRuntimeLogsHandler(service *managementruntimelogs.Service) http.Handler {
@@ -71,8 +90,20 @@ func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now fu
 		r = r.WithContext(ctx)
 
 		rawID := chi.URLParam(r, "id")
+		if rawID == "" && strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/runtime-logs/facets") {
+			rawID = "facets"
+		}
 		if rawID != "" {
-			if rawID == "facets" || rawID == "grep" {
+			if rawID == "facets" {
+				facets, err := service.Facets(r)
+				if err != nil {
+					writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+					return
+				}
+				writeData(w, http.StatusOK, managementRuntimeLogFacetsUnavailableRuntime(facets, now()))
+				return
+			}
+			if rawID == "grep" {
 				writeError(w, http.StatusNotFound, "接口不存在")
 				return
 			}
@@ -118,6 +149,44 @@ func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now fu
 			RuntimeLogIndexQueueAvailable: false,
 		})
 	})
+}
+
+func managementRuntimeLogFacetsUnavailableRuntime(facets managementruntimelogs.FacetsResult, now time.Time) managementRuntimeLogFacetsResponse {
+	if facets.Levels == nil {
+		facets.Levels = []managementruntimelogs.FacetLevel{}
+	}
+	if facets.Events == nil {
+		facets.Events = []string{}
+	}
+	endAt := now.UTC().Truncate(time.Millisecond)
+	startAt := endAt.Add(-3 * 24 * time.Hour)
+	return managementRuntimeLogFacetsResponse{
+		FacetsResult:                  facets,
+		RuntimeAvailable:              false,
+		WorkerSnapshotAvailable:       false,
+		RuntimeLogIndexQueueAvailable: false,
+		Runtime:                       nil,
+		Worker: map[string]any{
+			"available": false, "snapshotAvailable": false, "ready": nil, "pendingMessageCount": nil,
+		},
+		DBService: map[string]any{
+			"statusAvailable": false, "stateAvailable": false, "ready": nil, "pendingRequestCount": nil,
+			"timedOutRequestCount": nil, "failedRequestCount": nil,
+		},
+		QueueHealth: map[string]any{
+			"available": false, "workerSnapshotAvailable": false, "serverIpcQueueAvailable": false,
+			"status": "unavailable", "reasons": []string{"go_runtime_unavailable"},
+			"summary":      map[string]int{"degradedCount": 0, "backloggedCount": 0, "unavailableCount": 0, "droppedCount": 0, "rejectedCount": 0, "flushFailureCount": 0, "queuedCount": 0, "queuedBytes": 0, "pendingWriteRequestCount": 0, "writerPoolQueuedCount": 0, "writerPoolActiveJobs": 0},
+			"workerQueues": []any{}, "serverIpcQueues": []any{},
+		},
+		Grep: map[string]any{
+			"defaultStartAt": startAt.Format(time.RFC3339Nano), "defaultEndAt": endAt.Format(time.RFC3339Nano),
+			"defaultRangeDays": 3, "maxRangeDays": 7, "fileRetentionDays": facets.RetentionDays,
+			"activeSearchCount": 0, "maxConcurrentSearches": 0,
+		},
+		GatewayAccountSideEffectsAvailable: false,
+		GatewayAccountSideEffects:          nil,
+	}
 }
 
 func parseManagementRuntimeLogListQuery(values url.Values) managementruntimelogs.ListInput {

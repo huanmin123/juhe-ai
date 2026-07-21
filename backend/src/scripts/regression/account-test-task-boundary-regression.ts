@@ -9,6 +9,10 @@ const dispatchRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-
 const sessionRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-session.routes.ts')
 const statusRoutes = source(backendRoot, 'modules', 'accounts', 'account-test-status.routes.ts')
 const taskRepository = source(backendRoot, 'storage', 'account-test-tasks.repository.ts')
+const postgresTaskRepository = taskRepository.slice(
+  taskRepository.indexOf('export async function createAccountTestSessionAsync'),
+  taskRepository.indexOf('function getAccountTestTaskRow(')
+)
 const testService = source(backendRoot, 'modules', 'accounts', 'account-test.service.ts')
 const gatewayRoutes = source(backendRoot, 'modules', 'gateway', 'routes.ts')
 const failureDispatch = source(backendRoot, 'modules', 'gateway', 'response', 'failure-dispatch.ts')
@@ -71,6 +75,21 @@ assert.match(
   taskRepository,
   /账户测试会话只能包含一个账户任务/,
   '每个会话必须只承载一个账户任务，防止重新引入批量测试'
+)
+assert.doesNotMatch(
+  postgresTaskRepository,
+  /cancel_requested\s*=\s*[01]/,
+  'PostgreSQL account test path must use boolean predicates after the Go schema upgrade'
+)
+assert.match(
+  postgresTaskRepository,
+  /cancel_requested\s*=\s*false/,
+  'PostgreSQL runnable account test guards must use false'
+)
+assert.match(
+  postgresTaskRepository,
+  /cancel_requested\s*=\s*true/,
+  'PostgreSQL cancellation writes must use true'
 )
 
 assert.match(

@@ -14,7 +14,6 @@ import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/runtime/runtime-cache.service.js'
-import { flushRuntimeLogIndexQueueAsync } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { requestBackgroundWorkerDbService, requestIngestWorkerDrainStatus, requestServerProcessEventLoopSamples } from './background-ipc.js'
 import type { BackgroundWorkerIngestDrainStatus } from './background-ipc.types.js'
@@ -622,7 +621,6 @@ async function runProxyLatencyRefresh(): Promise<void> {
 
 async function runRuntimeLogIndexMaintenance(): Promise<void> {
   try {
-    await flushRuntimeLogIndexQueueAsync({ drain: true, retryOnFailure: false })
     if (runtimeConfig.databaseDriver !== 'postgres') {
       ensureRuntimeLogFacetSnapshots()
     }

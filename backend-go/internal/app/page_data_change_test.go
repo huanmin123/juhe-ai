@@ -343,6 +343,13 @@ func TestServerWiresPageDataPublisherWithRootRedisNamespace(t *testing.T) {
 			t.Fatalf("management accounts wiring missing %q", want)
 		}
 	}
+	accountTestDispatchBlock := sourceBlockBetween(t, text,
+		"accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions",
+		"accountForceActivateService := managementaccountforceactivate.NewService",
+	)
+	if !regexp.MustCompile(`TestOptions:\s+accountTestOptionsService`).MatchString(accountTestDispatchBlock) {
+		t.Fatal("server must inject account test options into account test dispatch")
+	}
 	systemAccountBlock := sourceBlockBetween(t, text,
 		"systemAccountService := managementsystemaccounts.NewServiceWithOptions",
 		"systemTeamService := managementsystemteams.NewServiceWithOptions",
