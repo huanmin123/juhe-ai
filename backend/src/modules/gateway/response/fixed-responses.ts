@@ -72,18 +72,17 @@ export function finalizeGatewayAuthFailureAudit(
   const authErrorCode = typeof locals.gatewayAuthFailureErrorCode === 'string'
     ? locals.gatewayAuthFailureErrorCode
     : 'invalid_request_error'
-  const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error', authErrorCode)
-  auditCapture.finalize({
+  auditCapture.finalizeLazy(() => ({
     outcome: 'gateway_failed',
     success: false,
     statusCode: res.statusCode,
     responseHeaders: responseHeadersToObject(res),
-    responseBody: JSON.stringify(authErrorPayload),
+    responseBody: JSON.stringify(gatewayErrorPayload(authErrorMessage, 'invalid_request_error', authErrorCode)),
     responsePartType: 'gateway_error',
     errorPhase: 'auth',
     errorCode: authErrorCode,
     errorMessage: authErrorMessage
-  })
+  }))
 }
 
 export async function sendOpenAIModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseInput): Promise<void> {
@@ -163,7 +162,7 @@ async function sendModelsGatewayResponsePayload(input: {
     setAuthenticatedModelsClientCacheHeaders(res)
   }
   res.status(200).json(responsePayload)
-  auditCapture.finalize({
+  auditCapture.finalizeLazy(() => ({
     outcome: 'success',
     success: true,
     statusCode: 200,
@@ -171,7 +170,7 @@ async function sendModelsGatewayResponsePayload(input: {
     responseBody: JSON.stringify(responsePayload),
     responsePartType: 'gateway_response',
     firstTokenMs: Date.now() - startedAt
-  })
+  }))
   return responsePayload
 }
 
