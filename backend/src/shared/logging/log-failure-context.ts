@@ -246,6 +246,15 @@ function safeErrorStringProperty(error: Error, key: string, state: CaptureState)
     const descriptor = safeOwnPropertyDescriptor(current, key, state)
     if (descriptor) {
       if ('value' in descriptor && typeof descriptor.value === 'string') return descriptor.value
+      if (!('value' in descriptor) && key === 'stack' && typeof descriptor.get === 'function') {
+        try {
+          const stack = descriptor.get.call(error)
+          if (typeof stack === 'string') return stack
+        } catch {
+          state.truncated = true
+        }
+        return undefined
+      }
       if (!('value' in descriptor)) state.truncated = true
       return undefined
     }
