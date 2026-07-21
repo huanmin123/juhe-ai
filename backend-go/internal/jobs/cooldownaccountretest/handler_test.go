@@ -4,13 +4,12 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hibiken/asynq"
 	module "juhe-ai/backend-go/internal/modules/cooldownaccountretest"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestHandleTaskRejectsInvalidPayload(t *testing.T) {
-	err := HandleTask(context.Background(), module.Processor{}, asynq.NewTask(TaskType, []byte(`{bad`)))
+	err := HandleTask(context.Background(), module.Processor{}, []byte(`{bad`))
 	if err == nil {
 		t.Fatal("expected payload error")
 	}
