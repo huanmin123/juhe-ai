@@ -13,23 +13,18 @@ import type {
 } from '../../shared/pageDataActivationCoordinator'
 import {
   BrowserPageDataTabCoordinator,
-  createPageDataCacheKey,
   createMemoryPageDataCacheStorage,
   type PageDataLoadResult,
+  type PageDataResourceCacheDefinition,
   type PageDataTabCoordinator
 } from '../../shared/pageDataCache'
 
 const resourceModulePath = fileURLToPath(new URL('../../shared/pageDataResourceCache.ts', import.meta.url))
 assert.equal(existsSync(resourceModulePath), true, '必须实现统一 IndexedDB page-data resource cache')
 
-type ResourceRequest<T> = {
-  cacheKey: { scope: string; route: string; query: unknown; version: string | number }
+type ResourceRequest<T> = PageDataResourceCacheDefinition<T> & {
   domain: 'providers.catalog'
   viewScope: 'self'
-  loadNetwork: () => Promise<T>
-  maxStaleMs?: number
-  activation?: PageDataActivationHandle
-  writeEpoch?: (domain: 'providers.catalog') => number
 }
 type ResourceCache = {
   load<T>(request: ResourceRequest<T>): Promise<PageDataLoadResult<T>>
@@ -252,50 +247,46 @@ assert.deepEqual(managedResource.data, ['managed-resource'])
 assert.equal(managedResource.confirmed, true)
 assert.deepEqual([managedRegisters, managedStabilizes, managedLegacyConfirms], [1, 1, 0], 'resource cache 必须透传 activation/writeEpoch 并复用 pre/post barrier')
 
-let rebindingNowMs = Date.parse('2026-07-18T12:00:00.000Z')
-let rebindingLegacyConfirms = 0
+const rebindingNowMs = Date.parse('2026-07-18T12:00:31.000Z')
+let rebindingPhase: 'unmanaged' | 'managed' = 'unmanaged'
+let rebindingUnmanagedLegacyConfirms = 0
+let rebindingManagedLegacyConfirms = 0
+let rebindingUnmanagedLoads = 0
 let rebindingManagedRegisters = 0
 let rebindingManagedStabilizes = 0
 let rebindingManagedLoads = 0
 const rebindingStorage = createMemoryPageDataCacheStorage({ now: () => new Date(rebindingNowMs) })
+const rebindingUnmanagedNetworkStarted = deferred<void>()
+const rebindingUnmanagedNetwork = deferred<string[]>()
 const rebindingRequest = (): ResourceRequest<string[]> => ({
   ...request(),
   cacheKey: { ...request().cacheKey, scope: 'self:rebinding' },
-  loadNetwork: async () => ['unmanaged-network']
-})
-const rebindingKey = createPageDataCacheKey({ ...rebindingRequest().cacheKey, domain: 'providers.catalog' })
-await rebindingStorage.writeIfCurrent({
-  key: rebindingKey,
-  domain: 'providers.catalog',
-  scope: rebindingRequest().cacheKey.scope,
-  route: rebindingRequest().cacheKey.route,
-  value: ['unmanaged-cache'],
-  token: token(7),
-  confirmedAt: new Date(rebindingNowMs).toISOString(),
-  writtenAt: new Date(rebindingNowMs).toISOString(),
-  expiresAt: new Date(rebindingNowMs + 60_000).toISOString(),
-  lastAccessedAt: new Date(rebindingNowMs).toISOString()
+  loadNetwork: async () => {
+    rebindingUnmanagedLoads += 1
+    rebindingUnmanagedNetworkStarted.resolve()
+    return rebindingUnmanagedNetwork.promise
+  }
 })
 const rebindingCache = new resourceModule.PageDataResourceCache({
   storage: rebindingStorage,
   tabCoordinator,
   now: () => new Date(rebindingNowMs),
-  confirm: async (input) => {
-    rebindingLegacyConfirms += 1
-    const current = token(7)
+  confirm: async () => {
+    if (rebindingPhase === 'unmanaged') rebindingUnmanagedLegacyConfirms += 1
+    else rebindingManagedLegacyConfirms += 1
     return {
       serverTime: new Date(rebindingNowMs).toISOString(),
       domains: {
         'providers.catalog': {
-          action: input.domains['providers.catalog']?.sequence === current.sequence ? 'unchanged' : 'reload',
-          token: current
+          action: 'reload',
+          token: token(7)
         }
       }
     }
   }
 })
 const unmanagedPending = rebindingCache.load(rebindingRequest())
-rebindingNowMs += 31_000
+await rebindingUnmanagedNetworkStarted.promise
 const reboundActivation: PageDataActivationHandle = {
   register: async (participant) => {
     rebindingManagedRegisters += 1
@@ -318,6 +309,7 @@ const reboundActivation: PageDataActivationHandle = {
   dispose: () => undefined
 }
 const reboundWriteEpoch = () => 21
+const reboundNetworkStarted = deferred<void>()
 const reboundNetwork = deferred<string[]>()
 const reboundRequest = (): ResourceRequest<string[]> => ({
   ...rebindingRequest(),
@@ -325,18 +317,33 @@ const reboundRequest = (): ResourceRequest<string[]> => ({
   writeEpoch: reboundWriteEpoch,
   loadNetwork: async () => {
     rebindingManagedLoads += 1
+    reboundNetworkStarted.resolve()
     return reboundNetwork.promise
   }
 })
+rebindingPhase = 'managed'
 const firstRebound = rebindingCache.load(reboundRequest())
-await unmanagedPending
 const secondRebound = rebindingCache.load(reboundRequest())
+await reboundNetworkStarted.promise
+rebindingUnmanagedNetwork.resolve(['unmanaged-late'])
+const unmanagedResult = await unmanagedPending
+assert.equal(unmanagedResult.superseded, true, '重绑定必须关闭旧 controller，使旧 pending 最终返回 superseded')
+const thirdRebound = rebindingCache.load(reboundRequest())
+await Promise.resolve()
+assert.equal(rebindingManagedLoads, 1, '旧 pending 的 finally 不得删除新绑定的 pending')
 reboundNetwork.resolve(['managed-rebound'])
-const rebound = await Promise.all([firstRebound, secondRebound])
-assert.deepEqual(rebound.map((item) => item.data), [['managed-rebound'], ['managed-rebound']], 'managed 请求不得复用同 key 的 unmanaged pending/controller')
+const rebound = await Promise.all([firstRebound, secondRebound, thirdRebound])
+assert.deepEqual(rebound.map((item) => item.data), [['managed-rebound'], ['managed-rebound'], ['managed-rebound']], 'managed 请求不得复用同 key 的 unmanaged pending/controller，相同新绑定仍应合并')
 assert.deepEqual(
-  [rebindingLegacyConfirms, rebindingManagedRegisters, rebindingManagedStabilizes, rebindingManagedLoads],
-  [0, 1, 1, 1],
+  [
+    rebindingUnmanagedLegacyConfirms,
+    rebindingManagedLegacyConfirms,
+    rebindingUnmanagedLoads,
+    rebindingManagedRegisters,
+    rebindingManagedStabilizes,
+    rebindingManagedLoads
+  ],
+  [1, 0, 1, 1, 1, 1],
   '重绑定必须关闭旧 controller，并让相同新绑定继续合并并发'
 )
 

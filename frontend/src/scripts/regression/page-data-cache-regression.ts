@@ -258,6 +258,7 @@ lifecycleController.close()
 
 await testMicrotaskConfirmBatching()
 await testActivationManagedCacheFlow()
+await testPendingConfirmFallbackMetadata()
 
 const followerSharedStorage = createMemoryPageDataCacheStorage()
 const followerSharedKey = createPageDataCacheKey({ scope: 'self:follower-shared-refresh', route: '/accounts', query: {}, version: 1, domain: 'accounts.runtime' })
@@ -612,9 +613,17 @@ raceController.close()
 dynamicManager.close()
 console.log('通用页面 IndexedDB cache-first、revision 与多标签协调回归通过')
 
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (reason?: unknown) => void } {
   let resolve!: (value: T) => void
-  return { promise: new Promise<T>((next) => { resolve = next }), resolve }
+  let reject!: (reason?: unknown) => void
+  return {
+    promise: new Promise<T>((next, fail) => {
+      resolve = next
+      reject = fail
+    }),
+    resolve,
+    reject
+  }
 }
 
 function assertSourceOrder(source: string, markers: string[], message: string): void {
@@ -628,6 +637,127 @@ function assertSourceOrder(source: string, markers: string[], message: string): 
 async function microtask(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
+}
+
+async function testPendingConfirmFallbackMetadata(): Promise<void> {
+  const now = () => new Date('2026-07-17T12:00:31.000Z')
+  const summaries: unknown[] = []
+
+  const unmanagedStorage = createMemoryPageDataCacheStorage({ now })
+  const unmanagedConfirm = deferred<PageDataConfirmResult>()
+  const unmanagedNetwork = deferred<string[]>()
+  let unmanagedNetworkLoads = 0
+  const unmanagedController = new PageDataCacheController<string[]>({
+    cacheKey: { scope: 'self:pending-fallback-unmanaged', route: '/accounts', query: {}, version: 1 },
+    domain: 'accounts.runtime',
+    viewScope: 'self',
+    storage: unmanagedStorage,
+    maxStaleMs: 30_000,
+    now,
+    confirm: () => unmanagedConfirm.promise,
+    loadNetwork: () => {
+      unmanagedNetworkLoads += 1
+      return unmanagedNetwork.promise
+    }
+  })
+  await unmanagedStorage.writeIfCurrent(cacheRecord(unmanagedController.key, ['unmanaged-stale'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const unmanagedPendingConfirm = unmanagedController.requestConfirm()
+  await microtask()
+  const unmanagedRefresh = unmanagedController.refresh()
+  unmanagedConfirm.reject(new Error('unmanaged confirm unavailable'))
+  await microtask()
+  unmanagedNetwork.resolve(['unmanaged-fallback'])
+  const [unmanagedOutcome, unmanagedResult] = await Promise.all([unmanagedPendingConfirm, unmanagedRefresh])
+  summaries.push({
+    mode: 'unmanaged',
+    networkLoads: unmanagedNetworkLoads,
+    outcome: unmanagedOutcome,
+    refresh: unmanagedResult
+  })
+  unmanagedController.close()
+
+  const managedStorage = createMemoryPageDataCacheStorage({ now })
+  const managedPre = deferred<PageDataActivationDecision>()
+  let managedNetworkLoads = 0
+  const managedController = new PageDataCacheController<string[]>({
+    cacheKey: { scope: 'self:pending-fallback-managed', route: '/accounts', query: {}, version: 1 },
+    domain: 'accounts.runtime',
+    viewScope: 'self',
+    storage: managedStorage,
+    maxStaleMs: 30_000,
+    now,
+    activation: activationHandle({ register: () => managedPre.promise }),
+    writeEpoch: () => 0,
+    confirm: async () => { throw new Error('managed request must not use legacy confirm') },
+    loadNetwork: async () => {
+      managedNetworkLoads += 1
+      return ['managed-fallback']
+    }
+  })
+  await managedStorage.writeIfCurrent(cacheRecord(managedController.key, ['managed-stale'], {
+    token: token(1),
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const managedPendingConfirm = managedController.requestConfirm()
+  await microtask()
+  const managedRefresh = managedController.refresh()
+  managedPre.resolve(activationFailure('unavailable', 'pre', {
+    resourceKey: managedController.key,
+    domain: 'accounts.runtime',
+    token: token(1),
+    generation: 1,
+    writeEpoch: 0
+  }))
+  const [managedOutcome, managedResult] = await Promise.all([managedPendingConfirm, managedRefresh])
+  summaries.push({
+    mode: 'managed',
+    networkLoads: managedNetworkLoads,
+    outcome: managedOutcome,
+    refresh: managedResult
+  })
+  managedController.close()
+
+  assert.deepEqual(summaries, [
+    {
+      mode: 'unmanaged',
+      networkLoads: 1,
+      outcome: {
+        state: 'updated',
+        data: ['unmanaged-fallback'],
+        source: 'network',
+        confirmed: false,
+        cached: true
+      },
+      refresh: {
+        source: 'network',
+        data: ['unmanaged-fallback'],
+        confirmed: false,
+        cached: true,
+        superseded: false
+      }
+    },
+    {
+      mode: 'managed',
+      networkLoads: 1,
+      outcome: {
+        state: 'updated',
+        data: ['managed-fallback'],
+        source: 'network',
+        confirmed: false,
+        cached: false
+      },
+      refresh: {
+        source: 'network',
+        data: ['managed-fallback'],
+        confirmed: false,
+        cached: false,
+        superseded: false
+      }
+    }
+  ], 'confirm 失败后的 pending refresh 必须复用唯一一次 fallback GET，并保留真实确认与缓存元数据')
 }
 
 async function testActivationManagedCacheFlow(): Promise<void> {

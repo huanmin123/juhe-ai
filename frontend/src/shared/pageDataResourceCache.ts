@@ -8,9 +8,10 @@ import {
   createPageDataCacheKey,
   createPageDataCacheStorage,
   getDefaultPageDataTabCoordinator,
+  type PageDataCacheControllerOptions,
   type PageDataCacheStorage,
   type PageDataLoadResult,
-  type PageDataRequestCacheDefinition,
+  type PageDataResourceCacheDefinition,
   type PageDataTabCoordinator
 } from './pageDataCache'
 import type { PageDataActivationHandle } from './pageDataActivationCoordinator'
@@ -70,7 +71,7 @@ export class PageDataResourceCache {
     })
   }
 
-  async load<T>(request: PageDataRequestCacheDefinition<T>): Promise<PageDataLoadResult<T>> {
+  async load<T>(request: PageDataResourceCacheDefinition<T>): Promise<PageDataLoadResult<T>> {
     if (this.closed) throw new Error('页面资源缓存已关闭')
     const key = createPageDataCacheKey({ ...request.cacheKey, domain: request.domain })
     const binding = this.bindingFor(request)
@@ -117,7 +118,7 @@ export class PageDataResourceCache {
     this.removeDomainInvalidationListener()
   }
 
-  private bindingFor<T>(request: PageDataRequestCacheDefinition<T>): ResourceBinding {
+  private bindingFor<T>(request: PageDataResourceCacheDefinition<T>): ResourceBinding {
     return {
       activation: request.activation ?? this.activation,
       writeEpoch: request.writeEpoch ?? this.writeEpoch
@@ -126,7 +127,7 @@ export class PageDataResourceCache {
 
   private entryFor<T>(
     key: string,
-    request: PageDataRequestCacheDefinition<T>,
+    request: PageDataResourceCacheDefinition<T>,
     binding: ResourceBinding
   ): ResourceEntry {
     const current = this.entries.get(key)
@@ -152,14 +153,7 @@ export class PageDataResourceCache {
         now: this.now,
         activation: binding.activation,
         writeEpoch: binding.writeEpoch
-      } as PageDataRequestCacheDefinition<unknown> & {
-        storage: PageDataCacheStorage
-        confirm: PageDataResourceCacheOptions['confirm']
-        tabCoordinator: PageDataTabCoordinator
-        now?: () => Date
-        activation?: PageDataActivationHandle
-        writeEpoch?: (domain: PageDataDomain) => number
-      }),
+      } as PageDataCacheControllerOptions<unknown>),
       domain: request.domain,
       scope: request.cacheKey.scope,
       route: request.cacheKey.route,

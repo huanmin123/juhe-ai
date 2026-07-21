@@ -85,7 +85,13 @@ export interface PageDataCacheControllerOptions<T> {
   writeEpoch?: (domain: PageDataDomain) => number
 }
 
-export type PageDataRequestCacheDefinition<T> = Omit<PageDataCacheControllerOptions<T>, 'storage' | 'confirm' | 'tabCoordinator' | 'now'>
+export type PageDataRequestCacheDefinition<T> = Omit<
+  PageDataCacheControllerOptions<T>,
+  'storage' | 'confirm' | 'tabCoordinator' | 'now' | 'activation' | 'writeEpoch'
+>
+
+export type PageDataResourceCacheDefinition<T> = PageDataRequestCacheDefinition<T>
+  & Pick<PageDataCacheControllerOptions<T>, 'activation' | 'writeEpoch'>
 
 export interface PageDataRequestCacheManagerOptions {
   storage?: PageDataCacheStorage
@@ -108,7 +114,13 @@ export interface PageDataLoadResult<T> {
 
 export type PageDataConfirmOutcome<T> =
   | { state: 'unchanged'; data?: T }
-  | { state: 'updated'; data: T }
+  | {
+    state: 'updated'
+    data: T
+    source: PageDataLoadResult<T>['source']
+    confirmed: boolean
+    cached: boolean
+  }
   | { state: 'unavailable'; data?: T }
   | { state: 'follower'; data?: T }
   | { state: 'superseded'; data?: T }
@@ -298,7 +310,13 @@ export class PageDataCacheController<T> {
     const outcome = await pendingConfirm.catch((): PageDataConfirmOutcome<T> => ({ state: 'unavailable' }))
     if (this.closed) return { source: 'cache', data: outcome.data as T, confirmed: false, cached: false, superseded: true }
     if (outcome.state === 'updated' && outcome.data !== undefined) {
-      return { source: 'cache', data: outcome.data, confirmed: true, cached: true, superseded: false }
+      return {
+        source: outcome.source,
+        data: outcome.data,
+        confirmed: outcome.confirmed,
+        cached: outcome.cached,
+        superseded: false
+      }
     }
     const generation = ++this.generation
     const operationWriteEpoch = this.currentWriteEpoch()
@@ -430,7 +448,13 @@ export class PageDataCacheController<T> {
       return this.refreshInFlight.then(
         (result) => result.superseded
           ? { state: 'superseded', data: result.data }
-          : { state: 'updated', data: result.data },
+          : {
+            state: 'updated',
+            data: result.data,
+            source: result.source,
+            confirmed: result.confirmed,
+            cached: result.cached
+          },
         () => ({ state: 'unavailable' })
       )
     }
@@ -470,13 +494,15 @@ export class PageDataCacheController<T> {
         try {
           const data = await this.options.loadNetwork()
           if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
-          if (this.options.activation) return { state: 'unavailable', data }
+          if (this.options.activation) {
+            return { state: 'updated', data, source: 'network', confirmed: false, cached: false }
+          }
           const record = this.record(data)
           if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
           const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
           if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data }
           if (written) this.publish(record)
-          return { state: 'updated', data }
+          return { state: 'updated', data, source: 'network', confirmed: false, cached: written }
         } catch {
           return { state: 'unavailable' }
         }
@@ -504,15 +530,21 @@ export class PageDataCacheController<T> {
           && await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: current.value }
         if (written) this.publish(record)
-        return written ? { state: 'updated', data: next } : { state: 'superseded', data: current.value }
+        return written
+          ? { state: 'updated', data: next, source: 'cache', confirmed: true, cached: true }
+          : { state: 'superseded', data: current.value }
       }
     }
     if (result.action === 'reset' && this.isOperationCurrent(generation, operationWriteEpoch)) await this.invalidateCache()
     const stable = await this.reloadStable(generation, operationWriteEpoch, result)
     if (!this.isOperationCurrent(generation, operationWriteEpoch)) return { state: 'superseded', data: stable.data }
-    return this.options.activation && !stable.confirmed
-      ? { state: 'unavailable', data: stable.data }
-      : { state: 'updated', data: stable.data }
+    return {
+      state: 'updated',
+      data: stable.data,
+      source: 'network',
+      confirmed: stable.confirmed,
+      cached: stable.cached
+    }
   }
 
   private async refreshFromToken(
