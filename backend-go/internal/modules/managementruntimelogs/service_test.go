@@ -172,6 +172,16 @@ func TestServicePropagatesStoreErrors(t *testing.T) {
 	}
 }
 
+func TestServiceFacetsReturnsEmptyArraysForEmptyStore(t *testing.T) {
+	result, err := NewService(&managementRuntimeLogReaderStub{}).Facets(context.Background())
+	if err != nil {
+		t.Fatalf("Facets: %v", err)
+	}
+	if result.Levels == nil || result.Events == nil {
+		t.Fatalf("empty facets must use arrays: levels=%v events=%v", result.Levels, result.Events)
+	}
+}
+
 type managementRuntimeLogReaderStub struct {
 	listInput   port.ManagementRuntimeLogListInput
 	listResult  port.ManagementRuntimeLogListResult
