@@ -14,7 +14,7 @@ SELECT a.id, a.system_account_id, a.name, a.status, a.schedulable,
          WHEN a.authorization_instance_authorization_id IS NOT NULL AND COALESCE(gb.account_authorization_id, '') <> COALESCE(ra.id, '') THEN 'authorization_unavailable'
          ELSE 'bound'
        END,
-       COALESCE((SELECT jsonb_build_object('requestCount', usd.request_count, 'successCount', usd.success_count, 'errorCount', usd.error_count, 'inputTokens', usd.input_tokens, 'outputTokens', usd.output_tokens, 'totalCost', usd.total_cost_usd)::text FROM juhe_stats.usage_stats_daily usd WHERE usd.scope_type = 'account' AND usd.scope_id = a.id ORDER BY usd.stat_date DESC LIMIT 1), '{}')
+       COALESCE((SELECT jsonb_build_object('requestCount', usd.request_count, 'successCount', usd.success_count, 'errorCount', usd.error_count, 'inputTokens', usd.input_tokens, 'outputTokens', usd.output_tokens, 'totalCost', usd.total_cost_usd)::text FROM juhe_stats.usage_stats_daily usd WHERE usd.system_account_id = a.system_account_id AND usd.scope_type = CASE WHEN ra.id IS NULL THEN 'account' ELSE 'account_authorization' END AND usd.scope_id = CASE WHEN ra.id IS NULL THEN a.id ELSE ra.id END AND usd.stat_date = sqlc.arg(stat_date)::text), '{}')
 FROM juhe_business.accounts a
 LEFT JOIN juhe_business.resource_authorizations ra ON ra.id = a.authorization_instance_authorization_id
 LEFT JOIN juhe_business.accounts source ON source.id = a.authorization_instance_source_account_id AND source.deleted_at IS NULL

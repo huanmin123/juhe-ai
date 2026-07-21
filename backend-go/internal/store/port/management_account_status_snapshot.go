@@ -5,6 +5,7 @@ import "context"
 type ManagementAccountStatusSnapshotInput struct {
 	AccountIDs      []string
 	SystemAccountID string
+	StatDate        string
 }
 
 type ManagementAccountStatusProjection struct {

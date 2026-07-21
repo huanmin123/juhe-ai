@@ -834,6 +834,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		APIKeySources:      store,
 		CredentialCodec:    secretcrypto.NewJSONCodec(cfg.Secret),
 		FingerprintSecret:  cfg.Secret,
+		UsageStatsTimezone: store,
 	})
 	accountListService := managementaccountlist.NewService(store)
 	accountExportService := managementaccountexport.NewService(managementaccountexport.ServiceOptions{

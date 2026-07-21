@@ -14,6 +14,9 @@ func TestManagementAccountStatusSnapshotSQLKeepsScopeAndInputOrder(t *testing.T)
 		"ga.account_authorization_id",
 		"authorization_unavailable",
 		"a.authorization_instance_authorization_id IS NULL OR ra.status IN ('active', 'paused', 'expired')",
+		"usd.stat_date = $3",
+		"'account_authorization'",
+		"usd.scope_id = CASE WHEN ra.id IS NULL THEN a.id ELSE ra.id END",
 	} {
 		if !strings.Contains(managementAccountStatusSnapshotSQL, fragment) {
 			t.Fatalf("query missing %q", fragment)

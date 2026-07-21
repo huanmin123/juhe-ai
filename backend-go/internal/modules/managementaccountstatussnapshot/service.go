@@ -147,6 +147,7 @@ type Service struct {
 	apiKeySources      APIKeyRuntimeSourceReader
 	credentialCodec    CredentialCodec
 	fingerprintSecret  string
+	usageStatsTimezone port.ManagementUsageStatsTimezoneReader
 	now                func() time.Time
 }
 
@@ -157,6 +158,7 @@ type ServiceOptions struct {
 	APIKeySources      APIKeyRuntimeSourceReader
 	CredentialCodec    CredentialCodec
 	FingerprintSecret  string
+	UsageStatsTimezone port.ManagementUsageStatsTimezoneReader
 	Now                func() time.Time
 }
 
@@ -176,6 +178,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		apiKeySources:      opts.APIKeySources,
 		credentialCodec:    opts.CredentialCodec,
 		fingerprintSecret:  opts.FingerprintSecret,
+		usageStatsTimezone: opts.UsageStatsTimezone,
 		now:                now,
 	}
 }
@@ -224,11 +227,15 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 	if input.SelfOnly {
 		scope = strings.TrimSpace(input.ActorSystemAccountID)
 	}
-	rows, err := s.reader.ListManagementAccountStatusProjections(ctx, port.ManagementAccountStatusSnapshotInput{AccountIDs: ids, SystemAccountID: scope})
+	now := s.now()
+	statDate, err := s.todayStatDate(ctx, now)
 	if err != nil {
 		return Result{}, err
 	}
-	now := s.now()
+	rows, err := s.reader.ListManagementAccountStatusProjections(ctx, port.ManagementAccountStatusSnapshotInput{AccountIDs: ids, SystemAccountID: scope, StatDate: statDate})
+	if err != nil {
+		return Result{}, err
+	}
 	currentConcurrency := make(map[string]int)
 	concurrencyAvailable := false
 	if s.accountConcurrency != nil {
@@ -268,6 +275,24 @@ func (s *Service) Get(ctx context.Context, input Input) (Result, error) {
 		},
 		Items: items,
 	}, nil
+}
+
+func (s *Service) todayStatDate(ctx context.Context, now time.Time) (string, error) {
+	timezone := "UTC"
+	if s.usageStatsTimezone != nil {
+		value, found, err := s.usageStatsTimezone.GetManagementUsageStatsTimezone(ctx)
+		if err != nil {
+			return "", fmt.Errorf("读取 usageStatsTimezone 失败: %w", err)
+		}
+		if found && strings.TrimSpace(value) != "" {
+			timezone = strings.TrimSpace(value)
+		}
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return "", fmt.Errorf("usageStatsTimezone 无效: %w", err)
+	}
+	return now.In(location).Format("2006-01-02"), nil
 }
 
 func concurrencyAccountID(row port.ManagementAccountStatusProjection) string {

@@ -35,6 +35,21 @@ func TestServiceSelfScopeAndEffectiveAvailability(t *testing.T) {
 	}
 }
 
+func TestServiceUsesUsageStatsTimezoneForTodayProjection(t *testing.T) {
+	reader := &statusReaderStub{rows: []port.ManagementAccountStatusProjection{{ID: "a1", SystemAccountID: "u1", Name: "A", Status: "active", Schedulable: true}}}
+	service := NewServiceWithOptions(ServiceOptions{
+		Reader:             reader,
+		UsageStatsTimezone: &statusTimezoneReaderStub{timezone: "Asia/Shanghai", found: true},
+		Now:                func() time.Time { return time.Date(2026, 7, 21, 18, 30, 0, 0, time.UTC) },
+	})
+	if _, err := service.Get(t.Context(), Input{ActorSystemAccountID: "u1", SelfOnly: true, AccountIDs: []string{"a1"}}); err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if reader.input.StatDate != "2026-07-22" {
+		t.Fatalf("stat date = %q, want 2026-07-22", reader.input.StatDate)
+	}
+}
+
 func TestServiceLoadsCurrentConcurrencyWhenReaderIsAvailable(t *testing.T) {
 	reader := &statusReaderStub{rows: []port.ManagementAccountStatusProjection{{ID: "a1", SystemAccountID: "u1", Name: "A", Status: "active", Schedulable: true}}}
 	concurrency := &statusConcurrencyReaderStub{values: map[string]int{"a1": 3}}
@@ -227,6 +242,16 @@ func (s *statusAPIKeyRuntimeReaderStub) ListManagementAccountAPIKeyRuntimeStates
 
 type statusCredentialCodecStub struct {
 	values map[string]any
+}
+
+type statusTimezoneReaderStub struct {
+	timezone string
+	found    bool
+	err      error
+}
+
+func (s *statusTimezoneReaderStub) GetManagementUsageStatsTimezone(context.Context) (string, bool, error) {
+	return s.timezone, s.found, s.err
 }
 
 func (s *statusCredentialCodecStub) DecryptJSON(_ string) (map[string]any, error) {
