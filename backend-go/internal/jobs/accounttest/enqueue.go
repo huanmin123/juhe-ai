@@ -11,7 +11,7 @@ import (
 const (
 	defaultTaskTimeout   = 10 * time.Minute
 	defaultTaskRetention = 24 * time.Hour
-	defaultMaxRetry      = 0
+	defaultMaxRetry      = 5
 )
 
 type EnqueueClient interface {
