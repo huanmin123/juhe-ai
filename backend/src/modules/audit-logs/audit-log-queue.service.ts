@@ -109,6 +109,7 @@ export function recordDroppedAuditCapture(input: {
   groupId?: string
   providerCode?: string
 }): void {
+  if (!readAuditLogSettings().enabled) return
   const timestamp = nowIso()
   const sanitizedUrl = sanitizeDroppedAuditUrl(input.path, input.queryString)
   enqueueAuditLog({
@@ -166,6 +167,7 @@ function sanitizeDroppedAuditUrl(path?: string, queryString?: string): { path: s
 }
 
 export function enqueueAuditLog(input: AuditLogInput): void {
+  if (!readAuditLogSettings().enabled) return
   const queuedInput = normalizeAuditLogInput(input)
   if (runtimeConfig.processRole === 'server' && estimateAuditLogBytes(queuedInput) > auditLogInlineTransportMaxBytes) {
     trackAuditLogServerDispatch(
@@ -339,6 +341,7 @@ async function dispatchAuditLogFromServer(input: AuditLogInput): Promise<void> {
 }
 
 export function enqueueAuditLogsLocal(inputs: AuditLogInput[]): void {
+  if (!readAuditLogSettings().enabled) return
   assertLocalAuditLogWriteAllowed('enqueueAuditLogsLocal')
   for (const input of inputs) {
     enqueueAuditLogLocal(normalizeAuditLogInput(input))
@@ -346,6 +349,7 @@ export function enqueueAuditLogsLocal(inputs: AuditLogInput[]): void {
 }
 
 export function startAuditLogRedisStreamConsumer(): void {
+  if (!readAuditLogSettings().enabled) return
   if (!shouldUseRedisStreamAuditLogQueue() || !isAuditLogIngestWorker() || auditLogRedisConsumerStarted) {
     return
   }
@@ -410,6 +414,9 @@ function enqueueAuditLogLocal(input: AuditLogInput): void {
 }
 
 export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
+  if (!readAuditLogSettings().enabled) {
+    return
+  }
   if (!isLocalAuditLogWriteAllowed()) {
     return
   }
@@ -478,6 +485,9 @@ export async function flushAuditLogQueueAsync(options: AuditLogFlushOptions = {}
 }
 
 async function flushAuditLogQueueAsyncInner(options: AuditLogFlushOptions = {}): Promise<void> {
+  if (!readAuditLogSettings().enabled) {
+    return
+  }
   if (!isLocalAuditLogWriteAllowed()) {
     return
   }
@@ -781,6 +791,7 @@ function auditLogRedisStreamQueue(consumerIndex?: number): RedisStreamQueue<Audi
 }
 
 export async function getAuditLogRedisStreamRuntime(): Promise<RedisStreamQueueRuntime | undefined> {
+  if (!readAuditLogSettings().enabled) return undefined
   if (!shouldUseRedisStreamAuditLogQueue()) return undefined
   return await auditLogRedisStreamQueue().inspectRuntime()
 }

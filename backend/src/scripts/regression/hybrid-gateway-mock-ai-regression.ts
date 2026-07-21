@@ -39,7 +39,7 @@ interface HybridMockCase {
 
 const scoringModel = 'glm-5.2-flash'
 const unavailableQualityModel = 'quality-model-unavailable'
-const deepseekModel = 'deepseek-ai-v4-flash'
+const deepseekModel = 'deepseek-v4-flash'
 const glmModel = 'glm-5.2'
 const gptModel = 'gpt-5.5'
 const opusModel = 'claude-opus-4-8'
@@ -91,6 +91,7 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
+  failureUsageFinalization,
   auditLogQueue,
   hybridAffinity,
   hybridScoring,
@@ -104,6 +105,7 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
+  import('../../modules/gateway/usage/failure-finalization.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/hybrid/affinity.service.js'),
   import('../../modules/gateway/hybrid/scoring.service.js'),
@@ -443,6 +445,7 @@ try {
       expectedScoringHits: 1,
       expectedTargetHits: 0
     })
+    await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000)
     usageRecordQueue.flushAllUsageRecordQueue()
     assertHybridGatewayFailureUsageMetadata({
       apiKeyId: qualityUnavailableApiKey.id,
@@ -554,6 +557,12 @@ function createHybridGroupAccount(input: {
     concurrencyLimit: 16,
     supportedModels: [input.supportedModel]
   }, access)
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '混合路由 Mock 账户应在探活成功后进入可调度状态')
   assert.deepEqual(account.supportedModels, [input.supportedModel])
   return { accountId: account.id, groupId: group.id }
 }
@@ -583,6 +592,12 @@ function createHybridAdditionalAccount(input: {
     concurrencyLimit: 16,
     supportedModels: [input.supportedModel]
   }, access)
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), '混合路由备用 Mock 账户应在探活成功后进入可调度状态')
   assert.deepEqual(account.supportedModels, [input.supportedModel])
   return account.id
 }

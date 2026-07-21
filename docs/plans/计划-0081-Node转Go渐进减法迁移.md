@@ -854,3 +854,11 @@
 - 对照最新 Node 后，Go 账户关键字候选已按自有账户、授权实例、直接账户授权、启用的分组授权四段优先级生成，限定当前系统账户；每段先按名称 / ID 排序并限制 200，再按账户 ID 去重并保持最终 200 条上限，不新增 Node 未使用的授权状态或过期过滤。
 - 标准 `usage_YYYYMMDD_sN_*` 详情 ID 已解析真实 UTC 日期并追加单日 `[start, end)` 分区条件；非法日期、自定义和旧格式 ID 保持原 ID-only 回退。详情同时补齐 request snapshot 的 endpoint 回退、ECMAScript snapshot 空白判定、request / response snapshot 非空时必须为 JSON 对象、合法空对象必须保留、`modelMappingApplied: false` 必需字段和列表专用全账户筛选门禁不拦截详情。
 - store / service / HTTP 回归覆盖授权 SQL、候选优先级结构、合法与非法 ID、endpoint 优先级、管理员未知 query 和个人详情强制自身范围。真实 PostgreSQL 多分区 `EXPLAIN`、Node writer -> Go reader、真实 listener / browser / 反向代理、生产切流和 Node 删除继续作为未完成门禁。
+
+## 2026-07-22 W6 审计日志详情只读首轮迁移
+
+- Go 已新增管理员 `GET /__aisys__/api/audit-logs/{id}`。列表 / 详情请求上下文上限均为 120 秒；详情复用列表摘要投影，读取 attempts、可选 error group 和 payload refs 元数据；attempts / payloads 保持稳定顺序和空数组，主记录不存在返回 Node 同语义 404，依赖错误返回通用 500。
+- PostgreSQL 先读取主记录，再并发读取三类互不依赖的子项并在等待完成后统一组装，避免共享结果并发写；错误组是软引用，悬空时省略。payload 只根据 blob ID返回 `hasHeaders/hasBody`，不读取 blob 文件、headers 或 body 原文。
+- attempt proxy / upstream URL 保留凭据与 query 原文，只对齐 Node 当前首尾 ECMAScript 空白处理；未新增脱敏、日志清洗或 sanitizer。未知 `trafficSource` 与 Node mapper 一样使详情失败，不返回未定义枚举。
+- `/audit-logs/search-hot`、`/runtime`、`/error-groups*`、`/{id}/payloads/{payloadId}` 仍未迁移并在 Go 保持 404。Node 继续单独拥有这些读路径以及捕获、Redis Stream / IPC、ingest writer、worker 和保留清理。
+- 定向 service / HTTP / router / PostgreSQL 查询测试已通过；真实 Node writer -> Go reader PostgreSQL、查询计划、真实 listener / browser、精确反向代理切流、回滚和 Node 删除仍未执行，不宣称生产接管。

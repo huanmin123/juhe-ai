@@ -208,6 +208,9 @@ function classifyDomain(filePath: string): string {
     ['record-maintenance', /record-maintenance|record-cleanup|data-retention|deleted-record|cleanup/],
     ['external-integration', /external/],
     ['model-check', /model-check/],
+    ['model-trust', /model-trust/],
+    ['page-data', /page-data/],
+    ['chat', /chat/],
     ['openai-compatible-artifacts', /openai-compatible-(?:files|vector-stores)/],
     ['system-metrics', /system-metrics|table-monitor|metrics/],
     ['codex-context', /codex-context/],
@@ -242,7 +245,11 @@ function assertNoRuntimeNodeSqliteValueImports(files: string[]): void {
 }
 
 function assertNoUnexpectedRawDriverImports(files: string[]): void {
-  const allowedDriverFiles = new Set(['shared/redis-client.ts', 'storage/postgres-client.ts'])
+  const allowedDriverFiles = new Set([
+    'shared/redis-client.ts',
+    'storage/postgres-client.ts',
+    'storage/postgres-goose-schema-gate.ts'
+  ])
   const offenders: Array<{ file: string; line: number; text: string }> = []
   for (const filePath of files) {
     const relativePath = slash(relative(srcRoot, filePath))

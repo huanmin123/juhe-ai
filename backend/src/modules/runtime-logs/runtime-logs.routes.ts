@@ -1,9 +1,12 @@
 import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
-import { requestDbService, requestServerRuntimeLogAvailabilitySnapshot } from '../db-service/db-service-ipc.js'
+import { buildBackgroundQueueHealthSnapshot } from '../background/background-queue-health.service.js'
+import type { BackgroundWorkerRuntimeLogQueueRuntime } from '../background/background-ipc.types.js'
+import { requestDbService, requestServerRuntimeLogAvailabilitySnapshot, requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 
@@ -45,7 +48,87 @@ runtimeLogsRouter.get('/', async (req, res, next) => {
 
 runtimeLogsRouter.get('/facets', async (_req, res, next) => {
   try {
-    res.json(ok(await requestDbService({ type: 'get_runtime_log_facets' })))
+    const [serverRuntime, dbServiceSnapshot, facets, grepRuntime] = await Promise.all([
+      requestServerRuntimeSnapshot(),
+      requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch(() => undefined),
+      requestDbService({ type: 'get_runtime_log_facets' }),
+      getRuntimeLogGrepRuntime()
+    ])
+    const workerSnapshot = serverRuntime?.ingestWorker?.snapshot
+    const workerRuntime = serverRuntime?.ingestWorker
+    const runtimeLogIndexQueue = workerSnapshot?.runtimeLogIndexQueue
+    const dbServiceState = serverRuntime?.dbService
+    const gatewayAccountSideEffects = serverRuntime?.gatewayAccountSideEffects
+    const queueHealth = buildBackgroundQueueHealthSnapshot(serverRuntime)
+    res.json(ok({
+      ...facets,
+      indexEnabled: runtimeConfig.log.indexEnabled,
+      runtimeAvailable: Boolean(serverRuntime),
+      workerSnapshotAvailable: Boolean(workerSnapshot),
+      runtimeLogIndexQueueAvailable: runtimeConfig.log.indexEnabled && Boolean(runtimeLogIndexQueue),
+      runtime: runtimeLogFileConsumerRuntimeDto(runtimeLogIndexQueue),
+      worker: {
+        available: Boolean(workerSnapshot ?? workerRuntime),
+        snapshotAvailable: Boolean(workerSnapshot),
+        pid: workerSnapshot?.pid ?? workerRuntime?.pid,
+        ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
+        pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
+      },
+      dbService: {
+        statusAvailable: Boolean(dbServiceSnapshot),
+        stateAvailable: Boolean(dbServiceState),
+        pid: dbServiceSnapshot?.pid ?? dbServiceState?.pid,
+        ready: dbServiceSnapshot?.ready ?? dbServiceState?.ready ?? null,
+        pendingRequestCount: dbServiceState?.pendingRequestCount ?? dbServiceSnapshot?.pendingRequestCount ?? null,
+        pendingDatasetWriteRequestCount: dbServiceState?.pendingDatasetWriteRequestCount,
+        oldestDatasetWriteRequestMs: dbServiceState?.oldestDatasetWriteRequestMs,
+        timedOutDatasetWriteRequestCount: dbServiceState?.timedOutDatasetWriteRequestCount,
+        rejectedDatasetWriteRequestCount: dbServiceState?.rejectedDatasetWriteRequestCount,
+        timedOutRequestCount: dbServiceState?.timedOutRequestCount ?? null,
+        failedRequestCount: dbServiceState?.failedRequestCount ?? dbServiceSnapshot?.failedRequestCount ?? null,
+        queuedRequestCount: dbServiceSnapshot?.queuedRequestCount ?? dbServiceState?.queuedRequestCount,
+        queuedRequestBytes: dbServiceSnapshot?.queuedRequestBytes ?? dbServiceState?.queuedRequestBytes,
+        queuedHighRequestCount: dbServiceSnapshot?.queuedHighRequestCount ?? dbServiceState?.queuedHighRequestCount,
+        queuedNormalRequestCount: dbServiceSnapshot?.queuedNormalRequestCount ?? dbServiceState?.queuedNormalRequestCount,
+        queuedLowRequestCount: dbServiceSnapshot?.queuedLowRequestCount ?? dbServiceState?.queuedLowRequestCount,
+        oldestQueuedMs: dbServiceSnapshot?.oldestQueuedMs ?? dbServiceState?.oldestQueuedMs,
+        lastQueueWaitMs: dbServiceSnapshot?.lastQueueWaitMs ?? dbServiceState?.lastQueueWaitMs,
+        maxQueueWaitMs: dbServiceSnapshot?.maxQueueWaitMs ?? dbServiceState?.maxQueueWaitMs,
+        queueRejectedCount: dbServiceSnapshot?.queueRejectedCount ?? dbServiceState?.queueRejectedCount,
+        queueExpiredCount: dbServiceSnapshot?.queueExpiredCount ?? dbServiceState?.queueExpiredCount,
+        activeConcurrentRequestCount: dbServiceSnapshot?.activeConcurrentRequestCount ?? dbServiceState?.activeConcurrentRequestCount,
+        maxActiveConcurrentRequestCount: dbServiceSnapshot?.maxActiveConcurrentRequestCount ?? dbServiceState?.maxActiveConcurrentRequestCount,
+        lastExecMs: dbServiceSnapshot?.lastExecMs ?? dbServiceState?.lastExecMs,
+        maxExecMs: dbServiceSnapshot?.maxExecMs ?? dbServiceState?.maxExecMs,
+        slowOpCount: dbServiceSnapshot?.slowOpCount ?? dbServiceState?.slowOpCount,
+        lastSlowOpType: dbServiceSnapshot?.lastSlowOpType ?? dbServiceState?.lastSlowOpType,
+        lastSlowOpMs: dbServiceSnapshot?.lastSlowOpMs ?? dbServiceState?.lastSlowOpMs,
+        lastSlowOpAt: dbServiceSnapshot?.lastSlowOpAt ?? dbServiceState?.lastSlowOpAt,
+        unavailableCircuitOpenUntil: dbServiceState?.unavailableCircuitOpenUntil,
+        httpHost: dbServiceSnapshot?.httpHost ?? dbServiceState?.httpHost,
+        httpPort: dbServiceSnapshot?.httpPort ?? dbServiceState?.httpPort,
+        handledRequestCount: dbServiceSnapshot?.handledRequestCount,
+        lastRequestAt: dbServiceSnapshot?.lastRequestAt,
+        lastError: dbServiceSnapshot?.lastError
+      },
+      queueHealth,
+      grep: grepRuntime,
+      gatewayAccountSideEffectsAvailable: Boolean(gatewayAccountSideEffects),
+      gatewayAccountSideEffects: gatewayAccountSideEffects
+        ? {
+            queueLength: numberField(gatewayAccountSideEffects, 'queueLength'),
+            processing: booleanField(gatewayAccountSideEffects, 'processing'),
+            enqueuedCount: numberField(gatewayAccountSideEffects, 'enqueuedCount'),
+            completedCount: numberField(gatewayAccountSideEffects, 'completedCount'),
+            failedAttemptCount: numberField(gatewayAccountSideEffects, 'failedAttemptCount'),
+            droppedCount: numberField(gatewayAccountSideEffects, 'droppedCount'),
+            expiredCount: numberField(gatewayAccountSideEffects, 'expiredCount'),
+            localSuppressedAccountCount: numberField(gatewayAccountSideEffects, 'localSuppressedAccountCount'),
+            nextAttemptAt: stringField(gatewayAccountSideEffects, 'nextAttemptAt')
+          }
+        : null,
+      unavailableReason: runtimeConfig.log.indexEnabled ? undefined : 'index_disabled'
+    }))
   } catch (error) {
     next(error)
   }
@@ -79,6 +162,25 @@ runtimeLogsRouter.get('/runtime', async (_req, res, next) => {
     next(error)
   }
 })
+
+export function runtimeLogFileConsumerRuntimeDto(
+  runtime: Partial<BackgroundWorkerRuntimeLogQueueRuntime> | undefined
+): RuntimeLogFileConsumerHttpDto | null {
+  if (!runtime) return null
+  return {
+    retentionDays: runtime.retentionDays ?? 0,
+    discoveredFileCount: runtime.discoveredFileCount ?? 0,
+    pendingFileCount: runtime.pendingFileCount ?? 0,
+    pendingBytes: runtime.pendingBytes ?? 0,
+    oldestPendingMtime: runtime.oldestPendingMtime,
+    currentFile: runtime.currentFile,
+    currentOffset: runtime.currentOffset ?? 0,
+    lastReadAt: runtime.lastReadAt,
+    lastCommitAt: runtime.lastCommitAt,
+    lastError: runtime.lastError,
+    protectedRotatedFileCount: runtime.protectedRotatedFileCount ?? 0
+  }
+}
 
 runtimeLogsRouter.get('/grep', async (req, res, next) => {
   try {
@@ -164,4 +266,18 @@ function dateTimeQueryValue(value: unknown): string | undefined {
   if (!text) return undefined
   const time = Date.parse(text)
   return Number.isNaN(time) ? undefined : new Date(time).toISOString()
+}
+
+function numberField(record: Record<string, unknown>, key: string): number {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function booleanField(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === true
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  return typeof value === 'string' ? value : undefined
 }

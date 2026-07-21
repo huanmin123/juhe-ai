@@ -11,6 +11,7 @@ export function useAuditLogRuntimeAlert() {
     const info = runtime.value
     if (!info) return []
     const reasons: string[] = []
+    if (info.enabled === false) reasons.push('原始审计已通过部署配置临时关闭')
     if (info.flushLastError) reasons.push(`最近写入失败：${info.flushLastError}`)
     if (positiveRuntimeCount(info.droppedSuccessCount)) reasons.push(`成功审计丢弃 ${info.droppedSuccessCount} 条`)
     if (positiveRuntimeCount(info.droppedFailureCount)) reasons.push(`失败审计丢弃 ${info.droppedFailureCount} 条`)
@@ -26,6 +27,7 @@ export function useAuditLogRuntimeAlert() {
     const info = runtime.value
     if (!info) return ''
     const reasons = auditRuntimeRiskReasons.value
+    if (info.enabled === false) return `${reasons.join('；')}。`
     const workerText = info.worker.available
       ? `后台进程${runtimeReadyText(info.worker.ready)}`
       : '后台进程状态不可用'

@@ -53,9 +53,74 @@ func TestListIgnoresInvalidEnumsAndStatus(t *testing.T) {
 	}
 }
 
+func TestDetailMapsAttemptsPayloadMetadataAndErrorGroup(t *testing.T) {
+	proxyURL := "  http://proxy.internal:8080  "
+	store := &auditLogReaderStub{
+		detailFound: true,
+		detail: port.ManagementAuditLogDetail{
+			ManagementAuditLogSummary: port.ManagementAuditLogSummary{
+				ID: "audit_1", TraceID: "trace_1", TrafficSource: "gateway", Method: "POST", Path: "/v1/responses",
+				AuditOutcome: "upstream_failed", SampleBucket: 3, SampleReason: "problem", CaptureStatus: "complete",
+				StartedAt: "2026-07-21T01:02:03.004Z", EndedAt: "2026-07-21T01:02:04.004Z", CreatedAt: "2026-07-21T01:02:05.004Z",
+			},
+			Attempts: []port.ManagementAuditLogAttempt{{
+				ID: "attempt_1", AttemptIndex: 0, ProxyURL: &proxyURL, UpstreamMethod: "POST", UpstreamURL: " https://user:pass@example.com/v1/responses ",
+				Success: false, StartedAt: "2026-07-21T01:02:03.100Z",
+			}},
+			ErrorGroup: &port.ManagementAuditErrorGroup{
+				ID: "err_1", Fingerprint: "fingerprint", WindowStartedAt: "2026-07-21T00:00:00.000Z",
+				WindowEndedAt: "2026-07-21T01:00:00.000Z", Count: 2, CreatedAt: "2026-07-21T00:00:00.000Z", UpdatedAt: "2026-07-21T01:00:00.000Z",
+			},
+			Payloads: []port.ManagementAuditLogPayloadSummary{{
+				ID: "payload_1", PartType: "upstream_response", SequenceIndex: 2, SizeBytes: 100,
+				CompressedSizeBytes: 60, CaptureStatus: "complete", CreatedAt: "2026-07-21T01:02:04.000Z", HasBody: true,
+			}},
+		},
+	}
+	detail, found, err := NewService(store).Detail(context.Background(), "audit_1")
+	if err != nil || !found {
+		t.Fatalf("Detail() found=%v err=%v", found, err)
+	}
+	if store.detailID != "audit_1" || len(detail.Attempts) != 1 || len(detail.Payloads) != 1 || detail.ErrorGroup == nil {
+		t.Fatalf("detail = %+v store id = %q", detail, store.detailID)
+	}
+	if detail.Attempts[0].UpstreamURL != "https://user:pass@example.com/v1/responses" || detail.Attempts[0].ProxyURL != "http://proxy.internal:8080" || !detail.Payloads[0].HasBody {
+		t.Fatalf("detail children = %+v / %+v", detail.Attempts, detail.Payloads)
+	}
+}
+
+func TestDetailRejectsUnknownTrafficSourceLikeNodeMapper(t *testing.T) {
+	store := &auditLogReaderStub{detailFound: true, detail: port.ManagementAuditLogDetail{
+		ManagementAuditLogSummary: port.ManagementAuditLogSummary{ID: "audit_1", TrafficSource: "legacy_source"},
+	}}
+	_, found, err := NewService(store).Detail(context.Background(), "audit_1")
+	if found || err == nil {
+		t.Fatalf("Detail() found=%v err=%v, want mapper error", found, err)
+	}
+}
+
+func TestDetailPreservesWhitespaceOnlyRequiredUpstreamURL(t *testing.T) {
+	store := &auditLogReaderStub{detailFound: true, detail: port.ManagementAuditLogDetail{
+		ManagementAuditLogSummary: port.ManagementAuditLogSummary{ID: "audit_1", TrafficSource: "gateway"},
+		Attempts: []port.ManagementAuditLogAttempt{{
+			ID: "attempt_1", UpstreamMethod: "POST", UpstreamURL: " \t ", StartedAt: "2026-07-21T01:02:03.100Z",
+		}},
+	}}
+	detail, found, err := NewService(store).Detail(context.Background(), "audit_1")
+	if err != nil || !found || len(detail.Attempts) != 1 {
+		t.Fatalf("Detail() found=%v err=%v detail=%+v", found, err, detail)
+	}
+	if detail.Attempts[0].UpstreamURL != " \t " {
+		t.Fatalf("upstreamUrl=%q, want stored required value", detail.Attempts[0].UpstreamURL)
+	}
+}
+
 type auditLogReaderStub struct {
-	input  port.ManagementAuditLogListInput
-	result port.ManagementAuditLogListResult
+	input       port.ManagementAuditLogListInput
+	result      port.ManagementAuditLogListResult
+	detailID    string
+	detail      port.ManagementAuditLogDetail
+	detailFound bool
 }
 
 func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input port.ManagementAuditLogListInput) (port.ManagementAuditLogListResult, error) {
@@ -64,4 +129,9 @@ func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input po
 		s.result.Items = []port.ManagementAuditLogSummary{}
 	}
 	return s.result, nil
+}
+
+func (s *auditLogReaderStub) GetManagementAuditLog(_ context.Context, id string) (port.ManagementAuditLogDetail, bool, error) {
+	s.detailID = id
+	return s.detail, s.detailFound, nil
 }

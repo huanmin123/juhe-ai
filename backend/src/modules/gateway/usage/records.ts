@@ -8,6 +8,8 @@ import type {
 } from '../../../storage/repositories.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import { enqueueUsageRecord } from './record-queue.service.js'
+import { dispatchGatewayUsageFinalization } from './failure-finalization.service.js'
+import { estimateJsonLikeBytes } from '../../../shared/queue-size.js'
 import {
   estimateCatalogCacheReadCostUsd,
   estimateCatalogCacheWriteCostUsd,
@@ -121,6 +123,13 @@ export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<
   }
 }
 
+export function dispatchUsageRecord(input: Parameters<typeof enqueueUsageRecord>[0]): void {
+  dispatchGatewayUsageFinalization({
+    taskFactory: () => enqueueUsageRecord(input),
+    bytes: estimateJsonLikeBytes(input, { maxBytes: 2 * 1024 * 1024, maxNodes: 20_000 })
+  })
+}
+
 export async function recordFailedUpstreamAttempt(
   req: Request,
   usageContext: GatewayUsageContext,
@@ -177,7 +186,7 @@ export async function recordFailedUpstreamAttempt(
     ...failureObservation
   }, '网关上游尝试失败')
 
-  await enqueueUsageRecord({
+  dispatchUsageRecord({
     traceId: usageContext.traceId,
     trafficSource: usageContext.trafficSource,
     clientIp: usageContext.clientIp,
@@ -260,7 +269,7 @@ export async function recordCompletedUpstreamAttempt(
     effectiveServiceTier: input.effectiveServiceTier,
     reportedServiceTier: input.usage.serviceTier
   })
-  await enqueueUsageRecord({
+  dispatchUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource,
     clientIp: input.clientIp,
@@ -363,7 +372,7 @@ export async function recordHybridScoringAttempt(input: {
   const modelAccounting = accountUsageModelAccounting(input.account, input.scoringModel, catalogSystemAccountId, 'chat_completions')
   const costModel = usageCostCatalogModel(modelAccounting, input.scoringModel)
   const serviceTiers = resolveUsageServiceTiers({ reportedServiceTier: input.usage.serviceTier })
-  await enqueueUsageRecord({
+  dispatchUsageRecord({
     traceId: input.traceId,
     trafficSource: input.trafficSource ?? 'hybrid_scoring',
     clientIp: input.clientIp,
@@ -514,7 +523,7 @@ export async function recordGatewayFailure(
     }, '网关失败 usage 缺少分组归属快照，已省略分组统计维度')
   }
 
-  await enqueueUsageRecord({
+  dispatchUsageRecord({
     traceId: usageContext.traceId,
     trafficSource: usageContext.trafficSource,
     clientIp: usageContext.clientIp,

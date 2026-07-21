@@ -46,3 +46,33 @@ func TestManagementAuditLogListQueryPreservesNonECMAScriptWhitespace(t *testing.
 		t.Fatalf("model arg = %#v, want non-ECMAScript whitespace preserved", args)
 	}
 }
+
+func TestManagementAuditLogDetailQueriesReadMetadataOnly(t *testing.T) {
+	queries := []string{
+		managementAuditLogDetailQuery(),
+		managementAuditLogAttemptsQuery(),
+		managementAuditLogPayloadSummariesQuery(),
+		managementAuditErrorGroupDetailQuery(),
+	}
+	for _, required := range []string{
+		"WHERE al.id = $1::text",
+		"ORDER BY attempts.attempt_index ASC, attempts.id ASC",
+		"ORDER BY refs.sequence_index ASC, refs.id ASC",
+		"WHERE groups.id = $1::text",
+	} {
+		found := false
+		for _, query := range queries {
+			found = found || strings.Contains(query, required)
+		}
+		if !found {
+			t.Fatalf("queries missing %q: %#v", required, queries)
+		}
+	}
+	for _, forbidden := range []string{"body_bytes", "headers_bytes", "pg_read_binary_file", "audit_log_hot"} {
+		for _, query := range queries {
+			if strings.Contains(query, forbidden) {
+				t.Fatalf("query contains %q:\n%s", forbidden, query)
+			}
+		}
+	}
+}

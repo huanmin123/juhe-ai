@@ -11,8 +11,6 @@ import {
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import {
-  cleanupRuntimeLogFileCursorsBefore,
-  cleanupRuntimeLogIndex,
   runtimeLogIndexRetentionDaysFromSettings
 } from '../../storage/runtime-logs.repository.js'
 import { tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
@@ -24,6 +22,7 @@ import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retentio
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { requestStatsWriter } from './background-stats-writer.js'
 import { deleteCodexContextStorageKeys } from '../gateway/codex-responses/chat-bridge-state.js'
+import { cleanupRuntimeLogIndexRetention } from '../runtime-logs/runtime-log-index-retention.service.js'
 import { publishUsageRecordsGlobalReset } from '../page-data/page-data-change.publisher.js'
 import {
   DATA_RETENTION_CLEANUP_BATCH_PAUSE_MS,
@@ -265,13 +264,13 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   await yieldToEventLoop()
   result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
   await yieldToEventLoop()
-  result.runtimeLogs = await cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
-  await yieldToEventLoop()
-  result.runtimeLogFileCursors = await cleanupInBatches(
-    () => cleanupRuntimeLogFileCursorsBefore(cutoffIso(now, retention.runtimeLogDays), batchSize),
+  const runtimeLogCleanup = await cleanupRuntimeLogIndexRetention({
+    cutoffIso: cutoffIso(now, retention.runtimeLogDays),
     batchSize,
     maxBatches
-  )
+  })
+  result.runtimeLogs = runtimeLogCleanup.runtimeLogs
+  result.runtimeLogFileCursors = runtimeLogCleanup.runtimeLogFileCursors
   await yieldToEventLoop()
   await cleanupRetentionInBatches(
     result,

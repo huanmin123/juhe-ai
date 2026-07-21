@@ -1179,6 +1179,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementAuditLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs", opts.ManagementAuditLogsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/{id}", opts.ManagementAuditLogsHandler.ServeHTTP)
 			}
 			if opts.ManagementUsageRecordsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records", opts.ManagementUsageRecordsHandler.ServeHTTP)

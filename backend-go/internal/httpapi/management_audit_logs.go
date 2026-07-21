@@ -1,21 +1,31 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/modules/managementauditlogs"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 )
 
+const managementAuditLogRequestTimeout = 120 * time.Second
+
 type managementAuditLogService interface {
 	List(*http.Request, managementauditlogs.ListInput) (managementauditlogs.ListResult, error)
+	Detail(*http.Request, string) (managementauditlogs.Detail, bool, error)
 }
 type managementAuditLogServiceAdapter struct{ service *managementauditlogs.Service }
 
 func (a managementAuditLogServiceAdapter) List(r *http.Request, input managementauditlogs.ListInput) (managementauditlogs.ListResult, error) {
 	return a.service.List(r.Context(), input)
+}
+func (a managementAuditLogServiceAdapter) Detail(r *http.Request, id string) (managementauditlogs.Detail, bool, error) {
+	return a.service.Detail(r.Context(), id)
 }
 func NewManagementAuditLogsHandler(service *managementauditlogs.Service) http.Handler {
 	return newManagementAuditLogsHandler(managementAuditLogServiceAdapter{service})
@@ -31,6 +41,27 @@ func newManagementAuditLogsHandler(service managementAuditLogService) http.Handl
 		}
 		if !managementauth.IsAdminRole(auth.Role) {
 			writeMessageError(w, 403, "需要管理员权限")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), managementAuditLogRequestTimeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+		if id := chi.URLParam(r, "id"); id != "" {
+			switch id {
+			case "search-hot", "runtime", "error-groups":
+				writeMessageError(w, 404, "接口不存在")
+				return
+			}
+			result, found, err := service.Detail(r, id)
+			if err != nil {
+				writeMessageError(w, 500, "服务器内部错误")
+				return
+			}
+			if !found {
+				writeMessageError(w, 404, "审计日志不存在")
+				return
+			}
+			writeData(w, 200, result)
 			return
 		}
 		result, err := service.List(r, parseManagementAuditLogListQuery(r.URL.Query()))

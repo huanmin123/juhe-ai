@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 
 import { parseAuditLogRuntimeConfig, runtimeConfig } from '../../config/runtime.js'
@@ -18,7 +19,55 @@ const transportServiceSource = readFileSync(new URL('../../modules/audit-logs/au
 const settings = readAuditLogSettings()
 
 assert.equal(settings, fixedAuditLogSettings, '审计日志设置应直接返回固定配置对象')
-assert.equal(settings.enabled, true, '原始审计日志应作为固定排障能力启用')
+assert.equal(settings.enabled, runtimeConfig.auditLog.enabled, '审计启用状态必须来自 runtimeConfig.auditLog.enabled')
+assert.equal(parseAuditLogRuntimeConfig({}).enabled, true, '未配置总开关时审计默认启用')
+for (const value of ['true', '1', 'yes', 'on'] as const) {
+  assert.equal(parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_ENABLED: value }).enabled, true, `${value} 应启用审计`)
+}
+for (const value of ['false', '0', 'no', 'off'] as const) {
+  assert.equal(parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_ENABLED: value }).enabled, false, `${value} 应关闭审计`)
+}
+assert.throws(
+  () => parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_ENABLED: 'disabled' }),
+  /JUHE_AI_AUDIT_LOG_ENABLED/,
+  '非法总开关值必须启动失败'
+)
+for (const value of ['', '   '] as const) {
+  assert.throws(
+    () => parseAuditLogRuntimeConfig({ JUHE_AI_AUDIT_LOG_ENABLED: value }),
+    /JUHE_AI_AUDIT_LOG_ENABLED/,
+    '审计总开关显式空值必须启动失败，不能静默回退为启用'
+  )
+}
+assert.equal(runtimeConfig.log.indexEnabled, true, '未配置时运行日志索引默认启用')
+for (const value of ['true', '1', 'yes', 'on'] as const) {
+  assert.equal(readRuntimeLogIndexEnabled(value).indexEnabled, true, `${value} 应启用运行日志索引`)
+}
+for (const value of ['false', '0', 'no', 'off'] as const) {
+  assert.equal(readRuntimeLogIndexEnabled(value).indexEnabled, false, `${value} 应关闭运行日志索引`)
+}
+assert.throws(
+  () => readRuntimeLogIndexEnabled('disabled'),
+  /JUHE_AI_RUNTIME_LOG_INDEX_ENABLED/,
+  '非法运行日志索引总开关值必须启动失败'
+)
+for (const value of ['', '   '] as const) {
+  assert.throws(
+    () => readRuntimeLogIndexEnabled(value),
+    /JUHE_AI_RUNTIME_LOG_INDEX_ENABLED/,
+    '运行日志索引总开关显式空值必须启动失败，不能静默回退为启用'
+  )
+}
+assert.deepEqual(
+  readRuntimeLogIndexEnabled('false', { runtimeMode: 'performance', fileEnabled: 'false' }),
+  { indexEnabled: false, fileEnabled: false },
+  '关闭运行日志索引后，performance 模式不应再要求 Pino 文件输出作为索引来源'
+)
+assert.deepEqual(
+  readRuntimeLogIndexEnabled('false', { fileEnabled: '' }),
+  { indexEnabled: false, fileEnabled: true },
+  '新开关严格空值规则不得改变既有布尔配置显式空值沿用默认值的兼容语义'
+)
 assert.equal(settings.batchSize, 500, '审计日志 worker 单批写入需要支撑 50 并发真实网关流量')
 assert.equal(settings.queueMaxItems, 50000, '审计日志 worker 本地队列请求数必须支撑 50 并发短期写入波峰')
 assert.equal(settings.queueMaxBytes, 256 * 1024 * 1024, '审计日志 worker 本地队列字节数必须按轻量部署控制在固定硬上限内')
@@ -141,3 +190,32 @@ assert(backgroundIpcSource.includes('function coalesceAuditLogMessage'), 'server
 assert(backgroundIpcSource.includes("message.type === 'background_worker_audit_logs'"), 'background IPC 必须识别审计日志消息并走合并路径')
 
 console.log('审计日志设置契约回归通过：默认保留 1 小时最近内容，允许显式关闭成功审计且不影响问题链路')
+
+function readRuntimeLogIndexEnabled(value: string, options?: { runtimeMode?: 'performance'; fileEnabled?: string }): {
+  indexEnabled: boolean
+  fileEnabled: boolean
+} {
+  const env = {
+    ...process.env,
+    JUHE_AI_RUNTIME_LOG_INDEX_ENABLED: value,
+    JUHE_AI_LOG_FILE_ENABLED: options?.fileEnabled ?? 'true',
+    JUHE_AI_RUNTIME_MODE: options?.runtimeMode,
+    JUHE_AI_DATABASE_DRIVER: options?.runtimeMode ? 'postgres' : undefined,
+    JUHE_AI_CACHE_DRIVER: options?.runtimeMode ? 'redis' : undefined,
+    JUHE_AI_RUNTIME_STATE_DRIVER: options?.runtimeMode ? 'redis' : undefined,
+    JUHE_AI_QUEUE_DRIVER: options?.runtimeMode ? 'redis_stream' : undefined,
+    JUHE_AI_POSTGRES_URL: options?.runtimeMode ? 'postgresql://127.0.0.1/juhe_ai' : undefined,
+    JUHE_AI_REDIS_CACHE_URL: options?.runtimeMode ? 'redis://127.0.0.1:6379/0' : undefined,
+    JUHE_AI_REDIS_STATE_URL: options?.runtimeMode ? 'redis://127.0.0.1:6380/1' : undefined,
+    JUHE_AI_REDIS_QUEUE_URL: options?.runtimeMode ? 'redis://127.0.0.1:6381/2' : undefined
+  }
+  const result = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', '-e', "import('./src/config/runtime.ts').then(({ runtimeConfig }) => console.log(JSON.stringify({ indexEnabled: runtimeConfig.log.indexEnabled, fileEnabled: runtimeConfig.log.fileEnabled })))"],
+    { cwd: process.cwd(), env, encoding: 'utf8' }
+  )
+  if (result.status !== 0) {
+    throw new Error(result.stderr || result.stdout || '运行时配置子进程启动失败')
+  }
+  return JSON.parse(result.stdout.trim()) as { indexEnabled: boolean; fileEnabled: boolean }
+}
