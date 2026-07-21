@@ -48,14 +48,28 @@ type managementRuntimeLogRuntimeResponse struct {
 	GatewayAccountSideEffectsAvailable bool `json:"gatewayAccountSideEffectsAvailable"`
 }
 
-func NewManagementRuntimeLogsHandler(service *managementruntimelogs.Service) http.Handler {
-	return newManagementRuntimeLogsHandler(managementRuntimeLogServiceAdapter{service: service}, time.Now)
+type managementRuntimeLogFacetsResponse struct {
+	managementruntimelogs.FacetsResult
+	IndexEnabled      bool   `json:"indexEnabled"`
+	UnavailableReason string `json:"unavailableReason,omitempty"`
+}
+
+type managementRuntimeLogsHandlerOptions struct {
+	indexEnabled bool
+}
+
+func NewManagementRuntimeLogsHandler(service *managementruntimelogs.Service, indexEnabled bool) http.Handler {
+	return newManagementRuntimeLogsHandlerWithOptions(managementRuntimeLogServiceAdapter{service: service}, managementRuntimeLogsHandlerOptions{indexEnabled: indexEnabled})
 }
 
 func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now func() time.Time) http.Handler {
 	if now == nil {
 		now = time.Now
 	}
+	return newManagementRuntimeLogsHandlerWithOptions(service, managementRuntimeLogsHandlerOptions{indexEnabled: true})
+}
+
+func newManagementRuntimeLogsHandlerWithOptions(service managementRuntimeLogService, opts managementRuntimeLogsHandlerOptions) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		authContext, ok := ManagementAuthContextFromRequest(r)
 		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
@@ -79,7 +93,11 @@ func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now fu
 				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 				return
 			}
-			writeData(w, http.StatusOK, facets)
+			response := managementRuntimeLogFacetsResponse{FacetsResult: facets, IndexEnabled: opts.indexEnabled}
+			if !opts.indexEnabled {
+				response.UnavailableReason = "index_disabled"
+			}
+			writeData(w, http.StatusOK, response)
 			return
 		}
 		if rawID == "" && strings.HasSuffix(path, "/runtime-logs/runtime") {

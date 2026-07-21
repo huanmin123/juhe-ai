@@ -224,6 +224,39 @@ func isOwnerLockEnabledSelector(expression ast.Expr) bool {
 	return ok && receiver.Name == "cfg"
 }
 
+func TestNewManagementAPIHandlerInjectsRuntimeLogIndexEnabled(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	function := findFunction(t, file, "newManagementAPIHandlerWithCatalogSnapshotRebuilder")
+	found := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || callName(call.Fun) != "httpapi.NewManagementRuntimeLogsHandler" {
+			return true
+		}
+		if len(call.Args) != 2 {
+			t.Fatalf("NewManagementRuntimeLogsHandler args = %d, want 2", len(call.Args))
+		}
+		selector, ok := call.Args[1].(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "RuntimeLogIndexEnabled" {
+			t.Fatalf("runtime log index option = %#v, want cfg.RuntimeLogIndexEnabled", call.Args[1])
+		}
+		receiver, ok := selector.X.(*ast.Ident)
+		if !ok || receiver.Name != "cfg" {
+			t.Fatalf("runtime log index option receiver = %#v, want cfg", selector.X)
+		}
+		found = true
+		return true
+	})
+	if !found {
+		t.Fatal("newManagementAPIHandlerWithCatalogSnapshotRebuilder missing runtime log handler assembly")
+	}
+}
+
 func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
 	_, _, err := newPublicAPIHandler(config.Config{
 		PublicAPIEnabled: true,

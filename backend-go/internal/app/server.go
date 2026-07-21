@@ -1162,7 +1162,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		AuditLogsHandler:                        httpapi.NewManagementAuditLogsHandler(auditLogService),
-		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService),
+		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),

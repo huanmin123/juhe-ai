@@ -727,6 +727,68 @@ func TestLoadParsesManagementAuthSessionsEnv(t *testing.T) {
 	}
 }
 
+func TestLoadParsesRuntimeLogIndexEnabledEnv(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "false", value: "false", want: false},
+		{name: "off", value: "OFF", want: false},
+		{name: "no", value: " no ", want: false},
+		{name: "zero", value: "0", want: false},
+		{name: "true", value: "true", want: true},
+		{name: "yes", value: "YES", want: true},
+		{name: "on", value: "on", want: true},
+		{name: "one", value: "1", want: true},
+		{name: "ECMAScript byte order mark", value: "\uFEFF true \uFEFF", want: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", testCase.value)
+			cfg, err := Load(LoadOptions{LoadDotEnv: false})
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.RuntimeLogIndexEnabled != testCase.want {
+				t.Fatalf("RuntimeLogIndexEnabled = %v, want %v", cfg.RuntimeLogIndexEnabled, testCase.want)
+			}
+		})
+	}
+
+	t.Run("unset defaults true", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "")
+		_ = os.Unsetenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED")
+		cfg, err := Load(LoadOptions{LoadDotEnv: false})
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if !cfg.RuntimeLogIndexEnabled {
+			t.Fatal("RuntimeLogIndexEnabled = false, want true")
+		}
+	})
+
+	t.Run("rejects bare t", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "t")
+		if _, err := Load(LoadOptions{LoadDotEnv: false}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INDEX_ENABLED") {
+			t.Fatalf("Load() error = %v, want deployment bool error", err)
+		}
+	})
+
+	t.Run("rejects explicitly empty value", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "")
+		if _, err := Load(LoadOptions{LoadDotEnv: false}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INDEX_ENABLED") {
+			t.Fatalf("Load() error = %v, want deployment bool error", err)
+		}
+	})
+
+	t.Run("preserves non ECMAScript next line", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "\u0085true\u0085")
+		if _, err := Load(LoadOptions{LoadDotEnv: false}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INDEX_ENABLED") {
+			t.Fatalf("Load() error = %v, want deployment bool error", err)
+		}
+	})
+}
+
 func TestConfigValidatesNodeInternalRequestTimeoutRangeRegardlessOfPublicAPI(t *testing.T) {
 	for _, test := range []struct {
 		name    string
