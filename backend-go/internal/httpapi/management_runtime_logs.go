@@ -90,7 +90,7 @@ func newManagementRuntimeLogsHandler(service managementRuntimeLogService, now fu
 		r = r.WithContext(ctx)
 
 		rawID := chi.URLParam(r, "id")
-		if rawID == "" && strings.HasSuffix(r.URL.Path, "/runtime-logs/facets") {
+		if rawID == "" && strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/runtime-logs/facets") {
 			rawID = "facets"
 		}
 		if rawID != "" {
