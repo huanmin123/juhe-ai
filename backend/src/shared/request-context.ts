@@ -7,11 +7,17 @@ import type { Logger } from 'pino'
 import type { SystemAccountRole } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { LOG_EVENT_VERSION } from './logging/log-event-contract.js'
+import { captureExpectedFailureContext, captureUnexpectedFailureContext } from './logging/log-failure-context.js'
 import { logger } from './logger.js'
 
 export interface RequestContext {
   traceId: string
   startedAt: number
+  monotonicStartedAt?: number
+  stageSequence?: number
+  stageSummaries?: Array<{ sequence: number; stage: string; outcome: string; durationMs: number }>
+  stageSummaryDropped?: number
+  timingSummaryLogged?: boolean
   method: string
   path: string
   originalUrl: string
@@ -32,6 +38,46 @@ export interface RequestContextFields {
   trafficSource?: string
 }
 
+export const GATEWAY_REQUEST_STAGES = [
+  'runtime_resolution',
+  'body.admission',
+  'body.speed_first_admission',
+  'body.receive',
+  'body.capture',
+  'request.accepted',
+  'route.group_access',
+  'client.profile',
+  'protocol.bridge',
+  'account.load_candidates',
+  'model.capability_filter',
+  'account.session_affinity',
+  'account.runtime_suppression',
+  'account.latency_degradation',
+  'account.proxy_health',
+  'account.client_ip_avoidance',
+  'account.codex_turn_avoidance',
+  'quota.batch_decision',
+  'capacity.account_snapshot',
+  'capacity.client_ip_concurrency',
+  'account.dispatch_candidates',
+  'account.concurrency_acquire',
+  'upstream.request_prepare',
+  'upstream.fetch_headers',
+  'upstream.dispatch.completed',
+  'upstream.dispatch.failed',
+  'upstream.first_output',
+  'upstream.body.completed',
+  'downstream.response.completed',
+  'downstream.finish',
+  'audit.finalize',
+  'preflight.completed',
+  'preflight.rejected',
+  'preflight.failed'
+] as const
+
+export type GatewayRequestStage = typeof GATEWAY_REQUEST_STAGES[number]
+export type GatewayRequestStageOutcome = 'success' | 'skipped' | 'expected_failure' | 'unexpected_failure' | 'aborted'
+
 const requestContextStorage = new AsyncLocalStorage<RequestContext>()
 
 export function createTraceId(): string {
@@ -47,6 +93,7 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
   const context: RequestContext = {
     traceId,
     startedAt: Date.now(),
+    monotonicStartedAt: performance.now(),
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl),
@@ -62,7 +109,6 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
       version: LOG_EVENT_VERSION,
       service: 'juhe-ai',
       role: runtimeConfig.processRole,
-      traceId,
       method: req.method,
       path: req.path,
       originalUrl: context.originalUrl,
@@ -104,47 +150,116 @@ export function getTraceId(): string | undefined {
 }
 
 export function logRequestStage(
-  stage: string,
+  stage: GatewayRequestStage,
   fields: Record<string, unknown> = {},
-  outcome: 'success' | 'expected_failure' | 'unexpected_failure' | 'aborted' = 'success',
-  stageStartedAt = Date.now()
+  outcome: GatewayRequestStageOutcome = 'success',
+  stageStartedAt = performance.now()
 ): void {
   const context = getRequestContext()
-  const endedAt = Date.now()
-  ;(context?.logger ?? logger).info(buildRequestStageLogFields(
+  const endedAt = performance.now()
+  const effectiveStageStartedAt = normalizeStageStartedAt(context, stageStartedAt)
+  const stageFields = buildRequestStageLogFields(
     context,
     stage,
     fields,
     outcome,
-    stageStartedAt,
+    effectiveStageStartedAt,
     endedAt
-  ), '请求阶段完成')
+  )
+  const requestLogger = context?.logger ?? logger
+  requestLogger.info(stageFields, '请求阶段完成')
+  if (context) {
+    context.stageSummaries ??= []
+    if (context.stageSummaries.length < 64) {
+      context.stageSummaries.push({
+        sequence: Number(stageFields.sequence ?? context.stageSummaries.length + 1),
+        stage,
+        outcome,
+        durationMs: Number(stageFields.durationMs ?? 0)
+      })
+    } else {
+      context.stageSummaryDropped = (context.stageSummaryDropped ?? 0) + 1
+    }
+  }
+  if (outcome === 'unexpected_failure') {
+    requestLogger.error({ ...stageFields, event: 'gateway.request.failure' }, '请求阶段发生未预期异常')
+  }
+}
+
+function normalizeStageStartedAt(context: RequestContext | undefined, stageStartedAt: number): number {
+  const requestStartedAt = context?.monotonicStartedAt
+  if (requestStartedAt === undefined || !Number.isFinite(stageStartedAt)) {
+    return requestStartedAt ?? stageStartedAt
+  }
+
+  // A wall-clock timestamp is several orders of magnitude away from performance.now().
+  // Keep the event usable if a caller accidentally passes Date.now().
+  return Math.abs(stageStartedAt - requestStartedAt) > 86_400_000
+    ? requestStartedAt
+    : stageStartedAt
 }
 
 export function buildRequestStageLogFields(
   context: RequestContext | undefined,
-  stage: string,
+  stage: GatewayRequestStage,
   fields: Record<string, unknown>,
-  outcome: 'success' | 'expected_failure' | 'unexpected_failure' | 'aborted',
+  outcome: GatewayRequestStageOutcome,
   stageStartedAt: number,
   endedAt: number
 ): Record<string, unknown> {
-  const suppliedTraceId = typeof fields.traceId === 'string' ? fields.traceId : undefined
+  const {
+    error: failureError,
+    failureReason,
+    decisionInputs,
+    stageSnapshot,
+    queueSnapshot,
+    retryState,
+    traceId: suppliedTraceIdValue,
+    ...businessFields
+  } = fields
+  const suppliedTraceId = typeof suppliedTraceIdValue === 'string' ? suppliedTraceIdValue : undefined
+  const sequence = context ? (context.stageSequence = (context.stageSequence ?? 0) + 1) : undefined
+  const failureContext = outcome === 'unexpected_failure'
+    ? captureUnexpectedFailureContext(
+      failureError ?? new Error(`${stage} failed without original error context`),
+      {
+        stageSnapshot: recordValue(stageSnapshot) ?? businessFields,
+        queueSnapshot: recordValue(queueSnapshot),
+        retryState: recordValue(retryState),
+        decisionInputs: recordValue(decisionInputs)
+      }
+    )
+    : outcome === 'expected_failure'
+      ? captureExpectedFailureContext(
+        typeof failureReason === 'string' && failureReason.trim() ? failureReason : stage,
+        recordValue(decisionInputs) ?? businessFields
+      )
+      : outcome === 'aborted'
+        ? { failureClass: 'aborted' as const }
+        : undefined
   return {
-    ...fields,
+    ...businessFields,
     event: 'gateway.request.stage',
     version: LOG_EVENT_VERSION,
     service: 'juhe-ai',
     role: runtimeConfig.processRole,
-    traceId: context?.traceId ?? suppliedTraceId,
+    ...(context ? {} : { traceId: suppliedTraceId }),
     stage,
+    ...(sequence !== undefined ? { sequence } : {}),
     outcome,
     durationMs: Math.max(0, endedAt - stageStartedAt),
     ...(context ? {
-      startedOffsetMs: Math.max(0, stageStartedAt - context.startedAt),
-      endedOffsetMs: Math.max(0, endedAt - context.startedAt)
-    } : {})
+      startedOffsetMs: Math.max(0, stageStartedAt - (context.monotonicStartedAt ?? stageStartedAt)),
+      endedOffsetMs: Math.max(0, endedAt - (context.monotonicStartedAt ?? stageStartedAt))
+    } : {}),
+    ...(failureContext ?? {})
   }
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
 }
 
 export function withRequestContext<T>(context: RequestContext, handler: () => T): T {
@@ -156,6 +271,7 @@ export function extractClientIp(req: Request): string | undefined {
 }
 
 function logRequestFinished(req: Request, res: Response, context: RequestContext): void {
+  setImmediate(() => logRequestTimingSummary(context, res.statusCode, resolveRequestSummaryOutcome(context, res.statusCode)))
   const durationMs = Date.now() - context.startedAt
   const fields = {
     event: 'http_request_completed',
@@ -188,6 +304,7 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
 }
 
 function logRequestClosed(req: Request, res: Response, context: RequestContext): void {
+  setImmediate(() => logRequestTimingSummary(context, res.statusCode, 'aborted'))
   context.logger.warn({
     event: 'http_request_closed',
     method: req.method,
@@ -205,22 +322,58 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
   }, 'HTTP 请求在完成前关闭')
 }
 
+function logRequestTimingSummary(context: RequestContext, statusCode: number, outcome: GatewayRequestStageOutcome): void {
+  if (context.timingSummaryLogged || !context.stageSummaries?.length) return
+  context.timingSummaryLogged = true
+  context.logger.info({
+    event: 'gateway.request.timing_summary',
+    version: LOG_EVENT_VERSION,
+    service: 'juhe-ai',
+    role: runtimeConfig.processRole,
+    outcome,
+    statusCode,
+    durationMs: Math.max(0, performance.now() - (context.monotonicStartedAt ?? performance.now())),
+    stageCount: context.stageSummaries.length,
+    droppedStageSummaries: context.stageSummaryDropped ?? 0,
+    stages: context.stageSummaries
+  }, '网关请求阶段耗时汇总')
+}
+
+export function resolveRequestSummaryOutcome(context: RequestContext, statusCode: number): GatewayRequestStageOutcome {
+  if (context.stageSummaries?.some((stage) => stage.outcome === 'unexpected_failure')) {
+    return 'unexpected_failure'
+  }
+  if (statusCode >= 500 && !context.stageSummaries?.some((stage) => stage.outcome === 'expected_failure')) {
+    return 'unexpected_failure'
+  }
+  if (statusCode >= 400) {
+    return 'expected_failure'
+  }
+  return 'success'
+}
+
 function normalizeTraceId(req: Request): string | undefined {
   const traceParent = parseTraceParent(req.header('traceparent'))
   if (traceParent) return traceParent
   return normalizeHeaderId(req.header('x-trace-id')) ?? normalizeHeaderId(req.header('x-correlation-id'))
 }
 
-function parseTraceParent(value?: string): string | undefined {
+export function parseTraceParent(value?: string): string | undefined {
   if (!value) return undefined
-  const match = value.trim().match(/^[\da-f]{2}-([\da-f]{32})-[\da-f]{16}-[\da-f]{2}$/i)
-  return match?.[1]
+  const match = value.trim().match(/^([\da-f]{2})-([\da-f]{32})-([\da-f]{16})-([\da-f]{2})$/i)
+  if (!match || match[1]?.toLowerCase() === 'ff') return undefined
+  if (isAllZeroHex(match[2]) || isAllZeroHex(match[3])) return undefined
+  return match[2]?.toLowerCase()
 }
 
-function normalizeHeaderId(value?: string): string | undefined {
+export function normalizeHeaderId(value?: string): string | undefined {
   const text = firstHeaderValue(value)?.trim()
-  if (!text) return undefined
-  return text.length <= 128 ? text : text.slice(0, 128)
+  if (!text || text.length > 128 || !/^[A-Za-z0-9._:-]+$/.test(text)) return undefined
+  return text
+}
+
+function isAllZeroHex(value: string | undefined): boolean {
+  return Boolean(value && /^0+$/.test(value))
 }
 
 function firstHeaderValue(value?: string): string | undefined {

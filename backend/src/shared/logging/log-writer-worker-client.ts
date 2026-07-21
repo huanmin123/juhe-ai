@@ -12,7 +12,23 @@ export interface LogWriterWorkerOptions {
 }
 
 export interface LogWriterWorkerClientOptions extends LogWriterWorkerOptions {
-  onLine?: (chunk: Buffer) => void
+  onLine?: (chunk: Buffer, options?: LogWriterWorkerLineOptions) => void
+}
+
+export interface LogWriterWorkerLineOptions {
+  logFile?: string
+  logFileIdentity?: string
+  logOffset?: number
+  parsedMetadata?: LogWriterWorkerParsedMetadata
+}
+
+export interface LogWriterWorkerParsedMetadata {
+  time?: string
+  level?: string | number
+  traceId?: string
+  event?: string
+  message?: string
+  errorMessage?: string
 }
 
 interface WorkerReply {
@@ -21,6 +37,8 @@ interface WorkerReply {
   error?: string
   chunk?: Uint8Array
   chunks?: Uint8Array[]
+  lineOptions?: LogWriterWorkerLineOptions
+  lineOptionsList?: LogWriterWorkerLineOptions[]
 }
 
 const currentModulePath = fileURLToPath(import.meta.url)
@@ -30,9 +48,9 @@ export class LogWriterWorkerClient {
   private readonly callbacks = new Map<number, (error?: Error | null) => void>()
   private nextID = 1
   private closeResolve?: () => void
-  private closeReject?: (error: Error) => void
+  private closeReject?: () => void
   private closed = false
-  private readonly onLine?: (chunk: Buffer) => void
+  private readonly onLine?: (chunk: Buffer, options?: LogWriterWorkerLineOptions) => void
 
   constructor(options: LogWriterWorkerClientOptions) {
     const { onLine, ...workerOptions } = options
@@ -41,7 +59,7 @@ export class LogWriterWorkerClient {
     this.worker.on('message', (message: WorkerReply) => this.handleMessage(message))
     this.worker.on('error', (error) => this.fail(error))
     this.worker.on('exit', (code) => {
-      if (!this.closed && code !== 0) this.fail(new Error(`日志 writer worker 异常退出: ${code}`))
+      if (code !== 0 && (this.callbacks.size > 0 || this.closeReject)) this.fail(new Error(`日志 writer worker 异常退出: ${code}`))
     })
     this.worker.unref()
   }
@@ -77,25 +95,53 @@ export class LogWriterWorkerClient {
     }
   }
 
-  close(): Promise<void> {
-    if (this.closed) return Promise.resolve()
+  async close(timeoutMs = 3_000): Promise<boolean> {
+    if (this.closed) return true
     this.closed = true
     this.worker.ref()
-    return new Promise<void>((resolve, reject) => {
-      this.closeResolve = resolve
-      this.closeReject = reject
-      this.worker.postMessage({ type: 'close' })
+    const closePromise = new Promise<boolean>((resolve) => {
+      this.closeResolve = () => resolve(true)
+      this.closeReject = () => resolve(false)
+      try {
+        this.worker.postMessage({ type: 'close' })
+      } catch {
+        this.forceClose()
+        resolve(false)
+      }
     })
+    let timeout: NodeJS.Timeout | undefined
+    const result = await Promise.race([
+      closePromise,
+      new Promise<boolean>((resolve) => {
+        timeout = setTimeout(() => {
+          this.forceClose()
+          resolve(false)
+        }, Math.max(0, timeoutMs))
+      })
+    ])
+    if (timeout) clearTimeout(timeout)
+    return result
+  }
+
+  forceClose(): void {
+    this.closed = true
+    const error = new Error('日志 writer worker 关闭超时')
+    this.fail(error)
+    this.worker.unref()
+    void this.worker.terminate().catch(() => undefined)
   }
 
   private handleMessage(message: WorkerReply): void {
     if (message.type === 'line' && message.chunk) {
-      this.onLine?.(Buffer.from(message.chunk.buffer, message.chunk.byteOffset, message.chunk.byteLength))
+      this.onLine?.(Buffer.from(message.chunk.buffer, message.chunk.byteOffset, message.chunk.byteLength), message.lineOptions)
       return
     }
     if (message.type === 'line' && message.chunks) {
-      for (const chunk of message.chunks) {
-        this.onLine?.(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength))
+      for (const [index, chunk] of message.chunks.entries()) {
+        this.onLine?.(
+          Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength),
+          message.lineOptionsList?.[index]
+        )
       }
       return
     }
@@ -119,7 +165,7 @@ export class LogWriterWorkerClient {
   private fail(error: Error): void {
     for (const callback of this.callbacks.values()) callback(error)
     this.callbacks.clear()
-    this.closeReject?.(error)
+    this.closeReject?.()
     this.closeResolve = undefined
     this.closeReject = undefined
   }

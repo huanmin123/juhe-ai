@@ -20,6 +20,7 @@ import {
   type RuntimeLogRedisProducerDropEvent,
   type RuntimeLogRedisProducerDropReason
 } from './runtime-log-redis-producer.js'
+import type { LogWriterWorkerParsedMetadata } from '../../shared/logging/log-writer-worker-client.js'
 
 const runtimeLogFlushIntervalMs = 200
 const runtimeLogRetryPolicy = fixedRetryPolicy('runtime_log_index_queue_flush', 1000)
@@ -79,6 +80,7 @@ export interface RuntimeLogLineIndexOptions {
   logFile?: string
   logOffset?: number
   lineNumber?: number
+  parsedMetadata?: LogWriterWorkerParsedMetadata
 }
 
 export interface RuntimeLogIndexRuntime {
@@ -394,6 +396,23 @@ function runtimeLogInputFromLine(rawLine: string, options: RuntimeLogLineIndexOp
 
   if (line.length > runtimeLogMaxRawJsonChars) {
     return fallbackRuntimeLogInput(rawJson, options.sourceKey ?? stableRuntimeLogSource(line, rawJson), metadata)
+  }
+
+  if (options.parsedMetadata) {
+    const parsed = options.parsedMetadata
+    const time = parsed.time ?? nowIso()
+    return {
+      id: stableRuntimeLogId(options.sourceKey ?? line),
+      ...metadata,
+      time,
+      level: normalizeLevel(parsed.level),
+      traceId: parsed.traceId,
+      event: parsed.event,
+      message: parsed.message,
+      errorMessage: parsed.errorMessage,
+      rawJson,
+      createdAt: time
+    }
   }
 
   let parsed: Record<string, unknown>

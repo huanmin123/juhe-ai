@@ -7,8 +7,10 @@ import {
   createTraceId,
   getRequestLogger,
   getTraceId,
+  logRequestStage,
   sanitizeUrlForLog
 } from '../../../shared/request-context.js'
+import type { GatewayRequestStageOutcome } from '../../../shared/request-context.js'
 import { recordDroppedAuditCapture } from '../../audit-logs/audit-log-queue.service.js'
 import {
   createGatewayRequestBodyState,
@@ -70,13 +72,33 @@ export function wrapGatewayRawBodyParser(
   handleParserError: ErrorRequestHandler
 ): RequestHandler {
   return (req, res, next) => {
-    parser(req, res, (error?: unknown) => {
-      if (error === undefined) {
-        next()
-        return
-      }
-      handleParserError(error, req, res, next)
-    })
+    const stageStartedAt = performance.now()
+    try {
+      parser(req, res, (error?: unknown) => {
+        const rawBodyBytes = Buffer.isBuffer(req.body) ? req.body.byteLength : 0
+        if (error === undefined) {
+          logRequestStage('body.receive', { rawBodyBytes }, 'success', stageStartedAt)
+          next()
+          return
+        }
+        const parserError = error as GatewayRawBodyParserError
+        logRequestStage('body.receive', {
+          rawBodyBytes: Number(parserError.received ?? parserError.length ?? parserError.limit ?? rawBodyBytes),
+          failureReason: parserError.type ?? 'gateway_body_parser',
+          decisionInputs: {
+            statusCode: parserError.statusCode ?? parserError.status,
+            parserType: parserError.type,
+            receivedBytes: parserError.received,
+            declaredLengthBytes: parserError.length,
+            limitBytes: parserError.limit
+          }
+        }, 'expected_failure', stageStartedAt)
+        handleParserError(error, req, res, next)
+      })
+    } catch (error) {
+      logRequestStage('body.receive', { error }, 'unexpected_failure', stageStartedAt)
+      next(error)
+    }
   }
 }
 
@@ -116,8 +138,25 @@ export async function captureGatewayRawBody(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  const stageStartedAt = performance.now()
+  let stageLogged = false
+  let rawBodyBytes = 0
+  const completeStage = (
+    outcome: GatewayRequestStageOutcome,
+    fields: Record<string, unknown> = {}
+  ) => {
+    if (stageLogged) return
+    stageLogged = true
+    logRequestStage('body.capture', {
+      rawBodyBytes,
+      contentType: String(req.headers['content-type'] ?? ''),
+      jsonParseStatus: req.gatewayRequestBody?.jsonParseStatus,
+      ...fields
+    }, outcome, stageStartedAt)
+  }
   try {
     const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
+    rawBodyBytes = rawBody.byteLength
     const contentType = req.headers['content-type'] ?? ''
     const isJson = isGatewayJsonContentType(contentType)
     if (rawBody.length > gatewayRawBodyHardLimitBytes) {
@@ -129,6 +168,10 @@ export async function captureGatewayRawBody(
         jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
       }
       await rejectGatewayRawBodyTooLarge(req, res, rawBody, gatewayRawBodyHardLimitBytes, 'gateway')
+      completeStage('expected_failure', {
+        failureReason: 'gateway_body_size_limit',
+        decisionInputs: { rawBodyBytes, limitBytes: gatewayRawBodyHardLimitBytes, limitScope: 'gateway' }
+      })
       return
     }
 
@@ -141,6 +184,16 @@ export async function captureGatewayRawBody(
         jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
       }
       await rejectGatewayRawBodyInFlightLimit(req, res, rawBody)
+      const inFlight = getGatewayRequestBodyInFlightState(runtimeConfig.gateway.bodyInFlightMaxBytes)
+      completeStage('expected_failure', {
+        failureReason: 'gateway_body_in_flight_limit',
+        decisionInputs: {
+          rawBodyBytes,
+          currentBytes: inFlight.currentBytes,
+          requestCount: inFlight.requestCount,
+          maxBytes: inFlight.maxBytes
+        }
+      })
       return
     }
 
@@ -153,6 +206,10 @@ export async function captureGatewayRawBody(
       req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'not_json' })
       req.body = undefined
       if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+        completeStage('expected_failure', {
+          failureReason: 'gateway_body_size_limit',
+          decisionInputs: { rawBodyBytes, requestLane: resolveOpenAIGatewayRequestLane(req) }
+        })
         return
       }
     } else {
@@ -162,6 +219,10 @@ export async function captureGatewayRawBody(
           req.rawBody = undefined
           req.body = undefined
           releaseGatewayRequestBodyInFlightBytes(req)
+          completeStage('expected_failure', {
+            failureReason: 'gateway_body_metadata_worker',
+            decisionInputs: { rawBodyBytes }
+          })
           return
         }
         const logPayload = {
@@ -200,6 +261,10 @@ export async function captureGatewayRawBody(
         })
         req.body = undefined
         if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+          completeStage('expected_failure', {
+            failureReason: 'gateway_body_size_limit',
+            decisionInputs: { rawBodyBytes, requestLane: resolveOpenAIGatewayRequestLane(req) }
+          })
           return
         }
       } else {
@@ -212,6 +277,10 @@ export async function captureGatewayRawBody(
           req.body = undefined
         }
         if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
+          completeStage('expected_failure', {
+            failureReason: 'gateway_body_size_limit',
+            decisionInputs: { rawBodyBytes, requestLane: resolveOpenAIGatewayRequestLane(req) }
+          })
           return
         }
       }
@@ -221,11 +290,20 @@ export async function captureGatewayRawBody(
       req.rawBody = undefined
       req.body = undefined
       releaseGatewayRequestBodyInFlightBytes(req)
+      completeStage('aborted')
       return
     }
+    completeStage(req.gatewayRequestBody?.jsonParseStatus === 'invalid_json' ? 'expected_failure' : 'success',
+      req.gatewayRequestBody?.jsonParseStatus === 'invalid_json'
+        ? {
+            failureReason: 'invalid_json',
+            decisionInputs: { rawBodyBytes, contentType: String(contentType) }
+          }
+        : undefined)
     next()
   } catch (error) {
     releaseGatewayRequestBodyInFlightBytes(req)
+    completeStage('unexpected_failure', { error })
     next(error)
   }
 }
@@ -235,17 +313,25 @@ export async function rejectGatewayRawBodyByContentLength(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  const stageStartedAt = performance.now()
   const contentLength = requestContentLengthBytes(req)
   if (contentLength === undefined) {
+    logRequestStage('body.admission', { contentLengthPresent: false }, 'skipped', stageStartedAt)
     next()
     return
   }
   const requestLimit = resolveGatewayRawBodyContentLengthLimit(req)
   if (!requestLimit) {
+    logRequestStage('body.admission', { contentLength, applicable: false }, 'skipped', stageStartedAt)
     next()
     return
   }
   if (contentLength <= requestLimit.limitBytes) {
+    logRequestStage('body.admission', {
+      contentLength,
+      limitBytes: requestLimit.limitBytes,
+      limitScope: requestLimit.scope
+    }, 'success', stageStartedAt)
     next()
     return
   }
@@ -276,6 +362,14 @@ export async function rejectGatewayRawBodyByContentLength(
       }
     })
   }
+  logRequestStage('body.admission', {
+    failureReason: 'gateway_body_size_limit',
+    decisionInputs: {
+      contentLength,
+      limitBytes: requestLimit.limitBytes,
+      limitScope: requestLimit.scope
+    }
+  }, 'expected_failure', stageStartedAt)
 }
 
 async function rejectGatewayRawBodyByRequestLane(

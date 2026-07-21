@@ -329,6 +329,7 @@
     "test:runtime-log-timestamp-normalization": "tsx src/scripts/regression/runtime-log-timestamp-normalization-regression.ts",
     "test:runtime-log-redis-enqueue-failure-boundary": "tsx src/scripts/regression/runtime-log-redis-enqueue-failure-boundary-regression.ts",
     "test:runtime-log-file-import-source": "tsx src/scripts/regression/runtime-log-file-import-source-regression.ts",
+    "test:runtime-log-live-cursor": "tsx src/scripts/regression/runtime-log-live-cursor-regression.ts",
     "test:runtime-log-search-guard": "tsx src/scripts/regression/runtime-log-search-guard-regression.ts",
     "test:runtime-snapshot-unavailable-contract": "tsx src/scripts/regression/runtime-snapshot-unavailable-contract-regression.ts",
     "test:background-ipc-snapshot-current-only": "tsx src/scripts/regression/background-ipc-snapshot-current-only-regression.ts",

@@ -26,3 +26,31 @@ func TestRequestIDMiddlewarePreservesTraceAndRequestIDs(t *testing.T) {
 		t.Fatalf("X-Trace-Id = %q", got)
 	}
 }
+
+func TestRequestIDMiddlewareRejectsOversizedRequestIDAndMalformedTraceparent(t *testing.T) {
+	var requestID string
+	var traceID string
+	handler := requestIDMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestID = requestIDFromContext(r.Context())
+		traceID = traceIDFromContext(r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("X-Request-Id", string(make([]byte, 1024)))
+	req.Header.Set("traceparent", "00-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-0123456789abcdef-01")
+	req.Header.Set("X-Trace-Id", "trace id with spaces")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+	if len(requestID) != 36 || len(traceID) != 36 {
+		t.Fatalf("generated IDs must be UUIDs: request=%q trace=%q", requestID, traceID)
+	}
+}
+
+func TestTraceparentRejectsAllZeroTraceID(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("traceparent", "00-00000000000000000000000000000000-0123456789abcdef-01")
+	if got := traceIDFromHeaders(req); len(got) != 36 {
+		t.Fatalf("trace id = %q, want generated UUID", got)
+	}
+}

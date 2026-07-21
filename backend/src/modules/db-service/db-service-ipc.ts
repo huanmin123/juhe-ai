@@ -4,6 +4,7 @@ import type { ChildProcess } from 'node:child_process'
 import { runtimeConfig } from '../../config/runtime.js'
 import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { getTraceId } from '../../shared/request-context.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
 import { invalidateGatewayAuthorizationQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache.service.js'
@@ -43,6 +44,7 @@ class DbServiceRequestQueueFullError extends Error {
 export interface RequestDbServiceOptions {
   timeoutMs?: number
   priority?: DbServiceRequestPriority
+  traceId?: string
 }
 
 interface DbServiceState {
@@ -192,6 +194,7 @@ export async function requestDbService<T extends DbServiceOperation>(
   const message: Extract<DbServiceParentMessage, { type: 'db_service_request' }> = {
     type: 'db_service_request',
     requestId,
+    traceId: options.traceId ?? getTraceId(),
     operation,
     deadlineAtMs: Date.now() + timeoutMs
   }

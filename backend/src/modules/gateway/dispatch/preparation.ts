@@ -101,7 +101,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   ignoreAccountRuntimeSuppression?: boolean
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
 }): Promise<DispatchPreparationResult> {
-  const sessionAffinityStartedAt = Date.now()
+  const sessionAffinityStartedAt = performance.now()
   const dispatchOrderingOptions = {
     groupType: input.groupAccess.groupType,
     schedulingPolicy: input.groupAccess.schedulingPolicy,
@@ -124,7 +124,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     candidateAccountCount: orderedCandidateAccounts.length,
     applied: Boolean(input.sessionAffinityKey)
   }, 'success', sessionAffinityStartedAt)
-  const suppressionStartedAt = Date.now()
+  const suppressionStartedAt = performance.now()
   const bypassLocalSuppression = input.ignoreAccountRuntimeSuppression === true || isAccountProbeTrafficSource(input.usageContext.trafficSource)
   const initialLocalSuppressionFilter = bypassLocalSuppression
     ? localSuppressionBypassResult(orderedCandidateAccounts)
@@ -222,7 +222,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     }
   }
 
-  const latencyDegradationStartedAt = Date.now()
+  const latencyDegradationStartedAt = performance.now()
   const latencyDegradationOrder = await orderGatewayAccountsByNormalRouteLatencyDegradationAsync(
     runtimeDegradationOrder.accounts,
     normalRouteLatencyDegradationScope({
@@ -265,7 +265,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
-  const proxyHealthStartedAt = Date.now()
+  const proxyHealthStartedAt = performance.now()
   const proxyHealthOrder = await orderGatewayAccountsByUpstreamBucketHealthAsync(latencyDegradationOrder.accounts, input.modelPriority)
   logRequestStage('account.proxy_health', {
     traceId: input.usageContext.traceId,
@@ -306,12 +306,22 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
+  const clientIpAvoidanceStartedAt = performance.now()
   const clientIpAccountAvoidance = await orderOpenAIAccountsByClientIpAccountAvoidanceAsync(proxyHealthOrder.accounts, {
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
     groupId: input.groupId,
     clientIp: input.clientIp
   }, input.modelPriority)
+  logRequestStage('account.client_ip_avoidance', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: clientIpAccountAvoidance.accounts.length,
+    applied: clientIpAccountAvoidance.applied,
+    avoidedAccountCount: clientIpAccountAvoidance.avoidedAccountIds.length,
+    bypassedAllAvoided: clientIpAccountAvoidance.bypassedAllAvoided,
+    clientIpPresent: Boolean(input.clientIp)
+  }, 'success', clientIpAvoidanceStartedAt)
   if (clientIpAccountAvoidance.applied || clientIpAccountAvoidance.bypassedAllAvoided) {
     logger.warn({
       event: clientIpAccountAvoidance.applied
@@ -337,11 +347,21 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
+  const codexTurnAvoidanceStartedAt = performance.now()
   const codexTurnAvoidance = await orderOpenAIAccountsByCodexTurnAvoidanceAsync(
     clientIpAccountAvoidance.accounts,
     input.clientStrategy,
     input.modelPriority
   )
+  logRequestStage('account.codex_turn_avoidance', {
+    traceId: input.usageContext.traceId,
+    groupId: input.groupId,
+    candidateAccountCount: codexTurnAvoidance.accounts.length,
+    applied: codexTurnAvoidance.applied,
+    failureCount: codexTurnAvoidance.failureCount,
+    avoidedAccountCount: codexTurnAvoidance.avoidedAccountIds.length,
+    bypassedAllAvoided: codexTurnAvoidance.bypassedAllAvoided
+  }, 'success', codexTurnAvoidanceStartedAt)
   if (codexTurnAvoidance.applied || codexTurnAvoidance.bypassedAllAvoided) {
     logger.warn({
       event: 'gateway_codex_turn_account_avoidance',
@@ -365,7 +385,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     })
   }
 
-  const candidatePreparationStartedAt = Date.now()
+  const candidatePreparationStartedAt = performance.now()
   const readyPreparation = await prepareQuotaAndCapacityReadyAccounts({
     ...input,
     accounts: codexTurnAvoidance.accounts,
@@ -375,7 +395,11 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     traceId: input.usageContext.traceId,
     groupId: input.groupId,
     preparationOutcome: readyPreparation.outcome,
-    candidateAccountCount: readyPreparation.outcome === 'ready' ? readyPreparation.accounts.length : 0
+    candidateAccountCount: readyPreparation.outcome === 'ready' ? readyPreparation.accounts.length : 0,
+    ...(readyPreparation.outcome === 'ready' ? {} : {
+      failureReason: `account_dispatch_${readyPreparation.outcome}`,
+      decisionInputs: { groupId: input.groupId, candidateAccountCount: codexTurnAvoidance.accounts.length }
+    })
   }, readyPreparation.outcome === 'ready' ? 'success' : 'expected_failure', candidatePreparationStartedAt)
   if (readyPreparation.outcome !== 'ready') {
     return readyPreparation
@@ -407,7 +431,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   dispatchOrderingOptions: OpenAIAccountDispatchOrderingOptions
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
 }): Promise<DispatchPreparationResult> {
-  const quotaStartedAt = Date.now()
+  const quotaStartedAt = performance.now()
   let authorizationQuotaDeniedAccountCount = 0
   let accounts: UpstreamAccount[] = []
   const accountQuotaDecisions = await checkGatewayAuthorizationQuotaBatchAsync({ groupAccess: input.groupAccess, accounts: input.accounts })
@@ -426,7 +450,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     allowedAccountCount: accounts.length,
     deniedAccountCount: authorizationQuotaDeniedAccountCount
   }, authorizationQuotaDeniedAccountCount > 0 ? 'expected_failure' : 'success', quotaStartedAt)
-  const capacityStartedAt = Date.now()
+  const capacityStartedAt = performance.now()
   if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
     accounts = await refreshGatewayAccountCurrentConcurrencyAsync(accounts)
   }
@@ -503,6 +527,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
 
   let releaseClientIpConcurrency = noop
   if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
+    const clientIpConcurrencyStartedAt = performance.now()
     const clientIpConcurrency = await acquireHighConcurrencyClientIpSlot({
       systemAccountId: input.systemAccountId,
       groupId: input.groupId,
@@ -511,6 +536,24 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       policy: input.groupAccess.schedulingPolicy,
       signal: input.signal
     })
+    logRequestStage('capacity.client_ip_concurrency', {
+      traceId: input.usageContext.traceId,
+      groupId: input.groupId,
+      enabled: clientIpConcurrency.enabled,
+      acquired: clientIpConcurrency.acquired,
+      ...(clientIpConcurrency.enabled ? {
+        current: clientIpConcurrency.current,
+        limit: clientIpConcurrency.limit
+      } : {}),
+      ...(!clientIpConcurrency.acquired ? {
+        failureReason: `client_ip_concurrency_${clientIpConcurrency.reason}`,
+        decisionInputs: clientIpConcurrencyAuditMetadata(clientIpConcurrency)
+      } : {})
+    }, input.signal?.aborted
+      ? 'aborted'
+      : clientIpConcurrency.acquired
+        ? 'success'
+        : 'expected_failure', clientIpConcurrencyStartedAt)
     if (clientIpConcurrency.enabled) {
       input.auditCapture.addGatewayMetadata({
         label: 'high_concurrency_client_ip',
@@ -546,6 +589,12 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       releaseClientIpConcurrency()
       return { outcome: 'completed' }
     }
+  } else {
+    logRequestStage('capacity.client_ip_concurrency', {
+      traceId: input.usageContext.traceId,
+      groupId: input.groupId,
+      groupType: input.dispatchOrderingOptions.groupType
+    }, 'skipped')
   }
 
   if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {

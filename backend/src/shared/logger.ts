@@ -303,9 +303,12 @@ class MultiDestinationLogStream extends Writable {
   }
 
   async close(): Promise<void> {
-    await this.publisher.close()
+    const drained = await this.publisher.closeWithin(3_000)
     for (const destination of this.destinations) {
-      if (destination instanceof LogWriterWorkerClient) await destination.close()
+      if (destination instanceof LogWriterWorkerClient) {
+        if (!drained) destination.forceClose()
+        await destination.close(drained ? 3_000 : 100)
+      }
     }
   }
 }
@@ -481,7 +484,7 @@ const logWriterWorker = runtimeConfig.log.fileEnabled || runtimeConfig.log.conso
     retentionDays: runtimeConfig.log.retentionDays,
     maxFiles: runtimeConfig.log.maxFiles,
     onLine: fileRuntimeLogIndexStream
-      ? (chunk) => fileRuntimeLogIndexStream.write(chunk, () => undefined)
+      ? (chunk, options) => fileRuntimeLogIndexStream.writeIndexedChunk(chunk, options, () => undefined)
       : undefined
   })
   : undefined
@@ -521,10 +524,33 @@ export function logPublisherStats(): AsyncLogPublisherStats | undefined {
 }
 
 export function startLogMaintenance(): void {
-  // writer worker 在启动和轮转时执行有界保留清理，避免主进程扫描日志目录。
+  if (logMaintenanceTimer) return
+  let lastNormalDropped = 0
+  let lastFailureDropped = 0
+  let lastDestinationErrors = 0
+  logMaintenanceTimer = setInterval(() => {
+    const stats = logPublisherStats()
+    if (!stats) return
+    if (stats.normalDropped === lastNormalDropped
+      && stats.failureDropped === lastFailureDropped
+      && stats.destinationErrors === lastDestinationErrors) return
+    lastNormalDropped = stats.normalDropped
+    lastFailureDropped = stats.failureDropped
+    lastDestinationErrors = stats.destinationErrors
+    logger.error({
+      event: 'system_log_drop',
+      normalDropped: stats.normalDropped,
+      failureDropped: stats.failureDropped,
+      destinationErrors: stats.destinationErrors,
+      pendingEvents: stats.pendingEvents,
+      pendingBytes: stats.pendingBytes
+    }, '日志异步管线出现丢弃或写入错误')
+  }, 60_000)
+  logMaintenanceTimer.unref()
 }
 
 let fatalProcessExitStarted = false
+let logMaintenanceTimer: NodeJS.Timeout | undefined
 
 export function installProcessLogHandlers(): void {
   process.on('unhandledRejection', (reason) => {
@@ -560,6 +586,10 @@ export function installProcessLogHandlers(): void {
 }
 
 export async function closeLogger(): Promise<void> {
+  if (logMaintenanceTimer) {
+    clearInterval(logMaintenanceTimer)
+    logMaintenanceTimer = undefined
+  }
   await multiDestinationLogStream?.close()
 }
 

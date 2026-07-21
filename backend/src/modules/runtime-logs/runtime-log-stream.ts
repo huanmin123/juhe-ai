@@ -1,10 +1,13 @@
 import { Writable } from 'node:stream'
+import type { LogWriterWorkerParsedMetadata } from '../../shared/logging/log-writer-worker-client.js'
 
 export interface RuntimeLogLineSinkOptions {
   sourceKey?: string
   logFile?: string
+  logFileIdentity?: string
   logOffset?: number
   lineNumber?: number
+  parsedMetadata?: LogWriterWorkerParsedMetadata
 }
 
 type RuntimeLogLineSink = (line: string, options?: RuntimeLogLineSinkOptions) => void
@@ -33,18 +36,36 @@ export function setRuntimeLogLineSink(sink?: RuntimeLogLineSink): void {
 
 export class RuntimeLogIndexStream extends Writable {
   private pending = ''
+  private pendingOptions?: RuntimeLogLineSinkOptions
+  private pendingOffset = 0
   private lineSequence = 0
 
   _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     try {
       const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : Buffer.from(chunk, encoding).toString('utf8')
-      this.pending += text
-      this.truncateOversizedPendingLine()
-      this.drainLines(false)
-      callback()
+      this.consumeChunk(text, undefined, callback)
     } catch (error) {
       callback(error instanceof Error ? error : new Error(String(error)))
     }
+  }
+
+  writeIndexedChunk(chunk: Buffer, options: RuntimeLogLineSinkOptions | undefined, callback: (error?: Error | null) => void): void {
+    try {
+      this.consumeChunk(chunk.toString('utf8'), options, callback)
+    } catch (error) {
+      callback(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+
+  private consumeChunk(text: string, options: RuntimeLogLineSinkOptions | undefined, callback: (error?: Error | null) => void): void {
+    if (!this.pending) {
+      this.pendingOptions = options
+      this.pendingOffset = options?.logOffset ?? 0
+    }
+    this.pending += text
+    this.truncateOversizedPendingLine()
+    this.drainLines(false)
+    callback()
   }
 
   _final(callback: (error?: Error | null) => void): void {
@@ -60,14 +81,22 @@ export class RuntimeLogIndexStream extends Writable {
     let newlineIndex = this.pending.indexOf('\n')
     while (newlineIndex >= 0) {
       const line = this.pending.slice(0, newlineIndex)
+      const lineBytes = Buffer.byteLength(this.pending.slice(0, newlineIndex + 1), 'utf8')
       this.pending = this.pending.slice(newlineIndex + 1)
-      this.emitIndexedLine(line)
+      this.emitIndexedLine(line, this.pendingOptions, this.pendingOffset)
+      this.pendingOffset += lineBytes
+      if (!this.pending) {
+        this.pendingOptions = undefined
+        this.pendingOffset = 0
+      }
       newlineIndex = this.pending.indexOf('\n')
     }
 
     if (includePartial && this.pending.trim()) {
-      this.emitIndexedLine(this.pending)
+      this.emitIndexedLine(this.pending, this.pendingOptions, this.pendingOffset)
       this.pending = ''
+      this.pendingOptions = undefined
+      this.pendingOffset = 0
     }
   }
 
@@ -75,14 +104,22 @@ export class RuntimeLogIndexStream extends Writable {
     if (Buffer.byteLength(this.pending, 'utf8') <= maxPendingLineBytes) {
       return
     }
-    this.emitIndexedLine(`${this.pending.slice(0, maxPendingLineBytes)} [truncated: runtime log line exceeded pending buffer limit]`)
+    this.emitIndexedLine(`${this.pending.slice(0, maxPendingLineBytes)} [truncated: runtime log line exceeded pending buffer limit]`, this.pendingOptions, this.pendingOffset)
     this.pending = ''
+    this.pendingOptions = undefined
+    this.pendingOffset = 0
   }
 
-  private emitIndexedLine(line: string): void {
+  private emitIndexedLine(line: string, options?: RuntimeLogLineSinkOptions, offset?: number): void {
     this.lineSequence += 1
     emitRuntimeLogLine(line, {
-      sourceKey: `live:${process.pid}:${this.lineSequence}`
+      ...options,
+      ...(options?.logFile && offset !== undefined
+        ? { logOffset: offset }
+        : {}),
+      sourceKey: options?.logFile && offset !== undefined
+        ? `${options.logFileIdentity ?? options.logFile}:${offset}`
+        : `live:${process.pid}:${this.lineSequence}`
     })
   }
 }

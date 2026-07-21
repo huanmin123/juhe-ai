@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -8,6 +9,14 @@ import (
 )
 
 func New(level string, output io.Writer) (*slog.Logger, error) {
+	runtime, err := NewRuntime(level, output, RuntimeOptions{Role: "go"})
+	if err != nil {
+		return nil, err
+	}
+	return runtime.Logger, nil
+}
+
+func NewRuntime(level string, output io.Writer, options RuntimeOptions) (*Runtime, error) {
 	var parsed slog.Level
 	switch strings.ToLower(strings.TrimSpace(level)) {
 	case "", "info":
@@ -22,10 +31,21 @@ func New(level string, output io.Writer) (*slog.Logger, error) {
 		return nil, fmt.Errorf("未知日志级别: %s", level)
 	}
 
-	handler := newAsyncLogHandler(slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parsed}).WithAttrs([]slog.Attr{
+	role := options.Role
+	if role == "" {
+		role = "go"
+	}
+	base := slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parsed}).WithAttrs([]slog.Attr{
 		slog.Int("version", EventVersion),
 		slog.String("service", "juhe-ai"),
-		slog.String("role", "go"),
-	}))
-	return slog.New(handler), nil
+		slog.String("role", role),
+	})
+	return newAsyncLogRuntime(base, options), nil
+}
+
+func Shutdown(ctx context.Context, runtime *Runtime) error {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.Shutdown(ctx)
 }

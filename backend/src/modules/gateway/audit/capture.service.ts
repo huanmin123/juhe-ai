@@ -4,7 +4,7 @@ import type { Request, Response } from 'express'
 import { nowIso } from '../../../storage/database.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { logger } from '../../../shared/logger.js'
-import { sanitizeUrlCredentialsForLog, sanitizeUrlForLog } from '../../../shared/request-context.js'
+import { logRequestStage, sanitizeUrlCredentialsForLog, sanitizeUrlForLog } from '../../../shared/request-context.js'
 import type {
   AuditLogAttemptInput,
   AuditLogInput,
@@ -172,6 +172,7 @@ export class AuditCaptureContext {
   private clientRequestPayloadCaptured = false
   private httpCompletedAtMs?: number
   private pendingFinalizeInput?: FinalizeAuditInput
+  private finalizeStartedAt?: number
   private releaseHttpCompletionListener?: () => void
   private activeCaptureRegistered = false
 
@@ -413,7 +414,15 @@ export class AuditCaptureContext {
   finalize(input: FinalizeAuditInput): void {
     if (this.finalized) return
     this.finalized = true
-    if (!this.enabled) return
+    this.finalizeStartedAt = performance.now()
+    if (!this.enabled) {
+      logRequestStage('audit.finalize', {
+        traceId: this.traceId,
+        auditEnabled: false,
+        skipped: true
+      }, 'skipped', this.finalizeStartedAt)
+      return
+    }
 
     this.pendingFinalizeInput = input
     if (!this.httpCompletion || this.httpCompletedAtMs !== undefined) {
@@ -469,6 +478,13 @@ export class AuditCaptureContext {
         successCaptureSelected: this.successCaptureSelected,
         sampleBucket: this.sampleBucket
       }, '网关审计捕获已按采样策略跳过')
+      logRequestStage('audit.finalize', {
+        traceId: this.traceId,
+        outcome,
+        success,
+        skipped: true,
+        sampleBucket: this.sampleBucket
+      }, 'success', this.finalizeStartedAt ?? performance.now())
       return
     }
 
@@ -542,6 +558,24 @@ export class AuditCaptureContext {
       sampleReason: auditLog.sampleReason
     }, '网关审计捕获已完成，准备投递')
     enqueueAuditLog(auditLog)
+    logRequestStage('audit.finalize', {
+      traceId: this.traceId,
+      outcome,
+      success,
+      payloadCount: this.payloads.length,
+      attemptCount: this.attempts.length,
+      captureStatus: auditLog.captureStatus,
+      ...(!success ? {
+        failureReason: outcome,
+        decisionInputs: {
+          statusCode: input.statusCode,
+          errorPhase: input.errorPhase,
+          errorCode: input.errorCode,
+          attemptCount: this.attempts.length,
+          clientAborted
+        }
+      } : {})
+    }, success ? 'success' : 'expected_failure', this.finalizeStartedAt ?? performance.now())
   }
 
   private releaseActiveCapture(): void {

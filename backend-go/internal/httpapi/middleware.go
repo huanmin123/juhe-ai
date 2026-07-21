@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"encoding/hex"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/netip"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"juhe-ai/backend-go/internal/logging"
 )
 
 type contextKey string
@@ -19,7 +23,7 @@ const traceIDKey contextKey = "trace_id"
 
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
+		requestID := normalizedCorrelationID(r.Header.Get("X-Request-Id"))
 		if requestID == "" {
 			requestID = uuid.NewString()
 		}
@@ -28,6 +32,7 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Trace-Id", traceID)
 		ctx := context.WithValue(r.Context(), requestIDKey, requestID)
 		ctx = context.WithValue(ctx, traceIDKey, traceID)
+		ctx = logging.WithLogContext(ctx, logging.LogContext{TraceID: traceID, RequestID: requestID})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
@@ -71,11 +76,12 @@ func recoverMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					if logger != nil {
-						logger.Error("HTTP handler panic",
-							slog.Any("error", recovered),
+						logger.ErrorContext(r.Context(), "HTTP handler panic",
+							slog.String("event", "http.request.panic"),
+							slog.String("errorType", fmt.Sprintf("%T", recovered)),
+							slog.String("errorMessage", boundedLogText(fmt.Sprint(recovered), 8*1024)),
 							slog.String("path", r.URL.Path),
-							slog.String("request_id", requestIDFromContext(r.Context())),
-							slog.String("stack", string(debug.Stack())),
+							slog.String("stack", boundedLogText(string(debug.Stack()), 64*1024)),
 						)
 					}
 					writeError(w, http.StatusInternalServerError, "服务内部错误")
@@ -84,6 +90,13 @@ func recoverMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 		})
 	}
+}
+
+func boundedLogText(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	return value[:maxBytes] + " [truncated]"
 }
 
 func loopbackOnlyMiddleware(clientIPs clientIPResolver) func(http.Handler) http.Handler {
@@ -120,14 +133,52 @@ func traceIDFromContext(ctx context.Context) string {
 func traceIDFromHeaders(r *http.Request) string {
 	traceparent := strings.TrimSpace(r.Header.Get("traceparent"))
 	parts := strings.Split(traceparent, "-")
-	if len(parts) == 4 && len(parts[1]) == 32 {
-		return parts[1]
+	if len(parts) == 4 && validTraceparent(parts) {
+		return strings.ToLower(parts[1])
 	}
-	if traceID := strings.TrimSpace(r.Header.Get("X-Trace-Id")); traceID != "" && len(traceID) <= 128 {
+	if traceID := normalizedCorrelationID(r.Header.Get("X-Trace-Id")); traceID != "" {
 		return traceID
 	}
-	if correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-Id")); correlationID != "" && len(correlationID) <= 128 {
+	if correlationID := normalizedCorrelationID(r.Header.Get("X-Correlation-Id")); correlationID != "" {
 		return correlationID
 	}
 	return uuid.NewString()
+}
+
+func validTraceparent(parts []string) bool {
+	return len(parts[0]) == 2 && parts[0] != "ff" && validHexValue(parts[0], false) &&
+		len(parts[1]) == 32 && validHexValue(parts[1], true) &&
+		len(parts[2]) == 16 && validHexValue(parts[2], true) &&
+		len(parts[3]) == 2 && validHexValue(parts[3], false)
+}
+
+func validHexValue(value string, requireNonZero bool) bool {
+	decoded, err := hex.DecodeString(value)
+	if err != nil {
+		return false
+	}
+	if !requireNonZero {
+		return true
+	}
+	for _, item := range decoded {
+		if item != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedCorrelationID(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	for _, item := range value {
+		if (item >= 'a' && item <= 'z') || (item >= 'A' && item <= 'Z') ||
+			(item >= '0' && item <= '9') || item == '-' || item == '_' || item == '.' || item == ':' {
+			continue
+		}
+		return ""
+	}
+	return value
 }

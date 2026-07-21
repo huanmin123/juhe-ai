@@ -1,7 +1,7 @@
 export const LOG_EVENT_VERSION = 1 as const
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
-export type LogOutcome = 'success' | 'expected_failure' | 'unexpected_failure' | 'aborted'
+export type LogOutcome = 'success' | 'skipped' | 'expected_failure' | 'unexpected_failure' | 'aborted'
 export type FailureClass = 'expected' | 'unexpected' | 'aborted' | 'infrastructure'
 
 export interface LogEventEnvelope {
@@ -29,8 +29,6 @@ export interface LogEventInput extends Omit<LogEventEnvelope, 'time' | 'version'
   time?: string
 }
 
-const sensitiveKeyPattern = /(?:authorization|proxy.?authorization|cookie|set-cookie|password|secret|token|api.?key|credential|private.?key)/i
-
 export function createLogEventEnvelope(input: LogEventInput): LogEventEnvelope {
   validateRequired(input)
   if (input.startedOffsetMs !== undefined || input.endedOffsetMs !== undefined || input.durationMs !== undefined) {
@@ -44,7 +42,6 @@ export function createLogEventEnvelope(input: LogEventInput): LogEventEnvelope {
   if (input.failureClass && !['expected', 'unexpected', 'aborted', 'infrastructure'].includes(input.failureClass)) {
     throw new Error(`无效失败分类: ${input.failureClass}`)
   }
-  if (input.fields) assertNoSensitiveFields(input.fields)
   return {
     time: input.time ?? new Date().toISOString(),
     version: LOG_EVENT_VERSION,
@@ -73,16 +70,4 @@ function validateRequired(input: LogEventInput): void {
     if (typeof value === 'string' && !value.trim()) throw new Error(`日志字段不能为空: ${name}`)
   }
   if (!input.level || !input.service || !input.role || !input.event) throw new Error('日志事件缺少必填字段')
-}
-
-function assertNoSensitiveFields(value: unknown, path = 'fields'): void {
-  if (!value || typeof value !== 'object') return
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoSensitiveFields(item, `${path}[${index}]`))
-    return
-  }
-  for (const [key, nested] of Object.entries(value)) {
-    if (sensitiveKeyPattern.test(key)) throw new Error(`日志字段包含敏感字段: ${path}.${key}`)
-    assertNoSensitiveFields(nested, `${path}.${key}`)
-  }
 }

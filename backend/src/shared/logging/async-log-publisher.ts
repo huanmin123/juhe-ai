@@ -33,6 +33,8 @@ export class AsyncLogPublisher {
   private readonly failureQueue: QueueItem[] = []
   private pendingBytes = 0
   private pendingFailureBytes = 0
+  private pendingNormalEvents = 0
+  private pendingFailureEvents = 0
   private flushing = false
   private closed = false
   private scheduled = false
@@ -48,23 +50,29 @@ export class AsyncLogPublisher {
     const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value)
     const queue = priority === 'failure' ? this.failureQueue : this.normalQueue
     const limit = priority === 'failure' ? this.options.maxFailureEvents : this.options.maxNormalEvents
+    const pendingLaneEvents = priority === 'failure' ? this.pendingFailureEvents : this.pendingNormalEvents
     const pendingLaneBytes = priority === 'failure' ? this.pendingFailureBytes : this.pendingBytes - this.pendingFailureBytes
     const laneByteLimit = priority === 'failure' ? (this.options.maxFailureBytes ?? this.options.maxBytes) : this.options.maxBytes
-    if (queue.length >= limit || pendingLaneBytes + chunk.byteLength > laneByteLimit) {
+    if (pendingLaneEvents >= limit || pendingLaneBytes + chunk.byteLength > laneByteLimit) {
       if (priority === 'failure') this.failureDropped += 1
       else this.normalDropped += 1
       return false
     }
     queue.push({ chunk, priority })
     this.pendingBytes += chunk.byteLength
-    if (priority === 'failure') this.pendingFailureBytes += chunk.byteLength
+    if (priority === 'failure') {
+      this.pendingFailureBytes += chunk.byteLength
+      this.pendingFailureEvents += 1
+    } else {
+      this.pendingNormalEvents += 1
+    }
     this.scheduleFlush()
     return true
   }
 
   stats(): AsyncLogPublisherStats {
     return {
-      pendingEvents: this.normalQueue.length + this.failureQueue.length,
+      pendingEvents: this.pendingNormalEvents + this.pendingFailureEvents,
       pendingBytes: this.pendingBytes,
       normalDropped: this.normalDropped,
       failureDropped: this.failureDropped,
@@ -80,9 +88,28 @@ export class AsyncLogPublisher {
   }
 
   async close(): Promise<void> {
-    if (this.closed) return
+    await this.closeWithin(3_000)
+  }
+
+  async closeWithin(timeoutMs: number): Promise<boolean> {
+    if (this.closed) return true
     this.closed = true
-    await this.flush()
+    if (this.normalQueue.length === 0 && this.failureQueue.length === 0 && !this.flushing) return true
+    const flushPromise = this.flush().then(() => true)
+    return await new Promise<boolean>((resolve) => {
+      let settled = false
+      const settle = (value: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timeout)
+        resolve(value)
+      }
+      const timeout = setTimeout(() => {
+        this.discardQueuedItems()
+        settle(false)
+      }, Math.max(0, timeoutMs))
+      void flushPromise.then(settle)
+    })
   }
 
   private scheduleFlush(): void {
@@ -100,7 +127,11 @@ export class AsyncLogPublisher {
     try {
       while (this.failureQueue.length > 0 || this.normalQueue.length > 0) {
         const items = this.takeBatch(256)
-        await this.writeBatchToDestinations(items.map((item) => item.chunk))
+        try {
+          await this.writeBatchToDestinations(items.map((item) => item.chunk))
+        } finally {
+          this.releaseBatch(items)
+        }
       }
     } finally {
       this.flushing = false
@@ -116,10 +147,25 @@ export class AsyncLogPublisher {
     while (items.length < maxItems && (this.failureQueue.length > 0 || this.normalQueue.length > 0)) {
       const item = this.failureQueue.shift() ?? this.normalQueue.shift()!
       items.push(item)
-      this.pendingBytes -= item.chunk.byteLength
-      if (item.priority === 'failure') this.pendingFailureBytes -= item.chunk.byteLength
     }
     return items
+  }
+
+  private releaseBatch(items: QueueItem[]): void {
+    for (const item of items) {
+      this.pendingBytes = Math.max(0, this.pendingBytes - item.chunk.byteLength)
+      if (item.priority === 'failure') {
+        this.pendingFailureBytes = Math.max(0, this.pendingFailureBytes - item.chunk.byteLength)
+        this.pendingFailureEvents = Math.max(0, this.pendingFailureEvents - 1)
+      } else {
+        this.pendingNormalEvents = Math.max(0, this.pendingNormalEvents - 1)
+      }
+    }
+  }
+
+  private discardQueuedItems(): void {
+    const items = [...this.failureQueue.splice(0), ...this.normalQueue.splice(0)]
+    this.releaseBatch(items)
   }
 
   private async writeBatchToDestinations(chunks: Buffer[]): Promise<void> {

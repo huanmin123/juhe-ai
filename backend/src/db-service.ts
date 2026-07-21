@@ -441,9 +441,10 @@ async function yieldDbServiceRequestQueue(): Promise<void> {
 async function respondToDbServiceRequest(message: DbServiceRequestParentMessage): Promise<void> {
   const startedAt = Date.now()
   const operationType = typeof message.operation.type === 'string' ? message.operation.type : 'unknown'
-  const traceId = 'traceId' in message.operation && typeof message.operation.traceId === 'string'
-    ? message.operation.traceId
-    : undefined
+  const traceId = message.traceId
+    ?? ('traceId' in message.operation && typeof message.operation.traceId === 'string'
+      ? message.operation.traceId
+      : undefined)
   logger.info({
     event: 'db_service.request.start',
     service: 'juhe-ai',

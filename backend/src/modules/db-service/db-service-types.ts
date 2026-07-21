@@ -1045,6 +1045,7 @@ export type DbServiceParentMessage =
   | {
     type: 'db_service_request'
     requestId: string
+    traceId?: string
     operation: DbServiceOperation
     priority?: DbServiceRequestPriority
     deadlineAtMs?: number

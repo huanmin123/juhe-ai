@@ -97,7 +97,8 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
     const result = await readRuntimeLogFileLines(file.path, {
       startOffset,
       endOffset,
-      initialLineNumber: cursor.lineNumber
+      initialLineNumber: cursor.lineNumber,
+      fileIdentity: cursor.fileIdentity ?? runtimeLogFileIdentity(file, stats)
     })
     if (result.flushFailed) {
       saveRuntimeLogFileCursor({
@@ -227,6 +228,7 @@ async function readRuntimeLogFileLines(logPath: string, input: {
   startOffset: number
   endOffset: number
   initialLineNumber: number
+  fileIdentity: string
 }): Promise<{
   nextOffset: number
   nextLineNumber: number
@@ -262,7 +264,7 @@ async function readRuntimeLogFileLines(logPath: string, input: {
       nextLineNumber = lineNumber
       importedLineCount += 1
       enqueueRuntimeLogLineLocal(trimTrailingCarriageReturn(pendingLine).toString('utf8'), {
-        sourceKey: runtimeLogFileSourceKey(logPath, lineStartOffset),
+        sourceKey: runtimeLogFileSourceKey(input.fileIdentity, lineStartOffset),
         logFile: logPath,
         logOffset: lineStartOffset,
         lineNumber
@@ -341,8 +343,8 @@ function trimTrailingCarriageReturn(buffer: Buffer<ArrayBufferLike>): Buffer<Arr
     : buffer
 }
 
-function runtimeLogFileSourceKey(logPath: string, lineStartOffset: number): string {
-  return `${logPath}:${lineStartOffset}`
+function runtimeLogFileSourceKey(fileIdentity: string, lineStartOffset: number): string {
+  return `${fileIdentity}:${lineStartOffset}`
 }
 
 function saveRuntimeLogFileCursor(input: Parameters<typeof upsertRuntimeLogFileCursor>[0]): void {

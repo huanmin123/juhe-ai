@@ -9,6 +9,8 @@ import {
   createTraceId,
   getRequestContext,
   getRequestLogger,
+  getTraceId,
+  logRequestStage,
   sanitizeUrlForLog
 } from '../../../shared/request-context.js'
 import type { DbServiceGatewayRuntime } from '../../db-service/db-service-types.js'
@@ -59,8 +61,12 @@ export async function preResolveGatewayRuntime(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  const stageStartedAt = performance.now()
+  let resolutionReason: string | undefined
+  let resolutionOutcome: 'success' | 'expected_failure' | 'unexpected_failure' = 'success'
   try {
     if (isGatewayModelsRequest(req)) {
+      resolutionReason = 'models_endpoint'
       next()
       return
     }
@@ -69,20 +75,35 @@ export async function preResolveGatewayRuntime(
       inspectClientIpPolicyAfterRuntime: false
     })
     if (!runtime?.apiKey) {
+      resolutionOutcome = 'expected_failure'
+      resolutionReason = 'runtime_unresolved'
       recordEarlyGatewayAuthFailure(req, res)
       return
     }
     if (isImageGenerationDisabledForApiKey(runtime.apiKey, resolveOpenAIGatewayRequestLane(req))) {
+      resolutionOutcome = 'expected_failure'
+      resolutionReason = 'image_generation_disabled'
       sendEarlyImageGenerationDisabledResponse(req, res)
       return
     }
     if (await rejectCachedClientIpBlacklist(req, res, extractClientIp(req), { closeConnectionOnAuthFailure: true }, { cacheOnly: true })) {
+      resolutionOutcome = 'expected_failure'
+      resolutionReason = 'client_ip_blacklisted'
       return
     }
     req.gatewayRuntime = runtime
     next()
   } catch (error) {
+    resolutionOutcome = 'unexpected_failure'
+    resolutionReason = error instanceof Error ? error.name : 'NonErrorThrown'
     next(error)
+  } finally {
+    logRequestStage('runtime_resolution', {
+      traceId: getTraceId(),
+      resolved: Boolean(req.gatewayRuntime?.apiKey),
+      reason: resolutionReason,
+      ...(resolutionOutcome === 'expected_failure' ? { failureReason: resolutionReason } : {})
+    }, resolutionOutcome, stageStartedAt)
   }
 }
 

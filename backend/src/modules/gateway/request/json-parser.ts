@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
+import { getTraceId } from '../../../shared/request-context.js'
 import { gatewayJsonBodyLargeWarningBytes } from './body.js'
 import { extractGatewayJsonBodyMetadata, type GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 import {
@@ -19,6 +20,7 @@ type GatewayJsonWorkerJobType =
 
 interface GatewayJsonWorkerJob {
   id: number
+  traceId?: string
   type: GatewayJsonWorkerJobType
   rawBody: Buffer
   normalizeInput?: OpenAIOAuthCodexNormalizeInput
@@ -257,6 +259,7 @@ function enqueueGatewayJsonWorkerJob<TValue>(input: {
     }
     const job: GatewayJsonWorkerJob = {
       id: nextJobId++,
+      traceId: getTraceId(),
       type: input.type,
       rawBody: input.rawBody,
       normalizeInput: input.normalizeInput,
@@ -511,7 +514,9 @@ function failJob(job: GatewayJsonWorkerJob, error: Error, restartWorker: boolean
   removeAbortListener(job)
   logger.warn(errorLogFields(error, {
     event: 'gateway_json_parse_worker_failed',
+    traceId: job.traceId,
     jobId: job.id,
+    parentId: job.traceId,
     jobType: job.type,
     rawBodyBytes: job.rawBody.byteLength,
     queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : undefined,
@@ -558,7 +563,9 @@ function logJobCompleted(job: GatewayJsonWorkerJob): void {
   const totalMs = now - job.enqueuedAtMs
   const fields = {
     event: 'gateway_json_worker_job_completed',
+    traceId: job.traceId,
     jobId: job.id,
+    parentId: job.traceId,
     jobType: job.type,
     rawBodyBytes: job.rawBody.byteLength,
     queuedWaitMs,

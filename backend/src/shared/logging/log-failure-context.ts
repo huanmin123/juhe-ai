@@ -4,8 +4,7 @@ import type { FailureClass } from './log-event-contract.js'
 
 const maxStringLength = 8 * 1024
 const maxCauseDepth = 4
-const sensitiveKeyPattern = /(?:authorization|proxy.?authorization|cookie|set-cookie|password|secret|token|api.?key|credential|private.?key)/i
-
+const maxEventBytes = 64 * 1024
 interface FailureCaptureOptions {
   stageSnapshot?: Record<string, unknown>
   queueSnapshot?: Record<string, unknown>
@@ -49,6 +48,7 @@ interface CaptureState {
   fieldSizes: Record<string, number>
   fieldHashes: Record<string, string>
   truncated: boolean
+  remainingBytes: number
 }
 
 export function captureUnexpectedFailureContext(error: unknown, options: FailureCaptureOptions = {}): UnexpectedFailureContext {
@@ -64,7 +64,7 @@ export function captureUnexpectedFailureContext(error: unknown, options: Failure
   if (options.queueSnapshot) context.queueSnapshot = sanitizeRecord(options.queueSnapshot, 'queueSnapshot', state)
   if (options.retryState) context.retryState = sanitizeRecord(options.retryState, 'retryState', state)
   if (options.decisionInputs) context.decisionInputs = sanitizeRecord(options.decisionInputs, 'decisionInputs', state)
-  if (state.truncated) context.truncationReason = 'field_limit'
+  if (state.truncated) context.truncationReason = 'field_or_event_limit'
   return context
 }
 
@@ -79,7 +79,7 @@ export function captureExpectedFailureContext(reasonCode: string, decisionInputs
     redactedFields: state.redactedFields,
     fieldSizes: state.fieldSizes,
     fieldHashes: state.fieldHashes,
-    ...(state.truncated ? { truncationReason: 'field_limit' } : {})
+    ...(state.truncated ? { truncationReason: 'field_or_event_limit' } : {})
   }
 }
 
@@ -108,32 +108,51 @@ function captureError(value: unknown, state: CaptureState, depth = 0): CapturedE
 }
 
 function sanitizeValue(value: unknown, path: string, state: CaptureState, depth = 0): unknown {
+  if (state.remainingBytes <= 0) {
+    state.truncated = true
+    return '[truncated: event byte budget]'
+  }
   if (typeof value === 'string') return truncateString(value, path, state)
-  if (value === null || typeof value !== 'object') return value
+  if (value === null || typeof value !== 'object') {
+    consumeBudget(16, state)
+    return value
+  }
   if (depth >= 8) {
     state.truncated = true
     return '[truncated: depth limit]'
   }
-  if (Array.isArray(value)) return value.slice(0, 100).map((item, index) => sanitizeValue(item, `${path}[${index}]`, state, depth + 1))
+  if (Array.isArray(value)) {
+    if (value.length > 100) state.truncated = true
+    return value.slice(0, 100).map((item, index) => sanitizeValue(item, `${path}[${index}]`, state, depth + 1))
+  }
   const output: Record<string, unknown> = {}
   for (const [key, nested] of Object.entries(value).slice(0, 100)) {
-    const nestedPath = `${path}.${key}`
-    if (sensitiveKeyPattern.test(key)) {
-      state.redactedFields.push(nestedPath)
-      continue
+    if (state.remainingBytes <= 0) {
+      state.truncated = true
+      output._truncated = 'event byte budget'
+      break
     }
+    const nestedPath = `${path}.${key}`
+    consumeBudget(Buffer.byteLength(key, 'utf8'), state)
     output[key] = sanitizeValue(nested, nestedPath, state, depth + 1)
   }
+  if (Object.keys(value).length > 100) state.truncated = true
   return output
 }
 
 function truncateString(value: string, path: string, state: CaptureState): string {
   const size = Buffer.byteLength(value)
-  if (size <= maxStringLength) return value
+  const allowed = Math.min(maxStringLength, Math.max(0, state.remainingBytes))
+  if (size <= allowed) {
+    consumeBudget(size, state)
+    return value
+  }
   state.truncated = true
   state.fieldSizes[path] = size
   state.fieldHashes[path] = createHash('sha256').update(value).digest('hex')
-  return Buffer.from(value).subarray(0, maxStringLength).toString('utf8')
+  const output = Buffer.from(value).subarray(0, allowed).toString('utf8')
+  consumeBudget(Buffer.byteLength(output, 'utf8'), state)
+  return output
 }
 
 function sanitizeRecord(value: Record<string, unknown>, path: string, state: CaptureState): Record<string, unknown> {
@@ -141,5 +160,10 @@ function sanitizeRecord(value: Record<string, unknown>, path: string, state: Cap
 }
 
 function createState(): CaptureState {
-  return { redactedFields: [], fieldSizes: {}, fieldHashes: {}, truncated: false }
+  return { redactedFields: [], fieldSizes: {}, fieldHashes: {}, truncated: false, remainingBytes: maxEventBytes }
+}
+
+function consumeBudget(bytes: number, state: CaptureState): void {
+  state.remainingBytes = Math.max(0, state.remainingBytes - bytes)
+  if (state.remainingBytes === 0) state.truncated = true
 }

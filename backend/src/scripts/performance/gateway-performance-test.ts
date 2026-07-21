@@ -179,7 +179,7 @@ function assertSqliteStandalonePerformanceScript(): void {
 
 const [
   { handleOpenAIGatewayRequest },
-  { captureGatewayRawBody },
+  { captureGatewayRawBody, wrapGatewayRawBodyParser },
   { requestContextMiddleware },
   databaseModule,
   accountHealthChecks,
@@ -359,7 +359,10 @@ function createGatewayServer(connectionTracker: ConnectionTracker, config: PerfC
   app.get('/__aisys__/health', (_req, res) => {
     res.json({ status: 'ok', service: 'juhe-ai-performance-test' })
   })
-  app.use(express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, (req: Request, res: ExpressResponse, next: NextFunction) => {
+  app.use(wrapGatewayRawBodyParser(
+    express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
+    handleGatewayRawBodyError
+  ), captureGatewayRawBody, (req: Request, res: ExpressResponse, next: NextFunction) => {
     handleOpenAIGatewayRequest(req, res, { auditCaptureMode: config.auditCaptureMode })
       .catch((error: unknown) => next(error))
   })

@@ -31,4 +31,26 @@ assert(stats.pendingEvents <= 3)
 await publisher.flush()
 assert(delivered.includes('failure\n'))
 await publisher.close()
+
+let blockedDestinationEnteredResolve!: () => void
+const blockedDestinationEntered = new Promise<void>((resolve) => { blockedDestinationEnteredResolve = resolve })
+const blockedPublisher = new AsyncLogPublisher({
+  maxNormalEvents: 1,
+  maxFailureEvents: 1,
+  maxBytes: 1024,
+  maxFailureBytes: 1024,
+  destinations: [{
+    write() {
+      // Simulate a writer that never acknowledges; shutdown must remain bounded.
+      blockedDestinationEnteredResolve()
+    }
+  }]
+})
+blockedPublisher.enqueue(Buffer.from('blocked\n'))
+await blockedDestinationEntered
+assert.equal(blockedPublisher.stats().pendingEvents, 1)
+assert.equal(blockedPublisher.stats().pendingBytes, Buffer.byteLength('blocked\n'))
+const shutdownStartedAt = Date.now()
+assert.equal(await blockedPublisher.closeWithin(20), false)
+assert(Date.now() - shutdownStartedAt < 200)
 console.log('异步日志发布器回归通过')
