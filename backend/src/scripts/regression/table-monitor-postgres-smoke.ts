@@ -36,7 +36,7 @@ try {
   await createSampledPostgresTable()
   await insertSmokeRows()
 
-  const overview = await getTableStorageOverviewAsync({ startAt, endAt, limit: 10 })
+  const overview = await getTableStorageOverviewAsync({ limit: 10 })
   const businessDatabase = overview.databases.find((row) => row.databaseRole === 'business')
   assert(businessDatabase, 'PG 表监控 overview 应返回 business 数据库快照')
   assert.equal(businessDatabase.sampledAt, middleAt, 'overview 应读取 business 最新数据库快照')

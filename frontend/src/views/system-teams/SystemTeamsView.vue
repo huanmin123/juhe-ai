@@ -20,7 +20,7 @@
           <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'memberCount'">
-          {{ record.activeMemberCount ?? record.memberCount ?? 0 }}
+          {{ record.memberCount ?? 0 }}
         </template>
         <template v-else-if="column.key === 'description'">
           <span>{{ record.description || '-' }}</span>
@@ -44,7 +44,7 @@
           <div class="mobile-list-meta-grid">
             <div class="mobile-list-meta-item">
               <span>成员数</span>
-              <strong>{{ record.activeMemberCount ?? record.memberCount ?? 0 }}</strong>
+              <strong>{{ record.memberCount ?? 0 }}</strong>
             </div>
             <div class="mobile-list-meta-item">
               <span>创建时间</span>
@@ -88,12 +88,12 @@
             :loading="memberOptionsLoading"
             mode="multiple"
             class="team-member-selector"
-            :disabled="selectedTeam?.status !== 'active'"
+            :disabled="memberDetailLoading || !selectedTeamDetail || selectedTeam?.status !== 'active'"
             placeholder="输入用户名称搜索"
             @dropdown-visible-change="handleMemberOptionsDropdown"
             @search="handleMemberOptionsSearch"
           />
-          <a-button type="primary" :loading="memberSaving" :disabled="selectedTeam?.status !== 'active' || memberSaving" v-submit-lock="{ key: 'system_teams.add_members', pending: memberSaving }" @click="addMembers">添加成员</a-button>
+          <a-button type="primary" :loading="memberSaving" :disabled="memberDetailLoading || !selectedTeamDetail || selectedTeam?.status !== 'active' || memberSaving" v-submit-lock="{ key: 'system_teams.add_members', pending: memberSaving }" @click="addMembers">添加成员</a-button>
         </div>
         <a-alert
           v-if="isManagementView && selectedTeam?.status !== 'active'"
@@ -161,7 +161,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { sanitizePaginationState, stringOrFallback, type PagePaginationState } from '@/shared/pageStateSanitizers'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
-import type { SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
+import type { SystemTeamDetail, SystemTeamListItem, SystemTeamMemberDetail } from '@/types/domain'
 
 interface SystemTeamsPageState {
   keyword: string
@@ -184,7 +184,6 @@ const systemTeamsApi = useScopedSystemTeamsApi(isManagementView)
 const {
   handleDropdown: handleMemberOptionsDropdown,
   handleSearch: handleMemberOptionsSearch,
-  load: loadMemberOptions,
   loading: memberOptionsLoading,
   resetSearch: resetMemberOptionSearch,
   systemAccounts
@@ -199,7 +198,7 @@ const memberModalOpen = ref(false)
 const memberDetailLoading = ref(false)
 const editingTeamId = ref<string>()
 const selectedTeamId = ref<string>()
-const selectedTeamDetail = ref<SystemTeamSummary>()
+const selectedTeamDetail = ref<SystemTeamDetail>()
 
 const teamForm = reactive({
   name: '',
@@ -224,7 +223,7 @@ const {
   loadMoreMobile: loadMoreMobileTeams,
   refreshMobile: refreshMobileTeams,
   resetPagination
-} = useResponsivePagedList<SystemTeamSummary>({
+} = useResponsivePagedList<SystemTeamListItem>({
   pageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -265,7 +264,7 @@ const memberColumns = computed(() => {
 })
 
 const selectedTeam = computed(() => selectedTeamDetail.value ?? teams.value.find((team) => team.id === selectedTeamId.value))
-const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
+const activeTeamMembers = computed(() => selectedTeamDetail.value?.members ?? [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
 const emptyTeamDescription = computed(() => isManagementView.value ? '还没有授权团队，先创建一个授权团队并添加成员。' : '你还没有加入任何授权团队。')
 const teamActions = computed<RowActionItem[]>(() => isManagementView.value
@@ -287,11 +286,7 @@ const memberActions: RowActionItem[] = [
   }
 ]
 
-function activeMembers(team: SystemTeamSummary): SystemTeamMemberSummary[] {
-  return (team.members ?? []).filter((member) => member.status === 'active')
-}
-
-function memberDisplayName(member: SystemTeamMemberSummary): string {
+function memberDisplayName(member: SystemTeamMemberDetail): string {
   return member.systemAccountName || '未命名成员'
 }
 
@@ -321,7 +316,7 @@ function openCreateTeam() {
   teamModalOpen.value = true
 }
 
-function openEditTeam(team: SystemTeamSummary) {
+function openEditTeam(team: SystemTeamListItem) {
   if (!ensureManagementAction()) return
   editingTeamId.value = team.id
   Object.assign(teamForm, {
@@ -365,23 +360,22 @@ const saveTeam = submitAction('system_teams.save', async () => {
   }
 })
 
-async function openMemberModal(team: SystemTeamSummary) {
+async function openMemberModal(team: SystemTeamListItem) {
   selectedTeamId.value = team.id
   selectedTeamDetail.value = undefined
   memberForm.systemAccountIds = []
   memberForm.systemAccounts = []
   resetMemberOptionSearch()
+  memberModalOpen.value = true
   try {
     await loadSelectedTeamDetail(team.id)
-    memberModalOpen.value = true
-    void loadMemberOptions()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载团队成员失败'))
   }
 }
 
-function handleTeamAction(key: string, team: SystemTeamSummary) {
+function handleTeamAction(key: string, team: SystemTeamListItem) {
   if (key === 'edit') {
     if (!ensureManagementAction()) return
     openEditTeam(team)
@@ -392,7 +386,7 @@ function handleTeamAction(key: string, team: SystemTeamSummary) {
   }
 }
 
-function handleMemberAction(key: string, member: SystemTeamMemberSummary) {
+function handleMemberAction(key: string, member: SystemTeamMemberDetail) {
   if (!ensureManagementAction()) return
   if (key === 'remove') {
     void removeMember(member.id)
@@ -416,8 +410,7 @@ const addMembers = submitAction('system_teams.add_members', async () => {
     message.success('成员已添加')
     await Promise.all([
       loadData(),
-      loadSelectedTeamDetail(teamId),
-      loadMemberOptions()
+      loadSelectedTeamDetail(teamId)
     ])
   } catch (error) {
     console.error(error)
@@ -434,8 +427,7 @@ async function removeMember(memberId: string) {
     message.success('成员已移除')
     await Promise.all([
       loadData(),
-      loadSelectedTeamDetail(teamId),
-      loadMemberOptions()
+      loadSelectedTeamDetail(teamId)
     ])
   } catch (error) {
     console.error(error)

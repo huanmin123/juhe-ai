@@ -55,6 +55,15 @@ const snapshot: AccountStatusSnapshotResult = {
     status: 'active',
     schedulable: true,
     currentConcurrency: 4,
+    lastErrorTraceId: 'trace-main',
+    cooldownRetestLastAt: '2026-07-16T00:50:00.000Z',
+    cooldownRetestLastStatusCode: 429,
+    nextHealthCheckAt: '2026-07-16T01:05:00.000Z',
+    lastHealthCheckStatusCode: 200,
+    lastHealthCheckTraceId: 'trace-health',
+    authorizationInstanceSourceAccountLastErrorTraceId: 'trace-source',
+    authorizationInstanceSourceAccountCooldownRetestLastAt: '2026-07-16T00:45:00.000Z',
+    authorizationInstanceSourceAccountLastHealthCheckErrorCode: 'source_health_failed',
     lastUsedAt: '2026-07-16T00:59:00.000Z',
     todayUsage: usage(8),
     effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' },
@@ -78,6 +87,12 @@ assert.equal(merged[0]?.currentConcurrency, 4)
 assert.equal(merged[0]?.currentConcurrencyAvailable, true)
 assert.equal(merged[0]?.todayUsage.requestCount, 8)
 assert.equal(merged[0]?.lastUsedAt, '2026-07-16T00:59:00.000Z')
+assert.equal(merged[0]?.lastErrorTraceId, 'trace-main')
+assert.equal(merged[0]?.cooldownRetestLastStatusCode, 429)
+assert.equal(merged[0]?.nextHealthCheckAt, '2026-07-16T01:05:00.000Z')
+assert.equal(merged[0]?.lastHealthCheckTraceId, 'trace-health')
+assert.equal(merged[0]?.authorizationInstanceSourceAccountLastErrorTraceId, 'trace-source')
+assert.equal(merged[0]?.authorizationInstanceSourceAccountLastHealthCheckErrorCode, 'source_health_failed')
 assert.equal(merged[0]?.notes, '不可被快照覆盖')
 assert.equal(merged[0]?.cooldownUntil, undefined, '快照缺失 optional 状态字段时应清除旧值')
 assert.equal(merged[0]?.availabilityPresentation?.status, 'available', '快照必须整体替换 presentation')

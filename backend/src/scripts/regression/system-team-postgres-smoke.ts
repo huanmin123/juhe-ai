@@ -9,6 +9,7 @@ import {
   createGroupAsync,
   createResourceAuthorizationAsync,
   createSystemTeamAsync,
+  findSystemTeamDetailAsync,
   listSystemTeamsPageAsync,
   removeSystemTeamMemberAsync,
   updateSystemTeamAsync
@@ -37,6 +38,9 @@ try {
   assert.ok(listed.items.some((item) => item.id === team.id), 'PG 系统团队列表关键词应返回刚创建的团队')
   const scopedListed = await listSystemTeamsPageAsync({ systemAccountId: memberIds[0], role: 'user' }, { keyword, page: 1, pageSize: 10 })
   assert.deepEqual(scopedListed.items.map((item) => item.id), [team.id], 'PG 系统团队成员作用域列表应只返回成员所在团队')
+  const detail = await findSystemTeamDetailAsync(team.id, adminAccess)
+  assert.deepEqual(Object.keys(detail ?? {}).sort(), ['createdAt', 'description', 'id', 'memberCount', 'members', 'name', 'status'], 'PG 系统团队详情只应返回弹窗字段')
+  assert.deepEqual(Object.keys(detail?.members[0] ?? {}).sort(), ['id', 'joinedAt', 'systemAccountId', 'systemAccountName'], 'PG 系统团队成员 DTO 只应返回四个字段')
 
   const group = await createGroupAsync({
     name: `系统团队 PG smoke 授权分组 ${marker}`,

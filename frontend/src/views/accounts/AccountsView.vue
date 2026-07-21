@@ -147,6 +147,7 @@
       :active-task="activeSingleTestTask"
       :model-options="testModelOptions"
       :model-readonly="testModelReadonly"
+      :models-error="testModelsError"
       :models-loading="testModelsLoading"
       :provider-name="providerName"
       :result="testResult"
@@ -155,6 +156,8 @@
       v-model:test-endpoint-mode="testForm.testEndpointMode"
       @close="closeTestModal"
       @copy-result="copyText"
+      @load-model-options="loadAccountTestModelOptions"
+      @search-model-options="loadAccountTestModelOptions(true, $event)"
       @run="runAccountTest"
       @stop="stopAccountTest"
       @update:model="updateAccountTestModel"
@@ -211,6 +214,11 @@
       @generate-auth-url="generateOAuthUrl"
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
+      @model-options-open="handleAccountModelOptionsOpen"
+      @model-options-search="handleAccountModelOptionsSearch"
+      @model-capabilities-load="loadCurrentProviderModelCapabilities"
+      @mapping-model-options-open="handleMappingModelOptionsOpen"
+      @mapping-model-options-search="handleMappingModelOptionsSearch"
       @advanced-open="loadAdvancedAccountDetail"
       @balance-query="queryBalanceFromEdit"
       @ok="saveAccount"
@@ -605,6 +613,9 @@ const {
   openEdit,
   ensureAccountEditDetailLoaded,
   loadAdvancedAccountDetail,
+  loadCurrentProviderModelOptions,
+  loadCurrentProviderModelCapabilities,
+  loadMappingSourceModelOptions,
   providerName,
   providerModelOptions,
   strategyModelsLoading,
@@ -631,6 +642,32 @@ const {
   systemAccountSelection: computed(() => filters.systemAccount),
   systemAccounts
 })
+
+function handleAccountModelOptionsOpen(open: boolean): void {
+  if (open) void loadCurrentProviderModelOptions()
+}
+
+let accountModelOptionsSearchTimer: ReturnType<typeof setTimeout> | undefined
+function handleAccountModelOptionsSearch(value: string): void {
+  if (accountModelOptionsSearchTimer) clearTimeout(accountModelOptionsSearchTimer)
+  accountModelOptionsSearchTimer = setTimeout(() => {
+    accountModelOptionsSearchTimer = undefined
+    void loadCurrentProviderModelOptions(value)
+  }, 250)
+}
+
+function handleMappingModelOptionsOpen(protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void {
+  if (open) void loadMappingSourceModelOptions(protocol)
+}
+
+function handleMappingModelOptionsSearch(protocol: 'openai' | 'anthropic' | 'gemini', value: string): void {
+  if (accountModelOptionsSearchTimer) clearTimeout(accountModelOptionsSearchTimer)
+  accountModelOptionsSearchTimer = setTimeout(() => {
+    accountModelOptionsSearchTimer = undefined
+    void loadMappingSourceModelOptions(protocol, value)
+  }, 250)
+}
+
 watch(
   [
     () => form.providerCode,
@@ -677,6 +714,7 @@ const {
 const {
   activeSingleTestTask,
   closeTestModal,
+  loadAccountTestModelOptions,
   openDraftTestModal: openDraftTestModalWithHealthCheckModel,
   openSavedDraftTestModal: openSavedDraftTestModalWithHealthCheckModel,
   openTestModal,
@@ -687,6 +725,7 @@ const {
   testModalOpen,
   testModelOptions,
   testModelReadonly,
+  testModelsError,
   testModelsLoading,
   testResult,
   testRunning,

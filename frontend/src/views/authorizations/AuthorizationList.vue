@@ -93,7 +93,7 @@
 import { computed } from 'vue'
 
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import type { ResourceAuthorizationSummary } from '@/types/domain'
+import type { ResourceAuthorizationListItem } from '@/types/domain'
 import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
@@ -102,7 +102,7 @@ import { authorizationDirectionColor, authorizationDirectionText, formatDateTime
 import type { AuthorizationResourceType } from '@/types/domain'
 
 const props = defineProps<{
-  authorizations: ResourceAuthorizationSummary[]
+  authorizations: ResourceAuthorizationListItem[]
   columns?: Array<Record<string, unknown>>
   currentSystemAccountId?: string
   emptyDescription: string
@@ -116,7 +116,7 @@ const props = defineProps<{
 
 defineEmits<{
   (event: 'change', paginationInfo: unknown): void
-  (event: 'menu-click', menuEvent: { key: string | number }, authorization: ResourceAuthorizationSummary): void
+  (event: 'menu-click', menuEvent: { key: string | number }, authorization: ResourceAuthorizationListItem): void
   (event: 'mobile-load-more'): void
   (event: 'refresh'): void
 }>()
@@ -135,7 +135,7 @@ const defaultColumns = computed(() => authorizationColumns.filter((column) => {
 const columns = computed(() => props.columns ?? defaultColumns.value)
 const tableScrollX = computed(() => props.isManagementView ? 1240 : 1320)
 
-function canReturnAuthorization(authorization: ResourceAuthorizationSummary): boolean {
+function canReturnAuthorization(authorization: ResourceAuthorizationListItem): boolean {
   if (props.isManagementView || props.direction !== 'inbound') return false
   if (authorization.granteeType !== 'system_account') return false
   if (!hasManualSource(authorization)) return false

@@ -390,11 +390,37 @@ export interface AccountSummary {
   authorizationLimits?: RequestQuotaLimits
   authorizationQuotaExceeded?: boolean
   authorizationSources?: AuthorizationSourceSummary[]
-  permissions?: ResourcePermissions
+  // List/options endpoints may return only the permissions relevant to that action.
+  permissions?: Partial<ResourcePermissions>
   authorizationUsageAvailable?: boolean
   authorizationCount?: number
   authorizationTeamCount?: number
 }
+
+type AccountListDeferredField =
+  | 'currentConcurrency'
+  | 'currentConcurrencyAvailable'
+  | 'accountRuntimeAvailabilityAvailable'
+  | 'runtimeAvailability'
+  | 'effectiveAvailability'
+  | 'availabilityPresentation'
+  | 'apiKeyRuntime'
+  | 'todayUsage'
+  | 'lastUsedAt'
+
+export type AccountListItem = Omit<AccountSummary,
+  | AccountListDeferredField
+  | 'credentials'
+  | 'supportedModels'
+  | 'modelMappings'
+  | 'apiKeyRuntimeDetails'
+  | 'usage'
+  | 'oauthUsage'
+  | 'authorizationSources'
+  | 'authorizationUsageAvailable'
+  | 'authorizationCount'
+  | 'authorizationTeamCount'
+> & Partial<Pick<AccountSummary, AccountListDeferredField>>
 
 export interface AccountStatusSnapshotItem {
   id: string
@@ -404,9 +430,15 @@ export interface AccountStatusSnapshotItem {
   cooldownUntil?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  lastErrorTraceId?: string
+  cooldownRetestLastAt?: string
+  cooldownRetestLastStatusCode?: number
   lastHealthCheckAt?: string
+  nextHealthCheckAt?: string
+  lastHealthCheckStatusCode?: number
   lastHealthCheckErrorCode?: string
   lastHealthCheckErrorMessage?: string
+  lastHealthCheckTraceId?: string
   authorizationStatus?: AuthorizationStatus
   authorizationExpiresAt?: string
   authorizationQuotaExceeded?: boolean
@@ -416,6 +448,15 @@ export interface AccountStatusSnapshotItem {
   authorizationInstanceSourceAccountCooldownUntil?: string
   authorizationInstanceSourceAccountLastErrorCode?: string
   authorizationInstanceSourceAccountLastErrorMessage?: string
+  authorizationInstanceSourceAccountLastErrorTraceId?: string
+  authorizationInstanceSourceAccountCooldownRetestLastAt?: string
+  authorizationInstanceSourceAccountCooldownRetestLastStatusCode?: number
+  authorizationInstanceSourceAccountLastHealthCheckAt?: string
+  authorizationInstanceSourceAccountNextHealthCheckAt?: string
+  authorizationInstanceSourceAccountLastHealthCheckStatusCode?: number
+  authorizationInstanceSourceAccountLastHealthCheckErrorCode?: string
+  authorizationInstanceSourceAccountLastHealthCheckErrorMessage?: string
+  authorizationInstanceSourceAccountLastHealthCheckTraceId?: string
   apiKeyRuntime?: AccountApiKeyRuntimeSummary
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability: AccountEffectiveAvailability
@@ -512,7 +553,7 @@ export interface AccountApiKeyRuntimeResponse {
 }
 
 export interface AccountListResult {
-  items: AccountSummary[]
+  items: AccountListItem[]
   total: number
   hasMore?: boolean
   page: number
@@ -809,7 +850,10 @@ export interface GroupSummary {
     hasTeam: boolean
     teamNames: string[]
   }
-  permissions?: ResourcePermissions
+  permissions?: Partial<ResourcePermissions>
+  canEdit?: boolean
+  canDelete?: boolean
+  canReturn?: boolean
 }
 
 export interface GroupListResult {
@@ -823,14 +867,21 @@ export interface GroupListResult {
   }
 }
 
-export type GroupOptionSummary = Pick<
+export interface GroupStatusSnapshotResult {
+  generatedAt: string
+  items: Array<{
+    id: string
+    currentConcurrency: number
+    todayUsage: AccountUsageSummary
+  }>
+}
+
+export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pick<
   GroupSummary,
-  | 'id'
   | 'systemAccountId'
   | 'systemAccountName'
   | 'ownerSystemAccountId'
   | 'ownerSystemAccountName'
-  | 'name'
   | 'providerCode'
   | 'enabled'
   | 'isDefault'
@@ -842,7 +893,7 @@ export type GroupOptionSummary = Pick<
   | 'authorizationLimits'
   | 'authorizationStatus'
   | 'permissions'
->
+>>
 
 export interface AccountGroupOptionSummary extends GroupOptionSummary {
   accountIds: string[]

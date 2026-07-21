@@ -89,12 +89,31 @@ type Source struct {
 	IsBuiltIn        bool            `json:"isBuiltIn"`
 }
 
+type PrimaryToken struct {
+	ID          string `json:"id"`
+	TokenPrefix string `json:"tokenPrefix"`
+	TokenSuffix string `json:"tokenSuffix"`
+}
+
+type ListItem struct {
+	ID           string          `json:"id"`
+	Name         string          `json:"name"`
+	Status       string          `json:"status"`
+	Scopes       []string        `json:"scopes"`
+	RateLimits   []RateLimitRule `json:"rateLimits"`
+	ExpiresAt    *string         `json:"expiresAt,omitempty"`
+	Notes        *string         `json:"notes,omitempty"`
+	LastUsedAt   *string         `json:"lastUsedAt,omitempty"`
+	PrimaryToken *PrimaryToken   `json:"primaryToken,omitempty"`
+	IsBuiltIn    bool            `json:"isBuiltIn"`
+}
+
 type ListResult struct {
-	Items          []Source `json:"items"`
-	Page           int      `json:"page"`
-	PageSize       int      `json:"pageSize"`
-	PageUpperBound int      `json:"pageUpperBound"`
-	HasMore        bool     `json:"hasMore"`
+	Items          []ListItem `json:"items"`
+	Page           int        `json:"page"`
+	PageSize       int        `json:"pageSize"`
+	PageUpperBound int        `json:"pageUpperBound"`
+	HasMore        bool       `json:"hasMore"`
 }
 
 type Detail struct {
@@ -237,10 +256,10 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		rows = rows[:pageSize]
 	}
 
-	items := make([]Source, 0, len(rows))
+	items := make([]ListItem, 0, len(rows))
 	sourceIDs := make([]string, 0, len(rows))
 	for _, row := range rows {
-		item, err := sourceFromStore(row)
+		item, err := listItemFromStore(row)
 		if err != nil {
 			return ListResult{}, err
 		}
@@ -251,15 +270,6 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		return listResult(items, page, pageSize, offset, hasMore), nil
 	}
 
-	statsRows, err := s.store.ListManagementExternalIntegrationSourceTokenStats(ctx, sourceIDs)
-	if err != nil {
-		return ListResult{}, err
-	}
-	statsBySourceID := make(map[string]port.ManagementExternalIntegrationSourceTokenStatsRow, len(statsRows))
-	for _, row := range statsRows {
-		statsBySourceID[row.SourceRefID] = row
-	}
-
 	primaryRows, err := s.store.ListManagementExternalIntegrationSourcePrimaryTokens(ctx, sourceIDs)
 	if err != nil {
 		return ListResult{}, err
@@ -268,7 +278,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	for _, sourceID := range sourceIDs {
 		pageSourceIDs[sourceID] = struct{}{}
 	}
-	primaryBySourceID := make(map[string]Token, len(primaryRows))
+	primaryBySourceID := make(map[string]PrimaryToken, len(primaryRows))
 	for _, row := range primaryRows {
 		if _, belongsToPage := pageSourceIDs[row.SourceRefID]; !belongsToPage {
 			continue
@@ -276,18 +286,12 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		if _, exists := primaryBySourceID[row.SourceRefID]; exists {
 			continue
 		}
-		item, err := tokenFromStore(row)
-		if err != nil {
-			return ListResult{}, err
+		primaryBySourceID[row.SourceRefID] = PrimaryToken{
+			ID: row.ID, TokenPrefix: row.TokenPrefix, TokenSuffix: row.TokenSuffix,
 		}
-		primaryBySourceID[row.SourceRefID] = item
 	}
 
 	for index := range items {
-		if stats, ok := statsBySourceID[items[index].ID]; ok {
-			items[index].TokenCount = stats.TokenCount
-			items[index].ActiveTokenCount = stats.ActiveTokenCount
-		}
 		if primary, ok := primaryBySourceID[items[index].ID]; ok {
 			value := primary
 			items[index].PrimaryToken = &value
@@ -296,7 +300,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	return listResult(items, page, pageSize, offset, hasMore), nil
 }
 
-func listResult(items []Source, page int, pageSize int, offset int, hasMore bool) ListResult {
+func listResult(items []ListItem, page int, pageSize int, offset int, hasMore bool) ListResult {
 	pageUpperBound := offset + len(items)
 	if hasMore {
 		pageUpperBound++
@@ -308,6 +312,34 @@ func listResult(items []Source, page int, pageSize int, offset int, hasMore bool
 		PageUpperBound: pageUpperBound,
 		HasMore:        hasMore,
 	}
+}
+
+func listItemFromStore(row port.ManagementExternalIntegrationSourceListRow) (ListItem, error) {
+	status, err := normalizeSourceStatus(row.Status)
+	if err != nil {
+		return ListItem{}, fmt.Errorf("management external integration source %q: %w", row.ID, err)
+	}
+	scopes, err := decodeScopes(row.ScopesJSON)
+	if err != nil {
+		return ListItem{}, fmt.Errorf("decode management external integration source %q scopes: %w", row.ID, err)
+	}
+	rateLimits, err := decodeRateLimits(row.RateLimitsJSON)
+	if err != nil {
+		return ListItem{}, fmt.Errorf("decode management external integration source %q rate limits: %w", row.ID, err)
+	}
+	expiresAt, err := formatOptionalTime(row.ExpiresAt, "source", row.ID, "expiresAt")
+	if err != nil {
+		return ListItem{}, err
+	}
+	lastUsedAt, err := formatOptionalTime(row.LastUsedAt, "source", row.ID, "lastUsedAt")
+	if err != nil {
+		return ListItem{}, err
+	}
+	return ListItem{
+		ID: row.ID, Name: row.Name, Status: status, Scopes: scopes, RateLimits: rateLimits,
+		ExpiresAt: expiresAt, Notes: cloneString(row.Notes), LastUsedAt: lastUsedAt,
+		IsBuiltIn: publicapi.IsBuiltInTestSource(row.ID),
+	}, nil
 }
 
 func sourceFromStore(row port.ManagementExternalIntegrationSourceListRow) (Source, error) {

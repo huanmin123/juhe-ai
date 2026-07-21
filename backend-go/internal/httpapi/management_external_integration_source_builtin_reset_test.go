@@ -47,9 +47,9 @@ func TestManagementExternalIntegrationSourceBuiltInResetHandlerSuccessAndOperati
 		t.Fatalf("Cache-Control=%q Pragma=%q", rec.Header().Get("Cache-Control"), rec.Header().Get("Pragma"))
 	}
 	var response struct {
-		Data managementexternalintegrationsources.TokenCreateResult `json:"data"`
+		Data map[string]json.RawMessage `json:"data"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || !reflect.DeepEqual(response.Data, result) {
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || len(response.Data) != 1 || response.Data["token"] == nil {
 		t.Fatalf("response=%#v err=%v", response, err)
 	}
 

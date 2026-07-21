@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, rmSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -41,6 +41,9 @@ try {
   const payload = detail?.payloads.find((item) => item.partType === 'gateway_error')
   assert(payload, '审计详情应包含超大 gateway_error payload 引用')
 
+  const firstWindow = await repositories.getAuditLogPayload('audit_large_plain_window', payload.id, { offset: 0, limit: 128 })
+  assert.equal(firstWindow?.headersIncluded, true, '审计 payload 首窗口应包含 Headers')
+
   const offset = 1_100_000
   const limit = 128
   const payloadWindow = await repositories.getAuditLogPayload('audit_large_plain_window', payload.id, { offset, limit })
@@ -49,6 +52,18 @@ try {
   assert.equal(payloadWindow?.bodyText, 'x'.repeat(limit), 'plain payload 后半段窗口应按 offset 直接返回正确内容')
   assert.equal(payloadWindow?.bodyTruncated, true, '后半段窗口之后仍有内容时应标记截断')
   assert.equal(payloadWindow?.bodyNextOffset, offset + limit, '后半段窗口应返回下一次读取 offset')
+  assert.equal(payloadWindow?.headersIncluded, false, '审计 payload 后续窗口不应重复读取 Headers')
+  assert.equal(payloadWindow?.headers, undefined, '审计 payload 后续窗口不应重复返回 Headers')
+
+  const truncatedFileOffset = offset + limit
+  truncateSync(resolve(backendRoot, 'data', 'audit', 'blobs', bodyBlob.storage_key), truncatedFileOffset)
+  const stalledWindow = await repositories.getAuditLogPayload('audit_large_plain_window', payload.id, {
+    offset: truncatedFileOffset,
+    limit
+  })
+  assert.equal(stalledWindow?.bodyBytesReturned, 0, '实际文件提前结束时窗口应明确返回 0 字节')
+  assert.equal(stalledWindow?.bodyTruncated, true, '元数据仍有剩余字节时应保留正文不完整状态')
+  assert.equal(stalledWindow?.bodyNextOffset, undefined, '0 字节窗口不得返回未前进的 nextOffset')
 
   console.log('审计 payload 超大窗口回归通过：1MB+ payload 保持 plain 并支持 offset 窗口读取')
 } finally {

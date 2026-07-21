@@ -60,9 +60,8 @@ func TestTokenCreateServiceAppliesDefaultsAndReturnsMappedRows(t *testing.T) {
 		result.Source.Status != publicapi.SourceStatusDisabled ||
 		!reflect.DeepEqual(result.Source.Scopes, []string{publicapi.ScopeGroupListRead}) ||
 		result.Source.Notes == nil || *result.Source.Notes != "来源备注" || result.Source.IsBuiltIn ||
-		result.Source.TokenCount != 2 || result.Source.ActiveTokenCount != 2 ||
-		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 2 ||
-		result.Source.Tokens[0].ID != "existing_active" || result.Source.Tokens[1].ID != input.TokenID {
+		result.Source.TokenCount != 0 || result.Source.ActiveTokenCount != 0 ||
+		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 0 {
 		t.Fatalf("mapped source = %#v", result.Source)
 	}
 }
@@ -103,11 +102,8 @@ func TestTokenCreateServiceNormalizesFullInputAndMapsRevokedToken(t *testing.T) 
 		!reflect.DeepEqual(result.Token.Scopes, []string{publicapi.ScopeAPIKeyListRead, publicapi.ScopeGroupListRead}) {
 		t.Fatalf("created full token = %#v", result.Token)
 	}
-	if result.Source.TokenCount != 2 || result.Source.ActiveTokenCount != 1 ||
-		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 2 ||
-		result.Source.Tokens[0].Status != publicapi.TokenStatusActive ||
-		result.Source.Tokens[1].Status != publicapi.TokenStatusRevoked ||
-		result.Source.Tokens[1].RevokedAt != nil {
+	if result.Source.TokenCount != 0 || result.Source.ActiveTokenCount != 0 ||
+		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 0 {
 		t.Fatalf("mapped revoked source detail = %#v", result.Source)
 	}
 }
@@ -126,11 +122,8 @@ func TestTokenCreateServiceReturnsExistingActiveAndNewDisabledTokens(t *testing.
 	if err != nil {
 		t.Fatalf("create disabled external source token: %v", err)
 	}
-	if result.Source.TokenCount != 2 || result.Source.ActiveTokenCount != 1 ||
-		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 2 ||
-		result.Source.Tokens[0].ID != "existing_active" ||
-		result.Source.Tokens[1].ID != store.inputs[0].TokenID ||
-		result.Source.Tokens[1].Status != publicapi.TokenStatusDisabled {
+	if result.Source.TokenCount != 0 || result.Source.ActiveTokenCount != 0 ||
+		result.Source.PrimaryToken != nil || len(result.Source.Tokens) != 0 {
 		t.Fatalf("mapped disabled source detail = %#v", result.Source)
 	}
 	if result.Token.Token == "" || result.Token.Token != "juis_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {

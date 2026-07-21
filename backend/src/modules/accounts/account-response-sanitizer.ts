@@ -1,4 +1,4 @@
-import type { AccountSummary } from '../../domain/types.js'
+import type { AccountListItem, AccountSummary } from '../../domain/types.js'
 import type { AccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
 
 const publicCredentialKeys = new Set([
@@ -91,11 +91,36 @@ export function sanitizeAccountCredentialCarrierResponse<T extends { credentials
   }
 }
 
-export function sanitizeAccountListResponse<T extends { items: AccountSummary[] }>(result: T): T {
+export function sanitizeAccountListResponse<T extends { items: AccountSummary[] }>(result: T): Omit<T, 'items'> & { items: AccountListItem[] } {
   return {
     ...result,
-    items: result.items.map(sanitizeAccountBasicDetailResponse)
+    items: result.items.map(projectAccountListItem)
   }
+}
+
+export function projectAccountListItem(account: AccountSummary): AccountListItem {
+  const {
+    credentials: _credentials,
+    supportedModels: _supportedModels,
+    modelMappings: _modelMappings,
+    apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
+    usage: _usage,
+    oauthUsage: _oauthUsage,
+    authorizationSources: _authorizationSources,
+    authorizationCount: _authorizationCount,
+    authorizationTeamCount: _authorizationTeamCount,
+    authorizationUsageAvailable: _authorizationUsageAvailable,
+    currentConcurrency: _currentConcurrency,
+    currentConcurrencyAvailable: _currentConcurrencyAvailable,
+    runtimeAvailability: _runtimeAvailability,
+    effectiveAvailability: _effectiveAvailability,
+    availabilityPresentation: _availabilityPresentation,
+    apiKeyRuntime: _apiKeyRuntime,
+    todayUsage: _todayUsage,
+    lastUsedAt: _lastUsedAt,
+    ...item
+  } = account
+  return item
 }
 
 export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(account: T): T {

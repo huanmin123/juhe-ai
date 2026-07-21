@@ -1,11 +1,11 @@
 import { accountSelectionForId, type AccountSelection } from '@/shared/accountLabelCache'
 import { systemAccountPrincipalName, type PrincipalSelection } from '@/shared/principalLabelCache'
-import { type AccountOptionSummary, type GroupOptionSummary, type SystemAccountPrincipalSummary, type SystemTeamPrincipalSummary } from '@/types/domain'
+import { type AccountOptionSummary, type AuthorizationGranteeGroupOptionSummary, type GroupOptionSummary, type SystemAccountPrincipalSummary, type SystemTeamPrincipalSummary } from '@/types/domain'
 import { type GroupSelection } from '@/shared/groupLabelCache'
 
 export function selectedGroupFromOptions(
   id: string | undefined,
-  nextGroups: GroupOptionSummary[],
+  nextGroups: Array<GroupOptionSummary | AuthorizationGranteeGroupOptionSummary>,
   fallback?: GroupSelection
 ): GroupSelection | undefined {
   const normalizedId = id?.trim()

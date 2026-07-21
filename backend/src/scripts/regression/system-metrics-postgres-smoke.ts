@@ -130,17 +130,6 @@ function sampledAtForStatHour(targetStatHour: string, timezone: string): string 
 async function assertSystemMetricsExplainPlans(rangeDate: string, targetStatHour: string): Promise<void> {
   const windowKey = `${rangeDate}:${rangeDate}`
   await assertIndexedPlan(
-    '最新系统指标采样 PG 查询',
-    `
-      SELECT sampled_at
-      FROM juhe_stats.system_metrics_samples
-      ORDER BY sampled_at DESC, id DESC
-      LIMIT 1
-    `,
-    [],
-    ['idx_system_metrics_samples_latest']
-  )
-  await assertIndexedPlan(
     '系统指标趋势窗口 PG 查询',
     `
       SELECT bucket_key
@@ -152,29 +141,27 @@ async function assertSystemMetricsExplainPlans(rangeDate: string, targetStatHour
     ['idx_system_metrics_trend_windows_lookup', 'system_metrics_trend_windows_pkey']
   )
   await assertIndexedPlan(
-    '进程事件循环最新采样 PG 查询',
+    '进程事件循环各角色最新采样 PG 查询',
     `
-      SELECT sampled_at
+      SELECT DISTINCT ON (process_role) process_role, sampled_at
       FROM juhe_stats.process_event_loop_samples
-      WHERE process_role = $1
-      ORDER BY sampled_at DESC, id DESC
-      LIMIT 1
+      WHERE process_role IN ($1, $2, $3, $4, $5)
+      ORDER BY process_role, sampled_at DESC, id DESC
     `,
-    ['server'],
+    ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service'],
     ['idx_process_event_loop_samples_role_latest']
   )
   await assertIndexedPlan(
-    '进程事件循环峰值采样 PG 查询',
+    '进程事件循环各角色峰值采样 PG 查询',
     `
-      SELECT sampled_at
+      SELECT DISTINCT ON (process_role) process_role, sampled_at
       FROM juhe_stats.process_event_loop_samples
-      WHERE process_role = $1
-        AND sampled_at >= $2
+      WHERE process_role IN ($1, $2, $3, $4, $5)
+        AND sampled_at >= $6
         AND event_loop_lag_ms IS NOT NULL
-      ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
-      LIMIT 1
+      ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC
     `,
-    ['server', sampledAt],
+    ['server', 'ingest-worker', 'stats-worker', 'ops-worker', 'db-service', sampledAt],
     ['idx_process_event_loop_samples_role_peak']
   )
   await assertIndexedPlan(

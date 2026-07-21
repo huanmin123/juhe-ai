@@ -1,7 +1,7 @@
 import type { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
-import { listAccountOptionsAsync, listAccountsPageAsync } from '../../storage/repositories.js'
+import { listAccountItemsPageAsync, listAccountOptionsAsync } from '../../storage/repositories.js'
 import {
   accountBalanceSnapshotMatchesConfiguration,
   loadAccountBalanceConfigurationsByAccountIdsAsync,
@@ -33,23 +33,28 @@ export function registerAccountListRoutes(router: Router): void {
       let concurrencyDurationMs = 0
       let statusFilterDurationMs = 0
       let balanceDurationMs = 0
+      const needsRuntimeStatusFilter = accountListNeedsRuntimeStatusFilter(listOptions)
 
       const statusFilterStartedAt = performance.now()
-      let filteredResult: Awaited<ReturnType<typeof applyAccountListRuntimeStatusFilter>> | undefined = accountListNeedsRuntimeStatusFilter(listOptions)
+      let filteredResult: Awaited<ReturnType<typeof applyAccountListRuntimeStatusFilter>> | undefined = needsRuntimeStatusFilter
         ? await listAccountsPageWithRuntimeStatusFilter(requestAccess, listOptions)
         : undefined
       statusFilterDurationMs = performance.now() - statusFilterStartedAt
 
       if (!filteredResult) {
         const listStartedAt = performance.now()
-        const result = await listAccountsPageAsync(requestAccess, listOptions)
+        const result = await listAccountItemsPageAsync(requestAccess, listOptions)
         listDurationMs = performance.now() - listStartedAt
-        const concurrencyStartedAt = performance.now()
-        const hydratedResult = await applyServerAccountConcurrencyToAccountList(result)
-        concurrencyDurationMs = performance.now() - concurrencyStartedAt
-        const fallbackStatusFilterStartedAt = performance.now()
-        filteredResult = await applyAccountListRuntimeStatusFilter(requestAccess, listOptions, hydratedResult)
-        statusFilterDurationMs += performance.now() - fallbackStatusFilterStartedAt
+        if (needsRuntimeStatusFilter) {
+          const concurrencyStartedAt = performance.now()
+          const hydratedResult = await applyServerAccountConcurrencyToAccountList(result)
+          concurrencyDurationMs = performance.now() - concurrencyStartedAt
+          const fallbackStatusFilterStartedAt = performance.now()
+          filteredResult = await applyAccountListRuntimeStatusFilter(requestAccess, listOptions, hydratedResult)
+          statusFilterDurationMs += performance.now() - fallbackStatusFilterStartedAt
+        } else {
+          filteredResult = result
+        }
       }
 
       const balanceStartedAt = performance.now()

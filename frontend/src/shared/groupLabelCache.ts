@@ -14,6 +14,11 @@ export interface GroupSelection {
   name: string
 }
 
+export type GroupLabelSummary = Pick<GroupOptionSummary, 'id' | 'name'> & Partial<Pick<
+  GroupOptionSummary,
+  'accessType' | 'ownerSystemAccountName' | 'providerCode'
+>>
+
 const groupCacheKey = 'groups'
 
 export function rememberGroupLabels(groups: Array<Pick<GroupOptionSummary, 'id' | 'name'>>): void {
@@ -62,7 +67,7 @@ export function displayGroupName(name: string | undefined, id: string | undefine
   return id ? fallback : '-'
 }
 
-export function groupSelectOptionLabel(group: GroupOptionSummary, options: { showProvider?: boolean } = {}): string {
+export function groupSelectOptionLabel(group: GroupLabelSummary, options: { showProvider?: boolean } = {}): string {
   const providerSuffix = options.showProvider ? ` (${groupProviderLabel(group.providerCode)})` : ''
   const authorizationSuffix = group.accessType === 'authorized' ? `（来自 ${group.ownerSystemAccountName || '其他用户'} 授权）` : ''
   return `${group.name}${providerSuffix}${authorizationSuffix}`

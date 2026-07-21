@@ -9,7 +9,7 @@ import { getPostgresPool } from './postgres-client.js'
 import { chunkValues } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { hourKey, usageStatsTimezone, usageStatsTimezoneAsync } from './usage-stats-helpers.js'
-import { mapProcessEventLoopHourly, mapSystemMetricsHourly, mapSystemMetricsLatest } from './usage-stats-mappers.js'
+import { mapProcessEventLoopHourly, mapSystemMetricsHourly } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
 import { normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput } from './usage-stats-types.js'
@@ -252,12 +252,6 @@ export async function insertProcessEventLoopSampleAsync(input: ProcessEventLoopS
 
 export function getSystemMetricsOverview(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): SystemMetricsOverview {
   const database = getStatsDatabase()
-  const latest = database.prepare(`
-    SELECT ${systemMetricsLatestSelectColumns()}
-    FROM system_metrics_samples
-    ORDER BY sampled_at DESC, id DESC
-    LIMIT 1
-  `).get() as unknown as Record<string, unknown> | undefined
   const windowKey = rangeWindowKey(range)
   const rows = database.prepare(`
     SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
@@ -286,12 +280,10 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
   const processEventLoopLatestStatus = buildProcessEventLoopStatus(processLatestRows)
   const processEventLoopPeakStatus = buildProcessEventLoopStatus(processEventLoopPeakRows(database, processEventLoopStartedAt))
   return {
-    latest: latest ? mapSystemMetricsLatest(latest) : undefined,
     hourlyTrend: rows.map(mapSystemMetricsHourly),
     processEventLoopLatestStatus,
     processEventLoopPeakStatus,
-    processEventLoopTrend: processRows,
-    backgroundJobs: []
+    processEventLoopTrend: processRows
   }
 }
 
@@ -306,37 +298,32 @@ export async function getSystemMetricsOverviewAsync(range: AccountUsageStatsRang
     return getSystemMetricsOverview(range)
   }
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const latest = await client.one<Record<string, unknown>>(`
-    SELECT ${systemMetricsLatestSelectColumns()}
-    FROM ${statsTable(client, 'system_metrics_samples')}
-    ORDER BY sampled_at DESC, id DESC
-    LIMIT 1
-  `)
   const windowKey = rangeWindowKey(range)
-  const rows = await client.query<Record<string, unknown>>(`
-    SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
-      memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
-      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
-      network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
-      network_rx_total_bytes_max, network_tx_total_bytes_max,
-      db_file_bytes_max, stats_lag_seconds_max
-    FROM ${statsTable(client, 'system_metrics_trend_windows')}
-    WHERE window_key = ? AND start_date = ? AND end_date = ?
-    ORDER BY bucket_key ASC
-  `, [windowKey, range.startDate, range.endDate])
-  const processLatestRows = await processEventLoopLatestRowsAsync(client)
   const processEventLoopStartedAt = processEventLoopPeakStartIso()
-  const processRows = await loadProcessEventLoopTrendWindowRowsAsync(client, range)
+  const [rows, processLatestRows, processRows, processPeakRows] = await Promise.all([
+    client.query<Record<string, unknown>>(`
+      SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
+        memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
+        process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
+        network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
+        network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
+        network_rx_total_bytes_max, network_tx_total_bytes_max,
+        db_file_bytes_max, stats_lag_seconds_max
+      FROM ${statsTable(client, 'system_metrics_trend_windows')}
+      WHERE window_key = ? AND start_date = ? AND end_date = ?
+      ORDER BY bucket_key ASC
+    `, [windowKey, range.startDate, range.endDate]),
+    processEventLoopLatestRowsAsync(client),
+    loadProcessEventLoopTrendWindowRowsAsync(client, range),
+    processEventLoopPeakRowsAsync(client, processEventLoopStartedAt)
+  ])
   const processEventLoopLatestStatus = buildProcessEventLoopStatus(processLatestRows)
-  const processEventLoopPeakStatus = buildProcessEventLoopStatus(await processEventLoopPeakRowsAsync(client, processEventLoopStartedAt))
+  const processEventLoopPeakStatus = buildProcessEventLoopStatus(processPeakRows)
   return {
-    latest: latest ? mapSystemMetricsLatest(latest) : undefined,
     hourlyTrend: rows.map(mapSystemMetricsHourly),
     processEventLoopLatestStatus,
     processEventLoopPeakStatus,
-    processEventLoopTrend: processRows,
-    backgroundJobs: []
+    processEventLoopTrend: processRows
   }
 }
 
@@ -702,35 +689,23 @@ function processEventLoopPeakRows(database: DatabaseSync, startedAt: string): Ar
 }
 
 async function processEventLoopLatestRowsAsync(client: DatabaseClient): Promise<Array<Record<string, unknown>>> {
-  const rows: Array<Record<string, unknown>> = []
-  for (const role of PROCESS_EVENT_LOOP_ROLES) {
-    const row = await client.one<Record<string, unknown>>(`
-      SELECT ${processEventLoopLatestSelectColumns()}
-      FROM ${statsTable(client, 'process_event_loop_samples')}
-      WHERE process_role = ?
-      ORDER BY sampled_at DESC, id DESC
-      LIMIT 1
-    `, [role])
-    if (row) rows.push(row)
-  }
-  return rows
+  return client.query<Record<string, unknown>>(`
+    SELECT DISTINCT ON (process_role) ${processEventLoopLatestSelectColumns()}
+    FROM ${statsTable(client, 'process_event_loop_samples')}
+    WHERE process_role IN (${PROCESS_EVENT_LOOP_ROLES.map(() => '?').join(', ')})
+    ORDER BY process_role, sampled_at DESC, id DESC
+  `, PROCESS_EVENT_LOOP_ROLES)
 }
 
 async function processEventLoopPeakRowsAsync(client: DatabaseClient, startedAt: string): Promise<Array<Record<string, unknown>>> {
-  const rows: Array<Record<string, unknown>> = []
-  for (const role of PROCESS_EVENT_LOOP_ROLES) {
-    const row = await client.one<Record<string, unknown>>(`
-      SELECT ${processEventLoopLatestSelectColumns()}
-      FROM ${statsTable(client, 'process_event_loop_samples')}
-      WHERE process_role = ?
-        AND sampled_at >= ?
-        AND event_loop_lag_ms IS NOT NULL
-      ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
-      LIMIT 1
-    `, [role, startedAt])
-    if (row) rows.push(row)
-  }
-  return rows
+  return client.query<Record<string, unknown>>(`
+    SELECT DISTINCT ON (process_role) ${processEventLoopLatestSelectColumns()}
+    FROM ${statsTable(client, 'process_event_loop_samples')}
+    WHERE process_role IN (${PROCESS_EVENT_LOOP_ROLES.map(() => '?').join(', ')})
+      AND sampled_at >= ?
+      AND event_loop_lag_ms IS NOT NULL
+    ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC
+  `, [...PROCESS_EVENT_LOOP_ROLES, startedAt])
 }
 
 function processRoleFromValue(value: unknown): ProcessEventLoopRole | undefined {
@@ -791,26 +766,6 @@ function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): Syst
       processArrayBuffersBytes: row.processArrayBuffersBytes ?? null
     }
   })
-}
-
-function systemMetricsLatestSelectColumns(): string {
-  return [
-    'sampled_at',
-    'cpu_percent',
-    'memory_used_percent',
-    'memory_total_bytes',
-    'memory_free_bytes',
-    'process_rss_bytes',
-    'process_heap_used_bytes',
-    'process_heap_total_bytes',
-    'event_loop_lag_ms',
-    'network_rx_bytes_per_sec',
-    'network_tx_bytes_per_sec',
-    'network_rx_total_bytes',
-    'network_tx_total_bytes',
-    'db_file_bytes',
-    'stats_lag_seconds'
-  ].join(', ')
 }
 
 function processEventLoopLatestSelectColumns(): string {

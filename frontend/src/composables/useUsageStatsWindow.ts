@@ -8,11 +8,25 @@ import type { UsageStatsWindow } from '@/types/domain'
 const fallbackMaxDays = 31
 const windowCacheTtlMs = 60_000
 const windowState = ref<UsageStatsWindow>()
-let windowLoadedAtMs = 0
-let windowRequest: Promise<UsageStatsWindow> | undefined
+
+type UsageStatsWindowScope = 'admin' | 'self'
+
+type UsageStatsWindowScopeState = {
+  value?: UsageStatsWindow
+  loadedAtMs: number
+  request?: Promise<UsageStatsWindow>
+  generation: number
+}
+
+const scopeStates: Record<UsageStatsWindowScope, UsageStatsWindowScopeState> = {
+  admin: { loadedAtMs: 0, generation: 0 },
+  self: { loadedAtMs: 0, generation: 0 }
+}
+let displayGeneration = 0
 
 type UsageStatsWindowLoadOptions = {
   force?: boolean
+  viewScope?: UsageStatsWindowScope
 }
 
 function fallbackWindow(): UsageStatsWindow {
@@ -27,36 +41,59 @@ function fallbackWindow(): UsageStatsWindow {
 }
 
 async function loadUsageStatsWindow(options: UsageStatsWindowLoadOptions = {}): Promise<UsageStatsWindow> {
-  if (!options.force && windowState.value && Date.now() - windowLoadedAtMs < windowCacheTtlMs) {
-    return windowState.value
+  const scope = options.viewScope ?? 'self'
+  const scopeState = scopeStates[scope]
+
+  if (!options.force && scopeState.request) return scopeState.request
+  if (!options.force && scopeState.value && Date.now() - scopeState.loadedAtMs < windowCacheTtlMs) {
+    displayGeneration += 1
+    windowState.value = scopeState.value
+    return scopeState.value
   }
-  if (!options.force && windowRequest) return windowRequest
-  const request = api.myStats.usageWindow()
+
+  const requestGeneration = ++scopeState.generation
+  const requestDisplayGeneration = ++displayGeneration
+  const request = (scope === 'admin' ? api.stats : api.myStats).usageWindow()
     .then((window) => {
-      windowState.value = window
-      windowLoadedAtMs = Date.now()
+      if (scopeState.generation === requestGeneration) {
+        scopeState.value = window
+        scopeState.loadedAtMs = Date.now()
+      }
+      if (displayGeneration === requestDisplayGeneration) {
+        windowState.value = window
+      }
       return window
     })
     .catch((error) => {
       console.error(error)
       const fallback = fallbackWindow()
-      windowState.value = fallback
-      windowLoadedAtMs = Date.now()
+      if (scopeState.generation === requestGeneration) {
+        scopeState.value = fallback
+        scopeState.loadedAtMs = Date.now()
+      }
+      if (displayGeneration === requestDisplayGeneration) {
+        windowState.value = fallback
+      }
       return fallback
     })
     .finally(() => {
-      if (windowRequest === request) {
-        windowRequest = undefined
+      if (scopeState.request === request) {
+        scopeState.request = undefined
       }
     })
-  windowRequest = request
+  scopeState.request = request
   return request
 }
 
 export function clearUsageStatsWindowCache() {
+  displayGeneration += 1
   windowState.value = undefined
-  windowLoadedAtMs = 0
-  windowRequest = undefined
+  for (const scopeState of Object.values(scopeStates)) {
+    scopeState.value = undefined
+    scopeState.loadedAtMs = 0
+    scopeState.request = undefined
+    scopeState.generation += 1
+  }
 }
 
 export function useUsageStatsWindow() {

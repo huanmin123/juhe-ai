@@ -20,12 +20,6 @@ export interface RuntimeLogSearchResult {
   hasMore: boolean
   page: number
   pageSize: number
-  elapsedMs: number
-  retentionDays: number | null
-  retentionDaysSource: 'worker_snapshot' | 'unavailable'
-  runtimeAvailable: boolean
-  workerSnapshotAvailable: boolean
-  runtimeLogIndexQueueAvailable: boolean
 }
 
 export interface RuntimeLogGrepItem {
@@ -39,7 +33,6 @@ export interface RuntimeLogGrepItem {
   event?: string
   message?: string
   errorMessage?: string
-  rawJson: string
   line: string
 }
 
@@ -150,59 +143,15 @@ export interface RuntimeLogFacets {
   totalIndexed: number
   levels: Array<{ value: string; count: number }>
   events: string[]
+}
+
+export interface RuntimeLogRuntime {
   runtimeAvailable: boolean
-  workerSnapshotAvailable: boolean
+  ingestWorkerAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean
-  runtime: RuntimeLogIndexRuntime | null
-  worker: {
-    available: boolean
-    snapshotAvailable: boolean
-    pid?: number
-    ready: boolean | null
-    pendingMessageCount: number | null
-  }
   dbService: {
     statusAvailable: boolean
     stateAvailable: boolean
-    pid?: number
-    ready: boolean | null
-    pendingRequestCount: number | null
-    pendingDatasetWriteRequestCount?: number
-    oldestDatasetWriteRequestMs?: number
-    timedOutRequestCount: number | null
-    failedRequestCount: number | null
-    queuedRequestCount?: number
-    queuedHighRequestCount?: number
-    queuedNormalRequestCount?: number
-    queuedLowRequestCount?: number
-    oldestQueuedMs?: number
-    lastQueueWaitMs?: number
-    maxQueueWaitMs?: number
-    lastExecMs?: number
-    maxExecMs?: number
-    slowOpCount?: number
-    lastSlowOpType?: string
-    lastSlowOpMs?: number
-    lastSlowOpAt?: string
-    unavailableCircuitOpenUntil?: string
-    httpHost?: string
-    httpPort?: number
-    handledRequestCount?: number
-    lastRequestAt?: string
-    lastError?: string
   }
-  queueHealth: RuntimeLogQueueHealth
-  grep: RuntimeLogGrepRuntime
   gatewayAccountSideEffectsAvailable: boolean
-  gatewayAccountSideEffects: {
-    queueLength: number
-    processing: boolean
-    enqueuedCount: number
-    completedCount: number
-    failedAttemptCount: number
-    droppedCount: number
-    expiredCount: number
-    localSuppressedAccountCount: number
-    nextAttemptAt?: string
-  } | null
 }

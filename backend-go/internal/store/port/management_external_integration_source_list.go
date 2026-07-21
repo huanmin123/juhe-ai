@@ -51,10 +51,6 @@ type ManagementExternalIntegrationSourceListReader interface {
 		ctx context.Context,
 		input ManagementExternalIntegrationSourceListInput,
 	) ([]ManagementExternalIntegrationSourceListRow, error)
-	ListManagementExternalIntegrationSourceTokenStats(
-		ctx context.Context,
-		sourceIDs []string,
-	) ([]ManagementExternalIntegrationSourceTokenStatsRow, error)
 	ListManagementExternalIntegrationSourcePrimaryTokens(
 		ctx context.Context,
 		sourceIDs []string,

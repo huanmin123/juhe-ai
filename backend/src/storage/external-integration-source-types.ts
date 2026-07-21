@@ -51,7 +51,7 @@ export interface CreatedExternalIntegrationSourceToken {
 }
 
 export interface CreatedExternalIntegrationSourceAuthorization {
-  source: ExternalIntegrationSourceSummary
+  source: ExternalIntegrationSourceRecord
   token: CreatedExternalIntegrationSourceToken
 }
 
@@ -74,7 +74,7 @@ export interface ExternalIntegrationSourceTokenSummary {
   isBuiltIn: boolean
 }
 
-export interface ExternalIntegrationSourceSummary {
+export interface ExternalIntegrationSourceRecord {
   id: string
   name: string
   status: ExternalIntegrationSourceStatus
@@ -85,15 +85,36 @@ export interface ExternalIntegrationSourceSummary {
   lastUsedAt?: string
   createdAt: string
   updatedAt: string
-  tokenCount: number
-  activeTokenCount: number
-  tokens?: ExternalIntegrationSourceTokenSummary[]
-  primaryToken?: ExternalIntegrationSourceTokenSummary
   isBuiltIn: boolean
 }
 
+export interface ExternalIntegrationSourcePrimaryTokenSummary {
+  id: string
+  tokenPrefix: string
+  tokenSuffix: string
+}
+
+export interface ExternalIntegrationSourceListItem {
+  id: string
+  name: string
+  status: ExternalIntegrationSourceStatus
+  scopes: string[]
+  rateLimits: ExternalIntegrationRateLimitRule[]
+  expiresAt?: string
+  notes?: string
+  lastUsedAt?: string
+  primaryToken?: ExternalIntegrationSourcePrimaryTokenSummary
+  isBuiltIn: boolean
+}
+
+export interface ExternalIntegrationSourceSummary extends ExternalIntegrationSourceRecord {
+  tokenCount: number
+  activeTokenCount: number
+  tokens: ExternalIntegrationSourceTokenSummary[]
+}
+
 export interface ExternalIntegrationSourceListResult {
-  items: ExternalIntegrationSourceSummary[]
+  items: ExternalIntegrationSourceListItem[]
   page: number
   pageSize: number
   pageUpperBound: number
@@ -173,6 +194,18 @@ export interface ExternalIntegrationSourceTokenListRow {
   created_at: string
   updated_at: string
   revoked_at: string | null
+}
+
+export type ExternalIntegrationSourceListProjectionRow = Pick<
+  ExternalIntegrationSourceRow,
+  'id' | 'name' | 'status' | 'scopes_json' | 'rate_limits_json' | 'expires_at' | 'notes' | 'last_used_at'
+>
+
+export interface ExternalIntegrationSourcePrimaryTokenRow {
+  id: string
+  source_ref_id: string
+  token_prefix: string
+  token_suffix: string
 }
 
 export interface ExternalIntegrationSourceTokenStats {

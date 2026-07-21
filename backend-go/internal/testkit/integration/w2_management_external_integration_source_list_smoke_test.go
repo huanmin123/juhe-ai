@@ -139,29 +139,15 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 	if item == nil {
 		t.Fatal("active source is missing from active status result")
 	}
-	if item.Status != publicapi.SourceStatusActive || item.TokenCount != 3 || item.ActiveTokenCount != 1 {
-		t.Fatalf("active source token stats = %+v", item)
+	if item.Status != publicapi.SourceStatusActive {
+		t.Fatalf("active source status = %+v", item)
 	}
 	if item.PrimaryToken == nil {
 		t.Fatalf("active source primary token is nil: %+v", item)
 	}
 	primary := item.PrimaryToken
-	if primary.ID != w2ExternalSourceListActiveTokenID || primary.Status != publicapi.TokenStatusActive {
+	if primary.ID != w2ExternalSourceListActiveTokenID || primary.TokenPrefix != "juis_w2_a" || primary.TokenSuffix != "suffix01" {
 		t.Fatalf("primary token did not prefer expired active token over newer non-active tokens: %+v", primary)
-	}
-	if primary.ExpiresAt == nil || *primary.ExpiresAt != fixture.activeTokenExpiresAt.UTC().Format("2006-01-02T15:04:05.000Z") {
-		t.Fatalf("expired active primary token expiry = %#v", primary.ExpiresAt)
-	}
-	if item.CreatedAt != fixture.activeSourceCreatedAt.UTC().Format("2006-01-02T15:04:05.000Z") ||
-		item.UpdatedAt != fixture.activeSourceUpdatedAt.UTC().Format("2006-01-02T15:04:05.000Z") ||
-		primary.CreatedAt != fixture.activeTokenCreatedAt.UTC().Format("2006-01-02T15:04:05.000Z") ||
-		primary.UpdatedAt != fixture.activeTokenUpdatedAt.UTC().Format("2006-01-02T15:04:05.000Z") {
-		t.Fatalf("UTC millisecond DTO times = source:%s/%s token:%s/%s",
-			item.CreatedAt,
-			item.UpdatedAt,
-			primary.CreatedAt,
-			primary.UpdatedAt,
-		)
 	}
 	if !reflect.DeepEqual(item.Scopes, []string{publicapi.ScopeAccountListRead, publicapi.ScopeGroupListRead}) {
 		t.Fatalf("source scopes = %#v", item.Scopes)
@@ -171,8 +157,8 @@ func TestW2ManagementExternalIntegrationSourceListPostgresSmoke(t *testing.T) {
 		item.RateLimits[1].WindowSeconds != 60 {
 		t.Fatalf("source rate limits = %#v", item.RateLimits)
 	}
-	if item.IsBuiltIn || primary.IsBuiltIn {
-		t.Fatalf("fixture must not be marked built-in: source=%t token=%t", item.IsBuiltIn, primary.IsBuiltIn)
+	if item.IsBuiltIn {
+		t.Fatalf("fixture must not be marked built-in: source=%t", item.IsBuiltIn)
 	}
 	assertW2ExternalSourceListSafeDTO(t, all, fixture.activeTokenCiphertext)
 
@@ -809,7 +795,7 @@ func cleanupW2ExternalSourceListFixtures(t *testing.T, ctx context.Context, db *
 
 func assertW2ExternalSourceListIDs(
 	t *testing.T,
-	items []managementexternalintegrationsources.Source,
+	items []managementexternalintegrationsources.ListItem,
 	want []string,
 ) {
 	t.Helper()
@@ -823,9 +809,9 @@ func assertW2ExternalSourceListIDs(
 }
 
 func findW2ExternalSourceListItem(
-	items []managementexternalintegrationsources.Source,
+	items []managementexternalintegrationsources.ListItem,
 	id string,
-) *managementexternalintegrationsources.Source {
+) *managementexternalintegrationsources.ListItem {
 	for index := range items {
 		if items[index].ID == id {
 			return &items[index]
@@ -851,7 +837,7 @@ func assertW2ExternalSourceListSafeDTO(
 func assertW2ExternalSourceDetail(
 	t *testing.T,
 	detail *managementexternalintegrationsources.Detail,
-	listItem *managementexternalintegrationsources.Source,
+	listItem *managementexternalintegrationsources.ListItem,
 	fixture w2ExternalSourceListFixtureTimes,
 ) {
 	t.Helper()

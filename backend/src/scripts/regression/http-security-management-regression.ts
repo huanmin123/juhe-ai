@@ -32,7 +32,7 @@ setManagementSecurityHeaders({
   }
 })
 assert.equal(writtenHeaders.get('content-security-policy'), expectedCsp, '安全头写入函数必须写入完整 CSP')
-assert.equal(writtenHeaders.get('x-frame-options'), 'DENY', '安全头写入函数必须写入防嵌套头')
+assert.equal(writtenHeaders.get('x-frame-options'), 'DENY', '安全头写入函数必须写入 X-Frame-Options')
 
 const app = express()
 app.disable('x-powered-by')

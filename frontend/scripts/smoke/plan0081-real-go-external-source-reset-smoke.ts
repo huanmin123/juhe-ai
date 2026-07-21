@@ -238,18 +238,7 @@ function assertFixtureDetail(value: unknown, phase: 'old' | 'new'): TokenPreview
 }
 
 function assertResetResult(value: unknown): ResetResult {
-  expect(isRecord(value) && hasExactKeys(value, ['source', 'token']), 'reset DTO is invalid')
-  expect(isRecord(value.source), 'reset source DTO is invalid')
-  expect(value.source.id === builtInExternalSourceResetFixture.sourceId, 'reset source ID mismatch')
-  expect(value.source.isBuiltIn === true, 'reset source must be built in')
-  expect(Array.isArray(value.source.tokens), 'reset source tokens DTO is invalid')
-  const sourceToken = value.source.tokens.find((item) =>
-    isRecord(item) && item.id === builtInExternalSourceResetFixture.tokenId
-  )
-  expect(isRecord(sourceToken), 'reset source fixed token is missing')
-  expect(sourceToken.isBuiltIn === true, 'reset source token must be built in')
-  assertTokenPreview(sourceToken, 'reset source token')
-
+  expect(isRecord(value) && hasExactKeys(value, ['token']), 'reset DTO is invalid')
   expect(isRecord(value.token), 'reset token DTO is invalid')
   expect(
     hasOnlyKeys(value.token, ['id', 'name', 'token', 'tokenPrefix', 'tokenSuffix', 'scopes', 'expiresAt']),
@@ -260,9 +249,6 @@ function assertResetResult(value: unknown): ResetResult {
   assertTokenPreview(value.token, 'reset token')
   expect(value.token.tokenPrefix === value.token.token.slice(0, 8), 'reset token prefix does not match plaintext')
   expect(value.token.tokenSuffix === value.token.token.slice(-8), 'reset token suffix does not match plaintext')
-  expect(sourceToken.tokenPrefix === value.token.tokenPrefix, 'reset source and token prefixes differ')
-  expect(sourceToken.tokenSuffix === value.token.tokenSuffix, 'reset source and token suffixes differ')
-
   return {
     plaintextToken: value.token.token,
     tokenPrefix: value.token.tokenPrefix,

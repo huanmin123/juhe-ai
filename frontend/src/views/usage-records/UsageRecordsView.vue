@@ -30,6 +30,8 @@
       @group-change="handleGroupFilterChange"
       @group-dropdown="handleGroupOptionsDropdown"
       @group-search="handleGroupOptionsSearch"
+      @model-options-dropdown="handleModelOptionsDropdown"
+      @model-options-search="handleModelOptionsSearch"
       @reset="resetFilters"
       @refresh="refreshRecords"
       @search="applyFilters"
@@ -75,13 +77,13 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, 
 import { useRoute, useRouter } from 'vue-router'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
-import { api } from '@/api/client'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedGroupsApi, useScopedUsageRecordsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
@@ -154,7 +156,21 @@ const businessFiltersDisabled = computed(() => isManagementView.value && !scoped
 if (businessFiltersDisabled.value) {
   restoreAllSystemAccountsAutoFilters()
 }
-const { loadModelOptions, modelOptions, modelOptionsLoading } = useUsageRecordModelOptions()
+const modelOptionsScopeParams = computed(() => {
+  const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
+  return systemAccountId ? { systemAccountId } : undefined
+})
+const {
+  handleDropdown: handleModelOptionsDropdown,
+  handleSearch: handleModelOptionsSearch,
+  modelOptions,
+  modelOptionsLoading,
+  resetModelOptions
+} = useUsageRecordModelOptions({
+  scopeParams: modelOptionsScopeParams,
+  selectedModel: computed(() => modelFilter.value)
+})
+const { loadUsageStatsWindow } = useUsageStatsWindow()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -217,10 +233,8 @@ const {
     if (options.forceOptions === true) {
       resetSystemAccountOptionsSearch()
       resetGroupOptionsSearch()
+      resetModelOptions()
     }
-    void loadModelOptions(options.forceOptions === true).catch((error) => {
-      console.error('加载使用记录模型筛选项失败', error)
-    })
     return await fetchRecords(pageState)
   },
   requestSignature: (_options, pageState) => [
@@ -361,7 +375,7 @@ function refreshRecords(): void {
 }
 
 async function refreshMobileRecords(): Promise<void> {
-  await refreshMobileRecordsList()
+  await refreshMobileRecordsList({ forceOptions: true })
 }
 
 function applyRouteTraceId(traceId: string): void {
@@ -546,8 +560,8 @@ function millisecondsUntilNextDeploymentDay(now: Date): number {
 async function loadDeploymentTimezone(): Promise<void> {
   if (!isManagementView.value) return
   try {
-    const settings = await api.settings.get()
-    deploymentTimezone.value = settings.usageStatsTimezone
+    const usageWindow = await loadUsageStatsWindow({ viewScope: 'admin' })
+    deploymentTimezone.value = usageWindow.timezone
     refreshAutoDateAfterRollover()
     scheduleAutoDateRollover()
   } catch {

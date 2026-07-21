@@ -77,8 +77,10 @@ try {
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     const shouldCapture = /^\s*SELECT\b/i.test(sql)
-      && (/\bFROM\s+system_accounts\b/i.test(sql) || /\bFROM\s+system_teams\b/i.test(sql))
-      && /\bORDER\s+BY\b/i.test(sql)
+      && (
+        ((/\bFROM\s+system_accounts\b/i.test(sql) || /\bFROM\s+system_teams\b/i.test(sql)) && /\bORDER\s+BY\b/i.test(sql))
+        || /\bFROM\s+groups\b/i.test(sql)
+      )
     if (shouldCapture) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
@@ -119,6 +121,14 @@ try {
     })
     assert.equal(missingDefaultGroups.length, 0, '授权目标分组选项读取路径不应自动补建缺失默认分组')
     assert.equal(openAIGroupCountForSystemAccount(missingDefaultGroupAccount.id), 0, '缺失默认分组属于数据异常，options 读取不能写 groups 修复')
+
+    const targetGroups = repositories.listAuthorizationGranteeGroups(undefined, {
+      granteeSystemAccountId: matchedAccount.id,
+      providerCode: 'gpt',
+      limit: 20
+    })
+    assert(targetGroups.length > 0, '授权目标用户应存在可选分组')
+    assert.deepEqual(Object.keys(targetGroups[0]!).sort(), ['id', 'name'], '授权目标分组选项只能返回 id/name')
   } finally {
     database.prepare = originalPrepare
   }
@@ -131,11 +141,17 @@ try {
       assert(/\bESCAPE\s+'\\'/i.test(call.sql), '授权候选项前缀搜索应显式转义 LIKE 通配符')
     }
   }
+  const groupCalls = capturedCalls.filter((call) => /\bFROM\s+groups\b/i.test(call.sql))
+  assert.equal(groupCalls.length, 2, '每次授权目标分组选项读取应只执行一条 groups 查询')
+  for (const call of groupCalls) {
+    assert.match(call.sql, /SELECT\s+groups\.id\s*,\s*groups\.name\s+FROM\s+groups/i, '授权目标分组选项 SQL 只能读取 groups.id/name')
+    assert.doesNotMatch(call.sql, /scheduling_policy_json|group_type|description|permissions|authorization_/i, '授权目标分组选项 SQL 不应读取调度、权限或授权宽字段')
+  }
   assertBusinessIndexExists('idx_system_accounts_username_lookup')
   assertBusinessIndexExists('idx_system_accounts_display_name_lookup')
   assertBusinessIndexExists('idx_system_teams_name_lookup')
 
-  console.log('授权候选项查询防护回归通过：用户/团队 options 支持精确/前缀搜索、limit 和通配符转义，目标分组选项读取不补建默认分组')
+  console.log('授权候选项查询防护回归通过：用户/团队 options 支持前缀搜索，目标分组选项仅查询并返回 id/name')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

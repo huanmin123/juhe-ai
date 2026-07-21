@@ -304,6 +304,12 @@ export async function requestServerRuntimeSnapshot(timeoutMs = 1000): Promise<Db
   return await requestServerRuntimeSnapshotByScope('full', timeoutMs)
 }
 
+export async function requestServerRuntimeLogAvailabilitySnapshot(
+  timeoutMs = 1000
+): Promise<DbServiceServerRuntimeSnapshot['runtimeLogAvailability'] | undefined> {
+  return (await requestServerRuntimeSnapshotByScope('runtime_logs', timeoutMs))?.runtimeLogAvailability
+}
+
 export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): Promise<Record<string, number> | undefined> {
   const snapshot = await requestServerRuntimeSnapshotByScope('account_concurrency', timeoutMs)
   return snapshot?.accountConcurrency
@@ -735,7 +741,11 @@ function handleDbServiceMessage(message: unknown): void {
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
         void respondToServerRuntimeRequest(
           record.requestId,
-          record.scope === 'account_concurrency' || record.scope === 'account_runtime' ? record.scope : 'full'
+          record.scope === 'account_concurrency'
+          || record.scope === 'account_runtime'
+          || record.scope === 'runtime_logs'
+            ? record.scope
+            : 'full'
         )
       }
       break
@@ -986,7 +996,9 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
       ? await buildServerAccountConcurrencySnapshot()
       : scope === 'account_runtime'
         ? await buildServerAccountRuntimeSnapshot()
-        : await buildServerRuntimeSnapshot()
+        : scope === 'runtime_logs'
+          ? await buildServerRuntimeLogAvailabilitySnapshot()
+          : await buildServerRuntimeSnapshot()
     sendToDbServiceProcess(child, {
       type: 'db_service_server_runtime_response',
       requestId,
@@ -1536,6 +1548,21 @@ async function buildServerAccountRuntimeSnapshot(): Promise<DbServiceServerRunti
   return {
     accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
     accountRuntimeAvailability: gatewaySideEffects.snapshotGatewayAccountRuntimeAvailability()
+  }
+}
+
+async function buildServerRuntimeLogAvailabilitySnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
+  const [backgroundIpc, gatewaySideEffects] = await Promise.all([
+    import('../background/background-ipc.js'),
+    import('../gateway/runtime/account-side-effects.service.js')
+  ])
+  const ingestAvailability = backgroundIpc.getIngestWorkerRuntimeLogAvailability()
+  return {
+    runtimeLogAvailability: {
+      ...ingestAvailability,
+      dbServiceStateAvailable: Boolean(getDbServiceState()),
+      gatewayAccountSideEffectsAvailable: Boolean(gatewaySideEffects)
+    }
   }
 }
 

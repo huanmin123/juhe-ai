@@ -6,7 +6,7 @@ import { accountSummaryWithEffectiveAvailability } from '../domain/account-effec
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
+import { accountCredentialsForList, accountRowSelectColumns, findAccountRowForAccess, hydrateAccountRowsWithQualityState, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
 import { parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { authorizationRuntimeBlockingStatus } from './account-runtime-status.js'
@@ -19,6 +19,7 @@ import { getBusinessDatabase, getStatsDatabase, isSqliteDatabaseLocked, nowIso, 
 import type { DatabaseClient } from './database-client.js'
 import { createPostgresDatabaseClient } from './database-client.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
+import { loadAccountQualityRowsByAccountIdsAsync } from './account-quality.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { accountSystemAccountId, activeAccountAuthorization, activeResourceAuthorizationById, canManageResourceOwner, sanitizeAuthorizationSourcesForViewer, usageScope } from './resource-authorization-helpers.js'
@@ -56,6 +57,19 @@ export interface AccountListResult {
 
 interface AccountSummaryBuildOptions {
   includeCredentials?: boolean
+  listProjection?: boolean
+  authorizedContext?: AuthorizedAccountSummaryContext
+}
+
+interface AuthorizedAccountSummaryContext {
+  supportedModelsByAccount: Awaited<ReturnType<typeof loadSupportedModelsByAccountIdsAsync>>
+  modelMappingsByAccount: Awaited<ReturnType<typeof loadModelMappingsByAccountIdsAsync>>
+  tagsByAccount: Awaited<ReturnType<typeof loadAccountTagsByAccountIdsAsync>>
+  accountNames: Map<string, string>
+  authorizationQuotaExceededByAuthorization: Awaited<ReturnType<typeof loadAuthorizationQuotaExceededByAuthorizationIdAsync>>
+  usageByAuthorization: Awaited<ReturnType<typeof loadAuthorizationUsageSummariesForScopesAsync>>
+  todayUsageByAuthorization: Awaited<ReturnType<typeof loadAuthorizationUsageSummariesForScopesAsync>>
+  currentConcurrencyByAccount: Awaited<ReturnType<typeof loadAccountCurrentConcurrencyByIdsAsync>>
 }
 
 const businessSchemaName = 'juhe_business'
@@ -90,6 +104,20 @@ export function listAccountsPageReadOnly(access?: AccessScope, options?: Account
   }
 }
 
+export function listAccountItemsPageReadOnly(access?: AccessScope, options?: AccountListOptions): AccountListResult {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const listOptions = normalizeAccountListOptions(options)
+  const databasePage = listAccountRowsPageForAccess(access, listOptions, { includeCredentials: false })
+  const rows = hydrateAccountRowsWithQualityState(databasePage.rows)
+  return {
+    items: accountSummariesFromRows(rows, access, viewerSystemAccountId, { includeCredentials: false, listProjection: true }),
+    total: databasePage.total,
+    hasMore: databasePage.total > listOptions.page * listOptions.pageSize,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
 export async function listAccountsPageAsync(access?: AccessScope, options?: AccountListOptions): Promise<AccountListResult> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     if (sqliteReadWorkerPoolEnabled()) {
@@ -104,11 +132,35 @@ export async function listAccountsPageAsync(access?: AccessScope, options?: Acco
   const listOptions = normalizeAccountListOptions(options)
   const client = createPostgresDatabaseClient(await getPostgresPool())
   if (accountListNeedsPostSummaryEffectiveFilter(listOptions)) {
-    return await listAccountsPageWithPostSummaryEffectiveFilterAsync(client, access, listOptions)
+    return await listAccountsPageWithPostSummaryEffectiveFilterAsync(client, access, listOptions, { includeCredentials: false })
   }
   const databasePage = await listAccountRowsPageAsync(client, access, listOptions)
   const pageRows = takePageRows(databasePage.rows, listOptions.pageSize)
-  const items = await accountSummariesFromRowsAsync(client, pageRows.rows, access, { includeCredentials: false })
+  const items = await accountSummariesFromRowsAsync(client, await hydrateAccountRowsWithQualityStateAsync(client, pageRows.rows), access, { includeCredentials: false })
+  return {
+    items,
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
+export async function listAccountItemsPageAsync(access?: AccessScope, options?: AccountListOptions): Promise<AccountListResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({ type: 'list_account_items_page_read_only', access, options })
+    }
+    return listAccountItemsPageReadOnly(access, options)
+  }
+  const listOptions = normalizeAccountListOptions(options)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  if (accountListNeedsPostSummaryEffectiveFilter(listOptions)) {
+    return await listAccountsPageWithPostSummaryEffectiveFilterAsync(client, access, listOptions, { includeCredentials: false, listProjection: true })
+  }
+  const databasePage = await listAccountRowsPageAsync(client, access, listOptions)
+  const pageRows = takePageRows(databasePage.rows, listOptions.pageSize)
+  const items = await accountSummariesFromRowsAsync(client, await hydrateAccountRowsWithQualityStateAsync(client, pageRows.rows), access, { includeCredentials: false, listProjection: true })
   return {
     items,
     total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
@@ -121,7 +173,8 @@ export async function listAccountsPageAsync(access?: AccessScope, options?: Acco
 async function listAccountsPageWithPostSummaryEffectiveFilterAsync(
   client: DatabaseClient,
   access: AccessScope | undefined,
-  options: NormalizedAccountListOptions
+  options: NormalizedAccountListOptions,
+  buildOptions: AccountSummaryBuildOptions
 ): Promise<AccountListResult> {
   const offset = (options.page - 1) * options.pageSize
   const requiredMatches = offset + options.pageSize + 1
@@ -142,7 +195,7 @@ async function listAccountsPageWithPostSummaryEffectiveFilterAsync(
       page: candidatePage
     })
     const pageRows = takePageRows(databasePage.rows, candidatePageSize)
-    const summaries = await accountSummariesFromRowsAsync(client, pageRows.rows, access, { includeCredentials: false })
+    const summaries = await accountSummariesFromRowsAsync(client, await hydrateAccountRowsWithQualityStateAsync(client, pageRows.rows), access, buildOptions)
     for (const summary of summaries) {
       if (accountSummaryMatchesPostSummaryEffectiveFilter(summary, options)) {
         matchedItems.push(summary)
@@ -346,14 +399,15 @@ async function findAuthorizedAccountRowByIdAsync(
 async function authorizedAccountSummaryFromRowAsync(
   client: DatabaseClient,
   row: AccountListRow,
-  access: AccessScope | undefined
+  access: AccessScope | undefined,
+  options: AccountSummaryBuildOptions = {}
 ): Promise<AccountSummary> {
+  const listProjection = options.listProjection === true
   const factAccountId = accountResourceFactAccountId(row)
   const includeAccountNames = includeSystemAccountFields(access)
   const displayOwnerSystemAccountId = row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
-  const timezone = await usageStatsTimezoneAsync()
-  const authorizationScopes = row.authorization_id ? [usageScope(row.authorization_id, row.system_account_id, row.authorization_id)] : []
-  const [
+  const context = options.authorizedContext ?? await loadAuthorizedAccountSummaryContextAsync(client, [row], access, options)
+  const {
     supportedModelsByAccount,
     modelMappingsByAccount,
     tagsByAccount,
@@ -362,19 +416,7 @@ async function authorizedAccountSummaryFromRowAsync(
     usageByAuthorization,
     todayUsageByAuthorization,
     currentConcurrencyByAccount
-  ] = await Promise.all([
-    factAccountId ? loadSupportedModelsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map<string, string[]>()),
-    factAccountId ? loadModelMappingsByAccountIdsAsync([factAccountId]) : Promise.resolve(new Map()),
-    loadAccountTagsByAccountIdsAsync([row.id]),
-    loadAccountSummarySystemAccountNamesAsync(client, [
-      row.system_account_id,
-      displayOwnerSystemAccountId
-    ]),
-    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, [row]),
-    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
-    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync([row.id])
-  ])
+  } = context
   row.supported_models = factAccountId ? supportedModelsByAccount.get(factAccountId) ?? [] : []
   row.model_mappings = factAccountId ? modelMappingsByAccount.get(factAccountId) ?? [] : []
 
@@ -475,7 +517,7 @@ async function authorizedAccountSummaryFromRowAsync(
     authorizationExpiresAt: row.authorization_expires_at ?? undefined,
     authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
     authorizationQuotaExceeded: row.authorization_id ? authorizationQuotaExceededByAuthorization.get(row.authorization_id) ?? false : false,
-    permissions: authorizedAccountPermissions(false),
+    permissions: authorizedAccountPermissions(authorizedAccountCanReturnAuthorization(row, options)),
     authorizationUsageAvailable: false,
     authorizationCount: 0,
     authorizationTeamCount: 0
@@ -544,7 +586,7 @@ async function listOwnerAccountRowsPageAsync(
   const orderClause = ownerAccountListOrderClause(options)
   const rows = await client.query<AccountListRow>(`
     SELECT
-      accounts.*,
+      ${accountRowSelectColumns(false)},
       'owner' AS access_type,
       group_bindings.system_account_id AS binding_system_account_id,
       group_bindings.group_id AS bound_group_id,
@@ -603,7 +645,7 @@ async function listAccountRowsPageAsync(
   const rows = await client.query<AccountListRow>(`
     WITH account_rows AS (
       SELECT
-        accounts.*,
+        ${accountRowSelectColumns(false)},
         'owner' AS access_type,
         NULL AS authorization_id,
         NULL AS authorization_status,
@@ -646,7 +688,7 @@ async function listAccountRowsPageAsync(
         ${scopeClause}
       UNION ALL
       SELECT
-        accounts.*,
+        ${accountRowSelectColumns(false)},
         'authorized' AS access_type,
         authorizations.id AS authorization_id,
         authorizations.status AS authorization_status,
@@ -748,10 +790,14 @@ async function accountSummariesFromRowsAsync(
   if (!rows.length) return []
   const ownerRows = rows.filter((row) => row.access_type !== 'authorized')
   const authorizedRows = rows.filter((row) => row.access_type === 'authorized')
-  const [ownerSummaries, authorizedSummaries] = await Promise.all([
+  const [ownerSummaries, authorizedContext] = await Promise.all([
     ownerAccountSummariesFromRowsAsync(client, ownerRows, access, options),
-    Promise.all(authorizedRows.map((row) => authorizedAccountSummaryFromRowAsync(client, row, access)))
+    loadAuthorizedAccountSummaryContextAsync(client, authorizedRows, access, options)
   ])
+  const authorizedSummaries = await Promise.all(authorizedRows.map((row) => authorizedAccountSummaryFromRowAsync(client, row, access, {
+    ...options,
+    authorizedContext
+  })))
   const summariesByRowKey = new Map<string, AccountSummary>()
   for (const summary of ownerSummaries) {
     summariesByRowKey.set(`owner:${summary.id}`, summary)
@@ -764,6 +810,71 @@ async function accountSummariesFromRowsAsync(
     .filter((summary): summary is AccountSummary => Boolean(summary))
 }
 
+async function hydrateAccountRowsWithQualityStateAsync(client: DatabaseClient, rows: AccountListRow[]): Promise<AccountListRow[]> {
+  if (!rows.length) return rows
+  const qualityByAccount = await loadAccountQualityRowsByAccountIdsAsync(client, rows.map((row) => row.id))
+  return rows.map((row) => {
+    const quality = qualityByAccount.get(row.id)
+    if (!quality) return row
+    return {
+      ...row,
+      quality_score: quality.quality_score,
+      quality_state: quality.quality_state,
+      quality_ewma_first_token_ms: quality.ewma_first_token_ms,
+      quality_recent_avg_first_token_ms: quality.recent_avg_first_token_ms,
+      quality_recent_request_count: quality.recent_request_count,
+      quality_recent_error_count: quality.recent_error_count,
+      quality_recent_success_rate: quality.success_rate,
+      quality_last_error_at: quality.last_error_at,
+      quality_last_error_message: quality.last_error_message,
+      quality_updated_at: quality.updated_at
+    }
+  })
+}
+
+async function loadAuthorizedAccountSummaryContextAsync(
+  client: DatabaseClient,
+  rows: AccountListRow[],
+  access: AccessScope | undefined,
+  options: AccountSummaryBuildOptions
+): Promise<AuthorizedAccountSummaryContext> {
+  const listProjection = options.listProjection === true
+  const factAccountIds = [...new Set(rows.map(accountResourceFactAccountId).filter(Boolean))]
+  const authorizationScopes = !listProjection
+    ? rows.filter((row) => row.authorization_id).map((row) => usageScope(row.authorization_id!, row.system_account_id, row.authorization_id!))
+    : []
+  const timezone = listProjection ? undefined : await usageStatsTimezoneAsync()
+  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, authorizationQuotaExceededByAuthorization, usageByAuthorization, todayUsageByAuthorization, currentConcurrencyByAccount] = await Promise.all([
+    !listProjection && factAccountIds.length ? loadSupportedModelsByAccountIdsAsync(factAccountIds) : Promise.resolve(new Map<string, string[]>()),
+    !listProjection && factAccountIds.length ? loadModelMappingsByAccountIdsAsync(factAccountIds) : Promise.resolve(new Map()),
+    loadAccountTagsByAccountIdsAsync(rows.map((row) => row.id)),
+    loadAccountSummarySystemAccountNamesAsync(client, rows.flatMap((row) => [
+      row.system_account_id,
+      row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
+    ])),
+    loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, rows),
+    listProjection ? Promise.resolve(new Map()) : loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
+    listProjection ? Promise.resolve(new Map()) : loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone!)),
+    listProjection ? Promise.resolve(new Map()) : loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id))
+  ])
+  void access
+  return {
+    supportedModelsByAccount,
+    modelMappingsByAccount,
+    tagsByAccount,
+    accountNames,
+    authorizationQuotaExceededByAuthorization,
+    usageByAuthorization,
+    todayUsageByAuthorization,
+    currentConcurrencyByAccount
+  }
+}
+
+function authorizedAccountCanReturnAuthorization(row: AccountListRow, options: AccountSummaryBuildOptions): boolean {
+  if (options.listProjection) return row.authorization_effective_source_type === 'manual'
+  return false
+}
+
 async function ownerAccountSummariesFromRowsAsync(
   client: DatabaseClient,
   rows: AccountListRow[],
@@ -772,10 +883,11 @@ async function ownerAccountSummariesFromRowsAsync(
 ): Promise<AccountSummary[]> {
   if (!rows.length) return []
   const includeCredentials = options.includeCredentials ?? true
+  const listProjection = options.listProjection === true
   const accountIds = rows.map((row) => row.id)
   const includeAccountNames = includeSystemAccountFields(access)
-  const timezone = await usageStatsTimezoneAsync()
-  const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
+  const timezone = listProjection ? undefined : await usageStatsTimezoneAsync()
+  const accountUsageScopes = listProjection ? [] : rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const ownerAccountIds = includeCredentials
     ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
     : []
@@ -790,15 +902,15 @@ async function ownerAccountSummariesFromRowsAsync(
     apiKeyRuntimeByAccount,
     apiKeyRuntimeDetailsByAccount
   ] = await Promise.all([
-    loadSupportedModelsByAccountIdsAsync(accountIds),
-    loadModelMappingsByAccountIdsAsync(accountIds),
+    listProjection ? Promise.resolve(new Map<string, string[]>()) : loadSupportedModelsByAccountIdsAsync(accountIds),
+    listProjection ? Promise.resolve(new Map()) : loadModelMappingsByAccountIdsAsync(accountIds),
     loadAccountTagsByAccountIdsAsync(accountIds),
     loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
-    loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
-    loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
-    loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
-    loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
+    listProjection ? Promise.resolve(new Map()) : loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
+    listProjection ? Promise.resolve(new Map()) : loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone!)),
+    listProjection ? Promise.resolve(new Map()) : loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    listProjection ? Promise.resolve(new Map()) : loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
+    listProjection ? Promise.resolve(new Map()) : loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
   ])
 
   return rows.map((row) => {
@@ -1283,27 +1395,28 @@ function accountSummariesFromRows(
   options: AccountSummaryBuildOptions = {}
 ): AccountSummary[] {
   const includeCredentials = options.includeCredentials ?? true
-  const timezone = usageStatsTimezone()
+  const listProjection = options.listProjection === true
+  const timezone = listProjection ? undefined : usageStatsTimezone()
   const accountIds = rows.map((row) => row.id)
-  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
+  const currentConcurrencyByAccount = listProjection ? new Map<string, number>() : loadAccountCurrentConcurrencyByIds(accountIds)
   const tagsByAccount = loadAccountTagsByAccountIds(accountIds)
-  const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const usageByAccount = loadAccountListStatsMap('account_usage_total', () => loadAccountUsageSummariesForScopes(accountUsageScopes))
-  const todayUsageByAccount = loadAccountListStatsMap('account_usage_today', () => loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone)))
-  const authorizationStatsByAccount = loadResourceAuthorizationStatsByResourceIds('account', accountIds)
-  const authorizationScopes = rows
+  const accountUsageScopes = listProjection ? [] : rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
+  const usageByAccount = listProjection ? new Map() : loadAccountListStatsMap('account_usage_total', () => loadAccountUsageSummariesForScopes(accountUsageScopes))
+  const todayUsageByAccount = listProjection ? new Map() : loadAccountListStatsMap('account_usage_today', () => loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone!)))
+  const authorizationStatsByAccount = listProjection ? new Map() : loadResourceAuthorizationStatsByResourceIds('account', accountIds)
+  const authorizationScopes = (listProjection ? [] : rows)
     .filter((row) => row.authorization_id)
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const usageByAuthorization = loadAccountListStatsMap('account_authorization_usage_total', () => loadAccountAuthorizationUsageSummaries(authorizationScopes))
-  const todayUsageByAuthorization = loadAccountListStatsMap('account_authorization_usage_today', () => loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone)))
+  const usageByAuthorization = listProjection ? new Map() : loadAccountListStatsMap('account_authorization_usage_total', () => loadAccountAuthorizationUsageSummaries(authorizationScopes))
+  const todayUsageByAuthorization = listProjection ? new Map() : loadAccountListStatsMap('account_authorization_usage_today', () => loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone!)))
   const quotaExceededByAuthorization = loadAuthorizationQuotaExceededByAuthorizationId(rows)
-  const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
-  const oauthUsageByAccount = loadAccountListStatsMap('account_oauth_usage_snapshot', () => loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row))))
-  const apiKeyRuntimeByAccount = loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
+  const sourcesByAuthorization = listProjection ? new Map() : loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
+  const oauthUsageByAccount = listProjection ? new Map() : loadAccountListStatsMap('account_oauth_usage_snapshot', () => loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row))))
+  const apiKeyRuntimeByAccount = listProjection ? new Map() : loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
   const ownerAccountIds = includeCredentials
     ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
     : []
-  const apiKeyRuntimeDetailsByAccount = loadAccountApiKeyRuntimeDetailsByAccountIds(ownerAccountIds)
+  const apiKeyRuntimeDetailsByAccount = listProjection ? new Map() : loadAccountApiKeyRuntimeDetailsByAccountIds(ownerAccountIds)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows
     ? loadSystemAccountNameMapByIds(rows.flatMap((row) => [
@@ -1448,7 +1561,9 @@ function accountSummariesFromRows(
       authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
       authorizationQuotaExceeded,
       authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(authorizationSources, isAuthorizedView) : undefined,
-      permissions: isAuthorizedView ? authorizedAccountPermissions(hasActiveManualAuthorizationSource(authorizationSources)) : ownerPermissions(),
+      permissions: isAuthorizedView
+        ? authorizedAccountPermissions(listProjection ? row.authorization_effective_source_type === 'manual' : hasActiveManualAuthorizationSource(authorizationSources))
+        : ownerPermissions(),
       authorizationUsageAvailable: !isAuthorizedView && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),
       authorizationCount: isAuthorizedView ? 0 : authorizationStats.authorizationCount,
       authorizationTeamCount: isAuthorizedView ? 0 : authorizationStats.authorizationTeamCount

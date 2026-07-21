@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -59,9 +58,9 @@ func TestManagementExternalIntegrationSourceCreateHandlerSuccessAndOperationLog(
 		t.Fatalf("rate limits type = %T", input.RateLimits)
 	}
 	var response struct {
-		Data managementexternalintegrationsources.CreateResult `json:"data"`
+		Data map[string]json.RawMessage `json:"data"`
 	}
-	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || !reflect.DeepEqual(response.Data, result) {
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil || len(response.Data) != 1 || response.Data["token"] == nil {
 		t.Fatalf("response=%#v err=%v", response, err)
 	}
 

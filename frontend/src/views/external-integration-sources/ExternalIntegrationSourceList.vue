@@ -119,8 +119,8 @@ import type { RowActionItem } from '@/components/rowActions'
 import { formatDateTime } from '@/shared/formatters'
 import type {
   ExternalIntegrationSourceStatus,
-  ExternalIntegrationSourceSummary,
-  ExternalIntegrationSourceTokenSummary
+  ExternalIntegrationSourceListItem,
+  ExternalIntegrationSourcePrimaryTokenSummary
 } from '@/types/domain'
 import { formatRateLimits } from './externalSourceFormModel'
 
@@ -133,23 +133,23 @@ export type ExternalSourceRowActionKey =
   | 'resetToken'
 
 defineProps<{
-  actions: (record: ExternalIntegrationSourceSummary) => RowActionItem[]
-  dataSource: ExternalIntegrationSourceSummary[]
-  formatTokenPreview: (token: ExternalIntegrationSourceTokenSummary | undefined) => string
+  actions: (record: ExternalIntegrationSourceListItem) => RowActionItem[]
+  dataSource: ExternalIntegrationSourceListItem[]
+  formatTokenPreview: (token: ExternalIntegrationSourcePrimaryTokenSummary | undefined) => string
   loading: boolean
   pagination: ResponsiveDataListTablePagination
-  primaryToken: (record: ExternalIntegrationSourceSummary) => ExternalIntegrationSourceTokenSummary | undefined
+  primaryToken: (record: ExternalIntegrationSourceListItem) => ExternalIntegrationSourcePrimaryTokenSummary | undefined
   scopeLabel: (scope: string) => string
-  sourceNotes: (record: ExternalIntegrationSourceSummary) => string
+  sourceNotes: (record: ExternalIntegrationSourceListItem) => string
   tokenCopyingKey: string
-  tokenCopyKey: (record: ExternalIntegrationSourceSummary) => string
-  tokenDisplayTitle: (token: ExternalIntegrationSourceTokenSummary | undefined) => string
+  tokenCopyKey: (record: ExternalIntegrationSourceListItem) => string
+  tokenDisplayTitle: (token: ExternalIntegrationSourcePrimaryTokenSummary | undefined) => string
 }>()
 
 const emit = defineEmits<{
   change: [...args: unknown[]]
-  'action-click': [actionKey: ExternalSourceRowActionKey, record: ExternalIntegrationSourceSummary]
-  'copy-token': [record: ExternalIntegrationSourceSummary]
+  'action-click': [actionKey: ExternalSourceRowActionKey, record: ExternalIntegrationSourceListItem]
+  'copy-token': [record: ExternalIntegrationSourceListItem]
 }>()
 
 const columns = [
@@ -164,7 +164,7 @@ const columns = [
   { title: '操作', key: 'actions', width: 120, fixed: 'right', align: 'left' }
 ]
 
-function emitActionClick(actionKey: string, record: ExternalIntegrationSourceSummary): void {
+function emitActionClick(actionKey: string, record: ExternalIntegrationSourceListItem): void {
   emit('action-click', actionKey as ExternalSourceRowActionKey, record)
 }
 

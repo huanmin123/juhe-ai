@@ -67,7 +67,7 @@ try {
   assert.equal(firstPageLikeList.some((announcement) => announcement.id === targetId), false, '最早创建的第 250 条外公告不应出现在前 200 条列表窗口里')
   const largeListItem = firstPageLikeList.find((announcement) => announcement.id === largeAnnouncement.id)
   assert(largeListItem, '列表应返回公告摘要')
-  assert(largeListItem.content.endsWith('...') && largeListItem.content.length < largeContent.length, '公告列表应只返回内容预览')
+  assert(largeListItem.contentPreview.endsWith('...') && largeListItem.contentPreview.length < largeContent.length, '公告列表应只返回显式内容预览')
 
   const target = repositories.findAnnouncement(targetId)
   assert.equal(target?.id, targetId, '按 ID 单条读取应能找到前 200 条之外的公告')

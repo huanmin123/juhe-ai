@@ -12,6 +12,7 @@ import {
   deleteGroupAsync,
   getAccountUsageStatsOverviewPageAsync
 } from '../../storage/repositories.js'
+import { getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '账号用量统计 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -83,7 +84,9 @@ try {
   })
   assert.deepEqual(keywordResult.rows.map((row) => row.id), [matchedAccount.id], 'PG 账号用量关键词应先解析账号 ID 再命中窗口表')
   assert.equal(keywordResult.rows[0]?.rangeUsage.requestCount, 31, 'PG 账号用量关键词结果应读取范围窗口用量')
-  const dailyPoint = keywordResult.rows[0]?.dailyUsage.find((point) => point.statDate === range.startDate)
+  assert.deepEqual(keywordResult.rows[0]?.dailyUsage, [], 'PG 账号用量列表不应携带日趋势')
+  const keywordTrend = await getAccountUsageStatsTrendAsync(access, range, [matchedAccount.id])
+  const dailyPoint = keywordTrend.rows[0]?.dailyUsage.find((point) => point.statDate === range.startDate)
   assert.equal(dailyPoint?.requestCount, 31, 'PG 账号用量日趋势应读取 usage_stats_daily')
 
   const selectedResult = await getAccountUsageStatsOverviewPageAsync(access, {

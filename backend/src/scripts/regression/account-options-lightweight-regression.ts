@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { SQLInputValue } from 'node:sqlite'
@@ -85,6 +85,18 @@ interface SeedState {
 let server: ReturnType<typeof app.listen> | undefined
 
 try {
+  const repositorySource = readFileSync(new URL('../../storage/account-options.repository.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(repositorySource, /\blistAccountsPageAsync\b/, '账户 options 的额度筛选不得回退完整账户列表 summary')
+  const { collectAccountOptionCandidateMatches } = await import('../../storage/account-options.repository.js')
+  const loadedPages: number[] = []
+  const tailMatches = await collectAccountOptionCandidateMatches(1, async (page) => {
+    loadedPages.push(page)
+    return page === 1
+      ? { items: [] as string[], exhausted: false }
+      : { items: ['第 201 条后的额度命中'], exhausted: true }
+  })
+  assert.deepEqual(loadedPages, [1, 2], '账户 options 额度筛选首批 200 条无命中时必须继续读取下一批')
+  assert.deepEqual(tailMatches, ['第 201 条后的额度命中'], '账户 options 额度筛选必须返回 200 条之后的尾部命中')
   const seed = seedData()
   server = app.listen(0, '127.0.0.1')
   await onceListening(server)

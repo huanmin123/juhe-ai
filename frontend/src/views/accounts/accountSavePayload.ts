@@ -472,7 +472,8 @@ function modelOptionSupportsProtocol(
   if (!options?.length) return true
   const item = options.find((option) => option.value === model)
   if (!item) return true
-  return Boolean(item.supportedApiProtocols?.includes(endpointFamily as ProviderModelApiProtocol))
+  if (!item.supportedApiProtocols?.length) return true
+  return item.supportedApiProtocols.includes(endpointFamily as ProviderModelApiProtocol)
 }
 
 function isOpenAIResponsesToChatMapping(

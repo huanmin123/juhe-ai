@@ -1,267 +1,82 @@
+import assert from 'node:assert/strict'
 import { computed, ref } from 'vue'
-import { readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
 
 import { api } from '@/api/client'
-import type { ProviderModelOption, ProviderModelPricing, ProviderModelsParams } from '@/types/domain'
-import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
+import type { ProviderModelOption } from '@/types/domain'
 import {
   invalidateAccountProviderModelOptionsCache,
   useAccountProviderModelOptions
 } from '../../views/accounts/useAccountProviderModelOptions'
 
-type ModelsLoader = (code: string, params?: ProviderModelsParams) => Promise<ProviderModelPricing[]>
 type ModelOptionsLoader = typeof api.providers.modelOptions
-
-const accountProviderModelSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountProviderModelOptions.ts', import.meta.url)), 'utf8')
-const globalProviderModelSource = readFileSync(fileURLToPath(new URL('../../composables/useProviderModelSelectOptions.ts', import.meta.url)), 'utf8')
-assertIncludes(accountProviderModelSource, 'getDefaultPageDataResourceCache', '账户供应商模型必须复用统一 IndexedDB resource cache')
-assertIncludes(accountProviderModelSource, "domain: 'providers.catalog'", '账户供应商模型必须绑定 providers.catalog revision')
-assertNotIncludes(accountProviderModelSource, 'providerModelOptionsCache = new Map', '账户供应商模型不得继续维护独立模块 Map')
-assertIncludes(globalProviderModelSource, 'getDefaultPageDataResourceCache', '全局模型下拉必须复用统一 IndexedDB resource cache')
-assertIncludes(globalProviderModelSource, "domain: 'providers.catalog'", '全局模型下拉必须绑定 providers.catalog revision')
-
-const originalModels = api.providers.models
 const originalModelOptions = api.providers.modelOptions
-const calls: Array<{ code: string; params?: ProviderModelsParams }> = []
-const modelOptionCalls: unknown[] = []
-let latestModels: ProviderModelPricing[] = [{
-  ...providerModel('gpt-cache-old', ['chat_completions']),
-  supportedServiceTiers: ['priority'],
-  supportedReasoningEfforts: ['medium', 'high'],
-  defaultReasoningEffort: 'high'
-}]
-const latestGlobalModels: ProviderModelOption[] = [
-  { providerCode: 'gpt', model: 'gpt-global-model', supportedApiProtocols: ['chat_completions'] },
-  { providerCode: 'gpt', model: 'gpt-global-model', supportedApiProtocols: ['responses'] },
-  { providerCode: 'anthropic', model: 'claude-global-model', supportedApiProtocols: ['messages'] },
-  { providerCode: 'gemini', model: 'gemini-global-model', supportedApiProtocols: ['generate_content', 'stream_generate_content'] }
-]
+const calls: Array<Record<string, unknown> | undefined> = []
+let latestModels: ProviderModelOption[] = [{ id: 'gpt-cache-old', name: 'GPT Cache Old' }]
 
-;(api.providers as unknown as { models: ModelsLoader }).models = async (code, params) => {
-  calls.push({ code, params })
-  return latestModels
-}
 ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = async (params) => {
-  modelOptionCalls.push(params ?? {})
-  return latestGlobalModels
+  calls.push(params)
+  return latestModels
 }
 
 try {
   invalidateAccountProviderModelOptionsCache()
-
+  const currentProviderCode = ref('openai')
   const modelOptions = useAccountProviderModelOptions({
-    currentProviderCode: () => 'openai',
+    currentProviderCode: () => currentProviderCode.value,
     extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
     isManagementView: computed(() => false),
     modelScopeParams: computed(() => undefined)
   })
 
   await modelOptions.loadProviderModelOptions('openai')
-  assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old'], '首次加载应读取接口模型目录')
-  assertDeepEqual(
-    protocolsByValue(modelOptions.providerModelOptions.value),
-    { 'gpt-cache-old': ['chat_completions'] },
-    '普通供应商模型选项必须保留协议能力，供账号模型别名右侧按协议过滤'
-  )
-  assertDeepEqual(
-    requestCapabilitiesByValue(modelOptions.providerModelOptions.value),
-    {
-      'gpt-cache-old': {
-        supportedServiceTiers: ['priority'],
-        supportedReasoningEfforts: ['medium', 'high'],
-        defaultReasoningEffort: 'high'
-      }
-    },
-    'GPT 账户模型选项必须保留模型目录精确请求能力'
-  )
-  assertEqual(calls.length, 1, '首次加载应请求一次模型目录')
+  assert.deepEqual(modelOptions.providerModelOptions.value, [{ label: 'GPT Cache Old', value: 'gpt-cache-old' }])
+  assert.deepEqual(calls[0], { providerCode: 'openai', limit: 50 })
 
   latestModels = [
-    { ...providerModel('gpt-cache-old', ['chat_completions']), supportedServiceTiers: ['priority'], supportedReasoningEfforts: ['medium'] },
-    { ...providerModel('gpt-cache-old', ['responses']), supportedServiceTiers: ['flex'], supportedReasoningEfforts: ['high'], defaultReasoningEffort: 'high' },
-    providerModel('gpt-cache-new', ['responses'])
+    { id: 'gpt-cache-old', name: 'GPT Cache Old' },
+    { id: 'gpt-cache-new', name: 'GPT Cache New' }
   ]
   await modelOptions.loadProviderModelOptions('openai')
-  assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old'], '未失效时应继续使用缓存模型目录')
-  assertEqual(calls.length, 1, '未失效时不应重复请求模型目录')
-
-  invalidateAccountProviderModelOptionsCache('gpt')
-  await modelOptions.loadProviderModelOptions('openai')
-  assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old'], '其他供应商失效不应清理当前供应商缓存')
-  assertEqual(calls.length, 1, '其他供应商失效后不应重新请求当前供应商模型目录')
+  assert.equal(calls.length, 1, '未失效时应继续使用供应商维度缓存')
 
   invalidateAccountProviderModelOptionsCache('openai')
   await modelOptions.loadProviderModelOptions('openai')
-  assertDeepEqual(optionValues(modelOptions.providerModelOptions.value), ['gpt-cache-old', 'gpt-cache-new'], '当前供应商失效后应重新读取模型目录')
-  assertDeepEqual(
-    protocolsByValue(modelOptions.providerModelOptions.value),
-    { 'gpt-cache-old': ['chat_completions', 'responses'], 'gpt-cache-new': ['responses'] },
-    '重复模型去重时必须合并协议能力'
-  )
-  assertDeepEqual(
-    requestCapabilitiesByValue(modelOptions.providerModelOptions.value)['gpt-cache-old'],
-    {
-      supportedServiceTiers: ['priority', 'flex'],
-      supportedReasoningEfforts: ['medium', 'high'],
-      defaultReasoningEffort: 'high'
-    },
-    '重复模型去重时必须合并请求覆盖能力'
-  )
-  assertEqual(calls.length, 2, '当前供应商失效后应重新请求模型目录')
-
-  const scopedModelOptions = useAccountProviderModelOptions({
-    currentProviderCode: () => 'openai',
-    extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
-    isManagementView: computed(() => true),
-    modelScopeParams: computed(() => ({ systemAccountId: 'sys_user_model_scope' }))
-  })
-  await scopedModelOptions.loadProviderModelOptions('openai')
-  assertEqual(calls.length, 3, '管理视图目标用户模型目录应使用独立缓存并重新请求')
-  assertEqual(calls[2]?.params?.systemAccountId, 'sys_user_model_scope', '非混合供应商模型目录请求必须携带目标系统账户')
-
-  const hybridModelOptions = useAccountProviderModelOptions({
-    currentProviderCode: () => 'hybrid',
-    extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
-    isManagementView: computed(() => true),
-    modelScopeParams: computed(() => ({ systemAccountId: 'sys_admin' }))
-  })
-  await hybridModelOptions.loadProviderModelOptions('hybrid')
-  assertDeepEqual(
-    optionValues(hybridModelOptions.providerModelOptions.value),
-    ['gpt-global-model', 'claude-global-model', 'gemini-global-model'],
-    '混合供应商应加载全局模型池而不是 hybrid 自身模型目录'
-  )
-  assertDeepEqual(
-    protocolsByValue(hybridModelOptions.providerModelOptions.value),
-    {
-      'gpt-global-model': ['chat_completions', 'responses'],
-      'claude-global-model': ['messages'],
-      'gemini-global-model': ['generate_content', 'stream_generate_content']
-    },
-    '混合供应商全局模型池也必须保留并合并协议能力'
-  )
-  assertEqual(modelOptionCalls.length, 1, '混合供应商应请求一次全局模型选项接口')
-  assertEqual(calls.length, 3, '混合供应商不应请求 /providers/hybrid/models 作为创建页模型候选')
+  assert.deepEqual(modelOptions.providerModelOptions.value.map((item) => item.value), ['gpt-cache-old', 'gpt-cache-new'])
+  assert.equal(calls.length, 2, '当前供应商失效后应重新请求轻量选项')
 
   invalidateAccountProviderModelOptionsCache()
-  const providerScopeId = ref('sys_scope_a')
-  const providerScopeRequests = new Map<string, Deferred<ProviderModelPricing[]>>()
-  const providerScopeCalls: string[] = []
-  ;(api.providers as unknown as { models: ModelsLoader }).models = async (_code, params) => {
-    const systemAccountId = params?.systemAccountId ?? ''
-    providerScopeCalls.push(systemAccountId)
-    const request = deferred<ProviderModelPricing[]>()
-    providerScopeRequests.set(systemAccountId, request)
-    return request.promise
-  }
-  const racedProviderModels = useAccountProviderModelOptions({
-    currentProviderCode: () => 'openai',
-    extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
-    isManagementView: computed(() => true),
-    modelScopeParams: computed(() => ({ systemAccountId: providerScopeId.value }))
-  })
-  const providerScopeA = racedProviderModels.loadProviderModelOptions('openai')
-  providerScopeId.value = 'sys_scope_b'
-  const providerScopeB = racedProviderModels.loadProviderModelOptions('openai')
-  await waitFor(() => providerScopeCalls.length === 2, '不同系统账户模型目录请求未进入 loader')
-  assertDeepEqual(providerScopeCalls, ['sys_scope_a', 'sys_scope_b'], '不同系统账户作用域必须各自发起模型目录请求')
-  providerScopeRequests.get('sys_scope_b')?.resolve([providerModel('scope-b-model', ['responses'])])
-  await providerScopeB
-  providerScopeRequests.get('sys_scope_a')?.resolve([providerModel('scope-a-model', ['chat_completions'])])
-  await providerScopeA
-  assertDeepEqual(
-    optionValues(racedProviderModels.providerModelOptions.value),
-    ['scope-b-model'],
-    '同供应商旧作用域的慢响应不得覆盖当前系统账户模型目录'
-  )
-  assertEqual(racedProviderModels.providerModelsLoading.value, false, '当前作用域完成后 loading 必须及时结束')
-
-  const globalScopeId = ref('sys_global_a')
-  const globalScopeRequests = new Map<string, Deferred<ProviderModelOption[]>>()
-  const globalScopeCalls: string[] = []
+  const scopeId = ref('sys_scope_a')
+  const requests = new Map<string, Deferred<ProviderModelOption[]>>()
   ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = async (params) => {
     const systemAccountId = params?.systemAccountId ?? ''
-    globalScopeCalls.push(systemAccountId)
     const request = deferred<ProviderModelOption[]>()
-    globalScopeRequests.set(systemAccountId, request)
+    requests.set(systemAccountId, request)
     return request.promise
   }
-  const racedGlobalModels = useProviderModelSelectOptions({
-    protocol: 'openai',
-    scopeParams: computed(() => ({ systemAccountId: globalScopeId.value }))
+  const raced = useAccountProviderModelOptions({
+    currentProviderCode: () => currentProviderCode.value,
+    extractApiErrorMessage: (error, fallback) => error instanceof Error ? error.message : fallback,
+    isManagementView: computed(() => true),
+    modelScopeParams: computed(() => ({ systemAccountId: scopeId.value }))
   })
-  const globalScopeA = racedGlobalModels.loadModelOptions()
-  globalScopeId.value = 'sys_global_b'
-  const globalScopeB = racedGlobalModels.loadModelOptions()
-  await waitFor(() => globalScopeCalls.length === 2, '不同系统账户全局模型请求未进入 loader')
-  assertDeepEqual(globalScopeCalls, ['sys_global_a', 'sys_global_b'], '全局模型选项切换作用域时不得复用旧 scope Promise')
-  globalScopeRequests.get('sys_global_b')?.resolve([
-    { providerCode: 'gpt', model: 'global-b-model', supportedApiProtocols: ['responses'] }
-  ])
-  await globalScopeB
-  globalScopeRequests.get('sys_global_a')?.resolve([
-    { providerCode: 'gpt', model: 'global-a-model', supportedApiProtocols: ['chat_completions'] }
-  ])
-  await globalScopeA
-  assertDeepEqual(
-    optionValues(racedGlobalModels.selectOptions.value),
-    ['global-b-model'],
-    '旧作用域全局模型选项响应不得覆盖当前系统账户候选'
-  )
-  assertEqual(racedGlobalModels.loading.value, false, '当前全局模型作用域完成后 loading 必须及时结束')
+  const scopeA = raced.loadProviderModelOptions('openai')
+  scopeId.value = 'sys_scope_b'
+  const scopeB = raced.loadProviderModelOptions('openai')
+  await waitFor(() => requests.size === 2)
+  requests.get('sys_scope_b')?.resolve([{ id: 'scope-b-model', name: 'Scope B' }])
+  await scopeB
+  requests.get('sys_scope_a')?.resolve([{ id: 'scope-a-model', name: 'Scope A' }])
+  await scopeA
+  assert.deepEqual(raced.providerModelOptions.value, [{ label: 'Scope B', value: 'scope-b-model' }])
+  assert.equal(raced.providerModelsLoading.value, false)
 
-  console.log('账户模型选项缓存回归通过：缓存失效、作用域隔离和逆序响应均符合预期')
+  console.log('账户模型选项缓存回归通过：轻量契约、供应商缓存失效、作用域隔离和逆序响应均符合预期')
 } finally {
-  ;(api.providers as unknown as { models: ModelsLoader }).models = originalModels
   ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = originalModelOptions
   invalidateAccountProviderModelOptionsCache()
 }
 
-function optionValues(options: Array<{ value: string }>): string[] {
-  return options.map((option) => option.value)
-}
-
-function protocolsByValue(options: Array<{ value: string; supportedApiProtocols?: string[] }>): Record<string, string[] | undefined> {
-  return Object.fromEntries(options.map((option) => [option.value, option.supportedApiProtocols]))
-}
-
-function requestCapabilitiesByValue(options: Array<{
-  value: string
-  supportedServiceTiers?: string[]
-  supportedReasoningEfforts?: string[]
-  defaultReasoningEffort?: string
-}>): Record<string, unknown> {
-  return Object.fromEntries(options.map((option) => [option.value, {
-    supportedServiceTiers: option.supportedServiceTiers,
-    supportedReasoningEfforts: option.supportedReasoningEfforts,
-    defaultReasoningEffort: option.defaultReasoningEffort
-  }]))
-}
-
-function assertEqual<T>(actual: T, expected: T, message: string): void {
-  if (!Object.is(actual, expected)) {
-    throw new Error(`${message}，实际 ${String(actual)}，预期 ${String(expected)}`)
-  }
-}
-
-function assertDeepEqual(actual: unknown, expected: unknown, message: string): void {
-  const actualJson = JSON.stringify(actual)
-  const expectedJson = JSON.stringify(expected)
-  if (actualJson !== expectedJson) {
-    throw new Error(`${message}，实际 ${actualJson}，预期 ${expectedJson}`)
-  }
-}
-
-function assertIncludes(source: string, expected: string, message: string): void {
-  if (!source.includes(expected)) throw new Error(`${message}，缺少 ${expected}`)
-}
-
-function assertNotIncludes(source: string, unexpected: string, message: string): void {
-  if (source.includes(unexpected)) throw new Error(`${message}，不应包含 ${unexpected}`)
-}
-
-type Deferred<T> = {
+interface Deferred<T> {
   promise: Promise<T>
   resolve: (value: T) => void
 }
@@ -274,23 +89,10 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve }
 }
 
-async function waitFor(predicate: () => boolean, message: string): Promise<void> {
+async function waitFor(predicate: () => boolean): Promise<void> {
   for (let index = 0; index < 50; index += 1) {
     if (predicate()) return
     await Promise.resolve()
   }
-  throw new Error(message)
-}
-
-function providerModel(model: string, supportedApiProtocols: ProviderModelPricing['supportedApiProtocols']): ProviderModelPricing {
-  return {
-    providerCode: 'openai',
-    model,
-    source: 'custom-personal',
-    scope: 'personal',
-    status: 'active',
-    supportsPromptCaching: false,
-    supportsServiceTier: false,
-    supportedApiProtocols
-  }
+  throw new Error('等待账户模型选项请求超时')
 }

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountUsageStatsRange, AccountUsageSummary, ResourceAuthorizationListResult, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AccountUsageStatsRange, AccountUsageSummary, ResourceAuthorizationListItem, ResourceAuthorizationListResult, ResourceAuthorizationSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
@@ -17,10 +17,12 @@ import {
   sanitizeResourceAuthorizationSummaryForAccess,
   withResourceAuthorizationPermissions
 } from './resource-authorization-list-helpers.js'
-import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
+import { canManageResourceOwner, resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
 import {
   loadAccountLookupMap,
   loadAccountLookupMapAsync,
+  loadAccountNameMap,
+  loadAccountNameMapAsync,
   loadGroupNameMap,
   loadGroupNameMapAsync,
   loadSystemAccountPrincipalMapByIds,
@@ -69,12 +71,26 @@ interface NormalizedResourceAuthorizationPageOptions {
 }
 
 interface ResourceAuthorizationGrantRowsPage {
-  rows: ResourceAuthorizationGrantRow[]
+  rows: ResourceAuthorizationListRow[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
 }
+
+type ResourceAuthorizationListRow = Pick<ResourceAuthorizationGrantRow,
+  | 'id'
+  | 'resource_type'
+  | 'resource_id'
+  | 'resource_owner_system_account_id'
+  | 'grantee_type'
+  | 'grantee_system_account_id'
+  | 'grantee_team_id'
+  | 'status'
+  | 'remark'
+  | 'expires_at'
+  | 'created_at'
+>
 
 interface ResourceAuthorizationReadTables {
   resourceAuthorizationGrants: string
@@ -100,15 +116,8 @@ export function listResourceAuthorizationSummaries(filters: Record<string, unkno
 }
 
 export function listResourceAuthorizationSummariesPage(filters: Record<string, unknown>, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationListResult {
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const page = listResourceAuthorizationGrantOperationRowsPage(filters, access, options)
-  const items = resourceAuthorizationGrantSummaries(page.rows, options)
-    .sort(compareResourceAuthorizationOperations)
-    .map((summary) => withResourceAuthorizationPermissions(
-      sanitizeResourceAuthorizationSummaryForAccess(summary, access),
-      viewerSystemAccountId,
-      access
-    ))
+  const items = resourceAuthorizationListItems(page.rows, access)
   return {
     items,
     total: page.total,
@@ -122,15 +131,8 @@ export async function listResourceAuthorizationSummariesPageAsync(filters: Recor
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listResourceAuthorizationSummariesPage(filters, access, options)
   }
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const page = await listResourceAuthorizationGrantOperationRowsPageAsync(filters, access, options)
-  const items = (await resourceAuthorizationGrantSummariesAsync(page.rows, options))
-    .sort(compareResourceAuthorizationOperations)
-    .map((summary) => withResourceAuthorizationPermissions(
-      sanitizeResourceAuthorizationSummaryForAccess(summary, access),
-      viewerSystemAccountId,
-      access
-    ))
+  const items = await resourceAuthorizationListItemsAsync(page.rows, access)
   return {
     items,
     total: page.total,
@@ -174,7 +176,7 @@ function listResourceAuthorizationGrantOperationRowsPage(filters: Record<string,
   const rows = listResourceAuthorizationGrantOperationRows(filters, access, {
     limit: pageOptions.pageSize + 1,
     offset: (pageOptions.page - 1) * pageOptions.pageSize
-  })
+  }, true)
   const pageRows = takePageRows(rows, pageOptions.pageSize)
   return {
     rows: pageRows.rows,
@@ -190,7 +192,7 @@ async function listResourceAuthorizationGrantOperationRowsPageAsync(filters: Rec
   const rows = await listResourceAuthorizationGrantOperationRowsAsync(filters, access, {
     limit: pageOptions.pageSize + 1,
     offset: (pageOptions.page - 1) * pageOptions.pageSize
-  })
+  }, true)
   const pageRows = takePageRows(rows, pageOptions.pageSize)
   return {
     rows: pageRows.rows,
@@ -211,7 +213,9 @@ function normalizeResourceAuthorizationPageOptions(options: ResourceAuthorizatio
   return { page, pageSize }
 }
 
-function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }): ResourceAuthorizationGrantRow[] {
+function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, listProjection: true): ResourceAuthorizationListRow[]
+function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }, listProjection?: false): ResourceAuthorizationGrantRow[]
+function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }, listProjection = false): ResourceAuthorizationGrantRow[] | ResourceAuthorizationListRow[] {
   const clauses: string[] = []
   const params: Array<string | number | null> = []
   const grantId = optionalString(filters.id)
@@ -298,12 +302,17 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
-  return getBusinessDatabase().prepare(`SELECT ${resourceAuthorizationGrantSelectColumns('rag')} FROM resource_authorization_grants rag ${where} ORDER BY rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
+  const columns = listProjection ? resourceAuthorizationListSelectColumns('rag') : resourceAuthorizationGrantSelectColumns('rag')
+  return getBusinessDatabase().prepare(`SELECT ${columns} FROM resource_authorization_grants rag ${where} ORDER BY rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[] | ResourceAuthorizationListRow[]
 }
 
-async function listResourceAuthorizationGrantOperationRowsAsync(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }): Promise<ResourceAuthorizationGrantRow[]> {
+function listResourceAuthorizationGrantOperationRowsAsync(filters: Record<string, unknown>, access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, listProjection: true): Promise<ResourceAuthorizationListRow[]>
+function listResourceAuthorizationGrantOperationRowsAsync(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }, listProjection?: false): Promise<ResourceAuthorizationGrantRow[]>
+async function listResourceAuthorizationGrantOperationRowsAsync(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }, listProjection = false): Promise<ResourceAuthorizationGrantRow[] | ResourceAuthorizationListRow[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return listResourceAuthorizationGrantOperationRows(filters, access, pagination)
+    return listProjection
+      ? listResourceAuthorizationGrantOperationRows(filters, access, pagination, true)
+      : listResourceAuthorizationGrantOperationRows(filters, access, pagination, false)
   }
   const client = await getResourceAuthorizationReadDatabaseClient()
   const tables = resourceAuthorizationReadTables(client)
@@ -312,7 +321,7 @@ async function listResourceAuthorizationGrantOperationRowsAsync(filters: Record<
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   return client.query<ResourceAuthorizationGrantRow>(`
-    SELECT ${resourceAuthorizationGrantSelectColumns('rag')}
+    SELECT ${listProjection ? resourceAuthorizationListSelectColumns('rag') : resourceAuthorizationGrantSelectColumns('rag')}
     FROM ${tables.resourceAuthorizationGrants} rag
     ${where}
     ORDER BY rag.created_at DESC, rag.id DESC${pageClause}
@@ -602,6 +611,22 @@ function resourceAuthorizationGrantSelectColumns(alias: string): string {
   ].map((column) => `${alias}.${column}`).join(', ')
 }
 
+function resourceAuthorizationListSelectColumns(alias: string): string {
+  return [
+    'id',
+    'resource_type',
+    'resource_id',
+    'resource_owner_system_account_id',
+    'grantee_type',
+    'grantee_system_account_id',
+    'grantee_team_id',
+    'status',
+    'remark',
+    'expires_at',
+    'created_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
+}
+
 export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getBusinessDatabase()): ResourceAuthorizationRow | undefined {
   if (!row.grantee_system_account_id) return undefined
   return database.prepare(`
@@ -674,6 +699,95 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
       updatedAt: row.updated_at
     }
   })
+}
+
+function resourceAuthorizationListItems(rows: ResourceAuthorizationListRow[], access?: AccessScope): ResourceAuthorizationListItem[] {
+  const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
+  const authorizationInstanceAccountNames = loadAuthorizationInstanceAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
+  const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
+  const systemAccounts = loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
+  const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
+  return rows.map((row) => resourceAuthorizationListItemFromRow(
+    row,
+    accountNames,
+    authorizationInstanceAccountNames,
+    groupNames,
+    systemAccounts,
+    teamNames,
+    access
+  ))
+}
+
+async function resourceAuthorizationListItemsAsync(rows: ResourceAuthorizationListRow[], access?: AccessScope): Promise<ResourceAuthorizationListItem[]> {
+  const client = await getResourceAuthorizationReadDatabaseClient()
+  const [accountNames, authorizationInstanceAccountNames, groupNames, systemAccounts, teamNames] = await Promise.all([
+    loadAccountNameMapAsync(client, rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id)),
+    loadAuthorizationInstanceAccountNameMapAsync(client, rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id)),
+    loadGroupNameMapAsync(client, rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id)),
+    loadSystemAccountPrincipalMapByIdsAsync(client, rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? ''])),
+    loadSystemTeamNameMapAsync(client, rows.map((row) => row.grantee_team_id ?? ''))
+  ])
+  return rows.map((row) => resourceAuthorizationListItemFromRow(
+    row,
+    accountNames,
+    authorizationInstanceAccountNames,
+    groupNames,
+    systemAccounts,
+    teamNames,
+    access
+  ))
+}
+
+function resourceAuthorizationListItemFromRow(
+  row: ResourceAuthorizationListRow,
+  accountNames: Map<string, string>,
+  authorizationInstanceAccountNames: Map<string, string>,
+  groupNames: Map<string, string>,
+  systemAccounts: Map<string, { username: string; displayName: string }>,
+  teamNames: Map<string, string>,
+  access?: AccessScope
+): ResourceAuthorizationListItem {
+  const owner = systemAccounts.get(row.resource_owner_system_account_id)
+  const grantee = row.grantee_system_account_id ? systemAccounts.get(row.grantee_system_account_id) : undefined
+  const teamName = row.grantee_team_id ? teamNames.get(row.grantee_team_id) : undefined
+  const isTeamSource = row.grantee_type === 'team'
+  const sourceActive = row.status === 'active' || row.status === 'paused'
+  const canManage = canManageResourceOwner(row.resource_owner_system_account_id, access)
+  return {
+    id: row.id,
+    resourceType: row.resource_type,
+    resourceId: row.resource_id,
+    resourceName: row.resource_type === 'account'
+      ? accountNames.get(row.resource_id) ?? authorizationInstanceAccountNames.get(row.resource_id)
+      : groupNames.get(row.resource_id),
+    resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
+    resourceOwnerSystemAccountName: owner?.displayName,
+    granteeType: row.grantee_type,
+    granteeSystemAccountId: row.grantee_system_account_id ?? undefined,
+    granteeSystemAccountName: grantee?.displayName,
+    granteeUsername: grantee?.username,
+    granteeTeamId: row.grantee_team_id ?? undefined,
+    granteeTeamName: teamName,
+    status: row.status,
+    remark: row.remark ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
+    effectiveSourceType: isTeamSource ? 'team' : 'manual',
+    effectiveSourceTeamId: canManage ? row.grantee_team_id ?? undefined : undefined,
+    effectiveSourceTeamName: canManage ? teamName : undefined,
+    createdAt: row.created_at,
+    sourceSummary: {
+      activeSourceCount: sourceActive ? 1 : 0,
+      hasManual: sourceActive && !isTeamSource,
+      hasTeam: sourceActive && isTeamSource,
+      teamSources: sourceActive && isTeamSource && canManage && row.grantee_team_id
+        ? [{ sourceTeamId: row.grantee_team_id, sourceTeamName: teamName }]
+        : []
+    },
+    permissions: {
+      canEdit: canManage,
+      canAuthorize: canManage
+    }
+  }
 }
 
 async function resourceAuthorizationGrantSummariesAsync(rows: ResourceAuthorizationGrantRow[], options: ResourceAuthorizationListOptions = {}): Promise<ResourceAuthorizationSummary[]> {

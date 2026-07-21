@@ -609,7 +609,10 @@ router.beforeEach(async (to) => {
   } catch {
     if (generation !== navigationGeneration) return false
     if (to.meta.public) return true
-    return { path: '/service-recovering', query: { redirect: to.fullPath } }
+    return {
+      path: '/service-recovering',
+      query: { redirect: to.fullPath }
+    }
   }
   if (generation !== navigationGeneration) return false
   if (to.name === 'not-found') {

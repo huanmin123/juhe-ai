@@ -12,7 +12,8 @@ import { ensureRequestQuotaDatabaseAttached, requestQuotaExceededSql, type Reque
 import { authorizedAccountPermissions, ownerPermissions } from './resource-permissions.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { getPostgresPool } from './postgres-client.js'
-import { listAccountsPageAsync } from './account-summary.repository.js'
+import { loadAuthorizationQuotaExceededByAuthorizationIdAsync } from './account-summary.repository.js'
+import type { AccountListRow } from './repository-row-types.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 
 type AccountOptionFilterValue = string | number
@@ -59,6 +60,27 @@ interface AccountOptionRow {
   source_last_error_code?: string | null
 }
 
+interface AccountOptionCandidatePage<T> {
+  items: T[]
+  exhausted: boolean
+}
+
+export async function collectAccountOptionCandidateMatches<T>(
+  limit: number,
+  loadPage: (page: number) => Promise<AccountOptionCandidatePage<T>>
+): Promise<T[]> {
+  const output: T[] = []
+  let page = 1
+  let exhausted = false
+  while (output.length < limit && !exhausted) {
+    const candidatePage = await loadPage(page)
+    output.push(...candidatePage.items.slice(0, limit - output.length))
+    exhausted = candidatePage.exhausted
+    page += 1
+  }
+  return output
+}
+
 export function listAccountOptions(access?: AccessScope, options?: AccountOptionListOptions): AccountOptionSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const listOptions = normalizeAccountOptionListOptions(options)
@@ -79,50 +101,48 @@ export async function listAccountOptionsAsync(access?: AccessScope, options?: Ac
   }
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const listOptions = normalizeAccountOptionListOptions(options)
-  if (accountOptionQuotaFilterRequested(listOptions)) {
-    return listAccountOptionsFromFullPageAsync(access, options, viewerSystemAccountId)
-  }
   const client = createPostgresDatabaseClient(await getPostgresPool())
+  if (accountOptionQuotaFilterRequested(listOptions)) {
+    return listAccountOptionsWithQuotaFilterAsync(client, access, listOptions, viewerSystemAccountId)
+  }
   const rows = await queryAccountOptionRowsForAccessAsync(client, access, listOptions)
   return accountOptionSummariesFromRowsAsync(client, rows, access, viewerSystemAccountId)
 }
 
-async function listAccountOptionsFromFullPageAsync(
+async function listAccountOptionsWithQuotaFilterAsync(
+  client: DatabaseClient,
   access: AccessScope | undefined,
-  options: AccountOptionListOptions | undefined,
+  options: ReturnType<typeof normalizeAccountOptionListOptions>,
   viewerSystemAccountId: string | undefined
 ): Promise<AccountOptionSummary[]> {
-  const page = await listAccountsPageAsync(access, {
-    ...options,
-    pageSize: options?.limit
+  const statuses = accountStatusFilterValues(options.status)
+  const candidatePageSize = 200
+  const rows = await collectAccountOptionCandidateMatches(options.pageSize, async (candidatePage) => {
+    const candidateRows = await queryAccountOptionRowsForAccessAsync(client, access, {
+      ...options,
+      status: undefined,
+      schedulable: 'all',
+      page: candidatePage,
+      pageSize: candidatePageSize
+    })
+    const quotaExceededByAuthorization = await loadAuthorizationQuotaExceededByAuthorizationIdAsync(
+      client,
+      candidateRows as unknown as AccountListRow[]
+    )
+    const matchedRows: AccountOptionRow[] = []
+    for (const row of candidateRows) {
+      const quotaExceeded = row.authorization_id
+        ? quotaExceededByAuthorization.get(row.authorization_id) === true
+        : false
+      const effectiveStatus: AccountStatus = quotaExceeded && row.status === 'active' ? 'rate_limited' : row.status
+      if (statuses.length > 0 && !statuses.includes(effectiveStatus)) continue
+      if (options.schedulable === 'enabled' && (effectiveStatus !== 'active' || quotaExceeded)) continue
+      if (options.schedulable === 'disabled' && effectiveStatus !== 'disabled' && effectiveStatus !== 'error' && !quotaExceeded) continue
+      matchedRows.push({ ...row, status: effectiveStatus })
+    }
+    return { items: matchedRows, exhausted: candidateRows.length < candidatePageSize }
   })
-  return page.items.map((item) => ({
-    id: item.id,
-    systemAccountId: includeSystemAccountFields(access) ? item.systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? item.systemAccountName : undefined,
-    ownerSystemAccountId: item.accessType === 'authorized'
-      ? item.ownerSystemAccountId ?? item.authorizationInstanceOwnerSystemAccountId ?? item.systemAccountId
-      : item.ownerSystemAccountId ?? item.systemAccountId ?? viewerSystemAccountId,
-    ownerSystemAccountName: item.ownerSystemAccountName
-      ?? (item.accessType === 'owner' ? item.systemAccountName : undefined),
-    providerCode: item.providerCode,
-    providerProtocolProfileId: item.providerProtocolProfileId,
-    protocolCode: item.protocolCode,
-    protocolVersion: item.protocolVersion,
-    name: item.name,
-    type: item.type,
-    status: item.status,
-    accessType: item.accessType,
-    accountAuthorizationId: item.accountAuthorizationId,
-    authorizationInstanceSourceAccountId: item.authorizationInstanceSourceAccountId,
-    authorizationInstanceOwnerSystemAccountId: item.authorizationInstanceOwnerSystemAccountId,
-    authorizationStatus: item.authorizationStatus,
-    authorizationExpiresAt: item.authorizationExpiresAt,
-    accountExpiresAt: item.accountExpiresAt,
-    permissions: item.accessType === 'authorized'
-      ? authorizedAccountPermissions(false)
-      : item.permissions ?? ownerPermissions()
-  }))
+  return accountOptionSummariesFromRowsAsync(client, rows, access, viewerSystemAccountId)
 }
 
 function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {

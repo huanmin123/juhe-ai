@@ -15,8 +15,7 @@ import type {
   AccountTestTask,
   AccountTrafficMigrationResult,
   AccountTrafficMigrationSourceStatus,
-  AccountSupportedEndpointMode,
-  ProviderModelApiProtocol
+  AccountSupportedEndpointMode
 } from '@/types/domain'
 import type {
   AccountBalanceDraftTestPayload,
@@ -25,6 +24,7 @@ import type {
   AccountListParams,
   AccountOptionParams,
   AccountTestPayload,
+  AccountTestOptionsParams,
   ListParams,
   RequestControlOptions
 } from '../contracts'
@@ -34,23 +34,20 @@ import { accountListParams, accountOptionsParams } from '../params'
 export interface AccountTestModelOption {
   label: string
   value: string
-  supportedApiProtocols: ProviderModelApiProtocol[]
-  testEndpointModes: AccountSupportedEndpointMode[]
 }
 
 export interface AccountManualTestModelOption {
-  model: string
-  supportedApiProtocols: ProviderModelApiProtocol[]
+  id: string
+  name: string
+}
+
+export interface AccountTestModelCapabilities {
+  id: string
+  name: string
   testEndpointModes: AccountSupportedEndpointMode[]
 }
 
-export interface AccountTestOptions {
-  accountId: string
-  defaultModel: string
-  models: AccountManualTestModelOption[]
-  testEndpointModes: AccountSupportedEndpointMode[]
-  defaultTestEndpointMode: AccountSupportedEndpointMode
-}
+export type AccountTestOptions = AccountManualTestModelOption[]
 
 export const accountsApi = {
   list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
@@ -77,7 +74,8 @@ export const accountsApi = {
   batchUpdate: (payload: AccountBatchEditRequest, params?: ListParams) => unwrap<AccountBatchEditResult>(http.post('/accounts/batch-update', payload, { params })),
   updateTags: (id: string, payload: { tags: string[] }, params?: ListParams) => unwrap<AccountTagsUpdateResult>(http.patch(`/accounts/${id}/tags`, payload, { params })),
   updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
-  testOptions: (id: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/accounts/${id}/test-options`, { params, signal: options?.signal })),
+  testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/accounts/${id}/test-options`, { params, signal: options?.signal })),
+  testModelCapabilities: (id: string, modelId: string, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestModelCapabilities>(http.get(`/accounts/${id}/test-options/models/${encodeURIComponent(modelId)}`, { params, signal: options?.signal })),
   bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
   test: (id: string, payload?: AccountTestPayload, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, signal: options?.signal })),
@@ -117,7 +115,8 @@ export const myAccountsApi = {
   batchUpdate: (payload: AccountBatchEditRequest) => unwrap<AccountBatchEditResult>(http.post('/my-accounts/batch-update', payload)),
   updateTags: (id: string, payload: { tags: string[] }) => unwrap<AccountTagsUpdateResult>(http.patch(`/my-accounts/${id}/tags`, payload)),
   updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; priority?: number; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
-  testOptions: (id: string, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/my-accounts/${id}/test-options`, { signal: options?.signal })),
+  testOptions: (id: string, params?: AccountTestOptionsParams, options?: RequestControlOptions) => unwrap<AccountTestOptions>(http.get(`/my-accounts/${id}/test-options`, { params, signal: options?.signal })),
+  testModelCapabilities: (id: string, modelId: string, options?: RequestControlOptions) => unwrap<AccountTestModelCapabilities>(http.get(`/my-accounts/${id}/test-options/models/${encodeURIComponent(modelId)}`, { signal: options?.signal })),
   bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
   migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
   test: (id: string, payload?: AccountTestPayload, options?: RequestControlOptions) => unwrap<AccountTestTask>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { signal: options?.signal })),

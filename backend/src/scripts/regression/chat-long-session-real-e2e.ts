@@ -101,6 +101,11 @@ interface ChatModelOption {
   maxInputTokens?: number
 }
 
+interface ChatModelListOption {
+  id: string
+  name: string
+}
+
 interface ContextStatus {
   usedTokens: number
   limitTokens?: number
@@ -356,9 +361,12 @@ async function runRealAcceptance(realProbe: boolean): Promise<void> {
     }
 
     const conversationId = resumedCheckpoint?.conversationId ?? (await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })).data.id
-    const models = (await apiJson<{ data: ChatModelOption[] }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)).data
+    const models = (await apiJson<{ data: ChatModelListOption[] }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models`, cookie)).data
     assert(models.length > 0, '真实会话没有可用模型')
-    const available = models.filter((model) => credential.models.includes(model.id))
+    const available = await Promise.all(models.filter((model) => credential.models.includes(model.id)).map(async (model) => {
+      const result = await apiJson<{ data: ChatModelOption }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models/${encodeURIComponent(model.id)}`, cookie)
+      return result.data
+    }))
     assert(available.length > 0, '模型接口未返回凭据声明的支持模型')
     if (realProbe) {
       const turn = fixture[0]!

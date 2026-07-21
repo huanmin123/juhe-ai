@@ -47,7 +47,6 @@ interface NormalizedConfig extends RealGoExternalSourceCreateSmokeConfig {
 }
 
 interface CreatedAuthorization {
-  source: Record<string, unknown>
   token: Record<string, unknown>
 }
 
@@ -146,18 +145,18 @@ export async function runRealGoExternalSourceCreateSmoke(
       const created = unwrapData(data, 'create')
       if (
         isRecord(created)
-        && isRecord(created.source)
         && isRecord(created.token)
-        && isNonEmptyString(created.source.id)
         && isNonEmptyString(created.token.id)
       ) {
-        cleanupTarget = { sourceId: created.source.id, tokenId: created.token.id, sourceName }
+        cleanupTarget = await recoverCleanupTarget(normalized, sourceName)
       } else {
         postOutcomeUncertain = true
       }
       assertSecretHeaders(response, 'create')
-      const authorization = assertCreatedAuthorization(created, sourceName)
-      const sourceId = authorization.source.id as string
+      const authorization = assertCreatedAuthorization(created)
+      cleanupTarget ??= await recoverCleanupTarget(normalized, sourceName)
+      expect(cleanupTarget, 'created source must be discoverable through the lightweight list')
+      const sourceId = cleanupTarget.sourceId
       const tokenId = authorization.token.id as string
       cleanupTarget = { sourceId, tokenId, sourceName }
       const plaintextToken = authorization.token.token as string
@@ -248,8 +247,7 @@ async function recoverCleanupTarget(config: NormalizedConfig, sourceName: string
         && candidate.status === 'disabled'
         && isNonEmptyString(candidate.id)
         && isRecord(candidate.primaryToken)
-        && isNonEmptyString(candidate.primaryToken.id)
-        && candidate.primaryToken.status === 'disabled',
+        && isNonEmptyString(candidate.primaryToken.id),
         'recovery list exact-name candidates are unsafe'
       )
       return {
@@ -351,17 +349,10 @@ function cleanupRetryDelay(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, cleanupRetryDelayMs))
 }
 
-function assertCreatedAuthorization(value: unknown, sourceName: string): CreatedAuthorization {
+function assertCreatedAuthorization(value: unknown): CreatedAuthorization {
   expect(isRecord(value), 'create DTO is invalid')
-  expect(hasExactKeys(value, ['source', 'token']), 'create DTO is invalid')
-  expect(isRecord(value.source), 'create source DTO is invalid')
+  expect(hasExactKeys(value, ['token']), 'create DTO is invalid')
   expect(isRecord(value.token), 'create token DTO is invalid')
-  assertSource(value.source, sourceName, false)
-  expect(value.source.notes === externalIntegrationSourceCreateNotesMarker, 'create source DTO notes mismatch')
-  expect(value.source.tokenCount === 1 && value.source.activeTokenCount === 0, 'create source DTO token counts are invalid')
-  expect(isRecord(value.source.primaryToken), 'create source DTO primaryToken is invalid')
-  expect(value.source.primaryToken.id === value.token.id, 'create source DTO primaryToken id mismatch')
-  expect(value.source.primaryToken.status === 'disabled', 'create source DTO primaryToken status mismatch')
 
   expect(
     hasOnlyKeys(value.token, ['id', 'name', 'token', 'tokenPrefix', 'tokenSuffix', 'scopes', 'expiresAt']),
@@ -417,19 +408,19 @@ function assertSource(value: Record<string, unknown>, sourceName: string, detail
       'id', 'name', 'status', 'scopes', 'rateLimits', 'expiresAt', 'notes', 'lastUsedAt', 'createdAt',
       'updatedAt', 'tokenCount', 'activeTokenCount', 'primaryToken', 'tokens', 'isBuiltIn'
     ]),
-    `${detail ? 'detail' : 'create'} source DTO is invalid`
+    'detail source DTO is invalid'
   )
-  expect(isNonEmptyString(value.id), `${detail ? 'detail' : 'create'} source DTO is invalid`)
-  expect(value.name === sourceName, `${detail ? 'detail' : 'create'} source DTO name mismatch`)
-  expect(value.status === 'disabled' && value.isBuiltIn === false, `${detail ? 'detail' : 'create'} source DTO is invalid`)
+  expect(isNonEmptyString(value.id), 'detail source DTO is invalid')
+  expect(value.name === sourceName, 'detail source DTO name mismatch')
+  expect(value.status === 'disabled' && value.isBuiltIn === false, 'detail source DTO is invalid')
   expect(
     Array.isArray(value.scopes) && value.scopes.length === 0
     && Array.isArray(value.rateLimits) && value.rateLimits.length === 0,
-    `${detail ? 'detail' : 'create'} source DTO is invalid`
+    'detail source DTO is invalid'
   )
-  expect(!Object.hasOwn(value, 'expiresAt'), `${detail ? 'detail' : 'create'} source DTO expiresAt mismatch`)
-  expect(value.notes === externalIntegrationSourceCreateNotesMarker, `${detail ? 'detail' : 'create'} source DTO notes mismatch`)
-  expect(isNonEmptyString(value.createdAt) && isNonEmptyString(value.updatedAt), `${detail ? 'detail' : 'create'} source DTO is invalid`)
+  expect(!Object.hasOwn(value, 'expiresAt'), 'detail source DTO expiresAt mismatch')
+  expect(value.notes === externalIntegrationSourceCreateNotesMarker, 'detail source DTO notes mismatch')
+  expect(isNonEmptyString(value.createdAt) && isNonEmptyString(value.updatedAt), 'detail source DTO is invalid')
 }
 
 async function request(

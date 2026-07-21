@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { buildChatModelOptions, ChatModelCapabilityError, resolveChatModelRequestOptions } from '../../modules/chat/chat-model-options.js'
+import { buildChatModelOptions, ChatModelCapabilityError, chatModelCapabilities, chatModelListOptions, mergeChatModelCapabilities, resolveChatModelRequestOptions } from '../../modules/chat/chat-model-options.js'
 
 const options = buildChatModelOptions(['gpt-test', 'mixed-cache-model', 'vendor-model', 'custom-model'], [{
   model: 'gpt-test',
@@ -115,6 +115,39 @@ assert.deepEqual(options, [
     supportedTools: []
   }
 ])
+
+assert.deepEqual(chatModelListOptions(options), [
+  { id: 'gpt-test', name: 'gpt-test' },
+  { id: 'mixed-cache-model', name: 'mixed-cache-model' },
+  { id: 'vendor-model', name: 'vendor-model' },
+  { id: 'custom-model', name: 'custom-model' }
+], '模型下拉投影只能返回 id 和 name')
+assert.deepEqual(chatModelCapabilities(options[0]!), { ...options[0], name: 'gpt-test' }, '单模型能力详情必须保留能力并补充展示名称')
+const mergedCapabilities = mergeChatModelCapabilities([options[0]!, {
+  ...options[0]!,
+  supportedReasoningEfforts: ['high'],
+  supportedServiceTiers: ['default'],
+  contextWindowTokens: 32_000,
+  maxInputTokens: 24_000,
+  maxOutputTokens: 8_000
+}])
+assert.deepEqual(mergedCapabilities && {
+  id: mergedCapabilities.id,
+  name: mergedCapabilities.name,
+  supportedReasoningEfforts: mergedCapabilities.supportedReasoningEfforts,
+  supportedServiceTiers: mergedCapabilities.supportedServiceTiers,
+  contextWindowTokens: mergedCapabilities.contextWindowTokens,
+  maxInputTokens: mergedCapabilities.maxInputTokens,
+  maxOutputTokens: mergedCapabilities.maxOutputTokens
+}, {
+  id: 'gpt-test',
+  name: 'gpt-test',
+  supportedReasoningEfforts: ['high'],
+  supportedServiceTiers: ['default'],
+  contextWindowTokens: 32_000,
+  maxInputTokens: 4_000,
+  maxOutputTokens: 8_000
+}, '多供应商同模型能力必须只暴露共同且保守的可用能力')
 
 const model = options[0]
 assert(model)

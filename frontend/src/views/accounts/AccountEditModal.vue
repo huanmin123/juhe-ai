@@ -41,6 +41,9 @@
           :deleting-tag-id="deletingTagId"
           :authorized-editing="authorizedEditing"
           @delete-tag="$emit('delete-tag', $event)"
+          @model-options-open="$emit('model-options-open', $event)"
+          @model-options-search="$emit('model-options-search', $event)"
+          @model-capabilities-load="$emit('model-capabilities-load', $event)"
           @group-options-dropdown="$emit('group-options-dropdown', $event)"
           @group-options-search="$emit('group-options-search', $event)"
         />
@@ -75,6 +78,9 @@
           @copy-auth-url="$emit('copy-auth-url', $event)"
           @generate-auth-url="$emit('generate-auth-url')"
           @open-auth-url="$emit('open-auth-url')"
+          @model-options-open="$emit('model-options-open', $event)"
+          @model-options-search="$emit('model-options-search', $event)"
+          @model-capabilities-load="$emit('model-capabilities-load', $event)"
         />
 
         <section v-if="authorizedEditing" class="form-section readonly-config-section">
@@ -150,6 +156,10 @@
                 :proxy-options="proxyOptions"
                 :selected-protocol-profile="selectedProtocolProfile"
                 :authorized-editing="authorizedEditing"
+                @current-provider-model-options-open="$emit('model-options-open', $event)"
+                @current-provider-model-options-search="$emit('model-options-search', $event)"
+                @mapping-source-model-options-open="(protocol, open) => $emit('mapping-model-options-open', protocol, open)"
+                @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
               />
 
               <section class="form-section probe-toggle-row">
@@ -402,6 +412,11 @@ const emit = defineEmits<{
   (event: 'generate-auth-url'): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
+  (event: 'model-options-open', open: boolean): void
+  (event: 'model-options-search', value: string): void
+  (event: 'model-capabilities-load', modelIds: string[]): void
+  (event: 'mapping-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
+  (event: 'mapping-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
   (event: 'ok'): void
   (event: 'open-auth-url'): void
   (event: 'select-provider', providerCode: string): void
