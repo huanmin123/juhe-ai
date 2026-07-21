@@ -15,7 +15,7 @@ func TestHandleTaskCompletesClaimedTask(t *testing.T) {
 	if err := HandleTask(context.Background(), store, runner, payload); err != nil {
 		t.Fatalf("HandleTask() error = %v", err)
 	}
-	if store.finish.Status != "completed" || store.finish.Result["ok"] != true {
+	if store.finish.Status != "success" || store.finish.Result["ok"] != true {
 		t.Fatalf("finish = %#v", store.finish)
 	}
 }

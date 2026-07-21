@@ -36,7 +36,7 @@ func (s *Store) ClaimAccountTestTask(ctx context.Context, id string) (port.Manag
 }
 
 func (s *Store) FinishAccountTestTask(ctx context.Context, input port.AccountTestWorkerFinishInput) error {
-	if input.Status != "completed" && input.Status != "failed" && input.Status != "canceled" {
+	if input.Status != "success" && input.Status != "failed" && input.Status != "canceled" {
 		return fmt.Errorf("invalid account test finish status %q", input.Status)
 	}
 	resultJSON := ""

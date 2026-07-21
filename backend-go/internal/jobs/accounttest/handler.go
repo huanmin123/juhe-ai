@@ -30,7 +30,7 @@ func HandleTask(ctx context.Context, store port.AccountTestWorkerStore, runner R
 	}
 	result, runErr := runner.RunAccountTest(ctx, task)
 	if runErr == nil {
-		if err := store.FinishAccountTestTask(ctx, port.AccountTestWorkerFinishInput{TaskID: task.ID, Status: "completed", Result: result}); err != nil {
+		if err := store.FinishAccountTestTask(ctx, port.AccountTestWorkerFinishInput{TaskID: task.ID, Status: "success", Result: result}); err != nil {
 			return fmt.Errorf("complete account test task: %w", err)
 		}
 		return nil
