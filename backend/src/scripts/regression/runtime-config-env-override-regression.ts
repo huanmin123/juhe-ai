@@ -25,7 +25,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.runtimeStateDriver, 'memory', 'standalone 默认运行态 driver 应为 memory')
   assert.equal(runtimeConfig.queueDriver, 'memory', 'standalone 默认队列 driver 应为 memory')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 64, 'standalone 默认 System API DB service 在途上限应为 64')
-  assert.equal(runtimeConfig.systemApi.readOnly, true, '临时接管只读开关应支持进程环境变量显式开启')
+  assert.equal('readOnly' in runtimeConfig.systemApi, false, '运行时配置不得保留临时发布只读开关')
   assert.equal(runtimeConfig.chat.retentionDays, 3, '聊天数据默认应保留 3 天')
   assert.equal(runtimeConfig.chat.maxConversationsPerUser, 50, '每用户默认最多应创建 50 个会话')
   assert.equal(runtimeConfig.chat.maxTurnsPerConversation, 50, '每个会话默认最多应接受 50 个用户轮次')
@@ -62,7 +62,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
   assert.equal(runtimeConfig.postgres.lockTimeoutMs, 3000, 'PostgreSQL lock timeout 应正确读取')
   assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 55000, 'PostgreSQL idle transaction timeout 应正确读取')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 321, 'System API DB service 在途上限应正确读取')
-  assert.equal(runtimeConfig.systemApi.readOnly, false, 'System API 临时只读开关应支持显式关闭')
+  assert.equal('readOnly' in runtimeConfig.systemApi, false, '显式历史开关不得恢复临时发布拦截模式')
   assert.equal(runtimeConfig.queue.redisStreamReadCount, 500, 'Redis Stream 批量读取数量应正确读取')
   assert.deepEqual(runtimeConfig.chat, {
     retentionDays: 9,
@@ -85,7 +85,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_DEFAULT_CHILD === '1') {
 
   assert.equal(runtimeConfig.runtimeMode, 'performance', '高性能模式应读取为 performance')
   assert.equal(runtimeConfig.systemApi.dbServiceMaxInFlight, 256, 'performance 默认 System API DB service 在途上限应为 256')
-  assert.equal(runtimeConfig.systemApi.readOnly, false, '正式环境未配置时 System API 临时只读开关必须默认关闭')
+  assert.equal('readOnly' in runtimeConfig.systemApi, false, '正式环境不得保留临时发布拦截模式')
   assert.equal(runtimeConfig.postgres.statementTimeoutMs, 30000, 'performance 默认 PostgreSQL statement timeout 应为 30 秒')
   assert.equal(runtimeConfig.postgres.lockTimeoutMs, 2000, 'performance 默认 PostgreSQL lock timeout 应为 2 秒')
   assert.equal(runtimeConfig.postgres.idleInTransactionSessionTimeoutMs, 30000, 'performance 默认 PostgreSQL idle transaction timeout 应为 30 秒')
@@ -134,7 +134,7 @@ const result = spawnRegression({
   JUHE_AI_STATS_DATABASE_PATH: 'env-override-stats.sqlite3',
   JUHE_AI_USAGE_SHARD_ROOT: 'env-override-usage-shards',
   JUHE_AI_USAGE_SHARD_COUNT: '32',
-  JUHE_AI_SYSTEM_API_READ_ONLY: 'true',
+  JUHE_AI_SYSTEM_API_READ_ONLY: 'invalid',
   JUHE_AI_LOG_CONSOLE_ENABLED: 'false'
 })
 
@@ -187,7 +187,6 @@ const performanceResult = spawnRegression({
   JUHE_AI_POSTGRES_LOCK_TIMEOUT_MS: '3000',
   JUHE_AI_POSTGRES_IDLE_IN_TRANSACTION_TIMEOUT_MS: '55000',
   JUHE_AI_SYSTEM_API_DB_SERVICE_MAX_IN_FLIGHT: '321',
-  JUHE_AI_SYSTEM_API_READ_ONLY: 'false',
   JUHE_AI_REDIS_STREAM_READ_COUNT: '500',
   JUHE_AI_CHAT_RETENTION_DAYS: '9',
   JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER: '60',
@@ -221,16 +220,6 @@ const performanceHintDefaultResult = spawnRegression({
 })
 
 assertRegressionSuccess(performanceHintDefaultResult)
-
-assertRegressionFailure(spawnRegression({
-  JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
-  JUHE_AI_RUNTIME_MODE: 'standalone',
-  JUHE_AI_DATABASE_DRIVER: 'sqlite',
-  JUHE_AI_CACHE_DRIVER: 'memory',
-  JUHE_AI_RUNTIME_STATE_DRIVER: 'memory',
-  JUHE_AI_QUEUE_DRIVER: 'memory',
-  JUHE_AI_SYSTEM_API_READ_ONLY: 'invalid'
-}), /JUHE_AI_SYSTEM_API_READ_ONLY 只能配置为/, '临时只读开关非法值必须在启动时失败')
 
 assertRegressionFailure(spawnRegression({
   JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD: '1',
