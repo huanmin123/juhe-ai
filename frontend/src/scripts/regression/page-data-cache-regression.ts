@@ -790,6 +790,67 @@ async function testActivationManagedCacheFlow(): Promise<void> {
     controller.close()
   }
 
+  const pendingBaselineStorage = createMemoryPageDataCacheStorage()
+  const pendingBaselineNetworkStarted = deferred<void>()
+  const pendingBaselineNetwork = deferred<string[]>()
+  let pendingBaselinePostToken: PageDataRevisionToken | undefined
+  let pendingBaselineCacheUpdated: ((key: string) => void) | undefined
+  const pendingBaselineController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:pending-confirm-frozen-baseline' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: pendingBaselineStorage,
+    activation: activationHandle({
+      register: (participant) => confirmedActivation('pre', participant, 'unchanged', token(1)),
+      stabilize: (participant) => {
+        pendingBaselinePostToken = participant.baseline
+        return confirmedActivation('post', participant, 'unchanged', participant.baseline)
+      }
+    }),
+    writeEpoch: () => 0,
+    tabCoordinator: {
+      isLeader: () => true,
+      requestConfirm: async () => false,
+      notifyUpdated: () => undefined,
+      notifyInvalidated: () => undefined,
+      notifyDomainInvalidated: () => undefined,
+      onConfirmRequested: () => () => undefined,
+      onCacheUpdated: (listener) => {
+        pendingBaselineCacheUpdated = listener
+        return () => { pendingBaselineCacheUpdated = undefined }
+      },
+      onCacheInvalidated: () => () => undefined,
+      onDomainInvalidated: () => () => undefined
+    },
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime'], token(1)),
+    loadNetwork: async () => {
+      pendingBaselineNetworkStarted.resolve()
+      return pendingBaselineNetwork.promise
+    }
+  })
+  await pendingBaselineStorage.writeIfCurrent(cacheRecord(pendingBaselineController.key, ['token-1-value'], {
+    token: token(1)
+  }))
+  const pendingBaselineConfirm = pendingBaselineController.requestConfirm()
+  const pendingBaselineRefresh = pendingBaselineController.refresh()
+  assert.equal((await pendingBaselineConfirm).state, 'unchanged')
+  await pendingBaselineNetworkStarted.promise
+  await pendingBaselineStorage.writeIfCurrent(cacheRecord(pendingBaselineController.key, ['token-2-newer-value'], {
+    token: token(2),
+    confirmedAt: '2026-07-17T12:00:32.000Z',
+    writtenAt: '2026-07-17T12:00:32.000Z'
+  }))
+  pendingBaselineCacheUpdated?.(pendingBaselineController.key)
+  await microtask()
+  pendingBaselineNetwork.resolve(['token-1-old-get'])
+  const pendingBaselineResult = await pendingBaselineRefresh
+  const pendingBaselineRecord = await pendingBaselineStorage.read<string[]>(pendingBaselineController.key)
+  assert.equal(pendingBaselinePostToken?.sequence, 1, 'pending confirm 后的 GET 必须冻结 pre-confirm 已确认的 token1 baseline')
+  assert.equal(pendingBaselineResult.superseded, true, '共享缓存推进到 token2 后旧 GET 必须返回 superseded')
+  assert.equal(pendingBaselineResult.confirmed, false, '旧 GET 不得借用 token2 标记 confirmed')
+  assert.deepEqual(pendingBaselineResult.data, ['token-2-newer-value'], 'superseded 结果应返回共享缓存中的新快照')
+  assert.equal(pendingBaselineRecord?.token?.sequence, 2, '旧 GET 不得回退共享缓存 token')
+  assert.deepEqual(pendingBaselineRecord?.value, ['token-2-newer-value'], '旧 GET 不得覆盖其他标签页的新快照')
+  pendingBaselineController.close()
+
   const pendingGenerationStorage = createMemoryPageDataCacheStorage()
   const pendingGenerationPre = deferred<PageDataActivationDecision>()
   const pendingGenerationFirstNetwork = deferred<string[]>()

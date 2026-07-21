@@ -302,34 +302,40 @@ export class PageDataCacheController<T> {
     }
     const generation = ++this.generation
     const operationWriteEpoch = this.currentWriteEpoch()
+    const baseline = outcome.state === 'unchanged'
+      ? await this.storage.read<T>(this.key)
+      : undefined
     const data = await this.options.loadNetwork()
     if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
-    if (outcome.state === 'unchanged') {
-      const current = await this.storage.read<T>(this.key)
-      if (current?.token && this.isOperationCurrent(generation, operationWriteEpoch)) {
-        let confirmedToken = current.token
-        let confirmedAt = current.confirmedAt
+    if (outcome.state === 'unchanged' && baseline?.token) {
+      if (this.isOperationCurrent(generation, operationWriteEpoch)) {
+        let confirmedToken = baseline.token
+        let confirmedAt = baseline.confirmedAt
         if (this.options.activation) {
           let after: ConfirmedPageDataDomain
           try {
-            after = await this.stabilizeDomain(current.token, generation, operationWriteEpoch)
+            after = await this.stabilizeDomain(baseline.token, generation, operationWriteEpoch)
           } catch {
             if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
             return { source: 'network', data, confirmed: false, cached: false, superseded: false }
           }
           if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
-          if (after.action !== 'unchanged' || !sameRevisionToken(after.token, current.token)) {
+          if (after.action !== 'unchanged' || !sameRevisionToken(after.token, baseline.token)) {
             return { source: 'network', data, confirmed: false, cached: false, superseded: false }
           }
           confirmedToken = after.token
           confirmedAt = after.serverTime
         }
+        const current = await this.storage.read<T>(this.key)
+        if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
+        if (!sameRevisionToken(current?.token, baseline.token)) return await this.supersededUnconfirmedLoadResult(data)
         const record = this.record(data, confirmedToken, confirmedAt)
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
         const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
-        if (written) this.publish(record)
-        return { source: 'network', data, confirmed: written, cached: written, superseded: false }
+        if (!written) return await this.supersededUnconfirmedLoadResult(data)
+        this.publish(record)
+        return { source: 'network', data, confirmed: true, cached: true, superseded: false }
       }
     }
     return { source: 'network', data, confirmed: false, cached: false, superseded: false }
@@ -694,6 +700,10 @@ export class PageDataCacheController<T> {
     return current
       ? { source: 'cache', data: current.value, confirmed: Boolean(current.token), cached: true, superseded: true }
       : { source: 'network', data: fallback, confirmed: false, cached: false, superseded: true }
+  }
+
+  private async supersededUnconfirmedLoadResult(fallback: T): Promise<PageDataLoadResult<T>> {
+    return { ...await this.supersededLoadResult(fallback), confirmed: false }
   }
 
   private publish(record: PageDataCacheRecord<T>): void {
