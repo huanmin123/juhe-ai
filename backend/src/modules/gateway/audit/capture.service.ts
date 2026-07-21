@@ -245,6 +245,11 @@ export class AuditCaptureContext {
     )
   }
 
+  finalizeLazy(buildInput: () => FinalizeAuditInput): void {
+    if (!this.enabled) return
+    this.finalize(buildInput())
+  }
+
   addGatewayMetadata(input: AddGatewayMetadataInput): void {
     if (!this.enabled) return
     this.addPayload({
