@@ -8,7 +8,7 @@ import {
 } from '../../../shared/account-concurrency.js'
 import { effectiveImageLaneConcurrencyLimit } from '../../../domain/group-scheduling.js'
 import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
-import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
+import { getRequestLogger, logRequestStage, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import {
   exponentialRetryPolicy,
   fixedRetryPolicy,
@@ -262,6 +262,7 @@ export async function fetchFirstAvailableUpstream(
         continue
       }
       const concurrencyAccountId = gatewayAccountConcurrencyAccountId(originalAccount)
+      const concurrencyStageStartedAt = performance.now()
       let concurrencyAcquire: AccountConcurrencyAcquireResult
       const reservedSlot = preAcquiredConcurrency?.takeForAccount(originalAccount)
       if (reservedSlot) {
@@ -284,11 +285,38 @@ export async function fetchFirstAvailableUpstream(
           )
         } catch (error) {
           await releaseHalfOpenLease(halfOpenLease)
+          logRequestStage('account.concurrency_acquire', {
+            traceId: usageContext.traceId,
+            accountId: originalAccount.id,
+            concurrencyAccountId,
+            error
+          }, signal?.aborted ? 'aborted' : 'unexpected_failure', concurrencyStageStartedAt)
           throw error
         }
       }
       concurrencyRetryWaitBudgetMs = concurrencyAcquire.remainingWaitBudgetMs
       const concurrencySlot = concurrencyAcquire.slot
+      logRequestStage('account.concurrency_acquire', {
+        traceId: usageContext.traceId,
+        accountId: originalAccount.id,
+        concurrencyAccountId,
+        acquired: concurrencySlot.acquired,
+        current: concurrencySlot.current,
+        limit: concurrencySlot.limit,
+        retryCount: concurrencyAcquire.retryCount,
+        waitedMs: concurrencyAcquire.waitedMs,
+        reserved: Boolean(reservedSlot),
+        ...(!concurrencySlot.acquired ? {
+          failureReason: 'account_concurrency_limit',
+          decisionInputs: {
+            current: concurrencySlot.current,
+            limit: concurrencySlot.limit,
+            waitedMs: concurrencyAcquire.waitedMs,
+            retryCount: concurrencyAcquire.retryCount,
+            remainingWaitBudgetMs: concurrencyAcquire.remainingWaitBudgetMs
+          }
+        } : {})
+      }, concurrencySlot.acquired ? 'success' : 'expected_failure', concurrencyStageStartedAt)
       if (!concurrencySlot.acquired) {
         await releaseHalfOpenLease(halfOpenLease)
         const message = concurrencyAcquire.waitedMs > 0
@@ -325,16 +353,34 @@ export async function fetchFirstAvailableUpstream(
           let effectiveServiceTier = usageContext.effectiveServiceTier ?? usageContext.requestedServiceTier ?? 'default'
           let upstreamUrls: string[]
           const preparationStartedAt = Date.now()
+          const preparationStageStartedAt = performance.now()
           try {
             account = await prepareUpstreamAccount(originalAccount, signal)
             upstreamUrls = buildGatewayUpstreamUrlsForAccount(account, req)
             if (upstreamUrls.length === 0) {
+              logRequestStage('upstream.request_prepare', {
+                traceId: usageContext.traceId,
+                accountId: account.id,
+                providerCode: account.providerCode,
+                failureReason: 'upstream_url_unavailable',
+                decisionInputs: { accountType: account.type }
+              }, 'expected_failure', preparationStageStartedAt)
               break
             }
             const selectedAccount = await selectAccountApiKeyForDispatch(account, {
               excludeFingerprints: excludedApiKeyFingerprints
             })
             if (!selectedAccount) {
+              logRequestStage('upstream.request_prepare', {
+                traceId: usageContext.traceId,
+                accountId: account.id,
+                providerCode: account.providerCode,
+                failureReason: 'account_api_key_pool_unavailable',
+                decisionInputs: {
+                  excludedApiKeyCount: excludedApiKeyFingerprints.size,
+                  accountApiKeyAttemptCount
+                }
+              }, 'expected_failure', preparationStageStartedAt)
               lastAttempt = accountApiKeyPoolUnavailableAttempt(account)
               failedAccountIds.add(account.id)
               auditCapture.addGatewayMetadata({
@@ -359,7 +405,38 @@ export async function fetchFirstAvailableUpstream(
             effectiveServiceTier = requestParts.effectiveServiceTier
             usageContext.effectiveServiceTier = effectiveServiceTier
             usageContext.effectiveReasoningEffort = requestParts.effectiveReasoningEffort
+            logRequestStage('upstream.request_prepare', {
+              traceId: usageContext.traceId,
+              accountId: account.id,
+              providerCode: account.providerCode,
+              protocolCode: account.protocolCode,
+              upstreamEndpointCount: upstreamUrls.length,
+              requestBodyBytes: typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : body?.byteLength,
+              proxyEnabled: Boolean(account.proxyUrl)
+            }, 'success', preparationStageStartedAt)
           } catch (error) {
+            const expectedPreparationFailure = error instanceof GatewayAgentGuidanceResponse
+              || error instanceof GatewayLocalProtocolResponse
+              || error instanceof OpenAIOAuthCodexAdapterError
+              || error instanceof GatewayRequestValidationError
+            logRequestStage('upstream.request_prepare', {
+              traceId: usageContext.traceId,
+              accountId: account.id,
+              providerCode: account.providerCode,
+              error,
+              ...(expectedPreparationFailure ? {
+                failureReason: error instanceof Error ? error.name : 'upstream_request_prepare_failed',
+                decisionInputs: {
+                  accountScoped: 'accountScoped' in error ? error.accountScoped : undefined,
+                  accountType: account.type,
+                  protocolCode: account.protocolCode
+                }
+              } : {})
+            }, signal?.aborted
+              ? 'aborted'
+              : expectedPreparationFailure
+                ? 'expected_failure'
+                : 'unexpected_failure', preparationStageStartedAt)
             if (error instanceof GatewayAgentGuidanceResponse && error.accountScoped) {
               lastAttempt = accountScopedGuidanceAttempt(account, error)
               agentGuidanceResponse = error

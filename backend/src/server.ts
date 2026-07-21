@@ -41,7 +41,7 @@ import { gatewayRawBodyHardLimit, gatewayRawBodyHardLimitBytes, type GatewayRawB
 import { preResolveGatewayRuntime } from './modules/gateway/request/pre-auth.js'
 import { admitSpeedFirstRequestBody } from './modules/gateway/request/speed-first-body-admission.middleware.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
-import { errorLogFields, installProcessLogHandlers, logger } from './shared/logger.js'
+import { closeLogger, errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
@@ -150,6 +150,7 @@ const parseGatewayRawBody = wrapGatewayRawBodyParser(
 )
 
 installProcessLogHandlers()
+startLogMaintenance()
 await enforcePostgresGooseSchemaGate()
 if (runtimeConfig.auth.captchaDisabled) {
   logger.warn({
@@ -602,6 +603,7 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
     }
     await stopAuditLogTransportWorker()
     await stopModelCheckTokenWorker()
+    await closeLogger()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'server_shutdown_failed' }), '服务优雅退出失败')
   } finally {

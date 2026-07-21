@@ -282,9 +282,13 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 	})
 	errorCode, errorMessage := publicapilog.ErrorInfoFromResponse(responsePayload, statusCode)
 
+	traceID := traceIDFromContext(r.Context())
+	if traceID == "" {
+		traceID = requestIDFromContext(r.Context())
+	}
 	logInput := publicapilog.BuildPublicAPILogInput(publicapilog.BuildInput{
 		ID:               s.newLogID(),
-		TraceID:          requestIDFromContext(r.Context()),
+		TraceID:          traceID,
 		Source:           publicAPILogSourceContext(state.authContext),
 		Method:           r.Method,
 		Path:             r.URL.Path,

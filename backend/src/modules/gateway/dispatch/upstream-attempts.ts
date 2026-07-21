@@ -1,6 +1,6 @@
 import type { Request } from 'express'
 
-import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
+import { getRequestLogger, logRequestStage, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
@@ -68,16 +68,43 @@ export async function performUpstreamRequestAttempt(
     proxyEnabled: Boolean(account.proxyUrl)
   }, '网关开始请求上游')
 
-  const response = await requestUpstream(upstreamUrl, {
-    method: req.method,
-    headers,
-    body: upstreamBody,
-    proxyUrl: account.proxyUrl,
-    timeoutMs: socketTimeoutMs,
-    requestTimeoutMs,
-    signal,
-    transport: upstreamTransportForAttempt(headers, upstreamUrl)
-  })
+  const fetchHeadersStartedAt = performance.now()
+  let response: GatewayUpstreamResponse
+  try {
+    response = await requestUpstream(upstreamUrl, {
+      method: req.method,
+      headers,
+      body: upstreamBody,
+      proxyUrl: account.proxyUrl,
+      timeoutMs: socketTimeoutMs,
+      requestTimeoutMs,
+      signal,
+      transport: upstreamTransportForAttempt(headers, upstreamUrl)
+    })
+    logRequestStage('upstream.fetch_headers', {
+      accountId: account.id,
+      providerCode: account.providerCode,
+      attemptIndex,
+      auditAttemptIndex,
+      statusCode: response.status,
+      ok: response.ok,
+      proxyEnabled: Boolean(account.proxyUrl)
+    }, 'success', fetchHeadersStartedAt)
+  } catch (error) {
+    logRequestStage('upstream.fetch_headers', {
+      accountId: account.id,
+      providerCode: account.providerCode,
+      attemptIndex,
+      auditAttemptIndex,
+      failureReason: signal?.aborted ? 'request_aborted' : 'upstream_request_error',
+      decisionInputs: {
+        socketTimeoutMs,
+        requestTimeoutMs,
+        proxyEnabled: Boolean(account.proxyUrl)
+      }
+    }, signal?.aborted ? 'aborted' : 'expected_failure', fetchHeadersStartedAt)
+    throw error
+  }
 
   getRequestLogger().debug({
     event: 'gateway_upstream_response_received',

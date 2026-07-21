@@ -35,7 +35,12 @@ assertNotIncludes(waitForSubmittedAccountTestResultSource, "task.status === 'can
 assertNotIncludes(accountTestModalSource, 'while (true)', '账户测试弹窗不应直接持有任务轮询主循环')
 assertNotIncludes(accountTestModalSource, 'runBatchAccountTest', '账户测试弹窗不应保留批量任务轮询编排')
 
-console.log('账户测试任务轮询回归通过：轮询循环、超时结果和任务结束清理边界保持分离')
+
+const accountTestTaskHelpersSource = readFileSync(resolve(frontendRoot, 'src/views/accounts/accountTestTaskHelpers.ts'), 'utf8')
+assertIncludes(accountTestTaskHelpersSource, 'export const accountTestPollIntervalMs = 3000', '任务轮询间隔应为 3000ms')
+assertNotIncludes(accountTestTaskHelpersSource, 'export const accountTestPollIntervalMs = 1000', '任务轮询间隔不得回退为 1000ms')
+
+console.log('账户测试任务轮询回归通过：轮询循环、超时结果和任务结束清理边界保持分离，间隔 3s')
 
 function assertIncludes(source: string, expected: string, message: string): void {
   if (!source.includes(expected)) {

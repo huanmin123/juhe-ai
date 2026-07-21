@@ -2,6 +2,7 @@ package cmdroot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/signal"
@@ -46,7 +47,7 @@ func newServerCommand() *cobra.Command {
 				return err
 			}
 
-			logger, err := logging.New(cfg.LogLevel, cmd.ErrOrStderr())
+			runtime, err := logging.NewRuntime(cfg.LogLevel, cmd.ErrOrStderr(), logging.RuntimeOptions{Role: "go-server"})
 			if err != nil {
 				return err
 			}
@@ -54,7 +55,10 @@ func newServerCommand() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 
-			return app.RunServer(ctx, cfg, logger)
+			runErr := app.RunServer(ctx, cfg, runtime.Logger)
+			shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			defer cancelShutdown()
+			return errors.Join(runErr, runtime.Shutdown(shutdownCtx))
 		},
 	}
 }
