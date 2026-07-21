@@ -52,6 +52,11 @@ import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/f
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
 import { dispatchAccountHealthCheck } from './modules/internal-api/account-health-check-dispatch.service.js'
+import { dispatchAccountTestTask } from './modules/internal-api/account-test-dispatch.service.js'
+import {
+  accountTestDispatchInternalPrefix,
+  createAccountTestDispatchRouter
+} from './modules/internal-api/account-test-dispatch.routes.js'
 import {
   mountAccountHealthCheckDispatchBridge
 } from './modules/internal-api/account-health-check-dispatch.routes.js'
@@ -269,6 +274,10 @@ if (runtimeConfig.databaseDriver === 'postgres') {
     }
   }))
 }
+app.use(accountTestDispatchInternalPrefix, createAccountTestDispatchRouter({
+  secret: runtimeConfig.secret,
+  dispatch: dispatchAccountTestTask
+}))
 mountAccountHealthCheckDispatchBridge(app, {
   corsMiddleware,
   compressionMiddleware: createHttpCompressionMiddleware(),

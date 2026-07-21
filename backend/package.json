@@ -400,6 +400,7 @@
     "test:openai-endpoint-modes": "tsx src/scripts/regression/openai-endpoint-mode-capability-regression.ts",
     "test:account-test-responses-contract": "tsx src/scripts/regression/account-test-responses-contract-regression.ts",
     "test:account-test-task-boundary": "tsx src/scripts/regression/account-test-task-boundary-regression.ts",
+    "test:account-test-node-bridge-boundary": "tsx src/scripts/regression/account-test-node-bridge-boundary-regression.ts",
     "test:account-test-task-postgres-smoke": "tsx src/scripts/regression/account-test-task-postgres-smoke.ts",
     "test:account-model-filter": "tsx src/scripts/regression/account-model-filter-regression.ts",
     "test:account-test-response-limit": "tsx src/scripts/regression/account-test-response-limit-regression.ts",
