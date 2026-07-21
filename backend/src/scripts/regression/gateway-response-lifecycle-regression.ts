@@ -177,6 +177,33 @@ assert.equal(
 )
 usageRecordQueue.clearUsageRecordQueueForTest()
 
+let releaseBoundedUsageTasks: (() => void) | undefined
+let startedBoundedUsageTasks = 0
+const boundedUsageGate = new Promise<void>((resolvePromise) => {
+  releaseBoundedUsageTasks = resolvePromise
+})
+let acceptedBoundedUsageTasks = 0
+for (let index = 0; index < 2_081; index += 1) {
+  if (failureUsageFinalization.dispatchGatewayUsageFinalization({
+    taskFactory: async () => {
+      startedBoundedUsageTasks += 1
+      await boundedUsageGate
+    },
+    bytes: 1
+  })) {
+    acceptedBoundedUsageTasks += 1
+  }
+}
+assert.equal(acceptedBoundedUsageTasks, 2_080, 'usage 异步收尾必须在数量上限处拒绝多余投递')
+await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+assert.equal(startedBoundedUsageTasks, 32, 'usage 异步收尾并发必须受上限保护')
+releaseBoundedUsageTasks?.()
+assert.equal(await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000), true, '有界 usage 收尾队列应可排空')
+const usageFinalizationRuntime = failureUsageFinalization.getGatewayUsageFinalizationRuntime()
+assert.equal(usageFinalizationRuntime.droppedCount, 1, '有界 usage 收尾溢出必须暴露累计 dropped 计数')
+assert.equal(usageFinalizationRuntime.pendingCount, 0, '有界 usage 收尾排空后运行态 pending 必须归零')
+assert.equal(usageFinalizationRuntime.queuedBytes, 0, '有界 usage 收尾排空后运行态 queued bytes 必须归零')
+
 clearGatewayRequestBodyInFlightForTest()
 console.log('网关响应生命周期回归通过：错误响应先返回，usage 异步收尾，lease、并发槽和耗时统一以 HTTP finish/close 为边界')
 

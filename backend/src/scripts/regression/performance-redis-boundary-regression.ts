@@ -451,10 +451,15 @@ function assertStrictRedisCacheBoundaries(): void {
 
   const usageRecordsSource = source('modules/gateway/usage/records.ts')
   assert.match(functionBody(usageRecordsSource, 'canUseSynchronousCatalogPricingInGatewayRequest'), /runtimeConfig\.cacheDriver !== 'redis'/, '高性能网关请求链路不能同步读取模型目录计算 usage 成本')
-  assert.match(functionBody(usageRecordsSource, 'recordFailedUpstreamAttempt'), /await enqueueUsageRecord/, '高性能失败使用记录必须等待 Redis Stream 接收')
-  assert.match(functionBody(usageRecordsSource, 'recordCompletedUpstreamAttempt'), /await enqueueUsageRecord/, '高性能成功使用记录必须等待 Redis Stream 接收')
-  assert.match(functionBody(usageRecordsSource, 'recordHybridScoringAttempt'), /await enqueueUsageRecord/, '高性能混合评分使用记录必须等待 Redis Stream 接收')
-  assert.match(functionBody(usageRecordsSource, 'recordGatewayFailure'), /await enqueueUsageRecord/, '高性能网关失败使用记录必须等待 Redis Stream 接收')
+  assert.match(functionBody(usageRecordsSource, 'dispatchUsageRecord'), /dispatchGatewayUsageFinalization\(\{/, '网关使用记录必须进入有界、可追踪、可排空的异步收尾队列')
+  const usageFinalizationSource = source('modules/gateway/usage/failure-finalization.service.ts')
+  assert.match(usageFinalizationSource, /gatewayUsageFinalizationMaxItems\s*=\s*2048/, '网关使用记录异步收尾必须有数量上限')
+  assert.match(usageFinalizationSource, /gatewayUsageFinalizationMaxBytes\s*=\s*64 \* 1024 \* 1024/, '网关使用记录异步收尾必须有字节上限')
+  assert.match(usageFinalizationSource, /gatewayUsageFinalizationMaxConcurrency\s*=\s*32/, '网关使用记录异步收尾必须有并发上限')
+  assert.match(functionBody(usageRecordsSource, 'recordFailedUpstreamAttempt'), /dispatchUsageRecord/, '失败使用记录不得在 retry 前等待 Redis Stream')
+  assert.match(functionBody(usageRecordsSource, 'recordCompletedUpstreamAttempt'), /dispatchUsageRecord/, '成功使用记录不得占用响应完成后的租约收尾')
+  assert.match(functionBody(usageRecordsSource, 'recordHybridScoringAttempt'), /dispatchUsageRecord/, '混合评分使用记录不得阻塞路由决策')
+  assert.match(functionBody(usageRecordsSource, 'recordGatewayFailure'), /dispatchUsageRecord/, '网关失败使用记录不得阻塞错误响应收尾')
 
   const usageRecordQueueSource = source('modules/gateway/usage/record-queue.service.ts')
   assert.match(functionBody(usageRecordQueueSource, 'enqueueUsageRecord'), /shouldEnqueueUsageRecordToRedisStream\(\)[\s\S]*await freezeUsageRecordPricingFactsAsync\(queuedInput\)[\s\S]*enqueueUsageRecordToRedisStream\(frozenInput\)/, '高性能使用记录必须在 Redis Stream 入队前异步固化请求时计价事实')
@@ -542,8 +547,8 @@ function assertNoPerformanceLocalFactQueues(): void {
   const fixedResponsesSource = source('modules/gateway/response/fixed-responses.ts')
   assert.match(
     functionBody(fixedResponsesSource, 'sendModelsGatewayResponse'),
-    /await enqueueUsageRecord/,
-    '模型列表固定响应的使用记录必须等待 Redis Stream XADD 成功'
+    /dispatchUsageRecord/,
+    '模型列表固定响应必须跟踪 usage 收尾，但不得等待 Redis Stream XADD'
   )
 
   const backgroundJobsSource = source('modules/background/background-jobs.ts')

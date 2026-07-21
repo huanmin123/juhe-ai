@@ -119,6 +119,7 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
         lastError: dbServiceSnapshot?.lastError
       },
       queueHealth,
+      gatewayUsageFinalization: serverRuntime?.gatewayUsageFinalization ?? null,
       grep: grepRuntime,
       gatewayAccountSideEffectsAvailable: Boolean(gatewayAccountSideEffects),
       gatewayAccountSideEffects: gatewayAccountSideEffects

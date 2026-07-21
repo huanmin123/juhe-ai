@@ -6,7 +6,7 @@ import { gatewayErrorPayload } from './responses.js'
 import { isCodexModelsRequest } from '../protocols/openai-v1/route-helpers.js'
 import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
-import { enqueueUsageRecord } from '../usage/record-queue.service.js'
+import { dispatchUsageRecord } from '../usage/records.js'
 import {
   ANTHROPIC_PROVIDER_CODE,
   GEMINI_PROVIDER_CODE,
@@ -126,7 +126,7 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
     systemAccountId: usageContext.systemAccountId,
     providerCodes: normalizedProviderCodes
   })
-  await enqueueUsageRecord({
+  dispatchUsageRecord({
     ...usageContext,
     providerCode,
     usageSemantic: usageSemanticForProfile({

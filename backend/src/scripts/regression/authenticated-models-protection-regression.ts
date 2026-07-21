@@ -120,9 +120,27 @@ assert.match(earlyHandlerSource, /resolveGatewayApiKeyForModelsAsync\([\s\S]*ins
 assert.doesNotMatch(earlyHandlerSource, /recordClientIpErrorCircuitSuccessAsync/, 'GET models 不产生请求体错误，不得读写请求体错误熔断状态')
 
 const authenticatedModelsLimiterSource = readFileSync(new URL('../../modules/gateway/runtime/authenticated-models-rate-limit.service.ts', import.meta.url), 'utf8')
-assert(
-  authenticatedModelsLimiterSource.indexOf('const apiKeyDecision') < authenticatedModelsLimiterSource.indexOf('const apiKeyIpDecision'),
-  '认证模型列表必须先检查 API Key 全局桶，通过后才能创建或消耗 API Key + IP 桶'
+assert.match(
+  authenticatedModelsLimiterSource,
+  /consumePenaltyWindowRateLimitGroupsAsync\(\{[\s\S]*groups:\s*\[[\s\S]*scope:\s*'api_key'[\s\S]*scope:\s*'api_key_ip'/,
+  '认证模型列表必须按 API Key 全局桶、API Key + IP 桶顺序用一次分组原子入口消费'
+)
+assert.doesNotMatch(
+  authenticatedModelsLimiterSource,
+  /consumePenaltyWindowRateLimitAsync/,
+  '认证模型列表不得继续通过两次顺序调用产生两次 Redis EVAL'
+)
+
+const penaltyLimiterSource = readFileSync(new URL('../../modules/rate-limit/penalty-window-rate-limit.ts', import.meta.url), 'utf8')
+assert.match(
+  penaltyLimiterSource,
+  /consumePenaltyWindowRateLimitGroupsAsync[\s\S]*consumeRedisPenaltyWindowRateLimitGroups/,
+  'Penalty limiter 必须提供跨 scope 的单次 Redis 分组消费入口'
+)
+assert.match(
+  penaltyLimiterSource,
+  /const redisPenaltyWindowRateLimitGroupsScript = `[\s\S]*group_count[\s\S]*return \{0, blocked_retry_ms, blocked_rule_index, blocked_group_index\}/,
+  '分组 Redis Lua 必须返回首个阻断 group，保持全局 API Key 桶优先'
 )
 
 const fixedResponseSource = readFileSync(new URL('../../modules/gateway/response/fixed-responses.ts', import.meta.url), 'utf8')

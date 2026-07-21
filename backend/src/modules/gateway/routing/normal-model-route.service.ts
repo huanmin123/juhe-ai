@@ -104,9 +104,16 @@ export async function resolveNormalGatewayModelRoute(
     bindings,
     targetModel: requestedModel,
     requestClientCompatibility,
-    acceptCandidate: (candidate) => candidate.modelFilter.mappingMatchedCount > 0
+    candidatePriority: (candidate) => candidate.modelFilter.mappingMatchedCount > 0
+      ? 2
+      : catalogRoute.outcome === 'matched' && candidate.binding.provider_code === catalogRoute.route.providerCode
+        ? 1
+        : Number.NEGATIVE_INFINITY
   })
   if (mappingTarget) {
+    const routeSource = mappingTarget.modelFilter.mappingMatchedCount > 0
+      ? 'account_mapping'
+      : 'catalog_provider'
     const selectedProviderBindings = bindings
       .filter(candidate => candidate.provider_code === mappingTarget.binding.provider_code)
       .map(copyGroupBinding)
@@ -122,8 +129,12 @@ export async function resolveNormalGatewayModelRoute(
       accounts: mappingTarget.accounts,
       responseInspectionPolicies: mappingTarget.responseInspectionPolicies,
       requestedModel,
-      routeSource: 'account_mapping',
-      matchedProviderCode: mappingTarget.groupAccess.providerCode
+      routeSource,
+      matchedProviderCode: routeSource === 'account_mapping'
+        ? mappingTarget.groupAccess.providerCode
+        : catalogRoute.outcome === 'matched'
+          ? catalogRoute.route.providerCode
+          : undefined
     }
   }
 
@@ -164,42 +175,14 @@ export async function resolveNormalGatewayModelRoute(
     }
   }
 
-  const target = await selectGatewayModelTargetGroup({
-    req,
-    apiKeyRecord,
-    bindings: candidateBindings,
-    targetModel: requestedModel,
-    requestClientCompatibility
-  })
-  if (!target) {
-    return {
-      outcome: 'failed',
-      statusCode: 503,
-      type: 'service_unavailable',
-      code: 'model_target_group_unavailable',
-      message: `请求模型对应的供应商分组当前没有可用账号：${requestedModel}`,
-      requestedModel,
-      matchedProviderCodes: matchedRoute.matchedProviderCodes
-    }
-  }
-
-  const selectedProviderBindings = bindings
-    .filter(candidate => candidate.provider_code === target.binding.provider_code)
-    .map(copyGroupBinding)
   return {
-    outcome: 'selected',
-    apiKeyRecord: {
-      ...apiKeyRecord,
-      selected_group_id: target.groupId,
-      group_bindings: selectedProviderBindings
-    },
-    groupId: target.groupId,
-    groupAccess: target.groupAccess,
-    accounts: target.accounts,
-    responseInspectionPolicies: target.responseInspectionPolicies,
+    outcome: 'failed',
+    statusCode: 503,
+    type: 'service_unavailable',
+    code: 'model_target_group_unavailable',
+    message: `请求模型对应的供应商分组当前没有可用账号：${requestedModel}`,
     requestedModel,
-    routeSource: 'catalog_provider',
-    matchedProviderCode: matchedRoute.providerCode
+    matchedProviderCodes: matchedRoute.matchedProviderCodes
   }
 }
 

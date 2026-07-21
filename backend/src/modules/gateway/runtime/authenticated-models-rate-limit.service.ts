@@ -1,6 +1,6 @@
 import {
   clearPenaltyWindowRateLimitStore,
-  consumePenaltyWindowRateLimitAsync,
+  consumePenaltyWindowRateLimitGroupsAsync,
   createPenaltyWindowRateLimitStore,
   type PenaltyWindowRateLimitDecision,
   type PenaltyWindowRateLimitRule
@@ -44,25 +44,26 @@ export async function consumeAuthenticatedModelsRateLimit(input: {
   const apiKeyId = input.apiKeyId.trim()
   if (!apiKeyId) return { allowed: true }
   try {
-    const apiKeyDecision = await consumePenaltyWindowRateLimitAsync({
-      store: apiKeyStore,
-      scopeKey: apiKeyId,
-      rules: apiKeyRules,
+    const decision = await consumePenaltyWindowRateLimitGroupsAsync({
+      groups: [
+        {
+          scope: 'api_key',
+          store: apiKeyStore,
+          scopeKey: apiKeyId,
+          rules: apiKeyRules
+        },
+        {
+          scope: 'api_key_ip',
+          store: apiKeyIpStore,
+          scopeKey: `${apiKeyId}:ip:${normalizedClientIp(input.clientIp)}`,
+          rules: apiKeyIpRules
+        }
+      ],
       nowMs: input.nowMs
     })
-    if (!apiKeyDecision.allowed) {
-      return blockedDecision('api_key', apiKeyDecision)
-    }
-
-    const apiKeyIpDecision = await consumePenaltyWindowRateLimitAsync({
-      store: apiKeyIpStore,
-      scopeKey: `${apiKeyId}:ip:${normalizedClientIp(input.clientIp)}`,
-      rules: apiKeyIpRules,
-      nowMs: input.nowMs
-    })
-    return apiKeyIpDecision.allowed
+    return decision.allowed
       ? { allowed: true }
-      : blockedDecision('api_key_ip', apiKeyIpDecision)
+      : blockedDecision(decision.scope ?? 'api_key', decision)
   } catch (error) {
     logger.error(errorLogFields(error, {
       event: 'authenticated_models_rate_limit_unavailable',

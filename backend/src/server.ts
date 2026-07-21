@@ -585,15 +585,15 @@ async function shutdownServer(httpServer: http.Server, exitCode: number): Promis
       waitForActiveAuditCapturesIdle(8_000)
     ])
     const dispatchIdle = await waitForAuditLogServerDispatchIdle(8_000)
-    const ingestAuditIdle = await waitForIngestAuditDrain(5_000)
-    if (!httpClosed || !failureUsageIdle || !captureIdle || !dispatchIdle || !ingestAuditIdle) {
+    const ingestFactQueuesIdle = await waitForIngestFactQueueDrain(5_000)
+    if (!httpClosed || !failureUsageIdle || !captureIdle || !dispatchIdle || !ingestFactQueuesIdle) {
       logger.warn({
         event: 'server_shutdown_drain_incomplete',
         httpClosed,
         failureUsageIdle,
         captureIdle,
         dispatchIdle,
-        ingestAuditIdle,
+        ingestFactQueuesIdle,
         activeAuditCaptureCount: getActiveAuditCaptureCount(),
         pendingFailureUsageFinalizationCount: getPendingGatewayFailureUsageFinalizationCount(),
         pendingAuditDispatchCount: getAuditLogServerDispatchPendingCount(),
@@ -630,13 +630,24 @@ async function closeHttpServer(httpServer: http.Server, timeoutMs: number): Prom
   })
 }
 
-async function waitForIngestAuditDrain(timeoutMs: number): Promise<boolean> {
+async function waitForIngestFactQueueDrain(timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + Math.max(1, timeoutMs)
   while (Date.now() < deadline) {
     const status = await requestIngestWorkerDrainStatus(Math.min(1000, Math.max(1, deadline - Date.now())))
-    const parentQueueLength = status?.pendingQueues.auditLogs.queueLength ?? 0
-    const workerQueueLength = status?.snapshot?.auditLogQueue.queueLength ?? 0
-    if (parentQueueLength === 0 && workerQueueLength === 0) return true
+    if (!status?.snapshot) {
+      await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 25))
+      continue
+    }
+    const parentUsageQueueLength = status.pendingQueues.usageRecords.queueLength
+    const parentAuditQueueLength = status.pendingQueues.auditLogs.queueLength
+    const workerUsageQueueLength = status.snapshot.usageRecordQueue.queueLength
+    const workerAuditQueueLength = status.snapshot.auditLogQueue.queueLength
+    if (
+      parentUsageQueueLength === 0
+      && parentAuditQueueLength === 0
+      && workerUsageQueueLength === 0
+      && workerAuditQueueLength === 0
+    ) return true
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 25))
   }
   return false

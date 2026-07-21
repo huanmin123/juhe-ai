@@ -1137,6 +1137,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     auditCapture,
     auditLogTransport,
     auditLogQueue,
+    gatewayUsageFinalization,
     accountConcurrency,
     highConcurrencyQueue,
     accountBalanceSnapshotCleanup
@@ -1146,6 +1147,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     import('../gateway/audit/capture.service.js'),
     import('../audit-logs/audit-log-transport.service.js'),
     import('../audit-logs/audit-log-queue.service.js'),
+    import('../gateway/usage/failure-finalization.service.js'),
     import('../../shared/account-concurrency.js'),
     import('../gateway/runtime/high-concurrency-queue.service.js'),
     import('../accounts/account-balance-snapshot-cleanup.service.js')
@@ -1301,6 +1303,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     highConcurrencyQueues: highConcurrencyQueue.highConcurrencyGroupQueueSnapshot(),
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
     activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount(),
+    gatewayUsageFinalization: gatewayUsageFinalization.getGatewayUsageFinalizationRuntime(),
     auditLogTransport: {
       ...auditLogTransport.getAuditLogTransportRuntime(),
       pendingDispatchCount: auditLogQueue.getAuditLogServerDispatchPendingCount()
