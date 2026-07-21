@@ -83,6 +83,90 @@ type Summary struct {
 	CreatedAt              string `json:"createdAt"`
 }
 
+type Attempt struct {
+	ID                          string `json:"id"`
+	AttemptIndex                int    `json:"attemptIndex"`
+	AccountID                   string `json:"accountId,omitempty"`
+	AccountName                 string `json:"accountName,omitempty"`
+	AccountOwnerSystemAccountID string `json:"accountOwnerSystemAccountId,omitempty"`
+	GroupID                     string `json:"groupId,omitempty"`
+	GroupName                   string `json:"groupName,omitempty"`
+	ProxyURL                    string `json:"proxyUrl,omitempty"`
+	ProviderCode                string `json:"providerCode,omitempty"`
+	Model                       string `json:"model,omitempty"`
+	UpstreamModel               string `json:"upstreamModel,omitempty"`
+	PricingModel                string `json:"pricingModel,omitempty"`
+	ModelMappingApplied         bool   `json:"modelMappingApplied"`
+	ModelMappingSource          string `json:"modelMappingSource,omitempty"`
+	SourceEndpointFamily        string `json:"sourceEndpointFamily,omitempty"`
+	UpstreamEndpointFamily      string `json:"upstreamEndpointFamily,omitempty"`
+	UpstreamMethod              string `json:"upstreamMethod"`
+	UpstreamURL                 string `json:"upstreamUrl"`
+	UpstreamStatusCode          *int   `json:"upstreamStatusCode,omitempty"`
+	Success                     bool   `json:"success"`
+	ErrorPhase                  string `json:"errorPhase,omitempty"`
+	ErrorCode                   string `json:"errorCode,omitempty"`
+	ErrorMessage                string `json:"errorMessage,omitempty"`
+	StartedAt                   string `json:"startedAt"`
+	EndedAt                     string `json:"endedAt,omitempty"`
+	DurationMs                  *int64 `json:"durationMs,omitempty"`
+}
+
+type PayloadSummary struct {
+	ID                  string `json:"id"`
+	AttemptID           string `json:"attemptId,omitempty"`
+	PartType            string `json:"partType"`
+	SequenceIndex       int    `json:"sequenceIndex"`
+	ContentType         string `json:"contentType,omitempty"`
+	ContentEncoding     string `json:"contentEncoding,omitempty"`
+	HeadersSHA256       string `json:"headersSha256,omitempty"`
+	BodySHA256          string `json:"bodySha256,omitempty"`
+	SizeBytes           int64  `json:"sizeBytes"`
+	CompressedSizeBytes int64  `json:"compressedSizeBytes"`
+	CaptureStatus       string `json:"captureStatus"`
+	CreatedAt           string `json:"createdAt"`
+	HasHeaders          bool   `json:"hasHeaders"`
+	HasBody             bool   `json:"hasBody"`
+}
+
+type ErrorGroup struct {
+	ID                 string `json:"id"`
+	Fingerprint        string `json:"fingerprint"`
+	WindowStartedAt    string `json:"windowStartedAt"`
+	WindowEndedAt      string `json:"windowEndedAt"`
+	SystemAccountID    string `json:"systemAccountId,omitempty"`
+	SystemAccountName  string `json:"systemAccountName,omitempty"`
+	APIKeyID           string `json:"apiKeyId,omitempty"`
+	APIKeyName         string `json:"apiKeyName,omitempty"`
+	GroupID            string `json:"groupId,omitempty"`
+	GroupName          string `json:"groupName,omitempty"`
+	AccountID          string `json:"accountId,omitempty"`
+	AccountName        string `json:"accountName,omitempty"`
+	ProviderCode       string `json:"providerCode,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Model              string `json:"model,omitempty"`
+	StatusCode         *int   `json:"statusCode,omitempty"`
+	ErrorPhase         string `json:"errorPhase,omitempty"`
+	ErrorCode          string `json:"errorCode,omitempty"`
+	ErrorType          string `json:"errorType,omitempty"`
+	RequestFingerprint string `json:"requestFingerprint,omitempty"`
+	ErrorFingerprint   string `json:"errorFingerprint,omitempty"`
+	Count              int    `json:"count"`
+	FirstEventID       string `json:"firstEventId,omitempty"`
+	LastEventID        string `json:"lastEventId,omitempty"`
+	SampleEventID      string `json:"sampleEventId,omitempty"`
+	LastMessage        string `json:"lastMessage,omitempty"`
+	CreatedAt          string `json:"createdAt"`
+	UpdatedAt          string `json:"updatedAt"`
+}
+
+type Detail struct {
+	Summary
+	Attempts   []Attempt        `json:"attempts"`
+	ErrorGroup *ErrorGroup      `json:"errorGroup,omitempty"`
+	Payloads   []PayloadSummary `json:"payloads"`
+}
+
 func NewService(store port.ManagementAuditLogReader) *Service { return &Service{store: store} }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
@@ -106,7 +190,11 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	}
 	items := make([]Summary, 0, len(result.Items))
 	for _, row := range result.Items {
-		items = append(items, summary(row))
+		item, err := summary(row)
+		if err != nil {
+			return ListResult{}, err
+		}
+		items = append(items, item)
 	}
 	total := (page-1)*pageSize + len(items)
 	if result.HasMore {
@@ -115,7 +203,64 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	return ListResult{Items: items, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
 }
 
-func summary(row port.ManagementAuditLogSummary) Summary {
+func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
+	if s.store == nil {
+		return Detail{}, false, fmt.Errorf("management audit log reader is required")
+	}
+	row, found, err := s.store.GetManagementAuditLog(ctx, id)
+	if err != nil || !found {
+		return Detail{}, found, err
+	}
+	summaryResult, err := summary(row.ManagementAuditLogSummary)
+	if err != nil {
+		return Detail{}, false, err
+	}
+	result := Detail{
+		Summary:  summaryResult,
+		Attempts: make([]Attempt, 0, len(row.Attempts)),
+		Payloads: make([]PayloadSummary, 0, len(row.Payloads)),
+	}
+	for _, attempt := range row.Attempts {
+		result.Attempts = append(result.Attempts, Attempt{
+			ID: attempt.ID, AttemptIndex: attempt.AttemptIndex,
+			AccountID: text(attempt.AccountID), AccountName: text(attempt.AccountName), AccountOwnerSystemAccountID: text(attempt.AccountOwnerSystemAccountID),
+			GroupID: text(attempt.GroupID), GroupName: text(attempt.GroupName), ProxyURL: trimURL(attempt.ProxyURL), ProviderCode: text(attempt.ProviderCode),
+			Model: text(attempt.Model), UpstreamModel: text(attempt.UpstreamModel), PricingModel: text(attempt.PricingModel),
+			ModelMappingApplied: attempt.ModelMappingApplied, ModelMappingSource: text(attempt.ModelMappingSource),
+			SourceEndpointFamily: text(attempt.SourceEndpointFamily), UpstreamEndpointFamily: text(attempt.UpstreamEndpointFamily),
+			UpstreamMethod: attempt.UpstreamMethod, UpstreamURL: trimRequiredURL(attempt.UpstreamURL), UpstreamStatusCode: attempt.UpstreamStatusCode,
+			Success: attempt.Success, ErrorPhase: text(attempt.ErrorPhase), ErrorCode: text(attempt.ErrorCode), ErrorMessage: text(attempt.ErrorMessage),
+			StartedAt: attempt.StartedAt, EndedAt: text(attempt.EndedAt), DurationMs: attempt.DurationMs,
+		})
+	}
+	if row.ErrorGroup != nil {
+		group := row.ErrorGroup
+		result.ErrorGroup = &ErrorGroup{
+			ID: group.ID, Fingerprint: group.Fingerprint, WindowStartedAt: group.WindowStartedAt, WindowEndedAt: group.WindowEndedAt,
+			SystemAccountID: text(group.SystemAccountID), SystemAccountName: text(group.SystemAccountName), APIKeyID: text(group.APIKeyID), APIKeyName: text(group.APIKeyName),
+			GroupID: text(group.GroupID), GroupName: text(group.GroupName), AccountID: text(group.AccountID), AccountName: text(group.AccountName),
+			ProviderCode: text(group.ProviderCode), Path: text(group.Path), Model: text(group.Model), StatusCode: group.StatusCode,
+			ErrorPhase: text(group.ErrorPhase), ErrorCode: text(group.ErrorCode), ErrorType: text(group.ErrorType),
+			RequestFingerprint: text(group.RequestFingerprint), ErrorFingerprint: text(group.ErrorFingerprint), Count: group.Count,
+			FirstEventID: text(group.FirstEventID), LastEventID: text(group.LastEventID), SampleEventID: text(group.SampleEventID), LastMessage: text(group.LastMessage),
+			CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt,
+		}
+	}
+	for _, payload := range row.Payloads {
+		result.Payloads = append(result.Payloads, PayloadSummary{
+			ID: payload.ID, AttemptID: text(payload.AttemptID), PartType: payload.PartType, SequenceIndex: payload.SequenceIndex,
+			ContentType: text(payload.ContentType), ContentEncoding: text(payload.ContentEncoding), HeadersSHA256: text(payload.HeadersSHA256), BodySHA256: text(payload.BodySHA256),
+			SizeBytes: payload.SizeBytes, CompressedSizeBytes: payload.CompressedSizeBytes, CaptureStatus: payload.CaptureStatus,
+			CreatedAt: payload.CreatedAt, HasHeaders: payload.HasHeaders, HasBody: payload.HasBody,
+		})
+	}
+	return result, true, nil
+}
+
+func summary(row port.ManagementAuditLogSummary) (Summary, error) {
+	if !validTrafficSource(row.TrafficSource) {
+		return Summary{}, fmt.Errorf("invalid management audit log traffic source: %q", row.TrafficSource)
+	}
 	return Summary{
 		ID: row.ID, TraceID: row.TraceID, TrafficSource: row.TrafficSource,
 		SystemAccountID: text(row.SystemAccountID), SystemAccountName: text(row.SystemAccountName), APIKeyID: text(row.APIKeyID), APIKeyName: text(row.APIKeyName),
@@ -127,7 +272,28 @@ func summary(row port.ManagementAuditLogSummary) Summary {
 		AttemptCount: row.AttemptCount, PayloadCount: row.PayloadCount, RawPayloadBytes: row.RawPayloadBytes, CompressedPayloadBytes: row.CompressedPayloadBytes,
 		CompressionSavedBytes: row.CompressionSavedBytes, ErrorGroupID: text(row.ErrorGroupID), CaptureStatus: row.CaptureStatus, StartedAt: row.StartedAt, EndedAt: row.EndedAt,
 		DurationMs: row.DurationMs, HTTPCompletedAt: text(row.HTTPCompletedAt), HTTPDurationMs: row.HTTPDurationMs, FirstTokenMs: row.FirstTokenMs, CreatedAt: row.CreatedAt,
+	}, nil
+}
+
+func validTrafficSource(value string) bool {
+	switch value {
+	case "gateway", "manual_account_test", "account_health_check", "runtime_recovery_probe", "cooldown_retest", "hybrid_scoring", "hybrid_quality_scoring":
+		return true
+	default:
+		return false
 	}
+}
+
+func trimURL(value *string) string {
+	return trim(text(value))
+}
+
+func trimRequiredURL(value string) string {
+	trimmed := trim(value)
+	if trimmed == "" {
+		return value
+	}
+	return trimmed
 }
 
 func normalizeOutcome(value string) string {
