@@ -8,16 +8,17 @@ import (
 
 	"juhe-ai/backend-go/internal/jobs/accounttest"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestDispatchCreatesQueuedTaskAndEnqueuesTaskID(t *testing.T) {
 	store := &dispatchStoreStub{account: testAccount(), found: true}
 	client := &dispatchQueueStub{}
-	service := NewService(Options{Store: store, EnqueueClient: client, NewID: func(string) string { return "accttest_1" }})
+	service := NewService(Options{Store: store, EnqueueClient: client, TestOptions: testOptionsStub(), NewID: func(string) string { return "accttest_1" }})
 
 	task, err := service.Dispatch(context.Background(), Input{
-		AccountID: " account_1 ", Model: " gpt-5.5 ", TestEndpointMode: " responses_sse ",
+		AccountID: " account_1 ", Model: " gpt-5.5 ", TestEndpointMode: "responses_sse",
 		Access: port.ManagementAccountTestAccess{ActorSystemAccountID: "admin_1", ActorRole: "admin", FilterSystemAccountID: "owner_1"},
 	})
 	if err != nil {
@@ -34,7 +35,7 @@ func TestDispatchCreatesQueuedTaskAndEnqueuesTaskID(t *testing.T) {
 
 func TestDispatchDraftValidatesSavedAccountIdentity(t *testing.T) {
 	store := &dispatchStoreStub{account: testAccount(), found: true}
-	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, Codec: dispatchCodecStub{}, NewID: func(string) string { return "accttest_1" }})
+	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, Codec: &dispatchCodecStub{}, NewID: func(string) string { return "accttest_1" }})
 	input := Input{
 		AccountID: "account_1",
 		Access:    port.ManagementAccountTestAccess{ActorSystemAccountID: "owner_1", ActorRole: "user", FilterSystemAccountID: "owner_1"},
@@ -48,10 +49,100 @@ func TestDispatchDraftValidatesSavedAccountIdentity(t *testing.T) {
 	}
 }
 
+func TestDispatchRejectsMissingSavedAccountModelInsteadOfFallingBack(t *testing.T) {
+	store := &dispatchStoreStub{account: testAccount(), found: true}
+	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, TestOptions: testOptionsStub()})
+
+	_, err := service.Dispatch(context.Background(), Input{
+		AccountID: "account_1",
+		Access:    port.ManagementAccountTestAccess{ActorSystemAccountID: "owner_1", ActorRole: "user", FilterSystemAccountID: "owner_1"},
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("Dispatch() error = %v, want ErrInvalidInput", err)
+	}
+	if store.createInput.TaskID != "" {
+		t.Fatalf("create input = %+v, want no task creation", store.createInput)
+	}
+}
+
+func TestDispatchRejectsModelOutsideCurrentAccountOptions(t *testing.T) {
+	store := &dispatchStoreStub{account: testAccount(), found: true}
+	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, TestOptions: testOptionsStub()})
+
+	_, err := service.Dispatch(context.Background(), Input{
+		AccountID: "account_1",
+		Model:     "missing-model",
+		Access:    port.ManagementAccountTestAccess{ActorSystemAccountID: "owner_1", ActorRole: "user", FilterSystemAccountID: "owner_1"},
+	})
+	if !errors.Is(err, ErrInvalidInput) || err.Error() != "模型不在当前账户供应商可用目录中：missing-model" {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+}
+
+func TestDispatchRejectsEndpointOutsideSelectedModelOptions(t *testing.T) {
+	store := &dispatchStoreStub{account: testAccount(), found: true}
+	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, TestOptions: testOptionsStub()})
+
+	_, err := service.Dispatch(context.Background(), Input{
+		AccountID:        "account_1",
+		Model:            "gpt-5.5",
+		TestEndpointMode: "chat_sse",
+		Access:           port.ManagementAccountTestAccess{ActorSystemAccountID: "owner_1", ActorRole: "user", FilterSystemAccountID: "owner_1"},
+	})
+	if !errors.Is(err, ErrInvalidInput) || err.Error() != "模型 gpt-5.5 不支持本次检查协议：chat_sse" {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+}
+
+func TestDispatchAuthorizedAccountPersistsLimitedDiagnostics(t *testing.T) {
+	account := testAccount()
+	account.AccessType = "authorized"
+	store := &dispatchStoreStub{account: account, found: true}
+	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, TestOptions: testOptionsStub(), NewID: func(string) string { return "accttest_1" }})
+
+	_, err := service.Dispatch(context.Background(), Input{
+		AccountID:        "account_1",
+		Model:            "gpt-5.5",
+		TestEndpointMode: "responses_sse",
+		Access:           port.ManagementAccountTestAccess{ActorSystemAccountID: "viewer_1", ActorRole: "user", FilterSystemAccountID: "viewer_1"},
+	})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+	if store.createInput.Diagnostics != "limited" {
+		t.Fatalf("create input diagnostics = %q, want limited", store.createInput.Diagnostics)
+	}
+}
+
+func TestDispatchRejectsDraftBeforePersistingTask(t *testing.T) {
+	store := &dispatchStoreStub{account: testAccount(), found: true}
+	codec := &dispatchCodecStub{}
+	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, Codec: codec, NewID: func(string) string { return "accttest_1" }})
+
+	_, err := service.Dispatch(context.Background(), Input{
+		AccountID: "account_1",
+		Access:    port.ManagementAccountTestAccess{ActorSystemAccountID: "owner_1", ActorRole: "user", FilterSystemAccountID: "owner_1"},
+		DraftAccount: map[string]any{
+			"providerCode": "openai", "providerProtocolProfileId": "profile_openai", "name": "Draft", "type": "api_key",
+			"credentials": map[string]any{"api_key": "sk-draft"}, "groupId": "group_1",
+			"healthCheckModel": "gpt-5.5", "healthCheckEndpointMode": "responses_sse",
+		},
+	})
+	if !errors.Is(err, ErrInvalidInput) || err.Error() != "Go 账户测试暂不支持未保存草稿配置" {
+		t.Fatalf("Dispatch() error = %v, want unsupported draft validation error", err)
+	}
+	if codec.input != nil {
+		t.Fatalf("EncryptJSON() input = %#v, want no draft encryption", codec.input)
+	}
+	if store.createInput.TaskID != "" {
+		t.Fatalf("create input = %+v, want no task creation", store.createInput)
+	}
+}
+
 func TestDispatchDraftRejectsAuthorizedAccount(t *testing.T) {
 	account := testAccount()
 	account.AccessType = "authorized"
-	service := NewService(Options{Store: &dispatchStoreStub{account: account, found: true}, EnqueueClient: &dispatchQueueStub{}, Codec: dispatchCodecStub{}})
+	service := NewService(Options{Store: &dispatchStoreStub{account: account, found: true}, EnqueueClient: &dispatchQueueStub{}, Codec: &dispatchCodecStub{}})
 	_, err := service.Dispatch(context.Background(), Input{
 		AccountID: "account_1", Access: port.ManagementAccountTestAccess{ActorSystemAccountID: "viewer_1", ActorRole: "user", FilterSystemAccountID: "viewer_1"},
 		DraftAccount: map[string]any{"providerCode": "openai", "providerProtocolProfileId": "profile_openai", "name": "Draft", "type": "api_key", "groupId": "group_1", "healthCheckModel": "gpt-5.5", "healthCheckEndpointMode": "responses_sse"},
@@ -65,9 +156,9 @@ func TestDispatchMarksQueuedTaskFailedWhenEnqueueFails(t *testing.T) {
 	queueErr := errors.New("redis unavailable")
 	store := &dispatchStoreStub{account: testAccount(), found: true}
 	client := &dispatchQueueStub{err: queueErr}
-	service := NewService(Options{Store: store, EnqueueClient: client, NewID: func(string) string { return "accttest_1" }})
+	service := NewService(Options{Store: store, EnqueueClient: client, TestOptions: testOptionsStub(), NewID: func(string) string { return "accttest_1" }})
 
-	task, err := service.Dispatch(context.Background(), Input{AccountID: "account_1", Access: port.ManagementAccountTestAccess{ActorSystemAccountID: "admin_1", ActorRole: "admin"}})
+	task, err := service.Dispatch(context.Background(), Input{AccountID: "account_1", Model: "gpt-5.5", TestEndpointMode: "responses_sse", Access: port.ManagementAccountTestAccess{ActorSystemAccountID: "admin_1", ActorRole: "admin"}})
 	if !errors.Is(err, ErrEnqueueFailed) || task.Status != "failed" || store.failedTaskID != "accttest_1" {
 		t.Fatalf("task=%+v err=%v failedTaskID=%q", task, err, store.failedTaskID)
 	}
@@ -85,6 +176,16 @@ func TestGetTaskUsesExistingScopedProjection(t *testing.T) {
 
 func testAccount() port.ManagementAccountTestDispatchAccount {
 	return port.ManagementAccountTestDispatchAccount{ID: "account_1", Name: "Account", ProviderCode: "openai", ProviderProtocolProfileID: "profile_openai", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key", AccessType: "owner", HealthCheckModel: "gpt-5.5", HealthCheckEndpointMode: "responses_sse"}
+}
+
+func testOptionsStub() *dispatchTestOptionsStub {
+	return &dispatchTestOptionsStub{found: true, result: managementaccounttestoptions.Result{
+		AccountID: "account_1",
+		Models: []managementaccounttestoptions.ModelOption{{
+			Model:             "gpt-5.5",
+			TestEndpointModes: []string{"responses_sse"},
+		}},
+	}}
 }
 
 func queuedTask(id string) Task {
@@ -133,12 +234,27 @@ type dispatchQueueStub struct {
 	err      error
 }
 
+type dispatchTestOptionsStub struct {
+	input  managementaccounttestoptions.Input
+	result managementaccounttestoptions.Result
+	found  bool
+	err    error
+}
+
+func (s *dispatchTestOptionsStub) Get(_ context.Context, input managementaccounttestoptions.Input) (managementaccounttestoptions.Result, bool, error) {
+	s.input = input
+	return s.result, s.found, s.err
+}
+
 func (s *dispatchQueueStub) Enqueue(_ context.Context, taskType string, payload []byte, _ queue.EnqueueOptions) (queue.TaskInfo, error) {
 	s.taskType = taskType
 	s.payload = append([]byte(nil), payload...)
 	return queue.TaskInfo{}, s.err
 }
 
-type dispatchCodecStub struct{}
+type dispatchCodecStub struct{ input map[string]any }
 
-func (dispatchCodecStub) EncryptJSON(map[string]any) (string, error) { return "encrypted-draft", nil }
+func (s *dispatchCodecStub) EncryptJSON(input map[string]any) (string, error) {
+	s.input = input
+	return "encrypted-draft", nil
+}

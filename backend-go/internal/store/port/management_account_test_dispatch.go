@@ -25,8 +25,10 @@ type ManagementAccountTestDispatchCreateInput struct {
 	ProtocolCode              string
 	ProtocolVersion           string
 	AccountType               string
+	Diagnostics               string
 	Model                     string
 	TestEndpointMode          string
+	DraftAccountEncrypted     string
 	Access                    ManagementAccountTestAccess
 }
 
