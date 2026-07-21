@@ -2,7 +2,9 @@ package accountbalancerefresh
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +50,18 @@ type Dependencies struct {
 	Now              func() time.Time
 }
 
+type candidateTimeoutError struct {
+	accountID string
+}
+
+func (e candidateTimeoutError) Error() string {
+	return fmt.Sprintf("account balance refresh candidate %q timed out", e.accountID)
+}
+
+func (candidateTimeoutError) Unwrap() error {
+	return context.DeadlineExceeded
+}
+
 func Run(ctx context.Context, dependencies Dependencies) (Summary, error) {
 	startedAt := now(dependencies.Now)
 	if dependencies.Store == nil {
@@ -91,12 +105,15 @@ func Run(ctx context.Context, dependencies Dependencies) (Summary, error) {
 	var cursor atomic.Int64
 	var processed atomic.Int64
 	var failed atomic.Int64
+	var taskFailed atomic.Bool
+	var taskFailure error
+	var taskFailureOnce sync.Once
 	done := make(chan struct{}, workerCount)
 	for range workerCount {
 		go func() {
 			defer func() { done <- struct{}{} }()
 			for {
-				if runCtx.Err() != nil {
+				if runCtx.Err() != nil || taskFailed.Load() {
 					return
 				}
 				index := int(cursor.Add(1) - 1)
@@ -107,8 +124,17 @@ func Run(ctx context.Context, dependencies Dependencies) (Summary, error) {
 				err := runCandidate(candidateCtx, dependencies.RefreshCandidate, candidates[index])
 				candidateCancel()
 				if err != nil {
-					failed.Add(1)
-					continue
+					var timeoutErr candidateTimeoutError
+					if errors.As(err, &timeoutErr) {
+						failed.Add(1)
+						continue
+					}
+					taskFailureOnce.Do(func() {
+						taskFailure = fmt.Errorf("refresh account balance candidate %q: %w", candidates[index].ID, err)
+						taskFailed.Store(true)
+						cancel()
+					})
+					return
 				}
 				processed.Add(1)
 			}
@@ -116,6 +142,9 @@ func Run(ctx context.Context, dependencies Dependencies) (Summary, error) {
 	}
 	for range workerCount {
 		<-done
+	}
+	if taskFailure != nil {
+		return Summary{}, taskFailure
 	}
 	if err := ctx.Err(); err != nil {
 		return Summary{}, err
@@ -174,6 +203,9 @@ func runCandidate(ctx context.Context, refresh func(context.Context, port.Accoun
 	case err := <-result:
 		return err
 	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return candidateTimeoutError{accountID: candidate.ID}
+		}
 		return ctx.Err()
 	}
 }

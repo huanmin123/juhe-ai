@@ -59,7 +59,7 @@ func refreshCandidate(id string) port.AccountBalanceRefreshCandidate {
 	return port.AccountBalanceRefreshCandidate{ID: id, SystemAccountID: "system-" + id}
 }
 
-func TestRunPrioritizesRecoveryBoundsWindowAndContinuesCandidateFailures(t *testing.T) {
+func TestRunPrioritizesRecoveryBoundsWindowAndContinuesCandidateTimeouts(t *testing.T) {
 	store := &fakeCandidateStore{
 		recovery: []port.AccountBalanceRefreshCandidate{refreshCandidate("recovery-1"), refreshCandidate("recovery-2")},
 		due:      []port.AccountBalanceRefreshCandidate{refreshCandidate("due-1"), refreshCandidate("due-2"), refreshCandidate("due-3")},
@@ -72,7 +72,7 @@ func TestRunPrioritizesRecoveryBoundsWindowAndContinuesCandidateFailures(t *test
 		RuntimeFilter:    fakeRuntimeFilter{available: true, keep: map[string]bool{"recovery-1": true, "recovery-2": true, "due-1": true, "due-2": true, "due-3": true}},
 		WorkerLimit:      2,
 		WindowSize:       4,
-		CandidateTimeout: time.Second,
+		CandidateTimeout: 10 * time.Millisecond,
 		RefreshCandidate: func(ctx context.Context, candidate port.AccountBalanceRefreshCandidate) error {
 			mu.Lock()
 			started++
@@ -86,7 +86,8 @@ func TestRunPrioritizesRecoveryBoundsWindowAndContinuesCandidateFailures(t *test
 				mu.Unlock()
 			}()
 			if candidate.ID == "due-1" {
-				return errors.New("upstream failed")
+				<-ctx.Done()
+				return ctx.Err()
 			}
 			select {
 			case <-time.After(5 * time.Millisecond):
@@ -110,6 +111,24 @@ func TestRunPrioritizesRecoveryBoundsWindowAndContinuesCandidateFailures(t *test
 	}
 	if len(store.limits) != 2 || store.limits[0] != 4 || store.limits[1] != 2 {
 		t.Fatalf("store limits = %v, want recovery=4 then due=2", store.limits)
+	}
+}
+
+func TestRunReturnsCandidateInfrastructureError(t *testing.T) {
+	infraErr := errors.New("persist account balance snapshot: database unavailable")
+	store := &fakeCandidateStore{due: []port.AccountBalanceRefreshCandidate{refreshCandidate("due-1")}}
+
+	_, err := Run(context.Background(), Dependencies{
+		Store:            store,
+		WorkerLimit:      1,
+		WindowSize:       1,
+		CandidateTimeout: time.Second,
+		RefreshCandidate: func(context.Context, port.AccountBalanceRefreshCandidate) error {
+			return infraErr
+		},
+	})
+	if !errors.Is(err, infraErr) {
+		t.Fatalf("Run() error = %v, want candidate infrastructure error", err)
 	}
 }
 
