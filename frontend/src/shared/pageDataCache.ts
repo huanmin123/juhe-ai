@@ -1168,20 +1168,37 @@ function createIndexedDbPageDataCacheStorage(factory: IDBFactory, options: { max
         const transaction = db.transaction(PAGE_DATA_CACHE_STORE, 'readwrite')
         const store = transaction.objectStore(PAGE_DATA_CACHE_STORE)
         let written = false
+        let guardAborted = false
         const request = store.get(record.key)
         request.onerror = () => reject(request.error ?? new Error('读取页面缓存失败'))
         request.onsuccess = () => {
           if (!canReplacePageDataCacheRecord(record, request.result as PageDataCacheRecord<unknown> | undefined)) return
           if (commitGuard && !commitGuard()) return
-          written = true
-          store.put(record)
+          const putRequest = store.put(record)
+          putRequest.onsuccess = () => {
+            if (commitGuard && !commitGuard()) {
+              guardAborted = true
+              written = false
+              transaction.abort()
+              return
+            }
+            written = true
+          }
         }
         transaction.oncomplete = () => {
           resolve(written)
           if (written) void pruneIndexedDbRecords(db, options.maxEntries, options.now()).catch(() => undefined)
         }
-        transaction.onerror = () => reject(transaction.error ?? new Error('写入页面缓存失败'))
-        transaction.onabort = () => reject(transaction.error ?? new Error('写入页面缓存已中止'))
+        transaction.onerror = () => {
+          if (!guardAborted) reject(transaction.error ?? new Error('写入页面缓存失败'))
+        }
+        transaction.onabort = () => {
+          if (guardAborted) {
+            resolve(false)
+            return
+          }
+          reject(transaction.error ?? new Error('写入页面缓存已中止'))
+        }
       })
     },
     async touch(key, token, confirmedAt, commitGuard) {
@@ -1190,18 +1207,35 @@ function createIndexedDbPageDataCacheStorage(factory: IDBFactory, options: { max
         const transaction = db.transaction(PAGE_DATA_CACHE_STORE, 'readwrite')
         const store = transaction.objectStore(PAGE_DATA_CACHE_STORE)
         let touched = false
+        let guardAborted = false
         const request = store.get(key)
         request.onerror = () => reject(request.error ?? new Error('读取页面缓存失败'))
         request.onsuccess = () => {
           const current = request.result as PageDataCacheRecord<unknown> | undefined
           if (!current || !sameRevisionToken(current.token, token)) return
           if (commitGuard && !commitGuard()) return
-          touched = true
-          store.put({ ...current, token, confirmedAt })
+          const putRequest = store.put({ ...current, token, confirmedAt })
+          putRequest.onsuccess = () => {
+            if (commitGuard && !commitGuard()) {
+              guardAborted = true
+              touched = false
+              transaction.abort()
+              return
+            }
+            touched = true
+          }
         }
         transaction.oncomplete = () => resolve(touched)
-        transaction.onerror = () => reject(transaction.error ?? new Error('更新页面缓存确认时间失败'))
-        transaction.onabort = () => reject(transaction.error ?? new Error('更新页面缓存确认时间已中止'))
+        transaction.onerror = () => {
+          if (!guardAborted) reject(transaction.error ?? new Error('更新页面缓存确认时间失败'))
+        }
+        transaction.onabort = () => {
+          if (guardAborted) {
+            resolve(false)
+            return
+          }
+          reject(transaction.error ?? new Error('更新页面缓存确认时间已中止'))
+        }
       })
     },
     async remove(key) {

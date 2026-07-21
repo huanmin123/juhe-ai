@@ -559,6 +559,45 @@ assert.match(usageRecordsSource, /return\s+await\s+usageRecordsApi\.list\(usageR
 const pageDataCacheSource = readFileSync(fileURLToPath(new URL('../../shared/pageDataCache.ts', import.meta.url)), 'utf8')
 assert.doesNotMatch(pageDataCacheSource, /if \(!primaryAvailable\) return fallbackCall\(\)/, 'IndexedDB 一次失败后不得永久降级到内存，后续操作必须重试持久存储')
 assert.match(pageDataCacheSource, /removeBoth/, '删除和按域失效必须同时尝试 IndexedDB 与内存，避免任一层旧值复活')
+const indexedDbStorageStart = pageDataCacheSource.indexOf('function createIndexedDbPageDataCacheStorage')
+assert.notEqual(indexedDbStorageStart, -1, '必须保留 IndexedDB 页面缓存实现')
+const indexedDbStorageSource = pageDataCacheSource.slice(indexedDbStorageStart)
+const indexedDbWriteStart = indexedDbStorageSource.indexOf('async writeIfCurrent<T>')
+const indexedDbTouchStart = indexedDbStorageSource.indexOf('async touch(', indexedDbWriteStart)
+const indexedDbRemoveStart = indexedDbStorageSource.indexOf('async remove(', indexedDbTouchStart)
+assert.notEqual(indexedDbWriteStart, -1, 'IndexedDB storage 必须实现 writeIfCurrent')
+assert.notEqual(indexedDbTouchStart, -1, 'IndexedDB storage 必须实现 touch')
+assert.notEqual(indexedDbRemoveStart, -1, 'IndexedDB storage 必须实现 remove')
+const indexedDbWriteSource = indexedDbStorageSource.slice(indexedDbWriteStart, indexedDbTouchStart)
+const indexedDbTouchSource = indexedDbStorageSource.slice(indexedDbTouchStart, indexedDbRemoveStart)
+assertSourceOrder(indexedDbWriteSource, [
+  'commitGuard && !commitGuard()',
+  'const putRequest = store.put(record)',
+  'putRequest.onsuccess = () => {',
+  'commitGuard && !commitGuard()',
+  'written = false',
+  'transaction.abort()',
+  'written = true'
+], 'writeIfCurrent 必须在 put 完成边界再次检查 guard，并回滚失效写入')
+assertSourceOrder(indexedDbTouchSource, [
+  'commitGuard && !commitGuard()',
+  'const putRequest = store.put(',
+  'putRequest.onsuccess = () => {',
+  'commitGuard && !commitGuard()',
+  'touched = false',
+  'transaction.abort()',
+  'touched = true'
+], 'touch 必须在 put 完成边界再次检查 guard，并回滚失效更新')
+assert.match(indexedDbWriteSource, /transaction\.onabort\s*=\s*\(\)\s*=>\s*\{[\s\S]*guardAborted[\s\S]*resolve\(false\)[\s\S]*reject\(/, 'writeIfCurrent 的 guard abort 必须正常返回 false，真实 abort 仍 reject')
+assert.match(indexedDbTouchSource, /transaction\.onabort\s*=\s*\(\)\s*=>\s*\{[\s\S]*guardAborted[\s\S]*resolve\(false\)[\s\S]*reject\(/, 'touch 的 guard abort 必须正常返回 false，真实 abort 仍 reject')
+assert.match(indexedDbWriteSource, /transaction\.onerror\s*=\s*\(\)\s*=>\s*\{[\s\S]*reject\(/, 'writeIfCurrent 的真实事务错误必须 reject')
+assert.match(indexedDbTouchSource, /transaction\.onerror\s*=\s*\(\)\s*=>\s*\{[\s\S]*reject\(/, 'touch 的真实事务错误必须 reject')
+assert.match(indexedDbWriteSource, /transaction\.oncomplete[\s\S]*if \(written\)[\s\S]*pruneIndexedDbRecords/, 'writeIfCurrent 只能在事务真实提交后按 written 结果触发 prune')
+const resilientStorageStart = pageDataCacheSource.indexOf('function createResilientStorage')
+assert.notEqual(resilientStorageStart, -1, '必须保留 IndexedDB resilient wrapper')
+const resilientStorageSource = pageDataCacheSource.slice(resilientStorageStart)
+assert.match(resilientStorageSource, /primary\.writeIfCurrent\(record, commitGuard\)[\s\S]*fallback\.writeIfCurrent\(record, commitGuard\)/, 'resilient writeIfCurrent 必须向 primary 与 fallback 透传同一 guard')
+assert.match(resilientStorageSource, /primary\.touch\(key, token, confirmedAt, commitGuard\)[\s\S]*fallback\.touch\(key, token, confirmedAt, commitGuard\)/, 'resilient touch 必须向 primary 与 fallback 透传同一 guard')
 
 cacheFirstController.close()
 forceRefreshController.close()
@@ -576,6 +615,14 @@ console.log('通用页面 IndexedDB cache-first、revision 与多标签协调回
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void
   return { promise: new Promise<T>((next) => { resolve = next }), resolve }
+}
+
+function assertSourceOrder(source: string, markers: string[], message: string): void {
+  let cursor = -1
+  for (const marker of markers) {
+    cursor = source.indexOf(marker, cursor + 1)
+    assert.notEqual(cursor, -1, `${message}: 缺少或顺序错误 ${marker}`)
+  }
 }
 
 async function microtask(): Promise<void> {
