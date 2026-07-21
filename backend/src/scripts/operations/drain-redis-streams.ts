@@ -16,10 +16,6 @@ import {
   stopPublicApiLogRedisStreamConsumer
 } from '../../modules/public-api-logs/public-api-log-queue.service.js'
 import {
-  startRuntimeLogRedisStreamConsumer,
-  stopRuntimeLogRedisStreamConsumer
-} from '../../modules/runtime-logs/runtime-log-index-queue.service.js'
-import {
   startRecordMaintenanceRedisStreamConsumer,
   stopRecordMaintenanceRedisStreamConsumer
 } from '../../modules/record-maintenance/record-maintenance-queue.service.js'
@@ -125,7 +121,6 @@ function startConsumers(): void {
   startAuditLogRedisStreamConsumer()
   startOperationLogRedisStreamConsumer()
   startPublicApiLogRedisStreamConsumer()
-  startRuntimeLogRedisStreamConsumer()
   startRecordMaintenanceRedisStreamConsumer()
 }
 
@@ -135,7 +130,6 @@ async function stopConsumers(): Promise<void> {
     stopAuditLogRedisStreamConsumer(),
     stopOperationLogRedisStreamConsumer(),
     stopPublicApiLogRedisStreamConsumer(),
-    stopRuntimeLogRedisStreamConsumer(),
     stopRecordMaintenanceRedisStreamConsumer()
   ])
 }

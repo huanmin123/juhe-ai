@@ -51,8 +51,7 @@
 | `background_worker_audit_logs` | `ingest-worker` | 原始审计 append-only，失败样本优先保留 |
 | `background_worker_operation_logs` | `ingest-worker` | 操作日志批量写入和摘要索引 |
 | `background_worker_public_api_logs` | `ingest-worker` | 公开接口调用明细 |
-| `background_worker_runtime_log_line` | `ingest-worker` | 运行日志索引增量写入 |
-| `runtime-log-file-import` | `ingest-worker` | 按 offset / cursor 追增量 |
+| `runtime-log-file-import` | `ingest-worker` | 从角色 JSONL 文件按 offset / cursor 追增量，批量提交成功后推进 cursor |
 | `background_worker_record_maintenance` | `ingest-worker` / `stats-worker` | usage / dataset 进 ingest；stats-only command 进 stats writer |
 | `api-key-record-cleanup-retry` / `account-record-cleanup-retry` | `ingest-worker` | 关联明细清理，等待统计安全游标 |
 | `audit-hot-retention-cleanup` / `data-retention-cleanup` dataset 部分 | `ingest-worker` | 小批多轮，不能压住热写入；PostgreSQL performance 下 `data-retention-cleanup` 只投递 record-maintenance 维护任务 |

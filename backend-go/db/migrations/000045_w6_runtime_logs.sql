@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS juhe_dataset.runtime_log_file_cursors (
   cursor_offset bigint NOT NULL DEFAULT 0,
   line_number integer NOT NULL DEFAULT 0,
   file_size bigint NOT NULL DEFAULT 0,
+  truncation_generation integer NOT NULL DEFAULT 0,
   file_mtime_ms bigint,
   last_read_at text,
   last_error_message text,

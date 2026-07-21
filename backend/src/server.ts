@@ -46,8 +46,6 @@ import { startProcessEventLoopMonitor } from './shared/process-event-loop-monito
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { gatewayErrorPayload } from './modules/gateway/response/responses.js'
 import { createCorsOriginDelegate, managementSecurityHeadersMiddleware } from './shared/http-security.js'
-import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
-import { enqueueRuntimeLogLine } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import { openAICompatibleFilesRouter } from './modules/openai-compatible-files/files.routes.js'
 import { openAICompatibleVectorStoresRouter } from './modules/openai-compatible-vector-stores/vector-stores.routes.js'
 import { createHttpCompressionMiddleware } from './shared/http-compression.js'
@@ -160,7 +158,6 @@ if (runtimeConfig.auth.captchaDisabled) {
   }, '登录验证码已关闭：仅用于测试或临时排障，账号密码、登录限频、会话和权限校验仍然生效')
 }
 startProcessEventLoopMonitor()
-setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLine(line, options))
 startDbServiceSupervisor({ onReady: startBackgroundWorkerSupervisorAfterDbServiceReady })
 backgroundWorkerStartupFallbackTimer = setTimeout(() => {
   if (runtimeConfig.runtimeMode === 'performance') {

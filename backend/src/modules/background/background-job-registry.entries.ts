@@ -534,19 +534,6 @@ export const backgroundWorkerRegistry = [
     writes: ['business:accounts']
   }),
   entry({
-    jobName: 'background_worker_runtime_log_line',
-    category: 'ipc-queue',
-    kind: 'log',
-    lifecycle: 'persistent',
-    defaultRole: 'ingest-worker',
-    hotspot: true,
-    singleOwner: false,
-    shardable: true,
-    leaseRequired: false,
-    blocksUserVisibleFreshness: false,
-    writes: ['dataset:runtime_logs']
-  }),
-  entry({
     jobName: 'background_worker_status_request',
     category: 'control-ipc',
     kind: 'control',

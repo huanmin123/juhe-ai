@@ -9,13 +9,11 @@ for (const functionName of [
   'startAuditLogRedisStreamConsumer',
   'startOperationLogRedisStreamConsumer',
   'startPublicApiLogRedisStreamConsumer',
-  'startRuntimeLogRedisStreamConsumer',
   'startRecordMaintenanceRedisStreamConsumer',
   'stopUsageRecordRedisStreamConsumer',
   'stopAuditLogRedisStreamConsumer',
   'stopOperationLogRedisStreamConsumer',
   'stopPublicApiLogRedisStreamConsumer',
-  'stopRuntimeLogRedisStreamConsumer',
   'stopRecordMaintenanceRedisStreamConsumer'
 ]) {
   assert.match(source, new RegExp(`${functionName}\\(`), `排空 CLI 必须调用 ${functionName}`)
