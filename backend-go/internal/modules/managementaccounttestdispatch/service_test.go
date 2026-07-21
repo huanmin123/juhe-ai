@@ -98,7 +98,8 @@ func TestDispatchAuthorizedAccountPersistsLimitedDiagnostics(t *testing.T) {
 	account := testAccount()
 	account.AccessType = "authorized"
 	store := &dispatchStoreStub{account: account, found: true}
-	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, TestOptions: testOptionsStub(), NewID: func(string) string { return "accttest_1" }})
+	testOptions := testOptionsStub()
+	service := NewService(Options{Store: store, EnqueueClient: &dispatchQueueStub{}, TestOptions: testOptions, NewID: func(string) string { return "accttest_1" }})
 
 	_, err := service.Dispatch(context.Background(), Input{
 		AccountID:        "account_1",
@@ -111,6 +112,9 @@ func TestDispatchAuthorizedAccountPersistsLimitedDiagnostics(t *testing.T) {
 	}
 	if store.createInput.Diagnostics != "limited" {
 		t.Fatalf("create input diagnostics = %q, want limited", store.createInput.Diagnostics)
+	}
+	if testOptions.input.AccountID != "account_1" || testOptions.input.SystemAccountID != "viewer_1" {
+		t.Fatalf("test options input = %+v, want authorized viewer scope", testOptions.input)
 	}
 }
 
