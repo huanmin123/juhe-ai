@@ -18,9 +18,9 @@ export interface AuditLogSettings {
 
 const auditLogMb = 1024 * 1024
 
-// 原始审计日志始终启用；runtimeConfig 负责环境变量合并和启动期校验。
+// runtimeConfig 是审计总开关和环境变量合并的唯一事实源。
 export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
-  enabled: true,
+  enabled: runtimeConfig.auditLog.enabled,
   fullBodyCaptureEnabled: true,
   successSampleRate: runtimeConfig.auditLog.successSampleRate,
   flushIntervalSeconds: 5,

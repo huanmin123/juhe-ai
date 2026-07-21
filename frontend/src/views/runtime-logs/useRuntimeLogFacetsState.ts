@@ -73,6 +73,7 @@ export function useRuntimeLogFacetsState() {
 
 function unavailableRuntimeLogRuntime(): RuntimeLogRuntime {
   return {
+    indexEnabled: true,
     runtimeAvailable: false,
     ingestWorkerAvailable: false,
     runtimeLogIndexQueueAvailable: false,

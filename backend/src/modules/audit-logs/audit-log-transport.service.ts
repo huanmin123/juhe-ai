@@ -126,6 +126,10 @@ export async function stopAuditLogTransportWorker(): Promise<void> {
 
 function enqueueAuditLogTransportJob(input: AuditLogInput, mode: AuditLogTransportMode): Promise<AuditLogInput | string> {
   return new Promise((resolve, reject) => {
+    if (!readAuditLogSettings().enabled) {
+      reject(new AuditLogTransportError('原始审计已关闭，拒绝创建传输 worker 任务'))
+      return
+    }
     const sourceBytes = auditLogTransportSourceBytes(input)
     if (
       sourceBytes > auditLogTransportMaxJobBytes

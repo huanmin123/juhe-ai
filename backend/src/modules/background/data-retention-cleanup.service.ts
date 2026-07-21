@@ -265,14 +265,16 @@ async function cleanupDatasetAndUsageRetainedData(input: {
   await yieldToEventLoop()
   result.auditHotSearchFiles = await cleanupAuditHotSearchFilesBefore(cutoffHoursIso(now, retention.auditLogSuccessHotHours))
   await yieldToEventLoop()
-  result.runtimeLogs = await cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
-  await yieldToEventLoop()
-  result.runtimeLogFileCursors = await cleanupInBatches(
-    () => cleanupRuntimeLogFileCursorsBefore(cutoffIso(now, retention.runtimeLogDays), batchSize),
-    batchSize,
-    maxBatches
-  )
-  await yieldToEventLoop()
+  if (runtimeConfig.log.indexEnabled) {
+    result.runtimeLogs = await cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
+    await yieldToEventLoop()
+    result.runtimeLogFileCursors = await cleanupInBatches(
+      () => cleanupRuntimeLogFileCursorsBefore(cutoffIso(now, retention.runtimeLogDays), batchSize),
+      batchSize,
+      maxBatches
+    )
+    await yieldToEventLoop()
+  }
   await cleanupRetentionInBatches(
     result,
     () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),

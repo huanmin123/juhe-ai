@@ -56,6 +56,8 @@ interface ApiEnvelope<T> {
 }
 
 interface AuditLogRuntimeResponse {
+  enabled: boolean
+  unavailableReason?: string
   runtimeAvailable: boolean
   workerSnapshotAvailable: boolean
   auditLogQueueAvailable: boolean
@@ -85,6 +87,8 @@ interface RuntimeLogFacetsResponse {
 }
 
 interface RuntimeLogRuntimeResponse {
+  indexEnabled: boolean
+  unavailableReason?: string
   runtimeAvailable: boolean
   ingestWorkerAvailable: boolean
   runtimeLogIndexQueueAvailable: boolean
@@ -158,6 +162,8 @@ try {
   const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
 
   const auditRuntime = await getEnvelope<AuditLogRuntimeResponse>(baseUrl, '/__aisys__/api/audit-logs/runtime', seed.adminCookie)
+  assert.equal(auditRuntime.enabled, true, '未配置总开关时审计运行态必须标记启用')
+  assert.equal(auditRuntime.unavailableReason, 'server_runtime_unavailable', '启用态必须保留原有运行态不可用原因')
   assert.equal(auditRuntime.runtimeAvailable, false, '审计运行态应标记 server runtime 不可用')
   assert.equal(auditRuntime.workerSnapshotAvailable, false, '审计运行态应标记 worker snapshot 不可用')
   assert.equal(auditRuntime.auditLogQueueAvailable, false, '审计运行态应标记审计队列不可用')
@@ -192,6 +198,8 @@ try {
   assert('defaultRangeDays' in runtimeLogGrepOptions, 'grep 模式应通过独立接口读取文件时间范围')
 
   const runtimeLogRuntime = await getEnvelope<RuntimeLogRuntimeResponse>(baseUrl, '/__aisys__/api/runtime-logs/runtime', seed.adminCookie)
+  assert.equal(runtimeLogRuntime.indexEnabled, true, '未配置总开关时运行日志索引必须标记启用')
+  assert.equal(runtimeLogRuntime.unavailableReason, undefined)
   assert.equal(runtimeLogRuntime.runtimeAvailable, false, '运行日志 runtime 应标记 server runtime 不可用')
   assert.equal(runtimeLogRuntime.ingestWorkerAvailable, false, '运行日志 runtime 应标记 ingest worker 不可用')
   assert.equal(runtimeLogRuntime.runtimeLogIndexQueueAvailable, false, '运行日志 runtime 应标记索引队列不可用')
@@ -203,6 +211,7 @@ try {
     [
       'dbService',
       'gatewayAccountSideEffectsAvailable',
+      'indexEnabled',
       'runtimeAvailable',
       'runtimeLogIndexQueueAvailable',
       'ingestWorkerAvailable'

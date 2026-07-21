@@ -117,6 +117,9 @@ export function createRuntimeLogFileImportTestDependencies(
 }
 
 export function startRuntimeLogFileImport(): void {
+  if (!runtimeConfig.log.indexEnabled) {
+    return
+  }
   if (runtimeConfig.runtimeMode === 'performance' && !runtimeConfig.log.fileEnabled) {
     throw new Error('高性能模式必须启用 JUHE_AI_LOG_FILE_ENABLED，否则 runtime_logs 没有耐久索引来源')
   }

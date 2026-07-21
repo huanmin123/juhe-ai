@@ -25,7 +25,8 @@ export function runtimeLogGrepRangeLimitText(runtime?: RuntimeLogGrepRuntime): s
 
 export function isRuntimeLogsAlertVisible(runtime?: RuntimeLogRuntime): boolean {
   return Boolean(runtime && (
-    !runtime.runtimeAvailable
+    runtime.indexEnabled === false
+    || !runtime.runtimeAvailable
     || !runtime.ingestWorkerAvailable
     || !runtime.runtimeLogIndexQueueAvailable
     || !runtime.dbService.statusAvailable
@@ -36,6 +37,9 @@ export function isRuntimeLogsAlertVisible(runtime?: RuntimeLogRuntime): boolean 
 
 export function runtimeLogsAlertDescription(runtime?: RuntimeLogRuntime): string {
   if (!runtime) return ''
+  if (runtime.indexEnabled === false) {
+    return '运行日志数据库搜索索引已临时关闭，日志文件写入与 grep 搜索仍正常。'
+  }
   const reasons: string[] = []
   if (!runtime.runtimeAvailable) {
     reasons.push('服务运行态不可用')
