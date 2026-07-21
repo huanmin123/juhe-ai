@@ -387,6 +387,7 @@ func TestRouterRegistersW6ManagementRuntimeLogsOnlyWhenEnabled(t *testing.T) {
 		wantStatus int
 	}{
 		{path: "/__aisys__/api/runtime-logs/facets", wantStatus: http.StatusOK},
+		{path: "/__aisys__/api/runtime-logs/facets/", wantStatus: http.StatusOK},
 		{path: "/__aisys__/api/runtime-logs/grep", wantStatus: http.StatusNotFound},
 	} {
 		req := httptest.NewRequest(http.MethodGet, testCase.path, nil)

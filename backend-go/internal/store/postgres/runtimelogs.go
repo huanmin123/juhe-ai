@@ -24,7 +24,11 @@ const (
 
 const managementRuntimeLogFacetRetentionSQL = `
 SELECT COALESCE((
-  SELECT (value_json::jsonb #>> '{}')::int
+  SELECT CASE
+    WHEN value_json ~ '^[[:space:]]*[0-9]+[[:space:]]*$'
+      THEN LEAST(90, GREATEST(1, (value_json::jsonb #>> '{}')::int))
+    ELSE NULL
+  END
   FROM juhe_business.system_settings
   WHERE system_account_id = 'sys_admin' AND key = 'runtimeLogIndexRetentionDays'
 ), $1::int)`

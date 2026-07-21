@@ -1185,6 +1185,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementRuntimeLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/facets", opts.ManagementRuntimeLogsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/facets/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 			}
 			if opts.ManagementExternalIntegrationSourceListHandler != nil {
