@@ -1515,7 +1515,7 @@ assert.match(usageStatsWriterParamsSource, /export function statsParamsTail/)
 assert.match(usageStatsWriterParamsSource, /export function statsSubtractParams/)
 
 const usageStatsAggregationSource = readSource('storage/usage-stats-aggregation.ts')
-assert.match(usageStatsAggregationSource, /shouldAggregateUsageStatsRecord\(_row: UsageStatsRecordRow\): boolean/)
+assert.match(usageStatsAggregationSource, /shouldAggregateUsageStatsRecord\(row: UsageStatsRecordRow\): boolean/)
 assert.match(usageStatsAggregationSource, /return true/)
 assert.doesNotMatch(usageStatsAggregationSource, /traffic_source !== 'cooldown_retest'/)
 assert.doesNotMatch(usageStatsAggregationSource, /traffic_source \?\? 'gateway'/)
