@@ -118,6 +118,8 @@ export function createRuntimeLogFileImportTestDependencies(
 
 export function startRuntimeLogFileImport(): void {
   if (!runtimeConfig.log.indexEnabled) {
+    // 没有索引 cursor 时，轮转文件按普通保留策略清理，避免全部被永久保护。
+    setRotatedLogCleanupProtectionPredicate(async () => true)
     return
   }
   if (runtimeConfig.runtimeMode === 'performance' && !runtimeConfig.log.fileEnabled) {
