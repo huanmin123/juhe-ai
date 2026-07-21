@@ -204,6 +204,30 @@ try {
   assert.equal(relocatedBatchCount, 0, '已追平 current cursor 按 identity 迁移到 rotated 路径时不得从头重读文件')
   assert.ok(relocatedWrites.some((cursor) => cursor.logFile === relocatedPath && cursor.truncationGeneration === 2), 'identity cursor 迁移到 rotated 路径时必须立即持久化并保留 generation')
 
+  const delayedCurrentPath = join(logDir, 'juhe-ai.stats-worker.log')
+  const delayedRotatedPath = join(logDir, 'juhe-ai.stats-worker.20260721T010206Z.00000000-0000-0000-0000-000000000004.log')
+  const delayedOldContent = `${line('delayed-rotated-old')}\n`
+  writeFileSync(delayedCurrentPath, delayedOldContent)
+  const delayedCursors = new Map<string, any>()
+  let delayedBatchCount = 0
+  const delayedDependency = importerModule.createRuntimeLogFileImportTestDependencies({
+    getCursor: async (path: string) => delayedCursors.get(path),
+    getCursorByIdentity: async (identity: string) => [...delayedCursors.values()].find((cursor) => cursor.fileIdentity === identity),
+    upsertCursor: async (cursor: any) => { delayedCursors.set(cursor.logFile, cursor) },
+    createBatch: async () => { delayedBatchCount += 1 }
+  })
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: delayedCurrentPath, role: 'stats-worker-current', kind: 'current' }, delayedDependency)
+  delayedCursors.set(delayedCurrentPath, { ...delayedCursors.get(delayedCurrentPath), truncationGeneration: 3 })
+  renameSync(delayedCurrentPath, delayedRotatedPath)
+  writeFileSync(delayedCurrentPath, `${line('delayed-current-new')}\n`)
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: delayedCurrentPath, role: 'stats-worker-current', kind: 'current' }, delayedDependency)
+  const preservedOldCursor = [...delayedCursors.values()].find((cursor) => cursor.logFile.startsWith('__runtime_log_identity__:'))
+  assert.equal(preservedOldCursor?.truncationGeneration, 3, 'current 先于 rotated 被发现时必须先按 identity 持久化旧 generation')
+  const batchCountBeforeDelayedRotated = delayedBatchCount
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: delayedRotatedPath, role: 'stats-worker-rotated', kind: 'rotated' }, delayedDependency)
+  assert.equal(delayedBatchCount, batchCountBeforeDelayedRotated, '跨目录发现窗口延迟出现的 rotated 文件不得从 offset 0 重读')
+  assert.equal(delayedCursors.get(delayedRotatedPath)?.truncationGeneration, 3, '延迟出现的 rotated 文件必须继承 current 被覆盖前的 generation')
+
   runtimeConfig.databaseDriver = 'sqlite'
   const oldTimestamp = '2000-01-01T00:00:00.000Z'
   database.prepare(`

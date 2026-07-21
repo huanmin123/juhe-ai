@@ -299,6 +299,12 @@ async function resolveRuntimeLogFileCursor(file: ActiveRuntimeLogFile, stats: St
     return existing
   }
   if (existing && existing.fileIdentity !== identity) {
+    if (existing.fileIdentity) {
+      await persistCursor({
+        ...existing,
+        logFile: displacedRuntimeLogFileCursorKey(existing.fileIdentity)
+      }, dependencies)
+    }
     const timestamp = nowIso()
     const replacement: RuntimeLogFileCursor = {
       logFile: file.path,
@@ -508,6 +514,10 @@ function markRuntimeLogFileCompleted(path: string, identity: string, stats: Stat
 
 function runtimeLogFileIdentity(stats: Stats): string {
   return [stats.dev, stats.ino, Math.trunc(stats.birthtimeMs)].join(':')
+}
+
+function displacedRuntimeLogFileCursorKey(fileIdentity: string): string {
+  return `__runtime_log_identity__:${fileIdentity}`
 }
 
 function isMissingFileError(error: unknown): boolean {
