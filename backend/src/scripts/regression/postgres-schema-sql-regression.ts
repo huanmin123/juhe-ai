@@ -186,7 +186,11 @@ assert.doesNotMatch(dataRetentionSource, /recordDataArchiveManifest|archivedPart
 assert.match(usagePartitionSource, /DETACH PARTITION[\s\S]*DROP TABLE/, '到期整日分区必须在安全游标后直接 DETACH 并 DROP')
 assert.doesNotMatch(usagePartitionSource, /CREATE SCHEMA IF NOT EXISTS juhe_archive|SET SCHEMA juhe_archive/, '分区工具不应创建或写入 juhe_archive')
 assert.doesNotMatch(tableMonitorSource, /juhe_archive|role:\s*'archive'/, '表监控不应生成 postgres:juhe_archive 占位项')
-assert.match(tableMonitorSource, /database_role = ANY\(\?::text\[\]\)/, 'PG 表监控概览必须过滤已移除的历史角色快照')
+assert.match(
+  tableMonitorSource,
+  /rowsByRole\s*=\s*await\s+Promise\.all\(monitoredDatabaseRoles\.map[\s\S]+WHERE database_role = \?/,
+  'PG 表监控概览必须使用受控角色集合过滤已移除的历史角色快照'
+)
 assert.doesNotMatch(tableMonitorRoutesSource, /'archive'/, '表监控接口不应再接受 archive 角色')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Responses 桥接状态索引 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_conversations/, '应包含 AI 问答会话 schema')
