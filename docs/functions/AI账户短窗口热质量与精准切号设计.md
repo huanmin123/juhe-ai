@@ -13,7 +13,7 @@
 3. 同一账户配置层使用“所有唯一候选最多一轮”，不再使用固定的“同层失败 2 个账号”预算。5 个 P1 账号中，前 4 个在请求救援准入时间内结束时，游标必须继续到第 5 个；第 5 个仍失败且仍满足时间准入时才允许进入下一层，期限先到则明确返回 deadline_exhausted。
 4. 首字统一的是事实和仲裁器，不是一个适用于所有 lane、模式和请求的数值。软观察、lane hard timeout、attempt lifetime、idle timeout 和请求级救援期限必须保持不同原因码。
 5. 自动电路只消费网关本地可验证的 transport 事实。完整 HTTP/SSE framing 在未命中用户显式高级规则时透明转发；上游状态码、响应头、错误码和正文不能被内部自动机制解释为切号或账号故障。
-6. 运行态分为配置意图、热运行态和持久异常三层。首次 transport 失败先阻断对应 protocol-model 作用域并发起唯一 confirmation；只有独立作用域证据满足条件，才升级到账号级电路。
+6. 运行态分为配置意图、热运行态和持久异常三层。首次 transport 失败先阻断对应 protocol-model 作用域并发起唯一、非阻塞客户端的 canonical confirmation；只有独立作用域证据满足条件，才升级到账号级电路。
 7. 热质量保存在 Redis 或进程内存，按最近 5、10、30 分钟计算。质量只能在完全相同的有效账户配置层内排序，不能跨优先级、备用或分组。
 8. 同层探索允许存在，但只能是低频、真实业务流量、同一有效层内的首选替换；不增加请求、不访问 P2/备用、不绕过会话亲和、电路、容量和路由覆盖。
 9. route coordinator 独占请求级游标、尝试集合、等待预算和跨组推进。routes、preparation、candidate-filter、dispatch 不得各自创建 fallback、重试预算或新的尝试轮次。
@@ -58,7 +58,7 @@
 - 不改变 API Key、路由策略、分组绑定、权重、轮询、主备和 hybrid 的产品语义。
 - 不以日级、周级或完整历史质量直接参与实时选号。
 - 不为获得质量样本向较低优先级、备用层或其他分组主动发业务流量。
-- 不做多个上游同时抢跑后取最快结果。
+- 不做无条件的多个上游同时抢跑后取最快结果。仅当既有 attempt 已由 speed-first 的显式 handoff 合同发出 abort、且重放门禁允许时，才可在有限取消握手窗口预占下一 attempt；不得以延迟最小者作为隐式胜者，所有已在途语义仍由请求级 winner CAS 决定。
 - 不用热质量直接修改 accounts.status、schedulable、cooldown_until 或用户配置的优先级。
 - 不使用上游状态码、响应头、错误码、正文或供应商文案建立系统自动故障分类。
 
@@ -85,9 +85,6 @@ routePlanId
 routeStrategyId
 mode
 orderedAllowedTargets
-groupCursor
-candidateCursor
-pendingBlockedTargets
 weightedDecisionToken
 roundRobinDecisionToken
 hybridDecision
@@ -108,6 +105,21 @@ dispatchRevision
 ```
 
 快照冻结本次请求的组顺序、权重决定、轮询起点、hybrid action plan、请求重放判定、路由目标策略和允许范围。routeOverrideBand 由 coordinator 汇总冻结 route reducer 或当前选中组的 `groupDispatchReducer` 结果，并结合当前动态运行态求值；它可以让候选暂时不可执行，但不能重新抽样、重建环、重算权重或扩大目标范围。
+
+可变推进状态单独放入 coordinator 独占的 `RouteExecutionState`，不属于 route plan snapshot：
+
+```text
+routePlanId
+executionVersion
+groupCursor
+candidateCursorByGroup
+pendingBlockedTargets
+reservedProtocolModelKeys
+attemptedProtocolModelKeys
+terminalState
+```
+
+RoutePlanSnapshot 创建后按内容生成 planHash，任何层都不能修改；RouteExecutionState 只由 coordinator 以 executionVersion 单写推进。这样“一轮”“回访”和 RR/weighted 不重算才能由明确的数据 owner 证明。
 
 ### 4.3 routeOverrideBand 与 baseTierKey
 
@@ -151,6 +163,8 @@ modelMatchRank
 - `cost_first`：有效 session/cache affinity -> 热质量 -> 稳定顺序；soft checkpoint 只能记录样本，不能触发慢切号。
 - `speed_first`：先应用路由层 `latency_degraded` 覆盖，再在同一覆盖带和 base tier 内使用热质量、有效 affinity 与稳定顺序；affinity 不能拉回已降级账号。
 - 高并发分组：由 `groupDispatchReducer` 保留既有 migration、fallback-on-queue、soft-busy、超级优先、priority 和容量比较；热质量只是其同档输入，coordinator 不复制该比较器。
+
+若 speed_first 当前分组所有硬可承接候选都处于 `latency_degraded`，route reducer 必须返回 `all_latency_degraded_passthrough` 并旁路速度降级覆盖，恢复原始分组内候选顺序；账户层不得把池筛空，也不得借此跨分组/优先级重排。当前已经确认慢的请求仍不能为了 soft handoff 从一个已降级账号切到另一个已降级账号，只能继续原 attempt 或进入通用 transport/期限链路。
 
 ### 4.4 模式约束
 
@@ -243,7 +257,7 @@ attemptedKeyFingerprints
 attemptedPurposes
 ```
 
-coordinator 在进入异步 dispatch 前先把 identity 原子加入 `reservedProtocolModelKeys`；随后在真正网络派发线性点取得 `dispatchAdmissionToken`，一次性核对 cluster runtime readiness、`runtimeRecoveryEpoch`、当前节点 membership lease、circuit state/generation、dispatchRevision 和容量 permit。token 必须携带取得时的 recovery epoch、nodeLeaseId 和 admissionId；任一 revision 不匹配都在发网前拒绝并要求刷新运行态，不能降级为旧快照派发。
+coordinator 在进入异步 dispatch 前先把 identity 原子加入 `reservedProtocolModelKeys`；随后在真正网络派发线性点取得 `dispatchAdmissionToken`，一次性核对 cluster runtime readiness、`runtimeRecoveryEpoch`、当前节点 membership lease、`ownerDomain + lifecycleOwnerEpoch + barrierEpoch`、circuit state/generation、dispatchRevision、eligibilityRevisionVector、warmupGeneration、qualityEpoch 和容量 permit。token 必须携带上述 fence、nodeLeaseId、permitId 和 admissionId；任一 revision 不匹配都在发网前拒绝并要求刷新运行态，不能降级为旧快照派发。设置 draining barrier 与递增 barrierEpoch 必须和禁止该 ownerDomain 新 token 处于同一 CAS；barrier 前只读但尚未取 token 的旧节点会得到 STALE，不能在快照后发网。
 
 取得 token 即定义为“已经在途”，并在同一个原子操作中从 reserved 转入 attempted，同时写入按 attemptId 索引的 admission registry：
 
@@ -253,13 +267,19 @@ protocolModelKey
 nodeId
 nodeLeaseId
 runtimeRecoveryEpoch
+ownerDomain
+lifecycleOwnerEpoch
+barrierEpoch
+eligibilityRevisionVector
+warmupGeneration
+qualityEpoch
 requestHardDeadlineAt
 admittedAtMs
 ```
 
 终态 CAS 必须关闭对应 registry entry。确认没有发网时才允许释放 reserved；已经取得 token 的请求即使随后失去 Redis，也只能按 unknown/outbox 合同收尾，不能假装没有 admission。SUSPECT 转换只能阻止线性点之后的新 admission，不能撤销之前已经取得 token 的首轮在途请求。
 
-普通业务取得 admission 后加入 attemptedProtocolModelKeys。本地 Key 准备失败或用户明确允许 Key 动作时，只加入 attemptedKeyFingerprints。confirmation、half-open、hybrid repair 是带 attemptPurpose 和 lease/generation 的显式例外，不能被普通 attempt 再次占用。
+普通业务取得 admission 后加入 attemptedProtocolModelKeys。本地 Key 准备失败或用户明确允许 Key 动作时，只加入 attemptedKeyFingerprints。请求内 half-open、hybrid repair 是带 attemptPurpose 和 lease/generation 的显式例外，不能被普通 attempt 再次占用；background confirmation 属于独立 ProbeIntent，不写入原请求的 attempted 集合。
 
 同一物理协议模型通过不同授权实例或后续分组出现时，本请求仍沿 route plan 访问并独立校验每个 binding 的授权和额度，但不得重复发出同一普通业务 attempt；重复物理目标记录 `duplicate_physical_target` 后推进原路由游标。这是有意的跨组行为迁移，不代表跳过后续不同物理目标。
 
@@ -281,7 +301,7 @@ route coordinator 是以下状态的唯一 owner：
 
 - route plan、分组和候选游标；
 - 请求级 attempted 集合；
-- 普通 attempt、confirmation、hybrid repair 的用途预算；
+- 普通 attempt 和 hybrid repair 的用途预算；
 - routeCoordinationBudget 和请求救援墙钟；
 - temporarily_blocked 的等待、回访和后续路由推进；
 - 语义提交前的切号决定。
@@ -334,7 +354,7 @@ completeness 至少区分 complete、window_incomplete 和 deadline_exhausted。
 
 1. CLOSED 且硬资格通过的候选按稳定顺序进入尝试。
 2. 已经 SUSPECT / OPEN / OPEN_UNKNOWN / HALF_OPEN / RECOVERING / QUARANTINED 的普通候选直接跳过，不占用普通 attempt。
-3. 容量忙、队列等待或暂时阻断的候选进入 pendingBlockedTargets，不算已尝试；回访时仍只能消费该候选一次。
+3. 容量忙、队列等待或暂时阻断的候选进入 pendingBlockedTargets，不算已尝试；同一候选可被事件驱动地重新检查多次，但只有取得真实 dispatch admission 时才“消费一次”。
 4. 真实 transport attempt 发出后，候选永远不能回到本请求的普通游标。
 5. 当前层所有唯一候选完成一轮后，且仍有请求救援时间，才进入下一层。
 6. 请求救援墙钟先耗尽时，返回 deadline_exhausted，不能声称当前层已经完整耗尽。
@@ -347,11 +367,13 @@ pendingBlockedTargets 只能是当前 route plan 已允许的目标子集。回�
 
 ```text
 RequestRescueLedger.committedAttemptId == null
-serverRescueDeadlineAt 未到期
+`serverRescueDeadlineAt` 尚未建立，或已建立且未到期
 circuit generation / lease 有效
 dispatchRevision 未变化
 capacity 仍可预占
 ```
+
+每个 pending entry 固定保存 `candidateRuntimeKey + firstBlockedAtMs + blockReason + nextEligibleAtMs + waitRegistrationId + lastCheckedRevision`。回访后仍 busy/queue-blocked 时保留原 entry，注册在容量释放、circuit due 或绝对 queue deadline 的单次唤醒上；不得推进为 attempted、不得即时自旋，也不得从当前时刻重置 queue wait。若硬资格永久失效则以明确 skip reason 删除；若 nextEligible 已超 request/rescue deadline，则结束为 deadline_exhausted 而不是 hard_exhausted。容量变为可预占时以 candidateRuntimeKey + executionVersion CAS 取得一次 admission，其他重复唤醒只做幂等清理。
 
 回访不能重抽 RR/weighted、扩大 hybrid 目标或重新加入已经 attempted 的候选。
 
@@ -406,7 +428,7 @@ CAS 失败的 loser 必须立即触发自己的 AbortController、释放容量 p
 - speed_first：同一个 soft event 先幂等记录慢样本，再由 slowTriggerCount、latency_degraded、安全写出窗口和模式切号上限决定是否切号。慢样本不能直接打开账户电路。
 - 真正的 lane hard timeout、读取中断、EOF 或连接失败才进入 transport 电路和 confirmation。
 - 图像、长思考、embedding 等 lane 保留各自 timeout profile；不能因为速度模式的软阈值中断合法长耗时请求。
-- 任何模式准备在已有 attempt 之后启动新 attempt 时，都必须通过 7.6 的统一重放授权；速度优先、故障切号和 hybrid 不得各自维护一套更宽松的规则。
+- 任何模式准备在已有 attempt 之后启动新 attempt 时，都必须通过 7.6 的统一重放授权；速度优先、故障切号和 hybrid 不得各自维护一套更宽松的规则。除显式 speed-first handoff 外，旧 attempt 未终止或未确认不可继续发网时不得与新 attempt 并行；取消确认在有界窗口内失败就保持原 attempt，不抢跑。
 
 ### 7.4 请求救援账本
 
@@ -417,11 +439,10 @@ RequestRescueLedger {
   requestStartAt
   routePlanCreatedAt
   requestHardDeadlineAt
-  serverRescueDeadlineAt
+  serverRescueDeadlineAt // 首个 route upstream attempt admission 后冻结；此前为 null
   coordinationRemainingMs
   activeGroupQueueDeadlineAt
   ordinaryAttemptCount
-  confirmationRemaining
   hybridRepairRemaining
   reservedDispatchMs
   committedAttemptId
@@ -433,15 +454,15 @@ RequestRescueLedger {
 规则：
 
 - 不设一个会截断 RR/weighted 全环或 hybrid 合法 repair 的固定全局 N=6。
-- 普通业务的唯一候选上限由 route plan 和同层一轮决定；confirmation、hybrid repair、recovery canary 使用独立目的预算，但共享请求救援墙钟。
-- serverRescueDeadlineAt 只限制启动下一 attempt。新 ordinary、confirmation、hybrid auxiliary/repair 或跨组派发都必须满足 `now + reservedDispatchMs < serverRescueDeadlineAt`；首期 `reservedDispatchMs` 固定 5 秒。不得用该保留值硬中断已经取得 admission 的 attempt。
+- 普通业务的唯一候选上限由 route plan 和同层一轮决定；hybrid repair 使用独立目的预算并共享请求救援墙钟。background confirmation、half-open 和 recovery canary 是 ProbeIntent，不消费客户端请求预算，也不占用该墙钟。
+- `serverRescueDeadlineAt` 只限制启动下一 ordinary/hybrid attempt。它在首个 route upstream attempt 取得 admission 时就冻结，即使该 attempt 后来才被证明不可重放；此前只受协调预算、分组队列截止和 request hard deadline 约束。新 attempt 必须满足 `now + reservedDispatchMs < serverRescueDeadlineAt`；首期 `reservedDispatchMs` 固定 5 秒。不得用该保留值硬中断已经取得 admission 的 attempt。
 - routeCoordinationBudget 是普通模式和快速模式共同的累计控制面等待预算，初始建议 3 秒，覆盖故障后切号等待、重选号、层级切换和未进入 `activeGroupQueue` 的零可派发协调等待。
-- 高并发分组的 admission FIFO 不是上述控制面等待，继续使用分组 `maxQueueWaitMs`；实际队列截止为 `min(group.maxQueueWaitMs, requestHardRemaining)`。队列响应客户端取消，出队后必须重验 circuit generation、dispatchRevision 和容量，不能叠加第二个 no-available 等待。
+- 高并发分组的 admission FIFO 不是上述控制面等待，但每次入队必须冻结绝对 `activeGroupQueueDeadlineAt = min(queueEnqueuedAt + group.maxQueueWaitMs, requestHardDeadlineAt - cleanupGraceMs, (serverRescueDeadlineAt ?? +∞) - reservedDispatchMs)`。回访、虚假唤醒或重新竞争同一队列不得把 60 秒/`maxQueueWaitMs` 从当前时刻重置；server rescue 建立后必须主动缩短既有队列截止并唤醒超时 waiter。队列响应客户端取消，出队后必须重验 circuit generation、dispatchRevision、warmup/资格和容量，不能叠加第二个 no-available 等待。
 - 现有 ServerRetryBudget 只能作为该唯一账本的兼容实现；不能再与旧 270 秒 no-available 预算叠加。每请求只创建一次，不能跨组重置。
 - 活跃 fetch、首字观察和响应读取不扣协调等待；等待前必须扣除协调成本并保留最小派发时间。
 - 任何预算耗尽都只能由 coordinator 产生一次终态，不能继续进入低层等待或重复派发。
 
-requestHardDeadlineAt 必须在请求开始时由单调时钟冻结为有限值，并满足 `serverRescueDeadlineAt <= requestHardDeadlineAt`。它统一控制活动 fetch、group queue、控制面等待和 lease 的 AbortSignal：
+requestHardDeadlineAt 必须在请求开始时由单调时钟冻结为有限值；`serverRescueDeadlineAt` 一旦建立必须满足 `serverRescueDeadlineAt <= requestHardDeadlineAt`。它统一控制活动 fetch、group queue、控制面等待和请求内 lease 的 AbortSignal：
 
 - 语义尚未提交时，到期原子取消所有活动分支、释放 reservation/permit/lease，并返回一次网关本地、协议兼容的 timeout 错误；该错误不依赖上游状态码，也不写账号失败。
 - 语义已经提交时，到期只终止当前上游和下游响应，不再切号。
@@ -453,22 +474,24 @@ requestHardDeadlineAt 必须在请求开始时由单调时钟冻结为有限值�
 | --- | --- | --- | --- |
 | `textRequestMaxLifetimeSeconds` | 1800 | 60-86400 | `requestStart + value` |
 | `imageRequestMaxLifetimeSeconds` | 3600 | 60-86400 | `requestStart + value` |
-| `serverRescueWindowSeconds` | 60 | 10-120 | `routePlanCreatedAt + value`，普通/快速和所有 lane 共用 |
+| `serverRescueTailSeconds` | 30 | 10-120 | 首个 route upstream attempt admission 即冻结，追加在该 attempt 的 lane hard 之后；普通/快速和所有 lane 共用 |
 
 如果客户端提供了网关认可且更短的绝对 deadline，则取两者最小值。默认值与现有对应 lane 的 uncommitted attempt lifetime 对齐，但新设置是整个请求的最终 wall-clock 上限，不能被每次换账号、分组或 hybrid action 重置。
 
-`serverRescueDeadlineAt` 在最终 request lane 和不可变 route plan 形成后、首次排队或派发前一次性计算：
+`serverRescueDeadlineAt` 在最终 request lane 和不可变 route plan 形成后仍为 `null`；首个 route upstream attempt 取得 admission 时一次性冻结：
 
 ```text
 serverRescueDeadlineAt = min(
   requestHardDeadlineAt - cleanupGraceMs,
-  routePlanCreatedAt + serverRescueWindowSeconds * 1000
+  firstRouteAttemptAdmittedAt
+    + laneHardBudgetMs
+    + serverRescueTailSeconds * 1000
 )
 ```
 
-首期 `cleanupGraceMs` 固定 1 秒，只用于 terminal CAS 和资源释放，不作为新的等待预算；`activeGroupQueueDeadlineAt` 不存在时在最小值计算中按正无穷处理。
+首期 `cleanupGraceMs` 固定 1 秒，只用于 terminal CAS 和资源释放，不作为新的等待预算；首个 admission 之前由 `coordinationRemainingMs`、`activeGroupQueueDeadlineAt` 和 `requestHardDeadlineAt` 共同约束。`laneHardBudgetMs` 取该请求 lane 已冻结的真实首字 hard 预算，不能由账户层或模式层重写。
 
-普通模式、快速模式、fallback、RR/weighted、hybrid 和 confirmation 都不得重建或延长该截止。它不按剩余候选平均切片，也不设置固定账号尝试数；同层所有唯一候选只要能在时间准入内依次快速形成可重放终态就继续推进。截止到达时，已有 attempt 继续遵守自己的 lane hard/lifetime；它结束后不再切号。没有活动 attempt 且尚未提交语义时，coordinator 返回一次 `deadline_exhausted` 或更具体的 `indeterminate_upstream_outcome`。
+普通模式、快速模式、fallback、RR/weighted 和 hybrid 都不得重建或延长该截止；background confirmation 不受客户端墙钟约束，但受自身 ProbeIntent due/lease/lifetime 约束。它不按剩余候选平均切片，也不设置固定账号尝试数；同层所有唯一候选只要能在时间准入内依次快速形成可重放终态就继续推进。截止到达时，已有 attempt 继续遵守自己的 lane hard/lifetime；它结束后不再切号。没有活动 attempt 且尚未提交语义时，coordinator 返回一次 `deadline_exhausted` 或更具体的 `indeterminate_upstream_outcome`。
 
 协调等待的有效时长固定取以下剩余值的最小值，等待结束后必须重新走 admission CAS：
 
@@ -476,20 +499,21 @@ serverRescueDeadlineAt = min(
 min(
   coordinationRemainingMs,
   activeGroupQueueDeadlineAt - now,
-  serverRescueDeadlineAt - now - reservedDispatchMs,
+  (serverRescueDeadlineAt ?? requestHardDeadlineAt) - now - reservedDispatchMs,
   requestHardDeadlineAt - now - cleanupGraceMs
 )
 ```
 
 ### 7.5 Confirmation
 
-confirmation 是一次真实上游 attempt，不是第二套重试循环：
+confirmation 是作用域级的标准诊断 ProbeIntent，不是把同一用户 payload 再发一次，也不是第二套客户端重试循环：
 
-- 首次作用域 transport 失败时，CAS 设置 SUSPECT 并只发放一个 matching-generation lease。
-- 当前业务请求只有通过 7.6 重放授权时才可消费该 lease 执行一次 confirmation；其他请求立即换赛道。请求不可重放时不发送 confirmation，原子释放 lease、保持 SUSPECT，并登记 nextLeaseAt/due，由后续安全业务请求或后台有界 probe 重新竞争。
-- confirmation 使用同一个首字事实和当前 lane 规则，不另设隐含 5 秒 timer。
+- 首次作用域 transport 失败时，CAS 设置 SUSPECT，并只发放一个 matching-generation `runtime_confirmation` lease。
+- lease 持有者提交 canonical health-check payload（固定检查模型、endpoint 和副作用边界），不复用失败业务请求的 body、工具调用或下游 writer；当前失败请求不等待 confirmation，按 7.6 重放授权立即推进下一候选，其他请求也直接换赛道。
+- confirmation 使用同一个 `AttemptArbiter` 事实和对应 probe lane 的 hard/lifetime 规则，不另设隐含 5 秒 timer；它有自己的 ProbeIntent due/lease 预算，不扣 `RequestRescueLedger`。
+- canonical probe 配置缺失时不伪造失败：作用域保持 SUSPECT，写入有界 due 并告警；只有未来具备安全探针，或一个 replay-safe 的 half-open 业务请求取得专用 lease 时才允许发网。该业务请求仍只执行一次普通 attempt，失败后不能在同账号串行重试。
 - confirmation 在语义提交前失败或超时，作用域进入 OPEN；租约未知、客户端取消、进程退出或 lease 超时不计失败，但必须原子清空旧 lease、保留 SUSPECT 并写入 `nextLeaseAtMs` 和 due index，到期后恰好允许一个新 confirmation lease。
-- confirmation 成功只能进入 RECOVERING，不能一次成功直接 CLOSED。
+- confirmation 成功只能进入 RECOVERING，不能一次成功直接 CLOSED；当前客户端的切号结果不因后台 confirmation 迟到而改写。
 
 ### 7.6 发网后的统一重放授权
 
@@ -500,13 +524,13 @@ networkWriteState = not_started | confirmed_not_sent | possibly_sent
 replayDisposition = replay_forbidden | replay_safe_before_commit | idempotency_protected
 ```
 
-在已经存在普通或特殊 attempt 后，coordinator 只有满足以下任一条件才能启动下一 attempt：
+在已经存在普通或特殊 attempt 后，coordinator 必须先满足请求级 `committedAttemptId == null`，再满足以下任一条件才能启动下一 attempt；该 winner guard 对 `confirmed_not_sent` 也不能省略：
 
 1. 前一个 attempt 被本地 transport 证明为 `confirmed_not_sent`；
-2. 请求级 `committedAttemptId == null`，并且冻结的 replayDisposition 为 `replay_safe_before_commit`；
+2. 冻结的 replayDisposition 为 `replay_safe_before_commit`；
 3. 适配器证明上游幂等键已透传且覆盖当前 endpoint、请求体和副作用范围，replayDisposition 为 `idempotency_protected`。
 
-`possibly_sent + replay_forbidden` 固定禁止普通切号、speed-first handoff、confirmation、hybrid repair/upgrade 和跨组 failover。若原 attempt 仍活跃则继续等待它自己的 lane/lifetime；若 transport 已结束且结果未知，则只返回一次本地 `indeterminate_upstream_outcome`，不尝试用第二个账号掩盖，也不把完整上游响应解释为失败。
+`possibly_sent + replay_forbidden` 固定禁止普通切号、speed-first handoff、hybrid repair/upgrade 和跨组 failover。它也禁止把原用户 payload 交给 confirmation；但若作用域已有 canonical `runtime_confirmation` lease，后台探针仍可独立运行，因为它不是该用户请求的重放。若原 attempt 仍活跃则继续等待它自己的 lane/lifetime；若 transport 已结束且结果未知，则只返回一次本地 `indeterminate_upstream_outcome`，不尝试用第二个账号掩盖，也不把完整上游响应解释为失败。
 
 纯模型推理 endpoint 也不是天然可重放。只有适配器同时证明不存在 hosted tool、外部 action、background/store、资源写入或其他不可幂等副作用，且请求体处于有界重放预算内，才能返回 `replay_safe_before_commit`。所有未知协议、未知 endpoint 和无法证明的工具能力默认拒绝。
 
@@ -520,7 +544,7 @@ replayDisposition = replay_forbidden | replay_safe_before_commit | idempotency_p
 | key | 本地 Key 装配失败或用户显式 Key 规则 | 当前 Key 指纹 |
 | protocol_model | transport、lane hard、读取中断、EOF | 物理资源的协议/通道/模型族 |
 | account | 多个独立 protocol_model 作用域聚合，或用户显式账号规则 | 物理账号跨请求共享 |
-| upstream_bucket | 多账号共享代理/Base URL 的 transport 故障 | 现有上游桶作用域 |
+| upstream_fault_incident | 同一来源 owner 下多个 upstream path 的相关 transport 故障 | faultCorrelationId + 明确成员快照；独立事故可并存，不能跨 owner |
 | latency_degraded | 快速路由慢样本状态机 | 当前路由策略范围，不是账号不可用 |
 
 单个模型、单条协议或单个 Key 的故障不能自动污染其他健康能力。建议账号级升级至少要求同一物理资源在短窗口内有两个不同 protocol_model 作用域分别 confirmation 失败，并且满足最小独立失败次数；具体阈值通过回归和生产窗口校准，不得按并发数直接升级。
@@ -616,6 +640,7 @@ SUSPECT、HALF_OPEN、RECOVERING、OPEN_UNKNOWN 和 QUARANTINED 都禁止出现�
 
 ```text
 configuredIntent
+  ∩ scheduleWindowAllows(now, scheduleRevision)
   ∩ bindingAndAuthorization
   ∩ sourceResourceAvailability
   ∩ hotCircuitAvailability
@@ -623,7 +648,9 @@ configuredIntent
   = effectiveAvailability
 ```
 
-- 配置意图来自业务库，包含启用、优先级、备用、授权和用户策略。
+- 配置意图来自业务库，包含启用、优先级、备用和用户策略；时间计划是独立的、有 revision 的资格事实。
+- 每次 ordinary、half-open、confirmation、recovery canary、activation 和 incident representative admission 都必须在发网线性点按规范化时区/日历直接求值 `scheduleWindowAllows(now)`，同时匹配 `eligibilityRevisionVector = { schedulingIntentRevision, scheduleRevision, authorizationRevision, quotaRevision, configRevision }`。当前使用 trusted wall clock（performance 优先 Redis TIME，standalone 使用受监控的 UTC 时钟）；边界前已取得 token 的 attempt 允许收尾，边界后的新 token 一律拒绝，未知时间/资格 fail-closed。
+- 10 秒 schedule worker 只能异步维护 due、缓存投影、页面摘要和审计，不能单独把 `accounts.status` 改成 active/disabled，也不能成为 admission 的唯一判断源；worker 停止不改变上述线性点。
 - 热运行态来自 Redis/进程内存，包含电路、租约、质量和探索令牌。
 - 持久异常由人工、后台健康检查或冷却复测推进。
 
@@ -635,12 +662,23 @@ configuredIntent
 
 | 事实面 | 事实源 | 职责 | 禁止事项 |
 | --- | --- | --- | --- |
-| 配置意图 | 业务库 `schedulable`、时间计划、授权、用户策略 | 表示用户是否希望账号在健康时参与调度 | 自动 transport 失败不得改写用户意图 |
+| 配置意图 | 业务库 `configured_scheduling_enabled`、时间计划、授权、用户策略 | 表示用户是否希望账号在健康时参与调度 | 自动 transport 失败不得改写用户意图 |
 | 持久健康状态 | 业务库 `active / pending_test / temporary_unavailable / rate_limited / error / disabled` | 跨进程重启表达整账号的长期资格 | 单个请求、单个模型或单个并发窗口不得直接升级 |
 | 热运行态 | Redis / standalone memory 电路、lease、quality、warmup | 秒级止损、分钟级恢复和受控放量 | 不替代路由策略，不回写优先级或备用配置 |
 | 有效可用性 | 前三层与容量的实时交集 | 网关过滤和页面展示的唯一读模型 | 不把 `accounts.status = active` 直接等同于可派发 |
 
-现有 `accounts.schedulable` 在目标合同中只表达配置意图。自动进入 `temporary_unavailable` 时保留该意图，不把它永久改为 false；恢复时只有原意图仍开启、授权/时间计划仍有效，才允许重新参与调度。`active + schedulable=false` 表示用户主动暂停，`temporary_unavailable + schedulable=true` 表示用户仍希望使用但系统正在恢复。实现迁移若暂时无法直接复用该字段，必须新增等价的持久意图字段，不能靠错误状态前的内存值猜测。
+现有 `accounts.schedulable` 被激活、冷却、异常和人工路径共同写入，没有可靠 provenance，不能直接重新解释为用户意图。目标 schema 新增独立 `configured_scheduling_enabled`、`scheduling_intent_revision` 和 `scheduling_intent_source`；自动健康状态只更新兼容投影和 effectiveAvailability，永远不改新意图字段。自动进入 `temporary_unavailable` 时保留意图；恢复时只有意图仍开启、授权/时间计划仍有效，才允许重新参与调度。
+
+旧数据迁移必须先完成以下确定性回填，再允许新 owner active：
+
+1. 最新显式启用/停用操作日志或仍有 revision 链的创建/导入 payload 可证明意图时，按该事件和 revision 回填 `user_enabled / user_disabled`；“查不到事件”不是启用证据。
+2. 仅凭迁移快照里的 `active + schedulable=1` 或当前 effectiveAvailability 不能证明用户意图：旧健康路径可能曾自动把 pending_test 改 active 并把 schedulable 改为 1，且创建/导入日志可能缺失。只有不可变 intent/revision、完整创建/导入 payload 或可验证的人工启用链同时存在时，才回填 enabled；否则（包括 `active + schedulable=1`、`active + schedulable=0` 和日志缺失）一律 `legacy_unknown`、fail-closed，由所有者确认，不能借“不会扩大切换前流量”猜测启用。
+3. `pending_test / temporary_unavailable / rate_limited / error` 当前均被健康状态阻断，旧 schedulable 可能由自动路径改写；没有第 1 条来源时一律 unknown，不能以 0 或 1 猜测恢复后的用户意图。
+4. `disabled` 若可由人工停用或本地到期事实唯一归因，则分别回填 disabled 或保留可证明的 enabled 意图并由对应资格继续阻断；旧 worker 因时间计划写入的 disabled 必须迁移回独立 schedule projection，不能伪装成人工停用。授权状态同样是独立资格事实，不反写用户 intent。
+5. 任何来源冲突、日志缺失或无法唯一归因的行回填 `scheduling_intent_source=legacy_unknown`，保持 fail-closed，并在页面显示“需确认调度意图”；只能由账户所有者/有权限管理员确认，后台恢复不得自动猜测。确认可支持有审计的批量操作，不能在迁移脚本中静默批量启用。
+6. migration dry-run 必须输出各来源计数和 unknown 账号清单，专项覆盖 `active + schedulable=true/false + 日志缺失`、健康检查自动改写和创建/导入来源缺失；先完成 configured intent 的双写、revision 链和 owner 审计，再允许新 owner active。Node/Go、SQLite/PostgreSQL 和授权来源实例都切到新字段后，旧 schedulable 才降为派生兼容列并最终移除权威读。
+
+因此目标语义是 `active + configured_scheduling_enabled=false` 表示用户主动暂停，`temporary_unavailable + configured_scheduling_enabled=true` 表示用户仍希望使用但系统正在恢复。任何实现阶段都不能通过反向填充 schedulable 来恢复用户意图。
 
 持久状态边界固定如下：
 
@@ -651,11 +689,21 @@ configuredIntent
 | `temporary_unavailable` | 禁止，只允许恢复 lease | 整个物理账号在跨时间、跨能力聚合后被证明无可派发路径 | 三次恢复验证和最小稳定窗口通过后 active；失败按 fast/slow/long_term 退避 |
 | `rate_limited` | 禁止，只允许策略允许的复测 | 仅用户显式高级规则或人工动作 | 按显式 TTL/恢复规则；系统不得从上游 429 自动建立 |
 | `error` | 禁止 | 本地确定性配置损坏、用户显式规则，或用户关闭持续探活后有界最终探针失败 | 修复配置/人工异常恢复后只进入 pending_test，不直接 active |
-| `disabled` | 禁止，默认不自动探活 | 用户停用、时间计划或本地到期事实 | 仅用户/时间计划重新启用；任何自动成功不得覆盖 |
+| `disabled` | 禁止，默认不自动探活 | 用户显式停用或本地确定性资源/凭据到期 | 用户启用、续期或修复后只进入 pending_test；时间计划关闭不写入 disabled，由 admission-time schedule 资格阻断 |
 
 上游完整 HTTP 响应无论 2xx、401、429 还是 5xx，在没有用户显式规则时都只是 transport completed：不能自动进入 `rate_limited`、`temporary_unavailable` 或 `error`。后台健康检查、激活检查、冷却复测和 canary 同样遵守这一边界；只有本地可验证 transport/framing 事实参与自动状态机。
 
 现有 `last_health_check_status_code`、`last_error_code` 等字段如因兼容性继续保存，只能作为原始诊断展示和审计，不得进入候选过滤、promotion、退避、恢复或质量比较；实施时要补反向回归，确保旧 `http_*` / `statusCode` 分支不再偷偷改变账号生命周期。
+
+`pending_test` 使用同一无状态码边界，但必须有完整出口：
+
+- 先执行本地确定性校验；凭据缺失/无法解密、URL/代理配置非法、没有检查模型或协议档案无法构造请求时，可以直接写带明确本地原因的 error。
+- 已形成真实请求且获得完整 HTTP/SSE framing 时，自动层只确认 transport 可达，不读取 401/429/5xx 或正文；本地配置校验同时通过后结束 pending_test。账户所有者若希望按响应语义决定激活，必须显式配置高级验证规则。
+- DNS/connect/TLS/lane hard/读取中断/framing 不完整属于 transport failure，保持 pending_test 并按 activation generation 进入 fast/slow/long_term due；不能只因持续 24 小时自动 error。
+- 任务取消、worker/Redis 故障、配置变化和未发网属于 unknown，只重排 due，不累计失败。人工“重新检查”递增 activation generation 并提升 due 优先级，不能直接 active。
+- pending_test transport 持续失败 12 小时后进入每 1 小时 activation long_term；用户停用/删除才停止。修复连接配置后旧 generation 失效，新验证成功再按 configured scheduling intent、时间计划和授权事实进入 active 或保持阻断。
+
+这意味着未配置高级规则的完整 401 可能通过 transport 激活检查并随后透明返回给客户端；这是“不解释不可信上游状态码”的明确代价，不得用隐藏 401 白名单补回。用户需要 401 自动隔离时，必须在前端显式配置对应规则。
 
 ### 8.7 从 scoped 故障到整账号临时不可用
 
@@ -671,7 +719,30 @@ independentFailedScopeKeys
 independentFailureRounds
 independentSuccessRounds
 lastFailureRoundAtMs
-sourceBucketGeneration
+bucketNamespace
+upstreamPathKey
+faultCorrelationId
+bucketIncidentGeneration
+incidentTopologyRevision
+incidentMemberFenceSet[] {
+  upstreamPathKey
+  pathGeneration
+  membershipRole = failed_member | covered_member
+}
+promotionDecisionId
+sagaDecisionVersion
+decisionState = none | prepared | fence_confirmed | commit_allowed | committed | cancel_requested | cancelled | compensation_pending | compensated
+decisionLeaseId / decisionLeaseUntilMs
+nextReconcileAtMs
+decisionOwnerBootId
+previousPersistentStatus
+promotionBlockOwnerDecisionId
+committedRecoveryGeneration
+runtimeRecoveryEpoch
+lifecycleOwnerEpoch
+incidentFenceDigest
+eligibilityRevisionVector
+schedulingIntentRevision
 nextEvaluationAtMs
 ```
 
@@ -680,12 +751,28 @@ nextEvaluationAtMs
 1. 观察持续至少 5 分钟，且存在至少 3 个独立后台失败轮次，轮次间隔至少 2 分钟；同一并发风暴无论有 2 个还是 200 个请求都只折叠为一个观察轮次。
 2. 每轮都形成了真实 upstream transport attempt，并以连接失败、lane hard、读取中断、EOF 或 framing 不完整结束；任务取消、探针执行器失败、Redis 失联和未知结果不计失败。
 3. 以当前 configRevision、模型映射和 Key 池重新计算后，所有当前可配置派发路径都被 scoped circuit 阻断；单模型、单协议或单 Key 故障只保持局部 OPEN。
-4. 账户只有一个可派发能力时，必须由标准账户检查 probe 和该唯一 scope 的独立 confirmation 共同证明；有多个能力时，至少两个不同 protocol-model scope 提供独立证据，且标准检查 probe 同样失败。
+4. 账户只有一个可派发能力时，必须由标准账户检查 probe 和该唯一 scope 的独立 confirmation 共同证明；两者必须来自不同 `evidenceIndependenceGroup`/真实 attemptId，不能因同一 ProbeIntent 的多 purpose 投影计数两次。有多个能力时，至少两个不同 protocol-model scope 提供独立证据，且标准检查 probe 同样失败。
 5. 当前观察代次尚未完成 matching-generation 的三次独立成功验证。普通业务或旧 in-flight 的单次完整 success 只记录为弱证据，并把下一次 promotion evaluation 至多推迟一个最小轮次间隔；它不能清理 scoped circuit、重置失败轮次或取消观察 epoch。只有三次串行成功 canary 和稳定窗口才能证明恢复，避免“100 次失败、偶尔成功 2 次”的账号长期卡在可调度状态。
-6. 当前物理账号没有未关闭普通 admission；最终写库使用 accountHealthGeneration + configRevision + observationStartedAt 的 CAS，迟到结果不得覆盖配置修改、人工停用或新观察代次。
-7. 失败未被更高层 upstream bucket 相关性吸收。相同 proxy/baseUrl/provider bucket 在短窗口出现多账号 transport 故障时，先打开 bucket circuit 并暂停账号持久升级，不能把一次供应商网络波动批量写成几十个死号。
+6. 当前物理账号没有未关闭普通 admission；最终写库必须同时匹配 `accountHealthGeneration + configRevision + observationStartedAt + schedulingIntentRevision + eligibilityRevisionVector + expectedPersistentStatus + configuredSchedulingEnabled`，以及 `promotionDecisionId + sagaDecisionVersion + runtimeRecoveryEpoch + lifecycleOwnerEpoch + faultCorrelationId + bucketIncidentGeneration + incidentTopologyRevision + incidentFenceDigest`，迟到结果不得覆盖配置修改、人工停用、用户暂停、新观察代次或事故成员变化。
+7. 失败未被 upstream incident 相关性吸收。bucket key 第一维固定为来源物理账号 owner 的 `bucketNamespace = sourceAccountOwnerSystemAccountId`；授权给其他主体的 binding 仍归来源 owner，同 namespace 共享，跨 owner 只做遥测，除非用户显式配置 platform-global 故障域。owner 缺失时 fail-closed，不能落入全局默认桶。
+
+   每个真实 attempt 生成不可变 `upstreamPathKey = namespace + provider + normalizedBaseUrl + proxyFingerprint + protocolProfile`，proxy/base URL/provider 只是该路径的 correlation labels，不假设为树。首次失败只创建一个 path incident；correlator 在短窗口看到至少两个不同物理账号/路径共享某 label 时，可用 `faultCorrelationId + incidentTopologyRevision` CAS 把明确的 member path snapshot 合并为一个事故。合并只覆盖 snapshot 中的路径，不能因共享 proxy 节点就把另一 Base URL 的健康路径隐式吸收；独立或无法证明同源的故障保留并行 incident。一个 path 可被多个独立 incident 阻断，但同一 source attempt 在同一 faultCorrelationId 下只计一次、只发一套 canary。
+
+   incident topology 变更必须原子提交 member index、旧 lease 失效和新 due。共槽数据以 bucketNamespace hash tag 执行一次 Lua；无法共槽时使用 durable `incidentTransitionId` saga/staging/reconciler，旧 topology 在全局 commit 前继续权威。所有 admission、probe terminal、reaper 和 promotion fence 都匹配 incidentTopologyRevision + member path generation + incident leaseId；旧成员 lease 不能在合并后继续发网或清理新事故。相同网络波动因此会由 fault incident 暂停账号 promotion，但不会把其他租户或未加入成员快照的路径批量写死。
 
 任一条件不满足时只保留 scoped 热电路和下一次 due，不写持久状态。scoped circuit 在 5 分钟内完成三次恢复 canary 时取消整账号观察 epoch；因此短暂 10 秒、1 分钟或 2 分钟波动会被快速切号隔离，但不会制造大量 `temporary_unavailable`，而零星成功也不会把故障账号错误复活。
+
+账号 promotion 不能把 Redis 桶事实和业务库写入假设成一个事务，必须由业务库 decision 行作为 durable saga 事实源。`(physicalResourceKey, accountHealthGeneration)` 只允许一个非终态 decision；每个 decision 带 `sagaDecisionVersion + decisionLeaseId/ownerBootId/leaseUntil + nextReconcileAtMs`，不依赖 TTL 自动消失：
+
+1. evaluator 先在业务库事务插入 `prepared` decision，冻结 previousPersistentStatus、expected 账号/配置/资格/owner/runtime/incident topology 代际、完整 member fence digest 和 upstream path snapshot；此时不改变对外持久健康状态。若已有非终态 decision，只唤醒同一 saga，不创建第二个。
+2. reconciler 取得 matching decision lease 后，在 Redis 以同一 decisionId 原子校验并登记全部 fault incident/member fence pending index；同 bucketNamespace 共槽 topology 使用一次 Lua，无法共槽时由数据库 durable fanout outbox 逐目标确认，全部 ack 前不能进入 `fence_confirmed`。Redis 不可用或 fence 未知只续排 nextReconcileAt，并把相关热 scope 保持 OPEN_UNKNOWN/fail-closed。
+3. Redis fence 全部确认后，数据库 CAS `prepared -> fence_confirmed -> commit_allowed`；每一步都匹配 sagaDecisionVersion、runtimeRecoveryEpoch、lifecycleOwnerEpoch、faultCorrelationId、bucketIncidentGeneration、incidentTopologyRevision、incidentFenceDigest、eligibilityRevisionVector 和完整 member fence digest。最终提交事务只有在 decision 仍为 `commit_allowed` 时，才可把账号写为 `temporary_unavailable`、设置 `promotionBlockOwnerDecisionId=decisionId`、递增并保存 committedRecoveryGeneration，同时把 decision 置 `committed` 并写 durable commit outbox。
+4. 任一 incident/member fence 或 eligibility 在 prepare/confirm/commit 期间变化，都发起 durable cancel。cancel consumer 必须先在业务库事务按 decisionId 竞争：若尚未提交，写 `cancelled` tombstone，使任何迟到 commit 因 state 不是 commit_allowed 而失败；若已经 committed，则写 `compensation_pending` 和 durable compensation outbox。不能在“数据库尚未 commit”时直接 ACK Redis cancel 后删除证据。
+5. compensation 只有同时匹配 `promotionBlockOwnerDecisionId + committedRecoveryGeneration + previousPersistentStatus + 全部账号/owner/fence 代际` 才恢复该次 decision 自己造成的持久阻断，并递增 accountHealthGeneration/recoveryGeneration、保留 incident/scoped OPEN，随后 CAS 为 compensated。若人工状态或新 recovery 已接管，补偿只能记 stale，不能覆盖新状态。
+6. 数据库 due reconciler 与 Redis decision index 互相修复，逐一覆盖 `prepared 后崩溃`、`DB pending 后崩溃`、`fence_confirmed 后崩溃`、`DB committed 但 Redis 未 finalize`、`cancel/compensation 中崩溃` 和 owner/runtime epoch 切换。DB commit outbox 负责最终清理 Redis pending index；过期 worker lease 只能由 matching decisionVersion 接管。连续失败进入 decision 级 quarantine/DLQ 并保持该账号 fail-closed，同时告警，不能卡住其他账号或静默留在 pending。
+7. 人工停用/暂停/启用必须递增 eligibility/意图代际并创建 cancel command；promotion、recovery 和 activation 的 commit 都匹配 expected persistent status 与 eligibilityRevisionVector。未知或不完整 fence 只保留 scoped 热阻断并重排 saga/due，不能猜测成功。
+
+这样既保证同一物理账号只有一个 promotion owner，也消除了“cancel 先消费、旧 worker 后 commit”和任一中间崩溃留下永久 pending/死号的窗口。
 
 授权实例不各自重复升级物理账号：transport 观察和持久健康归属 `physicalResourceKey` 对应的来源账号，所有授权实例只投影 `source_runtime_blocked` 或来源持久状态。binding 权限、额度、显式策略和本地状态仍独立。多 Key 账号只要还有一个 Key 对当前能力硬可用，就不能因其他 Key 故障升级整账号。
 
@@ -708,8 +795,8 @@ stateDiagram-v2
     TemporaryUnavailable --> Error: "explicit bounded-recovery opt-out final failure"
     Error --> PendingTest: "configuration repair / manual recovery"
     PendingTest --> Active: "activation verification"
-    Active --> Disabled: "manual / schedule / local expiry"
-    Disabled --> PendingTest: "manual or schedule re-enable"
+    Active --> Disabled: "manual / local expiry"
+    Disabled --> PendingTest: "manual re-enable / renewal"
 ```
 
 恢复节奏建议：
@@ -723,11 +810,19 @@ stateDiagram-v2
 
 第一次完整恢复 probe 不能直接把账号恢复为 active。它只进入 Verifying/RECOVERING，并要求 3 个不同 lease 的完整 transport canary、至少间隔 10 秒、总稳定观察不少于 30 秒。任一失败回到 temporary_unavailable 并增加退避；未知/取消只重排 nextProbeAt，不增加失败。
 
-恢复 CAS 成功后才把持久状态改为 active，并建立 `warmupStage`：前 30 秒最多 1 个 ordinary admission，随后 60 秒最多使用账号配置并发的 25%，之后恢复全量。warmup 中发生 transport failure 立即回到 scoped OPEN 并重启当前 accountHealthGeneration；不得因为账号刚恢复就让 20 个会话同时灌入。
+恢复 CAS 成功后才把持久状态改为 active，并在同一数据库事务写入 `recoveryCommitId + warmupRequiredGeneration + warmupState=armed + targetQualityEpoch` 和 durable outbox。该最小持久安全标记不是质量热数据；Redis/standalone memory 只保存它的运行镜像。只要 marker 未被 durable full-ack 清除，运行态缺失、Redis 全量丢失或 standalone 重启都必须 fail-closed 重建 armed，不能把“找不到 warmup key”解释为 full。
 
-持久恢复成功同时递增 `qualityEpoch`。旧 epoch 的 5/10/30 分钟失败桶继续保留诊断，但不再参与新 epoch 排序；新 epoch 从无样本中性状态开始，不赠送成功分。只有 warmup 中的真实业务 attempt 建立新质量，scoped 短故障恢复则不重置 qualityEpoch，避免波动账号靠频繁开关电路洗掉最近失败。
+warmup 使用真实业务暴露时间而不是空墙钟：
 
-人工“恢复正常”也不能直接打开普通流量，只能提升恢复任务优先级或把 error 送入 pending_test。关键连接配置、凭据、代理、协议档案或模型映射变化必须递增 configRevision/generation，取消旧 probe/lease；旧结果只能清理自己的资源。
+- 只有 eligibilityRevisionVector 全部有效时，首个 ordinary dispatch token 才能把 armed 变为 stage1；取消在发网前不启动计时。`warmupEligibleExposureMs` 只在 matching-generation ordinary attempt 真实在途且资格持续有效的区间增加，没有业务流量时暂停。因此账号恢复后闲置数分钟再进入 20 个会话，仍从 stage1 开始。
+- stage1 累计 30 秒真实暴露，最多 1 个 ordinary in-flight；stage2 再累计 60 秒，容量为 `max(1, floor(configuredConcurrency * 0.25))`。只有总暴露达到 90 秒且至少 3 个 matching-generation ordinary attempt 完整 transport success，才 CAS 为 full 并清除持久 marker；完整响应仍不按状态码解释。
+- 任一配置意图、时间计划、授权或持久资格关闭，立即进入 `draining_old_generation`、递增 warmupGeneration 并停止累计。旧 generation ordinary token 固定携带 `warmupGeneration + permitId + physicalAdmissionId`，只释放自己的 permit；新 generation 必须等旧物理 ordinary in-flight 归零后重新 armed，不能与旧请求叠加容量或让迟到完成释放新 permit。
+- 每次 dispatch admission CAS 必须同时匹配 warmupGeneration、eligibilityRevisionVector、当前 stage 容量和全物理 in-flight 计数。旧 token、迟到完成或定时器不能推进新 generation。
+- warmup 中发生 transport failure 时，同一个 CAS 必须打开 scoped OPEN、递增 accountHealthGeneration 和 warmupGeneration、清空 stage/start/exposure/success count，并进入 draining_old_generation；scoped canary 恢复后只能建立新的 armed generation，不能沿用旧 80 秒进度直接 full。
+
+持久恢复事务为 quality 建立 `targetQualityEpoch`，但不假设数据库与 Redis 原子。durable outbox 以 `recoveryCommitId + expectedOldQualityEpoch + targetQualityEpoch` 驱动 Redis CAS；应用成功前 warmup marker 保持 fail-closed，重复投递幂等。每个 dispatch token 捕获 admission 时的 qualityEpoch，终态只写入该 captured epoch，旧在途 attempt 不得读取 current epoch 后污染新窗口。旧 epoch 的 5/10/30 分钟桶保留诊断但不参与新排序；新 epoch 从无样本中性状态开始，不赠送成功分。scoped 短故障恢复不重置 qualityEpoch，避免波动账号靠频繁开关洗掉最近失败。
+
+人工“恢复正常”也不能直接打开普通流量，只能提升恢复任务优先级或把 error 送入 pending_test。关键连接配置、凭据、代理、协议档案或模型映射变化必须递增 configRevision/generation，取消旧 probe/lease；用户启用、暂停、时间计划或授权变化必须递增 schedulingIntentRevision 或对应资格 revision。promotion、recovery、activation 和任何自动持久状态写都必须校验 expected persistent status、configured intent 与这些 revision；旧结果只能清理自己的资源，不能覆盖人工 disabled/暂停或把账号直接恢复。
 
 ### 8.9 恢复容量、全池保护与公平性
 
@@ -735,22 +830,65 @@ stateDiagram-v2
 
 - 同一 physicalResourceKey 同时最多 1 个 confirmation/recovery/health probe；同一 protocol-model generation 最多 1 个 lease。
 - 同一分组默认最多 1 个恢复 probe；同一进程/worker 共享现有全局完整诊断上限，首期最多 3 路。
-- provider/proxy/baseUrl bucket 维护独立有界并发和 jitter；bucket OPEN 时先运行 bucket canary，禁止每个账号各发一轮探针造成恢复风暴。
+- fault incident 按 bucketNamespace + 明确 member path snapshot 维护有界并发和 jitter；同一 source failure 只进入一个 incident，相关路径可合并，独立 incident 可并存。incident 合并会提升 incidentTopologyRevision、失效旧成员 lease，并只签发一套 incident canary；不得把 proxy/base URL/provider 当树后隐式吸收未在 snapshot 中的路径，也不得跨来源 owner 合并。
 - due 队列使用 `(nextProbeAt, recoveryStage, lastSuccessfulBusinessAt, stableAccountId)` 的 keyset 公平扫描，并为长期恢复保留轮转份额；高优先账号可较早恢复，但不能让后排账号永久拿不到 probe。
 - 探针不占普通 route cursor、不进入业务质量、不生成客户端 usage；但必须占真实物理并发，避免恢复流量绕过账号容量。
 
 所有自动探针入口必须先写统一 `ProbeIntent`，再由一个 coalescer 决定真实派发：
 
 ```text
+scopeType = protocol_model | physical_account | upstream_fault_incident
+scopeKey
 physicalResourceKey
+bucketNamespace
+upstreamPathKey
+faultCorrelationId
+bucketIncidentGeneration
+incidentTopologyRevision
+incidentFenceDigest
+incidentMemberFenceSet[] { upstreamPathKey, pathGeneration, membershipRole }
 protocolProfile / endpointMode / healthCheckModel
 configRevision
-purposeSet = runtime_canary | persistent_retest | scheduled_health | activation
+schedulingIntentRevision
+scheduleRevision / scheduleWindowId / scheduleValidUntilMs
+authorizationRevision
+quotaRevision
+eligibilityRevisionVector
+configuredSchedulingEnabled
+purposeSet = bucket_canary | runtime_confirmation | runtime_canary | persistent_retest | latency_recovery | scheduled_health | activation
+evidenceIndependenceGroup
+sourceAttemptId
 requiredGenerationByPurpose
+transitionIdByPurpose
+recoveryEpochByPurpose
+canaryOrdinalByPurpose
+purposeLeaseId / purposeLeaseUntilMs
+bucketIncidentGeneration / incidentLeaseId
+latencyScopes[] {
+  routeStrategyId
+  groupId
+  dispatchBindingKey
+  latencyGeneration
+  firstByteThresholdMs
+  recoverySuccessTarget
+  policyRevision
+}
 earliestDueAt / latestStartAt
 ```
 
-只有检查配置和副作用边界完全相同的 intent 才能合并；派发前为每个 purpose 预留 matching generation，终态逐个 CAS 投影。不能合并时按 activation > recovery canary > persistent retest > scheduled health 的优先级串行执行，低优先 intent 重新入 due 且保留原始等待年龄。授权实例、周期健康检查、cooldown worker 和 server due sweep 都不得绕过 coalescer 直接执行同一 physical probe。
+`runtime_confirmation`、`runtime_canary`、`persistent_retest` 和 `activation` 默认要求 canonical scope exact match：相同 physicalResourceKey、protocolProfile、endpointMode、requestLane、mappedModelFamily、healthCheckModel、configRevision 和 eligibilityRevisionVector。只有 adapter 生成可审计的 equivalence certificate，证明 endpoint、lane、模型族和副作用边界完全等价时，才允许跨 key 共享一次真实 probe；否则一个 text 健康检查不能投影 image scope 的 generation，canonical probe 缺失时保持 SUSPECT/due。每个 purpose 的 `transitionId + recoveryEpoch + canaryOrdinal + purposeLeaseId` 都是独立身份，coalescer 只能合并同一 ordinal/lease 合同，不能把 ordinal 1 和 ordinal 2 合并成一次成功。
+
+ProbeIntent 入队只代表希望探测，不代表已有发网权限。coalescer 在取得 lease 和最终 dispatch token 两处都必须重新校验 `configuredSchedulingEnabled + eligibilityRevisionVector + scheduleWindowAllows(now)`；任一 revision 变化、用户暂停、时段关闭、授权/额度失效都取消旧 intent/lease并只写 stale/next due，不发付费请求，也不把旧结果投影为 RECOVERING。
+
+只有检查配置和副作用边界完全相同的 intent 才能合并；派发前为每个 purpose 预留 matching generation，终态逐个 CAS 投影。同一真实 `sourceAttemptId` 即使投影多个 purpose，在 promotion 证据中也只属于一个 evidenceIndependenceGroup、只计一次；标准 probe 与 runtime confirmation 在同一 promotion epoch 要满足独立证据时不得合并为同一 attempt。不能合并时按 bucket canary > activation > runtime confirmation > recovery canary > persistent retest > latency recovery > scheduled health 的优先级串行执行，低优先 intent 重新入 due 且保留原始等待年龄。授权实例、周期健康检查、速度恢复、cooldown worker 和 server due sweep 都不得绕过 coalescer 直接执行同一 physical probe。
+
+latency_recovery 即使与 transport canary 复用真实请求，也必须保留每个路由 scope 的首字测量并分别按 `latencyGeneration + policyRevision + firstByteThresholdMs` 判断。完整 framing 只证明 transport 成功；首字超过该策略阈值时不得清理 latency_degraded。不同 route strategy 的阈值可共享一次 firstByteMs 观测，但恢复计数和 CAS 完全隔离，账户电路恢复不能越权恢复快速模式慢状态。
+
+upstream fault incident OPEN 时，coalescer 只签发 matching `bucketNamespace + faultCorrelationId + bucketIncidentGeneration + incidentTopologyRevision + incidentLeaseId` 的唯一 bucket_canary lease，并在 member snapshot 内按稳定轮转选择 path/代表账号。代表必须 `configured_scheduling_enabled=true`、时间计划有效、授权/额度可用于健康检查、非 disabled 且具备 scope-exact 检查模型；用户暂停、时段关闭或其他 owner 的账号不得被拿来消耗上游。代表缺失或配置变化只重排 incident due 并保持 OPEN_UNKNOWN，不能 fail-open。
+
+一次代表 success 只把 incident 推进到 RECOVERING，不能释放所有成员。incident 固定 `failedMemberFenceSet` 和 `coveredMemberSet`：失败成员不超过 3 个时要求全部取得 matching path-generation success，更多时至少轮转 3 个不同 failed path；达到事故级 quorum 后才可关闭 correlation gate。已经有直接失败证据但未被本轮验证的成员必须降为 path-level OPEN_UNKNOWN，之后各自只允许一个 half-open；只有 matching success 的 failed member 和从未出现独立失败证据的 covered member 才可随 incident 关闭释放。任一 member canary 失败使 incident 回 OPEN 并提升 generation；其他独立 incident/scoped OPEN 仍继续阻断该 path。因此健康代表不能替仍坏路径“证明恢复”。
+
+incident 合并/拆分、member index、旧 lease 失效和新 due 必须按第 8.7 节 topology transition 原子或 saga 提交；ProbeIntent、dispatch token、terminal 和 reaper 都重验 topology/fence。incident lease 进入同一 due reaper，worker 崩溃后由 matching generation 接管；账号自身 persistent probe 在 incident 阻断期间挂起但保留原始 due age。
 
 当某分组所有账号都处于 scoped OPEN 或 persistent unavailable 时，路由 coordinator 先按冻结路由计划进入后备/下一层；仍无候选时只允许 matching-generation 的一个 half-open/recovery lease，其他请求在统一预算内等待或返回本地无可用错误。绝不为了“保可用”把全部坏账号 fail-open，也不因为当前业务请求失败而把所有账号批量升级。
 
@@ -768,9 +906,34 @@ earliestDueAt / latestStartAt
 | 持续 7 天 transport 失败自动 `error` | 删除默认路径 | 持续探活开启时长期低频恢复；只有本地确定性错误或显式用户策略进入 error |
 | 完整非成功 HTTP 作为后台失败 | 删除 | 完整 framing 是 transport success；状态码/正文只由用户显式高级规则解释 |
 | 多 Web 节点可重复运行同一 probe | 替换 | Redis/memory Store 使用 generation lease 和 due reaper，物理 scope 单飞 |
-| `schedulable` 随自动健康状态反复改写 | 分离 | 固定为用户配置意图；effectiveAvailability 承担实际派发判断 |
+| `schedulable` 随自动健康状态反复改写 | 降级为兼容投影 | 新 `configured_scheduling_enabled` 承担用户意图；完成 backfill/unknown 处置后，effectiveAvailability 承担实际派发判断 |
 
-迁移期间每种状态转换只能有一个 owner。先以 shadow event 对比新旧结果，再启用 scoped circuit admission；启用后必须同时关闭旧 precheck 调度 gate 和旧 probe 写入。随后切换整账号 promotion owner，最后切换 cooldown recovery owner。禁止长期双写后“谁更严格听谁”，否则同一账号会被两套 generation、两套探活和两套恢复互相卡死。
+迁移期间每个 ownerDomain 同时只能有一个 owner：`route_dispatch`、`scoped_runtime`、`activation_pending_test` 和 `persistent_health` 分别受同一 lifecycle state machine 管理。先以 shadow event 对比新旧结果，再一起切换 route/scoped/activation；启用后必须同时关闭旧 precheck gate、旧 activation 24h/状态码 writer 和对应 probe 写入。整账号 promotion 与 cooldown recovery 在后续独立 persistent draining 阶段一起切换，切换前仍由 legacy persistent owner 独占；禁止长期双写后“谁更严格听谁”。
+
+owner 切换使用单一、可审计的 `accountLifecycleOwnerMode = legacy | shadow | draining_scoped_activation | v2_scoped_activation_legacy_persistent | draining_persistent | v2` 和单调 `lifecycleOwnerEpoch`，不能由多个独立 feature flag 拼接。每个 mode 固定映射各 ownerDomain 及其 barrierEpoch；`shadow` 只消费既有终态并计算差异，不签发额外 probe/lease、不影响派发。`v2_scoped_activation_legacy_persistent` 是明确过渡态：route/scoped/activation 由 v2 独占，persistent promotion/cooldown 仍由 legacy 独占。
+
+`draining_scoped_activation` 对 route_dispatch、scoped_runtime、activation_pending_test 同时建立 barrier，停止旧 ordinary/special/activation admission 并有界排空；`draining_persistent` 只冻结 persistent_health 的新状态写和 lease，route/scoped/activation 的 v2 业务流继续服务。任何 barrier 都在 owner registry CAS 中递增对应 barrierEpoch，发网 token 必须匹配 ownerDomain/ownerEpoch/barrierEpoch。旧 activation generation/lease 也必须进入交接，v2 接管后只执行第 8.6 节 transport-only、fast/slow/long_term 语义，旧 24 小时自动 error 或状态码 writer 永久失去写权限。
+
+| 旧状态 | v2 映射 |
+| --- | --- |
+| `recovery_wait` | 保持普通 CLOSED，转换为不阻断的 observation/due intent；不能因为仅有请求信号直接 OPEN |
+| `precheck_pending / precheck_failed` | 以旧 generation、失败事实和 dueAt 建立新 OPEN；不能缺省为 CLOSED |
+| `pending_test / legacy activation generation` | 保持 pending_test，迁移本地校验结果、attempt/lease/due 和 generation；旧语义/24h 终态不继承，只按 transport-only activation intent 重建 |
+| `runtime_degraded` | 按旧 blocking/fallback 事实映射为 SUSPECT 或 OPEN，并保留原因；不提升持久状态 |
+| 旧 half-open/探针 lease | 不复用 leaseId；等待其 leaseUntil/attempt hard deadline 排空，写 migration tombstone，随后以新 generation 的 OPEN + nextLeaseAt 接管 |
+| `local_suppressed` | 保持显式策略 namespace、TTL 和 owner，不进入自动电路 |
+| `latency_degraded` | 保持 routeStrategy/group/binding scope 和 generation，由 latency_recovery intent 接管 |
+| legacy ordinary admission / attempt | 纳入 registry 和终态交接；禁止遗漏为“无状态” |
+
+所有 owner 的 terminal fact 先进入 owner-neutral `lifecycleTerminalJournal`。每个分片的 seq 只在记录真正 commit 时分配，禁止预占后用 allocated max 当 HWM；terminal dedup、journal append 和 admission registry close 必须在同一 Lua/数据库事务完成。若本地耐久 outbox 介入，registry 在 journal ack 前保持未关闭。每条记录携 account/scope generation、attemptId、ownerDomain、ownerEpoch、barrierEpoch 和 committedSeq。
+
+`draining_scoped_activation` 等待 barrier 前已登记的 ordinary/special/activation registry 在 hard deadline + cleanup grace 内终结；然后每个分片写 `sealedSeq`，证明 `[previousSealedSeq+1, sealedSeq]` 是无洞连续 committed prefix。旧回调在 seal 后只能 STALE。超时或无法证明的 scope 映射为 OPEN_UNKNOWN/隔离，不能沿用旧 CLOSED。
+
+`draining_persistent` 不等待持续增长的 scoped-v2 普通流量。它先冻结 legacy persistent writer/lease，记录每分片固定 `persistentCutoverSeq`；legacy persistent owner 只消费 `<= cutoverSeq` 的 terminal fact，v2 persistent owner 从 `cutoverSeq+1` 幂等接管，普通 dispatch 仍由 v2 scoped domain 服务。旧 recovery lease 到 hard deadline 后要么提交到 cutover 前缀，要么映射 unknown/due；不能用全局“等所有普通流量归零”作为切换条件。
+
+每次迁移创建 durable `migrationRunId` manifest，保存 source/target mode、owner/barrier epoch、snapshotRevision、各分片 sealedSeq/cutoverSeq、mappingDigest 和 staging namespace。状态映射、新 due、tombstone 先写不可见 staging；所有分片 prepared 且 digest/连续前缀验证通过后，才以全局 CAS commit manifest、推进 lifecycleOwnerEpoch、发布 tombstone/映射并解除对应 barrier。任一分片失败或协调器崩溃只能按同一 runId 幂等续跑或 abort 清理 staging，source owner 在全局 commit 前保持权威，禁止留下部分可见 generation/due。
+
+v2 active 后不允许直接翻开关回 legacy。回退必须先停止新 v2 admission、排空 permit/lease、生成反向兼容快照并由所有 live node 确认；无法完成时保持 v2 fail-closed，而不是让旧 owner按空状态放流。
 
 ## 9. 热质量与受控同层探索
 
@@ -785,7 +948,10 @@ earliestDueAt / latestStartAt
 - admission registry 的存活时间必须覆盖 request hard deadline 和 cleanup grace。其他节点准备向同一 protocol-model scope 派发时，若发现未关闭 registry 的 owner bootId 已过 heartbeat 租约，必须先原子把该 scope 转为 `OPEN_UNKNOWN`/隔离态并递增 generation，再决定是否发放受控 canary；不能继续按旧 CLOSED 放流。心跳 TTL 形成一个明确、有界的故障感知窗口，首期建议 3 秒续约、10 秒过期。
 - outbox 写入失败、达到容量上限或检测到上次进程非正常退出时，只允许该节点或可识别的受影响 scope 保持 fail-closed。重连后节点用新 bootId 重放 outbox、修复 admission registry/circuit/due 索引并等待旧 permit 的最大有效期；无法证明终态的 scope 进入 `QUARANTINED`/受控审计 canary。
 - 连续重投失败的可识别 scope 进入带 generation、退避、`quarantineUntil` 和 `nextAuditAt` 的 scope 级 DLQ；DLQ 不关闭全局 READY，也不阻塞其他 scope。到期后只允许一个审计 canary；管理员手动重试或清理也必须创建新 generation，不能删除状态造成 fail-open。只有无法识别任何受影响 scope 的损坏记录才保持全局 BOOTSTRAPPING，并要求显式人工重新确权。
-- 全局重建完成时，只等待当前 live-membership 集合确认当前 epoch，并确认未确权 scope 已被隔离；不等待历史下线节点，也不要求 scope DLQ 清空。随后按 `runtimeRecoveryEpoch + revision` CAS 打开 READY。任何 admission、lease 或 terminal outcome 都必须再次校验该 epoch/readiness，因此旧节点和旧 CLOSED 快照无法越过恢复栅栏。
+- 业务库维护轻量 `lifecycleRecoveryManifest`，只保存候选库存 revision/HWM、physicalResourceKey 与可派发 protocol/endpoint/model scope 派生输入、owner namespace、配置/资格 revision、未终态 promotion saga、warmup marker 和 terminal journal sealed HWM；它不保存 5/10/30 分钟质量桶，也不把短电路状态变成长期业务事实。
+- Redis 全量 flush、schema 不兼容或所有节点无法证明运行态连续性时，先提升 runtimeRecoveryEpoch 并保持 BOOTSTRAPPING。rebuild worker 以同一数据库 snapshot/HWM 枚举全部“当前或未来时间计划内可能派发”的来源物理账号及授权派生 scope，对每个 physical account 建立新 epoch 的 account-level OPEN_UNKNOWN/quarantine gate 和 bounded lazy due；无法枚举的动态 model scope 由账号级 gate 覆盖。旧 fault incident 即使无法完整恢复也不能 fail-open，因为其所有成员先被账号 gate 包住；非终态 promotion saga、warmup marker、journal/outbox 再按 decisionId/recoveryCommitId/HWM 幂等重放。
+- 重建不主动探索低优先级或备用账号。READY 只要求候选清单的 count/digest 与 manifest HWM 完整匹配、所有实体已有 CLOSED 以外的保守 gate、所有 durable saga/marker 已登记 due；具体账号可在路由真正需要时通过一个 matching half-open lease 懒确权。覆盖不完整、manifest 冲突或 snapshot 后新增实体未被 delta replay 时继续 BOOTSTRAPPING。
+- 全局重建完成时，只等待当前 live-membership 集合确认当前 epoch，并确认 manifest/snapshot/delta 覆盖的未确权实体已隔离；不等待历史下线节点，也不要求 scope DLQ 清空。随后按 `runtimeRecoveryEpoch + manifestHwm + revision` CAS 打开 READY。任何 admission、lease 或 terminal outcome 都必须再次校验该 epoch/readiness，因此旧节点、旧 CLOSED 快照或空 Redis key 无法越过恢复栅栏。
 - 业务数据库质量表继续用于展示和历史分析，不作为实时调度依赖。
 
 ### 9.2 质量维度与窗口
@@ -873,7 +1039,7 @@ lastCompletedAtMs
 | 账户内多 Key | 本地 Key 准备失败或显式 Key 动作才可换 Key；完整响应不能自动轮 Key |
 | IP 级账号回避 | 保留为窄作用域辅助，不承担共享账号故障保护 |
 | 上游桶健康 | 继续识别代理/Base URL/provider 公共故障，不替代单账号电路 |
-| recovery_wait / precheck_pending | 迁移为后台持久确认层；新短电路先承担秒级止损，recovery_wait 不能继续允许无限新请求 |
+| recovery_wait / precheck_pending | 按 8.10 一次性交接到 scoped circuit/observation；v2 active 后旧 gate、lease 和 probe writer 全部停用 |
 | 持久冷却复测 | 复用现有队列、退避和 CAS 基础；按 8.8-8.10 收敛为物理账号单飞、三 canary、渐进放量和持续低频恢复，不进入业务热质量 |
 | 历史质量统计 | 保留展示和分析，不参与实时候选读取 |
 | latency_degraded | 保持路由层状态，只影响启用该快速目标的范围 |
@@ -888,19 +1054,20 @@ lastCompletedAtMs
 - 停用未获用户显式授权的响应语义副作用；
 - 收敛 routes、preparation、candidate-filter、dispatch 的直接 fallback；
 - 用 route-coordinator 统一 attempted、预算、游标和跨组推进；
-- 在 route plan 冻结协议适配器的 requestReplayPolicy，让 ordinary failover、speed handoff、confirmation 和 hybrid 共用发网后重放门禁；
-- 将旧 same-account retry budget 改为 confirmation lease 一次例外；
+- 在 route plan 冻结协议适配器的 requestReplayPolicy，让 ordinary failover、speed handoff 和 hybrid 共用发网后重放门禁；background confirmation 使用 canonical health payload，不能拿该门禁为用户 payload 开例外；
+- 删除旧 same-account retry budget；confirmation 只通过 canonical `runtime_confirmation` ProbeIntent 一次例外，不能恢复为同一用户请求的串行重试；
 - 更新“recovery_wait 仍可调度”的旧测试契约，使首次作用域 transport 故障可以即时阻断新流量；
 - 补齐 Redis runtime overlay，避免网关与管理页面对可调度状态产生分歧。
 - 为跨授权物理 transport 去重补迁移开关、`duplicate_physical_target` 审计和 binding 独立授权回归；不把来源电路回写为授权实例持久状态。
 - 将高并发 group reducer 的动态队列/容量判断接入 coordinator，但保留 `maxQueueWaitMs` 作为组级队列上限；3 秒只控制重选号、层切换和未进入 `activeGroupQueue` 的零可派发协调等待。
 - 为 performance 增加 runtime epoch/readiness、节点 membership、admission registry、lease/due reaper、terminal outbox 和 scope 级 DLQ；所有 admission/lease CAS 都必须带 fencing。
-- 在 settings repository、schema defaults、管理 API 和验证脚本中落地 request hard deadline 与 60 秒 server rescue window，不能只在运行时代码写隐藏常量。
+- 在 settings repository、schema defaults、管理 API 和验证脚本中落地 request hard deadline 与 `serverRescueTailSeconds`（默认 30 秒，追加在首个 route attempt 的 lane hard 后），不能只在运行时代码写隐藏常量。
+- 删除 `maxFirstByteRetriesPerRequest=2`、通用最多 4 个账户、同账户普通 retry budget 和任何等价固定账号 cap 的运行时读取；同步清理/迁移 route schema、API、前端、导入导出、默认值和测试。历史配置只记录为 deprecated，不能继续截断同层唯一候选一轮；confirmation lease 和 Key 级本地准备例外不重建普通账号 cap。
 - 将 `precheck_pending / precheck_failed / recovery_wait` 的调度 owner 原子迁移到 scoped circuit；新 gate 开启时同步关闭旧 gate、旧 lease 和旧 probe 写入，禁止双写。
 - 将 5 分钟、3 个独立失败轮次保留为整物理账号 promotion 门槛，并增加全能力覆盖、标准检查 probe、成功证据、上游桶相关性、在途归零和 accountHealthGeneration CAS。
 - 将所有自动 `mark_*DisabledByFailure` / `mark_*TemporaryUnavailable` 调用收敛到 scoped circuit 与 promotion owner；只有本地确定性错误或用户显式策略可以调用持久 error/disable 写路径。
 - 复用 cooldown retest 队列但删除持续探活开启时“纯 transport 失败满 7 天自动 error”；增加 long_term 低频恢复、Verifying 三 canary 和 30/90 秒渐进放量。
-- 保持 `schedulable` 为配置意图；页面和网关统一读取持久状态 + runtime overlay + warmup + capacity 的 effectiveAvailability。
+- 新增并回填 `configured_scheduling_enabled` 作为配置意图，将旧 `schedulable` 降为兼容投影；页面和网关统一读取持久状态 + runtime overlay + warmup + capacity 的 effectiveAvailability。
 
 ## 12. 日志、指标与可观测性
 
@@ -962,7 +1129,7 @@ upstream_bucket_correlated_failure_total
 
 实施必须覆盖以下场景，普通模式和快速模式都要分别验证：
 
-1. 20 个同 IP、多会话同时命中同一坏账号：已在途请求允许结束；首次状态转换后只允许一个 confirmation，后续新请求全部换赛道。
+1. 20 个同 IP、多会话同时命中同一坏账号：已在途请求允许结束；首次状态转换后只允许一个 canonical `runtime_confirmation`，满足重放门禁的失败客户端和后续新请求全部换赛道；不可重放请求只返回一次 indeterminate，不能串行复用同一用户 payload。
 2. 不同 IP、不同 API Key 命中同一物理资源：按物理作用域共享电路，不依赖 IP 回避阈值。
 3. 5 个 P1 中前 4 个在 `serverRescueDeadlineAt - reservedDispatchMs` 前快速失败、第 5 个健康：必须给第 5 个一次 admission，不得因固定失败预算提前进入 P2；时间准入不再满足时只能返回 deadline_exhausted。
 4. 5 个 P1 全部快速失败、P2 健康且仍满足时间准入：P1 只扫描一轮，随后按路由计划进入 P2，不重复扫描 P1。
@@ -977,11 +1144,11 @@ upstream_bucket_correlated_failure_total
 13. speed-first 已确认慢的超级优先账号：未降级候选可按路由覆盖越过；热质量和 affinity 不得拉回慢账号。
 14. speed-first 单次慢但未达到阈值：只记慢样本，不强制切号。
 15. SSE 首字前 transport 失败只有在 `confirmed_not_sent` 或 requestReplayPolicy 允许时可以切号；首字后读取中断绝不拼接第二账号。
-16. 客户端取消 confirmation/half-open：只释放 lease，不累计失败；同一 CAS 写入 nextLeaseAtMs/due index，后续恰好允许一个新 lease。
+16. 客户端取消 half-open，或 background confirmation 的 worker 被取消：只释放 lease，不累计失败；同一 CAS 写入 nextLeaseAtMs/due index，后续恰好允许一个新 lease。
 17. 同一物理账号通过主用和备用授权实例出现：同请求不重复发普通 protocol-model attempt。
 18. 256 窗口或扫描窗口截断：返回 window_incomplete，不能 hard_exhausted。
 19. hybrid repair/upgrade：使用独立 purpose budget，但不重建 route plan、不清空 attempted、不绕过语义提交或统一重放边界。
-20. 高并发队列等待：使用 `min(group.maxQueueWaitMs, requestHardRemaining)`，不扣 3 秒控制面账本；出队后重新校验 revision/circuit/capacity。
+20. 高并发队列等待：使用冻结的 `min(queueEnqueuedAt + group.maxQueueWaitMs, requestHardDeadlineAt-cleanupGrace, (serverRescueDeadlineAt ?? +∞)-reservedDispatchMs)`，不扣 3 秒控制面账本；回访不得重置等待，救援截止提前时立即唤醒，出队后重新校验 revision/circuit/warmup/资格/capacity。
 21. Redis 不可用：失联节点禁止新 dispatch、confirmation、half-open、canary 和探索，不回退本机内存；仍连通节点按 membership/admission registry 把失联节点的未决 scope 转为 OPEN_UNKNOWN，不按旧 CLOSED 放流。
 22. 同一 attempt 终态重复提交：质量桶和电路只投影一次，CAS 冲突可观测。
 23. 配置 revision 在 confirmation 期间变化：旧结果不能污染新 generation。
@@ -994,64 +1161,85 @@ upstream_bucket_correlated_failure_total
 30. Redis 在 admission 后失联并发生进程重启：新 bootId、耐久 outbox、membership/admission registry 和 runtimeRecoveryEpoch fencing 阻止旧 CLOSED 快照放行；可识别 scope 完成重放/孤儿修复/受控探活前保持隔离。
 31. hybrid 请求包含 hosted tool、background/store 或未知 endpoint：replaySafe 默认拒绝，不执行 repair/upgrade。
 32. 同层候选快速返回：探索仍受“100 个 eligible 请求且 60 秒”双门槛约束，不能连续消耗后排账号。
-33. 普通或 speed-first 请求已可能发网且包含 hosted tool/store/未知副作用：禁止换号和 confirmation，返回 indeterminate_upstream_outcome；不能在两个上游重复执行。
+33. 普通或 speed-first 请求已可能发网且包含 hosted tool/store/未知副作用：禁止换号，也禁止把该用户 payload 交给 confirmation，返回 indeterminate_upstream_outcome；若已有 canonical probe lease，后台探针仍可独立运行，不能在两个上游重复执行用户副作用。
 34. 两个 attempt 同时争夺 SSE winner：loser CAS 失败后立即 abort、释放容量并提交 superseded_before_commit，不进入质量或电路。
 35. confirmation/half-open 持有节点进程崩溃：due reaper 或 admission 机会式修复在 lease 到期后只放出一个新 lease，状态不能永久卡住。
 36. 单节点 Redis 非对称断连：其 membership 过期后，其他节点在新 admission 前先隔离未关闭 registry 对应 scope；健康无关 scope 继续服务。
 37. 某个 scope 的 outbox 永久重投失败：仅该 scope 进入 QUARANTINED/DLQ 并按退避审计，live membership 过期节点和该 DLQ 都不能永久关闭全局 READY。
 38. 探索 lease 持有节点在发网前崩溃或旧节点迟到释放：matching epoch/policyRevision/leaseId 才能回收，新 lease 不被旧回调删除；已发网 cooldown 不因快速完成提前释放。
-39. server rescue window 默认 60 秒：普通/快速、fallback、RR/weighted 和 hybrid 均不重置；60 秒后已启动 image/text attempt 继续按 lane hard 运行，但结束后不再启动新 attempt。
+39. server rescue tail 默认 30 秒：首个真实派发取得 admission 后，按该请求 lane 的 hard 首字预算追加尾窗；普通/快速、fallback、RR/weighted 和 hybrid 均不重置。尾窗结束后已启动 image/text attempt 继续按 lane hard 运行，但结束后不再启动新 attempt；首个 attempt 之前只受协调/队列/request hard 预算约束。
 40. 20 个并发在 10 秒内同时 transport 失败：只建立一个 scoped failure round 和一个 confirmation lease，不直接写 temporary_unavailable；5 分钟内恢复后取消账号 promotion epoch。
 41. 单模型、单协议或单 Key 持续失败但同物理账号另一路径健康：只保持 scoped OPEN，整账号仍可通过健康路径调度，不得进入 temporary_unavailable。
-42. 单能力账号连续波动：只有标准检查 probe、独立 confirmation、5 分钟和 3 个间隔轮次全部满足，且期间无完整成功，才能进入 temporary_unavailable。
-43. 同一 proxy/baseUrl/provider 下多个账号同时失败：先建立 upstream bucket circuit，暂停逐账号持久 promotion；bucket 恢复后账号不被批量留在死亡状态。
+42. 单能力账号连续波动：只有标准检查 probe、独立 confirmation、5 分钟和 3 个间隔轮次全部满足，且未完成 matching-generation 三次成功 canary，才能进入 temporary_unavailable；旧在途/普通零星成功只按弱证据处理。
+43. 同一来源 owner 下多个 upstream path 相关失败：建立一个带 faultCorrelationId/member snapshot 的 incident，暂停成员账号持久 promotion；incident 恢复或补偿后账号不被批量留在死亡状态，其他 owner 不受影响。
 44. temporary_unavailable 账号坏 2 小时后恢复：slow 阶段仍公平获得单飞 probe，首次成功进入 Verifying，三次独立 canary 和稳定窗口后才 active。
 45. 开启持续恢复探活的账号 transport 失败持续 7 天：进入每小时 long_term 恢复，不自动转 error；其他健康账号和 due 队列不被该账号阻塞。
 46. 用户显式关闭持续恢复探活：10 分钟内按现有有界退避复测，只有到期后的真实最终 probe 失败才进入 error；worker 停机不能仅凭墙钟伪造 error。
-47. 恢复探针成功后 20 个业务会话同时到达：warmup 前 30 秒只允许 1 个 ordinary admission，随后 60 秒最多 25% 配置并发，不能瞬间灌满。
-48. warmup 中再次 transport 失败：立即回到当前 scoped OPEN 并创建新 generation，旧 canary/业务终态不能把账号重新 active。
-49. 人工恢复、配置修改、停用与迟到 probe 竞争：error 只进入 pending_test，configRevision/accountHealthGeneration CAS 拒绝旧结果，disabled 和用户 schedulable 意图不被覆盖。
+47. 恢复探针成功后 20 个业务会话同时到达：warmup stage1 累计 30 秒真实在途暴露只允许 1 个 ordinary，stage2 再累计 60 秒最多 `max(1,floor(25%))` 配置并发；空闲墙钟不推进，且至少三次 matching 完整 success 后才 full。
+48. warmup 中再次 transport 失败：同一 CAS 打开 scoped OPEN，递增 accountHealthGeneration/warmupGeneration，清空 stage/exposure/success 并排空旧 permit；恢复后只能从新 armed 开始，旧 canary/业务终态不能直接 full。
+49. 人工恢复、配置修改、停用与迟到 probe 竞争：error 只进入 pending_test，configRevision/accountHealthGeneration CAS 拒绝旧结果，disabled 和 configured scheduling intent 不被覆盖。
 50. 授权实例共享同一来源物理账号：只运行一套 physical promotion/recovery；各 binding 的权限、额度和显式策略保持隔离，不产生 N 倍探活。
 51. due 队列同时包含大量 fast 和 long_term 账号：keyset 轮转为 long_term 保留份额，后排账号最终获得 probe，且每物理账号、分组、provider 的并发上限均生效。
-52. 新 scoped circuit migration gate 开启：旧 recovery_wait/precheck gate 和旧探针写入同时关闭；shadow 阶段只比较不影响派发，任何阶段不存在双 lease 或双重阻断。
+52. 新 scoped/activation migration gate 开启：旧 recovery_wait/precheck gate、旧 activation 24h/状态码 writer 和对应探针写入同时关闭；shadow 阶段只比较不影响派发，任何阶段不存在双 lease、双重阻断或两套 pending_test 终态。
 53. 一个账号在 100 次 transport failure 中偶尔完成 2 次旧 in-flight success：不能清理 scoped OPEN、不能取消 promotion epoch；只有 matching-generation 三 canary 才能进入恢复验证。
+54. pending_test 探针收到完整 401/429/5xx 且无显式高级规则：只按 transport completed 结束自动 transport 验证，不因状态码写 error/rate_limited；显式规则存在时仅按该规则处理。
+55. pending_test 连续 transport failure 超过 24 小时：保持 pending_test long_term 并公平复测，不自动 error；unknown 不累计，本地确定性配置错误才进入 error。
+56. schedulable 旧数据迁移：操作日志/状态来源可唯一归因的行正确回填 configured intent；`active + schedulable=false + 日志缺失` 及其他冲突行保持 legacy_unknown/fail-closed，后台成功不能因“无停用日志”猜测后复活。
+57. upstream fault incident OPEN：只有 matching namespace/faultCorrelationId/incident generation/topology/lease 的 bucket_canary 可发网；代表账号必须满足 configured intent、时间计划、授权和 scope-exact 健康检查配置，缺失或 worker 崩溃会重排 due。一次成功只进 RECOVERING，failed member 按直接证据释放，未验证成员保持 path OPEN_UNKNOWN，不产生逐账号并发风暴。
+58. speed-first latency_degraded 与 transport OPEN 同时恢复：同一真实 probe 可共享 firstByteMs，但分别校验 routeStrategy/group/binding/latencyGeneration/threshold；transport 成功且首字仍慢时不得清理 latency_degraded。
+59. legacy precheck_pending/pending_test activation 在 owner 切换时有在途 probe：draining_scoped_activation 按 barrierEpoch + sealedSeq 排空，分别映射为新 OPEN 或 transport-only activation due；迟到成功/旧 24h error 不能写新 generation，映射失败时 source owner 保持权威。
+60. 历史 `maxFirstByteRetriesPerRequest=2`、通用 4 账号上限和同账号 retry 配置仍存在：v2 路径不得读取；5 个 P1 快速失败场景仍扫描全部唯一候选一轮，schema/API/UI 标记并删除 deprecated 字段。
+61. 多个并发回访同一 route plan：RoutePlanSnapshot.planHash 始终不变，只有 coordinator 以 executionVersion 推进 cursor/pending/attempted；版本冲突不能重建 RR/weighted 决策或重复派发。
+62. 账号恢复后没有业务流量，数分钟后 configured intent/时段/授权关闭，再过数分钟重新开启并同时到达 20 个会话：warmup 不能空跑到 full；新 eligibility 以新 warmupGeneration 从 stage1 开始，最多一个 ordinary in-flight。
+63. promotion evaluator 已捕获 incident member fence 后，incident topology/eligibility 在数据库提交前后变化：promotion decision 必须通过 DB cancelled tombstone 拒绝迟到 commit，或由 matching block owner 补偿，不能留下永久 temporary_unavailable；最终状态按 decisionId/sagaVersion/incident/account/config/eligibility generation 收敛。
+64. proxy/base URL/provider 形成重叠图：同一次 source failure 只建立一个 path incident；correlator 只能按 faultCorrelationId 合并显式 member snapshot，不能把共享 proxy 但不同 Base URL 的健康路径隐式吸收。incident topology 切换必须失效旧 lease/due 并只保留一套恢复；独立故障允许独立 incident，代表账号不能来自其他 owner 或用户暂停账号。
+65. draining 期间旧节点仍有普通 attempt transport 终态：domain barrierEpoch 使未取 token 的旧节点 STALE；已登记 attempt 的 terminal append/dedup/registry close 原子进入无洞 journal，所有分片 sealedSeq 与 migration manifest 在 owner CAS 前验证，迟到结果不能让 v2 以旧 CLOSED 放流。
+66. 用户在 promotion/recovery/activation 评估期间暂停、启用或手动 disabled：schedulingIntentRevision、资格 revision 和 expected persistent status 的 CAS 必须拒绝迟到自动写，不能覆盖人工意图。
+67. text 首个 attempt 在 120 秒 lane hard 失败、救援尾窗在 150 秒结束，随后进入 60 秒高并发 FIFO：队列绝对截止必须夹到 145 秒且不得在回访时重置；145 秒前出槽可继续派发，之后立即结束，不能白等到 180 秒。
+68. schedule worker 停机并跨越关闭/开启边界：每次 ordinary/special/probe admission 直接按 scheduleRevision 与当前时间 fail-closed/开放；worker 只影响投影，不能让关闭时段继续放流或开启后永久 disabled。
+69. promotion saga 分别在 prepared、Redis fence ack、commit_allowed、DB committed/Redis 未 finalize、cancel 和 compensation 后崩溃重启：decision lease/due/reconciler 必须幂等继续；cancel 先于迟到 commit 时 cancelled tombstone 必须获胜，commit 先赢则 durable compensation 收敛。
+70. 空闲账号已有 scoped/incident OPEN、warmup marker 和 prepared decision 时 Redis 全量 flush：新 runtime epoch 保持 BOOTSTRAPPING，按 lifecycleRecoveryManifest + DB snapshot/HWM 将全候选重建为 OPEN_UNKNOWN、重放 saga/marker；覆盖 digest 完整后才 READY，空 key 不能当 CLOSED。
+71. owner A 的两个账号发生相关故障，owner B 使用相同 provider/base URL 且健康：incident key、member set、lease/due、promotion fence 和代表池都按来源 owner namespace 隔离，A 的授权 binding 共享 A 状态，但不得阻断或消耗 B。
+72. proxy P1 同时服务 U1/U2，U1 故障而 U2 健康；另有独立 P1 故障：faultCorrelationId 只合并显式 path member snapshot，独立 incident 可并存。健康代表成功不能释放未验证 failed member；quorum 后其 path 保持 OPEN_UNKNOWN，旧 topology lease 不能发网。
+73. DB 已 active 且 warmupRequired marker 存在时 standalone 重启或 Redis warmup key 丢失：必须重建 armed/fail-closed；旧 generation permit 先排空，quality outbox 以 recoveryCommitId CAS，迟到 attempt 只写捕获的旧 qualityEpoch。
+74. `draining_persistent` 期间 scoped-v2 普通流量持续产生终态：legacy persistent 只消费 `<= persistentCutoverSeq`，v2 从下一序列接管；切换不能等待普通流量归零，也不能重复/漏消费终态。
+75. 单能力账号的一次真实 probe 同时投影 scheduled_health 与 runtime_confirmation：promotion evidence 按 sourceAttemptId/evidenceIndependenceGroup 只能计一次，必须另有独立 attempt 才满足“标准 probe + confirmation”。
 
 ## 14. 落地顺序
 
 ### 第零阶段：合同与反向回归
 
-- 建立 route-coordinator result contract、route plan snapshot 和请求级 ledger 类型。
-- 先补完整响应透明、状态码不参与自动机制、同层五账号一轮和客户端语义提交的反向回归。
-- 明确旧测试中与新核心原则冲突的断言和迁移开关。
+- 建立 immutable RoutePlanSnapshot、RouteExecutionState、route-coordinator result、RequestRescueLedger、AttemptArbiter、requestReplayPolicy 和 lifecycle owner epoch 类型。
+- 先补完整响应透明、状态码不参与任何自动机制、发网后重放默认拒绝、同层五账号一轮、请求级 semantic winner 和旧固定 cap 退场的反向回归。
+- 明确 legacy/shadow/draining/v2 状态和失败回滚；阶段验收不得依赖后续阶段补安全门。
 
-### 第一阶段：协调器收敛
+### 第一阶段：先落安全边界
 
-- 收敛 routes、preparation、candidate-filter、dispatch 的直接 fallback。
-- 让 route coordinator 成为唯一的游标、attempted、等待和跨组推进 owner。
-- 保留现有 route mode 的分组、权重、轮询、hybrid 和快速目标语义。
+- 在保持 legacy 路由/状态 owner 的前提下，先启用统一 requestReplayPolicy、请求级 semantic winner、loser abort、有限 request hard deadline 和 server rescue deadline。
+- 停用所有未获用户显式授权的状态码/正文调度副作用、自动 retry_next、自动 Key/账号状态写入；显式高级规则保留独立 source/namespace。
+- 收敛 routes、response finalization 和 hybrid 的重放入口，使任何未来 confirmation/handoff 在代码上只能调用已经生效的统一 guard。
+- 本阶段不启用新 confirmation、电路 gate、promotion 或额外 probe；因此可以独立发布和回滚。
 
-### 第二阶段：短电路与单飞
+### 第二阶段：shadow 基础设施与意图迁移
 
-- 建立 memory/Redis 电路 Store Port、runtime epoch/readiness、node membership、generation、lease、CAS、admission registry 和 due index/reaper。
-- 首次作用域 transport 失败立即 SUSPECT，确认 lease 只有一个持有者。
-- 完成 OPEN / HALF_OPEN / RECOVERING 和三次 canary，迁移旧 recovery_wait 的 admission 语义；未知/取消/崩溃必须维护 nextLeaseAtMs 和 due index。
-- 让 dispatch admission 在网络派发前成为唯一线性点，绑定 runtimeRecoveryEpoch、node bootId、circuit generation、dispatchRevision、容量 permit 和 registry entry。
+- 建立 coordinator/执行状态、memory/Redis Store Port、runtime epoch/readiness、node membership、admission registry、generation/lease/CAS、due reaper、ProbeIntent coalescer、fault incident 和 latency scope，但全部保持 shadow，不影响派发且不额外发网。
+- 新增 configured scheduling intent 字段，按 8.6 做 dry-run、确定性 backfill、unknown 清单和 Node/Go/SQLite/PostgreSQL 双读校验；unknown 未处理前不得进入 v2 active。
+- shadow 复用 legacy 已发生的 attempt/probe 终态比较候选、状态和 due 结果；不允许 v1/v2 两套 probe 同时真实执行。
 
-### 第三阶段：持久状态 promotion 与恢复生命周期
+### 第三阶段：scoped 与 activation owner 原子切换
 
-- 建立 physical accountHealthGeneration 和 promotion observation Store；同一并发风暴折叠为单轮，标准 probe、跨能力覆盖、最近成功和 upstream bucket 相关性共同守门。
-- 迁移旧 recovery_wait/precheck owner：先 shadow 对比，随后同一开关原子启用 scoped circuit gate并关闭旧 gate、旧 lease 与旧 probe 写入。
-- 复用 cooldown retest 的持久队列、keyset 扫描和 configRevision CAS，收敛为每物理账号单飞的 fast/slow/long_term/bounded 状态机。
-- 删除持续探活开启时纯 transport 7 天自动 error；保留用户显式 bounded 终态和本地确定性 error。
-- 将一次恢复成功改为 Verifying 三 canary、稳定窗口和 30/90 秒 warmup；页面与网关共同读取 effectiveAvailability。
+- 按 8.10 进入 `draining_scoped_activation`，为 route_dispatch、scoped_runtime、activation_pending_test 建立 domain barrier，冻结 legacy 新 ordinary/special/activation dispatch、旧 precheck gate、旧 24h/状态码 activation writer 和对应 probe writer；按 migrationRunId + sealedSeq 排空/记录 registry、attempt、lease、outbox，映射 recovery_wait/precheck/runtime_degraded/latency/pending_test activation generation 和 due。
+- 在同一个 lifecycleOwnerEpoch CAS 中启用 route coordinator、scoped circuit admission、非阻塞 canonical confirmation、OPEN/HALF_OPEN（仅 scoped）、统一 ProbeIntent scoped 部分及 transport-only activation fast/slow/long_term；整账号 promotion 与 persistent cooldown recovery 继续由 legacy persistent owner 独占，不能在本阶段关闭旧恢复出口。
+- 进入 `v2_scoped_activation_legacy_persistent` 后，dispatch admission 在发网前成为唯一 scoped/activation 线性点，绑定 runtime/node/owner/barrier/circuit/eligibility/warmup/quality/capacity fence 和 registry entry；legacy persistent owner 不能写 scoped/activation gate，旧 activation 迟到结果只能 STALE。
+- 切换前置条件是第一阶段 replay/status 安全门已 active、第二阶段 shadow/意图迁移无阻断差异；任一节点/分片失败保持 legacy，不允许部分切换。
 
-### 第四阶段：首字与请求账本
+### 第四阶段：persistent owner 原子切换与完整恢复
 
-- 建立统一 AttemptArbiter，保留 lane、soft、lifetime 和 request hard 分层。
-- 删除普通扫描中的多轮同账号 retry，只保留 confirmation 一次例外。
-- 统一 3 秒控制面协调等待账本，移除与旧 270 秒预算的叠加关系；高并发 FIFO 仍用 `min(maxQueueWaitMs, requestHardRemaining)`。
-- 冻结有限 requestHardDeadline 和默认 60 秒 server rescue admission deadline，统一 AbortSignal、terminal CAS、请求级 SSE semantic commit、loser cleanup 和 deadline cleanup。
-- 冻结 requestReplayPolicy，把普通切号、速度 handoff、confirmation 和 hybrid 的发网后重放授权收敛到一个 guard。
+- 在 scoped/activation v2 已稳定后再次按 8.10 进入 `draining_persistent`，只冻结 legacy persistent promotion/cooldown 新写和 lease；保留 scoped v2 对客户端的止损，以固定 persistentCutoverSeq 交接旧 recovery lease/探针终态，不能等待持续普通流量归零。
+- 在同一个新的 lifecycleOwnerEpoch CAS 中启用 physical accountHealthGeneration 和 promotion observation；同一并发风暴折叠为单轮，标准 probe、跨能力覆盖、三次成功、fault incident/member fence 和在途归零共同守门，同时关闭 legacy persistent owner。
+- 复用已经由 v2 owner 接管的 cooldown 队列和 ProbeIntent，启用 fast/slow/long_term/bounded、Verifying 三 canary、qualityEpoch 和基于真实业务暴露的 30/60 秒 warmup。阶段完成后 owner mode 才为完整 `v2`。
+- 删除持续探活开启时纯 transport 7 天自动 error；保留用户显式 bounded 终态和本地确定性 error；pending_test long_term 已由第三阶段 activation owner 独占。
+- 补齐页面/网关 effectiveAvailability、意图 unknown、long_term、warmup 和 next probe 展示。
 
 ### 第五阶段：热质量与同层探索
 
@@ -1061,9 +1249,9 @@ upstream_bucket_correlated_failure_total
 
 ### 第六阶段：响应语义和管理闭环
 
-- 停用默认响应规则的服务端调度副作用，仅保留用户显式规则动作。
 - 补齐 performance runtime overlay、状态原因、新鲜度、node membership、scope quarantine/DLQ 和孤儿修复。
-- 完成双节点 Redis fail-closed/非对称断连、SSE semantic commit/loser abort、冻结 hybridActionPlan/replay policy、高并发和长 lane 组合回归。
+- 删除 legacy 状态/store/schema/API/UI 读取和 deprecated 账号 cap 配置，保留可审计迁移记录；不能在这里才关闭第一阶段安全副作用。
+- 完成双节点 Redis fail-closed/非对称断连、fault incident/latency ProbeIntent、SSE semantic commit/loser abort、hybrid replay policy、高并发和长 lane 组合回归。
 
 每个阶段都必须同时验证 cost_first 和 speed_first，不能先实现通用热质量再让快速模式被动适配。
 
@@ -1074,20 +1262,20 @@ upstream_bucket_correlated_failure_total
 | 参数 | 首轮建议 |
 | --- | --- |
 | 控制面协调等待总预算 | 3 秒，普通/快速统一；不包含高并发 admission FIFO |
-| 高并发队列 | `min(group.maxQueueWaitMs, requestHardRemaining)` |
-| confirmation 次数 | 每个作用域、每请求最多 1 次 |
+| 高并发队列 | 冻结绝对 `min(queueEnqueuedAt + group.maxQueueWaitMs, requestHardDeadlineAt-cleanupGrace, (serverRescueDeadlineAt ?? +∞)-reservedDispatchMs)`；回访不重置 |
+| confirmation 次数 | 每个作用域、每 generation 最多 1 个 background ProbeIntent；不复用用户 payload、不占客户端请求预算 |
 | scoped hot RECOVERING canary | 串行 3 次，间隔建议 3 秒；如同时承担 persistent Verifying，使用更强的 10 秒/30 秒合同 |
 | 自动退避 | 3s -> 5s -> 10s -> 30s -> 60s，上限建议 5 分钟 |
 | 整账号持久升级 | 至少 5 分钟、3 个独立后台失败轮次，轮次至少间隔 2 分钟；另需全能力覆盖和标准 probe |
 | 恢复验证 | 3 个独立 canary，至少间隔 10 秒，总稳定窗口至少 30 秒 |
-| 恢复 warmup | 前 30 秒最多 1 个普通 admission；随后 60 秒最多 25% 配置并发；之后全量 |
+| 恢复 warmup | stage1 累计 30 秒真实在途暴露且最多 1 路；stage2 再累计 60 秒且 `max(1,floor(25%))` 配置并发；至少 3 次 matching 完整 success 后 full，空闲不推进 |
 | 长期恢复 | 连续不可用 12 小时后每 1 小时一次；持续探活开启时不设纯 transport 7 天死亡终点 |
 | 全局完整诊断 | 复用现有有界上限，首期每进程/worker 最多 3 路；每物理账号和分组最多 1 路 |
 | 同层探索 | 每请求最多 1 次；共享桶最近 100 eligible 请求且 60 秒最多 1 次 |
 | 文本请求 hard deadline | 默认 1800 秒，范围 60-86400 秒 |
 | 图像请求 hard deadline | 默认 3600 秒，范围 60-86400 秒 |
-| 请求救援准入墙钟 | 默认 60 秒，范围 10-120 秒；route plan 形成时冻结，所有模式/lane 共用，不重置 |
-| 新派发预留 | 固定 5 秒；`now + 5s < serverRescueDeadlineAt` 才能启动下一 attempt |
+| 请求救援尾窗 | 默认 30 秒，范围 10-120 秒；首个真实 admission 后按冻结 lane hard 追加，所有模式共用且不重置 |
+| 新派发预留 | 固定 5 秒；首个 attempt 前按 request/group 预算，建立后须满足 `now + 5s < serverRescueDeadlineAt` 才能启动下一 attempt |
 
 调参不能改变以下不变量：路由优先、同层普通候选最多一轮、语义提交后不拼接、状态必须 CAS、完整响应不自动解释、热数据不落业务库。
 
