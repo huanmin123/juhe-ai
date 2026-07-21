@@ -40,6 +40,12 @@ try {
     startedAtMs: Date.now(),
     captureMode: 'metadata_only'
   })
+  let lazyFinalizeInputBuilt = false
+  successCapture.finalizeLazy(() => {
+    lazyFinalizeInputBuilt = true
+    return { outcome: 'success', success: true, statusCode: 200 }
+  })
+  assert.equal(lazyFinalizeInputBuilt, false, '审计关闭后不得构造延迟 finalize 参数或执行审计专用序列化')
   successCapture.finalize({ outcome: 'success', success: true, statusCode: 200 })
 
   const failureCapture = auditCapture.createAuditCapture({

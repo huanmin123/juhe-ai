@@ -246,7 +246,7 @@ const configuredRedisNamespace = redisNamespaceConfig('JUHE_AI_REDIS_NAMESPACE',
 const configuredHost = stringConfig('JUHE_AI_HOST', '127.0.0.1')
 const configuredDevelopmentAutoLoginUsername = optionalStringConfig('JUHE_AI_DEV_AUTO_LOGIN_USERNAME')
 const configuredLogFileEnabled = booleanConfig('JUHE_AI_LOG_FILE_ENABLED', true)
-const configuredRuntimeLogIndexEnabled = booleanConfig('JUHE_AI_RUNTIME_LOG_INDEX_ENABLED', true)
+const configuredRuntimeLogIndexEnabled = strictDeploymentBooleanConfig('JUHE_AI_RUNTIME_LOG_INDEX_ENABLED', true)
 
 assertDevelopmentAutoLoginConfig({
   username: configuredDevelopmentAutoLoginUsername,
@@ -461,6 +461,14 @@ function optionalStringConfig(name: string): string | undefined {
 }
 
 function booleanConfig(name: string, fallback: boolean): boolean {
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
+  if (['1', 'true', 'yes', 'on'].includes(value)) return true
+  if (['0', 'false', 'no', 'off'].includes(value)) return false
+  throw new Error(`${name} 只能配置为 true/false/1/0/yes/no/on/off`)
+}
+
+function strictDeploymentBooleanConfig(name: string, fallback: boolean): boolean {
   const configuredValue = rawStringConfig(name)
   if (configuredValue === undefined) return fallback
   const value = configuredValue.toLowerCase()

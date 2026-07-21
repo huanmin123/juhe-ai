@@ -63,6 +63,11 @@ assert.deepEqual(
   { indexEnabled: false, fileEnabled: false },
   '关闭运行日志索引后，performance 模式不应再要求 Pino 文件输出作为索引来源'
 )
+assert.deepEqual(
+  readRuntimeLogIndexEnabled('false', { fileEnabled: '' }),
+  { indexEnabled: false, fileEnabled: true },
+  '新开关严格空值规则不得改变既有布尔配置显式空值沿用默认值的兼容语义'
+)
 assert.equal(settings.batchSize, 500, '审计日志 worker 单批写入需要支撑 50 并发真实网关流量')
 assert.equal(settings.queueMaxItems, 50000, '审计日志 worker 本地队列请求数必须支撑 50 并发短期写入波峰')
 assert.equal(settings.queueMaxBytes, 256 * 1024 * 1024, '审计日志 worker 本地队列字节数必须按轻量部署控制在固定硬上限内')
@@ -186,7 +191,7 @@ assert(backgroundIpcSource.includes("message.type === 'background_worker_audit_l
 
 console.log('审计日志设置契约回归通过：默认保留 1 小时最近内容，允许显式关闭成功审计且不影响问题链路')
 
-function readRuntimeLogIndexEnabled(value: string, options?: { runtimeMode?: 'performance'; fileEnabled?: 'false' }): {
+function readRuntimeLogIndexEnabled(value: string, options?: { runtimeMode?: 'performance'; fileEnabled?: string }): {
   indexEnabled: boolean
   fileEnabled: boolean
 } {
