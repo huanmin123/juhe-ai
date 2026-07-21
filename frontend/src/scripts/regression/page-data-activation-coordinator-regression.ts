@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import type {
+  PageDataConfirmDomainResult,
   PageDataConfirmRequest,
   PageDataConfirmResult,
   PageDataDomain,
@@ -192,6 +193,49 @@ async function testFreezeAndPostBarrier(): Promise<void> {
   assert.deepEqual(postDecisions.map(({ state }) => state), ['confirmed', 'confirmed'])
 }
 
+async function testPostConfirmationRequiresStableBaseline(): Promise<void> {
+  const baseline = token('accounts.static', 1)
+  const cases: Array<{
+    label: string
+    action: PageDataConfirmDomainResult['action']
+    responseToken: PageDataRevisionToken
+  }> = [
+    { label: 'sequence changed', action: 'unchanged', responseToken: { ...baseline, sequence: 2 } },
+    { label: 'epoch changed', action: 'unchanged', responseToken: { ...baseline, epoch: 'epoch-2' } },
+    { label: 'reset sequence changed', action: 'unchanged', responseToken: { ...baseline, resetSequence: 1 } },
+    { label: 'action is not stable', action: 'reload', responseToken: baseline }
+  ]
+  const decisions: Array<{ label: string; state: PageDataActivationDecision['state'] }> = []
+
+  for (const testCase of cases) {
+    const clock = new FakeClock()
+    const handle = createPageDataActivationCoordinator({
+      manifest: myAccountsPageDataActivationManifest,
+      viewScope: 'self',
+      confirm: async () => ({
+        serverTime: '2026-07-22T00:00:00.000Z',
+        domains: {
+          'accounts.static': {
+            action: testCase.action,
+            token: testCase.responseToken
+          }
+        }
+      }),
+      timer: clock.timer,
+      now: () => clock.nowMs
+    })
+    handle.trigger('interval')
+    const pending = handle.stabilize({
+      ...participant('accounts', 'accounts.static'),
+      baseline
+    })
+    await clock.advanceTo(50)
+    decisions.push({ label: testCase.label, state: (await pending).state })
+  }
+
+  assert.deepEqual(decisions, cases.map(({ label }) => ({ label, state: 'unavailable' })))
+}
+
 async function testDeactivateSupersedesPendingResult(): Promise<void> {
   const clock = new FakeClock()
   const gate = deferred<PageDataConfirmResult>()
@@ -230,6 +274,7 @@ assert.deepEqual(myAccountsPageDataActivationManifest.domains, [
 await testCollectionWindow()
 await testTokenDeduplicationAndConflict()
 await testFreezeAndPostBarrier()
+await testPostConfirmationRequiresStableBaseline()
 await testDeactivateSupersedesPendingResult()
 
 console.log('Page data activation coordinator regression passed')

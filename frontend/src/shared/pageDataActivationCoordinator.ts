@@ -229,7 +229,12 @@ export class PageDataActivationCoordinator implements PageDataActivationHandle {
       for (const pending of collection.pending) {
         if (!current) {
           this.settle(pending, decision('superseded', phase.kind, pending.participant))
-        } else if (!confirmed || confirmed.token.domain !== domain) {
+        } else if (
+          !confirmed
+          || confirmed.token.domain !== domain
+          || (phase.kind === 'post'
+            && (confirmed.action !== 'unchanged' || !sameOptionalToken(collection.token, confirmed.token)))
+        ) {
           this.settle(pending, decision('unavailable', phase.kind, pending.participant))
         } else {
           this.settle(pending, {
