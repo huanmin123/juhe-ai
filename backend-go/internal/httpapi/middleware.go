@@ -41,26 +41,17 @@ func requestLoggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handl
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			started := time.Now()
-			fields := []any{
-				slog.String("event", "http.request.start"),
-				slog.String("service", "juhe-ai"),
-				slog.String("role", "go"),
-				slog.String("traceId", traceIDFromContext(r.Context())),
-				slog.String("requestId", requestIDFromContext(r.Context())),
-				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
-			}
 			if logger != nil {
-				logger.Info("HTTP 请求开始", fields...)
+				logger.InfoContext(r.Context(), "HTTP 请求开始",
+					slog.String("event", "http.request.start"),
+					slog.String("method", r.Method),
+					slog.String("path", r.URL.Path),
+				)
 			}
 			next.ServeHTTP(w, r)
 			if logger != nil {
-				logger.Info("HTTP 请求完成",
+				logger.InfoContext(r.Context(), "HTTP 请求完成",
 					slog.String("event", "http.request.complete"),
-					slog.String("service", "juhe-ai"),
-					slog.String("role", "go"),
-					slog.String("traceId", traceIDFromContext(r.Context())),
-					slog.String("requestId", requestIDFromContext(r.Context())),
 					slog.String("method", r.Method),
 					slog.String("path", r.URL.Path),
 					slog.Int64("durationMs", time.Since(started).Milliseconds()),

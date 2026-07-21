@@ -63,6 +63,7 @@ export async function preResolveGatewayRuntime(
 ): Promise<void> {
   const stageStartedAt = performance.now()
   let resolutionReason: string | undefined
+  let resolutionError: unknown
   let resolutionOutcome: 'success' | 'expected_failure' | 'unexpected_failure' = 'success'
   try {
     if (isGatewayModelsRequest(req)) {
@@ -96,12 +97,14 @@ export async function preResolveGatewayRuntime(
   } catch (error) {
     resolutionOutcome = 'unexpected_failure'
     resolutionReason = error instanceof Error ? error.name : 'NonErrorThrown'
+    resolutionError = error
     next(error)
   } finally {
     logRequestStage('runtime_resolution', {
       traceId: getTraceId(),
       resolved: Boolean(req.gatewayRuntime?.apiKey),
       reason: resolutionReason,
+      ...(resolutionOutcome === 'unexpected_failure' ? { error: resolutionError } : {}),
       ...(resolutionOutcome === 'expected_failure' ? { failureReason: resolutionReason } : {})
     }, resolutionOutcome, stageStartedAt)
   }

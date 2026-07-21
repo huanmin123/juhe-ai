@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 import { errorLogFields, logger } from '../../../shared/logger.js'
-import { getTraceId } from '../../../shared/request-context.js'
+import { getRequestId, getTraceId } from '../../../shared/request-context.js'
 import { gatewayJsonBodyLargeWarningBytes } from './body.js'
 import { extractGatewayJsonBodyMetadata, type GatewayJsonBodyMetadata } from './json-metadata-scanner.js'
 import {
@@ -21,6 +21,7 @@ type GatewayJsonWorkerJobType =
 interface GatewayJsonWorkerJob {
   id: number
   traceId?: string
+  parentId?: string
   type: GatewayJsonWorkerJobType
   rawBody: Buffer
   normalizeInput?: OpenAIOAuthCodexNormalizeInput
@@ -38,10 +39,23 @@ interface GatewayJsonWorkerResponse {
   id: number
   ok: boolean
   value?: unknown
-  errorMessage?: string
+  failureClass?: 'expected' | 'infrastructure'
+  error?: GatewayJsonWorkerErrorEnvelope
   errorCode?: string
   errorStatusCode?: number
   errorType?: string
+}
+
+interface GatewayJsonWorkerErrorEnvelope {
+  name: string
+  message: string
+  stack?: string
+  cause?: GatewayJsonWorkerErrorEnvelope
+  truncated?: boolean
+}
+
+type GatewayJsonWorkerError = Error & {
+  workerError?: GatewayJsonWorkerErrorEnvelope
 }
 
 interface GatewayJsonWorkerSlot {
@@ -260,6 +274,7 @@ function enqueueGatewayJsonWorkerJob<TValue>(input: {
     const job: GatewayJsonWorkerJob = {
       id: nextJobId++,
       traceId: getTraceId(),
+      parentId: getRequestId(),
       type: input.type,
       rawBody: input.rawBody,
       normalizeInput: input.normalizeInput,
@@ -332,17 +347,18 @@ function createWorkerSlot(): GatewayJsonWorkerSlot {
   })
   slot.worker.on('exit', (code) => {
     removeWorkerSlot(slot)
-    if (code !== 0) {
-      logger.warn({
-        event: 'gateway_json_parse_worker_exited',
-        workerSlotId: slot.id,
-        exitCode: code
-      }, '网关 JSON worker 异常退出')
-    }
     if (slot.activeJob) {
       const job = slot.activeJob
       slot.activeJob = undefined
       failJob(job, new Error(`网关 JSON worker 已退出，退出码 ${code}`), false, slot)
+    } else if (code !== 0) {
+      const error = new Error(`网关 JSON worker 已退出，退出码 ${code}`)
+      logger.error(errorLogFields(error, {
+        event: 'gateway_json_parse_worker_exited',
+        failureClass: 'infrastructure',
+        workerSlotId: slot.id,
+        exitCode: code
+      }), '网关 JSON worker 异常退出')
     }
     pumpJsonWorkerQueue()
   })
@@ -413,30 +429,74 @@ function handleWorkerMessage(slot: GatewayJsonWorkerSlot, message: GatewayJsonWo
     return
   }
 
+  if (!message.ok) {
+    const error = workerResponseError(job, message)
+    if (!isExpectedWorkerResponseError(job, message, error)) {
+      failJob(job, error, false, slot)
+      return
+    }
+    clearJobTimer(job)
+    removeAbortListener(job)
+    slot.activeJob = undefined
+    job.reject(error)
+    pumpJsonWorkerQueue()
+    return
+  }
+
   clearJobTimer(job)
   removeAbortListener(job)
   slot.activeJob = undefined
-  if (message.ok) {
-    logJobCompleted(job)
-    job.resolve(message.value)
-  } else {
-    job.reject(workerResponseError(job, message))
-  }
+  logJobCompleted(job)
+  job.resolve(message.value)
   pumpJsonWorkerQueue()
 }
 
 function workerResponseError(job: GatewayJsonWorkerJob, message: GatewayJsonWorkerResponse): Error {
-  const errorMessage = message.errorMessage ?? '网关 JSON 请求体必须是有效 JSON'
+  const errorMessage = message.error?.message ?? '网关 JSON 请求体必须是有效 JSON'
   if (
     job.type === 'normalize_openai_oauth_codex_body'
     && message.errorCode === 'invalid_openai_oauth_codex_request'
   ) {
-    return new OpenAIOAuthCodexAdapterError(errorMessage, message.errorCode, {
+    return applyWorkerErrorEnvelope(new OpenAIOAuthCodexAdapterError(errorMessage, message.errorCode, {
       statusCode: message.errorStatusCode,
       type: message.errorType
-    })
+    }), message.error)
   }
-  return new Error(errorMessage)
+  return applyWorkerErrorEnvelope(new Error(errorMessage), message.error)
+}
+
+function applyWorkerErrorEnvelope(error: Error, envelope?: GatewayJsonWorkerErrorEnvelope): GatewayJsonWorkerError {
+  const workerError = error as GatewayJsonWorkerError
+  if (!envelope) return workerError
+  if (!(error instanceof OpenAIOAuthCodexAdapterError)) {
+    error.name = envelope.name || error.name
+  }
+  if (envelope.stack) error.stack = envelope.stack
+  if (envelope.cause) error.cause = restoreWorkerError(envelope.cause)
+  workerError.workerError = envelope
+  return workerError
+}
+
+function restoreWorkerError(envelope: GatewayJsonWorkerErrorEnvelope): Error {
+  const error = new Error(envelope.message)
+  error.name = envelope.name || 'Error'
+  if (envelope.stack) error.stack = envelope.stack
+  if (envelope.cause) error.cause = restoreWorkerError(envelope.cause)
+  return error
+}
+
+function isExpectedWorkerResponseError(
+  job: GatewayJsonWorkerJob,
+  message: GatewayJsonWorkerResponse,
+  error: Error
+): boolean {
+  if (message.failureClass !== 'expected') return false
+  if (job.type === 'parse_json_body') {
+    return message.error?.name === 'SyntaxError'
+  }
+  return job.type === 'normalize_openai_oauth_codex_body'
+    && message.errorCode === 'invalid_openai_oauth_codex_request'
+    && error instanceof OpenAIOAuthCodexAdapterError
 }
 
 function pushQueuedJob(job: GatewayJsonWorkerJob): void {
@@ -487,6 +547,12 @@ function failActiveJob(slot: GatewayJsonWorkerSlot, error: Error, restartWorker:
     return
   }
   if (restartWorker) {
+    logger.error(errorLogFields(error, {
+      event: 'gateway_json_parse_worker_failed',
+      failureClass: 'infrastructure',
+      workerSlotId: slot.id,
+      reason: 'worker_error_without_active_job'
+    }), '网关 JSON worker 失败')
     restartJsonWorker(slot)
   }
 }
@@ -512,18 +578,22 @@ function failJob(job: GatewayJsonWorkerJob, error: Error, restartWorker: boolean
   }
   clearJobTimer(job)
   removeAbortListener(job)
-  logger.warn(errorLogFields(error, {
+  logger.error(errorLogFields(error, {
     event: 'gateway_json_parse_worker_failed',
+    failureClass: 'infrastructure',
     traceId: job.traceId,
-    jobId: job.id,
-    parentId: job.traceId,
+    jobId: gatewayJsonWorkerJobId(job),
+    parentId: gatewayJsonWorkerParentId(job),
     jobType: job.type,
     rawBodyBytes: job.rawBody.byteLength,
     queuedWaitMs: job.startedAtMs ? job.startedAtMs - job.enqueuedAtMs : undefined,
     workerDurationMs: job.startedAtMs ? Date.now() - job.startedAtMs : undefined,
     totalMs: Date.now() - job.enqueuedAtMs,
     queuedJobs: queuedJobs.length,
-    queuedBytes: queuedJobsBytes
+    queuedBytes: queuedJobsBytes,
+    ...((error as GatewayJsonWorkerError).workerError
+      ? { workerError: (error as GatewayJsonWorkerError).workerError }
+      : {})
   }), '网关 JSON worker 失败')
   job.reject(error)
   if (restartWorker && activeSlot) {
@@ -564,8 +634,8 @@ function logJobCompleted(job: GatewayJsonWorkerJob): void {
   const fields = {
     event: 'gateway_json_worker_job_completed',
     traceId: job.traceId,
-    jobId: job.id,
-    parentId: job.traceId,
+    jobId: gatewayJsonWorkerJobId(job),
+    parentId: gatewayJsonWorkerParentId(job),
     jobType: job.type,
     rawBodyBytes: job.rawBody.byteLength,
     queuedWaitMs,
@@ -581,6 +651,14 @@ function logJobCompleted(job: GatewayJsonWorkerJob): void {
   if (job.rawBody.byteLength > gatewayJsonBodyLargeWarningBytes) {
     logger.info(fields, '网关 JSON worker 任务完成')
   }
+}
+
+function gatewayJsonWorkerJobId(job: GatewayJsonWorkerJob): string {
+  return `gateway-json-worker:${job.id}`
+}
+
+function gatewayJsonWorkerParentId(job: GatewayJsonWorkerJob): string | undefined {
+  return job.parentId
 }
 
 function startJobTimer(job: GatewayJsonWorkerJob): void {

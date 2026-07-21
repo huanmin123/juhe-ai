@@ -172,7 +172,6 @@ export class AuditCaptureContext {
   private clientRequestPayloadCaptured = false
   private httpCompletedAtMs?: number
   private pendingFinalizeInput?: FinalizeAuditInput
-  private finalizeStartedAt?: number
   private releaseHttpCompletionListener?: () => void
   private activeCaptureRegistered = false
 
@@ -414,13 +413,13 @@ export class AuditCaptureContext {
   finalize(input: FinalizeAuditInput): void {
     if (this.finalized) return
     this.finalized = true
-    this.finalizeStartedAt = performance.now()
     if (!this.enabled) {
+      const finalizeStartedAt = performance.now()
       logRequestStage('audit.finalize', {
         traceId: this.traceId,
         auditEnabled: false,
         skipped: true
-      }, 'skipped', this.finalizeStartedAt)
+      }, 'skipped', finalizeStartedAt)
       return
     }
 
@@ -453,6 +452,7 @@ export class AuditCaptureContext {
   private flushFinalizedAudit(): void {
     const input = this.pendingFinalizeInput
     if (!input) return
+    const finalizeStartedAt = performance.now()
     this.pendingFinalizeInput = undefined
     this.releaseActiveCapture()
 
@@ -484,7 +484,7 @@ export class AuditCaptureContext {
         success,
         skipped: true,
         sampleBucket: this.sampleBucket
-      }, 'success', this.finalizeStartedAt ?? performance.now())
+      }, 'success', finalizeStartedAt)
       return
     }
 
@@ -575,7 +575,7 @@ export class AuditCaptureContext {
           clientAborted
         }
       } : {})
-    }, success ? 'success' : 'expected_failure', this.finalizeStartedAt ?? performance.now())
+    }, success ? 'success' : 'expected_failure', finalizeStartedAt)
   }
 
   private releaseActiveCapture(): void {

@@ -24,6 +24,19 @@ interface GatewayJsonWorkerRequest {
   normalizeInput?: OpenAIOAuthCodexNormalizeInput
 }
 
+interface GatewayJsonWorkerErrorEnvelope {
+  name: string
+  message: string
+  stack?: string
+  cause?: GatewayJsonWorkerErrorEnvelope
+  truncated?: boolean
+}
+
+interface GatewayJsonWorkerErrorCaptureState {
+  remainingBytes: number
+  truncated: boolean
+}
+
 if (!parentPort) {
   throw new Error('网关 JSON worker 缺少 parentPort')
 }
@@ -43,7 +56,9 @@ workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
     }
     if (message.type === 'normalize_openai_oauth_codex_body') {
       if (!message.normalizeInput) {
-        throw new Error('OpenAI OAuth Codex 归一化参数缺失')
+        throw new Error('OpenAI OAuth Codex 归一化参数缺失', {
+          cause: new Error('normalize_input_missing')
+        })
       }
       const {
         normalizeOpenAIOAuthCodexRawBody
@@ -61,7 +76,7 @@ workerPort.on('message', async (message: GatewayJsonWorkerRequest) => {
       value: JSON.parse(rawBody.toString('utf8')) as unknown
     })
   } catch (error) {
-    workerPort.postMessage(workerErrorResponse(id, error))
+    workerPort.postMessage(workerErrorResponse(id, message.type, error))
   }
 })
 
@@ -77,12 +92,15 @@ function resolveJsonMetadataScannerModuleUrl(): string {
     : new URL('./json-metadata-scanner.js', import.meta.url).href
 }
 
-function workerErrorResponse(id: number, error: unknown): Record<string, unknown> {
-  if (isOpenAIOAuthCodexAdapterErrorLike(error)) {
+function workerErrorResponse(id: number, jobType: GatewayJsonWorkerJobType, error: unknown): Record<string, unknown> {
+  const capturedError = captureWorkerError(error)
+  if (isOpenAIOAuthCodexAdapterErrorLike(error)
+    && error.code === 'invalid_openai_oauth_codex_request') {
     return {
       id,
       ok: false,
-      errorMessage: error.message,
+      failureClass: 'expected',
+      error: capturedError,
       errorCode: error.code,
       errorStatusCode: error.statusCode,
       errorType: error.type
@@ -91,8 +109,60 @@ function workerErrorResponse(id: number, error: unknown): Record<string, unknown
   return {
     id,
     ok: false,
-    errorMessage: error instanceof Error ? error.message : String(error)
+    failureClass: jobType === 'parse_json_body' && error instanceof SyntaxError
+      ? 'expected'
+      : 'infrastructure',
+    error: capturedError
   }
+}
+
+function captureWorkerError(error: unknown): GatewayJsonWorkerErrorEnvelope {
+  const state: GatewayJsonWorkerErrorCaptureState = {
+    remainingBytes: gatewayJsonWorkerErrorMaxEnvelopeBytes,
+    truncated: false
+  }
+  const envelope = captureWorkerErrorValue(error, state)
+  if (state.truncated) envelope.truncated = true
+  return envelope
+}
+
+function captureWorkerErrorValue(
+  error: unknown,
+  state: GatewayJsonWorkerErrorCaptureState,
+  depth = 0
+): GatewayJsonWorkerErrorEnvelope {
+  if (!(error instanceof Error)) {
+    return {
+      name: 'NonErrorThrown',
+      message: captureWorkerErrorText(String(error), state)
+    }
+  }
+
+  const envelope: GatewayJsonWorkerErrorEnvelope = {
+    name: captureWorkerErrorText(error.name || 'Error', state),
+    message: captureWorkerErrorText(error.message, state),
+    ...(error.stack ? { stack: captureWorkerErrorText(error.stack, state) } : {})
+  }
+  if (error.cause !== undefined) {
+    if (depth < gatewayJsonWorkerErrorMaxCauseDepth && state.remainingBytes > 0) {
+      envelope.cause = captureWorkerErrorValue(error.cause, state, depth + 1)
+    } else {
+      state.truncated = true
+    }
+  }
+  return envelope
+}
+
+function captureWorkerErrorText(value: string, state: GatewayJsonWorkerErrorCaptureState): string {
+  const source = Buffer.from(value, 'utf8')
+  const retainedBytes = Math.min(
+    source.byteLength,
+    gatewayJsonWorkerErrorMaxStringBytes,
+    state.remainingBytes
+  )
+  if (retainedBytes < source.byteLength) state.truncated = true
+  state.remainingBytes = Math.max(0, state.remainingBytes - retainedBytes)
+  return source.subarray(0, retainedBytes).toString('utf8')
 }
 
 function isOpenAIOAuthCodexAdapterErrorLike(error: unknown): error is {
@@ -106,3 +176,7 @@ function isOpenAIOAuthCodexAdapterErrorLike(error: unknown): error is {
     && typeof (error as { statusCode?: unknown }).statusCode === 'number'
     && typeof (error as { type?: unknown }).type === 'string'
 }
+
+const gatewayJsonWorkerErrorMaxStringBytes = 8 * 1024
+const gatewayJsonWorkerErrorMaxEnvelopeBytes = 48 * 1024
+const gatewayJsonWorkerErrorMaxCauseDepth = 4

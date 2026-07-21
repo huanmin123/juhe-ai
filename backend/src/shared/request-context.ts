@@ -12,6 +12,7 @@ import { logger } from './logger.js'
 
 export interface RequestContext {
   traceId: string
+  requestId?: string
   startedAt: number
   monotonicStartedAt?: number
   stageSequence?: number
@@ -86,12 +87,15 @@ export function createTraceId(): string {
 
 export function requestContextMiddleware(req: Request, res: Response, next: NextFunction): void {
   const traceId = normalizeTraceId(req) ?? createTraceId()
+  const requestId = randomUUID()
   const clientIp = extractClientIp(req)
   const contextLogger = logger.child({
-    traceId
+    traceId,
+    requestId
   })
   const context: RequestContext = {
     traceId,
+    requestId,
     startedAt: Date.now(),
     monotonicStartedAt: performance.now(),
     method: req.method,
@@ -147,6 +151,10 @@ export function bindRequestContextFields(fields: RequestContextFields): void {
 
 export function getTraceId(): string | undefined {
   return getRequestContext()?.traceId
+}
+
+export function getRequestId(): string | undefined {
+  return getRequestContext()?.requestId
 }
 
 export function logRequestStage(

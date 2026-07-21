@@ -9,11 +9,46 @@ import (
 )
 
 func New(level string, output io.Writer) (*slog.Logger, error) {
-	runtime, err := NewRuntime(level, output, RuntimeOptions{Role: "go"})
-	if err != nil {
-		return nil, err
+	var parsed slog.Level
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "", "info":
+		parsed = slog.LevelInfo
+	case "debug":
+		parsed = slog.LevelDebug
+	case "warn", "warning":
+		parsed = slog.LevelWarn
+	case "error":
+		parsed = slog.LevelError
+	default:
+		return nil, fmt.Errorf("未知日志级别: %s", level)
 	}
-	return runtime.Logger, nil
+	base := slog.NewJSONHandler(output, &slog.HandlerOptions{Level: parsed}).WithAttrs([]slog.Attr{
+		slog.Int("version", EventVersion),
+		slog.String("service", "juhe-ai"),
+		slog.String("role", "go"),
+	})
+	return slog.New(&contextHandler{base: base}), nil
+}
+
+type contextHandler struct {
+	base slog.Handler
+}
+
+func (h *contextHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return h.base.Enabled(ctx, level)
+}
+
+func (h *contextHandler) Handle(ctx context.Context, record slog.Record) error {
+	record.AddAttrs(logContextAttrs(ctx)...)
+	return h.base.Handle(ctx, record)
+}
+
+func (h *contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &contextHandler{base: h.base.WithAttrs(attrs)}
+}
+
+func (h *contextHandler) WithGroup(name string) slog.Handler {
+	return &contextHandler{base: h.base.WithGroup(name)}
 }
 
 func NewRuntime(level string, output io.Writer, options RuntimeOptions) (*Runtime, error) {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/logging"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -23,7 +24,11 @@ func EnqueueWrite(ctx context.Context, client EnqueueClient, input port.Operatio
 	if client == nil {
 		return queue.TaskInfo{}, fmt.Errorf("operation log queue client is required")
 	}
-	payload, err := EncodeWriteTaskPayload(input)
+	logContext := logging.LogContextFrom(ctx)
+	payload, err := EncodeWriteTaskPayloadWithCorrelation(input, TaskCorrelation{
+		TraceID:   logContext.TraceID,
+		RequestID: logContext.RequestID,
+	})
 	if err != nil {
 		return queue.TaskInfo{}, err
 	}
