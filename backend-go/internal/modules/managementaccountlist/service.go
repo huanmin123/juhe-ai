@@ -78,6 +78,8 @@ type Item struct {
 	Priority               int         `json:"priority"`
 	SuperPriorityEnabled   bool        `json:"superPriorityEnabled"`
 	FallbackEnabled        bool        `json:"fallbackEnabled"`
+	HealthCheckModel       string      `json:"healthCheckModel"`
+	HealthCheckEndpointMode string     `json:"healthCheckEndpointMode"`
 	AccountExpiresAt       *time.Time  `json:"accountExpiresAt,omitempty"`
 	LastUsedAt             *time.Time  `json:"lastUsedAt,omitempty"`
 	AccessType             string      `json:"accessType"`
@@ -159,6 +161,7 @@ func (s *Service) List(ctx context.Context, input Input) (Result, error) {
 			Name: row.Name, ProviderCode: row.ProviderCode, Type: row.Type, Status: row.Status,
 			Schedulable: row.Schedulable, ConcurrencyLimit: row.ConcurrencyLimit, Priority: row.Priority,
 			SuperPriorityEnabled: row.SuperPriorityEnabled, FallbackEnabled: row.FallbackEnabled,
+			HealthCheckModel: row.HealthCheckModel, HealthCheckEndpointMode: row.HealthCheckEndpointMode,
 			AccountExpiresAt: row.AccountExpiresAt, LastUsedAt: row.LastUsedAt, AccessType: row.AccessType,
 			AccountAuthorizationID: row.AccountAuthorizationID, AuthorizationStatus: row.AuthorizationStatus,
 			AuthorizationExpiresAt: row.AuthorizationExpiresAt,

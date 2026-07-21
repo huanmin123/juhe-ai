@@ -99,9 +99,11 @@ try {
     readonly pid = 434343
     readonly connected = true
     readonly operationCounts = new Map<string, number>()
+    private operationQueue = Promise.resolve()
 
     send(message: unknown, callback?: (error?: Error | null) => void): boolean {
-      void this.handleMessage(message, callback)
+      const operation = this.operationQueue.then(() => this.handleMessage(message, callback))
+      this.operationQueue = operation.catch(() => undefined)
       return true
     }
 
@@ -131,6 +133,7 @@ try {
           this.emit('message', {
             type: 'db_service_response',
             requestId: message.requestId,
+            jobId: message.jobId,
             ok: true,
             result
           })
@@ -141,6 +144,7 @@ try {
           this.emit('message', {
             type: 'db_service_response',
             requestId: message.requestId,
+            jobId: message.jobId,
             ok: false,
             errorMessage: error instanceof Error ? error.message : String(error)
           })
@@ -653,7 +657,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; operation: Parameters<typeof import('../../modules/db-service/db-service-handlers.js')['handleDbServiceOperation']>[0] } {
+function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; jobId?: string; operation: Parameters<typeof import('../../modules/db-service/db-service-handlers.js')['handleDbServiceOperation']>[0] } {
   return typeof value === 'object'
     && value !== null
     && !Array.isArray(value)

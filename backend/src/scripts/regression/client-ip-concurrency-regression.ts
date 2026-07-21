@@ -1,10 +1,16 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   acquireHighConcurrencyClientIpSlot,
   clearClientIpConcurrency,
   clientIpConcurrencySnapshot
 } from '../../modules/gateway/runtime/client-ip-concurrency.service.js'
+
+const gatewayPreparationSource = readFileSync(new URL('../../modules/gateway/dispatch/preparation.ts', import.meta.url), 'utf8')
+assert(gatewayPreparationSource.includes('const releaseClientIpConcurrencyOnce = (): void => {'))
+assert(gatewayPreparationSource.includes('} catch (error) {') && gatewayPreparationSource.includes('releaseClientIpConcurrencyOnce()'), '高并发 Client-IP 槽位取得后的容量/亲和/回退异常必须统一释放，不能把 Redis 槽位残留到 TTL')
+assert(gatewayPreparationSource.includes('releaseClientIpConcurrency: releaseClientIpConcurrencyOnce'), '高并发准备成功返回的释放句柄必须保持幂等，避免正常收尾与异常兜底重复释放')
 
 try {
   clearClientIpConcurrency()

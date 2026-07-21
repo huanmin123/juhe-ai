@@ -19,7 +19,7 @@ assertOrdered(serverSource, [
   'waitForGatewayFailureUsageFinalizationsIdle(8_000)',
   'waitForActiveAuditCapturesIdle(8_000)',
   'waitForAuditLogServerDispatchIdle(8_000)',
-  'waitForIngestAuditDrain(5_000)',
+  'waitForIngestFactQueueDrain(5_000)',
   'stopAuditLogTransportWorker()',
   'stopBackgroundWorkerSupervisor()',
   'stopDbServiceSupervisor()'
@@ -28,6 +28,9 @@ assert(auditQueueSource.includes('pendingAuditLogServerDispatches.add(dispatch)'
 assert(auditQueueSource.includes('.finally(() => pendingAuditLogServerDispatches.delete(dispatch))'), 'server 审计异步投递结束后必须清 pending')
 assert(auditQueueSource.includes('waitForAuditLogServerDispatchIdle'), 'server 关闭流程必须能有限等待审计投递排空')
 assert(serverSource.includes('pendingFailureUsageFinalizationCount'), 'server 关闭未排空告警必须暴露失败 usage pending 数')
+assert.match(serverSource, /pendingQueues\.usageRecords\.queueLength/, 'server 关闭必须等待父进程 usage IPC 队列排空')
+assert.match(serverSource, /if \(!status\?\.snapshot\)/, 'server 关闭不得把未知 ingest-worker 状态误判为空队列')
+assert.match(serverSource, /snapshot\.usageRecordQueue\.queueLength/, 'server 关闭必须等待 ingest-worker usage 落库队列排空')
 
 await assertImmediateSigtermDrainsFailureUsage()
 

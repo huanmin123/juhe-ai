@@ -366,6 +366,16 @@ export interface DbServiceServerRuntimeSnapshot {
   }>
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
+  gatewayUsageFinalization?: {
+    pendingCount: number
+    queuedCount: number
+    queuedBytes: number
+    activeCount: number
+    droppedCount: number
+    maxItems: number
+    maxBytes: number
+    maxConcurrency: number
+  }
   auditLogTransport?: {
     queuedJobs: number
     queuedBytes: number

@@ -28,6 +28,18 @@ export interface PenaltyWindowRateLimitDecision {
   limit?: number
 }
 
+export interface PenaltyWindowRateLimitGroup<TScope extends string = string> {
+  scope: TScope
+  store: PenaltyWindowRateLimitStore
+  scopeKey: string
+  rules: readonly PenaltyWindowRateLimitRule[]
+}
+
+export interface PenaltyWindowRateLimitGroupDecision<TScope extends string = string>
+  extends PenaltyWindowRateLimitDecision {
+  scope?: TScope
+}
+
 interface PenaltyWindowRateLimitEntry {
   windowStartedAt: number
   count: number
@@ -109,6 +121,32 @@ export async function consumePenaltyWindowRateLimitAsync(input: {
   const nowMs = input.nowMs ?? Date.now()
   const activeRules = input.rules.filter((rule) => rule.maxRequests > 0 && rule.windowSeconds > 0)
   return consumeRedisPenaltyWindowRateLimit(input.store, input.scopeKey, activeRules, nowMs)
+}
+
+export async function consumePenaltyWindowRateLimitGroupsAsync<TScope extends string>(input: {
+  groups: readonly PenaltyWindowRateLimitGroup<TScope>[]
+  nowMs?: number
+}): Promise<PenaltyWindowRateLimitGroupDecision<TScope>> {
+  const nowMs = input.nowMs ?? Date.now()
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    for (const group of input.groups) {
+      const decision = consumePenaltyWindowRateLimit({
+        store: group.store,
+        scopeKey: group.scopeKey,
+        rules: group.rules,
+        nowMs
+      })
+      if (!decision.allowed) return { ...decision, scope: group.scope }
+    }
+    return { allowed: true }
+  }
+  const activeGroups = input.groups
+    .map((group) => ({
+      ...group,
+      rules: group.rules.filter((rule) => rule.maxRequests > 0 && rule.windowSeconds > 0)
+    }))
+    .filter((group) => group.rules.length > 0)
+  return consumeRedisPenaltyWindowRateLimitGroups(activeGroups, nowMs)
 }
 
 export function clearPenaltyWindowRateLimitStore(store: PenaltyWindowRateLimitStore): void {
@@ -210,6 +248,51 @@ async function consumeRedisPenaltyWindowRateLimit(
     retryAfterSeconds: Math.max(1, Math.ceil((values[1] ?? rule.windowSeconds * 1000) / 1000)),
     rule,
     storeName: store.name,
+    limit: rule.maxRequests
+  }
+}
+
+async function consumeRedisPenaltyWindowRateLimitGroups<TScope extends string>(
+  groups: readonly PenaltyWindowRateLimitGroup<TScope>[],
+  nowMs: number
+): Promise<PenaltyWindowRateLimitGroupDecision<TScope>> {
+  if (!groups.length) return { allowed: true }
+  const result = await (await redisStateClient()).eval(redisPenaltyWindowRateLimitGroupsScript, {
+    keys: groups.flatMap((group) => group.rules.map((rule) =>
+      redisPenaltyWindowRateLimitKey(group.store.name, group.scopeKey, rule)
+    )),
+    arguments: [
+      String(Math.trunc(nowMs)),
+      String(groups.length),
+      ...groups.flatMap((group) => [
+        String(group.rules.length),
+        group.store.penaltyMode === 'fixed_window' ? '1' : '0',
+        ...group.rules.flatMap((rule) => {
+          const windowMs = rule.windowSeconds * 1000
+          const maxPenaltyMs = Math.max(windowMs, group.store.maxPenaltyMs)
+          return [
+            String(windowMs),
+            String(Math.floor(nowMs / windowMs) * windowMs),
+            String(rule.maxRequests),
+            String(maxPenaltyMs),
+            String(Math.max(group.store.maxIdleMs, maxPenaltyMs, windowMs))
+          ]
+        })
+      ])
+    ]
+  })
+  const values = numericRedisArray(result)
+  if (values[0] === 1) return { allowed: true }
+  const groupIndex = Math.max(1, Math.trunc(values[3] ?? 1))
+  const group = groups[groupIndex - 1] ?? groups[0]!
+  const ruleIndex = Math.max(1, Math.trunc(values[2] ?? 1))
+  const rule = group.rules[ruleIndex - 1] ?? group.rules[0]!
+  return {
+    allowed: false,
+    scope: group.scope,
+    retryAfterSeconds: Math.max(1, Math.ceil((values[1] ?? rule.windowSeconds * 1000) / 1000)),
+    rule,
+    storeName: group.store.name,
     limit: rule.maxRequests
   }
 }
@@ -392,4 +475,86 @@ for index = 1, rule_count do
   redis.call('PEXPIRE', KEYS[index], ttl_values[index])
 end
 return {1, 0, 0}
+`
+
+const redisPenaltyWindowRateLimitGroupsScript = `
+local now_ms = tonumber(ARGV[1])
+local group_count = tonumber(ARGV[2])
+local argument_index = 3
+local key_index = 1
+
+for group_index = 1, group_count do
+  local rule_count = tonumber(ARGV[argument_index])
+  local fixed_window_mode = tonumber(ARGV[argument_index + 1]) == 1
+  argument_index = argument_index + 2
+  local counts = {}
+  local penalty_values = {}
+  local window_started_values = {}
+  local ttl_values = {}
+  local blocked_rule_index = 0
+  local blocked_retry_ms = 0
+
+  for rule_index = 1, rule_count do
+    local window_ms = tonumber(ARGV[argument_index])
+    local window_started_at = tonumber(ARGV[argument_index + 1])
+    local max_requests = tonumber(ARGV[argument_index + 2])
+    local max_penalty_ms = tonumber(ARGV[argument_index + 3])
+    local ttl_ms = tonumber(ARGV[argument_index + 4])
+    argument_index = argument_index + 5
+    local redis_key = KEYS[key_index + rule_index - 1]
+    local values = redis.call('HMGET', redis_key, 'windowStartedAt', 'count', 'penaltyMs', 'blockedUntilMs')
+    local stored_window_started_at = tonumber(values[1])
+    local count = stored_window_started_at == window_started_at and (tonumber(values[2]) or 0) or 0
+    local penalty_ms = tonumber(values[3]) or 0
+    local blocked_until_ms = tonumber(values[4]) or 0
+    counts[rule_index] = count
+    penalty_values[rule_index] = penalty_ms
+    window_started_values[rule_index] = window_started_at
+    ttl_values[rule_index] = ttl_ms
+
+    if blocked_until_ms > now_ms or count >= max_requests then
+      local next_penalty_ms = penalty_ms
+      if fixed_window_mode then
+        next_penalty_ms = 0
+        blocked_until_ms = window_started_at + window_ms
+      else
+        next_penalty_ms = penalty_ms > 0 and penalty_ms * 2 or window_ms
+        if next_penalty_ms > max_penalty_ms then next_penalty_ms = max_penalty_ms end
+        blocked_until_ms = now_ms + next_penalty_ms
+      end
+      redis.call(
+        'HSET', redis_key,
+        'windowStartedAt', tostring(window_started_at),
+        'count', tostring(count),
+        'penaltyMs', tostring(next_penalty_ms),
+        'blockedUntilMs', tostring(blocked_until_ms)
+      )
+      redis.call('PEXPIRE', redis_key, ttl_ms)
+      if blocked_rule_index == 0 then
+        blocked_rule_index = rule_index
+        blocked_retry_ms = blocked_until_ms - now_ms
+      end
+    end
+  end
+
+  if blocked_rule_index > 0 then
+    local blocked_group_index = group_index
+    return {0, blocked_retry_ms, blocked_rule_index, blocked_group_index}
+  end
+
+  for rule_index = 1, rule_count do
+    local redis_key = KEYS[key_index + rule_index - 1]
+    redis.call(
+      'HSET', redis_key,
+      'windowStartedAt', tostring(window_started_values[rule_index]),
+      'count', tostring(counts[rule_index] + 1),
+      'penaltyMs', tostring(penalty_values[rule_index]),
+      'blockedUntilMs', '0'
+    )
+    redis.call('PEXPIRE', redis_key, ttl_values[rule_index])
+  end
+  key_index = key_index + rule_count
+end
+
+return {1, 0, 0, 0}
 `

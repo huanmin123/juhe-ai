@@ -33,6 +33,8 @@ type ListManagementAccountsRow struct {
 	Priority               int32
 	SuperPriorityEnabled   bool
 	FallbackEnabled        bool
+	HealthCheckModel       string
+	HealthCheckEndpointMode string
 	AccountExpiresAt       pgtype.Timestamptz
 	LastUsedAt             pgtype.Timestamptz
 	AccessType             string

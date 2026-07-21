@@ -24,7 +24,9 @@ import {
   listRunnableAccountTestTaskIdsAsync,
   markAccountTestTaskRunningAsync,
   updateAccountTestTaskMessageAsync,
-  completeAccountTestTaskAsync
+  completeAccountTestTaskAsync,
+  failAccountTestTaskAsync,
+  cancelAccountTestTaskAsync
 } from '../../storage/account-test-tasks.repository.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 
@@ -107,6 +109,36 @@ try {
   assert.ok(canceledSession?.taskIds.includes(cancelTask.id), 'PG session cancel should return affected queued task')
   assert.equal(await isAccountTestTaskCancelRequestedAsync(cancelTask.id), true, 'PG session cancel should mark task canceled')
   assert.equal(await accountTestTaskCancelMessageAsync(cancelTask.id), 'PG smoke cancel', 'PG cancel message should be readable')
+
+  const raceSession = await createAccountTestSessionAsync(access)
+  sessionIds.push(raceSession.id)
+  const raceCompleteTask = await createAccountTestTaskAsync({
+    account,
+    access,
+    diagnostics: 'limited',
+    sessionId: raceSession.id
+  })
+  taskIds.push(raceCompleteTask.id)
+  assert.equal((await markAccountTestTaskRunningAsync(raceCompleteTask.id))?.status, 'running', 'PG race complete task should start')
+  assert.equal((await cancelAccountTestTaskAsync(raceCompleteTask.id, access))?.cancelRequested, true, 'PG race complete task should accept cancel')
+  const raceCompleted = await completeAccountTestTaskAsync(raceCompleteTask.id, result)
+  assert.equal(raceCompleted?.status, 'canceled', 'PG cancel must win over complete')
+  assert.equal((await getAccountTestTaskRecordAsync(raceCompleteTask.id))?.status, 'canceled', 'PG complete race final status must stay canceled')
+
+  const raceFailSession = await createAccountTestSessionAsync(access)
+  sessionIds.push(raceFailSession.id)
+  const raceFailTask = await createAccountTestTaskAsync({
+    account,
+    access,
+    diagnostics: 'limited',
+    sessionId: raceFailSession.id
+  })
+  taskIds.push(raceFailTask.id)
+  assert.equal((await markAccountTestTaskRunningAsync(raceFailTask.id))?.status, 'running', 'PG race fail task should start')
+  assert.equal((await cancelAccountTestTaskAsync(raceFailTask.id, access))?.cancelRequested, true, 'PG race fail task should accept cancel')
+  const raceFailed = await failAccountTestTaskAsync(raceFailTask.id, 'PG smoke fail race')
+  assert.equal(raceFailed?.status, 'canceled', 'PG cancel must win over fail')
+  assert.equal((await getAccountTestTaskRecordAsync(raceFailTask.id))?.status, 'canceled', 'PG fail race final status must stay canceled')
 
   const accountAccess: AccessScope = { systemAccountId: 'sys_admin', role: 'super_admin' }
   const group = await createGroupAsync({

@@ -9,7 +9,7 @@ import (
 
 func TestServiceListBoundsAndForcesSelfScope(t *testing.T) {
 	reader := &listReaderStub{page: port.ManagementAccountListPage{
-		Rows: []port.ManagementAccountListRow{{ID: "acc_1", SystemAccountID: "sys_user", Name: "Account", AccessType: "owner"}},
+		Rows: []port.ManagementAccountListRow{{ID: "acc_1", SystemAccountID: "sys_user", Name: "Account", AccessType: "owner", HealthCheckModel: "gpt-5.5", HealthCheckEndpointMode: "responses_sse"}},
 	}}
 	service := NewService(reader)
 
@@ -42,6 +42,9 @@ func TestServiceListBoundsAndForcesSelfScope(t *testing.T) {
 	}
 	if result.Items[0].SystemAccountID != "" || result.Items[0].OwnerSystemAccountID != "sys_user" {
 		t.Fatalf("item scope fields = %+v", result.Items[0])
+	}
+	if result.Items[0].HealthCheckModel != "gpt-5.5" || result.Items[0].HealthCheckEndpointMode != "responses_sse" {
+		t.Fatalf("health check fields = %+v", result.Items[0])
 	}
 }
 

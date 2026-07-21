@@ -422,6 +422,11 @@ export async function handleOpaqueFailedUpstreamResponse(
     errorMessage: '上游返回非成功 HTTP 响应',
     interpretUpstreamSemantics: false
   })
+  rememberClientIpAccountPendingFailure(input.clientIpAccountAvoidanceTracker, account, {
+    statusCode: response.status,
+    errorPhase: 'upstream_response',
+    endpoint: requestEndpoint(req)
+  })
 
   if (input.retrySameAccount) {
     auditCapture.addGatewayMetadata({

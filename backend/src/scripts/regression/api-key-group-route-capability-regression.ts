@@ -1241,7 +1241,7 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
     groupId: deepSeekGroup.id,
     status: 'active',
     schedulable: true,
-    supportedModels: ['deepseek-ai-v4-flash']
+    supportedModels: ['deepseek-v4-flash']
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '普通 Key 跨供应商模型路由 API Key',
@@ -1258,12 +1258,12 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
 
   const beforeCount = upstreamRequests.length
   const traceId = traceIdForBucket((bucket) => bucket < 1000, 'trace-route-normal-cross-provider-model')
-  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'deepseek-ai-v4-flash', traceId)
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'deepseek-v4-flash', traceId)
   assert.equal(response.status, 200, `普通 Key 跨供应商模型路由应按 DeepSeek 模型切到 DeepSeek 分组并成功，实际 ${response.status}: ${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.equal(newRequests.length, 1, '普通 Key 跨供应商模型路由切换后只应请求一次目标供应商上游')
   assert.equal(newRequests[0]?.accountKey, deepSeekUpstreamKey, 'DeepSeek 模型请求应命中 DeepSeek 号池账号')
-  assert.equal(newRequests[0]?.model, 'deepseek-ai-v4-flash', 'DeepSeek 跨供应商路由应保留 DeepSeek 请求模型再打上游')
+  assert.equal(newRequests[0]?.model, 'deepseek-v4-flash', 'DeepSeek 跨供应商路由应保留 DeepSeek 请求模型再打上游')
   assert(!newRequests.some((request) => request.accountKey === gptUpstreamKey), 'DeepSeek 模型请求不应派发到 GPT 号池账号')
 
   usageRecordQueue.flushAllUsageRecordQueue()
@@ -1277,7 +1277,7 @@ async function assertNormalApiKeyCrossProviderModelRoute(gatewayBaseUrl: string,
   assert.equal(auditLog?.groupId, deepSeekGroup.id, '普通 Key 跨供应商模型路由审计主记录必须归属 DeepSeek 分组')
   const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
   assert(metadataPayloads.some((metadata) => metadata.label === 'normal_model_route'
-    && metadata.metadata?.requestedModel === 'deepseek-ai-v4-flash'
+    && metadata.metadata?.requestedModel === 'deepseek-v4-flash'
     && metadata.metadata?.fromGroupId === gptGroup.id
     && metadata.metadata?.toGroupId === deepSeekGroup.id
     && metadata.metadata?.matchedProviderCode === 'deepseek'), '审计 metadata 应记录普通模型路由从 GPT 分组切到 DeepSeek 分组')
@@ -1811,6 +1811,7 @@ function createMockOpenAIUpstream(): http.Server {
 }
 
 async function requestResponseStream(baseUrl: string, apiKey: string, traceId?: string): Promise<{ status: number; text: string }> {
+  confirmPendingTestAccountsForGateway()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers: {
@@ -1831,6 +1832,7 @@ async function requestResponseStream(baseUrl: string, apiKey: string, traceId?: 
 }
 
 async function requestChatCompletion(baseUrl: string, apiKey: string, model: string, traceId?: string, clientIp?: string): Promise<{ status: number; text: string }> {
+  confirmPendingTestAccountsForGateway()
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
     headers: {
@@ -1847,6 +1849,21 @@ async function requestChatCompletion(baseUrl: string, apiKey: string, model: str
   return {
     status: response.status,
     text: await response.text()
+  }
+}
+
+function confirmPendingTestAccountsForGateway(): void {
+  const rows = databaseModule.getBusinessDatabase()
+    .prepare("SELECT id FROM accounts WHERE deleted_at IS NULL AND status = 'pending_test'")
+    .all() as Array<{ id?: string }>
+  for (const row of rows) {
+    if (!row.id) continue
+    repositories.recordAccountHealthCheckSuccess(row.id, {
+      intervalHours: 24,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
   }
 }
 

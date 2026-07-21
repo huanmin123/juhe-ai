@@ -1003,7 +1003,6 @@ async function routeCachedDynamicGatewayRuntimeForDispatch(runtime: DbServiceGat
     if (!hasDispatchableCachedGatewayAccount(accounts) && uniqueCandidateGroupIds.length > 1) {
       continue
     }
-    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(accounts)
     return {
       apiKey: {
         ...apiKey,
@@ -1012,7 +1011,7 @@ async function routeCachedDynamicGatewayRuntimeForDispatch(runtime: DbServiceGat
       settings: { ...runtime.settings },
       groupAccess,
       accounts,
-      responseInspectionPolicies
+      responseInspectionPolicies: []
     }
   }
 

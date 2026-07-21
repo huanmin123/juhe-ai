@@ -14,7 +14,6 @@ import {
   type GatewayModelAccountFilterResult
 } from '../dispatch/model-filter.js'
 import {
-  listCachedActiveResponseInspectionPoliciesForAccountsAsync,
   listCachedOpenAIAccountsForGroupAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from '../runtime/runtime-cache.service.js'
@@ -39,8 +38,11 @@ export async function selectGatewayModelTargetGroup(input: {
   targetModel: string
   requestClientCompatibility?: ClientCompatibilityCapability
   acceptCandidate?: (candidate: GatewayModelTargetGroupCandidate) => boolean
+  candidatePriority?: (candidate: GatewayModelTargetGroupCandidate) => number
 }): Promise<GatewayModelTargetGroupSelection | undefined> {
   const sourceEndpointFamily = gatewayRequestEndpointFamily(input.req)
+  let selected: GatewayModelTargetGroupSelection | undefined
+  let selectedPriority = Number.NEGATIVE_INFINITY
   for (const binding of uniqueGatewayGroupBindings(input.bindings)) {
     const groupAccess = await resolveCachedGroupUsageAccessMetadataAsync(binding.group_id, input.apiKeyRecord.system_account_id)
     if (!groupAccess) {
@@ -73,14 +75,19 @@ export async function selectGatewayModelTargetGroup(input: {
     if (input.acceptCandidate && !input.acceptCandidate(candidate)) {
       continue
     }
-    const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(modelFilter.accounts)
-    return {
+    const selection = {
       ...candidate,
       groupId: binding.group_id,
-      responseInspectionPolicies
+      responseInspectionPolicies: []
+    }
+    if (!input.candidatePriority) return selection
+    const priority = input.candidatePriority(candidate)
+    if (priority > selectedPriority) {
+      selected = selection
+      selectedPriority = priority
     }
   }
-  return undefined
+  return selected
 }
 
 function uniqueGatewayGroupBindings(bindings: GatewayApiKeyGroupBindingRow[]): GatewayApiKeyGroupBindingRow[] {

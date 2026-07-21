@@ -1488,10 +1488,13 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
 {
   const repositorySource = readFileSync(new URL('../../storage/response-inspection-policy.repository.ts', import.meta.url), 'utf8')
   const responseFinalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
+  const responseInspectionDesignSource = readFileSync(new URL('../../../../docs/functions/响应语义检查管线设计.md', import.meta.url), 'utf8')
   const routeSource = readFileSync(new URL('../../modules/response-inspection-policies/response-inspection-policies.routes.ts', import.meta.url), 'utf8')
   const schemaSource = readFileSync(new URL('../../storage/schema/business-schema.ts', import.meta.url), 'utf8')
   const gatewayPreflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
   const fallbackCandidateSource = readFileSync(new URL('../../modules/gateway/dispatch/api-key-group-fallback-candidate.ts', import.meta.url), 'utf8')
+  const targetGroupSelectorSource = readFileSync(new URL('../../modules/gateway/routing/model-target-group-selector.ts', import.meta.url), 'utf8')
+  const runtimeCacheSource = readFileSync(new URL('../../modules/gateway/runtime/runtime-cache.service.ts', import.meta.url), 'utf8')
   assert(repositorySource.includes('maxManagementResponseInspectionPolicies'), '管理端响应检查策略必须有固定数量上限')
   assert(repositorySource.includes('listResponseInspectionPoliciesAsync'), '管理端响应检查策略列表必须提供 async PG 入口')
   assert(repositorySource.includes('createResponseInspectionPolicyAsync'), '管理端响应检查策略创建必须提供 async PG 入口')
@@ -1513,13 +1516,34 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   assert(!routeSource.includes('recordOperationLog({'), '响应检查策略管理端不得重新调用同步操作日志入口')
   assert(schemaSource.includes("CHECK (action IN ('observe', 'drop_event', 'retry_no_avoidance', 'retry_next_account', 'avoid_account_ttl', 'avoid_upstream_bucket_ttl'))"), '响应检查策略动作必须有数据库 CHECK 约束')
   assert(schemaSource.includes('json_valid(match_json)'), '响应检查策略 match_json 必须有 JSON 有效性约束')
-  assert(fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesForAccountsAsync'), 'API Key 分组 fallback 候选必须按目标候选账号集合的协议和供应商加载响应检查策略')
-  assert(fallbackCandidateSource.includes('orderedQuotaAllowedAccounts'), 'API Key 分组 fallback 响应检查策略必须基于目标候选分组完成过滤和排序后的账号集合加载')
-  assert(gatewayPreflightSource.includes('responseInspectionPolicies: candidate.responseInspectionPolicies'), 'fallback dispatch context 必须使用目标候选分组的响应检查策略')
+  assert(!fallbackCandidateSource.includes('listCachedActiveResponseInspectionPoliciesForAccountsAsync'), 'API Key 分组 fallback 候选不得提前加载响应检查策略')
+  assert(!targetGroupSelectorSource.includes('listCachedActiveResponseInspectionPoliciesForAccountsAsync'), '模型目标选择器不得提前加载响应检查策略')
+  assert(!runtimeCacheSource.includes('const responseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(accounts)'), '动态 runtime 路由不得提前加载响应检查策略')
+  assert(gatewayPreflightSource.includes('responseInspectionPolicies: candidate.responseInspectionPolicies'), 'fallback dispatch context 必须保留最终候选策略字段契约')
   assert(!gatewayPreflightSource.includes('responseInspectionPolicies: input.responseInspectionPolicies'), 'fallback dispatch context 不得沿用原分组传入的响应检查策略')
   assert(
-    gatewayPreflightSource.includes('runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(candidateFilter.accounts)'),
-    '主预检必须始终按模型与能力过滤后的最终候选账号集合重新加载响应检查策略'
+    (gatewayPreflightSource.match(/runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync\(codexBridgeCompactPreflight\.accounts\)/g) ?? []).length === 1,
+    '主预检必须只按 dispatch 与 compact 后的最终候选账号集合加载一次响应检查策略'
+  )
+  assert(
+    gatewayPreflightSource.indexOf('runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(codexBridgeCompactPreflight.accounts)')
+      > gatewayPreflightSource.indexOf("if (dispatchPreparation.outcome === 'fallback')"),
+    '响应检查策略不得在可能触发跨组 fallback 的 dispatch preparation 之前加载'
+  )
+  assert.match(
+    gatewayPreflightSource,
+    /try \{\s*runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync\(codexBridgeCompactPreflight\.accounts\)[\s\S]*?catch \(error\) \{\s*dispatchPreparation\.releaseClientIpConcurrency\(\)/,
+    '最终策略加载失败时必须释放已取得的 high-concurrency 客户端 IP 槽位'
+  )
+  assert.match(
+    responseFinalizationSource,
+    /hybridRoute\?\.config\.qualityInspection\?\.enabled === true[\s\S]*!input\.hybridRoute\.scoringFallbackApplied/,
+    '混合路由质量评分必须独立于 generic 透明边界缓冲成功响应'
+  )
+  assert.match(
+    responseInspectionDesignSource,
+    /混合智能路由的“质量评分”是用户在路由策略中主动配置的内部辅助派发/,
+    '响应语义检查文档必须明确混合质量评分与 generic 透明边界的适用边界'
   )
 }
 

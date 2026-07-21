@@ -121,6 +121,9 @@ flowchart LR
 - 独立 public-api 进程方案已评估但暂不实施，见 [公开接口独立进程设计](../../functions/公开接口独立进程设计.md) 和 `PLAN-0036`；当前仍以上述 DB service 代理描述为准。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商管理、代理管理 CRUD / 检测、统计和需要管理员权限的接口再叠加 `requireAdmin`，代理 options 作为登录用户可用的全局选择项不叠加管理员权限。
 - 账号测试、模型检测和代理检测都会发起外部网络探测，但账号测试使用后台 worker 的独立任务模型：管理 API 只提交任务和 session，worker 按系统设置 `accountTestTaskConcurrency` 控制全站并发，默认 100，排队时间不计入 60 秒运行超时。模型检测和代理检测继续共享 DB service 诊断任务 in-flight 上限，超过上限直接返回 `503` 和 `Retry-After`，不在 DB service 事件循环内排队等待。
+  - 活动账号测试取消以 worker IPC + 本地 `AbortController` 为即时信号；管理 API 仍先把 `cancel_requested` 写入数据库，再转发 cancel IPC。
+  - claim / complete / fail 使用 `status` 与 `cancel_requested` 条件状态转换；取消与完成/失败竞态由 SQLite 与 PostgreSQL repository 在稀有失败分支收口，数据库保持跨进程重启后的最终权威。
+  - 正常任务执行路径不得为每个阶段轮询 `is_account_test_task_cancel_requested` 或 `read_account_test_task_cancel_message`，也不得通过提高 DB service timeout、PostgreSQL 连接数或账号测试并发来掩盖积压。
 - 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单、代理 options 用于普通用户账户代理下拉，必须允许登录用户读取。
 - 新增普通用户可见页面调用的接口时，必须在 `backend/src/scripts/regression/scope-boundary-regression.ts` 补普通用户可访问断言；新增 `my-*` 命名空间下仍属于管理员能力的例外时，也要补普通用户 403 断言，避免前端误暴露后才发现。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
