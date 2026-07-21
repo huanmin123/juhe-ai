@@ -9,6 +9,7 @@
     "typecheck": "vue-tsc --noEmit",
     "lint": "vue-tsc --noEmit",
     "test:short-lived-request-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/short-lived-request-cache-regression.ts",
+    "test:page-data-activation-coordinator": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/page-data-activation-coordinator-regression.ts",
     "test:page-data-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/page-data-cache-regression.ts",
     "test:page-data-resource-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/page-data-resource-cache-regression.ts",
     "test:page-data-option-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/page-data-option-cache-regression.ts",
