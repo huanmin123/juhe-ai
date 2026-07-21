@@ -24,7 +24,7 @@
     "test:captcha-rate-limit": "tsx src/scripts/regression/captcha-rate-limit-regression.ts",
     "test:auth-captcha-environment-guard": "tsx src/scripts/regression/auth-captcha-environment-guard-regression.ts",
     "test:system-api-rate-limit": "tsx src/scripts/regression/system-api-rate-limit-regression.ts",
-    "test:system-api-read-only": "tsx src/scripts/regression/system-api-read-only-regression.ts",
+    "test:system-api-temporary-parity": "tsx src/scripts/regression/system-api-temporary-parity-regression.ts",
     "test:penalty-window-rate-limit": "tsx src/scripts/regression/penalty-window-rate-limit-regression.ts",
     "test:auth-must-change-password-boundary": "tsx src/scripts/regression/auth-must-change-password-boundary-regression.ts",
     "test:development-auto-login": "tsx src/scripts/regression/development-auto-login-regression.ts",

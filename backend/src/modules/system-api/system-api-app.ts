@@ -41,7 +41,6 @@ import {
   systemApiDbServiceAdmissionControl,
   systemApiDbServiceMaxInFlight
 } from './system-api-db-access.js'
-import { systemApiReadOnlyMethodMiddleware } from './system-api-read-only.middleware.js'
 
 export interface SystemApiAppOptions {
   systemApiPrefix: string
@@ -72,7 +71,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(requestContextMiddleware)
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
-  app.use(systemApiPrefix, systemApiReadOnlyMethodMiddleware)
   if (!options.bypassSystemApiRateLimitForTest) {
     app.use(systemApiPrefix, systemApiIpRateLimit)
     app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
