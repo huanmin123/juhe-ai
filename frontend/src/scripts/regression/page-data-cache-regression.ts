@@ -737,6 +737,137 @@ async function testActivationManagedCacheFlow(): Promise<void> {
   assert.equal(postParticipants[0]?.writeEpoch, 4)
   assert.equal((await managedStorage.read<string[]>(hotKey))?.token?.sequence, 2)
 
+  for (const postOutcome of ['stable', 'token-drift', 'late', 'unavailable'] as const) {
+    const storage = createMemoryPageDataCacheStorage()
+    const controller = new PageDataCacheController<string[]>({
+      cacheKey: { ...keyInput, scope: `self:pending-confirm-${postOutcome}` },
+      domain: 'accounts.runtime',
+      viewScope: 'self',
+      storage,
+      activation: activationHandle({
+        register: (participant) => confirmedActivation('pre', participant, 'unchanged', token(7)),
+        stabilize: (participant) => {
+          postCalls += 1
+          return postOutcome === 'stable'
+            ? confirmedActivation('post', participant, 'unchanged', token(7))
+            : postOutcome === 'token-drift'
+              ? confirmedActivation('post', participant, 'unchanged', token(8))
+              : activationFailure(postOutcome, 'post', participant)
+        }
+      }),
+      writeEpoch: () => 0,
+      confirm: async (request) => {
+        legacyConfirms += 1
+        return confirmResult(request.domains['accounts.runtime'], token(7))
+      },
+      loadNetwork: async () => {
+        networkLoads += 1
+        return [`pending-confirm-${postOutcome}`]
+      }
+    })
+    await storage.writeIfCurrent(cacheRecord(controller.key, ['pending-confirm-before'], {
+      token: token(7),
+      confirmedAt: '2026-07-17T12:00:00.000Z'
+    }))
+    let postCalls = 0
+    let legacyConfirms = 0
+    let networkLoads = 0
+    const pendingConfirm = controller.requestConfirm()
+    const refresh = controller.refresh()
+    assert.equal((await pendingConfirm).state, 'unchanged')
+    const result = await refresh
+    const record = await storage.read<string[]>(controller.key)
+    assert.equal(postCalls, 1, `${postOutcome} 时 pending confirm 后的 GET 必须参加 post barrier`)
+    assert.equal(networkLoads, 1, `${postOutcome} 时 force refresh 只能 GET 一次`)
+    assert.equal(legacyConfirms, 0, `${postOutcome} 时 managed force refresh 不得调用私有 confirm`)
+    if (postOutcome === 'stable') {
+      assert.deepEqual([result.confirmed, result.cached], [true, true], '稳定 unchanged 同 token 才能写入 force refresh 结果')
+      assert.deepEqual(record?.value, ['pending-confirm-stable'])
+    } else {
+      assert.deepEqual([result.confirmed, result.cached], [false, false], `${postOutcome} 时不得确认或缓存 force refresh 结果`)
+      assert.deepEqual(record?.value, ['pending-confirm-before'], `${postOutcome} 时不得覆盖 pending confirm 前的缓存`)
+    }
+    controller.close()
+  }
+
+  const pendingGenerationStorage = createMemoryPageDataCacheStorage()
+  const pendingGenerationPre = deferred<PageDataActivationDecision>()
+  const pendingGenerationFirstNetwork = deferred<string[]>()
+  const pendingGenerationSecondNetwork = deferred<string[]>()
+  let pendingGenerationNetworkIndex = 0
+  let pendingGenerationPostCalls = 0
+  const pendingGenerationController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:pending-confirm-generation' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: pendingGenerationStorage,
+    activation: activationHandle({
+      register: () => pendingGenerationPre.promise,
+      stabilize: (participant) => {
+        pendingGenerationPostCalls += 1
+        return confirmedActivation('post', participant, 'unchanged', token(9))
+      }
+    }),
+    writeEpoch: () => 0,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime'], token(9)),
+    loadNetwork: () => (++pendingGenerationNetworkIndex === 1
+      ? pendingGenerationFirstNetwork.promise
+      : pendingGenerationSecondNetwork.promise)
+  })
+  await pendingGenerationStorage.writeIfCurrent(cacheRecord(pendingGenerationController.key, ['pending-generation-before'], {
+    token: token(9)
+  }))
+  const pendingGenerationConfirm = pendingGenerationController.requestConfirm()
+  const pendingGenerationOlder = pendingGenerationController.refresh()
+  pendingGenerationPre.resolve(confirmedActivation('pre', {
+    resourceKey: pendingGenerationController.key,
+    domain: 'accounts.runtime', token: token(9), generation: 1, writeEpoch: 0
+  }, 'unchanged', token(9)))
+  await pendingGenerationConfirm
+  for (let attempt = 0; attempt < 10 && pendingGenerationNetworkIndex < 1; attempt += 1) await microtask()
+  const pendingGenerationNewer = pendingGenerationController.refresh()
+  for (let attempt = 0; attempt < 10 && pendingGenerationNetworkIndex < 2; attempt += 1) await microtask()
+  pendingGenerationSecondNetwork.resolve(['pending-generation-newer'])
+  assert.equal((await pendingGenerationNewer).confirmed, true)
+  pendingGenerationFirstNetwork.resolve(['pending-generation-older'])
+  assert.equal((await pendingGenerationOlder).superseded, true, 'pending confirm 后 generation 变化必须 supersede 旧 GET')
+  assert.equal(pendingGenerationPostCalls, 1, 'pending confirm 后旧 generation 不得参加 post barrier')
+  assert.deepEqual((await pendingGenerationStorage.read<string[]>(pendingGenerationController.key))?.value, ['pending-generation-newer'])
+
+  let pendingEpoch = 60
+  const pendingEpochStorage = createMemoryPageDataCacheStorage()
+  const pendingEpochPre = deferred<PageDataActivationDecision>()
+  const pendingEpochPost = deferred<PageDataActivationDecision>()
+  let pendingEpochPostParticipant: (PageDataActivationParticipant & { baseline: PageDataRevisionToken }) | undefined
+  const pendingEpochController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:pending-confirm-epoch' },
+    domain: 'accounts.runtime', viewScope: 'self', storage: pendingEpochStorage,
+    activation: activationHandle({
+      register: () => pendingEpochPre.promise,
+      stabilize: (participant) => {
+        pendingEpochPostParticipant = participant
+        return pendingEpochPost.promise
+      }
+    }),
+    writeEpoch: () => pendingEpoch,
+    confirm: async (request) => confirmResult(request.domains['accounts.runtime'], token(10)),
+    loadNetwork: async () => ['pending-epoch-after']
+  })
+  await pendingEpochStorage.writeIfCurrent(cacheRecord(pendingEpochController.key, ['pending-epoch-before'], {
+    token: token(10)
+  }))
+  const pendingEpochConfirm = pendingEpochController.requestConfirm()
+  const pendingEpochRefresh = pendingEpochController.refresh()
+  pendingEpochPre.resolve(confirmedActivation('pre', {
+    resourceKey: pendingEpochController.key,
+    domain: 'accounts.runtime', token: token(10), generation: 1, writeEpoch: 60
+  }, 'unchanged', token(10)))
+  await pendingEpochConfirm
+  for (let attempt = 0; attempt < 10 && !pendingEpochPostParticipant; attempt += 1) await microtask()
+  assert(pendingEpochPostParticipant, 'pending confirm 后 GET 必须进入 post barrier')
+  pendingEpoch += 1
+  pendingEpochPost.resolve(confirmedActivation('post', pendingEpochPostParticipant, 'unchanged', token(10)))
+  assert.equal((await pendingEpochRefresh).superseded, true, 'pending confirm 的 post barrier 在途期间 writeEpoch 变化必须 supersede 结果')
+  assert.deepEqual((await pendingEpochStorage.read<string[]>(pendingEpochController.key))?.value, ['pending-epoch-before'])
+
   for (const failure of ['token-drift', 'late', 'unavailable'] as const) {
     const storage = createMemoryPageDataCacheStorage()
     const controller = new PageDataCacheController<string[]>({
@@ -994,6 +1125,8 @@ async function testActivationManagedCacheFlow(): Promise<void> {
   deltaController.close()
   postEpochController.close()
   generationController.close()
+  pendingGenerationController.close()
+  pendingEpochController.close()
 }
 
 function activationHandle(options: {

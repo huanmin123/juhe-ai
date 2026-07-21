@@ -307,7 +307,24 @@ export class PageDataCacheController<T> {
     if (outcome.state === 'unchanged') {
       const current = await this.storage.read<T>(this.key)
       if (current?.token && this.isOperationCurrent(generation, operationWriteEpoch)) {
-        const record = this.record(data, current.token, current.confirmedAt)
+        let confirmedToken = current.token
+        let confirmedAt = current.confirmedAt
+        if (this.options.activation) {
+          let after: ConfirmedPageDataDomain
+          try {
+            after = await this.stabilizeDomain(current.token, generation, operationWriteEpoch)
+          } catch {
+            if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
+            return { source: 'network', data, confirmed: false, cached: false, superseded: false }
+          }
+          if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
+          if (after.action !== 'unchanged' || !sameRevisionToken(after.token, current.token)) {
+            return { source: 'network', data, confirmed: false, cached: false, superseded: false }
+          }
+          confirmedToken = after.token
+          confirmedAt = after.serverTime
+        }
+        const record = this.record(data, confirmedToken, confirmedAt)
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
         const written = await this.storage.writeIfCurrent(record, () => this.isOperationCurrent(generation, operationWriteEpoch))
         if (!this.isOperationCurrent(generation, operationWriteEpoch)) return await this.supersededLoadResult(data)
