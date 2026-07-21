@@ -145,6 +145,10 @@ func TestManagementRuntimeLogsHandlerReturnsStaticFacets(t *testing.T) {
 			TotalIndexed      int64                              `json:"totalIndexed"`
 			Levels            []managementruntimelogs.FacetLevel `json:"levels"`
 			Events            []string                           `json:"events"`
+			RuntimeAvailable  bool                               `json:"runtimeAvailable"`
+			DBService         map[string]any                     `json:"dbService"`
+			QueueHealth       map[string]any                     `json:"queueHealth"`
+			Grep              map[string]any                     `json:"grep"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
@@ -153,6 +157,9 @@ func TestManagementRuntimeLogsHandlerReturnsStaticFacets(t *testing.T) {
 	if body.Data.RetentionDays != 14 || body.Data.EarliestIndexedAt == "" || body.Data.LatestIndexedAt == "" ||
 		body.Data.TotalIndexed != 3 || len(body.Data.Levels) != 1 || len(body.Data.Events) != 1 {
 		t.Fatalf("facets = %+v", body.Data)
+	}
+	if body.Data.RuntimeAvailable || body.Data.DBService["statusAvailable"] != false || body.Data.QueueHealth["status"] != "unavailable" || body.Data.Grep["defaultRangeDays"] != float64(3) {
+		t.Fatalf("unavailable runtime contract = %+v", body.Data)
 	}
 }
 
