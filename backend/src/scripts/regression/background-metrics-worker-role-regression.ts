@@ -2,6 +2,8 @@ import { strict as assert } from 'node:assert'
 import { readFileSync } from 'node:fs'
 
 import { backgroundWorkerRegistry } from '../../modules/background/background-job-registry.js'
+import { workerMessageTargetRole } from '../../modules/background/background-ipc-worker-roles.js'
+import type { BackgroundWorkerMessage } from '../../modules/background/background-ipc.types.js'
 
 const supervisorSource = readSource('../../modules/background/background-worker-supervisor.ts')
 const serverSource = readSource('../../server.ts')
@@ -22,6 +24,24 @@ const frontendSystemMetricsSource = readSource('../../../../frontend/src/views/s
 const registryByName = new Map<string, typeof backgroundWorkerRegistry[number]>(backgroundWorkerRegistry.map((job) => [job.jobName, job]))
 const expectedSupervisedRoles = ['ingest-worker', 'stats-worker', 'ops-worker'] as const
 const retiredRoles = ['metrics-worker', 'snapshot-worker', 'probe-worker', 'maintenance-worker'] as const
+
+for (const type of [
+  'background_worker_usage_records',
+  'background_worker_audit_logs',
+  'background_worker_operation_logs',
+  'background_worker_public_api_logs',
+  'background_worker_record_maintenance',
+  'background_worker_dataset_write_request'
+] as const) {
+  assert.equal(workerMessageTargetRole({ type } as BackgroundWorkerMessage), 'ingest-worker', `${type} 必须路由到 ingest-worker`)
+}
+for (const type of [
+  'background_worker_account_test_tasks',
+  'background_worker_account_test_cancel',
+  'background_worker_account_health_check_trigger'
+] as const) {
+  assert.equal(workerMessageTargetRole({ type } as BackgroundWorkerMessage), 'ops-worker', `${type} 必须路由到 ops-worker`)
+}
 
 assert(runtimeSource.includes("workerRole: workerRoleConfig('JUHE_AI_WORKER_ROLE', 'worker')"), 'runtimeConfig 必须支持 JUHE_AI_WORKER_ROLE')
 for (const role of expectedSupervisedRoles) {

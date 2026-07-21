@@ -9,6 +9,7 @@ export function workerMessageTargetRole(message: BackgroundWorkerMessage): Backg
     case 'background_worker_audit_logs':
     case 'background_worker_operation_logs':
     case 'background_worker_public_api_logs':
+      return 'ingest-worker'
     case 'background_worker_account_test_tasks':
     case 'background_worker_account_test_cancel':
     case 'background_worker_account_health_check_trigger':

@@ -225,6 +225,7 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
     if (!stats.isFile()) return true
     const identity = runtimeLogFileIdentity(stats)
     const completed = completedRuntimeLogFiles.get(file.path)
+    const completedCacheMissing = completed === undefined
     const nowMs = dependencies.nowMs?.() ?? Date.now()
     const completedFileMatches = completed?.identity === identity && completed.size === stats.size && completed.mtimeMs === Math.trunc(stats.mtimeMs)
     const completedCacheExpired = Boolean(completedFileMatches && completed && nowMs - completed.renewedAtMs >= runtimeLogCompletedCacheRenewalMs)
@@ -236,7 +237,7 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile, dependencie
     const startOffset = cursor.cursorOffset
     cursorOffsetForMetrics = startOffset
     if (stats.size <= startOffset) {
-      if (completedCacheExpired || cursor.fileSize !== stats.size || cursor.fileMtimeMs !== Math.trunc(stats.mtimeMs) || cursor.lastErrorMessage) {
+      if (completedCacheMissing || completedCacheExpired || cursor.fileSize !== stats.size || cursor.fileMtimeMs !== Math.trunc(stats.mtimeMs) || cursor.lastErrorMessage) {
         await persistCursor({ ...cursor, fileIdentity: identity, fileSize: stats.size, fileMtimeMs: Math.trunc(stats.mtimeMs), lastReadAt: nowIso(), lastErrorMessage: undefined }, dependencies)
       }
       runtimeLogFileImportRuntime.currentFile = file.path
@@ -322,7 +323,11 @@ async function resolveRuntimeLogFileCursor(file: ActiveRuntimeLogFile, stats: St
       await persistCursor(reset, dependencies)
       return reset
     }
-    return { ...identityCursor, logFile: file.path }
+    const relocated = { ...identityCursor, logFile: file.path, fileIdentity: identity }
+    if (identityCursor.logFile !== file.path) {
+      await persistCursor(relocated, dependencies)
+    }
+    return relocated
   }
   const timestamp = nowIso()
   const offset = isRotatedRuntimeLogFile(file) ? 0 : stats.size

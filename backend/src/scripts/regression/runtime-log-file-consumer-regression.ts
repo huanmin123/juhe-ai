@@ -171,6 +171,38 @@ try {
   await importerModule.importRuntimeLogFileDeltaForTest({ path: completedPath, role: 'ingest-worker-rotated', kind: 'rotated' }, completedDependency)
   assert.equal(completedCursorReadCount, readsAfterCompletion + 1, '完成缓存到期后必须重新读取 PostgreSQL cursor')
   assert.equal(completedCursorWriteCount, writesAfterCompletion + 1, '完成缓存到期后必须续租 PostgreSQL cursor，避免 retention 误删')
+  const readsBeforeRestart = completedCursorReadCount
+  const writesBeforeRestart = completedCursorWriteCount
+  await importerModule.resetRuntimeLogFileDiscoveryForTest()
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: completedPath, role: 'ingest-worker-rotated', kind: 'rotated' }, completedDependency)
+  assert.equal(completedCursorReadCount, readsBeforeRestart + 1, '重启后首次观察已追平文件必须重新读取 PostgreSQL cursor')
+  assert.equal(completedCursorWriteCount, writesBeforeRestart + 1, '重启后首次观察已追平文件必须立即续租 cursor，早于 retention cleanup')
+
+  const relocatedPath = join(logDir, 'juhe-ai.ingest-worker.20260721T010205Z.00000000-0000-0000-0000-000000000003.log')
+  const relocatedContent = `${line('identity-relocation')}\n`
+  writeFileSync(relocatedPath, relocatedContent)
+  const relocatedWrites: any[] = []
+  let relocatedBatchCount = 0
+  const relocatedDependency = importerModule.createRuntimeLogFileImportTestDependencies({
+    getCursor: async () => undefined,
+    getCursorByIdentity: async () => ({
+      logFile: currentPath,
+      fileIdentity: 'old-path-identity',
+      cursorOffset: Buffer.byteLength(relocatedContent),
+      lineNumber: 7,
+      fileSize: Buffer.byteLength(relocatedContent),
+      truncationGeneration: 2,
+      fileMtimeMs: Math.trunc(statSync(relocatedPath).mtimeMs),
+      lastReadAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }),
+    upsertCursor: async (cursor: any) => { relocatedWrites.push(cursor) },
+    createBatch: async () => { relocatedBatchCount += 1 }
+  })
+  await importerModule.importRuntimeLogFileDeltaForTest({ path: relocatedPath, role: 'ingest-worker-rotated', kind: 'rotated' }, relocatedDependency)
+  assert.equal(relocatedBatchCount, 0, '已追平 current cursor 按 identity 迁移到 rotated 路径时不得从头重读文件')
+  assert.ok(relocatedWrites.some((cursor) => cursor.logFile === relocatedPath && cursor.truncationGeneration === 2), 'identity cursor 迁移到 rotated 路径时必须立即持久化并保留 generation')
 
   runtimeConfig.databaseDriver = 'sqlite'
   const oldTimestamp = '2000-01-01T00:00:00.000Z'
