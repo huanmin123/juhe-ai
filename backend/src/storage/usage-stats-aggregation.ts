@@ -49,12 +49,7 @@ export function usageStatsEntries(row: UsageStatsRecordRow, lookup?: UsageStatsA
 
 function usageStatsAccountMetadata(row: UsageStatsRecordRow): { ownerSystemAccountId: string; accessType: string } | undefined {
   if (!row.account_id) return undefined
-  if (!row.account_owner_system_account_id) {
-    throw new Error(`使用记录 ${row.id} 缺少账户归属字段 account_owner_system_account_id`)
-  }
-  if (!row.account_access_type) {
-    throw new Error(`使用记录 ${row.id} 缺少账户访问类型字段 account_access_type`)
-  }
+  if (!row.account_owner_system_account_id || !row.account_access_type) return undefined
   return {
     ownerSystemAccountId: row.account_owner_system_account_id,
     accessType: row.account_access_type
@@ -63,12 +58,7 @@ function usageStatsAccountMetadata(row: UsageStatsRecordRow): { ownerSystemAccou
 
 function usageStatsGroupMetadata(row: UsageStatsRecordRow): { ownerSystemAccountId: string; accessType: string } | undefined {
   if (!row.group_id) return undefined
-  if (!row.group_owner_system_account_id) {
-    throw new Error(`使用记录 ${row.id} 缺少分组归属字段 group_owner_system_account_id`)
-  }
-  if (!row.group_access_type) {
-    throw new Error(`使用记录 ${row.id} 缺少分组访问类型字段 group_access_type`)
-  }
+  if (!row.group_owner_system_account_id || !row.group_access_type) return undefined
   return {
     ownerSystemAccountId: row.group_owner_system_account_id,
     accessType: row.group_access_type
@@ -83,8 +73,83 @@ function accountAuthorizationTeamAccountId(row: UsageStatsRecordRow, lookup?: Us
   return row.account_id ?? ''
 }
 
-export function shouldAggregateUsageStatsRecord(_row: UsageStatsRecordRow): boolean {
+export function shouldAggregateUsageStatsRecord(row: UsageStatsRecordRow): boolean {
+  if (!usageStatsDimensionValueIsCanonical(row.account_id)
+    || !usageStatsDimensionValueIsCanonical(row.group_id)
+    || !usageStatsDimensionValueIsCanonical(row.account_owner_system_account_id)
+    || !usageStatsDimensionValueIsCanonical(row.group_owner_system_account_id)
+    || !usageStatsDimensionValueIsCanonical(row.account_access_type)
+    || !usageStatsDimensionValueIsCanonical(row.group_access_type)
+    || !usageStatsDimensionValueIsCanonical(row.account_authorization_id)
+    || !usageStatsDimensionValueIsCanonical(row.account_authorization_source_type)
+    || !usageStatsDimensionValueIsCanonical(row.account_authorization_source_team_id)
+    || !usageStatsDimensionValueIsCanonical(row.group_authorization_id)
+    || !usageStatsDimensionValueIsCanonical(row.group_authorization_source_type)
+    || !usageStatsDimensionValueIsCanonical(row.group_authorization_source_team_id)) {
+    return false
+  }
+  if (row.account_access_type && !['owner', 'account_authorized', 'group_authorized'].includes(row.account_access_type)) {
+    return false
+  }
+  if (row.group_access_type && !['owner', 'authorized'].includes(row.group_access_type)) {
+    return false
+  }
+  if (row.account_authorization_source_type && !['manual', 'team'].includes(row.account_authorization_source_type)) {
+    return false
+  }
+  if (row.group_authorization_source_type && !['manual', 'team'].includes(row.group_authorization_source_type)) {
+    return false
+  }
+  if (!usageStatsAuthorizationSourcePairIsValid(row.account_authorization_source_type, row.account_authorization_source_team_id)
+    || !usageStatsAuthorizationSourcePairIsValid(row.group_authorization_source_type, row.group_authorization_source_team_id)) {
+    return false
+  }
+  if (row.account_id && (!row.account_owner_system_account_id || !row.account_access_type)) {
+    return false
+  }
+  if (row.group_id && (!row.group_owner_system_account_id || !row.group_access_type)) {
+    return false
+  }
+  if (!row.account_id && (row.account_owner_system_account_id || row.account_access_type || row.account_authorization_id || row.account_authorization_source_type || row.account_authorization_source_team_id)) {
+    return false
+  }
+  if (!row.group_id && (row.group_owner_system_account_id || row.group_access_type || row.group_authorization_id || row.group_authorization_source_type || row.group_authorization_source_team_id)) {
+    return false
+  }
+  if (row.account_access_type === 'account_authorized' && !row.account_authorization_id) {
+    return false
+  }
+  if (row.account_access_type === 'group_authorized'
+    && (!row.group_id || row.group_access_type !== 'authorized' || !row.group_authorization_id)) {
+    return false
+  }
+  if (row.account_access_type !== 'account_authorized' && (row.account_authorization_id || row.account_authorization_source_type || row.account_authorization_source_team_id)) {
+    return false
+  }
+  if (row.group_access_type === 'authorized' && !row.group_authorization_id) {
+    return false
+  }
+  if (row.group_access_type !== 'authorized' && (row.group_authorization_id || row.group_authorization_source_type || row.group_authorization_source_team_id)) {
+    return false
+  }
+  if (!row.account_authorization_id && (row.account_authorization_source_type || row.account_authorization_source_team_id)) {
+    return false
+  }
+  if (!row.group_authorization_id && (row.group_authorization_source_type || row.group_authorization_source_team_id)) {
+    return false
+  }
   return true
+}
+
+function usageStatsDimensionValueIsCanonical(value: string | null): boolean {
+  if (value === null) return true
+  const normalized = value.trim()
+  return normalized.length > 0 && normalized === value
+}
+
+function usageStatsAuthorizationSourcePairIsValid(sourceType: string | null, sourceTeamId: string | null): boolean {
+  if (sourceType === 'team') return Boolean(sourceTeamId)
+  return sourceTeamId === null
 }
 
 export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {

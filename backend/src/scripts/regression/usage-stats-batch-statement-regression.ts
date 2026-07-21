@@ -18,9 +18,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
+const [databaseModule, repositories, usageRecordShards, usageStatsRepository] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
+  import('../../storage/usage-record-shards.js'),
   import('../../storage/usage-stats.repository.js')
 ])
 
@@ -256,6 +257,67 @@ try {
     .prepare("SELECT SUM(request_count) AS request_count FROM account_quality_minute_stats WHERE account_id = ?")
     .get(apiKeyAccount.id) as { request_count?: number } | undefined
   assert.equal(apiKeyAccountQuality?.request_count, 1, '恢复探活应进入用量统计，但不应写入账号质量分钟样本')
+
+  const poisonedCreatedAt = new Date(createdAtBase + 50).toISOString()
+  const followingCreatedAt = new Date(createdAtBase + 51).toISOString()
+  repositories.createUsageRecordsBatch([
+    {
+      id: 'usage_stats_incomplete_group_snapshot',
+      traceId: 'trace-usage-stats-incomplete-group-snapshot',
+      trafficSource: 'gateway',
+      systemAccountId: 'sys_admin',
+      apiKeyId: mixedApiKey.id,
+      groupId: mixedGroup.id,
+      endpoint: '/v1/models',
+      providerCode: 'gpt',
+      model: 'gpt-5.1',
+      success: true,
+      statusCode: 200,
+      inputTokens: 1,
+      outputTokens: 1,
+      costUsd: 0.001,
+      createdAt: poisonedCreatedAt
+    },
+    {
+      id: 'usage_stats_after_incomplete_snapshot',
+      traceId: 'trace-usage-stats-after-incomplete-snapshot',
+      trafficSource: 'gateway',
+      systemAccountId: 'sys_admin',
+      apiKeyId: mixedApiKey.id,
+      groupId: mixedGroup.id,
+      endpoint: '/v1/models',
+      providerCode: 'gpt',
+      model: 'gpt-5.1',
+      success: true,
+      statusCode: 200,
+      inputTokens: 2,
+      outputTokens: 2,
+      costUsd: 0.002,
+      createdAt: followingCreatedAt
+    }
+  ])
+  usageRecordShards
+    .getUsageRecordShardDatabase(usageRecordShards.usageRecordShardLocationForRecord('usage_stats_incomplete_group_snapshot', poisonedCreatedAt))
+    .prepare(`
+      UPDATE usage_records
+      SET group_owner_system_account_id = NULL,
+          group_access_type = NULL
+      WHERE id = ?
+    `)
+    .run('usage_stats_incomplete_group_snapshot')
+
+  const beforeIncompleteBatch = usageStatsTotal(statsDatabase, 'api_key', mixedApiKey.id)
+  assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100), 2, '不完整快照和后续正常记录都应推进统计游标')
+  const afterIncompleteBatch = usageStatsTotal(statsDatabase, 'api_key', mixedApiKey.id)
+  assert.equal(
+    afterIncompleteBatch?.request_count,
+    Number(beforeIncompleteBatch?.request_count ?? 0) + 1,
+    '不完整快照应跳过，后续正常记录仍应进入统计'
+  )
+  const afterIncompleteJobState = statsDatabase
+    .prepare("SELECT cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
+    .get() as { cursor_id?: string } | undefined
+  assert.equal(afterIncompleteJobState?.cursor_id, 'usage_stats_after_incomplete_snapshot', '不完整快照不得阻塞后续统计游标')
 
   console.log('用量统计批量 statement 回归通过：基础统计 upsert statement 在 batch 内复用，OAuth/API Key 账号命中按本地 API Key 和分组合并')
 } finally {

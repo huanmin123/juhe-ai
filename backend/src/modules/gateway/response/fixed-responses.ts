@@ -26,7 +26,7 @@ export interface OpenAIModelsResponseUsageContext {
   clientIp?: string
   systemAccountId: string
   apiKeyId?: string
-  groupId: string
+  groupId?: string
   groupOwnerSystemAccountId?: string
   groupAccessType?: GroupUsageAccessMetadata['groupAccessType']
   groupAuthorizationId?: string

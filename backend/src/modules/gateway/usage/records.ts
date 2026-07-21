@@ -503,6 +503,16 @@ export async function recordGatewayFailure(
   }, '网关请求失败')
   const providerCode = usageContext.providerCode ?? defaultGatewayUsageProviderCode()
   const providerProtocolProfileId = usageContext.providerProtocolProfileId
+  const hasResolvedGroupUsageMetadata = !usageContext.groupId
+    || Boolean(usageContext.groupOwnerSystemAccountId && usageContext.groupAccessType)
+  if (usageContext.groupId && !hasResolvedGroupUsageMetadata) {
+    getRequestLogger().warn({
+      event: 'gateway_failure_usage_group_scope_omitted',
+      traceId: usageContext.traceId,
+      groupId: usageContext.groupId,
+      endpoint: usageContext.endpoint
+    }, '网关失败 usage 缺少分组归属快照，已省略分组统计维度')
+  }
 
   await enqueueUsageRecord({
     traceId: usageContext.traceId,
@@ -510,12 +520,12 @@ export async function recordGatewayFailure(
     clientIp: usageContext.clientIp,
     systemAccountId: usageContext.systemAccountId,
     apiKeyId: usageContext.apiKeyId,
-    groupId: usageContext.groupId,
-    groupOwnerSystemAccountId: usageContext.groupOwnerSystemAccountId,
-    groupAccessType: usageContext.groupAccessType,
-    groupAuthorizationId: usageContext.groupAuthorizationId,
-    groupAuthorizationSourceType: usageContext.groupAuthorizationSourceType,
-    groupAuthorizationSourceTeamId: usageContext.groupAuthorizationSourceTeamId,
+    groupId: hasResolvedGroupUsageMetadata ? usageContext.groupId : undefined,
+    groupOwnerSystemAccountId: hasResolvedGroupUsageMetadata ? usageContext.groupOwnerSystemAccountId : undefined,
+    groupAccessType: hasResolvedGroupUsageMetadata ? usageContext.groupAccessType : undefined,
+    groupAuthorizationId: hasResolvedGroupUsageMetadata ? usageContext.groupAuthorizationId : undefined,
+    groupAuthorizationSourceType: hasResolvedGroupUsageMetadata ? usageContext.groupAuthorizationSourceType : undefined,
+    groupAuthorizationSourceTeamId: hasResolvedGroupUsageMetadata ? usageContext.groupAuthorizationSourceTeamId : undefined,
     endpoint: usageContext.endpoint,
     providerCode,
     providerProtocolProfileId,
