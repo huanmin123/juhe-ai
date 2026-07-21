@@ -21,6 +21,8 @@ const (
 	maxFailureSnapshotMessageBytes       = 512
 	maxFailureSnapshotValueBytes         = 1024
 	maxFailureSnapshotStackBytes         = 4096
+	maxFailureRecordAttrs                = 64
+	maxFailureGroupDepth                 = 4
 )
 
 type RuntimeOptions struct {
@@ -32,12 +34,15 @@ type RuntimeOptions struct {
 }
 
 type RuntimeStats struct {
-	PendingNormal  int
-	PendingFailure int
-	NormalDropped  uint64
-	FailureDropped uint64
-	WriterErrors   uint64
-	PendingBytes   int64
+	PendingNormal            int
+	PendingFailure           int
+	NormalDropped            uint64
+	FailureDropped           uint64
+	WriterErrors             uint64
+	PendingBytes             int64
+	LastWriterError          string
+	LastWriterErrorAt        string
+	LastWriterErrorTruncated bool
 }
 
 type Runtime struct {
@@ -82,6 +87,7 @@ type asyncLogDispatcher struct {
 	reportedNormalDrop           uint64
 	reportedFailureDrop          uint64
 	lastFailureSnapshot          atomic.Pointer[failureDropSnapshot]
+	lastWriterError              atomic.Pointer[writerErrorSnapshot]
 }
 
 func newAsyncLogRuntime(base slog.Handler, options RuntimeOptions) *Runtime {
@@ -133,7 +139,7 @@ func (h *asyncSlogHandler) Enabled(ctx context.Context, level slog.Level) bool {
 func (h *asyncSlogHandler) Handle(ctx context.Context, record slog.Record) error {
 	record.AddAttrs(logContextAttrs(ctx)...)
 	if record.Level >= slog.LevelError {
-		addFailureFallbackAttrs(&record)
+		record = boundFailureRecord(record)
 	}
 	item := asyncLogItem{handler: h.base, record: record.Clone(), bytes: estimateRecordBytes(record)}
 	h.dispatcher.acceptMu.RLock()
@@ -214,7 +220,9 @@ func (d *asyncLogDispatcher) run() {
 	}
 }
 
-func addFailureFallbackAttrs(record *slog.Record) {
+func boundFailureRecord(record slog.Record) slog.Record {
+	boundedMessage, _ := boundedFailureSnapshotValue(record.Message, maxFailureSnapshotMessageBytes)
+	bounded := slog.NewRecord(record.Time, record.Level, boundedMessage, record.PC)
 	hasFailureClass := false
 	failureClass := ""
 	hasStack := false
@@ -223,12 +231,19 @@ func addFailureFallbackAttrs(record *slog.Record) {
 	hasErrorMessage := false
 	hasErrorCauseChain := false
 	var recordedError error
+	attrCount := 0
 	record.Attrs(func(attr slog.Attr) bool {
+		if attrCount >= maxFailureRecordAttrs {
+			return false
+		}
+		attrCount++
+		boundedAttr, attrError := boundFailureAttr(attr, 0)
+		bounded.AddAttrs(boundedAttr)
 		switch attr.Key {
 		case "failureClass":
 			hasFailureClass = true
-			if attr.Value.Kind() == slog.KindString {
-				failureClass = attr.Value.String()
+			if boundedAttr.Value.Kind() == slog.KindString {
+				failureClass = boundedAttr.Value.String()
 			}
 		case "stack":
 			hasStack = true
@@ -241,36 +256,93 @@ func addFailureFallbackAttrs(record *slog.Record) {
 		case "errorCauseChain":
 			hasErrorCauseChain = true
 		case "error":
-			if err, ok := attr.Value.Resolve().Any().(error); ok {
-				recordedError = err
-			}
+			recordedError = attrError
 		}
 		return true
 	})
 	if !hasFailureClass {
-		record.AddAttrs(slog.String("failureClass", "unexpected"))
+		bounded.AddAttrs(slog.String("failureClass", "unexpected"))
 		failureClass = "unexpected"
 	}
 	if failureClass != "expected" && failureClass != "aborted" && !hasStack {
-		record.AddAttrs(slog.String("stack", string(debug.Stack())))
+		stack, _ := boundedFailureSnapshotValue(string(debug.Stack()), maxFailureSnapshotStackBytes)
+		bounded.AddAttrs(slog.String("stack", stack))
 		if !hasStackSource {
-			record.AddAttrs(slog.String("stackSource", "log_call_site_fallback"))
+			bounded.AddAttrs(slog.String("stackSource", "log_call_site_fallback"))
 		}
 	}
 	if recordedError == nil {
-		return
+		return bounded
 	}
 	if !hasErrorType {
-		record.AddAttrs(slog.String("errorType", reflect.TypeOf(recordedError).String()))
+		errorType, _ := boundedFailureSnapshotValue(reflect.TypeOf(recordedError).String(), maxFailureSnapshotValueBytes)
+		bounded.AddAttrs(slog.String("errorType", errorType))
 	}
 	if !hasErrorMessage {
-		record.AddAttrs(slog.String("errorMessage", recordedError.Error()))
+		bounded.AddAttrs(slog.String("errorMessage", boundedErrorMessage(recordedError)))
 	}
 	if !hasErrorCauseChain {
 		if causes := failureErrorCauseChain(recordedError); len(causes) > 0 {
-			record.AddAttrs(slog.Any("errorCauseChain", causes))
+			bounded.AddAttrs(slog.Any("errorCauseChain", causes))
 		}
 	}
+	return bounded
+}
+
+func boundFailureAttr(attr slog.Attr, depth int) (slog.Attr, error) {
+	value := attr.Value
+	limit := failureSnapshotLimit(attr.Key)
+	switch value.Kind() {
+	case slog.KindString:
+		bounded, _ := boundedFailureSnapshotValue(value.String(), limit)
+		return slog.String(attr.Key, bounded), nil
+	case slog.KindBool, slog.KindDuration, slog.KindFloat64, slog.KindInt64, slog.KindTime, slog.KindUint64:
+		return attr, nil
+	case slog.KindGroup:
+		if depth >= maxFailureGroupDepth {
+			return slog.String(attr.Key, "[truncated slog.Group]"), nil
+		}
+		group := value.Group()
+		attrs := make([]slog.Attr, 0, min(len(group), maxFailureRecordAttrs))
+		for index, nested := range group {
+			if index >= maxFailureRecordAttrs {
+				break
+			}
+			bounded, _ := boundFailureAttr(nested, depth+1)
+			attrs = append(attrs, bounded)
+		}
+		return slog.Attr{Key: attr.Key, Value: slog.GroupValue(attrs...)}, nil
+	case slog.KindAny:
+		anyValue := value.Any()
+		if err, ok := anyValue.(error); ok {
+			return slog.String(attr.Key, "[captured error: see errorType/errorMessage/errorCauseChain]"), err
+		}
+		typeName := "<nil>"
+		if valueType := reflect.TypeOf(anyValue); valueType != nil {
+			typeName = valueType.String()
+		}
+		bounded, _ := boundedFailureSnapshotValue("[opaque slog.Any type="+typeName+"]", maxFailureSnapshotValueBytes)
+		return slog.String(attr.Key, bounded), nil
+	case slog.KindLogValuer:
+		return slog.String(attr.Key, "[opaque slog.LogValuer]"), nil
+	default:
+		return slog.String(attr.Key, "[opaque slog.Value]"), nil
+	}
+}
+
+func boundedErrorMessage(err error) string {
+	message, _ := boundedErrorSnapshot(err)
+	return message
+}
+
+func boundedErrorSnapshot(err error) (message string, truncated bool) {
+	defer func() {
+		if recover() != nil {
+			message = "[error message panicked]"
+			truncated = true
+		}
+	}()
+	return boundedFailureSnapshotValue(err.Error(), maxFailureSnapshotValueBytes)
 }
 
 type failureErrorCause struct {
@@ -288,8 +360,8 @@ func failureErrorCauseChain(err error) []failureErrorCause {
 			return
 		}
 		causes = append(causes, failureErrorCause{
-			Type:    reflect.TypeOf(cause).String(),
-			Message: cause.Error(),
+			Type:    boundedTypeName(cause),
+			Message: boundedErrorMessage(cause),
 		})
 		appendChildren(cause)
 	}
@@ -311,6 +383,15 @@ func failureErrorCauseChain(err error) []failureErrorCause {
 	}
 	appendChildren(err)
 	return causes
+}
+
+func boundedTypeName(value any) string {
+	valueType := reflect.TypeOf(value)
+	if valueType == nil {
+		return "<nil>"
+	}
+	name, _ := boundedFailureSnapshotValue(valueType.String(), maxFailureSnapshotValueBytes)
+	return name
 }
 
 func (d *asyncLogDispatcher) takeImmediate() (asyncLogItem, bool) {
@@ -350,6 +431,7 @@ func (d *asyncLogDispatcher) handle(item asyncLogItem) {
 	defer d.releaseBytes(item)
 	if err := item.handler.Handle(context.Background(), item.record); err != nil {
 		d.writerErrors.Add(1)
+		d.lastWriterError.Store(captureWriterErrorSnapshot(err))
 	}
 }
 
@@ -366,11 +448,37 @@ func (d *asyncLogDispatcher) releaseBytes(item asyncLogItem) {
 
 func estimateRecordBytes(record slog.Record) int64 {
 	size := int64(len(record.Message) + 128)
+	attrCount := 0
 	record.Attrs(func(attr slog.Attr) bool {
-		size += int64(len(attr.Key) + len(attr.Value.String()) + 16)
-		return true
+		if attrCount >= maxFailureRecordAttrs {
+			return false
+		}
+		attrCount++
+		size += int64(len(attr.Key) + estimateSlogValueBytes(attr.Value, 0) + 16)
+		return size < defaultNormalQueueBytes
 	})
 	return size
+}
+
+func estimateSlogValueBytes(value slog.Value, depth int) int {
+	switch value.Kind() {
+	case slog.KindString:
+		return min(len(value.String()), maxFailureSnapshotStackBytes)
+	case slog.KindGroup:
+		if depth >= maxFailureGroupDepth {
+			return 32
+		}
+		size := 0
+		for index, attr := range value.Group() {
+			if index >= maxFailureRecordAttrs {
+				break
+			}
+			size += min(len(attr.Key), maxFailureSnapshotValueBytes) + estimateSlogValueBytes(attr.Value, depth+1)
+		}
+		return size
+	default:
+		return 32
+	}
 }
 
 func (d *asyncLogDispatcher) emitDropSummary() {
@@ -390,6 +498,7 @@ func (d *asyncLogDispatcher) emitDropSummary() {
 	}
 	if err := d.base.Handle(context.Background(), record); err != nil {
 		d.writerErrors.Add(1)
+		d.lastWriterError.Store(captureWriterErrorSnapshot(err))
 		return
 	}
 	d.reportedNormalDrop = normalDropped
@@ -416,7 +525,7 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 }
 
 func (r *Runtime) Stats() RuntimeStats {
-	return RuntimeStats{
+	stats := RuntimeStats{
 		PendingNormal:  len(r.dispatcher.normal),
 		PendingFailure: len(r.dispatcher.failure) + len(r.dispatcher.emergencyFailure),
 		NormalDropped:  r.dispatcher.normalDropped.Load(),
@@ -426,6 +535,23 @@ func (r *Runtime) Stats() RuntimeStats {
 			r.dispatcher.pendingFailureBytes.Load() +
 			r.dispatcher.pendingEmergencyFailureBytes.Load(),
 	}
+	if snapshot := r.dispatcher.lastWriterError.Load(); snapshot != nil {
+		stats.LastWriterError = snapshot.Message
+		stats.LastWriterErrorAt = snapshot.CapturedAt
+		stats.LastWriterErrorTruncated = snapshot.Truncated
+	}
+	return stats
+}
+
+type writerErrorSnapshot struct {
+	CapturedAt string
+	Message    string
+	Truncated  bool
+}
+
+func captureWriterErrorSnapshot(err error) *writerErrorSnapshot {
+	message, truncated := boundedErrorSnapshot(err)
+	return &writerErrorSnapshot{CapturedAt: time.Now().UTC().Format(time.RFC3339Nano), Message: message, Truncated: truncated}
 }
 
 type failureDropSnapshot struct {
@@ -458,10 +584,25 @@ func captureFailureDropSnapshot(record slog.Record) *failureDropSnapshot {
 	}
 	var recordedError error
 	record.Attrs(func(attr slog.Attr) bool {
-		value := attr.Value.Resolve()
+		value := attr.Value
 		if attr.Key == "error" {
 			if err, ok := value.Any().(error); ok {
 				recordedError = err
+			}
+		}
+		if attr.Key == "errorCauseChain" && value.Kind() == slog.KindAny {
+			if causes, ok := value.Any().([]failureErrorCause); ok {
+				for index, cause := range causes {
+					if index >= 8 {
+						snapshot.Truncated = true
+						break
+					}
+					cause.Type, truncated = boundedFailureSnapshotValue(cause.Type, maxFailureSnapshotValueBytes)
+					snapshot.Truncated = snapshot.Truncated || truncated
+					cause.Message, truncated = boundedFailureSnapshotValue(cause.Message, maxFailureSnapshotValueBytes)
+					snapshot.Truncated = snapshot.Truncated || truncated
+					snapshot.ErrorCauseChain = append(snapshot.ErrorCauseChain, cause)
+				}
 			}
 		}
 		if value.Kind() != slog.KindString {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -363,6 +364,102 @@ func TestFailureDropSnapshotTruncatesAtUTF8Boundary(t *testing.T) {
 	}
 	if !utf8.ValidString(bounded) {
 		t.Fatalf("bounded value ended inside a UTF-8 sequence: %q", bounded)
+	}
+}
+
+type panicLogValuer struct {
+	calls *int
+}
+
+func (value panicLogValuer) LogValue() slog.Value {
+	*value.calls = *value.calls + 1
+	panic("failure queue must not resolve arbitrary LogValuer values")
+}
+
+type selfReferentialValue struct {
+	Self *selfReferentialValue
+}
+
+type oversizedError struct {
+	message string
+	cause   error
+}
+
+func (err oversizedError) Error() string { return err.message }
+func (err oversizedError) Unwrap() error { return err.cause }
+
+func TestRuntimeBoundsFailureRecordBeforePrimaryLaneAndSkipsOpaqueValues(t *testing.T) {
+	var output lockedBuffer
+	runtime, err := NewRuntime("info", &output, RuntimeOptions{Role: "go-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	logValuerCalls := 0
+	cycle := &selfReferentialValue{}
+	cycle.Self = cycle
+	root := oversizedError{message: strings.Repeat("root-cause-", 8192)}
+	failure := oversizedError{message: strings.Repeat("outer-failure-", 8192), cause: root}
+	runtime.Logger.Error(
+		strings.Repeat("failure message ", 8192),
+		"event", "failure.primary.bounded",
+		"error", failure,
+		"opaque", cycle,
+		"lazy", panicLogValuer{calls: &logValuerCalls},
+		"stack", strings.Repeat("stack ", 8192),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if logValuerCalls != 0 {
+		t.Fatalf("LogValuer resolved %d times", logValuerCalls)
+	}
+	event := findJSONEvent(t, output.String(), "failure.primary.bounded")
+	for _, key := range []string{"msg", "errorMessage", "stack"} {
+		value, ok := event[key].(string)
+		if !ok || len(value) == 0 || len(value) > maxFailureSnapshotStackBytes {
+			t.Fatalf("%s not bounded: %#v", key, event[key])
+		}
+	}
+	if opaque, ok := event["opaque"].(string); !ok || !strings.Contains(opaque, "opaque") {
+		t.Fatalf("opaque slog.Any was not replaced by a bounded marker: %#v", event["opaque"])
+	}
+	if lazy, ok := event["lazy"].(string); !ok || !strings.Contains(lazy, "LogValuer") {
+		t.Fatalf("lazy slog.Any was not replaced by a bounded marker: %#v", event["lazy"])
+	}
+	causes, ok := event["errorCauseChain"].([]any)
+	if !ok || len(causes) != 1 {
+		t.Fatalf("errorCauseChain = %#v, want one bounded cause", event["errorCauseChain"])
+	}
+	cause := causes[0].(map[string]any)
+	if message, ok := cause["message"].(string); !ok || len(message) > maxFailureSnapshotValueBytes {
+		t.Fatalf("bounded cause message = %#v", cause["message"])
+	}
+}
+
+type asyncFailingWriter struct {
+	err error
+}
+
+func (writer asyncFailingWriter) Write(p []byte) (int, error) {
+	return 0, writer.err
+}
+
+func TestRuntimePublishesBoundedLastWriterErrorInStats(t *testing.T) {
+	runtime, err := NewRuntime("info", asyncFailingWriter{err: errors.New(strings.Repeat("writer unavailable ", 1024))}, RuntimeOptions{Role: "go-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.Logger.Error("write will fail", "event", "writer.failure")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := runtime.Shutdown(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stats := runtime.Stats()
+	if stats.WriterErrors != 1 || stats.LastWriterError == "" || len(stats.LastWriterError) > maxFailureSnapshotValueBytes || !stats.LastWriterErrorTruncated || stats.LastWriterErrorAt == "" {
+		t.Fatalf("writer failure stats are not bounded/observable: %+v", stats)
 	}
 }
 

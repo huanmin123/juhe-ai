@@ -89,10 +89,6 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
   const traceId = normalizeTraceId(req) ?? createTraceId()
   const requestId = randomUUID()
   const clientIp = extractClientIp(req)
-  const contextLogger = logger.child({
-    traceId,
-    requestId
-  })
   const context: RequestContext = {
     traceId,
     requestId,
@@ -102,7 +98,7 @@ export function requestContextMiddleware(req: Request, res: Response, next: Next
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl),
     clientIp,
-    logger: contextLogger
+    logger: logger.child({ traceId, requestId })
   }
 
   res.setHeader('x-trace-id', traceId)
@@ -146,7 +142,7 @@ export function bindRequestContextFields(fields: RequestContextFields): void {
     Object.entries(fields).filter(([, value]) => value !== undefined)
   ) as RequestContextFields
   Object.assign(context, nextFields)
-  context.logger = context.logger.child(nextFields)
+  context.logger = logger.child(requestContextLogBindings(context))
 }
 
 export function getTraceId(): string | undefined {
@@ -246,7 +242,7 @@ export function buildRequestStageLogFields(
         ? { failureClass: 'aborted' as const }
         : undefined
   return {
-    ...businessFields,
+    ...omitRequestContextLogFields(businessFields, context),
     event: 'gateway.request.stage',
     version: LOG_EVENT_VERSION,
     service: 'juhe-ai',
@@ -270,6 +266,35 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
+function requestContextLogBindings(context: RequestContext): Record<string, unknown> {
+  return {
+    traceId: context.traceId,
+    requestId: context.requestId,
+    systemAccountId: context.systemAccountId,
+    systemAccountRole: context.role,
+    apiKeyId: context.apiKeyId,
+    groupId: context.groupId,
+    trafficSource: context.trafficSource
+  }
+}
+
+function omitRequestContextLogFields(
+  fields: Record<string, unknown>,
+  context: RequestContext | undefined
+): Record<string, unknown> {
+  if (!context) return fields
+  const {
+    requestId: _requestId,
+    systemAccountId: _systemAccountId,
+    systemAccountRole: _systemAccountRole,
+    apiKeyId: _apiKeyId,
+    groupId: _groupId,
+    trafficSource: _trafficSource,
+    ...remainingFields
+  } = fields
+  return remainingFields
+}
+
 export function withRequestContext<T>(context: RequestContext, handler: () => T): T {
   return requestContextStorage.run(context, handler)
 }
@@ -289,11 +314,6 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
     statusCode: res.statusCode,
     durationMs,
     clientIp: context.clientIp,
-    systemAccountId: context.systemAccountId,
-    role: context.role,
-    apiKeyId: context.apiKeyId,
-    groupId: context.groupId,
-    trafficSource: context.trafficSource,
     userAgent: req.header('user-agent')
   }
 
@@ -321,11 +341,6 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
     statusCode: res.statusCode,
     durationMs: Date.now() - context.startedAt,
     clientIp: context.clientIp,
-    systemAccountId: context.systemAccountId,
-    role: context.role,
-    apiKeyId: context.apiKeyId,
-    groupId: context.groupId,
-    trafficSource: context.trafficSource,
     userAgent: req.header('user-agent')
   }, 'HTTP 请求在完成前关闭')
 }

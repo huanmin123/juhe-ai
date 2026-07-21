@@ -94,6 +94,35 @@ const wideFailure = captureUnexpectedFailureContext(new Error('wide'), {
 })
 assert.equal(wideFailure.truncationReason, 'field_or_event_limit')
 
+let hostileGetterReads = 0
+const hostileDecisionInputs: Record<string, unknown> = {}
+Object.defineProperty(hostileDecisionInputs, 'mustNotRead', {
+  enumerable: true,
+  get() {
+    hostileGetterReads += 1
+    throw new Error('failure context must not invoke getters')
+  }
+})
+hostileDecisionInputs.payload = 'x'.repeat(1024 * 1024)
+hostileDecisionInputs.self = hostileDecisionInputs
+for (let index = 0; index < 200; index += 1) {
+  Object.defineProperty(hostileDecisionInputs, `getter${index}`, {
+    enumerable: true,
+    get() {
+      hostileGetterReads += 1
+      return index
+    }
+  })
+}
+const hostileFailure = captureUnexpectedFailureContext(new Error('hostile failure scene'), {
+  decisionInputs: hostileDecisionInputs
+})
+assert.equal(hostileGetterReads, 0)
+assert.equal(hostileFailure.decisionInputs?.mustNotRead, '[unreadable: accessor]')
+assert.equal(hostileFailure.decisionInputs?.self, '[truncated: circular reference]')
+assert.equal(hostileFailure.truncationReason, 'field_or_event_limit')
+assert((hostileFailure.decisionInputs?.payload as string).length < 16 * 1024)
+
 const expected = captureExpectedFailureContext('quota_exceeded', {
   threshold: 100,
   current: 101,
@@ -196,6 +225,41 @@ assert(rawProbeLine, `未找到真实 logger JSON 行：${rawLoggerProbe.stdout}
 for (const key of ['version', 'service', 'role', 'traceId', 'requestId']) {
   const occurrenceCount: number = rawProbeLine.match(new RegExp(`"${key}":`, 'g'))?.length ?? 0
   assert.equal(occurrenceCount, 1, `真实 logger JSON 行中的 ${key} 出现 ${occurrenceCount} 次：${rawProbeLine}`)
+}
+
+const requestContextRawProbe = spawnSync(process.execPath, [
+  '--import',
+  'tsx',
+  'src/scripts/regression/log-event-contract-raw-probe.ts'
+], {
+  cwd: process.cwd(),
+  encoding: 'utf8',
+  env: {
+    ...process.env,
+    NODE_ENV: 'test',
+    JUHE_AI_LOG_CONSOLE_ENABLED: 'true',
+    JUHE_AI_LOG_FILE_ENABLED: 'false',
+    JUHE_AI_LOG_LEVEL: 'info',
+    JUHE_AI_PROCESS_ROLE: 'server'
+  }
+})
+assert.equal(requestContextRawProbe.status, 0, requestContextRawProbe.stderr)
+const requestContextRawLines = requestContextRawProbe.stdout
+  .split(/\r?\n/)
+  .filter((line) => line.startsWith('{'))
+const expectedContextEvents = [
+  'gateway.request.stage',
+  'gateway.request.timing_summary',
+  'http_request_completed',
+  'request_logger_context_probe'
+]
+for (const eventName of expectedContextEvents) {
+  const rawLine = requestContextRawLines.find((line) => line.includes(`"event":"${eventName}"`))
+  assert(rawLine, `未找到请求上下文真实 JSON 行 ${eventName}：${requestContextRawProbe.stdout}`)
+  for (const key of ['role', 'traceId', 'requestId', 'systemAccountId', 'systemAccountRole', 'apiKeyId', 'groupId', 'trafficSource']) {
+    const occurrenceCount: number = rawLine.match(new RegExp(`"${key}":`, 'g'))?.length ?? 0
+    assert.equal(occurrenceCount, 1, `${eventName} 的 ${key} 出现 ${occurrenceCount} 次：${rawLine}`)
+  }
 }
 
 console.log('日志事件契约回归通过')

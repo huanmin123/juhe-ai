@@ -440,12 +440,17 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
     ?? ('traceId' in message.operation && typeof message.operation.traceId === 'string'
       ? message.operation.traceId
       : undefined)
+  const jobId = message.jobId ?? message.requestId
+  const operationId = message.operationId ?? jobId
   logger.info({
     event: 'db_service.request.start',
     service: 'juhe-ai',
     role: 'db-service',
     traceId,
     requestId: message.requestId,
+    jobId,
+    operationId,
+    parentId: message.parentId,
     operation: operationType,
     databaseDriver: runtimeConfig.databaseDriver
   }, 'DB service 请求开始')
@@ -457,6 +462,9 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
       role: 'db-service',
       traceId,
       requestId: message.requestId,
+      jobId,
+      operationId,
+      parentId: message.parentId,
       operation: operationType,
       outcome: 'success',
       durationMs: Date.now() - startedAt
@@ -464,6 +472,7 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
     sendDbServiceMessage({
       type: 'db_service_response',
       requestId: message.requestId,
+      jobId,
       ok: true,
       result
     })
@@ -474,6 +483,9 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
       role: 'db-service',
       traceId,
       requestId: message.requestId,
+      jobId,
+      operationId,
+      parentId: message.parentId,
       operation: operationType,
       outcome: 'unexpected_failure',
       durationMs: Date.now() - startedAt
@@ -481,6 +493,7 @@ async function respondToDbServiceRequest(message: DbServiceRequestParentMessage)
     sendDbServiceMessage({
       type: 'db_service_response',
       requestId: message.requestId,
+      jobId,
       ok: false,
       errorMessage: error instanceof Error ? error.message : String(error)
     })
@@ -491,6 +504,7 @@ function rejectDbServiceRequest(message: DbServiceRequestParentMessage, errorMes
   sendDbServiceMessage({
     type: 'db_service_response',
     requestId: message.requestId,
+    jobId: message.jobId ?? message.requestId,
     ok: false,
     errorMessage
   })

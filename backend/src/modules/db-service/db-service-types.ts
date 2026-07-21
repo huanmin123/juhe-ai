@@ -1044,6 +1044,9 @@ export type DbServiceParentMessage =
   | {
     type: 'db_service_request'
     requestId: string
+    jobId?: string
+    operationId?: string
+    parentId?: string
     traceId?: string
     operation: DbServiceOperation
     priority?: DbServiceRequestPriority
@@ -1133,12 +1136,14 @@ export type DbServiceChildMessage =
   | {
     type: 'db_service_response'
     requestId: string
+    jobId?: string
     ok: true
     result: unknown
   }
   | {
     type: 'db_service_response'
     requestId: string
+    jobId?: string
     ok: false
     errorMessage: string
   }

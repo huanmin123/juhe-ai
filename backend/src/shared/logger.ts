@@ -31,6 +31,242 @@ interface LogFileMtime {
   mtimeMs: number
 }
 
+export interface LogDestinationErrorMetadata {
+  at: string
+  destination: string
+  operation: string
+  name: string
+  code?: string
+  message: string
+  syscall?: string
+  path?: string
+}
+
+export interface LogDestinationStats {
+  name: string
+  errorCount: number
+  backpressureSignalCount: number
+  dropCount: number
+  failureDropCount: number
+  pendingBytes: number
+  failurePendingBytes: number
+  needDrain: boolean
+  lastError?: LogDestinationErrorMetadata
+  lastDrop?: LogDropMetadata
+}
+
+export interface LogPublisherStats {
+  errorCount: number
+  backpressureSignalCount: number
+  dropCount: number
+  failureDropCount: number
+  pendingBytes: number
+  failurePendingBytes: number
+  needDrain: boolean
+  degraded: boolean
+  lastError?: LogDestinationErrorMetadata
+  lastDrop?: LogDropMetadata
+  destinations: LogDestinationStats[]
+}
+
+export interface LogDropMetadata {
+  at: string
+  destination: string
+  level: string
+  byteLength: number
+  preview: string
+  previewBytes: number
+}
+
+interface MutableLogDestinationStats extends LogDestinationStats {
+  lastError?: LogDestinationErrorMetadata
+  lastDrop?: LogDropMetadata
+}
+
+interface NamedLogDestination {
+  name: string
+  stream: Writable
+}
+
+interface LogStreamBudgetOptions {
+  maxPendingBytes: number
+  failureReserveBytes: number
+  maxFailureSnapshotBytes: number
+  onFailureDrop?: (metadata: LogDropMetadata) => void
+}
+
+const defaultLogStreamBudgetOptions: LogStreamBudgetOptions = {
+  maxPendingBytes: 8 * 1_024 * 1_024,
+  failureReserveBytes: 1 * 1_024 * 1_024,
+  maxFailureSnapshotBytes: 4 * 1_024
+}
+
+const errorLevelMarker = Buffer.from('"level":"error"')
+const fatalLevelMarker = Buffer.from('"level":"fatal"')
+const warnLevelMarker = Buffer.from('"level":"warn"')
+
+class LogStreamDiagnostics {
+  private readonly destinations = new Map<string, MutableLogDestinationStats>()
+  private readonly seenErrors = new WeakSet<object>()
+  private lastError: LogDestinationErrorMetadata | undefined
+  private lastDrop: LogDropMetadata | undefined
+
+  register(destination: string): void {
+    this.state(destination)
+  }
+
+  writeStarted(destination: string, byteLength: number, failure: boolean): void {
+    const state = this.state(destination)
+    state.pendingBytes += byteLength
+    if (failure) state.failurePendingBytes += byteLength
+  }
+
+  writeCompleted(destination: string, byteLength: number, failure: boolean): void {
+    const state = this.state(destination)
+    state.pendingBytes = Math.max(0, state.pendingBytes - byteLength)
+    if (failure) state.failurePendingBytes = Math.max(0, state.failurePendingBytes - byteLength)
+  }
+
+  backpressureSignaled(destination: string): void {
+    const state = this.state(destination)
+    state.backpressureSignalCount += 1
+    state.needDrain = true
+  }
+
+  drained(destination: string): void {
+    this.state(destination).needDrain = false
+  }
+
+  recordError(destination: string, operation: string, error: unknown): void {
+    if (typeof error === 'object' && error !== null) {
+      if (this.seenErrors.has(error)) return
+      this.seenErrors.add(error)
+    }
+    const metadata = boundedLogDestinationError(destination, operation, error)
+    const state = this.state(destination)
+    state.errorCount += 1
+    state.lastError = metadata
+    this.lastError = metadata
+  }
+
+  recordDrop(destination: string, level: string, chunk: Buffer, maxPreviewBytes: number): LogDropMetadata {
+    const state = this.state(destination)
+    const failure = isFailureLogLevel(level)
+    const previewBuffer = chunk.subarray(0, Math.max(0, maxPreviewBytes))
+    const metadata: LogDropMetadata = {
+      at: new Date().toISOString(),
+      destination: boundedDiagnosticText(destination, 128),
+      level: boundedDiagnosticText(level, 32),
+      byteLength: chunk.byteLength,
+      preview: previewBuffer.toString('utf8').replace(/\uFFFD$/u, ''),
+      previewBytes: previewBuffer.byteLength
+    }
+    state.dropCount += 1
+    if (failure) state.failureDropCount += 1
+    state.lastDrop = metadata
+    this.lastDrop = metadata
+    return metadata
+  }
+
+  snapshot(): LogPublisherStats {
+    const destinations = [...this.destinations.values()].map((state) => ({
+      ...state,
+      lastError: state.lastError ? { ...state.lastError } : undefined,
+      lastDrop: state.lastDrop ? { ...state.lastDrop } : undefined
+    }))
+    const errorCount = destinations.reduce((total, state) => total + state.errorCount, 0)
+    const backpressureSignalCount = destinations.reduce(
+      (total, state) => total + state.backpressureSignalCount,
+      0
+    )
+    const dropCount = destinations.reduce((total, state) => total + state.dropCount, 0)
+    const failureDropCount = destinations.reduce((total, state) => total + state.failureDropCount, 0)
+    const pendingBytes = destinations.reduce((total, state) => total + state.pendingBytes, 0)
+    const failurePendingBytes = destinations.reduce((total, state) => total + state.failurePendingBytes, 0)
+    const needDrain = destinations.some((state) => state.needDrain)
+    return {
+      errorCount,
+      backpressureSignalCount,
+      dropCount,
+      failureDropCount,
+      pendingBytes,
+      failurePendingBytes,
+      needDrain,
+      degraded: errorCount > 0 || needDrain || dropCount > 0,
+      lastError: this.lastError ? { ...this.lastError } : undefined,
+      lastDrop: this.lastDrop ? { ...this.lastDrop } : undefined,
+      destinations
+    }
+  }
+
+  destinationSnapshot(destination: string): LogDestinationStats {
+    const state = this.state(destination)
+    return {
+      ...state,
+      lastError: state.lastError ? { ...state.lastError } : undefined,
+      lastDrop: state.lastDrop ? { ...state.lastDrop } : undefined
+    }
+  }
+
+  private state(destination: string): MutableLogDestinationStats {
+    const existing = this.destinations.get(destination)
+    if (existing) return existing
+    const created: MutableLogDestinationStats = {
+      name: destination,
+      errorCount: 0,
+      backpressureSignalCount: 0,
+      dropCount: 0,
+      failureDropCount: 0,
+      pendingBytes: 0,
+      failurePendingBytes: 0,
+      needDrain: false
+    }
+    this.destinations.set(destination, created)
+    return created
+  }
+}
+
+function boundedLogDestinationError(
+  destination: string,
+  operation: string,
+  error: unknown
+): LogDestinationErrorMetadata {
+  const errorRecord = typeof error === 'object' && error !== null
+    ? error as Record<string, unknown>
+    : undefined
+  return {
+    at: new Date().toISOString(),
+    destination: boundedDiagnosticText(destination, 128),
+    operation: boundedDiagnosticText(operation, 64),
+    name: boundedDiagnosticText(error instanceof Error ? error.name : 'Error', 128),
+    ...(typeof errorRecord?.code === 'string'
+      ? { code: boundedDiagnosticText(errorRecord.code, 128) }
+      : {}),
+    message: boundedDiagnosticText(error instanceof Error ? error.message : String(error), 1_024),
+    ...(typeof errorRecord?.syscall === 'string'
+      ? { syscall: boundedDiagnosticText(errorRecord.syscall, 128) }
+      : {}),
+    ...(typeof errorRecord?.path === 'string'
+      ? { path: boundedDiagnosticText(errorRecord.path, 1_024) }
+      : {})
+  }
+}
+
+function boundedDiagnosticText(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : value.slice(0, maxLength)
+}
+
+function logChunkLevel(chunk: Buffer): string {
+  if (chunk.includes(fatalLevelMarker)) return 'fatal'
+  if (chunk.includes(errorLevelMarker)) return 'error'
+  if (chunk.includes(warnLevelMarker)) return 'warn'
+  return 'info'
+}
+
+function isFailureLogLevel(level: string): boolean {
+  return level === 'error' || level === 'fatal'
+}
+
 type RotatedLogCleanupProtectionPredicate = (
   path: string,
   fileSize: number,
@@ -62,8 +298,16 @@ class RotatingFileLogStream extends Writable {
     'juhe-ai.temporary-maintenance-worker.log'
   ])
 
-  constructor(private readonly options: RotatingFileLogStreamOptions) {
+  constructor(
+    private readonly options: RotatingFileLogStreamOptions,
+    private readonly diagnostics?: LogStreamDiagnostics,
+    private readonly destinationName = 'file'
+  ) {
     super()
+    this.diagnostics?.register(this.destinationName)
+    this.on('error', (error) => {
+      this.diagnostics?.recordError(this.destinationName, 'rotating_stream', error)
+    })
     mkdirSync(options.directory, { recursive: true })
     this.currentPath = join(options.directory, options.fileName)
     this.currentSize = this.readCurrentSize()
@@ -169,7 +413,8 @@ class RotatingFileLogStream extends Writable {
 
   private openStream(): WriteStream {
     const stream = createWriteStream(this.currentPath, { flags: 'a' })
-    stream.on('error', () => {
+    stream.on('error', (error) => {
+      this.diagnostics?.recordError(this.destinationName, 'file_stream', error)
     })
     return stream
   }
@@ -215,19 +460,102 @@ export function rotatedLogFileName(fileName: string, timestamp: Date, uniqueId: 
 }
 
 class MultiDestinationLogStream extends Writable {
-  constructor(private readonly destinations: Writable[]) {
+  private readonly listenerBindings: Array<{
+    stream: Writable
+    onError: (error: Error) => void
+    onDrain: () => void
+  }> = []
+  private readonly failureDropDiagnosticEmitted = new Set<string>()
+
+  constructor(
+    private readonly destinations: NamedLogDestination[],
+    private readonly diagnostics: LogStreamDiagnostics,
+    private readonly budgetOptions: LogStreamBudgetOptions = defaultLogStreamBudgetOptions
+  ) {
     super()
+    this.on('error', (error) => {
+      this.diagnostics.recordError('multiplexer', 'stream', error)
+    })
+    for (const destination of destinations) {
+      this.diagnostics.register(destination.name)
+      const onError = (error: Error) => {
+        this.diagnostics.recordError(destination.name, 'destination', error)
+      }
+      const onDrain = () => {
+        this.diagnostics.drained(destination.name)
+      }
+      destination.stream.on('error', onError)
+      destination.stream.on('drain', onDrain)
+      this.listenerBindings.push({ stream: destination.stream, onError, onDrain })
+    }
   }
 
   _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     const rawChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding)
+    const level = logChunkLevel(rawChunk)
+    const failure = isFailureLogLevel(level)
     for (const destination of this.destinations) {
+      const byteLength = rawChunk.byteLength
+      const destinationState = this.diagnostics.destinationSnapshot(destination.name)
+      const normalPendingBytes = destinationState.pendingBytes - destinationState.failurePendingBytes
+      const exceedsBudget = failure
+        ? destinationState.failurePendingBytes + byteLength > this.budgetOptions.failureReserveBytes
+        : normalPendingBytes + byteLength > this.budgetOptions.maxPendingBytes
+      if (exceedsBudget) {
+        const drop = this.diagnostics.recordDrop(
+          destination.name,
+          level,
+          rawChunk,
+          this.budgetOptions.maxFailureSnapshotBytes
+        )
+        if (failure && !this.failureDropDiagnosticEmitted.has(destination.name)) {
+          this.failureDropDiagnosticEmitted.add(destination.name)
+          try {
+            this.budgetOptions.onFailureDrop?.(drop)
+          } catch {
+          }
+        }
+        continue
+      }
+      this.diagnostics.writeStarted(destination.name, byteLength, failure)
       try {
-        destination.write(rawChunk)
-      } catch {
+        const accepted = destination.stream.write(rawChunk, (error?: Error | null) => {
+          this.diagnostics.writeCompleted(destination.name, byteLength, failure)
+          if (error) this.diagnostics.recordError(destination.name, 'write', error)
+        })
+        if (!accepted) this.diagnostics.backpressureSignaled(destination.name)
+      } catch (error) {
+        this.diagnostics.writeCompleted(destination.name, byteLength, failure)
+        this.diagnostics.recordError(destination.name, 'write', error)
       }
     }
     callback()
+  }
+
+  _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    for (const binding of this.listenerBindings) {
+      binding.stream.off('error', binding.onError)
+      binding.stream.off('drain', binding.onDrain)
+    }
+    callback(error)
+  }
+}
+
+export function createObservedLogStreamForTest(
+  destinations: NamedLogDestination[],
+  budgetOptions: Partial<LogStreamBudgetOptions> = {}
+): {
+  stream: Writable
+  stats: () => LogPublisherStats
+} {
+  const diagnostics = new LogStreamDiagnostics()
+  const stream = new MultiDestinationLogStream(destinations, diagnostics, {
+    ...defaultLogStreamBudgetOptions,
+    ...budgetOptions
+  })
+  return {
+    stream,
+    stats: () => diagnostics.snapshot()
   }
 }
 
@@ -398,6 +726,8 @@ export async function cleanupRotatedLogFilesForTest(options: {
   })
 }
 
+const logStreamDiagnostics = new LogStreamDiagnostics()
+
 const fileLogStream = runtimeConfig.log.fileEnabled
   ? new RotatingFileLogStream({
     directory: runtimeConfig.log.directory,
@@ -411,12 +741,12 @@ const fileLogStream = runtimeConfig.log.fileEnabled
     maxFileBytes: runtimeConfig.log.maxFileBytes,
     retentionDays: runtimeConfig.log.retentionDays,
     maxFiles: runtimeConfig.log.maxFiles
-  })
+  }, logStreamDiagnostics, 'file')
   : undefined
 
-const logDestinations: Writable[] = [
-  ...(runtimeConfig.log.consoleEnabled ? [process.stdout] : []),
-  ...(fileLogStream ? [fileLogStream] : [])
+const logDestinations: NamedLogDestination[] = [
+  ...(runtimeConfig.log.consoleEnabled ? [{ name: 'console', stream: process.stdout }] : []),
+  ...(fileLogStream ? [{ name: 'file', stream: fileLogStream }] : [])
 ]
 
 const loggerOptions: LoggerOptions = {
@@ -438,15 +768,29 @@ const loggerOptions: LoggerOptions = {
   }
 }
 
-const multiDestinationLogStream = logDestinations.length > 0 ? new MultiDestinationLogStream(logDestinations) : undefined
+const multiDestinationLogStream = logDestinations.length > 0
+  ? new MultiDestinationLogStream(logDestinations, logStreamDiagnostics, {
+    ...defaultLogStreamBudgetOptions,
+    onFailureDrop: (drop) => {
+      writeProcessFatalDiagnostic({
+        event: 'log_failure_reserve_exhausted',
+        error: new Error(drop.preview || `日志失败预留已耗尽，原始字节数 ${drop.byteLength}`),
+        processRole: runtimeConfig.processRole,
+        pid: process.pid,
+        secrets: [runtimeConfig.secret],
+        maxBytes: defaultLogStreamBudgetOptions.maxFailureSnapshotBytes
+      })
+    }
+  })
+  : undefined
 
 export const logger: Logger = pino(
   loggerOptions,
   multiDestinationLogStream ?? new Writable({ write: (_chunk, _encoding, callback) => callback() })
 )
 
-export function logPublisherStats(): undefined {
-  return undefined
+export function logPublisherStats(): LogPublisherStats {
+  return logStreamDiagnostics.snapshot()
 }
 
 export function startLogMaintenance(): void {
