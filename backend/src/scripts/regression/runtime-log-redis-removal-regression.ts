@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 
 const sourceRoot = resolve('src')
 const read = (relativePath: string): string => readFileSync(resolve(sourceRoot, relativePath), 'utf8')
+const readProject = (relativePath: string): string => readFileSync(resolve('..', relativePath), 'utf8')
 
 const forbiddenProductionReferences = [
   'modules/runtime-logs/runtime-log-index-queue.service.ts',
@@ -42,6 +43,23 @@ for (const relativePath of [
 
 const drainSource = read('shared/redis-stream-drain.ts')
 assert.equal(drainSource.includes('runtimeLogIndex'), false, 'Redis Stream drain contract 不得再声明运行日志队列')
+
+for (const relativePath of [
+  'docs/deploy/高性能模式部署指南.md',
+  'docs/deploy/macos/macOS部署指南.md'
+]) {
+  const document = readProject(relativePath)
+  for (const forbidden of ['runtime-log-index', '六类 consumer', '六个目标 group', '六条 Stream']) {
+    assert.equal(document.includes(forbidden), false, `${relativePath} 不得保留已删除的运行日志 Redis drain 契约：${forbidden}`)
+  }
+}
+
+const performanceStorageDesign = readProject('docs/functions/PostgreSQL与Redis高性能模式设计.md')
+assert.doesNotMatch(
+  performanceStorageDesign,
+  /Redis queue[^\n]*runtime log/,
+  'PostgreSQL/Redis 高性能模式设计不得把普通运行日志声明为 Redis queue 消息'
+)
 
 const fileImporterSource = read('modules/runtime-logs/runtime-log-file-import.service.ts')
 assert.match(fileImporterSource, /parseRuntimeLogLineForIndex/, '文件导入器必须独占运行日志解析入口')
