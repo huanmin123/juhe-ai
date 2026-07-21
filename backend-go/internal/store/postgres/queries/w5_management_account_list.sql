@@ -4,6 +4,7 @@ WITH visible_accounts AS (
     accounts.id, accounts.system_account_id, system_accounts.display_name AS system_account_name,
     accounts.name, accounts.provider_code, accounts.type, accounts.status, accounts.schedulable,
     accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
+    accounts.health_check_model, accounts.health_check_endpoint_mode,
     accounts.account_expires_at, accounts.last_used_at, accounts.updated_at,
     'owner'::text AS access_type, NULL::text AS account_authorization_id,
     NULL::text AS authorization_status, NULL::timestamptz AS authorization_expires_at
@@ -21,6 +22,7 @@ WITH visible_accounts AS (
     accounts.id, accounts.system_account_id, grantee_accounts.display_name AS system_account_name,
     accounts.name, source_accounts.provider_code, source_accounts.type, accounts.status, accounts.schedulable,
     source_accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
+    accounts.health_check_model, accounts.health_check_endpoint_mode,
     accounts.account_expires_at, accounts.last_used_at, accounts.updated_at,
     'authorized'::text AS access_type, resource_authorizations.id AS account_authorization_id,
     resource_authorizations.status AS authorization_status, resource_authorizations.expires_at AS authorization_expires_at
@@ -43,6 +45,7 @@ SELECT
   visible_accounts.name, visible_accounts.provider_code, visible_accounts.type, visible_accounts.status,
   visible_accounts.schedulable, visible_accounts.concurrency_limit, visible_accounts.priority,
   visible_accounts.super_priority_enabled, visible_accounts.fallback_enabled,
+  visible_accounts.health_check_model, visible_accounts.health_check_endpoint_mode,
   visible_accounts.account_expires_at, visible_accounts.last_used_at, visible_accounts.access_type,
   visible_accounts.account_authorization_id, visible_accounts.authorization_status, visible_accounts.authorization_expires_at,
   coalesce(usage_stats.request_count, 0)::bigint AS request_count,

@@ -5,8 +5,6 @@ import { ref } from 'vue'
 
 import type { AccountListResult, AccountRuntimeAvailabilityStatus, AccountStatusSnapshotResult, AccountSummary } from '../../types/domain/accounts.js'
 import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountListRow } from '../../views/accounts/accountListMutations.js'
-import { accountStatusSnapshotPollingDelayMs, createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from '../../views/accounts/accountStatusSnapshotPolling.js'
-
 const usage = (requestCount: number) => ({
   requestCount,
   inputTokens: requestCount,
@@ -113,80 +111,12 @@ assert.equal(rowUpdated[0]?.todayUsage.requestCount, 1, '行级操作回写不�
 assert.equal(rowUpdated[0]?.lastUsedAt, '2026-07-16T00:00:00.000Z', '行级操作回写不应清掉最近使用时间')
 assert.equal(replaceAccountListRow(originalAccounts, { ...account, id: 'missing' }), originalAccounts)
 
-const acceptedIdentity = { sequence: 3, revision: 7, idSignature: 'a\u0000b', scopeSignature: 'self:' }
-assert.equal(isAccountStatusSnapshotCurrent(acceptedIdentity, acceptedIdentity), true)
-for (const changed of [
-  { ...acceptedIdentity, sequence: 4 },
-  { ...acceptedIdentity, revision: 8 },
-  { ...acceptedIdentity, idSignature: 'b\u0000a' },
-  { ...acceptedIdentity, scopeSignature: 'management:sys_a' }
-]) {
-  assert.equal(isAccountStatusSnapshotCurrent(acceptedIdentity, changed), false, '任一列表身份变化都必须拒绝迟到快照')
-}
-assert.equal(accountStatusSnapshotPollingDelayMs(() => 0), 29_000)
-assert.equal(accountStatusSnapshotPollingDelayMs(() => 1), 31_000)
-
-let visible = true
-let pending: (() => void) | undefined
-let requestSignal: AbortSignal | undefined
-let requestCount = 0
-let maxConcurrent = 0
-let concurrent = 0
-const requestedBatchSizes: number[] = []
-const delays: number[] = []
-const polling = createAccountStatusSnapshotPolling({
-  accountIds: () => Array.from({ length: 105 }, (_, index) => `account_${index}`),
-  isBlocked: () => false,
-  isVisible: () => visible,
-  random: () => 0.5,
-  request: async (ids, signal) => {
-    requestedBatchSizes.push(ids.length)
-    requestSignal = signal
-    requestCount += 1
-    concurrent += 1
-    maxConcurrent = Math.max(maxConcurrent, concurrent)
-    await new Promise<void>((resolve) => { pending = resolve })
-    concurrent -= 1
-  },
-  setTimer: (callback, delay) => {
-    delays.push(delay)
-    return callback
-  },
-  clearTimer: () => undefined
-})
-
-polling.start()
-await Promise.resolve()
-polling.refreshNow()
-assert.equal(requestCount, 1, '请求未完成时不得重叠')
-visible = false
-polling.refreshNow()
-assert.equal(requestSignal?.aborted, true, '页面转为 hidden 时必须中止当前快照请求')
-pending?.()
-await Promise.resolve()
-await Promise.resolve()
-assert.equal(requestCount, 1, '页面隐藏时不得继续下一分块或刷新')
-visible = true
-polling.refreshNow()
-await Promise.resolve()
-assert.equal(requestCount, 2, '页面重新可见时应立即恢复首个分块')
-pending?.()
-await Promise.resolve()
-await Promise.resolve()
-assert.equal(requestCount, 3, '超过 100 个账户时必须继续请求剩余分块')
-assert.deepEqual(requestedBatchSizes, [100, 100, 5], '每个运行态快照请求最多 100 个账户且必须覆盖全部已加载账户')
-pending?.()
-await Promise.resolve()
-await Promise.resolve()
-assert.equal(maxConcurrent, 1)
-assert.equal(delays[0], 30_000)
-polling.stop()
-
 const accountListDataSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountListData.ts', import.meta.url)), 'utf8')
-assert.match(accountListDataSource, /onActivated[\s\S]*snapshotPollingLifecycle\.activate\(\)/, 'KeepAlive 账户页恢复时必须激活轮询生命周期')
-assert.match(accountListDataSource, /onDeactivated[\s\S]*snapshotPollingLifecycle\.deactivate\(\)/, 'KeepAlive 账户页隐藏时必须停用状态快照轮询')
-assert.match(accountListDataSource, /onBeforeUnmount[\s\S]*snapshotPollingLifecycle\.dispose\(\)/, '账户页卸载时必须销毁状态快照轮询')
-assert.match(accountListDataSource, /onActivate:\s*\(\)\s*=>\s*snapshotPolling\.refreshNow\(\)/, '账户页每次恢复必须立即请求状态快照')
+assert.doesNotMatch(accountListDataSource, /createAccountStatusSnapshotPolling/, '账户列表不得创建状态快照自动轮询器')
+assert.doesNotMatch(accountListDataSource, /accountStatusSnapshotPolling/, '账户列表不得导入状态快照轮询 helper')
+assert.doesNotMatch(accountListDataSource, /statusSnapshot\(/, '账户列表生命周期不得自动请求状态快照接口')
+assert.doesNotMatch(accountListDataSource, /snapshotPolling/, '账户列表不得保留状态快照轮询生命周期连接')
+assert.doesNotMatch(accountListDataSource, /visibilitychange/, '账户列表不得因页面可见性变化触发状态快照刷新')
 
 const previousRuntimeAccount = {
   id: 'acc_runtime_refresh',
@@ -373,4 +303,4 @@ assert.equal(rowWithNewRuntime[0]?.runtimeAvailability?.status, 'precheck_pendin
 assert.equal(rowWithNewRuntime[0]?.effectiveAvailability?.status, 'runtime_precheck_pending')
 assert.equal(rowWithNewRuntime[0]?.availabilityPresentation?.status, 'pending_verification', '行级更新必须采用新的运行态 presentation')
 
-console.log('账户状态快照前端回归通过：全部运行态稳定合并、100 ID 分块全覆盖、递归周期、hidden 与非重叠约束生效')
+console.log('账户状态快照前端回归通过：运行态合并保持稳定，账户列表不再自动轮询状态快照')

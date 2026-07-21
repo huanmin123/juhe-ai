@@ -37,6 +37,8 @@ type ManagementAccountListRow struct {
 	Priority               int
 	SuperPriorityEnabled   bool
 	FallbackEnabled        bool
+	HealthCheckModel       string
+	HealthCheckEndpointMode string
 	AccountExpiresAt       *time.Time
 	LastUsedAt             *time.Time
 	AccessType             string

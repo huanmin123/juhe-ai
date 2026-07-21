@@ -1,4 +1,6 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import { authState } from '@/composables/useAuth'
 import type { AccountSummary, AccountTestTask } from '@/types/domain'
@@ -216,3 +218,17 @@ function createMemoryStorage(): Storage {
     }
   }
 }
+
+const accountTestModalSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountTestModal.ts', import.meta.url)), 'utf8')
+assert.match(accountTestModalSource, /accountTestSessionHeartbeatIntervalMs\s*=\s*5000/, '测试会话心跳间隔应为 5000ms')
+assert.doesNotMatch(accountTestModalSource, /accountTestSessionHeartbeatIntervalMs\s*=\s*2000/, '测试会话心跳间隔不得回退为 2000ms')
+assert.match(accountTestModalSource, /function closeTestModal\([\s\S]*terminateAttachedTestRun\(true\)/, '关闭测试弹窗必须终止运行中的测试')
+assert.match(accountTestModalSource, /function terminateAttachedTestRun[\s\S]*cancelAccountTestRunBackend\(run\)/, '终止测试必须请求后端取消')
+assert.match(accountTestModalSource, /function terminateAttachedTestRun[\s\S]*clearRunSessionSnapshot\(run\)/, '终止测试必须清理本地可恢复会话')
+assert.match(accountTestModalSource, /function closeTestModal\([\s\S]*detachCurrentTestView\(\)/, '无运行测试关闭时仍可安全脱离视图')
+assert.doesNotMatch(
+  accountTestModalSource.slice(accountTestModalSource.indexOf('function closeTestModal'), accountTestModalSource.indexOf('function closeTestModal') + 500),
+  /persistAccountTestRunSession/,
+  '关闭弹窗不得把运行中测试持久化为可恢复后台任务'
+)
+
