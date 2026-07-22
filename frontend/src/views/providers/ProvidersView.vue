@@ -275,13 +275,11 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { authState } from '@/composables/useAuth'
-import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { loadProviderModelCatalogResource } from '@/composables/useProviderModelCatalogResource'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
-import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/useAccountProviderModelOptions'
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyConfigurationTemplateToCustomModelForm,
@@ -343,7 +341,6 @@ const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
 const editingOriginalStatus = ref<ProviderModelPricing['status']>()
 let modelRequestSequence = 0
-const providerRecovery = useKeepAliveSupersededRecovery(() => loadProviders())
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canManageModelPrices = computed(() => canManageModelPricesForView(isManagementView.value, authState.isAdmin.value))
@@ -448,7 +445,6 @@ function formatDefaultSupportedModels(provider: ProviderDefinition): string {
 }
 
 async function loadProviders(force = false) {
-  const providerRecoveryRequest = providerRecovery.start()
   loading.value = true
   try {
     const providerResult = await loadProviderOptionsResource({
@@ -458,8 +454,7 @@ async function loadProviders(force = false) {
       includeDefinitions: !isManagementView.value,
       isManagementView: isManagementView.value
     })
-    providerRecovery.record(providerRecoveryRequest, providerResult.state)
-    if (providerResult.state === 'ready') providers.value = providerResult.data
+    providers.value = providerResult.data
   } catch (error) {
     console.error(error)
     message.error('加载供应商失败')
@@ -538,7 +533,6 @@ async function saveCustomModel() {
       await api.providers.createModel(targetProviderCode, payload, modelOperationQueryParams(payload))
       message.success('自定义模型已创建')
     }
-    invalidateAccountProviderModelOptionsCache()
     customModelModalOpen.value = false
     resetCustomModelForm()
     await reloadActiveProviderModels(true)
@@ -555,7 +549,6 @@ async function deleteCustomModel(record: ProviderModelPricing) {
   modelLoading.value = true
   try {
     await api.providers.deleteModel(record.providerCode, record.id)
-    invalidateAccountProviderModelOptionsCache()
     message.success('自定义模型已删除')
     await reloadActiveProviderModels(true)
   } catch (error) {
@@ -583,7 +576,6 @@ async function reloadActiveProviderModels(force = false) {
       systemAccountId: modelQuery.systemAccountId
     })
     if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
-    if (scopedProviders.state === 'superseded') return
     const scopedProvider = scopedProviders.data.find((item) => item.code === provider.code)
     if (scopedProvider) {
       activeProvider.value = scopedProvider
@@ -594,10 +586,7 @@ async function reloadActiveProviderModels(force = false) {
       providerCode: provider.code,
       query: modelQuery
     })
-    applyProviderModelResult(modelResult.data, requestSequence, provider.code)
-    void modelResult.confirmation?.then((outcome) => {
-      if (outcome.data) applyProviderModelResult(outcome.data, requestSequence, provider.code)
-    })
+    applyProviderModelResult(modelResult, requestSequence, provider.code)
   } catch (error) {
     if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
     console.error(error)

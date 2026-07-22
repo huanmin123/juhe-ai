@@ -27,6 +27,7 @@ type RouterOptions struct {
 	SystemAPIAuthenticatedRateLimiter                 SystemAPIAuthenticatedRateLimiter
 	NodeModelCatalogBridgeReadinessProber             ReadinessProber
 	PublicAPIHandler                                  http.Handler
+	GatewayModelsHandler                              http.Handler
 	ManagementAPIAuthMiddleware                       func(http.Handler) http.Handler
 	ManagementAPIAuthTouchMiddleware                  func(http.Handler) http.Handler
 	ManagementCaptchaHandler                          http.Handler
@@ -235,7 +236,6 @@ type RouterOptions struct {
 	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementAnnouncementsHandler                    http.Handler
 	ManagementSystemMetricsHandler                    http.Handler
-	ManagementPageDataConfirmHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
 	ManagementStatsAccountUsageHandler                http.Handler
@@ -273,6 +273,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 	readiness := NewReadinessHandler(opts.Config, opts.Logger, opts.NodeModelCatalogBridgeReadinessProber)
 	r.Get("/__aisys__/health", health.ServeHTTP)
 	r.Get("/__aisys__/readyz", readiness.ServeHTTP)
+	if opts.GatewayModelsHandler != nil {
+		r.Get("/models", opts.GatewayModelsHandler.ServeHTTP)
+		r.Get("/v1/models", opts.GatewayModelsHandler.ServeHTTP)
+		r.Get("/v1beta/models", opts.GatewayModelsHandler.ServeHTTP)
+	}
 	r.Route("/__aisys__/api", func(system chi.Router) {
 		system.Use(noStoreMiddleware)
 		if opts.SystemAPIRateLimitReader != nil {
@@ -540,7 +545,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementAnnouncementsHandler == nil &&
 				opts.ManagementSystemMetricsHandler == nil &&
-				opts.ManagementPageDataConfirmHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
 				opts.ManagementMyStatsUsageWindowHandler == nil &&
 				opts.ManagementStatsAccountUsageHandler == nil &&
@@ -1457,9 +1461,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementSystemMetricsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/system-metrics", opts.ManagementSystemMetricsHandler.ServeHTTP)
 			}
-			if opts.ManagementPageDataConfirmHandler != nil {
-				system.With(managementAPIReadRateLimitMiddleware).Post("/data-changes/confirm", opts.ManagementPageDataConfirmHandler.ServeHTTP)
-			}
 			if opts.ManagementStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
 			}
@@ -1667,6 +1668,9 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountListHandler != nil ||
 		opts.ManagementAccountExportHandler != nil ||
 		opts.ManagementMyAccountExportHandler != nil ||
+		opts.ManagementAccountImportPreviewHandler != nil ||
+		opts.ManagementMyAccountImportPreviewHandler != nil ||
+		opts.ManagementAccountImportConfirmHandler != nil ||
 		opts.ManagementAccountCreateHandler != nil ||
 		opts.ManagementMyAccountCreateHandler != nil ||
 		opts.ManagementAccountUpdateHandler != nil ||
@@ -1719,7 +1723,6 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementSystemMetricsHandler != nil ||
-		opts.ManagementPageDataConfirmHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
 		opts.ManagementMyStatsUsageWindowHandler != nil ||
 		opts.ManagementStatsAccountUsageHandler != nil ||
@@ -1747,8 +1750,9 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
 		opts.ManagementAPIKeyDeleteHandler != nil ||
-		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementMyAPIKeyDeleteHandler != nil ||
+		opts.ManagementAnnouncementPublicReadHandler != nil ||
+		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||

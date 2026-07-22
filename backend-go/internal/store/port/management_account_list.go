@@ -25,31 +25,31 @@ type ManagementAccountListInput struct {
 }
 
 type ManagementAccountListRow struct {
-	ID                     string
-	SystemAccountID        string
-	SystemAccountName      string
-	Name                   string
-	ProviderCode           string
-	Type                   string
-	Status                 string
-	Schedulable            bool
-	ConcurrencyLimit       int
-	Priority               int
-	SuperPriorityEnabled   bool
-	FallbackEnabled        bool
-	HealthCheckModel       string
+	ID                      string
+	SystemAccountID         string
+	SystemAccountName       string
+	Name                    string
+	ProviderCode            string
+	Type                    string
+	Status                  string
+	Schedulable             bool
+	ConcurrencyLimit        int
+	Priority                int
+	SuperPriorityEnabled    bool
+	FallbackEnabled         bool
+	HealthCheckModel        string
 	HealthCheckEndpointMode string
-	AccountExpiresAt       *time.Time
-	LastUsedAt             *time.Time
-	AccessType             string
-	AccountAuthorizationID string
-	AuthorizationStatus    string
-	AuthorizationExpiresAt *time.Time
-	RequestCount           int64
-	InputTokens            int64
-	OutputTokens           int64
-	TotalCost              float64
-	QualityScore           *int64
+	AccountExpiresAt        *time.Time
+	LastUsedAt              *time.Time
+	AccessType              string
+	AccountAuthorizationID  string
+	AuthorizationStatus     string
+	AuthorizationExpiresAt  *time.Time
+	RequestCount            int64
+	InputTokens             int64
+	OutputTokens            int64
+	TotalCost               float64
+	QualityScore            *int64
 }
 
 type ManagementAccountListPage struct {

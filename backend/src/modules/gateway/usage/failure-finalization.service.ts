@@ -10,32 +10,24 @@ const gatewayUsageFinalizationMaxBytes = 64 * 1024 * 1024
 const gatewayUsageFinalizationMaxConcurrency = 32
 let queuedGatewayUsageFinalizationBytes = 0
 let activeGatewayUsageFinalizations = 0
-let droppedGatewayUsageFinalizations = 0
+let admissionWaitCount = 0
+const capacityWaiters = new Set<() => void>()
 
-export function dispatchGatewayUsageFinalization(input: {
+export async function dispatchGatewayUsageFinalization(input: {
   taskFactory: () => Promise<void>
   bytes?: number
-}): boolean {
+}): Promise<void> {
   const bytes = Math.max(0, Math.trunc(input.bytes ?? 0))
-  if (
-    bytes > gatewayUsageFinalizationMaxBytes
-    || queuedGatewayUsageFinalizations.length >= gatewayUsageFinalizationMaxItems
-    || queuedGatewayUsageFinalizationBytes + bytes > gatewayUsageFinalizationMaxBytes
-  ) {
-    droppedGatewayUsageFinalizations += 1
-    logger.warn({
-      event: 'gateway_usage_finalization_dropped',
-      reason: bytes > gatewayUsageFinalizationMaxBytes ? 'oversize' : 'overflow',
-      droppedCount: droppedGatewayUsageFinalizations,
-      queuedCount: queuedGatewayUsageFinalizations.length,
-      queuedBytes: queuedGatewayUsageFinalizationBytes
-    }, '网关使用记录异步收尾达到容量上限，已丢弃本条投递')
-    return false
+  if (bytes > gatewayUsageFinalizationMaxBytes) {
+    throw new Error('网关使用记录异步收尾任务超过单条容量上限')
+  }
+  while (!hasGatewayUsageFinalizationCapacity(bytes)) {
+    admissionWaitCount += 1
+    await waitForGatewayUsageFinalizationCapacity()
   }
   queuedGatewayUsageFinalizations.push({ taskFactory: input.taskFactory, bytes })
   queuedGatewayUsageFinalizationBytes += bytes
   pumpGatewayUsageFinalizations()
-  return true
 }
 
 export function trackGatewayUsageFinalization(
@@ -61,7 +53,7 @@ export function trackGatewayFailureUsageFinalization(task: Promise<void>): void 
 }
 
 export function getPendingGatewayFailureUsageFinalizationCount(): number {
-  return pendingGatewayFailureUsageFinalizations.size + queuedGatewayUsageFinalizations.length
+  return pendingGatewayFailureUsageFinalizations.size + queuedGatewayUsageFinalizations.length + capacityWaiters.size
 }
 
 export interface GatewayUsageFinalizationRuntime {
@@ -70,6 +62,7 @@ export interface GatewayUsageFinalizationRuntime {
   queuedBytes: number
   activeCount: number
   droppedCount: number
+  admissionWaitCount: number
   maxItems: number
   maxBytes: number
   maxConcurrency: number
@@ -81,7 +74,8 @@ export function getGatewayUsageFinalizationRuntime(): GatewayUsageFinalizationRu
     queuedCount: queuedGatewayUsageFinalizations.length,
     queuedBytes: queuedGatewayUsageFinalizationBytes,
     activeCount: activeGatewayUsageFinalizations,
-    droppedCount: droppedGatewayUsageFinalizations,
+    droppedCount: 0,
+    admissionWaitCount,
     maxItems: gatewayUsageFinalizationMaxItems,
     maxBytes: gatewayUsageFinalizationMaxBytes,
     maxConcurrency: gatewayUsageFinalizationMaxConcurrency
@@ -90,12 +84,14 @@ export function getGatewayUsageFinalizationRuntime(): GatewayUsageFinalizationRu
 
 export async function waitForGatewayFailureUsageFinalizationsIdle(timeoutMs = 10_000): Promise<boolean> {
   const deadline = Date.now() + Math.max(1, timeoutMs)
-  while (pendingGatewayFailureUsageFinalizations.size > 0 || queuedGatewayUsageFinalizations.length > 0) {
+  while (true) {
+    if (getPendingGatewayFailureUsageFinalizationCount() === 0) {
+      await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+      if (getPendingGatewayFailureUsageFinalizationCount() === 0) return true
+    }
     if (Date.now() >= deadline) return false
     await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 5))
   }
-  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
-  return true
 }
 
 function pumpGatewayUsageFinalizations(): void {
@@ -106,6 +102,7 @@ function pumpGatewayUsageFinalizations(): void {
     const queued = queuedGatewayUsageFinalizations.shift()
     if (!queued) break
     queuedGatewayUsageFinalizationBytes = Math.max(0, queuedGatewayUsageFinalizationBytes - queued.bytes)
+    notifyGatewayUsageFinalizationCapacity()
     activeGatewayUsageFinalizations += 1
     const task = Promise.resolve()
       .then(queued.taskFactory)
@@ -115,4 +112,22 @@ function pumpGatewayUsageFinalizations(): void {
       })
     trackGatewayUsageFinalization(task)
   }
+}
+
+function hasGatewayUsageFinalizationCapacity(bytes: number): boolean {
+  return queuedGatewayUsageFinalizations.length < gatewayUsageFinalizationMaxItems
+    && queuedGatewayUsageFinalizationBytes + bytes <= gatewayUsageFinalizationMaxBytes
+}
+
+function waitForGatewayUsageFinalizationCapacity(): Promise<void> {
+  return new Promise((resolvePromise) => {
+    capacityWaiters.add(resolvePromise)
+  })
+}
+
+function notifyGatewayUsageFinalizationCapacity(): void {
+  for (const resolvePromise of capacityWaiters) {
+    resolvePromise()
+  }
+  capacityWaiters.clear()
 }

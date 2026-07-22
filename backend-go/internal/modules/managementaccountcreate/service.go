@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -37,8 +36,6 @@ type GatewayRuntimeInvalidator interface {
 type Options struct {
 	Store                      port.ManagementAccountCreator
 	CredentialCodec            CredentialCodec
-	GranteeReader              accountpagedata.GranteeReader
-	PageDataPublisher          accountpagedata.Publisher
 	AccountLookupInvalidator   AccountLookupInvalidator
 	GroupAccountIDsInvalidator GroupAccountIDsInvalidator
 	GatewayRuntimeInvalidator  GatewayRuntimeInvalidator
@@ -170,7 +167,6 @@ func mapCreateError(err error) error {
 
 func (s *Service) afterCommit(ctx context.Context, account map[string]any) {
 	accountID, _ := account["id"].(string)
-	owner, _ := account["systemAccountId"].(string)
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	if s.opts.AccountLookupInvalidator != nil {
@@ -182,14 +178,6 @@ func (s *Service) afterCommit(ctx context.Context, account map[string]any) {
 	if s.opts.GatewayRuntimeInvalidator != nil {
 		_ = s.opts.GatewayRuntimeInvalidator.InvalidateGatewayRuntime(postCtx, GatewayRuntimeReason)
 	}
-	if s.opts.PageDataPublisher == nil {
-		return
-	}
-	owners, allScopes, err := accountpagedata.ResolveOwners(postCtx, s.opts.GranteeReader, accountID, []string{owner})
-	if err != nil {
-		s.logger.WarnContext(postCtx, "账户创建后页面数据 owner 查询失败", "accountId", accountID, "error", err)
-	}
-	_ = s.opts.PageDataPublisher.PublishAccountStaticChange(postCtx, accountpagedata.ChangeInput{AccountID: accountID, Operation: accountpagedata.OperationUpsert, OwnerSystemAccountIDs: owners, AllScopes: allScopes, FieldMask: []string{"id", "name", "status", "boundGroupId"}, MembershipChanged: true, OrderChanged: true, FilterChanged: true, PageChanged: true})
 }
 
 func optionalText(value string) *string {

@@ -78,6 +78,7 @@
         data-1p-ignore="true"
         data-form-type="other"
         :placeholder="baseUrlPlaceholder"
+        @paste="suggestAccountNameFromBaseUrl"
       />
     </a-form-item>
     <AccountMetaFields
@@ -117,6 +118,7 @@ import { computed, watch } from 'vue'
 import { formatDateTime } from '@/shared/formatters'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
 import type { AccountApiKeyRuntimeDetail, AccountApiKeyRuntimeStatus, AccountTagSummary } from '@/types/domain'
+import { accountNameFromBaseUrl } from './accountNameSuggestion'
 import type { AccountFormModel } from './accountFormTypes'
 import { normalizedAccountApiKeys } from './accountCredentials'
 import AccountHealthCheckModelField from './AccountHealthCheckModelField.vue'
@@ -167,8 +169,8 @@ const apiKeyRuntimeDetailByIndex = computed(() => {
 })
 const baseUrlTooltip = computed(() => (
   isHybridProviderCode(props.form.providerCode)
-    ? '填写真实上游服务根地址，不要填写具体接口路径。例如 OpenAI-compatible 可填 https://api.openai.com/v1，Anthropic 可填 https://api.anthropic.com/v1，Gemini native 可填 https://generativelanguage.googleapis.com。'
-    : '填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1 或 https://api.anthropic.com/v1；不要填写 /responses、/messages 等具体接口路径。'
+    ? '填写真实上游服务根地址，不要填写具体接口路径。例如 OpenAI-compatible 可填 https://api.openai.com/v1，Anthropic 可填 https://api.anthropic.com/v1，Gemini native 可填 https://generativelanguage.googleapis.com。本地 CLIProxyAPI sidecar 联调时，可填 http://127.0.0.1:<port>/v1 或 /v1beta，并在后端显式放行对应 loopback Origin。'
+    : '填写服务根地址或 /v1 版本根地址，例如 https://api.openai.com/v1 或 https://api.anthropic.com/v1；不要填写 /responses、/messages 等具体接口路径。本地 CLIProxyAPI sidecar 联调时，可填 http://127.0.0.1:<port>/v1（Gemini native 用 /v1beta），并在后端显式放行对应 loopback Origin。'
 ))
 
 watch(
@@ -216,6 +218,12 @@ function ensureApiKeyInputs(): void {
   if (props.form.apiKeys.length) return
   props.form.apiKeys = [props.form.apiKey || '']
   props.form.apiKeyWeights = [1]
+}
+
+function suggestAccountNameFromBaseUrl(event: ClipboardEvent): void {
+  if (props.form.name.trim()) return
+  const name = accountNameFromBaseUrl(event.clipboardData?.getData('text') ?? '')
+  if (name) props.form.name = name
 }
 
 function syncApiKeyWeights(): void {

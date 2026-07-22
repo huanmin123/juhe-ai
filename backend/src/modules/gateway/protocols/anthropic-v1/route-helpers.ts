@@ -21,7 +21,7 @@ export interface AnthropicModelsListResponse {
 }
 
 export function buildAnthropicUpstreamUrlsForAccount(account: AnthropicUpstreamAccount, req: Request): string[] {
-  if (account.type !== 'api_key') {
+  if (account.type !== 'api_key' && account.type !== 'oauth') {
     return []
   }
   if (!isSupportedAnthropicRequest(req)) {

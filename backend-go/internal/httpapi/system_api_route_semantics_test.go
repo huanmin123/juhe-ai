@@ -29,7 +29,6 @@ func TestSystemAPIPostReadRoutesUseReadLimitsWithoutTouchingSession(t *testing.T
 		wantRead  int
 		wantTouch int
 	}{
-		{name: "page data confirm", path: "/__aisys__/api/data-changes/confirm", wantClass: systemAPIMethodRead, wantRead: 1},
 		{name: "admin import preview", path: "/__aisys__/api/accounts/import/preview", wantClass: systemAPIMethodRead, wantRead: 1},
 		{name: "self import preview", path: "/__aisys__/api/my-accounts/import/preview", wantClass: systemAPIMethodRead, wantRead: 1},
 		{name: "import confirm remains write", path: "/__aisys__/api/accounts/import/confirm", wantClass: systemAPIMethodWrite, wantTouch: 1},
@@ -58,7 +57,6 @@ func TestSystemAPIPostReadRoutesUseReadLimitsWithoutTouchingSession(t *testing.T
 				ManagementAccountImportPreviewHandler:   handler,
 				ManagementMyAccountImportPreviewHandler: handler,
 				ManagementAccountImportConfirmHandler:   handler,
-				ManagementPageDataConfirmHandler:        handler,
 			})
 
 			req := httptest.NewRequest(http.MethodPost, tt.path, nil)

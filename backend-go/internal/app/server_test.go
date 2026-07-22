@@ -22,7 +22,6 @@ import (
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/jobs/queue"
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
@@ -513,7 +512,7 @@ func TestNewPublicAPIHandlerReturnsErrorsWithoutTransferringInjectedQueueOwnersh
 	}
 }
 
-func TestRunServerCapturesPublicAPILogQueueBeforeHandlerErrors(t *testing.T) {
+func TestRunServerRegistersUnifiedRecordDispatcherShutdownBeforeHandlerErrors(t *testing.T) {
 	fileSet := token.NewFileSet()
 	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -522,12 +521,15 @@ func TestRunServerCapturesPublicAPILogQueueBeforeHandlerErrors(t *testing.T) {
 
 	runServer := findFunction(t, file, "RunServer")
 	foundHandlerAssembly := false
-	foundOwnedQueueClose := false
-	queueCloseDeferPosition := token.NoPos
-	dispatcherShutdownDeferPosition := token.NoPos
+	foundOwnedQueue := false
+	dispatcherShutdownPosition := token.NoPos
 	handlerAssemblyPosition := token.NoPos
 	ast.Inspect(runServer.Body, func(node ast.Node) bool {
 		switch typed := node.(type) {
+		case *ast.Ident:
+			if typed.Name == "publicAPILogQueueOwner" {
+				foundOwnedQueue = true
+			}
 		case *ast.AssignStmt:
 			if len(typed.Rhs) != 1 {
 				return true
@@ -542,41 +544,99 @@ func TestRunServerCapturesPublicAPILogQueueBeforeHandlerErrors(t *testing.T) {
 				t.Fatalf("newPublicAPIHandlerWithOptions assignment has %d results, want 3", len(typed.Lhs))
 			}
 		case *ast.DeferStmt:
-			if callName(typed.Call.Fun) == "shutdownRecordDispatcher" && dispatcherShutdownDeferPosition == token.NoPos {
-				dispatcherShutdownDeferPosition = typed.Pos()
+			if callName(typed.Call.Fun) == "shutdownRecordDispatchers" && dispatcherShutdownPosition == token.NoPos {
+				dispatcherShutdownPosition = typed.Pos()
 			}
-			if callName(typed.Call.Fun) != "closePublicAPILogQueue" {
-				return true
-			}
-			if len(typed.Call.Args) != 1 {
-				t.Fatalf("closePublicAPILogQueue defer args = %d, want 1", len(typed.Call.Args))
-			}
-			argument, ok := typed.Call.Args[0].(*ast.Ident)
-			if !ok || argument.Name != "publicAPILogQueueOwner" {
-				t.Fatalf("closePublicAPILogQueue defer argument = %#v, want publicAPILogQueueOwner", typed.Call.Args[0])
-			}
-			foundOwnedQueueClose = true
-			queueCloseDeferPosition = typed.Pos()
 		}
 		return true
 	})
 	if !foundHandlerAssembly {
 		t.Fatal("RunServer missing public API handler assembly")
 	}
-	if !foundOwnedQueueClose {
-		t.Fatal("RunServer must defer closing the public API log queue by evaluated argument")
+	if !foundOwnedQueue {
+		t.Fatal("RunServer must retain the created public API log queue owner")
 	}
-	if dispatcherShutdownDeferPosition == token.NoPos {
-		t.Fatal("RunServer missing public API log dispatcher shutdown defer")
+	if dispatcherShutdownPosition == token.NoPos {
+		t.Fatal("RunServer missing unified record dispatcher shutdown defer")
 	}
-	if !(queueCloseDeferPosition < dispatcherShutdownDeferPosition && dispatcherShutdownDeferPosition < handlerAssemblyPosition) {
+	if !(dispatcherShutdownPosition < handlerAssemblyPosition) {
 		t.Fatalf(
-			"public API resource registration order = queue close %d, dispatcher shutdown %d, handler assembly %d; want queue close < dispatcher shutdown < handler assembly",
-			queueCloseDeferPosition,
-			dispatcherShutdownDeferPosition,
+			"record dispatcher shutdown position = %d, handler assembly = %d; want shutdown defer registered before handler assembly",
+			dispatcherShutdownPosition,
 			handlerAssemblyPosition,
 		)
 	}
+}
+
+func TestShutdownRecordDispatchersUsesSharedBudgetAndClosesOnlyCompletedDependencies(t *testing.T) {
+	release := make(chan struct{})
+	completed := &recordDispatcherShutdownStub{done: make(chan struct{})}
+	blockedOne := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
+	blockedTwo := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
+	completedCloseCalls := 0
+	blockedOneClosed := make(chan struct{}, 1)
+	blockedTwoClosed := make(chan struct{}, 1)
+	go func() {
+		<-release
+		close(blockedOne.done)
+		close(blockedTwo.done)
+	}()
+
+	startedAt := time.Now()
+	resources := []recordDispatcherResource{
+		{dispatcher: completed, closeDependency: func() error { completedCloseCalls++; return nil }, recordType: "completed"},
+		{dispatcher: blockedOne, closeDependency: func() error { blockedOneClosed <- struct{}{}; return nil }, recordType: "blocked-one"},
+		{dispatcher: blockedTwo, closeDependency: func() error { blockedTwoClosed <- struct{}{}; return nil }, recordType: "blocked-two"},
+	}
+	shutdownRecordDispatchers(&resources, 25*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if elapsed := time.Since(startedAt); elapsed > 80*time.Millisecond {
+		close(release)
+		t.Fatalf("shutdown consumed sequential budgets: %s", elapsed)
+	}
+	if completedCloseCalls != 1 {
+		close(release)
+		t.Fatalf("completed dependency close calls = %d, want 1", completedCloseCalls)
+	}
+	select {
+	case <-blockedOneClosed:
+		close(release)
+		t.Fatal("blocked dependency closed before dispatcher completion")
+	default:
+	}
+	close(release)
+	for name, closed := range map[string]<-chan struct{}{"blocked-one": blockedOneClosed, "blocked-two": blockedTwoClosed} {
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatalf("%s dependency was not closed after dispatcher completion", name)
+		}
+	}
+}
+
+type recordDispatcherShutdownStub struct {
+	done    chan struct{}
+	release <-chan struct{}
+}
+
+func (s *recordDispatcherShutdownStub) Shutdown(ctx context.Context) error {
+	if s.release == nil {
+		select {
+		case <-s.done:
+		default:
+			close(s.done)
+		}
+		return nil
+	}
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *recordDispatcherShutdownStub) Done() <-chan struct{} {
+	return s.done
 }
 
 func TestNewManagementOperationLogQueueDisabledSkipsRuntimeDependencies(t *testing.T) {
@@ -603,7 +663,6 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 	handlers, err := newPublicAPIHandlers(
 		nil,
 		"12345678901234567890123456789012",
-		nil,
 		nil,
 		nil,
 		nil,
@@ -840,7 +899,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	const dispatchTimeout = 5 * time.Second
 	privateBaseURLAllowlist := []string{"http://192.168.40.199:8317"}
 	dispatcher := &appAccountHealthCheckDispatcherRecorder{}
-	pageDataPublisher := &appAccountPageDataPublisherStub{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var captured publicaccounts.Options
 	factoryCalls := 0
@@ -851,7 +909,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 		privateBaseURLAllowlist,
 		nil,
 		dispatcher,
-		pageDataPublisher,
 		logger,
 		dispatchTimeout,
 		func(opts publicaccounts.Options) *publicaccounts.Service {
@@ -872,9 +929,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	if captured.HealthCheckDispatcher != dispatcher {
 		t.Fatalf("HealthCheckDispatcher = %T, want injected recorder", captured.HealthCheckDispatcher)
 	}
-	if captured.PageDataPublisher != pageDataPublisher {
-		t.Fatalf("PageDataPublisher = %T, want injected recorder", captured.PageDataPublisher)
-	}
 	if captured.Logger != logger {
 		t.Fatalf("Logger = %p, want %p", captured.Logger, logger)
 	}
@@ -893,18 +947,8 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	}
 }
 
-type appAccountPageDataPublisherStub struct{}
-
-func (*appAccountPageDataPublisherStub) PublishAccountStaticChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
-}
-
-func (*appAccountPageDataPublisherStub) PublishAccountRuntimeChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
-}
-
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
 		handlers.CaptchaHandler != nil ||
@@ -1021,7 +1065,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.CaptchaHandler == nil ||
@@ -1141,7 +1185,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 }
 
 func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalIntegrationSourceListHandler != nil ||
 		disabled.ExternalIntegrationSourceDetailHandler != nil ||
 		disabled.ExternalIntegrationSourceCreateHandler != nil ||
@@ -1154,16 +1198,7 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		t.Fatal("external integration source handler was created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
-		config.Config{ManagementAPIEnabled: true},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil, nil,
-
-		nil,
-		nil)
+	enabled := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 
 	if enabled.ExternalIntegrationSourceListHandler == nil ||
 		enabled.ExternalIntegrationSourceDetailHandler == nil ||
@@ -1264,13 +1299,13 @@ func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
 		"providerModelService := managementprovidermodels.NewServiceWithOptions",
 		"routeStrategyService := managementroutestrategies.NewServiceWithOptions",
 	)
-	if !strings.Contains(block, "Logger:            logger") {
+	if !strings.Contains(block, "Logger:           logger") {
 		t.Fatal("server.go must inject the logger into the provider model service")
 	}
 }
 
 func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPAllowlistHandler != nil ||
 		disabled.ClientIPUnallowlistHandler != nil ||
 		disabled.ClientIPBlacklistHandler != nil ||
@@ -1278,16 +1313,7 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 		t.Fatal("client IP policy handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
-		config.Config{ManagementAPIEnabled: true},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil, nil,
-
-		nil,
-		nil)
+	enabled := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 
 	if enabled.ClientIPAllowlistHandler == nil ||
 		enabled.ClientIPUnallowlistHandler == nil ||
@@ -1324,21 +1350,12 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 }
 
 func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPStatsHandler != nil || disabled.ClientIPStatsDetailHandler != nil {
 		t.Fatal("client IP stats read handler was created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
-		config.Config{ManagementAPIEnabled: true},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil, nil,
-
-		nil,
-		nil)
+	enabled := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 
 	if enabled.ClientIPStatsHandler == nil || enabled.ClientIPStatsDetailHandler == nil {
 		t.Fatal("client IP stats read handler was not created while management API enabled")
@@ -1369,22 +1386,13 @@ func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerRouteStrategyDeleteOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.RouteStrategyDeleteHandler != nil ||
 		disabled.MyRouteStrategyDeleteHandler != nil {
 		t.Fatal("route strategy delete handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
-		config.Config{ManagementAPIEnabled: true},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil, nil,
-
-		nil,
-		nil)
+	enabled := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 
 	if enabled.RouteStrategyDeleteHandler == nil ||
 		enabled.MyRouteStrategyDeleteHandler == nil {
@@ -1518,4 +1526,17 @@ func appNodeDispatchSignature(secret string, body []byte) string {
 	_, _ = mac.Write([]byte("juhe-ai:account-health-check-dispatch:v1\n"))
 	_, _ = mac.Write(body)
 	return "v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func sourceBlockBetween(t *testing.T, source, startMarker, endMarker string) string {
+	t.Helper()
+	start := strings.Index(source, startMarker)
+	if start < 0 {
+		t.Fatalf("source marker %q not found", startMarker)
+	}
+	end := strings.Index(source[start+len(startMarker):], endMarker)
+	if end < 0 {
+		t.Fatalf("source marker %q not found after %q", endMarker, startMarker)
+	}
+	return source[start : start+len(startMarker)+end]
 }

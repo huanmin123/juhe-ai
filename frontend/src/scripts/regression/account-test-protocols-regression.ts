@@ -113,12 +113,12 @@ assertEqual(
 )
 assertEqual(
   validateAccountEndpointModes({ modes: ['message_token_counting'], type: 'api_key' }),
-  'Anthropic API Key 上游接口能力至少需要启用 Messages API (JSON) 或 Messages API (Streaming)',
+  'Anthropic 账户上游接口能力至少需要启用 Messages API (JSON) 或 Messages API (Streaming)',
   'Anthropic 必选 endpoint mode 校验必须使用上游接口能力文案'
 )
 assertEqual(
   validateAccountEndpointModes({ modes: ['count_tokens'], type: 'api_key' }),
-  'Gemini API Key 上游接口能力至少需要启用 generateContent (JSON) 或 streamGenerateContent (SSE)',
+  'Gemini 上游接口能力至少需要启用 generateContent (JSON)、streamGenerateContent (SSE) 或 Interactions',
   'Gemini 必选 endpoint mode 校验必须使用上游接口能力文案'
 )
 assertEqual(
@@ -137,8 +137,8 @@ assertFalse(isGatewaySupportedTestSelection([geminiAccount, geminiOpenAIChatAcco
 
 assertIncludes(accountTestModelsSource, 'response.testEndpointModes', '保存账户测试应保留后端返回的账户级请求形态作为兼容回退')
 assertIncludes(accountTestModelsSource, 'account.healthCheckEndpointMode', '保存账户测试应把账户保存的精确健康检查请求形态排到首位')
-assertIncludes(updateSelectableTestModelSource, 'accountTestEndpointModesForModelOption', '切换模型必须改用后端返回的模型与账户能力协议交集')
-assertIncludes(updateSelectableTestModelSource, 'testEndpointModes.value.includes', '切换模型后必须清除前一模型遗留的无效检查协议')
+assertIncludes(updateSelectableTestModelSource, 'normalizeEndpointModes(response.testEndpointModes)', '切换模型必须改用后端返回的模型与账户能力协议交集')
+assertIncludes(updateSelectableTestModelSource, "input.testForm.testEndpointMode = testEndpointModes.value[0] ?? 'account_default'", '切换模型后必须清除前一模型遗留的无效检查协议')
 assertNotIncludes(updateSelectableTestModelSource, 'supportedApiProtocols', '前端不能自行按模型协议标签二次推导检查协议')
 
 assertDeepEqual(

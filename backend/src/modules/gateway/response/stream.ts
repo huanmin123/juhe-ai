@@ -127,7 +127,9 @@ export async function pipeUpstreamStream(
   const gatewayErrorProtocol = protocolDriver.clientErrorProtocol
   const inspector = protocolDriver.createStreamInspector()
   const interpretProtocolFailures = options.interpretProtocolFailures !== false
-  const responseInspectionEnabled = options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0
+  const responseInspectionEnabled = interpretProtocolFailures
+    && options.responseInspectionContext?.clientProfile !== 'generic_anthropic'
+    && (options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0)
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,

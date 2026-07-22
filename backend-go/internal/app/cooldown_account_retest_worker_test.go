@@ -6,10 +6,12 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
+	job "juhe-ai/backend-go/internal/jobs/cooldownaccountretest"
 	"juhe-ai/backend-go/internal/jobs/queue"
 	module "juhe-ai/backend-go/internal/modules/cooldownaccountretest"
 	"juhe-ai/backend-go/internal/store/port"
@@ -55,6 +57,13 @@ func TestRunCooldownAccountRetestWorkerMissingProbeFailsBeforeRuntimeDependencie
 	}
 }
 
+func TestCooldownAccountRetestTaskBudgetReservesOutcomeAndShutdownMargin(t *testing.T) {
+	wantMinimum := module.DefaultTaskTimeout + module.DefaultOutcomeTimeout + 5*time.Second
+	if job.DefaultTaskTimeout < wantMinimum {
+		t.Fatalf("Asynq task timeout = %s, want at least %s", job.DefaultTaskTimeout, wantMinimum)
+	}
+}
+
 func TestCooldownAccountRetestSchedulerCarriesCursorAndSettingsAcrossPages(t *testing.T) {
 	now := time.Date(2026, 7, 22, 9, 30, 0, 0, time.UTC)
 	nextCursor := &port.CooldownAccountRetestCursor{CooldownUntil: now, ID: "acct_1"}
@@ -87,6 +96,29 @@ func TestCooldownAccountRetestSchedulerCarriesCursorAndSettingsAcrossPages(t *te
 	}
 	if runner.Cursor() != nil {
 		t.Fatalf("cursor = %+v, want reset after final page", runner.Cursor())
+	}
+}
+
+func TestCooldownAccountRetestSchedulerBoundsRedisEnqueueConcurrency(t *testing.T) {
+	candidates := make([]port.CooldownAccountRetestCandidate, 20)
+	for i := range candidates {
+		candidates[i] = port.CooldownAccountRetestCandidate{ID: "acct_" + strconv.Itoa(i), ConfigRevision: 1}
+	}
+	store := &cooldownAccountRetestRuntimeStoreStub{pages: []port.CooldownAccountRetestPage{{Candidates: candidates}}}
+	enqueuer := &cooldownAccountRetestConcurrencyEnqueuerStub{}
+	runner := newCooldownAccountRetestSchedulerRunner(
+		store,
+		cooldownAccountRetestSettingsReaderStub{settings: CooldownAccountRetestScheduleSettings{
+			Interval: time.Second, BatchSize: len(candidates), MaxPauseMinutes: 7, MaxRecoveryHours: 12,
+		}},
+		enqueuer,
+		cooldownAccountRetestCapacityStub{},
+	)
+	if _, err := runner.RunPage(t.Context(), time.Now()); err != nil {
+		t.Fatalf("RunPage() error = %v", err)
+	}
+	if maxActive := enqueuer.maxActive.Load(); maxActive > int32(module.DefaultEnqueueWorkers) {
+		t.Fatalf("concurrent enqueue calls = %d, want at most %d", maxActive, module.DefaultEnqueueWorkers)
 	}
 }
 
@@ -126,13 +158,13 @@ func TestPostgresCooldownAccountRetestSettingsReaderMapsRequiredValues(t *testin
 	}
 }
 
-func TestCooldownAccountRetestQueueCapacityUsesPendingAndActive(t *testing.T) {
+func TestCooldownAccountRetestQueueCapacityUsesPendingActiveAndRetry(t *testing.T) {
 	inspector := &cooldownAccountRetestQueueInspectorStub{info: queue.QueueInfo{Pending: 4, Active: 2, Retry: 100, Archived: 200}}
 	snapshot, err := (cooldownAccountRetestQueueCapacity{inspector: inspector}).CooldownAccountRetestQueueSnapshot(t.Context())
 	if err != nil {
 		t.Fatalf("CooldownAccountRetestQueueSnapshot() error = %v", err)
 	}
-	if snapshot.PendingCount != 4 || snapshot.RunningCount != 2 {
+	if snapshot.PendingCount != 4 || snapshot.RunningCount != 2 || snapshot.RetryCount != 100 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 }
@@ -174,6 +206,24 @@ type cooldownAccountRetestEnqueuerStub struct {
 
 func (s *cooldownAccountRetestEnqueuerStub) EnqueueCooldownAccountRetest(_ context.Context, task port.CooldownAccountRetestTask) (bool, error) {
 	s.tasks = append(s.tasks, task)
+	return true, nil
+}
+
+type cooldownAccountRetestConcurrencyEnqueuerStub struct {
+	active    atomic.Int32
+	maxActive atomic.Int32
+}
+
+func (s *cooldownAccountRetestConcurrencyEnqueuerStub) EnqueueCooldownAccountRetest(context.Context, port.CooldownAccountRetestTask) (bool, error) {
+	active := s.active.Add(1)
+	defer s.active.Add(-1)
+	for {
+		observed := s.maxActive.Load()
+		if observed >= active || s.maxActive.CompareAndSwap(observed, active) {
+			break
+		}
+	}
+	time.Sleep(10 * time.Millisecond)
 	return true, nil
 }
 

@@ -64,10 +64,10 @@ try {
       systemAccountId: 'sys_admin',
       apiKeyId: apiKey.id,
       groupId: group.id,
-      groupOwnerSystemAccountId: 'sys_admin',
+      groupOwnerSystemAccountId: access.systemAccountId,
       groupAccessType: 'owner' as const,
       accountId: account.id,
-      accountOwnerSystemAccountId: 'sys_admin',
+      accountOwnerSystemAccountId: access.systemAccountId,
       accountAccessType: 'owner' as const,
       endpoint: '/v1/chat/completions',
       providerCode: 'gpt',
@@ -98,10 +98,10 @@ try {
       systemAccountId: 'sys_admin',
       apiKeyId: apiKey.id,
       groupId: group.id,
-      groupOwnerSystemAccountId: 'sys_admin',
+      groupOwnerSystemAccountId: access.systemAccountId,
       groupAccessType: 'owner' as const,
       accountId: account.id,
-      accountOwnerSystemAccountId: 'sys_admin',
+      accountOwnerSystemAccountId: access.systemAccountId,
       accountAccessType: 'owner' as const,
       endpoint: '/v1/chat/completions',
       providerCode: 'gpt',
@@ -117,6 +117,7 @@ try {
     }
   })
   usageRecordQueue.enqueueUsageRecordsLocal(shutdownRecords)
+  assert.equal(usageRecordQueue.peekPendingUsageRecordForTest()?.accountId, account.id, '完整 owner 访问快照进入队列后应保留账号范围')
   usageRecordQueue.flushUsageRecordQueue()
   await usageRecordQueue.flushUsageRecordQueueForShutdown()
 

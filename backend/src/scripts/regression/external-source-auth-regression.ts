@@ -300,9 +300,10 @@ async function assertBuiltInSourceManagement(baseUrl: string, adminCookie: strin
   const builtInSource = builtInList.body.data.items.find((item: any) => item.id === builtInSourceId)
   assert(builtInSource, '外部来源授权列表应默认包含内置测试来源')
   assert.equal(builtInSource.isBuiltIn, true, '内置测试来源应带只读标识')
-  assert.equal(builtInSource.tokenCount, 1, '外部来源列表应只对当前页批量回填 tokenCount')
-  assert.equal(builtInSource.activeTokenCount, 1, '外部来源列表应只对当前页批量回填 activeTokenCount')
-  assert.equal(builtInSource.primaryToken?.isBuiltIn, true, '外部来源列表应返回内置主 Token 摘要')
+  assert.equal(Object.hasOwn(builtInSource, 'tokenCount'), false, '轻量来源列表不应回填 tokenCount')
+  assert.equal(Object.hasOwn(builtInSource, 'activeTokenCount'), false, '轻量来源列表不应回填 activeTokenCount')
+  assert(builtInSource.primaryToken, '外部来源列表应返回主 Token 轻量摘要')
+  assert.equal(Object.hasOwn(builtInSource.primaryToken, 'isBuiltIn'), false, '主 Token 轻量摘要不应携带详情标识')
   assert.equal(builtInSource.primaryToken?.tokenPrefix, builtInTestToken.slice(0, 8), '主 Token 摘要应保留前缀')
   assert.equal(builtInSource.primaryToken?.tokenSuffix, builtInTestToken.slice(-8), '主 Token 摘要应保留后缀')
   for (const sensitiveField of ['token', 'tokenHash', 'tokenSecretEncrypted']) {
@@ -695,9 +696,14 @@ async function assertManagementSourceLifecycle(baseUrl: string, adminCookie: str
     notes: '用于覆盖公开接口授权新增和删除'
   })
   assert.equal(managementCreatedSource.status, 201, '管理员应能新增公开接口来源授权')
-  const managementSourceId = managementCreatedSource.body.data.source.id as string
   const managementTokenId = managementCreatedSource.body.data.token.id as string
   const managementToken = managementCreatedSource.body.data.token.token as string
+  const managementSourceList = await requestJson(baseUrl, '/__aisys__/api/external-integration-sources?keyword=%E7%AE%A1%E7%90%86%20API%20%E5%88%A0%E9%99%A4%E5%9B%9E%E5%BD%92%E6%9D%A5%E6%BA%90&pageSize=10', {
+    Cookie: adminCookie
+  })
+  assert.equal(managementSourceList.status, 200, '新增后应能从轻量来源列表读取来源标识')
+  const managementSourceId = managementSourceList.body.data.items.find((item: any) => item.name === '管理 API 删除回归来源')?.id as string | undefined
+  assert(managementSourceId, '新增来源应出现在管理列表中')
   const managementTokenSecret = await requestJson(baseUrl, `/__aisys__/api/external-integration-sources/${managementSourceId}/tokens/${managementTokenId}/secret`, {
     Cookie: adminCookie
   })

@@ -191,6 +191,7 @@
       :has-account-type="hasAccountType"
       :is-api-key-form="isApiKeyForm"
       :is-management-view="isManagementView"
+      :is-anthropic-o-auth-form="isAnthropicOAuthForm"
       :is-o-auth-form="isOAuthForm"
       :is-token-credential-form="isTokenCredentialForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
@@ -263,15 +264,13 @@ import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
-import { usePageDataActivation } from '@/composables/usePageDataActivation'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { AccountDraftTestAccountPayload } from '@/api/client'
-import { api, pageDataApi } from '@/api/client'
+import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import { myAccountsPageDataActivationManifest } from '@/shared/pageDataActivationManifests'
 import type { AccountSummary, AccountTagSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
@@ -337,15 +336,6 @@ const balanceQueryTesting = ref(false)
 const batchDisableConfirmOpen = ref(false)
 const batchDisableConfirmLoading = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-const pageDataActivation = usePageDataActivation({
-  enabled: !isManagementView.value,
-  manifest: {
-    ...myAccountsPageDataActivationManifest,
-    domains: ['accounts.static', 'accounts.options', 'providers.catalog']
-  },
-  viewScope: 'self',
-  confirm: pageDataApi.confirm
-})
 const {
   loading,
   accounts,
@@ -380,7 +370,6 @@ const {
   resetFilters: resetAccountListFilters
 } = useAccountListData({
   isManagementView,
-  pageDataActivation,
   scopedSystemAccountId,
   onLoaded: handleAccountListLoaded
 })
@@ -420,7 +409,6 @@ const {
 } = useAccountFilterTagOptions({
   accountScopeParams,
   isManagementView,
-  pageDataActivation
 })
 
 function handleAccountListLoaded(selectableAccountIds: Set<string>) {
@@ -610,6 +598,7 @@ const {
   handleModalCancel,
   hasAccountType,
   isApiKeyForm,
+  isAnthropicOAuthForm,
   isOAuthForm,
   isTokenCredentialForm,
   isOpenAIOAuthForm,
@@ -650,7 +639,6 @@ const {
   loadAccountOptions: loadAccountAuxiliaryOptions,
   loadGroupOptions,
   loadData,
-  pageDataActivation,
   providers,
   draftApiKeyTestSnapshot,
   systemAccountSelection: computed(() => filters.systemAccount),
@@ -949,7 +937,6 @@ async function handleBatchEditSaved(): Promise<void> {
 }
 
 onMounted(() => {
-  if (pageDataActivation) return
   void loadData()
   void loadAccountAuxiliaryOptions(accountScopeParams.value?.systemAccountId).catch((error) => {
     console.error(error)

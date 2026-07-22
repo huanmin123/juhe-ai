@@ -14,6 +14,14 @@ assert.equal(markRouteAssetReload('/accounts', { storage, now: () => 1_000 }), t
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 30_999 }), false)
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 31_000 }), false)
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 31_001 }), true)
+assert.equal(markRouteAssetReload('/a', { storage, now: () => 40_000 }), true)
+assert.equal(markRouteAssetReload('/b', { storage, now: () => 40_100 }), true)
+assert.equal(shouldReloadRouteAsset('/a', { storage, now: () => 40_200 }), false)
+assert.equal(shouldReloadRouteAsset('/b', { storage, now: () => 40_200 }), false)
+assert.equal(shouldReloadRouteAsset('/a', { storage, now: () => 70_001 }), true)
+assert.equal(shouldReloadRouteAsset('/b', { storage, now: () => 70_001 }), false)
+storedValues.set('juhe-ai:route-asset-reload', JSON.stringify({ path: '/legacy', at: 80_000 }))
+assert.equal(shouldReloadRouteAsset('/legacy', { storage, now: () => 80_100 }), false)
 assert.equal(
   shouldReloadRouteAsset('/accounts', {
     storage: {

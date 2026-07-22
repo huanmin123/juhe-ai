@@ -290,6 +290,12 @@ function policyMatchesRuntimeContext(
   if (hasClientProfileMatcher) {
     if (!context?.clientProfile || !firstExactMatch(context.clientProfile, policy.match.clientProfiles)) return false
   }
+  if (!hasClientProfileMatcher && policy.scopeType === 'provider' && policy.providerCode) {
+    const preciseClientProfile = context?.clientProfile
+    if (preciseClientProfile !== 'codex' && preciseClientProfile !== 'claude_code' && preciseClientProfile !== 'gemini_cli') {
+      return false
+    }
+  }
   if (
     !hasClientProfileMatcher
     && policy.match.errorCodes?.length

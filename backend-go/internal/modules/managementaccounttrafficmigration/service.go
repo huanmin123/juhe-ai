@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -62,8 +61,6 @@ type Options struct {
 	RuntimeMigrator          RuntimeMigrator
 	AccountLookupInvalidator AccountLookupInvalidator
 	GatewayInvalidator       GatewayRuntimeInvalidator
-	GranteeReader            accountpagedata.GranteeReader
-	PageDataPublisher        accountpagedata.Publisher
 	Logger                   *slog.Logger
 	Now                      func() time.Time
 }
@@ -211,25 +208,6 @@ func (s *Service) afterCommit(ctx context.Context, result port.ManagementAccount
 		if err := s.opts.GatewayInvalidator.InvalidateGatewayRuntime(postCtx, GatewayRuntimeReason); err != nil {
 			s.opts.Logger.WarnContext(postCtx, "账户流量迁移后网关运行态失效失败", "accountId", result.SourceAccount.ID, "error", err)
 		}
-	}
-	if s.opts.PageDataPublisher == nil {
-		return
-	}
-	owners := []string{result.SourceAccount.SystemAccountID}
-	allScopes := false
-	if result.SourceAccount.AccessType != "authorized" {
-		var err error
-		owners, allScopes, err = accountpagedata.ResolveOwners(postCtx, s.opts.GranteeReader, result.SourceAccount.ID, []string{result.SourceAccount.OwnerSystemAccountID})
-		if err != nil {
-			s.opts.Logger.WarnContext(postCtx, "账户流量迁移后页面数据 owner 查询失败", "accountId", result.SourceAccount.ID, "error", err)
-		}
-	}
-	if err := s.opts.PageDataPublisher.PublishAccountRuntimeChange(postCtx, accountpagedata.ChangeInput{
-		AccountID: result.SourceAccount.ID, Operation: accountpagedata.OperationUpsert,
-		OwnerSystemAccountIDs: accountpagedata.NormalizeOwnerIDs(owners), AllScopes: allScopes,
-		FieldMask: []string{"status", "schedulable", "cooldownUntil"},
-	}); err != nil {
-		s.opts.Logger.WarnContext(postCtx, "账户流量迁移后页面数据失效失败", "accountId", result.SourceAccount.ID, "error", err)
 	}
 }
 

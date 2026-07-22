@@ -13,9 +13,9 @@ import (
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/jobs/queue"
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/gatewayclientcatalog"
 	"juhe-ai/backend-go/internal/modules/managementaccountauthorizeddispatch"
 	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
@@ -72,6 +72,7 @@ import (
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/recorddispatch"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 	"juhe-ai/backend-go/internal/version"
@@ -185,30 +186,23 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAPIRateLimitSettingsVersionReader,
 	)
 
-	var accountsStaticResetPublisher managementPageDataPublisher
-	if cfg.ManagementAPIEnabled || cfg.PublicAPIEnabled {
-		publisher, closePublisher, err := newRecoveringAccountsStaticResetPublisher(
-			ctx, stateRedis, cacheRedis, cfg.RedisNamespace, store, logger,
-		)
-		if err != nil {
-			return err
-		}
-		defer closePublisher()
-		accountsStaticResetPublisher = publisher
-	}
+	recordDispatcherResources := make([]recordDispatcherResource, 0, 2)
+	defer shutdownRecordDispatchers(&recordDispatcherResources, cfg.ShutdownTimeout, logger)
+
 	publicAPILogQueue, err := newPublicAPILogQueue(cfg)
 	if err != nil {
 		return err
 	}
 	publicAPILogQueueOwner := publicAPILogQueue
-	if publicAPILogQueueOwner != nil {
-		defer closePublicAPILogQueue(publicAPILogQueueOwner)
-	}
 	var publicAPILogSubmitter httpapi.PublicAPILogSubmitter
 	if publicAPILogQueueOwner != nil {
 		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueueOwner, logger)
 		publicAPILogSubmitter = publicAPILogDispatcher
-		defer shutdownRecordDispatcher(publicAPILogDispatcher, cfg.ShutdownTimeout, logger, "public API log")
+		recordDispatcherResources = append(recordDispatcherResources, recordDispatcherResource{
+			dispatcher:      publicAPILogDispatcher,
+			closeDependency: publicAPILogQueueOwner.Close,
+			recordType:      "public API log",
+		})
 	}
 	// The owner stays stable if handler assembly replaces its compatibility return value.
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
@@ -218,7 +212,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		stateRedis,
 		PublicAPIHandlerOptions{
 			APIKeyInvalidator: systemAccountInvalidator,
-			PageDataPublisher: accountsStaticResetPublisher,
 			logQueue:          publicAPILogQueueOwner,
 			logSubmitter:      publicAPILogSubmitter,
 		},
@@ -230,9 +223,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	if managementOperationLogQueue != nil {
-		defer func() { _ = managementOperationLogQueue.Close() }()
-	}
 	var managementOperationLogSubmitter httpapi.ManagementOperationLogSubmitter
 	if managementOperationLogQueue != nil {
 		managementOperationLogDispatcher := httpapi.NewManagementOperationLogDispatcher(
@@ -241,7 +231,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			logger,
 		)
 		managementOperationLogSubmitter = managementOperationLogDispatcher
-		defer shutdownRecordDispatcher(managementOperationLogDispatcher, cfg.ShutdownTimeout, logger, "management operation log")
+		recordDispatcherResources = append(recordDispatcherResources, recordDispatcherResource{
+			dispatcher:      managementOperationLogDispatcher,
+			closeDependency: managementOperationLogQueue.Close,
+			recordType:      "management operation log",
+		})
 	}
 	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
 	if err != nil {
@@ -267,11 +261,18 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		managementOperationLogSubmitter,
 		logger,
 		systemAccountInvalidator,
-		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
 		catalogSnapshotBridge,
 	)
+	var gatewayModelsHandler http.Handler
+	if cfg.GatewayModelsEnabled {
+		gatewayModelsService := gatewayclientcatalog.NewService(store)
+		gatewayModelsHandler = httpapi.NewGatewayModelsHandler(httpapi.GatewayModelsHandlerOptions{
+			Authorizer: httpapi.NewGatewayModelsCredentialAuthorizer(store),
+			Catalog:    httpapi.NewGatewayModelsCatalog(gatewayModelsService),
+		})
+	}
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
 		Logger:                                            logger,
@@ -284,6 +285,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
 		SystemAPIAuthenticatedRateLimiter:                 httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, cfg.RedisNamespace),
 		PublicAPIHandler:                                  publicAPIHandler,
+		GatewayModelsHandler:                              gatewayModelsHandler,
 		NodeModelCatalogBridgeReadinessProber:             catalogSnapshotBridge,
 		ManagementAPIAuthMiddleware:                       managementHandlers.AuthMiddleware,
 		ManagementAPIAuthTouchMiddleware:                  managementHandlers.AuthTouchMiddleware,
@@ -493,7 +495,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
 		ManagementSystemMetricsHandler:                    managementHandlers.SystemMetricsHandler,
-		ManagementPageDataConfirmHandler:                  managementHandlers.PageDataConfirmHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 		ManagementStatsAccountUsageHandler:                managementHandlers.StatsAccountUsageHandler,
@@ -746,7 +747,6 @@ type managementAPIHandlers struct {
 	AnnouncementPublicReadHandler           http.Handler
 	AnnouncementsHandler                    http.Handler
 	SystemMetricsHandler                    http.Handler
-	PageDataConfirmHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
 	StatsAccountUsageHandler                http.Handler
@@ -775,14 +775,53 @@ type managementAPIInvalidator interface {
 
 type recordDispatcherShutdowner interface {
 	Shutdown(context.Context) error
+	Done() <-chan struct{}
 }
 
-func shutdownRecordDispatcher(dispatcher recordDispatcherShutdowner, timeout time.Duration, logger *slog.Logger, recordType string) {
+type recordDispatcherResource struct {
+	dispatcher      recordDispatcherShutdowner
+	closeDependency func() error
+	recordType      string
+}
+
+func shutdownRecordDispatchers(resources *[]recordDispatcherResource, timeout time.Duration, logger *slog.Logger) {
+	if resources == nil || len(*resources) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := dispatcher.Shutdown(ctx); err != nil && logger != nil {
-		logger.Warn("记录派发器关闭超时",
-			slog.String("record_type", recordType),
+	shutdowners := make([]interface{ Shutdown(context.Context) error }, 0, len(*resources))
+	for _, resource := range *resources {
+		shutdowners = append(shutdowners, resource.dispatcher)
+	}
+	if err := recorddispatch.ShutdownAll(ctx, shutdowners...); err != nil && logger != nil {
+		logger.Warn("记录派发器共享关闭预算耗尽", slog.Any("error", err))
+	}
+	for _, resource := range *resources {
+		select {
+		case <-resource.dispatcher.Done():
+			closeRecordDispatcherDependency(resource, logger)
+		default:
+			if logger != nil {
+				logger.Warn("记录派发器仍在运行，等待完成后关闭依赖",
+					slog.String("record_type", resource.recordType),
+				)
+			}
+			go func(pending recordDispatcherResource) {
+				<-pending.dispatcher.Done()
+				closeRecordDispatcherDependency(pending, logger)
+			}(resource)
+		}
+	}
+}
+
+func closeRecordDispatcherDependency(resource recordDispatcherResource, logger *slog.Logger) {
+	if resource.closeDependency == nil {
+		return
+	}
+	if err := resource.closeDependency(); err != nil && logger != nil {
+		logger.Warn("记录派发器依赖关闭失败",
+			slog.String("record_type", resource.recordType),
 			slog.Any("error", err),
 		)
 	}
@@ -793,14 +832,13 @@ type gatewayCacheInvalidator interface {
 	publicapikeys.APIKeyGatewayCacheInvalidator
 }
 
-func newManagementAPIHandlerWithPageData(
+func newManagementAPIHandler(
 	cfg config.Config,
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
-	accountsStaticResetPublisher managementPageDataPublisher,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
@@ -812,7 +850,6 @@ func newManagementAPIHandlerWithPageData(
 		nil,
 		logger,
 		systemAccountInvalidator,
-		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
 		nil,
@@ -827,7 +864,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	operationLogSubmitter httpapi.ManagementOperationLogSubmitter,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
-	accountsStaticResetPublisher managementPageDataPublisher,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 	catalogSnapshotRebuilder managementprovidermodels.CatalogSnapshotRebuilder,
@@ -850,22 +886,20 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:             store,
-		Invalidator:       systemAccountInvalidator,
-		PageDataPublisher: accountsStaticResetPublisher,
-		CatalogRebuilder:  catalogSnapshotRebuilder,
-		Logger:            logger,
+		Store:            store,
+		Invalidator:      systemAccountInvalidator,
+		CatalogRebuilder: catalogSnapshotRebuilder,
+		Logger:           logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{
-			OptionReader:      store,
-			ListReader:        store,
-			DetailReader:      store,
-			CreateStore:       store,
-			Transactor:        store,
-			Invalidator:       systemAccountInvalidator,
-			PageDataPublisher: accountsStaticResetPublisher,
-			Logger:            logger,
+			OptionReader: store,
+			ListReader:   store,
+			DetailReader: store,
+			CreateStore:  store,
+			Transactor:   store,
+			Invalidator:  systemAccountInvalidator,
+			Logger:       logger,
 		},
 	)
 	responseInspectionInvalidator, _ := systemAccountInvalidator.(managementresponseinspectionpolicies.RuntimeInvalidator)
@@ -893,14 +927,11 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		UsageStatsTimezoneStore: store,
 		AccountConcurrency:      accountConcurrencyReader,
 		Invalidator:             systemAccountInvalidator,
-		PageDataPublisher:       accountsStaticResetPublisher,
 		Logger:                  logger,
 	})
 	accountService := managementaccounts.NewServiceWithOptions(managementaccounts.ServiceOptions{
-		Store:             store,
-		GranteeReader:     store,
-		PageDataPublisher: accountsStaticResetPublisher,
-		Logger:            logger,
+		Store:  store,
+		Logger: logger,
 	})
 	accountDetailService := managementaccountdetails.NewService(managementaccountdetails.ServiceOptions{
 		Reader:            store,
@@ -925,25 +956,23 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
 	accountCreateService := managementaccountcreate.NewService(managementaccountcreate.Options{
-		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
-		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
-		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		GatewayRuntimeInvalidator:  systemAccountInvalidator, Logger: logger,
 	})
 	accountUpdateService := managementaccountupdate.NewService(managementaccountupdate.Options{
-		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
-		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
-		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
+		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		GatewayRuntimeInvalidator:  systemAccountInvalidator, Logger: logger,
 	})
 	accountAuthorizedDispatchService := managementaccountauthorizeddispatch.NewService(managementaccountauthorizeddispatch.Options{
-		Store: store, GatewayInvalidator: systemAccountInvalidator,
-		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
+		Store: store, GatewayInvalidator: systemAccountInvalidator, Logger: logger,
 	})
 	accountImportService := managementaccountimport.NewService(managementaccountimport.Options{
 		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
 	})
 	accountTrafficMigrationService := managementaccounttrafficmigration.NewService(managementaccounttrafficmigration.Options{
-		Store: store, GatewayInvalidator: systemAccountInvalidator, GranteeReader: store,
-		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
+		Store: store, GatewayInvalidator: systemAccountInvalidator, Logger: logger,
 	})
 	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
@@ -962,14 +991,11 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
 		Details:            accountDetailService,
-		GranteeReader:      store,
-		PageDataPublisher:  accountsStaticResetPublisher,
 		GatewayInvalidator: systemAccountInvalidator,
 		Logger:             logger,
 	})
 	accountDeleteService := managementaccountdelete.NewService(managementaccountdelete.Options{
 		Store:                      store,
-		PageDataPublisher:          accountsStaticResetPublisher,
 		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		AuthorizationInvalidator:   systemAccountInvalidator,
 		GatewayRuntimeInvalidator:  systemAccountInvalidator,
@@ -977,8 +1003,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	accountGroupBindingService := managementaccountgroupbinding.NewService(managementaccountgroupbinding.Options{
 		Store:                      store,
-		GranteeReader:              store,
-		PageDataPublisher:          accountsStaticResetPublisher,
 		RuntimeInvalidator:         systemAccountInvalidator,
 		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		Logger:                     logger,
@@ -987,21 +1011,15 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		SystemAccountInvalidator: systemAccountInvalidator,
-		PageDataPublisher:        accountsStaticResetPublisher,
-		Logger:                   logger,
 	})
 	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
 		Store:                    store,
 		AuthorizationInvalidator: systemAccountInvalidator,
-		Publisher:                accountsStaticResetPublisher,
-		Logger:                   logger,
 	})
 	authorizationService := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		AuthorizationInvalidator: systemAccountInvalidator,
-		Publisher:                accountsStaticResetPublisher,
-		TeamReader:               store,
 		Logger:                   logger,
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
@@ -1064,14 +1082,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 			UsageStatsTimezoneReader: store,
 		},
 	)
-	var pageDataConfirmHandler http.Handler
-	if stateRedis != nil {
-		pageDataConfirmer, pageDataConfirmErr := redisplatform.NewPageDataChangeConfirmer(stateRedis, cfg.RedisNamespace)
-		pageDataConfirmHandler = httpapi.NewPageDataChangeConfirmHandler(pageDataChangeConfirmServiceAdapter{
-			confirmer: pageDataConfirmer,
-			initErr:   pageDataConfirmErr,
-		})
-	}
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config:         cfg,
 		Logger:         logger,
@@ -1286,9 +1296,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
 		AnnouncementPublicDetailHandler:         httpapi.NewAnnouncementPublicDetailHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
-		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
+		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, logger),
 		SystemMetricsHandler:                    httpapi.NewManagementSystemMetricsHandler(statsService),
-		PageDataConfirmHandler:                  pageDataConfirmHandler,
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 		StatsAccountUsageHandler:                httpapi.NewManagementStatsAccountUsageHandler(statsService),
@@ -1436,7 +1445,6 @@ type PublicAPIHandlerOptions struct {
 	NewLogID                     func() string
 	APIKeyInvalidator            publicapikeys.APIKeyGatewayCacheInvalidator
 	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
-	PageDataPublisher            accountpagedata.Publisher
 	logQueue                     *queue.Client
 	logSubmitter                 httpapi.PublicAPILogSubmitter
 	logQueueFactory              func(config.Config) (*queue.Client, error)
@@ -1526,7 +1534,6 @@ func newPublicAPIHandlerWithOptions(
 				cfg.UpstreamBaseURLPrivateAllowlist,
 				opts.APIKeyInvalidator,
 				accountHealthCheckDispatcher,
-				opts.PageDataPublisher,
 				logger,
 				cfg.NodeInternalRequestTimeout,
 				nil,
@@ -1555,19 +1562,12 @@ func newPublicAPIHandlerWithOptions(
 	return handler, logQueue, nil
 }
 
-func closePublicAPILogQueue(logQueue *queue.Client) {
-	if logQueue != nil {
-		_ = logQueue.Close()
-	}
-}
-
 func newPublicAPIHandlers(
 	store *postgresstore.Store,
 	credentialSecret string,
 	privateBaseURLAllowlist []string,
 	apiKeyInvalidator publicapikeys.APIKeyGatewayCacheInvalidator,
 	accountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher,
-	pageDataPublisher accountpagedata.Publisher,
 	logger *slog.Logger,
 	healthCheckDispatchTimeout time.Duration,
 	accountServiceFactory publicAccountServiceFactory,
@@ -1588,8 +1588,6 @@ func newPublicAPIHandlers(
 		Transactor:                 store,
 		ProviderModels:             providerModelService,
 		HealthCheckDispatcher:      accountHealthCheckDispatcher,
-		GranteeReader:              store,
-		PageDataPublisher:          pageDataPublisher,
 		HealthCheckDispatchTimeout: healthCheckDispatchTimeout,
 		Logger:                     logger,
 		Secret:                     credentialSecret,
