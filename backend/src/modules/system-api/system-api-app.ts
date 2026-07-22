@@ -71,14 +71,14 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(requestContextMiddleware)
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
+  app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   if (!options.bypassSystemApiRateLimitForTest) {
     app.use(systemApiPrefix, systemApiIpRateLimit)
-    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
   } else {
-    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
   }
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
-  app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(publicApiPrefix, systemApiDbAccessModeMiddleware(publicApiPrefix), systemApiDbServiceAdmissionControl)
 

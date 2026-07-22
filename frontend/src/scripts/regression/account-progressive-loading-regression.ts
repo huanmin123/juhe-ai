@@ -11,7 +11,7 @@ import type { AccountSummary, ProviderDefinition } from '../../types/domain/inde
 import { useAccountListData } from '../../views/accounts/useAccountListData.js'
 
 const mutableApi = api as unknown as {
-  providers: { options: (...args: unknown[]) => Promise<ProviderDefinition[]> }
+  providers: { definitions: (...args: unknown[]) => Promise<ProviderDefinition[]> }
   proxies: { options: (...args: unknown[]) => Promise<never[]> }
   myAccounts: { list: (...args: unknown[]) => Promise<AccountListPage> }
 }
@@ -27,7 +27,7 @@ interface AccountListPage {
   }
 }
 
-const originalProviderOptions = mutableApi.providers.options
+const originalProviderDefinitions = mutableApi.providers.definitions
 const originalProxyOptions = mutableApi.proxies.options
 const originalAccountList = mutableApi.myAccounts.list
 const originalConfirm = pageDataApi.confirm
@@ -58,7 +58,7 @@ try {
   }
   let resolveProviderOptions: ((value: ProviderDefinition[]) => void) | undefined
   let listStarted = false
-  mutableApi.providers.options = () => new Promise((resolve) => {
+  mutableApi.providers.definitions = () => new Promise((resolve) => {
     resolveProviderOptions = resolve
   })
   mutableApi.proxies.options = async () => []
@@ -79,7 +79,7 @@ try {
   assert.equal(await firstLoad, true)
   assert.equal(listData.accounts.value[0]?.name, '并行账户')
 
-  mutableApi.providers.options = async () => {
+  mutableApi.providers.definitions = async () => {
     throw new Error('provider options unavailable')
   }
   mutableApi.myAccounts.list = async () => accountPage(accountFixture('account_options_failed', '选项失败后账户'))
@@ -103,7 +103,7 @@ try {
     refreshAccountCalls += 1
     return accountPage(accountFixture('account_refresh', '手动刷新账户'))
   }
-  mutableApi.providers.options = async () => {
+  mutableApi.providers.definitions = async () => {
     refreshProviderCalls += 1
     return []
   }
@@ -117,7 +117,7 @@ try {
   assert.equal(refreshProviderCalls, providerCallsBeforeRefresh, '手动刷新列表不应失效并重查供应商筛选项')
   assert.deepEqual(confirmDomains.slice(confirmCountBeforeRefresh), [['accounts.static']], '手动刷新只应为账户列表执行一次轻量确认')
 } finally {
-  mutableApi.providers.options = originalProviderOptions
+  mutableApi.providers.definitions = originalProviderDefinitions
   mutableApi.proxies.options = originalProxyOptions
   mutableApi.myAccounts.list = originalAccountList
   pageDataApi.confirm = originalConfirm

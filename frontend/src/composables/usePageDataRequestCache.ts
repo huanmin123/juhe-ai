@@ -9,12 +9,13 @@ import {
   type PageDataCacheStorage,
   type PageDataConfirmOutcome,
   type PageDataLoadResult,
-  type PageDataRequestCacheDefinition,
+  type PageDataBoundRequestCacheDefinition,
+  type PageDataRequestCacheManagerOptions,
   type PageDataTabCoordinator
 } from '@/shared/pageDataCache'
 
 export interface UsePageDataRequestCacheOptions<T> {
-  resolveRequest: () => PageDataRequestCacheDefinition<T>
+  resolveRequest: () => PageDataBoundRequestCacheDefinition<T>
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
   confirmBatchKey?: string
   storage?: PageDataCacheStorage
@@ -23,6 +24,9 @@ export interface UsePageDataRequestCacheOptions<T> {
   immediate?: boolean
   initialData?: T
   confirmIntervalMs?: number
+  activation?: PageDataRequestCacheManagerOptions['activation']
+  writeEpoch?: PageDataRequestCacheManagerOptions['writeEpoch']
+  activationManaged?: boolean
 }
 
 export interface UsePageDataRequestCacheResult<T> {
@@ -44,7 +48,9 @@ export function usePageDataRequestCache<T>(options: UsePageDataRequestCacheOptio
     confirmBatchKey: options.confirmBatchKey,
     storage: options.storage,
     tabCoordinator: options.tabCoordinator ?? getDefaultPageDataTabCoordinator(),
-    now: options.now
+    now: options.now,
+    activation: options.activation,
+    writeEpoch: options.writeEpoch
   })
   const applyConfirmOutcome = (outcome: PageDataConfirmOutcome<T>): PageDataConfirmOutcome<T> => {
     if (!disposed && (outcome.state === 'updated' || outcome.state === 'unchanged' || outcome.state === 'unavailable')) {
@@ -53,20 +59,25 @@ export function usePageDataRequestCache<T>(options: UsePageDataRequestCacheOptio
     return outcome
   }
   const confirmCurrent = () => manager.confirmCurrent().then(applyConfirmOutcome)
-  const scheduler = new PageDataVisibleConfirmScheduler({
-    confirm: () => { void confirmCurrent() },
-    intervalMs: options.confirmIntervalMs
-  })
+  let scheduler: PageDataVisibleConfirmScheduler | undefined
+  if (!options.activationManaged) {
+    scheduler = new PageDataVisibleConfirmScheduler({
+      confirm: () => { void confirmCurrent() },
+      intervalMs: options.confirmIntervalMs
+    })
+  }
   const activationController = createPageDataActivationController({
-    start: () => scheduler.start(),
-    stop: () => scheduler.stop(),
-    onActivate: () => { void confirmCurrent().catch(() => undefined) }
+    start: () => { if (scheduler) scheduler.start() },
+    stop: () => { if (scheduler) scheduler.stop() },
+    onActivate: () => {
+      if (!options.activationManaged) void confirmCurrent().catch(() => undefined)
+    }
   })
   let operationGeneration = 0
   let removeSubscription: (() => void) | undefined
   let disposed = false
 
-  const run = async (operation: (request: PageDataRequestCacheDefinition<T>) => Promise<PageDataLoadResult<T>>): Promise<PageDataLoadResult<T>> => {
+  const run = async (operation: (request: PageDataBoundRequestCacheDefinition<T>) => Promise<PageDataLoadResult<T>>): Promise<PageDataLoadResult<T>> => {
     const generation = ++operationGeneration
     const request = options.resolveRequest()
     loading.value = true

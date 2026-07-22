@@ -93,6 +93,7 @@ import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -132,6 +133,7 @@ const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
 const providers = ref<ProviderDefinition[]>([])
+const providerRecovery = useKeepAliveSupersededRecovery(() => loadGroupOptions(false, true))
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
@@ -296,12 +298,13 @@ function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId' 
   return systemAccountId ? { systemAccountId } : undefined
 }
 
-async function loadGroupOptions(force = false): Promise<void> {
+async function loadGroupOptions(force = false, recoverSuperseded = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
-  if (!force && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
+  if (!force && !recoverSuperseded && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
     return
   }
 
+  const providerRecoveryRequest = providerRecovery.start()
   const providerList = await loadProviderOptionsResource({
     apply: (nextProviders) => {
       providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
@@ -309,7 +312,9 @@ async function loadGroupOptions(force = false): Promise<void> {
     force,
     isManagementView: isManagementView.value
   })
-  providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
+  providerRecovery.record(providerRecoveryRequest, providerList.state)
+  if (providerList.state === 'superseded') return
+  providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey
 }

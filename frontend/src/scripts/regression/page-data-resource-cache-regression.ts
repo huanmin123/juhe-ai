@@ -7,22 +7,24 @@ import type {
   PageDataConfirmResult,
   PageDataRevisionToken
 } from '../../api/domains/pageData'
+import type {
+  PageDataActivationHandle,
+  PageDataActivationParticipant
+} from '../../shared/pageDataActivationCoordinator'
 import {
   BrowserPageDataTabCoordinator,
   createMemoryPageDataCacheStorage,
   type PageDataLoadResult,
+  type PageDataResourceCacheDefinition,
   type PageDataTabCoordinator
 } from '../../shared/pageDataCache'
 
 const resourceModulePath = fileURLToPath(new URL('../../shared/pageDataResourceCache.ts', import.meta.url))
 assert.equal(existsSync(resourceModulePath), true, '必须实现统一 IndexedDB page-data resource cache')
 
-type ResourceRequest<T> = {
-  cacheKey: { scope: string; route: string; query: unknown; version: string | number }
+type ResourceRequest<T> = PageDataResourceCacheDefinition<T> & {
   domain: 'providers.catalog'
   viewScope: 'self'
-  loadNetwork: () => Promise<T>
-  maxStaleMs?: number
 }
 type ResourceCache = {
   load<T>(request: ResourceRequest<T>): Promise<PageDataLoadResult<T>>
@@ -34,6 +36,8 @@ type ResourceCacheConstructor = new (options: {
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
   tabCoordinator: PageDataTabCoordinator
   now?: () => Date
+  activation?: PageDataActivationHandle
+  writeEpoch?: (domain: 'providers.catalog') => number
 }) => ResourceCache
 
 const resourceModule = await import(pathToFileURL(resourceModulePath).href) as {
@@ -195,6 +199,154 @@ registryNowMs += 300_001
 assert.deepEqual((await registryCache.load(registryRequest())).data, ['registry-2'], '调用方未显式配置时必须采用 providers.catalog 注册表的 maxStaleMs，超时且确认失败后回源')
 assert.equal(registryNetworkLoads, 2)
 
+let managedRegisters = 0
+let managedStabilizes = 0
+let managedLegacyConfirms = 0
+const managedActivation: PageDataActivationHandle = {
+  register: async (participant) => {
+    managedRegisters += 1
+    assertManagedParticipant(participant)
+    return {
+      state: 'confirmed',
+      phase: 'pre',
+      participant,
+      result: { action: 'reload', token: token(8), serverTime: '2026-07-18T12:00:00.000Z' }
+    }
+  },
+  stabilize: async (participant) => {
+    managedStabilizes += 1
+    assertManagedParticipant(participant)
+    assert.equal(participant.baseline.sequence, 8)
+    return {
+      state: 'confirmed',
+      phase: 'post',
+      participant,
+      result: { action: 'unchanged', token: token(8), serverTime: '2026-07-18T12:00:00.000Z' }
+    }
+  },
+  trigger: () => undefined,
+  deactivate: () => undefined,
+  dispose: () => undefined
+}
+const managedResourceCache = new resourceModule.PageDataResourceCache({
+  storage: createMemoryPageDataCacheStorage(),
+  tabCoordinator,
+  activation: managedActivation,
+  writeEpoch: () => 12,
+  confirm: async () => {
+    managedLegacyConfirms += 1
+    throw new Error('受管 resource cache 不得调用私有 confirm')
+  }
+})
+const managedResource = await managedResourceCache.load({
+  ...request(),
+  cacheKey: { ...request().cacheKey, scope: 'self:managed-resource' },
+  loadNetwork: async () => ['managed-resource']
+})
+assert.deepEqual(managedResource.data, ['managed-resource'])
+assert.equal(managedResource.confirmed, true)
+assert.deepEqual([managedRegisters, managedStabilizes, managedLegacyConfirms], [1, 1, 0], 'resource cache 必须透传 activation/writeEpoch 并复用 pre/post barrier')
+
+const rebindingNowMs = Date.parse('2026-07-18T12:00:31.000Z')
+let rebindingPhase: 'unmanaged' | 'managed' = 'unmanaged'
+let rebindingUnmanagedLegacyConfirms = 0
+let rebindingManagedLegacyConfirms = 0
+let rebindingUnmanagedLoads = 0
+let rebindingManagedRegisters = 0
+let rebindingManagedStabilizes = 0
+let rebindingManagedLoads = 0
+const rebindingStorage = createMemoryPageDataCacheStorage({ now: () => new Date(rebindingNowMs) })
+const rebindingUnmanagedNetworkStarted = deferred<void>()
+const rebindingUnmanagedNetwork = deferred<string[]>()
+const rebindingRequest = (): ResourceRequest<string[]> => ({
+  ...request(),
+  cacheKey: { ...request().cacheKey, scope: 'self:rebinding' },
+  loadNetwork: async () => {
+    rebindingUnmanagedLoads += 1
+    rebindingUnmanagedNetworkStarted.resolve()
+    return rebindingUnmanagedNetwork.promise
+  }
+})
+const rebindingCache = new resourceModule.PageDataResourceCache({
+  storage: rebindingStorage,
+  tabCoordinator,
+  now: () => new Date(rebindingNowMs),
+  confirm: async () => {
+    if (rebindingPhase === 'unmanaged') rebindingUnmanagedLegacyConfirms += 1
+    else rebindingManagedLegacyConfirms += 1
+    return {
+      serverTime: new Date(rebindingNowMs).toISOString(),
+      domains: {
+        'providers.catalog': {
+          action: 'reload',
+          token: token(7)
+        }
+      }
+    }
+  }
+})
+const unmanagedPending = rebindingCache.load(rebindingRequest())
+await rebindingUnmanagedNetworkStarted.promise
+const reboundActivation: PageDataActivationHandle = {
+  register: async (participant) => {
+    rebindingManagedRegisters += 1
+    assert.equal(participant.writeEpoch, 21)
+    return {
+      state: 'confirmed', phase: 'pre', participant,
+      result: { action: 'reload', token: token(8), serverTime: new Date(rebindingNowMs).toISOString() }
+    }
+  },
+  stabilize: async (participant) => {
+    rebindingManagedStabilizes += 1
+    assert.equal(participant.writeEpoch, 21)
+    return {
+      state: 'confirmed', phase: 'post', participant,
+      result: { action: 'unchanged', token: token(8), serverTime: new Date(rebindingNowMs).toISOString() }
+    }
+  },
+  trigger: () => undefined,
+  deactivate: () => undefined,
+  dispose: () => undefined
+}
+const reboundWriteEpoch = () => 21
+const reboundNetworkStarted = deferred<void>()
+const reboundNetwork = deferred<string[]>()
+const reboundRequest = (): ResourceRequest<string[]> => ({
+  ...rebindingRequest(),
+  activation: reboundActivation,
+  writeEpoch: reboundWriteEpoch,
+  loadNetwork: async () => {
+    rebindingManagedLoads += 1
+    reboundNetworkStarted.resolve()
+    return reboundNetwork.promise
+  }
+})
+rebindingPhase = 'managed'
+const firstRebound = rebindingCache.load(reboundRequest())
+const secondRebound = rebindingCache.load(reboundRequest())
+await reboundNetworkStarted.promise
+rebindingUnmanagedNetwork.resolve(['unmanaged-late'])
+const unmanagedResult = await unmanagedPending
+assert.equal(unmanagedResult.superseded, true, '重绑定必须关闭旧 controller，使旧 pending 最终返回 superseded')
+const thirdRebound = rebindingCache.load(reboundRequest())
+await Promise.resolve()
+assert.equal(rebindingManagedLoads, 1, '旧 pending 的 finally 不得删除新绑定的 pending')
+reboundNetwork.resolve(['managed-rebound'])
+const rebound = await Promise.all([firstRebound, secondRebound, thirdRebound])
+assert.deepEqual(rebound.map((item) => item.data), [['managed-rebound'], ['managed-rebound'], ['managed-rebound']], 'managed 请求不得复用同 key 的 unmanaged pending/controller，相同新绑定仍应合并')
+assert.deepEqual(
+  [
+    rebindingUnmanagedLegacyConfirms,
+    rebindingManagedLegacyConfirms,
+    rebindingUnmanagedLoads,
+    rebindingManagedRegisters,
+    rebindingManagedStabilizes,
+    rebindingManagedLoads
+  ],
+  [1, 0, 1, 1, 1, 1],
+  '重绑定必须关闭旧 controller，并让相同新绑定继续合并并发'
+)
+
 const resourceSource = readFileSync(resourceModulePath, 'utf8')
 assert.match(resourceSource, /invalidateDefaultPageDataResourceCache[\s\S]{0,700}createPageDataCacheStorage\(\)/, '默认 resource cache 尚未实例化时也必须直接清理 IndexedDB domain')
 assert.match(resourceSource, /onDomainInvalidated/, 'resource cache 必须接收其他标签页发出的按域失效广播')
@@ -202,5 +354,17 @@ assert.match(resourceSource, /onDomainInvalidated/, 'resource cache 必须接收
 cache.close()
 routeCache.close()
 registryCache.close()
+managedResourceCache.close()
+rebindingCache.close()
 tabCoordinator.close()
 console.log('页面 resource cache 回归通过：cache-first、轻量确认、并发合并、scope 隔离和 domain 失效生效')
+
+function assertManagedParticipant(participant: PageDataActivationParticipant): void {
+  assert.equal(participant.domain, 'providers.catalog')
+  assert.equal(participant.writeEpoch, 12)
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  return { promise: new Promise<T>((next) => { resolve = next }), resolve }
+}
