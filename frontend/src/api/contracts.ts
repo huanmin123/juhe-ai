@@ -54,6 +54,7 @@ export interface ProxyListParams extends ListParams {
 export interface ProxyOptionParams {
   keyword?: string
   limit?: number
+  selectedIds?: string[]
 }
 
 export interface SystemAccountOptionsParams {

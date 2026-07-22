@@ -19,6 +19,10 @@ type ManagementAccountDetailSource struct {
 	CredentialsEncrypted  string
 	HasActiveManualSource bool
 	DetailJSON            string
+	ProxyProfileID        string
+	ProxyProfileName      string
+	ProxyProfileType      string
+	ProxyProfileEnabled   *bool
 }
 
 type ManagementAccountAPIKeyRuntimeState struct {

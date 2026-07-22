@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -47,6 +48,140 @@ func TestManagementOperationLogsHandlerRequiresAdminAndParsesQuery(t *testing.T)
 	}
 	if input.StartAt.IsZero() || input.EndAt.IsZero() || !input.StartAt.Before(input.EndAt) {
 		t.Fatalf("date range = %s - %s", input.StartAt, input.EndAt)
+	}
+}
+
+func TestManagementOperationLogsListReturnsExactListItemFields(t *testing.T) {
+	service := &managementOperationLogServiceStub{
+		listResult: managementoperationlogs.ListResult{
+			Items: []managementoperationlogs.ListItem{{
+				ID:                              "oplog_1",
+				TraceID:                         "req_1",
+				ActorSystemAccountID:            "sys_admin",
+				ActorDisplayName:                "管理员快照",
+				ActorSystemAccountName:          "管理员",
+				OperationScopeSystemAccountID:   "sys_user",
+				OperationScopeSystemAccountName: "普通用户",
+				Module:                          "accounts",
+				Action:                          "update_tags",
+				Summary:                         "更新账户标签",
+				CreatedAt:                       "2026-07-07T10:00:00Z",
+			}},
+			Total:    1,
+			Page:     1,
+			PageSize: 20,
+		},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
+	})(newManagementOperationLogsHandler(service, managementOperationLogScopeAdmin))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/operation-logs?pageSize=20", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data struct {
+			Items []map[string]any `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(body.Data.Items) != 1 {
+		t.Fatalf("items = %#v, want one item", body.Data.Items)
+	}
+	assertExactJSONKeys(t, body.Data.Items[0], []string{
+		"id",
+		"traceId",
+		"actorSystemAccountId",
+		"actorDisplayName",
+		"actorSystemAccountName",
+		"operationScopeSystemAccountId",
+		"operationScopeSystemAccountName",
+		"module",
+		"action",
+		"summary",
+		"createdAt",
+	})
+}
+
+func TestManagementOperationLogsDetailKeepsFullContract(t *testing.T) {
+	statusCode := 200
+	service := &managementOperationLogServiceStub{
+		detailFound: true,
+		detail: managementoperationlogs.Detail{
+			Summary: managementoperationlogs.Summary{
+				ID:                              "oplog_1",
+				TraceID:                         "req_1",
+				ActorSystemAccountID:            "sys_admin",
+				ActorUsername:                   "admin",
+				ActorDisplayName:                "管理员快照",
+				ActorSystemAccountName:          "管理员",
+				ActorRole:                       "admin",
+				OperationScopeSystemAccountID:   "sys_user",
+				OperationScopeSystemAccountName: "普通用户",
+				Mode:                            "admin",
+				Module:                          "accounts",
+				Action:                          "update_tags",
+				OperationKey:                    "accounts.update_tags",
+				ResourceType:                    "account",
+				ResourceID:                      "acct_1",
+				ResourceName:                    "主账号",
+				Summary:                         "更新账户标签",
+				DetailLevel:                     "full",
+				VisibilityScope:                 "targeted",
+				Method:                          "PATCH",
+				Path:                            "/__aisys__/api/accounts/acct_1/tags",
+				StatusCode:                      &statusCode,
+				ClientIP:                        "127.0.0.1",
+				CreatedAt:                       "2026-07-07T10:00:00Z",
+			},
+			Changes:   []port.OperationLogChange{{Field: "tags", Label: "标签"}},
+			Metadata:  map[string]any{"source": "test"},
+			Targets:   []managementoperationlogs.TargetSummary{{ID: "target_1", TargetType: "account", Relation: "primary", CreatedAt: "2026-07-07T10:00:00Z"}},
+			Viewers:   []managementoperationlogs.ViewerSummary{{SystemAccountID: "sys_admin", VisibilityReason: "actor_self", DetailLevel: "full", CreatedAt: "2026-07-07T10:00:00Z"}},
+			UserAgent: "unit-test",
+		},
+	}
+	handler := newManagementOperationLogsHandler(service, managementOperationLogScopeAdmin)
+	req := managementOperationLogDetailRequest("/__aisys__/api/operation-logs/oplog_1", "oplog_1")
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode detail response: %v", err)
+	}
+	assertExactJSONKeys(t, body.Data, []string{
+		"id", "traceId", "actorSystemAccountId", "actorUsername", "actorDisplayName", "actorSystemAccountName",
+		"actorRole", "operationScopeSystemAccountId", "operationScopeSystemAccountName", "mode", "module", "action",
+		"operationKey", "resourceType", "resourceId", "resourceName", "summary", "detailLevel", "visibilityScope",
+		"method", "path", "statusCode", "clientIp", "createdAt", "changes", "metadata", "targets", "viewers", "userAgent",
+	})
+}
+
+func assertExactJSONKeys(t *testing.T, value map[string]any, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(value))
+	for key := range value {
+		got = append(got, key)
+	}
+	slices.Sort(got)
+	want = slices.Clone(want)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("JSON keys = %v, want %v", got, want)
 	}
 }
 

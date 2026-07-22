@@ -5,10 +5,13 @@ WITH visible_accounts AS (
     accounts.name, accounts.provider_code, accounts.type, accounts.status, accounts.schedulable,
     accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
     accounts.account_expires_at, accounts.last_used_at, accounts.updated_at,
+    accounts.proxy_profile_id, proxy_profiles.name AS proxy_profile_name,
+    proxy_profiles.type AS proxy_profile_type, proxy_profiles.enabled AS proxy_profile_enabled,
     'owner'::text AS access_type, NULL::text AS account_authorization_id,
     NULL::text AS authorization_status, NULL::timestamptz AS authorization_expires_at
   FROM juhe_business.accounts AS accounts
   INNER JOIN juhe_business.system_accounts AS system_accounts ON system_accounts.id = accounts.system_account_id
+  LEFT JOIN juhe_business.proxy_profiles AS proxy_profiles ON proxy_profiles.id = accounts.proxy_profile_id
   WHERE accounts.deleted_at IS NULL
     AND accounts.authorization_instance_source_account_id IS NULL
     AND accounts.authorization_instance_authorization_id IS NULL
@@ -22,6 +25,8 @@ WITH visible_accounts AS (
     accounts.name, source_accounts.provider_code, source_accounts.type, accounts.status, accounts.schedulable,
     source_accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
     accounts.account_expires_at, accounts.last_used_at, accounts.updated_at,
+    source_accounts.proxy_profile_id, proxy_profiles.name AS proxy_profile_name,
+    proxy_profiles.type AS proxy_profile_type, proxy_profiles.enabled AS proxy_profile_enabled,
     'authorized'::text AS access_type, resource_authorizations.id AS account_authorization_id,
     resource_authorizations.status AS authorization_status, resource_authorizations.expires_at AS authorization_expires_at
   FROM juhe_business.accounts AS accounts
@@ -34,6 +39,7 @@ WITH visible_accounts AS (
     AND resource_authorizations.grantee_system_account_id = accounts.system_account_id
     AND resource_authorizations.status IN ('active', 'paused', 'expired')
   INNER JOIN juhe_business.system_accounts AS grantee_accounts ON grantee_accounts.id = accounts.system_account_id
+  LEFT JOIN juhe_business.proxy_profiles AS proxy_profiles ON proxy_profiles.id = source_accounts.proxy_profile_id
   WHERE accounts.deleted_at IS NULL
     AND sqlc.arg(system_account_id)::text <> ''
     AND accounts.system_account_id = sqlc.arg(system_account_id)::text
@@ -45,14 +51,13 @@ SELECT
   visible_accounts.super_priority_enabled, visible_accounts.fallback_enabled,
   visible_accounts.account_expires_at, visible_accounts.last_used_at, visible_accounts.access_type,
   visible_accounts.account_authorization_id, visible_accounts.authorization_status, visible_accounts.authorization_expires_at,
+  visible_accounts.proxy_profile_id, visible_accounts.proxy_profile_name,
+  visible_accounts.proxy_profile_type, visible_accounts.proxy_profile_enabled,
   coalesce(usage_stats.request_count, 0)::bigint AS request_count,
   coalesce(usage_stats.input_tokens, 0)::bigint AS input_tokens,
   coalesce(usage_stats.output_tokens, 0)::bigint AS output_tokens,
   coalesce(usage_stats.total_cost_usd, 0)::double precision AS total_cost,
-  CASE WHEN coalesce(usage_stats.request_count, 0) > 0
-    THEN round(usage_stats.success_count::numeric * 1000000 / usage_stats.request_count)::bigint
-    ELSE NULL::bigint
-  END AS quality_score
+  coalesce(usage_stats.success_count, 0)::bigint AS success_count
 FROM visible_accounts
 LEFT JOIN juhe_stats.usage_stats_totals AS usage_stats
   ON usage_stats.system_account_id = visible_accounts.system_account_id

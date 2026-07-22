@@ -24,6 +24,9 @@ WITH visible_accounts AS (
     accounts.health_check_model,
     accounts.health_check_endpoint_mode,
     accounts.proxy_profile_id,
+    proxy_profiles.name AS proxy_profile_name,
+    proxy_profiles.type AS proxy_profile_type,
+    proxy_profiles.enabled AS proxy_profile_enabled,
     accounts.schedulable,
     accounts.availability_schedule_json,
     accounts.account_expires_at,
@@ -60,6 +63,8 @@ WITH visible_accounts AS (
   FROM juhe_business.accounts AS accounts
   INNER JOIN juhe_business.system_accounts AS system_accounts
     ON system_accounts.id = accounts.system_account_id
+  LEFT JOIN juhe_business.proxy_profiles AS proxy_profiles
+    ON proxy_profiles.id = accounts.proxy_profile_id
   WHERE accounts.id = sqlc.arg(account_id)::text
     AND accounts.deleted_at IS NULL
     AND accounts.authorization_instance_source_account_id IS NULL
@@ -96,6 +101,9 @@ WITH visible_accounts AS (
     accounts.health_check_model,
     accounts.health_check_endpoint_mode,
     source_accounts.proxy_profile_id,
+    proxy_profiles.name AS proxy_profile_name,
+    proxy_profiles.type AS proxy_profile_type,
+    proxy_profiles.enabled AS proxy_profile_enabled,
     accounts.schedulable,
     accounts.availability_schedule_json,
     accounts.account_expires_at,
@@ -153,6 +161,8 @@ WITH visible_accounts AS (
     ON grantee_accounts.id = accounts.system_account_id
   INNER JOIN juhe_business.system_accounts AS owner_accounts
     ON owner_accounts.id = source_accounts.system_account_id
+  LEFT JOIN juhe_business.proxy_profiles AS proxy_profiles
+    ON proxy_profiles.id = source_accounts.proxy_profile_id
   WHERE accounts.id = sqlc.arg(account_id)::text
     AND accounts.deleted_at IS NULL
     AND (
@@ -171,6 +181,10 @@ SELECT
   visible_accounts.config_revision,
   visible_accounts.credentials_encrypted,
   visible_accounts.has_active_manual_source,
+  visible_accounts.proxy_profile_id,
+  visible_accounts.proxy_profile_name,
+  visible_accounts.proxy_profile_type,
+  visible_accounts.proxy_profile_enabled,
   jsonb_strip_nulls(jsonb_build_object(
     'id', visible_accounts.id,
     'configRevision', visible_accounts.config_revision,

@@ -46,8 +46,9 @@ type Service struct {
 }
 
 type Input struct {
-	AccountID       string
-	SystemAccountID string
+	AccountID            string
+	SystemAccountID      string
+	CanViewDisabledProxy bool
 }
 
 type ResourcePermissions struct {
@@ -129,6 +130,7 @@ func (s *Service) Get(ctx context.Context, input Input, level Level) (map[string
 	detail["todayUsage"] = emptyUsage()
 	detail["usage"] = emptyUsage()
 	detail["effectiveAvailability"] = effectiveAvailability(detail, s.now())
+	applyProxyProfileDisplay(detail, source, input.CanViewDisabledProxy)
 
 	switch level {
 	case LevelBasic:
@@ -157,6 +159,29 @@ func (s *Service) Get(ctx context.Context, input Input, level Level) (map[string
 		detail["credentials"] = credentials
 	}
 	return detail, true, nil
+}
+
+const proxyProfileUnavailableMessage = "代理不存在或已停用，请选择一个已启用的代理"
+
+func applyProxyProfileDisplay(detail map[string]any, source port.ManagementAccountDetailSource, canViewDisabled bool) {
+	if detail == nil || strings.TrimSpace(source.ProxyProfileID) == "" {
+		return
+	}
+	detail["proxyProfileId"] = source.ProxyProfileID
+	if source.ProxyProfileEnabled == nil {
+		detail["proxyProfileUnavailable"] = true
+		detail["proxyProfileErrorMessage"] = proxyProfileUnavailableMessage
+		return
+	}
+	if *source.ProxyProfileEnabled || canViewDisabled {
+		detail["proxyProfileName"] = source.ProxyProfileName
+		detail["proxyProfileType"] = source.ProxyProfileType
+		detail["proxyProfileEnabled"] = *source.ProxyProfileEnabled
+	}
+	if !*source.ProxyProfileEnabled {
+		detail["proxyProfileUnavailable"] = true
+		detail["proxyProfileErrorMessage"] = proxyProfileUnavailableMessage
+	}
 }
 
 func (s *Service) APIKeyRuntime(ctx context.Context, input Input) (APIKeyRuntimeResponse, bool, error) {

@@ -79,6 +79,19 @@ export interface PublicApiLogDetail extends PublicApiLogSummary {
   responseData: Record<string, unknown>
 }
 
+export interface PublicApiLogListItem {
+  id: string
+  createdAt: string
+  sourceName?: string
+  method: string
+  path: string
+  success: boolean
+  statusCode?: number
+  durationMs?: number
+  clientIp?: string
+  traceId?: string
+}
+
 export interface PublicApiLogListOptions {
   page?: number
   pageSize?: number
@@ -93,7 +106,7 @@ export interface PublicApiLogListOptions {
 }
 
 export interface PublicApiLogListResult {
-  items: PublicApiLogSummary[]
+  items: PublicApiLogListItem[]
   total: number
   hasMore: boolean
   page: number
@@ -103,7 +116,7 @@ export interface PublicApiLogListResult {
 type PublicApiLogRow = Record<string, unknown>
 type PublicApiLogFilterValue = string | number
 
-const publicApiLogDefaultPageSize = 100
+const publicApiLogDefaultPageSize = 50
 const publicApiLogMaxPageSize = 100
 const publicApiLogMaxListWindowRows = 1001
 const publicApiLogPostgresRowsPerInsert = 1000
@@ -341,17 +354,17 @@ export function listPublicApiLogs(options: PublicApiLogListOptions = {}): Public
   const pageSize = normalizePublicApiLogPageSize(options.pageSize)
   const page = normalizeListPage(options.page, pageSize, publicApiLogMaxListWindowRows)
   const offset = (page - 1) * pageSize
-  const filters = buildPublicApiLogFilters(options)
+  const filters = buildPublicApiLogFilters(options, 'sqlite')
   const whereClause = filters.clauses.length ? `WHERE ${filters.clauses.join(' AND ')}` : ''
   const rows = getDatasetDatabase().prepare(`
-    SELECT ${publicApiLogSummarySelectColumns('pal')}
+    SELECT ${publicApiLogListSelectColumns('pal')}
     FROM public_api_logs pal
     ${whereClause}
     ORDER BY pal.created_at DESC, pal.id DESC
     LIMIT ? OFFSET ?
   `).all(...filters.params, pageSize + 1, offset) as PublicApiLogRow[]
   const pageRows = takePageRows(rows, pageSize)
-  const items = pageRows.rows.map(publicApiLogSummaryFromRow)
+  const items = pageRows.rows.map(publicApiLogListItemFromRow)
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -374,18 +387,18 @@ export async function listPublicApiLogsAsync(options: PublicApiLogListOptions = 
   const pageSize = normalizePublicApiLogPageSize(options.pageSize)
   const page = normalizeListPage(options.page, pageSize, publicApiLogMaxListWindowRows)
   const offset = (page - 1) * pageSize
-  const filters = buildPublicApiLogFilters(options)
+  const filters = buildPublicApiLogFilters(options, 'postgres')
   const whereClause = filters.clauses.length ? `WHERE ${filters.clauses.join(' AND ')}` : ''
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const rows = await client.query<PublicApiLogRow>(`
-    SELECT ${publicApiLogSummarySelectColumns('pal')}
+    SELECT ${publicApiLogListSelectColumns('pal')}
     FROM juhe_dataset.public_api_logs pal
     ${whereClause}
     ORDER BY pal.created_at DESC, pal.id DESC
     LIMIT ? OFFSET ?
   `, [...filters.params, pageSize + 1, offset])
   const pageRows = takePageRows(rows, pageSize)
-  const items = pageRows.rows.map(publicApiLogSummaryFromRow)
+  const items = pageRows.rows.map(publicApiLogListItemFromRow)
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -457,7 +470,7 @@ export async function cleanupPublicApiLogsBeforeAsync(cutoffCreatedAt: string, l
   return deleted
 }
 
-function buildPublicApiLogFilters(options: PublicApiLogListOptions): { clauses: string[]; params: PublicApiLogFilterValue[] } {
+function buildPublicApiLogFilters(options: PublicApiLogListOptions, driver: 'sqlite' | 'postgres'): { clauses: string[]; params: PublicApiLogFilterValue[] } {
   const clauses: string[] = []
   const params: PublicApiLogFilterValue[] = []
   pushPrefixFilter(clauses, params, 'pal.trace_id', options.traceId)
@@ -465,9 +478,9 @@ function buildPublicApiLogFilters(options: PublicApiLogListOptions): { clauses: 
   pushPathExactFilter(clauses, params, 'pal.path', options.path)
   pushPrefixFilter(clauses, params, 'pal.client_ip', options.clientIp)
   if (options.result === 'success') {
-    clauses.push('pal.success = 1')
+    clauses.push(driver === 'postgres' ? 'pal.success = true' : 'pal.success = 1')
   } else if (options.result === 'failed') {
-    clauses.push('pal.success = 0')
+    clauses.push(driver === 'postgres' ? 'pal.success = false' : 'pal.success = 0')
   }
   if (isHttpStatusCode(options.statusCode)) {
     clauses.push('pal.status_code = ?')
@@ -486,36 +499,34 @@ function buildPublicApiLogFilters(options: PublicApiLogListOptions): { clauses: 
   return { clauses, params }
 }
 
-function publicApiLogSummarySelectColumns(alias: string): string {
+function publicApiLogListSelectColumns(alias: string): string {
   return [
     'id',
-    'trace_id',
-    'source_ref_id',
+    'created_at',
     'source_name',
-    'token_id',
-    'token_name',
-    'token_prefix',
-    'is_test_token',
     'method',
     'path',
-    'query_string',
-    'client_ip',
-    'user_agent',
-    'status_code',
     'success',
+    'status_code',
     'duration_ms',
-    'request_size_bytes',
-    'response_size_bytes',
-    'request_capture_status',
-    'response_capture_status',
-    "'{}' AS request_data_json",
-    "'{}' AS response_data_json",
-    'error_code',
-    'error_message',
-    'started_at',
-    'ended_at',
-    'created_at'
+    'client_ip',
+    'trace_id'
   ].map((column) => column.includes(' AS ') ? column : `${alias}.${column}`).join(', ')
+}
+
+function publicApiLogListItemFromRow(row: PublicApiLogRow): PublicApiLogListItem {
+  return {
+    id: String(row.id),
+    createdAt: String(row.created_at),
+    sourceName: optionalString(row.source_name),
+    method: String(row.method),
+    path: String(row.path),
+    success: Number(row.success ?? 0) === 1,
+    statusCode: numberValue(row.status_code),
+    durationMs: numberValue(row.duration_ms),
+    clientIp: optionalString(row.client_ip),
+    traceId: optionalString(row.trace_id)
+  }
 }
 
 function publicApiLogSummaryFromRow(row: PublicApiLogRow): PublicApiLogSummary {
@@ -650,4 +661,3 @@ function multiRowPlaceholders(rowCount: number, columnCount: number): string {
   const row = `(${Array.from({ length: columnCount }, () => '?').join(', ')})`
   return Array.from({ length: rowCount }, () => row).join(', ')
 }
-

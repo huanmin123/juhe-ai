@@ -22,7 +22,7 @@ import (
 func TestManagementPublicAPILogsHandlerParsesListQueryAndReturnsList(t *testing.T) {
 	service := &managementPublicAPILogServiceStub{
 		listResult: managementpublicapilogs.ListResult{
-			Items:    []managementpublicapilogs.Summary{{ID: "publog_1", Method: http.MethodPost, Path: "/v1/chat/completions"}},
+			Items:    []managementpublicapilogs.ListItem{{ID: "publog_1", Method: http.MethodPost, Path: "/v1/chat/completions"}},
 			Total:    21,
 			HasMore:  true,
 			Page:     2,

@@ -28,6 +28,28 @@ type managementOperationLogServiceAdapter struct {
 	service *managementoperationlogs.Service
 }
 
+type managementOperationLogListResponse struct {
+	Items    []managementOperationLogListItem `json:"items"`
+	Total    int                              `json:"total"`
+	HasMore  bool                             `json:"hasMore"`
+	Page     int                              `json:"page"`
+	PageSize int                              `json:"pageSize"`
+}
+
+type managementOperationLogListItem struct {
+	ID                              string `json:"id"`
+	TraceID                         string `json:"traceId,omitempty"`
+	ActorSystemAccountID            string `json:"actorSystemAccountId"`
+	ActorDisplayName                string `json:"actorDisplayName,omitempty"`
+	ActorSystemAccountName          string `json:"actorSystemAccountName,omitempty"`
+	OperationScopeSystemAccountID   string `json:"operationScopeSystemAccountId,omitempty"`
+	OperationScopeSystemAccountName string `json:"operationScopeSystemAccountName,omitempty"`
+	Module                          string `json:"module"`
+	Action                          string `json:"action"`
+	Summary                         string `json:"summary"`
+	CreatedAt                       string `json:"createdAt"`
+}
+
 func (s managementOperationLogServiceAdapter) List(r *http.Request, input managementoperationlogs.ListInput) (managementoperationlogs.ListResult, error) {
 	return s.service.List(r.Context(), input)
 }
@@ -77,8 +99,34 @@ func newManagementOperationLogsHandler(service managementOperationLogService, sc
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		writeData(w, http.StatusOK, result)
+		writeData(w, http.StatusOK, managementOperationLogListResponseFromService(result))
 	})
+}
+
+func managementOperationLogListResponseFromService(result managementoperationlogs.ListResult) managementOperationLogListResponse {
+	items := make([]managementOperationLogListItem, 0, len(result.Items))
+	for _, item := range result.Items {
+		items = append(items, managementOperationLogListItem{
+			ID:                              item.ID,
+			TraceID:                         item.TraceID,
+			ActorSystemAccountID:            item.ActorSystemAccountID,
+			ActorDisplayName:                item.ActorDisplayName,
+			ActorSystemAccountName:          item.ActorSystemAccountName,
+			OperationScopeSystemAccountID:   item.OperationScopeSystemAccountID,
+			OperationScopeSystemAccountName: item.OperationScopeSystemAccountName,
+			Module:                          item.Module,
+			Action:                          item.Action,
+			Summary:                         item.Summary,
+			CreatedAt:                       item.CreatedAt,
+		})
+	}
+	return managementOperationLogListResponse{
+		Items:    items,
+		Total:    result.Total,
+		HasMore:  result.HasMore,
+		Page:     result.Page,
+		PageSize: result.PageSize,
+	}
 }
 
 func managementOperationLogListInput(

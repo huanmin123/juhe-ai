@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -131,9 +133,17 @@ func newManagementProxiesHandler(service managementProxyOptionService) http.Hand
 
 func newManagementProxyOptionsHandler(service managementProxyOptionService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		input := parseManagementProxyOptionListQuery(r.URL.Query())
+		input, err := parseManagementProxyOptionListQuery(r.URL.Query())
+		if err != nil {
+			writeMessageError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		options, err := service.Options(r, input)
 		if err != nil {
+			if message, ok := managementproxies.ValidationMessage(err); ok {
+				writeMessageError(w, http.StatusBadRequest, message)
+				return
+			}
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
@@ -336,11 +346,49 @@ func parseManagementProxyListQuery(values url.Values) managementproxies.ListInpu
 	}
 }
 
-func parseManagementProxyOptionListQuery(values url.Values) managementproxies.OptionListInput {
+func parseManagementProxyOptionListQuery(values url.Values) (managementproxies.OptionListInput, error) {
+	selectedIDs, err := parseSelectedProxyOptionIDs(values)
+	if err != nil {
+		return managementproxies.OptionListInput{}, err
+	}
 	return managementproxies.OptionListInput{
 		Keyword: firstManagementQueryText(values, "keyword"),
 		Limit:   managementIntegerQueryValue(values, "limit"),
+		SelectedIDs: selectedIDs,
+	}, nil
+}
+
+func parseSelectedProxyOptionIDs(values url.Values) ([]string, error) {
+	for key := range values {
+		if key == "selectedIds" || key == "selectedIds[]" {
+			continue
+		}
+		if strings.HasPrefix(key, "selectedIds[") {
+			return nil, errors.New("代理选项 selectedIds 无效")
+		}
 	}
+	raw := append(append([]string{}, values["selectedIds"]...), values["selectedIds[]"]...)
+	output := make([]string, 0, len(raw))
+	seen := make(map[string]struct{}, len(raw))
+	for _, value := range raw {
+		text := strings.TrimSpace(value)
+		if text == "" {
+			continue
+		}
+		if strings.Contains(text, ",") || strings.HasPrefix(text, "[") || utf8.RuneCountInString(text) > 120 {
+			return nil, errors.New("代理选项 selectedIds 无效")
+		}
+		if _, exists := seen[text]; exists {
+			continue
+		}
+		seen[text] = struct{}{}
+		output = append(output, text)
+	}
+	if len(output) > 20 {
+		return nil, errors.New("代理选项 selectedIds 最多 20 个")
+	}
+	sort.Strings(output)
+	return output, nil
 }
 
 func firstManagementQueryText(values url.Values, key string) string {

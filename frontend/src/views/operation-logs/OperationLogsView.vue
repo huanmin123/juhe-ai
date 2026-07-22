@@ -85,7 +85,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import { loadEntityDetailCached } from '@/shared/entityDetailCache'
-import type { OperationLogDetail, OperationLogSummary } from '@/types/domain'
+import type { OperationLogDetail, OperationLogListItem } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import OperationLogDetailDrawer from './OperationLogDetailDrawer.vue'
 import OperationLogFilterToolbar from './OperationLogFilterToolbar.vue'
@@ -177,7 +177,7 @@ const {
   loadMoreMobile: loadMoreMobileRecords,
   refreshMobile: refreshMobileRecords,
   resetPagination
-} = useResponsivePagedList<OperationLogSummary, { forceOptions?: boolean }>({
+} = useResponsivePagedList<OperationLogListItem, { forceOptions?: boolean }>({
   pageSize,
   initialPagination: effectiveInitialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -283,7 +283,7 @@ function operationLogRequestParams(pageState: { current: number; pageSize: numbe
   return operationLogListParams(currentFilterValues.value, pageState, isManagementView.value)
 }
 
-async function openDetail(record: OperationLogSummary): Promise<void> {
+async function openDetail(record: OperationLogListItem): Promise<void> {
   const requestId = detailRequestId + 1
   detailRequestId = requestId
   detailOpen.value = true

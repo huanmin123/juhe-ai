@@ -14,11 +14,11 @@ import (
 func TestServiceListNormalizesFiltersAndUsesBoundedProgressivePagination(t *testing.T) {
 	startAt := time.Date(2026, 7, 14, 12, 0, 0, 987_654_321, time.FixedZone("UTC+8", 8*60*60))
 	endAt := startAt.Add(-time.Hour)
-	rows := make([]port.ManagementPublicAPILogSummary, 100)
+	rows := make([]port.ManagementPublicAPILogListItem, 100)
 	for index := range rows {
-		rows[index] = publicAPILogSummaryFixture("publog_probe")
+		rows[index] = publicAPILogListItemFixture("publog_probe")
 	}
-	rows[0] = publicAPILogSummaryFixture("publog_1")
+	rows[0] = publicAPILogListItemFixture("publog_1")
 	store := &publicAPILogReaderStub{
 		listResult: port.ManagementPublicAPILogListResult{Items: rows, HasMore: true},
 	}
@@ -75,7 +75,7 @@ func TestServiceListPageSizeDefaultsClampsAndTrimsStoreOverflow(t *testing.T) {
 			name:         "omitted page size uses default",
 			input:        ListInput{Page: -3, PageSize: 1},
 			wantPage:     1,
-			wantPageSize: 100,
+			wantPageSize: 50,
 		},
 		{
 			name:         "provided non-positive page size clamps to one",
@@ -92,9 +92,9 @@ func TestServiceListPageSizeDefaultsClampsAndTrimsStoreOverflow(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			rows := make([]port.ManagementPublicAPILogSummary, test.rowCount)
+			rows := make([]port.ManagementPublicAPILogListItem, test.rowCount)
 			for index := range rows {
-				rows[index] = publicAPILogSummaryFixture("publog_1")
+				rows[index] = publicAPILogListItemFixture("publog_1")
 			}
 			store := &publicAPILogReaderStub{listResult: port.ManagementPublicAPILogListResult{Items: rows}}
 			result, err := NewService(store).List(context.Background(), test.input)
@@ -167,37 +167,28 @@ func TestServiceListAllSentinelsAndNonECMAScriptWhitespace(t *testing.T) {
 	}
 }
 
-func TestServiceListMapsDTOOptionalFieldsCaptureFallbackAndUTCMilliseconds(t *testing.T) {
+func TestServiceListMapsLightweightDTOAndUTCMilliseconds(t *testing.T) {
 	empty := ""
 	traceID := "trace_1"
 	statusCode := 204
 	durationMs := int64(0)
-	row := publicAPILogSummaryFixture("publog_1")
+	row := publicAPILogListItemFixture("publog_1")
 	row.TraceID = &traceID
 	row.SourceName = &empty
 	row.StatusCode = &statusCode
 	row.DurationMs = &durationMs
-	row.RequestSizeBytes = -10
-	row.ResponseSizeBytes = -20
-	row.RequestCaptureStatus = port.PublicAPILogCaptureStatus("corrupt")
-	row.ResponseCaptureStatus = port.PublicAPILogCaptureTruncated
-	row.StartedAt = time.Date(2026, 7, 14, 10, 20, 30, 123_999_999, time.FixedZone("UTC+8", 8*60*60))
-	row.EndedAt = time.Date(2026, 7, 14, 2, 20, 31, 4_999_999, time.UTC)
 	row.CreatedAt = time.Date(2026, 7, 14, 2, 20, 32, 0, time.UTC)
-	store := &publicAPILogReaderStub{listResult: port.ManagementPublicAPILogListResult{Items: []port.ManagementPublicAPILogSummary{row}}}
+	store := &publicAPILogReaderStub{listResult: port.ManagementPublicAPILogListResult{Items: []port.ManagementPublicAPILogListItem{row}}}
 
 	result, err := NewService(store).List(context.Background(), ListInput{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
 	item := result.Items[0]
-	if item.StartedAt != "2026-07-14T02:20:30.123Z" || item.EndedAt != "2026-07-14T02:20:31.004Z" || item.CreatedAt != "2026-07-14T02:20:32.000Z" {
-		t.Fatalf("times = %q, %q, %q", item.StartedAt, item.EndedAt, item.CreatedAt)
+	if item.CreatedAt != "2026-07-14T02:20:32.000Z" {
+		t.Fatalf("createdAt = %q", item.CreatedAt)
 	}
-	if item.RequestCaptureStatus != port.PublicAPILogCaptureEmpty || item.ResponseCaptureStatus != port.PublicAPILogCaptureTruncated {
-		t.Fatalf("capture statuses = %q/%q", item.RequestCaptureStatus, item.ResponseCaptureStatus)
-	}
-	if item.SourceName != "" || item.TraceID != traceID || item.StatusCode == nil || item.DurationMs == nil || item.RequestSizeBytes != 0 || item.ResponseSizeBytes != 0 {
+	if item.SourceName != "" || item.TraceID != traceID || item.StatusCode == nil || item.DurationMs == nil {
 		t.Fatalf("mapped item = %+v", item)
 	}
 
@@ -209,16 +200,17 @@ func TestServiceListMapsDTOOptionalFieldsCaptureFallbackAndUTCMilliseconds(t *te
 	if err := json.Unmarshal(encoded, &object); err != nil {
 		t.Fatalf("decode mapped item: %v", err)
 	}
-	for _, omitted := range []string{"sourceRefId", "sourceName", "tokenId", "tokenName", "tokenPrefix", "queryString", "clientIp", "userAgent", "errorCode", "errorMessage"} {
+	for _, omitted := range []string{"sourceRefId", "sourceName", "tokenId", "tokenName", "tokenPrefix", "queryString", "userAgent", "errorCode", "errorMessage", "requestCaptureStatus", "startedAt", "endedAt"} {
 		if _, exists := object[omitted]; exists {
-			t.Fatalf("optional field %q must be omitted: %s", omitted, encoded)
+			t.Fatalf("field %q must be omitted: %s", omitted, encoded)
 		}
 	}
-	for _, included := range []string{"traceId", "statusCode", "durationMs", "requestCaptureStatus", "startedAt"} {
+	for _, included := range []string{"id", "createdAt", "method", "path", "success", "traceId", "statusCode", "durationMs"} {
 		if _, exists := object[included]; !exists {
 			t.Fatalf("field %q must be included: %s", included, encoded)
 		}
 	}
+
 }
 
 func TestServiceDetailParsesOnlyJSONObjectPayloadsAndPreservesID(t *testing.T) {
@@ -293,6 +285,16 @@ func TestServicePropagatesErrorsAndNotFound(t *testing.T) {
 	}
 	if _, _, err := NewService(nil).Detail(context.Background(), "publog_1"); err == nil {
 		t.Fatal("Detail without store should fail")
+	}
+}
+
+func publicAPILogListItemFixture(id string) port.ManagementPublicAPILogListItem {
+	return port.ManagementPublicAPILogListItem{
+		ID:        id,
+		Method:    "POST",
+		Path:      "/v1/responses",
+		Success:   true,
+		CreatedAt: time.Date(2026, 7, 14, 4, 0, 0, 0, time.UTC),
 	}
 }
 

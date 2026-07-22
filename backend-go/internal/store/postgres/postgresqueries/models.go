@@ -55,6 +55,17 @@ type JuheBusinessAccount struct {
 	LastErrorTraceID                           pgtype.Text
 	LastHealthCheckTraceID                     pgtype.Text
 	TemporaryUnavailableContinuousProbeEnabled int32
+	CooldownRetestFailureCount                 int32
+	CooldownRetestObservationStartedAt         pgtype.Timestamptz
+	CooldownRetestLastAt                       pgtype.Timestamptz
+	CooldownRetestLastStatusCode               pgtype.Int4
+	LastHealthCheckAt                          pgtype.Timestamptz
+	LastHealthSuccessAt                        pgtype.Timestamptz
+	StreamFailureCount                         int32
+	StreamFailureWindowStartedAt               pgtype.Timestamptz
+	BalanceQueryEnabled                        bool
+	BalanceQueryConfigJson                     string
+	BalanceQueryNextRefreshAt                  pgtype.Timestamptz
 }
 
 type JuheBusinessAccountApiKeyRuntimeState struct {
@@ -129,6 +140,54 @@ type JuheBusinessAccountTagBinding struct {
 	TagID           string
 	SystemAccountID string
 	CreatedAt       pgtype.Timestamptz
+}
+
+type JuheBusinessAccountTestSession struct {
+	ID                           string
+	RequestSystemAccountID       string
+	RequestRole                  string
+	RequestSystemAccountFilterID pgtype.Text
+	Status                       string
+	CancelReason                 pgtype.Text
+	LastHeartbeatAt              pgtype.Timestamptz
+	CancelRequestedAt            pgtype.Timestamptz
+	FinishedAt                   pgtype.Timestamptz
+	CreatedAt                    pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
+}
+
+type JuheBusinessAccountTestSessionTask struct {
+	SessionID string
+	TaskID    string
+	CreatedAt pgtype.Timestamptz
+}
+
+type JuheBusinessAccountTestTask struct {
+	ID                           string
+	AccountID                    string
+	AccountName                  string
+	ProviderCode                 string
+	ProviderProtocolProfileID    string
+	ProtocolCode                 string
+	ProtocolVersion              string
+	AccountType                  string
+	RequestSystemAccountID       string
+	RequestRole                  string
+	RequestSystemAccountFilterID pgtype.Text
+	Diagnostics                  string
+	Model                        pgtype.Text
+	TestEndpointMode             pgtype.Text
+	DraftAccountEncrypted        pgtype.Text
+	Status                       string
+	StatusMessage                pgtype.Text
+	ResultJson                   pgtype.Text
+	ErrorMessage                 pgtype.Text
+	CancelRequested              bool
+	QueuedAt                     pgtype.Timestamptz
+	StartedAt                    pgtype.Timestamptz
+	FinishedAt                   pgtype.Timestamptz
+	CreatedAt                    pgtype.Timestamptz
+	UpdatedAt                    pgtype.Timestamptz
 }
 
 type JuheBusinessAnnouncement struct {
@@ -742,6 +801,21 @@ type JuheDatasetRuntimeLogLevelFacet struct {
 	Level     string
 	Count     int64
 	UpdatedAt string
+}
+
+type JuheStatsAccountUsageSnapshot struct {
+	SystemAccountID  string
+	AccountID        string
+	Kind             string
+	Source           pgtype.Text
+	SnapshotJson     string
+	RefreshStatus    pgtype.Text
+	LastAttemptAt    pgtype.Timestamptz
+	LastSuccessAt    pgtype.Timestamptz
+	NextRefreshAfter pgtype.Timestamptz
+	LastErrorMessage pgtype.Text
+	UpdatedAt        pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
 }
 
 type JuheStatsAuthorizationTeamUsageRangeWindow struct {

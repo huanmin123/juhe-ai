@@ -57,6 +57,10 @@ func getManagementAccountDetailSource(
 		CredentialsEncrypted:  row.CredentialsEncrypted,
 		HasActiveManualSource: row.HasActiveManualSource,
 		DetailJSON:            row.DetailJson,
+		ProxyProfileID:        nullableText(row.ProxyProfileID),
+		ProxyProfileName:      nullableText(row.ProxyProfileName),
+		ProxyProfileType:      nullableText(row.ProxyProfileType),
+		ProxyProfileEnabled:   nullableBool(row.ProxyProfileEnabled),
 	}, true, nil
 }
 

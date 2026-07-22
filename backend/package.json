@@ -97,6 +97,7 @@
     "test:account-response-credentials-redaction": "tsx src/scripts/regression/account-response-credentials-redaction-regression.ts",
     "test:account-client-compatibility-boundary": "tsx src/scripts/regression/account-client-compatibility-boundary-regression.ts",
     "test:account-list-visible": "tsx src/scripts/regression/account-list-visible-regression.ts",
+    "test:account-proxy-display-contract": "tsx src/scripts/regression/account-proxy-display-contract-regression.ts",
     "test:account-options-lightweight": "tsx src/scripts/regression/account-options-lightweight-regression.ts",
     "test:account-name-uniqueness": "tsx src/scripts/regression/account-name-uniqueness-regression.ts",
     "test:account-credential-duplicates": "tsx src/scripts/regression/account-credential-duplicates-regression.ts",
@@ -543,7 +544,9 @@
     "build": "pnpm run clean:dist && tsc -p tsconfig.build.json",
     "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test:public-api-log-list-lightweight": "tsx src/scripts/regression/public-api-log-list-lightweight-regression.ts",
+    "test:operation-log-list-lightweight": "tsx src/scripts/regression/operation-log-list-lightweight-regression.ts"
   },
   "engines": {
     "node": ">=22.13.0 <23 || >=24.11.0 <25"

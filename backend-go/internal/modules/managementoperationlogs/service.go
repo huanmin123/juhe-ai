@@ -42,11 +42,25 @@ type DetailInput struct {
 }
 
 type ListResult struct {
-	Items    []Summary `json:"items"`
-	Total    int       `json:"total"`
-	HasMore  bool      `json:"hasMore"`
-	Page     int       `json:"page"`
-	PageSize int       `json:"pageSize"`
+	Items    []ListItem `json:"items"`
+	Total    int        `json:"total"`
+	HasMore  bool       `json:"hasMore"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"pageSize"`
+}
+
+type ListItem struct {
+	ID                              string `json:"id"`
+	TraceID                         string `json:"traceId,omitempty"`
+	ActorSystemAccountID            string `json:"actorSystemAccountId"`
+	ActorDisplayName                string `json:"actorDisplayName,omitempty"`
+	ActorSystemAccountName          string `json:"actorSystemAccountName,omitempty"`
+	OperationScopeSystemAccountID   string `json:"operationScopeSystemAccountId,omitempty"`
+	OperationScopeSystemAccountName string `json:"operationScopeSystemAccountName,omitempty"`
+	Module                          string `json:"module"`
+	Action                          string `json:"action"`
+	Summary                         string `json:"summary"`
+	CreatedAt                       string `json:"createdAt"`
 }
 
 type Summary struct {
@@ -145,13 +159,9 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	if err != nil {
 		return ListResult{}, err
 	}
-	items := make([]Summary, 0, len(pageResult.Items))
+	items := make([]ListItem, 0, len(pageResult.Items))
 	for _, item := range pageResult.Items {
-		summary := apiSummary(item)
-		if viewerSystemAccountID != "" {
-			summary = sanitizeSummaryForViewer(summary, item)
-		}
-		items = append(items, summary)
+		items = append(items, apiListItem(item))
 	}
 	return ListResult{
 		Items:    items,
@@ -179,6 +189,22 @@ func (s *Service) Detail(ctx context.Context, input DetailInput) (Detail, bool, 
 		output = sanitizeDetailForViewer(output, detail.Summary)
 	}
 	return output, true, nil
+}
+
+func apiListItem(item port.OperationLogListRow) ListItem {
+	return ListItem{
+		ID:                              item.ID,
+		TraceID:                         item.TraceID,
+		ActorSystemAccountID:            item.ActorSystemAccountID,
+		ActorDisplayName:                item.ActorDisplayName,
+		ActorSystemAccountName:          item.ActorSystemAccountName,
+		OperationScopeSystemAccountID:   item.OperationScopeSystemAccountID,
+		OperationScopeSystemAccountName: item.OperationScopeSystemAccountName,
+		Module:                          item.Module,
+		Action:                          item.Action,
+		Summary:                         item.Summary,
+		CreatedAt:                       formatTime(item.CreatedAt),
+	}
 }
 
 func apiSummary(item port.OperationLogSummary) Summary {

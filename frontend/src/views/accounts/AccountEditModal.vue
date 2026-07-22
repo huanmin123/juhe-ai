@@ -148,6 +148,9 @@
                 :mapping-source-model-options="mappingSourceModelOptions"
                 :mapping-upstream-model-options="mappingUpstreamModelOptions"
                 :proxy-options="proxyOptions"
+                :proxy-options-loading="proxyOptionsLoading"
+                @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
+                @proxy-options-search="$emit('proxyOptionsSearch', $event)"
                 :selected-protocol-profile="selectedProtocolProfile"
                 :authorized-editing="authorizedEditing"
               />
@@ -289,6 +292,7 @@ const props = withDefaults(defineProps<{
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
   selectedProvider?: ProviderDefinition
   testButtonDisabled?: boolean
@@ -402,6 +406,8 @@ const emit = defineEmits<{
   (event: 'generate-auth-url'): void
   (event: 'group-options-dropdown', open: boolean): void
   (event: 'group-options-search', value: string): void
+  (event: 'proxyOptionsDropdown', open: boolean): void
+  (event: 'proxyOptionsSearch', value: string): void
   (event: 'ok'): void
   (event: 'open-auth-url'): void
   (event: 'select-provider', providerCode: string): void

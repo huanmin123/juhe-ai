@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,81 @@ func TestOperationLogSQLGuards(t *testing.T) {
 			t.Fatalf("operation log sql contains forbidden scan/sort pattern %q", forbidden)
 		}
 	}
+}
+
+func TestOperationLogListQueriesUseNarrowProjection(t *testing.T) {
+	data, err := os.ReadFile("queries/w2_operation_logs.sql")
+	if err != nil {
+		t.Fatalf("read operation log sql: %v", err)
+	}
+	sql := string(data)
+	queryNames := []string{
+		"ListOperationLogs",
+		"ListOperationLogsBySummarySearch",
+		"ListVisibleTargetedOperationLogs",
+		"ListVisibleTargetedOperationLogsBySummarySearch",
+		"ListVisibleAllUsersOperationLogs",
+		"ListVisibleAllUsersOperationLogsBySummarySearch",
+	}
+	wantColumns := []string{
+		"ol.id",
+		"ol.trace_id",
+		"ol.actor_system_account_id",
+		"ol.actor_display_name",
+		"ol.operation_scope_system_account_id",
+		"ol.module",
+		"ol.action",
+		"ol.summary",
+		"ol.detail_level",
+		"ol.visibility_scope",
+		"ol.created_at",
+	}
+	for _, queryName := range queryNames {
+		querySQL := operationLogNamedQuerySQL(t, sql, queryName)
+		projection := operationLogSelectProjection(t, queryName, querySQL)
+		if strings.Contains(projection, "ol.*") {
+			t.Fatalf("%s projection must not select ol.*: %s", queryName, projection)
+		}
+		gotColumns := operationLogProjectionColumns(projection)
+		if !slices.Equal(gotColumns, wantColumns) {
+			t.Fatalf("%s projection columns = %v, want %v", queryName, gotColumns, wantColumns)
+		}
+	}
+}
+
+func operationLogNamedQuerySQL(t *testing.T, sql string, queryName string) string {
+	t.Helper()
+	marker := "-- name: " + queryName + " "
+	start := strings.Index(sql, marker)
+	if start < 0 {
+		t.Fatalf("operation log SQL missing query %s", queryName)
+	}
+	rest := sql[start+len(marker):]
+	if next := strings.Index(rest, "\n-- name: "); next >= 0 {
+		rest = rest[:next]
+	}
+	return rest
+}
+
+func operationLogSelectProjection(t *testing.T, queryName string, querySQL string) string {
+	t.Helper()
+	selectIndex := strings.Index(querySQL, "SELECT")
+	fromIndex := strings.Index(querySQL, "\nFROM ")
+	if selectIndex < 0 || fromIndex < 0 || fromIndex <= selectIndex {
+		t.Fatalf("%s does not have a parseable SELECT projection: %s", queryName, querySQL)
+	}
+	return querySQL[selectIndex+len("SELECT") : fromIndex]
+}
+
+func operationLogProjectionColumns(projection string) []string {
+	parts := strings.Split(projection, ",")
+	columns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if column := strings.TrimSpace(part); column != "" {
+			columns = append(columns, column)
+		}
+	}
+	return columns
 }
 
 func TestW5OperationLogSettingsMigrationSeedsMaxChanges(t *testing.T) {

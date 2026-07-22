@@ -76,8 +76,11 @@
         v-model:value="form.proxyProfileId"
         allow-clear
         :disabled="authorizedEditing"
+        :loading="proxyOptionsLoading"
         placeholder="不使用代理"
         :options="proxyOptions"
+        @dropdown-visible-change="$emit('proxyOptionsDropdown', $event)"
+        @search="$emit('proxyOptionsSearch', $event)"
       />
     </a-form-item>
   </section>
@@ -125,7 +128,13 @@ const props = defineProps<{
   mappingSourceModelOptions: ModelMappingSourceModelOption[]
   mappingUpstreamModelOptions: ModelMappingSourceModelOption[]
   proxyOptions: SelectOption[]
+  proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
+}>()
+
+const emit = defineEmits<{
+  (event: 'proxyOptionsDropdown', open: boolean): void
+  (event: 'proxyOptionsSearch', value: string): void
 }>()
 
 type ModelMappingSourceModelOption = AccountModelMappingModelOption

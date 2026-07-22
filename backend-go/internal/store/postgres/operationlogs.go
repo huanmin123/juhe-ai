@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"golang.org/x/text/unicode/norm"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -122,12 +123,9 @@ func (s *Store) ListOperationLogs(ctx context.Context, input port.OperationLogLi
 
 	q := s.queries()
 	params := operationLogListParams(input, limit, input.Offset)
-	var (
-		rows []postgresqueries.JuheDatasetOperationLog
-		err  error
-	)
+	var rows []operationLogListRow
 	if hasSearch {
-		rows, err = q.ListOperationLogsBySummarySearch(ctx, postgresqueries.ListOperationLogsBySummarySearchParams{
+		queryRows, err := q.ListOperationLogsBySummarySearch(ctx, postgresqueries.ListOperationLogsBySummarySearchParams{
 			SearchTerm:                    searchTerm,
 			TraceID:                       params.TraceID,
 			TraceIDUpper:                  params.TraceIDUpper,
@@ -143,11 +141,16 @@ func (s *Store) ListOperationLogs(ctx context.Context, input port.OperationLogLi
 			RowOffset:                     params.RowOffset,
 			RowLimit:                      params.RowLimit,
 		})
+		if err != nil {
+			return port.OperationLogListResult{}, fmt.Errorf("list operation logs: %w", err)
+		}
+		rows = operationLogListRowsFromSearchRows(queryRows)
 	} else {
-		rows, err = q.ListOperationLogs(ctx, params)
-	}
-	if err != nil {
-		return port.OperationLogListResult{}, fmt.Errorf("list operation logs: %w", err)
+		queryRows, err := q.ListOperationLogs(ctx, params)
+		if err != nil {
+			return port.OperationLogListResult{}, fmt.Errorf("list operation logs: %w", err)
+		}
+		rows = operationLogListRowsFromAdminRows(queryRows)
 	}
 	return s.operationLogListResult(ctx, rows, limit, "")
 }
@@ -167,12 +170,11 @@ func (s *Store) ListVisibleOperationLogs(ctx context.Context, input port.Operati
 	q := s.queries()
 	visibleParams := operationLogVisibleListParams(input.List, rowWindowLimit)
 	var (
-		targetedRows []postgresqueries.JuheDatasetOperationLog
-		allUsersRows []postgresqueries.JuheDatasetOperationLog
-		err          error
+		targetedRows []operationLogListRow
+		allUsersRows []operationLogListRow
 	)
 	if hasSearch {
-		targetedRows, err = q.ListVisibleTargetedOperationLogsBySummarySearch(ctx, postgresqueries.ListVisibleTargetedOperationLogsBySummarySearchParams{
+		queryRows, err := q.ListVisibleTargetedOperationLogsBySummarySearch(ctx, postgresqueries.ListVisibleTargetedOperationLogsBySummarySearchParams{
 			SystemAccountID: viewerSystemAccountID,
 			SearchTerm:      searchTerm,
 			TraceID:         visibleParams.TraceID,
@@ -188,7 +190,8 @@ func (s *Store) ListVisibleOperationLogs(ctx context.Context, input port.Operati
 		if err != nil {
 			return port.OperationLogListResult{}, fmt.Errorf("list visible targeted operation logs: %w", err)
 		}
-		allUsersRows, err = q.ListVisibleAllUsersOperationLogsBySummarySearch(ctx, postgresqueries.ListVisibleAllUsersOperationLogsBySummarySearchParams{
+		targetedRows = operationLogListRowsFromVisibleTargetedSearchRows(queryRows)
+		allUsersQueryRows, err := q.ListVisibleAllUsersOperationLogsBySummarySearch(ctx, postgresqueries.ListVisibleAllUsersOperationLogsBySummarySearchParams{
 			SearchTerm:   searchTerm,
 			TraceID:      visibleParams.TraceID,
 			TraceIDUpper: visibleParams.TraceIDUpper,
@@ -200,8 +203,12 @@ func (s *Store) ListVisibleOperationLogs(ctx context.Context, input port.Operati
 			EndAt:        visibleParams.EndAt,
 			RowLimit:     visibleParams.RowLimit,
 		})
+		if err != nil {
+			return port.OperationLogListResult{}, fmt.Errorf("list visible all-users operation logs: %w", err)
+		}
+		allUsersRows = operationLogListRowsFromVisibleAllUsersSearchRows(allUsersQueryRows)
 	} else {
-		targetedRows, err = q.ListVisibleTargetedOperationLogs(ctx, postgresqueries.ListVisibleTargetedOperationLogsParams{
+		queryRows, err := q.ListVisibleTargetedOperationLogs(ctx, postgresqueries.ListVisibleTargetedOperationLogsParams{
 			SystemAccountID: viewerSystemAccountID,
 			TraceID:         visibleParams.TraceID,
 			TraceIDUpper:    visibleParams.TraceIDUpper,
@@ -216,10 +223,12 @@ func (s *Store) ListVisibleOperationLogs(ctx context.Context, input port.Operati
 		if err != nil {
 			return port.OperationLogListResult{}, fmt.Errorf("list visible targeted operation logs: %w", err)
 		}
-		allUsersRows, err = q.ListVisibleAllUsersOperationLogs(ctx, visibleParams)
-	}
-	if err != nil {
-		return port.OperationLogListResult{}, fmt.Errorf("list visible all-users operation logs: %w", err)
+		targetedRows = operationLogListRowsFromVisibleTargetedRows(queryRows)
+		allUsersQueryRows, err := q.ListVisibleAllUsersOperationLogs(ctx, visibleParams)
+		if err != nil {
+			return port.OperationLogListResult{}, fmt.Errorf("list visible all-users operation logs: %w", err)
+		}
+		allUsersRows = operationLogListRowsFromVisibleAllUsersRows(allUsersQueryRows)
 	}
 
 	rows := mergeOperationLogRowsByCreatedAt(targetedRows, allUsersRows, rowWindowLimit)
@@ -649,24 +658,24 @@ func operationLogFilterText(value string) string {
 	return text
 }
 
-func (s *Store) operationLogListResult(ctx context.Context, rows []postgresqueries.JuheDatasetOperationLog, limit int, viewerSystemAccountID string) (port.OperationLogListResult, error) {
+func (s *Store) operationLogListResult(ctx context.Context, rows []operationLogListRow, limit int, viewerSystemAccountID string) (port.OperationLogListResult, error) {
 	pageSize := max(0, limit-1)
 	hasMore := len(rows) > pageSize
 	if hasMore {
 		rows = rows[:pageSize]
 	}
-	items, err := s.operationLogSummariesFromRows(ctx, rows, viewerSystemAccountID)
+	items, err := s.operationLogListItemsFromRows(ctx, rows, viewerSystemAccountID)
 	if err != nil {
 		return port.OperationLogListResult{}, err
 	}
 	return port.OperationLogListResult{Items: items, HasMore: hasMore}, nil
 }
 
-func (s *Store) operationLogSummariesFromRows(ctx context.Context, rows []postgresqueries.JuheDatasetOperationLog, viewerSystemAccountID string) ([]port.OperationLogSummary, error) {
+func (s *Store) operationLogListItemsFromRows(ctx context.Context, rows []operationLogListRow, viewerSystemAccountID string) ([]port.OperationLogListRow, error) {
 	if len(rows) == 0 {
-		return []port.OperationLogSummary{}, nil
+		return []port.OperationLogListRow{}, nil
 	}
-	names, err := s.operationLogSystemAccountNames(ctx, operationLogNameIDsFromRows(rows))
+	names, err := s.operationLogSystemAccountNames(ctx, operationLogNameIDsFromListRows(rows))
 	if err != nil {
 		return nil, err
 	}
@@ -677,19 +686,16 @@ func (s *Store) operationLogSummariesFromRows(ctx context.Context, rows []postgr
 			return nil, err
 		}
 	}
-	items := make([]port.OperationLogSummary, 0, len(rows))
+	items := make([]port.OperationLogListRow, 0, len(rows))
 	for _, row := range rows {
-		item, err := operationLogSummaryFromRow(row, names, false)
-		if err != nil {
-			return nil, err
-		}
+		item := operationLogListItemFromRow(row, names)
 		item.ViewerDetailLevel = viewerLevels[item.ID]
 		items = append(items, item)
 	}
 	return items, nil
 }
 
-func (s *Store) operationLogViewerDetailLevels(ctx context.Context, rows []postgresqueries.JuheDatasetOperationLog, viewerSystemAccountID string) (map[string]string, error) {
+func (s *Store) operationLogViewerDetailLevels(ctx context.Context, rows []operationLogListRow, viewerSystemAccountID string) (map[string]string, error) {
 	ids := make([]string, 0, len(rows))
 	for _, row := range rows {
 		ids = append(ids, row.ID)
@@ -718,6 +724,24 @@ func (s *Store) operationLogViewerDetailLevels(ctx context.Context, rows []postg
 		levels[row.OperationLogID] = "full"
 	}
 	return levels, nil
+}
+
+func operationLogListItemFromRow(row operationLogListRow, names map[string]string) port.OperationLogListRow {
+	return port.OperationLogListRow{
+		ID:                              row.ID,
+		TraceID:                         row.TraceID,
+		ActorSystemAccountID:            row.ActorSystemAccountID,
+		ActorDisplayName:                row.ActorDisplayName,
+		ActorSystemAccountName:          names[row.ActorSystemAccountID],
+		OperationScopeSystemAccountID:   row.OperationScopeSystemAccountID,
+		OperationScopeSystemAccountName: names[row.OperationScopeSystemAccountID],
+		Module:                          row.Module,
+		Action:                          row.Action,
+		Summary:                         row.Summary,
+		CreatedAt:                       row.CreatedAt,
+		DetailLevel:                     row.DetailLevel,
+		VisibilityScope:                 row.VisibilityScope,
+	}
 }
 
 func (s *Store) operationLogSystemAccountNames(ctx context.Context, ids []string) (map[string]string, error) {
@@ -859,6 +883,107 @@ func parseOperationLogMetadataJSON(raw string) (map[string]any, error) {
 	return metadata, nil
 }
 
+type operationLogListRow struct {
+	ID                            string
+	TraceID                       string
+	ActorSystemAccountID          string
+	ActorDisplayName              string
+	OperationScopeSystemAccountID string
+	Module                        string
+	Action                        string
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	CreatedAt                     time.Time
+}
+
+func newOperationLogListRow(
+	id string,
+	traceID pgtype.Text,
+	actorSystemAccountID string,
+	actorDisplayName pgtype.Text,
+	operationScopeSystemAccountID pgtype.Text,
+	module string,
+	action string,
+	summary string,
+	detailLevel string,
+	visibilityScope string,
+	createdAt pgtype.Timestamptz,
+) operationLogListRow {
+	return operationLogListRow{
+		ID:                            id,
+		TraceID:                       providerTextValue(traceID),
+		ActorSystemAccountID:          actorSystemAccountID,
+		ActorDisplayName:              providerTextValue(actorDisplayName),
+		OperationScopeSystemAccountID: providerTextValue(operationScopeSystemAccountID),
+		Module:                        module,
+		Action:                        action,
+		Summary:                       summary,
+		DetailLevel:                   detailLevel,
+		VisibilityScope:               visibilityScope,
+		CreatedAt:                     timestamptzValue(createdAt),
+	}
+}
+
+func operationLogListRowsFromAdminRows(rows []postgresqueries.ListOperationLogsRow) []operationLogListRow {
+	items := make([]operationLogListRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, newOperationLogListRow(row.ID, row.TraceID, row.ActorSystemAccountID, row.ActorDisplayName, row.OperationScopeSystemAccountID, row.Module, row.Action, row.Summary, row.DetailLevel, row.VisibilityScope, row.CreatedAt))
+	}
+	return items
+}
+
+func operationLogListRowsFromSearchRows(rows []postgresqueries.ListOperationLogsBySummarySearchRow) []operationLogListRow {
+	items := make([]operationLogListRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, newOperationLogListRow(row.ID, row.TraceID, row.ActorSystemAccountID, row.ActorDisplayName, row.OperationScopeSystemAccountID, row.Module, row.Action, row.Summary, row.DetailLevel, row.VisibilityScope, row.CreatedAt))
+	}
+	return items
+}
+
+func operationLogListRowsFromVisibleTargetedRows(rows []postgresqueries.ListVisibleTargetedOperationLogsRow) []operationLogListRow {
+	items := make([]operationLogListRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, newOperationLogListRow(row.ID, row.TraceID, row.ActorSystemAccountID, row.ActorDisplayName, row.OperationScopeSystemAccountID, row.Module, row.Action, row.Summary, row.DetailLevel, row.VisibilityScope, row.CreatedAt))
+	}
+	return items
+}
+
+func operationLogListRowsFromVisibleTargetedSearchRows(rows []postgresqueries.ListVisibleTargetedOperationLogsBySummarySearchRow) []operationLogListRow {
+	items := make([]operationLogListRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, newOperationLogListRow(row.ID, row.TraceID, row.ActorSystemAccountID, row.ActorDisplayName, row.OperationScopeSystemAccountID, row.Module, row.Action, row.Summary, row.DetailLevel, row.VisibilityScope, row.CreatedAt))
+	}
+	return items
+}
+
+func operationLogListRowsFromVisibleAllUsersRows(rows []postgresqueries.ListVisibleAllUsersOperationLogsRow) []operationLogListRow {
+	items := make([]operationLogListRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, newOperationLogListRow(row.ID, row.TraceID, row.ActorSystemAccountID, row.ActorDisplayName, row.OperationScopeSystemAccountID, row.Module, row.Action, row.Summary, row.DetailLevel, row.VisibilityScope, row.CreatedAt))
+	}
+	return items
+}
+
+func operationLogListRowsFromVisibleAllUsersSearchRows(rows []postgresqueries.ListVisibleAllUsersOperationLogsBySummarySearchRow) []operationLogListRow {
+	items := make([]operationLogListRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, newOperationLogListRow(row.ID, row.TraceID, row.ActorSystemAccountID, row.ActorDisplayName, row.OperationScopeSystemAccountID, row.Module, row.Action, row.Summary, row.DetailLevel, row.VisibilityScope, row.CreatedAt))
+	}
+	return items
+}
+
+func operationLogNameIDsFromListRows(rows []operationLogListRow) []string {
+	ids := make([]string, 0, len(rows)*2)
+	for _, row := range rows {
+		ids = append(ids, row.ActorSystemAccountID)
+		if row.OperationScopeSystemAccountID != "" {
+			ids = append(ids, row.OperationScopeSystemAccountID)
+		}
+	}
+	return ids
+}
+
 func operationLogNameIDsFromRows(rows []postgresqueries.JuheDatasetOperationLog) []string {
 	ids := make([]string, 0, len(rows)*2)
 	for _, row := range rows {
@@ -883,16 +1008,16 @@ func operationLogNameIDsFromDetail(row postgresqueries.JuheDatasetOperationLog, 
 	return ids
 }
 
-func mergeOperationLogRowsByCreatedAt(leftRows []postgresqueries.JuheDatasetOperationLog, rightRows []postgresqueries.JuheDatasetOperationLog, limit int) []postgresqueries.JuheDatasetOperationLog {
-	output := make([]postgresqueries.JuheDatasetOperationLog, 0, min(limit, len(leftRows)+len(rightRows)))
+func mergeOperationLogRowsByCreatedAt(leftRows []operationLogListRow, rightRows []operationLogListRow, limit int) []operationLogListRow {
+	output := make([]operationLogListRow, 0, min(limit, len(leftRows)+len(rightRows)))
 	leftIndex := 0
 	rightIndex := 0
 	for len(output) < limit && (leftIndex < len(leftRows) || rightIndex < len(rightRows)) {
-		var left *postgresqueries.JuheDatasetOperationLog
+		var left *operationLogListRow
 		if leftIndex < len(leftRows) {
 			left = &leftRows[leftIndex]
 		}
-		var right *postgresqueries.JuheDatasetOperationLog
+		var right *operationLogListRow
 		if rightIndex < len(rightRows) {
 			right = &rightRows[rightIndex]
 		}
@@ -907,11 +1032,9 @@ func mergeOperationLogRowsByCreatedAt(leftRows []postgresqueries.JuheDatasetOper
 	return output
 }
 
-func compareOperationLogRowsByCreatedAt(left postgresqueries.JuheDatasetOperationLog, right postgresqueries.JuheDatasetOperationLog) int {
-	leftCreatedAt := timestamptzValue(left.CreatedAt)
-	rightCreatedAt := timestamptzValue(right.CreatedAt)
-	if !leftCreatedAt.Equal(rightCreatedAt) {
-		if leftCreatedAt.After(rightCreatedAt) {
+func compareOperationLogRowsByCreatedAt(left operationLogListRow, right operationLogListRow) int {
+	if !left.CreatedAt.Equal(right.CreatedAt) {
+		if left.CreatedAt.After(right.CreatedAt) {
 			return -1
 		}
 		return 1

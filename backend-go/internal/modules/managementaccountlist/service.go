@@ -64,29 +64,35 @@ type Permissions struct {
 }
 
 type Item struct {
-	ID                     string      `json:"id"`
-	SystemAccountID        string      `json:"systemAccountId,omitempty"`
-	SystemAccountName      string      `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID   string      `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName string      `json:"ownerSystemAccountName,omitempty"`
-	Name                   string      `json:"name"`
-	ProviderCode           string      `json:"providerCode"`
-	Type                   string      `json:"type"`
-	Status                 string      `json:"status"`
-	Schedulable            bool        `json:"schedulable"`
-	ConcurrencyLimit       int         `json:"concurrencyLimit"`
-	Priority               int         `json:"priority"`
-	SuperPriorityEnabled   bool        `json:"superPriorityEnabled"`
-	FallbackEnabled        bool        `json:"fallbackEnabled"`
-	AccountExpiresAt       *time.Time  `json:"accountExpiresAt,omitempty"`
-	LastUsedAt             *time.Time  `json:"lastUsedAt,omitempty"`
-	AccessType             string      `json:"accessType"`
-	AccountAuthorizationID string      `json:"accountAuthorizationId,omitempty"`
-	AuthorizationStatus    string      `json:"authorizationStatus,omitempty"`
-	AuthorizationExpiresAt *time.Time  `json:"authorizationExpiresAt,omitempty"`
-	Usage                  Usage       `json:"usage"`
-	QualityScore           *int64      `json:"qualityScore,omitempty"`
-	Permissions            Permissions `json:"permissions"`
+	ID                       string      `json:"id"`
+	SystemAccountID          string      `json:"systemAccountId,omitempty"`
+	SystemAccountName        string      `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID     string      `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName   string      `json:"ownerSystemAccountName,omitempty"`
+	Name                     string      `json:"name"`
+	ProviderCode             string      `json:"providerCode"`
+	Type                     string      `json:"type"`
+	Status                   string      `json:"status"`
+	Schedulable              bool        `json:"schedulable"`
+	ConcurrencyLimit         int         `json:"concurrencyLimit"`
+	Priority                 int         `json:"priority"`
+	SuperPriorityEnabled     bool        `json:"superPriorityEnabled"`
+	FallbackEnabled          bool        `json:"fallbackEnabled"`
+	AccountExpiresAt         *time.Time  `json:"accountExpiresAt,omitempty"`
+	LastUsedAt               *time.Time  `json:"lastUsedAt,omitempty"`
+	AccessType               string      `json:"accessType"`
+	AccountAuthorizationID   string      `json:"accountAuthorizationId,omitempty"`
+	AuthorizationStatus      string      `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt   *time.Time  `json:"authorizationExpiresAt,omitempty"`
+	Usage                    Usage       `json:"usage"`
+	QualityScore             *int64      `json:"qualityScore,omitempty"`
+	Permissions              Permissions `json:"permissions"`
+	ProxyProfileID           string      `json:"proxyProfileId,omitempty"`
+	ProxyProfileName         string      `json:"proxyProfileName,omitempty"`
+	ProxyProfileType         string      `json:"proxyProfileType,omitempty"`
+	ProxyProfileEnabled      *bool       `json:"proxyProfileEnabled,omitempty"`
+	ProxyProfileUnavailable  bool        `json:"proxyProfileUnavailable,omitempty"`
+	ProxyProfileErrorMessage string      `json:"proxyProfileErrorMessage,omitempty"`
 }
 
 type Result struct {
@@ -166,6 +172,7 @@ func (s *Service) List(ctx context.Context, input Input) (Result, error) {
 			QualityScore:           row.QualityScore,
 			Permissions:            Permissions{CanUse: true, CanEdit: owner, CanDelete: owner},
 		}
+		applyProxyProfileDisplay(&item, row, admin && !input.SelfOnly)
 		if includeSystemAccount {
 			item.SystemAccountID = row.SystemAccountID
 			item.SystemAccountName = row.SystemAccountName
@@ -177,6 +184,29 @@ func (s *Service) List(ctx context.Context, input Input) (Result, error) {
 		total++
 	}
 	return Result{Items: items, Total: total, HasMore: hasMore, Page: page, PageSize: pageSize}, nil
+}
+
+const proxyProfileUnavailableMessage = "代理不存在或已停用，请选择一个已启用的代理"
+
+func applyProxyProfileDisplay(item *Item, row port.ManagementAccountListRow, canViewDisabled bool) {
+	if item == nil || strings.TrimSpace(row.ProxyProfileID) == "" {
+		return
+	}
+	item.ProxyProfileID = row.ProxyProfileID
+	if row.ProxyProfileEnabled == nil {
+		item.ProxyProfileUnavailable = true
+		item.ProxyProfileErrorMessage = proxyProfileUnavailableMessage
+		return
+	}
+	if *row.ProxyProfileEnabled || canViewDisabled {
+		item.ProxyProfileName = row.ProxyProfileName
+		item.ProxyProfileType = row.ProxyProfileType
+		item.ProxyProfileEnabled = row.ProxyProfileEnabled
+	}
+	if !*row.ProxyProfileEnabled {
+		item.ProxyProfileUnavailable = true
+		item.ProxyProfileErrorMessage = proxyProfileUnavailableMessage
+	}
 }
 
 func normalizeStatuses(values []string) []string {

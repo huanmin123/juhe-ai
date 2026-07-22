@@ -3,6 +3,8 @@ package managementproxies
 import (
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -132,15 +134,36 @@ func TestOptionsTrimsKeywordAndClampsLimit(t *testing.T) {
 	}
 	service := NewService(store)
 
-	got, err := service.Options(context.Background(), OptionListInput{Keyword: "  代理  ", Limit: 500})
+	got, err := service.Options(context.Background(), OptionListInput{
+		Keyword:     "  代理  ",
+		Limit:       500,
+		SelectedIDs: []string{" proxy_c ", "proxy_a", "proxy_c", "proxy_b"},
+	})
 	if err != nil {
 		t.Fatalf("Options() error = %v", err)
 	}
 	if store.input.Keyword != "代理" || store.input.Limit != 50 {
 		t.Fatalf("store input = %+v, want trimmed keyword and limit 50", store.input)
 	}
+	if gotIDs, wantIDs := store.input.SelectedIDs, []string{"proxy_a", "proxy_b", "proxy_c"}; !slices.Equal(gotIDs, wantIDs) {
+		t.Fatalf("selected ids = %v, want %v", gotIDs, wantIDs)
+	}
 	if len(got) != 1 || got[0].ID != "proxy_a" || got[0].Name != "代理 A" || got[0].Type != "http" || !got[0].Enabled {
 		t.Fatalf("Options() = %+v", got)
+	}
+}
+
+func TestOptionsRejectsTooManyOrOverlongSelectedIDs(t *testing.T) {
+	tooMany := make([]string, 21)
+	for index := range tooMany {
+		tooMany[index] = fmt.Sprintf("proxy_%d", index)
+	}
+	for _, selectedIDs := range [][]string{tooMany, {strings.Repeat("x", 121)}} {
+		service := NewService(&proxyOptionStoreStub{})
+		_, err := service.Options(context.Background(), OptionListInput{SelectedIDs: selectedIDs})
+		if _, ok := ValidationMessage(err); !ok {
+			t.Fatalf("Options(%v) error = %v, want validation error", selectedIDs, err)
+		}
 	}
 }
 

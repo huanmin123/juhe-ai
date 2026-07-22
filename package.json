@@ -59,6 +59,7 @@
     "test:time-schedule": "pnpm --filter juhe-ai-frontend test:time-schedule",
     "test:account-response-credentials-redaction": "pnpm --filter juhe-ai-backend test:account-response-credentials-redaction",
     "test:account-list-visible": "pnpm --filter juhe-ai-backend test:account-list-visible",
+    "test:account-proxy-display-contract": "pnpm --filter juhe-ai-backend test:account-proxy-display-contract",
     "test:account-options-lightweight": "pnpm --filter juhe-ai-backend test:account-options-lightweight",
     "test:performance-system-api-smoke": "pnpm --filter juhe-ai-backend test:performance-system-api-smoke",
     "benchmark:production-system-api-read": "pnpm --filter juhe-ai-backend benchmark:production-system-api-read",
@@ -187,7 +188,11 @@
     "smoke:plan0081-real-go-settings-write": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-settings-write",
     "test:plan0081-real-go-client-ip-allowlist-smoke": "pnpm --filter juhe-ai-frontend test:plan0081-real-go-client-ip-allowlist-smoke",
     "smoke:plan0081-real-go-client-ip-allowlist": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-client-ip-allowlist",
-    "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-client-ip-allowlist-cleanup-only"
+    "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --filter juhe-ai-frontend smoke:plan0081-real-go-client-ip-allowlist-cleanup-only",
+    "test:account-proxy-options-lazy-loading": "pnpm --filter juhe-ai-frontend test:account-proxy-options-lazy-loading",
+    "test:public-api-log-list-lightweight": "pnpm --filter juhe-ai-backend test:public-api-log-list-lightweight",
+    "test:operation-log-list-lightweight": "pnpm --filter juhe-ai-backend test:operation-log-list-lightweight",
+    "test:public-api-log-page-window": "pnpm --filter juhe-ai-frontend test:public-api-log-page-window"
   },
   "engines": {
     "node": ">=22.13.0 <23 || >=24.11.0 <25",

@@ -364,7 +364,7 @@ func w6ManagementPublicAPILogsAssertDefaultStableList(t *testing.T, ctx context.
 		"publog_w6_failed_sibling",
 		"publog_w6_oldest",
 	}
-	w6ManagementPublicAPILogsAssertListData(t, data, body, wantIDs, 9, false, 1, 100)
+	w6ManagementPublicAPILogsAssertListData(t, data, body, wantIDs, 9, false, 1, 50)
 }
 
 func w6ManagementPublicAPILogsAssertProgressivePagination(t *testing.T, ctx context.Context, server *httptest.Server) {
@@ -634,12 +634,20 @@ func w6ManagementPublicAPILogsAdminList(
 func w6ManagementPublicAPILogsAssertListHasNoPayload(t *testing.T, items []map[string]any, body []byte) {
 	t.Helper()
 
+	allowed := map[string]struct{}{
+		"id": {}, "createdAt": {}, "sourceName": {}, "method": {}, "path": {},
+		"success": {}, "statusCode": {}, "durationMs": {}, "clientIp": {}, "traceId": {},
+	}
 	for _, item := range items {
-		if _, found := item["requestData"]; found {
-			t.Fatalf("public API log list leaked requestData: %#v", item)
+		for key := range item {
+			if _, ok := allowed[key]; !ok {
+				t.Fatalf("public API log list returned non-ListItem field %q: %#v", key, item)
+			}
 		}
-		if _, found := item["responseData"]; found {
-			t.Fatalf("public API log list leaked responseData: %#v", item)
+		for _, required := range []string{"id", "createdAt", "method", "path", "success"} {
+			if _, ok := item[required]; !ok {
+				t.Fatalf("public API log list missing required field %q: %#v", required, item)
+			}
 		}
 	}
 	for _, forbidden := range []string{`"requestData"`, `"responseData"`, w6ManagementPublicAPILogsPayloadMarker} {

@@ -242,11 +242,14 @@ func listManagementProxyOptions(ctx context.Context, q *postgresqueries.Queries,
 	if keyword != "" {
 		keywordUpper = textPrefixUpperBound(keyword)
 	}
+	selectedIDs := append([]string(nil), input.SelectedIDs...)
 	rows, err := q.ListManagementProxyOptions(ctx, postgresqueries.ListManagementProxyOptionsParams{
 		HasKeyword:   keyword != "",
 		Keyword:      keyword,
 		KeywordUpper: keywordUpper,
 		RowLimit:     int32(normalizeManagementProxyOptionLimit(input.Limit)),
+		HasSelectedIds: len(selectedIDs) > 0,
+		SelectedIds:    selectedIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("list management proxy options: %w", err)

@@ -10,6 +10,7 @@ import type {
   AuthorizationPrincipalOptionsParams,
   GroupListParams,
   GroupOptionParams,
+  ProxyOptionParams,
   OperationLogListParams,
   SystemAccountListParams,
   SystemAccountOptionsParams,
@@ -111,6 +112,15 @@ export function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionP
   return Object.keys(output).length ? output : undefined
 }
 
+
+export function proxyOptionParams(params?: ProxyOptionParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
+  if (params.limit) output.limit = params.limit
+  if (params.selectedIds?.length) output.selectedIds = [...new Set(params.selectedIds.map((id) => id.trim()).filter(Boolean))].sort()
+  return Object.keys(output).length ? output : undefined
+}
 export function scopedListParams<T extends object>(params?: T, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output = { ...(params as Record<string, unknown>) }

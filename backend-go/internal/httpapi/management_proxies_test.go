@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +30,7 @@ func TestManagementProxyOptionsHandler(t *testing.T) {
 	}
 	handler := newManagementProxyOptionsHandler(service)
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options?keyword=%20%E4%BB%A3%E7%90%86%20&limit=500", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options?keyword=%20%E4%BB%A3%E7%90%86%20&limit=500&selectedIds=%20proxy_b%20&selectedIds=proxy_a&selectedIds=proxy_b&selectedIds[]=proxy_c", nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -39,6 +41,9 @@ func TestManagementProxyOptionsHandler(t *testing.T) {
 	if service.input.Keyword != "代理" || service.input.Limit != 500 {
 		t.Fatalf("service input = %+v", service.input)
 	}
+	if got, want := service.input.SelectedIDs, []string{"proxy_a", "proxy_b", "proxy_c"}; !slices.Equal(got, want) {
+		t.Fatalf("selected ids = %v, want %v", got, want)
+	}
 	var body struct {
 		Data []managementproxies.Option `json:"data"`
 	}
@@ -47,6 +52,40 @@ func TestManagementProxyOptionsHandler(t *testing.T) {
 	}
 	if len(body.Data) != 1 || body.Data[0].ID != "proxy_a" || body.Data[0].Name != "代理 A" {
 		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementProxyOptionsHandlerRejectsInvalidSelectedIDs(t *testing.T) {
+	tooMany := make([]string, 0, 21)
+	for index := range 21 {
+		tooMany = append(tooMany, "selectedIds=proxy_"+strconv.Itoa(index))
+	}
+	tests := []struct {
+		name  string
+		query string
+	}{
+		{name: "csv", query: "selectedIds=proxy_a%2Cproxy_b"},
+		{name: "json", query: "selectedIds=%5B%22proxy_a%22%5D"},
+		{name: "nested", query: "selectedIds%5Bid%5D=proxy_a"},
+		{name: "too long", query: "selectedIds=" + strings.Repeat("x", 121)},
+		{name: "too many", query: strings.Join(tooMany, "&")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementProxyOptionServiceStub{}
+			handler := newManagementProxyOptionsHandler(service)
+			req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/proxies/options?"+tt.query, nil)
+			rec := httptest.NewRecorder()
+
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+			}
+			if service.optionsCalls != 0 {
+				t.Fatalf("service calls = %d, want 0", service.optionsCalls)
+			}
+		})
 	}
 }
 
@@ -904,6 +943,7 @@ type managementProxyOptionServiceStub struct {
 	listCalled   bool
 	listInput    managementproxies.ListInput
 	input        managementproxies.OptionListInput
+	optionsCalls int
 	listResult   managementproxies.ListResult
 	options      []managementproxies.Option
 	listErr      error
@@ -939,6 +979,7 @@ func (s *managementProxyOptionServiceStub) List(_ *http.Request, input managemen
 }
 
 func (s *managementProxyOptionServiceStub) Options(_ *http.Request, input managementproxies.OptionListInput) ([]managementproxies.Option, error) {
+	s.optionsCalls++
 	s.input = input
 	return s.options, s.err
 }

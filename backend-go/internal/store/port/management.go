@@ -177,6 +177,7 @@ type ManagementProxyListResult struct {
 type ManagementProxyOptionListInput struct {
 	Keyword string
 	Limit   int
+	SelectedIDs []string
 }
 
 type ManagementProxyCreateInput struct {

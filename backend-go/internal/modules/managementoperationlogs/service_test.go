@@ -8,11 +8,10 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestListUsesPagedUpperBoundAndAdminFields(t *testing.T) {
-	status := 200
+func TestListUsesPagedUpperBoundAndProjectsListItem(t *testing.T) {
 	store := &operationLogReaderStub{
 		listResult: port.OperationLogListResult{
-			Items:   []port.OperationLogSummary{operationLogSummaryFixture("oplog_1", "full", "targeted", "full", &status)},
+			Items:   []port.OperationLogListRow{operationLogListRowFixture("oplog_1", "full", "targeted", "full")},
 			HasMore: true,
 		},
 	}
@@ -25,7 +24,7 @@ func TestListUsesPagedUpperBoundAndAdminFields(t *testing.T) {
 	if result.Page != 2 || result.PageSize != 20 || result.Total != 22 || !result.HasMore {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(result.Items) != 1 || result.Items[0].ClientIP != "127.0.0.1" || result.Items[0].StatusCode == nil {
+	if len(result.Items) != 1 || result.Items[0].ActorDisplayName != "管理员快照" || result.Items[0].OperationScopeSystemAccountName != "普通用户" {
 		t.Fatalf("items = %+v", result.Items)
 	}
 	if store.listInput.Limit != 21 || store.listInput.Offset != 20 {
@@ -33,11 +32,10 @@ func TestListUsesPagedUpperBoundAndAdminFields(t *testing.T) {
 	}
 }
 
-func TestListForViewerSanitizesSummaryLevelFields(t *testing.T) {
-	status := 200
+func TestListForViewerUsesVisibleReaderAndDoesNotExposeInternalPermissionFields(t *testing.T) {
 	store := &operationLogReaderStub{
 		visibleResult: port.OperationLogListResult{
-			Items: []port.OperationLogSummary{operationLogSummaryFixture("oplog_1", "full", "targeted", "summary", &status)},
+			Items: []port.OperationLogListRow{operationLogListRowFixture("oplog_1", "full", "targeted", "summary")},
 		},
 	}
 	service := NewService(store)
@@ -50,8 +48,8 @@ func TestListForViewerSanitizesSummaryLevelFields(t *testing.T) {
 		t.Fatalf("visible input = %+v", store.visibleInput)
 	}
 	item := result.Items[0]
-	if item.ClientIP != "" || item.Method != "" || item.Path != "" || item.StatusCode != nil || item.DetailLevel != "summary" {
-		t.Fatalf("sanitized item = %+v", item)
+	if item.ID != "oplog_1" || item.Summary != "更新账户标签：主账号" || item.CreatedAt == "" {
+		t.Fatalf("list item = %+v", item)
 	}
 }
 
@@ -133,6 +131,25 @@ func operationLogSummaryFixture(id string, detailLevel string, visibilityScope s
 		UserAgent:                     "unit-test",
 		CreatedAt:                     time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
 		ViewerDetailLevel:             viewerDetailLevel,
+	}
+}
+
+func operationLogListRowFixture(id string, detailLevel string, visibilityScope string, viewerDetailLevel string) port.OperationLogListRow {
+	return port.OperationLogListRow{
+		ID:                              id,
+		TraceID:                         "req_1",
+		ActorSystemAccountID:            "sys_admin",
+		ActorDisplayName:                "管理员快照",
+		ActorSystemAccountName:          "管理员",
+		OperationScopeSystemAccountID:   "sys_user",
+		OperationScopeSystemAccountName: "普通用户",
+		Module:                          "accounts",
+		Action:                          "update_tags",
+		Summary:                         "更新账户标签：主账号",
+		CreatedAt:                       time.Date(2026, 7, 7, 10, 0, 0, 0, time.UTC),
+		DetailLevel:                     detailLevel,
+		VisibilityScope:                 visibilityScope,
+		ViewerDetailLevel:               viewerDetailLevel,
 	}
 }
 

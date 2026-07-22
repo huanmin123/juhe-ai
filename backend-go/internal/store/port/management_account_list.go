@@ -48,6 +48,10 @@ type ManagementAccountListRow struct {
 	OutputTokens           int64
 	TotalCost              float64
 	QualityScore           *int64
+	ProxyProfileID         string
+	ProxyProfileName       string
+	ProxyProfileType       string
+	ProxyProfileEnabled    *bool
 }
 
 type ManagementAccountListPage struct {

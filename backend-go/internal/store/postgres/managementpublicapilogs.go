@@ -14,10 +14,21 @@ import (
 )
 
 const (
-	defaultManagementPublicAPILogListLimit = 100
+	defaultManagementPublicAPILogListLimit = 50
 	maxManagementPublicAPILogListLimit     = 100
 	maxManagementPublicAPILogListRows      = 1000
 )
+
+const managementPublicAPILogListSelectColumns = `  pal.id,
+  pal.created_at,
+  pal.source_name,
+  pal.method,
+  pal.path,
+  pal.success,
+  pal.status_code,
+  pal.duration_ms,
+  pal.client_ip,
+  pal.trace_id`
 
 const managementPublicAPILogSummarySelectColumns = `  pal.id,
   pal.trace_id,
@@ -52,6 +63,19 @@ const managementPublicAPILogDetailQuery = `SELECT
 FROM juhe_dataset.public_api_logs AS pal
 WHERE pal.id = $1::text
 LIMIT 1`
+
+type managementPublicAPILogListRow struct {
+	ID         string
+	CreatedAt  time.Time
+	SourceName pgtype.Text
+	Method     string
+	Path       string
+	Success    bool
+	StatusCode pgtype.Int4
+	DurationMs pgtype.Int8
+	ClientIP   pgtype.Text
+	TraceID    pgtype.Text
+}
 
 type managementPublicAPILogRow struct {
 	ID                    string
@@ -92,7 +116,7 @@ type managementPublicAPILogListExecutor interface {
 		ctx context.Context,
 		query string,
 		args ...any,
-	) ([]managementPublicAPILogRow, error)
+	) ([]managementPublicAPILogListRow, error)
 }
 
 type managementPublicAPILogDetailExecutor interface {
@@ -111,17 +135,17 @@ func (e postgresManagementPublicAPILogExecutor) QueryManagementPublicAPILogs(
 	ctx context.Context,
 	query string,
 	args ...any,
-) ([]managementPublicAPILogRow, error) {
+) ([]managementPublicAPILogListRow, error) {
 	rows, err := e.store.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	items := make([]managementPublicAPILogRow, 0)
+	items := make([]managementPublicAPILogListRow, 0)
 	for rows.Next() {
-		var item managementPublicAPILogRow
-		if err := rows.Scan(managementPublicAPILogSummaryScanDestinations(&item)...); err != nil {
+		var item managementPublicAPILogListRow
+		if err := rows.Scan(managementPublicAPILogListScanDestinations(&item)...); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -142,6 +166,21 @@ func (e postgresManagementPublicAPILogExecutor) QueryManagementPublicAPILog(
 	destinations = append(destinations, &row.RequestDataJSON, &row.ResponseDataJSON)
 	err := e.store.pool.QueryRow(ctx, query, id).Scan(destinations...)
 	return row, err
+}
+
+func managementPublicAPILogListScanDestinations(row *managementPublicAPILogListRow) []any {
+	return []any{
+		&row.ID,
+		&row.CreatedAt,
+		&row.SourceName,
+		&row.Method,
+		&row.Path,
+		&row.Success,
+		&row.StatusCode,
+		&row.DurationMs,
+		&row.ClientIP,
+		&row.TraceID,
+	}
 }
 
 func managementPublicAPILogSummaryScanDestinations(row *managementPublicAPILogRow) []any {
@@ -198,9 +237,9 @@ func listManagementPublicAPILogs(
 	if hasMore {
 		rows = rows[:limit]
 	}
-	items := make([]port.ManagementPublicAPILogSummary, 0, len(rows))
+	items := make([]port.ManagementPublicAPILogListItem, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, managementPublicAPILogSummary(row))
+		items = append(items, managementPublicAPILogListItem(row))
 	}
 	return port.ManagementPublicAPILogListResult{
 		Items:   items,
@@ -214,7 +253,7 @@ func managementPublicAPILogListQuery(
 	rowOffset int,
 ) (string, []any) {
 	const selectManagementPublicAPILogs = `SELECT
-` + managementPublicAPILogSummarySelectColumns + `
+` + managementPublicAPILogListSelectColumns + `
 FROM juhe_dataset.public_api_logs AS pal`
 
 	conditions := make([]string, 0, 10)
@@ -302,6 +341,21 @@ func normalizeManagementPublicAPILogListLimit(limit int) int {
 		return defaultManagementPublicAPILogListLimit
 	}
 	return min(limit, maxManagementPublicAPILogListLimit)
+}
+
+func managementPublicAPILogListItem(row managementPublicAPILogListRow) port.ManagementPublicAPILogListItem {
+	return port.ManagementPublicAPILogListItem{
+		ID:         row.ID,
+		CreatedAt:  row.CreatedAt,
+		SourceName: textPtr(row.SourceName),
+		Method:     row.Method,
+		Path:       row.Path,
+		Success:    row.Success,
+		StatusCode: int4Ptr(row.StatusCode),
+		DurationMs: managementPublicAPILogInt8Ptr(row.DurationMs),
+		ClientIP:   textPtr(row.ClientIP),
+		TraceID:    textPtr(row.TraceID),
+	}
 }
 
 func managementPublicAPILogSummary(row managementPublicAPILogRow) port.ManagementPublicAPILogSummary {

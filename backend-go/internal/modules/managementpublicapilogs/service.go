@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultPageSize           = 100
+	defaultPageSize           = 50
 	maxPageSize               = 100
 	maxListWindowRows         = 1001
 	javaScriptISOStringLayout = "2006-01-02T15:04:05.000Z"
@@ -37,11 +37,24 @@ type ListInput struct {
 }
 
 type ListResult struct {
-	Items    []Summary `json:"items"`
+	Items    []ListItem `json:"items"`
 	Total    int       `json:"total"`
 	HasMore  bool      `json:"hasMore"`
 	Page     int       `json:"page"`
 	PageSize int       `json:"pageSize"`
+}
+
+type ListItem struct {
+	ID         string `json:"id"`
+	CreatedAt  string `json:"createdAt"`
+	SourceName string `json:"sourceName,omitempty"`
+	Method     string `json:"method"`
+	Path       string `json:"path"`
+	Success    bool   `json:"success"`
+	StatusCode *int   `json:"statusCode,omitempty"`
+	DurationMs *int64 `json:"durationMs,omitempty"`
+	ClientIP   string `json:"clientIp,omitempty"`
+	TraceID    string `json:"traceId,omitempty"`
 }
 
 type Summary struct {
@@ -109,9 +122,9 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	if len(rows) > pageSize {
 		rows = rows[:pageSize]
 	}
-	items := make([]Summary, 0, len(rows))
+	items := make([]ListItem, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, summaryFromStore(row))
+		items = append(items, listItemFromStore(row))
 	}
 	return ListResult{
 		Items:    items,
@@ -135,6 +148,21 @@ func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
 		RequestData:  parseJSONObject(detail.RequestDataJSON),
 		ResponseData: parseJSONObject(detail.ResponseDataJSON),
 	}, true, nil
+}
+
+func listItemFromStore(item port.ManagementPublicAPILogListItem) ListItem {
+	return ListItem{
+		ID:         item.ID,
+		CreatedAt:  formatTime(item.CreatedAt),
+		SourceName: optionalText(item.SourceName),
+		Method:     item.Method,
+		Path:       item.Path,
+		Success:    item.Success,
+		StatusCode: cloneInt(item.StatusCode),
+		DurationMs: cloneInt64(item.DurationMs),
+		ClientIP:   optionalText(item.ClientIP),
+		TraceID:    optionalText(item.TraceID),
+	}
 }
 
 func summaryFromStore(item port.ManagementPublicAPILogSummary) Summary {

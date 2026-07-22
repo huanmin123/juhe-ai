@@ -112,7 +112,9 @@
     "smoke:plan0081-real-go-settings-write": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-settings-write-smoke.ts",
     "test:plan0081-real-go-client-ip-allowlist-smoke": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/plan0081-real-go-client-ip-allowlist-smoke-regression.ts",
     "smoke:plan0081-real-go-client-ip-allowlist": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts",
-    "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts --cleanup-only"
+    "smoke:plan0081-real-go-client-ip-allowlist-cleanup-only": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/smoke/plan0081-real-go-client-ip-allowlist-smoke.ts --cleanup-only",
+    "test:account-proxy-options-lazy-loading": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-proxy-options-lazy-loading-regression.ts",
+    "test:public-api-log-page-window": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/public-api-log-page-window-regression.ts"
   },
   "dependencies": {
     "@ant-design/icons-vue": "^7.0.1",

@@ -60,8 +60,21 @@ type ManagementPublicAPILogDetail struct {
 	ResponseDataJSON string
 }
 
+type ManagementPublicAPILogListItem struct {
+	ID         string
+	CreatedAt  time.Time
+	SourceName *string
+	Method     string
+	Path       string
+	Success    bool
+	StatusCode *int
+	DurationMs *int64
+	ClientIP   *string
+	TraceID    *string
+}
+
 type ManagementPublicAPILogListResult struct {
-	Items   []ManagementPublicAPILogSummary
+	Items   []ManagementPublicAPILogListItem
 	HasMore bool
 }
 

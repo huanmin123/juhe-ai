@@ -88,8 +88,25 @@ type OperationLogDetailInput struct {
 }
 
 type OperationLogListResult struct {
-	Items   []OperationLogSummary
+	Items   []OperationLogListRow
 	HasMore bool
+}
+
+type OperationLogListRow struct {
+	ID                              string
+	TraceID                         string
+	ActorSystemAccountID            string
+	ActorDisplayName                string
+	ActorSystemAccountName          string
+	OperationScopeSystemAccountID   string
+	OperationScopeSystemAccountName string
+	Module                          string
+	Action                          string
+	Summary                         string
+	CreatedAt                       time.Time
+	DetailLevel                     string
+	VisibilityScope                 string
+	ViewerDetailLevel               string
 }
 
 type OperationLogSummary struct {

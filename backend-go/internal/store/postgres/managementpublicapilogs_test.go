@@ -20,46 +20,27 @@ func TestListManagementPublicAPILogsBuildsAllFiltersAndMapsLookahead(t *testing.
 	endedAt := startedAt.Add(350 * time.Millisecond)
 	createdAt := endedAt.Add(time.Millisecond)
 	executor := &managementPublicAPILogListExecutorStub{
-		rows: []managementPublicAPILogRow{
-			{
-				ID:                    "publog_1",
-				TraceID:               pgtype.Text{String: "trace-public-1", Valid: true},
-				SourceRefID:           pgtype.Text{String: "source_1", Valid: true},
-				SourceName:            pgtype.Text{String: "source one", Valid: true},
-				TokenID:               pgtype.Text{String: "token_1", Valid: true},
-				TokenName:             pgtype.Text{String: "production token", Valid: true},
-				TokenPrefix:           pgtype.Text{String: "jpa_abc", Valid: true},
-				IsTestToken:           true,
-				Method:                "POST",
-				Path:                  "/__aipublic__/account/add",
-				QueryString:           pgtype.Text{String: "dryRun=true", Valid: true},
-				ClientIP:              pgtype.Text{String: "203.0.113.8", Valid: true},
-				UserAgent:             pgtype.Text{String: "integration-client/1.0", Valid: true},
-				StatusCode:            pgtype.Int4{Int32: 503, Valid: true},
-				Success:               false,
-				DurationMs:            pgtype.Int8{Int64: 350, Valid: true},
-				RequestSizeBytes:      2048,
-				ResponseSizeBytes:     512,
-				RequestCaptureStatus:  string(port.PublicAPILogCaptureComplete),
-				ResponseCaptureStatus: string(port.PublicAPILogCaptureTruncated),
-				ErrorCode:             pgtype.Text{String: "upstream_unavailable", Valid: true},
-				ErrorMessage:          pgtype.Text{String: "upstream unavailable", Valid: true},
-				StartedAt:             startedAt,
-				EndedAt:               endedAt,
-				CreatedAt:             createdAt,
-			},
-			{
-				ID:                    "publog_2",
-				Method:                "GET",
-				Path:                  "/__aipublic__/group/list",
-				RequestCaptureStatus:  string(port.PublicAPILogCaptureEmpty),
-				ResponseCaptureStatus: string(port.PublicAPILogCaptureDropped),
-				StartedAt:             startedAt,
-				EndedAt:               endedAt,
-				CreatedAt:             createdAt,
-			},
-			{ID: "publog_lookahead"},
-		},
+               rows: []managementPublicAPILogListRow{
+                       {
+                               ID:         "publog_1",
+                               CreatedAt:  createdAt,
+                               SourceName: pgtype.Text{String: "source one", Valid: true},
+                               Method:     "POST",
+                               Path:       "/__aipublic__/account/add",
+                               Success:    false,
+                               StatusCode: pgtype.Int4{Int32: 503, Valid: true},
+                               DurationMs: pgtype.Int8{Int64: 350, Valid: true},
+                               ClientIP:   pgtype.Text{String: "203.0.113.8", Valid: true},
+                               TraceID:    pgtype.Text{String: "trace-public-1", Valid: true},
+                       },
+                       {
+                               ID:        "publog_2",
+                               Method:    "GET",
+                               Path:      "/__aipublic__/group/list",
+                               CreatedAt: createdAt,
+                       },
+                       {ID: "publog_lookahead"},
+               },
 	}
 	statusCode := 503
 	startFilter := time.Date(2026, 7, 14, 8, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60))
@@ -130,37 +111,21 @@ func TestListManagementPublicAPILogsBuildsAllFiltersAndMapsLookahead(t *testing.
 		t.Fatalf("list result = %+v", result)
 	}
 	item := result.Items[0]
-	if item.ID != "publog_1" ||
-		item.TraceID == nil || *item.TraceID != "trace-public-1" ||
-		item.SourceRefID == nil || *item.SourceRefID != "source_1" ||
-		item.SourceName == nil || *item.SourceName != "source one" ||
-		item.TokenID == nil || *item.TokenID != "token_1" ||
-		item.TokenName == nil || *item.TokenName != "production token" ||
-		item.TokenPrefix == nil || *item.TokenPrefix != "jpa_abc" ||
-		!item.IsTestToken || item.Method != "POST" || item.Path != "/__aipublic__/account/add" ||
-		item.QueryString == nil || *item.QueryString != "dryRun=true" ||
-		item.ClientIP == nil || *item.ClientIP != "203.0.113.8" ||
-		item.UserAgent == nil || *item.UserAgent != "integration-client/1.0" ||
-		item.StatusCode == nil || *item.StatusCode != 503 || item.Success ||
-		item.DurationMs == nil || *item.DurationMs != 350 ||
-		item.RequestSizeBytes != 2048 || item.ResponseSizeBytes != 512 ||
-		item.RequestCaptureStatus != port.PublicAPILogCaptureComplete ||
-		item.ResponseCaptureStatus != port.PublicAPILogCaptureTruncated ||
-		item.ErrorCode == nil || *item.ErrorCode != "upstream_unavailable" ||
-		item.ErrorMessage == nil || *item.ErrorMessage != "upstream unavailable" ||
-		!item.StartedAt.Equal(startedAt.UTC()) ||
-		!item.EndedAt.Equal(endedAt.UTC()) ||
-		!item.CreatedAt.Equal(createdAt.UTC()) {
-		t.Fatalf("mapped item = %+v", item)
-	}
-	nullableItem := result.Items[1]
-	if nullableItem.TraceID != nil || nullableItem.SourceRefID != nil || nullableItem.SourceName != nil ||
-		nullableItem.TokenID != nil || nullableItem.TokenName != nil || nullableItem.TokenPrefix != nil ||
-		nullableItem.QueryString != nil || nullableItem.ClientIP != nil || nullableItem.UserAgent != nil ||
-		nullableItem.StatusCode != nil || nullableItem.DurationMs != nil || nullableItem.ErrorCode != nil ||
-		nullableItem.ErrorMessage != nil {
-		t.Fatalf("nullable fields must remain nil: %+v", nullableItem)
-	}
+       if item.ID != "publog_1" ||
+               item.TraceID == nil || *item.TraceID != "trace-public-1" ||
+               item.SourceName == nil || *item.SourceName != "source one" ||
+               item.Method != "POST" || item.Path != "/__aipublic__/account/add" ||
+               item.ClientIP == nil || *item.ClientIP != "203.0.113.8" ||
+               item.StatusCode == nil || *item.StatusCode != 503 || item.Success ||
+               item.DurationMs == nil || *item.DurationMs != 350 ||
+               !item.CreatedAt.Equal(createdAt.UTC()) {
+               t.Fatalf("mapped item = %+v", item)
+       }
+       nullableItem := result.Items[1]
+       if nullableItem.TraceID != nil || nullableItem.SourceName != nil || nullableItem.ClientIP != nil ||
+               nullableItem.StatusCode != nil || nullableItem.DurationMs != nil {
+               t.Fatalf("nullable fields must remain nil: %+v", nullableItem)
+       }
 }
 
 func TestManagementPublicAPILogListQueryOnlyAddsWhitelistedFilters(t *testing.T) {
@@ -251,7 +216,7 @@ func TestListManagementPublicAPILogsClampsWindowAndReturnsNonNilEmptyItems(t *te
 		{
 			name:       "default limit and negative offset",
 			input:      port.ManagementPublicAPILogListInput{Offset: -1},
-			wantWindow: []any{int32(101), int32(0)},
+			wantWindow: []any{int32(51), int32(0)},
 		},
 		{
 			name:       "maximum limit and upper window",
@@ -376,6 +341,16 @@ func assertManagementPublicAPILogListSQLIsLightweight(t *testing.T, query string
 	for _, forbidden := range []*regexp.Regexp{
 		regexp.MustCompile(`(?i)request_data_json`),
 		regexp.MustCompile(`(?i)response_data_json`),
+		regexp.MustCompile(`(?i)token_id`),
+		regexp.MustCompile(`(?i)token_name`),
+		regexp.MustCompile(`(?i)user_agent`),
+		regexp.MustCompile(`(?i)request_size_bytes`),
+		regexp.MustCompile(`(?i)error_message`),
+		regexp.MustCompile(`(?i)token_id`),
+		regexp.MustCompile(`(?i)token_name`),
+		regexp.MustCompile(`(?i)user_agent`),
+		regexp.MustCompile(`(?i)request_size_bytes`),
+		regexp.MustCompile(`(?i)error_message`),
 		regexp.MustCompile(`(?i)SELECT\s+\*`),
 		regexp.MustCompile(`(?i)\bOR\b`),
 		regexp.MustCompile(`(?i)\bCOUNT\s*\(`),
@@ -407,7 +382,7 @@ type managementPublicAPILogListCall struct {
 }
 
 type managementPublicAPILogListExecutorStub struct {
-	rows  []managementPublicAPILogRow
+	rows  []managementPublicAPILogListRow
 	err   error
 	calls []managementPublicAPILogListCall
 }
@@ -416,7 +391,7 @@ func (s *managementPublicAPILogListExecutorStub) QueryManagementPublicAPILogs(
 	_ context.Context,
 	query string,
 	args ...any,
-) ([]managementPublicAPILogRow, error) {
+) ([]managementPublicAPILogListRow, error) {
 	s.calls = append(s.calls, managementPublicAPILogListCall{
 		query: query,
 		args:  append([]any(nil), args...),

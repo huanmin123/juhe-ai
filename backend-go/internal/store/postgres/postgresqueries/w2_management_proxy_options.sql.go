@@ -409,25 +409,41 @@ func (q *Queries) ListManagementProxyAccountBindings(ctx context.Context, arg Li
 
 const listManagementProxyOptions = `-- name: ListManagementProxyOptions :many
 SELECT id, name, type, enabled
-FROM juhe_business.proxy_profiles
-WHERE enabled = true
-  AND (
-    $1::boolean = false
-    OR (
-      name COLLATE "C" >= $2::text
-      AND name COLLATE "C" < $3::text
-      AND starts_with(name, $2::text)
-    )
-)
+FROM (
+  (
+    SELECT id, name, type, enabled, updated_at
+    FROM juhe_business.proxy_profiles
+    WHERE enabled = true
+      AND (
+        $1::boolean = false
+        OR (
+          name COLLATE "C" >= $2::text
+          AND name COLLATE "C" < $3::text
+          AND starts_with(name, $2::text)
+        )
+      )
+    ORDER BY name ASC, updated_at DESC, id ASC
+    LIMIT $4::int
+  )
+  UNION
+  (
+    SELECT id, name, type, enabled, updated_at
+    FROM juhe_business.proxy_profiles
+    WHERE enabled = true
+      AND $5::boolean = true
+      AND id = ANY($6::text[])
+  )
+) proxy_options
 ORDER BY name ASC, updated_at DESC, id ASC
-LIMIT $4::int
 `
 
 type ListManagementProxyOptionsParams struct {
-	HasKeyword   bool
-	Keyword      string
-	KeywordUpper string
-	RowLimit     int32
+	HasKeyword     bool
+	Keyword        string
+	KeywordUpper   string
+	RowLimit       int32
+	HasSelectedIds bool
+	SelectedIds    []string
 }
 
 type ListManagementProxyOptionsRow struct {
@@ -443,6 +459,8 @@ func (q *Queries) ListManagementProxyOptions(ctx context.Context, arg ListManage
 		arg.Keyword,
 		arg.KeywordUpper,
 		arg.RowLimit,
+		arg.HasSelectedIds,
+		arg.SelectedIds,
 	)
 	if err != nil {
 		return nil, err

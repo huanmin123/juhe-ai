@@ -85,11 +85,8 @@ func TestW2ManagementOperationLogsPostgresSmoke(t *testing.T) {
 		t.Fatalf("viewer list = %+v", viewerList)
 	}
 	for _, item := range viewerList.Items {
-		if item.ClientIP != "" {
-			t.Fatalf("viewer list leaked client ip: %+v", item)
-		}
-		if item.ID == "oplog_w2_targeted" && (item.Method != "" || item.StatusCode != nil || item.DetailLevel != "summary") {
-			t.Fatalf("viewer summary item not sanitized: %+v", item)
+		if item.ActorSystemAccountID == "" || item.Module == "" || item.Action == "" || item.Summary == "" || item.CreatedAt == "" {
+			t.Fatalf("viewer list item missing display field: %+v", item)
 		}
 	}
 

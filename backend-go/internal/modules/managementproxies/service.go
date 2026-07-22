@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -144,6 +145,7 @@ type ListInput struct {
 type OptionListInput struct {
 	Keyword string
 	Limit   int
+	SelectedIDs []string
 }
 
 type Summary struct {
@@ -304,9 +306,14 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 	if s.store == nil {
 		return nil, fmt.Errorf("management proxy option store is required")
 	}
+	selectedIDs, err := normalizeSelectedProxyOptionIDs(input.SelectedIDs)
+	if err != nil {
+		return nil, err
+	}
 	rows, err := s.store.ListManagementProxyOptions(ctx, port.ManagementProxyOptionListInput{
 		Keyword: strings.TrimSpace(input.Keyword),
 		Limit:   normalizeOptionLimit(input.Limit),
+		SelectedIDs: selectedIDs,
 	})
 	if err != nil {
 		return nil, err
@@ -602,6 +609,33 @@ func normalizeOptionLimit(value int) int {
 		return 50
 	}
 	return value
+}
+
+const maxSelectedProxyOptionIDs = 20
+const maxSelectedProxyOptionIDRunes = 120
+
+func normalizeSelectedProxyOptionIDs(values []string) ([]string, error) {
+	output := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(value)
+		if text == "" {
+			continue
+		}
+		if utf8.RuneCountInString(text) > maxSelectedProxyOptionIDRunes {
+			return nil, &ValidationError{Message: "代理选项 selectedIds 无效"}
+		}
+		if _, exists := seen[text]; exists {
+			continue
+		}
+		seen[text] = struct{}{}
+		output = append(output, text)
+	}
+	if len(output) > maxSelectedProxyOptionIDs {
+		return nil, &ValidationError{Message: "代理选项 selectedIds 最多 20 个"}
+	}
+	sort.Strings(output)
+	return output, nil
 }
 
 func pagedTotalUpperBound(page int, pageSize int, itemCount int, hasMore bool) int {

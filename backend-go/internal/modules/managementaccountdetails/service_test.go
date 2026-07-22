@@ -85,6 +85,68 @@ func TestServiceAuthorizedDetailEnforcesCredentialBoundary(t *testing.T) {
 	}
 }
 
+func TestServiceBasicDetailProxyDisplayIsRoleScoped(t *testing.T) {
+	disabled := false
+	source := ownerDetailSource()
+	source.ProxyProfileID = "proxy-disabled"
+	source.ProxyProfileName = "停用代理"
+	source.ProxyProfileType = "socks5h"
+	source.ProxyProfileEnabled = &disabled
+	service := NewService(ServiceOptions{Reader: &detailReaderStub{source: source}})
+
+	userDetail, found, err := service.Get(t.Context(), Input{AccountID: "account-1"}, LevelBasic)
+	if err != nil || !found {
+		t.Fatalf("user Get(basic) = found %v, err %v", found, err)
+	}
+	if userDetail["proxyProfileId"] != "proxy-disabled" || userDetail["proxyProfileUnavailable"] != true || userDetail["proxyProfileErrorMessage"] == "" {
+		t.Fatalf("user proxy display = %#v", userDetail)
+	}
+	for _, key := range []string{"proxyProfileName", "proxyProfileType", "proxyProfileEnabled"} {
+		if _, ok := userDetail[key]; ok {
+			t.Fatalf("user proxy display unexpectedly contains %s: %#v", key, userDetail)
+		}
+	}
+
+	adminDetail, found, err := service.Get(t.Context(), Input{AccountID: "account-1", CanViewDisabledProxy: true}, LevelBasic)
+	if err != nil || !found {
+		t.Fatalf("admin Get(basic) = found %v, err %v", found, err)
+	}
+	if adminDetail["proxyProfileName"] != "停用代理" || adminDetail["proxyProfileType"] != "socks5h" || adminDetail["proxyProfileEnabled"] != false || adminDetail["proxyProfileUnavailable"] != true {
+		t.Fatalf("admin proxy display = %#v", adminDetail)
+	}
+
+	authorizedSource := source
+	authorizedSource.AccessType = "authorized"
+	authorizedSource.SourceAccountID = "source-account-1"
+	authorizedService := NewService(ServiceOptions{Reader: &detailReaderStub{source: authorizedSource}})
+	authorizedDetail, found, err := authorizedService.Get(t.Context(), Input{AccountID: "authorized-account-1"}, LevelBasic)
+	if err != nil || !found {
+		t.Fatalf("authorized Get(basic) = found %v, err %v", found, err)
+	}
+	if authorizedDetail["proxyProfileId"] != "proxy-disabled" || authorizedDetail["proxyProfileUnavailable"] != true {
+		t.Fatalf("authorized disabled proxy display = %#v", authorizedDetail)
+	}
+	for _, key := range []string{"proxyProfileName", "proxyProfileType", "proxyProfileEnabled"} {
+		if _, ok := authorizedDetail[key]; ok {
+			t.Fatalf("authorized disabled proxy display unexpectedly contains %s: %#v", key, authorizedDetail)
+		}
+	}
+
+	authorizedMissingSource := authorizedSource
+	authorizedMissingSource.ProxyProfileID = "proxy-missing"
+	authorizedMissingSource.ProxyProfileName = ""
+	authorizedMissingSource.ProxyProfileType = ""
+	authorizedMissingSource.ProxyProfileEnabled = nil
+	authorizedMissingService := NewService(ServiceOptions{Reader: &detailReaderStub{source: authorizedMissingSource}})
+	authorizedMissingDetail, found, err := authorizedMissingService.Get(t.Context(), Input{AccountID: "authorized-missing"}, LevelBasic)
+	if err != nil || !found {
+		t.Fatalf("authorized missing Get(basic) = found %v, err %v", found, err)
+	}
+	if authorizedMissingDetail["proxyProfileId"] != "proxy-missing" || authorizedMissingDetail["proxyProfileUnavailable"] != true {
+		t.Fatalf("authorized missing proxy display = %#v", authorizedMissingDetail)
+	}
+}
+
 func TestServiceAPIKeyRuntimeMergesCredentialEntriesAndStoredState(t *testing.T) {
 	secret := "runtime-secret"
 	fingerprint := testFingerprint(secret, "sk-second-secret")

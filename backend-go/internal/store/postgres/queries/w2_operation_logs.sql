@@ -74,7 +74,18 @@ WHERE term <> ''
 ON CONFLICT (term, operation_log_id) DO NOTHING;
 
 -- name: ListOperationLogs :many
-SELECT ol.*
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_logs AS ol
 WHERE (
     sqlc.arg(trace_id)::text = ''
@@ -106,7 +117,18 @@ LIMIT sqlc.arg(row_limit)::int
 OFFSET sqlc.arg(row_offset)::int;
 
 -- name: ListOperationLogsBySummarySearch :many
-SELECT ol.*
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_summary_search_terms AS search
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = search.operation_log_id
@@ -141,7 +163,18 @@ LIMIT sqlc.arg(row_limit)::int
 OFFSET sqlc.arg(row_offset)::int;
 
 -- name: ListVisibleTargetedOperationLogs :many
-SELECT ol.*
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_viewers AS visible
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = visible.operation_log_id
@@ -171,7 +204,18 @@ ORDER BY visible.created_at DESC, visible.operation_log_id DESC
 LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListVisibleTargetedOperationLogsBySummarySearch :many
-SELECT ol.*
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_summary_search_terms AS search
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = search.operation_log_id
@@ -204,7 +248,18 @@ ORDER BY search.created_at DESC, search.operation_log_id DESC
 LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListVisibleAllUsersOperationLogs :many
-SELECT ol.*
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_logs AS ol
 WHERE ol.visibility_scope = 'all_users'
   AND (
@@ -224,7 +279,18 @@ ORDER BY ol.created_at DESC, ol.id DESC
 LIMIT sqlc.arg(row_limit)::int;
 
 -- name: ListVisibleAllUsersOperationLogsBySummarySearch :many
-SELECT ol.*
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_summary_search_terms AS search
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = search.operation_log_id

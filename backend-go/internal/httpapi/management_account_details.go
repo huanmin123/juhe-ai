@@ -158,6 +158,7 @@ func managementAccountDetailInput(r *http.Request, scope managementAccountDetail
 			return managementaccountdetails.Input{}, false
 		}
 		input.SystemAccountID = managementDetailSystemAccountID(r.URL.Query())
+		input.CanViewDisabledProxy = true
 	case managementAccountDetailScopeSelf:
 		input.SystemAccountID = authContext.SystemAccountID
 	}

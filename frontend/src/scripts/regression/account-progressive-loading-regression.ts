@@ -9,6 +9,7 @@ import { authState } from '../../composables/useAuth.js'
 import { message } from '../../lib/antd.js'
 import type { AccountSummary, ProviderDefinition } from '../../types/domain/index.js'
 import { useAccountListData } from '../../views/accounts/useAccountListData.js'
+import { accountProxyDisplay } from '../../views/accounts/accountProxyDisplay.js'
 
 const mutableApi = api as unknown as {
   providers: { options: (...args: unknown[]) => Promise<ProviderDefinition[]> }
@@ -58,10 +59,14 @@ try {
   }
   let resolveProviderOptions: ((value: ProviderDefinition[]) => void) | undefined
   let listStarted = false
+  let proxyOptionCalls = 0
   mutableApi.providers.options = () => new Promise((resolve) => {
     resolveProviderOptions = resolve
   })
-  mutableApi.proxies.options = async () => []
+  mutableApi.proxies.options = async () => {
+    proxyOptionCalls += 1
+    return []
+  }
   mutableApi.myAccounts.list = async () => {
     listStarted = true
     return accountPage(accountFixture('account_parallel', '并行账户'))
@@ -74,10 +79,27 @@ try {
 
   assert.equal(listStarted, true, '账户列表必须在 provider / proxy options 完成前发起')
   assert.equal(listData.accounts.value[0]?.name, '并行账户', 'options 尚未完成时列表结果必须已经可见')
+  assert.equal(proxyOptionCalls, 0, '账户列表加载不得预拉代理 options')
 
   resolveProviderOptions?.([])
   assert.equal(await firstLoad, true)
   assert.equal(listData.accounts.value[0]?.name, '并行账户')
+
+  const responseProxy = accountProxyDisplay({
+    ...accountFixture('account_proxy_display', '代理展示账户'),
+    proxyProfileId: 'proxy_from_response',
+    proxyProfileName: '响应代理',
+    proxyProfileType: 'http',
+    proxyProfileEnabled: true
+  }, { id: 'proxy_from_cache', name: '缓存代理', type: 'socks5', enabled: true })
+  assert.equal(responseProxy?.id, 'proxy_from_response', '账户行代理展示字段必须优先于旧标签缓存')
+  assert.equal(responseProxy?.name, '响应代理')
+  const hiddenProxy = accountProxyDisplay({
+    ...accountFixture('account_hidden_proxy', '不可见代理账户'),
+    proxyProfileId: 'proxy_disabled',
+    proxyProfileUnavailable: true
+  }, { id: 'proxy_disabled', name: '不应泄露的停用代理', type: 'http', enabled: false })
+  assert.equal(hiddenProxy, undefined, '普通用户不可见代理不得由旧标签缓存重新泄露')
 
   mutableApi.providers.options = async () => {
     throw new Error('provider options unavailable')

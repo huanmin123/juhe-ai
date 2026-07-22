@@ -56,7 +56,17 @@ export interface AccountListResult {
 
 interface AccountSummaryBuildOptions {
   includeCredentials?: boolean
+  proxyProfileDisplays?: Map<string, AccountProxyProfileDisplay>
 }
+
+interface AccountProxyProfileDisplay {
+  id: string
+  name: string
+  type: NonNullable<AccountSummary['proxyProfileType']>
+  enabled: boolean
+}
+
+const proxyProfileUnavailableMessage = '代理不存在或已停用，请选择一个已启用的代理'
 
 const businessSchemaName = 'juhe_business'
 const accountListStatsBusyTimeoutMs = 60
@@ -346,7 +356,8 @@ async function findAuthorizedAccountRowByIdAsync(
 async function authorizedAccountSummaryFromRowAsync(
   client: DatabaseClient,
   row: AccountListRow,
-  access: AccessScope | undefined
+  access: AccessScope | undefined,
+  proxyProfileDisplays?: Map<string, AccountProxyProfileDisplay>
 ): Promise<AccountSummary> {
   const factAccountId = accountResourceFactAccountId(row)
   const includeAccountNames = includeSystemAccountFields(access)
@@ -399,6 +410,7 @@ async function authorizedAccountSummaryFromRowAsync(
   const todayUsage = row.authorization_id
     ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
     : emptyAccountUsageSummary()
+  const proxyDisplays = proxyProfileDisplays ?? await loadAccountProxyProfileDisplaysAsync(client, [row])
   return accountSummaryWithEffectiveAvailability({
     id: row.id,
     configRevision: Number(row.config_revision ?? 1),
@@ -426,6 +438,7 @@ async function authorizedAccountSummaryFromRowAsync(
     healthCheckModel: row.health_check_model.trim(),
     healthCheckEndpointMode: row.health_check_endpoint_mode,
     proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
+    ...accountProxyProfileDisplayFields(accountResourceProxyProfileId(row), proxyDisplays, canAccessAll(access)),
     schedulable: effectiveAuthorizedSchedulable,
     availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
     accountExpiresAt: row.account_expires_at ?? undefined,
@@ -746,11 +759,12 @@ async function accountSummariesFromRowsAsync(
   options: AccountSummaryBuildOptions = {}
 ): Promise<AccountSummary[]> {
   if (!rows.length) return []
+  const proxyProfileDisplays = options.proxyProfileDisplays ?? await loadAccountProxyProfileDisplaysAsync(client, rows)
   const ownerRows = rows.filter((row) => row.access_type !== 'authorized')
   const authorizedRows = rows.filter((row) => row.access_type === 'authorized')
   const [ownerSummaries, authorizedSummaries] = await Promise.all([
-    ownerAccountSummariesFromRowsAsync(client, ownerRows, access, options),
-    Promise.all(authorizedRows.map((row) => authorizedAccountSummaryFromRowAsync(client, row, access)))
+    ownerAccountSummariesFromRowsAsync(client, ownerRows, access, { ...options, proxyProfileDisplays }),
+    Promise.all(authorizedRows.map((row) => authorizedAccountSummaryFromRowAsync(client, row, access, proxyProfileDisplays)))
   ])
   const summariesByRowKey = new Map<string, AccountSummary>()
   for (const summary of ownerSummaries) {
@@ -779,6 +793,7 @@ async function ownerAccountSummariesFromRowsAsync(
   const ownerAccountIds = includeCredentials
     ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
     : []
+  const proxyProfileDisplays = options.proxyProfileDisplays ?? await loadAccountProxyProfileDisplaysAsync(client, rows)
   const [
     supportedModelsByAccount,
     modelMappingsByAccount,
@@ -836,6 +851,7 @@ async function ownerAccountSummariesFromRowsAsync(
       healthCheckModel: row.health_check_model.trim(),
       healthCheckEndpointMode: row.health_check_endpoint_mode,
       proxyProfileId: row.proxy_profile_id ?? undefined,
+      ...accountProxyProfileDisplayFields(row.proxy_profile_id, proxyProfileDisplays, canAccessAll(access)),
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -1312,6 +1328,7 @@ function accountSummariesFromRows(
         row.authorization_instance_owner_system_account_id ?? ''
       ]))
     : new Map<string, string>()
+  const proxyProfileDisplays = loadAccountProxyProfileDisplays(rows)
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
     const usage = isAuthorizedView && row.authorization_id
@@ -1388,6 +1405,7 @@ function accountSummariesFromRows(
       qualityLastErrorMessage: row.quality_last_error_message ?? undefined,
       qualityUpdatedAt: row.quality_updated_at ?? undefined,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
+      ...accountProxyProfileDisplayFields(accountResourceProxyProfileId(row), proxyProfileDisplays, canAccessAll(access)),
       schedulable: isAuthorizedView ? effectiveAuthorizedSchedulable && authorizationQuotaExceeded !== true : effectiveAuthorizedSchedulable,
       availabilitySchedule,
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -1473,6 +1491,99 @@ function loadAccountListStatsMap<T>(
       throw error
     }
     throw accountListStatsBusyError(lookupName, error)
+  }
+}
+
+function accountProxyProfileIds(rows: AccountListRow[]): string[] {
+  return [...new Set(rows.map((row) => accountResourceProxyProfileId(row) ?? '').filter(Boolean))]
+}
+
+function accountProxyProfileDisplayFields(
+  proxyProfileId: string | null,
+  displays: Map<string, AccountProxyProfileDisplay>,
+  canViewDisabled: boolean
+): Pick<AccountSummary, 'proxyProfileName' | 'proxyProfileType' | 'proxyProfileEnabled' | 'proxyProfileUnavailable' | 'proxyProfileErrorMessage'> {
+  if (!proxyProfileId) return {}
+  const display = displays.get(proxyProfileId)
+  if (!display) {
+    return {
+      proxyProfileUnavailable: true,
+      proxyProfileErrorMessage: proxyProfileUnavailableMessage
+    }
+  }
+  if (display.enabled || canViewDisabled) {
+    return {
+      proxyProfileName: display.name,
+      proxyProfileType: display.type,
+      proxyProfileEnabled: display.enabled,
+      ...(display.enabled ? {} : {
+        proxyProfileUnavailable: true,
+        proxyProfileErrorMessage: proxyProfileUnavailableMessage
+      })
+    }
+  }
+  return {
+    proxyProfileUnavailable: true,
+    proxyProfileErrorMessage: proxyProfileUnavailableMessage
+  }
+}
+
+function loadAccountProxyProfileDisplays(rows: AccountListRow[]): Map<string, AccountProxyProfileDisplay> {
+  const ids = accountProxyProfileIds(rows)
+  if (!ids.length) return new Map()
+  const database = getBusinessDatabase()
+  const displays = new Map<string, AccountProxyProfileDisplay>()
+  for (const chunk of chunkValues(ids, 900)) {
+    const chunkRows = database.prepare(`
+      SELECT id, name, type, enabled
+      FROM proxy_profiles
+      WHERE id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as Array<{ id: string; name: string; type: string; enabled: number }>
+    for (const row of chunkRows) {
+      const type = accountProxyProfileType(row.type)
+      if (!type) continue
+      displays.set(row.id, { id: row.id, name: row.name, type, enabled: row.enabled === 1 })
+    }
+  }
+  return displays
+}
+
+async function loadAccountProxyProfileDisplaysAsync(
+  client: DatabaseClient,
+  rows: AccountListRow[]
+): Promise<Map<string, AccountProxyProfileDisplay>> {
+  const ids = accountProxyProfileIds(rows)
+  if (!ids.length) return new Map()
+  const displays = new Map<string, AccountProxyProfileDisplay>()
+  for (const chunk of chunkValues(ids, 900)) {
+    const chunkRows = await client.query<{ id: string; name: string; type: string; enabled: boolean | number }>(`
+      SELECT id, name, type, enabled
+      FROM ${accountSummaryTable(client, 'proxy_profiles')}
+      WHERE id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk)
+    for (const row of chunkRows) {
+      const type = accountProxyProfileType(row.type)
+      if (!type) continue
+      displays.set(row.id, {
+        id: row.id,
+        name: row.name,
+        type,
+        enabled: row.enabled === true || row.enabled === 1
+      })
+    }
+  }
+  return displays
+}
+
+function accountProxyProfileType(value: string): NonNullable<AccountSummary['proxyProfileType']> | undefined {
+  switch (value) {
+  case 'http':
+  case 'https':
+  case 'socks5':
+  case 'socks5h':
+    return value
+  default:
+    return undefined
   }
 }
 

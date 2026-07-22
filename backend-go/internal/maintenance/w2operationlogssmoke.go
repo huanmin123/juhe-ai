@@ -248,8 +248,8 @@ func smokeW2OperationLogsRoutes(
 		return W2OperationLogsSmokeSummary{}, fmt.Errorf("admin operation logs list = %+v", adminList.Items)
 	}
 	for _, item := range adminList.Items {
-		if item.ClientIP == "" {
-			return W2OperationLogsSmokeSummary{}, fmt.Errorf("admin operation logs list missing clientIp for %s", item.ID)
+		if item.ActorSystemAccountID == "" || item.Module == "" || item.Action == "" || item.Summary == "" || item.CreatedAt == "" {
+			return W2OperationLogsSmokeSummary{}, fmt.Errorf("admin operation logs list missing display fields for %s", item.ID)
 		}
 	}
 
@@ -261,8 +261,8 @@ func smokeW2OperationLogsRoutes(
 		return W2OperationLogsSmokeSummary{}, fmt.Errorf("my operation logs list count = %d", len(myList.Items))
 	}
 	for _, item := range myList.Items {
-		if item.ClientIP != "" {
-			return W2OperationLogsSmokeSummary{}, fmt.Errorf("my operation logs list leaked clientIp for %s", item.ID)
+		if item.ActorSystemAccountID == "" || item.Module == "" || item.Action == "" || item.Summary == "" || item.CreatedAt == "" {
+			return W2OperationLogsSmokeSummary{}, fmt.Errorf("my operation logs list missing display fields for %s", item.ID)
 		}
 	}
 

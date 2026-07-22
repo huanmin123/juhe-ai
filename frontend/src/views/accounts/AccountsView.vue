@@ -70,6 +70,9 @@
       :is-management-view="isManagementView"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
+      :proxy-options-loading="proxyOptionsLoading"
+      @proxy-options-dropdown="handleProxyOptionsDropdown"
+      @proxy-options-search="handleProxyOptionsSearch"
       :scope-params="accountScopeParams"
       :tags="accountTagOptions"
       @saved="handleBatchEditSaved"
@@ -200,6 +203,9 @@
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
+      :proxy-options-loading="proxyOptionsLoading"
+      @proxy-options-dropdown="handleProxyOptionsDropdown"
+      @proxy-options-search="handleProxyOptionsSearch"
       :selected-protocol-profile="selectedProtocolProfile"
       :selected-provider="selectedProvider"
       :test-button-disabled="accountEditTestButtonDisabled"
@@ -304,6 +310,7 @@ import { useAccountFilterInteractions } from './useAccountFilterInteractions'
 import { useAccountGroupOptions } from './useAccountGroupOptions'
 import { useAccountEditGroupOptions } from './useAccountEditGroupOptions'
 import { useAccountListData } from './useAccountListData'
+import { useAccountProxyOptions } from './useAccountProxyOptions'
 import { useAccountMenuActions } from './useAccountMenuActions'
 import { accountOperationSystemAccountId } from './accountOperationScope'
 import { buildAccountBalancePayload, formatAccountBalance } from './accountBalanceQuery'
@@ -331,7 +338,6 @@ const {
   loading,
   accounts,
   providers,
-  proxies,
   systemAccounts,
   filters,
   accountSorts,
@@ -363,6 +369,21 @@ const {
   isManagementView,
   scopedSystemAccountId,
   onLoaded: handleAccountListLoaded
+})
+const {
+  proxies,
+  loading: proxyOptionsLoading,
+  handleDropdown: handleProxyOptionsDropdown,
+  handleSearch: handleProxyOptionsSearch,
+  load: loadProxyOptions
+} = useAccountProxyOptions({
+  errorMessage: '加载代理选项失败',
+  scope: () => ({
+    selectedIds: [
+      form.proxyProfileId,
+      ...(accounts.value.map((account) => account.proxyProfileId))
+    ]
+  })
 })
 const {
   groups: filterGroupOptions,

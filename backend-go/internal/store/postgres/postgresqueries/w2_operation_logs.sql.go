@@ -486,7 +486,18 @@ func (q *Queries) ListOperationLogViewers(ctx context.Context, operationLogID st
 }
 
 const listOperationLogs = `-- name: ListOperationLogs :many
-SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_logs AS ol
 WHERE (
     $1::text = ''
@@ -534,7 +545,21 @@ type ListOperationLogsParams struct {
 	RowLimit                      int32
 }
 
-func (q *Queries) ListOperationLogs(ctx context.Context, arg ListOperationLogsParams) ([]JuheDatasetOperationLog, error) {
+type ListOperationLogsRow struct {
+	ID                            string
+	TraceID                       pgtype.Text
+	ActorSystemAccountID          string
+	ActorDisplayName              pgtype.Text
+	OperationScopeSystemAccountID pgtype.Text
+	Module                        string
+	Action                        string
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	CreatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) ListOperationLogs(ctx context.Context, arg ListOperationLogsParams) ([]ListOperationLogsRow, error) {
 	rows, err := q.db.Query(ctx, listOperationLogs,
 		arg.TraceID,
 		arg.TraceIDUpper,
@@ -554,34 +579,20 @@ func (q *Queries) ListOperationLogs(ctx context.Context, arg ListOperationLogsPa
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheDatasetOperationLog
+	var items []ListOperationLogsRow
 	for rows.Next() {
-		var i JuheDatasetOperationLog
+		var i ListOperationLogsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TraceID,
 			&i.ActorSystemAccountID,
-			&i.ActorUsername,
 			&i.ActorDisplayName,
-			&i.ActorRole,
 			&i.OperationScopeSystemAccountID,
-			&i.Mode,
 			&i.Module,
 			&i.Action,
-			&i.OperationKey,
-			&i.ResourceType,
-			&i.ResourceID,
-			&i.ResourceName,
 			&i.Summary,
 			&i.DetailLevel,
 			&i.VisibilityScope,
-			&i.ChangesJson,
-			&i.MetadataJson,
-			&i.Method,
-			&i.Path,
-			&i.StatusCode,
-			&i.ClientIp,
-			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -595,7 +606,18 @@ func (q *Queries) ListOperationLogs(ctx context.Context, arg ListOperationLogsPa
 }
 
 const listOperationLogsBySummarySearch = `-- name: ListOperationLogsBySummarySearch :many
-SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_summary_search_terms AS search
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = search.operation_log_id
@@ -647,7 +669,21 @@ type ListOperationLogsBySummarySearchParams struct {
 	RowLimit                      int32
 }
 
-func (q *Queries) ListOperationLogsBySummarySearch(ctx context.Context, arg ListOperationLogsBySummarySearchParams) ([]JuheDatasetOperationLog, error) {
+type ListOperationLogsBySummarySearchRow struct {
+	ID                            string
+	TraceID                       pgtype.Text
+	ActorSystemAccountID          string
+	ActorDisplayName              pgtype.Text
+	OperationScopeSystemAccountID pgtype.Text
+	Module                        string
+	Action                        string
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	CreatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) ListOperationLogsBySummarySearch(ctx context.Context, arg ListOperationLogsBySummarySearchParams) ([]ListOperationLogsBySummarySearchRow, error) {
 	rows, err := q.db.Query(ctx, listOperationLogsBySummarySearch,
 		arg.SearchTerm,
 		arg.TraceID,
@@ -668,34 +704,20 @@ func (q *Queries) ListOperationLogsBySummarySearch(ctx context.Context, arg List
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheDatasetOperationLog
+	var items []ListOperationLogsBySummarySearchRow
 	for rows.Next() {
-		var i JuheDatasetOperationLog
+		var i ListOperationLogsBySummarySearchRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TraceID,
 			&i.ActorSystemAccountID,
-			&i.ActorUsername,
 			&i.ActorDisplayName,
-			&i.ActorRole,
 			&i.OperationScopeSystemAccountID,
-			&i.Mode,
 			&i.Module,
 			&i.Action,
-			&i.OperationKey,
-			&i.ResourceType,
-			&i.ResourceID,
-			&i.ResourceName,
 			&i.Summary,
 			&i.DetailLevel,
 			&i.VisibilityScope,
-			&i.ChangesJson,
-			&i.MetadataJson,
-			&i.Method,
-			&i.Path,
-			&i.StatusCode,
-			&i.ClientIp,
-			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -709,7 +731,18 @@ func (q *Queries) ListOperationLogsBySummarySearch(ctx context.Context, arg List
 }
 
 const listVisibleAllUsersOperationLogs = `-- name: ListVisibleAllUsersOperationLogs :many
-SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_logs AS ol
 WHERE ol.visibility_scope = 'all_users'
   AND (
@@ -741,7 +774,21 @@ type ListVisibleAllUsersOperationLogsParams struct {
 	RowLimit     int32
 }
 
-func (q *Queries) ListVisibleAllUsersOperationLogs(ctx context.Context, arg ListVisibleAllUsersOperationLogsParams) ([]JuheDatasetOperationLog, error) {
+type ListVisibleAllUsersOperationLogsRow struct {
+	ID                            string
+	TraceID                       pgtype.Text
+	ActorSystemAccountID          string
+	ActorDisplayName              pgtype.Text
+	OperationScopeSystemAccountID pgtype.Text
+	Module                        string
+	Action                        string
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	CreatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) ListVisibleAllUsersOperationLogs(ctx context.Context, arg ListVisibleAllUsersOperationLogsParams) ([]ListVisibleAllUsersOperationLogsRow, error) {
 	rows, err := q.db.Query(ctx, listVisibleAllUsersOperationLogs,
 		arg.TraceID,
 		arg.TraceIDUpper,
@@ -757,34 +804,20 @@ func (q *Queries) ListVisibleAllUsersOperationLogs(ctx context.Context, arg List
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheDatasetOperationLog
+	var items []ListVisibleAllUsersOperationLogsRow
 	for rows.Next() {
-		var i JuheDatasetOperationLog
+		var i ListVisibleAllUsersOperationLogsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TraceID,
 			&i.ActorSystemAccountID,
-			&i.ActorUsername,
 			&i.ActorDisplayName,
-			&i.ActorRole,
 			&i.OperationScopeSystemAccountID,
-			&i.Mode,
 			&i.Module,
 			&i.Action,
-			&i.OperationKey,
-			&i.ResourceType,
-			&i.ResourceID,
-			&i.ResourceName,
 			&i.Summary,
 			&i.DetailLevel,
 			&i.VisibilityScope,
-			&i.ChangesJson,
-			&i.MetadataJson,
-			&i.Method,
-			&i.Path,
-			&i.StatusCode,
-			&i.ClientIp,
-			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -798,7 +831,18 @@ func (q *Queries) ListVisibleAllUsersOperationLogs(ctx context.Context, arg List
 }
 
 const listVisibleAllUsersOperationLogsBySummarySearch = `-- name: ListVisibleAllUsersOperationLogsBySummarySearch :many
-SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_summary_search_terms AS search
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = search.operation_log_id
@@ -834,7 +878,21 @@ type ListVisibleAllUsersOperationLogsBySummarySearchParams struct {
 	RowLimit     int32
 }
 
-func (q *Queries) ListVisibleAllUsersOperationLogsBySummarySearch(ctx context.Context, arg ListVisibleAllUsersOperationLogsBySummarySearchParams) ([]JuheDatasetOperationLog, error) {
+type ListVisibleAllUsersOperationLogsBySummarySearchRow struct {
+	ID                            string
+	TraceID                       pgtype.Text
+	ActorSystemAccountID          string
+	ActorDisplayName              pgtype.Text
+	OperationScopeSystemAccountID pgtype.Text
+	Module                        string
+	Action                        string
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	CreatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) ListVisibleAllUsersOperationLogsBySummarySearch(ctx context.Context, arg ListVisibleAllUsersOperationLogsBySummarySearchParams) ([]ListVisibleAllUsersOperationLogsBySummarySearchRow, error) {
 	rows, err := q.db.Query(ctx, listVisibleAllUsersOperationLogsBySummarySearch,
 		arg.SearchTerm,
 		arg.TraceID,
@@ -851,34 +909,20 @@ func (q *Queries) ListVisibleAllUsersOperationLogsBySummarySearch(ctx context.Co
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheDatasetOperationLog
+	var items []ListVisibleAllUsersOperationLogsBySummarySearchRow
 	for rows.Next() {
-		var i JuheDatasetOperationLog
+		var i ListVisibleAllUsersOperationLogsBySummarySearchRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TraceID,
 			&i.ActorSystemAccountID,
-			&i.ActorUsername,
 			&i.ActorDisplayName,
-			&i.ActorRole,
 			&i.OperationScopeSystemAccountID,
-			&i.Mode,
 			&i.Module,
 			&i.Action,
-			&i.OperationKey,
-			&i.ResourceType,
-			&i.ResourceID,
-			&i.ResourceName,
 			&i.Summary,
 			&i.DetailLevel,
 			&i.VisibilityScope,
-			&i.ChangesJson,
-			&i.MetadataJson,
-			&i.Method,
-			&i.Path,
-			&i.StatusCode,
-			&i.ClientIp,
-			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -892,7 +936,18 @@ func (q *Queries) ListVisibleAllUsersOperationLogsBySummarySearch(ctx context.Co
 }
 
 const listVisibleTargetedOperationLogs = `-- name: ListVisibleTargetedOperationLogs :many
-SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_viewers AS visible
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = visible.operation_log_id
@@ -935,7 +990,21 @@ type ListVisibleTargetedOperationLogsParams struct {
 	RowLimit        int32
 }
 
-func (q *Queries) ListVisibleTargetedOperationLogs(ctx context.Context, arg ListVisibleTargetedOperationLogsParams) ([]JuheDatasetOperationLog, error) {
+type ListVisibleTargetedOperationLogsRow struct {
+	ID                            string
+	TraceID                       pgtype.Text
+	ActorSystemAccountID          string
+	ActorDisplayName              pgtype.Text
+	OperationScopeSystemAccountID pgtype.Text
+	Module                        string
+	Action                        string
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	CreatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) ListVisibleTargetedOperationLogs(ctx context.Context, arg ListVisibleTargetedOperationLogsParams) ([]ListVisibleTargetedOperationLogsRow, error) {
 	rows, err := q.db.Query(ctx, listVisibleTargetedOperationLogs,
 		arg.SystemAccountID,
 		arg.TraceID,
@@ -952,34 +1021,20 @@ func (q *Queries) ListVisibleTargetedOperationLogs(ctx context.Context, arg List
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheDatasetOperationLog
+	var items []ListVisibleTargetedOperationLogsRow
 	for rows.Next() {
-		var i JuheDatasetOperationLog
+		var i ListVisibleTargetedOperationLogsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TraceID,
 			&i.ActorSystemAccountID,
-			&i.ActorUsername,
 			&i.ActorDisplayName,
-			&i.ActorRole,
 			&i.OperationScopeSystemAccountID,
-			&i.Mode,
 			&i.Module,
 			&i.Action,
-			&i.OperationKey,
-			&i.ResourceType,
-			&i.ResourceID,
-			&i.ResourceName,
 			&i.Summary,
 			&i.DetailLevel,
 			&i.VisibilityScope,
-			&i.ChangesJson,
-			&i.MetadataJson,
-			&i.Method,
-			&i.Path,
-			&i.StatusCode,
-			&i.ClientIp,
-			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -993,7 +1048,18 @@ func (q *Queries) ListVisibleTargetedOperationLogs(ctx context.Context, arg List
 }
 
 const listVisibleTargetedOperationLogsBySummarySearch = `-- name: ListVisibleTargetedOperationLogsBySummarySearch :many
-SELECT ol.id, ol.trace_id, ol.actor_system_account_id, ol.actor_username, ol.actor_display_name, ol.actor_role, ol.operation_scope_system_account_id, ol.mode, ol.module, ol.action, ol.operation_key, ol.resource_type, ol.resource_id, ol.resource_name, ol.summary, ol.detail_level, ol.visibility_scope, ol.changes_json, ol.metadata_json, ol.method, ol.path, ol.status_code, ol.client_ip, ol.user_agent, ol.created_at
+SELECT
+  ol.id,
+  ol.trace_id,
+  ol.actor_system_account_id,
+  ol.actor_display_name,
+  ol.operation_scope_system_account_id,
+  ol.module,
+  ol.action,
+  ol.summary,
+  ol.detail_level,
+  ol.visibility_scope,
+  ol.created_at
 FROM juhe_dataset.operation_log_summary_search_terms AS search
 INNER JOIN juhe_dataset.operation_logs AS ol
   ON ol.id = search.operation_log_id
@@ -1040,7 +1106,21 @@ type ListVisibleTargetedOperationLogsBySummarySearchParams struct {
 	RowLimit        int32
 }
 
-func (q *Queries) ListVisibleTargetedOperationLogsBySummarySearch(ctx context.Context, arg ListVisibleTargetedOperationLogsBySummarySearchParams) ([]JuheDatasetOperationLog, error) {
+type ListVisibleTargetedOperationLogsBySummarySearchRow struct {
+	ID                            string
+	TraceID                       pgtype.Text
+	ActorSystemAccountID          string
+	ActorDisplayName              pgtype.Text
+	OperationScopeSystemAccountID pgtype.Text
+	Module                        string
+	Action                        string
+	Summary                       string
+	DetailLevel                   string
+	VisibilityScope               string
+	CreatedAt                     pgtype.Timestamptz
+}
+
+func (q *Queries) ListVisibleTargetedOperationLogsBySummarySearch(ctx context.Context, arg ListVisibleTargetedOperationLogsBySummarySearchParams) ([]ListVisibleTargetedOperationLogsBySummarySearchRow, error) {
 	rows, err := q.db.Query(ctx, listVisibleTargetedOperationLogsBySummarySearch,
 		arg.SystemAccountID,
 		arg.SearchTerm,
@@ -1058,34 +1138,20 @@ func (q *Queries) ListVisibleTargetedOperationLogsBySummarySearch(ctx context.Co
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheDatasetOperationLog
+	var items []ListVisibleTargetedOperationLogsBySummarySearchRow
 	for rows.Next() {
-		var i JuheDatasetOperationLog
+		var i ListVisibleTargetedOperationLogsBySummarySearchRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.TraceID,
 			&i.ActorSystemAccountID,
-			&i.ActorUsername,
 			&i.ActorDisplayName,
-			&i.ActorRole,
 			&i.OperationScopeSystemAccountID,
-			&i.Mode,
 			&i.Module,
 			&i.Action,
-			&i.OperationKey,
-			&i.ResourceType,
-			&i.ResourceID,
-			&i.ResourceName,
 			&i.Summary,
 			&i.DetailLevel,
 			&i.VisibilityScope,
-			&i.ChangesJson,
-			&i.MetadataJson,
-			&i.Method,
-			&i.Path,
-			&i.StatusCode,
-			&i.ClientIp,
-			&i.UserAgent,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err

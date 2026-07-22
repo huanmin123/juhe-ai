@@ -60,6 +60,37 @@ func TestManagementProxyOptionsSQLIncludesPagedListGuard(t *testing.T) {
 	}
 }
 
+func TestManagementProxyOptionsSQLUsesEnabledUnionAndNarrowProjection(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_proxy_options.sql")
+	if err != nil {
+		t.Fatalf("read proxy query: %v", err)
+	}
+	sql := querySection(t, string(source), "-- name: ListManagementProxyOptions :many", "-- name: CreateManagementProxy :one")
+	for _, want := range []string{
+		"SELECT id, name, type, enabled",
+		"enabled = true",
+		"ANY(sqlc.arg(selected_ids)::text[])",
+		"ORDER BY name ASC, updated_at DESC, id ASC",
+		"LIMIT sqlc.arg(row_limit)::int",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("proxy options query missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{
+		"password_encrypted",
+		"host",
+		"port",
+		"username",
+		"description",
+		"test_status",
+	} {
+		if strings.Contains(sql, forbidden) {
+			t.Fatalf("proxy options query should not project secret/detail column %q", forbidden)
+		}
+	}
+}
+
 func TestManagementProxyCRUDSQLUsesFixedBindingWindow(t *testing.T) {
 	source, err := os.ReadFile("queries/w2_management_proxy_options.sql")
 	if err != nil {
