@@ -1,11 +1,11 @@
 import { strict as assert } from 'node:assert'
+import { existsSync, readFileSync } from 'node:fs'
 
 import type { AuditTrafficSource, UsageRecordSummary } from '../../src/types/domain'
 import {
   trafficSourceColor as auditTrafficSourceColor,
   trafficSourceText as auditTrafficSourceText
 } from '../../src/views/audit-logs/auditLogFormatters'
-import { apiKeyGroupOptionsProviderProtocolProfileId } from '../../src/views/api-keys/useApiKeyGroupOptions'
 import { providerEmptyDescriptionForScope } from '../../src/views/providers/providerTableConfig'
 import {
   trafficSourceColor as usageTrafficSourceColor,
@@ -60,24 +60,13 @@ const runtimeRecoveryProbeAuditSource: AuditTrafficSource = 'runtime_recovery_pr
 assert.equal(auditTrafficSourceText(runtimeRecoveryProbeAuditSource), '运行态恢复探针', '审计日志应识别运行态恢复探针来源')
 assert.equal(auditTrafficSourceColor(runtimeRecoveryProbeAuditSource), 'orange', '审计日志运行态恢复探针应有独立标签颜色')
 
-assert.equal(
-  apiKeyGroupOptionsProviderProtocolProfileId({
-    formContext: true,
-    allowMixedProviderProtocolProfiles: false,
-    formBindings: [{ providerProtocolProfileId: 'profile_gpt_openai_v1' }]
-  }),
-  'profile_gpt_openai_v1',
-  '普通 API Key 分组选项应按已选协议档案收窄请求 scope'
-)
-assert.equal(
-  apiKeyGroupOptionsProviderProtocolProfileId({
-    formContext: true,
-    allowMixedProviderProtocolProfiles: true,
-    formBindings: [{ providerProtocolProfileId: 'profile_gpt_openai_v1' }]
-  }),
-  '',
-  '混合路由 API Key 分组选项不能按单一协议档案收窄'
-)
+const legacyApiKeyGroupOptionsUrl = new URL('../../src/views/api-keys/useApiKeyGroupOptions.ts', import.meta.url)
+assert.equal(existsSync(legacyApiKeyGroupOptionsUrl), false, '旧 API Key 分组选项 helper 必须删除')
+const apiKeyModalSource = readFileSync(new URL('../../src/views/api-keys/ApiKeyEditModal.vue', import.meta.url), 'utf8')
+const apiKeysApiSource = readFileSync(new URL('../../src/api/domains/apiKeys.ts', import.meta.url), 'utf8')
+assert.match(apiKeyModalSource, /routeStrategyId/, 'API Key 表单必须由 routeStrategyId 选择当前路由 owner')
+assert.doesNotMatch(apiKeyModalSource, /groupBindings/, 'API Key 表单不得恢复直接分组绑定')
+assert.match(apiKeysApiSource, /routeStrategyId\?: string/, 'API Key API payload 必须只引用策略路由 ID')
 assert.match(providerEmptyDescriptionForScope(true), /智谱 GLM/, '供应商空态应包含已内置的 GLM')
 
-console.log('网关来源与供应商前端契约回归通过：混合评分来源、混合质量评分来源、API Key 协议档案 scope 和 GLM 空态均符合预期')
+console.log('网关来源与供应商前端契约回归通过：混合评分来源、混合质量评分来源、API Key 策略路由 owner 和 GLM 空态均符合预期')

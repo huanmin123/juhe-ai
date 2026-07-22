@@ -118,7 +118,6 @@ const emit = defineEmits<{
   (event: 'clone'): void
   (event: 'delete'): void
   (event: 'edit'): void
-  (event: 'bind-group'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
   (event: 'return-authorization'): void
   (event: 'refresh-balance'): void
@@ -186,10 +185,6 @@ const authorizedActions = computed<RowActionItem[]>(() => {
 })
 
 function handleActionClick(key: string) {
-  if (key === 'bind-group') {
-    emit('bind-group')
-    return
-  }
   if (key === 'return-authorization') {
     emit('return-authorization')
     return

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import type { PageDataConfirmRequest, PageDataConfirmResult, PageDataRevisionToken } from '../../api/domains/pageData'
@@ -506,15 +506,8 @@ await testFollowerTakesOverWhenLeaderDoesNotOwnKey()
 await testFollowerMaxStaleFallsBackToNetwork()
 await testLeaderInvalidationWithdrawsFollowerData()
 
-const composableSource = readFileSync(fileURLToPath(new URL('../../composables/usePageDataCache.ts', import.meta.url)), 'utf8')
-assert.match(composableSource, /controller\.subscribe/, 'Vue composable 必须订阅跨标签与后台更新')
-assert.match(composableSource, /scheduler\.start\(\)/, 'Vue composable 必须启动 30 秒可见页与 focus 确认')
-assert.match(composableSource, /forceRefresh/, 'Vue composable 必须提供强制刷新入口')
-assert.match(composableSource, /onActivated[\s\S]*activationController\.activate\(\)/, 'KeepAlive 页面激活时必须恢复确认调度')
-assert.match(composableSource, /onDeactivated[\s\S]*activationController\.deactivate\(\)/, 'KeepAlive 页面隐藏时必须停止确认调度')
-assert.match(composableSource, /onActivate:\s*\(\)\s*=>\s*\{\s*void confirmCurrent\(\)\.catch\(\(\)\s*=>\s*undefined\)\s*\}/, 'KeepAlive 页面恢复必须立即确认且吞掉已处理的后台拒绝')
-assert.match(composableSource, /onMounted[\s\S]*activationController\.mount\(\)/, '首次 mount 必须只启动调度，不能触发恢复确认')
-assert.match(composableSource, /onUnmounted[\s\S]*activationController\.dispose\(\)[\s\S]*controller\.close\(\)/, 'Vue composable 卸载时必须清理调度器、订阅和 controller')
+const legacyComposableUrl = new URL('../../composables/usePageDataCache.ts', import.meta.url)
+assert.equal(existsSync(fileURLToPath(legacyComposableUrl)), false, '旧 usePageDataCache composable 已被 request owner 替代，不得继续保留')
 const requestComposableSource = readFileSync(fileURLToPath(new URL('../../composables/usePageDataRequestCache.ts', import.meta.url)), 'utf8')
 assert.match(requestComposableSource, /resolveRequest\(\)/, '动态页面缓存每次 load 必须解析当前 scope、route、query 与 version')
 assert.match(requestComposableSource, /manager\.subscribe/, '动态页面缓存必须只订阅当前 manager 的更新')

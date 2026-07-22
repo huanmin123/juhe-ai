@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -22,7 +22,37 @@ const editModalSource = readSource('src/views/accounts/AccountEditModal.vue')
 const editTestSource = readSource('src/views/accounts/useAccountEditTestAction.ts')
 const saveFlowSource = readSource('src/views/accounts/useAccountEditSaveFlow.ts')
 const testModalSource = readSource('src/views/accounts/useAccountTestModal.ts')
+const rowActionsSource = readSource('src/views/accounts/accountRowActions.ts')
+const rowActionsViewSource = readSource('src/views/accounts/AccountRowActions.vue')
+const tableCellSource = readSource('src/views/accounts/AccountTableCell.vue')
+const mobileCardSource = readSource('src/views/accounts/AccountMobileCard.vue')
+const accountListSource = readSource('src/views/accounts/AccountList.vue')
+const derivedStateSource = readSource('src/views/accounts/accountDerivedState.ts')
 const packageJson = JSON.parse(readSource('package.json')) as { scripts?: Record<string, string> }
+
+for (const legacyPath of [
+  'src/views/accounts/AccountBindGroupModal.vue',
+  'src/views/accounts/useAccountBindGroup.ts'
+]) {
+  assert.equal(existsSync(resolve(frontendRoot, legacyPath)), false, `${legacyPath} 已被当前编辑流程替代，不得继续保留`)
+}
+for (const [sourceName, source] of [
+  ['AccountRowActions.vue', rowActionsViewSource],
+  ['AccountTableCell.vue', tableCellSource],
+  ['AccountMobileCard.vue', mobileCardSource],
+  ['AccountList.vue', accountListSource]
+] as const) {
+  assert.doesNotMatch(source, /bind-group/, `${sourceName} 不得再声明或透传旧 bind-group UI event`)
+}
+assert.doesNotMatch(rowActionsSource, /groupName\?:/, 'accountRowActions action options 不得保留仅透传的 groupName')
+assert.doesNotMatch(rowActionsViewSource, /groupName\?:|groupName:\s*props\.groupName/, 'AccountRowActions 不得继续传递 groupName action option')
+assert.doesNotMatch(derivedStateSource, /bindGroupOptionsForAccount|bindGroupTip/, '旧 bind-group hook 专用 derived helper 必须删除')
+assert.match(derivedStateSource, /export function defaultGroupForProvider/, '账户编辑默认分组 helper 必须保留')
+assert.match(tableCellSource, /groupName:\s*\(accountId: string\)/, 'PC 账户表格必须保留 groupName 显示 prop')
+assert.match(mobileCardSource, /groupName\?: string/, '手机账户卡片必须保留 groupName 显示 prop')
+assert.match(accountListSource, /groupName:\s*\(accountId: string\)/, '账户列表必须保留 groupName 显示 prop')
+assert.match(saveFlowSource, /api\.accounts\.bindGroup/, '管理侧账户编辑保存必须继续调用 accounts.bindGroup')
+assert.match(saveFlowSource, /api\.myAccounts\.bindGroup/, '用户侧账户编辑保存必须继续调用 myAccounts.bindGroup')
 
 assert.doesNotMatch(
   `${accountsViewSource}\n${saveFlowSource}\n${testModalSource}`,

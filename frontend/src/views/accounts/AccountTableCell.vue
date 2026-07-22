@@ -55,9 +55,7 @@
     :can-clone="canClone(account)"
     :can-delete="canDelete(account)"
     :can-edit="canEdit(account)"
-    :group-name="groupName(account.id)"
     :menu-items="menuItems(account)"
-    @bind-group="$emit('bind-group', account)"
     @clone="$emit('clone', account)"
     @delete="$emit('delete', account)"
     @edit="$emit('edit', account)"
@@ -89,7 +87,6 @@ import { accountScheduleSummary, accountScheduleTagColor } from './accountAvaila
 import { authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip } from './accountRules'
 
 defineEmits<{
-  (event: 'bind-group', account: AccountSummary): void
   (event: 'clone', account: AccountSummary): void
   (event: 'delete', account: AccountSummary): void
   (event: 'edit', account: AccountSummary): void

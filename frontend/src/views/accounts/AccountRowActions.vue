@@ -16,12 +16,10 @@ const props = defineProps<{
   canClone: boolean
   canDelete: boolean
   canEdit: boolean
-  groupName?: string
   menuItems: AccountMenuItem[]
 }>()
 
 const emit = defineEmits<{
-  (event: 'bind-group'): void
   (event: 'clone'): void
   (event: 'delete'): void
   (event: 'edit'): void
@@ -35,7 +33,6 @@ const actionOptions = computed<AccountRowActionOptions>(() => ({
   canClone: props.canClone,
   canDelete: props.canDelete,
   canEdit: props.canEdit,
-  groupName: props.groupName,
   menuItems: props.menuItems
 }))
 
@@ -43,10 +40,6 @@ const actions = computed<RowActionItem[]>(() => buildAccountRowActions(actionOpt
 const moreItems = computed<RowActionItem[]>(() => buildAccountMoreActions(actionOptions.value))
 
 function handleActionClick(key: string) {
-  if (key === 'bind-group') {
-    emit('bind-group')
-    return
-  }
   if (key === 'return-authorization') {
     emit('return-authorization')
     return

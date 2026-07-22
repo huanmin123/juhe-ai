@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 import { clampChatFloatingMenuPosition, resolveChatViewportHeight, resolveChatVisualViewportBounds } from '../../views/chat/chatViewport'
 import { resolveChatViewportResizeTransition, shouldDetachChatFollowOnScroll, shouldFollowChatViewportResize } from '../../views/chat/chatScrollPolicy'
-import { planChatCreateDialogFromConversationPane } from '../../views/chat/chatConversationDrawer'
 
 const layoutSource = readFileSync(new URL('../../layouts/AppLayout.vue', import.meta.url), 'utf8')
 const globalSource = readFileSync(new URL('../../styles/global.css', import.meta.url), 'utf8')
@@ -18,8 +17,7 @@ assert.equal(resolveChatViewportHeight({ visualViewportHeight: Number.NaN, inner
 const visualBounds = resolveChatVisualViewportBounds({ offsetLeft: 20, offsetTop: 100, width: 360, height: 420, innerWidth: 800, innerHeight: 900 })
 assert.deepEqual(visualBounds, { left: 20, top: 100, right: 380, bottom: 520, width: 360, height: 420 })
 assert.deepEqual(clampChatFloatingMenuPosition({ preferredX: 370, preferredY: 510, menuWidth: 136, menuHeight: 188, viewport: visualBounds, padding: 8 }), { x: 236, y: 324 }, '菜单必须限制在 visualViewport 内')
-assert.deepEqual(planChatCreateDialogFromConversationPane({ mobile: true, drawerOpen: true }), { closeDrawer: true, openDialogNow: false }, '手机抽屉新建必须先关闭抽屉')
-assert.deepEqual(planChatCreateDialogFromConversationPane({ mobile: false, drawerOpen: false }), { closeDrawer: false, openDialogNow: true }, '桌面对话面板新建必须立即打开')
+assert.equal(existsSync(new URL('../../views/chat/chatConversationDrawer.ts', import.meta.url)), false, '对话抽屉新建流程已由 ChatView 内联 owner 承载，旧 helper 必须删除')
 
 assert.equal(shouldFollowChatViewportResize({ wasFollowing: true, userDetached: false }), true, '贴底时键盘或 composer 变高后必须继续贴底')
 assert.equal(shouldFollowChatViewportResize({ wasFollowing: true, userDetached: true }), false, '用户主动离底后尺寸变化不得抢滚')

@@ -213,16 +213,6 @@ export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCo
   return candidates.find((group) => group.isDefault)
 }
 
-export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountSummary): SelectOption[] {
-  if (!account) return []
-  return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId])
-}
-
-export function bindGroupTip(account?: AccountSummary): string {
-  const ownerName = account?.ownerSystemAccountName || '其他用户'
-  return `授权账户来自 ${ownerName}。绑定到你的兼容分组后，对应 API Key 才能调度使用。`
-}
-
 export function trafficMigrationTargetOptions(accounts: AccountSummary[], source: AccountSummary | undefined, groupIdForAccount: AccountGroupIdResolver, groupNameForAccount: AccountGroupIdResolver): SelectOption[] {
   if (!source) return []
   return accounts

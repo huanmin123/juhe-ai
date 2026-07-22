@@ -36,7 +36,6 @@
         :provider-name="providerName"
         :proxy="proxy"
         :balance-refreshing="balanceRefreshingIds.has(record.id)"
-        @bind-group="$emit('bind-group', $event)"
         @clone="$emit('clone', $event)"
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
@@ -63,7 +62,6 @@
         @delete="$emit('delete', record.id)"
         @clone="$emit('clone', record)"
         @edit="$emit('edit', record)"
-        @bind-group="$emit('bind-group', record)"
         @menu-click="$emit('menu-click', $event, record)"
         @return-authorization="$emit('return-authorization', record.id)"
         @refresh-balance="$emit('refresh-balance', record.id)"
@@ -109,7 +107,6 @@ defineProps<{
 }>()
 
 defineEmits<{
-  (event: 'bind-group', account: AccountSummary): void
   (event: 'change', ...args: unknown[]): void
   (event: 'clone', account: AccountSummary): void
   (event: 'delete', accountId: string): void

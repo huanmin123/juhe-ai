@@ -10,7 +10,6 @@ export type AccountRowActionOptions = {
   canClone: boolean
   canDelete: boolean
   canEdit: boolean
-  groupName?: string
   menuItems: AccountMenuItem[]
 }
 
