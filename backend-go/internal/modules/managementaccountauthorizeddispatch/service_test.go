@@ -5,20 +5,18 @@ import (
 	"testing"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestServiceUpdateUsesSelfScopeAndInvalidatesRuntimeAndPageData(t *testing.T) {
+func TestServiceUpdateUsesSelfScopeAndInvalidatesRuntime(t *testing.T) {
 	store := &dispatchStoreStub{result: port.ManagementAccountAuthorizedDispatchResult{
 		Account:       port.ManagementAccountAuthorizedDispatchAccount{ID: "acct_auth", SystemAccountID: "sys_self", Name: "授权实例", Status: "active", Schedulable: true, Priority: 8, BoundGroupID: "group_1", AccountAuthorizationID: "auth_1"},
 		ChangedFields: []string{"status", "priority", "clearFailureState"},
 	}, found: true}
 	runtime := &dispatchRuntimeStub{}
 	cache := &dispatchInvalidatorStub{}
-	page := &dispatchPageStub{}
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	service := NewService(Options{Store: store, RuntimeClearer: runtime, AccountLookupInvalidator: cache, GatewayInvalidator: cache, PageDataPublisher: page, Now: func() time.Time { return now }})
+	service := NewService(Options{Store: store, RuntimeClearer: runtime, AccountLookupInvalidator: cache, GatewayInvalidator: cache, Now: func() time.Time { return now }})
 	status, priority := "active", 8
 	result, err := service.Update(context.Background(), Input{ActorSystemAccountID: "sys_self", ActorRole: "user", SelfOnly: true, AccountID: "acct_auth", Status: &status, Priority: &priority, ClearFailureState: true})
 	if err != nil {
@@ -32,9 +30,6 @@ func TestServiceUpdateUsesSelfScopeAndInvalidatesRuntimeAndPageData(t *testing.T
 	}
 	if runtime.calls != 1 || runtime.target.AccountAuthorizationID != "auth_1" || cache.lookupCalls != 1 || cache.gatewayCalls != 1 {
 		t.Fatalf("runtime=%+v cache=%+v", runtime, cache)
-	}
-	if page.staticCalls != 1 || page.runtimeCalls != 1 || page.last.OwnerSystemAccountIDs[0] != "sys_self" {
-		t.Fatalf("page = %+v", page)
 	}
 }
 
@@ -85,21 +80,5 @@ func (s *dispatchInvalidatorStub) InvalidateAccountLookupCache(context.Context, 
 }
 func (s *dispatchInvalidatorStub) InvalidateGatewayRuntime(context.Context, string) error {
 	s.gatewayCalls++
-	return nil
-}
-
-type dispatchPageStub struct {
-	staticCalls, runtimeCalls int
-	last                      accountpagedata.ChangeInput
-}
-
-func (s *dispatchPageStub) PublishAccountStaticChange(_ context.Context, input accountpagedata.ChangeInput) error {
-	s.staticCalls++
-	s.last = input
-	return nil
-}
-func (s *dispatchPageStub) PublishAccountRuntimeChange(_ context.Context, input accountpagedata.ChangeInput) error {
-	s.runtimeCalls++
-	s.last = input
 	return nil
 }

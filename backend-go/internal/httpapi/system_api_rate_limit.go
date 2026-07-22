@@ -65,7 +65,6 @@ type systemAPIRouteKey struct {
 }
 
 var systemAPIReadRouteOverrides = map[systemAPIRouteKey]struct{}{
-	{method: http.MethodPost, path: "/__aisys__/api/data-changes/confirm"}:       {},
 	{method: http.MethodPost, path: "/__aisys__/api/accounts/import/preview"}:    {},
 	{method: http.MethodPost, path: "/__aisys__/api/my-accounts/import/preview"}: {},
 }

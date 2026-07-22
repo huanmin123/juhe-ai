@@ -285,20 +285,15 @@ func TestResetPasswordMapsStoreNotFoundAndErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			publisher := &systemAccountPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
-				Store:             tt.store,
-				HashPassword:      func(string) (string, error) { return "hash", nil },
-				PageDataPublisher: publisher,
+				Store:        tt.store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
 			})
 
 			_, err := service.ResetPassword(context.Background(), PasswordResetInput{SystemAccountID: "sys_user", Password: "NewPass123"})
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("ResetPassword() error = %v, want %v", err, tt.wantErr)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -626,11 +621,9 @@ func TestUpdateImageGenerationRejectsInvalidInputAndMapsErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			invalidator := &systemAccountInvalidatorStub{}
-			publisher := &systemAccountPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
 				Store:                    tt.store,
 				SystemAccountInvalidator: invalidator,
-				PageDataPublisher:        publisher,
 			})
 
 			_, err := service.UpdateImageGeneration(context.Background(), tt.input)
@@ -640,9 +633,6 @@ func TestUpdateImageGenerationRejectsInvalidInputAndMapsErrors(t *testing.T) {
 			}
 			if invalidator.imageCalls != 0 || invalidator.statusCalls != 0 {
 				t.Fatalf("invalidation calls = image %d status %d, want 0", invalidator.imageCalls, invalidator.statusCalls)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -658,11 +648,9 @@ func TestUpdateImageGenerationReturnsGatewayCacheInvalidationError(t *testing.T)
 			Account: port.ManagementSystemAccountSummary{ID: "sys_user", ImageGenerationEnabled: true, CreatedAt: now, UpdatedAt: now},
 		},
 	}
-	publisher := &systemAccountPageDataPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
 		Store:                    store,
 		SystemAccountInvalidator: &systemAccountInvalidatorStub{imageErr: want},
-		PageDataPublisher:        publisher,
 	})
 
 	_, err := service.UpdateImageGeneration(context.Background(), ImageGenerationUpdateInput{SystemAccountID: "sys_user", ImageGenerationEnabled: true})
@@ -670,7 +658,6 @@ func TestUpdateImageGenerationReturnsGatewayCacheInvalidationError(t *testing.T)
 	if !errors.Is(err, want) {
 		t.Fatalf("UpdateImageGeneration() error = %v, want %v", err, want)
 	}
-	assertSystemAccountPageDataResets(t, publisher)
 }
 
 func TestUpdateProfileNormalizesInputAndMapsResult(t *testing.T) {
@@ -833,16 +820,12 @@ func TestUpdateProfileMapsStoreErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			publisher := &systemAccountPageDataPublisherStub{}
-			service := NewServiceWithOptions(ServiceOptions{Store: tt.store, PageDataPublisher: publisher})
+			service := NewServiceWithOptions(ServiceOptions{Store: tt.store})
 
 			_, err := service.UpdateProfile(context.Background(), ProfileUpdateInput{SystemAccountID: "sys_user", DisplayName: stringPtr("用户")})
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("UpdateProfile() error = %v, want %v", err, tt.wantErr)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -1046,20 +1029,15 @@ func TestUpdateMapsStoreErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			publisher := &systemAccountPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
-				Store:             tt.store,
-				HashPassword:      func(string) (string, error) { return "hash", nil },
-				PageDataPublisher: publisher,
+				Store:        tt.store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
 			})
 
 			_, err := service.Update(context.Background(), UpdateInput{SystemAccountID: "sys_user", DisplayName: stringPtr("用户")})
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Update() error = %v, want %v", err, tt.wantErr)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}

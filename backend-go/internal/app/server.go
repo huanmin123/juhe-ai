@@ -237,17 +237,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 
 	publicSettingsService := publicsettings.NewService(store)
 	var accountConcurrencyReader managementgroups.AccountConcurrencyReader
-	var accountsStaticResetPublisher managementPageDataPublisher
 	if cfg.ManagementAPIEnabled {
 		accountConcurrencyReader, err = redisplatform.NewAccountConcurrencyReader(stateRedis, cfg.RedisNamespace)
 		if err != nil {
 			return fmt.Errorf("初始化账号实时并发读取器失败: %w", err)
 		}
-		publisher, err := newAccountsStaticResetPublisher(stateRedis, cacheRedis, cfg.RedisNamespace)
-		if err != nil {
-			return err
-		}
-		accountsStaticResetPublisher = publisher
 	}
 	managementHandlers := newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		cfg,
@@ -257,7 +251,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		managementOperationLogSubmitter,
 		logger,
 		systemAccountInvalidator,
-		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
 		catalogSnapshotBridge,
@@ -779,14 +772,13 @@ type gatewayCacheInvalidator interface {
 	publicapikeys.APIKeyGatewayCacheInvalidator
 }
 
-func newManagementAPIHandlerWithPageData(
+func newManagementAPIHandler(
 	cfg config.Config,
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
-	accountsStaticResetPublisher managementPageDataPublisher,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 ) managementAPIHandlers {
@@ -798,7 +790,6 @@ func newManagementAPIHandlerWithPageData(
 		nil,
 		logger,
 		systemAccountInvalidator,
-		accountsStaticResetPublisher,
 		accountConcurrencyReader,
 		systemAPIRateLimitSettingsCache,
 		nil,
@@ -813,7 +804,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	operationLogSubmitter httpapi.ManagementOperationLogSubmitter,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
-	accountsStaticResetPublisher managementPageDataPublisher,
 	accountConcurrencyReader managementgroups.AccountConcurrencyReader,
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 	catalogSnapshotRebuilder managementprovidermodels.CatalogSnapshotRebuilder,
@@ -873,12 +863,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Invalidator:             systemAccountInvalidator,
 		Logger:                  logger,
 	})
-	accountService := managementaccounts.NewServiceWithOptions(managementaccounts.ServiceOptions{
-		Store:             store,
-		GranteeReader:     store,
-		PageDataPublisher: accountsStaticResetPublisher,
-		Logger:            logger,
-	})
+	accountService := managementaccounts.NewServiceWithOptions(managementaccounts.ServiceOptions{Store: store, Logger: logger})
 	accountDetailService := managementaccountdetails.NewService(managementaccountdetails.ServiceOptions{
 		Reader:            store,
 		CredentialCodec:   secretcrypto.NewJSONCodec(cfg.Secret),
@@ -902,25 +887,21 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	groupAccountIDsInvalidator, _ := systemAccountInvalidator.(managementaccountgroupbinding.GroupAccountIDsInvalidator)
 	accountCreateService := managementaccountcreate.NewService(managementaccountcreate.Options{
-		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
-		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
 	})
 	accountUpdateService := managementaccountupdate.NewService(managementaccountupdate.Options{
-		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GranteeReader: store,
-		PageDataPublisher: accountsStaticResetPublisher, GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
+		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret), GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		GatewayRuntimeInvalidator: systemAccountInvalidator, Logger: logger,
 	})
 	accountAuthorizedDispatchService := managementaccountauthorizeddispatch.NewService(managementaccountauthorizeddispatch.Options{
-		Store: store, GatewayInvalidator: systemAccountInvalidator,
-		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
+		Store: store, GatewayInvalidator: systemAccountInvalidator, Logger: logger,
 	})
 	accountImportService := managementaccountimport.NewService(managementaccountimport.Options{
 		Store: store, CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
 	})
 	accountTrafficMigrationService := managementaccounttrafficmigration.NewService(managementaccounttrafficmigration.Options{
-		Store: store, GatewayInvalidator: systemAccountInvalidator, GranteeReader: store,
-		PageDataPublisher: accountsStaticResetPublisher, Logger: logger,
+		Store: store, GatewayInvalidator: systemAccountInvalidator, Logger: logger,
 	})
 	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
@@ -939,14 +920,11 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
 		Details:            accountDetailService,
-		GranteeReader:      store,
-		PageDataPublisher:  accountsStaticResetPublisher,
 		GatewayInvalidator: systemAccountInvalidator,
 		Logger:             logger,
 	})
 	accountDeleteService := managementaccountdelete.NewService(managementaccountdelete.Options{
 		Store:                      store,
-		PageDataPublisher:          accountsStaticResetPublisher,
 		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		AuthorizationInvalidator:   systemAccountInvalidator,
 		GatewayRuntimeInvalidator:  systemAccountInvalidator,
@@ -954,8 +932,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	accountGroupBindingService := managementaccountgroupbinding.NewService(managementaccountgroupbinding.Options{
 		Store:                      store,
-		GranteeReader:              store,
-		PageDataPublisher:          accountsStaticResetPublisher,
 		RuntimeInvalidator:         systemAccountInvalidator,
 		GroupAccountIDsInvalidator: groupAccountIDsInvalidator,
 		Logger:                     logger,
@@ -968,15 +944,11 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
 		Store:                    store,
 		AuthorizationInvalidator: systemAccountInvalidator,
-		Publisher:                accountsStaticResetPublisher,
-		Logger:                   logger,
 	})
 	authorizationService := managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		AuthorizationInvalidator: systemAccountInvalidator,
-		Publisher:                accountsStaticResetPublisher,
-		TeamReader:               store,
 		Logger:                   logger,
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
@@ -1252,7 +1224,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
 		AnnouncementPublicDetailHandler:         httpapi.NewAnnouncementPublicDetailHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
-		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
+		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, logger),
 		SystemMetricsHandler:                    httpapi.NewManagementSystemMetricsHandler(statsService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
