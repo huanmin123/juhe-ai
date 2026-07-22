@@ -366,6 +366,44 @@ func managementExternalIntegrationSourceUpdateMutationGuardConfig() mutationGuar
 	}
 }
 
+func managementAnnouncementCreateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "announcements.create",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFieldsWithLimit(w, r, 256<<10)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"title":   mutationAnnouncementFingerprintText(fields, "title"),
+				"content": mutationAnnouncementContentFingerprint(fields),
+				"level":   mutationAnnouncementFingerprintText(fields, "level"),
+				"status":  mutationAnnouncementFingerprintText(fields, "status"),
+			}, nil
+		},
+	}
+}
+
+func mutationAnnouncementFingerprintText(fields map[string]json.RawMessage, name string) string {
+	raw, ok := fields[name]
+	if !ok {
+		return ""
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return ""
+	}
+	return strings.TrimFunc(value, managementGroupListECMAScriptWhitespace)
+}
+
+func mutationAnnouncementContentFingerprint(fields map[string]json.RawMessage) string {
+	value := mutationAnnouncementFingerprintText(fields, "content")
+	if value == "" {
+		return ""
+	}
+	return hashMutationStableValue(value)
+}
+
 func managementExternalIntegrationSourceCreateMutationGuardConfig() mutationGuardConfig {
 	return mutationGuardConfig{
 		operationKey: "external_integration_sources.create",

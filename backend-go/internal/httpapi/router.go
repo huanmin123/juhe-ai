@@ -224,6 +224,7 @@ type RouterOptions struct {
 	ManagementUsageRecordsHandler                     http.Handler
 	ManagementMyUsageRecordsHandler                   http.Handler
 	ManagementAnnouncementPublicListHandler           http.Handler
+	ManagementAnnouncementPublicDetailHandler         http.Handler
 	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementAnnouncementsHandler                    http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
@@ -511,6 +512,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementUsageRecordsHandler == nil &&
 				opts.ManagementMyUsageRecordsHandler == nil &&
 				opts.ManagementAnnouncementPublicListHandler == nil &&
+				opts.ManagementAnnouncementPublicDetailHandler == nil &&
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementAnnouncementsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
@@ -1351,13 +1353,20 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementAnnouncementPublicListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/public", opts.ManagementAnnouncementPublicListHandler.ServeHTTP)
 			}
+			if opts.ManagementAnnouncementPublicDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/public/{id}", opts.ManagementAnnouncementPublicDetailHandler.ServeHTTP)
+			}
 			if opts.ManagementAnnouncementPublicReadHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/announcements/public/read", opts.ManagementAnnouncementPublicReadHandler.ServeHTTP)
 			}
 			if opts.ManagementAnnouncementsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
-				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementAnnouncementCreateMutationGuardConfig()),
+				).Post("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Patch("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/publish", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/unpublish", opts.ManagementAnnouncementsHandler.ServeHTTP)
@@ -1581,6 +1590,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementUsageRecordsHandler != nil ||
 		opts.ManagementMyUsageRecordsHandler != nil ||
 		opts.ManagementAnnouncementPublicListHandler != nil ||
+		opts.ManagementAnnouncementPublicDetailHandler != nil ||
 		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
