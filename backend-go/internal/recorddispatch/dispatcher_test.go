@@ -191,6 +191,37 @@ func TestDispatcherShutdownHonorsDeadlineWhenHandlerIgnoresContext(t *testing.T)
 	shutdownDispatcher(t, dispatcher)
 }
 
+func TestNewRejectsInvalidOptions(t *testing.T) {
+	valid := Options[string]{
+		Capacity: 1,
+		Workers:  1,
+		Timeout:  time.Second,
+		Handle:   func(context.Context, string) error { return nil },
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Options[string])
+	}{
+		{name: "nonpositive capacity", mutate: func(options *Options[string]) { options.Capacity = 0 }},
+		{name: "nonpositive workers", mutate: func(options *Options[string]) { options.Workers = 0 }},
+		{name: "nonpositive timeout", mutate: func(options *Options[string]) { options.Timeout = 0 }},
+		{name: "nil handler", mutate: func(options *Options[string]) { options.Handle = nil }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			options := valid
+			test.mutate(&options)
+			defer func() {
+				if recover() == nil {
+					t.Fatal("New() did not panic for invalid options")
+				}
+			}()
+			_ = New(options)
+		})
+	}
+}
+
 func shutdownDispatcher[T any](t *testing.T, dispatcher *Dispatcher[T]) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

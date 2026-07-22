@@ -45,6 +45,18 @@ type job[T any] struct {
 }
 
 func New[T any](options Options[T]) *Dispatcher[T] {
+	if options.Capacity < 1 {
+		panic("recorddispatch: capacity must be at least 1")
+	}
+	if options.Workers < 1 {
+		panic("recorddispatch: workers must be at least 1")
+	}
+	if options.Timeout <= 0 {
+		panic("recorddispatch: timeout must be positive")
+	}
+	if options.Handle == nil {
+		panic("recorddispatch: handler is required")
+	}
 	dispatcher := &Dispatcher[T]{
 		options:   options,
 		queue:     make(chan job[T], options.Capacity),
