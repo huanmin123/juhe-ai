@@ -191,6 +191,7 @@
     "test:audit-log-async-flush": "tsx src/scripts/regression/audit-log-async-flush-regression.ts",
     "test:audit-log-dispatch-estimate-boundary": "tsx src/scripts/regression/audit-log-dispatch-estimate-boundary-regression.ts",
     "test:audit-log-transport-worker": "tsx src/scripts/regression/audit-log-transport-worker-regression.ts",
+    "test:audit-writer-contract-golden": "tsx src/scripts/regression/audit-writer-contract-golden-regression.ts && tsx src/scripts/regression/audit-log-retention-regression.ts && tsx src/scripts/regression/worker-local-queue-limit-regression.ts && tsx src/scripts/regression/audit-log-dispatch-estimate-boundary-regression.ts && tsx src/scripts/regression/audit-log-transport-worker-regression.ts && tsx src/scripts/regression/audit-log-batch-existing-lookup-regression.ts && tsx src/scripts/regression/audit-log-async-flush-regression.ts",
     "test:audit-log-postgres-smoke": "tsx src/scripts/regression/audit-log-postgres-smoke.ts",
     "test:gateway-audit-payload-storage": "tsx src/scripts/regression/gateway-audit-payload-storage-regression.ts",
     "test:gateway-response-lifecycle": "tsx src/scripts/regression/gateway-response-lifecycle-regression.ts",
