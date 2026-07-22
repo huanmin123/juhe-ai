@@ -103,11 +103,12 @@ type Binding struct {
 	status          string
 	providerCode    string
 	groupEnabled    bool
+	accessExpiresAt *time.Time
 	createdAt       time.Time
 }
 
 func newBinding(row port.GatewayPreflightBindingRecord) Binding {
-	return Binding{id: row.ID, apiKeyID: row.APIKeyID, systemAccountID: row.SystemAccountID, groupID: row.GroupID, priority: row.Priority, weight: row.Weight, status: row.Status, providerCode: row.ProviderCode, groupEnabled: row.GroupEnabled, createdAt: row.CreatedAt}
+	return Binding{id: row.ID, apiKeyID: row.APIKeyID, systemAccountID: row.SystemAccountID, groupID: row.GroupID, priority: row.Priority, weight: row.Weight, status: row.Status, providerCode: row.ProviderCode, groupEnabled: row.GroupEnabled, accessExpiresAt: cloneTimePtr(row.AccessExpiresAt), createdAt: row.CreatedAt}
 }
 
 func (b Binding) ID() string              { return b.id }
@@ -119,7 +120,10 @@ func (b Binding) Weight() int             { return b.weight }
 func (b Binding) Status() string          { return b.status }
 func (b Binding) ProviderCode() string    { return b.providerCode }
 func (b Binding) GroupEnabled() bool      { return b.groupEnabled }
-func (b Binding) CreatedAt() time.Time    { return b.createdAt }
+func (b Binding) AccessExpiresAt() *time.Time {
+	return cloneTimePtr(b.accessExpiresAt)
+}
+func (b Binding) CreatedAt() time.Time { return b.createdAt }
 
 type Settings struct {
 	gatewayTextRawBodyLimitMegabytes           int

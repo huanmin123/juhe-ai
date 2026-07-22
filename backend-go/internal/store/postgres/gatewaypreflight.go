@@ -46,6 +46,10 @@ SELECT
   route_strategy_groups.status,
   groups.provider_code,
   groups.enabled AS group_enabled,
+  CASE
+    WHEN groups.system_account_id = route_strategy_groups.system_account_id THEN NULL
+    ELSE group_authorization.expires_at
+  END AS access_expires_at,
   route_strategy_groups.created_at
 FROM juhe_business.route_strategies AS route_strategies
 INNER JOIN juhe_business.route_strategy_groups AS route_strategy_groups
@@ -56,6 +60,7 @@ INNER JOIN juhe_business.groups AS groups
 LEFT JOIN juhe_business.resource_authorizations AS group_authorization
   ON group_authorization.resource_type = 'group'
   AND group_authorization.resource_id = groups.id
+  AND group_authorization.resource_owner_system_account_id = groups.system_account_id
   AND group_authorization.grantee_system_account_id = route_strategy_groups.system_account_id
   AND group_authorization.status = 'active'
   AND (group_authorization.expires_at IS NULL OR group_authorization.expires_at > $2)
@@ -163,8 +168,13 @@ func (s *Store) ListGatewayPreflightBindings(
 	items := make([]port.GatewayPreflightBindingRecord, 0, limit)
 	for rows.Next() {
 		var item port.GatewayPreflightBindingRecord
-		if err := rows.Scan(&item.ID, &item.APIKeyID, &item.SystemAccountID, &item.GroupID, &item.Priority, &item.Weight, &item.Status, &item.ProviderCode, &item.GroupEnabled, &item.CreatedAt); err != nil {
+		var accessExpiresAt pgtype.Timestamptz
+		if err := rows.Scan(&item.ID, &item.APIKeyID, &item.SystemAccountID, &item.GroupID, &item.Priority, &item.Weight, &item.Status, &item.ProviderCode, &item.GroupEnabled, &accessExpiresAt, &item.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan gateway preflight binding: %w", err)
+		}
+		if accessExpiresAt.Valid {
+			value := accessExpiresAt.Time.UTC()
+			item.AccessExpiresAt = &value
 		}
 		items = append(items, item)
 	}

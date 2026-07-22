@@ -40,12 +40,19 @@ type Cache struct {
 	now           func() time.Time
 	version       string
 	versionSet    bool
+	flights       map[string]*gatewayPreflightCacheFlight
 }
 
 type gatewayPreflightCacheEntry struct {
 	structure gatewayPreflightStructure
 	expiresAt time.Time
 	cachedAt  time.Time
+}
+
+type gatewayPreflightCacheFlight struct {
+	done      chan struct{}
+	structure gatewayPreflightStructure
+	err       error
 }
 
 func NewCache(opts CacheOptions) *Cache {
@@ -61,7 +68,7 @@ func NewCache(opts CacheOptions) *Cache {
 	if now == nil {
 		now = time.Now
 	}
-	return &Cache{entries: make(map[string]gatewayPreflightCacheEntry), versionReader: opts.VersionReader, ttl: ttl, maxEntries: maxEntries, now: now}
+	return &Cache{entries: make(map[string]gatewayPreflightCacheEntry), versionReader: opts.VersionReader, ttl: ttl, maxEntries: maxEntries, now: now, flights: make(map[string]*gatewayPreflightCacheFlight)}
 }
 
 func (c *Cache) load(ctx context.Context, keyHash string, loader func(context.Context, string) (gatewayPreflightStructure, error)) (gatewayPreflightStructure, error) {
@@ -81,10 +88,23 @@ func (c *Cache) load(ctx context.Context, keyHash string, loader func(context.Co
 		return structure, nil
 	}
 	delete(c.entries, keyHash)
+	flightKey := before + "\x00" + keyHash
+	if flight, ok := c.flights[flightKey]; ok {
+		c.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return gatewayPreflightStructure{}, ctx.Err()
+		case <-flight.done:
+			return cloneStructure(flight.structure), flight.err
+		}
+	}
+	flight := &gatewayPreflightCacheFlight{done: make(chan struct{})}
+	c.flights[flightKey] = flight
 	c.mu.Unlock()
 
 	loaded, err := loader(ctx, keyHash)
 	if err != nil {
+		c.finishFlight(flightKey, flight, gatewayPreflightStructure{}, err)
 		return gatewayPreflightStructure{}, err
 	}
 	after, err := c.versionReader.GatewayPreflightCacheVersion(ctx)
@@ -96,13 +116,17 @@ func (c *Cache) load(ctx context.Context, keyHash string, loader func(context.Co
 			}
 			c.mu.Unlock()
 		}
-		return cloneStructure(loaded), nil
+		result := cloneStructure(loaded)
+		c.finishFlight(flightKey, flight, result, nil)
+		return result, nil
 	}
 
 	c.mu.Lock()
 	if !c.versionSet || c.version != after {
 		c.mu.Unlock()
-		return cloneStructure(loaded), nil
+		result := cloneStructure(loaded)
+		c.finishFlight(flightKey, flight, result, nil)
+		return result, nil
 	}
 	c.evictExpiredLocked(now)
 	if len(c.entries) >= c.maxEntries {
@@ -110,7 +134,18 @@ func (c *Cache) load(ctx context.Context, keyHash string, loader func(context.Co
 	}
 	c.entries[keyHash] = gatewayPreflightCacheEntry{structure: cloneStructure(loaded), expiresAt: now.Add(c.ttl), cachedAt: now}
 	c.mu.Unlock()
-	return cloneStructure(loaded), nil
+	result := cloneStructure(loaded)
+	c.finishFlight(flightKey, flight, result, nil)
+	return result, nil
+}
+
+func (c *Cache) finishFlight(key string, flight *gatewayPreflightCacheFlight, structure gatewayPreflightStructure, err error) {
+	c.mu.Lock()
+	flight.structure = cloneStructure(structure)
+	flight.err = err
+	delete(c.flights, key)
+	close(flight.done)
+	c.mu.Unlock()
 }
 
 func (c *Cache) applyVersionLocked(version string) {

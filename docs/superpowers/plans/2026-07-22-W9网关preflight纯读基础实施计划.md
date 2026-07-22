@@ -41,12 +41,14 @@
 
 - [x] Add W9 port records/readers and immutable DTO accessors with copy-on-read slices.
 - [x] Implement service status priority, `apikeysecret.Hash`, binding normalization/cap and fixed settings conversion.
+- [x] Add owner-constrained authorized-group binding reads and re-check authorization expiry on cached structures; this intentionally fixes a Node JOIN/TTL permission gap.
 - [x] Implement quota current matching and limit comparison without exact usage fallback.
 - [x] Run `go test ./internal/modules/gatewaypreflight -count=1` until GREEN.
 
 ### Task 4: Add optional version cache and runtime state reader GREEN
 
 - [x] Implement nil-cache bypass, mutex-protected entries, TTL/max bounds, pre/post version checks and copy-on-store/load.
+- [x] Coalesce same-version same-key concurrent cache misses so a cold key cannot stampede PostgreSQL.
 - [x] Implement shared version reader for API Key validation + system settings keys + gateway runtime topic, with separate cache/state getters.
 - [x] Implement quota current raw Redis reader for `gateway_quota_snapshot/current`, including legacy omitted completeness default.
 - [x] Run module tests and targeted race until GREEN.
