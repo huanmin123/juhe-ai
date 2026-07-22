@@ -50,11 +50,20 @@ type ListInput struct {
 }
 
 type ListResult struct {
-	Items    []Summary `json:"items"`
-	Total    int       `json:"total"`
-	HasMore  bool      `json:"hasMore"`
-	Page     int       `json:"page"`
-	PageSize int       `json:"pageSize"`
+	Items    []ListItem `json:"items"`
+	Total    int        `json:"total"`
+	HasMore  bool       `json:"hasMore"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"pageSize"`
+}
+
+type ListItem struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Status      string `json:"status"`
+	MemberCount int    `json:"memberCount"`
+	CreatedAt   string `json:"createdAt"`
 }
 
 type CreateInput struct {
@@ -191,9 +200,9 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	if err != nil {
 		return ListResult{}, err
 	}
-	items := make([]Summary, 0, len(result.Items))
+	items := make([]ListItem, 0, len(result.Items))
 	for _, row := range result.Items {
-		items = append(items, summaryFromPort(row))
+		items = append(items, listItemFromPort(row))
 	}
 	return ListResult{
 		Items:    items,
@@ -594,6 +603,17 @@ func summaryFromPort(row port.ManagementSystemTeamSummary) Summary {
 		CreatedBy:         row.CreatedBy,
 		CreatedAt:         row.CreatedAt.UTC().Format(time.RFC3339Nano),
 		UpdatedAt:         row.UpdatedAt.UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func listItemFromPort(row port.ManagementSystemTeamListRow) ListItem {
+	return ListItem{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: row.Description,
+		Status:      row.Status,
+		MemberCount: row.MemberCount,
+		CreatedAt:   row.CreatedAt.UTC().Format(time.RFC3339Nano),
 	}
 }
 
