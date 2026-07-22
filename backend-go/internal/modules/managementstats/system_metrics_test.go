@@ -120,6 +120,18 @@ func TestServiceSystemMetricsNormalizesWindowGranularityAndMapsNodeDTO(t *testin
 	}
 }
 
+func TestRoundedSystemMetricAverageMatchesNodeMathRound(t *testing.T) {
+	if got := roundedSystemMetricAverage(5, 2); got == nil || *got != 3 {
+		t.Fatalf("roundedSystemMetricAverage(5, 2) = %v", got)
+	}
+	if got := roundedSystemMetricAverage(-3, 2); got == nil || *got != -1 {
+		t.Fatalf("roundedSystemMetricAverage(-3, 2) = %v", got)
+	}
+	if got := roundedSystemMetricAverage(5, 0); got != nil {
+		t.Fatalf("roundedSystemMetricAverage(5, 0) = %v, want nil", *got)
+	}
+}
+
 func TestServiceSystemMetricsMirrorsSingleBoundaryAndSelectsGranularity(t *testing.T) {
 	tests := []struct {
 		name        string
