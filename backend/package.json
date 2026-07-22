@@ -393,6 +393,8 @@
     "test:page-data-change-http": "tsx src/scripts/regression/page-data-change-http-regression.ts",
     "test:page-data-publisher-wiring": "tsx src/scripts/regression/page-data-publisher-wiring-regression.ts",
     "test:page-data-read-cache": "tsx src/scripts/regression/page-data-read-cache-regression.ts",
+    "smoke:page-data-confirm-http": "tsx src/scripts/smoke/page-data-confirm-http-smoke.ts",
+    "test:page-data-confirm-smoke-cleanup": "tsx src/scripts/regression/page-data-confirm-smoke-cleanup-regression.ts",
     "test:gateway-concurrency-preparation": "tsx src/scripts/regression/gateway-concurrency-preparation-regression.ts",
     "test:gateway-dispatch-candidate-window": "tsx src/scripts/regression/gateway-dispatch-candidate-window-regression.ts",
     "test:authorized-account-dispatch-query": "tsx src/scripts/regression/authorized-account-dispatch-query-regression.ts",
