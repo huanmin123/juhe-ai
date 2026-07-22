@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 
 import express from 'express'
 
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
 import { logger } from '../../shared/logger.js'
@@ -25,11 +26,13 @@ const [
   { openAIGatewayRouter },
   { requestContextMiddleware },
   databaseModule,
+  repositories,
   sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
   import('../../storage/sqlite-read-worker-pool.js')
 ])
 
@@ -42,6 +45,26 @@ app.use(openAIGatewayRouter)
 let server: Server | undefined
 try {
   databaseModule.getBusinessDatabase()
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const gptGroup = repositories.createGroup({
+    name: '动态模型 HTTP 回归 GPT 分组',
+    providerCode: 'gpt',
+    enabled: true
+  }, access)
+  const geminiGroup = repositories.createGroup({
+    name: '动态模型 HTTP 回归 Gemini 分组',
+    providerCode: 'gemini',
+    enabled: true
+  }, access)
+  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
+    name: '动态模型 HTTP 回归 API Key',
+    status: 'active',
+    groupBindings: [
+      { groupId: gptGroup.id, priority: 1, status: 'active' },
+      { groupId: geminiGroup.id, priority: 2, status: 'active' }
+    ]
+  }, access)
+  assert(apiKey.key, '动态模型 HTTP 回归必须创建可用的网关 API Key')
   server = createServer(app)
   await listen(server)
   const baseUrl = `http://127.0.0.1:${address(server).port}`
@@ -59,6 +82,17 @@ try {
   const v1Body = await v1Response.json() as { object?: string; data?: Array<{ id?: string }> }
   assert.equal(v1Body.object, 'list')
   assertOpenAIProviders(v1Body.data ?? [])
+
+  const authenticatedResponse = await fetch(`${baseUrl}/models`, {
+    headers: { authorization: `Bearer ${apiKey.key}` }
+  })
+  assert.equal(authenticatedResponse.status, 200)
+  const authenticatedBody = await authenticatedResponse.json() as { object?: string; data?: Array<{ id?: string }> }
+  assert.equal(authenticatedBody.object, 'list', '认证 /models 必须维持 OpenAI-compatible 响应形态')
+  const authenticatedIds = new Set(authenticatedBody.data?.map((model) => model.id))
+  assert(authenticatedIds.has('gpt-5.6-sol'), 'API Key 模型目录必须包含其 GPT 分组模型')
+  assert(authenticatedIds.has('gemini-3.5-flash'), 'API Key 模型目录必须包含其 Gemini 分组模型')
+  assert.equal(authenticatedIds.has('claude-fable-5'), false, 'API Key 模型目录不得泄漏未绑定的 Anthropic 模型')
 
   const geminiResponse = await fetch(`${baseUrl}/v1beta/models`)
   assert.equal(geminiResponse.status, 200)
