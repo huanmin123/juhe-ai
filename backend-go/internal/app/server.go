@@ -49,6 +49,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementpublicapilogs"
+	"juhe-ai/backend-go/internal/modules/managementresponseinspectionpolicies"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
 	"juhe-ai/backend-go/internal/modules/managementruntimelogs"
 	"juhe-ai/backend-go/internal/modules/managementsettings"
@@ -438,6 +439,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementAuditLogsHandler:                        managementHandlers.AuditLogsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
+		ManagementResponseInspectionPoliciesHandler:       managementHandlers.ResponseInspectionPoliciesHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
 		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
 		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
@@ -671,6 +673,7 @@ type managementAPIHandlers struct {
 	MyOperationLogsHandler                  http.Handler
 	AuditLogsHandler                        http.Handler
 	RuntimeLogsHandler                      http.Handler
+	ResponseInspectionPoliciesHandler       http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
 	ExternalIntegrationSourceDetailHandler  http.Handler
 	ExternalIntegrationSourceCreateHandler  http.Handler
@@ -780,6 +783,12 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 			Invalidator:       systemAccountInvalidator,
 			PageDataPublisher: accountsStaticResetPublisher,
 			Logger:            logger,
+		},
+	)
+	responseInspectionInvalidator, _ := systemAccountInvalidator.(managementresponseinspectionpolicies.RuntimeInvalidator)
+	responseInspectionPolicyService := managementresponseinspectionpolicies.NewService(
+		managementresponseinspectionpolicies.Options{
+			Store: store, Invalidator: responseInspectionInvalidator, Logger: logger,
 		},
 	)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
@@ -1148,6 +1157,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		AuditLogsHandler:                        httpapi.NewManagementAuditLogsHandler(auditLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
+		ResponseInspectionPoliciesHandler:       httpapi.NewManagementResponseInspectionPoliciesHandlerWithOperationLog(responseInspectionPolicyService, operationLogOptions),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),

@@ -209,6 +209,7 @@ type RouterOptions struct {
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementAuditLogsHandler                        http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
+	ManagementResponseInspectionPoliciesHandler       http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
 	ManagementExternalIntegrationSourceCreateHandler  http.Handler
@@ -496,6 +497,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementAuditLogsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
+				opts.ManagementResponseInspectionPoliciesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
 				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
@@ -1176,6 +1178,25 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/runtime/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementResponseInspectionPoliciesHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).
+					Get("/response-inspection-policies", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementResponseInspectionPolicyCreateMutationGuardConfig()),
+				).Post("/response-inspection-policies", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementResponseInspectionPolicyUpdateMutationGuardConfig()),
+				).Put("/response-inspection-policies/{id}", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementResponseInspectionPolicyDeleteMutationGuardConfig()),
+				).Delete("/response-inspection-policies/{id}", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
+			}
 			if opts.ManagementExternalIntegrationSourceListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
 					"/external-integration-sources",
@@ -1566,6 +1587,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementAuditLogsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
+		opts.ManagementResponseInspectionPoliciesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
@@ -1684,6 +1706,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPUnallowlistHandler != nil ||
 		opts.ManagementClientIPBlacklistHandler != nil ||
 		opts.ManagementClientIPUnblockHandler != nil ||
+		opts.ManagementResponseInspectionPoliciesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||
