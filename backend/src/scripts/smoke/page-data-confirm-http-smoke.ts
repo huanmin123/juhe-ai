@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import http from 'node:http'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import type { DatabaseClient } from '../../storage/database-client.js'
 import type { PageDataChangeStore, PageDataRevisionToken } from '../../modules/page-data/page-data-change.service.js'
@@ -17,6 +19,9 @@ const systemApiPrefix = '/__aisys__/api'
 const confirmPath = `${systemApiPrefix}/data-changes/confirm`
 const smokeClientIp = '198.51.100.77'
 const requestTimeoutMs = 10_000
+const cleanupOperationTimeoutMs = 3_000
+const cleanupStepTimeoutMs = 15_000
+const serverForceCloseGraceMs = 1_000
 const maxSafeRateLimitRequests = 256
 
 interface ConfirmDomainResult {
@@ -59,17 +64,19 @@ class SmokeFailure extends Error {
   }
 }
 
-await main().catch((error) => {
-  const failure = error instanceof SmokeFailure
-    ? error
-    : new SmokeFailure('unexpected', safeErrorMessage(error))
-  process.stderr.write(`${JSON.stringify({
-    passed: false,
-    step: failure.step,
-    message: safeErrorMessage(failure)
-  })}\n`)
-  process.exitCode = 1
-})
+if (isEntrypoint()) {
+  await main().catch((error) => {
+    const failure = error instanceof SmokeFailure
+      ? error
+      : new SmokeFailure('unexpected', safeErrorMessage(error))
+    process.stderr.write(`${JSON.stringify({
+      passed: false,
+      step: failure.step,
+      message: safeErrorMessage(failure)
+    })}\n`)
+    process.exitCode = 1
+  })
+}
 
 async function main(): Promise<void> {
   const startedAt = Date.now()
@@ -266,6 +273,7 @@ async function main(): Promise<void> {
       cookie: cookieA,
       client: stateRedisClient,
       namespace: redisNamespace,
+      accountId: fixtures[0]!.accountId,
       accountIds: fixtureAccountIds,
       settings: rateLimitSettings,
       token: requiredDomain(baselineA, 'providers.catalog').token
@@ -294,20 +302,22 @@ async function main(): Promise<void> {
     throw error instanceof SmokeFailure ? error : new SmokeFailure('verification', safeErrorMessage(error))
   } finally {
     const cleanupErrors: string[] = []
-    await cleanupStep('server', cleanupErrors, async () => closeServer(server))
+    await shutdownServerAndRuntimeRedis({
+      server,
+      closeRuntimeRedis: closeRedisClients,
+      errors: cleanupErrors,
+      operationTimeoutMs: cleanupOperationTimeoutMs,
+      forceCloseGraceMs: serverForceCloseGraceMs
+    })
     await cleanupStep('postgres-fixture', cleanupErrors, async () => {
       if (!databaseClient || !fixturesInserted) return
       await deleteFixtures(databaseClient, fixtureSessionIds, fixtureAccountIds)
     })
-    await cleanupStep('redis-clients', cleanupErrors, async () => closeRedisClients?.())
-    await cleanupStep('redis-namespace', cleanupErrors, async () => {
-      for (const client of dedicatedRedisClients.values()) {
-        await deleteRedisNamespace(client, redisPrefix)
-        assert.equal((await scanRedisNamespace(client, redisPrefix)).length, 0, 'Redis smoke namespace 清理后必须为空')
-      }
-    })
-    await cleanupStep('dedicated-redis-clients', cleanupErrors, async () => {
-      for (const client of dedicatedRedisClients.values()) await closeRedisClient(client)
+    await cleanupDedicatedRedisResources({
+      clients: dedicatedRedisClients,
+      prefix: redisPrefix,
+      errors: cleanupErrors,
+      operationTimeoutMs: cleanupOperationTimeoutMs
     })
     await cleanupStep('postgres-pool', cleanupErrors, async () => closePostgresPool?.())
     if (cleanupErrors.length > 0) {
@@ -391,8 +401,8 @@ async function insertFixtures(
       await tx.execute(`
         INSERT INTO "juhe_business"."system_accounts" (
           id, username, display_name, description, role, status, password_hash,
-          must_change_password, image_generation_enabled, created_at, updated_at
-        ) VALUES (?, ?, ?, NULL, 'user', 'active', ?, 0, 0, ?, ?)
+          created_at, updated_at
+        ) VALUES (?, ?, ?, NULL, 'user', 'active', ?, ?, ?)
       `, [
         fixture.accountId,
         `pdsmoke_${fixture.accountId.slice(-18)}`,
@@ -494,6 +504,7 @@ async function exerciseReadRateLimit(input: {
   cookie: string
   client: RedisCommandClient
   namespace: string
+  accountId: string
   accountIds: string[]
   settings: ReadRateLimitSettings
   token: PageDataRevisionToken
@@ -510,6 +521,44 @@ async function exerciseReadRateLimit(input: {
       `触发最小 read bucket 需要 ${requestCount} 次请求，超过 smoke 安全上限 ${maxSafeRateLimitRequests}；请使用专用低阈值测试库`
     )
   }
+
+  const readBuckets = [
+    {
+      key: fixedWindowKey(input.namespace, 'system_api_ip_minute', `${smokeClientIp}:read`),
+      limit: input.settings.ipPerMinute,
+      required: input.settings.ipPerMinute > 0
+    },
+    {
+      key: fixedWindowKey(input.namespace, 'system_api_ip_burst', `${smokeClientIp}:read`),
+      limit: input.settings.ipBurstPer10Seconds,
+      required: input.settings.ipBurstPer10Seconds > 0
+    },
+    {
+      key: fixedWindowKey(input.namespace, 'system_api_user_minute', `${input.accountId}:read`),
+      limit: input.settings.userPerMinute,
+      required: input.settings.userPerMinute > 0
+    }
+  ]
+  const writeKeys = [
+    fixedWindowKey(input.namespace, 'system_api_ip_minute', `${smokeClientIp}:write`),
+    fixedWindowKey(input.namespace, 'system_api_ip_burst', `${smokeClientIp}:write`),
+    ...input.accountIds.map((accountId) => fixedWindowKey(input.namespace, 'system_api_user_minute', `${accountId}:write`))
+  ]
+  const resetKeys = [
+    ...readBuckets.map((bucket) => bucket.key),
+    ...input.accountIds.flatMap((accountId) => [
+      fixedWindowKey(input.namespace, 'system_api_user_minute', `${accountId}:read`),
+      fixedWindowKey(input.namespace, 'system_api_user_minute', `${accountId}:write`)
+    ]),
+    ...writeKeys
+  ]
+  await clearRateLimitKeys(input.client, [
+    ...readBuckets.map((bucket) => bucket.key),
+    ...writeKeys,
+    ...resetKeys
+  ])
+  const resetValues = await Promise.all([...new Set(resetKeys)].map((key) => input.client.get(key)))
+  assert.ok(resetValues.every((value) => value === null), '限流实测必须从零计数开始')
 
   const responses: HttpResult[] = []
   const batchSize = 32
@@ -529,28 +578,6 @@ async function exerciseReadRateLimit(input: {
   }
   assert.ok(rejected.every((response) => /^\d+$/.test(response.retryAfter ?? '')), 'HTTP 429 必须携带数字 Retry-After')
 
-  const readBuckets = [
-    {
-      key: fixedWindowKey(input.namespace, 'system_api_ip_minute', `${smokeClientIp}:read`),
-      limit: input.settings.ipPerMinute,
-      required: input.settings.ipPerMinute > 0
-    },
-    {
-      key: fixedWindowKey(input.namespace, 'system_api_ip_burst', `${smokeClientIp}:read`),
-      limit: input.settings.ipBurstPer10Seconds,
-      required: input.settings.ipBurstPer10Seconds > 0
-    },
-    ...input.accountIds.map((accountId) => ({
-      key: fixedWindowKey(input.namespace, 'system_api_user_minute', `${accountId}:read`),
-      limit: input.settings.userPerMinute,
-      required: input.settings.userPerMinute > 0
-    }))
-  ]
-  const writeKeys = [
-    fixedWindowKey(input.namespace, 'system_api_ip_minute', `${smokeClientIp}:write`),
-    fixedWindowKey(input.namespace, 'system_api_ip_burst', `${smokeClientIp}:write`),
-    ...input.accountIds.map((accountId) => fixedWindowKey(input.namespace, 'system_api_user_minute', `${accountId}:write`))
-  ]
   const readValues = await Promise.all(readBuckets.map(async (bucket) => ({
     ...bucket,
     value: await input.client.get(bucket.key)
@@ -586,17 +613,37 @@ function sha256(value: string): string {
   return createHash('sha256').update(value).digest('base64url')
 }
 
-async function deleteRedisNamespace(client: RedisCommandClient, prefix: string): Promise<number> {
-  const keys = await scanRedisNamespace(client, prefix)
-  for (const key of keys) await client.del(key)
+async function clearRateLimitKeys(client: RedisCommandClient, keys: string[]): Promise<void> {
+  for (const key of new Set(keys)) {
+    await withDeadline(client.del(key), cleanupOperationTimeoutMs, 'Redis rate-limit DEL timeout')
+  }
+}
+
+async function deleteRedisNamespace(
+  client: RedisCommandClient,
+  prefix: string,
+  operationTimeoutMs = cleanupOperationTimeoutMs
+): Promise<number> {
+  const keys = await scanRedisNamespace(client, prefix, operationTimeoutMs)
+  for (const key of keys) {
+    await withDeadline(client.del(key), operationTimeoutMs, 'Redis cleanup DEL timeout')
+  }
   return keys.length
 }
 
-async function scanRedisNamespace(client: RedisCommandClient, prefix: string): Promise<string[]> {
+async function scanRedisNamespace(
+  client: RedisCommandClient,
+  prefix: string,
+  operationTimeoutMs = cleanupOperationTimeoutMs
+): Promise<string[]> {
   const keys: string[] = []
   let cursor = '0'
   do {
-    const value = await client.sendCommand(['SCAN', cursor, 'MATCH', `${prefix}*`, 'COUNT', '200'])
+    const value = await withDeadline(
+      client.sendCommand(['SCAN', cursor, 'MATCH', `${prefix}*`, 'COUNT', '200']),
+      operationTimeoutMs,
+      'Redis cleanup SCAN timeout'
+    )
     if (!Array.isArray(value) || value.length !== 2 || !Array.isArray(value[1])) {
       throw new SmokeFailure('redis-cleanup', 'Redis SCAN 返回格式无效')
     }
@@ -606,17 +653,58 @@ async function scanRedisNamespace(client: RedisCommandClient, prefix: string): P
   return [...new Set(keys)]
 }
 
-async function closeRedisClient(client: RedisCommandClient): Promise<void> {
-  if (client.quit) {
-    await client.quit()
+async function closeRedisClient(
+  client: RedisCommandClient,
+  operationTimeoutMs = cleanupOperationTimeoutMs
+): Promise<void> {
+  if (!client.quit) {
+    client.destroy?.()
     return
   }
-  client.destroy?.()
+  try {
+    await withDeadline(client.quit(), operationTimeoutMs, 'Redis cleanup QUIT timeout')
+  } catch (error) {
+    client.destroy?.()
+    throw error
+  }
 }
 
-async function cleanupStep(label: string, errors: string[], action: () => Promise<unknown>): Promise<void> {
+export async function cleanupDedicatedRedisResources(input: {
+  clients: ReadonlyMap<string, RedisCommandClient>
+  prefix: string
+  errors: string[]
+  operationTimeoutMs?: number
+}): Promise<void> {
+  const operationTimeoutMs = input.operationTimeoutMs ?? cleanupOperationTimeoutMs
+  const stepTimeoutMs = Math.max(cleanupStepTimeoutMs, operationTimeoutMs * 4)
+  for (const [role, client] of input.clients) {
+    await cleanupStep(`redis-${role}-namespace`, input.errors, async () => {
+      await deleteRedisNamespace(client, input.prefix, operationTimeoutMs)
+      assert.equal(
+        (await scanRedisNamespace(client, input.prefix, operationTimeoutMs)).length,
+        0,
+        `Redis ${role} smoke namespace 清理后必须为空`
+      )
+    }, stepTimeoutMs)
+  }
+  for (const [role, client] of input.clients) {
+    await cleanupStep(
+      `redis-${role}-client`,
+      input.errors,
+      async () => closeRedisClient(client, operationTimeoutMs),
+      stepTimeoutMs
+    )
+  }
+}
+
+async function cleanupStep(
+  label: string,
+  errors: string[],
+  action: () => Promise<unknown>,
+  timeoutMs = cleanupStepTimeoutMs
+): Promise<void> {
   try {
-    await action()
+    await withDeadline(Promise.resolve().then(action), timeoutMs, `${label} cleanup timeout`)
   } catch {
     errors.push(label)
   }
@@ -636,11 +724,64 @@ function serverPort(server: http.Server): number {
   return address.port
 }
 
-async function closeServer(server: http.Server | undefined): Promise<void> {
-  if (!server?.listening) return
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error ? reject(error) : resolve())
+interface CloseableHttpServer {
+  readonly listening?: boolean
+  close(callback: (error?: Error) => void): unknown
+  closeAllConnections?(): void
+}
+
+export async function shutdownServerAndRuntimeRedis(input: {
+  server: CloseableHttpServer | undefined
+  closeRuntimeRedis: (() => Promise<void>) | undefined
+  errors: string[]
+  operationTimeoutMs?: number
+  forceCloseGraceMs?: number
+}): Promise<void> {
+  const operationTimeoutMs = input.operationTimeoutMs ?? cleanupOperationTimeoutMs
+  const forceCloseGraceMs = input.forceCloseGraceMs ?? serverForceCloseGraceMs
+  const closePromise = beginServerClose(input.server)
+  await cleanupStep('runtime-redis-clients', input.errors, async () => {
+    await input.closeRuntimeRedis?.()
+  }, operationTimeoutMs)
+  await cleanupStep('server', input.errors, async () => {
+    try {
+      await withDeadline(closePromise, operationTimeoutMs, 'HTTP server graceful close timeout')
+      return
+    } catch (gracefulError) {
+      try {
+        input.server?.closeAllConnections?.()
+      } catch {
+        throw gracefulError
+      }
+    }
+    await withDeadline(closePromise, forceCloseGraceMs, 'HTTP server forced close timeout')
+  }, operationTimeoutMs + forceCloseGraceMs + 100)
+}
+
+function beginServerClose(server: CloseableHttpServer | undefined): Promise<void> {
+  if (!server?.listening) return Promise.resolve()
+  return new Promise<void>((resolvePromise, reject) => {
+    server.close((error) => error ? reject(error) : resolvePromise())
   })
+}
+
+async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs)
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+function isEntrypoint(): boolean {
+  const entrypoint = process.argv[1]
+  return Boolean(entrypoint) && resolve(entrypoint!) === fileURLToPath(import.meta.url)
 }
 
 function requiredEnvironment(name: string): string {
