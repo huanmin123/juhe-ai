@@ -42,7 +42,11 @@ assert.equal(codexResponsesContractRegistry.item('future_response_item'), undefi
 assert.equal(codexResponsesContractRegistry.itemByPrefix('ctc')?.type, 'custom_tool_call')
 assert.equal(codexResponsesContractRegistry.itemByPrefix('cmp')?.type, 'compaction')
 assert.equal(codexResponsesContractRegistry.itemByPrefix('unknown'), undefined)
-assert.equal(codexResponsesContractRegistry.items.length, expectedItemPrefixes.size)
+const compactionTrigger = codexResponsesContractRegistry.item('compaction_trigger')
+assert.ok(compactionTrigger, 'Codex 源码中的 compaction_trigger 必须是已知无 ID 类型')
+assert.equal(compactionTrigger.prefix, undefined)
+assert.deepEqual(compactionTrigger.repairableIdPaths, [])
+assert.equal(codexResponsesContractRegistry.items.length, expectedItemPrefixes.size + 1)
 assert.deepEqual(
   codexResponsesContractRegistry.item('custom_tool_call')?.requiredFields.map((field) => field.name),
   ['call_id', 'name', 'input']

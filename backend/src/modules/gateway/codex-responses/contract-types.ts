@@ -2,11 +2,20 @@ export type CodexContractRevision = 'codex-responses-2026-07-11-r1'
 
 export type CodexResponseItemEventStage = 'added' | 'delta' | 'done'
 
-export type CodexRequiredFieldKind = 'present' | 'string' | 'non_empty_string' | 'array' | 'object'
+export type CodexRequiredFieldKind =
+  | 'present'
+  | 'string'
+  | 'array'
+  | 'object'
+  | 'enum'
+  | 'function_output'
+  | 'local_shell_action'
 
 export interface CodexRequiredItemField {
   name: string
   kind: CodexRequiredFieldKind
+  nullable?: boolean
+  values?: readonly string[]
 }
 
 export type CodexProtocolIssueProvenance =
@@ -30,6 +39,7 @@ export interface CodexItemContract {
   eventStages: readonly CodexResponseItemEventStage[]
   repairableIdPaths: readonly string[]
   requiredFields: readonly CodexRequiredItemField[]
+  optionalFields: readonly CodexRequiredItemField[]
 }
 
 export interface CodexProtocolIssue {
@@ -52,6 +62,9 @@ export interface CodexRepairOperation {
   action: 'remove' | 'replace'
   path: readonly (string | number)[]
   value?: unknown
+  expectedItemType: string
+  expectedItemIdPresent: boolean
+  expectedItemId: unknown
   issueCode: string
   ruleId: string
 }

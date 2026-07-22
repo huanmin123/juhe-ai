@@ -2,10 +2,14 @@ import { GatewayRequestValidationError } from '../request/validation-error.js'
 import { validateCodexResponsesJson } from './contract-validator.js'
 import type { CodexRepairOperation, CodexRepairPlan } from './contract-types.js'
 import { isReplayableCodexHistoryItem } from './request-history-sanitizer.js'
+import { codexResponsesContractRegistry } from './contract-registry.js'
 
 type JsonRecord = Record<string, unknown>
 
 export function executeCodexResponsesRepair(document: JsonRecord, plan: CodexRepairPlan): JsonRecord {
+  if (plan.revision !== codexResponsesContractRegistry.revision) {
+    throw new Error('codex_repair_forbidden: unsupported contract revision')
+  }
   if (plan.level !== 'R0') {
     throw new Error(`codex_repair_forbidden: ${plan.forbiddenReason ?? 'R2 plan'}`)
   }
@@ -17,6 +21,7 @@ export function executeCodexResponsesRepair(document: JsonRecord, plan: CodexRep
 
   for (const operation of plan.operations) {
     const target = operationTarget(document, operation)
+    assertOperationAllowed(plan, operation, target)
     if (target.field === 'input' && operation.action === 'remove' && !isReplayableCodexHistoryItem(target.item)) {
       throw new GatewayRequestValidationError(
         'codex_history_item_unrecoverable: Codex Responses 历史 item 只有 ID，没有可重放内容',
@@ -50,6 +55,44 @@ export function executeCodexResponsesRepair(document: JsonRecord, plan: CodexRep
     throw new Error(`codex_repair_post_validation_failed: ${remainingViolation.code}`)
   }
   return output
+}
+
+function assertOperationAllowed(
+  plan: CodexRepairPlan,
+  operation: CodexRepairOperation,
+  target: { field: 'input' | 'output'; item: JsonRecord }
+): void {
+  const contract = codexResponsesContractRegistry.item(operation.expectedItemType)
+  if (!contract || !contract.repairableIdPaths.includes('id') || target.item.type !== operation.expectedItemType) {
+    throw new Error('codex_repair_forbidden: target item type is not repairable')
+  }
+  const idPresent = Object.hasOwn(target.item, 'id')
+  if (idPresent !== operation.expectedItemIdPresent || !Object.is(target.item.id, operation.expectedItemId)) {
+    throw new Error('codex_repair_forbidden: stale item ID precondition')
+  }
+  const allowedIssue = operation.issueCode === 'item_id_invalid' || operation.issueCode === 'item_id_prefix_mismatch'
+  if (!allowedIssue) throw new Error('codex_repair_forbidden: issue is not R0 allowlisted')
+
+  if (target.field === 'input') {
+    if (
+      plan.provenance !== 'request_history'
+      || operation.action !== 'remove'
+      || operation.ruleId !== 'codex.r0.request_history.remove_item_id'
+    ) {
+      throw new Error('codex_repair_forbidden: request history only permits ID removal')
+    }
+    return
+  }
+  if (
+    (plan.provenance !== 'raw_upstream' && plan.provenance !== 'gateway_bridge')
+    || operation.action !== 'replace'
+    || operation.ruleId !== 'codex.r0.response.replace_item_id'
+    || typeof operation.value !== 'string'
+    || !contract.prefix
+    || !operation.value.startsWith(`${contract.prefix}_`)
+  ) {
+    throw new Error('codex_repair_forbidden: response only permits typed ID replacement')
+  }
 }
 
 function operationTarget(document: JsonRecord, operation: CodexRepairOperation): {
