@@ -24,10 +24,21 @@ func TestManagementProviderModelReadQueriesStayPointAndWindowBounded(t *testing.
 		t.Fatalf("read provider model query: %v", err)
 	}
 	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+	enabledCodesStart := strings.Index(sql, "-- name: ListManagementEnabledModelProviderCodes :many")
+	protocolCodesStart := strings.Index(sql, "-- name: ListManagementProviderCodesByProtocol :many")
+	catalogStart := strings.Index(sql, "-- name: ListManagementProviderModelCatalog :many")
 	optionsStart := strings.Index(sql, "-- name: ListManagementProviderModelOptions :many")
 	capabilitiesStart := strings.Index(sql, "-- name: ListManagementProviderModelCapabilityCandidates :many")
-	if optionsStart < 0 || capabilitiesStart <= optionsStart {
+	if enabledCodesStart < 0 || protocolCodesStart <= enabledCodesStart || catalogStart <= protocolCodesStart || optionsStart < 0 || capabilitiesStart <= optionsStart {
 		t.Fatalf("provider model SQL missing options/capabilities queries")
+	}
+	for name, query := range map[string]string{
+		"enabled provider codes":  sql[enabledCodesStart:protocolCodesStart],
+		"protocol provider codes": sql[protocolCodesStart:catalogStart],
+	} {
+		if strings.Contains(query, "LIMIT ") {
+			t.Fatalf("%s SQL must not truncate an unpaginated source set: %s", name, query)
+		}
 	}
 	optionsSQL := sql[optionsStart:capabilitiesStart]
 	capabilitiesSQL := sql[capabilitiesStart:]
