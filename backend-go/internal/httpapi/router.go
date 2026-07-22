@@ -245,6 +245,8 @@ type RouterOptions struct {
 	ManagementMyStatsAIPerformanceHandler             http.Handler
 	ManagementStatsAIPerformanceAccountsHandler       http.Handler
 	ManagementMyStatsAIPerformanceAccountsHandler     http.Handler
+	ManagementStatsUsageOverviewHandler               http.Handler
+	ManagementMyStatsUsageOverviewHandler             http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -546,7 +548,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementStatsAIPerformanceHandler == nil &&
 				opts.ManagementMyStatsAIPerformanceHandler == nil &&
 				opts.ManagementStatsAIPerformanceAccountsHandler == nil &&
-				opts.ManagementMyStatsAIPerformanceAccountsHandler == nil {
+				opts.ManagementMyStatsAIPerformanceAccountsHandler == nil &&
+				opts.ManagementStatsUsageOverviewHandler == nil &&
+				opts.ManagementMyStatsUsageOverviewHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.Config.ManagementAPIEnabled {
@@ -1465,6 +1469,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyStatsAIPerformanceAccountsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/ai-performance/accounts", opts.ManagementMyStatsAIPerformanceAccountsHandler.ServeHTTP)
 			}
+			if opts.ManagementStatsUsageOverviewHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-overview", opts.ManagementStatsUsageOverviewHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageOverviewHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview", opts.ManagementMyStatsUsageOverviewHandler.ServeHTTP)
+			}
 		}
 	})
 
@@ -1697,7 +1707,9 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementStatsAIPerformanceHandler != nil ||
 		opts.ManagementMyStatsAIPerformanceHandler != nil ||
 		opts.ManagementStatsAIPerformanceAccountsHandler != nil ||
-		opts.ManagementMyStatsAIPerformanceAccountsHandler != nil
+		opts.ManagementMyStatsAIPerformanceAccountsHandler != nil ||
+		opts.ManagementStatsUsageOverviewHandler != nil ||
+		opts.ManagementMyStatsUsageOverviewHandler != nil
 }
 
 func managementWriteRoutesConfigured(opts RouterOptions) bool {
