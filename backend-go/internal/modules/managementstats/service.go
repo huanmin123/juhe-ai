@@ -306,16 +306,21 @@ func (s *Service) AccountUsageTrend(ctx context.Context, readScope ReadScope, in
 	if err != nil {
 		return AccountUsageTrendOverview{}, err
 	}
-	daily := make(map[string][]DailyUsagePoint)
+	daily := make(map[string]map[string]UsageSummary)
 	for _, row := range result.DailyRows {
-		daily[row.AccountID] = append(daily[row.AccountID], DailyUsagePoint{StatDate: row.StatDate, UsageSummary: usageSummary(row.Usage)})
+		if daily[row.AccountID] == nil {
+			daily[row.AccountID] = make(map[string]UsageSummary)
+		}
+		daily[row.AccountID][row.StatDate] = usageSummary(row.Usage)
 	}
+	dates := dateBuckets(rangeValue)
 	rows := make([]AccountUsageTrendRow, 0, len(result.Accounts))
 	for _, account := range result.Accounts {
-		row := AccountUsageTrendRow{ID: account.ID, Name: account.Name, ProviderCode: account.ProviderCode, OwnerSystemAccountID: account.OwnerSystemAccountID, OwnerSystemAccountName: optionalString(account.OwnerSystemAccountName), AccessType: account.AccessType, DailyUsage: daily[account.ID]}
-		if row.DailyUsage == nil {
-			row.DailyUsage = []DailyUsagePoint{}
+		points := make([]DailyUsagePoint, 0, len(dates))
+		for _, date := range dates {
+			points = append(points, DailyUsagePoint{StatDate: date, UsageSummary: daily[account.ID][date]})
 		}
+		row := AccountUsageTrendRow{ID: account.ID, Name: account.Name, ProviderCode: account.ProviderCode, OwnerSystemAccountID: account.OwnerSystemAccountID, OwnerSystemAccountName: optionalString(account.OwnerSystemAccountName), AccessType: account.AccessType, DailyUsage: points}
 		if scope.IncludeSystemAccountFields {
 			row.SystemAccountID = optionalString(account.SystemAccountID)
 			row.SystemAccountName = optionalString(account.SystemAccountName)
@@ -510,13 +515,22 @@ func countedMax(value, count int64) *int64 {
 }
 
 func hourBuckets(statsRange StatsRange) []string {
+	dates := dateBuckets(statsRange)
+	result := make([]string, 0, statsRange.Days*24)
+	for _, date := range dates {
+		for hour := 0; hour < 24; hour++ {
+			result = append(result, fmt.Sprintf("%sT%02d", date, hour))
+		}
+	}
+	return result
+}
+
+func dateBuckets(statsRange StatsRange) []string {
 	start, _ := time.Parse(time.DateOnly, statsRange.StartDate)
 	end, _ := time.Parse(time.DateOnly, statsRange.EndDate)
-	result := make([]string, 0, statsRange.Days*24)
+	result := make([]string, 0, statsRange.Days)
 	for date := start; !date.After(end); date = date.AddDate(0, 0, 1) {
-		for hour := 0; hour < 24; hour++ {
-			result = append(result, fmt.Sprintf("%sT%02d", date.Format(time.DateOnly), hour))
-		}
+		result = append(result, date.Format(time.DateOnly))
 	}
 	return result
 }
