@@ -125,15 +125,25 @@ func (d *Dispatcher[T]) Shutdown(ctx context.Context) error {
 func (d *Dispatcher[T]) runWorker() {
 	defer d.workers.Done()
 	for queued := range d.queue {
-		ctx := logging.WithLogContext(context.Background(), queued.context)
-		ctx, cancel := context.WithTimeout(ctx, d.options.Timeout)
-		err := d.options.Handle(ctx, queued.value)
-		cancel()
+		d.runJob(queued)
+	}
+}
 
-		if err != nil {
+func (d *Dispatcher[T]) runJob(queued job[T]) {
+	failed := false
+	defer func() {
+		if recover() != nil {
+			failed = true
+		}
+		if failed {
 			d.failed.Add(1)
 		}
 		d.completed.Add(1)
 		d.pending.Add(-1)
-	}
+	}()
+
+	ctx := logging.WithLogContext(context.Background(), queued.context)
+	ctx, cancel := context.WithTimeout(ctx, d.options.Timeout)
+	defer cancel()
+	failed = d.options.Handle(ctx, queued.value) != nil
 }

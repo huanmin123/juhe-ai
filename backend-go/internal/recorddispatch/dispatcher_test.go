@@ -114,6 +114,42 @@ func TestDispatcherCountsHandlerErrorsAsFailed(t *testing.T) {
 	}
 }
 
+func TestDispatcherRecoversHandlerPanicAndContinues(t *testing.T) {
+	processed := make(chan string, 1)
+	dispatcher := New(Options[string]{
+		Capacity: 2,
+		Workers:  1,
+		Timeout:  time.Second,
+		Handle: func(_ context.Context, value string) error {
+			if value == "panic" {
+				panic("handler failed")
+			}
+			processed <- value
+			return nil
+		},
+	})
+	if !dispatcher.Submit(context.Background(), "panic") {
+		t.Fatal("panic Submit() = false, want true")
+	}
+	if !dispatcher.Submit(context.Background(), "next") {
+		t.Fatal("next Submit() = false, want true")
+	}
+	shutdownDispatcher(t, dispatcher)
+
+	select {
+	case value := <-processed:
+		if value != "next" {
+			t.Fatalf("processed value = %q, want next", value)
+		}
+	default:
+		t.Fatal("worker did not continue after handler panic")
+	}
+	stats := dispatcher.Stats()
+	if stats.Accepted != 2 || stats.Completed != 2 || stats.Failed != 1 || stats.Pending != 0 {
+		t.Fatalf("Stats() = %+v", stats)
+	}
+}
+
 func TestDispatcherAppliesPerJobTimeout(t *testing.T) {
 	timedOut := make(chan error, 1)
 	dispatcher := New(Options[string]{

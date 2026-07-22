@@ -126,7 +126,7 @@ func recordProfileUpdateOperationLog(
 	result managementauth.ProfileUpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil || !result.Changed {
+	if opts.submitter == nil || !result.Changed {
 		return
 	}
 	now := opts.now

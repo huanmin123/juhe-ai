@@ -199,8 +199,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if publicAPILogQueue != nil {
 		defer func() { _ = publicAPILogQueue.Close() }()
 	}
-	publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueue, logger)
-	if publicAPILogDispatcher != nil {
+	var publicAPILogSubmitter httpapi.PublicAPILogSubmitter
+	if publicAPILogQueue != nil {
+		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueue, logger)
+		publicAPILogSubmitter = publicAPILogDispatcher
 		defer shutdownRecordDispatcher(publicAPILogDispatcher, cfg.ShutdownTimeout, logger, "public API log")
 	}
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
@@ -212,7 +214,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			APIKeyInvalidator: systemAccountInvalidator,
 			PageDataPublisher: accountsStaticResetPublisher,
 			logQueue:          publicAPILogQueue,
-			logSubmitter:      publicAPILogDispatcher,
+			logSubmitter:      publicAPILogSubmitter,
 		},
 	)
 	if err != nil {
@@ -225,12 +227,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if managementOperationLogQueue != nil {
 		defer func() { _ = managementOperationLogQueue.Close() }()
 	}
-	managementOperationLogDispatcher := httpapi.NewManagementOperationLogDispatcher(
-		managementOperationLogQueue,
-		store,
-		logger,
-	)
-	if managementOperationLogDispatcher != nil {
+	var managementOperationLogSubmitter httpapi.ManagementOperationLogSubmitter
+	if managementOperationLogQueue != nil {
+		managementOperationLogDispatcher := httpapi.NewManagementOperationLogDispatcher(
+			managementOperationLogQueue,
+			store,
+			logger,
+		)
+		managementOperationLogSubmitter = managementOperationLogDispatcher
 		defer shutdownRecordDispatcher(managementOperationLogDispatcher, cfg.ShutdownTimeout, logger, "management operation log")
 	}
 	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
@@ -254,7 +258,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		store,
 		stateRedis,
 		managementOperationLogQueue,
-		managementOperationLogDispatcher,
+		managementOperationLogSubmitter,
 		logger,
 		systemAccountInvalidator,
 		accountsStaticResetPublisher,

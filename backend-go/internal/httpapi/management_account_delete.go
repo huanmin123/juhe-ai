@@ -88,7 +88,7 @@ func newManagementAccountDeleteHandler(service managementAccountDeleteService, s
 }
 
 func recordManagementAccountDeleteOperationLog(r *http.Request, authContext managementauth.Context, scope managementAccountOptionScope, result managementaccountdelete.DeleteResult, opts managementOperationLogOptions) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	ownerSystemAccountID := firstNonEmptyText(result.Before.SystemAccountID, authContext.SystemAccountID)

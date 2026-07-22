@@ -708,7 +708,7 @@ func recordProxyOperationLog(
 	opts managementOperationLogOptions,
 	record proxyOperationLogRecord,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
