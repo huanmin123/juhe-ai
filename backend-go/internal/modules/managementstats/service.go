@@ -498,18 +498,18 @@ func performanceAccount(row port.ManagementStatsAccount, defaultVisible, selecte
 }
 
 func performancePoint(hour string, row port.ManagementAIPerformanceHourlyRow) AIPerformancePoint {
-	return AIPerformancePoint{StatHour: hour, RequestCount: row.RequestCount, AverageFirstTokenMS: roundedAverage(row.FirstTokenMSSum, row.FirstTokenMSCount), MaxFirstTokenMS: countedMax(row.FirstTokenMSMax, row.FirstTokenMSCount), AverageDurationMS: roundedAverage(row.DurationMSSum, row.DurationMSCount), MaxDurationMS: countedMax(row.DurationMSMax, row.DurationMSCount)}
+	return AIPerformancePoint{StatHour: hour, RequestCount: row.RequestCount, AverageFirstTokenMS: roundedAccountPerformanceAverage(row.FirstTokenMSSum, row.FirstTokenMSCount), MaxFirstTokenMS: countedMax(row.FirstTokenMSMax, row.FirstTokenMSCount), AverageDurationMS: roundedAccountPerformanceAverage(row.DurationMSSum, row.DurationMSCount), MaxDurationMS: countedMax(row.DurationMSMax, row.DurationMSCount)}
 }
 
 func performanceSummary(row port.ManagementAIPerformanceAggregate) AIPerformanceSummary {
-	return AIPerformanceSummary{RequestCount: row.RequestCount, AverageFirstTokenMS: roundedAverage(row.FirstTokenMSSum, row.FirstTokenMSCount), MaxFirstTokenMS: countedMax(row.FirstTokenMSMax, row.FirstTokenMSCount), AverageDurationMS: roundedAverage(row.DurationMSSum, row.DurationMSCount), MaxDurationMS: countedMax(row.DurationMSMax, row.DurationMSCount)}
+	return AIPerformanceSummary{RequestCount: row.RequestCount, AverageFirstTokenMS: roundedAccountPerformanceAverage(row.FirstTokenMSSum, row.FirstTokenMSCount), MaxFirstTokenMS: countedMax(row.FirstTokenMSMax, row.FirstTokenMSCount), AverageDurationMS: roundedAccountPerformanceAverage(row.DurationMSSum, row.DurationMSCount), MaxDurationMS: countedMax(row.DurationMSMax, row.DurationMSCount)}
 }
 
-func roundedAverage(sum, count int64) *int64 {
+func roundedAccountPerformanceAverage(sum, count int64) *int64 {
 	if count <= 0 {
 		return nil
 	}
-	value := int64(math.Round(float64(sum) / float64(count)))
+	value := int64(math.Floor(float64(sum)/float64(count) + 0.5))
 	return &value
 }
 
