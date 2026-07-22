@@ -1,6 +1,6 @@
 # PLAN-0141 页面确认去重与 Redis 快速路径
 
-> **已退场：** 本计划涉及的页面 confirm/revision 机制已由 [PLAN-0153](计划-0153-彻底移除页面数据确认机制.md) 彻底删除。本文只保留历史过程。
+> **已退场：** 本计划涉及的页面 confirm/revision 机制已由 [PLAN-0156](计划-0156-彻底移除页面数据确认机制.md) 彻底删除。本文只保留历史过程。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
