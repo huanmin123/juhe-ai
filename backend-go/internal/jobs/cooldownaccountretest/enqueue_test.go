@@ -20,14 +20,28 @@ func (f *fakeEnqueueClient) Enqueue(_ context.Context, taskType string, payload 
 	return queue.TaskInfo{}, f.err
 }
 
-func TestEnqueuerTreatsTaskIDConflictAsDuplicate(t *testing.T) {
+func TestEnqueuerTreatsUniqueTaskConflictAsDuplicate(t *testing.T) {
 	client := &fakeEnqueueClient{err: queue.ErrTaskConflict}
 	queued, err := (Enqueuer{Client: client}).EnqueueCooldownAccountRetest(context.Background(), port.CooldownAccountRetestTask{AccountID: "acct_1", ConfigRevision: 1})
 	if err != nil || queued {
 		t.Fatalf("queued=%v err=%v", queued, err)
 	}
-	if client.taskType != TaskType || client.options.TaskID == "" || client.options.UniqueTTL <= 0 {
+	if client.taskType != TaskType || client.options.TaskID != "" || client.options.UniqueTTL != DefaultUniqueTTL {
 		t.Fatalf("task = %q options = %+v", client.taskType, client.options)
+	}
+}
+
+func TestEnqueuerUsesBoundedRetriesWithoutStableArchiveTaskID(t *testing.T) {
+	client := &fakeEnqueueClient{}
+	queued, err := (Enqueuer{Client: client}).EnqueueCooldownAccountRetest(context.Background(), port.CooldownAccountRetestTask{AccountID: "acct_1", ConfigRevision: 1})
+	if err != nil || !queued {
+		t.Fatalf("queued=%v err=%v", queued, err)
+	}
+	if client.options.MaxRetry == nil || *client.options.MaxRetry != DefaultMaxRetry {
+		t.Fatalf("max retry = %v, want %d", client.options.MaxRetry, DefaultMaxRetry)
+	}
+	if client.options.TaskID != "" {
+		t.Fatalf("stable TaskID = %q; archived tasks must not block rescheduling", client.options.TaskID)
 	}
 }
 
