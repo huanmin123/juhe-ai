@@ -43,41 +43,45 @@ type AuthorizationSourceSummary struct {
 	TeamNames         []string `json:"teamNames"`
 }
 
-type RuntimeSnapshot struct {
-	AccountConcurrencyAvailable bool `json:"accountConcurrencyAvailable"`
+type ListItem struct {
+	ID                         string                      `json:"id"`
+	SystemAccountID            string                      `json:"systemAccountId,omitempty"`
+	SystemAccountName          string                      `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID       string                      `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName     string                      `json:"ownerSystemAccountName,omitempty"`
+	Name                       string                      `json:"name"`
+	ProviderCode               string                      `json:"providerCode"`
+	Description                *string                     `json:"description,omitempty"`
+	Enabled                    bool                        `json:"enabled"`
+	IsDefault                  bool                        `json:"isDefault"`
+	GroupType                  string                      `json:"groupType"`
+	AccountStats               ListAccountStats            `json:"accountStats"`
+	AccessType                 string                      `json:"accessType"`
+	GroupAuthorizationID       string                      `json:"groupAuthorizationId,omitempty"`
+	AuthorizationStatus        string                      `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt     *time.Time                  `json:"authorizationExpiresAt,omitempty"`
+	CanEdit                    bool                        `json:"canEdit"`
+	CanDelete                  bool                        `json:"canDelete"`
+	CanReturn                  bool                        `json:"canReturn"`
+	AuthorizationSourceSummary *AuthorizationSourceSummary `json:"authorizationSourceSummary,omitempty"`
 }
 
-type ListItem struct {
-	ID                         string                            `json:"id"`
-	SystemAccountID            string                            `json:"systemAccountId,omitempty"`
-	SystemAccountName          string                            `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID       string                            `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName     string                            `json:"ownerSystemAccountName,omitempty"`
-	Name                       string                            `json:"name"`
-	ProviderCode               string                            `json:"providerCode"`
-	Description                *string                           `json:"description,omitempty"`
-	Enabled                    bool                              `json:"enabled"`
-	IsDefault                  bool                              `json:"isDefault"`
-	GroupType                  string                            `json:"groupType"`
-	SchedulingPolicy           *SchedulingPolicy                 `json:"schedulingPolicy,omitempty"`
-	AccountStats               GroupAccountStats                 `json:"accountStats"`
-	AccessType                 string                            `json:"accessType"`
-	GroupAuthorizationID       string                            `json:"groupAuthorizationId,omitempty"`
-	AuthorizationStatus        string                            `json:"authorizationStatus,omitempty"`
-	AuthorizationExpiresAt     *time.Time                        `json:"authorizationExpiresAt,omitempty"`
-	AuthorizationLimits        port.ManagementRequestQuotaLimits `json:"authorizationLimits"`
-	Permissions                ResourcePermissions               `json:"permissions"`
-	AccountCount               int                               `json:"accountCount"`
-	AuthorizationSourceSummary *AuthorizationSourceSummary       `json:"authorizationSourceSummary,omitempty"`
+type ListAccountStats struct {
+	Total            int `json:"total"`
+	Available        int `json:"available"`
+	Active           int `json:"active"`
+	Disabled         int `json:"disabled"`
+	Error            int `json:"error"`
+	RateLimited      int `json:"rateLimited"`
+	ConcurrencyLimit int `json:"concurrencyLimit"`
 }
 
 type ListResult struct {
-	Items           []ListItem      `json:"items"`
-	Total           int             `json:"total"`
-	HasMore         bool            `json:"hasMore"`
-	Page            int             `json:"page"`
-	PageSize        int             `json:"pageSize"`
-	RuntimeSnapshot RuntimeSnapshot `json:"runtimeSnapshot"`
+	Items    []ListItem `json:"items"`
+	Total    int        `json:"total"`
+	HasMore  bool       `json:"hasMore"`
+	Page     int        `json:"page"`
+	PageSize int        `json:"pageSize"`
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
@@ -107,8 +111,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		return managementGroupListResult(nil, page, pageSize, hasMore), nil
 	}
 
-	now := s.now()
-	enrichment, err := s.loadManagementGroupListEnrichment(ctx, rows, now)
+	enrichment, err := s.loadManagementGroupListEnrichment(ctx, rows)
 	if err != nil {
 		return ListResult{}, err
 	}
@@ -117,7 +120,6 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		item, err := managementGroupListItem(
 			row,
 			includeSystemAccountFields,
-			now,
 			enrichment,
 		)
 		if err != nil {
@@ -129,56 +131,30 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 }
 
 type managementGroupListEnrichment struct {
-	accountStatsByGroup       map[string]port.ManagementGroupAccountStatsRow
-	totalUsageByKey           map[string]port.ManagementAccountUsageSummary
-	todayUsageByKey           map[string]port.ManagementAccountUsageSummary
-	sourceSummaryByAuth       map[string]AuthorizationSourceSummary
-	usageKeyByAuthorizationID map[string]string
-	usageKeyByOwnedGroupID    map[string]string
+	accountStatsByGroup map[string]port.ManagementGroupAccountStatsRow
+	sourceSummaryByAuth map[string]AuthorizationSourceSummary
 }
 
 func (s *Service) loadManagementGroupListEnrichment(
 	ctx context.Context,
 	rows []port.ManagementGroupListRow,
-	now time.Time,
 ) (managementGroupListEnrichment, error) {
 	groupIDs := make([]string, 0, len(rows))
-	usageInputs := make([]port.ManagementGroupUsageLookupInput, 0, len(rows))
 	authorizationIDs := make([]string, 0, len(rows))
 	enrichment := managementGroupListEnrichment{
-		accountStatsByGroup:       make(map[string]port.ManagementGroupAccountStatsRow, len(rows)),
-		totalUsageByKey:           make(map[string]port.ManagementAccountUsageSummary, len(rows)),
-		todayUsageByKey:           make(map[string]port.ManagementAccountUsageSummary, len(rows)),
-		sourceSummaryByAuth:       make(map[string]AuthorizationSourceSummary),
-		usageKeyByAuthorizationID: make(map[string]string),
-		usageKeyByOwnedGroupID:    make(map[string]string),
+		accountStatsByGroup: make(map[string]port.ManagementGroupAccountStatsRow, len(rows)),
+		sourceSummaryByAuth: make(map[string]AuthorizationSourceSummary),
 	}
 	for _, row := range rows {
 		groupIDs = append(groupIDs, row.ID)
 		accessType := groupAccessType(row.AccessType)
 		if accessType == "authorized" {
 			authorizationID := strings.TrimSpace(row.GroupAuthorizationID)
-			if authorizationID == "" {
-				return managementGroupListEnrichment{}, fmt.Errorf("authorized management group %q is missing authorization id", row.ID)
+			if authorizationID != "" {
+				authorizationIDs = append(authorizationIDs, authorizationID)
 			}
-			authorizationIDs = append(authorizationIDs, authorizationID)
-			enrichment.usageKeyByAuthorizationID[authorizationID] = authorizationID
-			usageInputs = append(usageInputs, port.ManagementGroupUsageLookupInput{
-				Key:             authorizationID,
-				SystemAccountID: strings.TrimSpace(row.SystemAccountID),
-				ScopeType:       "group_authorization",
-				ScopeID:         authorizationID,
-			})
 			continue
 		}
-		groupID := strings.TrimSpace(row.ID)
-		enrichment.usageKeyByOwnedGroupID[groupID] = groupID
-		usageInputs = append(usageInputs, port.ManagementGroupUsageLookupInput{
-			Key:             groupID,
-			SystemAccountID: strings.TrimSpace(row.SystemAccountID),
-			ScopeType:       "group",
-			ScopeID:         groupID,
-		})
 	}
 
 	statsRows, err := s.listStore.ListManagementGroupAccountStats(ctx, groupIDs)
@@ -187,26 +163,6 @@ func (s *Service) loadManagementGroupListEnrichment(
 	}
 	for _, row := range statsRows {
 		enrichment.accountStatsByGroup[managementGroupStatsKey(row.SystemAccountID, row.GroupID)] = row
-	}
-
-	totalUsageRows, err := s.listStore.ListManagementGroupUsageTotals(ctx, usageInputs)
-	if err != nil {
-		return managementGroupListEnrichment{}, err
-	}
-	for _, row := range totalUsageRows {
-		enrichment.totalUsageByKey[row.Key] = row.Usage
-	}
-
-	statDate, err := s.managementGroupListStatDate(ctx, now)
-	if err != nil {
-		return managementGroupListEnrichment{}, err
-	}
-	todayUsageRows, err := s.listStore.ListManagementGroupUsageDaily(ctx, statDate, usageInputs)
-	if err != nil {
-		return managementGroupListEnrichment{}, err
-	}
-	for _, row := range todayUsageRows {
-		enrichment.todayUsageByKey[row.Key] = row.Usage
 	}
 
 	if len(authorizationIDs) == 0 {
@@ -288,29 +244,12 @@ func managementGroupListResult(items []ListItem, page int, pageSize int, hasMore
 		HasMore:  hasMore,
 		Page:     page,
 		PageSize: pageSize,
-		RuntimeSnapshot: RuntimeSnapshot{
-			AccountConcurrencyAvailable: managementGroupListAccountConcurrencyAvailable(items),
-		},
 	}
-}
-
-func managementGroupListAccountConcurrencyAvailable(items []ListItem) bool {
-	for _, item := range items {
-		if item.AccessType != "owner" ||
-			item.AccountStats.CurrentConcurrencyAvailable == nil {
-			continue
-		}
-		if !*item.AccountStats.CurrentConcurrencyAvailable {
-			return false
-		}
-	}
-	return true
 }
 
 func managementGroupListItem(
 	row port.ManagementGroupListRow,
 	includeSystemAccountFields bool,
-	now time.Time,
 	enrichment managementGroupListEnrichment,
 ) (ListItem, error) {
 	accessType := groupAccessType(row.AccessType)
@@ -318,62 +257,48 @@ func managementGroupListItem(
 	if err != nil {
 		return ListItem{}, fmt.Errorf("normalize management group %q type: %w", row.ID, err)
 	}
-	schedulingPolicy, err := parseManagementGroupListSchedulingPolicy(row.SchedulingPolicyJSON, groupType)
-	if err != nil {
-		return ListItem{}, fmt.Errorf("parse management group %q scheduling policy: %w", row.ID, err)
-	}
-	authorizationLimits, err := parseManagementGroupAuthorizationLimits(row.AuthorizationLimitsJSON)
-	if err != nil {
-		return ListItem{}, fmt.Errorf("parse management group %q authorization limits: %w", row.ID, err)
-	}
 	statsRow := enrichment.accountStatsByGroup[managementGroupStatsKey(row.SystemAccountID, row.ID)]
-	usageKey := enrichment.usageKeyByOwnedGroupID[row.ID]
 	permissions := ownerPermissions()
-	accountCount := statsRow.Total
 	isDefault := row.IsDefault
 	var sourceSummary *AuthorizationSourceSummary
 	if accessType == "authorized" {
-		usageKey = enrichment.usageKeyByAuthorizationID[row.GroupAuthorizationID]
 		summary := enrichment.sourceSummaryByAuth[row.GroupAuthorizationID]
 		if summary.TeamNames == nil {
 			summary.TeamNames = []string{}
 		}
 		sourceSummary = &summary
 		permissions = authorizedGroupPermissions(
-			canBindAuthorizedGroupAt(row.Enabled, row.AuthorizationStatus, row.AuthorizationExpiresAt, now),
-			summary.HasManual,
+			false,
+			false,
 		)
-		accountCount = 0
 		isDefault = false
 	}
-	accountStats := managementGroupAccountStats(
-		statsRow,
-		enrichment.todayUsageByKey[usageKey],
-		enrichment.totalUsageByKey[usageKey],
-	)
-	if accessType != "authorized" && accountStats.Total > 0 {
-		available := false
-		accountStats.CurrentConcurrencyAvailable = &available
-	}
 	item := ListItem{
-		ID:                         row.ID,
-		OwnerSystemAccountID:       row.SystemAccountID,
-		OwnerSystemAccountName:     row.SystemAccountName,
-		Name:                       row.Name,
-		ProviderCode:               row.ProviderCode,
-		Description:                row.Description,
-		Enabled:                    row.Enabled,
-		IsDefault:                  isDefault,
-		GroupType:                  groupType,
-		SchedulingPolicy:           schedulingPolicy,
-		AccountStats:               accountStats,
+		ID:                     row.ID,
+		OwnerSystemAccountID:   row.SystemAccountID,
+		OwnerSystemAccountName: row.SystemAccountName,
+		Name:                   row.Name,
+		ProviderCode:           row.ProviderCode,
+		Description:            row.Description,
+		Enabled:                row.Enabled,
+		IsDefault:              isDefault,
+		GroupType:              groupType,
+		AccountStats: ListAccountStats{
+			Total:            statsRow.Total,
+			Available:        statsRow.Available,
+			Active:           statsRow.Active,
+			Disabled:         statsRow.Disabled,
+			Error:            statsRow.Error,
+			RateLimited:      statsRow.RateLimited,
+			ConcurrencyLimit: statsRow.ConcurrencyLimit,
+		},
 		AccessType:                 accessType,
 		GroupAuthorizationID:       row.GroupAuthorizationID,
 		AuthorizationStatus:        row.AuthorizationStatus,
 		AuthorizationExpiresAt:     row.AuthorizationExpiresAt,
-		AuthorizationLimits:        authorizationLimits,
-		Permissions:                permissions,
-		AccountCount:               accountCount,
+		CanEdit:                    !isDefault && permissions.CanEdit,
+		CanDelete:                  !isDefault && permissions.CanDelete,
+		CanReturn:                  accessType == "authorized" && permissions.CanReturnAuthorization,
 		AuthorizationSourceSummary: sourceSummary,
 	}
 	if includeSystemAccountFields {

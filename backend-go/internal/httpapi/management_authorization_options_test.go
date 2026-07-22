@@ -212,16 +212,7 @@ func TestManagementAuthorizationGranteeTeamsHandlerRedactsStoreErrors(t *testing
 func TestManagementAuthorizationGranteeGroupsHandlerRequiresAdminAndParsesQuery(t *testing.T) {
 	service := &managementAuthorizationOptionServiceStub{
 		granteeGroups: []managementauthorizationoptions.GranteeGroupOption{{
-			ID:                   "grp_default",
-			SystemAccountID:      "sys_user",
-			SystemAccountName:    "用户",
-			OwnerSystemAccountID: "sys_user",
-			Name:                 "默认分组",
-			ProviderCode:         "openai",
-			Enabled:              true,
-			IsDefault:            true,
-			GroupType:            "personal",
-			AccessType:           "owner",
+			ID: "grp_default", Name: "默认分组",
 		}},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -237,7 +228,6 @@ func TestManagementAuthorizationGranteeGroupsHandlerRequiresAdminAndParsesQuery(
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	if service.groupInput.GranteeSystemAccountID != "sys_user" ||
-		!service.groupInput.IncludeSystemAccountFields ||
 		service.groupInput.Keyword != "默认" ||
 		service.groupInput.ProviderCode != "openai" ||
 		service.groupInput.Limit != 500 ||
@@ -253,7 +243,7 @@ func TestManagementAuthorizationGranteeGroupsHandlerRequiresAdminAndParsesQuery(
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Data) != 1 || body.Data[0].ID != "grp_default" || body.Data[0].SystemAccountID != "sys_user" {
+	if len(body.Data) != 1 || body.Data[0].ID != "grp_default" || body.Data[0].Name != "默认分组" {
 		t.Fatalf("body = %+v", body)
 	}
 }
@@ -304,14 +294,7 @@ func TestManagementAuthorizationGranteeGroupsHandlerRejectsOrdinaryUserOnAdminRo
 func TestManagementMyAuthorizationGranteeGroupsHandlerAllowsOrdinaryUser(t *testing.T) {
 	service := &managementAuthorizationOptionServiceStub{
 		granteeGroups: []managementauthorizationoptions.GranteeGroupOption{{
-			ID:                   "grp_default",
-			OwnerSystemAccountID: "sys_target",
-			Name:                 "默认分组",
-			ProviderCode:         "openai",
-			Enabled:              true,
-			IsDefault:            true,
-			GroupType:            "personal",
-			AccessType:           "owner",
+			ID: "grp_default", Name: "默认分组",
 		}},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -329,7 +312,7 @@ func TestManagementMyAuthorizationGranteeGroupsHandlerAllowsOrdinaryUser(t *test
 	if !service.groupCalled {
 		t.Fatal("service should be called for ordinary user on my route")
 	}
-	if service.groupInput.GranteeSystemAccountID != "sys_target" || service.groupInput.IncludeSystemAccountFields {
+	if service.groupInput.GranteeSystemAccountID != "sys_target" {
 		t.Fatalf("service group input = %+v", service.groupInput)
 	}
 	var raw map[string][]map[string]any
@@ -339,10 +322,7 @@ func TestManagementMyAuthorizationGranteeGroupsHandlerAllowsOrdinaryUser(t *test
 	if len(raw["data"]) != 1 {
 		t.Fatalf("body = %+v", raw)
 	}
-	if _, exists := raw["data"][0]["systemAccountId"]; exists {
-		t.Fatalf("my route leaked systemAccountId: %+v", raw["data"][0])
-	}
-	if raw["data"][0]["ownerSystemAccountId"] != "sys_target" {
+	if len(raw["data"][0]) != 2 || raw["data"][0]["name"] != "默认分组" {
 		t.Fatalf("my route body = %+v", raw["data"][0])
 	}
 }
@@ -371,7 +351,7 @@ func TestRouterRegistersW2ManagementAuthorizationGranteeAccounts(t *testing.T) {
 	service := &managementAuthorizationOptionServiceStub{
 		granteeAccounts: []managementauthorizationoptions.GranteeAccountOption{{ID: "sys_user", Username: "user", DisplayName: "用户", Status: "active"}},
 		granteeTeams:    []managementauthorizationoptions.GranteeTeamOption{{ID: "team_ops", Name: "运维团队", Status: "active"}},
-		granteeGroups:   []managementauthorizationoptions.GranteeGroupOption{{ID: "grp_default", OwnerSystemAccountID: "sys_user", Name: "默认分组", ProviderCode: "openai", Enabled: true, IsDefault: true, GroupType: "personal", AccessType: "owner"}},
+		granteeGroups:   []managementauthorizationoptions.GranteeGroupOption{{ID: "grp_default", Name: "默认分组"}},
 	}
 	router := NewRouter(RouterOptions{
 		Config: config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},

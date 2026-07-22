@@ -118,3 +118,68 @@ ORDER BY
   group_rows.updated_at DESC,
   group_rows.id DESC
 LIMIT sqlc.arg(row_limit)::int;
+
+-- name: ListManagementGroupAuthorizationOptions :many
+WITH group_rows AS (
+  SELECT
+    groups.id,
+    groups.name,
+    groups.provider_code,
+    groups.is_default,
+    groups.updated_at,
+    'owner'::text AS access_type
+  FROM juhe_business.groups AS groups
+  WHERE (
+    sqlc.arg(system_account_id)::text = ''
+    OR groups.system_account_id = sqlc.arg(system_account_id)::text
+  )
+
+  UNION ALL
+
+  SELECT
+    groups.id,
+    groups.name,
+    groups.provider_code,
+    false AS is_default,
+    coalesce(group_authorization_settings.updated_at, groups.updated_at) AS updated_at,
+    'authorized'::text AS access_type
+  FROM juhe_business.resource_authorizations AS resource_authorizations
+  INNER JOIN juhe_business.groups AS groups
+    ON groups.id = resource_authorizations.resource_id
+    AND groups.system_account_id = resource_authorizations.resource_owner_system_account_id
+  LEFT JOIN juhe_business.group_authorization_settings AS group_authorization_settings
+    ON group_authorization_settings.authorization_id = resource_authorizations.id
+    AND group_authorization_settings.system_account_id = resource_authorizations.grantee_system_account_id
+    AND group_authorization_settings.group_id = resource_authorizations.resource_id
+  WHERE sqlc.arg(system_account_id)::text <> ''
+    AND sqlc.arg(manageable_only)::boolean = false
+    AND resource_authorizations.resource_type = 'group'
+    AND resource_authorizations.grantee_system_account_id = sqlc.arg(system_account_id)::text
+    AND resource_authorizations.status IN ('active', 'paused', 'expired')
+    AND groups.system_account_id <> sqlc.arg(system_account_id)::text
+)
+SELECT
+  group_rows.id,
+  group_rows.name,
+  group_rows.access_type
+FROM group_rows
+WHERE (
+    coalesce(array_length(sqlc.arg(ids)::text[], 1), 0) = 0
+    OR group_rows.id = ANY(sqlc.arg(ids)::text[])
+  )
+  AND (
+    sqlc.arg(provider_code)::text = ''
+    OR group_rows.provider_code = sqlc.arg(provider_code)::text
+  )
+  AND (
+    sqlc.arg(has_keyword)::boolean = false
+    OR (
+      (group_rows.name COLLATE "C" >= sqlc.arg(keyword)::text AND group_rows.name COLLATE "C" < sqlc.arg(keyword_upper)::text)
+      OR (group_rows.provider_code COLLATE "C" >= sqlc.arg(keyword)::text AND group_rows.provider_code COLLATE "C" < sqlc.arg(keyword_upper)::text)
+    )
+  )
+ORDER BY
+  CASE WHEN sqlc.arg(prefer_default)::boolean THEN group_rows.is_default ELSE false END DESC,
+  group_rows.updated_at DESC,
+  group_rows.id DESC
+LIMIT sqlc.arg(row_limit)::int;

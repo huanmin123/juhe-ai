@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,22 +12,19 @@ import (
 
 func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 	now := time.Date(2026, 7, 10, 16, 30, 0, 0, time.UTC)
-	lastUsedAt := now.Add(-time.Hour)
-	policyJSON := validManagementGroupListPolicyJSON()
 	store := &managementGroupListStoreStub{
 		page: port.ManagementGroupListPage{
 			Rows: []port.ManagementGroupListRow{{
-				ID:                   "grp_owner",
-				SystemAccountID:      "sys_owner",
-				SystemAccountName:    "所有者",
-				Name:                 "默认分组",
-				ProviderCode:         "openai",
-				Description:          stringPointer("主分组"),
-				Enabled:              true,
-				IsDefault:            true,
-				GroupType:            "high_concurrency",
-				SchedulingPolicyJSON: &policyJSON,
-				AccessType:           "owner",
+				ID:                "grp_owner",
+				SystemAccountID:   "sys_owner",
+				SystemAccountName: "所有者",
+				Name:              "默认分组",
+				ProviderCode:      "openai",
+				Description:       stringPointer("主分组"),
+				Enabled:           true,
+				IsDefault:         true,
+				GroupType:         "high_concurrency",
+				AccessType:        "owner",
 			}},
 			HasMore: true,
 		},
@@ -44,29 +40,6 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 			CurrentConcurrency: 5,
 			ConcurrencyLimit:   8,
 		}},
-		totalUsage: []port.ManagementGroupUsageRow{{
-			Key: "grp_owner",
-			Usage: port.ManagementAccountUsageSummary{
-				RequestCount: 10,
-				InputTokens:  120,
-				OutputTokens: 30,
-				TotalTokens:  999,
-				TotalCost:    1.25,
-				LastUsedAt:   &lastUsedAt,
-			},
-		}},
-		todayUsage: []port.ManagementGroupUsageRow{{
-			Key: "grp_owner",
-			Usage: port.ManagementAccountUsageSummary{
-				RequestCount: 2,
-				InputTokens:  20,
-				OutputTokens: 5,
-				TotalTokens:  999,
-				TotalCost:    0.25,
-			},
-		}},
-		timezone:      "Asia/Shanghai",
-		timezoneFound: true,
 	}
 	concurrency := &managementGroupConcurrencyReaderStub{err: errors.New("must not be called")}
 	service := NewServiceWithOptions(ServiceOptions{
@@ -86,30 +59,14 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 	if store.listInput.SystemAccountID != "" || store.listInput.Limit != 51 || store.listInput.Offset != 0 {
 		t.Fatalf("list input = %+v", store.listInput)
 	}
-	if store.dailyStatDate != "2026-07-11" {
-		t.Fatalf("daily stat date = %q, want 2026-07-11", store.dailyStatDate)
-	}
 	if len(store.statsGroupIDs) != 1 || store.statsGroupIDs[0] != "grp_owner" {
 		t.Fatalf("stats group ids = %#v", store.statsGroupIDs)
 	}
 	if len(concurrency.calls) != 0 {
 		t.Fatalf("concurrency calls = %#v, want none", concurrency.calls)
 	}
-	if len(store.totalUsageInputs) != 1 {
-		t.Fatalf("total usage inputs = %+v", store.totalUsageInputs)
-	}
-	usageInput := store.totalUsageInputs[0]
-	if usageInput.Key != "grp_owner" ||
-		usageInput.SystemAccountID != "sys_owner" ||
-		usageInput.ScopeType != "group" ||
-		usageInput.ScopeID != "grp_owner" {
-		t.Fatalf("usage input = %+v", usageInput)
-	}
 	if result.Page != 1 || result.PageSize != 50 || !result.HasMore || result.Total != 2 {
 		t.Fatalf("result page = %+v", result)
-	}
-	if result.RuntimeSnapshot.AccountConcurrencyAvailable {
-		t.Fatalf("runtime snapshot = %+v, want unavailable", result.RuntimeSnapshot)
 	}
 	if len(result.Items) != 1 {
 		t.Fatalf("items = %+v", result.Items)
@@ -121,28 +78,16 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 		item.OwnerSystemAccountName != "所有者" ||
 		item.AccessType != "owner" ||
 		!item.IsDefault ||
-		item.AccountCount != 4 ||
 		item.AuthorizationSourceSummary != nil {
 		t.Fatalf("owner item = %+v", item)
 	}
-	if item.SchedulingPolicy == nil ||
-		item.SchedulingPolicy.DefaultSoftConcurrency != 5 ||
-		item.SchedulingPolicy.ClientIPConcurrencyOverflowMode != "reject" {
-		t.Fatalf("scheduling policy = %+v", item.SchedulingPolicy)
-	}
 	if item.AccountStats.Total != 4 ||
 		item.AccountStats.Available != 3 ||
-		item.AccountStats.CurrentConcurrency != 5 ||
-		item.AccountStats.CurrentConcurrencyAvailable == nil ||
-		*item.AccountStats.CurrentConcurrencyAvailable ||
-		item.AccountStats.Usage.TotalTokens != 150 ||
-		item.AccountStats.TodayUsage.TotalTokens != 25 ||
-		item.AccountStats.Usage.LastUsedAt == nil ||
-		!item.AccountStats.Usage.LastUsedAt.Equal(lastUsedAt) {
+		item.AccountStats.ConcurrencyLimit != 8 {
 		t.Fatalf("account stats = %+v", item.AccountStats)
 	}
-	if item.Permissions != ownerPermissions() {
-		t.Fatalf("permissions = %+v", item.Permissions)
+	if item.CanEdit || item.CanDelete || item.CanReturn {
+		t.Fatalf("row actions = %+v", item)
 	}
 	assertManagementGroupListDoesNotExposeDetails(t, result)
 }
@@ -150,8 +95,6 @@ func TestServiceListMapsAdminOwnerPageFromPreaggregates(t *testing.T) {
 func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 	now := time.Date(2026, 7, 11, 8, 0, 0, 0, time.UTC)
 	expiredAt := now
-	policyJSON := validManagementGroupListPolicyJSON()
-	limitsJSON := `{"daily":{"enabled":true,"limit":100}}`
 	store := &managementGroupListStoreStub{
 		page: port.ManagementGroupListPage{Rows: []port.ManagementGroupListRow{
 			{
@@ -166,33 +109,23 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 				AccessType:        "owner",
 			},
 			{
-				ID:                      "grp_authorized",
-				SystemAccountID:         "sys_owner",
-				SystemAccountName:       "授权方",
-				Name:                    "授权分组",
-				ProviderCode:            "openai",
-				Enabled:                 false,
-				IsDefault:               true,
-				GroupType:               "high_concurrency",
-				SchedulingPolicyJSON:    &policyJSON,
-				AccessType:              "authorized",
-				GroupAuthorizationID:    "rauthgrant_group",
-				AuthorizationStatus:     "active",
-				AuthorizationExpiresAt:  &expiredAt,
-				AuthorizationLimitsJSON: &limitsJSON,
+				ID:                     "grp_authorized",
+				SystemAccountID:        "sys_owner",
+				SystemAccountName:      "授权方",
+				Name:                   "授权分组",
+				ProviderCode:           "openai",
+				Enabled:                false,
+				IsDefault:              true,
+				GroupType:              "high_concurrency",
+				AccessType:             "authorized",
+				GroupAuthorizationID:   "rauthgrant_group",
+				AuthorizationStatus:    "active",
+				AuthorizationExpiresAt: &expiredAt,
 			},
 		}},
 		stats: []port.ManagementGroupAccountStatsRow{
 			{SystemAccountID: "sys_target", GroupID: "grp_owned", Total: 2},
 			{SystemAccountID: "sys_owner", GroupID: "grp_authorized", Total: 9, Available: 8},
-		},
-		totalUsage: []port.ManagementGroupUsageRow{
-			{Key: "grp_owned", Usage: port.ManagementAccountUsageSummary{RequestCount: 3}},
-			{Key: "rauthgrant_group", Usage: port.ManagementAccountUsageSummary{RequestCount: 7}},
-		},
-		todayUsage: []port.ManagementGroupUsageRow{
-			{Key: "grp_owned", Usage: port.ManagementAccountUsageSummary{RequestCount: 1}},
-			{Key: "rauthgrant_group", Usage: port.ManagementAccountUsageSummary{RequestCount: 4}},
 		},
 		sources: []port.ManagementGroupAuthorizationSourceRow{
 			{AuthorizationID: "rauthgrant_group", SourceType: "manual", Status: "active"},
@@ -200,8 +133,6 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 			{AuthorizationID: "rauthgrant_group", SourceType: "team", Status: "active", SourceTeamName: " 研发组 "},
 			{AuthorizationID: "rauthgrant_group", SourceType: "team", Status: "ended", SourceTeamName: "历史组"},
 		},
-		timezone:      "UTC",
-		timezoneFound: true,
 	}
 	service := NewServiceWithOptions(ServiceOptions{
 		Store: store,
@@ -226,16 +157,6 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 	if result.Page != 2 || result.PageSize != 500 || result.Total != 502 || result.HasMore {
 		t.Fatalf("result page = %+v", result)
 	}
-	if len(store.totalUsageInputs) != 2 {
-		t.Fatalf("usage inputs = %+v", store.totalUsageInputs)
-	}
-	authorizedUsage := store.totalUsageInputs[1]
-	if authorizedUsage.Key != "rauthgrant_group" ||
-		authorizedUsage.SystemAccountID != "sys_owner" ||
-		authorizedUsage.ScopeType != "group_authorization" ||
-		authorizedUsage.ScopeID != "rauthgrant_group" {
-		t.Fatalf("authorized usage input = %+v", authorizedUsage)
-	}
 	if len(store.sourceAuthorizationIDs) != 1 || store.sourceAuthorizationIDs[0] != "rauthgrant_group" {
 		t.Fatalf("source authorization ids = %#v", store.sourceAuthorizationIDs)
 	}
@@ -245,20 +166,13 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 		authorized.AccessType != "authorized" ||
 		authorized.Enabled ||
 		authorized.IsDefault ||
-		authorized.AccountCount != 0 ||
 		authorized.AccountStats.Total != 9 ||
-		authorized.AccountStats.Usage.RequestCount != 7 ||
 		authorized.GroupAuthorizationID != "rauthgrant_group" ||
-		authorized.AuthorizationStatus != "active" ||
-		authorized.AuthorizationLimits.Daily == nil ||
-		authorized.AuthorizationLimits.Daily.Limit != 100 {
+		authorized.AuthorizationStatus != "active" {
 		t.Fatalf("authorized item = %+v", authorized)
 	}
-	if authorized.Permissions.CanBindToAPIKey ||
-		!authorized.Permissions.CanReturnAuthorization ||
-		authorized.Permissions.CanDelete ||
-		authorized.Permissions.CanAuthorize {
-		t.Fatalf("authorized permissions = %+v", authorized.Permissions)
+	if !authorized.CanEdit || authorized.CanDelete || authorized.CanReturn {
+		t.Fatalf("authorized actions = %+v", authorized)
 	}
 	summary := authorized.AuthorizationSourceSummary
 	if summary == nil ||
@@ -269,18 +183,8 @@ func TestServiceListMapsTargetAuthorizedRowsAndSourceSummary(t *testing.T) {
 		summary.TeamNames[0] != "研发组" {
 		t.Fatalf("source summary = %+v", summary)
 	}
-	if result.Items[0].AuthorizationSourceSummary != nil || result.Items[0].AccountCount != 2 {
+	if result.Items[0].AuthorizationSourceSummary != nil || result.Items[0].AccountStats.Total != 2 {
 		t.Fatalf("owner item = %+v", result.Items[0])
-	}
-	if result.Items[0].AccountStats.CurrentConcurrencyAvailable == nil ||
-		*result.Items[0].AccountStats.CurrentConcurrencyAvailable {
-		t.Fatalf("owner concurrency availability = %+v, want unavailable", result.Items[0].AccountStats)
-	}
-	if authorized.AccountStats.CurrentConcurrencyAvailable != nil {
-		t.Fatalf("authorized concurrency availability = %+v, want omitted", authorized.AccountStats)
-	}
-	if result.RuntimeSnapshot.AccountConcurrencyAvailable {
-		t.Fatalf("runtime snapshot = %+v, want unavailable", result.RuntimeSnapshot)
 	}
 	assertManagementGroupListDoesNotExposeDetails(t, result)
 }
@@ -320,8 +224,6 @@ func TestServiceListUsesPreaggregatedConcurrencyWithoutRuntimeReads(t *testing.T
 			{SystemAccountID: "sys_other", GroupID: "grp_authorized", Total: 4, CurrentConcurrency: 77},
 			{SystemAccountID: "sys_owner", GroupID: "grp_owner_empty", CurrentConcurrency: 8},
 		},
-		timezone:      "UTC",
-		timezoneFound: true,
 	}
 	concurrency := &managementGroupConcurrencyReaderStub{err: errors.New("must not be called")}
 	service := NewServiceWithOptions(ServiceOptions{
@@ -341,23 +243,16 @@ func TestServiceListUsesPreaggregatedConcurrencyWithoutRuntimeReads(t *testing.T
 		t.Fatalf("concurrency calls = %#v, want none", concurrency.calls)
 	}
 	owner := result.Items[0]
-	if owner.AccountStats.CurrentConcurrency != 999 ||
-		owner.AccountStats.CurrentConcurrencyAvailable == nil ||
-		*owner.AccountStats.CurrentConcurrencyAvailable {
+	if owner.AccountStats.Total != 205 {
 		t.Fatalf("owner stats = %+v", owner.AccountStats)
 	}
 	authorized := result.Items[1]
-	if authorized.AccountStats.CurrentConcurrency != 77 ||
-		authorized.AccountStats.CurrentConcurrencyAvailable != nil {
+	if authorized.AccountStats.Total != 4 {
 		t.Fatalf("authorized stats = %+v", authorized.AccountStats)
 	}
 	emptyOwner := result.Items[2]
-	if emptyOwner.AccountStats.CurrentConcurrency != 8 ||
-		emptyOwner.AccountStats.CurrentConcurrencyAvailable != nil {
+	if emptyOwner.AccountStats.Total != 0 {
 		t.Fatalf("empty owner stats = %+v", emptyOwner.AccountStats)
-	}
-	if result.RuntimeSnapshot.AccountConcurrencyAvailable {
-		t.Fatalf("runtime snapshot = %+v, want unavailable", result.RuntimeSnapshot)
 	}
 }
 
@@ -396,8 +291,6 @@ func TestServiceListKeepsPreaggregatesWhenRuntimeReaderIsUnavailable(t *testing.
 			{SystemAccountID: "sys_owner", GroupID: "grp_owner_empty", CurrentConcurrency: 8},
 			{SystemAccountID: "sys_other", GroupID: "grp_authorized", Total: 1, CurrentConcurrency: 9},
 		},
-		timezone:      "UTC",
-		timezoneFound: true,
 	}
 	concurrency := &managementGroupConcurrencyReaderStub{err: errors.New("redis unavailable")}
 	service := NewServiceWithOptions(ServiceOptions{
@@ -417,23 +310,16 @@ func TestServiceListKeepsPreaggregatesWhenRuntimeReaderIsUnavailable(t *testing.
 		t.Fatalf("concurrency calls = %#v, want none", concurrency.calls)
 	}
 	liveOwner := result.Items[0]
-	if liveOwner.AccountStats.CurrentConcurrency != 17 ||
-		liveOwner.AccountStats.CurrentConcurrencyAvailable == nil ||
-		*liveOwner.AccountStats.CurrentConcurrencyAvailable {
+	if liveOwner.AccountStats.Total != 1 {
 		t.Fatalf("live owner stats = %+v", liveOwner.AccountStats)
 	}
 	emptyOwner := result.Items[1]
-	if emptyOwner.AccountStats.CurrentConcurrency != 8 ||
-		emptyOwner.AccountStats.CurrentConcurrencyAvailable != nil {
+	if emptyOwner.AccountStats.Total != 0 {
 		t.Fatalf("empty owner stats = %+v", emptyOwner.AccountStats)
 	}
 	authorized := result.Items[2]
-	if authorized.AccountStats.CurrentConcurrency != 9 ||
-		authorized.AccountStats.CurrentConcurrencyAvailable != nil {
+	if authorized.AccountStats.Total != 1 {
 		t.Fatalf("authorized stats = %+v", authorized.AccountStats)
-	}
-	if result.RuntimeSnapshot.AccountConcurrencyAvailable {
-		t.Fatalf("runtime snapshot = %+v, want unavailable", result.RuntimeSnapshot)
 	}
 }
 
@@ -453,8 +339,6 @@ func TestServiceListAuthorizedOnlySkipsAccountIDAndConcurrencyReads(t *testing.T
 			GroupID:            "grp_authorized",
 			CurrentConcurrency: 12,
 		}},
-		timezone:      "UTC",
-		timezoneFound: true,
 	}
 	concurrency := &managementGroupConcurrencyReaderStub{
 		err: errors.New("must not be called"),
@@ -474,9 +358,7 @@ func TestServiceListAuthorizedOnlySkipsAccountIDAndConcurrencyReads(t *testing.T
 	if len(concurrency.calls) != 0 {
 		t.Fatalf("concurrency calls = %#v, want none", concurrency.calls)
 	}
-	if !result.RuntimeSnapshot.AccountConcurrencyAvailable ||
-		result.Items[0].AccountStats.CurrentConcurrency != 12 ||
-		result.Items[0].AccountStats.CurrentConcurrencyAvailable != nil {
+	if result.Items[0].AccountStats.Total != 0 {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -507,8 +389,6 @@ func TestServiceListForcesSelfScopeForUsersAndAdminMyGroups(t *testing.T) {
 					AuthorizationStatus:    "active",
 					AuthorizationExpiresAt: &future,
 				}}},
-				timezone:      "UTC",
-				timezoneFound: true,
 			}
 			service := NewServiceWithOptions(ServiceOptions{
 				Store: store,
@@ -534,8 +414,8 @@ func TestServiceListForcesSelfScopeForUsersAndAdminMyGroups(t *testing.T) {
 			if item.SystemAccountID != "" || item.SystemAccountName != "" {
 				t.Fatalf("self item leaked admin fields = %+v", item)
 			}
-			if !item.Permissions.CanBindToAPIKey || item.Permissions.CanReturnAuthorization {
-				t.Fatalf("permissions = %+v", item.Permissions)
+			if !item.CanEdit || item.CanDelete || item.CanReturn {
+				t.Fatalf("row actions = %+v", item)
 			}
 			if item.AuthorizationSourceSummary == nil ||
 				item.AuthorizationSourceSummary.TeamNames == nil ||
@@ -585,7 +465,7 @@ func TestServiceListUsesProgressivePaginationBounds(t *testing.T) {
 			if result.Page != test.wantPage || result.PageSize != test.wantPageSize {
 				t.Fatalf("result = %+v", result)
 			}
-			if result.Items == nil || !result.RuntimeSnapshot.AccountConcurrencyAvailable {
+			if result.Items == nil {
 				t.Fatalf("empty result = %+v", result)
 			}
 			if store.timezoneCalls != 0 ||
@@ -623,28 +503,10 @@ func TestServiceListDoesNotMaskEnrichmentFailures(t *testing.T) {
 	}{
 		{name: "list", store: &managementGroupListStoreStub{listErr: wantErr}},
 		{name: "stats", store: &managementGroupListStoreStub{page: basePage, statsErr: wantErr}},
-		{name: "total usage", store: &managementGroupListStoreStub{page: basePage, totalUsageErr: wantErr}},
-		{
-			name: "timezone setting",
-			store: &managementGroupListStoreStub{
-				page:          basePage,
-				timezoneErr:   wantErr,
-				timezoneFound: true,
-			},
-		},
-		{
-			name: "today usage",
-			store: &managementGroupListStoreStub{
-				page:          basePage,
-				timezone:      "UTC",
-				timezoneFound: true,
-				todayUsageErr: wantErr,
-			},
-		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			service := NewServiceWithOptions(ServiceOptions{ListStore: test.store, UsageStatsTimezoneStore: test.store})
+			service := NewServiceWithOptions(ServiceOptions{ListStore: test.store})
 			_, err := service.List(context.Background(), ListInput{
 				ActorSystemAccountID: "sys_admin",
 				ActorRole:            "admin",
@@ -656,66 +518,16 @@ func TestServiceListDoesNotMaskEnrichmentFailures(t *testing.T) {
 	}
 }
 
-func TestServiceListRejectsMissingActorAndInvalidTimezoneOrStoredJSON(t *testing.T) {
-	t.Run("missing actor", func(t *testing.T) {
-		store := &managementGroupListStoreStub{}
-		service := NewServiceWithOptions(ServiceOptions{ListStore: store})
-		_, err := service.List(context.Background(), ListInput{ActorRole: "admin"})
-		if !errors.Is(err, ErrGroupListInvalid) {
-			t.Fatalf("List() error = %v, want %v", err, ErrGroupListInvalid)
-		}
-		if store.listCalls != 0 {
-			t.Fatalf("list calls = %d, want 0", store.listCalls)
-		}
-	})
-
-	t.Run("invalid timezone", func(t *testing.T) {
-		store := &managementGroupListStoreStub{
-			page: port.ManagementGroupListPage{Rows: []port.ManagementGroupListRow{{
-				ID:              "grp_owner",
-				SystemAccountID: "sys_owner",
-				Name:            "分组",
-				ProviderCode:    "openai",
-				GroupType:       "personal",
-			}}},
-			timezone:      "Invalid/Timezone",
-			timezoneFound: true,
-		}
-		service := NewServiceWithOptions(ServiceOptions{ListStore: store, UsageStatsTimezoneStore: store})
-		_, err := service.List(context.Background(), ListInput{
-			ActorSystemAccountID: "sys_admin",
-			ActorRole:            "admin",
-		})
-		if err == nil || !strings.Contains(err.Error(), "usageStatsTimezone") {
-			t.Fatalf("List() error = %v, want usageStatsTimezone error", err)
-		}
-	})
-
-	t.Run("malformed authorization limits", func(t *testing.T) {
-		limitsJSON := "{"
-		store := &managementGroupListStoreStub{
-			page: port.ManagementGroupListPage{Rows: []port.ManagementGroupListRow{{
-				ID:                      "grp_authorized",
-				SystemAccountID:         "sys_owner",
-				Name:                    "分组",
-				ProviderCode:            "openai",
-				GroupType:               "personal",
-				AccessType:              "authorized",
-				GroupAuthorizationID:    "rauthgrant_bad",
-				AuthorizationLimitsJSON: &limitsJSON,
-			}}},
-			timezone:      "UTC",
-			timezoneFound: true,
-		}
-		service := NewServiceWithOptions(ServiceOptions{ListStore: store, UsageStatsTimezoneStore: store})
-		_, err := service.List(context.Background(), ListInput{
-			ActorSystemAccountID: "sys_admin",
-			ActorRole:            "admin",
-		})
-		if err == nil || !strings.Contains(err.Error(), "authorization limits") {
-			t.Fatalf("List() error = %v, want authorization limits error", err)
-		}
-	})
+func TestServiceListRejectsMissingActor(t *testing.T) {
+	store := &managementGroupListStoreStub{}
+	service := NewServiceWithOptions(ServiceOptions{ListStore: store})
+	_, err := service.List(context.Background(), ListInput{ActorRole: "admin"})
+	if !errors.Is(err, ErrGroupListInvalid) {
+		t.Fatalf("List() error = %v, want %v", err, ErrGroupListInvalid)
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("list calls = %d, want 0", store.listCalls)
+	}
 }
 
 func TestParseManagementGroupAuthorizationLimitsMatchesNodeContract(t *testing.T) {
@@ -822,11 +634,14 @@ func assertManagementGroupListDoesNotExposeDetails(t *testing.T, result ListResu
 		if !ok {
 			t.Fatalf("encoded item = %#v", raw)
 		}
-		if _, exists := item["accountIds"]; exists {
-			t.Fatalf("list item exposed accountIds: %#v", item)
-		}
-		if _, exists := item["authorizationSources"]; exists {
-			t.Fatalf("list item exposed authorizationSources: %#v", item)
+		for _, forbidden := range []string{
+			"accountIds", "accountCount", "authorizationLimits", "authorizationSources",
+			"currentConcurrency", "currentConcurrencyAvailable", "permissions", "runtimeSnapshot",
+			"schedulingPolicy", "todayUsage", "usage",
+		} {
+			if _, exists := item[forbidden]; exists {
+				t.Fatalf("list item exposed %s: %#v", forbidden, item)
+			}
 		}
 	}
 }

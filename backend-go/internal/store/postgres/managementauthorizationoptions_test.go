@@ -107,6 +107,9 @@ func TestManagementAuthorizationGranteeGroupsSQLIsLightweight(t *testing.T) {
 		t.Fatalf("read authorization options query: %v", err)
 	}
 	sql := querySection(t, string(source), "-- name: ListManagementAuthorizationGranteeGroups :many", "")
+	if !strings.Contains(sql, "SELECT\n  groups.id,\n  groups.name\nFROM") {
+		t.Fatalf("authorization grantee groups query must project only id and name:\n%s", sql)
+	}
 	for _, want := range []string{
 		"WITH active_grantee AS",
 		"FROM juhe_business.system_accounts",

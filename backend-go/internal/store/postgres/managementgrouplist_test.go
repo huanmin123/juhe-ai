@@ -19,21 +19,19 @@ func TestListManagementGroupsUsesPageSizePlusOneAndMapsRows(t *testing.T) {
 	q := &managementGroupListQueriesStub{
 		groupRows: []postgresqueries.ListManagementGroupsRow{
 			{
-				ID:                      "group_authorized",
-				SystemAccountID:         "sys_owner",
-				SystemAccountName:       "Owner",
-				Name:                    "Authorized Group",
-				ProviderCode:            "openai",
-				Description:             pgtype.Text{String: "description", Valid: true},
-				Enabled:                 true,
-				GroupType:               "high_concurrency",
-				SchedulingPolicyJson:    pgtype.Text{String: `{"mode":"balanced_fast"}`, Valid: true},
-				AccessType:              "authorized",
-				GroupAuthorizationID:    pgtype.Text{String: "auth_group", Valid: true},
-				AuthorizationStatus:     pgtype.Text{String: "active", Valid: true},
-				AuthorizationExpiresAt:  pgtype.Timestamptz{Time: authorizationExpiresAt, Valid: true},
-				AuthorizationLimitsJson: pgtype.Text{String: `{"daily":{"limit":10}}`, Valid: true},
-				EffectiveUpdatedAt:      pgtype.Timestamptz{Time: effectiveUpdatedAt, Valid: true},
+				ID:                     "group_authorized",
+				SystemAccountID:        "sys_owner",
+				SystemAccountName:      "Owner",
+				Name:                   "Authorized Group",
+				ProviderCode:           "openai",
+				Description:            pgtype.Text{String: "description", Valid: true},
+				Enabled:                true,
+				GroupType:              "high_concurrency",
+				AccessType:             "authorized",
+				GroupAuthorizationID:   pgtype.Text{String: "auth_group", Valid: true},
+				AuthorizationStatus:    pgtype.Text{String: "active", Valid: true},
+				AuthorizationExpiresAt: pgtype.Timestamptz{Time: authorizationExpiresAt, Valid: true},
+				EffectiveUpdatedAt:     pgtype.Timestamptz{Time: effectiveUpdatedAt, Valid: true},
 			},
 			{
 				ID:                 "group_extra",
@@ -76,17 +74,30 @@ func TestListManagementGroupsUsesPageSizePlusOneAndMapsRows(t *testing.T) {
 	if row.Description == nil || *row.Description != "description" {
 		t.Fatalf("description = %#v", row.Description)
 	}
-	if row.SchedulingPolicyJSON == nil || *row.SchedulingPolicyJSON != `{"mode":"balanced_fast"}` {
-		t.Fatalf("scheduling policy = %#v", row.SchedulingPolicyJSON)
-	}
-	if row.AuthorizationLimitsJSON == nil || *row.AuthorizationLimitsJSON != `{"daily":{"limit":10}}` {
-		t.Fatalf("authorization limits = %#v", row.AuthorizationLimitsJSON)
-	}
 	if row.AuthorizationExpiresAt == nil || !row.AuthorizationExpiresAt.Equal(authorizationExpiresAt.UTC()) {
 		t.Fatalf("authorization expiry = %#v", row.AuthorizationExpiresAt)
 	}
 	if !row.EffectiveUpdatedAt.Equal(effectiveUpdatedAt.UTC()) {
 		t.Fatalf("effective updated at = %v, want %v", row.EffectiveUpdatedAt, effectiveUpdatedAt.UTC())
+	}
+}
+
+func TestListManagementGroupStatusSnapshotRowsUsesBoundedProjection(t *testing.T) {
+	q := &managementGroupListQueriesStub{snapshotRows: []postgresqueries.ListManagementGroupStatusSnapshotRowsRow{
+		{ID: "grp_1", SystemAccountID: "sys_owner", AccessType: "authorized", GroupAuthorizationID: pgtype.Text{String: "auth_1", Valid: true}},
+	}}
+	rows, err := listManagementGroupStatusSnapshotRows(context.Background(), q, port.ManagementGroupStatusSnapshotInput{
+		SystemAccountID: " sys_viewer ",
+		GroupIDs:        []string{" grp_1 ", "grp_1", "grp_2"},
+	})
+	if err != nil {
+		t.Fatalf("listManagementGroupStatusSnapshotRows() error = %v", err)
+	}
+	if len(q.snapshotCalls) != 1 || q.snapshotCalls[0].SystemAccountID != "sys_viewer" || !reflect.DeepEqual(q.snapshotCalls[0].GroupIds, []string{"grp_1", "grp_2"}) {
+		t.Fatalf("snapshot calls = %#v", q.snapshotCalls)
+	}
+	if len(rows) != 1 || rows[0].GroupAuthorizationID != "auth_1" {
+		t.Fatalf("snapshot rows = %#v", rows)
 	}
 }
 
@@ -266,6 +277,9 @@ type managementGroupListQueriesStub struct {
 	groupRows         []postgresqueries.ListManagementGroupsRow
 	groupErr          error
 	groupCalls        []postgresqueries.ListManagementGroupsParams
+	snapshotRows      []postgresqueries.ListManagementGroupStatusSnapshotRowsRow
+	snapshotErr       error
+	snapshotCalls     []postgresqueries.ListManagementGroupStatusSnapshotRowsParams
 	accountStatsRows  []postgresqueries.ListManagementGroupAccountStatsRow
 	accountStatsErr   error
 	accountStatsCalls [][]string
@@ -278,6 +292,14 @@ type managementGroupListQueriesStub struct {
 	sourceRows        []postgresqueries.ListManagementGroupAuthorizationSourcesRow
 	sourceErr         error
 	sourceCalls       [][]string
+}
+
+func (s *managementGroupListQueriesStub) ListManagementGroupStatusSnapshotRows(
+	_ context.Context,
+	arg postgresqueries.ListManagementGroupStatusSnapshotRowsParams,
+) ([]postgresqueries.ListManagementGroupStatusSnapshotRowsRow, error) {
+	s.snapshotCalls = append(s.snapshotCalls, arg)
+	return s.snapshotRows, s.snapshotErr
 }
 
 func (s *managementGroupListQueriesStub) ListManagementGroups(

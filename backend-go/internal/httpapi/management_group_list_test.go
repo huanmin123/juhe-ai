@@ -244,7 +244,6 @@ func TestManagementGroupListHandlerRedactsServiceErrors(t *testing.T) {
 }
 
 func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *testing.T) {
-	concurrencyUnavailable := false
 	service := &managementGroupListServiceStub{
 		result: managementgroups.ListResult{
 			Items: []managementgroups.ListItem{
@@ -256,10 +255,7 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 					Enabled:              true,
 					GroupType:            "personal",
 					AccessType:           "owner",
-					AccountStats: managementgroups.GroupAccountStats{
-						CurrentConcurrency:          17,
-						CurrentConcurrencyAvailable: &concurrencyUnavailable,
-					},
+					AccountStats:         managementgroups.ListAccountStats{Total: 2, Available: 1},
 				},
 				{
 					ID:                   "grp_authorized",
@@ -271,10 +267,7 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 					AccessType:           "authorized",
 					GroupAuthorizationID: "rauthgrant_group",
 					AuthorizationStatus:  "active",
-					AccountCount:         0,
-					AccountStats: managementgroups.GroupAccountStats{
-						CurrentConcurrency: 9,
-					},
+					AccountStats:         managementgroups.ListAccountStats{Total: 3, Available: 2},
 					AuthorizationSourceSummary: &managementgroups.AuthorizationSourceSummary{
 						ActiveSourceCount: 1,
 						HasManual:         true,
@@ -285,9 +278,6 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 			Total:    2,
 			Page:     1,
 			PageSize: 50,
-			RuntimeSnapshot: managementgroups.RuntimeSnapshot{
-				AccountConcurrencyAvailable: false,
-			},
 		},
 	}
 	handler := newManagementGroupListHandler(service, managementGroupScopeSelf)
@@ -304,7 +294,19 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	raw := rec.Body.String()
-	for _, forbidden := range []string{"accountIds", "authorizationSources"} {
+	for _, forbidden := range []string{
+		"accountIds",
+		"accountCount",
+		"authorizationLimits",
+		"authorizationSources",
+		"currentConcurrency",
+		"currentConcurrencyAvailable",
+		"permissions",
+		"runtimeSnapshot",
+		"schedulingPolicy",
+		"todayUsage",
+		"usage",
+	} {
 		if strings.Contains(raw, forbidden) {
 			t.Fatalf("response leaked %q: %s", forbidden, raw)
 		}
@@ -318,20 +320,13 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 				AccessType   string                     `json:"accessType"`
 				AccountStats map[string]json.RawMessage `json:"accountStats"`
 			} `json:"items"`
-			RuntimeSnapshot managementgroups.RuntimeSnapshot `json:"runtimeSnapshot"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if envelope.Data.RuntimeSnapshot.AccountConcurrencyAvailable {
-		t.Fatalf("runtime snapshot = %+v", envelope.Data.RuntimeSnapshot)
-	}
-	if got := string(envelope.Data.Items[0].AccountStats["currentConcurrencyAvailable"]); got != "false" {
-		t.Fatalf("owner currentConcurrencyAvailable = %s, want false", got)
-	}
-	if _, exists := envelope.Data.Items[1].AccountStats["currentConcurrencyAvailable"]; exists {
-		t.Fatalf("authorized account stats exposed currentConcurrencyAvailable: %s", raw)
+	if _, exists := envelope.Data.Items[0].AccountStats["currentConcurrency"]; exists {
+		t.Fatalf("account stats exposed currentConcurrency: %s", raw)
 	}
 }
 

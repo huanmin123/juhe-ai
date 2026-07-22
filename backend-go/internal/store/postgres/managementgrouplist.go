@@ -19,6 +19,7 @@ const (
 
 type managementGroupListQueries interface {
 	ListManagementGroups(ctx context.Context, arg postgresqueries.ListManagementGroupsParams) ([]postgresqueries.ListManagementGroupsRow, error)
+	ListManagementGroupStatusSnapshotRows(ctx context.Context, arg postgresqueries.ListManagementGroupStatusSnapshotRowsParams) ([]postgresqueries.ListManagementGroupStatusSnapshotRowsRow, error)
 	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]postgresqueries.ListManagementGroupAccountStatsRow, error)
 	ListManagementGroupUsageTotals(ctx context.Context, arg postgresqueries.ListManagementGroupUsageTotalsParams) ([]postgresqueries.ListManagementGroupUsageTotalsRow, error)
 	ListManagementGroupUsageDaily(ctx context.Context, arg postgresqueries.ListManagementGroupUsageDailyParams) ([]postgresqueries.ListManagementGroupUsageDailyRow, error)
@@ -27,6 +28,10 @@ type managementGroupListQueries interface {
 
 func (s *Store) ListManagementGroups(ctx context.Context, input port.ManagementGroupListInput) (port.ManagementGroupListPage, error) {
 	return listManagementGroups(ctx, s.queries(), input)
+}
+
+func (s *Store) ListManagementGroupStatusSnapshotRows(ctx context.Context, input port.ManagementGroupStatusSnapshotInput) ([]port.ManagementGroupStatusSnapshotRow, error) {
+	return listManagementGroupStatusSnapshotRows(ctx, s.queries(), input)
 }
 
 func (s *Store) ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]port.ManagementGroupAccountStatsRow, error) {
@@ -74,25 +79,51 @@ func listManagementGroups(
 			return port.ManagementGroupListPage{}, fmt.Errorf("list management groups returned invalid effective updated time for group %q", row.ID)
 		}
 		items = append(items, port.ManagementGroupListRow{
-			ID:                      row.ID,
-			SystemAccountID:         row.SystemAccountID,
-			SystemAccountName:       row.SystemAccountName,
-			Name:                    row.Name,
-			ProviderCode:            row.ProviderCode,
-			Description:             textPtr(row.Description),
-			Enabled:                 row.Enabled,
-			IsDefault:               row.IsDefault,
-			GroupType:               row.GroupType,
-			SchedulingPolicyJSON:    textPtr(row.SchedulingPolicyJson),
-			AccessType:              row.AccessType,
-			GroupAuthorizationID:    textValue(row.GroupAuthorizationID),
-			AuthorizationStatus:     textValue(row.AuthorizationStatus),
-			AuthorizationExpiresAt:  timestamptzPtr(row.AuthorizationExpiresAt),
-			AuthorizationLimitsJSON: textPtr(row.AuthorizationLimitsJson),
-			EffectiveUpdatedAt:      row.EffectiveUpdatedAt.Time.UTC(),
+			ID:                     row.ID,
+			SystemAccountID:        row.SystemAccountID,
+			SystemAccountName:      row.SystemAccountName,
+			Name:                   row.Name,
+			ProviderCode:           row.ProviderCode,
+			Description:            textPtr(row.Description),
+			Enabled:                row.Enabled,
+			IsDefault:              row.IsDefault,
+			GroupType:              row.GroupType,
+			AccessType:             row.AccessType,
+			GroupAuthorizationID:   textValue(row.GroupAuthorizationID),
+			AuthorizationStatus:    textValue(row.AuthorizationStatus),
+			AuthorizationExpiresAt: timestamptzPtr(row.AuthorizationExpiresAt),
+			EffectiveUpdatedAt:     row.EffectiveUpdatedAt.Time.UTC(),
 		})
 	}
 	return port.ManagementGroupListPage{Rows: items, HasMore: hasMore}, nil
+}
+
+func listManagementGroupStatusSnapshotRows(
+	ctx context.Context,
+	q managementGroupListQueries,
+	input port.ManagementGroupStatusSnapshotInput,
+) ([]port.ManagementGroupStatusSnapshotRow, error) {
+	ids := uniqueStrings(input.GroupIDs, maxManagementGroupListBatch)
+	if len(ids) == 0 {
+		return []port.ManagementGroupStatusSnapshotRow{}, nil
+	}
+	rows, err := q.ListManagementGroupStatusSnapshotRows(ctx, postgresqueries.ListManagementGroupStatusSnapshotRowsParams{
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		GroupIds:        ids,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list management group status snapshot rows: %w", err)
+	}
+	items := make([]port.ManagementGroupStatusSnapshotRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, port.ManagementGroupStatusSnapshotRow{
+			ID:                   row.ID,
+			SystemAccountID:      row.SystemAccountID,
+			AccessType:           row.AccessType,
+			GroupAuthorizationID: textValue(row.GroupAuthorizationID),
+		})
+	}
+	return items, nil
 }
 
 func listManagementGroupAccountStats(

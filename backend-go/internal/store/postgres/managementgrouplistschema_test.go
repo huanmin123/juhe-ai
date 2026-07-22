@@ -143,7 +143,6 @@ func TestW5ManagementGroupListSQLUsesUnionOverridesAndStablePaging(t *testing.T)
 		"LEFT JOIN juhe_business.group_authorization_settings",
 		"WHEN groups.enabled THEN coalesce(group_authorization_settings.enabled, true)",
 		"coalesce(group_authorization_settings.group_type, groups.group_type)",
-		"coalesce(group_authorization_settings.scheduling_policy_json, groups.scheduling_policy_json)",
 		"false AS is_default",
 		"coalesce(group_authorization_settings.updated_at, groups.updated_at) AS effective_updated_at",
 		"ORDER BY group_rows.effective_updated_at DESC, group_rows.id DESC",
@@ -152,6 +151,8 @@ func TestW5ManagementGroupListSQLUsesUnionOverridesAndStablePaging(t *testing.T)
 	})
 	assertSQLExcludesAll(t, listSQL, []string{
 		"juhe_business.group_accounts",
+		"authorization_limits_json",
+		"scheduling_policy_json",
 		"usage_records",
 		"COUNT(",
 		"SUM(",

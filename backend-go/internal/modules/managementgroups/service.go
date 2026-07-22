@@ -28,6 +28,7 @@ const (
 type Service struct {
 	store                      port.ManagementGroupOptionReader
 	listStore                  port.ManagementGroupListReader
+	statusSnapshotStore        managementGroupStatusSnapshotStore
 	detailStore                port.ManagementGroupDetailReader
 	usageStatsTimezoneStore    port.ManagementUsageStatsTimezoneReader
 	accountConcurrency         AccountConcurrencyReader
@@ -43,6 +44,7 @@ type Service struct {
 type ServiceOptions struct {
 	Store                      port.ManagementGroupOptionReader
 	ListStore                  port.ManagementGroupListReader
+	StatusSnapshotStore        managementGroupStatusSnapshotStore
 	DetailStore                port.ManagementGroupDetailReader
 	UsageStatsTimezoneStore    port.ManagementUsageStatsTimezoneReader
 	AccountConcurrency         AccountConcurrencyReader
@@ -116,6 +118,12 @@ type Option struct {
 type AccountOption struct {
 	Option
 	AccountIDs []string `json:"accountIds"`
+}
+
+type AuthorizationOption struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	CanAuthorize bool   `json:"canAuthorize"`
 }
 
 type SchedulingPolicyInput struct {
@@ -297,6 +305,14 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			listStore = candidate
 		}
 	}
+	statusSnapshotStore := opts.StatusSnapshotStore
+	if statusSnapshotStore == nil {
+		if candidate, ok := opts.Store.(managementGroupStatusSnapshotStore); ok {
+			statusSnapshotStore = candidate
+		} else if candidate, ok := opts.ListStore.(managementGroupStatusSnapshotStore); ok {
+			statusSnapshotStore = candidate
+		}
+	}
 	detailStore := opts.DetailStore
 	if detailStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementGroupDetailReader); ok {
@@ -326,6 +342,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	return &Service{
 		store:                      opts.Store,
 		listStore:                  listStore,
+		statusSnapshotStore:        statusSnapshotStore,
 		detailStore:                detailStore,
 		usageStatsTimezoneStore:    usageStatsTimezoneStore,
 		accountConcurrency:         opts.AccountConcurrency,
@@ -421,6 +438,34 @@ func (s *Service) AccountOptions(ctx context.Context, input OptionListInput) ([]
 				Permissions:            groupAccountPermissions(row),
 			},
 			AccountIDs: append([]string(nil), row.AccountIDs...),
+		})
+	}
+	return items, nil
+}
+
+func (s *Service) AuthorizationOptions(ctx context.Context, input OptionListInput) ([]AuthorizationOption, error) {
+	reader, ok := s.store.(port.ManagementGroupAuthorizationOptionReader)
+	if !ok || reader == nil {
+		return nil, fmt.Errorf("management group authorization option store is required")
+	}
+	rows, err := reader.ListManagementGroupAuthorizationOptions(ctx, port.ManagementGroupOptionListInput{
+		SystemAccountID: input.SystemAccountID,
+		IDs:             uniqueStrings(input.IDs, 50),
+		Keyword:         strings.TrimSpace(input.Keyword),
+		ProviderCode:    strings.TrimSpace(input.ProviderCode),
+		Limit:           optionLimit(input.Limit),
+		ManageableOnly:  input.ManageableOnly,
+		PreferDefault:   input.PreferDefault,
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := make([]AuthorizationOption, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, AuthorizationOption{
+			ID:           row.ID,
+			Name:         row.Name,
+			CanAuthorize: groupAccessType(row.AccessType) != "authorized",
 		})
 	}
 	return items, nil

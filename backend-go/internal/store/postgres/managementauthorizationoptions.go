@@ -106,29 +106,10 @@ func listManagementAuthorizationGranteeGroups(ctx context.Context, q *postgresqu
 	}
 	items := make([]port.ManagementAuthorizationGranteeGroupOption, 0, len(rows))
 	for _, row := range rows {
-		schedulingPolicy, err := managementGroupSchedulingPolicy(row.ID, row.GroupType, row.SchedulingPolicyJson)
-		if err != nil {
-			return nil, err
-		}
-		item := port.ManagementAuthorizationGranteeGroupOption{
-			ID:                     row.ID,
-			OwnerSystemAccountID:   row.SystemAccountID,
-			OwnerSystemAccountName: textValue(row.SystemAccountName),
-			Name:                   row.Name,
-			ProviderCode:           row.ProviderCode,
-			Enabled:                row.Enabled,
-			IsDefault:              row.IsDefault,
-			GroupType:              managementGroupType(row.GroupType),
-			SchedulingPolicy:       schedulingPolicy,
-			AccessType:             "owner",
-		}
-		if input.IncludeSystemAccountFields {
-			item.SystemAccountID = row.SystemAccountID
-			item.SystemAccountName = textValue(row.SystemAccountName)
-		} else {
-			item.OwnerSystemAccountName = ""
-		}
-		items = append(items, item)
+		items = append(items, port.ManagementAuthorizationGranteeGroupOption{
+			ID:   row.ID,
+			Name: row.Name,
+		})
 	}
 	return items, nil
 }

@@ -45,6 +45,10 @@ func (s *Store) ListManagementGroupOptions(ctx context.Context, input port.Manag
 	return listManagementGroupOptions(ctx, s.queries(), input)
 }
 
+func (s *Store) ListManagementGroupAuthorizationOptions(ctx context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAuthorizationOptionRow, error) {
+	return listManagementGroupAuthorizationOptions(ctx, s.queries(), input)
+}
+
 func (s *Store) ListManagementGroupAccountOptions(ctx context.Context, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAccountOption, error) {
 	return listManagementGroupAccountOptions(ctx, s.queries(), input)
 }
@@ -630,6 +634,33 @@ func listManagementGroupOptions(ctx context.Context, q *postgresqueries.Queries,
 		options = append(options, option)
 	}
 	return options, nil
+}
+
+func listManagementGroupAuthorizationOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAuthorizationOptionRow, error) {
+	keyword := strings.TrimSpace(input.Keyword)
+	keywordUpper := ""
+	if keyword != "" {
+		keywordUpper = textPrefixUpperBound(keyword)
+	}
+	rows, err := q.ListManagementGroupAuthorizationOptions(ctx, postgresqueries.ListManagementGroupAuthorizationOptionsParams{
+		SystemAccountID: strings.TrimSpace(input.SystemAccountID),
+		Ids:             uniqueStrings(input.IDs, 50),
+		ProviderCode:    strings.TrimSpace(input.ProviderCode),
+		HasKeyword:      keyword != "",
+		Keyword:         keyword,
+		KeywordUpper:    keywordUpper,
+		PreferDefault:   input.PreferDefault,
+		RowLimit:        int32(managementGroupOptionLimit(input.Limit)),
+		ManageableOnly:  input.ManageableOnly,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list management group authorization options: %w", err)
+	}
+	items := make([]port.ManagementGroupAuthorizationOptionRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, port.ManagementGroupAuthorizationOptionRow{ID: row.ID, Name: row.Name, AccessType: row.AccessType})
+	}
+	return items, nil
 }
 
 func listManagementGroupAccountOptions(ctx context.Context, q *postgresqueries.Queries, input port.ManagementGroupOptionListInput) ([]port.ManagementGroupAccountOption, error) {

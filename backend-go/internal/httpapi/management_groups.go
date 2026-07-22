@@ -34,6 +34,10 @@ type managementGroupAccountOptionService interface {
 	AccountOptions(r *http.Request, input managementgroups.OptionListInput) ([]managementgroups.AccountOption, error)
 }
 
+type managementGroupAuthorizationOptionService interface {
+	AuthorizationOptions(r *http.Request, input managementgroups.OptionListInput) ([]managementgroups.AuthorizationOption, error)
+}
+
 type managementGroupCreateService interface {
 	Create(r *http.Request, input managementgroups.CreateInput) (managementgroups.CreateResult, error)
 }
@@ -106,6 +110,10 @@ func (s managementGroupOptionServiceAdapter) AccountOptions(r *http.Request, inp
 	return s.service.AccountOptions(r.Context(), input)
 }
 
+func (s managementGroupOptionServiceAdapter) AuthorizationOptions(r *http.Request, input managementgroups.OptionListInput) ([]managementgroups.AuthorizationOption, error) {
+	return s.service.AuthorizationOptions(r.Context(), input)
+}
+
 func (s managementGroupOptionServiceAdapter) Create(r *http.Request, input managementgroups.CreateInput) (managementgroups.CreateResult, error) {
 	return s.service.Create(r.Context(), input)
 }
@@ -154,6 +162,14 @@ func NewManagementGroupOptionsHandler(service *managementgroups.Service) http.Ha
 
 func NewManagementMyGroupOptionsHandler(service *managementgroups.Service) http.Handler {
 	return newManagementGroupOptionsHandler(managementGroupOptionServiceAdapter{service: service}, managementGroupScopeSelf)
+}
+
+func NewManagementGroupAuthorizationOptionsHandler(service *managementgroups.Service) http.Handler {
+	return newManagementGroupAuthorizationOptionsHandler(managementGroupOptionServiceAdapter{service: service}, managementGroupScopeAdmin)
+}
+
+func NewManagementMyGroupAuthorizationOptionsHandler(service *managementgroups.Service) http.Handler {
+	return newManagementGroupAuthorizationOptionsHandler(managementGroupOptionServiceAdapter{service: service}, managementGroupScopeSelf)
 }
 
 func NewManagementGroupAccountOptionsHandler(service *managementgroups.Service) http.Handler {
@@ -255,6 +271,27 @@ func newManagementGroupAccountOptionsHandler(service managementGroupAccountOptio
 			return
 		}
 		options, err := service.AccountOptions(r, input)
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, options)
+	})
+}
+
+func newManagementGroupAuthorizationOptionsHandler(service managementGroupAuthorizationOptionService, scope managementGroupOptionScope) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		input, allowed := managementGroupOptionListInput(authContext, r.URL.Query(), scope)
+		if !allowed {
+			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
+			return
+		}
+		options, err := service.AuthorizationOptions(r, input)
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return

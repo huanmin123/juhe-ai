@@ -546,28 +546,17 @@ type ManagementAuthorizationPrincipalOptionListInput struct {
 }
 
 type ManagementAuthorizationGranteeGroupOption struct {
-	ID                     string
-	SystemAccountID        string
-	SystemAccountName      string
-	OwnerSystemAccountID   string
-	OwnerSystemAccountName string
-	Name                   string
-	ProviderCode           string
-	Enabled                bool
-	IsDefault              bool
-	GroupType              string
-	SchedulingPolicy       map[string]any
-	AccessType             string
+	ID   string
+	Name string
 }
 
 type ManagementAuthorizationGranteeGroupOptionListInput struct {
-	GranteeSystemAccountID     string
-	IncludeSystemAccountFields bool
-	IDs                        []string
-	Keyword                    string
-	ProviderCode               string
-	Limit                      int
-	PreferDefault              bool
+	GranteeSystemAccountID string
+	IDs                    []string
+	Keyword                string
+	ProviderCode           string
+	Limit                  int
+	PreferDefault          bool
 }
 
 type ManagementAuthorizationOptionReader interface {
@@ -1648,6 +1637,20 @@ type ManagementGroupListPage struct {
 	HasMore bool
 }
 
+// ManagementGroupStatusSnapshotRow is the deliberately narrow visibility
+// projection used by the progressive group status endpoint.
+type ManagementGroupStatusSnapshotRow struct {
+	ID                   string
+	SystemAccountID      string
+	AccessType           string
+	GroupAuthorizationID string
+}
+
+type ManagementGroupStatusSnapshotInput struct {
+	SystemAccountID string
+	GroupIDs        []string
+}
+
 type ManagementGroupAccountStatsRow struct {
 	SystemAccountID    string
 	GroupID            string
@@ -1796,8 +1799,22 @@ type ManagementGroupOptionReader interface {
 	ListManagementGroupAccountOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupAccountOption, error)
 }
 
+type ManagementGroupAuthorizationOptionRow struct {
+	ID         string
+	Name       string
+	AccessType string
+}
+
+type ManagementGroupAuthorizationOptionReader interface {
+	ListManagementGroupAuthorizationOptions(ctx context.Context, input ManagementGroupOptionListInput) ([]ManagementGroupAuthorizationOptionRow, error)
+}
+
 type ManagementGroupListPageReader interface {
 	ListManagementGroups(ctx context.Context, input ManagementGroupListInput) (ManagementGroupListPage, error)
+}
+
+type ManagementGroupStatusSnapshotReader interface {
+	ListManagementGroupStatusSnapshotRows(ctx context.Context, input ManagementGroupStatusSnapshotInput) ([]ManagementGroupStatusSnapshotRow, error)
 }
 
 type ManagementGroupAccountStatsReader interface {

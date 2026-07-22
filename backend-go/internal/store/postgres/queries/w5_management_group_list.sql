@@ -10,12 +10,10 @@ WITH group_rows AS (
     groups.enabled,
     groups.is_default,
     groups.group_type,
-    groups.scheduling_policy_json,
     'owner'::text AS access_type,
     NULL::text AS group_authorization_id,
     NULL::text AS authorization_status,
     NULL::timestamptz AS authorization_expires_at,
-    NULL::text AS authorization_limits_json,
     groups.updated_at AS effective_updated_at
   FROM juhe_business.groups AS groups
   INNER JOIN juhe_business.system_accounts AS system_accounts
@@ -40,16 +38,10 @@ WITH group_rows AS (
     END AS enabled,
     false AS is_default,
     coalesce(group_authorization_settings.group_type, groups.group_type) AS group_type,
-    CASE
-      WHEN coalesce(group_authorization_settings.group_type, groups.group_type) = 'high_concurrency'
-        THEN coalesce(group_authorization_settings.scheduling_policy_json, groups.scheduling_policy_json)
-      ELSE NULL
-    END AS scheduling_policy_json,
     'authorized'::text AS access_type,
     resource_authorizations.id AS group_authorization_id,
     resource_authorizations.status AS authorization_status,
     resource_authorizations.expires_at AS authorization_expires_at,
-    resource_authorizations.limits_json AS authorization_limits_json,
     coalesce(group_authorization_settings.updated_at, groups.updated_at) AS effective_updated_at
   FROM juhe_business.resource_authorizations AS resource_authorizations
   INNER JOIN juhe_business.groups AS groups
@@ -77,12 +69,10 @@ SELECT
   group_rows.enabled,
   group_rows.is_default,
   group_rows.group_type,
-  group_rows.scheduling_policy_json,
   group_rows.access_type,
   group_rows.group_authorization_id,
   group_rows.authorization_status,
   group_rows.authorization_expires_at,
-  group_rows.authorization_limits_json,
   group_rows.effective_updated_at
 FROM group_rows
 ORDER BY group_rows.effective_updated_at DESC, group_rows.id DESC
@@ -192,3 +182,49 @@ ORDER BY
   authorization_sources.authorization_id ASC,
   authorization_sources.created_at ASC,
   authorization_sources.id ASC;
+
+-- name: ListManagementGroupStatusSnapshotRows :many
+WITH group_rows AS (
+  SELECT
+    groups.id,
+    groups.system_account_id,
+    'owner'::text AS access_type,
+    NULL::text AS group_authorization_id,
+    groups.updated_at AS effective_updated_at
+  FROM juhe_business.groups AS groups
+  WHERE (
+    sqlc.arg(system_account_id)::text = ''
+    OR groups.system_account_id = sqlc.arg(system_account_id)::text
+  )
+    AND groups.id = ANY(sqlc.arg(group_ids)::text[])
+
+  UNION ALL
+
+  SELECT
+    groups.id,
+    groups.system_account_id,
+    'authorized'::text AS access_type,
+    resource_authorizations.id AS group_authorization_id,
+    coalesce(group_authorization_settings.updated_at, groups.updated_at) AS effective_updated_at
+  FROM juhe_business.resource_authorizations AS resource_authorizations
+  INNER JOIN juhe_business.groups AS groups
+    ON groups.id = resource_authorizations.resource_id
+    AND groups.system_account_id = resource_authorizations.resource_owner_system_account_id
+  LEFT JOIN juhe_business.group_authorization_settings AS group_authorization_settings
+    ON group_authorization_settings.authorization_id = resource_authorizations.id
+    AND group_authorization_settings.system_account_id = resource_authorizations.grantee_system_account_id
+    AND group_authorization_settings.group_id = resource_authorizations.resource_id
+  WHERE sqlc.arg(system_account_id)::text <> ''
+    AND resource_authorizations.resource_type = 'group'
+    AND resource_authorizations.grantee_system_account_id = sqlc.arg(system_account_id)::text
+    AND resource_authorizations.status IN ('active', 'paused', 'expired')
+    AND groups.system_account_id <> sqlc.arg(system_account_id)::text
+    AND groups.id = ANY(sqlc.arg(group_ids)::text[])
+)
+SELECT
+  group_rows.id,
+  group_rows.system_account_id,
+  group_rows.access_type,
+  group_rows.group_authorization_id
+FROM group_rows
+ORDER BY group_rows.effective_updated_at DESC, group_rows.id DESC;

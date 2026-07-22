@@ -11,6 +11,120 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const listManagementGroupAuthorizationOptions = `-- name: ListManagementGroupAuthorizationOptions :many
+WITH group_rows AS (
+  SELECT
+    groups.id,
+    groups.name,
+    groups.provider_code,
+    groups.is_default,
+    groups.updated_at,
+    'owner'::text AS access_type
+  FROM juhe_business.groups AS groups
+  WHERE (
+    $8::text = ''
+    OR groups.system_account_id = $8::text
+  )
+
+  UNION ALL
+
+  SELECT
+    groups.id,
+    groups.name,
+    groups.provider_code,
+    false AS is_default,
+    coalesce(group_authorization_settings.updated_at, groups.updated_at) AS updated_at,
+    'authorized'::text AS access_type
+  FROM juhe_business.resource_authorizations AS resource_authorizations
+  INNER JOIN juhe_business.groups AS groups
+    ON groups.id = resource_authorizations.resource_id
+    AND groups.system_account_id = resource_authorizations.resource_owner_system_account_id
+  LEFT JOIN juhe_business.group_authorization_settings AS group_authorization_settings
+    ON group_authorization_settings.authorization_id = resource_authorizations.id
+    AND group_authorization_settings.system_account_id = resource_authorizations.grantee_system_account_id
+    AND group_authorization_settings.group_id = resource_authorizations.resource_id
+  WHERE $8::text <> ''
+    AND $9::boolean = false
+    AND resource_authorizations.resource_type = 'group'
+    AND resource_authorizations.grantee_system_account_id = $8::text
+    AND resource_authorizations.status IN ('active', 'paused', 'expired')
+    AND groups.system_account_id <> $8::text
+)
+SELECT
+  group_rows.id,
+  group_rows.name,
+  group_rows.access_type
+FROM group_rows
+WHERE (
+    coalesce(array_length($1::text[], 1), 0) = 0
+    OR group_rows.id = ANY($1::text[])
+  )
+  AND (
+    $2::text = ''
+    OR group_rows.provider_code = $2::text
+  )
+  AND (
+    $3::boolean = false
+    OR (
+      (group_rows.name COLLATE "C" >= $4::text AND group_rows.name COLLATE "C" < $5::text)
+      OR (group_rows.provider_code COLLATE "C" >= $4::text AND group_rows.provider_code COLLATE "C" < $5::text)
+    )
+  )
+ORDER BY
+  CASE WHEN $6::boolean THEN group_rows.is_default ELSE false END DESC,
+  group_rows.updated_at DESC,
+  group_rows.id DESC
+LIMIT $7::int
+`
+
+type ListManagementGroupAuthorizationOptionsParams struct {
+	Ids             []string
+	ProviderCode    string
+	HasKeyword      bool
+	Keyword         string
+	KeywordUpper    string
+	PreferDefault   bool
+	RowLimit        int32
+	SystemAccountID string
+	ManageableOnly  bool
+}
+
+type ListManagementGroupAuthorizationOptionsRow struct {
+	ID         string
+	Name       string
+	AccessType string
+}
+
+func (q *Queries) ListManagementGroupAuthorizationOptions(ctx context.Context, arg ListManagementGroupAuthorizationOptionsParams) ([]ListManagementGroupAuthorizationOptionsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementGroupAuthorizationOptions,
+		arg.Ids,
+		arg.ProviderCode,
+		arg.HasKeyword,
+		arg.Keyword,
+		arg.KeywordUpper,
+		arg.PreferDefault,
+		arg.RowLimit,
+		arg.SystemAccountID,
+		arg.ManageableOnly,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementGroupAuthorizationOptionsRow
+	for rows.Next() {
+		var i ListManagementGroupAuthorizationOptionsRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.AccessType); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManagementGroupOptions = `-- name: ListManagementGroupOptions :many
 WITH group_rows AS (
   SELECT

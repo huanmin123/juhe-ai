@@ -7,8 +7,6 @@ package postgresqueries
 
 import (
 	"context"
-
-	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const listManagementAuthorizationGranteeAccounts = `-- name: ListManagementAuthorizationGranteeAccounts :many
@@ -93,19 +91,10 @@ WITH active_grantee AS (
 )
 SELECT
   groups.id,
-  groups.system_account_id,
-  system_accounts.display_name AS system_account_name,
-  groups.name,
-  groups.provider_code,
-  groups.enabled,
-  groups.is_default,
-  groups.group_type,
-  groups.scheduling_policy_json
+  groups.name
 FROM juhe_business.groups AS groups
 INNER JOIN active_grantee
   ON active_grantee.id = groups.system_account_id
-LEFT JOIN juhe_business.system_accounts AS system_accounts
-  ON system_accounts.id = groups.system_account_id
 WHERE groups.enabled = true
   AND (
     coalesce(array_length($1::text[], 1), 0) = 0
@@ -142,15 +131,8 @@ type ListManagementAuthorizationGranteeGroupsParams struct {
 }
 
 type ListManagementAuthorizationGranteeGroupsRow struct {
-	ID                   string
-	SystemAccountID      string
-	SystemAccountName    pgtype.Text
-	Name                 string
-	ProviderCode         string
-	Enabled              bool
-	IsDefault            bool
-	GroupType            string
-	SchedulingPolicyJson pgtype.Text
+	ID   string
+	Name string
 }
 
 func (q *Queries) ListManagementAuthorizationGranteeGroups(ctx context.Context, arg ListManagementAuthorizationGranteeGroupsParams) ([]ListManagementAuthorizationGranteeGroupsRow, error) {
@@ -171,17 +153,7 @@ func (q *Queries) ListManagementAuthorizationGranteeGroups(ctx context.Context, 
 	var items []ListManagementAuthorizationGranteeGroupsRow
 	for rows.Next() {
 		var i ListManagementAuthorizationGranteeGroupsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.SystemAccountID,
-			&i.SystemAccountName,
-			&i.Name,
-			&i.ProviderCode,
-			&i.Enabled,
-			&i.IsDefault,
-			&i.GroupType,
-			&i.SchedulingPolicyJson,
-		); err != nil {
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

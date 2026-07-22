@@ -115,6 +115,8 @@ type RouterOptions struct {
 	ManagementMyAPIKeyDeleteHandler                   http.Handler
 	ManagementGroupListHandler                        http.Handler
 	ManagementMyGroupListHandler                      http.Handler
+	ManagementGroupStatusSnapshotHandler              http.Handler
+	ManagementMyGroupStatusSnapshotHandler            http.Handler
 	ManagementGroupDetailHandler                      http.Handler
 	ManagementMyGroupDetailHandler                    http.Handler
 	ManagementGroupCreateHandler                      http.Handler
@@ -125,6 +127,8 @@ type RouterOptions struct {
 	ManagementMyGroupDeleteHandler                    http.Handler
 	ManagementGroupOptionsHandler                     http.Handler
 	ManagementMyGroupOptionsHandler                   http.Handler
+	ManagementGroupAuthorizationOptionsHandler        http.Handler
+	ManagementMyGroupAuthorizationOptionsHandler      http.Handler
 	ManagementGroupAccountOptionsHandler              http.Handler
 	ManagementMyGroupAccountOptionsHandler            http.Handler
 	ManagementAccountOptionsHandler                   http.Handler
@@ -402,6 +406,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAPIKeyDeleteHandler == nil &&
 				opts.ManagementGroupListHandler == nil &&
 				opts.ManagementMyGroupListHandler == nil &&
+				opts.ManagementGroupStatusSnapshotHandler == nil &&
+				opts.ManagementMyGroupStatusSnapshotHandler == nil &&
 				opts.ManagementGroupDetailHandler == nil &&
 				opts.ManagementMyGroupDetailHandler == nil &&
 				opts.ManagementGroupCreateHandler == nil &&
@@ -412,6 +418,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyGroupDeleteHandler == nil &&
 				opts.ManagementGroupOptionsHandler == nil &&
 				opts.ManagementMyGroupOptionsHandler == nil &&
+				opts.ManagementGroupAuthorizationOptionsHandler == nil &&
+				opts.ManagementMyGroupAuthorizationOptionsHandler == nil &&
 				opts.ManagementGroupAccountOptionsHandler == nil &&
 				opts.ManagementMyGroupAccountOptionsHandler == nil &&
 				opts.ManagementAccountOptionsHandler == nil &&
@@ -834,6 +842,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyGroupListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-groups", opts.ManagementMyGroupListHandler.ServeHTTP)
 			}
+			if opts.ManagementGroupStatusSnapshotHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/groups/status-snapshot", opts.ManagementGroupStatusSnapshotHandler.ServeHTTP)
+			}
+			if opts.ManagementMyGroupStatusSnapshotHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-groups/status-snapshot", opts.ManagementMyGroupStatusSnapshotHandler.ServeHTTP)
+			}
 			if opts.ManagementGroupCreateHandler != nil {
 				system.With(
 					managementGroupCreateJSONBodyMiddleware,
@@ -877,6 +891,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyGroupOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-groups/options", opts.ManagementMyGroupOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementGroupAuthorizationOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/groups/authorization-options", opts.ManagementGroupAuthorizationOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyGroupAuthorizationOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-groups/authorization-options", opts.ManagementMyGroupAuthorizationOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementGroupAccountOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/groups/account-options", opts.ManagementGroupAccountOptionsHandler.ServeHTTP)
@@ -1490,6 +1510,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAPIKeyDeleteHandler != nil ||
 		opts.ManagementGroupListHandler != nil ||
 		opts.ManagementMyGroupListHandler != nil ||
+		opts.ManagementGroupStatusSnapshotHandler != nil ||
+		opts.ManagementMyGroupStatusSnapshotHandler != nil ||
 		opts.ManagementGroupDetailHandler != nil ||
 		opts.ManagementMyGroupDetailHandler != nil ||
 		opts.ManagementGroupCreateHandler != nil ||
@@ -1500,6 +1522,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyGroupDeleteHandler != nil ||
 		opts.ManagementGroupOptionsHandler != nil ||
 		opts.ManagementMyGroupOptionsHandler != nil ||
+		opts.ManagementGroupAuthorizationOptionsHandler != nil ||
+		opts.ManagementMyGroupAuthorizationOptionsHandler != nil ||
 		opts.ManagementGroupAccountOptionsHandler != nil ||
 		opts.ManagementMyGroupAccountOptionsHandler != nil ||
 		opts.ManagementAccountOptionsHandler != nil ||

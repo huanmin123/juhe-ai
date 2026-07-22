@@ -49,19 +49,10 @@ WITH active_grantee AS (
 )
 SELECT
   groups.id,
-  groups.system_account_id,
-  system_accounts.display_name AS system_account_name,
-  groups.name,
-  groups.provider_code,
-  groups.enabled,
-  groups.is_default,
-  groups.group_type,
-  groups.scheduling_policy_json
+  groups.name
 FROM juhe_business.groups AS groups
 INNER JOIN active_grantee
   ON active_grantee.id = groups.system_account_id
-LEFT JOIN juhe_business.system_accounts AS system_accounts
-  ON system_accounts.id = groups.system_account_id
 WHERE groups.enabled = true
   AND (
     coalesce(array_length(sqlc.arg(ids)::text[], 1), 0) = 0

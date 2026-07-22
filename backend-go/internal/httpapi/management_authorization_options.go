@@ -114,7 +114,6 @@ func newManagementAuthorizationGranteeGroupsHandler(service managementAuthorizat
 			return
 		}
 		input := parseManagementAuthorizationGranteeGroupOptionListQuery(r.URL.Query())
-		input.IncludeSystemAccountFields = scope == managementAuthorizationOptionScopeAdmin
 		if strings.TrimSpace(input.GranteeSystemAccountID) == "" {
 			writeMessageError(w, http.StatusBadRequest, "被授权用户不能为空")
 			return

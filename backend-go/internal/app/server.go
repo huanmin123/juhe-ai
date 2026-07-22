@@ -344,6 +344,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAPIKeyDeleteHandler:                   managementHandlers.MyAPIKeyDeleteHandler,
 		ManagementGroupListHandler:                        managementHandlers.GroupListHandler,
 		ManagementMyGroupListHandler:                      managementHandlers.MyGroupListHandler,
+		ManagementGroupStatusSnapshotHandler:              managementHandlers.GroupStatusSnapshotHandler,
+		ManagementMyGroupStatusSnapshotHandler:            managementHandlers.MyGroupStatusSnapshotHandler,
 		ManagementGroupDetailHandler:                      managementHandlers.GroupDetailHandler,
 		ManagementMyGroupDetailHandler:                    managementHandlers.MyGroupDetailHandler,
 		ManagementGroupCreateHandler:                      managementHandlers.GroupCreateHandler,
@@ -354,6 +356,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyGroupDeleteHandler:                    managementHandlers.MyGroupDeleteHandler,
 		ManagementGroupOptionsHandler:                     managementHandlers.GroupOptionsHandler,
 		ManagementMyGroupOptionsHandler:                   managementHandlers.MyGroupOptionsHandler,
+		ManagementGroupAuthorizationOptionsHandler:        managementHandlers.GroupAuthorizationOptionsHandler,
+		ManagementMyGroupAuthorizationOptionsHandler:      managementHandlers.MyGroupAuthorizationOptionsHandler,
 		ManagementGroupAccountOptionsHandler:              managementHandlers.GroupAccountOptionsHandler,
 		ManagementMyGroupAccountOptionsHandler:            managementHandlers.MyGroupAccountOptionsHandler,
 		ManagementAccountOptionsHandler:                   managementHandlers.AccountOptionsHandler,
@@ -577,6 +581,8 @@ type managementAPIHandlers struct {
 	MyAPIKeyDeleteHandler                   http.Handler
 	GroupListHandler                        http.Handler
 	MyGroupListHandler                      http.Handler
+	GroupStatusSnapshotHandler              http.Handler
+	MyGroupStatusSnapshotHandler            http.Handler
 	GroupDetailHandler                      http.Handler
 	MyGroupDetailHandler                    http.Handler
 	GroupCreateHandler                      http.Handler
@@ -587,6 +593,8 @@ type managementAPIHandlers struct {
 	MyGroupDeleteHandler                    http.Handler
 	GroupOptionsHandler                     http.Handler
 	MyGroupOptionsHandler                   http.Handler
+	GroupAuthorizationOptionsHandler        http.Handler
+	MyGroupAuthorizationOptionsHandler      http.Handler
 	GroupAccountOptionsHandler              http.Handler
 	MyGroupAccountOptionsHandler            http.Handler
 	AccountOptionsHandler                   http.Handler
@@ -1054,6 +1062,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAPIKeyDeleteHandler:                   httpapi.NewManagementMyAPIKeyDeleteHandlerWithOperationLog(apiKeyService, operationLogOptions),
 		GroupListHandler:                        httpapi.NewManagementGroupListHandler(groupService),
 		MyGroupListHandler:                      httpapi.NewManagementMyGroupListHandler(groupService),
+		GroupStatusSnapshotHandler:              httpapi.NewManagementGroupStatusSnapshotHandler(groupService),
+		MyGroupStatusSnapshotHandler:            httpapi.NewManagementMyGroupStatusSnapshotHandler(groupService),
 		GroupDetailHandler:                      httpapi.NewManagementGroupDetailHandler(groupService),
 		MyGroupDetailHandler:                    httpapi.NewManagementMyGroupDetailHandler(groupService),
 		GroupCreateHandler:                      httpapi.NewManagementGroupCreateHandlerWithOperationLog(groupService, operationLogOptions),
@@ -1064,6 +1074,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyGroupDeleteHandler:                    httpapi.NewManagementMyGroupDeleteHandlerWithOperationLog(groupService, operationLogOptions),
 		GroupOptionsHandler:                     httpapi.NewManagementGroupOptionsHandler(groupService),
 		MyGroupOptionsHandler:                   httpapi.NewManagementMyGroupOptionsHandler(groupService),
+		GroupAuthorizationOptionsHandler:        httpapi.NewManagementGroupAuthorizationOptionsHandler(groupService),
+		MyGroupAuthorizationOptionsHandler:      httpapi.NewManagementMyGroupAuthorizationOptionsHandler(groupService),
 		GroupAccountOptionsHandler:              httpapi.NewManagementGroupAccountOptionsHandler(groupService),
 		MyGroupAccountOptionsHandler:            httpapi.NewManagementMyGroupAccountOptionsHandler(groupService),
 		AccountOptionsHandler:                   httpapi.NewManagementAccountOptionsHandler(accountService),

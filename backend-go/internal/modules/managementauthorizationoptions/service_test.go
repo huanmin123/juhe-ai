@@ -104,36 +104,24 @@ func TestGranteeTeamsReturnsStoreError(t *testing.T) {
 func TestGranteeGroupsNormalizesInputAndMapsOptions(t *testing.T) {
 	store := &authorizationOptionStoreStub{
 		granteeGroups: []port.ManagementAuthorizationGranteeGroupOption{{
-			ID:                     "grp_default",
-			SystemAccountID:        "sys_user",
-			SystemAccountName:      "目标用户",
-			OwnerSystemAccountID:   "sys_user",
-			OwnerSystemAccountName: "目标用户",
-			Name:                   "默认分组",
-			ProviderCode:           "openai",
-			Enabled:                true,
-			IsDefault:              true,
-			GroupType:              "high_concurrency",
-			SchedulingPolicy:       map[string]any{"mode": "balanced_fast"},
-			AccessType:             "owner",
+			ID:   "grp_default",
+			Name: "默认分组",
 		}},
 	}
 	service := NewService(store)
 
 	got, err := service.GranteeGroups(context.Background(), GranteeGroupOptionListInput{
-		GranteeSystemAccountID:     " sys_user ",
-		IncludeSystemAccountFields: true,
-		IDs:                        []string{" grp_default ", "grp_default", "", "grp_backup"},
-		Keyword:                    "  默认  ",
-		ProviderCode:               " openai ",
-		Limit:                      500,
-		PreferDefault:              true,
+		GranteeSystemAccountID: " sys_user ",
+		IDs:                    []string{" grp_default ", "grp_default", "", "grp_backup"},
+		Keyword:                "  默认  ",
+		ProviderCode:           " openai ",
+		Limit:                  500,
+		PreferDefault:          true,
 	})
 	if err != nil {
 		t.Fatalf("GranteeGroups() error = %v", err)
 	}
 	if store.groupInput.GranteeSystemAccountID != "sys_user" ||
-		!store.groupInput.IncludeSystemAccountFields ||
 		store.groupInput.Keyword != "默认" ||
 		store.groupInput.ProviderCode != "openai" ||
 		store.groupInput.Limit != 50 ||
@@ -147,29 +135,8 @@ func TestGranteeGroupsNormalizesInputAndMapsOptions(t *testing.T) {
 		t.Fatalf("GranteeGroups() = %+v", got)
 	}
 	item := got[0]
-	if item.ID != "grp_default" ||
-		item.SystemAccountID != "sys_user" ||
-		item.SystemAccountName != "目标用户" ||
-		item.OwnerSystemAccountID != "sys_user" ||
-		item.OwnerSystemAccountName != "目标用户" ||
-		item.Name != "默认分组" ||
-		item.ProviderCode != "openai" ||
-		!item.Enabled ||
-		!item.IsDefault ||
-		item.GroupType != "high_concurrency" ||
-		item.SchedulingPolicy["mode"] != "balanced_fast" ||
-		item.AccessType != "owner" {
+	if item.ID != "grp_default" || item.Name != "默认分组" {
 		t.Fatalf("mapped group = %+v", item)
-	}
-	if !item.Permissions.CanUse ||
-		item.Permissions.CanEdit ||
-		item.Permissions.CanDelete ||
-		item.Permissions.CanReturnAuthorization ||
-		item.Permissions.CanAuthorize ||
-		item.Permissions.CanViewCredentials ||
-		item.Permissions.CanManageAccounts ||
-		item.Permissions.CanBindToAPIKey {
-		t.Fatalf("permissions = %+v, want authorized read-only use permission", item.Permissions)
 	}
 }
 
