@@ -66,6 +66,26 @@ func TestSessionAffinityStoreSetAndGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNewSessionAffinityStoreVersionsItsKeyspace(t *testing.T) {
+	client, err := NewClient("redis://127.0.0.1:6379/0", "juhe-ai:test:cache")
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	store, err := NewSessionAffinityStore(client)
+	if err != nil {
+		t.Fatalf("NewSessionAffinityStore() error = %v", err)
+	}
+	if got, want := store.keyPrefix, "juhe-ai:test:cache:session-affinity:"+SessionAffinityFormatVersion+":binding"; got != want {
+		t.Fatalf("keyPrefix = %q, want %q", got, want)
+	}
+}
+
 func TestSessionAffinityStoreCompareAndSetSupportsCreateAndExactRevision(t *testing.T) {
 	var calls int
 	store := &SessionAffinityStore{

@@ -94,9 +94,9 @@ type SessionAffinityRecord struct {
 // SessionAffinityStore owns only the Redis token-to-value primitive. Gateway
 // ordering, binding payloads and fallback policy remain in the caller.
 //
-// The go-revision-v1 key/value format is intentionally not compatible with the
-// weaker Node raw-JSON CAS format. It must only be enabled after an atomic
-// gateway owner cutover; existing short-lived Node affinity may then rebuild.
+// The versioned Go key/value format is intentionally isolated from the weaker
+// Node raw-JSON CAS format. Both stores may exist during a rollout, but gateway
+// affinity behavior must still have one owner and change only at owner cutover.
 type SessionAffinityStore struct {
 	keyPrefix        string
 	newRevision      func() string
@@ -112,7 +112,7 @@ func NewSessionAffinityStore(client *Client) (*SessionAffinityStore, error) {
 		return nil, fmt.Errorf("Redis cache client 不能为空")
 	}
 	store := &SessionAffinityStore{
-		keyPrefix:   client.Key("session-affinity", "binding"),
+		keyPrefix:   client.Key("session-affinity", SessionAffinityFormatVersion, "binding"),
 		newRevision: uuid.NewString,
 	}
 	store.get = func(ctx context.Context, key string) ([]byte, error) {
