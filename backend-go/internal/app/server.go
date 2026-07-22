@@ -882,6 +882,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
+		OptionReader:    store,
 		ModelCatalog:    providerModelService,
 		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
 	})

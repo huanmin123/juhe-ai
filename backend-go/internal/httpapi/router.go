@@ -906,9 +906,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementAccountTestOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/test-options", opts.ManagementAccountTestOptionsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/test-options/models/{modelId}", opts.ManagementAccountTestOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAccountTestOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/test-options", opts.ManagementMyAccountTestOptionsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/test-options/models/{modelId}", opts.ManagementMyAccountTestOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountTagsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/tags", opts.ManagementAccountTagsHandler.ServeHTTP)
