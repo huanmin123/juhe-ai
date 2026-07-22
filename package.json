@@ -95,6 +95,7 @@
     "test:hybrid-python-programming-scoring": "pnpm --filter juhe-ai-backend test:hybrid-python-programming-scoring",
     "test:group-options-lightweight": "pnpm --filter juhe-ai-backend test:group-options-lightweight",
     "test:group-scheduling-policy": "pnpm --filter juhe-ai-backend test:group-scheduling-policy",
+    "test:group-status-snapshot-refresh": "pnpm --filter juhe-ai-frontend test:group-status-snapshot-refresh",
     "test:dynamic-snapshot-batches": "pnpm --filter juhe-ai-frontend test:dynamic-snapshot-batches",
     "test:high-concurrency-queue": "pnpm --filter juhe-ai-backend test:high-concurrency-queue",
     "test:client-ip-concurrency": "pnpm --filter juhe-ai-backend test:client-ip-concurrency",

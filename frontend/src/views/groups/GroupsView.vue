@@ -100,6 +100,7 @@ import { loadProviderOptionsResource } from '@/composables/useProviderOptionsRes
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
+import { loadDynamicSnapshotsInBatches } from '@/shared/dynamicSnapshotBatches'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
 import type { GroupSummary, ProviderDefinition } from '@/types/domain'
@@ -107,6 +108,11 @@ import { FALLBACK_PROVIDERS } from '../accounts/accountOptions'
 import {
   groupStats
 } from './groupDisplay'
+import {
+  groupListItemHasDynamicSnapshot,
+  mergeGroupListDynamicSnapshot,
+  mergeGroupStatusSnapshot
+} from './groupListMutations'
 import GroupEditModal from './GroupEditModal.vue'
 import GroupsList from './GroupsList.vue'
 import {
@@ -136,6 +142,8 @@ const availableProviders = computed(() => providers.value.length ? providers.val
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
 let groupSnapshotRequestSequence = 0
+let acceptedGroupScopeSignature = ''
+let groupSnapshotFallbackIds = new Set<string>()
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -171,7 +179,7 @@ const {
   pagination,
   tablePagination,
   handleTableChange,
-  loadData,
+  loadData: loadGroupPage,
   loadMoreMobile: loadMoreMobileGroups,
   removeItems: removeGroupItems,
   refreshMobile: refreshMobileGroupsData,
@@ -185,7 +193,31 @@ const {
     : `共 ${formatNumber(total)} 个分组`,
   fetchPage: async (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-    return groupsApi.listPage(groupsListParams(systemAccountId, pageState))
+    groupSnapshotRequestSequence += 1
+    const page = await groupsApi.listPage(groupsListParams(systemAccountId, pageState))
+    const listConcurrencyAvailable = page.runtimeSnapshot?.accountConcurrencyAvailable === true
+    const items = page.items.map((group) => ({
+      ...group,
+      accountStats: {
+        ...group.accountStats,
+        currentConcurrencyAvailable: listConcurrencyAvailable
+          && group.accountStats.currentConcurrencyAvailable !== false
+      }
+    }))
+    return {
+      ...page,
+      items,
+      dynamicSnapshotFallbackIds: items
+        .filter((group) => !groupListItemHasDynamicSnapshot(group, listConcurrencyAvailable))
+        .map((group) => group.id)
+    }
+  },
+  transformItems: (nextItems, _options, _result, currentItems) => {
+    return mergeGroupListDynamicSnapshot(
+      currentItems,
+      nextItems,
+      acceptedGroupScopeSignature === groupScopeSignature()
+    )
   },
   requestSignature: (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
@@ -194,7 +226,12 @@ const {
       groupsListParams(systemAccountId, pageState)
     ]
   },
-  onLoaded: () => {
+  onLoaded: (result, loadOptions) => {
+    acceptedGroupScopeSignature = groupScopeSignature()
+    const fallbackIds = (result as { dynamicSnapshotFallbackIds?: string[] }).dynamicSnapshotFallbackIds ?? []
+    groupSnapshotFallbackIds = loadOptions.append
+      ? new Set([...groupSnapshotFallbackIds, ...fallbackIds])
+      : new Set(fallbackIds)
     void refreshGroupStatusSnapshot()
   },
   onError: (error) => {
@@ -204,34 +241,45 @@ const {
 })
 
 async function refreshGroupStatusSnapshot(): Promise<void> {
-  const groupIds = [...new Set(groups.value.map((group) => group.id).filter(Boolean))]
+  const loadedIds = new Set(groups.value.map((group) => group.id).filter(Boolean))
+  const groupIds = [...groupSnapshotFallbackIds].filter((groupId) => loadedIds.has(groupId))
   if (!groupIds.length) return
   const sequence = ++groupSnapshotRequestSequence
+  const scopeSignature = groupScopeSignature()
+  const idSignature = groups.value.map((group) => group.id).filter(Boolean).join('\u0000')
   const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-  try {
-    const snapshot = await groupsApi.statusSnapshot(groupIds, systemAccountId ? { systemAccountId } : undefined)
-    if (sequence !== groupSnapshotRequestSequence) return
-    const byId = new Map(snapshot.items.map((item) => [item.id, item]))
-    updateGroupItems(
-      (group) => byId.has(group.id),
-      (group) => {
-        const item = byId.get(group.id)
-        if (!item) return group
-        return {
-          ...group,
-          accountStats: {
-            ...group.accountStats,
-            currentConcurrency: item.currentConcurrency,
-            currentConcurrencyAvailable: true,
-            todayUsage: item.todayUsage
-          }
-        }
-      }
-    )
-  } catch (error) {
-    if (sequence !== groupSnapshotRequestSequence) return
-    console.error(error)
+  const results = await loadDynamicSnapshotsInBatches(groupIds, (batchIds) => groupsApi.statusSnapshot(
+    batchIds,
+    systemAccountId ? { systemAccountId } : undefined
+  ))
+  for (const result of results) {
+    if (!groupStatusSnapshotRequestIsCurrent(sequence, scopeSignature, idSignature)) return
+    if (result.error) {
+      console.error(result.error)
+      continue
+    }
+    if (!result.value) continue
+    groups.value = mergeGroupStatusSnapshot(groups.value, result.value)
+    const returnedIds = new Set(result.value.items.map((item) => item.id))
+    for (const groupId of result.ids) {
+      if (returnedIds.has(groupId)) groupSnapshotFallbackIds.delete(groupId)
+    }
   }
+}
+
+function groupStatusSnapshotRequestIsCurrent(sequence: number, scopeSignature: string, idSignature: string): boolean {
+  return sequence === groupSnapshotRequestSequence
+    && scopeSignature === groupScopeSignature()
+    && idSignature === groups.value.map((group) => group.id).filter(Boolean).join('\u0000')
+}
+
+function groupScopeSignature(): string {
+  const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
+  return `${isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
+}
+
+async function loadData(loadOptions: { forceOptions?: boolean; quiet?: boolean } = {}): Promise<void> {
+  await loadGroupPage(loadOptions)
 }
 
 const rawColumns = computed(() => groupsTableColumns(isManagementView.value))

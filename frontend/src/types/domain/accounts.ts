@@ -869,6 +869,9 @@ export interface GroupListResult {
 
 export interface GroupStatusSnapshotResult {
   generatedAt: string
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+  }
   items: Array<{
     id: string
     currentConcurrency: number
