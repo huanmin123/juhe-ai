@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
@@ -405,7 +404,6 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil,
 		2*time.Second,
 		nil,
 	)
@@ -638,7 +636,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	const dispatchTimeout = 5 * time.Second
 	privateBaseURLAllowlist := []string{"http://192.168.40.199:8317"}
 	dispatcher := &appAccountHealthCheckDispatcherRecorder{}
-	pageDataPublisher := &appAccountPageDataPublisherStub{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var captured publicaccounts.Options
 	factoryCalls := 0
@@ -649,7 +646,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 		privateBaseURLAllowlist,
 		nil,
 		dispatcher,
-		pageDataPublisher,
 		logger,
 		dispatchTimeout,
 		func(opts publicaccounts.Options) *publicaccounts.Service {
@@ -670,9 +666,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	if captured.HealthCheckDispatcher != dispatcher {
 		t.Fatalf("HealthCheckDispatcher = %T, want injected recorder", captured.HealthCheckDispatcher)
 	}
-	if captured.PageDataPublisher != pageDataPublisher {
-		t.Fatalf("PageDataPublisher = %T, want injected recorder", captured.PageDataPublisher)
-	}
 	if captured.Logger != logger {
 		t.Fatalf("Logger = %p, want %p", captured.Logger, logger)
 	}
@@ -689,16 +682,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	if len(captured.PrivateBaseURLAllowlist) != 1 || captured.PrivateBaseURLAllowlist[0] != privateBaseURLAllowlist[0] {
 		t.Fatalf("PrivateBaseURLAllowlist = %v, want %v", captured.PrivateBaseURLAllowlist, privateBaseURLAllowlist)
 	}
-}
-
-type appAccountPageDataPublisherStub struct{}
-
-func (*appAccountPageDataPublisherStub) PublishAccountStaticChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
-}
-
-func (*appAccountPageDataPublisherStub) PublishAccountRuntimeChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
 }
 
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
