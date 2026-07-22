@@ -1,9 +1,11 @@
 import { api, pageDataApi } from '@/api/client'
 import { authState } from '@/composables/useAuth'
+import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
 import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { ProviderDefinition, ProviderOption } from '@/types/domain'
 
 interface ProviderOptionsResourceOptions {
+  activation?: PageDataActivationHandle
   apply?: (providers: ProviderDefinition[]) => void
   force?: boolean
   includeDisabled?: boolean
@@ -29,6 +31,7 @@ export async function loadProviderOptionsResource(options: ProviderOptionsResour
     },
     domain: 'providers.catalog',
     viewScope: options.isManagementView ? 'admin' : 'self',
+    activation: options.activation,
     ...(options.isManagementView && options.systemAccountId
       ? { targetSystemAccountId: options.systemAccountId }
       : {}),

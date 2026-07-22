@@ -1,9 +1,10 @@
 import { message } from '@/lib/antd'
-import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, onUnmounted, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, pageDataApi, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import type { PageDataActivation } from '@/composables/usePageDataActivation'
 import { usePageDataRequestCache } from '@/composables/usePageDataRequestCache'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { authState } from '@/composables/useAuth'
@@ -30,6 +31,7 @@ interface AccountsPageState {
 
 interface UseAccountListDataOptions {
   isManagementView: ComputedRef<boolean>
+  pageDataActivation?: PageDataActivation
   scopedSystemAccountId: (filterValue?: string) => string | undefined
   onLoaded?: (selectableAccountIds: Set<string>) => void
 }
@@ -85,6 +87,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
   let accountPageCacheRequest: PageDataRequestCacheDefinition<AccountListResult> | undefined
   const accountPageCache = usePageDataRequestCache<AccountListResult>({
+    activation: options.pageDataActivation,
+    activationManaged: Boolean(options.pageDataActivation),
     immediate: false,
     confirmIntervalMs: 30_000,
     confirm: pageDataApi.confirm,
@@ -116,10 +120,12 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      void loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions)).catch((error) => {
-        console.error(error)
-        message.error('加载账户筛选选项失败')
-      })
+      if (!_loadOptions?.forceData || _loadOptions.forceOptions) {
+        void loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions)).catch((error) => {
+          console.error(error)
+          message.error('加载账户筛选选项失败')
+        })
+      }
       const accountList = await fetchAccountList(systemAccountId, pageState, _loadOptions.forceData === true)
       const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
       return {
@@ -183,6 +189,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
       loadNetwork
     }
+    if (force) options.pageDataActivation?.beginTargeted(['accounts.static'])
     const result = force ? await accountPageCache.forceRefresh() : await accountPageCache.load()
     return result.data
   }
@@ -287,6 +294,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const request = (async () => {
       const [providerList, proxyList] = await Promise.all([
         loadProviderOptionsResource({
+          activation: options.pageDataActivation,
           apply: (nextProviders) => {
             if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
           },
@@ -313,6 +321,37 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     accountOptionsInFlight.set(scopeKey, request)
     return request
   }
+
+  async function revalidateProviderDefinitions(): Promise<void> {
+    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
+    const scopeKey = options.isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
+    const currentScopeKey = () => options.isManagementView.value
+      ? `management:${accountScopeParams.value?.systemAccountId ?? 'all'}`
+      : 'self'
+    const providerList = await loadProviderOptionsResource({
+      activation: options.pageDataActivation,
+      apply: (nextProviders) => {
+        if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+      },
+      includeDefinitions: true,
+      isManagementView: options.isManagementView.value,
+      systemAccountId
+    })
+    if (currentScopeKey() === scopeKey) providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
+  }
+
+  const unregisterAccountListRevalidator = options.pageDataActivation?.registerRevalidator(
+    'accounts.static',
+    async () => { await loadData() }
+  )
+  const unregisterProviderRevalidator = options.pageDataActivation?.registerRevalidator(
+    'providers.catalog',
+    revalidateProviderDefinitions
+  )
+  onUnmounted(() => {
+    unregisterAccountListRevalidator?.()
+    unregisterProviderRevalidator?.()
+  })
 
   function accountListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }): AccountListParams {
     return {

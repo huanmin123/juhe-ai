@@ -2,6 +2,7 @@ import { message } from '@/lib/antd'
 import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
+import type { PageDataActivation } from '@/composables/usePageDataActivation'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountScopeParams } from './accountOperationScope'
@@ -17,6 +18,7 @@ interface UseAccountTagOptionsOptions {
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   form: AccountFormModel
   isManagementView: ComputedRef<boolean>
+  pageDataActivation?: PageDataActivation
 }
 
 export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
@@ -45,6 +47,7 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     accountTagOptionsLoading.value = true
     try {
       const nextOptions = await loadAccountTagOptionsCached({
+        activation: options.pageDataActivation,
         force,
         isManagementView: options.isManagementView.value,
         scopeParams

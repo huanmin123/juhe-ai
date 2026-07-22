@@ -2,6 +2,7 @@ import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, type AccountDraftTestAccountPayload } from '@/api/client'
+import type { PageDataActivation } from '@/composables/usePageDataActivation'
 import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
@@ -80,6 +81,7 @@ interface UseAccountEditFormOptions {
   loadAccountOptions: (systemAccountId?: string, force?: boolean) => Promise<void>
   loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: Partial<AccountGroupOptionsScope>, loadOptions?: AccountGroupOptionsLoadOptions) => Promise<void>
   loadData: () => Promise<void>
+  pageDataActivation?: PageDataActivation
   focusCreatedAccount?: (account: AccountSummary) => void
   providers: ReadonlyValue<ProviderDefinition[]>
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
@@ -164,7 +166,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountTagOperationScopeParams,
     extractApiErrorMessage: options.extractApiErrorMessage,
     form,
-    isManagementView: options.isManagementView
+    isManagementView: options.isManagementView,
+    pageDataActivation: options.pageDataActivation
   })
   const targetSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return undefined

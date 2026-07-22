@@ -1,12 +1,15 @@
 import { api, pageDataApi } from '@/api/client'
 import { authState } from '@/composables/useAuth'
+import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
 import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountScopeParams } from './accountOperationScope'
 
 interface AccountTagOptionsLoadInput {
+  activation?: PageDataActivationHandle
   force?: boolean
   isManagementView: boolean
+  revalidate?: boolean
   scopeParams?: AccountScopeParams
 }
 
@@ -44,7 +47,7 @@ export async function loadAccountTagOptionsCached(input: AccountTagOptionsLoadIn
   const scopeKey = resolveAccountTagOptionsScopeKey(input.isManagementView, input.scopeParams)
   if (!scopeKey) return []
 
-  if (!input.force) {
+  if (!input.force && !input.revalidate) {
     const cached = accountTagOptionsMemory.get(scopeKey)
     if (cached) return [...cached]
   }
@@ -61,6 +64,7 @@ export async function loadAccountTagOptionsCached(input: AccountTagOptionsLoadIn
     },
     domain: 'accounts.options',
     viewScope: input.isManagementView ? 'admin' : 'self',
+    activation: input.activation,
     ...(input.isManagementView && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
     loadNetwork: () => input.isManagementView
       ? api.accounts.tags(input.scopeParams)
