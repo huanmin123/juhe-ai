@@ -1,4 +1,4 @@
-import { onActivated, onDeactivated, onMounted, onUnmounted } from '@vue/runtime-core'
+import { onActivated, onDeactivated, onMounted, onUnmounted } from 'vue'
 
 import type {
   PageDataConfirmRequest,

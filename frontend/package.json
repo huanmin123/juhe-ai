@@ -141,7 +141,6 @@
     "@tiptap/starter-kit": "3.27.3",
     "@tiptap/vue-3": "3.27.3",
     "@vitejs/plugin-vue": "^5.2.0",
-    "@vue/runtime-core": "^3.5.0",
     "animejs": "^4.4.1",
     "ant-design-vue": "^4.2.6",
     "axios": "^1.15.0",

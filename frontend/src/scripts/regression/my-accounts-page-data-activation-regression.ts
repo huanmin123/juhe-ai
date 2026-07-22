@@ -17,10 +17,9 @@ import {
 } from '../../shared/pageDataCache'
 import type { PageDataActivationParticipant, PageDataActivationTimer } from '../../shared/pageDataActivationCoordinator'
 import { myAccountsPageDataActivationManifest } from '../../shared/pageDataActivationManifests'
-import {
-  usePageDataActivation,
-  type PageDataActivation,
-  type PageDataActivationLifecycleTimer
+import type {
+  PageDataActivation,
+  PageDataActivationLifecycleTimer
 } from '../../composables/usePageDataActivation'
 
 const domWindow = new Window({ url: 'http://127.0.0.1/my-accounts' })
@@ -35,6 +34,7 @@ Object.assign(globalThis, {
   getComputedStyle: domWindow.getComputedStyle.bind(domWindow)
 })
 
+const { usePageDataActivation } = await import('../../composables/usePageDataActivation')
 const { KeepAlive, createApp, defineComponent, h, nextTick, ref } = await import('vue')
 
 class FakeClock {
