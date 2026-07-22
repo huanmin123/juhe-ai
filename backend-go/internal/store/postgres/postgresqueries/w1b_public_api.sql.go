@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const cleanupPublicAPILogsBefore = `-- name: CleanupPublicAPILogsBefore :execrows
+WITH stale_public_api_logs AS (
+  SELECT id
+  FROM juhe_dataset.public_api_logs
+  WHERE created_at < $1::timestamptz
+  ORDER BY created_at ASC, id ASC
+  LIMIT $2::int
+)
+DELETE FROM juhe_dataset.public_api_logs
+WHERE id IN (SELECT id FROM stale_public_api_logs)
+`
+
+type CleanupPublicAPILogsBeforeParams struct {
+	CutoffCreatedAt pgtype.Timestamptz
+	RowLimit        int32
+}
+
+func (q *Queries) CleanupPublicAPILogsBefore(ctx context.Context, arg CleanupPublicAPILogsBeforeParams) (int64, error) {
+	result, err := q.db.Exec(ctx, cleanupPublicAPILogsBefore, arg.CutoffCreatedAt, arg.RowLimit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findPublicAPIAuthTokenByHash = `-- name: FindPublicAPIAuthTokenByHash :one
 SELECT
   sources.id AS source_ref_id,
@@ -70,6 +95,21 @@ func (q *Queries) FindPublicAPIAuthTokenByHash(ctx context.Context, tokenHash st
 		&i.TokenLastUsedAt,
 	)
 	return i, err
+}
+
+const getPublicAPILogRetentionDays = `-- name: GetPublicAPILogRetentionDays :one
+SELECT value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key = 'publicApiLogRetentionDays'
+LIMIT 1
+`
+
+func (q *Queries) GetPublicAPILogRetentionDays(ctx context.Context) (string, error) {
+	row := q.db.QueryRow(ctx, getPublicAPILogRetentionDays)
+	var value_json string
+	err := row.Scan(&value_json)
+	return value_json, err
 }
 
 const insertPublicAPILog = `-- name: InsertPublicAPILog :exec
