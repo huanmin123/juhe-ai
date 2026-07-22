@@ -143,6 +143,7 @@
       "clear_only_refresh_failure_state"
     ]
   },
+  "errorStatusScope": "explicit_route_handler_branches_only_excludes_middleware_and_uncaught_async_errors",
   "errors": [
     {
       "operation": "auth_url",
@@ -180,6 +181,12 @@
       "id": "no-stable-machine-error-code",
       "currentBehavior": "OAuth 路由错误主要返回中文 message 和 HTTP 状态，未提供稳定的机器可读 error code；前端只能按状态或文案处理。",
       "goMigration": "Go 新契约增加稳定 error.code 与安全 message，同时保持 HTTP 状态与敏感信息脱敏；不要把中文文案当作协议键。",
+      "disposition": "fix_in_go_do_not_copy"
+    },
+    {
+      "id": "reauthorize-refresh-token-without-idempotency-or-cas",
+      "currentBehavior": "Refresh Token 重新授权路由没有 mutation guard，token exchange 后通过普通 updateAccountAsync 覆盖凭据且不校验 config revision；它可与后台保活、手动刷新或重复提交并发，旧请求可能覆盖较新的轮换 token。",
+      "goMigration": "Go 对同一账户使用稳定幂等指纹和单账户 lease，并以 ExpectedConfigRevision CAS 写入；冲突时只接受数据库中的更新 token，或按最新 refresh token 最多重试一次，绝不无条件覆盖。",
       "disposition": "fix_in_go_do_not_copy"
     }
   ]
