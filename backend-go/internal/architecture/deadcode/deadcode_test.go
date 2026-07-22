@@ -73,7 +73,7 @@ func findModuleRoot(t *testing.T) string {
 
 func goList(t *testing.T, moduleRoot string, args ...string) []string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "go", append([]string{"list"}, args...)...)

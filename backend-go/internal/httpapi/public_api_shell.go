@@ -46,6 +46,7 @@ type PublicAPIShellOptions struct {
 	Authenticator           PublicAPIAuthenticator
 	RateLimiter             PublicAPIRateLimiter
 	LogClient               publicapilogjob.EnqueueClient
+	LogSubmitter            PublicAPILogSubmitter
 	EndpointHandlers        map[string]http.Handler
 	Now                     func() time.Time
 	NewLogID                func() string
@@ -57,7 +58,7 @@ type publicAPIShell struct {
 	clientIPs     clientIPResolver
 	authenticator PublicAPIAuthenticator
 	rateLimiter   PublicAPIRateLimiter
-	logClient     publicapilogjob.EnqueueClient
+	logSubmitter  PublicAPILogSubmitter
 	handlers      map[string]http.Handler
 	now           func() time.Time
 	newLogID      func() string
@@ -91,12 +92,16 @@ func NewPublicAPIShell(opts PublicAPIShellOptions) http.Handler {
 			return "publog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
 	}
+	logSubmitter := opts.LogSubmitter
+	if logSubmitter == nil {
+		logSubmitter = newSynchronousPublicAPILogSubmitter(opts.LogClient, opts.Logger)
+	}
 	shell := &publicAPIShell{
 		logger:        opts.Logger,
 		clientIPs:     newClientIPResolver(opts.Config),
 		authenticator: opts.Authenticator,
 		rateLimiter:   opts.RateLimiter,
-		logClient:     opts.LogClient,
+		logSubmitter:  logSubmitter,
 		handlers:      clonePublicAPIHandlers(opts.EndpointHandlers),
 		now:           now,
 		newLogID:      newLogID,
@@ -247,7 +252,7 @@ func (s *publicAPIShell) writeAuthError(w http.ResponseWriter, state *publicAPIR
 }
 
 func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponseCapture, state *publicAPIRequestState, startedAt time.Time) {
-	if s.logClient == nil {
+	if s.logSubmitter == nil {
 		return
 	}
 
@@ -305,15 +310,7 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 		EndedAt:          endedAt,
 		Closed:           closed,
 	})
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), publicAPILogEnqueueTimeout)
-	defer cancel()
-	if _, err := publicapilogjob.EnqueueWrite(enqueueCtx, s.logClient, logInput); err != nil && s.logger != nil {
-		s.logger.Warn("公开接口日志入队失败",
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
-			slog.String("error", err.Error()),
-		)
-	}
+	s.logSubmitter.Submit(r.Context(), logInput)
 }
 
 func publicAPIRequestClosed(r *http.Request, response *publicAPIResponseCapture) bool {

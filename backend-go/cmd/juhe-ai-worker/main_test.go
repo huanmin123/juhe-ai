@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -43,6 +44,23 @@ func TestExecuteCommandSuccessDoesNotWriteFatal(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestExecuteCommandReturnsWhenFatalWriterBlocks(t *testing.T) {
+	root := &cobra.Command{Use: "test", RunE: func(*cobra.Command, []string) error { return errors.New("startup failed") }}
+	root.SetArgs([]string{})
+	writer := &blockingCommandWriter{started: make(chan struct{}), release: make(chan struct{})}
+	defer close(writer.release)
+	result := make(chan int, 1)
+	go func() { result <- executeCommand(root, writer) }()
+	select {
+	case code := <-result:
+		if code != 1 {
+			t.Fatalf("exit code = %d, want 1", code)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("executeCommand() did not return while stderr was blocked")
 	}
 }
 
@@ -113,4 +131,15 @@ func assertFatalOnly(t *testing.T, output []byte, secret string) {
 	if record["level"] != "fatal" {
 		t.Fatalf("fatal level = %#v, want fatal", record["level"])
 	}
+}
+
+type blockingCommandWriter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingCommandWriter) Write(data []byte) (int, error) {
+	close(w.started)
+	<-w.release
+	return len(data), nil
 }

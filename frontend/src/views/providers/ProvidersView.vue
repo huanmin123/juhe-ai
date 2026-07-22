@@ -275,6 +275,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { authState } from '@/composables/useAuth'
+import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { loadProviderModelCatalogResource } from '@/composables/useProviderModelCatalogResource'
@@ -341,6 +342,7 @@ const editingCustomModelProviderCode = ref<string>()
 const editingModelScope = ref<ProviderModelPricing['scope']>()
 const editingOriginalStatus = ref<ProviderModelPricing['status']>()
 let modelRequestSequence = 0
+const providerRecovery = useKeepAliveSupersededRecovery(() => loadProviders())
 
 const isManagementView = computed(() => route.meta.viewScope === 'admin')
 const canManageModelPrices = computed(() => canManageModelPricesForView(isManagementView.value, authState.isAdmin.value))
@@ -445,15 +447,18 @@ function formatDefaultSupportedModels(provider: ProviderDefinition): string {
 }
 
 async function loadProviders(force = false) {
+  const providerRecoveryRequest = providerRecovery.start()
   loading.value = true
   try {
-    providers.value = await loadProviderOptionsResource({
+    const providerResult = await loadProviderOptionsResource({
       apply: (nextProviders) => { providers.value = nextProviders },
       force,
       includeDisabled: isManagementView.value,
       includeDefinitions: !isManagementView.value,
       isManagementView: isManagementView.value
     })
+    providerRecovery.record(providerRecoveryRequest, providerResult.state)
+    if (providerResult.state === 'ready') providers.value = providerResult.data
   } catch (error) {
     console.error(error)
     message.error('加载供应商失败')
@@ -577,7 +582,8 @@ async function reloadActiveProviderModels(force = false) {
       systemAccountId: modelQuery.systemAccountId
     })
     if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
-    const scopedProvider = scopedProviders.find((item) => item.code === provider.code)
+    if (scopedProviders.state === 'superseded') return
+    const scopedProvider = scopedProviders.data.find((item) => item.code === provider.code)
     if (scopedProvider) {
       activeProvider.value = scopedProvider
     }

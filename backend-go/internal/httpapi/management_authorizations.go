@@ -1420,7 +1420,7 @@ func recordAuthorizationCreateOperationLog(
 	payload managementAuthorizationCreatePayload,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -1485,7 +1485,7 @@ func recordAuthorizationUpdateOperationLog(
 	payload managementAuthorizationUpdatePayload,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -1568,7 +1568,7 @@ func recordAuthorizationExpireUpdateOperationLog(
 	payload managementAuthorizationExpireUpdatePayload,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -1647,7 +1647,7 @@ func recordAuthorizationReturnOperationLog(
 	result managementauthorizations.Summary,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -1709,7 +1709,7 @@ func recordResourceAuthorizationReturnOperationLog(
 	result managementauthorizations.Summary,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -1775,7 +1775,7 @@ func recordAuthorizationRevokeOperationLog(
 	result managementauthorizations.Summary,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

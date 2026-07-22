@@ -92,6 +92,7 @@ import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -131,10 +132,10 @@ const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
 const providers = ref<ProviderDefinition[]>([])
+const providerRecovery = useKeepAliveSupersededRecovery(() => loadGroupOptions(false, true))
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
-let groupSnapshotRequestSequence = 0
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -170,7 +171,7 @@ const {
   pagination,
   tablePagination,
   handleTableChange,
-  loadData,
+  loadData: loadGroupPage,
   loadMoreMobile: loadMoreMobileGroups,
   removeItems: removeGroupItems,
   refreshMobile: refreshMobileGroupsData,
@@ -184,7 +185,8 @@ const {
     : `共 ${formatNumber(total)} 个分组`,
   fetchPage: async (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-    return groupsApi.listPage(groupsListParams(systemAccountId, pageState))
+    const page = await groupsApi.listPage(groupsListParams(systemAccountId, pageState))
+    return page
   },
   requestSignature: (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
@@ -193,44 +195,14 @@ const {
       groupsListParams(systemAccountId, pageState)
     ]
   },
-  onLoaded: () => {
-    void refreshGroupStatusSnapshot()
-  },
   onError: (error) => {
     console.error(error)
     message.error('加载分组失败')
   }
 })
 
-async function refreshGroupStatusSnapshot(): Promise<void> {
-  const groupIds = [...new Set(groups.value.map((group) => group.id).filter(Boolean))]
-  if (!groupIds.length) return
-  const sequence = ++groupSnapshotRequestSequence
-  const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-  try {
-    const snapshot = await groupsApi.statusSnapshot(groupIds, systemAccountId ? { systemAccountId } : undefined)
-    if (sequence !== groupSnapshotRequestSequence) return
-    const byId = new Map(snapshot.items.map((item) => [item.id, item]))
-    updateGroupItems(
-      (group) => byId.has(group.id),
-      (group) => {
-        const item = byId.get(group.id)
-        if (!item) return group
-        return {
-          ...group,
-          accountStats: {
-            ...group.accountStats,
-            currentConcurrency: item.currentConcurrency,
-            currentConcurrencyAvailable: true,
-            todayUsage: item.todayUsage
-          }
-        }
-      }
-    )
-  } catch (error) {
-    if (sequence !== groupSnapshotRequestSequence) return
-    console.error(error)
-  }
+async function loadData(loadOptions: { forceOptions?: boolean; quiet?: boolean } = {}): Promise<void> {
+  await loadGroupPage(loadOptions)
 }
 
 const rawColumns = computed(() => groupsTableColumns(isManagementView.value))
@@ -295,12 +267,13 @@ function groupOperationScopeParams(group?: Pick<GroupSummary, 'systemAccountId' 
   return systemAccountId ? { systemAccountId } : undefined
 }
 
-async function loadGroupOptions(force = false): Promise<void> {
+async function loadGroupOptions(force = false, recoverSuperseded = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
-  if (!force && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
+  if (!force && !recoverSuperseded && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
     return
   }
 
+  const providerRecoveryRequest = providerRecovery.start()
   const providerList = await loadProviderOptionsResource({
     apply: (nextProviders) => {
       providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
@@ -308,7 +281,9 @@ async function loadGroupOptions(force = false): Promise<void> {
     force,
     isManagementView: isManagementView.value
   })
-  providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
+  providerRecovery.record(providerRecoveryRequest, providerList.state)
+  if (providerList.state === 'superseded') return
+  providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey
 }

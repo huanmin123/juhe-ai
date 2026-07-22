@@ -28,6 +28,7 @@ logger.level = 'silent'
 const [
   databaseModule,
   catalogService,
+  clientCatalogService,
   modelPricingService,
   { providersRouter },
   { requireAuth },
@@ -41,6 +42,7 @@ const [
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
+  import('../../modules/model-pricing/client-model-catalog.service.js'),
   import('../../modules/model-pricing/model-pricing.service.js'),
   import('../../modules/providers/providers.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
@@ -779,6 +781,35 @@ try {
       'claude-haiku-4-5-20251001'
     ],
     'Anthropic 模型目录应按官方当前模型从新到旧排序，并隐藏 Claude Code 本地别名'
+  )
+
+  const publicClientCatalog = await clientCatalogService.listClientModelCatalogAsync()
+  const publicClientProviderCodes = new Set(publicClientCatalog.map((item) => item.providerCode))
+  for (const providerCode of ['gpt', 'deepseek', 'glm', 'anthropic', 'gemini', 'xai']) {
+    assert(publicClientProviderCodes.has(providerCode), `公开客户端目录必须包含启用供应商 ${providerCode}`)
+  }
+  assert.equal(publicClientProviderCodes.has(HYBRID_PROVIDER_CODE), false, '公开客户端目录不得返回 hybrid 虚拟供应商模型')
+  assert(
+    publicClientCatalog.some((item) => item.providerCode === 'gemini' && !item.releaseDate),
+    '缺少发布时间的 Gemini 可用模型也必须进入全量客户端目录'
+  )
+
+  const scopedClientCatalog = await clientCatalogService.listClientModelCatalogAsync({
+    systemAccountId: 'sys_model_regression',
+    providerCodes: ['gpt', 'gemini']
+  })
+  const scopedClientProviderCodes = new Set(scopedClientCatalog.map((item) => item.providerCode))
+  assert(scopedClientProviderCodes.has('gpt'), 'API Key 多供应商作用域必须包含 GPT 目录')
+  assert(scopedClientProviderCodes.has('gemini'), 'API Key 多供应商作用域必须包含 Gemini 目录')
+  assert.deepEqual(
+    [...scopedClientProviderCodes].sort(),
+    ['gemini', 'gpt'],
+    'API Key 多供应商作用域不得泄漏未绑定供应商模型'
+  )
+  assert.deepEqual(
+    await clientCatalogService.listClientModelCatalogAsync({ providerCodes: [] }),
+    [],
+    'API Key 没有有效供应商绑定时不得回退公开全量目录'
   )
 
   const response = catalogService.buildOpenAIModelsResponseFromCatalog(publicCatalog)

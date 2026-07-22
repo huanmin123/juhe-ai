@@ -160,8 +160,10 @@ for (const varyHeader of [
 ]) {
   assert(fixedResponseSource.includes(varyHeader), `认证 models Vary 缺少实际判别头：${varyHeader}`)
 }
-assert.match(fixedResponseSource, /readPublishedModelCatalogResponseAsync/, '认证 models 必须读取写时生成的发布快照')
-assert.doesNotMatch(fixedResponseSource, /listProviderScopedModelCatalog/, '认证 models 请求路径不得按供应商重建目录')
+assert.match(fixedResponseSource, /listClientModelCatalogAsync/, '认证 models 必须动态聚合 API Key 绑定供应商目录')
+assert.match(fixedResponseSource, /providerCodes: input\.providerCodes/, '认证 models 必须把 API Key 绑定供应商集合传给客户端目录服务')
+assert.doesNotMatch(fixedResponseSource, /readPublishedModelCatalogResponseAsync/, '认证 models 不得继续读取 default\/codex 发布快照')
+assert.doesNotMatch(preflightSource, /fallbackProviderCode:/, '认证 models 目录不得回退为当前选中分组单供应商，必须只使用 API Key 全部 active binding')
 const usageRecordsSource = readFileSync(new URL('../../modules/gateway/usage/records.ts', import.meta.url), 'utf8')
 assert.match(usageRecordsSource, /hasResolvedGroupUsageMetadata/, '网关失败 usage 缺少分组归属快照时必须去掉分组维度，不能写入毒化记录')
 

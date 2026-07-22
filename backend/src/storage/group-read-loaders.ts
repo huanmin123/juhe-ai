@@ -136,6 +136,81 @@ export async function loadGroupAccountIdsByGroupIdsAsync(groupIds: string[]): Pr
   return result
 }
 
+export function loadGroupConcurrencyAccountIdsByGroupIds(groupIds: string[]): Map<string, string[]> {
+  assertSyncGroupReadLoaderAllowed('loadGroupConcurrencyAccountIdsByGroupIds')
+  const ids = uniqueIds(groupIds)
+  if (!ids.length) return new Map()
+  const rows: Array<{ group_id: string; account_id: string }> = []
+  const database = getBusinessDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`
+        SELECT group_accounts.group_id,
+          COALESCE(accounts.authorization_instance_source_account_id, accounts.id) AS account_id
+        FROM group_accounts
+        INNER JOIN groups ON groups.id = group_accounts.group_id
+        INNER JOIN accounts ON accounts.id = group_accounts.account_id
+        LEFT JOIN resource_authorizations resource_authorization_rows
+          ON resource_authorization_rows.id = group_accounts.account_authorization_id
+        WHERE group_accounts.enabled = 1
+          AND group_accounts.group_id IN (${sqlPlaceholders(chunk.length)})
+          AND accounts.deleted_at IS NULL
+          AND (
+            accounts.system_account_id = groups.system_account_id
+            OR resource_authorization_rows.status IN ('active', 'paused', 'expired')
+          )
+        ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC
+      `)
+      .all(...chunk) as unknown as Array<{ group_id: string; account_id: string }>)
+  }
+  return groupConcurrencyAccountIdsFromRows(ids, rows)
+}
+
+export async function loadGroupConcurrencyAccountIdsByGroupIdsAsync(groupIds: string[]): Promise<Map<string, string[]>> {
+  const ids = uniqueIds(groupIds)
+  if (!ids.length) return new Map()
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return loadGroupConcurrencyAccountIdsByGroupIds(ids)
+  }
+  const client = await groupReadLoaderDatabaseClient()
+  const groupAccountsTable = groupReadLoaderTable(client, 'group_accounts')
+  const groupsTable = groupReadLoaderTable(client, 'groups')
+  const accountsTable = groupReadLoaderTable(client, 'accounts')
+  const resourceAuthorizationsTable = groupReadLoaderTable(client, 'resource_authorizations')
+  const rows: Array<{ group_id: string; account_id: string }> = []
+  for (const chunk of chunkValues(ids, 500)) {
+    rows.push(...await client.query<{ group_id: string; account_id: string }>(`
+      SELECT group_accounts.group_id,
+        COALESCE(accounts.authorization_instance_source_account_id, accounts.id) AS account_id
+      FROM ${groupAccountsTable} group_accounts
+      INNER JOIN ${groupsTable} groups ON groups.id = group_accounts.group_id
+      INNER JOIN ${accountsTable} accounts ON accounts.id = group_accounts.account_id
+      LEFT JOIN ${resourceAuthorizationsTable} resource_authorization_rows
+        ON resource_authorization_rows.id = group_accounts.account_authorization_id
+      WHERE group_accounts.enabled = 1
+        AND group_accounts.group_id IN (${client.dialect.bindPlaceholders(chunk.length)})
+        AND accounts.deleted_at IS NULL
+        AND (
+          accounts.system_account_id = groups.system_account_id
+          OR resource_authorization_rows.status IN ('active', 'paused', 'expired')
+        )
+      ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC
+    `, chunk))
+  }
+  return groupConcurrencyAccountIdsFromRows(ids, rows)
+}
+
+function groupConcurrencyAccountIdsFromRows(
+  groupIds: string[],
+  rows: Array<{ group_id: string; account_id: string }>
+): Map<string, string[]> {
+  const accountIdsByGroup = new Map(groupIds.map((groupId) => [groupId, new Set<string>()]))
+  for (const row of rows) {
+    accountIdsByGroup.get(row.group_id)?.add(row.account_id)
+  }
+  return new Map([...accountIdsByGroup].map(([groupId, accountIds]) => [groupId, [...accountIds]]))
+}
+
 export function invalidateGroupAccountIdsCache(groupId?: string): void {
   const id = groupId?.trim()
   if (id) {

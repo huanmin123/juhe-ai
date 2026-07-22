@@ -51,7 +51,7 @@ export async function loadAccountConcurrencyByIds(accountIds: string[]): Promise
   available: boolean
   values: Record<string, number>
 }> {
-  const ids = [...new Set(accountIds.filter(Boolean))].slice(0, 100)
+  const ids = [...new Set(accountIds.filter(Boolean))]
   try {
     if (runtimeConfig.runtimeStateDriver === 'redis') {
       const values = await loadRedisAccountConcurrencySnapshot(ids)

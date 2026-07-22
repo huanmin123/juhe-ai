@@ -5,9 +5,13 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 )
 
-const maxFatalOutputBytes = 4096
+const (
+	maxFatalOutputBytes = 4096
+	fatalWriteTimeout   = 250 * time.Millisecond
+)
 
 var (
 	urlUserInfoPattern   = regexp.MustCompile(`(?i)\b([a-z][a-z0-9+.-]*://)[^/\s]+@`)
@@ -34,7 +38,18 @@ func WriteFatal(writer io.Writer, err error) {
 		message = sanitizeFatalMessage(err.Error())
 	}
 	encoded := marshalBoundedFatal(message)
-	_, _ = writer.Write(encoded)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = recover() }()
+		_, _ = writer.Write(encoded)
+	}()
+	timer := time.NewTimer(fatalWriteTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+	}
 }
 
 func sanitizeFatalMessage(message string) string {

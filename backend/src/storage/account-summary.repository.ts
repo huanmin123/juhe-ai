@@ -69,6 +69,7 @@ interface AuthorizedAccountSummaryContext {
   usageByAuthorization: Awaited<ReturnType<typeof loadAuthorizationUsageSummariesForScopesAsync>>
   todayUsageByAuthorization: Awaited<ReturnType<typeof loadAuthorizationUsageSummariesForScopesAsync>>
   currentConcurrencyByAccount: Awaited<ReturnType<typeof loadAccountCurrentConcurrencyByIdsAsync>>
+  apiKeyRuntimeByAccount: Awaited<ReturnType<typeof loadAccountApiKeyRuntimeSummariesByAccountIdsAsync>>
 }
 
 const businessSchemaName = 'juhe_business'
@@ -413,7 +414,8 @@ async function authorizedAccountSummaryFromRowAsync(
     authorizationQuotaExceededByAuthorization,
     usageByAuthorization,
     todayUsageByAuthorization,
-    currentConcurrencyByAccount
+    currentConcurrencyByAccount,
+    apiKeyRuntimeByAccount
   } = context
   row.supported_models = factAccountId ? supportedModelsByAccount.get(factAccountId) ?? [] : []
   row.model_mappings = factAccountId ? modelMappingsByAccount.get(factAccountId) ?? [] : []
@@ -456,6 +458,7 @@ async function authorizedAccountSummaryFromRowAsync(
     status: effectiveAuthorizedStatus,
     concurrencyLimit: accountResourceConcurrencyLimit(row),
     currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
+    apiKeyRuntime: factAccountId ? apiKeyRuntimeByAccount.get(factAccountId) : undefined,
     priority: dispatchPriority,
     superPriorityEnabled: dispatchSuperPriorityEnabled,
     fallbackEnabled: dispatchFallbackEnabled,
@@ -782,11 +785,11 @@ async function loadAuthorizedAccountSummaryContextAsync(
 ): Promise<AuthorizedAccountSummaryContext> {
   const listProjection = options.listProjection === true
   const factAccountIds = [...new Set(rows.map(accountResourceFactAccountId).filter(Boolean))]
-  const authorizationScopes = !listProjection
-    ? rows.filter((row) => row.authorization_id).map((row) => usageScope(row.authorization_id!, row.system_account_id, row.authorization_id!))
-    : []
-  const timezone = listProjection ? undefined : await usageStatsTimezoneAsync()
-  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, authorizationQuotaExceededByAuthorization, usageByAuthorization, todayUsageByAuthorization, currentConcurrencyByAccount] = await Promise.all([
+  const authorizationScopes = rows
+    .filter((row) => row.authorization_id)
+    .map((row) => usageScope(row.authorization_id!, row.system_account_id, row.authorization_id!))
+  const timezone = await usageStatsTimezoneAsync()
+  const [supportedModelsByAccount, modelMappingsByAccount, tagsByAccount, accountNames, authorizationQuotaExceededByAuthorization, usageByAuthorization, todayUsageByAuthorization, currentConcurrencyByAccount, apiKeyRuntimeByAccount] = await Promise.all([
     !listProjection && factAccountIds.length ? loadSupportedModelsByAccountIdsAsync(factAccountIds) : Promise.resolve(new Map<string, string[]>()),
     !listProjection && factAccountIds.length ? loadModelMappingsByAccountIdsAsync(factAccountIds) : Promise.resolve(new Map()),
     loadAccountTagsByAccountIdsAsync(rows.map((row) => row.id)),
@@ -795,9 +798,10 @@ async function loadAuthorizedAccountSummaryContextAsync(
       row.authorization_resource_owner_system_account_id ?? row.authorization_instance_owner_system_account_id ?? row.system_account_id
     ])),
     loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, rows),
-    listProjection ? Promise.resolve(new Map()) : loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
-    listProjection ? Promise.resolve(new Map()) : loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone!)),
-    listProjection ? Promise.resolve(new Map()) : loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id))
+    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
+    loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone)),
+    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)),
+    loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(factAccountIds)
   ])
   void access
   return {
@@ -808,7 +812,8 @@ async function loadAuthorizedAccountSummaryContextAsync(
     authorizationQuotaExceededByAuthorization,
     usageByAuthorization,
     todayUsageByAuthorization,
-    currentConcurrencyByAccount
+    currentConcurrencyByAccount,
+    apiKeyRuntimeByAccount
   }
 }
 
@@ -828,8 +833,8 @@ async function ownerAccountSummariesFromRowsAsync(
   const listProjection = options.listProjection === true
   const accountIds = rows.map((row) => row.id)
   const includeAccountNames = includeSystemAccountFields(access)
-  const timezone = listProjection ? undefined : await usageStatsTimezoneAsync()
-  const accountUsageScopes = listProjection ? [] : rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
+  const timezone = await usageStatsTimezoneAsync()
+  const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const ownerAccountIds = includeCredentials
     ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
     : []
@@ -848,10 +853,10 @@ async function ownerAccountSummariesFromRowsAsync(
     listProjection ? Promise.resolve(new Map()) : loadModelMappingsByAccountIdsAsync(accountIds),
     loadAccountTagsByAccountIdsAsync(accountIds),
     loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
-    listProjection ? Promise.resolve(new Map()) : loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
-    listProjection ? Promise.resolve(new Map()) : loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone!)),
-    listProjection ? Promise.resolve(new Map()) : loadAccountCurrentConcurrencyByIdsAsync(accountIds),
-    listProjection ? Promise.resolve(new Map()) : loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
+    loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
+    loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
     listProjection ? Promise.resolve(new Map()) : loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
   ])
 
@@ -915,7 +920,7 @@ async function ownerAccountSummariesFromRowsAsync(
       apiKeyRuntimeDetails: apiKeyRuntimeDetailsByAccount.get(row.id),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-      lastUsedAt: row.last_used_at ?? undefined,
+      lastUsedAt: usage.lastUsedAt ?? row.last_used_at ?? undefined,
       todayUsage,
       usage,
       accessType: 'owner',
@@ -1172,23 +1177,23 @@ function accountSummariesFromRows(
 ): AccountSummary[] {
   const includeCredentials = options.includeCredentials ?? true
   const listProjection = options.listProjection === true
-  const timezone = listProjection ? undefined : usageStatsTimezone()
+  const timezone = usageStatsTimezone()
   const accountIds = rows.map((row) => row.id)
-  const currentConcurrencyByAccount = listProjection ? new Map<string, number>() : loadAccountCurrentConcurrencyByIds(accountIds)
+  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
   const tagsByAccount = loadAccountTagsByAccountIds(accountIds)
-  const accountUsageScopes = listProjection ? [] : rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
-  const usageByAccount = listProjection ? new Map() : loadAccountListStatsMap('account_usage_total', () => loadAccountUsageSummariesForScopes(accountUsageScopes))
-  const todayUsageByAccount = listProjection ? new Map() : loadAccountListStatsMap('account_usage_today', () => loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone!)))
+  const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
+  const usageByAccount = loadAccountListStatsMap('account_usage_total', () => loadAccountUsageSummariesForScopes(accountUsageScopes))
+  const todayUsageByAccount = loadAccountListStatsMap('account_usage_today', () => loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone)))
   const authorizationStatsByAccount = listProjection ? new Map() : loadResourceAuthorizationStatsByResourceIds('account', accountIds)
-  const authorizationScopes = (listProjection ? [] : rows)
+  const authorizationScopes = rows
     .filter((row) => row.authorization_id)
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const usageByAuthorization = listProjection ? new Map() : loadAccountListStatsMap('account_authorization_usage_total', () => loadAccountAuthorizationUsageSummaries(authorizationScopes))
-  const todayUsageByAuthorization = listProjection ? new Map() : loadAccountListStatsMap('account_authorization_usage_today', () => loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone!)))
+  const usageByAuthorization = loadAccountListStatsMap('account_authorization_usage_total', () => loadAccountAuthorizationUsageSummaries(authorizationScopes))
+  const todayUsageByAuthorization = loadAccountListStatsMap('account_authorization_usage_today', () => loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone)))
   const quotaExceededByAuthorization = loadAuthorizationQuotaExceededByAuthorizationId(rows)
   const sourcesByAuthorization = listProjection ? new Map() : loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = listProjection ? new Map() : loadAccountListStatsMap('account_oauth_usage_snapshot', () => loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => accountResourceFactAccountId(row))))
-  const apiKeyRuntimeByAccount = listProjection ? new Map() : loadAccountApiKeyRuntimeSummariesByAccountIds(accountIds)
+  const apiKeyRuntimeByAccount = loadAccountApiKeyRuntimeSummariesByAccountIds(rows.map(accountResourceFactAccountId))
   const ownerAccountIds = includeCredentials
     ? rows.filter((row) => (row.access_type ?? 'owner') !== 'authorized').map((row) => row.id)
     : []
@@ -1300,11 +1305,11 @@ function accountSummariesFromRows(
       lastHealthCheckErrorCode: row.last_health_check_error_code ?? undefined,
       lastHealthCheckErrorMessage: row.last_health_check_error_message ?? undefined,
       lastHealthCheckTraceId: row.last_health_check_trace_id ?? undefined,
-      apiKeyRuntime: apiKeyRuntimeByAccount.get(row.id),
+      apiKeyRuntime: apiKeyRuntimeByAccount.get(accountResourceFactAccountId(row)),
       apiKeyRuntimeDetails: isAuthorizedView ? undefined : apiKeyRuntimeDetailsByAccount.get(row.id),
       streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
-      lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? undefined,
+      lastUsedAt: usage.lastUsedAt ?? row.last_used_at ?? undefined,
       todayUsage,
       usage,
       oauthUsage: isGptVendorCode(resourceProviderCode) && resourceType === 'oauth' ? oauthUsageByAccount.get(accountResourceFactAccountId(row)) : undefined,

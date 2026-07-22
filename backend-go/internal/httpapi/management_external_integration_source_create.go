@@ -142,7 +142,7 @@ func recordManagementExternalIntegrationSourceCreateOperationLog(
 	result managementexternalintegrationsources.CreateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

@@ -21,22 +21,27 @@ runtimeConfig.processRole = 'db-service'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, clientCatalogService, sqliteReadWorkerPool] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../modules/model-pricing/client-model-catalog.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const groups = Array.from({ length: maxRouteStrategyGroupBindings + 1 }, (_, index) => repositories.createGroup({
     name: `网关 API Key 路由查询防护分组 ${String(index + 1).padStart(2, '0')}`,
-    providerCode: 'gpt',
+    providerCode: index === 1 ? 'gemini' : 'gpt',
     enabled: true
   }, access))
   const routeStrategy = repositories.createRouteStrategy({
     name: '网关 API Key 路由查询防护策略',
     mode: 'failover',
-    groupBindings: [{ groupId: groups[0].id, priority: 1, weight: 1, status: 'active' }]
+    groupBindings: [
+      { groupId: groups[0].id, priority: 1, weight: 1, status: 'active' },
+      { groupId: groups[1].id, priority: 2, weight: 1, status: 'active' }
+    ]
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '网关 API Key 路由查询防护 Key',
@@ -52,7 +57,7 @@ try {
     INSERT INTO route_strategy_groups (id, route_strategy_id, system_account_id, group_id, priority, weight, status, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, 1, 'active', ?, ?)
   `)
-  for (let index = 1; index < groups.length; index += 1) {
+  for (let index = 2; index < groups.length; index += 1) {
     const params: SQLInputValue[] = [`rsg_route_guard_${index}`, routeStrategyId, 'sys_admin', groups[index].id, index + 1, now, now]
     insertBinding.run(...params)
   }
@@ -61,9 +66,20 @@ try {
   const bindings = loadActiveGatewayApiKeyGroupBindings(apiKey.id, routeStrategyId, 'sys_admin')
   assert.equal(bindings.length, maxRouteStrategyGroupBindings, '网关运行态单次只应读取固定上限的策略路由分组绑定')
   assert.deepEqual(bindings.map((binding) => binding.priority), Array.from({ length: maxRouteStrategyGroupBindings }, (_, index) => index + 1), '网关策略路由分组绑定应按优先级稳定返回固定窗口')
+  const providerCodes = [...new Set(bindings.map((binding) => binding.provider_code))]
+  assert.deepEqual(providerCodes.sort(), ['gemini', 'gpt'], 'API Key 模型目录作用域必须收集全部 active 分组涉及的供应商')
+  const clientCatalog = await clientCatalogService.listClientModelCatalogAsync({
+    systemAccountId: access.systemAccountId,
+    providerCodes
+  })
+  const clientProviderCodes = new Set(clientCatalog.map((item) => item.providerCode))
+  assert(clientProviderCodes.has('gpt'), 'API Key 客户端目录必须包含 GPT 分组模型')
+  assert(clientProviderCodes.has('gemini'), 'API Key 客户端目录必须包含 Gemini 分组模型')
+  assert.equal(clientProviderCodes.has('anthropic'), false, 'API Key 客户端目录不得包含未绑定的 Anthropic 模型')
 
-  console.log('网关策略路由绑定查询防护回归通过：读取固定 20 条窗口并命中路由索引，无全表扫描或临时排序')
+  console.log('网关策略路由绑定查询防护回归通过：读取固定 20 条窗口、聚合全部供应商并命中路由索引')
 } finally {
+  await sqliteReadWorkerPool.closeSqliteReadWorkerPool().catch(() => undefined)
   try {
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
