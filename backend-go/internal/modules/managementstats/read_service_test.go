@@ -141,6 +141,18 @@ func TestAIPerformanceCapsSelectionMergesAccountsAndFillsHourlyBuckets(t *testin
 	}
 }
 
+func TestRoundedAccountPerformanceAverageMatchesNodeMathRound(t *testing.T) {
+	if got := roundedAccountPerformanceAverage(5, 2); got == nil || *got != 3 {
+		t.Fatalf("roundedAccountPerformanceAverage(5, 2) = %v", got)
+	}
+	if got := roundedAccountPerformanceAverage(-3, 2); got == nil || *got != -1 {
+		t.Fatalf("roundedAccountPerformanceAverage(-3, 2) = %v", got)
+	}
+	if got := roundedAccountPerformanceAverage(5, 0); got != nil {
+		t.Fatalf("roundedAccountPerformanceAverage(5, 0) = %v, want nil", *got)
+	}
+}
+
 func TestAIPerformanceAccountsCapsLimitAndKeepsSelectedIDs(t *testing.T) {
 	reader := &managementStatsReadStub{aiAccounts: []port.ManagementStatsAccount{{ID: "acc_1", Name: "A", ProviderCode: "openai", Status: "active", SystemAccountID: "sys_self", OwnerSystemAccountID: "sys_self", AccessType: "owner"}}}
 	service := readServiceForTest(reader)
