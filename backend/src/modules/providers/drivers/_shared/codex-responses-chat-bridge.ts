@@ -77,6 +77,7 @@ interface CodexResponsesChatBridgeToolPlan {
 
 interface ChatToolCallState {
   id: string
+  itemType?: 'function_call' | 'custom_tool_call'
   callId: string
   name: string
   arguments: string
@@ -86,6 +87,12 @@ interface ChatToolCallState {
   done: boolean
 }
 
+interface PendingChatToolCallState {
+  upstreamCallId?: string
+  name: string
+  arguments: string
+  outputIndex: number
+}
 interface PendingChatToolCall {
   callId: string
   name: string
@@ -126,6 +133,7 @@ interface ChatToResponsesState {
   outputText: string
   outputItems: JsonRecord[]
   toolCalls: Map<number, ChatToolCallState>
+  pendingToolCalls: Map<number, PendingChatToolCallState>
   toolAdaptersByChatName: Map<string, CodexResponsesChatBridgeToolAdapter>
   usage?: JsonRecord
   estimatedInputTokens?: number
@@ -1196,6 +1204,7 @@ function createChatToResponsesState(
     outputText: '',
     outputItems: [],
     toolCalls: new Map(),
+    pendingToolCalls: new Map(),
     toolAdaptersByChatName: new Map(toolAdaptersByChatName ?? []),
     estimatedInputTokens,
     finishReasonFailures: new Map(Object.entries(finishReasonFailures ?? {})),
@@ -1402,16 +1411,58 @@ function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknow
   if (argumentsDelta) {
     activeToolCall.arguments += argumentsDelta
   }
-  const output: string[] = []
-  if (!activeToolCall.added && activeToolCall.name) {
-    activeToolCall.added = true
-    output.push(sse('response.output_item.added', {
-      type: 'response.output_item.added',
-      output_index: activeToolCall.outputIndex,
-      item: toolCallInProgressItem(activeToolCall)
-    }))
+  const pending = state.pendingToolCalls.get(index) ?? {
+    upstreamCallId: stringValue(value.id),
+    name: '',
+    arguments: '',
+    outputIndex: state.nextOutputIndex++
   }
-  return output
+  if (!pending.upstreamCallId) pending.upstreamCallId = stringValue(value.id)
+  if (chatName) pending.name = mergeChatToolName(pending.name, chatName)
+  if (argumentsDelta) pending.arguments += argumentsDelta
+  const adapter = pending.name ? state.toolAdaptersByChatName.get(pending.name) : undefined
+  if (!adapter) {
+    state.pendingToolCalls.set(index, pending)
+    return []
+  }
+
+  const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  const identity = createCodexBridgeToolIdentity({
+    adapterKind: adapter.kind,
+    idPrefix: state.idPrefix,
+    index,
+    upstreamCallId: pending.upstreamCallId,
+    suffix
+  })
+  const toolCall: ChatToolCallState = {
+    id: identity.itemId,
+    itemType: identity.itemType,
+    callId: identity.callId,
+    name: adapter.responsesName,
+    arguments: pending.arguments,
+    adapter,
+    outputIndex: pending.outputIndex,
+    added: false,
+    done: false
+  }
+  state.pendingToolCalls.delete(index)
+  state.toolCalls.set(index, toolCall)
+  return emitToolCallAdded(toolCall)
+}
+
+function emitToolCallAdded(toolCall: ChatToolCallState): string[] {
+  if (toolCall.added) return []
+  toolCall.added = true
+  return [sse('response.output_item.added', {
+    type: 'response.output_item.added',
+    output_index: toolCall.outputIndex,
+    item: toolCallInProgressItem(toolCall)
+  })]
+}
+
+function mergeChatToolName(current: string, incoming: string): string {
+  if (!current || current === incoming || current.endsWith(incoming)) return current || incoming
+  return `${current}${incoming}`
 }
 
 function completeOpenOutputItems(state: ChatToResponsesState): string[] {
