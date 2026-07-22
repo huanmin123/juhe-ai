@@ -15,6 +15,7 @@ import {
 import { buildPreparedUpstreamRequestParts } from '../../modules/gateway/dispatch/account-preparation.js'
 import type { GatewayUsageContext } from '../../modules/gateway/usage/records.js'
 import { replaceGatewayJsonBody, type GatewayRawBodyRequest } from '../../modules/gateway/request/body.js'
+import { GatewayRequestValidationError } from '../../modules/gateway/request/validation-error.js'
 
 const model = 'gpt-5.5'
 const summary = 'Earlier turns established the deployment constraints.'
@@ -48,8 +49,22 @@ const canonicalBody = {
 }
 const historicalInput = {
   type: 'message',
+  id: 'msg_chat_bridge_history',
   role: 'assistant',
   content: [{ type: 'output_text', text: 'Historical response that must not be saved as current input.' }]
+}
+const historicalReasoning = {
+  type: 'reasoning',
+  id: 'rs_chat_bridge_history',
+  summary: [{ type: 'summary_text', text: 'Bridge reasoning summary.' }],
+  encrypted_content: null
+}
+const historicalCustomToolCall = {
+  type: 'custom_tool_call',
+  id: 'ctc_chat_bridge_history',
+  call_id: 'call_chat_bridge_history',
+  name: 'apply_patch',
+  input: '*** Begin Patch\n*** End Patch\n'
 }
 
 const req = request(canonicalBody)
@@ -64,8 +79,8 @@ setCodexResponsesContextStateForRequest(req, {
   canonicalBody,
   currentBody: canonicalBody,
   currentInput: canonicalBody.input,
-  materializedInput: [historicalInput, ...canonicalBody.input],
-  materializedCurrentInputStartIndex: 1,
+  materializedInput: [historicalInput, historicalReasoning, historicalCustomToolCall, ...canonicalBody.input],
+  materializedCurrentInputStartIndex: 3,
   previousResponseId: canonicalBody.previous_response_id,
   previousResponseKind: 'internal',
   sessionId: 'session_test',
@@ -123,6 +138,15 @@ assert.deepEqual((nativeBody.input as unknown[]).find((item) => (
 })
 assert.match(JSON.stringify(nativeBody), /native-upstream-encrypted-content/)
 assert.doesNotMatch(JSON.stringify(nativeBody), /juhecmp\.v[12]/)
+for (const item of nativeBody.input as Array<Record<string, unknown>>) {
+  if (['message', 'reasoning', 'custom_tool_call'].includes(String(item.type))) {
+    assert.equal(Object.hasOwn(item, 'id'), false, `bridge -> native 重放不得携带 ${String(item.type)} 合成 ID`)
+  }
+}
+const nativeCustomToolCall = (nativeBody.input as Array<Record<string, unknown>>)
+  .find((item) => item.type === 'custom_tool_call')
+assert.equal(nativeCustomToolCall?.call_id, historicalCustomToolCall.call_id, '历史清洗不得修改 custom call_id')
+assert.equal(nativeCustomToolCall?.input, historicalCustomToolCall.input, '历史清洗不得修改 custom input')
 assert.equal(codexResponsesChatBridgeCompletionHandlerForRequest(req, nativeAccount), undefined)
 
 replaceGatewayJsonBody(req, {
@@ -248,6 +272,33 @@ const untouchedParts = await buildPreparedUpstreamRequestParts(untouchedReq, nat
 assert.equal(untouchedReq.body, untouchedBody, '原生 Responses 无转换派发不得替换请求 body 引用')
 assert.deepEqual((untouchedReq as unknown as GatewayRawBodyRequest).rawBody, untouchedRawBody, '原生 Responses 无转换派发不得重写 rawBody')
 assert.deepEqual(jsonBody(untouchedParts.body), untouchedBody, '原生 Responses 无转换派发的上游 body 语义应保持不变')
+
+const genericInputWithId = {
+  type: 'message',
+  id: 'msg_generic_client_owned',
+  role: 'user',
+  content: [{ type: 'input_text', text: 'Generic client request.' }]
+}
+const genericReq = request({ model, stream: true, input: [genericInputWithId] })
+const genericBody = jsonBody((await buildPreparedUpstreamRequestParts(genericReq, nativeAccount, usageContext, undefined, {
+  requestClientCompatibility: 'openai_standard'
+})).body)
+assert.equal(((genericBody.input as Array<Record<string, unknown>>)[0])?.id, genericInputWithId.id, 'P0 sanitizer 不得改写普通 OpenAI Responses 客户端历史')
+
+const unrecoverableReq = request({
+  model,
+  stream: true,
+  input: [{ type: 'reasoning', id: 'rs_only_reference' }]
+})
+await assert.rejects(
+  () => buildPreparedUpstreamRequestParts(unrecoverableReq, nativeAccount, usageContext, undefined, {
+    requestClientCompatibility: 'codex_responses'
+  }),
+  (error) => error instanceof GatewayRequestValidationError
+    && error.code === 'codex_history_item_unrecoverable'
+    && error.statusCode === 400,
+  'Codex 不可恢复历史必须在上游请求构造前本地失败'
+)
 
 console.log('跨协议 Codex 上下文回归通过：内部摘要按实际账号渲染，原生加密内容和外部 previous_response_id 保持边界')
 

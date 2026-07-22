@@ -564,6 +564,7 @@
     "test:codex-context-state-sharding": "tsx src/scripts/regression/codex-context-state-sharding-regression.ts",
     "test:codex-context-state-writer-pool": "tsx src/scripts/regression/codex-context-state-writer-pool-regression.ts",
     "test:codex-cross-protocol-context": "tsx src/scripts/regression/codex-cross-protocol-context-regression.ts",
+    "test:codex-responses-bridge-native-switch": "tsx src/scripts/regression/codex-cross-protocol-context-regression.ts",
     "test:group-summary-stats-total-fallback": "tsx src/scripts/regression/group-summary-stats-total-fallback-regression.ts",
     "test:codex-context-state-pressure": "tsx src/scripts/performance/codex-context-state-pressure.ts",
     "test:sqlite-database-pressure": "tsx src/scripts/performance/sqlite-database-pressure.ts",
