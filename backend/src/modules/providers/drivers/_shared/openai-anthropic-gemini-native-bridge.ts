@@ -520,6 +520,10 @@ function anthropicToolsToGeminiTools(
   const output: JsonRecord[] = []
   for (const raw of value) {
     const tool = objectValue(raw)
+    const explicitType = stringValue(tool?.type)
+    if (explicitType && explicitType !== 'custom') {
+      throw guidance(req, mapping, `当前${providerLabel(providerName)} Gemini native 上游不支持 Anthropic server tool：${explicitType}。请客户端配置本地 MCP 或改用真实支持该工具的上游。`, 'unsupported_anthropic_messages_server_tool')
+    }
     const name = stringValue(tool?.name)
     if (!name) continue
     output.push({

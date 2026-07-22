@@ -9,6 +9,18 @@ import type { ResolvedOpenAIModelMapping } from '../../modules/gateway/protocols
 
 const chatToGemini = mapping('chat_completions')
 const responsesToGemini = mapping('responses')
+const messagesToGemini = mapping('messages')
+
+await assert.rejects(
+  buildOpenAIOrAnthropicToGeminiNativeBody(request({
+    model: 'client-messages-model',
+    max_tokens: 64,
+    messages: [{ role: 'user', content: 'hello' }],
+    tools: [{ type: 'web_search_20250305', name: 'web_search', input_schema: { type: 'object', properties: {} } }]
+  }, '/v1/messages'), { mapping: messagesToGemini }),
+  (error: unknown) => (error as { code?: unknown }).code === 'unsupported_anthropic_messages_server_tool',
+  'Anthropic server tool 到 Gemini native bridge 必须保留稳定 guidance 错误码'
+)
 
 for (const [field, value] of [
   ['service_tier', 'priority'],
@@ -114,7 +126,7 @@ await assert.rejects(
 
 console.log('受保护请求控制 bridge 回归通过：无法保真映射时明确拒绝，不静默丢字段')
 
-function mapping(sourceEndpointFamily: 'chat_completions' | 'responses'): ResolvedOpenAIModelMapping {
+function mapping(sourceEndpointFamily: 'chat_completions' | 'responses' | 'messages'): ResolvedOpenAIModelMapping {
   return {
     sourceModel: `client-${sourceEndpointFamily}`,
     sourceEndpointFamily,
