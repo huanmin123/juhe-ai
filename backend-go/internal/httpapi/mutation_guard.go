@@ -478,6 +478,46 @@ func managementExternalIntegrationSourceBuiltInResetMutationGuardConfig() mutati
 	}
 }
 
+func managementResponseInspectionPolicyCreateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "response_inspection_policies.create",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFieldsWithLimit(w, r, responseInspectionPolicyMaxBodyBytes)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"payloadHash": hashMutationStableValue(mutationNodeJSONValue(mutationAnyFields(fields))),
+			}, nil
+		},
+	}
+}
+
+func managementResponseInspectionPolicyUpdateMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "response_inspection_policies.update",
+		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
+			fields, err := mutationJSONFieldsWithLimit(w, r, responseInspectionPolicyMaxBodyBytes)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"id":          chi.URLParam(r, "id"),
+				"payloadHash": hashMutationStableValue(mutationNodeJSONValue(mutationAnyFields(fields))),
+			}, nil
+		},
+	}
+}
+
+func managementResponseInspectionPolicyDeleteMutationGuardConfig() mutationGuardConfig {
+	return mutationGuardConfig{
+		operationKey: "response_inspection_policies.delete",
+		fingerprint: func(_ http.ResponseWriter, r *http.Request) (any, error) {
+			return map[string]any{"id": chi.URLParam(r, "id")}, nil
+		},
+	}
+}
+
 func managementGroupCreateMutationJSONFields(w http.ResponseWriter, r *http.Request) (map[string]json.RawMessage, error) {
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
@@ -545,6 +585,14 @@ func mutationAnyField(fields map[string]json.RawMessage, name string) any {
 		return nil
 	}
 	return value
+}
+
+func mutationAnyFields(fields map[string]json.RawMessage) map[string]any {
+	result := make(map[string]any, len(fields))
+	for name := range fields {
+		result[name] = mutationAnyField(fields, name)
+	}
+	return result
 }
 
 func mutationNodeJSONNumberField(fields map[string]json.RawMessage, name string) any {
