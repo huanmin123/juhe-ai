@@ -105,7 +105,12 @@ func newManagementAuditErrorGroupEventsHandler(service managementAuditLogService
 	readHandler := managementAuditReadHandler{service: service}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readHandler.handle(w, r, func(service managementAuditLogService, r *http.Request) {
-			result, err := service.ListErrorGroupEvents(r, chi.URLParam(r, "errorGroupId"), parseManagementAuditLogListQuery(r.URL.Query()))
+			errorGroupID := strings.TrimFunc(chi.URLParam(r, "errorGroupId"), managementGroupListECMAScriptWhitespace)
+			if errorGroupID == "" {
+				writeMessageError(w, http.StatusBadRequest, "错误分组 ID 不合法")
+				return
+			}
+			result, err := service.ListErrorGroupEvents(r, errorGroupID, parseManagementAuditLogListQuery(r.URL.Query()))
 			if err != nil {
 				writeMessageError(w, 500, "服务器内部错误")
 				return
