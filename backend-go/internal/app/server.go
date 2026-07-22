@@ -215,6 +215,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if managementOperationLogQueue != nil {
 		defer func() { _ = managementOperationLogQueue.Close() }()
 	}
+	managementOperationLogDispatcher := httpapi.NewManagementOperationLogDispatcher(
+		managementOperationLogQueue,
+		store,
+		logger,
+	)
+	if managementOperationLogDispatcher != nil {
+		defer shutdownRecordDispatcher(managementOperationLogDispatcher, cfg.ShutdownTimeout, logger, "management operation log")
+	}
 	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
 	if err != nil {
 		return err
@@ -236,6 +244,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		store,
 		stateRedis,
 		managementOperationLogQueue,
+		managementOperationLogDispatcher,
 		logger,
 		systemAccountInvalidator,
 		accountsStaticResetPublisher,
@@ -704,6 +713,21 @@ type managementAPIInvalidator interface {
 	managementclientippolicies.ClientIPPolicyCacheInvalidator
 }
 
+type recordDispatcherShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+func shutdownRecordDispatcher(dispatcher recordDispatcherShutdowner, timeout time.Duration, logger *slog.Logger, recordType string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := dispatcher.Shutdown(ctx); err != nil && logger != nil {
+		logger.Warn("记录派发器关闭超时",
+			slog.String("record_type", recordType),
+			slog.Any("error", err),
+		)
+	}
+}
+
 type gatewayCacheInvalidator interface {
 	managementAPIInvalidator
 	publicapikeys.APIKeyGatewayCacheInvalidator
@@ -725,6 +749,7 @@ func newManagementAPIHandlerWithPageData(
 		store,
 		stateRedis,
 		operationLogQueue,
+		nil,
 		logger,
 		systemAccountInvalidator,
 		accountsStaticResetPublisher,
@@ -739,6 +764,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
+	operationLogSubmitter httpapi.ManagementOperationLogSubmitter,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
 	accountsStaticResetPublisher managementPageDataPublisher,
@@ -964,6 +990,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Logger:         logger,
 		Client:         operationLogQueue,
 		SettingsReader: store,
+		Submitter:      operationLogSubmitter,
 	}
 	return managementAPIHandlers{
 		AuthMiddleware:                          httpapi.NewManagementAPIAuthMiddleware(authenticator),
