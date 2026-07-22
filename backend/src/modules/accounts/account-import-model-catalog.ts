@@ -34,11 +34,13 @@ export function validateAccountModelCatalogFields(
   try {
     const provider = context.providerByCode.get(account.providerCode)
     const providerProfile = provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId)
+    const usesProviderDefaults = !account.supportedModels?.length
     account.supportedModels = normalizeAccountSupportedModelsForProvider(
-      account.supportedModels?.length ? account.supportedModels : provider?.defaultSupportedModels,
+      usesProviderDefaults ? provider?.defaultSupportedModels : account.supportedModels,
       account.providerCode,
       context.targetSystemAccountId,
-      providerProfile
+      providerProfile,
+      usesProviderDefaults
     )
     assertAccountSupportedModelsRequired(account.supportedModels ?? [])
     assertImportedAccountHealthCheckModel(account.healthCheckModel, account.supportedModels ?? [])
@@ -69,11 +71,13 @@ export async function validateAccountModelCatalogFieldsAsync(
   try {
     const provider = context.providerByCode.get(account.providerCode)
     const providerProfile = provider?.protocolProfiles.find((profile) => profile.id === account.providerProtocolProfileId)
+    const usesProviderDefaults = !account.supportedModels?.length
     account.supportedModels = await normalizeAccountSupportedModelsForProviderAsync(
-      account.supportedModels?.length ? account.supportedModels : provider?.defaultSupportedModels,
+      usesProviderDefaults ? provider?.defaultSupportedModels : account.supportedModels,
       account.providerCode,
       context.targetSystemAccountId,
-      providerProfile
+      providerProfile,
+      usesProviderDefaults
     )
     assertAccountSupportedModelsRequired(account.supportedModels ?? [])
     assertImportedAccountHealthCheckModel(account.healthCheckModel, account.supportedModels ?? [])

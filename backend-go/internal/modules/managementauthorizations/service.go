@@ -14,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"math"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -72,26 +71,11 @@ type Service struct {
 	now                      func() time.Time
 	secret                   string
 	authorizationInvalidator AuthorizationInvalidator
-	pageDataPublisher        AuthorizationPageDataPublisher
-	teamReader               TeamReader
 	logger                   *slog.Logger
 }
 
 type AuthorizationInvalidator interface {
 	InvalidateAuthorizationChanged(ctx context.Context, reason string) error
-}
-
-type AccountsStaticResetPublisher interface {
-	PublishAccountsStaticReset(ctx context.Context, ownerSystemAccountIDs []string, allScopes bool) error
-}
-
-type AuthorizationPageDataPublisher interface {
-	AccountsStaticResetPublisher
-	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
-}
-
-type TeamReader interface {
-	FindManagementSystemTeam(ctx context.Context, teamID string, systemAccountID string) (port.ManagementSystemTeamDetail, bool, error)
 }
 
 type ServiceOptions struct {
@@ -110,9 +94,7 @@ type ServiceOptions struct {
 	Now                      func() time.Time
 	Secret                   string
 	AuthorizationInvalidator AuthorizationInvalidator
-	Publisher                AuthorizationPageDataPublisher
 	Logger                   *slog.Logger
-	TeamReader               TeamReader
 }
 
 type ListInput struct {
@@ -230,22 +212,13 @@ type ListItem struct {
 	GranteeUsername                string        `json:"granteeUsername,omitempty"`
 	GranteeTeamID                  string        `json:"granteeTeamId,omitempty"`
 	GranteeTeamName                string        `json:"granteeTeamName,omitempty"`
-	Scope                          string        `json:"scope"`
 	Status                         string        `json:"status"`
 	Remark                         string        `json:"remark,omitempty"`
 	ExpiresAt                      *time.Time    `json:"expiresAt,omitempty"`
-	EffectiveSourceType            string        `json:"effectiveSourceType,omitempty"`
+	EffectiveSourceType            string        `json:"effectiveSourceType"`
 	EffectiveSourceTeamID          string        `json:"effectiveSourceTeamId,omitempty"`
 	EffectiveSourceTeamName        string        `json:"effectiveSourceTeamName,omitempty"`
-	ActivatedAt                    *time.Time    `json:"activatedAt,omitempty"`
-	LastSourceChangedAt            *time.Time    `json:"lastSourceChangedAt,omitempty"`
-	LastUsedAt                     *time.Time    `json:"lastUsedAt,omitempty"`
-	CreatedBy                      string        `json:"createdBy"`
 	CreatedAt                      time.Time     `json:"createdAt"`
-	RevokedBy                      string        `json:"revokedBy,omitempty"`
-	RevokedAt                      *time.Time    `json:"revokedAt,omitempty"`
-	RevokedReason                  string        `json:"revokedReason,omitempty"`
-	UpdatedAt                      time.Time     `json:"updatedAt"`
 	Permissions                    Permissions   `json:"permissions"`
 	SourceSummary                  SourceSummary `json:"sourceSummary"`
 }
@@ -429,8 +402,6 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		now:                      now,
 		secret:                   opts.Secret,
 		authorizationInvalidator: opts.AuthorizationInvalidator,
-		pageDataPublisher:        opts.Publisher,
-		teamReader:               opts.TeamReader,
 		logger:                   logger,
 	}
 }
@@ -491,7 +462,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	}
 	items := make([]ListItem, 0, len(result.Items))
 	for _, row := range result.Items {
-		items = append(items, listItemFromSummary(row, canManageAuthorizationResourceOwner(row.ResourceOwnerSystemAccountID, canAccessAll, scopedSystemAccountID)))
+		items = append(items, listItemFromPort(row, canManageAuthorizationResourceOwner(row.ResourceOwnerSystemAccountID, canAccessAll, scopedSystemAccountID)))
 	}
 	return ListResult{
 		Items:    items,
@@ -738,7 +709,6 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 		return Summary{}, err
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationCreatedReason)
-	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, nil
 }
 
@@ -813,7 +783,6 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (Summary, bool,
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationUpdatedReason)
-	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -841,7 +810,6 @@ func (s *Service) Return(ctx context.Context, input ReturnInput) (Summary, bool,
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationReturnedReason)
-	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -871,7 +839,6 @@ func (s *Service) ReturnByResource(ctx context.Context, input ResourceReturnInpu
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationReturnedReason)
-	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -904,7 +871,6 @@ func (s *Service) Revoke(ctx context.Context, input RevokeInput) (Summary, bool,
 		return Summary{}, false, nil
 	}
 	s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationRevokedReason)
-	s.publishAuthorizationPageDataAfterCommit(ctx, row)
 	return row, true, nil
 }
 
@@ -929,7 +895,6 @@ func (s *Service) ExpireDue(ctx context.Context, input ExpirySweepInput) (Expiry
 	if result.Expired > 0 {
 		s.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationExpiredReason)
 	}
-	s.publishAuthorizationPageDataBatchAfterCommit(ctx, result.Authorizations)
 	return ExpirySweepResult{Expired: result.Expired}, nil
 }
 
@@ -945,249 +910,6 @@ func (s *Service) invalidateAuthorizationChangedBestEffort(ctx context.Context, 
 			"error", err,
 		)
 	}
-}
-
-func (s *Service) publishAuthorizationPageDataBatchAfterCommit(ctx context.Context, authorizations []port.ManagementResourceAuthorizationExpiryFanout) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), authorizationPostCommitSyncTimeout)
-	defer cancel()
-
-	owners := make([]string, 0, len(authorizations)*2)
-	teamIDSet := make(map[string]struct{})
-	accountAuthorizationCount := 0
-	groupAuthorizationCount := 0
-	hasAccountAuthorization := false
-	hasGroupAuthorization := false
-	for _, authorization := range authorizations {
-		if authorization.ResourceType == "group" {
-			hasGroupAuthorization = true
-			groupAuthorizationCount++
-			continue
-		}
-		if authorization.ResourceType != "account" {
-			continue
-		}
-		hasAccountAuthorization = true
-		accountAuthorizationCount++
-		owners = append(owners, authorization.ResourceOwnerSystemAccountID)
-		switch authorization.GranteeType {
-		case "system_account":
-			owners = append(owners, authorization.GranteeSystemAccountID)
-		case "team":
-			if teamID := strings.TrimSpace(authorization.GranteeTeamID); teamID != "" {
-				teamIDSet[teamID] = struct{}{}
-			}
-		}
-	}
-	teamIDs := make([]string, 0, len(teamIDSet))
-	for teamID := range teamIDSet {
-		teamIDs = append(teamIDs, teamID)
-	}
-	sort.Strings(teamIDs)
-
-	allScopes := false
-	for _, teamID := range teamIDs {
-		if s.teamReader == nil {
-			allScopes = true
-			s.logger.WarnContext(context.WithoutCancel(ctx), "authorization team page data owner lookup unavailable", "teamId", teamID)
-			continue
-		}
-		team, found, err := s.teamReader.FindManagementSystemTeam(publishCtx, teamID, "")
-		if err != nil || !found {
-			allScopes = true
-			attrs := []any{"teamId", teamID, "found", found}
-			if err != nil {
-				attrs = append(attrs, "error", err)
-			}
-			s.logger.WarnContext(context.WithoutCancel(ctx), "authorization team page data owner lookup failed", attrs...)
-			continue
-		}
-		for _, member := range team.Members {
-			if member.Status == "active" {
-				owners = append(owners, member.SystemAccountID)
-			}
-		}
-	}
-
-	owners = normalizeAccountsStaticResetOwnerIDs(owners)
-	var domainPublishDone <-chan struct{}
-	if hasGroupAuthorization {
-		done := make(chan struct{})
-		domainPublishDone = done
-		go func() {
-			defer close(done)
-			s.publishAuthorizationDomainResets(ctx, publishCtx,
-				[]string{"groups.static", "stats.overview", "stats.accountUsage", "stats.aiPerformance"},
-				nil, true,
-				"authorizationCount", len(authorizations),
-				"accountAuthorizationCount", accountAuthorizationCount,
-				"groupAuthorizationCount", groupAuthorizationCount,
-			)
-		}()
-	} else if hasAccountAuthorization {
-		done := make(chan struct{})
-		domainPublishDone = done
-		go func() {
-			defer close(done)
-			s.publishAuthorizationDomainResets(ctx, publishCtx,
-				[]string{"stats.overview", "stats.accountUsage", "stats.aiPerformance"},
-				owners, allScopes,
-				"authorizationCount", len(authorizations),
-				"accountAuthorizationCount", accountAuthorizationCount,
-				"groupAuthorizationCount", groupAuthorizationCount,
-			)
-		}()
-	}
-	if len(owners) > 0 || allScopes {
-		if err := s.pageDataPublisher.PublishAccountsStaticReset(publishCtx, owners, allScopes); err != nil {
-			s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-				"domains", "accounts.static,accounts.options",
-				"authorizationCount", len(authorizations),
-				"teamCount", len(teamIDs),
-				"ownerCount", len(owners),
-				"allScopes", allScopes,
-				"error", err,
-			)
-		}
-	}
-	if domainPublishDone != nil {
-		<-domainPublishDone
-	}
-}
-
-func (s *Service) publishAuthorizationDomainResets(
-	ctx context.Context,
-	publishCtx context.Context,
-	domains []string,
-	owners []string,
-	allScopes bool,
-	attrs ...any,
-) {
-	type publishResult struct {
-		domain string
-		err    error
-	}
-	results := make(chan publishResult, len(domains))
-	for _, domain := range domains {
-		go func(domain string) {
-			results <- publishResult{
-				domain: domain,
-				err:    s.pageDataPublisher.PublishPageDataReset(publishCtx, domain, append([]string(nil), owners...), allScopes),
-			}
-		}(domain)
-	}
-	for range domains {
-		result := <-results
-		if result.err == nil {
-			continue
-		}
-		logAttrs := append([]any{
-			"domain", result.domain,
-			"ownerCount", len(owners),
-			"allScopes", allScopes,
-			"error", result.err,
-		}, attrs...)
-		s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-			logAttrs...,
-		)
-	}
-}
-
-func (s *Service) publishAuthorizationPageDataAfterCommit(ctx context.Context, summary Summary) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), authorizationPostCommitSyncTimeout)
-	defer cancel()
-	if summary.ResourceType == "group" {
-		s.publishAuthorizationDomainResets(ctx, publishCtx,
-			[]string{"groups.static", "stats.overview", "stats.accountUsage", "stats.aiPerformance"},
-			nil, true,
-			"authorizationId", summary.ID,
-			"resourceId", summary.ResourceID,
-		)
-		return
-	}
-	if summary.ResourceType != "account" {
-		return
-	}
-
-	owners := []string{summary.ResourceOwnerSystemAccountID}
-	allScopes := false
-	switch summary.GranteeType {
-	case "system_account":
-		owners = append(owners, summary.GranteeSystemAccountID)
-	case "team":
-		if s.teamReader == nil {
-			allScopes = true
-			s.logger.WarnContext(context.WithoutCancel(ctx), "authorization team page data owner lookup unavailable",
-				"authorizationId", summary.ID,
-				"teamId", summary.GranteeTeamID,
-			)
-			break
-		}
-		team, found, err := s.teamReader.FindManagementSystemTeam(publishCtx, strings.TrimSpace(summary.GranteeTeamID), "")
-		if err != nil || !found {
-			allScopes = true
-			attrs := []any{"authorizationId", summary.ID, "teamId", summary.GranteeTeamID, "found", found}
-			if err != nil {
-				attrs = append(attrs, "error", err)
-			}
-			s.logger.WarnContext(context.WithoutCancel(ctx), "authorization team page data owner lookup failed", attrs...)
-			break
-		}
-		for _, member := range team.Members {
-			if member.Status == "active" {
-				owners = append(owners, member.SystemAccountID)
-			}
-		}
-	}
-	owners = normalizeAccountsStaticResetOwnerIDs(owners)
-	if len(owners) == 0 && !allScopes {
-		return
-	}
-	statsPublishDone := make(chan struct{})
-	go func() {
-		defer close(statsPublishDone)
-		s.publishAuthorizationDomainResets(ctx, publishCtx,
-			[]string{"stats.overview", "stats.accountUsage", "stats.aiPerformance"},
-			owners, allScopes,
-			"authorizationId", summary.ID,
-			"resourceId", summary.ResourceID,
-		)
-	}()
-	if err := s.pageDataPublisher.PublishAccountsStaticReset(publishCtx, owners, allScopes); err != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-			"domains", "accounts.static,accounts.options",
-			"authorizationId", summary.ID,
-			"resourceId", summary.ResourceID,
-			"granteeType", summary.GranteeType,
-			"ownerCount", len(owners),
-			"allScopes", allScopes,
-			"error", err,
-		)
-	}
-	<-statsPublishDone
-}
-
-func normalizeAccountsStaticResetOwnerIDs(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	owners := make([]string, 0, len(values))
-	for _, value := range values {
-		id := strings.TrimSpace(value)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		owners = append(owners, id)
-	}
-	sort.Strings(owners)
-	return owners
 }
 
 func (s *Service) RefreshUsageRangeWindows(ctx context.Context, input UsageRangeWindowRefreshInput) (UsageRangeWindowRefreshResult, error) {
@@ -1542,47 +1264,54 @@ func canManageAuthorizationResourceOwner(ownerSystemAccountID string, canAccessA
 	return canAccessAll
 }
 
-func listItemFromSummary(summary Summary, canManage bool) ListItem {
+func listItemFromPort(row port.ManagementResourceAuthorizationListRow, canManage bool) ListItem {
+	isTeamSource := row.GranteeType == "team"
+	sourceActive := row.Status == "active" || row.Status == "paused"
+	activeSourceCount := 0
+	if sourceActive {
+		activeSourceCount = 1
+	}
+	effectiveSourceType := "manual"
+	if isTeamSource {
+		effectiveSourceType = "team"
+	}
 	item := ListItem{
-		ID:                             summary.ID,
-		ResourceType:                   summary.ResourceType,
-		ResourceID:                     summary.ResourceID,
-		ResourceName:                   summary.ResourceName,
-		ResourceOwnerSystemAccountID:   summary.ResourceOwnerSystemAccountID,
-		ResourceOwnerSystemAccountName: summary.ResourceOwnerSystemAccountName,
-		GranteeType:                    summary.GranteeType,
-		GranteeSystemAccountID:         summary.GranteeSystemAccountID,
-		GranteeSystemAccountName:       summary.GranteeSystemAccountName,
-		GranteeUsername:                summary.GranteeUsername,
-		GranteeTeamID:                  summary.GranteeTeamID,
-		GranteeTeamName:                summary.GranteeTeamName,
-		Scope:                          summary.Scope,
-		Status:                         summary.Status,
-		Remark:                         summary.Remark,
-		ExpiresAt:                      summary.ExpiresAt,
-		EffectiveSourceType:            summary.EffectiveSourceType,
-		EffectiveSourceTeamID:          summary.EffectiveSourceTeamID,
-		EffectiveSourceTeamName:        summary.EffectiveSourceTeamName,
-		ActivatedAt:                    summary.ActivatedAt,
-		LastSourceChangedAt:            summary.LastSourceChangedAt,
-		LastUsedAt:                     summary.LastUsedAt,
-		CreatedBy:                      summary.CreatedBy,
-		CreatedAt:                      summary.CreatedAt,
-		RevokedBy:                      summary.RevokedBy,
-		RevokedAt:                      summary.RevokedAt,
-		RevokedReason:                  summary.RevokedReason,
-		UpdatedAt:                      summary.UpdatedAt,
+		ID:                             row.ID,
+		ResourceType:                   row.ResourceType,
+		ResourceID:                     row.ResourceID,
+		ResourceName:                   row.ResourceName,
+		ResourceOwnerSystemAccountID:   row.ResourceOwnerSystemAccountID,
+		ResourceOwnerSystemAccountName: row.ResourceOwnerSystemAccountName,
+		GranteeType:                    row.GranteeType,
+		GranteeSystemAccountID:         row.GranteeSystemAccountID,
+		GranteeSystemAccountName:       row.GranteeSystemAccountName,
+		GranteeUsername:                row.GranteeUsername,
+		GranteeTeamID:                  row.GranteeTeamID,
+		GranteeTeamName:                row.GranteeTeamName,
+		Status:                         row.Status,
+		Remark:                         row.Remark,
+		ExpiresAt:                      row.ExpiresAt,
+		EffectiveSourceType:            effectiveSourceType,
+		CreatedAt:                      row.CreatedAt,
 		Permissions: Permissions{
 			CanEdit:      canManage,
 			CanAuthorize: canManage,
 		},
-		SourceSummary: sourceSummary(summary.AuthorizationSources, canManage),
+		SourceSummary: SourceSummary{
+			ActiveSourceCount: activeSourceCount,
+			HasManual:         sourceActive && !isTeamSource,
+			HasTeam:           sourceActive && isTeamSource,
+			TeamSources:       []TeamSourceItem{},
+		},
 	}
-	if !canManage {
-		item.EffectiveSourceTeamID = ""
-		item.EffectiveSourceTeamName = ""
-		item.CreatedBy = ""
-		item.RevokedBy = ""
+	if canManage && isTeamSource {
+		item.EffectiveSourceTeamID = row.GranteeTeamID
+		item.EffectiveSourceTeamName = row.GranteeTeamName
+		if sourceActive && strings.TrimSpace(row.GranteeTeamID) != "" {
+			item.SourceSummary.TeamSources = []TeamSourceItem{{
+				SourceTeamID: row.GranteeTeamID, SourceTeamName: row.GranteeTeamName,
+			}}
+		}
 	}
 	return item
 }
@@ -1623,29 +1352,6 @@ func sanitizeAuthorizationSourcesForViewer(sources []port.ManagementResourceAuth
 		})
 	}
 	return out
-}
-
-func sourceSummary(sources []port.ManagementResourceAuthorizationSourceSummary, canManage bool) SourceSummary {
-	result := SourceSummary{TeamSources: []TeamSourceItem{}}
-	for _, source := range sources {
-		if source.Status != "active" {
-			continue
-		}
-		result.ActiveSourceCount++
-		if source.SourceType == "manual" {
-			result.HasManual = true
-		}
-		if source.SourceType == "team" {
-			result.HasTeam = true
-			if canManage && strings.TrimSpace(source.SourceTeamID) != "" {
-				result.TeamSources = append(result.TeamSources, TeamSourceItem{
-					SourceTeamID:   source.SourceTeamID,
-					SourceTeamName: source.SourceTeamName,
-				})
-			}
-		}
-	}
-	return result
 }
 
 func parseServerDateTime(value string) (time.Time, error) {

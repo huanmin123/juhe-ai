@@ -44,6 +44,20 @@ func (s *Store) ListManagementProviderOptions(ctx context.Context, input port.Ma
 	return listManagementProviderOptions(ctx, s.queries(), input)
 }
 
+func (s *Store) ListManagementProviderSelectOptions(ctx context.Context) ([]port.ManagementProviderSelectOption, error) {
+	rows, err := s.queries().ListManagementProviderSelectOptions(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list management provider select options: %w", err)
+	}
+	items := make([]port.ManagementProviderSelectOption, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, port.ManagementProviderSelectOption{
+			ID: row.ID, Code: row.Code, Name: row.Name, Enabled: row.Enabled,
+		})
+	}
+	return items, nil
+}
+
 func listManagementProviders(ctx context.Context, q *postgresqueries.Queries, input port.ManagementProviderListInput) ([]port.ManagementProviderOption, error) {
 	rows, err := q.ListManagementProviders(ctx)
 	if err != nil {

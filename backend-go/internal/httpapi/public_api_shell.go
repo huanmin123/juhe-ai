@@ -272,7 +272,7 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 	requestSnapshot := publicapilog.BuildRequestSnapshot(publicapilog.RequestSnapshotInput{
 		Method:             r.Method,
 		Path:               r.URL.Path,
-		Query:              publicAPIQueryMap(r.URL.Query()),
+		Query:              parsePublicAPIQuery(queryString),
 		Body:               state.requestBody,
 		ContentType:        r.Header.Get("Content-Type"),
 		ContentLength:      r.Header.Get("Content-Length"),
@@ -310,7 +310,10 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 		EndedAt:          endedAt,
 		Closed:           closed,
 	})
-	s.logSubmitter.Submit(r.Context(), logInput)
+	outcome := submitPublicAPILog(r.Context(), s.logSubmitter, logInput)
+	if !outcome.Accepted {
+		warnRecordDispatchRejection(s.logger, &publicRecordRejectWarnAt, "public_api_log", outcome.RejectionReason)
+	}
 }
 
 func publicAPIRequestClosed(r *http.Request, response *publicAPIResponseCapture) bool {
@@ -443,23 +446,6 @@ func publicAPILogSourceContext(authContext *publicapiauth.AuthContext) *publicap
 		TokenPrefix: authContext.TokenPrefix,
 		IsTestToken: authContext.IsTestToken,
 	}
-}
-
-func publicAPIQueryMap(values map[string][]string) map[string]any {
-	out := make(map[string]any, len(values))
-	for key, items := range values {
-		switch len(items) {
-		case 0:
-			out[key] = ""
-		case 1:
-			out[key] = items[0]
-		default:
-			copied := make([]string, len(items))
-			copy(copied, items)
-			out[key] = copied
-		}
-	}
-	return out
 }
 
 func clonePublicAPIHandlers(handlers map[string]http.Handler) map[string]http.Handler {

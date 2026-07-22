@@ -43,6 +43,45 @@ func TestLoadReadsUpstreamBaseURLPrivateAllowlistFromEnvironment(t *testing.T) {
 	}
 }
 
+func TestLoadReadsBoundedRuntimeLogGrepConfiguration(t *testing.T) {
+	t.Setenv("JUHE_AI_LOG_DIR", "D:/juhe/logs")
+	t.Setenv("JUHE_AI_LOG_FILE_ENABLED", "false")
+	t.Setenv("JUHE_AI_LOG_RETENTION_DAYS", "21")
+	t.Setenv("JUHE_AI_LOG_MAX_FILES", "123")
+	t.Setenv("JUHE_AI_RG_PATH", "D:/tools/rg.exe")
+
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatalf("Load(): %v", err)
+	}
+	if cfg.RuntimeLogDirectory != "D:/juhe/logs" || cfg.RuntimeLogFileEnabled || cfg.RuntimeLogRetentionDays != 21 || cfg.RuntimeLogMaxFiles != 123 || cfg.RGPath != "D:/tools/rg.exe" {
+		t.Fatalf("runtime log grep config = %+v", cfg)
+	}
+
+	cfg.RuntimeLogMaxFiles = 501
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_LOG_MAX_FILES") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	cfg.RuntimeLogMaxFiles = 123
+	cfg.RuntimeLogRetentionDays = 31
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_LOG_RETENTION_DAYS") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestLoadUsesGoDevelopmentRuntimeLogDirectoryDefault(t *testing.T) {
+	if _, configured := os.LookupEnv("JUHE_AI_LOG_DIR"); configured {
+		t.Skip("JUHE_AI_LOG_DIR is configured by the test environment")
+	}
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RuntimeLogDirectory != "../backend/logs" {
+		t.Fatalf("RuntimeLogDirectory=%q", cfg.RuntimeLogDirectory)
+	}
+}
+
 func TestConfigDefaultsValidate(t *testing.T) {
 	cfg := Config{
 		Host:                       "127.0.0.1",
@@ -583,6 +622,18 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 
 	if err := base.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestConfigGatewayModelsEnabledRequiresPostgres(t *testing.T) {
+	cfg := Config{
+		Host: "127.0.0.1", Port: 3000, Env: "test", LogLevel: "info",
+		RedisNamespace: "juhe-ai", TrustProxy: "false",
+		NodeInternalRequestTimeout: 2 * time.Second, ShutdownTimeout: 15 * time.Second,
+		GatewayModelsEnabled: true,
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_GATEWAY_MODELS_ENABLED") {
+		t.Fatalf("Validate() error = %v, want gateway models postgres requirement", err)
 	}
 }
 

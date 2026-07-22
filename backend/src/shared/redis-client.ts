@@ -80,7 +80,9 @@ async function createRedisClient(url: string, options: DedicatedRedisClientOptio
     : normalizedPositiveInteger(options.commandsQueueMaxLength, 1)
   const client = createClient({
     url,
-    ...(options.disableOfflineQueue === true ? { disableOfflineQueue: true } : {}),
+    // Redis 承载缓存、运行态和队列协调。断线重连期间保留命令会绕过调用方的有界
+    // 重试，并可能在故障期间无限增长；需要重试的调用方必须自行负责。
+    disableOfflineQueue: options.disableOfflineQueue ?? true,
     ...(commandsQueueMaxLength === undefined ? {} : { commandsQueueMaxLength }),
     socket: {
       connectTimeout: connectTimeoutMs,

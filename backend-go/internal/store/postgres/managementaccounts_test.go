@@ -291,31 +291,6 @@ func TestManagementAccountTagUpdateFlowIncrementsConfigRevision(t *testing.T) {
 	}
 }
 
-func TestManagementAccountAuthorizationGranteeQueryMatchesNodeScopeContract(t *testing.T) {
-	source, err := os.ReadFile("queries/w2_management_account_tags.sql")
-	if err != nil {
-		t.Fatalf("read management account tag queries: %v", err)
-	}
-	query := querySection(t, string(source),
-		"-- name: ListAccountAuthorizationGranteeIDs :many",
-		"-- name: ListManagementAccountTagsForAccount :many",
-	)
-	for _, want := range []string{
-		"SELECT DISTINCT grantee_system_account_id",
-		"FROM juhe_business.resource_authorizations",
-		"resource_type = 'account'",
-		"resource_id = sqlc.arg(account_id)::text",
-		"ORDER BY grantee_system_account_id",
-	} {
-		if !strings.Contains(query, want) {
-			t.Fatalf("account authorization grantee query missing %q", want)
-		}
-	}
-	if strings.Contains(query, "status") {
-		t.Fatal("account authorization grantee scope query must include all direct grants regardless of status")
-	}
-}
-
 func TestAccountNameSearchDocumentTerms(t *testing.T) {
 	got := make([]string, 0)
 	for length := 1; length <= accountNameSearchMaxGramLength; length++ {

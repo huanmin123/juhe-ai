@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +16,21 @@ import (
 )
 
 type announcementPublicServiceStub struct {
-	items      []announcements.Announcement
-	listInput  announcements.PublicListInput
-	readInput  announcements.PublicReadInput
-	readResult announcements.PublicReadResult
-	listErr    error
-	readErr    error
+	items       []announcements.Announcement
+	detail      announcements.Announcement
+	detailID    string
+	detailFound bool
+	detailErr   error
+	listInput   announcements.PublicListInput
+	readInput   announcements.PublicReadInput
+	readResult  announcements.PublicReadResult
+	listErr     error
+	readErr     error
+}
+
+func (s *announcementPublicServiceStub) FindPublic(_ context.Context, id string) (announcements.Announcement, bool, error) {
+	s.detailID = id
+	return s.detail, s.detailFound, s.detailErr
 }
 
 func (s *announcementPublicServiceStub) ListPublic(_ context.Context, input announcements.PublicListInput) ([]announcements.Announcement, error) {
@@ -40,7 +50,11 @@ func announcementRequest(method string, path string, body string) *http.Request 
 }
 
 func TestAnnouncementPublicListHandlerPreservesDataAndNoStore(t *testing.T) {
-	service := &announcementPublicServiceStub{items: []announcements.Announcement{{ID: "a1"}}}
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	service := &announcementPublicServiceStub{items: []announcements.Announcement{{
+		ID: "a1", Title: "标题", Content: "不得泄露", Level: "info", Status: "published",
+		PublishedAt: &now, ReadAt: &now, CreatedAt: now, UpdatedAt: now,
+	}}}
 	recorder := httptest.NewRecorder()
 	newAnnouncementPublicListHandler(service).ServeHTTP(recorder, announcementRequest(http.MethodGet, "/__aisys__/api/announcements/public?limit=7", ""))
 
@@ -58,8 +72,53 @@ func TestAnnouncementPublicListHandlerPreservesDataAndNoStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal response data: %v", err)
 	}
-	if !strings.Contains(string(data), `"id":"a1"`) || strings.Contains(string(data), `"ID"`) || strings.Contains(string(data), `"createdBy"`) {
+	var items []map[string]json.RawMessage
+	if err := json.Unmarshal(data, &items); err != nil {
+		t.Fatalf("decode response items: %v", err)
+	}
+	wantKeys := []string{"id", "level", "publishedAt", "readAt", "title"}
+	gotKeys := make([]string, 0, len(items[0]))
+	for key := range items[0] {
+		gotKeys = append(gotKeys, key)
+	}
+	slices.Sort(gotKeys)
+	if !slices.Equal(gotKeys, wantKeys) {
 		t.Fatalf("response data = %s", data)
+	}
+}
+
+func TestAnnouncementPublicDetailHandlerReturnsPublishedDTOAndNotFound(t *testing.T) {
+	now := time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC)
+	service := &announcementPublicServiceStub{detail: announcements.Announcement{
+		ID: "a1", Title: "标题", Content: "完整正文", Level: "warning", Status: "published",
+		PublishedAt: &now, CreatedAt: now, UpdatedAt: now,
+	}, detailFound: true}
+	recorder := httptest.NewRecorder()
+	newAnnouncementPublicDetailHandler(service).ServeHTTP(recorder, announcementManagementRequest(http.MethodGet, "/announcements/public/a1", "user", "a1"))
+	if recorder.Code != http.StatusOK || service.detailID != "a1" || recorder.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d id=%q cache=%q", recorder.Code, service.detailID, recorder.Header().Get("Cache-Control"))
+	}
+	var response struct {
+		Data map[string]json.RawMessage `json:"data"`
+	}
+	if err := json.NewDecoder(recorder.Body).Decode(&response); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	wantKeys := []string{"content", "id", "level", "publishedAt", "title"}
+	gotKeys := make([]string, 0, len(response.Data))
+	for key := range response.Data {
+		gotKeys = append(gotKeys, key)
+	}
+	slices.Sort(gotKeys)
+	if !slices.Equal(gotKeys, wantKeys) {
+		t.Fatalf("detail keys=%v, want %v", gotKeys, wantKeys)
+	}
+
+	service.detailFound = false
+	recorder = httptest.NewRecorder()
+	newAnnouncementPublicDetailHandler(service).ServeHTTP(recorder, announcementManagementRequest(http.MethodGet, "/announcements/public/draft", "user", "draft"))
+	if recorder.Code != http.StatusNotFound || recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("Pragma") != "no-cache" {
+		t.Fatalf("hidden detail status=%d cache=%q pragma=%q", recorder.Code, recorder.Header().Get("Cache-Control"), recorder.Header().Get("Pragma"))
 	}
 }
 
@@ -135,16 +194,17 @@ func TestAnnouncementPublicHandlersRequireManagementAuthContext(t *testing.T) {
 func TestRouterRegistersAnnouncementPublicHandlersOnlyWhenManagementAPIEnabled(t *testing.T) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	base := RouterOptions{
-		ManagementAPIAuthMiddleware:             func(next http.Handler) http.Handler { return next },
-		ManagementAPIAuthTouchMiddleware:        func(next http.Handler) http.Handler { return next },
-		ManagementAnnouncementPublicListHandler: handler,
-		ManagementAnnouncementPublicReadHandler: handler,
+		ManagementAPIAuthMiddleware:               func(next http.Handler) http.Handler { return next },
+		ManagementAPIAuthTouchMiddleware:          func(next http.Handler) http.Handler { return next },
+		ManagementAnnouncementPublicListHandler:   handler,
+		ManagementAnnouncementPublicDetailHandler: handler,
+		ManagementAnnouncementPublicReadHandler:   handler,
 	}
 
 	enabled := base
 	enabled.Config.ManagementAPIEnabled = true
 	router := NewRouter(enabled)
-	for _, path := range []string{"/__aisys__/api/announcements/public", "/__aisys__/api/announcements/public/read"} {
+	for _, path := range []string{"/__aisys__/api/announcements/public", "/__aisys__/api/announcements/public/a1", "/__aisys__/api/announcements/public/read"} {
 		recorder := httptest.NewRecorder()
 		method := http.MethodGet
 		if strings.HasSuffix(path, "/read") {
@@ -164,4 +224,22 @@ func TestRouterRegistersAnnouncementPublicHandlersOnlyWhenManagementAPIEnabled(t
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("disabled status=%d, want 404", recorder.Code)
 	}
+}
+
+func TestRouterRequiresTouchAuthWhenAnnouncementPublicReadIsTheOnlyWriteRoute(t *testing.T) {
+	defer func() {
+		recovered := recover()
+		if recovered != "ManagementAPIAuthTouchMiddleware is required for Go management write routes" {
+			t.Fatalf("panic = %v, want missing write auth middleware", recovered)
+		}
+	}()
+
+	opts := RouterOptions{
+		ManagementAPIAuthMiddleware: func(next http.Handler) http.Handler {
+			return next
+		},
+		ManagementAnnouncementPublicReadHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	}
+	opts.Config.ManagementAPIEnabled = true
+	NewRouter(opts)
 }

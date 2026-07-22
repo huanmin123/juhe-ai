@@ -47,7 +47,7 @@ try {
   seedAccountUsage(account.id)
   const baselinePage = repositories.listAccountItemsPageReadOnly(access, { page: 1, pageSize: 20 })
   const baselineAccount = baselinePage.items.find((item) => item.id === account.id)
-  assert.equal(baselineAccount?.usage.requestCount, 0, '账户基础列表不应同步读取账号累计用量')
+  assert.equal(baselineAccount?.usage.requestCount, 7, '账户基础列表应内联返回账号累计用量')
 
   const statsDatabase = databaseModule.getStatsDatabase()
   const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
@@ -67,17 +67,22 @@ try {
     return originalPrepare(sql)
   }) as typeof statsDatabase.prepare
 
-  let lockedPage: typeof baselinePage | undefined
+  let lockedError: unknown
   try {
-    lockedPage = repositories.listAccountItemsPageReadOnly(access, { page: 1, pageSize: 20 })
+    repositories.listAccountItemsPageReadOnly(access, { page: 1, pageSize: 20 })
+  } catch (error) {
+    lockedError = error
   } finally {
     statsDatabase.prepare = originalPrepare
     statsDatabase.exec = originalExec
   }
-  assert(lockedPage?.items.some((item) => item.id === account.id), '统计库忙锁不应阻塞不读取统计表的账户基础列表')
-  assert.deepEqual(busyTimeouts, [], '账户基础列表不应为了累计用量修改统计库 busy_timeout')
+  assert(lockedError instanceof Error, '统计库忙锁时账户列表应明确失败，不能返回伪造空统计')
+  assert.match(lockedError.message, /AI 账户列表统计装饰读取遇到 SQLite 忙锁：account_usage_total/)
+  assert.equal((lockedError as Error & { code?: string }).code, 'SQLITE_BUSY', '统计锁错误应保留 SQLITE_BUSY 语义')
+  assert.equal(busyTimeouts[0], 60, '账户列表统计装饰读取应使用有界 60ms busy_timeout')
+  assert(busyTimeouts.length >= 2, '账户列表统计装饰读取完成后应恢复默认 busy_timeout')
 
-  console.log('AI 账户列表统计锁回归通过：基础列表不读取累计统计，统计库 busy 不再阻塞首屏')
+  console.log('AI 账户列表统计锁回归通过：基础列表内联累计统计，统计库 busy 时有界失败且不返回伪造空统计')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

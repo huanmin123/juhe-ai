@@ -27,7 +27,6 @@ import {
 import { requestBackgroundWorkerDbService, sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
 import { requestStatsWriter, type BackgroundStatsWriteOperation } from '../background/background-stats-writer.js'
 import type { BackgroundWorkerMessage } from '../background/background-ipc.types.js'
-import { publishUsageRecordsGlobalReset } from '../page-data/page-data-change.publisher.js'
 import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 
 const currentModulePath = fileURLToPath(import.meta.url)
@@ -104,6 +103,10 @@ const recordMaintenanceRedisStreamKey = redisStreamQueueContracts.recordMaintena
 const recordMaintenanceRedisStreamGroup = redisStreamQueueContracts.recordMaintenance.groupName
 const recordMaintenanceRedisConsumerErrorRetryMs = 1000
 const recordMaintenanceRedisStopWaitMs = 2000
+// Record maintenance may spawn an isolated worker for bounded but materially
+// longer cleanup work.  It must not be reclaimed by another ingest worker
+// while that worker is still alive.
+const recordMaintenanceRedisStreamClaimIdleMs = 60 * 60 * 1000
 const auditRetainedDataCleanupBatchPauseMs = 10
 const auditRetainedDataCleanupBatchSizeLimit = 100
 const auditRetainedDataCleanupMaxBatchesLimit = 3
@@ -524,7 +527,8 @@ function recordMaintenanceRedisStreamQueue(): RedisStreamQueue<RecordMaintenance
     recordMaintenanceRedisStreamQueueInstance = new RedisStreamQueue<RecordMaintenanceJob>({
       streamKey: recordMaintenanceRedisStreamKey,
       groupName: recordMaintenanceRedisStreamGroup,
-      readCount: recordMaintenanceBatchSize
+      readCount: recordMaintenanceBatchSize,
+      claimIdleMs: Math.max(runtimeConfig.queue.redisStreamClaimIdleMs, recordMaintenanceRedisStreamClaimIdleMs)
     })
   }
   return recordMaintenanceRedisStreamQueueInstance
@@ -903,7 +907,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
   let batches = 0
   let hasMore = false
   let blockedReason: string | undefined
-  let resetNeeded = false
   const cutoffTime = Date.parse(input.cutoffAt)
   if (Number.isNaN(cutoffTime)) {
     return {
@@ -934,7 +937,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
     hasMore = batch.hasMore
     blockedReason = batch.blockedReason ?? blockedReason
     const changed = batch.deletedRows > 0 || Number(batch.droppedPartitions ?? 0) > 0
-    resetNeeded ||= changed
     if (changed) {
       batches += 1
     }
@@ -942,8 +944,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
       break
     }
   }
-
-  if (resetNeeded) await publishUsageRecordsGlobalReset()
 
   return {
     cutoffAt: input.cutoffAt,

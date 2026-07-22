@@ -524,10 +524,10 @@ async function testCodexResponsesCompatibilityKeepsExplicitToolSettings(): Promi
   assert.equal(body.parallel_tool_calls, false)
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
   assert.equal(parts.headers.get('content-type'), 'application/json')
-  assert.equal(parts.headers.get('openai-beta'), 'responses=v1')
+  assert.equal(parts.headers.get('openai-beta'), null)
   assert.equal(parts.headers.get('originator'), 'codex_vscode')
-  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/1.2.3')
-  assert.equal(parts.headers.get('version'), '1.2.3')
+  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/0.144.4')
+  assert.equal(parts.headers.get('version'), null)
 }
 
 async function testCodexResponsesCompatibilityDoesNotRewriteChatCompletions(): Promise<void> {

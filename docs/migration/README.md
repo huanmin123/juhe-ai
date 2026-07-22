@@ -51,9 +51,16 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前覆盖管理侧 / 个人侧 `usage-window`、使用记录列表 / 详情、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表 Go opt-in。
 26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
 27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
-28. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
-29. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-30. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+28. [W6 管理端表监控只读 Schema 共存记录](W6-管理端表监控只读Schema共存记录.md)：表监控三条 GET 的 Go reader、Node 单 writer、schema capability gate、已发布 `000071` 后的连续版本规则和删除门禁。
+29. [W7 模型检测写入与任务契约迁移记录](W7-模型检测写入与任务契约迁移记录.md)：模型检测 durable job payload、幂等写阶段、终态 CAS、停止 / SSE 语义和 Node 专用复杂度删除边界。
+30. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
+31. [W7 公开接口日志写入与保留契约](W7-公开接口日志写入与保留契约.md)：冻结 Node 单 writer、队列容量、payload 捕获、保留清理和 Go reader 反向约束，供后续 Go-native writer / retention 接管使用；当前不改变生产 owner。
+32. [W7 使用记录写入队列 Node 契约基线](W7-使用记录写入队列Node契约基线.md)：冻结 Node 使用记录 writer / queue 的 owner、可靠性边界、已确认丢失缺陷和 Go 原生接管门禁。
+33. [W7 账户健康探针状态机契约](W7-账户健康探针状态机契约.md)：自动探针归因、周期健康 / 冷却复测边界、陈旧任务护栏和 Go 原生 worker 接线规则。
+34. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
+35. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+36. [精确路由 Owner 清单设计](精确路由Owner清单设计.md)：四大域默认 owner、method + path template 精确 allowlist、回滚 manifest 和未来代理接入门禁。
+37. [Goose 与 Node 初始化边界复审记录](Goose与Node初始化边界复审记录.md)：schema 70 的 Go-only Goose 执行命令、Node 补充 DDL 仍保留的原因和未追踪 schema 拒绝门禁。
 
 ## 4. 目录职责
 
@@ -67,6 +74,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 | `Go迁移指标与观测规划.md` | Go 目标系统指标、Prometheus、pprof、PG/Redis/Asynq、worker 和网关观测口径 |
 | `Go系统指标字段迁移清单.md` | Node 系统指标字段删除、Go 字段替换、前端页面迁移和 W6 / W7 / W8 验收清单 |
 | `模块迁移顺序与减法清单.md` | 模块优先级、迁移状态、Node 删除证据和测试门禁 |
+| `Goose与Node初始化边界复审记录.md` | Goose schema-up 的单一账本边界、fresh / upgrade 数据库规则、Node DDL 缺口和 seed boolean 修复证据 |
 | `W1b-外部维护公开接口迁移记录.md` | `/__aipublic__` 外部维护接口契约、Go 迁移范围、Node 对照命令和删除门禁 |
 | `W2-管理端只读辅助接口迁移记录.md` | 管理端只读辅助接口与账号标签只读 / 未绑定删除 / 独立 PATCH 契约、Go 当前实现范围、权限边界、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、主账户标签写路径 / 完整 summary / operation log 缺口和删除门禁 |
 | `W3-登录与系统账户迁移记录.md` | 登录、当前用户、会话、登出、改密、验证码和系统账户写接口迁移记录；当前固定 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 只读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前令牌退出切片、`POST /system-accounts` 创建切片、`PATCH /system-accounts/{id}` 完整 mixed partial update 和后续拆分门禁；登录会话列表 / 按 ID 撤销已撤销，不得作为恢复项 |
@@ -87,9 +95,14 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 | `W6-记录与统计读接口迁移记录.md` | W6 记录、日志和统计只读接口迁移记录；当前固定管理侧 / 个人侧 `usage-window` 权限、时区、31 天窗口、无明细扫描和删除门禁 |
 | `W6-System-API限流对齐记录.md` | system API 两层 read / write 限流记录；固定六项设置默认值、鉴权前 IP 层、鉴权后已注册业务路由用户层、Redis / 内存实现、client IP allowlist 两层 bypass、30 秒缓存 / shared version 失效、429 语义，以及已认证未知路径 / 错误 method 尚未对齐的删除门禁 |
 | `W6-管理端客户端IP策略迁移记录.md` | W6 `GET /ip-stats` 与四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；列表固定只读 Node 预聚合结果、query/date/status/sort/progressive pagination、默认静态请求数排序和 Node writer / detail 边界，写接口固定 strict JSON、事务、shared cache version、operation log、前端证据和真实依赖门禁 |
+| `W7-账户健康探针状态机契约.md` | W7 自动探针归因、周期健康检查与冷却复测边界、陈旧任务版本护栏、`cooldown_retest` 统计排除和 Go 原生 worker 接线门禁 |
+| `W6-管理端表监控只读Schema共存记录.md` | W6 表监控三条 GET 的 PostgreSQL 只读迁移；固定 Node 单 writer、schema capability gate、缺表不伪造空数据、并行 migration 版本协调和删除门禁 |
+| `W7-模型检测写入与任务契约迁移记录.md` | W7 模型检测 writer/job 契约、Go 主动修复、后续 schema/worker/executor/HTTP 顺序和 Node 删除门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
+| `W7-公开接口日志写入与保留契约.md` | Node 公开接口日志单 writer、队列容量、payload 捕获、保留清理、Go reader 反向约束和 Go-native 接管顺序；当前不改生产 owner |
 | `开发构建部署调整.md` | 开发环境、命令、包结构、部署脚本和平台差异 |
 | `迁移文档示例.md` | 后续新增单模块迁移记录时的参考格式 |
+| `精确路由Owner清单设计.md` | 路由级 owner 声明、严格匹配、回滚清单和生产 dispatch 接入门禁 |
 
 ## 5. 维护规则
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-db-service-sqlite-dispatch-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databaseDriver = 'sqlite'
@@ -21,12 +22,14 @@ const [
   { logger },
   databaseModule,
   repositories,
-  dbServiceHandlers
+  dbServiceHandlers,
+  sqliteReadWorkerPool
 ] = await Promise.all([
   import('../../shared/logger.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../modules/db-service/db-service-handlers.js')
+  import('../../modules/db-service/db-service-handlers.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 logger.level = 'silent'
 
@@ -37,8 +40,9 @@ try {
     providerCode: 'gpt',
     enabled: true
   }, access)
-  repositories.createAccount({
+  const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: 'DB service SQLite standalone 账号',
     type: 'api_key',
     credentials: {
@@ -48,8 +52,16 @@ try {
     },
     groupId: group.id,
     status: 'active',
-    schedulable: true
+    schedulable: true,
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5'
   }, access)
+  assert(repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), 'SQLite standalone DB service dispatch 种子账号后台检查应成功')
 
   const settings = await dbServiceHandlers.handleDbServiceOperation({ type: 'read_gateway_settings' })
   assert(settings, 'SQLite standalone DB service dispatch 应读取网关设置')
@@ -105,7 +117,7 @@ try {
   console.log('DB service SQLite standalone dispatch 回归通过：SQLite 下 server/db-service 读操作不会返回 undefined')
 } finally {
   try {
-    databaseModule.getBusinessDatabase().close()
+    await sqliteReadWorkerPool.closeSqliteReadWorkerPool()
     databaseModule.closeStorageDatabases()
   } catch {
   }

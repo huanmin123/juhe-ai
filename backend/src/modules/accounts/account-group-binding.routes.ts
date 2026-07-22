@@ -6,7 +6,6 @@ import { findAccountForTestAsync, setAccountGroupAsync } from '../../storage/rep
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { accountPageDataOwnerIds, publishAccountStaticChange } from '../page-data/page-data-change.publisher.js'
 import { accountGroupSchema } from './account-request.schemas.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
@@ -52,14 +51,6 @@ export function registerAccountGroupBindingRoutes(router: Router): void {
           }
         }
       }, req)
-      await publishAccountStaticChange({
-        accountId: account.id,
-        ownerSystemAccountIds: accountPageDataOwnerIds(account, effectiveRequestSystemAccountId(requestAccess)),
-        fieldMask: ['boundGroupId'],
-        membershipChanged: true,
-        filterChanged: true,
-        pageChanged: true
-      })
       res.json(ok(sanitizeAccountResponse(account)))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '绑定账户分组失败'))

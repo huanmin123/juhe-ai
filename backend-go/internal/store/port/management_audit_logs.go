@@ -69,6 +69,18 @@ type ManagementAuditErrorGroup struct {
 	Count                                                                 int
 }
 
+type ManagementAuditErrorGroupListInput struct {
+	Path, Model, SystemAccountID string
+	APIKeyID, GroupID, AccountID string
+	StatusCode                   *int
+	Limit, Offset                int
+}
+
+type ManagementAuditErrorGroupListResult struct {
+	Items   []ManagementAuditErrorGroup
+	HasMore bool
+}
+
 type ManagementAuditLogDetail struct {
 	ManagementAuditLogSummary
 	Attempts   []ManagementAuditLogAttempt
@@ -76,7 +88,25 @@ type ManagementAuditLogDetail struct {
 	Payloads   []ManagementAuditLogPayloadSummary
 }
 
+type ManagementAuditPayloadBlob struct {
+	StorageKey                        string
+	Compression                       string
+	RawSizeBytes, CompressedSizeBytes int64
+}
+
+type ManagementAuditLogPayload struct {
+	Summary     ManagementAuditLogPayloadSummary
+	HeadersBlob *ManagementAuditPayloadBlob
+	BodyBlob    *ManagementAuditPayloadBlob
+}
+
 type ManagementAuditLogReader interface {
 	ListManagementAuditLogs(context.Context, ManagementAuditLogListInput) (ManagementAuditLogListResult, error)
+	ListManagementAuditErrorGroups(context.Context, ManagementAuditErrorGroupListInput) (ManagementAuditErrorGroupListResult, error)
 	GetManagementAuditLog(context.Context, string) (ManagementAuditLogDetail, bool, error)
+	ListManagementAuditLogsByIDs(context.Context, []string) ([]ManagementAuditLogSummary, error)
+}
+
+type ManagementAuditLogPayloadReader interface {
+	GetManagementAuditLogPayload(context.Context, string, string) (ManagementAuditLogPayload, bool, error)
 }

@@ -45,6 +45,37 @@
       />
     </template>
 
+    <template v-else-if="isAnthropicOAuth">
+      <a-alert
+        class="form-alert"
+        type="info"
+        show-icon
+        message="Anthropic OAuth 使用直接录入 Bearer Token 的方式接入；请粘贴官方 OAuth / Claude Code 体系得到的 Access Token。"
+      />
+      <a-form-item label="Access Token" required>
+        <a-textarea
+          v-model:value="form.accessToken"
+          :rows="3"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+          placeholder="粘贴 CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN"
+        />
+      </a-form-item>
+      <a-form-item label="Refresh Token">
+        <a-textarea
+          v-model:value="form.refreshToken"
+          :rows="3"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+          placeholder="可选；当前项目不主动刷新 Anthropic OAuth Token"
+        />
+      </a-form-item>
+    </template>
+
     <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，当前支持 GPT OAuth。" />
 
     <a-form-item label="支持模型" required tooltip="声明这个 OAuth 账户实际支持的上游模型；账户必须至少选择一个模型，模型映射右侧只能从这里选择。">
@@ -81,6 +112,7 @@ defineProps<{
   authResult?: OpenAIAuthURLResult
   editing: boolean
   form: AccountFormModel
+  isAnthropicOAuth: boolean
   isOpenAI: boolean
   isGoogleOAuth: boolean
   modelOptions: Array<{ label: string; value: string }>

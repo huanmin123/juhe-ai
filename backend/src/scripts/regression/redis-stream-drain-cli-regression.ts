@@ -21,10 +21,13 @@ for (const functionName of [
 
 assert.match(source, /JUHE_AI_QUEUE_FENCE_TOKEN/, '排空 CLI 必须要求 fence token')
 assert.match(source, /redisQueueFenceKey\(\)/, '排空 CLI 必须核对 queue fence key')
+assert.match(source, /renewRedisQueueFenceWithClient/, '排空 CLI 必须在长时间排空时续租 queue fence')
+assert.match(source, /enabledDrainContracts\(\)/, '排空 CLI 必须只核对当前启用的队列')
+assert.match(source, /runtimeConfig\.auditLog\.enabled/, '关闭审计采集时，不应要求空审计队列的 consumer group')
 assert.match(source, /RedisStreamDrainStabilityTracker/, '排空 CLI 必须使用连续稳定窗口判定')
 assert.match(source, /assertRequiredConsumerGroupsPresent/, '排空 CLI 必须在启动消费者前确认全部既有 consumer group')
 assert.ok(
-  source.indexOf('assertRequiredConsumerGroupsPresent') < source.indexOf('startConsumers()'),
+  source.indexOf('assertRequiredConsumerGroupsPresent(preflightSnapshot') < source.indexOf('startConsumers()'),
   '排空 CLI 的 consumer group 门禁必须先于 startConsumers，避免 one-shot 自建空 group 后误判'
 )
 assert.match(source, /runtimeConfig\.processRole !== 'worker'/, '排空 CLI 必须限制 worker 进程角色')

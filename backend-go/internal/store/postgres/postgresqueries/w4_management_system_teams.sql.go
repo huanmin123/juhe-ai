@@ -349,9 +349,7 @@ SELECT
   teams.name,
   teams.description,
   teams.status,
-  teams.created_by,
-  teams.created_at,
-  teams.updated_at
+  teams.created_at
 FROM juhe_business.system_teams AS teams
 WHERE (
     $1::text = ''
@@ -384,7 +382,15 @@ type ListManagementSystemTeamsParams struct {
 	RowLimit        int32
 }
 
-func (q *Queries) ListManagementSystemTeams(ctx context.Context, arg ListManagementSystemTeamsParams) ([]JuheBusinessSystemTeam, error) {
+type ListManagementSystemTeamsRow struct {
+	ID          string
+	Name        string
+	Description pgtype.Text
+	Status      string
+	CreatedAt   pgtype.Timestamptz
+}
+
+func (q *Queries) ListManagementSystemTeams(ctx context.Context, arg ListManagementSystemTeamsParams) ([]ListManagementSystemTeamsRow, error) {
 	rows, err := q.db.Query(ctx, listManagementSystemTeams,
 		arg.SystemAccountID,
 		arg.Keyword,
@@ -396,17 +402,15 @@ func (q *Queries) ListManagementSystemTeams(ctx context.Context, arg ListManagem
 		return nil, err
 	}
 	defer rows.Close()
-	var items []JuheBusinessSystemTeam
+	var items []ListManagementSystemTeamsRow
 	for rows.Next() {
-		var i JuheBusinessSystemTeam
+		var i ListManagementSystemTeamsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
 			&i.Description,
 			&i.Status,
-			&i.CreatedBy,
 			&i.CreatedAt,
-			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

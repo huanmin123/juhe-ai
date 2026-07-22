@@ -18,29 +18,27 @@ const (
 )
 
 type Service struct {
-	store             port.ManagementRouteStrategyOptionReader
-	listReader        port.ManagementRouteStrategyListReader
-	detailReader      port.ManagementRouteStrategyDetailReader
-	createStore       port.PublicRouteStrategyStore
-	transactor        port.PublicRouteStrategyTransactor
-	invalidator       RuntimeInvalidator
-	pageDataPublisher PageDataPublisher
-	logger            *slog.Logger
-	now               func() time.Time
-	newID             func(prefix string) string
+	store        port.ManagementRouteStrategyOptionReader
+	listReader   port.ManagementRouteStrategyListReader
+	detailReader port.ManagementRouteStrategyDetailReader
+	createStore  port.PublicRouteStrategyStore
+	transactor   port.PublicRouteStrategyTransactor
+	invalidator  RuntimeInvalidator
+	logger       *slog.Logger
+	now          func() time.Time
+	newID        func(prefix string) string
 }
 
 type ServiceOptions struct {
-	OptionReader      port.ManagementRouteStrategyOptionReader
-	ListReader        port.ManagementRouteStrategyListReader
-	DetailReader      port.ManagementRouteStrategyDetailReader
-	CreateStore       port.PublicRouteStrategyStore
-	Transactor        port.PublicRouteStrategyTransactor
-	Invalidator       RuntimeInvalidator
-	PageDataPublisher PageDataPublisher
-	Logger            *slog.Logger
-	Now               func() time.Time
-	NewID             func(prefix string) string
+	OptionReader port.ManagementRouteStrategyOptionReader
+	ListReader   port.ManagementRouteStrategyListReader
+	DetailReader port.ManagementRouteStrategyDetailReader
+	CreateStore  port.PublicRouteStrategyStore
+	Transactor   port.PublicRouteStrategyTransactor
+	Invalidator  RuntimeInvalidator
+	Logger       *slog.Logger
+	Now          func() time.Time
+	NewID        func(prefix string) string
 }
 
 type OptionListInput struct {
@@ -50,10 +48,6 @@ type OptionListInput struct {
 	Keyword                    string
 	Limit                      int
 	ActiveOnly                 bool
-}
-
-type PageDataPublisher interface {
-	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
 type Option struct {
@@ -111,16 +105,15 @@ func NewServiceWithOptions(options ServiceOptions) *Service {
 		}
 	}
 	return &Service{
-		store:             options.OptionReader,
-		listReader:        options.ListReader,
-		detailReader:      options.DetailReader,
-		createStore:       createStore,
-		transactor:        transactor,
-		invalidator:       options.Invalidator,
-		pageDataPublisher: options.PageDataPublisher,
-		logger:            logger,
-		now:               now,
-		newID:             newID,
+		store:        options.OptionReader,
+		listReader:   options.ListReader,
+		detailReader: options.DetailReader,
+		createStore:  createStore,
+		transactor:   transactor,
+		invalidator:  options.Invalidator,
+		logger:       logger,
+		now:          now,
+		newID:        newID,
 	}
 }
 
