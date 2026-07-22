@@ -104,6 +104,44 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 	}
 }
 
+func TestPublicAPIShellDoesNotWaitForBlockedLogQueue(t *testing.T) {
+	client := &blockingPublicAPILogQueue{started: make(chan struct{}), release: make(chan struct{})}
+	dispatcher := NewPublicAPILogDispatcher(client, nil)
+	t.Cleanup(func() {
+		close(client.release)
+		shutdownRecordDispatcher(t, dispatcher)
+	})
+	router := NewPublicAPIShell(PublicAPIShellOptions{
+		Config:        config.Config{Host: "127.0.0.1", Port: 3000},
+		Authenticator: &publicAPIShellAuthStub{ctx: publicAPIShellAuthContext()},
+		RateLimiter:   &publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+		LogSubmitter:  dispatcher,
+		EndpointHandlers: map[string]http.Handler{
+			"group-list": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{}})
+			}),
+		},
+		SkipRequestIDMiddleware: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list", nil)
+	req.Header.Set("Authorization", "Bearer juis_plain")
+	rec := httptest.NewRecorder()
+	startedAt := time.Now()
+	router.ServeHTTP(rec, req)
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("ServeHTTP() blocked for %s", elapsed)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("queue client was not called")
+	}
+}
+
 func TestPublicAPIShellPreservesJSONNumberShapeInSnapshots(t *testing.T) {
 	authenticator := &publicAPIShellAuthStub{ctx: publicAPIShellAuthContext()}
 	limiter := &publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}}

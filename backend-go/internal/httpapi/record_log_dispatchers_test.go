@@ -6,6 +6,7 @@ import (
 	"time"
 
 	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
+	publicapilogjob "juhe-ai/backend-go/internal/jobs/publicapilog"
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/logging"
 	"juhe-ai/backend-go/internal/store/port"
@@ -112,6 +113,38 @@ func TestManagementOperationLogDispatcherDoesNotWaitForBlockedQueue(t *testing.T
 	}
 }
 
+func TestPublicAPILogDispatcherPreservesLogContextCorrelation(t *testing.T) {
+	client := &capturingOperationLogQueue{calls: make(chan operationLogQueueCall, 1), done: make(chan struct{})}
+	dispatcher := NewPublicAPILogDispatcher(client, nil)
+	t.Cleanup(func() { shutdownRecordDispatcher(t, dispatcher) })
+	ctx := logging.WithLogContext(context.Background(), logging.LogContext{
+		TraceID:   "trace-public-1",
+		RequestID: "request-public-1",
+	})
+	now := time.Now().UTC()
+	if !dispatcher.Submit(ctx, port.PublicAPILogInput{
+		ID:        "publog_1",
+		Method:    "GET",
+		Path:      "/__aipublic__/group/list",
+		StartedAt: now,
+		EndedAt:   now,
+	}) {
+		t.Fatal("Submit() = false, want true")
+	}
+	select {
+	case call := <-client.calls:
+		envelope, err := publicapilogjob.DecodeWriteTaskEnvelope(call.payload)
+		if err != nil {
+			t.Fatalf("DecodeWriteTaskEnvelope() error = %v", err)
+		}
+		if envelope.Correlation == nil || envelope.Correlation.TraceID != "trace-public-1" || envelope.Correlation.RequestID != "request-public-1" {
+			t.Fatalf("correlation = %+v, want trace-public-1/request-public-1", envelope.Correlation)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queue client did not receive a task")
+	}
+}
+
 type operationLogSettingsReaderFunc func(context.Context) (int, error)
 
 func (f operationLogSettingsReaderFunc) OperationLogMaxChangesPerRecord(ctx context.Context) (int, error) {
@@ -144,6 +177,17 @@ type capturingOperationLogQueue struct {
 type blockingOperationLogQueue struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+type blockingPublicAPILogQueue struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (q *blockingPublicAPILogQueue) Enqueue(_ context.Context, _ string, _ []byte, _ queue.EnqueueOptions) (queue.TaskInfo, error) {
+	close(q.started)
+	<-q.release
+	return queue.TaskInfo{}, nil
 }
 
 func (q *blockingOperationLogQueue) Enqueue(_ context.Context, _ string, _ []byte, _ queue.EnqueueOptions) (queue.TaskInfo, error) {

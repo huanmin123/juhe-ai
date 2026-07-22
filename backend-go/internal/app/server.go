@@ -192,6 +192,17 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		defer closePublisher()
 		accountsStaticResetPublisher = publisher
 	}
+	publicAPILogQueue, err := newPublicAPILogQueue(cfg)
+	if err != nil {
+		return err
+	}
+	if publicAPILogQueue != nil {
+		defer func() { _ = publicAPILogQueue.Close() }()
+	}
+	publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueue, logger)
+	if publicAPILogDispatcher != nil {
+		defer shutdownRecordDispatcher(publicAPILogDispatcher, cfg.ShutdownTimeout, logger, "public API log")
+	}
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
 		logger,
@@ -200,13 +211,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		PublicAPIHandlerOptions{
 			APIKeyInvalidator: systemAccountInvalidator,
 			PageDataPublisher: accountsStaticResetPublisher,
+			logQueue:          publicAPILogQueue,
+			logSubmitter:      publicAPILogDispatcher,
 		},
 	)
 	if err != nil {
 		return err
-	}
-	if publicAPILogQueue != nil {
-		defer func() { _ = publicAPILogQueue.Close() }()
 	}
 	managementOperationLogQueue, err := newManagementOperationLogQueue(cfg)
 	if err != nil {
@@ -1299,6 +1309,22 @@ func newManagementOperationLogQueue(cfg config.Config) (*queue.Client, error) {
 	return logQueue, nil
 }
 
+func newPublicAPILogQueue(cfg config.Config) (*queue.Client, error) {
+	if !cfg.PublicAPIEnabled {
+		return nil, nil
+	}
+	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
+	if err != nil {
+		return nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	}
+	logQueue := queue.NewClient(redisOpts)
+	if err := logQueue.Ping(); err != nil {
+		_ = logQueue.Close()
+		return nil, fmt.Errorf("公开接口日志队列不可用: %w", err)
+	}
+	return logQueue, nil
+}
+
 func newPublicAPIHandler(
 	cfg config.Config,
 	logger *slog.Logger,
@@ -1314,6 +1340,8 @@ type PublicAPIHandlerOptions struct {
 	APIKeyInvalidator            publicapikeys.APIKeyGatewayCacheInvalidator
 	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
 	PageDataPublisher            accountpagedata.Publisher
+	logQueue                     *queue.Client
+	logSubmitter                 httpapi.PublicAPILogSubmitter
 }
 
 func NewPublicAPIHandler(
@@ -1346,19 +1374,25 @@ func newPublicAPIHandlerWithOptions(
 		return nil, nil, nil
 	}
 
-	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	logQueue := opts.logQueue
+	createdLogQueue := false
+	if logQueue == nil {
+		var err error
+		logQueue, err = newPublicAPILogQueue(cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		createdLogQueue = true
 	}
-	logQueue := queue.NewClient(redisOpts)
-	if err := logQueue.Ping(); err != nil {
-		_ = logQueue.Close()
-		return nil, nil, fmt.Errorf("公开接口日志队列不可用: %w", err)
+	closeCreatedLogQueue := func() {
+		if createdLogQueue {
+			_ = logQueue.Close()
+		}
 	}
 
 	limiter, err := publicapiratelimit.NewLimiter(publicapiratelimit.Options{Client: stateRedis})
 	if err != nil {
-		_ = logQueue.Close()
+		closeCreatedLogQueue()
 		return nil, nil, err
 	}
 
@@ -1367,7 +1401,7 @@ func newPublicAPIHandlerWithOptions(
 		opts.AccountHealthCheckDispatcher,
 	)
 	if err != nil {
-		_ = logQueue.Close()
+		closeCreatedLogQueue()
 		return nil, nil, err
 	}
 
@@ -1383,7 +1417,7 @@ func newPublicAPIHandlerWithOptions(
 		nil,
 	)
 	if err != nil {
-		_ = logQueue.Close()
+		closeCreatedLogQueue()
 		return nil, nil, err
 	}
 
@@ -1393,6 +1427,7 @@ func newPublicAPIHandlerWithOptions(
 		Authenticator:           publicapiauth.NewAuthenticator(publicapiauth.AuthenticatorOptions{Store: store}),
 		RateLimiter:             limiter,
 		LogClient:               logQueue,
+		LogSubmitter:            opts.logSubmitter,
 		EndpointHandlers:        handlers,
 		Now:                     opts.Now,
 		NewLogID:                opts.NewLogID,
