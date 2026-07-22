@@ -17,6 +17,8 @@ const (
 	DefaultPublicAPILogCleanupBatchPause = 25 * time.Millisecond
 	MaxPublicAPILogCleanupBatchSize      = 1000
 	MaxPublicAPILogCleanupMaxBatches     = 100
+	RetentionCleanupPhasePublicAPILogs   = "public_api_logs"
+	RetentionCleanupPhaseComplete        = "complete"
 )
 
 type RetentionCleanupService struct {
@@ -41,6 +43,8 @@ type RetentionCleanupInput struct {
 type RetentionCleanupResult struct {
 	Deleted         int64
 	Batches         int
+	Phase           string
+	Partial         bool
 	RetentionDays   int
 	BatchSize       int
 	MaxBatches      int
@@ -94,6 +98,7 @@ func (s *RetentionCleanupService) Cleanup(ctx context.Context, input RetentionCl
 	}
 
 	result := RetentionCleanupResult{
+		Phase:           RetentionCleanupPhasePublicAPILogs,
 		RetentionDays:   retentionDays,
 		BatchSize:       batchSize,
 		MaxBatches:      maxBatches,
@@ -101,14 +106,16 @@ func (s *RetentionCleanupService) Cleanup(ctx context.Context, input RetentionCl
 	}
 	for result.Batches < maxBatches {
 		if err := ctx.Err(); err != nil {
-			return RetentionCleanupResult{}, err
+			result.Partial = result.Deleted > 0
+			return result, err
 		}
 		deleted, err := s.store.CleanupPublicAPILogsBefore(ctx, port.PublicAPILogCleanupInput{
 			CutoffCreatedAt: result.CutoffCreatedAt,
 			Limit:           batchSize,
 		})
 		if err != nil {
-			return RetentionCleanupResult{}, err
+			result.Partial = result.Deleted > 0
+			return result, err
 		}
 		if deleted <= 0 {
 			break
@@ -120,10 +127,12 @@ func (s *RetentionCleanupService) Cleanup(ctx context.Context, input RetentionCl
 		}
 		if result.Batches < maxBatches && s.batchPause > 0 {
 			if err := s.sleep(ctx, s.batchPause); err != nil {
-				return RetentionCleanupResult{}, err
+				result.Partial = result.Deleted > 0
+				return result, err
 			}
 		}
 	}
+	result.Phase = RetentionCleanupPhaseComplete
 	return result, nil
 }
 

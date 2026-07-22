@@ -37,6 +37,9 @@ func TestPublicAPILogRetentionCleanupUsesOneUTCCutoffAcrossBatches(t *testing.T)
 	if result.Deleted != 3 || result.Batches != 2 || result.RetentionDays != 7 || result.BatchSize != 2 || result.MaxBatches != 3 {
 		t.Fatalf("result = %+v", result)
 	}
+	if result.Phase != RetentionCleanupPhaseComplete || result.Partial {
+		t.Fatalf("completion result = %+v", result)
+	}
 	wantCutoff := now.UTC().Add(-7 * 24 * time.Hour)
 	if !result.CutoffCreatedAt.Equal(wantCutoff) || result.CutoffCreatedAt.Location() != time.UTC {
 		t.Fatalf("CutoffCreatedAt = %v, want UTC %v", result.CutoffCreatedAt, wantCutoff)
@@ -71,6 +74,52 @@ func TestPublicAPILogRetentionCleanupDefaultsAndStopsAtConfiguredMaximum(t *test
 	}
 	if len(store.inputs) != 2 {
 		t.Fatalf("cleanup calls = %d, want 2", len(store.inputs))
+	}
+}
+
+func TestPublicAPILogRetentionCleanupReturnsPartialResultWhenSecondBatchFails(t *testing.T) {
+	wantErr := errors.New("second batch failed")
+	store := &publicAPILogRetentionCleanerStub{
+		deleted:       []int64{2},
+		cleanupErrors: []error{nil, wantErr},
+	}
+	service := NewRetentionCleanupServiceWithOptions(RetentionCleanupServiceOptions{Store: store, BatchPause: -1})
+
+	result, err := service.Cleanup(context.Background(), RetentionCleanupInput{
+		Now:        time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC),
+		BatchSize:  2,
+		MaxBatches: 3,
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Cleanup() error = %v, want %v", err, wantErr)
+	}
+	if result.Deleted != 2 || result.Batches != 1 || !result.Partial || result.Phase != RetentionCleanupPhasePublicAPILogs {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestPublicAPILogRetentionCleanupReturnsPartialResultWhenPauseIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &publicAPILogRetentionCleanerStub{deleted: []int64{1}}
+	service := NewRetentionCleanupServiceWithOptions(RetentionCleanupServiceOptions{
+		Store:      store,
+		BatchPause: time.Millisecond,
+		Sleep: func(context.Context, time.Duration) error {
+			cancel()
+			return context.Canceled
+		},
+	})
+
+	result, err := service.Cleanup(ctx, RetentionCleanupInput{
+		Now:        time.Date(2026, 7, 10, 8, 0, 0, 0, time.UTC),
+		BatchSize:  1,
+		MaxBatches: 2,
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Cleanup() error = %v, want context.Canceled", err)
+	}
+	if result.Deleted != 1 || result.Batches != 1 || !result.Partial || result.Phase != RetentionCleanupPhasePublicAPILogs {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
@@ -114,6 +163,7 @@ type publicAPILogRetentionCleanerStub struct {
 	retentionDays int
 	found         bool
 	deleted       []int64
+	cleanupErrors []error
 	inputs        []port.PublicAPILogCleanupInput
 	sleeps        []time.Duration
 }
@@ -124,6 +174,13 @@ func (s *publicAPILogRetentionCleanerStub) GetPublicAPILogRetentionDays(context.
 
 func (s *publicAPILogRetentionCleanerStub) CleanupPublicAPILogsBefore(_ context.Context, input port.PublicAPILogCleanupInput) (int64, error) {
 	s.inputs = append(s.inputs, input)
+	if len(s.cleanupErrors) > 0 {
+		err := s.cleanupErrors[0]
+		s.cleanupErrors = s.cleanupErrors[1:]
+		if err != nil {
+			return 0, err
+		}
+	}
 	if len(s.deleted) == 0 {
 		return 0, nil
 	}

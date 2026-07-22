@@ -58,6 +58,9 @@ func TestCleanupUsesFixedCutoffAndIndependentBatches(t *testing.T) {
 	if result.RuntimeLogBatches != 2 || result.RuntimeLogFileCursorBatches != 1 {
 		t.Fatalf("batch result = %+v", result)
 	}
+	if result.Phase != CleanupPhaseComplete || result.Partial {
+		t.Fatalf("completion result = %+v", result)
+	}
 	wantCutoff := "2026-07-15T12:34:56.987Z"
 	if result.CutoffISO != wantCutoff {
 		t.Fatalf("CutoffISO = %q, want %q", result.CutoffISO, wantCutoff)
@@ -135,9 +138,58 @@ func TestCleanupStopsWhenContextIsCancelledDuringPause(t *testing.T) {
 			return ctx.Err()
 		},
 	})
-	_, err := service.Cleanup(ctx, CleanupInput{IndexEnabled: true, BatchSize: 1, MaxBatches: 2})
+	result, err := service.Cleanup(ctx, CleanupInput{IndexEnabled: true, BatchSize: 1, MaxBatches: 2})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Cleanup() error = %v, want context.Canceled", err)
+	}
+	if result.RuntimeLogs != 1 || result.RuntimeLogBatches != 1 || !result.Partial || result.Phase != CleanupPhaseRuntimeLogs {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCleanupReturnsPartialResultWhenRuntimeLogSecondBatchFails(t *testing.T) {
+	wantErr := errors.New("runtime log second batch failed")
+	store := &retentionStoreStub{
+		indexDeleted: []int64{2},
+		indexErrors:  []error{nil, wantErr},
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
+
+	result, err := service.Cleanup(context.Background(), CleanupInput{
+		IndexEnabled: true,
+		BatchSize:    2,
+		MaxBatches:   3,
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Cleanup() error = %v, want %v", err, wantErr)
+	}
+	if result.RuntimeLogs != 2 || result.RuntimeLogBatches != 1 || !result.Partial || result.Phase != CleanupPhaseRuntimeLogs {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestCleanupReturnsPartialResultWhenRuntimeLogFileCursorPhaseFails(t *testing.T) {
+	wantErr := errors.New("cursor cleanup failed")
+	store := &retentionStoreStub{
+		indexDeleted:  []int64{1},
+		cursorDeleted: []int64{2},
+		cursorErrors:  []error{nil, wantErr},
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
+
+	result, err := service.Cleanup(context.Background(), CleanupInput{
+		IndexEnabled: true,
+		BatchSize:    2,
+		MaxBatches:   2,
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Cleanup() error = %v, want %v", err, wantErr)
+	}
+	if result.RuntimeLogs != 1 || result.RuntimeLogBatches != 1 || result.RuntimeLogFileCursors != 2 || result.RuntimeLogFileCursorBatches != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	if !result.Partial || result.Phase != CleanupPhaseRuntimeLogFileCursors {
+		t.Fatalf("result = %+v", result)
 	}
 }
 
@@ -148,6 +200,8 @@ type retentionStoreStub struct {
 	settingReads  int
 	indexDeleted  []int64
 	cursorDeleted []int64
+	indexErrors   []error
+	cursorErrors  []error
 	indexInputs   []port.RuntimeLogRetentionCleanupInput
 	cursorInputs  []port.RuntimeLogRetentionCleanupInput
 	sleeps        []time.Duration
@@ -160,6 +214,13 @@ func (s *retentionStoreStub) GetRuntimeLogIndexRetentionDays(context.Context) (i
 
 func (s *retentionStoreStub) CleanupRuntimeLogIndexBefore(_ context.Context, input port.RuntimeLogRetentionCleanupInput) (int64, error) {
 	s.indexInputs = append(s.indexInputs, input)
+	if len(s.indexErrors) > 0 {
+		err := s.indexErrors[0]
+		s.indexErrors = s.indexErrors[1:]
+		if err != nil {
+			return 0, err
+		}
+	}
 	if len(s.indexDeleted) == 0 {
 		return 0, nil
 	}
@@ -170,6 +231,13 @@ func (s *retentionStoreStub) CleanupRuntimeLogIndexBefore(_ context.Context, inp
 
 func (s *retentionStoreStub) CleanupCompletedRuntimeLogFileCursorsBefore(_ context.Context, input port.RuntimeLogRetentionCleanupInput) (int64, error) {
 	s.cursorInputs = append(s.cursorInputs, input)
+	if len(s.cursorErrors) > 0 {
+		err := s.cursorErrors[0]
+		s.cursorErrors = s.cursorErrors[1:]
+		if err != nil {
+			return 0, err
+		}
+	}
 	if len(s.cursorDeleted) == 0 {
 		return 0, nil
 	}
