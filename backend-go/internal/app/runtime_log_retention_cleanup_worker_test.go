@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -50,6 +51,31 @@ func TestRunRuntimeLogRetentionCleanupLoopSupportsRunOnce(t *testing.T) {
 	})
 	if err != nil || calls != 1 {
 		t.Fatalf("error=%v calls=%d", err, calls)
+	}
+}
+
+func TestRunRuntimeLogRetentionCleanupLoopLogsPartialResultBeforeReturningError(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+	wantErr := errors.New("cursor cleanup failed")
+
+	err := runRuntimeLogRetentionCleanupLoop(context.Background(), logger, RuntimeLogRetentionCleanupWorkerOptions{RunOnce: true}, func(context.Context) (runtimelogretention.CleanupResult, error) {
+		return runtimelogretention.CleanupResult{
+			RuntimeLogs:                 3,
+			RuntimeLogBatches:           2,
+			RuntimeLogFileCursors:       1,
+			RuntimeLogFileCursorBatches: 1,
+			Phase:                       runtimelogretention.CleanupPhaseRuntimeLogFileCursors,
+			Partial:                     true,
+		}, wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("runRuntimeLogRetentionCleanupLoop() error = %v, want %v", err, wantErr)
+	}
+	for _, want := range []string{"level=ERROR", "runtimeLogs=3", "runtimeLogBatches=2", "runtimeLogFileCursors=1", "runtimeLogFileCursorBatches=1", "phase=runtime_log_file_cursors", "partial=true", `error="cursor cleanup failed"`} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("log = %q, want contains %q", output.String(), want)
+		}
 	}
 }
 
