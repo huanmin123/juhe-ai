@@ -5,7 +5,7 @@
 - 编号：PLAN-0081
 - 状态：进行中
 - 创建时间：2026-07-06
-- 更新时间：2026-07-21
+- 更新时间：2026-07-22
 - 需求来源：用户对话
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
@@ -28,6 +28,7 @@
 - 2026-07-21 账户运行态 schema 与快照对齐：Goose `000064` 补齐已迁移健康检查、冷却复测、流式失败和状态快照实际读写的账户字段；`000065` 补齐余额查询配置 / 下次刷新字段和候选索引，并修复 PostgreSQL `boolean = 1` 条件。账户 status snapshot 已批量加载当前凭据中的 API Key runtime state，授权实例复用来源账户，缺失 state 计为 active，并对齐状态计数、最早 `nextProbeAt`、最新失败排序和已删除来源排除；详情接口同时移除 Node 当前不支持的 `xai/hybrid` Key 池误判。模块、store、HTTP 和 app targeted tests 通过；未执行本批真实 PostgreSQL / Redis / worker / 前端 listener 验收，不改变 Node 生产 owner，也不构成切流证据。
 - 2026-07-21 schema / master 同步收口：`000066` 补齐 Go 已使用的 `account_usage_snapshots`、账户测试 session/task 及关联表；账户测试任务持久化补写 Node 要求的 `request_role`。migration catalog、server/worker schema gate、owner manifest 与 Node owner 预检已统一到 schema `66`。fetch 后 `origin/master=3a467aad0` 已无冲突合入；该提交只修改尚未迁移的 Node gateway runtime/usage Redis 行为，未复制到 Go。账户 Key runtime 快照随后按当前 fingerprint 精确查询，避免历史 Key 状态无界读取；P1 的全 Key 不可用 blocker 已补齐。targeted Go、migration catalog、owner manifest 和 integration 编译通过，真实依赖与生产 owner 验收仍未完成。
 - 2026-07-21 account-test PostgreSQL 类型对齐：新增 Goose `000067`，将 Node 既有 PostgreSQL 路径可能生成的 `cancel_requested integer` 和文本时间列前向升级为 Go 最终使用的 `boolean/timestamptz`，非法旧取消值会使迁移失败而不会静默改值，并补齐 `account_test_session_tasks(task_id, session_id)` 索引；Node PostgreSQL schema generator 与 async repository 同步使用布尔条件，DatabaseClient 将 PostgreSQL `Date` 统一归一化为 API ISO 字符串，SQLite 路径保持整数条件。schema catalog、worker gate、owner manifest 已统一到 `67`。Node account-test boundary、PostgreSQL schema SQL、DatabaseClient、TypeScript typecheck、Go store/catalog/app/platform tests、integration 编译和 owner manifest 预检通过；未执行真实 PostgreSQL/Redis 迁移，不构成生产切流验收。
+- 2026-07-22 schema owner 清单漂移门禁收口：当前 Goose migration catalog、Go / Node schema gate 的权威版本为 `69`，owner manifest 已同步到 `69`；validator 只保留一个当前 schema 常量，owner regression 读取真实 migration 目录校验连续版本，源码树与发布包共用的 Node 预检及两个平台启动脚本不再各自硬编码旧版本。owner manifest、Node Goose gate、Go catalog / migration tests 和发布脚本静态回归通过。`init-postgres-schema` 仍不写 Goose ledger，owner lock 未配置时仍默认关闭，这两项继续作为生产接管前 P1，不在本切片改变 provisioning 或开关默认值。
 - 2026-07-21 account-test 第一轮 worker bridge：Go 任务成功终态修正为公开契约 `success`；新增 `account-test:run` Asynq bridge handler、默认 100 并发的独立 worker、`juhe-ai-worker account-test` 命令和五次有界投递重试。worker 只把版本化 `taskId` 通过 loopback + 独立 HMAC domain 的 Node internal endpoint 交给 Node 既有 ops-worker 队列，不 claim/finish PostgreSQL 任务、不跨进程传凭据，Node 继续作为真实测试状态唯一 writer，保留 OAuth、代理、API Key 池、诊断和网关语义。Go bridge client、handler/mux/app/CLI、Node route/mount/typecheck 与边界回归通过；完整 `internal/jobs/worker` 包仍被既有 `cooldownaccountretest` Asynq import guard 阻断，未执行真实 Redis/Node/上游联调。owner manifest 继续保持 `worker=node`，本增量不构成 worker 切流或原生 Go Runner 完成。
 
 - 2026-07-18 AI Chat 迁移顺序调整：AI Chat Go 无缝接管设计已由用户批准并通过独立审查，提交 `e5cd03583` 固化 `/my-chat` 单 owner、Go 调用 Node `/v1/*`、owner generation / advisory lock、attach 版本屏障、at-most-once 恢复、共享资产卷、双向 cross-read、切流 / 回滚和最终 Node 减法门禁。因 `master` 仍持续改造 Chat，用户明确要求 AI Chat 排到 W10 Go 网关稳定之后、W11 最终 Node 减法之前，作为最后一个业务模块迁移；当前只维护设计与契约漂移审计，不编写实施计划、不开始 Go Chat 代码。待其他迁移与生产切流门禁完成、Chat 契约稳定后再实施。
