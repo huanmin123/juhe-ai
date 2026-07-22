@@ -115,6 +115,63 @@ func TestListErrorGroupsDefaultsPageSizeAndReturnsNonNilItems(t *testing.T) {
 	}
 }
 
+func TestListErrorGroupEventsOverridesQueryGroupAndPreservesListFilters(t *testing.T) {
+	status := 503
+	store := &auditLogReaderStub{result: port.ManagementAuditLogListResult{
+		Items: []port.ManagementAuditLogSummary{{
+			ID: "audit_1", TraceID: "trace_1", TrafficSource: "gateway", Method: "POST", Path: "/v1/responses",
+			AuditOutcome: "upstream_failed", FinalStatusCode: &status, StartedAt: "2026-07-21T01:02:03.004Z",
+			EndedAt: "2026-07-21T01:02:04.004Z", CreatedAt: "2026-07-21T01:02:05.004Z",
+		}}, HasMore: true,
+	}}
+
+	result, err := NewService(store).ListErrorGroupEvents(context.Background(), " route_group ", ListInput{
+		TraceID: " trace_1 ", ErrorGroupID: "query_group", Outcome: "upstream_failed", StatusCode: 503,
+		Path: " POST /v1/responses?stream=true ", Model: " gpt-5 ", SystemAccountID: " sys_1 ",
+		APIKeyID: " key_1 ", GroupID: " group_1 ", AccountID: " account_1 ", ClientIP: " 203.0.113.1 ",
+		StartAt: " 2026-07-21T00:00:00.000Z ", EndAt: " 2026-07-21T23:59:59.000Z ", TrafficSource: "gateway",
+		Page: 20, PageSize: 100, PageSizeProvided: true,
+	})
+	if err != nil {
+		t.Fatalf("ListErrorGroupEvents() error = %v", err)
+	}
+	if store.listCalls != 1 || store.input.ErrorGroupID != "route_group" || store.input.TraceID != "trace_1" ||
+		store.input.Outcome != "upstream_failed" || store.input.StatusCode == nil || *store.input.StatusCode != 503 ||
+		store.input.Path != "/v1/responses" || store.input.Model != "gpt-5" || store.input.SystemAccountID != "sys_1" ||
+		store.input.APIKeyID != "key_1" || store.input.GroupID != "group_1" || store.input.AccountID != "account_1" ||
+		store.input.ClientIP != "203.0.113.1" || store.input.StartAt != "2026-07-21T00:00:00.000Z" ||
+		store.input.EndAt != "2026-07-21T23:59:59.000Z" || store.input.TrafficSource != "gateway" ||
+		store.input.Limit != 100 || store.input.Offset != 900 {
+		t.Fatalf("store input = %+v", store.input)
+	}
+	if result.Page != 10 || result.PageSize != 100 || result.Total != 902 || !result.HasMore || len(result.Items) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestListErrorGroupEventsReturnsNonNilEmptyListWithoutDetailLookup(t *testing.T) {
+	store := &auditLogReaderStub{}
+	result, err := NewService(store).ListErrorGroupEvents(context.Background(), "missing_group", ListInput{})
+	if err != nil {
+		t.Fatalf("ListErrorGroupEvents() error = %v", err)
+	}
+	if store.listCalls != 1 || store.input.ErrorGroupID != "missing_group" || store.detailCalls != 0 || store.detailID != "" ||
+		result.Items == nil || result.Page != 1 || result.PageSize != 100 || result.Total != 0 || result.HasMore {
+		t.Fatalf("store input = %+v, result = %+v", store.input, result)
+	}
+}
+
+func TestListErrorGroupEventsRejectsECMAScriptWhitespaceOnlyRouteID(t *testing.T) {
+	store := &auditLogReaderStub{}
+	_, err := NewService(store).ListErrorGroupEvents(context.Background(), "\uFEFF \t\n\uFEFF", ListInput{})
+	if err == nil || err.Error() != "error group id is required" {
+		t.Fatalf("ListErrorGroupEvents() error = %v", err)
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("ListManagementAuditLogs() calls = %d, want 0", store.listCalls)
+	}
+}
+
 func TestDetailMapsAttemptsPayloadMetadataAndErrorGroup(t *testing.T) {
 	proxyURL := "  http://proxy.internal:8080  "
 	store := &auditLogReaderStub{
@@ -182,12 +239,15 @@ type auditLogReaderStub struct {
 	result           port.ManagementAuditLogListResult
 	errorGroupInput  port.ManagementAuditErrorGroupListInput
 	errorGroupResult port.ManagementAuditErrorGroupListResult
+	listCalls        int
 	detailID         string
+	detailCalls      int
 	detail           port.ManagementAuditLogDetail
 	detailFound      bool
 }
 
 func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input port.ManagementAuditLogListInput) (port.ManagementAuditLogListResult, error) {
+	s.listCalls++
 	s.input = input
 	if s.result.Items == nil {
 		s.result.Items = []port.ManagementAuditLogSummary{}
@@ -201,6 +261,7 @@ func (s *auditLogReaderStub) ListManagementAuditErrorGroups(_ context.Context, i
 }
 
 func (s *auditLogReaderStub) GetManagementAuditLog(_ context.Context, id string) (port.ManagementAuditLogDetail, bool, error) {
+	s.detailCalls++
 	s.detailID = id
 	return s.detail, s.detailFound, nil
 }
