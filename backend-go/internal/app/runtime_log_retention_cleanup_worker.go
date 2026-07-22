@@ -92,19 +92,23 @@ func runRuntimeLogRetentionCleanupLoop(
 	}
 	runCleanup := func() error {
 		result, err := cleanup(ctx)
-		if err != nil {
-			return err
-		}
-		logger.Info("运行日志索引保留清理完成",
+		attrs := []any{
 			slog.Int64("runtimeLogs", result.RuntimeLogs),
 			slog.Int("runtimeLogBatches", result.RuntimeLogBatches),
 			slog.Int64("runtimeLogFileCursors", result.RuntimeLogFileCursors),
 			slog.Int("runtimeLogFileCursorBatches", result.RuntimeLogFileCursorBatches),
+			slog.String("phase", result.Phase),
+			slog.Bool("partial", result.Partial),
 			slog.Int("retentionDays", result.RetentionDays),
 			slog.Int("batchSize", result.BatchSize),
 			slog.Int("maxBatches", result.MaxBatches),
 			slog.String("cutoff", result.CutoffISO),
-		)
+		}
+		if err != nil {
+			logger.Error("运行日志索引保留清理失败", append(attrs, slog.Any("error", err))...)
+			return err
+		}
+		logger.Info("运行日志索引保留清理完成", attrs...)
 		return nil
 	}
 	if opts.RunOnce {
@@ -129,9 +133,7 @@ func runRuntimeLogRetentionCleanupLoop(
 		return nil
 	}
 	for {
-		if err := runCleanup(); err != nil {
-			logger.Error("运行日志索引保留清理失败", slog.Any("error", err))
-		}
+		runCleanup()
 		if err := waitRuntimeLogRetentionCleanupWorker(ctx, interval); err != nil {
 			return nil
 		}
