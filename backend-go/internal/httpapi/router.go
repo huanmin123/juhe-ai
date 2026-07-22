@@ -211,6 +211,7 @@ type RouterOptions struct {
 	ManagementAuditErrorGroupsHandler                 http.Handler
 	ManagementAuditErrorGroupEventsHandler            http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
+	ManagementRuntimeLogGrepHandler                   http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
 	ManagementExternalIntegrationSourceCreateHandler  http.Handler
@@ -500,6 +501,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAuditErrorGroupsHandler == nil &&
 				opts.ManagementAuditErrorGroupEventsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
+				opts.ManagementRuntimeLogGrepHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
 				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
@@ -1184,6 +1186,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/facets/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/runtime", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/runtime/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
+			}
+			if opts.ManagementRuntimeLogGrepHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep-options", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep-options/", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep/", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+			}
+			if opts.ManagementRuntimeLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 			}
 			if opts.ManagementExternalIntegrationSourceListHandler != nil {
@@ -1578,6 +1588,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAuditErrorGroupsHandler != nil ||
 		opts.ManagementAuditErrorGroupEventsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
+		opts.ManagementRuntimeLogGrepHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
