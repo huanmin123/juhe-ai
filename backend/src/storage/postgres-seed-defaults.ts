@@ -51,8 +51,8 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
       'super_admin',
       'active',
       hashPassword('admin'),
-      0,
-      0,
+      false,
+      false,
       now,
       now
     ]
@@ -263,7 +263,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         `
           INSERT INTO ${businessTable('provider_protocol_profile_families')} (
             profile_id, family_code, enabled, capabilities_json, created_at, updated_at
-          ) VALUES ($1, $2, 1, '[]', $3, $4)
+          ) VALUES ($1, $2, TRUE, '[]', $3, $4)
           ON CONFLICT DO NOTHING
         `,
         [profile.id, familyCode, now, now]
@@ -276,7 +276,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
       `
         SELECT id
         FROM ${businessTable('groups')}
-        WHERE system_account_id = ? AND provider_code = ? AND is_default = 1
+        WHERE system_account_id = ? AND provider_code = ? AND is_default = TRUE
         ORDER BY updated_at DESC, id ASC
         LIMIT 1
       `,
@@ -291,7 +291,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
           id, system_account_id, name, provider_code,
           description, enabled, is_default, created_at, updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, 1, 1, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, TRUE, TRUE, $6, $7)
         ON CONFLICT DO NOTHING
       `,
       [
@@ -305,7 +305,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
       ]
     )
     await query(
-      `UPDATE ${businessTable('groups')} SET is_default = 1 WHERE id = $1 AND system_account_id = $2`,
+      `UPDATE ${businessTable('groups')} SET is_default = TRUE WHERE id = $1 AND system_account_id = $2`,
       [group.id, group.systemAccountId]
     )
   }
@@ -340,7 +340,7 @@ async function seedAdminDefaultRouteStrategiesAndApiKeys(
         FROM ${businessTable('groups')}
         WHERE system_account_id = $1
           AND provider_code = $2
-          AND is_default = 1
+          AND is_default = TRUE
         ORDER BY updated_at DESC, id ASC
         LIMIT 1
       `,
@@ -356,7 +356,7 @@ async function seedAdminDefaultRouteStrategiesAndApiKeys(
       `
         INSERT INTO ${businessTable('route_strategies')} (
           id, system_account_id, name, description, mode, status, is_default, config_json, created_at, updated_at
-        ) VALUES ($1, 'sys_admin', $2, $3, 'normal', 'active', 1, NULL, $4, $5)
+        ) VALUES ($1, 'sys_admin', $2, $3, 'normal', 'active', TRUE, NULL, $4, $5)
         ON CONFLICT DO NOTHING
       `,
       [
@@ -398,7 +398,7 @@ async function seedAdminDefaultRouteStrategiesAndApiKeys(
       `
         SELECT id
         FROM ${businessTable('api_keys')}
-        WHERE route_strategy_id = $1 AND is_default = 1
+        WHERE route_strategy_id = $1 AND is_default = TRUE
         LIMIT 1
       `,
       [routeStrategyId]
@@ -413,7 +413,7 @@ async function seedAdminDefaultRouteStrategiesAndApiKeys(
           id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
           key_secret_encrypted, status, is_default, expires_at, quota_limits_json, availability_schedule_json,
           availability_schedule_next_check_at, created_at, updated_at
-        ) VALUES ($1, 'sys_admin', $2, $3, $4, $5, $6, $7, $8, 'active', 1, NULL, NULL, NULL, NULL, $9, $10)
+        ) VALUES ($1, 'sys_admin', $2, $3, $4, $5, $6, $7, $8, 'active', TRUE, NULL, NULL, NULL, NULL, $9, $10)
         ON CONFLICT DO NOTHING
       `,
       [

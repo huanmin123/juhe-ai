@@ -56,6 +56,55 @@ await seedPostgresDefaults({
 const modelInsertStatements = executedStatements.filter(({ sql }) => (
   /INSERT INTO\s+"juhe_business"\."provider_model_catalog"/i.test(sql)
 ))
+
+function requireExecutedStatement(pattern: RegExp, label: string): ExecutedStatement {
+  const statement = booleanContractStatements.find(({ sql }) => pattern.test(sql))
+  assert.ok(statement, `PostgreSQL seed 必须执行 ${label}`)
+  return statement
+}
+
+const booleanContractStatements = [...executedStatements]
+await seedPostgresDefaults({
+  async execute(sql, values = []) {
+    booleanContractStatements.push({ sql, values })
+    return { changes: 1 }
+  },
+  async one<T extends object>(sql: string, values: readonly unknown[] = []) {
+    if (/SELECT id, name\s+FROM\s+"juhe_business"\."groups"/i.test(sql)) {
+      const group = DEFAULT_BUILT_IN_GROUPS.find((item) => item.providerCode === values[1])
+      return (group ? { id: group.id, name: group.name } : undefined) as T | undefined
+    }
+    if (/SELECT id\s+FROM\s+"juhe_business"\."route_strategies"/i.test(sql)) {
+      return { id: String(values[0]) } as T
+    }
+    return undefined
+  }
+})
+
+const systemAccountInsert = requireExecutedStatement(
+  /INSERT INTO\s+"juhe_business"\."system_accounts"/i,
+  'system_accounts INSERT'
+)
+assert.equal(systemAccountInsert.values[7], false, 'must_change_password 必须用 boolean false 参数')
+assert.equal(systemAccountInsert.values[8], false, 'image_generation_enabled 必须用 boolean false 参数')
+
+const booleanSqlStatements = [
+  requireExecutedStatement(/INSERT INTO\s+"juhe_business"\."provider_protocol_profile_families"/i, 'provider_protocol_profile_families INSERT'),
+  requireExecutedStatement(/INSERT INTO\s+"juhe_business"\."groups"/i, 'groups INSERT'),
+  requireExecutedStatement(/UPDATE\s+"juhe_business"\."groups"\s+SET is_default/i, 'groups default UPDATE'),
+  requireExecutedStatement(/INSERT INTO\s+"juhe_business"\."route_strategies"/i, 'route_strategies INSERT'),
+  requireExecutedStatement(/INSERT INTO\s+"juhe_business"\."api_keys"/i, 'api_keys INSERT')
+]
+for (const statement of booleanSqlStatements) {
+  assert.match(statement.sql, /\bTRUE\b/i, 'PostgreSQL boolean seed SQL 必须使用 TRUE')
+}
+
+const defaultLookupStatements = booleanContractStatements.filter(({ sql }) => /\bis_default\s*=\s*/i.test(sql))
+assert.ok(defaultLookupStatements.length >= 3, '默认分组、路由和 API Key 查询必须覆盖 is_default')
+for (const statement of defaultLookupStatements) {
+  assert.doesNotMatch(statement.sql, /\bis_default\s*=\s*1\b/i, 'PostgreSQL boolean 谓词不得使用 integer 1')
+}
+
 const expectedModelKeys = DEFAULT_PROVIDER_SEEDS
   .filter((provider) => provider.code !== HYBRID_PROVIDER_CODE && provider.code !== 'openai')
   .flatMap((provider) => listProviderModelPricing(provider.code).map((model) => `${provider.code}\u0000${model.model}`))
