@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 
-import { PageDataReadCache } from '../../modules/page-data/page-data-read-cache.service.js'
+import { SharedReadCache } from '../../shared/shared-read-cache.js'
 
 interface RecordValue {
   value: string
@@ -44,7 +44,7 @@ class DelayedSetStorage<V> extends MemoryStorage<V> {
 }
 
 const storage = new MemoryStorage<RecordValue>()
-const cache = new PageDataReadCache<RecordValue>(storage)
+const cache = new SharedReadCache<RecordValue>(storage)
 let loads = 0
 let releaseLoader: (() => void) | undefined
 const loaderReady = new Promise<void>((resolve) => { releaseLoader = resolve })
@@ -77,7 +77,7 @@ assert.equal(storage.clearCount, 1, '整域失效应清理领域缓存')
 assert.deepEqual(await cache.load('scope-b', async () => ({ value: 'reloaded-other' })), { value: 'reloaded-other' })
 
 const delayedStorage = new DelayedSetStorage<RecordValue>()
-const delayedCache = new PageDataReadCache<RecordValue>(delayedStorage)
+const delayedCache = new SharedReadCache<RecordValue>(delayedStorage)
 const delayedLoad = delayedCache.load('scope-race', async () => ({ value: 'late-stale' }))
 await delayedStorage.setStarted.promise
 const delayedInvalidation = delayedCache.invalidateDomain()
