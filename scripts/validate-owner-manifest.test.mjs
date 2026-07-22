@@ -16,6 +16,12 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const currentMigrationVersion = await readMigrationCatalogSchemaVersion(path.join(repoRoot, 'backend-go/db/migrations'))
 const currentManifest = JSON.parse(await readFile(path.join(repoRoot, 'deploy/owner-manifest.json'), 'utf8'))
 const rootPackage = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8'))
+const startupScripts = await Promise.all(
+  ['deploy/start.ps1', 'deploy/start.sh'].map(async relativePath => ({
+    relativePath,
+    source: await readFile(path.join(repoRoot, relativePath), 'utf8')
+  }))
+)
 
 const valid = {
   schemaVersion: 1,
@@ -39,6 +45,13 @@ assert.equal(
   false,
   'release package validation must not depend on source-only migration catalog files'
 )
+for (const { relativePath, source } of startupScripts) {
+  assert.equal(
+    /--require-schema-version(?:=|\s)/u.test(source),
+    false,
+    `${relativePath} must use the validator current schema version instead of a duplicated literal`
+  )
+}
 assertRequiredOwners(valid, { management: 'node', gateway: 'node' })
 assert.throws(() => assertRequiredOwners(valid, { management: 'go' }), OwnerManifestValidationError)
 assertRequiredRelease(valid, {
