@@ -88,6 +88,19 @@ const systemAccountInsert = requireExecutedStatement(
 assert.equal(systemAccountInsert.values[7], false, 'must_change_password 必须用 boolean false 参数')
 assert.equal(systemAccountInsert.values[8], false, 'image_generation_enabled 必须用 boolean false 参数')
 
+for (const [pattern, parameterIndex, label] of [
+  [/INSERT INTO\s+"juhe_business"\."providers"/i, 5, 'providers.enabled'],
+  [/INSERT INTO\s+"juhe_business"\."protocols"/i, 5, 'protocols.enabled'],
+  [/INSERT INTO\s+"juhe_business"\."protocol_endpoint_families"/i, 6, 'protocol_endpoint_families.enabled'],
+  [/INSERT INTO\s+"juhe_business"\."provider_protocol_profiles"/i, 4, 'provider_protocol_profiles.enabled']
+] as const) {
+  const statements = booleanContractStatements.filter(({ sql }) => pattern.test(sql))
+  assert.ok(statements.length > 0, `PostgreSQL seed 必须执行 ${label} INSERT`)
+  for (const statement of statements) {
+    assert.equal(statement.values[parameterIndex], true, `${label} 必须用 boolean true 参数`)
+  }
+}
+
 const booleanSqlStatements = [
   requireExecutedStatement(/INSERT INTO\s+"juhe_business"\."provider_protocol_profile_families"/i, 'provider_protocol_profile_families INSERT'),
   requireExecutedStatement(/INSERT INTO\s+"juhe_business"\."groups"/i, 'groups INSERT'),

@@ -94,7 +94,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         provider.name,
         provider.description,
         provider.parentCode,
-        provider.enabled,
+        provider.enabled === 1,
         JSON.stringify(provider.defaultSupportedModels),
         now,
         now
@@ -196,7 +196,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         protocol.version,
         protocol.name,
         protocol.description,
-        protocol.enabled,
+        protocol.enabled === 1,
         now,
         now
       ]
@@ -218,7 +218,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         family.code,
         family.name,
         family.description,
-        family.enabled,
+        family.enabled === 1,
         now,
         now
       ]
@@ -244,7 +244,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
         profile.providerCode,
         profile.name,
         profile.description,
-        profile.enabled,
+        profile.enabled === 1,
         profile.protocolCode,
         profile.protocolVersion,
         profile.baseUrl,
