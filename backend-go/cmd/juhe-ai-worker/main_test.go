@@ -7,6 +7,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -46,7 +49,7 @@ func TestExecuteCommandSuccessDoesNotWriteFatal(t *testing.T) {
 	}
 }
 
-func TestSixWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
+func TestSevenWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 	var gated []string
 	deps := workerCommandDependencies{
 		loadConfig: func() (config.Config, error) { return config.Config{}, nil },
@@ -69,6 +72,7 @@ func TestSixWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 		"operation-log-retention-cleanup",
 		"authorization-usage-range-windows-refresh",
 		"gateway-quota-snapshot-build",
+		"cooldown-account-retest",
 	} {
 		command, _, err := root.Find([]string{name})
 		if err != nil {
@@ -95,6 +99,27 @@ func TestSixWorkerCommandsUseSharedRuntimeGate(t *testing.T) {
 	versionCommand.Run(versionCommand, nil)
 	if len(gated) != before {
 		t.Fatal("version command used worker runtime gate")
+	}
+}
+
+func TestCooldownAccountRetestCommandStaysDefaultOffWhileNodeOwnsWorker(t *testing.T) {
+	field, ok := reflect.TypeOf(config.Config{}).FieldByName("CooldownAccountRetestWorkerEnabled")
+	if !ok || field.Tag.Get("envDefault") != "false" {
+		t.Fatalf("CooldownAccountRetestWorkerEnabled field=%+v ok=%v", field, ok)
+	}
+	manifestPath := filepath.Clean(filepath.Join("..", "..", "..", "deploy", "owner-manifest.json"))
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read owner manifest: %v", err)
+	}
+	var manifest struct {
+		RouteOwners map[string]string `json:"routeOwners"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("parse owner manifest: %v", err)
+	}
+	if manifest.RouteOwners["worker"] != "node" {
+		t.Fatalf("worker owner = %q, want node", manifest.RouteOwners["worker"])
 	}
 }
 
