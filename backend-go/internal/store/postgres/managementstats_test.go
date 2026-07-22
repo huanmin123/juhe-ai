@@ -39,6 +39,7 @@ func TestManagementStatsSQLReadsOnlyBoundedPreaggregates(t *testing.T) {
 		"update juhe_stats",
 		"delete from",
 		"usage_range_window_requests",
+		"$5::text = ''",
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("management stats store must not contain %q", forbidden)
