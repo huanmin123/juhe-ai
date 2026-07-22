@@ -344,19 +344,6 @@ function orderedAccountsForBucketScope(order: {
   return [...order.freshAccounts, ...order.avoidedAccounts]
 }
 
-function upstreamBucketAccountState(
-  key: string,
-  account: UpstreamAccount,
-  now: number,
-  candidateAccountIds: Set<string>
-): 'normal' | 'blocked' | 'half_open_probe' {
-  const entry = getMemoryBucketFailureEntry(key)
-  const persistEntry = (nextEntry: GatewayUpstreamBucketFailureEntry, ttlMs: number) => {
-    setMemoryBucketFailureEntry(nextEntry.key, nextEntry, ttlMs)
-  }
-  return upstreamBucketAccountStateWithEntries(key, account, now, candidateAccountIds, new Map(entry ? [[key, entry]] : []), persistEntry)
-}
-
 function upstreamBucketAccountStateWithEntries(
   key: string,
   account: UpstreamAccount,
@@ -876,12 +863,4 @@ function pruneAccountSamples(samples: Array<[string, number]>, now: number): Arr
 
 function gatewayUpstreamBucketHealthNow(): number {
   return gatewayUpstreamBucketHealthNowForTest ?? Date.now()
-}
-
-function stringProperty(value: unknown, key: string): string {
-  if (typeof value !== 'object' || value === null) {
-    return ''
-  }
-  const property = (value as Record<string, unknown>)[key]
-  return typeof property === 'string' && property.trim() ? property.trim() : ''
 }

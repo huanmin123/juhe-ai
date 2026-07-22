@@ -59,6 +59,20 @@ const dynamicEntrypointContracts: DynamicEntrypointContract[] = [
   }
 ]
 
+const retiredProductionFiles = [
+  'src/modules/gateway/codex-responses/web-search-executor.ts',
+  'src/shared/process-fatal.ts',
+  'src/modules/stats/mock-background-runtime.ts',
+  'src/modules/gateway/client-profiles/codex-switch-probe.ts'
+]
+
+const unexpectedlyPresentRetiredFiles = retiredProductionFiles.filter((filePath) => existsSync(resolve(backendRoot, filePath)))
+assert.deepEqual(
+  unexpectedlyPresentRetiredFiles,
+  [],
+  `已退役生产文件仍存在：\n${unexpectedlyPresentRetiredFiles.map((filePath) => `- ${filePath}`).join('\n')}`
+)
+
 const failures = dynamicEntrypointContracts.flatMap(validateEntrypointContract)
 
 assert.deepEqual(

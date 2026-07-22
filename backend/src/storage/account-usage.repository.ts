@@ -460,19 +460,6 @@ function mergeAccountUsageSourceRows(pageRows: AccountUsageStatsSourceRow[], sel
   return merged
 }
 
-function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, page: number, pageSize: number): AccountUsageStatsOverview {
-  return {
-    range: input.range,
-    summary: loadAccountUsageOverviewSummary(input.access, input.range),
-    rows: [],
-    defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
-    total: 0,
-    hasMore: false,
-    page,
-    pageSize
-  }
-}
-
 function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>) {
   const scope = accountUsageOverviewSummaryScope(access)
   const windowKey = rangeWindowKey(range)

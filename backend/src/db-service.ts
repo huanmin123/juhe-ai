@@ -375,16 +375,6 @@ function shiftNextDispatchableDbServiceRequest(): QueuedDbServiceRequest | undef
   return undefined
 }
 
-function shiftNextDbServiceRequest(): QueuedDbServiceRequest | undefined {
-  for (const priority of dbServiceRequestPriorityOrder()) {
-    const request = shiftDbServiceRequestFromQueue(priority)
-    if (request) {
-      return request
-    }
-  }
-  return undefined
-}
-
 function dbServiceRequestPriorityOrder(): DbServiceOperationPriority[] {
   const lowReady = queuedDbServiceRequests.low.length > 0
   const normalReady = queuedDbServiceRequests.normal.length > 0
@@ -589,10 +579,6 @@ function queuedDbServiceRequestCount(): number {
   return queuedDbServiceRequests.high.length
     + queuedDbServiceRequests.normal.length
     + queuedDbServiceRequests.low.length
-}
-
-function shiftDbServiceRequestFromQueue(priority: DbServiceOperationPriority): QueuedDbServiceRequest | undefined {
-  return shiftDbServiceRequestFromQueueAt(priority, 0)
 }
 
 function shiftDbServiceRequestFromQueueAt(priority: DbServiceOperationPriority, index: number): QueuedDbServiceRequest | undefined {

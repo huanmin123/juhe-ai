@@ -421,26 +421,6 @@ async function enqueueRecordMaintenanceJobToRedisStream(job: RecordMaintenanceJo
   }
 }
 
-function sendRecordMaintenanceJobToParent(job: RecordMaintenanceJob): boolean {
-  if (!process.send || process.connected === false) {
-    return false
-  }
-  try {
-    process.send({
-      type: 'background_worker_record_maintenance',
-      items: [job]
-    }, (error) => {
-      if (error) {
-        recordRecordMaintenanceDispatchFailure(error, job)
-      }
-    })
-    return true
-  } catch (error) {
-    recordRecordMaintenanceDispatchFailure(error, job)
-    return false
-  }
-}
-
 async function runRecordMaintenanceRedisStreamConsumer(): Promise<void> {
   const queue = recordMaintenanceRedisStreamQueue()
   while (!recordMaintenanceRedisConsumerStopping) {

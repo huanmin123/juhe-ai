@@ -4,7 +4,7 @@ import { assertOpenAIEndpointModesCompatible } from '../../domain/openai-endpoin
 import { assertAnthropicEndpointModesCompatible } from '../../domain/anthropic-endpoint-modes.js'
 import { assertGeminiEndpointModesCompatible } from '../../domain/gemini-endpoint-modes.js'
 import { isAnthropicProtocolProfile, isGatewaySupportedProtocolProfile, isGeminiProtocolProfile, isHybridProviderCode, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
-import type { AccountClientCompatibility, AccountHealthCheckEndpointMode, AccountModelMapping, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
+import type { AccountHealthCheckEndpointMode, AccountModelMapping, AccountSummary, AccountSupportedEndpointMode } from '../../domain/types.js'
 import {
   accountAvailabilityScheduleFromRequest,
   accountAvailabilityScheduleJson
@@ -645,10 +645,6 @@ function optionalText(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const text = value.trim()
   return text || undefined
-}
-
-function hasOwnRecordKey(value: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(value, key)
 }
 
 function hasCredentialText(value: unknown): boolean {

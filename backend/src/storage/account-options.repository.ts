@@ -230,34 +230,6 @@ async function accountOptionSummariesFromRowsAsync(
   })
 }
 
-async function accountOptionSummariesFromOwnerRowsAsync(
-  client: DatabaseClient,
-  rows: AccountOptionRow[],
-  access: AccessScope | undefined
-): Promise<AccountOptionSummary[]> {
-  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields
-    ? await loadAccountOptionSystemAccountNamesAsync(client, rows.map((row) => row.system_account_id))
-    : new Map<string, string>()
-  return rows.map((row) => ({
-    id: row.id,
-    systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
-    systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
-    ownerSystemAccountId: row.system_account_id,
-    ownerSystemAccountName: accountNames.get(row.system_account_id),
-    providerCode: row.provider_code,
-    providerProtocolProfileId: row.provider_protocol_profile_id,
-    protocolCode: row.protocol_code,
-    protocolVersion: row.protocol_version,
-    name: row.name,
-    type: row.type,
-    status: row.status,
-    accessType: 'owner',
-    accountExpiresAt: row.account_expires_at ?? undefined,
-    permissions: ownerPermissions()
-  }))
-}
-
 async function queryOwnerAccountOptionRowsAsync(
   client: DatabaseClient,
   access: AccessScope | undefined,

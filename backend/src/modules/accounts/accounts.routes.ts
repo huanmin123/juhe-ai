@@ -290,13 +290,6 @@ function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | 
   return access?.systemAccountFilterId?.trim() || access?.systemAccountId
 }
 
-function isApiKeyCredentialChanged(account: AccountSummary, credentials: unknown): boolean {
-  if (account.type !== 'api_key') return false
-  const requestedCredentials = credentialsRecordValue(credentials)
-  if (!requestedCredentials) return false
-  return accountCredentialFingerprint(requestedCredentials) !== accountCredentialFingerprint(account.credentials)
-}
-
 function isAuthorizedAccountUpdateTarget(account: AccountSummary): boolean {
   return account.accessType === 'authorized' || Boolean(account.accountAuthorizationId || account.authorizationInstanceSourceAccountId)
 }

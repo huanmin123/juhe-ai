@@ -96,6 +96,7 @@ for (const requiredFile of requiredFiles) {
 assert.equal(unclassifiedHits.length, 0, `存在未分类的存储直接调用点：${JSON.stringify(unclassifiedHits.slice(0, 10), null, 2)}`)
 assertNoRuntimeNodeSqliteValueImports(sourceFiles)
 assertNoUnexpectedRawDriverImports(sourceFiles)
+assertRetiredMockBackgroundRuntimeRemoved()
 assertNoUnexpectedRuntimeSqliteDirectAccess(hits)
 assertNoHttpRouteSqliteSyncImports(sourceFiles)
 assertStorageRuntimeSkeletonBoundary()
@@ -273,7 +274,6 @@ function assertNoUnexpectedRuntimeSqliteDirectAccess(inventoryHits: InventoryHit
     'modules/operation-logs/operation-log.service.ts': [/\brunInDatabaseTransaction\s*\(/],
     'modules/background/background-stats-writer.ts': [/\bgetStatsDatabase\(\)/],
     'modules/background/data-retention-cleanup.service.ts': [/\bgetDatasetDatabase\(\)/],
-    'modules/stats/mock-background-runtime.ts': [/\bget(?:Business|Dataset|Stats)Database\(\)/],
     'modules/gateway/quota/api-key-quota.service.ts': [/\bgetStatsDatabase\(\)/],
     'modules/gateway/quota/authorization-quota.service.ts': [/\bget(?:Business|Stats)Database\(\)/]
   }
@@ -288,6 +288,17 @@ function assertNoUnexpectedRuntimeSqliteDirectAccess(inventoryHits: InventoryHit
     [],
     '运行态非 storage 基础设施不得新增 SQLite getter/client 直连；确需 SQLite-only 分支必须在此回归中显式分类'
   )
+}
+
+function assertRetiredMockBackgroundRuntimeRemoved(): void {
+  assert.equal(
+    existsSync(resolve(srcRoot, 'modules/stats/mock-background-runtime.ts')),
+    false,
+    '旧 mock background runtime 必须删除，系统运行态只能来自正式 worker / DB service owner'
+  )
+  const storageRuntimeOwner = readFileSync(resolve(srcRoot, 'storage/runtime/index.ts'), 'utf8')
+  assert.match(storageRuntimeOwner, /export function getStorageRuntime\(\): StorageRuntime/, '当前 storage runtime owner 必须保留统一 getStorageRuntime 入口')
+  assert.match(storageRuntimeOwner, /createSqliteMemoryStorageRuntime|createPostgresRedisStorageRuntime/, '当前 storage runtime owner 必须继续按运行模式装配正式 adapter')
 }
 
 function assertNoHttpRouteSqliteSyncImports(files: string[]): void {

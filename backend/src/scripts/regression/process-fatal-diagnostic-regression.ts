@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 import {
   drainProcessDiagnosticAsyncForTest,
@@ -9,6 +9,12 @@ import {
   writeBoundedProcessDiagnosticLineAsync,
   writeProcessDiagnosticAsync
 } from '../../shared/process-fatal-diagnostic.js'
+
+assert.equal(
+  existsSync(new URL('../../shared/process-fatal.ts', import.meta.url)),
+  false,
+  '旧 scheduleProcessFatalError helper 必须删除，正式 fatal 诊断 owner 为 process-fatal-diagnostic.ts/logger.ts'
+)
 
 const secret = 'sk-regression-secret-value'
 const diagnostic = serializeProcessFatalDiagnostic({

@@ -528,14 +528,6 @@ export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Pr
   })
 }
 
-async function requestWorkerProcessEventLoopSamples(timeoutMs = 800): Promise<ProcessEventLoopSample[] | undefined> {
-  return await requestChildProcessEventLoopSamples('worker', timeoutMs)
-}
-
-async function requestIngestWorkerProcessEventLoopSamples(timeoutMs = 800): Promise<ProcessEventLoopSample[] | undefined> {
-  return await requestChildProcessEventLoopSamples('ingest-worker', timeoutMs)
-}
-
 async function requestChildProcessEventLoopSamples(
   role: BackgroundWorkerProcessRole,
   timeoutMs = 800

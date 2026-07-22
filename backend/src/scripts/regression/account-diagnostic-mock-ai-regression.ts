@@ -1,26 +1,42 @@
 import { strict as assert } from 'node:assert'
-import { mkdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import type { Request } from 'express'
 
-import { runtimeConfig } from '../../config/runtime.js'
-import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import type { AccountSummary } from '../../domain/types.js'
-import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-diagnostic-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const testSecret = 'account-diagnostic-mock-ai-secret'
+
+process.env.JUHE_AI_SECRET = testSecret
+process.env.JUHE_AI_DATABASE_PATH = join(tempRoot, 'business.sqlite3')
+process.env.JUHE_AI_DATASET_DATABASE_PATH = join(tempRoot, 'dataset.sqlite3')
+process.env.JUHE_AI_STATS_DATABASE_PATH = join(tempRoot, 'stats.sqlite3')
+process.env.JUHE_AI_LOG_CONSOLE_ENABLED = 'false'
+process.env.JUHE_AI_LOG_FILE_ENABLED = 'false'
+process.env.JUHE_AI_PROCESS_ROLE = 'db-service'
+
+const { runtimeConfig } = await import('../../config/runtime.js')
+
+assert.equal(
+  process.env.JUHE_AI_SECRET,
+  runtimeConfig.secret,
+  'SQLite read worker 的 JUHE_AI_SECRET 必须在 config 和 crypto 初始化前与父进程一致'
+)
+
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
 runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
-runtimeConfig.secret = 'account-diagnostic-mock-ai-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'db-service'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
+
+const { logger } = await import('../../shared/logger.js')
 logger.level = 'silent'
 
 const upstreamState = {
@@ -28,8 +44,9 @@ const upstreamState = {
 }
 
 const [
+  { GPT_OPENAI_V1_PROFILE_ID },
+  { resolveOpenAIGatewayClientStrategy },
   { testOpenAIAccountWithDiagnosticRetries },
-  { probeCodexSwitchCandidateAccount },
   { readGatewaySettings },
   { flushGatewayAccountSideEffects },
   { flushAllUsageRecordQueue, setDbServiceUsageRecordLocalWriteAllowedForTest },
@@ -37,8 +54,9 @@ const [
   databaseModule,
   repositories
 ] = await Promise.all([
+  import('../../domain/provider-protocol.js'),
+  import('../../modules/gateway/client-profiles/strategy.js'),
   import('../../modules/accounts/account-test.service.js'),
-  import('../../modules/gateway/client-profiles/codex-switch-probe.js'),
   import('../../modules/gateway/policy/account-error-policy.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
@@ -47,8 +65,24 @@ const [
   import('../../storage/repositories.js')
 ])
 
+assert.equal(
+  existsSync(new URL('../../modules/gateway/client-profiles/codex-switch-probe.ts', import.meta.url)),
+  false,
+  '旧 Codex 直接切号 probe 必须删除，客户端识别与重试协调由正式 strategy owner 管理'
+)
+
+const codexStrategy = resolveOpenAIGatewayClientStrategy(mockResponsesRequest('gpt-5.5'), {
+  systemAccountId: 'diagnostic-strategy-system-account',
+  apiKeyId: 'diagnostic-strategy-api-key',
+  groupId: 'diagnostic-strategy-group',
+  endpoint: '/v1/responses'
+})
+assert.equal(codexStrategy.clientProfile, 'codex', '带 turn metadata 的 Responses SSE 请求必须由正式 Codex client strategy 识别')
+assert.equal(codexStrategy.requestClientCompatibility, 'codex_responses')
+assert.equal(codexStrategy.retryCoordination.preCommitFailureSignal, 'protocol_error_event')
+assert.equal(codexStrategy.allowCodexTurnAccountAvoidance, true)
+
 let upstream: http.Server | undefined
-const originalAbortSignalTimeout = AbortSignal.timeout
 
 try {
   setDbServiceUsageRecordLocalWriteAllowedForTest(true)
@@ -111,39 +145,8 @@ try {
   assert.equal(imageResult.message, 'OpenAI 模型目录 测试通过', '图像模型探针结果不得误报为 Responses 测试')
   assert.equal(hitCount('image-catalog'), 1, '模型目录探针成功后不得重复请求或触发生图')
 
-  const codexFailedAccount = createMockAccount(group.id, upstreamBaseUrl, 'codex-explicit-failure', access)
-  const codexFailedCandidate = requiredRuntimeAccount(group.id, codexFailedAccount.id, admin.id)
-  const codexFailedResult = await probeCodexSwitchCandidateAccount(codexFailedCandidate, {
-    req: mockResponsesRequest('gpt-5.5'),
-    systemAccountId: admin.id,
-    groupId: group.id
-  })
-  await flushGatewayAccountSideEffects()
-  flushAllUsageRecordQueue()
-  assert.equal(codexFailedResult.success, false, 'Codex 切号探针明确失败不应通过')
-  assert.equal(
-    hitCount('codex-explicit-failure'),
-    1,
-    `Codex 切号探针拿到明确失败后应立即淘汰候选，不在同账号烧完三档：${codexFailedResult.message}`
-  )
-
-  const codexTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'codex-timeout', access)
-  const codexTimeoutCandidate = requiredRuntimeAccount(group.id, codexTimeoutAccount.id, admin.id)
-  AbortSignal.timeout = ((timeoutMs: number) => originalAbortSignalTimeout(Math.min(timeoutMs, 20))) as typeof AbortSignal.timeout
-  const codexTimeoutResult = await probeCodexSwitchCandidateAccount(codexTimeoutCandidate, {
-    req: mockResponsesRequest('gpt-5.5'),
-    systemAccountId: admin.id,
-    groupId: group.id
-  })
-  AbortSignal.timeout = originalAbortSignalTimeout
-  await flushGatewayAccountSideEffects()
-  flushAllUsageRecordQueue()
-  assert.equal(codexTimeoutResult.success, false, '持续本地超时的 Codex 切号探针不应通过')
-  assert.equal(hitCount('codex-timeout'), 3, 'Codex 切号探针只有本地超时时才应在同一候选账号递进三档')
-
-  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类、Codex 明确失败立即换号和本地超时三档递进')
+  console.log('账号诊断 mock AI 回归通过：真实 mock 上游覆盖手动测试三档重试、持续失败不分类，并由正式 Codex client strategy 管理客户端重试协调')
 } finally {
-  AbortSignal.timeout = originalAbortSignalTimeout
   auditLogQueue.flushAllAuditLogQueue()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   setDbServiceUsageRecordLocalWriteAllowedForTest(false)
@@ -178,25 +181,19 @@ function createMockAccount(
   }, access)
 }
 
-function requiredRuntimeAccount(groupId: string, accountId: string, systemAccountId: string) {
-  repositories.recordAccountHealthCheckSuccess(accountId, {
-    intervalHours: 12,
-    jitterMinutes: 0,
-    failureThreshold: 3,
-    statusCode: 200
-  })
-  const account = repositories.findOpenAIAccountForGroup(groupId, accountId, systemAccountId, { ignoreAvailability: true })
-  assert(account, `应能读取运行态账号 ${accountId}`)
-  return account
-}
-
 function mockResponsesRequest(model: string): Request {
   return {
     method: 'POST',
     path: '/v1/responses',
     originalUrl: '/v1/responses',
     body: { model, stream: true },
-    header: (name: string) => name.toLowerCase() === 'accept' ? 'text/event-stream' : undefined
+    header: (name: string) => {
+      if (name.toLowerCase() === 'accept') return 'text/event-stream'
+      if (name.toLowerCase() === 'x-codex-turn-metadata') {
+        return JSON.stringify({ turn_id: 'diagnostic-strategy-turn' })
+      }
+      return undefined
+    }
   } as unknown as Request
 }
 
@@ -228,18 +225,6 @@ function createMockAIUpstream(): http.Server {
       }
       if (key === 'manual-persistent-401') {
         sendJsonError(res, 401, 'manual persistent unauthorized')
-        return
-      }
-      if (key === 'codex-explicit-failure') {
-        sendJsonError(res, 503, 'codex explicit probe failure')
-        return
-      }
-      if (key === 'codex-timeout') {
-        setTimeout(() => {
-          if (!res.destroyed) {
-            sendMockCompleted(res, responseMode, 'OK')
-          }
-        }, 200)
         return
       }
       sendMockCompleted(res, responseMode, 'OK')

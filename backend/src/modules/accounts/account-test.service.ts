@@ -11,7 +11,6 @@ import {
 } from '../../domain/provider-protocol.js'
 import type {
   AccountClientCompatibility,
-  AccountModelMapping,
   AccountModelMappingSourceEndpointFamily,
   AccountSummary,
   AccountSupportedEndpointMode,
@@ -20,10 +19,8 @@ import type {
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
-  defaultProviderProtocolProfileAsync,
   findAccountForTestAsync,
   findOpenAIAccountForGroupAsync,
-  findProviderProtocolProfileAsync,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
@@ -687,28 +684,6 @@ async function resolveAccountTestCandidate(account: AccountSummary, input: { gro
   }
 }
 
-function preferredMappedSourceModelForAccount(
-  account: Pick<AccountSummary, 'modelMappings' | 'supportedModels'>,
-  sourceFamilies: AccountModelMappingSourceEndpointFamily[]
-): string | undefined {
-  const supported = new Set((account.supportedModels ?? []).map((model) => stringValue(model)).filter(Boolean))
-  const sourceFamilySet = new Set(sourceFamilies)
-  const mapping = (account.modelMappings ?? []).find((item) => accountModelMappingUsableForTest(item, sourceFamilySet, supported))
-  return mapping?.sourceModel
-}
-
-function accountModelMappingUsableForTest(
-  mapping: AccountModelMapping,
-  sourceFamilies: Set<AccountModelMappingSourceEndpointFamily>,
-  supportedModels: Set<string>
-): boolean {
-  return mapping.enabled !== false
-    && sourceFamilies.has(mapping.sourceEndpointFamily)
-    && Boolean(stringValue(mapping.sourceModel))
-    && Boolean(stringValue(mapping.upstreamModel))
-    && (supportedModels.size === 0 || supportedModels.has(mapping.upstreamModel))
-}
-
 function accountTestDefaultSourceFamilies(account: Pick<AccountSummary, 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>): AccountModelMappingSourceEndpointFamily[] {
   if (isAnthropicProtocolProfile(account)) return [ANTHROPIC_MESSAGES_FAMILY]
   if (isGeminiProtocolProfile(account)) return [GEMINI_STREAM_GENERATE_CONTENT_FAMILY, GEMINI_GENERATE_CONTENT_FAMILY]
@@ -737,27 +712,8 @@ async function loadOpenAIAccountForGroup(
   return await reader(groupId, accountId, systemAccountId, options)
 }
 
-function accountTestPreferenceSystemAccountId(
-  account: Pick<AccountSummary, 'systemAccountId' | 'ownerSystemAccountId' | 'bindingSystemAccountId'>,
-  requestSystemAccountId?: string
-): string | undefined {
-  return stringValue(requestSystemAccountId)
-    || stringValue(account.bindingSystemAccountId)
-    || stringValue(account.ownerSystemAccountId)
-    || stringValue(account.systemAccountId)
-    || undefined
-}
-
 function normalizedAccountTestModels(models: string[] | undefined): string[] {
   return [...new Set((models ?? []).map((model) => stringValue(model)).filter(Boolean))]
-}
-
-function supportedAccountTestModel(model: string | undefined, supportedModels: string[]): string {
-  const normalizedModel = stringValue(model)
-  if (!normalizedModel) return ''
-  return !supportedModels.length || supportedModels.includes(normalizedModel)
-    ? normalizedModel
-    : ''
 }
 
 function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret): boolean | undefined {

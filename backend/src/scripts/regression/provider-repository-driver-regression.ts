@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -140,6 +140,11 @@ function assertDefaultHealthCheckModelRoleLookupBoundary(): void {
 
 function assertAccountHealthCheckModelRuntimeBoundary(): void {
   const srcRoot = join(dirname(fileURLToPath(import.meta.url)), '../..')
+  const retiredCodexSwitchProbePath = join(srcRoot, 'modules/gateway/client-profiles/codex-switch-probe.ts')
+  assert.equal(existsSync(retiredCodexSwitchProbePath), false, '旧 Codex 直接切号 probe 文件必须删除')
+  const clientStrategySource = readFileSync(join(srcRoot, 'modules/gateway/client-profiles/strategy.ts'), 'utf8')
+  assert.match(clientStrategySource, /export function resolveOpenAIGatewayClientStrategy/, 'Codex 客户端识别必须保留正式 strategy owner')
+  assert.match(clientStrategySource, /allowCodexTurnAccountAvoidance:\s*Boolean\(codexTurn\)/, '正式 strategy owner 必须管理 Codex turn 级账号避让')
   const accountTestServiceSource = readFileSync(join(srcRoot, 'modules/accounts/account-test.service.ts'), 'utf8')
   assert.ok(
     accountTestServiceSource.includes('export async function resolveAccountTestModelAsync')
@@ -176,7 +181,6 @@ function assertAccountHealthCheckModelRuntimeBoundary(): void {
     'modules/background/account-quality-failure-precheck.service.ts',
     'modules/background/account-api-key-cooldown-retest.service.ts',
     'modules/accounts/account-test-task-queue.service.ts',
-    'modules/gateway/client-profiles/codex-switch-probe.ts',
     'modules/gateway/runtime/account-side-effects.service.ts'
   ]) {
     const source = readFileSync(join(srcRoot, relativePath), 'utf8')

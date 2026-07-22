@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 import { backgroundWorkerRegistry } from '../../modules/background/background-job-registry.js'
 import { workerMessageTargetRole } from '../../modules/background/background-ipc-worker-roles.js'
@@ -22,6 +22,12 @@ const frontendBackgroundQueuesHelperSource = readSource('../../../../frontend/sr
 const frontendSystemMetricsSource = readSource('../../../../frontend/src/views/stats/SystemMetricsStatsView.vue')
 const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics',[\s\S]*?\n\}\)\n/)?.[0]
 const systemMetricsRuntimeRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime',[\s\S]*?\n\}\)\n/)?.[0]
+
+assert.equal(
+  existsSync(new URL('../../modules/stats/mock-background-runtime.ts', import.meta.url)),
+  false,
+  '旧 mock background runtime 文件必须删除，系统指标只能读取正式 worker / DB service snapshot'
+)
 
 assert(systemMetricsRouteSource, '系统指标趋势路由必须存在')
 assert(systemMetricsRuntimeRouteSource, '系统指标运行态路由必须存在')

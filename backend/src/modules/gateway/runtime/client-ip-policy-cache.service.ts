@@ -291,14 +291,6 @@ async function setActivePolicySnapshotSharedCacheEntry(entry: ClientIpPolicySnap
   }, { ttlMs: clientIpPolicyCacheTtlMs })
 }
 
-async function loadClientIpPolicySnapshotFromSharedCacheOrDatabase(): Promise<ClientIpPolicySnapshotCacheEntry> {
-  const sharedSnapshot = await getActivePolicySnapshotSharedCacheEntry()
-  if (sharedSnapshot) {
-    return sharedSnapshot
-  }
-  return await loadClientIpPolicySnapshotFromDatabase()
-}
-
 async function loadClientIpPolicySnapshotFromDatabase(): Promise<ClientIpPolicySnapshotCacheEntry> {
   const policies = shouldUseStatsWriterBridge()
     ? await requestStatsWriter({ type: 'list_active_client_ip_policies' }, 1000)

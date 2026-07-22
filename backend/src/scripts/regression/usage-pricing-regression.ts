@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
@@ -1442,13 +1442,16 @@ assert.match(gatewayAccountSideEffectsSource, /systemAccountId:\s*state\.systemA
 assert.match(gatewayAccountSideEffectsSource, /trafficSource:\s*'runtime_recovery_probe'/)
 assert.doesNotMatch(gatewayAccountSideEffectsSource, /requestShape:/, '运行态恢复探针不能复用失败请求形态')
 assert.doesNotMatch(gatewayAccountSideEffectsSource, /precheckAttemptTimeoutMs|precheckRetryDelayMs|45_000/)
-const codexSwitchProbeSource = readSource('modules/gateway/client-profiles/codex-switch-probe.ts')
-assert.match(codexSwitchProbeSource, /accountDiagnosticRetryTimeoutMs/)
-assert.match(codexSwitchProbeSource, /diagnosticAttemptSignal\(input\.signal,\s*timeoutMs\)/)
-assert.match(codexSwitchProbeSource, /isDiagnosticTimeoutSignal\(attemptSignal\)/)
-assert.match(codexSwitchProbeSource, /result\.success\s*\|\|\s*!shouldRetryCodexSwitchProbeSameAccount/, 'Codex 切号探针拿到明确失败后应立即换候选账号，只在本地超时时同账号递进等待')
-assert.match(codexSwitchProbeSource, /codexSwitchProbeGatewayTimeoutMs\(timeoutMs\)/)
-assert.doesNotMatch(codexSwitchProbeSource, /8_000|codexSwitchProbeTimeoutMs|testOpenAIAccountWithDiagnosticRetries/, 'Codex 切号探针不能保留 8s 专用超时，也不能使用普通账号测试的全失败原地重试包装器')
+const gatewayClientStrategySource = readSource('modules/gateway/client-profiles/strategy.ts')
+assert.equal(
+  existsSync(resolve(dirname(fileURLToPath(import.meta.url)), '../../modules/gateway/client-profiles/codex-switch-probe.ts')),
+  false,
+  'usage/pricing 回归不得继续依赖旧 Codex 直接切号 probe 文件'
+)
+assert.match(gatewayClientStrategySource, /export function resolveOpenAIGatewayClientStrategy/)
+assert.match(gatewayClientStrategySource, /clientProfile === 'codex' && downstreamProtocol === 'responses_sse'/, 'Codex Responses SSE 重试协调必须由正式 client strategy owner 判定')
+assert.match(gatewayClientStrategySource, /allowCodexTurnAccountAvoidance:\s*Boolean\(codexTurn\)/, '正式 Codex client strategy 必须显式管理 turn 级账号避让能力')
+assert.doesNotMatch(gatewayClientStrategySource, /probeCodexSwitchCandidateAccount|accountDiagnosticRetryTimeoutMs/, '正式 client strategy 不得回引旧直接切号 probe 或账号诊断重试实现')
 
 const usageRecordsRepositorySource = readSource('storage/usage-records.repository.ts')
 assert.match(usageRecordsRepositorySource, /traffic_source/)
