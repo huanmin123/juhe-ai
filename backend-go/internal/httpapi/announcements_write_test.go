@@ -307,7 +307,7 @@ func TestAnnouncementManagementWriteRoutesUseTouchAuthAndRespectFeatureGate(t *t
 		ManagementAnnouncementsHandler:   managementHandler,
 	})
 	recorder := httptest.NewRecorder()
-	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", nil))
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", strings.NewReader(`{"title":"标题","content":"正文"}`)))
 	if recorder.Code != http.StatusAccepted || readCalls != 0 || writeCalls != 1 || touchCalls != 1 {
 		t.Fatalf("status=%d read=%d write=%d touch=%d", recorder.Code, readCalls, writeCalls, touchCalls)
 	}
@@ -322,6 +322,100 @@ func TestAnnouncementManagementWriteRoutesUseTouchAuthAndRespectFeatureGate(t *t
 	disabled.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", nil))
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("disabled status=%d, want 404", recorder.Code)
+	}
+}
+
+func TestAnnouncementCreateRouteRejectsDuplicateSubmission(t *testing.T) {
+	createCalls := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		createCalls++
+		w.WriteHeader(http.StatusCreated)
+	})
+	auth := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "actor-1", Role: "admin",
+			})))
+		})
+	}
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:      auth,
+		ManagementAPIAuthTouchMiddleware: auth,
+		ManagementAnnouncementsHandler:   handler,
+	})
+	body := `{"title":"  标题  ","content":" 正文 ","level":"warning","status":"draft"}`
+	first := httptest.NewRecorder()
+	router.ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", strings.NewReader(body)))
+	second := httptest.NewRecorder()
+	router.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", strings.NewReader(
+		`{"status":"draft","content":"正文","title":"标题","level":"warning"}`,
+	)))
+	if first.Code != http.StatusCreated || second.Code != http.StatusConflict || createCalls != 1 {
+		t.Fatalf("first=%d second=%d createCalls=%d secondBody=%s", first.Code, second.Code, createCalls, second.Body.String())
+	}
+}
+
+func TestAnnouncementCreateMutationGuardMatchesNodeTrimWhitespace(t *testing.T) {
+	createCalls := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		createCalls++
+		w.WriteHeader(http.StatusCreated)
+	})
+	auth := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "actor-1", Role: "admin",
+			})))
+		})
+	}
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:      auth,
+		ManagementAPIAuthTouchMiddleware: auth,
+		ManagementAnnouncementsHandler:   handler,
+	})
+
+	request := func(body string) int {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", strings.NewReader(body)))
+		return recorder.Code
+	}
+	if first, duplicate := request(`{"title":"\uFEFF标题\uFEFF","content":"\uFEFF正文\uFEFF","level":"\uFEFFinfo\uFEFF","status":"\uFEFFdraft\uFEFF"}`), request(`{"title":"标题","content":"正文","level":"info","status":"draft"}`); first != http.StatusCreated || duplicate != http.StatusConflict {
+		t.Fatalf("ECMAScript trim statuses=%d,%d", first, duplicate)
+	}
+	if kept, plain := request(`{"title":"边界\u0085","content":"正文","level":"info","status":"draft"}`), request(`{"title":"边界","content":"正文","level":"info","status":"draft"}`); kept != http.StatusCreated || plain != http.StatusCreated {
+		t.Fatalf("non-ECMAScript whitespace statuses=%d,%d", kept, plain)
+	}
+	if createCalls != 3 {
+		t.Fatalf("createCalls=%d, want 3", createCalls)
+	}
+}
+
+func TestAnnouncementCreateMutationGuardRejectsBodyOverNodeLimit(t *testing.T) {
+	createCalls := 0
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		createCalls++
+		w.WriteHeader(http.StatusCreated)
+	})
+	auth := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), managementAuthContextKey, managementauth.Context{
+				SystemAccountID: "actor-1", Role: "admin",
+			})))
+		})
+	}
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:      auth,
+		ManagementAPIAuthTouchMiddleware: auth,
+		ManagementAnnouncementsHandler:   handler,
+	})
+	body := `{"title":"标题","content":"` + strings.Repeat("x", 256<<10) + `"}`
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", strings.NewReader(body)))
+	if recorder.Code != http.StatusRequestEntityTooLarge || createCalls != 0 {
+		t.Fatalf("status=%d createCalls=%d", recorder.Code, createCalls)
 	}
 }
 

@@ -466,6 +466,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementUsageRecordsHandler:                     managementHandlers.UsageRecordsHandler,
 		ManagementMyUsageRecordsHandler:                   managementHandlers.MyUsageRecordsHandler,
 		ManagementAnnouncementPublicListHandler:           managementHandlers.AnnouncementPublicListHandler,
+		ManagementAnnouncementPublicDetailHandler:         managementHandlers.AnnouncementPublicDetailHandler,
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
 		ManagementSystemMetricsHandler:                    managementHandlers.SystemMetricsHandler,
@@ -703,6 +704,7 @@ type managementAPIHandlers struct {
 	UsageRecordsHandler                     http.Handler
 	MyUsageRecordsHandler                   http.Handler
 	AnnouncementPublicListHandler           http.Handler
+	AnnouncementPublicDetailHandler         http.Handler
 	AnnouncementPublicReadHandler           http.Handler
 	AnnouncementsHandler                    http.Handler
 	SystemMetricsHandler                    http.Handler
@@ -1188,6 +1190,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		UsageRecordsHandler:                     httpapi.NewManagementUsageRecordsHandler(usageRecordService),
 		MyUsageRecordsHandler:                   httpapi.NewManagementMyUsageRecordsHandler(usageRecordService),
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
+		AnnouncementPublicDetailHandler:         httpapi.NewAnnouncementPublicDetailHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
 		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, logger),
 		SystemMetricsHandler:                    httpapi.NewManagementSystemMetricsHandler(statsService),
