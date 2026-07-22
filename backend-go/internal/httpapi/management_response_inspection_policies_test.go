@@ -198,7 +198,7 @@ func assertResponseInspectionPolicyOperationLog(t *testing.T, payload []byte, ac
 	if err != nil {
 		t.Fatalf("decode operation log: %v", err)
 	}
-	if input.Module != "response_inspection_policies" || input.Action != action || input.OperationKey != "response_inspection_policies."+action ||
+	if input.Mode != "admin" || input.Module != "response_inspection_policies" || input.Action != action || input.OperationKey != "response_inspection_policies."+action ||
 		input.ResourceType != "response_inspection_policy" || input.VisibilityScope != "admin_only" || input.StatusCode == nil || *input.StatusCode != status {
 		t.Fatalf("operation log = %#v", input)
 	}

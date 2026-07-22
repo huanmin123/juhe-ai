@@ -302,7 +302,9 @@ func recordManagementResponseInspectionPolicyOperation(
 		ID: newLogID(), TraceID: requestIDFromContext(r.Context()),
 		ActorSystemAccountID: authContext.SystemAccountID, ActorUsername: authContext.Username,
 		ActorDisplayName: authContext.DisplayName, ActorRole: authContext.Role,
-		Mode: "self", Module: "response_inspection_policies", Action: action,
+		// This endpoint is admin-only; classify the operation as an admin action
+		// even though the actor is the same system account that owns the session.
+		Mode: "admin", Module: "response_inspection_policies", Action: action,
 		OperationKey: "response_inspection_policies." + action,
 		ResourceType: "response_inspection_policy", ResourceID: policy.ID,
 		ResourceName: policy.Name, Summary: responseInspectionPolicyOperationSummary(action, policy.Name),
