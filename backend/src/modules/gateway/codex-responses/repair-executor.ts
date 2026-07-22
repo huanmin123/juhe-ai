@@ -72,6 +72,9 @@ function assertOperationAllowed(
   }
   const allowedIssue = operation.issueCode === 'item_id_invalid' || operation.issueCode === 'item_id_prefix_mismatch'
   if (!allowedIssue) throw new Error('codex_repair_forbidden: issue is not R0 allowlisted')
+  if (!operationIssueMatchesCurrentItem(plan, operation, target.item, contract.prefix)) {
+    throw new Error('codex_repair_forbidden: current item does not satisfy the diagnosed issue')
+  }
 
   if (target.field === 'input') {
     if (
@@ -93,6 +96,26 @@ function assertOperationAllowed(
   ) {
     throw new Error('codex_repair_forbidden: response only permits typed ID replacement')
   }
+}
+
+function operationIssueMatchesCurrentItem(
+  plan: CodexRepairPlan,
+  operation: CodexRepairOperation,
+  item: JsonRecord,
+  expectedPrefix: string | undefined
+): boolean {
+  const currentId = item.id
+  if (operation.issueCode === 'item_id_prefix_mismatch') {
+    return typeof currentId === 'string'
+      && currentId.length > 0
+      && Boolean(expectedPrefix)
+      && !(currentId.startsWith(`${expectedPrefix}_`) && currentId.length > (expectedPrefix?.length ?? 0) + 1)
+  }
+  if (operation.issueCode === 'item_id_invalid') {
+    if (plan.provenance !== 'request_history' && currentId === null) return false
+    return typeof currentId !== 'string' || currentId.length === 0
+  }
+  return false
 }
 
 function operationTarget(document: JsonRecord, operation: CodexRepairOperation): {
