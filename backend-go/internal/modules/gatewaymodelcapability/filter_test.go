@@ -3,6 +3,8 @@ package gatewaymodelcapability
 import (
 	"reflect"
 	"testing"
+
+	gatewayprotocol "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 func TestFilterCandidatesAppliesCapabilityBeforeModelPriority(t *testing.T) {
@@ -33,6 +35,17 @@ func TestFilterCandidatesAppliesCapabilityBeforeModelPriority(t *testing.T) {
 	}
 	if result.Model.Priority.RankByCandidateID["direct"] != ModelPriorityDirect || result.Model.Priority.RankByCandidateID["mapping"] != ModelPriorityMapping {
 		t.Fatalf("unexpected priority: %#v", result.Model.Priority.RankByCandidateID)
+	}
+}
+
+func TestFilterModelCandidatesAcceptsProtocolRegistryEndpointFamily(t *testing.T) {
+	result := FilterModelCandidates(
+		[]Candidate{candidate("unrestricted", readyCapability(), nil)},
+		"gpt-5",
+		gatewayprotocol.EndpointResponses,
+	)
+	if got, want := candidateIDs(result.Candidates), []string{"unrestricted"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidate ids = %#v, want %#v", got, want)
 	}
 }
 
