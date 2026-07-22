@@ -61,7 +61,7 @@ func NativeProtocolForRequest(request RequestShape) (ProtocolCode, bool) {
 func ResolveDownstreamProtocol(protocol ProtocolCode, request RequestShape) DownstreamProtocol {
 	method := strings.ToUpper(strings.TrimSpace(request.Method))
 	family := EndpointFamilyFromPath(protocol, request.Path)
-	acceptsSSE := strings.Contains(strings.ToLower(request.Header("accept")), "text/event-stream")
+	acceptsSSE := acceptsEventStream(request.Header("accept"))
 	stream := request.Stream || acceptsSSE
 
 	switch protocol {
