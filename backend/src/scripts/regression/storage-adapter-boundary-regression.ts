@@ -205,7 +205,6 @@ function classifyDomain(filePath: string): string {
     ['external-integration', /external/],
     ['model-check', /model-check/],
     ['model-trust', /model-trust/],
-    ['page-data', /page-data/],
     ['chat', /chat/],
     ['openai-compatible-artifacts', /openai-compatible-(?:files|vector-stores)/],
     ['system-metrics', /system-metrics|table-monitor|metrics/],

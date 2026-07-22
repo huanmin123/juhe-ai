@@ -636,13 +636,13 @@ async function runReadOnlySmoke(
     }
   }
   if (externalIntegrationSourceFirstPage.hasMore) {
-    const externalIntegrationSourceSecondPageData = await getEnvelopeData(
+    const externalIntegrationSourceSecondPage = await getEnvelopeData(
       externalIntegrationSourcesListUrl(config, 2),
       config,
       'external integration source list page 2'
     )
     const externalIntegrationSourceSecondPage = assertExternalIntegrationSourceList(
-      externalIntegrationSourceSecondPageData,
+      externalIntegrationSourceSecondPage,
       2,
       20
     )

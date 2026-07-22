@@ -1919,7 +1919,3 @@ type ManagementAccountOptionReader interface {
 	DeleteManagementAccountTag(ctx context.Context, input ManagementAccountTagDeleteInput) (bool, error)
 	UpdateManagementAccountTags(ctx context.Context, input ManagementAccountTagUpdateInput) (ManagementAccountTagUpdateResult, bool, error)
 }
-
-type AccountAuthorizationGranteeReader interface {
-	ListAccountAuthorizationGranteeIDs(ctx context.Context, accountID string) ([]string, error)
-}

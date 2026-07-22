@@ -1,14 +1,12 @@
 import { onBeforeUnmount, ref } from 'vue'
 
-import { api, pageDataApi } from '@/api/client'
-import { authState } from '@/composables/useAuth'
+import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import { rememberGroupLabels } from '@/shared/groupLabelCache'
 import {
   removeLocalSelectPreferenceValues,
   type LocalSelectStorageKeyPart
 } from '@/shared/selectLocalPreferenceCache'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { GroupOptionSummary } from '@/types/domain'
 
 export interface AccountGroupOptionsScope {
@@ -27,15 +25,12 @@ interface UseAccountGroupOptionsConfig {
   errorMessage?: string
   isManagementView: () => boolean
   limit?: number
-  cacheTtlMs?: number
   localCacheKeyParts?: (scope: Required<AccountGroupOptionsScope>) => LocalSelectStorageKeyPart[]
   onMissingSelectedIds?: (ids: string[]) => boolean | void
   preferenceKeys?: () => string[]
   scope: () => AccountGroupOptionsScope
   searchDelayMs?: number
 }
-
-const groupOptionResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   const groups = ref<GroupOptionSummary[]>([])
@@ -82,40 +77,13 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     loadingPromise = (async () => {
       try {
         const isManagementView = config.isManagementView()
-        const cacheScope = groupOptionCacheScope(scope, isManagementView)
-        const route = isManagementView ? '/groups/options' : '/my-groups/options'
-        if (force) await groupOptionResourceCache.invalidate('groups.static', cacheScope, route)
-        const result = await groupOptionResourceCache.load<GroupOptionSummary[]>({
-          cacheKey: {
-            scope: cacheScope,
-            route,
-            query: {
-              ...groupOptionParams(scope, requestKeyword, limit),
-              selectedIds: scope.selectedIds,
-              localScope: config.localCacheKeyParts?.(scope) ?? []
-            },
-            version: 1
-          },
-          domain: 'groups.static',
-          viewScope: isManagementView ? 'admin' : 'self',
-          ...(isManagementView && scope.systemAccountId ? { targetSystemAccountId: scope.systemAccountId } : {}),
-          loadNetwork: async () => {
-            let nextGroups = isManagementView
-              ? await api.groups.options(groupOptionParams(scope, requestKeyword, limit))
-              : await api.myGroups.options(groupOptionParams(scope, requestKeyword, limit))
-            nextGroups = await ensureSelectedGroupOptions(nextGroups, scope)
-            return nextGroups
-          }
-        })
-        const nextGroups = result.data
+        let nextGroups = isManagementView
+          ? await api.groups.options(groupOptionParams(scope, requestKeyword, limit))
+          : await api.myGroups.options(groupOptionParams(scope, requestKeyword, limit))
+        nextGroups = await ensureSelectedGroupOptions(nextGroups, scope)
         rememberGroupLabels(nextGroups)
         if (currentRequestId !== requestId) return
         groups.value = nextGroups
-        void result.confirmation?.then((outcome) => {
-          if (!outcome.data || currentRequestId !== requestId) return
-          rememberGroupLabels(outcome.data)
-          groups.value = outcome.data
-        })
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
@@ -206,16 +174,6 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
         .filter((id): id is string => Boolean(id))
         .sort())]
     }
-  }
-
-  function groupOptionCacheScope(scope: Required<AccountGroupOptionsScope>, isManagementView: boolean): string {
-    const viewer = authState.currentUser.value
-    return [
-      isManagementView ? 'admin' : 'self',
-      viewer?.id ?? 'anonymous',
-      viewer?.role ?? 'anonymous',
-      scope.systemAccountId || 'self'
-    ].join(':')
   }
 
   onBeforeUnmount(clearSearchTimer)

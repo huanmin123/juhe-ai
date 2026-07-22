@@ -308,13 +308,6 @@ type JuheBusinessModelCatalogSnapshotRebuildRequest struct {
 	UpdatedAt       pgtype.Timestamptz
 }
 
-type JuheBusinessPageDataDirtyDomain struct {
-	Domain     string
-	Generation int64
-	IsDirty    bool
-	UpdatedAt  pgtype.Timestamptz
-}
-
 type JuheBusinessProtocol struct {
 	ID          string
 	Code        string

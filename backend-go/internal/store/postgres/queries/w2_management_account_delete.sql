@@ -21,14 +21,6 @@ WHERE accounts.authorization_instance_source_account_id = sqlc.arg(source_accoun
 ORDER BY accounts.created_at ASC, accounts.id ASC
 FOR UPDATE OF accounts;
 
--- name: ListManagementAccountDeletePageOwners :many
-SELECT DISTINCT resource_authorizations.grantee_system_account_id
-FROM juhe_business.resource_authorizations AS resource_authorizations
-WHERE resource_authorizations.resource_type = 'account'
-  AND resource_authorizations.resource_id = sqlc.arg(account_id)::text
-  AND resource_authorizations.status <> 'returned'
-ORDER BY resource_authorizations.grantee_system_account_id ASC;
-
 -- name: ListManagementAccountDeleteAuthorizationIDs :many
 SELECT resource_authorizations.id
 FROM juhe_business.resource_authorizations AS resource_authorizations

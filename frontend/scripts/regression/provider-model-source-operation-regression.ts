@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url'
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(currentDir, '../..')
 const providersViewSource = readSource('src/views/providers/ProvidersView.vue')
-const providerModelOptionsSource = readSource('src/views/accounts/useAccountProviderModelOptions.ts')
 
 assertIncludes(
   providersViewSource,
@@ -29,20 +28,14 @@ assertIncludes(
 )
 assertIncludes(
   providersViewSource,
-  'invalidateAccountProviderModelOptionsCache()',
-  '自定义模型变更后应清理全部账户模型选项缓存'
+  'await reloadActiveProviderModels(true)',
+  '自定义模型变更后应直接重新读取当前模型目录'
 )
 assertNotIncludes(
   providersViewSource,
   'record.providerCode !== activeProvider.value.code',
   '聚合目录里可见的自定义模型不应因来源供应商不同而隐藏操作'
 )
-assertIncludes(
-  providerModelOptionsSource,
-  'export function invalidateAccountProviderModelOptionsCache(providerCode?: string): void',
-  '账户模型选项缓存应支持按供应商失效'
-)
-
 console.log('供应商模型目录操作回归通过：聚合目录可见自定义模型按来源供应商发起编辑 / 删除')
 
 function readSource(relativePath: string): string {

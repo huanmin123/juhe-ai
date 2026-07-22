@@ -8,13 +8,11 @@ import type {
   AccountTestModelOption,
   AccountTestOptions
 } from '@/api/domains/accounts'
+import { api } from '@/api/client'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { accountOperationScopeParams } from './accountOperationScope'
 import type { AccountTestEndpointMode, AccountTestForm } from './accountTestFlow'
 import { isAbortError } from './accountTestTaskHelpers'
-import {
-  loadAccountTestModelCapabilitiesCached,
-  loadAccountTestOptionsCached
-} from './accountTestOptionsCache'
 
 type UseAccountTestModelsInput = {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -79,17 +77,18 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testModelOptionsLoading.value = true
     testModelsError.value = ''
     try {
-      const response = await loadAccountTestOptionsCached({
-        account,
-        isManagementView: input.isManagementView.value,
-        options: { signal: controller.signal },
-        params: {
-          keyword: normalizedKeyword || undefined,
-          limit: 50,
-          selectedIds
-        },
-        scopeParams: input.accountScopeParams.value
-      })
+      const params = {
+        keyword: normalizedKeyword || undefined,
+        limit: 50,
+        selectedIds
+      }
+      const response = input.isManagementView.value
+        ? await api.accounts.testOptions(
+          account.id,
+          { ...accountOperationScopeParams(account, input.accountScopeParams.value), ...params },
+          { signal: controller.signal }
+        )
+        : await api.myAccounts.testOptions(account.id, params, { signal: controller.signal })
       if (!isCurrentOptionsRequest(requestToken, account.id)) return undefined
       loadedOptionsAccountKey = accountKey
       testModelOptions.value = normalizeModelOptions(response)
@@ -176,13 +175,18 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testEndpointModes.value = []
     input.testForm.testEndpointMode = 'account_default'
     try {
-      const response = await loadAccountTestModelCapabilitiesCached({
-        account,
-        modelId: normalizedModel,
-        isManagementView: input.isManagementView.value,
-        options: { signal: controller.signal },
-        scopeParams: input.accountScopeParams.value
-      })
+      const response = input.isManagementView.value
+        ? await api.accounts.testModelCapabilities(
+          account.id,
+          normalizedModel,
+          accountOperationScopeParams(account, input.accountScopeParams.value),
+          { signal: controller.signal }
+        )
+        : await api.myAccounts.testModelCapabilities(
+          account.id,
+          normalizedModel,
+          { signal: controller.signal }
+        )
       if (
         !isCurrentModelRequest(requestToken, account.id, normalizedModel)
         || response.id !== normalizedModel

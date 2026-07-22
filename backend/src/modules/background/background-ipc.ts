@@ -58,7 +58,6 @@ import {
   type BackgroundWorkerSnapshotRole
 } from './background-ipc-worker-roles.js'
 import { HeadIndexedQueue } from './ipc-head-queue.js'
-import { isPageDataChangeEvent } from '../page-data/page-data-change.service.js'
 
 export type {
   BackgroundWorkerIngestDrainStatus,
@@ -729,34 +728,6 @@ function handleWorkerMessage(message: unknown, role: BackgroundWorkerProcessRole
         })
       }
       break
-    case 'page_data_change_publish':
-      if (runtimeConfig.processRole === 'server' && isPageDataChangeEvent(record.event)) {
-        void import('../page-data/page-data-change.runtime.js')
-          .then(({ publishPageDataChange }) => publishPageDataChange(record.event as import('../page-data/page-data-change.service.js').PageDataChangeEvent))
-          .catch((error) => {
-            logger.warn(errorLogFields(error, { event: 'page_data_change_worker_ipc_forward_failed' }), '转发 worker 页面数据变更失败')
-          })
-      }
-      break
-    case 'page_data_change_dirty':
-      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string' && Array.isArray(record.domains)) {
-        void (async () => {
-          try {
-            const { sendPageDataDirtyDomainsToDbService } = await import('../db-service/db-service-ipc.js')
-            await sendPageDataDirtyDomainsToDbService(record.domains as import('../page-data/page-data-change.service.js').PageDataDomain[])
-            sendPageDataDirtyAckToWorker(child, { type: 'page_data_change_dirty_ack', requestId: record.requestId as string, ok: true })
-          } catch (error) {
-            logger.warn(errorLogFields(error, { event: 'page_data_change_dirty_worker_ipc_forward_failed' }), '转发 worker 页面数据 dirty domain 失败')
-            sendPageDataDirtyAckToWorker(child, {
-              type: 'page_data_change_dirty_ack',
-              requestId: record.requestId as string,
-              ok: false,
-              errorMessage: error instanceof Error ? error.message : String(error)
-            })
-          }
-        })()
-      }
-      break
     default:
       break
   }
@@ -787,26 +758,6 @@ function handleParentMessage(message: unknown): void {
   if (record.type === 'background_worker_stats_write_response' && typeof record.requestId === 'string') {
     finishStatsWriteRequest(record.requestId, record.ok === true ? { ok: true, result: record.result } : { ok: false, errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : 'stats-writer 请求失败' })
     return
-  }
-  if (record.type === 'page_data_change_dirty_ack' && typeof record.requestId === 'string') {
-    void import('../page-data/page-data-change.runtime.js')
-      .then(({ acceptPageDataDirtyDomainsParentAck }) => {
-        acceptPageDataDirtyDomainsParentAck(record.requestId as string, record.ok === true, typeof record.errorMessage === 'string' ? record.errorMessage : undefined)
-      })
-  }
-}
-
-function sendPageDataDirtyAckToWorker(
-  child: ChildProcess | undefined,
-  message: Extract<BackgroundWorkerMessage, { type: 'page_data_change_dirty_ack' }>
-): void {
-  if (!child?.connected) return
-  try {
-    child.send(message, (error) => {
-      if (error) logger.warn(errorLogFields(error, { event: 'page_data_change_dirty_worker_ack_failed' }), '回传 worker 页面数据 dirty domain ACK 失败')
-    })
-  } catch (error) {
-    logger.warn(errorLogFields(error, { event: 'page_data_change_dirty_worker_ack_failed' }), '回传 worker 页面数据 dirty domain ACK 失败')
   }
 }
 

@@ -64,31 +64,31 @@ type Permissions struct {
 }
 
 type Item struct {
-	ID                     string      `json:"id"`
-	SystemAccountID        string      `json:"systemAccountId,omitempty"`
-	SystemAccountName      string      `json:"systemAccountName,omitempty"`
-	OwnerSystemAccountID   string      `json:"ownerSystemAccountId"`
-	OwnerSystemAccountName string      `json:"ownerSystemAccountName,omitempty"`
-	Name                   string      `json:"name"`
-	ProviderCode           string      `json:"providerCode"`
-	Type                   string      `json:"type"`
-	Status                 string      `json:"status"`
-	Schedulable            bool        `json:"schedulable"`
-	ConcurrencyLimit       int         `json:"concurrencyLimit"`
-	Priority               int         `json:"priority"`
-	SuperPriorityEnabled   bool        `json:"superPriorityEnabled"`
-	FallbackEnabled        bool        `json:"fallbackEnabled"`
-	HealthCheckModel       string      `json:"healthCheckModel"`
-	HealthCheckEndpointMode string     `json:"healthCheckEndpointMode"`
-	AccountExpiresAt       *time.Time  `json:"accountExpiresAt,omitempty"`
-	LastUsedAt             *time.Time  `json:"lastUsedAt,omitempty"`
-	AccessType             string      `json:"accessType"`
-	AccountAuthorizationID string      `json:"accountAuthorizationId,omitempty"`
-	AuthorizationStatus    string      `json:"authorizationStatus,omitempty"`
-	AuthorizationExpiresAt *time.Time  `json:"authorizationExpiresAt,omitempty"`
-	Usage                  Usage       `json:"usage"`
-	QualityScore           *int64      `json:"qualityScore,omitempty"`
-	Permissions            Permissions `json:"permissions"`
+	ID                      string      `json:"id"`
+	SystemAccountID         string      `json:"systemAccountId,omitempty"`
+	SystemAccountName       string      `json:"systemAccountName,omitempty"`
+	OwnerSystemAccountID    string      `json:"ownerSystemAccountId"`
+	OwnerSystemAccountName  string      `json:"ownerSystemAccountName,omitempty"`
+	Name                    string      `json:"name"`
+	ProviderCode            string      `json:"providerCode"`
+	Type                    string      `json:"type"`
+	Status                  string      `json:"status"`
+	Schedulable             bool        `json:"schedulable"`
+	ConcurrencyLimit        int         `json:"concurrencyLimit"`
+	Priority                int         `json:"priority"`
+	SuperPriorityEnabled    bool        `json:"superPriorityEnabled"`
+	FallbackEnabled         bool        `json:"fallbackEnabled"`
+	HealthCheckModel        string      `json:"healthCheckModel"`
+	HealthCheckEndpointMode string      `json:"healthCheckEndpointMode"`
+	AccountExpiresAt        *time.Time  `json:"accountExpiresAt,omitempty"`
+	LastUsedAt              *time.Time  `json:"lastUsedAt,omitempty"`
+	AccessType              string      `json:"accessType"`
+	AccountAuthorizationID  string      `json:"accountAuthorizationId,omitempty"`
+	AuthorizationStatus     string      `json:"authorizationStatus,omitempty"`
+	AuthorizationExpiresAt  *time.Time  `json:"authorizationExpiresAt,omitempty"`
+	Usage                   Usage       `json:"usage"`
+	QualityScore            *int64      `json:"qualityScore,omitempty"`
+	Permissions             Permissions `json:"permissions"`
 }
 
 type Result struct {

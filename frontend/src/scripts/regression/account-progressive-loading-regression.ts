@@ -3,8 +3,7 @@ import assert from 'node:assert/strict'
 import { computed, createApp } from 'vue'
 import { routeLocationKey } from 'vue-router'
 
-import { api, pageDataApi } from '../../api/client.js'
-import type { PageDataConfirmRequest, PageDataConfirmResult } from '../../api/domains/pageData.js'
+import { api } from '../../api/client.js'
 import { authState } from '../../composables/useAuth.js'
 import { message } from '../../lib/antd.js'
 import type { AccountSummary, ProviderDefinition } from '../../types/domain/index.js'
@@ -30,7 +29,6 @@ interface AccountListPage {
 const originalProviderDefinitions = mutableApi.providers.definitions
 const originalProxyOptions = mutableApi.proxies.options
 const originalAccountList = mutableApi.myAccounts.list
-const originalConfirm = pageDataApi.confirm
 const originalMessageError = message.error
 const originalConsoleError = console.error
 const originalConsoleWarn = console.warn
@@ -50,11 +48,6 @@ try {
     displayName: '账户刷新管理员',
     role: 'admin',
     mustChangePassword: false
-  }
-  const confirmDomains: string[][] = []
-  pageDataApi.confirm = async (request: PageDataConfirmRequest): Promise<PageDataConfirmResult> => {
-    confirmDomains.push(Object.keys(request.domains).sort())
-    return confirmResult(request)
   }
   let resolveProviderDefinitions: ((value: ProviderDefinition[]) => void) | undefined
   let listStarted = false
@@ -108,19 +101,17 @@ try {
     return []
   }
   await listData.loadAccountOptions(undefined, true)
-  const confirmCountBeforeRefresh = confirmDomains.length
   const providerCallsBeforeRefresh = refreshProviderCalls
   const accountCallsBeforeRefresh = refreshAccountCalls
   listData.refreshData()
   await waitFor(() => refreshAccountCalls > accountCallsBeforeRefresh, '手动刷新未发起账户列表请求')
   await flushPromises()
   assert.equal(refreshProviderCalls, providerCallsBeforeRefresh, '手动刷新列表不应失效并重查供应商筛选项')
-  assert.deepEqual(confirmDomains.slice(confirmCountBeforeRefresh), [['accounts.static']], '手动刷新只应为账户列表执行一次轻量确认')
+  assert.equal(refreshAccountCalls, accountCallsBeforeRefresh + 1, '手动刷新必须直接请求一次账户列表')
 } finally {
   mutableApi.providers.definitions = originalProviderDefinitions
   mutableApi.proxies.options = originalProxyOptions
   mutableApi.myAccounts.list = originalAccountList
-  pageDataApi.confirm = originalConfirm
   authState.currentUser.value = undefined
   message.error = originalMessageError
   console.error = originalConsoleError
@@ -212,21 +203,4 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
     await flushPromises()
   }
   throw new Error(message)
-}
-
-function confirmResult(request: PageDataConfirmRequest): PageDataConfirmResult {
-  return {
-    serverTime: '2026-07-19T12:00:00.000Z',
-    domains: Object.fromEntries(Object.entries(request.domains).map(([domain, known]) => [domain, {
-      action: known ? 'unchanged' : 'reload',
-      token: known ?? {
-        protocolVersion: 2,
-        epoch: 'account-refresh-epoch',
-        scope: `scope:${request.viewScope}:${request.targetSystemAccountId ?? 'self'}`,
-        domain,
-        sequence: 1,
-        resetSequence: 0
-      }
-    }])) as PageDataConfirmResult['domains']
-  }
 }
