@@ -93,6 +93,7 @@
     "test:account-test-task-polling": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-test-task-polling-regression.ts",
     "test:account-edit-save-flow": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/account-edit-save-flow-regression.ts",
     "test:route-strategy-group-bindings": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/route-strategy-group-bindings-regression.ts",
+    "test:route-strategy-first-byte-config": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/route-strategy-first-byte-config-regression.ts",
     "test:route-strategy-create-api": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/route-strategy-create-api-regression.ts",
     "test:ip-stats-policy-api": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/ip-stats-policy-api-regression.ts",
     "test:api-key-hybrid-config": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/scripts/regression/api-key-hybrid-config-regression.ts",

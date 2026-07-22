@@ -55,6 +55,16 @@ import type {
   OpenAICompatibleVectorStoreSearchOptions,
   OpenAICompatibleVectorStoreSearchResult
 } from '../../storage/openai-compatible-vector-stores.repository.js'
+import type {
+  AccountCircuitControlPlaneCleanupResult,
+  AccountCircuitIncidentRebuildPage,
+  AccountCircuitOutboxRecord,
+  AccountCircuitProjectionGaps,
+  AdvanceAccountCircuitDispatchRevisionInput,
+  AdvanceAccountCircuitDispatchRevisionResult,
+  CompareAndSetAccountCircuitIncidentInput,
+  CompareAndSetAccountCircuitIncidentResult
+} from '../../storage/account-circuit-control-plane.repository.js'
 
 export type DbServiceRequestPriority = 'high' | 'normal' | 'low'
 
@@ -862,6 +872,56 @@ export type DbServiceOperation =
     limit: number
   }
   | {
+    type: 'advance_account_circuit_dispatch_revision'
+    input: AdvanceAccountCircuitDispatchRevisionInput
+  }
+  | {
+    type: 'compare_and_set_account_circuit_incident'
+    input: CompareAndSetAccountCircuitIncidentInput
+  }
+  | {
+    type: 'claim_account_circuit_outbox'
+    ownerId: string
+    nowMs?: number
+    leaseMs: number
+    limit: number
+  }
+  | {
+    type: 'ack_account_circuit_outbox'
+    eventId: string
+    projectionKey: string
+    claimToken: string
+    acknowledgedAtMs?: number
+  }
+  | {
+    type: 'release_account_circuit_outbox_for_replay'
+    eventId: string
+    claimToken: string
+    errorClass: string
+    nowMs?: number
+    retryDelayMs: number
+  }
+  | {
+    type: 'list_account_circuit_incidents_for_rebuild'
+    nowMs?: number
+    afterUpdatedAtMs?: number
+    afterCircuitScopeKey?: string
+    limit: number
+  }
+  | {
+    type: 'list_account_circuit_projection_gaps'
+    afterAccountId?: string
+    afterUpdatedAtMs?: number
+    afterCircuitScopeKey?: string
+    limit: number
+  }
+  | {
+    type: 'cleanup_account_circuit_control_plane'
+    nowMs?: number
+    outboxAcknowledgedBeforeMs: number
+    limit: number
+  }
+  | {
     type: 'cleanup_chat_retention'
     now: string
     interruptedBefore: string
@@ -1030,6 +1090,14 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'expire_due_resource_authorizations' } ? { expired: number } :
   T extends { type: 'cleanup_expired_deleted_accounts' } ? import('../../storage/repositories.js').ExpiredDeletedAccountCleanupResult :
   T extends { type: 'cleanup_expired_system_sessions' } ? { deleted: number } :
+  T extends { type: 'advance_account_circuit_dispatch_revision' } ? AdvanceAccountCircuitDispatchRevisionResult :
+  T extends { type: 'compare_and_set_account_circuit_incident' } ? CompareAndSetAccountCircuitIncidentResult :
+  T extends { type: 'claim_account_circuit_outbox' } ? AccountCircuitOutboxRecord[] :
+  T extends { type: 'ack_account_circuit_outbox' } ? { acknowledged: boolean } :
+  T extends { type: 'release_account_circuit_outbox_for_replay' } ? { released: boolean } :
+  T extends { type: 'list_account_circuit_incidents_for_rebuild' } ? AccountCircuitIncidentRebuildPage :
+  T extends { type: 'list_account_circuit_projection_gaps' } ? AccountCircuitProjectionGaps :
+  T extends { type: 'cleanup_account_circuit_control_plane' } ? AccountCircuitControlPlaneCleanupResult :
   T extends { type: 'cleanup_chat_retention' } ? import('../../storage/chat.repository.js').ChatRetentionCleanupResult :
   T extends { type: 'save_codex_context_response_state' } ? CodexContextResponseStateIndex :
   T extends { type: 'save_codex_context_compact_state' } ? CodexContextCompactStateIndex :

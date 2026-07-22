@@ -1224,8 +1224,12 @@ assert.doesNotMatch(gatewayResponseFinalizationSource, /applyAnthropicStreamUsag
 assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
 assert.match(gatewayResponseFinalizationSource, /responseSemanticText\s*=\s*completeBodyText/, '非流式完整 JSON 响应语义文本不能依赖成功审计正文捕获开关')
 assert.match(gatewayResponseFinalizationSource, /responseBodyText:\s*responseBodyText\s*\?\?\s*responseSemanticText/, '非流式 usage fallback 应读取完整检查窗口文本')
-assert.match(gatewayResponseFinalizationSource, /const errorMessage\s*=\s*'上游响应体为空'/)
-assert.match(gatewayResponseFinalizationSource, /recordCompletedUpstreamAttempt[\s\S]+errorMessage\r?\n\s*\}/)
+assert.match(
+  gatewayResponseFinalizationSource,
+  /if \(!upstreamResponse\.body\) \{[\s\S]*prepareUpstreamResponseForDownstream[\s\S]*markTransportCommitted[\s\S]*markSemanticCommitted/,
+  '完整空 body HTTP 响应必须透明提交，不得按客户端画像切号'
+)
+assert.doesNotMatch(gatewayResponseFinalizationSource, /upstream_empty_body/, '空 body 完整响应不得写账户故障或服务端重试语义')
 
 const gatewayResponseStreamSource = readSource('modules/gateway/response/stream.ts')
 assert.match(gatewayResponseStreamSource, /requireGatewayProtocolDriverForResponseProtocol/)

@@ -146,7 +146,6 @@ function assertRejectsInvalidCurrentStates(): void {
     { label: 'version 68', currentRows: [{ version_id: '68', is_applied: true }] },
     { label: 'version 69', currentRows: [{ version_id: '69', is_applied: true }] },
     { label: 'version 70', currentRows: [{ version_id: '70', is_applied: true }] },
-    { label: 'version 72', currentRows: [{ version_id: '72', is_applied: true }] },
     { label: 'not applied', currentRows: [{ version_id: '71', is_applied: false }] },
     { label: 'empty result', currentRows: [] }
   ]

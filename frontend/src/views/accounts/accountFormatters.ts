@@ -421,58 +421,6 @@ export function hasAccountRuntimeRecoveryState(account: AccountSummary): boolean
   return Boolean(activeRuntimeAvailabilityStatus(account))
 }
 
-function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string[] {
-  const runtime = account.runtimeAvailability
-  if (!runtime || runtime.status === 'normal') return []
-  const lines = [
-    `运行态状态：${runtimeAvailabilityText(runtime.status)}`,
-    account.status === 'active'
-      ? `数据库状态仍为${statusText(account.status)}；此状态只保存在当前网关进程缓存，不写入数据库`
-      : `数据库状态：${statusText(account.status)}；运行态仅说明当前网关进程最近的确认过程`
-  ]
-  if (runtime.since) {
-    lines.push(`进入时间：${formatDateTime(runtime.since)}`)
-  }
-  if (runtime.until) {
-    lines.push(`预计释放：${formatDateTime(runtime.until)}`)
-  }
-  if (runtime.failureCount) {
-    lines.push(`短窗口失败：${formatNumber(runtime.failureCount)} 次`)
-  }
-  if (runtime.distinctClientIpCount) {
-    lines.push(`来源 IP：${formatNumber(runtime.distinctClientIpCount)} 个`)
-  }
-  if (runtime.distinctApiKeyCount) {
-    lines.push(`API Key：${formatNumber(runtime.distinctApiKeyCount)} 个`)
-  }
-  if (runtime.precheckAttemptCount) {
-    lines.push(`事前探针：${formatNumber(runtime.precheckAttemptCount)} 次`)
-  }
-  if (runtime.localFailureCount) {
-    lines.push(`短暂避让轮次：第 ${formatNumber(runtime.localFailureCount)} 轮`)
-  }
-  if (runtime.status === 'degraded') {
-    lines.push('只影响调度排序：有普通候选时不会优先选择该账号，普通候选不足时才会兜底尝试')
-    lines.push('兜底尝试完整成功后会自动解除调度降级')
-  }
-  if (runtime.reason) {
-    lines.push(`原因：${runtime.reason}`)
-  }
-  if (account.status === 'active') {
-    lines.push('可在更多菜单手动恢复正常，清理当前网关运行态避让')
-  }
-  return lines
-}
-
-function runtimeAvailabilityText(status: NonNullable<AccountSummary['runtimeAvailability']>['status']): string {
-  if (status === 'degraded') return '调度降级'
-  if (status === 'precheck_pending') return '待探针确认'
-  if (status === 'local_suppressed') return '短暂避让'
-  if (status === 'half_open') return '半开探测'
-  if (status === 'precheck_failed') return '探针确认失败'
-  return '正常'
-}
-
 export function isTemporaryAccountStatus(account: AccountSummary) {
   return account.status === 'rate_limited' || account.status === 'temporary_unavailable'
 }

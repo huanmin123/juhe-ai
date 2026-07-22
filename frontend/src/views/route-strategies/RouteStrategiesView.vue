@@ -227,11 +227,11 @@
             <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。">
               <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
             </a-form-item>
+            <a-form-item label="首字截止" required tooltip="普通路由两种调度偏好共用；按秒配置，每个上游尝试在截止前仍无可见首字时产生统一首字截止事件。">
+              <a-input-number v-model:value="form.normal.firstByteDeadlineSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
+            </a-form-item>
           </div>
           <div v-if="form.normal.schedulingPreference === 'speed_first'" class="hybrid-config-grid">
-            <a-form-item label="首字观察阈值" required tooltip="按秒配置；超过阈值先记录慢样本，达到触发次数确认慢后，才会在安全窗口切换账号。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.firstByteThresholdSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
-            </a-form-item>
             <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
               <a-input-number v-model:value="form.normal.speedFirstConfig.slowTriggerCount" :min="2" :max="10" addon-after="次" />
             </a-form-item>
@@ -582,12 +582,11 @@ interface HybridRoutingForm {
 
 interface NormalRoutingForm {
   schedulingPreference: RouteStrategyNormalSchedulingPreference
+  firstByteDeadlineSeconds: number
   speedFirstConfig: SpeedFirstConfigForm
 }
 
-interface SpeedFirstConfigForm extends Omit<RouteStrategySpeedFirstConfig, 'firstByteThresholdMs'> {
-  firstByteThresholdSeconds: number
-}
+interface SpeedFirstConfigForm extends RouteStrategySpeedFirstConfig {}
 
 const routeStrategiesPageSize = 20
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -749,7 +748,7 @@ const qualityInspectionUnavailableActionOptions = [
 ]
 
 const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
-const normalRoutingConfigTooltip = '成本优先尽量保持会话粘黏和账号缓存；速度优先在首字慢速连续触发后临时降级当前账号，并按配置探针恢复。'
+const normalRoutingConfigTooltip = '成本优先与速度优先共用首字截止；成本优先在截止事件后切换存活候选，速度优先还会累计慢样本、临时降级并按配置探针恢复。'
 const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
 const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
 const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'
@@ -1541,13 +1540,13 @@ function routeStrategyStatusColor(status: RouteStrategyStatus): string {
 function defaultNormalRoutingForm(): NormalRoutingForm {
   return {
     schedulingPreference: 'cost_first',
+    firstByteDeadlineSeconds: 10,
     speedFirstConfig: defaultSpeedFirstConfigForm()
   }
 }
 
 function defaultSpeedFirstConfigForm(): SpeedFirstConfigForm {
   return {
-    firstByteThresholdSeconds: 30,
     slowTriggerCount: 3,
     slowWindowSeconds: 120,
     recoverySuccessCount: 3,
@@ -1563,6 +1562,7 @@ function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig):
   const speedFirstConfig = speedFirstConfigFormFromConfig(config.speedFirstConfig)
   return {
     schedulingPreference: config.schedulingPreference ?? fallback.schedulingPreference,
+    firstByteDeadlineSeconds: millisecondsToSeconds(config.firstByteDeadlineMs, fallback.firstByteDeadlineSeconds),
     speedFirstConfig
   }
 }
@@ -1570,7 +1570,6 @@ function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig):
 function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig): SpeedFirstConfigForm {
   const fallback = defaultSpeedFirstConfigForm()
   return {
-    firstByteThresholdSeconds: millisecondsToSeconds(config?.firstByteThresholdMs, fallback.firstByteThresholdSeconds),
     slowTriggerCount: config?.slowTriggerCount ?? fallback.slowTriggerCount,
     slowWindowSeconds: config?.slowWindowSeconds ?? fallback.slowWindowSeconds,
     recoverySuccessCount: config?.recoverySuccessCount ?? fallback.recoverySuccessCount,
@@ -1581,14 +1580,15 @@ function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig):
 }
 
 function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
+  const firstByteDeadlineMs = secondsToMilliseconds(form.normal.firstByteDeadlineSeconds)
   if (form.normal.schedulingPreference !== 'speed_first') {
-    return { schedulingPreference: 'cost_first' }
+    return { schedulingPreference: 'cost_first', firstByteDeadlineMs }
   }
   const speedFirstConfig = form.normal.speedFirstConfig
   return {
     schedulingPreference: 'speed_first',
+    firstByteDeadlineMs,
     speedFirstConfig: {
-      firstByteThresholdMs: secondsToMilliseconds(speedFirstConfig.firstByteThresholdSeconds),
       slowTriggerCount: boundedInteger(speedFirstConfig.slowTriggerCount, 2, 10),
       slowWindowSeconds: boundedInteger(speedFirstConfig.slowWindowSeconds, 60, 600),
       recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),

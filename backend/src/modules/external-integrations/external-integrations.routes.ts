@@ -198,6 +198,7 @@ const routeStrategySpeedFirstConfigSchema = z.object({
 }).strict()
 const routeStrategyNormalRoutingConfigSchema = z.object({
   schedulingPreference: z.enum(['cost_first', 'speed_first']).optional(),
+  firstByteDeadlineMs: z.number().int().min(10000).max(60000).optional(),
   speedFirstConfig: routeStrategySpeedFirstConfigSchema.optional()
 }).strict().transform((value) => normalizeNormalRoutingConfig(value)).nullable()
 const routeStrategyAddSchema = z.object({

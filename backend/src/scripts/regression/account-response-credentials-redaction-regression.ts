@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
@@ -23,12 +24,14 @@ const [
   { createSystemApiApp },
   databaseModule,
   oauthRefreshService,
-  repositories
+  repositories,
+  accountResponseSanitizer
 ] = await Promise.all([
   import('../../modules/system-api/system-api-app.js'),
   import('../../storage/database.js'),
   import('../../modules/openai-oauth/openai-oauth-access-token-refresh.service.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../modules/accounts/account-response-sanitizer.js')
 ])
 
 interface ApiEnvelope<T> {
@@ -43,6 +46,7 @@ interface AccountResponse {
   supportedModels?: string[]
   modelMappings?: unknown[]
   apiKeyRuntimeDetails?: unknown[]
+  runtimeAvailability?: Record<string, unknown>
 }
 
 interface AccountApiKeyRuntimeResponse {
@@ -93,6 +97,7 @@ try {
   const accountList = await getEnvelope<AccountListResponse>(baseUrl, '/__aisys__/api/accounts?page=1&pageSize=20', seed.adminCookie)
   assertNoCredentialLeak(accountList, '账户列表响应')
   for (const account of accountList.items) {
+    assertNoInternalRuntimeLeak(account, '账户列表响应')
     assert.equal(Object.prototype.hasOwnProperty.call(account, 'credentials'), false, '账户列表响应不应返回 credentials 字段')
     assert.equal(Object.prototype.hasOwnProperty.call(account, 'supportedModels'), false, '账户列表响应不应返回 supportedModels 字段')
     assert.equal(Object.prototype.hasOwnProperty.call(account, 'modelMappings'), false, '账户列表响应不应返回 modelMappings 字段')
@@ -100,11 +105,57 @@ try {
   }
 
   const basicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}`, seed.adminCookie)
+  assertNoInternalRuntimeLeak(basicDetail, '账户基础详情响应')
   assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'credentials'), false, '账户基础详情不应返回 credentials 字段')
   assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'supportedModels'), false, '账户基础详情不应返回 supportedModels 字段')
   assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'modelMappings'), false, '账户基础详情不应返回 modelMappings 字段')
   assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'apiKeyRuntimeDetails'), false, '账户基础详情不应返回 API Key 运行明细')
   assertNoCredentialLeak(basicDetail, '账户基础详情响应')
+
+  const statusSnapshot = await getEnvelope<{ items: AccountResponse[] }>(
+    baseUrl,
+    `/__aisys__/api/accounts/status-snapshot?accountIds=${encodeURIComponent(seed.apiKeyAccountId)}`,
+    seed.adminCookie
+  )
+  assert.equal(statusSnapshot.items.length, 1, '账户状态快照应返回请求账户')
+  assertNoInternalRuntimeLeak(statusSnapshot.items[0]!, '账户状态快照响应')
+
+  const unsafeRuntime = publicAccountRuntimeAvailability({
+    status: 'precheck_pending',
+    reason: '回归测试',
+    since: '2026-07-23T00:00:00.000Z',
+    failureCount: 8,
+    distinctClientIpCount: 3,
+    distinctApiKeyCount: 2,
+    precheckAttemptCount: 4,
+    localFailureCount: 3,
+    probePresentation: {
+      schedule: { state: 'running' },
+      recoveryAt: '2026-07-23T00:02:00.000Z',
+      recoveryAtKind: 'policy_ttl_expiry'
+    }
+  })
+  assert.deepEqual(unsafeRuntime, {
+    status: 'precheck_pending',
+    reason: '回归测试',
+    since: '2026-07-23T00:00:00.000Z',
+    probePresentation: { schedule: { state: 'running' } }
+  }, '公开运行态投影不得携带内部计数、租约或恢复时间')
+  const sanitizedSynthetic = accountResponseSanitizer.sanitizeAccountRuntimeAvailabilityResponse({
+    runtimeAvailability: {
+      status: 'precheck_pending',
+      failureCount: 8,
+      distinctClientIpCount: 3,
+      distinctApiKeyCount: 2,
+      precheckAttemptCount: 4,
+      localFailureCount: 3,
+      probePresentation: {
+        schedule: { state: 'running' },
+        recoveryAt: '2026-07-23T00:02:00.000Z'
+      }
+    }
+  })
+  assertNoInternalRuntimeLeak(sanitizedSynthetic, '账户响应 sanitizer')
 
   const editBasicDetail = await getEnvelope<AccountResponse>(baseUrl, `/__aisys__/api/accounts/${seed.apiKeyAccountId}/edit-basic`, seed.adminCookie)
   assert(editBasicDetail.credentials, '账户编辑首屏详情应返回基础凭据字段')
@@ -448,6 +499,19 @@ function assertNoCredentialLeak(value: unknown, label: string): void {
   const text = JSON.stringify(value)
   for (const secret of secretValues) {
     assert.equal(text.includes(secret), false, `${label} 不应包含密钥原文 ${secret}`)
+  }
+}
+
+function assertNoInternalRuntimeLeak(value: Pick<AccountResponse, 'runtimeAvailability'>, label: string): void {
+  const runtime = value.runtimeAvailability
+  if (!runtime) return
+  for (const field of ['failureCount', 'distinctClientIpCount', 'distinctApiKeyCount', 'precheckAttemptCount', 'localFailureCount', 'until', 'leaseId', 'leasePurpose', 'leaseUntilMs']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(runtime, field), false, `${label} 不应返回运行态内部字段 ${field}`)
+  }
+  const probe = runtime.probePresentation
+  if (probe && typeof probe === 'object') {
+    assert.equal(Object.prototype.hasOwnProperty.call(probe, 'recoveryAt'), false, `${label} 不应返回运行态恢复时间`)
+    assert.equal(Object.prototype.hasOwnProperty.call(probe, 'recoveryAtKind'), false, `${label} 不应返回运行态恢复时间类型`)
   }
 }
 

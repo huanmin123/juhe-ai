@@ -18,6 +18,11 @@ import { buildUsageRequestSnapshot } from '../usage/snapshots.js'
 import { emptyUsage, type ParsedUsage } from '../usage/types.js'
 import { orderGatewayApiKeyGroupBindingsForDispatchAsync } from '../routing/api-key-group-route-selector.service.js'
 import { selectGatewayModelTargetGroup } from '../routing/model-target-group-selector.js'
+import {
+  GatewayRequestAttemptTracker,
+  GatewayRequestWallBudget,
+  RouteCoordinationBudget
+} from '../routing/route-coordination.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { parseOpenAIUsageFromJsonBuffer } from '../protocols/openai-v1/usage.js'
 
@@ -124,7 +129,33 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
   })
   const dispatchSignal = hybridAuxiliaryAbortSignal(input.signal, input.timeoutMs)
   const settings = await hybridAuxiliaryGatewaySettings(input.timeoutMs)
-  const serverRetryBudget = new ServerRetryBudget(input.timeoutMs)
+  const auxiliaryBudgetMs = Math.max(1, Math.trunc(input.timeoutMs))
+  const serverRetryBudget = new ServerRetryBudget(auxiliaryBudgetMs)
+  const gatewayRequestWallBudget = new GatewayRequestWallBudget({
+    requestAcceptedAtMs: startedAt,
+    budgetMs: auxiliaryBudgetMs
+  })
+  const routeCoordinationBudget = new RouteCoordinationBudget({
+    requestId: input.traceId,
+    budgetId: `${input.traceId}:${input.trafficSource}:route-coordination`,
+    budgetMs: Math.min(auxiliaryBudgetMs, 3_000)
+  })
+  const auxiliaryRequestCoordination = {
+    scope: 'internal_hybrid_auxiliary' as const,
+    reason: input.trafficSource,
+    serverRetryBudget,
+    gatewayRequestWallBudget,
+    routeCoordinationBudget,
+    requestAttemptTracker: new GatewayRequestAttemptTracker()
+  }
+  auditCapture.addGatewayMetadata({
+    label: 'gateway_internal_request_coordination',
+    metadata: {
+      scope: auxiliaryRequestCoordination.scope,
+      reason: auxiliaryRequestCoordination.reason,
+      independentFromParentRequest: true
+    }
+  })
   const preparation = await prepareOpenAIGatewayDispatchAccounts({
     req: input.req,
     res: response.asResponse(),
@@ -142,6 +173,8 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
     clientStrategy,
     requestLane: 'text',
     serverRetryBudget,
+    routeCoordinationBudget,
+    gatewayRequestWallBudget,
     signal: dispatchSignal,
     attemptFallback: async () => ({ attempted: false })
   })
@@ -177,9 +210,8 @@ export async function dispatchHybridAuxiliaryChatCompletion(input: {
       clientStrategy.requestClientCompatibility,
       selection.modelFilter.modelPriority,
       undefined,
-      undefined,
       false,
-      serverRetryBudget,
+      auxiliaryRequestCoordination,
       false
     )
     let released = false
