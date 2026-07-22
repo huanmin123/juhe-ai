@@ -46,6 +46,12 @@ const invalidShapeBaseUrls = [
 ] as const
 
 try {
+  assert.throws(
+    () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-ssrf-policy', base_url: 'http://127.0.0.1:9/v1' }),
+    /JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST|JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS/,
+    '默认私网上游拒绝信息应明确提示 loopback 联调放行入口'
+  )
+
   for (const [baseUrl, expectedMessage] of invalidShapeBaseUrls) {
     assert.throws(
       () => normalizeAccountCredentialsForWrite('api_key', { api_key: 'sk-url-shape-policy', base_url: baseUrl }),

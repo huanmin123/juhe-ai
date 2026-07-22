@@ -76,6 +76,7 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 	providerModels := managementprovidermodels.NewService(store)
 	service := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
+		OptionReader:    store,
 		ModelCatalog:    providerModels,
 		CredentialCodec: codec,
 	})
@@ -121,14 +122,7 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 		}
 		for _, path := range globalPaths {
 			rec := requestW2AccountTestOptions(t, router, path, w2AccountTestOptionsAdminToken)
-			result := decodeW2AccountTestOptionsResult(t, rec, http.StatusOK)
-			assertW2AccountTestOptionsResult(
-				t,
-				result,
-				"acct_w2_test_hybrid",
-				"w2-hybrid-owner-model",
-				[]string{"messages_sse"},
-			)
+			assertW2AccountTestSelectionContains(t, decodeW2AccountTestSelectionOptions(t, rec, http.StatusOK), "w2-hybrid-owner-model")
 		}
 
 		wrongOwner := requestW2AccountTestOptions(
@@ -145,13 +139,7 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 			"/__aisys__/api/accounts/acct_w2_test_authorized/test-options",
 			w2AccountTestOptionsAdminToken,
 		)
-		assertW2AccountTestOptionsResult(
-			t,
-			decodeW2AccountTestOptionsResult(t, globalAuthorized, http.StatusOK),
-			"acct_w2_test_authorized",
-			"w2-source-owner-model",
-			[]string{"chat_sse", "chat_json"},
-		)
+		assertW2AccountTestSelectionContains(t, decodeW2AccountTestSelectionOptions(t, globalAuthorized, http.StatusOK), "w2-source-owner-model")
 
 		wrongAuthorizedViewer := requestW2AccountTestOptions(
 			t,
@@ -197,10 +185,12 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 		for _, testCase := range testCases {
 			t.Run(testCase.name, func(t *testing.T) {
 				path := "/__aisys__/api/my-accounts/" + testCase.accountID +
-					"/test-options?systemAccountId=sys_w2_test_options_grantee"
+					"/test-options/models/" + testCase.defaultModel + "?systemAccountId=sys_w2_test_options_grantee"
 				rec := requestW2AccountTestOptions(t, router, path, w2AccountTestOptionsOwnerToken)
-				result := decodeW2AccountTestOptionsResult(t, rec, http.StatusOK)
-				assertW2AccountTestOptionsResult(t, result, testCase.accountID, testCase.defaultModel, testCase.wantModes)
+				result := decodeW2AccountTestModelCapabilities(t, rec, http.StatusOK)
+				if result.ID != testCase.defaultModel || !reflect.DeepEqual(result.TestEndpointModes, testCase.wantModes) {
+					t.Fatalf("model capabilities = %+v, want model %q modes %+v", result, testCase.defaultModel, testCase.wantModes)
+				}
 			})
 		}
 	})
@@ -212,20 +202,25 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 			"/__aisys__/api/my-accounts/acct_w2_test_hybrid/test-options",
 			w2AccountTestOptionsOwnerToken,
 		)
-		result := decodeW2AccountTestOptionsResult(t, rec, http.StatusOK)
-		assertW2AccountTestOptionsResult(
-			t,
-			result,
-			"acct_w2_test_hybrid",
-			"w2-hybrid-owner-model",
-			[]string{"messages_sse"},
-		)
-		assertW2AccountTestOptionsModelModes(t, result, "w2-hybrid-owner-model", []string{"messages_sse"})
-		assertW2AccountTestOptionsModelModes(t, result, "w2-hybrid-chat-upstream", []string{"chat_json"})
-		assertW2AccountTestOptionsModelModes(t, result, "w2-hybrid-reduced-model", []string{"chat_json"})
-		if option := findW2AccountTestOptionsModel(result.Models, "w2-hybrid-filtered-model"); option != nil {
-			t.Fatalf("hybrid model with no effective endpoint modes was not filtered: %+v", option)
+		options := decodeW2AccountTestSelectionOptions(t, rec, http.StatusOK)
+		for _, model := range []string{"w2-hybrid-owner-model", "w2-hybrid-chat-upstream", "w2-hybrid-reduced-model", "w2-hybrid-filtered-model"} {
+			assertW2AccountTestSelectionContains(t, options, model)
 		}
+		for model, wantModes := range map[string][]string{
+			"w2-hybrid-owner-model":   {"messages_sse"},
+			"w2-hybrid-chat-upstream": {"chat_json"},
+			"w2-hybrid-reduced-model": {"chat_json"},
+		} {
+			capabilities := decodeW2AccountTestModelCapabilities(t, requestW2AccountTestOptions(
+				t, router, "/__aisys__/api/my-accounts/acct_w2_test_hybrid/test-options/models/"+model, w2AccountTestOptionsOwnerToken,
+			), http.StatusOK)
+			if !reflect.DeepEqual(capabilities.TestEndpointModes, wantModes) {
+				t.Fatalf("model %q modes = %+v, want %+v", model, capabilities.TestEndpointModes, wantModes)
+			}
+		}
+		assertW2AccountTestOptionsMessage(t, requestW2AccountTestOptions(
+			t, router, "/__aisys__/api/my-accounts/acct_w2_test_hybrid/test-options/models/w2-hybrid-filtered-model", w2AccountTestOptionsOwnerToken,
+		), http.StatusBadRequest, "账户上游接口能力中没有可用于连接测试的请求形态")
 	})
 
 	t.Run("authorized instance uses source semantics and source catalog owner", func(t *testing.T) {
@@ -272,26 +267,17 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 			"/__aisys__/api/my-accounts/acct_w2_test_authorized/test-options?systemAccountId=sys_w2_test_options_source_owner",
 			w2AccountTestOptionsGranteeToken,
 		)
-		result := decodeW2AccountTestOptionsResult(t, rec, http.StatusOK)
-		assertW2AccountTestOptionsResult(
-			t,
-			result,
-			"acct_w2_test_authorized",
-			"w2-source-owner-model",
-			[]string{"chat_sse", "chat_json"},
-		)
-		if option := findW2AccountTestOptionsModel(result.Models, "w2-source-owner-model"); option == nil ||
-			!reflect.DeepEqual(option.SupportedAPIProtocols, []string{"chat_completions"}) {
-			t.Fatalf("authorized source owner model = %+v", option)
+		options := decodeW2AccountTestSelectionOptions(t, rec, http.StatusOK)
+		assertW2AccountTestSelectionContains(t, options, "w2-source-owner-model")
+		assertW2AccountTestSelectionContains(t, options, "w2-source-chat-upstream")
+		if findW2AccountTestSelectionOption(options, "w2-grantee-only-model") != nil {
+			t.Fatalf("authorized response leaked grantee catalog: %+v", options)
 		}
-		assertW2AccountTestOptionsModelModes(
-			t,
-			result,
-			"w2-source-chat-upstream",
-			[]string{"chat_sse", "chat_json"},
-		)
-		if findW2AccountTestOptionsModel(result.Models, "w2-grantee-only-model") != nil {
-			t.Fatalf("authorized response leaked grantee catalog: %+v", result.Models)
+		capabilities := decodeW2AccountTestModelCapabilities(t, requestW2AccountTestOptions(
+			t, router, "/__aisys__/api/my-accounts/acct_w2_test_authorized/test-options/models/w2-source-owner-model", w2AccountTestOptionsGranteeToken,
+		), http.StatusOK)
+		if !reflect.DeepEqual(capabilities.TestEndpointModes, []string{"chat_sse", "chat_json"}) {
+			t.Fatalf("authorized source modes = %+v", capabilities.TestEndpointModes)
 		}
 	})
 
@@ -302,12 +288,12 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 			"/__aisys__/api/my-accounts/acct_w2_test_stale/test-options",
 			w2AccountTestOptionsOwnerToken,
 		)
-		assertW2AccountTestOptionsMessage(
-			t,
-			rec,
-			http.StatusBadRequest,
-			"账户检查模型已不在当前供应商可用目录中，请先修正账户检查模型：w2-retired-model",
-		)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("stale list status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		assertW2AccountTestOptionsMessage(t, requestW2AccountTestOptions(
+			t, router, "/__aisys__/api/my-accounts/acct_w2_test_stale/test-options/models/w2-retired-model", w2AccountTestOptionsOwnerToken,
+		), http.StatusBadRequest, "模型不在当前账户供应商可用目录中：w2-retired-model")
 	})
 
 	t.Run("corrupt ciphertext is generic and does not leak", func(t *testing.T) {
@@ -317,9 +303,15 @@ func TestW2ManagementAccountTestOptionsPostgresSmoke(t *testing.T) {
 			"/__aisys__/api/my-accounts/acct_w2_test_corrupt/test-options",
 			w2AccountTestOptionsOwnerToken,
 		)
-		assertW2AccountTestOptionsMessage(t, rec, http.StatusInternalServerError, "服务器内部错误")
-		if strings.Contains(rec.Body.String(), w2AccountTestOptionsCorruptText) {
-			t.Fatalf("corrupt ciphertext leaked in response: %s", rec.Body.String())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("corrupt list status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		capabilities := requestW2AccountTestOptions(
+			t, router, "/__aisys__/api/my-accounts/acct_w2_test_corrupt/test-options/models/w2-hybrid-owner-model", w2AccountTestOptionsOwnerToken,
+		)
+		assertW2AccountTestOptionsMessage(t, capabilities, http.StatusInternalServerError, "服务器内部错误")
+		if strings.Contains(capabilities.Body.String(), w2AccountTestOptionsCorruptText) {
+			t.Fatalf("corrupt ciphertext leaked in response: %s", capabilities.Body.String())
 		}
 	})
 
@@ -658,6 +650,65 @@ func decodeW2AccountTestOptionsResult(
 		t.Fatalf("decode account test options response: %v", err)
 	}
 	return body.Data
+}
+
+func decodeW2AccountTestSelectionOptions(
+	t *testing.T,
+	rec *httptest.ResponseRecorder,
+	wantStatus int,
+) []managementaccounttestoptions.SelectionOption {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Fatalf("account test options status = %d, want %d, body = %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var body struct {
+		Data []managementaccounttestoptions.SelectionOption `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode account test selection options response: %v", err)
+	}
+	return body.Data
+}
+
+func decodeW2AccountTestModelCapabilities(
+	t *testing.T,
+	rec *httptest.ResponseRecorder,
+	wantStatus int,
+) managementaccounttestoptions.ModelCapabilities {
+	t.Helper()
+	if rec.Code != wantStatus {
+		t.Fatalf("account test model capabilities status = %d, want %d, body = %s", rec.Code, wantStatus, rec.Body.String())
+	}
+	var body struct {
+		Data managementaccounttestoptions.ModelCapabilities `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode account test model capabilities response: %v", err)
+	}
+	return body.Data
+}
+
+func assertW2AccountTestSelectionContains(
+	t *testing.T,
+	options []managementaccounttestoptions.SelectionOption,
+	model string,
+) {
+	t.Helper()
+	if findW2AccountTestSelectionOption(options, model) == nil {
+		t.Fatalf("account test selection options missing %q: %+v", model, options)
+	}
+}
+
+func findW2AccountTestSelectionOption(
+	options []managementaccounttestoptions.SelectionOption,
+	model string,
+) *managementaccounttestoptions.SelectionOption {
+	for index := range options {
+		if options[index].ID == model {
+			return &options[index]
+		}
+	}
+	return nil
 }
 
 func assertW2AccountTestOptionsResult(

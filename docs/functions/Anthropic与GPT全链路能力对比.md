@@ -32,8 +32,8 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 
 | 链路 | GPT / OpenAI 当前能力 | Anthropic 当前能力 | 差距判断 |
 | --- | --- | --- | --- |
-| 供应商协议档案 | `openai/v1`、`gpt/openai_v1`，区分通用 OpenAI-compatible 与 GPT 专属能力 | `anthropic/v1` 独立档案，当前官方 Anthropic API Key | 已对齐 |
-| 账户类型 | GPT API Key、GPT OAuth；通用 OpenAI 只 API Key | Anthropic 只 API Key | OAuth / Setup Token / Claude Code token 属于明确不做，不是当前缺口 |
+| 供应商协议档案 | `openai/v1`、`gpt/openai_v1`，区分通用 OpenAI-compatible 与 GPT 专属能力 | `anthropic/v1` 独立档案，当前官方 Anthropic 支持 API Key 与 Bearer Token 型 OAuth | 已对齐 |
+| 账户类型 | GPT API Key、GPT OAuth；通用 OpenAI 只 API Key | Anthropic API Key、Anthropic OAuth（直贴 Bearer Token） | 站内浏览器授权 / Setup Token / 订阅代理链路仍明确不做 |
 | Base URL | API Key 可填 OpenAI-compatible 根地址 | API Key 可填 Anthropic-compatible 根地址 | 已对齐 |
 | 多 API Key | 单账户多 key、轮询 / 加权、Key 级故障隔离 | 多 key 可保存并参与轮询 / 加权，已启用 Key 级运行态隔离 | 已对齐 |
 | 客户端兼容能力 | GPT API Key 同时具备 OpenAI 标准 / Codex Responses，OAuth 固定 Codex；请求侧兼容能力决定是否改写 | Anthropic API Key 具备 Anthropic 原生 / Claude Code 请求能力，不暴露 OpenAI 账号兼容切换 | 正确，不应照搬 |
@@ -100,7 +100,7 @@ Anthropic API Key 当前已经具备可用的原生中转闭环：账户创建�
 
 ### 不建议补到 Anthropic API Key 路径
 
-- Anthropic OAuth、Setup Token、Claude Code token 账号。
+- Anthropic 订阅网页登录 OAuth、Setup Token、Cookie / sessionKey 代理账号。
 - Claude Code OAuth cloaking、TLS 指纹、CCH signing。
 - API Key 路径默认注入 Claude Code 专属 `anthropic-beta` 或 `User-Agent`。
 - 按 `authentication_error`、`rate_limit_error`、HTTP 403 / 429 / 5xx 直接写死账号状态。

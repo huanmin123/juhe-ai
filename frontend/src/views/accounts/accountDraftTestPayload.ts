@@ -1,11 +1,13 @@
 import type { AccountDraftTestAccountPayload } from '@/api/client'
 import { groupLabelForId } from '@/shared/groupLabelCache'
+import { isAnthropicProtocolProfile, isOpenAIProtocolProfile } from '@/shared/providerProtocol'
 import type { AccountSummary, ProviderDefinition, ProviderProtocolProfileDefinition } from '@/types/domain'
 import type { AccountErrorPolicyRuleForm } from './accountErrorPolicyTypes'
 import type { AccountResponseInspectionRuleForm } from './accountResponseInspectionPolicyTypes'
 import type { AccountFormModel } from './accountFormTypes'
-import { buildAccountSavePayload, validateAccountSaveForm } from './accountSavePayload'
+import { buildAccountSavePayload, resolveFormProviderProfile, validateAccountSaveForm } from './accountSavePayload'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
+import { canCreateOAuthAccount } from './accountProviderCapabilities'
 
 interface AccountDraftTestPayloadInput {
   accountDetail?: AccountSummary
@@ -30,7 +32,10 @@ interface AccountDraftTestSummaryInput {
 
 export function validateAccountDraftTestForm(input: AccountDraftTestPayloadInput & { hasAuthSession: boolean }): string | undefined {
   if (!input.form.providerProtocolProfileId) return '当前供应商配置不完整，请刷新后重试'
-  if (!input.editingId && input.form.type === 'oauth' && input.form.oauthMode === 'manual') {
+  if (!input.editingId
+    && input.form.type === 'oauth'
+    && input.form.oauthMode === 'manual'
+    && canCreateOAuthAccount(resolveFormProviderProfile(input.form, input.providers))) {
     return '手动授权创建需先保存账户，完成换取 Token 后再测试'
   }
   const validationMessage = validateAccountSaveForm(input)
@@ -85,7 +90,7 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
     priority: input.draftPayload.priority,
     superPriorityEnabled: input.accountDetail?.superPriorityEnabled ?? false,
     fallbackEnabled: input.accountDetail?.fallbackEnabled ?? false,
-    clientCompatibility: input.accountDetail?.clientCompatibility ?? (input.draftPayload.type === 'oauth' ? 'codex_responses' : 'openai_standard'),
+    clientCompatibility: input.accountDetail?.clientCompatibility ?? draftAccountClientCompatibility(input),
     supportedModels: input.draftPayload.supportedModels,
     healthCheckModel: input.draftPayload.healthCheckModel,
     healthCheckEndpointMode: input.draftPayload.healthCheckEndpointMode,
@@ -115,6 +120,13 @@ export function buildAccountDraftTestSummary(input: AccountDraftTestSummaryInput
       color: 'blue'
     }
   }
+}
+
+function draftAccountClientCompatibility(input: AccountDraftTestSummaryInput): AccountSummary['clientCompatibility'] {
+  if (input.draftPayload.type === 'oauth' && isOpenAIProtocolProfile(input.accountDetail ?? input.protocolProfile)) {
+    return 'codex_responses'
+  }
+  return 'openai_standard'
 }
 
 function accountDraftTestCredentials(credentials: Record<string, unknown>, accountDetail?: AccountSummary): Record<string, unknown> {

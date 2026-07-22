@@ -124,7 +124,9 @@ export async function pipeUpstreamStream(
   const gatewayErrorProtocol = protocolDriver.clientErrorProtocol
   const inspector = protocolDriver.createStreamInspector()
   const interpretProtocolFailures = options.interpretProtocolFailures !== false
-  const responseInspectionEnabled = options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0
+  const responseInspectionEnabled = interpretProtocolFailures
+    && options.responseInspectionContext?.clientProfile !== 'generic_anthropic'
+    && (options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0)
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,
@@ -920,7 +922,11 @@ export async function pipeUpstreamStream(
         recentSseEventTypes: inspection.recentEventTypes
       }, '网关流式响应达到最大存活时间，已直接中断下游连接以交由客户端重试')
       interruptResponse(res)
-      return finishStreamResult(false, rawMessage, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+      return withTransportFailure(
+        finishStreamResult(false, rawMessage, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
+        'timeout',
+        rawMessage
+      )
     }
     if (inspection.terminalReceived && !interpretedProtocolFailure(inspection)) {
       endResponse(res)
@@ -950,7 +956,11 @@ export async function pipeUpstreamStream(
         totalUpstreamBytes,
         totalResponseBytes
       }, '网关在下游提交前捕获流式失败，交由上层决定是否服务端换号重试')
-      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+      return withTransportFailure(
+        finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
+        streamTransportFailureKind(error, message),
+        message
+      )
     }
     if (shouldInterruptCommittedGenericStream(options.clientRetryEnabled === true, totalResponseBytes)) {
       streamLogger.warn({
@@ -961,7 +971,11 @@ export async function pipeUpstreamStream(
         totalResponseBytes
       }, '普通客户端已收到部分流式响应，网关直接中断连接以交由客户端重试')
       interruptResponse(res)
-      return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+      return withTransportFailure(
+        finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
+        streamTransportFailureKind(error, message),
+        message
+      )
     }
     if (!interpretedProtocolFailure(inspection)) {
       streamLogger.warn({
@@ -997,7 +1011,11 @@ export async function pipeUpstreamStream(
       }
     }
     endResponse(res)
-    return finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+    return withTransportFailure(
+      finishStreamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection)),
+      streamTransportFailureKind(error, message),
+      message
+    )
   } finally {
     res.off('close', closeIterator)
   }
@@ -1175,6 +1193,26 @@ export async function pipeUpstreamStream(
     outputEventCount: inspection.outputEventCount
   }, '网关流式响应已成功结束')
   return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+}
+
+function withTransportFailure(
+  result: StreamPipeResult,
+  kind: 'timeout' | 'read_incomplete',
+  reason: string
+): StreamPipeResult {
+  return {
+    ...result,
+    transportFailure: { kind, reason }
+  }
+}
+
+function streamTransportFailureKind(error: unknown, message: string): 'timeout' | 'read_incomplete' {
+  const diagnostic = [
+    error instanceof Error ? error.name : '',
+    typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '',
+    message
+  ].join(' ').toLowerCase()
+  return /timeout|timedout|timed out|etimedout|超时/.test(diagnostic) ? 'timeout' : 'read_incomplete'
 }
 
 async function readNextStreamChunk(

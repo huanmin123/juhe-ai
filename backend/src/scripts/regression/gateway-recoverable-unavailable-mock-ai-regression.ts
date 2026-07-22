@@ -87,8 +87,8 @@ try {
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
     const localSuppression = createSingleAccountScenario('本地屏蔽恢复等待', 'sk-recoverable-local-suppression', upstreamBaseUrl)
-    const transportFailure = createSingleAccountScenario('传输失败后恢复等待', 'sk-recoverable-transport-failure', upstreamBaseUrl)
-    const persistentTransportFailure = createSingleAccountScenario('持续传输失败预算终止', 'sk-recoverable-transport-always-fails', upstreamBaseUrl)
+    const transportFailure = createSingleAccountScenario('传输失败直接交还客户端', 'sk-recoverable-transport-failure', upstreamBaseUrl)
+    const persistentTransportFailure = createSingleAccountScenario('持续传输失败直接交还客户端', 'sk-recoverable-transport-always-fails', upstreamBaseUrl)
     const rateLimitedCooldown = createSingleAccountScenario('限流冷却恢复等待', 'sk-recoverable-rate-limited', upstreamBaseUrl)
     const activeCooldown = createSingleAccountScenario('正常状态冷却时间恢复等待', 'sk-recoverable-active-cooldown', upstreamBaseUrl)
     const fallback = createFallbackScenario(upstreamBaseUrl)
@@ -99,8 +99,8 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertLocalSuppressionWaitsAndRecovers(baseUrl, localSuppression)
-    await assertTransportFailureWaitsAndRecovers(baseUrl, transportFailure)
-    await assertPersistentTransportFailureStopsAtBudget(baseUrl, persistentTransportFailure)
+    await assertOpaqueTransportFailureHandsOffWithoutReplay(baseUrl, transportFailure)
+    await assertPersistentOpaqueTransportFailureHandsOffWithoutReplay(baseUrl, persistentTransportFailure)
     await assertRateLimitedCooldownWaitsAndRecovers(baseUrl, rateLimitedCooldown)
     await assertActiveCooldownWaitsAndRecovers(baseUrl, activeCooldown)
     await assertFallbackGroupBypassesRecoverableWait(baseUrl, fallback)
@@ -139,32 +139,29 @@ async function assertLocalSuppressionWaitsAndRecovers(baseUrl: string, scenario:
   assert.deepEqual(authorizationsForKeySince(startHitCount, 'sk-recoverable-local-suppression'), ['Bearer sk-recoverable-local-suppression'])
 }
 
-async function assertTransportFailureWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+async function assertOpaqueTransportFailureHandsOffWithoutReplay(baseUrl: string, scenario: GatewayScenario): Promise<void> {
   const startHitCount = upstreamHits.length
   const startedAt = Date.now()
-  const response = await postChat(baseUrl, scenario.apiKey, 'transport failure should wait and recover')
+  const response = await postChat(baseUrl, scenario.apiKey, 'opaque transport failure must not replay')
   const elapsedMs = Date.now() - startedAt
   const matchingAuthorizations = authorizationsSince(startHitCount)
     .filter((authorization) => authorization === 'Bearer sk-recoverable-transport-failure')
-  assert.equal(response.status, 200, `传输失败形成短期避让后应等待恢复并重试，实际 HTTP ${response.status}: ${response.text}`)
-  assert.match(response.text, /mock ai ok from sk-recoverable-transport-failure/)
-  assert(elapsedMs >= 2_500, `传输失败恢复不应绕过本地短期避让，实际 ${elapsedMs}ms`)
-  assert(elapsedMs < 8_000, `传输失败恢复不应等满服务端预算，实际 ${elapsedMs}ms`)
-  assert(matchingAuthorizations.length >= 2, `传输失败后应至少再次命中同一可恢复账户，实际 ${matchingAuthorizations.length} 次`)
+  assert.equal(response.status, 503, `通用 POST 传输失败应交给客户端决定是否重试，实际 HTTP ${response.status}: ${response.text}`)
+  assert.match(response.text, /上游暂时不可用|上游请求失败/)
+  assert(elapsedMs < 3_000, `通用 POST 传输失败不得进入服务端恢复等待，实际 ${elapsedMs}ms`)
+  assert.deepEqual(matchingAuthorizations, ['Bearer sk-recoverable-transport-failure'], '通用 POST 可能已被上游接受，不得服务端重放')
 }
 
-async function assertPersistentTransportFailureStopsAtBudget(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+async function assertPersistentOpaqueTransportFailureHandsOffWithoutReplay(baseUrl: string, scenario: GatewayScenario): Promise<void> {
   const startHitCount = upstreamHits.length
   const startedAt = Date.now()
-  const response = await postChat(baseUrl, scenario.apiKey, 'persistent transport failure should stop at budget')
+  const response = await postChat(baseUrl, scenario.apiKey, 'persistent opaque transport failure must not replay')
   const elapsedMs = Date.now() - startedAt
   const matchingAuthorizations = authorizationsForKeySince(startHitCount, 'sk-recoverable-transport-always-fails')
-  assert.equal(response.status, 503, `持续 transport 失败在预算耗尽后应交给客户端重试，实际 HTTP ${response.status}: ${response.text}`)
+  assert.equal(response.status, 503, `持续通用 POST transport 失败应直接交给客户端重试，实际 HTTP ${response.status}: ${response.text}`)
   assert.match(response.text, /上游暂时不可用|上游请求失败/)
-  assert(elapsedMs >= 9_000, `持续 transport 失败不应提前绕过 10 秒测试预算，实际 ${elapsedMs}ms`)
-  assert(elapsedMs < 14_000, `预算耗尽后必须有限结束，不能进入忙循环，实际 ${elapsedMs}ms`)
-  assert(matchingAuthorizations.length >= 3, `预算内应进行有界恢复尝试，实际 ${matchingAuthorizations.length} 次`)
-  assert(matchingAuthorizations.length < 12, `预算内恢复尝试次数必须有界，实际 ${matchingAuthorizations.length} 次`)
+  assert(elapsedMs < 3_000, `持续通用 POST transport 失败不得消耗服务端恢复预算，实际 ${elapsedMs}ms`)
+  assert.deepEqual(matchingAuthorizations, ['Bearer sk-recoverable-transport-always-fails'], '持续通用 POST transport 失败也不得服务端重放')
 }
 
 async function assertRateLimitedCooldownWaitsAndRecovers(baseUrl: string, scenario: GatewayScenario): Promise<void> {

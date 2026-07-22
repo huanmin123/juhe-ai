@@ -191,6 +191,7 @@
       :has-account-type="hasAccountType"
       :is-api-key-form="isApiKeyForm"
       :is-management-view="isManagementView"
+      :is-anthropic-o-auth-form="isAnthropicOAuthForm"
       :is-o-auth-form="isOAuthForm"
       :is-token-credential-form="isTokenCredentialForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
@@ -594,6 +595,7 @@ const {
   handleModalCancel,
   hasAccountType,
   isApiKeyForm,
+  isAnthropicOAuthForm,
   isOAuthForm,
   isTokenCredentialForm,
   isOpenAIOAuthForm,

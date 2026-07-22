@@ -220,6 +220,16 @@ import {
   searchOpenAICompatibleVectorStore,
   searchOpenAICompatibleVectorStoreAsync
 } from '../../storage/openai-compatible-vector-stores.repository.js'
+import {
+  acknowledgeAccountCircuitOutbox,
+  advanceAccountCircuitDispatchRevision,
+  claimAccountCircuitOutbox,
+  cleanupAccountCircuitControlPlane,
+  compareAndSetAccountCircuitIncident,
+  listAccountCircuitIncidentsForRebuild,
+  listAccountCircuitProjectionGaps,
+  releaseAccountCircuitOutboxForReplay
+} from '../../storage/account-circuit-control-plane.repository.js'
 import type {
   DbServiceGatewayRuntime,
   DbServiceOperation,
@@ -1047,6 +1057,26 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           ? await cleanupExpiredSystemSessionsAsync(operation.expiredBefore, operation.limit)
           : cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit)
       }
+    case 'advance_account_circuit_dispatch_revision':
+      return await advanceAccountCircuitDispatchRevision(operation.input)
+    case 'compare_and_set_account_circuit_incident':
+      return await compareAndSetAccountCircuitIncident(operation.input)
+    case 'claim_account_circuit_outbox':
+      return await claimAccountCircuitOutbox(operation)
+    case 'ack_account_circuit_outbox':
+      return {
+        acknowledged: await acknowledgeAccountCircuitOutbox(operation)
+      }
+    case 'release_account_circuit_outbox_for_replay':
+      return {
+        released: await releaseAccountCircuitOutboxForReplay(operation)
+      }
+    case 'list_account_circuit_incidents_for_rebuild':
+      return await listAccountCircuitIncidentsForRebuild(operation)
+    case 'list_account_circuit_projection_gaps':
+      return await listAccountCircuitProjectionGaps(operation)
+    case 'cleanup_account_circuit_control_plane':
+      return await cleanupAccountCircuitControlPlane(operation)
     case 'cleanup_chat_retention': {
       const client = await getChatDatabaseClient()
       const retention = await cleanupChatRetention(client, { ...operation, isActiveTurn: isActiveChatGeneration })
@@ -1514,6 +1544,15 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     }
     case 'cleanup_expired_system_sessions':
       return { deleted: cleanupExpiredSystemSessions(operation.expiredBefore, operation.limit) }
+    case 'advance_account_circuit_dispatch_revision':
+    case 'compare_and_set_account_circuit_incident':
+    case 'claim_account_circuit_outbox':
+    case 'ack_account_circuit_outbox':
+    case 'release_account_circuit_outbox_for_replay':
+    case 'list_account_circuit_incidents_for_rebuild':
+    case 'list_account_circuit_projection_gaps':
+    case 'cleanup_account_circuit_control_plane':
+      throw new Error(`DB service 操作 ${operation.type} 必须通过异步 repository 执行`)
     case 'save_codex_context_response_state':
       return saveCodexContextResponseStateIndex(operation.input)
     case 'save_codex_context_compact_state':

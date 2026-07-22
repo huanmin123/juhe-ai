@@ -202,7 +202,6 @@ async function runAccountHealthCheckQueueItem(
     markedTemporaryUnavailable = updated?.updated ?? false
   }
 
-
   const logFields = {
     event: 'background_account_health_check_failed',
     accountId: account.id,

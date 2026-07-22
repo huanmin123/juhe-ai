@@ -95,6 +95,7 @@ try {
   }, access)
   assert.equal(normalStrategy.mode, 'normal', '普通路由策略模式应为 normal')
   assert.equal(normalStrategy.normalRoutingConfig?.schedulingPreference, 'cost_first', '普通路由默认应使用成本优先调度')
+  assert.equal(normalStrategy.normalRoutingConfig?.firstByteDeadlineMs, 10000, '普通路由成本优先默认首字截止应为 10 秒')
   assert.equal(normalStrategy.groupBindings.length, 1, '普通路由只能保存一个分组绑定')
   assert.equal(normalStrategy.groupBindings[0]?.groupId, primaryGroup.id, '普通路由应绑定目标分组')
 
@@ -103,8 +104,8 @@ try {
     mode: 'normal',
     normalRoutingConfig: {
       schedulingPreference: 'speed_first',
+      firstByteDeadlineMs: 30000,
       speedFirstConfig: {
-        firstByteThresholdMs: 30000,
         slowTriggerCount: 3,
         slowWindowSeconds: 120,
         recoverySuccessCount: 3,
@@ -115,7 +116,8 @@ try {
     groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
   }, access)
   assert.equal(speedFirstStrategy.normalRoutingConfig?.schedulingPreference, 'speed_first', '速度优先配置应保存到普通路由')
-  assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.firstByteThresholdMs, 30000, '速度优先首字观察阈值应按毫秒保存')
+  assert.equal(speedFirstStrategy.normalRoutingConfig?.firstByteDeadlineMs, 30000, '速度优先应读取公共首字截止字段')
+  assert.equal(Object.hasOwn(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig ?? {}, 'firstByteThresholdMs'), false, '规范化速度配置不得继续输出旧首字阈值字段')
   assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.slowTriggerCount, 3, '速度优先慢速触发次数默认基线应为 3')
   assert.equal(speedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.maxFirstByteRetriesPerRequest, 2, '速度优先单请求切号次数默认基线应为 2')
   const speedFirstListItem = repositories
@@ -123,6 +125,28 @@ try {
     .items
     .find((item) => item.id === speedFirstStrategy.id)
   assert.equal(speedFirstListItem?.normalRoutingConfig?.schedulingPreference, 'speed_first', '策略路由列表项应返回速度优先配置供前端模式列展示')
+  const storedSpeedFirstConfig = JSON.parse(String((database.prepare('SELECT config_json FROM route_strategies WHERE id = ?').get(speedFirstStrategy.id) as { config_json: string }).config_json)) as Record<string, unknown>
+  assert.equal(JSON.stringify(storedSpeedFirstConfig).includes('firstByteDeadlineMs'), true, 'repository 应把首字截止写入公共字段')
+  assert.equal(JSON.stringify(storedSpeedFirstConfig).includes('firstByteThresholdMs'), false, 'repository 不得写入旧速度模式首字阈值字段')
+
+  const legacySpeedFirstStrategy = repositories.createRouteStrategy({
+    name: '普通路由旧首字阈值兼容回归策略',
+    mode: 'normal',
+    normalRoutingConfig: {
+      schedulingPreference: 'speed_first',
+      speedFirstConfig: {
+        firstByteThresholdMs: 25000,
+        slowTriggerCount: 4
+      }
+    },
+    groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
+  }, access)
+  assert.equal(legacySpeedFirstStrategy.normalRoutingConfig?.firstByteDeadlineMs, 25000, '旧 firstByteThresholdMs 应只作为公共首字截止的读取兼容别名')
+  assert.equal(legacySpeedFirstStrategy.normalRoutingConfig?.speedFirstConfig?.slowTriggerCount, 4, '旧配置迁移时应保留速度优先专属参数')
+  assert.equal(Object.hasOwn(legacySpeedFirstStrategy.normalRoutingConfig?.speedFirstConfig ?? {}, 'firstByteThresholdMs'), false, '旧首字阈值兼容读取后不得继续出现在规范化结果')
+  const storedLegacyConfig = String((database.prepare('SELECT config_json FROM route_strategies WHERE id = ?').get(legacySpeedFirstStrategy.id) as { config_json: string }).config_json)
+  assert.equal(storedLegacyConfig.includes('firstByteDeadlineMs'), true, '旧首字阈值输入写库时必须迁移为公共字段')
+  assert.equal(storedLegacyConfig.includes('firstByteThresholdMs'), false, '旧首字阈值输入写库后不得保留兼容别名')
 
   assert.throws(() => {
     repositories.createRouteStrategy({
@@ -130,11 +154,24 @@ try {
       mode: 'normal',
       normalRoutingConfig: {
         schedulingPreference: 'speed_first',
-        speedFirstConfig: { firstByteThresholdMs: 9999 }
+        firstByteDeadlineMs: 9999
       },
       groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
     }, access)
-}, /首字观察阈值/, '速度优先首字观察阈值不能低于 10 秒')
+  }, /首字截止时间/, '普通路由公共首字截止不能低于 10 秒')
+
+  assert.throws(() => {
+    repositories.createRouteStrategy({
+      name: '普通路由双首字字段回归策略',
+      mode: 'normal',
+      normalRoutingConfig: {
+        schedulingPreference: 'speed_first',
+        firstByteDeadlineMs: 10000,
+        speedFirstConfig: { firstByteThresholdMs: 30000 }
+      },
+      groupBindings: [{ groupId: primaryGroup.id, priority: 1, status: 'active' }]
+    }, access)
+  }, /不能同时配置/, '新旧首字字段同时出现时必须拒绝，避免双事实源')
 
   assert.throws(() => {
     repositories.createRouteStrategy({

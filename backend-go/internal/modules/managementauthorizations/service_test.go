@@ -1090,7 +1090,7 @@ func TestServiceListNormalizesScopeAndRedactsNonOwnerSourceDetails(t *testing.T)
 	createdAt := time.Date(2026, 7, 9, 10, 30, 0, 0, time.UTC)
 	store := &authorizationListStoreStub{
 		result: port.ManagementResourceAuthorizationListResult{
-			Items: []port.ManagementResourceAuthorizationSummary{{
+			Items: []port.ManagementResourceAuthorizationListRow{{
 				ID:                           "rauthgrant_team",
 				ResourceType:                 "account",
 				ResourceID:                   "acct_main",
@@ -1099,23 +1099,8 @@ func TestServiceListNormalizesScopeAndRedactsNonOwnerSourceDetails(t *testing.T)
 				GranteeType:                  "team",
 				GranteeTeamID:                "team_ops",
 				GranteeTeamName:              "运维团队",
-				Scope:                        "use",
 				Status:                       "active",
-				EffectiveSourceType:          "team",
-				EffectiveSourceTeamID:        "team_ops",
-				EffectiveSourceTeamName:      "运维团队",
-				AuthorizationSources: []port.ManagementResourceAuthorizationSourceSummary{{
-					ID:             "rauthgrant_team",
-					SourceType:     "team",
-					SourceTeamID:   "team_ops",
-					SourceTeamName: "运维团队",
-					Status:         "active",
-					CreatedAt:      createdAt,
-					UpdatedAt:      createdAt,
-				}},
-				CreatedBy: "sys_owner",
-				CreatedAt: createdAt,
-				UpdatedAt: createdAt,
+				CreatedAt:                    createdAt,
 			}},
 			HasMore: true,
 		},
@@ -1157,8 +1142,7 @@ func TestServiceListNormalizesScopeAndRedactsNonOwnerSourceDetails(t *testing.T)
 	item := got.Items[0]
 	if item.Permissions.CanEdit || item.Permissions.CanAuthorize ||
 		item.EffectiveSourceTeamID != "" ||
-		item.EffectiveSourceTeamName != "" ||
-		item.CreatedBy != "" {
+		item.EffectiveSourceTeamName != "" {
 		t.Fatalf("non-owner item was not redacted: %+v", item)
 	}
 	if item.SourceSummary.ActiveSourceCount != 1 ||

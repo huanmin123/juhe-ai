@@ -275,6 +275,7 @@ Copy-RequiredItem (Join-Path $repoRoot 'deploy/start.ps1') (Join-Path $packageRo
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/run-with-owner-lock.mjs') (Join-Path $packageRoot 'scripts/run-with-owner-lock.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'scripts/validate-owner-manifest.mjs') (Join-Path $packageRoot 'scripts/validate-owner-manifest.mjs')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.json') (Join-Path $packageRoot 'deploy/owner-manifest.json')
+Copy-RequiredItem (Join-Path $repoRoot 'deploy/owner-manifest.schema.json') (Join-Path $packageRoot 'deploy/owner-manifest.schema.json')
 Copy-RequiredItem (Join-Path $repoRoot 'deploy/README.md') (Join-Path $packageRoot 'README.md')
 Copy-RequiredItem (Join-Path $repoRoot 'docs/deploy') (Join-Path $packageRoot 'docs/deploy')
 

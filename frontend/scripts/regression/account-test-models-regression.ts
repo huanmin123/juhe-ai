@@ -44,6 +44,21 @@ const detachCurrentTestViewSource = sourceSection(
   'function detachCurrentTestView',
   'function finishAccountTestRun'
 )
+const stopAccountTestSource = sourceSection(
+  accountTestModalSource,
+  'function stopAccountTest',
+  'function closeTestModal'
+)
+const terminateAttachedTestRunSource = sourceSection(
+  accountTestModalSource,
+  'function terminateAttachedTestRun',
+  'function stopAccountTest'
+)
+const closeTestModalSource = sourceSection(
+  accountTestModalSource,
+  'function closeTestModal',
+  'onBeforeUnmount'
+)
 const updateSelectableTestModelSource = sourceSection(
   accountTestModelsSource,
   'function updateSelectableTestModel',
@@ -115,12 +130,15 @@ assert.equal(
   '运行异常和恢复异常都必须转换为终端 AccountTestResult；候选列表失败使用局部加载状态'
 )
 
-assertIncludes(detachCurrentTestViewSource, 'persistAccountTestRunSession(run, true)', '关闭视图前应保留当前账户单任务快照')
-assertIncludes(detachCurrentTestViewSource, 'run.controller.abort()', '关闭视图应只终止当前前端轮询绑定')
-assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestRunBackend', '关闭视图不能取消后台 session 或 task')
-assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestTaskRequest', '关闭视图不能取消后台 task')
-assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestSessionRequest', '关闭视图不能取消后台 session')
-assertIncludes(accountTestModalSource, 'void cancelAccountTestRunBackend(run)', '用户显式停止时才应取消当前后台运行')
+assertIncludes(detachCurrentTestViewSource, 'persistAccountTestRunSession(run, true)', '切换账户或组件卸载时应保留当前账户单任务快照')
+assertIncludes(detachCurrentTestViewSource, 'run.controller.abort()', '分离视图应只终止当前前端轮询绑定')
+assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestRunBackend', '分离视图不能取消后台 session 或 task')
+assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestTaskRequest', '分离视图不能取消后台 task')
+assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestSessionRequest', '分离视图不能取消后台 session')
+assertIncludes(stopAccountTestSource, 'terminateAttachedTestRun(true)', '用户显式停止应进入完整终止流程')
+assertIncludes(terminateAttachedTestRunSource, 'cancelAccountTestRunBackend(run)', '完整终止流程应取消当前后台运行')
+assertIncludes(closeTestModalSource, 'terminateAttachedTestRun(true)', '关闭弹窗必须终止正在运行的后台任务')
+assertIncludes(closeTestModalSource, 'detachCurrentTestView()', '没有运行任务时关闭弹窗仍应清理视图绑定')
 
 assertIncludes(accountTestComponentSource, 'v-if="modelReadonly"', '草稿测试模型应使用只读控件展示')
 assertIncludes(accountTestComponentSource, ':mask-closable="true"', '运行中也应允许关闭并分离当前测试视图')

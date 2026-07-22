@@ -4,7 +4,12 @@ import { createRetryQueue } from '../../shared/retry-queue.js'
 import { sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
+import {
+  transportProbeMeetsFirstByteTarget,
+  transportProbeOutcomeFromAccountTestResult
+} from '../accounts/automatic-account-probe-outcome.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
   discardNormalRouteLatencyProbeCandidateAsync,
   recordNormalRouteFirstByteSuccessAsync,
@@ -88,6 +93,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     return true
   }
 
+  let upstreamAttempt: UpstreamAttempt | undefined
   const result = await testOpenAIAccount(account, {
     diagnostics: 'limited',
     groupId: item.scope.groupId,
@@ -96,19 +102,23 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     testEndpointMode: account.healthCheckEndpointMode,
     candidateAccount,
     disableAccountStateMutation: true,
+    onUpstreamAttempt: (attempt) => {
+      upstreamAttempt = attempt
+    },
     findAccountForTest: loadAccountForTestViaDbService,
     findOpenAIAccountForGroup: loadOpenAIAccountForGroupViaDbService,
     gatewaySettingsOverride: {
       temporaryUnschedulableRetryAttempts: 0,
       temporaryUnschedulableRetryIntervalSeconds: 0,
-      textFirstResponseTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteThresholdMs),
-      noAvailableAccountWaitTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteThresholdMs),
-      textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, probeTimeoutSeconds(item.config.firstByteThresholdMs))
+      textFirstResponseTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteDeadlineMs),
+      noAvailableAccountWaitTimeoutSeconds: probeTimeoutSeconds(item.config.firstByteDeadlineMs),
+      textUncommittedAttemptMaxLifetimeSeconds: Math.max(60, probeTimeoutSeconds(item.config.firstByteDeadlineMs))
     }
   })
 
+  const transportOutcome = transportProbeOutcomeFromAccountTestResult(result, { upstreamAttempt })
   const firstByteMs = result.firstTokenMs
-  if (result.success && firstByteMs !== undefined && firstByteMs <= item.config.firstByteThresholdMs) {
+  if (transportProbeMeetsFirstByteTarget(result, transportOutcome, item.config.firstByteDeadlineMs)) {
     const recovery = await recordNormalRouteFirstByteSuccessAsync(candidateAccount, item.scope, item.config, firstByteMs)
     logger.info({
       event: recovery?.cleared
@@ -119,7 +129,7 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
       routeStrategyId: item.scope.routeStrategyId,
       groupId: item.scope.groupId,
       firstByteMs,
-      thresholdMs: item.config.firstByteThresholdMs,
+      thresholdMs: item.config.firstByteDeadlineMs,
       recoverySuccessCount: recovery?.recoverySuccessCount ?? item.recoverySuccessCount + 1,
       requiredRecoverySuccessCount: recovery?.requiredRecoverySuccessCount ?? item.config.recoverySuccessCount,
       cleared: recovery?.cleared ?? false,
@@ -131,18 +141,19 @@ async function runNormalRouteSpeedFirstRecoveryProbeQueueItem(
     return true
   }
 
-  await recordNormalRouteProbeFailureAsync(item, probeFailureReason(result, item.config.firstByteThresholdMs))
+  await recordNormalRouteProbeFailureAsync(item, probeFailureReason(result, item.config.firstByteDeadlineMs))
   logger.debug({
     event: 'background_normal_route_speed_first_recovery_probe_failed',
     accountId: item.accountId,
     accountName: item.accountName,
     routeStrategyId: item.scope.routeStrategyId,
     groupId: item.scope.groupId,
-    success: result.success,
+    transportOutcome: transportOutcome.kind,
+    transportFailureKind: transportOutcome.kind === 'framing_complete' ? undefined : transportOutcome.failureKind,
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     firstByteMs,
-    thresholdMs: item.config.firstByteThresholdMs,
+    thresholdMs: item.config.firstByteDeadlineMs,
     durationMs: result.durationMs,
     attemptIndex: context.attemptIndex,
     retryNumber: context.retryNumber,
@@ -186,8 +197,8 @@ function isNormalRouteSpeedFirstProbeAccountEligible(account: AccountSummary | u
   return true
 }
 
-function probeTimeoutSeconds(firstByteThresholdMs: number): number {
-  return Math.max(10, Math.ceil((firstByteThresholdMs + 10_000) / 1000))
+function probeTimeoutSeconds(firstByteDeadlineMs: number): number {
+  return Math.max(10, Math.ceil((firstByteDeadlineMs + 10_000) / 1000))
 }
 
 function probeFailureReason(result: AccountTestResult, thresholdMs: number): string {

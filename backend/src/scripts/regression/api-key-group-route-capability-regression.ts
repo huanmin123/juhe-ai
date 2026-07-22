@@ -441,7 +441,7 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
 
   const beforeCount = upstreamRequests.length
   const traceId = `trace-route-strategy-${item.suffix}-exhausted-fallback`
-  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId, undefined, true)
   assert.equal(response.status, 200, `${item.displayName} 下 A 号池真实失败耗尽后应切 B 并成功，实际 ${response.status}: ${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.deepEqual(
@@ -962,12 +962,12 @@ async function assertModelSpecificAccountPreferred(gatewayBaseUrl: string, upstr
     failingUpstreamKeys.add(directUpstreamKey)
     const beforeFailoverCount = upstreamRequests.length
     const failoverResponse = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-model-specific-failover')
-    assert.equal(failoverResponse.status, 200, `显式支持模型账号失败后应继续切到映射账号，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
+    assert.equal(failoverResponse.status, 502, `显式支持模型账号已返回不透明上游失败后应原样终止，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
     const failoverRequests = upstreamRequests.slice(beforeFailoverCount)
     assert.deepEqual(
       failoverRequests.map((request) => request.accountKey),
-      [directUpstreamKey, mappingUpstreamKey],
-      '显式支持模型账号真实上游失败后，应在同组继续尝试映射账号，不能影响客户端可用性'
+      [directUpstreamKey],
+      '显式支持模型账号已完成上游派发后，不应把不透明请求重放到映射账号'
     )
   } finally {
     failingUpstreamKeys.delete(directUpstreamKey)
@@ -1049,12 +1049,12 @@ async function assertHighConcurrencyModelSpecificAccountPreferred(gatewayBaseUrl
     failingUpstreamKeys.add(directUpstreamKey)
     const beforeFailoverCount = upstreamRequests.length
     const failoverResponse = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-hc-model-specific-failover')
-    assert.equal(failoverResponse.status, 200, `高并发号池显式支持模型账号失败后应继续切到映射账号，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
+    assert.equal(failoverResponse.status, 502, `高并发号池显式支持模型账号已返回不透明上游失败后应原样终止，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
     const failoverRequests = upstreamRequests.slice(beforeFailoverCount)
     assert.deepEqual(
       failoverRequests.map((request) => request.accountKey),
-      [directUpstreamKey, mappingUpstreamKey],
-      '高并发号池显式支持模型账号真实上游失败后，应继续尝试映射账号，不能影响客户端可用性'
+      [directUpstreamKey],
+      '高并发号池显式支持模型账号已完成上游派发后，不应把不透明请求重放到映射账号'
     )
   } finally {
     failingUpstreamKeys.delete(directUpstreamKey)

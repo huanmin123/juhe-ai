@@ -103,6 +103,10 @@ const recordMaintenanceRedisStreamKey = redisStreamQueueContracts.recordMaintena
 const recordMaintenanceRedisStreamGroup = redisStreamQueueContracts.recordMaintenance.groupName
 const recordMaintenanceRedisConsumerErrorRetryMs = 1000
 const recordMaintenanceRedisStopWaitMs = 2000
+// Record maintenance may spawn an isolated worker for bounded but materially
+// longer cleanup work.  It must not be reclaimed by another ingest worker
+// while that worker is still alive.
+const recordMaintenanceRedisStreamClaimIdleMs = 60 * 60 * 1000
 const auditRetainedDataCleanupBatchPauseMs = 10
 const auditRetainedDataCleanupBatchSizeLimit = 100
 const auditRetainedDataCleanupMaxBatchesLimit = 3
@@ -503,7 +507,8 @@ function recordMaintenanceRedisStreamQueue(): RedisStreamQueue<RecordMaintenance
     recordMaintenanceRedisStreamQueueInstance = new RedisStreamQueue<RecordMaintenanceJob>({
       streamKey: recordMaintenanceRedisStreamKey,
       groupName: recordMaintenanceRedisStreamGroup,
-      readCount: recordMaintenanceBatchSize
+      readCount: recordMaintenanceBatchSize,
+      claimIdleMs: Math.max(runtimeConfig.queue.redisStreamClaimIdleMs, recordMaintenanceRedisStreamClaimIdleMs)
     })
   }
   return recordMaintenanceRedisStreamQueueInstance
@@ -919,7 +924,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
       break
     }
   }
-
 
   return {
     cutoffAt: input.cutoffAt,

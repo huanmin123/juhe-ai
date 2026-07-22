@@ -60,6 +60,13 @@ type Option struct {
 	ProtocolProfiles              []ProtocolProfile `json:"protocolProfiles"`
 }
 
+type SelectOption struct {
+	ID      string `json:"id"`
+	Code    string `json:"code"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
 func NewService(store port.ManagementProviderReader) *Service {
 	return &Service{store: store}
 }
@@ -88,6 +95,23 @@ func (s *Service) Options(ctx context.Context, input OptionListInput) ([]Option,
 		return nil, err
 	}
 	return providerOptionsFromPort(rows), nil
+}
+
+func (s *Service) SelectOptions(ctx context.Context) ([]SelectOption, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("management provider option store is required")
+	}
+	rows, err := s.store.ListManagementProviderSelectOptions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]SelectOption, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, SelectOption{
+			ID: row.Code, Code: row.Code, Name: row.Name, Enabled: row.Enabled,
+		})
+	}
+	return items, nil
 }
 
 func providerOptionsFromPort(rows []port.ManagementProviderOption) []Option {

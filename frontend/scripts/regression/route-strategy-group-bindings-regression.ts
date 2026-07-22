@@ -74,6 +74,11 @@ assert(routeStrategiesViewSource.includes(':max="bindingWeightMax(index)"'), '�
 assert(routeStrategiesViewSource.includes('weightedBindingTotal.value >= 100'), '权重调度路由总权重达到 100 后必须禁止继续添加分组')
 assert(routeStrategiesViewSource.includes('权重调度路由的分组权重总和不能超过 100'), '权重调度路由保存前必须校验总权重不超过 100')
 assert(routeStrategiesViewSource.includes('status: \'active\' | \'disabled\''), '策略路由分组绑定必须支持启停状态')
+assert(routeStrategiesViewSource.includes('form.normal.firstByteDeadlineSeconds'), '普通路由表单必须使用成本/速度共用的首字截止字段')
+assert(routeStrategiesViewSource.includes('firstByteDeadlineMs'), '普通路由表单 payload 必须写入公共首字截止字段')
+assert(!routeStrategiesViewSource.includes('firstByteThresholdMs'), '策略路由前端不得继续把旧速度模式首字阈值作为事实字段')
+assert(accessTypesSource.includes('firstByteDeadlineMs: number'), '前端领域类型必须声明公共首字截止字段')
+assert(!accessTypesSource.includes('firstByteThresholdMs'), '前端领域类型不得声明旧速度模式首字阈值字段')
 
 assert(routeStrategiesApiSource.includes('groupBindings?: Array<'), '策略路由 API payload 必须承载分组绑定数组')
 assert(routeStrategiesApiSource.includes('priority?: number'), '策略路由 API payload 必须承载分组优先级')

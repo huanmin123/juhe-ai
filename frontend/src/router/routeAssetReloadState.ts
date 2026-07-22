@@ -1,10 +1,7 @@
 const routeAssetReloadStorageKey = 'juhe-ai:route-asset-reload'
 const routeAssetReloadCooldownMs = 30_000
 
-interface RouteAssetReloadRecord {
-  path: string
-  at: number
-}
+type RouteAssetReloadRecords = Record<string, number>
 
 interface RouteAssetReloadStorage {
   getItem(key: string): string | null
@@ -20,11 +17,12 @@ export function shouldReloadRouteAsset(
   path: string,
   options: RouteAssetReloadStateOptions = {}
 ): boolean {
-  const lastReload = readRouteAssetReloadRecord(options)
-  if (lastReload === null) return false
-  if (!lastReload) return true
+  const reloads = readRouteAssetReloadRecords(options)
+  if (reloads === null) return false
+  const lastReloadAt = reloads[path]
+  if (lastReloadAt === undefined) return true
   const now = options.now ?? Date.now
-  return lastReload.path !== path || now() - lastReload.at > routeAssetReloadCooldownMs
+  return now() - lastReloadAt > routeAssetReloadCooldownMs
 }
 
 export function markRouteAssetReload(
@@ -34,16 +32,19 @@ export function markRouteAssetReload(
   try {
     const storage = options.storage ?? window.sessionStorage
     const now = options.now ?? Date.now
-    storage.setItem(routeAssetReloadStorageKey, JSON.stringify({ path, at: now() }))
+    const reloads = readRouteAssetReloadRecords(options)
+    if (reloads === null) return false
+    reloads[path] = now()
+    storage.setItem(routeAssetReloadStorageKey, JSON.stringify(reloads))
     return true
   } catch {
     return false
   }
 }
 
-function readRouteAssetReloadRecord(
+function readRouteAssetReloadRecords(
   options: RouteAssetReloadStateOptions
-): RouteAssetReloadRecord | null | undefined {
+): RouteAssetReloadRecords | null {
   let text: string | null
   try {
     const storage = options.storage ?? window.sessionStorage
@@ -51,13 +52,20 @@ function readRouteAssetReloadRecord(
   } catch {
     return null
   }
-  if (!text) return undefined
+  if (!text) return {}
 
   try {
-    const value = JSON.parse(text) as Partial<RouteAssetReloadRecord>
-    if (typeof value.path !== 'string' || typeof value.at !== 'number') return undefined
-    return { path: value.path, at: value.at }
+    const value = JSON.parse(text) as unknown
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+    if ('path' in value && 'at' in value && typeof value.path === 'string' && typeof value.at === 'number') {
+      return { [value.path]: value.at }
+    }
+    const reloads: RouteAssetReloadRecords = {}
+    for (const [path, at] of Object.entries(value)) {
+      if (typeof at === 'number') reloads[path] = at
+    }
+    return reloads
   } catch {
-    return undefined
+    return {}
   }
 }

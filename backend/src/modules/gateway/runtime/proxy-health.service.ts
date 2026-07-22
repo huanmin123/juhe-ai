@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../../config/runtime.js'
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { createRuntimeStateStore } from '../../../shared/runtime-state-store.js'
 import { getRequestLogger, sanitizeUrlCredentialsForLog } from '../../../shared/request-context.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
@@ -782,7 +783,7 @@ function proxyUrlKeyHash(value: string): string {
 }
 
 export function gatewayUpstreamBucketKeys(
-  account: Pick<UpstreamAccount, 'id' | 'systemAccountId' | 'accountOwnerSystemAccountId' | 'providerCode' | 'baseUrl' | 'type' | 'proxyProfileId' | 'proxyUrl'>,
+  account: Pick<UpstreamAccount, 'id' | 'systemAccountId' | 'accountOwnerSystemAccountId' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'baseUrl' | 'type' | 'proxyProfileId' | 'proxyUrl'>,
   scope: 'all' | 'proxy' | 'upstream' = 'all'
 ): string[] {
   const keys: string[] = []
@@ -801,8 +802,8 @@ export function gatewayUpstreamBucketKeys(
   return [...new Set(keys.map((key) => `${key}:owner:${ownerScope}`))]
 }
 
-function gatewayBaseUrlKey(account: Pick<UpstreamAccount, 'baseUrl' | 'type'>): string | undefined {
-  if (account.type === 'oauth') {
+function gatewayBaseUrlKey(account: Pick<UpstreamAccount, 'baseUrl' | 'type' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>): string | undefined {
+  if (account.type === 'oauth' && isOpenAIProtocolProfile(account)) {
     return 'baseUrl:https://chatgpt.com/backend-api/codex'
   }
   const normalized = normalizeOpenAIBaseUrlForBucket(account.baseUrl)

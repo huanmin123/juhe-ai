@@ -23,8 +23,13 @@ import {
   accountDiagnosticRetryTimeoutMs,
   diagnosticAccountTestGatewaySettingsOverride
 } from '../../accounts/account-diagnostic-retry-policy.js'
-import { automaticAccountProbeObservation, automaticAccountProbeOutcome } from '../../accounts/automatic-account-probe-outcome.js'
-import { isCompletedRealUpstreamAttempt } from '../upstream/attempt.js'
+import {
+  automaticAccountProbeObservation,
+  transportProbeOutcomeFromAccountTestResult,
+  type AutomaticAccountProbeOutcome,
+  type TransportProbeOutcome
+} from '../../accounts/automatic-account-probe-outcome.js'
+import type { UpstreamAttempt } from '../upstream/attempt.js'
 import {
   accountPrecheckMinimumObservationMs,
   nextAccountPrecheckProbeAtMs
@@ -187,7 +192,8 @@ interface GatewayAutomaticProbeResult {
   durationMs?: number
   accountFailureEligible?: boolean
   attemptedAt: string
-  probeOutcome: Exclude<ReturnType<typeof automaticAccountProbeOutcome>, 'stale'>
+  probeOutcome: Exclude<AutomaticAccountProbeOutcome, 'stale'>
+  transportOutcome: TransportProbeOutcome
 }
 
 interface ConfiguredPolicyAvoidanceState {
@@ -240,10 +246,10 @@ function runtimeProbeObservation(
     attemptCount,
     attemptedAt: result.attemptedAt,
     probeOutcome: result.probeOutcome,
-    success: result.success,
+    success: result.transportOutcome.kind === 'framing_complete',
     statusCode: result.statusCode,
-    errorCode: result.errorCode,
-    reason: result.success ? undefined : accountPrecheckFailureReason(result),
+    errorCode: result.transportOutcome.kind === 'framing_complete' ? undefined : result.errorCode,
+    reason: result.transportOutcome.kind === 'framing_complete' ? undefined : accountPrecheckFailureReason(result),
     traceId: result.traceId
   })
 }
@@ -789,18 +795,24 @@ async function runGatewayAccountRecoveryProbe(runtimeKey: string): Promise<void>
       rescheduleLatestRecoveryProbeAfterStaleResult(runtimeKey, generation, 'gateway_account_recovery_probe_stale_result_ignored')
       return
     }
-    if (result.probeOutcome === 'probe_task_failure') {
-      clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
+    if (result.transportOutcome.kind === 'unknown') {
+      latest.running = false
+      latest.nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+      latest.probePresentation = runtimeProbeScheduledPresentation(latest.probePresentation.lastObservation, latest.nextProbeAtMs)
+      recoveryProbeStates.set(runtimeKey, latest)
+      scheduleRecoveryProbeTimer(runtimeKey, recoveryProbeRetryDelayMs)
       logger.info({
-        event: 'gateway_account_recovery_probe_inconclusive_discarded',
+        event: 'gateway_account_recovery_probe_inconclusive_rescheduled',
         accountId: latest.account.id,
         accountName: latest.account.name,
         runtimeKey,
-        generation
-      }, '账号运行态后台恢复探针未形成有效上游尝试，已丢弃判断并释放观察')
+        generation,
+        nextProbeAt: new Date(latest.nextProbeAtMs).toISOString(),
+        failureKind: result.transportOutcome.failureKind
+      }, '账号运行态后台恢复探针结论未知，已保留状态并有界重排')
       return
     }
-    if (result.success) {
+    if (result.transportOutcome.kind === 'framing_complete') {
       clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
       logger.info({
         event: 'gateway_account_recovery_probe_success',
@@ -946,18 +958,29 @@ async function runDistributedGatewayAccountRecoveryProbe(runtimeKey: string): Pr
     markRecoveryProbeStarted(state, now)
     try {
       const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(state, timeoutMs))
-      if (result.probeOutcome === 'probe_task_failure') {
-        await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
+      if (result.transportOutcome.kind === 'unknown') {
+        const nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+        const rescheduled = await commitDistributedRecoveryProbeRun({
+          ...claimedState,
+          nextProbeAtMs,
+          probePresentation: runtimeProbeScheduledPresentation(claimedState.probePresentation.lastObservation, nextProbeAtMs)
+        }, runId)
+        if (!rescheduled) {
+          logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_unknown_ignored')
+          return
+        }
         logger.info({
-          event: 'gateway_account_distributed_recovery_probe_inconclusive_discarded',
+          event: 'gateway_account_distributed_recovery_probe_inconclusive_rescheduled',
           accountId: state.account.id,
           accountName: state.account.name,
           runtimeKey,
-          generation
-        }, 'Redis 运行态账号恢复探针未形成有效上游尝试，已丢弃判断并释放观察')
+          generation,
+          nextProbeAt: new Date(nextProbeAtMs).toISOString(),
+          failureKind: result.transportOutcome.failureKind
+        }, 'Redis 运行态账号恢复探针结论未知，已保留状态并有界重排')
         return
       }
-      if (result.success) {
+      if (result.transportOutcome.kind === 'framing_complete') {
         const cleared = await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
         if (!cleared) {
           logStaleDistributedRecoveryProbeResult(runtimeKey, generation, 'gateway_account_distributed_recovery_probe_stale_success_ignored')
@@ -1099,21 +1122,27 @@ async function runDistributedGatewayAccountPrecheck(
       const attempt = state.attemptCount
       state = {
         ...state,
-        attemptCount: attempt + 1,
         nextProbeAtMs: Date.now() + precheckSuppressionMs(),
         probePresentation: { lastObservation: state.probePresentation.lastObservation, schedule: { state: 'running' } }
       }
       const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(distributedStateWithAccount(state, account), timeoutMs))
-      if (result.probeOutcome === 'probe_task_failure') {
-        await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
+      if (result.transportOutcome.kind === 'unknown') {
+        const nextProbeAtMs = Date.now() + recoveryProbeRetryDelayMs
+        await commitDistributedRecoveryProbeRun({
+          ...state,
+          attemptCount: attempt,
+          nextProbeAtMs,
+          probePresentation: runtimeProbeScheduledPresentation(state.probePresentation.lastObservation, nextProbeAtMs)
+        }, runId)
         return
       }
-      if (result.success) {
+      if (result.transportOutcome.kind === 'framing_complete') {
         await clearDistributedRecoveryProbeRun(runtimeKey, generation, runId)
         return
       }
       state = {
         ...state,
+        attemptCount: attempt + 1,
         reason: accountPrecheckFailureReason(result),
         probePresentation: {
           lastObservation: runtimeProbeObservation(runtimeKey, generation, state.attemptCount, result),
@@ -2458,7 +2487,6 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         logStalePrecheckResult(runtimeKey, generation, 'gateway_account_precheck_stale_attempt_ignored')
         return
       }
-      latestState.attemptCount = attempt + 1
       latestState.lastAttemptAtMs = Date.now()
       const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
       const result = await runWithGatewayAutomaticProbeSlot(() => runSingleGatewayAccountPrecheck(latestState, timeoutMs))
@@ -2468,18 +2496,23 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
         return
       }
       stateAfterResult.running = false
-      if (result.probeOutcome === 'probe_task_failure') {
-        clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
+      if (result.transportOutcome.kind === 'unknown') {
+        stateAfterResult.probePresentation = runtimeProbeScheduledPresentation(
+          stateAfterResult.probePresentation?.lastObservation,
+          Date.now() + recoveryProbeRetryDelayMs
+        )
+        scheduleGatewayAccountPrecheckRun(runtimeKey, recoveryProbeRetryDelayMs)
         logger.info({
-          event: 'gateway_account_precheck_inconclusive_discarded',
+          event: 'gateway_account_precheck_inconclusive_rescheduled',
           accountId: latestState.account.id,
           accountName: latestState.account.name,
           runtimeKey,
-          generation
-        }, '账号事前确认未形成有效上游尝试，已丢弃判断并释放观察')
+          generation,
+          failureKind: result.transportOutcome.failureKind
+        }, '账号事前确认结论未知，已保留状态并有界重排')
         return
       }
-      if (result.success) {
+      if (result.transportOutcome.kind === 'framing_complete') {
         clearGatewayAccountRuntimeAvailabilityLocal(runtimeKey)
         logger.info({
           event: 'gateway_account_precheck_recovered',
@@ -2487,12 +2520,13 @@ async function runGatewayAccountPrecheck(runtimeKey: string): Promise<void> {
           accountName: stateAfterResult.account.name,
           runtimeKey,
           generation,
-          attemptCount: stateAfterResult.attemptCount,
+          attemptCount: attempt + 1,
           statusCode: result.statusCode,
           durationMs: result.durationMs
         }, '账号事前确认探针通过，已清理运行态短避让')
         return
       }
+      stateAfterResult.attemptCount = attempt + 1
       stateAfterResult.reason = accountPrecheckFailureReason(result)
       stateAfterResult.probePresentation = {
         lastObservation: runtimeProbeObservation(runtimeKey, generation, stateAfterResult.attemptCount, result),
@@ -2600,7 +2634,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     groupId: state.groupId,
     systemAccountId: state.systemAccountId
   })
-  let upstreamResponseObserved = false
+  let upstreamAttempt: UpstreamAttempt | undefined
   const result = await testOpenAIAccount(account, {
     diagnostics: 'full',
     groupId: state.groupId,
@@ -2610,7 +2644,7 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     signal,
     disableAccountStateMutation: true,
     onUpstreamAttempt: (attempt) => {
-      if (isCompletedRealUpstreamAttempt(attempt)) upstreamResponseObserved = true
+      upstreamAttempt = attempt
     },
     candidateAccount: state.account,
     findAccountForTest: (accountId, access) => requestGatewayDbService({
@@ -2628,8 +2662,16 @@ async function runSingleGatewayAccountPrecheck(state: PrecheckState, timeoutMs: 
     }, { timeoutMs: 10_000 }),
     gatewaySettingsOverride: diagnosticAccountTestGatewaySettingsOverride(state.settings, timeoutMs)
   })
-  const probeOutcome = automaticAccountProbeOutcome(result, upstreamResponseObserved)
-  return { ...result, attemptedAt, probeOutcome }
+  const transportOutcome = transportProbeOutcomeFromAccountTestResult(result, {
+    upstreamAttempt,
+    timeout: signal.aborted
+  })
+  const probeOutcome: GatewayAutomaticProbeResult['probeOutcome'] = transportOutcome.kind === 'framing_complete'
+    ? 'complete_success'
+    : transportOutcome.kind === 'transport_incomplete'
+      ? 'upstream_failure'
+      : 'probe_task_failure'
+  return { ...result, attemptedAt, probeOutcome, transportOutcome }
 }
 
 function accountPrecheckFailureReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {

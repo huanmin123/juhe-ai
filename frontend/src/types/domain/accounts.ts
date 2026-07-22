@@ -3,7 +3,7 @@ import type { RequestQuotaLimits } from './access'
 import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
-export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
+export type AccountClientCompatibility = 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
 export type AccountGptServiceTierOverride = string
 export type AccountGptReasoningEffortOverride = string
 export type AccountSupportedEndpointMode =
@@ -94,12 +94,6 @@ export interface AccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
   reason?: string
   since?: string
-  until?: string
-  failureCount?: number
-  distinctClientIpCount?: number
-  distinctApiKeyCount?: number
-  precheckAttemptCount?: number
-  localFailureCount?: number
   probePresentation?: AccountRuntimeProbePresentation
 }
 
@@ -109,8 +103,6 @@ export interface AccountRuntimeProbePresentation {
     state: 'scheduled' | 'due_waiting' | 'running' | 'none'
     nextAttemptAt?: string
   }
-  recoveryAt?: string
-  recoveryAtKind?: 'policy_ttl_expiry'
 }
 
 export type AccountEffectiveAvailabilityStatus =

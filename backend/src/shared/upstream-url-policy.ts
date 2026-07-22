@@ -17,7 +17,7 @@ type UpstreamUrlSecurityConfig = RuntimeConfig['upstreamUrlSecurity']
 type UpstreamLookup = NonNullable<RequestOptions['lookup']>
 
 export class UnsafeUpstreamUrlError extends Error {
-  constructor(message = '上游 Base URL 不能指向本机、内网、链路本地或保留地址') {
+  constructor(message = '上游 Base URL 不能指向本机、内网、链路本地或保留地址；本地联调请显式配置 JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST，只有临时回归才使用 JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS=true') {
     super(message)
   }
 }

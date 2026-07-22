@@ -189,10 +189,39 @@ func (q *Queries) FindManagementAnnouncement(ctx context.Context, id string) (Fi
 	return i, err
 }
 
+const findPublicAnnouncement = `-- name: FindPublicAnnouncement :one
+SELECT a.id, a.title, a.content, a.level, a.published_at
+FROM juhe_business.announcements a
+WHERE a.id = $1::text
+  AND a.status = 'published'
+  AND a.published_at IS NOT NULL
+`
+
+type FindPublicAnnouncementRow struct {
+	ID          string
+	Title       string
+	Content     string
+	Level       string
+	PublishedAt pgtype.Timestamptz
+}
+
+func (q *Queries) FindPublicAnnouncement(ctx context.Context, id string) (FindPublicAnnouncementRow, error) {
+	row := q.db.QueryRow(ctx, findPublicAnnouncement, id)
+	var i FindPublicAnnouncementRow
+	err := row.Scan(
+		&i.ID,
+		&i.Title,
+		&i.Content,
+		&i.Level,
+		&i.PublishedAt,
+	)
+	return i, err
+}
+
 const listManagementAnnouncements = `-- name: ListManagementAnnouncements :many
 SELECT
   a.id, a.title,
-  CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content,
+  CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content_preview,
   a.level, a.status,
   a.created_by, creator.display_name AS created_by_name,
   a.updated_by, updater.display_name AS updated_by_name,
@@ -210,18 +239,18 @@ type ListManagementAnnouncementsParams struct {
 }
 
 type ListManagementAnnouncementsRow struct {
-	ID            string
-	Title         string
-	Content       string
-	Level         string
-	Status        string
-	CreatedBy     string
-	CreatedByName pgtype.Text
-	UpdatedBy     pgtype.Text
-	UpdatedByName pgtype.Text
-	PublishedAt   pgtype.Timestamptz
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
+	ID             string
+	Title          string
+	ContentPreview string
+	Level          string
+	Status         string
+	CreatedBy      string
+	CreatedByName  pgtype.Text
+	UpdatedBy      pgtype.Text
+	UpdatedByName  pgtype.Text
+	PublishedAt    pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
 }
 
 func (q *Queries) ListManagementAnnouncements(ctx context.Context, arg ListManagementAnnouncementsParams) ([]ListManagementAnnouncementsRow, error) {
@@ -236,7 +265,7 @@ func (q *Queries) ListManagementAnnouncements(ctx context.Context, arg ListManag
 		if err := rows.Scan(
 			&i.ID,
 			&i.Title,
-			&i.Content,
+			&i.ContentPreview,
 			&i.Level,
 			&i.Status,
 			&i.CreatedBy,
@@ -259,8 +288,7 @@ func (q *Queries) ListManagementAnnouncements(ctx context.Context, arg ListManag
 
 const listPublicAnnouncements = `-- name: ListPublicAnnouncements :many
 SELECT
-  a.id, a.title, a.content, a.level, a.status,
-  a.published_at, ar.read_at, a.created_at, a.updated_at
+  a.id, a.title, a.level, a.published_at, ar.read_at
 FROM juhe_business.announcements a
 LEFT JOIN juhe_business.announcement_reads ar
   ON ar.announcement_id = a.id
@@ -279,13 +307,9 @@ type ListPublicAnnouncementsParams struct {
 type ListPublicAnnouncementsRow struct {
 	ID          string
 	Title       string
-	Content     string
 	Level       string
-	Status      string
 	PublishedAt pgtype.Timestamptz
 	ReadAt      pgtype.Timestamptz
-	CreatedAt   pgtype.Timestamptz
-	UpdatedAt   pgtype.Timestamptz
 }
 
 func (q *Queries) ListPublicAnnouncements(ctx context.Context, arg ListPublicAnnouncementsParams) ([]ListPublicAnnouncementsRow, error) {
@@ -300,13 +324,9 @@ func (q *Queries) ListPublicAnnouncements(ctx context.Context, arg ListPublicAnn
 		if err := rows.Scan(
 			&i.ID,
 			&i.Title,
-			&i.Content,
 			&i.Level,
-			&i.Status,
 			&i.PublishedAt,
 			&i.ReadAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

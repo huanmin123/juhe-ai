@@ -360,6 +360,19 @@ export const backgroundScheduledJobs = [
     writes: ['runtime-state:gateway-normal-route-latency-degradation', 'usage-shards:usage_records', 'dataset:audit_logs']
   }),
   scheduled({
+    jobName: 'account-circuit-recovery',
+    category: 'scheduled',
+    kind: 'probe',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: true,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: false,
+    writes: ['runtime:account_circuit']
+  }),
+  scheduled({
     jobName: 'runtime-log-index-maintenance',
     category: 'scheduled',
     kind: 'log',
