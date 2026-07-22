@@ -58,14 +58,18 @@ func RunRuntimeLogRetentionCleanupWorker(
 
 	service := runtimelogretention.NewService(store)
 	return runRuntimeLogRetentionCleanupLoop(ctx, logger, opts, func(ctx context.Context) (runtimelogretention.CleanupResult, error) {
-		return service.Cleanup(ctx, runtimelogretention.CleanupInput{
-			IndexEnabled:                 cfg.RuntimeLogIndexEnabled,
-			GoExclusiveIndexCleanupOwner: opts.GoExclusiveIndexCleanupOwner,
-			RetentionDays:                opts.RetentionDays,
-			BatchSize:                    opts.BatchSize,
-			MaxBatches:                   opts.MaxBatches,
-		})
+		return service.Cleanup(ctx, runtimeLogRetentionCleanupInput(cfg, opts))
 	})
+}
+
+func runtimeLogRetentionCleanupInput(cfg config.Config, opts RuntimeLogRetentionCleanupWorkerOptions) runtimelogretention.CleanupInput {
+	return runtimelogretention.CleanupInput{
+		IndexEnabled:                 cfg.RuntimeLogIndexEnabled,
+		GoExclusiveIndexCleanupOwner: opts.GoExclusiveIndexCleanupOwner,
+		RetentionDays:                opts.RetentionDays,
+		BatchSize:                    opts.BatchSize,
+		MaxBatches:                   opts.MaxBatches,
+	}
 }
 
 func validateRuntimeLogRetentionCleanupWorkerOptions(cfg config.Config, opts RuntimeLogRetentionCleanupWorkerOptions) error {
