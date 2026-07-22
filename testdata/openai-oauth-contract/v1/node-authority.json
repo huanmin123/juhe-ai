@@ -71,6 +71,7 @@
     "ttlSeconds": 1800,
     "globalMaxEntries": 1024,
     "ownerMaxEntries": 8,
+    "capacityScope": "memory_only_redis_has_no_global_or_owner_cap",
     "stateBytes": 32,
     "codeVerifierBytes": 64,
     "sessionIdBytes": 16,
@@ -187,6 +188,18 @@
       "id": "reauthorize-refresh-token-without-idempotency-or-cas",
       "currentBehavior": "Refresh Token 重新授权路由没有 mutation guard，token exchange 后通过普通 updateAccountAsync 覆盖凭据且不校验 config revision；它可与后台保活、手动刷新或重复提交并发，旧请求可能覆盖较新的轮换 token。",
       "goMigration": "Go 对同一账户使用稳定幂等指纹和单账户 lease，并以 ExpectedConfigRevision CAS 写入；冲突时只接受数据库中的更新 token，或按最新 refresh token 最多重试一次，绝不无条件覆盖。",
+      "disposition": "fix_in_go_do_not_copy"
+    },
+    {
+      "id": "oauth-session-plaintext-in-redis",
+      "currentBehavior": "OAuth session 复用通用 runtime state store，state 与 PKCE code_verifier 会被 JSON.stringify 后直接写入 Redis；TTL 和访问控制不能替代静态加密。",
+      "goMigration": "Go 使用稳定 JUHE_AI_SECRET 派生的 AEAD 密封 session payload，只把随机 session ID 放入 Redis key；解密失败必须 fail closed，日志和错误不得输出 state、verifier 或密文正文。",
+      "disposition": "fix_in_go_do_not_copy"
+    },
+    {
+      "id": "redis-session-capacity-unbounded",
+      "currentBehavior": "1024 个全局 session 和每 owner 8 个 session 的容量限制只由进程内 memory store 实现；Redis runtime state store 只设置 TTL，不维护全局或 owner 计数。",
+      "goMigration": "Go 在 Redis Lua 中原子执行过期清理、全局上限、owner 上限和 session 创建；达到上限时返回稳定容量错误，不回退到本机状态，也不以扫描全库实现限额。",
       "disposition": "fix_in_go_do_not_copy"
     }
   ]
