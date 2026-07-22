@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 var (
@@ -14,18 +16,6 @@ var (
 	ErrInvalidQuery         = errors.New("gemini: invalid query")
 	ErrAmbiguousQuery       = errors.New("gemini: ambiguous query")
 	ErrInvalidIdentifier    = errors.New("gemini: invalid identifier")
-)
-
-type EndpointFamily string
-
-const (
-	EndpointUnknown               EndpointFamily = ""
-	EndpointModels                EndpointFamily = "models"
-	EndpointGenerateContent       EndpointFamily = "generate_content"
-	EndpointStreamGenerateContent EndpointFamily = "stream_generate_content"
-	EndpointCountTokens           EndpointFamily = "count_tokens"
-	EndpointEmbedContent          EndpointFamily = "embed_content"
-	EndpointInteractions          EndpointFamily = "interactions"
 )
 
 type EndpointMode string
@@ -39,16 +29,6 @@ const (
 	ModeEmbedContent        EndpointMode = "embed_content"
 	ModeInteractionsJSON    EndpointMode = "interactions_json"
 	ModeInteractionsSSE     EndpointMode = "interactions_sse"
-)
-
-type InteractionAction string
-
-const (
-	InteractionNone   InteractionAction = ""
-	InteractionCreate InteractionAction = "create"
-	InteractionGet    InteractionAction = "get"
-	InteractionDelete InteractionAction = "delete"
-	InteractionCancel InteractionAction = "cancel"
 )
 
 type RequestInput struct {
@@ -67,9 +47,9 @@ type QueryFacts struct {
 }
 
 type RequestClassification struct {
-	Family            EndpointFamily
+	Family            protocolgateway.EndpointFamily
 	Mode              EndpointMode
-	InteractionAction InteractionAction
+	InteractionAction protocolgateway.GeminiInteractionAction
 	Model             string
 	InteractionID     string
 	Stream            bool
@@ -94,48 +74,67 @@ func ClassifyRequest(input RequestInput) (RequestClassification, error) {
 	if err != nil {
 		return RequestClassification{}, err
 	}
-	result := RequestClassification{Query: queryFacts}
 	path = stripVersion(path)
+	result := RequestClassification{
+		Family: protocolgateway.EndpointFamilyFromPath(protocolgateway.ProtocolGemini, path),
+		Query:  queryFacts,
+	}
 	method := strings.ToUpper(strings.TrimSpace(input.Method))
+	requestShape := protocolgateway.RequestShape{
+		Method:  method,
+		Path:    input.PathAndQuery,
+		Headers: map[string]string{"Accept": input.Accept},
+		Stream:  input.BodyStream,
+	}
+	nativeProtocol, native := protocolgateway.NativeProtocolForRequest(requestShape)
+	geminiNative := native && nativeProtocol == protocolgateway.ProtocolGemini
+	downstream := protocolgateway.ResolveDownstreamProtocol(protocolgateway.ProtocolGemini, requestShape)
 
-	if strings.EqualFold(path, "/models") {
-		result.Family = EndpointModels
-		if method == "GET" {
+	if result.Family == protocolgateway.EndpointModels {
+		if geminiNative {
 			result.Native = true
 			result.Mode = ModeModels
 		}
 		return result, nil
 	}
 
-	if match := modelActionPattern.FindStringSubmatch(path); match != nil {
+	if result.Family == protocolgateway.EndpointGenerateContent ||
+		result.Family == protocolgateway.EndpointStreamGenerateContent ||
+		result.Family == protocolgateway.EndpointCountTokens ||
+		result.Family == protocolgateway.EndpointEmbedContent {
+		match := modelActionPattern.FindStringSubmatch(path)
+		if match == nil {
+			return RequestClassification{}, ErrInvalidRequestTarget
+		}
 		model, err := decodeIdentifier(match[1], true)
 		if err != nil {
 			return RequestClassification{}, err
 		}
 		result.Model = model
-		switch strings.ToLower(match[2]) {
-		case "generatecontent":
-			result.Family = EndpointGenerateContent
-			if method == "POST" {
+		switch result.Family {
+		case protocolgateway.EndpointGenerateContent:
+			if geminiNative {
 				result.Native = true
-				result.Mode = ModeGenerateContentJSON
+				result.Stream = downstream == protocolgateway.DownstreamGeminiGenerateContentSSE
+				if result.Stream {
+					result.Mode = ModeGenerateContentSSE
+				} else {
+					result.Mode = ModeGenerateContentJSON
+				}
 			}
-		case "streamgeneratecontent":
-			result.Family = EndpointStreamGenerateContent
-			if method == "POST" {
+		case protocolgateway.EndpointStreamGenerateContent:
+			if geminiNative {
 				result.Native = true
 				result.Stream = true
 				result.Mode = ModeGenerateContentSSE
 			}
-		case "counttokens":
-			result.Family = EndpointCountTokens
-			if method == "POST" {
+		case protocolgateway.EndpointCountTokens:
+			if geminiNative {
 				result.Native = true
 				result.Mode = ModeCountTokens
 			}
-		case "embedcontent":
-			result.Family = EndpointEmbedContent
-			if method == "POST" {
+		case protocolgateway.EndpointEmbedContent:
+			if geminiNative {
 				result.Native = true
 				result.Mode = ModeEmbedContent
 			}
@@ -143,11 +142,13 @@ func ClassifyRequest(input RequestInput) (RequestClassification, error) {
 		return result, nil
 	}
 
-	match := interactionPattern.FindStringSubmatch(path)
-	if match == nil {
+	if result.Family != protocolgateway.EndpointInteractions {
 		return result, nil
 	}
-	result.Family = EndpointInteractions
+	match := interactionPattern.FindStringSubmatch(path)
+	if match == nil {
+		return RequestClassification{}, ErrInvalidRequestTarget
+	}
 	if match[1] != "" {
 		interactionID, err := decodeIdentifier(match[1], false)
 		if err != nil {
@@ -156,22 +157,13 @@ func ClassifyRequest(input RequestInput) (RequestClassification, error) {
 		result.InteractionID = interactionID
 	}
 
-	switch {
-	case result.InteractionID == "" && match[2] == "" && method == "POST":
-		result.InteractionAction = InteractionCreate
-	case result.InteractionID != "" && match[2] == "" && method == "GET":
-		result.InteractionAction = InteractionGet
-	case result.InteractionID != "" && match[2] == "" && method == "DELETE":
-		result.InteractionAction = InteractionDelete
-	case result.InteractionID != "" && match[2] != "" && method == "POST":
-		result.InteractionAction = InteractionCancel
-	default:
+	result.InteractionAction = protocolgateway.GeminiInteractionActionForRequest(method, path)
+	if result.InteractionAction == protocolgateway.GeminiInteractionNone || !geminiNative {
 		return result, nil
 	}
 
 	result.Native = true
-	streamCapable := result.InteractionAction == InteractionCreate || result.InteractionAction == InteractionGet
-	result.Stream = streamCapable && (queryFacts.StreamRequested || input.BodyStream || acceptsEventStream(input.Accept))
+	result.Stream = downstream == protocolgateway.DownstreamGeminiInteractionsSSE
 	if result.Stream {
 		result.Mode = ModeInteractionsSSE
 	} else {
@@ -252,14 +244,4 @@ func identifierAllowed(value string, model bool) bool {
 		}
 	}
 	return true
-}
-
-func acceptsEventStream(accept string) bool {
-	for _, item := range strings.Split(accept, ",") {
-		mediaType := strings.TrimSpace(strings.SplitN(item, ";", 2)[0])
-		if strings.EqualFold(mediaType, "text/event-stream") {
-			return true
-		}
-	}
-	return false
 }

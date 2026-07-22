@@ -3,6 +3,8 @@ package gemini
 import (
 	"errors"
 	"testing"
+
+	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 func TestClassifyRequest(t *testing.T) {
@@ -11,9 +13,9 @@ func TestClassifyRequest(t *testing.T) {
 	tests := []struct {
 		name        string
 		input       RequestInput
-		family      EndpointFamily
+		family      protocolgateway.EndpointFamily
 		mode        EndpointMode
-		action      InteractionAction
+		action      protocolgateway.GeminiInteractionAction
 		model       string
 		interaction string
 		stream      bool
@@ -22,22 +24,36 @@ func TestClassifyRequest(t *testing.T) {
 		{
 			name:   "model list",
 			input:  RequestInput{Method: "GET", PathAndQuery: "/v1beta/models?pageSize=20"},
-			family: EndpointModels,
+			family: protocolgateway.EndpointModels,
 			mode:   ModeModels,
 			native: true,
 		},
 		{
+			name:   "shared root model list follows openai priority",
+			input:  RequestInput{Method: "GET", PathAndQuery: "/models"},
+			family: protocolgateway.EndpointModels,
+		},
+		{
 			name:   "generate content keeps decoded model",
 			input:  RequestInput{Method: "post", PathAndQuery: "/v1beta/models/gemini-3.5-flash:generateContent?key=secret"},
-			family: EndpointGenerateContent,
+			family: protocolgateway.EndpointGenerateContent,
 			mode:   ModeGenerateContentJSON,
 			model:  "gemini-3.5-flash",
 			native: true,
 		},
 		{
+			name:   "generate content alt sse follows gateway registry",
+			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/models/gemini-3.5-flash:generateContent?alt=sse"},
+			family: protocolgateway.EndpointGenerateContent,
+			mode:   ModeGenerateContentSSE,
+			model:  "gemini-3.5-flash",
+			stream: true,
+			native: true,
+		},
+		{
 			name:   "stream generate is always sse",
 			input:  RequestInput{Method: "POST", PathAndQuery: "/models/gemini-3.5-flash:streamGenerateContent"},
-			family: EndpointStreamGenerateContent,
+			family: protocolgateway.EndpointStreamGenerateContent,
 			mode:   ModeGenerateContentSSE,
 			model:  "gemini-3.5-flash",
 			stream: true,
@@ -46,7 +62,7 @@ func TestClassifyRequest(t *testing.T) {
 		{
 			name:   "count tokens",
 			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/models/gemini-3.5-flash:countTokens"},
-			family: EndpointCountTokens,
+			family: protocolgateway.EndpointCountTokens,
 			mode:   ModeCountTokens,
 			model:  "gemini-3.5-flash",
 			native: true,
@@ -54,7 +70,7 @@ func TestClassifyRequest(t *testing.T) {
 		{
 			name:   "embed content",
 			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/models/gemini-embedding-2:embedContent"},
-			family: EndpointEmbedContent,
+			family: protocolgateway.EndpointEmbedContent,
 			mode:   ModeEmbedContent,
 			model:  "gemini-embedding-2",
 			native: true,
@@ -62,35 +78,43 @@ func TestClassifyRequest(t *testing.T) {
 		{
 			name:   "interaction create json",
 			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/interactions"},
-			family: EndpointInteractions,
+			family: protocolgateway.EndpointInteractions,
 			mode:   ModeInteractionsJSON,
-			action: InteractionCreate,
+			action: protocolgateway.GeminiInteractionCreate,
 			native: true,
 		},
 		{
 			name:   "interaction create body stream",
 			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/interactions", BodyStream: true},
-			family: EndpointInteractions,
+			family: protocolgateway.EndpointInteractions,
 			mode:   ModeInteractionsSSE,
-			action: InteractionCreate,
+			action: protocolgateway.GeminiInteractionCreate,
 			stream: true,
 			native: true,
 		},
 		{
 			name:   "interaction create accept stream",
 			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/interactions", Accept: "application/json, text/event-stream"},
-			family: EndpointInteractions,
+			family: protocolgateway.EndpointInteractions,
 			mode:   ModeInteractionsSSE,
-			action: InteractionCreate,
+			action: protocolgateway.GeminiInteractionCreate,
 			stream: true,
+			native: true,
+		},
+		{
+			name:   "interaction create query stream is ignored",
+			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/interactions?stream=true"},
+			family: protocolgateway.EndpointInteractions,
+			mode:   ModeInteractionsJSON,
+			action: protocolgateway.GeminiInteractionCreate,
 			native: true,
 		},
 		{
 			name:        "interaction get query stream",
 			input:       RequestInput{Method: "GET", PathAndQuery: "/v1beta/interactions/abc%2D123?stream=TRUE"},
-			family:      EndpointInteractions,
+			family:      protocolgateway.EndpointInteractions,
 			mode:        ModeInteractionsSSE,
-			action:      InteractionGet,
+			action:      protocolgateway.GeminiInteractionGet,
 			interaction: "abc-123",
 			stream:      true,
 			native:      true,
@@ -98,44 +122,44 @@ func TestClassifyRequest(t *testing.T) {
 		{
 			name:        "interaction delete cannot become stream",
 			input:       RequestInput{Method: "DELETE", PathAndQuery: "/v1beta/interactions/abc?stream=true", Accept: "text/event-stream", BodyStream: true},
-			family:      EndpointInteractions,
+			family:      protocolgateway.EndpointInteractions,
 			mode:        ModeInteractionsJSON,
-			action:      InteractionDelete,
+			action:      protocolgateway.GeminiInteractionDelete,
 			interaction: "abc",
 			native:      true,
 		},
 		{
 			name:        "interaction cancel",
 			input:       RequestInput{Method: "POST", PathAndQuery: "/v1beta/interactions/abc/cancel"},
-			family:      EndpointInteractions,
+			family:      protocolgateway.EndpointInteractions,
 			mode:        ModeInteractionsJSON,
-			action:      InteractionCancel,
+			action:      protocolgateway.GeminiInteractionCancel,
 			interaction: "abc",
 			native:      true,
 		},
 		{
 			name:   "legacy interaction alt sse is not stream",
 			input:  RequestInput{Method: "POST", PathAndQuery: "/v1beta/interactions?alt=sse"},
-			family: EndpointInteractions,
+			family: protocolgateway.EndpointInteractions,
 			mode:   ModeInteractionsJSON,
-			action: InteractionCreate,
+			action: protocolgateway.GeminiInteractionCreate,
 			native: true,
 		},
 		{
 			name:   "wrong method is not native",
 			input:  RequestInput{Method: "GET", PathAndQuery: "/v1beta/models/gemini:generateContent"},
-			family: EndpointGenerateContent,
+			family: protocolgateway.EndpointGenerateContent,
 			model:  "gemini",
 		},
 		{
 			name:   "interaction root get is not a resource lookup",
 			input:  RequestInput{Method: "GET", PathAndQuery: "/v1beta/interactions"},
-			family: EndpointInteractions,
+			family: protocolgateway.EndpointInteractions,
 		},
 		{
 			name:        "interaction resource post is not a supported action",
 			input:       RequestInput{Method: "POST", PathAndQuery: "/v1beta/interactions/abc"},
-			family:      EndpointInteractions,
+			family:      protocolgateway.EndpointInteractions,
 			interaction: "abc",
 		},
 	}

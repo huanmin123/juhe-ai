@@ -77,6 +77,16 @@ const (
 	EndpointInteractions          EndpointFamily = "interactions"
 )
 
+type GeminiInteractionAction string
+
+const (
+	GeminiInteractionNone   GeminiInteractionAction = ""
+	GeminiInteractionCreate GeminiInteractionAction = "create"
+	GeminiInteractionGet    GeminiInteractionAction = "get"
+	GeminiInteractionDelete GeminiInteractionAction = "delete"
+	GeminiInteractionCancel GeminiInteractionAction = "cancel"
+)
+
 type DownstreamProtocol string
 
 const (

@@ -3,6 +3,8 @@ package gemini
 import (
 	"errors"
 	"testing"
+
+	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 func int64p(value int64) *int64 { return &value }
@@ -52,6 +54,13 @@ func TestParseJSONUsage(t *testing.T) {
 			body:  `{"service_tier":" priority ","usageMetadata":{"promptTokenCount":-1,"candidatesTokenCount":1.5,"thoughtsTokenCount":"NaN"}}`,
 			usage: Usage{},
 		},
+		{
+			name: "usage counters and derived sums stay within int64",
+			body: `{"usageMetadata":{"promptTokenCount":"9223372036854775808","candidatesTokenCount":"9223372036854775807","thoughtsTokenCount":1}}`,
+			usage: Usage{
+				ThinkingTokens: int64p(1),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -86,6 +95,41 @@ func TestParseJSONTerminalMetadata(t *testing.T) {
 	}
 	if !failed.Failed || failed.Status != "failed" || failed.ErrorCode != "UNAVAILABLE" || failed.ErrorMessage != "temporary" {
 		t.Fatalf("failed result = %#v", failed)
+	}
+
+	conflicting, err := ParseJSON([]byte(`{"status":"completed","error":{"status":"UNAVAILABLE","message":"must win"}}`), JSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conflicting.Failed || conflicting.Status != "failed" || conflicting.ErrorCode != "UNAVAILABLE" {
+		t.Fatalf("conflicting error result = %#v", conflicting)
+	}
+}
+
+func TestParseJSONAllowsEmptyBodyOnlyForInteractionDelete(t *testing.T) {
+	t.Parallel()
+
+	result, err := ParseJSON(nil, JSONOptions{InteractionAction: protocolgateway.GeminiInteractionDelete, HTTPStatus: 204})
+	if err != nil {
+		t.Fatalf("ParseJSON(delete empty) error = %v", err)
+	}
+	if !result.Terminal || result.Failed || result.Usage != (Usage{}) {
+		t.Fatalf("delete empty result = %#v", result)
+	}
+	for _, status := range []int{0, 199, 300, 404, 500} {
+		if _, err := ParseJSON(nil, JSONOptions{InteractionAction: protocolgateway.GeminiInteractionDelete, HTTPStatus: status}); !errors.Is(err, ErrInvalidJSON) {
+			t.Fatalf("ParseJSON(empty delete status %d) error = %v, want %v", status, err, ErrInvalidJSON)
+		}
+	}
+	for _, action := range []protocolgateway.GeminiInteractionAction{
+		protocolgateway.GeminiInteractionNone,
+		protocolgateway.GeminiInteractionCreate,
+		protocolgateway.GeminiInteractionGet,
+		protocolgateway.GeminiInteractionCancel,
+	} {
+		if _, err := ParseJSON(nil, JSONOptions{InteractionAction: action}); !errors.Is(err, ErrInvalidJSON) {
+			t.Fatalf("ParseJSON(empty action %q) error = %v, want %v", action, err, ErrInvalidJSON)
+		}
 	}
 }
 
@@ -174,6 +218,34 @@ func TestSSEParserTerminalSignalsAndFailures(t *testing.T) {
 	}
 }
 
+func TestSSEParserPreservesFirstTerminalOutcome(t *testing.T) {
+	t.Parallel()
+
+	completedFirst := NewSSEParser(SSEOptions{})
+	if err := completedFirst.Push([]byte("data: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\"}}\n\ndata: {\"event_type\":\"interaction.failed\",\"error\":{\"status\":\"UNAVAILABLE\",\"message\":\"late\"}}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := completedFirst.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !completed.Terminal || completed.Failed || completed.Status != "completed" || completed.ErrorCode != "" {
+		t.Fatalf("completed-first result = %#v", completed)
+	}
+
+	failedFirst := NewSSEParser(SSEOptions{})
+	if err := failedFirst.Push([]byte("data: {\"event_type\":\"interaction.failed\",\"error\":{\"status\":\"UNAVAILABLE\",\"message\":\"first\"}}\n\ndata: {\"event_type\":\"interaction.completed\",\"interaction\":{\"status\":\"completed\"}}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := failedFirst.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !failed.Terminal || !failed.Failed || failed.Status != "failed" || failed.ErrorCode != "UNAVAILABLE" || failed.ErrorMessage != "first" {
+		t.Fatalf("failed-first result = %#v", failed)
+	}
+}
+
 func TestSSEParserHandlesMalformedAndEOFEvent(t *testing.T) {
 	t.Parallel()
 
@@ -187,6 +259,36 @@ func TestSSEParserHandlesMalformedAndEOFEvent(t *testing.T) {
 	}
 	if !got.Terminal || got.MalformedEvents != 1 || got.Events != 2 {
 		t.Fatalf("result = %#v", got)
+	}
+}
+
+func TestSSEParserSupportsBareCRAndSplitCRLF(t *testing.T) {
+	t.Parallel()
+
+	bareCR := NewSSEParser(SSEOptions{})
+	if err := bareCR.Push([]byte("event: done\rdata: {}\r\r")); err != nil {
+		t.Fatal(err)
+	}
+	bareResult, err := bareCR.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bareResult.Terminal || bareResult.Status != "completed" {
+		t.Fatalf("bare CR result = %#v", bareResult)
+	}
+
+	splitCRLF := NewSSEParser(SSEOptions{})
+	for _, chunk := range []string{"data: [DONE]\r", "\n\r", "\n"} {
+		if err := splitCRLF.Push([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	splitResult, err := splitCRLF.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !splitResult.Terminal || splitResult.Events != 1 {
+		t.Fatalf("split CRLF result = %#v", splitResult)
 	}
 }
 
@@ -208,6 +310,24 @@ func TestSSEParserRejectsOversizedUnknownLine(t *testing.T) {
 	parser := NewSSEParser(SSEOptions{MaxEventBytes: 8})
 	if err := parser.Push([]byte("ignored: 123456789\n")); !errors.Is(err, ErrEventTooLarge) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestSSEParserRejectsOversizedTotalStream(t *testing.T) {
+	t.Parallel()
+
+	parser := NewSSEParser(SSEOptions{MaxEventBytes: 64, MaxTotalBytes: 20})
+	if err := parser.Push([]byte("data: {}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := parser.Push([]byte("data: {}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := parser.Push([]byte("x")); !errors.Is(err, ErrStreamTooLarge) {
+		t.Fatalf("total stream error = %v, want %v", err, ErrStreamTooLarge)
+	}
+	if _, err := parser.Finish(); !errors.Is(err, ErrStreamTooLarge) {
+		t.Fatalf("finish error = %v, want %v", err, ErrStreamTooLarge)
 	}
 }
 

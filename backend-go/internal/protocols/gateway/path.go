@@ -47,7 +47,7 @@ func NativeProtocolForRequest(request RequestShape) (ProtocolCode, bool) {
 			return ProtocolGemini, true
 		}
 	case EndpointInteractions:
-		if method == "GET" || method == "DELETE" || method == "POST" {
+		if GeminiInteractionActionForRequest(method, request.Path) != GeminiInteractionNone {
 			return ProtocolGemini, true
 		}
 	case EndpointGenerateContent, EndpointStreamGenerateContent, EndpointCountTokens, EndpointEmbedContent:
@@ -56,6 +56,29 @@ func NativeProtocolForRequest(request RequestShape) (ProtocolCode, bool) {
 		}
 	}
 	return "", false
+}
+
+func GeminiInteractionActionForRequest(method, pathAndQuery string) GeminiInteractionAction {
+	method = strings.ToUpper(strings.TrimSpace(method))
+	path := normalizedPath(pathAndQuery, "/v1beta")
+	switch {
+	case path == "/interactions":
+		if method == "POST" {
+			return GeminiInteractionCreate
+		}
+	case isGeminiInteractionResourcePath(path):
+		if method == "GET" {
+			return GeminiInteractionGet
+		}
+		if method == "DELETE" {
+			return GeminiInteractionDelete
+		}
+	case strings.HasSuffix(path, "/cancel"):
+		if method == "POST" && isGeminiInteractionResourcePath(strings.TrimSuffix(path, "/cancel")) {
+			return GeminiInteractionCancel
+		}
+	}
+	return GeminiInteractionNone
 }
 
 func ResolveDownstreamProtocol(protocol ProtocolCode, request RequestShape) DownstreamProtocol {
