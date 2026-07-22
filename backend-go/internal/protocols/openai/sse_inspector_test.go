@@ -115,6 +115,24 @@ func TestSSEInspectorNormalizesDetailedUsageVariants(t *testing.T) {
 	assertUsageValue(t, "output image count", got.OutputImageCount, 1)
 }
 
+func TestSSEInspectorMatchesNonStreamNumericNormalization(t *testing.T) {
+	inspector := newTestSSEInspector(t, DefaultSSELimits())
+	stream := "data: {\"type\":\"response.completed\",\"usage\":{" +
+		"\"input_tokens\":1e3,\"output_tokens\":\" 2.9 \",\"output_image_count\":0}}\n\n"
+	if _, err := inspector.Write([]byte(stream)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := inspector.Finish(); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+	got := inspector.Snapshot().Usage
+	assertUsageValue(t, "input tokens", got.InputTokens, 1000)
+	assertUsageValue(t, "output tokens", got.OutputTokens, 2)
+	if got.OutputImageCount != nil {
+		t.Fatalf("output image count = %d, want nil for zero", *got.OutputImageCount)
+	}
+}
+
 func TestSSEInspectorClassifiesErrorWithoutInventingTerminal(t *testing.T) {
 	inspector := newTestSSEInspector(t, DefaultSSELimits())
 	stream := "event: error\ndata: {\"type\":\"error\",\"code\":\"bad_request\",\"message\":\"invalid\"}\n\n"

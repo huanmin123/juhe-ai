@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	gatewayprotocol "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 const (
@@ -35,12 +37,12 @@ const (
 	InterpretOpenAI Interpretation = "openai"
 )
 
-type EndpointFamily string
+type EndpointFamily = gatewayprotocol.EndpointFamily
 
 const (
-	EndpointUnknown         EndpointFamily = ""
-	EndpointChatCompletions EndpointFamily = "chat_completions"
-	EndpointResponses       EndpointFamily = "responses"
+	EndpointUnknown         = gatewayprotocol.EndpointUnknown
+	EndpointChatCompletions = gatewayprotocol.EndpointChatCompletions
+	EndpointResponses       = gatewayprotocol.EndpointResponses
 )
 
 type FrameKind string
