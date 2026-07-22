@@ -54,6 +54,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 28. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
 29. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
 30. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+31. [OpenAI OAuth Go 迁移设计](OpenAI-OAuth-Go迁移设计.md)：OAuth 管理接口、PKCE/session 状态机、token 与凭据安全、Access Token 保活 worker、Node 缺陷修复及分 owner 切流 / 回滚设计。
 
 ## 4. 目录职责
 
@@ -66,6 +67,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 | `存储目标与SQLite移除.md` | PostgreSQL + Redis 单模式、SQLite 删除清单、离线数据处理和验证要求 |
 | `Go迁移指标与观测规划.md` | Go 目标系统指标、Prometheus、pprof、PG/Redis/Asynq、worker 和网关观测口径 |
 | `Go系统指标字段迁移清单.md` | Node 系统指标字段删除、Go 字段替换、前端页面迁移和 W6 / W7 / W8 验收清单 |
+| `OpenAI-OAuth-Go迁移设计.md` | OpenAI OAuth 的 Go 目标接口、session / PKCE、token、存储、worker、owner、切流、回滚和 Node 缺陷处置 |
 | `模块迁移顺序与减法清单.md` | 模块优先级、迁移状态、Node 删除证据和测试门禁 |
 | `W1b-外部维护公开接口迁移记录.md` | `/__aipublic__` 外部维护接口契约、Go 迁移范围、Node 对照命令和删除门禁 |
 | `W2-管理端只读辅助接口迁移记录.md` | 管理端只读辅助接口与账号标签只读 / 未绑定删除 / 独立 PATCH 契约、Go 当前实现范围、权限边界、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、主账户标签写路径 / 完整 summary / operation log 缺口和删除门禁 |
