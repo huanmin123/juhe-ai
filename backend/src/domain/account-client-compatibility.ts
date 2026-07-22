@@ -31,7 +31,6 @@ export function normalizeOpenAIAccountClientCompatibility(
   providerCode: unknown,
   accountType: unknown,
   value: unknown,
-  fallback: AccountClientCompatibility = 'openai_standard',
   protocolProfile?: {
     providerCode?: string
     protocolCode?: string

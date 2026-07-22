@@ -610,38 +610,6 @@ function buildTaskPrompt(testCase: QualityCase): string {
   ].join('\n')
 }
 
-function buildJudgePrompt(
-  testCase: QualityCase,
-  aliases: TargetKey[],
-  results: Record<TargetKey, CompletionResult>,
-  targetToAlias: Map<TargetKey, string>
-): string {
-  const answerBlocks = aliases.map((target) => {
-    const alias = targetToAlias.get(target)
-    const result = results[target]
-    return [
-      `答案 ${alias}:`,
-      result.ok ? truncateForJudge(result.content) : `请求失败：${result.error ?? 'unknown error'}`
-    ].join('\n')
-  })
-  return [
-    `题目 ID：${testCase.id}`,
-    `题目：${testCase.title}`,
-    '',
-    testCase.prompt,
-    '',
-    '验收点：',
-    ...testCase.acceptanceCriteria.map((item, index) => `${index + 1}. ${item}`),
-    '',
-    ...answerBlocks,
-    '',
-    '请分别评价答案 A、B、C。评分标准：totalScore 0-100；>=80 且没有 fatalIssues 才算 pass=true。',
-    '重点看是否满足验收点、是否可落地、是否覆盖风险和测试。允许答案与参考做法不同，但必须自洽可执行。',
-    '只输出如下 JSON 结构：',
-    '{"A":{"totalScore":0,"pass":false,"reason":"","missingCriteria":[],"fatalIssues":[]},"B":{"totalScore":0,"pass":false,"reason":"","missingCriteria":[],"fatalIssues":[]},"C":{"totalScore":0,"pass":false,"reason":"","missingCriteria":[],"fatalIssues":[]}}'
-  ].join('\n')
-}
-
 function buildSingleJudgePrompt(testCase: QualityCase, answer: string): string {
   return [
     `题目 ID：${testCase.id}`,
@@ -660,33 +628,6 @@ function buildSingleJudgePrompt(testCase: QualityCase, answer: string): string {
     '只输出如下 JSON 结构：',
     '{"totalScore":0,"pass":false,"reason":"","missingCriteria":[],"fatalIssues":[]}'
   ].join('\n')
-}
-
-function parseJudgeOutput(text: string, aliasToTarget: Map<string, TargetKey>): {
-  ok: boolean
-  scores: Record<TargetKey, JudgedTargetResult>
-} {
-  const defaults = defaultScores()
-  const parsed = parseJsonObjectLoose(text)
-  if (!parsed) return { ok: false, scores: defaults }
-  let ok = true
-  for (const [alias, target] of aliasToTarget.entries()) {
-    const item = parsed[alias] as Record<string, unknown> | undefined
-    if (!item || typeof item !== 'object') {
-      ok = false
-      continue
-    }
-    const totalScore = boundedNumber(item.totalScore, 0, 100)
-    const fatalIssues = stringArray(item.fatalIssues)
-    defaults[target] = {
-      fatalIssues,
-      missingCriteria: stringArray(item.missingCriteria),
-      pass: typeof item.pass === 'boolean' ? item.pass && totalScore >= 80 && fatalIssues.length === 0 : totalScore >= 80 && fatalIssues.length === 0,
-      reason: typeof item.reason === 'string' ? item.reason.slice(0, 500) : '',
-      totalScore
-    }
-  }
-  return { ok, scores: defaults }
 }
 
 function parseSingleJudgeOutput(text: string): {
@@ -978,14 +919,6 @@ function pickScore(score: JudgedTargetResult): Record<string, unknown> {
   }
 }
 
-function defaultScores(): Record<TargetKey, JudgedTargetResult> {
-  return {
-    hybrid: failedJudgeScore(),
-    gpt55: failedJudgeScore(),
-    opus: failedJudgeScore()
-  }
-}
-
 function failedJudgeScore(): JudgedTargetResult {
   return {
     fatalIssues: ['judge_parse_failed'],
@@ -1004,18 +937,6 @@ function failedCompletionScore(error: string | undefined): JudgedTargetResult {
     reason: '目标模型请求失败或无有效答案',
     totalScore: 0
   }
-}
-
-function shuffledAliases(index: number): TargetKey[] {
-  const orders: TargetKey[][] = [
-    ['hybrid', 'gpt55', 'opus'],
-    ['gpt55', 'opus', 'hybrid'],
-    ['opus', 'hybrid', 'gpt55'],
-    ['hybrid', 'opus', 'gpt55'],
-    ['gpt55', 'hybrid', 'opus'],
-    ['opus', 'gpt55', 'hybrid']
-  ]
-  return orders[index % orders.length]!
 }
 
 function truncateForJudge(value: string): string {

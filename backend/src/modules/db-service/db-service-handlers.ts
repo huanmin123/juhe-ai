@@ -67,8 +67,6 @@ import {
   listOpenAIAccountsForGroup,
   listOpenAIAccountsForGroupResult,
   listOpenAIAccountsForGroupResultAsync,
-  listAccountsDueForCooldownRetest,
-  listAccountsDueForCooldownRetestAsync,
   listAccountsDueForCooldownRetestPage,
   listAccountsDueForCooldownRetestPageAsync,
   listAccountsDueForHealthCheck,
@@ -77,19 +75,11 @@ import {
   listPublicGlobalSettings,
   listPublicGlobalSettingsAsync,
   markAccountException,
-  markAccountCooldown,
-  markAccountCooldownAsync,
-  markAccountDisabledByFailure,
-  markAccountDisabledByFailureAsync,
   markAccountTestTemporaryUnavailable,
   markAccountTestTemporaryUnavailableAsync,
   markAccountTemporaryUnavailable,
   markAccountTemporaryUnavailableAsync,
   markAccountExceptionAsync,
-  markAuthorizedAccountBindingCooldownByContext,
-  markAuthorizedAccountBindingCooldownByContextAsync,
-  markAuthorizedAccountBindingDisabledByFailure,
-  markAuthorizedAccountBindingDisabledByFailureAsync,
   markAuthorizedAccountBindingTemporaryUnavailableByContext,
   markAuthorizedAccountBindingTemporaryUnavailableByContextAsync,
   recordAccountStreamFailure,
@@ -1890,19 +1880,6 @@ async function readGatewayRuntimeAsync(operation: Extract<DbServiceOperation, { 
     settings,
     accounts: [],
     responseInspectionPolicies: []
-  }
-}
-
-function withDbServiceLocalRole<T>(operation: () => T): T {
-  if (runtimeConfig.processRole !== 'server') {
-    return operation()
-  }
-  const previousProcessRole = runtimeConfig.processRole
-  try {
-    runtimeConfig.processRole = 'db-service'
-    return operation()
-  } finally {
-    runtimeConfig.processRole = previousProcessRole
   }
 }
 

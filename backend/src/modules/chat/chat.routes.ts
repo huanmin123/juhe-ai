@@ -34,7 +34,7 @@ import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { ChatContextBudgetError, estimateChatInputTokens, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport, type ChatTransportProtocol } from './chat-transport.js'
-import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, mergeChatModelCapabilities, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption, type ChatModelOption } from './chat-model-options.js'
+import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, mergeChatModelCapabilities, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import {
   beginActiveChatAcceptance,
@@ -46,7 +46,6 @@ import {
   getActiveChatConversationAction,
   getActiveChatPreparation,
   getActiveChatPreparationForConversation,
-  hasActiveChatPreparation,
   type ActiveChatConversationAction,
   type ActiveChatPreparation
 } from './chat-active-streams.js'

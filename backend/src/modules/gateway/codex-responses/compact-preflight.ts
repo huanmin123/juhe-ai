@@ -2,7 +2,7 @@ import type { Request, Response } from 'express'
 
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import type { ClientCompatibilityCapability, GroupSchedulingPolicy } from '../../../domain/types.js'
-import { OPENAI_CHAT_COMPLETIONS_FAMILY, OPENAI_RESPONSES_FAMILY } from '../../../domain/provider-protocol.js'
+import { OPENAI_CHAT_COMPLETIONS_FAMILY } from '../../../domain/provider-protocol.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
 import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'

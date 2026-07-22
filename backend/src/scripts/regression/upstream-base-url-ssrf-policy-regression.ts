@@ -5,7 +5,6 @@ import http from 'node:http'
 import { runtimeConfig } from '../../config/runtime.js'
 import { closeGatewayUpstreamAgentsForTest, requestUpstream } from '../../modules/gateway/upstream/request.js'
 import { normalizeAccountCredentialsForWrite } from '../../storage/repositories.js'
-import { prepareSafeUpstreamRequestUrl } from '../../shared/upstream-url-policy.js'
 
 const previousPolicy = { ...runtimeConfig.upstreamUrlSecurity }
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = false

@@ -857,10 +857,6 @@ function seedData(): SeedState {
     .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
     .get(userBGroup.id, userA.id) as unknown as { id?: string } | undefined
   assert(runtimeGroupAuthorization?.id, '共享团队分组授权应生成用户 A 的运行时授权')
-  const userAApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: '用户 A Key',
-    groupBindings: [{ groupId: userAOwnedGroup, priority: 1, status: 'active' }],
-  }, userAAccess)
   const userBApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '用户 B Key',
     groupBindings: [{ groupId: userBGroup.id, priority: 1, status: 'active' }],

@@ -220,7 +220,6 @@ export class AnthropicStreamInspector {
       return
     }
     const eventName = this.eventName
-    const dataText = this.dataLines.join('\n').trim()
     const rawText = `${eventName ? `event: ${eventName}\n` : ''}${this.dataLines.map((line) => `data: ${line}`).join('\n')}\n\n`
     const event = parseAnthropicSseEventText(rawText)
     const eventType = event.eventType || event.eventName || eventName || 'message'

@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { spawnSync } from 'node:child_process'
 import { channel } from 'node:diagnostics_channel'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'

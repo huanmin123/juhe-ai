@@ -124,7 +124,7 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
   }
 })
 
-systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => {
+systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res) => {
   try {
     if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'username')) {
       res.status(400).json(badRequest('用户账户创建后不能修改'))

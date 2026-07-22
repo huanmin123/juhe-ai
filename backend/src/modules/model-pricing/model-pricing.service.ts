@@ -2,8 +2,6 @@ import { normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { modelPricingProviderDriverForProvider } from './provider-driver.registry.js'
 import type {
   CodexReasoningLevel,
-  GptServiceTier,
-  GptWireReasoningEffort,
   ModelPricingProviderDriverHelpers,
   ProviderModelApiProtocol,
   ProviderModelModality,

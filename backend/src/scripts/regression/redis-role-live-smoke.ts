@@ -6,7 +6,7 @@ import {
   acquireRedisQueueFence,
   releaseRedisQueueFence
 } from '../../shared/redis-queue-fence.js'
-import { redisNamespacedGroup, redisNamespacedKey } from '../../shared/redis-namespace.js'
+import { redisNamespacedKey } from '../../shared/redis-namespace.js'
 import { RedisStreamQueue } from '../../shared/redis-stream-queue.js'
 
 if (process.env.JUHE_AI_ALLOW_REDIS_ROLE_LIVE_SMOKE !== '1') {
@@ -17,7 +17,6 @@ if (!runtimeConfig.redis.cacheUrl || !runtimeConfig.redis.stateUrl || !runtimeCo
 }
 
 const streamKey = redisNamespacedKey('juhe-ai:queue:role-live-smoke')
-const groupName = redisNamespacedGroup('juhe-ai:role-live-smoke-writers')
 const fenceToken = `role-live-smoke-${process.pid}-${Date.now()}`
 const clients: RedisCommandClient[] = []
 

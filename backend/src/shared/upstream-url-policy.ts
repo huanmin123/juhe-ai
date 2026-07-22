@@ -246,7 +246,7 @@ function ipv6MatchesPrefix(groups: number[], rangeGroups: number[], prefixLength
 
 function fixedLookup(addresses: ResolvedAddress[]): UpstreamLookup {
   const normalizedAddresses = addresses.length ? addresses : []
-  return ((hostname: string, options: unknown, callback?: unknown) => {
+  return ((_hostname: string, options: unknown, callback?: unknown) => {
     const cb = typeof options === 'function' ? options : callback
     if (typeof cb !== 'function') return
     const all = typeof options === 'object' && options !== null && 'all' in options && Boolean((options as { all?: unknown }).all)

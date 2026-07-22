@@ -6,7 +6,6 @@ import type {
   AccountSupportedEndpointMode,
   ClientCompatibilityCapability
 } from '../../../../domain/types.js'
-import { runtimeConfig } from '../../../../config/runtime.js'
 import {
   ANTHROPIC_MESSAGES_FAMILY,
   OPENAI_CHAT_COMPLETIONS_FAMILY,
@@ -482,10 +481,7 @@ export async function buildOpenAIToAnthropicBridgeBody(
   await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
   prepareOpenAIToAnthropicCodeInterpreterTool(sourceEndpointFamily, body, requestPlan, options.codeInterpreterExecutor)
   recordOpenAIToAnthropicUnsupportedHostedTools(sourceEndpointFamily, body, requestPlan, options)
-  const localCodeInterpreterRuntimeResponse = await openAIToAnthropicCodeInterpreterRuntimeResponse(body, requestPlan, options.codeInterpreterExecutor, {
-    model,
-    stream: requestStream(req)
-  }, signal)
+  const localCodeInterpreterRuntimeResponse = await openAIToAnthropicCodeInterpreterRuntimeResponse(requestPlan, options.codeInterpreterExecutor)
   if (localCodeInterpreterRuntimeResponse) {
     throw localCodeInterpreterRuntimeResponse
   }
@@ -590,16 +586,6 @@ function claudeCodeBridgeMetadataUserId(req: Request): string {
     account_uuid: '',
     session_id: sessionId
   })
-}
-
-function requestHeader(req: Request, name: string): string | undefined {
-  if (typeof req.header === 'function') {
-    return req.header(name)
-  }
-  const headers = (req as Request & { headers?: Record<string, string | string[] | undefined> }).headers
-  const value = headers?.[name.toLowerCase()] ?? headers?.[name]
-  if (Array.isArray(value)) return value.join(', ')
-  return typeof value === 'string' ? value : undefined
 }
 
 export function transformOpenAIToAnthropicBridgeUpstreamResponse(
@@ -2138,18 +2124,6 @@ function hasOpenAIVerbosityRequest(body: JsonRecord): boolean {
   return text ? hasMeaningfulField(text, 'verbosity') : false
 }
 
-async function applyOpenAIToAnthropicLocalToolEmulation(
-  sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
-  body: JsonRecord,
-  requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  options: OpenAIToAnthropicBridgeBodyOptions,
-  signal?: AbortSignal
-): Promise<void> {
-  if (sourceEndpointFamily !== OPENAI_RESPONSES_FAMILY && sourceEndpointFamily !== OPENAI_CHAT_COMPLETIONS_FAMILY) return
-  await applyOpenAIToAnthropicFileSearchEmulation(sourceEndpointFamily, body, requestPlan, options.fileSearchExecutor, signal)
-  await applyOpenAIToAnthropicImageGenerationEmulation(sourceEndpointFamily, body, requestPlan, options.imageGenerationExecutor)
-}
-
 async function applyOpenAIToAnthropicFileSearchEmulation(
   sourceEndpointFamily: AccountModelMappingSourceEndpointFamily,
   body: JsonRecord,
@@ -2441,10 +2415,6 @@ function isOpenAIComputerTool(value: unknown): value is JsonRecord {
   return isPlainObject(value) && stringValue(value.type) === 'computer'
 }
 
-function isOpenAIMcpTool(value: unknown): value is JsonRecord {
-  return isPlainObject(value) && stringValue(value.type) === 'mcp'
-}
-
 function fileSearchToolConfig(value: JsonRecord): OpenAIToAnthropicFileSearchToolConfig {
   return {
     vectorStoreIds: stringArrayValue(value.vector_store_ids),
@@ -2618,11 +2588,8 @@ function openAIToAnthropicCodeInterpreterMockResponse(
 }
 
 async function openAIToAnthropicCodeInterpreterRuntimeResponse(
-  body: JsonRecord,
   requestPlan: OpenAIToAnthropicBridgeRequestPlan,
-  executor: OpenAIToAnthropicCodeInterpreterExecutor | undefined,
-  response: { model: string; stream: boolean },
-  signal?: AbortSignal
+  executor: OpenAIToAnthropicCodeInterpreterExecutor | undefined
 ): Promise<GatewayLocalProtocolResponse | undefined> {
   const runtime = requestPlan.codeInterpreterLocalRuntime
   if (!runtime) return undefined
@@ -6296,17 +6263,6 @@ function isPdfUrl(value: string): boolean {
   }
 }
 
-function parseJsonObjectString(value: unknown): JsonRecord | undefined {
-  if (isPlainObject(value)) return value
-  if (typeof value !== 'string' || !value.trim()) return undefined
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return isPlainObject(parsed) ? parsed : undefined
-  } catch {
-    return undefined
-  }
-}
-
 function anthropicToolInputFromOpenAIArguments(value: unknown): JsonRecord {
   if (isPlainObject(value)) return value
   if (typeof value !== 'string' || !value.trim()) return {}
@@ -6426,10 +6382,6 @@ function requestedPositiveInteger(value: unknown): boolean {
 
 function hasMeaningfulField(value: JsonRecord, key: string): boolean {
   return hasOwn(value, key) && value[key] !== undefined && value[key] !== null
-}
-
-function hasMeaningfulValue(value: unknown): boolean {
-  return value !== undefined && value !== null
 }
 
 function hasOwn(value: JsonRecord, key: string): boolean {

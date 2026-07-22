@@ -24,7 +24,7 @@ export interface AppCache<K extends {}, V extends {}> {
   entries(): IterableIterator<[K, V]>
 }
 
-export interface SharedJsonCacheOptions<V extends {}> {
+export interface SharedJsonCacheOptions {
   name: string
   max: number
   ttlMs: number
@@ -150,8 +150,8 @@ export function canUseProcessLocalAppCacheAsFactSource(): boolean {
   return runtimeConfig.cacheDriver !== 'redis'
 }
 
-export function createSharedJsonCache<V extends {}>(options: SharedJsonCacheOptions<V>): SharedJsonCache<V> {
-  return new DriverSharedJsonCache(options)
+export function createSharedJsonCache<V extends {}>(options: SharedJsonCacheOptions): SharedJsonCache<V> {
+  return new DriverSharedJsonCache<V>(options)
 }
 
 class DriverSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
@@ -159,9 +159,9 @@ class DriverSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   private readonly memoryCache: MemorySharedJsonCache<V>
   private redisCache: RedisSharedJsonCache<V> | undefined
 
-  constructor(private readonly options: SharedJsonCacheOptions<V>) {
+  constructor(private readonly options: SharedJsonCacheOptions) {
     this.name = options.name
-    this.memoryCache = new MemorySharedJsonCache(options)
+    this.memoryCache = new MemorySharedJsonCache<V>(options)
   }
 
   async get(key: string): Promise<V | undefined> {
@@ -198,7 +198,7 @@ class DriverSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
 
   private cache(): SharedJsonCache<V> {
     if (runtimeConfig.cacheDriver !== 'redis') return this.memoryCache
-    this.redisCache ??= new RedisSharedJsonCache(this.options)
+    this.redisCache ??= new RedisSharedJsonCache<V>(this.options)
     return this.redisCache
   }
 }
@@ -208,9 +208,9 @@ class MemorySharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   private store: LRUCache<string, V>
   private readonly leases = new Map<string, { token: string; expiresAt: number }>()
 
-  constructor(private readonly options: SharedJsonCacheOptions<V>) {
+  constructor(private readonly options: SharedJsonCacheOptions) {
     this.name = options.name
-    this.store = createSharedStore(options)
+    this.store = createSharedStore<V>(options)
   }
 
   async get(key: string): Promise<V | undefined> {
@@ -226,7 +226,7 @@ class MemorySharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 
   async clear(): Promise<void> {
-    this.store = createSharedStore(this.options)
+    this.store = createSharedStore<V>(this.options)
   }
 
   async acquireLease(key: string, options: { ttlMs: number; token: string }): Promise<boolean> {
@@ -262,7 +262,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   private readonly versionKey: string
   private readonly leaseKeyPrefix: string
 
-  constructor(private readonly options: SharedJsonCacheOptions<V>) {
+  constructor(private readonly options: SharedJsonCacheOptions) {
     const cacheUrl = runtimeConfig.redis.cacheUrl
     if (!cacheUrl) {
       throw new Error('JUHE_AI_REDIS_CACHE_URL 在 Redis cache driver 下必须配置')
@@ -386,7 +386,7 @@ class RedisSharedJsonCache<V extends {}> implements SharedJsonCache<V> {
   }
 }
 
-function createSharedStore<V extends {}>(options: SharedJsonCacheOptions<V>): LRUCache<string, V> {
+function createSharedStore<V extends {}>(options: SharedJsonCacheOptions): LRUCache<string, V> {
   return new LRUCache<string, V>({
     max: normalizeMaxEntries(options.max),
     ttl: normalizeTtlMs(options.ttlMs)

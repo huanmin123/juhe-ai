@@ -187,7 +187,6 @@ function apiKeyDraftActivationSnapshot(input: ReturnType<typeof apiKeyActivation
     input.providerCode,
     input.type,
     input.clientCompatibility,
-    'openai_standard',
     { protocolCode: OPENAI_PROTOCOL_CODE, protocolVersion: OPENAI_PROTOCOL_VERSION }
   )
   const credentials = repositories.normalizeAccountCredentialsForWrite(input.type, input.credentials, {

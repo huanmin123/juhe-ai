@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
 import { isIP } from 'node:net'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'

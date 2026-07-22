@@ -39,7 +39,6 @@ try {
 
   const database = databaseModule.getStatsDatabase()
   const today = usageStatsRepository.normalizeDefaultUsageStatsRange().endDate
-  const fixedDates = usageStatsWindowHelpers.fixedUsageStatsDateKeys(usageStatsHelpers.usageStatsTimezone(), today)
   const hotRangeCount = usageStatsWindowHelpers.hotUsageStatsRanges(usageStatsHelpers.usageStatsTimezone(), today).length
   seedPublishedRangeWindows(today)
   seedNewRangeSources(today)

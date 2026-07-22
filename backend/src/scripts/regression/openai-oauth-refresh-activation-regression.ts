@@ -101,7 +101,6 @@ function oauthDraftActivationSnapshot(input: {
     'gpt',
     'oauth',
     undefined,
-    'openai_standard',
     { protocolCode: OPENAI_PROTOCOL_CODE, protocolVersion: OPENAI_PROTOCOL_VERSION }
   )
   return {

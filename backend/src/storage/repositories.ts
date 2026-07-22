@@ -1531,7 +1531,6 @@ function openAIOAuthRefreshCandidateSummaries(rows: OpenAIOAuthRefreshCandidateR
       GPT_VENDOR_CODE,
       'oauth',
       row.client_compatibility,
-      'openai_standard',
       { protocolCode: row.protocol_code, protocolVersion: row.protocol_version }
     ),
     supportedModels: [],

@@ -248,7 +248,6 @@ function prepareImportAccountPlan(
       source.providerCode,
       source.type,
       source.clientCompatibility,
-      'openai_standard',
       {
         providerCode: source.providerCode,
         providerProtocolProfileId: source.providerProtocolProfileId,
@@ -296,7 +295,6 @@ function normalizeImportAccountEffectiveClientCompatibility(account: NormalizedI
       account.providerCode,
       account.type,
       account.clientCompatibility,
-      'openai_standard',
       {
         providerCode: account.providerCode,
         providerProtocolProfileId: account.providerProtocolProfileId,
@@ -316,7 +314,6 @@ function validateImportAccountEndpointModes(account: NormalizedImportAccount): v
       account.providerCode,
       account.type,
       account.clientCompatibility,
-      'openai_standard',
       {
         providerCode: account.providerCode,
         providerProtocolProfileId: account.providerProtocolProfileId,

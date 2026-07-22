@@ -175,7 +175,6 @@ export async function testOpenAIAccount(
         account.providerCode,
         account.type,
         account.clientCompatibility,
-        account.clientCompatibility,
         account
       )
   let clientCompatibility = accountClientCompatibility
@@ -502,7 +501,6 @@ function accountTestClientCompatibility(
     account.providerCode,
     account.type,
     accountClientCompatibility,
-    account.clientCompatibility,
     account
   )
 }

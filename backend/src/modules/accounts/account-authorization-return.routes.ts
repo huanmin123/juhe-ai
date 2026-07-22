@@ -24,7 +24,7 @@ export function registerAccountAuthorizationReturnRoutes(router: Router): void {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const before = await findAccountSummaryAsync(req.params.id, requestAccess)
     try {
-      const authorization = await runLoggedOperationAsync(async () => {
+      await runLoggedOperationAsync(async () => {
         const authorization = await returnAccountAuthorizationInstanceForGranteeAsync(req.params.id, requestAccess)
         if (!authorization) {
           throw new Error('授权账户不存在或不可归还')

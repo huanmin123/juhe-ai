@@ -42,9 +42,7 @@ import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-la
 import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
-  areOpenAIHighConcurrencyAccountsBusyForLane,
   areOpenAIHighConcurrencyAccountsBusyForLaneAsync,
-  orderOpenAIAccountsBySessionAffinity,
   orderOpenAIAccountsBySessionAffinityAsync,
   type OpenAIAccountDispatchOrderingOptions
 } from '../runtime/session-affinity.service.js'

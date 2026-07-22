@@ -830,13 +830,6 @@ end
 return 1
 `
 
-function numericRedisResult(value: unknown): number {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'bigint') return Number(value)
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : 0
-}
-
 function numericRedisArray(value: unknown): number[] {
   if (!Array.isArray(value)) return []
   return value.map((item) => {

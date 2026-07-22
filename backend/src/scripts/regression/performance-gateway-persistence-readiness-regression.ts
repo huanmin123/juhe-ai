@@ -868,14 +868,6 @@ async function cleanupReadinessRows(client: DatabaseClient): Promise<void> {
     `${readinessTeamInstanceAccountId}:${readinessTeamId}`,
     `${readinessTeamGroupId}:${readinessTeamId}`
   ]
-  const ids = [
-    `${runId}_usage_success`,
-    `${runId}_usage_error`,
-    `${runId}_audit`,
-    `${runId}_audit_error`,
-    `${runId}_oplog`,
-    `${runId}_publog`
-  ]
   const auditBlobStorageKeys = (await client.query<{ storage_key?: string }>(`
     SELECT DISTINCT b.storage_key
     FROM juhe_dataset.audit_payload_blobs b

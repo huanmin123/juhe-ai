@@ -15,7 +15,6 @@ import {
   type CustomProviderModelRecord,
   type CustomProviderModelTestCatalogRecord,
   type CustomProviderModelScope,
-  type CustomProviderModelStatus,
   type UpsertCustomProviderModelInput
 } from '../../storage/custom-provider-models.repository.js'
 import {

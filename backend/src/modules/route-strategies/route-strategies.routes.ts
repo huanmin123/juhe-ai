@@ -169,7 +169,7 @@ routeStrategiesRouter.post('/', mutationGuard({
     owner: normalizedText(queryField(req, 'systemAccountId')),
     name: normalizedText(bodyField(req, 'name'))
   })
-}), async (req, res, next) => {
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))

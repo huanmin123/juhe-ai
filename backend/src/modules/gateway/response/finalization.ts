@@ -31,8 +31,7 @@ import {
   NonStreamUpstreamBodyPipeError,
   endResponse,
   pipeNonStreamUpstreamResponse,
-  pipeNonStreamUpstreamResponseForInspection,
-  nonStreamResponseCaptureBytes
+  pipeNonStreamUpstreamResponseForInspection
 } from '../upstream/body.js'
 import {
   responseInspectionAuditMetadata
@@ -54,9 +53,7 @@ import {
   type StreamBodyOmissionSummary
 } from './stream.js'
 import {
-  inspectResponseSemanticFrames,
-  resolveRuntimeResponseInspectionPolicies,
-  type ResponseInspectionDecision
+  resolveRuntimeResponseInspectionPolicies
 } from './inspection.js'
 import {
   isEffectiveOpenAIStreamRequest,
@@ -111,8 +108,7 @@ import {
   shouldExcludeCurrentAccountForStreamServerRetry,
   shouldRememberCodexTurnStreamFailure,
   shouldRetryPreCommitStreamFailureOnServer,
-  shouldRetryResponseInspectionOnServer,
-  type StreamServerRetryReason
+  shouldRetryResponseInspectionOnServer
 } from './stream-finalization-retry-decision.js'
 import {
   applyResponseInspectionObservationDecisions,
@@ -692,7 +688,6 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
   let errorPayload: Record<string, unknown> = {}
-  const responseProtocol = gatewayProtocolResponseProtocolForRequest(req, account)
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false

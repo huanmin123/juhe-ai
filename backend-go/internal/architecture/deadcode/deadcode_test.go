@@ -20,15 +20,6 @@ var strict = flag.Bool("deadcode-strict", false, "fail when business packages ar
 var knownUnregisteredPackages = []string{
 	"juhe-ai/backend-go/db/migrationtests",
 	"juhe-ai/backend-go/internal/architecture/deadcode",
-	"juhe-ai/backend-go/internal/jobs/accountbalanceautodetect",
-	"juhe-ai/backend-go/internal/jobs/accountbalancerefresh",
-	"juhe-ai/backend-go/internal/jobs/accountbalancesnapshotcleanup",
-	"juhe-ai/backend-go/internal/jobs/accounthealthcheck",
-	"juhe-ai/backend-go/internal/jobs/cooldownaccountretest",
-	"juhe-ai/backend-go/internal/modules/accountbalanceautodetect",
-	"juhe-ai/backend-go/internal/modules/accountbalancesnapshotcleanup",
-	"juhe-ai/backend-go/internal/modules/accounthealthcheck",
-	"juhe-ai/backend-go/internal/modules/cooldownaccountretest",
 }
 
 var strictAllowedPackages = []string{

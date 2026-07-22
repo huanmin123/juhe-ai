@@ -26,7 +26,6 @@ import {
   saveCustomProviderModelAsync,
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
-import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
 import { rebuildPublishedModelCatalogSnapshotsBestEffortAsync } from '../model-pricing/published-model-catalog.service.js'
 import {
   findBuiltInProviderModelByIdAsync,
@@ -36,12 +35,11 @@ import { recordOperationLogAsync, safeChange } from '../operation-logs/operation
 import {
   listProviderModelSelectionOptionsAsync,
   normalizeProviderModelOptionQuery,
-  type ProviderModelSelectionOption
 } from './provider-model-options.service.js'
 
 export const providersRouter = Router()
 
-providersRouter.get('/', requireAdmin, async (req, res, next) => {
+providersRouter.get('/', requireAdmin, async (_req, res, next) => {
   try {
     const providers = await listProvidersForRequestAsync()
     res.json(ok(providers))
@@ -52,8 +50,6 @@ providersRouter.get('/', requireAdmin, async (req, res, next) => {
 
 providersRouter.get('/options', async (req, res, next) => {
   try {
-    const access = getRequestAccessScope(req.query.systemAccountId)
-    const systemAccountId = providerModelRequestSystemAccountId(access)
     const providers = (await listProvidersAsync())
       .filter((provider) => provider.enabled)
       .map((provider) => ({ id: provider.code, code: provider.code, name: provider.name, enabled: true as const }))

@@ -36,7 +36,6 @@ const stageNames: UsageRankSnapshotStageName[] = ['usage_overview_windows']
 const sentinelUpdatedAt = '1999-12-31T00:00:00.000Z'
 
 try {
-  const database = databaseModule.getStatsDatabase()
   const today = usageStatsRepository.normalizeDefaultUsageStatsRange().endDate
   const fixedDates = usageStatsWindowHelpers.fixedUsageStatsDateKeys(usageStatsHelpers.usageStatsTimezone(), today)
   const yesterday = fixedDates[fixedDates.length - 2]

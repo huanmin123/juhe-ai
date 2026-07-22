@@ -6,7 +6,6 @@ import {
 } from '../../../../domain/anthropic-endpoint-modes.js'
 import {
   ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
-  ANTHROPIC_MESSAGES_FAMILY,
   ANTHROPIC_PROVIDER_CODE,
   ANTHROPIC_PROTOCOL_CODE,
   ANTHROPIC_PROTOCOL_VERSION,
@@ -28,7 +27,6 @@ import {
   buildOpenAIModelMappedJsonBody,
   geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery,
   isGeminiGenerateContentToAnthropicMessagesModelMapping,
-  openAIRequestEndpointFamily,
   resolveOpenAIAccountModelMapping,
   resolveOpenAIRequestModelMapping
 } from '../../../gateway/protocols/openai-v1/model-mapping.js'

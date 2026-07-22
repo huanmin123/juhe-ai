@@ -4,10 +4,7 @@ import { getRequestLogger } from '../../../shared/request-context.js'
 import type { OpenAIGatewayDownstreamProtocol } from '../client-profiles/strategy.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
 import { downstreamConnectionClosedMessage } from './client-abort.js'
-import {
-  emptyUsage,
-  type ParsedUsage
-} from '../usage/types.js'
+import type { ParsedUsage } from '../usage/types.js'
 import {
   isUpstreamRequestAbortedError,
   UpstreamRequestAbortedError

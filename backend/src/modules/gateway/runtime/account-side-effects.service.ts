@@ -47,7 +47,6 @@ import {
   releaseLocalAccountHalfOpenLease,
   snapshotLocalAccountRuntimeAvailability,
   suppressLocalAccount,
-  suppressLocalAccountForGatewayFailure,
   type GatewayAccountHalfOpenLease,
   type GatewayAccountLocalSuppressionResult,
   type LocalAccountSuppression,
@@ -108,23 +107,6 @@ interface FailureStormEntry {
   failureCount: number
   clientIps: Set<string>
   apiKeyIds: Set<string>
-}
-
-interface SuccessObservationEntry {
-  firstSeenMs: number
-  lastSeenMs: number
-  successCount: number
-}
-
-interface FailureStormPrecheckDecision {
-  trigger: boolean
-  successCount: number
-  failureRatio: number
-  skippedReason?:
-    | 'below_threshold'
-    | 'observation_window'
-    | 'recent_success'
-    | 'failure_ratio'
 }
 
 interface PrecheckState {
@@ -327,11 +309,6 @@ export interface GatewayAccountSideEffectState {
 const sideEffectRetentionMs = 10 * 60_000
 const failureStormWindowMs = 5 * 60_000
 const failureStormThresholdCount = 5
-const failureStormDistinctIpThreshold = 2
-const failureStormMinObservationMs = 60_000
-const failureStormRecentSuccessGraceMs = 5_000
-const failureStormFailureRatioThreshold = 0.9
-const precheckMinIntervalMs = 60_000
 const precheckMaxAttempts = accountDiagnosticRetryTimeoutMs.length
 const precheckSuppressionGuardMs = accountDiagnosticRetryMaxTotalTimeoutMs + 15_000
 const precheckConcurrencyDrainPollMs = 1_000
@@ -357,7 +334,6 @@ const distributedRecoveryProbeStore = createRuntimeProbeStateStore<DistributedRe
 const configuredPolicyAvoidanceStore = createRuntimeStateStore('gateway-configured-account-policy-avoidance')
 const sideEffectQueue = new AccountSideEffectQueue()
 const failureStorms = new Map<string, FailureStormEntry>()
-const successObservations = new Map<string, SuccessObservationEntry>()
 const precheckStates = new Map<string, PrecheckState>()
 const recoveryProbeStates = new Map<string, RecoveryProbeState>()
 const recoveryProbeTimers = new Map<string, NodeJS.Timeout>()
@@ -389,7 +365,6 @@ export async function enqueueGatewayAccountErrorHandlingSideEffect(operation: Ac
   }
   if (operation.input.success) {
     const runtimeKey = accountErrorHandlingOperationRuntimeKey(operation)
-    recordGatewayAccountSuccessObservation(runtimeKey)
     const canceledCount = cancelQueuedAccountErrorHandlingSideEffectsForRuntimeKey(runtimeKey)
     if (canceledCount > 0) {
       canceledBySuccessCount += canceledCount
@@ -1421,14 +1396,6 @@ async function clearDistributedRecoveryProbeStateGeneration(runtimeKey: string, 
   return false
 }
 
-async function currentDistributedRecoveryProbeState(
-  runtimeKey: string,
-  generation: number
-): Promise<DistributedRecoveryProbeState | undefined> {
-  const state = await distributedRecoveryProbeStore.get(runtimeKey)
-  return state?.generation === generation ? state : undefined
-}
-
 async function loadDistributedRecoveryProbeStateWithAccount(
   state: DistributedRecoveryProbeState
 ): Promise<RecoveryProbeState | undefined> {
@@ -1517,54 +1484,6 @@ function clearGatewayAccountPrecheckRunTimer(runtimeKey: string): boolean {
   clearTimeout(timer)
   precheckRunTimers.delete(runtimeKey)
   return true
-}
-
-function recordGatewayAccountSuccessObservation(runtimeKey: string): void {
-  if (!canUseProcessLocalGatewayAccountRuntimeState()) return
-  cleanupExpiredFailureStorms()
-  const now = Date.now()
-  const current = successObservations.get(runtimeKey)
-  const entry: SuccessObservationEntry = current && now - current.firstSeenMs <= failureStormWindowMs
-    ? current
-    : {
-        firstSeenMs: now,
-        lastSeenMs: now,
-        successCount: 0
-      }
-  entry.lastSeenMs = now
-  entry.successCount += 1
-  successObservations.set(runtimeKey, entry)
-}
-
-function shouldTriggerFailureStormPrecheck(
-  runtimeKey: string,
-  entry: FailureStormEntry,
-  forcePrecheck: boolean,
-  now: number
-): FailureStormPrecheckDecision {
-  const successObservation = successObservations.get(runtimeKey)
-  const successCount = successObservation?.successCount ?? 0
-  const total = entry.failureCount + successCount
-  const failureRatio = total > 0 ? entry.failureCount / total : 1
-
-  if (forcePrecheck) {
-    return now - entry.firstSeenMs >= failureStormMinObservationMs
-      ? { trigger: true, successCount, failureRatio }
-      : { trigger: false, successCount, failureRatio, skippedReason: 'observation_window' }
-  }
-  if (entry.failureCount < failureStormThresholdCount || entry.clientIps.size < failureStormDistinctIpThreshold) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'below_threshold' }
-  }
-  if (now - entry.firstSeenMs < failureStormMinObservationMs) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'observation_window' }
-  }
-  if (successObservation && now - successObservation.lastSeenMs <= failureStormRecentSuccessGraceMs) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'recent_success' }
-  }
-  if (failureRatio < failureStormFailureRatioThreshold) {
-    return { trigger: false, successCount, failureRatio, skippedReason: 'failure_ratio' }
-  }
-  return { trigger: true, successCount, failureRatio }
 }
 
 export function snapshotGatewayAccountRuntimeAvailability(): Record<string, AccountRuntimeAvailability> {
@@ -2127,7 +2046,6 @@ export function clearGatewayLocalAccountSuppressionsForTest(): void {
   clearAllGatewayAccountPrecheckRunTimers()
   clearLocalAccountSuppressionsForTest()
   failureStorms.clear()
-  successObservations.clear()
   precheckStates.clear()
   configuredPolicyAvoidancesMemory.clear()
   configuredPolicyAvoidanceCache.clear()
@@ -2404,11 +2322,6 @@ function cleanupExpiredFailureStorms(): void {
       failureStorms.delete(runtimeKey)
     }
   }
-  for (const [runtimeKey, entry] of successObservations) {
-    if (now - entry.lastSeenMs > failureStormWindowMs) {
-      successObservations.delete(runtimeKey)
-    }
-  }
 }
 
 function isPrecheckRuntimeBlocking(runtimeKey: string): boolean {
@@ -2427,10 +2340,6 @@ function precheckSuppressionMs(): number {
 
 function operationAccountId(operation: AccountSideEffectOperation): string {
   return operation.account.id
-}
-
-function gatewayRuntimeConcurrencyAccountId(account: SuppressibleGatewayAccount | string): string {
-  return typeof account === 'string' ? account : gatewayAccountConcurrencyAccountId(account)
 }
 
 function delay(ms: number): Promise<void> {
@@ -2670,7 +2579,6 @@ function canUseProcessLocalGatewayAccountRuntimeState(): boolean {
   clearAllGatewayAccountRecoveryProbes()
   clearAllGatewayAccountPrecheckRunTimers()
   failureStorms.clear()
-  successObservations.clear()
   precheckStates.clear()
   recoveryProbeStates.clear()
   return false

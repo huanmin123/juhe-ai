@@ -663,15 +663,6 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function assertDatasetQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
-  const details = databaseModule.getUsageCatalogDatabase()
-    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
-    .all(...params)
-    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
-    .join('\n')
-  assert(details.includes(indexName), `目录查询计划应使用 ${indexName}，实际计划：${details}`)
-}
-
 function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
   const location = usageRecordShards.listUsageRecordShardLocations()[0]
   assert(location, '查询计划验证需要至少一个 usage shard')

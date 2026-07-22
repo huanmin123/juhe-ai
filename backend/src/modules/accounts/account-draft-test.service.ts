@@ -166,7 +166,6 @@ function prepareAccountDraftTestSnapshotResolved(
         accountInput.providerCode,
         accountInput.type,
         undefined,
-        'openai_standard',
         providerProfile
       )
   const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl), {
@@ -278,7 +277,6 @@ async function prepareAccountDraftTestSnapshotResolvedAsync(
         accountInput.providerCode,
         accountInput.type,
         undefined,
-        'openai_standard',
         providerProfile
       )
   const credentials = normalizeAccountCredentialsForWrite(accountInput.type, draftAccountCredentials(accountInput, providerProfile.baseUrl), {

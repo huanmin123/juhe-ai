@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, rm, unlink } from 'node:fs/promises'
+import { mkdir, open, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import sharp from 'sharp'

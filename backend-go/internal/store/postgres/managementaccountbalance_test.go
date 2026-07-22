@@ -38,16 +38,3 @@ func TestAccountBalanceQueryMigrationDefinesRuntimeColumns(t *testing.T) {
 		}
 	}
 }
-
-func TestAccountBalanceRefreshCandidatesUsePostgresBooleanPredicates(t *testing.T) {
-	for _, sql := range []string{accountBalanceRefreshRecoveryCandidatesSQL, accountBalanceRefreshDueCandidatesSQL} {
-		if strings.Contains(sql, "schedulable = 1") || strings.Contains(sql, "balance_query_enabled = 1") {
-			t.Fatalf("balance refresh SQL uses integer boolean predicate: %s", sql)
-		}
-		for _, want := range []string{"schedulable = true", "balance_query_enabled = true"} {
-			if !strings.Contains(sql, want) {
-				t.Fatalf("balance refresh SQL missing %q: %s", want, sql)
-			}
-		}
-	}
-}

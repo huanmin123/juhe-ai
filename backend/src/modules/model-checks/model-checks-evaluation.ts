@@ -116,7 +116,7 @@ type RequestFailureAggregate = {
 }
 
 export function evaluateBasicResponsesProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
-  return evaluateBasicProtocolProbe(result, model, prefix, {
+  return evaluateBasicProtocolProbe(result, model, {
     itemKey: `${prefix}.responses_basic`,
     itemType: 'responses_basic',
     successMessage: 'Responses 非流式调用可用',
@@ -124,7 +124,7 @@ export function evaluateBasicResponsesProbe(result: GatewayProbeResult, model: s
   })
 }
 
-export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix, options: {
+export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: string, options: {
   itemKey: string
   itemType: string
   successMessage: string
@@ -151,7 +151,7 @@ export function evaluateBasicProtocolProbe(result: GatewayProbeResult, model: st
 }
 
 export function evaluateStreamProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
-  return evaluateProtocolStreamProbe(result, model, prefix, {
+  return evaluateProtocolStreamProbe(result, model, {
     itemKey: `${prefix}.responses_stream`,
     itemType: 'responses_stream',
     successMessage: 'Responses 流式调用可用',
@@ -159,7 +159,7 @@ export function evaluateStreamProbe(result: GatewayProbeResult, model: string, p
   })
 }
 
-export function evaluateProtocolStreamProbe(result: GatewayProbeResult, model: string, prefix: ModelCheckProbePrefix, options: {
+export function evaluateProtocolStreamProbe(result: GatewayProbeResult, model: string, options: {
   itemKey: string
   itemType: string
   successMessage: string

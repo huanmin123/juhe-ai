@@ -1001,35 +1001,6 @@ function unsupportedToolsForSystemMessage(
   return plan.unsupportedTools
 }
 
-function canIgnoreUnsupportedResponsesTools(
-  toolChoice: unknown,
-  plan: CodexResponsesChatBridgeToolPlan
-): boolean {
-  if (toolChoice === undefined || toolChoice === null) {
-    return false
-  }
-  if (typeof toolChoice === 'string') {
-    if (toolChoice === 'none') return true
-    if (toolChoice === 'auto' || toolChoice === 'required') return false
-    return false
-  }
-  if (!isPlainObject(toolChoice)) {
-    return false
-  }
-  const type = stringValue(toolChoice.type)
-  if (type === 'function' || type === 'custom') {
-    const name = stringValue(toolChoice.name)
-    if (!name) return false
-    const namespace = stringValue(toolChoice.namespace)
-    return plan.adaptersByResponsesKey.has(responsesToolAdapterKey(type, name, namespace))
-  }
-  if (type === 'allowed_tools') {
-    const allowed = Array.isArray(toolChoice.tools) ? toolChoice.tools : []
-    return allowed.length > 0 && allowed.every((tool) => allowedToolChoiceAdapter(tool, plan))
-  }
-  return false
-}
-
 function throwUnsupportedNativeToolChoice(choice: string, unsupportedTools: string[]): never {
   const suffix = unsupportedTools.length > 0 ? `；当前不可代执行工具：${unsupportedTools.join(', ')}` : ''
   throw new GatewayRequestValidationError(

@@ -772,7 +772,7 @@ function evaluateBasicForProfile(profile: ModelCheckProtocolProfile, result: Gat
   if (profile.protocol === 'openai_responses') {
     return evaluateBasicResponsesProbe(result, model, prefix)
   }
-  return evaluateBasicProtocolProbe(result, model, prefix, {
+  return evaluateBasicProtocolProbe(result, model, {
     itemKey: basicProbeItemKey(profile, prefix),
     itemType: 'protocol_basic',
     successMessage: `${profile.protocolLabel} 非流式调用可用`,
@@ -784,7 +784,7 @@ function evaluateStreamForProfile(profile: ModelCheckProtocolProfile, result: Ga
   if (profile.protocol === 'openai_responses') {
     return evaluateStreamProbe(result, model, prefix)
   }
-  return evaluateProtocolStreamProbe(result, model, prefix, {
+  return evaluateProtocolStreamProbe(result, model, {
     itemKey: streamProbeItemKey(profile, prefix),
     itemType: 'protocol_stream',
     successMessage: `${profile.protocolLabel} 流式调用可用`,

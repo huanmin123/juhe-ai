@@ -65,7 +65,7 @@ export function assertAccountGptRequestOverridesSupportedByCatalog(input: {
   catalog: readonly ProviderModelCatalogItem[]
   supportedEndpointModes?: readonly string[]
 }): void {
-  assertProviderSupportsAccountRequestOverrides(input.providerCode ?? 'gpt', input.overrides)
+  assertProviderSupportsAccountRequestOverrides(input.providerCode ?? 'gpt')
   if (input.providerCode === 'gemini' && input.supportedEndpointModes
     && !input.supportedEndpointModes.some((mode) => mode === 'generate_content_json' || mode === 'generate_content_sse')) {
     throw new Error('Interactions-only Gemini 账户不能配置 GenerateContent 请求覆盖')
@@ -118,8 +118,7 @@ function uniqueTextList(values: readonly string[]): string[] {
 }
 
 function assertProviderSupportsAccountRequestOverrides(
-  providerCode: string,
-  overrides: GptAccountRequestOverrides
+  providerCode: string
 ): void {
   if (!new Set(['gpt', 'openai', 'anthropic', 'gemini']).has(providerCode)) {
     throw new Error(`供应商 ${providerCode} 没有可确认的账户请求覆盖 wire 映射`)

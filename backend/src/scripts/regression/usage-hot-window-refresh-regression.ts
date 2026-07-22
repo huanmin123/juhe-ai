@@ -7,7 +7,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 import { usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from '../../storage/usage-stats-types.js'
-import { fixedUsageStatsDateKeys, rangeWindowKey } from '../../storage/usage-stats-window-helpers.js'
+import { fixedUsageStatsDateKeys } from '../../storage/usage-stats-window-helpers.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-hot-window-refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'usage-hot-window-refresh.sqlite3')

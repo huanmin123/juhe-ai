@@ -933,19 +933,6 @@ async function readJsonBody(body: AsyncIterable<Uint8Array>): Promise<unknown> {
   return text.trim() ? JSON.parse(text) as unknown : {}
 }
 
-function geminiChatBridgeResponseErrorJson(error: unknown): JsonRecord {
-  const tooLarge = error instanceof Error && error.message === 'gemini_chat_bridge_response_too_large'
-  return {
-    error: {
-      status: tooLarge ? 'RESOURCE_EXHAUSTED' : 'INTERNAL',
-      code: tooLarge ? 'upstream_chat_completions_response_too_large' : 'upstream_chat_completions_invalid_json',
-      message: tooLarge
-        ? '上游 Chat Completions 响应过大，无法转换为 Gemini GenerateContent 响应'
-        : '上游 Chat Completions 返回了无法转换为 Gemini GenerateContent 响应的 JSON'
-    }
-  }
-}
-
 function takeCompleteSseEvents(input: string): { events: string[]; rest: string } {
   const events: string[] = []
   let rest = input

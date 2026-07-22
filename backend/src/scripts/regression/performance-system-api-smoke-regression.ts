@@ -754,10 +754,6 @@ async function postEnvelope<T = unknown>(baseUrl: string, path: string, body: Re
   return (await postCreatedEnvelopeWithHeaders<T>(baseUrl, path, body, cookie)).data
 }
 
-async function postOkEnvelope<T = unknown>(baseUrl: string, path: string, body: Record<string, unknown>, cookie: string): Promise<T> {
-  return (await postOkEnvelopeWithHeaders<T>(baseUrl, path, body, cookie)).data
-}
-
 async function deleteNoContent(baseUrl: string, path: string, cookie: string): Promise<void> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: 'DELETE',

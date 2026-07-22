@@ -1,7 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
 import { readFileSync } from 'node:fs'
-import type { Request } from 'express'
 
 import {
   buildOpenAIOAuthCodexRequestParts,

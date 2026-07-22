@@ -1003,12 +1003,6 @@ function boolEnv(name: string, fallback: boolean): boolean {
   return fallback
 }
 
-function usagePartitionStartDateFromName(value: unknown): string | undefined {
-  const match = /^usage_records_(\d{4})(\d{2})(\d{2})$/.exec(String(value ?? '').trim())
-  if (!match) return undefined
-  return `${match[1]}-${match[2]}-${match[3]}`
-}
-
 function isoDateToDateKey(value: string): string {
   return value.replace(/-/g, '')
 }

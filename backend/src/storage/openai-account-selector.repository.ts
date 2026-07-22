@@ -627,7 +627,6 @@ function openAIAccountResourceClientCompatibility(row: OpenAIAccountRow): Accoun
     openAIAccountResourceProviderCode(row),
     openAIAccountResourceType(row),
     row.resource_client_compatibility ?? row.client_compatibility,
-    'openai_standard',
     { protocolCode: openAIAccountResourceProtocolCode(row), protocolVersion: openAIAccountResourceProtocolVersion(row) }
   )
 }
