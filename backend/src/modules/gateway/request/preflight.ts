@@ -107,6 +107,7 @@ import {
   type AuthenticatedModelsRateLimitDecision
 } from '../runtime/authenticated-models-rate-limit.service.js'
 import { normalRouteSpeedFirstAppliesToLane } from '../policy/speed-first-lane.js'
+import type { NormalRouteSpeedFirstRuntimeConfig } from '../runtime/normal-route-latency-degradation.service.js'
 import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import {
   GatewayRequestAttemptTracker,
@@ -165,7 +166,7 @@ export interface OpenAIGatewayDispatchContext {
   modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
-  normalRouteSpeedFirstConfig?: RouteStrategySpeedFirstConfig
+  normalRouteSpeedFirstConfig?: NormalRouteSpeedFirstRuntimeConfig
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
   groupFallbackApiKeyRecord?: GatewayApiKeyRow
@@ -1117,11 +1118,15 @@ function isDirectLoopbackDeploymentSmoke(req: Request): boolean {
   return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
 }
 
-function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): RouteStrategySpeedFirstConfig | undefined {
+function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): NormalRouteSpeedFirstRuntimeConfig | undefined {
   if (apiKeyRecord?.route_strategy_mode !== 'normal') return undefined
   const normalConfig = apiKeyRecord.normal_routing_config
   if (normalConfig?.schedulingPreference !== 'speed_first') return undefined
-  return normalConfig.speedFirstConfig
+  if (!normalConfig.speedFirstConfig) return undefined
+  return {
+    ...normalConfig.speedFirstConfig,
+    firstByteDeadlineMs: normalConfig.firstByteDeadlineMs
+  }
 }
 
 async function handleGatewayModelsRequestBeforeRequiredAuth(input: {

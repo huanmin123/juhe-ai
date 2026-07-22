@@ -67,7 +67,6 @@ import {
 import type { UpstreamAttempt } from './upstream/attempt.js'
 import type { ResponseInspectionDecision } from './response/inspection.js'
 import type { GatewaySettings } from './policy/account-error-policy.service.js'
-import type { RouteStrategySpeedFirstConfig } from '../../domain/types.js'
 import { OpenAIOAuthCodexAdapterError } from './adapters/gpt-codex/oauth-adapter.js'
 import { recordClientIpErrorCircuitSampleAsync } from './runtime/client-ip-error-circuit.service.js'
 import {
@@ -93,7 +92,8 @@ import {
   isNormalRouteAccountLatencyDegradedAsync,
   recordNormalRouteFirstByteSlowAsync,
   recordNormalRouteFirstByteSuccessAsync,
-  type NormalRouteLatencySlowResult
+  type NormalRouteLatencySlowResult,
+  type NormalRouteSpeedFirstRuntimeConfig
 } from './runtime/normal-route-latency-degradation.service.js'
 import {
   reserveSpeedFirstCutoverTarget,
@@ -752,7 +752,7 @@ export async function handleOpenAIGatewayRequest(
                 accountId: account.id,
                 accountName: account.name,
                 firstTokenMs: undefined,
-                thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
+                thresholdMs: normalRouteSpeedFirstConfig.firstByteDeadlineMs,
                 elapsedMs: Date.now() - attemptStartedAt,
                 observedAt: 'first_byte_deadline',
                 alreadyDegraded,
@@ -969,7 +969,7 @@ export async function handleOpenAIGatewayRequest(
                 accountId: account.id,
                 remainingCandidateCount,
                 excludedAccountIds: [...streamServerRetryExcludedAccountIds],
-                thresholdMs: normalRouteSpeedFirstConfig?.firstByteThresholdMs,
+                thresholdMs: normalRouteSpeedFirstConfig?.firstByteDeadlineMs,
                 slowCount: speedFirstSlowObservedForAttempt?.slowCount,
                 degraded: speedFirstSlowObservedForAttempt?.degraded,
                 degradedUntil: speedFirstSlowObservedForAttempt?.degradedUntil,
@@ -1220,20 +1220,20 @@ export async function handleOpenAIGatewayRequest(
           continue
         }
         if (normalRouteSpeedFirstConfig && handledResponse.firstTokenMs !== undefined) {
-          if (handledResponse.firstTokenMs > normalRouteSpeedFirstConfig.firstByteThresholdMs) {
+          if (handledResponse.firstTokenMs > normalRouteSpeedFirstConfig.firstByteDeadlineMs) {
             if (!speedFirstSlowObservedForAttempt) {
               const slowResult = await recordNormalRouteFirstByteSlowAsync(
                 account,
                 speedFirstLatencyScope,
                 normalRouteSpeedFirstConfig,
-                `普通路由速度优先首字耗时 ${handledResponse.firstTokenMs}ms 超过阈值 ${normalRouteSpeedFirstConfig.firstByteThresholdMs}ms`
+                `普通路由速度优先首字耗时 ${handledResponse.firstTokenMs}ms 超过阈值 ${normalRouteSpeedFirstConfig.firstByteDeadlineMs}ms`
               )
               auditCapture.addGatewayMetadata({
                 label: 'normal_route_speed_first_slow_observed',
                 metadata: {
                   accountId: account.id,
                   firstTokenMs: handledResponse.firstTokenMs,
-                  thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
+                  thresholdMs: normalRouteSpeedFirstConfig.firstByteDeadlineMs,
                   observedAt: 'response_completed',
                   slowCount: slowResult?.slowCount,
                   degraded: slowResult?.degraded,
@@ -1255,7 +1255,7 @@ export async function handleOpenAIGatewayRequest(
                 metadata: {
                   accountId: account.id,
                   firstTokenMs: handledResponse.firstTokenMs,
-                  thresholdMs: normalRouteSpeedFirstConfig.firstByteThresholdMs,
+                  thresholdMs: normalRouteSpeedFirstConfig.firstByteDeadlineMs,
                   cleared: recoveryResult.cleared,
                   recoverySuccessCount: recoveryResult.recoverySuccessCount,
                   requiredRecoverySuccessCount: recoveryResult.requiredRecoverySuccessCount
@@ -1487,8 +1487,8 @@ function streamRetryDispatchAccounts(accounts: UpstreamAccount[], excludedAccoun
   return accounts.filter((account) => !excludedAccountIds.has(account.id))
 }
 
-function normalRouteSpeedFirstByteDeadlineMs(config?: RouteStrategySpeedFirstConfig): number | undefined {
-  return config?.firstByteThresholdMs
+function normalRouteSpeedFirstByteDeadlineMs(config?: NormalRouteSpeedFirstRuntimeConfig): number | undefined {
+  return config?.firstByteDeadlineMs
 }
 
 async function speedFirstRouteEligibleDispatchAccounts(

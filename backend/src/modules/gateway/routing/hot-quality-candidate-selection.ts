@@ -28,6 +28,7 @@ export interface HotQualityCandidate {
 export interface SameTierExplorationState {
   enabled: boolean
   eligibleFirstPrimaryDispatch: boolean
+  creditAccrualAlreadyApplied?: boolean
   requestAlreadyExplored: boolean
   hasLeftHighestNormalTier: boolean
   credit: number
@@ -206,6 +207,7 @@ function decideExploration<TCandidate extends HotQualityCandidate>(input: {
   const eligibleCreditAccrual = Boolean(
     state?.enabled
     && state.eligibleFirstPrimaryDispatch
+    && !state.creditAccrualAlreadyApplied
     && !state.requestAlreadyExplored
     && !state.hasLeftHighestNormalTier
     && primary

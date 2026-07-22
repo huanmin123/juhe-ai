@@ -564,6 +564,7 @@ export async function fetchFirstAvailableUpstream(
               })
               if (!attemptRegistration.allowed) {
                 lastAttempt = requestDeduplicatedAttempt(account, attemptRegistration.reason)
+                failedAccountIds.add(account.id)
                 auditCapture.addGatewayMetadata({
                   label: 'gateway_request_attempt_deduplicated',
                   metadata: {

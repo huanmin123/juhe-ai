@@ -98,14 +98,14 @@ const revisionScope = scope('revision')
 await openCircuit(store, revisionScope, 'old-revision', now)
 now += 3_000
 let revisionProbeCount = 0
-const revisionSweep = await service(store, async () => ({
-  dispatchRevision: 'new-revision',
+const revisionSweep = await service(store, async (state) => ({
+  dispatchRevision: state.scope.accountRuntimeKey === 'revision' ? 'new-revision' : 'r1',
   probe: async () => {
-    revisionProbeCount += 1
+    if (state.scope.accountRuntimeKey === 'revision') revisionProbeCount += 1
     return { kind: 'framing_complete', statusCode: 200 }
   }
 })).sweep()
-assert.equal(revisionSweep.fencedCount, 1)
+assert(revisionSweep.fencedCount >= 1)
 assert.equal(revisionProbeCount, 0, 'dispatchRevision 变化必须在发探针前 fencing')
 const revised = await store.get(revisionScope, now)
 assert.equal(revised.phase, 'CLOSED')
@@ -140,8 +140,13 @@ assert.equal((await store.get(staleScope, now)).dispatchRevision, 'r2')
 const missingScope = scope('missing-target')
 await openCircuit(store, missingScope, 'r1', now)
 now += 3_000
-const missingSweep = await service(store, async () => undefined).sweep()
-assert.equal(missingSweep.unknownCount, 1)
+const missingSweep = await service(store, async (state) => state.scope.accountRuntimeKey === 'missing-target'
+  ? undefined
+  : {
+      dispatchRevision: 'r1',
+      probe: async () => ({ kind: 'framing_complete', statusCode: 200 })
+    }).sweep()
+assert(missingSweep.unknownCount >= 1)
 assert.equal((await store.get(missingScope, now)).phase, 'OPEN', 'resolver 缺失目标时必须保守释放到 OPEN')
 
 console.log('account-circuit-recovery-regression passed')

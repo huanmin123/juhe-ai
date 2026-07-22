@@ -138,6 +138,12 @@ assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
 }), { allowed: true })
 assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
   protocolModelKey,
+  accountRuntimeKey: 'runtime-owner',
+  physicalCredentialKey: 'physical-owner',
+  keyFingerprint: 'key-a'
+}), { allowed: false, reason: 'physical_credential_already_attempted' })
+assert.deepEqual(dispatchAttempts.tryRecordDispatchAttempt({
+  protocolModelKey,
   accountRuntimeKey: 'runtime-owner:authorized:grantee:group-a:auth-a',
   physicalCredentialKey: 'physical-owner',
   keyFingerprint: 'key-a'
@@ -231,6 +237,9 @@ assert.deepEqual(results.map(result => result.outcome), [
 
 const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
 const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
+const dispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')
+const compactPreflightSource = readFileSync(new URL('../../modules/gateway/codex-responses/compact-preflight.ts', import.meta.url), 'utf8')
+const auxiliaryDispatchSource = readFileSync(new URL('../../modules/gateway/hybrid/auxiliary-dispatch.service.ts', import.meta.url), 'utf8')
 assert.match(preflightSource, /gatewayRequestWallBudget\?: GatewayRequestWallBudget/, 'preflight 必须显式携带整请求墙钟')
 assert.match(preflightSource, /routeCoordinationBudget\?: RouteCoordinationBudget/, 'preflight 必须显式携带路由协调等待预算')
 assert.match(preflightSource, /requestAttemptTracker\?: GatewayRequestAttemptTracker/, 'preflight 必须显式携带请求尝试集合')
@@ -238,5 +247,9 @@ assert.match(routesSource, /gatewayRequestWallBudget: currentPreflight\.gatewayR
 assert.match(routesSource, /routeCoordinationBudget: currentPreflight\.routeCoordinationBudget/g, '分组和混合重入必须复用同一路由协调预算')
 assert.match(routesSource, /requestAttemptTracker: currentPreflight\.requestAttemptTracker/g, '分组和混合重入必须复用同一尝试集合')
 assert.match(routesSource, /gateway_request_client_handoff/, '主循环必须在决策点执行墙钟 handoff')
+assert.match(dispatchSource, /fetchFirstAvailableUpstream requires shared request coordination context/, '派发器不得为旁路请求静默创建独立预算')
+assert.match(dispatchSource, /tryRecordDispatchAttempt/, '实际 HTTP attempt 前必须登记请求去重键')
+assert.match(compactPreflightSource, /requestCoordination: GatewayUpstreamRequestCoordinationContext/, 'compact 预检必须接收主请求协调上下文')
+assert.match(auxiliaryDispatchSource, /gateway_internal_request_coordination/, '独立 hybrid 辅助请求必须显式记录其独立预算原因')
 
 console.log('gateway route coordination regression passed')

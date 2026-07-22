@@ -57,12 +57,16 @@ import {
   gatewayAccountConcurrencyLimitsByAccountId
 } from './account-concurrency-identity.js'
 import type { GatewayAccountModelPriority } from './model-filter.js'
-import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
+import type { NormalRouteSpeedFirstRuntimeConfig } from '../runtime/normal-route-latency-degradation.service.js'
 import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import type {
   GatewayRequestWallBudget,
   RouteCoordinationBudget
 } from '../routing/route-coordination.js'
+import {
+  orderGatewayAccountsByHotQualityAsync,
+  type GatewayHotQualityExplorationReservation
+} from '../runtime/hot-quality-runtime.service.js'
 
 export interface DispatchPreparationFallbackResult {
   attempted: boolean
@@ -78,6 +82,8 @@ export type DispatchPreparationResult =
     codexTurnAccountAvoidanceApplied?: boolean
     codexTurnAvoidedAccountIds?: string[]
     precheckHalfOpenEligible?: boolean
+    hotQualityExplorationReservation?: GatewayHotQualityExplorationReservation
+    settleHotQualityExplorationAfterDispatch?: (outcome: 'dispatched' | 'not_dispatched') => Promise<void>
   }
   | { outcome: 'fallback'; context?: OpenAIGatewayDispatchContext }
   | { outcome: 'completed' }
@@ -96,7 +102,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   apiKeyId?: string
   groupId: string
   routeStrategyId?: string
-  normalRouteSpeedFirstConfig?: RouteStrategySpeedFirstConfig
+  normalRouteSpeedFirstConfig?: NormalRouteSpeedFirstRuntimeConfig
   clientIp?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
   requestLane: OpenAIGatewayRequestLane
@@ -397,7 +403,10 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   const readyPreparation = await prepareQuotaAndCapacityReadyAccounts({
     ...input,
     accounts: codexTurnAvoidance.accounts,
-    dispatchOrderingOptions
+    dispatchOrderingOptions,
+    latencyDegradedAccountIds: new Set(latencyDegradationOrder.degradedAccountIds),
+    hotQualityMode: input.normalRouteSpeedFirstConfig ? 'speed_first' : 'cost_first',
+    eligibleFirstPrimaryDispatch: input.usageContext.trafficSource === 'gateway'
   })
   logRequestStage('account.dispatch_candidates', {
     traceId: input.usageContext.traceId,
@@ -417,7 +426,9 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
     precheckHalfOpenEligible,
     normalRouteLatencyDegradationApplied: latencyDegradationOrder.applied,
     codexTurnAccountAvoidanceApplied: codexTurnAvoidance.thresholdReached,
-    codexTurnAvoidedAccountIds: codexTurnAvoidance.avoidedAccountIds
+    codexTurnAvoidedAccountIds: codexTurnAvoidance.avoidedAccountIds,
+    hotQualityExplorationReservation: readyPreparation.hotQualityExplorationReservation,
+    settleHotQualityExplorationAfterDispatch: readyPreparation.settleHotQualityExplorationAfterDispatch
   }
 }
 
@@ -433,15 +444,21 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   systemAccountId: string
   apiKeyId?: string
   groupId: string
+  routeStrategyId?: string
   clientIp?: string
   requestLane: OpenAIGatewayRequestLane
   signal?: AbortSignal
   dispatchOrderingOptions: OpenAIAccountDispatchOrderingOptions
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
+  latencyDegradedAccountIds: ReadonlySet<string>
+  hotQualityMode: 'cost_first' | 'speed_first'
+  eligibleFirstPrimaryDispatch: boolean
 }): Promise<DispatchPreparationResult> {
   const quotaStartedAt = performance.now()
   let authorizationQuotaDeniedAccountCount = 0
   let accounts: UpstreamAccount[] = []
+  let hotQualityExplorationReservation: GatewayHotQualityExplorationReservation | undefined
+  let settleHotQualityExplorationAfterDispatch: ((outcome: 'dispatched' | 'not_dispatched') => Promise<void>) | undefined
   const accountQuotaDecisions = await checkGatewayAuthorizationQuotaBatchAsync({ groupAccess: input.groupAccess, accounts: input.accounts })
   for (const account of input.accounts) {
     const decision = accountQuotaDecisions.get(account.id) ?? { allowed: true }
@@ -511,6 +528,40 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     )
   }
 
+  const applyHotQualityOrder = async (): Promise<void> => {
+    const hotQualityOrder = await orderGatewayAccountsByHotQualityAsync({
+      accounts,
+      modelPriority: input.dispatchOrderingOptions.modelPriority ?? { sourceEndpointFamily: 'chat_completions', rankByAccountId: new Map() },
+      mode: input.hotQualityMode,
+      systemAccountId: input.systemAccountId,
+      routeStrategyId: input.routeStrategyId,
+      groupId: input.groupId,
+      requestLane: input.requestLane,
+      requestId: input.usageContext.traceId,
+      latencyDegradedAccountIds: input.latencyDegradedAccountIds,
+      eligibleFirstPrimaryDispatch: input.eligibleFirstPrimaryDispatch
+    })
+    accounts = hotQualityOrder.accounts
+    hotQualityExplorationReservation = hotQualityOrder.explorationReservation
+    settleHotQualityExplorationAfterDispatch = hotQualityOrder.settleExplorationAfterDispatch
+    if (hotQualityOrder.dispatchIntent === 'same_tier_exploration' || hotQualityOrder.qualityReorderedTierKeys.length > 0) {
+      input.auditCapture.addGatewayMetadata({
+        label: 'hot_quality_candidate_selection',
+        metadata: {
+          dispatchIntent: hotQualityOrder.dispatchIntent,
+          selectedAccountId: hotQualityOrder.selectedAccountId,
+          explorationStatus: hotQualityOrder.explorationStatus,
+          qualityReorderedTierKeys: hotQualityOrder.qualityReorderedTierKeys,
+          latencyDegradedOverrideApplied: hotQualityOrder.latencyDegradedOverrideApplied
+        }
+      })
+    }
+  }
+
+  if (input.dispatchOrderingOptions.groupType === 'high_concurrency') {
+    await applyHotQualityOrder()
+  }
+
   if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
     const fallback = await input.attemptFallback('high_concurrency_group_busy')
     if (fallback.attempted) {
@@ -525,6 +576,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       input.groupAccess.schedulingPolicy,
       input.dispatchOrderingOptions.modelPriority
     )
+    await applyHotQualityOrder()
     if (await areGatewayAccountsCapacityBusyForLaneAsync(accounts, input.requestLane, input.groupAccess.schedulingPolicy)) {
       const fallback = await input.attemptFallback('group_capacity_busy')
       if (fallback.attempted) {
@@ -671,11 +723,13 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       return { outcome: 'completed' }
     }
 
-    return {
-      outcome: 'ready',
-      accounts,
-      releaseClientIpConcurrency: releaseClientIpConcurrencyOnce
-    }
+      return {
+        outcome: 'ready',
+        accounts,
+      releaseClientIpConcurrency: releaseClientIpConcurrencyOnce,
+      hotQualityExplorationReservation,
+      settleHotQualityExplorationAfterDispatch
+      }
   } catch (error) {
     releaseClientIpConcurrencyOnce()
     throw error
