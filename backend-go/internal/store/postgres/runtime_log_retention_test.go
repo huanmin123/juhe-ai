@@ -42,7 +42,11 @@ func TestRuntimeLogRetentionSQLContracts(t *testing.T) {
 	if !strings.Contains(runtimeLogRetentionLevelUpdateSQL, "GREATEST(0, facets.count - decrements.count)") {
 		t.Fatal("level facet SQL must prevent negative counts")
 	}
-	for _, want := range []string{"GREATEST(0, facets.count - decrements.count)", "logs.event = decrements.event", "ORDER BY logs.time DESC, logs.id DESC"} {
+	for _, want := range []string{
+		"GREATEST(0, facets.count - decrements.count)",
+		"COALESCE(NULLIF(BTRIM(logs.event), ''), '') = decrements.event",
+		"ORDER BY logs.time DESC, logs.id DESC",
+	} {
 		if !strings.Contains(runtimeLogRetentionEventUpdateSQL, want) {
 			t.Fatalf("event facet SQL missing %q", want)
 		}
