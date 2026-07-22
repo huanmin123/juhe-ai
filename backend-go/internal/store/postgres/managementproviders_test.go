@@ -221,16 +221,18 @@ func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
 	optionStart := strings.Index(sql, "-- name: ListManagementProviderOptionProviders :many")
 	selectStart := strings.Index(sql, "-- name: ListManagementProviderSelectOptions :many")
 	profileStart := strings.Index(sql, "-- name: ListManagementProviderOptionProfiles :many")
-	if listStart < 0 || optionStart < 0 || selectStart < 0 || profileStart < 0 || optionStart <= listStart || selectStart <= optionStart || profileStart <= selectStart {
+	endpointFamilyStart := strings.Index(sql, "-- name: ListManagementProviderOptionEndpointFamilies :many")
+	if listStart < 0 || optionStart < 0 || selectStart < 0 || profileStart < 0 || endpointFamilyStart < 0 || optionStart <= listStart || selectStart <= optionStart || profileStart <= selectStart || endpointFamilyStart <= profileStart {
 		t.Fatalf("provider SQL missing list/options queries")
 	}
 	listSQL := sql[listStart:optionStart]
 	optionSQL := sql[optionStart:]
+	optionProviderSQL := sql[optionStart:selectStart]
 	selectSQL := sql[selectStart:profileStart]
+	profileSQL := sql[profileStart:endpointFamilyStart]
 	for _, want := range []string{
 		"FROM juhe_business.providers",
 		"ORDER BY name ASC, code ASC",
-		"LIMIT 50",
 	} {
 		if !strings.Contains(listSQL, want) {
 			t.Fatalf("provider list SQL missing %q", want)
@@ -239,10 +241,20 @@ func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
 	if strings.Contains(listSQL, "WHERE enabled = true") {
 		t.Fatalf("provider list SQL must include disabled providers: %s", listSQL)
 	}
+	for name, query := range map[string]string{
+		"provider list":        listSQL,
+		"provider definitions": optionProviderSQL,
+		"provider select":      selectSQL,
+		"provider profiles":    profileSQL,
+	} {
+		if strings.Contains(query, "LIMIT ") {
+			t.Fatalf("%s SQL must not silently truncate an unpaginated contract: %s", name, query)
+		}
+	}
 	if !strings.Contains(optionSQL, "WHERE enabled = true") {
 		t.Fatalf("provider options SQL must keep enabled filter")
 	}
-	for _, want := range []string{"SELECT id, code, name, enabled", "WHERE enabled = true", "LIMIT 50"} {
+	for _, want := range []string{"SELECT id, code, name, enabled", "WHERE enabled = true"} {
 		if !strings.Contains(selectSQL, want) {
 			t.Fatalf("provider select options SQL missing %q: %s", want, selectSQL)
 		}
