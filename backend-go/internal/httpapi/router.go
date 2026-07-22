@@ -209,6 +209,7 @@ type RouterOptions struct {
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementAuditLogsHandler                        http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
+	ManagementTableMonitorHandler                     http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
 	ManagementExternalIntegrationSourceCreateHandler  http.Handler
@@ -496,6 +497,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementAuditLogsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
+				opts.ManagementTableMonitorHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
 				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
@@ -1176,6 +1178,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/runtime/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementTableMonitorHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/table-monitor/overview", opts.ManagementTableMonitorHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/table-monitor/history", opts.ManagementTableMonitorHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/table-monitor/database-history", opts.ManagementTableMonitorHandler.ServeHTTP)
+			}
 			if opts.ManagementExternalIntegrationSourceListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
 					"/external-integration-sources",
@@ -1566,6 +1573,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementAuditLogsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
+		opts.ManagementTableMonitorHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
