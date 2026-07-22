@@ -843,11 +843,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	providerService := managementproviders.NewService(store)
 	providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:             store,
-		Invalidator:       systemAccountInvalidator,
-		PageDataPublisher: accountsStaticResetPublisher,
-		CatalogRebuilder:  catalogSnapshotRebuilder,
-		Logger:            logger,
+		Store:            store,
+		Invalidator:      systemAccountInvalidator,
+		CatalogRebuilder: catalogSnapshotRebuilder,
+		Logger:           logger,
 	})
 	routeStrategyService := managementroutestrategies.NewServiceWithOptions(
 		managementroutestrategies.ServiceOptions{

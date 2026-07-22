@@ -27,7 +27,6 @@ const (
 
 	CustomProviderModelSavedReason   = "custom_provider_model_saved"
 	CustomProviderModelDeletedReason = "custom_provider_model_deleted"
-	pageDataPublishTimeout           = 5 * time.Second
 )
 
 var ErrProviderNotFound = errors.New("provider not found")
@@ -49,30 +48,24 @@ type CustomProviderModelInvalidator interface {
 	InvalidateCustomProviderModelChanged(ctx context.Context, reason string) error
 }
 
-type PageDataPublisher interface {
-	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
-}
-
 type CatalogSnapshotRebuilder interface {
 	Rebuild(ctx context.Context, scope string, systemAccountID string) error
 }
 
 type ServiceOptions struct {
-	Store             Store
-	Invalidator       CustomProviderModelInvalidator
-	PageDataPublisher PageDataPublisher
-	CatalogRebuilder  CatalogSnapshotRebuilder
-	NewID             func(prefix string) string
-	Logger            *slog.Logger
+	Store            Store
+	Invalidator      CustomProviderModelInvalidator
+	CatalogRebuilder CatalogSnapshotRebuilder
+	NewID            func(prefix string) string
+	Logger           *slog.Logger
 }
 
 type Service struct {
-	store             Store
-	invalidator       CustomProviderModelInvalidator
-	pageDataPublisher PageDataPublisher
-	catalogRebuilder  CatalogSnapshotRebuilder
-	newID             func(prefix string) string
-	logger            *slog.Logger
+	store            Store
+	invalidator      CustomProviderModelInvalidator
+	catalogRebuilder CatalogSnapshotRebuilder
+	newID            func(prefix string) string
+	logger           *slog.Logger
 }
 
 type ModelOptionListInput struct {
@@ -404,7 +397,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		logger = slog.Default()
 	}
 	return &Service{
-		store: opts.Store, invalidator: opts.Invalidator, pageDataPublisher: opts.PageDataPublisher, catalogRebuilder: opts.CatalogRebuilder,
+		store: opts.Store, invalidator: opts.Invalidator, catalogRebuilder: opts.CatalogRebuilder,
 		newID: newID, logger: logger,
 	}
 }
@@ -691,11 +684,6 @@ func (s *Service) SetDefaultHealthCheckModel(ctx context.Context, input DefaultH
 	if err != nil {
 		return DefaultHealthCheckModelResult{}, err
 	}
-	if systemScope {
-		s.publishModelPageDataResets(ctx, "global", "")
-	} else {
-		s.publishModelPageDataResets(ctx, "personal", actorSystemAccountID)
-	}
 	return DefaultHealthCheckModelResult{
 		ProviderCode:            saved.ProviderCode,
 		DefaultHealthCheckModel: saved.Model,
@@ -773,7 +761,6 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	s.publishModelPageDataResets(ctx, saved.Scope, saved.SystemAccountID)
 	s.rebuildCatalogSnapshot(ctx, saved.Scope, saved.SystemAccountID)
 	return catalogItemFromPort(saved), nil
 }
@@ -837,7 +824,6 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 	if persisted.After.Status != "active" {
 		cleanupErr = s.clearDefaultHealthCheckModelReferences(ctx, persisted.After)
 	}
-	s.publishModelPageDataResets(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
 	s.rebuildCatalogSnapshot(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
 	if cleanupErr != nil {
 		return CustomModelUpdateResult{}, cleanupErr
@@ -969,7 +955,6 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 		return CustomModelUpdateResult{}, ErrCustomProviderModelNotFound
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	s.publishModelPageDataResets(ctx, "built_in", "")
 	s.rebuildCatalogSnapshot(ctx, "all", "")
 	return CustomModelUpdateResult{
 		Before: builtInCatalogItemWithConfigurationSnapshot(existing, persisted.Before),
@@ -1109,7 +1094,6 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 	if deleted {
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
 		cleanupErr := s.clearDefaultHealthCheckModelReferences(ctx, existing)
-		s.publishModelPageDataResets(ctx, existing.Scope, existing.SystemAccountID)
 		s.rebuildCatalogSnapshot(ctx, existing.Scope, existing.SystemAccountID)
 		if cleanupErr != nil {
 			return CustomModelDeleteResult{}, cleanupErr
@@ -1896,45 +1880,6 @@ func (s *Service) rebuildCatalogSnapshot(ctx context.Context, scope string, syst
 		)
 	}
 }
-
-func (s *Service) publishModelPageDataResets(ctx context.Context, scope string, systemAccountID string) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	owners := []string(nil)
-	if strings.TrimSpace(scope) == "personal" {
-		if owner := strings.TrimSpace(systemAccountID); owner != "" {
-			owners = []string{owner}
-		}
-	}
-	allScopes := len(owners) == 0
-	domains := []string{"providers.catalog", "accounts.options"}
-	type publishResult struct {
-		domain string
-		err    error
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
-	defer cancel()
-	results := make(chan publishResult, len(domains))
-	for _, domain := range domains {
-		go func(domain string) {
-			results <- publishResult{
-				domain: domain,
-				err:    s.pageDataPublisher.PublishPageDataReset(publishCtx, domain, append([]string(nil), owners...), allScopes),
-			}
-		}(domain)
-	}
-	for range domains {
-		result := <-results
-		if result.err != nil {
-			s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-				"domain", result.domain,
-				"error", result.err,
-			)
-		}
-	}
-}
-
 type mergeKeyFunc func(port.ManagementProviderModelCatalogItem) string
 
 func mergeKeyModel(item port.ManagementProviderModelCatalogItem) string {
