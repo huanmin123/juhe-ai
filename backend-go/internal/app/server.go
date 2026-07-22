@@ -460,6 +460,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementAuditLogsHandler:                        managementHandlers.AuditLogsHandler,
+		ManagementAuditErrorGroupsHandler:                 managementHandlers.AuditErrorGroupsHandler,
+		ManagementAuditErrorGroupEventsHandler:            managementHandlers.AuditErrorGroupEventsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
 		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
@@ -693,6 +695,8 @@ type managementAPIHandlers struct {
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	AuditLogsHandler                        http.Handler
+	AuditErrorGroupsHandler                 http.Handler
+	AuditErrorGroupEventsHandler            http.Handler
 	RuntimeLogsHandler                      http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
 	ExternalIntegrationSourceDetailHandler  http.Handler
@@ -1188,6 +1192,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		AuditLogsHandler:                        httpapi.NewManagementAuditLogsHandler(auditLogService),
+		AuditErrorGroupsHandler:                 httpapi.NewManagementAuditErrorGroupsHandler(auditLogService),
+		AuditErrorGroupEventsHandler:            httpapi.NewManagementAuditErrorGroupEventsHandler(auditLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
