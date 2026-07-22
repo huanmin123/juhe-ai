@@ -69,6 +69,18 @@ type ManagementAuditErrorGroup struct {
 	Count                                                                 int
 }
 
+type ManagementAuditErrorGroupListInput struct {
+	Path, Model, SystemAccountID string
+	APIKeyID, GroupID, AccountID string
+	StatusCode                   *int
+	Limit, Offset                int
+}
+
+type ManagementAuditErrorGroupListResult struct {
+	Items   []ManagementAuditErrorGroup
+	HasMore bool
+}
+
 type ManagementAuditLogDetail struct {
 	ManagementAuditLogSummary
 	Attempts   []ManagementAuditLogAttempt
@@ -78,5 +90,6 @@ type ManagementAuditLogDetail struct {
 
 type ManagementAuditLogReader interface {
 	ListManagementAuditLogs(context.Context, ManagementAuditLogListInput) (ManagementAuditLogListResult, error)
+	ListManagementAuditErrorGroups(context.Context, ManagementAuditErrorGroupListInput) (ManagementAuditErrorGroupListResult, error)
 	GetManagementAuditLog(context.Context, string) (ManagementAuditLogDetail, bool, error)
 }

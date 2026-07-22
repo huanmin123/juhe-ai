@@ -33,6 +33,22 @@ type ListResult struct {
 	PageSize int       `json:"pageSize"`
 }
 
+type ErrorGroupListInput struct {
+	Path, Model, SystemAccountID string
+	APIKeyID, GroupID, AccountID string
+	StatusCode                   int
+	Page, PageSize               int
+	PageSizeProvided             bool
+}
+
+type ErrorGroupListResult struct {
+	Items    []ErrorGroup `json:"items"`
+	Total    int          `json:"total"`
+	HasMore  bool         `json:"hasMore"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"pageSize"`
+}
+
 type Summary struct {
 	ID                     string `json:"id"`
 	TraceID                string `json:"traceId"`
@@ -173,11 +189,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	if s.store == nil {
 		return ListResult{}, fmt.Errorf("management audit log reader is required")
 	}
-	pageSize := defaultPageSize
-	if input.PageSizeProvided {
-		pageSize = min(max(input.PageSize, 1), maxPageSize)
-	}
-	page := min(max(input.Page, 1), max(1, (maxListWindowRows-1)/pageSize))
+	page, pageSize := normalizeListWindow(input.Page, input.PageSize, input.PageSizeProvided)
 	result, err := s.store.ListManagementAuditLogs(ctx, port.ManagementAuditLogListInput{
 		TraceID: trim(input.TraceID), ErrorGroupID: trim(input.ErrorGroupID), Outcome: normalizeOutcome(input.Outcome),
 		StatusCode: normalizeStatusCode(input.StatusCode), Path: normalizePath(input.Path), Model: trim(input.Model),
@@ -201,6 +213,30 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		total++
 	}
 	return ListResult{Items: items, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
+}
+
+func (s *Service) ListErrorGroups(ctx context.Context, input ErrorGroupListInput) (ErrorGroupListResult, error) {
+	if s.store == nil {
+		return ErrorGroupListResult{}, fmt.Errorf("management audit log reader is required")
+	}
+	page, pageSize := normalizeListWindow(input.Page, input.PageSize, input.PageSizeProvided)
+	result, err := s.store.ListManagementAuditErrorGroups(ctx, port.ManagementAuditErrorGroupListInput{
+		Path: normalizePath(input.Path), Model: trim(input.Model), SystemAccountID: trim(input.SystemAccountID),
+		APIKeyID: trim(input.APIKeyID), GroupID: trim(input.GroupID), AccountID: trim(input.AccountID),
+		StatusCode: normalizeStatusCode(input.StatusCode), Limit: pageSize, Offset: (page - 1) * pageSize,
+	})
+	if err != nil {
+		return ErrorGroupListResult{}, err
+	}
+	items := make([]ErrorGroup, 0, len(result.Items))
+	for _, row := range result.Items {
+		items = append(items, errorGroup(row))
+	}
+	total := (page-1)*pageSize + len(items)
+	if result.HasMore {
+		total++
+	}
+	return ErrorGroupListResult{Items: items, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
 }
 
 func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
@@ -234,17 +270,8 @@ func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
 		})
 	}
 	if row.ErrorGroup != nil {
-		group := row.ErrorGroup
-		result.ErrorGroup = &ErrorGroup{
-			ID: group.ID, Fingerprint: group.Fingerprint, WindowStartedAt: group.WindowStartedAt, WindowEndedAt: group.WindowEndedAt,
-			SystemAccountID: text(group.SystemAccountID), SystemAccountName: text(group.SystemAccountName), APIKeyID: text(group.APIKeyID), APIKeyName: text(group.APIKeyName),
-			GroupID: text(group.GroupID), GroupName: text(group.GroupName), AccountID: text(group.AccountID), AccountName: text(group.AccountName),
-			ProviderCode: text(group.ProviderCode), Path: text(group.Path), Model: text(group.Model), StatusCode: group.StatusCode,
-			ErrorPhase: text(group.ErrorPhase), ErrorCode: text(group.ErrorCode), ErrorType: text(group.ErrorType),
-			RequestFingerprint: text(group.RequestFingerprint), ErrorFingerprint: text(group.ErrorFingerprint), Count: group.Count,
-			FirstEventID: text(group.FirstEventID), LastEventID: text(group.LastEventID), SampleEventID: text(group.SampleEventID), LastMessage: text(group.LastMessage),
-			CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt,
-		}
+		group := errorGroup(*row.ErrorGroup)
+		result.ErrorGroup = &group
 	}
 	for _, payload := range row.Payloads {
 		result.Payloads = append(result.Payloads, PayloadSummary{
@@ -273,6 +300,28 @@ func summary(row port.ManagementAuditLogSummary) (Summary, error) {
 		CompressionSavedBytes: row.CompressionSavedBytes, ErrorGroupID: text(row.ErrorGroupID), CaptureStatus: row.CaptureStatus, StartedAt: row.StartedAt, EndedAt: row.EndedAt,
 		DurationMs: row.DurationMs, HTTPCompletedAt: text(row.HTTPCompletedAt), HTTPDurationMs: row.HTTPDurationMs, FirstTokenMs: row.FirstTokenMs, CreatedAt: row.CreatedAt,
 	}, nil
+}
+
+func errorGroup(row port.ManagementAuditErrorGroup) ErrorGroup {
+	return ErrorGroup{
+		ID: row.ID, Fingerprint: row.Fingerprint, WindowStartedAt: row.WindowStartedAt, WindowEndedAt: row.WindowEndedAt,
+		SystemAccountID: text(row.SystemAccountID), SystemAccountName: text(row.SystemAccountName), APIKeyID: text(row.APIKeyID), APIKeyName: text(row.APIKeyName),
+		GroupID: text(row.GroupID), GroupName: text(row.GroupName), AccountID: text(row.AccountID), AccountName: text(row.AccountName), ProviderCode: text(row.ProviderCode),
+		Path: text(row.Path), Model: text(row.Model), StatusCode: row.StatusCode, ErrorPhase: text(row.ErrorPhase), ErrorCode: text(row.ErrorCode), ErrorType: text(row.ErrorType),
+		RequestFingerprint: text(row.RequestFingerprint), ErrorFingerprint: text(row.ErrorFingerprint), Count: row.Count,
+		FirstEventID: text(row.FirstEventID), LastEventID: text(row.LastEventID), SampleEventID: text(row.SampleEventID), LastMessage: text(row.LastMessage),
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+func normalizeListWindow(page, pageSize int, pageSizeProvided bool) (int, int) {
+	if !pageSizeProvided {
+		pageSize = defaultPageSize
+	} else {
+		pageSize = min(max(pageSize, 1), maxPageSize)
+	}
+	page = min(max(page, 1), max(1, (maxListWindowRows-1)/pageSize))
+	return page, pageSize
 }
 
 func validTrafficSource(value string) bool {
