@@ -37,8 +37,53 @@ func TestRunSchemaUpCatalogExecutesCurrentMigrationAndVerifiesVersion(t *testing
 	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if !result.Success || result.TargetVersion != 70 || result.CurrentVersion != 70 {
-		t.Fatalf("result = %+v, want exact schema version 70", result)
+	if !result.Success || result.TargetVersion != migrationcatalog.CurrentSchemaVersion || result.CurrentVersion != migrationcatalog.CurrentSchemaVersion {
+		t.Fatalf("result = %+v, want exact current schema version", result)
+	}
+}
+
+func TestValidateSchemaUpSourceStateAcceptsOnlyFreshOrTrackedDatabase(t *testing.T) {
+	tests := []struct {
+		name    string
+		state   schemaUpSourceState
+		wantErr string
+	}{
+		{name: "fresh", state: schemaUpSourceState{}},
+		{name: "tracked", state: schemaUpSourceState{gooseLedgerPresent: true, gooseLedgerRows: 71, juheRelationCount: 76}},
+		{
+			name:    "untracked node schema",
+			state:   schemaUpSourceState{juheRelationCount: 158},
+			wantErr: "without Goose history",
+		},
+		{
+			name:    "empty ledger",
+			state:   schemaUpSourceState{gooseLedgerPresent: true},
+			wantErr: "without migration history",
+		},
+		{
+			name:    "inconsistent ledger count",
+			state:   schemaUpSourceState{gooseLedgerRows: 1},
+			wantErr: "inconsistent",
+		},
+		{
+			name:    "negative relation count",
+			state:   schemaUpSourceState{juheRelationCount: -1},
+			wantErr: "invalid count",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateSchemaUpSourceState(test.state)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateSchemaUpSourceState() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want substring %q", err, test.wantErr)
+			}
+		})
 	}
 }
 
@@ -94,8 +139,11 @@ func TestSchemaUpSourceNeverWritesGooseLedgerDirectly(t *testing.T) {
 			t.Fatalf("schemaup.go contains forbidden direct ledger mutation %q", forbidden)
 		}
 	}
-	if !strings.Contains(text, "goose.withsessionlocker(locker)") {
-		t.Fatal("schemaup.go must serialize migration execution with Goose session locking")
+	lockIndex := strings.Index(text, "locker.sessionlock(ctx, conn)")
+	inspectIndex := strings.Index(text, "inspectschemaupsource(ctx, conn)")
+	providerIndex := strings.Index(text, "goose.newprovider(")
+	if lockIndex < 0 || inspectIndex < 0 || providerIndex < 0 || !(lockIndex < inspectIndex && inspectIndex < providerIndex) {
+		t.Fatal("schemaup.go must lock, validate the source, then create the Goose provider")
 	}
 	if strings.Contains(text, "goose.uptocontext") {
 		t.Fatal("schemaup.go must not use the unlocked legacy Goose UpToContext API")
