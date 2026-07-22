@@ -72,6 +72,7 @@ import (
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/recorddispatch"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 	"juhe-ai/backend-go/internal/version"
@@ -185,19 +186,23 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAPIRateLimitSettingsVersionReader,
 	)
 
+	recordDispatcherResources := make([]recordDispatcherResource, 0, 2)
+	defer shutdownRecordDispatchers(&recordDispatcherResources, cfg.ShutdownTimeout, logger)
+
 	publicAPILogQueue, err := newPublicAPILogQueue(cfg)
 	if err != nil {
 		return err
 	}
 	publicAPILogQueueOwner := publicAPILogQueue
-	if publicAPILogQueueOwner != nil {
-		defer closePublicAPILogQueue(publicAPILogQueueOwner)
-	}
 	var publicAPILogSubmitter httpapi.PublicAPILogSubmitter
 	if publicAPILogQueueOwner != nil {
 		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueueOwner, logger)
 		publicAPILogSubmitter = publicAPILogDispatcher
-		defer shutdownRecordDispatcher(publicAPILogDispatcher, cfg.ShutdownTimeout, logger, "public API log")
+		recordDispatcherResources = append(recordDispatcherResources, recordDispatcherResource{
+			dispatcher:      publicAPILogDispatcher,
+			closeDependency: publicAPILogQueueOwner.Close,
+			recordType:      "public API log",
+		})
 	}
 	// The owner stays stable if handler assembly replaces its compatibility return value.
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
@@ -218,9 +223,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	if managementOperationLogQueue != nil {
-		defer func() { _ = managementOperationLogQueue.Close() }()
-	}
 	var managementOperationLogSubmitter httpapi.ManagementOperationLogSubmitter
 	if managementOperationLogQueue != nil {
 		managementOperationLogDispatcher := httpapi.NewManagementOperationLogDispatcher(
@@ -229,7 +231,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			logger,
 		)
 		managementOperationLogSubmitter = managementOperationLogDispatcher
-		defer shutdownRecordDispatcher(managementOperationLogDispatcher, cfg.ShutdownTimeout, logger, "management operation log")
+		recordDispatcherResources = append(recordDispatcherResources, recordDispatcherResource{
+			dispatcher:      managementOperationLogDispatcher,
+			closeDependency: managementOperationLogQueue.Close,
+			recordType:      "management operation log",
+		})
 	}
 	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
 	if err != nil {
@@ -769,16 +775,46 @@ type managementAPIInvalidator interface {
 
 type recordDispatcherShutdowner interface {
 	Shutdown(context.Context) error
+	Done() <-chan struct{}
 }
 
-func shutdownRecordDispatcher(dispatcher recordDispatcherShutdowner, timeout time.Duration, logger *slog.Logger, recordType string) {
+type recordDispatcherResource struct {
+	dispatcher      recordDispatcherShutdowner
+	closeDependency func() error
+	recordType      string
+}
+
+func shutdownRecordDispatchers(resources *[]recordDispatcherResource, timeout time.Duration, logger *slog.Logger) {
+	if resources == nil || len(*resources) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := dispatcher.Shutdown(ctx); err != nil && logger != nil {
-		logger.Warn("记录派发器关闭超时",
-			slog.String("record_type", recordType),
-			slog.Any("error", err),
-		)
+	shutdowners := make([]interface{ Shutdown(context.Context) error }, 0, len(*resources))
+	for _, resource := range *resources {
+		shutdowners = append(shutdowners, resource.dispatcher)
+	}
+	if err := recorddispatch.ShutdownAll(ctx, shutdowners...); err != nil && logger != nil {
+		logger.Warn("记录派发器共享关闭预算耗尽", slog.Any("error", err))
+	}
+	for _, resource := range *resources {
+		select {
+		case <-resource.dispatcher.Done():
+			if resource.closeDependency != nil {
+				if err := resource.closeDependency(); err != nil && logger != nil {
+					logger.Warn("记录派发器依赖关闭失败",
+						slog.String("record_type", resource.recordType),
+						slog.Any("error", err),
+					)
+				}
+			}
+		default:
+			if logger != nil {
+				logger.Warn("记录派发器仍在运行，跳过依赖关闭",
+					slog.String("record_type", resource.recordType),
+				)
+			}
+		}
 	}
 }
 
@@ -1515,12 +1551,6 @@ func newPublicAPIHandlerWithOptions(
 	})
 
 	return handler, logQueue, nil
-}
-
-func closePublicAPILogQueue(logQueue *queue.Client) {
-	if logQueue != nil {
-		_ = logQueue.Close()
-	}
 }
 
 func newPublicAPIHandlers(
