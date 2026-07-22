@@ -215,6 +215,15 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	return ListResult{Items: items, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
 }
 
+func (s *Service) ListErrorGroupEvents(ctx context.Context, errorGroupID string, input ListInput) (ListResult, error) {
+	id := trim(errorGroupID)
+	if id == "" {
+		return ListResult{}, fmt.Errorf("error group id is required")
+	}
+	input.ErrorGroupID = id
+	return s.List(ctx, input)
+}
+
 func (s *Service) ListErrorGroups(ctx context.Context, input ErrorGroupListInput) (ErrorGroupListResult, error) {
 	if s.store == nil {
 		return ErrorGroupListResult{}, fmt.Errorf("management audit log reader is required")
