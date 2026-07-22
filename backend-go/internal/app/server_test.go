@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,15 @@ import (
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 )
+
+func TestManagementAPIHandlersDoNotExposeSessionManagement(t *testing.T) {
+	typeOfHandlers := reflect.TypeOf(managementAPIHandlers{})
+	for _, name := range []string{"SessionListHandler", "SessionRevokeHandler"} {
+		if _, ok := typeOfHandlers.FieldByName(name); ok {
+			t.Fatalf("managementAPIHandlers still exposes %s", name)
+		}
+	}
+}
 
 func TestNewPublicAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	handler, logQueue, err := newPublicAPIHandler(config.Config{}, nil, nil, nil)
@@ -222,6 +232,39 @@ func isOwnerLockEnabledSelector(expression ast.Expr) bool {
 	}
 	receiver, ok := selector.X.(*ast.Ident)
 	return ok && receiver.Name == "cfg"
+}
+
+func TestNewManagementAPIHandlerInjectsRuntimeLogIndexEnabled(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	function := findFunction(t, file, "newManagementAPIHandlerWithCatalogSnapshotRebuilder")
+	found := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok || callName(call.Fun) != "httpapi.NewManagementRuntimeLogsHandler" {
+			return true
+		}
+		if len(call.Args) != 2 {
+			t.Fatalf("NewManagementRuntimeLogsHandler args = %d, want 2", len(call.Args))
+		}
+		selector, ok := call.Args[1].(*ast.SelectorExpr)
+		if !ok || selector.Sel.Name != "RuntimeLogIndexEnabled" {
+			t.Fatalf("runtime log index option = %#v, want cfg.RuntimeLogIndexEnabled", call.Args[1])
+		}
+		receiver, ok := selector.X.(*ast.Ident)
+		if !ok || receiver.Name != "cfg" {
+			t.Fatalf("runtime log index option receiver = %#v, want cfg", selector.X)
+		}
+		found = true
+		return true
+	})
+	if !found {
+		t.Fatal("newManagementAPIHandlerWithCatalogSnapshotRebuilder missing runtime log handler assembly")
+	}
 }
 
 func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
@@ -568,8 +611,6 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ProfileUpdateHandler != nil ||
 		handlers.PasswordChangeHandler != nil ||
 		handlers.LogoutHandler != nil ||
-		handlers.SessionListHandler != nil ||
-		handlers.SessionRevokeHandler != nil ||
 		handlers.ProxiesHandler != nil ||
 		handlers.ProxyOptionsHandler != nil ||
 		handlers.ProxyCreateHandler != nil ||
@@ -674,97 +715,6 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	}
 }
 
-func TestNewManagementAPIHandlerSessionSwitchOnlyReturnsSessionHandlers(t *testing.T) {
-	handlers := newManagementAPIHandlerWithPageData(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
-	if handlers.AuthMiddleware == nil ||
-		handlers.AuthTouchMiddleware == nil ||
-		handlers.SessionListHandler == nil ||
-		handlers.SessionRevokeHandler == nil {
-		t.Fatal("newManagementAPIHandler() did not return auth/session handlers while session switch enabled")
-	}
-	if handlers.CaptchaHandler != nil ||
-		handlers.LoginHandler != nil ||
-		handlers.CurrentUserHandler != nil ||
-		handlers.ProfileUpdateHandler != nil ||
-		handlers.PasswordChangeHandler != nil ||
-		handlers.LogoutHandler != nil ||
-		handlers.ProxiesHandler != nil ||
-		handlers.ProxyOptionsHandler != nil ||
-		handlers.ProxyCreateHandler != nil ||
-		handlers.ProxyUpdateHandler != nil ||
-		handlers.ProxyDeleteHandler != nil ||
-		handlers.SystemAccountsHandler != nil ||
-		handlers.SystemAccountOptionsHandler != nil ||
-		handlers.SystemAccountPatchHandler != nil ||
-		handlers.SystemAccountCreateHandler != nil ||
-		handlers.SystemTeamsHandler != nil ||
-		handlers.MySystemTeamsHandler != nil ||
-		handlers.SystemTeamCreateHandler != nil ||
-		handlers.SystemTeamPatchHandler != nil ||
-		handlers.SystemTeamMembersAddHandler != nil ||
-		handlers.SystemTeamMemberDeleteHandler != nil ||
-		handlers.AuthorizationGranteeAccountsHandler != nil ||
-		handlers.AuthorizationListHandler != nil ||
-		handlers.AuthorizationCreateHandler != nil ||
-		handlers.AuthorizationReturnHandler != nil ||
-		handlers.AuthorizationRevokeHandler != nil ||
-		handlers.ProvidersHandler != nil ||
-		handlers.ProviderOptionsHandler != nil ||
-		handlers.ProviderModelOptionsHandler != nil ||
-		handlers.ProviderModelsHandler != nil ||
-		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
-		handlers.RouteStrategyListHandler != nil ||
-		handlers.MyRouteStrategyListHandler != nil ||
-		handlers.RouteStrategyUpdateHandler != nil ||
-		handlers.MyRouteStrategyUpdateHandler != nil ||
-		handlers.RouteStrategyDetailHandler != nil ||
-		handlers.MyRouteStrategyDetailHandler != nil ||
-		handlers.RouteStrategyOptionsHandler != nil ||
-		handlers.APIKeyListHandler != nil ||
-		handlers.MyAPIKeyListHandler != nil ||
-		handlers.APIKeySecretHandler != nil ||
-		handlers.MyAPIKeySecretHandler != nil ||
-		handlers.APIKeyRefreshHandler != nil ||
-		handlers.MyAPIKeyRefreshHandler != nil ||
-		handlers.APIKeyCreateHandler != nil ||
-		handlers.MyAPIKeyCreateHandler != nil ||
-		handlers.APIKeyUpdateHandler != nil ||
-		handlers.MyAPIKeyUpdateHandler != nil ||
-		handlers.APIKeyDeleteHandler != nil ||
-		handlers.MyAPIKeyDeleteHandler != nil ||
-		handlers.GroupListHandler != nil ||
-		handlers.MyGroupListHandler != nil ||
-		handlers.GroupCreateHandler != nil ||
-		handlers.MyGroupCreateHandler != nil ||
-		handlers.GroupUpdateHandler != nil ||
-		handlers.MyGroupUpdateHandler != nil ||
-		handlers.GroupDeleteHandler != nil ||
-		handlers.MyGroupDeleteHandler != nil ||
-		handlers.GroupOptionsHandler != nil ||
-		handlers.AccountOptionsHandler != nil ||
-		handlers.AccountTagsHandler != nil ||
-		handlers.SystemSettingsHandler != nil ||
-		handlers.SystemSettingsUpdateHandler != nil ||
-		handlers.GlobalSettingsHandler != nil ||
-		handlers.GlobalSettingsUpdateHandler != nil ||
-		handlers.ClientIPStatsHandler != nil ||
-		handlers.ClientIPStatsDetailHandler != nil ||
-		handlers.ClientIPAllowlistHandler != nil ||
-		handlers.ClientIPUnallowlistHandler != nil ||
-		handlers.ClientIPBlacklistHandler != nil ||
-		handlers.ClientIPUnblockHandler != nil ||
-		handlers.OperationLogsHandler != nil ||
-		handlers.ExternalIntegrationSourceListHandler != nil ||
-		handlers.ExternalIntegrationSourceDetailHandler != nil ||
-		handlers.ExternalSourceTokenCreateHandler != nil ||
-		handlers.ExternalIntegrationSourceScopesHandler != nil ||
-		handlers.ExternalIntegrationSourceAPIDocsHandler != nil ||
-		handlers.StatsUsageWindowHandler != nil ||
-		handlers.MyStatsUsageWindowHandler != nil {
-		t.Fatal("newManagementAPIHandler() returned non-session management handlers while only session switch enabled")
-	}
-}
-
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
 	handlers := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
@@ -775,8 +725,6 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ProfileUpdateHandler == nil ||
 		handlers.PasswordChangeHandler == nil ||
 		handlers.LogoutHandler == nil ||
-		handlers.SessionListHandler == nil ||
-		handlers.SessionRevokeHandler == nil ||
 		handlers.ProxiesHandler == nil ||
 		handlers.ProxyOptionsHandler == nil ||
 		handlers.ProxyCreateHandler == nil ||
@@ -896,29 +844,6 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		disabled.ExternalIntegrationSourceScopesHandler != nil ||
 		disabled.ExternalIntegrationSourceAPIDocsHandler != nil {
 		t.Fatal("external integration source handler was created while management API disabled")
-	}
-
-	sessionOnly := newManagementAPIHandlerWithPageData(
-		config.Config{ManagementAuthSessionsEnabled: true},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil, nil,
-
-		nil,
-		nil)
-
-	if sessionOnly.ExternalIntegrationSourceListHandler != nil ||
-		sessionOnly.ExternalIntegrationSourceDetailHandler != nil ||
-		sessionOnly.ExternalIntegrationSourceCreateHandler != nil ||
-		sessionOnly.ExternalIntegrationSourceUpdateHandler != nil ||
-		sessionOnly.ExternalIntegrationSourceDeleteHandler != nil ||
-		sessionOnly.ExternalSourceTokenCreateHandler != nil ||
-		sessionOnly.ExternalSourceTokenSecretHandler != nil ||
-		sessionOnly.ExternalIntegrationSourceScopesHandler != nil ||
-		sessionOnly.ExternalIntegrationSourceAPIDocsHandler != nil {
-		t.Fatal("external integration source handler was created while only session switch enabled")
 	}
 
 	enabled := newManagementAPIHandlerWithPageData(
@@ -1094,21 +1019,6 @@ func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
 	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPStatsHandler != nil || disabled.ClientIPStatsDetailHandler != nil {
 		t.Fatal("client IP stats read handler was created while management API disabled")
-	}
-
-	sessionOnly := newManagementAPIHandlerWithPageData(
-		config.Config{ManagementAuthSessionsEnabled: true},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil, nil,
-
-		nil,
-		nil)
-
-	if sessionOnly.ClientIPStatsHandler != nil || sessionOnly.ClientIPStatsDetailHandler != nil {
-		t.Fatal("client IP stats read handler was created while only session switch enabled")
 	}
 
 	enabled := newManagementAPIHandlerWithPageData(

@@ -122,7 +122,7 @@ func TestW6ManagementRuntimeLogsNodeWriterGoReaderIntegrationSmoke(t *testing.T)
 		SystemAPIIPRateLimiter:            httpapi.NewInMemorySystemAPIIPRateLimiter(),
 		SystemAPIAuthenticatedRateLimiter: httpapi.NewInMemorySystemAPIAuthenticatedRateLimiter(),
 		ManagementAPIAuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
-		ManagementRuntimeLogsHandler:      httpapi.NewManagementRuntimeLogsHandler(service),
+		ManagementRuntimeLogsHandler:      httpapi.NewManagementRuntimeLogsHandler(service, true),
 	})
 	server := httptest.NewServer(router)
 	defer server.Close()

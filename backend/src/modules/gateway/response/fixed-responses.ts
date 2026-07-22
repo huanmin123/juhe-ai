@@ -6,7 +6,7 @@ import { gatewayErrorPayload } from './responses.js'
 import { isCodexModelsRequest } from '../protocols/openai-v1/route-helpers.js'
 import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
-import { enqueueUsageRecord } from '../usage/record-queue.service.js'
+import { dispatchUsageRecord } from '../usage/records.js'
 import {
   ANTHROPIC_PROVIDER_CODE,
   GEMINI_PROVIDER_CODE,
@@ -65,24 +65,25 @@ export function finalizeGatewayAuthFailureAudit(
   res: Response,
   auditCapture: AuditCaptureContext
 ): void {
-  const locals = res.locals as Record<string, unknown>
-  const authErrorMessage = typeof locals.gatewayAuthFailureErrorMessage === 'string'
-    ? locals.gatewayAuthFailureErrorMessage
-    : extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少访问令牌'
-  const authErrorCode = typeof locals.gatewayAuthFailureErrorCode === 'string'
-    ? locals.gatewayAuthFailureErrorCode
-    : 'invalid_request_error'
-  const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error', authErrorCode)
-  auditCapture.finalize({
-    outcome: 'gateway_failed',
-    success: false,
-    statusCode: res.statusCode,
-    responseHeaders: responseHeadersToObject(res),
-    responseBody: JSON.stringify(authErrorPayload),
-    responsePartType: 'gateway_error',
-    errorPhase: 'auth',
-    errorCode: authErrorCode,
-    errorMessage: authErrorMessage
+  auditCapture.finalizeLazy(() => {
+    const locals = res.locals as Record<string, unknown>
+    const authErrorMessage = typeof locals.gatewayAuthFailureErrorMessage === 'string'
+      ? locals.gatewayAuthFailureErrorMessage
+      : extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少访问令牌'
+    const authErrorCode = typeof locals.gatewayAuthFailureErrorCode === 'string'
+      ? locals.gatewayAuthFailureErrorCode
+      : 'invalid_request_error'
+    return {
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode: res.statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(gatewayErrorPayload(authErrorMessage, 'invalid_request_error', authErrorCode)),
+      responsePartType: 'gateway_error',
+      errorPhase: 'auth',
+      errorCode: authErrorCode,
+      errorMessage: authErrorMessage
+    }
   })
 }
 
@@ -126,7 +127,7 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
     systemAccountId: usageContext.systemAccountId,
     providerCodes: normalizedProviderCodes
   })
-  await enqueueUsageRecord({
+  dispatchUsageRecord({
     ...usageContext,
     providerCode,
     usageSemantic: usageSemanticForProfile({
@@ -163,7 +164,7 @@ async function sendModelsGatewayResponsePayload(input: {
     setAuthenticatedModelsClientCacheHeaders(res)
   }
   res.status(200).json(responsePayload)
-  auditCapture.finalize({
+  auditCapture.finalizeLazy(() => ({
     outcome: 'success',
     success: true,
     statusCode: 200,
@@ -171,7 +172,7 @@ async function sendModelsGatewayResponsePayload(input: {
     responseBody: JSON.stringify(responsePayload),
     responsePartType: 'gateway_response',
     firstTokenMs: Date.now() - startedAt
-  })
+  }))
   return responsePayload
 }
 

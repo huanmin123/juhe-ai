@@ -1,10 +1,11 @@
 import { attachChatStream, chatApi, ChatStreamHttpError, ChatStreamProtocolError, streamChatMessage } from '@/api/domains/chat'
-import type { ChatMessage, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent } from '@/types/domain/chat'
+import type { ChatMessage, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 
 import { applyChatStreamEvent } from './chatStream'
 
 export type ChatGenerationRuntimeStatus = 'preparing' | 'running' | 'completed' | 'failed' | 'canceled'
 export type ChatGenerationReconciliationReason = 'runner_terminal' | 'runner_missing' | 'http_error' | 'protocol_error' | 'reconnect_exhausted'
+export type ChatGenerationLivenessState = 'active' | 'checking' | 'reconnecting'
 
 export interface ChatGenerationRuntimeError {
   name: string
@@ -31,6 +32,10 @@ export interface RunningTurn {
   readonly status: ChatGenerationRuntimeStatus
   readonly reconnectAttempt: number
   readonly userProjection?: DeepReadonly<ChatMessage>
+  readonly startedAt: number
+  readonly lastTransportActivityAt: number
+  readonly lastSemanticActivityAt: number
+  readonly livenessState: ChatGenerationLivenessState
   readonly projection: DeepReadonly<ChatMessage>
   readonly reconciliationReason?: ChatGenerationReconciliationReason
   readonly error?: Readonly<ChatGenerationRuntimeError>
@@ -61,15 +66,19 @@ export interface ChatGenerationRuntimeAttachInput {
 interface RuntimeStreamInput {
   conversationId: string
   signal: AbortSignal
+  onActivity: () => void
   onEvent: (event: ChatStreamEvent) => void
 }
 
 export interface ChatGenerationRuntimeDependencies {
   streamMessage(input: RuntimeStreamInput & Omit<ChatGenerationRuntimeStartInput, 'systemAccountId'>): Promise<void>
   attachStream(input: RuntimeStreamInput & { turnId: string }): Promise<void>
-  stop(conversationId: string, target: { clientMessageId: string; turnId: string }): Promise<{ stopped: boolean }>
+  stop(conversationId: string, target: { clientMessageId: string; turnId?: string }): Promise<{ stopped: boolean }>
   schedule(callback: () => void, delayMs: number): unknown
   cancelSchedule(handle: unknown): void
+  getSubmissionStatus?(conversationId: string, clientMessageId: string): Promise<ChatSubmissionStatus>
+  scheduleWatchdog?(callback: () => void, delayMs: number): unknown
+  cancelWatchdog?(handle: unknown): void
   onReconcileRequired?(turn: RunningTurn): void
 }
 
@@ -78,6 +87,8 @@ export interface ChatGenerationRuntimeOptions {
   terminalProjectionLimit?: number
   terminalProjectionTtlMs?: number
   now?: () => number
+  staleAfterMs?: number
+  watchdogMaxChecks?: number
 }
 
 type TurnSubscriber = (turn: RunningTurn | undefined) => void
@@ -93,10 +104,22 @@ interface InternalTurn {
   controller: AbortController
   reconnectAttempt: number
   userProjection?: ChatMessage
+  startedAt: number
+  lastTransportActivityAt: number
+  lastSemanticActivityAt: number
+  lastLivenessCheckAt: number
+  livenessState: ChatGenerationLivenessState
   projection: ChatMessage
   reconciliationReason?: ChatGenerationReconciliationReason
   error?: ChatGenerationRuntimeError
   reconnectTimer?: unknown
+  watchdogTimer?: unknown
+  watchdogChecking: boolean
+  watchdogCheckCount: number
+  watchdogLookupFailureCount: number
+  watchdogNotFoundCount: number
+  watchdogFirstNotFoundAt?: number
+  watchdogExhausted: boolean
   stopRequested: boolean
   connectionActive: boolean
   accepted: boolean
@@ -110,7 +133,10 @@ const defaultDependencies: ChatGenerationRuntimeDependencies = {
   attachStream: attachChatStream,
   stop: (conversationId, target) => chatApi.stop(conversationId, target),
   schedule: (callback, delayMs) => window.setTimeout(callback, delayMs),
-  cancelSchedule: (handle) => window.clearTimeout(handle as number)
+  cancelSchedule: (handle) => window.clearTimeout(handle as number),
+  getSubmissionStatus: (conversationId, clientMessageId) => chatApi.getSubmissionStatus(conversationId, clientMessageId),
+  scheduleWatchdog: (callback, delayMs) => window.setTimeout(callback, delayMs),
+  cancelWatchdog: (handle) => window.clearTimeout(handle as number)
 }
 
 export class ChatGenerationRuntime {
@@ -121,6 +147,8 @@ export class ChatGenerationRuntime {
   private readonly terminalProjectionLimit: number
   private readonly terminalProjectionTtlMs: number
   private readonly now: () => number
+  private readonly staleAfterMs: number
+  private readonly watchdogMaxChecks: number
   private activeSystemAccountId?: string
 
   constructor(
@@ -131,6 +159,8 @@ export class ChatGenerationRuntime {
     this.terminalProjectionLimit = Math.max(1, Math.min(128, Math.floor(options.terminalProjectionLimit ?? 32)))
     this.terminalProjectionTtlMs = Math.max(1_000, Math.min(86_400_000, Math.floor(options.terminalProjectionTtlMs ?? 5 * 60_000)))
     this.now = options.now ?? Date.now
+    this.staleAfterMs = Math.max(1_000, Math.min(60_000, Math.floor(options.staleAfterMs ?? 10_000)))
+    this.watchdogMaxChecks = Math.max(1, Math.min(10_000, Math.floor(options.watchdogMaxChecks ?? 180)))
   }
 
   get(systemAccountId: string, conversationId: string): RunningTurn | undefined {
@@ -168,6 +198,7 @@ export class ChatGenerationRuntime {
     if (existing && (existing.status === 'preparing' || existing.status === 'running')) return snapshotTurn(existing)!
     if (existing) this.releaseConnection(existing)
 
+    const startedAt = this.now()
     const turn: InternalTurn = {
       systemAccountId: input.systemAccountId,
       conversationId: input.conversationId,
@@ -177,13 +208,24 @@ export class ChatGenerationRuntime {
       controller: new AbortController(),
       reconnectAttempt: 0,
       userProjection: optimisticUserProjection(input),
-      projection: emptyAssistantProjection(input.conversationId, input.model),
+      startedAt,
+      lastTransportActivityAt: startedAt,
+      lastSemanticActivityAt: startedAt,
+      lastLivenessCheckAt: startedAt,
+      livenessState: 'active',
+      projection: emptyAssistantProjection(input.conversationId, input.model, `optimistic-turn:${input.clientMessageId}`, `optimistic-assistant:${input.clientMessageId}`, input.clientMessageId),
       stopRequested: false,
       connectionActive: false,
       accepted: false,
-      lastAccessAt: this.now()
+      lastAccessAt: startedAt,
+      watchdogChecking: false,
+      watchdogCheckCount: 0,
+      watchdogLookupFailureCount: 0,
+      watchdogNotFoundCount: 0,
+      watchdogExhausted: false
     }
     this.turns.set(key, turn)
+    this.scheduleWatchdog(key, turn)
     this.notify(key)
     void this.runPost(key, turn, input)
     return snapshotTurn(turn)!
@@ -196,7 +238,12 @@ export class ChatGenerationRuntime {
     if (existing && isTerminal(existing.status) && existing.turnId === input.turnId) return snapshotTurn(existing)!
     if (existing && existing.status === 'running' && existing.turnId === input.turnId) {
       existing.lastAccessAt = this.now()
-      if (existing.reconciliationReason === 'reconnect_exhausted' && !hasAuthoritativeServerProgress(existing, input)) return snapshotTurn(existing)!
+      const authoritativeProgress = hasAuthoritativeServerProgress(existing, input)
+      if ((existing.reconciliationReason === 'reconnect_exhausted' || existing.watchdogExhausted) && !authoritativeProgress) return snapshotTurn(existing)!
+      if (existing.watchdogExhausted) {
+        existing.watchdogCheckCount = 0
+        this.resetWatchdogFailures(existing)
+      }
       this.applyAttachProgress(existing, input)
       if (isTerminal(existing.status)) {
         this.markTerminal(existing, existing.status)
@@ -209,12 +256,14 @@ export class ChatGenerationRuntime {
         existing.reconnectAttempt = 0
         void this.runAttach(key, existing, false)
       }
+      this.scheduleWatchdog(key, existing)
       return snapshotTurn(existing)!
     }
     if (existing) this.releaseConnection(existing)
 
     const projectedStatus = input.projection?.status
     const initialStatus: ChatGenerationRuntimeStatus = projectedStatus === 'completed' || projectedStatus === 'failed' || projectedStatus === 'canceled' ? projectedStatus : 'running'
+    const startedAt = this.now()
     const turn: InternalTurn = {
       systemAccountId: input.systemAccountId,
       conversationId: input.conversationId,
@@ -225,14 +274,25 @@ export class ChatGenerationRuntime {
       status: initialStatus,
       controller: new AbortController(),
       reconnectAttempt: 0,
+      startedAt,
+      lastTransportActivityAt: startedAt,
+      lastSemanticActivityAt: startedAt,
+      lastLivenessCheckAt: startedAt,
+      livenessState: 'active',
       projection: input.projection ? cloneJsonSafe(input.projection) : emptyAssistantProjection(input.conversationId, '', input.turnId, input.assistantMessageId),
       stopRequested: false,
       connectionActive: false,
       accepted: true,
-      lastAccessAt: this.now()
+      lastAccessAt: startedAt,
+      watchdogChecking: false,
+      watchdogCheckCount: 0,
+      watchdogLookupFailureCount: 0,
+      watchdogNotFoundCount: 0,
+      watchdogExhausted: false
     }
     this.turns.set(key, turn)
     if (isTerminal(initialStatus)) this.markTerminal(turn, initialStatus)
+    else this.scheduleWatchdog(key, turn)
     this.notify(key)
     if (!isTerminal(initialStatus)) void this.runAttach(key, turn)
     return snapshotTurn(turn)!
@@ -241,18 +301,29 @@ export class ChatGenerationRuntime {
   async stop(
     systemAccountId: string,
     conversationId: string,
-    expected?: { clientMessageId: string; turnId: string }
+    expected?: { clientMessageId: string; turnId?: string }
   ): Promise<boolean> {
     const key = runtimeKey(systemAccountId, conversationId)
     const turn = this.turns.get(key)
-    if (!turn || !turn.turnId || !turn.clientMessageId || turn.stopRequested) return false
-    if (expected && (expected.clientMessageId !== turn.clientMessageId || expected.turnId !== turn.turnId)) return false
+    if (!turn || !turn.clientMessageId || turn.stopRequested) return false
+    if (expected && (expected.clientMessageId !== turn.clientMessageId || (expected.turnId !== undefined && expected.turnId !== turn.turnId))) return false
     turn.stopRequested = true
-    const target = { clientMessageId: turn.clientMessageId, turnId: turn.turnId }
+    const stoppingBeforeAcceptance = !turn.turnId
+    const target = {
+      clientMessageId: turn.clientMessageId,
+      ...(turn.turnId ? { turnId: turn.turnId } : {})
+    }
     this.releaseConnection(turn)
     try {
       await this.dependencies.stop(conversationId, target)
     } catch (error) {
+      if (stoppingBeforeAcceptance && error instanceof ChatStreamHttpError && error.status === 404 && error.code === 'chat_generation_not_found') {
+        if (this.turns.get(key) === turn && !isTerminal(turn.status)) {
+          this.markTerminal(turn, 'canceled')
+          this.notify(key)
+        }
+        return true
+      }
       if (this.turns.get(key) === turn && !isTerminal(turn.status)) {
         turn.stopRequested = false
         turn.reconnectAttempt = 0
@@ -343,6 +414,7 @@ export class ChatGenerationRuntime {
         reasoningEffort: input.reasoningEffort,
         serviceTier: input.serviceTier,
         signal: controller.signal,
+        onActivity: () => this.handleTransportActivity(key, turn),
         onEvent: (event) => this.handleEvent(key, turn, event)
       })
     } catch (error) {
@@ -358,13 +430,19 @@ export class ChatGenerationRuntime {
     turn.controller = new AbortController()
     const controller = turn.controller
     turn.connectionActive = true
-    if (reconnect) turn.reconnectAttempt += 1
+    if (reconnect) {
+      turn.reconnectAttempt += 1
+      turn.livenessState = 'reconnecting'
+      this.notify(key)
+    }
+    this.scheduleWatchdog(key, turn)
     let failure: unknown
     try {
       await this.dependencies.attachStream({
         conversationId: turn.conversationId,
         turnId: turn.turnId,
         signal: controller.signal,
+        onActivity: () => this.handleTransportActivity(key, turn),
         onEvent: (event) => this.handleEvent(key, turn, event)
       })
     } catch (error) {
@@ -375,10 +453,30 @@ export class ChatGenerationRuntime {
     this.handleConnectionEnd(key, turn, controller, failure)
   }
 
+  private handleTransportActivity(key: string, turn: InternalTurn): void {
+    if (this.turns.get(key) !== turn || isTerminal(turn.status)) return
+    const changed = turn.livenessState !== 'active'
+    turn.lastTransportActivityAt = this.now()
+    turn.livenessState = 'active'
+    this.resetWatchdogFailures(turn)
+    this.scheduleWatchdog(key, turn)
+    if (changed) this.notify(key)
+  }
+
+  private markSemanticActivity(key: string, turn: InternalTurn): void {
+    const now = this.now()
+    turn.lastTransportActivityAt = now
+    turn.lastSemanticActivityAt = now
+    turn.livenessState = 'active'
+    this.resetWatchdogFailures(turn)
+    this.scheduleWatchdog(key, turn)
+  }
+
   private handleEvent(key: string, turn: InternalTurn, event: ChatStreamEvent): void {
     if (this.turns.get(key) !== turn || isTerminal(turn.status)) return
     if (event.type === 'message.started') {
       if (turn.turnId && turn.turnId !== event.data.turnId) return
+      this.markSemanticActivity(key, turn)
       turn.turnId = event.data.turnId
       turn.accepted = true
       turn.assistantMessageId = event.data.assistantMessage.id
@@ -390,7 +488,8 @@ export class ChatGenerationRuntime {
       this.notify(key)
       return
     }
-    if (!Number.isSafeInteger(event.data.eventVersion) || event.data.eventVersion < 0 || event.data.eventVersion <= turn.eventVersion) return
+    if (!Number.isSafeInteger(event.data.eventVersion) || event.data.eventVersion < 0) return
+    if (event.type === 'message.snapshot' ? event.data.eventVersion < turn.eventVersion : event.data.eventVersion <= turn.eventVersion) return
     if (event.type === 'message.snapshot') {
       if (turn.turnId && event.data.turnId !== turn.turnId) return
       if (turn.assistantMessageId && event.data.assistant.id !== turn.assistantMessageId) return
@@ -400,6 +499,7 @@ export class ChatGenerationRuntime {
     } else if (turn.assistantMessageId && event.data.messageId !== turn.assistantMessageId) {
       return
     }
+    this.markSemanticActivity(key, turn)
     applyChatStreamEvent([turn.projection], event)
     turn.eventVersion = event.data.eventVersion
     turn.reconciliationReason = undefined
@@ -457,10 +557,142 @@ export class ChatGenerationRuntime {
       return
     }
     if (turn.reconnectTimer !== undefined) return
+    turn.livenessState = 'reconnecting'
+    this.notify(key)
     turn.reconnectTimer = this.dependencies.schedule(() => {
       turn.reconnectTimer = undefined
       void this.runAttach(key, turn)
     }, delay)
+  }
+
+  private scheduleWatchdog(key: string, turn: InternalTurn): void {
+    const schedule = this.dependencies.scheduleWatchdog
+    const cancel = this.dependencies.cancelWatchdog
+    if (!schedule || !cancel || !this.dependencies.getSubmissionStatus || isTerminal(turn.status) || turn.watchdogExhausted) return
+    if (turn.watchdogTimer !== undefined) cancel(turn.watchdogTimer)
+    const baseline = Math.max(turn.lastTransportActivityAt, turn.lastLivenessCheckAt)
+    const delay = Math.max(1, baseline + this.staleAfterMs - this.now())
+    turn.watchdogTimer = schedule(() => {
+      turn.watchdogTimer = undefined
+      void this.checkLiveness(key, turn)
+    }, delay)
+  }
+
+  private async checkLiveness(key: string, turn: InternalTurn): Promise<void> {
+    const getSubmissionStatus = this.dependencies.getSubmissionStatus
+    if (!getSubmissionStatus || this.turns.get(key) !== turn || isTerminal(turn.status) || turn.watchdogChecking) return
+    const baseline = Math.max(turn.lastTransportActivityAt, turn.lastLivenessCheckAt)
+    if (this.now() - baseline < this.staleAfterMs) { this.scheduleWatchdog(key, turn); return }
+    if (!turn.clientMessageId) { this.scheduleWatchdog(key, turn); return }
+    turn.watchdogChecking = true
+    turn.watchdogCheckCount += 1
+    turn.lastLivenessCheckAt = this.now()
+    turn.livenessState = 'checking'
+    this.notify(key)
+    let reattaching = false
+    try {
+      const status = await getSubmissionStatus(turn.conversationId, turn.clientMessageId)
+      if (this.turns.get(key) !== turn || isTerminal(turn.status)) return
+      turn.lastLivenessCheckAt = this.now()
+      turn.watchdogLookupFailureCount = 0
+      if (status.state === 'preparing') {
+        turn.watchdogNotFoundCount = 0
+        turn.watchdogFirstNotFoundAt = undefined
+        if (turn.watchdogCheckCount >= this.watchdogMaxChecks) this.exhaustWatchdog(key, turn)
+        return
+      }
+      if (status.state === 'not_found') {
+        turn.watchdogNotFoundCount += 1
+        turn.watchdogFirstNotFoundAt ??= this.now()
+        if (turn.watchdogNotFoundCount >= 3 && this.now() - turn.watchdogFirstNotFoundAt >= 1_000) {
+          turn.reconciliationReason = 'http_error'
+          turn.error = { name: 'ChatSubmissionNotFoundError', message: '发送请求未被服务端接受' }
+          this.markTerminal(turn, 'failed')
+          this.notify(key)
+        } else if (turn.watchdogCheckCount >= this.watchdogMaxChecks) {
+          this.exhaustWatchdog(key, turn)
+        }
+        return
+      }
+      turn.watchdogNotFoundCount = 0
+      turn.watchdogFirstNotFoundAt = undefined
+      if (turn.turnId && status.turnId !== turn.turnId) {
+        this.requestReconciliation(key, turn, 'http_error', {
+          name: 'ChatSubmissionIdentityChangedError',
+          message: '生成状态已变化，正在同步服务端消息'
+        })
+        return
+      }
+      turn.turnId = status.turnId
+      turn.assistantMessageId = status.assistantMessageId
+      turn.accepted = true
+      if (status.assistantStatus !== 'streaming' || status.runnerState === 'terminal') {
+        this.requestReconciliation(key, turn, 'runner_terminal', {
+          name: 'ChatRunnerTerminalError',
+          message: status.errorMessage || '生成已结束，正在同步服务端消息'
+        })
+        return
+      }
+      if (turn.watchdogCheckCount >= this.watchdogMaxChecks) {
+        this.exhaustWatchdog(key, turn)
+        return
+      }
+      reattaching = true
+      turn.livenessState = 'reconnecting'
+      turn.reconciliationReason = undefined
+      turn.error = undefined
+      turn.reconnectAttempt = 0
+      this.notify(key)
+      this.releaseConnection(turn)
+      turn.lastLivenessCheckAt = this.now()
+      void this.runAttach(key, turn, false)
+    } catch {
+      if (this.turns.get(key) === turn && !isTerminal(turn.status)) {
+        turn.lastLivenessCheckAt = this.now()
+        turn.watchdogLookupFailureCount += 1
+        if (turn.watchdogLookupFailureCount >= 5) {
+          turn.watchdogExhausted = true
+          this.requestReconciliation(key, turn, 'http_error', {
+            name: 'ChatSubmissionStatusUnavailableError',
+            message: '生成状态暂时无法确认，请稍后重新进入会话'
+          })
+        } else if (turn.watchdogCheckCount >= this.watchdogMaxChecks) {
+          this.exhaustWatchdog(key, turn)
+        }
+      }
+    } finally {
+      turn.watchdogChecking = false
+      if (!reattaching && this.turns.get(key) === turn && !isTerminal(turn.status)) this.scheduleWatchdog(key, turn)
+    }
+  }
+
+  private resetWatchdogFailures(turn: InternalTurn): void {
+    turn.watchdogLookupFailureCount = 0
+    turn.watchdogNotFoundCount = 0
+    turn.watchdogFirstNotFoundAt = undefined
+    turn.watchdogExhausted = false
+  }
+
+  private exhaustWatchdog(key: string, turn: InternalTurn): void {
+    if (this.turns.get(key) !== turn || isTerminal(turn.status) || turn.watchdogExhausted) return
+    turn.watchdogExhausted = true
+    if (!turn.accepted || !turn.turnId) {
+      turn.reconciliationReason = 'http_error'
+      turn.error = {
+        name: 'ChatSubmissionConfirmationTimeoutError',
+        code: 'chat_submission_confirmation_timeout',
+        message: '长时间无法确认消息是否已被服务端接受，请重新发送'
+      }
+      this.markTerminal(turn, 'failed')
+      this.notify(key)
+      return
+    }
+    this.releaseConnection(turn)
+    this.requestReconciliation(key, turn, 'http_error', {
+      name: 'ChatSubmissionStatusCheckLimitError',
+      code: 'chat_submission_status_check_limit',
+      message: '已停止自动确认生成状态，请稍后重新进入会话或手动停止'
+    })
   }
 
   private scheduleTerminalEviction(turn: InternalTurn): void {
@@ -523,6 +755,10 @@ export class ChatGenerationRuntime {
       this.dependencies.cancelSchedule(turn.terminalTimer)
       turn.terminalTimer = undefined
     }
+    if (turn.watchdogTimer !== undefined) {
+      this.dependencies.cancelWatchdog?.(turn.watchdogTimer)
+      turn.watchdogTimer = undefined
+    }
   }
 
   private requestReconciliation(
@@ -534,6 +770,7 @@ export class ChatGenerationRuntime {
     if (this.turns.get(key) !== turn || isTerminal(turn.status) || turn.reconciliationReason === reason) return
     turn.reconciliationReason = reason
     turn.error = error
+    turn.livenessState = 'checking'
     this.notify(key)
     try {
       const snapshot = snapshotTurn(turn)
@@ -586,12 +823,13 @@ function isTerminal(status: ChatGenerationRuntimeStatus): status is Extract<Chat
   return status === 'completed' || status === 'failed' || status === 'canceled'
 }
 
-function emptyAssistantProjection(conversationId: string, model: string, turnId = '', id = ''): ChatMessage {
+function emptyAssistantProjection(conversationId: string, model: string, turnId = '', id = '', clientMessageId?: string): ChatMessage {
   return {
     id,
     conversationId,
     turnId,
     sequenceNo: 0,
+    ...(clientMessageId ? { clientMessageId } : {}),
     role: 'assistant',
     status: 'streaming',
     contentText: '',
@@ -637,6 +875,10 @@ function snapshotTurn(turn?: InternalTurn): RunningTurn | undefined {
     status: turn.status,
     reconnectAttempt: turn.reconnectAttempt,
     userProjection: turn.userProjection ? cloneJsonSafe(turn.userProjection) : undefined,
+    startedAt: turn.startedAt,
+    lastTransportActivityAt: turn.lastTransportActivityAt,
+    lastSemanticActivityAt: turn.lastSemanticActivityAt,
+    livenessState: turn.livenessState,
     projection: cloneJsonSafe(turn.projection),
     reconciliationReason: turn.reconciliationReason,
     error: turn.error ? { ...turn.error } : undefined

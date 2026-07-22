@@ -35,8 +35,6 @@ type RouterOptions struct {
 	ManagementProfileUpdateHandler                    http.Handler
 	ManagementPasswordChangeHandler                   http.Handler
 	ManagementLogoutHandler                           http.Handler
-	ManagementSessionListHandler                      http.Handler
-	ManagementSessionRevokeHandler                    http.Handler
 	ManagementProxiesHandler                          http.Handler
 	ManagementProxyOptionsHandler                     http.Handler
 	ManagementProxyCreateHandler                      http.Handler
@@ -209,6 +207,7 @@ type RouterOptions struct {
 	ManagementClientIPUnblockHandler                  http.Handler
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
+	ManagementAuditLogsHandler                        http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
@@ -272,14 +271,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 			publicSettingsHandler := NewPublicSettingsHandler(*opts.PublicSettingsService, opts.Logger)
 			system.Get("/settings/public", publicSettingsHandler.ServeHTTP)
 		}
-		if opts.Config.ManagementAPIEnabled || opts.Config.ManagementAuthSessionsEnabled {
+		if opts.Config.ManagementAPIEnabled {
 			if opts.ManagementAPIAuthMiddleware == nil {
 				panic("ManagementAPIAuthMiddleware is required when Go management routes are enabled")
 			}
 			writeRoutesConfigured := managementWriteRoutesConfigured(opts)
-			if !opts.Config.ManagementAPIEnabled {
-				writeRoutesConfigured = opts.ManagementSessionRevokeHandler != nil
-			}
 			if writeRoutesConfigured && opts.ManagementAPIAuthTouchMiddleware == nil {
 				panic("ManagementAPIAuthTouchMiddleware is required for Go management write routes")
 			}
@@ -319,11 +315,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 					)
 				}
 			}
-			if !opts.Config.ManagementAPIEnabled &&
-				opts.ManagementSessionListHandler == nil &&
-				opts.ManagementSessionRevokeHandler == nil {
-				panic("at least one management auth session handler is required when JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED is true")
-			}
 			if opts.Config.ManagementAPIEnabled &&
 				opts.ManagementCaptchaHandler == nil &&
 				opts.ManagementLoginHandler == nil &&
@@ -331,8 +322,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementProfileUpdateHandler == nil &&
 				opts.ManagementPasswordChangeHandler == nil &&
 				opts.ManagementLogoutHandler == nil &&
-				opts.ManagementSessionListHandler == nil &&
-				opts.ManagementSessionRevokeHandler == nil &&
 				opts.ManagementProxiesHandler == nil &&
 				opts.ManagementProxyOptionsHandler == nil &&
 				opts.ManagementProxyCreateHandler == nil &&
@@ -505,6 +494,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementClientIPUnblockHandler == nil &&
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
+				opts.ManagementAuditLogsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
@@ -546,15 +536,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 				if opts.ManagementLogoutHandler != nil {
 					system.Post("/auth/logout", opts.ManagementLogoutHandler.ServeHTTP)
 				}
-			}
-			if opts.ManagementSessionListHandler != nil {
-				system.With(opts.ManagementAPIAuthMiddleware).Get("/auth/sessions", opts.ManagementSessionListHandler.ServeHTTP)
-			}
-			if opts.ManagementSessionRevokeHandler != nil {
-				system.With(managementAPIWriteAuthMiddleware).Delete("/auth/sessions/{id}", opts.ManagementSessionRevokeHandler.ServeHTTP)
-			}
-			if !opts.Config.ManagementAPIEnabled {
-				return
 			}
 			if opts.ManagementProxiesHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/proxies", opts.ManagementProxiesHandler.ServeHTTP)
@@ -1175,6 +1156,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementAuditLogsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs", opts.ManagementAuditLogsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/{id}", opts.ManagementAuditLogsHandler.ServeHTTP)
+			}
 			if opts.ManagementUsageRecordsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records", opts.ManagementUsageRecordsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records/{id}", opts.ManagementUsageRecordsHandler.ServeHTTP)
@@ -1579,6 +1564,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPUnblockHandler != nil ||
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
+		opts.ManagementAuditLogsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
@@ -1603,7 +1589,6 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 
 func managementWriteRoutesConfigured(opts RouterOptions) bool {
 	return opts.ManagementProfileUpdateHandler != nil ||
-		opts.ManagementSessionRevokeHandler != nil ||
 		opts.ManagementProxyCreateHandler != nil ||
 		opts.ManagementProxyUpdateHandler != nil ||
 		opts.ManagementProxyDeleteHandler != nil ||

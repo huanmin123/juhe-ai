@@ -221,11 +221,6 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
   const onDiagnosticAttemptProgress = accountTestTaskProgressReporter(task.id)
 
   try {
-    if (await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
-      await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
-      return true
-    }
-
     if (task.draftAccount) {
       const draft = task.draftAccount
       const draftAccount = accountSummaryFromDraftSnapshot(draft)
@@ -265,8 +260,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
             void updateAccountTestTaskMessageViaDbService(task.id, message)
           }
         })
-        if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
-          await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
+        if (controller.signal.aborted) {
+          await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
           return true
         }
         await completeAccountTestTaskViaDbService(task.id, result)
@@ -283,8 +278,8 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
           void updateAccountTestTaskMessageViaDbService(task.id, message)
         }
       })
-      if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
-        await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
+      if (controller.signal.aborted) {
+        await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
         return true
       }
       await completeAccountTestTaskViaDbService(task.id, result)
@@ -317,16 +312,16 @@ async function runAccountTestQueueItem(item: AccountTestQueueItem): Promise<bool
       }
     })
 
-    if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
-      await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
+    if (controller.signal.aborted) {
+      await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
       return true
     }
 
     await completeAccountTestTaskViaDbService(task.id, result)
     return true
   } catch (error) {
-    if (controller.signal.aborted || await isAccountTestTaskCancelRequestedViaDbService(task.id)) {
-      await markAccountTestTaskCanceledViaDbService(task.id, await accountTestTaskCancelMessageViaDbService(task.id))
+    if (controller.signal.aborted) {
+      await markAccountTestTaskCanceledViaDbService(task.id, '已停止测试')
       return true
     }
     logger.warn(errorLogFields(error, {
@@ -419,22 +414,6 @@ async function updateAccountTestTaskMessageViaDbService(taskId: string, message:
     taskId,
     message
   })
-}
-
-async function isAccountTestTaskCancelRequestedViaDbService(taskId: string): Promise<boolean> {
-  const result = await requestBackgroundWorkerDbService({
-    type: 'is_account_test_task_cancel_requested',
-    taskId
-  })
-  return result?.canceled ?? false
-}
-
-async function accountTestTaskCancelMessageViaDbService(taskId: string): Promise<string> {
-  const result = await requestBackgroundWorkerDbService({
-    type: 'read_account_test_task_cancel_message',
-    taskId
-  })
-  return result?.message ?? '已停止测试'
 }
 
 function accountDiagnosticAttemptMessage(progress: AccountDiagnosticAttemptProgress): string {

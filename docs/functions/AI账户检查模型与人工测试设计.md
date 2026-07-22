@@ -64,11 +64,13 @@ pnpm --filter juhe-ai-backend maintenance:migrate-account-health-check-endpoint-
 
 - `healthCheckModel` 必填。
 - 必须属于账户最终的 `supportedModels`。
-- 必须是当前账户协议可以发起最小检查请求的启用文本生成模型。
+- 必须是当前账户协议可以验证的启用模型。普通文本生成模型按账户保存的精确 endpoint mode 发起最小生成请求；OpenAI v1 档案中的 `mode=image_generation` 模型改用上游 `GET /v1/models` 目录探针，并要求标准 `object=list` 响应中存在精确模型 ID。
 - 删除支持模型时如果命中当前检查模型，必须先重新选择，不能静默切换到其他模型。
 - 后台任务发现检查模型缺失、不可见或不属于支持模型时，记录“检查模型配置异常”并停止本轮探针，不能猜测其他模型，也不能因此把账户标记为上游不可用。
 
-账户向用户暴露必填的“健康检查请求形态”，只能选择账户已经启用的 JSON / Streaming mode。保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。
+账户向用户暴露必填的“健康检查请求形态”，只能选择账户已经启用的 JSON / Streaming mode。普通生成模型保存值就是后台探针最终使用值；人工测试仍可为单次诊断临时选择其他已启用 mode。纯图像模型仍保留该字段作为任务和历史记录元数据，但实际探针固定使用模型目录，不得按该字段误调用 Chat Completions 或 Responses。
+
+图像模型目录探针是低成本存在性和凭据连通性检查，不生成图片，也不证明生成质量。真实 `/v1/images/generations` 与 `/v1/images/edits` 只在用户主动对话或显式验收时调用；后台周期任务禁止通过定时生图消耗额度。后续新增非 OpenAI 协议图像模型时必须为对应供应商驱动定义明确探针，不能猜测或复用文本端点。
 
 Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent 或 Interactions 的 JSON / Streaming 生成形态；混合供应商账户可以选择 Chat Completions、Responses、Messages 或 GenerateContent。人工测试和后台检查必须按本次选中的精确 mode 构造下游诊断请求，再由混合账户模型映射决定实际上游协议和模型；`message_token_counting`、`count_tokens`、`embed_content` 等工具接口不进入检查协议选项。
 
@@ -131,7 +133,7 @@ Gemini 原生账户可以从自身上游接口能力中选择 GenerateContent �
 
 列表“测试”是面向用户的自由模型诊断工具，不属于账户健康检查：
 
-- 模型候选来自该账户供应商、协议档案和当前账户所有者作用域可见的启用文本模型目录。
+- 模型候选来自该账户供应商、协议档案和当前账户所有者作用域可见的启用可测试模型目录；普通生成模型必须匹配协议能力，OpenAI v1 纯图像模型按模型目录探针能力进入候选。
 - 不受账户 `supportedModels` 限制，允许用户验证尚未加入账户支持模型的供应商模型。
 - 默认选中账户 `healthCheckModel`，但用户可以为本次测试自由切换其他候选模型。
 - 后端固定命中当前账户并绕过账户 `supportedModels` 调度过滤，只验证该账户凭据、Base URL、代理、协议和指定模型的实际响应。
@@ -176,9 +178,9 @@ GET /__aisys__/api/my-accounts/:id/test-options/models/:modelId
 
 能力响应只包含 `{ id, name, testEndpointModes }`。列表和能力接口均不得返回凭据；测试执行仍由后端按账户 ID 读取受控凭据，并在提交时重新校验模型与请求形态。
 
-`testEndpointModes` 必须由后端基于完整账户的上游接口能力返回；每个模型选项还必须返回该模型经过有效模型映射后可用的 `testEndpointModes`。前端不能从列表裁剪账户重新推导，切换模型时只展示后端计算出的“模型协议、模型映射和账户上游能力”交集。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。
+`testEndpointModes` 必须由后端基于完整账户的上游接口能力返回；每个普通生成模型选项还必须返回该模型经过有效模型映射后可用的 `testEndpointModes`。前端不能从列表裁剪账户重新推导，切换模型时只展示后端计算出的“模型协议、模型映射和账户上游能力”交集。合法跨协议映射按来源协议选择检查形态、按映射目标协议校验上游模型，不能用目标协议直接裁掉来源检查形态。模型目录探针不使用生成 endpoint mode 做能力过滤，只沿用账户已启用 mode 作为任务元数据，结果中的 `requestUrl=/v1/models` 才是实际请求形态的权威证据。
 
-后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；空正文、仅 `[DONE]`、HTML、畸形 JSON 或只有未完成数据片段都属于检查失败，不能把 `pending_test` 账户激活进号池。
+后台检查和人工测试不能仅凭 HTTP 2xx 判定成功。JSON 响应必须包含对应协议的正常完成对象，Streaming 响应必须包含对应协议的完成事件；模型目录探针必须得到标准 OpenAI 模型列表且精确包含目标模型 ID。空正文、仅 `[DONE]`、HTML、畸形 JSON、只有未完成数据片段或目录缺少目标模型都属于检查失败，不能把 `pending_test` 账户激活进号池。
 
 新增和编辑表单直接使用当前表单中的 `supportedModels`、`healthCheckModel`、endpoint modes 和未保存配置，不额外读取已保存详情。表单测试不再请求自由模型选项。
 
@@ -294,7 +296,7 @@ PUT /__aisys__/api/providers/:code/default-health-check-model
 人工测试接口：
 
 - 新增 / 编辑表单测试必须使用草稿 `healthCheckModel`，后端拒绝测试其他模型。
-- 列表测试必须显式提交本次 `model`，并校验模型属于当前账户供应商、协议档案和所有者作用域可见的启用文本模型目录；不要求属于账户 `supportedModels`。
+- 列表测试必须显式提交本次 `model`，并校验模型属于当前账户供应商、协议档案和所有者作用域可见的启用可测试模型目录；不要求属于账户 `supportedModels`。OpenAI v1 图像生成模型只能使用模型目录探针，不能因为账户保存了 `responses_sse` 就发送文本 Responses 请求。
 - 测试任务结果不能被账户保存、状态恢复或后台检查任务当作可信状态凭证。
 
 ## 15. 验证要求

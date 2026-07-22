@@ -99,10 +99,6 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		CookieSameSite:       "none",
 	}
 	operationLogQueue := &w2OperationLogQueueStub{}
-	sessionService := managementauth.NewSessionServiceWithOptions(managementauth.SessionServiceOptions{
-		Store: store,
-		Now:   func() time.Time { return now },
-	})
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                           cfg,
 		Logger:                           slog.Default(),
@@ -120,8 +116,6 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		),
 		ManagementPasswordChangeHandler: httpapi.NewManagementPasswordChangeHandler(authenticator, managementauth.NewPasswordService(store)),
 		ManagementLogoutHandler:         httpapi.NewManagementLogoutHandler(authenticator, cfg),
-		ManagementSessionListHandler:    httpapi.NewManagementSessionListHandler(sessionService),
-		ManagementSessionRevokeHandler:  httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
 		ManagementProxyOptionsHandler:   httpapi.NewManagementProxyOptionsHandler(managementproxies.NewService(store)),
 	})
 
@@ -154,59 +148,6 @@ func TestW2ManagementAuthPostgresSmoke(t *testing.T) {
 		t.Fatalf("current user = %+v", currentUserBody.Data)
 	}
 	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", adminReadLastSeenAt)
-
-	sessionListReq := httptest.NewRequest(http.MethodGet, "/__aisys__/api/auth/sessions?page=1&pageSize=10", nil)
-	sessionListReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
-	sessionListRec := httptest.NewRecorder()
-	router.ServeHTTP(sessionListRec, sessionListReq)
-	if sessionListRec.Code != http.StatusOK {
-		t.Fatalf("session list status = %d, body = %s", sessionListRec.Code, sessionListRec.Body.String())
-	}
-	var sessionListBody struct {
-		Data managementauth.SessionListResult `json:"data"`
-	}
-	if err := json.NewDecoder(sessionListRec.Body).Decode(&sessionListBody); err != nil {
-		t.Fatalf("decode session list response: %v", err)
-	}
-	if sessionListBody.Data.Total != 2 || sessionListBody.Data.HasMore || sessionListBody.Data.Page != 1 || sessionListBody.Data.PageSize != 10 {
-		t.Fatalf("session list pagination = %+v", sessionListBody.Data)
-	}
-	foundCurrent := false
-	foundOther := false
-	for _, item := range sessionListBody.Data.Items {
-		if item.ID == "sess_w2_management_auth" {
-			foundCurrent = item.Current
-			if item.ExpiresAt == "" || item.CreatedAt == "" || item.LastSeenAt == "" {
-				t.Fatalf("current session missing timestamps: %+v", item)
-			}
-		}
-		if item.ID == "sess_w2_management_auth_other" {
-			foundOther = !item.Current
-		}
-	}
-	if !foundCurrent || !foundOther {
-		t.Fatalf("session list items = %+v", sessionListBody.Data.Items)
-	}
-	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", adminReadLastSeenAt)
-
-	revokeOtherSessionReq := httptest.NewRequest(http.MethodDelete, "/__aisys__/api/auth/sessions/sess_w2_management_auth_other", nil)
-	revokeOtherSessionReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
-	revokeOtherSessionRec := httptest.NewRecorder()
-	router.ServeHTTP(revokeOtherSessionRec, revokeOtherSessionReq)
-	if revokeOtherSessionRec.Code != http.StatusOK {
-		t.Fatalf("revoke other session status = %d, body = %s", revokeOtherSessionRec.Code, revokeOtherSessionRec.Body.String())
-	}
-	var revokeOtherSessionBody struct {
-		Data managementauth.SessionRevokeResult `json:"data"`
-	}
-	if err := json.NewDecoder(revokeOtherSessionRec.Body).Decode(&revokeOtherSessionBody); err != nil {
-		t.Fatalf("decode revoke other session response: %v", err)
-	}
-	if !revokeOtherSessionBody.Data.Revoked || revokeOtherSessionBody.Data.Current || revokeOtherSessionBody.Data.ID != "sess_w2_management_auth_other" {
-		t.Fatalf("revoke other session response = %+v", revokeOtherSessionBody.Data)
-	}
-	assertW2ManagementSessionDeleted(t, ctx, db, "sess_w2_management_auth_other")
-	assertW2ManagementSessionLastSeenAt(t, ctx, db, "sess_w2_management_auth", now)
 
 	profileReq := httptest.NewRequest(http.MethodPatch, "/__aisys__/api/auth/me", strings.NewReader(`{"displayName":"W2ProfileRenamed"}`))
 	profileReq.Header.Set("Cookie", "juhe_ai_session="+sessionToken)
@@ -582,21 +523,6 @@ func assertW2ManagementSessionLastSeenAt(t *testing.T, ctx context.Context, db *
 	}
 	if !got.UTC().Equal(want.UTC()) {
 		t.Fatalf("session %s last_seen_at = %s, want %s", sessionID, got.UTC().Format(time.RFC3339Nano), want.UTC().Format(time.RFC3339Nano))
-	}
-}
-
-func assertW2ManagementSessionDeleted(t *testing.T, ctx context.Context, db *sql.DB, sessionID string) {
-	t.Helper()
-	var count int
-	if err := db.QueryRowContext(ctx, `
-		SELECT COUNT(*)
-		FROM juhe_business.system_sessions
-		WHERE id = $1
-	`, sessionID).Scan(&count); err != nil {
-		t.Fatalf("count W2 management session %s: %v", sessionID, err)
-	}
-	if count != 0 {
-		t.Fatalf("session %s count = %d, want 0", sessionID, count)
 	}
 }
 

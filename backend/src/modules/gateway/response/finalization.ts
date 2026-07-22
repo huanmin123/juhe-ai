@@ -1167,10 +1167,11 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
     runtimeResponseInspectionPoliciesForInput(input).length > 0
     || (
       interpretUpstreamResponseSemantics
-      && (
-        input.clientStrategy?.codexCompactionExpected === true
-        || (input.hybridRoute && !input.hybridRoute.scoringFallbackApplied)
-      )
+      && input.clientStrategy?.codexCompactionExpected === true
+    )
+    || (
+      input.hybridRoute?.config.qualityInspection?.enabled === true
+      && !input.hybridRoute.scoringFallbackApplied
     )
     || (
       input.upstreamResponse.ok
@@ -1649,26 +1650,6 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
           }
         })
       }
-      const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterSuccessAsync(
-        clientIpAccountAvoidanceTracker,
-        account.id,
-        settings
-      )
-      if (clientIpAvoidanceResult.confirmedAccountIds.length > 0 || clientIpAvoidanceResult.cleared) {
-        getRequestLogger().info({
-          event: 'gateway_client_ip_account_failure_confirmed',
-          accountId: account.id,
-          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-          clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
-        }, '客户端 IP 级账号回避状态已按成功响应更新')
-        auditCapture.addGatewayMetadata({
-          label: 'client_ip_account_avoidance_update',
-          metadata: {
-            confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
-            clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
-          }
-        })
-      }
     }
     if (input.automaticAccountStateMutationEnabled !== false) {
       await applyAccountErrorHandlingWithCacheInvalidation(account, {
@@ -1681,6 +1662,29 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
       && usageContext.trafficSource !== 'gateway'
       && (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage)) {
       clearAccountStreamFailureStateWithCacheInvalidation(account)
+    }
+  }
+
+  if (upstreamResponse.ok && !isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
+    const clientIpAvoidanceResult = await confirmClientIpAccountAvoidanceAfterSuccessAsync(
+      clientIpAccountAvoidanceTracker,
+      account.id,
+      settings
+    )
+    if (clientIpAvoidanceResult.confirmedAccountIds.length > 0 || clientIpAvoidanceResult.cleared) {
+      getRequestLogger().info({
+        event: 'gateway_client_ip_account_failure_confirmed',
+        accountId: account.id,
+        confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
+        clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
+      }, '客户端 IP 级账号回避状态已按成功响应更新')
+      auditCapture.addGatewayMetadata({
+        label: 'client_ip_account_avoidance_update',
+        metadata: {
+          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
+          clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
+        }
+      })
     }
   }
 

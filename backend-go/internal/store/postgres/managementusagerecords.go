@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -67,6 +68,8 @@ const managementUsageRecordSelectColumns = `
   ur.error_code,
   ur.error_message,
   ur.created_at`
+
+var managementUsageRecordIDDatePattern = regexp.MustCompile(`^usage_(\d{8})_s\d+_`)
 
 const managementUsageRecordFromClause = `
 FROM juhe_usage.usage_records AS ur
@@ -184,32 +187,74 @@ func managementUsageRecordListQuery(input port.ManagementUsageRecordListInput, l
 		args = append(args, value)
 		return fmt.Sprintf("$%d", len(args))
 	}
+	systemAccountArg := ""
 	if value := strings.TrimSpace(input.SystemAccountID); value != "" {
-		conditions = append(conditions, "ur.system_account_id = "+addArg(value)+"::text")
+		systemAccountArg = addArg(value)
+		conditions = append(conditions, "ur.system_account_id = "+systemAccountArg+"::text")
 	}
 	addManagementUsageRecordPrefixFilter(&conditions, &args, "ur.trace_id", input.TraceID)
 	if value := strings.TrimSpace(norm.NFKC.String(input.AccountKeyword)); value != "" {
 		lower := addArg(value)
 		upper := addArg(textPrefixUpperBound(value))
-		conditions = append(conditions, `ur.account_id IN (
-  SELECT matched.id
-  FROM (
-    SELECT accounts.id, accounts.name AS match_name
+		accountMatches := []string{`SELECT accounts.id, accounts.name AS match_name, 1 AS source_rank
     FROM juhe_business.accounts AS accounts
     WHERE accounts.deleted_at IS NULL
-      AND accounts.name COLLATE "C" >= `+lower+`::text
-      AND accounts.name COLLATE "C" < `+upper+`::text
-    UNION
-    SELECT instances.id, sources.name AS match_name
+      AND accounts.name COLLATE "C" >= ` + lower + `::text
+      AND accounts.name COLLATE "C" < ` + upper + `::text`,
+			`SELECT instances.id, sources.name AS match_name, 2 AS source_rank
     FROM juhe_business.accounts AS sources
     INNER JOIN juhe_business.accounts AS instances
       ON instances.authorization_instance_source_account_id = sources.id
     WHERE sources.deleted_at IS NULL
       AND instances.deleted_at IS NULL
-      AND sources.name COLLATE "C" >= `+lower+`::text
-      AND sources.name COLLATE "C" < `+upper+`::text
-  ) AS matched
-  ORDER BY matched.match_name COLLATE "C", matched.id
+      AND sources.name COLLATE "C" >= ` + lower + `::text
+      AND sources.name COLLATE "C" < ` + upper + `::text`}
+		if systemAccountArg != "" {
+			accountMatches[0] += "\n      AND accounts.system_account_id = " + systemAccountArg + "::text"
+			accountMatches[1] += "\n      AND instances.system_account_id = " + systemAccountArg + "::text"
+			accountMatches = append(accountMatches,
+				`SELECT accounts.id, accounts.name AS match_name, 3 AS source_rank
+    FROM juhe_business.accounts AS accounts
+    INNER JOIN juhe_business.resource_authorizations AS direct_authorization
+      ON direct_authorization.resource_type = 'account'
+      AND direct_authorization.resource_id = accounts.id
+      AND direct_authorization.grantee_system_account_id = `+systemAccountArg+`::text
+    WHERE accounts.deleted_at IS NULL
+      AND accounts.name COLLATE "C" >= `+lower+`::text
+      AND accounts.name COLLATE "C" < `+upper+`::text`,
+				`SELECT accounts.id, accounts.name AS match_name, 4 AS source_rank
+    FROM juhe_business.accounts AS accounts
+    INNER JOIN juhe_business.group_accounts AS ga
+      ON ga.account_id = accounts.id
+      AND ga.enabled = true
+    INNER JOIN juhe_business.resource_authorizations AS group_authorization
+      ON group_authorization.resource_type = 'group'
+      AND group_authorization.resource_id = ga.group_id
+      AND group_authorization.grantee_system_account_id = `+systemAccountArg+`::text
+    WHERE accounts.deleted_at IS NULL
+      AND accounts.name COLLATE "C" >= `+lower+`::text
+      AND accounts.name COLLATE "C" < `+upper+`::text`)
+		}
+		aliases := []string{"owned_candidates", "instance_candidates", "direct_candidates", "group_candidates"}
+		orders := []string{
+			`accounts.name COLLATE "C", accounts.id`,
+			`sources.name COLLATE "C", instances.id`,
+			`accounts.name COLLATE "C", accounts.id`,
+			`accounts.name COLLATE "C", accounts.id`,
+		}
+		for index := range accountMatches {
+			accountMatches[index] = boundedManagementUsageRecordAccountMatch(accountMatches[index], aliases[index], orders[index])
+		}
+		conditions = append(conditions, `ur.account_id IN (
+  SELECT ordered.id
+  FROM (
+    SELECT DISTINCT ON (matched.id) matched.id, matched.match_name, matched.source_rank
+    FROM (
+      `+strings.Join(accountMatches, "\n      UNION ALL\n      ")+`
+    ) AS matched
+    ORDER BY matched.id, matched.source_rank, matched.match_name COLLATE "C"
+  ) AS ordered
+  ORDER BY ordered.source_rank, ordered.match_name COLLATE "C", ordered.id
   LIMIT 200
 )`)
 	}
@@ -260,17 +305,46 @@ func managementUsageRecordListQuery(input port.ManagementUsageRecordListInput, l
 	return query.String(), args
 }
 
+func boundedManagementUsageRecordAccountMatch(query, alias, orderBy string) string {
+	return `SELECT ` + alias + `.id, ` + alias + `.match_name, ` + alias + `.source_rank
+    FROM (
+      ` + query + `
+      ORDER BY ` + orderBy + `
+      LIMIT 200
+    ) AS ` + alias
+}
+
 func managementUsageRecordDetailQuery(input port.ManagementUsageRecordDetailInput) (string, []any) {
-	args := []any{strings.TrimSpace(input.ID)}
+	recordID := strings.TrimSpace(input.ID)
+	args := []any{recordID}
+	addArg := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
 	query := "SELECT" + managementUsageRecordSelectColumns + `,
   ur.request_snapshot_json,
   ur.response_snapshot_json` + managementUsageRecordFromClause + "\nWHERE ur.id = $1::text"
+	if startAt, endAt, ok := managementUsageRecordPartitionBoundsFromID(recordID); ok {
+		query += "\n  AND ur.created_at >= " + addArg(startAt) + "::timestamptz"
+		query += "\n  AND ur.created_at < " + addArg(endAt) + "::timestamptz"
+	}
 	if systemAccountID := strings.TrimSpace(input.SystemAccountID); systemAccountID != "" {
-		args = append(args, systemAccountID)
-		query += "\n  AND ur.system_account_id = $2::text"
+		query += "\n  AND ur.system_account_id = " + addArg(systemAccountID) + "::text"
 	}
 	query += "\nLIMIT 1"
 	return query, args
+}
+
+func managementUsageRecordPartitionBoundsFromID(id string) (time.Time, time.Time, bool) {
+	match := managementUsageRecordIDDatePattern.FindStringSubmatch(strings.TrimSpace(id))
+	if len(match) != 2 {
+		return time.Time{}, time.Time{}, false
+	}
+	startAt, err := time.Parse("20060102", match[1])
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	return startAt, startAt.AddDate(0, 0, 1), true
 }
 
 func addManagementUsageRecordPrefixFilter(conditions *[]string, args *[]any, column, value string) {

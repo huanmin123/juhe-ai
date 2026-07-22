@@ -36,6 +36,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementaccounttrafficmigration"
 	"juhe-ai/backend-go/internal/modules/managementaccountupdate"
 	"juhe-ai/backend-go/internal/modules/managementapikeys"
+	"juhe-ai/backend-go/internal/modules/managementauditlogs"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementauthorizationoptions"
 	"juhe-ai/backend-go/internal/modules/managementauthorizations"
@@ -263,8 +264,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProfileUpdateHandler:                    managementHandlers.ProfileUpdateHandler,
 		ManagementPasswordChangeHandler:                   managementHandlers.PasswordChangeHandler,
 		ManagementLogoutHandler:                           managementHandlers.LogoutHandler,
-		ManagementSessionListHandler:                      managementHandlers.SessionListHandler,
-		ManagementSessionRevokeHandler:                    managementHandlers.SessionRevokeHandler,
 		ManagementProxiesHandler:                          managementHandlers.ProxiesHandler,
 		ManagementProxyOptionsHandler:                     managementHandlers.ProxyOptionsHandler,
 		ManagementProxyCreateHandler:                      managementHandlers.ProxyCreateHandler,
@@ -437,6 +436,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementClientIPUnblockHandler:                  managementHandlers.ClientIPUnblockHandler,
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
+		ManagementAuditLogsHandler:                        managementHandlers.AuditLogsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
 		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
@@ -497,8 +497,6 @@ type managementAPIHandlers struct {
 	ProfileUpdateHandler                    http.Handler
 	PasswordChangeHandler                   http.Handler
 	LogoutHandler                           http.Handler
-	SessionListHandler                      http.Handler
-	SessionRevokeHandler                    http.Handler
 	ProxiesHandler                          http.Handler
 	ProxyOptionsHandler                     http.Handler
 	ProxyCreateHandler                      http.Handler
@@ -671,6 +669,7 @@ type managementAPIHandlers struct {
 	ClientIPUnblockHandler                  http.Handler
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
+	AuditLogsHandler                        http.Handler
 	RuntimeLogsHandler                      http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
 	ExternalIntegrationSourceDetailHandler  http.Handler
@@ -747,19 +746,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 	catalogSnapshotRebuilder managementprovidermodels.CatalogSnapshotRebuilder,
 ) managementAPIHandlers {
-	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
+	if !cfg.ManagementAPIEnabled {
 		return managementAPIHandlers{}
 	}
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
-	sessionService := managementauth.NewSessionService(store)
-	if !cfg.ManagementAPIEnabled {
-		return managementAPIHandlers{
-			AuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
-			AuthTouchMiddleware:  httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
-			SessionListHandler:   httpapi.NewManagementSessionListHandler(sessionService),
-			SessionRevokeHandler: httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
-		}
-	}
 	captchaService := managementauth.NewCaptchaService(stateRedis)
 	loginGuardService := managementauth.NewLoginGuardService(stateRedis)
 	loginService := managementauth.NewLoginServiceWithOptions(managementauth.LoginServiceOptions{
@@ -923,6 +913,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
+	auditLogService := managementauditlogs.NewService(store)
 	runtimeLogService := managementruntimelogs.NewService(store)
 	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
 		managementexternalintegrationsources.ServiceOptions{
@@ -983,8 +974,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		ProfileUpdateHandler:                    httpapi.NewManagementProfileUpdateHandlerWithOperationLog(profileService, operationLogOptions),
 		PasswordChangeHandler:                   httpapi.NewManagementPasswordChangeHandler(authenticator, passwordService),
 		LogoutHandler:                           httpapi.NewManagementLogoutHandler(authenticator, cfg),
-		SessionListHandler:                      httpapi.NewManagementSessionListHandler(sessionService),
-		SessionRevokeHandler:                    httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
 		ProxiesHandler:                          httpapi.NewManagementProxiesHandler(proxyService),
 		ProxyOptionsHandler:                     httpapi.NewManagementProxyOptionsHandler(proxyService),
 		ProxyCreateHandler:                      httpapi.NewManagementProxyCreateHandlerWithOperationLog(proxyService, operationLogOptions),
@@ -1157,7 +1146,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		ClientIPUnblockHandler:                  httpapi.NewManagementClientIPUnblockHandlerWithOperationLog(clientIPPolicyService, operationLogOptions),
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
-		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService),
+		AuditLogsHandler:                        httpapi.NewManagementAuditLogsHandler(auditLogService),
+		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),

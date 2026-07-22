@@ -10,6 +10,8 @@
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
+- 2026-07-18 产品撤销：项目不再提供登录设备或登录会话列表 / 按 ID 撤销管理。Go W3 的 `GET /auth/sessions`、`DELETE /auth/sessions/{id}`、`JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED` 及其前端入口、存储查询和测试已由 `PLAN-0150` 完整删除；本文件其余历史记录只说明该切片曾实现，不再代表当前能力、迁移目标或待生产接管事项。登录、当前令牌退出、改密和改密后的其他令牌安全撤销继续保留。
+
 ## 多轮批量迁移规则（2026-07-20）
 
 - 本计划不要求第一轮迁移一次达到最终完美状态，采用“三轮迁移、最后减法”策略：第一轮快速扩大 Go 模块覆盖，第二轮从头对照最新 Node 修复遗漏，第三轮统一做跨模块真实验收和删除门禁。
@@ -841,3 +843,30 @@
 - 返回 `retentionDays`、索引最早/最新时间、总数、levels 与 events；空快照保持 `0` 与空数组、时间字段省略。retention days 从当前系统设置读取，缺失时使用 Node 同源默认值 14。
 - 本块只迁移静态 PostgreSQL facet 数据。Node 继续单独拥有日志文件 consumer、writer cursor、server/worker/queue/grep 与 gateway side-effect runtime owner；Go 返回 Node DTO 兼容的 unavailable / null 运行态形状，明确不伪造实时值，也不据此切换 owner。
 - 最小验证已通过：`go test -p=1 ./internal/httpapi ./internal/modules/managementruntimelogs ./internal/store/postgres ./internal/app -count=1`。Windows 默认并发编译曾在 Go compiler SSA 阶段崩溃，`-p=1` 同一目标包验证通过；未执行 Docker 或真实 Node writer -> Go reader smoke。
+
+## 2026-07-21 W6 审计日志列表只读首轮迁移
+
+- Go 已新增管理员 `GET /__aisys__/api/audit-logs` 精确列表路由，使用只读 session、管理端读限流与 `no-store`；普通用户保持 403，依赖错误只返回通用 500。
+- PostgreSQL reader 只选择 `juhe_dataset.audit_logs` 摘要列并一次关联名称，支持 Node 当前筛选与 1000 行 progressive window，固定 `created_at DESC, id DESC`，不执行 `COUNT`，不读取 payload、attempt 或热搜索文件，也未新增脱敏、日志清洗或 sanitizer。
+- migration `000069` 保留 Node writer 继续运行所需的 audit logs / attempts / payload blobs / payload refs / error groups 五张表和索引。Go 不接管捕获、Redis Stream / IPC、ingest worker、详情、payload、error groups、hot search、runtime 或保留清理；这些路径仍由 Node 单 owner。
+- 定向 Go、migration catalog 和 integration package 编译已通过；真实 Node writer -> Go reader PostgreSQL、查询计划、真实 listener / browser、反向代理单 owner、回滚和 Node 删除尚未执行，不宣称生产接管。
+
+## 2026-07-22 W6 使用记录已迁移语义漂移修复
+
+- 对照最新 Node 后，Go 账户关键字候选已按自有账户、授权实例、直接账户授权、启用的分组授权四段优先级生成，限定当前系统账户；每段先按名称 / ID 排序并限制 200，再按账户 ID 去重并保持最终 200 条上限，不新增 Node 未使用的授权状态或过期过滤。
+- 标准 `usage_YYYYMMDD_sN_*` 详情 ID 已解析真实 UTC 日期并追加单日 `[start, end)` 分区条件；非法日期、自定义和旧格式 ID 保持原 ID-only 回退。详情同时补齐 request snapshot 的 endpoint 回退、ECMAScript snapshot 空白判定、request / response snapshot 非空时必须为 JSON 对象、合法空对象必须保留、`modelMappingApplied: false` 必需字段和列表专用全账户筛选门禁不拦截详情。
+- store / service / HTTP 回归覆盖授权 SQL、候选优先级结构、合法与非法 ID、endpoint 优先级、管理员未知 query 和个人详情强制自身范围。真实 PostgreSQL 多分区 `EXPLAIN`、Node writer -> Go reader、真实 listener / browser / 反向代理、生产切流和 Node 删除继续作为未完成门禁。
+
+## 2026-07-22 W6 审计日志详情只读首轮迁移
+
+- Go 已新增管理员 `GET /__aisys__/api/audit-logs/{id}`。列表 / 详情请求上下文上限均为 120 秒；详情复用列表摘要投影，读取 attempts、可选 error group 和 payload refs 元数据；attempts / payloads 保持稳定顺序和空数组，主记录不存在返回 Node 同语义 404，依赖错误返回通用 500。
+- PostgreSQL 先读取主记录，再并发读取三类互不依赖的子项并在等待完成后统一组装，避免共享结果并发写；错误组是软引用，悬空时省略。payload 只根据 blob ID返回 `hasHeaders/hasBody`，不读取 blob 文件、headers 或 body 原文。
+- attempt proxy / upstream URL 保留凭据与 query 原文，只对齐 Node 当前首尾 ECMAScript 空白处理；未新增脱敏、日志清洗或 sanitizer。未知 `trafficSource` 与 Node mapper 一样使详情失败，不返回未定义枚举。
+- `/audit-logs/search-hot`、`/runtime`、`/error-groups*`、`/{id}/payloads/{payloadId}` 仍未迁移并在 Go 保持 404。Node 继续单独拥有这些读路径以及捕获、Redis Stream / IPC、ingest writer、worker 和保留清理。
+- 定向 service / HTTP / router / PostgreSQL 查询测试已通过；真实 Node writer -> Go reader PostgreSQL、查询计划、真实 listener / browser、精确反向代理切流、回滚和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 运行日志索引临时关闭契约同步
+
+- 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
+- Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
+- 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。

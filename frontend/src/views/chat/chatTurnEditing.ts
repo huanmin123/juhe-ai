@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatMessageContentBlock } from '@/types/domain/chat'
+import type { JSONContent } from '@tiptap/core'
 import { maxChatImageCount } from './composer/chatImageSelection'
 
 export interface ChatTurnEditCandidate {
@@ -8,6 +9,12 @@ export interface ChatTurnEditCandidate {
   assistantMessageId: string
   content: string
   contentBlocks: Array<{ type: 'input_text'; text: string } | { type: 'input_image'; assetId: string }>
+}
+
+export interface ChatTurnRetryCandidate extends ChatTurnEditCandidate {
+  assistantStatus: 'failed' | 'canceled'
+  model: string
+  replaceTurnId?: string
 }
 
 export interface ChatSubmitFailureResolution {
@@ -45,6 +52,91 @@ export function beginLatestTurnEdit(messages: readonly ChatMessage[], userMessag
     content: userMessage.contentText,
     contentBlocks
   }
+}
+
+export function beginLatestTurnRetry(messages: readonly ChatMessage[]): ChatTurnRetryCandidate | undefined {
+  if (messages.length < 2) return undefined
+  const userMessage = messages[messages.length - 2]
+  const assistantMessage = messages[messages.length - 1]
+  if (!userMessage || !assistantMessage || userMessage.role !== 'user' || assistantMessage.role !== 'assistant') return undefined
+  if (assistantMessage.status !== 'failed' && assistantMessage.status !== 'canceled') return undefined
+  if (isUnacceptedOptimisticPair(userMessage, assistantMessage)) {
+    const contentBlocks = strictInputBlocks(userMessage.contentBlocks)
+    if (!contentBlocks?.length) return undefined
+    return {
+      conversationId: userMessage.conversationId,
+      turnId: userMessage.turnId,
+      userMessageId: userMessage.id,
+      assistantMessageId: assistantMessage.id,
+      content: userMessage.contentText,
+      contentBlocks,
+      assistantStatus: assistantMessage.status,
+      model: userMessage.model || assistantMessage.model
+    }
+  }
+  const editable = beginLatestTurnEdit(messages, userMessage.id)
+  if (!editable) return undefined
+  return { ...editable, assistantStatus: assistantMessage.status, model: userMessage.model || assistantMessage.model, replaceTurnId: editable.turnId }
+}
+
+function isUnacceptedOptimisticPair(userMessage: ChatMessage, assistantMessage: ChatMessage): boolean {
+  const clientMessageId = userMessage.clientMessageId
+  return Boolean(clientMessageId
+    && assistantMessage.clientMessageId === clientMessageId
+    && userMessage.conversationId === assistantMessage.conversationId
+    && userMessage.turnId === `optimistic-turn:${clientMessageId}`
+    && assistantMessage.turnId === userMessage.turnId
+    && userMessage.id === `optimistic-user:${clientMessageId}`
+    && assistantMessage.id === `optimistic-assistant:${clientMessageId}`
+    && userMessage.sequenceNo === 0
+    && assistantMessage.sequenceNo === 0
+    && userMessage.status === 'completed')
+}
+
+export function restoreChatMessagesAfterRejectedReplacement(input: {
+  messages: readonly ChatMessage[]
+  clientMessageId: string
+  originalMessages: readonly ChatMessage[]
+}): ChatMessage[] {
+  const optimisticTurnId = `optimistic-turn:${input.clientMessageId}`
+  const originalIds = new Set(input.originalMessages.map((item) => item.id))
+  return [
+    ...input.messages.filter((item) => item.turnId !== optimisticTurnId && item.clientMessageId !== input.clientMessageId && !originalIds.has(item.id)),
+    ...input.originalMessages
+  ].sort((left, right) => left.sequenceNo - right.sequenceNo || left.id.localeCompare(right.id))
+}
+
+export function removeInvalidatedGeneratedAssetsFromDraft(input: {
+  snapshot: JSONContent
+  replacedAssistantBlocks: readonly ChatMessageContentBlock[] | undefined
+  submittedBlocks: readonly ChatTurnEditCandidate['contentBlocks'][number][]
+}): { snapshot: JSONContent; removedCount: number } {
+  const retainedAssetIds = new Set(input.submittedBlocks
+    .filter((block) => block.type === 'input_image')
+    .map((block) => block.assetId))
+  const invalidatedAssetIds = new Set<string>()
+  for (const block of input.replacedAssistantBlocks ?? []) {
+    if (block.type === 'output_image' && !retainedAssetIds.has(block.assetId)) invalidatedAssetIds.add(block.assetId)
+  }
+  if (invalidatedAssetIds.size === 0) return { snapshot: input.snapshot, removedCount: 0 }
+
+  let removedCount = 0
+  const prune = (node: JSONContent): JSONContent | undefined => {
+    if (node.type === 'chatImageAttachment' && invalidatedAssetIds.has(String(node.attrs?.assetId ?? ''))) {
+      removedCount += 1
+      return undefined
+    }
+    const next: JSONContent = { ...node }
+    if (node.content) {
+      const content = node.content.map(prune).filter((child): child is JSONContent => Boolean(child))
+      if (content.length > 0) next.content = content
+      else delete next.content
+    }
+    return next
+  }
+  const snapshot = prune(input.snapshot) ?? { type: 'doc' }
+  if (snapshot.type === 'doc' && !snapshot.content?.length) snapshot.content = [{ type: 'paragraph' }]
+  return { snapshot, removedCount }
 }
 
 export function resolveChatSubmitFailure(input: {

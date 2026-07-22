@@ -98,7 +98,7 @@ PLAN-0104 只实现本机有界文件存储；对象存储仅作为未来扩展�
 - 请求流与 Busboy 通过 pipeline 连接；客户端中断必须终止文件写入、拒绝请求并在 `finally` 清理临时目录，不能等待永远不会到达的 multipart `finish`。
 - 上传接口先验证登录用户、会话归属、MIME、单图/总图预算和解码后的真实格式。
 - 图像处理在有并发上限的 worker thread 或专用执行池完成；上传接口等待处理结果后返回 `assetId`。
-- 聊天发送接口只传有序 `contentBlocks`，其中图片块为 `{ type: "image", assetId }`。
+- 聊天发送接口只传有序 `contentBlocks`，其中图片块为 `{ type: "input_image", assetId }`。
 
 ### 5.2 缩放与压缩
 
@@ -262,6 +262,17 @@ historyBudget = effectiveInputLimit
 - 图片说明调用使用 90 秒超时，结构化压缩调用使用 120 秒超时；超时保留旧上下文并进入可重试状态。
 - 维护任务会恢复 stale `compacting` claim，再清理过期 checkpoint，避免长期占用批次导致清理饥饿。
 
+### 7.4 用户手动压缩
+
+用户可以通过 AI 问答 `/compact` 命令请求压缩当前对话，但这不改变只读上下文圆环、模型窗口或压缩质量门禁：
+
+- `POST /my-chat/conversations/:id/context/compactions` 只接受当前选中模型；API Key、协议、网关地址和有效输入窗口由服务端重新解析。
+- 正在准备、生成或清空的对话返回冲突；正在压缩时返回幂等接受状态，没有可压缩完整轮次时返回 `no_compactable_turn`。
+- 服务端必须先持久化 `compact_pending` 再返回 `202`，随后复用同一分页读取、claim、CAS、checkpoint 安装和失败恢复链路，不能另建手动摘要表或把完整历史载入内存。
+- 前端收到服务端接受结果后才显示压缩状态，并轮询 `context-status` 到 `ready` 或 `compact_failed`；选择命令本身不能乐观宣称压缩完成。
+- 手动压缩会使用会话绑定的真实 API Key 调用模型，继续产生正常额度、用量和审计事实，确认界面必须明确这一点。
+- 手动压缩失败继续使用旧 checkpoint 和历史，不删除页面消息，也不改变模型窗口。
+
 ## 8. 上游前缀 / KV 缓存
 
 上下文预算解决“单次请求能否放入模型窗口”，上游 Prompt Cache 解决“相同前缀是否需要重复计算和按普通输入价格计费”，两者必须分别设计。供应商通常按 token/item 前缀匹配，不会因为语义近似、会话 ID 相同或本地 checkpoint 相同就自动命中。
@@ -392,8 +403,11 @@ AI 问答不新建一套缓存路由。稳定 `prompt_cache_key` 进入现有网
 
 - `POST /my-chat/conversations/:id/assets`：流式上传并返回处理后的资产元数据。
 - `GET /my-chat/conversations/:id/assets/:assetId/content`：按会话归属读取私有处理图。
-- `GET /my-chat/conversations/:id/context-status`：返回圆环所需的 token、窗口、状态和估算标记。
+- `GET /my-chat/conversations/:id/context-status`：返回圆环所需的 token、窗口、状态、估算标记，以及手动压缩需要的安全 `errorCode`、`retryAt` 和 `attemptCount`；不返回裸上游错误。
+- `POST /my-chat/conversations/:id/context/compactions`：请求当前对话进入结构化压缩；先持久化 pending，再以 `202` 返回，禁止等待完整 120 秒压缩调用后才响应。
 - `POST /my-chat/conversations/:id/stream`：删除 `contextWindowTokens`，图片块只接收 `assetId`。
+
+手动压缩请求体严格为 `{ "model": "当前已选模型" }`。没有可压缩尾轮、当前正在发送或正在清空时返回明确 `409`；首次接受和已经运行都返回 `202`，状态分别为 `accepted`、`already_running`。前端只在服务端接受后显示低噪压缩状态，并继续轮询 `context-status`；不得先改写 token、checkpoint 或消息历史。进程重启后已持久化的 `compact_pending` 可以恢复 claim，同一会话不得启动第二个压缩任务。
 
 服务端不信任客户端提供的 token、尺寸、MIME、asset owner 或上下文窗口。
 

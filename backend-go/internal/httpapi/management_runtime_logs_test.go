@@ -136,14 +136,45 @@ func TestManagementRuntimeLogsHandlerReturnsStaticFacets(t *testing.T) {
 			TotalIndexed      int64                              `json:"totalIndexed"`
 			Levels            []managementruntimelogs.FacetLevel `json:"levels"`
 			Events            []string                           `json:"events"`
+			IndexEnabled      bool                               `json:"indexEnabled"`
+			UnavailableReason *string                            `json:"unavailableReason"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if body.Data.RetentionDays != 14 || body.Data.EarliestIndexedAt == "" || body.Data.LatestIndexedAt == "" ||
-		body.Data.TotalIndexed != 3 || len(body.Data.Levels) != 1 || len(body.Data.Events) != 1 {
+		body.Data.TotalIndexed != 3 || len(body.Data.Levels) != 1 || len(body.Data.Events) != 1 || !body.Data.IndexEnabled || body.Data.UnavailableReason != nil {
 		t.Fatalf("facets = %+v", body.Data)
+	}
+}
+
+func TestManagementRuntimeLogsHandlerReportsDisabledIndexWithoutHidingHistory(t *testing.T) {
+	service := &managementRuntimeLogServiceStub{facets: managementruntimelogs.FacetsResult{
+		RetentionDays: 14,
+		TotalIndexed:  3,
+		Levels:        []managementruntimelogs.FacetLevel{},
+		Events:        []string{},
+	}}
+	handler := newManagementRuntimeLogsHandlerWithOptions(service, managementRuntimeLogsHandlerOptions{
+		indexEnabled: false,
+	})
+	req := withManagementRuntimeLogAuth(httptest.NewRequest(http.MethodGet, "/__aisys__/api/runtime-logs/facets", nil), "admin")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK || !service.facetsCalled {
+		t.Fatalf("status=%d facetsCalled=%v body=%s", rec.Code, service.facetsCalled, rec.Body.String())
+	}
+	var envelope struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if envelope.Data["indexEnabled"] != false || envelope.Data["unavailableReason"] != "index_disabled" || envelope.Data["totalIndexed"] != float64(3) {
+		t.Fatalf("data=%#v", envelope.Data)
 	}
 }
 
@@ -159,6 +190,9 @@ func TestManagementRuntimeLogsHandlerReturnsProgressiveRuntimeContracts(t *testi
 		{path: "/__aisys__/api/runtime-logs/runtime", check: func(t *testing.T, data map[string]any) {
 			if data["runtimeAvailable"] != false || data["ingestWorkerAvailable"] != false || data["runtimeLogIndexQueueAvailable"] != false || data["gatewayAccountSideEffectsAvailable"] != false {
 				t.Fatalf("runtime = %#v", data)
+			}
+			if _, exists := data["indexEnabled"]; exists {
+				t.Fatalf("runtime must not expose indexEnabled: %#v", data)
 			}
 		}},
 	} {

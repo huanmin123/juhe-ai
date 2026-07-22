@@ -137,6 +137,8 @@ interface OpenAIGatewayRequestPreflightOptions {
   settingsOverride?: Partial<GatewaySettings>
   requestLane?: OpenAIGatewayRequestLane
   ignoreAccountRuntimeSuppression?: boolean
+  forwardModelsRequestToUpstream?: boolean
+  accountProbeModel?: string
   sameAccountRetryBudget?: SameAccountRetryBudget
   serverRetryBudget?: ServerRetryBudget
   downstreamCommitState?: GatewayDownstreamCommitState
@@ -191,11 +193,11 @@ export async function prepareOpenAIGatewayDispatchContext(
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
   let runtimeAccounts: UpstreamAccount[] | undefined
   let runtimeAccountDispatchDiagnostics: OpenAIAccountsForGroupDiagnostics | undefined
-  let runtimeResponseInspectionPolicies: ResponseInspectionPolicySummary[] | undefined = options.responseInspectionPolicies
+  let runtimeResponseInspectionPolicies: ResponseInspectionPolicySummary[] | undefined
   let selectedHybridRoute: HybridGatewayRuntimeRoute | undefined
   const initialModelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
 
-  if (initialModelsResponseProtocol && !options.identity) {
+  if (initialModelsResponseProtocol && !options.identity && !options.forwardModelsRequestToUpstream) {
     const completed = await handleGatewayModelsRequestBeforeRequiredAuth({
       req,
       res,
@@ -211,6 +213,41 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
+  if (isDirectLoopbackDeploymentSmoke(req)) {
+    const responsePayload = gatewayErrorPayload(
+      '部署 smoke 已在网关本地完成，未派发上游',
+      'invalid_request_error',
+      'deployment_smoke_no_upstream'
+    )
+    await sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: buildGatewayUsageContext({
+        traceId,
+        clientIp,
+        identity: {
+          systemAccountId: 'deployment-smoke',
+          groupId: 'deployment-smoke'
+        },
+        trafficSource: options.trafficSource ?? 'gateway',
+        endpoint,
+        requestSnapshot
+      }),
+      startedAt,
+      statusCode: 400,
+      responsePayload,
+      recordUsage: false,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'request_validation',
+        errorCode: 'deployment_smoke_no_upstream',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
+
   let identity = options.identity ?? await (async () => {
     const runtime = await resolveGatewayRuntimeAsync(req, res)
     if (!runtime?.apiKey) {
@@ -223,8 +260,6 @@ export async function prepareOpenAIGatewayDispatchContext(
     runtimeGroupAccess = runtime.groupAccess
     runtimeAccounts = runtime.accounts
     runtimeAccountDispatchDiagnostics = runtime.accountDispatchDiagnostics
-    runtimeResponseInspectionPolicies = runtime.responseInspectionPolicies
-    options.responseInspectionPolicies = runtime.responseInspectionPolicies
     return {
       systemAccountId: runtime.apiKey.system_account_id,
       apiKeyId: runtime.apiKey.id,
@@ -335,29 +370,6 @@ export async function prepareOpenAIGatewayDispatchContext(
       groupId,
       clientIp: gatewayClientIp,
       endpoint
-    })
-    return undefined
-  }
-  if (isDirectLoopbackDeploymentSmoke(req)) {
-    const responsePayload = gatewayErrorPayload(
-      '部署 smoke 已在网关本地完成，未派发上游',
-      'invalid_request_error',
-      'deployment_smoke_no_upstream'
-    )
-    await sendGatewayFailureResponse({
-      req,
-      res,
-      auditCapture,
-      usageContext: currentGroupUsageContext(),
-      startedAt,
-      statusCode: 400,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'request_validation',
-        errorCode: 'deployment_smoke_no_upstream',
-        errorMessage: responsePayload.error.message
-      }
     })
     return undefined
   }
@@ -493,8 +505,8 @@ export async function prepareOpenAIGatewayDispatchContext(
       runtimeGroupAccess = normalRoute.groupAccess
       runtimeAccounts = normalRoute.accounts
       runtimeAccountDispatchDiagnostics = undefined
-      runtimeResponseInspectionPolicies = normalRoute.responseInspectionPolicies
-      options.responseInspectionPolicies = normalRoute.responseInspectionPolicies
+      runtimeResponseInspectionPolicies = undefined
+      options.responseInspectionPolicies = undefined
       auditCapture.addGatewayMetadata({
         label: 'normal_model_route',
         metadata: {
@@ -597,11 +609,13 @@ export async function prepareOpenAIGatewayDispatchContext(
         statusCode === 503 ? 'service_unavailable' : 'upstream_response_error',
         hybridRoute.reason
       )
+      const failureGroupAccess = runtimeGroupAccess
+        ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
       await sendGatewayFailureResponse({
         req,
         res,
         auditCapture,
-        usageContext: currentGroupUsageContext(),
+        usageContext: currentGroupUsageContext({ groupId, groupAccess: failureGroupAccess }),
         startedAt,
         statusCode,
         responsePayload,
@@ -625,8 +639,8 @@ export async function prepareOpenAIGatewayDispatchContext(
       runtimeGroupAccess = hybridRoute.groupAccess
       runtimeAccounts = hybridRoute.accounts
       runtimeAccountDispatchDiagnostics = undefined
-      runtimeResponseInspectionPolicies = hybridRoute.responseInspectionPolicies
-      options.responseInspectionPolicies = hybridRoute.responseInspectionPolicies
+      runtimeResponseInspectionPolicies = undefined
+      options.responseInspectionPolicies = undefined
       selectedHybridRoute = {
         apiKeyRecord,
         config: hybridRoute.config,
@@ -803,7 +817,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
-  if (modelsResponseProtocol) {
+  if (modelsResponseProtocol && !options.forwardModelsRequestToUpstream) {
     await recordClientIpErrorCircuitSuccessAsync({
       systemAccountId,
       apiKeyId,
@@ -883,6 +897,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIp: gatewayClientIp,
     endpoint,
     bypassModelFilter: interactionResourceAffinity !== undefined,
+    requestModelOverride: options.forwardModelsRequestToUpstream ? options.accountProbeModel : undefined,
     loadModelAwareCandidateAccounts: options.candidateAccounts || interactionResourceAffinity
       ? undefined
       : (model, sourceEndpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model, requestedEndpointFamily: sourceEndpointFamily }),
@@ -943,9 +958,6 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (candidateFilter.outcome === 'completed') {
     return undefined
   }
-  runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(candidateFilter.accounts)
-  options.responseInspectionPolicies = runtimeResponseInspectionPolicies
-
   const imagePermissionPreflight = await applyOpenAIGatewayImagePermissionPreflight({
     req,
     res,
@@ -1051,6 +1063,13 @@ export async function prepareOpenAIGatewayDispatchContext(
     dispatchPreparation.releaseClientIpConcurrency()
     return undefined
   }
+  try {
+    runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(codexBridgeCompactPreflight.accounts)
+  } catch (error) {
+    dispatchPreparation.releaseClientIpConcurrency()
+    throw error
+  }
+  options.responseInspectionPolicies = runtimeResponseInspectionPolicies
 
   return {
     activeGatewaySettings,

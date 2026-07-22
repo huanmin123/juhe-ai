@@ -15,12 +15,21 @@ export interface ActiveChatPreparation {
   phase: 'preparing' | 'accepting'
 }
 
+export type ActiveChatConversationActionKind = 'compacting' | 'clearing'
+
+export interface ActiveChatConversationAction {
+  token: symbol
+  ownerId: string
+  kind: ActiveChatConversationActionKind
+}
+
 export function claimActiveChatPreparation(
   preparations: Map<string, ActiveChatPreparation>,
-  input: { conversationId: string; ownerId: string; clientMessageId: string }
+  input: { conversationId: string; ownerId: string; clientMessageId: string },
+  actions?: ReadonlyMap<string, ActiveChatConversationAction>
 ): ActiveChatPreparation | undefined {
   const { conversationId } = input
-  if (preparations.has(conversationId)) return undefined
+  if (preparations.has(conversationId) || actions?.has(conversationId)) return undefined
   const claim: ActiveChatPreparation = {
     token: Symbol(conversationId),
     ownerId: input.ownerId,
@@ -30,6 +39,46 @@ export function claimActiveChatPreparation(
   }
   preparations.set(conversationId, claim)
   return claim
+}
+
+export function getActiveChatPreparationForConversation(
+  preparations: ReadonlyMap<string, ActiveChatPreparation>,
+  input: { conversationId: string; ownerId: string }
+): ActiveChatPreparation | undefined {
+  const current = preparations.get(input.conversationId)
+  return current?.ownerId === input.ownerId ? current : undefined
+}
+
+export function claimActiveChatConversationAction(
+  actions: Map<string, ActiveChatConversationAction>,
+  preparations: ReadonlyMap<string, ActiveChatPreparation>,
+  input: { conversationId: string; ownerId: string; kind: ActiveChatConversationActionKind }
+): ActiveChatConversationAction | undefined {
+  if (actions.has(input.conversationId) || preparations.has(input.conversationId)) return undefined
+  const claim: ActiveChatConversationAction = {
+    token: Symbol(`${input.kind}:${input.conversationId}`),
+    ownerId: input.ownerId,
+    kind: input.kind
+  }
+  actions.set(input.conversationId, claim)
+  return claim
+}
+
+export function getActiveChatConversationAction(
+  actions: ReadonlyMap<string, ActiveChatConversationAction>,
+  input: { conversationId: string; ownerId: string }
+): ActiveChatConversationAction | undefined {
+  const current = actions.get(input.conversationId)
+  return current?.ownerId === input.ownerId ? current : undefined
+}
+
+export function deleteActiveChatConversationActionIfMatches(
+  actions: Map<string, ActiveChatConversationAction>,
+  conversationId: string,
+  token: symbol
+): boolean {
+  if (actions.get(conversationId)?.token !== token) return false
+  return actions.delete(conversationId)
 }
 
 export function beginActiveChatAcceptance(
@@ -60,6 +109,14 @@ export function hasActiveChatPreparation(
 ): boolean {
   const current = preparations.get(input.conversationId)
   return current?.ownerId === input.ownerId && current.clientMessageId === input.clientMessageId
+}
+
+export function getActiveChatPreparation(
+  preparations: Map<string, ActiveChatPreparation>,
+  input: { conversationId: string; ownerId: string; clientMessageId: string }
+): ActiveChatPreparation | undefined {
+  const current = preparations.get(input.conversationId)
+  return current?.ownerId === input.ownerId && current.clientMessageId === input.clientMessageId ? current : undefined
 }
 
 export function deleteActiveChatPreparationIfMatches(

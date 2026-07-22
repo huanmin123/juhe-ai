@@ -9,6 +9,9 @@ import { runtimeConfig } from '../config/runtime.js'
 
 export const chatAssetOriginalMaxBytes = 1024 * 1024
 export const chatAssetProcessedMaxBytes = 1024 * 1024
+export const chatAssetGeneratedMaxBytes = 16 * 1024 * 1024
+export const chatAssetPreviewMaxBytes = 512 * 1024
+export const chatAssetGeneratedQuotaMaxBytes = chatAssetGeneratedMaxBytes + chatAssetPreviewMaxBytes
 
 export class ChatAssetStorageError extends Error {
   constructor(public readonly code: 'chat_asset_empty' | 'chat_asset_too_large' | 'chat_asset_integrity_mismatch', message: string) {
@@ -32,11 +35,13 @@ export function storageKeyForChatAsset(input: {
   assetId: string
   sha256: string
   mimeType: string
+  variant?: 'original' | 'preview'
 }): string {
   const assetId = safeStorageSegment(input.assetId, 120)
   const sha256 = normalizedSha256(input.sha256)
   const extension = extensionForChatAssetMimeType(input.mimeType)
-  return `${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${assetId}-${sha256.slice(0, 16)}${extension}`
+  const variant = input.variant ? `-${input.variant}` : ''
+  return `${sha256.slice(0, 2)}/${sha256.slice(2, 4)}/${assetId}${variant}-${sha256.slice(0, 16)}${extension}`
 }
 
 export function chatAssetObjectPath(storageKey: string): string {
@@ -57,7 +62,7 @@ export async function writeChatAssetObject(input: {
   expectedBytes?: number
   expectedSha256?: string
 }): Promise<ChatAssetObjectWriteResult> {
-  const maxBytes = normalizedObjectMaxBytes(input.maxBytes)
+  const maxBytes = normalizedObjectMaxBytes(input.maxBytes, chatAssetProcessedMaxBytes)
   const filePath = chatAssetObjectPath(input.storageKey)
   mkdirSync(dirname(filePath), { recursive: true })
   const temporaryPath = `${filePath}.tmp-${randomUUID().replace(/-/g, '')}`
@@ -93,7 +98,7 @@ export async function writeChatAssetObject(input: {
 }
 
 export async function openChatAssetObject(storageKey: string, maxBytes = chatAssetProcessedMaxBytes): Promise<ChatAssetObjectReadResult> {
-  const normalizedMaxBytes = normalizedObjectMaxBytes(maxBytes)
+  const normalizedMaxBytes = normalizedObjectMaxBytes(maxBytes, chatAssetProcessedMaxBytes)
   const handle = await open(chatAssetObjectPath(storageKey), 'r')
   try {
     const stat = await handle.stat()
@@ -154,12 +159,28 @@ function safeStorageSegment(value: string, maxLength: number): string {
 function extensionForChatAssetMimeType(mimeType: string): string {
   const normalized = mimeType.trim().toLowerCase()
   if (normalized === 'image/jpeg') return '.jpg'
+  if (normalized === 'image/png') return '.png'
+  if (normalized === 'image/webp') return '.webp'
   throw new Error(`不支持的聊天资产 MIME：${mimeType}`)
 }
 
-function normalizedObjectMaxBytes(value: number | undefined): number {
-  const normalized = normalizedPositiveInteger(value ?? chatAssetProcessedMaxBytes, 'maxBytes')
-  return Math.min(normalized, chatAssetOriginalMaxBytes)
+export async function writeChatGeneratedAssetObject(input: {
+  storageKey: string
+  source: Readable
+  maxBytes?: number
+  expectedBytes?: number
+  expectedSha256?: string
+}): Promise<ChatAssetObjectWriteResult> {
+  return writeChatAssetObject({ ...input, maxBytes: input.maxBytes ?? chatAssetGeneratedMaxBytes })
+}
+
+export function openChatGeneratedAssetObject(storageKey: string, maxBytes = chatAssetGeneratedMaxBytes): Promise<ChatAssetObjectReadResult> {
+  return openChatAssetObject(storageKey, maxBytes)
+}
+
+function normalizedObjectMaxBytes(value: number | undefined, fallback: number): number {
+  const normalized = normalizedPositiveInteger(value ?? fallback, 'maxBytes')
+  return Math.min(normalized, chatAssetGeneratedMaxBytes)
 }
 
 function normalizedPositiveInteger(value: number, field: string): number {

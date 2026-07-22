@@ -35,6 +35,18 @@ await stopping
 assert.equal(finished, true)
 assert.equal(newController.signal.aborted, false)
 
+const rejectedSendSettled = deferred()
+const failedStop = stopActiveChatGeneration({
+  stop: async () => { throw new Error('stop request failed') },
+  sendSettled: rejectedSendSettled.promise
+})
+let failedStopSettled = false
+void failedStop.catch(() => { failedStopSettled = true })
+await Promise.resolve()
+assert.equal(failedStopSettled, false, '停止 HTTP 失败后仍须等待旧发送收口再向页面报告')
+rejectedSendSettled.resolve()
+await assert.rejects(failedStop, /stop request failed/, '停止请求失败必须抛给页面显示，不能被 allSettled 吞掉')
+
 const pendingTarget = resolveChatStopTarget({
   selectedConversationId: 'conversation-pending',
   pending: {

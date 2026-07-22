@@ -11,6 +11,9 @@ assert.equal(parseChatSseBlock('event: message.started\ndata: {"turnId":"turn_1"
 assert.equal(parseChatSseBlock('event: message.snapshot\ndata: {"turnId":"turn_1","assistant":{"id":"msg_2"},"eventVersion":2}'), undefined, 'snapshot 助手投影不完整必须拒绝')
 assert.equal(parseChatSseBlock('event: tool.started\ndata: {"messageId":"msg_2","item":null,"eventVersion":2}'), undefined, 'tool item 必须是对象')
 assert.equal(parseChatSseBlock('event: message.failed\ndata: {"messageId":"msg_2","eventVersion":2}'), undefined, 'failed 必须包含 code/message')
+const processStarted = parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"tool_call","blockId":"assistant_block_1","order":1,"callId":"tool_1","toolType":"web_search_call","status":"started"},"eventVersion":1}')
+assert.ok(processStarted, '有序过程 started 事件必须被前端 SSE 校验器接受')
+assert.equal(parseChatSseBlock('event: content_block.started\ndata: {"messageId":"msg_2","block":{"type":"tool_call","blockId":"assistant_block_1","order":1,"toolType":"web_search_call","status":"started"},"eventVersion":1}'), undefined, '有序工具块缺少 callId 必须拒绝')
 
 const messages: ChatMessage[] = [{
   id: 'msg_2', conversationId: 'conv_1', turnId: 'turn_1', sequenceNo: 2,
@@ -26,6 +29,17 @@ applyChatStreamEvent(messages, reasoning)
 applyChatStreamEvent(messages, tool)
 assert.equal(messages[0].reasoningText, '先分析')
 assert.equal(messages[0].toolEvents?.[0]?.type, 'web_search_call')
+const processMessages: ChatMessage[] = [{ ...messages[0]!, contentText: '', contentBlocks: [], reasoningText: undefined, toolEvents: [], eventVersion: undefined }]
+applyChatStreamEvent(processMessages, processStarted!)
+assert.equal(processMessages[0].contentBlocks?.find((block) => 'blockId' in block && block.blockId === 'assistant_block_1')?.type, 'tool_call')
+const processUpdated = parseChatSseBlock('event: content_block.updated\ndata: {"messageId":"msg_2","blockId":"assistant_block_1","patch":{"status":"updated","item":{"query":"天气"}},"eventVersion":2}')
+assert.ok(processUpdated)
+applyChatStreamEvent(processMessages, processUpdated)
+assert.equal(processMessages[0].contentBlocks?.find((block) => 'blockId' in block && block.blockId === 'assistant_block_1')?.status, 'updated')
+const processCompleted = parseChatSseBlock('event: content_block.completed\ndata: {"messageId":"msg_2","block":{"type":"tool_call","blockId":"assistant_block_1","order":1,"callId":"tool_1","toolType":"web_search_call","status":"completed","item":{"query":"天气"}},"eventVersion":3}')
+assert.ok(processCompleted)
+applyChatStreamEvent(processMessages, processCompleted)
+assert.equal(processMessages[0].contentBlocks?.find((block) => 'blockId' in block && block.blockId === 'assistant_block_1')?.status, 'completed')
 
 const snapshot = parseChatSseBlock('event: message.snapshot\ndata: {"turnId":"turn_1","assistant":{"id":"msg_2","status":"streaming","contentText":"权威快照","reasoningText":"完整推理","toolEvents":[],"contentBlocks":[]},"eventVersion":4}')
 assert.ok(snapshot)

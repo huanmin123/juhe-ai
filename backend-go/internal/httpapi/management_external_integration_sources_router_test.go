@@ -104,15 +104,13 @@ func TestRouterExternalIntegrationSourceListRouteRequiresFullManagementOptIn(t *
 			wantStatus:     http.StatusNotFound,
 		},
 		{
-			name: "session only",
+			name: "management disabled with auth middleware",
 			opts: RouterOptions{
 				Config: config.Config{
-					Host:                          "127.0.0.1",
-					Port:                          3000,
-					ManagementAuthSessionsEnabled: true,
+					Host: "127.0.0.1",
+					Port: 3000,
 				},
-				ManagementAPIAuthMiddleware:  readAuth,
-				ManagementSessionListHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+				ManagementAPIAuthMiddleware: readAuth,
 			},
 			includeHandler: true,
 			wantStatus:     http.StatusNotFound,
@@ -179,15 +177,13 @@ func TestRouterExternalIntegrationSourceDetailRouteRequiresFullManagementOptIn(t
 			wantStatus:     http.StatusNotFound,
 		},
 		{
-			name: "session only",
+			name: "management disabled with auth middleware",
 			opts: RouterOptions{
 				Config: config.Config{
-					Host:                          "127.0.0.1",
-					Port:                          3000,
-					ManagementAuthSessionsEnabled: true,
+					Host: "127.0.0.1",
+					Port: 3000,
 				},
-				ManagementAPIAuthMiddleware:  readAuth,
-				ManagementSessionListHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+				ManagementAPIAuthMiddleware: readAuth,
 			},
 			includeHandler: true,
 			wantStatus:     http.StatusNotFound,
@@ -257,15 +253,13 @@ func TestRouterExternalIntegrationSourceTokenSecretRouteRequiresFullManagementOp
 			wantStatus:     http.StatusNotFound,
 		},
 		{
-			name: "session only",
+			name: "management disabled with auth middleware",
 			opts: RouterOptions{
 				Config: config.Config{
-					Host:                          "127.0.0.1",
-					Port:                          3000,
-					ManagementAuthSessionsEnabled: true,
+					Host: "127.0.0.1",
+					Port: 3000,
 				},
-				ManagementAPIAuthMiddleware:  readAuth,
-				ManagementSessionListHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+				ManagementAPIAuthMiddleware: readAuth,
 			},
 			includeHandler: true,
 			wantStatus:     http.StatusNotFound,
@@ -569,15 +563,13 @@ func TestRouterExternalIntegrationSourceCatalogRoutesRequireFullManagementOptIn(
 					wantStatus:     http.StatusNotFound,
 				},
 				{
-					name: "session only",
+					name: "management disabled with auth middleware",
 					opts: RouterOptions{
 						Config: config.Config{
-							Host:                          "127.0.0.1",
-							Port:                          3000,
-							ManagementAuthSessionsEnabled: true,
+							Host: "127.0.0.1",
+							Port: 3000,
 						},
-						ManagementAPIAuthMiddleware:  readAuth,
-						ManagementSessionListHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+						ManagementAPIAuthMiddleware: readAuth,
 					},
 					includeHandler: true,
 					wantStatus:     http.StatusNotFound,

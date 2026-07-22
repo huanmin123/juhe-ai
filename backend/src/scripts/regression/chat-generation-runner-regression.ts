@@ -57,6 +57,95 @@ async function twoSubscribersShareOneExecution(): Promise<void> {
   assert.equal(first.events.at(-1)?.type, 'message.completed')
 }
 
+async function orderedContentBlockLifecycleAndSnapshot(): Promise<void> {
+  const execution = deferred<{ status: 'completed'; data: { messageId: string } }>()
+  const runner = new ChatGenerationRunner({ identity: identity('turn_blocks'), execute: () => execution.promise })
+  const collector = eventCollector()
+  runner.start()
+  runner.subscribe(collector.subscriber)
+
+  runner.publish('message.delta', { delta: '正文 A' }, { contentTextDelta: '正文 A' })
+  runner.publish('reasoning.delta', { delta: '思考 1' }, { reasoningTextDelta: '思考 1' })
+  runner.publish('reasoning.delta', { delta: '思考 2' }, { reasoningTextDelta: '思考 2' })
+  runner.publish('reasoning.completed', {}, { reasoningCompleted: true })
+  runner.publish('tool.started', { item: { id: 'search-1' } }, {
+    toolEvent: { id: 'search-1', toolType: 'web_search', status: 'started', item: { query: '时间线' } }
+  })
+  runner.publish('tool.updated', { item: { id: 'search-1' } }, {
+    toolEvent: { id: 'search-1', toolType: 'web_search', status: 'updated', item: { phase: 'searching' } }
+  })
+  runner.publish('tool.completed', { item: { id: 'search-1' } }, {
+    toolEvent: { id: 'search-1', toolType: 'web_search', status: 'completed', item: { result: 'done' } }
+  })
+  runner.publish('message.delta', { delta: '正文 B' }, { contentTextDelta: '正文 B' })
+
+  assert.deepEqual(
+    collector.events.map((event) => event.type),
+    [
+      'message.snapshot',
+      'content_block.started',
+      'content_block.started',
+      'content_block.delta',
+      'content_block.completed',
+      'content_block.started',
+      'content_block.updated',
+      'content_block.completed',
+      'content_block.started'
+    ],
+    'runner 必须把旧 transport 投影收敛为块级有序事件'
+  )
+  assert.deepEqual(collector.events.map((event) => event.eventVersion), [0, 1, 2, 3, 4, 5, 6, 7, 8])
+  assert.equal(collector.events[3]?.data.delta, '思考 2')
+  assert.equal(collector.events[4]?.data.block.status, 'completed', '收到 reasoning 完成事件后必须立即终态化思考块')
+  assert.equal(collector.events[5]?.data.block.order, 3)
+  assert.equal(collector.events[6]?.data.blockId, collector.events[5]?.data.block.blockId, '工具更新必须命中原块')
+  assert.equal(collector.events[7]?.data.block.status, 'completed')
+
+  const late = eventCollector()
+  assert.equal(runner.subscribe(late.subscriber), true)
+  assert.equal(late.events[0]?.eventVersion, 8)
+  const snapshot = late.events[0]?.data.assistant
+  assert.deepEqual(snapshot.contentBlocks.map((block: { type: string }) => block.type), [
+    'output_text', 'reasoning', 'tool_call', 'output_text'
+  ])
+  assert.deepEqual(snapshot.contentBlocks.map((block: { order: number }) => block.order), [1, 2, 3, 4])
+  assert.equal(snapshot.contentText, '正文 A正文 B')
+  assert.equal(snapshot.contentBlocks[1].text, '思考 1思考 2')
+  assert.equal(snapshot.contentBlocks[2].callId, 'search-1')
+
+  execution.resolve({ status: 'completed', data: { messageId: runner.identity.assistantMessageId } })
+  await runner.completion
+  assert.equal(collector.events.at(-1)?.type, 'message.completed')
+  assert.equal(collector.events.filter((event) => event.type === 'content_block.completed').length, 2, '已完成的 reasoning 不得在消息终态重复完成')
+}
+
+async function terminalizesActiveBlocksOnFailureAndCancellation(): Promise<void> {
+  for (const status of ['failed', 'canceled'] as const) {
+    const runner = new ChatGenerationRunner({
+      identity: identity(`turn_${status}`),
+      execute: async ({ publish }) => {
+        publish('reasoning.delta', { delta: status }, { reasoningTextDelta: status })
+        publish('tool.started', { item: { id: `${status}-tool` } }, {
+          toolEvent: { id: `${status}-tool`, toolType: 'web_search', status: 'started' }
+        })
+        return { status, data: { messageId: `assistant_turn_${status}` } }
+      }
+    })
+    const collector = eventCollector()
+    runner.start()
+    runner.subscribe(collector.subscriber)
+    await runner.completion
+
+    const terminalBlockEvents = collector.events.filter((event) => event.type === 'content_block.updated')
+    assert.equal(terminalBlockEvents.length, 2, `${status} 必须终态化 reasoning 和 tool`)
+    assert(terminalBlockEvents.every((event) => event.data.patch.status === status))
+    assert.equal(collector.events.at(-1)?.type, `message.${status}`)
+    const terminalSnapshot = eventCollector()
+    assert.equal(runner.subscribe(terminalSnapshot.subscriber), true)
+    assert(terminalSnapshot.events[0]?.data.assistant.contentBlocks.every((block: { status?: string }) => block.status === status))
+  }
+}
+
 async function subscriberFailuresAreIsolated(): Promise<void> {
   const execution = deferred<{ status: 'completed'; data: Record<string, never> }>()
   const runner = new ChatGenerationRunner({ identity: identity('turn_subscribers'), execute: () => execution.promise })
@@ -80,7 +169,7 @@ async function subscriberFailuresAreIsolated(): Promise<void> {
   runner.publish('message.delta', { delta: 'still-delivered' }, { contentTextDelta: 'still-delivered' })
   assert.equal(throwingDeliveries, 2, 'live publish 抛错后只移除故障 subscriber')
   assert.equal(backpressuredDeliveries, 2, 'live publish 返回 false 后只移除背压 subscriber')
-  assert.equal(healthy.events.at(-1)?.type, 'message.delta', '故障 subscriber 不得影响健康 subscriber')
+  assert.equal(healthy.events.at(-1)?.type, 'content_block.started', '故障 subscriber 不得影响健康 subscriber')
   assert.equal(registry.unsubscribe(runner.identity, healthy.subscriber), true)
   assert.equal(runner.signal.aborted, false, 'unsubscribe 不得中断生成')
   await tick()
@@ -156,7 +245,7 @@ async function snapshotIsBounded(): Promise<void> {
   assert(Buffer.byteLength(assistant.contentText, 'utf8') <= CHAT_GENERATION_TEXT_MAX_BYTES)
   assert(Buffer.byteLength(assistant.reasoningText, 'utf8') <= CHAT_GENERATION_REASONING_MAX_BYTES)
   assert(Buffer.byteLength(JSON.stringify(assistant.toolEvents), 'utf8') <= CHAT_GENERATION_TOOL_JSON_MAX_BYTES)
-  assert(Buffer.byteLength(JSON.stringify(assistant.contentBlocks), 'utf8') <= CHAT_GENERATION_REASONING_MAX_BYTES + CHAT_GENERATION_TOOL_JSON_MAX_BYTES + 1024)
+  assert(Buffer.byteLength(JSON.stringify(assistant.contentBlocks), 'utf8') <= CHAT_GENERATION_TEXT_MAX_BYTES + CHAT_GENERATION_REASONING_MAX_BYTES + CHAT_GENERATION_TOOL_JSON_MAX_BYTES + 1024)
   execution.resolve({ status: 'completed', data: {} })
   await runner.completion
 }
@@ -237,7 +326,117 @@ async function cleanupFailureDoesNotRejectDetachedRun(): Promise<void> {
   }
 }
 
+async function unexpectedFailureWaitsForAuthoritativeFinalizer(): Promise<void> {
+  const finalization = deferred<void>()
+  const rawSecret = ['sk', 'runner-secret-that-must-not-leak'].join('-')
+  const finalizerErrors: Array<{ code: string; message: string }> = []
+  const reportedErrors: Array<{ stage: string; message: string }> = []
+  const order: string[] = []
+  const runner = new ChatGenerationRunner({
+    identity: identity('turn_unexpected_failure', 'conv_unexpected_failure'),
+    execute: async () => {
+      order.push('execute')
+      throw new Error(`unexpected upstream failure: ${rawSecret}`)
+    },
+    onUnexpectedError: async (error) => {
+      finalizerErrors.push(error)
+      order.push('finalizer.started')
+      await finalization.promise
+      order.push('finalizer.completed')
+    },
+    reportUnexpectedError: (error, stage) => {
+      reportedErrors.push({ stage, message: error instanceof Error ? error.message : String(error) })
+    }
+  })
+  const collector = eventCollector()
+  assert.equal(runner.start(), true)
+  assert.equal(runner.subscribe(collector.subscriber), true)
+  await tick()
+  assert.equal(runner.state, 'running', '权威 DB finalizer 完成前 runner 必须保持 running')
+  assert.equal(collector.events.some((event) => event.type === 'message.failed'), false, 'DB finalizer 完成前不得发布失败终态')
+  assert.deepEqual(order, ['execute', 'finalizer.started'])
+  assert.deepEqual(reportedErrors, [{ stage: 'execute', message: `unexpected upstream failure: ${rawSecret}` }], 'execute cause 必须单独报告一次')
+  assert.deepEqual(finalizerErrors, [{
+    code: 'internal_generation_failed',
+    message: '生成任务异常结束，请重新发送'
+  }], 'unexpected finalizer 只接收公开安全错误')
+  assert.doesNotMatch(JSON.stringify(finalizerErrors), /sk-runner-secret/u)
+
+  finalization.resolve()
+  await runner.completion
+  assert.equal(runner.state, 'failed')
+  assert.equal(runner.authoritativeTerminal, true, 'DB finalizer 成功后 runner 才能声明权威终态')
+  assert.deepEqual(order, ['execute', 'finalizer.started', 'finalizer.completed'])
+  assert.equal(finalizerErrors.length, 1, 'unexpected finalizer 只能调用一次')
+  assert.deepEqual(collector.events.at(-1), {
+    type: 'message.failed',
+    eventVersion: 1,
+    data: {
+      messageId: runner.identity.assistantMessageId,
+      code: 'internal_generation_failed',
+      message: '生成任务异常结束，请重新发送'
+    }
+  })
+}
+
+async function unexpectedFinalizerFailureDoesNotPublishFalseTerminal(): Promise<void> {
+  let finalizerCalls = 0
+  const reportedErrors: Array<{ stage: string; message: string }> = []
+  const runner = new ChatGenerationRunner({
+    identity: identity('turn_unexpected_finalizer_failure', 'conv_unexpected_finalizer_failure'),
+    execute: async () => { throw new Error('execute failed') },
+    onUnexpectedError: async () => {
+      finalizerCalls += 1
+      throw new Error('DB finalizer failed')
+    },
+    reportUnexpectedError: (error, stage) => {
+      reportedErrors.push({ stage, message: error instanceof Error ? error.message : String(error) })
+    }
+  })
+  const collector = eventCollector()
+  runner.start()
+  runner.subscribe(collector.subscriber)
+  await runner.completion
+  assert.equal(finalizerCalls, 1)
+  assert.equal(runner.state, 'failed', 'finalizer 自身异常也必须令 runner 内存状态收敛 failed')
+  assert.equal(runner.authoritativeTerminal, false, 'DB finalizer 失败时不得缓存伪权威 terminal 快照')
+  assert.equal(collector.events.some((event) => event.type === 'message.failed'), false, 'DB 未权威收口时不得伪造 message.failed')
+  assert.deepEqual(reportedErrors, [
+    { stage: 'execute', message: 'execute failed' },
+    { stage: 'finalizer', message: 'DB finalizer failed' }
+  ], 'execute 与 DB finalizer cause 必须各报告一次')
+}
+
+async function unexpectedReporterFailuresAreBounded(): Promise<void> {
+  const unhandled: unknown[] = []
+  const reporterStages: string[] = []
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const runner = new ChatGenerationRunner({
+      identity: identity('turn_reporter_failure', 'conv_reporter_failure'),
+      execute: async () => { throw new Error('execute cause') },
+      onUnexpectedError: async () => { throw new Error('finalizer cause') },
+      reportUnexpectedError: (_error, stage) => {
+        reporterStages.push(stage)
+        if (stage === 'execute') throw new Error('sync reporter failed')
+        return Promise.reject(new Error('async reporter failed'))
+      }
+    })
+    runner.start()
+    await runner.completion
+    await tick()
+    assert.equal(runner.state, 'failed')
+    assert.deepEqual(reporterStages, ['execute', 'finalizer'])
+    assert.deepEqual(unhandled, [], 'reporter 自身异常不得产生 unhandled rejection')
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+  }
+}
+
 await twoSubscribersShareOneExecution()
+await orderedContentBlockLifecycleAndSnapshot()
+await terminalizesActiveBlocksOnFailureAndCancellation()
 await subscriberFailuresAreIsolated()
 await stopRequiresExactTurn()
 await staleFinallyCannotDeleteReplacement()
@@ -246,5 +445,8 @@ await snapshotIsBounded()
 await shutdownRejectsAndDrains()
 await cleanupFailureDoesNotRejectDetachedRun()
 await shutdownTimeoutBoundsNonCooperativeExecution()
+await unexpectedFailureWaitsForAuthoritativeFinalizer()
+await unexpectedFinalizerFailureDoesNotPublishFalseTerminal()
+await unexpectedReporterFailuresAreBounded()
 
 console.log('AI 问答服务端生成 runner 回归通过')

@@ -5,7 +5,6 @@ import type {
   AccountUsageStatsParams,
   AiPerformanceAccountOptionsParams,
   AiPerformanceParams,
-  AuthSessionListParams,
   AuthorizationGranteeGroupOptionsParams,
   AuthorizationPrincipalOptionsParams,
   GroupListParams,
@@ -167,14 +166,6 @@ export function systemAccountListParams(params?: SystemAccountListParams): Recor
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  return Object.keys(output).length ? output : undefined
-}
-
-export function authSessionListParams(params?: AuthSessionListParams): Record<string, unknown> | undefined {
-  if (!params) return undefined
-  const output: Record<string, unknown> = {}
-  if (params.page) output.page = params.page
-  if (params.pageSize) output.pageSize = params.pageSize
   return Object.keys(output).length ? output : undefined
 }
 

@@ -65,8 +65,8 @@ export async function logout(): Promise<void> {
   const systemAccountId = currentUser.value?.id
   authStateVersion += 1
   await api.auth.logout()
-  clearAuthState()
   await clearCurrentAccountChatState(systemAccountId)
+  clearAuthState()
 }
 
 function isExplicitUnauthorized(error: unknown): boolean {

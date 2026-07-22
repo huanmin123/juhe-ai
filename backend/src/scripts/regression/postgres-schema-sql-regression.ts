@@ -186,7 +186,11 @@ assert.doesNotMatch(dataRetentionSource, /recordDataArchiveManifest|archivedPart
 assert.match(usagePartitionSource, /DETACH PARTITION[\s\S]*DROP TABLE/, '到期整日分区必须在安全游标后直接 DETACH 并 DROP')
 assert.doesNotMatch(usagePartitionSource, /CREATE SCHEMA IF NOT EXISTS juhe_archive|SET SCHEMA juhe_archive/, '分区工具不应创建或写入 juhe_archive')
 assert.doesNotMatch(tableMonitorSource, /juhe_archive|role:\s*'archive'/, '表监控不应生成 postgres:juhe_archive 占位项')
-assert.match(tableMonitorSource, /database_role = ANY\(\?::text\[\]\)/, 'PG 表监控概览必须过滤已移除的历史角色快照')
+assert.match(
+  tableMonitorSource,
+  /rowsByRole\s*=\s*await\s+Promise\.all\(monitoredDatabaseRoles\.map[\s\S]+WHERE database_role = \?/,
+  'PG 表监控概览必须使用受控角色集合过滤已移除的历史角色快照'
+)
 assert.doesNotMatch(tableMonitorRoutesSource, /'archive'/, '表监控接口不应再接受 archive 角色')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS codex_context_sessions/, '应包含 Responses 桥接状态索引 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_conversations/, '应包含 AI 问答会话 schema')
@@ -197,23 +201,35 @@ assert.match(sql, /reserved_bytes bigint NOT NULL DEFAULT 0/, 'PG 容量窗口 r
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_context_checkpoints/, '应包含 AI 问答模型上下文 checkpoint schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_context_entries/, '应包含 AI 问答模型上下文 entry schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_assets/, '应包含 AI 问答私有图片资产 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_asset_references/, '应包含 AI 问答消息资产引用 schema')
+assert.match(sql, /CREATE TABLE IF NOT EXISTS chat_image_generations/, '应包含 AI 问答图片生成谱系 schema')
 const chatMessagesCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_messages\b/i.test(statement.sql))?.sql ?? ''
 const chatConversationsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_conversations\b/i.test(statement.sql))?.sql ?? ''
 const chatCheckpointsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_context_checkpoints\b/i.test(statement.sql))?.sql ?? ''
 const chatEntriesCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_context_entries\b/i.test(statement.sql))?.sql ?? ''
 const chatAssetsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_assets\b/i.test(statement.sql))?.sql ?? ''
+const chatAssetReferencesCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_asset_references\b/i.test(statement.sql))?.sql ?? ''
+const chatImageGenerationsCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_image_generations\b/i.test(statement.sql))?.sql ?? ''
 const chatAssetUsageCreateSql = statements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_user_asset_usage\b/i.test(statement.sql))?.sql ?? ''
 assert.match(chatMessagesCreateSql, /PRIMARY KEY \(created_at, id\)[\s\S]+\) PARTITION BY RANGE \(created_at\)/, 'PG AI 问答消息主表必须按 created_at 日范围分区')
 assert.match(chatConversationsCreateSql, /next_sequence_no bigint NOT NULL DEFAULT 1[\s\S]+context_revision bigint NOT NULL DEFAULT 0[\s\S]+compacted_through_sequence bigint NOT NULL DEFAULT 0/, 'PG AI 问答会话的上下文版本与消息序号必须使用 bigint')
 assert.match(chatConversationsCreateSql, /user_turn_count bigint NOT NULL DEFAULT 0[\s\S]+CHECK \(user_turn_count >= 0\)/, 'PG AI 问答会话必须持久化非负用户轮次计数')
+assert.match(chatConversationsCreateSql, /default_image_model text NOT NULL DEFAULT 'gpt-image-2'/, 'PG AI 问答会话必须持久化默认图像模型')
 assert.match(chatCheckpointsCreateSql, /source_revision bigint NOT NULL[\s\S]+source_from_sequence bigint NOT NULL[\s\S]+source_through_sequence bigint NOT NULL[\s\S]+request_body_bytes bigint NOT NULL/, 'PG checkpoint 来源序号和请求字节必须使用 bigint')
 assert.match(chatEntriesCreateSql, /sequence bigint NOT NULL[\s\S]+content_bytes bigint NOT NULL[\s\S]+token_count bigint/, 'PG checkpoint entry 序号、字节和 token 必须使用 bigint')
 assert.match(chatAssetsCreateSql, /original_bytes bigint NOT NULL[\s\S]+processed_bytes bigint/, 'PG 图片资产原图和处理后字节数必须使用 bigint')
+assert.match(chatAssetsCreateSql, /source_kind text NOT NULL DEFAULT 'user_upload'[\s\S]+UNIQUE \(id, conversation_id\)[\s\S]+source_kind IN \('user_upload', 'assistant_generated'\)/, 'PG 图片资产必须保存带上传默认值的来源类型和会话复合候选键')
+assert.match(chatAssetsCreateSql, /processed_mime_type IN \('image\/jpeg', 'image\/png', 'image\/webp'\)/, 'PG 图片资产必须允许 JPEG、PNG 和 WebP 处理结果')
+assert.match(chatAssetReferencesCreateSql, /FOREIGN KEY \(asset_id, conversation_id\) REFERENCES chat_assets\(id, conversation_id\) ON DELETE CASCADE[\s\S]+UNIQUE \(message_id, content_order\)[\s\S]+reference_kind IN \('user_input', 'assistant_output'\)/, 'PG 消息资产引用必须按会话绑定资产，并约束消息内容顺序和引用类型')
+assert.match(chatImageGenerationsCreateSql, /asset_id text PRIMARY KEY[\s\S]+source_asset_ids_json text NOT NULL DEFAULT '\[\]'[\s\S]+FOREIGN KEY \(asset_id, conversation_id\) REFERENCES chat_assets\(id, conversation_id\) ON DELETE CASCADE[\s\S]+FOREIGN KEY \(root_asset_id, conversation_id\) REFERENCES chat_assets\(id, conversation_id\) ON DELETE CASCADE[\s\S]+operation IN \('generate', 'edit'\)/, 'PG 图片生成谱系必须约束输出、根资产、来源数组与操作类型')
 assert.match(chatAssetUsageCreateSql, /asset_bytes bigint NOT NULL DEFAULT 0[\s\S]+asset_count integer NOT NULL DEFAULT 0/, 'PG 用户图片额度字节必须使用 bigint，数量计数保留 integer')
 assert.match(chatAssetsCreateSql, /observation_status text NOT NULL DEFAULT 'not_requested'[\s\S]+cleanup_status text NOT NULL DEFAULT 'active'/, 'PG 图片资产必须持久化隐藏说明与对象清理状态')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_messages_compaction_source\s+ON chat_messages\(conversation_id, system_account_id, status, sequence_no\)/, 'PG 压缩来源分页必须有匹配索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_context_checkpoints_cleanup\s+ON chat_context_checkpoints\(expires_at, status, id\)/, 'PG checkpoint 到期清理必须有匹配索引')
 assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_assets_cleanup\s+ON chat_assets\(cleanup_status, cleanup_retry_at, expires_at, id\)/, 'PG 图片资产清理必须有匹配索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_asset_references_message\s+ON chat_asset_references\(conversation_id, message_id, content_order\)/, 'PG 消息资产引用查询必须有匹配索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_asset_references_asset_valid\s+ON chat_asset_references\(asset_id, expires_at\)/, 'PG 资产有效引用判断必须有匹配索引')
+assert.match(sql, /CREATE INDEX IF NOT EXISTS idx_chat_asset_references_cleanup\s+ON chat_asset_references\(expires_at, asset_id, message_id\)/, 'PG 过期资产引用清理必须有匹配索引')
 assert.match(sql, /codex_context_sessions[\s\S]+storage_offset_bytes bigint NOT NULL[\s\S]+raw_size_bytes bigint NOT NULL[\s\S]+compressed_size_bytes bigint NOT NULL/, 'PG Responses 桥接状态文件 offset/大小字段必须使用 bigint')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategies/, '应包含策略路由表 schema')
 assert.match(sql, /CREATE TABLE IF NOT EXISTS route_strategy_groups/, '应包含策略路由分组绑定表 schema')

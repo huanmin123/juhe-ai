@@ -14,6 +14,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       title_source_message_id TEXT,
       is_pinned INTEGER NOT NULL DEFAULT 0,
       last_model TEXT,
+      default_image_model TEXT NOT NULL DEFAULT 'gpt-image-2',
       next_sequence_no INTEGER NOT NULL DEFAULT 1,
       user_turn_count INTEGER NOT NULL DEFAULT 0,
       message_revision INTEGER NOT NULL DEFAULT 0,
@@ -217,6 +218,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
       conversation_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL DEFAULT 'user_upload',
       original_filename TEXT NOT NULL,
       original_mime_type TEXT NOT NULL,
       original_width INTEGER,
@@ -229,6 +231,12 @@ export function applyChatSchema(database: DatabaseSync): void {
       processed_bytes INTEGER,
       processed_sha256 TEXT,
       storage_key TEXT,
+      preview_mime_type TEXT,
+      preview_width INTEGER,
+      preview_height INTEGER,
+      preview_bytes INTEGER,
+      preview_sha256 TEXT,
+      preview_storage_key TEXT,
       processing_status TEXT NOT NULL DEFAULT 'pending',
       processing_error_code TEXT,
       observation_status TEXT NOT NULL DEFAULT 'not_requested',
@@ -249,6 +257,7 @@ export function applyChatSchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       expires_at TEXT NOT NULL,
+      UNIQUE (id, conversation_id),
       CHECK (original_width IS NULL OR original_width > 0),
       CHECK (original_height IS NULL OR original_height > 0),
       CHECK ((original_width IS NULL AND original_height IS NULL) OR (original_width IS NOT NULL AND original_height IS NOT NULL)),
@@ -258,8 +267,19 @@ export function applyChatSchema(database: DatabaseSync): void {
       CHECK (processed_height IS NULL OR processed_height > 0),
       CHECK ((processed_width IS NULL AND processed_height IS NULL) OR (processed_width IS NOT NULL AND processed_height IS NOT NULL)),
       CHECK (processed_bytes IS NULL OR processed_bytes > 0),
-      CHECK (processed_mime_type IS NULL OR processed_mime_type = 'image/jpeg'),
+      CHECK (source_kind IN ('user_upload', 'assistant_generated')),
+      CHECK (processed_mime_type IS NULL OR processed_mime_type IN ('image/jpeg', 'image/png', 'image/webp')),
       CHECK (processed_sha256 IS NULL OR length(processed_sha256) = 64),
+      CHECK (preview_mime_type IS NULL OR preview_mime_type = 'image/webp'),
+      CHECK (preview_width IS NULL OR preview_width > 0),
+      CHECK (preview_height IS NULL OR preview_height > 0),
+      CHECK (preview_bytes IS NULL OR preview_bytes > 0),
+      CHECK (preview_sha256 IS NULL OR length(preview_sha256) = 64),
+      CHECK (
+        (preview_mime_type IS NULL AND preview_width IS NULL AND preview_height IS NULL AND preview_bytes IS NULL AND preview_sha256 IS NULL AND preview_storage_key IS NULL)
+        OR (preview_mime_type IS NOT NULL AND preview_width IS NOT NULL AND preview_height IS NOT NULL AND preview_bytes IS NOT NULL AND preview_sha256 IS NOT NULL AND preview_storage_key IS NOT NULL)
+      ),
+      CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL),
       CHECK (processing_status IN ('pending', 'ready', 'failed')),
       CHECK (observation_status IN ('not_requested', 'pending', 'ready', 'failed')),
       CHECK (observation_revision >= 0),
@@ -289,6 +309,43 @@ export function applyChatSchema(database: DatabaseSync): void {
         (cleanup_status = 'claimed' AND cleanup_claim_id IS NOT NULL AND cleanup_claimed_at IS NOT NULL)
         OR (cleanup_status != 'claimed' AND cleanup_claim_id IS NULL AND cleanup_claimed_at IS NULL)
       )
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_asset_references (
+      asset_id TEXT NOT NULL,
+      conversation_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      message_id TEXT NOT NULL,
+      reference_kind TEXT NOT NULL,
+      content_order INTEGER NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      FOREIGN KEY (asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE,
+      FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+      UNIQUE (message_id, content_order),
+      CHECK (reference_kind IN ('user_input', 'assistant_output')),
+      CHECK (content_order >= 0)
+    );
+
+    CREATE TABLE IF NOT EXISTS chat_image_generations (
+      asset_id TEXT PRIMARY KEY,
+      conversation_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      operation TEXT NOT NULL,
+      model TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      source_asset_ids_json TEXT NOT NULL DEFAULT '[]',
+      root_asset_id TEXT NOT NULL,
+      size TEXT NOT NULL,
+      quality TEXT NOT NULL,
+      output_format TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      FOREIGN KEY (asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE,
+      FOREIGN KEY (root_asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE,
+      FOREIGN KEY (conversation_id) REFERENCES chat_conversations(id) ON DELETE CASCADE,
+      CHECK (operation IN ('generate', 'edit')),
+      CHECK (json_valid(source_asset_ids_json) AND json_type(source_asset_ids_json) = 'array')
     );
 
     CREATE INDEX IF NOT EXISTS idx_chat_conversations_owner_recent
@@ -335,5 +392,15 @@ export function applyChatSchema(database: DatabaseSync): void {
         AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active';
     CREATE INDEX IF NOT EXISTS idx_chat_assets_cleanup
       ON chat_assets(cleanup_status, cleanup_retry_at, expires_at, id);
+    CREATE INDEX IF NOT EXISTS idx_chat_asset_references_message
+      ON chat_asset_references(conversation_id, message_id, content_order);
+    CREATE INDEX IF NOT EXISTS idx_chat_asset_references_asset_valid
+      ON chat_asset_references(asset_id, expires_at);
+    CREATE INDEX IF NOT EXISTS idx_chat_asset_references_cleanup
+      ON chat_asset_references(expires_at, asset_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_image_generations_conversation_recent
+      ON chat_image_generations(conversation_id, created_at DESC, asset_id DESC);
+    CREATE INDEX IF NOT EXISTS idx_chat_image_generations_expiry
+      ON chat_image_generations(expires_at, asset_id);
   `)
 }

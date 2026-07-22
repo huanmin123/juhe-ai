@@ -4,6 +4,7 @@ import type { DatabaseClient } from '../../storage/database-client.js'
 import { listReadyChatAssetsByIds } from '../../storage/chat-assets.repository.js'
 import {
   claimChatContextCompaction,
+  failPendingChatContextCompaction,
   failChatContextCompaction,
   installChatContextCheckpoint,
   loadChatCompactionSourcePage,
@@ -23,7 +24,14 @@ const compactionSourcePageRows = 40
 const compactionSourcePageBytes = 512 * 1024
 const compactionResponseBytes = 256 * 1024
 const compactionRequestTimeoutMs = 120_000
-const activeCompactions = new Map<string, Promise<ChatCompactionResult>>()
+type ActiveCompactionEntry = {
+  acceptance: Promise<ChatCompactionStartResult>
+  completion: Promise<ChatCompactionResult>
+  resolveAcceptance: (result: ChatCompactionStartResult) => void
+  resolveCompletion: (result: ChatCompactionResult) => void
+}
+
+const activeCompactions = new Map<string, ActiveCompactionEntry>()
 
 export interface ChatMemorySnapshot {
   durableMemory: string[]
@@ -43,6 +51,12 @@ export type ChatCompactionResult =
   | { status: 'skipped'; reason: string }
   | { status: 'failed'; reason: string }
 
+export type ChatCompactionStartResult =
+  | { status: 'accepted' }
+  | { status: 'already_running' }
+  | { status: 'skipped'; reason: string }
+  | { status: 'failed'; reason: string }
+
 export function compactChatContextOnce(input: {
   client: DatabaseClient
   conversationId: string
@@ -57,19 +71,47 @@ export function compactChatContextOnce(input: {
 }): Promise<ChatCompactionResult> {
   const key = `${input.systemAccountId}:${input.conversationId}`
   const running = activeCompactions.get(key)
-  if (running) return running
-  const task = runCompaction(input).finally(() => {
-    if (activeCompactions.get(key) === task) activeCompactions.delete(key)
-  })
-  activeCompactions.set(key, task)
-  return task
+  if (running) return running.completion
+  return createActiveCompaction(key, input).completion
+}
+
+export function startChatContextCompaction(input: Parameters<typeof compactChatContextOnce>[0]): Promise<ChatCompactionStartResult> {
+  const key = `${input.systemAccountId}:${input.conversationId}`
+  if (activeCompactions.has(key)) return Promise.resolve({ status: 'already_running' })
+  return createActiveCompaction(key, input).acceptance
 }
 
 export function scheduleChatContextCompaction(input: Parameters<typeof compactChatContextOnce>[0]): void {
   void compactChatContextOnce(input).catch(() => undefined)
 }
 
-async function runCompaction(input: Parameters<typeof compactChatContextOnce>[0]): Promise<ChatCompactionResult> {
+function createActiveCompaction(key: string, input: Parameters<typeof compactChatContextOnce>[0]): ActiveCompactionEntry {
+  let resolveAcceptance!: (result: ChatCompactionStartResult) => void
+  let resolveCompletion!: (result: ChatCompactionResult) => void
+  const entry: ActiveCompactionEntry = {
+    acceptance: new Promise((resolve) => { resolveAcceptance = resolve }),
+    completion: new Promise((resolve) => { resolveCompletion = resolve }),
+    resolveAcceptance: (result) => resolveAcceptance(result),
+    resolveCompletion: (result) => resolveCompletion(result)
+  }
+  activeCompactions.set(key, entry)
+  void runCompaction(input, (result) => entry.resolveAcceptance(result))
+    .then((result) => entry.resolveCompletion(result))
+    .catch((error) => {
+      const reason = error instanceof Error ? error.message : 'chat_context_compaction_failed'
+      entry.resolveAcceptance({ status: 'failed', reason })
+      entry.resolveCompletion({ status: 'failed', reason })
+    })
+    .finally(() => {
+      if (activeCompactions.get(key) === entry) activeCompactions.delete(key)
+    })
+  return entry
+}
+
+async function runCompaction(
+  input: Parameters<typeof compactChatContextOnce>[0],
+  onAccepted: (result: ChatCompactionStartResult) => void
+): Promise<ChatCompactionResult> {
   const now = new Date().toISOString()
   const loaded = await loadChatModelContext(input.client, {
     conversationId: input.conversationId,
@@ -78,26 +120,51 @@ async function runCompaction(input: Parameters<typeof compactChatContextOnce>[0]
     maxRows: 512,
     maxBytes: 16 * 1024 * 1024
   })
-  if (!loaded) return { status: 'skipped', reason: 'conversation_missing' }
+  if (!loaded) {
+    onAccepted({ status: 'skipped', reason: 'conversation_missing' })
+    return { status: 'skipped', reason: 'conversation_missing' }
+  }
   const sourceThroughSequence = loaded.head.nextSequenceNo - 3
   if (sourceThroughSequence <= loaded.head.compactedThroughSequence) {
+    onAccepted({ status: 'skipped', reason: 'no_compactable_turn' })
     return { status: 'skipped', reason: 'no_compactable_turn' }
   }
-  await requestChatContextCompaction(input.client, {
-    conversationId: input.conversationId,
-    systemAccountId: input.systemAccountId,
-    expectedRevision: loaded.head.contextRevision,
-    sourceThroughSequence,
-    now
-  })
-  const claim = await claimChatContextCompaction(input.client, {
-    conversationId: input.conversationId,
-    systemAccountId: input.systemAccountId,
-    expectedRevision: loaded.head.contextRevision,
-    sourceThroughSequence,
-    now,
-    staleClaimBefore: new Date(Date.parse(now) - 15 * 60_000).toISOString()
-  })
+  const resumesPersistedCompaction = loaded.head.contextState === 'compact_pending' || loaded.head.contextState === 'compacting'
+  if (!resumesPersistedCompaction) {
+    const requested = await requestChatContextCompaction(input.client, {
+      conversationId: input.conversationId,
+      systemAccountId: input.systemAccountId,
+      expectedRevision: loaded.head.contextRevision,
+      sourceThroughSequence,
+      now
+    })
+    if (!requested) {
+      onAccepted({ status: 'skipped', reason: 'compaction_conflict' })
+      return { status: 'skipped', reason: 'compaction_conflict' }
+    }
+  }
+  onAccepted({ status: resumesPersistedCompaction ? 'already_running' : 'accepted' })
+  let claim: Awaited<ReturnType<typeof claimChatContextCompaction>>
+  try {
+    claim = await claimChatContextCompaction(input.client, {
+      conversationId: input.conversationId,
+      systemAccountId: input.systemAccountId,
+      expectedRevision: loaded.head.contextRevision,
+      sourceThroughSequence,
+      now,
+      staleClaimBefore: new Date(Date.parse(now) - 15 * 60_000).toISOString()
+    })
+  } catch (error) {
+    await failPendingChatContextCompaction(input.client, {
+      conversationId: input.conversationId,
+      systemAccountId: input.systemAccountId,
+      expectedRevision: loaded.head.contextRevision,
+      errorCode: safeErrorCode(error),
+      retryAt: new Date(Date.now() + 60_000).toISOString(),
+      now: new Date().toISOString()
+    }).catch(() => false)
+    return { status: 'failed', reason: error instanceof Error ? error.message : 'chat_context_claim_failed' }
+  }
   if (!claim) return { status: 'skipped', reason: 'claim_conflict' }
 
   try {

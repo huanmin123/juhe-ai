@@ -4,6 +4,8 @@ export interface ChatContextMessage {
 }
 
 import { countChatJsonTokens, countChatTextTokens } from './chat-token-count.js'
+import { normalizeChatHostedTools, type ChatHostedTool } from './chat-tools.js'
+import type { ChatInternalToolDefinition } from './tools/contracts.js'
 
 const protocolReserveTokens = 4_000
 const toolDefinitionReserveTokens = 2_048
@@ -19,7 +21,8 @@ export class ChatContextBudgetError extends Error {
 interface FixedChatInputBudget {
   currentUserContent: string
   instructions: string
-  toolsEnabled: boolean
+  effectiveTools: readonly ChatHostedTool[]
+  internalTools?: readonly ChatInternalToolDefinition[]
   imageTokenEstimate: number
   maxInputTokens?: number
 }
@@ -62,7 +65,8 @@ function fixedChatInputTokens(input: FixedChatInputBudget): number {
     + estimateChatTokens(input.instructions)
     + estimateChatTokens(input.currentUserContent)
     + messageOverheadTokens * 2
-    + (input.toolsEnabled ? toolDefinitionReserveTokens : 0)
+    + normalizeChatHostedTools(input.effectiveTools).length * toolDefinitionReserveTokens
+    + countChatJsonTokens((input.internalTools ?? []).map((tool) => ({ name: tool.modelName, description: tool.description, parameters: tool.inputSchema })))
     + Math.max(0, Math.floor(input.imageTokenEstimate))
 }
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -585,40 +586,9 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 	}
 }
 
-func TestConfigManagementAuthSessionsEnabledRequiresPostgresAndStateRedis(t *testing.T) {
-	base := Config{
-		Host:                          "127.0.0.1",
-		Port:                          3000,
-		RedisNamespace:                "juhe-ai",
-		TrustProxy:                    "false",
-		ManagementAuthSessionsEnabled: true,
-		PostgresURL:                   "postgres://127.0.0.1:5432/juhe_ai",
-		RedisStateURL:                 "redis://127.0.0.1:6379/1",
-		NodeInternalRequestTimeout:    2 * time.Second,
-		ShutdownTimeout:               time.Second,
-	}
-
-	if err := base.Validate(); err != nil {
-		t.Fatalf("Validate() error = %v", err)
-	}
-
-	base.RedisStateURL = ""
-	err := base.Validate()
-	if err == nil {
-		t.Fatal("Validate() error = nil, want state redis dependency error")
-	}
-	if got := err.Error(); !strings.Contains(got, "JUHE_AI_REDIS_STATE_URL") {
-		t.Fatalf("Validate() error = %q, want contains JUHE_AI_REDIS_STATE_URL", got)
-	}
-
-	base.RedisStateURL = "redis://127.0.0.1:6379/1"
-	base.PostgresURL = ""
-	err = base.Validate()
-	if err == nil {
-		t.Fatal("Validate() error = nil, want PostgreSQL dependency error")
-	}
-	if got := err.Error(); !strings.Contains(got, "JUHE_AI_POSTGRES_URL") {
-		t.Fatalf("Validate() error = %q, want contains JUHE_AI_POSTGRES_URL", got)
+func TestConfigDoesNotExposeManagementAuthSessionsSwitch(t *testing.T) {
+	if _, ok := reflect.TypeOf(Config{}).FieldByName("ManagementAuthSessionsEnabled"); ok {
+		t.Fatal("Config still exposes ManagementAuthSessionsEnabled")
 	}
 }
 
@@ -713,18 +683,75 @@ func TestLoadParsesManagementAPIEnv(t *testing.T) {
 	}
 }
 
-func TestLoadParsesManagementAuthSessionsEnv(t *testing.T) {
+func TestLoadIgnoresRemovedManagementAuthSessionsEnv(t *testing.T) {
 	t.Setenv("JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED", "true")
-	t.Setenv("JUHE_AI_POSTGRES_URL", "postgres://127.0.0.1:5432/juhe_ai")
-	t.Setenv("JUHE_AI_REDIS_STATE_URL", "redis://127.0.0.1:6379/1")
 
-	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	_, err := Load(LoadOptions{LoadDotEnv: false})
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !cfg.ManagementAuthSessionsEnabled {
-		t.Fatal("ManagementAuthSessionsEnabled = false, want true")
+}
+
+func TestLoadParsesRuntimeLogIndexEnabledEnv(t *testing.T) {
+	for _, testCase := range []struct {
+		name  string
+		value string
+		want  bool
+	}{
+		{name: "false", value: "false", want: false},
+		{name: "off", value: "OFF", want: false},
+		{name: "no", value: " no ", want: false},
+		{name: "zero", value: "0", want: false},
+		{name: "true", value: "true", want: true},
+		{name: "yes", value: "YES", want: true},
+		{name: "on", value: "on", want: true},
+		{name: "one", value: "1", want: true},
+		{name: "ECMAScript byte order mark", value: "\uFEFF true \uFEFF", want: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", testCase.value)
+			cfg, err := Load(LoadOptions{LoadDotEnv: false})
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.RuntimeLogIndexEnabled != testCase.want {
+				t.Fatalf("RuntimeLogIndexEnabled = %v, want %v", cfg.RuntimeLogIndexEnabled, testCase.want)
+			}
+		})
 	}
+
+	t.Run("unset defaults true", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "")
+		_ = os.Unsetenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED")
+		cfg, err := Load(LoadOptions{LoadDotEnv: false})
+		if err != nil {
+			t.Fatalf("Load() error = %v", err)
+		}
+		if !cfg.RuntimeLogIndexEnabled {
+			t.Fatal("RuntimeLogIndexEnabled = false, want true")
+		}
+	})
+
+	t.Run("rejects bare t", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "t")
+		if _, err := Load(LoadOptions{LoadDotEnv: false}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INDEX_ENABLED") {
+			t.Fatalf("Load() error = %v, want deployment bool error", err)
+		}
+	})
+
+	t.Run("rejects explicitly empty value", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "")
+		if _, err := Load(LoadOptions{LoadDotEnv: false}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INDEX_ENABLED") {
+			t.Fatalf("Load() error = %v, want deployment bool error", err)
+		}
+	})
+
+	t.Run("preserves non ECMAScript next line", func(t *testing.T) {
+		t.Setenv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", "\u0085true\u0085")
+		if _, err := Load(LoadOptions{LoadDotEnv: false}); err == nil || !strings.Contains(err.Error(), "JUHE_AI_RUNTIME_LOG_INDEX_ENABLED") {
+			t.Fatalf("Load() error = %v, want deployment bool error", err)
+		}
+	})
 }
 
 func TestConfigValidatesNodeInternalRequestTimeoutRangeRegardlessOfPublicAPI(t *testing.T) {

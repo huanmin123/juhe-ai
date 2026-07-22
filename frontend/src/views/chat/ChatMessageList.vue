@@ -8,7 +8,7 @@
     <div v-else ref="virtualSpace" class="message-virtual-space" :data-message-count="messages.length" :style="{ height: `${virtualizer.getTotalSize()}px` }">
       <article
         v-for="item in virtualItems"
-        :key="messages[item.index].id"
+        :key="messages[item.index].turnId + ':' + messages[item.index].role"
         :ref="measureElement"
         :data-index="item.index"
         class="message-row"
@@ -18,10 +18,11 @@
         <div class="message-body">
           <div :class="messages[item.index].role === 'user' ? 'message-bubble-user' : 'message-bubble-assistant'">
             <ChatUserMessageContent v-if="messages[item.index].role === 'user'" :message="messages[item.index]" />
-            <ChatMarkdown v-else :content="messages[item.index].contentText" />
-            <ChatToolEvent v-if="messages[item.index].role === 'assistant' && (messages[item.index].toolEvents?.length || messages[item.index].reasoningText || messages[item.index].contentBlocks?.length)" :message="messages[item.index]" />
-            <div v-if="messages[item.index].status !== 'completed'" class="message-status-text" role="status">
-              {{ statusLabel(messages[item.index].status) }}
+            <ChatThinkingIndicator v-if="shouldShowThinking(messages[item.index])" :started-at="thinkingStartedAt(messages[item.index])" :liveness-state="thinkingLiveness(messages[item.index])" />
+            <ChatMarkdown v-else-if="messages[item.index].role === 'assistant' && !messages[item.index].contentBlocks?.length" :content="messages[item.index].contentText" />
+            <ChatAssistantMessageContent v-else-if="messages[item.index].role === 'assistant'" :message="messages[item.index]" />
+            <div v-if="showStatusText(messages[item.index])" class="message-status-text" role="status">
+              {{ statusLabel(messages[item.index]) }}
             </div>
           </div>
           <div v-if="messages[item.index].role === 'user'" class="message-actions">
@@ -37,9 +38,14 @@
                   <template #icon><EditOutlined /></template>
                 </a-button>
               </a-tooltip>
+              <a-tooltip v-if="messages[item.index].id === retryableMessageId" :title="retryLabel || '重新发送'">
+                <a-button type="text" class="message-action-button" :aria-label="retryLabel || '重新发送'" @click="emit('retry-message', messages[item.index])">
+                  <template #icon><ReloadOutlined /></template>
+                </a-button>
+              </a-tooltip>
             </div>
           </div>
-          <div v-if="messages[item.index].role === 'assistant'" class="message-actions message-actions-assistant">
+          <div v-if="messages[item.index].role === 'assistant' && messages[item.index].status !== 'streaming' && messages[item.index].contentText.trim()" class="message-actions message-actions-assistant">
             <div class="message-actions-controls">
               <time :datetime="messages[item.index].createdAt">{{ formatMessageTime(messages[item.index].createdAt) }}</time>
               <a-tooltip title="复制回答">
@@ -56,20 +62,28 @@
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, EditOutlined, MessageOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, EditOutlined, MessageOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { message as antdMessage } from 'ant-design-vue'
 import dayjs from 'dayjs'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { writeTextToClipboard } from '@/shared/clipboard'
-import type { ChatMessage, ChatMessageStatus } from '@/types/domain/chat'
+import type { ChatMessage } from '@/types/domain/chat'
+import type { ChatGenerationLivenessState, RunningTurn } from './chatGenerationRuntime'
 import ChatMarkdown from './ChatMarkdown.vue'
-import ChatToolEvent from './ChatToolEvent.vue'
+import ChatAssistantMessageContent from './ChatAssistantMessageContent.vue'
+import ChatThinkingIndicator from './ChatThinkingIndicator.vue'
 import ChatUserMessageContent from './ChatUserMessageContent.vue'
+import { chatErrorMessage } from './chatErrorMessage'
 import { chatDistanceFromBottom, resolveChatFollowState, resolveChatViewportResizeTransition, shouldBreakChatFollowOnWheel, shouldDetachChatFollowOnScroll, shouldShowChatJumpButton } from './chatScrollPolicy'
 
-const props = defineProps<{ messages: ChatMessage[]; loading: boolean; editableMessageId?: string; editingTurnId?: string }>()
-const emit = defineEmits<{ (event: 'near-top'): void; (event: 'jump-visibility', visible: boolean): void; (event: 'edit-message', message: ChatMessage): void }>()
+const props = defineProps<{ messages: ChatMessage[]; loading: boolean; editableMessageId?: string; editingTurnId?: string; retryableMessageId?: string; retryLabel?: string; runtimeTurn?: RunningTurn }>()
+const emit = defineEmits<{
+  (event: 'near-top'): void
+  (event: 'jump-visibility', visible: boolean): void
+  (event: 'edit-message', message: ChatMessage): void
+  (event: 'retry-message', message: ChatMessage): void
+}>()
 const scrollElement = ref<HTMLElement>()
 const virtualSpace = ref<HTMLElement>()
 const followLatest = ref(true)
@@ -134,15 +148,30 @@ async function restoreScrollAnchor(anchor: { offset: number; totalSize: number }
   virtualizer.value.measure()
   virtualizer.value.scrollToOffset(anchor.offset + Math.max(0, virtualizer.value.getTotalSize() - anchor.totalSize))
 }
-function statusLabel(status: ChatMessageStatus): string {
-  return ({ streaming: '正在生成', failed: '生成失败', canceled: '已停止', completed: '' })[status]
+function statusLabel(message: ChatMessage): string {
+  return message.status === 'failed' ? message.errorMessage || chatErrorMessage(message.errorCode) : ({ streaming: '正在生成', canceled: '已停止', completed: '' })[message.status]
 }
+function showStatusText(message: ChatMessage): boolean { return message.status !== 'completed' && !(message.role === 'assistant' && message.status === 'streaming') }
+function runtimeFor(message: ChatMessage): RunningTurn | undefined {
+  const runtime = props.runtimeTurn
+  if (!runtime || message.role !== 'assistant') return undefined
+  return runtime.assistantMessageId === message.id || runtime.turnId === message.turnId || (runtime.clientMessageId && runtime.clientMessageId === message.clientMessageId) ? runtime : undefined
+}
+function shouldShowThinking(message: ChatMessage): boolean {
+  return message.role === 'assistant' && message.status === 'streaming' && !message.contentText.trim()
+    && !message.reasoningText?.trim() && !message.toolEvents?.length && !message.contentBlocks?.length
+}
+function thinkingStartedAt(message: ChatMessage): number {
+  const parsed = Date.parse(message.createdAt)
+  return runtimeFor(message)?.startedAt ?? (Number.isFinite(parsed) ? parsed : Date.now())
+}
+function thinkingLiveness(message: ChatMessage): ChatGenerationLivenessState { return runtimeFor(message)?.livenessState ?? 'active' }
 function formatMessageTime(value: string): string { return dayjs(value).format('HH:mm') }
 async function copyMessage(content: string): Promise<void> {
   try { await writeTextToClipboard(content) } catch { antdMessage.error('复制失败，请稍后重试') }
 }
 
-watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length, props.messages.at(-1)?.toolEvents?.length, props.messages.at(-1)?.reasoningText?.length], followStream)
+watch(() => [props.messages.length, props.messages.at(-1)?.contentText.length, props.messages.at(-1)?.toolEvents?.length, props.messages.at(-1)?.reasoningText?.length, props.messages.at(-1)?.eventVersion, props.messages.at(-1)?.renderRevision], followStream)
 function handleObservedResize(entries: ResizeObserverEntry[]): void {
   for (const entry of entries) {
     if (entry.target !== scrollElement.value) {

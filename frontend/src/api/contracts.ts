@@ -72,11 +72,6 @@ export interface RequestControlOptions {
   signal?: AbortSignal
 }
 
-export interface AuthSessionListParams {
-  page?: number
-  pageSize?: number
-}
-
 export interface UsageOverviewParams extends ListParams {
   startDate?: string
   endDate?: string

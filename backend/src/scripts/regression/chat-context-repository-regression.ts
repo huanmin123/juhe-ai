@@ -31,6 +31,16 @@ await createChatConversation(client, {
   apiKeyNameSnapshot: '上下文 Key', maxConversationsPerUser: 1000,
   now: '2026-07-13T00:00:00.000Z'
 })
+const initialHead = await getChatContextHead(client, { conversationId, systemAccountId: ownerId })
+assert.deepEqual({
+  contextRetryAt: initialHead?.contextRetryAt,
+  contextAttemptCount: initialHead?.contextAttemptCount,
+  contextErrorCode: initialHead?.contextErrorCode
+}, {
+  contextRetryAt: undefined,
+  contextAttemptCount: 0,
+  contextErrorCode: undefined
+}, '新会话必须返回空退避与零尝试次数')
 
 for (let index = 1; index <= 3; index += 1) {
   const now = `2026-07-13T00:0${index}:00.000Z`
@@ -115,6 +125,18 @@ const checkpoint = await installChatContextCheckpoint(client, {
   now: '2026-07-13T00:11:04.000Z'
 })
 assert.equal(checkpoint.status, 'active')
+const installedHead = await getChatContextHead(client, { conversationId, systemAccountId: ownerId })
+assert.deepEqual({
+  contextState: installedHead?.contextState,
+  contextRetryAt: installedHead?.contextRetryAt,
+  contextAttemptCount: installedHead?.contextAttemptCount,
+  contextErrorCode: installedHead?.contextErrorCode
+}, {
+  contextState: 'ready',
+  contextRetryAt: undefined,
+  contextAttemptCount: 0,
+  contextErrorCode: undefined
+}, '成功安装 checkpoint 必须暴露已清零的权威失败状态')
 
 const after = await loadChatModelContext(client, { conversationId, systemAccountId: ownerId, now: '2026-07-13T00:12:00.000Z', maxRows: 50, maxBytes: 1024 * 1024 })
 assert.equal(after?.entries.length, 1)
@@ -411,6 +433,18 @@ await requestChatContextCompaction(client, { conversationId: retryConversationId
 const retryClaim = await claimChatContextCompaction(client, { conversationId: retryConversationId, systemAccountId: retryOwnerId, expectedRevision: 2, sourceThroughSequence: 2, now: '2026-07-14T01:03:01.000Z', staleClaimBefore: '2026-07-13T00:00:00.000Z' })
 assert.ok(retryClaim)
 await failChatContextCompaction(client, { conversationId: retryConversationId, systemAccountId: retryOwnerId, claimId: retryClaim!.claimId, errorCode: 'temporary_failure', retryAt: '2026-07-14T01:30:00.000Z', now: '2026-07-14T01:03:02.000Z' })
+const failedHead = await getChatContextHead(client, { conversationId: retryConversationId, systemAccountId: retryOwnerId })
+assert.deepEqual({
+  contextState: failedHead?.contextState,
+  contextRetryAt: failedHead?.contextRetryAt,
+  contextAttemptCount: failedHead?.contextAttemptCount,
+  contextErrorCode: failedHead?.contextErrorCode
+}, {
+  contextState: 'compact_failed',
+  contextRetryAt: '2026-07-14T01:30:00.000Z',
+  contextAttemptCount: 1,
+  contextErrorCode: 'temporary_failure'
+}, '压缩失败 head 必须返回安全错误码、退避时间和连续尝试次数')
 assert.equal(await requestChatContextCompaction(client, { conversationId: retryConversationId, systemAccountId: retryOwnerId, expectedRevision: 2, sourceThroughSequence: 2, now: '2026-07-14T01:10:00.000Z' }), false, 'retry_at 到期前不能绕过压缩退避')
 assert.equal(await claimChatContextCompaction(client, { conversationId: retryConversationId, systemAccountId: retryOwnerId, expectedRevision: 2, sourceThroughSequence: 2, now: '2026-07-14T01:10:00.000Z', staleClaimBefore: '2026-07-13T00:00:00.000Z' }), undefined)
 assert.equal(await requestChatContextCompaction(client, { conversationId: retryConversationId, systemAccountId: retryOwnerId, expectedRevision: 2, sourceThroughSequence: 2, now: '2026-07-14T01:30:00.000Z' }), true, 'retry_at 到期后应恢复压缩调度')

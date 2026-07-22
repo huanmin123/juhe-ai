@@ -4,7 +4,7 @@ import {
   completeChatAssetDeletion,
   releaseChatAssetDeletionClaim
 } from '../../storage/chat-assets.repository.js'
-import { removeChatAssetObject } from '../../storage/chat-asset-storage.js'
+import { deleteChatAssetObjects } from '../../storage/chat-asset-storage.js'
 
 export interface ChatAssetCleanupResult {
   claimedAssets: number
@@ -23,7 +23,7 @@ export async function cleanupExpiredChatAssets(input: {
   let failedAssets = 0
   for (const asset of claim.assets) {
     try {
-      await removeChatAssetObject(asset.storageKey)
+      await deleteChatAssetObjects([asset.storageKey, asset.previewStorageKey])
       const deleted = await completeChatAssetDeletion(input.client, { assetId: asset.id, claimId: claim.claimId })
       if (!deleted) throw new Error('聊天资产清理认领已变化')
       deletedAssets += 1
