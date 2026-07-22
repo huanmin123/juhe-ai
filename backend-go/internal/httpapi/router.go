@@ -208,6 +208,8 @@ type RouterOptions struct {
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementAuditLogsHandler                        http.Handler
+	ManagementAuditErrorGroupsHandler                 http.Handler
+	ManagementAuditErrorGroupEventsHandler            http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
@@ -495,6 +497,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementAuditLogsHandler == nil &&
+				opts.ManagementAuditErrorGroupsHandler == nil &&
+				opts.ManagementAuditErrorGroupEventsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
@@ -1156,6 +1160,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementAuditErrorGroupsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/error-groups", opts.ManagementAuditErrorGroupsHandler.ServeHTTP)
+			}
+			if opts.ManagementAuditErrorGroupEventsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/error-groups/{errorGroupId}/events", opts.ManagementAuditErrorGroupEventsHandler.ServeHTTP)
+			}
 			if opts.ManagementAuditLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs", opts.ManagementAuditLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/{id}", opts.ManagementAuditLogsHandler.ServeHTTP)
@@ -1565,6 +1575,8 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementAuditLogsHandler != nil ||
+		opts.ManagementAuditErrorGroupsHandler != nil ||
+		opts.ManagementAuditErrorGroupEventsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
