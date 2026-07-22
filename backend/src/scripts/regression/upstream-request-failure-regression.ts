@@ -33,6 +33,7 @@ const [
   repositories,
   gatewayCache,
   accountSideEffects,
+  gatewayFailureDispatch,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
