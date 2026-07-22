@@ -9,14 +9,17 @@ import (
 )
 
 const (
-	DefaultRetentionDays = 14
-	MinRetentionDays     = 1
-	MaxRetentionDays     = 90
-	DefaultBatchSize     = 1000
-	MaxBatchSize         = 1000
-	DefaultMaxBatches    = 20
-	MaxMaxBatches        = 100
-	DefaultBatchPause    = 25 * time.Millisecond
+	DefaultRetentionDays              = 14
+	MinRetentionDays                  = 1
+	MaxRetentionDays                  = 90
+	DefaultBatchSize                  = 1000
+	MaxBatchSize                      = 1000
+	DefaultMaxBatches                 = 20
+	MaxMaxBatches                     = 100
+	DefaultBatchPause                 = 25 * time.Millisecond
+	CleanupPhaseRuntimeLogs           = "runtime_logs"
+	CleanupPhaseRuntimeLogFileCursors = "runtime_log_file_cursors"
+	CleanupPhaseComplete              = "complete"
 )
 
 const runtimeLogRetentionISOLayout = "2006-01-02T15:04:05.000Z"
@@ -43,6 +46,8 @@ type CleanupInput struct {
 
 type CleanupResult struct {
 	IndexEnabled                bool
+	Phase                       string
+	Partial                     bool
 	RetentionDays               int
 	BatchSize                   int
 	MaxBatches                  int
@@ -99,6 +104,7 @@ func (s *Service) Cleanup(ctx context.Context, input CleanupInput) (CleanupResul
 	cutoffISO := now.UTC().Add(-time.Duration(retentionDays) * 24 * time.Hour).Truncate(time.Millisecond).Format(runtimeLogRetentionISOLayout)
 	result := CleanupResult{
 		IndexEnabled:  true,
+		Phase:         CleanupPhaseRuntimeLogs,
 		RetentionDays: retentionDays,
 		BatchSize:     batchSize,
 		MaxBatches:    maxBatches,
@@ -109,15 +115,23 @@ func (s *Service) Cleanup(ctx context.Context, input CleanupInput) (CleanupResul
 		return s.store.CleanupRuntimeLogIndexBefore(ctx, port.RuntimeLogRetentionCleanupInput{CutoffISO: cutoffISO, Limit: batchSize})
 	})
 	if err != nil {
-		return CleanupResult{}, err
+		result.Partial = cleanupResultHasProgress(result)
+		return result, err
 	}
+	result.Phase = CleanupPhaseRuntimeLogFileCursors
 	result.RuntimeLogFileCursors, result.RuntimeLogFileCursorBatches, err = s.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
 		return s.store.CleanupCompletedRuntimeLogFileCursorsBefore(ctx, port.RuntimeLogRetentionCleanupInput{CutoffISO: cutoffISO, Limit: batchSize})
 	})
 	if err != nil {
-		return CleanupResult{}, err
+		result.Partial = cleanupResultHasProgress(result)
+		return result, err
 	}
+	result.Phase = CleanupPhaseComplete
 	return result, nil
+}
+
+func cleanupResultHasProgress(result CleanupResult) bool {
+	return result.RuntimeLogs > 0 || result.RuntimeLogFileCursors > 0
 }
 
 func (s *Service) retentionDays(ctx context.Context, override int) (int, error) {
@@ -147,11 +161,11 @@ func (s *Service) cleanupInBatches(
 	batches := 0
 	for attempt := 0; attempt < maxBatches; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return 0, 0, err
+			return total, batches, err
 		}
 		deleted, err := cleanup(ctx)
 		if err != nil {
-			return 0, 0, err
+			return total, batches, err
 		}
 		if deleted <= 0 {
 			break
@@ -163,7 +177,7 @@ func (s *Service) cleanupInBatches(
 		}
 		if attempt < maxBatches-1 && s.batchPause > 0 {
 			if err := s.sleep(ctx, s.batchPause); err != nil {
-				return 0, 0, err
+				return total, batches, err
 			}
 		}
 	}
