@@ -685,7 +685,7 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 }
 
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
 		handlers.CaptchaHandler != nil ||
@@ -802,7 +802,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.CaptchaHandler == nil ||
@@ -922,7 +922,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 }
 
 func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalIntegrationSourceListHandler != nil ||
 		disabled.ExternalIntegrationSourceDetailHandler != nil ||
 		disabled.ExternalIntegrationSourceCreateHandler != nil ||
@@ -935,16 +935,16 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		t.Fatal("external integration source handler was created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.ExternalIntegrationSourceListHandler == nil ||
 		enabled.ExternalIntegrationSourceDetailHandler == nil ||
@@ -1053,7 +1053,7 @@ func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPAllowlistHandler != nil ||
 		disabled.ClientIPUnallowlistHandler != nil ||
 		disabled.ClientIPBlacklistHandler != nil ||
@@ -1061,16 +1061,16 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 		t.Fatal("client IP policy handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.ClientIPAllowlistHandler == nil ||
 		enabled.ClientIPUnallowlistHandler == nil ||
@@ -1107,21 +1107,21 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 }
 
 func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPStatsHandler != nil || disabled.ClientIPStatsDetailHandler != nil {
 		t.Fatal("client IP stats read handler was created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.ClientIPStatsHandler == nil || enabled.ClientIPStatsDetailHandler == nil {
 		t.Fatal("client IP stats read handler was not created while management API enabled")
@@ -1152,22 +1152,22 @@ func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerRouteStrategyDeleteOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.RouteStrategyDeleteHandler != nil ||
 		disabled.MyRouteStrategyDeleteHandler != nil {
 		t.Fatal("route strategy delete handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.RouteStrategyDeleteHandler == nil ||
 		enabled.MyRouteStrategyDeleteHandler == nil {
