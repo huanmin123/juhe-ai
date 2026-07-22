@@ -92,6 +92,20 @@ func TestSchedulerLimitsPageToAvailableQueueSlots(t *testing.T) {
 	}
 }
 
+func TestSchedulerCountsRetryTasksAsOccupiedQueueSlots(t *testing.T) {
+	store := &fakeStore{}
+	result, next, err := (Scheduler{
+		Store: store, Enqueuer: &fakeEnqueuer{}, BatchSize: 3,
+		Capacity: fakeQueueCapacity{snapshot: QueueSnapshot{RetryCount: 3}},
+	}).RunPage(context.Background(), nil, time.Now())
+	if err != nil {
+		t.Fatalf("RunPage() error = %v", err)
+	}
+	if store.lists != 0 || next != nil || result.AvailableSlots != 0 {
+		t.Fatalf("lists=%d next=%+v result=%+v", store.lists, next, result)
+	}
+}
+
 func TestSchedulerKeepsCursorWhenQueueIsFull(t *testing.T) {
 	cursor := &port.CooldownAccountRetestCursor{ID: "cursor-account"}
 	store := &fakeStore{}
@@ -137,6 +151,24 @@ type fakeOutcomes struct {
 	deferErr                  error
 }
 
+type blockingOutcomes struct {
+	started chan struct{}
+}
+
+func (o blockingOutcomes) RecordCooldownAccountRetestSuccess(ctx context.Context, _ port.CooldownAccountRetestTask) error {
+	close(o.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (blockingOutcomes) DeferCooldownAccountRetest(context.Context, port.CooldownAccountRetestTask, time.Duration) error {
+	return nil
+}
+
+func (blockingOutcomes) RecordCooldownAccountRetestFailure(context.Context, port.CooldownAccountRetestTask, port.CooldownAccountRetestProbeResult) error {
+	return nil
+}
+
 func (f *fakeOutcomes) RecordCooldownAccountRetestSuccess(context.Context, port.CooldownAccountRetestTask) error {
 	f.success++
 	return nil
@@ -178,6 +210,56 @@ func TestProcessorDefersAfterProbeTimeoutWithFreshOutcomeContext(t *testing.T) {
 	if outcomes.deferred != 1 || outcomes.deferContextErr != nil {
 		t.Fatalf("outcomes = %+v, want deferred with live context", outcomes)
 	}
+}
+
+func TestProcessorDoesNotDeferWhenWorkerShutdownCancelsProbe(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &fakeStore{ok: true, found: port.CooldownAccountRetestCandidate{ID: "a", ConfigRevision: 1}}
+	outcomes := &fakeOutcomes{}
+	probe := cancelingProbe{cancel: cancel}
+	err := (Processor{Store: store, Outcomes: outcomes, Probe: probe}).RunTask(
+		ctx,
+		port.CooldownAccountRetestTask{AccountID: "a", ConfigRevision: 1},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RunTask() error = %v, want context cancellation", err)
+	}
+	if outcomes.deferred != 0 || outcomes.success != 0 || outcomes.failed != 0 {
+		t.Fatalf("shutdown cancellation wrote outcome: %+v", outcomes)
+	}
+}
+
+func TestProcessorCancelsOutcomeWriteWhenWorkerShutsDown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	store := &fakeStore{ok: true, found: port.CooldownAccountRetestCandidate{ID: "a", ConfigRevision: 1}}
+	outcomes := blockingOutcomes{started: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- (Processor{Store: store, Outcomes: outcomes, Probe: &fakeProbe{}, OutcomeTimeout: time.Second}).RunTask(
+			ctx,
+			port.CooldownAccountRetestTask{AccountID: "a", ConfigRevision: 1},
+		)
+	}()
+	<-outcomes.started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("RunTask() error = %v, want context cancellation", err)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("outcome write outlived worker cancellation")
+	}
+}
+
+type cancelingProbe struct {
+	cancel context.CancelFunc
+}
+
+func (p cancelingProbe) Probe(ctx context.Context, _ port.CooldownAccountRetestCandidate) (port.CooldownAccountRetestProbeResult, error) {
+	p.cancel()
+	<-ctx.Done()
+	return port.CooldownAccountRetestProbeResult{}, ctx.Err()
 }
 
 func TestProcessorDefersTransientProbeErrorWithoutQueueRetry(t *testing.T) {
