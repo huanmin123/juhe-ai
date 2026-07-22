@@ -7,28 +7,28 @@ import {
 } from '../../shared/cache.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { stableStringify } from '../deduplication/deduplication.service.js'
-import type { PageDataDomain } from './page-data-change.service.js'
+export type SharedReadCacheNamespace = string
 
-export interface PageDataReadCacheStorage<V> {
+export interface SharedReadCacheStorage<V> {
   get(key: string): Promise<V | undefined>
   set(key: string, value: V): Promise<void>
   delete(key: string): Promise<void>
   clear(): Promise<void>
 }
 
-export interface PageDataReadCacheOptions {
+export interface SharedReadCacheOptions {
   onStorageError?: (error: unknown, operation: 'get' | 'set' | 'delete' | 'clear', key?: string) => void
 }
 
-export class PageDataReadCache<V> {
+export class SharedReadCache<V> {
   private readonly pendingLoads = new Map<string, Promise<V>>()
   private generation = 0
   private invalidationInFlight: Promise<void> = Promise.resolve()
   private bypassStorage = false
 
   constructor(
-    private readonly storage: PageDataReadCacheStorage<V>,
-    private readonly options: PageDataReadCacheOptions = {}
+    private readonly storage: SharedReadCacheStorage<V>,
+    private readonly options: SharedReadCacheOptions = {}
   ) {}
 
   async load(key: string, loader: () => Promise<V>): Promise<V> {
@@ -119,43 +119,43 @@ export class PageDataReadCache<V> {
   }
 }
 
-interface DomainReadCacheOptions {
+interface NamespacedReadCacheOptions {
   max: number
   ttlMs: number
   version?: string
 }
 
-const domainCaches = new Map<PageDataDomain, Set<PageDataReadCache<object>>>()
-const sharedDomainInvalidators = new Map<PageDataDomain, SharedJsonCache<object>>()
+const namespaceCaches = new Map<SharedReadCacheNamespace, Set<SharedReadCache<object>>>()
+const sharedNamespaceInvalidators = new Map<SharedReadCacheNamespace, SharedJsonCache<object>>()
 
-export function createPageDataDomainReadCache<V extends object>(
-  domain: PageDataDomain,
-  options: DomainReadCacheOptions
-): PageDataReadCache<V> {
+export function createNamespacedReadCache<V extends object>(
+  namespace: SharedReadCacheNamespace,
+  options: NamespacedReadCacheOptions
+): SharedReadCache<V> {
   const storage = createSharedJsonCache<V>({
-    name: pageDataDomainCacheName(domain),
+    name: sharedReadCacheName(namespace),
     max: options.max,
     ttlMs: options.ttlMs,
     version: options.version ?? 'v1'
   })
-  const cache = new PageDataReadCache<V>(storage, {
+  const cache = new SharedReadCache<V>(storage, {
     onStorageError: (error, operation, key) => {
       logger.warn(errorLogFields(error, {
-        event: 'page_data_read_cache_storage_failed',
-        domain,
+        event: 'shared_read_cache_storage_failed',
+        namespace,
         operation,
         cacheKey: key
-      }), '页面数据后端缓存不可用，已回退到有界事实读取')
+      }), '共享读取缓存不可用，已回退到有界事实读取')
     }
   })
-  const caches = domainCaches.get(domain) ?? new Set<PageDataReadCache<object>>()
-  caches.add(cache as PageDataReadCache<object>)
-  domainCaches.set(domain, caches)
+  const caches = namespaceCaches.get(namespace) ?? new Set<SharedReadCache<object>>()
+  caches.add(cache as SharedReadCache<object>)
+  namespaceCaches.set(namespace, caches)
   return cache
 }
 
-export async function invalidatePageDataReadCacheDomain(domain: PageDataDomain): Promise<void> {
-  const caches = domainCaches.get(domain)
+export async function invalidateSharedReadCacheNamespace(namespace: SharedReadCacheNamespace): Promise<void> {
+  const caches = namespaceCaches.get(namespace)
   if (canUseProcessLocalAppCacheAsFactSource()) {
     if (!caches?.size) return
     await Promise.all([...caches].map((cache) => cache.invalidateDomain()))
@@ -164,35 +164,35 @@ export async function invalidatePageDataReadCacheDomain(domain: PageDataDomain):
 
   await Promise.all([...(caches ?? [])].map((cache) => cache.invalidateDomain()))
   try {
-    await sharedDomainInvalidator(domain).clear()
+    await sharedNamespaceInvalidator(namespace).clear()
   } catch (error) {
     logger.warn(errorLogFields(error, {
-      event: 'page_data_read_cache_storage_failed',
-      domain,
+      event: 'shared_read_cache_storage_failed',
+      namespace,
       operation: 'clear'
-    }), '页面数据后端共享缓存失效失败')
+    }), '共享读取缓存失效失败')
     throw error
   }
 }
 
-function sharedDomainInvalidator(domain: PageDataDomain): SharedJsonCache<object> {
-  const current = sharedDomainInvalidators.get(domain)
+function sharedNamespaceInvalidator(namespace: SharedReadCacheNamespace): SharedJsonCache<object> {
+  const current = sharedNamespaceInvalidators.get(namespace)
   if (current) return current
   const cache = createSharedJsonCache<object>({
-    name: pageDataDomainCacheName(domain),
+    name: sharedReadCacheName(namespace),
     max: 1,
     ttlMs: 60_000,
     version: 'v1'
   })
-  sharedDomainInvalidators.set(domain, cache)
+  sharedNamespaceInvalidators.set(namespace, cache)
   return cache
 }
 
-function pageDataDomainCacheName(domain: PageDataDomain): string {
-  return `page_data_${domain.replace(/[^a-zA-Z0-9_-]/g, '_')}`
+function sharedReadCacheName(namespace: SharedReadCacheNamespace): string {
+  return `business_read_${namespace.replace(/[^a-zA-Z0-9_-]/g, '_')}`
 }
 
-export function pageDataReadCacheKey(input: {
+export function sharedReadCacheKey(input: {
   scope: unknown
   route: string
   query?: unknown
