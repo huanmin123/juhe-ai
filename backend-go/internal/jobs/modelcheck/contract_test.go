@@ -20,7 +20,8 @@ type goldenContract struct {
 	DeadlinePolicy            string            `json:"deadlinePolicy"`
 	LeaseFencingPolicy        string            `json:"leaseFencingPolicy"`
 	EnqueueHandoffPolicy      string            `json:"enqueueHandoffPolicy"`
-	FinishCASPolicy           string            `json:"finishCasPolicy"`
+	WorkerFinishCASPolicy     string            `json:"workerFinishCasPolicy"`
+	StopCASPolicy             string            `json:"stopCasPolicy"`
 	PublicStatuses            []RunStatus       `json:"publicStatuses"`
 	TerminalStatuses          []RunStatus       `json:"terminalStatuses"`
 	ApplyTransitions          [][2]RunStatus    `json:"applyTransitions"`
@@ -49,8 +50,8 @@ func TestWriterLifecycleGoldenContract(t *testing.T) {
 	if golden.TaskType != TaskTypeRun || golden.PayloadVersion != PayloadVersionV1 || golden.Queue != QueueName || golden.MaxRetry != DefaultMaxRetry || golden.DeadlinePolicy != DeadlinePolicyV1 {
 		t.Fatalf("task contract drifted: type=%q version=%d queue=%q retry=%d deadline=%q", golden.TaskType, golden.PayloadVersion, golden.Queue, golden.MaxRetry, golden.DeadlinePolicy)
 	}
-	if golden.LeaseFencingPolicy != LeaseFencingV1 || golden.EnqueueHandoffPolicy != EnqueueHandoffV1 || golden.FinishCASPolicy != FinishCASV1 {
-		t.Fatalf("coordination contract drifted: fencing=%q handoff=%q finish=%q", golden.LeaseFencingPolicy, golden.EnqueueHandoffPolicy, golden.FinishCASPolicy)
+	if golden.LeaseFencingPolicy != LeaseFencingV1 || golden.EnqueueHandoffPolicy != EnqueueHandoffV1 || golden.WorkerFinishCASPolicy != WorkerFinishCASV1 || golden.StopCASPolicy != StopCASV1 {
+		t.Fatalf("coordination contract drifted: fencing=%q handoff=%q workerFinish=%q stop=%q", golden.LeaseFencingPolicy, golden.EnqueueHandoffPolicy, golden.WorkerFinishCASPolicy, golden.StopCASPolicy)
 	}
 	wantStatuses := []RunStatus{RunStatusRunning, RunStatusCompleted, RunStatusFailed, RunStatusCanceled}
 	if !reflect.DeepEqual(golden.PublicStatuses, wantStatuses) {
