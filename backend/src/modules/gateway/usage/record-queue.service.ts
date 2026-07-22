@@ -16,7 +16,7 @@ import { RedisStreamQueue, type RedisStreamMessage, type RedisStreamQueueRuntime
 import { redisStreamQueueContracts } from '../../../shared/redis-stream-drain.js'
 import { runRedisEnqueueWithBoundedRetry } from '../../../shared/redis-enqueue-retry.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../../shared/retry-policy.js'
-import { sendUsageRecordsToWorker } from '../../background/background-ipc.js'
+import { sendUsageRecordsToWorkerAsync } from '../../background/background-ipc.js'
 import { sanitizeHeaderRecord } from '../upstream/headers.js'
 
 const usageRecordFlushIntervalMs = 500
@@ -26,6 +26,7 @@ const usageRecordFlushBatchMaxBytes = 8 * 1024 * 1024
 const usageRecordShutdownFlushMaxBatches = 100
 const usageRecordQueueMaxItems = 10_000
 const usageRecordQueueMaxBytes = 64 * 1024 * 1024
+const usageRecordAdmissionWaiterMaxItems = 2048
 const usageRecordEstimateMaxBytes = usageRecordQueueMaxBytes + 1
 const slowUsageRecordFlushMs = 500
 const usageRecordRedisStreamKey = redisStreamQueueContracts.usageRecords.streamKey
@@ -53,6 +54,13 @@ let lastSlowFlushAt: string | undefined
 let droppedDispatchCount = 0
 let droppedOverflowCount = 0
 let droppedOversizeCount = 0
+let admissionWaitCount = 0
+let rejectedAdmissionCount = 0
+const usageRecordAdmissionWaiters: Array<{
+  queued: QueuedUsageRecord
+  resolve: () => void
+  reject: (error: Error) => void
+}> = []
 let shutdownHooksInstalled = false
 let allowDbServiceLocalUsageRecordWriteForTest = false
 let usageRecordRedisStreamQueueInstance: RedisStreamQueue<UsageRecordInput> | undefined
@@ -74,27 +82,34 @@ export async function enqueueUsageRecord(input: UsageRecordInput): Promise<void>
     return
   }
   if (shouldDispatchUsageRecordToIngestWorker()) {
-    if (!sendUsageRecordsToWorker([queuedInput])) {
-      recordUsageRecordDispatchFailure(new Error('ingest-worker IPC 不可用'), queuedInput)
+    try {
+      await sendUsageRecordsToWorkerAsync([queuedInput])
+    } catch (error) {
+      recordUsageRecordDispatchFailure(error, queuedInput)
+      throw error
     }
     return
   }
 
   if (runtimeConfig.processRole === 'db-service' && !isDbServiceLocalUsageRecordWriteAllowedForTest()) {
-    if (!sendUsageRecordFromDbServiceToServer(queuedInput)) {
-      recordUsageRecordDispatchFailure(new Error('DB service 无父进程 IPC'), queuedInput)
-    }
+    await sendUsageRecordFromDbServiceToServer(queuedInput)
     return
   }
 
-  enqueueUsageRecordLocal(queuedInput)
+  await enqueueUsageRecordLocal(queuedInput)
 }
 
-export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): void {
+export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): Promise<void> {
   assertLocalUsageRecordWriteAllowed('enqueueUsageRecordsLocal')
-  for (const input of inputs) {
-    enqueueUsageRecordLocal(normalizeUsageRecordInput(input))
+  for (let index = 0; index < inputs.length; index += 1) {
+    const input = inputs[index]
+    if (!input) continue
+    const admission = enqueueUsageRecordLocal(normalizeUsageRecordInput(input))
+    if (admission) {
+      return admission.then(() => enqueueUsageRecordsLocal(inputs.slice(index + 1)))
+    }
   }
+  return Promise.resolve()
 }
 
 export function startUsageRecordRedisStreamConsumer(): void {
@@ -124,7 +139,7 @@ export async function stopUsageRecordRedisStreamConsumer(): Promise<void> {
   }
 }
 
-function enqueueUsageRecordLocal(input: UsageRecordInput): void {
+function enqueueUsageRecordLocal(input: UsageRecordInput): Promise<void> | undefined {
   assertLocalUsageRecordWriteAllowed('enqueueUsageRecordLocal')
   const queued = {
     input,
@@ -133,16 +148,24 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
   }
   if (queued.bytes > usageRecordQueueMaxBytes) {
     recordUsageRecordLocalDrop(queued, 'oversize')
-    return
+    throw new Error('单条使用记录超过本地队列容量上限')
   }
   if (pendingUsageRecords.length >= usageRecordQueueMaxItems || pendingUsageRecordBytes + queued.bytes > usageRecordQueueMaxBytes) {
-    recordUsageRecordLocalDrop(queued, 'overflow')
-    return
+    if (usageRecordAdmissionWaiters.length >= usageRecordAdmissionWaiterMaxItems) {
+      rejectedAdmissionCount += 1
+      recordUsageRecordLocalDrop(queued, 'overflow')
+      throw new Error('使用记录本地队列 admission 等待已满')
+    }
+    admissionWaitCount += 1
+    return new Promise<void>((resolvePromise, rejectPromise) => {
+      usageRecordAdmissionWaiters.push({ queued, resolve: resolvePromise, reject: rejectPromise })
+    })
   }
 
   pendingUsageRecords.push(queued)
   pendingUsageRecordBytes += queued.bytes
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
+  return undefined
 }
 
 export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): void {
@@ -324,6 +347,9 @@ export function getUsageRecordQueueRuntime(): {
   retainedOverflowWarningCount: number
   droppedOverflowCount: number
   droppedOversizeCount: number
+  admissionWaitCount: number
+  admissionWaiterCount: number
+  rejectedAdmissionCount: number
   flushFailureCount: number
   oldestQueuedMs: number
   lastFlushMs: number
@@ -350,6 +376,9 @@ export function getUsageRecordQueueRuntime(): {
     retainedOverflowWarningCount,
     droppedOverflowCount,
     droppedOversizeCount,
+    admissionWaitCount,
+    admissionWaiterCount: usageRecordAdmissionWaiters.length,
+    rejectedAdmissionCount,
     flushFailureCount,
     oldestQueuedMs: oldestUsageRecordQueuedMs(),
     lastFlushMs,
@@ -440,27 +469,33 @@ function recordUsageRecordDispatchFailure(error: unknown, input: UsageRecordInpu
     statusCode: input.statusCode,
     errorCode: input.errorCode,
     droppedDispatchCount
-  }), '使用记录投递后台 worker 失败，已跳过投递')
+  }), '使用记录投递后台 worker 失败，调用方将收到明确失败')
 }
 
-function sendUsageRecordFromDbServiceToServer(input: UsageRecordInput): boolean {
+async function sendUsageRecordFromDbServiceToServer(input: UsageRecordInput): Promise<void> {
   if (typeof process.send !== 'function' || process.connected === false) {
-    return false
-  }
-  try {
-    process.send({
-      type: 'background_worker_usage_records',
-      items: [input]
-    }, (error) => {
-      if (error) {
-        recordUsageRecordDispatchFailure(error, input)
-      }
-    })
-    return true
-  } catch (error) {
+    const error = new Error('DB service 无父进程 IPC')
     recordUsageRecordDispatchFailure(error, input)
-    return true
+    throw error
   }
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    try {
+      process.send?.({
+        type: 'background_worker_usage_records',
+        items: [input]
+      }, (error) => {
+        if (!error) {
+          resolvePromise()
+          return
+        }
+        recordUsageRecordDispatchFailure(error, input)
+        rejectPromise(error)
+      })
+    } catch (error) {
+      recordUsageRecordDispatchFailure(error, input)
+      rejectPromise(error)
+    }
+  })
 }
 
 async function enqueueUsageRecordToRedisStream(input: UsageRecordInput): Promise<void> {
@@ -706,6 +741,11 @@ export function clearUsageRecordQueueForTest(): void {
   droppedDispatchCount = 0
   droppedOverflowCount = 0
   droppedOversizeCount = 0
+  admissionWaitCount = 0
+  rejectedAdmissionCount = 0
+  while (usageRecordAdmissionWaiters.length > 0) {
+    usageRecordAdmissionWaiters.shift()?.reject(new Error('使用记录本地队列已由测试清理'))
+  }
   shutdownHooksInstalled = false
   allowDbServiceLocalUsageRecordWriteForTest = false
   usageRecordRedisConsumerStopping = true
@@ -713,6 +753,13 @@ export function clearUsageRecordQueueForTest(): void {
   usageRecordRedisConsumerPromise = undefined
   void usageRecordRedisStreamQueueInstance?.closeConsumer().catch(() => undefined)
   usageRecordRedisStreamQueueInstance = undefined
+}
+
+export function releaseUsageRecordQueueCapacityForTest(count = 1): void {
+  const normalizedCount = Math.max(0, Math.min(Math.trunc(count), pendingUsageRecords.length))
+  if (normalizedCount <= 0) return
+  const bytes = pendingUsageRecords.slice(0, normalizedCount).reduce((total, item) => total + item.bytes, 0)
+  removeUsageRecordFlushBatch(normalizedCount, bytes)
 }
 
 export function setDbServiceUsageRecordLocalWriteAllowedForTest(value: boolean): void {
@@ -908,6 +955,20 @@ function peekUsageRecordFlushBatch(maxItems: number, maxBytes: number): { batch:
 function removeUsageRecordFlushBatch(count: number, bytes: number): void {
   pendingUsageRecords.splice(0, count)
   pendingUsageRecordBytes = Math.max(0, pendingUsageRecordBytes - bytes)
+  admitWaitingUsageRecords()
+}
+
+function admitWaitingUsageRecords(): void {
+  while (usageRecordAdmissionWaiters.length > 0) {
+    const waiter = usageRecordAdmissionWaiters[0]
+    if (!waiter) break
+    if (pendingUsageRecords.length >= usageRecordQueueMaxItems) break
+    if (pendingUsageRecordBytes + waiter.queued.bytes > usageRecordQueueMaxBytes) break
+    usageRecordAdmissionWaiters.shift()
+    pendingUsageRecords.push(waiter.queued)
+    pendingUsageRecordBytes += waiter.queued.bytes
+    waiter.resolve()
+  }
 }
 
 async function flushUsageRecordQueueConcurrentAsync(options: UsageRecordFlushOptions = {}): Promise<void> {

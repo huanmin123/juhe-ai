@@ -10,6 +10,8 @@ import express from 'express'
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import { markGatewayUpstreamModelsProbe } from '../../modules/gateway/request/upstream-models-probe.js'
+import { cancelGatewayUpstreamResponseBody } from '../../modules/gateway/upstream/request.js'
 import { logger } from '../../shared/logger.js'
 import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 
@@ -26,7 +28,7 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [
-  { openAIGatewayRouter },
+  { openAIGatewayRouter, handleOpenAIGatewayRequest },
   { requestContextMiddleware },
   databaseModule,
   readWorkerPool,
@@ -34,6 +36,7 @@ const [
   gatewayCache,
   accountSideEffects,
   gatewayFailureDispatch,
+  sessionAffinity,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
@@ -45,6 +48,7 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/response/failure-dispatch.js'),
+  import('../../modules/gateway/runtime/session-affinity.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
@@ -65,9 +69,26 @@ assert.equal(
   true,
   '只读 GET 仍可使用通用候选故障转移'
 )
+let cancelBodyCalled = false
+await cancelGatewayUpstreamResponseBody({
+  status: 503,
+  ok: false,
+  headers: new Headers(),
+  body: null,
+  async cancelBody() {
+    cancelBodyCalled = true
+  }
+})
+assert.equal(cancelBodyCalled, true, 'opaque failover 应通过统一响应生命周期入口取消失败响应体')
 
 const app = express()
 app.use(requestContextMiddleware)
+app.get('/v1/models', (req, res, next) => {
+  void handleOpenAIGatewayRequest(markGatewayUpstreamModelsProbe(req), res, {
+    forwardModelsRequestToUpstream: true,
+    accountProbeModel: 'gpt-4o-mini'
+  }).catch(next)
+})
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -90,6 +111,16 @@ async function main(): Promise<void> {
     const upstreamAuthorizations: string[] = []
     upstreamServer = http.createServer((req, res) => {
       upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
+      if (req.url?.includes('opaque_get_cleanup=1')) {
+        if (req.headers.authorization === 'Bearer sk-opaque-failure-first') {
+          res.writeHead(503, { 'content-type': 'application/octet-stream' })
+          res.end('failed body that must be cancelled before failover')
+          return
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end('{"ok":true,"source":"fallback"}')
+        return
+      }
       res.writeHead(422, {
         'content-type': 'application/json; charset=utf-8',
         'x-upstream-contract': 'opaque'
@@ -105,6 +136,15 @@ async function main(): Promise<void> {
       createAccount(opaqueGroup.id, '02-不透明后备账户', 'sk-opaque-failure-fallback', upstreamBaseUrl)
     ]
     const opaqueApiKey = createRegressionApiKey(opaqueGroup.id, 'sk-opaque-request-failure-regression')
+    const opaqueSessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey({
+      headers: { 'x-session-id': 'opaque-http-session' },
+      header: (name: string) => name.toLowerCase() === 'x-session-id' ? 'opaque-http-session' : undefined,
+      body: {}
+    } as unknown as express.Request, {
+      systemAccountId: access.systemAccountId,
+      apiKeyId: opaqueApiKey.id,
+      groupId: opaqueGroup.id
+    })
 
     closedTransportServer = http.createServer()
     await listen(closedTransportServer)
@@ -117,6 +157,15 @@ async function main(): Promise<void> {
       createAccount(transportGroup.id, '02-传输失败后备账户', 'sk-transport-failure-fallback', closedTransportBaseUrl)
     ]
     const transportApiKey = createRegressionApiKey(transportGroup.id, 'sk-opaque-transport-failure-regression')
+    const transportSessionKey = sessionAffinity.resolveOpenAIGatewaySessionAffinityKey({
+      headers: { 'x-session-id': 'opaque-transport-session' },
+      header: (name: string) => name.toLowerCase() === 'x-session-id' ? 'opaque-transport-session' : undefined,
+      body: {}
+    } as unknown as express.Request, {
+      systemAccountId: access.systemAccountId,
+      apiKeyId: transportApiKey.id,
+      groupId: transportGroup.id
+    })
 
     gatewayCache.clearGatewayRuntimeCache()
     appServer = http.createServer(app)
@@ -134,9 +183,14 @@ async function main(): Promise<void> {
     assert.match(invalidJsonText, /请求体不是合法 JSON/)
     assert.equal(upstreamAuthorizations.length, invalidJsonHitsBefore, '无效 JSON 不应命中上游')
 
+    sessionAffinity.rememberOpenAIAccountForSession(opaqueSessionKey, opaqueAccounts[0].id)
     const opaqueResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${opaqueApiKey.key}`, 'content-type': 'application/json' },
+      headers: {
+        authorization: `Bearer ${opaqueApiKey.key}`,
+        'content-type': 'application/json',
+        'x-session-id': 'opaque-http-session'
+      },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: 'opaque non-idempotent failure must not replay' }],
@@ -148,11 +202,32 @@ async function main(): Promise<void> {
     assert.equal(opaqueResponseText, opaqueFailureBody, '通用 POST 应保留不透明上游错误体')
     assert.equal(opaqueResponse.headers.get('x-upstream-contract'), 'opaque', '通用 POST 应保留不透明上游响应头')
     assert.deepEqual(upstreamAuthorizations, ['Bearer sk-opaque-failure-first'], '完整 HTTP 非 2xx 后不得换 Key 或跨账号重放 POST')
+    assertSessionAffinityForgotFailedAccount(sessionAffinity, opaqueSessionKey, opaqueAccounts)
     assertAccountsRemainAvailable(opaqueAccounts, '不透明 HTTP 失败')
 
+    const getHitsBefore = upstreamAuthorizations.length
+    const opaqueGetResponse = await fetch(`${baseUrl}/v1/models?opaque_get_cleanup=1`, {
+      headers: {
+        authorization: `Bearer ${opaqueApiKey.key}`,
+        'x-session-id': 'opaque-get-cleanup-session'
+      }
+    })
+    assert.equal(opaqueGetResponse.status, 200, `通用 GET 应在非 2xx 后切换后备账号：${await opaqueGetResponse.text()}`)
+    const opaqueGetAuthorizations = upstreamAuthorizations.slice(getHitsBefore)
+    assert(opaqueGetAuthorizations.length >= 2, '通用 GET 应至少尝试首账号和后备账号')
+    assert.equal(opaqueGetAuthorizations.at(-1), 'Bearer sk-opaque-failure-fallback', '通用 GET 最终应切换到后备账号')
+    assert(
+      opaqueGetAuthorizations.slice(0, -1).every((authorization) => authorization === 'Bearer sk-opaque-failure-first'),
+      '切换后备账号前只允许尝试首账号的兼容上游 URL'
+    )
+    sessionAffinity.rememberOpenAIAccountForSession(transportSessionKey, transportAccounts[0].id)
     const transportResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${transportApiKey.key}`, 'content-type': 'application/json' },
+      headers: {
+        authorization: `Bearer ${transportApiKey.key}`,
+        'content-type': 'application/json',
+        'x-session-id': 'opaque-transport-session'
+      },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: 'opaque transport failure must remain request scoped' }],
@@ -162,6 +237,7 @@ async function main(): Promise<void> {
     const transportResponseText = await transportResponse.text()
     assert.equal(transportResponse.status, 503, `未收到上游响应头的传输失败应返回统一网关错误：${transportResponseText}`)
     assert.match(transportResponseText, /upstream_retryable_error/)
+    assertSessionAffinityForgotFailedAccount(sessionAffinity, transportSessionKey, transportAccounts)
     assertAccountsRemainAvailable(transportAccounts, '不透明传输失败')
 
     usageRecordQueue.flushAllUsageRecordQueue()
@@ -183,6 +259,21 @@ async function main(): Promise<void> {
     }
     await removeTempRoot()
   }
+}
+
+function assertSessionAffinityForgotFailedAccount(
+  affinity: typeof sessionAffinity,
+  sessionKey: string | undefined,
+  accounts: Array<{ id: string }>
+): void {
+  assert(sessionKey, '回归请求应生成会话亲和 key')
+  const reversed = [...accounts].reverse()
+  const candidates = reversed as unknown as Parameters<typeof affinity.orderOpenAIAccountsBySessionAffinity>[0]
+  assert.deepEqual(
+    affinity.orderOpenAIAccountsBySessionAffinity(candidates, sessionKey).map((account) => account.id),
+    reversed.map((account) => account.id),
+    'opaque 失败后不得继续把失败账号提升为会话亲和首选'
+  )
 }
 
 function createAccount(groupId: string, name: string, apiKey: string, baseUrl: string) {

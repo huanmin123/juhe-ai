@@ -3,6 +3,7 @@ export {
   defaultProfile,
   distributionSampleCount,
   probeSetVersion,
+  quickProbeSetVersion,
   supportedModels,
   supportedModelSet,
   type SupportedModel

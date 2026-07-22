@@ -93,6 +93,12 @@ const pendingBackgroundDbServiceRequestMaxCount = 1000
 const ingestUsageBurstBeforeRegular = 8
 const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 const ingestUsageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
+const usageRecordAdmissionWaiterMaxItems = 2048
+const usageRecordAdmissionWaiters: Array<{
+  message: Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>
+  messageBytes: number
+  resolve: () => void
+}> = []
 const ingestRegularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 const opsWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let regularWorkerMessageQueueBytes = 0
@@ -245,6 +251,48 @@ export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
   return sendBackgroundWorkerMessageToWorker({
     type: 'background_worker_usage_records',
     items
+  })
+}
+
+export async function sendUsageRecordsToWorkerAsync(items: UsageRecordInput[]): Promise<void> {
+  const message = {
+    type: 'background_worker_usage_records' as const,
+    items
+  }
+  if (runtimeConfig.processRole === 'worker') {
+    if (!sendBackgroundWorkerMessageToWorker(message)) {
+      throw new Error('ingest-worker 父进程 IPC 不可用')
+    }
+    return
+  }
+  if (runtimeConfig.queueDriver === 'redis_stream') {
+    rejectRedisStreamLocalQueueMessage(message, 'sendUsageRecordsToWorkerAsync')
+    throw new Error('Redis Stream queue driver 下禁止使用 usage 本地 IPC 队列')
+  }
+  const messageBytes = estimateWorkerMessageBytes(message)
+  if (messageBytes > usageRecordWorkerMessageMaxBytes) {
+    const runtime = pendingQueueRuntimeForTarget('ingest-worker').usageRecords
+    runtime.rejectedCount = (runtime.rejectedCount ?? 0) + 1
+    throw new Error('单条使用记录 IPC 消息超过容量上限')
+  }
+  if (usageRecordAdmissionWaiters.length === 0
+    && canQueueWorkerMessage('ingest-worker', message, messageBytes, 'usageRecords')) {
+    if (!queueWorkerMessage(message)) {
+      throw new Error('使用记录 IPC 入队失败')
+    }
+    return
+  }
+  if (usageRecordAdmissionWaiters.length >= usageRecordAdmissionWaiterMaxItems) {
+    const runtime = pendingQueueRuntimeForTarget('ingest-worker').usageRecords
+    runtime.rejectedCount = (runtime.rejectedCount ?? 0) + 1
+    throw new Error('使用记录 IPC admission 等待队列已满')
+  }
+  await new Promise<void>((resolvePromise) => {
+    usageRecordAdmissionWaiters.push({
+      message,
+      messageBytes,
+      resolve: resolvePromise
+    })
   })
 }
 
@@ -1396,8 +1444,22 @@ function shiftIngestWorkerMessage(): BackgroundWorkerMessage | undefined {
       ingestRegularWorkerMessageQueueBytes = Math.max(0, ingestRegularWorkerMessageQueueBytes - messageBytes)
     }
     removePendingQueueRuntimeMessage('ingest-worker', queueKey, messageBytes)
+    admitWaitingUsageRecordMessages()
   }
   return message
+}
+
+function admitWaitingUsageRecordMessages(): void {
+  while (usageRecordAdmissionWaiters.length > 0) {
+    const waiter = usageRecordAdmissionWaiters[0]
+    if (!waiter) break
+    if (!canQueueWorkerMessage('ingest-worker', waiter.message, waiter.messageBytes, 'usageRecords')) break
+    usageRecordAdmissionWaiters.shift()
+    ingestUsageRecordMessageQueue.push(waiter.message)
+    ingestUsageRecordMessageQueueBytes += waiter.messageBytes
+    addPendingQueueRuntimeMessage('ingest-worker', 'usageRecords', waiter.messageBytes)
+    waiter.resolve()
+  }
 }
 
 function shouldShiftIngestRegularBeforeUsage(): boolean {
@@ -1486,6 +1548,9 @@ function requeueOpsWorkerMessageFirst(message: BackgroundWorkerMessage): void {
 
 function buildIngestPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
   const runtime = clonePendingQueueRuntime(ingestPendingQueueRuntime)
+  runtime.usageRecords.queueLength += usageRecordAdmissionWaiters.length
+  runtime.usageRecords.queueBytes = (runtime.usageRecords.queueBytes ?? 0)
+    + usageRecordAdmissionWaiters.reduce((total, waiter) => total + waiter.messageBytes, 0)
   const oldestCreatedAt = oldestIngestUsageRecordMessageCreatedAt()
   if (oldestCreatedAt) {
     runtime.usageRecords.oldestCreatedAt = oldestCreatedAt
@@ -1500,7 +1565,7 @@ function buildOpsPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
 function buildAggregatePendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
   return mergePendingQueuesRuntime(
     pendingQueueRuntime,
-    mergePendingQueuesRuntime(ingestPendingQueueRuntime, opsPendingQueueRuntime)
+    mergePendingQueuesRuntime(buildIngestPendingQueuesRuntime(), opsPendingQueueRuntime)
   )
 }
 

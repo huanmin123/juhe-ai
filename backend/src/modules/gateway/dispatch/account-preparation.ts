@@ -34,6 +34,7 @@ import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner
 import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
 import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
@@ -261,7 +262,9 @@ export async function buildPreparedUpstreamRequestParts(
         }
       })
       await recordFailedUpstreamAttempt(req, usageContext, account, {
-        upstreamUrl: account.type === 'oauth' ? 'openai-oauth-codex:local-validation' : 'gateway:local-validation',
+        upstreamUrl: account.type === 'oauth' && isOpenAIProtocolProfile(account)
+          ? 'openai-oauth-codex:local-validation'
+          : 'gateway:local-validation',
         startedAt: Date.now(),
         statusCode: error.statusCode,
         bodyText: responseBodyText,

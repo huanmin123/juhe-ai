@@ -103,10 +103,6 @@ const recordMaintenanceRedisStreamKey = redisStreamQueueContracts.recordMaintena
 const recordMaintenanceRedisStreamGroup = redisStreamQueueContracts.recordMaintenance.groupName
 const recordMaintenanceRedisConsumerErrorRetryMs = 1000
 const recordMaintenanceRedisStopWaitMs = 2000
-// Record maintenance may spawn an isolated worker for bounded but materially
-// longer cleanup work.  It must not be reclaimed by another ingest worker
-// while that worker is still alive.
-const recordMaintenanceRedisStreamClaimIdleMs = 60 * 60 * 1000
 const auditRetainedDataCleanupBatchPauseMs = 10
 const auditRetainedDataCleanupBatchSizeLimit = 100
 const auditRetainedDataCleanupMaxBatchesLimit = 3
@@ -478,12 +474,16 @@ async function flushRecordMaintenanceRedisStreamMessages(
     const snapshotMessages = collectAccountUsageSnapshotStreamMessages(messages, index)
     try {
       if (snapshotMessages.length > 0) {
-        await processAccountUsageSnapshotUpsertJobs(snapshotMessages.map((item) => normalizeRecordMaintenanceStreamJob(item.payload) as AccountUsageSnapshotUpsertJob))
+        await runWithRecordMaintenancePendingHeartbeat(queue, snapshotMessages.map((item) => item.id), async () => {
+          await processAccountUsageSnapshotUpsertJobs(snapshotMessages.map((item) => normalizeRecordMaintenanceStreamJob(item.payload) as AccountUsageSnapshotUpsertJob))
+        })
         completedCount += snapshotMessages.length
         await queue.ack(snapshotMessages.map((item) => item.id))
         index += snapshotMessages.length - 1
       } else {
-        await processRecordMaintenanceJob(job)
+        await runWithRecordMaintenancePendingHeartbeat(queue, [message.id], async () => {
+          await processRecordMaintenanceJob(job)
+        })
         completedCount += 1
         await queue.ack([message.id])
       }
@@ -498,6 +498,40 @@ async function flushRecordMaintenanceRedisStreamMessages(
       }), 'Redis Stream 数据维护任务执行失败，消息保持 pending 等待重投')
       break
     }
+  }
+}
+
+async function runWithRecordMaintenancePendingHeartbeat<T>(
+  queue: RedisStreamQueue<RecordMaintenanceJob>,
+  messageIds: string[],
+  action: () => Promise<T>
+): Promise<T> {
+  let heartbeatFailure: unknown
+  let heartbeatInFlight = Promise.resolve()
+  const heartbeat = (): void => {
+    heartbeatInFlight = heartbeatInFlight.then(async () => {
+      const heartbeatCount = await queue.heartbeatPending(messageIds)
+      if (heartbeatCount !== messageIds.length) {
+        throw new Error(`Redis Stream 数据维护消息续租不完整：expected=${messageIds.length}, actual=${heartbeatCount}`)
+      }
+    }).catch((error) => {
+      heartbeatFailure ??= error
+      logger.error(errorLogFields(error, {
+        event: 'record_maintenance_redis_stream_heartbeat_failed',
+        messageIds
+      }), 'Redis Stream 数据维护消息处理心跳失败')
+    })
+  }
+  const heartbeatTimer = setInterval(heartbeat, queue.pendingHeartbeatIntervalMs())
+  heartbeatTimer.unref()
+  try {
+    const result = await action()
+    await heartbeatInFlight
+    if (heartbeatFailure) throw heartbeatFailure
+    return result
+  } finally {
+    clearInterval(heartbeatTimer)
+    await heartbeatInFlight
   }
 }
 
@@ -528,7 +562,7 @@ function recordMaintenanceRedisStreamQueue(): RedisStreamQueue<RecordMaintenance
       streamKey: recordMaintenanceRedisStreamKey,
       groupName: recordMaintenanceRedisStreamGroup,
       readCount: recordMaintenanceBatchSize,
-      claimIdleMs: Math.max(runtimeConfig.queue.redisStreamClaimIdleMs, recordMaintenanceRedisStreamClaimIdleMs)
+      claimIdleMs: runtimeConfig.queue.redisStreamClaimIdleMs
     })
   }
   return recordMaintenanceRedisStreamQueueInstance

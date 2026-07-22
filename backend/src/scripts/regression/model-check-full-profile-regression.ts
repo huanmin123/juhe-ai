@@ -20,6 +20,7 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
 const upstream = createMockUpstream()
+let upstreamRequestCount = 0
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -27,15 +28,17 @@ try {
   const [
     repositories,
     { createMockGatewayFixture },
-    { runModelCheck },
+    { getModelCheckOptions, runModelCheck },
     usageRecordQueue,
-    gatewayJsonParser
+    gatewayJsonParser,
+    { getDatasetDatabase }
   ] = await Promise.all([
     import('../../storage/repositories.js'),
     import('../maintenance/mockdata/fixtures.js'),
     import('../../modules/model-checks/model-checks.service.js'),
     import('../../modules/gateway/usage/record-queue.service.js'),
-    import('../../modules/gateway/request/json-parser.js')
+    import('../../modules/gateway/request/json-parser.js'),
+    import('../../storage/database.js')
   ])
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
 
@@ -49,6 +52,32 @@ try {
   const secondAccount = fixture.accounts[1]
   assert(account, 'mock fixture should create a target account')
   assert(secondAccount, 'mock fixture should create a second group account')
+
+  const options = getModelCheckOptions({ systemAccountId: 'sys_admin', role: 'admin' })
+  assert.equal(options.defaultProfile, 'quick', '模型检测 options 应默认快速检测')
+  assert.deepEqual(options.supportedProfiles.map((item) => item.value), ['quick', 'full'], '模型检测 options 应同时暴露 quick/full')
+
+  const quickRequestCountBefore = upstreamRequestCount
+  const quickRun = await runModelCheck({
+    targetType: 'account',
+    targetId: account.id,
+    model: 'gpt-5.6-sol',
+    trustedComparison: false
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  assert.equal(quickRun.profile, 'quick', '省略 profile 时应持久化为 quick')
+  assert.equal(quickRun.level, 'likely', '快速检测全部通过时最高只能为较可信')
+  assert.match(quickRun.message, /快速检测/, '快速检测结论应明确属于初步估计')
+  assert.equal(upstreamRequestCount - quickRequestCountBefore, 2, '健康快速检测必须严格只执行 2 个上游请求')
+  assert.deepEqual(
+    quickRun.checks.map((item) => item.itemType).sort(),
+    ['responses_basic', 'behavior_probe', 'usage_shape'].sort(),
+    '快速检测只应保存基础响应、单题行为和 usage 三类检测项'
+  )
+  assert(!quickRun.checks.some((item) => ['responses_stream', 'structured_output', 'tool_calling', 'long_context', 'stability', 'cross_model', 'trusted_comparison', 'distribution_similarity', 'token_integrity', 'identity_observation'].includes(item.itemType)), '快速检测不得执行深度探针')
+  const quickObservationCount = getDatasetDatabase()
+    .prepare('SELECT COUNT(*) AS count FROM model_check_observations WHERE run_id = ?')
+    .get(quickRun.id) as { count: number }
+  assert.equal(quickObservationCount.count, 0, '快速检测不得写入模型指纹或 Token observation')
 
   const progressItemKeys: string[] = []
   const accountRun = await runModelCheck({
@@ -81,7 +110,7 @@ try {
   assert(!usageRows.some((row) => row.accountId && row.accountId !== account.id), '账户目标检测不应静默切到同分组其他账号')
   assert(!usageRows.some((row) => row.accountId === secondAccount.id), '账户目标检测不应命中第二个分组账号')
 
-  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环，辅助模型对照与长上下文探针通过')
+  console.log('模型检测 quick/full profile 回归通过：快速档严格 2 请求且无 observation，深度档完整探针通过')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -134,6 +163,7 @@ function createMockUpstream(): http.Server {
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
+        upstreamRequestCount += 1
         const outputText = outputForProbe(body)
         if (body.stream === true) {
           sendStream(res, String(body.model ?? 'gpt-5.6-sol'), outputText)

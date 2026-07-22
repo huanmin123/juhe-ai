@@ -12,6 +12,8 @@ const storage = {
 }
 assert.equal(markRouteAssetReload('/accounts', { storage, now: () => 1_000 }), true)
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 30_999 }), false)
+assert.equal(shouldReloadRouteAsset('/accounts?page=2', { storage, now: () => 30_999 }), false)
+assert.equal(shouldReloadRouteAsset('/accounts#details', { storage, now: () => 30_999 }), false)
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 31_000 }), false)
 assert.equal(shouldReloadRouteAsset('/accounts', { storage, now: () => 31_001 }), true)
 assert.equal(markRouteAssetReload('/a', { storage, now: () => 40_000 }), true)
@@ -20,8 +22,19 @@ assert.equal(shouldReloadRouteAsset('/a', { storage, now: () => 40_200 }), false
 assert.equal(shouldReloadRouteAsset('/b', { storage, now: () => 40_200 }), false)
 assert.equal(shouldReloadRouteAsset('/a', { storage, now: () => 70_001 }), true)
 assert.equal(shouldReloadRouteAsset('/b', { storage, now: () => 70_001 }), false)
-storedValues.set('juhe-ai:route-asset-reload', JSON.stringify({ path: '/legacy', at: 80_000 }))
-assert.equal(shouldReloadRouteAsset('/legacy', { storage, now: () => 80_100 }), false)
+storedValues.set('juhe-ai:route-asset-reload', JSON.stringify({ path: '/legacy?tab=usage#daily', at: 80_000 }))
+assert.equal(shouldReloadRouteAsset('/legacy?tab=accounts', { storage, now: () => 80_100 }), false)
+storedValues.set('juhe-ai:route-asset-reload', JSON.stringify({
+  '/accounts?page=1': 90_000,
+  '/accounts?page=2#detail': 90_100,
+  '/expired': 1_000
+}))
+assert.equal(markRouteAssetReload('/accounts?page=3#latest', { storage, now: () => 90_200 }), true)
+assert.deepEqual(
+  JSON.parse(storedValues.get('juhe-ai:route-asset-reload') ?? '{}'),
+  { '/accounts': 90_200 },
+  '查询参数和 hash 必须复用同一路径冷却键，写入时还应清理过期记录'
+)
 assert.equal(
   shouldReloadRouteAsset('/accounts', {
     storage: {

@@ -4,6 +4,7 @@ import type {
   ModelCheckCheckResult,
   ModelCheckLevel,
   ModelCheckOption,
+  ModelCheckProfile,
   ModelCheckRunSummary,
   ModelCheckStatus
 } from '@/types/domain'
@@ -36,6 +37,14 @@ export function providerText(value: ModelCheckRunSummary['providerCode']): strin
 
 export function runTrustedComparison(run: Pick<ModelCheckRunSummary, 'trustedComparison'>): boolean {
   return run.trustedComparison
+}
+
+export function modelCheckProfileText(value: ModelCheckProfile): string {
+  return value === 'full' ? '深度检测' : '快速检测'
+}
+
+export function modelCheckProfileColor(value: ModelCheckProfile): string {
+  return value === 'full' ? 'purple' : 'cyan'
 }
 
 export function statusText(value: ModelCheckStatus): string {

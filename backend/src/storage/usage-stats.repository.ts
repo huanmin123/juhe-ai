@@ -11,6 +11,7 @@ import { createPostgresDatabaseClient, type DatabaseClient } from './database-cl
 import { getPostgresPool } from './postgres-client.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
+import { statsAggregationMaxShardsPerBatch } from './stats-shard-aggregation-drain.js'
 import { defaultRequestQuotaHourlyWindowHours, maxRequestQuotaHourlyWindowHours } from './request-quota-limits.js'
 import {
   refreshSystemMetricsTrendWindowSnapshotsStage,
@@ -114,7 +115,6 @@ export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './u
 
 export const usageStatsCursorSafetyDelaySeconds = 15
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = usageStatsCursorSafetyDelaySeconds
-const USAGE_STATS_MAX_SHARDS_PER_BATCH = 16
 const USAGE_RANK_SNAPSHOT_EMPTY_SOURCE_WATERMARK = '0000-00-00T00:00:00.000Z'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_TYPE = 'global'
 const USAGE_RANK_SNAPSHOT_JOB_STATE_SCOPE_ID = ''
@@ -1454,7 +1454,7 @@ function postgresMultiRowPlaceholders(rowCount: number, columnCount: number): st
 }
 
 function usageStatsShardLocationsForBatch(batchLimit: number): ReturnType<typeof listUsageRecordShardLocationsPage> {
-  const maxShardCount = Math.max(1, Math.min(USAGE_STATS_MAX_SHARDS_PER_BATCH, Math.trunc(batchLimit)))
+  const maxShardCount = Math.max(1, Math.min(statsAggregationMaxShardsPerBatch, Math.trunc(batchLimit)))
   const window = listUsageRecordShardLocationsPage({
     offset: usageStatsShardScanOffset,
     limit: maxShardCount

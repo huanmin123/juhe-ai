@@ -40,7 +40,9 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
 
   async function load(nextKeyword = keyword.value): Promise<void> {
     if (config.enabled?.() === false) {
+      requestId += 1
       options.value = []
+      loading.value = false
       loadingKey = undefined
       loadingPromise = undefined
       return
@@ -61,11 +63,12 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
           keyword: requestKeyword,
           limit
         })
-        nextOptions = await ensureSelectedOptions(nextOptions, selectedIds, isManagementView)
-        if (currentRequestId !== requestId) return
-        options.value = nextOptions
+        const ensured = await ensureSelectedOptions(nextOptions, selectedIds, isManagementView)
+        if (!isCurrentRequest(currentRequestId, requestKey, requestKeyword)) return
+        handleMissingSelectedIds(ensured.invalidSelectedIds)
+        options.value = ensured.options
       } catch (error) {
-        if (currentRequestId !== requestId) return
+        if (!isCurrentRequest(currentRequestId, requestKey, requestKeyword)) return
         console.error(error)
         message.error(config.errorMessage ?? '加载授权候选项失败')
       } finally {
@@ -108,9 +111,12 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     }
   }
 
-  async function ensureSelectedOptions(nextOptions: T[], selectedIds: string[], isManagementView: boolean): Promise<T[]> {
+  async function ensureSelectedOptions(nextOptions: T[], selectedIds: string[], isManagementView: boolean): Promise<{
+    invalidSelectedIds: string[]
+    options: T[]
+  }> {
     const missingSelectedIds = selectedIds.filter((id) => !nextOptions.some((option) => option.id === id))
-    if (!missingSelectedIds.length) return nextOptions
+    if (!missingSelectedIds.length) return { invalidSelectedIds: [], options: nextOptions }
     try {
       const selectedOptions = await fetchOptions<T>(config.kind, isManagementView, {
         ids: missingSelectedIds,
@@ -118,10 +124,12 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
       })
       const foundIds = new Set(selectedOptions.map((option) => option.id))
       const invalidSelectedIds = missingSelectedIds.filter((id) => !foundIds.has(id))
-      handleMissingSelectedIds(invalidSelectedIds)
-      return mergeOptionsById(selectedOptions, nextOptions)
+      return {
+        invalidSelectedIds,
+        options: mergeOptionsById(selectedOptions, nextOptions)
+      }
     } catch {
-      return nextOptions
+      return { invalidSelectedIds: [], options: nextOptions }
     }
   }
 
@@ -143,6 +151,16 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     return [...new Set((config.selectedIds?.() ?? [])
       .filter((id): id is string => Boolean(id && id !== allSystemAccountsValue))
       .sort())]
+  }
+
+  function isCurrentRequest(currentRequestId: number, requestKey: string, requestKeyword?: string): boolean {
+    return currentRequestId === requestId
+      && requestKey === JSON.stringify([
+        config.kind,
+        config.isManagementView(),
+        requestKeyword ?? '',
+        normalizedSelectedIds()
+      ])
   }
 
   onBeforeUnmount(clearSearchTimer)

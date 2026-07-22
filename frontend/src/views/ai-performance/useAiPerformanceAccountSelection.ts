@@ -151,6 +151,7 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
           : await api.myStats.aiPerformanceAccounts(accountParams)
         applyAccountOptions(result, requestSeq)
       } catch (error) {
+        if (requestSeq !== accountSearchSeq) return
         console.error(error)
         message.error(extractApiErrorMessage(error, 'AI 账户列表加载失败'))
       } finally {
@@ -222,7 +223,12 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
   }
 
   function clearAccountState() {
+    accountSearchSeq += 1
     clearAccountSearchTimer()
+    accounts.value = []
+    accountsLoading.value = false
+    loadingAccountOptionsKey = undefined
+    loadingAccountOptionsPromise = undefined
     addedAccountIds.value = []
     addedAccountSelections.value = []
     activeAccountIds.value = []

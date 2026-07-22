@@ -35,7 +35,9 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
 
   async function load(nextKeyword = keyword.value): Promise<void> {
     if (config.enabled?.() === false) {
+      requestId += 1
       systemAccounts.value = []
+      loading.value = false
       loadingKey = undefined
       loadingPromise = undefined
       return
@@ -55,11 +57,12 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
           keyword: requestKeyword,
           limit
         })
-        options = await ensureSelectedSystemAccountOptions(options, selectedIds)
-        if (currentRequestId !== requestId) return
-        systemAccounts.value = options
+        const ensured = await ensureSelectedSystemAccountOptions(options, selectedIds)
+        if (!isCurrentRequest(currentRequestId, requestKey, requestKeyword)) return
+        handleMissingSelectedIds(ensured.invalidSelectedIds)
+        systemAccounts.value = ensured.options
       } catch (error) {
-        if (currentRequestId !== requestId) return
+        if (!isCurrentRequest(currentRequestId, requestKey, requestKeyword)) return
         console.error(error)
         message.error(config.errorMessage ?? '加载系统账户筛选项失败')
       } finally {
@@ -102,9 +105,12 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     }
   }
 
-  async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[]): Promise<SystemAccountPrincipalSummary[]> {
+  async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[]): Promise<{
+    invalidSelectedIds: string[]
+    options: SystemAccountPrincipalSummary[]
+  }> {
     const missingSelectedIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
-    if (!missingSelectedIds.length) return options
+    if (!missingSelectedIds.length) return { invalidSelectedIds: [], options }
     try {
       const selectedOptions = await api.systemAccounts.options({
         ids: missingSelectedIds,
@@ -112,10 +118,12 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
       })
       const foundIds = new Set(selectedOptions.map((option) => option.id))
       const invalidSelectedIds = missingSelectedIds.filter((id) => !foundIds.has(id))
-      handleMissingSelectedIds(invalidSelectedIds)
-      return mergeOptionsById(selectedOptions, options)
+      return {
+        invalidSelectedIds,
+        options: mergeOptionsById(selectedOptions, options)
+      }
     } catch {
-      return options
+      return { invalidSelectedIds: [], options }
     }
   }
 
@@ -137,6 +145,11 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     return [...new Set((config.selectedIds?.() ?? [])
       .filter((id): id is string => Boolean(id && id !== allSystemAccountsValue))
       .sort())]
+  }
+
+  function isCurrentRequest(currentRequestId: number, requestKey: string, requestKeyword?: string): boolean {
+    return currentRequestId === requestId
+      && requestKey === JSON.stringify([requestKeyword ?? '', normalizedSelectedIds()])
   }
 
   onBeforeUnmount(clearSearchTimer)

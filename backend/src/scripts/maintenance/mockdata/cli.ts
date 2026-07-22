@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   createStatsTableCoverageMockdata(created, usageRecords)
   createStorageMockdata(created, options)
   updateApiKeyLastUsedAt(usageRecords)
-  assertMockdataCoverage(created)
+  assertMockdataCoverage(created, usageRecords)
   writeSummary(
     created,
     usageRecords,

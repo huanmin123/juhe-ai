@@ -22,11 +22,12 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = await Promise.all([
+const [databaseModule, repositories, usageStatsRepository, usageRecordShards, mockdataCoverage] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../storage/usage-stats.repository.js'),
-  import('../../storage/usage-record-shards.js')
+  import('../../storage/usage-record-shards.js'),
+  import('../maintenance/mockdata-coverage.js')
 ])
 
 try {
@@ -78,6 +79,23 @@ try {
 
   repositories.createUsageRecordsBatch(records)
   repositories.createUsageRecordsBatch(records)
+
+  const historicalEmptyShard = usageRecordShards.usageRecordShardLocationFromKey('20200101:s0')
+  assert(historicalEmptyShard, '回归应能构造历史空 usage shard')
+  usageRecordShards.getUsageRecordShardDatabase(historicalEmptyShard)
+  mockdataCoverage.assertCurrentMockdataUsageRun(records)
+  const firstRecordLocation = usageRecordShards.usageRecordShardLocationForRecord(records[0].id, records[0].createdAt)
+  databaseModule.getUsageCatalogDatabase()
+    .prepare('UPDATE usage_record_shard_entries SET shard_key = ? WHERE usage_id = ?')
+    .run(historicalEmptyShard.shardKey, records[0].id)
+  assert.throws(
+    () => mockdataCoverage.assertCurrentMockdataUsageRun(records),
+    /usage catalog 分片错误/,
+    '本轮 Mockdata 校验必须识别 catalog 指向错误分片'
+  )
+  databaseModule.getUsageCatalogDatabase()
+    .prepare('UPDATE usage_record_shard_entries SET shard_key = ? WHERE usage_id = ?')
+    .run(firstRecordLocation.shardKey, records[0].id)
 
   assertCurrentShardRegistry()
   assert.equal(shardUsageRecordCount(), records.length, '新 usage 应写入 usage shard，重复投递应保持幂等')

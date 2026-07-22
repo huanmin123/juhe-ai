@@ -28,6 +28,8 @@ const [
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 const options = getModelCheckOptions(access)
 const supportedModelIds = options.supportedModels.map((item) => item.value)
+assert.equal(options.defaultProfile, 'quick', '模型检测必须默认使用快速 profile')
+assert.deepEqual(options.supportedProfiles.map((item) => item.value), ['quick', 'full'], '模型检测 options 应同时提供快速和深度 profile')
 assert.equal(options.trustedComparison.enabledByDefault, false, '可信对比必须默认关闭')
 assert.equal(options.trustedComparison.available, true, '可信对比能力不应依赖自动扫描账户')
 assert(supportedModelIds.includes('claude-opus-4-8'), '模型检测 options 应包含 Anthropic 完整模型 ID claude-opus-4-8')
@@ -48,6 +50,24 @@ assert.equal(isModelCheckSupportedProtocolProfile({ providerCode: 'gemini', prov
 const trustedComparisonMessage = options.trustedComparison.message ?? ''
 assert.match(trustedComparisonMessage, /Anthropic Messages/, '可信对比文案应描述多供应商协议能力边界')
 assert.doesNotMatch(trustedComparisonMessage, /GPT/, '可信对比文案不应绑定 GPT 供应商名')
+
+await assert.rejects(
+  () => runModelCheck({
+    targetType: 'account',
+    targetId: 'acc_missing',
+    model: 'gpt-5.5',
+    profile: 'quick',
+    trustedComparison: true,
+    trustedComparisonAccountId: 'acc_comparison'
+  }, access),
+  (error) => {
+    assert(error instanceof ModelCheckRequestError)
+    assert.equal(error.statusCode, 400)
+    assert.match(error.message, /快速检测不支持可信对比/)
+    return true
+  },
+  '快速检测必须拒绝可信对比，避免隐藏执行高成本探针'
+)
 
 await assert.rejects(
   () => runModelCheck({

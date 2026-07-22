@@ -29,13 +29,23 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories, usageStatsRepository] = await Promise.all([
+const [databaseModule, repositories, usageStatsRepository, usageRecordShards] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/usage-stats.repository.js')
+  import('../../storage/usage-stats.repository.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 
 try {
+  const emptyBucketDateKey = '20240101'
+  for (let shardId = 0; shardId < 20; shardId += 1) {
+    const shardKey = `${emptyBucketDateKey}:s${String(shardId).padStart(2, '0')}`
+    const location = usageRecordShards.usageRecordShardLocationFromKey(shardKey)
+    assert(location, `空 shard key 应可解析：${shardKey}`)
+    usageRecordShards.getUsageRecordShardDatabase(location)
+  }
+  assert(usageRecordShards.listUsageRecordShardLocations().length > 16, '回归必须让真实数据位于首个空 shard 扫描窗口之后')
+
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const group = repositories.createGroup({ name: '统计重建分片游标回归分组', providerCode: 'gpt', enabled: true }, access)
   const account = repositories.createAccount({
@@ -73,11 +83,40 @@ try {
   }))
 
   repositories.createUsageRecordsBatch(records)
-  assert.equal(usageStatsRepository.aggregateUsageStatsBatch(1000), records.length, '预聚合应先建立 per-shard 游标')
+  assert.equal(usageStatsRepository.aggregateUsageStatsBatch(1000), 0, '首个真实聚合窗口应只有前置空 shard')
+  assert.equal(usageStatsRepository.aggregateUsageStatsBatch(1000), records.length, '轮转后的预聚合应建立 per-shard 游标')
   assert.equal(apiKeyStatsTotal(apiKey.id), records.length, '预聚合统计应存在')
   assert(usageShardCursorCount() > 0, '预聚合后应存在 usage_shard 游标')
 
   databaseModule.closeStorageDatabases()
+  const maintenanceEnv = {
+    ...process.env,
+    JUHE_AI_DATABASE_PATH: databasePath,
+    JUHE_AI_DATASET_DATABASE_PATH: datasetDatabasePath,
+    JUHE_AI_USAGE_CATALOG_DATABASE_PATH: usageCatalogDatabasePath,
+    JUHE_AI_STATS_DATABASE_PATH: statsDatabasePath,
+    JUHE_AI_USAGE_SHARD_ROOT: usageShardRoot,
+    JUHE_AI_USAGE_SHARD_COUNT: '4',
+    JUHE_AI_PROCESS_ROLE: 'worker',
+    JUHE_AI_WORKER_ROLE: 'stats-worker',
+    JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
+    JUHE_AI_LOG_FILE_ENABLED: 'false'
+  }
+  const incompleteResult = spawnSync(process.execPath, [
+    '--import',
+    'tsx',
+    'src/scripts/maintenance/rebuild-usage-stats.ts',
+    '1000',
+    '--confirm-offline',
+    '--max-batches=1'
+  ], {
+    cwd: backendRoot,
+    env: maintenanceEnv,
+    encoding: 'utf8'
+  })
+  assert.notEqual(incompleteResult.status, 0, '未扫完整个 shard 周期时重建脚本必须失败，不能以 0 条假成功')
+  assert.match(`${incompleteResult.stdout}\n${incompleteResult.stderr}`, /用量统计重建未完成/, '不完整重建必须给出明确失败原因')
+
   const result = spawnSync(process.execPath, [
     '--import',
     'tsx',
@@ -86,19 +125,7 @@ try {
     '--confirm-offline'
   ], {
     cwd: backendRoot,
-    env: {
-      ...process.env,
-      JUHE_AI_DATABASE_PATH: databasePath,
-      JUHE_AI_DATASET_DATABASE_PATH: datasetDatabasePath,
-      JUHE_AI_USAGE_CATALOG_DATABASE_PATH: usageCatalogDatabasePath,
-      JUHE_AI_STATS_DATABASE_PATH: statsDatabasePath,
-      JUHE_AI_USAGE_SHARD_ROOT: usageShardRoot,
-      JUHE_AI_USAGE_SHARD_COUNT: '4',
-      JUHE_AI_PROCESS_ROLE: 'worker',
-      JUHE_AI_WORKER_ROLE: 'stats-worker',
-      JUHE_AI_LOG_CONSOLE_ENABLED: 'false',
-      JUHE_AI_LOG_FILE_ENABLED: 'false'
-    },
+    env: maintenanceEnv,
     encoding: 'utf8'
   })
   if (result.status !== 0) {
@@ -107,8 +134,9 @@ try {
     process.exit(result.status ?? 1)
   }
 
+  assert.match(result.stdout, /扫描 20 条记录/, '重建脚本不能在首个空 shard 窗口后以扫描 0 条假成功')
   assert.equal(apiKeyStatsTotal(apiKey.id), records.length, '重建脚本应清理已有 per-shard 游标并从 shard 重新聚合统计')
-  console.log('用量统计重建分片游标回归通过：已有 per-shard 游标不会阻止重建全量扫描')
+  console.log('用量统计重建分片游标回归通过：已有游标和前置空 shard 窗口都不会阻止重建全量扫描')
 } finally {
   try {
     databaseModule.closeStorageDatabases()

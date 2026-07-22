@@ -183,6 +183,7 @@ const overview = ref<AccountUsageStatsOverview>()
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
+let usageStatsOptionsRequestSequence = 0
 const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 6 })
 const initialPageState = pageStateCache.read()
 const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
@@ -344,13 +345,14 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
   if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
     return
   }
+  const requestSequence = ++usageStatsOptionsRequestSequence
   const providerList = await loadProviderOptionsResource({
-    apply: (nextProviders) => {
-      providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
-    },
     force,
-    isManagementView: isManagementView.value
+    isCurrent: () => requestSequence === usageStatsOptionsRequestSequence
+      && scopeKey === (isManagementView.value ? 'management' : 'self'),
+    isManagementView: scopeKey === 'management'
   })
+  if (requestSequence !== usageStatsOptionsRequestSequence || scopeKey !== (isManagementView.value ? 'management' : 'self')) return
   providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
   usageStatsOptionsLoaded.value = true
   usageStatsOptionsScopeKey.value = scopeKey

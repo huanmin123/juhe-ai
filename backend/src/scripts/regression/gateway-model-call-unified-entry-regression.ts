@@ -44,7 +44,11 @@ assertOnlyAllowedCallSites({
   allowedFiles: [
     'backend/src/modules/gateway/upstream/request.ts',
     'backend/src/modules/gateway/dispatch/upstream-attempts.ts'
-  ]
+  ],
+  allowedMatches: {
+    'backend/src/modules/accounts/account-balance-query.service.ts': /requestUpstream\(url\.toString\(\)/,
+    'backend/src/modules/providers/drivers/_shared/token-exchange-transport.ts': /requestUpstream\(input\.url/
+  }
 })
 
 assertOnlyAllowedCallSites({
@@ -90,7 +94,10 @@ assertOnlyAllowedCallSites({
     'backend/src/modules/gateway/request/preflight.ts',
     'backend/src/modules/gateway/dispatch/api-key-group-fallback-candidate.ts',
     'backend/src/modules/gateway/routing/model-target-group-selector.ts'
-  ]
+  ],
+  allowedMatches: {
+    'backend/src/modules/chat/chat.routes.ts': /\blistCachedOpenAIAccountsForGroupAsync\s*\(/
+  }
 })
 
 assertSourceOrder({
@@ -118,7 +125,14 @@ assertNoMatches({
   allowedFiles: [
     'backend/src/modules/openai-compatible-images/image-generation-executor.ts',
     'backend/src/modules/openai-compatible-computer/computer-adapter.ts'
-  ]
+  ],
+  allowedMatches: {
+    'backend/src/modules/gateway/upstream/request.ts': /fetch\(url,/,
+    'backend/src/modules/db-service/db-service-supervisor.ts': /fetch\(`http:\/\/\$\{state\.httpHost\}:\$\{state\.httpPort\}\/__aisys__\/api\/health`/,
+    'backend/src/modules/chat/chat.routes.ts': /fetch\(gatewayUrl\(/,
+    'backend/src/modules/chat/chat-context-compaction.ts': /fetch\(`\$\{input\.gatewayBaseUrl\}/,
+    'backend/src/modules/chat/chat-image-observation.ts': /fetch\(`\$\{input\.gatewayBaseUrl\}/
+  }
 })
 assert.doesNotMatch(
   imageGenerationExecutorSource,
@@ -169,12 +183,20 @@ function assertOnlyAllowedCallSites(input: {
   files: string[]
   pattern: RegExp
   allowedFiles: string[]
+  allowedMatches?: Record<string, RegExp>
 }): void {
   const allowed = new Set(input.allowedFiles.map(normalizeAllowedRepoPath))
   for (const file of input.files) {
     const repoPath = normalizeRepoPath(file)
     if (allowed.has(repoPath)) continue
-    collectMatches(file, input.pattern).forEach((match) => findings.push({ rule: input.rule, ...match }))
+    const allowedMatch = input.allowedMatches?.[repoPath]
+    collectMatches(file, input.pattern).forEach((match) => {
+      if (allowedMatch) {
+        allowedMatch.lastIndex = 0
+        if (allowedMatch.test(match.text)) return
+      }
+      findings.push({ rule: input.rule, ...match })
+    })
   }
 }
 
@@ -183,11 +205,20 @@ function assertNoMatches(input: {
   files: string[]
   pattern: RegExp
   allowedFiles?: string[]
+  allowedMatches?: Record<string, RegExp>
 }): void {
   const allowed = new Set((input.allowedFiles ?? []).map(normalizeAllowedRepoPath))
   for (const file of input.files) {
-    if (allowed.has(normalizeRepoPath(file))) continue
-    collectMatches(file, input.pattern).forEach((match) => findings.push({ rule: input.rule, ...match }))
+    const repoPath = normalizeRepoPath(file)
+    if (allowed.has(repoPath)) continue
+    const allowedMatch = input.allowedMatches?.[repoPath]
+    collectMatches(file, input.pattern).forEach((match) => {
+      if (allowedMatch) {
+        allowedMatch.lastIndex = 0
+        if (allowedMatch.test(match.text)) return
+      }
+      findings.push({ rule: input.rule, ...match })
+    })
   }
 }
 

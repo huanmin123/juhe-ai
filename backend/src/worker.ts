@@ -124,7 +124,13 @@ process.on('message', (message: unknown) => {
 
   switch (message.type) {
     case 'background_worker_usage_records':
-      enqueueUsageRecordsLocal(message.items as Parameters<typeof enqueueUsageRecordsLocal>[0])
+      void enqueueUsageRecordsLocal(message.items as Parameters<typeof enqueueUsageRecordsLocal>[0]).catch((error) => {
+        logger.error(errorLogFields(error, {
+          event: 'background_worker_usage_record_admission_failed',
+          itemCount: message.items.length
+        }), 'ingest-worker 使用记录本地队列 admission 失败，进程将退出等待 supervisor 重启')
+        process.exit(1)
+      })
       break
     case 'background_worker_audit_logs':
       enqueueAuditLogsLocal(message.items as Parameters<typeof enqueueAuditLogsLocal>[0])
@@ -311,6 +317,9 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     droppedFailureCount: typeof input.droppedFailureCount === 'number' ? input.droppedFailureCount : undefined,
     droppedOverflowCount: typeof input.droppedOverflowCount === 'number' ? input.droppedOverflowCount : undefined,
     droppedOversizeCount: typeof input.droppedOversizeCount === 'number' ? input.droppedOversizeCount : undefined,
+    admissionWaitCount: typeof input.admissionWaitCount === 'number' ? input.admissionWaitCount : undefined,
+    admissionWaiterCount: typeof input.admissionWaiterCount === 'number' ? input.admissionWaiterCount : undefined,
+    rejectedAdmissionCount: typeof input.rejectedAdmissionCount === 'number' ? input.rejectedAdmissionCount : undefined,
     retainedOverflowWarningCount: typeof input.retainedOverflowWarningCount === 'number' ? input.retainedOverflowWarningCount : undefined,
     flushFailureCount: typeof input.flushFailureCount === 'number' ? input.flushFailureCount : undefined,
     oldestQueuedMs: typeof input.oldestQueuedMs === 'number' ? input.oldestQueuedMs : undefined,

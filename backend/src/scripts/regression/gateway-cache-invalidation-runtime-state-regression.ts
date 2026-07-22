@@ -16,6 +16,12 @@ const repositoryLookupsSource = readFileSync(new URL('../../storage/repository-l
 assert.match(invalidationSource, /createRuntimeStateStore\('gateway_cache_invalidation'\)/, '网关缓存失效应使用 runtime state store 承接跨进程版本')
 assert.match(invalidationSource, /runtimeConfig\.runtimeStateDriver !== 'redis'/, '非 Redis runtime state 模式不应触发跨进程同步')
 assert.match(invalidationSource, /gatewayCacheInvalidationSyncIntervalMs\s*=\s*1000/, '读取侧应有固定节流，避免每个请求都读取 Redis')
+assert.match(invalidationSource, /getJsonMany<GatewayCacheInvalidationState>/, '三个缓存失效 topic 应通过一次 MGET 批量读取')
+assert.doesNotMatch(
+  sourceFunctionBlock(invalidationSource, 'async function syncGatewayCacheInvalidationsFromRuntimeStateUnsafe'),
+  /\.getJson<GatewayCacheInvalidationState>/,
+  '缓存失效同步不得对三个 topic 串行 GET'
+)
 assert.doesNotMatch(invalidationSource, /background-ipc|process\.send|gateway_runtime_cache_invalidate/, '网关缓存失效广播不能依赖后台 IPC 作为跨进程事实源')
 assert.match(invalidationSource, /publishGatewayCacheInvalidationToRuntimeState\('gateway_runtime_cache'/, '网关运行态失效应发布 runtime state 版本')
 assert.match(invalidationSource, /publishGatewayCacheInvalidationToRuntimeState\('authorization_quota_cache'/, '授权额度失效应发布 runtime state 版本')

@@ -12,11 +12,10 @@ import {
   refreshUsageRankSnapshots
 } from '../../../../storage/usage-stats.repository.js'
 import { listUsageRecordShardLocations } from '../../../../storage/usage-record-shards.js'
+import { createSqliteShardAggregationDrainTracker } from '../../../../storage/stats-shard-aggregation-drain.js'
 import type { DerivedCacheCounts } from '../shared.js'
 
 type StatsDatabase = ReturnType<typeof getStatsDatabase>
-
-const aggregationShardScanPageSize = 16
 
 export function rebuildDerivedCaches(statsDatabase: StatsDatabase): DerivedCacheCounts {
   assertSqliteMockdataMaintenance('rebuildDerivedCaches')
@@ -24,7 +23,8 @@ export function rebuildDerivedCaches(statsDatabase: StatsDatabase): DerivedCache
   const shardLocationCount = listUsageRecordShardLocations().length
   const totalProcessed = drainShardAggregation(
     () => aggregateUsageStatsBatch(5000),
-    shardLocationCount
+    shardLocationCount,
+    5000
   )
   refreshUsageRankSnapshots()
   refreshUsageQuotaHourlyWindowsCache()
@@ -32,7 +32,8 @@ export function rebuildDerivedCaches(statsDatabase: StatsDatabase): DerivedCache
   const quality = refreshAccountQualityFromUsage(24 * 60)
   const clientIpProcessed = drainShardAggregation(
     () => aggregateClientIpStatsBatch(10000),
-    shardLocationCount
+    shardLocationCount,
+    10000
   )
   rebuildClientIpUsageRangeWindows()
   console.log(`统计缓存已重建：聚合 ${totalProcessed} 条，用量质量刷新 ${quality.refreshed} 个账号，IP 统计聚合 ${clientIpProcessed} 条`)
@@ -45,19 +46,15 @@ export function rebuildDerivedCaches(statsDatabase: StatsDatabase): DerivedCache
 
 export function drainShardAggregation(
   aggregateBatch: () => number,
-  shardLocationCount: number
+  shardLocationCount: number,
+  batchSize = 5000
 ): number {
-  const emptyBatchLimit = Math.max(1, Math.ceil(shardLocationCount / aggregationShardScanPageSize))
-  let consecutiveEmptyBatches = 0
+  const drainTracker = createSqliteShardAggregationDrainTracker(batchSize, shardLocationCount)
   let totalProcessed = 0
-  while (consecutiveEmptyBatches < emptyBatchLimit) {
+  while (true) {
     const processed = aggregateBatch()
-    if (processed > 0) {
-      totalProcessed += processed
-      consecutiveEmptyBatches = 0
-    } else {
-      consecutiveEmptyBatches += 1
-    }
+    totalProcessed += processed
+    if (drainTracker.observe(processed)) break
   }
   return totalProcessed
 }

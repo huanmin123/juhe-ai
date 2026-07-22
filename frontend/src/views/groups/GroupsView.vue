@@ -135,6 +135,7 @@ const providers = ref<ProviderDefinition[]>([])
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
+let groupOptionsRequestSequence = 0
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -272,13 +273,14 @@ async function loadGroupOptions(force = false): Promise<void> {
     return
   }
 
+  const requestSequence = ++groupOptionsRequestSequence
   const providerList = await loadProviderOptionsResource({
-    apply: (nextProviders) => {
-      providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
-    },
     force,
-    isManagementView: isManagementView.value
+    isCurrent: () => requestSequence === groupOptionsRequestSequence
+      && scopeKey === (isManagementView.value ? 'management' : 'self'),
+    isManagementView: scopeKey === 'management'
   })
+  if (requestSequence !== groupOptionsRequestSequence || scopeKey !== (isManagementView.value ? 'management' : 'self')) return
   providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey

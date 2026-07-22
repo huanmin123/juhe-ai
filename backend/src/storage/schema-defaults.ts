@@ -162,7 +162,7 @@ export const ANTHROPIC_PROVIDER_SEED = {
   code: ANTHROPIC_PROVIDER_CODE,
   name: 'Anthropic',
   parentCode: null,
-  description: 'Anthropic 官方供应商，使用 API Key 接入 Anthropic Messages 原生协议',
+  description: 'Anthropic 官方供应商，支持 API Key 或 OAuth Access Token（Bearer）接入 Anthropic Messages 原生协议',
   enabled: 1,
   defaultSupportedModels: DEFAULT_ANTHROPIC_SUPPORTED_MODELS
 } as const
@@ -405,13 +405,13 @@ export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
   id: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
   providerCode: ANTHROPIC_PROVIDER_CODE,
   name: 'Anthropic / Anthropic v1',
-  description: 'Anthropic 官方 API Key 协议档案，仅承载 x-api-key、anthropic-version 与 Messages 原生协议',
+  description: 'Anthropic 官方协议档案，支持 API Key 或 OAuth Access Token（Bearer），承载 anthropic-version 与 Messages 原生协议',
   enabled: 1,
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
   defaultHealthCheckModel: 'claude-opus-4-8',
-  accountTypes: ['api_key'],
+  accountTypes: ['api_key', 'oauth'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY, ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY]
 } as const

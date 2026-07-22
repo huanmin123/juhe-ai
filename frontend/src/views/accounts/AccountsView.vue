@@ -193,6 +193,7 @@
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-token-credential-form="isTokenCredentialForm"
+      :is-anthropic-o-auth-form="isAnthropicOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
       :loading="accountEditDetailLoading"
       :mapping-anthropic-source-model-options="mappingAnthropicSourceModelOptions"
@@ -401,6 +402,7 @@ const {
 const {
   disabled: tagFilterDisabled,
   handleDropdown: handleFilterAccountTagDropdown,
+  invalidate: invalidateFilterAccountTagOptions,
   load: loadFilterAccountTagOptions,
   loading: filterAccountTagOptionsLoading,
   options: filterAccountTagOptions,
@@ -599,6 +601,7 @@ const {
   isApiKeyForm,
   isOAuthForm,
   isTokenCredentialForm,
+  isAnthropicOAuthForm,
   isOpenAIOAuthForm,
   mappingAnthropicSourceModelOptions,
   mappingGeminiSourceModelOptions,
@@ -634,6 +637,7 @@ const {
   groupIdForAccount,
   groups,
   isManagementView,
+  invalidateFilterAccountTagOptions,
   loadAccountOptions: loadAccountAuxiliaryOptions,
   loadGroupOptions,
   loadData,

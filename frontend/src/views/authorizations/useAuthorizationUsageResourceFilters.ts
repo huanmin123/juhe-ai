@@ -46,10 +46,12 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   async function loadAuthorizableResourceOptions(keyword = searchKeyword.value) {
     searchKeyword.value = keyword
     if (filters.resourceType === 'all') {
+      requestId += 1
       accounts.value = []
       groups.value = []
       filters.resourceAccount = undefined
       filters.resourceGroup = undefined
+      resourceOptionsLoading.value = false
       loadingKey = undefined
       loadingPromise = undefined
       return
@@ -93,9 +95,9 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
               ownerSystemAccountId,
               isManagementView.value
             )
-        applyResourceOptions(resourceType, result, currentRequestId)
+        applyResourceOptions(resourceType, result, currentRequestId, requestKey, normalizedKeyword)
       } catch (error) {
-        if (currentRequestId !== requestId) return
+        if (currentRequestId !== requestId || requestKey !== currentResourceRequestKey(normalizedKeyword)) return
         console.error(error)
         message.error(filters.resourceType === 'account' ? '加载 AI 账户失败' : '加载分组失败')
       } finally {
@@ -114,9 +116,13 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   function applyResourceOptions(
     resourceType: 'account' | 'group',
     nextOptions: AccountOptionSummary[] | GroupOptionSummary[],
-    currentRequestId: number
+    currentRequestId: number,
+    requestKey: string,
+    normalizedKeyword?: string
   ): void {
-    if (currentRequestId !== requestId || filters.resourceType !== resourceType) return
+    if (currentRequestId !== requestId
+      || filters.resourceType !== resourceType
+      || requestKey !== currentResourceRequestKey(normalizedKeyword)) return
     if (resourceType === 'account') {
       const nextAccounts = nextOptions as AccountOptionSummary[]
       rememberAccountLabels(nextAccounts)
@@ -136,6 +142,15 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     filters.resourceId = undefined
     filters.resourceAccount = undefined
     filters.resourceGroup = undefined
+  }
+
+  function currentResourceRequestKey(normalizedKeyword?: string): string {
+    return JSON.stringify([
+      filters.resourceType,
+      selectedResourceOwnerSystemAccountId.value ?? '',
+      normalizedKeyword ?? '',
+      filters.resourceId ?? ''
+    ])
   }
 
   function handleResourceOptionsDropdown(open: boolean) {

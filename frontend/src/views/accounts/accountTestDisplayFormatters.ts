@@ -184,7 +184,7 @@ export function accountTestSingleRunningOutputLines(input: {
       tone: 'info'
     })
   }
-  if (input.account.type === 'oauth') {
+  if (input.account.type === 'oauth' && accountProviderProtocolKind(input.account) === 'openai_v1') {
     lines.push({ text: 'OAuth Token 刷新也包含在当前等待窗口内', tone: 'muted' })
   }
   return lines

@@ -76,6 +76,11 @@ assert.match(
   /if \(upstreamResponse\.ok\) \{\s*await confirmHalfOpenSuccess\(\)\s*await confirmSameAccountApiKeyFailures\(\)/,
   '只有真实成功响应才能确认 half-open 和同账号前序 Key 失败，资源非 2xx 不得恢复账户运行态'
 )
+assert.match(
+  gatewayRoutesSource,
+  /finalizeHandledUpstreamResponse\(\{[\s\S]*?result: handledResponse,\s*sessionAffinityKey,/,
+  '最终化 opaque HTTP 响应时必须携带会话亲和 key，失败响应才能清理绑定'
+)
 const preparedRequestIndex = upstreamDispatchSource.indexOf('const requestParts = await buildPreparedUpstreamRequestParts')
 const opaqueBudgetConsumeIndex = upstreamDispatchSource.indexOf('opaqueFailoverBudget.attemptedAccountIds.add(originalAccount.id)')
 const upstreamAttemptIndex = upstreamDispatchSource.indexOf('const response = await performUpstreamRequestAttempt')
@@ -84,6 +89,12 @@ assert(upstreamAttemptIndex > opaqueBudgetConsumeIndex, '通用四账户预算�
 assert.equal((gatewayRoutesSource.match(/automaticAccountStateMutationEnabled: false/g) ?? []).length, 3, '普通客户请求的流式、非流式和最终化路径都必须关闭系统自动账户状态副作用')
 assert.match(gatewayRoutesSource, /const requestErrorResult = await handleUpstreamRequestError\(\{[\s\S]*?accountStateMutationEnabled: false[\s\S]*?nonStreamResponseStartedFailedAccountIds\.add/, '非流式正文读取异常 catch 也不得按精确客户端画像开启账户状态副作用')
 const responseFinalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
+const failureDispatchSource = readFileSync(new URL('../../modules/gateway/response/failure-dispatch.ts', import.meta.url), 'utf8')
+assert.match(
+  failureDispatchSource,
+  /handleOpaqueFailedUpstreamResponse[\s\S]*?await cancelGatewayUpstreamResponseBody\(response,[\s\S]*?forgetOpenAIAccountForSessionBestEffort\(input\.sessionAffinityKey, account\.id\)/,
+  'opaque GET/HEAD 故障转移必须先取消非 2xx 响应体，并清理失败账号会话亲和'
+)
 assert.match(responseFinalizationSource, /automaticAccountStateMutationEnabled !== false[\s\S]*?recordGatewayUpstreamBucketSuccessAsync/, '普通成功响应不得清理后台确认的全局上游桶运行态')
 
 const app = express()

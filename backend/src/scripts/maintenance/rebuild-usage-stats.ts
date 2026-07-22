@@ -10,11 +10,12 @@ if (runtimeConfig.databaseDriver === 'sqlite' && offlineConfirmed) {
   process.env.JUHE_AI_SQLITE_OFFLINE_MAINTENANCE = '1'
 }
 
-const [usageStatsRepository, databaseModule, databaseClientModule, postgresModule] = await Promise.all([
+const [usageStatsRepository, databaseModule, databaseClientModule, postgresModule, shardAggregationDrainModule] = await Promise.all([
   import('../../storage/usage-stats.repository.js'),
   import('../../storage/database.js'),
   import('../../storage/database-client.js'),
-  import('../../storage/postgres-client.js')
+  import('../../storage/postgres-client.js'),
+  import('../../storage/stats-shard-aggregation-drain.js')
 ])
 const { aggregateUsageStatsBatch, aggregateUsageStatsBatchAsync, refreshUsageRankSnapshotsInStages } = usageStatsRepository
 const {
@@ -29,6 +30,7 @@ const {
 } = databaseModule
 const { createPostgresDatabaseClient } = databaseClientModule
 const { closePostgresPool, getPostgresPool } = postgresModule
+const { createSqliteShardAggregationDrainTracker } = shardAggregationDrainModule
 
 interface RebuildUsageStatsOptions {
   batchSize: number
@@ -59,26 +61,33 @@ async function main(): Promise<void> {
 
   let totalProcessed = 0
   let batches = 0
+  let aggregationComplete = false
+  const sqliteDrainTracker = runtimeConfig.databaseDriver === 'sqlite'
+    ? createSqliteShardAggregationDrainTracker(options.batchSize)
+    : undefined
   while (batches < options.maxBatches) {
     const processed = runtimeConfig.databaseDriver === 'postgres'
       ? await aggregateUsageStatsBatchAsync(options.batchSize)
       : aggregateUsageStatsBatch(options.batchSize)
     batches += 1
     totalProcessed += processed
-    if (processed <= 0) {
+    aggregationComplete = sqliteDrainTracker
+      ? sqliteDrainTracker.observe(processed)
+      : processed <= 0
+    if (aggregationComplete) {
       break
     }
     await yieldToEventLoop()
+  }
+  if (!aggregationComplete) {
+    throw new Error(`用量统计重建未完成：已达到批次上限 ${options.maxBatches}，请提高 --max-batches 后重新执行完整重建`)
   }
   if (options.refreshRankSnapshots) {
     await refreshUsageRankSnapshotsInStages({ yieldToEventLoop })
   }
 
   const durationMs = Date.now() - startedAt
-  const capped = batches >= options.maxBatches
-    ? `，已达到本轮批次上限 ${options.maxBatches}，如仍有统计滞后请再次离线执行`
-    : ''
-  console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，批次 ${batches}，耗时 ${durationMs}ms${capped}`)
+  console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，批次 ${batches}，耗时 ${durationMs}ms`)
   if (runtimeConfig.databaseDriver === 'postgres') {
     console.log('PostgreSQL schema：juhe_usage -> juhe_stats')
   } else {
@@ -265,6 +274,7 @@ function printHelp(): void {
 说明：
   - 必须停服或确认没有网关/worker 写入后离线执行。
   - SQLite 模式会清空统计结果库派生表，从 usage shard 文件重建统计。
+  - SQLite 模式必须完整扫过所有 active usage shard；批次上限不足时脚本会失败，避免把部分结果误报为重建完成。
   - PostgreSQL 模式会清空 juhe_stats 派生表，从 juhe_usage.usage_records 重建统计。
   - 默认会刷新排行快照；如只重建基础聚合，可追加 --skip-rank-refresh。
 `)

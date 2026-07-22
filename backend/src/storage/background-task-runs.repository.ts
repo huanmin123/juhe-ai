@@ -30,6 +30,7 @@ export interface BackgroundTaskRunStartInput {
 
 export interface BackgroundTaskRunFinishInput {
   runId: string
+  ownerId: string
   status: Extract<BackgroundTaskRunStatus, 'completed' | 'failed' | 'skipped'>
   result?: Record<string, unknown>
   errorMessage?: string
@@ -72,6 +73,11 @@ export interface BackgroundTaskRunReconcileResult {
 }
 
 type BackgroundTaskRunRow = Record<string, unknown>
+type BackgroundTaskLeaseRow = {
+  run_id: unknown
+  job_name: unknown
+  lease_key: unknown
+}
 
 export function createBackgroundTaskRun(input: BackgroundTaskRunCreateInput): BackgroundTaskRunSummary {
   const now = nowIso()
@@ -98,43 +104,86 @@ export function createBackgroundTaskRun(input: BackgroundTaskRunCreateInput): Ba
 
 export function tryStartBackgroundTaskRun(input: BackgroundTaskRunStartInput): boolean {
   const now = input.now ?? nowIso()
-  const changed = getStatsDatabase().prepare(`
-    UPDATE background_task_runs
-    SET status = 'running',
-      owner_id = ?,
-      started_at = COALESCE(started_at, ?),
-      heartbeat_at = ?,
-      updated_at = ?
-    WHERE run_id = ?
-      AND status = 'queued'
-  `).run(input.ownerId, now, now, now, input.runId).changes
-  if (changed <= 0) return false
-  return acquireBackgroundJobLease({
-    leaseKey: backgroundTaskLeaseKey(input.runId),
-    jobName: 'temporary-maintenance-worker',
-    shardKey: input.runId,
-    ownerId: input.ownerId,
-    runId: input.runId,
-    leaseUntil: input.leaseUntil,
-    now
-  })
+  const database = getStatsDatabase()
+  const transactionStarted = beginImmediateDatabaseTransaction(database)
+  try {
+    const row = database.prepare(`
+      SELECT run_id, job_name, lease_key
+      FROM background_task_runs
+      WHERE run_id = ?
+        AND status = 'queued'
+    `).get(input.runId) as BackgroundTaskLeaseRow | undefined
+    if (!row) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return false
+    }
+    const acquired = acquireBackgroundJobLease({
+      leaseKey: String(row.lease_key),
+      jobName: String(row.job_name),
+      shardKey: String(row.run_id),
+      ownerId: input.ownerId,
+      runId: input.runId,
+      leaseUntil: input.leaseUntil,
+      now
+    })
+    if (!acquired) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return false
+    }
+    const changed = database.prepare(`
+      UPDATE background_task_runs
+      SET status = 'running',
+        owner_id = ?,
+        started_at = COALESCE(started_at, ?),
+        heartbeat_at = ?,
+        updated_at = ?
+      WHERE run_id = ?
+        AND status = 'queued'
+    `).run(input.ownerId, now, now, now, input.runId).changes
+    if (changed <= 0) throw new Error('后台任务运行权状态切换失败')
+    commitDatabaseTransaction(database, transactionStarted)
+    return true
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
 }
 
 export function heartbeatBackgroundTaskRun(runId: string, ownerId: string, leaseUntil: string, now = nowIso()): boolean {
-  const changed = getStatsDatabase().prepare(`
-    UPDATE background_task_runs
-    SET heartbeat_at = ?, updated_at = ?
-    WHERE run_id = ?
-      AND owner_id = ?
-      AND status = 'running'
-  `).run(now, now, runId, ownerId).changes
-  if (changed <= 0) return false
-  return renewBackgroundJobLease(backgroundTaskLeaseKey(runId), ownerId, leaseUntil, now)
+  const database = getStatsDatabase()
+  const transactionStarted = beginImmediateDatabaseTransaction(database)
+  try {
+    const row = database.prepare(`
+      SELECT lease_key
+      FROM background_task_runs
+      WHERE run_id = ?
+        AND owner_id = ?
+        AND status = 'running'
+    `).get(runId, ownerId) as Pick<BackgroundTaskLeaseRow, 'lease_key'> | undefined
+    if (!row || !renewBackgroundTaskJobLease(String(row.lease_key), ownerId, runId, leaseUntil, now)) {
+      commitDatabaseTransaction(database, transactionStarted)
+      return false
+    }
+    const changed = database.prepare(`
+      UPDATE background_task_runs
+      SET heartbeat_at = ?, updated_at = ?
+      WHERE run_id = ?
+        AND owner_id = ?
+        AND status = 'running'
+    `).run(now, now, runId, ownerId).changes
+    if (changed <= 0) throw new Error('后台任务心跳状态更新失败')
+    commitDatabaseTransaction(database, transactionStarted)
+    return true
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
 }
 
 export function finishBackgroundTaskRun(input: BackgroundTaskRunFinishInput): boolean {
   const finishedAt = input.finishedAt ?? nowIso()
   const row = getBackgroundTaskRun(input.runId)
+  if (!row || row.ownerId !== input.ownerId || row.status !== 'running') return false
   const startedAtMs = row?.startedAt ? Date.parse(row.startedAt) : NaN
   const durationMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.parse(finishedAt) - startedAtMs) : undefined
   const changed = getStatsDatabase().prepare(`
@@ -147,6 +196,8 @@ export function finishBackgroundTaskRun(input: BackgroundTaskRunFinishInput): bo
       exit_code = ?,
       updated_at = ?
     WHERE run_id = ?
+      AND owner_id = ?
+      AND status = 'running'
   `).run(
     input.status,
     safeJson(input.result ?? {}),
@@ -155,9 +206,10 @@ export function finishBackgroundTaskRun(input: BackgroundTaskRunFinishInput): bo
     durationMs ?? null,
     typeof input.exitCode === 'number' ? Math.trunc(input.exitCode) : null,
     finishedAt,
-    input.runId
+    input.runId,
+    input.ownerId
   ).changes
-  releaseBackgroundJobLease(backgroundTaskLeaseKey(input.runId), row?.ownerId)
+  if (changed > 0) releaseBackgroundTaskJobLease(row.leaseKey, input.ownerId, input.runId)
   return changed > 0
 }
 
@@ -197,45 +249,69 @@ export async function createBackgroundTaskRunAsync(input: BackgroundTaskRunCreat
 export async function tryStartBackgroundTaskRunAsync(input: BackgroundTaskRunStartInput): Promise<boolean> {
   const now = input.now ?? nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const changed = await client.execute(`
-    UPDATE ${backgroundTaskRunTable(client, 'background_task_runs')}
-    SET status = 'running',
-      owner_id = ?,
-      started_at = COALESCE(started_at, ?),
-      heartbeat_at = ?,
-      updated_at = ?
-    WHERE run_id = ?
-      AND status = 'queued'
-  `, [input.ownerId, now, now, now, input.runId])
-  if (changed.changes <= 0) return false
-  return acquireBackgroundJobLeaseAsync({
-    leaseKey: backgroundTaskLeaseKey(input.runId),
-    jobName: 'temporary-maintenance-worker',
-    shardKey: input.runId,
-    ownerId: input.ownerId,
-    runId: input.runId,
-    leaseUntil: input.leaseUntil,
-    now
+  return await client.transaction(async (tx) => {
+    const row = await tx.one<BackgroundTaskLeaseRow>(`
+      SELECT run_id, job_name, lease_key
+      FROM ${backgroundTaskRunTable(tx, 'background_task_runs')}
+      WHERE run_id = ?
+        AND status = 'queued'
+      FOR UPDATE
+    `, [input.runId])
+    if (!row) return false
+    const acquired = await acquireBackgroundJobLeaseAsync({
+      leaseKey: String(row.lease_key),
+      jobName: String(row.job_name),
+      shardKey: String(row.run_id),
+      ownerId: input.ownerId,
+      runId: input.runId,
+      leaseUntil: input.leaseUntil,
+      now
+    }, tx)
+    if (!acquired) return false
+    const changed = await tx.execute(`
+      UPDATE ${backgroundTaskRunTable(tx, 'background_task_runs')}
+      SET status = 'running',
+        owner_id = ?,
+        started_at = COALESCE(started_at, ?),
+        heartbeat_at = ?,
+        updated_at = ?
+      WHERE run_id = ?
+        AND status = 'queued'
+    `, [input.ownerId, now, now, now, input.runId])
+    if (changed.changes <= 0) throw new Error('后台任务运行权状态切换失败')
+    return true
   })
 }
 
 export async function heartbeatBackgroundTaskRunAsync(runId: string, ownerId: string, leaseUntil: string, now = nowIso()): Promise<boolean> {
   const client = createPostgresDatabaseClient(await getPostgresPool())
-  const changed = await client.execute(`
-    UPDATE ${backgroundTaskRunTable(client, 'background_task_runs')}
-    SET heartbeat_at = ?, updated_at = ?
-    WHERE run_id = ?
-      AND owner_id = ?
-      AND status = 'running'
-  `, [now, now, runId, ownerId])
-  if (changed.changes <= 0) return false
-  return renewBackgroundJobLeaseAsync(backgroundTaskLeaseKey(runId), ownerId, leaseUntil, now, client)
+  return await client.transaction(async (tx) => {
+    const row = await tx.one<Pick<BackgroundTaskLeaseRow, 'lease_key'>>(`
+      SELECT lease_key
+      FROM ${backgroundTaskRunTable(tx, 'background_task_runs')}
+      WHERE run_id = ?
+        AND owner_id = ?
+        AND status = 'running'
+      FOR UPDATE
+    `, [runId, ownerId])
+    if (!row || !await renewBackgroundTaskJobLeaseAsync(String(row.lease_key), ownerId, runId, leaseUntil, now, tx)) return false
+    const changed = await tx.execute(`
+      UPDATE ${backgroundTaskRunTable(tx, 'background_task_runs')}
+      SET heartbeat_at = ?, updated_at = ?
+      WHERE run_id = ?
+        AND owner_id = ?
+        AND status = 'running'
+    `, [now, now, runId, ownerId])
+    if (changed.changes <= 0) throw new Error('后台任务心跳状态更新失败')
+    return true
+  })
 }
 
 export async function finishBackgroundTaskRunAsync(input: BackgroundTaskRunFinishInput): Promise<boolean> {
   const finishedAt = input.finishedAt ?? nowIso()
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const row = await getBackgroundTaskRunAsync(input.runId, client)
+  if (!row || row.ownerId !== input.ownerId || row.status !== 'running') return false
   const startedAtMs = row?.startedAt ? Date.parse(row.startedAt) : NaN
   const durationMs = Number.isFinite(startedAtMs) ? Math.max(0, Date.parse(finishedAt) - startedAtMs) : undefined
   const changed = await client.execute(`
@@ -248,6 +324,8 @@ export async function finishBackgroundTaskRunAsync(input: BackgroundTaskRunFinis
       exit_code = ?,
       updated_at = ?
     WHERE run_id = ?
+      AND owner_id = ?
+      AND status = 'running'
   `, [
     input.status,
     safeJson(input.result ?? {}),
@@ -256,9 +334,10 @@ export async function finishBackgroundTaskRunAsync(input: BackgroundTaskRunFinis
     durationMs ?? null,
     typeof input.exitCode === 'number' ? Math.trunc(input.exitCode) : null,
     finishedAt,
-    input.runId
+    input.runId,
+    input.ownerId
   ])
-  await releaseBackgroundJobLeaseAsync(backgroundTaskLeaseKey(input.runId), row?.ownerId, client)
+  if (changed.changes > 0) await releaseBackgroundTaskJobLeaseAsync(row.leaseKey, input.ownerId, input.runId, client)
   return changed.changes > 0
 }
 
@@ -403,6 +482,16 @@ function renewBackgroundJobLease(leaseKey: string, ownerId: string, leaseUntil: 
   `).run(leaseUntil, now, now, leaseKey, ownerId).changes > 0
 }
 
+function renewBackgroundTaskJobLease(leaseKey: string, ownerId: string, runId: string, leaseUntil: string, now: string): boolean {
+  return getStatsDatabase().prepare(`
+    UPDATE background_job_leases
+    SET lease_until = ?, heartbeat_at = ?, updated_at = ?
+    WHERE lease_key = ?
+      AND owner_id = ?
+      AND run_id = ?
+  `).run(leaseUntil, now, now, leaseKey, ownerId, runId).changes > 0
+}
+
 export function releaseBackgroundJobLease(leaseKey: string, ownerId?: string): void {
   if (!ownerId) return
   getStatsDatabase().prepare(`
@@ -410,6 +499,15 @@ export function releaseBackgroundJobLease(leaseKey: string, ownerId?: string): v
     WHERE lease_key = ?
       AND owner_id = ?
   `).run(leaseKey, ownerId)
+}
+
+function releaseBackgroundTaskJobLease(leaseKey: string, ownerId: string, runId: string): void {
+  getStatsDatabase().prepare(`
+    DELETE FROM background_job_leases
+    WHERE lease_key = ?
+      AND owner_id = ?
+      AND run_id = ?
+  `).run(leaseKey, ownerId, runId)
 }
 
 export async function acquireBackgroundJobLeaseAsync(input: {
@@ -420,12 +518,12 @@ export async function acquireBackgroundJobLeaseAsync(input: {
   runId?: string
   leaseUntil: string
   now?: string
-}): Promise<boolean> {
+}, client?: DatabaseClient): Promise<boolean> {
   if (runtimeConfig.databaseDriver !== 'postgres') return acquireBackgroundJobLease(input)
   const now = input.now ?? nowIso()
-  const client = createPostgresDatabaseClient(await getPostgresPool())
-  const result = await client.execute(`
-      INSERT INTO ${backgroundTaskRunTable(client, 'background_job_leases')} (
+  const databaseClient = client ?? createPostgresDatabaseClient(await getPostgresPool())
+  const result = await databaseClient.execute(`
+      INSERT INTO ${backgroundTaskRunTable(databaseClient, 'background_job_leases')} (
         lease_key, job_name, shard_key, owner_id, run_id, lease_until, heartbeat_at, started_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(lease_key) DO UPDATE SET
@@ -465,6 +563,38 @@ export async function renewBackgroundJobLeaseAsync(leaseKey: string, ownerId: st
   return result.changes > 0
 }
 
+async function renewBackgroundTaskJobLeaseAsync(
+  leaseKey: string,
+  ownerId: string,
+  runId: string,
+  leaseUntil: string,
+  now: string,
+  client: DatabaseClient
+): Promise<boolean> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return renewBackgroundTaskJobLease(leaseKey, ownerId, runId, leaseUntil, now)
+  const result = await client.execute(`
+    UPDATE ${backgroundTaskRunTable(client, 'background_job_leases')}
+    SET lease_until = ?, heartbeat_at = ?, updated_at = ?
+    WHERE lease_key = ?
+      AND owner_id = ?
+      AND run_id = ?
+  `, [leaseUntil, now, now, leaseKey, ownerId, runId])
+  return result.changes > 0
+}
+
+async function releaseBackgroundTaskJobLeaseAsync(leaseKey: string, ownerId: string, runId: string, client: DatabaseClient): Promise<void> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    releaseBackgroundTaskJobLease(leaseKey, ownerId, runId)
+    return
+  }
+  await client.execute(`
+    DELETE FROM ${backgroundTaskRunTable(client, 'background_job_leases')}
+    WHERE lease_key = ?
+      AND owner_id = ?
+      AND run_id = ?
+  `, [leaseKey, ownerId, runId])
+}
+
 export async function releaseBackgroundJobLeaseAsync(leaseKey: string, ownerId?: string, client?: DatabaseClient): Promise<void> {
   if (!ownerId) return
   if (runtimeConfig.databaseDriver !== 'postgres') {
@@ -477,10 +607,6 @@ export async function releaseBackgroundJobLeaseAsync(leaseKey: string, ownerId?:
     WHERE lease_key = ?
       AND owner_id = ?
   `, [leaseKey, ownerId])
-}
-
-function backgroundTaskLeaseKey(runId: string): string {
-  return `temporary-maintenance-worker:${runId}`
 }
 
 function reconcileQueuedTaskRunsSql(runsTable: string, leasesTable: string): string {
@@ -498,7 +624,7 @@ function reconcileQueuedTaskRunsSql(runsTable: string, leasesTable: string): str
         SELECT 1
         FROM ${leasesTable} current_lease
         WHERE current_lease.run_id = target.run_id
-          AND current_lease.job_name = 'temporary-maintenance-worker'
+          AND current_lease.lease_key = target.lease_key
           AND current_lease.lease_until > ?
       )
       AND target.run_id IN (
@@ -511,7 +637,7 @@ function reconcileQueuedTaskRunsSql(runsTable: string, leasesTable: string): str
           SELECT 1
           FROM ${leasesTable} leases
           WHERE leases.run_id = runs.run_id
-            AND leases.job_name = 'temporary-maintenance-worker'
+            AND leases.lease_key = runs.lease_key
             AND leases.lease_until > ?
         )
       ORDER BY runs.updated_at ASC, runs.run_id ASC
@@ -535,7 +661,7 @@ function reconcileRunningTaskRunsSql(runsTable: string, leasesTable: string): st
         SELECT 1
         FROM ${leasesTable} current_lease
         WHERE current_lease.run_id = target.run_id
-          AND current_lease.job_name = 'temporary-maintenance-worker'
+          AND current_lease.lease_key = target.lease_key
           AND current_lease.lease_until > ?
       )
       AND target.run_id IN (
@@ -548,7 +674,7 @@ function reconcileRunningTaskRunsSql(runsTable: string, leasesTable: string): st
           SELECT 1
           FROM ${leasesTable} leases
           WHERE leases.run_id = runs.run_id
-            AND leases.job_name = 'temporary-maintenance-worker'
+            AND leases.lease_key = runs.lease_key
             AND leases.lease_until > ?
         )
       ORDER BY runs.updated_at ASC, runs.run_id ASC
@@ -564,9 +690,12 @@ function deleteExpiredTemporaryLeasesSql(runsTable: string, leasesTable: string)
       SELECT leases.lease_key
       FROM ${leasesTable} leases
       LEFT JOIN ${runsTable} runs ON runs.run_id = leases.run_id
-      WHERE leases.job_name = 'temporary-maintenance-worker'
+      WHERE leases.run_id IS NOT NULL
         AND leases.lease_until <= ?
-        AND (runs.run_id IS NULL OR runs.status NOT IN ('queued', 'running'))
+        AND (
+          runs.run_id IS NULL
+          OR (runs.worker_role = 'temporary-maintenance-worker' AND runs.status NOT IN ('queued', 'running'))
+        )
       ORDER BY leases.lease_until ASC, leases.lease_key ASC
       LIMIT ?
     )

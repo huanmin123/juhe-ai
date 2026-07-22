@@ -31,6 +31,7 @@ const run = modelChecks.createModelCheckRun({
   targetId: 'acct_model_trust',
   accountId: 'acct_model_trust',
   model: 'gpt-5.6-sol',
+  profile: 'full',
   trustedComparison: false,
   probeSetVersion: 'openai-model-check-v1'
 })
@@ -133,9 +134,29 @@ assert.equal(apiTrustReport?.observationCount, 9)
 const userDetail = await getModelCheckRun(run.id, { systemAccountId: 'sys_model_trust', role: 'user' })
 const userTrustReport = userDetail?.resultSummary.trustReport as Record<string, unknown> | undefined
 assert.equal(userTrustReport?.observationCount, 9, '用户详情也必须按当前作用域读取预聚合结果')
+const quickRun = modelChecks.createModelCheckRun({
+  systemAccountId: 'sys_model_trust', actorSystemAccountId: 'sys_model_trust', providerCode: 'gpt',
+  targetType: 'account', targetId: 'acct_model_trust', accountId: 'acct_model_trust', model: 'gpt-5.6-sol',
+  profile: 'quick', trustedComparison: false, probeSetVersion: 'model-check-quick-v1'
+})
+modelChecks.finishModelCheckRun(quickRun.id, {
+  level: 'likely', score: 100, maxScore: 100, status: 'completed', message: '快速检测初步通过',
+  resultSummary: {
+    trustReport: {
+      identityStatus: 'insufficient_evidence', mappingStatus: 'direct', usageIntegrityStatus: 'insufficient_evidence',
+      protocolStatus: 'consistent', evidenceStatus: 'insufficient', evidenceCoverage: 35,
+      observedModel: 'gpt-5.6-sol', reasonCodes: ['quick_profile_initial_estimate']
+    }
+  }
+})
+const quickDetail = await getModelCheckRun(quickRun.id, { systemAccountId: 'sys_model_trust', role: 'admin' })
+const quickTrustReport = quickDetail?.resultSummary.trustReport as Record<string, unknown> | undefined
+assert.equal(quickTrustReport?.usageIntegrityStatus, 'insufficient_evidence', '快速报告不能合并同账户的历史深度 Token 结论')
+assert.equal(quickTrustReport?.observationCount, undefined, '快速报告不能借用历史 observation 数量扩充当前证据')
 const unavailableRun = modelChecks.createModelCheckRun({
   systemAccountId: 'sys_model_trust', actorSystemAccountId: 'sys_model_trust', providerCode: 'gpt',
   targetType: 'account', targetId: 'acct_model_trust', accountId: 'acct_model_trust', model: 'gpt-5.6-sol',
+  profile: 'full',
   trustedComparison: false, probeSetVersion: 'openai-model-check-v1'
 })
 modelChecks.finishModelCheckRun(unavailableRun.id, {
@@ -304,7 +325,7 @@ assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_token_intercept_base
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_window_sources_cohort ON model_trust_window_sources(cohort_key_hmac, upstream_bucket_hmac)'))
 assert(pgSql.includes('CREATE INDEX IF NOT EXISTS idx_model_trust_latest_dirty_updated'))
 
-console.log('模型可信 observation 聚合回归通过：脱敏事实、游标增量、窗口结果和 PostgreSQL schema 同步符合预期')
+console.log('模型可信 observation 聚合回归通过：深度报告合并 latest、快速报告隔离历史证据，脱敏事实和游标聚合符合预期')
 
 function tokenObservation(input: {
   accountId: string

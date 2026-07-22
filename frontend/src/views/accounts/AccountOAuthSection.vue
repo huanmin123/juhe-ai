@@ -34,6 +34,37 @@
       </a-form-item>
     </template>
 
+    <template v-else-if="isAnthropicOAuth">
+      <a-alert
+        class="form-alert"
+        type="info"
+        show-icon
+        message="Anthropic OAuth 新建账户使用官方 Bearer Token；可直接粘贴 CLAUDE_CODE_OAUTH_TOKEN 或 ANTHROPIC_AUTH_TOKEN。"
+      />
+      <a-form-item label="Access Token" required>
+        <a-textarea
+          v-model:value="form.accessToken"
+          :rows="4"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+          placeholder="粘贴 Anthropic Bearer Token（例如 CLAUDE_CODE_OAUTH_TOKEN）"
+        />
+      </a-form-item>
+      <a-form-item label="Refresh Token">
+        <a-textarea
+          v-model:value="form.refreshToken"
+          :rows="3"
+          autocomplete="off"
+          data-lpignore="true"
+          data-1p-ignore="true"
+          data-form-type="other"
+          placeholder="可选；如你手里有 Anthropic Refresh Token，也可一并保存"
+        />
+      </a-form-item>
+    </template>
+
     <template v-else-if="isOpenAI">
       <AccountOAuthAuthorizePanel
         :auth-loading="authLoading"
@@ -81,6 +112,7 @@ defineProps<{
   authResult?: OpenAIAuthURLResult
   editing: boolean
   form: AccountFormModel
+  isAnthropicOAuth: boolean
   isOpenAI: boolean
   isGoogleOAuth: boolean
   modelOptions: Array<{ label: string; value: string }>

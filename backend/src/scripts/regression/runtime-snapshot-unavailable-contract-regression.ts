@@ -22,6 +22,7 @@ logger.level = 'silent'
 const statsRoutesSource = readFileSync(resolve('src/modules/stats/stats.routes.ts'), 'utf8')
 const dbServiceIpcSource = readFileSync(resolve('src/modules/db-service/db-service-ipc.ts'), 'utf8')
 const workerSchedulerSource = readFileSync(resolve('src/modules/background/worker-scheduler.ts'), 'utf8')
+const accountSummarySource = readFileSync(resolve('src/storage/account-summary.repository.ts'), 'utf8')
 const systemMetricsRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics',[\s\S]*?\n\}\)\n/)?.[0]
 const systemMetricsRuntimeRouteSource = statsRoutesSource.match(/statsRouter\.get\('\/system-metrics\/runtime',[\s\S]*?\n\}\)\n/)?.[0]
 assert(systemMetricsRouteSource, '应定义系统指标首屏路由')
@@ -37,6 +38,16 @@ assert.match(dbServiceIpcSource, /observedAt: new Date\(\)\.toISOString\(\)/, '�
 assert.match(statsRoutesSource, /runtimeSnapshotAgeMs/, '系统指标接口必须返回运行态快照年龄')
 assert.match(statsRoutesSource, /runtimeSnapshotStale/, '系统指标接口必须明确快照过期状态')
 assert.doesNotMatch(workerSchedulerSource, /state\.lastErrorAt = undefined/, '任务成功后必须保留最近失败时间供恢复状态判断')
+assert.match(
+  accountSummarySource,
+  /listProjection\s*\? Promise\.resolve\(new Map<string, number>\(\)\)\s*:\s*loadAccountCurrentConcurrencyByIdsAsync/g,
+  '账户列表轻投影不得在最终 runtime snapshot 前重复读取 Redis 并发'
+)
+assert.match(
+  accountSummarySource,
+  /账户摘要暂用 0 占位，最终响应必须标记快照不可用/,
+  '并发快照异常日志必须明确 0 是占位值，不能只声称返回未知'
+)
 
 const [
   { createSystemApiApp },

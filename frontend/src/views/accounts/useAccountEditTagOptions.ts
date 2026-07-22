@@ -11,6 +11,7 @@ interface UseAccountTagOptionsOptions {
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   form: AccountFormModel
   isManagementView: ComputedRef<boolean>
+  onTagsChanged?: () => void
 }
 
 export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
@@ -68,6 +69,7 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
       if (!isCurrentDeleteRequest(currentDeleteRequestToken, scopeKey)) return
       options.form.tags = options.form.tags.filter((name) => name.trim() !== tag.name)
       accountTagOptions.value = accountTagOptions.value.filter((item) => item.id !== tagId)
+      options.onTagsChanged?.()
       message.success('标签已删除')
     } catch (error) {
       if (!isCurrentDeleteRequest(currentDeleteRequestToken, scopeKey)) return
@@ -87,6 +89,14 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     accountTagOptionsLoading.value = false
   }
 
+  function invalidateAccountTagOptions(scopeParams: AccountScopeParams | undefined): void {
+    const scopeKey = accountTagOptionsScopeKey(options.isManagementView.value, scopeParams)
+    if (!scopeKey || loadedScopeKey.value !== scopeKey) return
+    requestToken += 1
+    loadedScopeKey.value = ''
+    accountTagOptionsLoading.value = false
+  }
+
   function isCurrentDeleteRequest(
     currentDeleteRequestToken: number,
     scopeKey: string
@@ -100,6 +110,7 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     accountTagOptionsLoading,
     deleteAccountTag,
     deletingAccountTagId,
+    invalidateAccountTagOptions,
     loadAccountTagOptions
   }
 }

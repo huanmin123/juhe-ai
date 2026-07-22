@@ -70,6 +70,7 @@
           :auth-result="authResult"
           :editing="editing"
           :form="form"
+          :is-anthropic-o-auth="isAnthropicOAuthForm"
           :is-open-a-i="isOpenAIOAuthForm"
           :is-google-o-auth="form.type === 'google_oauth'"
           :model-options="modelOptions"
@@ -289,6 +290,7 @@ const props = withDefaults(defineProps<{
   isManagementView: boolean
   isOAuthForm: boolean
   isTokenCredentialForm: boolean
+  isAnthropicOAuthForm: boolean
   isOpenAIOAuthForm: boolean
   loading?: boolean
   mappingAnthropicSourceModelOptions: SelectOption[]

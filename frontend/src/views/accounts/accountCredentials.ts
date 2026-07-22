@@ -129,6 +129,7 @@ function stableStringListKey(value: string[]): string {
 function buildOAuthCredentials(form: AccountFormModel, currentCredentials: Record<string, unknown>): Record<string, unknown> {
   return compactAccountCredentials({
     ...pickOAuthCredentialMetadata(currentCredentials),
+    base_url: form.baseUrl || currentCredentials.base_url,
     access_token: form.accessToken,
     refresh_token: form.refreshToken,
     supported_endpoint_modes: [...form.supportedEndpointModes]

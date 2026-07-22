@@ -252,15 +252,17 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
       let providerApplied = false
-      const [providerResult, proxyList] = await Promise.all([
+      const [, proxyList] = await Promise.all([
         loadProviderOptionsResource({
           apply: (nextProviders) => {
-            if (currentScopeKey() !== scopeKey) return
+            if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) return
             providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
             providerApplied = true
           },
           force,
           includeDefinitions: true,
+          isCurrent: () => currentScopeKey() === scopeKey
+            && accountOptionsInFlight.get(scopeKey) === requestRef.current,
           isManagementView: options.isManagementView.value,
           systemAccountId
         }),

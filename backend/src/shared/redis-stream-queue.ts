@@ -118,6 +118,26 @@ export class RedisStreamQueue<T> {
     }
   }
 
+  pendingHeartbeatIntervalMs(): number {
+    return Math.max(250, Math.min(30_000, Math.floor(this.claimIdleMs / 3)))
+  }
+
+  async heartbeatPending(ids: string[]): Promise<number> {
+    const normalizedIds = ids.map((id) => id.trim()).filter(Boolean)
+    if (!normalizedIds.length) return 0
+    await this.ensureGroup()
+    const client = await this.consumerClient()
+    try {
+      return pendingHeartbeatCount(await this.heartbeatPendingUnsafe(client, normalizedIds))
+    } catch (error) {
+      if (!isRedisNoGroupError(error)) {
+        throw error
+      }
+      await this.recreateGroupAfterNoGroup()
+      return pendingHeartbeatCount(await this.heartbeatPendingUnsafe(client, normalizedIds))
+    }
+  }
+
   async ack(ids: string[]): Promise<number> {
     const normalizedIds = ids.map((id) => id.trim()).filter(Boolean)
     if (!normalizedIds.length) return 0
@@ -265,6 +285,13 @@ export class RedisStreamQueue<T> {
     ])
   }
 
+  private async heartbeatPendingUnsafe(client: RedisCommandClient, ids: string[]): Promise<unknown> {
+    return await client.eval(redisHeartbeatOwnedPendingMessagesScript, {
+      keys: [this.streamKey],
+      arguments: [this.groupName, this.consumerName, ...ids]
+    })
+  }
+
   private consumerClient(): Promise<RedisCommandClient> {
     if (!this.consumerClientPromise) {
       this.consumerClientPromise = createDedicatedRedisClient(this.redisUrl).catch((error) => {
@@ -399,6 +426,21 @@ end
 return output
 `
 
+const redisHeartbeatOwnedPendingMessagesScript = `
+local output = {}
+for index = 3, #ARGV do
+  local id = ARGV[index]
+  local pending = redis.call('XPENDING', KEYS[1], ARGV[1], id, id, 1)
+  if #pending > 0 and pending[1][2] == ARGV[2] then
+    local claimed = redis.call('XCLAIM', KEYS[1], ARGV[1], ARGV[2], 0, id, 'JUSTID')
+    if #claimed > 0 then
+      output[#output + 1] = claimed[1]
+    end
+  end
+end
+return output
+`
+
 const redisEnqueueWithFenceScript = `
 if redis.call('GET', KEYS[1]) then
   return redis.error_reply('QUEUE_QUIESCED')
@@ -455,6 +497,12 @@ function stringField(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed && trimmed !== 'null' ? trimmed : undefined
+}
+
+function pendingHeartbeatCount(value: unknown): number {
+  if (Array.isArray(value)) return value.length
+  if (value && typeof value === 'object') return Object.keys(value as Record<string, unknown>).length
+  return 0
 }
 
 function requiredRedisQueueUrl(): string {

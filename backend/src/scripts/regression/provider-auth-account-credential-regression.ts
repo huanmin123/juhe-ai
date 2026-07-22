@@ -17,8 +17,8 @@ import { assertAccountGptRequestOverridesSupportedByCatalog } from '../../module
 assert(GEMINI_NATIVE_V1BETA_PROFILE_SEED.accountTypes.includes('google_oauth'))
 assert.deepEqual(
   ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED.accountTypes,
-  ['api_key'],
-  '没有可信自动轮换 assertion source 时 Anthropic 档案只能开放 API Key'
+  ['api_key', 'oauth'],
+  'Anthropic 档案应开放 API Key 与官方 token 型 OAuth'
 )
 
 assert.throws(
@@ -32,7 +32,7 @@ assert.throws(
   /不支持凭据写入/,
   '没有可信自动轮换 assertion source 时不得接受 workload_identity 凭据'
 )
-assert.equal(anthropicProviderDriver.prepareAccountBeforeDispatch, undefined, 'Anthropic driver 不得暴露 WIF token exchange 运行钩子')
+assert.equal(anthropicProviderDriver.prepareAccountBeforeDispatch, undefined, 'Anthropic driver 当前不应暴露额外 token exchange 运行钩子')
 
 const googleOAuth = normalizeAccountCredentialsForWrite('google_oauth', {
   access_token: 'google-access',
@@ -113,6 +113,31 @@ const googleParts = await geminiProviderDriver.buildUpstreamRequestParts(interac
 assert.equal(googleParts.headers.get('authorization'), 'Bearer google-access')
 assert.equal(googleParts.headers.get('x-goog-api-key'), null)
 assert.equal(googleParts.headers.get('x-goog-user-project'), 'quota-project')
+
+const anthropicOauthParts = await anthropicProviderDriver.buildUpstreamRequestParts(
+  requestFixture('/v1/messages', { model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'OK' }] }),
+  accountFixture({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1',
+    type: 'oauth',
+    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: 'anthropic-refresh-should-not-be-used',
+    credentials: {
+      access_token: 'anthropic-access-token',
+      refresh_token: 'anthropic-refresh-token',
+      base_url: 'https://api.anthropic.com/v1',
+      supported_endpoint_modes: ['messages_json', 'messages_sse', 'message_token_counting']
+    },
+    healthCheckEndpointMode: 'messages_json'
+  }),
+  { systemAccountId: 'sys', groupId: 'grp' },
+  undefined
+)
+assert.equal(anthropicOauthParts.headers.get('authorization'), 'Bearer anthropic-access-token')
+assert.equal(anthropicOauthParts.headers.get('x-api-key'), null)
+assert.equal(anthropicOauthParts.headers.get('anthropic-version'), '2023-06-01')
 
 console.log('provider auth account credential regression passed')
 

@@ -1,6 +1,6 @@
 export type ModelCheckTargetType = 'account'
 export type ModelCheckModel = string
-export type ModelCheckProfile = 'full'
+export type ModelCheckProfile = 'quick' | 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckStatus = 'running' | 'completed' | 'failed' | 'canceled'
 export type ModelCheckItemStatus = 'passed' | 'warning' | 'failed' | 'skipped'
@@ -175,6 +175,7 @@ export type ModelCheckProgressEvent = {
   targetId: string
   targetName?: string
   model: string
+  profile: ModelCheckProfile
   trustedComparison: boolean
   trustedComparisonAccountId?: string
   trustedComparisonAccountName?: string
