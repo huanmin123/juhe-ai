@@ -1,6 +1,7 @@
 package managementruntimeloggrep
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -248,6 +249,52 @@ func TestServiceRealRGFixture(t *testing.T) {
 	result := service.Grep(context.Background(), Input{Keywords: []string{"realneedle"}, Limit: 10})
 	if !result.Available || len(result.Items) != 1 || result.Items[0].Event != "real" {
 		t.Fatalf("real rg result = %+v", result)
+	}
+}
+
+func TestServiceRealRGFixtureAcceptsMaxSizedEscapedJSONLine(t *testing.T) {
+	if _, err := exec.LookPath("rg"); err != nil {
+		t.Skip("rg is not installed")
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, "juhe-ai.log")
+	payload := "realescapedneedle " + strings.Repeat("\"\\\x01", 1_900)
+	line, err := json.Marshal(map[string]any{
+		"time":  "2026-07-22T11:00:00Z",
+		"level": 30,
+		"event": "escaped",
+		"msg":   payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(line) > maxLineLength {
+		t.Fatalf("fixture line length = %d, max = %d", len(line), maxLineLength)
+	}
+	if envelopeLength := len(rgMatchJSON(path, 1, string(line))); envelopeLength <= 28_000 {
+		t.Fatalf("fixture rg JSON envelope length = %d, want above old 28000-byte limit", envelopeLength)
+	}
+	if err := os.WriteFile(path, append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := NewService(Options{Directory: directory, FileEnabled: true, MaxFiles: 1})
+	result := service.Grep(context.Background(), Input{Keywords: []string{"realescapedneedle"}, Limit: 10})
+	if !result.Available || len(result.Items) != 1 || result.Items[0].Event != "escaped" || result.Items[0].Message != payload {
+		t.Fatalf("real rg escaped result = available:%v items:%d message:%q", result.Available, len(result.Items), result.Message)
+	}
+}
+
+func TestReadBoundedLineDiscardsOversizedEventAndContinues(t *testing.T) {
+	input := strings.Repeat("x", maxRGJSONLineLength+1) + "\nnext\n"
+	reader := bufio.NewReaderSize(strings.NewReader(input), 4*1024)
+
+	line, oversized, err := readBoundedLine(reader, maxRGJSONLineLength)
+	if err != nil || !oversized || len(line) != 0 {
+		t.Fatalf("oversized line = len:%d oversized:%v err:%v", len(line), oversized, err)
+	}
+	line, oversized, err = readBoundedLine(reader, maxRGJSONLineLength)
+	if err != nil || oversized || string(line) != "next" {
+		t.Fatalf("following line = %q oversized:%v err:%v", line, oversized, err)
 	}
 }
 
