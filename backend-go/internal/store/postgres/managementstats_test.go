@@ -2,8 +2,11 @@ package postgres
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestManagementStatsSQLReadsOnlyBoundedPreaggregates(t *testing.T) {
@@ -63,6 +66,70 @@ func TestManagementStatsSelectedInputsAreCappedBeforeSQL(t *testing.T) {
 				t.Fatalf("bounded IDs = %d, want %d", got, test.want)
 			}
 		})
+	}
+}
+
+func TestManagementStatsKeywordCandidateQueriesAreSplitAndBounded(t *testing.T) {
+	accountQuery, sourceQuery := managementStatsKeywordAccountIDQueries(port.ManagementStatsScope{
+		SystemAccountID:       "sys_self",
+		ViewerSystemAccountID: "sys_self",
+		ScopeType:             "caller_account",
+	})
+
+	for _, required := range []string{
+		"FROM juhe_business.accounts AS accounts",
+		`accounts.name COLLATE "C" >= $3::text`,
+		`starts_with(accounts.name, $3::text)`,
+		`ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC`,
+		"LIMIT $5::integer",
+		"OFFSET $6::integer",
+	} {
+		if !strings.Contains(accountQuery, required) {
+			t.Fatalf("account-name candidate query missing %q:\n%s", required, accountQuery)
+		}
+	}
+	for _, forbidden := range []string{"source_accounts", "COALESCE("} {
+		if strings.Contains(accountQuery, forbidden) {
+			t.Fatalf("account-name candidate query contains %q:\n%s", forbidden, accountQuery)
+		}
+	}
+
+	for _, required := range []string{
+		"FROM juhe_business.accounts AS source_accounts",
+		"INNER JOIN juhe_business.accounts AS instance_accounts",
+		`source_accounts.name COLLATE "C" >= $3::text`,
+		`starts_with(source_accounts.name, $3::text)`,
+		"instance_accounts.system_account_id = $2::text",
+		`ORDER BY source_accounts.name COLLATE "C" ASC, instance_accounts.id ASC`,
+		"LIMIT $5::integer",
+		"OFFSET $6::integer",
+	} {
+		if !strings.Contains(sourceQuery, required) {
+			t.Fatalf("source-name candidate query missing %q:\n%s", required, sourceQuery)
+		}
+	}
+	for _, forbidden := range []string{"COALESCE(", " OR (source_accounts.name"} {
+		if strings.Contains(sourceQuery, forbidden) {
+			t.Fatalf("source-name candidate query contains %q:\n%s", forbidden, sourceQuery)
+		}
+	}
+}
+
+func TestMergeManagementStatsKeywordAccountIDsKeepsAccountCandidatesFirst(t *testing.T) {
+	got := mergeManagementStatsKeywordAccountIDs(
+		[]string{"own_a", "shared", "own_b"},
+		[]string{"source_a", "shared", "source_b"},
+		4,
+	)
+	want := []string{"own_a", "shared", "own_b", "source_a"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("merged IDs = %v, want %v", got, want)
+	}
+}
+
+func TestNormalizeManagementStatsKeywordUsesNFKCAndTrim(t *testing.T) {
+	if got := normalizeManagementStatsKeyword("  ＡＢＣ  "); got != "ABC" {
+		t.Fatalf("normalized keyword = %q, want ABC", got)
 	}
 }
 
