@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
@@ -374,6 +375,207 @@ func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
 	}, nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_QUEUE_URL") {
 		t.Fatalf("newPublicAPIHandler() error = %v, want redis queue url error", err)
+	}
+}
+
+func TestNewPublicAPIHandlerReturnsErrorsWithoutTransferringInjectedQueueOwnership(t *testing.T) {
+	stateRedis, err := redisplatform.NewClient("redis://127.0.0.1:1/0", "public-api-handler-error-test")
+	if err != nil {
+		t.Fatalf("new state redis client: %v", err)
+	}
+	t.Cleanup(func() { _ = stateRedis.Close() })
+
+	newLogQueue := func(t *testing.T) *queue.Client {
+		t.Helper()
+		client := queue.NewClient(queue.RedisOptions{
+			Addr:         "127.0.0.1:1",
+			DialTimeout:  time.Millisecond,
+			ReadTimeout:  time.Millisecond,
+			WriteTimeout: time.Millisecond,
+		})
+		t.Cleanup(func() { _ = client.Close() })
+		return client
+	}
+
+	handlerAssemblyError := errors.New("endpoint handler assembly failed")
+	tests := []struct {
+		name       string
+		stateRedis *redisplatform.Client
+		config     config.Config
+		options    func(*queue.Client) PublicAPIHandlerOptions
+		wantError  string
+	}{
+		{
+			name:       "rate limiter",
+			stateRedis: nil,
+			config: config.Config{
+				PublicAPIEnabled: true,
+			},
+			options: func(logQueue *queue.Client) PublicAPIHandlerOptions {
+				return PublicAPIHandlerOptions{logQueue: logQueue}
+			},
+			wantError: "rate limiter client is required",
+		},
+		{
+			name:       "account health check dispatcher",
+			stateRedis: stateRedis,
+			config: config.Config{
+				PublicAPIEnabled:           true,
+				NodeInternalBaseURL:        "http://example.com:3000",
+				NodeInternalRequestTimeout: time.Second,
+				Secret:                     "secret",
+			},
+			options: func(logQueue *queue.Client) PublicAPIHandlerOptions {
+				return PublicAPIHandlerOptions{logQueue: logQueue}
+			},
+			wantError: "仅允许 loopback IP literal",
+		},
+		{
+			name:       "endpoint handlers",
+			stateRedis: stateRedis,
+			config: config.Config{
+				PublicAPIEnabled: true,
+			},
+			options: func(logQueue *queue.Client) PublicAPIHandlerOptions {
+				return PublicAPIHandlerOptions{
+					logQueue:                     logQueue,
+					AccountHealthCheckDispatcher: &appAccountHealthCheckDispatcherRecorder{},
+					endpointHandlersFactory: func() (map[string]http.Handler, error) {
+						return nil, handlerAssemblyError
+					},
+				}
+			},
+			wantError: handlerAssemblyError.Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/injected", func(t *testing.T) {
+			logQueue := newLogQueue(t)
+			closeCalls := 0
+			options := tt.options(logQueue)
+			options.closeLogQueue = func(got *queue.Client) error {
+				closeCalls++
+				if got != logQueue {
+					t.Fatalf("closed queue = %p, want injected queue %p", got, logQueue)
+				}
+				return nil
+			}
+			handler, returnedQueue, err := newPublicAPIHandlerWithOptions(
+				tt.config,
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+				nil,
+				tt.stateRedis,
+				options,
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("newPublicAPIHandlerWithOptions() error = %v, want %q", err, tt.wantError)
+			}
+			if handler != nil || returnedQueue != nil {
+				t.Fatalf("newPublicAPIHandlerWithOptions() = (%v, %v), want nil handler and queue on error", handler, returnedQueue)
+			}
+			if closeCalls != 0 {
+				t.Fatalf("injected queue close calls = %d, want 0", closeCalls)
+			}
+		})
+
+		t.Run(tt.name+"/created", func(t *testing.T) {
+			logQueue := newLogQueue(t)
+			closeCalls := 0
+			options := tt.options(nil)
+			options.logQueueFactory = func(config.Config) (*queue.Client, error) {
+				return logQueue, nil
+			}
+			options.closeLogQueue = func(got *queue.Client) error {
+				closeCalls++
+				if got != logQueue {
+					t.Fatalf("closed queue = %p, want created queue %p", got, logQueue)
+				}
+				return nil
+			}
+			handler, returnedQueue, err := newPublicAPIHandlerWithOptions(
+				tt.config,
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+				nil,
+				tt.stateRedis,
+				options,
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("newPublicAPIHandlerWithOptions() error = %v, want %q", err, tt.wantError)
+			}
+			if handler != nil || returnedQueue != nil {
+				t.Fatalf("newPublicAPIHandlerWithOptions() = (%v, %v), want nil handler and queue on error", handler, returnedQueue)
+			}
+			if closeCalls != 1 {
+				t.Fatalf("created queue close calls = %d, want 1", closeCalls)
+			}
+		})
+	}
+}
+
+func TestRunServerCapturesPublicAPILogQueueBeforeHandlerErrors(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	runServer := findFunction(t, file, "RunServer")
+	foundHandlerAssembly := false
+	foundOwnedQueueClose := false
+	queueCloseDeferPosition := token.NoPos
+	dispatcherShutdownDeferPosition := token.NoPos
+	handlerAssemblyPosition := token.NoPos
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.AssignStmt:
+			if len(typed.Rhs) != 1 {
+				return true
+			}
+			call, ok := typed.Rhs[0].(*ast.CallExpr)
+			if !ok || callName(call.Fun) != "newPublicAPIHandlerWithOptions" {
+				return true
+			}
+			foundHandlerAssembly = true
+			handlerAssemblyPosition = typed.Pos()
+			if len(typed.Lhs) != 3 {
+				t.Fatalf("newPublicAPIHandlerWithOptions assignment has %d results, want 3", len(typed.Lhs))
+			}
+		case *ast.DeferStmt:
+			if callName(typed.Call.Fun) == "shutdownRecordDispatcher" && dispatcherShutdownDeferPosition == token.NoPos {
+				dispatcherShutdownDeferPosition = typed.Pos()
+			}
+			if callName(typed.Call.Fun) != "closePublicAPILogQueue" {
+				return true
+			}
+			if len(typed.Call.Args) != 1 {
+				t.Fatalf("closePublicAPILogQueue defer args = %d, want 1", len(typed.Call.Args))
+			}
+			argument, ok := typed.Call.Args[0].(*ast.Ident)
+			if !ok || argument.Name != "publicAPILogQueueOwner" {
+				t.Fatalf("closePublicAPILogQueue defer argument = %#v, want publicAPILogQueueOwner", typed.Call.Args[0])
+			}
+			foundOwnedQueueClose = true
+			queueCloseDeferPosition = typed.Pos()
+		}
+		return true
+	})
+	if !foundHandlerAssembly {
+		t.Fatal("RunServer missing public API handler assembly")
+	}
+	if !foundOwnedQueueClose {
+		t.Fatal("RunServer must defer closing the public API log queue by evaluated argument")
+	}
+	if dispatcherShutdownDeferPosition == token.NoPos {
+		t.Fatal("RunServer missing public API log dispatcher shutdown defer")
+	}
+	if !(queueCloseDeferPosition < dispatcherShutdownDeferPosition && dispatcherShutdownDeferPosition < handlerAssemblyPosition) {
+		t.Fatalf(
+			"public API resource registration order = queue close %d, dispatcher shutdown %d, handler assembly %d; want queue close < dispatcher shutdown < handler assembly",
+			queueCloseDeferPosition,
+			dispatcherShutdownDeferPosition,
+			handlerAssemblyPosition,
+		)
 	}
 }
 
