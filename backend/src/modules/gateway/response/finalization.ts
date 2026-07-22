@@ -1066,7 +1066,7 @@ function shouldBufferNonStreamJsonResponse(input: HandleUpstreamResponseInput): 
 function managementResponseInspectionPoliciesForInput(
   input: HandleUpstreamResponseInput
 ): ResponseInspectionPolicySummary[] | undefined {
-  return input.responseInspectionPolicies?.filter((policy) => policy.defaultRule !== true)
+  return undefined
 }
 
 function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponseInput) {
