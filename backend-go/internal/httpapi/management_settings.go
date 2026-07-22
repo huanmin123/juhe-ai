@@ -251,7 +251,10 @@ func enqueueManagementOperationLog(
 	if opts.submitter == nil {
 		return
 	}
-	opts.submitter.Submit(ctx, input)
+	outcome := submitManagementOperationLog(ctx, opts.submitter, input)
+	if !outcome.Accepted {
+		warnRecordDispatchRejection(opts.logger, &managementRecordRejectWarnAt, "management_operation_log", outcome.RejectionReason)
+	}
 }
 
 func operationLogMaxChangesPerRecord(ctx context.Context, settingsReader OperationLogSettingsReader) (int, error) {
