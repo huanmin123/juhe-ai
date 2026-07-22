@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -184,6 +185,9 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.RuntimeLogMaxFiles != 0 && (cfg.RuntimeLogMaxFiles < 1 || cfg.RuntimeLogMaxFiles > 500) {
 		return fmt.Errorf("JUHE_AI_LOG_MAX_FILES 必须在 1 到 500 之间")
+	}
+	if root := strings.TrimSpace(cfg.AuditHotSearchRoot); root != "" && !filepath.IsAbs(root) {
+		return fmt.Errorf("JUHE_AI_AUDIT_HOT_SEARCH_ROOT 必须是绝对路径")
 	}
 	if cfg.OwnerLockEnabled {
 		if strings.TrimSpace(cfg.OwnerLockPath) == "" {

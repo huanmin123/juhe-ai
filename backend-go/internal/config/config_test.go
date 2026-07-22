@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -325,13 +326,28 @@ func TestLoadDefaultsNodeInternalRequestTimeout(t *testing.T) {
 }
 
 func TestLoadReadsAuditHotSearchRoot(t *testing.T) {
-	t.Setenv("JUHE_AI_AUDIT_HOT_SEARCH_ROOT", "D:/shared/audit/search-hot")
+	root := filepath.Join(t.TempDir(), "audit", "search-hot")
+	t.Setenv("JUHE_AI_AUDIT_HOT_SEARCH_ROOT", root)
 	cfg, err := Load(LoadOptions{LoadDotEnv: false})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AuditHotSearchRoot != "D:/shared/audit/search-hot" {
+	if cfg.AuditHotSearchRoot != root {
 		t.Fatalf("AuditHotSearchRoot = %q", cfg.AuditHotSearchRoot)
+	}
+}
+
+func TestConfigRejectsRelativeAuditHotSearchRoot(t *testing.T) {
+	cfg := Config{
+		Host:                       "127.0.0.1",
+		Port:                       3000,
+		RedisNamespace:             "test",
+		NodeInternalRequestTimeout: 2 * time.Second,
+		ShutdownTimeout:            time.Second,
+		AuditHotSearchRoot:         "./data/audit/search-hot",
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_AUDIT_HOT_SEARCH_ROOT") {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 
