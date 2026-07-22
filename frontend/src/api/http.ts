@@ -1,7 +1,10 @@
 import axios from 'axios'
 
 import { extractResponseErrorMessage, localizeTransportErrorMessage } from '@/shared/apiError'
-import { invalidatePageDataForSuccessfulMutation } from '@/shared/pageDataMutationInvalidation'
+import {
+  beginPageDataMutation,
+  invalidatePageDataForSuccessfulMutation
+} from '@/shared/pageDataMutationInvalidation'
 
 interface ApiResponse<T> {
   data: T
@@ -26,6 +29,11 @@ export function setUnauthorizedHandler(handler: () => void): void {
 export function setMustChangePasswordHandler(handler: () => void): void {
   mustChangePasswordHandler = handler
 }
+
+http.interceptors.request.use((config) => {
+  beginPageDataMutation(config.method, config.url)
+  return config
+})
 
 http.interceptors.response.use(async (response) => {
   await invalidatePageDataForSuccessfulMutation(response.config.method, response.config.url)

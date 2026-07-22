@@ -14,6 +14,7 @@ export interface UsePageDataCacheOptions<T> extends PageDataCacheControllerOptio
   immediate?: boolean
   initialData?: T
   confirmIntervalMs?: number
+  activationManaged?: boolean
 }
 
 export interface UsePageDataCacheResult<T> {
@@ -40,14 +41,19 @@ export function usePageDataCache<T>(options: UsePageDataCacheOptions<T>): UsePag
     return outcome
   }
   const confirmCurrent = () => controller.requestConfirm().then(applyConfirmOutcome)
-  const scheduler = new PageDataVisibleConfirmScheduler({
-    confirm: () => { void confirmCurrent() },
-    intervalMs: options.confirmIntervalMs
-  })
+  let scheduler: PageDataVisibleConfirmScheduler | undefined
+  if (!options.activationManaged) {
+    scheduler = new PageDataVisibleConfirmScheduler({
+      confirm: () => { void confirmCurrent() },
+      intervalMs: options.confirmIntervalMs
+    })
+  }
   const activationController = createPageDataActivationController({
-    start: () => scheduler.start(),
-    stop: () => scheduler.stop(),
-    onActivate: () => { void confirmCurrent().catch(() => undefined) }
+    start: () => { if (scheduler) scheduler.start() },
+    stop: () => { if (scheduler) scheduler.stop() },
+    onActivate: () => {
+      if (!options.activationManaged) void confirmCurrent().catch(() => undefined)
+    }
   })
   let operationGeneration = 0
   let removeSubscription: (() => void) | undefined
