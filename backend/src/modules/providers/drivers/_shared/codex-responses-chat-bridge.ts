@@ -75,7 +75,7 @@ interface CodexResponsesChatBridgeToolPlan {
 }
 
 interface ChatToolCallState {
-  id: string
+  id?: string
   callId: string
   name: string
   arguments: string
@@ -1376,7 +1376,6 @@ function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknow
   const toolCall = existingToolCall ?? (() => {
     const callId = stringValue(value.id) ?? `call_${state.idPrefix}_${index}_${Date.now().toString(36)}`
     const created: ChatToolCallState = {
-      id: `fc_${state.idPrefix}_${index}_${Date.now().toString(36)}`,
       callId,
       name: '',
       arguments: '',
@@ -1402,6 +1401,7 @@ function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknow
   const output: string[] = []
   if (!activeToolCall.added && activeToolCall.name) {
     activeToolCall.added = true
+    ensureToolCallItemId(state, activeToolCall, index)
     output.push(sse('response.output_item.added', {
       type: 'response.output_item.added',
       output_index: activeToolCall.outputIndex,
@@ -1504,6 +1504,7 @@ function completeToolCallOutputItem(
   output: string[],
   toolCall: ChatToolCallState
 ): void {
+  ensureToolCallItemId(state, toolCall)
   if (!toolCall.added) {
     toolCall.added = true
     output.push(sse('response.output_item.added', {
@@ -1523,9 +1524,10 @@ function completeToolCallOutputItem(
 }
 
 function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
+  const itemId = toolCall.id ?? ''
   if (toolCall.adapter?.kind === 'custom') {
     return {
-      id: toolCall.id,
+      id: itemId,
       type: 'custom_tool_call',
       status: 'in_progress',
       call_id: toolCall.callId,
@@ -1534,7 +1536,7 @@ function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
     }
   }
   const item: JsonRecord = {
-    id: toolCall.id,
+    id: itemId,
     type: 'function_call',
     status: 'in_progress',
     call_id: toolCall.callId,
@@ -1548,9 +1550,10 @@ function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
 }
 
 function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
+  const itemId = toolCall.id ?? ''
   if (toolCall.adapter?.kind === 'custom') {
     return {
-      id: toolCall.id,
+      id: itemId,
       type: 'custom_tool_call',
       status: 'completed',
       call_id: toolCall.callId,
@@ -1559,7 +1562,7 @@ function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
     }
   }
   const item: JsonRecord = {
-    id: toolCall.id,
+    id: itemId,
     type: 'function_call',
     status: 'completed',
     call_id: toolCall.callId,
@@ -1570,6 +1573,17 @@ function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
     item.namespace = toolCall.adapter.namespace
   }
   return item
+}
+
+function ensureToolCallItemId(
+  state: ChatToResponsesState,
+  toolCall: ChatToolCallState,
+  index = toolCall.outputIndex
+): string {
+  if (toolCall.id) return toolCall.id
+  const prefix = toolCall.adapter?.kind === 'custom' ? 'ctc' : 'fc'
+  toolCall.id = `${prefix}_${state.idPrefix}_${index}_${Date.now().toString(36)}`
+  return toolCall.id
 }
 
 function customToolInputFromChatArguments(argumentsText: string, toolName?: string): string {
