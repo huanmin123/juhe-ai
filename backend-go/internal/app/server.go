@@ -931,7 +931,9 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
-	auditLogService := managementauditlogs.NewService(store)
+	auditLogService := managementauditlogs.NewServiceWithOptions(managementauditlogs.ServiceOptions{
+		Store: store, HotSearchRoot: cfg.AuditHotSearchDirectory(),
+	})
 	runtimeLogService := managementruntimelogs.NewService(store)
 	runtimeLogGrepService := managementruntimeloggrep.NewService(managementruntimeloggrep.Options{
 		Directory:     cfg.RuntimeLogDirectory,

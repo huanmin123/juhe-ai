@@ -92,4 +92,5 @@ type ManagementAuditLogReader interface {
 	ListManagementAuditLogs(context.Context, ManagementAuditLogListInput) (ManagementAuditLogListResult, error)
 	ListManagementAuditErrorGroups(context.Context, ManagementAuditErrorGroupListInput) (ManagementAuditErrorGroupListResult, error)
 	GetManagementAuditLog(context.Context, string) (ManagementAuditLogDetail, bool, error)
+	ListManagementAuditLogsByIDs(context.Context, []string) ([]ManagementAuditLogSummary, error)
 }

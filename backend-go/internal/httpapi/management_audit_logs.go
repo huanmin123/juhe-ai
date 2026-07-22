@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,7 @@ type managementAuditLogService interface {
 	ListErrorGroups(*http.Request, managementauditlogs.ErrorGroupListInput) (managementauditlogs.ErrorGroupListResult, error)
 	ListErrorGroupEvents(*http.Request, string, managementauditlogs.ListInput) (managementauditlogs.ListResult, error)
 	Detail(*http.Request, string) (managementauditlogs.Detail, bool, error)
+	HotSearch(*http.Request, managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error)
 }
 type managementAuditLogServiceAdapter struct{ service *managementauditlogs.Service }
 
@@ -35,6 +37,9 @@ func (a managementAuditLogServiceAdapter) ListErrorGroups(r *http.Request, input
 func (a managementAuditLogServiceAdapter) ListErrorGroupEvents(r *http.Request, errorGroupID string, input managementauditlogs.ListInput) (managementauditlogs.ListResult, error) {
 	return a.service.ListErrorGroupEvents(r.Context(), errorGroupID, input)
 }
+func (a managementAuditLogServiceAdapter) HotSearch(r *http.Request, input managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error) {
+	return a.service.HotSearch(r.Context(), input)
+}
 func NewManagementAuditLogsHandler(service *managementauditlogs.Service) http.Handler {
 	if service == nil {
 		return newManagementAuditLogsHandler(nil)
@@ -47,7 +52,15 @@ func newManagementAuditLogsHandler(service managementAuditLogService) http.Handl
 		readHandler.handle(w, r, func(service managementAuditLogService, r *http.Request) {
 			if id := chi.URLParam(r, "id"); id != "" {
 				switch id {
-				case "search-hot", "runtime", "error-groups":
+				case "search-hot":
+					result, err := service.HotSearch(r, parseManagementAuditHotSearchQuery(r.URL.Query()))
+					if err != nil {
+						writeMessageError(w, 500, "服务器内部错误")
+						return
+					}
+					writeData(w, 200, result)
+					return
+				case "runtime", "error-groups":
 					writeMessageError(w, 404, "接口不存在")
 					return
 				}
@@ -71,6 +84,34 @@ func newManagementAuditLogsHandler(service managementAuditLogService) http.Handl
 			writeData(w, 200, result)
 		})
 	})
+}
+
+func parseManagementAuditHotSearchQuery(values url.Values) managementauditlogs.HotSearchInput {
+	limit, limitProvided := managementAuditHotSearchLimit(values)
+	keywords := append([]string(nil), values["keywords"]...)
+	first := func(key string) string {
+		if len(values[key]) == 0 {
+			return ""
+		}
+		return values[key][0]
+	}
+	return managementauditlogs.HotSearchInput{
+		Keywords: keywords, Limit: limit, LimitProvided: limitProvided,
+		StartAt: first("startAt"), EndAt: first("endAt"),
+	}
+}
+
+func managementAuditHotSearchLimit(values url.Values) (int, bool) {
+	items := values["limit"]
+	if len(items) == 0 {
+		return 0, false
+	}
+	text := strings.TrimFunc(items[0], managementGroupListECMAScriptWhitespace)
+	value, ok := managementGroupListNumber(text)
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	return int(math.Trunc(value)), true
 }
 
 func NewManagementAuditErrorGroupsHandler(service *managementauditlogs.Service) http.Handler {
