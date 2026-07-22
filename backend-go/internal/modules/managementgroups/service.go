@@ -34,7 +34,6 @@ type Service struct {
 	invalidator                RuntimeInvalidator
 	groupLookupInvalidator     GroupLookupInvalidator
 	groupAccountIDsInvalidator GroupAccountIDsInvalidator
-	pageDataPublisher          PageDataPublisher
 	logger                     *slog.Logger
 	now                        func() time.Time
 	newID                      func(prefix string) string
@@ -49,7 +48,6 @@ type ServiceOptions struct {
 	Invalidator                RuntimeInvalidator
 	GroupLookupInvalidator     GroupLookupInvalidator
 	GroupAccountIDsInvalidator GroupAccountIDsInvalidator
-	PageDataPublisher          PageDataPublisher
 	Logger                     *slog.Logger
 	Now                        func() time.Time
 	NewID                      func(prefix string) string
@@ -65,10 +63,6 @@ type GroupLookupInvalidator interface {
 
 type GroupAccountIDsInvalidator interface {
 	InvalidateGroupAccountIDsCache(ctx context.Context) error
-}
-
-type PageDataPublisher interface {
-	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
 type OptionListInput struct {
@@ -332,7 +326,6 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		invalidator:                opts.Invalidator,
 		groupLookupInvalidator:     groupLookupInvalidator,
 		groupAccountIDsInvalidator: groupAccountIDsInvalidator,
-		pageDataPublisher:          opts.PageDataPublisher,
 		logger:                     opts.Logger,
 		now:                        now,
 		newID:                      newID,
@@ -493,7 +486,6 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 		return CreateResult{}, err
 	}
 	s.invalidateRuntime(ctx)
-	s.publishDependentPageDataResets(ctx)
 	result := CreateResult{
 		ID:               created.ID,
 		Name:             created.Name,
@@ -540,28 +532,6 @@ func (s *Service) invalidateRuntimeWithReason(ctx context.Context, reason string
 			slog.String("reason", reason),
 			slog.Any("error", err),
 		)
-	}
-}
-
-func (s *Service) publishDependentPageDataResets(ctx context.Context) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	logger := s.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	for _, domain := range []string{"groups.static", "routeStrategies.options"} {
-		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), groupRuntimeInvalidationTimeout)
-		err := s.pageDataPublisher.PublishPageDataReset(publishCtx, domain, nil, true)
-		cancel()
-		if err != nil {
-			logger.WarnContext(context.WithoutCancel(ctx), "分组写入后页面数据失效失败",
-				slog.String("event", "management_group_page_data_reset_failed"),
-				slog.String("domain", domain),
-				slog.Any("error", err),
-			)
-		}
 	}
 }
 

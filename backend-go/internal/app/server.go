@@ -880,7 +880,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		UsageStatsTimezoneStore: store,
 		AccountConcurrency:      accountConcurrencyReader,
 		Invalidator:             systemAccountInvalidator,
-		PageDataPublisher:       accountsStaticResetPublisher,
 		Logger:                  logger,
 	})
 	accountService := managementaccounts.NewServiceWithOptions(managementaccounts.ServiceOptions{

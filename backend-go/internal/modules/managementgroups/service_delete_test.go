@@ -28,13 +28,11 @@ func TestServiceDeleteUsesSelfOwnerScopeAndInvalidatesCaches(t *testing.T) {
 		},
 	}
 	invalidator := &managementGroupDeleteInvalidatorStub{}
-	publisher := &groupPageDataPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
 		Store:                      store,
 		Invalidator:                invalidator,
 		GroupLookupInvalidator:     invalidator,
 		GroupAccountIDsInvalidator: invalidator,
-		PageDataPublisher:          publisher,
 		Now:                        func() time.Time { return now },
 	})
 
@@ -66,7 +64,6 @@ func TestServiceDeleteUsesSelfOwnerScopeAndInvalidatesCaches(t *testing.T) {
 		invalidator.runtimeReasons[0] != GroupDeletedReason {
 		t.Fatalf("invalidation = %+v", invalidator)
 	}
-	assertGroupPageDataResets(t, publisher)
 }
 
 func TestServiceDeleteUsesAdminAllAndTargetedOwnerScopes(t *testing.T) {
@@ -143,13 +140,11 @@ func TestServiceDeleteMapsUserFacingErrorsAndSkipsInvalidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			store := &managementGroupDeleteStoreStub{err: tt.storeErr}
 			invalidator := &managementGroupDeleteInvalidatorStub{}
-			publisher := &groupPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
 				Store:                      store,
 				Invalidator:                invalidator,
 				GroupLookupInvalidator:     invalidator,
 				GroupAccountIDsInvalidator: invalidator,
-				PageDataPublisher:          publisher,
 			})
 
 			_, err := service.Delete(context.Background(), DeleteInput{
@@ -171,9 +166,6 @@ func TestServiceDeleteMapsUserFacingErrorsAndSkipsInvalidation(t *testing.T) {
 				invalidator.accountIDsCalls != 0 ||
 				len(invalidator.runtimeReasons) != 0 {
 				t.Fatalf("failed delete invalidation = %+v", invalidator)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
