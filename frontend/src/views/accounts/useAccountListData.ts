@@ -1,26 +1,23 @@
 import { message } from '@/lib/antd'
-import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type ComputedRef } from 'vue'
 
-import { api, pageDataApi, type AccountListParams, type AccountListSortParam } from '@/api/client'
+import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import { usePageDataRequestCache } from '@/composables/usePageDataRequestCache'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
-import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountBalanceSnapshot, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
-import { createPageDataActivationController, type PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 import { createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from './accountStatusSnapshotPolling'
 
 interface AccountsPageState {
@@ -84,17 +81,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
   }
 
-  let accountPageCacheRequest: PageDataRequestCacheDefinition<AccountListResult> | undefined
-  const accountPageCache = usePageDataRequestCache<AccountListResult>({
-    immediate: false,
-    confirmIntervalMs: 30_000,
-    confirm: pageDataApi.confirm,
-    resolveRequest: () => {
-      if (!accountPageCacheRequest) throw new Error('账户列表缓存请求尚未初始化')
-      return accountPageCacheRequest
-    }
-  })
-
   const {
     items: accounts,
     loading,
@@ -108,7 +94,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccountsCached,
     resetPagination: resetAccountListPagination,
-    applyResult: applyAccountPageCacheResult
   } = useResponsivePagedList<AccountSummary, { forceOptions?: boolean; forceData?: boolean }>({
     pageSize: ACCOUNT_PAGE_SIZE,
     initialPagination: initialPageState.pagination,
@@ -193,50 +178,24 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   })
 
   const refreshStatusSnapshot = () => snapshotPolling.refreshNow()
-  const snapshotPollingLifecycle = createPageDataActivationController({
-    start: () => {
-      snapshotPolling.start()
-      document.addEventListener('visibilitychange', refreshStatusSnapshot)
-      window.addEventListener('focus', refreshStatusSnapshot)
-    },
-    stop: () => {
-      snapshotRequestSequence += 1
-      snapshotPolling.stop()
-      document.removeEventListener('visibilitychange', refreshStatusSnapshot)
-      window.removeEventListener('focus', refreshStatusSnapshot)
-    },
-    onActivate: () => snapshotPolling.refreshNow()
+  onMounted(() => {
+    snapshotPolling.start()
+    document.addEventListener('visibilitychange', refreshStatusSnapshot)
+    window.addEventListener('focus', refreshStatusSnapshot)
   })
-  onMounted(() => snapshotPollingLifecycle.mount())
-  onActivated(() => snapshotPollingLifecycle.activate())
-  onDeactivated(() => snapshotPollingLifecycle.deactivate())
-  onBeforeUnmount(() => snapshotPollingLifecycle.dispose())
+  onBeforeUnmount(() => {
+    snapshotRequestSequence += 1
+    snapshotPolling.stop()
+    document.removeEventListener('visibilitychange', refreshStatusSnapshot)
+    window.removeEventListener('focus', refreshStatusSnapshot)
+  })
 
-  async function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, force: boolean) {
+  function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, _force: boolean) {
     const params = accountListParams(systemAccountId, pageState)
     const loadNetwork = () => options.isManagementView.value
       ? api.accounts.list(params)
       : api.myAccounts.list(accountListParams(undefined, pageState))
-    const viewerSystemAccountId = authState.currentUser.value?.id
-    if (!viewerSystemAccountId) return loadNetwork()
-    const viewScope = options.isManagementView.value ? 'admin' as const : 'self' as const
-    accountPageCacheRequest = {
-      cacheKey: {
-        scope: viewScope === 'admin'
-          ? `admin:${viewerSystemAccountId}:target:${systemAccountId ?? 'global'}`
-          : `self:${viewerSystemAccountId}`,
-        route: viewScope === 'admin' ? '/accounts' : '/my-accounts',
-        query: params,
-        version: 1
-      },
-      domain: 'accounts.static',
-      viewScope,
-      maxStaleMs: 30_000,
-      ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
-      loadNetwork
-    }
-    const result = force ? await accountPageCache.forceRefresh() : await accountPageCache.load()
-    return result.data
+    return loadNetwork()
   }
 
   function refreshData() {
@@ -377,15 +336,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-  watch(accountPageCache.data, (accountList) => {
-    applyAccountPageCacheResult(accountList ? cloneAccountListCacheResult(accountList) : {
-      items: [],
-      page: accountPagination.current,
-      pageSize: accountPagination.pageSize,
-      total: 0,
-      hasMore: false
-    })
-  })
   watch(loading, (value) => {
     if (!value) snapshotPolling.refreshNow()
   })

@@ -3,6 +3,7 @@ ALTER TABLE juhe_business.accounts
   ADD COLUMN IF NOT EXISTS dispatch_revision bigint NOT NULL DEFAULT 1,
   ADD COLUMN IF NOT EXISTS circuit_projection_revision bigint NOT NULL DEFAULT 0;
 
+-- +goose StatementBegin
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -23,6 +24,7 @@ BEGIN
       CHECK (circuit_projection_revision >= 0 AND circuit_projection_revision <= dispatch_revision);
   END IF;
 END $$;
+-- +goose StatementEnd
 
 CREATE TABLE IF NOT EXISTS juhe_business.account_circuit_incidents (
   circuit_scope_key text PRIMARY KEY,
