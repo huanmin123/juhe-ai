@@ -30,8 +30,16 @@ assert.match(routerSource, /loadCurrentUser\(true\)[\s\S]*?\.catch\(/, '强制�
 
 const logoutBody = source.match(/export async function logout\(\): Promise<void> \{([\s\S]*?)\n\}/)?.[1] ?? ''
 const apiLogoutIndex = logoutBody.indexOf('await api.auth.logout()')
+const logoutVersionGuardIndex = logoutBody.indexOf('operationVersion !== authStateVersion')
+const logoutVersionGuards = logoutBody.match(/operationVersion !== authStateVersion/g) ?? []
+const chatCleanupIndex = logoutBody.indexOf('await clearCurrentAccountChatState(systemAccountId)')
 const clearAuthIndex = logoutBody.indexOf('clearAuthState()')
 assert(apiLogoutIndex >= 0 && clearAuthIndex > apiLogoutIndex, '只有服务端 logout 成功后才能清空本地登录态')
+assert(
+  logoutVersionGuardIndex > apiLogoutIndex && chatCleanupIndex > logoutVersionGuardIndex && clearAuthIndex > chatCleanupIndex,
+  'logout 返回后必须先确认仍是当前认证操作，再按 chat cleanup → clear state 顺序清理旧账户'
+)
+assert.equal(logoutVersionGuards.length, 2, '聊天清理期间认证操作变化时也不得清空较新的登录态')
 const loginBody = source.match(/export async function login\([\s\S]*?\): Promise<CurrentUserSummary> \{([\s\S]*?)\n\}/)?.[1] ?? ''
 assert(
   loginBody.indexOf('beginAuthSessionTransition(operationVersion)') >= 0
@@ -95,6 +103,22 @@ try {
   await firstLogin
   assert.equal(authState.currentUser.value?.id, 'second-user', '迟到的旧 login 不得覆盖较新的 login')
 
+  const staleLogoutGate = deferred<void>()
+  const replacementLoginGate = deferred<CurrentUserSummary>()
+  api.auth.logout = async () => staleLogoutGate.promise
+  api.auth.login = async () => replacementLoginGate.promise
+  const staleLogout = logout()
+  const replacementLogin = login({ username: 'replacement-user', password: 'secret' })
+  replacementLoginGate.resolve(user('replacement-user'))
+  await replacementLogin
+  staleLogoutGate.resolve()
+  await staleLogout
+  assert.equal(
+    authState.currentUser.value?.id,
+    'replacement-user',
+    '迟到的旧 logout 不得清除较新的 login 状态'
+  )
+
   const failedLogoutGate = deferred<void>()
   api.auth.logout = async () => failedLogoutGate.promise
   const beforeFailedLogout = currentPageDataSecurityGeneration()
@@ -106,10 +130,10 @@ try {
   )
   failedLogoutGate.reject(new Error('logout unavailable'))
   await assert.rejects(failedLogout, /logout unavailable/)
-  assert.equal(authState.currentUser.value?.id, 'second-user', 'logout 失败必须保留当前登录用户')
+  assert.equal(authState.currentUser.value?.id, 'replacement-user', 'logout 失败必须保留当前登录用户')
 
   authState.authChecked.value = false
-  api.auth.me = async () => user('second-user', 'admin')
+  api.auth.me = async () => user('replacement-user', 'admin')
   const beforeRoleRefresh = currentPageDataSecurityGeneration()
   await loadCurrentUser(true)
   assert.equal(authState.currentUser.value?.role, 'admin')
@@ -121,7 +145,7 @@ try {
 
   api.auth.me = async () => { throw new Error('temporary outage') }
   const beforeTransientFailure = currentPageDataSecurityGeneration()
-  assert.equal((await loadCurrentUser(true))?.id, 'second-user', '已有用户时临时认证失败必须保留当前用户')
+  assert.equal((await loadCurrentUser(true))?.id, 'replacement-user', '已有用户时临时认证失败必须保留当前用户')
   assert.equal(currentPageDataSecurityGeneration(), beforeTransientFailure, '临时认证失败不得伪造安全上下文变化')
 
   const firstMeGate = deferred<CurrentUserSummary>()

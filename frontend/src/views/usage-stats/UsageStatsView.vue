@@ -131,6 +131,7 @@ import AccountAppendSelect from '@/components/AccountAppendSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -184,6 +185,7 @@ const overview = ref<AccountUsageStatsOverview>()
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
+const providerRecovery = useKeepAliveSupersededRecovery(() => loadUsageStatsOptions(false, true))
 const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 6 })
 const initialPageState = pageStateCache.read()
 const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
@@ -349,14 +351,15 @@ const summaryCards = computed(() => {
   })
 })
 
-async function loadUsageStatsOptions(force = false): Promise<void> {
+async function loadUsageStatsOptions(force = false, recoverSuperseded = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
   if (force) {
     resetSystemAccountOptionsSearch()
   }
-  if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
+  if (!force && !recoverSuperseded && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
     return
   }
+  const providerRecoveryRequest = providerRecovery.start()
   const providerList = await loadProviderOptionsResource({
     apply: (nextProviders) => {
       providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
@@ -364,6 +367,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
     force,
     isManagementView: isManagementView.value
   })
+  providerRecovery.record(providerRecoveryRequest, providerList.state)
   if (providerList.state === 'superseded') return
   providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
   usageStatsOptionsLoaded.value = true
