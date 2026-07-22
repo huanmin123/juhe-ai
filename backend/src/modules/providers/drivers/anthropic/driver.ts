@@ -117,11 +117,11 @@ export const anthropicProviderDriver: ProviderDriver = {
     if (isGatewayProtocolNativeRequest(req, GEMINI_PROTOCOL_CODE) && !isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
       return []
     }
-    if (account.type === 'api_key' && isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
+    if (supportsAnthropicCredentialDispatch(account) && isGeminiGenerateContentToAnthropicMessagesModelMapping(modelMapping)) {
       return [buildAnthropicUpstreamUrl(account.baseUrl, geminiGenerateContentToAnthropicMessagesUpstreamPathAndQuery(req))]
     }
     const bridgePath = openAIToAnthropicBridgeUpstreamPath(req)
-    if (account.type === 'api_key' && bridgePath && shouldUseOpenAIToAnthropicBridge(req, account)) {
+    if (supportsAnthropicCredentialDispatch(account) && bridgePath && shouldUseOpenAIToAnthropicBridge(req, account)) {
       return [buildAnthropicUpstreamUrl(account.baseUrl, anthropicClaudeCodePathAndQueryForRequest(req, bridgePath, {
         targetPathAndQuery: bridgePath
       }))]
@@ -129,8 +129,8 @@ export const anthropicProviderDriver: ProviderDriver = {
     return buildAnthropicUpstreamUrlsForAccount(account, req)
   },
   async buildUpstreamRequestParts(req, account, _identity, signal, context) {
-    if (account.type !== 'api_key') {
-      throw new Error('Anthropic 当前仅支持 API Key 账户')
+    if (!supportsAnthropicCredentialDispatch(account)) {
+      throw new Error('Anthropic 当前仅支持 API Key 或 OAuth Access Token 账户')
     }
     const headers = copySafeUpstreamRequestHeaders(req.headers)
     applyAnthropicUpstreamAuthHeaders(headers, account)
@@ -289,12 +289,34 @@ function shouldUseOpenAIToAnthropicBridge(
     && isOpenAIToAnthropicMessagesModelMapping(req, account)
 }
 
+function supportsAnthropicCredentialDispatch(account: ProviderDriverAccount): boolean {
+  return account.type === 'api_key' || account.type === 'oauth'
+}
+
 function applyAnthropicUpstreamAuthHeaders(headers: Headers, account: DispatchAccountSecret): void {
-  if (account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) {
-    headers.set('authorization', `Bearer ${account.apiKey}`)
+  if (account.type === 'oauth') {
+    const credential = typeof account.credentials.access_token === 'string'
+      ? account.credentials.access_token.trim()
+      : ''
+    if (!credential) {
+      throw new Error('Anthropic OAuth 账户缺少 Access Token')
+    }
+    headers.set('authorization', `Bearer ${credential}`)
     return
   }
-  headers.set('x-api-key', account.apiKey)
+  if (account.providerCode === GLM_PROVIDER_CODE && account.providerProtocolProfileId === GLM_CODING_ANTHROPIC_V1_PROFILE_ID) {
+    const credential = account.apiKey?.trim()
+    if (!credential) {
+      throw new Error('GLM Coding Anthropic 账户缺少 Bearer Token')
+    }
+    headers.set('authorization', `Bearer ${credential}`)
+    return
+  }
+  const credential = account.apiKey?.trim()
+  if (!credential) {
+    throw new Error('Anthropic API Key 账户缺少 API Key')
+  }
+  headers.set('x-api-key', credential)
 }
 
 function anthropicVersionHeader(req: Request): string {

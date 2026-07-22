@@ -1,3 +1,4 @@
+import { isGptVendorCode, isOpenAIProtocolProfile } from '../domain/provider-protocol.js'
 import { optionalServerDateTimeIso, optionalString } from './value-utils.js'
 
 export const accountCreateInputKeys = new Set([
@@ -88,11 +89,20 @@ export function normalizeFallbackInput(value: unknown, fallback: boolean): boole
   return normalizeBooleanDispatchInput(value, fallback, '降级备用')
 }
 
-export function openAIOAuthRefreshMetadata(accountType: string, credentials: Record<string, unknown>): {
+export function openAIOAuthRefreshMetadata(
+  accountType: string,
+  credentials: Record<string, unknown>,
+  context?: {
+    providerCode?: string
+    protocolCode?: string
+    protocolVersion?: string
+    providerProtocolProfileId?: string
+  }
+): {
   accessTokenExpiresAt: string | null
   refreshTokenPresent: boolean
 } {
-  if (accountType !== 'oauth') {
+  if (accountType !== 'oauth' || !isGptVendorCode(context?.providerCode) || !isOpenAIProtocolProfile(context)) {
     return { accessTokenExpiresAt: null, refreshTokenPresent: false }
   }
   const refreshToken = optionalString(credentials.refresh_token)

@@ -18,8 +18,30 @@ const geminiProfile = gemini?.protocolProfiles.find((profile) => profile.id === 
 assert(geminiProfile?.accountTypes.includes('google_oauth'))
 const anthropic = FALLBACK_PROVIDERS.find((provider) => provider.code === 'anthropic')
 const anthropicProfile = anthropic?.protocolProfiles.find((profile) => profile.id === 'profile_anthropic_anthropic_v1')
-assert.deepEqual(anthropic?.accountTypes, ['api_key'], 'Anthropic 回退供应商不得开放 workload_identity')
-assert.deepEqual(anthropicProfile?.accountTypes, ['api_key'], 'Anthropic 回退协议档案不得开放 workload_identity')
+assert.deepEqual(anthropic?.accountTypes, ['api_key', 'oauth'], 'Anthropic 回退供应商应开放 API Key 与 Bearer Token OAuth')
+assert.deepEqual(anthropicProfile?.accountTypes, ['api_key', 'oauth'], 'Anthropic 回退协议档案应开放 API Key 与 Bearer Token OAuth')
+const openAICompatibleProfile = openAICompatible?.protocolProfiles.find((profile) => profile.id === 'profile_openai_openai_v1')
+assert.deepEqual(openAICompatible?.accountTypes, ['api_key'], '通用 OpenAI-compatible 回退供应商不得开放 OAuth 账户类型')
+assert.deepEqual(openAICompatibleProfile?.accountTypes, ['api_key'], '通用 OpenAI-compatible 回退协议档案不得开放 OAuth 账户类型')
+
+const anthropicOAuthForm = defaultAccountForm('anthropic', 'oauth', FALLBACK_PROVIDERS, 'profile_anthropic_anthropic_v1')
+Object.assign(anthropicOAuthForm, {
+  name: 'Anthropic OAuth',
+  groupId: 'group-1',
+  baseUrl: 'https://api.anthropic.com/v1',
+  accessToken: 'anthropic-access',
+  supportedModels: ['claude-opus-4-8'],
+  healthCheckModel: 'claude-opus-4-8',
+  healthCheckEndpointMode: 'messages_json'
+})
+assert.equal(validateAccountSaveForm({
+  form: anthropicOAuthForm,
+  hasAuthSession: false,
+  errorPolicyRules: [],
+  responseInspectionRules: [],
+  providers: FALLBACK_PROVIDERS
+}), undefined, 'Anthropic OAuth 新建表单应允许直接录入 Access Token 保存')
+
 const googleForm = defaultAccountForm('gemini', 'google_oauth', FALLBACK_PROVIDERS, 'profile_gemini_native_v1beta')
 Object.assign(googleForm, {
   accessToken: 'access',

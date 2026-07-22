@@ -88,10 +88,20 @@ export function canCreateOAuthAccount(input: {
     && accountProviderProtocolKind(input.profile ?? input.provider) === 'openai_v1'
 }
 
+export function supportsOAuthAccountType(input: {
+  provider?: ProviderDefinition
+  profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
+}): boolean {
+  return providerProfileSupportsAccountType('oauth', input.provider, input.profile)
+}
+
 export function defaultAccountClientCompatibilityForProvider(input: {
   provider?: ProviderDefinition
   profile?: ProviderProtocolProfileDefinition
 }): AccountClientCompatibility {
+  if (accountProviderProtocolKind(input.profile ?? input.provider) === 'anthropic_v1') {
+    return 'anthropic_native'
+  }
   return canCreateOAuthAccount(input) ? 'codex_responses' : 'openai_standard'
 }
 
@@ -103,6 +113,9 @@ export function effectiveAccountTestClientCompatibility(
     return 'codex_responses'
   }
   if (clientCompatibility !== 'account_default') return clientCompatibility
+  if (accountProviderProtocolKind(account) === 'anthropic_v1') {
+    return 'anthropic_native'
+  }
   return 'openai_standard'
 }
 
@@ -173,9 +186,9 @@ export function defaultEndpointModesForAccount(input: {
 }): AccountSupportedEndpointMode[] {
   if (isHybridProviderProfile(input.profile ?? input.provider)) return [...allAccountEndpointModes]
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
-  if (input.type === 'oauth') return [...responsesEndpointModes]
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
   if (protocolKind === 'gemini_v1beta') return endpointModesForProfile(input.profile ?? input.provider)
+  if (input.type === 'oauth' && protocolKind === 'openai_v1') return [...responsesEndpointModes]
   if (protocolKind === 'openai_v1') {
     return endpointModesForProfile(input.profile ?? input.provider)
   }

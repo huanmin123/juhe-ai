@@ -1695,7 +1695,12 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
     : null
-  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials)
+  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials, {
+    providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
+  })
   const accountExpiresAt = hasOwnInput(input, 'accountExpiresAt')
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
     : null
@@ -1945,7 +1950,12 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
     : null
-  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials)
+  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(accountType, credentials, {
+    providerCode,
+    providerProtocolProfileId: providerProfile.id,
+    protocolCode: providerProfile.protocolCode,
+    protocolVersion: providerProfile.protocolVersion
+  })
   const accountExpiresAt = hasOwnInput(input, 'accountExpiresAt')
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
     : null
@@ -2199,7 +2209,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
     : null
-  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials)
+  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials, current)
   const hasAccountExpiresAtInput = hasOwnInput(input, 'accountExpiresAt')
   const nextAccountExpiresAt = hasAccountExpiresAtInput
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')
@@ -2690,7 +2700,7 @@ export async function updateAccountAsync(
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountCredentialFingerprint(credentialSource)
     : null
-  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials)
+  const oauthRefreshMetadata = openAIOAuthRefreshMetadata(current.type, credentials, current)
   const hasAccountExpiresAtInput = hasOwnInput(input, 'accountExpiresAt')
   const nextAccountExpiresAt = hasAccountExpiresAtInput
     ? nullableServerDateTimeIso(input.accountExpiresAt, '账户套餐到期时间')

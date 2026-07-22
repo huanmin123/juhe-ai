@@ -15,13 +15,14 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 - 直连 Anthropic 必须作为独立 `anthropic/v1` 原生协议档案接入，核心端点是 `POST /v1/messages`。
 - Anthropic 官方确实提供 OpenAI SDK compatibility，但官方定位主要是测试和对比，不适合作为本项目直连接入的主协议。
 - “Anthropic-compatible” 和 “Claude 官方模型”不是一回事。DeepSeek、GLM Coding、Kimi 等国内入口即使暴露 Anthropic Messages 形态，也应归到各自供应商，不应显示为官方 Anthropic。
-- 当前 Anthropic 原生目标完整落地 Anthropic API Key 直连和 Messages / Models / Count Tokens 的轻量闭环，并单独支持 Claude Code 作为下游客户端画像。Workload Identity Federation（WIF）、Claude.ai / Claude Code 订阅 OAuth、Bedrock、Vertex 暂不开放。OpenAI Chat / Responses 到 Anthropic Messages 不属于原生 raw passthrough，而是独立的显式桥接能力，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
+- 当前 Anthropic 原生目标完整落地 Anthropic API Key 直连、官方 OAuth Access Token 导入，以及 Messages / Models / Count Tokens 的轻量闭环，并单独支持 Claude Code 作为下游客户端画像。Workload Identity Federation（WIF）、Claude.ai / Claude Code 订阅 OAuth 浏览器换码、Bedrock、Vertex 暂不开放。OpenAI Chat / Responses 到 Anthropic Messages 不属于原生 raw passthrough，而是独立的显式桥接能力，设计见 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md)。
 
 ## 当前落地状态（2026-07-18）
 
 已落地并通过 mock 回归的能力：
 
 - Anthropic 官方 API Key 账户走 `profile_anthropic_anthropic_v1`，本地网关支持 `POST /v1/messages`、`POST /v1/messages/count_tokens` 和本地 `GET /v1/models`。
+- 截至 `2026-07-22`，Anthropic 官方 OAuth Access Token 账户也走 `profile_anthropic_anthropic_v1`；创建方式为直接录入 `access_token`（可选保留 `refresh_token` 仅作元数据），上游认证固定为 `Authorization: Bearer <access_token>`，不在项目内实现浏览器换码或主动刷新。
 - 本地认证支持 `Authorization: Bearer <本地 API Key>` 和 Anthropic SDK 常用的 `x-api-key: <本地 API Key>`；上游认证始终替换为命中账号的 `x-api-key`。
 - `anthropic-version` 默认 `2023-06-01`；客户端显式传入时透传客户端值。普通 Anthropic 请求的 `anthropic-beta` 只透传客户端显式 header，不作为账号配置保存；`claude_code` 客户端画像下会按真实 Claude Code 请求特征补齐缺失的 `anthropic-beta`、`User-Agent`、`x-claude-code-session-id` 和 `?beta=true`。
 - Anthropic 账户模型映射已支持顶层 `model` 改写，`messages`、`system`、`tools`、`thinking`、`stream`、`metadata` 等其他原生字段保持透传。
@@ -31,13 +32,13 @@ Anthropic 与 GPT 账户、测试、网关、统计和前端的全链路差异�
 - Anthropic native 本地错误已按 Anthropic error shape 返回，认证、端点能力、模型路由、调度失败等本地错误不再暴露 OpenAI error payload。
 - Anthropic WIF 暂不注册账户类型、凭据写入或运行时 token exchange。仅保存一个管理员手工填写的 IdP JWT 无法形成可信自动轮换 source，JWT 到期后会永久失败，因此不能伪装为可用生产能力。
 - Claude Code 只作为下游客户端画像，支持显式 `x-juhe-client-profile: claude_code` 和官方 CLI 多信号识别；本地画像 header 不透传上游。命中该画像时，原生 Anthropic 请求准备层只补齐 Claude Code 请求头和 `beta=true` 查询参数，不伪造 Claude Code system prompt、工具 schema、thinking body 或 OAuth 字段。显式 OpenAI -> Anthropic Messages bridge 命中 `claude_code` 时，会额外补最小 Claude Code-compatible body envelope，用于兼容会校验 Claude Code body 形态的第三方上游。
-- 前端账户表单当前只支持 Anthropic API Key、Base URL 和 Messages 端点能力选择；`Anthropic-Version` / `Anthropic-Beta` 不作为账号配置项。
+- 前端账户表单当前支持 Anthropic API Key 和 Anthropic OAuth Access Token 两种接入类型，均可配置 Base URL 和 Messages 端点能力；`Anthropic-Version` / `Anthropic-Beta` 不作为账号配置项。
 - Anthropic 模型价格目录已按 `providerCode = anthropic` 接入，当前成本估算覆盖 input、output、cache read、cache write 和 1h cache write，并补充 Claude Code 模型别名与常见 Antigravity 兼容别名。
 - Anthropic 使用记录明细已保存 `usage_semantic=anthropic`、cache write、1h cache 和 thinking tokens；使用记录页和成本明细可展示这些字段。
 
 仍保持为后续独立需求的边界：
 
-- 不支持 Claude.ai / Claude Code 订阅 OAuth、Setup Token、Claude Code token、Claude 订阅账号中转或 WIF；WIF 是 Anthropic 官方组织级身份联邦，不属于订阅 OAuth，但仍需要独立的可信 assertion source 才能开放。
+- 不支持 Claude.ai / Claude Code 订阅 OAuth 浏览器换码、Setup Token、Claude 订阅账号中转或 WIF；WIF 是 Anthropic 官方组织级身份联邦，不属于订阅 OAuth，但仍需要独立的可信 assertion source 才能开放。当前仅支持用户已经拿到的官方 OAuth Access Token 直接导入。
 - 不在 Anthropic 原生 `/v1/messages` 透传路径里隐式做 OpenAI Chat / Responses 转换；OpenAI-compatible 下游请求 Claude 模型必须走显式 OpenAI -> Anthropic Messages bridge，且覆盖范围、失败策略和测试矩阵以 [OpenAI 到 Anthropic Messages 协议桥接设计](OpenAI到Anthropic协议桥接设计.md) 为准。
 - stats staged / window / summary 表、授权消耗报表和统计大盘暂未按 cache write、1h cache、thinking token 扩维；后续必须继续由 worker 增量聚合，不在 API 路由临时扫描明细。
 - Anthropic-compatible 国产入口必须按各自供应商建档，不并入官方 `anthropic` 账号池、价格目录和默认分组。
@@ -68,7 +69,7 @@ type ProtocolVersion = 'v1'
 type ProviderProtocolProfileId = 'profile_anthropic_anthropic_v1'
 type EndpointFamily = 'messages' | 'models' | 'message_token_counting'
 type AccountSupportedEndpointMode = 'messages_json' | 'messages_sse' | 'message_token_counting'
-type AnthropicAccountType = 'api_key'
+type AnthropicAccountType = 'api_key' | 'oauth'
 ```
 
 建议显示名称为 `Anthropic Claude`。`anthropic` 是官方直连供应商，表示账号池、分组、模型目录、价格目录和响应策略都归属于 Anthropic 官方 Claude API。它不能复用 `openai`、`gpt`、`glm`、`deepseek` 或第三方代理供应商的账号池。
@@ -77,7 +78,7 @@ type AnthropicAccountType = 'api_key'
 
 | 档案 | 供应商 | 协议 | 默认 Base URL | 账户创建类型 | 默认能力 |
 | --- | --- | --- | --- | --- | --- |
-| `profile_anthropic_anthropic_v1` | `anthropic` | `anthropic/v1` | `https://api.anthropic.com` | API Key | `messages_json`、`messages_sse`、`message_token_counting` |
+| `profile_anthropic_anthropic_v1` | `anthropic` | `anthropic/v1` | `https://api.anthropic.com` | API Key / OAuth Access Token | `messages_json`、`messages_sse`、`message_token_counting` |
 
 端点族边界：
 
@@ -114,20 +115,23 @@ type AnthropicAccountType = 'api_key'
 
 前端创建流程仍按“供应商 -> 账户类型 -> 凭据与调度配置”展开。
 
-选择 `Anthropic Claude` 后当前只展示 API Key 接入类型：
+选择 `Anthropic Claude` 后当前展示 API Key 与 OAuth Access Token 两种接入类型：
 
 | 页面接入类型 | 底层 `accounts.type` | 协议档案 | 凭据字段 | 默认检查模型 |
 | --- | --- | --- | --- | --- |
 | Anthropic API Key | `api_key` | `profile_anthropic_anthropic_v1` | `api_key`、`base_url`、`supported_endpoint_modes` | `claude-opus-4-8` |
+| Anthropic OAuth | `oauth` | `profile_anthropic_anthropic_v1` | `access_token`、可选 `refresh_token`、`base_url`、`supported_endpoint_modes` | `claude-opus-4-8` |
 
 保存规则：
 
 - API Key 账户加密保存 `api_key`；列表不展示，编辑弹窗可查看和修改。
+- OAuth 账户加密保存 `access_token`；列表不展示，编辑弹窗可查看和修改。
 - API Key 账户的 `base_url` 默认 `https://api.anthropic.com`，允许用户修改为明确的 Anthropic-compatible 代理地址；前端不对非官方域名做额外警告，和 GPT / OpenAI-compatible API Key 的 Base URL 体验保持一致。如需严控官方直连，必须通过独立需求增加只允许官方域名的档案。
+- OAuth 账户的 `base_url` 默认 `https://api.anthropic.com/v1`；允许用户修改为同协议代理地址，但上游仍只走 Anthropic Messages / Models / Count Tokens 原生语义。
 - `Anthropic-Version` 不是账号字段；客户端请求带 `anthropic-version` 时透传客户端值，否则由上游 adapter 固定补齐当前协议默认 `2023-06-01`。
-- `credentials.supported_endpoint_modes` 省略时默认 `['messages_json', 'messages_sse', 'message_token_counting']`。
+- `credentials.supported_endpoint_modes` 省略时，API Key 与 OAuth 账户都默认 `['messages_json', 'messages_sse', 'message_token_counting']`。
 - 新建账户默认写入 `pending_test` 且不可调度，测试通过后才恢复正常。
-- Anthropic API Key 账户不显示 OAuth、Refresh Token、Access Token、OpenAI Organization、OpenAI Project、Codex Responses、GPT 客户端兼容能力等字段。
+- Anthropic API Key 账户不显示 OpenAI Organization、OpenAI Project、Codex Responses、GPT 客户端兼容能力等字段；Anthropic OAuth 不显示站内浏览器授权链接，只接受直接录入 Access Token。
 - WIF 后续若重新开放，必须由服务端受控的可信 assertion provider 自动获取和轮换 JWT，校验 `exp`，不得允许账户提交任意文件路径或 source URL；token exchange 还必须使用账户代理、独立超时、请求时 DNS SSRF 校验和有界 JSON 读取。只重读数据库里的同一 `identity_token` 不视为轮换能力。
 
 可选高级字段：
@@ -135,7 +139,14 @@ type AnthropicAccountType = 'api_key'
 - `request_timeout_seconds`：可沿用当前账户或网关超时配置，不为 Anthropic 单独新增重型超时体系。
 - `service_tier`、`inference_geo`、`speed` 等 Anthropic 原生字段默认由请求体透传。当前模型目录不把 `auto` / `standard_only` 或 `fast` 映射为本站 `priority` / `flex`，因此不提供 Anthropic 账户服务等级选项；模型明确声明 effort 时，用户显式配置的账户思考级别覆盖是唯一现有请求体改写例外，会写入 `output_config.effort`。
 
-### 订阅 OAuth 不纳入当前目标
+### Anthropic OAuth 直贴模式
+
+- 当前只支持用户已取得的官方 OAuth Access Token 直接导入；前端推荐粘贴 `CLAUDE_CODE_OAUTH_TOKEN` 或 `ANTHROPIC_AUTH_TOKEN`。
+- `access_token` 为必填；`refresh_token` 当前只作为附带元数据保留，不会在项目内主动刷新，也不会自动换取新的 Access Token。
+- Anthropic OAuth 账户的真实上游认证始终是 `Authorization: Bearer <access_token>`；它不复用 OpenAI OAuth 的刷新、预热或后台批量保活链路。
+- Claude Code 只作为下游客户端画像和 Bearer Token 来源之一，不等于项目内要复刻 Claude.ai / Claude Code 订阅登录流程。
+
+### 站内浏览器授权式订阅 OAuth 不纳入当前目标
 
 `sub2api`、`new-api` 等参考项目实现的 Claude OAuth / SetupToken 链路更接近 Claude 订阅 / Claude Code token 账号链路，不是普通 Anthropic Console API Key，也不是组织级 WIF。当前目标不接入这类 OAuth，避免把订阅账号风控和会话限制误写进官方 API 账户主链路。
 
@@ -147,7 +158,7 @@ type AnthropicAccountType = 'api_key'
 - 验证 access token 刷新、setup token 有效期、账号额度、会话限制、RPM 和风控失败是否能稳定归入现有账户错误处理策略。
 - 验证失败场景不能只靠状态码或错误类型判死账号，仍必须走统一确认、半开、冷却复测和并发归零流程。
 
-在新需求完成真实验证并重新设计前，前端不展示 Anthropic 订阅 OAuth 或 WIF，导入协议只接受 API Key 档案，数据库和网关代码不新增这些认证运行路径。
+在新需求完成真实验证并重新设计前，前端不展示 Anthropic 订阅网页登录 OAuth 或 WIF。当前项目已开放官方 Bearer Token 型 `oauth` 账户导入与创建，但仍不新增订阅网页登录、Setup Token、Cookie / sessionKey 或其他私有登录代理运行路径。
 
 ## 本地网关入口
 

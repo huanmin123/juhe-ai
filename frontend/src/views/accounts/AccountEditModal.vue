@@ -70,6 +70,7 @@
           :auth-result="authResult"
           :editing="editing"
           :form="form"
+          :is-anthropic-o-auth="isAnthropicOAuthForm"
           :is-open-a-i="isOpenAIOAuthForm"
           :is-google-o-auth="form.type === 'google_oauth'"
           :model-options="modelOptions"
@@ -287,6 +288,7 @@ const props = withDefaults(defineProps<{
   hasAccountType: boolean
   isApiKeyForm: boolean
   isManagementView: boolean
+  isAnthropicOAuthForm: boolean
   isOAuthForm: boolean
   isTokenCredentialForm: boolean
   isOpenAIOAuthForm: boolean
