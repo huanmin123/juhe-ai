@@ -118,9 +118,10 @@ func (s *Store) readManagementAccountUsageRows(ctx context.Context, input port.M
 		return nil, nil
 	}
 	keyword := norm.NFKC.String(strings.TrimSpace(input.Keyword))
-	keywordUpper := managementStatsPrefixUpperBound(keyword)
 	visibilitySQL := managementStatsVisibilitySQL(input.Scope, "accounts", true)
 	selectionSQL := ""
+	keywordJoinSQL := ""
+	keywordPredicateSQL := ""
 	positiveSQL := `AND (
     usage_window.request_count > 0
     OR usage_window.input_tokens > 0
@@ -129,13 +130,33 @@ func (s *Store) readManagementAccountUsageRows(ctx context.Context, input port.M
     OR usage_window.total_cost_usd > 0
     OR usage_window.last_used_at IS NOT NULL
   )`
-	args := []any{input.Scope.SystemAccountID, input.Scope.ViewerSystemAccountID, input.Range.StartDate + ":" + input.Range.EndDate, input.Scope.ScopeType, keyword, keywordUpper}
+	args := []any{input.Scope.SystemAccountID, input.Scope.ViewerSystemAccountID, input.Range.StartDate + ":" + input.Range.EndDate, input.Scope.ScopeType}
 	if len(selectedIDs) > 0 {
-		args[4] = ""
-		args[5] = ""
 		selectionSQL = fmt.Sprintf("AND usage_window.scope_id = ANY($%d::text[])", len(args)+1)
 		positiveSQL = ""
 		args = append(args, selectedIDs)
+	} else if keyword != "" {
+		keywordArg := len(args) + 1
+		keywordUpperArg := keywordArg + 1
+		keywordJoinSQL = `LEFT JOIN juhe_business.accounts AS source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id`
+		keywordPredicateSQL = fmt.Sprintf(`AND (
+    (accounts.name COLLATE "C" >= $%[1]d::text AND accounts.name COLLATE "C" < $%[2]d::text AND starts_with(accounts.name, $%[1]d::text))
+    OR (accounts.provider_code COLLATE "C" >= $%[1]d::text AND accounts.provider_code COLLATE "C" < $%[2]d::text AND starts_with(accounts.provider_code, $%[1]d::text))
+    OR (accounts.type COLLATE "C" >= $%[1]d::text AND accounts.type COLLATE "C" < $%[2]d::text AND starts_with(accounts.type, $%[1]d::text))
+    OR (source_accounts.deleted_at IS NULL AND source_accounts.name COLLATE "C" >= $%[1]d::text AND source_accounts.name COLLATE "C" < $%[2]d::text AND starts_with(source_accounts.name, $%[1]d::text))
+    OR EXISTS (
+      SELECT 1
+      FROM juhe_business.group_accounts AS keyword_group_accounts
+      INNER JOIN juhe_business.groups AS keyword_groups ON keyword_groups.id = keyword_group_accounts.group_id
+      WHERE keyword_group_accounts.account_id = accounts.id
+        AND keyword_group_accounts.system_account_id = $2::text
+        AND keyword_group_accounts.enabled = true
+        AND keyword_groups.name COLLATE "C" >= $%[1]d::text
+        AND keyword_groups.name COLLATE "C" < $%[2]d::text
+        AND starts_with(keyword_groups.name, $%[1]d::text)
+    )
+  )`, keywordArg, keywordUpperArg)
+		args = append(args, keyword, managementStatsPrefixUpperBound(keyword))
 	}
 	limitArg := len(args) + 1
 	offsetArg := len(args) + 2
@@ -144,30 +165,13 @@ func (s *Store) readManagementAccountUsageRows(ctx context.Context, input port.M
 FROM juhe_stats.usage_scope_range_windows AS usage_window
 INNER JOIN juhe_business.accounts AS accounts ON accounts.id = usage_window.scope_id
 LEFT JOIN juhe_business.system_accounts AS system_accounts ON system_accounts.id = accounts.system_account_id
-LEFT JOIN juhe_business.accounts AS source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
+` + keywordJoinSQL + `
 WHERE usage_window.system_account_id = $1::text
   AND usage_window.scope_type = $4::text
   AND usage_window.window_key = $3::text
   AND accounts.deleted_at IS NULL
   AND (` + visibilitySQL + `)
-  AND (
-    $5::text = ''
-    OR (accounts.name COLLATE "C" >= $5::text AND accounts.name COLLATE "C" < $6::text AND starts_with(accounts.name, $5::text))
-    OR (accounts.provider_code COLLATE "C" >= $5::text AND accounts.provider_code COLLATE "C" < $6::text AND starts_with(accounts.provider_code, $5::text))
-    OR (accounts.type COLLATE "C" >= $5::text AND accounts.type COLLATE "C" < $6::text AND starts_with(accounts.type, $5::text))
-    OR (source_accounts.deleted_at IS NULL AND source_accounts.name COLLATE "C" >= $5::text AND source_accounts.name COLLATE "C" < $6::text AND starts_with(source_accounts.name, $5::text))
-    OR EXISTS (
-      SELECT 1
-      FROM juhe_business.group_accounts AS keyword_group_accounts
-      INNER JOIN juhe_business.groups AS keyword_groups ON keyword_groups.id = keyword_group_accounts.group_id
-      WHERE keyword_group_accounts.account_id = accounts.id
-        AND keyword_group_accounts.system_account_id = $2::text
-        AND keyword_group_accounts.enabled = true
-        AND keyword_groups.name COLLATE "C" >= $5::text
-        AND keyword_groups.name COLLATE "C" < $6::text
-        AND starts_with(keyword_groups.name, $5::text)
-    )
-  )
+  ` + keywordPredicateSQL + `
   ` + selectionSQL + `
   ` + positiveSQL + `
 ORDER BY usage_window.request_count DESC,
