@@ -38,6 +38,8 @@ Go owner 接管 `/__aisys__/api/stats/system-metrics` 时，以下字段不得�
 
 允许保留的例外：历史文档、未迁移 Node 代码、迁移记录和明确标注为 Node 过渡事实的测试基线。Go runtime、Go API DTO、Go 前端目标类型和 Go 发布文档中不得保留这些字段作为正式口径。
 
+2026-07-22 过渡例外：Go opt-in `GET /__aisys__/api/stats/system-metrics` reader 可以临时返回当前 Node `SystemMetricsOverview`，但必须同时满足“只读 Node 继续单 owner 写入的历史 PostgreSQL 窗口 / sample、不注册 `/runtime`、不声称 `runtimeKind=go`、不新增 writer / migration”。该 reader 只用于共存期精确路由切流，不得用作 W6 Go 原生系统指标完成证据；Go runtime owner 正式接管前仍须按本清单替换该过渡 DTO 和 `process_event_loop_*` 读取。
+
 ## 4. Go 字段目标清单
 
 Go 系统监控接口建议保留当前路径 `GET /__aisys__/api/stats/system-metrics`，但响应模型切换为以下分组。字段名可以在实现时微调，但语义和删除边界必须保持一致。

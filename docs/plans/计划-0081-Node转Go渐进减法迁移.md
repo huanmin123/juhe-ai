@@ -870,3 +870,15 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 历史系统指标只读迁移执行计划
+
+- 目标：为 Go 增加管理员 `GET /__aisys__/api/stats/system-metrics`，只读 Node 当前单 owner 维护的 `juhe_stats.system_metrics_trend_windows`、`juhe_stats.process_event_loop_trend_windows` 和 `juhe_stats.process_event_loop_samples`，返回当前前端 `SystemMetricsOverview` 契约。
+- 过渡边界：这是历史窗口读取兼容切片，不表示 Go 原生系统指标 owner 已接管；Node `stats-worker` 继续独占采样、小时聚合、窗口刷新和保留清理。`/stats/system-metrics/runtime` 依赖 Node server / ingest-worker / stats-worker / ops-worker 运行态，本块不注册 Go 路由、不伪造空快照。
+- 架构：扩展现有 `managementstats` service 复用 `usageStatsTimezone` 和 31 天有界日期归一化；新增独立 system metrics reader port 与 PostgreSQL adapter，参数化读取已有 window key、最新 sample 和 24 小时 peak，不经过 DB-service IPC，不新增 migration / writer。HTTP 使用管理员权限、只读 session、通用读限流、`no-store` 和 120 秒 context 上限。
+- [x] RED：service 日期归一化、DTO 映射、固定角色缺失状态测试先失败。
+- [x] RED：PostgreSQL SQL 只读 / 参数化 / 有界 / 无 raw 聚合扫描守卫测试先失败。
+- [x] RED：HTTP 管理员、query、envelope、通用错误、router 只读 session / limiter / no-store 与 runtime 404 测试先失败。
+- [x] GREEN：实现 port / store / service / handler / router / app 装配，保持 Node DTO 字段与排序。
+- [x] 验证：执行定向测试、`go test ./... -count=1`、`go vet ./...`、`gofmt` / diff 复查；真实 Node writer -> Go reader PostgreSQL integration 和查询计划证据后置。
+- 实际结果：四组 RED 分别因 port / service、store SQL、HTTP / router 和 server 装配缺失而按预期失败，对应 GREEN 后通过；定向四包测试、定向 race、全量 `go test ./... -count=1`、`go vet ./...`、`go mod tidy -diff` 和 `git diff --check` 均通过。本轮未启动 PostgreSQL / Node worker，不记录真实 writer -> reader、查询计划或生产切流通过。
