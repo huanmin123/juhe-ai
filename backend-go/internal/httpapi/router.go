@@ -226,6 +226,7 @@ type RouterOptions struct {
 	ManagementAnnouncementPublicListHandler           http.Handler
 	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementAnnouncementsHandler                    http.Handler
+	ManagementPageDataConfirmHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
 }
@@ -513,6 +514,7 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAnnouncementPublicListHandler == nil &&
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementAnnouncementsHandler == nil &&
+				opts.ManagementPageDataConfirmHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
 				opts.ManagementMyStatsUsageWindowHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
@@ -1363,6 +1365,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/unpublish", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Delete("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
 			}
+			if opts.ManagementPageDataConfirmHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Post("/data-changes/confirm", opts.ManagementPageDataConfirmHandler.ServeHTTP)
+			}
 			if opts.ManagementStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
 			}
@@ -1583,6 +1588,7 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAnnouncementPublicListHandler != nil ||
 		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementAnnouncementsHandler != nil ||
+		opts.ManagementPageDataConfirmHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
 		opts.ManagementMyStatsUsageWindowHandler != nil
 }
