@@ -914,3 +914,8 @@
 - reader 只读既有 `usage_scope_range_windows`、`usage_rank_snapshots`、`usage_stats_daily`、`usage_stats_hourly`、`ai_performance_summary_windows` 和账户授权 metadata，不回扫 `usage_records`，不新增 migration、writer、worker 或冷窗口登记。Node stats worker 继续单写预聚合。
 - 首轮对齐 31 天范围、1000 行 progressive pagination、显式账户 50、trend 10、性能选择 20、options 50、默认榜单、授权可见性、NFKC 名称前缀、小时补零、平均 / 最大样本边界和前端 DTO；options 不返回 `selected/defaultVisible`。
 - 定向 service / PostgreSQL guard / HTTP / router / app 测试、`go test ./... -count=1` 与 `go vet ./...` 已通过；真实 PostgreSQL schema 衔接、Node writer -> Go reader、查询计划、真实 listener / browser、精确切流、回滚和 Node 删除继续后置，当前不宣称生产接管。
+
+## 2026-07-22 W6 统计 overview 代码预迁移
+
+- Go 已补管理 / 自助 `GET /__aisys__/api/stats/usage-overview` 与 `GET /__aisys__/api/my-stats/usage-overview` 的代码路径。对照最新 Node 后，summary 修正为按请求日期范围聚合 `juhe_stats.usage_stats_daily` 的 `system_account` 日汇总；trend、model distribution 和 errors 仍只读各自预聚合窗口。请求路径不读取 `usage_records`。
+- 当前 Goose 已有 `usage_stats_daily`，但尚未创建 `usage_overview_trend_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`。为避免与并行 schema 工作争抢 `000070` 或形成两套表定义，本切片不新增 migration；集成前必须由 schema owner 统一补表和索引，并完成 fresh Goose、Node writer -> Go reader 与查询计划 smoke。该门禁未完成前，本切片只算代码预迁移，不得切流或删除 Node 路由。
