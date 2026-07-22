@@ -306,7 +306,6 @@ import {
   formatModelServiceTier,
   formatProviderCapability,
   getModelCategory,
-  modelModeOptions,
   visibleProviderCapabilities,
   type ModelCategoryKey
 } from './providerModelFormatters'
@@ -510,7 +509,7 @@ function openEditCustomModel(record: ProviderModelPricing) {
   editingCustomModelProviderCode.value = record.providerCode
   editingModelScope.value = record.scope
   editingOriginalStatus.value = record.status ?? 'active'
-  Object.assign(customModelForm, createCustomModelFormFromPricing(record, providerModels.value))
+  Object.assign(customModelForm, createCustomModelFormFromPricing(record))
   ensureServiceTierPriceRows()
   customModelModalOpen.value = true
 }

@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "build": "vue-tsc -b && vite build",
-    "typecheck": "vue-tsc --noEmit",
+    "dev": "vite --host 0.0.0.0 --config vite.config.ts",
+    "build": "pnpm run typecheck && vite build --config vite.config.ts",
+    "typecheck": "vue-tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "typecheck:unused": "vue-tsc -p tsconfig.unused.json",
     "lint": "vue-tsc --noEmit",
     "test:short-lived-request-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/short-lived-request-cache-regression.ts",

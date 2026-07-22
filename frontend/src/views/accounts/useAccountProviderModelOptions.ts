@@ -175,10 +175,6 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
       && cacheKey.startsWith(`${providerModelViewerScope()}:${currentProviderCode}:`)
   }
 
-  function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
-    return dedupeAccountModelOptions(options)
-  }
-
   async function loadSelectedModelCapabilities(providerCode: string, modelIds: string[]): Promise<void> {
     const code = providerCode.trim()
     const selectedIds = normalizedSelectedModelIds(modelIds)

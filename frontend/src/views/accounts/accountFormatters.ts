@@ -9,7 +9,6 @@ import {
 import type { AccountStatus, AccountSummary, AccountTestResult } from '@/types/domain'
 import {
   accountDiagnosticTooltipLines,
-  conciseAccountLastErrorText,
   splitAccountDiagnosticMessage,
   type AccountDiagnosticMessageParts
 } from './accountDiagnosticMessages'
@@ -43,10 +42,6 @@ export {
 export interface AccountStatusTagInfo {
   color: string
   label: string
-}
-
-interface AccountQualityStatusInfo extends AccountStatusTagInfo {
-  tooltipLines: string[]
 }
 
 export function statusColor(status: AccountStatus) {
@@ -126,221 +121,18 @@ export function accountStatusText(account: AccountSummary) {
   return statusText(account.status)
 }
 
-function accountQualityStatusInfo(account: AccountSummary): AccountQualityStatusInfo | undefined {
-  if (account.effectiveAvailability?.status !== 'available') return undefined
-  if (account.status !== 'active' || !account.schedulable) return undefined
-
-  const requestCount = Math.max(0, Math.trunc(account.qualityRecentRequestCount ?? 0))
-  const successRate = normalizedRate(account.qualityRecentSuccessRate)
-  const derivedErrorCount = successRate === undefined
-    ? 0
-    : Math.max(0, requestCount - Math.round(requestCount * successRate))
-  const errorCount = Math.max(0, Math.trunc(account.qualityRecentErrorCount ?? derivedErrorCount))
-  if (requestCount < 3 || errorCount < 2) return undefined
-
-  const successRateText = successRate === undefined ? '' : `，成功率 ${Math.round(successRate * 100)}%`
-  const lines = [
-    `AI账户质量：近窗口 ${formatNumber(requestCount)} 次请求，失败 ${formatNumber(errorCount)} 次${successRateText}`,
-    '归因范围：仅统计真实上游失败和账号依赖失败',
-    '不计入：并发满、额度/认证/规则拦截、客户端断开',
-    '账户状态：数据库仍为正常，不参与状态筛选'
-  ]
-  if (account.qualityLastErrorAt) {
-    lines.push(`最后质量失败：${formatDateTime(account.qualityLastErrorAt)}`)
-  }
-  const lastErrorMessage = formatAccountQualityLastError(account.qualityLastErrorMessage)
-  if (lastErrorMessage) {
-    lines.push(`最后质量原因：${lastErrorMessage}`)
-  }
-  if (account.qualityUpdatedAt) {
-    lines.push(`统计刷新：${formatDateTime(account.qualityUpdatedAt)}`)
-  }
-
-  if (requestCount >= 5 && (errorCount >= 5 || (successRate !== undefined && successRate <= 0.5))) {
-    return { color: 'red', label: '频繁失败', tooltipLines: lines }
-  }
-  if (errorCount >= 3 || (successRate !== undefined && successRate <= 0.8)) {
-    return { color: 'orange', label: '近期不稳', tooltipLines: lines }
-  }
-  return { color: 'gold', label: '近期失败', tooltipLines: lines }
-}
-
-function normalizedRate(value: unknown): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
-  return Math.max(0, Math.min(1, value))
-}
-
-function formatAccountQualityLastError(message?: string): string {
-  const value = conciseAccountLastErrorText(message)
-  const maxLength = 120
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
-}
-
 export function accountCooldownText(account: AccountSummary) {
   if (!isCoolingDown(account)) return ''
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
-}
-
-function accountRetestNextText(account: AccountSummary): string {
-  if (!account.cooldownUntil) return ''
-  const timestamp = serverDateTimeTimestamp(account.cooldownUntil)
-  if (timestamp === undefined) return formatDateTime(account.cooldownUntil)
-  if (timestamp <= Date.now()) {
-    return `复测排队中（计划 ${formatDateTime(account.cooldownUntil)}）`
-  }
-  return formatDateTime(account.cooldownUntil)
-}
-
-function accountCooldownRetestText(account: AccountSummary): string {
-  const parts: string[] = []
-  if (account.cooldownRetestFailureCount) {
-    parts.push(`连续失败 ${formatNumber(account.cooldownRetestFailureCount)} 次`)
-  }
-  if (account.cooldownRetestLastAt) {
-    const status = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
-    parts.push(`最近 ${formatDateTime(account.cooldownRetestLastAt)}${status}`)
-  }
-  const nextText = accountRetestNextText(account)
-  if (nextText) {
-    parts.push(`下次冷却复测：${nextText}`)
-  }
-  return parts.length ? `后台复测：${parts.join('，')}` : ''
 }
 
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
   return accountStatusPresentationTooltipLines(account)
 }
 
-function conciseAccountStatusTooltipLines(account: AccountSummary): string[] {
-  const lines = [directAccountStatusText(account)]
-  const effectiveStatus = account.effectiveAvailability?.status
-  if (account.status === 'error') {
-    lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
-  }
-  if (effectiveStatus === 'instance_expired') {
-    lines.push(account.accountExpiresAt ? `到期时间：${formatDateTime(account.accountExpiresAt)}` : '账户已到期，当前不可用')
-  } else if (effectiveStatus === 'instance_pending_test') {
-    lines.push(pendingHealthCheckStatusText(account))
-  } else if (effectiveStatus === 'instance_disabled') {
-    lines.push('已停用，不参与调度')
-  } else if (effectiveStatus === 'instance_unschedulable') {
-    lines.push('已关闭调度，不参与调度')
-  }
-  if (isTemporaryAccountStatus(account)) {
-    const retestText = accountCooldownRetestText(account)
-    if (retestText) lines.push(retestText)
-    if (isLongTermUnavailableAccount(account)) {
-      lines.push('已进入长期不可用每 1 小时复测；从观察开始满 7 天仍失败时转为异常')
-    }
-  } else if (account.effectiveAvailability?.status === 'instance_cooldown') {
-    const cooldownText = accountCooldownText(account)
-    if (cooldownText) {
-      lines.push(cooldownText)
-    } else {
-      lines.push('正在冷却，不参与调度')
-    }
-  }
-  lines.push(...accountHealthCheckTooltipLines(account))
-  lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
-    reasonLabel: '最后错误',
-    statusCode: account.cooldownRetestLastStatusCode,
-    concise: true
-  }))
-  if (account.lastErrorTraceId) {
-    lines.push(`最后错误 traceId：${account.lastErrorTraceId}`)
-  }
-  return lines
-}
-
-function accountHealthCheckTooltipLines(account: AccountSummary): string[] {
-  const lines: string[] = []
-  if (account.lastHealthCheckAt) {
-    lines.push(`最近主动健康检查：${formatDateTime(account.lastHealthCheckAt)}`)
-  }
-  if (account.lastHealthCheckTraceId) {
-    lines.push(`健康检查 traceId：${account.lastHealthCheckTraceId}`)
-  }
-  if (account.lastHealthSuccessAt) {
-    lines.push(`最近健康成功信号：${formatDateTime(account.lastHealthSuccessAt)}`)
-  }
-  if ((account.status === 'active' || account.status === 'pending_test') && account.nextHealthCheckAt) {
-    const nextTimestamp = serverDateTimeTimestamp(account.nextHealthCheckAt)
-    const nextText = nextTimestamp !== undefined && nextTimestamp <= Date.now()
-      ? `等待复核（计划 ${formatDateTime(account.nextHealthCheckAt)}）`
-      : formatDateTime(account.nextHealthCheckAt)
-    lines.push(`下次健康复核：${nextText}`)
-  }
-  if (account.healthCheckFailureCount) {
-    const status = account.lastHealthCheckStatusCode ? `，HTTP ${account.lastHealthCheckStatusCode}` : ''
-    const code = account.lastHealthCheckErrorCode ? `，${accountErrorCodeText(account.lastHealthCheckErrorCode)}` : ''
-    lines.push(`后台健康检测连续失败：${formatNumber(account.healthCheckFailureCount)} 次${status}${code}`)
-  }
-  const message = formatAccountHealthCheckError(account.lastHealthCheckErrorMessage)
-  if (message) {
-    lines.push(`健康检测原因：${message}`)
-  }
-  return lines
-}
-
-function formatAccountHealthCheckError(message?: string): string {
-  const value = conciseAccountLastErrorText(message)
-  const maxLength = 120
-  return value.length > maxLength ? `${value.slice(0, maxLength)}...` : value
-}
-
-function shouldShowEffectiveAvailabilitySummary(account: AccountSummary): boolean {
-  const availability = account.effectiveAvailability
-  if (!availability || availability.available) return false
-  if (isDirectAccountStatus(availability.status)) return false
-  if (availability.blockerScope === 'source_account' || availability.blockerScope === 'runtime') return false
-  if (availability.status === 'authorization_expired'
-    || availability.status === 'authorization_paused'
-    || availability.status === 'authorization_quota_exceeded') {
-    return false
-  }
-  return true
-}
-
 function shouldDisplayEffectiveAvailabilityAsStatus(account: AccountSummary): account is AccountSummary & { effectiveAvailability: NonNullable<AccountSummary['effectiveAvailability']> } {
   const availability = account.effectiveAvailability
   return Boolean(availability && !availability.available)
-}
-
-function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): string[] {
-  if (!isAuthorizedInstanceLocalStatusHandledAsContext(account)) return []
-  const lines = [`授权实例本地状态：${localAccountStatusText(account)}`]
-  if (account.status === 'error') {
-    lines.push(`本地异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
-  }
-  if (isTemporaryAccountStatus(account)) {
-    const retestText = accountCooldownRetestText(account)
-    if (retestText) lines.push(`本地${retestText}`)
-    if (isLongTermUnavailableAccount(account)) {
-      lines.push('本地已进入长期不可用低频复测；后台仍会自动探活，成功后恢复正常')
-    }
-  }
-  lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {
-    reasonLabel: '本地最后错误',
-    idLabelPrefix: '本地',
-    statusCode: account.cooldownRetestLastStatusCode,
-    concise: true
-  }))
-  return lines
-}
-
-function isAuthorizedInstanceLocalStatusHandledAsContext(account: AccountSummary): boolean {
-  return isAuthorizedAccount(account)
-    && !isAccountInstanceEffectiveAvailability(account)
-    && Boolean(localAccountStatusText(account))
-}
-
-function localAccountStatusText(account: AccountSummary): string {
-  if (isAccountPackageExpiredStatus(account)) return '账户到期'
-  if (isLongTermUnavailableAccount(account)) return '长期不可用'
-  if (account.status !== 'active') return statusText(account.status)
-  if (isFutureTime(account.cooldownUntil)) return '冷却中'
-  if (!account.schedulable) return '停调'
-  return ''
 }
 
 export function authorizationSourceAccountStatusTag(account: AccountSummary): AccountStatusTagInfo | undefined {
@@ -421,58 +213,6 @@ export function hasAccountRuntimeRecoveryState(account: AccountSummary): boolean
   return Boolean(activeRuntimeAvailabilityStatus(account))
 }
 
-function accountRuntimeAvailabilityTooltipLines(account: AccountSummary): string[] {
-  const runtime = account.runtimeAvailability
-  if (!runtime || runtime.status === 'normal') return []
-  const lines = [
-    `运行态状态：${runtimeAvailabilityText(runtime.status)}`,
-    account.status === 'active'
-      ? `数据库状态仍为${statusText(account.status)}；此状态只保存在当前网关进程缓存，不写入数据库`
-      : `数据库状态：${statusText(account.status)}；运行态仅说明当前网关进程最近的确认过程`
-  ]
-  if (runtime.since) {
-    lines.push(`进入时间：${formatDateTime(runtime.since)}`)
-  }
-  if (runtime.until) {
-    lines.push(`预计释放：${formatDateTime(runtime.until)}`)
-  }
-  if (runtime.failureCount) {
-    lines.push(`短窗口失败：${formatNumber(runtime.failureCount)} 次`)
-  }
-  if (runtime.distinctClientIpCount) {
-    lines.push(`来源 IP：${formatNumber(runtime.distinctClientIpCount)} 个`)
-  }
-  if (runtime.distinctApiKeyCount) {
-    lines.push(`API Key：${formatNumber(runtime.distinctApiKeyCount)} 个`)
-  }
-  if (runtime.precheckAttemptCount) {
-    lines.push(`事前探针：${formatNumber(runtime.precheckAttemptCount)} 次`)
-  }
-  if (runtime.localFailureCount) {
-    lines.push(`短暂避让轮次：第 ${formatNumber(runtime.localFailureCount)} 轮`)
-  }
-  if (runtime.status === 'degraded') {
-    lines.push('只影响调度排序：有普通候选时不会优先选择该账号，普通候选不足时才会兜底尝试')
-    lines.push('兜底尝试完整成功后会自动解除调度降级')
-  }
-  if (runtime.reason) {
-    lines.push(`原因：${runtime.reason}`)
-  }
-  if (account.status === 'active') {
-    lines.push('可在更多菜单手动恢复正常，清理当前网关运行态避让')
-  }
-  return lines
-}
-
-function runtimeAvailabilityText(status: NonNullable<AccountSummary['runtimeAvailability']>['status']): string {
-  if (status === 'degraded') return '调度降级'
-  if (status === 'precheck_pending') return '待探针确认'
-  if (status === 'local_suppressed') return '短暂避让'
-  if (status === 'half_open') return '半开探测'
-  if (status === 'precheck_failed') return '探针确认失败'
-  return '正常'
-}
-
 export function isTemporaryAccountStatus(account: AccountSummary) {
   return account.status === 'rate_limited' || account.status === 'temporary_unavailable'
 }
@@ -491,10 +231,6 @@ function isAccountInstanceEffectiveAvailability(account: AccountSummary): accoun
   return scope === 'account' || scope === 'authorized_instance'
 }
 
-function isConciseAccountStatus(status: NonNullable<AccountSummary['effectiveAvailability']>['status']): boolean {
-  return isDirectAccountStatus(status)
-}
-
 function directAccountStatusText(account: AccountSummary): string {
   const status = account.effectiveAvailability?.status
   if (status === 'instance_expired') return '账户到期'
@@ -507,13 +243,6 @@ function directAccountStatusText(account: AccountSummary): string {
   if (status === 'instance_cooldown') return '冷却中'
   if (status === 'instance_unschedulable') return '停调'
   return statusText(account.status)
-}
-
-function pendingHealthCheckStatusText(account: AccountSummary): string {
-  if (isPendingHealthCheckFailed(account)) {
-    return '后台健康检查未通过，系统每 1 小时自动重试；首次失败持续 24 小时仍未通过时转为异常；人工测试仅用于诊断，不改变账户状态'
-  }
-  return '等待后台健康检查，通过后自动参与调度；人工测试仅用于诊断，不改变账户状态'
 }
 
 export function isPendingHealthCheckFailed(account: AccountSummary): boolean {

@@ -295,8 +295,6 @@ const pageStateCache = usePageStateCache<AuthorizationTeamUsagePageState>(undefi
 })
 const initialPageState = pageStateCache.read()
 const overview = ref<AuthorizationTeamUsageOverview>()
-let optionsLoaded = false
-let optionsLoading: Promise<void> | undefined
 let usageRequestSeq = 0
 
 const filters = reactive<AuthorizationTeamUsageFilters>({ ...defaultAuthorizationTeamUsageFilters(), ...initialPageState.filters })
@@ -308,14 +306,12 @@ const {
   resourceOptionsLoading,
   handleResourceOptionsDropdown,
   handleResourceOptionsSearch,
-  loadAuthorizableResourceOptions,
   resetResourceId,
   resetResourceOptionsSearch
 } = useAuthorizationUsageResourceFilters(filters)
 const {
   handleDropdown: handleResourceOwnerOptionsDropdown,
   handleSearch: handleResourceOwnerOptionsSearch,
-  load: loadResourceOwnerOptions,
   loading: resourceOwnerOptionsLoading,
   resetSearch: resetResourceOwnerOptionsSearch,
   systemAccounts: resourceOwners
@@ -327,7 +323,6 @@ const {
 const {
   handleDropdown: handleTeamOptionsDropdown,
   handleSearch: handleTeamOptionsSearch,
-  load: loadTeamOptions,
   loading: teamOptionsLoading,
   options: teams,
   resetSearch: resetTeamOptionsSearch
@@ -396,43 +391,6 @@ const summaryCards = computed(() => buildAuthorizationTeamUsageSummaryCards({
   summary: overview.value?.summary,
   teamCount: overview.value?.teamCount
 }))
-
-async function loadOptions(options: { force?: boolean } = {}) {
-  if (options.force) {
-    resetResourceOwnerOptionsSearch()
-    resetTeamOptionsSearch()
-    resetResourceOptionsSearch()
-  }
-  if (optionsLoaded && !options.force) return
-  if (optionsLoading && !options.force) return optionsLoading
-  optionsLoading = loadOptionsNow()
-  try {
-    await optionsLoading
-    optionsLoaded = true
-  } finally {
-    optionsLoading = undefined
-  }
-}
-
-async function loadOptionsNow() {
-  const [teamResult, ownerResult, resourceResult] = await Promise.allSettled([
-    loadTeamOptions(),
-    loadResourceOwnerOptions(),
-    loadAuthorizableResourceOptions()
-  ])
-  if (teamResult.status === 'rejected') {
-    console.error(teamResult.reason)
-    message.error('加载被授权团队失败')
-  }
-  if (ownerResult.status === 'rejected') {
-    console.error(ownerResult.reason)
-    message.error('加载资源归属用户失败')
-  }
-  if (resourceResult.status === 'rejected') {
-    console.error(resourceResult.reason)
-    message.error('加载资源选项失败')
-  }
-}
 
 async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOptions & { forceOptions?: boolean }, pageState: { current: number; pageSize: number }) {
   const requestSeq = ++usageRequestSeq

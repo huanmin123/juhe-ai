@@ -389,10 +389,6 @@ const createAuthorizationScopeParams = computed(() => {
   const systemAccountId = createForm.ownerSystemAccountId
   return systemAccountId ? { systemAccountId } : undefined
 })
-function canManageAuthorization(authorization: ResourceAuthorizationListItem): boolean {
-  return isManagementView.value || authorization.permissions?.canEdit === true
-}
-
 function canReturnAuthorization(authorization: ResourceAuthorizationListItem): boolean {
   if (isManagementView.value || filters.direction !== 'inbound') return false
   if (authorization.granteeType !== 'system_account') return false

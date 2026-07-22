@@ -35,7 +35,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
     color: colors.length ? colors : chartColors,
     tooltip: {
       trigger: 'axis',
-      formatter: (params: unknown) => performanceTooltip(params, overview, metric)
+      formatter: (params: unknown) => performanceTooltip(params, metric)
     },
     legend: { show: false },
     grid: {
@@ -117,7 +117,7 @@ interface TooltipPoint {
   data?: unknown
 }
 
-function performanceTooltip(params: unknown, overview: AiPerformanceOverview, metric: AiPerformanceMetric) {
+function performanceTooltip(params: unknown, metric: AiPerformanceMetric) {
   const points = tooltipParams(params)
   const title = performanceTooltipTitle(points[0])
   const visiblePoints = points.filter((point) => pointValue(point) !== undefined)

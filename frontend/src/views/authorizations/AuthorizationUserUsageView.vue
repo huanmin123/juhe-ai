@@ -337,8 +337,6 @@ const pageStateCache = usePageStateCache<AuthorizationUserUsagePageState>(undefi
 })
 const initialPageState = pageStateCache.read()
 const overview = ref<AuthorizationUserUsageOverview>()
-let optionsLoaded = false
-let optionsLoading: Promise<void> | undefined
 let usageRequestSeq = 0
 
 const filters = reactive<AuthorizationUserUsageFilters>({ ...defaultAuthorizationUserUsageFilters(), ...initialPageState.filters })
@@ -350,14 +348,12 @@ const {
   resourceOptionsLoading,
   handleResourceOptionsDropdown,
   handleResourceOptionsSearch,
-  loadAuthorizableResourceOptions,
   resetResourceId,
   resetResourceOptionsSearch
 } = useAuthorizationUsageResourceFilters(filters)
 const {
   handleDropdown: handleTeamOptionsDropdown,
   handleSearch: handleTeamOptionsSearch,
-  load: loadTeamOptions,
   loading: teamOptionsLoading,
   options: teams,
   resetSearch: resetTeamOptionsSearch
@@ -370,7 +366,6 @@ const {
 const {
   handleDropdown: handleGranteeUserOptionsDropdown,
   handleSearch: handleGranteeUserOptionsSearch,
-  load: loadGranteeUserOptions,
   loading: granteeUserOptionsLoading,
   options: granteeUsers,
   resetSearch: resetGranteeUserOptionsSearch
@@ -383,7 +378,6 @@ const {
 const {
   handleDropdown: handleResourceOwnerUserOptionsDropdown,
   handleSearch: handleResourceOwnerUserOptionsSearch,
-  load: loadResourceOwnerUserOptions,
   loading: resourceOwnerUserOptionsLoading,
   options: resourceOwnerUsers,
   resetSearch: resetResourceOwnerUserOptionsSearch
@@ -452,49 +446,6 @@ const summaryCards = computed(() => buildAuthorizationUserUsageSummaryCards({
   summary: overview.value?.summary,
   userCount: overview.value?.userCount
 }))
-
-async function loadOptions(options: { force?: boolean } = {}) {
-  if (options.force) {
-    resetTeamOptionsSearch()
-    resetGranteeUserOptionsSearch()
-    resetResourceOwnerUserOptionsSearch()
-    resetResourceOptionsSearch()
-  }
-  if (optionsLoaded && !options.force) return
-  if (optionsLoading && !options.force) return optionsLoading
-  optionsLoading = loadOptionsNow()
-  try {
-    await optionsLoading
-    optionsLoaded = true
-  } finally {
-    optionsLoading = undefined
-  }
-}
-
-async function loadOptionsNow() {
-  const [teamResult, granteeUserResult, resourceOwnerUserResult, resourceResult] = await Promise.allSettled([
-    loadTeamOptions(),
-    loadGranteeUserOptions(),
-    loadResourceOwnerUserOptions(),
-    loadAuthorizableResourceOptions()
-  ])
-  if (teamResult.status === 'rejected') {
-    console.error(teamResult.reason)
-    message.error('加载授权团队失败')
-  }
-  if (granteeUserResult.status === 'rejected') {
-    console.error(granteeUserResult.reason)
-    message.error('加载被授权用户失败')
-  }
-  if (resourceOwnerUserResult.status === 'rejected') {
-    console.error(resourceOwnerUserResult.reason)
-    message.error('加载资源归属用户失败')
-  }
-  if (resourceResult.status === 'rejected') {
-    console.error(resourceResult.reason)
-    message.error('加载授权资源选项失败')
-  }
-}
 
 async function fetchUserUsagePage(loadPageOptions: ResponsivePagedListLoadOptions & { forceOptions?: boolean }, pageState: { current: number; pageSize: number }) {
   const requestSeq = ++usageRequestSeq

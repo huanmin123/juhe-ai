@@ -64,8 +64,7 @@ export const emptyCustomModelForm: CustomModelForm = {
 }
 
 export function createCustomModelFormFromPricing(
-  record: ProviderModelPricing,
-  providerModels: ProviderModelPricing[]
+  record: ProviderModelPricing
 ): CustomModelForm {
   const form: CustomModelForm = {
     id: record.id,

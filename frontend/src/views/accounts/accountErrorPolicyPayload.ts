@@ -80,9 +80,6 @@ const hasSuccessErrorCodeItems = (value: unknown): boolean => {
 
 const isSuccessStatusCode = (code: number): boolean => code >= 200 && code <= 299
 
-const formatList = (value: unknown): string => splitList(value).join(', ')
-const formatStatusCodes = (value: unknown): string => normalizeStatusCodes(value).join(', ')
-
 const normalizeOptionalPositiveInt = (value: unknown): number | null => {
   return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0 ? value : null
 }

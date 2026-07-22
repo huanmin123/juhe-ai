@@ -315,7 +315,7 @@ const catalogRecord = providerModel({
   codexDefaultReasoningLevel: 'ultra',
   codexMultiAgentVersion: 'v2'
 })
-const loadedCustomForm = createCustomModelFormFromPricing(catalogRecord, [])
+const loadedCustomForm = createCustomModelFormFromPricing(catalogRecord)
 assert.deepEqual(loadedCustomForm.supportedServiceTiers, ['priority'], '自定义模型编辑必须恢复 wire 服务等级能力')
 assert.deepEqual(loadedCustomForm.supportedReasoningEfforts, ['high', 'max'], '自定义模型编辑必须恢复 wire 思考能力')
 assert.equal(loadedCustomForm.defaultReasoningEffort, 'high', '自定义模型编辑表单必须恢复默认思考级别')

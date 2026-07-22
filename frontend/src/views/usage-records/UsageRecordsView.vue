@@ -196,7 +196,6 @@ const {
   groups,
   handleDropdown: handleGroupOptionsDropdown,
   handleSearch: handleGroupOptionsSearch,
-  load: loadGroupOptions,
   loading: groupOptionsLoading,
   resetSearch: resetGroupOptionsSearch,
   selectedGroupSelection,

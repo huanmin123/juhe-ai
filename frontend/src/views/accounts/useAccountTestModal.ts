@@ -35,7 +35,6 @@ import { isGatewayTestableAccountProfile } from './accountProviderCapabilities'
 import { accountTestEndpointModesForAccount } from './accountEndpointModes'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import {
-  type AccountTestRunSessionSnapshot,
   clearAccountTestRunSession as clearStoredAccountTestRunSession,
   readAccountTestRunSession,
   writeAccountTestRunSession

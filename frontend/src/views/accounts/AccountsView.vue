@@ -270,7 +270,7 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { groupLabelForId } from '@/shared/groupLabelCache'
 import { isHybridProviderCode } from '@/shared/providerProtocol'
-import type { AccountSummary, AccountTagSummary } from '@/types/domain'
+import type { AccountSummary } from '@/types/domain'
 import AccountBatchDisableConfirmModal from './AccountBatchDisableConfirmModal.vue'
 import AccountBatchDeleteConfirmModal from './AccountBatchDeleteConfirmModal.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -285,9 +285,6 @@ import {
 import {
   statusOptions
 } from './accountOptions'
-import {
-  accountDisplayName
-} from './accountBasicFormatters'
 import {
   accountTableScrollX,
   accountTableScrollY,

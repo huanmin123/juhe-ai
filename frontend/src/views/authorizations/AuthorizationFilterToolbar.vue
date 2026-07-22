@@ -235,7 +235,7 @@ import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType, AuthorizationSourceFilter, AuthorizationStatusFilter } from './authorizationTableColumns'
 
-const props = defineProps<{
+defineProps<{
   keyword: string
   filters: {
     direction: AuthorizationDirectionFilter

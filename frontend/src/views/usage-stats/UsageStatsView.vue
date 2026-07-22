@@ -139,7 +139,7 @@ import { loadProviderOptionsResource } from '@/composables/useProviderOptionsRes
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageStatsTrendOverview, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageStatsTrendOverview, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -211,7 +211,6 @@ const {
   loading,
   mobileHasMore: accountUsageMobileHasMore,
   mobileLoadingMore: accountUsageMobileLoadingMore,
-  pagination: accountUsagePagination,
   tablePagination,
   handleTableChange,
   loadData,
@@ -315,7 +314,6 @@ const {
   displayRows,
   hasSelectedTrendAccounts,
   hasTrendData,
-  selectedTrendAccountIds,
   trendEmptyDescription,
   visibleTrendRows,
   clearTrendAccountState: clearTrendAccountSelectionState,

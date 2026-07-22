@@ -331,14 +331,6 @@ async function loadRouteStrategyOptions(keyword = '', selectedIds: string[] = []
   return routeStrategyOptionsLoadingPromise
 }
 
-function mergeRouteStrategyOptionsById(leading: RouteStrategyOptionSummary[], trailing: RouteStrategyOptionSummary[]): RouteStrategyOptionSummary[] {
-  const merged = new Map<string, RouteStrategyOptionSummary>()
-  for (const strategy of [...leading, ...trailing]) {
-    merged.set(strategy.id, strategy)
-  }
-  return [...merged.values()]
-}
-
 function routeStrategyOptionsRequestKey(systemAccountId: string | undefined, keyword: string | undefined, selectedIds: string[]): string {
   return JSON.stringify([
     props.isManagementView ? `management:${systemAccountId ?? ''}` : 'self',
