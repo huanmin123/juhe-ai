@@ -620,7 +620,7 @@ func (s *Service) ModelCapabilities(ctx context.Context, input ModelCapabilities
 	if provider.Code == hybridProviderCode {
 		mergeKey = mergeKeyProviderModel
 	}
-	items := sortCatalogItems(mergeCatalogItems(rows, mergeKey))
+	items := sortModelCapabilityCandidates(mergeCatalogItems(rows, mergeKey))
 	if len(items) == 0 {
 		return ModelCapabilities{}, ErrModelCapabilitiesNotFound
 	}
@@ -2017,6 +2017,34 @@ func sortCatalogItems(items []port.ManagementProviderModelCatalogItem) []port.Ma
 	output := append([]port.ManagementProviderModelCatalogItem(nil), items...)
 	sort.SliceStable(output, func(i, j int) bool {
 		return compareCatalogItems(output[i], output[j]) < 0
+	})
+	return output
+}
+
+func sortModelCapabilityCandidates(items []port.ManagementProviderModelCatalogItem) []port.ManagementProviderModelCatalogItem {
+	output := append([]port.ManagementProviderModelCatalogItem(nil), items...)
+	sort.SliceStable(output, func(i, j int) bool {
+		left, right := output[i], output[j]
+		if strings.EqualFold(left.ProviderCode, right.ProviderCode) {
+			if result := compareOptionalInt(left.CatalogOrder, right.CatalogOrder); result != 0 {
+				return result < 0
+			}
+		}
+		leftReleaseDate := strings.TrimSpace(left.ReleaseDate)
+		rightReleaseDate := strings.TrimSpace(right.ReleaseDate)
+		if leftReleaseDate != rightReleaseDate {
+			if leftReleaseDate == "" {
+				return false
+			}
+			if rightReleaseDate == "" {
+				return true
+			}
+			return leftReleaseDate > rightReleaseDate
+		}
+		if left.Model != right.Model {
+			return left.Model < right.Model
+		}
+		return left.ID < right.ID
 	})
 	return output
 }
