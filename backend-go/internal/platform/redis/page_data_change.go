@@ -756,11 +756,47 @@ func parsePageDataRedisSequencedEvent(value interface{}) (pageDataSequencedEvent
 	if err != nil || sequence <= 0 || !pageDataSafeNonNegativeInteger(sequence) {
 		return pageDataSequencedEvent{}, false
 	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(text[separator+1:]), &fields) != nil || !validPageDataChangeEventJSONShape(fields) {
+		return pageDataSequencedEvent{}, false
+	}
 	var event PageDataChangeEvent
 	if json.Unmarshal([]byte(text[separator+1:]), &event) != nil || validatePageDataChangeEventForConfirm(event) != nil {
 		return pageDataSequencedEvent{}, false
 	}
 	return pageDataSequencedEvent{sequence: sequence, event: event}, true
+}
+
+// validPageDataChangeEventJSONShape keeps Redis replay aligned with Node's
+// runtime validation, where absent fields are invalid instead of zero values.
+func validPageDataChangeEventJSONShape(fields map[string]json.RawMessage) bool {
+	for _, field := range []string{"fieldMask", "ownerSystemAccountIds"} {
+		raw, ok := fields[field]
+		if !ok {
+			return false
+		}
+		var values []json.RawMessage
+		if json.Unmarshal(raw, &values) != nil || values == nil {
+			return false
+		}
+	}
+	for _, field := range []string{"membershipChanged", "orderChanged", "filterChanged", "pageChanged"} {
+		raw, ok := fields[field]
+		if !ok {
+			return false
+		}
+		value := strings.TrimSpace(string(raw))
+		if value != "true" && value != "false" {
+			return false
+		}
+	}
+	if raw, ok := fields["allScopes"]; ok {
+		value := strings.TrimSpace(string(raw))
+		if value != "true" && value != "false" {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePageDataChangeEventForConfirm(event PageDataChangeEvent) error {
