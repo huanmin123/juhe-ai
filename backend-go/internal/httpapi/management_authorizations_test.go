@@ -1231,10 +1231,8 @@ func TestManagementAuthorizationListHandlerParsesAdminQueryAndResponds(t *testin
 				ResourceOwnerSystemAccountID: "sys_owner",
 				GranteeType:                  "system_account",
 				GranteeSystemAccountID:       "sys_grantee",
-				Scope:                        "use",
 				Status:                       "active",
 				CreatedAt:                    createdAt,
-				UpdatedAt:                    createdAt,
 				Permissions: managementauthorizations.Permissions{
 					CanEdit:      true,
 					CanAuthorize: true,
