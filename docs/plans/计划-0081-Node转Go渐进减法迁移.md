@@ -878,3 +878,15 @@
 - 保留天数读取 `sys_admin/runtimeLogIndexRetentionDays`，缺失或零值默认 14，catalog 值收敛到 1..90，显式 override 严格校验 1..90；一次运行固定毫秒 UTC cutoff。默认每批 1000、每轮 20 批，索引和 cursor 独立循环，满批之间执行 25ms context-aware pause。
 - PostgreSQL 索引批次按 `time ASC, id ASC LIMIT ... FOR UPDATE SKIP LOCKED` 选删，并在同一事务内以固定顺序锁定 summary / level / event facet 表。summary、level 和 event count 使用非负扣减；summary earliest/latest 与受影响 event latest 从 cutoff 后剩余索引重算，事务失败整体回滚。完成 cursor 只删除 `updated_at < cutoff`、已读完且无错误的行，按 `updated_at ASC, log_file ASC` 稳定小批处理。
 - 当前没有修改共享 `cmd/juhe-ai-worker/main.go`，因此 CLI / supervisor 集成点是调用 `app.RunRuntimeLogRetentionCleanupWorker` 并映射 `retention-days/batch-size/max-batches/interval/initial-delay/run-once`；真实 PostgreSQL 下 Node importer 与 Go cleanup 并发 smoke 后置，不能据此声明运行日志生产治理接管。
+
+## 2026-07-22 W6 历史系统指标只读迁移执行计划
+
+- 目标：为 Go 增加管理员 `GET /__aisys__/api/stats/system-metrics`，只读 Node 当前单 owner 维护的 `juhe_stats.system_metrics_trend_windows`、`juhe_stats.process_event_loop_trend_windows` 和 `juhe_stats.process_event_loop_samples`，返回当前前端 `SystemMetricsOverview` 契约。
+- 过渡边界：这是历史窗口读取兼容切片，不表示 Go 原生系统指标 owner 已接管；Node `stats-worker` 继续独占采样、小时聚合、窗口刷新和保留清理。`/stats/system-metrics/runtime` 依赖 Node server / ingest-worker / stats-worker / ops-worker 运行态，本块不注册 Go 路由、不伪造空快照。
+- 架构：扩展现有 `managementstats` service 复用 `usageStatsTimezone` 和 31 天有界日期归一化；新增独立 system metrics reader port 与 PostgreSQL adapter，参数化读取已有 window key、最新 sample 和 24 小时 peak，不经过 DB-service IPC，不新增 migration / writer。HTTP 使用管理员权限、只读 session、通用读限流、`no-store` 和 120 秒 context 上限。
+- [x] RED：service 日期归一化、DTO 映射、固定角色缺失状态测试先失败。
+- [x] RED：PostgreSQL SQL 只读 / 参数化 / 有界 / 无 raw 聚合扫描守卫测试先失败。
+- [x] RED：HTTP 管理员、query、envelope、通用错误、router 只读 session / limiter / no-store 与 runtime 404 测试先失败。
+- [x] GREEN：实现 port / store / service / handler / router / app 装配，保持 Node DTO 字段与排序。
+- [x] 验证：执行定向测试、`go test ./... -count=1`、`go vet ./...`、`gofmt` / diff 复查；真实 Node writer -> Go reader PostgreSQL integration 和查询计划证据后置。
+- 实际结果：四组 RED 分别因 port / service、store SQL、HTTP / router 和 server 装配缺失而按预期失败，对应 GREEN 后通过；定向四包测试、定向 race、全量 `go test ./... -count=1`、`go vet ./...`、`go mod tidy -diff` 和 `git diff --check` 均通过。本轮未启动 PostgreSQL / Node worker，不记录真实 writer -> reader、查询计划或生产切流通过。

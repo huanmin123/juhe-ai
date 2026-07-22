@@ -36,6 +36,26 @@ func TestManagementAPIHandlersDoNotExposeSessionManagement(t *testing.T) {
 	}
 }
 
+func TestManagementSystemMetricsHandlerIsWiredThroughServer(t *testing.T) {
+	typeOfHandlers := reflect.TypeOf(managementAPIHandlers{})
+	if _, ok := typeOfHandlers.FieldByName("SystemMetricsHandler"); !ok {
+		t.Fatal("managementAPIHandlers does not expose SystemMetricsHandler")
+	}
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := strings.Join(strings.Fields(string(source)), "")
+	for _, required := range []string{
+		"ManagementSystemMetricsHandler:managementHandlers.SystemMetricsHandler",
+		"SystemMetricsHandler:httpapi.NewManagementSystemMetricsHandler(statsService)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing system metrics wiring %q", required)
+		}
+	}
+}
+
 func TestNewPublicAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 	handler, logQueue, err := newPublicAPIHandler(config.Config{}, nil, nil, nil)
 	if err != nil {
