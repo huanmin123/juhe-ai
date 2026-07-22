@@ -219,11 +219,14 @@ func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
 	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
 	listStart := strings.Index(sql, "-- name: ListManagementProviders :many")
 	optionStart := strings.Index(sql, "-- name: ListManagementProviderOptionProviders :many")
-	if listStart < 0 || optionStart < 0 || optionStart <= listStart {
+	selectStart := strings.Index(sql, "-- name: ListManagementProviderSelectOptions :many")
+	profileStart := strings.Index(sql, "-- name: ListManagementProviderOptionProfiles :many")
+	if listStart < 0 || optionStart < 0 || selectStart < 0 || profileStart < 0 || optionStart <= listStart || selectStart <= optionStart || profileStart <= selectStart {
 		t.Fatalf("provider SQL missing list/options queries")
 	}
 	listSQL := sql[listStart:optionStart]
 	optionSQL := sql[optionStart:]
+	selectSQL := sql[selectStart:profileStart]
 	for _, want := range []string{
 		"FROM juhe_business.providers",
 		"ORDER BY name ASC, code ASC",
@@ -238,6 +241,16 @@ func TestManagementProviderSQLKeepsListAndOptionsFiltersSeparate(t *testing.T) {
 	}
 	if !strings.Contains(optionSQL, "WHERE enabled = true") {
 		t.Fatalf("provider options SQL must keep enabled filter")
+	}
+	for _, want := range []string{"SELECT id, code, name, enabled", "WHERE enabled = true", "LIMIT 50"} {
+		if !strings.Contains(selectSQL, want) {
+			t.Fatalf("provider select options SQL missing %q: %s", want, selectSQL)
+		}
+	}
+	for _, forbidden := range []string{"provider_protocol_profiles", "default_health_check_model", "capabilities_json"} {
+		if strings.Contains(selectSQL, forbidden) {
+			t.Fatalf("provider select options SQL must stay lightweight, found %q: %s", forbidden, selectSQL)
+		}
 	}
 	for _, want := range []string{
 		"default_health_check_model",

@@ -749,8 +749,10 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyAuthorizationRevokeHandler != nil ||
 		handlers.ProvidersHandler != nil ||
 		handlers.ProviderOptionsHandler != nil ||
+		handlers.ProviderDefinitionsHandler != nil ||
 		handlers.ProviderModelOptionsHandler != nil ||
 		handlers.ProviderModelsHandler != nil ||
+		handlers.ProviderModelCapabilitiesHandler != nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
 		handlers.RouteStrategyListHandler != nil ||
 		handlers.MyRouteStrategyListHandler != nil ||
@@ -863,8 +865,10 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyAuthorizationRevokeHandler == nil ||
 		handlers.ProvidersHandler == nil ||
 		handlers.ProviderOptionsHandler == nil ||
+		handlers.ProviderDefinitionsHandler == nil ||
 		handlers.ProviderModelOptionsHandler == nil ||
 		handlers.ProviderModelsHandler == nil ||
+		handlers.ProviderModelCapabilitiesHandler == nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler == nil ||
 		handlers.RouteStrategyListHandler == nil ||
 		handlers.MyRouteStrategyListHandler == nil ||

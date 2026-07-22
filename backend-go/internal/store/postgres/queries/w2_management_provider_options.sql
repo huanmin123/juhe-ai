@@ -11,6 +11,13 @@ WHERE enabled = true
 ORDER BY name ASC, code ASC
 LIMIT 50;
 
+-- name: ListManagementProviderSelectOptions :many
+SELECT id, code, name, enabled
+FROM juhe_business.providers
+WHERE enabled = true
+ORDER BY name ASC, code ASC
+LIMIT 50;
+
 -- name: ListManagementProviderOptionProfiles :many
 SELECT
   id,
