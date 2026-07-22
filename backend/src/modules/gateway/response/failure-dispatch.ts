@@ -56,6 +56,16 @@ import {
 import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
 
 /** Generic takeover is limited to inference endpoints. Resource creation must not be replayed. */
+export function isOpaqueUpstreamFailoverAllowed(req: Request): boolean {
+  const method = req.method.toUpperCase()
+  const path = (req.originalUrl || req.path || '').split('?', 1)[0]
+  if (method === 'GET' || method === 'HEAD') return true
+  if (method !== 'POST') return false
+  return /\/(?:chat\/completions|responses|embeddings|images\/(?:generations|edits))$/i.test(path)
+    || /\/models\/[^/]+:(?:generateContent|streamGenerateContent|countTokens|embedContent)$/i.test(path)
+    || /\/interactions\/[^/]+$/i.test(path)
+}
+
 export type AccountFailureInput = {
   success: false
   statusCode: number
