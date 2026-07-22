@@ -84,6 +84,18 @@ func TestResolveClientProfile(t *testing.T) {
 			want:     ClientProfileResolution{Profile: ClientProfileGenericGemini, Source: ClientProfileSourceDefault, Compatibility: CompatibilityOpenAIStandard},
 		},
 		{
+			name:     "explicit gemini cli rejects unsupported interaction resource post",
+			protocol: ProtocolGemini,
+			request:  RequestShape{Method: "POST", Path: "/interactions/abc", Headers: map[string]string{"x-juhe-client-profile": "gemini_cli"}},
+			want:     ClientProfileResolution{Profile: ClientProfileGenericGemini, Source: ClientProfileSourceDefault, Compatibility: CompatibilityOpenAIStandard},
+		},
+		{
+			name:     "explicit gemini cli rejects interaction root get",
+			protocol: ProtocolGemini,
+			request:  RequestShape{Method: "GET", Path: "/interactions", Headers: map[string]string{"x-juhe-client-profile": "gemini_cli"}},
+			want:     ClientProfileResolution{Profile: ClientProfileGenericGemini, Source: ClientProfileSourceDefault, Compatibility: CompatibilityOpenAIStandard},
+		},
+		{
 			name:     "gemini signature requires post",
 			protocol: ProtocolGemini,
 			request:  RequestShape{Method: "GET", Path: "/models/gemini:generateContent", Headers: map[string]string{"user-agent": "GeminiCLI/0.9", "authorization": "Bearer redacted"}},

@@ -9,22 +9,29 @@ import (
 const (
 	DefaultSSEEventMaxBytes = 256 << 10
 	MaxSSEEventBytes        = 1 << 20
+	DefaultSSETotalMaxBytes = 64 << 20
+	MaxSSETotalBytes        = 256 << 20
 )
 
 var (
 	ErrEventTooLarge  = errors.New("gemini: SSE event too large")
+	ErrStreamTooLarge = errors.New("gemini: SSE stream too large")
 	ErrParserFinished = errors.New("gemini: SSE parser already finished")
 )
 
 type SSEOptions struct {
 	MaxEventBytes int
+	MaxTotalBytes int
 }
 
 // SSEParser incrementally consumes Gemini SSE without retaining the full
 // stream. A stream is terminal only after an explicit protocol signal.
 type SSEParser struct {
 	maxEventBytes int
+	maxTotalBytes int
+	totalBytes    int
 	line          []byte
+	afterCR       bool
 	eventName     string
 	data          []byte
 	result        Result
@@ -33,8 +40,12 @@ type SSEParser struct {
 }
 
 func NewSSEParser(options SSEOptions) *SSEParser {
-	maxBytes, err := normalizedLimit(options.MaxEventBytes, DefaultSSEEventMaxBytes, MaxSSEEventBytes)
-	return &SSEParser{maxEventBytes: maxBytes, fatal: err}
+	maxEventBytes, eventErr := normalizedLimit(options.MaxEventBytes, DefaultSSEEventMaxBytes, MaxSSEEventBytes)
+	maxTotalBytes, totalErr := normalizedLimit(options.MaxTotalBytes, DefaultSSETotalMaxBytes, MaxSSETotalBytes)
+	if eventErr == nil {
+		eventErr = totalErr
+	}
+	return &SSEParser{maxEventBytes: maxEventBytes, maxTotalBytes: maxTotalBytes, fatal: eventErr}
 }
 
 func (parser *SSEParser) Push(chunk []byte) error {
@@ -44,31 +55,31 @@ func (parser *SSEParser) Push(chunk []byte) error {
 	if parser.fatal != nil {
 		return parser.fatal
 	}
-	for len(chunk) > 0 {
-		newline := bytes.IndexByte(chunk, '\n')
-		if newline < 0 {
-			if parser.currentEventBytes()+len(chunk) > parser.maxEventBytes {
-				parser.fatal = ErrEventTooLarge
-				return parser.fatal
+	if len(chunk) > parser.maxTotalBytes-parser.totalBytes {
+		parser.fatal = ErrStreamTooLarge
+		return parser.fatal
+	}
+	parser.totalBytes += len(chunk)
+	for _, value := range chunk {
+		if parser.afterCR {
+			parser.afterCR = false
+			if value == '\n' {
+				continue
 			}
-			parser.line = append(parser.line, chunk...)
-			return nil
 		}
-		if parser.currentEventBytes()+newline > parser.maxEventBytes {
+		if value == '\r' || value == '\n' {
+			if err := parser.processBufferedLine(); err != nil {
+				parser.fatal = err
+				return err
+			}
+			parser.afterCR = value == '\r'
+			continue
+		}
+		if parser.currentEventBytes()+1 > parser.maxEventBytes {
 			parser.fatal = ErrEventTooLarge
 			return parser.fatal
 		}
-		parser.line = append(parser.line, chunk[:newline]...)
-		line := parser.line
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
-		}
-		parser.line = nil
-		if err := parser.processLine(line); err != nil {
-			parser.fatal = err
-			return err
-		}
-		chunk = chunk[newline+1:]
+		parser.line = append(parser.line, value)
 	}
 	return nil
 }
@@ -81,19 +92,21 @@ func (parser *SSEParser) Finish() (Result, error) {
 		return parser.snapshot(), ErrParserFinished
 	}
 	parser.finished = true
+	parser.afterCR = false
 	if len(parser.line) > 0 {
-		line := parser.line
-		if len(line) > 0 && line[len(line)-1] == '\r' {
-			line = line[:len(line)-1]
-		}
-		parser.line = nil
-		if err := parser.processLine(line); err != nil {
+		if err := parser.processBufferedLine(); err != nil {
 			parser.fatal = err
 			return parser.snapshot(), err
 		}
 	}
 	parser.flushEvent()
 	return parser.snapshot(), nil
+}
+
+func (parser *SSEParser) processBufferedLine() error {
+	line := parser.line
+	parser.line = nil
+	return parser.processLine(line)
 }
 
 func (parser *SSEParser) Snapshot() Result {
@@ -135,6 +148,10 @@ func (parser *SSEParser) flushEvent() {
 		parser.resetEvent()
 		return
 	}
+	if parser.result.Terminal {
+		parser.resetEvent()
+		return
+	}
 	parser.result.Events++
 	data := strings.TrimSpace(string(parser.data))
 	if data == "[DONE]" {
@@ -154,11 +171,7 @@ func (parser *SSEParser) flushEvent() {
 		parser.result.InteractionID = observed.InteractionID
 	}
 	if observed.Failed {
-		parser.result.Terminal = true
-		parser.result.Failed = true
-		parser.result.Status = "failed"
-		parser.result.ErrorCode = observed.ErrorCode
-		parser.result.ErrorMessage = observed.ErrorMessage
+		parser.markFailed(observed)
 	}
 
 	eventType := firstString(value, "type", "event_type")
@@ -173,9 +186,7 @@ func (parser *SSEParser) flushEvent() {
 		}
 		parser.markCompleted(status)
 	case "interaction.failed":
-		parser.result.Terminal = true
-		parser.result.Failed = true
-		parser.result.Status = "failed"
+		parser.markFailed(observed)
 	case "finish", "done", "[done]":
 		parser.markCompleted("completed")
 	}
@@ -185,19 +196,28 @@ func (parser *SSEParser) flushEvent() {
 	if equalFold(observed.Status, "completed") {
 		parser.markCompleted(observed.Status)
 	} else if equalFold(observed.Status, "failed") {
-		parser.result.Terminal = true
-		parser.result.Failed = true
-		parser.result.Status = "failed"
+		parser.markFailed(observed)
 	}
 	parser.resetEvent()
 }
 
 func (parser *SSEParser) markCompleted(status string) {
-	if parser.result.Failed {
+	if parser.result.Terminal {
 		return
 	}
 	parser.result.Terminal = true
 	parser.result.Status = status
+}
+
+func (parser *SSEParser) markFailed(observed Result) {
+	if parser.result.Terminal {
+		return
+	}
+	parser.result.Terminal = true
+	parser.result.Failed = true
+	parser.result.Status = "failed"
+	parser.result.ErrorCode = observed.ErrorCode
+	parser.result.ErrorMessage = observed.ErrorMessage
 }
 
 func (parser *SSEParser) resetEvent() {

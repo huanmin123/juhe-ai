@@ -48,8 +48,8 @@ func resolveGeminiClientProfile(request RequestShape) ClientProfileResolution {
 	method := strings.ToUpper(strings.TrimSpace(request.Method))
 	family := geminiEndpointFamily(request.Path)
 	supportedShape := (method == "POST" && (family == EndpointGenerateContent || family == EndpointStreamGenerateContent ||
-		family == EndpointCountTokens || family == EndpointEmbedContent || family == EndpointInteractions)) ||
-		((method == "GET" || method == "DELETE") && family == EndpointInteractions)
+		family == EndpointCountTokens || family == EndpointEmbedContent)) ||
+		(family == EndpointInteractions && GeminiInteractionActionForRequest(method, request.Path) != GeminiInteractionNone)
 	if supportedShape && explicitClientProfile(request) == ClientProfileGeminiCLI {
 		return ClientProfileResolution{Profile: ClientProfileGeminiCLI, Source: ClientProfileSourceExplicitHeader, Compatibility: CompatibilityOpenAIStandard}
 	}
