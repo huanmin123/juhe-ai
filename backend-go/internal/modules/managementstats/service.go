@@ -16,16 +16,18 @@ const (
 )
 
 type Service struct {
-	store           port.ManagementUsageStatsTimezoneReader
-	now             func() time.Time
-	timezoneMu      sync.Mutex
-	timezoneCache   cachedUsageStatsTimezone
-	timezoneRefresh *usageStatsTimezoneRefresh
+	store              port.ManagementUsageStatsTimezoneReader
+	systemMetricsStore port.ManagementSystemMetricsReader
+	now                func() time.Time
+	timezoneMu         sync.Mutex
+	timezoneCache      cachedUsageStatsTimezone
+	timezoneRefresh    *usageStatsTimezoneRefresh
 }
 
 type ServiceOptions struct {
-	Store port.ManagementUsageStatsTimezoneReader
-	Now   func() time.Time
+	Store              port.ManagementUsageStatsTimezoneReader
+	SystemMetricsStore port.ManagementSystemMetricsReader
+	Now                func() time.Time
 }
 
 type UsageWindow struct {
@@ -47,7 +49,11 @@ type usageStatsTimezoneRefresh struct {
 }
 
 func NewService(store port.ManagementUsageStatsTimezoneReader) *Service {
-	return NewServiceWithOptions(ServiceOptions{Store: store})
+	options := ServiceOptions{Store: store}
+	if systemMetricsStore, ok := store.(port.ManagementSystemMetricsReader); ok {
+		options.SystemMetricsStore = systemMetricsStore
+	}
+	return NewServiceWithOptions(options)
 }
 
 func NewServiceWithOptions(opts ServiceOptions) *Service {
@@ -56,8 +62,9 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		now = time.Now
 	}
 	return &Service{
-		store: opts.Store,
-		now:   now,
+		store:              opts.Store,
+		systemMetricsStore: opts.SystemMetricsStore,
+		now:                now,
 	}
 }
 
