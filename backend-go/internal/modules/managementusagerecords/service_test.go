@@ -254,6 +254,7 @@ type usageRecordReaderStub struct {
 	listInput   port.ManagementUsageRecordListInput
 	listResult  port.ManagementUsageRecordListResult
 	listErr     error
+	listCalls   int
 	detailInput port.ManagementUsageRecordDetailInput
 	detail      port.ManagementUsageRecordDetail
 	detailFound bool
@@ -265,6 +266,7 @@ func (s *usageRecordReaderStub) GetManagementUsageStatsTimezone(context.Context)
 }
 
 func (s *usageRecordReaderStub) ListManagementUsageRecords(_ context.Context, input port.ManagementUsageRecordListInput) (port.ManagementUsageRecordListResult, error) {
+	s.listCalls++
 	s.listInput = input
 	return s.listResult, s.listErr
 }
