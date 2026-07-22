@@ -16,7 +16,7 @@ export interface PostgresQueryClient {
 }
 
 export interface PostgresPoolClient extends PostgresQueryClient {
-  release(): void
+  release(destroy?: boolean): void
 }
 
 type PostgresPool = PostgresQueryClient & {

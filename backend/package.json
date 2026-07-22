@@ -580,6 +580,7 @@
     "test:announcement-sqlite-read-worker": "tsx src/scripts/regression/announcement-sqlite-read-worker-regression.ts",
     "test:announcement-postgres-smoke": "tsx src/scripts/regression/announcement-postgres-smoke.ts",
     "test:postgres-goose-schema-gate": "tsx src/scripts/regression/postgres-goose-schema-gate-regression.ts",
+    "test:postgres-schema-goose-bootstrap": "tsx src/scripts/regression/postgres-schema-goose-bootstrap-regression.ts",
     "clean:dist": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "build": "pnpm run clean:dist && tsc -p tsconfig.build.json",
     "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",

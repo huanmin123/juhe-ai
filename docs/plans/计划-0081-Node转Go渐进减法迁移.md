@@ -870,3 +870,9 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 Node 新库 Goose 账本 P1 修复
+
+- `postgres:init-schema` 不再把 Node 完整 DDL 当成 Goose catalog 的等价证明，也不直接写 `goose_db_version`。初始化改为在专用 PostgreSQL session advisory lock 内先执行 Go `juhe-ai-maintenance schema-up`，由 Goose 真实执行当前连续 catalog 并记录 ledger；精确 gate 通过后才执行 Node 当前幂等补充 DDL和可选默认 seed。
+- 无 ledger 且已有 `juhe_*` 业务对象时 fail-closed；已有真实低版本 ledger 由 Goose 续跑，高于当前 catalog、空 ledger 或非法版本拒绝。Goose/Node DDL/seed 任一阶段失败均保留真实已提交进度，重跑不通过伪造 marker 或版本跳跃恢复。
+- Node 定向回归和 Go schema-up test/vet 已通过，源码扫描确认没有直接 ledger mutation，连接串只经子进程环境传递、不进入 argv。本批没有连接真实 PostgreSQL，fresh 全 catalog、故障注入、双进程竞争和生产旧库离线迁移仍属于统一验收/独立运维门禁。
