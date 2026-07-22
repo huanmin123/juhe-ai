@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import ts from 'typescript'
 
 import { shouldOfferChatImageGenerationTool } from '../../modules/chat/chat-tools.js'
 
@@ -20,6 +21,76 @@ const maintenanceCleanupSource = readFileSync('src/modules/background/maintenanc
 const imageTransportSource = readFileSync('src/modules/chat/chat-image-generation-transport.ts', 'utf8')
 const generatedArtifactSinkSource = readFileSync('src/modules/chat/tools/artifact-sink.ts', 'utf8')
 const generationRunnerSource = readFileSync('src/modules/chat/chat-generation-runner.ts', 'utf8')
+
+function findChatStreamHandler(source: ts.SourceFile): ts.ArrowFunction | ts.FunctionExpression {
+  let handler: ts.ArrowFunction | ts.FunctionExpression | undefined
+  const visit = (node: ts.Node): void => {
+    if (handler) return
+    if (
+      ts.isCallExpression(node)
+      && ts.isPropertyAccessExpression(node.expression)
+      && node.expression.name.text === 'post'
+      && node.arguments[0]
+      && ts.isStringLiteral(node.arguments[0])
+      && node.arguments[0].text === '/conversations/:conversationId/stream'
+    ) {
+      const candidate = node.arguments.find((argument): argument is ts.ArrowFunction | ts.FunctionExpression => (
+        ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)
+      ))
+      if (candidate) handler = candidate
+      return
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(source)
+  assert(handler, '必须通过 TypeScript AST 定位聊天 stream 路由处理器')
+  return handler
+}
+
+function collectOuterHandlerNodes(handler: ts.FunctionLikeDeclaration): ts.Node[] {
+  const nodes: ts.Node[] = []
+  const visit = (node: ts.Node): void => {
+    if (node !== handler && ts.isFunctionLike(node)) return
+    nodes.push(node)
+    ts.forEachChild(node, visit)
+  }
+  visit(handler)
+  return nodes
+}
+
+const routesAst = ts.createSourceFile('chat.routes.ts', routesSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+const streamHandler = findChatStreamHandler(routesAst)
+const outerHandlerNodes = collectOuterHandlerNodes(streamHandler)
+const acceptedTurnAssignment = outerHandlerNodes.find((node): node is ts.BinaryExpression => (
+  ts.isBinaryExpression(node)
+  && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  && ts.isIdentifier(node.left)
+  && node.left.text === 'accepted'
+  && ts.isAwaitExpression(node.right)
+  && ts.isCallExpression(node.right.expression)
+  && ts.isIdentifier(node.right.expression.expression)
+  && node.right.expression.expression.text === 'acceptChatTurn'
+))
+const registryStartCall = outerHandlerNodes.find((node): node is ts.CallExpression => (
+  ts.isCallExpression(node)
+  && ts.isPropertyAccessExpression(node.expression)
+  && ts.isIdentifier(node.expression.expression)
+  && node.expression.expression.text === 'registry'
+  && node.expression.name.text === 'start'
+))
+assert(acceptedTurnAssignment, '必须通过 TypeScript AST 定位已接受聊天轮次')
+assert(registryStartCall, '必须通过 TypeScript AST 定位 generation registry 登记')
+assert(acceptedTurnAssignment.end < registryStartCall.getStart(routesAst), 'generation registry 登记必须发生在 acceptChatTurn 之后')
+const awaitsBeforeRegistryStart = outerHandlerNodes.filter((node): node is ts.AwaitExpression => (
+  ts.isAwaitExpression(node)
+  && node.getStart(routesAst) >= acceptedTurnAssignment.end
+  && node.end <= registryStartCall.getStart(routesAst)
+))
+assert.deepEqual(
+  awaitsBeforeRegistryStart.map((node) => node.getText(routesAst)),
+  [],
+  '轮次一旦接受，必须在外层路径无 await 地登记 generation runner；runner 内部嵌套执行函数不属于该窗口'
+)
 
 assert.equal(shouldOfferChatImageGenerationTool('请生成一份 Markdown 表格'), false)
 assert.equal(shouldOfferChatImageGenerationTool('解释图片 Base64 处理流程'), false)

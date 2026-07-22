@@ -22,7 +22,7 @@ import {
   DATA_RETENTION_CLEANUP_BATCH_SIZE,
   DATA_RETENTION_CLEANUP_MAX_BATCHES_PER_RUN
 } from './data-retention-cleanup.constants.js'
-import { enqueueRecordMaintenanceJobAsync, enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
+import { enqueueRecordMaintenanceJobAsync, enqueueRecordMaintenanceJobWithResultAsync } from '../record-maintenance/record-maintenance-queue.service.js'
 import { cleanupRuntimeLogIndexRetention } from '../runtime-logs/runtime-log-index-retention.service.js'
 
 const dayMs = 24 * 60 * 60 * 1000
@@ -410,7 +410,7 @@ export async function runExpiredDeletedAccountCleanup(): Promise<void> {
       throw new Error('DB service 未返回逻辑删除 AI 账户清理结果')
     }
     for (const target of summary.recordCleanupTargets ?? []) {
-      const enqueueResult = enqueueRecordMaintenanceJobWithResult({
+      const enqueueResult = await enqueueRecordMaintenanceJobWithResultAsync({
         type: 'account_related_cleanup',
         accountId: target.accountId,
         systemAccountId: target.systemAccountId,

@@ -63,7 +63,14 @@ const retiredProductionFiles = [
   'src/modules/gateway/codex-responses/web-search-executor.ts',
   'src/shared/process-fatal.ts',
   'src/modules/stats/mock-background-runtime.ts',
-  'src/modules/gateway/client-profiles/codex-switch-probe.ts'
+  'src/modules/gateway/client-profiles/codex-switch-probe.ts',
+  'src/modules/accounts/account-cleanup.service.ts',
+  'src/modules/chat/chat-turn-initialization.ts',
+  'src/modules/usage-semantics/types.ts',
+  'src/storage/runtime/index.ts',
+  'src/storage/runtime/postgres-redis-runtime.ts',
+  'src/storage/runtime/sqlite-memory-runtime.ts',
+  'src/storage/runtime/storage-runtime.ts'
 ]
 
 const unexpectedlyPresentRetiredFiles = retiredProductionFiles.filter((filePath) => existsSync(resolve(backendRoot, filePath)))

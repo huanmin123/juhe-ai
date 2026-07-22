@@ -4,7 +4,6 @@ import { DatabaseSync } from 'node:sqlite'
 import { createSqliteDatabaseClient, type DatabaseClient } from '../../storage/database-client.js'
 import { listActiveChatObservationTasks, trackActiveChatObservation } from '../../modules/chat/chat-active-observations.js'
 import { applyChatSchema } from '../../storage/schema.js'
-import { initializeAcceptedChatTurn } from '../../modules/chat/chat-turn-initialization.js'
 import { claimChatAssetObservation, claimUncommittedChatAssetForDeletion, commitChatGeneratedAsset, completeChatAssetProcessing, createChatAsset, getChatAsset, setChatAssetObservation } from '../../storage/chat-assets.repository.js'
 import {
   acceptChatTurn,
@@ -1542,68 +1541,6 @@ await assert.rejects(
     now: '2026-07-12T00:03:00.000Z'
   }),
   /会话不存在/
-)
-
-const initializationConversation = await createChatConversation(client, {
-  id: 'chat_conv_initialization_failure',
-  systemAccountId: 'sys_user_1',
-  apiKeyId: 'key_1',
-  apiKeyNameSnapshot: '默认 Key', maxConversationsPerUser: 1000,
-  now: '2026-07-12T01:00:00.000Z'
-})
-const initializationTurn = await acceptChatTurn(client, {
-  conversationId: initializationConversation.id,
-  systemAccountId: 'sys_user_1',
-  clientMessageId: 'client_initialization_failure',
-  userContent: '触发初始化失败',
-  model: 'mock-model',
-  now: '2026-07-12T01:00:01.000Z',
-  storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
-})
-let upstreamRequests = 0
-await assert.rejects((async () => {
-  await initializeAcceptedChatTurn({
-    initialize: async () => { throw new Error('受控历史读取失败') },
-    failAcceptedTurn: async () => {
-      await failChatTurn(client, {
-        conversationId: initializationConversation.id,
-        systemAccountId: 'sys_user_1',
-        turnId: initializationTurn.turnId,
-        assistantContent: '',
-        errorCode: 'chat_initialization_failed',
-        traceId: 'trace_initialization_failure',
-        now: '2026-07-12T01:00:02.000Z'
-      })
-    }
-  })
-  upstreamRequests += 1
-})(), /受控历史读取失败/)
-assert.equal(upstreamRequests, 0, '接受轮次后的初始化失败不得请求上游')
-assert.equal((await getChatConversation(client, initializationConversation.id, 'sys_user_1'))?.activeTurnId, undefined, '初始化失败必须清除 active_turn_id')
-const initializationMessages = await listChatMessages(client, {
-  conversationId: initializationConversation.id,
-  systemAccountId: 'sys_user_1',
-  limit: 10,
-  now: '2026-07-12T01:00:03.000Z'
-})
-assert.deepEqual(initializationMessages.map((message) => [message.role, message.status, message.errorCode]), [
-  ['user', 'completed', undefined],
-  ['assistant', 'failed', 'chat_initialization_failed']
-])
-
-const initializationError = new Error('初始化读取失败')
-const finalizationError = new Error('终结写入失败')
-await assert.rejects(
-  initializeAcceptedChatTurn({
-    initialize: async () => { throw initializationError },
-    failAcceptedTurn: async () => { throw finalizationError }
-  }),
-  (error) => error instanceof AggregateError
-    && error.message === '聊天轮次初始化失败，且终结失败'
-    && error.errors.length === 2
-    && error.errors[0] === initializationError
-    && error.errors[1] === finalizationError,
-  '初始化与终结同时失败时必须保留两个原始错误供外层日志记录'
 )
 
 const observationTasks = new Map<string, Set<Promise<void>>>()

@@ -364,7 +364,6 @@ backend/src/modules/chat/
   chat-bounded-json.ts
   chat-content-blocks.ts
   chat-model-options.ts
-  chat-turn-initialization.ts
 
 backend/src/storage/
   chat-client.ts
@@ -383,7 +382,7 @@ backend/src/storage/
 - `chat-active-streams.ts`：按会话和 turn ID 条件删除停止句柄，防止旧流清理误删新流。
 - `chat-bounded-json.ts`：模型目录和上游错误的普通 JSON 流式限长读取，超限立即取消 reader；聊天与生图流的消费者提前退出同样必须取消 reader。
 - `chat-content-blocks.ts`：完成、取消和失败终态写库前先把仍处于 `started/updated` 的 reasoning、tool 和 output image 块复制收敛到消息终态，再执行有界序列化降级；不能出现 SSE 已终态但刷新后过程块仍显示“执行中”。
-- `chat-turn-initialization.ts`：接受轮次后的初始化失败终结；初始化与终结同时失败时保留两个错误。
+- 接受轮次前必须完成历史读取、上下文压缩、transport 构造和请求体预算等可失败准备；`acceptChatTurn` 成功后，路由外层不得再等待异步初始化，必须同步把 runner 登记到 generation registry。登记冲突时直接把本轮助手占位终结为失败并清除活动轮次；登记成功后的异步失败由 runner 内部统一终结。
 - repository：会话、消息、幂等、容量窗口、最近轮次事务替换和清理，全部通过 DB service typed operations；替换助手生成图片轮次时同步清除引用、来源绑定并推进即时过期清理。
 
 ## 10. API 契约
@@ -458,7 +457,7 @@ Content-Type: application/json
 - 单条用户消息最多 5 张图片。前端选择、连续粘贴、编辑重发和文档序列化共享同一数量边界；后端 HTTP 契约、资产解析/绑定和未绑定草稿资产创建事务独立复核，第 6 张返回明确 4xx，不能创建或绑定额外资产。
 - 前端使用 Compressor.js 在插入输入框前完成首层压缩，后端使用 Sharp 重新解码校验；两层都应用 EXIF 方向、最长边不超过 `1024 px`、透明区域铺白底、固定 `image/jpeg` 质量 `85`。压缩结果必须不超过 `1 MiB`，否则前端不插入、不上传，后端也按 `1 MiB` 请求体与处理结果硬拒绝；不得为了通过门禁逐级降到 80 以下。聊天 JSON、本地渲染缓存和模型持久上下文只保存 `assetId`，不保存 base64。
 - 图片使用独立 multipart 资产接口，聊天 JSON 不承载 Data URL；请求仍必须先经过 session 鉴权、登录用户限流和 DB service 准入控制。
-- 同一会话同时只允许一个生成任务。服务端接受后才发送 `message.started`；接受后的初始化失败必须把占位助手消息终结为失败。
+- 同一会话同时只允许一个生成任务。服务端接受后必须无异步间隙地登记 runner，登记成功后才发送 `message.started`；登记冲突必须返回 `409 chat_stream_conflict`，同时把新占位助手消息终结为失败并清除活动轮次，且不得发起额外上游请求。
 
 ```http
 POST /__aisys__/api/my-chat/conversations/:id/stop

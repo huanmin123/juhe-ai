@@ -17,9 +17,6 @@ const apiKeyCleanupServiceSource = source('../../modules/api-keys/api-key-cleanu
 assert.doesNotMatch(apiKeyCleanupServiceSource, /postgres_record_cleanup_not_supported|api_key_related_cleanup_postgres_deferred/, 'API Key 清理提交不能保留 PostgreSQL 不支持分支')
 assert.match(apiKeyCleanupServiceSource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]*registerDeletedApiKeyRecordCleanupTarget/, '单机模式才登记 SQLite API Key 清理目标')
 
-const accountCleanupServiceSource = source('../../modules/accounts/account-cleanup.service.ts')
-assert.match(accountCleanupServiceSource, /runtimeConfig\.databaseDriver !== 'postgres'[\s\S]*registerDeletedAccountRecordCleanupTarget/, '单机模式才登记 SQLite AI 账户清理目标')
-
 const recordMaintenanceSource = source('../../modules/record-maintenance/record-maintenance-queue.service.ts')
 assert.match(recordMaintenanceSource, /cleanupProcessedUsageRecordsBeforeWithResultAsync/, '数据维护 usage 清理必须调用 PG-aware 异步入口')
 assert.doesNotMatch(recordMaintenanceSource, /cleanupProcessedUsageRecordsBeforeWithResult\(/, '数据维护队列不能直接调用同步 SQLite usage 清理入口')
@@ -30,9 +27,11 @@ assert.doesNotMatch(dataRetentionCleanupSource, /cleanupProcessedUsageRecordsBef
 assert.doesNotMatch(dataRetentionCleanupSource, /data_retention_cleanup_skipped_postgres_mode/, '高性能模式数据保留 worker 不能静默跳过')
 assert.match(dataRetentionCleanupSource, /runtimeConfig\.databaseDriver === 'postgres'[\s\S]*throw new Error/, '高性能模式数据保留 worker 不能返回空清理结果，必须 fail-fast')
 const maintenanceCleanupJobsSource = source('../../modules/background/maintenance-cleanup-jobs.ts')
+assert.match(maintenanceCleanupJobsSource, /runExpiredDeletedAccountCleanup\(\)[\s\S]*for \(const target of summary\.recordCleanupTargets \?\? \[\]\) \{[\s\S]*await enqueueRecordMaintenanceJobWithResultAsync\(/, '逻辑删除 AI 账户过期清理必须等待异步记录维护任务投递')
+assert.doesNotMatch(maintenanceCleanupJobsSource, /runExpiredDeletedAccountCleanup\(\)[\s\S]*for \(const target of summary\.recordCleanupTargets \?\? \[\]\) \{[\s\S]*enqueueRecordMaintenanceJobWithResult\(/, '逻辑删除 AI 账户过期清理不能在 target 循环使用同步 with-result 投递入口')
 assert.match(maintenanceCleanupJobsSource, /runDataRetentionCleanup\(\)[\s\S]*runtimeConfig\.databaseDriver === 'postgres'[\s\S]*enqueuePostgresDataRetentionMaintenanceJobs/, 'PG 高性能 data-retention 定时入口必须投递 record-maintenance 任务，不能直接跑单机清理链路')
 assert.match(maintenanceCleanupJobsSource, /enqueuePostgresDataRetentionMaintenanceJobs[\s\S]*getSettingsAsync[\s\S]*readAuditLogSettings\(\)[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'usage_records_cleanup'[\s\S]*enqueueRecordMaintenanceJobAsync\(\{[\s\S]*type: 'audit_retained_data_cleanup'[\s\S]*successHotRetentionHours[\s\S]*successSampleBucketThreshold/, 'PG 高性能 data-retention 必须分别按系统设置和审计设置投递 usage 与审计保留维护任务')
-assert.match(maintenanceCleanupJobsSource, /cleanupPostgresDatasetRetainedData[\s\S]*cleanupOperationLogsBeforeAsync[\s\S]*cleanupPublicApiLogsBeforeAsync[\s\S]*cleanupRuntimeLogIndexAsync[\s\S]*cleanupRuntimeLogFileCursorsBeforeAsync[\s\S]*cleanupModelCheckRunsBeforeAsync/, 'PG 高性能 data-retention 必须按单机同样的保留设置清理非审计 dataset 日志和模型检测历史')
+assert.match(maintenanceCleanupJobsSource, /cleanupPostgresDatasetRetainedData[\s\S]*cleanupOperationLogsBeforeAsync[\s\S]*cleanupPublicApiLogsBeforeAsync[\s\S]*cleanupRuntimeLogIndexRetention[\s\S]*cleanupModelCheckRunsBeforeAsync/, 'PG 高性能 data-retention 必须按单机同样的保留设置清理非审计 dataset 日志和模型检测历史')
 assert.doesNotMatch(maintenanceCleanupJobsSource, /enqueuePostgresDataRetentionMaintenanceJobs[\s\S]*type: 'non_business_data_cleanup'/, 'PG 高性能定时保留清理不能用 usage cutoff 投递通用非业务硬清理，避免误删审计数据')
 assert.doesNotMatch(source('../../modules/background/background-jobs.ts'), /if \(!isPostgresHighPerformanceMode\(\)\) \{[\s\S]*backgroundScheduledJobName\('data-retention-cleanup'\)/, 'PG 高性能 ingest-worker 不能跳过 data-retention-cleanup 调度')
 

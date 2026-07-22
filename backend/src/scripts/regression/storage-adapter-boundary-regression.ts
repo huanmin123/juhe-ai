@@ -78,11 +78,7 @@ const inventoryPatterns: InventoryPattern[] = [
 
 const requiredFiles = [
   'docs/functions/存储适配接口设计.md',
-  'docs/plans/计划-0071-存储适配接口收敛.md',
-  'backend/src/storage/runtime/storage-runtime.ts',
-  'backend/src/storage/runtime/sqlite-memory-runtime.ts',
-  'backend/src/storage/runtime/postgres-redis-runtime.ts',
-  'backend/src/storage/runtime/index.ts'
+  'docs/plans/计划-0071-存储适配接口收敛.md'
 ]
 
 const sourceFiles = listSourceFiles(srcRoot)
@@ -97,9 +93,9 @@ assert.equal(unclassifiedHits.length, 0, `存在未分类的存储直接调用�
 assertNoRuntimeNodeSqliteValueImports(sourceFiles)
 assertNoUnexpectedRawDriverImports(sourceFiles)
 assertRetiredMockBackgroundRuntimeRemoved()
+assertRetiredStorageRuntimeScaffoldRemoved()
 assertNoUnexpectedRuntimeSqliteDirectAccess(hits)
 assertNoHttpRouteSqliteSyncImports(sourceFiles)
-assertStorageRuntimeSkeletonBoundary()
 assertGatewayRuntimeCachePostgresWorkerBoundary()
 assertGroupSummaryAsyncTimezoneBoundary()
 assertSqliteOnlyAsyncHelperGuards()
@@ -170,7 +166,6 @@ function classifyArea(filePath: string): string {
   if (filePath.startsWith('modules/gateway/')) return 'gateway'
   if (filePath.startsWith('modules/background/')) return 'background'
   if (filePath.startsWith('modules/')) return 'modules'
-  if (filePath.startsWith('storage/runtime/')) return 'storage-runtime'
   if (filePath.startsWith('storage/schema/')) return 'storage-schema'
   if (filePath.startsWith('storage/')) return 'storage'
   if (filePath.startsWith('shared/')) return 'shared'
@@ -296,9 +291,32 @@ function assertRetiredMockBackgroundRuntimeRemoved(): void {
     false,
     '旧 mock background runtime 必须删除，系统运行态只能来自正式 worker / DB service owner'
   )
-  const storageRuntimeOwner = readFileSync(resolve(srcRoot, 'storage/runtime/index.ts'), 'utf8')
-  assert.match(storageRuntimeOwner, /export function getStorageRuntime\(\): StorageRuntime/, '当前 storage runtime owner 必须保留统一 getStorageRuntime 入口')
-  assert.match(storageRuntimeOwner, /createSqliteMemoryStorageRuntime|createPostgresRedisStorageRuntime/, '当前 storage runtime owner 必须继续按运行模式装配正式 adapter')
+}
+
+function assertRetiredStorageRuntimeScaffoldRemoved(): void {
+  const runtimeRoot = resolve(srcRoot, 'storage/runtime')
+  if (!existsSync(runtimeRoot)) return
+
+  const descriptorExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs']
+  const descriptorFiles: string[] = []
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const fullPath = resolve(directory, entry.name)
+      if (entry.isDirectory()) {
+        walk(fullPath)
+        continue
+      }
+      if (!descriptorExtensions.some((extension) => entry.name.toLowerCase().endsWith(extension))) continue
+      descriptorFiles.push(slash(relative(srcRoot, fullPath)))
+    }
+  }
+  walk(runtimeRoot)
+
+  assert.deepEqual(
+    descriptorFiles.sort(),
+    [],
+    '已退役的 storage/runtime 描述层不得以换名文件恢复；真实存储边界由现有业务 Port、inventory 与 driver guards 约束'
+  )
 }
 
 function assertNoHttpRouteSqliteSyncImports(files: string[]): void {
@@ -327,47 +345,6 @@ function assertNoHttpRouteSqliteSyncImports(files: string[]): void {
     }
   }
   assert.deepEqual(offenders, [], 'HTTP routes 不得直接导入 SQLite getter 或同步事务 helper；PG 路径必须走 async repository / DB service')
-}
-
-function assertStorageRuntimeSkeletonBoundary(): void {
-  const runtimeFiles = requiredFiles
-    .filter((filePath) => filePath.startsWith('backend/src/storage/runtime/'))
-    .map((filePath) => resolve(repoRoot, filePath))
-  const forbiddenPatterns = [
-    /from ['"].*\.\.\/database\.js['"]/,
-    /from ['"].*\.\.\/usage-record-shards\.js['"]/,
-    /from ['"].*\.\.\/postgres-client\.js['"]/,
-    /from ['"].*\.\.\/\.\.\/shared\/redis-client\.js['"]/,
-    /from ['"].*\.\.\/database-client\.js['"]/,
-    /from ['"].*\.\.\/\.\.\/shared\/cache\.js['"]/,
-    /from ['"].*\.\.\/\.\.\/shared\/runtime-state-store\.js['"]/,
-    /from ['"].*\.\.\/\.\.\/shared\/redis-stream-queue\.js['"]/,
-    /from ['"]node:sqlite['"]/,
-    /\bget(?:Business|Dataset|Stats|UsageCatalog|UsageRecordShard|CodexContextStateShard)Database\s*\(/,
-    /\bgetPostgresPool\s*\(/,
-    /\bgetRedisClient\s*\(/,
-    /\bcreateSqliteDatabaseClient\s*\(/,
-    /\bcreatePostgresDatabaseClient\s*\(/,
-    /\bcreateDedicatedRedisClient\s*\(/,
-    /\bcreateSharedJsonCache(?:<[^\n]*>)?\s*\(/,
-    /\bcreateAppCache(?:<[^\n]*>)?\s*\(/,
-    /\bcreateRuntimeStateStore\s*\(/,
-    /\bRedisStreamQueue\b/
-  ]
-  const offenders: Array<{ file: string; line: number; text: string }> = []
-  for (const filePath of runtimeFiles) {
-    const lines = readFileSync(filePath, 'utf8').split(/\r?\n/)
-    for (let index = 0; index < lines.length; index += 1) {
-      const text = lines[index]
-      if (!forbiddenPatterns.some((pattern) => pattern.test(text))) continue
-      offenders.push({
-        file: slash(relative(repoRoot, filePath)),
-        line: index + 1,
-        text: text.trim()
-      })
-    }
-  }
-  assert.deepEqual(offenders, [], 'StorageRuntime 骨架只能做装配描述，不能直接打开 SQLite / PostgreSQL / Redis 基础设施')
 }
 
 function assertGatewayRuntimeCachePostgresWorkerBoundary(): void {
