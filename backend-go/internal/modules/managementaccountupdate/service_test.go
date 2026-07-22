@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -23,10 +22,9 @@ func TestUpdateMergesCredentialsEncryptsAndPropagatesInvalidation(t *testing.T) 
 		},
 	}
 	codec := &codecStub{decrypted: map[string]any{"api_key": "keep", "base_url": "https://old"}}
-	page := &publisherStub{}
 	runtime := &invalidationStub{}
 	service := NewService(Options{
-		Store: store, CredentialCodec: codec, PageDataPublisher: page, GranteeReader: &granteeStub{ids: []string{"viewer-1"}},
+		Store: store, CredentialCodec: codec,
 		GatewayRuntimeInvalidator: runtime, AccountLookupInvalidator: runtime,
 		Now: func() time.Time { return time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC) },
 	})
@@ -45,8 +43,8 @@ func TestUpdateMergesCredentialsEncryptsAndPropagatesInvalidation(t *testing.T) 
 	if codec.encrypted == nil || codec.encrypted["api_key"] != "replacement" || codec.encrypted["base_url"] != "https://old" {
 		t.Fatalf("encrypted credentials = %#v", codec.encrypted)
 	}
-	if store.input.CredentialsEncrypted != "encrypted" || page.staticCalls != 1 || runtime.lookupCalls != 1 || runtime.runtimeCalls != 1 {
-		t.Fatalf("side effects store=%#v page=%d lookup=%d runtime=%d", store.input, page.staticCalls, runtime.lookupCalls, runtime.runtimeCalls)
+	if store.input.CredentialsEncrypted != "encrypted" || runtime.lookupCalls != 1 || runtime.runtimeCalls != 1 {
+		t.Fatalf("side effects store=%#v lookup=%d runtime=%d", store.input, runtime.lookupCalls, runtime.runtimeCalls)
 	}
 }
 
@@ -97,22 +95,6 @@ func (s *codecStub) DecryptJSON(string) (map[string]any, error) { return s.decry
 func (s *codecStub) EncryptJSON(value map[string]any) (string, error) {
 	s.encrypted = value
 	return "encrypted", nil
-}
-
-type publisherStub struct{ staticCalls int }
-
-func (s *publisherStub) PublishAccountStaticChange(context.Context, accountpagedata.ChangeInput) error {
-	s.staticCalls++
-	return nil
-}
-func (s *publisherStub) PublishAccountRuntimeChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
-}
-
-type granteeStub struct{ ids []string }
-
-func (s *granteeStub) ListAccountAuthorizationGranteeIDs(context.Context, string) ([]string, error) {
-	return s.ids, nil
 }
 
 type invalidationStub struct{ lookupCalls, runtimeCalls int }

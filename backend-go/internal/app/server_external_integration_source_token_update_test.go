@@ -9,11 +9,11 @@ import (
 )
 
 func TestNewManagementAPIHandlerExternalIntegrationSourceTokenUpdateOptIn(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalSourceTokenUpdateHandler != nil {
 		t.Fatal("token update handler created while management API disabled")
 	}
-	enabled := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
+	enabled := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 	if enabled.ExternalSourceTokenUpdateHandler == nil {
 		t.Fatal("token update handler missing while management API enabled")
 	}

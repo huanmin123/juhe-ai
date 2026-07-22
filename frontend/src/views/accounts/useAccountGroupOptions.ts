@@ -25,7 +25,6 @@ interface UseAccountGroupOptionsConfig {
   errorMessage?: string
   isManagementView: () => boolean
   limit?: number
-  cacheTtlMs?: number
   localCacheKeyParts?: (scope: Required<AccountGroupOptionsScope>) => LocalSelectStorageKeyPart[]
   onMissingSelectedIds?: (ids: string[]) => boolean | void
   preferenceKeys?: () => string[]

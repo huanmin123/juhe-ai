@@ -13,7 +13,6 @@ import { rebuildPublishedModelCatalogSnapshotsBestEffortAsync } from '../model-p
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
 
-
 const createSchema = z.object({
   username: z.string().min(2),
   displayName: z.string().min(1),

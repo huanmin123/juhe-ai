@@ -20,7 +20,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -49,8 +48,6 @@ const (
 	accountHealthCheckReasonActivation        = "activation"
 	accountHealthCheckDispatchFailedEvent     = "public_account_health_check_dispatch_failed"
 	accountHealthCheckDispatchTimeout         = 2 * time.Second
-	accountPageDataPostCommitTimeout          = 5 * time.Second
-	accountPageDataOwnerLookupTimeout         = time.Second
 	deepSeekOpenAIProfileID                   = "profile_deepseek_openai_v1"
 	deepSeekAnthropicProfileID                = "profile_deepseek_anthropic_v1"
 	glmGeneralOpenAIProfileID                 = "profile_glm_general_openai_v1"
@@ -139,10 +136,6 @@ type Service struct {
 	transactor                 port.PublicAccountTransactor
 	providerModels             ProviderModelReader
 	dispatcher                 AccountHealthCheckDispatcher
-	granteeReader              accountpagedata.GranteeReader
-	pageDataPublisher          accountpagedata.Publisher
-	pageDataPostCommitTimeout  time.Duration
-	pageDataOwnerLookupTimeout time.Duration
 	healthCheckDispatchTimeout time.Duration
 	logger                     *slog.Logger
 	now                        func() time.Time
@@ -156,10 +149,6 @@ type Options struct {
 	Transactor                 port.PublicAccountTransactor
 	ProviderModels             ProviderModelReader
 	HealthCheckDispatcher      AccountHealthCheckDispatcher
-	GranteeReader              accountpagedata.GranteeReader
-	PageDataPublisher          accountpagedata.Publisher
-	PageDataPostCommitTimeout  time.Duration
-	PageDataOwnerLookupTimeout time.Duration
 	HealthCheckDispatchTimeout time.Duration
 	Logger                     *slog.Logger
 	Now                        func() time.Time
@@ -329,24 +318,11 @@ func NewService(opts Options) *Service {
 	if healthCheckDispatchTimeout <= 0 {
 		healthCheckDispatchTimeout = accountHealthCheckDispatchTimeout
 	}
-	pageDataPostCommitTimeout := opts.PageDataPostCommitTimeout
-	if pageDataPostCommitTimeout <= 0 {
-		pageDataPostCommitTimeout = accountPageDataPostCommitTimeout
-	}
-	pageDataOwnerLookupTimeout := opts.PageDataOwnerLookupTimeout
-	if pageDataOwnerLookupTimeout <= 0 {
-		pageDataOwnerLookupTimeout = accountPageDataOwnerLookupTimeout
-	}
-	pageDataOwnerLookupTimeout = min(pageDataOwnerLookupTimeout, pageDataPostCommitTimeout)
 	return &Service{
 		store:                      opts.Store,
 		transactor:                 opts.Transactor,
 		providerModels:             opts.ProviderModels,
 		dispatcher:                 opts.HealthCheckDispatcher,
-		granteeReader:              opts.GranteeReader,
-		pageDataPublisher:          opts.PageDataPublisher,
-		pageDataPostCommitTimeout:  pageDataPostCommitTimeout,
-		pageDataOwnerLookupTimeout: pageDataOwnerLookupTimeout,
 		healthCheckDispatchTimeout: healthCheckDispatchTimeout,
 		logger:                     opts.Logger,
 		now:                        now,
@@ -462,16 +438,6 @@ func (s *Service) Add(ctx context.Context, input AddInput) (AccountResponse, err
 		response, err = s.addOnce(ctx, input)
 		if publicAccountAddRetryable(err) {
 			continue
-		}
-		if err == nil && response.Account != nil {
-			s.publishAccountPageData(ctx, response.Account.ID, response.Target.SystemAccountID, accountpagedata.ChangeInput{
-				Operation:         accountpagedata.OperationUpsert,
-				FieldMask:         []string{"id", "name", "status", "boundGroupId"},
-				MembershipChanged: true,
-				OrderChanged:      true,
-				FilterChanged:     true,
-				PageChanged:       true,
-			})
 		}
 		if err == nil && response.Account != nil && response.Account.Status == StatusPendingTest {
 			s.dispatchAccountHealthCheckAsync(ctx, response.Account.ID, accountHealthCheckReasonActivation)
@@ -607,7 +573,6 @@ func (s *Service) addOnce(ctx context.Context, input AddInput) (AccountResponse,
 
 func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountResponse, error) {
 	var response AccountResponse
-	runtimeChanged := false
 	err := s.inTx(ctx, func(ctx context.Context, store port.PublicAccountStore) error {
 		current, target, err := s.accountAndTargetForWrite(ctx, store, input.AccountID, input.TargetUsername)
 		if err != nil {
@@ -782,26 +747,9 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (AccountRespons
 		if !ok {
 			return ErrAccountNotFound
 		}
-		runtimeChanged = input.Status != nil || connectionConfigurationChanged
 		response = accountResponse("updated", target, nil, updated, false, s.generatedAt())
 		return nil
 	})
-	if err == nil && response.Account != nil {
-		staticInput := accountpagedata.ChangeInput{
-			Operation:     accountpagedata.OperationUpsert,
-			FieldMask:     publicAccountUpdateFieldMask(input),
-			OrderChanged:  input.Name != nil || input.Priority != nil,
-			FilterChanged: input.Status != nil,
-		}
-		var runtimeInput *accountpagedata.ChangeInput
-		if runtimeChanged {
-			runtimeInput = &accountpagedata.ChangeInput{
-				Operation: accountpagedata.OperationUpsert,
-				FieldMask: []string{"status", "schedulable", "cooldownUntil", "lastErrorCode", "lastErrorMessage"},
-			}
-		}
-		s.publishAccountPageData(ctx, response.Account.ID, response.Target.SystemAccountID, staticInput, runtimeInput)
-	}
 	return response, err
 }
 
@@ -841,15 +789,6 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (AccountRespons
 		response = accountResponse("deleted", target, nil, current, false, s.generatedAt())
 		return nil
 	})
-	if err == nil && response.Action == "deleted" && response.Account != nil {
-		s.publishAccountPageData(ctx, response.Account.ID, response.Target.SystemAccountID, accountpagedata.ChangeInput{
-			Operation:         accountpagedata.OperationDelete,
-			MembershipChanged: true,
-			OrderChanged:      true,
-			FilterChanged:     true,
-			PageChanged:       true,
-		})
-	}
 	return response, err
 }
 
@@ -1336,98 +1275,6 @@ func credentialEndpointModePolicy(
 		ErrInvalidCredentials,
 		providerCode,
 	)
-}
-
-func (s *Service) publishAccountPageData(
-	ctx context.Context,
-	accountID string,
-	ownerSystemAccountID string,
-	staticInput accountpagedata.ChangeInput,
-	runtimeInput ...*accountpagedata.ChangeInput,
-) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	logger := s.logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	postCommitCtx, postCommitCancel := context.WithTimeout(context.WithoutCancel(ctx), s.pageDataPostCommitTimeout)
-	defer postCommitCancel()
-	lookupCtx, cancel := context.WithTimeout(postCommitCtx, s.pageDataOwnerLookupTimeout)
-	owners, allScopes, lookupErr := accountpagedata.ResolveOwners(
-		lookupCtx,
-		s.granteeReader,
-		accountID,
-		[]string{ownerSystemAccountID},
-	)
-	cancel()
-	if lookupErr != nil {
-		logger.WarnContext(context.WithoutCancel(ctx), "public account page data grantee lookup failed",
-			"accountId", accountID,
-			"error", lookupErr,
-		)
-	}
-	staticInput.AccountID = strings.TrimSpace(accountID)
-	staticInput.OwnerSystemAccountIDs = owners
-	staticInput.AllScopes = allScopes
-	if err := s.pageDataPublisher.PublishAccountStaticChange(postCommitCtx, staticInput); err != nil {
-		logger.WarnContext(context.WithoutCancel(ctx), "public account static page data publish failed",
-			"accountId", accountID,
-			"error", err,
-		)
-	}
-	if len(runtimeInput) == 0 || runtimeInput[0] == nil {
-		return
-	}
-	runtime := *runtimeInput[0]
-	runtime.AccountID = strings.TrimSpace(accountID)
-	runtime.OwnerSystemAccountIDs = append([]string(nil), owners...)
-	runtime.AllScopes = allScopes
-	if err := s.pageDataPublisher.PublishAccountRuntimeChange(postCommitCtx, runtime); err != nil {
-		logger.WarnContext(context.WithoutCancel(ctx), "public account runtime page data publish failed",
-			"accountId", accountID,
-			"error", err,
-		)
-	}
-}
-
-func publicAccountUpdateFieldMask(input UpdateInput) []string {
-	fields := make([]string, 0, 11)
-	if input.Name != nil {
-		fields = append(fields, "name")
-	}
-	if input.Type != nil {
-		fields = append(fields, "type")
-	}
-	if input.BaseURL != nil {
-		fields = append(fields, "baseUrl")
-	}
-	if input.APIKey != nil {
-		fields = append(fields, "apiKey")
-	}
-	if input.SupportedModels.Set() {
-		fields = append(fields, "supportedModels")
-	}
-	if input.HealthCheckEndpointMode != nil {
-		fields = append(fields, "healthCheckEndpointMode")
-	}
-	if input.Status != nil {
-		fields = append(fields, "status")
-	}
-	if input.ConcurrencyLimit != nil {
-		fields = append(fields, "concurrencyLimit")
-	}
-	if input.Priority != nil {
-		fields = append(fields, "priority")
-	}
-	if input.AvailabilitySchedule.Set() {
-		fields = append(fields, "availabilitySchedule")
-	}
-	if input.Notes.Set() {
-		fields = append(fields, "notes")
-	}
-	return fields
 }
 
 func (s *Service) inTx(ctx context.Context, fn func(context.Context, port.PublicAccountStore) error) error {

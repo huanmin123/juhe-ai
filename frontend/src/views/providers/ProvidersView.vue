@@ -280,7 +280,6 @@ import { loadProviderOptionsResource } from '@/composables/useProviderOptionsRes
 import { loadProviderModelCatalogResource } from '@/composables/useProviderModelCatalogResource'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
-import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/useAccountProviderModelOptions'
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyConfigurationTemplateToCustomModelForm,
@@ -534,7 +533,6 @@ async function saveCustomModel() {
       await api.providers.createModel(targetProviderCode, payload, modelOperationQueryParams(payload))
       message.success('自定义模型已创建')
     }
-    invalidateAccountProviderModelOptionsCache()
     customModelModalOpen.value = false
     resetCustomModelForm()
     await reloadActiveProviderModels(true)
@@ -551,7 +549,6 @@ async function deleteCustomModel(record: ProviderModelPricing) {
   modelLoading.value = true
   try {
     await api.providers.deleteModel(record.providerCode, record.id)
-    invalidateAccountProviderModelOptionsCache()
     message.success('自定义模型已删除')
     await reloadActiveProviderModels(true)
   } catch (error) {

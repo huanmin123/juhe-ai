@@ -190,18 +190,11 @@ systemTeamsRouter.patch('/:id', requireAdmin, async (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    let authorizationAffectedOwnerSystemAccountIds: string[] = []
     const team = await runLoggedOperationAsync(async () => {
       const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
       const team = await updateSystemTeamAsync(paramsParsed.data.id, parsed.data, requestAccess)
       if (!team) {
         throw new Error('团队不存在')
-      }
-      if (Object.prototype.hasOwnProperty.call(parsed.data, 'status')) {
-        authorizationAffectedOwnerSystemAccountIds = [...new Set([
-          ...(before?.members ?? []).map((member) => member.systemAccountId),
-          ...(team.members ?? []).map((member) => member.systemAccountId)
-        ])]
       }
       return {
         result: team,
@@ -260,7 +253,6 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    let affectedOwnerSystemAccountIds: string[] = []
     const team = await runLoggedOperationAsync(async () => {
       const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
       const beforeMemberIds = new Set((before?.members ?? []).map((member) => member.systemAccountId))
@@ -269,7 +261,6 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
         throw new Error('团队不存在或已停用')
       }
       const addedMembers = (team.members ?? []).filter((member) => !beforeMemberIds.has(member.systemAccountId))
-      affectedOwnerSystemAccountIds = addedMembers.map((member) => member.systemAccountId)
       return {
         result: team,
         log: {
@@ -319,11 +310,9 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, async (req, res
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    let affectedOwnerSystemAccountId: string | undefined
     const team = await runLoggedOperationAsync(async () => {
       const before = await findSystemTeamSummaryAsync(paramsParsed.data.id, requestAccess)
       const removedMember = before?.members?.find((member) => member.id === paramsParsed.data.memberId)
-      affectedOwnerSystemAccountId = removedMember?.systemAccountId
       const team = await removeSystemTeamMemberAsync(paramsParsed.data.id, paramsParsed.data.memberId, requestAccess)
       if (!team) {
         throw new Error('团队成员不存在')

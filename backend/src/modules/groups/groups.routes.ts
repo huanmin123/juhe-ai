@@ -12,7 +12,6 @@ import { getGroupStatusSnapshot, parseGroupStatusSnapshotGroupIds } from './grou
 
 export const groupsRouter = Router()
 
-
 const groupSchema = z.object({
   name: z.string().trim().min(1),
   providerCode: z.string().trim().min(1),

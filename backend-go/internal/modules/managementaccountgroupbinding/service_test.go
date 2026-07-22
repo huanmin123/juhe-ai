@@ -7,19 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
 func TestServiceBindAdminOwnerScopeAndInvalidations(t *testing.T) {
 	now := time.Date(2026, 7, 20, 9, 30, 0, 0, time.UTC)
 	store := &bindingStoreStub{result: bindingStoreResult("group_old", "group_new")}
-	pageData := &bindingPageDataStub{}
 	invalidator := &bindingInvalidatorStub{}
 	service := NewService(Options{
 		Store:                      store,
-		GranteeReader:              bindingGranteeReaderStub{ids: []string{"sys_grantee"}},
-		PageDataPublisher:          pageData,
 		RuntimeInvalidator:         invalidator,
 		GroupAccountIDsInvalidator: invalidator,
 		Now:                        func() time.Time { return now },
@@ -42,16 +38,6 @@ func TestServiceBindAdminOwnerScopeAndInvalidations(t *testing.T) {
 	}
 	if result.Account.AccessType != "owner" || result.PreviousGroupID != "group_old" || result.Account.BoundGroupID != "group_new" {
 		t.Fatalf("result = %+v", result)
-	}
-	if len(pageData.inputs) != 1 {
-		t.Fatalf("page data calls = %d, want 1", len(pageData.inputs))
-	}
-	wantOwners := []string{"sys_grantee", "sys_owner"}
-	if got := pageData.inputs[0]; got.AccountID != "acct_main" ||
-		!reflect.DeepEqual(got.OwnerSystemAccountIDs, wantOwners) ||
-		!reflect.DeepEqual(got.FieldMask, []string{"boundGroupId"}) ||
-		!got.MembershipChanged || !got.FilterChanged || !got.PageChanged || got.AllScopes {
-		t.Fatalf("page data input = %+v", got)
 	}
 	if invalidator.groupAccountIDsCalls != 1 || !reflect.DeepEqual(invalidator.runtimeReasons, []string{GatewayRuntimeReason}) {
 		t.Fatalf("invalidations = %+v", invalidator)
@@ -108,8 +94,6 @@ func TestServiceBindInvalidationFailuresDoNotRollBackSavedBinding(t *testing.T) 
 	store := &bindingStoreStub{result: bindingStoreResult("", "group_new")}
 	service := NewService(Options{
 		Store:                      store,
-		GranteeReader:              bindingGranteeReaderStub{err: wantErr},
-		PageDataPublisher:          &bindingPageDataStub{err: wantErr},
 		RuntimeInvalidator:         &bindingInvalidatorStub{runtimeErr: wantErr},
 		GroupAccountIDsInvalidator: &bindingInvalidatorStub{groupAccountIDsErr: wantErr},
 	})
@@ -150,29 +134,6 @@ func bindingStoreResult(previousGroupID, groupID string) port.ManagementAccountG
 		},
 		PreviousGroupID: previousGroupID,
 	}
-}
-
-type bindingGranteeReaderStub struct {
-	ids []string
-	err error
-}
-
-func (s bindingGranteeReaderStub) ListAccountAuthorizationGranteeIDs(context.Context, string) ([]string, error) {
-	return s.ids, s.err
-}
-
-type bindingPageDataStub struct {
-	inputs []accountpagedata.ChangeInput
-	err    error
-}
-
-func (s *bindingPageDataStub) PublishAccountStaticChange(_ context.Context, input accountpagedata.ChangeInput) error {
-	s.inputs = append(s.inputs, input)
-	return s.err
-}
-
-func (*bindingPageDataStub) PublishAccountRuntimeChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
 }
 
 type bindingInvalidatorStub struct {

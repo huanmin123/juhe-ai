@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -46,23 +45,6 @@ type gatewayInvalidatorStub struct{ reasons []string }
 func (s *gatewayInvalidatorStub) InvalidateGatewayRuntime(_ context.Context, reason string) error {
 	s.reasons = append(s.reasons, reason)
 	return nil
-}
-
-type pageDataPublisherStub struct{ runtimeChanges []accountpagedata.ChangeInput }
-
-func (s *pageDataPublisherStub) PublishAccountStaticChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
-}
-
-func (s *pageDataPublisherStub) PublishAccountRuntimeChange(_ context.Context, input accountpagedata.ChangeInput) error {
-	s.runtimeChanges = append(s.runtimeChanges, input)
-	return nil
-}
-
-type granteeReaderStub struct{ ids []string }
-
-func (s *granteeReaderStub) ListAccountAuthorizationGranteeIDs(context.Context, string) ([]string, error) {
-	return s.ids, nil
 }
 
 func (s *activatorStub) ForceActivatePendingAccount(_ context.Context, input port.ManagementAccountForceActivateInput) (port.ManagementAccountForceActivateResult, bool, error) {
@@ -120,18 +102,16 @@ func TestForceActivateMapsCASMissToStateChanged(t *testing.T) {
 	}
 }
 
-func TestForceActivateInvalidatesRuntimeAndPublishesOwnerScopes(t *testing.T) {
+func TestForceActivateInvalidatesRuntime(t *testing.T) {
 	d := &detailStub{found: true,
 		before: map[string]any{"accessType": "owner", "status": "pending_test", "ownerSystemAccountId": "owner-1", "configRevision": 2},
 		after:  map[string]any{"id": "a", "name": "account", "status": "active", "ownerSystemAccountId": "owner-1"},
 	}
 	clearer := &runtimeClearerStub{}
 	invalidator := &gatewayInvalidatorStub{}
-	publisher := &pageDataPublisherStub{}
 	s := NewService(ServiceOptions{
 		Details: d, Store: &activatorStub{changed: true}, RuntimeClearer: clearer,
-		GatewayInvalidator: invalidator, PageDataPublisher: publisher,
-		GranteeReader: &granteeReaderStub{ids: []string{"grantee-1"}},
+		GatewayInvalidator: invalidator,
 	})
 	if _, err := s.ForceActivate(context.Background(), Input{AccountID: "a", Acknowledged: true}); err != nil {
 		t.Fatalf("ForceActivate() error = %v", err)
@@ -141,13 +121,5 @@ func TestForceActivateInvalidatesRuntimeAndPublishesOwnerScopes(t *testing.T) {
 	}
 	if len(invalidator.reasons) != 1 || invalidator.reasons[0] != "account_pending_force_activated" {
 		t.Fatalf("runtime invalidations = %#v", invalidator.reasons)
-	}
-	if len(publisher.runtimeChanges) != 1 {
-		t.Fatalf("page data changes = %#v", publisher.runtimeChanges)
-	}
-	change := publisher.runtimeChanges[0]
-	if change.AccountID != "a" || change.AllScopes || len(change.OwnerSystemAccountIDs) != 2 ||
-		change.OwnerSystemAccountIDs[0] != "grantee-1" || change.OwnerSystemAccountIDs[1] != "owner-1" {
-		t.Fatalf("page data change = %+v", change)
 	}
 }

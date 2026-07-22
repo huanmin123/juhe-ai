@@ -107,6 +107,7 @@ try {
   await waitFor(() => refreshAccountCalls > accountCallsBeforeRefresh, '手动刷新未发起账户列表请求')
   await flushPromises()
   assert.equal(refreshProviderCalls, providerCallsBeforeRefresh, '手动刷新列表不应失效并重查供应商筛选项')
+  assert.equal(refreshAccountCalls, accountCallsBeforeRefresh + 1, '手动刷新必须直接请求一次账户列表')
 } finally {
   mutableApi.providers.definitions = originalProviderDefinitions
   mutableApi.proxies.options = originalProxyOptions

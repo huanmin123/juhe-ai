@@ -907,7 +907,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
   let batches = 0
   let hasMore = false
   let blockedReason: string | undefined
-  let resetNeeded = false
   const cutoffTime = Date.parse(input.cutoffAt)
   if (Number.isNaN(cutoffTime)) {
     return {
@@ -938,7 +937,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
     hasMore = batch.hasMore
     blockedReason = batch.blockedReason ?? blockedReason
     const changed = batch.deletedRows > 0 || Number(batch.droppedPartitions ?? 0) > 0
-    resetNeeded ||= changed
     if (changed) {
       batches += 1
     }

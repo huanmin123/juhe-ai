@@ -54,41 +54,6 @@ func TestServiceOptionsNormalizesInputAndMapsOptions(t *testing.T) {
 	}
 }
 
-type routeStrategyPageDataPublisherStub struct {
-	calls       int
-	domain      string
-	owners      []string
-	allScopes   bool
-	contextErr  error
-	hasDeadline bool
-	err         error
-}
-
-func (s *routeStrategyPageDataPublisherStub) PublishPageDataReset(
-	ctx context.Context,
-	domain string,
-	owners []string,
-	allScopes bool,
-) error {
-	s.calls++
-	s.domain = domain
-	s.owners = append([]string(nil), owners...)
-	s.allScopes = allScopes
-	s.contextErr = ctx.Err()
-	_, s.hasDeadline = ctx.Deadline()
-	return s.err
-}
-
-func assertRouteStrategyPageDataReset(t *testing.T, publisher *routeStrategyPageDataPublisherStub) {
-	t.Helper()
-	if publisher.calls != 1 || publisher.domain != "routeStrategies.options" || len(publisher.owners) != 0 || !publisher.allScopes {
-		t.Fatalf("page data publisher = %+v", publisher)
-	}
-	if publisher.contextErr != nil || !publisher.hasDeadline {
-		t.Fatalf("page data context error=%v deadline=%v", publisher.contextErr, publisher.hasDeadline)
-	}
-}
-
 func TestServiceOptionsDefaults(t *testing.T) {
 	store := &routeStrategyOptionStoreStub{}
 	service := NewService(store)

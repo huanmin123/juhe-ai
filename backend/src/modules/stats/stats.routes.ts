@@ -31,7 +31,6 @@ import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/re
 
 export const statsRouter = Router()
 
-
 const usageOverviewQuerySchema = z.object({
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
   endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()

@@ -17,7 +17,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { cloneAccountListCacheResult, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -91,8 +91,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     loadMoreMobile: loadMoreMobileAccounts,
     removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccountsCached,
-    resetPagination: resetAccountListPagination,
-    applyResult: applyAccountPageCacheResult
+    resetPagination: resetAccountListPagination
   } = useResponsivePagedList<AccountSummary, AccountListLoadOptions>({
     pageSize: ACCOUNT_PAGE_SIZE,
     initialPagination: initialPageState.pagination,

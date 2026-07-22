@@ -61,8 +61,13 @@ const accountTestModelsSource = readFileSync(
 )
 assert.match(
   accountTestModelsSource,
-  /loadAccountTestModelCapabilitiesCached\(\{/,
-  '人工测试切换模型时必须独立请求模型能力'
+  /api\.accounts\.testModelCapabilities\(/,
+  '管理端人工测试切换模型时必须直接请求账户模型能力'
+)
+assert.match(
+  accountTestModelsSource,
+  /api\.myAccounts\.testModelCapabilities\(/,
+  '个人端人工测试切换模型时必须直接请求账户模型能力'
 )
 assert.match(
   accountTestModelsSource,

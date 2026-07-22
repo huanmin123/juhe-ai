@@ -21,7 +21,6 @@ import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperatio
 
 export const routeStrategiesRouter = Router()
 
-
 const routeStrategyGroupBindingSchema = z.object({
   groupId: z.string().trim().min(1, '策略路由分组无效'),
   priority: z.number().int().positive().optional(),

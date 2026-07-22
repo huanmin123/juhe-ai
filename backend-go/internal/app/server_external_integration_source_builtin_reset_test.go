@@ -9,11 +9,11 @@ import (
 )
 
 func TestNewManagementAPIHandlerExternalIntegrationSourceBuiltInResetOptIn(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalSourceBuiltInResetHandler != nil {
 		t.Fatal("built-in reset handler created while management API disabled")
 	}
-	enabled := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
+	enabled := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 	if enabled.ExternalSourceBuiltInResetHandler == nil {
 		t.Fatal("built-in reset handler missing while management API enabled")
 	}

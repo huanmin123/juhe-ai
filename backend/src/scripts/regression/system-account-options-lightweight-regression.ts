@@ -128,6 +128,7 @@ try {
 
     assert.equal(systemAccountOptionSqls.length, 1, '系统账户选项请求应只执行一次系统账户选项查询')
     await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options', seed.adminCookie)
+    assert.equal(systemAccountOptionSqls.length, 2, '相同系统账户 options 查询应直接读取业务表，不依赖页面缓存')
     assert.equal(systemAccountOptionSqls.some((sql) => /SELECT\s+\*/i.test(sql)), false, '系统账户选项查询不应 SELECT *')
     assert.equal(systemAccountOptionSqls.some((sql) => /\bpassword_hash\b/i.test(sql)), false, '系统账户选项查询不应读取 password_hash')
     assert.equal(systemAccountOptionSqls.some((sql) => /\brole\b|\bmust_change_password\b|\blast_login_at\b|\bcreated_at\b|\bupdated_at\b/i.test(sql)), false, '系统账户选项查询不应读取管理字段')

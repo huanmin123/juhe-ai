@@ -40,6 +40,7 @@ assert(
 )
 assert.equal(logoutVersionGuards.length, 2, '聊天清理期间认证操作变化时也不得清空较新的登录态')
 const loginBody = source.match(/export async function login\([\s\S]*?\): Promise<CurrentUserSummary> \{([\s\S]*?)\n\}/)?.[1] ?? ''
+assert(loginBody.indexOf('const operationVersion = ++authStateVersion') < loginBody.indexOf('await api.auth.login(payload)'), 'login 必须在请求发出前建立认证操作版本')
 assert.match(layoutSource, /try \{\s*await logout\(\)[\s\S]*router\.replace\('\/login'\)[\s\S]*catch/, '退出失败时页面必须保留当前路由并显示错误')
 assert.match(layoutSource, /if \(!authState\.currentUser\.value\)[\s\S]*?router\.replace\('\/login'\)/, '服务端已退出但本地聊天清理失败时仍必须离开受保护页面')
 assert.match(source, /function applyCurrentUser\(/, '认证结果必须经单一 helper 比较身份与角色变化')
