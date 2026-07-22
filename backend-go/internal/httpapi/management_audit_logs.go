@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -18,6 +19,7 @@ const managementAuditLogRequestTimeout = 120 * time.Second
 type managementAuditLogService interface {
 	List(*http.Request, managementauditlogs.ListInput) (managementauditlogs.ListResult, error)
 	Detail(*http.Request, string) (managementauditlogs.Detail, bool, error)
+	HotSearch(*http.Request, managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error)
 }
 type managementAuditLogServiceAdapter struct{ service *managementauditlogs.Service }
 
@@ -26,6 +28,9 @@ func (a managementAuditLogServiceAdapter) List(r *http.Request, input management
 }
 func (a managementAuditLogServiceAdapter) Detail(r *http.Request, id string) (managementauditlogs.Detail, bool, error) {
 	return a.service.Detail(r.Context(), id)
+}
+func (a managementAuditLogServiceAdapter) HotSearch(r *http.Request, input managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error) {
+	return a.service.HotSearch(r.Context(), input)
 }
 func NewManagementAuditLogsHandler(service *managementauditlogs.Service) http.Handler {
 	return newManagementAuditLogsHandler(managementAuditLogServiceAdapter{service})
@@ -48,7 +53,15 @@ func newManagementAuditLogsHandler(service managementAuditLogService) http.Handl
 		r = r.WithContext(ctx)
 		if id := chi.URLParam(r, "id"); id != "" {
 			switch id {
-			case "search-hot", "runtime", "error-groups":
+			case "search-hot":
+				result, err := service.HotSearch(r, parseManagementAuditHotSearchQuery(r.URL.Query()))
+				if err != nil {
+					writeMessageError(w, 500, "服务器内部错误")
+					return
+				}
+				writeData(w, 200, result)
+				return
+			case "runtime", "error-groups":
 				writeMessageError(w, 404, "接口不存在")
 				return
 			}
@@ -71,6 +84,37 @@ func newManagementAuditLogsHandler(service managementAuditLogService) http.Handl
 		}
 		writeData(w, 200, result)
 	})
+}
+
+func parseManagementAuditHotSearchQuery(values url.Values) managementauditlogs.HotSearchInput {
+	limit, limitProvided := managementAuditHotSearchLimit(values)
+	keywords := append([]string(nil), values["keywords"]...)
+	first := func(key string) string {
+		if len(values[key]) == 0 {
+			return ""
+		}
+		return values[key][0]
+	}
+	return managementauditlogs.HotSearchInput{
+		Keywords:      keywords,
+		Limit:         limit,
+		LimitProvided: limitProvided,
+		StartAt:       first("startAt"),
+		EndAt:         first("endAt"),
+	}
+}
+
+func managementAuditHotSearchLimit(values url.Values) (int, bool) {
+	items := values["limit"]
+	if len(items) == 0 {
+		return 0, false
+	}
+	text := strings.TrimFunc(items[0], managementGroupListECMAScriptWhitespace)
+	value, ok := managementGroupListNumber(text)
+	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, false
+	}
+	return int(math.Trunc(value)), true
 }
 func parseManagementAuditLogListQuery(values url.Values) managementauditlogs.ListInput {
 	page, _ := managementGroupListIntegerQueryValue(values, "page")

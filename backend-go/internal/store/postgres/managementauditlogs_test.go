@@ -76,3 +76,17 @@ func TestManagementAuditLogDetailQueriesReadMetadataOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestManagementAuditLogsByIDsQueryIsBoundedAndParameterized(t *testing.T) {
+	query := managementAuditLogsByIDsQuery()
+	for _, want := range []string{"WHERE al.id = ANY($1::text[])", "ORDER BY al.created_at DESC, al.id DESC", "LIMIT 100"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query missing %q:\n%s", want, query)
+		}
+	}
+	for _, forbidden := range []string{"audit_payload_refs", "body_bytes", "COUNT("} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("query contains %q:\n%s", forbidden, query)
+		}
+	}
+}

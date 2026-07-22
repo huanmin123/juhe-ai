@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -113,6 +114,53 @@ func TestManagementAuditLogDetailHandlerReturnsDetailAndNotFound(t *testing.T) {
 	}
 }
 
+func TestManagementAuditLogsHandlerSearchHotParsesRepeatedKeywords(t *testing.T) {
+	service := &managementAuditLogServiceStub{hotResult: managementauditlogs.HotSearchResult{
+		Items: []managementauditlogs.Summary{}, Page: 1, PageSize: 25, Available: true,
+		Keywords: []string{"needle", "other"}, Limit: 25,
+	}}
+	handler := newManagementAuditLogsHandler(service)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/audit-logs/search-hot?keywords=needle&keywords=other&limit=25.8&startAt=2026-07-22T09%3A00%3A00Z", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("id", "search-hot")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !service.hotCalled || len(service.hotInput.Keywords) != 2 || service.hotInput.Limit != 25 || service.hotInput.StartAt == "" {
+		t.Fatalf("status=%d input=%+v body=%s", rec.Code, service.hotInput, rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") != "no-store" || !strings.Contains(rec.Body.String(), `"available":true`) {
+		t.Fatalf("headers=%v body=%s", rec.Header(), rec.Body.String())
+	}
+}
+
+func TestManagementAuditHotSearchLimitMatchesNodeFiniteNumberRules(t *testing.T) {
+	for _, testCase := range []struct {
+		name     string
+		query    string
+		want     int
+		provided bool
+	}{
+		{name: "missing", want: 0, provided: false},
+		{name: "explicit zero", query: "limit=0", want: 0, provided: true},
+		{name: "negative decimal", query: "limit=-1.8", want: -1, provided: true},
+		{name: "hex", query: "limit=0x10", want: 16, provided: true},
+		{name: "invalid", query: "limit=oops", want: 0, provided: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			values, err := url.ParseQuery(testCase.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, provided := managementAuditHotSearchLimit(values)
+			if got != testCase.want || provided != testCase.provided {
+				t.Fatalf("managementAuditHotSearchLimit(%q) = (%d, %v), want (%d, %v)", testCase.query, got, provided, testCase.want, testCase.provided)
+			}
+		})
+	}
+}
+
 func TestRouterRegistersManagementAuditLogListAndDetailOnly(t *testing.T) {
 	service := &managementAuditLogServiceStub{
 		result:       managementauditlogs.ListResult{Items: []managementauditlogs.Summary{}, Page: 1, PageSize: 100},
@@ -128,7 +176,7 @@ func TestRouterRegistersManagementAuditLogListAndDetailOnly(t *testing.T) {
 	for path, want := range map[string]int{
 		"/__aisys__/api/audit-logs":                            http.StatusOK,
 		"/__aisys__/api/audit-logs/runtime":                    http.StatusNotFound,
-		"/__aisys__/api/audit-logs/search-hot":                 http.StatusNotFound,
+		"/__aisys__/api/audit-logs/search-hot":                 http.StatusOK,
 		"/__aisys__/api/audit-logs/audit_1":                    http.StatusOK,
 		"/__aisys__/api/audit-logs/error-groups":               http.StatusNotFound,
 		"/__aisys__/api/audit-logs/audit_1/payloads/payload_1": http.StatusNotFound,
@@ -154,6 +202,16 @@ type managementAuditLogServiceStub struct {
 	detailFound  bool
 	deadlineSeen bool
 	err          error
+	hotCalled    bool
+	hotInput     managementauditlogs.HotSearchInput
+	hotResult    managementauditlogs.HotSearchResult
+}
+
+func (s *managementAuditLogServiceStub) HotSearch(r *http.Request, input managementauditlogs.HotSearchInput) (managementauditlogs.HotSearchResult, error) {
+	s.hotCalled = true
+	s.hotInput = input
+	_, s.deadlineSeen = r.Context().Deadline()
+	return s.hotResult, s.err
 }
 
 func (s *managementAuditLogServiceStub) Detail(r *http.Request, id string) (managementauditlogs.Detail, bool, error) {

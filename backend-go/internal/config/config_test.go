@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -282,6 +283,17 @@ func TestLoadDefaultsNodeInternalRequestTimeout(t *testing.T) {
 	}
 	if cfg.NodeInternalSnapshotRebuildTimeout != time.Minute {
 		t.Fatalf("NodeInternalSnapshotRebuildTimeout = %s, want %s", cfg.NodeInternalSnapshotRebuildTimeout, time.Minute)
+	}
+}
+
+func TestAuditHotSearchDirectoryFollowsNodeDatasetLayout(t *testing.T) {
+	cfg := Config{DatasetDatabasePath: "D:/juhe/data/custom-dataset.sqlite3"}
+	if got, want := cfg.AuditHotSearchDirectory(), filepath.Join("D:/juhe/data", "audit", "search-hot"); got != want {
+		t.Fatalf("AuditHotSearchDirectory() = %q, want %q", got, want)
+	}
+	cfg.AuditHotSearchRoot = "D:/shared/audit-hot"
+	if got := cfg.AuditHotSearchDirectory(); got != "D:/shared/audit-hot" {
+		t.Fatalf("explicit AuditHotSearchDirectory() = %q", got)
 	}
 }
 

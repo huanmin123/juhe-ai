@@ -79,4 +79,5 @@ type ManagementAuditLogDetail struct {
 type ManagementAuditLogReader interface {
 	ListManagementAuditLogs(context.Context, ManagementAuditLogListInput) (ManagementAuditLogListResult, error)
 	GetManagementAuditLog(context.Context, string) (ManagementAuditLogDetail, bool, error)
+	ListManagementAuditLogsByIDs(context.Context, []string) ([]ManagementAuditLogSummary, error)
 }
