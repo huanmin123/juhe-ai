@@ -759,3 +759,29 @@ fixture 需要记录来源 commit；Codex 源码更新后通过独立同步检�
 - 每次都做全文级重写和重哈希：否。
 - 已处理 item 可跳过：仅限本网关同边界、同 revision、指纹未变的条件快路径。
 - 最大收益：源头生成正确 ID + 单次遍历 + copy-on-write + 流式增量校验。
+
+## 24. 实现模块地图
+
+实现按独立小模块接入现有主链路，避免继续膨胀 bridge/stream 大文件。
+
+| 模块 | 建议路径 | 职责 |
+| --- | --- | --- |
+| Contract Registry | `backend/src/modules/gateway/codex-protocol/contract-registry.ts` | 类型前缀、事件字段、revision、规则元数据 |
+| Request History Sanitizer | `backend/src/modules/gateway/codex-protocol/request-history-sanitizer.ts` | L0 请求历史结构扫描与 R0 删 ID |
+| Response Validator | `backend/src/modules/gateway/codex-protocol/response-contract-validator.ts` | JSON/SSE 诊断，不改数据 |
+| Repair Planner/Executor | `backend/src/modules/gateway/codex-protocol/response-repair.ts` | 仅 R0/R1 事务式修复 |
+| Stream Identity State | `backend/src/modules/gateway/codex-protocol/stream-identity-state.ts` | `responseResourceId + outputIndex` 生命周期 |
+| Account Guard Config | `backend/src/modules/gateway/codex-protocol/account-guard-config.ts` | `credentials.codex_protocol_guard` 解析与默认值 |
+| Protocol Diagnostics | `backend/src/modules/gateway/codex-protocol/diagnostics.ts` | outcome、issue code、usage 窄字段映射 |
+| Bridge Tool ID Source Fix | `backend/src/modules/providers/drivers/_shared/codex-responses-chat-bridge.ts` | 类型确定后生成 `fc_*`/`ctc_*` |
+| Bridge→Native Hand-off | `backend/src/modules/gateway/codex-responses/chat-bridge-state.ts` | native 重放前清洗 wire item ID |
+| Usage/UI 接入 | usage records + 账户设置 + 使用记录标签 | 黄/红标签与能力诊断展示 |
+
+分阶段落地：
+
+1. **P0 源头与请求自愈**：bridge tool ID、request sanitizer、bridge→native 删 ID。
+2. **P1 响应契约**：registry、双检查点、SSE 身份状态机、shadow 指标。
+3. **P2 账户策略与日志**：兼容修复/严格拦截开关、usage outcome、黄标签。
+4. **P3 能力隔离与探针**：lane 回避、后台协议探针、全局紧急 observe_only。
+
+生产上线必须等待用户明确通知；本功能分支完成验证后先合并 master 并推远程，不自动部署生产。
