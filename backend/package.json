@@ -331,6 +331,7 @@
     "test:openai-oauth-access-token-refresh-postgres-smoke": "tsx src/scripts/regression/openai-oauth-access-token-refresh-postgres-smoke.ts",
     "test:openai-oauth-refresh-hot-path-cache": "tsx src/scripts/regression/openai-oauth-refresh-hot-path-cache-regression.ts",
     "test:openai-oauth-protocol-contract": "tsx src/scripts/regression/openai-oauth-protocol-contract-regression.ts",
+    "test:openai-oauth-migration-golden": "tsx src/scripts/regression/openai-oauth-migration-golden-regression.ts",
     "test:openai-oauth-token-response-boundary": "tsx src/scripts/regression/openai-oauth-token-response-boundary-regression.ts",
     "test:openai-api-key-passthrough": "tsx src/scripts/regression/openai-api-key-passthrough-regression.ts",
     "test:openai-compatible-gateway-e2e": "tsx src/scripts/regression/openai-compatible-gateway-e2e-regression.ts",
