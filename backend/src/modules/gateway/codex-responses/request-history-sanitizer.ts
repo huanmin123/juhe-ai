@@ -3,27 +3,9 @@ import type {
   CodexHistorySanitizerContext,
   CodexHistorySanitizerResult
 } from './request-history-types.js'
+import { codexResponsesContractRegistry } from './contract-registry.js'
 
 type JsonRecord = Record<string, unknown>
-
-const itemIdPrefixes = new Map<string, string>([
-  ['additional_tools', 'at'],
-  ['message', 'msg'],
-  ['agent_message', 'amsg'],
-  ['reasoning', 'rs'],
-  ['local_shell_call', 'lsh'],
-  ['function_call', 'fc'],
-  ['tool_search_call', 'tsc'],
-  ['function_call_output', 'fco'],
-  ['custom_tool_call', 'ctc'],
-  ['custom_tool_call_output', 'ctco'],
-  ['tool_search_output', 'tso'],
-  ['web_search_call', 'ws'],
-  ['image_generation_call', 'ig'],
-  ['compaction', 'cmp'],
-  ['compaction_summary', 'cmp'],
-  ['context_compaction', 'cmp']
-])
 
 export function sanitizeCodexResponseHistoryItems(
   items: unknown[],
@@ -64,7 +46,7 @@ function itemIdRemovalDecision(
 ): { item: JsonRecord; type: string; issueCode: string } | undefined {
   if (!isPlainObject(value)) return undefined
   const type = stringValue(value.type)
-  const expectedPrefix = type ? itemIdPrefixes.get(type) : undefined
+  const expectedPrefix = type ? codexResponsesContractRegistry.item(type)?.prefix : undefined
   if (!type || !expectedPrefix || !Object.hasOwn(value, 'id')) return undefined
 
   const id = stringValue(value.id)

@@ -35,6 +35,9 @@ import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner
 import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
 import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
+import { sanitizeCodexResponseHistoryItems } from '../codex-responses/request-history-sanitizer.js'
+import { codexResponsesContractRevision } from '../codex-responses/contract-registry.js'
+import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
@@ -275,6 +278,41 @@ export async function buildPreparedUpstreamRequestParts(
   }
 }
 
+function sanitizeCodexResponsesHistoryForAccount(
+  req: Request,
+  account: UpstreamAccount,
+  context: ProviderGatewayRequestContext | undefined
+): void {
+  if (context?.requestClientCompatibility !== 'codex_responses') return
+  if (gatewayRequestEndpointFamily(req) !== 'responses') return
+  const body = gatewayJsonObjectBody(req)
+  if (!body || !Array.isArray(body.input)) return
+  const result = sanitizeCodexResponseHistoryItems(body.input, {
+    store: false,
+    targetScopeKey: `account:${account.id}`,
+    targetPersistenceScope: 'none',
+    contractRevision: codexResponsesContractRevision
+  })
+  if (!result.changed) return
+  replaceGatewayJsonBody(req, {
+    ...body,
+    input: result.items
+  })
+}
+
+function gatewayJsonObjectBody(req: Request): Record<string, unknown> | undefined {
+  const request = req as GatewayRawBodyRequest
+  const body = request.body !== undefined
+    ? request.body
+    : request.gatewayParsedJsonBodyAvailable
+      ? request.gatewayParsedJsonBody
+      : undefined
+  return isPlainObject(body) ? body : undefined
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 function accountApiKeySelectionCredentials(account: UpstreamAccount): Record<string, unknown> {
   return {
     ...account.credentials,
