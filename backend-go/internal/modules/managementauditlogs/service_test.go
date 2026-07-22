@@ -1,11 +1,154 @@
 package managementauditlogs
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"encoding/base64"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
+
+func TestPayloadReadsBoundedPlainWindowAndHeadersOnlyOnFirstWindow(t *testing.T) {
+	root := t.TempDir()
+	writeAuditPayloadTestFile(t, root, "aa/headers.blob", []byte(`{"x-test":["one","two"]}`))
+	writeAuditPayloadTestFile(t, root, "bb/body.blob", []byte("hello payload"))
+	store := &auditLogReaderStub{payloadFound: true, payload: port.ManagementAuditLogPayload{
+		Summary:     port.ManagementAuditLogPayloadSummary{ID: "payload_1", PartType: "client_request", HasHeaders: true, HasBody: true},
+		HeadersBlob: &port.ManagementAuditPayloadBlob{StorageKey: "aa/headers.blob", Compression: "none", RawSizeBytes: 24, CompressedSizeBytes: 24},
+		BodyBlob:    &port.ManagementAuditPayloadBlob{StorageKey: "bb/body.blob", Compression: "none", RawSizeBytes: 13, CompressedSizeBytes: 13},
+	}}
+	service := NewServiceWithOptions(store, Options{PayloadBlobRoot: root})
+
+	first, found, err := service.Payload(context.Background(), "audit_1", "payload_1", PayloadInput{Offset: 0, Limit: 5})
+	if err != nil || !found {
+		t.Fatalf("Payload() found=%v err=%v", found, err)
+	}
+	headerValues, headersOK := first.Headers["x-test"].([]string)
+	if !first.HeadersIncluded || !headersOK || len(headerValues) != 2 || first.BodyText != "hello" || first.BodyNextOffset == nil || *first.BodyNextOffset != 5 || !first.BodyTruncated {
+		t.Fatalf("first payload = %+v", first)
+	}
+	second, found, err := service.Payload(context.Background(), "audit_1", "payload_1", PayloadInput{Offset: 5, Limit: 1024})
+	if err != nil || !found || second.HeadersIncluded || second.Headers != nil || second.HeadersStorageStatus != "not_saved" || second.BodyText != " payload" || second.BodyTruncated {
+		t.Fatalf("second payload found=%v err=%v detail=%+v", found, err, second)
+	}
+}
+
+func TestPayloadStreamsGzipWindowAndEncodesBinary(t *testing.T) {
+	root := t.TempDir()
+	raw := []byte{0x00, 0xff, 0x01, 0x02, 0x03, 0x04}
+	var compressed bytes.Buffer
+	writer := gzip.NewWriter(&compressed)
+	if _, err := writer.Write(raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeAuditPayloadTestFile(t, root, "cc/body.gz", compressed.Bytes())
+	store := &auditLogReaderStub{payloadFound: true, payload: port.ManagementAuditLogPayload{
+		Summary:  port.ManagementAuditLogPayloadSummary{ID: "payload_2", PartType: "upstream_response", HasBody: true},
+		BodyBlob: &port.ManagementAuditPayloadBlob{StorageKey: "cc/body.gz", Compression: "gzip", RawSizeBytes: int64(len(raw)), CompressedSizeBytes: int64(compressed.Len())},
+	}}
+	detail, found, err := NewServiceWithOptions(store, Options{PayloadBlobRoot: root}).Payload(context.Background(), "audit_1", "payload_2", PayloadInput{Offset: 1, Limit: 3})
+	if err != nil || !found {
+		t.Fatalf("Payload() found=%v err=%v", found, err)
+	}
+	if detail.BodyText != "" || detail.BodyBase64 != base64.StdEncoding.EncodeToString(raw[1:4]) || detail.BodyBytesReturned != 3 {
+		t.Fatalf("detail = %+v", detail)
+	}
+}
+
+func TestPayloadRejectsTraversalAndOversizedMetadata(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.blob")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, blob := range []port.ManagementAuditPayloadBlob{
+		{StorageKey: filepath.Join("..", filepath.Base(filepath.Dir(outside)), filepath.Base(outside)), Compression: "none", RawSizeBytes: 6, CompressedSizeBytes: 6},
+		{StorageKey: "body.blob", Compression: "none", RawSizeBytes: maxAuditPayloadBlobRawBytes + 1, CompressedSizeBytes: 1},
+	} {
+		store := &auditLogReaderStub{payloadFound: true, payload: port.ManagementAuditLogPayload{
+			Summary: port.ManagementAuditLogPayloadSummary{ID: "payload_bad", HasBody: true}, BodyBlob: &blob,
+		}}
+		if _, _, err := NewServiceWithOptions(store, Options{PayloadBlobRoot: root}).Payload(context.Background(), "audit_1", "payload_bad", PayloadInput{}); err == nil {
+			t.Fatalf("blob %+v accepted", blob)
+		}
+	}
+}
+
+func TestPayloadReportsMissingMetadataAndMissingFileWithoutReadingUnboundedData(t *testing.T) {
+	root := t.TempDir()
+	metadataMissing := &auditLogReaderStub{payloadFound: true, payload: port.ManagementAuditLogPayload{
+		Summary: port.ManagementAuditLogPayloadSummary{ID: "payload_missing_meta", HasHeaders: true, HasBody: true},
+	}}
+	detail, found, err := NewServiceWithOptions(metadataMissing, Options{PayloadBlobRoot: root}).Payload(context.Background(), "audit_1", "payload_missing_meta", PayloadInput{})
+	if err != nil || !found || detail.HeadersStorageStatus != "metadata_missing" || detail.BodyStorageStatus != "metadata_missing" || !detail.HeadersIncluded {
+		t.Fatalf("metadata-missing detail=%+v found=%v err=%v", detail, found, err)
+	}
+
+	fileMissing := &auditLogReaderStub{payloadFound: true, payload: port.ManagementAuditLogPayload{
+		Summary:  port.ManagementAuditLogPayloadSummary{ID: "payload_missing_file", HasBody: true},
+		BodyBlob: &port.ManagementAuditPayloadBlob{StorageKey: "missing/body.blob", Compression: "none", RawSizeBytes: 10, CompressedSizeBytes: 10},
+	}}
+	detail, found, err = NewServiceWithOptions(fileMissing, Options{PayloadBlobRoot: root}).Payload(context.Background(), "audit_1", "payload_missing_file", PayloadInput{})
+	if err != nil || !found || detail.BodyStorageStatus != "file_missing" || detail.BodyTotalBytes != 10 || !detail.BodyTruncated || detail.BodyNextOffset != nil {
+		t.Fatalf("file-missing detail=%+v found=%v err=%v", detail, found, err)
+	}
+}
+
+func TestPayloadRejectsGzipBeyondWriterBoundaryAndHonorsCanceledContext(t *testing.T) {
+	root := t.TempDir()
+	writeAuditPayloadTestFile(t, root, "body.blob", []byte("body"))
+	store := &auditLogReaderStub{payloadFound: true, payload: port.ManagementAuditLogPayload{
+		Summary:  port.ManagementAuditLogPayloadSummary{ID: "payload_cancel", HasBody: true},
+		BodyBlob: &port.ManagementAuditPayloadBlob{StorageKey: "body.blob", Compression: "none", RawSizeBytes: 4, CompressedSizeBytes: 4},
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := NewServiceWithOptions(store, Options{PayloadBlobRoot: root}).Payload(ctx, "audit_1", "payload_cancel", PayloadInput{}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Payload() error = %v", err)
+	}
+	store.payload.BodyBlob = &port.ManagementAuditPayloadBlob{StorageKey: "body.gz", Compression: "gzip", RawSizeBytes: maxGzipPayloadBlobRawBytes + 1, CompressedSizeBytes: 1}
+	if _, _, err := NewServiceWithOptions(store, Options{PayloadBlobRoot: root}).Payload(context.Background(), "audit_1", "payload_cancel", PayloadInput{}); err == nil {
+		t.Fatal("gzip payload beyond writer boundary accepted")
+	}
+}
+
+func TestOpenAuditPayloadBlobRejectsSymlinkEscapeWhenSupported(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.blob")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked.blob")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink is unavailable on this host: %v", err)
+	}
+	file, found, err := openAuditPayloadBlob(root, "linked.blob")
+	if file != nil {
+		file.Close()
+	}
+	if err == nil || found {
+		t.Fatalf("symlink escape found=%v err=%v", found, err)
+	}
+}
+
+func writeAuditPayloadTestFile(t *testing.T, root, key string, data []byte) {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(key))
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestListNormalizesNodeCompatibleFiltersAndProgressiveWindow(t *testing.T) {
 	status := 503
@@ -244,6 +387,8 @@ type auditLogReaderStub struct {
 	detailCalls      int
 	detail           port.ManagementAuditLogDetail
 	detailFound      bool
+	payload          port.ManagementAuditLogPayload
+	payloadFound     bool
 }
 
 func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input port.ManagementAuditLogListInput) (port.ManagementAuditLogListResult, error) {
@@ -264,4 +409,8 @@ func (s *auditLogReaderStub) GetManagementAuditLog(_ context.Context, id string)
 	s.detailCalls++
 	s.detailID = id
 	return s.detail, s.detailFound, nil
+}
+
+func (s *auditLogReaderStub) GetManagementAuditLogPayload(_ context.Context, auditLogID, payloadID string) (port.ManagementAuditLogPayload, bool, error) {
+	return s.payload, s.payloadFound, nil
 }

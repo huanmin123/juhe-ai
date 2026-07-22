@@ -89,6 +89,13 @@ type managementAuditLogPayloadSummaryRow struct {
 	SizeBytes, CompressedSizeBytes                       int64
 }
 
+type managementAuditPayloadBlobRow struct {
+	StorageKey      pgtype.Text
+	Compression     pgtype.Text
+	RawSizeBytes    pgtype.Int8
+	CompressedBytes pgtype.Int8
+}
+
 type managementAuditErrorGroupRow struct {
 	ID, Fingerprint, WindowStartedAt, WindowEndedAt, CreatedAt, UpdatedAt string
 	SystemAccountID, SystemAccountName, APIKeyID, APIKeyName              pgtype.Text
@@ -227,6 +234,28 @@ func (s *Store) GetManagementAuditLog(ctx context.Context, id string) (port.Mana
 	return detail, true, nil
 }
 
+func (s *Store) GetManagementAuditLogPayload(ctx context.Context, auditLogID, payloadID string) (port.ManagementAuditLogPayload, bool, error) {
+	var row managementAuditLogPayloadSummaryRow
+	var headers, body managementAuditPayloadBlobRow
+	err := s.pool.QueryRow(ctx, managementAuditLogPayloadQuery(), auditLogID, payloadID).Scan(
+		&row.ID, &row.AttemptID, &row.PartType, &row.SequenceIndex, &row.ContentType, &row.ContentEncoding,
+		&row.HeadersBlobID, &row.BodyBlobID, &row.HeadersSHA256, &row.BodySHA256,
+		&row.SizeBytes, &row.CompressedSizeBytes, &row.CaptureStatus, &row.CreatedAt,
+		&headers.StorageKey, &headers.Compression, &headers.RawSizeBytes, &headers.CompressedBytes,
+		&body.StorageKey, &body.Compression, &body.RawSizeBytes, &body.CompressedBytes,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.ManagementAuditLogPayload{}, false, nil
+	}
+	if err != nil {
+		return port.ManagementAuditLogPayload{}, false, fmt.Errorf("get management audit log payload: %w", err)
+	}
+	result := port.ManagementAuditLogPayload{Summary: managementAuditPayloadSummary(row)}
+	result.HeadersBlob = managementAuditPayloadBlob(row.HeadersBlobID, headers)
+	result.BodyBlob = managementAuditPayloadBlob(row.BodyBlobID, body)
+	return result, true, nil
+}
+
 type auditLogRowScanner interface {
 	Scan(...any) error
 }
@@ -278,6 +307,19 @@ WHERE refs.audit_log_id = $1::text
 ORDER BY refs.sequence_index ASC, refs.id ASC`
 }
 
+func managementAuditLogPayloadQuery() string {
+	return `SELECT
+  refs.id, refs.attempt_id, refs.part_type, refs.sequence_index, refs.content_type, refs.content_encoding,
+  refs.headers_blob_id, refs.body_blob_id, refs.headers_sha256, refs.body_sha256,
+  refs.raw_size_bytes, refs.compressed_size_bytes, refs.capture_status, refs.created_at,
+  headers_blob.storage_key, headers_blob.compression, headers_blob.raw_size_bytes, headers_blob.compressed_size_bytes,
+  body_blob.storage_key, body_blob.compression, body_blob.raw_size_bytes, body_blob.compressed_size_bytes
+FROM juhe_dataset.audit_payload_refs AS refs
+LEFT JOIN juhe_dataset.audit_payload_blobs AS headers_blob ON headers_blob.id = refs.headers_blob_id
+LEFT JOIN juhe_dataset.audit_payload_blobs AS body_blob ON body_blob.id = refs.body_blob_id
+WHERE refs.audit_log_id = $1::text AND refs.id = $2::text`
+}
+
 func managementAuditErrorGroupDetailQuery() string {
 	return managementAuditErrorGroupSelect + "\nWHERE aeg.id = $1::text"
 }
@@ -323,17 +365,31 @@ func (s *Store) listManagementAuditLogPayloadSummaries(ctx context.Context, id s
 		if err = rows.Scan(&row.ID, &row.AttemptID, &row.PartType, &row.SequenceIndex, &row.ContentType, &row.ContentEncoding, &row.HeadersBlobID, &row.BodyBlobID, &row.HeadersSHA256, &row.BodySHA256, &row.SizeBytes, &row.CompressedSizeBytes, &row.CaptureStatus, &row.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan management audit log payload summaries: %w", err)
 		}
-		items = append(items, port.ManagementAuditLogPayloadSummary{
-			ID: row.ID, AttemptID: textPtr(row.AttemptID), PartType: row.PartType, SequenceIndex: int(row.SequenceIndex),
-			ContentType: textPtr(row.ContentType), ContentEncoding: textPtr(row.ContentEncoding), HeadersSHA256: textPtr(row.HeadersSHA256), BodySHA256: textPtr(row.BodySHA256),
-			SizeBytes: row.SizeBytes, CompressedSizeBytes: row.CompressedSizeBytes, CaptureStatus: row.CaptureStatus, CreatedAt: row.CreatedAt,
-			HasHeaders: row.HeadersBlobID.Valid && row.HeadersBlobID.String != "", HasBody: row.BodyBlobID.Valid && row.BodyBlobID.String != "",
-		})
+		items = append(items, managementAuditPayloadSummary(row))
 	}
 	if err = rows.Err(); err != nil {
 		return nil, fmt.Errorf("scan management audit log payload summaries: %w", err)
 	}
 	return items, nil
+}
+
+func managementAuditPayloadSummary(row managementAuditLogPayloadSummaryRow) port.ManagementAuditLogPayloadSummary {
+	return port.ManagementAuditLogPayloadSummary{
+		ID: row.ID, AttemptID: textPtr(row.AttemptID), PartType: row.PartType, SequenceIndex: int(row.SequenceIndex),
+		ContentType: textPtr(row.ContentType), ContentEncoding: textPtr(row.ContentEncoding), HeadersSHA256: textPtr(row.HeadersSHA256), BodySHA256: textPtr(row.BodySHA256),
+		SizeBytes: row.SizeBytes, CompressedSizeBytes: row.CompressedSizeBytes, CaptureStatus: row.CaptureStatus, CreatedAt: row.CreatedAt,
+		HasHeaders: row.HeadersBlobID.Valid && row.HeadersBlobID.String != "", HasBody: row.BodyBlobID.Valid && row.BodyBlobID.String != "",
+	}
+}
+
+func managementAuditPayloadBlob(id pgtype.Text, row managementAuditPayloadBlobRow) *port.ManagementAuditPayloadBlob {
+	if !id.Valid || id.String == "" || !row.StorageKey.Valid {
+		return nil
+	}
+	return &port.ManagementAuditPayloadBlob{
+		StorageKey: row.StorageKey.String, Compression: row.Compression.String,
+		RawSizeBytes: row.RawSizeBytes.Int64, CompressedSizeBytes: row.CompressedBytes.Int64,
+	}
 }
 
 func (s *Store) getManagementAuditErrorGroup(ctx context.Context, id string) (*port.ManagementAuditErrorGroup, error) {
