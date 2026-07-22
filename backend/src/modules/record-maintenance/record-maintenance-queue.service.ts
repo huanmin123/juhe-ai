@@ -27,7 +27,6 @@ import {
 import { requestBackgroundWorkerDbService, sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
 import { requestStatsWriter, type BackgroundStatsWriteOperation } from '../background/background-stats-writer.js'
 import type { BackgroundWorkerMessage } from '../background/background-ipc.types.js'
-import { publishUsageRecordsGlobalReset } from '../page-data/page-data-change.publisher.js'
 import { auditSuccessRetentionCutoffIso } from '../audit-logs/audit-log-retention-policy.js'
 
 const currentModulePath = fileURLToPath(import.meta.url)
@@ -903,7 +902,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
   let batches = 0
   let hasMore = false
   let blockedReason: string | undefined
-  let resetNeeded = false
   const cutoffTime = Date.parse(input.cutoffAt)
   if (Number.isNaN(cutoffTime)) {
     return {
@@ -934,7 +932,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
     hasMore = batch.hasMore
     blockedReason = batch.blockedReason ?? blockedReason
     const changed = batch.deletedRows > 0 || Number(batch.droppedPartitions ?? 0) > 0
-    resetNeeded ||= changed
     if (changed) {
       batches += 1
     }
@@ -943,7 +940,6 @@ async function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: n
     }
   }
 
-  if (resetNeeded) await publishUsageRecordsGlobalReset()
 
   return {
     cutoffAt: input.cutoffAt,
