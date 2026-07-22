@@ -46,7 +46,6 @@ type systemAPIIPRateLimitMiddleware struct {
 type systemAPIAuthenticatedRateLimitMiddleware struct {
 	reader        port.SystemAPIRateLimitReader
 	limiter       SystemAPIAuthenticatedRateLimiter
-	methodClass   systemAPIMethodClass
 	clientIPs     clientIPResolver
 	allowlist     *systemAPIClientIPAllowlistInspector
 	logger        *slog.Logger
@@ -59,6 +58,17 @@ const (
 	systemAPIMethodRead  systemAPIMethodClass = "read"
 	systemAPIMethodWrite systemAPIMethodClass = "write"
 )
+
+type systemAPIRouteKey struct {
+	method string
+	path   string
+}
+
+var systemAPIReadRouteOverrides = map[systemAPIRouteKey]struct{}{
+	{method: http.MethodPost, path: "/__aisys__/api/data-changes/confirm"}:       {},
+	{method: http.MethodPost, path: "/__aisys__/api/accounts/import/preview"}:    {},
+	{method: http.MethodPost, path: "/__aisys__/api/my-accounts/import/preview"}: {},
+}
 
 type systemAPIRateLimitSettingsCache struct {
 	mu            sync.Mutex
@@ -201,7 +211,6 @@ func newSystemAPIIPRateLimitMiddleware(
 func newSystemAPIAuthenticatedRateLimitMiddleware(
 	reader port.SystemAPIRateLimitReader,
 	limiter SystemAPIAuthenticatedRateLimiter,
-	methodClass systemAPIMethodClass,
 	clientIPs clientIPResolver,
 	allowlist *systemAPIClientIPAllowlistInspector,
 	logger *slog.Logger,
@@ -216,7 +225,6 @@ func newSystemAPIAuthenticatedRateLimitMiddleware(
 	middleware := &systemAPIAuthenticatedRateLimitMiddleware{
 		reader:        reader,
 		limiter:       limiter,
-		methodClass:   methodClass,
 		clientIPs:     clientIPs,
 		allowlist:     allowlist,
 		logger:        logger,
@@ -340,7 +348,7 @@ func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler 
 			settings,
 		))
 
-		methodClass := systemAPIMethodClassFor(r.Method)
+		methodClass := systemAPIRouteClassFor(r)
 		clientIP := m.clientIPs.FromRequest(r)
 		if systemAPIClientIPRateLimitAllowlisted(r, clientIP, m.allowlist, m.logger) {
 			next.ServeHTTP(w, r)
@@ -374,6 +382,7 @@ func (m *systemAPIIPRateLimitMiddleware) handle(next http.Handler) http.Handler 
 
 func (m *systemAPIAuthenticatedRateLimitMiddleware) handle(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methodClass := systemAPIRouteClassFor(r)
 		authContext, ok := ManagementAuthContextFromRequest(r)
 		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
 			next.ServeHTTP(w, r)
@@ -388,7 +397,7 @@ func (m *systemAPIAuthenticatedRateLimitMiddleware) handle(next http.Handler) ht
 				if m.logger != nil {
 					m.logger.Error("系统 API 认证用户限流设置读取失败",
 						slog.String("path", r.URL.Path),
-						slog.String("method_class", string(m.methodClass)),
+						slog.String("method_class", string(methodClass)),
 						slog.String("request_id", requestIDFromContext(r.Context())),
 						slog.Any("error", err),
 					)
@@ -405,14 +414,14 @@ func (m *systemAPIAuthenticatedRateLimitMiddleware) handle(next http.Handler) ht
 		}
 		decision, err := m.limiter.AllowSystemAPIAuthenticated(
 			r.Context(),
-			systemAPIAuthenticatedRateLimitKey(authContext.SystemAccountID, m.methodClass),
-			systemAPIAuthenticatedRateLimitFor(settings, m.methodClass),
+			systemAPIAuthenticatedRateLimitKey(authContext.SystemAccountID, methodClass),
+			systemAPIAuthenticatedRateLimitFor(settings, methodClass),
 		)
 		if err != nil {
 			if m.logger != nil {
 				m.logger.Error("系统 API 认证用户限流失败",
 					slog.String("path", r.URL.Path),
-					slog.String("method_class", string(m.methodClass)),
+					slog.String("method_class", string(methodClass)),
 					slog.String("request_id", requestIDFromContext(r.Context())),
 					slog.Any("error", err),
 				)
@@ -816,8 +825,24 @@ func shouldApplySystemAPIIPRateLimit(r *http.Request) bool {
 	return path != "/__aisys__/api/health" && path != "/__aisys__/api/readyz"
 }
 
+func systemAPIRouteClassFor(r *http.Request) systemAPIMethodClass {
+	method := strings.ToUpper(strings.TrimSpace(r.Method))
+	methodClass := systemAPIMethodClassFor(method)
+	if methodClass == systemAPIMethodRead {
+		return systemAPIMethodRead
+	}
+	path := strings.TrimRight(r.URL.Path, "/")
+	if path == "" {
+		path = "/"
+	}
+	if _, ok := systemAPIReadRouteOverrides[systemAPIRouteKey{method: method, path: path}]; ok {
+		return systemAPIMethodRead
+	}
+	return systemAPIMethodWrite
+}
+
 func systemAPIMethodClassFor(method string) systemAPIMethodClass {
-	if isReadMethod(method) {
+	if isReadMethod(strings.ToUpper(strings.TrimSpace(method))) {
 		return systemAPIMethodRead
 	}
 	return systemAPIMethodWrite
