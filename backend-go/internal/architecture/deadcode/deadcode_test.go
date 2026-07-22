@@ -38,11 +38,9 @@ var strictAllowedPackages = []string{
 
 func TestCommandEntrypointReachability(t *testing.T) {
 	moduleRoot := findModuleRoot(t)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
 
-	allPackages := goList(t, ctx, moduleRoot, "-mod=readonly", "-f", "{{.ImportPath}}", "./...")
-	commandDependencies := goList(t, ctx, moduleRoot, "-mod=readonly", "-deps", "-f", "{{.ImportPath}}", "./cmd/...")
+	allPackages := goList(t, moduleRoot, "-mod=readonly", "-f", "{{.ImportPath}}", "./...")
+	commandDependencies := goList(t, moduleRoot, "-mod=readonly", "-deps", "-f", "{{.ImportPath}}", "./cmd/...")
 	unregistered := packageDifference(modulePackages(allPackages), modulePackages(commandDependencies))
 
 	if *strict {
@@ -73,8 +71,11 @@ func findModuleRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "..", ".."))
 }
 
-func goList(t *testing.T, ctx context.Context, moduleRoot string, args ...string) []string {
+func goList(t *testing.T, moduleRoot string, args ...string) []string {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
 	cmd := exec.CommandContext(ctx, "go", append([]string{"list"}, args...)...)
 	cmd.Dir = moduleRoot
 	output, err := cmd.CombinedOutput()
