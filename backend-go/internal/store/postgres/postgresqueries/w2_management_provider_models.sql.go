@@ -529,6 +529,119 @@ func (q *Queries) ListManagementProviderCodesByProtocol(ctx context.Context, arg
 	return items, nil
 }
 
+const listManagementProviderModelCapabilityCandidates = `-- name: ListManagementProviderModelCapabilityCandidates :many
+SELECT
+  built_in.id,
+  built_in.provider_code,
+  built_in.model,
+  'built_in'::text AS scope,
+  ''::text AS system_account_id,
+  built_in.mode,
+  built_in.catalog_order,
+  built_in.release_date,
+  built_in.supported_api_protocols_json,
+  built_in.supported_service_tiers_json,
+  built_in.supported_reasoning_efforts_json,
+  built_in.default_reasoning_effort
+FROM juhe_business.provider_model_catalog AS built_in
+WHERE built_in.provider_code = ANY($1::text[])
+  AND built_in.model = $2
+  AND built_in.status = 'active'
+  AND built_in.catalog_visible = true
+  AND (
+    built_in.shutdown_date IS NULL
+    OR btrim(built_in.shutdown_date) = ''
+    OR built_in.shutdown_date > CURRENT_DATE::text
+  )
+UNION ALL
+SELECT
+  custom.id,
+  custom.provider_code,
+  custom.model,
+  custom.scope,
+  COALESCE(custom.system_account_id, '') AS system_account_id,
+  custom.mode,
+  NULL::integer AS catalog_order,
+  custom.release_date,
+  custom.supported_api_protocols_json,
+  custom.supported_service_tiers_json,
+  custom.supported_reasoning_efforts_json,
+  custom.default_reasoning_effort
+FROM juhe_business.custom_provider_models AS custom
+WHERE custom.provider_code = ANY($3::text[])
+  AND custom.model = $2
+  AND custom.status = 'active'
+  AND (
+    (custom.scope = 'global' AND custom.system_account_id IS NULL)
+    OR (
+      $4::text <> ''
+      AND custom.scope = 'personal'
+      AND custom.system_account_id = $4
+    )
+  )
+ORDER BY provider_code ASC, scope ASC, catalog_order ASC NULLS LAST, release_date DESC NULLS LAST, model ASC, id ASC
+`
+
+type ListManagementProviderModelCapabilityCandidatesParams struct {
+	BuiltInProviderCodes []string
+	Model                string
+	CustomProviderCodes  []string
+	SystemAccountID      string
+}
+
+type ListManagementProviderModelCapabilityCandidatesRow struct {
+	ID                            string
+	ProviderCode                  string
+	Model                         string
+	Scope                         string
+	SystemAccountID               string
+	Mode                          pgtype.Text
+	CatalogOrder                  pgtype.Int4
+	ReleaseDate                   pgtype.Text
+	SupportedApiProtocolsJson     string
+	SupportedServiceTiersJson     string
+	SupportedReasoningEffortsJson string
+	DefaultReasoningEffort        pgtype.Text
+}
+
+func (q *Queries) ListManagementProviderModelCapabilityCandidates(ctx context.Context, arg ListManagementProviderModelCapabilityCandidatesParams) ([]ListManagementProviderModelCapabilityCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProviderModelCapabilityCandidates,
+		arg.BuiltInProviderCodes,
+		arg.Model,
+		arg.CustomProviderCodes,
+		arg.SystemAccountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProviderModelCapabilityCandidatesRow
+	for rows.Next() {
+		var i ListManagementProviderModelCapabilityCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProviderCode,
+			&i.Model,
+			&i.Scope,
+			&i.SystemAccountID,
+			&i.Mode,
+			&i.CatalogOrder,
+			&i.ReleaseDate,
+			&i.SupportedApiProtocolsJson,
+			&i.SupportedServiceTiersJson,
+			&i.SupportedReasoningEffortsJson,
+			&i.DefaultReasoningEffort,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManagementProviderModelCatalog = `-- name: ListManagementProviderModelCatalog :many
 SELECT
   id,
@@ -769,6 +882,140 @@ func (q *Queries) ListManagementProviderModelCatalog(ctx context.Context, arg Li
 			&i.Source,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManagementProviderModelOptions = `-- name: ListManagementProviderModelOptions :many
+WITH built_in_ranked AS (
+  SELECT
+    built_in.id,
+    built_in.provider_code,
+    built_in.model,
+    ROW_NUMBER() OVER (
+      PARTITION BY built_in.model
+      ORDER BY built_in.provider_code ASC, built_in.id ASC
+    ) AS option_rank
+  FROM juhe_business.provider_model_catalog AS built_in
+  WHERE built_in.provider_code = ANY($1::text[])
+    AND built_in.status = 'active'
+    AND built_in.catalog_visible = true
+    AND (
+      built_in.shutdown_date IS NULL
+      OR btrim(built_in.shutdown_date) = ''
+      OR built_in.shutdown_date > CURRENT_DATE::text
+    )
+    AND (
+      btrim($2::text) = ''
+      OR built_in.model = ANY($3::text[])
+      OR lower(built_in.model) LIKE '%' || lower($2::text) || '%'
+    )
+),
+built_in_options AS (
+  SELECT id, provider_code, model, 'built_in'::text AS scope
+  FROM built_in_ranked
+  WHERE option_rank = 1
+  ORDER BY
+    CASE WHEN model = ANY($3::text[]) THEN 0 ELSE 1 END,
+    lower(model) ASC,
+    provider_code ASC,
+    id ASC
+  LIMIT $4
+),
+custom_ranked AS (
+  SELECT
+    custom.id,
+    custom.provider_code,
+    custom.model,
+    custom.scope,
+    ROW_NUMBER() OVER (
+      PARTITION BY custom.model
+      ORDER BY CASE custom.scope WHEN 'personal' THEN 0 ELSE 1 END, custom.provider_code ASC, custom.id ASC
+    ) AS option_rank
+  FROM juhe_business.custom_provider_models AS custom
+  WHERE custom.provider_code = ANY($5::text[])
+    AND custom.status = 'active'
+    AND custom.catalog_visible = true
+    AND (
+      custom.shutdown_date IS NULL
+      OR btrim(custom.shutdown_date) = ''
+      OR custom.shutdown_date > CURRENT_DATE::text
+    )
+    AND (
+      (custom.scope = 'global' AND custom.system_account_id IS NULL)
+      OR (
+        $6::text <> ''
+        AND custom.scope = 'personal'
+        AND custom.system_account_id = $6
+      )
+    )
+    AND (
+      btrim($2::text) = ''
+      OR custom.model = ANY($3::text[])
+      OR lower(custom.model) LIKE '%' || lower($2::text) || '%'
+    )
+),
+custom_options AS (
+  SELECT id, provider_code, model, scope
+  FROM custom_ranked
+  WHERE option_rank = 1
+  ORDER BY
+    CASE WHEN model = ANY($3::text[]) THEN 0 ELSE 1 END,
+    lower(model) ASC,
+    provider_code ASC,
+    scope ASC,
+    id ASC
+  LIMIT $4
+)
+SELECT id, provider_code, model, scope FROM built_in_options
+UNION ALL
+SELECT id, provider_code, model, scope FROM custom_options
+`
+
+type ListManagementProviderModelOptionsParams struct {
+	BuiltInProviderCodes []string
+	Keyword              string
+	SelectedIds          []string
+	ResultLimit          int32
+	CustomProviderCodes  []string
+	SystemAccountID      string
+}
+
+type ListManagementProviderModelOptionsRow struct {
+	ID           string
+	ProviderCode string
+	Model        string
+	Scope        string
+}
+
+func (q *Queries) ListManagementProviderModelOptions(ctx context.Context, arg ListManagementProviderModelOptionsParams) ([]ListManagementProviderModelOptionsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProviderModelOptions,
+		arg.BuiltInProviderCodes,
+		arg.Keyword,
+		arg.SelectedIds,
+		arg.ResultLimit,
+		arg.CustomProviderCodes,
+		arg.SystemAccountID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProviderModelOptionsRow
+	for rows.Next() {
+		var i ListManagementProviderModelOptionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProviderCode,
+			&i.Model,
+			&i.Scope,
 		); err != nil {
 			return nil, err
 		}

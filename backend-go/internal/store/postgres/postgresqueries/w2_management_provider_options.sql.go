@@ -212,6 +212,46 @@ func (q *Queries) ListManagementProviderOptionProviders(ctx context.Context) ([]
 	return items, nil
 }
 
+const listManagementProviderSelectOptions = `-- name: ListManagementProviderSelectOptions :many
+SELECT id, code, name, enabled
+FROM juhe_business.providers
+WHERE enabled = true
+ORDER BY name ASC, code ASC
+LIMIT 50
+`
+
+type ListManagementProviderSelectOptionsRow struct {
+	ID      string
+	Code    string
+	Name    string
+	Enabled bool
+}
+
+func (q *Queries) ListManagementProviderSelectOptions(ctx context.Context) ([]ListManagementProviderSelectOptionsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProviderSelectOptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProviderSelectOptionsRow
+	for rows.Next() {
+		var i ListManagementProviderSelectOptionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.Name,
+			&i.Enabled,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManagementProviderSystemDefaultHealthCheckModels = `-- name: ListManagementProviderSystemDefaultHealthCheckModels :many
 SELECT provider_code, model
 FROM juhe_business.provider_system_default_health_check_models
