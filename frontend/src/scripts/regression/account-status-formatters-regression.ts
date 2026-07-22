@@ -274,8 +274,7 @@ const runtimeDegradedAccount = accountFixture({
   },
   runtimeAvailability: {
     status: 'degraded',
-    reason: 'mock runtime degraded',
-    failureCount: 2
+    reason: 'mock runtime degraded'
   }
 })
 assertStatus('运行态调度降级', runtimeDegradedAccount, '调度降级', 'gold')
@@ -301,11 +300,6 @@ assertStatus('运行态事前确认', accountFixture({
     status: 'precheck_pending',
     reason: 'mock precheck pending',
     since: '2026-06-16T00:00:00.000Z',
-    until: '2026-06-16T00:00:10.000Z',
-    failureCount: 6,
-    distinctClientIpCount: 2,
-    distinctApiKeyCount: 3,
-    precheckAttemptCount: 1,
     probePresentation: {
       lastObservation: {
         observationId: 'precheck-pending',
@@ -355,8 +349,7 @@ assertStatus('运行态半开探测', accountFixture({
   },
   runtimeAvailability: {
     status: 'half_open',
-    reason: 'mock half open',
-    until: '2099-01-01T00:00:00.000Z'
+    reason: 'mock half open'
   }
 }), '半开探测', 'blue')
 assertStatus('运行态探针确认失败', accountFixture({
@@ -370,8 +363,7 @@ assertStatus('运行态探针确认失败', accountFixture({
   },
   runtimeAvailability: {
     status: 'precheck_failed',
-    reason: 'mock precheck failed',
-    failureCount: 5
+    reason: 'mock precheck failed'
   }
 }), '探针确认失败', 'gold')
 assertStatus('持久临时不可调用', accountFixture({
@@ -493,11 +485,7 @@ assertTrue(
 const precheckTooltip = accountStatusTooltipLines(accountFixture({
   runtimeAvailability: {
     status: 'precheck_pending',
-    reason: 'mock precheck pending',
-    failureCount: 6,
-    distinctClientIpCount: 2,
-    distinctApiKeyCount: 3,
-    precheckAttemptCount: 1
+    reason: 'mock precheck pending'
   }
 }))
 assertTrue(!precheckTooltip.some((line) => line.includes('运行态状态') || line.includes('数据库状态') || line.includes('短窗口失败')), '事前确认 tooltip 不应展示内部机制')

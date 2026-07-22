@@ -12,6 +12,10 @@ import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import { waitForRecoverableUnavailableState } from './recoverable-unavailable-wait.js'
 import type { ServerRetryBudget } from './server-retry-budget.js'
+import type {
+  GatewayRequestWallBudget,
+  RouteCoordinationBudget
+} from '../routing/route-coordination.js'
 
 export async function resolveLocalSuppressionFilter(input: {
   req: Request
@@ -24,9 +28,12 @@ export async function resolveLocalSuppressionFilter(input: {
   apiKeyId?: string
   groupId: string
   serverRetryBudget: ServerRetryBudget
+  routeCoordinationBudget: RouteCoordinationBudget
+  gatewayRequestWallBudget: GatewayRequestWallBudget
   signal?: AbortSignal
 }): Promise<LocalAccountSuppressionFilterResult<UpstreamAccount> | undefined> {
   let filter = await filterGatewayAccountRuntimeSuppressionsAsync(input.accounts)
+  let waitSkippedReason: string | undefined
   if (filter.suppressedCount > 0) {
     logger.warn({
       event: filter.allSuppressed
@@ -69,9 +76,23 @@ export async function resolveLocalSuppressionFilter(input: {
         maxWaitMs: input.serverRetryBudget.remainingMs(waitStartedAtMs),
         requestStartedAtMs: waitStartedAtMs,
         deadlineAtMs,
+        routeCoordinationBudget: input.routeCoordinationBudget,
+        gatewayRequestWallBudget: input.gatewayRequestWallBudget,
         signal: input.signal
       })
       filter = wait.state
+      waitSkippedReason = wait.skippedReason
+      if (waitSkippedReason) {
+        input.auditCapture.addGatewayMetadata({
+          label: 'local_account_suppression_temporarily_blocked',
+          metadata: {
+            reason: waitSkippedReason,
+            coordinationRemainingMs: input.routeCoordinationBudget.remainingMs(),
+            serverRetryRemainingMs: input.serverRetryBudget.remainingMs(),
+            wallRemainingMs: input.gatewayRequestWallBudget.remainingMs()
+          }
+        })
+      }
     } finally {
       input.serverRetryBudget.pauseNoAvailableWait()
     }
@@ -86,7 +107,8 @@ export async function resolveLocalSuppressionFilter(input: {
   }
 
   const statusCode = 503
-  const responsePayload = gatewayErrorPayload('所有上游账户正在临时隔离，请稍后重试', 'service_unavailable')
+  const errorCode = waitSkippedReason ?? 'temporarily_blocked_local_account_suppression'
+  const responsePayload = gatewayErrorPayload('所有上游账户正在临时隔离，请稍后重试', 'service_unavailable', errorCode)
   if (!input.res.headersSent && filter.nextRetryAfterMs !== undefined) {
     input.res.setHeader('Retry-After', String(Math.max(1, Math.ceil(filter.nextRetryAfterMs / 1000))))
   }
@@ -101,7 +123,7 @@ export async function resolveLocalSuppressionFilter(input: {
     audit: {
       outcome: 'gateway_failed',
       errorPhase: 'dispatch',
-      errorCode: 'service_unavailable',
+      errorCode,
       errorMessage: responsePayload.error.message
     }
   })

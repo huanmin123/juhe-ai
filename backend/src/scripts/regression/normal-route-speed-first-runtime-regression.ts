@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import type { RouteStrategySpeedFirstConfig } from '../../domain/types.js'
+import type { NormalRouteSpeedFirstRuntimeConfig } from '../../modules/gateway/runtime/normal-route-latency-degradation.service.js'
 import { createRuntimeStateStore } from '../../shared/runtime-state-store.js'
 
 runtimeConfig.runtimeStateDriver = 'memory'
@@ -18,8 +18,8 @@ const {
   recordNormalRouteFirstByteSlowAsync,
   recordNormalRouteFirstByteSuccessAsync
 } = await import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js')
-const config: RouteStrategySpeedFirstConfig = {
-  firstByteThresholdMs: 30000,
+const config: NormalRouteSpeedFirstRuntimeConfig = {
+  firstByteDeadlineMs: 30000,
   slowTriggerCount: 2,
   slowWindowSeconds: 120,
   recoverySuccessCount: 3,

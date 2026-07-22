@@ -27,6 +27,12 @@ export interface StreamPipeResult {
   responseInspectionObservations?: ResponseInspectionDecision[]
   responseInspectionObservationOmittedCount?: number
   bodyOmission?: StreamBodyOmissionSummary
+  transportFailure?: StreamTransportFailure
+}
+
+export interface StreamTransportFailure {
+  kind: 'timeout' | 'read_incomplete'
+  reason: string
 }
 
 export interface StreamBodyOmissionSummary {

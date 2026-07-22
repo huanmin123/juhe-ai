@@ -219,76 +219,15 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     ? gatewayClientAllowsUpstreamSemanticInterpretation(clientStrategy)
     : false
   if (!upstreamResponse.body) {
-    if (!interpretUpstreamResponseSemantics) {
-      prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
-      input.downstreamCommitState.markTransportCommitted()
-      endResponse(res)
-      input.downstreamCommitState.markSemanticCommitted()
-      return {
-        alreadyFinalized: false,
-        usage: emptyUsage(),
-        firstTokenMs: Date.now() - startedAt,
-        errorPayload: {}
-      }
-    }
-    const errorMessage = '上游响应体为空'
-    await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-    auditCapture.completeAttempt(auditAttemptId, {
-      statusCode: upstreamResponse.status,
-      responseHeaders: upstreamResponse.headers,
-      success: false,
-      errorPhase: 'upstream_response',
-      errorCode: 'upstream_empty_body',
-      errorMessage
-    })
-    await recordCompletedUpstreamAttempt(req, {
-      ...usageContext,
-      account,
-      statusCode: upstreamResponse.status,
-      success: false,
-      stream: isEffectiveOpenAIStreamRequest(req, account),
-      startedAt,
-      usage: emptyUsage(),
-      requestSnapshot: usageContext.requestSnapshot,
-      responseSnapshot: buildUsageResponseSnapshot({
-        upstreamUrl,
-        statusCode: upstreamResponse.status,
-        headers: upstreamResponse.headers,
-        errorMessage
-      }),
-      errorCode: 'upstream_empty_body',
-      errorMessage
-    })
-    rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
-      statusCode: upstreamResponse.status,
-      errorCode: 'upstream_empty_body',
-      errorPhase: 'upstream_response',
-      errorMessage,
-      endpoint: usageContext.endpoint
-    })
-    if (automaticAccountStateMutationEnabled !== false) {
-      const localSuppression = suppressGatewayAccountLocally(account, settings, errorMessage)
-      if (usageContext.trafficSource === 'gateway') {
-        recordGatewayAccountFailureForPrecheck(account, settings, {
-          systemAccountId: usageContext.systemAccountId,
-          groupId: usageContext.groupId,
-          apiKeyId: usageContext.apiKeyId,
-          clientIp: usageContext.clientIp,
-          endpoint: usageContext.endpoint,
-          reason: errorMessage,
-          statusCode: upstreamResponse.status,
-          forcePrecheck: localSuppression.action === 'precheck_required',
-          localSuppressionDelayMs: localSuppression.delayMs
-        })
-      }
-    }
+    prepareUpstreamResponseForDownstream(res, upstreamResponse, true)
+    input.downstreamCommitState.markTransportCommitted()
+    endResponse(res)
+    input.downstreamCommitState.markSemanticCommitted()
     return {
       alreadyFinalized: false,
-      retryUpstream: true,
-      retryReason: 'upstream_protocol_failure',
-      excludeCurrentAccount: true,
-      message: errorMessage,
-      errorCode: 'upstream_empty_body'
+      usage: emptyUsage(),
+      firstTokenMs: Date.now() - startedAt,
+      errorPayload: {}
     }
   }
 
@@ -315,9 +254,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context, usageContext, shouldMutateAccountForStreamFailure(errorCode, context)),
       signal,
       {
-        clientRetryEnabled: interpretUpstreamResponseSemantics
-          && clientStrategy?.retryCoordination.committedFailureSignal === 'protocol_error_event',
-        interpretProtocolFailures: interpretUpstreamResponseSemantics,
+        clientRetryEnabled: false,
+        interpretProtocolFailures: false,
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
@@ -480,7 +418,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         excludeCurrentAccount: true,
         message: streamResult.message,
         errorCode: streamResult.errorCode,
-        uncommittedResponseBody: streamResult.uncommittedResponseBody
+        uncommittedResponseBody: streamResult.uncommittedResponseBody,
+        transportFailure: streamResult.transportFailure
       }
     }
     if (shouldRetryResponseInspectionOnServer(streamResult, res)) {
@@ -496,7 +435,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         excludeCurrentAccount: shouldExcludeCurrentAccountForStreamServerRetry(streamResult.responseInspection),
         message: streamResult.message,
         errorCode: streamResult.responseInspection.upstreamErrorCode ?? streamResult.errorCode,
-        uncommittedResponseBody: streamResult.uncommittedResponseBody
+        uncommittedResponseBody: streamResult.uncommittedResponseBody,
+        transportFailure: streamResult.transportFailure
       }
     }
     if (shouldRetryPreCommitStreamFailureOnServer(streamResult, res)) {
@@ -520,7 +460,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         excludeCurrentAccount: true,
         message: streamResult.message,
         errorCode: clientFacingErrorCode,
-        uncommittedResponseBody: streamResult.uncommittedResponseBody
+        uncommittedResponseBody: streamResult.uncommittedResponseBody,
+        transportFailure: streamResult.transportFailure
       }
     }
     if (
@@ -587,7 +528,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       accountId: account.id,
       firstTokenMs: streamResult.firstTokenMs
     })
-    return { alreadyFinalized: true }
+    return { alreadyFinalized: true, transportFailure: streamResult.transportFailure }
   }
 
   return {
@@ -718,77 +659,13 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     if (upstreamResponse.ok && isGeminiInteractionDeleteRequest(req, account)) {
       await deleteGeminiInteractionBeforeDownstreamCommit({ req, auditCapture, account, usageContext })
     }
-    if (!upstreamResponse.body && isSuccessfulEmptyUpstreamResponseAllowed({
-      req,
-      account,
-      statusCode: upstreamResponse.status
-    })) {
+    if (!upstreamResponse.body) {
       prepareUpstreamResponseForDownstream(res, upstreamResponse, false)
       input.downstreamCommitState.markTransportCommitted()
       endResponse(res)
       input.downstreamCommitState.markSemanticCommitted()
       firstTokenMs = Date.now() - startedAt
       markFirstOutput?.()
-    } else if (!upstreamResponse.body && interpretUpstreamResponseSemantics) {
-      const errorMessage = '上游响应体为空'
-      await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-      auditCapture.completeAttempt(auditAttemptId, {
-        statusCode: upstreamResponse.status,
-        responseHeaders: upstreamResponse.headers,
-        success: false,
-        errorPhase: 'upstream_response',
-        errorCode: 'upstream_empty_body',
-        errorMessage
-      })
-      await recordCompletedUpstreamAttempt(req, {
-        ...usageContext,
-        account,
-        statusCode: upstreamResponse.status,
-        success: false,
-        stream: isEffectiveOpenAIStreamRequest(req, account),
-        startedAt,
-        usage: emptyUsage(),
-        requestSnapshot: usageContext.requestSnapshot,
-        responseSnapshot: buildUsageResponseSnapshot({
-          upstreamUrl,
-          statusCode: upstreamResponse.status,
-          headers: upstreamResponse.headers,
-          errorMessage
-        }),
-        errorCode: 'upstream_empty_body',
-        errorMessage
-      })
-      rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
-        statusCode: upstreamResponse.status,
-        errorCode: 'upstream_empty_body',
-        errorPhase: 'upstream_response',
-        errorMessage,
-        endpoint: usageContext.endpoint
-      })
-      if (input.automaticAccountStateMutationEnabled !== false) {
-        const localSuppression = suppressGatewayAccountLocally(account, settings, errorMessage)
-        if (usageContext.trafficSource === 'gateway') {
-          recordGatewayAccountFailureForPrecheck(account, settings, {
-            systemAccountId: usageContext.systemAccountId,
-            groupId: usageContext.groupId,
-            apiKeyId: usageContext.apiKeyId,
-            clientIp: usageContext.clientIp,
-            endpoint: usageContext.endpoint,
-            reason: errorMessage,
-            statusCode: upstreamResponse.status,
-            forcePrecheck: localSuppression.action === 'precheck_required',
-            localSuppressionDelayMs: localSuppression.delayMs
-          })
-        }
-      }
-      return {
-        alreadyFinalized: false,
-        retryUpstream: true,
-        retryReason: 'upstream_protocol_failure',
-        excludeCurrentAccount: true,
-        message: errorMessage,
-        errorCode: 'upstream_empty_body'
-      }
     } else if (upstreamResponse.body) {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
       const inspectJsonResponse = isCodexResponsesGuardEligible(input)
@@ -854,7 +731,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             clientStrategy: input.clientStrategy,
             accountStateMutationEnabled: accountStateMutationEnabled !== false,
             automaticAccountStateMutationEnabled: input.automaticAccountStateMutationEnabled !== false,
-            protocolValidationEnabled: interpretUpstreamResponseSemantics,
+            protocolValidationEnabled: false,
             downstreamCommitState: input.downstreamCommitState,
             onCodexResponsesGuardResult: (result) => {
               if (result.outcome === 'repaired_safe' || result.outcome === 'repaired_bridge') {
@@ -1141,7 +1018,13 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         accountId: account.id,
         firstTokenMs
       })
-      return { alreadyFinalized: true }
+      return {
+        alreadyFinalized: true,
+        transportFailure: {
+          kind: 'read_incomplete',
+          reason: errorMessage
+        }
+      }
     }
     throw error
   }
@@ -1261,12 +1144,7 @@ function recordCodexResponsesGuardCoverageGap(input: HandleUpstreamResponseInput
 function managementResponseInspectionPoliciesForInput(
   input: HandleUpstreamResponseInput
 ): ResponseInspectionPolicySummary[] | undefined {
-  const interpretUpstreamResponseSemantics = input.clientStrategy
-    ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
-    : false
-  return interpretUpstreamResponseSemantics
-    ? input.responseInspectionPolicies
-    : input.responseInspectionPolicies?.filter((policy) => policy.defaultRule !== true)
+  return undefined
 }
 
 function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponseInput) {

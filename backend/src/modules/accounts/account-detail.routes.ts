@@ -8,7 +8,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
 import { loadOwnerAccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
-import { sanitizeAccountApiKeyRuntimeResponse, sanitizeAccountBasicDetailResponse, sanitizeAccountEditBasicDetailResponse, sanitizeAccountResponse } from './account-response-sanitizer.js'
+import { sanitizeAccountApiKeyRuntimeResponse, sanitizeAccountBasicDetailResponse, sanitizeAccountEditBasicDetailResponse, sanitizeAccountResponse, sanitizeAccountRuntimeAvailabilityResponse } from './account-response-sanitizer.js'
 
 export function registerAccountDetailRoutes(router: Router): void {
   router.get('/:id/api-key-runtime', async (req, res, next) => {
@@ -157,7 +157,9 @@ async function loadEditableAccountDetail(accountId: string, query: Record<string
   }
   const account = await findAccountForTestAsync(accountId, requestAccess, visibleAccount)
   if (!account) return undefined
-  return applyServerAccountRuntimeToAccount(await hydrateEditableBalanceConfiguration(account))
+  return sanitizeAccountRuntimeAvailabilityResponse(
+    await applyServerAccountRuntimeToAccount(await hydrateEditableBalanceConfiguration(account))
+  )
 }
 
 async function hydrateEditableBalanceConfiguration(account: AccountSummary): Promise<AccountSummary> {

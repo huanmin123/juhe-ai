@@ -11,6 +11,10 @@ export interface NormalRouteLatencyDegradationScope {
   groupId: string
 }
 
+export interface NormalRouteSpeedFirstRuntimeConfig extends RouteStrategySpeedFirstConfig {
+  firstByteDeadlineMs: number
+}
+
 export interface NormalRouteLatencyDegradationOrderResult<T> {
   accounts: T[]
   applied: boolean
@@ -41,7 +45,7 @@ export interface NormalRouteLatencyProbeCandidate {
   accountName?: string
   runtimeKey: string
   scope: NormalRouteLatencyDegradationScope
-  config: RouteStrategySpeedFirstConfig
+  config: NormalRouteSpeedFirstRuntimeConfig
   degradedUntil: string
   nextProbeAt: string
   recoverySuccessCount: number
@@ -53,7 +57,7 @@ interface NormalRouteLatencyState {
   accountName?: string
   runtimeKey: string
   scope: NormalRouteLatencyDegradationScope
-  config: RouteStrategySpeedFirstConfig
+  config: NormalRouteSpeedFirstRuntimeConfig
   firstSlowAtMs: number
   lastSlowAtMs: number
   slowCount: number
@@ -103,7 +107,7 @@ const latencyStateInitialGenerationEvent: NormalRouteLatencyGenerationEvent = {
 export async function orderGatewayAccountsByNormalRouteLatencyDegradationAsync<T extends SuppressibleGatewayAccount>(
   accounts: T[],
   scope: NormalRouteLatencyDegradationScope | undefined,
-  config: RouteStrategySpeedFirstConfig | undefined,
+  config: NormalRouteSpeedFirstRuntimeConfig | undefined,
   _modelPriority?: GatewayAccountModelPriority
 ): Promise<NormalRouteLatencyDegradationOrderResult<T>> {
   if (!scope || !config || accounts.length === 0) {
@@ -162,7 +166,7 @@ export async function orderGatewayAccountsByNormalRouteLatencyDegradationAsync<T
 export async function recordNormalRouteFirstByteSlowAsync(
   account: SuppressibleGatewayAccount,
   scope: NormalRouteLatencyDegradationScope | undefined,
-  config: RouteStrategySpeedFirstConfig | undefined,
+  config: NormalRouteSpeedFirstRuntimeConfig | undefined,
   reason = '普通路由速度优先首字等待超时'
 ): Promise<NormalRouteLatencySlowResult | undefined> {
   if (!scope || !config) return undefined
@@ -176,7 +180,7 @@ export async function recordNormalRouteFirstByteSlowAsync(
 async function recordNormalRouteFirstByteSlowLockedAsync(
   account: SuppressibleGatewayAccount,
   scope: NormalRouteLatencyDegradationScope,
-  config: RouteStrategySpeedFirstConfig,
+  config: NormalRouteSpeedFirstRuntimeConfig,
   reason: string,
   key: string,
   generation: string
@@ -231,10 +235,10 @@ async function recordNormalRouteFirstByteSlowLockedAsync(
 export async function recordNormalRouteFirstByteSuccessAsync(
   account: SuppressibleGatewayAccount,
   scope: NormalRouteLatencyDegradationScope | undefined,
-  config: RouteStrategySpeedFirstConfig | undefined,
+  config: NormalRouteSpeedFirstRuntimeConfig | undefined,
   firstByteMs: number | undefined
 ): Promise<NormalRouteLatencySuccessResult | undefined> {
-  if (!scope || !config || firstByteMs === undefined || firstByteMs > config.firstByteThresholdMs) return undefined
+  if (!scope || !config || firstByteMs === undefined || firstByteMs > config.firstByteDeadlineMs) return undefined
   const key = accountLatencyStateKey(scope, account)
   const generation = await loadLatencyStateGeneration()
   return withLatencyStateMutationLock(key, generation, () =>
@@ -244,7 +248,7 @@ export async function recordNormalRouteFirstByteSuccessAsync(
 
 async function recordNormalRouteFirstByteSuccessLockedAsync(
   account: SuppressibleGatewayAccount,
-  config: RouteStrategySpeedFirstConfig,
+  config: NormalRouteSpeedFirstRuntimeConfig,
   key: string,
   generation: string
 ): Promise<NormalRouteLatencySuccessResult | undefined> {
@@ -587,12 +591,12 @@ function probeCandidateFromState(
   }
 }
 
-function latencyStateTtlMs(config: RouteStrategySpeedFirstConfig, degraded: boolean): number {
+function latencyStateTtlMs(config: NormalRouteSpeedFirstRuntimeConfig, degraded: boolean): number {
   const seconds = degraded ? config.degradedTtlSeconds : config.slowWindowSeconds
   return Math.max(1, seconds) * 1000
 }
 
-function nextProbeDelayMs(config: RouteStrategySpeedFirstConfig, key: string): number {
+function nextProbeDelayMs(config: NormalRouteSpeedFirstRuntimeConfig, key: string): number {
   const baseMs = Math.max(10, config.probeIntervalSeconds) * 1000
   const jitterRatio = stableProbeJitterRatio(key)
   return Math.max(1000, Math.trunc(baseMs + baseMs * jitterRatio))
@@ -896,10 +900,10 @@ function isNormalRouteLatencyDegradationScope(value: unknown): value is NormalRo
     && typeof record.groupId === 'string' && record.groupId.trim() !== ''
 }
 
-function isRouteStrategySpeedFirstConfig(value: unknown): value is RouteStrategySpeedFirstConfig {
+function isRouteStrategySpeedFirstConfig(value: unknown): value is NormalRouteSpeedFirstRuntimeConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const record = value as Record<string, unknown>
-  return isFinitePositiveInteger(record.firstByteThresholdMs)
+  return isFinitePositiveInteger(record.firstByteDeadlineMs)
     && isFinitePositiveInteger(record.slowTriggerCount)
     && isFinitePositiveInteger(record.slowWindowSeconds)
     && isFinitePositiveInteger(record.recoverySuccessCount)

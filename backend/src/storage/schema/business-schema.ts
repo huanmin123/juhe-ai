@@ -304,6 +304,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       config_revision INTEGER NOT NULL DEFAULT 1,
+      dispatch_revision INTEGER NOT NULL DEFAULT 1 CHECK (dispatch_revision >= 1),
+      circuit_projection_revision INTEGER NOT NULL DEFAULT 0 CHECK (circuit_projection_revision >= 0 AND circuit_projection_revision <= dispatch_revision),
       system_account_id TEXT NOT NULL,
       provider_code TEXT NOT NULL,
       provider_protocol_profile_id TEXT NOT NULL,
@@ -366,6 +368,92 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (proxy_profile_id) REFERENCES proxy_profiles(id),
       FOREIGN KEY (authorization_instance_source_account_id) REFERENCES accounts(id),
       FOREIGN KEY (authorization_instance_authorization_id) REFERENCES resource_authorizations(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS account_circuit_incidents (
+      circuit_scope_key TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      account_runtime_key TEXT NOT NULL,
+      scope_kind TEXT NOT NULL CHECK (scope_kind IN ('account', 'key', 'protocol_model')),
+      key_fingerprint TEXT,
+      protocol_code TEXT,
+      request_lane TEXT,
+      model_family TEXT,
+      incident_id TEXT NOT NULL,
+      parent_incident_id TEXT,
+      child_incident_ids_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(child_incident_ids_json) AND json_type(child_incident_ids_json) = 'array'),
+      caused_by_terminal_outcome_id TEXT,
+      state TEXT NOT NULL CHECK (state IN ('CLOSED', 'SUSPECT', 'OPEN', 'HALF_OPEN', 'RECOVERING', 'PERSISTING', 'SHADOWED_BY_PERSISTENT')),
+      failure_scope TEXT CHECK (failure_scope IN ('account', 'key', 'protocol_model')),
+      generation INTEGER NOT NULL CHECK (generation >= 0),
+      dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
+      ledger_revision INTEGER NOT NULL CHECK (ledger_revision >= 1),
+      projected_ledger_revision INTEGER NOT NULL DEFAULT 0 CHECK (projected_ledger_revision >= 0 AND projected_ledger_revision <= ledger_revision),
+      transition_id TEXT NOT NULL,
+      cooldown_observation_generation INTEGER NOT NULL DEFAULT 0 CHECK (cooldown_observation_generation >= 0),
+      open_until_ms INTEGER,
+      next_transition_at_ms INTEGER,
+      lease_id TEXT,
+      lease_purpose TEXT CHECK (lease_purpose IN ('confirmation', 'half_open', 'recovery', 'cooldown_retest', 'background_probe')),
+      lease_owner_run_id TEXT,
+      lease_until_ms INTEGER,
+      attempt_started_at_ms INTEGER,
+      attempt_hard_deadline_ms INTEGER,
+      upstream_attempt_observed INTEGER NOT NULL DEFAULT 0 CHECK (upstream_attempt_observed IN (0, 1)),
+      backoff_level INTEGER NOT NULL DEFAULT 0 CHECK (backoff_level >= 0),
+      consecutive_failures INTEGER NOT NULL DEFAULT 0 CHECK (consecutive_failures >= 0),
+      recovering_successes INTEGER NOT NULL DEFAULT 0 CHECK (recovering_successes >= 0),
+      last_failure_class TEXT CHECK (last_failure_class IN ('connect_failed', 'timeout_before_complete', 'read_interrupted', 'incomplete_response', 'explicit_policy')),
+      retained_until_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      CHECK (length(circuit_scope_key) BETWEEN 1 AND 2048),
+      CHECK (length(account_runtime_key) BETWEEN 1 AND 1024),
+      CHECK (length(incident_id) BETWEEN 1 AND 256),
+      CHECK (length(transition_id) BETWEEN 1 AND 256),
+      CHECK ((scope_kind = 'account' AND key_fingerprint IS NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL)
+        OR (scope_kind = 'key' AND key_fingerprint IS NOT NULL AND protocol_code IS NULL AND request_lane IS NULL AND model_family IS NULL)
+        OR (scope_kind = 'protocol_model' AND key_fingerprint IS NULL AND protocol_code IS NOT NULL AND request_lane IS NOT NULL AND model_family IS NOT NULL)),
+      CHECK ((state = 'CLOSED' AND retained_until_ms IS NOT NULL) OR (state <> 'CLOSED' AND retained_until_ms IS NULL))
+    );
+
+    CREATE TABLE IF NOT EXISTS account_circuit_outbox (
+      event_id TEXT PRIMARY KEY,
+      projection_key TEXT NOT NULL,
+      dedupe_key TEXT NOT NULL,
+      event_type TEXT NOT NULL CHECK (event_type IN ('dispatch_revision_changed', 'incident_changed')),
+      account_id TEXT NOT NULL,
+      account_runtime_key TEXT NOT NULL,
+      circuit_scope_key TEXT,
+      incident_id TEXT,
+      transition_id TEXT NOT NULL,
+      dispatch_revision INTEGER NOT NULL CHECK (dispatch_revision >= 1),
+      generation INTEGER,
+      ledger_revision INTEGER,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'dispatched')),
+      available_at_ms INTEGER NOT NULL,
+      claim_token TEXT,
+      claimed_by TEXT,
+      claim_until_ms INTEGER,
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      last_error_class TEXT,
+      acknowledged_at_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      UNIQUE (projection_key, dedupe_key),
+      CHECK (length(event_id) BETWEEN 1 AND 256),
+      CHECK (length(projection_key) BETWEEN 1 AND 128),
+      CHECK (length(dedupe_key) BETWEEN 1 AND 256),
+      CHECK (length(account_runtime_key) BETWEEN 1 AND 1024),
+      CHECK (length(transition_id) BETWEEN 1 AND 256),
+      CHECK (last_error_class IS NULL OR length(last_error_class) BETWEEN 1 AND 64),
+      CHECK ((event_type = 'dispatch_revision_changed' AND circuit_scope_key IS NULL AND incident_id IS NULL AND generation IS NULL AND ledger_revision IS NULL)
+        OR (event_type = 'incident_changed' AND circuit_scope_key IS NOT NULL AND incident_id IS NOT NULL AND generation IS NOT NULL AND ledger_revision IS NOT NULL)),
+      CHECK ((status = 'pending' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NULL)
+        OR (status = 'processing' AND claim_token IS NOT NULL AND claimed_by IS NOT NULL AND claim_until_ms IS NOT NULL AND acknowledged_at_ms IS NULL)
+        OR (status = 'dispatched' AND claim_token IS NULL AND claimed_by IS NULL AND claim_until_ms IS NULL AND acknowledged_at_ms IS NOT NULL))
     );
 
     CREATE TABLE IF NOT EXISTS account_name_search_terms (
@@ -1120,6 +1208,23 @@ function ensureAuthorizationInstanceIndexes(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_deleted_cleanup
       ON accounts(deleted_at ASC, updated_at ASC, id ASC)
       WHERE deleted_at IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_incidents_account ON account_circuit_incidents(account_id, updated_at_ms, circuit_scope_key);
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_incidents_runtime_state ON account_circuit_incidents(account_runtime_key, state, updated_at_ms, circuit_scope_key);
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_incidents_projection_gap
+      ON account_circuit_incidents(updated_at_ms, circuit_scope_key)
+      WHERE projected_ledger_revision < ledger_revision;
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_incidents_closed_cleanup
+      ON account_circuit_incidents(retained_until_ms, updated_at_ms, circuit_scope_key)
+      WHERE state = 'CLOSED';
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_outbox_account ON account_circuit_outbox(account_id, dispatch_revision, created_at_ms, event_id);
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_outbox_scope ON account_circuit_outbox(circuit_scope_key, ledger_revision, created_at_ms, event_id)
+      WHERE circuit_scope_key IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_outbox_claim
+      ON account_circuit_outbox(status, available_at_ms, claim_until_ms, created_at_ms, event_id)
+      WHERE status IN ('pending', 'processing');
+    CREATE INDEX IF NOT EXISTS idx_account_circuit_outbox_ack_cleanup
+      ON account_circuit_outbox(acknowledged_at_ms, event_id)
+      WHERE status = 'dispatched';
     CREATE INDEX IF NOT EXISTS idx_group_accounts_dispatch_priority ON group_accounts(group_id, enabled, local_fallback_enabled, local_super_priority_enabled, local_priority, created_at, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_accounts_dispatch_candidate_window
       ON group_accounts(group_id, system_account_id, enabled, local_fallback_enabled ASC, local_super_priority_enabled DESC, local_priority ASC, created_at ASC, account_id ASC);

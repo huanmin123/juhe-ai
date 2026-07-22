@@ -88,8 +88,8 @@ async function assertGoRouteStrategyInvalidationClearsAllLatencyState(): Promise
     import('../../modules/gateway/runtime/runtime-cache.service.js'),
     import('../../shared/logger.js')
   ])
-  const config: RouteStrategySpeedFirstConfig = {
-    firstByteThresholdMs: 30000,
+  const config: RouteStrategySpeedFirstConfig & { firstByteDeadlineMs: number } = {
+    firstByteDeadlineMs: 30000,
     slowTriggerCount: 2,
     slowWindowSeconds: 120,
     recoverySuccessCount: 3,
