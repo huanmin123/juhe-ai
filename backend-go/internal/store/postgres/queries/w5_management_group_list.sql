@@ -228,3 +228,23 @@ SELECT
   group_rows.group_authorization_id
 FROM group_rows
 ORDER BY group_rows.effective_updated_at DESC, group_rows.id DESC;
+
+-- name: ListManagementGroupConcurrencyAccountIDs :many
+SELECT
+  group_accounts.group_id,
+  coalesce(accounts.authorization_instance_source_account_id, accounts.id)::text AS account_id
+FROM juhe_business.group_accounts AS group_accounts
+INNER JOIN juhe_business.groups AS groups
+  ON groups.id = group_accounts.group_id
+INNER JOIN juhe_business.accounts AS accounts
+  ON accounts.id = group_accounts.account_id
+  AND accounts.deleted_at IS NULL
+LEFT JOIN juhe_business.resource_authorizations AS resource_authorizations
+  ON resource_authorizations.id = group_accounts.account_authorization_id
+WHERE group_accounts.group_id = ANY(sqlc.arg(group_ids)::text[])
+  AND group_accounts.enabled = true
+  AND (
+    accounts.system_account_id = groups.system_account_id
+    OR resource_authorizations.status IN ('active', 'paused', 'expired')
+  )
+ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC;

@@ -255,7 +255,7 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 					Enabled:              true,
 					GroupType:            "personal",
 					AccessType:           "owner",
-					AccountStats:         managementgroups.ListAccountStats{Total: 2, Available: 1},
+					AccountStats:         managementgroups.ListAccountStats{Total: 2, Available: 1, CurrentConcurrency: 17, CurrentConcurrencyAvailable: true},
 				},
 				{
 					ID:                   "grp_authorized",
@@ -267,7 +267,7 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 					AccessType:           "authorized",
 					GroupAuthorizationID: "rauthgrant_group",
 					AuthorizationStatus:  "active",
-					AccountStats:         managementgroups.ListAccountStats{Total: 3, Available: 2},
+					AccountStats:         managementgroups.ListAccountStats{Total: 3, Available: 2, CurrentConcurrency: 9, CurrentConcurrencyAvailable: true},
 					AuthorizationSourceSummary: &managementgroups.AuthorizationSourceSummary{
 						ActiveSourceCount: 1,
 						HasManual:         true,
@@ -275,9 +275,10 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 					},
 				},
 			},
-			Total:    2,
-			Page:     1,
-			PageSize: 50,
+			Total:           2,
+			Page:            1,
+			PageSize:        50,
+			RuntimeSnapshot: managementgroups.RuntimeSnapshot{AccountConcurrencyAvailable: true},
 		},
 	}
 	handler := newManagementGroupListHandler(service, managementGroupScopeSelf)
@@ -299,12 +300,8 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 		"accountCount",
 		"authorizationLimits",
 		"authorizationSources",
-		"currentConcurrency",
-		"currentConcurrencyAvailable",
 		"permissions",
-		"runtimeSnapshot",
 		"schedulingPolicy",
-		"todayUsage",
 		"usage",
 	} {
 		if strings.Contains(raw, forbidden) {
@@ -325,8 +322,8 @@ func TestManagementGroupListHandlerReturnsProgressiveJSONWithoutDetailFields(t *
 	if err := json.Unmarshal(rec.Body.Bytes(), &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if _, exists := envelope.Data.Items[0].AccountStats["currentConcurrency"]; exists {
-		t.Fatalf("account stats exposed currentConcurrency: %s", raw)
+	if got := string(envelope.Data.Items[0].AccountStats["currentConcurrency"]); got != "17" {
+		t.Fatalf("account stats currentConcurrency = %s, body = %s", got, raw)
 	}
 }
 

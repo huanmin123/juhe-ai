@@ -120,6 +120,52 @@ func (q *Queries) ListManagementGroupAuthorizationSources(ctx context.Context, a
 	return items, nil
 }
 
+const listManagementGroupConcurrencyAccountIDs = `-- name: ListManagementGroupConcurrencyAccountIDs :many
+SELECT
+  group_accounts.group_id,
+  coalesce(accounts.authorization_instance_source_account_id, accounts.id)::text AS account_id
+FROM juhe_business.group_accounts AS group_accounts
+INNER JOIN juhe_business.groups AS groups
+  ON groups.id = group_accounts.group_id
+INNER JOIN juhe_business.accounts AS accounts
+  ON accounts.id = group_accounts.account_id
+  AND accounts.deleted_at IS NULL
+LEFT JOIN juhe_business.resource_authorizations AS resource_authorizations
+  ON resource_authorizations.id = group_accounts.account_authorization_id
+WHERE group_accounts.group_id = ANY($1::text[])
+  AND group_accounts.enabled = true
+  AND (
+    accounts.system_account_id = groups.system_account_id
+    OR resource_authorizations.status IN ('active', 'paused', 'expired')
+  )
+ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC
+`
+
+type ListManagementGroupConcurrencyAccountIDsRow struct {
+	GroupID   string
+	AccountID string
+}
+
+func (q *Queries) ListManagementGroupConcurrencyAccountIDs(ctx context.Context, groupIds []string) ([]ListManagementGroupConcurrencyAccountIDsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementGroupConcurrencyAccountIDs, groupIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementGroupConcurrencyAccountIDsRow
+	for rows.Next() {
+		var i ListManagementGroupConcurrencyAccountIDsRow
+		if err := rows.Scan(&i.GroupID, &i.AccountID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listManagementGroupStatusSnapshotRows = `-- name: ListManagementGroupStatusSnapshotRows :many
 WITH group_rows AS (
   SELECT

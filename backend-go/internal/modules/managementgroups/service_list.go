@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -67,21 +68,29 @@ type ListItem struct {
 }
 
 type ListAccountStats struct {
-	Total            int `json:"total"`
-	Available        int `json:"available"`
-	Active           int `json:"active"`
-	Disabled         int `json:"disabled"`
-	Error            int `json:"error"`
-	RateLimited      int `json:"rateLimited"`
-	ConcurrencyLimit int `json:"concurrencyLimit"`
+	Total                       int          `json:"total"`
+	Available                   int          `json:"available"`
+	Active                      int          `json:"active"`
+	Disabled                    int          `json:"disabled"`
+	Error                       int          `json:"error"`
+	RateLimited                 int          `json:"rateLimited"`
+	ConcurrencyLimit            int          `json:"concurrencyLimit"`
+	CurrentConcurrency          int          `json:"currentConcurrency"`
+	CurrentConcurrencyAvailable bool         `json:"currentConcurrencyAvailable"`
+	TodayUsage                  UsageSummary `json:"todayUsage"`
+}
+
+type RuntimeSnapshot struct {
+	AccountConcurrencyAvailable bool `json:"accountConcurrencyAvailable"`
 }
 
 type ListResult struct {
-	Items    []ListItem `json:"items"`
-	Total    int        `json:"total"`
-	HasMore  bool       `json:"hasMore"`
-	Page     int        `json:"page"`
-	PageSize int        `json:"pageSize"`
+	Items           []ListItem      `json:"items"`
+	Total           int             `json:"total"`
+	HasMore         bool            `json:"hasMore"`
+	Page            int             `json:"page"`
+	PageSize        int             `json:"pageSize"`
+	RuntimeSnapshot RuntimeSnapshot `json:"runtimeSnapshot"`
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
@@ -111,7 +120,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		return managementGroupListResult(nil, page, pageSize, hasMore), nil
 	}
 
-	enrichment, err := s.loadManagementGroupListEnrichment(ctx, rows)
+	enrichment, err := s.loadManagementGroupListEnrichment(ctx, rows, s.now())
 	if err != nil {
 		return ListResult{}, err
 	}
@@ -131,19 +140,26 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 }
 
 type managementGroupListEnrichment struct {
-	accountStatsByGroup map[string]port.ManagementGroupAccountStatsRow
-	sourceSummaryByAuth map[string]AuthorizationSourceSummary
+	accountStatsByGroup         map[string]port.ManagementGroupAccountStatsRow
+	sourceSummaryByAuth         map[string]AuthorizationSourceSummary
+	todayUsageByGroup           map[string]port.ManagementAccountUsageSummary
+	currentConcurrencyByGroup   map[string]int
+	accountConcurrencyAvailable bool
 }
 
 func (s *Service) loadManagementGroupListEnrichment(
 	ctx context.Context,
 	rows []port.ManagementGroupListRow,
+	now time.Time,
 ) (managementGroupListEnrichment, error) {
 	groupIDs := make([]string, 0, len(rows))
+	usageInputs := make([]port.ManagementGroupUsageLookupInput, 0, len(rows))
 	authorizationIDs := make([]string, 0, len(rows))
 	enrichment := managementGroupListEnrichment{
-		accountStatsByGroup: make(map[string]port.ManagementGroupAccountStatsRow, len(rows)),
-		sourceSummaryByAuth: make(map[string]AuthorizationSourceSummary),
+		accountStatsByGroup:       make(map[string]port.ManagementGroupAccountStatsRow, len(rows)),
+		sourceSummaryByAuth:       make(map[string]AuthorizationSourceSummary),
+		todayUsageByGroup:         make(map[string]port.ManagementAccountUsageSummary, len(rows)),
+		currentConcurrencyByGroup: make(map[string]int, len(rows)),
 	}
 	for _, row := range rows {
 		groupIDs = append(groupIDs, row.ID)
@@ -152,41 +168,89 @@ func (s *Service) loadManagementGroupListEnrichment(
 			authorizationID := strings.TrimSpace(row.GroupAuthorizationID)
 			if authorizationID != "" {
 				authorizationIDs = append(authorizationIDs, authorizationID)
+				usageInputs = append(usageInputs, port.ManagementGroupUsageLookupInput{Key: row.ID, SystemAccountID: row.SystemAccountID, ScopeType: "group_authorization", ScopeID: authorizationID})
 			}
 			continue
 		}
+		usageInputs = append(usageInputs, port.ManagementGroupUsageLookupInput{Key: row.ID, SystemAccountID: row.SystemAccountID, ScopeType: "group", ScopeID: row.ID})
 	}
 
-	statsRows, err := s.listStore.ListManagementGroupAccountStats(ctx, groupIDs)
-	if err != nil {
+	var (
+		statsRows            []port.ManagementGroupAccountStatsRow
+		todayUsageRows       []port.ManagementGroupUsageRow
+		sourceRows           []port.ManagementGroupAuthorizationSourceRow
+		currentConcurrency   map[string]int
+		concurrencyAvailable bool
+	)
+	errCh := make(chan error, 4)
+	var wait sync.WaitGroup
+	wait.Add(3)
+	go func() {
+		defer wait.Done()
+		var err error
+		statsRows, err = s.listStore.ListManagementGroupAccountStats(ctx, groupIDs)
+		if err != nil {
+			errCh <- err
+		}
+	}()
+	go func() {
+		defer wait.Done()
+		statDate, err := s.managementGroupListStatDate(ctx, now)
+		if err == nil {
+			todayUsageRows, err = s.listStore.ListManagementGroupUsageDaily(ctx, statDate, usageInputs)
+		}
+		if err != nil {
+			errCh <- err
+		}
+	}()
+	go func() {
+		defer wait.Done()
+		var err error
+		currentConcurrency, concurrencyAvailable, err = s.loadManagementGroupCurrentConcurrency(ctx, groupIDs, now)
+		if err != nil {
+			errCh <- err
+		}
+	}()
+	if len(authorizationIDs) > 0 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			var err error
+			sourceRows, err = s.listStore.ListManagementGroupAuthorizationSources(ctx, authorizationIDs)
+			if err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wait.Wait()
+	close(errCh)
+	for err := range errCh {
 		return managementGroupListEnrichment{}, err
 	}
+
 	for _, row := range statsRows {
 		enrichment.accountStatsByGroup[managementGroupStatsKey(row.SystemAccountID, row.GroupID)] = row
 	}
-
-	if len(authorizationIDs) == 0 {
-		return enrichment, nil
+	for _, row := range todayUsageRows {
+		enrichment.todayUsageByGroup[row.Key] = row.Usage
 	}
-	sourceRows, err := s.listStore.ListManagementGroupAuthorizationSources(ctx, authorizationIDs)
-	if err != nil {
-		return managementGroupListEnrichment{}, err
-	}
+	enrichment.currentConcurrencyByGroup = currentConcurrency
+	enrichment.accountConcurrencyAvailable = concurrencyAvailable
 	enrichment.sourceSummaryByAuth = summarizeManagementGroupAuthorizationSources(sourceRows)
 	return enrichment, nil
 }
 
 func (s *Service) managementGroupListStatDate(ctx context.Context, now time.Time) (string, error) {
+	timezone := "UTC"
 	if s.usageStatsTimezoneStore == nil {
-		return "", fmt.Errorf("management usage stats timezone reader is required")
+		return now.In(time.UTC).Format("2006-01-02"), nil
 	}
-	timezone, found, err := s.usageStatsTimezoneStore.GetManagementUsageStatsTimezone(ctx)
+	value, found, err := s.usageStatsTimezoneStore.GetManagementUsageStatsTimezone(ctx)
 	if err != nil {
 		return "", err
 	}
-	timezone = strings.TrimSpace(timezone)
-	if !found || timezone == "" {
-		return "", fmt.Errorf("系统设置缺少 usageStatsTimezone")
+	if found && strings.TrimSpace(value) != "" {
+		timezone = strings.TrimSpace(value)
 	}
 	location, err := timezonecompat.LoadNodeLocation(timezone)
 	if err != nil {
@@ -244,6 +308,9 @@ func managementGroupListResult(items []ListItem, page int, pageSize int, hasMore
 		HasMore:  hasMore,
 		Page:     page,
 		PageSize: pageSize,
+		RuntimeSnapshot: RuntimeSnapshot{
+			AccountConcurrencyAvailable: len(items) == 0 || items[0].AccountStats.CurrentConcurrencyAvailable,
+		},
 	}
 }
 
@@ -284,13 +351,16 @@ func managementGroupListItem(
 		IsDefault:              isDefault,
 		GroupType:              groupType,
 		AccountStats: ListAccountStats{
-			Total:            statsRow.Total,
-			Available:        statsRow.Available,
-			Active:           statsRow.Active,
-			Disabled:         statsRow.Disabled,
-			Error:            statsRow.Error,
-			RateLimited:      statsRow.RateLimited,
-			ConcurrencyLimit: statsRow.ConcurrencyLimit,
+			Total:                       statsRow.Total,
+			Available:                   statsRow.Available,
+			Active:                      statsRow.Active,
+			Disabled:                    statsRow.Disabled,
+			Error:                       statsRow.Error,
+			RateLimited:                 statsRow.RateLimited,
+			ConcurrencyLimit:            statsRow.ConcurrencyLimit,
+			CurrentConcurrency:          enrichment.currentConcurrencyByGroup[row.ID],
+			CurrentConcurrencyAvailable: enrichment.accountConcurrencyAvailable,
+			TodayUsage:                  managementGroupUsageSummary(enrichment.todayUsageByGroup[row.ID]),
 		},
 		AccessType:                 accessType,
 		GroupAuthorizationID:       row.GroupAuthorizationID,

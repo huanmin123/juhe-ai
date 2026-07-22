@@ -302,6 +302,13 @@ func (s *managementGroupListQueriesStub) ListManagementGroupStatusSnapshotRows(
 	return s.snapshotRows, s.snapshotErr
 }
 
+func (s *managementGroupListQueriesStub) ListManagementGroupConcurrencyAccountIDs(
+	_ context.Context,
+	_ []string,
+) ([]postgresqueries.ListManagementGroupConcurrencyAccountIDsRow, error) {
+	return nil, nil
+}
+
 func (s *managementGroupListQueriesStub) ListManagementGroups(
 	_ context.Context,
 	arg postgresqueries.ListManagementGroupsParams,

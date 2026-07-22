@@ -20,6 +20,7 @@ const (
 type managementGroupListQueries interface {
 	ListManagementGroups(ctx context.Context, arg postgresqueries.ListManagementGroupsParams) ([]postgresqueries.ListManagementGroupsRow, error)
 	ListManagementGroupStatusSnapshotRows(ctx context.Context, arg postgresqueries.ListManagementGroupStatusSnapshotRowsParams) ([]postgresqueries.ListManagementGroupStatusSnapshotRowsRow, error)
+	ListManagementGroupConcurrencyAccountIDs(ctx context.Context, groupIDs []string) ([]postgresqueries.ListManagementGroupConcurrencyAccountIDsRow, error)
 	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]postgresqueries.ListManagementGroupAccountStatsRow, error)
 	ListManagementGroupUsageTotals(ctx context.Context, arg postgresqueries.ListManagementGroupUsageTotalsParams) ([]postgresqueries.ListManagementGroupUsageTotalsRow, error)
 	ListManagementGroupUsageDaily(ctx context.Context, arg postgresqueries.ListManagementGroupUsageDailyParams) ([]postgresqueries.ListManagementGroupUsageDailyRow, error)
@@ -32,6 +33,22 @@ func (s *Store) ListManagementGroups(ctx context.Context, input port.ManagementG
 
 func (s *Store) ListManagementGroupStatusSnapshotRows(ctx context.Context, input port.ManagementGroupStatusSnapshotInput) ([]port.ManagementGroupStatusSnapshotRow, error) {
 	return listManagementGroupStatusSnapshotRows(ctx, s.queries(), input)
+}
+
+func (s *Store) ListManagementGroupConcurrencyAccountIDs(ctx context.Context, groupIDs []string) ([]port.ManagementGroupConcurrencyAccountIDRow, error) {
+	ids := uniqueStrings(groupIDs, maxManagementGroupListBatch)
+	if len(ids) == 0 {
+		return []port.ManagementGroupConcurrencyAccountIDRow{}, nil
+	}
+	rows, err := s.queries().ListManagementGroupConcurrencyAccountIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("list management group concurrency account ids: %w", err)
+	}
+	items := make([]port.ManagementGroupConcurrencyAccountIDRow, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, port.ManagementGroupConcurrencyAccountIDRow{GroupID: row.GroupID, AccountID: row.AccountID})
+	}
+	return items, nil
 }
 
 func (s *Store) ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]port.ManagementGroupAccountStatsRow, error) {

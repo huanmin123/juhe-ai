@@ -1821,6 +1821,15 @@ type ManagementGroupAccountStatsReader interface {
 	ListManagementGroupAccountStats(ctx context.Context, groupIDs []string) ([]ManagementGroupAccountStatsRow, error)
 }
 
+type ManagementGroupConcurrencyAccountIDRow struct {
+	GroupID   string
+	AccountID string
+}
+
+type ManagementGroupDynamicReader interface {
+	ListManagementGroupConcurrencyAccountIDs(ctx context.Context, groupIDs []string) ([]ManagementGroupConcurrencyAccountIDRow, error)
+}
+
 type ManagementGroupUsageReader interface {
 	ListManagementGroupUsageTotals(ctx context.Context, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)
 	ListManagementGroupUsageDaily(ctx context.Context, statDate string, inputs []ManagementGroupUsageLookupInput) ([]ManagementGroupUsageRow, error)

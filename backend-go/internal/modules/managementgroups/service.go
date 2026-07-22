@@ -29,6 +29,7 @@ type Service struct {
 	store                      port.ManagementGroupOptionReader
 	listStore                  port.ManagementGroupListReader
 	statusSnapshotStore        managementGroupStatusSnapshotStore
+	dynamicStore               port.ManagementGroupDynamicReader
 	detailStore                port.ManagementGroupDetailReader
 	usageStatsTimezoneStore    port.ManagementUsageStatsTimezoneReader
 	accountConcurrency         AccountConcurrencyReader
@@ -45,6 +46,7 @@ type ServiceOptions struct {
 	Store                      port.ManagementGroupOptionReader
 	ListStore                  port.ManagementGroupListReader
 	StatusSnapshotStore        managementGroupStatusSnapshotStore
+	DynamicStore               port.ManagementGroupDynamicReader
 	DetailStore                port.ManagementGroupDetailReader
 	UsageStatsTimezoneStore    port.ManagementUsageStatsTimezoneReader
 	AccountConcurrency         AccountConcurrencyReader
@@ -313,6 +315,16 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 			statusSnapshotStore = candidate
 		}
 	}
+	dynamicStore := opts.DynamicStore
+	if dynamicStore == nil {
+		if candidate, ok := opts.Store.(port.ManagementGroupDynamicReader); ok {
+			dynamicStore = candidate
+		} else if candidate, ok := opts.ListStore.(port.ManagementGroupDynamicReader); ok {
+			dynamicStore = candidate
+		} else if candidate, ok := opts.StatusSnapshotStore.(port.ManagementGroupDynamicReader); ok {
+			dynamicStore = candidate
+		}
+	}
 	detailStore := opts.DetailStore
 	if detailStore == nil {
 		if candidate, ok := opts.Store.(port.ManagementGroupDetailReader); ok {
@@ -343,6 +355,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		store:                      opts.Store,
 		listStore:                  listStore,
 		statusSnapshotStore:        statusSnapshotStore,
+		dynamicStore:               dynamicStore,
 		detailStore:                detailStore,
 		usageStatsTimezoneStore:    usageStatsTimezoneStore,
 		accountConcurrency:         opts.AccountConcurrency,

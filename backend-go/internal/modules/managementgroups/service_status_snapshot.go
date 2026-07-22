@@ -42,8 +42,9 @@ type StatusSnapshotItem struct {
 }
 
 type StatusSnapshotResult struct {
-	GeneratedAt string               `json:"generatedAt"`
-	Items       []StatusSnapshotItem `json:"items"`
+	GeneratedAt     string               `json:"generatedAt"`
+	RuntimeSnapshot RuntimeSnapshot      `json:"runtimeSnapshot"`
+	Items           []StatusSnapshotItem `json:"items"`
 }
 
 func ParseStatusSnapshotGroupIDs(raw string) ([]string, error) {
@@ -80,6 +81,9 @@ func (s *Service) StatusSnapshot(ctx context.Context, input StatusSnapshotInput)
 	if s == nil || s.statusSnapshotStore == nil {
 		return StatusSnapshotResult{}, fmt.Errorf("management group status snapshot reader is required")
 	}
+	if !input.SelfOnly && !managementGroupListAdminRole(input.ActorRole) {
+		return StatusSnapshotResult{}, fmt.Errorf("需要管理员权限")
+	}
 	groupIDs, err := normalizeStatusSnapshotGroupIDs(input.GroupIDs)
 	if err != nil {
 		return StatusSnapshotResult{}, err
@@ -106,7 +110,7 @@ func (s *Service) StatusSnapshot(ctx context.Context, input StatusSnapshotInput)
 		return StatusSnapshotResult{}, err
 	}
 	if len(rows) == 0 {
-		return StatusSnapshotResult{GeneratedAt: now.UTC().Format(time.RFC3339Nano), Items: []StatusSnapshotItem{}}, nil
+		return StatusSnapshotResult{GeneratedAt: now.UTC().Format(time.RFC3339Nano), RuntimeSnapshot: RuntimeSnapshot{AccountConcurrencyAvailable: true}, Items: []StatusSnapshotItem{}}, nil
 	}
 	visibleGroupIDs := make([]string, 0, len(rows))
 	usageInputs := make([]port.ManagementGroupUsageLookupInput, 0, len(rows))
@@ -128,17 +132,13 @@ func (s *Service) StatusSnapshot(ctx context.Context, input StatusSnapshotInput)
 			ScopeID:         scopeID,
 		})
 	}
-	stats, err := s.statusSnapshotStore.ListManagementGroupAccountStats(ctx, visibleGroupIDs)
+	currentConcurrencyByGroup, concurrencyAvailable, err := s.loadManagementGroupCurrentConcurrency(ctx, visibleGroupIDs, now)
 	if err != nil {
 		return StatusSnapshotResult{}, err
 	}
 	usage, err := s.statusSnapshotStore.ListManagementGroupUsageDaily(ctx, statDate, usageInputs)
 	if err != nil {
 		return StatusSnapshotResult{}, err
-	}
-	statsByGroupID := make(map[string]port.ManagementGroupAccountStatsRow, len(stats))
-	for _, row := range stats {
-		statsByGroupID[row.GroupID] = row
 	}
 	usageByGroupID := make(map[string]port.ManagementAccountUsageSummary, len(usage))
 	for _, row := range usage {
@@ -148,9 +148,13 @@ func (s *Service) StatusSnapshot(ctx context.Context, input StatusSnapshotInput)
 	for _, row := range rows {
 		items = append(items, StatusSnapshotItem{
 			ID:                 row.ID,
-			CurrentConcurrency: statsByGroupID[row.ID].CurrentConcurrency,
+			CurrentConcurrency: currentConcurrencyByGroup[row.ID],
 			TodayUsage:         managementGroupUsageSummary(usageByGroupID[row.ID]),
 		})
 	}
-	return StatusSnapshotResult{GeneratedAt: now.UTC().Format(time.RFC3339Nano), Items: items}, nil
+	return StatusSnapshotResult{
+		GeneratedAt:     now.UTC().Format(time.RFC3339Nano),
+		RuntimeSnapshot: RuntimeSnapshot{AccountConcurrencyAvailable: concurrencyAvailable},
+		Items:           items,
+	}, nil
 }

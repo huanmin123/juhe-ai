@@ -168,7 +168,6 @@ func TestW5ManagementGroupListSQLReadsOnlyPreaggregatedCurrentPageSummariesInBat
 	sql := string(source)
 	assertSQLExcludesAll(t, sql, []string{
 		"-- name: ListManagementGroupAccountIDs :many",
-		"group_accounts",
 	})
 	for _, table := range []string{
 		"juhe_stats.group_account_stats",
@@ -216,7 +215,7 @@ func TestW5ManagementGroupListSQLReadsOnlyPreaggregatedCurrentPageSummariesInBat
 		}
 	}
 
-	sourcesSQL := querySection(t, sql, "-- name: ListManagementGroupAuthorizationSources :many", "")
+	sourcesSQL := querySection(t, sql, "-- name: ListManagementGroupAuthorizationSources :many", "-- name: ListManagementGroupStatusSnapshotRows :many")
 	assertSQLContainsAll(t, sourcesSQL, []string{
 		"FROM juhe_business.resource_authorization_sources AS authorization_sources",
 		"LEFT JOIN juhe_business.system_teams AS system_teams",
@@ -224,6 +223,20 @@ func TestW5ManagementGroupListSQLReadsOnlyPreaggregatedCurrentPageSummariesInBat
 		"coalesce(system_teams.name, '')::text AS source_team_name",
 	})
 	assertSQLExcludesAll(t, sourcesSQL, []string{"usage_records", "COUNT(", "SUM(", "GROUP BY"})
+}
+
+func TestW5ManagementGroupConcurrencyAccountIDsUsesAuthorizedSources(t *testing.T) {
+	source, err := os.ReadFile("queries/w5_management_group_list.sql")
+	if err != nil {
+		t.Fatalf("read management group list query: %v", err)
+	}
+	query := querySection(t, string(source), "-- name: ListManagementGroupConcurrencyAccountIDs :many", "")
+	assertSQLContainsAll(t, query, []string{
+		"coalesce(accounts.authorization_instance_source_account_id, accounts.id)",
+		"LEFT JOIN juhe_business.resource_authorizations",
+		"group_accounts.account_authorization_id",
+		"resource_authorizations.status IN ('active', 'paused', 'expired')",
+	})
 }
 
 func migrationTableSQL(t *testing.T, sql string, tableName string) string {

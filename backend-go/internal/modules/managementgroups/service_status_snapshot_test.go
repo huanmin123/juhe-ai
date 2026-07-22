@@ -2,6 +2,7 @@ package managementgroups
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -15,9 +16,9 @@ func TestServiceStatusSnapshotUsesVisibleRowsAndScopeSpecificUsage(t *testing.T)
 			{ID: "grp_owner", SystemAccountID: "sys_owner", AccessType: "owner"},
 			{ID: "grp_authorized", SystemAccountID: "sys_owner", AccessType: "authorized", GroupAuthorizationID: "auth_group"},
 		},
-		stats: []port.ManagementGroupAccountStatsRow{
-			{SystemAccountID: "sys_owner", GroupID: "grp_owner", CurrentConcurrency: 3},
-			{SystemAccountID: "sys_owner", GroupID: "grp_authorized", CurrentConcurrency: 9},
+		concurrencyRows: []port.ManagementGroupConcurrencyAccountIDRow{
+			{GroupID: "grp_owner", AccountID: "acc_1"},
+			{GroupID: "grp_authorized", AccountID: "acc_2"},
 		},
 		usage: []port.ManagementGroupUsageRow{
 			{Key: "grp_owner", Usage: port.ManagementAccountUsageSummary{RequestCount: 2, InputTokens: 8, OutputTokens: 3}},
@@ -27,6 +28,7 @@ func TestServiceStatusSnapshotUsesVisibleRowsAndScopeSpecificUsage(t *testing.T)
 	service := NewServiceWithOptions(ServiceOptions{
 		StatusSnapshotStore:     store,
 		UsageStatsTimezoneStore: managementGroupStatusSnapshotTimezoneStub{timezone: "UTC", found: true},
+		AccountConcurrency:      &managementGroupConcurrencyReaderStub{values: map[string]int{"acc_1": 3, "acc_2": 9}},
 		Now:                     func() time.Time { return now },
 	})
 
@@ -68,12 +70,35 @@ func TestServiceStatusSnapshotEnforcesScope(t *testing.T) {
 	}
 }
 
+func TestServiceStatusSnapshotMarksRedisUnavailable(t *testing.T) {
+	store := &managementGroupStatusSnapshotStoreStub{
+		rows:            []port.ManagementGroupStatusSnapshotRow{{ID: "grp_1", SystemAccountID: "sys_owner", AccessType: "owner"}},
+		concurrencyRows: []port.ManagementGroupConcurrencyAccountIDRow{{GroupID: "grp_1", AccountID: "acc_1"}},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		StatusSnapshotStore: store,
+		AccountConcurrency:  &managementGroupConcurrencyReaderStub{err: errors.New("redis unavailable")},
+	})
+	result, err := service.StatusSnapshot(context.Background(), StatusSnapshotInput{
+		ActorSystemAccountID: "sys_user",
+		ActorRole:            "user",
+		SelfOnly:             true,
+		GroupIDs:             []string{"grp_1"},
+	})
+	if err != nil {
+		t.Fatalf("StatusSnapshot() error = %v", err)
+	}
+	if result.RuntimeSnapshot.AccountConcurrencyAvailable || len(result.Items) != 1 || result.Items[0].CurrentConcurrency != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 type managementGroupStatusSnapshotStoreStub struct {
-	input       port.ManagementGroupStatusSnapshotInput
-	rows        []port.ManagementGroupStatusSnapshotRow
-	stats       []port.ManagementGroupAccountStatsRow
-	usage       []port.ManagementGroupUsageRow
-	usageInputs []port.ManagementGroupUsageLookupInput
+	input           port.ManagementGroupStatusSnapshotInput
+	rows            []port.ManagementGroupStatusSnapshotRow
+	concurrencyRows []port.ManagementGroupConcurrencyAccountIDRow
+	usage           []port.ManagementGroupUsageRow
+	usageInputs     []port.ManagementGroupUsageLookupInput
 }
 
 type managementGroupStatusSnapshotTimezoneStub struct {
@@ -91,7 +116,11 @@ func (s *managementGroupStatusSnapshotStoreStub) ListManagementGroupStatusSnapsh
 }
 
 func (s *managementGroupStatusSnapshotStoreStub) ListManagementGroupAccountStats(_ context.Context, _ []string) ([]port.ManagementGroupAccountStatsRow, error) {
-	return append([]port.ManagementGroupAccountStatsRow(nil), s.stats...), nil
+	return []port.ManagementGroupAccountStatsRow{}, nil
+}
+
+func (s *managementGroupStatusSnapshotStoreStub) ListManagementGroupConcurrencyAccountIDs(_ context.Context, _ []string) ([]port.ManagementGroupConcurrencyAccountIDRow, error) {
+	return append([]port.ManagementGroupConcurrencyAccountIDRow(nil), s.concurrencyRows...), nil
 }
 
 func (s *managementGroupStatusSnapshotStoreStub) ListManagementGroupUsageDaily(_ context.Context, _ string, input []port.ManagementGroupUsageLookupInput) ([]port.ManagementGroupUsageRow, error) {
