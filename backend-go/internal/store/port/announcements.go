@@ -53,6 +53,7 @@ type AnnouncementUpdateInput struct {
 
 type AnnouncementStore interface {
 	ListPublicAnnouncements(ctx context.Context, systemAccountID string, limit int) ([]Announcement, error)
+	FindPublicAnnouncement(ctx context.Context, id string) (Announcement, bool, error)
 	MarkVisibleAnnouncementsRead(ctx context.Context, systemAccountID string, announcementIDs []string, readAt time.Time) (int, error)
 	ListManagementAnnouncements(ctx context.Context, page int, pageSize int) (AnnouncementPage, error)
 	FindManagementAnnouncement(ctx context.Context, id string) (Announcement, bool, error)

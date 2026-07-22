@@ -16,18 +16,8 @@ import (
 
 func TestManagementProviderOptionsHandler(t *testing.T) {
 	service := &managementProviderOptionServiceStub{
-		options: []managementproviders.Option{
-			{
-				ID:                            "provider_gpt",
-				Code:                          "gpt",
-				Name:                          "GPT",
-				Enabled:                       true,
-				DefaultHealthCheckModel:       "gpt-5-user",
-				SystemDefaultHealthCheckModel: "gpt-5-system",
-				ProtocolProfiles: []managementproviders.ProtocolProfile{
-					{ID: "profile_gpt_openai_v1", DefaultHealthCheckModel: "gpt-5-system"},
-				},
-			},
+		selectOptions: []managementproviders.SelectOption{
+			{ID: "gpt", Code: "gpt", Name: "GPT", Enabled: true},
 		},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
@@ -41,17 +31,50 @@ func TestManagementProviderOptionsHandler(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
+	var body struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Data) != 1 || body.Data[0]["code"] != "gpt" {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.Data[0]["id"] != "gpt" {
+		t.Fatalf("provider option id = %v, want provider code", body.Data[0]["id"])
+	}
+	if got := len(body.Data[0]); got != 4 {
+		t.Fatalf("provider option keys = %+v, want id/code/name/enabled only", body.Data[0])
+	}
+}
+
+func TestManagementProviderDefinitionsHandlerUsesScopedEnabledDefinitions(t *testing.T) {
+	service := &managementProviderOptionServiceStub{
+		options: []managementproviders.Option{{
+			ID:           "provider_gpt",
+			Code:         "gpt",
+			Name:         "GPT",
+			Enabled:      true,
+			BaseURL:      "https://example.test/v1",
+			AccountTypes: []string{"api_key"},
+			ProtocolProfiles: []managementproviders.ProtocolProfile{{
+				ID: "profile_gpt_openai_v1", ProviderCode: "gpt", Enabled: true,
+			}},
+		}},
+	}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementProviderDefinitionsHandler(service))
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/definitions?systemAccountId=sys_admin", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
 	if service.input.SystemAccountID != "sys_user" {
-		t.Fatalf("service input = %+v", service.input)
-	}
-	responseJSON := rec.Body.String()
-	for _, want := range []string{`"defaultHealthCheckModel":"gpt-5-user"`, `"systemDefaultHealthCheckModel":"gpt-5-system"`} {
-		if !strings.Contains(responseJSON, want) {
-			t.Fatalf("response missing %s: %s", want, responseJSON)
-		}
-	}
-	if strings.Contains(responseJSON, "defaultTestModel") || strings.Contains(responseJSON, "systemDefaultTestModel") {
-		t.Fatalf("response exposes legacy provider model fields: %s", responseJSON)
+		t.Fatalf("service input = %+v, want ordinary-user self scope", service.input)
 	}
 	var body struct {
 		Data []managementproviders.Option `json:"data"`
@@ -59,13 +82,8 @@ func TestManagementProviderOptionsHandler(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Data) != 1 || body.Data[0].Code != "gpt" {
+	if len(body.Data) != 1 || body.Data[0].Code != "gpt" || !body.Data[0].Enabled || len(body.Data[0].ProtocolProfiles) != 1 {
 		t.Fatalf("body = %+v", body)
-	}
-	if body.Data[0].DefaultHealthCheckModel != "gpt-5-user" ||
-		body.Data[0].SystemDefaultHealthCheckModel != "gpt-5-system" ||
-		body.Data[0].ProtocolProfiles[0].DefaultHealthCheckModel != "gpt-5-system" {
-		t.Fatalf("provider option contract = %+v", body.Data[0])
 	}
 }
 
@@ -161,13 +179,13 @@ func TestManagementProvidersHandlerRejectsOrdinaryUser(t *testing.T) {
 	}
 }
 
-func TestManagementProviderOptionsHandlerUsesSelfScopeForOrdinaryUser(t *testing.T) {
+func TestManagementProviderDefinitionsHandlerUsesSelfScopeForOrdinaryUser(t *testing.T) {
 	service := &managementProviderOptionServiceStub{}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
-	})(newManagementProviderOptionsHandler(service))
+	})(newManagementProviderDefinitionsHandler(service))
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/options?systemAccountId=sys_admin", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/definitions?systemAccountId=sys_admin", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -179,13 +197,13 @@ func TestManagementProviderOptionsHandlerUsesSelfScopeForOrdinaryUser(t *testing
 	}
 }
 
-func TestManagementProviderOptionsHandlerUsesSelfScopeForAdminWithoutTarget(t *testing.T) {
+func TestManagementProviderDefinitionsHandlerUsesSelfScopeForAdminWithoutTarget(t *testing.T) {
 	service := &managementProviderOptionServiceStub{}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
-	})(newManagementProviderOptionsHandler(service))
+	})(newManagementProviderDefinitionsHandler(service))
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/options", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/definitions", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
@@ -248,18 +266,22 @@ func TestRouterRegistersW2ManagementProviderHandlersOnlyWithAuthMiddleware(t *te
 		options: []managementproviders.Option{
 			{ID: "provider_gpt", Code: "gpt", Name: "GPT", Enabled: true},
 		},
+		selectOptions: []managementproviders.SelectOption{
+			{ID: "provider_gpt", Code: "gpt", Name: "GPT", Enabled: true},
+		},
 	}
 	router := NewRouter(RouterOptions{
-		Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		ManagementProvidersHandler:       newManagementProvidersHandler(service),
-		ManagementProviderOptionsHandler: newManagementProviderOptionsHandler(service),
+		Config:                               config.Config{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
+		Logger:                               slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementProvidersHandler:           newManagementProvidersHandler(service),
+		ManagementProviderOptionsHandler:     newManagementProviderOptionsHandler(service),
+		ManagementProviderDefinitionsHandler: newManagementProviderDefinitionsHandler(service),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
 	})
 
-	for _, path := range []string{"/__aisys__/api/providers", "/__aisys__/api/providers/options"} {
+	for _, path := range []string{"/__aisys__/api/providers", "/__aisys__/api/providers/options", "/__aisys__/api/providers/definitions"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
 		rec := httptest.NewRecorder()
@@ -277,16 +299,17 @@ func TestRouterRegistersW2ManagementProviderHandlersOnlyWithAuthMiddleware(t *te
 
 func TestRouterDoesNotRegisterW2ManagementProviderOptionsWhenDisabled(t *testing.T) {
 	router := NewRouter(RouterOptions{
-		Config:                           config.Config{Host: "127.0.0.1", Port: 3000},
-		Logger:                           slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		ManagementProvidersHandler:       newManagementProvidersHandler(&managementProviderOptionServiceStub{}),
-		ManagementProviderOptionsHandler: newManagementProviderOptionsHandler(&managementProviderOptionServiceStub{}),
+		Config:                               config.Config{Host: "127.0.0.1", Port: 3000},
+		Logger:                               slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+		ManagementProvidersHandler:           newManagementProvidersHandler(&managementProviderOptionServiceStub{}),
+		ManagementProviderOptionsHandler:     newManagementProviderOptionsHandler(&managementProviderOptionServiceStub{}),
+		ManagementProviderDefinitionsHandler: newManagementProviderDefinitionsHandler(&managementProviderOptionServiceStub{}),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 		}),
 	})
 
-	for _, path := range []string{"/__aisys__/api/providers", "/__aisys__/api/providers/options"} {
+	for _, path := range []string{"/__aisys__/api/providers", "/__aisys__/api/providers/options", "/__aisys__/api/providers/definitions"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
 		rec := httptest.NewRecorder()
@@ -300,13 +323,14 @@ func TestRouterDoesNotRegisterW2ManagementProviderOptionsWhenDisabled(t *testing
 }
 
 type managementProviderOptionServiceStub struct {
-	listCalled bool
-	listInput  managementproviders.ListInput
-	input      managementproviders.OptionListInput
-	providers  []managementproviders.Option
-	options    []managementproviders.Option
-	listErr    error
-	err        error
+	listCalled    bool
+	listInput     managementproviders.ListInput
+	input         managementproviders.OptionListInput
+	providers     []managementproviders.Option
+	options       []managementproviders.Option
+	selectOptions []managementproviders.SelectOption
+	listErr       error
+	err           error
 }
 
 func (s *managementProviderOptionServiceStub) List(_ *http.Request, input managementproviders.ListInput) ([]managementproviders.Option, error) {
@@ -318,4 +342,8 @@ func (s *managementProviderOptionServiceStub) List(_ *http.Request, input manage
 func (s *managementProviderOptionServiceStub) Options(_ *http.Request, input managementproviders.OptionListInput) ([]managementproviders.Option, error) {
 	s.input = input
 	return s.options, s.err
+}
+
+func (s *managementProviderOptionServiceStub) SelectOptions(*http.Request) ([]managementproviders.SelectOption, error) {
+	return s.selectOptions, s.err
 }

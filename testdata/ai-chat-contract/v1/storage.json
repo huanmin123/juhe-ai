@@ -1,0 +1,269 @@
+{
+  "contractVersion": 1,
+  "authority": {
+    "schema": "backend/src/storage/postgres-schema.ts -> backend/src/storage/schema/chat-schema.ts",
+    "repositories": [
+      "backend/src/storage/chat.repository.ts",
+      "backend/src/storage/chat-context.repository.ts",
+      "backend/src/storage/chat-assets.repository.ts",
+      "backend/src/storage/chat-image-generations.repository.ts",
+      "backend/src/storage/chat-asset-storage.ts"
+    ]
+  },
+  "normalizedFields": [
+    "postgres.tables.columns",
+    "postgres.tables.constraints",
+    "postgres.enums",
+    "postgres.indexes",
+    "postgres.partitionBy",
+    "repositories.exports",
+    "repositories.normalizedSourceSha256",
+    "semantics.cas",
+    "semantics.idempotency",
+    "semantics.relativeStorageKey",
+    "semantics.originalAndPreview",
+    "semantics.assetReferences",
+    "semantics.imageLineage"
+  ],
+  "postgres": {
+    "schema": "juhe_chat",
+    "tableCount": 10,
+    "tables": [
+      {
+        "name": "chat_asset_references",
+        "columns": "asset_id,conversation_id,turn_id,message_id,reference_kind,content_order,created_at,expires_at",
+        "constraintCount": 5,
+        "normalizedConstraintsSha256": "bc3423f772d034d174ca28f58aa54b310db195f4e2a15ee32566a0d0cd7fbaad",
+        "normalizedDefinitionSha256": "da55e73dd083d13cb609e4d2041e7479bdf7de40cc9af683c8bf88dd5d2afaa0"
+      },
+      {
+        "name": "chat_assets",
+        "columns": "id,system_account_id,conversation_id,source_kind,original_filename,original_mime_type,original_width,original_height,original_bytes,original_sha256,processed_mime_type,processed_width,processed_height,processed_bytes,processed_sha256,storage_key,preview_mime_type,preview_width,preview_height,preview_bytes,preview_sha256,preview_storage_key,processing_status,processing_error_code,observation_status,observation_json,observation_revision,observation_claim_id,observation_claimed_at,quota_bytes,turn_id,message_id,committed_at,cleanup_status,cleanup_claim_id,cleanup_attempt_count,cleanup_claimed_at,cleanup_retry_at,cleanup_error_code,created_at,updated_at,expires_at",
+        "constraintCount": 30,
+        "normalizedConstraintsSha256": "3b6ed94ba0987b98ff38f9f218b5efce6e4748ddf328d3f33cf02b5b5d1e5487",
+        "normalizedDefinitionSha256": "9f9d9d1e5ea3dc77dc42f0d3e2dea481b72f05a57efa714219fc56e24e1a3d45"
+      },
+      {
+        "name": "chat_context_checkpoints",
+        "columns": "id,conversation_id,system_account_id,version,source_revision,source_from_sequence,source_through_sequence,recent_tail_from_sequence,entry_from_sequence,entry_through_sequence,payload_digest,estimated_input_tokens,upstream_input_tokens,request_body_bytes,model_id,provider_code,provider_profile_id,endpoint_family,compact_compatibility_hash,prompt_version,status,quality_status,created_at,expires_at",
+        "constraintCount": 15,
+        "normalizedConstraintsSha256": "6c57c239c2366a69a0cd3cdcb21e9125be235809c393b898a23c326030532e0c",
+        "normalizedDefinitionSha256": "9061d0cb342ceb031f035a7544976955f65919c6740fe5544228c0c3736fa2af"
+      },
+      {
+        "name": "chat_context_entries",
+        "columns": "conversation_id,checkpoint_id,sequence,source_message_id,kind,content_json,content_bytes,provenance,trust_level,token_count,created_at,expires_at",
+        "constraintCount": 9,
+        "normalizedConstraintsSha256": "0f5d8bb5372cde4c8801ec53c6ac05631ffcaa3eb165d6b2351c8fde3e86e55b",
+        "normalizedDefinitionSha256": "29a9c204ee473b5da0a841779589c31e93f5fd1eee8f27064f410cef3b1aa590"
+      },
+      {
+        "name": "chat_conversations",
+        "columns": "id,system_account_id,api_key_id,api_key_name_snapshot,title,title_source_message_id,is_pinned,last_model,default_image_model,next_sequence_no,user_turn_count,message_revision,active_turn_id,active_started_at,context_revision,active_checkpoint_id,compacted_through_sequence,context_state,active_context_tokens,effective_context_limit_tokens,context_usage_estimated,context_claim_id,context_claim_revision,context_claim_through_sequence,context_claimed_at,context_retry_at,context_attempt_count,context_error_code,context_progress_sequence,context_progress_earliest_expires_at,last_message_at,created_at,updated_at",
+        "constraintCount": 14,
+        "normalizedConstraintsSha256": "19c15921ac3e19211521bbd6f6e3b44e0e8a4934566c9a7bb8ee402a9c1fa43d",
+        "normalizedDefinitionSha256": "96e4024d0a5ef477be2cf12b001e57a75244767f63d0e8efa81903b754a88cfd"
+      },
+      {
+        "name": "chat_image_generations",
+        "columns": "asset_id,conversation_id,system_account_id,operation,model,prompt,source_asset_ids_json,root_asset_id,size,quality,output_format,created_at,expires_at",
+        "constraintCount": 5,
+        "normalizedConstraintsSha256": "82ecea2dc78cc880843c0f4ba2604a1aaf72ea67915648ff0d1c0cb90dfe569e",
+        "normalizedDefinitionSha256": "d83b81f2e5d7b71e36e4bd1ac83c113f81775440e638db0646120f85434bd61c"
+      },
+      {
+        "name": "chat_message_idempotency",
+        "columns": "conversation_id,client_message_id,system_account_id,turn_id,user_message_id,assistant_message_id,created_at,expires_at",
+        "constraintCount": 2,
+        "normalizedConstraintsSha256": "87b5bd60a83684c8899857db54f7e568644b565df1ff79dde55dc78f583a6b5c",
+        "normalizedDefinitionSha256": "a4ad19eabc254d249faafc7e050bb6ac65c05baccd573af019677539bf0e081f"
+      },
+      {
+        "name": "chat_messages",
+        "columns": "id,conversation_id,system_account_id,turn_id,sequence_no,client_message_id,role,status,content_text,content_blocks_json,content_bytes,storage_reserved_bytes,model,trace_id,finish_reason,error_code,created_at,completed_at,expires_at",
+        "constraintCount": 9,
+        "normalizedConstraintsSha256": "43d8f5285fb3fb75836d946c5137aa45f99a4218a67b869c6cc1eb56af138c50",
+        "normalizedDefinitionSha256": "4e21e85499cd45aeff199362dffc863d78c6536797117e9edc291188061afa6f",
+        "partitionBy": "RANGE (created_at)"
+      },
+      {
+        "name": "chat_user_asset_usage",
+        "columns": "system_account_id,asset_bytes,asset_count,updated_at",
+        "constraintCount": 2,
+        "normalizedConstraintsSha256": "66a38c4a05d295f46dea0cbc99c79465192ef158b24a7da847d9c910317379bf",
+        "normalizedDefinitionSha256": "c6a4859600c378e44f6672d30d8aebcc69bf30dfc7d057a254e93f4eb13a223e"
+      },
+      {
+        "name": "chat_user_storage_windows",
+        "columns": "system_account_id,bucket_date,content_bytes,reserved_bytes,updated_at",
+        "constraintCount": 3,
+        "normalizedConstraintsSha256": "b895a1771e019f6b86473f4014cb1d60ea3fa81adb5986cc9f901b0c886b50d9",
+        "normalizedDefinitionSha256": "e2e2c2124527829fd6bc650a8e46bcb97ddf0c279df1087291361aee862993c7"
+      }
+    ],
+    "enums": [
+      { "table": "chat_asset_references", "column": "reference_kind", "values": ["user_input", "assistant_output"] },
+      { "table": "chat_assets", "column": "cleanup_status", "values": ["active", "claimed", "failed"] },
+      { "table": "chat_assets", "column": "observation_status", "values": ["not_requested", "pending", "ready", "failed"] },
+      { "table": "chat_assets", "column": "processed_mime_type", "values": ["image/jpeg", "image/png", "image/webp"] },
+      { "table": "chat_assets", "column": "processing_status", "values": ["pending", "ready", "failed"] },
+      { "table": "chat_assets", "column": "source_kind", "values": ["user_upload", "assistant_generated"] },
+      { "table": "chat_context_checkpoints", "column": "quality_status", "values": ["passed", "failed"] },
+      { "table": "chat_context_checkpoints", "column": "status", "values": ["pending", "active", "superseded", "rejected"] },
+      { "table": "chat_context_entries", "column": "kind", "values": ["verbatim", "durable_memory", "task_state", "tool_result", "image_observation", "provider_compaction"] },
+      { "table": "chat_context_entries", "column": "provenance", "values": ["user", "assistant", "tool", "asset", "provider"] },
+      { "table": "chat_context_entries", "column": "trust_level", "values": ["untrusted", "assistant_derived", "provider_opaque"] },
+      { "table": "chat_conversations", "column": "context_state", "values": ["ready", "compact_pending", "compacting", "compact_failed"] },
+      { "table": "chat_image_generations", "column": "operation", "values": ["generate", "edit"] },
+      { "table": "chat_messages", "column": "role", "values": ["user", "assistant"] },
+      { "table": "chat_messages", "column": "status", "values": ["completed", "streaming", "failed", "canceled"] }
+    ],
+    "indexes": [
+      { "name": "idx_chat_asset_references_asset_valid", "table": "chat_asset_references", "unique": false, "normalizedDefinitionSha256": "c9a06a2a5fed8926fb9f65d2deed22adc408289c67cb3e855d91b9f7732fa0ee" },
+      { "name": "idx_chat_asset_references_cleanup", "table": "chat_asset_references", "unique": false, "normalizedDefinitionSha256": "a3b2f9131ab29fcf6c45e8bdeb747556d92a6775432cd55f1056ea7896fd25b2" },
+      { "name": "idx_chat_asset_references_message", "table": "chat_asset_references", "unique": false, "normalizedDefinitionSha256": "2d4f6377ef361fb0b6833d7623ac9586b52b4d1f05f916f4c4fd7e23b722dfba" },
+      { "name": "idx_chat_assets_cleanup", "table": "chat_assets", "unique": false, "normalizedDefinitionSha256": "16c3d444f83ab8a0c771376746f420ea0db8cf1fcacb16a64a5058b5f3007afa" },
+      { "name": "idx_chat_assets_message", "table": "chat_assets", "unique": false, "normalizedDefinitionSha256": "fa0d36c5f006eb6b21cfb2fb26410ea6a3c1ee1ff6bbfca1a002d119e4177fe9" },
+      { "name": "idx_chat_assets_owner_conversation", "table": "chat_assets", "unique": false, "normalizedDefinitionSha256": "7db5452613bc6bebca2ff96230d8ae933e5ea780ec9d8332343ef6307bf15647" },
+      { "name": "idx_chat_assets_owner_lookup", "table": "chat_assets", "unique": false, "normalizedDefinitionSha256": "ecb403b3bc2b23fa5b7f27a7bf1f0d2d7cabe53eff49e689bc7a09de43862055" },
+      { "name": "idx_chat_assets_uncommitted", "table": "chat_assets", "unique": false, "normalizedDefinitionSha256": "6bf5fa26b444201eccf4a5f2b3ac126086cf0b50552f4d84b2d2d882fefe3602" },
+      { "name": "idx_chat_context_checkpoints_cleanup", "table": "chat_context_checkpoints", "unique": false, "normalizedDefinitionSha256": "24ad5aa3c3477a28b7fd227a8d4f8800d49008e42757ead29e332121882d89f4" },
+      { "name": "idx_chat_context_checkpoints_conversation_version", "table": "chat_context_checkpoints", "unique": false, "normalizedDefinitionSha256": "76991379345305a1ff346b9d0042685b5398d1cf7bdfa9b05e029edc129732dc" },
+      { "name": "idx_chat_context_checkpoints_one_active", "table": "chat_context_checkpoints", "unique": true, "normalizedDefinitionSha256": "33e91e6e91232e70142a490e40247ac4219151a16be2fa876330f5355046d5d0" },
+      { "name": "idx_chat_context_entries_conversation_checkpoint", "table": "chat_context_entries", "unique": false, "normalizedDefinitionSha256": "55a6bc9f67420024fd7eb89620feab0e6e33676af43f98f89a832f9435c319b1" },
+      { "name": "idx_chat_context_entries_expiry", "table": "chat_context_entries", "unique": false, "normalizedDefinitionSha256": "e8990059522b86b8b1a5197835db44c2ed3bd6910222e2b1d7847f261746720a" },
+      { "name": "idx_chat_conversations_active_started", "table": "chat_conversations", "unique": false, "normalizedDefinitionSha256": "47cfd54cb3a973521a1bb3f154cae551f6b54165b90d3100fdba3f1697f66047" },
+      { "name": "idx_chat_conversations_context_queue", "table": "chat_conversations", "unique": false, "normalizedDefinitionSha256": "22fca6627c394751b55e08dc0c111db6008438384983cbb01d632ad6babe67ee" },
+      { "name": "idx_chat_conversations_owner_api_key", "table": "chat_conversations", "unique": false, "normalizedDefinitionSha256": "e702950e0f3a537ed83cf0865b797bfd8daca1385cd862872c10720dc7cf4b62" },
+      { "name": "idx_chat_conversations_owner_pinned_recent", "table": "chat_conversations", "unique": false, "normalizedDefinitionSha256": "8c1ad6c28a61102ba51454c1f35bebd60c0fd15548c1ded93dd22e15a4fcdd85" },
+      { "name": "idx_chat_conversations_owner_recent", "table": "chat_conversations", "unique": false, "normalizedDefinitionSha256": "0c5669055d55b17a97b6fb4da63b9f655d0e407f68dc0e86c31385d8f9539223" },
+      { "name": "idx_chat_idempotency_expiry", "table": "chat_message_idempotency", "unique": false, "normalizedDefinitionSha256": "31cf27d277f499a85c3ace171892b98ea4219bd60e19dc0586c02496ca62183a" },
+      { "name": "idx_chat_image_generations_conversation_recent", "table": "chat_image_generations", "unique": false, "normalizedDefinitionSha256": "740ab9b350ae92e15d15188f42f071a999bab93e7b0e9300e26d67e8f2c467c2" },
+      { "name": "idx_chat_image_generations_expiry", "table": "chat_image_generations", "unique": false, "normalizedDefinitionSha256": "ba39863047e4659afd6486690a298946bc80fd98dd76b93fbd234bd7fcb21a2f" },
+      { "name": "idx_chat_messages_compaction_source", "table": "chat_messages", "unique": false, "normalizedDefinitionSha256": "d9bf4e2f63b4d1195d9cd9238f43ba646440dbf025467f508c55d41f1eea3a81" },
+      { "name": "idx_chat_messages_context", "table": "chat_messages", "unique": false, "normalizedDefinitionSha256": "74bdbb9fd09c9145ffd4857b66d539967ed93762d38a527b78fed94867a1a0ce" },
+      { "name": "idx_chat_messages_conversation_sequence", "table": "chat_messages", "unique": false, "normalizedDefinitionSha256": "c435194318653f34891289ef771130869ac825d4ff986f375e49e69dc86e987b" },
+      { "name": "idx_chat_messages_conversation_turn", "table": "chat_messages", "unique": false, "normalizedDefinitionSha256": "9cb68f77ecc730534402311b3ff302c14ad1f2cb73c5719f5648adcdf89c920b" },
+      { "name": "idx_chat_messages_expiry", "table": "chat_messages", "unique": false, "normalizedDefinitionSha256": "89197f63c2ca86efc74085a6d11ee71a7dabe2210005049f32b92b61f4599a45" }
+    ],
+    "messagePartition": {
+      "table": "chat_messages",
+      "primaryKey": "PRIMARY KEY (created_at, id)",
+      "partitionBy": "RANGE (created_at)",
+      "childNamePattern": "chat_messages_YYYYMMDD",
+      "bounds": "[UTC day, next UTC day)"
+    }
+  },
+  "repositories": [
+    {
+      "name": "chat",
+      "path": "backend/src/storage/chat.repository.ts",
+      "exports": "CancelActiveChatTurnResult,ChatAssistantStorageLimitError,ChatConflictError,ChatConversation,ChatConversationSyncHead,ChatConversationSyncMessage,ChatImageModel,ChatInputContentBlock,ChatMessage,ChatMessageContentBlock,ChatMessageRole,ChatMessageStatus,ChatRetentionCleanupResult,ChatTurnSubmissionFact,acceptChatTurn,assertChatTurnReplaceable,cancelActiveChatTurnIfMatches,cancelChatTurn,chatAssistantStorageReservationBytes,cleanupChatRetention,clearChatConversation,completeChatTurn,createChatConversation,deleteChatConversation,failChatTurn,failInterruptedChatTurnIfMatches,findChatTurnByClientMessageId,getChatConversation,getChatConversationSyncHead,listChatContextMessages,listChatConversations,listChatMessages,updateChatConversation",
+      "normalizedSourceSha256": "86e2f1a2a20e27c881e6afccf8c6a594c5ae85779a60508ce9409adc15dc1304"
+    },
+    {
+      "name": "context",
+      "path": "backend/src/storage/chat-context.repository.ts",
+      "exports": "ChatCompactionSourcePage,ChatContextCheckpoint,ChatContextCheckpointEntryInput,ChatContextCompactionClaim,ChatContextConflictError,ChatContextEntry,ChatContextEntryKind,ChatContextEntryProvenance,ChatContextEntryTrustLevel,ChatContextHead,ChatContextSourceMessage,ChatContextState,ChatModelContextLoadResult,InstallChatContextCheckpointInput,chatContextMaintenanceMaxBatchSize,claimChatContextCompaction,cleanupExpiredChatContextCheckpoints,failChatContextCompaction,failPendingChatContextCompaction,getChatContextHead,installChatContextCheckpoint,loadChatCompactionSourcePage,loadChatModelContext,recordChatContextCompactionProgress,recordChatContextUsage,recoverStaleChatContextCompactions,releaseChatContextCompactionClaim,requestChatContextCompaction",
+      "normalizedSourceSha256": "f5b3e7abc95a6eda944b8d86b605afbfb1ac798b9f5513b469e3dd2ddb2b1289"
+    },
+    {
+      "name": "assets",
+      "path": "backend/src/storage/chat-assets.repository.ts",
+      "exports": "ChatAssetApiMetadata,ChatAssetCleanupClaim,ChatAssetCleanupStatus,ChatAssetCountExceededError,ChatAssetCreateInput,ChatAssetLookupInput,ChatAssetObservationStatus,ChatAssetOriginalMimeType,ChatAssetProcessedMimeType,ChatAssetProcessingResultInput,ChatAssetProcessingStatus,ChatAssetQuotaExceededError,ChatAssetRecord,ChatAssetReferenceCreateInput,ChatAssetReferenceKind,ChatAssetReferenceRecord,ChatAssetSourceKind,ChatGeneratedAssetCommitInput,assertChatAssetUploadSlotAvailable,chatAssetApiMetadata,chatAssetUserMaxBytes,chatAssetUserMaxCount,claimChatAssetObservation,claimExpiredChatAssetsForCleanup,claimUncommittedChatAssetForDeletion,commitChatAssetsToMessage,commitChatAssetsToMessageInClient,commitChatGeneratedAsset,completeChatAssetDeletion,completeChatAssetProcessing,createChatAsset,expireChatAssetsForConversationInClient,failChatAssetProcessing,getChatAsset,hasValidChatAssetReference,insertChatAssetReference,listActiveChatAssetReferences,listReadyChatAssetsByIds,newChatAssetId,releaseChatAssetDeletionClaim,removeChatAssetReferencesForMessage,setChatAssetObservation",
+      "normalizedSourceSha256": "963051cca6f461552f144c19f27e3d6e0e295078e7acf6c85397a293313c920a"
+    },
+    {
+      "name": "imageGenerations",
+      "path": "backend/src/storage/chat-image-generations.repository.ts",
+      "exports": "ChatImageGenerationCommitInput,ChatImageGenerationOperation,ChatImageGenerationRecord,commitChatImageGenerationInClient,getChatImageGeneration,listChatImageGenerationRootAssetIdsInClient,listRecentChatImageGenerations,renewChatImageGenerationExpiryInClient",
+      "normalizedSourceSha256": "5730a7f73d6fd18d7c24de5dddd8660c3603ac55ce7058cbbca22f23c913eadc"
+    },
+    {
+      "name": "assetStorage",
+      "path": "backend/src/storage/chat-asset-storage.ts",
+      "exports": "ChatAssetObjectReadResult,ChatAssetObjectWriteResult,ChatAssetStorageError,chatAssetGeneratedMaxBytes,chatAssetGeneratedQuotaMaxBytes,chatAssetObjectPath,chatAssetOriginalMaxBytes,chatAssetPreviewMaxBytes,chatAssetProcessedMaxBytes,deleteChatAssetObjects,openChatAssetObject,openChatGeneratedAssetObject,removeChatAssetObject,storageKeyForChatAsset,writeChatAssetObject,writeChatGeneratedAssetObject",
+      "normalizedSourceSha256": "210cb27063815554ee1ee39476e168ca6340acf715c0df1b30d67d44bbdda267"
+    }
+  ],
+  "semantics": {
+    "idempotency": {
+      "table": "chat_message_idempotency",
+      "primaryKey": "PRIMARY KEY (conversation_id, client_message_id)",
+      "lookupScope": "WHERE conversation_id = ? AND client_message_id = ? AND system_account_id = ?",
+      "insertColumns": ["conversation_id", "client_message_id", "system_account_id", "turn_id", "user_message_id", "assistant_message_id", "created_at", "expires_at"],
+      "duplicateResult": "duplicate: true",
+      "replacementCardinality": ["deletedIdempotency.changes !== 1", "deletedMessages.changes !== 2"]
+    },
+    "cas": {
+      "turn": {
+        "activeTurnPredicate": "WHERE id = ? AND system_account_id = ? AND active_turn_id = ?",
+        "assistantStreamingPredicate": "WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ? AND role = 'assistant' AND status = 'streaming'",
+        "successfulChangeCount": 1
+      },
+      "context": {
+        "states": ["ready", "compact_pending", "compacting", "compact_failed"],
+        "revisionPredicate": "id = ? AND system_account_id = ? AND context_revision = ?",
+        "revisionPredicateOccurrences": 7,
+        "claimIdentityFields": ["context_claim_id", "context_claim_revision", "context_claim_through_sequence", "context_progress_sequence"],
+        "installPredicate": "AND context_state = 'compacting' AND context_claim_id = ? AND context_claim_revision = ? AND context_claim_through_sequence = ?",
+        "successfulChangeCount": 1
+      }
+    },
+    "relativeStorageKey": {
+      "limits": {
+        "originalBytes": 1048576,
+        "processedBytes": 1048576,
+        "generatedBytes": 16777216,
+        "previewBytes": 524288,
+        "generatedQuotaBytes": 17301504
+      },
+      "variants": ["original", "preview"],
+      "examples": {
+        "original": "01/23/chat_asset_0123456789abcdef0123456789abcdef-original-0123456789abcdef.png",
+        "preview": "01/23/chat_asset_0123456789abcdef0123456789abcdef-preview-0123456789abcdef.png"
+      },
+      "separator": "/",
+      "maxLength": 512,
+      "rejects": ["normalized.startsWith('/')", "normalized.includes('\\0')", "relativePath.startsWith('..')"]
+    },
+    "originalAndPreview": {
+      "table": "chat_assets",
+      "originalColumns": ["original_bytes", "original_filename", "original_height", "original_mime_type", "original_sha256", "original_width"],
+      "processedColumns": ["processed_bytes", "processed_height", "processed_mime_type", "processed_sha256", "processed_width", "storage_key"],
+      "previewColumns": ["preview_bytes", "preview_height", "preview_mime_type", "preview_sha256", "preview_storage_key", "preview_width"],
+      "generatedObjectsMustDiffer": "if (storageKey === previewStorageKey) throw new Error('生成图片原图与 preview 不能共用 storage key')",
+      "generatedPreviewRequired": "CHECK (source_kind != 'assistant_generated' OR preview_storage_key IS NOT NULL)",
+      "sourceKinds": ["user_upload", "assistant_generated"],
+      "originalMimeTypes": ["image/jpeg", "image/png", "image/webp", "image/gif"],
+      "processedMimeTypes": ["image/jpeg", "image/png", "image/webp"],
+      "processingStatuses": ["pending", "ready", "failed"],
+      "observationStatuses": ["not_requested", "pending", "ready", "failed"],
+      "cleanupStatuses": ["active", "claimed", "failed"],
+      "maxUserBytes": 2147483648,
+      "maxUserCount": 1024
+    },
+    "assetReferences": {
+      "table": "chat_asset_references",
+      "kinds": ["user_input", "assistant_output"],
+      "uniqueContentSlot": "UNIQUE (message_id, content_order)",
+      "assetForeignKey": "FOREIGN KEY (asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE",
+      "insertConflictPolicy": "ON CONFLICT (message_id, content_order) DO NOTHING",
+      "validityScope": ["system_account_id", "conversation_id", "processing_status = 'ready'", "cleanup_status = 'active'", "expires_at > now"]
+    },
+    "imageLineage": {
+      "table": "chat_image_generations",
+      "operations": ["generate", "edit"],
+      "model": ["gpt-image-2"],
+      "sourceColumn": "source_asset_ids_json",
+      "rootColumn": "root_asset_id",
+      "maxSourceAssets": 5,
+      "generateRoot": "let rootAssetId = assetId",
+      "editRoot": "rootAssetId = sourceRootAssetIds[0]!",
+      "sourceForeignKey": "FOREIGN KEY (asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE",
+      "rootForeignKey": "FOREIGN KEY (root_asset_id, conversation_id) REFERENCES chat_assets(id, conversation_id) ON DELETE CASCADE",
+      "sourceJsonArrayCheck": "CHECK (jsonb_typeof(source_asset_ids_json::jsonb) = 'array')"
+    },
+    "assistantStorageReservationBytes": 458752
+  }
+}

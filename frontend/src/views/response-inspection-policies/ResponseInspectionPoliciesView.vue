@@ -56,7 +56,6 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
@@ -99,7 +98,6 @@ const modalMode = ref<PolicyModalMode>('create')
 const guideOpen = ref(false)
 const editingId = ref<string>()
 const activePolicy = ref<ResponseInspectionPolicySummary>()
-const providerRecovery = useKeepAliveSupersededRecovery(() => loadPolicyProviders())
 
 const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
 const policyProviders = computed(() => providers.value
@@ -150,7 +148,6 @@ async function loadPageData(force = false): Promise<void> {
 }
 
 async function loadPolicyProviders(force = false): Promise<void> {
-  const providerRecoveryRequest = providerRecovery.start()
   const providerResult = await loadProviderOptionsResource({
     apply: (nextProviders) => { providers.value = nextProviders },
     force,
@@ -158,8 +155,7 @@ async function loadPolicyProviders(force = false): Promise<void> {
     includeDefinitions: true,
     isManagementView: true
   })
-  providerRecovery.record(providerRecoveryRequest, providerResult.state)
-  if (providerResult.state === 'ready') providers.value = providerResult.data
+  providers.value = providerResult.data
 }
 
 function openCreate(): void {

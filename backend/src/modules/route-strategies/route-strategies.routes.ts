@@ -18,15 +18,8 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { clearNormalRouteLatencyDegradationForRouteStrategyAsync } from '../gateway/runtime/normal-route-latency-degradation.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
-import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
 
 export const routeStrategiesRouter = Router()
-
-const routeStrategyOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listRouteStrategyOptionsAsync>>>('routeStrategies.options', {
-  max: 512,
-  ttlMs: 6 * 60 * 60 * 1000
-})
 
 const routeStrategyGroupBindingSchema = z.object({
   groupId: z.string().trim().min(1, '策略路由分组无效'),
@@ -150,11 +143,7 @@ routeStrategiesRouter.get('/options', async (req, res, next) => {
       limit: optionLimitValue(integerQueryValue(req.query.limit)),
       activeOnly: booleanQueryValue(req.query.activeOnly) ?? true
     }
-    const options = await routeStrategyOptionsReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/route-strategies/options',
-      query
-    }), () => listRouteStrategyOptionsAsync(access, query))
+    const options = await listRouteStrategyOptionsAsync(access, query)
     res.json(ok(options))
   } catch (error) {
     next(error)
@@ -226,7 +215,6 @@ routeStrategiesRouter.post('/', mutationGuard({
         }
       }
     }, req)
-    await publishPageDataDomainGlobalReset('routeStrategies.options')
     res.status(201).json(ok(routeStrategy))
   } catch (error) {
     const message = error instanceof Error ? error.message : '创建策略路由失败'
@@ -284,7 +272,6 @@ routeStrategiesRouter.patch('/:id', async (req, res, next) => {
       }
     }, req)
     await clearNormalRouteSpeedFirstRuntime(routeStrategy.id, 'route_strategy_updated')
-    await publishPageDataDomainGlobalReset('routeStrategies.options')
     res.json(ok(routeStrategy))
   } catch (error) {
     if (error instanceof Error && error.message === '策略路由不存在') {
@@ -342,7 +329,6 @@ routeStrategiesRouter.delete('/:id', async (req, res, next) => {
     res.status(400).json(badRequest(message))
     return
   }
-  await publishPageDataDomainGlobalReset('routeStrategies.options')
   res.status(204).send()
 })
 

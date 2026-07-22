@@ -54,7 +54,6 @@ import {
   runBackgroundTaskRunReconcile
 } from './background-task-run-reconcile.job.js'
 import { seedUsageRecordFirstPage } from '../usage-records/usage-record-first-page-cache.service.js'
-import { publishAccountRuntimeReset } from '../page-data/page-data-change.publisher.js'
 import { runScheduledAccountCircuitRecovery } from './account-circuit-recovery.service.js'
 
 let started = false
@@ -529,7 +528,6 @@ async function runAccountAvailabilityScheduleStatusSync(): Promise<void> {
     }
     if (result.changedIds.length > 0) {
       clearGatewayRuntimeCache()
-      await publishAccountRuntimeReset([], true)
       logger.info({
         event: 'background_account_availability_schedule_status_sync_completed',
         scanned: result.scanned,

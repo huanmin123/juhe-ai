@@ -51,7 +51,6 @@ import type { ProviderCostBreakdown } from '../modules/model-pricing/model-prici
 import type { UsageReasoningEffort } from '../modules/gateway/usage/reasoning-effort.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { readUsageHealthCheckSettingsSnapshot } from './usage-health-check-settings-snapshot.js'
-import { publishUsageRecordBatchChange } from '../modules/page-data/page-data-change.publisher.js'
 import {
   publishUsageRecordFirstPage,
   usageRecordFirstPageCandidateInputs,
@@ -391,7 +390,6 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     }
     throw error
   }
-  publishUsageRecordBatchChange(writePlan.shardEntries)
   void publishUsageRecordFirstPageWithNamesBestEffort(inputs)
 }
 
@@ -401,8 +399,7 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
   }
   if (runtimeConfig.databaseDriver === 'postgres') {
     const client = createPostgresDatabaseClient(await getPostgresPool())
-    const persistedRecords = await createUsageRecordsBatchPostgres(inputs, client)
-    publishUsageRecordBatchChange(persistedRecords)
+    await createUsageRecordsBatchPostgres(inputs, client)
     await publishUsageRecordFirstPageWithNamesBestEffort(inputs, client)
     return
   }
@@ -437,7 +434,6 @@ export async function createUsageRecordsBatchAsync(inputs: UsageRecordInput[]): 
     }
     throw error
   }
-  publishUsageRecordBatchChange(writePlan.shardEntries)
   const client = createSqliteDatabaseClient(businessDatabase)
   await publishUsageRecordFirstPageWithNamesBestEffort(inputs, client)
 }

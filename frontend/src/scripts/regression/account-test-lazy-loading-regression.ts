@@ -10,7 +10,6 @@ import type {
 } from '@/api/domains/accounts'
 import { authState } from '@/composables/useAuth'
 import type { AccountSummary } from '@/types/domain'
-import { invalidateAccountTestOptionsCache } from '@/views/accounts/accountTestOptionsCache'
 import { useAccountTestModal } from '@/views/accounts/useAccountTestModal'
 
 const originalManagementOptions = api.accounts.testOptions
@@ -30,11 +29,9 @@ try {
   api.accounts.testModelCapabilities = originalManagementCapabilities
   api.myAccounts.testModelCapabilities = originalSelfCapabilities
   authState.currentUser.value = undefined
-  invalidateAccountTestOptionsCache()
 }
 
 async function verifyManagementLazyLoading(): Promise<void> {
-  invalidateAccountTestOptionsCache()
   authState.currentUser.value = currentUser('lazy-admin')
   const account = accountFixture('management-account')
   const scopeParams = { systemAccountId: 'managed-owner' }
@@ -92,7 +89,6 @@ async function verifyManagementLazyLoading(): Promise<void> {
 }
 
 async function verifySelfLazyLoading(): Promise<void> {
-  invalidateAccountTestOptionsCache()
   authState.currentUser.value = currentUser('lazy-user')
   const account = accountFixture('self-account')
   let optionsCalls = 0
@@ -130,7 +126,6 @@ async function verifySelfLazyLoading(): Promise<void> {
 }
 
 async function verifyPendingOptionsAbortOnAccountSwitch(): Promise<void> {
-  invalidateAccountTestOptionsCache()
   authState.currentUser.value = currentUser('abort-options-user')
   const firstAccount = accountFixture('abort-options-first')
   const secondAccount = accountFixture('abort-options-second')
@@ -161,11 +156,10 @@ async function verifyPendingOptionsAbortOnAccountSwitch(): Promise<void> {
   modal.closeTestModal()
   await modal.openTestModal(firstAccount)
   await modal.loadAccountTestModelOptions(true)
-  assert.equal(firstAccountCalls, 2, '已取消的候选模型请求不得写入缓存，重新打开必须重新请求')
+  assert.equal(firstAccountCalls, 2, '已取消的候选模型请求不得标记为已完成，重新打开必须重新请求')
 }
 
 async function verifyPendingCapabilitiesAbortOnClose(): Promise<void> {
-  invalidateAccountTestOptionsCache()
   authState.currentUser.value = currentUser('abort-capabilities-user')
   const account = accountFixture('abort-capabilities-account')
   let capabilitySignal: AbortSignal | undefined
@@ -193,7 +187,7 @@ async function verifyPendingCapabilitiesAbortOnClose(): Promise<void> {
   await modal.loadAccountTestModelOptions(true)
   modal.updateAccountTestModel('vendor/model-two')
   await waitFor(() => modal.testForm.testEndpointMode === 'chat_json', '重新打开后模型能力请求未完成')
-  assert.equal(capabilityCalls, 2, '已取消的模型能力请求不得写入缓存，重新选择必须重新请求')
+  assert.equal(capabilityCalls, 2, '已取消的模型能力请求不得更新当前视图，重新选择必须重新请求')
 }
 
 function testOptions(): AccountTestOptions {

@@ -27,7 +27,6 @@ import {
   normalizeAccountErrorHandlingRules,
   type AccountErrorHandlingRule
 } from '../../accounts/account-error-policy-validation.js'
-import { publishAccountRuntimeChange } from '../../page-data/page-data-change.publisher.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -350,13 +349,6 @@ function applyExplicitAccountErrorPolicyDecision(
           undefined,
           input.traceId
         )
-  if (updated) {
-    void publishAccountRuntimeChange({
-      accountId: account.id,
-      ownerSystemAccountIds: [account.bindingSystemAccountId ?? '', account.groupOwnerSystemAccountId ?? ''],
-      fieldMask: ['status', 'schedulable', 'cooldownUntil', 'lastErrorCode', 'lastErrorMessage']
-    })
-  }
   return {
     action: decision.action,
     changed: Boolean(updated),
@@ -401,13 +393,6 @@ async function applyExplicitAccountErrorPolicyDecisionAsync(
           undefined,
           input.traceId
         )
-  if (updated) {
-    await publishAccountRuntimeChange({
-      accountId: account.id,
-      ownerSystemAccountIds: [account.bindingSystemAccountId ?? '', account.groupOwnerSystemAccountId ?? ''],
-      fieldMask: ['status', 'schedulable', 'cooldownUntil', 'lastErrorCode', 'lastErrorMessage']
-    })
-  }
   return {
     action: decision.action,
     changed: Boolean(updated),

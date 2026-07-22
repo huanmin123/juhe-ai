@@ -246,9 +246,9 @@ func TestNodeModelCatalogBridgeDependency(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			router := NewRouter(RouterOptions{
-				Config:                       test.cfg,
-				Logger:                       slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-				ManagementCaptchaHandler:     http.NotFoundHandler(),
+				Config:                   test.cfg,
+				Logger:                   slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
+				ManagementCaptchaHandler: http.NotFoundHandler(),
 				ManagementAPIAuthMiddleware: func(next http.Handler) http.Handler {
 					return next
 				},

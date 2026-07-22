@@ -29,10 +29,6 @@ import {
   sameTagNames,
   type AccountModelSelectOption
 } from './accountEditFormPayload'
-import {
-  invalidateAccountTagOptionsCache,
-  resolveAccountTagOptionsScopeKey
-} from './accountTagOptionsCache'
 import { invalidateAccountDetailForAccount } from './accountDetailCache'
 
 type ReadonlyValue<T> = {
@@ -124,7 +120,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           ? '账户已创建，已因多 Key 自动关闭余额查询'
           : created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
       }
-      invalidateAccountTagOptions(options.editingId.value ? options.editingAccountScopeParams() : options.createScopeParams.value)
       options.modalOpen.value = false
       await options.loadData()
     } catch (error) {
@@ -185,7 +180,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         } else {
           await api.myAccounts.updateTags(account.id, payload)
         }
-        invalidateAccountTagOptions(scopeParams)
       }
       invalidateAccountDetailOptions(account.id, scopeParams)
       message.success('授权账户已更新')
@@ -258,7 +252,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         await api.myAccounts.update(options.editingId.value, payload)
       }
       invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
-      invalidateAccountTagOptions(options.editingAccountScopeParams())
       message.success(balanceAutoDisabled ? '账户基础信息已更新，已因多 Key 自动关闭余额查询' : '账户基础信息已更新')
       options.modalOpen.value = false
       await options.loadData()
@@ -302,10 +295,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     return options.isManagementView.value
       ? api.accounts.create(payload, options.createScopeParams.value)
       : api.myAccounts.create(payload)
-  }
-
-  function invalidateAccountTagOptions(scopeParams: AccountScopeParams | undefined): void {
-    invalidateAccountTagOptionsCache(resolveAccountTagOptionsScopeKey(options.isManagementView.value, scopeParams))
   }
 
   function invalidateAccountDetailOptions(accountId: string | undefined, scopeParams: AccountScopeParams | undefined): void {

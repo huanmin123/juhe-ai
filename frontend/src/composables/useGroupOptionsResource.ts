@@ -32,7 +32,7 @@ export async function loadGroupOptionsResource(options: GroupOptionsResourceOpti
     systemAccountId: options.systemAccountId
   })
   const missingIds = selectedIds.filter((id) => !windowGroups.some((group) => group.id === id))
-  const groups = missingIds.length
+  const result = missingIds.length
     ? mergeGroupOptionsById(await options.api.options({
         ids: missingIds,
         limit: missingIds.length,
@@ -40,8 +40,8 @@ export async function loadGroupOptionsResource(options: GroupOptionsResourceOpti
         systemAccountId: options.systemAccountId
       }), windowGroups)
     : windowGroups
-  applyIfCurrent(options, groups)
-  return groups
+  applyIfCurrent(options, result)
+  return result
 }
 
 function applyIfCurrent(options: GroupOptionsResourceOptions, value: GroupOptionSummary[]): void {

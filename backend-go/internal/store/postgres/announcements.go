@@ -37,6 +37,17 @@ func (s *Store) ListPublicAnnouncements(ctx context.Context, systemAccountID str
 	return items, nil
 }
 
+func (s *Store) FindPublicAnnouncement(ctx context.Context, id string) (port.Announcement, bool, error) {
+	row, err := s.queries().FindPublicAnnouncement(ctx, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return port.Announcement{}, false, nil
+	}
+	if err != nil {
+		return port.Announcement{}, false, fmt.Errorf("find public announcement: %w", err)
+	}
+	return publicAnnouncementDetailFromRow(row), true, nil
+}
+
 func (s *Store) MarkVisibleAnnouncementsRead(ctx context.Context, systemAccountID string, announcementIDs []string, readAt time.Time) (int, error) {
 	ids := uniqueAnnouncementIDs(announcementIDs)
 	if len(ids) == 0 {
@@ -200,15 +211,21 @@ func (s announcementTxStore) DeleteAnnouncementReads(ctx context.Context, id str
 
 func publicAnnouncementFromRow(row postgresqueries.ListPublicAnnouncementsRow) port.Announcement {
 	return port.Announcement{
-		ID: row.ID, Title: row.Title, Content: row.Content, Level: row.Level, Status: row.Status,
+		ID: row.ID, Title: row.Title, Level: row.Level,
 		PublishedAt: timestamptzPtr(row.PublishedAt), ReadAt: timestamptzPtr(row.ReadAt),
-		CreatedAt: timestamptzValue(row.CreatedAt), UpdatedAt: timestamptzValue(row.UpdatedAt),
+	}
+}
+
+func publicAnnouncementDetailFromRow(row postgresqueries.FindPublicAnnouncementRow) port.Announcement {
+	return port.Announcement{
+		ID: row.ID, Title: row.Title, Content: row.Content, Level: row.Level,
+		PublishedAt: timestamptzPtr(row.PublishedAt),
 	}
 }
 
 func managementAnnouncementFromListRow(row postgresqueries.ListManagementAnnouncementsRow) port.Announcement {
 	return port.Announcement{
-		ID: row.ID, Title: row.Title, Content: row.Content, Level: row.Level, Status: row.Status,
+		ID: row.ID, Title: row.Title, Content: row.ContentPreview, Level: row.Level, Status: row.Status,
 		CreatedBy: row.CreatedBy, CreatedByName: textValue(row.CreatedByName),
 		UpdatedBy: pgTextPtrValue(row.UpdatedBy), UpdatedByName: pgTextPtrValue(row.UpdatedByName),
 		PublishedAt: timestamptzPtr(row.PublishedAt), CreatedAt: timestamptzValue(row.CreatedAt), UpdatedAt: timestamptzValue(row.UpdatedAt),

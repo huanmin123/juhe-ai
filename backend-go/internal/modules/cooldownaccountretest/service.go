@@ -15,6 +15,7 @@ const (
 	DefaultEnqueueWorkers = 8
 	DefaultTaskTimeout    = 60 * time.Second
 	DefaultProbeTaskDelay = 10 * time.Second
+	DefaultOutcomeTimeout = 5 * time.Second
 )
 
 var ErrProbeNotConfigured = errors.New("cooldown account retest probe is not configured")
@@ -27,9 +28,20 @@ type Probe interface {
 	Probe(context.Context, port.CooldownAccountRetestCandidate) (port.CooldownAccountRetestProbeResult, error)
 }
 
+type QueueSnapshot struct {
+	PendingCount int
+	RunningCount int
+	RetryCount   int
+}
+
+type QueueCapacity interface {
+	CooldownAccountRetestQueueSnapshot(context.Context) (QueueSnapshot, error)
+}
+
 type Scheduler struct {
 	Store            port.CooldownAccountRetestStore
 	Enqueuer         Enqueuer
+	Capacity         QueueCapacity
 	BatchSize        int
 	EnqueueWorkers   int
 	MaxPauseMinutes  int
@@ -40,6 +52,7 @@ type ScheduleResult struct {
 	CandidateCount int
 	EnqueuedCount  int
 	DuplicateCount int
+	AvailableSlots int
 }
 
 func (s Scheduler) RunPage(ctx context.Context, cursor *port.CooldownAccountRetestCursor, now time.Time) (ScheduleResult, *port.CooldownAccountRetestCursor, error) {
@@ -47,12 +60,25 @@ func (s Scheduler) RunPage(ctx context.Context, cursor *port.CooldownAccountRete
 		return ScheduleResult{}, cursor, fmt.Errorf("cooldown account retest store and enqueuer are required")
 	}
 	limit := clamp(s.BatchSize, 1, port.CooldownAccountRetestMaxPageSize, DefaultBatchSize)
+	availableSlots := limit
+	if s.Capacity != nil {
+		snapshot, err := s.Capacity.CooldownAccountRetestQueueSnapshot(ctx)
+		if err != nil {
+			return ScheduleResult{}, cursor, fmt.Errorf("read cooldown account retest queue capacity: %w", err)
+		}
+		occupied := max(snapshot.PendingCount, 0) + max(snapshot.RunningCount, 0) + max(snapshot.RetryCount, 0)
+		availableSlots = max(0, limit-occupied)
+		if availableSlots == 0 {
+			return ScheduleResult{AvailableSlots: 0}, cursor, nil
+		}
+		limit = availableSlots
+	}
 	workers := clamp(s.EnqueueWorkers, 1, limit, DefaultEnqueueWorkers)
 	page, err := s.Store.ListDueCooldownAccountRetests(ctx, port.CooldownAccountRetestListInput{Now: now, Limit: limit, Cursor: cursor})
 	if err != nil {
 		return ScheduleResult{}, cursor, fmt.Errorf("list cooldown account retest candidates: %w", err)
 	}
-	result := ScheduleResult{CandidateCount: len(page.Candidates)}
+	result := ScheduleResult{CandidateCount: len(page.Candidates), AvailableSlots: availableSlots}
 	jobs := make(chan port.CooldownAccountRetestCandidate)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -107,10 +133,11 @@ func (s Scheduler) RunPage(ctx context.Context, cursor *port.CooldownAccountRete
 }
 
 type Processor struct {
-	Store       port.CooldownAccountRetestStore
-	Outcomes    port.CooldownAccountRetestOutcomeStore
-	Probe       Probe
-	TaskTimeout time.Duration
+	Store          port.CooldownAccountRetestStore
+	Outcomes       port.CooldownAccountRetestOutcomeStore
+	Probe          Probe
+	TaskTimeout    time.Duration
+	OutcomeTimeout time.Duration
 }
 
 func (p Processor) RunTask(ctx context.Context, task port.CooldownAccountRetestTask) error {
@@ -135,18 +162,49 @@ func (p Processor) RunTask(ctx context.Context, task port.CooldownAccountRetestT
 	}
 	result, err := p.Probe.Probe(taskCtx, candidate)
 	if err != nil {
-		return fmt.Errorf("probe cooldown account retest: %w", err)
+		if ctx.Err() != nil {
+			return fmt.Errorf("probe cooldown account retest interrupted: %w", ctx.Err())
+		}
+		// A transport or timeout error has no attributable upstream result.  Move
+		// the candidate out of the due set before acknowledging this task; otherwise
+		// a queue retry and the scheduler can issue duplicate probes concurrently.
+		if deferErr := p.deferOutcome(ctx, task); deferErr != nil {
+			return fmt.Errorf("defer cooldown account retest after probe error (%v): %w", err, deferErr)
+		}
+		return nil
 	}
 	switch result.Outcome {
 	case "complete_success":
-		return p.Outcomes.RecordCooldownAccountRetestSuccess(taskCtx, task)
+		return p.recordOutcome(ctx, func(outcomeCtx context.Context) error {
+			return p.Outcomes.RecordCooldownAccountRetestSuccess(outcomeCtx, task)
+		})
 	case "probe_task_failure":
-		return p.Outcomes.DeferCooldownAccountRetest(taskCtx, task, DefaultProbeTaskDelay)
+		return p.deferOutcome(ctx, task)
 	case "upstream_failure":
-		return p.Outcomes.RecordCooldownAccountRetestFailure(taskCtx, task, result)
+		return p.recordOutcome(ctx, func(outcomeCtx context.Context) error {
+			return p.Outcomes.RecordCooldownAccountRetestFailure(outcomeCtx, task, result)
+		})
 	default:
 		return fmt.Errorf("unsupported cooldown account retest outcome %q", result.Outcome)
 	}
+}
+
+func (p Processor) deferOutcome(ctx context.Context, task port.CooldownAccountRetestTask) error {
+	return p.recordOutcome(ctx, func(outcomeCtx context.Context) error {
+		return p.Outcomes.DeferCooldownAccountRetest(outcomeCtx, task, DefaultProbeTaskDelay)
+	})
+}
+
+func (p Processor) recordOutcome(ctx context.Context, write func(context.Context) error) error {
+	timeout := p.OutcomeTimeout
+	if timeout <= 0 {
+		timeout = DefaultOutcomeTimeout
+	}
+	// The probe uses a child budget, while outcome persistence uses the outer task
+	// budget. Preserve outer cancellation so shutdown cannot outlive worker ownership.
+	outcomeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	return write(outcomeCtx)
 }
 
 func sameObservation(a, b *time.Time) bool {
