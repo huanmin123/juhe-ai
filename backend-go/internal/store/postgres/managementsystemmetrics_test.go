@@ -102,10 +102,13 @@ func TestManagementSystemMetricsSQLIsReadOnlyParameterizedAndBounded(t *testing.
 		}
 	}
 	for _, required := range []string{
-		"DISTINCT ON (process_role)",
-		"FROM juhe_stats.process_event_loop_samples",
-		"process_role = ANY($1::text[])",
-		"ORDER BY process_role, sampled_at DESC, id DESC",
+		"FROM unnest($1::text[]) WITH ORDINALITY AS requested(process_role, ordinal)",
+		"CROSS JOIN LATERAL",
+		"FROM juhe_stats.process_event_loop_samples AS samples",
+		"samples.process_role = requested.process_role",
+		"ORDER BY samples.sampled_at DESC, samples.id DESC",
+		"LIMIT 1",
+		"ORDER BY requested.ordinal",
 		"LIMIT $2",
 	} {
 		if !strings.Contains(managementSystemMetricsLatestSQL, required) {
@@ -113,13 +116,25 @@ func TestManagementSystemMetricsSQLIsReadOnlyParameterizedAndBounded(t *testing.
 		}
 	}
 	for _, required := range []string{
-		"sampled_at >= $2",
-		"event_loop_lag_ms IS NOT NULL",
-		"ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC",
+		"FROM unnest($1::text[]) WITH ORDINALITY AS requested(process_role, ordinal)",
+		"CROSS JOIN LATERAL",
+		"samples.sampled_at >= $2",
+		"samples.event_loop_lag_ms IS NOT NULL",
+		"ORDER BY samples.event_loop_lag_ms DESC, samples.sampled_at DESC, samples.id DESC",
+		"LIMIT 1",
+		"ORDER BY requested.ordinal",
 		"LIMIT $3",
 	} {
 		if !strings.Contains(managementSystemMetricsPeakSQL, required) {
 			t.Fatalf("peak query missing %q:\n%s", required, managementSystemMetricsPeakSQL)
+		}
+	}
+	for name, query := range map[string]string{
+		"latest": managementSystemMetricsLatestSQL,
+		"peak":   managementSystemMetricsPeakSQL,
+	} {
+		if strings.Contains(query, "DISTINCT ON") {
+			t.Fatalf("%s query must not scan role history through DISTINCT ON:\n%s", name, query)
 		}
 	}
 	for _, forbidden := range []string{"system_metrics_hourly", "process_event_loop_hourly"} {
