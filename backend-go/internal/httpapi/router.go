@@ -297,7 +297,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 					newSystemAPIAuthenticatedRateLimitMiddleware(
 						opts.SystemAPIRateLimitReader,
 						opts.SystemAPIAuthenticatedRateLimiter,
-						systemAPIMethodRead,
 						clientIPs,
 						systemAPIClientIPAllowlist,
 						opts.Logger,
@@ -310,7 +309,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 						newSystemAPIAuthenticatedRateLimitMiddleware(
 							opts.SystemAPIRateLimitReader,
 							opts.SystemAPIAuthenticatedRateLimiter,
-							systemAPIMethodWrite,
 							clientIPs,
 							systemAPIClientIPAllowlist,
 							opts.Logger,
@@ -1027,10 +1025,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/authorized-dispatch", opts.ManagementMyAccountAuthorizedDispatchHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountImportPreviewHandler != nil {
-				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/preview", opts.ManagementAccountImportPreviewHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Post("/accounts/import/preview", opts.ManagementAccountImportPreviewHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAccountImportPreviewHandler != nil {
-				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/import/preview", opts.ManagementMyAccountImportPreviewHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Post("/my-accounts/import/preview", opts.ManagementMyAccountImportPreviewHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountImportConfirmHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/confirm", opts.ManagementAccountImportConfirmHandler.ServeHTTP)
@@ -1689,8 +1687,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountUpdateHandler != nil ||
 		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
-		opts.ManagementAccountImportPreviewHandler != nil ||
-		opts.ManagementMyAccountImportPreviewHandler != nil ||
 		opts.ManagementAccountImportConfirmHandler != nil ||
 		opts.ManagementMyAccountImportConfirmHandler != nil ||
 		opts.ManagementAccountTrafficMigrationHandler != nil ||
