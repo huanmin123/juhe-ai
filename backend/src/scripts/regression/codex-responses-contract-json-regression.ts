@@ -479,6 +479,31 @@ const arbitraryIssuePlan: CodexRepairPlan = {
 }
 assert.throws(() => executeCodexResponsesRepair(mismatchedResponse, arbitraryIssuePlan), /codex_repair_forbidden/)
 
+const validIdDocument: JsonRecord = {
+  output: [{ id: 'msg_already_valid', type: 'message', role: 'assistant', content: [] }]
+}
+const forgedAllowlistedIssuePlan: CodexRepairPlan = {
+  revision: codexResponsesContractRevision,
+  level: 'R0',
+  provenance: 'raw_upstream',
+  sourceOutcome: 'repairable',
+  operations: [{
+    action: 'replace',
+    path: ['output', 0, 'id'],
+    value: 'msg_rewritten',
+    expectedItemType: 'message',
+    expectedItemIdPresent: true,
+    expectedItemId: 'msg_already_valid',
+    issueCode: 'item_id_prefix_mismatch',
+    ruleId: 'codex.r0.response.replace_item_id'
+  }]
+}
+assert.throws(
+  () => executeCodexResponsesRepair(validIdDocument, forgedAllowlistedIssuePlan),
+  /codex_repair_forbidden/,
+  'executor 必须重算 allowlisted issue predicate，不能只信任 issue code 字符串'
+)
+
 console.log('Codex Responses JSON contract 回归通过：诊断、R0、未知类型、orphan、历史自愈和语义不变量已固定')
 
 function semanticProjection(document: JsonRecord): unknown {
