@@ -45,6 +45,7 @@ interface OAuthMigrationGolden {
     ttlSeconds: number
     globalMaxEntries: number
     ownerMaxEntries: number
+    capacityScope: string
     stateBytes: number
     codeVerifierBytes: number
     sessionIdBytes: number
@@ -91,6 +92,7 @@ assert.equal(golden.authority, 'node')
 
 const routesSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.routes.ts'), 'utf8')
 const serviceSource = readFileSync(resolve('src/modules/openai-oauth/openai-oauth.service.ts'), 'utf8')
+const runtimeStateStoreSource = readFileSync(resolve('src/shared/runtime-state-store.ts'), 'utf8')
 const appSource = readFileSync(resolve('src/modules/system-api/system-api-app.ts'), 'utf8')
 const frontendApiSource = readFileSync(resolve('..', 'frontend/src/api/domains/openaiOAuth.ts'), 'utf8')
 
@@ -157,6 +159,7 @@ assert.deepEqual(Object.fromEntries(authorizeUrl.searchParams), {
 
 assert.equal(golden.session.globalMaxEntries, openAIOAuthMemorySessionMaxEntries)
 assert.equal(golden.session.ownerMaxEntries, openAIOAuthOwnerSessionMaxEntries)
+assert.equal(golden.session.capacityScope, 'memory_only_redis_has_no_global_or_owner_cap')
 assert.equal(golden.session.ttlSeconds % 60, 0)
 assert.match(serviceSource, new RegExp(`const sessionTtlMs = ${golden.session.ttlSeconds / 60} \\* 60 \\* 1000`))
 assert.match(serviceSource, new RegExp(`randomBytes\\(${golden.session.stateBytes}\\)\\.toString\\('hex'\\)`))
@@ -283,13 +286,28 @@ for (const defect of golden.knownNodeDefects) {
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'session-consumed-before-token-success'))
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'no-stable-machine-error-code'))
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'reauthorize-refresh-token-without-idempotency-or-cas'))
+assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'oauth-session-plaintext-in-redis'))
+assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'redis-session-capacity-unbounded'))
+
+assert.match(serviceSource, /createRuntimeStateStore\('openai-oauth:sessions'\)/)
+const redisRuntimeStateStoreStart = runtimeStateStoreSource.indexOf('class RedisRuntimeStateStore')
+assert.ok(redisRuntimeStateStoreStart >= 0)
+const runtimeStateSetStart = runtimeStateStoreSource.indexOf('async setJson<T>', redisRuntimeStateStoreStart)
+const runtimeStateSetEnd = runtimeStateStoreSource.indexOf('\n  async compareSetJson<T>', runtimeStateSetStart)
+assert.ok(runtimeStateSetStart >= 0 && runtimeStateSetEnd > runtimeStateSetStart)
+const runtimeStateSetBlock = runtimeStateStoreSource.slice(runtimeStateSetStart, runtimeStateSetEnd)
+assert.match(runtimeStateSetBlock, /JSON\.stringify\(value\)/)
+assert.doesNotMatch(runtimeStateSetBlock, /(?:encrypt|seal|aead)/i)
+assert.doesNotMatch(runtimeStateSetBlock, /(?:maxEntries|maxOwnerSessions|ownerSystemAccountId)/)
 
 const refreshTokenReauthorizeStart = routesSource.indexOf("openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token'")
-const refreshTokenReauthorizeBlock = routesSource.slice(refreshTokenReauthorizeStart)
-assert.ok(refreshTokenReauthorizeStart >= 0)
+const refreshTokenReauthorizeEnd = routesSource.indexOf('\ntype OpenAIOAuthProvider', refreshTokenReauthorizeStart)
+assert.ok(refreshTokenReauthorizeStart >= 0 && refreshTokenReauthorizeEnd > refreshTokenReauthorizeStart)
+const refreshTokenReauthorizeBlock = routesSource.slice(refreshTokenReauthorizeStart, refreshTokenReauthorizeEnd)
 assert.doesNotMatch(refreshTokenReauthorizeBlock, /mutationGuard\(/)
 const credentialUpdateStart = routesSource.indexOf('async function updateOpenAIOAuthAccountCredentials')
 const credentialUpdateEnd = routesSource.indexOf('\nexport function buildReauthorizedOpenAIOAuthCredentials', credentialUpdateStart)
+assert.ok(credentialUpdateStart >= 0 && credentialUpdateEnd > credentialUpdateStart)
 const credentialUpdateBlock = routesSource.slice(credentialUpdateStart, credentialUpdateEnd)
 assert.match(credentialUpdateBlock, /updateAccountAsync\(account\.id/)
 assert.doesNotMatch(credentialUpdateBlock, /configRevision|expectedRevision|ExpectedConfigRevision/)
