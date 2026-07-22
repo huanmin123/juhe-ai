@@ -96,7 +96,7 @@ SET count = GREATEST(0, facets.count - decrements.count),
     latest_time = (
       SELECT logs.time FROM juhe_dataset.runtime_logs AS logs
       WHERE logs.time >= $4::text
-        AND logs.event = decrements.event
+        AND COALESCE(NULLIF(BTRIM(logs.event), ''), '') = decrements.event
       ORDER BY logs.time DESC, logs.id DESC
       LIMIT 1
     ),
