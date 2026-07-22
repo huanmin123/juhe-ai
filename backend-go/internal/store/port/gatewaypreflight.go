@@ -29,6 +29,7 @@ type GatewayPreflightBindingRecord struct {
 	Status          string
 	ProviderCode    string
 	GroupEnabled    bool
+	AccessExpiresAt *time.Time
 	CreatedAt       time.Time
 }
 

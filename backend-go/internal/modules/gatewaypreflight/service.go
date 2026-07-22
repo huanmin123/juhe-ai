@@ -63,8 +63,14 @@ func (s *Service) Resolve(ctx context.Context, rawAPIKey string) (Result, error)
 	if structure.apiKey == nil {
 		return Result{}, fmt.Errorf("gateway preflight ready result has no API key")
 	}
-	if structure.apiKey.expiresAt != nil && !s.now().Before(*structure.apiKey.expiresAt) {
+	now := s.now()
+	if structure.apiKey.expiresAt != nil && !now.Before(*structure.apiKey.expiresAt) {
 		structure.decision = newDecision(DecisionAPIKeyExpired)
+		return structure.result(), nil
+	}
+	structure.bindings = activeBindingsAt(structure.bindings, now)
+	if len(structure.bindings) == 0 {
+		structure.decision = newDecision(DecisionNoActiveBindings)
 		return structure.result(), nil
 	}
 	if !hasEnabledQuota(structure.apiKey.quotaLimits) {
@@ -195,6 +201,17 @@ func normalizeHours(value int) int {
 		return 0
 	}
 	return value
+}
+
+func activeBindingsAt(bindings []Binding, now time.Time) []Binding {
+	active := make([]Binding, 0, len(bindings))
+	for _, binding := range bindings {
+		if binding.accessExpiresAt != nil && !now.Before(*binding.accessExpiresAt) {
+			continue
+		}
+		active = append(active, binding)
+	}
+	return active
 }
 
 func quotaExceeded(limits port.ManagementRequestQuotaLimits, costs port.GatewayQuotaCosts) bool {

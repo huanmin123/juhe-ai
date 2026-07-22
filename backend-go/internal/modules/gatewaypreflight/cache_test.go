@@ -3,6 +3,8 @@ package gatewaypreflight
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -110,6 +112,45 @@ func TestCacheDoesNotRollBackVersionObservedByAnotherLoader(t *testing.T) {
 	}
 	if _, ok := cache.entries["hash"]; ok {
 		t.Fatal("stale loader backfilled an entry after another loader observed v2")
+	}
+}
+
+func TestCacheCoalescesConcurrentMissesForTheSameVersionAndKey(t *testing.T) {
+	const callers = 32
+	cache := NewCache(CacheOptions{VersionReader: &gatewayPreflightVersionReaderStub{version: "v1"}, TTL: time.Minute})
+	var loads atomic.Int32
+	release := make(chan struct{})
+	loader := func(context.Context, string) (gatewayPreflightStructure, error) {
+		loads.Add(1)
+		<-release
+		return gatewayPreflightStructure{decision: newDecision(DecisionReady)}, nil
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := cache.load(context.Background(), "same-hash", loader); err != nil {
+				t.Errorf("cache.load() error = %v", err)
+			}
+		}()
+	}
+	close(start)
+	deadline := time.Now().Add(time.Second)
+	for loads.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if loads.Load() == 0 {
+		t.Fatal("loader did not start")
+	}
+	time.Sleep(25 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if got := loads.Load(); got != 1 {
+		t.Fatalf("loader calls = %d, want 1", got)
 	}
 }
 

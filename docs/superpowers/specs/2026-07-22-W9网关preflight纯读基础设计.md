@@ -60,6 +60,8 @@ W9 只为后续 Go 真实网关降低风险，不接管 Node 网关 owner。当�
 
 - API Key 查询只按 `key_hash = $1`，`LIMIT 1`。
 - 绑定查询只读取 route strategy、binding、group、group authorization/settings，按 `priority ASC, created_at ASC, id ASC`，最多 20 条。
+- 授权分组 JOIN 同时约束 `resource_owner_system_account_id = groups.system_account_id`；Node 旧查询缺少该条件，Go 不沿用这个权限边界缺口。
+- 绑定 DTO 保留授权有效期；结构缓存命中后再次按当前时间过滤 `accessExpiresAt`，因此授权自然过期不会沿用最长 60 秒的旧绑定。自有分组的有效期固定为空，不受误关联授权记录影响。
 - 设置查询只读取当前 Node 网关准备层需要的固定 13 个数值键，`streamCircuitBreakerEnabled` 维持当前常量 `true`。
 - 所有动态值均通过参数传入；禁止字符串拼接用户输入。
 - 本切片不读取 `accounts`、`group_accounts`、凭据、候选账户、统计明细或 `usage_records`。
@@ -71,7 +73,7 @@ W9 只为后续 Go 真实网关降低风险，不接管 Node 网关 owner。当�
 - 内置 version reader 分别注入 cache Redis 与 state Redis getter，组合 API Key validation、system settings shared version 和 `gateway_runtime_cache` topic version；任一版本变化即清空结构缓存。
 - version 读取失败时绕过缓存并读取 PostgreSQL，不提供陈旧降级。
 - loader 前后各读取一次版本；读取期间发生版本变化时返回本次只读结果但不回填缓存。
-- cache 使用互斥锁保护 map，DTO 和切片在存取边界克隆；race 测试覆盖并发 Resolve。
+- cache 使用互斥锁保护 map，并按“版本 + key”合并并发 miss，避免同一 API Key 冷启动时重复打 PostgreSQL；DTO 和切片在存取边界克隆；race 测试覆盖并发 Resolve。
 
 ## 配额语义
 
