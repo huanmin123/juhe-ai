@@ -571,14 +571,22 @@ func TestRunServerRegistersUnifiedRecordDispatcherShutdownBeforeHandlerErrors(t 
 func TestShutdownRecordDispatchersUsesSharedBudgetAndClosesOnlyCompletedDependencies(t *testing.T) {
 	release := make(chan struct{})
 	completed := &recordDispatcherShutdownStub{done: make(chan struct{})}
-	blocked := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
+	blockedOne := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
+	blockedTwo := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
 	completedCloseCalls := 0
-	blockedCloseCalls := 0
+	blockedOneClosed := make(chan struct{}, 1)
+	blockedTwoClosed := make(chan struct{}, 1)
+	go func() {
+		<-release
+		close(blockedOne.done)
+		close(blockedTwo.done)
+	}()
 
 	startedAt := time.Now()
 	resources := []recordDispatcherResource{
 		{dispatcher: completed, closeDependency: func() error { completedCloseCalls++; return nil }, recordType: "completed"},
-		{dispatcher: blocked, closeDependency: func() error { blockedCloseCalls++; return nil }, recordType: "blocked"},
+		{dispatcher: blockedOne, closeDependency: func() error { blockedOneClosed <- struct{}{}; return nil }, recordType: "blocked-one"},
+		{dispatcher: blockedTwo, closeDependency: func() error { blockedTwoClosed <- struct{}{}; return nil }, recordType: "blocked-two"},
 	}
 	shutdownRecordDispatchers(&resources, 25*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if elapsed := time.Since(startedAt); elapsed > 80*time.Millisecond {
@@ -589,11 +597,20 @@ func TestShutdownRecordDispatchersUsesSharedBudgetAndClosesOnlyCompletedDependen
 		close(release)
 		t.Fatalf("completed dependency close calls = %d, want 1", completedCloseCalls)
 	}
-	if blockedCloseCalls != 0 {
+	select {
+	case <-blockedOneClosed:
 		close(release)
-		t.Fatalf("blocked dependency close calls = %d, want 0", blockedCloseCalls)
+		t.Fatal("blocked dependency closed before dispatcher completion")
+	default:
 	}
 	close(release)
+	for name, closed := range map[string]<-chan struct{}{"blocked-one": blockedOneClosed, "blocked-two": blockedTwoClosed} {
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatalf("%s dependency was not closed after dispatcher completion", name)
+		}
+	}
 }
 
 type recordDispatcherShutdownStub struct {
@@ -611,8 +628,7 @@ func (s *recordDispatcherShutdownStub) Shutdown(ctx context.Context) error {
 		return nil
 	}
 	select {
-	case <-s.release:
-		close(s.done)
+	case <-s.done:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

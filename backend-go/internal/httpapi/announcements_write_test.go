@@ -156,7 +156,7 @@ func TestAnnouncementManagementWriteCreateRejectsBodyOverNodeLimit(t *testing.T)
 	fake := &announcementWriteServiceFake{}
 	recorder := httptest.NewRecorder()
 	body := `{"title":"标题","content":"` + strings.Repeat("x", announcementJSONMaxBodyBytes) + `"}`
-	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}, &announcementPageDataFake{}).ServeHTTP(
+	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}).ServeHTTP(
 		recorder,
 		announcementWriteRequest(http.MethodPost, "/announcements", body, "admin"),
 	)

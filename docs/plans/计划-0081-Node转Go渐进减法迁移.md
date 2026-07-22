@@ -5,12 +5,19 @@
 - 编号：PLAN-0081
 - 状态：进行中
 - 创建时间：2026-07-06
-- 更新时间：2026-07-22
+- 更新时间：2026-07-23
 - 需求来源：用户对话
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
 - 2026-07-18 产品撤销：项目不再提供登录设备或登录会话列表 / 按 ID 撤销管理。Go W3 的 `GET /auth/sessions`、`DELETE /auth/sessions/{id}`、`JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED` 及其前端入口、存储查询和测试已由 `PLAN-0150-20260722T022751000Z` 完整删除；本文件其余历史记录只说明该切片曾实现，不再代表当前能力、迁移目标或待生产接管事项。登录、当前令牌退出、改密和改密后的其他令牌安全撤销继续保留。
+
+## 2026-07-23 本轮收口与总进度
+
+- 本轮完成：最新 `origin/master` 已变基合入，page-data 已按 master 最新业务调整继续保持退场；Goose / owner gate 统一到 `71`；OpenAI OAuth 只完成 Go-native 契约基础；W9 增加 PostgreSQL client catalog reader、`GET /models`、`GET /v1/models`、`GET /v1beta/models` 的 opt-in 纵切面；dispatcher 统一共享 shutdown budget，并在 `Done()` 后释放队列依赖；补回账户导入三条路由的 authenticated rate-limit 覆盖。
+- 本轮证据：Go `config/httpapi/app/gatewayclientcatalog/store/postgres` 定向测试、`app/httpapi/recorddispatch` 回归与 dispatcher race、migration catalog / maintenance、owner manifest、Node owner validator、page-data removal gate 均通过。真实 PostgreSQL / Redis / upstream / worker、真实 Go listener、反向代理切流和 Node owner 移交仍未完成。
+- 进度口径：代码迁移约 `65%`，可独立验证的 Go 能力约 `58%~59%`；生产 owner 接管 `0%`（`management=node`、`public=node`、`gateway=node`、`worker=node`，Go allowlist 为空）；Node 通用减法约 `3%`，本轮 page-data 删除属于产品退场清理，不计作已开始通用 Node 删除。
+- 本轮完成标准：`origin/master` behind 为 `0`、变基冲突已裁决、工作树无未提交代码、候选提交已合入或有明确延期理由、page-data removal gate 通过、目标测试通过、计划与迁移清单同步、远端检查点推送成功。下一轮从 W9 网关准备层继续，优先把模型目录接入真实依赖和 owner 灰度证据，不扩大到 Chat 或最终 Node 删除。
 
 ## 多轮批量迁移规则（2026-07-20）
 

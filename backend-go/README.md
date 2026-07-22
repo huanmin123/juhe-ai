@@ -7,6 +7,8 @@
 > W6 另提供 `app.RunRuntimeLogRetentionCleanupWorker` 独立组装入口：仅在 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true` 时清理 PostgreSQL 运行日志索引和已完成 cursor，并在同一事务内维护 facet。该入口尚未接入共享 CLI / supervisor，Node ingest-worker 继续拥有文件导入、cursor/facet 写入和生产调度。
 > 账户级冷却复测已补 `juhe-ai-worker cooldown-account-retest` 的 Asynq consumer、容量受限 scheduler 和 app/CLI 边界；`JUHE_AI_COOLDOWN_ACCOUNT_RETEST_WORKER_ENABLED=false` 默认关闭，启用要求 worker owner lock。当前 owner manifest 仍为 `worker=node`，真实 Go Probe 与 production outcome adapter 尚未注入，因此该命令只提供 fail-fast 的迁移壳，不回投 Node、不注册 API Key 级 sibling，也不代表生产 worker 接管。
 
+> W9 网关准备层新增 opt-in `GET /models`、`GET /v1/models` 和 `GET /v1beta/models`。设置 `JUHE_AI_GATEWAY_MODELS_ENABLED=true` 时要求 PostgreSQL，Go 读取 client catalog 并按 OpenAI / Codex / Anthropic / Gemini 协议返回模型 DTO；默认值为 `false`，未改变 `gateway=node` owner，也不代表真实 upstream、listener、切流或 Node 删除证据。OpenAI OAuth 当前只固定 Go-native 契约、错误映射和 token/session lease 生命周期，HTTP、store、真实 OAuth upstream 与 worker 仍未迁移。
+
 本目录是 `juhe-ai` 后端从 Node.js 迁移到 Go 的新后端工程。迁移规则见 `../docs/migration/README.md`。
 
 ## 当前范围

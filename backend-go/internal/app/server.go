@@ -800,21 +800,30 @@ func shutdownRecordDispatchers(resources *[]recordDispatcherResource, timeout ti
 	for _, resource := range *resources {
 		select {
 		case <-resource.dispatcher.Done():
-			if resource.closeDependency != nil {
-				if err := resource.closeDependency(); err != nil && logger != nil {
-					logger.Warn("记录派发器依赖关闭失败",
-						slog.String("record_type", resource.recordType),
-						slog.Any("error", err),
-					)
-				}
-			}
+			closeRecordDispatcherDependency(resource, logger)
 		default:
 			if logger != nil {
-				logger.Warn("记录派发器仍在运行，跳过依赖关闭",
+				logger.Warn("记录派发器仍在运行，等待完成后关闭依赖",
 					slog.String("record_type", resource.recordType),
 				)
 			}
+			go func(pending recordDispatcherResource) {
+				<-pending.dispatcher.Done()
+				closeRecordDispatcherDependency(pending, logger)
+			}(resource)
 		}
+	}
+}
+
+func closeRecordDispatcherDependency(resource recordDispatcherResource, logger *slog.Logger) {
+	if resource.closeDependency == nil {
+		return
+	}
+	if err := resource.closeDependency(); err != nil && logger != nil {
+		logger.Warn("记录派发器依赖关闭失败",
+			slog.String("record_type", resource.recordType),
+			slog.Any("error", err),
+		)
 	}
 }
 

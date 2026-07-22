@@ -1668,6 +1668,9 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountListHandler != nil ||
 		opts.ManagementAccountExportHandler != nil ||
 		opts.ManagementMyAccountExportHandler != nil ||
+		opts.ManagementAccountImportPreviewHandler != nil ||
+		opts.ManagementMyAccountImportPreviewHandler != nil ||
+		opts.ManagementAccountImportConfirmHandler != nil ||
 		opts.ManagementAccountCreateHandler != nil ||
 		opts.ManagementMyAccountCreateHandler != nil ||
 		opts.ManagementAccountUpdateHandler != nil ||
