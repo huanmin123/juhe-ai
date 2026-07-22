@@ -1748,7 +1748,6 @@ export function accountResourceClientCompatibility(row: AccountListRow): Account
     accountResourceProviderCode(row),
     accountResourceType(row),
     row.access_type === 'authorized' ? row.source_client_compatibility : row.client_compatibility,
-    'openai_standard',
     { protocolCode: accountResourceProtocolCode(row), protocolVersion: accountResourceProtocolVersion(row) }
   )
 }

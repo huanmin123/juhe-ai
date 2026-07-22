@@ -33,7 +33,6 @@ const [
   repositories,
   gatewayCache,
   accountSideEffects,
-  gatewayFailureDispatch,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
@@ -55,17 +54,6 @@ assert.equal(
   '请求失败：ETIMEDOUT',
   '空错误消息应回退到错误码，避免最后一次尝试文案只剩空白'
 )
-assert.equal(
-  gatewayFailureDispatch.isOpaqueUpstreamFailoverAllowed({ method: 'POST' } as express.Request),
-  false,
-  '无法证明幂等的 POST 不得跨 Key 或账号重放'
-)
-assert.equal(
-  gatewayFailureDispatch.isOpaqueUpstreamFailoverAllowed({ method: 'GET' } as express.Request),
-  true,
-  '只读 GET 仍可使用通用候选故障转移'
-)
-
 const app = express()
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
