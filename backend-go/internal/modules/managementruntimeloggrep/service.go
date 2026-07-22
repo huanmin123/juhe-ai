@@ -26,7 +26,7 @@ const (
 	defaultLimit              = 100
 	maxLimit                  = 100
 	maxLineLength             = 20_000
-	maxRGJSONLineLength       = maxLineLength + 8_000
+	maxRGJSONLineLength       = 128 * 1024 // Covers sixfold JSON escaping plus rg envelope overhead.
 	maxParsedMatches          = 2_000
 	maxConcurrentSearches     = 1
 	maxDirectoryEntries       = 10_000
