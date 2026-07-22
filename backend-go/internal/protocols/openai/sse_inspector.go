@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strconv"
+	"math/big"
 	"strings"
 )
 
@@ -481,6 +481,10 @@ func extractSSEUsage(payload map[string]any) SSEUsage {
 		payload["service_tier"],
 		usage["service_tier"],
 	)
+	outputImageCount := firstNonnegativeInt64(usage["output_image_count"], usage["output_images"], usage["image_count"])
+	if outputImageCount != nil && *outputImageCount <= 0 {
+		outputImageCount = nil
+	}
 	return SSEUsage{
 		ServiceTier:        serviceTier,
 		InputTokens:        firstNonnegativeInt64(usage["input_tokens"], usage["prompt_tokens"]),
@@ -493,7 +497,7 @@ func extractSSEUsage(payload map[string]any) SSEUsage {
 		OutputImageTokens:  firstNonnegativeInt64(valueField(outputDetails, "image_tokens")),
 		InputAudioTokens:   firstNonnegativeInt64(valueField(responsesInputDetails, "audio_tokens"), valueField(chatInputDetails, "audio_tokens")),
 		OutputAudioTokens:  firstNonnegativeInt64(valueField(outputDetails, "audio_tokens")),
-		OutputImageCount:   firstNonnegativeInt64(usage["output_image_count"], usage["output_images"], usage["image_count"]),
+		OutputImageCount:   outputImageCount,
 	}
 }
 
@@ -557,15 +561,23 @@ func firstNonnegativeInt64(values ...any) *int64 {
 		var text string
 		switch typed := value.(type) {
 		case json.Number:
-			text = string(typed)
+			text = typed.String()
 		case string:
-			text = typed
+			text = strings.TrimSpace(typed)
+			if text == "" {
+				continue
+			}
 		default:
 			continue
 		}
-		parsed, err := strconv.ParseInt(text, 10, 64)
-		if err == nil && parsed >= 0 {
-			return &parsed
+		parsed, _, err := big.ParseFloat(text, 10, 256, big.ToZero)
+		if err != nil || parsed.Sign() < 0 || parsed.IsInf() {
+			continue
+		}
+		integer, _ := parsed.Int(nil)
+		if integer.IsInt64() {
+			count := integer.Int64()
+			return &count
 		}
 	}
 	return nil
