@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"juhe-ai/backend-go/internal/store/port"
@@ -15,7 +16,15 @@ const (
 	maxListWindowRows = 1001
 )
 
-type Service struct{ store port.ManagementAuditLogReader }
+type Service struct {
+	store     port.ManagementAuditLogReader
+	hotSearch hotSearchSearcher
+}
+
+type ServiceOptions struct {
+	Store         port.ManagementAuditLogReader
+	HotSearchRoot string
+}
 
 type ListInput struct {
 	TraceID, ErrorGroupID, Outcome, Path, Model, SystemAccountID string
@@ -31,6 +40,23 @@ type ListResult struct {
 	HasMore  bool      `json:"hasMore"`
 	Page     int       `json:"page"`
 	PageSize int       `json:"pageSize"`
+}
+
+type HotSearchResult struct {
+	Items            []Summary `json:"items"`
+	Total            int       `json:"total"`
+	HasMore          bool      `json:"hasMore"`
+	Page             int       `json:"page"`
+	PageSize         int       `json:"pageSize"`
+	Available        bool      `json:"available"`
+	ElapsedMs        int64     `json:"elapsedMs"`
+	Keywords         []string  `json:"keywords"`
+	StartAt          string    `json:"startAt"`
+	EndAt            string    `json:"endAt"`
+	Limit            int       `json:"limit"`
+	Truncated        bool      `json:"truncated"`
+	ScannedFileCount int       `json:"scannedFileCount"`
+	Message          string    `json:"message,omitempty"`
 }
 
 type Summary struct {
@@ -167,7 +193,60 @@ type Detail struct {
 	Payloads   []PayloadSummary `json:"payloads"`
 }
 
-func NewService(store port.ManagementAuditLogReader) *Service { return &Service{store: store} }
+func NewService(store port.ManagementAuditLogReader) *Service {
+	return NewServiceWithOptions(ServiceOptions{Store: store})
+}
+
+func NewServiceWithOptions(options ServiceOptions) *Service {
+	return &Service{store: options.Store, hotSearch: newHotSearchScanner(options.HotSearchRoot)}
+}
+
+func (s *Service) HotSearch(ctx context.Context, input HotSearchInput) (HotSearchResult, error) {
+	startedAt := time.Now()
+	if s.hotSearch == nil {
+		s.hotSearch = newHotSearchScanner("")
+	}
+	scan := s.hotSearch.Search(ctx, input)
+	result := HotSearchResult{
+		Items: []Summary{}, Page: 1, PageSize: scan.Limit, Available: scan.Available,
+		ElapsedMs: time.Since(startedAt).Milliseconds(), Keywords: scan.Keywords,
+		StartAt: scan.StartAt, EndAt: scan.EndAt, Limit: scan.Limit, Truncated: scan.Truncated,
+		ScannedFileCount: scan.ScannedFileCount, Message: scan.Message,
+	}
+	if !scan.Available || len(scan.IDs) == 0 {
+		return result, nil
+	}
+	if s.store == nil {
+		return HotSearchResult{}, fmt.Errorf("management audit log reader is required")
+	}
+	ids := make([]string, 0, len(scan.IDs))
+	for _, item := range scan.IDs {
+		ids = append(ids, item.ID)
+	}
+	rows, err := s.store.ListManagementAuditLogsByIDs(ctx, ids)
+	if err != nil {
+		return HotSearchResult{}, err
+	}
+	byID := make(map[string]Summary, len(rows))
+	for _, row := range rows {
+		item, mapErr := summary(row)
+		if mapErr != nil {
+			return HotSearchResult{}, mapErr
+		}
+		byID[item.ID] = item
+	}
+	for _, id := range ids {
+		if item, found := byID[id]; found {
+			result.Items = append(result.Items, item)
+		}
+	}
+	result.HasMore = scan.Truncated
+	result.Total = len(result.Items)
+	if result.HasMore {
+		result.Total = max(result.Total+1, len(ids))
+	}
+	return result, nil
+}
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
 	if s.store == nil {

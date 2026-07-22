@@ -114,6 +114,32 @@ func (s *Store) ListManagementAuditLogs(ctx context.Context, input port.Manageme
 	return port.ManagementAuditLogListResult{Items: items, HasMore: hasMore}, nil
 }
 
+func (s *Store) ListManagementAuditLogsByIDs(ctx context.Context, ids []string) ([]port.ManagementAuditLogSummary, error) {
+	if len(ids) == 0 {
+		return []port.ManagementAuditLogSummary{}, nil
+	}
+	if len(ids) > 100 {
+		ids = ids[:100]
+	}
+	rows, err := s.pool.Query(ctx, managementAuditLogsByIDsQuery(), ids)
+	if err != nil {
+		return nil, fmt.Errorf("list management audit logs by ids: %w", err)
+	}
+	defer rows.Close()
+	items := make([]port.ManagementAuditLogSummary, 0, len(ids))
+	for rows.Next() {
+		var row managementAuditLogRow
+		if err := scanManagementAuditLogRow(rows, &row); err != nil {
+			return nil, fmt.Errorf("scan management audit logs by ids: %w", err)
+		}
+		items = append(items, managementAuditLogSummary(row))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan management audit logs by ids: %w", err)
+	}
+	return items, nil
+}
+
 func (s *Store) GetManagementAuditLog(ctx context.Context, id string) (port.ManagementAuditLogDetail, bool, error) {
 	var row managementAuditLogRow
 	if err := scanManagementAuditLogRow(s.pool.QueryRow(ctx, managementAuditLogDetailQuery(), id), &row); err != nil {
@@ -195,6 +221,13 @@ func scanManagementAuditLogRow(scanner auditLogRowScanner, row *managementAuditL
 
 func managementAuditLogDetailQuery() string {
 	return managementAuditLogSelect + "\nWHERE al.id = $1::text"
+}
+
+func managementAuditLogsByIDsQuery() string {
+	return managementAuditLogSelect + `
+WHERE al.id = ANY($1::text[])
+ORDER BY al.created_at DESC, al.id DESC
+LIMIT 100`
 }
 
 func managementAuditLogAttemptsQuery() string {
