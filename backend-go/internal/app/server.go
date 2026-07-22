@@ -50,6 +50,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementpublicapilogs"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
+	"juhe-ai/backend-go/internal/modules/managementruntimeloggrep"
 	"juhe-ai/backend-go/internal/modules/managementruntimelogs"
 	"juhe-ai/backend-go/internal/modules/managementsettings"
 	"juhe-ai/backend-go/internal/modules/managementstats"
@@ -438,6 +439,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementAuditLogsHandler:                        managementHandlers.AuditLogsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
+		ManagementRuntimeLogGrepHandler:                   managementHandlers.RuntimeLogGrepHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
 		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
 		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
@@ -671,6 +673,7 @@ type managementAPIHandlers struct {
 	MyOperationLogsHandler                  http.Handler
 	AuditLogsHandler                        http.Handler
 	RuntimeLogsHandler                      http.Handler
+	RuntimeLogGrepHandler                   http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
 	ExternalIntegrationSourceDetailHandler  http.Handler
 	ExternalIntegrationSourceCreateHandler  http.Handler
@@ -915,6 +918,13 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	operationLogService := managementoperationlogs.NewService(store)
 	auditLogService := managementauditlogs.NewService(store)
 	runtimeLogService := managementruntimelogs.NewService(store)
+	runtimeLogGrepService := managementruntimeloggrep.NewService(managementruntimeloggrep.Options{
+		Directory:     cfg.RuntimeLogDirectory,
+		FileEnabled:   cfg.RuntimeLogFileEnabled,
+		MaxFiles:      cfg.RuntimeLogMaxFiles,
+		RetentionDays: cfg.RuntimeLogRetentionDays,
+		RGPath:        cfg.RGPath,
+	})
 	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
 		managementexternalintegrationsources.ServiceOptions{
 			ListReader:   store,
@@ -1148,6 +1158,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		AuditLogsHandler:                        httpapi.NewManagementAuditLogsHandler(auditLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
+		RuntimeLogGrepHandler:                   httpapi.NewManagementRuntimeLogGrepHandler(runtimeLogGrepService),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),
