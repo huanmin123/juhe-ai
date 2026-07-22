@@ -1,7 +1,6 @@
 package managementauditlogs
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,8 +21,10 @@ const (
 	maxHotSearchKeywordRunes = 128
 	maxHotSearchLineRunes    = 20_000
 	maxHotSearchLineBytes    = maxHotSearchLineRunes * utf8.UTFMax
+	maxHotSearchIDBytes      = 256
 	maxHotSearchFiles        = 2_000
 	maxHotSearchMatches      = 2_000
+	hotSearchReadBlockBytes  = 64 * 1024
 	maxHotSearchDuration     = 15 * time.Second
 	hotSearchWindow          = time.Hour
 )
@@ -77,6 +78,7 @@ type hotSearchFileListing struct {
 type hotSearchLine struct {
 	AuditLogID string `json:"auditLogId"`
 	CreatedAt  string `json:"createdAt"`
+	TraceID    string `json:"traceId"`
 	Text       string `json:"text"`
 }
 
@@ -197,7 +199,13 @@ func (s *hotSearchScanner) listFiles(ctx context.Context, start, end time.Time) 
 				continue
 			}
 			info, infoErr := entry.Info()
-			if infoErr != nil || info.Size() <= 0 {
+			if errors.Is(infoErr, os.ErrNotExist) {
+				continue
+			}
+			if infoErr != nil {
+				return hotSearchFileListing{}, infoErr
+			}
+			if info.Size() <= 0 {
 				continue
 			}
 			listing.files = append(listing.files, hotSearchFile{path: filepath.Join(s.root, entry.Name()), bucketStart: bucket, modifiedAt: info.ModTime()})
@@ -235,55 +243,128 @@ func (s *hotSearchScanner) scanFile(ctx context.Context, path string, keywords [
 		return false, err
 	}
 	defer file.Close()
-	reader := bufio.NewReaderSize(file, maxHotSearchLineBytes+1)
-	for {
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	position := info.Size()
+	suffix := make([]byte, 0, hotSearchReadBlockBytes)
+	droppingOversized := false
+	for position > 0 {
 		if err := ctx.Err(); err != nil {
 			return true, nil
 		}
-		line, oversized, readErr := readBoundedHotSearchLine(reader)
-		if !oversized && len(line) > 0 && hotSearchLineMatches(line, keywords) {
-			*matchCount++
-			var item hotSearchLine
-			if json.Unmarshal(line, &item) == nil && item.AuditLogID != "" {
-				createdAt, parseErr := time.Parse(time.RFC3339Nano, item.CreatedAt)
-				_, duplicate := seen[item.AuditLogID]
-				if parseErr == nil && !createdAt.Before(start) && !createdAt.After(end) && !duplicate {
-					seen[item.AuditLogID] = struct{}{}
-					result.IDs = append(result.IDs, hotSearchID{ID: item.AuditLogID, CreatedAt: createdAt})
-				}
-			}
-			if *matchCount >= maxHotSearchMatches {
-				return true, nil
-			}
+		blockSize := int64(hotSearchReadBlockBytes)
+		if position < blockSize {
+			blockSize = position
 		}
-		if errors.Is(readErr, io.EOF) {
-			return false, nil
-		}
-		if readErr != nil {
+		position -= blockSize
+		block := make([]byte, int(blockSize))
+		read, readErr := file.ReadAt(block, position)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return false, readErr
 		}
-	}
-}
-
-func readBoundedHotSearchLine(reader *bufio.Reader) ([]byte, bool, error) {
-	line, err := reader.ReadSlice('\n')
-	if !errors.Is(err, bufio.ErrBufferFull) {
-		if len(line) > maxHotSearchLineBytes {
-			return nil, true, err
+		block = block[:read]
+		segmentEnd := len(block)
+		for index := len(block) - 1; index >= 0; index-- {
+			if block[index] != '\n' {
+				continue
+			}
+			segment := block[index+1 : segmentEnd]
+			if droppingOversized {
+				droppingOversized = false
+				result.Truncated = true
+			} else {
+				line, oversized := prependHotSearchFragment(segment, suffix)
+				if oversized {
+					result.Truncated = true
+				} else if s.acceptHotSearchLine(line, keywords, start, end, seen, matchCount, result) {
+					return true, nil
+				}
+			}
+			suffix = suffix[:0]
+			segmentEnd = index
 		}
-		return line, false, err
+		prefix := block[:segmentEnd]
+		if droppingOversized {
+			continue
+		}
+		combined, oversized := prependHotSearchFragment(prefix, suffix)
+		if oversized {
+			droppingOversized = true
+			suffix = suffix[:0]
+			continue
+		}
+		suffix = combined
 	}
-	for errors.Is(err, bufio.ErrBufferFull) {
-		_, err = reader.ReadSlice('\n')
+	if droppingOversized {
+		result.Truncated = true
+		return false, nil
 	}
-	return nil, true, err
+	if len(suffix) > 0 && s.acceptHotSearchLine(suffix, keywords, start, end, seen, matchCount, result) {
+		return true, nil
+	}
+	return false, nil
 }
 
-func hotSearchLineMatches(line []byte, keywords []string) bool {
-	if utf8.RuneCount(line) > maxHotSearchLineRunes {
+func prependHotSearchFragment(prefix, suffix []byte) ([]byte, bool) {
+	if len(prefix) > maxHotSearchLineBytes-len(suffix) {
+		return nil, true
+	}
+	line := make([]byte, len(prefix)+len(suffix))
+	copy(line, prefix)
+	copy(line[len(prefix):], suffix)
+	return line, false
+}
+
+func (s *hotSearchScanner) acceptHotSearchLine(line []byte, keywords []string, start, end time.Time, seen map[string]struct{}, matchCount *int, result *hotSearchScanResult) bool {
+	if len(line) == 0 {
 		return false
 	}
-	value := strings.ToLower(string(line))
+	item, matched, truncated := matchHotSearchLine(line, keywords)
+	if truncated {
+		result.Truncated = true
+	}
+	if !matched {
+		return false
+	}
+	*matchCount++
+	if len(item.AuditLogID) == 0 || len(item.AuditLogID) > maxHotSearchIDBytes {
+		if len(item.AuditLogID) > maxHotSearchIDBytes {
+			result.Truncated = true
+		}
+		return *matchCount >= maxHotSearchMatches
+	}
+	createdAt, parseErr := time.Parse(time.RFC3339Nano, item.CreatedAt)
+	_, duplicate := seen[item.AuditLogID]
+	if parseErr == nil && !createdAt.Before(start) && !createdAt.After(end) && !duplicate {
+		seen[item.AuditLogID] = struct{}{}
+		result.IDs = append(result.IDs, hotSearchID{ID: item.AuditLogID, CreatedAt: createdAt})
+	}
+	return *matchCount >= maxHotSearchMatches
+}
+
+func matchHotSearchLine(line []byte, keywords []string) (hotSearchLine, bool, bool) {
+	oversizedSerializedLine := utf8.RuneCount(line) > maxHotSearchLineRunes
+	if !oversizedSerializedLine && !hotSearchTextMatches(string(line), keywords) {
+		return hotSearchLine{}, false, false
+	}
+	var item hotSearchLine
+	if json.Unmarshal(line, &item) != nil {
+		return hotSearchLine{}, false, oversizedSerializedLine
+	}
+	if !oversizedSerializedLine {
+		return item, true, false
+	}
+	searchable := strings.Join([]string{item.AuditLogID, item.CreatedAt, item.TraceID, item.Text}, " ")
+	if utf8.RuneCountInString(searchable) > maxHotSearchLineRunes {
+		return hotSearchLine{}, false, true
+	}
+	return item, hotSearchTextMatches(searchable, keywords), false
+}
+
+func hotSearchTextMatches(value string, keywords []string) bool {
+	value = strings.ToLower(value)
 	for _, keyword := range keywords {
 		if strings.Contains(value, strings.ToLower(keyword)) {
 			return true
