@@ -20,6 +20,7 @@ import {
 import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
 import type { CodexResponsesChatBridgeCompletionHandler } from '../../../gateway/codex-responses/chat-bridge-state.js'
 import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
+import { createCodexBridgeToolIdentity } from './codex-responses-chat-bridge-tool-identity.js'
 type JsonRecord = Record<string, unknown>
 const codexResponsesChatBridgeLocalValidationUrl = 'codex-responses-chat-bridge:local-validation'
 const codexCustomToolChatNamePrefix = 'custom__'
@@ -76,13 +77,20 @@ interface CodexResponsesChatBridgeToolPlan {
 
 interface ChatToolCallState {
   id: string
+  itemType: 'function_call' | 'custom_tool_call'
   callId: string
   name: string
   arguments: string
-  adapter?: CodexResponsesChatBridgeToolAdapter
+  adapter: CodexResponsesChatBridgeToolAdapter
   outputIndex: number
   added: boolean
   done: boolean
+}
+
+interface PendingChatToolCallState {
+  upstreamCallId?: string
+  name: string
+  arguments: string
 }
 
 interface PendingChatToolCall {
@@ -125,6 +133,7 @@ interface ChatToResponsesState {
   outputText: string
   outputItems: JsonRecord[]
   toolCalls: Map<number, ChatToolCallState>
+  pendingToolCalls: Map<number, PendingChatToolCallState>
   toolAdaptersByChatName: Map<string, CodexResponsesChatBridgeToolAdapter>
   usage?: JsonRecord
   estimatedInputTokens?: number
@@ -1193,6 +1202,7 @@ function createChatToResponsesState(
     outputText: '',
     outputItems: [],
     toolCalls: new Map(),
+    pendingToolCalls: new Map(),
     toolAdaptersByChatName: new Map(toolAdaptersByChatName ?? []),
     estimatedInputTokens,
     finishReasonFailures: new Map(Object.entries(finishReasonFailures ?? {})),
@@ -1222,6 +1232,9 @@ function processChatSseEvent(state: ChatToResponsesState, rawEventText: string):
   const event = parseOpenAISseEventText(rawEventText)
   if (event.dataText === '[DONE]') {
     state.terminalReceived = true
+    if (state.pendingToolCalls.size > 0) {
+      return failResponsesStream(state, '上游 Chat SSE 返回了未在请求工具声明中解析的工具调用', 'codex_bridge_unknown_tool_call')
+    }
     return completeResponsesStream(state)
   }
   if (event.dataParseError) {
@@ -1267,6 +1280,10 @@ function processChatSseEvent(state: ChatToResponsesState, rawEventText: string):
     }
     if (typeof choice.finish_reason === 'string') {
       state.terminalReceived = true
+      if (state.pendingToolCalls.size > 0) {
+        output.push(...failResponsesStream(state, '上游 Chat SSE 返回了未在请求工具声明中解析的工具调用', 'codex_bridge_unknown_tool_call'))
+        continue
+      }
       const finishReasonFailure = state.finishReasonFailures.get(choice.finish_reason)
       if (finishReasonFailure) {
         appendOutput(completeOpenOutputItems(state))
@@ -1372,43 +1389,66 @@ function chatToolCallDeltas(delta: JsonRecord): unknown[] {
 function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknown): string[] {
   if (!isPlainObject(value)) return []
   const index = integerValue(value.index) ?? 0
-  const existingToolCall = state.toolCalls.get(index)
-  const toolCall = existingToolCall ?? (() => {
-    const callId = stringValue(value.id) ?? `call_${state.idPrefix}_${index}_${Date.now().toString(36)}`
-    const created: ChatToolCallState = {
-      id: `fc_${state.idPrefix}_${index}_${Date.now().toString(36)}`,
-      callId,
-      name: '',
-      arguments: '',
-      outputIndex: state.nextOutputIndex++,
-      added: false,
-      done: false
-    }
-    state.toolCalls.set(index, created)
-    return created
-  })()
-  const activeToolCall = toolCall
   const fn = objectValue(value.function)
   const chatName = stringValue(fn?.name)
-  if (chatName) {
-    const adapter = state.toolAdaptersByChatName.get(chatName)
-    activeToolCall.adapter = adapter ?? activeToolCall.adapter
-    activeToolCall.name = adapter?.responsesName ?? chatName
-  }
   const argumentsDelta = stringValue(fn?.arguments) ?? ''
-  if (argumentsDelta) {
-    activeToolCall.arguments += argumentsDelta
+  const existingToolCall = state.toolCalls.get(index)
+  if (existingToolCall) {
+    if (argumentsDelta) existingToolCall.arguments += argumentsDelta
+    return emitToolCallAdded(existingToolCall)
   }
-  const output: string[] = []
-  if (!activeToolCall.added && activeToolCall.name) {
-    activeToolCall.added = true
-    output.push(sse('response.output_item.added', {
-      type: 'response.output_item.added',
-      output_index: activeToolCall.outputIndex,
-      item: toolCallInProgressItem(activeToolCall)
-    }))
+
+  const pending = state.pendingToolCalls.get(index) ?? {
+    upstreamCallId: stringValue(value.id),
+    name: '',
+    arguments: ''
   }
-  return output
+  if (!pending.upstreamCallId) pending.upstreamCallId = stringValue(value.id)
+  if (chatName) pending.name = mergeChatToolName(pending.name, chatName)
+  if (argumentsDelta) pending.arguments += argumentsDelta
+  const adapter = pending.name ? state.toolAdaptersByChatName.get(pending.name) : undefined
+  if (!adapter) {
+    state.pendingToolCalls.set(index, pending)
+    return []
+  }
+
+  const suffix = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+  const identity = createCodexBridgeToolIdentity({
+    adapterKind: adapter.kind,
+    idPrefix: state.idPrefix,
+    index,
+    upstreamCallId: pending.upstreamCallId,
+    suffix
+  })
+  const toolCall: ChatToolCallState = {
+    id: identity.itemId,
+    itemType: identity.itemType,
+    callId: identity.callId,
+    name: adapter.responsesName,
+    arguments: pending.arguments,
+    adapter,
+    outputIndex: state.nextOutputIndex++,
+    added: false,
+    done: false
+  }
+  state.pendingToolCalls.delete(index)
+  state.toolCalls.set(index, toolCall)
+  return emitToolCallAdded(toolCall)
+}
+
+function emitToolCallAdded(toolCall: ChatToolCallState): string[] {
+  if (toolCall.added) return []
+  toolCall.added = true
+  return [sse('response.output_item.added', {
+    type: 'response.output_item.added',
+    output_index: toolCall.outputIndex,
+    item: toolCallInProgressItem(toolCall)
+  })]
+}
+
+function mergeChatToolName(current: string, incoming: string): string {
+  if (!current || current === incoming || current.endsWith(incoming)) return current || incoming
+  return `${current}${incoming}`
 }
 
 function completeOpenOutputItems(state: ChatToResponsesState): string[] {
@@ -1523,7 +1563,7 @@ function completeToolCallOutputItem(
 }
 
 function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
-  if (toolCall.adapter?.kind === 'custom') {
+  if (toolCall.itemType === 'custom_tool_call') {
     return {
       id: toolCall.id,
       type: 'custom_tool_call',
@@ -1541,21 +1581,21 @@ function toolCallInProgressItem(toolCall: ChatToolCallState): JsonRecord {
     name: toolCall.name,
     arguments: ''
   }
-  if (toolCall.adapter?.namespace) {
+  if (toolCall.adapter.namespace) {
     item.namespace = toolCall.adapter.namespace
   }
   return item
 }
 
 function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
-  if (toolCall.adapter?.kind === 'custom') {
+  if (toolCall.itemType === 'custom_tool_call') {
     return {
       id: toolCall.id,
       type: 'custom_tool_call',
       status: 'completed',
       call_id: toolCall.callId,
       name: toolCall.name,
-      input: customToolInputFromChatArguments(toolCall.arguments, toolCall.adapter?.responsesName)
+      input: customToolInputFromChatArguments(toolCall.arguments, toolCall.adapter.responsesName)
     }
   }
   const item: JsonRecord = {
@@ -1566,7 +1606,7 @@ function completedToolCallItem(toolCall: ChatToolCallState): JsonRecord {
     name: toolCall.name,
     arguments: toolCall.arguments
   }
-  if (toolCall.adapter?.namespace) {
+  if (toolCall.adapter.namespace) {
     item.namespace = toolCall.adapter.namespace
   }
   return item
