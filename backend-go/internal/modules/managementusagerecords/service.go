@@ -23,13 +23,17 @@ type Store interface {
 }
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store          Store
+	now            func() time.Time
+	firstPageCache FirstPageCache
+	sleep          func(time.Duration)
 }
 
 type ServiceOptions struct {
-	Store Store
-	Now   func() time.Time
+	Store          Store
+	Now            func() time.Time
+	FirstPageCache FirstPageCache
+	Sleep          func(time.Duration)
 }
 
 type ListInput struct {
@@ -160,7 +164,11 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: opts.Store, now: now}
+	sleep := opts.Sleep
+	if sleep == nil {
+		sleep = time.Sleep
+	}
+	return &Service{store: opts.Store, now: now, firstPageCache: opts.FirstPageCache, sleep: sleep}
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
@@ -169,9 +177,15 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	}
 	pageSize := normalizedPageSize(input.PageSize, input.PageSizeProvided)
 	page := normalizedPage(input.Page, pageSize)
-	startAt, endAt, err := s.dateRange(ctx, input.StartDate, input.EndDate)
+	startAt, endAt, location, err := s.dateRange(ctx, input.StartDate, input.EndDate)
 	if err != nil {
 		return ListResult{}, err
+	}
+	eligibility, cacheEligible := s.firstPageEligibility(input, page, pageSize, startAt, endAt, location)
+	if cacheEligible {
+		if cached, found := s.getFirstPage(ctx, eligibility); found {
+			return cached, nil
+		}
 	}
 	result, err := s.store.ListManagementUsageRecords(ctx, port.ManagementUsageRecordListInput{
 		SystemAccountID: strings.TrimSpace(input.ScopeSystemAccountID),
@@ -196,13 +210,17 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	for _, row := range result.Items {
 		items = append(items, summaryFromStore(row, input.IncludeSystemAccount))
 	}
-	return ListResult{
+	output := ListResult{
 		Items:    items,
 		Total:    (page-1)*pageSize + len(items) + boolInt(result.HasMore),
 		HasMore:  result.HasMore,
 		Page:     page,
 		PageSize: pageSize,
-	}, nil
+	}
+	if cacheEligible {
+		s.seedFirstPage(ctx, eligibility, output)
+	}
+	return output, nil
 }
 
 func (s *Service) Detail(ctx context.Context, input DetailInput) (Summary, bool, error) {
@@ -232,27 +250,27 @@ func (s *Service) Detail(ctx context.Context, input DetailInput) (Summary, bool,
 	return result, true, nil
 }
 
-func (s *Service) dateRange(ctx context.Context, startText, endText string) (time.Time, time.Time, error) {
+func (s *Service) dateRange(ctx context.Context, startText, endText string) (time.Time, time.Time, *time.Location, error) {
 	timezone, found, err := s.store.GetManagementUsageStatsTimezone(ctx)
 	if err != nil {
-		return time.Time{}, time.Time{}, err
+		return time.Time{}, time.Time{}, nil, err
 	}
 	if !found || strings.TrimSpace(timezone) == "" {
-		return time.Time{}, time.Time{}, fmt.Errorf("系统设置缺少 usageStatsTimezone")
+		return time.Time{}, time.Time{}, nil, fmt.Errorf("系统设置缺少 usageStatsTimezone")
 	}
 	location, err := time.LoadLocation(strings.TrimSpace(timezone))
 	if err != nil {
-		return time.Time{}, time.Time{}, fmt.Errorf("系统设置 usageStatsTimezone 无效: %w", err)
+		return time.Time{}, time.Time{}, nil, fmt.Errorf("系统设置 usageStatsTimezone 无效: %w", err)
 	}
 	startDate, startOK := parseDate(startText)
 	endDate, endOK := parseDate(endText)
 	if !startOK && !endOK {
 		if strings.TrimSpace(startText) != "" || strings.TrimSpace(endText) != "" {
-			return time.Time{}, time.Time{}, nil
+			return time.Time{}, time.Time{}, location, nil
 		}
 		now := s.now().In(location)
 		startDate = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location)
-		return startDate.UTC(), startDate.AddDate(0, 0, 1).UTC(), nil
+		return startDate.UTC(), startDate.AddDate(0, 0, 1).UTC(), location, nil
 	}
 	if !startOK {
 		startDate = endDate
@@ -265,7 +283,7 @@ func (s *Service) dateRange(ctx context.Context, startText, endText string) (tim
 	}
 	start := time.Date(startDate.Year(), startDate.Month(), startDate.Day(), 0, 0, 0, 0, location)
 	end := time.Date(endDate.Year(), endDate.Month(), endDate.Day(), 0, 0, 0, 0, location).AddDate(0, 0, 1)
-	return start.UTC(), end.UTC(), nil
+	return start.UTC(), end.UTC(), location, nil
 }
 
 func parseDate(value string) (time.Time, bool) {
