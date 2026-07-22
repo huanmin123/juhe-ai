@@ -33,6 +33,7 @@ func main() {
 	})
 	root.AddCommand(newMigrationCatalogPreflightCommand())
 	root.AddCommand(newStatsSchemaContractPreflightCommand())
+	root.AddCommand(newSchemaUpCommand())
 	root.AddCommand(&cobra.Command{
 		Use:   "w0-smoke",
 		Short: "Run W0 PostgreSQL, Redis and Asynq smoke checks",
@@ -137,6 +138,27 @@ func newMigrationCatalogPreflightCommand() *cobra.Command {
 			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			return maintenance.RunMigrationCatalogPreflight(ctx, directory, cmd.OutOrStdout())
+		},
+	}
+	cmd.Flags().StringVar(&directory, "dir", "db/migrations", "migration catalog directory")
+	return cmd
+}
+
+func newSchemaUpCommand() *cobra.Command {
+	var directory string
+	cmd := &cobra.Command{
+		Use:   "schema-up",
+		Short: "Apply the current PostgreSQL migration catalog through Goose",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+			defer stop()
+			return maintenance.RunSchemaUp(
+				ctx,
+				os.Getenv("JUHE_AI_POSTGRES_URL"),
+				directory,
+				cmd.OutOrStdout(),
+			)
 		},
 	}
 	cmd.Flags().StringVar(&directory, "dir", "db/migrations", "migration catalog directory")
