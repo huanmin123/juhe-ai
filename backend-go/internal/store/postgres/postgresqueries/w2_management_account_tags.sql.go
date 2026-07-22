@@ -141,34 +141,6 @@ func (q *Queries) InsertManagementAccountTagBindingForAccount(ctx context.Contex
 	return err
 }
 
-const listAccountAuthorizationGranteeIDs = `-- name: ListAccountAuthorizationGranteeIDs :many
-SELECT DISTINCT grantee_system_account_id
-FROM juhe_business.resource_authorizations
-WHERE resource_type = 'account'
-  AND resource_id = $1::text
-ORDER BY grantee_system_account_id
-`
-
-func (q *Queries) ListAccountAuthorizationGranteeIDs(ctx context.Context, accountID string) ([]string, error) {
-	rows, err := q.db.Query(ctx, listAccountAuthorizationGranteeIDs, accountID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var grantee_system_account_id string
-		if err := rows.Scan(&grantee_system_account_id); err != nil {
-			return nil, err
-		}
-		items = append(items, grantee_system_account_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listManagementAccountTags = `-- name: ListManagementAccountTags :many
 SELECT
   account_tags.id,

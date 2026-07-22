@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -40,7 +39,6 @@ type GatewayRuntimeInvalidator interface {
 
 type Options struct {
 	Store                      port.ManagementAccountDeleter
-	PageDataPublisher          accountpagedata.Publisher
 	AccountLookupInvalidator   AccountLookupInvalidator
 	GroupAccountIDsInvalidator GroupAccountIDsInvalidator
 	AuthorizationInvalidator   AuthorizationInvalidator
@@ -51,7 +49,6 @@ type Options struct {
 
 type Service struct {
 	store                      port.ManagementAccountDeleter
-	pageDataPublisher          accountpagedata.Publisher
 	accountLookupInvalidator   AccountLookupInvalidator
 	groupAccountIDsInvalidator GroupAccountIDsInvalidator
 	authorizationInvalidator   AuthorizationInvalidator
@@ -84,7 +81,6 @@ func NewService(opts Options) *Service {
 	}
 	return &Service{
 		store:                      opts.Store,
-		pageDataPublisher:          opts.PageDataPublisher,
 		accountLookupInvalidator:   opts.AccountLookupInvalidator,
 		groupAccountIDsInvalidator: opts.GroupAccountIDsInvalidator,
 		authorizationInvalidator:   opts.AuthorizationInvalidator,
@@ -122,7 +118,6 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (DeleteResult, 
 		}
 	}
 
-	s.publishPageData(ctx, deleted)
 	s.invalidateCaches(ctx, deleted.DeletedAccountIDs)
 	return DeleteResult{Before: deleted.Before, DeletedAccountIDs: deleted.DeletedAccountIDs}, nil
 }
@@ -145,29 +140,6 @@ func isAdminRole(role string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func (s *Service) publishPageData(ctx context.Context, result port.ManagementAccountDeleteResult) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	owners := accountpagedata.NormalizeOwnerIDs(append(result.PageDataOwnerIDs, result.Before.SystemAccountID))
-	for _, accountID := range result.DeletedAccountIDs {
-		publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidationTimeout)
-		err := s.pageDataPublisher.PublishAccountStaticChange(publishCtx, accountpagedata.ChangeInput{
-			AccountID:             accountID,
-			Operation:             accountpagedata.OperationDelete,
-			OwnerSystemAccountIDs: owners,
-			MembershipChanged:     true,
-			OrderChanged:          true,
-			FilterChanged:         true,
-			PageChanged:           true,
-		})
-		cancel()
-		if err != nil {
-			s.logger.WarnContext(context.WithoutCancel(ctx), "账户删除后页面数据失效失败", "accountId", accountID, "error", err)
-		}
 	}
 }
 

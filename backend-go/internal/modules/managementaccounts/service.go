@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -22,21 +21,16 @@ const (
 	maxOptionFilterItemSize = 50
 	maxTagsPerAccount       = 24
 	maxTagNameLength        = 40
-	pageDataPublishTimeout  = 5 * time.Second
 )
 
 type Service struct {
-	store             port.ManagementAccountOptionReader
-	granteeReader     accountpagedata.GranteeReader
-	pageDataPublisher accountpagedata.Publisher
-	logger            *slog.Logger
+	store  port.ManagementAccountOptionReader
+	logger *slog.Logger
 }
 
 type ServiceOptions struct {
-	Store             port.ManagementAccountOptionReader
-	GranteeReader     accountpagedata.GranteeReader
-	PageDataPublisher accountpagedata.Publisher
-	Logger            *slog.Logger
+	Store  port.ManagementAccountOptionReader
+	Logger *slog.Logger
 }
 
 type OptionListInput struct {
@@ -161,10 +155,8 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 		logger = slog.Default()
 	}
 	return &Service{
-		store:             opts.Store,
-		granteeReader:     opts.GranteeReader,
-		pageDataPublisher: opts.PageDataPublisher,
-		logger:            logger,
+		store:  opts.Store,
+		logger: logger,
 	}
 }
 
@@ -289,44 +281,10 @@ func (s *Service) UpdateTags(ctx context.Context, input TagUpdateInput) (TagUpda
 	if !ok {
 		return TagUpdateResult{}, ErrAccountNotFound
 	}
-	s.publishTagPageData(ctx, saved.Account, systemAccountID)
 	return TagUpdateResult{
 		Account:      tagUpdateAccountFromPort(saved.Account),
 		PreviousTags: tagUpdateTagsFromPort(saved.PreviousTags),
 	}, nil
-}
-
-func (s *Service) publishTagPageData(ctx context.Context, account port.ManagementAccountTagUpdateAccount, requestSystemAccountID string) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
-	owners, allScopes, lookupErr := accountpagedata.ResolveOwners(lookupCtx, s.granteeReader, account.ID, []string{
-		account.SystemAccountID, account.OwnerSystemAccountID, requestSystemAccountID,
-	})
-	cancel()
-	if lookupErr != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "account page data grantee lookup failed",
-			"accountId", account.ID,
-			"error", lookupErr,
-		)
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
-	defer cancel()
-	if err := s.pageDataPublisher.PublishAccountStaticChange(publishCtx, accountpagedata.ChangeInput{
-		AccountID:             strings.TrimSpace(account.ID),
-		Operation:             accountpagedata.OperationUpsert,
-		OwnerSystemAccountIDs: owners,
-		FieldMask:             []string{"tags"},
-		FilterChanged:         true,
-		PageChanged:           true,
-		AllScopes:             allScopes,
-	}); err != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "account page data publish failed",
-			"accountId", account.ID,
-			"error", err,
-		)
-	}
 }
 
 func optionLimit(limit int) int {

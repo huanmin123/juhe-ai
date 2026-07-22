@@ -33,8 +33,6 @@ import {
   updateBuiltInProviderModelConfigurationAsync
 } from '../../storage/provider-model-catalog.repository.js'
 import { recordOperationLogAsync, safeChange } from '../operation-logs/operation-log.service.js'
-import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
-import { publishPageDataDomainReset } from '../page-data/page-data-change.publisher.js'
 import {
   listProviderModelSelectionOptionsAsync,
   normalizeProviderModelOptionQuery,
@@ -43,27 +41,9 @@ import {
 
 export const providersRouter = Router()
 
-const providerOptionsReadCache = createPageDataDomainReadCache<ProviderDefinition[]>('providers.catalog', {
-  max: 128,
-  ttlMs: 24 * 60 * 60 * 1000
-})
-const providerSelectOptionsReadCache = createPageDataDomainReadCache<Array<{ id: string; code: string; name: string; enabled: true }>>('providers.catalog', {
-  max: 128,
-  ttlMs: 24 * 60 * 60 * 1000
-})
-const providerModelOptionsReadCache = createPageDataDomainReadCache<ProviderModelSelectionOption[]>('providers.catalog', {
-  max: 128,
-  ttlMs: 24 * 60 * 60 * 1000
-})
-
 providersRouter.get('/', requireAdmin, async (req, res, next) => {
   try {
-    const access = getRequestAccessScope(req.query.systemAccountId)
-    const providers = await providerOptionsReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/providers',
-      query: { enabledOnly: false }
-    }), () => listProvidersForRequestAsync())
+    const providers = await listProvidersForRequestAsync()
     res.json(ok(providers))
   } catch (error) {
     next(error)
@@ -74,13 +54,9 @@ providersRouter.get('/options', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const systemAccountId = providerModelRequestSystemAccountId(access)
-    const providers = await providerSelectOptionsReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/providers/options',
-      query: { systemAccountId }
-    }), async () => (await listProvidersAsync())
+    const providers = (await listProvidersAsync())
       .filter((provider) => provider.enabled)
-      .map((provider) => ({ id: provider.code, code: provider.code, name: provider.name, enabled: true as const })))
+      .map((provider) => ({ id: provider.code, code: provider.code, name: provider.name, enabled: true as const }))
     res.json(ok(providers))
   } catch (error) {
     next(error)
@@ -91,11 +67,7 @@ providersRouter.get('/definitions', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const systemAccountId = providerModelRequestSystemAccountId(access)
-    const providers = await providerOptionsReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/providers/definitions',
-      query: { systemAccountId }
-    }), async () => (await listProvidersForRequestAsync(systemAccountId)).filter((provider) => provider.enabled))
+    const providers = (await listProvidersForRequestAsync(systemAccountId)).filter((provider) => provider.enabled)
     res.json(ok(providers))
   } catch (error) {
     next(error)
@@ -120,11 +92,7 @@ providersRouter.get('/models/options', async (req, res, next) => {
         return
       }
     }
-    const options = await providerModelOptionsReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/providers/models/options',
-      query: { ...query, systemAccountId }
-    }), () => listProviderModelSelectionOptionsAsync({ ...query, systemAccountId }))
+    const options = await listProviderModelSelectionOptionsAsync({ ...query, systemAccountId })
     res.json(ok(options))
   } catch (error) {
     next(error)
@@ -224,12 +192,6 @@ providersRouter.put('/:code/default-health-check-model', async (req, res, next) 
           systemAccountId: targetSystemAccountId!,
           model: validation.model
         })
-    const affectedOwnerSystemAccountIds = targetSystemAccountId ? [targetSystemAccountId] : []
-    const allScopes = affectedOwnerSystemAccountIds.length === 0
-    await Promise.all([
-      publishPageDataDomainReset('providers.catalog', affectedOwnerSystemAccountIds, allScopes),
-      publishPageDataDomainReset('accounts.options', affectedOwnerSystemAccountIds, allScopes)
-    ])
     res.json(ok({
       providerCode: saved.providerCode,
       defaultHealthCheckModel: saved.model
@@ -385,7 +347,6 @@ providersRouter.post('/:code/models', async (req, res, next) => {
         actorSystemAccountId: context.systemAccountId
       })
       await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(saved.scope === 'personal' ? saved.systemAccountId : undefined)
-      await publishProviderModelPageDataReset(saved)
       res.status(201).json(ok(saved))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
@@ -438,7 +399,6 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         summary: `更新模型配置：${saved.model}`, detailLevel: 'full', visibilityScope: 'admin_only',
         changes: [safeChange('configuration', '模型配置', providerModelConfigurationSnapshot(builtIn), providerModelConfigurationSnapshot(saved))]
       }, req)
-      await publishProviderModelPageDataReset({ scope: 'global' })
       res.json(ok(saved))
       return
     }
@@ -496,7 +456,6 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
           })
         }
       }
-      await publishProviderModelPageDataReset(saved)
       res.json(ok(saved))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
@@ -548,7 +507,6 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
           model: existing.model
         })
       }
-      await publishProviderModelPageDataReset(existing)
     }
     res.json(ok({ deleted }))
   } catch (error) {
@@ -558,15 +516,6 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
 
 function providerModelRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
   return access?.systemAccountFilterId ?? access?.systemAccountId
-}
-
-async function publishProviderModelPageDataReset(model: { scope?: string; systemAccountId?: string }): Promise<void> {
-  const ownerSystemAccountIds = model.scope === 'personal' && model.systemAccountId ? [model.systemAccountId] : []
-  const allScopes = ownerSystemAccountIds.length === 0
-  await Promise.all([
-    publishPageDataDomainReset('providers.catalog', ownerSystemAccountIds, allScopes),
-    publishPageDataDomainReset('accounts.options', ownerSystemAccountIds, allScopes)
-  ])
 }
 
 async function listProvidersForRequestAsync(systemAccountId?: string): Promise<ProviderDefinition[]> {

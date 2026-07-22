@@ -28,7 +28,6 @@ type ManagementAccountDeleteSummary struct {
 type ManagementAccountDeleteResult struct {
 	Before            ManagementAccountDeleteSummary
 	DeletedAccountIDs []string
-	PageDataOwnerIDs  []string
 }
 
 type ManagementAccountDeleter interface {

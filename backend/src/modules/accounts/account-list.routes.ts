@@ -17,12 +17,6 @@ import {
 import { parseAccountListOptions, parseAccountOptionsQuery } from './account-list-query.js'
 import { sanitizeAccountListResponse } from './account-response-sanitizer.js'
 import { isAccountBalanceSnapshotSuppressed } from './account-balance-snapshot-cleanup.service.js'
-import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
-
-const accountOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listAccountOptionsAsync>>>('accounts.options', {
-  max: 512,
-  ttlMs: 6 * 60 * 60 * 1000
-})
 
 export function registerAccountListRoutes(router: Router): void {
   router.get('/', async (req, res, next) => {
@@ -77,11 +71,7 @@ export function registerAccountListRoutes(router: Router): void {
     try {
       const access = getRequestAccessScope(req.query.systemAccountId)
       const query = parseAccountOptionsQuery(req.query)
-      const options = await accountOptionsReadCache.load(pageDataReadCacheKey({
-        scope: access,
-        route: '/accounts/options',
-        query
-      }), () => listAccountOptionsAsync(access, query))
+      const options = await listAccountOptionsAsync(access, query)
       res.json(ok(options))
     } catch (error) {
       next(error)

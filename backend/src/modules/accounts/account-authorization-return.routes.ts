@@ -6,7 +6,6 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
-import { publishAccountStaticReset } from '../page-data/page-data-change.publisher.js'
 
 export function registerAccountAuthorizationReturnRoutes(router: Router): void {
   router.post('/:id/return-authorization', mutationGuard({
@@ -65,10 +64,6 @@ export function registerAccountAuthorizationReturnRoutes(router: Router): void {
           }
         }
       }, req)
-      await publishAccountStaticReset([
-        authorization.resource_owner_system_account_id,
-        authorization.grantee_system_account_id
-      ])
       res.status(204).send()
     } catch (error) {
       if (error instanceof Error && error.message === '授权账户不存在或不可归还') {

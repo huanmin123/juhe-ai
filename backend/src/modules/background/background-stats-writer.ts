@@ -81,7 +81,6 @@ import {
   acquireBackgroundJobLeaseAsync,
   releaseBackgroundJobLeaseAsync
 } from '../../storage/background-task-runs.repository.js'
-import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
 
 const statsAggregationBatchPauseMs = 25
 const usageStatsAggregationOnlineBatchSizeCap = 1000
@@ -265,7 +264,6 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
       return { processed: await aggregateModelTrustObservationsAsync(operation.batchSize) }
     case 'aggregate_usage_stats': {
       const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)
-      if (result.processed > 0) await publishStatsPageDataReset()
       return result
     }
     case 'aggregate_client_ip_stats':
@@ -297,7 +295,6 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         skipIfUnchanged: true,
         jobName: operation.jobName
       })
-      if (!result.skipped) await publishStatsPageDataReset()
       return result
     }
     case 'refresh_hot_usage_windows': {
@@ -306,7 +303,6 @@ export async function handleStatsWriteOperation(operation: BackgroundStatsWriteO
         skipIfUnchanged: true,
         jobName: operation.jobName
       })
-      if (!result.skipped) await publishStatsPageDataReset()
       return result
     }
     case 'check_usage_stats_consistency':
@@ -392,14 +388,6 @@ function postgresStatsWriterOperationNotImplemented(operationType: string): Erro
 
 function currentProcessOwnsStatsWriter(): boolean {
   return runtimeConfig.processRole === 'worker' && runtimeConfig.workerRole === 'stats-worker'
-}
-
-async function publishStatsPageDataReset(): Promise<void> {
-  await Promise.all([
-    publishPageDataDomainGlobalReset('stats.overview'),
-    publishPageDataDomainGlobalReset('stats.accountUsage'),
-    publishPageDataDomainGlobalReset('stats.aiPerformance')
-  ])
 }
 
 async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRunMs: number, safeCreatedBefore?: string): Promise<{ processed: number; quotaSnapshotSent: boolean; stoppedByTimeBudget: boolean; effectiveBatchSize: number }> {
