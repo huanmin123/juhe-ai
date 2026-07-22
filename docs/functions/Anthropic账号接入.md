@@ -503,6 +503,25 @@ Anthropic 账户测试必须复用真实网关链路。
 }
 ```
 
+Bearer Token 型 OAuth 导入示例：
+
+```json
+{
+  "name": "Anthropic Claude OAuth 账号 1",
+  "providerCode": "anthropic",
+  "providerProtocolProfileId": "profile_anthropic_anthropic_v1",
+  "type": "oauth",
+  "status": "pending_test",
+  "groupName": "默认 Anthropic 分组",
+  "credentials": {
+    "access_token": "sk-ant-oauth-...",
+    "refresh_token": "optional-refresh-token",
+    "base_url": "https://api.anthropic.com",
+    "supported_endpoint_modes": ["messages_json", "messages_sse", "message_token_counting"]
+  }
+}
+```
+
 `providerProtocolProfileId` 是导入协议层唯一协议档案入口。当前 Anthropic 官方账户固定使用 `profile_anthropic_anthropic_v1`；导入协议接受 `type = api_key` 和 Bearer Token 型 `type = oauth`，但仍不接受旧接入类型别名、`setup_token`、WIF、Cookie / sessionKey 或云平台托管 Claude 字段。
 
 ## 参考实现观察
