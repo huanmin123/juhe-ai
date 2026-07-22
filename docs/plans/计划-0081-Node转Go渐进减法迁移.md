@@ -893,3 +893,9 @@
 - [x] 验证：执行定向测试、`go test ./... -count=1`、`go vet ./...`、`gofmt` / diff 复查；真实 Node writer -> Go reader PostgreSQL integration 和查询计划证据后置。
 - 实际结果：四组 RED 分别因 port / service、store SQL、HTTP / router 和 server 装配缺失而按预期失败，对应 GREEN 后通过；定向四包测试、定向 race、全量 `go test ./... -count=1`、`go vet ./...`、`go mod tidy -diff` 和 `git diff --check` 均通过。本轮未启动 PostgreSQL / Node worker，不记录真实 writer -> reader、查询计划或生产切流通过。
 - 复查修复：初版 latest / peak 使用 `DISTINCT ON (process_role)` 后再做全局 `LIMIT`，会为每个角色遍历大量历史候选。Go reader 已改为参数化 `unnest(roles) + LATERAL`，将 `LIMIT 1` 下推到每个角色的索引查询；真实 PostgreSQL `EXPLAIN` 仍属于后置门禁。
+## 2026-07-22 W6 表监控只读 Schema 共存门禁
+
+- Go 已补管理员三条精确 GET 读路径的 PostgreSQL reader；本次追加运行时 schema capability gate，检查 `juhe_stats.database_storage_snapshots` 与 `table_storage_snapshots` 的 base table、实际读列 / Node PostgreSQL 类型和 SELECT 权限。缺表或列不完整时在数据查询前返回 unavailable，不以空数组伪造“暂无快照”；catalog 查询异常保留 infrastructure error 链，读期间的 drop / alter / revoke SQLSTATE 映射回 unavailable。
+- Node 继续单独拥有两张表的建表、采样、保留清理和数据质量。Go 不创建表、不补 migration、不做 SQLite fallback、不启动 writer，因此不能把本块写成表监控接管或 Node 删除证据。
+- `origin/master` 当前权威 catalog 为 `000069`，而 `000070` 由并行模型目录 / 聊天快照工作占位但尚未合入；本块不复用该版本，也不在缺少 `000070` 时制造不连续 `000071`。后续 schema owner 变更只能从届时最新连续版本新增。
+- 最小验证通过：`go test ./internal/modules/managementtablemonitor ./internal/httpapi ./internal/app ./internal/store/postgres -count=1` 与 `go vet ./internal/store/postgres`。真实 PostgreSQL schema contract、Node writer -> Go reader、查询计划、真实 listener / 反向代理、切流和回滚仍待后续批次，未宣称完成。
