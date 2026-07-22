@@ -589,6 +589,12 @@ func isSupportedPageDataDomain(domain string) bool {
 	return ok
 }
 
+// IsSupportedPageDataDomain reports whether domain belongs to the shared
+// Node/Go page-data protocol registry.
+func IsSupportedPageDataDomain(domain string) bool {
+	return isSupportedPageDataDomain(domain)
+}
+
 func normalizePageDataOwners(ownerIDs []string) []string {
 	seen := make(map[string]struct{}, len(ownerIDs))
 	owners := make([]string, 0, len(ownerIDs))

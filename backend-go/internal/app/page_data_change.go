@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
@@ -26,6 +27,39 @@ type pageDataCorePublisher interface {
 
 type pageDataCacheVersionWriter interface {
 	SetPageDataVersion(ctx context.Context, key, value string, ttl time.Duration) error
+}
+
+type pageDataChangeConfirmer interface {
+	Confirm(ctx context.Context, scope redisplatform.PageDataScope, domains map[string]*redisplatform.PageDataRevisionToken) (redisplatform.PageDataConfirmResult, error)
+}
+
+type pageDataChangeConfirmServiceAdapter struct {
+	confirmer pageDataChangeConfirmer
+	initErr   error
+}
+
+func (s pageDataChangeConfirmServiceAdapter) Confirm(
+	ctx context.Context,
+	input httpapi.PageDataChangeConfirmInput,
+) (redisplatform.PageDataConfirmResult, error) {
+	if s.initErr != nil {
+		return redisplatform.PageDataConfirmResult{}, s.initErr
+	}
+	if s.confirmer == nil {
+		return redisplatform.PageDataConfirmResult{}, errors.New("page data confirmer is required")
+	}
+	if input.ViewScope == redisplatform.PageDataViewScopeSelf && strings.TrimSpace(input.TargetSystemAccountID) != "" {
+		return redisplatform.PageDataConfirmResult{}, errors.New("self page data scope cannot target another system account")
+	}
+	scope, err := redisplatform.NewPageDataScope(redisplatform.PageDataScopeInput{
+		ViewerSystemAccountID: strings.TrimSpace(input.ViewerSystemAccountID),
+		ViewScope:             input.ViewScope,
+		TargetSystemAccountID: strings.TrimSpace(input.TargetSystemAccountID),
+	})
+	if err != nil {
+		return redisplatform.PageDataConfirmResult{}, err
+	}
+	return s.confirmer.Confirm(ctx, scope, input.Domains)
 }
 
 type redisPageDataCacheVersionWriter struct{ client *redisplatform.Client }
