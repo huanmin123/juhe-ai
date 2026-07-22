@@ -882,3 +882,4 @@
 - [x] GREEN：实现 port / store / service / handler / router / app 装配，保持 Node DTO 字段与排序。
 - [x] 验证：执行定向测试、`go test ./... -count=1`、`go vet ./...`、`gofmt` / diff 复查；真实 Node writer -> Go reader PostgreSQL integration 和查询计划证据后置。
 - 实际结果：四组 RED 分别因 port / service、store SQL、HTTP / router 和 server 装配缺失而按预期失败，对应 GREEN 后通过；定向四包测试、定向 race、全量 `go test ./... -count=1`、`go vet ./...`、`go mod tidy -diff` 和 `git diff --check` 均通过。本轮未启动 PostgreSQL / Node worker，不记录真实 writer -> reader、查询计划或生产切流通过。
+- 复查修复：初版 latest / peak 使用 `DISTINCT ON (process_role)` 后再做全局 `LIMIT`，即使已有角色复合索引，仍可能为每个角色遍历大量历史候选。Go reader 已改为参数化 `unnest(roles) + LATERAL`，把 `LIMIT 1` 下推到每个角色的索引查询；latest 使用 role/latest 索引，peak 保留参数化 24 小时起点并使用 role/peak partial index。SQL 契约同时禁止退回 `DISTINCT ON`，真实 PostgreSQL `EXPLAIN` 仍按上述后置门禁补证。
