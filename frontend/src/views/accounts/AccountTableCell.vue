@@ -87,6 +87,7 @@ import {
 import { formatDateTime, isAuthorizedAccount } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
 import { authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip } from './accountRules'
+import { accountProxyDisplay } from './accountProxyDisplay'
 
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
@@ -113,7 +114,7 @@ const props = defineProps<{
 }>()
 
 const currentGroupName = computed(() => props.groupName(props.account.id))
-const currentProxy = computed(() => props.proxy(props.account.proxyProfileId))
+const currentProxy = computed(() => accountProxyDisplay(props.account, props.proxy(props.account.proxyProfileId)))
 
 const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''

@@ -16,6 +16,8 @@ import type {
   RouteStrategyNormalRoutingConfig,
   RouteStrategyListItem,
   RouteStrategyListItemResult,
+  RouteStrategyListSnapshotItem,
+  RouteStrategyListSnapshotResult,
   RouteStrategyListResult,
   RouteStrategyMode,
   RouteStrategyOptionSummary,
@@ -38,6 +40,7 @@ import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-r
 const businessSchemaName = 'juhe_business'
 const ROUTE_STRATEGY_GROUP_BOUNDARY_ERROR = '策略路由只能绑定自己的分组或有效授权给自己的分组'
 const DEFAULT_ROUTE_STRATEGY_NAME = '默认路由'
+const maxRouteStrategyListSnapshotIds = 200
 const routeStrategyMutationInputKeys = new Set([
   'name',
   'description',
@@ -88,7 +91,6 @@ interface RouteStrategyRow {
   status: RouteStrategyStatus | string
   is_default?: number | boolean | string | null
   config_json: string | null
-  binding_count?: number | string | null
   api_key_count?: number | string | null
   created_at: string
   updated_at: string
@@ -105,6 +107,17 @@ interface RouteStrategyGroupBindingRow {
   priority: number
   weight?: number | null
   status: RouteStrategyGroupBindingStatus | string
+}
+
+interface RouteStrategyListSnapshotCountRow {
+  route_strategy_id: string
+  metric: 'binding' | 'api_key' | string
+  count: number | string
+}
+
+interface VisibleRouteStrategyRow {
+  id: string
+  system_account_id: string
 }
 
 interface RouteStrategyBindableGroupRow {
@@ -246,6 +259,46 @@ export async function listRouteStrategyListItemsPageAsync(access?: AccessScope, 
     page: normalized.page,
     pageSize: normalized.pageSize
   }
+}
+
+export function listRouteStrategyListSnapshot(access: AccessScope | undefined, routeStrategyIds: string[]): RouteStrategyListSnapshotResult {
+  return listRouteStrategyListSnapshotReadOnly(access, routeStrategyIds)
+}
+
+export function listRouteStrategyListSnapshotReadOnly(access: AccessScope | undefined, routeStrategyIds: string[]): RouteStrategyListSnapshotResult {
+  const ids = normalizeRouteStrategyListSnapshotIds(routeStrategyIds)
+  const visibleRows = listVisibleRouteStrategyRows(access, ids)
+  const visibleIds = orderedVisibleRouteStrategyIds(ids, visibleRows)
+  if (!visibleIds.length) return emptyRouteStrategyListSnapshot()
+
+  const countRows = loadRouteStrategyListSnapshotCountRows(visibleIds)
+  const previews = loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIds(visibleIds)
+  return routeStrategyListSnapshotResult(visibleIds, countRows, previews)
+}
+
+export async function listRouteStrategyListSnapshotAsync(access: AccessScope | undefined, routeStrategyIds: string[]): Promise<RouteStrategyListSnapshotResult> {
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    if (sqliteReadWorkerPoolEnabled()) {
+      return requestSqliteReadWorker({
+        type: 'list_route_strategy_list_snapshot_read_only',
+        access,
+        routeStrategyIds
+      })
+    }
+    return listRouteStrategyListSnapshotReadOnly(access, routeStrategyIds)
+  }
+
+  const ids = normalizeRouteStrategyListSnapshotIds(routeStrategyIds)
+  const client = await getRouteStrategyDatabaseClient()
+  const visibleRows = await listVisibleRouteStrategyRowsAsync(client, access, ids)
+  const visibleIds = orderedVisibleRouteStrategyIds(ids, visibleRows)
+  if (!visibleIds.length) return emptyRouteStrategyListSnapshot()
+
+  const [countRows, previews] = await Promise.all([
+    loadRouteStrategyListSnapshotCountRowsAsync(client, visibleIds),
+    loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(visibleIds, 3, client)
+  ])
+  return routeStrategyListSnapshotResult(visibleIds, countRows, previews)
 }
 
 export function listRouteStrategyOptionsReadOnly(access?: AccessScope, options?: RouteStrategyOptionListOptions): RouteStrategyOptionSummary[] {
@@ -804,6 +857,116 @@ async function loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAs
   return result
 }
 
+function listVisibleRouteStrategyRows(access: AccessScope | undefined, routeStrategyIds: string[]): VisibleRouteStrategyRow[] {
+  const scope = buildSystemAccountScopeClause(access, 'route_strategies.system_account_id')
+  return getBusinessDatabase()
+    .prepare(`
+      SELECT route_strategies.id, route_strategies.system_account_id
+      FROM route_strategies
+      WHERE route_strategies.id IN (${sqlPlaceholders(routeStrategyIds.length)})${scope.clause}
+    `)
+    .all(...routeStrategyIds, ...scope.params) as unknown as VisibleRouteStrategyRow[]
+}
+
+async function listVisibleRouteStrategyRowsAsync(client: DatabaseClient, access: AccessScope | undefined, routeStrategyIds: string[]): Promise<VisibleRouteStrategyRow[]> {
+  const scope = buildSystemAccountScopeClause(access, 'route_strategies.system_account_id')
+  return client.query<VisibleRouteStrategyRow>(`
+    SELECT route_strategies.id, route_strategies.system_account_id
+    FROM ${routeStrategyTable(client, 'route_strategies')} route_strategies
+    WHERE route_strategies.id IN (${client.dialect.bindPlaceholders(routeStrategyIds.length)})${scope.clause}
+  `, [...routeStrategyIds, ...scope.params])
+}
+
+function orderedVisibleRouteStrategyIds(requestedIds: string[], rows: VisibleRouteStrategyRow[]): string[] {
+  const visibleIds = new Set(rows.map((row) => row.id))
+  return requestedIds.filter((id) => visibleIds.has(id))
+}
+
+function loadRouteStrategyListSnapshotCountRows(routeStrategyIds: string[]): RouteStrategyListSnapshotCountRow[] {
+  const placeholders = sqlPlaceholders(routeStrategyIds.length)
+  return getBusinessDatabase()
+    .prepare(`
+      SELECT route_strategy_groups.route_strategy_id, 'binding' AS metric, COUNT(1) AS count
+      FROM route_strategy_groups
+      INNER JOIN route_strategies
+        ON route_strategies.id = route_strategy_groups.route_strategy_id
+        AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+      WHERE route_strategy_groups.route_strategy_id IN (${placeholders})
+      GROUP BY route_strategy_groups.route_strategy_id
+      UNION ALL
+      SELECT api_keys.route_strategy_id, 'api_key' AS metric, COUNT(1) AS count
+      FROM api_keys
+      INNER JOIN route_strategies
+        ON route_strategies.id = api_keys.route_strategy_id
+        AND route_strategies.system_account_id = api_keys.system_account_id
+      WHERE api_keys.route_strategy_id IN (${placeholders})
+      GROUP BY api_keys.route_strategy_id
+    `)
+    .all(...routeStrategyIds, ...routeStrategyIds) as unknown as RouteStrategyListSnapshotCountRow[]
+}
+
+async function loadRouteStrategyListSnapshotCountRowsAsync(client: DatabaseClient, routeStrategyIds: string[]): Promise<RouteStrategyListSnapshotCountRow[]> {
+  const placeholders = client.dialect.bindPlaceholders(routeStrategyIds.length)
+  return client.query<RouteStrategyListSnapshotCountRow>(`
+    SELECT route_strategy_groups.route_strategy_id, 'binding' AS metric, COUNT(1) AS count
+    FROM ${routeStrategyTable(client, 'route_strategy_groups')} route_strategy_groups
+    INNER JOIN ${routeStrategyTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = route_strategy_groups.route_strategy_id
+      AND route_strategies.system_account_id = route_strategy_groups.system_account_id
+    WHERE route_strategy_groups.route_strategy_id IN (${placeholders})
+    GROUP BY route_strategy_groups.route_strategy_id
+    UNION ALL
+    SELECT api_keys.route_strategy_id, 'api_key' AS metric, COUNT(1) AS count
+    FROM ${routeStrategyTable(client, 'api_keys')} api_keys
+    INNER JOIN ${routeStrategyTable(client, 'route_strategies')} route_strategies
+      ON route_strategies.id = api_keys.route_strategy_id
+      AND route_strategies.system_account_id = api_keys.system_account_id
+    WHERE api_keys.route_strategy_id IN (${placeholders})
+    GROUP BY api_keys.route_strategy_id
+  `, [...routeStrategyIds, ...routeStrategyIds])
+}
+
+function routeStrategyListSnapshotResult(
+  routeStrategyIds: string[],
+  countRows: RouteStrategyListSnapshotCountRow[],
+  previews: Map<string, RouteStrategyGroupBindingSummary[]>
+): RouteStrategyListSnapshotResult {
+  const counts = new Map<string, Pick<RouteStrategyListSnapshotItem, 'bindingCount' | 'apiKeyCount'>>()
+  routeStrategyIds.forEach((id) => counts.set(id, { bindingCount: 0, apiKeyCount: 0 }))
+  for (const row of countRows) {
+    const current = counts.get(row.route_strategy_id)
+    if (!current) continue
+    const count = Number(row.count)
+    if (!Number.isSafeInteger(count) || count < 0) throw new Error(`策略路由计数数据无效：${row.route_strategy_id}`)
+    if (row.metric === 'binding') current.bindingCount = count
+    else if (row.metric === 'api_key') current.apiKeyCount = count
+    else throw new Error(`策略路由计数类型无效：${row.metric}`)
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    items: routeStrategyIds.map((id) => ({
+      id,
+      ...(counts.get(id) ?? { bindingCount: 0, apiKeyCount: 0 }),
+      groupBindingPreview: (previews.get(id) ?? []).slice(0, 3).map(routeStrategyGroupBindingPreview)
+    }))
+  }
+}
+
+function routeStrategyGroupBindingPreview(binding: RouteStrategyGroupBindingSummary): RouteStrategyListSnapshotItem['groupBindingPreview'][number] {
+  return {
+    id: binding.id,
+    groupId: binding.groupId,
+    groupName: binding.groupName,
+    providerCode: binding.providerCode,
+    status: binding.status,
+    groupEnabled: binding.groupEnabled
+  }
+}
+
+function emptyRouteStrategyListSnapshot(): RouteStrategyListSnapshotResult {
+  return { generatedAt: new Date().toISOString(), items: [] }
+}
+
 function routeStrategySummariesFromRows(rows: RouteStrategyRow[], access?: AccessScope): RouteStrategySummary[] {
   const includeOwner = includeSystemAccountFields(access)
   const accountNames = includeOwner ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
@@ -822,16 +985,14 @@ async function routeStrategySummariesFromRowsAsync(rows: RouteStrategyRow[], acc
 function routeStrategyListItemsFromRows(rows: RouteStrategyRow[], access?: AccessScope): RouteStrategyListItem[] {
   const includeOwner = includeSystemAccountFields(access)
   const accountNames = includeOwner ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
-  const bindingsByStrategyId = loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIds(rows.map((row) => row.id))
-  return rows.map((row) => routeStrategyListItemFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
+  return rows.map((row) => routeStrategyListItemFromRow(row, includeOwner, accountNames))
 }
 
 async function routeStrategyListItemsFromRowsAsync(rows: RouteStrategyRow[], access?: AccessScope, client?: DatabaseClient): Promise<RouteStrategyListItem[]> {
   const includeOwner = includeSystemAccountFields(access)
   const lookupClient = includeOwner ? (client ?? await getRouteStrategyDatabaseClient()) : undefined
   const accountNames = includeOwner ? await loadSystemAccountNameMapByIdsAsync(lookupClient!, rows.map((row) => row.system_account_id)) : new Map<string, string>()
-  const bindingsByStrategyId = await loadRouteStrategyGroupBindingPreviewSummariesByRouteStrategyIdsAsync(rows.map((row) => row.id), 3, client)
-  return rows.map((row) => routeStrategyListItemFromRow(row, bindingsByStrategyId.get(row.id) ?? [], includeOwner, accountNames))
+  return rows.map((row) => routeStrategyListItemFromRow(row, includeOwner, accountNames))
 }
 
 function routeStrategySummaryFromRow(
@@ -863,7 +1024,6 @@ function routeStrategySummaryFromRow(
 
 function routeStrategyListItemFromRow(
   row: RouteStrategyRow,
-  groupBindings: RouteStrategyGroupBindingSummary[],
   includeOwner: boolean,
   accountNames: Map<string, string>
 ): RouteStrategyListItem {
@@ -879,16 +1039,6 @@ function routeStrategyListItemFromRow(
     status: normalizeRouteStrategyStatus(row.status, 'active'),
     isDefault: normalizeRouteStrategyDefaultFlag(row.is_default),
     normalRoutingConfig: mode === 'normal' ? config.normalRoutingConfig ?? defaultNormalRoutingConfig() : undefined,
-    groupBindingPreview: groupBindings.slice(0, 3).map((binding) => ({
-      id: binding.id,
-      groupId: binding.groupId,
-      groupName: binding.groupName,
-      providerCode: binding.providerCode,
-      status: binding.status,
-      groupEnabled: binding.groupEnabled
-    })),
-    bindingCount: Number(row.binding_count ?? groupBindings.length),
-    apiKeyCount: Number(row.api_key_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
@@ -1316,8 +1466,6 @@ function routeStrategyListItemColumns(): string {
     'route_strategies.status',
     'route_strategies.is_default',
     'route_strategies.config_json',
-    '(SELECT COUNT(1) FROM route_strategy_groups WHERE route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id) AS binding_count',
-    '(SELECT COUNT(1) FROM api_keys WHERE api_keys.route_strategy_id = route_strategies.id AND api_keys.system_account_id = route_strategies.system_account_id) AS api_key_count',
     'route_strategies.created_at',
     'route_strategies.updated_at'
   ].join(', ')
@@ -1351,8 +1499,6 @@ function routeStrategyListItemColumnsForClient(client: DatabaseClient): string {
     'route_strategies.status',
     'route_strategies.is_default',
     'route_strategies.config_json',
-    `(SELECT COUNT(1) FROM ${routeStrategyTable(client, 'route_strategy_groups')} route_strategy_groups WHERE route_strategy_groups.route_strategy_id = route_strategies.id AND route_strategy_groups.system_account_id = route_strategies.system_account_id) AS binding_count`,
-    `(SELECT COUNT(1) FROM ${routeStrategyTable(client, 'api_keys')} api_keys WHERE api_keys.route_strategy_id = route_strategies.id AND api_keys.system_account_id = route_strategies.system_account_id) AS api_key_count`,
     'route_strategies.created_at',
     'route_strategies.updated_at'
   ].join(', ')
@@ -1370,6 +1516,13 @@ function normalizeRouteStrategyListOptions(options?: RouteStrategyListOptions): 
     mode: normalizeRouteStrategyListMode(options?.mode),
     status: normalizeRouteStrategyListStatus(options?.status)
   }
+}
+
+function normalizeRouteStrategyListSnapshotIds(routeStrategyIds: string[]): string[] {
+  const ids = [...new Set(routeStrategyIds.map((id) => id.trim()).filter(Boolean))]
+  if (ids.length === 0) throw new Error('策略路由列表快照至少选择 1 个策略路由')
+  if (ids.length > maxRouteStrategyListSnapshotIds) throw new Error(`策略路由列表快照最多查询 ${maxRouteStrategyListSnapshotIds} 个策略路由`)
+  return ids
 }
 
 function normalizeRouteStrategyOptionListOptions(options?: RouteStrategyOptionListOptions): Required<Pick<RouteStrategyOptionListOptions, 'limit'>> & Pick<RouteStrategyOptionListOptions, 'ids' | 'keyword' | 'activeOnly'> {

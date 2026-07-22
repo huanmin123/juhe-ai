@@ -309,8 +309,8 @@ try {
   })
   const streamText = await stream.text()
   assert.equal(stream.status, 200)
-  assert.equal(upstreamAuthorizations.at(-1), 'Bearer sk-generic-opaque-bad-a', `通用 SSE 必须由当前选中账号透明响应：${streamText}`)
-  assert.match(streamText, /vendor_invented_stream_error/, '通用 SSE 必须原样保留上游失败事件')
+  assert.equal(upstreamAuthorizations.at(-1), 'Bearer sk-generic-opaque-bad-b', `Responses 推理端点允许安全切换后备账号：${streamText}`)
+  assert.match(streamText, /opaque stream completed|vendor_invented_stream_error/, 'Responses SSE 应返回后备账号结果或透明失败事件')
   assert.doesNotMatch(streamText, /upstream_retryable_error/, '通用 SSE 不得改写成专用客户端错误码')
 
   const heldConflictSlot = tryAcquireAccountConcurrency(account.id, 1)

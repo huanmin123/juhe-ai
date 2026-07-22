@@ -509,6 +509,8 @@ export {
   ensureDefaultRouteStrategiesForSystemAccountAsync,
   ensureDefaultRouteStrategyForSystemAccount,
   ensureDefaultRouteStrategyForSystemAccountAsync,
+  listRouteStrategyListSnapshot,
+  listRouteStrategyListSnapshotAsync,
   listRouteStrategyListItemsPage,
   listRouteStrategyListItemsPageAsync,
   listRouteStrategiesPage,

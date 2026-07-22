@@ -58,6 +58,33 @@ export interface ResponseInspectionPolicySummary {
   updatedAt?: string
 }
 
+export interface ResponseInspectionPolicyOverview {
+  id: string
+  defaultRule: boolean
+  editable: boolean
+  name: string
+  enabled: boolean
+  priority: number
+  scopeType: ResponseInspectionPolicyScopeType
+  protocolCode: string
+  providerCode?: string
+  providerName?: string
+  action: ResponseInspectionPolicyAction
+  updatedAt?: string
+}
+
+export interface ResponseInspectionPolicyDetail extends ResponseInspectionPolicyOverview {
+  match: ResponseInspectionPolicyMatch
+  notes?: string
+  createdAt?: string
+}
+
+export interface ResponseInspectionPolicyProviderOption {
+  code: string
+  name: string
+  protocolCode: string
+}
+
 export interface ResponseInspectionPolicyInput {
   name?: string
   enabled?: boolean
@@ -85,9 +112,32 @@ interface ResponseInspectionPolicyRow {
   updated_at: string
 }
 
+interface ResponseInspectionPolicyOverviewRow {
+  id: string
+  name: string
+  enabled: number
+  priority: number
+  scope_type: string
+  protocol_code: string
+  provider_code: string | null
+  provider_name: string | null
+  action: string
+  updated_at: string
+}
+
+interface ResponseInspectionPolicyDetailRow extends ResponseInspectionPolicyRow {
+  provider_name: string | null
+}
+
+interface ResponseInspectionPolicyProviderOptionRow {
+  code: string
+  name: string
+  protocol_code: string
+}
+
 export interface ResponseInspectionPolicyListResult {
-  defaultRules: ResponseInspectionPolicySummary[]
-  policies: ResponseInspectionPolicySummary[]
+  defaultRules: ResponseInspectionPolicyOverview[]
+  policies: ResponseInspectionPolicyOverview[]
 }
 
 export const maxManagementResponseInspectionPolicies = 100
@@ -115,7 +165,8 @@ const inputKeys = new Set([
 
 const clientProfiles = ['codex', 'generic_openai', 'claude_code', 'generic_anthropic', 'generic_gemini', 'gemini_cli'] as const satisfies readonly ResponseInspectionPolicyClientProfile[]
 const clientProfileValues = new Set<ResponseInspectionPolicyClientProfile>(clientProfiles)
-const supportedResponseInspectionProtocolCodes = new Set([OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE])
+const responseInspectionProtocolCodes = [OPENAI_PROTOCOL_CODE, ANTHROPIC_PROTOCOL_CODE, GEMINI_PROTOCOL_CODE] as const
+const supportedResponseInspectionProtocolCodes = new Set<string>(responseInspectionProtocolCodes)
 const codexCompactionContractMismatchErrorCode = 'codex_compaction_contract_mismatch'
 const businessSchemaName = 'juhe_business'
 
@@ -288,9 +339,16 @@ export function listResponseInspectionPolicyDefaultRules(): ResponseInspectionPo
 }
 
 export function listResponseInspectionPolicies(): ResponseInspectionPolicyListResult {
+  const rows = listResponseInspectionPolicyOverviewRows()
+  const defaultProviderNames = responseInspectionPolicyProviderNames(
+    systemDefaultRules.map((policy) => policy.providerCode)
+  )
   return {
-    defaultRules: listResponseInspectionPolicyDefaultRules(),
-    policies: listResponseInspectionPolicyRows().map(policyFromRow)
+    defaultRules: systemDefaultRules.map((policy) => policyOverviewFromSummary(
+      policy,
+      policy.providerCode ? defaultProviderNames.get(policy.providerCode) : undefined
+    )),
+    policies: rows.map(policyOverviewFromRow)
   }
 }
 
@@ -303,10 +361,95 @@ export async function listResponseInspectionPoliciesAsync(): Promise<ResponseIns
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return listResponseInspectionPolicies()
   }
+  const [rows, defaultProviderNames] = await Promise.all([
+    listResponseInspectionPolicyOverviewRowsAsync(),
+    responseInspectionPolicyProviderNamesAsync(systemDefaultRules.map((policy) => policy.providerCode))
+  ])
   return {
-    defaultRules: listResponseInspectionPolicyDefaultRules(),
-    policies: (await listResponseInspectionPolicyRowsAsync()).map(policyFromRow)
+    defaultRules: systemDefaultRules.map((policy) => policyOverviewFromSummary(
+      policy,
+      policy.providerCode ? defaultProviderNames.get(policy.providerCode) : undefined
+    )),
+    policies: rows.map(policyOverviewFromRow)
   }
+}
+
+export function getResponseInspectionPolicyDetail(id: string): ResponseInspectionPolicyDetail | undefined {
+  const normalizedId = id.trim()
+  if (!normalizedId) return undefined
+  const defaultRule = systemDefaultRules.find((policy) => policy.id === normalizedId)
+  if (defaultRule) {
+    const providerNames = responseInspectionPolicyProviderNames([defaultRule.providerCode])
+    return policyDetailFromSummary(
+      defaultRule,
+      defaultRule.providerCode ? providerNames.get(defaultRule.providerCode) : undefined
+    )
+  }
+  const row = findResponseInspectionPolicyDetailRow(normalizedId)
+  return row ? policyDetailFromRow(row) : undefined
+}
+
+export async function getResponseInspectionPolicyDetailAsync(id: string): Promise<ResponseInspectionPolicyDetail | undefined> {
+  const normalizedId = id.trim()
+  if (!normalizedId) return undefined
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'get_response_inspection_policy_detail_read_only',
+      id: normalizedId
+    })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return getResponseInspectionPolicyDetail(normalizedId)
+  }
+  const defaultRule = systemDefaultRules.find((policy) => policy.id === normalizedId)
+  if (defaultRule) {
+    const providerNames = await responseInspectionPolicyProviderNamesAsync([defaultRule.providerCode])
+    return policyDetailFromSummary(
+      defaultRule,
+      defaultRule.providerCode ? providerNames.get(defaultRule.providerCode) : undefined
+    )
+  }
+  const row = await findResponseInspectionPolicyDetailRowAsync(normalizedId)
+  return row ? policyDetailFromRow(row) : undefined
+}
+
+export function listResponseInspectionPolicyProviderOptions(): ResponseInspectionPolicyProviderOption[] {
+  const placeholders = responseInspectionProtocolCodes.map(() => '?').join(', ')
+  const rows = getBusinessDatabase()
+    .prepare(`
+      SELECT DISTINCT p.code, p.name, ppp.protocol_code
+      FROM providers p
+      INNER JOIN provider_protocol_profiles ppp ON ppp.provider_code = p.code
+      WHERE p.enabled = 1
+        AND ppp.enabled = 1
+        AND ppp.protocol_code IN (${placeholders})
+      ORDER BY p.name ASC, p.code ASC, ppp.protocol_code ASC
+    `)
+    .all(...responseInspectionProtocolCodes) as unknown as ResponseInspectionPolicyProviderOptionRow[]
+  return rows.map(responseInspectionPolicyProviderOptionFromRow)
+}
+
+export async function listResponseInspectionPolicyProviderOptionsAsync(): Promise<ResponseInspectionPolicyProviderOption[]> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({
+      type: 'list_response_inspection_policy_provider_options_read_only'
+    })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') {
+    return listResponseInspectionPolicyProviderOptions()
+  }
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  const placeholders = client.dialect.bindPlaceholders(responseInspectionProtocolCodes.length)
+  const rows = await client.query<ResponseInspectionPolicyProviderOptionRow>(`
+    SELECT DISTINCT p.code, p.name, ppp.protocol_code
+    FROM ${providersTable(client)} p
+    INNER JOIN ${providerProtocolProfilesTable(client)} ppp ON ppp.provider_code = p.code
+    WHERE p.enabled = 1
+      AND ppp.enabled = 1
+      AND ppp.protocol_code IN (${placeholders})
+    ORDER BY p.name ASC, p.code ASC, ppp.protocol_code ASC
+  `, responseInspectionProtocolCodes)
+  return rows.map(responseInspectionPolicyProviderOptionFromRow)
 }
 
 export function listActiveResponseInspectionPoliciesForGateway(input: {
@@ -394,7 +537,7 @@ function normalizeGatewayPolicyProtocolCode(value: unknown): string | undefined 
   return supportedResponseInspectionProtocolCodes.has(text) ? text : undefined
 }
 
-export function createResponseInspectionPolicy(input: ResponseInspectionPolicyInput): ResponseInspectionPolicySummary {
+export function createResponseInspectionPolicy(input: ResponseInspectionPolicyInput): ResponseInspectionPolicyDetail {
   assertKnownInputKeys(input, inputKeys, '响应检查策略')
   assertManagementPolicyCapacity()
   const now = nowIso()
@@ -425,10 +568,10 @@ export function createResponseInspectionPolicy(input: ResponseInspectionPolicyIn
       policy.updatedAt ?? now
     )
   notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_created')
-  return policy
+  return policyDetailFromSummary(policy, responseInspectionPolicyProviderName(policy.providerCode))
 }
 
-export async function createResponseInspectionPolicyAsync(input: ResponseInspectionPolicyInput): Promise<ResponseInspectionPolicySummary> {
+export async function createResponseInspectionPolicyAsync(input: ResponseInspectionPolicyInput): Promise<ResponseInspectionPolicyDetail> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return createResponseInspectionPolicy(input)
   }
@@ -461,10 +604,10 @@ export async function createResponseInspectionPolicyAsync(input: ResponseInspect
     policy.updatedAt ?? now
   ])
   notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_created')
-  return policy
+  return policyDetailFromSummary(policy, await responseInspectionPolicyProviderNameAsync(policy.providerCode))
 }
 
-export function updateResponseInspectionPolicy(id: string, input: ResponseInspectionPolicyInput): ResponseInspectionPolicySummary | undefined {
+export function updateResponseInspectionPolicy(id: string, input: ResponseInspectionPolicyInput): ResponseInspectionPolicyDetail | undefined {
   assertKnownInputKeys(input, inputKeys, '响应检查策略')
   const current = findResponseInspectionPolicyRow(id)
   if (!current) return undefined
@@ -494,10 +637,10 @@ export function updateResponseInspectionPolicy(id: string, input: ResponseInspec
       id
     )
   notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_updated')
-  return policy
+  return policyDetailFromSummary(policy, responseInspectionPolicyProviderName(policy.providerCode))
 }
 
-export async function updateResponseInspectionPolicyAsync(id: string, input: ResponseInspectionPolicyInput): Promise<ResponseInspectionPolicySummary | undefined> {
+export async function updateResponseInspectionPolicyAsync(id: string, input: ResponseInspectionPolicyInput): Promise<ResponseInspectionPolicyDetail | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return updateResponseInspectionPolicy(id, input)
   }
@@ -529,7 +672,7 @@ export async function updateResponseInspectionPolicyAsync(id: string, input: Res
     id
   ])
   notifyGatewayRuntimeCacheInvalidation('response_inspection_policy_updated')
-  return policy
+  return policyDetailFromSummary(policy, await responseInspectionPolicyProviderNameAsync(policy.providerCode))
 }
 
 export function deleteResponseInspectionPolicy(id: string): boolean {
@@ -577,36 +720,126 @@ export function responseInspectionPolicyActionRuntime(action: ResponseInspection
   }
 }
 
-function listResponseInspectionPolicyRows(): ResponseInspectionPolicyRow[] {
+function listResponseInspectionPolicyOverviewRows(): ResponseInspectionPolicyOverviewRow[] {
   return getBusinessDatabase()
     .prepare(`
-      SELECT *
-      FROM response_inspection_policies
-      ORDER BY priority ASC, updated_at DESC, id ASC
+      SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
+        rip.provider_code, p.name AS provider_name, rip.action, rip.updated_at
+      FROM response_inspection_policies rip
+      LEFT JOIN providers p ON p.code = rip.provider_code
+      ORDER BY rip.priority ASC, rip.updated_at DESC, rip.id ASC
       LIMIT ?
     `)
-    .all(maxManagementResponseInspectionPolicies) as unknown as ResponseInspectionPolicyRow[]
+    .all(maxManagementResponseInspectionPolicies) as unknown as ResponseInspectionPolicyOverviewRow[]
 }
 
-async function listResponseInspectionPolicyRowsAsync(): Promise<ResponseInspectionPolicyRow[]> {
+async function listResponseInspectionPolicyOverviewRowsAsync(): Promise<ResponseInspectionPolicyOverviewRow[]> {
   const client = await getResponseInspectionPolicyDatabaseClient()
-  return await client.query<ResponseInspectionPolicyRow>(`
-    SELECT *
-    FROM ${responseInspectionPoliciesTable(client)}
-    ORDER BY priority ASC, updated_at DESC, id ASC
+  return await client.query<ResponseInspectionPolicyOverviewRow>(`
+    SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
+      rip.provider_code, p.name AS provider_name, rip.action, rip.updated_at
+    FROM ${responseInspectionPoliciesTable(client)} rip
+    LEFT JOIN ${providersTable(client)} p ON p.code = rip.provider_code
+    ORDER BY rip.priority ASC, rip.updated_at DESC, rip.id ASC
     LIMIT ?
   `, [maxManagementResponseInspectionPolicies])
 }
 
 function findResponseInspectionPolicyRow(id: string): ResponseInspectionPolicyRow | undefined {
   return getBusinessDatabase()
-    .prepare('SELECT * FROM response_inspection_policies WHERE id = ?')
+    .prepare(`
+      SELECT id, name, enabled, priority, scope_type, protocol_code, provider_code,
+        match_json, action, notes, created_at, updated_at
+      FROM response_inspection_policies
+      WHERE id = ?
+    `)
     .get(id) as unknown as ResponseInspectionPolicyRow | undefined
 }
 
 async function findResponseInspectionPolicyRowAsync(id: string): Promise<ResponseInspectionPolicyRow | undefined> {
   const client = await getResponseInspectionPolicyDatabaseClient()
-  return await client.one<ResponseInspectionPolicyRow>(`SELECT * FROM ${responseInspectionPoliciesTable(client)} WHERE id = ?`, [id])
+  return await client.one<ResponseInspectionPolicyRow>(`
+    SELECT id, name, enabled, priority, scope_type, protocol_code, provider_code,
+      match_json, action, notes, created_at, updated_at
+    FROM ${responseInspectionPoliciesTable(client)}
+    WHERE id = ?
+  `, [id])
+}
+
+function findResponseInspectionPolicyDetailRow(id: string): ResponseInspectionPolicyDetailRow | undefined {
+  return getBusinessDatabase()
+    .prepare(`
+      SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
+        rip.provider_code, rip.match_json, rip.action, rip.notes, rip.created_at, rip.updated_at,
+        p.name AS provider_name
+      FROM response_inspection_policies rip
+      LEFT JOIN providers p ON p.code = rip.provider_code
+      WHERE rip.id = ?
+    `)
+    .get(id) as unknown as ResponseInspectionPolicyDetailRow | undefined
+}
+
+async function findResponseInspectionPolicyDetailRowAsync(id: string): Promise<ResponseInspectionPolicyDetailRow | undefined> {
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  return await client.one<ResponseInspectionPolicyDetailRow>(`
+    SELECT rip.id, rip.name, rip.enabled, rip.priority, rip.scope_type, rip.protocol_code,
+      rip.provider_code, rip.match_json, rip.action, rip.notes, rip.created_at, rip.updated_at,
+      p.name AS provider_name
+    FROM ${responseInspectionPoliciesTable(client)} rip
+    LEFT JOIN ${providersTable(client)} p ON p.code = rip.provider_code
+    WHERE rip.id = ?
+  `, [id])
+}
+
+function responseInspectionPolicyProviderName(providerCode: string | undefined): string | undefined {
+  if (!providerCode) return undefined
+  return responseInspectionPolicyProviderNames([providerCode]).get(providerCode)
+}
+
+async function responseInspectionPolicyProviderNameAsync(providerCode: string | undefined): Promise<string | undefined> {
+  if (!providerCode) return undefined
+  return (await responseInspectionPolicyProviderNamesAsync([providerCode])).get(providerCode)
+}
+
+function responseInspectionPolicyProviderNames(providerCodes: Array<string | undefined>): Map<string, string> {
+  const codes = normalizedResponseInspectionPolicyProviderCodes(providerCodes)
+  if (codes.length === 0) return new Map()
+  const placeholders = codes.map(() => '?').join(', ')
+  const rows = getBusinessDatabase()
+    .prepare(`
+      SELECT code, name
+      FROM providers
+      WHERE code IN (${placeholders})
+      ORDER BY code ASC
+      LIMIT ?
+    `)
+    .all(...codes, codes.length) as unknown as Array<{ code: string; name: string }>
+  return new Map(rows.map((row) => [row.code, row.name]))
+}
+
+async function responseInspectionPolicyProviderNamesAsync(
+  providerCodes: Array<string | undefined>
+): Promise<Map<string, string>> {
+  const codes = normalizedResponseInspectionPolicyProviderCodes(providerCodes)
+  if (codes.length === 0) return new Map()
+  const client = await getResponseInspectionPolicyDatabaseClient()
+  const placeholders = client.dialect.bindPlaceholders(codes.length)
+  const rows = await client.query<{ code: string; name: string }>(`
+    SELECT code, name
+    FROM ${providersTable(client)}
+    WHERE code IN (${placeholders})
+    ORDER BY code ASC
+    LIMIT ?
+  `, [...codes, codes.length])
+  return new Map(rows.map((row) => [row.code, row.name]))
+}
+
+function normalizedResponseInspectionPolicyProviderCodes(providerCodes: Array<string | undefined>): string[] {
+  return [...new Set(providerCodes
+    .map((providerCode) => providerCode?.trim())
+    .filter((providerCode): providerCode is string => Boolean(providerCode)))]
+    .slice(0, maxManagementResponseInspectionPolicies)
+    .sort()
 }
 
 function assertManagementPolicyCapacity(): void {
@@ -716,6 +949,85 @@ function policyFromRow(row: ResponseInspectionPolicyRow): ResponseInspectionPoli
     notes: row.notes ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  }
+}
+
+function policyOverviewFromSummary(
+  policy: ResponseInspectionPolicySummary,
+  providerName?: string
+): ResponseInspectionPolicyOverview {
+  return {
+    id: policy.id,
+    defaultRule: policy.defaultRule,
+    editable: policy.editable,
+    name: policy.name,
+    enabled: policy.enabled,
+    priority: policy.priority,
+    scopeType: policy.scopeType,
+    protocolCode: policy.protocolCode,
+    providerCode: policy.providerCode,
+    providerName,
+    action: policy.action,
+    updatedAt: policy.updatedAt
+  }
+}
+
+function policyOverviewFromRow(row: ResponseInspectionPolicyOverviewRow): ResponseInspectionPolicyOverview {
+  return {
+    id: row.id,
+    defaultRule: false,
+    editable: true,
+    name: row.name,
+    enabled: row.enabled === 1,
+    priority: row.priority,
+    scopeType: normalizeScopeType(row.scope_type),
+    protocolCode: row.protocol_code,
+    providerCode: row.provider_code ?? undefined,
+    providerName: row.provider_name ?? undefined,
+    action: normalizeAction(row.action),
+    updatedAt: row.updated_at
+  }
+}
+
+function policyDetailFromSummary(
+  policy: ResponseInspectionPolicySummary,
+  providerName?: string
+): ResponseInspectionPolicyDetail {
+  return {
+    ...policyOverviewFromSummary(policy, providerName),
+    match: clonePolicyMatch(policy.match),
+    notes: policy.notes,
+    createdAt: policy.createdAt
+  }
+}
+
+function policyDetailFromRow(row: ResponseInspectionPolicyDetailRow): ResponseInspectionPolicyDetail {
+  return {
+    id: row.id,
+    defaultRule: false,
+    editable: true,
+    name: row.name,
+    enabled: row.enabled === 1,
+    priority: row.priority,
+    scopeType: normalizeScopeType(row.scope_type),
+    protocolCode: row.protocol_code,
+    providerCode: row.provider_code ?? undefined,
+    providerName: row.provider_name ?? undefined,
+    match: normalizeMatch(parseJsonObject(row.match_json)),
+    action: normalizeAction(row.action),
+    notes: row.notes ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function responseInspectionPolicyProviderOptionFromRow(
+  row: ResponseInspectionPolicyProviderOptionRow
+): ResponseInspectionPolicyProviderOption {
+  return {
+    code: row.code,
+    name: row.name,
+    protocolCode: row.protocol_code
   }
 }
 
@@ -857,8 +1169,14 @@ function assertKnownInputKeys(value: object, allowedKeys: ReadonlySet<string>, l
 function clonePolicy(policy: ResponseInspectionPolicySummary): ResponseInspectionPolicySummary {
   return {
     ...policy,
-    match: { ...policy.match }
+    match: clonePolicyMatch(policy.match)
   }
+}
+
+function clonePolicyMatch(match: ResponseInspectionPolicyMatch): ResponseInspectionPolicyMatch {
+  return Object.fromEntries(
+    Object.entries(match).map(([key, values]) => [key, values ? [...values] : values])
+  ) as ResponseInspectionPolicyMatch
 }
 
 async function getResponseInspectionPolicyDatabaseClient(): Promise<DatabaseClient> {
@@ -872,4 +1190,16 @@ function responseInspectionPoliciesTable(client: DatabaseClient): string {
   return client.driver === 'postgres'
     ? client.dialect.qualifyTable(businessSchemaName, 'response_inspection_policies')
     : client.dialect.quoteIdentifier('response_inspection_policies')
+}
+
+function providersTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, 'providers')
+    : client.dialect.quoteIdentifier('providers')
+}
+
+function providerProtocolProfilesTable(client: DatabaseClient): string {
+  return client.driver === 'postgres'
+    ? client.dialect.qualifyTable(businessSchemaName, 'provider_protocol_profiles')
+    : client.dialect.quoteIdentifier('provider_protocol_profiles')
 }

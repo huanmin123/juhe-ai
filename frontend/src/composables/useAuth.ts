@@ -13,10 +13,12 @@ const currentUser = ref<CurrentUserSummary>()
 const authChecked = ref(false)
 let authStateVersion = 0
 let authLoadGeneration = 0
+const authRevision = ref(0)
 
 export const authState = {
   currentUser,
   authChecked,
+  revision: authRevision,
   isLoggedIn: computed(() => Boolean(currentUser.value)),
   isAdmin: computed(() => isAdminRole(currentUser.value?.role)),
   isSuperAdmin: computed(() => isSuperAdminRole(currentUser.value?.role))
@@ -31,7 +33,7 @@ export async function loadCurrentUser(force = false): Promise<CurrentUserSummary
   try {
     const user = await api.auth.me()
     if (requestVersion !== authStateVersion || loadGeneration !== authLoadGeneration) return currentUser.value
-    applyCurrentUser(user)
+    currentUser.value = user
     authChecked.value = true
     return currentUser.value
   } catch (error: unknown) {
@@ -52,10 +54,10 @@ export async function loadCaptcha(): Promise<CaptchaChallengeSummary> {
 }
 
 export async function login(payload: { username: string; password: string; captchaId?: string; captchaCode?: string }): Promise<CurrentUserSummary> {
-  const operationVersion = ++authStateVersion
+  const operationVersion = advanceAuthStateVersion()
   const user = await api.auth.login(payload)
   if (operationVersion === authStateVersion) {
-    applyCurrentUser(user)
+    currentUser.value = user
     authChecked.value = true
   }
   return user
@@ -63,11 +65,9 @@ export async function login(payload: { username: string; password: string; captc
 
 export async function logout(): Promise<void> {
   const systemAccountId = currentUser.value?.id
-  const operationVersion = ++authStateVersion
+  advanceAuthStateVersion()
   await api.auth.logout()
-  if (operationVersion !== authStateVersion) return
   await clearCurrentAccountChatState(systemAccountId)
-  if (operationVersion !== authStateVersion) return
   clearAuthState()
 }
 
@@ -85,25 +85,27 @@ export async function clearCurrentAccountChatState(systemAccountId = currentUser
 }
 
 export async function changePassword(payload: { oldPassword?: string; newPassword: string }): Promise<CurrentUserSummary> {
-  const operationVersion = ++authStateVersion
+  const operationVersion = advanceAuthStateVersion()
   const user = await api.auth.changePassword(payload)
-  if (operationVersion === authStateVersion) applyCurrentUser(user)
+  if (operationVersion === authStateVersion) currentUser.value = user
   return user
 }
 
 export async function updateProfile(payload: { displayName: string }): Promise<CurrentUserSummary> {
-  const operationVersion = ++authStateVersion
+  const operationVersion = advanceAuthStateVersion()
   const user = await api.auth.updateProfile(payload)
-  if (operationVersion === authStateVersion) applyCurrentUser(user)
+  if (operationVersion === authStateVersion) currentUser.value = user
   return user
 }
 
 export function clearAuthState(): void {
-  authStateVersion += 1
+  advanceAuthStateVersion()
   currentUser.value = undefined
   authChecked.value = true
 }
 
-function applyCurrentUser(user: CurrentUserSummary): void {
-  currentUser.value = user
+function advanceAuthStateVersion(): number {
+  authStateVersion += 1
+  authRevision.value += 1
+  return authStateVersion
 }

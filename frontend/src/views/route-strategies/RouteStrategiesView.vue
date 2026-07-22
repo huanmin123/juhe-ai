@@ -109,7 +109,7 @@
           <a-tag :color="routeStrategyStatusColor(record.status)">{{ routeStrategyStatusText(record.status) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'groups'">
-          <div class="route-strategy-groups">
+          <div v-if="routeStrategySnapshotStatus(record) === 'ready'" class="route-strategy-groups">
             <a-tag
               v-for="binding in visibleGroupBindings(record)"
               :key="binding.id"
@@ -118,11 +118,19 @@
               {{ routeStrategyGroupLabel(binding) }}
             </a-tag>
             <a-tag v-if="hiddenGroupBindingCount(record) > 0" color="default">+{{ hiddenGroupBindingCount(record) }}</a-tag>
-            <span v-if="!record.bindingCount" class="muted-cell">未绑定</span>
+            <span v-if="!routeStrategyBindingCount(record)" class="muted-cell">未绑定</span>
+          </div>
+          <div v-else class="route-strategy-dynamic-state muted-cell">
+            <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+            <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'apiKeyCount'">
-          <a-tag>{{ formatNumber(record.apiKeyCount ?? 0) }}</a-tag>
+          <a-tag v-if="routeStrategySnapshotStatus(record) === 'ready'">{{ formatNumber(routeStrategyApiKeyCount(record)) }}</a-tag>
+          <span v-else class="route-strategy-dynamic-state muted-cell">
+            <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+            <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
+          </span>
         </template>
         <template v-else-if="column.key === 'updatedAt'">
           <span class="muted-cell">{{ formatDateTime(record.updatedAt) }}</span>
@@ -152,11 +160,19 @@
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>分组</span>
-              <strong>{{ routeStrategyGroupSummary(record) }}</strong>
+              <strong v-if="routeStrategySnapshotStatus(record) === 'ready'">{{ routeStrategyGroupSummary(record) }}</strong>
+              <span v-else class="route-strategy-dynamic-state muted-cell">
+                <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+                <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
+              </span>
             </div>
             <div class="mobile-list-meta-item">
               <span>API Key</span>
-              <strong>{{ formatNumber(record.apiKeyCount ?? 0) }}</strong>
+              <strong v-if="routeStrategySnapshotStatus(record) === 'ready'">{{ formatNumber(routeStrategyApiKeyCount(record)) }}</strong>
+              <span v-else class="route-strategy-dynamic-state muted-cell">
+                <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+                <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
+              </span>
             </div>
             <div class="mobile-list-meta-item">
               <span>更新时间</span>
@@ -485,6 +501,11 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import {
+  createRouteStrategyListProgressiveState,
+  routeStrategyListFallbackPage,
+  type RouteStrategyListSnapshotState
+} from './routeStrategyListProgressiveState'
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionFailureAction,
@@ -590,6 +611,7 @@ let editDetailRequestToken = 0
 const bindingDragSourceIndex = ref<number | null>(null)
 const bindingDragOverIndex = ref<number | null>(null)
 const items = ref<RouteStrategyListItem[]>([])
+const routeStrategyListSnapshotStates = ref<Map<string, RouteStrategyListSnapshotState>>(new Map())
 const total = ref(0)
 const page = ref(initialPageState.pagination.current)
 const pageSize = ref(initialPageState.pagination.pageSize)
@@ -604,6 +626,30 @@ let modelOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 const routeStrategyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
+})
+const routeStrategyListProgressiveState = createRouteStrategyListProgressiveState({
+  currentScopeKey: routeStrategyListScopeKey,
+  currentVisibleIds: () => items.value.map((item) => item.id),
+  setListLoading: (value) => {
+    loading.value = value
+  },
+  applyList: (result) => {
+    const fallbackPage = routeStrategyListFallbackPage(result)
+    if (fallbackPage !== undefined) {
+      page.value = fallbackPage
+      void loadRouteStrategies()
+      return false
+    }
+    items.value = result.items
+    total.value = result.total
+    return true
+  },
+  applySnapshotStates: (states) => {
+    routeStrategyListSnapshotStates.value = states
+  },
+  onListError: (error) => {
+    message.error(extractApiErrorMessage(error, '策略路由加载失败'))
+  }
 })
 const modelOptionsScopeParams = computed(() => routeStrategyOperationScopeParams())
 const {
@@ -713,7 +759,7 @@ const columns = computed<Array<Record<string, unknown>>>(() => {
     { title: '模式', key: 'mode', width: 150 },
     { title: '状态', key: 'status', width: 100 },
     { title: '绑定分组', key: 'groups', width: 320 },
-    { title: 'API Key', dataIndex: 'apiKeyCount', key: 'apiKeyCount', width: 100 },
+    { title: 'API Key', key: 'apiKeyCount', width: 100 },
     { title: '更新时间', dataIndex: 'updatedAt', key: 'updatedAt', width: 180 },
     { title: '操作', key: 'actions', width: 96, fixed: 'right' }
   ]
@@ -814,26 +860,33 @@ onMounted(() => {
   void loadRouteStrategies()
 })
 
-onBeforeUnmount(clearGroupOptionsSearchTimer)
+onBeforeUnmount(() => {
+  routeStrategyListProgressiveState.dispose()
+  clearGroupOptionsSearchTimer()
+})
 
-async function loadRouteStrategies() {
-  loading.value = true
-  try {
-    const result = await routeStrategiesApi.list({
-      page: page.value,
-      pageSize: pageSize.value,
-      keyword: keyword.value.trim() || undefined,
-      mode: modeFilter.value,
-      status: statusFilter.value,
-      systemAccountId: routeStrategyScopeParams.value?.systemAccountId
-    })
-    items.value = result.items
-    total.value = result.total
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '策略路由加载失败'))
-  } finally {
-    loading.value = false
+function loadRouteStrategies(): Promise<boolean> {
+  const scopeParams = routeStrategyScopeParams.value
+  const scopeKey = routeStrategyListScopeKey()
+  const listParams = {
+    page: page.value,
+    pageSize: pageSize.value,
+    keyword: keyword.value.trim() || undefined,
+    mode: modeFilter.value,
+    status: statusFilter.value,
+    systemAccountId: scopeParams?.systemAccountId
   }
+  return routeStrategyListProgressiveState.load({
+    scopeKey,
+    list: () => routeStrategiesApi.list(listParams),
+    snapshot: (ids) => routeStrategiesApi.listSnapshot(ids, scopeParams)
+  })
+}
+
+function routeStrategyListScopeKey(): string {
+  return isManagementView.value
+    ? `management:${routeStrategyScopeParams.value?.systemAccountId ?? '*'}`
+    : 'self'
 }
 
 function handleTableChange(...args: unknown[]) {
@@ -1412,18 +1465,37 @@ function handleRouteStrategyAction(key: string, record: RouteStrategyListItem) {
 }
 
 function visibleGroupBindings(record: RouteStrategyListItem): RouteStrategyGroupBindingPreview[] {
-  return record.groupBindingPreview
+  return routeStrategyReadySnapshot(record)?.groupBindingPreview ?? []
 }
 
 function hiddenGroupBindingCount(record: RouteStrategyListItem): number {
-  return Math.max(0, record.bindingCount - record.groupBindingPreview.length)
+  const snapshot = routeStrategyReadySnapshot(record)
+  return snapshot ? Math.max(0, snapshot.bindingCount - snapshot.groupBindingPreview.length) : 0
 }
 
 function routeStrategyGroupSummary(record: RouteStrategyListItem): string {
-  if (!record.bindingCount) return '未绑定'
+  const snapshot = routeStrategyReadySnapshot(record)
+  if (!snapshot?.bindingCount) return '未绑定'
   const visibleNames = visibleGroupBindings(record).map(routeStrategyGroupLabel).join('、')
   const hiddenCount = hiddenGroupBindingCount(record)
-  return hiddenCount > 0 ? `${visibleNames} 等 ${record.bindingCount} 个分组` : visibleNames
+  return hiddenCount > 0 ? `${visibleNames} 等 ${snapshot.bindingCount} 个分组` : visibleNames
+}
+
+function routeStrategySnapshotStatus(record: RouteStrategyListItem): RouteStrategyListSnapshotState['status'] {
+  return routeStrategyListSnapshotStates.value.get(record.id)?.status ?? 'pending'
+}
+
+function routeStrategyReadySnapshot(record: RouteStrategyListItem) {
+  const state = routeStrategyListSnapshotStates.value.get(record.id)
+  return state?.status === 'ready' ? state.item : undefined
+}
+
+function routeStrategyBindingCount(record: RouteStrategyListItem): number {
+  return routeStrategyReadySnapshot(record)?.bindingCount ?? 0
+}
+
+function routeStrategyApiKeyCount(record: RouteStrategyListItem): number {
+  return routeStrategyReadySnapshot(record)?.apiKeyCount ?? 0
 }
 
 function routeStrategyGroupLabel(binding: RouteStrategyGroupBindingPreview | RouteStrategyGroupBindingSummary): string {
@@ -1776,6 +1848,14 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
+}
+
+.route-strategy-dynamic-state {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
 }
 
 .route-strategy-modal-form {

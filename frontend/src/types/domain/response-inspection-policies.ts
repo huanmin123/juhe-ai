@@ -27,7 +27,9 @@ export interface ResponseInspectionPolicyMatch {
   rawTextIncludes?: string[]
 }
 
-export interface ResponseInspectionPolicySummary {
+export type ResponseInspectionPolicyProtocolCode = 'openai' | 'anthropic' | 'gemini'
+
+export interface ResponseInspectionPolicyOverview {
   id: string
   defaultRule: boolean
   editable: boolean
@@ -35,16 +37,26 @@ export interface ResponseInspectionPolicySummary {
   enabled: boolean
   priority: number
   scopeType: ResponseInspectionPolicyScopeType
-  protocolCode: string
+  protocolCode: ResponseInspectionPolicyProtocolCode
   providerCode?: string
-  match: ResponseInspectionPolicyMatch
+  providerName?: string
   action: ResponseInspectionPolicyAction
-  notes?: string
-  createdAt?: string
   updatedAt?: string
 }
 
+export interface ResponseInspectionPolicyDetail extends ResponseInspectionPolicyOverview {
+  match: ResponseInspectionPolicyMatch
+  notes?: string
+  createdAt?: string
+}
+
+export interface ResponseInspectionPolicyProviderOption {
+  code: string
+  name: string
+  protocolCode: ResponseInspectionPolicyProtocolCode
+}
+
 export interface ResponseInspectionPolicyListResult {
-  defaultRules: ResponseInspectionPolicySummary[]
-  policies: ResponseInspectionPolicySummary[]
+  defaultRules: ResponseInspectionPolicyOverview[]
+  policies: ResponseInspectionPolicyOverview[]
 }
