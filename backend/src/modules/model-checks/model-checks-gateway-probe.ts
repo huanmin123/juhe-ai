@@ -77,26 +77,32 @@ type GatewayProbeProgressEvent = {
 
 type GatewayProbeProgressReporter = (event: GatewayProbeProgressEvent) => void
 
+export interface RunGatewayProbeOptions {
+  maxAttempts?: number
+}
+
 export async function runGatewayProbe(
   target: ModelCheckGatewayProbeTarget,
   probe: GatewayProbeInput,
   signal?: AbortSignal,
-  progress?: GatewayProbeProgressReporter
+  progress?: GatewayProbeProgressReporter,
+  options?: RunGatewayProbeOptions
 ): Promise<GatewayProbeResult> {
   const startedAt = Date.now()
   const attempts: GatewayProbeResult[] = []
-  for (let attempt = 1; attempt <= probeMaxAttempts; attempt += 1) {
+  const maxAttempts = normalizedProbeMaxAttempts(options?.maxAttempts)
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     if (attempt > 1) {
       await waitForModelCheckProbeAttemptDelay(attempts[attempts.length - 1], signal)
     }
     const timeoutMs = accountDiagnosticRetryTimeoutMs[attempt - 1] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
-    const result = await runGatewayProbeAttempt(target, probe, signal, progress, attempt, timeoutMs)
+    const result = await runGatewayProbeAttempt(target, probe, signal, progress, attempt, maxAttempts, timeoutMs)
     attempts.push(result)
-    if (result.success || !isRetryableProbeFailure(result) || attempt >= probeMaxAttempts) {
-      return attachProbeRetryEvidence(result, attempts, Date.now() - startedAt)
+    if (result.success || !isRetryableProbeFailure(result) || attempt >= maxAttempts) {
+      return attachProbeRetryEvidence(result, attempts, Date.now() - startedAt, maxAttempts)
     }
   }
-  return attachProbeRetryEvidence(attempts[attempts.length - 1] ?? emptyProbeResult(), attempts, Date.now() - startedAt)
+  return attachProbeRetryEvidence(attempts[attempts.length - 1] ?? emptyProbeResult(), attempts, Date.now() - startedAt, maxAttempts)
 }
 
 async function runGatewayProbeAttempt(
@@ -105,10 +111,11 @@ async function runGatewayProbeAttempt(
   signal: AbortSignal | undefined,
   progress: GatewayProbeProgressReporter | undefined,
   attempt: number,
+  maxAttempts: number,
   timeoutMs: number
 ): Promise<GatewayProbeResult> {
   throwIfAborted(signal)
-  const attemptMessage = attempt > 1 ? `（第 ${attempt}/${probeMaxAttempts} 次重试）` : ''
+  const attemptMessage = attempt > 1 ? `（第 ${attempt}/${maxAttempts} 次重试）` : ''
   emitGatewayProbeProgress(progress, {
     type: 'probe_started',
     message: `开始执行探针 ${probe.itemKey}${attemptMessage}`,
@@ -302,7 +309,7 @@ function probeAbortMessage(signal: AbortSignal): string {
   return isDiagnosticTimeoutSignal(signal) ? '模型检测探针超时' : '模型检测已取消'
 }
 
-function attachProbeRetryEvidence(result: GatewayProbeResult, attempts: GatewayProbeResult[], durationMs: number): GatewayProbeResult {
+function attachProbeRetryEvidence(result: GatewayProbeResult, attempts: GatewayProbeResult[], durationMs: number, maxAttempts: number): GatewayProbeResult {
   if (attempts.length <= 1) return result
   const retryableFailureCount = attempts.filter((attempt) => isRetryableProbeFailure(attempt)).length
   return {
@@ -310,7 +317,7 @@ function attachProbeRetryEvidence(result: GatewayProbeResult, attempts: GatewayP
     durationMs,
     attemptCount: attempts.length,
     retryAttemptCount: attempts.length - 1,
-    retryMaxAttempts: probeMaxAttempts,
+    retryMaxAttempts: maxAttempts,
     retryableFailureCount,
     attemptTraceIds: attempts.map((attempt) => attempt.traceId),
     attemptStatusCodes: attempts.map((attempt) => attempt.statusCode),
@@ -318,6 +325,11 @@ function attachProbeRetryEvidence(result: GatewayProbeResult, attempts: GatewayP
     attemptRetryAfterMs: attempts.map((attempt) => attempt.retryAfterMs ?? 0),
     attemptMessages: attempts.map((attempt) => attempt.success ? 'success' : attempt.errorMessage ?? `HTTP ${attempt.statusCode}`)
   }
+}
+
+function normalizedProbeMaxAttempts(value: number | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return probeMaxAttempts
+  return Math.max(1, Math.min(probeMaxAttempts, Math.trunc(value)))
 }
 
 async function waitForModelCheckProbeAttemptDelay(previous: GatewayProbeResult | undefined, signal?: AbortSignal): Promise<void> {

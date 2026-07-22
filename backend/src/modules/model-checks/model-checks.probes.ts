@@ -44,6 +44,8 @@ export const behaviorProbeDefinitions = [
   }
 ] as const
 
+export const quickBehaviorProbeDefinitions = behaviorProbeDefinitions.filter((definition) => definition.key === 'json_arithmetic')
+
 export const distributionProbeDefinitions = [
   {
     key: 'style_compact',

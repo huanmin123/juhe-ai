@@ -10,6 +10,7 @@ import {
   type AccountModelMappingSourceEndpointFamily,
   type AccountSummary,
   type ModelCheckOptions,
+  type ModelCheckProfile,
   type ModelCheckRunDetail,
   type ModelCheckRunListResult,
   type ModelCheckRunRequest,
@@ -36,6 +37,7 @@ import {
   defaultProfile,
   distributionSampleCount,
   probeSetVersion,
+  quickProbeSetVersion,
   supportedModels,
   type SupportedModel
 } from './model-checks.constants.js'
@@ -51,6 +53,7 @@ import {
 import {
   behaviorProbeDefinitions,
   distributionProbeDefinitions,
+  quickBehaviorProbeDefinitions,
   longContextProbeDefinitionsForModel
 } from './model-checks.probes.js'
 import {
@@ -87,7 +90,8 @@ import {
 import { buildModelCheckTrustReport } from './model-checks-trust-report.js'
 import {
   runGatewayProbe,
-  type ModelCheckGatewayProbeTarget
+  type ModelCheckGatewayProbeTarget,
+  type RunGatewayProbeOptions
 } from './model-checks-gateway-probe.js'
 import {
   isModelCheckSupportedProtocolProfile,
@@ -138,6 +142,7 @@ export type ModelCheckProgressEvent = {
   targetId: string
   targetName?: string
   model: string
+  profile: ModelCheckProfile
   trustedComparison: boolean
   trustedComparisonAccountId?: string
   trustedComparisonAccountName?: string
@@ -188,6 +193,7 @@ export type ModelCheckProgressEvent = {
   level: ModelCheckRunDetail['level']
   score: number
   maxScore: number
+  profile: ModelCheckProfile
   durationMs?: number
 }
 
@@ -204,8 +210,13 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
     supportedModels: supportedModels.map((model) => ({ value: model, label: model })),
     supportedProfiles: [
       {
+        value: 'quick',
+        label: '快速检测',
+        description: '最多执行 2 个轻量串行探针，快速给出初步判断'
+      },
+      {
         value: 'full',
-        label: '强诊断完整检测',
+        label: '深度检测',
         description: '准确优先，不以成本和耗时为约束，执行多轮协议、行为指纹、长上下文、稳定性和可信对比探针'
       }
     ],
@@ -220,8 +231,9 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   if (!model) {
     throw new ModelCheckRequestError(400, modelCheckUnsupportedModelMessage())
   }
-  if (input.profile && input.profile !== defaultProfile) {
-    throw new ModelCheckRequestError(400, '当前仅支持完整检测')
+  const profile: ModelCheckProfile = input.profile ?? defaultProfile
+  if (profile !== 'quick' && profile !== 'full') {
+    throw new ModelCheckRequestError(400, '检测 profile 仅支持 quick 或 full')
   }
   const targetId = input.targetId.trim()
   if (!targetId) {
@@ -230,6 +242,9 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
 
   const trustedComparisonAccountId = input.trustedComparisonAccountId?.trim()
   const trustedComparison = input.trustedComparison === true || Boolean(trustedComparisonAccountId)
+  if (profile === 'quick' && trustedComparison) {
+    throw new ModelCheckRequestError(400, '快速检测不支持可信对比，请开启深度检测')
+  }
   if (trustedComparison && !trustedComparisonAccountId) {
     throw new ModelCheckRequestError(400, '请选择可信对比账户后再开启可信对比检测')
   }
@@ -246,6 +261,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     targetId: target.targetId,
     targetName: target.targetName,
     model,
+    profile,
     trustedComparison,
     trustedComparisonAccountId: comparison?.targetId,
     trustedComparisonAccountName: comparison?.targetName
@@ -268,7 +284,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       groupId: target.groupId,
       apiKeyId: target.apiKeyId,
       model,
-      profile: defaultProfile,
+      profile,
       trustedComparison,
       trustedComparisonAvailable: Boolean(comparison),
       traceId: runTraceId,
@@ -283,7 +299,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         modelCheckProfileId: target.modelCheckProfile.id,
         modelCheckProtocol: target.modelCheckProfile.protocol,
         model,
-        profile: defaultProfile,
+        profile,
         trustedComparison,
         trustedComparisonAccountId: comparison?.targetId,
         trustedComparisonAccountName: comparison?.targetName
@@ -300,7 +316,43 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
 
   try {
     throwIfAborted(signal)
-    const targetSuite = await executeProbeSuite(target, model, 'target', signal, progress)
+    const targetSuite = await executeProbeSuite(target, model, 'target', profile, signal, progress)
+    if (profile === 'quick') {
+      const checks = await requestDatasetWriter({
+        type: 'create_model_check_items',
+        runId: run.id,
+        items: targetSuite.items
+      })
+      const summary = summarizeChecks(checks, { trustedComparison: false, profile })
+      const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
+      const trustReport = buildModelCheckTrustReport(checks, {
+        requestedModel: model,
+        probeSetVersion: quickProbeSetVersion,
+        evidenceCoverage: evidenceCompleteness.evidenceCompletenessScore
+      })
+      await requestDatasetWriter({
+        type: 'finish_model_check_run',
+        runId: run.id,
+        input: {
+          ...summary,
+          status: 'completed',
+          finishedAt: new Date().toISOString(),
+          durationMs: Date.now() - startedAtMs,
+          resultSummary: {
+            itemCount: checks.length,
+            passedCount: checks.filter((item) => item.status === 'passed').length,
+            warningCount: checks.filter((item) => item.status === 'warning').length,
+            failedCount: checks.filter((item) => item.status === 'failed').length,
+            skippedCount: checks.filter((item) => item.status === 'skipped').length,
+            requestFailureCount: checks.filter((item) => recordValue(item.evidenceSummary)?.requestFailure === true).length,
+            evidenceCompleteness,
+            trustReport,
+            trustedComparison: false,
+            profile
+          }
+        }
+      })
+    } else {
     const targetUnavailable = targetSuite.basic?.success !== true
     const tokenIntegrity = targetUnavailable || target.modelCheckProfile.protocol !== 'openai_responses' || !target.accountId || !target.candidateAccounts?.[0]?.baseUrl
       ? undefined
@@ -331,7 +383,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     const comparisonSuite = comparison
       ? targetUnavailable
         ? undefined
-        : await executeProbeSuite(comparison, model, 'trusted_comparison', signal, progress)
+        : await executeProbeSuite(comparison, model, 'trusted_comparison', profile, signal, progress)
       : undefined
     const trustedComparisonItem = comparisonSuite
       ? buildTrustedComparisonItem(targetSuite, comparisonSuite)
@@ -356,7 +408,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       runId: run.id,
       items: itemInputs
     })
-    const summary = summarizeChecks(checks, { trustedComparison })
+    const summary = summarizeChecks(checks, { trustedComparison, profile })
     const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
     const trustReport = buildModelCheckTrustReport(checks, {
       requestedModel: model,
@@ -409,10 +461,12 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
           evidenceCompleteness,
           trustReport,
           trustedComparison,
-          trustedComparisonAccountId: comparison?.targetId
+          trustedComparisonAccountId: comparison?.targetId,
+          profile
         }
       }
     })
+    }
   } catch (error) {
     const message = signal?.aborted ? '模型检测已取消' : error instanceof Error ? error.message : '模型检测失败'
     const status: ModelCheckRunStatus = signal?.aborted ? 'canceled' : 'failed'
@@ -443,6 +497,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     message: detail.message || detail.errorMessage || '模型检测已结束',
     runId: detail.id,
     status: detail.status,
+    profile: detail.profile,
     level: detail.level,
     score: detail.score,
     maxScore: detail.maxScore,
@@ -471,6 +526,7 @@ export async function getModelCheckRun(id: string, access?: AccessScope): Promis
 }
 
 async function withLatestModelTrustResult(detail: ModelCheckRunDetail, fallbackSystemAccountId?: string): Promise<ModelCheckRunDetail> {
+  if (detail.profile === 'quick') return detail
   const systemAccountId = detail.systemAccountId ?? fallbackSystemAccountId
   if (!systemAccountId || !detail.accountId) return detail
   const current = recordValue(detail.resultSummary.trustReport) ?? {}
@@ -638,22 +694,38 @@ async function executeProbeSuite(
   target: ModelCheckTarget,
   model: SupportedModel,
   prefix: ModelCheckProbePrefix,
+  profileMode: ModelCheckProfile,
   signal?: AbortSignal,
   progress?: ModelCheckProgressReporter
 ): Promise<ProbeSuiteResult> {
   const profile = target.modelCheckProfile
   const items: ModelCheckItemCreateInput[] = []
+  const quickProbeOptions: RunGatewayProbeOptions | undefined = profileMode === 'quick' ? { maxAttempts: 1 } : undefined
 
   const basicRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
-  const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress)
+  const basic = await runModelCheckProbeRequest(target, basicRequest, basicProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
   pushProbeItem(items, evaluateBasicForProfile(profile, basic, model, prefix), progress)
   if (!basic.success) {
-    pushProbeItem(items, evaluateUsageShapeProbe([basic], prefix), progress)
+    if (profileMode === 'full') pushProbeItem(items, evaluateUsageShapeProbe([basic], prefix), progress)
     return { items, basic }
+  }
+  if (profileMode === 'quick') {
+    const behaviorObservations: BehaviorProbeObservation[] = []
+    for (const definition of quickBehaviorProbeDefinitions) {
+      const request = createModelCheckProbeRequest(profile.protocol, model, definition.prompt, {
+        maxOutputTokens: definition.maxOutputTokens,
+        stream: false
+      })
+      const result = await runModelCheckProbeRequest(target, request, `${prefix}.behavior.${definition.key}`, signal, progress, quickProbeOptions)
+      behaviorObservations.push({ definition, result })
+    }
+    const behaviorItem = evaluateBehaviorProbeSet(behaviorObservations, model, prefix)
+    pushProbeItem(items, behaviorItem, progress)
+    return { items, basic, behavior: behaviorObservations[0]?.result, behaviorObservations }
   }
 
   const streamRequest = createModelCheckProbeRequest(profile.protocol, model, 'Reply with exactly: STREAM-OK', { maxOutputTokens: 16, stream: true })
-  const stream = await runModelCheckProbeRequest(target, streamRequest, streamProbeItemKey(profile, prefix), signal, progress)
+  const stream = await runModelCheckProbeRequest(target, streamRequest, streamProbeItemKey(profile, prefix), signal, progress, quickProbeOptions)
   pushProbeItem(items, evaluateStreamForProfile(profile, stream, model, prefix), progress)
 
   const structured = await runModelCheckProbeRequest(
@@ -661,7 +733,8 @@ async function executeProbeSuite(
     createModelCheckStructuredOutputRequest(profile.protocol, model),
     `${prefix}.structured_output`,
     signal,
-    progress
+    progress,
+    quickProbeOptions
   )
   pushProbeItem(items, evaluateStructuredOutputProbe(structured, model, prefix), progress)
 
@@ -670,7 +743,8 @@ async function executeProbeSuite(
     createModelCheckToolCallingRequest(profile.protocol, model),
     `${prefix}.tool_calling`,
     signal,
-    progress
+    progress,
+    quickProbeOptions
   )
   pushProbeItem(items, evaluateToolCallingProbe(tool, model, prefix), progress)
 
@@ -682,7 +756,7 @@ async function executeProbeSuite(
       maxOutputTokens: definition.maxOutputTokens,
       stream: false
     })
-    const result = await runModelCheckProbeRequest(target, request, `${prefix}.behavior.${definition.key}`, signal, progress)
+    const result = await runModelCheckProbeRequest(target, request, `${prefix}.behavior.${definition.key}`, signal, progress, quickProbeOptions)
     behaviorObservations.push({ definition, result })
   }
   const behaviorItem = evaluateBehaviorProbeSet(behaviorObservations, model, prefix)
@@ -695,7 +769,8 @@ async function executeProbeSuite(
       createModelCheckLongContextRequest(profile.protocol, model, definition),
       `${prefix}.long_context.${definition.key}`,
       signal,
-      progress
+      progress,
+      quickProbeOptions
     )
     longContextObservations.push({ definition, result: longContext })
   }
@@ -707,7 +782,7 @@ async function executeProbeSuite(
       maxOutputTokens: 16,
       stream: false
     })
-    stabilityResults.push(await runModelCheckProbeRequest(target, request, `${prefix}.stability_${index}`, signal, progress))
+    stabilityResults.push(await runModelCheckProbeRequest(target, request, `${prefix}.stability_${index}`, signal, progress, quickProbeOptions))
   }
   pushProbeItem(items, evaluateStabilityProbe(stabilityResults, model, prefix), progress)
 
@@ -797,7 +872,8 @@ async function runModelCheckProbeRequest(
   request: ModelCheckProbeRequest,
   itemKey: string,
   signal?: AbortSignal,
-  progress?: ModelCheckProgressReporter
+  progress?: ModelCheckProgressReporter,
+  options?: RunGatewayProbeOptions
 ): Promise<GatewayProbeResult> {
   const resolvedRequest = resolveModelCheckProbeModelMapping(target, request)
   return await runGatewayProbe(target, {
@@ -813,7 +889,7 @@ async function runModelCheckProbeRequest(
     modelMappingSource: resolvedRequest.modelMappingSource,
     sourceEndpointFamily: resolvedRequest.sourceEndpointFamily,
     upstreamEndpointFamily: resolvedRequest.upstreamEndpointFamily
-  }, signal, progress)
+  }, signal, progress, options)
 }
 
 function resolveModelCheckProbeModelMapping(target: ProbeTarget, request: ModelCheckProbeRequest): ModelCheckProbeRequest {
