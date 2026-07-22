@@ -43,6 +43,10 @@ assert.equal(codexResponsesContractRegistry.itemByPrefix('ctc')?.type, 'custom_t
 assert.equal(codexResponsesContractRegistry.itemByPrefix('cmp')?.type, 'compaction')
 assert.equal(codexResponsesContractRegistry.itemByPrefix('unknown'), undefined)
 assert.equal(codexResponsesContractRegistry.items.length, expectedItemPrefixes.size)
+assert.deepEqual(
+  codexResponsesContractRegistry.item('custom_tool_call')?.requiredFields.map((field) => field.name),
+  ['call_id', 'name', 'input']
+)
 
 assert.throws(
   () => (codexResponsesContractRegistry.items as unknown as Array<unknown>).push({}),

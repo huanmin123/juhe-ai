@@ -19,7 +19,7 @@ export function sanitizeCodexResponseHistoryItems(
     const item = items[index]
     const decision = itemIdRemovalDecision(item, context)
     if (!decision) continue
-    if (!hasReplayablePayload(item)) {
+    if (!isReplayableCodexHistoryItem(item)) {
       throw new GatewayRequestValidationError(
         `Codex Responses 历史项 ${decision.type} 只有持久化 ID，没有可重放内容`,
         'codex_history_item_unrecoverable'
@@ -69,7 +69,7 @@ function itemIdRemovalDecision(
   return undefined
 }
 
-function hasReplayablePayload(value: unknown): boolean {
+export function isReplayableCodexHistoryItem(value: unknown): boolean {
   if (!isPlainObject(value)) return false
   switch (stringValue(value.type)) {
     case 'additional_tools':

@@ -2,6 +2,13 @@ export type CodexContractRevision = 'codex-responses-2026-07-11-r1'
 
 export type CodexResponseItemEventStage = 'added' | 'delta' | 'done'
 
+export type CodexRequiredFieldKind = 'present' | 'string' | 'non_empty_string' | 'array' | 'object'
+
+export interface CodexRequiredItemField {
+  name: string
+  kind: CodexRequiredFieldKind
+}
+
 export type CodexProtocolIssueProvenance =
   | 'request_history'
   | 'raw_upstream'
@@ -22,6 +29,7 @@ export interface CodexItemContract {
   prefix?: string
   eventStages: readonly CodexResponseItemEventStage[]
   repairableIdPaths: readonly string[]
+  requiredFields: readonly CodexRequiredItemField[]
 }
 
 export interface CodexProtocolIssue {
@@ -51,6 +59,8 @@ export interface CodexRepairOperation {
 export interface CodexRepairPlan {
   revision: CodexContractRevision
   level: CodexRepairLevel
+  provenance: CodexProtocolIssueProvenance
+  sourceOutcome: CodexContractOutcome
   operations: readonly CodexRepairOperation[]
   forbiddenReason?: string
 }
