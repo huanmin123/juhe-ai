@@ -8,7 +8,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -377,6 +379,40 @@ func TestDetailPreservesWhitespaceOnlyRequiredUpstreamURL(t *testing.T) {
 	}
 }
 
+func TestHotSearchServiceRestoresDatabaseSummariesAndPreservesSearchOrder(t *testing.T) {
+	root := t.TempDir()
+	writeHotSearchFile(t, root, "audit-hot-2026072210.ndjson", strings.Join([]string{
+		`{"auditLogId":"audit_new","createdAt":"2026-07-22T10:02:00Z","text":"needle"}`,
+		`{"auditLogId":"audit_old","createdAt":"2026-07-22T10:01:00Z","text":"needle"}`,
+	}, "\n"))
+	store := &auditLogReaderStub{byIDs: []port.ManagementAuditLogSummary{
+		{ID: "audit_old", TraceID: "old", TrafficSource: "gateway", AuditOutcome: "success", CreatedAt: "2026-07-22T10:01:00Z"},
+		{ID: "audit_new", TraceID: "new", TrafficSource: "gateway", AuditOutcome: "success", CreatedAt: "2026-07-22T10:02:00Z"},
+	}}
+	service := NewServiceWithOptions(store, Options{HotSearchRoot: root})
+	result, err := service.HotSearch(context.Background(), HotSearchInput{Keywords: []string{"needle"}, Limit: 10, Now: time.Date(2026, 7, 22, 11, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 2 || result.Items[0].ID != "audit_new" || result.Items[1].ID != "audit_old" || len(store.ids) != 2 {
+		t.Fatalf("result = %+v ids = %+v", result, store.ids)
+	}
+}
+
+func TestHotSearchServiceReturnsDatabaseFailureInsteadOfEmptySuccess(t *testing.T) {
+	root := t.TempDir()
+	writeHotSearchFile(t, root, "audit-hot-2026072210.ndjson", `{"auditLogId":"audit_1","createdAt":"2026-07-22T10:02:00Z","text":"needle"}`)
+	want := errors.New("audit table unavailable")
+	service := NewServiceWithOptions(&auditLogReaderStub{byIDsErr: want}, Options{HotSearchRoot: root})
+
+	result, err := service.HotSearch(context.Background(), HotSearchInput{
+		Keywords: []string{"needle"}, Now: time.Date(2026, 7, 22, 11, 0, 0, 0, time.UTC),
+	})
+	if !errors.Is(err, want) || len(result.Items) != 0 {
+		t.Fatalf("HotSearch() result = %+v, error = %v, want %v", result, err, want)
+	}
+}
+
 type auditLogReaderStub struct {
 	input            port.ManagementAuditLogListInput
 	result           port.ManagementAuditLogListResult
@@ -389,6 +425,14 @@ type auditLogReaderStub struct {
 	detailFound      bool
 	payload          port.ManagementAuditLogPayload
 	payloadFound     bool
+	ids              []string
+	byIDs            []port.ManagementAuditLogSummary
+	byIDsErr         error
+}
+
+func (s *auditLogReaderStub) ListManagementAuditLogsByIDs(_ context.Context, ids []string) ([]port.ManagementAuditLogSummary, error) {
+	s.ids = append([]string(nil), ids...)
+	return s.byIDs, s.byIDsErr
 }
 
 func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input port.ManagementAuditLogListInput) (port.ManagementAuditLogListResult, error) {
