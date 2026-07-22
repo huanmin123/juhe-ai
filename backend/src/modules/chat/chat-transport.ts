@@ -1,4 +1,7 @@
 import type { ChatReasoningEffort, ChatServiceTier } from './chat-model-options.js'
+import { mapChatHostedToolsToResponses, type ChatHostedTool } from './chat-tools.js'
+import type { ChatInternalToolDefinition } from './tools/contracts.js'
+import { compileChatInternalTools } from './tools/protocol.js'
 
 export type ChatTransportProtocol = 'chat_completions' | 'responses'
 
@@ -93,13 +96,22 @@ export function buildChatTransportRequest(input: {
   history: ChatTransportMessage[]
   currentContent: string
   currentBlocks?: ChatTransportInputBlock[]
-  toolsEnabled: boolean
+  effectiveTools: readonly ChatHostedTool[]
+  internalTools?: readonly ChatInternalToolDefinition[]
+  toolContinuation?: readonly unknown[]
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
   promptCacheKey?: string
 }): { path: '/v1/chat/completions' | '/v1/responses'; body: Record<string, unknown> } {
-  const messages = [{ role: 'system' as const, content: input.instructions }, ...input.history, { role: 'user' as const, content: input.currentContent }]
+  const messages = [
+    { role: 'system' as const, content: input.instructions },
+    ...input.history,
+    { role: 'user' as const, content: input.currentContent },
+    ...(input.toolContinuation ?? [])
+  ]
   if (input.protocol === 'responses') {
+    const internalTools = compileChatInternalTools('responses', input.internalTools ?? [])
+    const tools = [...mapChatHostedToolsToResponses(input.effectiveTools), ...internalTools]
     const currentContent = input.currentBlocks?.length
       ? toResponsesBlocks(input.currentBlocks)
       : toResponsesBlocks([{ type: 'input_text', text: input.currentContent }])
@@ -108,15 +120,21 @@ export function buildChatTransportRequest(input: {
       body: {
         model: input.model,
         instructions: input.instructions,
-        input: [...input.history.map((message) => ({ ...message, content: toResponsesMessageContent(message) })), { role: 'user' as const, content: currentContent }],
+        input: [
+          ...input.history.map((message) => ({ ...message, content: toResponsesMessageContent(message) })),
+          { role: 'user' as const, content: currentContent },
+          ...(input.toolContinuation ?? [])
+        ],
         stream: true,
-        ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort } } : {}),
+        ...(input.reasoningEffort ? { reasoning: { effort: input.reasoningEffort, summary: 'auto' } } : {}),
         ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
         ...(input.promptCacheKey ? { prompt_cache_key: input.promptCacheKey } : {}),
-        ...(input.toolsEnabled ? { tools: [{ type: 'web_search' }], tool_choice: 'auto' } : {})
+        ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+        ...(internalTools.length > 0 ? { parallel_tool_calls: false } : {})
       }
     }
   }
+  const internalTools = compileChatInternalTools('chat_completions', input.internalTools ?? [])
   return {
     path: '/v1/chat/completions',
     body: {
@@ -126,7 +144,8 @@ export function buildChatTransportRequest(input: {
       stream_options: { include_usage: true },
       ...(input.reasoningEffort ? { reasoning_effort: input.reasoningEffort } : {}),
       ...(input.serviceTier ? { service_tier: input.serviceTier } : {}),
-      ...(input.promptCacheKey ? { prompt_cache_key: input.promptCacheKey } : {})
+      ...(input.promptCacheKey ? { prompt_cache_key: input.promptCacheKey } : {}),
+      ...(internalTools.length > 0 ? { tools: internalTools, tool_choice: 'auto', parallel_tool_calls: false } : {})
     }
   }
 }

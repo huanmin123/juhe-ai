@@ -24,6 +24,11 @@ const retryDelays = [100, 200, 350, 500, 750, 1_000, 1_500]
 const requiredNotFoundConfirmations = 3
 const notFoundGraceMilliseconds = 1_000
 const terminalStatuses = new Set<ChatMessageStatus>(['completed', 'failed', 'canceled'])
+const maxPendingConfirmationAutomaticRetries = 8
+
+export function shouldAutomaticallyRetryPendingConfirmation(retryCount: number): boolean {
+  return Number.isSafeInteger(retryCount) && retryCount >= 0 && retryCount < maxPendingConfirmationAutomaticRetries
+}
 
 export async function applyChatReconciliationIfActive<T>(input: {
   reconcile: () => Promise<T>

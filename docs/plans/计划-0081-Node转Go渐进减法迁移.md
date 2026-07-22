@@ -10,6 +10,8 @@
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
 
+- 2026-07-18 产品撤销：项目不再提供登录设备或登录会话列表 / 按 ID 撤销管理。Go W3 的 `GET /auth/sessions`、`DELETE /auth/sessions/{id}`、`JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED` 及其前端入口、存储查询和测试已由 `PLAN-0150` 完整删除；本文件其余历史记录只说明该切片曾实现，不再代表当前能力、迁移目标或待生产接管事项。登录、当前令牌退出、改密和改密后的其他令牌安全撤销继续保留。
+
 ## 多轮批量迁移规则（2026-07-20）
 
 - 本计划不要求第一轮迁移一次达到最终完美状态，采用“三轮迁移、最后减法”策略：第一轮快速扩大 Go 模块覆盖，第二轮从头对照最新 Node 修复遗漏，第三轮统一做跨模块真实验收和删除门禁。
@@ -862,3 +864,9 @@
 - attempt proxy / upstream URL 保留凭据与 query 原文，只对齐 Node 当前首尾 ECMAScript 空白处理；未新增脱敏、日志清洗或 sanitizer。未知 `trafficSource` 与 Node mapper 一样使详情失败，不返回未定义枚举。
 - `/audit-logs/search-hot`、`/runtime`、`/error-groups*`、`/{id}/payloads/{payloadId}` 仍未迁移并在 Go 保持 404。Node 继续单独拥有这些读路径以及捕获、Redis Stream / IPC、ingest writer、worker 和保留清理。
 - 定向 service / HTTP / router / PostgreSQL 查询测试已通过；真实 Node writer -> Go reader PostgreSQL、查询计划、真实 listener / browser、精确反向代理切流、回滚和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 运行日志索引临时关闭契约同步
+
+- 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
+- Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
+- 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。

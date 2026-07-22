@@ -26,24 +26,6 @@ SET last_seen_at = sqlc.arg(last_seen_at)::timestamptz
 WHERE id = sqlc.arg(session_id)::text
   AND last_seen_at < sqlc.arg(cutoff)::timestamptz;
 
--- name: ListManagementSessionsForAccount :many
-SELECT
-  id,
-  expires_at,
-  created_at,
-  last_seen_at
-FROM juhe_business.system_sessions
-WHERE system_account_id = sqlc.arg(system_account_id)::text
-  AND expires_at > sqlc.arg(now_at)::timestamptz
-ORDER BY last_seen_at DESC, created_at DESC, id DESC
-LIMIT sqlc.arg(limit_rows)::int
-OFFSET sqlc.arg(offset_rows)::int;
-
--- name: RevokeManagementSessionForAccount :execrows
-DELETE FROM juhe_business.system_sessions
-WHERE system_account_id = sqlc.arg(system_account_id)::text
-  AND id = sqlc.arg(session_id)::text;
-
 -- name: FindManagementSystemAccountPasswordByUsername :one
 SELECT
   id,

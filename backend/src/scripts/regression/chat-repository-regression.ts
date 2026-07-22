@@ -5,7 +5,7 @@ import { createSqliteDatabaseClient, type DatabaseClient } from '../../storage/d
 import { listActiveChatObservationTasks, trackActiveChatObservation } from '../../modules/chat/chat-active-observations.js'
 import { applyChatSchema } from '../../storage/schema.js'
 import { initializeAcceptedChatTurn } from '../../modules/chat/chat-turn-initialization.js'
-import { claimChatAssetObservation, completeChatAssetProcessing, createChatAsset, getChatAsset, setChatAssetObservation } from '../../storage/chat-assets.repository.js'
+import { claimChatAssetObservation, claimUncommittedChatAssetForDeletion, commitChatGeneratedAsset, completeChatAssetProcessing, createChatAsset, getChatAsset, setChatAssetObservation } from '../../storage/chat-assets.repository.js'
 import {
   acceptChatTurn,
   ChatAssistantStorageLimitError,
@@ -48,7 +48,7 @@ function chatConversationRowClient(userTurnCount: unknown, messageRevision: unkn
     ...client,
     one: async () => ({
       id: 'turn_count', system_account_id: 'turn_owner', api_key_id: 'key', api_key_name_snapshot: 'Key',
-      title: '计数测试', is_pinned: 0, last_model: null, active_turn_id: null, user_turn_count: userTurnCount, message_revision: messageRevision,
+      title: '计数测试', is_pinned: 0, last_model: null, default_image_model: 'gpt-image-2', active_turn_id: null, user_turn_count: userTurnCount, message_revision: messageRevision,
       last_message_at: '2026-07-10T00:00:00.000Z', created_at: '2026-07-10T00:00:00.000Z', updated_at: '2026-07-10T00:00:00.000Z'
     })
   } as unknown as DatabaseClient
@@ -396,6 +396,7 @@ const conversation = await createChatConversation(client, {
   now: '2026-07-12T00:00:00.000Z'
 })
 assert.equal(conversation.title, '新对话')
+assert.equal(conversation.defaultImageModel, 'gpt-image-2', '新会话必须默认使用 gpt-image-2')
 assert.equal(conversation.messageRevision, 0, '新会话的可见消息 revision 必须从 0 开始')
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 })).length, 1)
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_2', limit: 20 })).length, 0)
@@ -412,12 +413,90 @@ const renamedPinned = await updateChatConversation(client, {
   systemAccountId: 'sys_user_1',
   title: '置顶会话',
   isPinned: true,
+  defaultImageModel: 'gpt-image-2',
   now: '2026-07-12T00:00:10.000Z'
 })
 assert.equal(renamedPinned?.title, '置顶会话')
 assert.equal(renamedPinned?.isPinned, true)
+assert.equal(renamedPinned?.defaultImageModel, 'gpt-image-2')
 assert.equal(renamedPinned?.messageRevision, 0, '重命名和置顶不得推进可见消息 revision')
 assert.equal((await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 20 }))[0]?.id, pinnedConversation.id)
+
+const manuallyNamedConversation = await createChatConversation(client, {
+  id: 'chat_conv_manual_title',
+  systemAccountId: 'sys_manual_title',
+  apiKeyId: 'key_1',
+  apiKeyNameSnapshot: '默认 Key', maxConversationsPerUser: 1000,
+  now: '2026-07-12T00:00:11.000Z'
+})
+await updateChatConversation(client, {
+  conversationId: manuallyNamedConversation.id,
+  systemAccountId: 'sys_manual_title',
+  title: '人工命名必须保留',
+  now: '2026-07-12T00:00:12.000Z'
+})
+const manuallyNamedTurn = await acceptChatTurn(client, {
+  conversationId: manuallyNamedConversation.id,
+  systemAccountId: 'sys_manual_title',
+  clientMessageId: 'manual_title_first_turn',
+  userContent: '首条消息不能覆盖人工标题',
+  model: 'mock-model',
+  now: '2026-07-12T00:00:13.000Z',
+  storageQuotaBytes: testStorageQuotaBytes,
+  retentionDays: 7,
+  maxTurnsPerConversation: 1000
+})
+assert.equal((await getChatConversation(client, manuallyNamedConversation.id, 'sys_manual_title'))?.title, '人工命名必须保留', '首条消息只能自动替换默认标题')
+await completeChatTurn(client, {
+  conversationId: manuallyNamedConversation.id,
+  systemAccountId: 'sys_manual_title',
+  turnId: manuallyNamedTurn.turnId,
+  assistantContent: '标题已保留',
+  finishReason: 'stop',
+  traceId: 'trace_manual_title',
+  now: '2026-07-12T00:00:14.000Z'
+})
+assert.equal(await deleteChatConversation(client, manuallyNamedConversation.id, 'sys_manual_title'), true)
+
+const concurrentFieldConversation = await createChatConversation(client, {
+  id: 'chat_conv_concurrent_fields',
+  systemAccountId: 'sys_user_1',
+  apiKeyId: 'key_1',
+  apiKeyNameSnapshot: '默认 Key', maxConversationsPerUser: 1000,
+  now: '2026-07-11T00:00:30.000Z'
+})
+let releaseConcurrentFieldReads!: () => void
+const concurrentFieldReadsCompleted = new Promise<void>((resolve) => { releaseConcurrentFieldReads = resolve })
+let concurrentFieldReadCount = 0
+const concurrentFieldClient: DatabaseClient = {
+  ...client,
+  async one<T extends object = Record<string, unknown>>(sql: string, params?: readonly unknown[]): Promise<T | undefined> {
+    const row = await client.one<T>(sql, params)
+    concurrentFieldReadCount += 1
+    if (concurrentFieldReadCount === 2) releaseConcurrentFieldReads()
+    if (concurrentFieldReadCount <= 2) await concurrentFieldReadsCompleted
+    return row
+  }
+}
+await Promise.all([
+  updateChatConversation(concurrentFieldClient, {
+    conversationId: concurrentFieldConversation.id,
+    systemAccountId: 'sys_user_1',
+    title: '并发保留标题',
+    now: '2026-07-12T00:00:20.000Z'
+  }),
+  updateChatConversation(concurrentFieldClient, {
+    conversationId: concurrentFieldConversation.id,
+    systemAccountId: 'sys_user_1',
+    isPinned: true,
+    now: '2026-07-12T00:00:21.000Z'
+  })
+])
+const concurrentlyUpdatedFields = await getChatConversation(client, concurrentFieldConversation.id, 'sys_user_1')
+assert.equal(concurrentlyUpdatedFields?.title, '并发保留标题', '并发置顶请求不得用旧标题快照覆盖重命名')
+assert.equal(concurrentlyUpdatedFields?.isPinned, true, '并发重命名请求不得用旧置顶快照覆盖置顶')
+assert.equal(await deleteChatConversation(client, concurrentFieldConversation.id, 'sys_user_1'), true)
+
 const pinnedPage = await listChatConversations(client, { systemAccountId: 'sys_user_1', limit: 1 })
 const unpinnedPage = await listChatConversations(client, {
   systemAccountId: 'sys_user_1',
@@ -451,7 +530,11 @@ assert.deepEqual(await findChatTurnByClientMessageId(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_1',
   clientMessageId: 'client_1'
-}), { turnId: accepted.turnId, assistantStatus: 'streaming' })
+}), {
+  turnId: accepted.turnId,
+  assistantMessageId: accepted.assistantMessage.id,
+  assistantStatus: 'streaming'
+})
 assert.equal(await findChatTurnByClientMessageId(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_2',
@@ -513,7 +596,13 @@ assert.deepEqual(await findChatTurnByClientMessageId(client, {
   conversationId: conversation.id,
   systemAccountId: 'sys_user_1',
   clientMessageId: 'client_1'
-}), { turnId: accepted.turnId, assistantStatus: 'completed' }, '提交状态查询必须返回助手权威终态')
+}), {
+  turnId: accepted.turnId,
+  assistantMessageId: accepted.assistantMessage.id,
+  assistantStatus: 'completed',
+  completedAt: '2026-07-12T00:02:00.000Z',
+  traceId: 'trace_chat_1'
+}, '提交状态查询必须返回助手权威终态与恢复事实')
 
 const messages = await listChatMessages(client, {
   conversationId: conversation.id,
@@ -559,6 +648,50 @@ const replaceOriginal = await acceptChatTurn(client, {
   now: '2026-07-13T00:01:00.000Z',
   storageQuotaBytes: testStorageQuotaBytes, retentionDays: 7, maxTurnsPerConversation: 1000
 })
+const replaceGeneratedAsset = await commitChatGeneratedAsset(client, {
+  id: 'chat_asset_99999999999999999999999999999999',
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  turnId: replaceOriginal.turnId,
+  messageId: replaceOriginal.assistantMessage.id,
+  contentOrder: 0,
+  mimeType: 'image/png',
+  width: 64,
+  height: 64,
+  bytes: 128,
+  sha256: '9'.repeat(64),
+  storageKey: 'generated/replace-original.png',
+  previewMimeType: 'image/webp', previewWidth: 64, previewHeight: 64, previewBytes: 64,
+  previewSha256: '1'.repeat(64), previewStorageKey: 'generated/replace-original-preview.webp',
+  now: '2026-07-13T00:01:10.000Z',
+  retentionDays: 7,
+  generation: {
+    operation: 'generate', model: 'gpt-image-2', prompt: '替换原始图', sourceAssetIds: [],
+    size: '1024x1024', quality: 'auto', outputFormat: 'png'
+  }
+})
+const retainedReplaceGeneratedAsset = await commitChatGeneratedAsset(client, {
+  id: 'chat_asset_88888888888888888888888888888888',
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  turnId: replaceOriginal.turnId,
+  messageId: replaceOriginal.assistantMessage.id,
+  contentOrder: 1,
+  mimeType: 'image/png',
+  width: 64,
+  height: 64,
+  bytes: 128,
+  sha256: '8'.repeat(64),
+  storageKey: 'generated/replace-retained.png',
+  previewMimeType: 'image/webp', previewWidth: 64, previewHeight: 64, previewBytes: 64,
+  previewSha256: '2'.repeat(64), previewStorageKey: 'generated/replace-retained-preview.webp',
+  now: '2026-07-13T00:01:20.000Z',
+  retentionDays: 7,
+  generation: {
+    operation: 'generate', model: 'gpt-image-2', prompt: '保留替换图', sourceAssetIds: [],
+    size: '1024x1024', quality: 'auto', outputFormat: 'png'
+  }
+})
 assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.messageRevision, 1)
 await completeChatTurn(client, {
   conversationId: replaceConversation.id,
@@ -576,7 +709,8 @@ const oldStorageBytes = Number((database.prepare(`
 `).get(replaceAccountId, '2026-07-13') as { content_bytes?: unknown })?.content_bytes ?? 0)
 const replacementContent = '修正后的问题'
 const replacementMarkerJson = JSON.stringify([
-  { type: 'input_text', text: replacementContent, order: 0 }
+  { type: 'input_text', text: replacementContent, order: 0 },
+  { type: 'input_image', assetId: retainedReplaceGeneratedAsset.id, order: 1 }
 ])
 const replacementUserBytes = Buffer.byteLength(replacementContent, 'utf8') + Buffer.byteLength(replacementMarkerJson, 'utf8')
 assert(oldStorageBytes > replacementUserBytes, '测试前提：旧问答占用必须大于替换后的新问题')
@@ -599,17 +733,132 @@ const replacement = await acceptChatTurn(client, {
   systemAccountId: replaceAccountId,
   clientMessageId: 'client_replace_new',
   userContent: replacementContent,
-  contentBlocks: [{ type: 'input_text', text: replacementContent }],
+  contentBlocks: [{ type: 'input_text', text: replacementContent }, { type: 'input_image', assetId: ` ${retainedReplaceGeneratedAsset.id} ` }],
   model: 'mock-model',
   now: '2026-07-13T01:00:00.000Z',
   storageQuotaBytes: replacementUserBytes + chatAssistantStorageReservationBytes, retentionDays: 7, maxTurnsPerConversation: 1000,
   replaceTurnId: replaceOriginal.turnId
 })
+const replacedGeneratedAssetState = database.prepare(`
+  SELECT turn_id, message_id, expires_at,
+    (SELECT COUNT(*) FROM chat_asset_references WHERE asset_id = chat_assets.id) AS reference_count
+  FROM chat_assets WHERE id = ?
+`).get(replaceGeneratedAsset.id) as { turn_id?: unknown; message_id?: unknown; expires_at?: unknown; reference_count?: unknown }
+assert.deepEqual({
+  turnId: replacedGeneratedAssetState.turn_id,
+  messageId: replacedGeneratedAssetState.message_id,
+  expiresAt: replacedGeneratedAssetState.expires_at,
+  referenceCount: Number(replacedGeneratedAssetState.reference_count)
+}, {
+  turnId: null,
+  messageId: null,
+  expiresAt: '2026-07-13T01:00:00.000Z',
+  referenceCount: 0
+}, '替换含助手生成图片的最近轮次必须解除来源绑定并立即进入资产清理队列')
+const retainedGeneratedAssetState = database.prepare(`
+  SELECT turn_id, message_id, expires_at,
+    (SELECT COUNT(*) FROM chat_asset_references WHERE asset_id = chat_assets.id) AS reference_count,
+    (SELECT message_id FROM chat_asset_references WHERE asset_id = chat_assets.id LIMIT 1) AS reference_message_id,
+    (SELECT turn_id FROM chat_asset_references WHERE asset_id = chat_assets.id LIMIT 1) AS reference_turn_id,
+    (SELECT reference_kind FROM chat_asset_references WHERE asset_id = chat_assets.id LIMIT 1) AS reference_kind,
+    (SELECT expires_at FROM chat_asset_references WHERE asset_id = chat_assets.id LIMIT 1) AS reference_expires_at
+  FROM chat_assets WHERE id = ?
+`).get(retainedReplaceGeneratedAsset.id) as {
+  turn_id?: unknown
+  message_id?: unknown
+  expires_at?: unknown
+  reference_count?: unknown
+  reference_message_id?: unknown
+  reference_turn_id?: unknown
+  reference_kind?: unknown
+  reference_expires_at?: unknown
+}
+assert.deepEqual({
+  turnId: retainedGeneratedAssetState.turn_id,
+  messageId: retainedGeneratedAssetState.message_id,
+  expiresAt: retainedGeneratedAssetState.expires_at,
+  referenceCount: Number(retainedGeneratedAssetState.reference_count),
+  referenceMessageId: retainedGeneratedAssetState.reference_message_id,
+  referenceTurnId: retainedGeneratedAssetState.reference_turn_id,
+  referenceKind: retainedGeneratedAssetState.reference_kind,
+  referenceExpiresAt: retainedGeneratedAssetState.reference_expires_at
+}, {
+  turnId: null,
+  messageId: null,
+  expiresAt: '2026-07-20T01:00:00.000Z',
+  referenceCount: 1,
+  referenceMessageId: replacement.userMessage.id,
+  referenceTurnId: replacement.turnId,
+  referenceKind: 'user_input',
+  referenceExpiresAt: '2026-07-20T01:00:00.000Z'
+}, '替换时明确复用的助手生成图片必须只解除旧来源并重新绑定新用户消息，不能提前过期')
+const retainedGeneratedObservationClaim = await claimChatAssetObservation(client, {
+  assetId: retainedReplaceGeneratedAsset.id,
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  expectedTurnId: replacement.turnId,
+  expectedMessageId: replacement.userMessage.id,
+  now: '2026-07-13T01:00:00.250Z'
+})
+if (!retainedGeneratedObservationClaim?.observationClaimId) throw new Error('复用助手生成图片必须能按新 user_input 引用认领图片说明')
+assert.ok(await setChatAssetObservation(client, {
+  assetId: retainedReplaceGeneratedAsset.id,
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  status: 'ready',
+  observation: { summary: '复用生成图片的新用户输入说明' },
+  observationRevision: retainedGeneratedObservationClaim.observationRevision,
+  claimId: retainedGeneratedObservationClaim.observationClaimId,
+  now: '2026-07-13T01:00:00.500Z'
+}), '复用助手生成图片的说明必须能以新引用完成写入')
+const draftAssetIds = ['a', 'b', 'c', 'd', 'e'].map((marker) => `chat_asset_${marker.repeat(32)}`)
+for (const [index, marker] of ['a', 'b', 'c', 'd', 'e'].entries()) {
+  await createChatAsset(client, {
+    id: draftAssetIds[index]!,
+    systemAccountId: replaceAccountId,
+    conversationId: replaceConversation.id,
+    sourceKind: 'user_upload',
+    originalFilename: `draft-${index + 1}.png`,
+    originalMimeType: 'image/png',
+    originalWidth: 1,
+    originalHeight: 1,
+    originalBytes: 1,
+    originalSha256: marker.repeat(64),
+    quotaBytes: 1,
+    retentionDays: 7,
+    now: `2026-07-13T01:00:0${index + 1}.000Z`
+  })
+}
+assert.equal(await claimUncommittedChatAssetForDeletion(client, {
+  assetId: retainedReplaceGeneratedAsset.id,
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  now: '2026-07-13T01:00:10.000Z'
+}), undefined, '已有有效 user_input 引用的助手生成图片不得被未提交草稿删除接口认领')
+database.prepare(`
+  INSERT INTO chat_asset_references (
+    asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
+  ) VALUES (?, ?, ?, ?, 'user_input', 2, ?, ?)
+`).run(draftAssetIds[0], replaceConversation.id, replacement.turnId, replacement.userMessage.id, '2026-07-13T01:00:10.000Z', '2026-07-20T01:00:10.000Z')
+assert.equal(await claimUncommittedChatAssetForDeletion(client, {
+  assetId: draftAssetIds[0]!,
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  now: '2026-07-13T01:00:11.000Z'
+}), undefined, '仍为空绑定但存在有效 user_input 引用的用户上传资产不得被草稿删除接口认领')
+database.prepare('DELETE FROM chat_asset_references WHERE asset_id = ? AND message_id = ?').run(draftAssetIds[0], replacement.userMessage.id)
+assert.ok(await claimUncommittedChatAssetForDeletion(client, {
+  assetId: draftAssetIds[0]!,
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  now: '2026-07-13T01:00:12.000Z'
+}), '无有效引用的空绑定用户上传资产仍必须允许草稿删除')
 assert.equal(replacement.userMessage.sequenceNo, replaceOriginal.userMessage.sequenceNo)
 assert.equal(replacement.assistantMessage.sequenceNo, replaceOriginal.assistantMessage.sequenceNo)
 assert.equal((await getChatConversation(client, replaceConversation.id, replaceAccountId))?.messageRevision, 3, '替换最近轮次的删旧写新事务只能推进一次 revision')
 assert.deepEqual(replacement.userMessage.contentBlocks, [
-  { type: 'input_text', text: replacementContent, order: 0 }
+  { type: 'input_text', text: replacementContent, order: 0 },
+  { type: 'input_image', assetId: retainedReplaceGeneratedAsset.id, order: 1 }
 ])
 const replacementReplay = await acceptChatTurn(client, {
   conversationId: replaceConversation.id,
@@ -671,6 +920,120 @@ await completeChatTurn(client, {
   finishReason: 'stop',
   traceId: 'trace_replace_new',
   now: '2026-07-13T01:01:00.000Z'
+})
+const replacementWithoutGeneratedImage = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_replace_without_generated_image',
+  userContent: '不再使用生成图片',
+  contentBlocks: [{ type: 'input_text', text: '不再使用生成图片' }],
+  model: 'mock-model',
+  now: '2026-07-13T01:01:10.000Z',
+  storageQuotaBytes: testStorageQuotaBytes,
+  retentionDays: 7,
+  maxTurnsPerConversation: 1000,
+  replaceTurnId: replacement.turnId
+})
+assert.deepEqual(await getChatAsset(client, {
+  assetId: retainedReplaceGeneratedAsset.id,
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id
+}).then((asset) => ({
+  expiresAt: asset?.expiresAt,
+  messageId: asset?.messageId,
+  referenceCount: Number((database.prepare('SELECT COUNT(*) AS total FROM chat_asset_references WHERE asset_id = ?').get(retainedReplaceGeneratedAsset.id) as { total?: unknown } | undefined)?.total ?? 0)
+})), {
+  expiresAt: '2026-07-13T01:01:10.000Z',
+  messageId: undefined,
+  referenceCount: 0
+}, '二次替换删除最后一个 user_input 引用后必须立即过期无来源的助手生成图片')
+await completeChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  turnId: replacementWithoutGeneratedImage.turnId,
+  assistantContent: '已移除图片后的回答',
+  finishReason: 'stop',
+  traceId: 'trace_replace_without_generated_image',
+  now: '2026-07-13T01:01:20.000Z'
+})
+const sourceRetainedGeneratedAsset = await commitChatGeneratedAsset(client, {
+  id: 'chat_asset_ffffffffffffffffffffffffffffffff',
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id,
+  turnId: replacementWithoutGeneratedImage.turnId,
+  messageId: replacementWithoutGeneratedImage.assistantMessage.id,
+  contentOrder: 0,
+  mimeType: 'image/png',
+  width: 64,
+  height: 64,
+  bytes: 128,
+  sha256: 'f'.repeat(64),
+  storageKey: 'generated/source-retained.png',
+  previewMimeType: 'image/webp', previewWidth: 64, previewHeight: 64, previewBytes: 64,
+  previewSha256: '3'.repeat(64), previewStorageKey: 'generated/source-retained-preview.webp',
+  now: '2026-07-13T01:01:25.000Z',
+  retentionDays: 7,
+  generation: {
+    operation: 'generate', model: 'gpt-image-2', prompt: '来源保留图', sourceAssetIds: [],
+    size: '1024x1024', quality: 'auto', outputFormat: 'png'
+  }
+})
+const generatedImageUseTurn = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_generated_image_use',
+  userContent: '继续分析这张图',
+  contentBlocks: [{ type: 'input_text', text: '继续分析这张图' }, { type: 'input_image', assetId: sourceRetainedGeneratedAsset.id }],
+  model: 'mock-model',
+  now: '2026-07-13T01:01:30.000Z',
+  storageQuotaBytes: testStorageQuotaBytes,
+  retentionDays: 7,
+  maxTurnsPerConversation: 1000
+})
+await completeChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  turnId: generatedImageUseTurn.turnId,
+  assistantContent: '图像分析结果',
+  finishReason: 'stop',
+  traceId: 'trace_generated_image_use',
+  now: '2026-07-13T01:01:40.000Z'
+})
+const generatedImageRemovedTurn = await acceptChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  clientMessageId: 'client_generated_image_remove',
+  userContent: '不再引用这张图',
+  contentBlocks: [{ type: 'input_text', text: '不再引用这张图' }],
+  model: 'mock-model',
+  now: '2026-07-13T01:01:50.000Z',
+  storageQuotaBytes: testStorageQuotaBytes,
+  retentionDays: 7,
+  maxTurnsPerConversation: 1000,
+  replaceTurnId: generatedImageUseTurn.turnId
+})
+const sourceRetainedAssetAfterUseReplace = await getChatAsset(client, {
+  assetId: sourceRetainedGeneratedAsset.id,
+  systemAccountId: replaceAccountId,
+  conversationId: replaceConversation.id
+})
+assert.deepEqual({
+  expiresAt: sourceRetainedAssetAfterUseReplace?.expiresAt,
+  messageId: sourceRetainedAssetAfterUseReplace?.messageId,
+  referenceCount: Number((database.prepare('SELECT COUNT(*) AS total FROM chat_asset_references WHERE asset_id = ?').get(sourceRetainedGeneratedAsset.id) as { total?: unknown } | undefined)?.total ?? 0)
+}, {
+  expiresAt: '2026-07-20T01:01:30.000Z',
+  messageId: replacementWithoutGeneratedImage.assistantMessage.id,
+  referenceCount: 1
+}, '仍有原助手输出引用的生成图在移除后续 user_input 时不得提前过期')
+await completeChatTurn(client, {
+  conversationId: replaceConversation.id,
+  systemAccountId: replaceAccountId,
+  turnId: generatedImageRemovedTurn.turnId,
+  assistantContent: '移除后续图片引用后的回答',
+  finishReason: 'stop',
+  traceId: 'trace_generated_image_remove',
+  now: '2026-07-13T01:02:00.000Z'
 })
 const replaceLatest = await acceptChatTurn(client, {
   conversationId: replaceConversation.id,
@@ -836,6 +1199,7 @@ await createChatAsset(client, {
   id: imageAssetId,
   systemAccountId: 'sys_user_1',
   conversationId: imageReplaceConversation.id,
+  sourceKind: 'user_upload',
   originalFilename: 'repository-test.png',
   originalMimeType: 'image/png',
   originalWidth: 1,
@@ -861,6 +1225,7 @@ await createChatAsset(client, {
   id: droppedImageAssetId,
   systemAccountId: 'sys_user_1',
   conversationId: imageReplaceConversation.id,
+  sourceKind: 'user_upload',
   originalFilename: 'repository-test-dropped.png',
   originalMimeType: 'image/png',
   originalWidth: 1,
@@ -1021,6 +1386,18 @@ await failChatTurn(client, {
   traceId: 'trace_chat_failed',
   now: '2026-07-12T00:05:00.000Z'
 })
+assert.deepEqual(await findChatTurnByClientMessageId(client, {
+  conversationId: conversation.id,
+  systemAccountId: 'sys_user_1',
+  clientMessageId: 'client_failed'
+}), {
+  turnId: failedTurn.turnId,
+  assistantMessageId: failedTurn.assistantMessage.id,
+  assistantStatus: 'failed',
+  errorCode: 'mock_interrupted',
+  completedAt: '2026-07-12T00:05:00.000Z',
+  traceId: 'trace_chat_failed'
+}, '失败提交必须返回可用于权威恢复的安全事实')
 assert.equal((await getChatConversation(client, conversation.id, 'sys_user_1'))?.messageRevision, Number(revisionBeforeFailure) + 1, '失败终结实际改变可见消息时必须推进一次 revision')
 assertStorageLedgerInvariant(database, 'sys_user_1', 'failed 轮次结算')
 const contextAfterFailure = await listChatContextMessages(client, {

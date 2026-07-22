@@ -52,49 +52,6 @@ func TestManagementSessionFromRowRejectsMissingTimes(t *testing.T) {
 	}
 }
 
-func TestManagementSessionSummaryFromRow(t *testing.T) {
-	expiresAt := time.Date(2026, 7, 10, 10, 0, 0, 0, time.FixedZone("test", 8*3600))
-	createdAt := expiresAt.Add(-24 * time.Hour)
-	lastSeenAt := expiresAt.Add(-time.Hour)
-
-	session, err := managementSessionSummaryFromRow(postgresqueries.ListManagementSessionsForAccountRow{
-		ID:         "sess_1",
-		ExpiresAt:  pgtype.Timestamptz{Time: expiresAt, Valid: true},
-		CreatedAt:  pgtype.Timestamptz{Time: createdAt, Valid: true},
-		LastSeenAt: pgtype.Timestamptz{Time: lastSeenAt, Valid: true},
-	})
-	if err != nil {
-		t.Fatalf("managementSessionSummaryFromRow() error = %v", err)
-	}
-	if session.ID != "sess_1" ||
-		!session.ExpiresAt.Equal(expiresAt.UTC()) ||
-		!session.CreatedAt.Equal(createdAt.UTC()) ||
-		!session.LastSeenAt.Equal(lastSeenAt.UTC()) {
-		t.Fatalf("session = %+v", session)
-	}
-}
-
-func TestManagementSessionSummaryFromRowRejectsMissingTimes(t *testing.T) {
-	if _, err := managementSessionSummaryFromRow(postgresqueries.ListManagementSessionsForAccountRow{
-		CreatedAt:  pgtype.Timestamptz{Time: time.Now(), Valid: true},
-		LastSeenAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
-	}); err == nil {
-		t.Fatal("managementSessionSummaryFromRow() error = nil, want missing expires_at error")
-	}
-	if _, err := managementSessionSummaryFromRow(postgresqueries.ListManagementSessionsForAccountRow{
-		ExpiresAt:  pgtype.Timestamptz{Time: time.Now(), Valid: true},
-		LastSeenAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
-	}); err == nil {
-		t.Fatal("managementSessionSummaryFromRow() error = nil, want missing created_at error")
-	}
-	if _, err := managementSessionSummaryFromRow(postgresqueries.ListManagementSessionsForAccountRow{
-		ExpiresAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
-		CreatedAt: pgtype.Timestamptz{Time: time.Now(), Valid: true},
-	}); err == nil {
-		t.Fatal("managementSessionSummaryFromRow() error = nil, want missing last_seen_at error")
-	}
-}
-
 func TestManagementProfileUpdateResultFromRow(t *testing.T) {
 	result := managementProfileUpdateResultFromRow(postgresqueries.UpdateManagementCurrentUserProfileRow{
 		PreviousDisplayName: "旧名称",
@@ -219,27 +176,6 @@ func TestManagementAuthSQLSourceGuards(t *testing.T) {
 	}
 	if strings.Contains(touchQuery, "expires_at") || strings.Contains(touchQuery, "system_account_id") || strings.Contains(touchQuery, "password_hash") {
 		t.Fatal("management session touch SQL must not refresh expiry, account sessions or password fields")
-	}
-	sessionListQuery := managementAuthSQLBlock(t, normalized, "ListManagementSessionsForAccount")
-	if strings.Contains(sessionListQuery, "token_hash") || strings.Contains(sessionListQuery, "password_hash") {
-		t.Fatal("management session list SQL must not read token or password hashes")
-	}
-	if !strings.Contains(sessionListQuery, "from juhe_business.system_sessions") ||
-		!strings.Contains(sessionListQuery, "where system_account_id = sqlc.arg(system_account_id)::text") ||
-		!strings.Contains(sessionListQuery, "and expires_at > sqlc.arg(now_at)::timestamptz") ||
-		!strings.Contains(sessionListQuery, "order by last_seen_at desc, created_at desc, id desc") ||
-		!strings.Contains(sessionListQuery, "limit sqlc.arg(limit_rows)::int") ||
-		!strings.Contains(sessionListQuery, "offset sqlc.arg(offset_rows)::int") {
-		t.Fatal("management session list SQL must be account-scoped, active-windowed and cursor-window limited")
-	}
-	revokeAccountSessionQuery := managementAuthSQLBlock(t, normalized, "RevokeManagementSessionForAccount")
-	if !strings.Contains(revokeAccountSessionQuery, "delete from juhe_business.system_sessions") ||
-		!strings.Contains(revokeAccountSessionQuery, "where system_account_id = sqlc.arg(system_account_id)::text") ||
-		!strings.Contains(revokeAccountSessionQuery, "and id = sqlc.arg(session_id)::text") {
-		t.Fatal("management account session revoke SQL must delete by current account id and session id")
-	}
-	if strings.Contains(revokeAccountSessionQuery, "token_hash") {
-		t.Fatal("management account session revoke SQL must not revoke by raw or hashed token")
 	}
 	if strings.Contains(normalized, "select *") || strings.Contains(normalized, "count(") {
 		t.Fatal("management auth SQL must keep profile requests field-bounded and avoid aggregate scans")

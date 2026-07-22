@@ -68,12 +68,14 @@ export interface ChatActiveTurnAttachInput {
 
 interface SyncFlight {
   accountEpoch: number
+  conversationEpoch: number
   promise: Promise<ChatConversationSyncOutcome>
 }
 
 export class ChatConversationSyncCoordinator {
   private activeSystemAccountId?: string
   private readonly accountEpochs = new Map<string, number>()
+  private readonly conversationEpochs = new Map<string, number>()
   private readonly flights = new Map<string, SyncFlight>()
   private readonly serverRevisionHighWatermarks = new Map<string, number>()
 
@@ -91,16 +93,30 @@ export class ChatConversationSyncCoordinator {
     for (const key of this.serverRevisionHighWatermarks.keys()) {
       if (syncKeyBelongsTo(key, systemAccountId)) this.serverRevisionHighWatermarks.delete(key)
     }
+    for (const key of this.conversationEpochs.keys()) {
+      if (syncKeyBelongsTo(key, systemAccountId)) this.conversationEpochs.delete(key)
+    }
+  }
+
+  invalidateConversation(systemAccountId: string, conversationId: string, minimumServerRevision?: number): void {
+    const key = syncKey(systemAccountId, conversationId)
+    this.conversationEpochs.set(key, this.conversationEpoch(key) + 1)
+    if (minimumServerRevision !== undefined && Number.isSafeInteger(minimumServerRevision) && minimumServerRevision >= 0) {
+      this.serverRevisionHighWatermarks.set(key, Math.max(this.serverRevisionHighWatermarks.get(key) ?? -1, minimumServerRevision))
+    }
   }
 
   synchronize(input: ChatConversationSyncInput): Promise<ChatConversationSyncOutcome> {
     if (this.activeSystemAccountId !== input.systemAccountId) return Promise.resolve(supersededOutcome())
     const key = syncKey(input.systemAccountId, input.conversationId)
     const accountEpoch = this.accountEpoch(input.systemAccountId)
+    const conversationEpoch = this.conversationEpoch(key)
     const existing = this.flights.get(key)
-    if (existing?.accountEpoch === accountEpoch) return existing.promise
+    if (existing?.accountEpoch === accountEpoch && existing.conversationEpoch === conversationEpoch) return existing.promise
 
-    const isCurrent = () => this.activeSystemAccountId === input.systemAccountId && this.accountEpoch(input.systemAccountId) === accountEpoch
+    const isCurrent = () => this.activeSystemAccountId === input.systemAccountId
+      && this.accountEpoch(input.systemAccountId) === accountEpoch
+      && this.conversationEpoch(key) === conversationEpoch
     const promise = synchronizeChatConversationInternal(
       input,
       isCurrent,
@@ -115,7 +131,7 @@ export class ChatConversationSyncCoordinator {
       }
       throw error
     }).then((result) => {
-      if (result.state === 'ready' && this.activeSystemAccountId === input.systemAccountId && this.accountEpoch(input.systemAccountId) === accountEpoch) {
+      if (result.state === 'ready' && isCurrent()) {
         const current = this.serverRevisionHighWatermarks.get(key) ?? -1
         if (result.messageRevision < current) return supersededOutcome(result.passes)
         this.serverRevisionHighWatermarks.set(key, result.messageRevision)
@@ -124,7 +140,7 @@ export class ChatConversationSyncCoordinator {
     }).finally(() => {
       if (this.flights.get(key)?.promise === promise) this.flights.delete(key)
     })
-    this.flights.set(key, { accountEpoch, promise })
+    this.flights.set(key, { accountEpoch, conversationEpoch, promise })
     return promise
   }
 
@@ -135,8 +151,17 @@ export class ChatConversationSyncCoordinator {
     await Promise.allSettled(pending)
   }
 
+  async drainConversation(systemAccountId: string, conversationId: string): Promise<void> {
+    const flight = this.flights.get(syncKey(systemAccountId, conversationId))
+    if (flight) await Promise.allSettled([flight.promise])
+  }
+
   private accountEpoch(systemAccountId: string): number {
     return this.accountEpochs.get(systemAccountId) ?? 0
+  }
+
+  private conversationEpoch(key: string): number {
+    return this.conversationEpochs.get(key) ?? 0
   }
 
   private bumpEpoch(systemAccountId: string): void {
@@ -156,6 +181,14 @@ export function invalidateChatConversationSyncAccount(systemAccountId: string): 
 
 export function drainChatConversationSyncAccount(systemAccountId: string): Promise<void> {
   return defaultSyncCoordinator.drainAccount(systemAccountId)
+}
+
+export function invalidateChatConversationSyncConversation(systemAccountId: string, conversationId: string, minimumServerRevision?: number): void {
+  defaultSyncCoordinator.invalidateConversation(systemAccountId, conversationId, minimumServerRevision)
+}
+
+export function drainChatConversationSyncConversation(systemAccountId: string, conversationId: string): Promise<void> {
+  return defaultSyncCoordinator.drainConversation(systemAccountId, conversationId)
 }
 
 export function decideChatConversationSync(input: {
@@ -288,6 +321,9 @@ async function synchronizeChatConversationInternal(
     } else {
       const refreshed = await dependencies.listMessages(conversationId, { fromSequenceNo: decision.fromSequenceNo, limit: 100 })
       messages = mergeBySequence(messages.filter((message) => message.sequenceNo < decision.fromSequenceNo), refreshed)
+    }
+    if (decision.type !== 'rebuild' && (messages.at(-1)?.sequenceNo ?? 0) < latestHead.lastSequenceNo) {
+      messages = await dependencies.listMessages(conversationId, { limit: 100 })
     }
     if (!isCurrent()) return supersededOutcome(passes)
     const committed = await commitProjectedSnapshot(input, messages, latestHead, isCurrent, cachedProjection)

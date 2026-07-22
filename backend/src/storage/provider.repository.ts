@@ -692,8 +692,8 @@ function providerTable(client: DatabaseClient, tableName: string): string {
     : client.dialect.quoteIdentifier(tableName)
 }
 
-function providerEnabledPredicate(client: DatabaseClient, column: string): string {
-  return `${column} = ${client.driver === 'postgres' ? 'TRUE' : '1'}`
+function providerEnabledPredicate(_client: DatabaseClient, column: string): string {
+  return `${column} = 1`
 }
 
 function providerDefaultProfileFields(profiles: ProviderProtocolProfileDefinition[]): Omit<ProviderDefinition, 'id' | 'code' | 'name' | 'parentCode' | 'description' | 'enabled' | 'defaultSupportedModels' | 'protocolProfiles'> {

@@ -44,11 +44,12 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   clientIp?: string
   endpoint: string
   bypassModelFilter?: boolean
+  requestModelOverride?: string
   attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
   recoverUnavailableCandidateAccounts?: () => Promise<UpstreamAccount[] | undefined>
   loadModelAwareCandidateAccounts?: (requestedModel: string, sourceEndpointFamily?: ReturnType<typeof gatewayRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>
 }): Promise<RequestCandidateFilterResult> {
-  const requestedModel = requestModel(input.req)
+  const requestedModel = input.requestModelOverride?.trim() || requestModel(input.req)
   const sourceEndpointFamily = gatewayRequestEndpointFamily(input.req)
   let rawCandidateAccounts = input.rawCandidateAccounts
   if (rawCandidateAccounts.length === 0 && requestedModel && input.loadModelAwareCandidateAccounts) {

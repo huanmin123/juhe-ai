@@ -29,7 +29,11 @@ import {
 import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
-import { hasAccountTestProtocolSuccessEvidence } from './account-test-success-evidence.js'
+import {
+  hasAccountModelCatalogSuccessEvidence,
+  hasAccountTestProtocolSuccessEvidence
+} from './account-test-success-evidence.js'
+import { accountTestProbeKind, type AccountTestProbeKind } from './account-test-probe-policy.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
@@ -37,9 +41,11 @@ import type { GatewaySettings } from '../gateway/policy/account-error-policy.ser
 import { flushGatewayAccountSideEffects } from '../gateway/runtime/account-side-effects.service.js'
 import type { UpstreamAttempt } from '../gateway/upstream/attempt.js'
 import {
+  createMemoryGatewayRequest,
   createGatewayTestRequest,
   MemoryGatewayResponse
 } from '../gateway/testing/memory-gateway-http.js'
+import { markGatewayUpstreamModelsProbe } from '../gateway/request/upstream-models-probe.js'
 import {
   extractOpenAIResponseOutputText,
   parseOpenAIJsonBody,
@@ -163,6 +169,8 @@ export async function testOpenAIAccount(
   let requestBody: Record<string, unknown> | undefined
   let requestUrl: string | undefined
   let modelMapping: ResolvedOpenAIModelMapping | undefined
+  let testedModel: string | undefined
+  let probeKind: AccountTestProbeKind = 'generation'
   // 非 OpenAI v1 账户不使用 OpenAI 的 clientCompatibility 规范化，避免写入无意义的 OpenAI 格式值
   const accountClientCompatibility = anthropicProtocol || geminiProtocol
     ? 'openai_standard' as const
@@ -193,35 +201,50 @@ export async function testOpenAIAccount(
       systemAccountId: input.systemAccountId,
       sourceFamilies: [accountTestEndpointModeSourceFamily(testEndpointMode)]
     })
+    testedModel = model
+    probeKind = accountTestProbeKind(account, model)
     const messagesTestMode = isMessagesTestEndpointMode(testEndpointMode)
     const geminiTestMode = isGeminiTestEndpointMode(testEndpointMode)
-    testRequest = messagesTestMode
-      ? createAnthropicTestRequest({
-        explicitModel,
-        fallbackModel: model,
-        prompt,
-        supportedEndpointModes,
-        testEndpointMode
-      })
-      : geminiTestMode
-        ? createGeminiTestRequest({
+    if (probeKind === 'generation') {
+      testRequest = messagesTestMode
+        ? createAnthropicTestRequest({
           explicitModel,
           fallbackModel: model,
           prompt,
+          supportedEndpointModes,
           testEndpointMode
         })
-        : createOpenAITestRequest({
-          explicitModel,
-          fallbackModel: model,
-          prompt,
-          isOAuth: account.type === 'oauth',
-          clientCompatibility,
-          testEndpointMode
-        })
-    requestBody = testRequest.body
-    const requestBodyText = JSON.stringify(requestBody)
-    requestUrl = testRequest.path
-    const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal, clientCompatibility, testRequest.headers)
+        : geminiTestMode
+          ? createGeminiTestRequest({
+            explicitModel,
+            fallbackModel: model,
+            prompt,
+            testEndpointMode
+          })
+          : createOpenAITestRequest({
+            explicitModel,
+            fallbackModel: model,
+            prompt,
+            isOAuth: account.type === 'oauth',
+            clientCompatibility,
+            testEndpointMode
+          })
+    }
+    requestBody = testRequest?.body
+    requestUrl = probeKind === 'models_catalog' ? accountTestModelsPath : testRequest!.path
+    const request = probeKind === 'models_catalog'
+      ? markGatewayUpstreamModelsProbe(
+          createMemoryGatewayRequest({ method: 'GET', path: requestUrl, signal: input.signal })
+        )
+      : createGatewayTestRequest(
+        requestUrl,
+        requestBody!,
+        JSON.stringify(requestBody),
+        account.type === 'oauth',
+        input.signal,
+        clientCompatibility,
+        testRequest?.headers
+      )
     const diagnosticCandidate = explicitModel
       ? {
           ...resolved.account,
@@ -231,7 +254,9 @@ export async function testOpenAIAccount(
           ])
         }
       : resolved.account
-    modelMapping = resolveOpenAIRequestModelMapping(request, diagnosticCandidate)
+    modelMapping = probeKind === 'generation'
+      ? resolveOpenAIRequestModelMapping(request, diagnosticCandidate)
+      : undefined
     const response = new MemoryGatewayResponse(startedAt)
     let diagnosticLastAttempt: UpstreamAttempt | undefined
     const context: RequestContext = {
@@ -258,6 +283,8 @@ export async function testOpenAIAccount(
       settingsOverride: input.gatewaySettingsOverride,
       disableAccountStateMutation: input.disableAccountStateMutation ?? true,
       ignoreAccountRuntimeSuppression: true,
+      forwardModelsRequestToUpstream: probeKind === 'models_catalog',
+      accountProbeModel: probeKind === 'models_catalog' ? testedModel : undefined,
       onUpstreamAttemptDiagnostic: (lastAttempt) => {
         diagnosticLastAttempt = lastAttempt
         notifyUpstreamAttempt(input.onUpstreamAttempt, lastAttempt)
@@ -297,14 +324,18 @@ export async function testOpenAIAccount(
         ? extractGeminiResponseOutputText(responseText)
       : extractOpenAIResponseOutputText(responseText)
     const httpSucceeded = response.statusCode >= 200 && response.statusCode < 300
-    const protocolSuccessEvidence = Boolean(
-      testEndpointMode
-      && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText)
-    )
+    const protocolSuccessEvidence = probeKind === 'models_catalog'
+      ? hasAccountModelCatalogSuccessEvidence(model, responseText)
+      : Boolean(testEndpointMode && hasAccountTestProtocolSuccessEvidence(testEndpointMode, responseText))
     const success = httpSucceeded && !streamFailureMessage && protocolSuccessEvidence
     const protocolEvidenceError = httpSucceeded && !streamFailureMessage && !protocolSuccessEvidence
-      ? '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
+      ? probeKind === 'models_catalog'
+        ? `上游模型目录未包含检查模型或响应格式无效：${model}`
+        : '上游返回 HTTP 2xx，但响应中缺少所选检查协议的完成证据'
       : undefined
+    const protocolEvidenceErrorCode = probeKind === 'models_catalog'
+      ? 'model_not_found'
+      : 'invalid_protocol_success_response'
     const diagnosticStatusCode = accountTestDiagnosticStatusCode(response.statusCode, success, diagnosticLastAttempt)
     const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
@@ -319,11 +350,11 @@ export async function testOpenAIAccount(
       traceId,
       success,
       statusCode: diagnosticStatusCode,
-      errorCode: success ? undefined : protocolEvidenceError ? 'invalid_protocol_success_response' : upstreamErrorCode,
+      errorCode: success ? undefined : protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
       message: success
         ? accountTestSuccessMessage(account, responseTruncated, requestUrl)
         : proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage || accountTestHttpFailureMessage(diagnosticStatusCode, response.statusCode),
-      model: testRequest?.model,
+      model: testedModel,
       ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
       requestUrl,
@@ -344,7 +375,7 @@ export async function testOpenAIAccount(
         ? false
         : accountTestFailureEligibleForAccount({
             statusCode: diagnosticStatusCode,
-            errorCode: protocolEvidenceError ? 'invalid_protocol_success_response' : upstreamErrorCode,
+            errorCode: protocolEvidenceError ? protocolEvidenceErrorCode : upstreamErrorCode,
             message: proxyFailureMessage || protocolEvidenceError || upstreamMessage || streamFailureMessage
           })
     }), limitedDiagnostics)
@@ -363,7 +394,7 @@ export async function testOpenAIAccount(
       traceId,
       success: false,
       message,
-      model: testRequest?.model,
+      model: testedModel,
       ...accountTestModelMappingFields(modelMapping),
       testEndpointMode,
       requestUrl,
@@ -831,6 +862,7 @@ function accountTestFailureMessage(account: AccountSummary, requestUrl?: string)
 }
 
 function accountTestProtocolName(account: AccountSummary, requestUrl?: string): string {
+  if (requestUrl === accountTestModelsPath) return 'OpenAI 模型目录'
   if (isAnthropicProtocolProfile(account)) return 'Anthropic Messages'
   if (isGeminiProtocolProfile(account)) return 'Gemini GenerateContent'
   return requestUrl?.includes('/chat/completions') ? 'OpenAI Chat Completions' : 'OpenAI Responses'

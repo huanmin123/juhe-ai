@@ -25,6 +25,7 @@ const { closeStorageDatabases } = await import('../../storage/database.js')
 const { getChatDatabaseClient } = await import('../../storage/chat-client.js')
 const {
   acceptChatTurn,
+  clearChatConversation,
   completeChatTurn,
   createChatConversation,
   getChatConversationSyncHead,
@@ -314,6 +315,54 @@ try {
   })
   assert.deepEqual(longHead?.tail.map((message) => message.id), [latestLongTurn.userMessage.id, latestLongTurn.assistantMessage.id], '50 轮会话同步仍只能返回索引尾部最新完整轮次')
   assert.equal(longHead?.lastSequenceNo, 100)
+
+  const clearSyncConversation = await createChatConversation(client, {
+    id: 'chat_sync_clear_conversation',
+    systemAccountId: ownerId,
+    apiKeyId: 'key_sync',
+    apiKeyNameSnapshot: '同步 Key',
+    now: '2026-07-18T00:00:00.000Z',
+    maxConversationsPerUser: 50
+  })
+  const clearSyncTurn = await acceptChatTurn(client, {
+    conversationId: clearSyncConversation.id,
+    systemAccountId: ownerId,
+    clientMessageId: 'sync_clear_client',
+    userContent: '清空后同步必须失效旧快照',
+    model: 'mock-model',
+    now: '2026-07-18T00:01:00.000Z',
+    storageQuotaBytes: 64 * 1024 * 1024,
+    retentionDays: 7,
+    maxTurnsPerConversation: 50
+  })
+  await completeChatTurn(client, {
+    conversationId: clearSyncConversation.id,
+    systemAccountId: ownerId,
+    turnId: clearSyncTurn.turnId,
+    assistantContent: '清空前回答',
+    finishReason: 'stop',
+    traceId: 'trace_sync_clear',
+    now: '2026-07-18T00:02:00.000Z'
+  })
+  const clearSyncBefore = await getChatConversationSyncHead(client, {
+    conversationId: clearSyncConversation.id,
+    systemAccountId: ownerId,
+    now: '2026-07-18T00:02:01.000Z'
+  })
+  await clearChatConversation(client, {
+    conversationId: clearSyncConversation.id,
+    systemAccountId: ownerId,
+    now: '2026-07-18T00:03:00.000Z'
+  })
+  const clearSyncAfter = await getChatConversationSyncHead(client, {
+    conversationId: clearSyncConversation.id,
+    systemAccountId: ownerId,
+    now: '2026-07-18T00:03:01.000Z'
+  })
+  assert.equal(clearSyncAfter?.messageRevision, Number(clearSyncBefore?.messageRevision) + 1, '清空必须推进 sync revision')
+  assert.equal(clearSyncAfter?.lastSequenceNo, 0)
+  assert.equal(clearSyncAfter?.activeTurn, undefined)
+  assert.deepEqual(clearSyncAfter?.tail, [], '清空后 sync tail 必须为空')
 
   console.log('AI 问答 revision 同步回归通过')
 } finally {

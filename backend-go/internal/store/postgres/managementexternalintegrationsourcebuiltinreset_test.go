@@ -22,7 +22,7 @@ func TestBuiltInExternalIntegrationSourceResetSQLContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allSQL := string(raw)
+	allSQL := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	start := strings.Index(allSQL, "-- name: ResetBuiltInExternalIntegrationSourceToken")
 	end := strings.Index(allSQL[start:], "-- name: TouchBuiltInExternalIntegrationSource")
 	if start < 0 || end < 0 {

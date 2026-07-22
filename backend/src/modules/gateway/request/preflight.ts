@@ -137,6 +137,8 @@ interface OpenAIGatewayRequestPreflightOptions {
   settingsOverride?: Partial<GatewaySettings>
   requestLane?: OpenAIGatewayRequestLane
   ignoreAccountRuntimeSuppression?: boolean
+  forwardModelsRequestToUpstream?: boolean
+  accountProbeModel?: string
   sameAccountRetryBudget?: SameAccountRetryBudget
   serverRetryBudget?: ServerRetryBudget
   downstreamCommitState?: GatewayDownstreamCommitState
@@ -195,7 +197,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   let selectedHybridRoute: HybridGatewayRuntimeRoute | undefined
   const initialModelsResponseProtocol = resolveGatewayModelsResponseProtocol(req)
 
-  if (initialModelsResponseProtocol && !options.identity) {
+  if (initialModelsResponseProtocol && !options.identity && !options.forwardModelsRequestToUpstream) {
     const completed = await handleGatewayModelsRequestBeforeRequiredAuth({
       req,
       res,
@@ -815,7 +817,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     }
   }
 
-  if (modelsResponseProtocol) {
+  if (modelsResponseProtocol && !options.forwardModelsRequestToUpstream) {
     await recordClientIpErrorCircuitSuccessAsync({
       systemAccountId,
       apiKeyId,
@@ -895,6 +897,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientIp: gatewayClientIp,
     endpoint,
     bypassModelFilter: interactionResourceAffinity !== undefined,
+    requestModelOverride: options.forwardModelsRequestToUpstream ? options.accountProbeModel : undefined,
     loadModelAwareCandidateAccounts: options.candidateAccounts || interactionResourceAffinity
       ? undefined
       : (model, sourceEndpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: model, requestedEndpointFamily: sourceEndpointFamily }),

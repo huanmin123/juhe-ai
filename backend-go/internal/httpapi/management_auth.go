@@ -4,11 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"net/url"
-	"strconv"
-	"strings"
-
-	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/managementauth"
@@ -34,11 +29,6 @@ type ManagementCurrentUserTouchAuthenticator interface {
 
 type ManagementLogoutAuthenticator interface {
 	LogoutCookie(ctx context.Context, cookieHeader string) error
-}
-
-type ManagementSessionService interface {
-	List(ctx context.Context, input managementauth.SessionListInput) (managementauth.SessionListResult, error)
-	Revoke(ctx context.Context, input managementauth.SessionRevokeInput) (managementauth.SessionRevokeResult, error)
 }
 
 type managementCurrentUserResponse struct {
@@ -123,100 +113,6 @@ func NewManagementLogoutHandler(authenticator ManagementLogoutAuthenticator, cfg
 		clearManagementSessionCookie(w, cfg)
 		writeData(w, http.StatusOK, managementLogoutResponse{LoggedOut: true})
 	})
-}
-
-func NewManagementSessionListHandler(service *managementauth.SessionService) http.Handler {
-	return newManagementSessionListHandler(service)
-}
-
-func NewManagementSessionRevokeHandler(service *managementauth.SessionService, cfg config.Config) http.Handler {
-	return newManagementSessionRevokeHandler(service, cfg)
-}
-
-func newManagementSessionListHandler(service ManagementSessionService) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authContext, ok := ManagementAuthContextFromRequest(r)
-		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-			return
-		}
-		if service == nil {
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-			return
-		}
-		page, err := managementSessionIntegerQueryValue(r.URL.Query(), "page")
-		if err != nil {
-			writeMessageError(w, http.StatusBadRequest, "会话参数无效")
-			return
-		}
-		pageSize, err := managementSessionIntegerQueryValue(r.URL.Query(), "pageSize")
-		if err != nil {
-			writeMessageError(w, http.StatusBadRequest, "会话参数无效")
-			return
-		}
-		result, err := service.List(r.Context(), managementauth.SessionListInput{
-			SystemAccountID:  authContext.SystemAccountID,
-			CurrentSessionID: authContext.SessionID,
-			Page:             page,
-			PageSize:         pageSize,
-		})
-		if errors.Is(err, managementauth.ErrSessionInputInvalid) {
-			writeMessageError(w, http.StatusBadRequest, "会话参数无效")
-			return
-		}
-		if err != nil {
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-			return
-		}
-		writeData(w, http.StatusOK, result)
-	})
-}
-
-func newManagementSessionRevokeHandler(service ManagementSessionService, cfg config.Config) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		authContext, ok := ManagementAuthContextFromRequest(r)
-		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-			return
-		}
-		if service == nil {
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-			return
-		}
-		result, err := service.Revoke(r.Context(), managementauth.SessionRevokeInput{
-			SystemAccountID:  authContext.SystemAccountID,
-			SessionID:        chi.URLParam(r, "id"),
-			CurrentSessionID: authContext.SessionID,
-		})
-		if errors.Is(err, managementauth.ErrSessionInputInvalid) {
-			writeMessageError(w, http.StatusBadRequest, "会话参数无效")
-			return
-		}
-		if errors.Is(err, managementauth.ErrSessionNotFound) {
-			writeMessageError(w, http.StatusNotFound, "会话不存在")
-			return
-		}
-		if err != nil {
-			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-			return
-		}
-		if result.Current {
-			clearManagementSessionCookie(w, cfg)
-		}
-		writeData(w, http.StatusOK, result)
-	})
-}
-
-func managementSessionIntegerQueryValue(values url.Values, key string) (int, error) {
-	text := firstManagementQueryText(values, key)
-	if text == "" {
-		return 0, nil
-	}
-	value, err := strconv.Atoi(text)
-	if err != nil {
-		return 0, managementauth.ErrSessionInputInvalid
-	}
-	return value, nil
 }
 
 func ManagementAuthContextFromRequest(r *http.Request) (managementauth.Context, bool) {

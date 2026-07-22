@@ -65,6 +65,40 @@ assert.deepEqual(decideChatConversationSync({ localRevision: 4, localMessages: l
 ]) }), { type: 'replace_tail', fromSequenceNo: 1 })
 assert.deepEqual(decideChatConversationSync({ localRevision: 6, localMessages: local, server: head(5, []) }), { type: 'rebuild' })
 
+const clearRaceGate = deferred<void>()
+const clearRaceCoordinator = new ChatConversationSyncCoordinator()
+clearRaceCoordinator.activateAccount('sys_clear_race')
+let clearRaceCommitStarted = false
+const staleClearFlight = clearRaceCoordinator.synchronize({
+  systemAccountId: 'sys_clear_race',
+  conversationId: 'conv_1',
+  dependencies: {
+    readCache: async () => ({ head: { messageRevision: 1 }, messages: local }),
+    getSyncHead: async () => ({ ...head(2, []), unchanged: true }),
+    listMessages: async () => local,
+    deleteConversation: async () => undefined,
+    commitSnapshot: async () => { clearRaceCommitStarted = true; await clearRaceGate.promise; return true }
+  }
+})
+while (!clearRaceCommitStarted) await Promise.resolve()
+clearRaceCoordinator.invalidateConversation('sys_clear_race', 'conv_1', 3)
+const clearRaceDrain = clearRaceCoordinator.drainConversation('sys_clear_race', 'conv_1')
+clearRaceGate.resolve()
+await clearRaceDrain
+assert.equal((await staleClearFlight).state, 'superseded', '清空成功后必须使旧同步 flight 失效，旧消息不得在清空后复活')
+const belowClearWatermark = await clearRaceCoordinator.synchronize({
+  systemAccountId: 'sys_clear_race',
+  conversationId: 'conv_1',
+  dependencies: {
+    readCache: async () => ({ messages: [] }),
+    getSyncHead: async () => head(2, []),
+    listMessages: async () => [],
+    deleteConversation: async () => undefined,
+    commitSnapshot: async () => true
+  }
+})
+assert.equal(belowClearWatermark.state, 'superseded', '清空后的 revision 水位必须拒绝更旧服务端快照')
+
 const runtimeProjection = message(2, 'assistant_1', 'streaming')
 runtimeProjection.contentText = 'runtime-new'
 const projected = projectChatMessagesWithRuntime({
@@ -251,6 +285,26 @@ clock = 15_000
 assert.equal(reconciliationScheduler.begin(stalledTurn), true, '有界退避后仍必须继续发现服务端终态')
 reconciliationScheduler.complete(stalledTurn, { ...stalledTurn, eventVersion: 5, reconciliationReason: undefined, status: 'completed' })
 assert.equal(reconciliationScheduler.size, 0, '终态或运行态进展必须清理重试 key')
+const statusLimitTurn = {
+  ...stalledTurn,
+  clientMessageId: 'client_status_limit',
+  turnId: 'turn_status_limit',
+  error: { name: 'ChatSubmissionStatusCheckLimitError', code: 'chat_submission_status_check_limit', message: '已停止自动确认' }
+}
+assert.equal(reconciliationScheduler.begin(statusLimitTurn), true, 'watchdog 耗尽后必须执行一次权威消息同步')
+reconciliationScheduler.complete(statusLimitTurn, statusLimitTurn)
+clock += 60_000
+assert.equal(reconciliationScheduler.begin(statusLimitTurn), false, 'watchdog 耗尽后的权威同步只能自动执行一次，不能永久轮询')
+
+const boundedReconciliation = new ChatRuntimeReconciliationScheduler({ now: () => clock, retryDelaysMs: [1], maxAttempts: 2 })
+const generallyStalledTurn = { ...stalledTurn, clientMessageId: 'client_bounded', turnId: 'turn_bounded' }
+assert.equal(boundedReconciliation.begin(generallyStalledTurn), true)
+boundedReconciliation.complete(generallyStalledTurn, generallyStalledTurn)
+clock += 1
+assert.equal(boundedReconciliation.begin(generallyStalledTurn), true)
+boundedReconciliation.complete(generallyStalledTurn, generallyStalledTurn)
+clock += 1
+assert.equal(boundedReconciliation.begin(generallyStalledTurn), false, '其他 reconciliation 原因也必须在配置次数后停止自动请求')
 
 const calls: string[] = []
 let headCall = 0
@@ -292,6 +346,27 @@ await synchronizeChatConversation({
   }
 })
 assert.equal(unchangedBodyCalls, 0, 'revision 相等时不得请求消息正文')
+
+const largeGapCalls: string[] = []
+const largeGapMessages = Array.from({ length: 250 }, (_value, index) => message(index + 1, `large_gap_${index + 1}`))
+const largeGap = await synchronizeChatConversation({
+  systemAccountId: 'sys_1',
+  conversationId: 'conv_1',
+  dependencies: {
+    ...dependencies,
+    readCache: async () => ({ head: { messageRevision: 1 }, messages: [largeGapMessages[0]!] }),
+    getSyncHead: async () => head(250, [], 250),
+    listMessages: async (_conversationId, cursor) => {
+      largeGapCalls.push(JSON.stringify(cursor))
+      if ('afterSequenceNo' in cursor) return largeGapMessages.slice(1, 101)
+      return largeGapMessages.slice(150)
+    }
+  }
+})
+assert.equal(largeGap.state, 'ready')
+if (largeGap.state !== 'ready') throw new Error('大跨度同步应返回 ready')
+assert.equal(largeGap.messages.at(-1)?.sequenceNo, 250, '增量窗口未覆盖服务端最新序号时必须回退到最新消息页')
+assert.deepEqual(largeGapCalls, ['{"afterSequenceNo":1,"limit":100}', '{"limit":100}'])
 
 let deletedOnNotFound = 0
 const notFound = await synchronizeChatConversation({

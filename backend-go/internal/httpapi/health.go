@@ -169,9 +169,9 @@ func (h HealthHandler) checkDependencies(ctx context.Context) (map[string]CheckR
 		}
 	}
 	for name, required := range map[string]bool{
-		"postgres":   h.cfg.PublicAPIEnabled || h.cfg.ManagementAPIEnabled || h.cfg.ManagementAuthSessionsEnabled,
+		"postgres":   h.cfg.PublicAPIEnabled || h.cfg.ManagementAPIEnabled,
 		"redisCache": h.cfg.PublicAPIEnabled || h.cfg.ManagementAPIEnabled,
-		"redisState": h.cfg.PublicAPIEnabled || h.cfg.ManagementAPIEnabled || h.cfg.ManagementAuthSessionsEnabled,
+		"redisState": h.cfg.PublicAPIEnabled || h.cfg.ManagementAPIEnabled,
 		"asynqQueue": h.cfg.PublicAPIEnabled || h.cfg.ManagementAPIEnabled,
 	} {
 		if required && !deps[name].Configured {

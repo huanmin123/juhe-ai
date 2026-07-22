@@ -8,14 +8,29 @@ import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import json from 'highlight.js/lib/languages/json'
 import shell from 'highlight.js/lib/languages/shell'
+import powershell from 'highlight.js/lib/languages/powershell'
 import typescript from 'highlight.js/lib/languages/typescript'
 import xml from 'highlight.js/lib/languages/xml'
+import css from 'highlight.js/lib/languages/css'
+import python from 'highlight.js/lib/languages/python'
+import go from 'highlight.js/lib/languages/go'
+import java from 'highlight.js/lib/languages/java'
+import cpp from 'highlight.js/lib/languages/cpp'
+import csharp from 'highlight.js/lib/languages/csharp'
+import rust from 'highlight.js/lib/languages/rust'
+import sql from 'highlight.js/lib/languages/sql'
+import yaml from 'highlight.js/lib/languages/yaml'
+import php from 'highlight.js/lib/languages/php'
+import ruby from 'highlight.js/lib/languages/ruby'
 import katex from 'katex'
 import { marked, type RendererObject } from 'marked'
 import { message as antdMessage } from 'ant-design-vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { writeTextToClipboard } from '@/shared/clipboard'
 import { ChatCodeCopyLifecycle, ChatCodeCopyResetController } from './chatCodeCopyState'
+import { isCompleteMarkdownCodeFence } from './chatMarkdownFences'
+import { normalizeChatMarkdownMathDelimiters } from './chatMarkdownMath'
+import { isCompleteStaticSvg, resolveChatSvgPreviewSize } from './chatSvgPreview'
 import 'highlight.js/styles/github.css'
 import 'katex/dist/katex.min.css'
 
@@ -26,7 +41,29 @@ hljs.registerLanguage('ts', typescript)
 hljs.registerLanguage('json', json)
 hljs.registerLanguage('shell', shell)
 hljs.registerLanguage('bash', shell)
+hljs.registerLanguage('sh', shell)
+hljs.registerLanguage('powershell', powershell)
+hljs.registerLanguage('pwsh', powershell)
+hljs.registerLanguage('ps1', powershell)
 hljs.registerLanguage('html', xml)
+hljs.registerLanguage('xml', xml)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('py', python)
+hljs.registerLanguage('go', go)
+hljs.registerLanguage('golang', go)
+hljs.registerLanguage('java', java)
+hljs.registerLanguage('c', cpp)
+hljs.registerLanguage('cpp', cpp)
+hljs.registerLanguage('c++', cpp)
+hljs.registerLanguage('csharp', csharp)
+hljs.registerLanguage('c#', csharp)
+hljs.registerLanguage('rust', rust)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('yaml', yaml)
+hljs.registerLanguage('yml', yaml)
+hljs.registerLanguage('php', php)
+hljs.registerLanguage('ruby', ruby)
 
 const props = defineProps<{ content: string }>()
 const root = ref<HTMLElement>()
@@ -53,9 +90,13 @@ const renderer: RendererObject = {
     const titleAttribute = title ? ` title="${escapeAttribute(title)}"` : ''
     return `<img src="${escapeAttribute(href)}" alt="${escapeAttribute(text || '')}"${titleAttribute} loading="lazy" referrerpolicy="no-referrer" />`
   },
-  code({ text, lang }) {
+  code({ text, lang, raw }) {
     const language = normalizeLanguage(lang)
+    const fenceComplete = isCompleteMarkdownCodeFence(raw)
+    if (language === 'mermaid' && !fenceComplete) return `<pre class="mermaid-pending"><code>${escapeHtml(text)}</code></pre>`
     if (language === 'mermaid') return `<pre class="mermaid-source"><code>${escapeHtml(text)}</code></pre>`
+    if (language === 'svg' && !fenceComplete) return `<div class="chat-svg-pending"><pre><code>${escapeHtml(text)}</code></pre></div>`
+    if (language === 'svg') return `<div class="chat-svg-source"><pre><code>${escapeHtml(text)}</code></pre></div>`
     const highlighted = language && hljs.getLanguage(language)
       ? hljs.highlight(text, { language }).value
       : escapeHtml(text)
@@ -67,7 +108,7 @@ const renderer: RendererObject = {
 
 marked.use({ gfm: true, breaks: true, renderer })
 
-const html = computed(() => DOMPurify.sanitize(enforceSafeImages(renderMathInTextNodes(marked.parse(props.content, { async: false }) as string)), {
+const html = computed(() => DOMPurify.sanitize(enforceSafeImages(renderMathInTextNodes(marked.parse(normalizeChatMarkdownMathDelimiters(props.content), { async: false }) as string)), {
   ADD_ATTR: ['target', 'rel', 'loading', 'referrerpolicy', 'data-copy-code', 'aria-label'],
   FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed']
 }))
@@ -77,28 +118,51 @@ watch(html, async () => {
   await nextTick()
   if (version !== renderVersion || !root.value) return
   const sources = [...root.value.querySelectorAll<HTMLElement>('pre.mermaid-source')]
-  if (!sources.length) return
-  const mermaid = (await import('mermaid')).default
-  mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral' })
-  for (const [index, source] of sources.entries()) {
-    if (version !== renderVersion) return
-    const diagram = source.textContent ?? ''
+  if (sources.length) {
+    const mermaid = (await import('mermaid')).default
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: 'neutral', htmlLabels: false })
+    for (const [index, source] of sources.entries()) {
+      if (version !== renderVersion) return
+      const diagram = source.textContent ?? ''
+      try {
+        const { svg } = await mermaid.render(`${mermaidPrefix}-${version}-${index}`, diagram)
+        if (version !== renderVersion || !source.isConnected) return
+        const container = document.createElement('div')
+        container.className = 'mermaid'
+        container.innerHTML = DOMPurify.sanitize(svg, {
+          USE_PROFILES: { svg: true, svgFilters: true },
+          FORBID_TAGS: ['script', 'foreignObject'],
+          FORBID_ATTR: ['onload', 'onclick', 'onerror']
+        })
+        source.replaceWith(container)
+      } catch {
+        if (version !== renderVersion || !source.isConnected) return
+        const error = document.createElement('pre')
+        error.className = 'mermaid-error'
+        error.textContent = diagram
+        source.replaceWith(error)
+      }
+    }
+  }
+  for (const source of [...root.value.querySelectorAll<HTMLElement>('.chat-svg-source')]) {
+    if (version !== renderVersion || !source.isConnected) return
+    const svg = source.querySelector('code')?.textContent ?? ''
+    if (!isCompleteStaticSvg(svg)) continue
     try {
-      const { svg } = await mermaid.render(`${mermaidPrefix}-${version}-${index}`, diagram)
+      const frame = document.createElement('iframe')
+      const size = resolveChatSvgPreviewSize(svg)
+      frame.className = 'chat-svg-preview'
+      frame.setAttribute('sandbox', 'allow-scripts')
+      frame.setAttribute('title', 'SVG 预览')
+      frame.width = String(size.width)
+      frame.height = String(size.height)
+      frame.srcdoc = svg
       if (version !== renderVersion || !source.isConnected) return
-      const container = document.createElement('div')
-      container.className = 'mermaid'
-      container.innerHTML = DOMPurify.sanitize(svg, {
-        USE_PROFILES: { svg: true, svgFilters: true },
-        FORBID_TAGS: ['script', 'foreignObject'],
-        FORBID_ATTR: ['onload', 'onclick', 'onerror']
-      })
-      source.replaceWith(container)
+      source.replaceWith(frame)
     } catch {
-      if (version !== renderVersion || !source.isConnected) return
       const error = document.createElement('pre')
-      error.className = 'mermaid-error'
-      error.textContent = diagram
+      error.className = 'chat-svg-error'
+      error.textContent = svg
       source.replaceWith(error)
     }
   }
@@ -165,7 +229,10 @@ function renderMathText(value: string): string {
 function safeKatex(source: string, displayMode: boolean): string { try { return katex.renderToString(source, { displayMode, throwOnError: false, strict: 'warn' }) } catch { return escapeHtml(source) } }
 function decodeHtml(value: string): string { const textarea = document.createElement('textarea'); textarea.innerHTML = value; return textarea.value }
 function isSafeHref(value: string): boolean { return /^(https?:|mailto:)/i.test(value) }
-function normalizeLanguage(value: string | undefined): string { return (value || '').trim().toLowerCase().replace(/[^a-z0-9_+-]/g, '') }
+function normalizeLanguage(value: string | undefined): string {
+  const language = (value || '').trim().toLowerCase().replace(/[^a-z0-9_+#-]/g, '')
+  return ({ py: 'python', 'c++': 'cpp', 'c#': 'csharp', sh: 'shell', yml: 'yaml' }[language] ?? language)
+}
 function escapeAttribute(value: string): string { return escapeHtml(value).replace(/`/g, '&#96;') }
 function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!) }
 </script>
@@ -202,4 +269,6 @@ function escapeHtml(value: string): string { return value.replace(/[&<>"']/g, (c
 .chat-markdown :deep(.mermaid) { max-width: 100%; margin: 12px 0; overflow-x: auto; text-align: center; }
 .chat-markdown :deep(.mermaid svg) { max-width: 100%; height: auto; }
 .chat-markdown :deep(.mermaid-error) { max-height: 168px; margin: 10px 0; padding: 9px; overflow: auto; white-space: pre-wrap; color: #b42318; background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 5px; }
+.chat-markdown :deep(.chat-svg-preview) { display: block; max-width: 100%; margin: 10px 0; border: 1px solid #e3e7ec; border-radius: 6px; background: #fff; }
+.chat-markdown :deep(.chat-svg-error) { max-height: 220px; margin: 10px 0; padding: 9px; overflow: auto; white-space: pre-wrap; color: #b42318; background: #fff7f6; border: 1px solid #ffd8d3; border-radius: 5px; }
 </style>

@@ -37,35 +37,6 @@ type ManagementSessionToucher interface {
 	TouchManagementSession(ctx context.Context, input ManagementSessionTouchInput) error
 }
 
-type ManagementSessionSummary struct {
-	ID         string
-	ExpiresAt  time.Time
-	CreatedAt  time.Time
-	LastSeenAt time.Time
-}
-
-type ManagementSessionListInput struct {
-	SystemAccountID string
-	Now             time.Time
-	Limit           int
-	Offset          int
-}
-
-type ManagementSessionListResult struct {
-	Items   []ManagementSessionSummary
-	HasMore bool
-}
-
-type ManagementSessionRevokeInput struct {
-	SystemAccountID string
-	SessionID       string
-}
-
-type ManagementSessionManager interface {
-	ListManagementSessionsForAccount(ctx context.Context, input ManagementSessionListInput) (ManagementSessionListResult, error)
-	RevokeManagementSessionForAccount(ctx context.Context, input ManagementSessionRevokeInput) (bool, error)
-}
-
 type ManagementCurrentUserProfile struct {
 	ID                 string
 	Username           string

@@ -1,5 +1,7 @@
 # BUG-0049 Go 管理 API 缺少 Redis cache 仍启动
 
+> 历史说明：本文涉及的 session-only 登录会话管理开关已于 2026-07-18 随 PLAN-0150 删除，不得恢复或作为当前配置依据。完整管理 API 的 Redis cache/state/queue fail-fast 结论继续有效。
+
 ## 基本信息
 
 - 编号：BUG-0049
@@ -23,13 +25,13 @@
 
 - public API 已把 Redis cache 作为必需依赖，但管理 API 的配置校验沿用了更早只要求 state / queue 的灰度基线。
 - `newGatewaySystemAccountInvalidator` 为管理 API 保留了“缺 cache 仅告警”的降级分支，与迁移文档“不允许绕过 gateway cache invalidation 缺口”的切流门禁冲突。
-- session-only 窄开关和完整管理 API 共用部分配置校验，收紧时必须避免误要求 session-only 配置 Redis cache / queue。
+- 历史上的 session-only 窄开关曾与完整管理 API 共用部分配置校验；该窄开关及其专用校验现已删除。
 
 ## 修复方案
 
 - `validateManagementAPIConfig` 在完整管理 API 开启时新增 `JUHE_AI_REDIS_CACHE_URL` 必填校验。
 - gateway invalidator 装配层同步移除告警降级；管理或 public API 任一开启且 cache URL 缺失时直接返回错误。
-- 保留 `JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED=true` 且完整管理开关关闭时只要求 Redis state 的窄开关行为。
+- 删除 `JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED` 及其“仅要求 Redis state”的专用启动分支；不得恢复该窄开关。
 - 继续保留 Redis URL 格式、不同 DB 和启动 Ping 校验；不增加内存 cache 或本地降级分支。
 
 ## 验证记录

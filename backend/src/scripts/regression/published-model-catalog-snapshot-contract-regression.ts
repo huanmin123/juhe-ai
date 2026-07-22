@@ -35,6 +35,8 @@ assert.match(
   '全量 prune 与 owner 重建必须整体进入同一串行队列'
 )
 assert.match(rebuildScript, /await closeRedisClients\(\)/, '模型目录离线重建完成后必须关闭 Redis 客户端，避免维护进程挂起')
+assert.match(rebuildScript, /runtimeConfig\.processRole\s*=\s*'db-service'/, '模型目录离线重建必须使用业务库写角色，不能以 server 只读连接执行')
+assert.match(rebuildScript, /closeSqliteReadWorkerPool/, '模型目录离线重建必须关闭 SQLite 读 worker 池，避免维护进程挂起')
 assert.match(snapshotService, /await publishedModelCatalogCache\.clear\(\)[\s\S]*publishedModelCatalogLocalCache\.clear\(\)[\s\S]*replaceGatewayModelCatalogSnapshotsAsync/, '动态聊天快照必须在 durable 替换前统一失效，避免旧 variant 残留')
 assert.match(snapshotService, /publishedModelCatalogLocalCache\.set\(publishedModelCatalogCacheKey\(snapshot\)/, 'Redis 或数据库回源后必须回填进程内快照')
 assert.match(snapshotService, /publishedModelCatalogCache\.clear\(\)/, '全量模型重建必须清理旧模型能力缓存')

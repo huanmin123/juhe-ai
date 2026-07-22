@@ -79,8 +79,8 @@ export async function logout(): Promise<void> {
   beginAuthSessionTransition(operationVersion)
   try {
     await api.auth.logout()
-    clearAuthState()
     await clearCurrentAccountChatState(systemAccountId)
+    clearAuthState()
   } finally {
     finishAuthSessionTransition(operationVersion)
   }

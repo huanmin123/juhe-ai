@@ -2,12 +2,12 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import { DatabaseSync } from 'node:sqlite'
 
-import { compactChatContextOnce } from '../../modules/chat/chat-context-compaction.js'
+import { compactChatContextOnce, startChatContextCompaction } from '../../modules/chat/chat-context-compaction.js'
 import { ChatModelContextError, loadChatTransportHistory } from '../../modules/chat/chat-model-context.js'
 import { createSqliteDatabaseClient } from '../../storage/database-client.js'
 import { applyChatSchema } from '../../storage/schema.js'
 import { acceptChatTurn, completeChatTurn, createChatConversation, failChatTurn } from '../../storage/chat.repository.js'
-import { getChatContextHead, loadChatModelContext } from '../../storage/chat-context.repository.js'
+import { getChatContextHead, loadChatModelContext, requestChatContextCompaction } from '../../storage/chat-context.repository.js'
 
 const rememberedCode = '海王星-7349'
 let compactionCalls = 0
@@ -25,6 +25,7 @@ const server = http.createServer((req, res) => {
       return
     }
     const emptyRequiredFields = serializedInput.includes('EMPTY_REQUIRED_PAGE')
+    const delayedManualStart = serializedInput.includes('MANUAL_START_PAGE')
     if (emptyRequiredFields) emptyRequiredCompactionCalls += 1
     else assert.match(serializedInput, /海王星-7349/, '每次压缩请求都必须携带来源消息或已有长期记忆')
     const summary = JSON.stringify(emptyRequiredFields ? {
@@ -42,8 +43,12 @@ const server = http.createServer((req, res) => {
       recentUserIntent: compactionCalls === 1 ? '' : '继续讨论项目发布计划',
       uncertainties: []
     })
-    res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ output_text: summary, output: [{ type: 'message', content: [{ type: 'output_text', text: summary }] }] }))
+    const finish = () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ output_text: summary, output: [{ type: 'message', content: [{ type: 'output_text', text: summary }] }] }))
+    }
+    if (delayedManualStart) setTimeout(finish, 100)
+    else finish()
   })
 })
 await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -60,10 +65,10 @@ await createChatConversation(client, {
   systemAccountId: ownerId,
   apiKeyId: 'context_compaction_key',
   apiKeyNameSnapshot: '压缩测试 Key', maxConversationsPerUser: 1000,
-  now: '2026-07-13T01:00:00.000Z'
+  now: '2099-07-13T01:00:00.000Z'
 })
 for (let index = 1; index <= 4; index += 1) {
-  const now = `2026-07-13T01:0${index}:00.000Z`
+  const now = `2099-07-13T01:0${index}:00.000Z`
   const content = index === 1
     ? `请记住我的项目代号是 ${rememberedCode}。${'旧上下文填充'.repeat(2_000)}`
     : `第 ${index} 轮上下文。${'历史过程填充'.repeat(2_000)}`
@@ -97,20 +102,20 @@ const result = await compactChatContextOnce({
   protocol: 'responses',
   effectiveContextLimitTokens: 32_000
 })
-assert.equal(result.status, 'installed')
+assert.equal(result.status, 'installed', result.status === 'failed' ? result.reason : `unexpected status: ${result.status}`)
 assert.ok(result.status === 'installed' && result.afterBytes < result.beforeBytes)
 assert.ok(compactionCalls >= 1)
 
 const stored = await loadChatModelContext(client, {
   conversationId,
   systemAccountId: ownerId,
-  now: '2026-07-13T01:10:00.000Z',
+  now: '2099-07-13T01:10:00.000Z',
   maxRows: 100,
   maxBytes: 4 * 1024 * 1024
 })
 assert.match(JSON.stringify(stored?.entries), new RegExp(rememberedCode))
 assert.deepEqual(stored?.suffix.map((message) => message.sequenceNo), [7, 8], '压缩后只能保留最近一整轮原文尾部')
-assert.equal(stored?.checkpoint?.expiresAt, '2026-07-20T01:01:00.000Z', 'checkpoint 到期时间必须严格继承最早压缩来源消息')
+assert.equal(stored?.checkpoint?.expiresAt, '2099-07-20T01:01:00.000Z', 'checkpoint 到期时间必须严格继承最早压缩来源消息')
 assert.doesNotMatch(JSON.stringify(stored?.entries), /旧上下文填充旧上下文填充旧上下文填充/, 'checkpoint 不得继续保存旧大段原文')
 
 const transport = await loadChatTransportHistory({
@@ -118,7 +123,7 @@ const transport = await loadChatTransportHistory({
   conversationId,
   systemAccountId: ownerId,
   protocol: 'responses',
-  now: '2026-07-13T01:10:00.000Z'
+  now: '2099-07-13T01:10:00.000Z'
 })
 assert.match(JSON.stringify(transport.history), new RegExp(rememberedCode), '后续模型请求必须重新携带压缩后的关键记忆')
 assert.match(JSON.stringify(transport.history), /第 4 轮上下文/, '后续模型请求必须保留最近原文尾部')
@@ -126,8 +131,102 @@ const head = await getChatContextHead(client, { conversationId, systemAccountId:
 assert.equal(head?.contextState, 'ready')
 assert.equal(head?.contextRevision, 5)
 
+const manualConversationId = 'context_manual_start_conversation'
+await createChatConversation(client, {
+  id: manualConversationId,
+  systemAccountId: ownerId,
+  apiKeyId: 'context_compaction_key',
+  apiKeyNameSnapshot: '手动压缩启动边界', maxConversationsPerUser: 1000,
+  now: '2099-07-13T01:10:00.000Z'
+})
+for (let index = 1; index <= 2; index += 1) {
+  const now = `2099-07-13T01:1${index}:00.000Z`
+  const accepted = await acceptChatTurn(client, {
+    conversationId: manualConversationId,
+    systemAccountId: ownerId,
+    clientMessageId: `manual_start_${index}`,
+    userContent: `MANUAL_START_PAGE ${rememberedCode} 第 ${index} 轮 ${'手动压缩填充'.repeat(500)}`,
+    model: 'context-compaction-model',
+    now,
+    storageQuotaBytes: 64 * 1024 * 1024, retentionDays: 7, maxTurnsPerConversation: 1000
+  })
+  await completeChatTurn(client, {
+    conversationId: manualConversationId,
+    systemAccountId: ownerId,
+    turnId: accepted.turnId,
+    assistantContent: `手动压缩回答 ${index}`,
+    finishReason: 'stop',
+    traceId: `manual_start_trace_${index}`,
+    now
+  })
+}
+const manualInput = {
+  client,
+  conversationId: manualConversationId,
+  systemAccountId: ownerId,
+  apiKeySecret: 'context-compaction-secret',
+  gatewayBaseUrl: `http://127.0.0.1:${address.port}`,
+  model: 'context-compaction-model',
+  protocol: 'responses' as const,
+  effectiveContextLimitTokens: 32_000
+}
+assert.deepEqual(await startChatContextCompaction(manualInput), { status: 'accepted' }, '手动压缩必须在持久化 compact_pending 后快速返回 accepted')
+assert.deepEqual(await startChatContextCompaction(manualInput), { status: 'already_running' }, '同会话重复手动压缩必须幂等返回 already_running')
+assert.match((await getChatContextHead(client, { conversationId: manualConversationId, systemAccountId: ownerId }))?.contextState ?? '', /^(compact_pending|compacting)$/)
+assert.equal((await compactChatContextOnce(manualInput)).status, 'installed', '接受后的后台 completion 必须继续安装 checkpoint')
+
+const noTurnConversationId = 'context_manual_no_turn_conversation'
+await createChatConversation(client, {
+  id: noTurnConversationId,
+  systemAccountId: ownerId,
+  apiKeyId: 'context_compaction_key',
+  apiKeyNameSnapshot: '无可压缩轮次', maxConversationsPerUser: 1000,
+  now: '2099-07-13T01:13:00.000Z'
+})
+assert.deepEqual(await startChatContextCompaction({ ...manualInput, conversationId: noTurnConversationId }), {
+  status: 'skipped', reason: 'no_compactable_turn'
+})
+
+const pendingRecoveryConversationId = 'context_pending_recovery_conversation'
+await createChatConversation(client, {
+  id: pendingRecoveryConversationId,
+  systemAccountId: ownerId,
+  apiKeyId: 'context_compaction_key',
+  apiKeyNameSnapshot: '持久 pending 恢复', maxConversationsPerUser: 1000,
+  now: '2099-07-13T01:14:00.000Z'
+})
+for (let index = 1; index <= 2; index += 1) {
+  const now = `2099-07-13T01:1${4 + index}:00.000Z`
+  const accepted = await acceptChatTurn(client, {
+    conversationId: pendingRecoveryConversationId,
+    systemAccountId: ownerId,
+    clientMessageId: `pending_recovery_${index}`,
+    userContent: `${rememberedCode} pending 恢复第 ${index} 轮 ${'恢复填充'.repeat(500)}`,
+    model: 'context-compaction-model',
+    now,
+    storageQuotaBytes: 64 * 1024 * 1024, retentionDays: 7, maxTurnsPerConversation: 1000
+  })
+  await completeChatTurn(client, {
+    conversationId: pendingRecoveryConversationId,
+    systemAccountId: ownerId,
+    turnId: accepted.turnId,
+    assistantContent: `pending 恢复回答 ${index}`,
+    finishReason: 'stop', traceId: `pending_recovery_trace_${index}`, now
+  })
+}
+assert.equal(await requestChatContextCompaction(client, {
+  conversationId: pendingRecoveryConversationId,
+  systemAccountId: ownerId,
+  expectedRevision: 2,
+  sourceThroughSequence: 2,
+  now: '2099-07-13T01:17:00.000Z'
+}), true)
+const pendingRecoveryInput = { ...manualInput, conversationId: pendingRecoveryConversationId }
+assert.deepEqual(await startChatContextCompaction(pendingRecoveryInput), { status: 'already_running' }, '进程重启或新消息失效旧 claim 后必须直接恢复持久 compact_pending')
+assert.equal((await compactChatContextOnce(pendingRecoveryInput)).status, 'installed', '持久 compact_pending 必须重新 claim 并最终安装 checkpoint')
+
 for (let index = 5; index <= 6; index += 1) {
-  const now = `2026-07-13T01:1${index}:00.000Z`
+  const now = `2099-07-13T01:1${index}:00.000Z`
   const accepted = await acceptChatTurn(client, {
     conversationId,
     systemAccountId: ownerId,
@@ -161,7 +260,7 @@ assert.equal(secondResult.status, 'installed')
 const twiceCompacted = await loadChatModelContext(client, {
   conversationId,
   systemAccountId: ownerId,
-  now: '2026-07-13T01:20:00.000Z',
+  now: '2099-07-13T01:20:00.000Z',
   maxRows: 100,
   maxBytes: 4 * 1024 * 1024
 })
@@ -174,10 +273,10 @@ await createChatConversation(client, {
   systemAccountId: ownerId,
   apiKeyId: 'context_compaction_key',
   apiKeyNameSnapshot: '多页空字段降级测试', maxConversationsPerUser: 1000,
-  now: '2026-07-13T01:30:00.000Z'
+  now: '2099-07-13T01:30:00.000Z'
 })
 for (let index = 1; index <= 22; index += 1) {
-  const now = new Date(Date.UTC(2026, 6, 13, 1, 30, index)).toISOString()
+  const now = new Date(Date.UTC(2099, 6, 13, 1, 30, index)).toISOString()
   const accepted = await acceptChatTurn(client, {
     conversationId: emptyRequiredConversationId,
     systemAccountId: ownerId,
@@ -207,12 +306,16 @@ const emptyRequiredResult = await compactChatContextOnce({
   protocol: 'responses',
   effectiveContextLimitTokens: 32_000
 })
-assert.equal(emptyRequiredResult.status, 'installed')
+assert.equal(
+  emptyRequiredResult.status,
+  'installed',
+  emptyRequiredResult.status === 'failed' ? emptyRequiredResult.reason : `unexpected status: ${emptyRequiredResult.status}`
+)
 assert.equal(emptyRequiredCompactionCalls, 2, '42 条压缩来源消息必须分为两个完整轮次页面')
 const emptyRequiredStored = await loadChatModelContext(client, {
   conversationId: emptyRequiredConversationId,
   systemAccountId: ownerId,
-  now: '2026-07-13T01:40:00.000Z',
+  now: '2099-07-13T01:40:00.000Z',
   maxRows: 100,
   maxBytes: 4 * 1024 * 1024
 })
@@ -226,7 +329,7 @@ await createChatConversation(client, {
   systemAccountId: ownerId,
   apiKeyId: 'context_compaction_key',
   apiKeyNameSnapshot: '失败轮配对测试', maxConversationsPerUser: 1000,
-  now: '2026-07-13T02:00:00.000Z'
+  now: '2099-07-13T02:00:00.000Z'
 })
 const failedTurn = await acceptChatTurn(client, {
   conversationId: failedConversationId,
@@ -234,7 +337,7 @@ const failedTurn = await acceptChatTurn(client, {
   clientMessageId: 'failed_pair_1',
   userContent: '这轮会失败',
   model: 'context-compaction-model',
-  now: '2026-07-13T02:01:00.000Z',
+  now: '2099-07-13T02:01:00.000Z',
   storageQuotaBytes: 64 * 1024 * 1024, retentionDays: 7, maxTurnsPerConversation: 1000
 })
 await failChatTurn(client, {
@@ -243,7 +346,7 @@ await failChatTurn(client, {
   turnId: failedTurn.turnId,
   assistantContent: '',
   errorCode: 'mock_failed',
-  now: '2026-07-13T02:01:30.000Z'
+  now: '2099-07-13T02:01:30.000Z'
 })
 const successfulTurn = await acceptChatTurn(client, {
   conversationId: failedConversationId,
@@ -251,7 +354,7 @@ const successfulTurn = await acceptChatTurn(client, {
   clientMessageId: 'failed_pair_2',
   userContent: '失败后这轮必须保留',
   model: 'context-compaction-model',
-  now: '2026-07-13T02:02:00.000Z',
+  now: '2099-07-13T02:02:00.000Z',
   storageQuotaBytes: 64 * 1024 * 1024, retentionDays: 7, maxTurnsPerConversation: 1000
 })
 await completeChatTurn(client, {
@@ -261,14 +364,14 @@ await completeChatTurn(client, {
   assistantContent: '失败后的成功回答',
   finishReason: 'stop',
   traceId: 'failed_pair_trace',
-  now: '2026-07-13T02:02:30.000Z'
+  now: '2099-07-13T02:02:30.000Z'
 })
 const afterFailedTurn = await loadChatTransportHistory({
   client,
   conversationId: failedConversationId,
   systemAccountId: ownerId,
   protocol: 'responses',
-  now: '2026-07-13T02:03:00.000Z'
+  now: '2099-07-13T02:03:00.000Z'
 })
 assert.deepEqual(afterFailedTurn.history.map((message) => message.content), [[{ type: 'input_text', text: '失败后这轮必须保留' }], '失败后的成功回答'], 'Responses 历史用户纯文本必须固定为 input_text block，且失败轮不能打乱后续成功轮的配对')
 const afterFailedTurnChat = await loadChatTransportHistory({
@@ -276,7 +379,7 @@ const afterFailedTurnChat = await loadChatTransportHistory({
   conversationId: failedConversationId,
   systemAccountId: ownerId,
   protocol: 'chat_completions',
-  now: '2026-07-13T02:03:00.000Z'
+  now: '2099-07-13T02:03:00.000Z'
 })
 assert.deepEqual(afterFailedTurnChat.history.map((message) => message.content), ['失败后这轮必须保留', '失败后的成功回答'], 'Chat Completions 历史纯文本必须继续使用 string')
 
@@ -286,10 +389,10 @@ await createChatConversation(client, {
   systemAccountId: ownerId,
   apiKeyId: 'context_compaction_key',
   apiKeyNameSnapshot: '行数上限测试', maxConversationsPerUser: 1000,
-  now: '2026-07-13T03:00:00.000Z'
+  now: '2099-07-13T03:00:00.000Z'
 })
 for (let index = 1; index <= 258; index += 1) {
-  const now = new Date(Date.UTC(2026, 6, 13, 3, 0, index)).toISOString()
+  const now = new Date(Date.UTC(2099, 6, 13, 3, 0, index)).toISOString()
   const accepted = await acceptChatTurn(client, {
     conversationId: oversizedConversationId,
     systemAccountId: ownerId,
@@ -310,7 +413,7 @@ for (let index = 1; index <= 258; index += 1) {
   })
 }
 await assert.rejects(
-  loadChatTransportHistory({ client, conversationId: oversizedConversationId, systemAccountId: ownerId, protocol: 'responses', now: '2026-07-13T04:00:00.000Z' }),
+  loadChatTransportHistory({ client, conversationId: oversizedConversationId, systemAccountId: ownerId, protocol: 'responses', now: '2099-07-13T04:00:00.000Z' }),
   (error: unknown) => error instanceof ChatModelContextError && error.reason === 'load_limit',
   '超过 512 条消息时应返回可触发预压缩的明确原因'
 )
@@ -325,7 +428,7 @@ const rowLimitCompaction = await compactChatContextOnce({
   effectiveContextLimitTokens: 32_000
 })
 assert.equal(rowLimitCompaction.status, 'installed', '本地装载超过 512 条后仍必须能通过分页来源完成压缩')
-const rowLimitTransport = await loadChatTransportHistory({ client, conversationId: oversizedConversationId, systemAccountId: ownerId, protocol: 'responses', now: '2026-07-13T04:00:00.000Z' })
+const rowLimitTransport = await loadChatTransportHistory({ client, conversationId: oversizedConversationId, systemAccountId: ownerId, protocol: 'responses', now: '2099-07-13T04:00:00.000Z' })
 assert.match(JSON.stringify(rowLimitTransport.history), new RegExp(rememberedCode))
 
 const abortConversationId = 'context_compaction_abort_conversation'
@@ -334,10 +437,10 @@ await createChatConversation(client, {
   systemAccountId: ownerId,
   apiKeyId: 'context_compaction_key',
   apiKeyNameSnapshot: '压缩中断测试', maxConversationsPerUser: 1000,
-  now: '2026-07-13T05:00:00.000Z'
+  now: '2099-07-13T05:00:00.000Z'
 })
 for (let index = 1; index <= 2; index += 1) {
-  const now = new Date(Date.UTC(2026, 6, 13, 5, index)).toISOString()
+  const now = new Date(Date.UTC(2099, 6, 13, 5, index)).toISOString()
   const accepted = await acceptChatTurn(client, {
     conversationId: abortConversationId,
     systemAccountId: ownerId,

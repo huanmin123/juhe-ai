@@ -117,6 +117,8 @@ export interface OpenAIGatewayHandleOptions {
   settingsOverride?: Partial<GatewaySettings>
   disableAccountStateMutation?: boolean
   ignoreAccountRuntimeSuppression?: boolean
+  forwardModelsRequestToUpstream?: boolean
+  accountProbeModel?: string
   onUpstreamAttemptDiagnostic?: (lastAttempt: UpstreamAttempt) => void
 }
 

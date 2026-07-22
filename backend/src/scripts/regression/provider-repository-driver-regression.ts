@@ -90,13 +90,14 @@ function assertProviderEnabledPredicateBoundary(): void {
   const source = readFileSync(join(srcRoot, 'storage/provider.repository.ts'), 'utf8')
   assert.match(
     source,
-    /function providerEnabledPredicate\(client: DatabaseClient, column: string\): string \{[\s\S]*?client\.driver === 'postgres' \? 'TRUE' : '1'/,
-    '供应商异步查询必须按 DatabaseClient driver 生成 boolean enabled predicate'
+    /function providerEnabledPredicate\(_client: DatabaseClient, column: string\): string \{[\s\S]*?return `\$\{column\} = 1`/,
+    '供应商 enabled 字段在 SQLite 与 PostgreSQL schema 中均为 INTEGER，异步查询必须统一使用 1'
   )
+  assert.doesNotMatch(source, /providerEnabledPredicate[\s\S]{0,300}\bTRUE\b/, '供应商 INTEGER enabled 字段不得与 PostgreSQL boolean TRUE 比较')
   assert.equal(
     source.match(/providerEnabledPredicate\(client, '[^']+'\)/g)?.length,
     11,
-    '全部供应商异步 enabled 查询都必须复用 PostgreSQL boolean predicate'
+    '全部供应商异步 enabled 查询都必须复用 INTEGER predicate'
   )
 }
 

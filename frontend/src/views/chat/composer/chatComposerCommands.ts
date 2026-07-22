@@ -1,16 +1,17 @@
 import type { EditorState } from '@tiptap/pm/state'
 
-export interface ChatComposerCommand {
-  key: string
-  label: string
-  description: string
-  insert: string
-}
+export type ChatComposerCommand =
+  | { key: 'clear-input' | 'code'; kind: 'editor'; insert: string; label: string; description: string }
+  | { key: 'image'; kind: 'image'; label: string; description: string }
+  | { key: 'image-model' | 'compact' | 'clear'; kind: 'conversation'; action: 'set-image-model' | 'compact-context' | 'clear-conversation'; label: string; description: string }
 
 export const chatComposerCommands: ChatComposerCommand[] = [
-  { key: 'clear', label: '清空输入', description: '清除当前编辑内容', insert: '' },
-  { key: 'code', label: '代码块', description: '插入 Markdown 代码块', insert: '\n```\n\n```' },
-  { key: 'image', label: '添加图片', description: '粘贴或选择图片', insert: '' }
+  { key: 'clear-input', kind: 'editor', label: '清空输入', description: '清除当前编辑内容', insert: '' },
+  { key: 'code', kind: 'editor', label: '代码块', description: '插入 Markdown 代码块', insert: '\n```\n\n```' },
+  { key: 'image', kind: 'image', label: '添加图片', description: '粘贴或选择图片' },
+  { key: 'image-model', kind: 'conversation', action: 'set-image-model', label: '默认图像模型', description: '设置当前会话的图片生成模型' },
+  { key: 'compact', kind: 'conversation', action: 'compact-context', label: '压缩上下文', description: '整理当前会话的较早内容' },
+  { key: 'clear', kind: 'conversation', action: 'clear-conversation', label: '清空会话', description: '清除消息但保留会话壳' }
 ]
 
 export function filterChatComposerCommands(query: string): ChatComposerCommand[] {
