@@ -212,7 +212,7 @@ async function assertResponseInspectionFallbackToNextGroup(gatewayBaseUrl: strin
 
   const beforeCount = upstreamRequests.length
   const traceId = 'trace-route-response-inspection-fallback'
-  const response = await requestResponseStream(gatewayBaseUrl, apiKey.key, traceId)
+  const response = await requestResponseStream(gatewayBaseUrl, apiKey.key, traceId, true)
   assert.equal(response.status, 200, `响应检查当前号池耗尽后应切后备并成功，实际 ${response.status}: ${response.text}`)
   assert(response.text.includes('route stream ok'), `后备流式响应应返回成功内容：${response.text}`)
   assert(!response.text.includes('route-stream-pollution'), `写下游前被拦截的主号池污染事件不应泄露给客户端：${response.text}`)
@@ -962,12 +962,12 @@ async function assertModelSpecificAccountPreferred(gatewayBaseUrl: string, upstr
     failingUpstreamKeys.add(directUpstreamKey)
     const beforeFailoverCount = upstreamRequests.length
     const failoverResponse = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-model-specific-failover')
-    assert.equal(failoverResponse.status, 200, `显式支持模型账号失败后应继续切到映射账号，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
+    assert.equal(failoverResponse.status, 200, `推理端点不透明上游失败后应切换到可用候选，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
     const failoverRequests = upstreamRequests.slice(beforeFailoverCount)
     assert.deepEqual(
       failoverRequests.map((request) => request.accountKey),
       [directUpstreamKey, mappingUpstreamKey],
-      '显式支持模型账号真实上游失败后，应在同组继续尝试映射账号，不能影响客户端可用性'
+      '推理端点不透明失败应先记录显式账号失败，再切换到映射账号'
     )
   } finally {
     failingUpstreamKeys.delete(directUpstreamKey)
@@ -1049,12 +1049,12 @@ async function assertHighConcurrencyModelSpecificAccountPreferred(gatewayBaseUrl
     failingUpstreamKeys.add(directUpstreamKey)
     const beforeFailoverCount = upstreamRequests.length
     const failoverResponse = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', 'trace-route-hc-model-specific-failover')
-    assert.equal(failoverResponse.status, 200, `高并发号池显式支持模型账号失败后应继续切到映射账号，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
+    assert.equal(failoverResponse.status, 200, `高并发推理端点不透明失败后应切换到可用候选，实际 ${failoverResponse.status}: ${failoverResponse.text}`)
     const failoverRequests = upstreamRequests.slice(beforeFailoverCount)
     assert.deepEqual(
       failoverRequests.map((request) => request.accountKey),
       [directUpstreamKey, mappingUpstreamKey],
-      '高并发号池显式支持模型账号真实上游失败后，应继续尝试映射账号，不能影响客户端可用性'
+      '高并发推理端点不透明失败应切换到映射账号'
     )
   } finally {
     failingUpstreamKeys.delete(directUpstreamKey)
@@ -1810,13 +1810,21 @@ function createMockOpenAIUpstream(): http.Server {
   })
 }
 
-async function requestResponseStream(baseUrl: string, apiKey: string, traceId?: string): Promise<{ status: number; text: string }> {
+async function requestResponseStream(
+  baseUrl: string,
+  apiKey: string,
+  traceId?: string,
+  codexSemanticRetry = false
+): Promise<{ status: number; text: string }> {
   confirmPendingTestAccountsForGateway()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json',
+      ...(codexSemanticRetry
+        ? { 'x-codex-turn-metadata': JSON.stringify({ turn_id: `turn-${traceId ?? 'route-stream'}` }) }
+        : {}),
       ...(traceId ? { 'x-trace-id': traceId } : {})
     },
     body: JSON.stringify({

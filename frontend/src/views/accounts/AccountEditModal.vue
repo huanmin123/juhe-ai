@@ -70,6 +70,7 @@
           :auth-result="authResult"
           :editing="editing"
           :form="form"
+          :is-anthropic-o-auth="isAnthropicOAuthForm"
           :is-open-a-i="isOpenAIOAuthForm"
           :is-google-o-auth="form.type === 'google_oauth'"
           :model-options="modelOptions"
@@ -154,12 +155,15 @@
                 :mapping-source-model-options="mappingSourceModelOptions"
                 :mapping-upstream-model-options="mappingUpstreamModelOptions"
                 :proxy-options="proxyOptions"
+                :proxy-options-loading="proxyOptionsLoading"
                 :selected-protocol-profile="selectedProtocolProfile"
                 :authorized-editing="authorizedEditing"
                 @current-provider-model-options-open="$emit('model-options-open', $event)"
                 @current-provider-model-options-search="$emit('model-options-search', $event)"
                 @mapping-source-model-options-open="(protocol, open) => $emit('mapping-model-options-open', protocol, open)"
                 @mapping-source-model-options-search="(protocol, value) => $emit('mapping-model-options-search', protocol, value)"
+                @proxy-options-dropdown="$emit('proxyOptionsDropdown', $event)"
+                @proxy-options-search="$emit('proxyOptionsSearch', $event)"
               />
 
               <section class="form-section probe-toggle-row">
@@ -287,6 +291,7 @@ const props = withDefaults(defineProps<{
   hasAccountType: boolean
   isApiKeyForm: boolean
   isManagementView: boolean
+  isAnthropicOAuthForm: boolean
   isOAuthForm: boolean
   isTokenCredentialForm: boolean
   isOpenAIOAuthForm: boolean
@@ -299,6 +304,7 @@ const props = withDefaults(defineProps<{
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  proxyOptionsLoading?: boolean
   selectedProtocolProfile?: ProviderProtocolProfileDefinition
   selectedProvider?: ProviderDefinition
   testButtonDisabled?: boolean
@@ -417,6 +423,8 @@ const emit = defineEmits<{
   (event: 'model-capabilities-load', modelIds: string[]): void
   (event: 'mapping-model-options-open', protocol: 'openai' | 'anthropic' | 'gemini', open: boolean): void
   (event: 'mapping-model-options-search', protocol: 'openai' | 'anthropic' | 'gemini', value: string): void
+  (event: 'proxyOptionsDropdown', open: boolean): void
+  (event: 'proxyOptionsSearch', value: string): void
   (event: 'ok'): void
   (event: 'open-auth-url'): void
   (event: 'select-provider', providerCode: string): void

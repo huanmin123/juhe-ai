@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { getRequestLogger } from '../../../shared/request-context.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
@@ -261,7 +262,9 @@ export async function buildPreparedUpstreamRequestParts(
         }
       })
       await recordFailedUpstreamAttempt(req, usageContext, account, {
-        upstreamUrl: account.type === 'oauth' ? 'openai-oauth-codex:local-validation' : 'gateway:local-validation',
+        upstreamUrl: account.type === 'oauth' && isOpenAIProtocolProfile(account)
+          ? 'openai-oauth-codex:local-validation'
+          : 'gateway:local-validation',
         startedAt: Date.now(),
         statusCode: error.statusCode,
         bodyText: responseBodyText,

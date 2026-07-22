@@ -98,6 +98,7 @@ import {
 import { formatDateTime, isAuthorizedAccount } from './accountFormatters'
 import { accountScheduleSummary, accountScheduleTagColor } from './accountAvailabilitySchedule'
 import { accountMenuItemsWithClone, authorizedAccountOwnerBadgeText, authorizedAccountSourceToneClass, authorizedAccountTooltip, canReturnAuthorizedAccount } from './accountRules'
+import { accountProxyDisplay } from './accountProxyDisplay'
 
 const props = defineProps<{
   account: AccountSummary
@@ -126,18 +127,20 @@ const emit = defineEmits<{
   (event: 'toggle-selection'): void
 }>()
 
+const currentProxy = computed(() => accountProxyDisplay(props.account, props.proxy))
+
 const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''
-  return props.proxy?.name ?? '代理已配置'
+  return currentProxy.value?.name ?? '代理已配置'
 })
 const proxyTooltip = computed(() => {
   if (props.account.proxyProfileErrorMessage) return props.account.proxyProfileErrorMessage
   if (props.account.proxyProfileUnavailable) return '代理不可用，请到代理管理确认配置'
-  if (props.proxy?.enabled === false) return '代理已停用，请启用代理或更换账户代理'
-  if (props.proxy) return `${props.proxy.name}（${props.proxy.type}）`
+  if (currentProxy.value?.enabled === false) return '代理已停用，请启用代理或更换账户代理'
+  if (currentProxy.value) return `${currentProxy.value.name}（${currentProxy.value.type}）`
   return '代理配置不存在或当前不可见'
 })
-const proxyToneClass = computed(() => (props.account.proxyProfileUnavailable || props.proxy?.enabled === false ? 'proxy-error' : ''))
+const proxyToneClass = computed(() => (props.account.proxyProfileUnavailable || currentProxy.value?.enabled === false ? 'proxy-error' : ''))
 const priorityText = computed(() => {
   if (!props.account.fallbackEnabled) return String(props.account.priority)
   return `${props.account.priority} / ${props.account.status === 'active' && props.account.schedulable ? '备用' : '备用暂停'}`

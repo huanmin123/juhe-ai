@@ -266,6 +266,15 @@ export function decideAccountErrorPolicy(
   }
 }
 
+export function accountErrorPolicyCouldMatchStatus(
+  account: AccountErrorPolicyAccount,
+  statusCode: number
+): boolean {
+  if (statusCode >= 200 && statusCode <= 299) return false
+  return normalizeAccountErrorHandlingRules(account.credentials.error_handling_rules)
+    .some((rule) => rule.enabled && (!rule.status_codes?.length || rule.status_codes.includes(statusCode)))
+}
+
 function accountErrorPolicyPayload(
   bodyText: string,
   headers: Headers,

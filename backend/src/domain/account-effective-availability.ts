@@ -2,12 +2,13 @@ import type {
   AccountEffectiveAvailability,
   AccountEffectiveAvailabilityBlockerScope,
   AccountEffectiveAvailabilityStatus,
+  AccountRuntimeAvailability,
   AccountSummary,
   AuthorizationStatus
 } from './types.js'
 import { accountAvailabilityPresentation } from './account-status-presentation.js'
 
-export type AccountEffectiveAvailabilityInput = Pick<
+export type AccountEffectiveAvailabilityInput = Omit<Pick<
   AccountSummary,
   | 'id'
   | 'permissions'
@@ -51,7 +52,9 @@ export type AccountEffectiveAvailabilityInput = Pick<
   | 'lastErrorTraceId'
   | 'cooldownRetestLastAt'
   | 'cooldownRetestLastStatusCode'
->
+>, 'runtimeAvailability'> & {
+  runtimeAvailability?: AccountRuntimeAvailability
+}
 
 export function accountSummaryWithEffectiveAvailability<T extends AccountEffectiveAvailabilityInput>(
   account: T,
@@ -224,20 +227,20 @@ function runtimeAvailability(account: AccountEffectiveAvailabilityInput): Accoun
       color: 'gold',
       blockerScope: 'runtime',
       reason: runtime.reason || '当前账号近期失败，正常候选不足时才会兜底尝试',
-      retryAt: runtime.until
+      retryAt: undefined
     }
   }
   if (status === 'precheck_pending') {
-    return blocked('runtime_precheck_pending', '待探针确认', 'blue', 'runtime', runtime.reason || '当前网关正在执行事前探针确认', runtime.until)
+    return blocked('runtime_precheck_pending', '待探针确认', 'blue', 'runtime', runtime.reason || '当前网关正在执行事前探针确认')
   }
   if (status === 'local_suppressed') {
-    return blocked('runtime_local_suppressed', '短暂避让', 'gold', 'runtime', runtime.reason || '当前网关短窗口内临时避让该账户', runtime.until)
+    return blocked('runtime_local_suppressed', '短暂避让', 'gold', 'runtime', runtime.reason || '当前网关短窗口内临时避让该账户')
   }
   if (status === 'half_open') {
-    return blocked('runtime_half_open', '半开探测', 'blue', 'runtime', runtime.reason || '当前网关已放行一个请求确认账户是否恢复', runtime.until)
+    return blocked('runtime_half_open', '半开探测', 'blue', 'runtime', runtime.reason || '当前网关已放行一个请求确认账户是否恢复')
   }
   if (status === 'precheck_failed') {
-    return blocked('runtime_precheck_failed', '探针确认失败', 'gold', 'runtime', runtime.reason || '最近事前探针确认失败，当前网关暂不调度该账户', runtime.until)
+    return blocked('runtime_precheck_failed', '探针确认失败', 'gold', 'runtime', runtime.reason || '最近事前探针确认失败，当前网关暂不调度该账户')
   }
   return undefined
 }

@@ -455,11 +455,14 @@ export interface AccountOAuthUsageSnapshot {
 
 export type AccountRuntimeAvailabilityStatus = 'normal' | 'degraded' | 'local_suppressed' | 'half_open' | 'precheck_pending' | 'precheck_failed'
 
-export interface AccountRuntimeAvailability {
+export interface PublicAccountRuntimeAvailability {
   status: AccountRuntimeAvailabilityStatus
   reason?: string
   since?: string
-  until?: string
+  probePresentation?: Pick<AccountRuntimeProbePresentation, 'lastObservation' | 'schedule'>
+}
+
+export interface AccountRuntimeAvailability extends PublicAccountRuntimeAvailability {
   failureCount?: number
   distinctClientIpCount?: number
   distinctApiKeyCount?: number
@@ -651,7 +654,7 @@ export interface AccountSummary {
   concurrencyLimit: number
   currentConcurrency: number
   currentConcurrencyAvailable?: boolean
-  runtimeAvailability?: AccountRuntimeAvailability
+  runtimeAvailability?: PublicAccountRuntimeAvailability
   effectiveAvailability: AccountEffectiveAvailability
   availabilityPresentation?: AccountAvailabilityPresentation
   priority: number
@@ -674,6 +677,9 @@ export interface AccountSummary {
   qualityLastErrorMessage?: string
   qualityUpdatedAt?: string
   proxyProfileId?: string
+  proxyProfileName?: string
+  proxyProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
+  proxyProfileEnabled?: boolean
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
   schedulable: boolean
@@ -1488,7 +1494,6 @@ export interface RouteStrategyGroupBindingSummary {
 }
 
 export interface RouteStrategySpeedFirstConfig {
-  firstByteThresholdMs: number
   slowTriggerCount: number
   slowWindowSeconds: number
   recoverySuccessCount: number
@@ -1499,6 +1504,7 @@ export interface RouteStrategySpeedFirstConfig {
 
 export interface RouteStrategyNormalRoutingConfig {
   schedulingPreference: RouteStrategyNormalSchedulingPreference
+  firstByteDeadlineMs: number
   speedFirstConfig?: RouteStrategySpeedFirstConfig
 }
 
@@ -1533,11 +1539,20 @@ export interface RouteStrategyListItem {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
-  groupBindingPreview: RouteStrategyGroupBindingPreview[]
-  bindingCount: number
-  apiKeyCount?: number
   createdAt: string
   updatedAt: string
+}
+
+export interface RouteStrategyListSnapshotItem {
+  id: string
+  bindingCount: number
+  apiKeyCount: number
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+}
+
+export interface RouteStrategyListSnapshotResult {
+  generatedAt: string
+  items: RouteStrategyListSnapshotItem[]
 }
 
 export interface RouteStrategyOptionSummary {

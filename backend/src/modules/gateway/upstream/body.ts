@@ -34,6 +34,11 @@ export interface LimitedBodyReadResult {
   firstByteMs?: number
 }
 
+export interface ReplayableLimitedBodyReadResult extends LimitedBodyReadResult {
+  replayBody: AsyncIterable<Uint8Array> | null
+  close: () => Promise<void>
+}
+
 export interface ResponseWriteResult {
   bytes: number
   backpressure: boolean
@@ -491,6 +496,81 @@ export async function readUpstreamBodyLimited(
     truncated,
     readBytes,
     firstByteMs
+  }
+}
+
+export async function readUpstreamBodyForPolicyInspection(
+  upstreamBody: AsyncIterable<Uint8Array> | null,
+  input: {
+    maxBytes?: number
+    signal?: AbortSignal
+  } = {}
+): Promise<ReplayableLimitedBodyReadResult> {
+  if (!upstreamBody) {
+    return {
+      ...emptyLimitedBodyReadResult(),
+      replayBody: null,
+      close: async () => {}
+    }
+  }
+
+  const maxBytes = Math.max(0, input.maxBytes ?? upstreamErrorBodyCaptureBytes)
+  const iterator = upstreamBody[Symbol.asyncIterator]()
+  const replayChunks: Buffer[] = []
+  const capture = new LimitedBufferCapture(maxBytes)
+  let readBytes = 0
+  let completed = false
+  let closed = false
+
+  const close = async () => {
+    if (closed || completed) return
+    closed = true
+    await closeAsyncIterator(iterator)
+  }
+
+  try {
+    while (!capture.isTruncated()) {
+      const result = await readStreamChunkWithAbort(iterator, input.signal)
+      if (result.done) {
+        completed = true
+        break
+      }
+      const chunk = bufferFromUint8Array(result.value)
+      replayChunks.push(chunk)
+      readBytes += chunk.length
+      capture.push(chunk)
+    }
+  } catch (error) {
+    await close()
+    throw error
+  }
+
+  const replayBody = (async function* (): AsyncGenerator<Uint8Array> {
+    try {
+      for (const chunk of replayChunks) yield chunk
+      while (!completed && !closed) {
+        const result = await readStreamChunkWithAbort(iterator, input.signal)
+        if (result.done) {
+          completed = true
+          break
+        }
+        yield bufferFromUint8Array(result.value)
+      }
+    } finally {
+      await close()
+    }
+  })()
+  const body = capture.buffer()
+  const bodyText = body.toString('utf8')
+  const truncated = capture.isTruncated()
+  return {
+    body,
+    bodyText,
+    diagnosticBodyText: truncated ? `${bodyText}\n[truncated]` : bodyText,
+    truncated,
+    readBytes,
+    replayBody,
+    close
   }
 }
 

@@ -456,7 +456,7 @@ function assertStrictRedisCacheBoundaries(): void {
 
   const usageRecordsSource = source('modules/gateway/usage/records.ts')
   assert.match(functionBody(usageRecordsSource, 'canUseSynchronousCatalogPricingInGatewayRequest'), /runtimeConfig\.cacheDriver !== 'redis'/, '高性能网关请求链路不能同步读取模型目录计算 usage 成本')
-  assert.match(functionBody(usageRecordsSource, 'dispatchUsageRecord'), /dispatchGatewayUsageFinalization\(\{/, '网关使用记录必须进入有界、可追踪、可排空的异步收尾队列')
+  assert.match(functionBody(usageRecordsSource, 'dispatchUsageRecord'), /await dispatchGatewayUsageFinalization\(\{/, '网关使用记录必须进入有界、可追踪、可排空的异步收尾队列')
   const usageFinalizationSource = source('modules/gateway/usage/failure-finalization.service.ts')
   assert.match(usageFinalizationSource, /gatewayUsageFinalizationMaxItems\s*=\s*2048/, '网关使用记录异步收尾必须有数量上限')
   assert.match(usageFinalizationSource, /gatewayUsageFinalizationMaxBytes\s*=\s*64 \* 1024 \* 1024/, '网关使用记录异步收尾必须有字节上限')

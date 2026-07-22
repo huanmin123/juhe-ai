@@ -84,6 +84,17 @@ assert.deepEqual(
 )
 assert.deepEqual(
   defaultAnthropicEndpointModes({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+    accountType: 'oauth',
+    protocolCode: ANTHROPIC_PROTOCOL_CODE,
+    protocolVersion: ANTHROPIC_PROTOCOL_VERSION
+  }),
+  ['messages_json', 'messages_sse', 'message_token_counting'],
+  '官方 Anthropic OAuth 默认应保留与 API Key 一致的 Messages JSON/Streaming 和 count_tokens 能力'
+)
+assert.deepEqual(
+  defaultAnthropicEndpointModes({
     providerCode: DEEPSEEK_PROVIDER_CODE,
     providerProtocolProfileId: DEEPSEEK_ANTHROPIC_V1_PROFILE_ID,
     accountType: 'api_key',
@@ -136,22 +147,26 @@ assert.throws(
 )
 assert.throws(
   () => assertAnthropicEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
-  /Anthropic API Key 账户上游接口能力不支持：chat_json/,
+  /Anthropic 账户上游接口能力不支持：chat_json/,
   'Anthropic 上游接口能力兼容校验必须返回统一文案'
 )
 assert.throws(
   () => assertGeminiEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
-  /Gemini API Key 账户上游接口能力不支持：chat_json/,
+  /Gemini 账户上游接口能力不支持：chat_json/,
   'Gemini 上游接口能力兼容校验必须返回统一文案'
 )
 assert.throws(
   () => assertAnthropicEndpointModesCompatible({ modes: ['message_token_counting'], accountType: 'api_key' }),
-  /Anthropic API Key 账户上游接口能力必须至少启用 Messages API/,
+  /Anthropic 账户上游接口能力必须至少启用 Messages API/,
   'Anthropic 必选上游接口能力校验必须返回统一文案'
+)
+assert.doesNotThrow(
+  () => assertAnthropicEndpointModesCompatible({ modes: ['messages_json', 'messages_sse'], accountType: 'oauth' }),
+  'Anthropic OAuth 应允许保存 Messages JSON/Streaming 能力'
 )
 assert.throws(
   () => assertGeminiEndpointModesCompatible({ modes: ['count_tokens'], accountType: 'api_key' }),
-  /Gemini API Key 账户上游接口能力必须至少启用 generateContent JSON/,
+  /Gemini 账户上游接口能力必须至少启用 generateContent、streamGenerateContent 或 Interactions/,
   'Gemini 必选上游接口能力校验必须返回统一文案'
 )
 assert.throws(
@@ -419,7 +434,7 @@ const accountCredentialsNormalizationSource = readFileSync(resolve('src/storage/
 assert.match(accountCredentialsNormalizationSource, /providerAccountCredentialDriverForContext/)
 assert.doesNotMatch(accountCredentialsNormalizationSource, /normalizeOpenAIEndpointModesForWrite/)
 assert.doesNotMatch(accountCredentialsNormalizationSource, /normalizeAnthropicEndpointModesForWrite/)
-assert.doesNotMatch(accountCredentialsNormalizationSource, /isAnthropicProtocolProfile/)
+assert.match(accountCredentialsNormalizationSource, /isAnthropicProtocolProfile/)
 const accountCredentialDriverRegistrySource = readFileSync(resolve('src/modules/providers/drivers/account-credentials.registry.ts'), 'utf8')
 assert.match(accountCredentialDriverRegistrySource, /openAICompatibleAccountCredentialDriver/)
 assert.match(accountCredentialDriverRegistrySource, /gptAccountCredentialDriver/)

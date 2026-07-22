@@ -95,7 +95,8 @@ export function resolveOpenAIGatewayClientStrategy(
     ? buildCodexTurnContext(req, identity, codexMetadata)
     : undefined
 
-  const clientProfile = codexTurn ? 'codex' : 'generic_openai'
+  const explicitProfile = parseGatewayClientProfileHeader(req.header(gatewayClientProfileHeader))
+  const clientProfile = codexTurn || explicitProfile === 'codex' ? 'codex' : 'generic_openai'
   return {
     clientProfile,
     requestClientCompatibility: codexTurn ? 'codex_responses' : 'openai_standard',
@@ -103,7 +104,7 @@ export function resolveOpenAIGatewayClientStrategy(
     upstreamAdapter: 'openai_mixed',
     codexCompactionExpected: Boolean(codexTurn) && codexCompactionExpected,
     codexTurn,
-    clientProfileSource: codexTurn ? 'codex_turn_metadata' : 'default',
+    clientProfileSource: codexTurn ? 'codex_turn_metadata' : explicitProfile === 'codex' ? 'explicit_header' : 'default',
     retryCoordination: resolveGatewayClientRetryCoordination(clientProfile, downstreamProtocol),
     allowCodexTurnAccountAvoidance: Boolean(codexTurn)
   }
@@ -244,6 +245,7 @@ export function openAIGatewayClientStrategyAuditMetadata(
 
 function parseGatewayClientProfileHeader(value: string | undefined): OpenAIGatewayClientProfile | undefined {
   const normalized = stringValue(value)?.toLowerCase().replace(/[-\s]+/g, '_')
+  if (normalized === 'codex') return 'codex'
   if (normalized === 'claude_code') return 'claude_code'
   if (normalized === 'gemini_cli') return 'gemini_cli'
   return undefined

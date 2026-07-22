@@ -5,6 +5,7 @@ import { isGptVendorCode } from '../domain/provider-protocol.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { accountCredentialsForList, accountRowSelectColumns, findAccountRowForAccess, hydrateAccountRowsWithQualityState, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
@@ -55,10 +56,20 @@ export interface AccountListResult {
   pageSize: number
 }
 
+interface AccountProxyProfileDisplay {
+  id: string
+  name: string
+  type: NonNullable<AccountSummary['proxyProfileType']>
+  enabled: boolean
+}
+
+const proxyProfileUnavailableMessage = '代理不存在或已停用，请选择一个已启用的代理'
+
 interface AccountSummaryBuildOptions {
   includeCredentials?: boolean
   listProjection?: boolean
   authorizedContext?: AuthorizedAccountSummaryContext
+  proxyProfileDisplays?: Map<string, AccountProxyProfileDisplay>
 }
 
 interface AuthorizedAccountSummaryContext {
@@ -443,6 +454,7 @@ async function authorizedAccountSummaryFromRowAsync(
   const todayUsage = row.authorization_id
     ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
     : emptyAccountUsageSummary()
+  const proxyDisplays = options.proxyProfileDisplays ?? await loadAccountProxyProfileDisplaysAsync(client, [row])
   return accountSummaryWithEffectiveAvailability({
     id: row.id,
     configRevision: Number(row.config_revision ?? 1),
@@ -471,6 +483,7 @@ async function authorizedAccountSummaryFromRowAsync(
     healthCheckModel: row.health_check_model.trim(),
     healthCheckEndpointMode: row.health_check_endpoint_mode,
     proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
+    ...accountProxyProfileDisplayFields(accountResourceProxyProfileId(row), proxyDisplays, canAccessAll(access)),
     schedulable: effectiveAuthorizedSchedulable,
     availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
     accountExpiresAt: row.account_expires_at ?? undefined,
@@ -793,13 +806,15 @@ async function accountSummariesFromRowsAsync(
   if (!rows.length) return []
   const ownerRows = rows.filter((row) => row.access_type !== 'authorized')
   const authorizedRows = rows.filter((row) => row.access_type === 'authorized')
+  const proxyProfileDisplays = options.proxyProfileDisplays ?? await loadAccountProxyProfileDisplaysAsync(client, rows)
   const [ownerSummaries, authorizedContext] = await Promise.all([
-    ownerAccountSummariesFromRowsAsync(client, ownerRows, access, options),
+    ownerAccountSummariesFromRowsAsync(client, ownerRows, access, { ...options, proxyProfileDisplays }),
     loadAuthorizedAccountSummaryContextAsync(client, authorizedRows, access, options)
   ])
   const authorizedSummaries = await Promise.all(authorizedRows.map((row) => authorizedAccountSummaryFromRowAsync(client, row, access, {
     ...options,
-    authorizedContext
+    authorizedContext,
+    proxyProfileDisplays
   })))
   const summariesByRowKey = new Map<string, AccountSummary>()
   for (const summary of ownerSummaries) {
@@ -858,7 +873,9 @@ async function loadAuthorizedAccountSummaryContextAsync(
     loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, rows),
     loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
     loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)),
+    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)).catch((error) =>
+      accountCurrentConcurrencySnapshotFallback(error, rows.map((row) => row.id))
+    ),
     loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(factAccountIds)
   ])
   void access
@@ -890,6 +907,7 @@ async function ownerAccountSummariesFromRowsAsync(
   const includeCredentials = options.includeCredentials ?? true
   const listProjection = options.listProjection === true
   const accountIds = rows.map((row) => row.id)
+  const proxyProfileDisplays = options.proxyProfileDisplays ?? await loadAccountProxyProfileDisplaysAsync(client, rows)
   const includeAccountNames = includeSystemAccountFields(access)
   const timezone = await usageStatsTimezoneAsync()
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
@@ -913,7 +931,9 @@ async function ownerAccountSummariesFromRowsAsync(
     loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds).catch((error) =>
+      accountCurrentConcurrencySnapshotFallback(error, accountIds)
+    ),
     loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
     listProjection ? Promise.resolve(new Map()) : loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
   ])
@@ -953,6 +973,7 @@ async function ownerAccountSummariesFromRowsAsync(
       healthCheckModel: row.health_check_model.trim(),
       healthCheckEndpointMode: row.health_check_endpoint_mode,
       proxyProfileId: row.proxy_profile_id ?? undefined,
+      ...accountProxyProfileDisplayFields(row.proxy_profile_id, proxyProfileDisplays, canAccessAll(access)),
       schedulable: row.schedulable === 1,
       availabilitySchedule: parseAccountAvailabilityScheduleJson(row.availability_schedule_json),
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -991,6 +1012,17 @@ async function ownerAccountSummariesFromRowsAsync(
       authorizationTeamCount: 0
     })
   })
+}
+
+function accountCurrentConcurrencySnapshotFallback(error: unknown, accountIds: string[]): Map<string, number> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    throw error
+  }
+  logger.warn(errorLogFields(error, {
+    event: 'account_list_redis_concurrency_snapshot_unavailable',
+    accountCount: new Set(accountIds.filter(Boolean)).size
+  }), 'Redis 账号并发快照不可用，账户列表按未知并发返回')
+  return new Map<string, number>()
 }
 
 function ownerAccountListFilters(
@@ -1430,6 +1462,7 @@ function accountSummariesFromRows(
         row.authorization_instance_owner_system_account_id ?? ''
       ]))
     : new Map<string, string>()
+  const proxyProfileDisplays = loadAccountProxyProfileDisplays(rows)
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
     const usage = isAuthorizedView && row.authorization_id
@@ -1506,6 +1539,7 @@ function accountSummariesFromRows(
       qualityLastErrorMessage: row.quality_last_error_message ?? undefined,
       qualityUpdatedAt: row.quality_updated_at ?? undefined,
       proxyProfileId: accountResourceProxyProfileId(row) ?? undefined,
+    ...accountProxyProfileDisplayFields(accountResourceProxyProfileId(row), proxyProfileDisplays, canAccessAll(access)),
       schedulable: isAuthorizedView ? effectiveAuthorizedSchedulable && authorizationQuotaExceeded !== true : effectiveAuthorizedSchedulable,
       availabilitySchedule,
       accountExpiresAt: row.account_expires_at ?? undefined,
@@ -1593,6 +1627,100 @@ function loadAccountListStatsMap<T>(
       throw error
     }
     throw accountListStatsBusyError(lookupName, error)
+  }
+}
+
+
+function accountProxyProfileIds(rows: AccountListRow[]): string[] {
+  return [...new Set(rows.map((row) => accountResourceProxyProfileId(row) ?? '').filter(Boolean))]
+}
+
+function accountProxyProfileDisplayFields(
+  proxyProfileId: string | null | undefined,
+  displays: Map<string, AccountProxyProfileDisplay>,
+  canViewDisabled: boolean
+): Pick<AccountSummary, 'proxyProfileName' | 'proxyProfileType' | 'proxyProfileEnabled' | 'proxyProfileUnavailable' | 'proxyProfileErrorMessage'> {
+  if (!proxyProfileId) return {}
+  const display = displays.get(proxyProfileId)
+  if (!display) {
+    return {
+      proxyProfileUnavailable: true,
+      proxyProfileErrorMessage: proxyProfileUnavailableMessage
+    }
+  }
+  if (display.enabled || canViewDisabled) {
+    return {
+      proxyProfileName: display.name,
+      proxyProfileType: display.type,
+      proxyProfileEnabled: display.enabled,
+      ...(display.enabled ? {} : {
+        proxyProfileUnavailable: true,
+        proxyProfileErrorMessage: proxyProfileUnavailableMessage
+      })
+    }
+  }
+  return {
+    proxyProfileUnavailable: true,
+    proxyProfileErrorMessage: proxyProfileUnavailableMessage
+  }
+}
+
+function loadAccountProxyProfileDisplays(rows: AccountListRow[]): Map<string, AccountProxyProfileDisplay> {
+  const ids = accountProxyProfileIds(rows)
+  if (!ids.length) return new Map()
+  const database = getBusinessDatabase()
+  const displays = new Map<string, AccountProxyProfileDisplay>()
+  for (const chunk of chunkValues(ids, 900)) {
+    const chunkRows = database.prepare(`
+      SELECT id, name, type, enabled
+      FROM proxy_profiles
+      WHERE id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as Array<{ id: string; name: string; type: string; enabled: number }>
+    for (const row of chunkRows) {
+      const type = accountProxyProfileType(row.type)
+      if (!type) continue
+      displays.set(row.id, { id: row.id, name: row.name, type, enabled: row.enabled === 1 })
+    }
+  }
+  return displays
+}
+
+async function loadAccountProxyProfileDisplaysAsync(
+  client: DatabaseClient,
+  rows: AccountListRow[]
+): Promise<Map<string, AccountProxyProfileDisplay>> {
+  const ids = accountProxyProfileIds(rows)
+  if (!ids.length) return new Map()
+  const displays = new Map<string, AccountProxyProfileDisplay>()
+  for (const chunk of chunkValues(ids, 900)) {
+    const chunkRows = await client.query<{ id: string; name: string; type: string; enabled: boolean | number }>(`
+      SELECT id, name, type, enabled
+      FROM ${accountSummaryTable(client, 'proxy_profiles')}
+      WHERE id IN (${chunk.map(() => '?').join(', ')})
+    `, chunk)
+    for (const row of chunkRows) {
+      const type = accountProxyProfileType(row.type)
+      if (!type) continue
+      displays.set(row.id, {
+        id: row.id,
+        name: row.name,
+        type,
+        enabled: row.enabled === true || row.enabled === 1
+      })
+    }
+  }
+  return displays
+}
+
+function accountProxyProfileType(value: string): NonNullable<AccountSummary['proxyProfileType']> | undefined {
+  switch (value) {
+  case 'http':
+  case 'https':
+  case 'socks5':
+  case 'socks5h':
+    return value
+  default:
+    return undefined
   }
 }
 

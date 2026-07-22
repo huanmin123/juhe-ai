@@ -34,7 +34,7 @@ try {
   seedNewUsageSources(range.endDate)
 
   const before = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
-  assert.equal(before.summary.requestCount, 1, '测试前应读到已发布 summary 窗口')
+  assert.equal(before.summary.requestCount, 5, 'summary 应直接读取最新 daily 聚合数据')
   assert.equal(before.hourlyTrend[0]?.requestCount, 1, '测试前应读到已发布 trend 窗口')
   assert.equal(before.modelDistribution[0]?.requestCount, 1, '测试前应读到已发布 model 窗口')
   assert.equal(before.errors[0]?.errorCount, 1, '测试前应读到已发布 error 窗口')
@@ -57,7 +57,7 @@ try {
   }
 
   const afterFailure = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
-  assert.equal(afterFailure.summary.requestCount, 1, '概览窗口 stage 失败后 summary 不应单独发布为新数据')
+  assert.equal(afterFailure.summary.requestCount, 5, '概览窗口 stage 失败不应影响直接读取的 daily summary')
   assert.equal(afterFailure.hourlyTrend[0]?.requestCount, 1, '概览窗口 stage 失败后 trend 应保留原有数据')
   assert.equal(afterFailure.modelDistribution[0]?.requestCount, 1, '概览窗口 stage 失败后 model 排行应保留原有数据')
   assert.equal(afterFailure.errors[0]?.errorCount, 1, '概览窗口 stage 失败后 error 排行应保留原有数据')
@@ -89,7 +89,7 @@ try {
     errorCount: 2
   })
 
-  console.log('用量概览窗口原子发布回归通过：概览四类窗口同一 stage 内失败不会半发布')
+  console.log('用量概览窗口原子发布回归通过：窗口表同一 stage 内失败不会半发布，daily summary 保持可读')
 } finally {
   try {
     databaseModule.getBusinessDatabase().close()

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { createApiKey, encryptJson, hashPassword, hashSecret } from '../crypto.js'
-import { HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { providerModelCatalogId } from '../provider-model-catalog-id.js'
 import {
@@ -91,6 +91,18 @@ export function seedDefaults(database: DatabaseSync): void {
     )
     providerDefaultsStatement.run(defaultSupportedModelsJson, now, provider.code)
   }
+  database.prepare(`
+    UPDATE providers
+    SET default_supported_models_json = json_insert(default_supported_models_json, '$[#]', ?), updated_at = ?
+    WHERE code = ?
+      AND json_valid(default_supported_models_json)
+      AND json_type(default_supported_models_json) = 'array'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM json_each(default_supported_models_json)
+        WHERE value = ?
+      )
+  `).run('codex-auto-review', now, GPT_VENDOR_CODE, 'codex-auto-review')
 
   const modelStatement = database.prepare(`
     INSERT OR IGNORE INTO provider_model_catalog (

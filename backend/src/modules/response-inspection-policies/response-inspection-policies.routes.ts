@@ -6,9 +6,11 @@ import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
   createResponseInspectionPolicyAsync,
   deleteResponseInspectionPolicyAsync,
+  getResponseInspectionPolicyDetailAsync,
   listResponseInspectionPoliciesAsync,
+  listResponseInspectionPolicyProviderOptionsAsync,
   updateResponseInspectionPolicyAsync,
-  type ResponseInspectionPolicySummary
+  type ResponseInspectionPolicyDetail
 } from '../../storage/response-inspection-policy.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
@@ -91,10 +93,28 @@ const policyBodySchema = z.object({
 responseInspectionPoliciesRouter.get('/', async (_req, res, next) => {
   try {
     const result = await listResponseInspectionPoliciesAsync()
-    res.json(ok({
-      defaultRules: result.defaultRules.map(publicPolicySummary),
-      policies: result.policies.map(publicPolicySummary)
-    }))
+    res.json(ok(result))
+  } catch (error) {
+    next(error)
+  }
+})
+
+responseInspectionPoliciesRouter.get('/provider-options', async (_req, res, next) => {
+  try {
+    res.json(ok(await listResponseInspectionPolicyProviderOptionsAsync()))
+  } catch (error) {
+    next(error)
+  }
+})
+
+responseInspectionPoliciesRouter.get('/:id', async (req, res, next) => {
+  try {
+    const policy = await getResponseInspectionPolicyDetailAsync(req.params.id)
+    if (!policy) {
+      res.status(404).json({ message: '响应检查策略不存在' })
+      return
+    }
+    res.json(ok(policy))
   } catch (error) {
     next(error)
   }
@@ -115,7 +135,7 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略参数无效')))
     return
   }
-  let policy: ResponseInspectionPolicySummary
+  let policy: ResponseInspectionPolicyDetail
   try {
     policy = await createResponseInspectionPolicyAsync(parsed.data)
   } catch (error) {
@@ -130,7 +150,7 @@ responseInspectionPoliciesRouter.post('/', mutationGuard({
     safeChange('enabled', '启用状态', undefined, policy.enabled),
     safeChange('priority', '优先级', undefined, policy.priority)
   ])
-  res.status(201).json(ok(publicPolicySummary(policy)))
+  res.status(201).json(ok(policy))
 })
 
 responseInspectionPoliciesRouter.put('/:id', mutationGuard({
@@ -151,7 +171,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '响应检查策略参数无效')))
     return
   }
-  let policy: ResponseInspectionPolicySummary | undefined
+  let policy: ResponseInspectionPolicyDetail | undefined
   try {
     policy = await updateResponseInspectionPolicyAsync(req.params.id, parsed.data)
   } catch (error) {
@@ -170,7 +190,7 @@ responseInspectionPoliciesRouter.put('/:id', mutationGuard({
     safeChange('enabled', '启用状态', undefined, policy.enabled),
     safeChange('priority', '优先级', undefined, policy.priority)
   ])
-  res.json(ok(publicPolicySummary(policy)))
+  res.json(ok(policy))
 })
 
 responseInspectionPoliciesRouter.delete('/:id', mutationGuard({
@@ -218,10 +238,4 @@ function operationActionText(action: 'create' | 'update' | 'delete'): string {
   if (action === 'create') return '创建'
   if (action === 'update') return '更新'
   return '删除'
-}
-
-type PublicResponseInspectionPolicySummary = ResponseInspectionPolicySummary
-
-function publicPolicySummary(policy: ResponseInspectionPolicySummary): PublicResponseInspectionPolicySummary {
-  return policy
 }

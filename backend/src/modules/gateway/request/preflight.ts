@@ -106,12 +106,14 @@ import {
   consumeAuthenticatedModelsRateLimit,
   type AuthenticatedModelsRateLimitDecision
 } from '../runtime/authenticated-models-rate-limit.service.js'
-import {
-  createSameAccountRetryBudget,
-  type SameAccountRetryBudget
-} from '../dispatch/upstream-dispatch.js'
 import { normalRouteSpeedFirstAppliesToLane } from '../policy/speed-first-lane.js'
+import type { NormalRouteSpeedFirstRuntimeConfig } from '../runtime/normal-route-latency-degradation.service.js'
 import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
+import {
+  GatewayRequestAttemptTracker,
+  GatewayRequestWallBudget,
+  RouteCoordinationBudget
+} from '../routing/route-coordination.js'
 import { GatewayDownstreamCommitState } from '../response/downstream-commit-state.js'
 import { createGatewaySseWaitHeartbeatObserver } from '../response/sse-wait-heartbeat.js'
 
@@ -134,8 +136,10 @@ interface OpenAIGatewayRequestPreflightOptions {
   ignoreAccountRuntimeSuppression?: boolean
   forwardModelsRequestToUpstream?: boolean
   accountProbeModel?: string
-  sameAccountRetryBudget?: SameAccountRetryBudget
   serverRetryBudget?: ServerRetryBudget
+  gatewayRequestWallBudget?: GatewayRequestWallBudget
+  routeCoordinationBudget?: RouteCoordinationBudget
+  requestAttemptTracker?: GatewayRequestAttemptTracker
   downstreamCommitState?: GatewayDownstreamCommitState
 }
 
@@ -162,7 +166,7 @@ export interface OpenAIGatewayDispatchContext {
   modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
-  normalRouteSpeedFirstConfig?: RouteStrategySpeedFirstConfig
+  normalRouteSpeedFirstConfig?: NormalRouteSpeedFirstRuntimeConfig
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
   groupFallbackApiKeyRecord?: GatewayApiKeyRow
@@ -172,8 +176,10 @@ export interface OpenAIGatewayDispatchContext {
   codexTurnAvoidedAccountIds?: string[]
   precheckHalfOpenEligible?: boolean
   serverRetryBudget: ServerRetryBudget
+  gatewayRequestWallBudget: GatewayRequestWallBudget
+  routeCoordinationBudget: RouteCoordinationBudget
+  requestAttemptTracker: GatewayRequestAttemptTracker
   downstreamCommitState: GatewayDownstreamCommitState
-  sameAccountRetryBudget: SameAccountRetryBudget
   interactionResourceAffinity?: GeminiInteractionAffinityBinding
   releaseClientIpConcurrency: () => void
 }
@@ -298,11 +304,16 @@ export async function prepareOpenAIGatewayDispatchContext(
   const serverRetryBudget = options.serverRetryBudget
     ?? new ServerRetryBudget(activeGatewaySettings.noAvailableAccountWaitTimeoutSeconds * 1000)
   options.serverRetryBudget = serverRetryBudget
+  const gatewayRequestWallBudget = options.gatewayRequestWallBudget
+    ?? new GatewayRequestWallBudget({ requestAcceptedAtMs: startedAt })
+  options.gatewayRequestWallBudget = gatewayRequestWallBudget
+  const routeCoordinationBudget = options.routeCoordinationBudget
+    ?? new RouteCoordinationBudget({ requestId: traceId })
+  options.routeCoordinationBudget = routeCoordinationBudget
+  const requestAttemptTracker = options.requestAttemptTracker ?? new GatewayRequestAttemptTracker()
+  options.requestAttemptTracker = requestAttemptTracker
   const downstreamCommitState = options.downstreamCommitState ?? new GatewayDownstreamCommitState()
   options.downstreamCommitState = downstreamCommitState
-  const sameAccountRetryBudget = options.sameAccountRetryBudget
-    ?? createSameAccountRetryBudget(activeGatewaySettings.temporaryUnschedulableRetryAttempts)
-  options.sameAccountRetryBudget = sameAccountRetryBudget
   let requestLane = options.requestLane ?? 'text'
   const currentGroupUsageContext = (input: { groupId?: string; groupAccess?: GroupUsageAccessMetadata } = {}): GatewayFailureUsageContext => buildGatewayUsageContext({
     traceId,
@@ -903,6 +914,8 @@ export async function prepareOpenAIGatewayDispatchContext(
         groupId,
         startedAt,
         serverRetryBudget,
+        routeCoordinationBudget,
+        gatewayRequestWallBudget,
         signal
       }),
     attemptFallback: interactionResourceAffinity
@@ -998,6 +1011,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     clientStrategy,
     requestLane,
     serverRetryBudget,
+    routeCoordinationBudget,
+    gatewayRequestWallBudget,
     signal,
     ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
     attemptFallback: interactionResourceAffinity
@@ -1047,8 +1062,13 @@ export async function prepareOpenAIGatewayDispatchContext(
     modelPriority: candidateFilter.modelPriority,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
-    sameAccountRetryBudget,
-    serverRetryBudget,
+    requestCoordination: {
+      scope: 'gateway_request',
+      serverRetryBudget,
+      gatewayRequestWallBudget,
+      routeCoordinationBudget,
+      requestAttemptTracker
+    },
     signal
   })
   if (codexBridgeCompactPreflight.outcome === 'completed') {
@@ -1083,8 +1103,10 @@ export async function prepareOpenAIGatewayDispatchContext(
     codexTurnAvoidedAccountIds: dispatchPreparation.codexTurnAvoidedAccountIds,
     precheckHalfOpenEligible: dispatchPreparation.precheckHalfOpenEligible,
     serverRetryBudget,
+    gatewayRequestWallBudget,
+    routeCoordinationBudget,
+    requestAttemptTracker,
     downstreamCommitState,
-    sameAccountRetryBudget,
     interactionResourceAffinity,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
@@ -1096,11 +1118,15 @@ function isDirectLoopbackDeploymentSmoke(req: Request): boolean {
   return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1'
 }
 
-function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): RouteStrategySpeedFirstConfig | undefined {
+function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): NormalRouteSpeedFirstRuntimeConfig | undefined {
   if (apiKeyRecord?.route_strategy_mode !== 'normal') return undefined
   const normalConfig = apiKeyRecord.normal_routing_config
   if (normalConfig?.schedulingPreference !== 'speed_first') return undefined
-  return normalConfig.speedFirstConfig
+  if (!normalConfig.speedFirstConfig) return undefined
+  return {
+    ...normalConfig.speedFirstConfig,
+    firstByteDeadlineMs: normalConfig.firstByteDeadlineMs
+  }
 }
 
 async function handleGatewayModelsRequestBeforeRequiredAuth(input: {
@@ -1328,6 +1354,8 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
   groupId: string
   startedAt: number
   serverRetryBudget: ServerRetryBudget
+  routeCoordinationBudget: RouteCoordinationBudget
+  gatewayRequestWallBudget: GatewayRequestWallBudget
   signal?: AbortSignal
 }): Promise<UpstreamAccount[]> {
   const requestedModel = requestModel(input.req)
@@ -1372,6 +1400,8 @@ async function waitForRecoverableOpenAIGatewayCandidateAccounts(input: {
       maxWaitMs: input.serverRetryBudget.remainingMs(waitStartedAtMs),
       requestStartedAtMs: waitStartedAtMs,
       deadlineAtMs,
+      routeCoordinationBudget: input.routeCoordinationBudget,
+      gatewayRequestWallBudget: input.gatewayRequestWallBudget,
       signal: input.signal
     })
     return wait.state.accounts

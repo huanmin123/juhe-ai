@@ -74,7 +74,6 @@ export interface RouteStrategyGroupBindingSummary {
 }
 
 export interface RouteStrategySpeedFirstConfig {
-  firstByteThresholdMs: number
   slowTriggerCount: number
   slowWindowSeconds: number
   recoverySuccessCount: number
@@ -85,6 +84,7 @@ export interface RouteStrategySpeedFirstConfig {
 
 export interface RouteStrategyNormalRoutingConfig {
   schedulingPreference: RouteStrategyNormalSchedulingPreference
+  firstByteDeadlineMs: number
   speedFirstConfig?: RouteStrategySpeedFirstConfig
 }
 
@@ -120,11 +120,20 @@ export interface RouteStrategyListItem {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
-  groupBindingPreview: RouteStrategyGroupBindingPreview[]
-  bindingCount: number
-  apiKeyCount?: number
   createdAt: string
   updatedAt: string
+}
+
+export interface RouteStrategyListSnapshotItem {
+  id: string
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+  bindingCount: number
+  apiKeyCount: number
+}
+
+export interface RouteStrategyListSnapshotResult {
+  generatedAt: string
+  items: RouteStrategyListSnapshotItem[]
 }
 
 export interface RouteStrategyOptionSummary {

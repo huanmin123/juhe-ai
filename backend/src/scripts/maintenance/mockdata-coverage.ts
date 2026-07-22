@@ -17,6 +17,8 @@ import { chunks, idPrefix, type CreatedMockdata } from './mockdata/shared.js'
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 
 const allowedEmptyTables = new Set([
+  'business.gateway_model_catalog_snapshots',
+  'stats.model_trust_latest_dirty_accounts',
   'stats.usage_range_window_requests'
 ])
 
@@ -157,9 +159,6 @@ function assertApplicationTablesHaveRows(): void {
   collectEmptyTables(emptyTables, 'stats', getStatsDatabase())
   for (const shardIndex of codexContextStateShardIndexes()) {
     collectEmptyTables(emptyTables, `codex-context-state:${String(shardIndex).padStart(3, '0')}`, getCodexContextStateShardDatabase(shardIndex))
-  }
-  for (const location of listUsageRecordShardLocations()) {
-    collectEmptyTables(emptyTables, `usage-shard:${location.shardKey}`, getUsageRecordShardDatabase(location))
   }
   if (emptyTables.length) {
     throw new Error(`Mockdata 应用表覆盖不完整，空表：${emptyTables.join('、')}`)

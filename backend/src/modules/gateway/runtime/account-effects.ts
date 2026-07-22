@@ -1,5 +1,6 @@
 import { errorLogFields, logger } from '../../../shared/logger.js'
 import { getRequestLogger, getTraceId } from '../../../shared/request-context.js'
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { type AccountErrorPolicyDecision, type GatewaySettings } from '../policy/account-error-policy.service.js'
 import {
   clearGatewayAutomaticAccountRuntimeAvailability,
@@ -209,7 +210,7 @@ export function clearAccountStreamFailureStateWithCacheInvalidation(account: Ups
 }
 
 export function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: Headers, source: string): void {
-  if (account.type !== 'oauth') return
+  if (account.type !== 'oauth' || !isOpenAIProtocolProfile(account)) return
   if (!parseOpenAICodexUsageHeaders(headers)) return
   void requestGatewayDbService({
     type: 'persist_openai_codex_usage_headers',

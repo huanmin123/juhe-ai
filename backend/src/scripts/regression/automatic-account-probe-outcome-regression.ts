@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { automaticAccountProbeOutcome } from '../../modules/accounts/automatic-account-probe-outcome.js'
+import {
+  automaticAccountProbeOutcome,
+  transportProbeOutcomeFromAccountTestResult
+} from '../../modules/accounts/automatic-account-probe-outcome.js'
 import { isCompletedRealUpstreamAttempt, isRealUpstreamAttempt } from '../../modules/gateway/upstream/attempt.js'
 import {
   accountPrecheckMinimumObservationMs,
@@ -48,6 +51,95 @@ assert.equal(upstreamFailure, 'upstream_failure')
 
 assert.equal(automaticAccountProbeOutcome({ success: true, accountFailureEligible: false }, true), 'complete_success')
 assert.equal(automaticAccountProbeOutcome({ success: false, accountFailureEligible: false }, false), 'probe_task_failure')
+
+for (const status of [401, 429, 503]) {
+  assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+    success: false,
+    statusCode: status,
+    message: `HTTP ${status}`
+  }, {
+    upstreamAttempt: {
+      upstreamUrl: 'https://api.openai.com/v1/responses',
+      status
+    }
+  }), {
+    kind: 'framing_complete',
+    statusCode: status
+  }, `完整 HTTP ${status} 必须是 transport framing_complete，不能读取业务 success`)
+}
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
+  errorCode: 'upstream_said_timeout',
+  message: 'socket hang up after quota rejection'
+}, {
+  upstreamAttempt: {
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    status: 503
+  }
+}), {
+  kind: 'framing_complete',
+  statusCode: 503
+}, '完整 framing 不得解析上游错误码或正文文案')
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
+  message: '账户测试超时'
+}, {
+  upstreamAttempt: {
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    message: 'first_byte_timeout'
+  },
+  timeout: true
+}), {
+  kind: 'transport_incomplete',
+  failureKind: 'timeout'
+})
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
+  errorCode: 'ECONNREFUSED',
+  message: 'connect ECONNREFUSED'
+}, {
+  upstreamAttempt: {
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    message: 'connect ECONNREFUSED'
+  }
+}), {
+  kind: 'transport_incomplete',
+  failureKind: 'connection'
+})
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
+  errorCode: 'upstream_body_interrupted',
+  message: 'upstream body interrupted'
+}, {
+  upstreamAttempt: {
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    status: 200
+  }
+}), {
+  kind: 'transport_incomplete',
+  failureKind: 'read',
+  statusCode: 200
+})
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
+  message: '账户测试已取消'
+}, { canceled: true }), {
+  kind: 'unknown',
+  failureKind: 'canceled'
+})
+
+assert.deepEqual(transportProbeOutcomeFromAccountTestResult({
+  success: false,
+  message: '账户未绑定可用分组'
+}), {
+  kind: 'unknown',
+  failureKind: 'task_failure'
+})
 
 const sideEffectsSource = readFileSync(fileURLToPath(new URL('../../modules/gateway/runtime/account-side-effects.service.ts', import.meta.url)), 'utf8')
 const healthCheckSource = readFileSync(fileURLToPath(new URL('../../modules/background/account-health-check.service.ts', import.meta.url)), 'utf8')
@@ -118,20 +210,59 @@ assert.match(
   /loadConfiguredPolicyAvoidanceStates/,
   '用户显式策略过滤器必须继续读取账户所有者配置的避让状态'
 )
-assert.match(sideEffectsSource, /onUpstreamAttempt:/)
-assert.match(sideEffectsSource, /isCompletedRealUpstreamAttempt\(attempt\)/, '网关后台复核只能接受已返回响应头的真实 HTTP(S) 上游尝试')
-assert.match(sideEffectsSource, /automaticAccountProbeOutcome\(result, upstreamResponseObserved\)/)
-assert.match(gatewayRoutesSource, /response: upstreamResponse[\s\S]{0,900}notifyUpstreamAttemptDiagnostic\(options,[\s\S]{0,500}status: upstreamResponse\.status/, '收到上游响应头后必须立即向后台探针回传完成证据')
-assert.doesNotMatch(
-  sideEffectsSource,
-  /probeOutcome === 'probe_task_failure'[\s\S]{0,240}throw new Error/,
-  '未形成有效上游尝试必须丢弃判断并释放观察，不能进入无限异常重试'
+const singleProbeSource = sourceBetween(sideEffectsSource, 'async function runSingleGatewayAccountPrecheck', 'function accountPrecheckFailureReason')
+assert.match(singleProbeSource, /onUpstreamAttempt:/)
+assert.match(singleProbeSource, /transportProbeOutcomeFromAccountTestResult\(/, '短运行态探针必须返回独立 transport outcome')
+assert.match(singleProbeSource, /upstreamAttempt/, '短运行态探针必须携带真实 upstream attempt 证据')
+assert.doesNotMatch(singleProbeSource, /automaticAccountProbeOutcome\(|result\.success/, '短运行态探针自身不得再读取业务 success')
+assert.match(gatewayRoutesSource, /notifyUpstreamAttemptDiagnostic\(options, \{/)
+assert.match(gatewayRoutesSource, /status: upstreamResponse\.status/, '收到上游响应头后必须立即向后台探针回传状态证据')
+
+for (const [name, start, end] of [
+  ['memory recovery', 'async function runGatewayAccountRecoveryProbe', 'async function runDistributedGatewayAccountRecoveryProbe'],
+  ['redis recovery', 'async function runDistributedGatewayAccountRecoveryProbe', 'async function promoteDistributedRecoveryProbeToPrecheck'],
+  ['redis precheck', 'async function runDistributedGatewayAccountPrecheck', 'function promoteRecoveryProbeToPrecheck'],
+  ['memory precheck', 'async function runGatewayAccountPrecheck', 'function canUseProcessLocalGatewayAccountRuntimeState']
+] as const) {
+  const source = sourceBetween(sideEffectsSource, start, end)
+  assert.doesNotMatch(source, /if \(result\.success\)/, `${name} 不能读取 AccountTestResult.success 决定短运行态恢复`)
+  assert.match(source, /transportOutcome\.kind === 'framing_complete'/, `${name} 只能用 framing_complete 关闭短运行态`)
+  assert.match(source, /transportOutcome\.kind === 'unknown'/, `${name} 必须单独处理 unknown`)
+}
+
+const memoryRecoveryUnknown = sourceBetween(
+  sourceBetween(sideEffectsSource, 'async function runGatewayAccountRecoveryProbe', 'async function runDistributedGatewayAccountRecoveryProbe'),
+  "if (result.transportOutcome.kind === 'unknown')",
+  "if (result.transportOutcome.kind === 'framing_complete')"
 )
-assert.match(
-  sideEffectsSource,
-  /probeOutcome === 'probe_task_failure'[\s\S]{0,500}clearDistributedRecoveryProbeStateGeneration/,
-  'Redis 探针任务失败必须精确清理当前 generation'
+assert.match(memoryRecoveryUnknown, /latest\.running = false/)
+assert.match(memoryRecoveryUnknown, /scheduleRecoveryProbeTimer\(runtimeKey, recoveryProbeRetryDelayMs\)/)
+assert.doesNotMatch(memoryRecoveryUnknown, /clearGatewayAccountRuntimeAvailabilityLocal|attemptCount \+=/)
+
+const redisRecoveryUnknown = sourceBetween(
+  sourceBetween(sideEffectsSource, 'async function runDistributedGatewayAccountRecoveryProbe', 'async function promoteDistributedRecoveryProbeToPrecheck'),
+  "if (result.transportOutcome.kind === 'unknown')",
+  "if (result.transportOutcome.kind === 'framing_complete')"
 )
+assert.match(redisRecoveryUnknown, /commitDistributedRecoveryProbeRun\(/)
+assert.doesNotMatch(redisRecoveryUnknown, /clearDistributedRecoveryProbeRun|attemptCount:/)
+
+const redisPrecheckUnknown = sourceBetween(
+  sourceBetween(sideEffectsSource, 'async function runDistributedGatewayAccountPrecheck', 'function promoteRecoveryProbeToPrecheck'),
+  "if (result.transportOutcome.kind === 'unknown')",
+  "if (result.transportOutcome.kind === 'framing_complete')"
+)
+assert.match(redisPrecheckUnknown, /attemptCount: attempt/)
+assert.match(redisPrecheckUnknown, /commitDistributedRecoveryProbeRun\(/)
+assert.doesNotMatch(redisPrecheckUnknown, /clearDistributedRecoveryProbeRun/)
+
+const memoryPrecheckUnknown = sourceBetween(
+  sourceBetween(sideEffectsSource, 'async function runGatewayAccountPrecheck', 'function canUseProcessLocalGatewayAccountRuntimeState'),
+  "if (result.transportOutcome.kind === 'unknown')",
+  "if (result.transportOutcome.kind === 'framing_complete')"
+)
+assert.match(memoryPrecheckUnknown, /scheduleGatewayAccountPrecheckRun\(runtimeKey, recoveryProbeRetryDelayMs\)/)
+assert.doesNotMatch(memoryPrecheckUnknown, /clearGatewayAccountRuntimeAvailabilityLocal|attemptCount = attempt \+ 1/)
 assert.match(
   sideEffectsSource,
   /shouldSkipHealthySuccessfulAccountSideEffect[\s\S]{0,500}clearGatewayAccountRuntimeAvailabilityForRuntimeKey/,
@@ -161,3 +292,11 @@ for (const [name, source] of [
 }
 
 console.log('AUTOMATIC_ACCOUNT_PROBE_OUTCOME_OK')
+
+function sourceBetween(source: string, start: string, end: string): string {
+  const startIndex = source.indexOf(start)
+  const endIndex = source.indexOf(end, startIndex + start.length)
+  assert.notEqual(startIndex, -1, `缺少源码起点：${start}`)
+  assert.notEqual(endIndex, -1, `缺少源码终点：${end}`)
+  return source.slice(startIndex, endIndex)
+}

@@ -109,7 +109,7 @@
           <a-tag :color="routeStrategyStatusColor(record.status)">{{ routeStrategyStatusText(record.status) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'groups'">
-          <div class="route-strategy-groups">
+          <div v-if="routeStrategySnapshotStatus(record) === 'ready'" class="route-strategy-groups">
             <a-tag
               v-for="binding in visibleGroupBindings(record)"
               :key="binding.id"
@@ -118,11 +118,19 @@
               {{ routeStrategyGroupLabel(binding) }}
             </a-tag>
             <a-tag v-if="hiddenGroupBindingCount(record) > 0" color="default">+{{ hiddenGroupBindingCount(record) }}</a-tag>
-            <span v-if="!record.bindingCount" class="muted-cell">未绑定</span>
+            <span v-if="!routeStrategyBindingCount(record)" class="muted-cell">未绑定</span>
+          </div>
+          <div v-else class="route-strategy-dynamic-state muted-cell">
+            <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+            <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'apiKeyCount'">
-          <a-tag>{{ formatNumber(record.apiKeyCount ?? 0) }}</a-tag>
+          <a-tag v-if="routeStrategySnapshotStatus(record) === 'ready'">{{ formatNumber(routeStrategyApiKeyCount(record)) }}</a-tag>
+          <span v-else class="route-strategy-dynamic-state muted-cell">
+            <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+            <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
+          </span>
         </template>
         <template v-else-if="column.key === 'updatedAt'">
           <span class="muted-cell">{{ formatDateTime(record.updatedAt) }}</span>
@@ -152,11 +160,19 @@
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>分组</span>
-              <strong>{{ routeStrategyGroupSummary(record) }}</strong>
+              <strong v-if="routeStrategySnapshotStatus(record) === 'ready'">{{ routeStrategyGroupSummary(record) }}</strong>
+              <span v-else class="route-strategy-dynamic-state muted-cell">
+                <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+                <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
+              </span>
             </div>
             <div class="mobile-list-meta-item">
               <span>API Key</span>
-              <strong>{{ formatNumber(record.apiKeyCount ?? 0) }}</strong>
+              <strong v-if="routeStrategySnapshotStatus(record) === 'ready'">{{ formatNumber(routeStrategyApiKeyCount(record)) }}</strong>
+              <span v-else class="route-strategy-dynamic-state muted-cell">
+                <a-spin v-if="routeStrategySnapshotStatus(record) === 'pending'" size="small" />
+                <span>{{ routeStrategySnapshotStatus(record) === 'pending' ? '加载中' : '暂不可用' }}</span>
+              </span>
             </div>
             <div class="mobile-list-meta-item">
               <span>更新时间</span>
@@ -211,11 +227,11 @@
             <a-form-item label="调度偏好" tooltip="成本优先保持当前账号缓存和会话粘黏；速度优先先观察首字慢样本，确认账号近期变慢后再优先切换到更快账号。">
               <a-segmented v-model:value="form.normal.schedulingPreference" block :options="normalSchedulingPreferenceOptions" />
             </a-form-item>
+            <a-form-item label="首字截止" required tooltip="普通路由两种调度偏好共用；按秒配置，每个上游尝试在截止前仍无可见首字时产生统一首字截止事件。">
+              <a-input-number v-model:value="form.normal.firstByteDeadlineSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
+            </a-form-item>
           </div>
           <div v-if="form.normal.schedulingPreference === 'speed_first'" class="hybrid-config-grid">
-            <a-form-item label="首字观察阈值" required tooltip="按秒配置；超过阈值先记录慢样本，达到触发次数确认慢后，才会在安全窗口切换账号。">
-              <a-input-number v-model:value="form.normal.speedFirstConfig.firstByteThresholdSeconds" :min="10" :max="60" :precision="0" addon-after="秒" />
-            </a-form-item>
             <a-form-item label="慢速触发次数" required tooltip="窗口期内达到这个慢速次数后，账号进入速度降级。">
               <a-input-number v-model:value="form.normal.speedFirstConfig.slowTriggerCount" :min="2" :max="10" addon-after="次" />
             </a-form-item>
@@ -485,6 +501,11 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { GroupSelection } from '@/shared/groupLabelCache'
 import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import {
+  createRouteStrategyListProgressiveState,
+  routeStrategyListFallbackPage,
+  type RouteStrategyListSnapshotState
+} from './routeStrategyListProgressiveState'
 import type {
   ApiKeyHybridLevelRoute,
   ApiKeyHybridQualityInspectionFailureAction,
@@ -561,12 +582,11 @@ interface HybridRoutingForm {
 
 interface NormalRoutingForm {
   schedulingPreference: RouteStrategyNormalSchedulingPreference
+  firstByteDeadlineSeconds: number
   speedFirstConfig: SpeedFirstConfigForm
 }
 
-interface SpeedFirstConfigForm extends Omit<RouteStrategySpeedFirstConfig, 'firstByteThresholdMs'> {
-  firstByteThresholdSeconds: number
-}
+interface SpeedFirstConfigForm extends RouteStrategySpeedFirstConfig {}
 
 const routeStrategiesPageSize = 20
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -591,6 +611,7 @@ let editDetailRequestToken = 0
 const bindingDragSourceIndex = ref<number | null>(null)
 const bindingDragOverIndex = ref<number | null>(null)
 const items = ref<RouteStrategyListItem[]>([])
+const routeStrategyListSnapshotStates = ref<Map<string, RouteStrategyListSnapshotState>>(new Map())
 const total = ref(0)
 const page = ref(initialPageState.pagination.current)
 const pageSize = ref(initialPageState.pagination.pageSize)
@@ -605,6 +626,30 @@ let modelOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 const routeStrategyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
+})
+const routeStrategyListProgressiveState = createRouteStrategyListProgressiveState({
+  currentScopeKey: routeStrategyListScopeKey,
+  currentVisibleIds: () => items.value.map((item) => item.id),
+  setListLoading: (value) => {
+    loading.value = value
+  },
+  applyList: (result) => {
+    const fallbackPage = routeStrategyListFallbackPage(result)
+    if (fallbackPage !== undefined) {
+      page.value = fallbackPage
+      void loadRouteStrategies()
+      return false
+    }
+    items.value = result.items
+    total.value = result.total
+    return true
+  },
+  applySnapshotStates: (states) => {
+    routeStrategyListSnapshotStates.value = states
+  },
+  onListError: (error) => {
+    message.error(extractApiErrorMessage(error, '策略路由加载失败'))
+  }
 })
 const modelOptionsScopeParams = computed(() => routeStrategyOperationScopeParams())
 const {
@@ -703,7 +748,7 @@ const qualityInspectionUnavailableActionOptions = [
 ]
 
 const hybridConfigTooltip = '混合智能路由会先评分请求难度，再按等级模型和质量偏好选择目标模型。'
-const normalRoutingConfigTooltip = '成本优先尽量保持会话粘黏和账号缓存；速度优先在首字慢速连续触发后临时降级当前账号，并按配置探针恢复。'
+const normalRoutingConfigTooltip = '成本优先与速度优先共用首字截止；成本优先在截止事件后切换存活候选，速度优先还会累计慢样本、临时降级并按配置探针恢复。'
 const hybridLevelRoutesTooltip = '把评分等级 1-10 映射到目标模型；请求评分落入某个范围后优先使用该目标模型。'
 const qualityInspectionTooltip = '在高风险或指定场景复审上游响应，未通过时按失败处理策略重试、升级或返回错误。'
 const hybridCacheSwitchTooltip = '控制评分缓存、模型亲和和升降级节奏，减少重复评分和频繁切换。'
@@ -714,7 +759,7 @@ const columns = computed<Array<Record<string, unknown>>>(() => {
     { title: '模式', key: 'mode', width: 150 },
     { title: '状态', key: 'status', width: 100 },
     { title: '绑定分组', key: 'groups', width: 320 },
-    { title: 'API Key', dataIndex: 'apiKeyCount', key: 'apiKeyCount', width: 100 },
+    { title: 'API Key', key: 'apiKeyCount', width: 100 },
     { title: '更新时间', dataIndex: 'updatedAt', key: 'updatedAt', width: 180 },
     { title: '操作', key: 'actions', width: 96, fixed: 'right' }
   ]
@@ -815,26 +860,33 @@ onMounted(() => {
   void loadRouteStrategies()
 })
 
-onBeforeUnmount(clearGroupOptionsSearchTimer)
+onBeforeUnmount(() => {
+  routeStrategyListProgressiveState.dispose()
+  clearGroupOptionsSearchTimer()
+})
 
-async function loadRouteStrategies() {
-  loading.value = true
-  try {
-    const result = await routeStrategiesApi.list({
-      page: page.value,
-      pageSize: pageSize.value,
-      keyword: keyword.value.trim() || undefined,
-      mode: modeFilter.value,
-      status: statusFilter.value,
-      systemAccountId: routeStrategyScopeParams.value?.systemAccountId
-    })
-    items.value = result.items
-    total.value = result.total
-  } catch (error) {
-    message.error(extractApiErrorMessage(error, '策略路由加载失败'))
-  } finally {
-    loading.value = false
+function loadRouteStrategies(): Promise<boolean> {
+  const scopeParams = routeStrategyScopeParams.value
+  const scopeKey = routeStrategyListScopeKey()
+  const listParams = {
+    page: page.value,
+    pageSize: pageSize.value,
+    keyword: keyword.value.trim() || undefined,
+    mode: modeFilter.value,
+    status: statusFilter.value,
+    systemAccountId: scopeParams?.systemAccountId
   }
+  return routeStrategyListProgressiveState.load({
+    scopeKey,
+    list: () => routeStrategiesApi.list(listParams),
+    snapshot: (ids) => routeStrategiesApi.listSnapshot(ids, scopeParams)
+  })
+}
+
+function routeStrategyListScopeKey(): string {
+  return isManagementView.value
+    ? `management:${routeStrategyScopeParams.value?.systemAccountId ?? '*'}`
+    : 'self'
 }
 
 function handleTableChange(...args: unknown[]) {
@@ -1413,18 +1465,37 @@ function handleRouteStrategyAction(key: string, record: RouteStrategyListItem) {
 }
 
 function visibleGroupBindings(record: RouteStrategyListItem): RouteStrategyGroupBindingPreview[] {
-  return record.groupBindingPreview
+  return routeStrategyReadySnapshot(record)?.groupBindingPreview ?? []
 }
 
 function hiddenGroupBindingCount(record: RouteStrategyListItem): number {
-  return Math.max(0, record.bindingCount - record.groupBindingPreview.length)
+  const snapshot = routeStrategyReadySnapshot(record)
+  return snapshot ? Math.max(0, snapshot.bindingCount - snapshot.groupBindingPreview.length) : 0
 }
 
 function routeStrategyGroupSummary(record: RouteStrategyListItem): string {
-  if (!record.bindingCount) return '未绑定'
+  const snapshot = routeStrategyReadySnapshot(record)
+  if (!snapshot?.bindingCount) return '未绑定'
   const visibleNames = visibleGroupBindings(record).map(routeStrategyGroupLabel).join('、')
   const hiddenCount = hiddenGroupBindingCount(record)
-  return hiddenCount > 0 ? `${visibleNames} 等 ${record.bindingCount} 个分组` : visibleNames
+  return hiddenCount > 0 ? `${visibleNames} 等 ${snapshot.bindingCount} 个分组` : visibleNames
+}
+
+function routeStrategySnapshotStatus(record: RouteStrategyListItem): RouteStrategyListSnapshotState['status'] {
+  return routeStrategyListSnapshotStates.value.get(record.id)?.status ?? 'pending'
+}
+
+function routeStrategyReadySnapshot(record: RouteStrategyListItem) {
+  const state = routeStrategyListSnapshotStates.value.get(record.id)
+  return state?.status === 'ready' ? state.item : undefined
+}
+
+function routeStrategyBindingCount(record: RouteStrategyListItem): number {
+  return routeStrategyReadySnapshot(record)?.bindingCount ?? 0
+}
+
+function routeStrategyApiKeyCount(record: RouteStrategyListItem): number {
+  return routeStrategyReadySnapshot(record)?.apiKeyCount ?? 0
 }
 
 function routeStrategyGroupLabel(binding: RouteStrategyGroupBindingPreview | RouteStrategyGroupBindingSummary): string {
@@ -1469,13 +1540,13 @@ function routeStrategyStatusColor(status: RouteStrategyStatus): string {
 function defaultNormalRoutingForm(): NormalRoutingForm {
   return {
     schedulingPreference: 'cost_first',
+    firstByteDeadlineSeconds: 10,
     speedFirstConfig: defaultSpeedFirstConfigForm()
   }
 }
 
 function defaultSpeedFirstConfigForm(): SpeedFirstConfigForm {
   return {
-    firstByteThresholdSeconds: 30,
     slowTriggerCount: 3,
     slowWindowSeconds: 120,
     recoverySuccessCount: 3,
@@ -1491,6 +1562,7 @@ function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig):
   const speedFirstConfig = speedFirstConfigFormFromConfig(config.speedFirstConfig)
   return {
     schedulingPreference: config.schedulingPreference ?? fallback.schedulingPreference,
+    firstByteDeadlineSeconds: millisecondsToSeconds(config.firstByteDeadlineMs, fallback.firstByteDeadlineSeconds),
     speedFirstConfig
   }
 }
@@ -1498,7 +1570,6 @@ function normalRoutingFormFromConfig(config?: RouteStrategyNormalRoutingConfig):
 function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig): SpeedFirstConfigForm {
   const fallback = defaultSpeedFirstConfigForm()
   return {
-    firstByteThresholdSeconds: millisecondsToSeconds(config?.firstByteThresholdMs, fallback.firstByteThresholdSeconds),
     slowTriggerCount: config?.slowTriggerCount ?? fallback.slowTriggerCount,
     slowWindowSeconds: config?.slowWindowSeconds ?? fallback.slowWindowSeconds,
     recoverySuccessCount: config?.recoverySuccessCount ?? fallback.recoverySuccessCount,
@@ -1509,14 +1580,15 @@ function speedFirstConfigFormFromConfig(config?: RouteStrategySpeedFirstConfig):
 }
 
 function buildNormalRoutingConfigPayload(): RouteStrategyNormalRoutingConfig {
+  const firstByteDeadlineMs = secondsToMilliseconds(form.normal.firstByteDeadlineSeconds)
   if (form.normal.schedulingPreference !== 'speed_first') {
-    return { schedulingPreference: 'cost_first' }
+    return { schedulingPreference: 'cost_first', firstByteDeadlineMs }
   }
   const speedFirstConfig = form.normal.speedFirstConfig
   return {
     schedulingPreference: 'speed_first',
+    firstByteDeadlineMs,
     speedFirstConfig: {
-      firstByteThresholdMs: secondsToMilliseconds(speedFirstConfig.firstByteThresholdSeconds),
       slowTriggerCount: boundedInteger(speedFirstConfig.slowTriggerCount, 2, 10),
       slowWindowSeconds: boundedInteger(speedFirstConfig.slowWindowSeconds, 60, 600),
       recoverySuccessCount: boundedInteger(speedFirstConfig.recoverySuccessCount, 3, 10),
@@ -1776,6 +1848,14 @@ function boundedInteger(value: unknown, min: number, max: number): number {
   flex-wrap: wrap;
   gap: 4px;
   min-width: 0;
+}
+
+.route-strategy-dynamic-state {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  gap: 6px;
+  font-weight: 400;
 }
 
 .route-strategy-modal-form {

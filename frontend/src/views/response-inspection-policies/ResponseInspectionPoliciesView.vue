@@ -2,29 +2,29 @@
   <a-card class="page-card responsive-page-card response-policy-page">
     <ResponsiveListToolbar
       v-model:keyword="keyword"
-      search-placeholder="搜索策略名称或匹配条件"
+      search-placeholder="搜索名称、协议、供应商或处置"
       :show-reset="Boolean(keyword.trim())"
       :refresh-loading="loading"
       @search="applySearch"
       @reset="resetSearch"
-      @refresh="loadPageData(true)"
+      @refresh="loadPolicies"
     >
       <template #actions>
         <a-button @click="guideOpen = true">
           <template #icon><question-circle-outlined /></template>
           配置指南
         </a-button>
-        <a-button type="primary" @click="openCreate">新建策略</a-button>
+        <a-button type="primary" :loading="createOpening" @click="openCreate">新建策略</a-button>
       </template>
     </ResponsiveListToolbar>
 
     <ResponseInspectionPolicyList
       :loading="loading"
       :policies="filteredPolicies"
-      :providers="policyProviders"
+      :opening-policy-id="openingPolicyId"
       @delete="removePolicy"
       @edit="openEdit"
-      @refresh="loadPageData(true)"
+      @refresh="loadPolicies"
       @view="openView"
     />
 
@@ -33,7 +33,7 @@
       :mode="modalMode"
       :policy="activePolicy"
       :saving="saving"
-      :provider-options="providerSelectOptions"
+      :provider-options="providerOptions"
       :default-priority="nextPriority()"
       :default-provider-code="defaultProviderCode('openai')"
       @submit="savePolicy"
@@ -51,30 +51,31 @@
 <script setup lang="ts">
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
-import { isAnthropicProtocolProfile, isOpenAIProtocolProfile, preferredDefaultProviderCode } from '@/shared/providerProtocol'
+import { isGptVendorCode } from '@/shared/providerProtocol'
 import type {
-  ProviderDefinition,
-  ResponseInspectionPolicySummary
+  ResponseInspectionPolicyDetail,
+  ResponseInspectionPolicyOverview,
+  ResponseInspectionPolicyProviderOption
 } from '@/types/domain'
 import ResponseInspectionPolicyFormModal from './ResponseInspectionPolicyFormModal.vue'
 import ResponseInspectionPolicyGuideModal from './ResponseInspectionPolicyGuideModal.vue'
 import {
   responseInspectionPolicyActionText,
-  responseInspectionPolicyClientProfileText,
-  responseInspectionPolicyMatchSummary,
-  responseInspectionPolicyProviderText,
   responseInspectionPolicyProtocolText,
   responseInspectionPolicyScopeText
 } from './responseInspectionPolicyDisplay'
 import ResponseInspectionPolicyList from './ResponseInspectionPolicyList.vue'
+import {
+  createResponseInspectionPolicyLoadCoordinator,
+  type ResponseInspectionPolicyModalIntent
+} from './responseInspectionPolicyLoadCoordinator'
 
 type PolicyModalMode = 'create' | 'edit' | 'view'
 
@@ -90,26 +91,25 @@ const initialPageState = pageStateCache.read()
 const loading = ref(false)
 const saving = ref(false)
 const keyword = ref(initialPageState.keyword)
-const providers = ref<ProviderDefinition[]>([])
-const defaultRules = ref<ResponseInspectionPolicySummary[]>([])
-const policies = ref<ResponseInspectionPolicySummary[]>([])
+const providerOptions = ref<ResponseInspectionPolicyProviderOption[]>([])
+const defaultRules = ref<ResponseInspectionPolicyOverview[]>([])
+const policies = ref<ResponseInspectionPolicyOverview[]>([])
 const modalOpen = ref(false)
 const modalMode = ref<PolicyModalMode>('create')
 const guideOpen = ref(false)
 const editingId = ref<string>()
-const activePolicy = ref<ResponseInspectionPolicySummary>()
+const activePolicy = ref<ResponseInspectionPolicyDetail>()
+const openingPolicyId = ref<string>()
+const createOpening = ref(false)
+
+const loadCoordinator = createResponseInspectionPolicyLoadCoordinator({
+  list: (signal) => api.responseInspectionPolicies.list({ signal }),
+  detail: (policyId, signal) => api.responseInspectionPolicies.detail(policyId, { signal }),
+  providerOptions: (signal) => api.responseInspectionPolicies.providerOptions({ signal })
+})
+let activeListRequest: Promise<unknown> | undefined
 
 const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
-const policyProviders = computed(() => providers.value
-  .filter((provider) => provider.enabled && provider.protocolProfiles.some((profile) => profile.enabled && (isOpenAIProtocolProfile(profile) || isAnthropicProtocolProfile(profile))))
-  .sort((left, right) => left.name.localeCompare(right.name, 'zh-Hans-CN') || left.code.localeCompare(right.code)))
-const providerSelectOptions = computed(() => policyProviders.value.flatMap((provider) => provider.protocolProfiles
-  .filter((profile) => profile.enabled && (isOpenAIProtocolProfile(profile) || isAnthropicProtocolProfile(profile)))
-  .map((profile) => ({
-    label: provider.name,
-    value: provider.code,
-    protocolCode: profile.protocolCode
-  }))))
 const filteredPolicies = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   if (!text) return allPolicies.value
@@ -117,73 +117,80 @@ const filteredPolicies = computed(() => {
 })
 
 async function loadPolicies(): Promise<void> {
+  const request = loadCoordinator.loadList()
+  activeListRequest = request
   loading.value = true
   try {
-    const result = await api.responseInspectionPolicies.list()
+    const result = await request
+    if (!result || activeListRequest !== request) return
     defaultRules.value = result.defaultRules
     policies.value = result.policies
   } catch (error) {
+    if (activeListRequest !== request) return
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载响应检查策略失败'))
   } finally {
-    loading.value = false
+    if (activeListRequest === request) {
+      loading.value = false
+      activeListRequest = undefined
+    }
   }
 }
 
-async function loadPageData(force = false): Promise<void> {
-  loading.value = true
-  try {
-    const [policyResult] = await Promise.all([
-      api.responseInspectionPolicies.list(),
-      loadPolicyProviders(force)
-    ])
-    defaultRules.value = policyResult.defaultRules
-    policies.value = policyResult.policies
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '加载响应检查策略失败'))
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadPolicyProviders(force = false): Promise<void> {
-  const providerResult = await loadProviderOptionsResource({
-    apply: (nextProviders) => { providers.value = nextProviders },
-    force,
-    includeDisabled: false,
-    includeDefinitions: true,
-    isManagementView: true
-  })
-  providers.value = providerResult.data
-}
-
-function openCreate(): void {
+async function openCreate(): Promise<void> {
+  const intent = prepareModalIntent()
   editingId.value = undefined
   activePolicy.value = undefined
   modalMode.value = 'create'
+  createOpening.value = true
+  const options = await loadProviderOptionsForIntent(intent)
+  if (!loadCoordinator.isCurrentModalIntent(intent)) return
+  createOpening.value = false
+  if (!options) return
+  providerOptions.value = options
   modalOpen.value = true
 }
 
-function openView(policy: ResponseInspectionPolicySummary): void {
+async function openView(policy: ResponseInspectionPolicyOverview): Promise<void> {
+  const intent = prepareModalIntent(policy.id)
   editingId.value = undefined
-  activePolicy.value = policy
+  activePolicy.value = undefined
   modalMode.value = 'view'
+  const detail = await loadPolicyDetailForIntent(intent, policy.id)
+  if (!loadCoordinator.isCurrentModalIntent(intent, policy.id)) return
+  openingPolicyId.value = undefined
+  if (!detail) return
+  activePolicy.value = detail
   modalOpen.value = true
 }
 
-function openEdit(policy: ResponseInspectionPolicySummary): void {
+async function openEdit(policy: ResponseInspectionPolicyOverview): Promise<void> {
   if (!policy.editable) {
-    openView(policy)
+    await openView(policy)
     return
   }
-  editingId.value = policy.id
-  activePolicy.value = policy
+  const intent = prepareModalIntent(policy.id)
+  editingId.value = undefined
+  activePolicy.value = undefined
   modalMode.value = 'edit'
+  const [detail, optionsReady] = await Promise.all([
+    loadPolicyDetailForIntent(intent, policy.id),
+    loadProviderOptionsForIntent(intent)
+  ])
+  if (!loadCoordinator.isCurrentModalIntent(intent, policy.id)) return
+  openingPolicyId.value = undefined
+  if (!detail || !optionsReady) return
+  providerOptions.value = optionsReady
+  editingId.value = policy.id
+  activePolicy.value = detail
   modalOpen.value = true
 }
 
 function resetModal(): void {
+  loadCoordinator.cancelModalIntent()
+  modalOpen.value = false
+  openingPolicyId.value = undefined
+  createOpening.value = false
   editingId.value = undefined
   activePolicy.value = undefined
   modalMode.value = 'create'
@@ -191,17 +198,20 @@ function resetModal(): void {
 
 async function savePolicy(payload: ResponseInspectionPolicyPayload): Promise<void> {
   saving.value = true
+  const targetId = editingId.value
   try {
-    if (editingId.value) {
-      await api.responseInspectionPolicies.update(editingId.value, payload)
+    let savedPolicy: ResponseInspectionPolicyDetail
+    if (targetId) {
+      savedPolicy = await api.responseInspectionPolicies.update(targetId, payload)
+      upsertPolicyOverview(savedPolicy)
       message.success('响应检查策略已更新')
     } else {
-      await api.responseInspectionPolicies.create(payload)
+      savedPolicy = await api.responseInspectionPolicies.create(payload)
+      upsertPolicyOverview(savedPolicy)
       message.success('响应检查策略已创建')
     }
-    modalOpen.value = false
     resetModal()
-    await loadPolicies()
+    void loadPolicies()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存响应检查策略失败'))
@@ -210,7 +220,7 @@ async function savePolicy(payload: ResponseInspectionPolicyPayload): Promise<voi
   }
 }
 
-async function removePolicy(policy: ResponseInspectionPolicySummary): Promise<void> {
+async function removePolicy(policy: ResponseInspectionPolicyOverview): Promise<void> {
   if (!policy.editable) return
   try {
     await api.responseInspectionPolicies.delete(policy.id)
@@ -259,27 +269,95 @@ function nextPriority(): number {
   return 9999
 }
 
-function searchableText(policy: ResponseInspectionPolicySummary): string {
+function searchableText(policy: ResponseInspectionPolicyOverview): string {
   return [
     policy.name,
     responseInspectionPolicyScopeText(policy),
     responseInspectionPolicyProtocolText(policy.protocolCode),
-    responseInspectionPolicyProviderText(policy.providerCode, policyProviders.value),
-    responseInspectionPolicyClientProfileText(policy.match.clientProfiles),
-    responseInspectionPolicyMatchSummary(policy),
+    policy.providerName,
+    policy.providerCode,
     policy.defaultRule ? '默认' : '自定义',
     String(policy.priority),
     policy.enabled ? '启用' : '停用',
-    responseInspectionPolicyActionText(policy.action),
-    policy.notes
+    responseInspectionPolicyActionText(policy.action)
   ].filter(Boolean).join(' ').toLowerCase()
 }
 
 function defaultProviderCode(protocolCode: string): string {
-  return preferredDefaultProviderCode(policyProviders.value.filter((provider) => provider.protocolProfiles.some((profile) => profile.enabled && profile.protocolCode === protocolCode)))
+  const options = providerOptions.value.filter((option) => option.protocolCode === protocolCode)
+  return options.find((option) => isGptVendorCode(option.code))?.code ?? options[0]?.code ?? ''
 }
 
-onMounted(loadPageData)
+async function loadPolicyDetailForIntent(
+  intent: ResponseInspectionPolicyModalIntent,
+  policyId: string
+): Promise<ResponseInspectionPolicyDetail | undefined> {
+  try {
+    return await loadCoordinator.loadDetail(intent, policyId)
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载响应检查策略详情失败，请重试'))
+    return undefined
+  }
+}
+
+async function loadProviderOptionsForIntent(
+  intent: ResponseInspectionPolicyModalIntent
+): Promise<ResponseInspectionPolicyProviderOption[] | undefined> {
+  try {
+    return await loadCoordinator.loadProviderOptions(intent)
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载响应检查策略供应商选项失败，请重试'))
+    return undefined
+  }
+}
+
+function prepareModalIntent(policyId?: string): ResponseInspectionPolicyModalIntent {
+  modalOpen.value = false
+  activePolicy.value = undefined
+  editingId.value = undefined
+  createOpening.value = false
+  openingPolicyId.value = policyId
+  return loadCoordinator.beginModalIntent(policyId)
+}
+
+function upsertPolicyOverview(detail: ResponseInspectionPolicyDetail): void {
+  const overview = policyOverviewFromDetail(detail)
+  if (overview.defaultRule) {
+    defaultRules.value = upsertOverview(defaultRules.value, overview)
+    return
+  }
+  policies.value = upsertOverview(policies.value, overview)
+}
+
+function upsertOverview(items: ResponseInspectionPolicyOverview[], overview: ResponseInspectionPolicyOverview): ResponseInspectionPolicyOverview[] {
+  const next = items.filter((item) => item.id !== overview.id)
+  next.push(overview)
+  return next.sort((left, right) => left.priority - right.priority || String(right.updatedAt ?? '').localeCompare(String(left.updatedAt ?? '')) || left.id.localeCompare(right.id))
+}
+
+function policyOverviewFromDetail(detail: ResponseInspectionPolicyDetail): ResponseInspectionPolicyOverview {
+  return {
+    id: detail.id,
+    defaultRule: detail.defaultRule,
+    editable: detail.editable,
+    name: detail.name,
+    enabled: detail.enabled,
+    priority: detail.priority,
+    scopeType: detail.scopeType,
+    protocolCode: detail.protocolCode,
+    providerCode: detail.providerCode,
+    providerName: detail.providerName,
+    action: detail.action,
+    updatedAt: detail.updatedAt
+  }
+}
+
+onMounted(loadPolicies)
+onBeforeUnmount(() => {
+  loadCoordinator.dispose()
+})
 </script>
 
 <style scoped>
