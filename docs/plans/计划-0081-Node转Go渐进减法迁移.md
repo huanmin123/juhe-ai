@@ -878,7 +878,7 @@
 
 - Go 已新增独立 port / service / PostgreSQL store / app worker 入口，只在 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true` 时运行；Node 继续拥有日志文件导入、runtime_logs/cursor/facet 写入和生产 supervisor 调度，本块不改 schema、不删 Node、不切生产 owner。
 - 保留天数读取 `sys_admin/runtimeLogIndexRetentionDays`，缺失或零值默认 14，catalog 值收敛到 1..90，显式 override 严格校验 1..90；一次运行固定毫秒 UTC cutoff。默认每批 1000、每轮 20 批，索引和 cursor 独立循环，满批之间执行 25ms context-aware pause。
-- PostgreSQL 索引批次按 `time ASC, id ASC LIMIT ... FOR UPDATE SKIP LOCKED` 选删，并在同一事务内以固定顺序锁定 summary / level / event facet 表。summary、level 和 event count 使用非负扣减；summary earliest/latest 与受影响 event latest 从 cutoff 后剩余索引重算，事务失败整体回滚。完成 cursor 只删除 `updated_at < cutoff`、已读完且无错误的行，按 `updated_at ASC, log_file ASC` 稳定小批处理。
+- PostgreSQL 索引批次默认 fail-closed：Node cleanup 子 owner 未停止、`GoExclusiveIndexCleanupOwner` 未显式开启时不调用索引删除 store，只记录 deferred。独占门禁开启后按 `time ASC, id ASC LIMIT ... FOR UPDATE SKIP LOCKED` 暂时选删；已移除会阻塞 Node importer 的三表 `SHARE ROW EXCLUSIVE` 锁。Go 多实例先用 try-advisory 去重，确有删除后再通过 `current` summary `FOR UPDATE NOWAIT` 与 Node 当前 summary-first importer facet 写事务串行；锁竞争和短超时均整批回滚并标记 deferred。summary、level 和 event count 使用非负扣减，summary earliest/latest 与受影响 event latest 从 cutoff 后剩余索引重算。完成 cursor 只删除 `updated_at < cutoff`、已读完且无错误的行，按 `updated_at ASC, log_file ASC` 稳定小批处理。
 - 当前没有修改共享 `cmd/juhe-ai-worker/main.go`，因此 CLI / supervisor 集成点是调用 `app.RunRuntimeLogRetentionCleanupWorker` 并映射 `retention-days/batch-size/max-batches/interval/initial-delay/run-once`；真实 PostgreSQL 下 Node importer 与 Go cleanup 并发 smoke 后置，不能据此声明运行日志生产治理接管。
 
 ## 2026-07-22 W6 历史系统指标只读迁移执行计划
