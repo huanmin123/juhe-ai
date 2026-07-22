@@ -46,29 +46,9 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
-const { isOpaqueUpstreamFailoverAllowed } = await import('../../modules/gateway/response/failure-dispatch.js')
 const accountSideEffects = await import('../../modules/gateway/runtime/account-side-effects.service.js')
 const proxyHealth = await import('../../modules/gateway/runtime/proxy-health.service.js')
 
-assert.equal(isOpaqueUpstreamFailoverAllowed({ method: 'GET', originalUrl: '/v1/models' } as express.Request), true)
-assert.equal(isOpaqueUpstreamFailoverAllowed({ method: 'HEAD', originalUrl: '/v1/models' } as express.Request), true)
-for (const path of [
-  '/v1/chat/completions',
-  '/v1/responses',
-  '/v1/messages',
-  '/v1/images/generations',
-  '/v1/interactions/interaction_123',
-  '/v1/uploads',
-  '/v1/batches',
-  '/v1/fine_tuning/jobs',
-  '/v1/unknown'
-]) {
-  assert.equal(
-    isOpaqueUpstreamFailoverAllowed({ method: 'POST', originalUrl: path } as express.Request),
-    false,
-    `${path} POST 可能已被上游接受，不能跨 Key/账户重放`
-  )
-}
 const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
 const upstreamDispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')
 assert.match(
@@ -77,10 +57,9 @@ assert.match(
   '只有真实成功响应才能确认 half-open 和同账号前序 Key 失败，资源非 2xx 不得恢复账户运行态'
 )
 const preparedRequestIndex = upstreamDispatchSource.indexOf('const requestParts = await buildPreparedUpstreamRequestParts')
-const opaqueBudgetConsumeIndex = upstreamDispatchSource.indexOf('opaqueFailoverBudget.attemptedAccountIds.add(originalAccount.id)')
 const upstreamAttemptIndex = upstreamDispatchSource.indexOf('const response = await performUpstreamRequestAttempt')
-assert(preparedRequestIndex >= 0 && opaqueBudgetConsumeIndex > preparedRequestIndex, '通用四账户预算只能在账户、Key 和请求体准备完成后扣减')
-assert(upstreamAttemptIndex > opaqueBudgetConsumeIndex, '通用四账户预算必须紧邻首次真实上游 attempt 前扣减')
+assert(preparedRequestIndex >= 0 && upstreamAttemptIndex > preparedRequestIndex, '真实上游 attempt 必须在账户、Key 和请求体准备完成后发起')
+assert.doesNotMatch(upstreamDispatchSource, /OpaqueFailoverBudget|maxOpaqueFailoverAccountsPerRequest|opaqueFailoverBudget/, '通用请求不得保留固定四账户预算')
 assert.equal((gatewayRoutesSource.match(/automaticAccountStateMutationEnabled: false/g) ?? []).length, 3, '普通客户请求的流式、非流式和最终化路径都必须关闭系统自动账户状态副作用')
 assert.match(gatewayRoutesSource, /const requestErrorResult = await handleUpstreamRequestError\(\{[\s\S]*?accountStateMutationEnabled: false[\s\S]*?nonStreamResponseStartedFailedAccountIds\.add/, '非流式正文读取异常 catch 也不得按精确客户端画像开启账户状态副作用')
 const responseFinalizationSource = readFileSync(new URL('../../modules/gateway/response/finalization.ts', import.meta.url), 'utf8')
@@ -116,6 +95,21 @@ try {
         '',
         ''
       ].join('\n'))
+      return
+    }
+    if (req.url?.includes('mock_codex_json_error=1')) {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end('{"error":{"type":"server_error","code":"system_default_must_not_retry","message":"complete response remains transparent"}}')
+      return
+    }
+    if (req.url?.includes('mock_explicit_policy=1')) {
+      if (req.headers.authorization === 'Bearer sk-generic-opaque-good') {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end('{"id":"explicit_policy_fallback_success","choices":[{"message":{"role":"assistant","content":"explicit retry completed"}}]}')
+        return
+      }
+      res.writeHead(429, { 'content-type': 'application/json; charset=utf-8' })
+      res.end('{"error":{"type":"rate_limit_error","code":"explicit_retry_next","message":"configured retry"}}')
       return
     }
     if (path === '/v1/responses') {
@@ -154,7 +148,14 @@ try {
       api_key: 'sk-generic-opaque-bad-a',
       api_keys: ['sk-generic-opaque-bad-a', 'sk-generic-opaque-bad-b'],
       api_key_strategy: 'round_robin',
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      error_handling_rules: [{
+        enabled: true,
+        name: '显式 429 切号',
+        priority: 1,
+        status_codes: [429],
+        action: 'retry_next'
+      }]
     },
     groupId: group.id,
     status: 'active',
@@ -249,11 +250,44 @@ try {
     body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'opaque status' }], stream: false })
   })
   const nonStreamText = await nonStream.text()
-  assert.equal(nonStream.status, 418, `通用 POST 非成功响应必须原样返回，实际 ${nonStream.status}: ${nonStreamText}`)
+  assert.equal(nonStream.status, 418, `通用客户端完整 HTTP 失败必须透明返回，实际 ${nonStream.status}: ${nonStreamText}`)
   assert.match(nonStreamText, /opaque non-stream failure/)
   assert.deepEqual(upstreamAuthorizations, [
     'Bearer sk-generic-opaque-bad-a'
-  ], '通用完整 HTTP 失败不得同账户换 Key 或跨账户重放')
+  ], '未命中显式规则的完整 HTTP 失败不得轮 Key 或切换账户')
+
+  const exactHitOffset = upstreamAuthorizations.length
+  const exactNonStream = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json',
+      'x-codex-turn-metadata': JSON.stringify({ turn_id: `turn-exact-http-${Date.now()}` })
+    },
+    body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'exact status' }], stream: false })
+  })
+  const exactNonStreamText = await exactNonStream.text()
+  assert.equal(exactNonStream.status, 418, `精确客户端完整 HTTP 失败必须透明返回，实际 ${exactNonStream.status}: ${exactNonStreamText}`)
+  assert.match(exactNonStreamText, /opaque non-stream failure/)
+  assert.equal(upstreamAuthorizations.length - exactHitOffset, 1, '精确客户端完整非 2xx 不得默认切号')
+
+  const explicitHitOffset = upstreamAuthorizations.length
+  const explicitRetry = await fetch(`${baseUrl}/v1/chat/completions?mock_explicit_policy=1`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${apiKey.key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'configured retry' }], stream: false })
+  })
+  const explicitRetryText = await explicitRetry.text()
+  assert.equal(explicitRetry.status, 200, `显式 retry_next 仍应切换后备账号，实际 ${explicitRetry.status}: ${explicitRetryText}`)
+  assert.match(explicitRetryText, /explicit retry completed/)
+  assert.equal(upstreamAuthorizations.length - explicitHitOffset, 2, '显式 retry_next 应只切换一次账户，不得轮换同账户 Key')
+  const explicitPolicyAccount = repositories.findOpenAIAccountForGroup(group.id, account.id, access.systemAccountId)
+  assert(explicitPolicyAccount, '显式策略回归必须能读取真实调度账户')
+  assert.equal(
+    proxyHealth.recordGatewayUpstreamBucketSuccess(explicitPolicyAccount),
+    false,
+    '显式 retry_next 只能切换当前请求，不得附带自动上游桶失败状态'
+  )
 
   const imageHitOffset = upstreamAuthorizations.length
   const image = await fetch(`${baseUrl}/v1/images/generations`, {
@@ -262,11 +296,11 @@ try {
     body: JSON.stringify({ model: 'gpt-image-1', prompt: 'server side failover' })
   })
   const imageText = await image.text()
-  assert.equal(image.status, 418, `图片请求非成功响应必须原样返回，实际 ${image.status}: ${imageText}`)
+  assert.equal(image.status, 418, `图片完整 HTTP 失败也必须透明返回，实际 ${image.status}: ${imageText}`)
   assert.match(imageText, /opaque non-stream failure/)
   assert.deepEqual(upstreamAuthorizations.slice(imageHitOffset), [
     'Bearer sk-generic-image-bad'
-  ], '图片 HTTP 失败不得跨账号重放')
+  ], '未配置显式规则的图片 HTTP 失败不得切换后备账号')
 
   const stream = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -275,7 +309,7 @@ try {
   })
   const streamText = await stream.text()
   assert.equal(stream.status, 200)
-  assert.equal(hits.length, 3, `通用 SSE 必须继续派发上游且完整 HTTP 失败不得重放，实际响应：${streamText}`)
+  assert.equal(upstreamAuthorizations.at(-1), 'Bearer sk-generic-opaque-bad-a', `通用 SSE 必须由当前选中账号透明响应：${streamText}`)
   assert.match(streamText, /vendor_invented_stream_error/, '通用 SSE 必须原样保留上游失败事件')
   assert.doesNotMatch(streamText, /upstream_retryable_error/, '通用 SSE 不得改写成专用客户端错误码')
 
@@ -301,7 +335,7 @@ try {
   clearTimeout(conflictReleaseTimer)
   heldConflictSlot.release()
   heldFallbackConflictSlot.release()
-  assert.equal(hits.length, 4, 'SSE/非流式传输冲突不得按响应类型切换上游账户')
+  assert.equal(upstreamAuthorizations.at(-1), 'Bearer sk-generic-opaque-bad-a', 'SSE/非流式传输冲突不得按响应类型切换上游账户')
 
   const accountAfter = repositories.findAccountForTest(account.id, access)
   assert.equal(accountAfter?.status, 'active', '通用响应状态和错误类型不得修改账号状态')
@@ -311,6 +345,21 @@ try {
   for (const genericAccount of [account, fallbackAccount, imageBadAccount, imageGoodAccount]) {
     assert.equal(genericRuntimeSnapshot[genericAccount.id], undefined, `通用用户请求不得写账户运行态：${genericAccount.name}`)
   }
+
+  const systemDefaultHitOffset = upstreamAuthorizations.length
+  const codexJsonError = await fetch(`${baseUrl}/v1/responses?mock_codex_json_error=1`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey.key}`,
+      'content-type': 'application/json',
+      'x-codex-turn-metadata': JSON.stringify({ turn_id: `turn-system-default-${Date.now()}` })
+    },
+    body: JSON.stringify({ model: 'gpt-5.5', input: 'system default must not dispatch', stream: false })
+  })
+  const codexJsonErrorText = await codexJsonError.text()
+  assert.equal(codexJsonError.status, 200)
+  assert.match(codexJsonErrorText, /system_default_must_not_retry/, 'system_default 只允许透明渲染，不得替换完整响应')
+  assert.equal(upstreamAuthorizations.length - systemDefaultHitOffset, 1, 'system_default 响应检查不得触发服务端切号')
 
   const codexStream = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -324,8 +373,7 @@ try {
   })
   const codexStreamText = await codexStream.text()
   assert.equal(codexStream.status, 200)
-  assert.match(codexStreamText, /upstream_retryable_error/, '明确 Codex 画像应继续使用专用协议可重试信号')
-  assert.equal(hits.length, 6, '明确客户端语义处理应尝试两个账号，耗尽后不得无限重派')
+  assert.match(codexStreamText, /vendor_invented_stream_error/, '明确 Codex 画像应原样渲染完整上游失败事件')
   const codexRuntimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
   for (const codexAccount of [account, fallbackAccount]) {
     assert.equal(codexRuntimeSnapshot[codexAccount.id], undefined, `明确客户端失败只允许影响当前请求，不得写账户运行态：${codexAccount.name}`)

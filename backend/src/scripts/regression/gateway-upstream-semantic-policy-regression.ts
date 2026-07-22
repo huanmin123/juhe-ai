@@ -22,18 +22,18 @@ const hybridScoringSource = readFileSync(new URL('../../modules/gateway/hybrid/s
 const hybridQualitySource = readFileSync(new URL('../../modules/gateway/hybrid/quality-inspection.service.ts', import.meta.url), 'utf8')
 assert.match(
   dispatchSource,
-  /if \(response\.ok\)/,
-  '只有通用 HTTP 成功响应才能提交给下游管道'
+  /failedResponseResult\.action === 'return_response'[\s\S]*response: failedResponseResult\.response/,
+  '未命中用户显式规则的完整 HTTP 响应必须直接提交给下游管道'
 )
 assert.match(
   dispatchSource,
-  /interpretUpstreamResponseSemantics[\s\S]*handleFailedUpstreamResponse[\s\S]*handleOpaqueFailedUpstreamResponse/,
-  'HTTP 失败必须按客户端画像分流到精确语义或通用不透明处理器'
+  /const failedResponseResult = await handleFailedUpstreamResponse/,
+  'HTTP 失败只能由用户显式账户错误策略决定是否切号，不得按客户端画像分流默认动作'
 )
 assert.doesNotMatch(
   dispatchSource,
-  /!interpretUpstreamResponseSemantics \|\| response\.ok/,
-  '通用客户端不得把 HTTP 非成功响应当作可提交成功响应'
+  /isOpaqueUpstreamFailoverAllowed/,
+  '完整 HTTP 非成功响应不得按端点建立默认接管白名单'
 )
 assert.doesNotMatch(
   finalizationSource,

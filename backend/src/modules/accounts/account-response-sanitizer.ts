@@ -1,4 +1,5 @@
-import type { AccountListItem, AccountSummary } from '../../domain/types.js'
+import type { AccountListItem, AccountSummary, PublicAccountRuntimeAvailability } from '../../domain/types.js'
+import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import type { AccountApiKeyRuntimeResponse } from './account-api-key-pool-runtime.js'
 
 const publicCredentialKeys = new Set([
@@ -47,7 +48,8 @@ export function sanitizeAccountCredentialsForResponse(credentials: Record<string
 export function sanitizeAccountResponse<T extends AccountSummary>(account: T): T {
   return {
     ...account,
-    credentials: sanitizeAccountCredentialsForResponse(account.credentials)
+    credentials: sanitizeAccountCredentialsForResponse(account.credentials),
+    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability)
   } as T
 }
 
@@ -63,6 +65,7 @@ export function sanitizeAccountEditBasicDetailResponse<T extends AccountSummary>
   return {
     ...item,
     credentials: sanitizeAccountCredentialsByKeys(account.credentials, editBasicCredentialKeys),
+    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability),
     supportedModels: [...(account.supportedModels ?? [])]
   } as T
 }
@@ -78,6 +81,7 @@ export function sanitizeAccountBatchEditDetailResponse<T extends AccountSummary>
   return {
     ...item,
     credentials: sanitizeAccountCredentialsByKeys(account.credentials, batchEditCredentialKeys),
+    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability),
     supportedModels: [...(account.supportedModels ?? [])],
     modelMappings: [...(account.modelMappings ?? [])],
     tags: [...(account.tags ?? [])]
@@ -112,7 +116,10 @@ export function projectAccountListItem(account: AccountSummary): AccountListItem
     authorizationUsageAvailable: _authorizationUsageAvailable,
     ...item
   } = account
-  return item
+  return {
+    ...item,
+    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability)
+  }
 }
 
 export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(account: T): T {
@@ -123,7 +130,17 @@ export function sanitizeAccountBasicDetailResponse<T extends AccountSummary>(acc
     apiKeyRuntimeDetails: _apiKeyRuntimeDetails,
     ...item
   } = account
-  return item as T
+  return {
+    ...item,
+    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability)
+  } as T
+}
+
+export function sanitizeAccountRuntimeAvailabilityResponse<T extends { runtimeAvailability?: PublicAccountRuntimeAvailability }>(account: T): T {
+  return {
+    ...account,
+    runtimeAvailability: publicAccountRuntimeAvailability(account.runtimeAvailability)
+  }
 }
 
 export function sanitizeAccountApiKeyRuntimeResponse(value: AccountApiKeyRuntimeResponse): AccountApiKeyRuntimeResponse {
