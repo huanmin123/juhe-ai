@@ -2,10 +2,8 @@ package postgres
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -13,17 +11,31 @@ import (
 )
 
 const managementStatsOverviewSummarySQL = `
-SELECT request_count, success_count, error_count,
-  input_tokens, output_tokens, cache_read_tokens,
-  CAST(cache_read_cost_usd AS double precision), cache_write_tokens,
-  cache_write_1h_tokens, CAST(cache_write_cost_usd AS double precision),
-  thinking_tokens, input_image_tokens, output_image_tokens,
-  CAST(total_cost_usd AS double precision), duration_ms_sum, duration_ms_count,
-  first_token_ms_sum, first_token_ms_count, last_used_at
-FROM juhe_stats.usage_overview_summary_windows
-WHERE system_account_id = $1 AND window_key = $2 AND start_date = $3 AND end_date = $4
-ORDER BY updated_at DESC, system_account_id ASC
-LIMIT 1`
+SELECT COALESCE(SUM(request_count), 0)::bigint,
+  COALESCE(SUM(success_count), 0)::bigint,
+  COALESCE(SUM(error_count), 0)::bigint,
+  COALESCE(SUM(input_tokens), 0)::bigint,
+  COALESCE(SUM(output_tokens), 0)::bigint,
+  COALESCE(SUM(cache_read_tokens), 0)::bigint,
+  COALESCE(SUM(cache_read_cost_usd), 0)::double precision,
+  COALESCE(SUM(cache_write_tokens), 0)::bigint,
+  COALESCE(SUM(cache_write_1h_tokens), 0)::bigint,
+  COALESCE(SUM(cache_write_cost_usd), 0)::double precision,
+  COALESCE(SUM(thinking_tokens), 0)::bigint,
+  COALESCE(SUM(input_image_tokens), 0)::bigint,
+  COALESCE(SUM(output_image_tokens), 0)::bigint,
+  COALESCE(SUM(total_cost_usd), 0)::double precision,
+  COALESCE(SUM(duration_ms_sum), 0)::bigint,
+  COALESCE(SUM(duration_ms_count), 0)::bigint,
+  COALESCE(SUM(first_token_ms_sum), 0)::bigint,
+  COALESCE(SUM(first_token_ms_count), 0)::bigint,
+  MAX(last_used_at)
+FROM juhe_stats.usage_stats_daily
+WHERE system_account_id = $1
+  AND scope_type = 'system_account'
+  AND scope_id = $1
+  AND stat_date >= $2
+  AND stat_date <= $3`
 
 const managementStatsOverviewTrendSQL = `
 SELECT bucket_key, request_count, error_count, input_tokens, output_tokens,
@@ -108,16 +120,13 @@ func readManagementStatsOverview(ctx context.Context, queries managementStatsOve
 func (q *managementStatsOverviewPGQueries) summaryRow(ctx context.Context, input port.ManagementStatsOverviewReadInput) (port.ManagementStatsOverviewSummaryRow, bool, error) {
 	var row port.ManagementStatsOverviewSummaryRow
 	var lastUsedAt pgtype.Text
-	err := q.pool.QueryRow(ctx, managementStatsOverviewSummarySQL, input.SystemAccountID, input.WindowKey, input.StartDate, input.EndDate).Scan(
+	err := q.pool.QueryRow(ctx, managementStatsOverviewSummarySQL, input.SystemAccountID, input.StartDate, input.EndDate).Scan(
 		&row.RequestCount, &row.SuccessCount, &row.ErrorCount, &row.InputTokens, &row.OutputTokens,
 		&row.CacheReadTokens, &row.CacheReadCost, &row.CacheWriteTokens, &row.CacheWrite1hTokens,
 		&row.CacheWriteCost, &row.ThinkingTokens, &row.InputImageTokens, &row.OutputImageTokens,
 		&row.TotalCost, &row.DurationMsSum, &row.DurationMsCount, &row.FirstTokenMsSum,
 		&row.FirstTokenMsCount, &lastUsedAt,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return port.ManagementStatsOverviewSummaryRow{}, false, nil
-	}
 	if err != nil {
 		return port.ManagementStatsOverviewSummaryRow{}, false, err
 	}

@@ -9,13 +9,33 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-func TestManagementStatsOverviewSQLIsBoundedParameterizedAndPreaggregated(t *testing.T) {
+func TestManagementStatsOverviewSQLMatchesNodeFreshSummaryAndPreaggregatedDetails(t *testing.T) {
+	t.Run("summary reads the bounded daily aggregate", func(t *testing.T) {
+		for _, want := range []string{
+			"juhe_stats.usage_stats_daily",
+			"scope_type = 'system_account'",
+			"scope_id = $1",
+			"stat_date >= $2",
+			"stat_date <= $3",
+			"COALESCE(SUM(request_count), 0)",
+			"MAX(last_used_at)",
+		} {
+			if !strings.Contains(managementStatsOverviewSummarySQL, want) {
+				t.Fatalf("summary SQL missing %q:\n%s", want, managementStatsOverviewSummarySQL)
+			}
+		}
+		for _, forbidden := range []string{"usage_records", "usage_overview_summary_windows", "window_key"} {
+			if strings.Contains(strings.ToLower(managementStatsOverviewSummarySQL), forbidden) {
+				t.Fatalf("summary SQL must not contain %q:\n%s", forbidden, managementStatsOverviewSummarySQL)
+			}
+		}
+	})
+
 	queries := []struct {
 		name string
 		sql  string
 		want []string
 	}{
-		{name: "summary", sql: managementStatsOverviewSummarySQL, want: []string{"juhe_stats.usage_overview_summary_windows", "system_account_id = $1", "window_key = $2", "start_date = $3", "end_date = $4", "LIMIT 1"}},
 		{name: "trend", sql: managementStatsOverviewTrendSQL, want: []string{"juhe_stats.usage_overview_trend_windows", "ORDER BY bucket_key ASC", "LIMIT 744"}},
 		{name: "models", sql: managementStatsOverviewModelsSQL, want: []string{"juhe_stats.usage_model_rank_windows", "ORDER BY rank ASC, provider_code ASC, model ASC", "LIMIT 10"}},
 		{name: "errors", sql: managementStatsOverviewErrorsSQL, want: []string{"juhe_stats.usage_error_rank_windows", "ORDER BY rank ASC, provider_code ASC, error_code ASC, status_code ASC", "LIMIT 10"}},
