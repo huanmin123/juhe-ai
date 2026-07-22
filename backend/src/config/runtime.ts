@@ -80,6 +80,7 @@ export interface RuntimeConfig {
     maxConversationsPerUser: number
     maxTurnsPerConversation: number
     upstreamSseMaxEvents: number
+    diagnosticToolEnabled: boolean
   }
   openAICompatibleFilesRoot: string
   codexContextStateShardRoot: string
@@ -330,7 +331,8 @@ export const runtimeConfig: RuntimeConfig = {
     retentionDays: integerConfig('JUHE_AI_CHAT_RETENTION_DAYS', 3, 1, 365),
     maxConversationsPerUser: integerConfig('JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER', 50, 1, 1000),
     maxTurnsPerConversation: integerConfig('JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION', 50, 1, 1000),
-    upstreamSseMaxEvents: integerConfig('JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS', 65_536, 2_048, 262_144)
+    upstreamSseMaxEvents: integerConfig('JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS', 65_536, 2_048, 262_144),
+    diagnosticToolEnabled: booleanConfig('JUHE_AI_CHAT_DIAGNOSTIC_TOOL_ENABLED', false)
   },
   openAICompatibleFilesRoot: pathConfig('JUHE_AI_OPENAI_COMPATIBLE_FILES_ROOT', defaultOpenAICompatibleFilesRoot),
   codexContextStateShardRoot: pathConfig('JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT', defaultCodexContextStateShardRoot),

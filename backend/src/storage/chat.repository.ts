@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto'
 
 import type { DatabaseClient } from './database-client.js'
 import { ensurePostgresChatMessagePartitions } from './postgres-chat-message-partitions.js'
-import { commitChatAssetsToMessageInClient, expireChatAssetsForConversationInClient } from './chat-assets.repository.js'
+import { commitChatAssetsToMessageInClient, expireChatAssetsForConversationInClient, removeChatAssetReferencesForMessage } from './chat-assets.repository.js'
 
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
+export type ChatImageModel = 'gpt-image-2'
 
 export type CancelActiveChatTurnResult =
   | { state: 'canceled'; assistantStatus: 'canceled' }
@@ -21,6 +22,7 @@ export interface ChatConversation {
   title: string
   isPinned: boolean
   lastModel?: string
+  defaultImageModel: ChatImageModel
   activeTurnId?: string
   userTurnCount: number
   messageRevision: number
@@ -70,9 +72,20 @@ export interface ChatConversationSyncHead {
   tail: ChatConversationSyncMessage[]
 }
 
+export interface ChatTurnSubmissionFact {
+  turnId: string
+  assistantMessageId: string
+  assistantStatus: ChatMessageStatus
+  errorCode?: string
+  completedAt?: string
+  traceId?: string
+}
+
 export type ChatMessageContentBlock =
-  | { type: 'reasoning'; text: string }
-  | { type: 'tool_call'; id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> }
+  | { type: 'output_text'; blockId?: string; order?: number; text: string }
+  | { type: 'reasoning'; blockId?: string; order?: number; text: string; status?: 'started' | 'completed' | 'failed' | 'canceled' }
+  | { type: 'tool_call'; blockId?: string; order?: number; id?: string; callId?: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed' | 'canceled'; item?: Record<string, unknown> }
+  | { type: 'output_image'; blockId: string; order: number; assetId: string; status: 'started' | 'completed' | 'failed' | 'canceled'; mimeType?: string; width?: number; height?: number; revisedPrompt?: string }
   | { type: 'input_text'; text: string; order: number }
   | { type: 'input_image'; assetId: string; order: number }
 
@@ -91,9 +104,11 @@ const postgresIntegerMax = 2_147_483_647
 const sqliteChatUserPolicyLocks = new Map<string, Promise<void>>()
 
 export class ChatConflictError extends Error {
-  constructor(public readonly code: 'chat_message_in_progress' | 'chat_storage_quota_exceeded' | 'chat_replace_conflict' | 'chat_conversation_limit_exceeded' | 'chat_turn_limit_exceeded') {
+  constructor(public readonly code: 'chat_message_in_progress' | 'chat_context_compacting' | 'chat_conversation_clearing' | 'chat_storage_quota_exceeded' | 'chat_replace_conflict' | 'chat_conversation_limit_exceeded' | 'chat_turn_limit_exceeded') {
     super({
       chat_message_in_progress: '当前会话正在生成回答',
+      chat_context_compacting: '当前会话正在压缩上下文',
+      chat_conversation_clearing: '当前会话正在清空',
       chat_storage_quota_exceeded: '聊天容量已达到上限，请先删除部分会话',
       chat_replace_conflict: '最近一轮已变化，请重新确认后再编辑',
       chat_conversation_limit_exceeded: '会话数量已达到上限，请先删除部分会话',
@@ -128,9 +143,9 @@ export async function createChatConversation(client: DatabaseClient, input: {
     if (Number(count?.total ?? 0) >= input.maxConversationsPerUser) throw new ChatConflictError('chat_conversation_limit_exceeded')
     await tx.execute(`
       INSERT INTO ${table} (
-        id, system_account_id, api_key_id, api_key_name_snapshot, title, last_model,
+        id, system_account_id, api_key_id, api_key_name_snapshot, title, last_model, default_image_model,
         next_sequence_no, user_turn_count, last_message_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, '新对话', ?, 1, 0, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, '新对话', ?, 'gpt-image-2', 1, 0, ?, ?, ?)
     `, [id, input.systemAccountId, input.apiKeyId, input.apiKeyNameSnapshot, input.defaultModel ?? null, input.now, input.now, input.now])
     return requireConversation(tx, id, input.systemAccountId)
   }))
@@ -279,11 +294,20 @@ export async function findChatTurnByClientMessageId(client: DatabaseClient, inpu
   conversationId: string
   systemAccountId: string
   clientMessageId: string
-}): Promise<{ turnId: string; assistantStatus: ChatMessageStatus } | undefined> {
+}): Promise<ChatTurnSubmissionFact | undefined> {
   const idempotencyTable = chatTable(client, 'chat_message_idempotency')
   const messagesTable = chatTable(client, 'chat_messages')
-  const row = await client.one<{ turn_id?: unknown; assistant_status?: unknown }>(`
-    SELECT submission.turn_id, assistant.status AS assistant_status
+  const row = await client.one<{
+    turn_id?: unknown
+    assistant_message_id?: unknown
+    assistant_status?: unknown
+    error_code?: unknown
+    completed_at?: unknown
+    trace_id?: unknown
+  }>(`
+    SELECT submission.turn_id, assistant.id AS assistant_message_id,
+           assistant.status AS assistant_status, assistant.error_code,
+           assistant.completed_at, assistant.trace_id
     FROM ${idempotencyTable} AS submission
     JOIN ${messagesTable} AS assistant
       ON assistant.id = submission.assistant_message_id
@@ -295,7 +319,18 @@ export async function findChatTurnByClientMessageId(client: DatabaseClient, inpu
       AND submission.client_message_id = ?
       AND submission.system_account_id = ?
   `, [input.conversationId, input.clientMessageId, input.systemAccountId])
-  return row ? { turnId: String(row.turn_id), assistantStatus: String(row.assistant_status) as ChatMessageStatus } : undefined
+  if (!row) return undefined
+  const errorCode = nullable(row.error_code)
+  const completedAt = nullable(row.completed_at)
+  const traceId = nullable(row.trace_id)
+  return {
+    turnId: String(row.turn_id),
+    assistantMessageId: String(row.assistant_message_id),
+    assistantStatus: String(row.assistant_status) as ChatMessageStatus,
+    ...(errorCode ? { errorCode } : {}),
+    ...(completedAt ? { completedAt } : {}),
+    ...(traceId ? { traceId } : {})
+  }
 }
 
 export async function updateChatConversation(client: DatabaseClient, input: {
@@ -303,59 +338,117 @@ export async function updateChatConversation(client: DatabaseClient, input: {
   systemAccountId: string
   title?: string
   isPinned?: boolean
+  defaultImageModel?: ChatImageModel
   now: string
 }): Promise<ChatConversation | undefined> {
-  const current = await getChatConversation(client, input.conversationId, input.systemAccountId)
-  if (!current) return undefined
-  const title = input.title ?? current.title
-  const isPinned = input.isPinned ?? current.isPinned
-  await client.execute(`
+  const assignments: string[] = []
+  const params: unknown[] = []
+  if (input.title !== undefined) {
+    assignments.push('title = ?', 'title_source_message_id = NULL')
+    params.push(input.title)
+  }
+  if (input.isPinned !== undefined) {
+    assignments.push('is_pinned = ?')
+    params.push(input.isPinned ? 1 : 0)
+  }
+  if (input.defaultImageModel !== undefined) {
+    assignments.push('default_image_model = ?')
+    params.push(normalizedChatImageModel(input.defaultImageModel))
+  }
+  assignments.push('updated_at = ?')
+  params.push(input.now, input.conversationId, input.systemAccountId)
+  const result = await client.execute(`
     UPDATE ${chatTable(client, 'chat_conversations')}
-    SET title = ?, title_source_message_id = CASE WHEN ? THEN NULL ELSE title_source_message_id END,
-        is_pinned = ?, updated_at = ?
+    SET ${assignments.join(', ')}
     WHERE id = ? AND system_account_id = ?
-  `, [title, input.title !== undefined, isPinned ? 1 : 0, input.now, input.conversationId, input.systemAccountId])
+  `, params)
+  if (result.changes !== 1) return undefined
   return getChatConversation(client, input.conversationId, input.systemAccountId)
 }
 
 export async function deleteChatConversation(client: DatabaseClient, conversationId: string, systemAccountId: string): Promise<boolean> {
   return client.transaction(async (tx) => {
+    await lockChatUserStorageQuota(tx, systemAccountId)
     const conversation = await tx.one<ConversationRow>(`
       SELECT * FROM ${chatTable(tx, 'chat_conversations')}
       WHERE id = ? AND system_account_id = ?${tx.driver === 'postgres' ? ' FOR UPDATE' : ''}
     `, [conversationId, systemAccountId])
     if (!conversation) return false
     if (conversation.active_turn_id) throw new ChatConflictError('chat_message_in_progress')
-    const buckets = await tx.query<{ bucket_date?: unknown; content_bytes?: unknown; reserved_bytes?: unknown }>(`
-      SELECT substr(created_at, 1, 10) AS bucket_date,
-             COALESCE(SUM(content_bytes), 0) AS content_bytes,
-             COALESCE(SUM(storage_reserved_bytes), 0) AS reserved_bytes
-      FROM ${chatTable(tx, 'chat_messages')}
-      WHERE conversation_id = ? AND system_account_id = ?
-      GROUP BY substr(created_at, 1, 10)
-    `, [conversationId, systemAccountId])
-    for (const bucket of buckets) {
-      await tx.execute(`
-        UPDATE ${chatTable(tx, 'chat_user_storage_windows')}
-        SET content_bytes = CASE WHEN content_bytes > ? THEN content_bytes - ? ELSE 0 END,
-            reserved_bytes = CASE WHEN reserved_bytes > ? THEN reserved_bytes - ? ELSE 0 END,
-            updated_at = ?
-        WHERE system_account_id = ? AND bucket_date = ?
-      `, [Number(bucket.content_bytes ?? 0), Number(bucket.content_bytes ?? 0), Number(bucket.reserved_bytes ?? 0), Number(bucket.reserved_bytes ?? 0), new Date().toISOString(), systemAccountId, String(bucket.bucket_date)])
-    }
-    await tx.execute(`
-      DELETE FROM ${chatTable(tx, 'chat_user_storage_windows')}
-      WHERE system_account_id = ? AND content_bytes = 0 AND reserved_bytes = 0
-    `, [systemAccountId])
-    await expireChatAssetsForConversationInClient(tx, {
-      systemAccountId,
+    await releaseChatConversationStorageAndExpireAssets(tx, {
       conversationId,
+      systemAccountId,
       now: new Date().toISOString()
     })
     const result = await tx.execute(`
       DELETE FROM ${chatTable(tx, 'chat_conversations')} WHERE id = ? AND system_account_id = ?
     `, [conversationId, systemAccountId])
     return result.changes === 1
+  })
+}
+
+export async function clearChatConversation(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  now: string
+}): Promise<ChatConversation | undefined> {
+  return client.transaction(async (tx) => {
+    await lockChatUserStorageQuota(tx, input.systemAccountId)
+    const conversation = await tx.one<ConversationRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ?${tx.driver === 'postgres' ? ' FOR UPDATE' : ''}
+    `, [input.conversationId, input.systemAccountId])
+    if (!conversation) return undefined
+    if (conversation.active_turn_id) throw new ChatConflictError('chat_message_in_progress')
+    if (String(conversation.context_state) === 'compacting') throw new ChatConflictError('chat_context_compacting')
+
+    await releaseChatConversationStorageAndExpireAssets(tx, input)
+    await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_image_generations')}
+      WHERE conversation_id = ? AND system_account_id = ?
+    `, [input.conversationId, input.systemAccountId])
+    await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_asset_references')}
+      WHERE conversation_id = ?
+    `, [input.conversationId])
+    await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_message_idempotency')}
+      WHERE conversation_id = ? AND system_account_id = ?
+    `, [input.conversationId, input.systemAccountId])
+    await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_messages')}
+      WHERE conversation_id = ? AND system_account_id = ?
+    `, [input.conversationId, input.systemAccountId])
+    await tx.execute(`
+      DELETE FROM ${chatTable(tx, 'chat_context_checkpoints')}
+      WHERE conversation_id = ? AND system_account_id = ?
+    `, [input.conversationId, input.systemAccountId])
+
+    const result = await tx.execute(`
+      UPDATE ${chatTable(tx, 'chat_conversations')}
+      SET title = '新对话', title_source_message_id = NULL,
+          next_sequence_no = 1, user_turn_count = 0,
+          message_revision = message_revision + 1,
+          active_turn_id = NULL, active_started_at = NULL,
+          context_revision = context_revision + 1,
+          active_checkpoint_id = NULL, compacted_through_sequence = 0,
+          context_state = 'ready', active_context_tokens = NULL,
+          effective_context_limit_tokens = NULL, context_usage_estimated = 1,
+          context_claim_id = NULL, context_claim_revision = NULL,
+          context_claim_through_sequence = NULL, context_claimed_at = NULL,
+          context_retry_at = NULL, context_attempt_count = 0,
+          context_error_code = NULL, context_progress_sequence = 0,
+          context_progress_earliest_expires_at = NULL,
+          last_message_at = ?, updated_at = ?
+      WHERE id = ? AND system_account_id = ?
+        AND active_turn_id IS NULL AND context_state != 'compacting'
+    `, [input.now, input.now, input.conversationId, input.systemAccountId])
+    if (result.changes !== 1) throw new Error('清空会话状态发生并发冲突')
+    const cleared = await tx.one<ConversationRow>(`
+      SELECT * FROM ${chatTable(tx, 'chat_conversations')}
+      WHERE id = ? AND system_account_id = ?
+    `, [input.conversationId, input.systemAccountId])
+    return cleared ? mapConversation(cleared) : undefined
   })
 }
 
@@ -396,6 +489,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
     let userSequence = Number(conversation.next_sequence_no)
     let assistantSequence = userSequence + 1
     let replacedUserMessageId: string | undefined
+    let replacedAssistantMessageId: string | undefined
     if (input.replaceTurnId) {
       if (conversation.active_turn_id) throw new ChatConflictError('chat_replace_conflict')
       const replacement = await requireReplaceableTurn(tx, {
@@ -408,6 +502,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       userSequence = Number(replacement.userMessage.sequence_no)
       assistantSequence = Number(replacement.assistantMessage.sequence_no)
       replacedUserMessageId = String(replacement.userMessage.id)
+      replacedAssistantMessageId = String(replacement.assistantMessage.id)
       const usedBytes = await recentStorageBytes(tx, input.systemAccountId, input.now, input.retentionDays)
       if (usedBytes < replacement.totalBytes) throw new Error('聊天容量窗口数据不一致：最近窗口小于待替换轮次')
       if (usedBytes - replacement.totalBytes + userBytes + chatAssistantStorageReservationBytes > input.storageQuotaBytes) {
@@ -424,7 +519,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
       const retainedAssetIds = [...new Set(
         input.contentBlocks
           ?.filter((block) => block.type === 'input_image' && block.assetId)
-          .map((block) => block.assetId!) ?? []
+          .map((block) => block.assetId!.trim()) ?? []
       )]
       await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_assets')}
@@ -432,6 +527,7 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
             cleanup_retry_at = CASE WHEN cleanup_status = 'failed' THEN ? ELSE cleanup_retry_at END,
             updated_at = ?
         WHERE system_account_id = ? AND conversation_id = ? AND message_id = ?
+          AND source_kind = 'user_upload'
           ${retainedAssetIds.length > 0 ? `AND id NOT IN (${tx.dialect.bindPlaceholders(retainedAssetIds.length)})` : ''}
       `, [
         input.now,
@@ -452,6 +548,88 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
             updated_at = ?
         WHERE system_account_id = ? AND conversation_id = ? AND message_id = ?
       `, [input.now, input.systemAccountId, input.conversationId, replacedUserMessageId])
+      const replacedUserInputAssetIds = (await tx.query<{ asset_id?: unknown }>(`
+        SELECT asset_id FROM ${chatTable(tx, 'chat_asset_references')}
+        WHERE conversation_id = ? AND message_id = ? AND reference_kind = 'user_input' AND expires_at > ?
+      `, [input.conversationId, replacedUserMessageId, input.now]))
+        .map((row) => String(row.asset_id ?? '').trim())
+        .filter(Boolean)
+      await removeChatAssetReferencesForMessage(tx, {
+        systemAccountId: input.systemAccountId,
+        conversationId: input.conversationId,
+        messageId: replacedUserMessageId,
+        now: input.now
+      })
+      if (replacedUserInputAssetIds.length > 0) {
+        await tx.execute(`
+          UPDATE ${chatTable(tx, 'chat_assets')} AS asset
+          SET expires_at = CASE WHEN expires_at > ? THEN ? ELSE expires_at END,
+              cleanup_retry_at = CASE WHEN cleanup_status = 'failed' THEN ? ELSE cleanup_retry_at END,
+              updated_at = ?
+          WHERE asset.system_account_id = ? AND asset.conversation_id = ?
+            AND asset.source_kind = 'assistant_generated'
+            AND asset.id IN (${tx.dialect.bindPlaceholders(replacedUserInputAssetIds.length)})
+            AND asset.turn_id IS NULL AND asset.message_id IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM ${chatTable(tx, 'chat_asset_references')} AS reference
+              WHERE reference.asset_id = asset.id
+                AND reference.conversation_id = asset.conversation_id
+                AND reference.expires_at > ?
+            )
+            ${retainedAssetIds.length > 0 ? `AND asset.id NOT IN (${tx.dialect.bindPlaceholders(retainedAssetIds.length)})` : ''}
+        `, [
+          input.now,
+          input.now,
+          input.now,
+          input.now,
+          input.systemAccountId,
+          input.conversationId,
+          ...replacedUserInputAssetIds,
+          input.now,
+          ...retainedAssetIds
+        ])
+      }
+      await removeChatAssetReferencesForMessage(tx, {
+        systemAccountId: input.systemAccountId,
+        conversationId: input.conversationId,
+        messageId: replacedAssistantMessageId,
+        now: input.now
+      })
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_assets')}
+        SET expires_at = CASE WHEN expires_at > ? THEN ? ELSE expires_at END,
+            cleanup_retry_at = CASE WHEN cleanup_status = 'failed' THEN ? ELSE cleanup_retry_at END,
+            updated_at = ?
+        WHERE system_account_id = ? AND conversation_id = ? AND message_id = ?
+          AND source_kind = 'assistant_generated'
+          AND cleanup_status IN ('active', 'failed')
+          ${retainedAssetIds.length > 0 ? `AND id NOT IN (${tx.dialect.bindPlaceholders(retainedAssetIds.length)})` : ''}
+      `, [
+        input.now,
+        input.now,
+        input.now,
+        input.now,
+        input.systemAccountId,
+        input.conversationId,
+        replacedAssistantMessageId,
+        ...retainedAssetIds
+      ])
+      await tx.execute(`
+        UPDATE ${chatTable(tx, 'chat_assets')}
+        SET turn_id = NULL, message_id = NULL, committed_at = NULL,
+            observation_status = 'not_requested', observation_json = NULL,
+            observation_revision = observation_revision + 1,
+            observation_claim_id = NULL, observation_claimed_at = NULL,
+            updated_at = ?
+        WHERE system_account_id = ? AND conversation_id = ? AND message_id = ?
+          AND source_kind = 'assistant_generated'
+          AND cleanup_status IN ('active', 'failed')
+      `, [
+        input.now,
+        input.systemAccountId,
+        input.conversationId,
+        replacedAssistantMessageId
+      ])
       const deletedMessages = await tx.execute(`
         DELETE FROM ${chatTable(tx, 'chat_messages')}
         WHERE conversation_id = ? AND system_account_id = ? AND turn_id = ?
@@ -515,8 +693,8 @@ export async function acceptChatTurn(client: DatabaseClient, input: {
     } else {
       await tx.execute(`
         UPDATE ${chatTable(tx, 'chat_conversations')}
-        SET title = CASE WHEN next_sequence_no = 1 THEN ? ELSE title END,
-            title_source_message_id = CASE WHEN next_sequence_no = 1 THEN ? ELSE title_source_message_id END,
+        SET title = CASE WHEN next_sequence_no = 1 AND title = '新对话' AND title_source_message_id IS NULL THEN ? ELSE title END,
+            title_source_message_id = CASE WHEN next_sequence_no = 1 AND title = '新对话' AND title_source_message_id IS NULL THEN ? ELSE title_source_message_id END,
             message_revision = message_revision + 1,
             context_revision = context_revision + 1,
             context_state = CASE WHEN context_state = 'compacting' THEN 'compact_pending' ELSE context_state END,
@@ -1217,6 +1395,37 @@ async function loadMessagePair(client: DatabaseClient, conversationId: string, s
   return { userMessage: mapMessage(rows[0]), assistantMessage: mapMessage(rows[1]) }
 }
 
+async function releaseChatConversationStorageAndExpireAssets(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  now: string
+}): Promise<void> {
+  const buckets = await client.query<{ bucket_date?: unknown; content_bytes?: unknown; reserved_bytes?: unknown }>(`
+    SELECT substr(created_at, 1, 10) AS bucket_date,
+           COALESCE(SUM(content_bytes), 0) AS content_bytes,
+           COALESCE(SUM(storage_reserved_bytes), 0) AS reserved_bytes
+    FROM ${chatTable(client, 'chat_messages')}
+    WHERE conversation_id = ? AND system_account_id = ?
+    GROUP BY substr(created_at, 1, 10)
+  `, [input.conversationId, input.systemAccountId])
+  for (const bucket of buckets) {
+    const contentBytes = Number(bucket.content_bytes ?? 0)
+    const reservedBytes = Number(bucket.reserved_bytes ?? 0)
+    await client.execute(`
+      UPDATE ${chatTable(client, 'chat_user_storage_windows')}
+      SET content_bytes = CASE WHEN content_bytes > ? THEN content_bytes - ? ELSE 0 END,
+          reserved_bytes = CASE WHEN reserved_bytes > ? THEN reserved_bytes - ? ELSE 0 END,
+          updated_at = ?
+      WHERE system_account_id = ? AND bucket_date = ?
+    `, [contentBytes, contentBytes, reservedBytes, reservedBytes, input.now, input.systemAccountId, String(bucket.bucket_date)])
+  }
+  await client.execute(`
+    DELETE FROM ${chatTable(client, 'chat_user_storage_windows')}
+    WHERE system_account_id = ? AND content_bytes = 0 AND reserved_bytes = 0
+  `, [input.systemAccountId])
+  await expireChatAssetsForConversationInClient(client, input)
+}
+
 async function recentStorageBytes(client: DatabaseClient, systemAccountId: string, now: string, retentionDays: number): Promise<number> {
   const start = new Date(now)
   start.setUTCDate(start.getUTCDate() - retentionDays)
@@ -1389,11 +1598,17 @@ function mapConversation(row: ConversationRow): ChatConversation {
   return {
     id: String(row.id), systemAccountId: String(row.system_account_id),
     apiKeyId: nullable(row.api_key_id), apiKeyNameSnapshot: String(row.api_key_name_snapshot),
-    title: String(row.title), isPinned: Number(row.is_pinned ?? 0) === 1, lastModel: nullable(row.last_model), activeTurnId: nullable(row.active_turn_id),
+    title: String(row.title), isPinned: Number(row.is_pinned ?? 0) === 1, lastModel: nullable(row.last_model),
+    defaultImageModel: normalizedChatImageModel(row.default_image_model), activeTurnId: nullable(row.active_turn_id),
     userTurnCount: normalizedChatUserTurnCount(row.user_turn_count),
     messageRevision: normalizedChatMessageRevision(row.message_revision),
     lastMessageAt: String(row.last_message_at), createdAt: String(row.created_at), updatedAt: String(row.updated_at)
   }
+}
+
+function normalizedChatImageModel(value: unknown): ChatImageModel {
+  if (value === 'gpt-image-2') return value
+  throw new Error('聊天会话默认图像模型无效')
 }
 
 function mapMessage(row: ChatMessageRow): ChatMessage {
@@ -1425,15 +1640,21 @@ function parseContentBlocks(value: unknown): ChatMessageContentBlock[] {
 function isChatMessageContentBlock(value: unknown): value is ChatMessageContentBlock {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const block = value as Record<string, unknown>
+  if (block.type === 'output_text') return typeof block.text === 'string'
   if (block.type === 'reasoning') return typeof block.text === 'string'
+    && (block.status === undefined || ['started', 'completed', 'failed', 'canceled'].includes(String(block.status)))
   if (block.type === 'input_text' || block.type === 'input_image') {
     if (!Number.isSafeInteger(block.order) || Number(block.order) < 0 || Number(block.order) >= maxInputContentBlocks) return false
     return block.type === 'input_text'
       ? typeof block.text === 'string'
       : typeof block.assetId === 'string' && Boolean(block.assetId.trim())
   }
-  return block.type === 'tool_call' && typeof block.id === 'string' && typeof block.toolType === 'string'
-    && ['started', 'updated', 'completed', 'failed'].includes(String(block.status))
+  if (block.type === 'output_image') return typeof block.blockId === 'string' && Boolean(block.blockId)
+    && Number.isSafeInteger(block.order) && Number(block.order) >= 0
+    && typeof block.assetId === 'string' && Boolean(block.assetId)
+    && ['started', 'completed', 'failed', 'canceled'].includes(String(block.status))
+  return block.type === 'tool_call' && (typeof block.id === 'string' || typeof block.callId === 'string') && typeof block.toolType === 'string'
+    && ['started', 'updated', 'completed', 'failed', 'canceled'].includes(String(block.status))
 }
 
 function parseStoredInputMarkers(value: unknown): Array<Extract<ChatMessageContentBlock, { type: 'input_text' | 'input_image' }>> | undefined {

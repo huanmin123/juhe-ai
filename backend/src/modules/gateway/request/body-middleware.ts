@@ -35,6 +35,7 @@ import { groupUsageMetadata, recordGatewayFailure } from '../usage/records.js'
 import { gatewayErrorPayload, type GatewayErrorPayload } from '../response/responses.js'
 import { extractClientIp, requestEndpoint } from './metadata.js'
 import { buildGatewayUsageContext } from './preflight.js'
+import { extractGatewayMultipartImageModel } from './multipart-image-metadata.js'
 
 export type GatewayRawBodyLimitScope = 'gateway' | 'text' | 'image'
 type GatewayBodyRejectReason = 'gateway_body_parser' | 'gateway_body_size_limit' | 'gateway_body_in_flight_limit' | 'gateway_body_metadata_worker' | 'gateway_body_admission'
@@ -207,7 +208,12 @@ export async function captureGatewayRawBody(
       req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'empty' })
       req.body = undefined
     } else if (!isJson) {
-      req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'not_json' })
+      const model = await extractGatewayMultipartImageModel({
+        rawBody,
+        contentType: String(contentType),
+        path: req.path || req.originalUrl
+      })
+      req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'not_json', model })
       req.body = undefined
       if (await rejectGatewayRawBodyByRequestLane(req, res, rawBody)) {
         completeStage('expected_failure', {

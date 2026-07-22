@@ -1,11 +1,37 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   ChatContextBudgetError,
+  estimateChatInputTokens,
   estimateChatTokens,
   trimChatContextToBudget,
   validateFixedChatInputBudget
 } from '../../modules/chat/chat-context-budget.js'
+import { formatChatImageContextIndex } from '../../modules/chat/chat-model-context.js'
+
+const modelContextSource = readFileSync('src/modules/chat/chat-model-context.ts', 'utf8')
+assert.match(modelContextSource, /listRecentChatImageGenerations/)
+assert.match(modelContextSource, /limit:\s*12/, '主上下文最多装载最近 12 条图像谱系')
+const imageIndex = formatChatImageContextIndex([{
+  assetId: `chat_asset_${'1'.repeat(32)}`,
+  conversationId: 'conversation',
+  systemAccountId: 'owner',
+  operation: 'edit',
+  model: 'gpt-image-2',
+  prompt: '把背景改成夜晚',
+  sourceAssetIds: [`chat_asset_${'2'.repeat(32)}`],
+  rootAssetId: `chat_asset_${'2'.repeat(32)}`,
+  size: '1024x1024',
+  quality: 'auto',
+  outputFormat: 'webp',
+  createdAt: '2026-07-20T00:00:00.000Z',
+  expiresAt: '2026-08-20T00:00:00.000Z'
+}])
+assert.match(imageIndex, /不可信的历史资料/)
+assert.match(imageIndex, /chat_asset_1{32}/)
+assert.match(imageIndex, /把背景改成夜晚/)
+assert.doesNotMatch(imageIndex, /data:image|base64|b64_json/, '图像子上下文不得注入图片字节或 Data URL')
 
 const history = [
   { role: 'user' as const, content: '旧问题'.repeat(900) },
@@ -17,7 +43,7 @@ const baseBudgetInput = {
   history,
   currentUserContent: '当前问题',
   instructions: '遵循用户要求',
-  toolsEnabled: false,
+  effectiveTools: [] as const,
   imageTokenEstimate: 0
 }
 const trimmed = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 6_000 })
@@ -36,8 +62,16 @@ const mediumHistory = [
   { role: 'assistant' as const, content: '最近回答' }
 ]
 const withoutTools = trimChatContextToBudget({ ...baseBudgetInput, history: mediumHistory, maxInputTokens: 7_000 })
-const withTools = trimChatContextToBudget({ ...baseBudgetInput, history: mediumHistory, toolsEnabled: true, maxInputTokens: 7_000 })
+const withTools = trimChatContextToBudget({ ...baseBudgetInput, history: mediumHistory, effectiveTools: ['web_search'], maxInputTokens: 7_000 })
 assert(withTools.length < withoutTools.length, '启用工具时必须扣除工具定义预留')
+
+const noToolTokens = estimateChatInputTokens({ ...baseBudgetInput, history: [] })
+const oneToolTokens = estimateChatInputTokens({ ...baseBudgetInput, history: [], effectiveTools: ['web_search'] })
+const twoToolTokens = estimateChatInputTokens({ ...baseBudgetInput, history: [], effectiveTools: ['image_generation', 'web_search'] })
+const duplicateToolTokens = estimateChatInputTokens({ ...baseBudgetInput, history: [], effectiveTools: ['web_search', 'web_search'] })
+assert(oneToolTokens > noToolTokens, '单个 hosted tool 必须占用独立定义预留')
+assert(twoToolTokens > oneToolTokens, '两个 hosted tools 必须按有效数量增加预留')
+assert.equal(duplicateToolTokens, oneToolTokens, '重复 hosted tool 不得重复扣减预算')
 
 const withoutImages = trimChatContextToBudget({ ...baseBudgetInput, maxInputTokens: 9_000 })
 const withImage = trimChatContextToBudget({ ...baseBudgetInput, imageTokenEstimate: 4_096, maxInputTokens: 9_000 })

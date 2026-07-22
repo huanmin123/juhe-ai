@@ -150,7 +150,6 @@ func TestReadinessRequiresPostgresForEnabledBusinessRoutes(t *testing.T) {
 	for _, cfg := range []config.Config{
 		{Host: "127.0.0.1", Port: 3000, PublicAPIEnabled: true},
 		{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
-		{Host: "127.0.0.1", Port: 3000, ManagementAuthSessionsEnabled: true},
 	} {
 		handler := NewReadinessHandler(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), nil)
 		req := httptest.NewRequest(http.MethodGet, "/__aisys__/readyz", nil)
@@ -242,13 +241,6 @@ func TestNodeModelCatalogBridgeDependency(t *testing.T) {
 			wantStatus:     "error",
 			wantHTTPStatus: http.StatusServiceUnavailable,
 		},
-		{
-			name:           "session only does not require bridge",
-			cfg:            config.Config{ManagementAuthSessionsEnabled: true},
-			wantConfigured: false,
-			wantStatus:     "skipped",
-			wantHTTPStatus: http.StatusServiceUnavailable,
-		},
 	}
 
 	for _, test := range tests {
@@ -257,7 +249,6 @@ func TestNodeModelCatalogBridgeDependency(t *testing.T) {
 				Config:                       test.cfg,
 				Logger:                       slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 				ManagementCaptchaHandler:     http.NotFoundHandler(),
-				ManagementSessionListHandler: http.NotFoundHandler(),
 				ManagementAPIAuthMiddleware: func(next http.Handler) http.Handler {
 					return next
 				},

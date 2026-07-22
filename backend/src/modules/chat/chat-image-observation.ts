@@ -63,7 +63,7 @@ async function runObservation(input: Parameters<typeof scheduleChatImageObservat
       systemAccountId: input.systemAccountId,
       now
     })
-    const dataUrl = resolved.blocks?.[0]?.dataUrl
+    const dataUrl = resolved.blocks?.find((block) => block.type === 'input_image')?.dataUrl
     if (!dataUrl) throw new Error('chat_image_observation_asset_missing')
     const instructions = [
       '你是图片语义记忆提取器。只输出一个 JSON 对象，不要 Markdown 围栏。',

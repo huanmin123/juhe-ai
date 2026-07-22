@@ -12,11 +12,38 @@ import {
   createOpenAITestRequest,
   testPathFromEndpointMode
 } from '../../modules/accounts/account-test-request.js'
-import { hasAccountTestProtocolSuccessEvidence } from '../../modules/accounts/account-test-success-evidence.js'
+import { accountTestProbeKind } from '../../modules/accounts/account-test-probe-policy.js'
+import {
+  hasAccountModelCatalogSuccessEvidence,
+  hasAccountTestProtocolSuccessEvidence
+} from '../../modules/accounts/account-test-success-evidence.js'
 import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, accountUpdateSchema } from '../../modules/accounts/account-request.schemas.js'
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
+const openAIProfile = { providerCode: 'gpt', protocolCode: 'openai', protocolVersion: 'v1', type: 'api_key' }
+assert.equal(accountTestProbeKind(openAIProfile, 'gpt-image-2'), 'models_catalog', 'OpenAI v1 纯图像模型探针必须使用模型目录，不得调用文本 Responses')
+assert.equal(accountTestProbeKind(openAIProfile, 'gpt-5.5'), 'generation', '文本模型探针必须继续使用保存的生成请求形态')
+assert.equal(
+  accountTestProbeKind({ ...openAIProfile, type: 'oauth' }, 'gpt-image-2'),
+  'generation',
+  'OAuth 账户没有 Images/模型目录探针能力，不得误判为可测试的 gpt-image-2 账户'
+)
+assert.equal(
+  accountTestProbeKind({ ...openAIProfile, protocolCode: 'gemini', protocolVersion: 'v1beta' }, 'gpt-image-2'),
+  'generation',
+  '非 OpenAI 协议不得猜测复用 OpenAI 模型目录探针'
+)
+assert.equal(
+  hasAccountModelCatalogSuccessEvidence('gpt-image-2', JSON.stringify({ object: 'list', data: [{ id: 'gpt-image-2' }] })),
+  true,
+  '模型目录探针必须确认目标图像模型存在'
+)
+assert.equal(
+  hasAccountModelCatalogSuccessEvidence('gpt-image-2', JSON.stringify({ object: 'list', data: [{ id: 'gpt-5.5' }] })),
+  false,
+  '模型目录缺少目标模型时不得判定探针成功'
+)
 
 for (const mode of ['interactions_json', 'interactions_sse'] as const) {
   assert.equal(accountCreateSchema.safeParse({

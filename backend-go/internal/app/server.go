@@ -264,8 +264,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementProfileUpdateHandler:                    managementHandlers.ProfileUpdateHandler,
 		ManagementPasswordChangeHandler:                   managementHandlers.PasswordChangeHandler,
 		ManagementLogoutHandler:                           managementHandlers.LogoutHandler,
-		ManagementSessionListHandler:                      managementHandlers.SessionListHandler,
-		ManagementSessionRevokeHandler:                    managementHandlers.SessionRevokeHandler,
 		ManagementProxiesHandler:                          managementHandlers.ProxiesHandler,
 		ManagementProxyOptionsHandler:                     managementHandlers.ProxyOptionsHandler,
 		ManagementProxyCreateHandler:                      managementHandlers.ProxyCreateHandler,
@@ -499,8 +497,6 @@ type managementAPIHandlers struct {
 	ProfileUpdateHandler                    http.Handler
 	PasswordChangeHandler                   http.Handler
 	LogoutHandler                           http.Handler
-	SessionListHandler                      http.Handler
-	SessionRevokeHandler                    http.Handler
 	ProxiesHandler                          http.Handler
 	ProxyOptionsHandler                     http.Handler
 	ProxyCreateHandler                      http.Handler
@@ -750,19 +746,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	systemAPIRateLimitSettingsCache managementsettings.SystemAPIRateLimitSettingsCacheInvalidator,
 	catalogSnapshotRebuilder managementprovidermodels.CatalogSnapshotRebuilder,
 ) managementAPIHandlers {
-	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
+	if !cfg.ManagementAPIEnabled {
 		return managementAPIHandlers{}
 	}
 	authenticator := managementauth.NewAuthenticator(managementauth.AuthenticatorOptions{Store: store})
-	sessionService := managementauth.NewSessionService(store)
-	if !cfg.ManagementAPIEnabled {
-		return managementAPIHandlers{
-			AuthMiddleware:       httpapi.NewManagementAPIAuthMiddleware(authenticator),
-			AuthTouchMiddleware:  httpapi.NewManagementAPIAuthTouchMiddleware(authenticator),
-			SessionListHandler:   httpapi.NewManagementSessionListHandler(sessionService),
-			SessionRevokeHandler: httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
-		}
-	}
 	captchaService := managementauth.NewCaptchaService(stateRedis)
 	loginGuardService := managementauth.NewLoginGuardService(stateRedis)
 	loginService := managementauth.NewLoginServiceWithOptions(managementauth.LoginServiceOptions{
@@ -987,8 +974,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		ProfileUpdateHandler:                    httpapi.NewManagementProfileUpdateHandlerWithOperationLog(profileService, operationLogOptions),
 		PasswordChangeHandler:                   httpapi.NewManagementPasswordChangeHandler(authenticator, passwordService),
 		LogoutHandler:                           httpapi.NewManagementLogoutHandler(authenticator, cfg),
-		SessionListHandler:                      httpapi.NewManagementSessionListHandler(sessionService),
-		SessionRevokeHandler:                    httpapi.NewManagementSessionRevokeHandler(sessionService, cfg),
 		ProxiesHandler:                          httpapi.NewManagementProxiesHandler(proxyService),
 		ProxyOptionsHandler:                     httpapi.NewManagementProxyOptionsHandler(proxyService),
 		ProxyCreateHandler:                      httpapi.NewManagementProxyCreateHandlerWithOperationLog(proxyService, operationLogOptions),

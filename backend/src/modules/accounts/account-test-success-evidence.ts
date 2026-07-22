@@ -17,6 +17,14 @@ export function hasAccountTestProtocolSuccessEvidence(
   return false
 }
 
+export function hasAccountModelCatalogSuccessEvidence(model: string, bodyText: string): boolean {
+  const target = model.trim()
+  if (!target) return false
+  const payload = parseJsonObject(bodyText)
+  if (!payload || payload.object !== 'list' || !Array.isArray(payload.data)) return false
+  return payload.data.some((item) => stringValue(objectValue(item)?.id) === target)
+}
+
 function hasStreamingSuccessEvidence(mode: AccountSupportedEndpointMode, bodyText: string): boolean {
   let hasChatContent = false
   for (const event of parseServerSentEvents(bodyText)) {

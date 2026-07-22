@@ -19,6 +19,9 @@ export interface ChatContextHead {
   activeContextTokens?: number
   effectiveContextLimitTokens?: number
   usageEstimated: boolean
+  contextRetryAt?: string
+  contextAttemptCount: number
+  contextErrorCode?: string
   nextSequenceNo: number
 }
 
@@ -168,7 +171,8 @@ export async function loadChatModelContext(client: DatabaseClient, input: {
   const headRow = await client.one<ContextHeadRow>(`
     SELECT id, system_account_id, context_revision, active_checkpoint_id,
            compacted_through_sequence, context_state, active_context_tokens,
-           effective_context_limit_tokens, context_usage_estimated, next_sequence_no
+           effective_context_limit_tokens, context_usage_estimated,
+           context_retry_at, context_attempt_count, context_error_code, next_sequence_no
     FROM ${chatTable(client, 'chat_conversations')}
     WHERE id = ? AND system_account_id = ?
     LIMIT 1
@@ -318,7 +322,8 @@ export async function getChatContextHead(client: DatabaseClient, input: {
   const row = await client.one<ContextHeadRow>(`
     SELECT id, system_account_id, context_revision, active_checkpoint_id,
            compacted_through_sequence, context_state, active_context_tokens,
-           effective_context_limit_tokens, context_usage_estimated, next_sequence_no
+           effective_context_limit_tokens, context_usage_estimated,
+           context_retry_at, context_attempt_count, context_error_code, next_sequence_no
     FROM ${chatTable(client, 'chat_conversations')}
     WHERE id = ? AND system_account_id = ?
     LIMIT 1
@@ -555,6 +560,36 @@ export async function failChatContextCompaction(client: DatabaseClient, input: {
     input.conversationId,
     input.systemAccountId,
     input.claimId
+  ])
+  return result.changes === 1
+}
+
+export async function failPendingChatContextCompaction(client: DatabaseClient, input: {
+  conversationId: string
+  systemAccountId: string
+  expectedRevision: number
+  errorCode: string
+  retryAt?: string
+  now: string
+}): Promise<boolean> {
+  const expectedRevision = nonNegativeSafeInteger(input.expectedRevision, 'expectedRevision')
+  const result = await client.execute(`
+    UPDATE ${chatTable(client, 'chat_conversations')}
+    SET context_state = 'compact_failed', context_claim_id = NULL,
+        context_claim_revision = NULL, context_claim_through_sequence = NULL,
+        context_claimed_at = NULL, context_retry_at = ?, context_error_code = ?,
+        context_progress_sequence = 0, context_progress_earliest_expires_at = NULL,
+        context_attempt_count = context_attempt_count + 1,
+        updated_at = ?
+    WHERE id = ? AND system_account_id = ? AND context_revision = ?
+      AND context_state = 'compact_pending'
+  `, [
+    input.retryAt ?? null,
+    normalizedText(input.errorCode, 'errorCode', 128),
+    input.now,
+    input.conversationId,
+    input.systemAccountId,
+    expectedRevision
   ])
   return result.changes === 1
 }
@@ -886,6 +921,9 @@ function contextHeadFromRow(row: ContextHeadRow): ChatContextHead {
     activeContextTokens: optionalNumber(row.active_context_tokens),
     effectiveContextLimitTokens: optionalNumber(row.effective_context_limit_tokens),
     usageEstimated: Number(row.context_usage_estimated ?? 1) !== 0,
+    contextRetryAt: optionalString(row.context_retry_at),
+    contextAttemptCount: Number(row.context_attempt_count ?? 0),
+    contextErrorCode: optionalString(row.context_error_code),
     nextSequenceNo: Number(row.next_sequence_no)
   }
 }
@@ -1066,6 +1104,9 @@ type ContextHeadRow = Record<string, unknown> & {
   active_context_tokens?: unknown
   effective_context_limit_tokens?: unknown
   context_usage_estimated?: unknown
+  context_retry_at?: unknown
+  context_attempt_count?: unknown
+  context_error_code?: unknown
   next_sequence_no?: unknown
   context_claim_id?: unknown
   context_claim_revision?: unknown

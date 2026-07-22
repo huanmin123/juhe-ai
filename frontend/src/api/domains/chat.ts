@@ -1,9 +1,10 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
   listApiKeys: () => unwrap<ChatApiKeyOption[]>(http.get('/my-chat/api-keys')),
+  getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
   createConversation: (apiKeyId?: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', apiKeyId ? { apiKeyId } : {})),
   getConversation: (conversationId: string) => unwrap<ChatConversation>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)),
@@ -13,6 +14,7 @@ export const chatApi = {
   listModels: (conversationId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelListOption[]>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models`, { signal: options?.signal })),
   getModelCapabilities: (conversationId: string, modelId: string, options?: { signal?: AbortSignal }) => unwrap<ChatModelCapabilities>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/models/${encodeURIComponent(modelId)}`, { signal: options?.signal })),
   getContextStatus: (conversationId: string) => unwrap<ChatContextStatus>(http.get(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context-status`)),
+  compactContext: (conversationId: string, payload: { model: string }) => unwrap<{ state: 'accepted' | 'already_running'; serverTime: string }>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/context/compactions`, payload)),
   uploadAsset: (
     conversationId: string,
     file: File,
@@ -30,8 +32,9 @@ export const chatApi = {
     }))
   },
   deleteAsset: (conversationId: string, assetId: string) => http.delete(`/my-chat/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(assetId)}`),
-  updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean }) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${encodeURIComponent(conversationId)}`, payload)),
+  updateConversation: (conversationId: string, payload: { title?: string; isPinned?: boolean; defaultImageModel?: ChatImageModel }) => unwrap<ChatConversation>(http.patch(`/my-chat/conversations/${encodeURIComponent(conversationId)}`, payload)),
   stop: (conversationId: string, target: { clientMessageId?: string; turnId?: string }) => unwrap<{ stopped: boolean }>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/stop`, target)),
+  clearConversation: (conversationId: string) => unwrap<ChatConversation>(http.post(`/my-chat/conversations/${encodeURIComponent(conversationId)}/clear`, {})),
   deleteConversation: (conversationId: string) => http.delete(`/my-chat/conversations/${encodeURIComponent(conversationId)}`)
 }
 
@@ -43,8 +46,8 @@ type ChatMessageCursor =
 
 export type ChatMessageListParams = ChatMessageCursor & { limit?: number }
 
-export function chatAssetContentUrl(conversationId: string, assetId: string): string {
-  return apiUrl(`/my-chat/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(assetId)}/content`)
+export function chatAssetContentUrl(conversationId: string, assetId: string, variant: 'preview' | 'original' = 'original'): string {
+  return apiUrl(`/my-chat/conversations/${encodeURIComponent(conversationId)}/assets/${encodeURIComponent(assetId)}/content?variant=${variant}`)
 }
 
 export class ChatStreamHttpError extends Error {
@@ -75,6 +78,7 @@ export async function streamChatMessage(input: {
   reasoningEffort?: ChatReasoningEffort
   serviceTier?: ChatServiceTier
   signal?: AbortSignal
+  onActivity?: () => void
   onEvent: (event: ChatStreamEvent) => void
 }): Promise<void> {
   const path = `/my-chat/conversations/${encodeURIComponent(input.conversationId)}/stream`
@@ -85,13 +89,14 @@ export async function streamChatMessage(input: {
     body: JSON.stringify({ clientMessageId: input.clientMessageId, replaceTurnId: input.replaceTurnId, content: input.content, contentBlocks: input.contentBlocks, model: input.model, reasoningEffort: input.reasoningEffort, serviceTier: input.serviceTier }),
     signal: input.signal
   })
-  await consumeChatSseResponse(response, path, input.onEvent)
+  await consumeChatSseResponse(response, path, input.onEvent, input.onActivity)
 }
 
 export async function attachChatStream(input: {
   conversationId: string
   turnId: string
   signal?: AbortSignal
+  onActivity?: () => void
   onEvent: (event: ChatStreamEvent) => void
 }): Promise<void> {
   const path = `/my-chat/conversations/${encodeURIComponent(input.conversationId)}/streams/${encodeURIComponent(input.turnId)}`
@@ -101,10 +106,10 @@ export async function attachChatStream(input: {
     headers: { accept: 'text/event-stream' },
     signal: input.signal
   })
-  await consumeChatSseResponse(response, path, input.onEvent)
+  await consumeChatSseResponse(response, path, input.onEvent, input.onActivity)
 }
 
-async function consumeChatSseResponse(response: Response, path: string, onEvent: (event: ChatStreamEvent) => void): Promise<void> {
+async function consumeChatSseResponse(response: Response, path: string, onEvent: (event: ChatStreamEvent) => void, onActivity?: () => void): Promise<void> {
   if (!response.ok || !response.body) {
     const message = await readFetchErrorMessage(response.clone(), path)
     const code = await readChatErrorCode(response)
@@ -113,29 +118,36 @@ async function consumeChatSseResponse(response: Response, path: string, onEvent:
   const reader = response.body.getReader()
   const decoder = new TextDecoder('utf-8', { fatal: true })
   let buffer = ''
+  let completed = false
   try {
     while (true) {
       const next = await reader.read()
-      if (next.done) break
+      if (next.done) {
+        completed = true
+        break
+      }
+      if (next.value.byteLength > 0) onActivity?.()
       buffer += decoder.decode(next.value, { stream: true })
       let boundary = findBoundary(buffer)
       while (boundary) {
         const block = buffer.slice(0, boundary.index)
         buffer = buffer.slice(boundary.index + boundary.length)
-        consumeChatSseBlock(block, onEvent)
+        consumeChatSseBlock(block, onEvent, onActivity)
         boundary = findBoundary(buffer)
       }
     }
     buffer += decoder.decode()
-    consumeChatSseBlock(buffer, onEvent)
+    consumeChatSseBlock(buffer, onEvent, onActivity)
   } finally {
+    if (!completed) await reader.cancel().catch(() => undefined)
     reader.releaseLock()
   }
 }
 
-function consumeChatSseBlock(block: string, onEvent: (event: ChatStreamEvent) => void): void {
+function consumeChatSseBlock(block: string, onEvent: (event: ChatStreamEvent) => void, onActivity?: () => void): void {
   const trimmed = block.trim()
-  if (!trimmed || trimmed.startsWith(':')) return
+  if (!trimmed) return
+  if (trimmed.startsWith(':')) { onActivity?.(); return }
   const event = parseChatSseBlock(block)
   if (!event) throw new ChatStreamProtocolError('收到格式无效的聊天流事件')
   onEvent(event)

@@ -46,47 +46,6 @@ func (s *Store) TouchManagementSession(ctx context.Context, input port.Managemen
 	return nil
 }
 
-func (s *Store) ListManagementSessionsForAccount(ctx context.Context, input port.ManagementSessionListInput) (port.ManagementSessionListResult, error) {
-	limit := input.Limit
-	if limit <= 0 {
-		return port.ManagementSessionListResult{}, nil
-	}
-	rows, err := s.queries().ListManagementSessionsForAccount(ctx, postgresqueries.ListManagementSessionsForAccountParams{
-		SystemAccountID: input.SystemAccountID,
-		NowAt:           pgtype.Timestamptz{Time: input.Now.UTC(), Valid: true},
-		OffsetRows:      int32(max(0, input.Offset)),
-		LimitRows:       int32(limit),
-	})
-	if err != nil {
-		return port.ManagementSessionListResult{}, fmt.Errorf("list management sessions for account: %w", err)
-	}
-	pageSize := max(0, limit-1)
-	hasMore := len(rows) > pageSize
-	if hasMore {
-		rows = rows[:pageSize]
-	}
-	items := make([]port.ManagementSessionSummary, 0, len(rows))
-	for _, row := range rows {
-		item, err := managementSessionSummaryFromRow(row)
-		if err != nil {
-			return port.ManagementSessionListResult{}, err
-		}
-		items = append(items, item)
-	}
-	return port.ManagementSessionListResult{Items: items, HasMore: hasMore}, nil
-}
-
-func (s *Store) RevokeManagementSessionForAccount(ctx context.Context, input port.ManagementSessionRevokeInput) (bool, error) {
-	rowsAffected, err := s.queries().RevokeManagementSessionForAccount(ctx, postgresqueries.RevokeManagementSessionForAccountParams{
-		SystemAccountID: input.SystemAccountID,
-		SessionID:       input.SessionID,
-	})
-	if err != nil {
-		return false, fmt.Errorf("revoke management session for account: %w", err)
-	}
-	return rowsAffected > 0, nil
-}
-
 func (s *Store) FindManagementSystemAccountPasswordByUsername(ctx context.Context, username string) (port.ManagementSystemAccountPasswordCredential, bool, error) {
 	row, err := s.queries().FindManagementSystemAccountPasswordByUsername(ctx, username)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -189,24 +148,6 @@ func managementSessionFromRow(row postgresqueries.FindManagementSessionByTokenHa
 	}, nil
 }
 
-func managementSessionSummaryFromRow(row postgresqueries.ListManagementSessionsForAccountRow) (port.ManagementSessionSummary, error) {
-	if !row.ExpiresAt.Valid {
-		return port.ManagementSessionSummary{}, fmt.Errorf("management session summary expires_at is null")
-	}
-	if !row.CreatedAt.Valid {
-		return port.ManagementSessionSummary{}, fmt.Errorf("management session summary created_at is null")
-	}
-	if !row.LastSeenAt.Valid {
-		return port.ManagementSessionSummary{}, fmt.Errorf("management session summary last_seen_at is null")
-	}
-	return port.ManagementSessionSummary{
-		ID:         row.ID,
-		ExpiresAt:  row.ExpiresAt.Time.UTC(),
-		CreatedAt:  row.CreatedAt.Time.UTC(),
-		LastSeenAt: row.LastSeenAt.Time.UTC(),
-	}, nil
-}
-
 func managementProfileUpdateResultFromRow(row postgresqueries.UpdateManagementCurrentUserProfileRow) port.ManagementCurrentUserProfileUpdateResult {
 	before := port.ManagementCurrentUserProfile{
 		ID:                 row.ID,
@@ -277,7 +218,6 @@ func isManagementProfileDisplayNameUniqueViolation(err error) bool {
 var _ port.ManagementSessionReader = (*Store)(nil)
 var _ port.ManagementSessionRevoker = (*Store)(nil)
 var _ port.ManagementSessionToucher = (*Store)(nil)
-var _ port.ManagementSessionManager = (*Store)(nil)
 var _ port.ManagementCurrentUserProfileWriter = (*Store)(nil)
 var _ port.ManagementCurrentUserPasswordChanger = (*Store)(nil)
 var _ port.ManagementLoginStore = (*Store)(nil)

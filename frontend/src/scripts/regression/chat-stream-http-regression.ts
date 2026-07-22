@@ -7,10 +7,11 @@ Object.assign(globalThis, {
 const observedBodies: Array<Record<string, unknown>> = []
 const observedUrls: string[] = []
 let responseStatus = 409
+let responseBody = ''
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   observedUrls.push(String(input))
   observedBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
-  if (responseStatus === 200) return new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  if (responseStatus === 200) return new Response(responseBody, { status: 200, headers: { 'content-type': 'text/event-stream' } })
   const payload = responseStatus === 401
     ? { code: 'auth_required', message: '请先登录' }
     : { code: 'chat_replace_conflict', message: '最近一轮已变化，请重新确认后再编辑' }
@@ -64,10 +65,28 @@ assert.equal(unauthorizedNotified, 1, 'typed stream error 必须继续触发现�
 
 const encodedId = 'conv/with?reserved#chars'
 responseStatus = 200
-await streamChatMessage({ conversationId: encodedId, clientMessageId: 'encoded', content: 'path', model: 'mock', onEvent: () => undefined })
-await attachChatStream({ conversationId: encodedId, turnId: 'turn/with?#', onEvent: () => undefined })
+responseBody = ': heartbeat\n\nevent: message.delta\ndata: {"messageId":"assistant","delta":"x","eventVersion":1}\n\n'
+let streamActivities = 0
+let streamEvents = 0
+await streamChatMessage({ conversationId: encodedId, clientMessageId: 'encoded', content: 'path', model: 'mock', onActivity: () => { streamActivities += 1 }, onEvent: () => { streamEvents += 1 } })
+assert.equal(streamEvents, 1, 'heartbeat comment 不得进入 ChatStreamEvent')
+assert.ok(streamActivities >= 2, '非空 reader chunk 与 heartbeat comment 都必须记录传输活动')
+responseBody = ': heartbeat\n\n'
+let attachActivities = 0
+await attachChatStream({ conversationId: encodedId, turnId: 'turn/with?#', onActivity: () => { attachActivities += 1 }, onEvent: () => { throw new Error('heartbeat 不得产生事件') } })
+assert.ok(attachActivities >= 2, '重附着流也必须记录 chunk 与 heartbeat 活动')
 assert(observedUrls.at(-2)?.includes('/conversations/conv%2Fwith%3Freserved%23chars/stream'))
 assert(observedUrls.at(-1)?.includes('/conversations/conv%2Fwith%3Freserved%23chars/streams/turn%2Fwith%3F%23'))
+
+let malformedStreamCanceled = false
+globalThis.fetch = (async () => new Response(new ReadableStream<Uint8Array>({
+  start(controller) { controller.enqueue(new TextEncoder().encode('event: malformed\ndata: {}\n\n')) },
+  cancel() { malformedStreamCanceled = true }
+}), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as typeof fetch
+await assert.rejects(streamChatMessage({
+  conversationId: 'conv_cancel', clientMessageId: 'client_cancel', content: 'cancel', model: 'mock', onEvent: () => undefined
+}), /格式无效/)
+assert.equal(malformedStreamCanceled, true, 'SSE 协议提前失败后必须取消仍未结束的响应体')
 
 const axiosUrls: string[] = []
 const previousAdapter = http.defaults.adapter

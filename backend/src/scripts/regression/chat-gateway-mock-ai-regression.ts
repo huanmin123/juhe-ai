@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
+import Busboy from 'busboy'
 
 import {
   GPT_OPENAI_V1_PROFILE_ID,
@@ -21,13 +22,17 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import { isTransientChatLongSessionFailure } from './chat-long-session-attempts.js'
 
 const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..')
-const projectRoot = resolve(backendRoot, '..')
 const tempRoot = resolve(tmpdir(), `juhe-ai-chat-mock-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const upstreamAuthorizations: string[] = []
 const upstreamBodies: Array<Record<string, unknown>> = []
 const upstreamPaths: string[] = []
 const upstreamTraceIds: string[] = []
+const imageProviderBodies: Array<Record<string, unknown>> = []
+const mockGeneratedImageBase64 = (await sharp({
+  create: { width: 1024, height: 768, channels: 3, background: { r: 36, g: 112, b: 168 } }
+}).webp({ quality: 90 }).toBuffer()).toString('base64')
 let delayedImageObservationMs = 0
+let delayedImageObservationMatch = ''
 let delayedStreamingResponseMs = 0
 let transientReplacementFailuresRemaining = 0
 let upstream: http.Server | undefined
@@ -36,6 +41,7 @@ const realCredentialFile = process.env.JUHE_AI_CHAT_REAL_CREDENTIAL_FILE?.trim()
 const realCredential = realCredentialFile ? readRealCredential(realCredentialFile) : undefined
 const testModel = process.env.JUHE_AI_CHAT_REAL_MODEL?.trim() || realCredential?.models.find((item) => item === 'gpt-5.5') || realCredential?.models[0] || 'gpt-5.5'
 const chatOnlyTestModel = 'chat-only-model'
+const uiOnly = process.env.JUHE_AI_CHAT_UI_ONLY === '1'
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.chatDatabasePath = join(tempRoot, 'chat.sqlite3')
@@ -75,7 +81,7 @@ try {
     type: 'api_key',
     credentials: { api_key: realCredential?.apiKey ?? 'sk-chat-upstream', base_url: upstreamBaseUrl },
     groupId: group.id,
-    supportedModels: realCredential?.models ?? [testModel],
+    supportedModels: [...new Set([...(realCredential?.models ?? [testModel]), 'gpt-image-2'])],
     healthCheckModel: testModel,
     status: 'active',
     schedulable: true
@@ -87,6 +93,19 @@ try {
     status: 'active'
   }, access)
   assert(gatewayKey.key)
+  assert.equal(
+    databaseModule.getBusinessDatabase().prepare("UPDATE system_accounts SET image_generation_enabled = 1 WHERE id = 'sys_admin'").run().changes,
+    1,
+    'Mock 管理账户必须显式开启图片生成权限'
+  )
+  repositories.updateSettings({
+    systemApiRateLimitIpReadPerMinute: 1_000_000,
+    systemApiRateLimitIpReadBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitIpWritePerMinute: 1_000_000,
+    systemApiRateLimitIpWriteBurstPer10Seconds: 1_000_000,
+    systemApiRateLimitUserReadPerMinute: 1_000_000,
+    systemApiRateLimitUserWritePerMinute: 1_000_000
+  })
   let chatOnlyGatewayKeyId: string | undefined
   let chatOnlyGroupId: string | undefined
   if (!realCredential) {
@@ -150,8 +169,21 @@ try {
   backend = startBackend(port)
   await waitForReady(baseUrl, cookie, backend)
 
-  const orphanBeforeStop = await apiJson<{ data: { state: string; turnId?: string; assistantStatus?: string } }>(baseUrl, `/__aisys__/api/my-chat/conversations/${orphanTurn.conversationId}/submissions/${orphanTurn.clientMessageId}`, cookie)
-  assert.deepEqual(orphanBeforeStop.data, { state: 'accepted', turnId: orphanTurn.turnId, assistantStatus: 'streaming' }, '重启后的孤立轮次必须仍能按 clientMessageId 查询')
+  if (uiOnly) {
+    console.log(`CHAT_UI_URL=${baseUrl}/__aisys__/my-chat`)
+    console.log(`CHAT_UI_MODEL=${testModel}`)
+    console.log('CHAT_UI_LOGIN=development-auto-login')
+    await new Promise<void>((resolveStop) => {
+      process.once('SIGINT', resolveStop)
+      process.once('SIGTERM', resolveStop)
+    })
+  } else {
+  const orphanBeforeStop = await apiJson<{ data: ChatSubmissionStatusData }>(baseUrl, `/__aisys__/api/my-chat/conversations/${orphanTurn.conversationId}/submissions/${orphanTurn.clientMessageId}`, cookie)
+  assert.deepEqual(pickSubmissionFact(orphanBeforeStop.data), {
+    state: 'accepted', turnId: orphanTurn.turnId, assistantMessageId: orphanTurn.assistantMessageId,
+    assistantStatus: 'streaming', runnerState: 'missing'
+  }, '重启后的孤立轮次必须仍能按 clientMessageId 查询并明确 runner 已丢失')
+  assert.match(orphanBeforeStop.data.serverTime ?? '', /^\d{4}-\d{2}-\d{2}T/, '提交状态必须返回服务端时间')
   const upstreamCallsBeforeOrphanConflict = upstreamAuthorizations.length
   const orphanConflict = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${orphanTurn.conversationId}/stream`, {
     method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -169,8 +201,11 @@ try {
   })
   const [orphanStop, repeatedOrphanStop] = await Promise.all([stopRequest(), stopRequest()])
   assert.deepEqual([orphanStop.status, repeatedOrphanStop.status], [202, 202], '并发条件 stop 必须幂等收口，不能出现 500')
-  const orphanAfterStop = await apiJson<{ data: { state: string; turnId?: string; assistantStatus?: string } }>(baseUrl, `/__aisys__/api/my-chat/conversations/${orphanTurn.conversationId}/submissions/${orphanTurn.clientMessageId}`, cookie)
-  assert.deepEqual(orphanAfterStop.data, { state: 'accepted', turnId: orphanTurn.turnId, assistantStatus: 'canceled' }, 'stop 必须把失去内存句柄的孤立 streaming 轮次权威收口')
+  const orphanAfterStop = await apiJson<{ data: ChatSubmissionStatusData }>(baseUrl, `/__aisys__/api/my-chat/conversations/${orphanTurn.conversationId}/submissions/${orphanTurn.clientMessageId}`, cookie)
+  assert.deepEqual(pickSubmissionFact(orphanAfterStop.data), {
+    state: 'accepted', turnId: orphanTurn.turnId, assistantMessageId: orphanTurn.assistantMessageId,
+    assistantStatus: 'canceled', runnerState: 'terminal'
+  }, 'stop 必须把失去内存句柄的孤立 streaming 轮次权威收口')
 
   const keys = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, '/__aisys__/api/my-chat/api-keys', cookie)
   assert(keys.data.some((item) => item.id === gatewayKey.id), 'AI 问答应列出当前用户自己的可用 API Key')
@@ -213,6 +248,7 @@ try {
   const selectedCapabilities = await apiJson<{ data: { id: string; name: string; supportsPromptCaching: boolean; supportedApiProtocols: string[]; supportedTools: string[] } }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/models/${encodeURIComponent(testModel)}`, cookie)
   assert(selectedCapabilities.data.supportedApiProtocols.includes('responses'), '单模型能力详情必须包含 Responses 路由')
   assert(selectedCapabilities.data.supportedTools.includes('web_search'), '单模型能力详情必须保留联网搜索工具')
+  assert(selectedCapabilities.data.supportedTools.includes('function_calling'), '内部工具回归模型必须明确支持 function calling')
   assert.equal(selectedCapabilities.data.supportsPromptCaching, true, '支持缓存计费的目录模型必须由能力详情透出 prompt caching 能力')
   const slashModelResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${conversationId}/models/${encodeURIComponent(`${testModel}/missing`)}`, { headers: { cookie } })
   assert.deepEqual([slashModelResponse.status, (await slashModelResponse.json() as { code?: string }).code], [404, 'chat_model_not_found'], '含斜杠模型 ID 必须安全到达能力路由并返回稳定错误')
@@ -225,11 +261,11 @@ try {
   const streamText = await streamResponse.text()
   assert.equal(streamResponse.status, 200, streamText)
   assert.match(streamText, /event: message\.started/)
-  assert.match(streamText, /event: message\.delta/)
+  assert.match(streamText, /event: content_block\.delta/)
   if (!realCredential) {
-    assert.match(streamText, /event: tool\.started/)
-    assert.match(streamText, /event: tool\.completed/)
-    assert.match(streamText, /"delta":"Mock "/)
+    assert.match(streamText, /event: content_block\.started/)
+    assert.match(streamText, /event: content_block\.completed/)
+    assert.match(streamText, /"text":"Mock "/)
     assert.match(streamText, /Markdown/)
   }
   assert.match(streamText, /event: message\.completed/)
@@ -261,7 +297,7 @@ try {
     assert(chatBody, `Chat Completions 请求必须命中 mock 上游，当前路径 ${JSON.stringify(upstreamPaths)}`)
     const chatMessages = Array.isArray(chatBody?.messages) ? chatBody.messages as Array<{ role?: string; content?: string }> : []
     assert.equal(chatMessages.filter((message) => message.role === 'system').length, 1, 'Chat Completions 必须且只能注入一条 system 消息')
-    assert.equal(chatMessages[0]?.content, buildChatSystemInstructions({ toolsEnabled: false }).text)
+    assert.equal(chatMessages[0]?.content, buildChatSystemInstructions({ effectiveTools: [] }).text)
     assert.equal(Object.hasOwn(chatBody ?? {}, 'instructions'), false, 'Chat Completions 不得发送 Responses instructions 字段')
     assert.equal(Object.hasOwn(chatBody ?? {}, 'tools'), false, 'Chat-only 模型不得发送 Responses Hosted Tools')
     assert.equal(Object.hasOwn(chatBody ?? {}, 'prompt_cache_key'), false, '不支持 prompt caching 的 Chat Completions 模型不得携带缓存键')
@@ -278,7 +314,7 @@ try {
   })
   assert.equal(duplicateResponse.status, 409, '相同 clientMessageId 必须返回冲突且不再次调用模型')
   if (!realCredential) {
-    const expectedInstructions = buildChatSystemInstructions({ toolsEnabled: true }).text
+    const expectedInstructions = buildChatSystemInstructions({ effectiveTools: ['web_search'], internalToolNames: ['generate_image'] }).text
     const observedInstructions = upstreamBodies[0]?.instructions
     const observedTools = Array.isArray(upstreamBodies[0]?.tools) ? upstreamBodies[0].tools as Array<{ type?: string }> : []
     const firstResponsesInput = Array.isArray(upstreamBodies[0]?.input) ? upstreamBodies[0].input as Array<{ role?: string; content?: unknown }> : []
@@ -324,8 +360,13 @@ try {
     const activeStopResponse = await activeStopStream
     const activeStopStreamText = await activeStopResponse.text()
     assert.equal(activeStopResponse.status, 200, activeStopStreamText)
-    const activeStoppedStatus = await apiJson<{ data: { state: string; turnId?: string; assistantStatus?: string } }>(baseUrl, `/__aisys__/api/my-chat/conversations/${activeStopConversation.data.id}/submissions/${activeStopClientMessageId}`, cookie)
-    assert.deepEqual(activeStoppedStatus.data, { state: 'accepted', turnId: activeStopTurnId, assistantStatus: 'canceled' }, '活动 stop 必须由原请求收口为 canceled，不能继续完成或遗留 streaming')
+    const activeStoppedStatus = await apiJson<{ data: ChatSubmissionStatusData }>(baseUrl, `/__aisys__/api/my-chat/conversations/${activeStopConversation.data.id}/submissions/${activeStopClientMessageId}`, cookie)
+    assert.deepEqual({
+      state: activeStoppedStatus.data.state,
+      turnId: activeStoppedStatus.data.turnId,
+      assistantStatus: activeStoppedStatus.data.assistantStatus,
+      runnerState: activeStoppedStatus.data.runnerState
+    }, { state: 'accepted', turnId: activeStopTurnId, assistantStatus: 'canceled', runnerState: 'terminal' }, '活动 stop 必须由原请求收口为 canceled，不能继续完成或遗留 streaming')
     const callsBeforeStoppedReplace = upstreamBodies.length
     const stoppedReplace = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${activeStopConversation.data.id}/stream`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -340,11 +381,14 @@ try {
     assert.equal(stoppedReplaceMessages.data.some((item) => item.turnId === activeStopTurnId), false, '停止轮替换成功后旧消息对必须消失')
   }
 
-  const stored = await apiJson<{ data: Array<{ id: string; turnId: string; sequenceNo: number; clientMessageId?: string; role: string; status: string; contentText: string; traceId?: string; contentBlocks: Array<{ type: string; id?: string; status?: string; text?: string; assetId?: string; order?: number }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
+  const stored = await apiJson<{ data: Array<{ id: string; turnId: string; sequenceNo: number; clientMessageId?: string; role: string; status: string; contentText: string; traceId?: string; errorCode?: string; contentBlocks: Array<{ type: string; id?: string; callId?: string; status?: string; text?: string; assetId?: string; order?: number }> }> }>(baseUrl, `/__aisys__/api/my-chat/conversations/${conversationId}/messages`, cookie)
   assert.deepEqual(stored.data.map((item) => [item.role, item.status]), [['user', 'completed'], ['assistant', 'completed']])
   assert.equal(stored.data[1]?.traceId, 'chat-mock-trace-responses', '聊天消息 trace 必须与网关 usage/audit trace 一致')
   if (!realCredential) {
-    assert.deepEqual(stored.data[1].contentBlocks.map((block) => [block.type, block.id, block.status]), [['tool_call', 'search_1', 'completed']])
+    assert.deepEqual(stored.data[1].contentBlocks.map((block) => [block.type, block.callId, block.status]), [
+      ['tool_call', 'search_1', 'completed'],
+      ['output_text', undefined, undefined]
+    ])
     assert.match(stored.data[1].contentText, /\|项目\|结果\|/)
     assert.match(stored.data[1].contentText, /\$E=mc\^2\$/)
     assert.match(stored.data[1].contentText, /```mermaid/)
@@ -441,25 +485,28 @@ try {
     const deterministicStream = await deterministicResponse.text()
     assert.equal(deterministicResponse.status, 200, deterministicStream)
     const deterministicFailure = extractSseEventData(deterministicStream, 'message.failed')
+    const deterministicMessages = await apiJson<typeof stored>(baseUrl, `/__aisys__/api/my-chat/conversations/${deterministicConversation.data.id}/messages`, cookie)
     assert.equal(upstreamBodies.length, deterministicCallsBefore + 1, '确定性失败只能调用一次上游')
     assert.match(deterministicStream, /event: message\.started/)
     assert.match(deterministicStream, /event: message\.snapshot/)
+    assert.equal(deterministicMessages.data.find((message) => message.role === 'assistant')?.errorCode, 'upstream_stream_failed', 'DB 必须只保存公开错误码')
     if (deterministicFailure.code) {
-      assert.equal(deterministicFailure.code, 'gateway_stream_failed')
-      assert.match(String(deterministicFailure.message), /模型回答超过 192 KiB 上限/)
+      assert.equal(deterministicFailure.code, 'upstream_stream_failed')
+      assert.equal(deterministicFailure.message, '模型响应中断，请重新发送')
+      assert.doesNotMatch(JSON.stringify(deterministicFailure), /模型回答超过 192 KiB 上限|https?:\/\/|Authorization|Bearer|sk-/u, 'SSE 失败事件不得泄露内部或上游原文')
       assert.equal(isTransientChatLongSessionFailure({ type: 'message.failed', code: String(deterministicFailure.code), message: String(deterministicFailure.message) }), false, '真实路由折叠后的确定性失败必须立即终止')
     } else {
-      const deterministicMessages = await apiJson<typeof stored>(baseUrl, `/__aisys__/api/my-chat/conversations/${deterministicConversation.data.id}/messages`, cookie)
       assert.equal(deterministicMessages.data.find((message) => message.role === 'assistant')?.status, 'failed', '背压 detach 后 runner 必须继续完成 DB 终态')
     }
 
     const preparationConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
     const preparationAsset = await uploadChatImage(baseUrl, preparationConversation.data.id, cookie, '准备取消.png')
     delayedImageObservationMs = 1_500
+    delayedImageObservationMatch = 'PREPARATION_OBSERVATION_DELAY'
     const preparationSeed = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${preparationConversation.data.id}/stream`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
       body: JSON.stringify({
-        clientMessageId: 'mock-client-preparation-seed', content: '[图片]',
+        clientMessageId: 'mock-client-preparation-seed', content: 'PREPARATION_OBSERVATION_DELAY',
         contentBlocks: [{ type: 'input_image', assetId: preparationAsset.id }], model: testModel
       })
     })
@@ -469,7 +516,11 @@ try {
     const preparingClientMessageId = 'mock-client-preparing-cancel'
     const preparingStream = fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${preparationConversation.data.id}/stream`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
-      body: JSON.stringify({ clientMessageId: preparingClientMessageId, content: '这条 preparing 必须被取消', model: testModel })
+      body: JSON.stringify({
+        clientMessageId: preparingClientMessageId,
+        content: '这条 preparing 必须被取消',
+        model: testModel
+      })
     })
     let preparingObserved = false
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -514,7 +565,7 @@ try {
       `交错图片-${index + 1}.png`
     )))
     assert.equal(new Set(imageAssets.map((asset) => asset.id)).size, 5, '每次 multipart 上传必须创建独立图片资产')
-    assert(imageAssets.every((asset) => asset.mimeType === 'image/jpeg'), '所有上传图片必须统一存为 JPEG')
+    assert(imageAssets.every((asset) => asset.mimeType === 'image/webp'), '所有上传图片必须统一存为 WebP')
     assert(imageAssets.every((asset) => Math.max(asset.width, asset.height) <= 1_024), '所有上传图片最长边必须不超过 1024')
     const sixthImageResponse = await postChatImage(baseUrl, imageConversation.data.id, cookie, '第六张.png')
     const sixthImageText = await sixthImageResponse.text()
@@ -525,7 +576,7 @@ try {
       { headers: { cookie } }
     )
     assert.equal(imageContentResponse.status, 200)
-    assert.equal(String(imageContentResponse.headers.get('content-type')), 'image/jpeg')
+    assert.equal(String(imageContentResponse.headers.get('content-type')), 'image/webp')
     assert((await imageContentResponse.arrayBuffer()).byteLength > 0, '已上传图片必须可通过私有内容接口读取')
     const imageResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${imageConversation.data.id}/stream`, {
       method: 'POST', headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
@@ -598,6 +649,109 @@ try {
     assert.ok(followupRequest, '图片后续对话必须再次进入上游')
     assert.match(JSON.stringify(followupRequest), /一张用于回归测试的交错图片/, '后续上下文必须在原位置使用隐藏图片说明')
     assert.doesNotMatch(JSON.stringify(followupRequest), /data:image\//, '图片说明完成后不得再次把历史图片 Base64 发给模型')
+
+    const generatedConversation = await apiJson<{ data: { id: string } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, { apiKeyId: gatewayKey.id })
+    const directImageProbe = await fetch(`${baseUrl}/v1/images/generations`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${gatewayKey.key}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-image-2', prompt: 'probe', n: 1, size: '1024x768', quality: 'auto', output_format: 'webp' })
+    })
+    const directImageProbeText = await directImageProbe.text()
+    assert.equal(directImageProbe.status, 200, `本机 Images lane 预检失败：${directImageProbe.status} ${directImageProbeText}`)
+    imageProviderBodies.length = 0
+    const generatedResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${generatedConversation.data.id}/stream`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({
+        clientMessageId: 'mock-client-internal-image-tool',
+        content: 'MOCK_INTERNAL_IMAGE：请生成一张蓝色的产品背景图。',
+        model: testModel
+      })
+    })
+    const generatedStream = await generatedResponse.text()
+    assert.equal(generatedResponse.status, 200, generatedStream)
+    assert.doesNotMatch(
+      generatedStream,
+      /event: message\.failed/,
+      `内部生图执行失败；providerBodies=${JSON.stringify(imageProviderBodies)} paths=${JSON.stringify(upstreamPaths.slice(-8))}`
+    )
+    assert.match(generatedStream, /event: content_block\.started[\s\S]*generate_image/, '内部生图必须先投影应用工具开始事件')
+    assert.match(generatedStream, /event: content_block\.completed[\s\S]*generate_image[\s\S]*completed/, '内部生图必须投影应用工具完成事件')
+    assert.match(generatedStream, /event: content_block\.started[\s\S]*output_image/, '生成资产必须在同一助手时间线投影 output_image')
+    assert.match(generatedStream, /event: message\.completed/, '生图工具续答完成后必须收口消息终态')
+    assert.equal(imageProviderBodies.length, 1, '一次内部 generate_image 只能调用一次图像 provider')
+    assert.equal(imageProviderBodies[0]?.model, 'gpt-image-2', '图像 provider 必须固定使用配置的 gpt-image-2')
+    assert.equal(imageProviderBodies[0]?.output_format, 'webp', '用户未指定格式时必须优先生成 WebP')
+    const imageToolRequests = upstreamBodies.filter((body) => JSON.stringify(body).includes('MOCK_INTERNAL_IMAGE'))
+    assert.equal(imageToolRequests.length, 2, '内部工具必须执行模型调用、工具结果续答两轮')
+    const declaredTools = Array.isArray(imageToolRequests[0]?.tools) ? imageToolRequests[0]!.tools as Array<Record<string, unknown>> : []
+    assert(declaredTools.some((tool) => tool.type === 'function' && tool.name === 'generate_image'), '首轮必须注入 generate_image function schema')
+    assert.equal(imageToolRequests[0]?.parallel_tool_calls, false, '应用工具必须强制串行调用')
+    assert.match(JSON.stringify(imageToolRequests[1]?.input), /function_call_output/, '第二轮必须携带 function_call_output')
+
+    const generatedMessages = await apiJson<{ data: Array<{ role: string; contentBlocks: Array<{ type: string; assetId?: string; mimeType?: string; width?: number; height?: number }> }> }>(
+      baseUrl,
+      `/__aisys__/api/my-chat/conversations/${generatedConversation.data.id}/messages`,
+      cookie
+    )
+    const generatedImageBlock = generatedMessages.data
+      .find((message) => message.role === 'assistant')
+      ?.contentBlocks.find((block) => block.type === 'output_image')
+    assert(generatedImageBlock?.assetId, '生成图片必须以 assetId 持久化到助手消息')
+
+    imageProviderBodies.length = 0
+    const editedResponse = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations/${generatedConversation.data.id}/stream`, {
+      method: 'POST',
+      headers: { cookie, 'content-type': 'application/json', accept: 'text/event-stream' },
+      body: JSON.stringify({
+        clientMessageId: 'mock-client-internal-image-edit-tool',
+        content: 'MOCK_INTERNAL_IMAGE_EDIT：请基于刚才生成的图片，把背景改成夜晚。',
+        model: testModel
+      })
+    })
+    const editedStream = await editedResponse.text()
+    assert.equal(editedResponse.status, 200, editedStream)
+    assert.doesNotMatch(editedStream, /event: message\.failed/, `内部图片编辑失败；providerBodies=${JSON.stringify(imageProviderBodies)} paths=${JSON.stringify(upstreamPaths.slice(-8))}`)
+    assert.equal(imageProviderBodies.length, 1, '一次内部 edit 只能调用一次图像 provider')
+    assert.equal(imageProviderBodies[0]?.model, 'gpt-image-2')
+    assert.equal(imageProviderBodies[0]?.image_count, 1, '编辑请求必须携带一张来源图片')
+    assert.equal(imageProviderBodies[0]?.prompt, '把背景改成夜晚')
+    assert(upstreamPaths.some((path) => path === 'POST /v1/images/edits'), '编辑必须走 /v1/images/edits')
+    const editedMessages = await apiJson<{ data: Array<{ role: string; contentBlocks: Array<{ type: string; assetId?: string }> }> }>(
+      baseUrl,
+      `/__aisys__/api/my-chat/conversations/${generatedConversation.data.id}/messages`,
+      cookie
+    )
+    const imageAssetIds = editedMessages.data.flatMap((message) => message.contentBlocks.filter((block) => block.type === 'output_image').flatMap((block) => block.assetId ? [block.assetId] : []))
+    assert.equal(imageAssetIds.length, 2, '生成与编辑必须各持久化一个独立输出资产')
+    const editedLineage = databaseModule.getChatDatabase().prepare('SELECT operation, source_asset_ids_json, root_asset_id FROM chat_image_generations WHERE asset_id = ?').get(imageAssetIds[1]) as { operation?: unknown; source_asset_ids_json?: unknown; root_asset_id?: unknown } | undefined
+    assert.equal(editedLineage?.operation, 'edit')
+    assert.deepEqual(JSON.parse(String(editedLineage?.source_asset_ids_json ?? '[]')), [generatedImageBlock.assetId])
+    assert.equal(editedLineage?.root_asset_id, generatedImageBlock.assetId, '二次编辑必须保留原始根图 ID')
+
+    const assetBaseUrl = `${baseUrl}/__aisys__/api/my-chat/conversations/${generatedConversation.data.id}/assets/${generatedImageBlock.assetId}/content`
+    const [previewResponse, originalResponse] = await Promise.all([
+      fetch(`${assetBaseUrl}?variant=preview`, { headers: { cookie } }),
+      fetch(`${assetBaseUrl}?variant=original`, { headers: { cookie } })
+    ])
+    assert.deepEqual([previewResponse.status, originalResponse.status], [200, 200])
+    assert.equal(previewResponse.headers.get('content-type'), 'image/webp')
+    assert.equal(originalResponse.headers.get('content-type'), 'image/webp')
+    assert.equal(previewResponse.headers.get('cache-control'), 'private, max-age=86400, immutable')
+    assert.equal(originalResponse.headers.get('cache-control'), 'private, max-age=86400, immutable')
+    const previewEtag = previewResponse.headers.get('etag')
+    const originalEtag = originalResponse.headers.get('etag')
+    assert(previewEtag && originalEtag && previewEtag !== originalEtag, '缩略图与原图必须使用各自内容 SHA-256 ETag')
+    const previewBuffer = Buffer.from(await previewResponse.arrayBuffer())
+    const originalBuffer = Buffer.from(await originalResponse.arrayBuffer())
+    const [previewMetadata, originalMetadata] = await Promise.all([sharp(previewBuffer).metadata(), sharp(originalBuffer).metadata()])
+    assert.equal(Math.max(previewMetadata.width ?? 0, previewMetadata.height ?? 0), 640, '前端缩略图最长边必须为 640')
+    assert.deepEqual([originalMetadata.width, originalMetadata.height], [1024, 768], '原图必须保留 provider 返回尺寸')
+    const [previewNotModified, originalNotModified] = await Promise.all([
+      fetch(`${assetBaseUrl}?variant=preview`, { headers: { cookie, 'if-none-match': previewEtag } }),
+      fetch(`${assetBaseUrl}?variant=original`, { headers: { cookie, 'if-none-match': originalEtag } })
+    ])
+    assert.deepEqual([previewNotModified.status, originalNotModified.status], [304, 304], '缩略图与原图再次请求必须命中条件缓存')
   } else {
     assert(stored.data[1].contentText.trim().length > 0, '真实模型必须返回非空中文回答')
     await verifyRealContextCompression({ baseUrl, cookie, conversationId, gatewayKeySecret: String(gatewayKey.key), model: testModel })
@@ -613,9 +767,13 @@ try {
       process.once('SIGTERM', resolveStop)
     })
   }
+  }
 } finally {
   await stopProcess(backend)
   await closeServer(upstream)
+  await import('../../storage/sqlite-read-worker-pool.js')
+    .then((module) => module.closeSqliteReadWorkerPool())
+    .catch(() => undefined)
   databaseModule.closeStorageDatabases()
   await removeTempRoot(tempRoot)
 }
@@ -648,7 +806,7 @@ async function seedBulkChatMessages(apiKeyId: string, count: number): Promise<vo
   })
 }
 
-async function seedOrphanChatTurn(apiKeyId: string): Promise<{ conversationId: string; clientMessageId: string; turnId: string }> {
+async function seedOrphanChatTurn(apiKeyId: string): Promise<{ conversationId: string; clientMessageId: string; turnId: string; assistantMessageId: string }> {
   const { createSqliteDatabaseClient } = await import('../../storage/database-client.js')
   const { acceptChatTurn, createChatConversation } = await import('../../storage/chat.repository.js')
   const client = createSqliteDatabaseClient(databaseModule.getChatDatabase())
@@ -670,19 +828,51 @@ async function seedOrphanChatTurn(apiKeyId: string): Promise<{ conversationId: s
     now: '2099-01-01T00:01:00.000Z',
     storageQuotaBytes: 1024 * 1024, retentionDays: 7, maxTurnsPerConversation: 1000
   })
-  return { conversationId, clientMessageId, turnId: accepted.turnId }
+  return { conversationId, clientMessageId, turnId: accepted.turnId, assistantMessageId: accepted.assistantMessage.id }
+}
+
+interface ChatSubmissionStatusData {
+  state: string
+  turnId?: string
+  assistantMessageId?: string
+  assistantStatus?: string
+  runnerState?: string
+  serverTime?: string
+}
+
+function pickSubmissionFact(value: ChatSubmissionStatusData): Omit<ChatSubmissionStatusData, 'serverTime'> {
+  return {
+    state: value.state,
+    turnId: value.turnId,
+    assistantMessageId: value.assistantMessageId,
+    assistantStatus: value.assistantStatus,
+    runnerState: value.runnerState
+  }
 }
 
 function createMockUpstream(): http.Server {
   return http.createServer((req, res) => {
     upstreamPaths.push(`${req.method ?? ''} ${req.url ?? ''}`)
-    if (req.method !== 'POST' || (req.url !== '/v1/responses' && req.url !== '/v1/chat/completions')) { res.writeHead(404).end(); return }
+    if (req.method !== 'POST' || !['/v1/responses', '/v1/chat/completions', '/v1/images/generations', '/v1/images/edits'].includes(req.url ?? '')) { res.writeHead(404).end(); return }
     const chunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => chunks.push(chunk))
-    req.on('end', () => {
+    req.on('end', async () => {
+      if (req.url === '/v1/images/edits') {
+        const multipart = await parseMultipartFixture(Buffer.concat(chunks), String(req.headers['content-type'] ?? ''))
+        imageProviderBodies.push({ ...multipart.fields, image_count: multipart.files.length, image_bytes: multipart.files.reduce((total, file) => total + file.bytes, 0) })
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ created: Math.floor(Date.now() / 1000), data: [{ b64_json: mockGeneratedImageBase64 }] }))
+        return
+      }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> & { stream?: boolean; tools?: Array<{ type?: string }> }
+      if (req.url === '/v1/images/generations') {
+        imageProviderBodies.push(body)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ created: Math.floor(Date.now() / 1000), data: [{ b64_json: mockGeneratedImageBase64 }] }))
+        return
+      }
       upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
       upstreamTraceIds.push(String(req.headers['x-trace-id'] ?? ''))
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as Record<string, unknown> & { stream?: boolean; tools?: Array<{ type?: string }> }
       upstreamBodies.push(body)
       if (body.stream === false) {
         const purpose = String(req.headers['x-juhe-ai-purpose'] ?? '')
@@ -693,8 +883,15 @@ function createMockUpstream(): http.Server {
           res.writeHead(200, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ id: 'resp_background_mock', output_text: outputText, output: [{ type: 'message', content: [{ type: 'output_text', text: outputText }] }] }))
         }
-        const delay = purpose === 'chat_context_compaction' ? 0 : delayedImageObservationMs
-        delayedImageObservationMs = 0
+        const serializedObservation = JSON.stringify(body)
+        const shouldDelayObservation = purpose !== 'chat_context_compaction'
+          && delayedImageObservationMs > 0
+          && (!delayedImageObservationMatch || serializedObservation.includes(delayedImageObservationMatch))
+        const delay = shouldDelayObservation ? delayedImageObservationMs : 0
+        if (shouldDelayObservation) {
+          delayedImageObservationMs = 0
+          delayedImageObservationMatch = ''
+        }
         if (delay > 0) setTimeout(respond, delay)
         else respond()
         return
@@ -727,6 +924,45 @@ function createMockUpstream(): http.Server {
         res.end(`data: ${JSON.stringify(chunk)}\n\ndata: ${JSON.stringify(done)}\n\ndata: [DONE]\n\n`)
         return
       }
+      const serializedBody = JSON.stringify(body)
+      if (serializedBody.includes('MOCK_INTERNAL_IMAGE_EDIT')) {
+        assert.equal(serializedBody.includes('"type":"input_image"'), false, '连续编辑必须由纯文本追问和图像谱系驱动，不要求把生成图重新塞进输入框')
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
+        if (!serializedBody.includes('function_call_output')) {
+          const assetIds = serializedBody.match(/chat_asset_[a-f0-9]{32}/g) ?? []
+          const referenceAssetId = assetIds.at(-1)
+          assert(referenceAssetId, '编辑模型请求必须包含最近图像谱系 assetId')
+          const functionCall = {
+            type: 'function_call', id: 'fc_mock_image_edit', call_id: 'call_mock_image_edit', name: 'generate_image',
+            arguments: JSON.stringify({ action: 'edit', prompt: '把背景改成夜晚', reference_asset_ids: [referenceAssetId] }), status: 'completed'
+          }
+          writeMockResponseEvent(res, 'response.output_item.added', { type: 'response.output_item.added', output_index: 0, item: { ...functionCall, arguments: '' } })
+          writeMockResponseEvent(res, 'response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: functionCall })
+          writeMockResponseEvent(res, 'response.completed', { type: 'response.completed', response: { id: 'resp_mock_image_edit_call', status: 'completed', output: [functionCall], usage: { input_tokens: 18, output_tokens: 8, total_tokens: 26 } } })
+        } else {
+          writeMockResponseEvent(res, 'response.output_text.delta', { type: 'response.output_text.delta', delta: '图片已编辑。' })
+          writeMockResponseEvent(res, 'response.completed', { type: 'response.completed', response: { id: 'resp_mock_image_edit_final', status: 'completed', output: [], usage: { input_tokens: 32, output_tokens: 5, total_tokens: 37 } } })
+        }
+        res.end()
+        return
+      }
+      if (serializedBody.includes('MOCK_INTERNAL_IMAGE')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
+        if (!serializedBody.includes('function_call_output')) {
+          const functionCall = {
+            type: 'function_call', id: 'fc_mock_image', call_id: 'call_mock_image', name: 'generate_image',
+            arguments: JSON.stringify({ prompt: '简洁蓝色产品背景，干净留白', size: '1024x768' }), status: 'completed'
+          }
+          writeMockResponseEvent(res, 'response.output_item.added', { type: 'response.output_item.added', output_index: 0, item: { ...functionCall, arguments: '' } })
+          writeMockResponseEvent(res, 'response.output_item.done', { type: 'response.output_item.done', output_index: 0, item: functionCall })
+          writeMockResponseEvent(res, 'response.completed', { type: 'response.completed', response: { id: 'resp_mock_image_call', status: 'completed', output: [functionCall], usage: { input_tokens: 18, output_tokens: 8, total_tokens: 26 } } })
+        } else {
+          writeMockResponseEvent(res, 'response.output_text.delta', { type: 'response.output_text.delta', delta: '图片已生成。' })
+          writeMockResponseEvent(res, 'response.completed', { type: 'response.completed', response: { id: 'resp_mock_image_final', status: 'completed', output: [], usage: { input_tokens: 32, output_tokens: 5, total_tokens: 37 } } })
+        }
+        res.end()
+        return
+      }
       assert(body.tools?.some((tool) => tool.type === 'web_search'))
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' })
       writeMockResponseEvent(res, 'response.output_item.added', { type: 'response.output_item.added', item: { id: 'search_1', type: 'web_search_call', status: 'in_progress' } })
@@ -741,6 +977,23 @@ function createMockUpstream(): http.Server {
         res.end()
       }, responseDelay)
     })
+  })
+}
+
+async function parseMultipartFixture(rawBody: Buffer, contentType: string): Promise<{ fields: Record<string, string>; files: Array<{ name: string; bytes: number }> }> {
+  return new Promise((resolveMultipart, rejectMultipart) => {
+    const fields: Record<string, string> = {}
+    const files: Array<{ name: string; bytes: number }> = []
+    const parser = Busboy({ headers: { 'content-type': contentType }, limits: { files: 5, fields: 16, parts: 24 } })
+    parser.on('field', (name, value) => { fields[name] = value })
+    parser.on('file', (name, stream) => {
+      let bytes = 0
+      stream.on('data', (chunk: Buffer) => { bytes += chunk.byteLength })
+      stream.on('end', () => { files.push({ name, bytes }) })
+    })
+    parser.once('error', rejectMultipart)
+    parser.once('finish', () => resolveMultipart({ fields, files }))
+    parser.end(rawBody)
   })
 }
 
@@ -930,10 +1183,25 @@ function writeMockResponseEvent(res: http.ServerResponse, event: string, data: u
 }
 
 function startBackend(port: number): ChildProcess {
-  return spawn('pnpm', ['--filter', 'juhe-ai-backend', 'exec', 'tsx', 'src/server.ts'], {
-    cwd: projectRoot,
-    env: { ...process.env, NODE_ENV: '', JUHE_AI_HOST: '127.0.0.1', JUHE_AI_PORT: String(port), JUHE_AI_DB_SERVICE_HTTP_HOST: '127.0.0.1', JUHE_AI_DB_SERVICE_HTTP_PORT: '0', JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath, JUHE_AI_CHAT_DATABASE_PATH: runtimeConfig.chatDatabasePath, JUHE_AI_CHAT_ASSETS_ROOT: runtimeConfig.chatAssetsRoot, JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath, JUHE_AI_USAGE_CATALOG_DATABASE_PATH: runtimeConfig.usageCatalogDatabasePath, JUHE_AI_STATS_DATABASE_PATH: runtimeConfig.statsDatabasePath, JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot, JUHE_AI_CODEX_CONTEXT_ROOT: runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: runtimeConfig.codexContextStateShardRoot, JUHE_AI_SECRET: runtimeConfig.secret, JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true', JUHE_AI_LOG_LEVEL: 'warn', JUHE_AI_LOG_CONSOLE_ENABLED: 'false', JUHE_AI_LOG_FILE_ENABLED: 'false' },
-    shell: process.platform === 'win32', stdio: ['ignore', 'pipe', 'pipe']
+  const imageProviderEnv = !realCredential && upstream
+    ? {
+      JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT: `http://127.0.0.1:${serverPort(upstream)}/v1/images/generations`,
+      JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY: 'sk-mock-image-provider',
+      JUHE_AI_IMAGE_GENERATION_PROVIDER_API: 'images',
+      JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL: 'gpt-image-2'
+    }
+    : realCredential && uiOnly
+      ? {
+        JUHE_AI_IMAGE_GENERATION_PROVIDER_ENDPOINT: `${realCredential.baseUrl.replace(/\/v1\/?$/u, '').replace(/\/+$/u, '')}/v1/images/generations`,
+        JUHE_AI_IMAGE_GENERATION_PROVIDER_API_KEY: realCredential.apiKey,
+        JUHE_AI_IMAGE_GENERATION_PROVIDER_API: 'images',
+        JUHE_AI_IMAGE_GENERATION_PROVIDER_MODEL: 'gpt-image-2'
+      }
+      : {}
+  return spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
+    cwd: backendRoot,
+    env: { ...process.env, ...imageProviderEnv, NODE_ENV: '', JUHE_AI_HOST: '127.0.0.1', JUHE_AI_PORT: String(port), JUHE_AI_DB_SERVICE_HTTP_HOST: '127.0.0.1', JUHE_AI_DB_SERVICE_HTTP_PORT: '0', JUHE_AI_DATABASE_PATH: runtimeConfig.databasePath, JUHE_AI_CHAT_DATABASE_PATH: runtimeConfig.chatDatabasePath, JUHE_AI_CHAT_ASSETS_ROOT: runtimeConfig.chatAssetsRoot, JUHE_AI_DATASET_DATABASE_PATH: runtimeConfig.datasetDatabasePath, JUHE_AI_USAGE_CATALOG_DATABASE_PATH: runtimeConfig.usageCatalogDatabasePath, JUHE_AI_STATS_DATABASE_PATH: runtimeConfig.statsDatabasePath, JUHE_AI_USAGE_SHARD_ROOT: runtimeConfig.usageShardRoot, JUHE_AI_CODEX_CONTEXT_ROOT: runtimeConfig.codexContextRoot, JUHE_AI_CODEX_CONTEXT_STATE_SHARD_ROOT: runtimeConfig.codexContextStateShardRoot, JUHE_AI_SECRET: runtimeConfig.secret, JUHE_AI_ALLOW_PRIVATE_UPSTREAM_BASE_URLS: 'true', JUHE_AI_LOG_LEVEL: 'warn', JUHE_AI_LOG_CONSOLE_ENABLED: 'false', JUHE_AI_LOG_FILE_ENABLED: 'false' },
+    stdio: ['ignore', 'pipe', 'pipe']
   })
 }
 
@@ -952,6 +1220,7 @@ function sleep(ms: number): Promise<void> { return new Promise((resolveSleep) =>
 async function closeServer(server?: http.Server): Promise<void> { if (!server?.listening) return; await new Promise<void>((resolveClose) => server.close(() => resolveClose())) }
 async function stopProcess(child?: ChildProcess): Promise<void> {
   if (!child || child.exitCode !== null) return
+  const closed = new Promise<void>((resolveClose) => child.once('close', () => resolveClose()))
   if (process.platform === 'win32' && child.pid) {
     await new Promise<void>((resolveKill) => {
       const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' })
@@ -959,7 +1228,7 @@ async function stopProcess(child?: ChildProcess): Promise<void> {
       killer.once('exit', () => resolveKill())
     })
   } else child.kill('SIGTERM')
-  await Promise.race([new Promise<void>((resolveExit) => child.once('exit', () => resolveExit())), sleep(5000)])
+  await Promise.race([closed, sleep(5000)])
   await sleep(500)
 }
 async function removeTempRoot(path: string): Promise<void> {

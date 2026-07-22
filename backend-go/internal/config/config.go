@@ -37,7 +37,6 @@ type Config struct {
 	NodeInternalSnapshotRebuildTimeout time.Duration `env:"JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT" envDefault:"60s"`
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
-	ManagementAuthSessionsEnabled      bool          `env:"JUHE_AI_MANAGEMENT_AUTH_SESSIONS_ENABLED" envDefault:"false"`
 	AuthCaptchaDisabled                bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
 	TrustProxy                         string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
 	CookieSecure                       bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
@@ -326,7 +325,7 @@ func validatePublicAPIConfig(cfg Config) error {
 }
 
 func validateManagementAPIConfig(cfg Config) error {
-	if !cfg.ManagementAPIEnabled && !cfg.ManagementAuthSessionsEnabled {
+	if !cfg.ManagementAPIEnabled {
 		return nil
 	}
 	if strings.TrimSpace(cfg.PostgresURL) == "" {
@@ -334,9 +333,6 @@ func validateManagementAPIConfig(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.RedisStateURL) == "" {
 		return fmt.Errorf("启用 Go 管理端接口时 JUHE_AI_REDIS_STATE_URL 不能为空")
-	}
-	if !cfg.ManagementAPIEnabled {
-		return nil
 	}
 	if strings.TrimSpace(cfg.RedisCacheURL) == "" {
 		return fmt.Errorf("启用 JUHE_AI_MANAGEMENT_API_ENABLED 时 JUHE_AI_REDIS_CACHE_URL 不能为空")

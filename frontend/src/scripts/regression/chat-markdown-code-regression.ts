@@ -1,12 +1,35 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 const source = readFileSync('../frontend/src/views/chat/ChatMarkdown.vue', 'utf8')
 const copyStateSource = readFileSync('../frontend/src/views/chat/chatCodeCopyState.ts', 'utf8')
+const mathHelperPath = '../frontend/src/views/chat/chatMarkdownMath.ts'
+const fenceHelperPath = '../frontend/src/views/chat/chatMarkdownFences.ts'
+
+assert.equal(existsSync(mathHelperPath), true, 'Markdown 数学预处理 helper 必须存在')
+const { normalizeChatMarkdownMathDelimiters } = await import('../../views/chat/chatMarkdownMath')
+assert.equal(normalizeChatMarkdownMathDelimiters('\\[\nE = mc^2\n\\]'), '$$ E = mc^2 $$', '\\[...\\] 必须兼容为不会被 breaks 拆散的块级 KaTeX 定界符')
+assert.equal(normalizeChatMarkdownMathDelimiters('$$\nx^2 + y^2\n$$'), '$$ x^2 + y^2 $$', '原生多行 $$ 公式也必须保持为单一 Markdown 文本节点')
+assert.equal(normalizeChatMarkdownMathDelimiters('行内 \\(a+b\\) 公式'), '行内 $a+b$ 公式', '\\(...\\) 必须兼容为行内 KaTeX 定界符')
+assert.equal(normalizeChatMarkdownMathDelimiters('```tex\n\\[x\\]\n```'), '```tex\n\\[x\\]\n```', '代码围栏内的 LaTeX 定界符不得改写')
+assert.match(source, /normalizeChatMarkdownMathDelimiters\(props\.content\)/, 'Markdown 必须在 marked 解析前兼容常见 LaTeX 定界符')
+
+assert.equal(existsSync(fenceHelperPath), true, 'Markdown fenced block 完整性 helper 必须存在')
+const { isCompleteMarkdownCodeFence } = await import('../../views/chat/chatMarkdownFences')
+assert.equal(isCompleteMarkdownCodeFence('```mermaid\nflowchart TD\nA --> B\n```\n'), true, '闭合的反引号 fenced block 必须允许渲染')
+assert.equal(isCompleteMarkdownCodeFence('```mermaid\nflowchart TD\nA --> B'), false, '流式阶段未闭合的 Mermaid fenced block 不得提前渲染')
+assert.equal(isCompleteMarkdownCodeFence('~~~~svg\n<svg></svg>\n~~~~\n'), true, '闭合的波浪号 fenced block 必须允许渲染')
+assert.equal(isCompleteMarkdownCodeFence('````mermaid\n```\nflowchart TD\nA --> B'), false, '短于 opening fence 的内容行不得误判为 closing fence')
+assert.equal(isCompleteMarkdownCodeFence('plain code'), true, '非 fenced code token 不需要特殊门禁')
+assert.match(source, /isCompleteMarkdownCodeFence\(raw\)/, 'Mermaid 与 SVG renderer 必须用原始 token 判断 fence 是否闭合')
+assert.match(source, /mermaid-pending/, '未闭合 Mermaid 必须保留源码而不是触发渲染')
+assert.match(source, /chat-svg-pending/, '未闭合 SVG 必须保留源码而不是触发 iframe 预览')
 
 assert.match(source, /html\(\{\s*text\s*\}\)[\s\S]{0,120}escapeHtml\(text\)/, '模型原始 HTML 必须按文本转义，不能进入 v-html DOM')
 assert.match(source, /class="chat-code-block"/, '代码 renderer 必须生成独立代码块 wrapper')
 assert.match(source, /class="chat-code-language"/, '代码块必须显示语言标签')
+assert.match(source, /highlight\.js\/lib\/languages\/powershell/, 'PowerShell 必须注册真实高亮语法，不能退化为转义纯文本')
+assert.match(source, /registerLanguage\('powershell',[\s\S]{0,180}registerLanguage\('pwsh',[\s\S]{0,180}registerLanguage\('ps1'/, 'PowerShell、pwsh 和 ps1 fenced 别名必须全部可用')
 assert.match(source, /class="chat-code-copy"\s+type="button"\s+data-copy-code/, '代码块必须生成可委托的复制按钮')
 assert.doesNotMatch(source, /<code[^>]*data-copy-code/, '源码 code 节点不能携带 data-copy-code，避免内容伪造操作入口')
 assert.match(source, /root\.value\?\.addEventListener\('click',\s*handleRootClick\)/, '代码复制只能在根节点绑定一次 click 委托')
@@ -23,7 +46,9 @@ assert.doesNotMatch(source, /let copyResetTimer:/, '不能用单一 timer 让快
 assert.match(source, /ChatCodeCopyResetController/, '代码块复制恢复必须使用按按钮隔离的状态 helper')
 assert.match(source, /ChatCodeCopyLifecycle/, '异步剪贴板必须由带 mounted generation 的生命周期 helper 隔离')
 assert.match(source, /mermaid\.render\(/, 'Mermaid 必须先通过 render 得到 SVG 字符串')
+assert.match(source, /theme:\s*'neutral',\s*htmlLabels:\s*false/, 'Mermaid 11 必须使用优先级更高的根级 htmlLabels=false 输出纯 SVG text')
 assert.match(source, /DOMPurify\.sanitize\([^)]*svg[\s\S]{0,180}USE_PROFILES:\s*\{\s*svg:\s*true,\s*svgFilters:\s*true\s*\}/, 'Mermaid SVG 插入前必须使用 SVG profile 再净化')
+assert.match(source, /FORBID_TAGS:\s*\['script',\s*'foreignObject'\]/, '纯 SVG 标签模式必须继续禁止脚本和 foreignObject')
 assert.doesNotMatch(source, /mermaid\.run\(/, '不能在已净化 DOM 上调用 mermaid.run 注入未净化 SVG')
 assert.match(source, /version !== renderVersion/, '异步 Mermaid 渲染必须保留版本竞态保护')
 assert.match(source, /\.chat-code-block[\s\S]{0,120}overflow/, '代码块必须局部横向滚动')

@@ -118,6 +118,7 @@ export async function uploadChatAsset(input: {
     pendingAsset = await createChatAsset(input.client, {
       systemAccountId: input.systemAccountId,
       conversationId: input.conversationId,
+      sourceKind: 'user_upload',
       originalFilename: uploaded.filename,
       originalMimeType: processed.originalMimeType,
       originalWidth: processed.originalWidth,

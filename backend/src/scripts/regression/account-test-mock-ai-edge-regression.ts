@@ -14,8 +14,6 @@ import { logger } from '../../shared/logger.js'
 
 const currentDir = dirname(fileURLToPath(import.meta.url))
 const backendRoot = resolve(currentDir, '../../..')
-const projectRoot = resolve(backendRoot, '..')
-const useShellSpawn = process.platform === 'win32'
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-test-mock-ai-edge-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const pollIntervalMs = 200
 
@@ -133,19 +131,21 @@ try {
   assert.equal(queuedFinished.status, 'success', '前一个运行任务失败后，排队任务应继续被消费并成功')
   assert(queuedFinished.startedAt && Date.parse(queuedFinished.startedAt) > Date.parse(queuedTask.queuedAt ?? queuedFinished.startedAt), '排队任务应在被 worker 接收后才写 startedAt')
 
-  const cancelSession = await createTestSession(context)
+  const runningCancelSession = await createTestSession(context)
+  const queuedCancelSession = await createTestSession(context)
   const runningCancelAccount = await createMockAccount(context, '运行中取消账号', 'sk-cancel-running')
   const queuedCancelAccount = await createMockAccount(context, '排队取消账号', 'sk-cancel-queued')
-  const runningCancelTask = await submitAccountTest(context, runningCancelAccount, cancelSession.id)
-  const queuedCancelTask = await submitAccountTest(context, queuedCancelAccount, cancelSession.id)
+  const runningCancelTask = await submitAccountTest(context, runningCancelAccount, runningCancelSession.id)
+  const queuedCancelTask = await submitAccountTest(context, queuedCancelAccount, queuedCancelSession.id)
   await waitForTask(context, runningCancelTask.id, 10_000, (task) => task.status === 'running')
   const queuedBeforeCancel = await getTask(context, queuedCancelTask.id)
-  assert.equal(queuedBeforeCancel.status, 'queued', 'session 取消前第二个任务应仍在 queued')
-  await cancelTestSession(context, cancelSession.id)
+  assert.equal(queuedBeforeCancel.status, 'queued', '独立 session 取消前第二个任务应仍在 queued')
+  await cancelTestSession(context, queuedCancelSession.id)
+  await cancelTestSession(context, runningCancelSession.id)
   const canceledRunning = await waitForTask(context, runningCancelTask.id, 10_000, (task) => task.status === 'canceled')
   const canceledQueued = await waitForTask(context, queuedCancelTask.id, 10_000, (task) => task.status === 'canceled')
-  assert.equal(canceledRunning.status, 'canceled', 'session 取消应中断 running 任务')
-  assert.equal(canceledQueued.status, 'canceled', 'session 取消应剔除 queued 任务')
+  assert.equal(canceledRunning.status, 'canceled', '运行中账户的独立 session 取消应中断任务')
+  assert.equal(canceledQueued.status, 'canceled', '排队账户的独立 session 取消应剔除任务')
   assert.equal(mockState.hitsByKey.get('cancel-queued') ?? 0, 0, '被 session 取消的 queued 任务不应再命中 mock AI')
   const afterCancelAccount = await createMockAccount(context, '取消后立即测试账号', 'sk-after-cancel-fast')
   const afterCancelTask = await submitAccountTest(context, afterCancelAccount)
@@ -238,8 +238,8 @@ async function waitForTask(
 }
 
 function startBackendServer(port: number): ChildProcess {
-  const child = spawn('pnpm', ['--filter', 'juhe-ai-backend', 'exec', 'tsx', 'src/server.ts'], {
-    cwd: projectRoot,
+  const child = spawn(process.execPath, ['--import', 'tsx', 'src/server.ts'], {
+    cwd: backendRoot,
     env: {
       ...process.env,
       NODE_ENV: '',
@@ -257,7 +257,6 @@ function startBackendServer(port: number): ChildProcess {
       JUHE_AI_LOG_CONSOLE_ENABLED: process.env.JUHE_AI_REGRESSION_SERVER_LOG_CONSOLE ?? 'false',
       JUHE_AI_LOG_FILE_ENABLED: 'false'
     },
-    shell: useShellSpawn,
     stdio: ['ignore', 'pipe', 'pipe']
   })
   child.stdout?.on('data', (chunk) => {

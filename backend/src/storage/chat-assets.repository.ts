@@ -1,18 +1,22 @@
 import { randomUUID } from 'node:crypto'
 
 import type { DatabaseClient } from './database-client.js'
-import { chatAssetOriginalMaxBytes, chatAssetProcessedMaxBytes } from './chat-asset-storage.js'
+import { chatAssetGeneratedMaxBytes, chatAssetGeneratedQuotaMaxBytes, chatAssetOriginalMaxBytes, chatAssetPreviewMaxBytes, chatAssetProcessedMaxBytes } from './chat-asset-storage.js'
+import { commitChatImageGenerationInClient, listChatImageGenerationRootAssetIdsInClient, renewChatImageGenerationExpiryInClient, type ChatImageGenerationCommitInput } from './chat-image-generations.repository.js'
 
 export type ChatAssetOriginalMimeType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif'
-export type ChatAssetProcessedMimeType = 'image/jpeg'
+export type ChatAssetProcessedMimeType = 'image/jpeg' | 'image/png' | 'image/webp'
+export type ChatAssetSourceKind = 'user_upload' | 'assistant_generated'
 export type ChatAssetProcessingStatus = 'pending' | 'ready' | 'failed'
 export type ChatAssetObservationStatus = 'not_requested' | 'pending' | 'ready' | 'failed'
 export type ChatAssetCleanupStatus = 'active' | 'claimed' | 'failed'
+export type ChatAssetReferenceKind = 'user_input' | 'assistant_output'
 
 export interface ChatAssetRecord {
   id: string
   systemAccountId: string
   conversationId: string
+  sourceKind: ChatAssetSourceKind
   originalFilename: string
   originalMimeType: ChatAssetOriginalMimeType
   originalWidth?: number
@@ -25,6 +29,12 @@ export interface ChatAssetRecord {
   processedBytes?: number
   processedSha256?: string
   storageKey?: string
+  previewMimeType?: 'image/webp'
+  previewWidth?: number
+  previewHeight?: number
+  previewBytes?: number
+  previewSha256?: string
+  previewStorageKey?: string
   processingStatus: ChatAssetProcessingStatus
   processingErrorCode?: string
   observationStatus: ChatAssetObservationStatus
@@ -59,6 +69,7 @@ export interface ChatAssetCreateInput {
   id?: string
   systemAccountId: string
   conversationId: string
+  sourceKind: ChatAssetSourceKind
   originalFilename: string
   originalMimeType: ChatAssetOriginalMimeType
   originalWidth?: number
@@ -68,6 +79,46 @@ export interface ChatAssetCreateInput {
   quotaBytes: number
   now: string
   retentionDays: number
+}
+
+export interface ChatAssetReferenceRecord {
+  assetId: string
+  conversationId: string
+  turnId: string
+  messageId: string
+  referenceKind: ChatAssetReferenceKind
+  contentOrder: number
+  createdAt: string
+  expiresAt: string
+}
+
+export interface ChatAssetReferenceCreateInput extends ChatAssetReferenceRecord {
+  systemAccountId: string
+  now: string
+}
+
+export interface ChatGeneratedAssetCommitInput {
+  id?: string
+  systemAccountId: string
+  conversationId: string
+  turnId: string
+  messageId: string
+  contentOrder: number
+  mimeType: ChatAssetProcessedMimeType
+  width: number
+  height: number
+  bytes: number
+  sha256: string
+  storageKey: string
+  previewMimeType: 'image/webp'
+  previewWidth: number
+  previewHeight: number
+  previewBytes: number
+  previewSha256: string
+  previewStorageKey: string
+  now: string
+  retentionDays: number
+  generation: Omit<ChatImageGenerationCommitInput, 'assetId' | 'conversationId' | 'systemAccountId' | 'createdAt' | 'expiresAt'>
 }
 
 export interface ChatAssetProcessingResultInput {
@@ -100,6 +151,7 @@ interface ChatAssetRow {
   id: unknown
   system_account_id: unknown
   conversation_id: unknown
+  source_kind: unknown
   original_filename: unknown
   original_mime_type: unknown
   original_width: unknown
@@ -112,6 +164,12 @@ interface ChatAssetRow {
   processed_bytes: unknown
   processed_sha256: unknown
   storage_key: unknown
+  preview_mime_type: unknown
+  preview_width: unknown
+  preview_height: unknown
+  preview_bytes: unknown
+  preview_sha256: unknown
+  preview_storage_key: unknown
   processing_status: unknown
   processing_error_code: unknown
   observation_status: unknown
@@ -130,6 +188,17 @@ interface ChatAssetRow {
   cleanup_error_code: unknown
   created_at: unknown
   updated_at: unknown
+  expires_at: unknown
+}
+
+interface ChatAssetReferenceRow {
+  asset_id: unknown
+  conversation_id: unknown
+  turn_id: unknown
+  message_id: unknown
+  reference_kind: unknown
+  content_order: unknown
+  created_at: unknown
   expires_at: unknown
 }
 
@@ -184,12 +253,12 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
     }
     const row = await tx.one<ChatAssetRow>(`
       INSERT INTO ${chatTable(tx, 'chat_assets')} (
-        id, system_account_id, conversation_id, original_filename, original_mime_type,
+        id, system_account_id, conversation_id, source_kind, original_filename, original_mime_type,
         original_width, original_height, original_bytes, original_sha256, quota_bytes,
         processing_status, observation_status, cleanup_status, cleanup_attempt_count,
         created_at, updated_at, expires_at
       )
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'not_requested', 'active', 0, ?, ?, ?
+      SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'not_requested', 'active', 0, ?, ?, ?
       FROM ${chatTable(tx, 'chat_conversations')}
       WHERE id = ? AND system_account_id = ?
       RETURNING *
@@ -197,6 +266,7 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
       id,
       input.systemAccountId,
       input.conversationId,
+      input.sourceKind,
       originalFilename,
       originalMimeType,
       originalWidth ?? null,
@@ -216,6 +286,160 @@ export async function createChatAsset(client: DatabaseClient, input: ChatAssetCr
   })
 }
 
+/** Commits an already validated/atomically written generated object and its assistant reference. */
+export async function commitChatGeneratedAsset(client: DatabaseClient, input: ChatGeneratedAssetCommitInput): Promise<ChatAssetRecord> {
+  const id = input.id === undefined ? newChatAssetId() : normalizedAssetId(input.id)
+  const mimeType = normalizedProcessedMimeType(input.mimeType)
+  const width = normalizedDimension(input.width, 'width')
+  const height = normalizedDimension(input.height, 'height')
+  const bytes = normalizedPositiveInteger(input.bytes, 'bytes', chatAssetGeneratedMaxBytes)
+  const sha256 = normalizedSha256(input.sha256)
+  const storageKey = normalizedStorageKey(input.storageKey)
+  const previewMimeType = input.previewMimeType
+  if (previewMimeType !== 'image/webp') throw new Error('生成图片 preview 必须是 WebP')
+  const previewWidth = normalizedDimension(input.previewWidth, 'previewWidth')
+  const previewHeight = normalizedDimension(input.previewHeight, 'previewHeight')
+  const previewBytes = normalizedPositiveInteger(input.previewBytes, 'previewBytes', chatAssetPreviewMaxBytes)
+  const previewSha256 = normalizedSha256(input.previewSha256)
+  const previewStorageKey = normalizedStorageKey(input.previewStorageKey)
+  if (storageKey === previewStorageKey) throw new Error('生成图片原图与 preview 不能共用 storage key')
+  const quotaBytes = bytes + previewBytes
+  if (quotaBytes > chatAssetGeneratedQuotaMaxBytes) throw new Error('生成图片原图与 preview 总字节超过上限')
+  const contentOrder = nonNegativeSafeInteger(input.contentOrder, 'contentOrder')
+  const expiresAt = addDays(input.now, input.retentionDays)
+  return client.transaction(async (tx) => {
+    await lockChatAssetUserQuota(tx, input.systemAccountId)
+    const message = await tx.one<{ turn_id?: unknown }>(`
+      SELECT turn_id FROM ${chatTable(tx, 'chat_messages')}
+      WHERE id = ? AND conversation_id = ? AND system_account_id = ? AND turn_id = ? AND role = 'assistant'
+      LIMIT 1 ${tx.driver === 'postgres' ? 'FOR UPDATE' : ''}
+    `, [input.messageId, input.conversationId, input.systemAccountId, input.turnId])
+    if (!message) throw new Error('生成图片只能绑定到当前助手消息')
+    const usage = await getChatAssetUserUsage(tx, input.systemAccountId)
+    if (usage.assetBytes + quotaBytes > chatAssetUserMaxBytes || usage.assetCount + 1 > chatAssetUserMaxCount) throw new ChatAssetQuotaExceededError()
+    const row = await tx.one<ChatAssetRow>(`
+      INSERT INTO ${chatTable(tx, 'chat_assets')} (
+        id, system_account_id, conversation_id, source_kind, original_filename, original_mime_type,
+        original_width, original_height, original_bytes, original_sha256,
+        processed_mime_type, processed_width, processed_height, processed_bytes, processed_sha256, storage_key,
+        preview_mime_type, preview_width, preview_height, preview_bytes, preview_sha256, preview_storage_key,
+        processing_status, observation_status, observation_revision, quota_bytes,
+        turn_id, message_id, committed_at, cleanup_status, cleanup_attempt_count, created_at, updated_at, expires_at
+      ) VALUES (?, ?, ?, 'assistant_generated', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ready', 'not_requested', 0, ?, ?, ?, ?, 'active', 0, ?, ?, ?)
+      RETURNING *
+    `, [
+      id, input.systemAccountId, input.conversationId, generatedAssetFilename(id, mimeType), mimeType,
+      width, height, bytes, sha256, mimeType, width, height, bytes, sha256, storageKey,
+      previewMimeType, previewWidth, previewHeight, previewBytes, previewSha256, previewStorageKey,
+      quotaBytes, input.turnId, input.messageId, input.now, input.now, input.now, expiresAt
+    ])
+    if (!row) throw new Error('生成图片资产写入失败')
+    await tx.execute(`
+      INSERT INTO ${chatTable(tx, 'chat_asset_references')} (
+        asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, 'assistant_output', ?, ?, ?)
+    `, [id, input.conversationId, input.turnId, input.messageId, contentOrder, input.now, expiresAt])
+    await commitChatImageGenerationInClient(tx, {
+      assetId: id,
+      conversationId: input.conversationId,
+      systemAccountId: input.systemAccountId,
+      createdAt: input.now,
+      expiresAt,
+      ...input.generation
+    })
+    await incrementChatAssetUserUsage(tx, input.systemAccountId, quotaBytes, input.now)
+    return chatAssetFromRow(row)
+  })
+}
+
+export async function insertChatAssetReference(client: DatabaseClient, input: ChatAssetReferenceCreateInput): Promise<ChatAssetReferenceRecord | undefined> {
+  const row = await client.one<ChatAssetReferenceRow>(`
+    INSERT INTO ${chatTable(client, 'chat_asset_references')} (
+      asset_id, conversation_id, turn_id, message_id, reference_kind,
+      content_order, created_at, expires_at
+    )
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?
+    FROM ${chatTable(client, 'chat_assets')} AS asset
+    WHERE asset.id = ? AND asset.system_account_id = ? AND asset.conversation_id = ?
+      AND asset.processing_status = 'ready' AND asset.cleanup_status = 'active' AND asset.expires_at > ?
+      AND ? > ? AND ? <= asset.expires_at
+    RETURNING *
+  `, [
+    input.assetId,
+    input.conversationId,
+    input.turnId,
+    input.messageId,
+    input.referenceKind,
+    input.contentOrder,
+    input.createdAt,
+    input.expiresAt,
+    input.assetId,
+    input.systemAccountId,
+    input.conversationId,
+    input.now,
+    input.expiresAt,
+    input.now,
+    input.expiresAt
+  ])
+  return row ? chatAssetReferenceFromRow(row) : undefined
+}
+
+export async function hasValidChatAssetReference(client: DatabaseClient, input: {
+  assetId: string
+  systemAccountId: string
+  conversationId: string
+  now: string
+}): Promise<boolean> {
+  const row = await client.one<{ found?: unknown }>(`
+    SELECT 1 AS found
+    FROM ${chatTable(client, 'chat_asset_references')} AS reference
+    INNER JOIN ${chatTable(client, 'chat_assets')} AS asset
+      ON asset.id = reference.asset_id AND asset.conversation_id = reference.conversation_id
+    WHERE reference.asset_id = ? AND asset.system_account_id = ? AND reference.conversation_id = ?
+      AND reference.expires_at > ? AND asset.expires_at > ?
+      AND asset.processing_status = 'ready' AND asset.cleanup_status = 'active'
+    LIMIT 1
+  `, [input.assetId, input.systemAccountId, input.conversationId, input.now, input.now])
+  return Boolean(row?.found)
+}
+
+export async function listActiveChatAssetReferences(client: DatabaseClient, input: {
+  systemAccountId: string
+  conversationId: string
+  messageId: string
+  now: string
+}): Promise<ChatAssetReferenceRecord[]> {
+  const rows = await client.query<ChatAssetReferenceRow>(`
+    SELECT reference.*
+    FROM ${chatTable(client, 'chat_asset_references')} AS reference
+    INNER JOIN ${chatTable(client, 'chat_assets')} AS asset
+      ON asset.id = reference.asset_id AND asset.conversation_id = reference.conversation_id
+    WHERE asset.system_account_id = ? AND reference.conversation_id = ?
+      AND reference.message_id = ? AND reference.expires_at > ?
+      AND asset.cleanup_status = 'active' AND asset.expires_at > ?
+    ORDER BY reference.content_order ASC, reference.asset_id ASC
+  `, [input.systemAccountId, input.conversationId, input.messageId, input.now, input.now])
+  return rows.map(chatAssetReferenceFromRow)
+}
+
+export async function removeChatAssetReferencesForMessage(client: DatabaseClient, input: {
+  systemAccountId: string
+  conversationId: string
+  messageId: string
+  now: string
+}): Promise<number> {
+  const result = await client.execute(`
+    DELETE FROM ${chatTable(client, 'chat_asset_references')} AS reference
+    WHERE reference.conversation_id = ? AND reference.message_id = ?
+      AND EXISTS (
+        SELECT 1 FROM ${chatTable(client, 'chat_assets')} AS asset
+        WHERE asset.id = reference.asset_id AND asset.conversation_id = reference.conversation_id
+          AND asset.system_account_id = ?
+      )
+  `, [input.conversationId, input.messageId, input.systemAccountId])
+  return result.changes
+}
+
 async function assertUncommittedChatAssetCountAvailable(client: DatabaseClient, input: {
   systemAccountId: string
   conversationId: string
@@ -225,6 +449,7 @@ async function assertUncommittedChatAssetCountAvailable(client: DatabaseClient, 
     SELECT COUNT(*) AS total
     FROM ${chatTable(client, 'chat_assets')}
     WHERE system_account_id = ? AND conversation_id = ?
+      AND source_kind = 'user_upload'
       AND turn_id IS NULL AND message_id IS NULL
       AND processing_status IN ('pending', 'ready') AND cleanup_status = 'active'
       AND expires_at > ?
@@ -358,19 +583,60 @@ export async function commitChatAssetsToMessageInClient(client: DatabaseClient, 
     if (!asset || asset.processingStatus !== 'ready' || asset.cleanupStatus !== 'active' || asset.expiresAt <= input.now) {
       throw new Error('聊天资产不存在、未处理完成或已过期')
     }
-    if ((asset.turnId && asset.turnId !== turnId) || (asset.messageId && asset.messageId !== input.messageId)) {
+    if (asset.sourceKind === 'user_upload' && ((asset.turnId && asset.turnId !== turnId) || (asset.messageId && asset.messageId !== input.messageId))) {
       throw new Error('聊天资产已绑定其他消息')
     }
   }
   const expiresAt = addDays(input.now, input.retentionDays)
-  const result = await client.execute(`
-    UPDATE ${chatTable(client, 'chat_assets')}
-    SET turn_id = ?, message_id = ?, committed_at = COALESCE(committed_at, ?), expires_at = ?, updated_at = ?
-    WHERE id IN (${client.dialect.bindPlaceholders(assetIds.length)})
-      AND system_account_id = ? AND conversation_id = ? AND cleanup_status = 'active'
-      AND (turn_id IS NULL OR turn_id = ?) AND (message_id IS NULL OR message_id = ?)
-  `, [turnId, input.messageId, input.now, expiresAt, input.now, ...assetIds, input.systemAccountId, input.conversationId, turnId, input.messageId])
-  if (result.changes !== assetIds.length) throw new Error('聊天资产绑定消息时发生并发冲突')
+  for (const assetId of assetIds) {
+    const asset = recordsById.get(assetId)!
+    const result = asset.sourceKind === 'assistant_generated'
+      ? await client.execute(`
+          UPDATE ${chatTable(client, 'chat_assets')}
+          SET expires_at = CASE WHEN expires_at < ? THEN ? ELSE expires_at END, updated_at = ?
+          WHERE id = ? AND system_account_id = ? AND conversation_id = ?
+            AND source_kind = 'assistant_generated' AND processing_status = 'ready' AND cleanup_status = 'active'
+        `, [expiresAt, expiresAt, input.now, assetId, input.systemAccountId, input.conversationId])
+      : await client.execute(`
+          UPDATE ${chatTable(client, 'chat_assets')}
+          SET turn_id = ?, message_id = ?, committed_at = COALESCE(committed_at, ?),
+              expires_at = CASE WHEN expires_at < ? THEN ? ELSE expires_at END, updated_at = ?
+          WHERE id = ? AND system_account_id = ? AND conversation_id = ?
+            AND source_kind = 'user_upload' AND cleanup_status = 'active'
+            AND (turn_id IS NULL OR turn_id = ?) AND (message_id IS NULL OR message_id = ?)
+        `, [turnId, input.messageId, input.now, expiresAt, expiresAt, input.now, assetId, input.systemAccountId, input.conversationId, turnId, input.messageId])
+    if (result.changes !== 1) throw new Error('聊天资产绑定消息时发生并发冲突')
+  }
+  const rootAssetIds = (await listChatImageGenerationRootAssetIdsInClient(client, {
+    assetIds,
+    conversationId: input.conversationId,
+    systemAccountId: input.systemAccountId
+  })).filter((assetId) => !recordsById.has(assetId))
+  if (rootAssetIds.length > 0) {
+    const retainedRoots = await client.execute(`
+      UPDATE ${chatTable(client, 'chat_assets')}
+      SET expires_at = CASE WHEN expires_at < ? THEN ? ELSE expires_at END,
+          updated_at = CASE WHEN expires_at < ? THEN ? ELSE updated_at END
+      WHERE id IN (${client.dialect.bindPlaceholders(rootAssetIds.length)})
+        AND system_account_id = ? AND conversation_id = ?
+        AND source_kind = 'assistant_generated' AND processing_status = 'ready' AND cleanup_status = 'active'
+    `, [expiresAt, expiresAt, expiresAt, input.now, ...rootAssetIds, input.systemAccountId, input.conversationId])
+    if (retainedRoots.changes !== rootAssetIds.length) throw new Error('聊天图片根谱系保留期限更新失败')
+  }
+  await renewChatImageGenerationExpiryInClient(client, {
+    assetIds: [...assetIds, ...rootAssetIds],
+    conversationId: input.conversationId,
+    systemAccountId: input.systemAccountId,
+    expiresAt
+  })
+  for (const [contentOrder, assetId] of assetIds.entries()) {
+    await client.execute(`
+      INSERT INTO ${chatTable(client, 'chat_asset_references')} (
+        asset_id, conversation_id, turn_id, message_id, reference_kind, content_order, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, 'user_input', ?, ?, ?)
+      ON CONFLICT (message_id, content_order) DO NOTHING
+    `, [assetId, input.conversationId, turnId, input.messageId, contentOrder, input.now, expiresAt])
+  }
   return listReadyChatAssetsByIds(client, { ...input, assetIds })
 }
 
@@ -404,15 +670,20 @@ export async function claimChatAssetObservation(client: DatabaseClient, input: C
   const staleBefore = new Date(Date.parse(input.now) - 15 * 60_000).toISOString()
   const claimId = observationClaimId()
   const row = await client.one<ChatAssetRow>(`
-    UPDATE ${chatTable(client, 'chat_assets')}
+    UPDATE ${chatTable(client, 'chat_assets')} AS asset
     SET observation_status = 'pending', observation_json = NULL,
         observation_revision = observation_revision + 1,
         observation_claim_id = ?, observation_claimed_at = ?, updated_at = ?
-    WHERE id = ? AND system_account_id = ? AND conversation_id = ?
-      AND turn_id = ? AND message_id = ?
-      AND processing_status = 'ready'
-      AND (observation_status IN ('not_requested', 'failed') OR (observation_status = 'pending' AND observation_claimed_at <= ?))
-      AND cleanup_status = 'active' AND expires_at > ?
+    WHERE asset.id = ? AND asset.system_account_id = ? AND asset.conversation_id = ?
+      AND EXISTS (
+        SELECT 1 FROM ${chatTable(client, 'chat_asset_references')} AS reference
+        WHERE reference.asset_id = asset.id AND reference.conversation_id = asset.conversation_id
+          AND reference.turn_id = ? AND reference.message_id = ? AND reference.reference_kind = 'user_input'
+          AND reference.expires_at > ?
+      )
+      AND asset.processing_status = 'ready'
+      AND (asset.observation_status IN ('not_requested', 'failed') OR (asset.observation_status = 'pending' AND asset.observation_claimed_at <= ?))
+      AND asset.cleanup_status = 'active' AND asset.expires_at > ?
     RETURNING *
   `, [
     claimId,
@@ -423,6 +694,7 @@ export async function claimChatAssetObservation(client: DatabaseClient, input: C
     input.conversationId,
     input.expectedTurnId,
     input.expectedMessageId,
+    input.now,
     staleBefore,
     input.now
   ])
@@ -434,13 +706,20 @@ export async function claimUncommittedChatAssetForDeletion(client: DatabaseClien
 }): Promise<{ claimId: string; asset: ChatAssetRecord } | undefined> {
   const claimId = cleanupClaimId()
   const result = await client.execute(`
-    UPDATE ${chatTable(client, 'chat_assets')}
+    UPDATE ${chatTable(client, 'chat_assets')} AS asset
     SET cleanup_status = 'claimed', cleanup_claim_id = ?, cleanup_claimed_at = ?,
         cleanup_attempt_count = cleanup_attempt_count + 1, cleanup_retry_at = NULL,
         cleanup_error_code = NULL, updated_at = ?
-    WHERE id = ? AND system_account_id = ? AND conversation_id = ?
-      AND message_id IS NULL AND cleanup_status IN ('active', 'failed')
-  `, [claimId, input.now, input.now, input.assetId, input.systemAccountId, input.conversationId])
+    WHERE asset.id = ? AND asset.system_account_id = ? AND asset.conversation_id = ?
+      AND asset.source_kind = 'user_upload'
+      AND asset.turn_id IS NULL AND asset.message_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ${chatTable(client, 'chat_asset_references')} AS reference
+        WHERE reference.asset_id = asset.id AND reference.conversation_id = asset.conversation_id
+          AND reference.expires_at > ?
+      )
+      AND asset.cleanup_status IN ('active', 'failed')
+  `, [claimId, input.now, input.now, input.assetId, input.systemAccountId, input.conversationId, input.now])
   if (result.changes !== 1) return undefined
   const asset = await getClaimedChatAsset(client, input.assetId, claimId)
   return asset ? { claimId, asset } : undefined
@@ -582,6 +861,7 @@ function chatAssetFromRow(row: ChatAssetRow): ChatAssetRecord {
     id: String(row.id),
     systemAccountId: String(row.system_account_id),
     conversationId: String(row.conversation_id),
+    sourceKind: normalizedSourceKind(row.source_kind),
     originalFilename: String(row.original_filename),
     originalMimeType: normalizedOriginalMimeType(String(row.original_mime_type)),
     originalWidth: optionalNumber(row.original_width),
@@ -594,6 +874,12 @@ function chatAssetFromRow(row: ChatAssetRow): ChatAssetRecord {
     processedBytes: optionalNumber(row.processed_bytes),
     processedSha256: optionalString(row.processed_sha256),
     storageKey: optionalString(row.storage_key),
+    previewMimeType: row.preview_mime_type == null ? undefined : normalizedPreviewMimeType(String(row.preview_mime_type)),
+    previewWidth: optionalNumber(row.preview_width),
+    previewHeight: optionalNumber(row.preview_height),
+    previewBytes: optionalNumber(row.preview_bytes),
+    previewSha256: optionalString(row.preview_sha256),
+    previewStorageKey: optionalString(row.preview_storage_key),
     processingStatus: normalizedProcessingStatus(row.processing_status),
     processingErrorCode: optionalString(row.processing_error_code),
     observationStatus: normalizedObservationStatus(row.observation_status),
@@ -601,7 +887,7 @@ function chatAssetFromRow(row: ChatAssetRow): ChatAssetRecord {
     observationRevision: nonNegativeSafeInteger(Number(row.observation_revision), 'observationRevision'),
     observationClaimId: optionalString(row.observation_claim_id),
     observationClaimedAt: optionalString(row.observation_claimed_at),
-    quotaBytes: normalizedPositiveInteger(Number(row.quota_bytes), 'quotaBytes', chatAssetProcessedMaxBytes),
+    quotaBytes: normalizedPositiveInteger(Number(row.quota_bytes), 'quotaBytes', chatAssetGeneratedQuotaMaxBytes),
     turnId: optionalString(row.turn_id),
     messageId: optionalString(row.message_id),
     committedAt: optionalString(row.committed_at),
@@ -612,6 +898,19 @@ function chatAssetFromRow(row: ChatAssetRow): ChatAssetRecord {
     cleanupErrorCode: optionalString(row.cleanup_error_code),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    expiresAt: String(row.expires_at)
+  }
+}
+
+function chatAssetReferenceFromRow(row: ChatAssetReferenceRow): ChatAssetReferenceRecord {
+  return {
+    assetId: String(row.asset_id),
+    conversationId: String(row.conversation_id),
+    turnId: String(row.turn_id),
+    messageId: String(row.message_id),
+    referenceKind: String(row.reference_kind) as ChatAssetReferenceKind,
+    contentOrder: Number(row.content_order),
+    createdAt: String(row.created_at),
     expiresAt: String(row.expires_at)
   }
 }
@@ -706,8 +1005,24 @@ function normalizedOriginalMimeType(value: string): ChatAssetOriginalMimeType {
 
 function normalizedProcessedMimeType(value: string): ChatAssetProcessedMimeType {
   const normalized = value.trim().toLowerCase()
-  if (normalized === 'image/jpeg') return normalized
+  if (normalized === 'image/jpeg' || normalized === 'image/png' || normalized === 'image/webp') return normalized
   throw new Error(`不支持的处理后聊天图片 MIME：${value}`)
+}
+
+function normalizedPreviewMimeType(value: string): 'image/webp' {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'image/webp') return normalized
+  throw new Error(`不支持的聊天图片 preview MIME：${value}`)
+}
+
+function normalizedSourceKind(value: unknown): ChatAssetSourceKind {
+  if (value === 'user_upload' || value === 'assistant_generated') return value
+  throw new Error(`聊天资产来源类型无效：${String(value)}`)
+}
+
+function generatedAssetFilename(id: string, mimeType: ChatAssetProcessedMimeType): string {
+  const extension = mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png'
+  return `generated-${id}.${extension}`
 }
 
 function normalizedProcessingStatus(value: unknown): ChatAssetProcessingStatus {

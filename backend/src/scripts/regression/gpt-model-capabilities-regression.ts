@@ -50,6 +50,7 @@ for (const model of pricing) {
 for (const model of [sol, terra, luna]) {
   assert.deepEqual(model.supportedServiceTiers, ['priority', 'flex'])
   assert.deepEqual(model.supportedReasoningEfforts, wireReasoning)
+  assert(model.supportedTools.includes('function_calling'), `${model.model} 必须声明真实支持的函数调用能力，供站内工具路由使用`)
   assert.equal(model.supportsServiceTier, model.supportedServiceTiers.length > 0)
   assert.equal(model.supportedReasoningEfforts.some((effort) => effort === ('ultra' as string)), false)
 }

@@ -19,6 +19,7 @@ export interface ChatCacheConversationHead {
   title?: string
   isPinned?: boolean
   lastModel?: string
+  defaultImageModel?: ChatConversation['defaultImageModel']
   activeTurnId?: string
   userTurnCount?: number
   lastMessageAt?: string
@@ -122,15 +123,46 @@ function validatePersistentPayload(value: unknown): boolean {
 }
 
 function integerValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) ? value : undefined }
+function positiveIntegerValue(value: unknown): number | undefined { return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined }
+function optionalSafeString(value: unknown): string | undefined { return value === undefined ? undefined : safeString(value) ? value : undefined }
 
 function cloneContentBlock(value: unknown): ChatMessageContentBlock | undefined {
   if (!isPlainRecord(value) || typeof value.type !== 'string') return undefined
-  if (value.type === 'reasoning' && typeof value.text === 'string') return { type: 'reasoning', text: value.text }
+  if (value.type === 'output_text' && typeof value.text === 'string' && integerValue(value.order) !== undefined) {
+    return { type: 'output_text', ...(optionalSafeString(value.blockId) ? { blockId: value.blockId as string } : {}), order: value.order as number, text: value.text }
+  }
+  if (value.type === 'reasoning' && typeof value.text === 'string') {
+    return { type: 'reasoning', ...(optionalSafeString(value.blockId) ? { blockId: value.blockId as string } : {}), ...(integerValue(value.order) !== undefined ? { order: value.order as number } : {}), text: value.text, ...(isProcessStatus(value.status) ? { status: value.status } : {}) }
+  }
   if (value.type === 'input_text' && typeof value.text === 'string' && integerValue(value.order) !== undefined) return { type: 'input_text', text: value.text, order: value.order as number }
   if (value.type === 'input_image' && typeof value.assetId === 'string' && integerValue(value.order) !== undefined) return { type: 'input_image', assetId: value.assetId, order: value.order as number }
-  if (value.type === 'tool_call' && typeof value.id === 'string' && typeof value.toolType === 'string' && ['started', 'updated', 'completed', 'failed'].includes(String(value.status))) return { type: 'tool_call', id: value.id, toolType: value.toolType, status: value.status as 'started' | 'updated' | 'completed' | 'failed' }
+  if (value.type === 'tool_call' && typeof value.toolType === 'string' && isToolStatus(value.status)) {
+    const id = typeof value.id === 'string' ? value.id : undefined
+    const callId = typeof value.callId === 'string' ? value.callId : undefined
+    if (!id && !callId) return undefined
+    return {
+      type: 'tool_call',
+      ...(optionalSafeString(value.blockId) ? { blockId: value.blockId as string } : {}),
+      ...(integerValue(value.order) !== undefined ? { order: value.order as number } : {}),
+      ...(id ? { id } : {}), ...(callId ? { callId } : {}), toolType: value.toolType, status: value.status
+    }
+  }
+  if (value.type === 'output_image' && typeof value.assetId === 'string' && integerValue(value.order) !== undefined && isProcessStatus(value.status)) {
+    const width = positiveIntegerValue(value.width)
+    const height = positiveIntegerValue(value.height)
+    return {
+      type: 'output_image', blockId: typeof value.blockId === 'string' && safeString(value.blockId) ? value.blockId : `cached-image-${value.order}`,
+      order: value.order as number, assetId: value.assetId, status: value.status,
+      ...(optionalSafeString(value.mimeType) ? { mimeType: value.mimeType as string } : {}),
+      ...(width ? { width } : {}), ...(height ? { height } : {}),
+      ...(optionalSafeString(value.revisedPrompt) ? { revisedPrompt: value.revisedPrompt as string } : {})
+    }
+  }
   return undefined
 }
+
+function isProcessStatus(value: unknown): value is 'started' | 'completed' | 'failed' | 'canceled' { return value === 'started' || value === 'completed' || value === 'failed' || value === 'canceled' }
+function isToolStatus(value: unknown): value is 'started' | 'updated' | 'completed' | 'failed' | 'canceled' { return isProcessStatus(value) || value === 'updated' }
 
 export function cloneVisibleChatMessage(value: unknown): ChatMessage | undefined {
   try {
@@ -138,9 +170,10 @@ export function cloneVisibleChatMessage(value: unknown): ChatMessage | undefined
     const sequenceNo = integerValue(value.sequenceNo)
     if (!safeString(value.id) || !safeString(value.conversationId) || !safeString(value.turnId) || sequenceNo === undefined || !['user', 'assistant'].includes(String(value.role)) || !['completed', 'streaming', 'failed', 'canceled'].includes(String(value.status)) || !safeString(value.contentText) || !safeString(value.model) || !safeString(value.createdAt) || !safeString(value.expiresAt)) return undefined
     const result: ChatMessage = { id: value.id, conversationId: value.conversationId, turnId: value.turnId, sequenceNo, role: value.role as ChatMessage['role'], status: value.status as ChatMessage['status'], contentText: value.contentText, model: value.model, createdAt: value.createdAt, expiresAt: value.expiresAt }
-    for (const key of ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'completedAt', 'reasoningText'] as const) if (value[key] !== undefined) { if (!safeString(value[key])) return undefined; result[key] = value[key] }
+    for (const key of ['clientMessageId', 'traceId', 'finishReason', 'errorCode', 'errorMessage', 'completedAt', 'reasoningText'] as const) if (value[key] !== undefined) { if (!safeString(value[key])) return undefined; result[key] = value[key] }
     if (Array.isArray(value.contentBlocks)) result.contentBlocks = value.contentBlocks.map(cloneContentBlock).filter((item): item is ChatMessageContentBlock => Boolean(item))
-    if (Array.isArray(value.toolEvents)) result.toolEvents = value.toolEvents.flatMap((event) => isPlainRecord(event) && typeof event.id === 'string' && typeof event.type === 'string' && ['started', 'updated', 'completed', 'failed'].includes(String(event.status)) ? [{ id: event.id, type: event.type, status: event.status as 'started' | 'updated' | 'completed' | 'failed' }] : [])
+    if (Array.isArray(value.toolEvents)) result.toolEvents = value.toolEvents.flatMap((event) => isPlainRecord(event) && typeof event.id === 'string' && typeof event.type === 'string' && isToolStatus(event.status) ? [{ id: event.id, type: event.type, status: event.status }] : [])
+    for (const key of ['eventVersion', 'renderRevision'] as const) if (value[key] !== undefined) { const version = integerValue(value[key]); if (version === undefined || version < 0) return undefined; result[key] = version }
     if (!validatePersistentPayload(result)) return undefined
     return JSON.parse(JSON.stringify(result)) as ChatMessage
   } catch { return undefined }
@@ -302,7 +335,7 @@ export class ChatLocalCache {
 
 function pickHeadFields(conversation: Partial<ChatConversation>): Partial<ChatCacheConversationHead> {
   const output: Partial<ChatCacheConversationHead> = {}
-  for (const key of ['title', 'isPinned', 'lastModel', 'activeTurnId', 'userTurnCount', 'lastMessageAt', 'createdAt', 'updatedAt'] as const) if (conversation[key] !== undefined) Object.assign(output, { [key]: conversation[key] })
+  for (const key of ['title', 'isPinned', 'lastModel', 'defaultImageModel', 'activeTurnId', 'userTurnCount', 'lastMessageAt', 'createdAt', 'updatedAt'] as const) if (conversation[key] !== undefined) Object.assign(output, { [key]: conversation[key] })
   return output
 }
 

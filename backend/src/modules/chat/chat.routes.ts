@@ -10,6 +10,7 @@ import {
   cancelActiveChatTurnIfMatches,
   cancelChatTurn,
   ChatConflictError,
+  clearChatConversation,
   completeChatTurn,
   createChatConversation,
   deleteChatConversation,
@@ -32,37 +33,54 @@ import { listCachedOpenAIAccountsForGroupAsync, listCachedProviderModelCatalogAs
 import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { ChatContextBudgetError, estimateChatInputTokens, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
-import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport } from './chat-transport.js'
-import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, mergeChatModelCapabilities, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption } from './chat-model-options.js'
+import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport, type ChatTransportProtocol } from './chat-transport.js'
+import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, mergeChatModelCapabilities, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption, type ChatModelOption } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import {
   beginActiveChatAcceptance,
   cancelActiveChatPreparation,
+  claimActiveChatConversationAction,
   claimActiveChatPreparation,
+  deleteActiveChatConversationActionIfMatches,
   deleteActiveChatPreparationIfMatches,
+  getActiveChatConversationAction,
+  getActiveChatPreparation,
+  getActiveChatPreparationForConversation,
   hasActiveChatPreparation,
+  type ActiveChatConversationAction,
   type ActiveChatPreparation
 } from './chat-active-streams.js'
-import { sanitizeChatContentBlocksForPersistence } from './chat-content-blocks.js'
+import { terminalizeChatContentBlocksForPersistence } from './chat-content-blocks.js'
 import { readChatJsonResponse } from './chat-bounded-json.js'
 import { type ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
 import { GPT_VENDOR_CODE, normalizeProviderToken } from '../../domain/provider-protocol.js'
 import { chatAssetApiMetadata, claimUncommittedChatAssetForDeletion, completeChatAssetDeletion, getChatAsset, releaseChatAssetDeletionClaim } from '../../storage/chat-assets.repository.js'
-import { openChatAssetObject, removeChatAssetObject } from '../../storage/chat-asset-storage.js'
+import { chatAssetGeneratedMaxBytes, chatAssetPreviewMaxBytes, deleteChatAssetObjects, openChatAssetObject, openChatGeneratedAssetObject } from '../../storage/chat-asset-storage.js'
 import { ChatAssetUploadError, uploadChatAsset } from './chat-asset-upload.js'
 import { ChatAssetInputError, resolveChatAssetInput } from './chat-asset-input.js'
+import { generateChatImage } from './chat-image-generation-transport.js'
 import { getChatContextHead, recordChatContextUsage } from '../../storage/chat-context.repository.js'
 import { loadChatTransportHistory, ChatModelContextError } from './chat-model-context.js'
-import { compactChatContextOnce, scheduleChatContextCompaction } from './chat-context-compaction.js'
+import { compactChatContextOnce, scheduleChatContextCompaction, startChatContextCompaction } from './chat-context-compaction.js'
 import { scheduleChatImageObservations, waitForChatImageObservations } from './chat-image-observation.js'
 import { countChatTextTokens } from './chat-token-count.js'
+import { chatImageInputPolicy, isChatImageGenerationAccount } from './chat-image-policy.js'
 import { buildChatPromptCacheKey } from './chat-prompt-cache.js'
 import { ChatGenerationRunner, type ChatGenerationSubscriber } from './chat-generation-runner.js'
-import { createChatSseSubscriber, writeChatSseEvent } from './chat-sse-subscriber.js'
+import { chatGenerationErrorMessage, classifyChatGenerationError, type PublicChatGenerationErrorCode } from './chat-generation-error.js'
+import { createChatSseSubscriber, startChatSseHeartbeat, writeChatSseEvent } from './chat-sse-subscriber.js'
 import { chatGenerationRegistry, isActiveChatGeneration, shutdownChatGenerationRegistry } from './chat-generation-runtime.js'
 import { createChatModelOptionsSnapshotCache } from './chat-model-availability.js'
+import { type ChatHostedTool } from './chat-tools.js'
+import { ChatInternalToolRegistry } from './tools/registry.js'
+import { ChatInternalToolOrchestrator } from './tools/orchestrator.js'
+import { createDiagnosticEchoTool } from './tools/executors/diagnostic-echo.js'
+import { chatImageGenerationGatewayModel, createGenerateImageTool } from './tools/executors/generate-image.js'
+import { createChatGeneratedImageArtifactSink } from './tools/artifact-sink.js'
+import { loadChatImageEditReferences } from './chat-image-edit-references.js'
+import type { ChatToolExecutionEvent, ChatToolRuntimeEnvironment } from './tools/contracts.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import { readPublishedChatModelCapabilitiesAsync, readPublishedChatModelListAsync } from '../model-pricing/published-model-catalog.service.js'
-import { logger } from '../../shared/logger.js'
 
 export const chatRouter = Router()
 export { isActiveChatGeneration, shutdownChatGenerationRegistry }
@@ -99,6 +117,10 @@ const messagesQuerySchema = z.object({
 const syncQuerySchema = z.object({
   knownRevision: z.preprocess(queryScalar, z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER))
 }).strict()
+const assetContentQuerySchema = z.object({
+  variant: z.preprocess(queryScalar, z.enum(['preview', 'original']).default('original')),
+  download: z.preprocess(queryScalar, z.enum(['0', '1']).optional())
+}).strict()
 const submissionParamsSchema = z.object({
   conversationId: z.string().trim().min(1).max(120),
   clientMessageId: z.string().trim().min(1).max(100)
@@ -107,12 +129,16 @@ const stopBodySchema = z.object({
   turnId: z.string().trim().min(1).max(100).optional(),
   clientMessageId: z.string().trim().min(1).max(100).optional()
 }).strict().refine((value) => value.turnId !== undefined || value.clientMessageId !== undefined, '缺少要停止的消息或轮次')
+const compactBodySchema = z.object({ model: z.string().trim().min(1, '请选择模型').max(200) }).strict()
+const clearBodySchema = z.object({}).strict()
 const createConversationSchema = z.object({ apiKeyId: z.string().trim().min(1).optional() }).strict()
 const updateConversationSchema = z.object({
   title: z.string().trim().min(1, '请输入会话标题').max(60, '会话标题最多 60 个字符').optional(),
-  isPinned: z.boolean().optional()
-}).strict().refine((value) => value.title !== undefined || value.isPinned !== undefined, '没有可更新的会话字段')
+  isPinned: z.boolean().optional(),
+  defaultImageModel: z.enum(['gpt-image-2']).optional()
+}).strict().refine((value) => value.title !== undefined || value.isPinned !== undefined || value.defaultImageModel !== undefined, '没有可更新的会话字段')
 const activePreparations = new Map<string, ActiveChatPreparation>()
+const activeConversationActions = new Map<string, ActiveChatConversationAction>()
 const registry = chatGenerationRegistry
 const maxMessageBytes = 192 * 1024
 const maxInternalChatRequestBytes = 15 * 1024 * 1024
@@ -150,6 +176,13 @@ chatRouter.get('/api-keys', async (_req, res, next) => {
     const keys = await listApiKeysAsync({ systemAccountId: auth.systemAccountId, role: 'user' })
     res.json(ok(keys.filter((key) => key.status === 'active').map((key) => ({ id: key.id, name: key.name, status: key.status }))))
   } catch (error) { next(error) }
+})
+
+chatRouter.get('/image-policy', async (_req, res, next) => {
+  try {
+    requireChatAuth()
+    res.json(ok({ input: chatImageInputPolicy }))
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.get('/conversations', async (req, res, next) => {
@@ -245,15 +278,86 @@ chatRouter.get('/conversations/:conversationId/submissions/:clientMessageId', as
       clientMessageId: params.clientMessageId
     })
     if (accepted) {
-      res.json(ok({ state: 'accepted', turnId: accepted.turnId, assistantStatus: accepted.assistantStatus }))
+      const serverTime = new Date().toISOString()
+      const snapshot = registry.snapshot({
+        ownerId: auth.systemAccountId,
+        conversationId: conversation.id,
+        turnId: accepted.turnId
+      })
+      const snapshotMatches = snapshot.state !== 'missing' && snapshot.assistantMessageId === accepted.assistantMessageId
+      const runnerState = accepted.assistantStatus === 'streaming'
+        ? (snapshotMatches ? snapshot.state : 'missing')
+        : 'terminal'
+      const publicError = accepted.errorCode
+        ? classifyChatGenerationError({ code: accepted.errorCode })
+        : undefined
+      res.json(ok({
+        state: 'accepted',
+        turnId: accepted.turnId,
+        assistantMessageId: accepted.assistantMessageId,
+        assistantStatus: accepted.assistantStatus,
+        runnerState,
+        ...(snapshotMatches ? { eventVersion: snapshot.eventVersion, lastSemanticActivityAt: snapshot.lastSemanticActivityAt } : {}),
+        ...(publicError ? { errorCode: publicError.code, errorMessage: chatGenerationErrorMessage(publicError.code) } : {}),
+        ...(accepted.completedAt ? { completedAt: accepted.completedAt } : {}),
+        serverTime
+      }))
       return
     }
-    const preparing = hasActiveChatPreparation(activePreparations, {
+    const preparation = getActiveChatPreparation(activePreparations, {
       conversationId: conversation.id,
       ownerId: auth.systemAccountId,
       clientMessageId: params.clientMessageId
     })
-    res.json(ok({ state: preparing ? 'preparing' : 'not_found' }))
+    res.json(ok({
+      state: preparation ? 'preparing' : 'not_found',
+      ...(preparation ? { phase: preparation.phase } : {}),
+      serverTime: new Date().toISOString()
+    }))
+  } catch (error) { handleChatRouteError(error, res, next) }
+})
+
+chatRouter.post('/conversations/:conversationId/context/compactions', async (req, res, next) => {
+  try {
+    const body = compactBodySchema.parse(req.body)
+    const auth = requireChatAuth()
+    const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
+    const existingAction = getActiveChatConversationAction(activeConversationActions, {
+      conversationId: conversation.id,
+      ownerId: auth.systemAccountId
+    })
+    if (existingAction?.kind === 'compacting') {
+      res.status(202).json(ok({ state: 'already_running', serverTime: new Date().toISOString() }))
+      return
+    }
+    if (existingAction?.kind === 'clearing') throw new ChatConflictError('chat_conversation_clearing')
+    if (conversation.activeTurnId || getActiveChatPreparationForConversation(activePreparations, {
+      conversationId: conversation.id,
+      ownerId: auth.systemAccountId
+    })) throw new ChatConflictError('chat_message_in_progress')
+    const actionClaim = claimActiveChatConversationAction(activeConversationActions, activePreparations, {
+      conversationId: conversation.id,
+      ownerId: auth.systemAccountId,
+      kind: 'compacting'
+    })
+    if (!actionClaim) throw new ChatConflictError('chat_message_in_progress')
+    try {
+      const client = await getChatDatabaseClient()
+      const input = await resolveChatCompactionInput(client, conversation, auth.systemAccountId, body.model)
+      const result = await startChatContextCompaction(input)
+      const serverTime = new Date().toISOString()
+      if (result.status === 'accepted' || result.status === 'already_running') {
+        res.status(202).json(ok({ state: result.status, serverTime }))
+        return
+      }
+      if (result.status === 'skipped') {
+        res.status(409).json({ message: '当前会话没有可压缩的内容', code: result.reason === 'no_compactable_turn' ? 'no_compactable_turn' : 'chat_context_compaction_skipped', serverTime })
+        return
+      }
+      res.status(500).json({ message: '上下文压缩启动失败，请稍后重试', code: 'chat_context_compaction_failed', serverTime })
+    } finally {
+      deleteActiveChatConversationActionIfMatches(activeConversationActions, conversation.id, actionClaim.token)
+    }
   } catch (error) { handleChatRouteError(error, res, next) }
 })
 
@@ -274,9 +378,47 @@ chatRouter.get('/conversations/:conversationId/context-status', async (req, res,
       state: head.contextState,
       usageEstimated: head.usageEstimated,
       compactedThroughSequence: head.compactedThroughSequence,
-      revision: head.contextRevision
+      revision: head.contextRevision,
+      errorCode: head.contextErrorCode,
+      retryAt: head.contextRetryAt,
+      attemptCount: head.contextAttemptCount
     }))
-  } catch (error) { next(error) }
+  } catch (error) { handleChatRouteError(error, res, next) }
+})
+
+chatRouter.post('/conversations/:conversationId/clear', async (req, res, next) => {
+  try {
+    clearBodySchema.parse(req.body ?? {})
+    const auth = requireChatAuth()
+    const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
+    const existingAction = getActiveChatConversationAction(activeConversationActions, {
+      conversationId: conversation.id,
+      ownerId: auth.systemAccountId
+    })
+    if (existingAction?.kind === 'compacting') throw new ChatConflictError('chat_context_compacting')
+    if (existingAction?.kind === 'clearing') throw new ChatConflictError('chat_conversation_clearing')
+    if (getActiveChatPreparationForConversation(activePreparations, {
+      conversationId: conversation.id,
+      ownerId: auth.systemAccountId
+    })) throw new ChatConflictError('chat_message_in_progress')
+    const actionClaim = claimActiveChatConversationAction(activeConversationActions, activePreparations, {
+      conversationId: conversation.id,
+      ownerId: auth.systemAccountId,
+      kind: 'clearing'
+    })
+    if (!actionClaim) throw new ChatConflictError('chat_message_in_progress')
+    try {
+      const cleared = await clearChatConversation(await getChatDatabaseClient(), {
+        conversationId: conversation.id,
+        systemAccountId: auth.systemAccountId,
+        now: new Date().toISOString()
+      })
+      if (!cleared) throw new ChatConversationNotFoundError()
+      res.json(ok(chatConversationResponse(cleared)))
+    } finally {
+      deleteActiveChatConversationActionIfMatches(activeConversationActions, conversation.id, actionClaim.token)
+    }
+  } catch (error) { handleChatRouteError(error, res, next) }
 })
 
 chatRouter.get('/conversations/:conversationId', async (req, res, next) => {
@@ -297,6 +439,7 @@ chatRouter.patch('/conversations/:conversationId', async (req, res, next) => {
       systemAccountId: auth.systemAccountId,
       title: body.title,
       isPinned: body.isPinned,
+      defaultImageModel: body.defaultImageModel,
       now: new Date().toISOString()
     })
     if (!conversation) { res.status(404).json({ message: '会话不存在' }); return }
@@ -322,6 +465,7 @@ chatRouter.post('/conversations/:conversationId/assets', async (req, res, next) 
 
 chatRouter.get('/conversations/:conversationId/assets/:assetId/content', async (req, res, next) => {
   try {
+    const query = assetContentQuerySchema.parse(req.query)
     const auth = requireChatAuth()
     const conversation = await requireOwnedConversation(req.params.conversationId, auth.systemAccountId)
     const asset = await getChatAsset(await getChatDatabaseClient(), {
@@ -330,16 +474,36 @@ chatRouter.get('/conversations/:conversationId/assets/:assetId/content', async (
       conversationId: conversation.id,
       now: new Date().toISOString()
     })
-    if (!asset || asset.processingStatus !== 'ready' || !asset.storageKey || !asset.processedMimeType) {
+    if (!asset || asset.processingStatus !== 'ready' || !asset.storageKey || !asset.processedMimeType || !asset.processedSha256) {
       res.status(404).json({ message: '图片不存在或已过期' })
       return
     }
-    const object = await openChatAssetObject(asset.storageKey)
-    res.status(200)
-    res.setHeader('Content-Type', asset.processedMimeType)
-    res.setHeader('Content-Length', String(object.bytes))
-    res.setHeader('Cache-Control', 'private, max-age=3600')
+    const previewAvailable = Boolean(asset.previewStorageKey && asset.previewMimeType && asset.previewSha256 && asset.previewBytes)
+    const usePreview = query.variant === 'preview' && previewAvailable
+    const storageKey = usePreview ? asset.previewStorageKey! : asset.storageKey
+    const mimeType = usePreview ? asset.previewMimeType! : asset.processedMimeType
+    const sha256 = usePreview ? asset.previewSha256! : asset.processedSha256
+    const maxBytes = usePreview ? chatAssetPreviewMaxBytes : asset.sourceKind === 'assistant_generated' ? chatAssetGeneratedMaxBytes : undefined
+    const etag = `"${sha256}"`
+    res.setHeader('Cache-Control', 'private, max-age=86400, immutable')
+    res.setHeader('ETag', etag)
     res.setHeader('X-Content-Type-Options', 'nosniff')
+    if (requestEtagMatches(req.headers['if-none-match'], etag)) {
+      res.status(304).end()
+      return
+    }
+    if (query.download === '1' && !usePreview) {
+      const extension = mimeType === 'image/png' ? 'png' : mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'bin'
+      res.setHeader('Content-Disposition', `attachment; filename="generated-${asset.id}.${extension}"`)
+    } else {
+      res.setHeader('Content-Disposition', 'inline')
+    }
+    const object = asset.sourceKind === 'assistant_generated'
+      ? await openChatGeneratedAssetObject(storageKey, maxBytes)
+      : await openChatAssetObject(storageKey, maxBytes)
+    res.status(200)
+    res.setHeader('Content-Type', mimeType)
+    res.setHeader('Content-Length', String(object.bytes))
     object.stream.once('error', (error) => {
       if (!res.headersSent) next(error)
       else res.destroy(error)
@@ -366,7 +530,7 @@ chatRouter.delete('/conversations/:conversationId/assets/:assetId', async (req, 
       return
     }
     try {
-      await removeChatAssetObject(claim.asset.storageKey)
+      await deleteChatAssetObjects([claim.asset.storageKey, claim.asset.previewStorageKey])
       if (!await completeChatAssetDeletion(client, { assetId: claim.asset.id, claimId: claim.claimId })) {
         throw new Error('聊天图片删除认领已变化')
       }
@@ -413,7 +577,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   let accepted: Awaited<ReturnType<typeof acceptChatTurn>> | undefined
   let ownerId = ''
   let controller: AbortController | undefined
-  let heartbeat: ReturnType<typeof setInterval> | undefined
+  let stopHeartbeat: (() => void) | undefined
   let subscriber: ChatGenerationSubscriber | undefined
   let responseClosed = false
   let partialContent = ''
@@ -423,7 +587,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
   res.once('close', () => {
     responseClosed = true
     if (!accepted) controller?.abort()
-    if (heartbeat) clearInterval(heartbeat)
+    stopHeartbeat?.()
     if (accepted && subscriber) {
       registry.unsubscribe({ ownerId, conversationId: req.params.conversationId, turnId: accepted.turnId }, subscriber)
     }
@@ -461,12 +625,19 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     if (conversation.activeTurnId) {
       throw new ChatConflictError(body.replaceTurnId ? 'chat_replace_conflict' : 'chat_message_in_progress')
     }
+    const activeAction = getActiveChatConversationAction(activeConversationActions, {
+      conversationId: conversation.id,
+      ownerId
+    })
+    if (activeAction) {
+      throw new ChatConflictError(activeAction.kind === 'compacting' ? 'chat_context_compacting' : 'chat_conversation_clearing')
+    }
     preparationConversationId = conversation.id
     preparationClaim = claimActiveChatPreparation(activePreparations, {
       conversationId: preparationConversationId,
       ownerId,
       clientMessageId: body.clientMessageId
-    })
+    }, activeConversationActions)
     if (!preparationClaim) throw new ChatConflictError(body.replaceTurnId ? 'chat_replace_conflict' : 'chat_message_in_progress')
     controller = preparationClaim.controller
     if (responseClosed || req.aborted || res.destroyed) controller.abort()
@@ -484,8 +655,18 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const apiKeySecret = String(apiKey.key)
     const gatewayKey = await validateGatewayApiKeyAsync(apiKeySecret)
     assertChatPreparationActive(preparationClaim)
+    const groupIds = gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? []
+    const imageCount = body.contentBlocks?.filter((block) => block.type === 'input_image').length ?? 0
+    const catalog = await listChatModelCatalog({
+      groupIds,
+      systemAccountId: ownerId,
+      requestedModel: body.model
+    })
+    assertChatPreparationActive(preparationClaim)
+    const modelOption = buildChatModelOptions([body.model], catalog)[0]
+    if (!modelOption) throw new ChatModelCapabilityError('当前模型能力信息不可用，请刷新模型列表')
     const accountSupportedProtocols = await resolveChatSupportedProtocols({
-      groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
+      groupIds,
       model: body.model,
       loadAccounts: (groupId, model, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, ownerId, {
         requestedModel: model,
@@ -496,21 +677,27 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     if (!accountSupportedProtocols.length) {
       throw new ChatModelCapabilityError('当前 API Key 没有可用于该模型的对话路由，请切换模型或检查账户映射')
     }
-    const imageCount = body.contentBlocks?.filter((block) => block.type === 'input_image').length ?? 0
-    const catalog = await listChatModelCatalog({
-      groupIds: gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? [],
-      systemAccountId: ownerId,
-      requestedModel: body.model
-    })
-    assertChatPreparationActive(preparationClaim)
-    const modelOption = buildChatModelOptions([body.model], catalog)[0]
-    if (!modelOption) throw new ChatModelCapabilityError('当前模型能力信息不可用，请刷新模型列表')
     const supportsWebSearch = modelOption.supportedTools.includes('web_search')
-    const protocol = selectChatTransport({
+    const protocol: ChatTransportProtocol = selectChatTransport({
       supportedProtocols: accountSupportedProtocols,
       preferResponses: supportsWebSearch || imageCount > 0
     })
-    const toolsEnabled = protocol === 'responses' && supportsWebSearch
+    const effectiveTools: ChatHostedTool[] = protocol === 'responses'
+      ? [...(supportsWebSearch ? ['web_search' as const] : [])]
+      : []
+    const imageGenerationEnabled = gatewayKey?.system_account_image_generation_enabled === 1
+      && Boolean(runtimeConfig.imageGenerationProvider.endpoint)
+      && await hasChatImageGenerationRoute(groupIds, ownerId)
+    const internalToolRegistry = new ChatInternalToolRegistry({
+      environment: chatToolRuntimeEnvironment(),
+      internalToolsEnabled: runtimeConfig.chat.diagnosticToolEnabled,
+      imageGenerationEnabled
+    })
+    internalToolRegistry.register(createDiagnosticEchoTool())
+    internalToolRegistry.register(createGenerateImageTool())
+    const internalTools = internalToolRegistry.resolve({
+      functionCalling: modelOption.supportedTools.includes('function_calling')
+    })
     if (imageCount > 0 && (!modelOption.inputModalities.includes('image') || protocol !== 'responses')) {
       throw new ChatRequestError('chat_image_not_supported', '当前模型或路由不支持图片输入，请切换模型或移除图片')
     }
@@ -533,11 +720,12 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           conversationId: conversation.id
         })
       : undefined
-    const systemInstructions = buildChatSystemInstructions({ toolsEnabled })
+    const systemInstructions = buildChatSystemInstructions({ effectiveTools, internalToolNames: internalTools.map((tool) => tool.modelName) })
     const fixedBudgetInput = {
       currentUserContent: resolveChatBudgetContent({ protocol, currentContent: body.content, currentBlocks: resolvedInput.blocks }),
       instructions: systemInstructions.text,
-      toolsEnabled,
+      effectiveTools,
+      internalTools,
       imageTokenEstimate: resolvedInput.imageTokenEstimate,
       maxInputTokens: modelRequestOptions.maxInputTokens
     }
@@ -553,7 +741,11 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       effectiveContextLimitTokens: modelRequestOptions.maxInputTokens
     }
     let contextCompacted = false
-    let preparedContext
+    let preparedContext: Awaited<ReturnType<typeof loadChatTransportHistory>> | undefined
+    let estimatedRequestTokens = countChatTextTokens(body.content)
+    let effectiveContextLimitTokens = modelRequestOptions.maxInputTokens
+    let transport: ReturnType<typeof buildChatTransportRequest> | undefined
+    let serializedTransportBody = ''
     try {
       preparedContext = await loadChatTransportHistory({
         client,
@@ -605,8 +797,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         throw new ChatModelContextError('历史图片语义说明仍在生成，请稍后重试', 'image_pending')
       }
     }
-    let estimatedRequestTokens = estimateChatInputTokens({ history: preparedContext.history, ...fixedBudgetInput })
-    const effectiveContextLimitTokens = modelRequestOptions.maxInputTokens
+    estimatedRequestTokens = estimateChatInputTokens({ history: preparedContext.history, ...fixedBudgetInput })
+    effectiveContextLimitTokens = modelRequestOptions.maxInputTokens
     if (effectiveContextLimitTokens && estimatedRequestTokens / effectiveContextLimitTokens >= 0.85) {
       const compacted = await waitForChatPreparation(compactChatContextOnce(compactionInput), preparationClaim)
       assertChatPreparationActive(preparationClaim)
@@ -624,19 +816,20 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
       }
     }
     if (effectiveContextLimitTokens && estimatedRequestTokens > effectiveContextLimitTokens) throw new ChatContextBudgetError()
-    let transport = buildChatTransportRequest({
+    transport = buildChatTransportRequest({
       protocol,
       instructions: systemInstructions.text,
       model: body.model,
       history: preparedContext.history,
       currentContent: body.content,
       currentBlocks: resolvedInput.blocks,
-      toolsEnabled,
+      effectiveTools,
+      internalTools,
       reasoningEffort: modelRequestOptions.reasoningEffort,
       serviceTier: modelRequestOptions.serviceTier,
       promptCacheKey
     })
-    let serializedTransportBody = JSON.stringify(transport.body)
+    serializedTransportBody = JSON.stringify(transport.body)
     if (Buffer.byteLength(serializedTransportBody, 'utf8') > maxInternalChatRequestBytes && !contextCompacted && preparedContext.history.length) {
       const compacted = await waitForChatPreparation(compactChatContextOnce(compactionInput), preparationClaim)
       assertChatPreparationActive(preparationClaim)
@@ -659,7 +852,8 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           history: preparedContext.history,
           currentContent: body.content,
           currentBlocks: resolvedInput.blocks,
-          toolsEnabled,
+          effectiveTools,
+          internalTools,
           reasoningEffort: modelRequestOptions.reasoningEffort,
           serviceTier: modelRequestOptions.serviceTier,
           promptCacheKey
@@ -692,58 +886,155 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
     const runner = new ChatGenerationRunner({
       identity,
       execute: async ({ signal, publish }) => {
+        let failureCode: PublicChatGenerationErrorCode = 'internal_generation_failed'
         try {
           const acceptedContextHead = await getChatContextHead(client, {
             conversationId: conversation.id,
             systemAccountId: ownerId
           })
           if (!acceptedContextHead) throw new Error('聊天上下文状态不存在')
-          const upstream = await fetch(gatewayUrl(transport.path), {
-            method: 'POST',
-            headers: {
-              authorization: `Bearer ${apiKeySecret}`,
-              'content-type': 'application/json',
-              accept: 'text/event-stream',
-              ...(traceId ? { 'x-trace-id': traceId } : {})
-            },
-            body: serializedTransportBody,
-            signal
+          const artifactSink = createChatGeneratedImageArtifactSink({
+            client,
+            systemAccountId: ownerId,
+            conversationId: conversation.id,
+            turnId: accepted!.turnId,
+            messageId: accepted!.assistantMessage.id,
+            retentionDays: runtimeConfig.chat.retentionDays,
+            nextContentOrder: () => runner.snapshotContentBlocks().length
           })
-          if (!upstream.ok || !upstream.body) {
-            const payload = await readChatJsonResponse(upstream, 64 * 1024)
-            throw new Error(upstreamMessage(payload, `模型请求失败（HTTP ${upstream.status}）`))
-          }
-          const result = protocol === 'responses'
-            ? await collectChatResponsesSse(readableStreamChunks(upstream.body), (event) => {
-                if (event.type === 'text_delta') {
-                  partialContent += event.delta
-                  publish('message.delta', { messageId: accepted!.assistantMessage.id, delta: event.delta }, { contentTextDelta: event.delta })
-                } else if (event.type === 'reasoning_delta') {
-                  const existing = contentBlocks.find((block): block is Extract<ChatMessageContentBlock, { type: 'reasoning' }> => block.type === 'reasoning')
-                  if (existing) existing.text += event.delta
-                  else contentBlocks.push({ type: 'reasoning', text: event.delta })
-                  publish('reasoning.delta', { messageId: accepted!.assistantMessage.id, delta: event.delta }, { reasoningTextDelta: event.delta })
-                } else if (event.type === 'tool_started' || event.type === 'tool_updated' || event.type === 'tool_completed') {
-                  projectToolEvent(contentBlocks, event.type, event.item)
-                  publish(event.type.replace('_', '.'), { messageId: accepted!.assistantMessage.id, item: event.item }, { toolEvent: chatGenerationToolEvent(event.type, event.item) })
-                } else if (event.type === 'failed') {
-                  throw new Error(upstreamMessage(event.error, '模型工具调用失败'))
+          const orchestrator = new ChatInternalToolOrchestrator({
+            registry: internalToolRegistry,
+            tools: internalTools,
+            context: {
+              environment: chatToolRuntimeEnvironment(),
+              ownerId,
+              conversationId: conversation.id,
+              turnId: accepted!.turnId,
+              assistantMessageId: accepted!.assistantMessage.id,
+              signal,
+              apiKey: apiKeySecret,
+              gatewayBaseUrl: gatewayUrl(''),
+              traceId,
+              userContent: body.content,
+              defaultImageModel: conversation.defaultImageModel,
+              loadImageEditReferences: (assetIds) => loadChatImageEditReferences(client, {
+                assetIds,
+                systemAccountId: ownerId,
+                conversationId: conversation.id,
+                now: new Date().toISOString()
+              }),
+              artifactSink,
+              imageGeneration: async (imageRequest) => {
+                failureCode = 'image_generation_failed'
+                const generated = await generateChatImage({
+                  gatewayBaseUrl: gatewayUrl(''),
+                  apiKey: apiKeySecret,
+                  model: imageRequest.model,
+                  prompt: imageRequest.prompt,
+                  size: imageRequest.size,
+                  allowLarge: imageRequest.allowLarge,
+                  quality: imageRequest.quality,
+                  outputFormat: imageRequest.outputFormat,
+                  references: imageRequest.references,
+                  signal: imageRequest.signal
+                })
+                if (!generated.mimeType || !generated.width || !generated.height) throw new Error('生成图片缺少有效 MIME 或尺寸')
+                return { ...generated, mimeType: generated.mimeType, width: generated.width, height: generated.height }
+              }
+            },
+            limits: { maxModelRounds: 4, maxToolCalls: 8, maxImageCalls: 2 },
+            publish: (event) => publishApplicationToolEvent(publish, accepted!.assistantMessage.id, event)
+          })
+          const result = await orchestrator.run({
+            protocol,
+            invokeModel: async (request) => {
+              const roundTransport = buildChatTransportRequest({
+                protocol,
+                instructions: systemInstructions.text,
+                model: body.model,
+                history: preparedContext!.history,
+                currentContent: body.content,
+                currentBlocks: resolvedInput.blocks,
+                effectiveTools,
+                internalTools,
+                toolContinuation: request.continuation,
+                reasoningEffort: modelRequestOptions.reasoningEffort,
+                serviceTier: modelRequestOptions.serviceTier,
+                promptCacheKey
+              })
+              const roundBody = JSON.stringify(roundTransport.body)
+              if (Buffer.byteLength(roundBody, 'utf8') > maxInternalChatRequestBytes) {
+                throw new ChatRequestError('chat_request_body_too_large', '工具续答请求体超过安全上限，请减少上下文后重试')
+              }
+              failureCode = 'upstream_http_error'
+              const upstream = await fetch(gatewayUrl(roundTransport.path), {
+                method: 'POST',
+                headers: {
+                  authorization: `Bearer ${apiKeySecret}`,
+                  'content-type': 'application/json',
+                  accept: 'text/event-stream',
+                  ...(traceId ? { 'x-trace-id': traceId } : {})
+                },
+                body: roundBody,
+                signal
+              })
+              if (!upstream.ok || !upstream.body) {
+                const payload = await readChatJsonResponse(upstream, 64 * 1024)
+                throw new Error(upstreamMessage(payload, `模型请求失败（HTTP ${upstream.status}）`))
+              }
+              failureCode = 'upstream_stream_failed'
+              if (protocol === 'responses') {
+                const collected = await collectChatResponsesSse(readableStreamChunks(upstream.body), (event) => {
+                  if (event.type === 'text_delta') {
+                    partialContent += event.delta
+                    publish('message.delta', { messageId: accepted!.assistantMessage.id, delta: event.delta }, { contentTextDelta: event.delta })
+                  } else if (event.type === 'reasoning_delta') {
+                    publish('reasoning.delta', { messageId: accepted!.assistantMessage.id, delta: event.delta }, { reasoningTextDelta: event.delta })
+                  } else if (event.type === 'reasoning_completed') {
+                    publish('reasoning.completed', { messageId: accepted!.assistantMessage.id }, { reasoningCompleted: true })
+                  } else if (event.type === 'tool_started' || event.type === 'tool_updated' || event.type === 'tool_completed') {
+                    if (isApplicationFunctionToolEvent(event.item)) return
+                    projectToolEvent(contentBlocks, event.type, event.item)
+                    publish(event.type.replace('_', '.'), { messageId: accepted!.assistantMessage.id, item: event.item }, { toolEvent: chatGenerationToolEvent(event.type, event.item) })
+                  } else if (event.type === 'failed') {
+                    throw new Error(upstreamMessage(event.error, '模型工具调用失败'))
+                  }
+                }, maxMessageBytes, runtimeConfig.chat.upstreamSseMaxEvents)
+                return {
+                  content: collected.content,
+                  finishReason: collected.toolCalls.length ? 'tool_calls' : 'stop',
+                  continuationItems: collected.continuationItems,
+                  toolCalls: collected.toolCalls,
+                  inputTokens: collected.inputTokens,
+                  outputTokens: collected.outputTokens
                 }
-              }, maxMessageBytes, runtimeConfig.chat.upstreamSseMaxEvents)
-            : await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
+              }
+              const collected = await collectOpenAIChatSse(readableStreamChunks(upstream.body), maxMessageBytes, (delta) => {
                 partialContent += delta
                 publish('message.delta', { messageId: accepted!.assistantMessage.id, delta }, { contentTextDelta: delta })
               }, runtimeConfig.chat.upstreamSseMaxEvents)
-          const finishReason = 'finishReason' in result && typeof result.finishReason === 'string' ? result.finishReason : 'stop'
+              return {
+                content: collected.content,
+                finishReason: collected.finishReason,
+                continuationItems: collected.continuationItems,
+                toolCalls: collected.toolCalls,
+                inputTokens: collected.inputTokens,
+                outputTokens: collected.outputTokens
+              }
+            }
+          })
+          failureCode = 'internal_generation_failed'
+          const finishReason = result.finishReason ?? 'stop'
+          const assistantContent = partialContent || result.content
           if (signal.aborted) throw new ChatPreparationCanceledError()
           await completeChatTurn(client, {
             conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId,
-            assistantContent: result.content, contentBlocks: sanitizeChatContentBlocksForPersistence(contentBlocks), finishReason, traceId: traceId ?? '', now: new Date().toISOString()
+            assistantContent, contentBlocks: terminalizeChatContentBlocksForPersistence(runner.snapshotContentBlocks(), 'completed'), finishReason, traceId: traceId ?? '', now: new Date().toISOString()
           })
           const upstreamUsageAvailable = result.inputTokens !== undefined
           const activeContextTokens = upstreamUsageAvailable
-            ? result.inputTokens! + (result.outputTokens ?? countChatTextTokens(result.content))
-            : estimatedRequestTokens + countChatTextTokens(result.content) + 12
+            ? result.inputTokens! + (result.outputTokens ?? countChatTextTokens(assistantContent))
+            : estimatedRequestTokens + countChatTextTokens(assistantContent) + 12
           await recordChatContextUsage(client, {
             conversationId: conversation.id,
             systemAccountId: ownerId,
@@ -765,7 +1056,7 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               gatewayBaseUrl: gatewayUrl(''),
               model: body.model,
               userContent: body.content,
-              assistantContent: result.content
+              assistantContent
             })
           }
           if (effectiveContextLimitTokens && activeContextTokens / effectiveContextLimitTokens >= 0.7) {
@@ -777,13 +1068,14 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
           return { status: 'completed', data: { messageId: accepted!.assistantMessage.id, finishReason, traceId } }
         } catch (error) {
           const canceled = signal.aborted || error instanceof ChatPreparationCanceledError
-          const persistedContentBlocks = sanitizeChatContentBlocksForPersistence(contentBlocks)
+          const publicError = classifyChatGenerationError(error, failureCode)
           let finalizedStatus: 'completed' | 'failed' | 'canceled' = canceled ? 'canceled' : 'failed'
+          const persistedContentBlocks = terminalizeChatContentBlocksForPersistence(runner.snapshotContentBlocks(), finalizedStatus)
           try {
             if (canceled) {
               await cancelChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, traceId, now: new Date().toISOString() })
             } else {
-              await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: 'gateway_stream_failed', traceId, now: new Date().toISOString() })
+              await failChatTurn(client, { conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted!.turnId, assistantContent: partialContent, contentBlocks: persistedContentBlocks, errorCode: publicError.code, traceId, now: new Date().toISOString() })
             }
           } catch (finalizeError) {
             finalizedStatus = await recoverChatTurnFinalization({
@@ -799,14 +1091,35 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
             ? { status: 'canceled', data: { messageId: accepted!.assistantMessage.id } }
             : finalizedStatus === 'completed'
               ? { status: 'completed', data: { messageId: accepted!.assistantMessage.id } }
-              : { status: 'failed', data: { messageId: accepted!.assistantMessage.id, code: 'gateway_stream_failed', message: error instanceof Error ? error.message : '模型请求失败' } }
+              : { status: 'failed', data: { messageId: accepted!.assistantMessage.id, code: publicError.code, message: publicError.message } }
         }
+      },
+      onUnexpectedError: async (publicError) => {
+        await failChatTurn(client, {
+          conversationId: conversation.id,
+          systemAccountId: ownerId,
+          turnId: accepted!.turnId,
+          assistantContent: partialContent,
+          contentBlocks: terminalizeChatContentBlocksForPersistence(runner.snapshotContentBlocks(), 'failed'),
+          errorCode: publicError.code,
+          traceId,
+          now: new Date().toISOString()
+        })
+      },
+      reportUnexpectedError: (error, stage) => {
+        logger.error(errorLogFields(error, {
+          event: 'chat_generation_runner_unexpected_error',
+          traceId,
+          conversationId: conversation.id,
+          turnId: accepted!.turnId,
+          stage
+        }), 'AI 问答生成 runner 意外异常')
       }
     })
     if (!registry.start(runner)) {
       await failChatTurn(client, {
         conversationId: conversation.id, systemAccountId: ownerId, turnId: accepted.turnId,
-        assistantContent: '', contentBlocks: [], errorCode: 'stream_registry_conflict', traceId, now: new Date().toISOString()
+        assistantContent: '', contentBlocks: [], errorCode: 'internal_generation_failed', traceId, now: new Date().toISOString()
       })
       res.status(409).json({ message: '当前会话生成任务冲突', code: 'chat_stream_conflict' })
       return
@@ -817,11 +1130,19 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
         prepareSseResponse(res)
         writeChatSseEvent(res, 'message.started', { turnId: accepted.turnId, userMessage: accepted.userMessage, assistantMessage: accepted.assistantMessage })
         subscriber = responseSubscriber(res, identity)
-        if (registry.subscribe(identity, subscriber)) heartbeat = startSubscriberHeartbeat(res, identity, subscriber)
+        if (registry.subscribe(identity, subscriber)) {
+          stopHeartbeat = startChatSseHeartbeat({
+            response: res,
+            onUnwritable: () => {
+              if (subscriber) registry.unsubscribe(identity, subscriber)
+              if (!res.writableEnded) res.end()
+            }
+          })
+        }
       }
       await runner.completion
     } finally {
-      if (heartbeat) clearInterval(heartbeat)
+      stopHeartbeat?.()
       if (subscriber) registry.unsubscribe(identity, subscriber)
       if (!res.writableEnded && !responseClosed) res.end()
     }
@@ -964,15 +1285,16 @@ chatRouter.get('/conversations/:conversationId/streams/:turnId', async (req, res
       if (!res.writableEnded) res.end()
       return
     }
-    const heartbeat = startSubscriberHeartbeat(res, { ownerId: auth.systemAccountId, conversationId: conversation.id, turnId: req.params.turnId }, subscriber)
     let cleanedUp = false
+    let stopHeartbeat: (() => void) | undefined
     const cleanup = (): void => {
       if (cleanedUp) return
       cleanedUp = true
-      clearInterval(heartbeat)
+      stopHeartbeat?.()
       registry.unsubscribe(identity, subscriber)
       if (!res.writableEnded) res.end()
     }
+    stopHeartbeat = startChatSseHeartbeat({ response: res, onUnwritable: cleanup })
     res.once('close', cleanup)
     void runner.completion.finally(cleanup)
   } catch (error) { handleChatRouteError(error, res, next) }
@@ -1011,6 +1333,45 @@ async function requireOwnedApiKey(apiKeyId: string | undefined, ownerId: string)
   const key = await findChatApiKeySecretAsync(apiKeyId, ownerId)
   if (!key?.key || key.status !== 'active') throw new Error('API Key 不存在或不可用')
   return key
+}
+
+async function resolveChatCompactionInput(
+  client: Awaited<ReturnType<typeof getChatDatabaseClient>>,
+  conversation: Awaited<ReturnType<typeof getChatConversation>> extends infer T ? Exclude<T, undefined> : never,
+  ownerId: string,
+  model: string
+) {
+  const apiKey = await requireOwnedApiKey(conversation.apiKeyId, ownerId)
+  const gatewayKey = await validateGatewayApiKeyAsync(String(apiKey.key))
+  const groupIds = gatewayKey?.group_bindings?.map((binding) => binding.group_id) ?? []
+  const catalog = await listChatModelCatalog({ groupIds, systemAccountId: ownerId, requestedModel: model })
+  const modelOption = buildChatModelOptions([model], catalog)[0]
+  if (!modelOption || modelOption.supportedApiProtocols.includes('images')) {
+    throw new ChatModelCapabilityError('当前模型不支持上下文压缩，请切换对话模型')
+  }
+  const supportedProtocols = await resolveChatSupportedProtocols({
+    groupIds,
+    model,
+    loadAccounts: (groupId, requestedModel, endpointFamily) => listCachedOpenAIAccountsForGroupAsync(groupId, ownerId, {
+      requestedModel,
+      requestedEndpointFamily: endpointFamily
+    })
+  })
+  if (!supportedProtocols.length) throw new ChatModelCapabilityError('当前 API Key 没有可用于该模型的对话路由')
+  const protocol = selectChatTransport({
+    supportedProtocols,
+    preferResponses: modelOption.supportedTools.includes('web_search')
+  })
+  return {
+    client,
+    conversationId: conversation.id,
+    systemAccountId: ownerId,
+    apiKeySecret: String(apiKey.key),
+    gatewayBaseUrl: gatewayUrl(''),
+    model,
+    protocol,
+    effectiveContextLimitTokens: resolveChatModelRequestOptions(modelOption, {}).maxInputTokens
+  }
 }
 
 async function recoverChatTurnFinalization(input: {
@@ -1068,6 +1429,10 @@ function handleChatRouteError(error: unknown, res: ExpressResponse, next: NextFu
     res.status(409).json({ message: error.message, code: error.code })
     return
   }
+  if (error instanceof ChatModelCapabilityError) {
+    res.status(422).json({ message: error.message, code: 'chat_model_capability_unavailable' })
+    return
+  }
   next(error)
 }
 
@@ -1110,6 +1475,12 @@ async function loadChatModelListsAsync(systemAccountId: string, providerCodes: r
 }
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }
+async function hasChatImageGenerationRoute(groupIds: readonly string[], systemAccountId: string): Promise<boolean> {
+  const accountLists = await Promise.all([...new Set(groupIds.filter(Boolean))].map((groupId) => (
+    listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId, { requestedModel: chatImageGenerationGatewayModel })
+  )))
+  return accountLists.some((accounts) => accounts.some((account) => isChatImageGenerationAccount(account)))
+}
 async function listChatModelCatalog(input: { groupIds: readonly string[]; systemAccountId: string; requestedModel?: string }): Promise<ProviderModelCatalogItem[]> {
   return (await loadChatModelCatalogSnapshot(input)).catalog
 }
@@ -1190,6 +1561,13 @@ function textQuery(value: unknown): string | undefined { const raw = Array.isArr
 function optionalIntegerQuery(value: unknown): number | undefined { const text = textQuery(value); if (!text) return undefined; const result = Number(text); return Number.isInteger(result) && result > 0 ? result : undefined }
 function optionalBooleanQuery(value: unknown): boolean | undefined { const text = textQuery(value)?.toLowerCase(); if (text === 'true' || text === '1') return true; if (text === 'false' || text === '0') return false; return undefined }
 function integerQuery(value: unknown, fallback: number, min: number, max: number): number { const result = optionalIntegerQuery(value); return result === undefined ? fallback : Math.max(min, Math.min(max, result)) }
+function requestEtagMatches(value: string | string[] | undefined, etag: string): boolean {
+  const header = Array.isArray(value) ? value.join(',') : value
+  return typeof header === 'string' && header.split(',').some((candidate) => {
+    const normalized = candidate.trim()
+    return normalized === '*' || normalized === etag || normalized === `W/${etag}`
+  })
+}
 function prepareSseResponse(res: import('express').Response): void {
   res.status(200)
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
@@ -1205,35 +1583,84 @@ function responseSubscriber(res: import('express').Response, identity: { ownerId
   })
   return subscriber
 }
-function startSubscriberHeartbeat(res: import('express').Response, identity: { ownerId: string; conversationId: string; turnId: string }, subscriber: ChatGenerationSubscriber): ReturnType<typeof setInterval> {
-  const heartbeat = setInterval(() => {
-    let writable = !res.writableEnded && !res.destroyed
-    try { if (writable) writable = res.write(': heartbeat\n\n') }
-    catch { writable = false }
-    if (!writable) {
-      clearInterval(heartbeat)
-      registry.unsubscribe(identity, subscriber)
-      if (!res.writableEnded) res.end()
-    }
-  }, 15_000)
-  heartbeat.unref()
-  return heartbeat
-}
 function chatGenerationToolEvent(eventType: 'tool_started' | 'tool_updated' | 'tool_completed', item: Record<string, unknown>): { id: string; toolType: string; status: 'started' | 'updated' | 'completed' | 'failed'; item?: Record<string, unknown> } {
   return {
-    id: String(item.id ?? item.call_id ?? 'tool'),
+    id: String(item.id ?? item.callId ?? item.call_id ?? 'tool'),
     toolType: String(item.type ?? 'tool'),
     status: eventType === 'tool_started' ? 'started' : eventType === 'tool_updated' ? 'updated' : 'completed',
     item
   }
 }
-async function* readableStreamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> { const reader = stream.getReader(); try { while (true) { const next = await reader.read(); if (next.done) return; yield next.value } } finally { reader.releaseLock() } }
+function chatToolRuntimeEnvironment(): ChatToolRuntimeEnvironment {
+  if (process.env.NODE_ENV === 'production') return 'production'
+  if (process.env.NODE_ENV === 'test') return 'test'
+  return 'development'
+}
+function isApplicationFunctionToolEvent(item: Record<string, unknown>): boolean {
+  const type = String(item.type ?? '')
+  return type === 'function_call' || type.startsWith('response.function_call_arguments.')
+}
+function publishApplicationToolEvent(
+  publish: ChatGenerationRunner['publish'],
+  messageId: string,
+  event: ChatToolExecutionEvent
+): void {
+  const item = {
+    type: event.toolName,
+    executionOwner: 'application',
+    ...(event.publicResult ?? {}),
+    ...(event.reused ? { reused: true } : {}),
+    ...(event.errorCode ? { errorCode: event.errorCode } : {})
+  }
+  const assetId = typeof event.publicResult?.assetId === 'string' ? event.publicResult.assetId : undefined
+  const projection = {
+    toolEvent: {
+      id: event.callId,
+      toolType: event.toolName,
+      status: event.status,
+      item
+    },
+    ...(event.status === 'completed' && event.toolName === 'generate_image' && assetId
+      ? {
+          imageEvent: {
+            id: event.callId,
+            status: 'completed' as const,
+            item: {
+              assetId,
+              mimeType: event.publicResult?.mimeType,
+              width: event.publicResult?.width,
+              height: event.publicResult?.height,
+              revisedPrompt: event.publicResult?.revisedPrompt
+            }
+          }
+        }
+      : {})
+  }
+  publish(`tool.${event.status}`, { messageId, item: { callId: event.callId, ...item } }, projection)
+}
+async function* readableStreamChunks(stream: ReadableStream<Uint8Array>): AsyncGenerator<Uint8Array> {
+  const reader = stream.getReader()
+  let completed = false
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) {
+        completed = true
+        return
+      }
+      yield next.value
+    }
+  } finally {
+    if (!completed) await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+}
 function upstreamMessage(payload: unknown, fallback: string): string { if (payload && typeof payload === 'object') { const item = payload as { message?: unknown; error?: { message?: unknown } }; if (typeof item.error?.message === 'string') return item.error.message; if (typeof item.message === 'string') return item.message } return fallback }
 
 function projectToolEvent(blocks: ChatMessageContentBlock[], eventType: 'tool_started' | 'tool_updated' | 'tool_completed', item: Record<string, unknown>): void {
-  const id = String(item.id ?? item.call_id ?? `tool_${blocks.filter((block) => block.type === 'tool_call').length + 1}`)
+  const id = String(item.id ?? item.callId ?? item.call_id ?? `tool_${blocks.filter((block) => block.type === 'tool_call').length + 1}`)
   const status = eventType === 'tool_started' ? 'started' : eventType === 'tool_updated' ? 'updated' : 'completed'
-  const existing = blocks.find((block): block is Extract<ChatMessageContentBlock, { type: 'tool_call' }> => block.type === 'tool_call' && block.id === id)
+  const existing = blocks.find((block): block is Extract<ChatMessageContentBlock, { type: 'tool_call' }> => block.type === 'tool_call' && (block.id === id || block.callId === id))
   if (existing) { existing.status = status; existing.toolType = String(item.type ?? existing.toolType); existing.item = item; return }
-  blocks.push({ type: 'tool_call', id, toolType: String(item.type ?? 'tool'), status, item })
+  blocks.push({ type: 'tool_call', blockId: `assistant_block_${blocks.length + 1}`, order: blocks.length + 1, id, callId: id, toolType: String(item.type ?? 'tool'), status, item })
 }

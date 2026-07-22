@@ -118,18 +118,34 @@ assert.equal(calculateChatCacheBudget(undefined), 64 * 1024 ** 2)
 
 const sanitized = cloneVisibleChatMessage({
   ...message(1, 'visible'), apiKey: 'secret', token: 'secret', password: 'secret', proxy: 'secret', upstreamBody: { hidden: true }, checkpoint: 'secret',
+  eventVersion: 12,
+  renderRevision: 8,
   contentBlocks: [
     { type: 'input_text', text: 'visible', order: 0, metadata: { safe: true, token: 'secret' } },
     { type: 'input_image', assetId: 'asset_1', order: 1, dataUrl: 'data:image/png;base64,AAAA', hiddenDescription: 'secret' },
-    { type: 'reasoning', text: 'thinking', extra: 'drop' },
-    { type: 'tool_call', id: 'tool_1', toolType: 'search', status: 'completed', item: { query: 'safe', password: 'secret' } }
-  ]
+    { type: 'output_text', blockId: 'block_text', order: 2, text: '先给结论' },
+    { type: 'reasoning', blockId: 'block_reasoning', order: 3, text: 'thinking', status: 'completed', extra: 'drop' },
+    { type: 'tool_call', blockId: 'block_tool', order: 4, callId: 'tool_1', toolType: 'search', status: 'canceled', item: { query: 'safe', password: 'secret' } },
+    { type: 'output_image', blockId: 'block_image', order: 5, assetId: 'asset_generated', status: 'completed', mimeType: 'image/png', width: 1024, height: 1024, revisedPrompt: '绿色圆形' }
+  ],
+  toolEvents: [{ id: 'tool_legacy', type: 'search', status: 'canceled', item: { token: 'secret' } }]
 } as unknown as ChatMessage)
 assert.ok(sanitized)
 assert.equal(JSON.stringify(sanitized).includes('secret'), false)
 assert.equal(JSON.stringify(sanitized).includes('base64'), false)
 assert.equal((sanitized!.contentBlocks?.[1] as { assetId?: string }).assetId, 'asset_1')
-assert.equal('item' in (sanitized!.contentBlocks?.[3] ?? {}), false, 'tool_call 原始 item 不得进入展示缓存')
+assert.deepEqual(sanitized!.contentBlocks?.map((block) => block.type), ['input_text', 'input_image', 'output_text', 'reasoning', 'tool_call', 'output_image'])
+assert.deepEqual(sanitized!.contentBlocks?.slice(2).map((block) => ({ blockId: 'blockId' in block ? block.blockId : undefined, order: block.order })), [
+  { blockId: 'block_text', order: 2 },
+  { blockId: 'block_reasoning', order: 3 },
+  { blockId: 'block_tool', order: 4 },
+  { blockId: 'block_image', order: 5 }
+])
+assert.equal((sanitized!.contentBlocks?.[4] as { status?: string }).status, 'canceled')
+assert.equal('item' in (sanitized!.contentBlocks?.[4] ?? {}), false, 'tool_call 原始 item 不得进入展示缓存')
+assert.deepEqual(sanitized!.contentBlocks?.[5], { type: 'output_image', blockId: 'block_image', order: 5, assetId: 'asset_generated', status: 'completed', mimeType: 'image/png', width: 1024, height: 1024, revisedPrompt: '绿色圆形' })
+assert.deepEqual({ eventVersion: sanitized!.eventVersion, renderRevision: sanitized!.renderRevision }, { eventVersion: 12, renderRevision: 8 })
+assert.deepEqual(sanitized!.toolEvents, [{ id: 'tool_legacy', type: 'search', status: 'canceled' }])
 const deepToolPayload = cloneVisibleChatMessage({
   ...message(2, 'safe'),
   contentBlocks: [{ type: 'tool_call', id: 'tool_deep', toolType: 'search', status: 'completed', item: { query: 'safe', nested: { a: { b: { c: { d: { e: { password: 'deep-secret', raw: 'data:image/png;base64,AAAA' } } } } } } } }],
@@ -175,6 +191,18 @@ const staleRevision = await casCache.commitSyncSnapshot('A', { conversationId: '
 assert.deepEqual(staleRevision.value, { committed: false }, '低 revision sync snapshot 必须整次丢弃')
 assert.equal((await casCache.readConversation('A', 'c1')).value?.messages[0]?.contentText, 'revision-5', '低 revision 不得回退消息正文')
 assert.equal((await casCache.readConversation('A', 'c1')).value?.runningTurn?.turnId, 'sync-turn', '低 revision 不得清除较新 running turn')
+await casCache.putMessages('A', 'c1', [{
+  ...message(2, '图片过程'),
+  eventVersion: 12,
+  renderRevision: 4,
+  contentBlocks: [
+    { type: 'reasoning', blockId: 'reasoning_1', order: 1, text: '先思考', status: 'completed' },
+    { type: 'output_image', blockId: 'image_1', order: 2, assetId: 'asset_generated', status: 'completed', mimeType: 'image/png', width: 512, height: 512 }
+  ]
+}])
+const restoredOrdered = (await casCache.readConversation('A', 'c1')).value?.messages.find((item) => item.sequenceNo === 2)
+assert.deepEqual(restoredOrdered?.contentBlocks?.map((block) => block.type), ['reasoning', 'output_image'], '缓存往返必须保留有序过程和生成图片块')
+assert.deepEqual({ eventVersion: restoredOrdered?.eventVersion, renderRevision: restoredOrdered?.renderRevision }, { eventVersion: 12, renderRevision: 4 }, '缓存往返必须保留事件版本和渲染版本')
 const payloadAdapter = new MemoryAdapter()
 const payloadCache = new ChatLocalCache({ adapter: payloadAdapter })
 assert.equal((await payloadCache.putHead('A', { conversationId: 'bad', messageRevision: 1, title: 'data:text/plain;base64,c2VjcmV0' })).ok, false)
@@ -261,3 +289,8 @@ assert.doesNotMatch(source, /getAll\(\s*\)/, '生产 IndexedDB 读取必须带 k
 assert.doesNotMatch(source, /transaction\.onerror\s*=/, '事务只能由 complete/abort 终结，request error 应 abort 后等待事务终态')
 assert.match(source, /request\.transaction\?\.abort\(\)/, 'request error 必须主动 abort 事务')
 assert.match(source, /openCursor\([\s\S]{0,160}'prev'/, '会话消息必须从尾部使用 prev cursor 有界读取')
+
+const browserRunnerSource = readFileSync(new URL('./chat-local-cache-indexeddb-browser-runner.ts', import.meta.url), 'utf8')
+assert.match(browserRunnerSource, /--disable-crash-reporter/, '原生浏览器回归必须禁用 Crashpad，避免指标文件延迟释放')
+assert.match(browserRunnerSource, /method:\s*'Browser\.close'/, '原生浏览器回归必须优先通过 CDP 优雅关闭 Chrome')
+assert.match(browserRunnerSource, /await waitForProcessClose\(browser/, '删除临时 profile 前必须等待 Chrome 子进程 close')

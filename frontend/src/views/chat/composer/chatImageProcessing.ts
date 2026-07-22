@@ -1,8 +1,11 @@
 import Compressor from 'compressorjs'
 
-export const chatImageUploadMaxEdge = 1024
-export const chatImageUploadJpegQuality = 0.85
-export const chatImageUploadMaxBytes = 1024 * 1024
+export interface ChatImageUploadPolicy {
+  mimeType: 'image/webp'
+  maxEdge: number
+  quality: number
+  maxBytes: number
+}
 
 export interface ChatDecodedImage {
   width: number
@@ -13,18 +16,19 @@ export interface ChatDecodedImage {
 
 export interface ChatImageProcessingRuntime {
   decode: (file: File) => Promise<ChatDecodedImage>
-  encodeJpeg: (
+  encodeWebp: (
     image: ChatDecodedImage,
     size: { width: number; height: number },
     quality: number
   ) => Promise<Blob>
 }
 
-export function resolveChatImageUploadSize(width: number, height: number): { width: number; height: number } {
+export function resolveChatImageUploadSize(width: number, height: number, maxEdge: number): { width: number; height: number } {
   if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
     throw new Error('图片尺寸无效')
   }
-  const scale = Math.min(1, chatImageUploadMaxEdge / Math.max(width, height))
+  if (!Number.isFinite(maxEdge) || maxEdge <= 0) throw new Error('图片策略最大边无效')
+  const scale = Math.min(1, maxEdge / Math.max(width, height))
   return {
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale))
@@ -33,51 +37,59 @@ export function resolveChatImageUploadSize(width: number, height: number): { wid
 
 export async function prepareChatImageForUpload(
   file: File,
+  policy: ChatImageUploadPolicy,
   runtime?: ChatImageProcessingRuntime
 ): Promise<File> {
+  const quality = normalizedQuality(policy.quality)
   let blob: Blob
   if (runtime) {
     const decoded = await runtime.decode(file)
     try {
-      blob = await runtime.encodeJpeg(decoded, resolveChatImageUploadSize(decoded.width, decoded.height), chatImageUploadJpegQuality)
+      blob = await runtime.encodeWebp(decoded, resolveChatImageUploadSize(decoded.width, decoded.height, policy.maxEdge), quality)
     } finally {
       decoded.close?.()
     }
   } else {
-    blob = await compressWithCompressorJs(file)
+    blob = await compressWithCompressorJs(file, policy, quality)
   }
-  if (blob.type !== 'image/jpeg' || blob.size <= 0) throw new Error('图片压缩失败')
-  if (blob.size > chatImageUploadMaxBytes) {
-    throw new Error('图片压缩后仍超过 1 MiB，请裁剪图片后重试')
+  if (blob.type !== policy.mimeType || blob.size <= 0) throw new Error('图片压缩失败，当前浏览器可能不支持 WebP 编码')
+  if (blob.size > policy.maxBytes) {
+    throw new Error(`图片压缩后仍超过 ${formatBytes(policy.maxBytes)}，请裁剪图片后重试`)
   }
-  return new File([blob], jpegFilename(file.name), {
-    type: 'image/jpeg',
+  return new File([blob], webpFilename(file.name), {
+    type: policy.mimeType,
     lastModified: file.lastModified
   })
 }
 
-function compressWithCompressorJs(file: File): Promise<Blob> {
+function compressWithCompressorJs(file: File, policy: ChatImageUploadPolicy, quality: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     new Compressor(file, {
       strict: false,
       checkOrientation: true,
       retainExif: false,
-      maxWidth: chatImageUploadMaxEdge,
-      maxHeight: chatImageUploadMaxEdge,
-      mimeType: 'image/jpeg',
-      quality: chatImageUploadJpegQuality,
+      maxWidth: policy.maxEdge,
+      maxHeight: policy.maxEdge,
+      mimeType: policy.mimeType,
+      quality,
       convertSize: 0,
-      beforeDraw(context, canvas) {
-        context.fillStyle = '#ffffff'
-        context.fillRect(0, 0, canvas.width, canvas.height)
-      },
       success: resolve,
       error: reject
     })
   })
 }
 
-function jpegFilename(filename: string): string {
+function webpFilename(filename: string): string {
   const base = filename.trim().replace(/\.[^.]+$/, '') || '图片'
-  return `${base}.jpg`
+  return `${base}.webp`
+}
+
+function normalizedQuality(value: number): number {
+  if (!Number.isFinite(value) || value <= 0 || value > 100) throw new Error('图片策略质量无效')
+  return value / 100
+}
+
+function formatBytes(value: number): string {
+  if (value === 1024 * 1024) return '1 MiB'
+  return `${Math.ceil(value / 1024)} KiB`
 }

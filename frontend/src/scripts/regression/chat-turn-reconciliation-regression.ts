@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict'
 
 import * as reconciliationModule from '../../views/chat/chatTurnReconciliation'
-import { applyChatReconciliationIfActive, isRetryableChatSubmissionLookupError, reconcileChatSubmission, type ChatSubmissionReconciliation } from '../../views/chat/chatTurnReconciliation'
+import { applyChatReconciliationIfActive, isRetryableChatSubmissionLookupError, reconcileChatSubmission, shouldAutomaticallyRetryPendingConfirmation, type ChatSubmissionReconciliation } from '../../views/chat/chatTurnReconciliation'
 import type { ChatPendingSubmission } from '../../views/chat/chatPendingSubmissionStorage'
 import type { ChatMessage, ChatSubmissionStatus } from '../../types/domain/chat'
+
+assert.equal(shouldAutomaticallyRetryPendingConfirmation(7), true)
+assert.equal(shouldAutomaticallyRetryPendingConfirmation(8), false, '待确认后台轮询必须有总上限，耗尽后只保留手动重新确认')
 
 function pair(status: ChatMessage['status'], clientMessageId = 'client_1', turnId = 'turn_1'): ChatMessage[] {
   return [

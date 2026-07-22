@@ -64,6 +64,34 @@ const startInput: ChatGenerationRuntimeStartInput = {
   systemAccountId: 'account', conversationId: 'conversation', clientMessageId: 'client', content: 'hello', model: 'model'
 }
 
+const earlyPostGate = deferred()
+let earlyPostSignal: AbortSignal | undefined
+const earlyStopCalls: Array<{ conversationId: string; target: { clientMessageId: string; turnId?: string } }> = []
+const earlyStopRuntime = new ChatGenerationRuntime({
+  streamMessage: async (input) => {
+    earlyPostSignal = input.signal
+    await earlyPostGate.promise
+  },
+  attachStream: async () => undefined,
+  stop: async (conversationId, target) => {
+    earlyStopCalls.push({ conversationId, target })
+    throw new ChatStreamHttpError(404, 'chat_generation_not_found', 'preparation 尚未建立')
+  },
+  schedule: () => undefined,
+  cancelSchedule: () => undefined
+})
+earlyStopRuntime.activateAccount('account')
+earlyStopRuntime.start({ ...startInput, conversationId: 'early-stop', clientMessageId: 'client-early-stop' })
+await earlyStopRuntime.stop('account', 'early-stop', { clientMessageId: 'client-early-stop' })
+assert.equal(earlyPostSignal?.aborted, true, 'turnId 尚未返回时，停止必须先 abort 正在提交的本地 POST')
+assert.deepEqual(earlyStopCalls, [{
+  conversationId: 'early-stop',
+  target: { clientMessageId: 'client-early-stop' }
+}], 'preparing 停止只按 clientMessageId 收口，不能等待 turnId 后才允许停止')
+assert.equal(earlyStopRuntime.get('account', 'early-stop')?.status, 'canceled')
+earlyPostGate.resolve()
+earlyStopRuntime.close()
+
 const notifications: string[] = []
 let badSubscriberCalls = 0
 runtime.subscribe('account', 'conversation', (turn) => {

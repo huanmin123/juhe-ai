@@ -43,6 +43,7 @@ import {
   isEffectiveOpenAIStreamRequest
 } from '../../../gateway/upstream/request.js'
 import { requestModel } from '../../../gateway/request/metadata.js'
+import { isGatewayUpstreamModelsProbe } from '../../../gateway/request/upstream-models-probe.js'
 import {
   anthropicMessagesChatBridgeRequiredEndpointMode,
   buildAnthropicMessagesChatBridgeBody,
@@ -102,6 +103,11 @@ export const gptProviderDriver: ProviderDriver = {
     return await prepareGptAccountBeforeDispatch(account, context.signal)
   },
   buildUpstreamUrls(account: DispatchAccountSecret, req: Request): string[] {
+    if (isGatewayUpstreamModelsProbe(req)) {
+      return account.type === 'api_key'
+        ? buildUpstreamUrls(account.baseUrl, req.originalUrl)
+        : []
+    }
     const modelMapping = resolveOpenAIRequestModelMapping(req, account)
     if (isGatewayProtocolNativeRequest(req, ANTHROPIC_PROTOCOL_CODE) && !(account.type !== 'oauth' && isAnthropicMessagesToChatCompletionsModelMapping(modelMapping))) {
       return []

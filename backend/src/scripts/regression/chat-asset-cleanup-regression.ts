@@ -69,6 +69,7 @@ try {
     id: 'chat_asset_dddddddddddddddddddddddddddddddd',
     systemAccountId: quotaOwnerId,
     conversationId: quotaConversationId,
+    sourceKind: 'user_upload',
     originalFilename: 'quota.png',
     originalMimeType: 'image/png',
     originalBytes: 16,
@@ -89,6 +90,13 @@ try {
     conversationId, systemAccountId: ownerId, turnId: committedTurn.turnId,
     assistantContent: '', traceId: 'trace_asset_retention', now: '2026-07-01T00:11:00.000Z'
   })
+  const clearNow = '2026-07-01T00:12:00.000Z'
+  assert.ok(await chatRepository.clearChatConversation(client, { conversationId, systemAccountId: ownerId, now: clearNow }))
+  assert.equal((await assetRepository.getChatAsset(client, { assetId: committed.id, systemAccountId: ownerId, conversationId }))?.expiresAt, clearNow, '清空会话必须让已绑定资产立即进入过期队列')
+  assert.equal(await exists(committed.storageKey!), true, '清空请求不得直接删除对象文件')
+  const clearedAssetCleanup = await cleanupExpiredChatAssets({ client, now: clearNow, limit: 10 })
+  assert.deepEqual([clearedAssetCleanup.claimedAssets, clearedAssetCleanup.deletedAssets, clearedAssetCleanup.failedAssets], [1, 1, 0])
+  assert.equal(await exists(committed.storageKey!), false, '后台清理应收口清空会话的过期资产')
 
   async function createReadyAsset(id: string, storageKey: string, bytes: Buffer) {
     const sha256 = createHash('sha256').update(bytes).digest('hex')
@@ -96,6 +104,7 @@ try {
       id,
       systemAccountId: ownerId,
       conversationId,
+      sourceKind: 'user_upload',
       originalFilename: `${id}.png`,
       originalMimeType: 'image/png',
       originalBytes: bytes.length,

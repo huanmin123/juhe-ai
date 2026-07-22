@@ -2,10 +2,13 @@ import assert from 'node:assert/strict'
 
 import {
   beginLatestTurnEdit,
+  beginLatestTurnRetry,
   isDefinitiveChatHttpRejection,
   isLatestEditableUserMessage,
   resolveChatReconciliationNotice,
-  resolveChatSubmitFailure
+  resolveChatSubmitFailure,
+  removeInvalidatedGeneratedAssetsFromDraft,
+  restoreChatMessagesAfterRejectedReplacement
 } from '../../views/chat/chatTurnEditing'
 import type { ChatMessage } from '../../types/domain/chat'
 
@@ -55,6 +58,65 @@ assert.deepEqual(beginLatestTurnEdit(messages, latestUser.id), {
 })
 assert.equal(isLatestEditableUserMessage([latestUser, message({ ...latestAssistant, status: 'failed' })], latestUser.id), true, '最近失败轮次必须允许显式编辑并重新生成')
 assert.equal(isLatestEditableUserMessage([latestUser, message({ ...latestAssistant, status: 'canceled' })], latestUser.id), true, '最近停止轮次必须允许显式编辑并重新生成')
+assert.deepEqual(beginLatestTurnRetry([latestUser, message({ ...latestAssistant, status: 'failed' })]), {
+  conversationId: 'conv_1', turnId: 'turn_latest', userMessageId: 'user_latest', assistantMessageId: 'assistant_latest',
+  content: '原始 **Markdown**', contentBlocks: [{ type: 'input_text', text: '原始 ' }, { type: 'input_text', text: '**Markdown**' }],
+  assistantStatus: 'failed', model: 'mock-model', replaceTurnId: 'turn_latest'
+}, '最近失败尾轮必须返回可原位替换的完整请求')
+const optimisticClientMessageId = 'client_not_accepted'
+const optimisticTurnId = `optimistic-turn:${optimisticClientMessageId}`
+const optimisticFailedRetry = beginLatestTurnRetry([
+  message({ id: `optimistic-user:${optimisticClientMessageId}`, turnId: optimisticTurnId, sequenceNo: 0, role: 'user', clientMessageId: optimisticClientMessageId }),
+  message({ id: `optimistic-assistant:${optimisticClientMessageId}`, turnId: optimisticTurnId, sequenceNo: 0, role: 'assistant', clientMessageId: optimisticClientMessageId, status: 'failed', errorMessage: '发送请求未被服务端接受' })
+])
+assert.deepEqual(optimisticFailedRetry, {
+  conversationId: 'conv_1', turnId: optimisticTurnId,
+  userMessageId: `optimistic-user:${optimisticClientMessageId}`, assistantMessageId: `optimistic-assistant:${optimisticClientMessageId}`,
+  content: '原始 **Markdown**', contentBlocks: [{ type: 'input_text', text: '原始 **Markdown**' }],
+  assistantStatus: 'failed', model: 'mock-model'
+}, '未被服务端接受的乐观失败轮次必须提供新提交重试，且不能伪造 replaceTurnId')
+assert.equal(beginLatestTurnRetry([olderUser, message({ ...olderAssistant, status: 'failed' }), latestUser, latestAssistant]), undefined, '旧失败轮次不得出现直接重试候选')
+assert.equal(beginLatestTurnRetry([latestUser, latestAssistant]), undefined, '已完成尾轮不得出现重试候选')
+
+const rejectedReplacement = restoreChatMessagesAfterRejectedReplacement({
+  messages: [
+    olderUser,
+    olderAssistant,
+    message({ id: 'optimistic_user', turnId: 'optimistic-turn:retry_client', sequenceNo: 0, role: 'user', clientMessageId: 'retry_client' }),
+    message({ id: 'optimistic_assistant', turnId: 'optimistic-turn:retry_client', sequenceNo: 0, role: 'assistant', clientMessageId: 'retry_client', status: 'streaming' })
+  ],
+  clientMessageId: 'retry_client',
+  originalMessages: [latestUser, message({ ...latestAssistant, status: 'failed' })]
+})
+assert.deepEqual(rejectedReplacement.map((item) => item.id), ['user_old', 'assistant_old', 'user_latest', 'assistant_latest'], '替换在服务端接受前失败时必须移除乐观轮次并恢复原失败尾轮')
+assert.equal(beginLatestTurnRetry(rejectedReplacement)?.userMessageId, 'user_latest', '回滚后必须继续提供原失败尾轮重试入口')
+
+const displacedDraft = {
+  type: 'doc',
+  content: [{
+    type: 'paragraph',
+    content: [
+      { type: 'text', text: '继续处理' },
+      { type: 'chatImageAttachment', attrs: { localId: 'generated-old', assetId: 'generated_old' } },
+      { type: 'chatImageAttachment', attrs: { localId: 'generated-retained', assetId: 'generated_retained' } },
+      { type: 'chatImageAttachment', attrs: { localId: 'uploaded-draft', assetId: 'uploaded_draft' } }
+    ]
+  }]
+}
+const prunedDraft = removeInvalidatedGeneratedAssetsFromDraft({
+  snapshot: displacedDraft,
+  replacedAssistantBlocks: [
+    { type: 'output_image', blockId: 'image-old', order: 0, assetId: 'generated_old', status: 'completed' },
+    { type: 'output_image', blockId: 'image-retained', order: 1, assetId: 'generated_retained', status: 'completed' }
+  ],
+  submittedBlocks: [{ type: 'input_image', assetId: 'generated_retained' }]
+})
+assert.equal(prunedDraft.removedCount, 1, '替换成功后只能移除来源回答已删除且未随新消息保留的生成图片')
+assert.deepEqual(
+  prunedDraft.snapshot.content?.[0]?.content?.map((node) => node.attrs?.assetId ?? node.text),
+  ['继续处理', 'generated_retained', 'uploaded_draft'],
+  '仍被新用户消息引用的生成图和普通草稿上传必须保留'
+)
 
 const imageEdit = beginLatestTurnEdit([
   message({

@@ -31,7 +31,7 @@ export function projectChatMessageProcess(message: ChatMessage): { reasoningText
     .join('\n')
   const persistedTools = (message.contentBlocks ?? [])
     .filter((block): block is Extract<NonNullable<ChatMessage['contentBlocks']>[number], { type: 'tool_call' }> => block.type === 'tool_call')
-    .map((block) => ({ id: block.id, type: block.toolType, status: block.status, item: block.item }))
+    .map((block) => ({ id: block.callId ?? block.id ?? block.blockId ?? 'tool', type: block.toolType, status: block.status ?? 'started', item: block.item }))
   const rawTools = message.toolEvents?.length ? message.toolEvents : persistedTools
   return { reasoningText, toolGroups: groupToolEvents(rawTools) }
 }
@@ -215,12 +215,13 @@ function resolveGroupStatus(statuses: ChatToolStatus[]): ChatToolStatus {
   if (statuses.includes('failed')) return 'failed'
   if (statuses.includes('updated')) return 'updated'
   if (statuses.includes('started')) return 'started'
+  if (statuses.includes('canceled')) return 'canceled'
   return 'completed'
 }
 
 function mergeLifecycleStatus(previous: ChatToolStatus | undefined, current: ChatToolStatus): ChatToolStatus {
   if (!previous) return current
-  const priority: Record<ChatToolStatus, number> = { started: 0, updated: 1, completed: 2, failed: 3, canceled: 4 }
+  const priority: Record<ChatToolStatus, number> = { started: 0, updated: 1, completed: 2, failed: 3, canceled: 3 }
   return priority[current] > priority[previous] ? current : previous
 }
 
