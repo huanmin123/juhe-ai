@@ -7,6 +7,8 @@ import (
 	"io"
 	"regexp"
 	"strconv"
+
+	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 const (
@@ -46,7 +48,9 @@ type Result struct {
 }
 
 type JSONOptions struct {
-	MaxBytes int
+	MaxBytes          int
+	InteractionAction protocolgateway.GeminiInteractionAction
+	HTTPStatus        int
 }
 
 func ParseJSON(body []byte, options JSONOptions) (Result, error) {
@@ -57,13 +61,16 @@ func ParseJSON(body []byte, options JSONOptions) (Result, error) {
 	if len(body) > maxBytes {
 		return Result{}, ErrPayloadTooLarge
 	}
+	if len(body) == 0 && options.InteractionAction == protocolgateway.GeminiInteractionDelete && options.HTTPStatus >= 200 && options.HTTPStatus < 300 {
+		return Result{Terminal: true}, nil
+	}
 	value, err := decodeJSONObject(body)
 	if err != nil {
 		return Result{}, err
 	}
 	result := resultFromObject(value)
 	result.Terminal = true
-	if result.Status == "" && result.Failed {
+	if result.Failed {
 		result.Status = "failed"
 	}
 	return result, nil

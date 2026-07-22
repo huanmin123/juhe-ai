@@ -48,7 +48,14 @@ func TestNativeProtocolForRequestHonorsMethods(t *testing.T) {
 		{request: RequestShape{Method: "PATCH", Path: "/v1/responses/x"}, want: ProtocolOpenAI, ok: true},
 		{request: RequestShape{Method: "GET", Path: "/v1/messages"}, ok: false},
 		{request: RequestShape{Method: "POST", Path: "/v1/messages/count_tokens"}, want: ProtocolAnthropic, ok: true},
+		{request: RequestShape{Method: "POST", Path: "/v1beta/interactions"}, want: ProtocolGemini, ok: true},
+		{request: RequestShape{Method: "GET", Path: "/v1beta/interactions/abc"}, want: ProtocolGemini, ok: true},
 		{request: RequestShape{Method: "DELETE", Path: "/v1beta/interactions/abc"}, want: ProtocolGemini, ok: true},
+		{request: RequestShape{Method: "POST", Path: "/v1beta/interactions/abc/cancel"}, want: ProtocolGemini, ok: true},
+		{request: RequestShape{Method: "GET", Path: "/v1beta/interactions"}, ok: false},
+		{request: RequestShape{Method: "DELETE", Path: "/v1beta/interactions"}, ok: false},
+		{request: RequestShape{Method: "POST", Path: "/v1beta/interactions/abc"}, ok: false},
+		{request: RequestShape{Method: "GET", Path: "/v1beta/interactions/abc/cancel"}, ok: false},
 		{request: RequestShape{Method: "GET", Path: "/v1beta/models/gemini:generateContent"}, ok: false},
 	}
 
