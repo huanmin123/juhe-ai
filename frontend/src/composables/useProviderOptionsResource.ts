@@ -15,9 +15,13 @@ interface ProviderOptionsResourceOptions {
   systemAccountId?: string
 }
 
+export type ProviderOptionsResourceResult =
+  | { state: 'ready'; data: ProviderDefinition[] }
+  | { state: 'superseded' }
+
 const providerOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
-export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderDefinition[]> {
+export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderOptionsResourceResult> {
   const includeDisabled = options.includeDisabled === true && options.isManagementView
   const route = includeDisabled ? '/providers' : options.includeDefinitions ? '/providers/definitions' : '/providers/options'
   const scope = providerOptionsScope(options.isManagementView, options.systemAccountId)
@@ -41,11 +45,12 @@ export async function loadProviderOptionsResource(options: ProviderOptionsResour
         ? api.providers.definitions(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
         : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined).then((items) => items.map(providerOptionToDefinition))
   })
-  if (!result.superseded) applyIfCurrent(options, result.data)
+  if (result.superseded) return { state: 'superseded' }
+  applyIfCurrent(options, result.data)
   void result.confirmation?.then((outcome) => {
     if (outcome.state !== 'superseded' && outcome.data) applyIfCurrent(options, outcome.data)
   })
-  return result.data
+  return { state: 'ready', data: result.data }
 }
 
 function providerOptionToDefinition(option: ProviderOption): ProviderDefinition {

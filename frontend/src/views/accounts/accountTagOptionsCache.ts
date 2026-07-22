@@ -43,11 +43,17 @@ export function readAccountTagOptionsCache(scopeKey: string): AccountTagSummary[
   return [...entry.options]
 }
 
-export function writeAccountTagOptionsCache(scopeKey: string, options: AccountTagSummary[]): void {
+export function writeAccountTagOptionsCache(
+  scopeKey: string,
+  options: AccountTagSummary[],
+  expectedSecurityGeneration = currentPageDataSecurityGeneration()
+): boolean {
+  if (expectedSecurityGeneration !== currentPageDataSecurityGeneration()) return false
   accountTagOptionsMemory.set(scopeKey, {
-    securityGeneration: currentPageDataSecurityGeneration(),
+    securityGeneration: expectedSecurityGeneration,
     options: [...options]
   })
+  return true
 }
 
 export function invalidateAccountTagOptionsCache(scopeKey?: string): void {

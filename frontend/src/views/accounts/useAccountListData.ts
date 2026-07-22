@@ -342,7 +342,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
       let providerApplied = false
-      const [, proxyList] = await Promise.all([
+      const [providerResult, proxyList] = await Promise.all([
         loadProviderOptionsResource({
           activation,
           apply: (nextProviders) => {
@@ -357,6 +357,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         }),
         api.proxies.options({ limit: 50 })
       ])
+      if (providerResult.state === 'superseded') return
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
         return
       }
@@ -381,7 +382,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const currentScopeKey = () => options.isManagementView.value
       ? `management:${accountScopeParams.value?.systemAccountId ?? 'all'}`
       : 'self'
-    await loadProviderOptionsResource({
+    const providerResult = await loadProviderOptionsResource({
       activation,
       apply: (nextProviders) => {
         if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
@@ -390,6 +391,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       isManagementView: options.isManagementView.value,
       systemAccountId
     })
+    if (providerResult.state === 'superseded') return
   }
 
   const unregisterAccountListRevalidator = options.pageDataActivation?.registerRevalidator(

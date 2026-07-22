@@ -44,7 +44,7 @@ Object.assign(globalThis, {
 })
 
 const { usePageDataActivation } = await import('../../composables/usePageDataActivation')
-const { KeepAlive, computed, createApp, defineComponent, h, nextTick, ref } = await import('vue')
+const { KeepAlive, computed, createApp, defineComponent, h, nextTick, reactive, ref } = await import('vue')
 
 class FakeClock {
   private nextId = 1
@@ -568,18 +568,28 @@ await clock.advanceBy(100)
 assert.equal(zombieFullCalls, 1, 'zombie 竞态准备必须保持一个 full revalidator 挂起')
 const zombieTargeted = activation.runTargeted(['accounts.static'], async () => {
   zombieTargetedCalls += 1
-  return 'zombie'
+  return 'zombie:first'
+})
+const secondZombieTargeted = activation.runTargeted(['accounts.static'], async () => {
+  zombieTargetedCalls += 1
+  return 'zombie:second'
 })
 await flushMicrotasks()
+const zombieTargetedRejected = assert.rejects(zombieTargeted, /activation.*不可用/i, '等待 full 的 targeted 必须可由 deactivate 释放')
+const secondZombieTargetedRejected = assert.rejects(
+  secondZombieTargeted,
+  /activation.*不可用/i,
+  '尚未进入 FIFO 执行体的 targeted 也必须由 deactivate 立即释放'
+)
 activation.deactivate()
-await assert.rejects(zombieTargeted, /activation.*不可用/i, '等待 full 的 targeted 必须可由 deactivate 释放')
+await Promise.all([zombieTargetedRejected, secondZombieTargetedRejected])
 showActivationPage.value = false
 await nextTick()
 showActivationPage.value = true
 await nextTick()
 zombieFullGate.resolve(undefined)
 await clock.advanceBy(100)
-assert.equal(zombieTargetedCalls, 0, '已取消 targeted 的旧 continuation 不得在页面恢复后执行')
+assert.equal(zombieTargetedCalls, 0, '所有已取消 targeted 的旧 continuation 都不得在页面恢复后执行')
 unregisterZombieFull()
 
 gatedConfirmation = deferred<PageDataConfirmResult>()
@@ -608,6 +618,7 @@ const { api } = await import('../../api/client')
 const { authState } = await import('../../composables/useAuth')
 const { useAccountListData } = await import('../../views/accounts/useAccountListData')
 const { loadProviderOptionsResource } = await import('../../composables/useProviderOptionsResource')
+const { useAccountEditTagOptions } = await import('../../views/accounts/useAccountEditTagOptions')
 const { createMemoryHistory, createRouter } = await import('vue-router')
 const {
   loadAccountTagOptionsCached,
@@ -730,14 +741,19 @@ try {
     isManagementView: false
   })
   await oldProviderStarted.promise
-  await loadProviderOptionsResource({
+  const currentProviderResult = await loadProviderOptionsResource({
     activation: scopedDomainActivation('providers.catalog', 2),
     apply: (items) => { if (items[0]) appliedProviderIds.push(items[0].id) },
     includeDefinitions: true,
     isManagementView: false
   })
+  assert.deepEqual(currentProviderResult, {
+    state: 'ready',
+    data: [providerDefinition('provider-new')]
+  }, '当前 provider resource 必须返回显式 ready 结果')
   oldProviderNetwork.resolve([providerDefinition('provider-old')])
-  await oldProviderLoad
+  const oldProviderResult = await oldProviderLoad
+  assert.deepEqual(oldProviderResult, { state: 'superseded' }, '旧 provider Promise 不得携带可被调用方误应用的数据')
   assert.deepEqual(appliedProviderIds, ['provider-new'], '旧 provider resource 晚返回不得 apply 覆盖新数据')
 
   const oldTagsLoad = loadAccountTagOptionsCached({
@@ -769,6 +785,48 @@ assert.equal(readAccountTagOptionsCache('self')?.[0]?.id, 'old-security-tag', '�
 advancePageDataSessionGeneration()
 assert.equal(currentPageDataSecurityGeneration(), tagMemoryGenerationBefore + 1)
 assert.equal(readAccountTagOptionsCache('self'), undefined, 'security generation 变化后不得命中旧标签内存缓存')
+
+const originalDeleteMyAccountTag = api.myAccounts.deleteTag
+const originalMyAccountTagsForMutation = api.myAccounts.tags
+const delayedTagDelete = deferred<void>()
+const editTagForm = reactive({ tags: ['旧标签'] }) as Parameters<typeof useAccountEditTagOptions>[0]['form']
+let editTagOptions: ReturnType<typeof useAccountEditTagOptions> | undefined
+try {
+  api.myAccounts.tags = async () => [{ id: 'old-tag', name: '旧标签', accountCount: 0 }]
+  api.myAccounts.deleteTag = async () => delayedTagDelete.promise
+  const EditTagHarness = defineComponent({
+    setup() {
+      editTagOptions = useAccountEditTagOptions({
+        accountTagOperationScopeParams: () => undefined,
+        extractApiErrorMessage: (_error, fallback) => fallback,
+        form: editTagForm,
+        isManagementView: computed(() => false)
+      })
+      return () => h('div')
+    }
+  })
+  const editTagContainer = document.createElement('div')
+  document.body.append(editTagContainer)
+  const editTagApp = createApp(EditTagHarness)
+  editTagApp.mount(editTagContainer)
+  await nextTick()
+  assert(editTagOptions)
+  await editTagOptions.loadAccountTagOptions(undefined, true)
+  assert.equal(readAccountTagOptionsCache('self')?.[0]?.id, 'old-tag', '删除前必须建立真实 self 标签 cache')
+  const deleteFlight = editTagOptions.deleteAccountTag('old-tag')
+  await flushMicrotasks()
+  advancePageDataSessionGeneration()
+  delayedTagDelete.resolve(undefined)
+  await deleteFlight
+  assert.deepEqual(editTagForm.tags, ['旧标签'], '旧安全上下文 mutation 迟到成功不得修改新上下文表单')
+  assert.equal(editTagOptions.accountTagOptions.value[0]?.id, 'old-tag', '旧 mutation 不得覆盖新上下文页面标签状态')
+  assert.equal(readAccountTagOptionsCache('self'), undefined, '旧 mutation 不得以当前 security generation 重新写 self 内存缓存')
+  editTagApp.unmount()
+  editTagContainer.remove()
+} finally {
+  api.myAccounts.deleteTag = originalDeleteMyAccountTag
+  api.myAccounts.tags = originalMyAccountTagsForMutation
+}
 
 let disabledActivation: PageDataActivation | undefined
 const disabledApp = createApp(defineComponent({
@@ -811,7 +869,8 @@ assert.match(tagCacheSource, /currentPageDataSecurityGeneration/, 'tags 独立�
 assert.match(tagCacheSource, /if\s*\(!superseded\)[\s\S]{0,120}writeAccountTagOptionsCache/, '旧 tags resource 不得写独立内存 cache')
 assert.match(tagCacheSource, /outcome\.state\s*!==\s*'superseded'/, '旧 tags confirmation 不得写独立内存 cache')
 assert.match(providerSource, /activation:\s*options\.activation/)
-assert.match(providerSource, /if\s*\(!result\.superseded\)[\s\S]{0,100}applyIfCurrent/, '旧 provider resource 不得 apply')
+assert.match(providerSource, /if\s*\(result\.superseded\)\s*return\s*\{\s*state:\s*'superseded'\s*\}/, '旧 provider resource 必须返回无 data 的显式 superseded 结果')
+assert.match(providerSource, /return\s*\{\s*state:\s*'ready',\s*data:\s*result\.data\s*\}/, '当前 provider resource 必须返回显式 ready data')
 assert.match(providerSource, /outcome\.state\s*!==\s*'superseded'/, '旧 provider confirmation 不得 apply')
 assert.doesNotMatch(activationSource, /setInterval|clearInterval/, '页面 activation 周期必须使用一次性 timeout')
 assert.doesNotMatch(activationSource, /createCoordinatorTimer|setTimeout\(\(\) => undefined/, '生产代码不得使用空 timeout 辅助测试 flush')

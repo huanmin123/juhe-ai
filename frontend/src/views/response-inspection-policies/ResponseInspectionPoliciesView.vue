@@ -143,9 +143,10 @@ async function loadPageData(force = false): Promise<void> {
         isManagementView: true
       })
     ])
+    if (providerResult.state === 'superseded') return
     defaultRules.value = policyResult.defaultRules
     policies.value = policyResult.policies
-    providers.value = providerResult
+    providers.value = providerResult.data
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载响应检查策略失败'))

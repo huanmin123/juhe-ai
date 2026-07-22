@@ -448,13 +448,14 @@ function formatDefaultSupportedModels(provider: ProviderDefinition): string {
 async function loadProviders(force = false) {
   loading.value = true
   try {
-    providers.value = await loadProviderOptionsResource({
+    const result = await loadProviderOptionsResource({
       apply: (nextProviders) => { providers.value = nextProviders },
       force,
       includeDisabled: isManagementView.value,
       includeDefinitions: !isManagementView.value,
       isManagementView: isManagementView.value
     })
+    if (result.state === 'ready') providers.value = result.data
   } catch (error) {
     console.error(error)
     message.error('加载供应商失败')
@@ -578,7 +579,8 @@ async function reloadActiveProviderModels(force = false) {
       systemAccountId: modelQuery.systemAccountId
     })
     if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
-    const scopedProvider = scopedProviders.find((item) => item.code === provider.code)
+    if (scopedProviders.state === 'superseded') return
+    const scopedProvider = scopedProviders.data.find((item) => item.code === provider.code)
     if (scopedProvider) {
       activeProvider.value = scopedProvider
     }

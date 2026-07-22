@@ -3,6 +3,7 @@ import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import type { PageDataActivation } from '@/composables/usePageDataActivation'
+import { currentPageDataSecurityGeneration } from '@/shared/pageDataGenerationFences'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountScopeParams } from './accountOperationScope'
@@ -27,6 +28,7 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
   const deletingAccountTagId = ref<string>()
   const loadedScopeKey = ref('')
   let requestToken = 0
+  let deleteRequestToken = 0
 
   async function loadAccountTagOptions(scopeParams: AccountScopeParams | undefined, force = false): Promise<void> {
     const scopeKey = resolveAccountTagOptionsScopeKey(options.isManagementView.value, scopeParams)
@@ -73,6 +75,9 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
       message.warning('标签已绑定账户，不能删除')
       return
     }
+    const currentDeleteRequestToken = ++deleteRequestToken
+    const securityGeneration = currentPageDataSecurityGeneration()
+    const scopeKey = loadedScopeKey.value
     deletingAccountTagId.value = tagId
     try {
       const scopeParams = options.accountTagOperationScopeParams()
@@ -81,26 +86,39 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
       } else {
         await api.myAccounts.deleteTag(tagId)
       }
+      if (!isCurrentDeleteRequest(currentDeleteRequestToken, securityGeneration, scopeKey)) return
       options.form.tags = options.form.tags.filter((name) => name.trim() !== tag.name)
       accountTagOptions.value = accountTagOptions.value.filter((item) => item.id !== tagId)
-      if (loadedScopeKey.value) {
-        writeAccountTagOptionsCache(loadedScopeKey.value, accountTagOptions.value)
+      if (scopeKey) {
+        writeAccountTagOptionsCache(scopeKey, accountTagOptions.value, securityGeneration)
       }
       message.success('标签已删除')
     } catch (error) {
+      if (!isCurrentDeleteRequest(currentDeleteRequestToken, securityGeneration, scopeKey)) return
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '删除标签失败'))
       await loadAccountTagOptions(options.accountTagOperationScopeParams(), true)
     } finally {
-      deletingAccountTagId.value = undefined
+      if (currentDeleteRequestToken === deleteRequestToken) deletingAccountTagId.value = undefined
     }
   }
 
   function resetAccountTagOptions(): void {
     requestToken += 1
+    deleteRequestToken += 1
     accountTagOptions.value = []
     loadedScopeKey.value = ''
     accountTagOptionsLoading.value = false
+  }
+
+  function isCurrentDeleteRequest(
+    currentDeleteRequestToken: number,
+    securityGeneration: number,
+    scopeKey: string
+  ): boolean {
+    return currentDeleteRequestToken === deleteRequestToken
+      && securityGeneration === currentPageDataSecurityGeneration()
+      && scopeKey === loadedScopeKey.value
   }
 
   return {

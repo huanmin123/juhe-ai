@@ -309,7 +309,8 @@ async function loadGroupOptions(force = false): Promise<void> {
     force,
     isManagementView: isManagementView.value
   })
-  providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
+  if (providerList.state === 'superseded') return
+  providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey
 }
