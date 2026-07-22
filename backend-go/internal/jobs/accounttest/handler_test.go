@@ -40,6 +40,18 @@ func TestHandleTaskSkipsAlreadyClaimedTask(t *testing.T) {
 	}
 }
 
+func TestHandleTaskFinalizesCancellationWithoutRetry(t *testing.T) {
+	store := &workerStoreStub{task: port.ManagementAccountTestTask{ID: "accttest_cancel"}, claimed: true}
+	payload, _ := Encode(EnqueuePayload{TaskID: "accttest_cancel"})
+	err := HandleTask(context.Background(), store, workerRunnerStub{err: context.Canceled}, payload)
+	if err != nil {
+		t.Fatalf("HandleTask() error = %v, canceled work must not be retried", err)
+	}
+	if store.finish.Status != "canceled" || store.finish.Message != "账户测试已取消" {
+		t.Fatalf("finish = %#v", store.finish)
+	}
+}
+
 type workerStoreStub struct {
 	task    port.ManagementAccountTestTask
 	claimed bool

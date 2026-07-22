@@ -16,6 +16,9 @@ func TestEnqueueUsesFixedContractAndBoundedOptions(t *testing.T) {
 	if info.ID != "queue_1" || client.taskType != TaskType || client.options.Queue != QueueName {
 		t.Fatalf("info=%+v taskType=%q options=%+v", info, client.taskType, client.options)
 	}
+	if client.options.TaskID != "accttest_1" {
+		t.Fatalf("queue task ID = %q, want business task ID", client.options.TaskID)
+	}
 	if client.options.MaxRetry == nil || *client.options.MaxRetry <= 0 || client.options.Timeout <= 0 || client.options.Retention <= 0 {
 		t.Fatalf("options are not bounded: %+v", client.options)
 	}

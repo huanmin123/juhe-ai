@@ -32,5 +32,6 @@ func Enqueue(ctx context.Context, client EnqueueClient, payload EnqueuePayload) 
 		MaxRetry:  &maxRetry,
 		Timeout:   defaultTaskTimeout,
 		Retention: defaultTaskRetention,
+		TaskID:    payload.TaskID,
 	})
 }

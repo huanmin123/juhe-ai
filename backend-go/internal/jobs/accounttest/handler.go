@@ -44,5 +44,8 @@ func HandleTask(ctx context.Context, store port.AccountTestWorkerStore, runner R
 	if err := store.FinishAccountTestTask(context.WithoutCancel(ctx), port.AccountTestWorkerFinishInput{TaskID: task.ID, Status: status, Message: message}); err != nil {
 		return fmt.Errorf("finish failed account test task: %w", err)
 	}
+	if status == "canceled" {
+		return nil
+	}
 	return fmt.Errorf("run account test task: %w", runErr)
 }

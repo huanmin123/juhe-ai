@@ -16,4 +16,13 @@ func TestAccountTestWorkerSQLUsesAtomicStateTransitions(t *testing.T) {
 			t.Fatalf("finish SQL missing %q", fragment)
 		}
 	}
+	for _, fragment := range []string{
+		"CASE WHEN cancel_requested THEN 'canceled' ELSE $2 END",
+		"WHEN cancel_requested AND NULLIF(BTRIM(status_message),'') IS NOT NULL THEN status_message",
+		"CASE WHEN cancel_requested THEN NULL ELSE NULLIF($4,'') END",
+	} {
+		if !strings.Contains(finishAccountTestTaskSQL, fragment) {
+			t.Fatalf("finish SQL missing cancellation guard %q", fragment)
+		}
+	}
 }

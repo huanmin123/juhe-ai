@@ -35,6 +35,33 @@ func TestClientDispatchesSignedTaskID(t *testing.T) {
 	}
 }
 
+func TestClientCancelsWithDedicatedPathAndSignatureDomain(t *testing.T) {
+	var gotPath, gotSignature, gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotSignature = r.Header.Get("X-Juhe-AI-Signature")
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.URL, "bridge-secret")
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if err := client.Cancel(context.Background(), " accttest_cancel "); err != nil {
+		t.Fatalf("Cancel() error = %v", err)
+	}
+	if gotPath != "/__aiinternal__/v1/account-test/cancel" || gotBody != `{"version":1,"taskId":"accttest_cancel"}` {
+		t.Fatalf("path=%q body=%q", gotPath, gotBody)
+	}
+	dispatchSignature := createSignature([]byte("bridge-secret"), []byte(gotBody), []byte(signatureDomain))
+	if gotSignature == dispatchSignature {
+		t.Fatal("cancel signature must not be replayable as dispatch")
+	}
+}
+
 func TestClientRejectsUnsafeBaseURLAndUnexpectedStatus(t *testing.T) {
 	if _, err := NewClient("http://example.com:3000", "bridge-secret"); err == nil {
 		t.Fatal("NewClient() error = nil, want loopback rejection")

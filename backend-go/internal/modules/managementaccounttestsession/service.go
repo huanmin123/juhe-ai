@@ -11,7 +11,7 @@ import (
 )
 
 type CancelDispatcher interface {
-	DispatchAccountTestCancel(taskID string)
+	Cancel(context.Context, string) error
 }
 
 type Service struct {
@@ -58,7 +58,7 @@ func (s *Service) CancelSession(ctx context.Context, id string, access port.Mana
 	}
 	if s.dispatcher != nil {
 		for _, taskID := range taskIDs {
-			s.dispatcher.DispatchAccountTestCancel(taskID)
+			_ = s.dispatcher.Cancel(ctx, taskID)
 		}
 	}
 	return session, true, nil
@@ -70,7 +70,7 @@ func (s *Service) CancelTask(ctx context.Context, id string, access port.Managem
 	}
 	task, found, err := s.store.CancelManagementAccountTestTask(ctx, strings.TrimSpace(id), access)
 	if err == nil && found && s.dispatcher != nil {
-		s.dispatcher.DispatchAccountTestCancel(task.ID)
+		_ = s.dispatcher.Cancel(ctx, task.ID)
 	}
 	return task, found, err
 }

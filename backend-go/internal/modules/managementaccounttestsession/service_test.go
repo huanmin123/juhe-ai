@@ -44,4 +44,7 @@ func (s *sessionStoreStub) CancelManagementAccountTestTask(context.Context, stri
 
 type cancelDispatcherStub struct{ ids []string }
 
-func (s *cancelDispatcherStub) DispatchAccountTestCancel(id string) { s.ids = append(s.ids, id) }
+func (s *cancelDispatcherStub) Cancel(_ context.Context, id string) error {
+	s.ids = append(s.ids, id)
+	return nil
+}

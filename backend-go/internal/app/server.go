@@ -66,6 +66,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/publicsettings"
 	"juhe-ai/backend-go/internal/ownerlock"
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
+	accounttestdispatchbridge "juhe-ai/backend-go/internal/platform/accounttestdispatch"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 	"juhe-ai/backend-go/internal/secretcrypto"
@@ -858,7 +859,18 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		ModelCatalog:    providerModelService,
 		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
 	})
-	accountTestSessionService := managementaccounttestsession.NewService(store, nil)
+	accountTestCancelDispatcher, cancelDispatcherErr := accounttestdispatchbridge.NewClientWithTimeout(
+		cfg.NodeInternalBaseURL,
+		strings.TrimSpace(cfg.Secret),
+		cfg.NodeInternalRequestTimeout,
+	)
+	if cancelDispatcherErr != nil {
+		accountTestCancelDispatcher = nil
+		if logger != nil {
+			logger.Warn("账户测试取消 bridge 未启用", slog.String("error", cancelDispatcherErr.Error()))
+		}
+	}
+	accountTestSessionService := managementaccounttestsession.NewService(store, accountTestCancelDispatcher)
 	accountTestStatusService := managementaccountteststatus.NewService(store)
 	accountTestDispatchService := managementaccounttestdispatch.NewService(managementaccounttestdispatch.Options{
 		Store:         store,

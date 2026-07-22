@@ -7,6 +7,7 @@ import express from 'express'
 
 import {
   accountTestDispatchInternalPrefix,
+  createAccountTestCancelSignature,
   createAccountTestDispatchRouter,
   createAccountTestDispatchSignature
 } from '../../modules/internal-api/account-test-dispatch.routes.js'
@@ -23,17 +24,24 @@ assert.match(serverSource, /dispatchAccountTestTask/, 'Node server 必须把内�
 const routeSource = readFileSync(routePath, 'utf8')
 const serviceSource = readFileSync(servicePath, 'utf8')
 assert.match(routeSource, /juhe-ai:account-test-dispatch:v1/, '账户测试内部 dispatch 必须使用独立 HMAC domain')
+assert.match(routeSource, /juhe-ai:account-test-cancel:v1/, '账户测试内部 cancel 必须使用独立 HMAC domain')
 assert.match(routeSource, /\/v1\/account-test\/dispatch/, '账户测试内部 dispatch 必须使用固定大小写 path')
+assert.match(routeSource, /\/v1\/account-test\/cancel/, '账户测试内部 cancel 必须使用固定大小写 path')
 assert.match(routeSource, /isLoopbackRemoteAddress/, '账户测试内部 dispatch 必须限制 loopback 来源')
 assert.match(routeSource, /timingSafeEqual/, '账户测试内部 dispatch 必须恒定时间校验签名')
 assert.match(serviceSource, /dispatchAccountTestTasks\(\[normalizedId\]\)/, '内部 dispatch 只能复用 Node 既有任务队列，不得重复创建任务')
 
 const calls: string[] = []
+const canceled: string[] = []
 const app = express()
 app.use(accountTestDispatchInternalPrefix, createAccountTestDispatchRouter({
   secret: 'bridge-secret',
   dispatch: (taskId) => {
     calls.push(taskId)
+    return true
+  },
+  cancel: (taskId) => {
+    canceled.push(taskId)
     return true
   }
 }))
@@ -53,6 +61,30 @@ try {
   })
   assert.equal(response.status, 202, '合法签名账户测试 dispatch 应返回 202')
   assert.deepEqual(calls, ['accttest_1'])
+
+  const cancelBody = Buffer.from(JSON.stringify({ version: 1, taskId: ' accttest_1 ' }))
+  const cancelResponse = await fetch(`http://127.0.0.1:${port}${accountTestDispatchInternalPrefix}/v1/account-test/cancel`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'content-encoding': 'identity',
+      'x-juhe-ai-signature': createAccountTestCancelSignature('bridge-secret', cancelBody)
+    },
+    body: cancelBody
+  })
+  assert.equal(cancelResponse.status, 202, '合法签名账户测试 cancel 应返回 202')
+  assert.deepEqual(canceled, ['accttest_1'])
+
+  const replayedDispatchSignature = await fetch(`http://127.0.0.1:${port}${accountTestDispatchInternalPrefix}/v1/account-test/cancel`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'content-encoding': 'identity',
+      'x-juhe-ai-signature': createAccountTestDispatchSignature('bridge-secret', cancelBody)
+    },
+    body: cancelBody
+  })
+  assert.equal(replayedDispatchSignature.status, 401, 'dispatch 签名不得重放为 cancel')
 
   const rejected = await fetch(`http://127.0.0.1:${port}${accountTestDispatchInternalPrefix}/v1/account-test/dispatch`, {
     method: 'POST',

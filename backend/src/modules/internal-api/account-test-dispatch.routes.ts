@@ -6,14 +6,17 @@ import { isLoopbackRemoteAddress } from './account-health-check-dispatch.routes.
 
 export const accountTestDispatchInternalPrefix = '/__aiinternal__'
 export const accountTestDispatchSignatureDomain = 'juhe-ai:account-test-dispatch:v1\n'
+export const accountTestCancelSignatureDomain = 'juhe-ai:account-test-cancel:v1\n'
 
 const accountTestDispatchPath = '/v1/account-test/dispatch'
+const accountTestCancelPath = '/v1/account-test/cancel'
 const rawBodyLimitBytes = 1024
 const signaturePattern = /^v1=([0-9a-f]{64})$/
 
 export interface AccountTestDispatchRouterOptions {
   secret: string
   dispatch: (taskId: string) => boolean
+  cancel: (taskId: string) => boolean
 }
 
 type BodyParserError = Error & {
@@ -23,8 +26,16 @@ type BodyParserError = Error & {
 }
 
 export function createAccountTestDispatchSignature(secret: string, rawBody: Uint8Array): string {
+  return createAccountTestSignature(secret, rawBody, accountTestDispatchSignatureDomain)
+}
+
+export function createAccountTestCancelSignature(secret: string, rawBody: Uint8Array): string {
+  return createAccountTestSignature(secret, rawBody, accountTestCancelSignatureDomain)
+}
+
+function createAccountTestSignature(secret: string, rawBody: Uint8Array, domain: string): string {
   return `v1=${createHmac('sha256', secret)
-    .update(accountTestDispatchSignatureDomain, 'utf8')
+    .update(domain, 'utf8')
     .update(rawBody)
     .digest('hex')}`
 }
@@ -38,7 +49,16 @@ export function createAccountTestDispatchRouter(options: AccountTestDispatchRout
     requireIdentityContentEncoding,
     express.raw({ type: () => true, limit: rawBodyLimitBytes, inflate: false }),
     handleBodyParserError,
-    (req: Request, res: Response, next: NextFunction) => handleDispatch(req, res, next, options)
+    (req: Request, res: Response, next: NextFunction) => handleTaskAction(req, res, next, options.secret, options.dispatch, accountTestDispatchSignatureDomain)
+  )
+  router.post(
+    accountTestCancelPath,
+    requireLoopback,
+    requireJsonContentType,
+    requireIdentityContentEncoding,
+    express.raw({ type: () => true, limit: rawBodyLimitBytes, inflate: false }),
+    handleBodyParserError,
+    (req: Request, res: Response, next: NextFunction) => handleTaskAction(req, res, next, options.secret, options.cancel, accountTestCancelSignatureDomain)
   )
   return router
 }
@@ -84,14 +104,16 @@ function handleBodyParserError(error: BodyParserError, req: Request, res: Respon
   res.status(Number(status)).json({ message: Number(status) === 413 ? '请求体过大' : '请求体无效' })
 }
 
-function handleDispatch(
+function handleTaskAction(
   req: Request,
   res: Response,
   next: NextFunction,
-  options: AccountTestDispatchRouterOptions
+  secret: string,
+  action: (taskId: string) => boolean,
+  signatureDomain: string
 ): void {
   const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-  if (!hasValidSignature(req, options.secret, rawBody)) {
+  if (!hasValidSignature(req, secret, rawBody, signatureDomain)) {
     res.status(401).json({ message: '认证失败' })
     return
   }
@@ -101,7 +123,7 @@ function handleDispatch(
     return
   }
   try {
-    if (!options.dispatch(taskId)) {
+    if (!action(taskId)) {
       res.status(503).json({ message: '服务暂不可用' })
       return
     }
@@ -111,14 +133,14 @@ function handleDispatch(
   }
 }
 
-function hasValidSignature(req: Request, secret: string, rawBody: Buffer): boolean {
+function hasValidSignature(req: Request, secret: string, rawBody: Buffer, signatureDomain: string): boolean {
   const signature = req.headers['x-juhe-ai-signature']
   if (typeof signature !== 'string') return false
   const match = signaturePattern.exec(signature)
   if (!match) return false
   return timingSafeEqual(
     Buffer.from(match[1]!, 'hex'),
-    Buffer.from(createAccountTestDispatchSignature(secret, rawBody).slice(3), 'hex')
+    Buffer.from(createAccountTestSignature(secret, rawBody, signatureDomain).slice(3), 'hex')
   )
 }
 

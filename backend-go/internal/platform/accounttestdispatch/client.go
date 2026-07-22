@@ -20,15 +20,18 @@ import (
 
 const (
 	dispatchPath                = "/__aiinternal__/v1/account-test/dispatch"
+	cancelPath                  = "/__aiinternal__/v1/account-test/cancel"
 	signatureDomain             = "juhe-ai:account-test-dispatch:v1\n"
+	cancelSignatureDomain       = "juhe-ai:account-test-cancel:v1\n"
 	requestTimeout              = 2 * time.Second
 	maxResponseDrainBytes int64 = 8 * 1024
 )
 
 type Client struct {
-	endpoint   string
-	secret     []byte
-	httpClient *http.Client
+	dispatchEndpoint string
+	cancelEndpoint   string
+	secret           []byte
+	httpClient       *http.Client
 }
 
 type dispatchPayload struct {
@@ -59,10 +62,14 @@ func NewClientWithTimeout(rawBaseURL, secret string, timeout time.Duration) (*Cl
 		ResponseHeaderTimeout: timeout, ExpectContinueTimeout: timeout,
 		MaxResponseHeaderBytes: 16 * 1024, DisableCompression: true,
 	}
-	baseURL.Path = dispatchPath
+	dispatchURL := *baseURL
+	dispatchURL.Path = dispatchPath
+	cancelURL := *baseURL
+	cancelURL.Path = cancelPath
 	return &Client{
-		endpoint: baseURL.String(),
-		secret:   []byte(secret),
+		dispatchEndpoint: dispatchURL.String(),
+		cancelEndpoint:   cancelURL.String(),
+		secret:           []byte(secret),
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   timeout,
@@ -74,31 +81,39 @@ func NewClientWithTimeout(rawBaseURL, secret string, timeout time.Duration) (*Cl
 }
 
 func (c *Client) Dispatch(ctx context.Context, taskID string) error {
+	return c.send(ctx, taskID, c.dispatchEndpoint, []byte(signatureDomain), "dispatch")
+}
+
+func (c *Client) Cancel(ctx context.Context, taskID string) error {
+	return c.send(ctx, taskID, c.cancelEndpoint, []byte(cancelSignatureDomain), "cancel")
+}
+
+func (c *Client) send(ctx context.Context, taskID, endpoint string, domain []byte, action string) error {
 	if ctx == nil {
-		return errors.New("账户测试 dispatch context 不能为空")
+		return fmt.Errorf("账户测试 %s context 不能为空", action)
 	}
 	taskID = strings.TrimSpace(taskID)
 	if taskID == "" {
-		return errors.New("账户测试 dispatch task ID 不能为空")
+		return fmt.Errorf("账户测试 %s task ID 不能为空", action)
 	}
 	body, err := json.Marshal(dispatchPayload{Version: 1, TaskID: taskID})
 	if err != nil {
-		return fmt.Errorf("编码账户测试 dispatch 请求失败: %w", err)
+		return fmt.Errorf("编码账户测试 %s 请求失败: %w", action, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("创建账户测试 dispatch 请求失败: %w", err)
+		return fmt.Errorf("创建账户测试 %s 请求失败: %w", action, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "identity")
-	req.Header.Set("X-Juhe-AI-Signature", createSignature(c.secret, body))
+	req.Header.Set("X-Juhe-AI-Signature", createSignature(c.secret, body, domain))
 	response, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("发送账户测试 dispatch 请求失败: %w", err)
+		return fmt.Errorf("发送账户测试 %s 请求失败: %w", action, err)
 	}
 	drainAndClose(response.Body)
 	if response.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("账户测试 dispatch 返回非预期 HTTP 状态: %d %s", response.StatusCode, http.StatusText(response.StatusCode))
+		return fmt.Errorf("账户测试 %s 返回非预期 HTTP 状态: %d %s", action, response.StatusCode, http.StatusText(response.StatusCode))
 	}
 	return nil
 }
@@ -124,9 +139,9 @@ func parseBaseURL(raw string) (*url.URL, error) {
 	return baseURL, nil
 }
 
-func createSignature(secret, body []byte) string {
+func createSignature(secret, body, domain []byte) string {
 	mac := hmac.New(sha256.New, secret)
-	_, _ = mac.Write([]byte(signatureDomain))
+	_, _ = mac.Write(domain)
 	_, _ = mac.Write(body)
 	return "v1=" + hex.EncodeToString(mac.Sum(nil))
 }

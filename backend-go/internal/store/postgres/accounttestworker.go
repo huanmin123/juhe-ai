@@ -19,7 +19,14 @@ RETURNING id, '', account_id, account_name, provider_code, COALESCE(provider_pro
  COALESCE(result_json,''), cancel_requested, created_at, queued_at, started_at, finished_at, updated_at`
 
 const finishAccountTestTaskSQL = `
-UPDATE juhe_business.account_test_tasks SET status=$2, status_message=$3, result_json=NULLIF($4,''),
+UPDATE juhe_business.account_test_tasks SET
+ status=CASE WHEN cancel_requested THEN 'canceled' ELSE $2 END,
+ status_message=CASE
+  WHEN cancel_requested AND NULLIF(BTRIM(status_message),'') IS NOT NULL THEN status_message
+  WHEN cancel_requested THEN COALESCE(NULLIF(BTRIM($3),''),'账户测试已取消')
+  ELSE $3
+ END,
+ result_json=CASE WHEN cancel_requested THEN NULL ELSE NULLIF($4,'') END,
  finished_at=COALESCE(finished_at,now()), updated_at=now()
 WHERE id=$1 AND status='running'`
 
@@ -51,8 +58,8 @@ func (s *Store) FinishAccountTestTask(ctx context.Context, input port.AccountTes
 	if err != nil {
 		return fmt.Errorf("finish account test task: %w", err)
 	}
-	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("account test task is not running")
+	if tag.RowsAffected() > 1 {
+		return fmt.Errorf("account test task finish affected multiple rows")
 	}
 	return nil
 }
