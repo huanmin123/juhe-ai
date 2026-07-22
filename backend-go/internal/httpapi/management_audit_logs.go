@@ -111,6 +111,12 @@ func managementAuditHotSearchLimit(values url.Values) (int, bool) {
 	if !ok || math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, false
 	}
+	if value >= 100 {
+		return 100, true
+	}
+	if value <= 0 {
+		return 0, true
+	}
 	return int(math.Trunc(value)), true
 }
 

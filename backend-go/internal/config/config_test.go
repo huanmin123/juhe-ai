@@ -2,7 +2,6 @@ package config
 
 import (
 	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -325,14 +324,14 @@ func TestLoadDefaultsNodeInternalRequestTimeout(t *testing.T) {
 	}
 }
 
-func TestAuditHotSearchDirectoryFollowsNodeDatasetLayout(t *testing.T) {
-	cfg := Config{DatasetDatabasePath: "D:/juhe/data/custom-dataset.sqlite3"}
-	if got, want := cfg.AuditHotSearchDirectory(), filepath.Join("D:/juhe/data", "audit", "search-hot"); got != want {
-		t.Fatalf("AuditHotSearchDirectory() = %q, want %q", got, want)
+func TestLoadReadsAuditHotSearchRoot(t *testing.T) {
+	t.Setenv("JUHE_AI_AUDIT_HOT_SEARCH_ROOT", "D:/shared/audit/search-hot")
+	cfg, err := Load(LoadOptions{LoadDotEnv: false})
+	if err != nil {
+		t.Fatal(err)
 	}
-	cfg.AuditHotSearchRoot = "D:/shared/audit-hot"
-	if got := cfg.AuditHotSearchDirectory(); got != "D:/shared/audit-hot" {
-		t.Fatalf("explicit AuditHotSearchDirectory() = %q", got)
+	if cfg.AuditHotSearchRoot != "D:/shared/audit/search-hot" {
+		t.Fatalf("AuditHotSearchRoot = %q", cfg.AuditHotSearchRoot)
 	}
 }
 

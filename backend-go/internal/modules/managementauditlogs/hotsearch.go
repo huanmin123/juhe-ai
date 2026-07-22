@@ -68,6 +68,12 @@ type hotSearchFile struct {
 	modifiedAt  time.Time
 }
 
+type hotSearchFileListing struct {
+	files     []hotSearchFile
+	missing   bool
+	truncated bool
+}
+
 type hotSearchLine struct {
 	AuditLogID string `json:"auditLogId"`
 	CreatedAt  string `json:"createdAt"`
@@ -109,20 +115,25 @@ func (s *hotSearchScanner) Search(ctx context.Context, input HotSearchInput) hot
 
 	searchCtx, cancel := context.WithTimeout(ctx, maxHotSearchDuration)
 	defer cancel()
-	files, missing, err := s.listFiles(searchCtx, start, end)
+	listing, err := s.listFiles(searchCtx, start, end)
 	if err != nil {
 		result.Available = false
 		result.Message = "审计内容搜索文件读取失败，审计内容搜索暂不可用。"
 		return result
 	}
-	if missing || len(files) == 0 {
-		result.Message = "最近 1 小时没有可搜索的审计内容"
+	result.Truncated = listing.truncated
+	if listing.missing || len(listing.files) == 0 {
+		if listing.truncated {
+			result.Message = "审计内容搜索目录扫描超过安全边界，未发现可搜索文件"
+		} else {
+			result.Message = "最近 1 小时没有可搜索的审计内容"
+		}
 		return result
 	}
-	result.ScannedFileCount = len(files)
+	result.ScannedFileCount = len(listing.files)
 	seen := make(map[string]struct{})
 	matchCount := 0
-	for _, file := range files {
+	for _, file := range listing.files {
 		stopped, err := s.scanFile(searchCtx, file.path, keywords, start, end, seen, &matchCount, &result)
 		if err != nil {
 			result.Available = false
@@ -148,27 +159,32 @@ func (s *hotSearchScanner) Search(ctx context.Context, input HotSearchInput) hot
 		result.IDs = result.IDs[:result.Limit]
 	}
 	if len(result.IDs) == 0 {
-		result.Message = "没有匹配的审计内容"
+		if result.Truncated {
+			result.Message = "审计内容搜索超过安全边界；没有匹配的审计内容"
+		} else {
+			result.Message = "没有匹配的审计内容"
+		}
 	} else if result.Truncated {
 		result.Message = "结果超过安全上限，已按最新优先截断显示"
 	}
 	return result
 }
 
-func (s *hotSearchScanner) listFiles(ctx context.Context, start, end time.Time) ([]hotSearchFile, bool, error) {
+func (s *hotSearchScanner) listFiles(ctx context.Context, start, end time.Time) (hotSearchFileListing, error) {
 	directory, err := os.Open(s.root)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, true, nil
+		return hotSearchFileListing{missing: true}, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return hotSearchFileListing{}, err
 	}
 	defer directory.Close()
-	files := make([]hotSearchFile, 0, 24)
+	listing := hotSearchFileListing{files: make([]hotSearchFile, 0, 24)}
 	scanned := 0
 	for scanned < maxHotSearchFiles {
 		if err := ctx.Err(); err != nil {
-			return nil, false, err
+			listing.truncated = true
+			break
 		}
 		entries, readErr := directory.ReadDir(min(100, maxHotSearchFiles-scanned))
 		for _, entry := range entries {
@@ -184,22 +200,25 @@ func (s *hotSearchScanner) listFiles(ctx context.Context, start, end time.Time) 
 			if infoErr != nil || info.Size() <= 0 {
 				continue
 			}
-			files = append(files, hotSearchFile{path: filepath.Join(s.root, entry.Name()), bucketStart: bucket, modifiedAt: info.ModTime()})
+			listing.files = append(listing.files, hotSearchFile{path: filepath.Join(s.root, entry.Name()), bucketStart: bucket, modifiedAt: info.ModTime()})
 		}
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if readErr != nil {
-			return nil, false, readErr
+			return hotSearchFileListing{}, readErr
 		}
 	}
-	sort.Slice(files, func(i, j int) bool {
-		if !files[i].bucketStart.Equal(files[j].bucketStart) {
-			return files[i].bucketStart.After(files[j].bucketStart)
+	if scanned >= maxHotSearchFiles {
+		listing.truncated = true
+	}
+	sort.Slice(listing.files, func(i, j int) bool {
+		if !listing.files[i].bucketStart.Equal(listing.files[j].bucketStart) {
+			return listing.files[i].bucketStart.After(listing.files[j].bucketStart)
 		}
-		return files[i].modifiedAt.After(files[j].modifiedAt)
+		return listing.files[i].modifiedAt.After(listing.files[j].modifiedAt)
 	})
-	return files, false, nil
+	return listing, nil
 }
 
 func (s *hotSearchScanner) scanFile(ctx context.Context, path string, keywords []string, start, end time.Time, seen map[string]struct{}, matchCount *int, result *hotSearchScanResult) (bool, error) {
@@ -333,11 +352,60 @@ func normalizeHotSearchRange(input HotSearchInput) (time.Time, time.Time) {
 }
 
 func parseHotSearchTime(value string, fallback time.Time) time.Time {
-	parsed, err := time.Parse(time.RFC3339Nano, trim(value))
-	if err != nil {
+	text := trim(value)
+	if text == "" {
 		return fallback
 	}
-	return parsed.UTC()
+	isoText := normalizeHotSearchISODateSeparators(text)
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		"2006-01-02T15:04Z07:00",
+		"2006-01-02T15:04:05.999999999Z0700",
+		"2006-01-02T15:04Z0700",
+		"2006-01-02 15:04:05.999999999Z07:00",
+		"2006-01-02 15:04Z07:00",
+		"2006-01-02 15:04:05.999999999Z0700",
+		"2006-01-02 15:04Z0700",
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC850,
+	} {
+		if parsed, err := time.Parse(layout, isoText); err == nil {
+			return parsed.UTC()
+		}
+	}
+	for _, layout := range []string{"2006", "2006-01", time.DateOnly} {
+		if parsed, err := time.ParseInLocation(layout, text, time.UTC); err == nil {
+			return parsed.UTC()
+		}
+	}
+	if parsed, err := time.ParseInLocation(time.ANSIC, text, time.Local); err == nil {
+		return parsed.UTC()
+	}
+	for _, layout := range []string{
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04",
+		"2006/01/02 15:04:05.999999999",
+		"2006/01/02 15:04",
+	} {
+		if parsed, err := time.ParseInLocation(layout, isoText, time.Local); err == nil {
+			return parsed.UTC()
+		}
+	}
+	return fallback
+}
+
+func normalizeHotSearchISODateSeparators(text string) string {
+	bytes := []byte(text)
+	if len(bytes) > len("2006-01-02") && bytes[len("2006-01-02")] == 't' {
+		bytes[len("2006-01-02")] = 'T'
+	}
+	if len(bytes) > 0 && bytes[len(bytes)-1] == 'z' {
+		bytes[len(bytes)-1] = 'Z'
+	}
+	return string(bytes)
 }
 
 func formatHotSearchTime(value time.Time) string {

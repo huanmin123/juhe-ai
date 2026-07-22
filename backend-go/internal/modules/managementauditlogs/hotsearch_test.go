@@ -42,6 +42,29 @@ func TestHotSearchScannerMissingDirectoryIsAvailableWithoutResults(t *testing.T)
 	}
 }
 
+func TestHotSearchScannerReportsCanceledDirectoryScanAsTruncated(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := newHotSearchScanner(t.TempDir()).Search(ctx, HotSearchInput{
+		Keywords: []string{"needle"}, Now: time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC),
+	})
+	if !result.Available || !result.Truncated || !strings.Contains(result.Message, "安全边界") {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestHotSearchScannerRejectsConcurrentSearchWithoutScanning(t *testing.T) {
+	scanner := newHotSearchScanner(t.TempDir())
+	scanner.slot <- struct{}{}
+	result := scanner.Search(context.Background(), HotSearchInput{
+		Keywords: []string{"needle"}, Now: time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC),
+	})
+	<-scanner.slot
+	if result.Available || !strings.Contains(result.Message, "正在运行") {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
 func TestHotSearchScannerRejectsUnreadableDependencyWithoutLeakingPath(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
@@ -86,6 +109,28 @@ func TestNormalizeHotSearchLimitDistinguishesMissingAndExplicitNonPositiveValues
 		t.Run(testCase.name, func(t *testing.T) {
 			if got := normalizeHotSearchLimit(testCase.input); got != testCase.want {
 				t.Fatalf("normalizeHotSearchLimit() = %d, want %d", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestParseHotSearchTimeMatchesNodeDateParseFormats(t *testing.T) {
+	fallback := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	localTime := time.Date(2026, 7, 22, 9, 30, 0, 0, time.Local).UTC()
+	for _, testCase := range []struct {
+		name  string
+		value string
+		want  time.Time
+	}{
+		{name: "date only", value: "2026-07-22", want: time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC)},
+		{name: "year month", value: "2026-07", want: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)},
+		{name: "local minute", value: "2026-07-22T09:30", want: localTime},
+		{name: "offset without colon", value: "2026-07-22T09:30:00+0800", want: time.Date(2026, 7, 22, 1, 30, 0, 0, time.UTC)},
+		{name: "invalid", value: "not-a-date", want: fallback},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := parseHotSearchTime(testCase.value, fallback); !got.Equal(testCase.want) {
+				t.Fatalf("parseHotSearchTime(%q) = %s, want %s", testCase.value, got, testCase.want)
 			}
 		})
 	}
