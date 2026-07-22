@@ -1725,8 +1725,9 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
 		opts.ManagementAPIKeyDeleteHandler != nil ||
-		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementMyAPIKeyDeleteHandler != nil ||
+		opts.ManagementAnnouncementPublicReadHandler != nil ||
+		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||
