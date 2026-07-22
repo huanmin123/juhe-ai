@@ -17,11 +17,12 @@ export const modelCheckFallbackOptions: ModelCheckOptions = {
     { value: 'gemini-3.1-pro-preview', label: 'gemini-3.1-pro-preview' }
   ],
   supportedProfiles: [
+    { value: 'quick', label: '快速检测', description: '最多执行 2 个轻量串行探针，快速给出初步判断' },
     { value: 'full', label: '强诊断完整检测', description: '准确优先，不以成本和耗时为约束' }
   ],
   trustedComparison: { enabledByDefault: false, available: true, message: '可信对比默认关闭；选择可信账户后会额外消耗该账户额度。' },
   defaultModel: 'gpt-5.6-sol',
-  defaultProfile: 'full'
+  defaultProfile: 'quick'
 }
 
 export const modelCheckHistoryColumns: Array<Record<string, any>> = [
@@ -29,6 +30,7 @@ export const modelCheckHistoryColumns: Array<Record<string, any>> = [
   { title: '账户类型', key: 'targetType', width: 110 },
   { title: '供应商', key: 'providerCode', width: 110 },
   { title: '模型', key: 'model', width: 130 },
+  { title: '模式', key: 'profile', width: 110 },
   { title: '状态', key: 'status', width: 110 },
   { title: '级别', key: 'level', width: 100 },
   { title: '摘要', key: 'summary', width: 320 },

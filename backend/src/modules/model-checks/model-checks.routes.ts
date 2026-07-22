@@ -38,7 +38,7 @@ const modelCheckRunSchema = z.object({
   }),
   targetId: z.string().trim().min(1, '检测目标不能为空'),
   model: z.string({ invalid_type_error: '模型必须使用完整模型 ID' }).trim().min(1, '模型必须使用完整模型 ID'),
-  profile: z.enum(['full']).optional(),
+  profile: z.enum(['quick', 'full']).optional(),
   trustedComparison: z.boolean().optional(),
   trustedComparisonAccountId: z.string().trim().optional()
 }).strict()
@@ -297,7 +297,8 @@ function activeModelCheckProgressUpdater(key: string): (event: ModelCheckProgres
       updateActiveModelCheckRun(key, {
         targetId: event.targetId,
         targetName: event.targetName,
-        model: event.model
+        model: event.model,
+        profile: event.profile
       })
       return
     }

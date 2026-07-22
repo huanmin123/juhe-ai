@@ -56,7 +56,7 @@
               :selected-account="selectedComparisonAccount"
               show-search
               allow-clear
-              :disabled="accountSelectDisabled"
+              :disabled="comparisonSelectDisabled"
               :filter-option="false"
               :loading="comparisonOptionsLoading"
               :options="comparisonOptions"
@@ -77,11 +77,15 @@
         </div>
 
         <div class="model-checks-toolbar">
+          <a-space align="center">
+            <span class="model-checks-deep-label">深度检测</span>
+            <a-switch :checked="deepDetection" :disabled="submitting" @change="handleDeepDetectionChange" />
+          </a-space>
           <a-button type="primary" :loading="submitting" @click="emit('submit')">
             <template #icon>
               <ExperimentOutlined />
             </template>
-            开始检测
+            {{ deepDetection ? '开始深度检测' : '快速检测' }}
           </a-button>
         </div>
       </div>
@@ -113,10 +117,12 @@ type SelectValue = string | string[] | undefined
 
 defineProps<{
   accountSelectDisabled: boolean
+  comparisonSelectDisabled: boolean
   accountSelectPlaceholder: string
   comparisonOptions: SelectOption[]
   comparisonOptionsLoading: boolean
   comparisonSelectPlaceholder: string
+  deepDetection: boolean
   isManagementView: boolean
   model: ModelCheckModel
   modelOptions: Array<{ label: string; value: string }>
@@ -154,6 +160,7 @@ const emit = defineEmits<{
   (event: 'target-search', value: string): void
   (event: 'target-value-update', value: SelectValue): void
   (event: 'update:model', value: ModelCheckModel): void
+  (event: 'update:deepDetection', value: boolean): void
   (event: 'update:selectedComparisonAccount', value?: AccountSelection): void
   (event: 'update:selectedTargetAccount', value?: AccountSelection): void
   (event: 'update:systemAccountFilter', value?: string): void
@@ -177,6 +184,10 @@ function handleModelValueUpdate(value: SelectValue) {
 
 function handleComparisonValueUpdate(value: SelectValue) {
   emit('update:trustedComparisonAccountId', selectStringValue(value))
+}
+
+function handleDeepDetectionChange(value: boolean) {
+  emit('update:deepDetection', value)
 }
 
 function selectStringValue(value: SelectValue): string | undefined {

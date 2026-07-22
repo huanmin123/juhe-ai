@@ -1032,7 +1032,7 @@ export interface AccountTestTask {
 }
 
 export type ModelCheckTargetType = 'account'
-export type ModelCheckProfile = 'full'
+export type ModelCheckProfile = 'quick' | 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckRunStatus = 'running' | 'completed' | 'failed' | 'canceled'
 export type ModelCheckItemStatus = 'passed' | 'warning' | 'failed' | 'skipped'
