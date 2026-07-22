@@ -9,6 +9,7 @@ import (
 
 	"juhe-ai/backend-go/internal/jobs/accounttest"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/managementaccountdraft"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -27,8 +28,13 @@ type Options struct {
 	Store         port.ManagementAccountTestDispatchStore
 	EnqueueClient EnqueueClient
 	Codec         CredentialCodec
+	Drafts        DraftPreparer
 	TestOptions   TestOptionsProvider
 	NewID         func(string) string
+}
+
+type DraftPreparer interface {
+	Prepare(context.Context, managementaccountdraft.Input) (managementaccountdraft.Snapshot, error)
 }
 
 type TestOptionsProvider interface {
@@ -48,6 +54,13 @@ type Input struct {
 	TestEndpointMode string
 	Access           port.ManagementAccountTestAccess
 	DraftAccount     map[string]any
+}
+
+type DraftInput struct {
+	SessionID        string
+	TestEndpointMode string
+	Account          managementaccountdraft.Account
+	Access           port.ManagementAccountTestAccess
 }
 
 type Task = port.ManagementAccountTestTask
@@ -101,6 +114,56 @@ func (s *Service) Dispatch(ctx context.Context, input Input) (Task, error) {
 		ProviderCode: account.ProviderCode, ProviderProtocolProfileID: account.ProviderProtocolProfileID,
 		ProtocolCode: account.ProtocolCode, ProtocolVersion: account.ProtocolVersion, AccountType: account.Type,
 		Diagnostics: diagnostics, Model: model, TestEndpointMode: endpoint, Access: input.Access,
+	})
+	if err != nil || !ok {
+		if err != nil {
+			return Task{}, err
+		}
+		return Task{}, ErrInvalidInput
+	}
+	if s.opts.EnqueueClient == nil {
+		return task, ErrEnqueueFailed
+	}
+	if _, err := accounttest.Enqueue(ctx, s.opts.EnqueueClient, accounttest.EnqueuePayload{TaskID: task.ID}); err != nil {
+		failed, _, markErr := s.opts.Store.MarkManagementAccountTestEnqueueFailed(ctx, task.ID, input.Access, err.Error())
+		if markErr != nil {
+			return task, fmt.Errorf("%w: %v", ErrEnqueueFailed, markErr)
+		}
+		return failed, ErrEnqueueFailed
+	}
+	return task, nil
+}
+
+func (s *Service) DispatchDraft(ctx context.Context, input DraftInput) (Task, error) {
+	if s.opts.Store == nil || s.opts.Drafts == nil || s.opts.Codec == nil || strings.TrimSpace(input.Access.ActorSystemAccountID) == "" {
+		return Task{}, ErrInvalidInput
+	}
+	snapshot, err := s.opts.Drafts.Prepare(ctx, managementaccountdraft.Input{Access: input.Access, Account: input.Account})
+	if err != nil {
+		return Task{}, err
+	}
+	endpoint := strings.TrimSpace(input.TestEndpointMode)
+	if endpoint == "" {
+		endpoint = snapshot.HealthCheckEndpointMode
+	}
+	if err := managementaccountdraft.ValidateTestEndpoint(snapshot, endpoint); err != nil {
+		return Task{}, err
+	}
+	payload, err := snapshot.Map()
+	if err != nil {
+		return Task{}, fmt.Errorf("encode account draft snapshot: %w", err)
+	}
+	encrypted, err := s.opts.Codec.EncryptJSON(payload)
+	if err != nil {
+		return Task{}, fmt.Errorf("encrypt account draft snapshot: %w", err)
+	}
+	taskID := s.opts.NewID("accttest")
+	task, ok, err := s.opts.Store.CreateManagementAccountTestTask(ctx, port.ManagementAccountTestDispatchCreateInput{
+		TaskID: taskID, SessionID: strings.TrimSpace(input.SessionID), AccountID: snapshot.ID, AccountName: snapshot.Name,
+		ProviderCode: snapshot.ProviderCode, ProviderProtocolProfileID: snapshot.ProviderProtocolProfileID,
+		ProtocolCode: snapshot.ProtocolCode, ProtocolVersion: snapshot.ProtocolVersion, AccountType: snapshot.Type,
+		Diagnostics: "full", Model: snapshot.HealthCheckModel, TestEndpointMode: endpoint,
+		DraftAccountEncrypted: encrypted, Access: input.Access,
 	})
 	if err != nil || !ok {
 		if err != nil {

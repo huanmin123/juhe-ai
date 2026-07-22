@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"juhe-ai/backend-go/internal/modules/managementaccountdraft"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -34,18 +35,40 @@ type Input struct {
 
 type Query func(context.Context, port.ManagementAccountBalanceCandidate) (Snapshot, error)
 
+type DraftCandidate struct {
+	AccountID       string
+	SystemAccountID string
+	ProviderCode    string
+	ProtocolCode    string
+	ProtocolVersion string
+	Type            string
+	Credentials     map[string]any
+	ProxyProfileID  string
+	Config          managementaccountdraft.BalanceQueryConfig
+}
+
+type DraftQuery func(context.Context, DraftCandidate) (Snapshot, error)
+
+type DraftPreparer interface {
+	Prepare(context.Context, managementaccountdraft.Input) (managementaccountdraft.Snapshot, error)
+}
+
 type ServiceOptions struct {
-	Reader port.ManagementAccountBalanceReader
-	Writer port.ManagementAccountBalanceWriter
-	Now    func() time.Time
-	Query  Query
+	Reader     port.ManagementAccountBalanceReader
+	Writer     port.ManagementAccountBalanceWriter
+	Now        func() time.Time
+	Query      Query
+	Drafts     DraftPreparer
+	DraftQuery DraftQuery
 }
 
 type Service struct {
-	reader port.ManagementAccountBalanceReader
-	writer port.ManagementAccountBalanceWriter
-	now    func() time.Time
-	query  Query
+	reader     port.ManagementAccountBalanceReader
+	writer     port.ManagementAccountBalanceWriter
+	now        func() time.Time
+	query      Query
+	drafts     DraftPreparer
+	draftQuery DraftQuery
 }
 
 func NewService(opts ServiceOptions) *Service {
@@ -53,7 +76,13 @@ func NewService(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{reader: opts.Reader, writer: opts.Writer, now: now, query: opts.Query}
+	return &Service{reader: opts.Reader, writer: opts.Writer, now: now, query: opts.Query, drafts: opts.Drafts, draftQuery: opts.DraftQuery}
+}
+
+type DraftInput struct {
+	Account managementaccountdraft.Account
+	Config  managementaccountdraft.BalanceQueryConfig
+	Access  port.ManagementAccountTestAccess
 }
 
 func (s *Service) Get(ctx context.Context, input Input) (Snapshot, bool, error) {
@@ -107,6 +136,31 @@ func (s *Service) Refresh(ctx context.Context, input Input) (Snapshot, bool, err
 		return Snapshot{}, true, err
 	}
 	return snapshot, true, nil
+}
+
+func (s *Service) TestDraft(ctx context.Context, input DraftInput) (Snapshot, error) {
+	if s.drafts == nil {
+		return Snapshot{}, fmt.Errorf("management account balance draft preparer is required")
+	}
+	snapshot, err := s.drafts.Prepare(ctx, managementaccountdraft.Input{Access: input.Access, Account: input.Account})
+	if err != nil {
+		return Snapshot{}, err
+	}
+	config, err := managementaccountdraft.NormalizeBalanceConfig(input.Config)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if err := managementaccountdraft.ValidateBalanceDraft(snapshot, config); err != nil {
+		return Snapshot{}, err
+	}
+	if s.draftQuery == nil {
+		return Snapshot{}, ErrBalanceQueryMissing
+	}
+	return s.draftQuery(ctx, DraftCandidate{
+		AccountID: snapshot.ID, SystemAccountID: snapshot.OwnerSystemAccountID,
+		ProviderCode: snapshot.ProviderCode, ProtocolCode: snapshot.ProtocolCode, ProtocolVersion: snapshot.ProtocolVersion,
+		Type: snapshot.Type, Credentials: snapshot.Credentials, ProxyProfileID: snapshot.ProxyProfileID, Config: config,
+	})
 }
 
 func normalizeInput(input Input) port.ManagementAccountBalanceInput {

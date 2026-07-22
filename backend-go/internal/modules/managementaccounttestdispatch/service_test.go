@@ -8,6 +8,7 @@ import (
 
 	"juhe-ai/backend-go/internal/jobs/accounttest"
 	"juhe-ai/backend-go/internal/jobs/queue"
+	"juhe-ai/backend-go/internal/modules/managementaccountdraft"
 	"juhe-ai/backend-go/internal/modules/managementaccounttestoptions"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -30,6 +31,35 @@ func TestDispatchCreatesQueuedTaskAndEnqueuesTaskID(t *testing.T) {
 	decoded, err := accounttest.Decode(client.payload)
 	if err != nil || decoded.TaskID != task.ID || client.taskType != accounttest.TaskType {
 		t.Fatalf("decoded=%+v err=%v type=%q", decoded, err, client.taskType)
+	}
+}
+
+func TestDispatchDraftEncryptsValidatedSnapshotWithoutResolvingSavedAccount(t *testing.T) {
+	store := &dispatchStoreStub{}
+	client := &dispatchQueueStub{}
+	codec := &dispatchCodecStub{}
+	service := NewService(Options{
+		Store: store, EnqueueClient: client, Codec: codec,
+		Drafts: &draftPreparerStub{snapshot: managementaccountdraft.Snapshot{
+			ID: "acctdraft_1", OwnerSystemAccountID: "owner_1", Name: "Draft", ProviderCode: "openai",
+			ProviderProtocolProfileID: "profile_openai", ProtocolCode: "openai", ProtocolVersion: "v1", Type: "api_key",
+			HealthCheckModel: "gpt-5.5", HealthCheckEndpointMode: "responses_sse", Credentials: map[string]any{"api_key": "sk-draft"},
+		}},
+		NewID: func(string) string { return "accttest_1" },
+	})
+
+	task, err := service.DispatchDraft(context.Background(), DraftInput{
+		Account: managementaccountdraft.Account{ProviderCode: "openai"},
+		Access:  port.ManagementAccountTestAccess{ActorSystemAccountID: "owner_1", ActorRole: "user", FilterSystemAccountID: "owner_1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.resolveCalls != 0 || task.ID != "accttest_1" || store.createInput.AccountID != "acctdraft_1" || store.createInput.DraftAccountEncrypted != "encrypted-draft" {
+		t.Fatalf("task=%+v create=%+v resolveCalls=%d", task, store.createInput, store.resolveCalls)
+	}
+	if codec.input["id"] != "acctdraft_1" || codec.input["credentials"] == nil {
+		t.Fatalf("encrypted snapshot = %#v", codec.input)
 	}
 }
 
@@ -204,9 +234,11 @@ type dispatchStoreStub struct {
 	createInput  port.ManagementAccountTestDispatchCreateInput
 	failedTaskID string
 	getTaskID    string
+	resolveCalls int
 }
 
 func (s *dispatchStoreStub) ResolveManagementAccountTestAccount(context.Context, string, port.ManagementAccountTestAccess) (port.ManagementAccountTestDispatchAccount, bool, error) {
+	s.resolveCalls++
 	return s.account, s.found, nil
 }
 func (s *dispatchStoreStub) CreateManagementAccountTestTask(_ context.Context, input port.ManagementAccountTestDispatchCreateInput) (port.ManagementAccountTestTask, bool, error) {
@@ -261,4 +293,13 @@ type dispatchCodecStub struct{ input map[string]any }
 func (s *dispatchCodecStub) EncryptJSON(input map[string]any) (string, error) {
 	s.input = input
 	return "encrypted-draft", nil
+}
+
+type draftPreparerStub struct {
+	snapshot managementaccountdraft.Snapshot
+	err      error
+}
+
+func (s *draftPreparerStub) Prepare(context.Context, managementaccountdraft.Input) (managementaccountdraft.Snapshot, error) {
+	return s.snapshot, s.err
 }

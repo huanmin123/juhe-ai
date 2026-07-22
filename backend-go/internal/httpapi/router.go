@@ -157,6 +157,8 @@ type RouterOptions struct {
 	ManagementMyAccountBalanceHandler                 http.Handler
 	ManagementAccountBalanceRefreshHandler            http.Handler
 	ManagementMyAccountBalanceRefreshHandler          http.Handler
+	ManagementAccountBalanceDraftTestHandler          http.Handler
+	ManagementMyAccountBalanceDraftTestHandler        http.Handler
 	ManagementAccountStatusSnapshotHandler            http.Handler
 	ManagementMyAccountStatusSnapshotHandler          http.Handler
 	ManagementAccountListHandler                      http.Handler
@@ -195,6 +197,8 @@ type RouterOptions struct {
 	ManagementMyAccountTestTaskStatusHandler          http.Handler
 	ManagementAccountTestDispatchHandler              http.Handler
 	ManagementMyAccountTestDispatchHandler            http.Handler
+	ManagementAccountDraftTestHandler                 http.Handler
+	ManagementMyAccountDraftTestHandler               http.Handler
 	ManagementSystemSettingsHandler                   http.Handler
 	ManagementSystemSettingsUpdateHandler             http.Handler
 	ManagementGlobalSettingsHandler                   http.Handler
@@ -443,6 +447,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountBalanceHandler == nil &&
 				opts.ManagementAccountBalanceRefreshHandler == nil &&
 				opts.ManagementMyAccountBalanceRefreshHandler == nil &&
+				opts.ManagementAccountBalanceDraftTestHandler == nil &&
+				opts.ManagementMyAccountBalanceDraftTestHandler == nil &&
 				opts.ManagementAccountStatusSnapshotHandler == nil &&
 				opts.ManagementMyAccountStatusSnapshotHandler == nil &&
 				opts.ManagementAccountListHandler == nil &&
@@ -481,6 +487,8 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountTestTaskStatusHandler == nil &&
 				opts.ManagementAccountTestDispatchHandler == nil &&
 				opts.ManagementMyAccountTestDispatchHandler == nil &&
+				opts.ManagementAccountDraftTestHandler == nil &&
+				opts.ManagementMyAccountDraftTestHandler == nil &&
 				opts.ManagementMyAccountTagUpdateHandler == nil &&
 				opts.ManagementSystemSettingsHandler == nil &&
 				opts.ManagementSystemSettingsUpdateHandler == nil &&
@@ -982,6 +990,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyAccountBalanceRefreshHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/balance/refresh", opts.ManagementMyAccountBalanceRefreshHandler.ServeHTTP)
 			}
+			if opts.ManagementAccountBalanceDraftTestHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/balance/test-draft", opts.ManagementAccountBalanceDraftTestHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountBalanceDraftTestHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/balance/test-draft", opts.ManagementMyAccountBalanceDraftTestHandler.ServeHTTP)
+			}
 			if opts.ManagementAccountStatusSnapshotHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/status-snapshot", opts.ManagementAccountStatusSnapshotHandler.ServeHTTP)
 			}
@@ -1095,6 +1109,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAccountTestDispatchHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/{id}/test", opts.ManagementMyAccountTestDispatchHandler.ServeHTTP)
+			}
+			if opts.ManagementAccountDraftTestHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/test-draft", opts.ManagementAccountDraftTestHandler.ServeHTTP)
+			}
+			if opts.ManagementMyAccountDraftTestHandler != nil {
+				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/test-draft", opts.ManagementMyAccountDraftTestHandler.ServeHTTP)
 			}
 			if opts.ManagementSystemSettingsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/settings", opts.ManagementSystemSettingsHandler.ServeHTTP)
@@ -1532,6 +1552,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountBalanceHandler != nil ||
 		opts.ManagementAccountBalanceRefreshHandler != nil ||
 		opts.ManagementMyAccountBalanceRefreshHandler != nil ||
+		opts.ManagementAccountBalanceDraftTestHandler != nil ||
+		opts.ManagementMyAccountBalanceDraftTestHandler != nil ||
+		opts.ManagementAccountDraftTestHandler != nil ||
+		opts.ManagementMyAccountDraftTestHandler != nil ||
 		opts.ManagementAccountStatusSnapshotHandler != nil ||
 		opts.ManagementMyAccountStatusSnapshotHandler != nil ||
 		opts.ManagementAccountListHandler != nil ||
@@ -1652,6 +1676,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountDeleteHandler != nil ||
 		opts.ManagementAccountBalanceRefreshHandler != nil ||
 		opts.ManagementMyAccountBalanceRefreshHandler != nil ||
+		opts.ManagementAccountBalanceDraftTestHandler != nil ||
+		opts.ManagementMyAccountBalanceDraftTestHandler != nil ||
 		opts.ManagementAccountExportHandler != nil ||
 		opts.ManagementMyAccountExportHandler != nil ||
 		opts.ManagementAccountCreateHandler != nil ||
@@ -1678,6 +1704,8 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountTestTaskCancelHandler != nil ||
 		opts.ManagementAccountTestDispatchHandler != nil ||
 		opts.ManagementMyAccountTestDispatchHandler != nil ||
+		opts.ManagementAccountDraftTestHandler != nil ||
+		opts.ManagementMyAccountDraftTestHandler != nil ||
 		opts.ManagementSystemSettingsUpdateHandler != nil ||
 		opts.ManagementGlobalSettingsUpdateHandler != nil ||
 		opts.ManagementClientIPAllowlistHandler != nil ||

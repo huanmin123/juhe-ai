@@ -22,6 +22,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementaccountcreate"
 	"juhe-ai/backend-go/internal/modules/managementaccountdelete"
 	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
+	"juhe-ai/backend-go/internal/modules/managementaccountdraft"
 	"juhe-ai/backend-go/internal/modules/managementaccountexport"
 	"juhe-ai/backend-go/internal/modules/managementaccountforceactivate"
 	"juhe-ai/backend-go/internal/modules/managementaccountgroupbinding"
@@ -386,6 +387,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountBalanceHandler:                 managementHandlers.MyAccountBalanceHandler,
 		ManagementAccountBalanceRefreshHandler:            managementHandlers.AccountBalanceRefreshHandler,
 		ManagementMyAccountBalanceRefreshHandler:          managementHandlers.MyAccountBalanceRefreshHandler,
+		ManagementAccountBalanceDraftTestHandler:          managementHandlers.AccountBalanceDraftTestHandler,
+		ManagementMyAccountBalanceDraftTestHandler:        managementHandlers.MyAccountBalanceDraftTestHandler,
 		ManagementAccountStatusSnapshotHandler:            managementHandlers.AccountStatusSnapshotHandler,
 		ManagementMyAccountStatusSnapshotHandler:          managementHandlers.MyAccountStatusSnapshotHandler,
 		ManagementAccountListHandler:                      managementHandlers.AccountListHandler,
@@ -424,6 +427,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountTestTaskStatusHandler:          managementHandlers.MyAccountTestTaskStatusHandler,
 		ManagementAccountTestDispatchHandler:              managementHandlers.AccountTestDispatchHandler,
 		ManagementMyAccountTestDispatchHandler:            managementHandlers.MyAccountTestDispatchHandler,
+		ManagementAccountDraftTestHandler:                 managementHandlers.AccountDraftTestHandler,
+		ManagementMyAccountDraftTestHandler:               managementHandlers.MyAccountDraftTestHandler,
 		ManagementSystemSettingsHandler:                   managementHandlers.SystemSettingsHandler,
 		ManagementSystemSettingsUpdateHandler:             managementHandlers.SystemSettingsUpdateHandler,
 		ManagementGlobalSettingsHandler:                   managementHandlers.GlobalSettingsHandler,
@@ -619,6 +624,8 @@ type managementAPIHandlers struct {
 	MyAccountBalanceHandler                 http.Handler
 	AccountBalanceRefreshHandler            http.Handler
 	MyAccountBalanceRefreshHandler          http.Handler
+	AccountBalanceDraftTestHandler          http.Handler
+	MyAccountBalanceDraftTestHandler        http.Handler
 	AccountStatusSnapshotHandler            http.Handler
 	MyAccountStatusSnapshotHandler          http.Handler
 	AccountListHandler                      http.Handler
@@ -657,6 +664,8 @@ type managementAPIHandlers struct {
 	MyAccountTestTaskStatusHandler          http.Handler
 	AccountTestDispatchHandler              http.Handler
 	MyAccountTestDispatchHandler            http.Handler
+	AccountDraftTestHandler                 http.Handler
+	MyAccountDraftTestHandler               http.Handler
 	SystemSettingsHandler                   http.Handler
 	SystemSettingsUpdateHandler             http.Handler
 	GlobalSettingsHandler                   http.Handler
@@ -816,7 +825,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		FingerprintSecret: cfg.Secret,
 	})
 	accountBatchEditService := managementaccountbatchedit.NewService(store, store)
-	accountBalanceService := managementaccountbalance.NewService(managementaccountbalance.ServiceOptions{Reader: store, Writer: store})
+	accountDraftService := managementaccountdraft.NewService(managementaccountdraft.Options{Groups: store, Providers: store})
+	accountBalanceService := managementaccountbalance.NewService(managementaccountbalance.ServiceOptions{Reader: store, Writer: store, Drafts: accountDraftService})
 	accountStatusSnapshotService := managementaccountstatussnapshot.NewServiceWithOptions(managementaccountstatussnapshot.ServiceOptions{
 		Reader:             store,
 		AccountConcurrency: accountConcurrencyReader,
@@ -865,6 +875,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		EnqueueClient: operationLogQueue,
 		Codec:         secretcrypto.NewJSONCodec(cfg.Secret),
 		TestOptions:   accountTestOptionsService,
+		Drafts:        accountDraftService,
 	})
 	accountForceActivateService := managementaccountforceactivate.NewService(managementaccountforceactivate.ServiceOptions{
 		Store:              store,
@@ -1096,6 +1107,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountBalanceHandler:                 httpapi.NewManagementMyAccountBalanceHandler(accountBalanceService),
 		AccountBalanceRefreshHandler:            httpapi.NewManagementAccountBalanceRefreshHandler(accountBalanceService),
 		MyAccountBalanceRefreshHandler:          httpapi.NewManagementMyAccountBalanceRefreshHandler(accountBalanceService),
+		AccountBalanceDraftTestHandler:          httpapi.NewManagementAccountBalanceDraftTestHandler(accountBalanceService),
+		MyAccountBalanceDraftTestHandler:        httpapi.NewManagementMyAccountBalanceDraftTestHandler(accountBalanceService),
 		AccountStatusSnapshotHandler:            httpapi.NewManagementAccountStatusSnapshotHandler(accountStatusSnapshotService),
 		MyAccountStatusSnapshotHandler:          httpapi.NewManagementMyAccountStatusSnapshotHandler(accountStatusSnapshotService),
 		AccountListHandler:                      httpapi.NewManagementAccountListHandler(accountListService),
@@ -1134,6 +1147,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountTestTaskStatusHandler:          httpapi.NewManagementMyAccountTestTaskStatusHandler(accountTestStatusService),
 		AccountTestDispatchHandler:              httpapi.NewManagementAccountTestDispatchHandler(accountTestDispatchService),
 		MyAccountTestDispatchHandler:            httpapi.NewManagementMyAccountTestDispatchHandler(accountTestDispatchService),
+		AccountDraftTestHandler:                 httpapi.NewManagementAccountDraftTestHandler(accountTestDispatchService),
+		MyAccountDraftTestHandler:               httpapi.NewManagementMyAccountDraftTestHandler(accountTestDispatchService),
 		SystemSettingsHandler:                   httpapi.NewManagementSystemSettingsHandler(systemSettingsService),
 		SystemSettingsUpdateHandler:             httpapi.NewManagementSystemSettingsUpdateHandlerWithOperationLog(systemSettingsService, operationLogOptions),
 		GlobalSettingsHandler:                   httpapi.NewManagementGlobalSettingsHandler(&globalSettingsService),
