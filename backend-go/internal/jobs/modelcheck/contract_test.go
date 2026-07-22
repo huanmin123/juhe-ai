@@ -147,6 +147,8 @@ func TestDecodeRunTaskPayloadRejectsUnknownTrailingAndOversizedData(t *testing.T
 	valid := `{"version":1,"runId":"run-1","systemAccountId":"owner-1","actorSystemAccountId":"actor-1","targetType":"account","targetId":"account-1","targetConfigRevision":1,"model":"gpt-5.4","profile":"full","probeSetVersion":"probe-v1","trustedComparison":false,"traceId":"trace-1","requestedAt":"2026-07-22T12:00:00Z"}`
 	for _, raw := range [][]byte{
 		[]byte(strings.TrimSuffix(valid, "}") + `,"apiKey":"secret"}`),
+		[]byte(strings.Replace(valid, `"runId":"run-1"`, `"runId":"run-1","runId":"run-2"`, 1)),
+		[]byte(strings.Replace(valid, `"runId":"run-1"`, `"runId":" run-1 "`, 1)),
 		[]byte(valid + ` {}`),
 		bytes.Repeat([]byte("x"), MaxPayloadBytes+1),
 	} {
