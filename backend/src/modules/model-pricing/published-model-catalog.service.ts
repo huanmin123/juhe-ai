@@ -11,14 +11,10 @@ import {
   type GatewayModelCatalogVariant
 } from '../../storage/gateway-model-catalog-snapshot.repository.js'
 import { requestGatewayDbService } from '../gateway/runtime/gateway-db-service-request.js'
-import { buildAnthropicModelsResponse } from '../gateway/protocols/anthropic-v1/route-helpers.js'
-import { buildGeminiModelsResponse } from '../gateway/protocols/gemini-v1beta/route-helpers.js'
 import { buildChatModelOptions, chatModelCapabilities, chatModelListOptions, type ChatModelCapabilities, type ChatModelListOption } from '../chat/chat-model-options.js'
 import { normalizeProviderToken, OPENAI_COMPATIBLE_PROVIDER_CODE } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 import {
-  buildCodexModelsResponseFromCatalog,
-  buildOpenAIModelsResponseFromCatalog,
   listProviderModelCatalogAsync,
   type ProviderModelCatalogItem
 } from './model-catalog.service.js'
@@ -35,9 +31,8 @@ const publishedModelCatalogCache = createSharedJsonCache<PublishedModelCatalogCa
   ttlMs: 10 * 60_000,
   version: 'v1'
 })
-// The published snapshot is immutable between explicit catalog rebuilds. Keep the
-// response object in-process so the hot path does not pay a Redis round trip or
-// JSON parse for every /v1/models request.
+// AI Chat snapshots are immutable between explicit catalog rebuilds. Keep the
+// response object in-process so chat model dropdowns avoid repeated Redis reads.
 const publishedModelCatalogLocalCache = createProcessLocalResourceCache<string, PublishedModelCatalogCacheEntry>({
   name: 'gateway:published-model-catalog:local',
   max: 50_000,
@@ -45,7 +40,7 @@ const publishedModelCatalogLocalCache = createProcessLocalResourceCache<string, 
 })
 const pendingRebuildRetries = new Map<string, { timer: NodeJS.Timeout; attempt: number }>()
 
-export async function readPublishedModelCatalogResponseAsync(input: {
+async function readPublishedChatModelCatalogResponseAsync(input: {
   systemAccountId: string
   protocol: GatewayModelCatalogProtocol
   variant: GatewayModelCatalogVariant
@@ -126,11 +121,7 @@ async function rebuildPublishedModelCatalogSnapshotsForSystemAccountInternalAsyn
 async function rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync(
   systemAccountId: string
 ): Promise<GatewayModelCatalogSnapshot[]> {
-  const [openaiCatalog, anthropicCatalog, geminiCatalog] = await Promise.all([
-    publishedCatalog(OPENAI_COMPATIBLE_PROVIDER_CODE, systemAccountId),
-    publishedCatalog('anthropic', systemAccountId),
-    publishedCatalog('gemini', systemAccountId)
-  ])
+  const openaiCatalog = await publishedCatalog(OPENAI_COMPATIBLE_PROVIDER_CODE, systemAccountId)
   const revision = `${Date.now()}-${Math.random().toString(16).slice(2)}`
   const chatCatalogsByProvider = new Map<string, ProviderModelCatalogItem[]>()
   for (const item of openaiCatalog) {
@@ -152,14 +143,8 @@ async function rebuildPublishedModelCatalogSnapshotsForSystemAccountImplAsync(
   // same old dynamic chat-model keys again.
   await publishedModelCatalogCache.clear()
   publishedModelCatalogLocalCache.clear()
-  const snapshots = await replaceGatewayModelCatalogSnapshotsAsync(systemAccountId, [
-    snapshotInput('openai', 'default', buildOpenAIModelsResponseFromCatalog(openaiCatalog), openaiCatalog.length, revision),
-    snapshotInput('openai', 'codex', buildCodexModelsResponseFromCatalog(openaiCatalog), openaiCatalog.length, revision),
-    snapshotInput('anthropic', 'default', buildAnthropicModelsResponse(anthropicCatalog), anthropicCatalog.length, revision),
-    snapshotInput('gemini', 'default', buildGeminiModelsResponse(geminiCatalog), geminiCatalog.length, revision),
-    ...chatSnapshots
-  ])
-  await Promise.all(snapshots.filter((snapshot) => !isChatModelSnapshot(snapshot.variant)).map((snapshot) => cachePublishedSnapshot(snapshot, true)))
+  const snapshots = await replaceGatewayModelCatalogSnapshotsAsync(systemAccountId, chatSnapshots)
+  await Promise.all(snapshots.filter((snapshot) => isChatModelListSnapshot(snapshot.variant)).map((snapshot) => cachePublishedSnapshot(snapshot, true)))
   return snapshots
 }
 
@@ -171,7 +156,7 @@ export interface PublishedChatModelList {
 export async function readPublishedChatModelListAsync(systemAccountId: string, providerCode: string): Promise<PublishedChatModelList> {
   let payload: object
   try {
-    payload = await readPublishedModelCatalogResponseAsync({
+    payload = await readPublishedChatModelCatalogResponseAsync({
       systemAccountId,
       protocol: 'openai',
       variant: chatModelListSnapshotVariant(providerCode)
@@ -190,7 +175,7 @@ export async function readPublishedChatModelListAsync(systemAccountId: string, p
 
 export async function readPublishedChatModelCapabilitiesAsync(systemAccountId: string, providerCode: string, modelId: string): Promise<ChatModelCapabilities | undefined> {
   try {
-    const payload = await readPublishedModelCatalogResponseAsync({
+    const payload = await readPublishedChatModelCatalogResponseAsync({
       systemAccountId,
       protocol: 'openai',
       variant: chatModelSnapshotVariant(providerCode, modelId)
@@ -269,8 +254,9 @@ export function prewarmPublishedModelCatalogSnapshotsAsync(): Promise<number> {
     const snapshots = runtimeConfig.processRole === 'server'
       ? await requestGatewayDbService({ type: 'list_gateway_model_catalog_snapshots' })
       : await listGatewayModelCatalogSnapshotsAsync()
-    await Promise.all(snapshots.filter((snapshot) => !isChatModelSnapshot(snapshot.variant)).map((snapshot) => cachePublishedSnapshot(snapshot)))
-    return snapshots.length
+    const chatListSnapshots = snapshots.filter((snapshot) => isChatModelListSnapshot(snapshot.variant))
+    await Promise.all(chatListSnapshots.map((snapshot) => cachePublishedSnapshot(snapshot)))
+    return chatListSnapshots.length
   })
 }
 
@@ -351,8 +337,8 @@ function chatModelSnapshotVariant(providerCode: string, modelId: string): Gatewa
   return `chat_model:${encodeURIComponent(normalizeProviderToken(providerCode) || providerCode)}:${encodeURIComponent(modelId)}`
 }
 
-function isChatModelSnapshot(variant: GatewayModelCatalogVariant): boolean {
-  return variant.startsWith('chat_model:')
+function isChatModelListSnapshot(variant: GatewayModelCatalogVariant): boolean {
+  return variant.startsWith('chat_list:')
 }
 
 function publishedModelCatalogCacheKey(input: {

@@ -88,6 +88,13 @@
 - [响应语义检查管线设计](响应语义检查管线设计.md)
 - [SQLite 存储说明](SQLite存储说明.md)
 
+## 客户端模型目录规则
+
+- 普通 `GET /models` 与 `GET /v1/models` 默认使用 OpenAI-compatible 响应；`GET /v1beta/models` 或明确 Gemini 客户端信号使用 Gemini 原生响应，明确 Anthropic 客户端信号使用 Anthropic 原生响应。
+- 无 API Key 时聚合全部已启用、非 `hybrid` 供应商目录；有效 API Key 按其路由策略全部 active 分组绑定的供应商聚合，不只取当前选中分组，空绑定不回退公开全量。
+- 聚合复用供应商级进程内 / Redis 缓存，只保留启用、可见、可计价模型；按用户最终要求返回新旧及缺少发布时间的全部可用模型，`releaseDate` 只参与稳定排序和响应元数据。
+- 网关模型列表不读写 `default/codex` 发布响应快照；AI Chat 仍使用 `chat_list:*` 与 `chat_model:*` 能力快照。
+
 ## 备选 / 历史 / 背景文档
 
 - [公开接口独立进程设计](公开接口独立进程设计.md)：已评估但暂不实施，当前仍由主进程代理到 DB service。
