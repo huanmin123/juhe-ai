@@ -1,13 +1,11 @@
 import { onBeforeUnmount, ref, shallowRef } from 'vue'
 
-import { api, pageDataApi } from '@/api/client'
-import { authState } from '@/composables/useAuth'
+import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import {
   removeLocalSelectPreferenceValues,
   type LocalSelectStorageKeyPart
 } from '@/shared/selectLocalPreferenceCache'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -27,8 +25,6 @@ interface RemoteAuthorizationPrincipalOptionsConfig {
   searchDelayMs?: number
   selectedIds?: () => Array<string | undefined>
 }
-
-const authorizationOptionResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPrincipalOption>(config: RemoteAuthorizationPrincipalOptionsConfig) {
   const options = shallowRef<T[]>([])
@@ -61,38 +57,13 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     loadingPromise = (async () => {
       try {
         const isManagementView = config.isManagementView()
-        const domain = config.kind === 'team' ? 'teams.options' : 'systemAccounts.options'
-        const route = `/${isManagementView ? '' : 'my-'}authorization-options/grantee-${config.kind === 'team' ? 'teams' : 'accounts'}`
-        const result = await authorizationOptionResourceCache.load<T[]>({
-          cacheKey: {
-            scope: authorizationOptionScope(isManagementView),
-            route,
-            query: {
-              kind: config.kind,
-              keyword: requestKeyword,
-              selectedIds,
-              limit,
-              localScope: config.localCacheKeyParts?.() ?? []
-            },
-            version: 1
-          },
-          domain,
-          viewScope: isManagementView ? 'admin' : 'self',
-          loadNetwork: async () => {
-            let nextOptions = await fetchOptions<T>(config.kind, isManagementView, {
-              keyword: requestKeyword,
-              limit
-            })
-            nextOptions = await ensureSelectedOptions(nextOptions, selectedIds, isManagementView)
-            return nextOptions
-          }
+        let nextOptions = await fetchOptions<T>(config.kind, isManagementView, {
+          keyword: requestKeyword,
+          limit
         })
-        const nextOptions = result.data
+        nextOptions = await ensureSelectedOptions(nextOptions, selectedIds, isManagementView)
         if (currentRequestId !== requestId) return
         options.value = nextOptions
-        void result.confirmation?.then((outcome) => {
-          if (outcome.data && currentRequestId === requestId) options.value = outcome.data
-        })
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
@@ -172,11 +143,6 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     return [...new Set((config.selectedIds?.() ?? [])
       .filter((id): id is string => Boolean(id && id !== allSystemAccountsValue))
       .sort())]
-  }
-
-  function authorizationOptionScope(isManagementView: boolean): string {
-    const viewer = authState.currentUser.value
-    return `${isManagementView ? 'admin' : 'self'}:${viewer?.id ?? 'anonymous'}:${viewer?.role ?? 'anonymous'}`
   }
 
   onBeforeUnmount(clearSearchTimer)

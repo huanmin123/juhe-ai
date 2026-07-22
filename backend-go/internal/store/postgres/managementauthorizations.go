@@ -1506,7 +1506,7 @@ func (s *Store) ExpireDueManagementResourceAuthorizations(ctx context.Context, i
 	}
 	rows.Close()
 
-	authorizations := make([]port.ManagementResourceAuthorizationExpiryFanout, 0, len(dueGrants))
+	expired := 0
 	for _, grant := range dueGrants {
 		tag, err := tx.Exec(ctx, `
 UPDATE juhe_business.resource_authorization_grants
@@ -1534,9 +1534,8 @@ WHERE id = $2
 		if err := syncManagementGrantRuntimeAfterUpdateTx(ctx, tx, grant, actor, now, 0); err != nil {
 			return port.ManagementResourceAuthorizationExpirySweepResult{}, err
 		}
-		authorizations = append(authorizations, managementAuthorizationExpiryFanout(grant))
+		expired++
 	}
-	expired := len(authorizations)
 	if expired > 0 {
 		if err := markAllGroupAccountStatsDirtyIfPresentTx(ctx, tx, managementResourceAuthorizationExpiredReason, now); err != nil {
 			return port.ManagementResourceAuthorizationExpirySweepResult{}, err
@@ -1549,22 +1548,7 @@ WHERE id = $2
 		return port.ManagementResourceAuthorizationExpirySweepResult{}, fmt.Errorf("commit management resource authorization expiry sweep tx: %w", err)
 	}
 	committed = true
-	return port.ManagementResourceAuthorizationExpirySweepResult{
-		Expired:        expired,
-		Authorizations: authorizations,
-	}, nil
-}
-
-func managementAuthorizationExpiryFanout(grant postgresqueries.JuheBusinessResourceAuthorizationGrant) port.ManagementResourceAuthorizationExpiryFanout {
-	return port.ManagementResourceAuthorizationExpiryFanout{
-		AuthorizationID:              grant.ID,
-		ResourceType:                 grant.ResourceType,
-		ResourceID:                   grant.ResourceID,
-		ResourceOwnerSystemAccountID: grant.ResourceOwnerSystemAccountID,
-		GranteeType:                  grant.GranteeType,
-		GranteeSystemAccountID:       textValue(grant.GranteeSystemAccountID),
-		GranteeTeamID:                textValue(grant.GranteeTeamID),
-	}
+	return port.ManagementResourceAuthorizationExpirySweepResult{Expired: expired}, nil
 }
 
 func managementResourceAuthorizationExpirySweepQuery() string {

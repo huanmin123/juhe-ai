@@ -171,9 +171,9 @@ try {
     assert(keywordIds.includes(seed.matchedPrefixAccountId), '账户选项关键词应命中账户名称前缀值')
     assert(!keywordIds.includes(seed.middleAccountId), '账户选项关键词不应命中账户名称中间包含值')
     assert.equal(keywordOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '账户选项关键词查询不应混入其他用户账户')
-    const hotKeywordCallCount = capturedCalls.length
+    const repeatedKeywordCallStart = capturedCalls.length
     await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${keyword}&limit=20`, seed.adminCookie)
-    assert.equal(capturedCalls.length, hotKeywordCallCount, '相同账户 options 查询第二次应命中后端 cache，不再读取业务表')
+    assert(capturedCalls.length > repeatedKeywordCallStart, '相同账户 options 查询应直接读取业务表，不依赖页面缓存')
 
     const groupKeywordOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('账户选项绑定分组')}&limit=20`, seed.adminCookie)
     assert(!groupKeywordOptions.some((account) => account.id === seed.groupMatchedAccountId), '账户选项关键词不应通过绑定分组名称命中')

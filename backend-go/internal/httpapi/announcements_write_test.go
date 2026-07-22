@@ -70,22 +70,6 @@ func (f *announcementWriteServiceFake) FindManagement(_ context.Context, _ strin
 	return f.findResult, f.findFound, f.findErr
 }
 
-type announcementPageDataFake struct {
-	err   error
-	calls []announcementPageDataCall
-}
-
-type announcementPageDataCall struct {
-	id        string
-	operation string
-	fieldMask []string
-}
-
-func (f *announcementPageDataFake) PublishAnnouncementPublicChange(_ context.Context, id, operation string, fieldMask []string) error {
-	f.calls = append(f.calls, announcementPageDataCall{id: id, operation: operation, fieldMask: append([]string(nil), fieldMask...)})
-	return f.err
-}
-
 func announcementWriteRequest(method, path, body, role string) *http.Request {
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
 	if role != "" {
@@ -116,15 +100,14 @@ func announcementWriteRequestWithID(request *http.Request, id string) *http.Requ
 	return request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext))
 }
 
-func newAnnouncementWriteHandler(fake *announcementWriteServiceFake, queue *operationLogQueueStub, pageData *announcementPageDataFake) http.Handler {
+func newAnnouncementWriteHandler(fake *announcementWriteServiceFake, queue *operationLogQueueStub) http.Handler {
 	return newAnnouncementManagementWriteHandler(fake, announcementManagementWriteOptions{
 		operationLogs: newManagementOperationLogOptions(ManagementOperationLogOptions{
 			Client:   queue,
 			Now:      func() time.Time { return time.Date(2026, 7, 19, 12, 0, 0, 0, time.UTC) },
 			NewLogID: func() string { return "oplog-announcement" },
 		}),
-		pageData: pageData,
-		reader:   fake,
+		reader: fake,
 	})
 }
 
@@ -148,7 +131,7 @@ func TestAnnouncementManagementWriteCreateStrictJSONAndStatus(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fake := &announcementWriteServiceFake{createResult: port.Announcement{ID: "ann-1", Title: "标题"}}
 			recorder := httptest.NewRecorder()
-			newAnnouncementWriteHandler(fake, &operationLogQueueStub{}, &announcementPageDataFake{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", body, "admin"))
+			newAnnouncementWriteHandler(fake, &operationLogQueueStub{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", body, "admin"))
 			if recorder.Code != http.StatusBadRequest || fake.createCalls != 0 {
 				t.Fatalf("status=%d createCalls=%d body=%s", recorder.Code, fake.createCalls, recorder.Body.String())
 			}
@@ -157,13 +140,13 @@ func TestAnnouncementManagementWriteCreateStrictJSONAndStatus(t *testing.T) {
 
 	fake := &announcementWriteServiceFake{createResult: port.Announcement{ID: "ann-1", Title: "标题", Status: "draft"}}
 	recorder := httptest.NewRecorder()
-	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}, &announcementPageDataFake{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", valid, "admin"))
+	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", valid, "admin"))
 	if recorder.Code != http.StatusCreated || fake.createCalls != 1 {
 		t.Fatalf("status=%d createCalls=%d body=%s", recorder.Code, fake.createCalls, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
-	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}, &announcementPageDataFake{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", `{"title":"标题","content":"内容","status":null,"status":"draft"}`, "admin"))
+	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", `{"title":"标题","content":"内容","status":null,"status":"draft"}`, "admin"))
 	if recorder.Code != http.StatusCreated || fake.createCalls != 2 {
 		t.Fatalf("duplicate last value status=%d createCalls=%d body=%s", recorder.Code, fake.createCalls, recorder.Body.String())
 	}
@@ -173,7 +156,7 @@ func TestAnnouncementManagementWriteCreateRejectsBodyOverNodeLimit(t *testing.T)
 	fake := &announcementWriteServiceFake{}
 	recorder := httptest.NewRecorder()
 	body := `{"title":"标题","content":"` + strings.Repeat("x", announcementJSONMaxBodyBytes) + `"}`
-	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}, &announcementPageDataFake{}).ServeHTTP(
+	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}).ServeHTTP(
 		recorder,
 		announcementWriteRequest(http.MethodPost, "/announcements", body, "admin"),
 	)
@@ -189,8 +172,7 @@ func TestAnnouncementManagementWriteUpdateActionsAndNotFound(t *testing.T) {
 		unpublishResult: port.Announcement{ID: "ann-1", Title: "标题", Status: "archived"},
 	}
 	queue := &operationLogQueueStub{}
-	pageData := &announcementPageDataFake{}
-	handler := newAnnouncementWriteHandler(fake, queue, pageData)
+	handler := newAnnouncementWriteHandler(fake, queue)
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, announcementWriteRequest(http.MethodPatch, "/announcements/ann-1", `{"title":"新标题"}`, "admin"))
@@ -253,7 +235,7 @@ func TestAnnouncementManagementWriteAuthAndServiceErrorMapping(t *testing.T) {
 				fake.findFound = false
 			}
 			recorder := httptest.NewRecorder()
-			newAnnouncementWriteHandler(fake, &operationLogQueueStub{}, &announcementPageDataFake{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", `{"title":"标题","content":"内容"}`, test.role))
+			newAnnouncementWriteHandler(fake, &operationLogQueueStub{}).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", `{"title":"标题","content":"内容"}`, test.role))
 			if recorder.Code != test.want {
 				t.Fatalf("status=%d, want %d; body=%s", recorder.Code, test.want, recorder.Body.String())
 			}
@@ -261,7 +243,7 @@ func TestAnnouncementManagementWriteAuthAndServiceErrorMapping(t *testing.T) {
 	}
 }
 
-func TestAnnouncementManagementWriteOperationLogAndPageData(t *testing.T) {
+func TestAnnouncementManagementWriteOperationLog(t *testing.T) {
 	before := announcementPublished("ann-1")
 	fake := &announcementWriteServiceFake{
 		createResult:    before,
@@ -272,31 +254,23 @@ func TestAnnouncementManagementWriteOperationLogAndPageData(t *testing.T) {
 		findResult:      before, findFound: true,
 	}
 	queue := &operationLogQueueStub{}
-	pageData := &announcementPageDataFake{}
-	handler := newAnnouncementWriteHandler(fake, queue, pageData)
+	handler := newAnnouncementWriteHandler(fake, queue)
 	requests := []struct {
 		action, method, path, body string
 		wantStatus                 int
-		wantOperation              string
-		wantMask                   []string
 	}{
-		{"create", http.MethodPost, "/announcements", `{"title":"标题","content":"内容","status":"published"}`, http.StatusCreated, "upsert", []string{"title", "content", "level", "status", "publishedAt"}},
-		{"update", http.MethodPatch, "/announcements/ann-1", `{"title":"新标题"}`, http.StatusOK, "upsert", []string{"title", "content", "level", "status", "publishedAt"}},
-		{"publish", http.MethodPost, "/announcements/ann-1/publish", "", http.StatusOK, "upsert", []string{"status", "publishedAt"}},
-		{"unpublish", http.MethodPost, "/announcements/ann-1/unpublish", "", http.StatusOK, "delete", []string{"status"}},
-		{"delete", http.MethodDelete, "/announcements/ann-1", "", http.StatusNoContent, "delete", nil},
+		{"create", http.MethodPost, "/announcements", `{"title":"标题","content":"内容","status":"published"}`, http.StatusCreated},
+		{"update", http.MethodPatch, "/announcements/ann-1", `{"title":"新标题"}`, http.StatusOK},
+		{"publish", http.MethodPost, "/announcements/ann-1/publish", "", http.StatusOK},
+		{"unpublish", http.MethodPost, "/announcements/ann-1/unpublish", "", http.StatusOK},
+		{"delete", http.MethodDelete, "/announcements/ann-1", "", http.StatusNoContent},
 	}
 	for _, test := range requests {
 		queue.payload = nil
-		pageData.calls = nil
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, announcementWriteRequest(test.method, test.path, test.body, "admin"))
-		if recorder.Code != test.wantStatus || len(pageData.calls) != 1 {
-			t.Fatalf("action=%s status=%d pageCalls=%d body=%s", test.action, recorder.Code, len(pageData.calls), recorder.Body.String())
-		}
-		call := pageData.calls[0]
-		if call.id != "ann-1" || call.operation != test.wantOperation || strings.Join(call.fieldMask, ",") != strings.Join(test.wantMask, ",") {
-			t.Fatalf("action=%s pageData=%+v", test.action, call)
+		if recorder.Code != test.wantStatus {
+			t.Fatalf("action=%s status=%d body=%s", test.action, recorder.Code, recorder.Body.String())
 		}
 		logInput, err := operationlogjob.DecodeWriteTaskPayload(queue.payload)
 		if err != nil {
@@ -317,11 +291,10 @@ func TestAnnouncementManagementWriteOperationLogAndPageData(t *testing.T) {
 func TestAnnouncementManagementWriteSideEffectFailuresDoNotChangeSuccess(t *testing.T) {
 	fake := &announcementWriteServiceFake{createResult: port.Announcement{ID: "ann-1", Title: "标题", Status: "published"}}
 	queue := &operationLogQueueStub{err: errors.New("redis down")}
-	pageData := &announcementPageDataFake{err: errors.New("page data down")}
 	recorder := httptest.NewRecorder()
-	newAnnouncementWriteHandler(fake, queue, pageData).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", `{"title":"标题","content":"内容","status":"published"}`, "admin"))
-	if recorder.Code != http.StatusCreated || fake.createCalls != 1 || queue.calls != 1 || len(pageData.calls) != 1 {
-		t.Fatalf("status=%d createCalls=%d queueCalls=%d pageCalls=%d", recorder.Code, fake.createCalls, queue.calls, len(pageData.calls))
+	newAnnouncementWriteHandler(fake, queue).ServeHTTP(recorder, announcementWriteRequest(http.MethodPost, "/announcements", `{"title":"标题","content":"内容","status":"published"}`, "admin"))
+	if recorder.Code != http.StatusCreated || fake.createCalls != 1 || queue.calls != 1 {
+		t.Fatalf("status=%d createCalls=%d queueCalls=%d", recorder.Code, fake.createCalls, queue.calls)
 	}
 }
 

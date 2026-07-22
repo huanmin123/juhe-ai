@@ -26,14 +26,14 @@ export async function loadRouteStrategyOptionsResource(options: RouteStrategyOpt
   const selectedIds = [...new Set((options.selectedIds ?? []).map((id) => id.trim()).filter(Boolean))].sort()
   const windowOptions = await options.api.options({ keyword, limit: 50, activeOnly: false, systemAccountId: options.systemAccountId })
   const missingIds = selectedIds.filter((id) => !windowOptions.some((item) => item.id === id))
-  const values = missingIds.length
+  const result = missingIds.length
     ? mergeRouteStrategyOptionsById(
         await options.api.options({ ids: missingIds, limit: missingIds.length, activeOnly: false, systemAccountId: options.systemAccountId }),
         windowOptions
       )
     : windowOptions
-  applyIfCurrent(options, values)
-  return values
+  applyIfCurrent(options, result)
+  return result
 }
 
 function applyIfCurrent(options: RouteStrategyOptionsResourceOptions, value: RouteStrategyOptionSummary[]): void {

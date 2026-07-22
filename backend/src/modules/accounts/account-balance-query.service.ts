@@ -21,7 +21,6 @@ import { requestStatsWriter } from '../background/background-stats-writer.js'
 import { requestUpstream, UpstreamRequestAbortedError, UpstreamRequestTimeoutError } from '../gateway/upstream/request.js'
 import { parseCustomBalance, parseLiteLlmBalance, parseNewApiBalance, parseSub2ApiBalance, parseUserBalance } from './account-balance-adapters.js'
 import { effectiveAccountApiKeys, MULTI_KEY_ACCOUNT_BALANCE_QUERY_MESSAGE } from './account-balance-config.js'
-import { publishAccountStaticChange } from '../page-data/page-data-change.publisher.js'
 
 const responseMaxBytes = 256 * 1024
 const requestTimeoutMs = 15_000
@@ -98,11 +97,6 @@ export async function refreshAccountBalanceCandidate(
       attempt.nextRefreshAfter,
       dependencies.mode
     )
-    await publishAccountStaticChange({
-      accountId: candidate.id,
-      ownerSystemAccountIds: [candidate.systemAccountId],
-      fieldMask: ['balanceSnapshot', 'balanceQueryConfig']
-    })
     return attempt.snapshot
   } finally {
     await releaseBalanceLease(leaseKey, ownerId)

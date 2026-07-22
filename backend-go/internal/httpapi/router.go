@@ -235,7 +235,6 @@ type RouterOptions struct {
 	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementAnnouncementsHandler                    http.Handler
 	ManagementSystemMetricsHandler                    http.Handler
-	ManagementPageDataConfirmHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
 	ManagementStatsAccountUsageHandler                http.Handler
@@ -540,7 +539,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementAnnouncementsHandler == nil &&
 				opts.ManagementSystemMetricsHandler == nil &&
-				opts.ManagementPageDataConfirmHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
 				opts.ManagementMyStatsUsageWindowHandler == nil &&
 				opts.ManagementStatsAccountUsageHandler == nil &&
@@ -1457,9 +1455,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementSystemMetricsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/system-metrics", opts.ManagementSystemMetricsHandler.ServeHTTP)
 			}
-			if opts.ManagementPageDataConfirmHandler != nil {
-				system.With(managementAPIReadRateLimitMiddleware).Post("/data-changes/confirm", opts.ManagementPageDataConfirmHandler.ServeHTTP)
-			}
 			if opts.ManagementStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
 			}
@@ -1673,6 +1668,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountUpdateHandler != nil ||
 		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementAccountImportPreviewHandler != nil ||
+		opts.ManagementMyAccountImportPreviewHandler != nil ||
+		opts.ManagementAccountImportConfirmHandler != nil ||
+		opts.ManagementMyAccountImportConfirmHandler != nil ||
 		opts.ManagementAccountTestTaskListHandler != nil ||
 		opts.ManagementMyAccountTestTaskListHandler != nil ||
 		opts.ManagementAccountTestSessionStatusHandler != nil ||
@@ -1719,7 +1718,6 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementSystemMetricsHandler != nil ||
-		opts.ManagementPageDataConfirmHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
 		opts.ManagementMyStatsUsageWindowHandler != nil ||
 		opts.ManagementStatsAccountUsageHandler != nil ||

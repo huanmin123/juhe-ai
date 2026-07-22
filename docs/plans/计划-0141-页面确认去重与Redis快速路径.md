@@ -1,5 +1,7 @@
 # PLAN-0141 页面确认去重与 Redis 快速路径
 
+> **已退场：** 本计划涉及的页面 confirm/revision 机制已由 [PLAN-0081](计划-0081-Node转Go渐进减法迁移.md) 的退场记录彻底删除。本文只保留历史过程。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 消除 KeepAlive 隐藏页面和单次刷新产生的重复确认请求，并把 performance 模式页面确认压缩为一次 Redis 原子往返。

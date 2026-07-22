@@ -11,16 +11,20 @@ interface ProviderOptionsResourceOptions {
   systemAccountId?: string
 }
 
-export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderDefinition[]> {
+export interface ProviderOptionsResourceResult {
+  state: 'ready'
+  data: ProviderDefinition[]
+}
+
+export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderOptionsResourceResult> {
   const includeDisabled = options.includeDisabled === true && options.isManagementView
-  const params = options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined
-  const providers = includeDisabled
-    ? await api.providers.list(params)
+  const data = await (includeDisabled
+    ? api.providers.list(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
     : options.includeDefinitions
-      ? await api.providers.definitions(params)
-      : (await api.providers.options(params)).map(providerOptionToDefinition)
-  applyIfCurrent(options, providers)
-  return providers
+      ? api.providers.definitions(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
+      : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined).then((items) => items.map(providerOptionToDefinition)))
+  applyIfCurrent(options, data)
+  return { state: 'ready', data }
 }
 
 function providerOptionToDefinition(option: ProviderOption): ProviderDefinition {
