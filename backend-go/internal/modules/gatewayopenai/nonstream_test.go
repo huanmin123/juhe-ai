@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	gatewayprotocol "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 func TestParseNonStreamJSONChatCompletions(t *testing.T) {
@@ -403,6 +405,20 @@ func TestParseNonStreamJSONPreservesZeroUsageValues(t *testing.T) {
 	})
 	if len(result.Frames) != 2 || result.Frames[0].Kind != FrameUsage || result.Frames[1].Kind != FrameRawJSONPath {
 		t.Fatalf("zero usage frame = %#v", result.Frames)
+	}
+}
+
+func TestParseNonStreamJSONAcceptsRegistryEndpointFamily(t *testing.T) {
+	endpointFamily := gatewayprotocol.EndpointResponses
+	result, err := ParseNonStreamJSON([]byte(`{"status":"completed"}`), ParseOptions{
+		Interpretation: InterpretOpenAI,
+		EndpointFamily: endpointFamily,
+	})
+	if err != nil {
+		t.Fatalf("ParseNonStreamJSON() error = %v", err)
+	}
+	if len(result.Frames) < 1 || result.Frames[0].EndpointFamily != gatewayprotocol.EndpointResponses {
+		t.Fatalf("frames = %#v", result.Frames)
 	}
 }
 
