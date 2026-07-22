@@ -38,6 +38,11 @@ type Config struct {
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
 	RuntimeLogIndexEnabled             bool
+	RuntimeLogDirectory                string        `env:"JUHE_AI_LOG_DIR" envDefault:"../backend/logs"`
+	RuntimeLogFileEnabled              bool          `env:"JUHE_AI_LOG_FILE_ENABLED" envDefault:"true"`
+	RuntimeLogRetentionDays            int           `env:"JUHE_AI_LOG_RETENTION_DAYS" envDefault:"30"`
+	RuntimeLogMaxFiles                 int           `env:"JUHE_AI_LOG_MAX_FILES" envDefault:"500"`
+	RGPath                             string        `env:"JUHE_AI_RG_PATH"`
 	AuthCaptchaDisabled                bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
 	TrustProxy                         string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
 	CookieSecure                       bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
@@ -171,6 +176,12 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		return fmt.Errorf("JUHE_AI_SHUTDOWN_TIMEOUT 必须大于 0")
+	}
+	if cfg.RuntimeLogRetentionDays != 0 && (cfg.RuntimeLogRetentionDays < 1 || cfg.RuntimeLogRetentionDays > 30) {
+		return fmt.Errorf("JUHE_AI_LOG_RETENTION_DAYS 必须在 1 到 30 之间")
+	}
+	if cfg.RuntimeLogMaxFiles != 0 && (cfg.RuntimeLogMaxFiles < 1 || cfg.RuntimeLogMaxFiles > 500) {
+		return fmt.Errorf("JUHE_AI_LOG_MAX_FILES 必须在 1 到 500 之间")
 	}
 	if cfg.OwnerLockEnabled {
 		if strings.TrimSpace(cfg.OwnerLockPath) == "" {
