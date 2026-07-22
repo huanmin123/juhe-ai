@@ -3,6 +3,7 @@ import type {
   CodexContractOutcome,
   CodexContractRevision,
   CodexContractValidationResult,
+  CodexItemContract,
   CodexProtocolIssue,
   CodexProtocolIssueProvenance,
   CodexRequiredItemField
@@ -88,31 +89,16 @@ export function validateCodexResponsesJson(input: {
 
     const deferHistoryPayloadCheck = input.provenance === 'request_history' && hasRepairableIdIssue
     if (!deferHistoryPayloadCheck) {
-      for (const requiredField of contract.requiredFields) {
-        if (!validContractField(item, requiredField, true)) {
-          issues.push(issue(
-            input,
-            'item_required_field_invalid',
-            `${type}.${requiredField.name} 不满足 Codex Responses contract`,
-            [collection.field, index, requiredField.name],
-            index,
-            type,
-            'R2'
-          ))
-        }
-      }
-      for (const optionalField of contract.optionalFields) {
-        if (!validContractField(item, optionalField, false)) {
-          issues.push(issue(
-            input,
-            'item_optional_field_invalid',
-            `${type}.${optionalField.name} 不满足 Codex Responses contract`,
-            [collection.field, index, optionalField.name],
-            index,
-            type,
-            'R2'
-          ))
-        }
+      for (const fieldIssue of validateCodexItemContractFields(item, contract)) {
+        issues.push(issue(
+          input,
+          fieldIssue.code,
+          `${type}.${fieldIssue.field} 不满足 Codex Responses contract`,
+          [collection.field, index, fieldIssue.field],
+          index,
+          type,
+          'R2'
+        ))
       }
     }
 
@@ -258,6 +244,20 @@ function isExpectedItemId(id: string, prefix: string | undefined): boolean {
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
+}
+
+export function validateCodexItemContractFields(
+  item: JsonRecord,
+  contract: CodexItemContract
+): Array<{ code: 'item_required_field_invalid' | 'item_optional_field_invalid'; field: string }> {
+  const issues: Array<{ code: 'item_required_field_invalid' | 'item_optional_field_invalid'; field: string }> = []
+  for (const field of contract.requiredFields) {
+    if (!validContractField(item, field, true)) issues.push({ code: 'item_required_field_invalid', field: field.name })
+  }
+  for (const field of contract.optionalFields) {
+    if (!validContractField(item, field, false)) issues.push({ code: 'item_optional_field_invalid', field: field.name })
+  }
+  return issues
 }
 
 function validContractField(item: JsonRecord, field: CodexRequiredItemField, required: boolean): boolean {
