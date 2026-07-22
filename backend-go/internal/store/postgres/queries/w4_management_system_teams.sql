@@ -94,9 +94,7 @@ SELECT
   teams.name,
   teams.description,
   teams.status,
-  teams.created_by,
-  teams.created_at,
-  teams.updated_at
+  teams.created_at
 FROM juhe_business.system_teams AS teams
 WHERE (
     sqlc.arg(system_account_id)::text = ''
