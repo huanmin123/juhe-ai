@@ -1,11 +1,7 @@
-import { api, pageDataApi } from '@/api/client'
-import { authState } from '@/composables/useAuth'
-import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
+import { api } from '@/api/client'
 import type { ProviderDefinition, ProviderOption } from '@/types/domain'
 
 interface ProviderOptionsResourceOptions {
-  activation?: PageDataActivationHandle
   apply?: (providers: ProviderDefinition[]) => void
   force?: boolean
   includeDisabled?: boolean
@@ -15,42 +11,20 @@ interface ProviderOptionsResourceOptions {
   systemAccountId?: string
 }
 
-export type ProviderOptionsResourceResult =
-  | { state: 'ready'; data: ProviderDefinition[] }
-  | { state: 'superseded' }
-
-const providerOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
+export interface ProviderOptionsResourceResult {
+  state: 'ready'
+  data: ProviderDefinition[]
+}
 
 export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderOptionsResourceResult> {
   const includeDisabled = options.includeDisabled === true && options.isManagementView
-  const route = includeDisabled ? '/providers' : options.includeDefinitions ? '/providers/definitions' : '/providers/options'
-  const scope = providerOptionsScope(options.isManagementView, options.systemAccountId)
-  if (options.force) await providerOptionsResourceCache.invalidate('providers.catalog', scope, route)
-  const result = await providerOptionsResourceCache.load<ProviderDefinition[]>({
-    cacheKey: {
-      scope,
-      route,
-      query: { includeDisabled, systemAccountId: options.systemAccountId },
-      version: 1
-    },
-    domain: 'providers.catalog',
-    viewScope: options.isManagementView ? 'admin' : 'self',
-    activation: options.activation,
-    ...(options.isManagementView && options.systemAccountId
-      ? { targetSystemAccountId: options.systemAccountId }
-      : {}),
-    loadNetwork: () => includeDisabled
-      ? api.providers.list(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
-      : options.includeDefinitions
-        ? api.providers.definitions(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
-        : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined).then((items) => items.map(providerOptionToDefinition))
-  })
-  if (result.superseded) return { state: 'superseded' }
-  applyIfCurrent(options, result.data)
-  void result.confirmation?.then((outcome) => {
-    if (outcome.state !== 'superseded' && outcome.data) applyIfCurrent(options, outcome.data)
-  })
-  return { state: 'ready', data: result.data }
+  const data = await (includeDisabled
+    ? api.providers.list(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
+    : options.includeDefinitions
+      ? api.providers.definitions(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
+      : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined).then((items) => items.map(providerOptionToDefinition)))
+  applyIfCurrent(options, data)
+  return { state: 'ready', data }
 }
 
 function providerOptionToDefinition(option: ProviderOption): ProviderDefinition {
@@ -74,14 +48,4 @@ function providerOptionToDefinition(option: ProviderOption): ProviderDefinition 
 function applyIfCurrent(options: ProviderOptionsResourceOptions, providers: ProviderDefinition[]): void {
   if (options.isCurrent?.() === false) return
   options.apply?.(providers)
-}
-
-function providerOptionsScope(isManagementView: boolean, systemAccountId?: string): string {
-  const viewer = authState.currentUser.value
-  return [
-    isManagementView ? 'admin' : 'self',
-    viewer?.id ?? 'anonymous',
-    viewer?.role ?? 'anonymous',
-    systemAccountId ?? (isManagementView ? 'all' : 'self')
-  ].join(':')
 }

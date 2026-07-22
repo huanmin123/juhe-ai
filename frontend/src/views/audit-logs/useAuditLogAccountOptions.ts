@@ -1,19 +1,15 @@
 import { ref, type Ref } from 'vue'
 import { message } from '@/lib/antd'
 
-import { api, pageDataApi } from '@/api/client'
-import { authState } from '@/composables/useAuth'
+import { api } from '@/api/client'
 import type { AccountOptionSummary } from '@/types/domain'
 import { accountSelectionForId, type AccountSelection } from '@/shared/accountLabelCache'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 
 type UseAuditLogAccountOptionsParams = {
   accountSelection: Ref<AccountSelection | undefined>
   selectedSystemAccountId: () => string | undefined
   selectedAccountId: () => string
 }
-
-const auditAccountOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParams) {
   const options = ref<AccountOptionSummary[]>([])
@@ -70,29 +66,9 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        const scope = auditAccountOptionScope(systemAccountId)
-        const route = '/accounts/options'
-        if (force) await auditAccountOptionsResourceCache.invalidate('accounts.options', scope, route)
-        const result = await auditAccountOptionsResourceCache.load<AccountOptionSummary[]>({
-          cacheKey: {
-            scope,
-            route,
-            query: { keyword: requestKeyword, selectedIds, systemAccountId, limit: 50 },
-            version: 1
-          },
-          domain: 'accounts.options',
-          viewScope: 'admin',
-          targetSystemAccountId: systemAccountId,
-          loadNetwork: async () => {
-            let nextOptions = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-            nextOptions = await ensureSelectedAccountOption(nextOptions)
-            return nextOptions
-          }
-        })
-        applyOptions(result.data, currentRequestSeq)
-        void result.confirmation?.then((outcome) => {
-          if (outcome.data) applyOptions(outcome.data, currentRequestSeq)
-        })
+        let nextOptions = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+        nextOptions = await ensureSelectedAccountOption(nextOptions)
+        applyOptions(nextOptions, currentRequestSeq)
       } catch (error) {
         if (currentRequestSeq !== requestSeq) return
         console.error(error)
@@ -143,11 +119,6 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
     options,
     resetSearch
   }
-}
-
-function auditAccountOptionScope(systemAccountId: string): string {
-  const viewer = authState.currentUser.value
-  return ['admin', viewer?.id ?? 'anonymous', viewer?.role ?? 'anonymous', systemAccountId].join(':')
 }
 
 function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {

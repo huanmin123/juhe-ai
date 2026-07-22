@@ -24,9 +24,6 @@ import { myUsageRecordsApi, usageRecordsApi } from './domains/usageRecords'
 export { setMustChangePasswordHandler, setUnauthorizedHandler } from './http'
 export { apiUrl } from './http'
 export type * from './contracts'
-export { pageDataApi } from './domains/pageData'
-export type * from './domains/pageData'
-
 export const api = {
   auth: authApi,
   systemAccounts: systemAccountsApi,

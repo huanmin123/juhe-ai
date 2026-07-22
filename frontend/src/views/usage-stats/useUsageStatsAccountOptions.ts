@@ -1,9 +1,7 @@
 import { message } from '@/lib/antd'
 import { ref, type Ref } from 'vue'
 
-import { api, pageDataApi } from '@/api/client'
-import { authState } from '@/composables/useAuth'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
+import { api } from '@/api/client'
 import type { AccountOptionSummary } from '@/types/domain'
 import { mergeOptionsById } from './usageStatsHelpers'
 
@@ -13,8 +11,6 @@ interface UseUsageStatsAccountOptionsOptions {
   selectedIds: () => string[]
   pageActive: Ref<boolean>
 }
-
-const usageStatsAccountOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptionsOptions) {
   const accountOptionRows = ref<AccountOptionSummary[]>([])
@@ -30,9 +26,7 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
     const systemAccountId = options.isManagementView() ? options.systemAccountId() : undefined
     const requestKeyword = keyword.trim() || undefined
     const selectedIds = [...options.selectedIds()].sort()
-    const scope = accountOptionsScope(options.isManagementView(), systemAccountId)
-    const route = options.isManagementView() ? '/accounts/options' : '/my-accounts/options'
-    const requestKey = JSON.stringify([scope, requestKeyword ?? '', selectedIds])
+    const requestKey = JSON.stringify([options.isManagementView(), systemAccountId ?? '', requestKeyword ?? '', selectedIds])
     if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
       return accountOptionsLoadingPromise
     }
@@ -41,29 +35,11 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
     accountOptionsLoadingKey = requestKey
     accountOptionsLoadingPromise = (async () => {
       try {
-        if (force) await usageStatsAccountOptionsResourceCache.invalidate('accounts.options', scope, route)
-        const result = await usageStatsAccountOptionsResourceCache.load<AccountOptionSummary[]>({
-          cacheKey: {
-            scope,
-            route,
-            query: { keyword: requestKeyword, selectedIds, systemAccountId, limit: 50 },
-            version: 1
-          },
-          domain: 'accounts.options',
-          viewScope: options.isManagementView() ? 'admin' : 'self',
-          ...(options.isManagementView() && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
-          loadNetwork: async () => {
-            let nextOptions = options.isManagementView()
-              ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-              : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
-            nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
-            return nextOptions
-          }
-        })
-        applyOptions(result.data, requestSeq)
-        void result.confirmation?.then((outcome) => {
-          if (outcome.data) applyOptions(outcome.data, requestSeq)
-        })
+        let nextOptions = options.isManagementView()
+          ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+          : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
+        nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
+        applyOptions(nextOptions, requestSeq)
       } catch (error) {
         if (requestSeq !== accountOptionsRequestSeq) return
         console.error(error)
@@ -133,14 +109,4 @@ export function useUsageStatsAccountOptions(options: UseUsageStatsAccountOptions
     handleAccountOptionsDropdown,
     clearAccountOptionsSearchTimer
   }
-}
-
-function accountOptionsScope(isManagementView: boolean, systemAccountId?: string): string {
-  const viewer = authState.currentUser.value
-  return [
-    isManagementView ? 'admin' : 'self',
-    viewer?.id ?? 'anonymous',
-    viewer?.role ?? 'anonymous',
-    systemAccountId ?? (isManagementView ? 'all' : 'self')
-  ].join(':')
 }
