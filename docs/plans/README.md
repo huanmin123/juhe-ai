@@ -1,5 +1,6 @@
 # 计划目录
 
+- [计划-0153-路由级Node减法切流.md](计划-0153-路由级Node减法切流.md)：建立 method+path 单 owner、双 listener、真实 smoke、原子切流和回滚门禁，从公共设置 GET 开始逐条减少 Node 路由，同时保留尚未迁移的 Node writer/worker。
 - [计划-0152-客户端模型目录动态聚合.md](计划-0152-客户端模型目录动态聚合.md)：修复 `/models` 协议误判，按公开全供应商或 API Key 全部绑定供应商动态聚合作用域内全部可用模型。
 - [计划-0151-页面级版本确认聚合.md](计划-0151-页面级版本确认聚合.md)：将 `/my-accounts` 分散的 v2 confirm 收敛为页面级批次，补 mutation/lifecycle 围栏和 read 限流语义；不含 v3、数据库 schema 或生产部署。
 
@@ -197,6 +198,7 @@ docs/plans/
 | 编号 | 标题 | 状态 | 创建时间 | 关联模块 | 文档 |
 | --- | --- | --- | --- | --- | --- |
 | PLAN-0155 | Go 持久化记录异步派发与有界致命输出 | 已完成并推送 master，未上线 | 2026-07-22 | Go HTTP / Asynq / 记录派发 / fatal 诊断 | `docs/plans/计划-0155-Go持久化记录异步派发与有界致命输出.md` |
+| PLAN-0153 | 路由级 Node 减法切流 | 进行中（设计完成，实施待开始） | 2026-07-22 | Node/Go migration / route owner / proxy / release / rollback | `docs/plans/计划-0153-路由级Node减法切流.md` |
 | PLAN-0152 | 客户端模型目录动态聚合 | 进行中 / 禁止上线 | 2026-07-22 | 网关 / API Key / 供应商模型目录 / 发布快照 / SQLite / PostgreSQL / Redis | `docs/plans/计划-0152-客户端模型目录动态聚合.md` |
 | PLAN-0151 | 页面级版本确认聚合 | 进行中 | 2026-07-22 | 前端页面缓存 / AI 账户 / System API / Redis / 验证 | `docs/plans/计划-0151-页面级版本确认聚合.md` |
 | PLAN-0150 | AI 问答有序过程、生图、编辑、内部工具与按需加载 | 已完成（本地验收完成，禁止上线） | 2026-07-18 | AI 问答 / 内部工具 Registry / Demo / 生图与二次编辑 / 图像谱系 / 默认图像模型 / WebP 双变体资产 / 对话按需加载 / 手机工具箱 / 上下文命令 / SSE 探活 / 失败重试 / 登录会话管理删除 / 真实验收 | `docs/plans/计划-0150-AI问答有序过程生图与按需加载.md` |

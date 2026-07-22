@@ -870,3 +870,10 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 路由级 Node 减法设计
+
+- 已批准 [路由级 Node 减法切流与回滚设计](../migration/路由级Node减法切流与回滚设计.md) 和 [PLAN-0153](计划-0153-路由级Node减法切流.md)。后续不再等待整个 management 域全部完成才开始减法，而是按 `HTTP method + canonical path` 单 owner 逐条切换已验证的纯读路由。
+- 当前仍不能直接删除 Node：owner manifest 只有 management/public/gateway/worker 四个粗粒度 owner，release/proxy/owner lock 也不支持 Node/Go 双 listener 的 route-level 分流；已提交 schema authority 69、manifest 67、start scripts 63 和部署文档 57 还存在门禁漂移。
+- Pilot 固定为 `GET /__aisys__/api/settings/public`；随后依次评估 external integration scopes/api-docs、stats usage-window、settings GET 和 operation logs。每条均需 strict real dependency、真实 listener、ingress owner、观察和实际回切证据后才删除 Node 精确入口。
+- Node server、DB service、ingest/stats/ops/temporary-maintenance worker 继续保持 owner；HTTP 纯读路由切到 Go 不代表 writer、worker、gateway 或整个 Node 进程已接管。当前文档提交不修改 proxy、不删除 Node，也不启动任何双 writer。
