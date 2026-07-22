@@ -107,8 +107,6 @@ func TestServiceCreateSupportsFiveModes(t *testing.T) {
 				Enabled:         true,
 			}
 			service, tx, invalidator, _ := newManagementRouteStrategyCreateService(store)
-			publisher := &routeStrategyPageDataPublisherStub{}
-			service.pageDataPublisher = publisher
 
 			result, err := service.Create(context.Background(), CreateInput{
 				SystemAccountID:            " sys_owner ",
@@ -210,7 +208,6 @@ func TestServiceCreateSupportsFiveModes(t *testing.T) {
 			if invalidator.calls != 1 || invalidator.reasons[0] != RouteStrategyCreatedReason {
 				t.Fatalf("invalidation = calls %d reasons %#v", invalidator.calls, invalidator.reasons)
 			}
-			assertRouteStrategyPageDataReset(t, publisher)
 		})
 	}
 }
@@ -1048,8 +1045,6 @@ func TestServiceCreateDoesNotInvalidateWhenTransactionCommitFails(t *testing.T) 
 		ID: "group_1", SystemAccountID: "sys_owner", Enabled: true,
 	}
 	service, tx, invalidator, _ := newManagementRouteStrategyCreateService(store)
-	publisher := &routeStrategyPageDataPublisherStub{}
-	service.pageDataPublisher = publisher
 	commitErr := errors.New("commit failed")
 	tx.afterErr = commitErr
 
@@ -1063,9 +1058,6 @@ func TestServiceCreateDoesNotInvalidateWhenTransactionCommitFails(t *testing.T) 
 	}
 	if invalidator.calls != 0 {
 		t.Fatalf("invalidation calls = %d, want 0", invalidator.calls)
-	}
-	if publisher.calls != 0 {
-		t.Fatalf("page data publisher calls = %d, want 0", publisher.calls)
 	}
 }
 
@@ -1081,8 +1073,6 @@ func TestServiceCreateInvalidationUsesDetachedTimeoutAndFailureOnlyWarns(t *test
 		slog.New(slog.NewTextHandler(&logs, nil)),
 	)
 	invalidator.err = errors.New("invalidate failed")
-	publisher := &routeStrategyPageDataPublisherStub{err: errors.New("page data unavailable")}
-	service.pageDataPublisher = publisher
 	parent, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -1105,10 +1095,6 @@ func TestServiceCreateInvalidationUsesDetachedTimeoutAndFailureOnlyWarns(t *test
 	}
 	if !strings.Contains(logs.String(), "策略路由创建后网关运行态失效失败") {
 		t.Fatalf("logs = %q", logs.String())
-	}
-	assertRouteStrategyPageDataReset(t, publisher)
-	if !strings.Contains(logs.String(), "management_route_strategy_page_data_reset_failed") {
-		t.Fatalf("page data failure logs = %q", logs.String())
 	}
 }
 

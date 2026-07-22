@@ -36,8 +36,6 @@ func TestServiceDeleteCommitsAtomicDeleteAndReturnsSafeBeforeSummary(t *testing.
 		Transactor:  tx,
 		Invalidator: invalidator,
 	})
-	publisher := &routeStrategyPageDataPublisherStub{}
-	service.pageDataPublisher = publisher
 
 	result, err := service.Delete(context.Background(), DeleteInput{
 		ActorSystemAccountID: "sys_admin",
@@ -96,7 +94,6 @@ func TestServiceDeleteCommitsAtomicDeleteAndReturnsSafeBeforeSummary(t *testing.
 		invalidator.reason != RouteStrategyDeletedReason {
 		t.Fatalf("invalidator = %+v", invalidator)
 	}
-	assertRouteStrategyPageDataReset(t, publisher)
 }
 
 func TestServiceDeleteUsesOnlyTransactionCallbackStore(t *testing.T) {
