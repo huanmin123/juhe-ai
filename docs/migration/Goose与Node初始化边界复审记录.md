@@ -17,7 +17,7 @@
 | 无 ledger 的历史 Node PostgreSQL | 不猜测、不补写版本；按当前 schema 离线重建或等待 Node 全量表进入正式 migration |
 | ledger 高于当前 catalog | 拒绝由旧代码继续运行，禁止自动降级 |
 
-`schema-up` 会先检查 migration 文件连续性，再通过 Goose Provider 的 PostgreSQL session advisory locker 串行提交每个 migration，最后读取实际版本；migration 失败后保留 Goose 已真实提交的进度，重跑从 ledger 继续。运行时不增加旧表、旧字段或双读双写兼容。
+`schema-up` 会先检查 migration 文件连续性，再在专用连接获取 Goose 标准 PostgreSQL session advisory lock，并在创建 version table 前于同一锁内检查数据库来源。无 ledger 时只有 `juhe_*` 业务对象为零的真 fresh 库可以继续；空 ledger、无 ledger 的历史 Node 库都直接拒绝且不留下新账本。持锁期间由 Goose Provider 提交 migration 和读取最终版本。migration 失败后保留 Goose 已真实提交的进度，重跑从 ledger 继续。运行时不增加旧表、旧字段或双读双写兼容。schema 维护期间仍要求停止不遵守 Goose advisory lock 的其他 DDL 工具。
 
 ## PostgreSQL boolean 修复
 
