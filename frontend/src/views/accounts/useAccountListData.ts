@@ -17,7 +17,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { cloneAccountListCacheResult, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -91,8 +91,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     loadMoreMobile: loadMoreMobileAccounts,
     removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccountsCached,
-    resetPagination: resetAccountListPagination,
-    applyResult: applyAccountPageCacheResult
+    resetPagination: resetAccountListPagination
   } = useResponsivePagedList<AccountSummary, AccountListLoadOptions>({
     pageSize: ACCOUNT_PAGE_SIZE,
     initialPagination: initialPageState.pagination,
@@ -308,25 +307,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-  watch(accountPageCache.data, (accountList) => {
-    const clonedAccountList = accountList ? cloneAccountListCacheResult(accountList as AccountListResult) : undefined
-    const cachedResult = clonedAccountList
-      ? {
-        ...clonedAccountList,
-        items: clonedAccountList.items.map((account) => accountListViewModel(
-          account as AccountListItem,
-          clonedAccountList.runtimeSnapshot
-        ))
-      }
-      : {
-      items: [],
-      page: accountPagination.current,
-      pageSize: accountPagination.pageSize,
-      total: 0,
-      hasMore: false
-      }
-    applyAccountPageCacheResult(cachedResult)
-  }, { flush: 'sync' })
   watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
   watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })
 
