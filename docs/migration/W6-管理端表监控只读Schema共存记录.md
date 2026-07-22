@@ -8,7 +8,7 @@
 
 ## Schema 决策
 
-2026-07-22 的 `origin/master` 已正式包含 `000070_w2_gateway_model_catalog_chat_snapshot_variants.sql`，权威 Goose catalog 连续到 `000070`。本切片没有新增 migration；后续工作必须从真实 catalog 派生下一连续版本，不能复用或改写已发布的 `000070`。
+`000070_w2_gateway_model_catalog_chat_snapshot_variants.sql` 已正式发布；page-data 退场随后新增 `000071_w7_drop_page_data_dirty_domains.sql`，权威 Goose catalog 当前连续到 `000071`。本表监控切片没有新增 migration；后续工作必须从真实 catalog 派生下一连续版本，不能复用或改写已发布版本。
 
 因此本轮选择运行时只读能力门禁，而不是抢占 migration 版本：
 
