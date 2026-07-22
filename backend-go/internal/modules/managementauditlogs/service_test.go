@@ -53,6 +53,59 @@ func TestListIgnoresInvalidEnumsAndStatus(t *testing.T) {
 	}
 }
 
+func TestListErrorGroupsNormalizesFiltersMapsOptionalFieldsAndProgressiveWindow(t *testing.T) {
+	status := 503
+	value := func(text string) *string { return &text }
+	group := port.ManagementAuditErrorGroup{
+		ID: "err_1", Fingerprint: "fingerprint", WindowStartedAt: "2026-07-21T00:00:00.000Z", WindowEndedAt: "2026-07-21T01:00:00.000Z",
+		SystemAccountID: value("sys_1"), SystemAccountName: value("System account"), APIKeyID: value("key_1"), APIKeyName: value("API key"),
+		GroupID: value("group_1"), GroupName: value("Group"), AccountID: value("account_1"), AccountName: value("Account"), ProviderCode: value("openai"),
+		Path: value("/v1/responses"), Model: value("gpt-5"), StatusCode: &status, ErrorPhase: value("upstream"), ErrorCode: value("rate_limit"), ErrorType: value("rate_limit_error"),
+		RequestFingerprint: value("request_fingerprint"), ErrorFingerprint: value("error_fingerprint"), Count: 2,
+		FirstEventID: value("event_1"), LastEventID: value("event_2"), SampleEventID: value("event_1"), LastMessage: value("rate limit reached"),
+		CreatedAt: "2026-07-21T00:00:00.000Z", UpdatedAt: "2026-07-21T01:00:00.000Z",
+	}
+	store := &auditLogReaderStub{errorGroupResult: port.ManagementAuditErrorGroupListResult{
+		Items: []port.ManagementAuditErrorGroup{group}, HasMore: true,
+	}}
+	result, err := NewService(store).ListErrorGroups(context.Background(), ErrorGroupListInput{
+		Path: "\uFEFF POST /v1/responses?stream=true \uFEFF", Model: " \uFEFFgpt-5\uFEFF ", SystemAccountID: " \u0085sys_1\u0085 ",
+		APIKeyID: " key_1 ", GroupID: " group_1 ", AccountID: " account_1 ", StatusCode: 503,
+		Page: 20, PageSize: 999, PageSizeProvided: true,
+	})
+	if err != nil {
+		t.Fatalf("ListErrorGroups() error = %v", err)
+	}
+	if store.errorGroupInput.Path != "/v1/responses" || store.errorGroupInput.Model != "gpt-5" || store.errorGroupInput.SystemAccountID != "\u0085sys_1\u0085" ||
+		store.errorGroupInput.APIKeyID != "key_1" || store.errorGroupInput.GroupID != "group_1" || store.errorGroupInput.AccountID != "account_1" ||
+		store.errorGroupInput.StatusCode == nil || *store.errorGroupInput.StatusCode != 503 || store.errorGroupInput.Limit != 100 || store.errorGroupInput.Offset != 900 {
+		t.Fatalf("store input = %+v", store.errorGroupInput)
+	}
+	want := ErrorGroup{
+		ID: group.ID, Fingerprint: group.Fingerprint, WindowStartedAt: group.WindowStartedAt, WindowEndedAt: group.WindowEndedAt,
+		SystemAccountID: *group.SystemAccountID, SystemAccountName: *group.SystemAccountName, APIKeyID: *group.APIKeyID, APIKeyName: *group.APIKeyName,
+		GroupID: *group.GroupID, GroupName: *group.GroupName, AccountID: *group.AccountID, AccountName: *group.AccountName, ProviderCode: *group.ProviderCode,
+		Path: *group.Path, Model: *group.Model, StatusCode: group.StatusCode, ErrorPhase: *group.ErrorPhase, ErrorCode: *group.ErrorCode, ErrorType: *group.ErrorType,
+		RequestFingerprint: *group.RequestFingerprint, ErrorFingerprint: *group.ErrorFingerprint, Count: group.Count,
+		FirstEventID: *group.FirstEventID, LastEventID: *group.LastEventID, SampleEventID: *group.SampleEventID, LastMessage: *group.LastMessage,
+		CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt,
+	}
+	if result.Page != 10 || result.PageSize != 100 || result.Total != 902 || !result.HasMore || len(result.Items) != 1 || result.Items[0] != want {
+		t.Fatalf("result = %+v, want item = %+v", result, want)
+	}
+}
+
+func TestListErrorGroupsDefaultsPageSizeAndReturnsNonNilItems(t *testing.T) {
+	store := &auditLogReaderStub{}
+	result, err := NewService(store).ListErrorGroups(context.Background(), ErrorGroupListInput{})
+	if err != nil {
+		t.Fatalf("ListErrorGroups() error = %v", err)
+	}
+	if store.errorGroupInput.Limit != 100 || store.errorGroupInput.Offset != 0 || result.Page != 1 || result.PageSize != 100 || result.Items == nil || result.Total != 0 || result.HasMore {
+		t.Fatalf("store input = %+v, result = %+v", store.errorGroupInput, result)
+	}
+}
+
 func TestDetailMapsAttemptsPayloadMetadataAndErrorGroup(t *testing.T) {
 	proxyURL := "  http://proxy.internal:8080  "
 	store := &auditLogReaderStub{
@@ -116,11 +169,13 @@ func TestDetailPreservesWhitespaceOnlyRequiredUpstreamURL(t *testing.T) {
 }
 
 type auditLogReaderStub struct {
-	input       port.ManagementAuditLogListInput
-	result      port.ManagementAuditLogListResult
-	detailID    string
-	detail      port.ManagementAuditLogDetail
-	detailFound bool
+	input            port.ManagementAuditLogListInput
+	result           port.ManagementAuditLogListResult
+	errorGroupInput  port.ManagementAuditErrorGroupListInput
+	errorGroupResult port.ManagementAuditErrorGroupListResult
+	detailID         string
+	detail           port.ManagementAuditLogDetail
+	detailFound      bool
 }
 
 func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input port.ManagementAuditLogListInput) (port.ManagementAuditLogListResult, error) {
@@ -129,6 +184,14 @@ func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input po
 		s.result.Items = []port.ManagementAuditLogSummary{}
 	}
 	return s.result, nil
+}
+
+func (s *auditLogReaderStub) ListManagementAuditErrorGroups(_ context.Context, input port.ManagementAuditErrorGroupListInput) (port.ManagementAuditErrorGroupListResult, error) {
+	s.errorGroupInput = input
+	if s.errorGroupResult.Items == nil {
+		s.errorGroupResult.Items = []port.ManagementAuditErrorGroup{}
+	}
+	return s.errorGroupResult, nil
 }
 
 func (s *auditLogReaderStub) GetManagementAuditLog(_ context.Context, id string) (port.ManagementAuditLogDetail, bool, error) {
