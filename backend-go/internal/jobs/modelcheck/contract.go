@@ -14,14 +14,15 @@ import (
 )
 
 const (
-	TaskTypeRun      = "model-check:run"
-	PayloadVersionV1 = 1
-	QueueName        = "model-check"
-	DefaultMaxRetry  = 3
-	DeadlinePolicyV1 = "probe-plan-budget-v1"
-	LeaseFencingV1   = "claim-epoch-v1"
-	EnqueueHandoffV1 = "transactional-outbox-v1"
-	FinishCASV1      = "running-active-claim-no-stop-v1"
+	TaskTypeRun       = "model-check:run"
+	PayloadVersionV1  = 1
+	QueueName         = "model-check"
+	DefaultMaxRetry   = 3
+	DeadlinePolicyV1  = "probe-plan-budget-v1"
+	LeaseFencingV1    = "claim-epoch-v1"
+	EnqueueHandoffV1  = "transactional-outbox-v1"
+	WorkerFinishCASV1 = "running-active-claim-no-stop-v1"
+	StopCASV1         = "intent-first-cancel-v1"
 
 	MaxIdentifierBytes = 200
 	MaxModelBytes      = 200

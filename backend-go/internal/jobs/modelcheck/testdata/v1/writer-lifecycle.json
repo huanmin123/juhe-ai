@@ -6,7 +6,8 @@
   "deadlinePolicy": "probe-plan-budget-v1",
   "leaseFencingPolicy": "claim-epoch-v1",
   "enqueueHandoffPolicy": "transactional-outbox-v1",
-  "finishCasPolicy": "running-active-claim-no-stop-v1",
+  "workerFinishCasPolicy": "running-active-claim-no-stop-v1",
+  "stopCasPolicy": "intent-first-cancel-v1",
   "publicStatuses": ["running", "completed", "failed", "canceled"],
   "terminalStatuses": ["completed", "failed", "canceled"],
   "applyTransitions": [
@@ -66,11 +67,11 @@
   },
   "exampleRequestFingerprint": "sha256:7cf53869f67bbd91eee83e251e0b07e8737cbad883c3ac0cdeeeed6d37cd4d38",
   "idempotency": {
-    "create_run": "insert by stable run id; a retry may reuse only an identical immutable request fingerprint and account config revisions",
+    "create_run": "insert run plus outbox atomically; outbox stores the exact canonical payload bytes, sha256, task type, and version; a retry may reuse only an identical immutable request fingerprint and account config revisions",
     "checkpoint_probe_attempts": "persist one bounded internal result per run, probe key, and attempt before starting the next probe; retries resume completed work without exposing partial report items",
     "upsert_items": "one item per run id and item key; retry replaces the sanitized result instead of duplicating it",
     "append_observations": "observation ids are deterministic per run, probe, round, and sample; conflict is a no-op",
-    "finish_run": "compare-and-set running to one terminal state only for the active claim epoch, an unexpired lease, and no stop intent; replay of the same terminal result is a no-op"
+    "finish_run": "worker terminal writes require the active claim epoch and an unexpired lease; completed or failed also require no stop intent; user stop separately writes intent and cancels without requiring a worker claim; replay of the same terminal result is a no-op"
   },
   "nodeDivergenceReasons": [
     "Go uses an Asynq ops task instead of keeping the expensive probe lifecycle inside an HTTP request.",
