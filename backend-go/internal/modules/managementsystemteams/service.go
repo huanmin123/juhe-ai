@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -19,7 +17,6 @@ const (
 	maxTeamNameRunes        = 100
 	maxTeamDescriptionRunes = 200
 	maxTeamMemberBatchSize  = 20
-	pageDataPublishTimeout  = 5 * time.Second
 
 	TeamAuthorizationChangedReason = "team_authorization_changed"
 	TeamMembersChangedReason       = "team_members_changed"
@@ -38,8 +35,6 @@ type Service struct {
 	store                    any
 	now                      func() time.Time
 	authorizationInvalidator AuthorizationInvalidator
-	pageDataPublisher        AccountsStaticResetPublisher
-	logger                   *slog.Logger
 }
 
 type ListInput struct {
@@ -149,16 +144,10 @@ type ServiceOptions struct {
 	Store                    any
 	Now                      func() time.Time
 	AuthorizationInvalidator AuthorizationInvalidator
-	Publisher                AccountsStaticResetPublisher
-	Logger                   *slog.Logger
 }
 
 type AuthorizationInvalidator interface {
 	InvalidateAuthorizationChanged(ctx context.Context, reason string) error
-}
-
-type AccountsStaticResetPublisher interface {
-	PublishAccountsStaticReset(ctx context.Context, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
 func NewService(store port.ManagementSystemTeamCreator) *Service {
@@ -170,17 +159,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	logger := opts.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	return &Service{
-		store:                    opts.Store,
-		now:                      now,
-		authorizationInvalidator: opts.AuthorizationInvalidator,
-		pageDataPublisher:        opts.Publisher,
-		logger:                   logger,
-	}
+	return &Service{store: opts.Store, now: now, authorizationInvalidator: opts.AuthorizationInvalidator}
 }
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
@@ -335,9 +314,6 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	if row.AuthorizationChanged && s.authorizationInvalidator != nil {
 		s.invalidateAuthorization(ctx, TeamAuthorizationChangedReason)
 	}
-	if row.AuthorizationChanged {
-		s.publishAccountsStaticResetAfterCommit(ctx, memberSystemAccountIDs(row.Team.Members))
-	}
 	return UpdateResult{
 		Before:               summaryFromPort(row.Before),
 		Team:                 detailFromPort(row.Team),
@@ -374,7 +350,6 @@ func (s *Service) AddMembers(ctx context.Context, input AddMembersInput) (AddMem
 		return AddMembersResult{}, false, nil
 	}
 	s.invalidateAuthorization(ctx, TeamMembersChangedReason)
-	s.publishAccountsStaticResetAfterCommit(ctx, addedMemberSystemAccountIDs(row.Before.Members, row.Team.Members))
 	return AddMembersResult{
 		Before: detailFromPort(row.Before),
 		Team:   detailFromPort(row.Team),
@@ -407,7 +382,6 @@ func (s *Service) RemoveMember(ctx context.Context, input RemoveMemberInput) (Re
 		return RemoveMemberResult{}, false, nil
 	}
 	s.invalidateAuthorization(ctx, TeamMembersChangedReason)
-	s.publishAccountsStaticResetAfterCommit(ctx, []string{row.RemovedMember.SystemAccountID})
 	return RemoveMemberResult{
 		Before:        detailFromPort(row.Before),
 		Team:          detailFromPort(row.Team),
@@ -420,68 +394,6 @@ func (s *Service) invalidateAuthorization(ctx context.Context, reason string) {
 		return
 	}
 	_ = s.authorizationInvalidator.InvalidateAuthorizationChanged(ctx, reason)
-}
-
-func (s *Service) publishAccountsStaticResetAfterCommit(ctx context.Context, ownerSystemAccountIDs []string) {
-	owners := normalizePageDataOwnerIDs(ownerSystemAccountIDs)
-	if s.pageDataPublisher == nil || len(owners) == 0 {
-		return
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
-	defer cancel()
-	if err := s.pageDataPublisher.PublishAccountsStaticReset(publishCtx, owners, false); err != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-			"domain", "accounts.static",
-			"error", err,
-		)
-	}
-}
-
-func memberSystemAccountIDs(members []port.ManagementSystemTeamMemberSummary) []string {
-	ids := make([]string, 0, len(members))
-	for _, member := range members {
-		ids = append(ids, member.SystemAccountID)
-	}
-	return ids
-}
-
-func addedMemberSystemAccountIDs(before []port.ManagementSystemTeamMemberSummary, after []port.ManagementSystemTeamMemberSummary) []string {
-	existing := make(map[string]struct{}, len(before))
-	for _, id := range memberSystemAccountIDs(before) {
-		id = strings.TrimSpace(id)
-		if id != "" {
-			existing[id] = struct{}{}
-		}
-	}
-	added := make([]string, 0, len(after))
-	for _, id := range memberSystemAccountIDs(after) {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			continue
-		}
-		if _, ok := existing[id]; !ok {
-			added = append(added, id)
-		}
-	}
-	return added
-}
-
-func normalizePageDataOwnerIDs(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	owners := make([]string, 0, len(values))
-	for _, value := range values {
-		id := strings.TrimSpace(value)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		owners = append(owners, id)
-	}
-	sort.Strings(owners)
-	return owners
 }
 
 func normalizeTeamStatus(status string) string {

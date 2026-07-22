@@ -1,11 +1,8 @@
 package managementsystemteams
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -728,109 +725,6 @@ func TestRemoveMemberReturnsSuccessWhenInvalidationFailsAfterWrite(t *testing.T)
 	}
 }
 
-func TestTeamWritesPublishAccountsStaticResetAfterCommittedWrite(t *testing.T) {
-	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
-	member := func(id string) port.ManagementSystemTeamMemberSummary {
-		return port.ManagementSystemTeamMemberSummary{SystemAccountID: id, Status: "active", JoinedAt: now, CreatedAt: now, UpdatedAt: now}
-	}
-	tests := []struct {
-		name       string
-		store      *teamStoreStub
-		invoke     func(context.Context, *Service) error
-		wantOwners []string
-	}{
-		{
-			name: "status update publishes current team members",
-			store: &teamStoreStub{updateFound: true, updateResult: port.ManagementSystemTeamUpdateResult{
-				Before: port.ManagementSystemTeamSummary{ID: "team_ops", Status: "active", CreatedAt: now, UpdatedAt: now},
-				Team: port.ManagementSystemTeamDetail{
-					ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Status: "disabled", CreatedAt: now, UpdatedAt: now},
-					Members:                     []port.ManagementSystemTeamMemberSummary{member(" owner-b "), member("owner-a"), member("owner-a")},
-				},
-				AuthorizationChanged: true,
-			}},
-			invoke: func(ctx context.Context, service *Service) error {
-				status := "disabled"
-				_, _, err := service.Update(ctx, UpdateInput{TeamID: "team_ops", Status: &status, UpdatedBy: "admin"})
-				return err
-			},
-			wantOwners: []string{"owner-a", "owner-b"},
-		},
-		{
-			name: "add publishes only actual new members",
-			store: &teamStoreStub{addFound: true, addResult: port.ManagementSystemTeamMemberAddResult{
-				Before: port.ManagementSystemTeamDetail{Members: []port.ManagementSystemTeamMemberSummary{member("owner-old")}},
-				Team:   port.ManagementSystemTeamDetail{Members: []port.ManagementSystemTeamMemberSummary{member("owner-old"), member("owner-new")}},
-			}},
-			invoke: func(ctx context.Context, service *Service) error {
-				_, _, err := service.AddMembers(ctx, AddMembersInput{TeamID: "team_ops", SystemAccountIDs: []string{"owner-new"}, CreatedBy: "admin"})
-				return err
-			},
-			wantOwners: []string{"owner-new"},
-		},
-		{
-			name: "remove publishes removed member",
-			store: &teamStoreStub{removeFound: true, removeResult: port.ManagementSystemTeamMemberRemoveResult{
-				RemovedMember: member(" owner-old "),
-			}},
-			invoke: func(ctx context.Context, service *Service) error {
-				_, _, err := service.RemoveMember(ctx, RemoveMemberInput{TeamID: "team_ops", MemberID: "member-old", UpdatedBy: "admin"})
-				return err
-			},
-			wantOwners: []string{"owner-old"},
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			publisher := &accountsStaticResetPublisherStub{err: errors.New("redis unavailable")}
-			var logs bytes.Buffer
-			service := NewServiceWithOptions(ServiceOptions{
-				Store:     test.store,
-				Publisher: publisher,
-				Logger:    slog.New(slog.NewTextHandler(&logs, nil)),
-			})
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			if err := test.invoke(ctx, service); err != nil {
-				t.Fatalf("write returned publisher error: %v", err)
-			}
-			if publisher.calls != 1 || publisher.allScopes || !reflect.DeepEqual(publisher.owners, test.wantOwners) {
-				t.Fatalf("publisher calls=%d owners=%#v allScopes=%v", publisher.calls, publisher.owners, publisher.allScopes)
-			}
-			if publisher.contextErr != nil {
-				t.Fatalf("publisher context error = %v, want detached context", publisher.contextErr)
-			}
-			if !publisher.hasDeadline || publisher.deadlineRemaining <= 0 || publisher.deadlineRemaining > pageDataPublishTimeout {
-				t.Fatalf("publisher deadline present=%v remaining=%v", publisher.hasDeadline, publisher.deadlineRemaining)
-			}
-			if !strings.Contains(logs.String(), "level=WARN") ||
-				!strings.Contains(logs.String(), "domain=accounts.static") ||
-				!strings.Contains(logs.String(), "redis unavailable") {
-				t.Fatalf("warning log = %q", logs.String())
-			}
-		})
-	}
-}
-
-func TestTeamWritesSkipAccountsStaticResetWhenVisibleAccountsDoNotChange(t *testing.T) {
-	now := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
-	publisher := &accountsStaticResetPublisherStub{}
-	service := NewServiceWithOptions(ServiceOptions{
-		Store: &teamStoreStub{updateFound: true, updateResult: port.ManagementSystemTeamUpdateResult{
-			Before: port.ManagementSystemTeamSummary{ID: "team_ops", Status: "active", CreatedAt: now, UpdatedAt: now},
-			Team:   port.ManagementSystemTeamDetail{ManagementSystemTeamSummary: port.ManagementSystemTeamSummary{ID: "team_ops", Status: "active", CreatedAt: now, UpdatedAt: now}},
-		}},
-		Publisher: publisher,
-	})
-	name := "renamed"
-	if _, found, err := service.Update(context.Background(), UpdateInput{TeamID: "team_ops", Name: &name, UpdatedBy: "admin"}); err != nil || !found {
-		t.Fatalf("Update() found=%v error=%v", found, err)
-	}
-	if publisher.calls != 0 {
-		t.Fatalf("publisher calls = %d, want 0", publisher.calls)
-	}
-}
-
 type teamStoreStub struct {
 	called                bool
 	input                 port.ManagementSystemTeamCreateInput
@@ -905,29 +799,6 @@ type authorizationInvalidatorStub struct {
 	reason string
 	err    error
 	onCall func(reason string)
-}
-
-type accountsStaticResetPublisherStub struct {
-	calls             int
-	owners            []string
-	allScopes         bool
-	contextErr        error
-	hasDeadline       bool
-	deadlineRemaining time.Duration
-	err               error
-}
-
-func (s *accountsStaticResetPublisherStub) PublishAccountsStaticReset(ctx context.Context, owners []string, allScopes bool) error {
-	s.calls++
-	s.owners = append([]string(nil), owners...)
-	s.allScopes = allScopes
-	s.contextErr = ctx.Err()
-	deadline, ok := ctx.Deadline()
-	s.hasDeadline = ok
-	if ok {
-		s.deadlineRemaining = time.Until(deadline)
-	}
-	return s.err
 }
 
 func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.Context, reason string) error {
