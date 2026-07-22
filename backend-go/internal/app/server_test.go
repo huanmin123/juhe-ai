@@ -1041,14 +1041,12 @@ func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read server.go: %v", err)
 	}
-	text := strings.ReplaceAll(string(source), "\r\n", "\n")
-	wiring := `providerModelService := managementprovidermodels.NewServiceWithOptions(managementprovidermodels.ServiceOptions{
-		Store:       store,
-		Invalidator: systemAccountInvalidator,
-		Logger:      logger,
-	})`
-	if !strings.Contains(text, wiring) {
-		t.Fatalf("server.go missing provider model logger wiring %q", wiring)
+	block := sourceBlockBetween(t, string(source),
+		"providerModelService := managementprovidermodels.NewServiceWithOptions",
+		"routeStrategyService := managementroutestrategies.NewServiceWithOptions",
+	)
+	if !strings.Contains(block, "Logger:           logger") {
+		t.Fatal("server.go must inject the logger into the provider model service")
 	}
 }
 
@@ -1301,4 +1299,17 @@ func appNodeDispatchSignature(secret string, body []byte) string {
 	_, _ = mac.Write([]byte("juhe-ai:account-health-check-dispatch:v1\n"))
 	_, _ = mac.Write(body)
 	return "v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func sourceBlockBetween(t *testing.T, source, startMarker, endMarker string) string {
+	t.Helper()
+	start := strings.Index(source, startMarker)
+	if start < 0 {
+		t.Fatalf("source marker %q not found", startMarker)
+	}
+	end := strings.Index(source[start+len(startMarker):], endMarker)
+	if end < 0 {
+		t.Fatalf("source marker %q not found after %q", endMarker, startMarker)
+	}
+	return source[start : start+len(startMarker)+end]
 }
