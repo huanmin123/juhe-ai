@@ -33,15 +33,6 @@ try {
   const loginPayload = await login.json() as { code?: string }
   assert.notEqual(loginPayload.code, 'system_api_read_only', '临时发布不得返回遗留只读门禁错误')
 
-  const confirm = await fetch(`${baseUrl}/__aisys__/api/data-changes/confirm`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}'
-  })
-  assert.notEqual(confirm.status, 503, '页面变更确认不得被临时发布拦截')
-  const confirmPayload = await confirm.json() as { code?: string }
-  assert.notEqual(confirmPayload.code, 'system_api_read_only', '页面变更确认不得返回遗留只读门禁错误')
-
   const publicWrite = await fetch(`${baseUrl}/__aipublic__/group/add`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

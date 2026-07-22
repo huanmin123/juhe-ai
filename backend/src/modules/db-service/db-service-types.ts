@@ -36,7 +36,6 @@ import type {
 } from '../../storage/codex-context-state.repository.js'
 import type { CodexContextStateWriterPoolRuntime } from '../../storage/codex-context-state-writer-pool.js'
 import type { SqliteReadWorkerPoolRuntime } from '../../storage/sqlite-read-worker-pool.js'
-import type { PageDataChangeEvent, PageDataDomain } from '../page-data/page-data-change.service.js'
 import type {
   OpenAICompatibleFileCreateInput,
   OpenAICompatibleFileListOptions,
@@ -1132,15 +1131,6 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
-  | {
-    type: 'page_data_change_publish'
-    event: PageDataChangeEvent
-  }
-  | {
-    type: 'page_data_change_dirty'
-    requestId: string
-    domains: PageDataDomain[]
-  }
 
 export type DbServiceChildMessage =
   | {
@@ -1234,15 +1224,4 @@ export type DbServiceChildMessage =
     type: 'background_worker_stats_write_request'
     requestId: string
     operation: BackgroundStatsWriteOperation
-  }
-  | {
-    type: 'page_data_change_dirty_ack'
-    requestId: string
-    ok: true
-  }
-  | {
-    type: 'page_data_change_dirty_ack'
-    requestId: string
-    ok: false
-    errorMessage: string
   }
