@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/managementaccountdetails"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -37,8 +36,6 @@ type GatewayRuntimeInvalidator interface {
 type ServiceOptions struct {
 	Store              port.ManagementAccountForceActivator
 	Details            DetailReader
-	GranteeReader      accountpagedata.GranteeReader
-	PageDataPublisher  accountpagedata.Publisher
 	RuntimeClearer     RuntimeAvailabilityClearer
 	GatewayInvalidator GatewayRuntimeInvalidator
 	Logger             *slog.Logger
@@ -48,8 +45,6 @@ type ServiceOptions struct {
 type Service struct {
 	store              port.ManagementAccountForceActivator
 	details            DetailReader
-	granteeReader      accountpagedata.GranteeReader
-	pageDataPublisher  accountpagedata.Publisher
 	runtimeClearer     RuntimeAvailabilityClearer
 	gatewayInvalidator GatewayRuntimeInvalidator
 	logger             *slog.Logger
@@ -79,8 +74,7 @@ func NewService(opts ServiceOptions) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{store: opts.Store, details: opts.Details, granteeReader: opts.GranteeReader,
-		pageDataPublisher: opts.PageDataPublisher, runtimeClearer: opts.RuntimeClearer,
+	return &Service{store: opts.Store, details: opts.Details, runtimeClearer: opts.RuntimeClearer,
 		gatewayInvalidator: opts.GatewayInvalidator, logger: logger, now: now}
 }
 
@@ -148,19 +142,6 @@ func (s *Service) afterCommit(ctx context.Context, accountID, ownerID string, ac
 		if err := s.gatewayInvalidator.InvalidateGatewayRuntime(postCtx, "account_pending_force_activated"); err != nil {
 			s.logger.WarnContext(postCtx, "gateway runtime invalidation failed", "accountId", accountID, "error", err)
 		}
-	}
-	if s.pageDataPublisher == nil {
-		return
-	}
-	owners, allScopes, err := accountpagedata.ResolveOwners(postCtx, s.granteeReader, accountID, []string{ownerID})
-	if err != nil {
-		s.logger.WarnContext(postCtx, "account page data owner lookup failed", "accountId", accountID, "error", err)
-	}
-	if err := s.pageDataPublisher.PublishAccountRuntimeChange(postCtx, accountpagedata.ChangeInput{
-		AccountID: accountID, Operation: accountpagedata.OperationUpsert, OwnerSystemAccountIDs: owners,
-		AllScopes: allScopes, FieldMask: []string{"status", "schedulable", "lastErrorCode", "lastErrorMessage"},
-	}); err != nil {
-		s.logger.WarnContext(postCtx, "account runtime page data publish failed", "accountId", accountID, "error", err)
 	}
 }
 
