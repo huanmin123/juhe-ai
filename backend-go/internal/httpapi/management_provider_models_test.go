@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -20,42 +21,134 @@ import (
 
 func TestManagementProviderModelOptionsHandlerParsesScopeAndProtocol(t *testing.T) {
 	service := &managementProviderModelServiceStub{
-		modelOptions: []managementprovidermodels.ModelOption{{
-			ProviderCode:              "gpt",
-			Model:                     "gpt-5.5",
-			SupportedServiceTiers:     []string{"priority"},
-			SupportedReasoningEfforts: []string{"low", "high"},
-			DefaultReasoningEffort:    "high",
+		selectionOptions: []managementprovidermodels.ModelSelectionOption{{
+			ID: "gpt-5.5", Name: "gpt-5.5",
 		}},
 	}
 	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
 	})(newManagementProviderModelOptionsHandler(service))
 
-	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options?systemAccountId=sys_user&protocol=openai", nil)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options?systemAccountId=sys_user&providerCode=gpt&protocol=openai&keyword=gpt&limit=2&selectedIds=gpt-5.5&selectedIds=vendor%2Fmodel,gpt-5.5", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if service.modelOptionsInput.SystemAccountID != "sys_user" || service.modelOptionsInput.Protocol != "openai" {
-		t.Fatalf("input = %+v", service.modelOptionsInput)
+	if service.selectionOptionsInput.SystemAccountID != "sys_user" ||
+		service.selectionOptionsInput.ProviderCode != "gpt" ||
+		service.selectionOptionsInput.Protocol != "openai" ||
+		service.selectionOptionsInput.Keyword != "gpt" ||
+		service.selectionOptionsInput.Limit != 2 ||
+		!slices.Equal(service.selectionOptionsInput.SelectedIDs, []string{"gpt-5.5", "vendor/model"}) {
+		t.Fatalf("input = %+v", service.selectionOptionsInput)
 	}
 	var body struct {
-		Data []managementprovidermodels.ModelOption `json:"data"`
+		Data []map[string]any `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(body.Data) != 1 || body.Data[0].Model != "gpt-5.5" {
+	if len(body.Data) != 1 || body.Data[0]["id"] != "gpt-5.5" || body.Data[0]["name"] != "gpt-5.5" {
 		t.Fatalf("body = %+v", body)
 	}
-	if len(body.Data[0].SupportedServiceTiers) != 1 ||
-		body.Data[0].SupportedServiceTiers[0] != "priority" ||
-		len(body.Data[0].SupportedReasoningEfforts) != 2 ||
-		body.Data[0].DefaultReasoningEffort != "high" {
-		t.Fatalf("capability body = %+v", body.Data[0])
+	if len(body.Data[0]) != 2 {
+		t.Fatalf("model option keys = %+v, want id/name only", body.Data[0])
+	}
+}
+
+func TestManagementProviderModelOptionsHandlerRejectsInvalidQuery(t *testing.T) {
+	for _, target := range []string{
+		"/__aisys__/api/providers/models/options?protocol=invalid",
+		"/__aisys__/api/providers/models/options?limit=0",
+		"/__aisys__/api/providers/models/options?limit=51",
+		"/__aisys__/api/providers/models/options?limit=1.5",
+	} {
+		service := &managementProviderModelServiceStub{}
+		handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+			context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+		})(newManagementProviderModelOptionsHandler(service))
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || service.selectionOptionsCalls != 0 {
+			t.Fatalf("%s status = %d, calls = %d, body = %s", target, rec.Code, service.selectionOptionsCalls, rec.Body.String())
+		}
+	}
+}
+
+func TestManagementProviderModelOptionsHandlerReturnsProviderNotFound(t *testing.T) {
+	service := &managementProviderModelServiceStub{selectionOptionsErr: managementprovidermodels.ErrProviderNotFound}
+	handler := NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})(newManagementProviderModelOptionsHandler(service))
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/models/options?providerCode=missing", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "供应商不存在或已停用") {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestManagementProviderModelCapabilitiesHandlerDecodesModelIDAndUsesScope(t *testing.T) {
+	service := &managementProviderModelServiceStub{
+		capabilities: managementprovidermodels.ModelCapabilities{
+			ID:                        "vendor/model",
+			Name:                      "vendor/model",
+			SupportedAPIProtocols:     []string{"responses"},
+			SupportedServiceTiers:     []string{},
+			SupportedReasoningEfforts: []string{"high"},
+		},
+	}
+	router := chi.NewRouter()
+	router.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+		context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+	})).Get("/__aisys__/api/providers/{code}/models/{modelId}/capabilities", newManagementProviderModelCapabilitiesHandler(service).ServeHTTP)
+
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/gpt/models/vendor%2Fmodel/capabilities?systemAccountId=sys_admin", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if service.capabilitiesInput.ProviderCode != "gpt" || service.capabilitiesInput.Model != "vendor/model" || service.capabilitiesInput.SystemAccountID != "sys_user" {
+		t.Fatalf("input = %+v", service.capabilitiesInput)
+	}
+	var body struct {
+		Data managementprovidermodels.ModelCapabilities `json:"data"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Data.ID != "vendor/model" || len(body.Data.SupportedReasoningEfforts) != 1 {
+		t.Fatalf("body = %+v", body)
+	}
+}
+
+func TestManagementProviderModelCapabilitiesHandlerNotFoundMessages(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		err     error
+		message string
+	}{
+		{name: "provider", err: managementprovidermodels.ErrProviderNotFound, message: "供应商不存在或已停用"},
+		{name: "model", err: managementprovidermodels.ErrModelCapabilitiesNotFound, message: "模型不存在"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &managementProviderModelServiceStub{capabilitiesErr: tt.err}
+			router := chi.NewRouter()
+			router.With(NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
+				context: managementauth.Context{SystemAccountID: "sys_user", Username: "user", Role: "user", SessionID: "sess_user"},
+			})).Get("/__aisys__/api/providers/{code}/models/{modelId}/capabilities", newManagementProviderModelCapabilitiesHandler(service).ServeHTTP)
+			req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/gpt/models/missing/capabilities", nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), tt.message) {
+				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }
 
@@ -72,8 +165,8 @@ func TestManagementProviderModelOptionsHandlerUsesSelfScopeForOrdinaryUser(t *te
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if service.modelOptionsInput.SystemAccountID != "sys_user" {
-		t.Fatalf("input = %+v", service.modelOptionsInput)
+	if service.selectionOptionsInput.SystemAccountID != "sys_user" {
+		t.Fatalf("input = %+v", service.selectionOptionsInput)
 	}
 }
 
@@ -968,6 +1061,7 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProviderModelOptionsHandler: newManagementProviderModelOptionsHandler(service),
 		ManagementProviderModelsHandler:       newManagementProviderModelsHandler(service),
+		ManagementProviderModelCapabilitiesHandler:       newManagementProviderModelCapabilitiesHandler(service),
 		ManagementProviderDefaultHealthCheckModelHandler: newManagementProviderDefaultHealthCheckModelHandler(service),
 		ManagementProviderCustomModelCreateHandler:       newManagementProviderCustomModelCreateHandler(service),
 		ManagementProviderCustomModelUpdateHandler:       newManagementProviderCustomModelUpdateHandler(service),
@@ -993,6 +1087,17 @@ func TestRouterRegistersW2ManagementProviderModelHandlers(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("models status = %d, want 200", rec.Code)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/gpt/models/vendor%2Fmodel/capabilities", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("capabilities status = %d, cache = %q, body = %s", rec.Code, rec.Header().Get("Cache-Control"), rec.Body.String())
+	}
+	if touchAuthenticator.touchCookieHeader != "" {
+		t.Fatalf("read routes must not touch session, got %q", touchAuthenticator.touchCookieHeader)
 	}
 
 	req = httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", strings.NewReader(`{"model":"gpt-5.5"}`))
@@ -1045,6 +1150,7 @@ func TestRouterDoesNotRegisterW2ManagementProviderModelHandlersWhenDisabled(t *t
 		Logger:                                slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
 		ManagementProviderModelOptionsHandler: newManagementProviderModelOptionsHandler(&managementProviderModelServiceStub{}),
 		ManagementProviderModelsHandler:       newManagementProviderModelsHandler(&managementProviderModelServiceStub{}),
+		ManagementProviderModelCapabilitiesHandler:       newManagementProviderModelCapabilitiesHandler(&managementProviderModelServiceStub{}),
 		ManagementProviderDefaultHealthCheckModelHandler: newManagementProviderDefaultHealthCheckModelHandler(&managementProviderModelServiceStub{}),
 		ManagementAPIAuthMiddleware: NewManagementAPIAuthMiddleware(&managementAPIAuthenticatorStub{
 			context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_admin"},
@@ -1059,6 +1165,14 @@ func TestRouterDoesNotRegisterW2ManagementProviderModelHandlersWhenDisabled(t *t
 		t.Fatalf("status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
 	}
 
+	req = httptest.NewRequest(http.MethodGet, "/__aisys__/api/providers/gpt/models/test/capabilities", nil)
+	req.Header.Set("Cookie", "juhe_ai_session=session-token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("capabilities status = %d, want 404 while JUHE_AI_MANAGEMENT_API_ENABLED=false", rec.Code)
+	}
+
 	req = httptest.NewRequest(http.MethodPut, "/__aisys__/api/providers/gpt/default-health-check-model", strings.NewReader(`{"model":"gpt-5.5"}`))
 	req.Header.Set("Cookie", "juhe_ai_session=session-token")
 	rec = httptest.NewRecorder()
@@ -1070,9 +1184,16 @@ func TestRouterDoesNotRegisterW2ManagementProviderModelHandlersWhenDisabled(t *t
 
 type managementProviderModelServiceStub struct {
 	modelOptionsInput             managementprovidermodels.ModelOptionListInput
+	selectionOptionsInput         managementprovidermodels.ModelSelectionOptionListInput
+	selectionOptionsCalls         int
+	selectionOptions              []managementprovidermodels.ModelSelectionOption
+	selectionOptionsErr           error
 	modelsInput                   managementprovidermodels.ModelListInput
 	modelsCalls                   int
 	modelsErr                     error
+	capabilitiesInput             managementprovidermodels.ModelCapabilitiesInput
+	capabilities                  managementprovidermodels.ModelCapabilities
+	capabilitiesErr               error
 	defaultHealthCheckModelInput  managementprovidermodels.DefaultHealthCheckModelInput
 	createInput                   managementprovidermodels.CustomModelCreateInput
 	createCalls                   int
@@ -1088,9 +1209,20 @@ type managementProviderModelServiceStub struct {
 	err                           error
 }
 
+func (s *managementProviderModelServiceStub) ModelCapabilities(_ *http.Request, input managementprovidermodels.ModelCapabilitiesInput) (managementprovidermodels.ModelCapabilities, error) {
+	s.capabilitiesInput = input
+	return s.capabilities, s.capabilitiesErr
+}
+
 func (s *managementProviderModelServiceStub) ModelOptions(_ *http.Request, input managementprovidermodels.ModelOptionListInput) ([]managementprovidermodels.ModelOption, error) {
 	s.modelOptionsInput = input
 	return s.modelOptions, s.err
+}
+
+func (s *managementProviderModelServiceStub) ModelSelectionOptions(_ *http.Request, input managementprovidermodels.ModelSelectionOptionListInput) ([]managementprovidermodels.ModelSelectionOption, error) {
+	s.selectionOptionsCalls++
+	s.selectionOptionsInput = input
+	return s.selectionOptions, s.selectionOptionsErr
 }
 
 func (s *managementProviderModelServiceStub) Models(_ *http.Request, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error) {

@@ -1,8 +1,6 @@
 import { computed, ref, type ComputedRef } from 'vue'
 
-import { api, pageDataApi, type ListParams } from '@/api/client'
-import { authState } from '@/composables/useAuth'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
+import { api, type ListParams } from '@/api/client'
 import type { ProviderModelOption } from '@/types/domain'
 
 export interface ProviderModelSelectOption {
@@ -26,8 +24,6 @@ interface ModelLoadParams {
   limit?: number
   selectedIds?: string[]
 }
-
-const providerModelResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useProviderModelSelectOptions(options: UseProviderModelSelectOptionsOptions = {}) {
   const providerModelOptions = ref<ProviderModelOption[]>([])
@@ -89,40 +85,20 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
     }
     const promise = (async () => {
       try {
-        if (params.force) {
-          await providerModelResourceCache.invalidate('providers.catalog', providerModelViewerScope(), '/providers/models/options')
-        }
-        const result = await providerModelResourceCache.load<ProviderModelOption[]>({
-          cacheKey: {
-            scope: providerModelViewerScope(),
-            route: '/providers/models/options',
-            query: { ...query, providerCodes },
-            version: 2
-          },
-          domain: 'providers.catalog',
-          viewScope: scopeParams?.systemAccountId ? 'admin' : 'self',
-          ...(scopeParams?.systemAccountId ? { targetSystemAccountId: scopeParams.systemAccountId } : {}),
-          loadNetwork: async () => {
-            if (providerCodes.length <= 1) return api.providers.modelOptions(query)
-            const results = await Promise.all(providerCodes.map((code) => api.providers.modelOptions({
+        const result = providerCodes.length <= 1
+          ? await api.providers.modelOptions(query)
+          : await Promise.all(providerCodes.map((code) => api.providers.modelOptions({
               ...query,
               providerCode: code
-            })))
-            const byId = new Map<string, ProviderModelOption>()
-            for (const item of results.flat()) byId.set(item.id, item)
-            return [...byId.values()]
-          }
-        })
+            }))).then((results) => {
+              const byId = new Map<string, ProviderModelOption>()
+              for (const item of results.flat()) byId.set(item.id, item)
+              return [...byId.values()]
+            })
         if (isCurrentRequest(requestId, contextKey)) {
-          providerModelOptions.value = result.data
+          providerModelOptions.value = result
           loadedScopeKey = scopeKey
         }
-        void result.confirmation?.then((outcome) => {
-          if (outcome.data && isCurrentRequest(requestId, contextKey)) {
-            providerModelOptions.value = outcome.data
-            loadedScopeKey = scopeKey
-          }
-        })
       } catch (error) {
         if (!isCurrentRequest(requestId, contextKey)) return
         loadFailed.value = true
@@ -162,18 +138,12 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
 
   function modelOptionsContextKey(): string {
     return JSON.stringify([
-      providerModelViewerScope(),
+      options.scopeParams?.value?.systemAccountId ?? 'self',
       options.providerCode?.value?.trim() ?? '',
       [...(options.providerCodes?.value ?? [])].map((code) => code.trim()).filter(Boolean).sort(),
       options.protocol ?? '',
       [...(options.selectedIds?.value ?? [])].map((id) => id.trim()).filter(Boolean).sort()
     ])
-  }
-
-  function providerModelViewerScope(): string {
-    const viewer = authState.currentUser.value
-    const targetSystemAccountId = options.scopeParams?.value?.systemAccountId
-    return [targetSystemAccountId ? 'admin' : 'self', viewer?.id ?? 'anonymous', viewer?.role ?? 'anonymous', targetSystemAccountId ?? 'self'].join(':')
   }
 
   function isCurrentRequest(requestId: number, contextKey: string): boolean {

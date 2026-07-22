@@ -1,7 +1,10 @@
 import type { Request, Response } from 'express'
 
 import type { ResponseInspectionPolicySummary } from '../../../storage/response-inspection-policy.repository.js'
-import type { OpenAIGatewayClientStrategyContext } from '../client-profiles/strategy.js'
+import {
+  gatewayClientAllowsUpstreamSemanticInterpretation,
+  type OpenAIGatewayClientStrategyContext
+} from '../client-profiles/strategy.js'
 import {
   responseHeadersToObject,
   type AuditCaptureContext
@@ -108,11 +111,18 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     }, protocolFailure)
   }
   if (isGatewayGeneratedResponsesFailure(parsedJson, input)) return undefined
+  const interpretUpstreamResponseSemantics = input.clientStrategy
+    ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
+    : false
+  if (!interpretUpstreamResponseSemantics) return undefined
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(input.req, input.account)
   const context = {
     clientProfile: input.clientStrategy?.clientProfile ?? defaultClientProfile,
     accountClientCompatibility: input.account.clientCompatibility,
     codexCompactionExpected: input.clientStrategy?.codexCompactionExpected
+  }
+  if (context.clientProfile === 'generic_anthropic') {
+    return undefined
   }
   const frames = extractGatewayProtocolJsonSemanticFramesForRequest(parsedJson, input.req, input.account)
   if (

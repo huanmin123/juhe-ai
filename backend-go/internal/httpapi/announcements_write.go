@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -19,13 +18,10 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
-type announcementPublicChangePublisher interface {
-	PublishAnnouncementPublicChange(ctx context.Context, announcementID, operation string, fieldMask []string) error
-}
+const announcementJSONMaxBodyBytes = 256 << 10
 
 type announcementManagementWriteOptions struct {
 	operationLogs managementOperationLogOptions
-	pageData      announcementPublicChangePublisher
 	logger        announcementWriteLogger
 	reader        announcementManagementService
 }
@@ -45,7 +41,6 @@ type announcementManagementWriteService interface {
 func NewAnnouncementManagementHandlerWithOptions(
 	service *announcements.Service,
 	operationLogs ManagementOperationLogOptions,
-	pageData announcementPublicChangePublisher,
 	logger announcementWriteLogger,
 ) http.Handler {
 	read := newAnnouncementManagementHandler(announcementManagementServiceAdapter{service: service})
@@ -53,7 +48,6 @@ func NewAnnouncementManagementHandlerWithOptions(
 		announcementManagementWriteServiceAdapter{service: service},
 		announcementManagementWriteOptions{
 			operationLogs: newManagementOperationLogOptions(operationLogs),
-			pageData:      pageData,
 			logger:        logger,
 			reader:        announcementManagementServiceAdapter{service: service},
 		},
@@ -174,9 +168,6 @@ func handleAnnouncementCreate(w http.ResponseWriter, r *http.Request, auth manag
 		return err
 	}
 	recordAnnouncementOperationLog(r, auth, result, "create", nil, opts.operationLogs)
-	if result.Status == "published" {
-		publishAnnouncementChange(r, opts, result.ID, "upsert", []string{"title", "content", "level", "status", "publishedAt"})
-	}
 	writeData(w, http.StatusCreated, enrichAnnouncementWriteResult(r, opts.reader, result))
 	return nil
 }
@@ -201,13 +192,6 @@ func handleAnnouncementUpdate(w http.ResponseWriter, r *http.Request, auth manag
 		return err
 	}
 	recordAnnouncementOperationLog(r, auth, result, "update", &before, opts.operationLogs)
-	if result.Status == "published" || before.Status == "published" {
-		op := "delete"
-		if result.Status == "published" {
-			op = "upsert"
-		}
-		publishAnnouncementChange(r, opts, result.ID, op, []string{"title", "content", "level", "status", "publishedAt"})
-	}
 	writeData(w, http.StatusOK, enrichAnnouncementWriteResult(r, opts.reader, result))
 	return nil
 }
@@ -234,13 +218,10 @@ func handleAnnouncementStatus(w http.ResponseWriter, r *http.Request, auth manag
 		return err
 	}
 	action := "unpublish"
-	operation := "delete"
-	mask := []string{"status"}
 	if publish {
-		action, operation, mask = "publish", "upsert", []string{"status", "publishedAt"}
+		action = "publish"
 	}
 	recordAnnouncementOperationLog(r, auth, result, action, &before, opts.operationLogs)
-	publishAnnouncementChange(r, opts, result.ID, operation, mask)
 	writeData(w, http.StatusOK, enrichAnnouncementWriteResult(r, opts.reader, result))
 	return nil
 }
@@ -252,18 +233,20 @@ func handleAnnouncementDelete(w http.ResponseWriter, r *http.Request, auth manag
 		return err
 	}
 	recordAnnouncementOperationLog(r, auth, port.Announcement{ID: id, Title: before.Title, Status: before.Status}, "delete", &before, opts.operationLogs)
-	if before.Status == "published" {
-		publishAnnouncementChange(r, opts, id, "delete", nil)
-	}
 	w.WriteHeader(http.StatusNoContent)
 	return nil
 }
 
 func decodeAnnouncementJSON(w http.ResponseWriter, r *http.Request, target any) bool {
-	limited := http.MaxBytesReader(w, r.Body, 256<<10)
+	limited := http.MaxBytesReader(w, r.Body, announcementJSONMaxBodyBytes)
 	defer limited.Close()
 	raw, err := io.ReadAll(limited)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+			return false
+		}
 		writeMessageError(w, http.StatusBadRequest, "公告参数无效")
 		return false
 	}
@@ -316,19 +299,8 @@ func enrichAnnouncementWriteResult(r *http.Request, reader announcementManagemen
 	return enriched
 }
 
-func publishAnnouncementChange(r *http.Request, opts announcementManagementWriteOptions, id, operation string, fieldMask []string) {
-	if opts.pageData == nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
-	defer cancel()
-	if err := opts.pageData.PublishAnnouncementPublicChange(ctx, id, operation, fieldMask); err != nil && opts.logger != nil {
-		opts.logger.Warn("公告页面数据变更发布失败", "error", err, "announcement_id", id)
-	}
-}
-
 func recordAnnouncementOperationLog(r *http.Request, auth managementauth.Context, result port.Announcement, action string, before *port.Announcement, opts managementOperationLogOptions) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	statusCode := http.StatusOK

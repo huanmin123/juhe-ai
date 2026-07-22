@@ -37,7 +37,13 @@ type Config struct {
 	NodeInternalSnapshotRebuildTimeout time.Duration `env:"JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT" envDefault:"60s"`
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
+	GatewayModelsEnabled               bool          `env:"JUHE_AI_GATEWAY_MODELS_ENABLED" envDefault:"false"`
 	RuntimeLogIndexEnabled             bool
+	RuntimeLogDirectory                string        `env:"JUHE_AI_LOG_DIR" envDefault:"../backend/logs"`
+	RuntimeLogFileEnabled              bool          `env:"JUHE_AI_LOG_FILE_ENABLED" envDefault:"true"`
+	RuntimeLogRetentionDays            int           `env:"JUHE_AI_LOG_RETENTION_DAYS" envDefault:"30"`
+	RuntimeLogMaxFiles                 int           `env:"JUHE_AI_LOG_MAX_FILES" envDefault:"500"`
+	RGPath                             string        `env:"JUHE_AI_RG_PATH"`
 	AuthCaptchaDisabled                bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
 	TrustProxy                         string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
 	CookieSecure                       bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
@@ -45,6 +51,7 @@ type Config struct {
 	MetricsEnabled                     bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
 	PprofEnabled                       bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
 	ShutdownTimeout                    time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	CooldownAccountRetestWorkerEnabled bool          `env:"JUHE_AI_COOLDOWN_ACCOUNT_RETEST_WORKER_ENABLED" envDefault:"false"`
 	OwnerLockEnabled                   bool          `env:"JUHE_AI_OWNER_LOCK_ENABLED" envDefault:"false"`
 	OwnerLockPath                      string        `env:"JUHE_AI_OWNER_LOCK_PATH"`
 	OwnerLockDeploymentEpoch           string        `env:"JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"`
@@ -172,6 +179,12 @@ func (cfg Config) Validate() error {
 	if cfg.ShutdownTimeout <= 0 {
 		return fmt.Errorf("JUHE_AI_SHUTDOWN_TIMEOUT 必须大于 0")
 	}
+	if cfg.RuntimeLogRetentionDays != 0 && (cfg.RuntimeLogRetentionDays < 1 || cfg.RuntimeLogRetentionDays > 30) {
+		return fmt.Errorf("JUHE_AI_LOG_RETENTION_DAYS 必须在 1 到 30 之间")
+	}
+	if cfg.RuntimeLogMaxFiles != 0 && (cfg.RuntimeLogMaxFiles < 1 || cfg.RuntimeLogMaxFiles > 500) {
+		return fmt.Errorf("JUHE_AI_LOG_MAX_FILES 必须在 1 到 500 之间")
+	}
 	if cfg.OwnerLockEnabled {
 		if strings.TrimSpace(cfg.OwnerLockPath) == "" {
 			return fmt.Errorf("启用 owner lock 时 JUHE_AI_OWNER_LOCK_PATH 不能为空")
@@ -209,6 +222,9 @@ func (cfg Config) Validate() error {
 		return err
 	}
 	if err := validateManagementAPIConfig(cfg); err != nil {
+		return err
+	}
+	if err := validateGatewayModelsConfig(cfg); err != nil {
 		return err
 	}
 	if err := validateUpstreamBaseURLPrivateAllowlist(cfg); err != nil {
@@ -382,6 +398,16 @@ func validateManagementAPIConfig(cfg Config) error {
 	}
 	if len([]rune(secret)) < 32 {
 		return fmt.Errorf("JUHE_AI_SECRET 至少需要 32 个字符")
+	}
+	return nil
+}
+
+func validateGatewayModelsConfig(cfg Config) error {
+	if !cfg.GatewayModelsEnabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.PostgresURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_GATEWAY_MODELS_ENABLED 时 JUHE_AI_POSTGRES_URL 不能为空")
 	}
 	return nil
 }

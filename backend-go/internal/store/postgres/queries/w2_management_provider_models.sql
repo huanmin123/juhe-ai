@@ -9,8 +9,7 @@ SELECT code
 FROM juhe_business.providers
 WHERE enabled = true
   AND code <> 'hybrid'
-ORDER BY name ASC, code ASC
-LIMIT 50;
+ORDER BY name ASC, code ASC;
 
 -- name: ListManagementProviderCodesByProtocol :many
 SELECT DISTINCT p.code
@@ -21,8 +20,7 @@ WHERE p.enabled = true
   AND ppp.enabled = true
   AND ppp.protocol_code = sqlc.arg(protocol_code)
   AND ppp.protocol_version = sqlc.arg(protocol_version)
-ORDER BY p.code ASC
-LIMIT 50;
+ORDER BY p.code ASC;
 
 -- name: ListManagementProviderModelCatalog :many
 SELECT
@@ -143,6 +141,143 @@ WHERE provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
     )
   )
 ORDER BY provider_code ASC, scope ASC, model ASC, id ASC;
+
+-- name: ListManagementProviderModelOptions :many
+WITH built_in_ranked AS (
+  SELECT
+    built_in.id,
+    built_in.provider_code,
+    built_in.model,
+    ROW_NUMBER() OVER (
+      PARTITION BY built_in.model
+      ORDER BY built_in.provider_code ASC, built_in.id ASC
+    ) AS option_rank
+  FROM juhe_business.provider_model_catalog AS built_in
+  WHERE built_in.provider_code = ANY(sqlc.arg(built_in_provider_codes)::text[])
+    AND built_in.status = 'active'
+    AND built_in.catalog_visible = true
+    AND (
+      built_in.shutdown_date IS NULL
+      OR btrim(built_in.shutdown_date) = ''
+      OR built_in.shutdown_date > CURRENT_DATE::text
+    )
+    AND (
+      btrim(sqlc.arg(keyword)::text) = ''
+      OR built_in.model = ANY(sqlc.arg(selected_ids)::text[])
+      OR lower(built_in.model) LIKE '%' || lower(sqlc.arg(keyword)::text) || '%'
+    )
+),
+built_in_options AS (
+  SELECT id, provider_code, model, 'built_in'::text AS scope
+  FROM built_in_ranked
+  WHERE option_rank = 1
+  ORDER BY
+    CASE WHEN model = ANY(sqlc.arg(selected_ids)::text[]) THEN 0 ELSE 1 END,
+    lower(model) ASC,
+    provider_code ASC,
+    id ASC
+  LIMIT sqlc.arg(result_limit)
+),
+custom_ranked AS (
+  SELECT
+    custom.id,
+    custom.provider_code,
+    custom.model,
+    custom.scope,
+    ROW_NUMBER() OVER (
+      PARTITION BY custom.model
+      ORDER BY CASE custom.scope WHEN 'personal' THEN 0 ELSE 1 END, custom.provider_code ASC, custom.id ASC
+    ) AS option_rank
+  FROM juhe_business.custom_provider_models AS custom
+  WHERE custom.provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
+    AND custom.status = 'active'
+    AND custom.catalog_visible = true
+    AND (
+      custom.shutdown_date IS NULL
+      OR btrim(custom.shutdown_date) = ''
+      OR custom.shutdown_date > CURRENT_DATE::text
+    )
+    AND (
+      (custom.scope = 'global' AND custom.system_account_id IS NULL)
+      OR (
+        sqlc.arg(system_account_id)::text <> ''
+        AND custom.scope = 'personal'
+        AND custom.system_account_id = sqlc.arg(system_account_id)
+      )
+    )
+    AND (
+      btrim(sqlc.arg(keyword)::text) = ''
+      OR custom.model = ANY(sqlc.arg(selected_ids)::text[])
+      OR lower(custom.model) LIKE '%' || lower(sqlc.arg(keyword)::text) || '%'
+    )
+),
+custom_options AS (
+  SELECT id, provider_code, model, scope
+  FROM custom_ranked
+  WHERE option_rank = 1
+  ORDER BY
+    CASE WHEN model = ANY(sqlc.arg(selected_ids)::text[]) THEN 0 ELSE 1 END,
+    lower(model) ASC,
+    provider_code ASC,
+    scope ASC,
+    id ASC
+  LIMIT sqlc.arg(result_limit)
+)
+SELECT id, provider_code, model, scope FROM built_in_options
+UNION ALL
+SELECT id, provider_code, model, scope FROM custom_options;
+
+-- name: ListManagementProviderModelCapabilityCandidates :many
+SELECT
+  built_in.id,
+  built_in.provider_code,
+  built_in.model,
+  'built_in'::text AS scope,
+  ''::text AS system_account_id,
+  built_in.mode,
+  built_in.catalog_order,
+  built_in.release_date,
+  built_in.supported_api_protocols_json,
+  built_in.supported_service_tiers_json,
+  built_in.supported_reasoning_efforts_json,
+  built_in.default_reasoning_effort
+FROM juhe_business.provider_model_catalog AS built_in
+WHERE built_in.provider_code = ANY(sqlc.arg(built_in_provider_codes)::text[])
+  AND built_in.model = sqlc.arg(model)
+  AND built_in.status = 'active'
+  AND built_in.catalog_visible = true
+  AND (
+    built_in.shutdown_date IS NULL
+    OR btrim(built_in.shutdown_date) = ''
+    OR built_in.shutdown_date > CURRENT_DATE::text
+  )
+UNION ALL
+SELECT
+  custom.id,
+  custom.provider_code,
+  custom.model,
+  custom.scope,
+  COALESCE(custom.system_account_id, '') AS system_account_id,
+  custom.mode,
+  NULL::integer AS catalog_order,
+  custom.release_date,
+  custom.supported_api_protocols_json,
+  custom.supported_service_tiers_json,
+  custom.supported_reasoning_efforts_json,
+  custom.default_reasoning_effort
+FROM juhe_business.custom_provider_models AS custom
+WHERE custom.provider_code = ANY(sqlc.arg(custom_provider_codes)::text[])
+  AND custom.model = sqlc.arg(model)
+  AND custom.status = 'active'
+  AND (
+    (custom.scope = 'global' AND custom.system_account_id IS NULL)
+    OR (
+      sqlc.arg(system_account_id)::text <> ''
+      AND custom.scope = 'personal'
+      AND custom.system_account_id = sqlc.arg(system_account_id)
+    )
+  )
+ORDER BY provider_code ASC, scope ASC, catalog_order ASC NULLS LAST, release_date DESC NULLS LAST, model ASC, id ASC;
 
 -- name: LockManagementBuiltInProviderModelConfiguration :one
 SELECT id, provider_code, status, catalog_visible, mode, supported_api_protocols_json, supported_service_tiers_json,

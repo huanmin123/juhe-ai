@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 const schema = readFileSync(new URL('../../storage/schema/business-schema.ts', import.meta.url), 'utf8')
 assert.match(schema, /CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots/, '业务 schema 必须持久化网关发布模型快照')
@@ -14,6 +14,40 @@ assert.match(postgresSchema, /chat_list:%/, 'PostgreSQL 当前 schema 必须允�
 assert.match(postgresSchema, /chat_model:%/, 'PostgreSQL 当前 schema 必须允许按模型维度聊天能力快照')
 assert.match(postgresSchema, /custom_provider_models[\s\S]*catalog_visible boolean NOT NULL DEFAULT true/i, 'PostgreSQL 自定义模型必须有发布开关')
 
+const chatSnapshotVariantMigrationUrl = new URL(
+  '../../../../backend-go/db/migrations/000070_w2_gateway_model_catalog_chat_snapshot_variants.sql',
+  import.meta.url
+)
+assert.equal(existsSync(chatSnapshotVariantMigrationUrl), true, 'PostgreSQL 必须用前向迁移升级已存在快照表的聊天 variant 约束')
+const chatSnapshotVariantMigration = readFileSync(chatSnapshotVariantMigrationUrl, 'utf8')
+const gooseDownMarker = '-- +goose Down'
+const gooseDownIndex = chatSnapshotVariantMigration.indexOf(gooseDownMarker)
+assert.notEqual(gooseDownIndex, -1, '聊天 variant 前向迁移必须声明 Goose Down 分段')
+const chatSnapshotVariantUp = chatSnapshotVariantMigration.slice(0, gooseDownIndex)
+const chatSnapshotVariantDown = chatSnapshotVariantMigration.slice(gooseDownIndex + gooseDownMarker.length)
+assert.match(
+  chatSnapshotVariantUp,
+  /DROP CONSTRAINT IF EXISTS gateway_model_catalog_snapshots_variant_check/i,
+  '前向迁移必须移除生产旧 chat-only variant 约束'
+)
+assert.match(
+  chatSnapshotVariantUp,
+  /DELETE FROM juhe_business\.gateway_model_catalog_snapshots[\s\S]*WHERE variant = 'chat'/i,
+  '前向迁移必须先删除会阻止新 CHECK 落地的旧 chat 派生快照'
+)
+assert.match(chatSnapshotVariantUp, /chat_list:%/, '前向迁移必须允许供应商维度轻量聊天列表快照')
+assert.match(chatSnapshotVariantUp, /chat_model:%/, '前向迁移必须允许按模型维度聊天能力快照')
+assert.match(
+  chatSnapshotVariantUp,
+  /INSERT INTO juhe_business\.model_catalog_snapshot_rebuild_requests[\s\S]*'all'[\s\S]*ON CONFLICT/i,
+  'variant 契约升级后必须投递一次全量快照重建请求'
+)
+assert.doesNotMatch(
+  chatSnapshotVariantDown,
+  /gateway_model_catalog_snapshots|model_catalog_snapshot_rebuild_requests/i,
+  'Down 必须保持新 variant 约束和已重建快照，避免回滚代码后重新制造空模型列表'
+)
+
 const snapshotService = readFileSync(new URL('../../modules/model-pricing/published-model-catalog.service.ts', import.meta.url), 'utf8')
 const rebuildScript = readFileSync(new URL('../maintenance/rebuild-published-model-catalog-snapshots.ts', import.meta.url), 'utf8')
 assert.match(snapshotService, /createSharedJsonCache<PublishedModelCatalogCacheEntry>/, '发布快照必须镜像到 Redis 单 key')
@@ -26,7 +60,10 @@ assert.match(
 assert.match(snapshotService, /findGatewayModelCatalogSnapshotAsync/, 'Redis miss 只能读取一行持久化快照')
 assert.doesNotMatch(snapshotService, /listCachedProviderModelCatalogAsync/, '请求读取服务不得调用运行态模型目录构建')
 assert.match(snapshotService, /rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync/, '写路径必须提供系统账户级快照重建入口')
-assert.match(snapshotService, /OPENAI_COMPATIBLE_PROVIDER_CODE/, 'OpenAI 静态目录必须覆盖所有 OpenAI-compatible 供应商模型')
+assert.doesNotMatch(snapshotService, /snapshotInput\('openai', 'default'/, '发布快照不得继续生成网关 OpenAI default 响应')
+assert.doesNotMatch(snapshotService, /snapshotInput\('openai', 'codex'/, '发布快照不得继续生成网关 Codex 响应')
+assert.doesNotMatch(snapshotService, /snapshotInput\('anthropic', 'default'/, '发布快照不得继续生成网关 Anthropic 响应')
+assert.doesNotMatch(snapshotService, /snapshotInput\('gemini', 'default'/, '发布快照不得继续生成网关 Gemini 响应')
 assert.match(snapshotService, /pruneGatewayModelCatalogSnapshotsAsync/, '全量重建必须清理已停用或删除 owner 的旧快照')
 assert.match(snapshotService, /rebuildPublishedModelCatalogSnapshotsBestEffortAsync/, '模型事实提交后快照失败必须有界后台重试，不能把已提交事实返回成失败')
 assert.match(
@@ -54,8 +91,9 @@ assert.match(snapshotService, /chatModelSnapshotVariant\(providerCode, model\.id
 assert.doesNotMatch(snapshotService, /snapshotInput\('openai', 'chat', \{ data: buildChatModelOptions/, '不得继续把全部聊天能力写进单个宽快照')
 
 const fixedResponses = readFileSync(new URL('../../modules/gateway/response/fixed-responses.ts', import.meta.url), 'utf8')
-assert.match(fixedResponses, /readPublishedModelCatalogResponseAsync/, '/v1/models 必须直读已发布最终响应')
-assert.doesNotMatch(fixedResponses, /listProviderScopedModelCatalog/, '/v1/models 不得按供应商 fan-out 构建目录')
+assert.match(fixedResponses, /listClientModelCatalogAsync/, '/v1/models 必须动态聚合客户端可见供应商目录')
+assert.match(fixedResponses, /buildOpenAIModelsResponse\(catalog, req\)/, 'OpenAI 与 Codex 模型响应必须从同一动态目录按请求形态构建')
+assert.doesNotMatch(fixedResponses, /readPublishedModelCatalogResponseAsync/, '/v1/models 不得继续读取 default\/codex 发布响应快照')
 
 const customRepository = readFileSync(new URL('../../storage/custom-provider-models.repository.ts', import.meta.url), 'utf8')
 assert.match(customRepository, /catalogVisible/, '自定义模型 repository 必须读写发布开关')

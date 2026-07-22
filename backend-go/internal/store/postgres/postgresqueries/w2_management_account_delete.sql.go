@@ -105,35 +105,6 @@ func (q *Queries) ListManagementAccountDeleteInstances(ctx context.Context, sour
 	return items, nil
 }
 
-const listManagementAccountDeletePageOwners = `-- name: ListManagementAccountDeletePageOwners :many
-SELECT DISTINCT resource_authorizations.grantee_system_account_id
-FROM juhe_business.resource_authorizations AS resource_authorizations
-WHERE resource_authorizations.resource_type = 'account'
-  AND resource_authorizations.resource_id = $1::text
-  AND resource_authorizations.status <> 'returned'
-ORDER BY resource_authorizations.grantee_system_account_id ASC
-`
-
-func (q *Queries) ListManagementAccountDeletePageOwners(ctx context.Context, accountID string) ([]string, error) {
-	rows, err := q.db.Query(ctx, listManagementAccountDeletePageOwners, accountID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var grantee_system_account_id string
-		if err := rows.Scan(&grantee_system_account_id); err != nil {
-			return nil, err
-		}
-		items = append(items, grantee_system_account_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const lockManagementAccountDeleteTarget = `-- name: LockManagementAccountDeleteTarget :one
 SELECT
   accounts.id,

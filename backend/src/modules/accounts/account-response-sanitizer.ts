@@ -110,14 +110,6 @@ export function projectAccountListItem(account: AccountSummary): AccountListItem
     authorizationCount: _authorizationCount,
     authorizationTeamCount: _authorizationTeamCount,
     authorizationUsageAvailable: _authorizationUsageAvailable,
-    currentConcurrency: _currentConcurrency,
-    currentConcurrencyAvailable: _currentConcurrencyAvailable,
-    runtimeAvailability: _runtimeAvailability,
-    effectiveAvailability: _effectiveAvailability,
-    availabilityPresentation: _availabilityPresentation,
-    apiKeyRuntime: _apiKeyRuntime,
-    todayUsage: _todayUsage,
-    lastUsedAt: _lastUsedAt,
     ...item
   } = account
   return item

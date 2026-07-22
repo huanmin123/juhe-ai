@@ -198,7 +198,6 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (DetailResult, 
 	}
 
 	s.invalidateCreatedRouteStrategy(ctx)
-	s.publishOptionsPageDataReset(ctx)
 	return result, nil
 }
 
@@ -899,21 +898,6 @@ func (s *Service) invalidateRouteStrategy(
 				"management_route_strategy_gateway_runtime_invalidation_failed",
 			),
 			slog.String("reason", reason),
-			slog.Any("error", err),
-		)
-	}
-}
-
-func (s *Service) publishOptionsPageDataReset(ctx context.Context) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), routeStrategyInvalidationTimeout)
-	defer cancel()
-	if err := s.pageDataPublisher.PublishPageDataReset(publishCtx, "routeStrategies.options", nil, true); err != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "策略路由写入后页面数据失效失败",
-			slog.String("event", "management_route_strategy_page_data_reset_failed"),
-			slog.String("domain", "routeStrategies.options"),
 			slog.Any("error", err),
 		)
 	}

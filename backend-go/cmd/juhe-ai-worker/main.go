@@ -153,6 +153,26 @@ func newRootCommand(deps workerCommandDependencies) *cobra.Command {
 	gatewayQuotaSnapshotCommand.Flags().DurationVar(&gatewayQuotaSnapshotOptions.SnapshotTTL, "snapshot-ttl", 0, "Redis runtime state snapshot TTL; 0 uses the service default")
 	root.AddCommand(gatewayQuotaSnapshotCommand)
 
+	cooldownAccountRetestOptions := app.CooldownAccountRetestWorkerOptions{
+		InitialDelay: 60 * time.Second,
+	}
+	cooldownAccountRetestCommand := &cobra.Command{
+		Use:   "cooldown-account-retest",
+		Short: "Run account-level cooldown retest scheduler and worker",
+		RunE: newWorkerCommandRunE(deps, func(cfg config.Config, logger *slog.Logger) app.WorkerRunner {
+			return func(ctx context.Context) error {
+				return app.RunCooldownAccountRetestWorker(ctx, cfg, logger, cooldownAccountRetestOptions)
+			}
+		}),
+	}
+	cooldownAccountRetestCommand.Flags().DurationVar(
+		&cooldownAccountRetestOptions.InitialDelay,
+		"initial-delay",
+		cooldownAccountRetestOptions.InitialDelay,
+		"initial delay before the first account-level cooldown retest scan",
+	)
+	root.AddCommand(cooldownAccountRetestCommand)
+
 	return root
 }
 

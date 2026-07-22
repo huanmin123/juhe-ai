@@ -69,6 +69,25 @@ func TestServiceOptionsMapsProviderDefinitions(t *testing.T) {
 	}
 }
 
+func TestServiceSelectOptionsUsesLightweightStore(t *testing.T) {
+	store := &providerOptionStoreStub{
+		selectOptions: []port.ManagementProviderSelectOption{
+			{ID: "provider_gpt", Code: "gpt", Name: "GPT", Enabled: true},
+		},
+	}
+
+	options, err := NewService(store).SelectOptions(context.Background())
+	if err != nil {
+		t.Fatalf("SelectOptions() error = %v", err)
+	}
+	if len(options) != 1 || options[0].ID != "gpt" || options[0].Code != "gpt" || options[0].Name != "GPT" || !options[0].Enabled {
+		t.Fatalf("options = %+v", options)
+	}
+	if store.selectCalls != 1 || store.input.SystemAccountID != "" {
+		t.Fatalf("select calls = %d, definition input = %+v", store.selectCalls, store.input)
+	}
+}
+
 func TestServiceOptionsPreservesDeepSeekAndHybridContractsByCode(t *testing.T) {
 	store := &providerOptionStoreStub{options: []port.ManagementProviderOption{
 		{
@@ -164,11 +183,13 @@ func TestServiceListUsesAllProviders(t *testing.T) {
 }
 
 type providerOptionStoreStub struct {
-	listInput port.ManagementProviderListInput
-	input     port.ManagementProviderOptionListInput
-	providers []port.ManagementProviderOption
-	options   []port.ManagementProviderOption
-	err       error
+	listInput     port.ManagementProviderListInput
+	input         port.ManagementProviderOptionListInput
+	providers     []port.ManagementProviderOption
+	options       []port.ManagementProviderOption
+	selectOptions []port.ManagementProviderSelectOption
+	selectCalls   int
+	err           error
 }
 
 func (s *providerOptionStoreStub) ListManagementProviders(_ context.Context, input port.ManagementProviderListInput) ([]port.ManagementProviderOption, error) {
@@ -179,4 +200,9 @@ func (s *providerOptionStoreStub) ListManagementProviders(_ context.Context, inp
 func (s *providerOptionStoreStub) ListManagementProviderOptions(_ context.Context, input port.ManagementProviderOptionListInput) ([]port.ManagementProviderOption, error) {
 	s.input = input
 	return s.options, s.err
+}
+
+func (s *providerOptionStoreStub) ListManagementProviderSelectOptions(context.Context) ([]port.ManagementProviderSelectOption, error) {
+	s.selectCalls++
+	return s.selectOptions, s.err
 }

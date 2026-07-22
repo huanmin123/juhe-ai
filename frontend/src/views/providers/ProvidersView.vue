@@ -280,7 +280,6 @@ import { loadProviderOptionsResource } from '@/composables/useProviderOptionsRes
 import { loadProviderModelCatalogResource } from '@/composables/useProviderModelCatalogResource'
 import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { ProviderDefinition, ProviderModelPricing, ProviderModelsParams, ProviderModelUpsertPayload } from '@/types/domain'
-import { invalidateAccountProviderModelOptionsCache } from '@/views/accounts/useAccountProviderModelOptions'
 import ProviderModelCatalogModal from './ProviderModelCatalogModal.vue'
 import {
   applyConfigurationTemplateToCustomModelForm,
@@ -448,13 +447,14 @@ function formatDefaultSupportedModels(provider: ProviderDefinition): string {
 async function loadProviders(force = false) {
   loading.value = true
   try {
-    providers.value = await loadProviderOptionsResource({
+    const providerResult = await loadProviderOptionsResource({
       apply: (nextProviders) => { providers.value = nextProviders },
       force,
       includeDisabled: isManagementView.value,
       includeDefinitions: !isManagementView.value,
       isManagementView: isManagementView.value
     })
+    providers.value = providerResult.data
   } catch (error) {
     console.error(error)
     message.error('加载供应商失败')
@@ -533,7 +533,6 @@ async function saveCustomModel() {
       await api.providers.createModel(targetProviderCode, payload, modelOperationQueryParams(payload))
       message.success('自定义模型已创建')
     }
-    invalidateAccountProviderModelOptionsCache()
     customModelModalOpen.value = false
     resetCustomModelForm()
     await reloadActiveProviderModels(true)
@@ -550,7 +549,6 @@ async function deleteCustomModel(record: ProviderModelPricing) {
   modelLoading.value = true
   try {
     await api.providers.deleteModel(record.providerCode, record.id)
-    invalidateAccountProviderModelOptionsCache()
     message.success('自定义模型已删除')
     await reloadActiveProviderModels(true)
   } catch (error) {
@@ -578,7 +576,7 @@ async function reloadActiveProviderModels(force = false) {
       systemAccountId: modelQuery.systemAccountId
     })
     if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
-    const scopedProvider = scopedProviders.find((item) => item.code === provider.code)
+    const scopedProvider = scopedProviders.data.find((item) => item.code === provider.code)
     if (scopedProvider) {
       activeProvider.value = scopedProvider
     }
@@ -588,10 +586,7 @@ async function reloadActiveProviderModels(force = false) {
       providerCode: provider.code,
       query: modelQuery
     })
-    applyProviderModelResult(modelResult.data, requestSequence, provider.code)
-    void modelResult.confirmation?.then((outcome) => {
-      if (outcome.data) applyProviderModelResult(outcome.data, requestSequence, provider.code)
-    })
+    applyProviderModelResult(modelResult, requestSequence, provider.code)
   } catch (error) {
     if (requestSequence !== modelRequestSequence || activeProvider.value?.code !== provider.code) return
     console.error(error)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
@@ -95,12 +96,14 @@ type CredentialCodec interface {
 
 type ServiceOptions struct {
 	Reader          port.ManagementAccountTestOptionsReader
+	OptionReader    port.ManagementAccountTestOptionReader
 	ModelCatalog    ModelCatalog
 	CredentialCodec CredentialCodec
 }
 
 type Service struct {
 	reader          port.ManagementAccountTestOptionsReader
+	optionReader    port.ManagementAccountTestOptionReader
 	modelCatalog    ModelCatalog
 	credentialCodec CredentialCodec
 }
@@ -108,6 +111,31 @@ type Service struct {
 type Input struct {
 	AccountID       string
 	SystemAccountID string
+}
+
+type OptionsInput struct {
+	AccountID       string
+	SystemAccountID string
+	Keyword         string
+	Limit           int
+	SelectedIDs     []string
+}
+
+type ModelCapabilitiesInput struct {
+	AccountID       string
+	SystemAccountID string
+	Model           string
+}
+
+type SelectionOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type ModelCapabilities struct {
+	ID                string   `json:"id"`
+	Name              string   `json:"name"`
+	TestEndpointModes []string `json:"testEndpointModes"`
 }
 
 type ModelOption struct {
@@ -146,9 +174,119 @@ func ValidationMessage(err error) (string, bool) {
 func NewServiceWithOptions(opts ServiceOptions) *Service {
 	return &Service{
 		reader:          opts.Reader,
+		optionReader:    opts.OptionReader,
 		modelCatalog:    opts.ModelCatalog,
 		credentialCodec: opts.CredentialCodec,
 	}
+}
+
+func (s *Service) Options(ctx context.Context, input OptionsInput) ([]SelectionOption, bool, error) {
+	if s.optionReader == nil {
+		return nil, false, fmt.Errorf("management account test option reader is required")
+	}
+	limit := input.Limit
+	if limit == 0 {
+		limit = 50
+	}
+	if limit < 1 || limit > 50 {
+		return nil, false, &ValidationError{Message: "limit 必须是 1 到 50 的整数"}
+	}
+	source, found, err := s.optionReader.GetManagementAccountTestOptionListSource(ctx, port.ManagementAccountTestOptionsInput{
+		AccountID:       trimAccountTestText(input.AccountID),
+		SystemAccountID: trimAccountTestText(input.SystemAccountID),
+	})
+	if err != nil || !found {
+		return nil, found, err
+	}
+	ownerSystemAccountID := trimAccountTestText(source.OwnerSystemAccountID)
+	if ownerSystemAccountID == "" {
+		return nil, false, fmt.Errorf("账户归属数据异常，无法读取测试模型")
+	}
+	selectedIDs := normalizeModelIDs(input.SelectedIDs, 50)
+	if healthCheckModel := trimAccountTestText(source.HealthCheckModel); healthCheckModel != "" {
+		selectedIDs = appendUniqueModelID(selectedIDs, healthCheckModel, 51)
+	}
+	rows, err := s.optionReader.ListManagementAccountTestModelCatalog(ctx, port.ManagementAccountTestModelCatalogInput{
+		ProviderCode:    trimAccountTestText(source.ProviderCode),
+		SystemAccountID: ownerSystemAccountID,
+		Keyword:         trimAccountTestText(input.Keyword),
+		Limit:           limit,
+		SelectedIDs:     selectedIDs,
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	account := testOptionsSourceFromListSource(source)
+	eligible := make([]port.ManagementAccountTestModelCatalogItem, 0, len(rows))
+	for _, row := range rows {
+		if isAccountManualTestModel(modelCatalogItemFromOption(row), account) {
+			eligible = append(eligible, row)
+		}
+	}
+	return mergeSelectionOptions(eligible, trimAccountTestText(input.Keyword), limit, selectedIDs), true, nil
+}
+
+func (s *Service) ModelCapabilities(
+	ctx context.Context,
+	input ModelCapabilitiesInput,
+) (ModelCapabilities, bool, error) {
+	model := trimAccountTestText(input.Model)
+	if model == "" {
+		return ModelCapabilities{}, false, &ValidationError{Message: "请选择测试模型"}
+	}
+	if s.optionReader == nil {
+		return ModelCapabilities{}, false, fmt.Errorf("management account test option reader is required")
+	}
+	account, found, err := s.optionReader.GetManagementAccountTestModelCapabilitiesSource(ctx, port.ManagementAccountTestModelCapabilitiesSourceInput{
+		AccountID:       trimAccountTestText(input.AccountID),
+		SystemAccountID: trimAccountTestText(input.SystemAccountID),
+		Model:           model,
+	})
+	if err != nil || !found {
+		return ModelCapabilities{}, found, err
+	}
+	ownerSystemAccountID := trimAccountTestText(account.OwnerSystemAccountID)
+	if ownerSystemAccountID == "" {
+		return ModelCapabilities{}, false, fmt.Errorf("账户归属数据异常，无法读取测试模型")
+	}
+	if s.credentialCodec == nil {
+		return ModelCapabilities{}, false, fmt.Errorf("management account test options credential codec is required")
+	}
+	credentials, err := s.credentialCodec.DecryptJSON(account.CredentialsEncrypted)
+	if err != nil {
+		return ModelCapabilities{}, false, err
+	}
+	modelIDs := []string{model}
+	for _, mapping := range account.ModelMappings {
+		if mapping.Enabled && trimAccountTestText(mapping.SourceModel) == model {
+			modelIDs = appendUniqueModelID(modelIDs, trimAccountTestText(mapping.UpstreamModel), 50)
+		}
+	}
+	rows, err := s.optionReader.ListManagementAccountTestModelCatalog(ctx, port.ManagementAccountTestModelCatalogInput{
+		ProviderCode:    trimAccountTestText(account.ProviderCode),
+		SystemAccountID: ownerSystemAccountID,
+		Limit:           len(modelIDs) * 50,
+		SelectedIDs:     modelIDs,
+		ModelIDs:        modelIDs,
+	})
+	if err != nil {
+		return ModelCapabilities{}, false, err
+	}
+	catalog := mergeTestCatalogItems(rows, isHybridProvider(account.ProviderCode))
+	selected := findCatalogModel(catalog, model)
+	if selected == nil || !isAccountManualTestModel(*selected, account) {
+		return ModelCapabilities{}, false, &ValidationError{Message: "模型不在当前账户供应商可用目录中：" + model}
+	}
+	modes := accountManualTestEndpointModesForModel(
+		account,
+		*selected,
+		catalog,
+		accountManualTestEndpointModes(account, credentials),
+	)
+	if len(modes) == 0 {
+		return ModelCapabilities{}, false, &ValidationError{Message: "账户上游接口能力中没有可用于连接测试的请求形态"}
+	}
+	return ModelCapabilities{ID: selected.Model, Name: selected.Model, TestEndpointModes: modes}, true, nil
 }
 
 func (s *Service) Get(ctx context.Context, input Input) (Result, bool, error) {
@@ -548,4 +686,169 @@ func stringSet(values ...string) map[string]struct{} {
 		output[value] = struct{}{}
 	}
 	return output
+}
+
+func testOptionsSourceFromListSource(source port.ManagementAccountTestOptionListSource) port.ManagementAccountTestOptionsSource {
+	return port.ManagementAccountTestOptionsSource{
+		ID:                        source.ID,
+		OwnerSystemAccountID:      source.OwnerSystemAccountID,
+		ProviderCode:              source.ProviderCode,
+		ProviderProtocolProfileID: source.ProviderProtocolProfileID,
+		ProtocolCode:              source.ProtocolCode,
+		ProtocolVersion:           source.ProtocolVersion,
+		Type:                      source.Type,
+		ClientCompatibility:       source.ClientCompatibility,
+		HealthCheckModel:          source.HealthCheckModel,
+	}
+}
+
+func modelCatalogItemFromOption(item port.ManagementAccountTestModelCatalogItem) managementprovidermodels.ModelCatalogItem {
+	return managementprovidermodels.ModelCatalogItem{
+		ID:                    item.ID,
+		ProviderCode:          item.ProviderCode,
+		Model:                 item.Model,
+		Scope:                 item.Scope,
+		Status:                "active",
+		Mode:                  item.Mode,
+		SupportedAPIProtocols: append([]string(nil), item.SupportedAPIProtocols...),
+	}
+}
+
+func mergeTestCatalogItems(
+	rows []port.ManagementAccountTestModelCatalogItem,
+	preserveProviderIdentity bool,
+) []managementprovidermodels.ModelCatalogItem {
+	merged := make(map[string]port.ManagementAccountTestModelCatalogItem, len(rows))
+	order := make([]string, 0, len(rows))
+	for _, row := range rows {
+		model := strings.TrimSpace(row.Model)
+		if model == "" {
+			continue
+		}
+		key := model
+		if preserveProviderIdentity {
+			key = normalizeToken(row.ProviderCode) + "\n" + model
+		}
+		previous, exists := merged[key]
+		if !exists {
+			order = append(order, key)
+			merged[key] = row
+			continue
+		}
+		if modelCatalogScopePriority(row.Scope) >= modelCatalogScopePriority(previous.Scope) {
+			merged[key] = row
+		}
+	}
+	output := make([]managementprovidermodels.ModelCatalogItem, 0, len(order))
+	for _, key := range order {
+		output = append(output, modelCatalogItemFromOption(merged[key]))
+	}
+	sort.SliceStable(output, func(left, right int) bool {
+		if output[left].Model != output[right].Model {
+			return output[left].Model < output[right].Model
+		}
+		return output[left].ID < output[right].ID
+	})
+	return output
+}
+
+func mergeSelectionOptions(
+	rows []port.ManagementAccountTestModelCatalogItem,
+	keyword string,
+	limit int,
+	selectedIDs []string,
+) []SelectionOption {
+	selected := stringSet(selectedIDs...)
+	byModel := make(map[string]port.ManagementAccountTestModelCatalogItem, len(rows))
+	for _, row := range rows {
+		model := strings.TrimSpace(row.Model)
+		if model == "" {
+			continue
+		}
+		if keyword != "" && !strings.Contains(strings.ToLower(model), strings.ToLower(keyword)) {
+			if _, ok := selected[model]; !ok {
+				continue
+			}
+		}
+		previous, exists := byModel[model]
+		if !exists || modelCatalogScopePriority(row.Scope) > modelCatalogScopePriority(previous.Scope) {
+			row.Model = model
+			byModel[model] = row
+		}
+	}
+	ordered := make([]port.ManagementAccountTestModelCatalogItem, 0, len(byModel))
+	for _, row := range byModel {
+		ordered = append(ordered, row)
+	}
+	sort.SliceStable(ordered, func(left, right int) bool {
+		_, leftSelected := selected[ordered[left].Model]
+		_, rightSelected := selected[ordered[right].Model]
+		if leftSelected != rightSelected {
+			return leftSelected
+		}
+		if ordered[left].Model != ordered[right].Model {
+			return ordered[left].Model < ordered[right].Model
+		}
+		return ordered[left].ProviderCode < ordered[right].ProviderCode
+	})
+	output := make([]SelectionOption, 0, len(ordered))
+	nonSelectedCount := 0
+	for _, row := range ordered {
+		_, isSelected := selected[row.Model]
+		if !isSelected {
+			if nonSelectedCount >= limit {
+				continue
+			}
+			nonSelectedCount++
+		}
+		output = append(output, SelectionOption{ID: row.Model, Name: row.Model})
+	}
+	return output
+}
+
+func modelCatalogScopePriority(scope string) int {
+	switch strings.TrimSpace(scope) {
+	case "personal":
+		return 3
+	case "global":
+		return 2
+	default:
+		return 1
+	}
+}
+
+func normalizeModelIDs(values []string, max int) []string {
+	output := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, candidate := range strings.Split(value, ",") {
+			output = appendUniqueModelID(output, trimAccountTestText(candidate), max)
+			if len(output) >= max {
+				return output
+			}
+		}
+	}
+	return output
+}
+
+func appendUniqueModelID(values []string, value string, max int) []string {
+	if value == "" || len(values) >= max {
+		return values
+	}
+	for _, candidate := range values {
+		if candidate == value {
+			return values
+		}
+	}
+	return append(values, value)
+}
+
+func trimAccountTestText(value string) string {
+	return strings.TrimFunc(value, func(character rune) bool {
+		switch character {
+		case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680', '\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F', '\u205F', '\u3000', '\uFEFF', '\u000A', '\u000D', '\u2028', '\u2029':
+			return true
+		default:
+			return false
+		}
+	})
 }

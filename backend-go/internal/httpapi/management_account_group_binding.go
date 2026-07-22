@@ -114,7 +114,7 @@ func managementAccountGroupBindingSystemAccountID(r *http.Request, scope managem
 }
 
 func recordAccountGroupBindingOperationLog(r *http.Request, authContext managementauth.Context, scope managementAccountGroupBindingScope, result managementaccountgroupbinding.BindResult, opts managementOperationLogOptions) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

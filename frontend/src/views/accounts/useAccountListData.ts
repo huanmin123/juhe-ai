@@ -1,26 +1,23 @@
 import { message } from '@/lib/antd'
 import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
 
-import { api, pageDataApi, type AccountListParams, type AccountListSortParam } from '@/api/client'
+import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import { usePageDataRequestCache } from '@/composables/usePageDataRequestCache'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
-import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
-import { type PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -32,6 +29,13 @@ interface UseAccountListDataOptions {
   isManagementView: ComputedRef<boolean>
   scopedSystemAccountId: (filterValue?: string) => string | undefined
   onLoaded?: (selectableAccountIds: Set<string>) => void
+}
+
+interface AccountListLoadOptions extends Record<string, unknown> {
+  forceOptions?: boolean
+  forceData?: boolean
+  requestIdentity?: number
+  skipOptions?: boolean
 }
 
 const defaultAccountsPageState = (): AccountsPageState => ({
@@ -75,25 +79,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return systemAccountId ? { systemAccountId } : undefined
   })
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
-  const accountListRevision = ref(0)
-  let acceptedRuntimeScopeSignature = ''
-
-  const runtimeScopeSignature = (): string => {
-    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-    return `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
-  }
-
-  let accountPageCacheRequest: PageDataRequestCacheDefinition<AccountListResult> | undefined
-  const accountPageCache = usePageDataRequestCache<AccountListResult>({
-    immediate: false,
-    confirmIntervalMs: 30_000,
-    confirm: pageDataApi.confirm,
-    resolveRequest: () => {
-      if (!accountPageCacheRequest) throw new Error('账户列表缓存请求尚未初始化')
-      return accountPageCacheRequest
-    }
-  })
-
   const {
     items: accounts,
     loading,
@@ -106,9 +91,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     loadMoreMobile: loadMoreMobileAccounts,
     removeItems: removeAccountItems,
     refreshMobile: refreshMobileAccountsCached,
-    resetPagination: resetAccountListPagination,
-    applyResult: applyAccountPageCacheResult
-  } = useResponsivePagedList<AccountSummary, { forceOptions?: boolean; forceData?: boolean }>({
+    resetPagination: resetAccountListPagination
+  } = useResponsivePagedList<AccountSummary, AccountListLoadOptions>({
     pageSize: ACCOUNT_PAGE_SIZE,
     initialPagination: initialPageState.pagination,
     showTotal: (total, range, context) => context?.hasMore
@@ -116,39 +100,33 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      void loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions)).catch((error) => {
-        console.error(error)
-        message.error('加载账户筛选选项失败')
-      })
-      const accountList = await fetchAccountList(systemAccountId, pageState, _loadOptions.forceData === true)
-      const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
+      if (!_loadOptions.skipOptions && (!_loadOptions.forceData || _loadOptions.forceOptions)) {
+        void loadAccountOptions(
+          systemAccountId,
+          Boolean(_loadOptions?.forceOptions),
+        ).catch((error) => {
+          console.error(error)
+          message.error('加载账户筛选选项失败')
+        })
+      }
+      const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
-        items: accountList.items.map((account) => accountListViewModel(account, runtimeAvailable)),
+        items: accountList.items.map((account) => accountListViewModel(account, accountList.runtimeSnapshot)),
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
         hasMore: accountList.hasMore
       }
     },
-    transformItems: (nextItems, _loadOptions, _result, currentItems) => {
-      const currentScopeSignature = runtimeScopeSignature()
-      return mergeAccountListRuntimeSnapshot(
-        currentItems,
-        nextItems,
-        nextItems.some((account) => account.accountRuntimeAvailabilityAvailable === true),
-        acceptedRuntimeScopeSignature === currentScopeSignature
-      )
-    },
     requestSignature: (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       return [
         options.isManagementView.value ? 'management' : 'self',
+        _loadOptions.requestIdentity,
         accountListParams(systemAccountId, pageState)
       ]
     },
     onLoaded: () => {
-      acceptedRuntimeScopeSignature = runtimeScopeSignature()
-      accountListRevision.value += 1
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
     },
@@ -160,31 +138,15 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const filteredAccounts = computed(() => accounts.value)
   const mobileRefreshing = computed(() => loading.value)
   const mobileVisibleAccounts = computed(() => filteredAccounts.value)
-  async function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, force: boolean) {
+  async function fetchAccountList(
+    systemAccountId: string | undefined,
+    pageState: { current: number; pageSize: number },
+  ): Promise<AccountListResult> {
     const params = accountListParams(systemAccountId, pageState)
     const loadNetwork = () => options.isManagementView.value
       ? api.accounts.list(params)
       : api.myAccounts.list(accountListParams(undefined, pageState))
-    const viewerSystemAccountId = authState.currentUser.value?.id
-    if (!viewerSystemAccountId) return loadNetwork()
-    const viewScope = options.isManagementView.value ? 'admin' as const : 'self' as const
-    accountPageCacheRequest = {
-      cacheKey: {
-        scope: viewScope === 'admin'
-          ? `admin:${viewerSystemAccountId}:target:${systemAccountId ?? 'global'}`
-          : `self:${viewerSystemAccountId}`,
-        route: viewScope === 'admin' ? '/accounts' : '/my-accounts',
-        query: params,
-        version: 1
-      },
-      domain: 'accounts.static',
-      viewScope,
-      maxStaleMs: 30_000,
-      ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
-      loadNetwork
-    }
-    const result = force ? await accountPageCache.forceRefresh() : await accountPageCache.load()
-    return result.data
+    return loadNetwork()
   }
 
   function refreshData() {
@@ -270,7 +232,10 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
   }
 
-  async function loadAccountOptions(systemAccountId: string | undefined, force = false): Promise<void> {
+  async function loadAccountOptions(
+    systemAccountId: string | undefined,
+    force = false,
+  ): Promise<void> {
     const scopeKey = options.isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
     if (!force && accountOptionsLoaded.value && accountOptionsScopeKey.value === scopeKey) {
       return
@@ -285,10 +250,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
-      const [providerList, proxyList] = await Promise.all([
+      let providerApplied = false
+      const [providerResult, proxyList] = await Promise.all([
         loadProviderOptionsResource({
           apply: (nextProviders) => {
-            if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+            if (currentScopeKey() !== scopeKey) return
+            providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
+            providerApplied = true
           },
           force,
           includeDefinitions: true,
@@ -300,10 +268,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
         return
       }
-      providers.value = providerList.length ? providerList : FALLBACK_PROVIDERS
       proxies.value = proxyList
-      accountOptionsLoaded.value = true
-      accountOptionsScopeKey.value = scopeKey
+      accountOptionsLoaded.value = providerApplied
+      accountOptionsScopeKey.value = providerApplied ? scopeKey : ''
     })().finally(() => {
       if (accountOptionsInFlight.get(scopeKey) === requestRef.current) {
         accountOptionsInFlight.delete(scopeKey)
@@ -329,34 +296,17 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
   }
 
-  function accountListViewModel(account: AccountListItem, runtimeAvailable: boolean): AccountSummary {
+  function accountListViewModel(account: AccountListItem, runtimeSnapshot: AccountListResult['runtimeSnapshot']): AccountSummary {
     return {
       ...account,
-      currentConcurrencyAvailable: false,
-      accountRuntimeAvailabilityAvailable: runtimeAvailable
+      currentConcurrencyAvailable: runtimeSnapshot?.accountConcurrencyAvailable === true
+        && account.currentConcurrencyAvailable !== false,
+      accountRuntimeAvailabilityAvailable: runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
+        && account.accountRuntimeAvailabilityAvailable !== false
     } as AccountSummary
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-  watch(accountPageCache.data, (accountList) => {
-    const clonedAccountList = accountList ? cloneAccountListCacheResult(accountList as AccountListResult) : undefined
-    const cachedResult = clonedAccountList
-      ? {
-        ...clonedAccountList,
-        items: clonedAccountList.items.map((account) => accountListViewModel(
-          account as AccountListItem,
-          clonedAccountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
-        ))
-      }
-      : {
-      items: [],
-      page: accountPagination.current,
-      pageSize: accountPagination.pageSize,
-      total: 0,
-      hasMore: false
-      }
-    applyAccountPageCacheResult(cachedResult)
-  })
   watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
   watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })
 

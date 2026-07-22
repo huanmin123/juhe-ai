@@ -103,7 +103,6 @@ func TestAnnouncementManagementHTTPIntegration(t *testing.T) {
 		service,
 		ManagementOperationLogOptions{Client: recordedQueue},
 		nil,
-		nil,
 	)
 	router := NewRouter(RouterOptions{
 		Config:                           config.Config{ManagementAPIEnabled: true},

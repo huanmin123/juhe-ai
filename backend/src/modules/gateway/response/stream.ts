@@ -148,9 +148,13 @@ export async function pipeUpstreamStream(
     })
   }
   const interpretProtocolFailures = options.interpretProtocolFailures !== false
-  const responseInspectionEnabled = options.clientRetryEnabled === true
-    || (options.responseInspectionPolicies?.length ?? 0) > 0
-    || codexSafeRepairEnabled
+  const responseInspectionEnabled = interpretProtocolFailures
+    && options.responseInspectionContext?.clientProfile !== 'generic_anthropic'
+    && (
+      options.clientRetryEnabled === true
+      || (options.responseInspectionPolicies?.length ?? 0) > 0
+      || codexSafeRepairEnabled
+    )
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,

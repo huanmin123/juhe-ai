@@ -469,6 +469,37 @@ func TestManagementGlobalSettingsUpdateHandlerKeepsSuccessWhenOperationLogQueueF
 	}
 }
 
+func TestManagementGlobalSettingsUpdateHandlerAcceptsSubmitterWithoutLegacyClient(t *testing.T) {
+	service := &managementGlobalSettingsUpdateServiceStub{
+		result: managementsettings.UpdateResult{
+			Before:   managementsettings.Settings{AppName: "旧名称", AppIcon: "/icon.svg"},
+			Settings: managementsettings.Settings{AppName: "新名称", AppIcon: "/icon.svg"},
+		},
+	}
+	var submitted port.OperationLogInput
+	handler := newManagementGlobalSettingsUpdateHandler(
+		service,
+		newManagementOperationLogOptions(ManagementOperationLogOptions{
+			Submitter: managementOperationLogSubmitterFunc(func(_ context.Context, input port.OperationLogInput) bool {
+				submitted = input
+				return true
+			}),
+			NewLogID: func() string { return "oplog_submitter_only" },
+		}),
+	)
+	req := managementGlobalSettingsUpdateRequest("admin", `{"appName":"新名称"}`)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if submitted.ID != "oplog_submitter_only" || submitted.OperationKey != "settings.update_global" {
+		t.Fatalf("submitted log = %+v", submitted)
+	}
+}
+
 func TestManagementGlobalSettingsUpdateHandlerEnqueuesNoOpOperationLog(t *testing.T) {
 	queueStub := &managementGlobalSettingsOperationLogQueueStub{}
 	settings := managementsettings.Settings{AppName: "同名", AppIcon: "/same-icon.svg"}
@@ -801,6 +832,12 @@ type managementGlobalSettingsOperationLogQueueStub struct {
 	payload  []byte
 	options  queue.EnqueueOptions
 	err      error
+}
+
+type managementOperationLogSubmitterFunc func(context.Context, port.OperationLogInput) bool
+
+func (f managementOperationLogSubmitterFunc) Submit(ctx context.Context, input port.OperationLogInput) bool {
+	return f(ctx, input)
 }
 
 func (s *managementGlobalSettingsOperationLogQueueStub) Enqueue(_ context.Context, taskType string, payload []byte, opts queue.EnqueueOptions) (queue.TaskInfo, error) {

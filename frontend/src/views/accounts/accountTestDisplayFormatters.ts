@@ -1,4 +1,5 @@
 import type { AccountSummary, AccountTestResult, AccountTestTask } from '@/types/domain'
+import { isGptVendorCode } from '@/shared/providerProtocol'
 
 import type { AccountTestEndpointMode } from './accountTestFlow'
 import { accountProviderProtocolKind } from './accountProviderCapabilities'
@@ -184,10 +185,17 @@ export function accountTestSingleRunningOutputLines(input: {
       tone: 'info'
     })
   }
-  if (input.account.type === 'oauth') {
+  if (shouldDisplayManagedOAuthRefreshHint(input.account)) {
     lines.push({ text: 'OAuth Token 刷新也包含在当前等待窗口内', tone: 'muted' })
   }
   return lines
+}
+
+function shouldDisplayManagedOAuthRefreshHint(account: AccountSummary): boolean {
+  if (account.type !== 'oauth') return false
+  return accountProviderProtocolKind(account) === 'openai_v1'
+    || account.clientCompatibility === 'codex_responses'
+    || isGptVendorCode(account.providerCode)
 }
 
 export function accountTestTaskStatusText(status: AccountTestTask['status']): string {

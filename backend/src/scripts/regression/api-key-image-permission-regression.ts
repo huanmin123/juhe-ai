@@ -8,7 +8,11 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
-import { ANTHROPIC_PROVIDER_CODE } from '../../domain/provider-protocol.js'
+import {
+  ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
+  ANTHROPIC_PROVIDER_CODE,
+  GPT_OPENAI_V1_PROFILE_ID
+} from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-api-key-image-permission-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -36,7 +40,8 @@ const [
   requestBodyModule,
   jsonParserModule,
   dbServiceHandlers,
-  dbServiceIpc
+  dbServiceIpc,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -50,7 +55,8 @@ const [
   import('../../modules/gateway/request/body.js'),
   import('../../modules/gateway/request/json-parser.js'),
   import('../../modules/db-service/db-service-handlers.js'),
-  import('../../modules/db-service/db-service-ipc.js')
+  import('../../modules/db-service/db-service-ipc.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 interface SeededGateway {
@@ -137,6 +143,7 @@ class FakeDbServiceChild extends EventTarget {
         this.emit('message', {
           type: 'db_service_response',
           requestId: message.requestId,
+          jobId: message.jobId,
           ok: true,
           result
         })
@@ -147,6 +154,7 @@ class FakeDbServiceChild extends EventTarget {
         this.emit('message', {
           type: 'db_service_response',
           requestId: message.requestId,
+          jobId: message.jobId,
           ok: false,
           errorMessage: error instanceof Error ? error.message : String(error)
         })
@@ -228,6 +236,7 @@ try {
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
   try {
+    await readWorkerPool.closeSqliteReadWorkerPool()
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
@@ -254,6 +263,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
   }, access)
   const account = repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '图像权限回归上游账号',
     type: 'api_key',
     credentials: {
@@ -284,6 +294,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
   }, access)
   repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
+    providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     name: '图像权限 normal 路由 Anthropic 初始账号',
     type: 'api_key',
     credentials: {
@@ -298,6 +309,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
   const normalRouteGptUpstreamKey = 'sk-image-permission-normal-route-gpt-upstream'
   repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '图像权限 normal 路由 GPT 目标账号',
     type: 'api_key',
     credentials: {
@@ -491,6 +503,7 @@ function hasImageGenerationTool(body: Record<string, unknown> | undefined): bool
 function isDbServiceRequest(value: unknown): value is {
   type: 'db_service_request'
   requestId: string
+  jobId: string
   operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0]
 } {
   return typeof value === 'object'
@@ -498,6 +511,7 @@ function isDbServiceRequest(value: unknown): value is {
     && !Array.isArray(value)
     && (value as Record<string, unknown>).type === 'db_service_request'
     && typeof (value as Record<string, unknown>).requestId === 'string'
+    && typeof (value as Record<string, unknown>).jobId === 'string'
     && typeof (value as Record<string, unknown>).operation === 'object'
     && (value as Record<string, unknown>).operation !== null
 }

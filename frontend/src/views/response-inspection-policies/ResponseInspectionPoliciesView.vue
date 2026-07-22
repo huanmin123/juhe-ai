@@ -133,25 +133,29 @@ async function loadPolicies(): Promise<void> {
 async function loadPageData(force = false): Promise<void> {
   loading.value = true
   try {
-    const [policyResult, providerResult] = await Promise.all([
+    const [policyResult] = await Promise.all([
       api.responseInspectionPolicies.list(),
-      loadProviderOptionsResource({
-        apply: (nextProviders) => { providers.value = nextProviders },
-        force,
-        includeDisabled: false,
-        includeDefinitions: true,
-        isManagementView: true
-      })
+      loadPolicyProviders(force)
     ])
     defaultRules.value = policyResult.defaultRules
     policies.value = policyResult.policies
-    providers.value = providerResult
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载响应检查策略失败'))
   } finally {
     loading.value = false
   }
+}
+
+async function loadPolicyProviders(force = false): Promise<void> {
+  const providerResult = await loadProviderOptionsResource({
+    apply: (nextProviders) => { providers.value = nextProviders },
+    force,
+    includeDisabled: false,
+    includeDefinitions: true,
+    isManagementView: true
+  })
+  providers.value = providerResult.data
 }
 
 function openCreate(): void {

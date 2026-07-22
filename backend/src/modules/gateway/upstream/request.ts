@@ -27,6 +27,7 @@ import {
 import {
   normalizeOpenAICodexClientHeaders
 } from '../adapters/gpt-codex/client-headers.js'
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 
 export interface GatewayUpstreamResponse {
@@ -53,6 +54,10 @@ interface UpstreamHeaderAccount {
   id?: string
   apiKey: string
   type?: string
+  providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   credentials?: Record<string, unknown>
 }
 
@@ -436,7 +441,7 @@ export function upstreamRequestTimeoutMs(profile: GatewayTimeoutProfile): number
 }
 
 export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: string }): boolean {
-  if (account?.type === 'oauth') {
+  if (usesOpenAIOAuthCompactStreamRules(account)) {
     return !isOpenAIOAuthCodexCompactRequest(req)
   }
   return requestStream(req)
@@ -461,10 +466,26 @@ export function buildUpstreamRequestBody(req: Request): Buffer | undefined {
 export function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamHeaderAccount): Headers {
   const headers = copySafeUpstreamRequestHeaders(inputHeaders)
   headers.set('authorization', `Bearer ${account.apiKey}`)
-  if (account.type === 'oauth') {
+  if (usesOpenAIOAuthCompactStreamRules(account)) {
     applyOpenAICodexHeaders(headers, account)
   }
   return headers
+}
+
+function usesOpenAIOAuthCompactStreamRules(account?: {
+  type?: string
+  providerCode?: string
+  protocolCode?: string
+  protocolVersion?: string
+  providerProtocolProfileId?: string
+}): boolean {
+  if (account?.type !== 'oauth') {
+    return false
+  }
+  if (!account.protocolCode && !account.protocolVersion && !account.providerProtocolProfileId) {
+    return true
+  }
+  return isOpenAIProtocolProfile(account)
 }
 
 export function copySafeUpstreamRequestHeaders(inputHeaders: Record<string, string | string[] | undefined>): Headers {

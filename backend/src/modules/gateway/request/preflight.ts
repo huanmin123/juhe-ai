@@ -24,7 +24,6 @@ import {
   type OpenAIGatewayRequestLane
 } from '../protocols/openai-v1/request-lane.js'
 import {
-  gatewayClientProfileHeader,
   openAIGatewayClientStrategyAuditMetadata,
   resolveOpenAIGatewayClientStrategy,
   type OpenAIGatewayClientStrategyContext
@@ -51,12 +50,7 @@ import {
   resolveGatewayRuntimeAsync,
   type GatewayRuntimeRequest
 } from './pre-auth.js'
-import {
-  isOpenAIModelsRequest,
-  type UpstreamAccount
-} from '../protocols/openai-v1/route-helpers.js'
-import { isAnthropicModelsRequest } from '../protocols/anthropic-v1/route-helpers.js'
-import { isGeminiModelsRequest } from '../protocols/gemini-v1beta/route-helpers.js'
+import { type UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   geminiInteractionResourceIdFromRequest,
   isGeminiInteractionResourceRequest,
@@ -105,6 +99,7 @@ import { applyCodexResponsesContextStatePreflight } from '../codex-responses/cha
 import { applyCodexResponsesChatBridgeCompactPreflight } from '../codex-responses/compact-preflight.js'
 import { waitForRecoverableUnavailableState } from '../runtime/recoverable-unavailable-wait.js'
 import { requestModel } from './metadata.js'
+import { resolveGatewayModelsResponseProtocol } from './models-response-protocol.js'
 import { gatewayRequestEndpointFamily, openAIRequestEndpointFamily, resolveOpenAIAccountModelMapping } from '../protocols/openai-v1/model-mapping.js'
 import { consumePublicModelsRateLimit } from '../runtime/public-models-rate-limit.service.js'
 import {
@@ -835,10 +830,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       res,
       auditCapture,
       usageContext,
-      providerCodes: gatewayModelsProviderCodes({
-        apiKeyRecord,
-        fallbackProviderCode: groupAccess.providerCode
-      }),
+      providerCodes: gatewayModelsProviderCodes({ apiKeyRecord }),
       startedAt
     })
     return undefined
@@ -1234,7 +1226,6 @@ async function sendAuthenticatedModelsRateLimitFailure(input: {
 
 function gatewayModelsProviderCodes(input: {
   apiKeyRecord?: GatewayApiKeyRow
-  fallbackProviderCode?: string
 }): string[] {
   const providerCodes = new Set<string>()
   const bindings = input.apiKeyRecord?.group_bindings?.filter((binding) => binding.status === 'active') ?? []
@@ -1242,8 +1233,6 @@ function gatewayModelsProviderCodes(input: {
     const providerCode = binding.provider_code?.trim()
     if (providerCode) providerCodes.add(providerCode)
   }
-  const fallbackProviderCode = input.fallbackProviderCode?.trim()
-  if (!providerCodes.size && fallbackProviderCode) providerCodes.add(fallbackProviderCode)
   return [...providerCodes]
 }
 
@@ -1292,52 +1281,10 @@ function sendPublicModelsRateLimitedResponse(
   })
 }
 
-function resolveGatewayModelsResponseProtocol(req: Request): ResponseProtocolCode | undefined {
-  if (isGeminiModelsRequest(req)) {
-    return 'gemini_v1beta'
-  }
-  if (isAnthropicModelsRequest(req) && isExplicitAnthropicModelsClient(req)) {
-    return 'anthropic_v1'
-  }
-  if (isOpenAIModelsRequest(req) || isAnthropicModelsRequest(req)) {
-    return 'openai_v1'
-  }
-  return undefined
-}
-
 function modelsResponseKind(protocol: ResponseProtocolCode): 'openai' | 'anthropic' | 'gemini' {
   if (protocol === 'anthropic_v1') return 'anthropic'
   if (protocol === 'gemini_v1beta') return 'gemini'
   return 'openai'
-}
-
-function isExplicitAnthropicModelsClient(req: Request): boolean {
-  const profile = normalizedHeaderToken(req.header(gatewayClientProfileHeader))
-  if (profile === 'anthropic' || profile === 'generic_anthropic' || profile === 'claude_code') {
-    return true
-  }
-  return Boolean(
-    normalizedHeaderToken(req.header('anthropic-version'))
-      || normalizedHeaderToken(req.header('anthropic-beta'))
-      || normalizedHeaderToken(req.header('x-claude-code-session-id'))
-      || normalizedHeaderToken(req.header('x-claude-code-agent-id'))
-      || claudeCodeUserAgent(req)
-  )
-}
-
-function claudeCodeUserAgent(req: Request): boolean {
-  const userAgent = lowerHeaderToken(req.header('user-agent'))
-  return Boolean(userAgent && (userAgent.startsWith('claude-cli/') || userAgent.includes(' claude-cli/')))
-}
-
-function normalizedHeaderToken(value: unknown): string | undefined {
-  return lowerHeaderToken(value)?.replace(/[-\s]+/g, '_')
-}
-
-function lowerHeaderToken(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim()
-    ? value.trim().toLowerCase()
-    : undefined
 }
 
 async function sendInteractionAffinityFailure(input: {

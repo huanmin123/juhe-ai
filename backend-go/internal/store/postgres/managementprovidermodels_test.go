@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,6 +17,61 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 	"juhe-ai/backend-go/internal/store/postgres/postgresqueries"
 )
+
+func TestManagementProviderModelReadQueriesStayPointAndWindowBounded(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_provider_models.sql")
+	if err != nil {
+		t.Fatalf("read provider model query: %v", err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+	enabledCodesStart := strings.Index(sql, "-- name: ListManagementEnabledModelProviderCodes :many")
+	protocolCodesStart := strings.Index(sql, "-- name: ListManagementProviderCodesByProtocol :many")
+	catalogStart := strings.Index(sql, "-- name: ListManagementProviderModelCatalog :many")
+	optionsStart := strings.Index(sql, "-- name: ListManagementProviderModelOptions :many")
+	capabilitiesStart := strings.Index(sql, "-- name: ListManagementProviderModelCapabilityCandidates :many")
+	if enabledCodesStart < 0 || protocolCodesStart <= enabledCodesStart || catalogStart <= protocolCodesStart || optionsStart < 0 || capabilitiesStart <= optionsStart {
+		t.Fatalf("provider model SQL missing options/capabilities queries")
+	}
+	for name, query := range map[string]string{
+		"enabled provider codes":  sql[enabledCodesStart:protocolCodesStart],
+		"protocol provider codes": sql[protocolCodesStart:catalogStart],
+	} {
+		if strings.Contains(query, "LIMIT ") {
+			t.Fatalf("%s SQL must not truncate an unpaginated source set: %s", name, query)
+		}
+	}
+	optionsSQL := sql[optionsStart:capabilitiesStart]
+	capabilitiesSQL := sql[capabilitiesStart:]
+	for _, want := range []string{
+		"ROW_NUMBER() OVER",
+		"catalog_visible = true",
+		"model = ANY(sqlc.arg(selected_ids)::text[])",
+		"lower(built_in.model) LIKE",
+		"LIMIT sqlc.arg(result_limit)",
+		"custom.scope = 'personal'",
+	} {
+		if !strings.Contains(optionsSQL, want) {
+			t.Fatalf("provider model options SQL missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"input_usd_per_1m", "supported_service_tiers_json", "capability_notes"} {
+		if strings.Contains(optionsSQL, forbidden) {
+			t.Fatalf("provider model options SQL must stay lightweight, found %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		"built_in.model = sqlc.arg(model)",
+		"built_in.status = 'active'",
+		"built_in.catalog_visible = true",
+		"custom.model = sqlc.arg(model)",
+		"custom.scope = 'personal'",
+		"supported_reasoning_efforts_json",
+	} {
+		if !strings.Contains(capabilitiesSQL, want) {
+			t.Fatalf("provider model capabilities SQL missing %q", want)
+		}
+	}
+}
 
 func TestMarshalManagementProviderModelPriceMapNormalizesNilToObject(t *testing.T) {
 	encoded, err := marshalManagementProviderModelPriceMap(nil)

@@ -1,13 +1,11 @@
 import { onBeforeUnmount, ref } from 'vue'
 
-import { api, pageDataApi } from '@/api/client'
-import { authState } from '@/composables/useAuth'
+import { api } from '@/api/client'
 import { message } from '@/lib/antd'
 import {
   removeLocalSelectPreferenceValues,
   type LocalSelectStorageKeyPart
 } from '@/shared/selectLocalPreferenceCache'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -22,8 +20,6 @@ interface RemoteSystemAccountOptionsConfig {
   searchDelayMs?: number
   selectedIds?: () => Array<string | undefined>
 }
-
-const systemAccountOptionResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptionsConfig = {}) {
   const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
@@ -55,35 +51,13 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        const result = await systemAccountOptionResourceCache.load<SystemAccountPrincipalSummary[]>({
-          cacheKey: {
-            scope: systemAccountOptionScope(),
-            route: '/system-accounts/options',
-            query: {
-              keyword: requestKeyword,
-              selectedIds,
-              limit,
-              localScope: config.localCacheKeyParts?.() ?? []
-            },
-            version: 1
-          },
-          domain: 'systemAccounts.options',
-          viewScope: 'admin',
-          loadNetwork: async () => {
-            let options = await api.systemAccounts.options({
-              keyword: requestKeyword,
-              limit
-            })
-            options = await ensureSelectedSystemAccountOptions(options, selectedIds)
-            return options
-          }
+        let options = await api.systemAccounts.options({
+          keyword: requestKeyword,
+          limit
         })
-        const options = result.data
+        options = await ensureSelectedSystemAccountOptions(options, selectedIds)
         if (currentRequestId !== requestId) return
         systemAccounts.value = options
-        void result.confirmation?.then((outcome) => {
-          if (outcome.data && currentRequestId === requestId) systemAccounts.value = outcome.data
-        })
       } catch (error) {
         if (currentRequestId !== requestId) return
         console.error(error)
@@ -163,11 +137,6 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     return [...new Set((config.selectedIds?.() ?? [])
       .filter((id): id is string => Boolean(id && id !== allSystemAccountsValue))
       .sort())]
-  }
-
-  function systemAccountOptionScope(): string {
-    const viewer = authState.currentUser.value
-    return `admin:${viewer?.id ?? 'anonymous'}:${viewer?.role ?? 'anonymous'}`
   }
 
   onBeforeUnmount(clearSearchTimer)

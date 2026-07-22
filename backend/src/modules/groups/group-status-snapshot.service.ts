@@ -7,13 +7,14 @@ import {
   loadGroupAuthorizationUsageSummariesAsync
 } from '../../storage/group-read.repository.js'
 import {
-  loadGroupAccountStatsByGroupIds,
-  loadGroupAccountStatsByGroupIdsAsync
+  loadGroupConcurrencyAccountIdsByGroupIds,
+  loadGroupConcurrencyAccountIdsByGroupIdsAsync
 } from '../../storage/group-read-loaders.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { usageScope } from '../../storage/resource-authorization-helpers.js'
 import { loadGroupUsageSummariesForScopes, loadGroupUsageSummariesForScopesAsync } from '../../storage/usage-summary-loaders.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
+import { loadAccountConcurrencyByIds } from '../gateway/runtime/runtime-snapshot.service.js'
 
 const maxSnapshotGroupIds = 100
 const maxSnapshotQueryLength = 8192
@@ -42,25 +43,33 @@ export async function getGroupStatusSnapshot(
   const authorizationScopes = rows
     .filter((row) => row.access_type === 'authorized' && row.authorization_id)
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const [statsByGroup, ownerUsage, authorizationUsage] = runtimeConfig.databaseDriver === 'postgres'
+  const [concurrencyAccountIdsByGroup, ownerUsage, authorizationUsage] = runtimeConfig.databaseDriver === 'postgres'
     ? await Promise.all([
-      loadGroupAccountStatsByGroupIdsAsync(rows.map((row) => row.id)),
+      loadGroupConcurrencyAccountIdsByGroupIdsAsync(rows.map((row) => row.id)),
       loadGroupUsageSummariesForScopesAsync(ownerScopes, dateKey),
       loadGroupAuthorizationUsageSummariesAsync(authorizationScopes, dateKey)
     ])
     : [
-      loadGroupAccountStatsByGroupIds(rows.map((row) => row.id)),
+      loadGroupConcurrencyAccountIdsByGroupIds(rows.map((row) => row.id)),
       loadGroupUsageSummariesForScopes(ownerScopes, dateKey),
       loadGroupAuthorizationUsageSummaries(authorizationScopes, dateKey)
     ]
+  const concurrency = await loadAccountConcurrencyByIds([...new Set([...concurrencyAccountIdsByGroup.values()].flat())])
   return {
     generatedAt: new Date().toISOString(),
+    runtimeSnapshot: {
+      accountConcurrencyAvailable: concurrency.available
+    },
     items: rows.map((row) => ({
       id: row.id,
-      currentConcurrency: Number(statsByGroup.get(row.id)?.current_concurrency ?? 0),
+      currentConcurrency: sumConcurrency(concurrencyAccountIdsByGroup.get(row.id) ?? [], concurrency.values),
       todayUsage: row.access_type === 'authorized' && row.authorization_id
         ? authorizationUsage.get(row.authorization_id) ?? emptyAccountUsageSummary()
         : ownerUsage.get(row.id) ?? emptyAccountUsageSummary()
     }))
   }
+}
+
+function sumConcurrency(accountIds: string[], values: Record<string, number>): number {
+  return accountIds.reduce((total, accountId) => total + Math.max(0, Math.trunc(values[accountId] ?? 0)), 0)
 }

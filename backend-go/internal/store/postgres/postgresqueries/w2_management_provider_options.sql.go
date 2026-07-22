@@ -117,7 +117,6 @@ SELECT
 FROM juhe_business.provider_protocol_profiles
 WHERE provider_code = ANY($1::text[])
 ORDER BY provider_code ASC, updated_at DESC, id ASC
-LIMIT 200
 `
 
 type ListManagementProviderOptionProfilesRow struct {
@@ -171,7 +170,6 @@ SELECT id, code, name, parent_code, description, enabled, default_supported_mode
 FROM juhe_business.providers
 WHERE enabled = true
 ORDER BY name ASC, code ASC
-LIMIT 50
 `
 
 type ListManagementProviderOptionProvidersRow struct {
@@ -201,6 +199,45 @@ func (q *Queries) ListManagementProviderOptionProviders(ctx context.Context) ([]
 			&i.Description,
 			&i.Enabled,
 			&i.DefaultSupportedModelsJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listManagementProviderSelectOptions = `-- name: ListManagementProviderSelectOptions :many
+SELECT id, code, name, enabled
+FROM juhe_business.providers
+WHERE enabled = true
+ORDER BY name ASC, code ASC
+`
+
+type ListManagementProviderSelectOptionsRow struct {
+	ID      string
+	Code    string
+	Name    string
+	Enabled bool
+}
+
+func (q *Queries) ListManagementProviderSelectOptions(ctx context.Context) ([]ListManagementProviderSelectOptionsRow, error) {
+	rows, err := q.db.Query(ctx, listManagementProviderSelectOptions)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListManagementProviderSelectOptionsRow
+	for rows.Next() {
+		var i ListManagementProviderSelectOptionsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Code,
+			&i.Name,
+			&i.Enabled,
 		); err != nil {
 			return nil, err
 		}
@@ -248,7 +285,6 @@ const listManagementProviders = `-- name: ListManagementProviders :many
 SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
 FROM juhe_business.providers
 ORDER BY name ASC, code ASC
-LIMIT 50
 `
 
 type ListManagementProvidersRow struct {

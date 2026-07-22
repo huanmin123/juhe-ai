@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -17,7 +16,6 @@ import (
 type managementAccountDeleteQueries interface {
 	LockManagementAccountDeleteTarget(context.Context, postgresqueries.LockManagementAccountDeleteTargetParams) (postgresqueries.LockManagementAccountDeleteTargetRow, error)
 	ListManagementAccountDeleteInstances(context.Context, string) ([]postgresqueries.ListManagementAccountDeleteInstancesRow, error)
-	ListManagementAccountDeletePageOwners(context.Context, string) ([]string, error)
 	ListManagementAccountDeleteAuthorizationIDs(context.Context, string) ([]string, error)
 	RevokeManagementAccountDeleteGrants(context.Context, postgresqueries.RevokeManagementAccountDeleteGrantsParams) error
 	RevokeManagementAccountDeleteSources(context.Context, postgresqueries.RevokeManagementAccountDeleteSourcesParams) error
@@ -88,10 +86,6 @@ func deleteManagementAccount(
 	if err != nil {
 		return port.ManagementAccountDeleteResult{}, fmt.Errorf("list management account delete instances: %w", err)
 	}
-	pageDataOwners, err := q.ListManagementAccountDeletePageOwners(ctx, target.ID)
-	if err != nil {
-		return port.ManagementAccountDeleteResult{}, fmt.Errorf("list management account delete page owners: %w", err)
-	}
 	authorizationIDs, err := q.ListManagementAccountDeleteAuthorizationIDs(ctx, target.ID)
 	if err != nil {
 		return port.ManagementAccountDeleteResult{}, fmt.Errorf("list management account delete authorization ids: %w", err)
@@ -129,10 +123,8 @@ func deleteManagementAccount(
 
 	accountIDs := make([]string, 0, len(instances)+1)
 	accountIDs = append(accountIDs, target.ID)
-	pageDataOwners = append(pageDataOwners, target.SystemAccountID)
 	for _, instance := range instances {
 		accountIDs = append(accountIDs, instance.ID)
-		pageDataOwners = append(pageDataOwners, instance.SystemAccountID)
 	}
 	deletedIDs, err := q.LogicallyDeleteManagementAccounts(ctx, postgresqueries.LogicallyDeleteManagementAccountsParams{
 		DeletedAt:  deletedAt,
@@ -164,7 +156,6 @@ func deleteManagementAccount(
 			Name:            target.Name,
 		},
 		DeletedAccountIDs: deletedIDs,
-		PageDataOwnerIDs:  uniqueSortedTexts(pageDataOwners),
 	}, nil
 }
 
@@ -180,24 +171,6 @@ func stableDeletedAccountIDs(expected, returned []string) []string {
 			result = append(result, value)
 		}
 	}
-	return result
-}
-
-func uniqueSortedTexts(values []string) []string {
-	seen := make(map[string]struct{}, len(values))
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		result = append(result, value)
-	}
-	sort.Strings(result)
 	return result
 }
 

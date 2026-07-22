@@ -115,7 +115,6 @@ import StatsChartCard from './StatsChartCard.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
 import { buildErrorOption, buildModelDistributionOption, buildUsageTrendOption } from './statsChartOptions'
 import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent } from './statsFormatters'
-import { loadStatsPageDataResource } from './statsPageDataResource'
 
 const MAX_RANGE_DAYS = 31
 type QuickRange = 'today' | 'recent7d' | 'recent1m'
@@ -228,27 +227,16 @@ async function loadData(options: { force?: boolean } = {}) {
   try {
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
     const rangeParams = selectedRangeParams()
-    await Promise.all([
-      loadStatsPageDataResource<UsageStatsOverview>({
-        apply: (nextOverview) => {
-          usageOverview.value = nextOverview
-          syncDateRangeFromResponse(nextOverview.range)
-          renderCharts()
-        },
-        domain: 'stats.overview',
-        force: options.force,
-        isCurrent: () => requestSeq === statsRequestSeq,
-        isManagementView: isManagementView.value,
-        loadNetwork: () => isManagementView.value
-          ? api.stats.usageOverview({ ...rangeParams, systemAccountId })
-          : api.myStats.usageOverview(rangeParams),
-        query: { ...rangeParams, systemAccountId },
-        route: isManagementView.value ? '/stats/usage-overview' : '/my-stats/usage-overview',
-        targetSystemAccountId: systemAccountId
-      }),
+    const [nextOverview] = await Promise.all([
+      isManagementView.value
+        ? api.stats.usageOverview({ ...rangeParams, systemAccountId })
+        : api.myStats.usageOverview(rangeParams),
       loadUsageStatsWindow()
     ])
     if (requestSeq !== statsRequestSeq) return
+    usageOverview.value = nextOverview
+    syncDateRangeFromResponse(nextOverview.range)
+    renderCharts()
   } catch (error) {
     if (requestSeq !== statsRequestSeq) return
     console.error(error)

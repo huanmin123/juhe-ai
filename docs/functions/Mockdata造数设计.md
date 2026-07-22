@@ -76,7 +76,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - 授权样例必须覆盖个人直授权、团队授权、AI 账户授权、分组授权、有效授权、暂停授权、过期授权、回收授权和归还授权；授权调用方至少覆盖研发、测试、运维、财务、观察用户和超级管理员，不能只围绕单一用户或单一团队造数。
 - 授权分组既作为分组列表、我的授权和授权用量统计样本展示，也会作为授权调用方路由策略的号池样本。`mockdata-summary.json` 会通过 `routeStrategyBindingRule` 和 `authorizationSamples[].bindableToRouteStrategy` 显式标记有效授权分组可绑定。
 - 授权调用方的 Mock API Key 会选择混合绑定有效授权分组和该调用方自己默认分组的路由策略；admin 也会生成一个绑定有效授权分组的 Mock 路由策略和 API Key。授权账户样本仍会放入调用方本地分组，授权分组消耗样本用于验证路由策略命中授权分组后的统计和审计口径。
-- AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；GPT 造数显式保存 `healthCheckEndpointMode=responses_sse`，通用 OpenAI-compatible 造数显式保存 `chat_json`，用于检查配置回显和后台精确请求形态；Anthropic 样本只使用 API Key，不生成 OAuth / Claude Code token。
+- AI 账户必须覆盖 API Key、OAuth、Anthropic API Key、Anthropic OAuth、`openai_standard`、`codex_responses`、多上游 Key、图像生成、模型映射、标签、账号内 Key 运行态、待检查、停用、限流、临时不可用、错误、账号不可调度和时间计划不生效样本；GPT 造数显式保存 `healthCheckEndpointMode=responses_sse`，通用 OpenAI-compatible 造数显式保存 `chat_json`，用于检查配置回显和后台精确请求形态；Anthropic OAuth 样本使用 Bearer Token 模拟值，不生成站内浏览器授权或订阅代理链路。
 - API Key 必须覆盖 `priority_failover`、`round_robin`、`weighted_round_robin` 路由策略，路由策略分组绑定状态必须同时包含 active 和 disabled；额度窗口、过期 Key、停用 Key、时间计划不生效 Key 都需要有样本。
 - 自定义模型目录必须覆盖当前存储支持的模型范围、active / draft / disabled 状态，以及文本、图像和音频等不同能力类型；账号模型映射和使用记录需要出现至少一条实际命中样本。当前 SQLite 自定义模型表只允许 personal 范围时，Mockdata 覆盖校验不强制要求 global 样本。
 - 使用记录必须覆盖 gateway、manual_account_test 和 cooldown_retest 来源，OpenAI models、responses、chat completions 和 images 端点，Anthropic messages、models 和 count tokens 端点，成功、失败、图片 token、模型映射命中、缓存读取、流式与非流式样本；GPT 文本记录还必须包含 Priority、Flex 实际计费档位、请求 / 最终思考强度及写入时计价快照样本。
@@ -112,7 +112,7 @@ pnpm mockdata -- --days 31 --daily-requests 120
 - API Key 列表和详情应能看到优先级故障转移、轮询、加权轮询、路由策略绑定禁用、停用、过期、时间计划和额度窗口样本。
 - 自定义模型目录应能看到全局模型、个人模型、草稿模型、停用模型、图像模型和音频模型样本。
 - 使用记录应能看到 gateway、手动账号测试、冷却重试、图片生成、模型映射命中、Priority / Flex 实际档位和最终思考强度样本；悬浮成本应读取写入时计价快照并展示档位计价来源与最终单价。
-- 模型检测历史会覆盖管理端与用户侧可见路径，包含运行中、已完成、失败和已取消样本，以及可信对比样本；受控 observation 通过真实游标聚合器生成 Token 完整轮次、身份来源、基线、配对窗口和账户最新可信结果，用于模型检测与可信度详情验收。
+- 模型检测历史会覆盖管理端与用户侧可见路径，包含快速 / 深度、运行中、已完成、失败、已取消和深度可信对比样本；受控 observation 只绑定深度样本，并通过真实游标聚合器生成 Token 完整轮次、身份来源、基线、配对窗口和账户最新可信结果，用于模型检测与可信度详情验收。
 - `usage_range_window_requests` 只在用户请求尚未生成的自定义范围时登记，未发生请求或处理完成后允许为空；Mockdata 不为满足表非空断言伪造瞬时队列任务。
 - `backend/data/mockdata-summary.json` 中的 active API Key 可用于本地网关请求验证；其中 `authorizationSamples` 里的 active 分组授权用于验证授权展示、授权统计和路由策略授权分组绑定。
 - `pnpm mockdata` 会执行内置覆盖断言；如果数据库缺少关键状态、类型、路由策略、账号内 Key 运行态、自定义模型状态 / 范围、图片 token 或模型映射命中记录，脚本应直接失败，不能生成看似成功但覆盖不完整的数据。

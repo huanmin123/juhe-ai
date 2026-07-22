@@ -1,6 +1,6 @@
 # BUG-0049 Go 管理 API 缺少 Redis cache 仍启动
 
-> 历史说明：本文涉及的 session-only 登录会话管理开关已于 2026-07-18 随 PLAN-0150 删除，不得恢复或作为当前配置依据。完整管理 API 的 Redis cache/state/queue fail-fast 结论继续有效。
+> 历史说明：本文涉及的 session-only 登录会话管理开关已于 2026-07-18 随 PLAN-0150-20260722T022751000Z 删除，不得恢复或作为当前配置依据。完整管理 API 的 Redis cache/state/queue fail-fast 结论继续有效。
 
 ## 基本信息
 
