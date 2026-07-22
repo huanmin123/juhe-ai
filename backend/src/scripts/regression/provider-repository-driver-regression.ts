@@ -90,15 +90,36 @@ function assertProviderEnabledPredicateBoundary(): void {
   const source = readFileSync(join(srcRoot, 'storage/provider.repository.ts'), 'utf8')
   assert.match(
     source,
-    /function providerEnabledPredicate\(_client: DatabaseClient, column: string\): string \{[\s\S]*?return `\$\{column\} = 1`/,
-    '供应商 enabled 字段在 SQLite 与 PostgreSQL schema 中均为 INTEGER，异步查询必须统一使用 1'
+    /function providerEnabledPredicate\(client: DatabaseClient, column: string\): string \{[\s\S]*?client\.driver === 'postgres' \? 'TRUE' : '1'/,
+    '供应商 enabled 谓词必须匹配 SQLite INTEGER 与 PostgreSQL boolean 的实际列类型'
   )
-  assert.doesNotMatch(source, /providerEnabledPredicate[\s\S]{0,300}\bTRUE\b/, '供应商 INTEGER enabled 字段不得与 PostgreSQL boolean TRUE 比较')
+  assert.doesNotMatch(
+    source,
+    /function providerEnabledPredicate\(_client:[\s\S]{0,200}return `\$\{column\} = 1`/,
+    'PostgreSQL boolean enabled 字段不得与 integer 1 比较'
+  )
   assert.equal(
     source.match(/providerEnabledPredicate\(client, '[^']+'\)/g)?.length,
     11,
-    '全部供应商异步 enabled 查询都必须复用 INTEGER predicate'
+    '全部供应商异步 enabled 查询都必须复用方言谓词'
   )
+
+  const migrationRoot = join(srcRoot, '..', '..', 'backend-go', 'db', 'migrations')
+  const providerSchema = readFileSync(join(migrationRoot, '000004_w1b_public_groups.sql'), 'utf8')
+  const protocolSchema = readFileSync(join(migrationRoot, '000005_w1b_public_accounts.sql'), 'utf8')
+  const endpointFamilySchema = readFileSync(join(migrationRoot, '000008_w2_management_provider_options.sql'), 'utf8')
+  for (const [table, migration] of [
+    ['providers', providerSchema],
+    ['provider_protocol_profiles', protocolSchema],
+    ['protocol_endpoint_families', endpointFamilySchema],
+    ['provider_protocol_profile_families', endpointFamilySchema]
+  ] as const) {
+    assert.match(
+      migration,
+      new RegExp(`CREATE TABLE IF NOT EXISTS juhe_business\\.${table} \\([\\s\\S]*?enabled boolean NOT NULL DEFAULT true`),
+      `Goose PostgreSQL ${table}.enabled 必须保持 boolean`
+    )
+  }
 }
 
 function assertModelCatalogPostgresSyncBoundary(): void {
