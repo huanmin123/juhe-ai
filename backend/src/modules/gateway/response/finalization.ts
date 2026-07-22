@@ -1188,7 +1188,7 @@ function managementResponseInspectionPoliciesForInput(
     : false
   return interpretUpstreamResponseSemantics
     ? input.responseInspectionPolicies
-    : input.responseInspectionPolicies?.filter((policy) => policy.defaultRule !== true)
+    : undefined
 }
 
 function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponseInput) {
