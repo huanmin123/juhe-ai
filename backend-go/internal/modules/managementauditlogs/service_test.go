@@ -69,14 +69,14 @@ func TestListErrorGroupsNormalizesFiltersMapsOptionalFieldsAndProgressiveWindow(
 		Items: []port.ManagementAuditErrorGroup{group}, HasMore: true,
 	}}
 	result, err := NewService(store).ListErrorGroups(context.Background(), ErrorGroupListInput{
-		Path: "\uFEFF POST /v1/responses?stream=true \uFEFF", Model: " \uFEFFgpt-5\uFEFF ", SystemAccountID: " \u0085sys_1\u0085 ",
+		Path: "\uFEFF POST /v1/responses?stream=true \uFEFF", Model: "\uFEFF\u0085gpt-5\u0085\uFEFF", SystemAccountID: " sys_1 ",
 		APIKeyID: " key_1 ", GroupID: " group_1 ", AccountID: " account_1 ", StatusCode: 503,
 		Page: 20, PageSize: 999, PageSizeProvided: true,
 	})
 	if err != nil {
 		t.Fatalf("ListErrorGroups() error = %v", err)
 	}
-	if store.errorGroupInput.Path != "/v1/responses" || store.errorGroupInput.Model != "gpt-5" || store.errorGroupInput.SystemAccountID != "\u0085sys_1\u0085" ||
+	if store.errorGroupInput.Path != "/v1/responses" || store.errorGroupInput.Model != "\u0085gpt-5\u0085" || store.errorGroupInput.SystemAccountID != "sys_1" ||
 		store.errorGroupInput.APIKeyID != "key_1" || store.errorGroupInput.GroupID != "group_1" || store.errorGroupInput.AccountID != "account_1" ||
 		store.errorGroupInput.StatusCode == nil || *store.errorGroupInput.StatusCode != 503 || store.errorGroupInput.Limit != 100 || store.errorGroupInput.Offset != 900 {
 		t.Fatalf("store input = %+v", store.errorGroupInput)
