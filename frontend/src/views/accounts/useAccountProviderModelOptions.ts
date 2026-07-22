@@ -1,13 +1,9 @@
 import { message } from '@/lib/antd'
 import { ref, type ComputedRef } from 'vue'
 
-import { api, pageDataApi } from '@/api/client'
-import { authState } from '@/composables/useAuth'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
-import type { PageDataLoadResult } from '@/shared/pageDataCache'
+import { api } from '@/api/client'
 import type { AccountModelSelectOption } from './accountEditFormPayload'
 import type { AccountScopeParams } from './accountOperationScope'
-import { invalidateAccountTestOptionsCache } from './accountTestOptionsCache'
 
 interface UseAccountProviderModelOptionsOptions {
   currentProviderCode: () => string
@@ -15,10 +11,6 @@ interface UseAccountProviderModelOptionsOptions {
   isManagementView: ComputedRef<boolean>
   modelScopeParams: ComputedRef<AccountScopeParams>
 }
-
-const providerModelResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
-const providerCacheGenerations = new Map<string, number>()
-let providerCacheGlobalGeneration = 0
 
 interface ProviderAccountModelResourceOptions {
   isManagementView: boolean
@@ -30,49 +22,23 @@ interface ProviderAccountModelResourceOptions {
 
 export async function loadAccountProviderModelOptionsResource(
   options: ProviderAccountModelResourceOptions
-): Promise<PageDataLoadResult<AccountModelSelectOption[]>> {
+): Promise<{ data: AccountModelSelectOption[] }> {
   const code = options.providerCode.trim()
-  if (!code) return { data: [], source: 'network', confirmed: false, cached: false, superseded: false }
+  if (!code) return { data: [] }
   const scopeParams = options.scopeParams ? { ...options.scopeParams } : undefined
   const selectedIds = normalizedSelectedModelIds(options.selectedIds)
-  const route = '/providers/models/options'
-  const scope = buildProviderModelViewerScope(options.isManagementView, scopeParams?.systemAccountId)
-  return providerModelResourceCache.load<AccountModelSelectOption[]>({
-    cacheKey: {
-      scope,
-      route,
-      query: {
-        providerCode: code,
-        systemAccountId: scopeParams?.systemAccountId,
-        selectedIds,
-        view: options.isManagementView ? 'management' : 'self'
-      },
-      version: `${providerCacheGlobalGeneration}:${providerCacheGenerations.get(code) ?? 0}:1`
-    },
-    domain: 'providers.catalog',
-    viewScope: options.isManagementView ? 'admin' : 'self',
-    ...(options.isManagementView && scopeParams?.systemAccountId
-      ? { targetSystemAccountId: scopeParams.systemAccountId }
-      : {}),
-    loadNetwork: async () => {
-      return loadAccountModelOptions(code, scopeParams, selectedIds, undefined, options.includeCapabilities === true)
-    }
-  })
+  return {
+    data: await loadAccountModelOptions(
+      code,
+      scopeParams,
+      selectedIds,
+      undefined,
+      options.includeCapabilities === true
+    )
+  }
 }
 
-export function invalidateAccountProviderModelOptionsCache(providerCode?: string): void {
-  invalidateAccountTestOptionsCache()
-  const code = providerCode?.trim()
-  if (!code) {
-    providerCacheGlobalGeneration += 1
-    providerCacheGenerations.clear()
-    void providerModelResourceCache.invalidate('providers.catalog')
-    return
-  }
-  providerCacheGenerations.set(code, (providerCacheGenerations.get(code) ?? 0) + 1)
-  const route = '/providers/models/options'
-  void providerModelResourceCache.invalidate('providers.catalog', undefined, route)
-}
+export function invalidateAccountProviderModelOptionsCache(_providerCode?: string): void {}
 
 export function useAccountProviderModelOptions(options: UseAccountProviderModelOptionsOptions) {
   const providerModelOptions = ref<AccountModelSelectOption[]>([])
@@ -97,8 +63,8 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     }
     const selectedIds = normalizedSelectedModelIds(request.selectedIds)
     const keyword = request.keyword?.trim() || undefined
-    const cacheKey = providerModelCacheKey(code, keyword, selectedIds)
-    if (loadingKey === cacheKey && loadingPromise) return loadingPromise
+    const requestKey = providerModelRequestKey(code, keyword, selectedIds)
+    if (loadingKey === requestKey && loadingPromise) return loadingPromise
 
     const requestId = latestRequestId + 1
     latestRequestId = requestId
@@ -111,40 +77,12 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
     providerModelsLoading.value = true
     const promise = (async () => {
       try {
-        const route = '/providers/models/options'
-        const result = await providerModelResourceCache.load<AccountModelSelectOption[]>({
-          cacheKey: {
-            scope: providerModelViewerScope(),
-            route,
-            query: {
-              providerCode: code,
-              systemAccountId: scopeParams?.systemAccountId,
-              selectedIds,
-              keyword,
-              view: options.isManagementView.value ? 'management' : 'self'
-            },
-            version: `${providerCacheGlobalGeneration}:${providerCacheGenerations.get(code) ?? 0}:1`
-          },
-          domain: 'providers.catalog',
-          viewScope: options.isManagementView.value ? 'admin' : 'self',
-          ...(options.isManagementView.value && scopeParams?.systemAccountId
-            ? { targetSystemAccountId: scopeParams.systemAccountId }
-            : {}),
-          loadNetwork: async () => {
-            return loadAccountModelOptions(code, scopeParams, selectedIds, keyword, false)
-          }
-        })
-        const modelOptions = result.data
-        if (isCurrentRequest(requestId, cacheKey)) {
+        const modelOptions = await loadAccountModelOptions(code, scopeParams, selectedIds, keyword, false)
+        if (isCurrentRequest(requestId, code)) {
           providerModelOptions.value = modelOptions
         }
-        void result.confirmation?.then((outcome) => {
-          if (outcome.data && isCurrentRequest(requestId, cacheKey)) {
-            providerModelOptions.value = outcome.data
-          }
-        })
       } catch (error) {
-        if (!isCurrentRequest(requestId, cacheKey)) return
+        if (!isCurrentRequest(requestId, code)) return
         console.error(error)
         message.error(options.extractApiErrorMessage(error, '加载供应商模型失败'))
       } finally {
@@ -155,24 +93,26 @@ export function useAccountProviderModelOptions(options: UseAccountProviderModelO
         }
       }
     })()
-    loadingKey = cacheKey
+    loadingKey = requestKey
     loadingPromise = promise
     return promise
   }
 
-  function providerModelCacheKey(providerCode: string, keyword?: string, selectedIds: string[] = []): string {
-    return `${providerModelViewerScope()}:${providerCode}:${keyword ?? ''}:${selectedIds.join(',')}:${providerCacheGlobalGeneration}:${providerCacheGenerations.get(providerCode) ?? 0}`
+  function providerModelRequestKey(providerCode: string, keyword?: string, selectedIds: string[] = []): string {
+    return JSON.stringify([
+      options.isManagementView.value ? 'management' : 'self',
+      options.modelScopeParams.value?.systemAccountId ?? '',
+      providerCode,
+      keyword ?? '',
+      selectedIds
+    ])
   }
 
-  function providerModelViewerScope(): string {
-    return buildProviderModelViewerScope(options.isManagementView.value, options.modelScopeParams.value?.systemAccountId)
-  }
-
-  function isCurrentRequest(requestId: number, cacheKey: string): boolean {
+  function isCurrentRequest(requestId: number, providerCode: string): boolean {
     const currentProviderCode = options.currentProviderCode().trim()
     return requestId === latestRequestId
       && Boolean(currentProviderCode)
-      && cacheKey.startsWith(`${providerModelViewerScope()}:${currentProviderCode}:`)
+      && currentProviderCode === providerCode
   }
 
   function dedupeModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
@@ -265,16 +205,6 @@ async function loadAccountModelOptions(
 
 function normalizedSelectedModelIds(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].slice(0, 50)
-}
-
-function buildProviderModelViewerScope(isManagementView: boolean, systemAccountId?: string): string {
-  const viewer = authState.currentUser.value
-  return [
-    isManagementView ? 'admin' : 'self',
-    viewer?.id ?? 'anonymous',
-    viewer?.role ?? 'anonymous',
-    systemAccountId ?? 'self'
-  ].join(':')
 }
 
 function dedupeAccountModelOptions(options: AccountModelSelectOption[]): AccountModelSelectOption[] {
