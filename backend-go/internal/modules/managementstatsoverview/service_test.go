@@ -117,6 +117,34 @@ func TestServiceOverviewNormalizesNodeCompatibleDateWindows(t *testing.T) {
 	}
 }
 
+func TestServiceOverviewRoundsAveragesLikeNode(t *testing.T) {
+	reader := &overviewReaderStub{window: port.ManagementStatsOverviewWindow{
+		Summary: &port.ManagementStatsOverviewSummaryRow{
+			DurationMsSum: 5, DurationMsCount: 2,
+			FirstTokenMsSum: 7, FirstTokenMsCount: 2,
+		},
+		HourlyTrend: []port.ManagementStatsOverviewTrendRow{{
+			StatHour: "2026-07-22T08", DurationMsSum: 5, DurationMsCount: 2,
+		}},
+	}}
+	service := NewService(ServiceOptions{
+		Reader:       reader,
+		WindowReader: usageWindowReaderStub{window: managementstats.UsageWindow{StartDate: "2026-06-22", EndDate: "2026-07-22", MaxDays: 31}},
+	})
+
+	got, err := service.Overview(context.Background(), "sys_1", Input{})
+
+	if err != nil {
+		t.Fatalf("Overview() error = %v", err)
+	}
+	if got.Summary.AverageDurationMs == nil || *got.Summary.AverageDurationMs != 3 ||
+		got.Summary.AverageFirstTokenMs == nil || *got.Summary.AverageFirstTokenMs != 4 ||
+		len(got.HourlyTrend) != 1 || got.HourlyTrend[0].AverageDurationMs == nil ||
+		*got.HourlyTrend[0].AverageDurationMs != 3 {
+		t.Fatalf("rounded averages = summary %+v, trend %+v", got.Summary, got.HourlyTrend)
+	}
+}
+
 func TestServiceOverviewRejectsMissingDependenciesAndPropagatesReads(t *testing.T) {
 	readErr := errors.New("postgres down")
 	tests := []struct {
