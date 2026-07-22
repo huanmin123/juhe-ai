@@ -1647,6 +1647,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountUpdateHandler != nil ||
 		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
+		opts.ManagementAccountImportPreviewHandler != nil ||
+		opts.ManagementMyAccountImportPreviewHandler != nil ||
+		opts.ManagementAccountImportConfirmHandler != nil ||
+		opts.ManagementMyAccountImportConfirmHandler != nil ||
 		opts.ManagementAccountTestTaskListHandler != nil ||
 		opts.ManagementMyAccountTestTaskListHandler != nil ||
 		opts.ManagementAccountTestSessionStatusHandler != nil ||

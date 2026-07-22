@@ -1806,14 +1806,23 @@ func (s *authorizationUsageStoreStub) FindManagementResourceAuthorizationUsage(_
 }
 
 type authorizationInvalidatorStub struct {
-	calls  int
-	reason string
-	err    error
+	calls             int
+	reason            string
+	err               error
+	contextErr        error
+	hasDeadline       bool
+	deadlineRemaining time.Duration
 }
 
-func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(_ context.Context, reason string) error {
+func (s *authorizationInvalidatorStub) InvalidateAuthorizationChanged(ctx context.Context, reason string) error {
 	s.calls++
 	s.reason = reason
+	s.contextErr = ctx.Err()
+	deadline, ok := ctx.Deadline()
+	s.hasDeadline = ok
+	if ok {
+		s.deadlineRemaining = time.Until(deadline)
+	}
 	return s.err
 }
 
