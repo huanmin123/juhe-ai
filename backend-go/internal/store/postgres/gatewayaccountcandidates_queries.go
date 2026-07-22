@@ -26,6 +26,7 @@ LEFT JOIN LATERAL (
   WHERE groups.system_account_id <> $2::text
     AND resource_authorizations.resource_type = 'group'
     AND resource_authorizations.resource_id = groups.id
+    AND resource_authorizations.resource_owner_system_account_id = groups.system_account_id
     AND resource_authorizations.grantee_system_account_id = $2::text
     AND resource_authorizations.status = 'active'
     AND (resource_authorizations.expires_at IS NULL OR resource_authorizations.expires_at > $3::timestamptz)
@@ -130,6 +131,7 @@ WHERE group_accounts.group_id = $1::text
         WHERE group_authorizations.id = $8::text
           AND group_authorizations.resource_type = 'group'
           AND group_authorizations.resource_id = groups.id
+          AND group_authorizations.resource_owner_system_account_id = groups.system_account_id
           AND group_authorizations.grantee_system_account_id = $3::text
           AND group_authorizations.status = 'active'
           AND (group_authorizations.expires_at IS NULL OR group_authorizations.expires_at > $6::timestamptz)
@@ -147,6 +149,9 @@ WHERE group_accounts.group_id = $1::text
   AND (
     (
       accounts.authorization_instance_authorization_id IS NULL
+      AND accounts.authorization_instance_source_account_id IS NULL
+      AND accounts.authorization_instance_owner_system_account_id IS NULL
+      AND group_accounts.account_authorization_id IS NULL
       AND accounts.type IN ('api_key', 'oauth', 'google_oauth')
     )
     OR (
