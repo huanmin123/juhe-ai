@@ -19,6 +19,8 @@ import (
 	"juhe-ai/backend-go/internal/store/port"
 )
 
+const announcementJSONMaxBodyBytes = 256 << 10
+
 type announcementPublicChangePublisher interface {
 	PublishAnnouncementPublicChange(ctx context.Context, announcementID, operation string, fieldMask []string) error
 }
@@ -260,10 +262,15 @@ func handleAnnouncementDelete(w http.ResponseWriter, r *http.Request, auth manag
 }
 
 func decodeAnnouncementJSON(w http.ResponseWriter, r *http.Request, target any) bool {
-	limited := http.MaxBytesReader(w, r.Body, 256<<10)
+	limited := http.MaxBytesReader(w, r.Body, announcementJSONMaxBodyBytes)
 	defer limited.Close()
 	raw, err := io.ReadAll(limited)
 	if err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeMessageError(w, http.StatusRequestEntityTooLarge, "请求体过大")
+			return false
+		}
 		writeMessageError(w, http.StatusBadRequest, "公告参数无效")
 		return false
 	}
