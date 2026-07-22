@@ -185,8 +185,6 @@ func TestServiceUpdateScopesAndReturnsCompleteBeforeAfter(t *testing.T) {
 			wantCreatedAt := store.current.CreatedAt.UTC().Format(time.RFC3339Nano)
 			wantUpdatedAt := store.current.UpdatedAt.UTC().Format(time.RFC3339Nano)
 			service, tx, invalidator, _ := newManagementRouteStrategyUpdateService(store, nil)
-			publisher := &routeStrategyPageDataPublisherStub{}
-			service.pageDataPublisher = publisher
 
 			result, err := service.Update(context.Background(), UpdateInput{
 				ActorSystemAccountID: tt.actorID,
@@ -254,7 +252,6 @@ func TestServiceUpdateScopesAndReturnsCompleteBeforeAfter(t *testing.T) {
 				invalidator.reasons[0] != RouteStrategyUpdatedReason {
 				t.Fatalf("invalidation calls=%d reasons=%#v", invalidator.calls, invalidator.reasons)
 			}
-			assertRouteStrategyPageDataReset(t, publisher)
 		})
 	}
 }

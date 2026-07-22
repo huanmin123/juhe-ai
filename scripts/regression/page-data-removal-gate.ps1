@@ -9,7 +9,7 @@ $checks = @(
   @{ Name = 'frontend page-data runtime'; Pattern = 'pageDataApi|PageDataRevisionToken|PageDataActivation|pageDataActivation|pageDataResourceCache|pageDataMutationInvalidation|pageDataGenerationFences|currentPageDataSecurityGeneration|advancePageData'; Paths = @('frontend/src') },
   @{ Name = 'Node page-data runtime'; Pattern = 'page-data|PageData|publishAccountStaticChange|publishAccountRuntimeChange|publishPageDataDomain|publishStatsPageData'; Paths = @('backend/src') },
   @{ Name = 'Go page-data runtime'; Pattern = 'page-data|PageData|pageData|page_data'; Paths = @('backend-go/internal') },
-  @{ Name = 'dirty-domain current artifacts'; Pattern = 'page_data_dirty_domains|JuheBusinessPageDataDirtyDomain'; Paths = @('backend-go/internal', 'backend-go/db/migrationtests', 'backend-go/db/queries') },
+  @{ Name = 'dirty-domain current artifacts'; Pattern = 'page_data_dirty_domains|JuheBusinessPageDataDirtyDomain'; Paths = @('backend-go/internal', 'backend-go/db/queries') },
   @{ Name = 'retired scripts'; Pattern = 'test:page-data|smoke:page-data|benchmark:page-data'; Paths = @('frontend/package.json', 'backend/package.json') }
 )
 

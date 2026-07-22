@@ -95,14 +95,7 @@ func RunAuthorizationExpirySweepWorker(ctx context.Context, cfg config.Config, l
 	if err != nil {
 		return err
 	}
-	publisher, closePublisher, err := newRecoveringAccountsStaticResetPublisher(
-		ctx, stateRedis, cacheRedis, cfg.RedisNamespace, store, logger,
-	)
-	if err != nil {
-		return err
-	}
-	defer closePublisher()
-	service := newAuthorizationExpirySweepService(store, invalidator, publisher, store, logger)
+	service := newAuthorizationExpirySweepService(store, invalidator, logger)
 	sweep := func() error {
 		result, err := service.ExpireDue(ctx, managementauthorizations.ExpirySweepInput{Limit: opts.Limit})
 		if err != nil {
@@ -136,15 +129,11 @@ func RunAuthorizationExpirySweepWorker(ctx context.Context, cfg config.Config, l
 func newAuthorizationExpirySweepService(
 	expiryStore port.ManagementResourceAuthorizationExpirySweeper,
 	invalidator managementauthorizations.AuthorizationInvalidator,
-	publisher managementauthorizations.AuthorizationPageDataPublisher,
-	teamReader managementauthorizations.TeamReader,
 	logger *slog.Logger,
 ) *managementauthorizations.Service {
 	return managementauthorizations.NewServiceWithOptions(managementauthorizations.ServiceOptions{
 		ExpirySweepStore:         expiryStore,
 		AuthorizationInvalidator: invalidator,
-		Publisher:                publisher,
-		TeamReader:               teamReader,
 		Logger:                   logger,
 	})
 }
