@@ -3,6 +3,7 @@ package managementstatsoverview
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -254,7 +255,7 @@ func average(sum int64, count int64) *float64 {
 	if count <= 0 {
 		return nil
 	}
-	value := float64(sum) / float64(count)
+	value := math.Round(float64(sum) / float64(count))
 	return &value
 }
 
