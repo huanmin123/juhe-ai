@@ -460,6 +460,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
 		ManagementSystemMetricsHandler:                    managementHandlers.SystemMetricsHandler,
+		ManagementPageDataConfirmHandler:                  managementHandlers.PageDataConfirmHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 	})
@@ -697,6 +698,7 @@ type managementAPIHandlers struct {
 	AnnouncementPublicReadHandler           http.Handler
 	AnnouncementsHandler                    http.Handler
 	SystemMetricsHandler                    http.Handler
+	PageDataConfirmHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
 }
@@ -975,6 +977,14 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 			UsageStatsTimezoneReader: store,
 		},
 	)
+	var pageDataConfirmHandler http.Handler
+	if stateRedis != nil {
+		pageDataConfirmer, pageDataConfirmErr := redisplatform.NewPageDataChangeConfirmer(stateRedis, cfg.RedisNamespace)
+		pageDataConfirmHandler = httpapi.NewPageDataChangeConfirmHandler(pageDataChangeConfirmServiceAdapter{
+			confirmer: pageDataConfirmer,
+			initErr:   pageDataConfirmErr,
+		})
+	}
 	operationLogOptions := httpapi.ManagementOperationLogOptions{
 		Config:         cfg,
 		Logger:         logger,
@@ -1185,6 +1195,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
 		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
 		SystemMetricsHandler:                    httpapi.NewManagementSystemMetricsHandler(statsService),
+		PageDataConfirmHandler:                  pageDataConfirmHandler,
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}

@@ -890,3 +890,10 @@
 - [x] GREEN：实现 port / store / service / handler / router / app 装配，保持 Node DTO 字段与排序。
 - [x] 验证：执行定向测试、`go test ./... -count=1`、`go vet ./...`、`gofmt` / diff 复查；真实 Node writer -> Go reader PostgreSQL integration 和查询计划证据后置。
 - 实际结果：四组 RED 分别因 port / service、store SQL、HTTP / router 和 server 装配缺失而按预期失败，对应 GREEN 后通过；定向四包测试、定向 race、全量 `go test ./... -count=1`、`go vet ./...`、`go mod tidy -diff` 和 `git diff --check` 均通过。本轮未启动 PostgreSQL / Node worker，不记录真实 writer -> reader、查询计划或生产切流通过。
+
+## 2026-07-22 页面数据确认接口 Go opt-in
+
+- Go management API 已新增 `POST /__aisys__/api/data-changes/confirm`，直接复用现有 `PageDataChangeConfirmer`、协议版本 2、scope fingerprint、Redis key 前缀和单次 Lua 快路径；没有新增第二套 token、事件、publisher 或 Redis 协议。
+- 任意已登录角色可确认 `self` 视图；`admin` 视图继续要求管理员。`self` 携带 target 返回 400，普通用户伪造 admin 返回 403；请求要求 `application/json`、沿用 Node System API 的 `256kb` body 上限，并严格限制顶层与 token 字段、13 个现有 domain、单次最多 32 域和 JavaScript safe integer 序列边界。
+- 该接口虽然使用 POST，仍精确挂载 management read auth / read rate-limit，不 touch session；System API 外层继续设置 `Cache-Control: no-store`。Redis confirm 不可用时返回 `503 + Retry-After: 5`，不查询 PostgreSQL 或其他业务表。
+- 本块只增加 Go opt-in read endpoint。真实 Redis listener smoke、前端浏览器请求、反向代理单 owner、生产切流、回滚和 Node 路由删除继续后置，不能据此声明生产接管。
