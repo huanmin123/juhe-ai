@@ -91,6 +91,7 @@ interface PendingChatToolCallState {
   upstreamCallId?: string
   name: string
   arguments: string
+  outputIndex: number
 }
 
 interface PendingChatToolCall {
@@ -1401,7 +1402,8 @@ function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknow
   const pending = state.pendingToolCalls.get(index) ?? {
     upstreamCallId: stringValue(value.id),
     name: '',
-    arguments: ''
+    arguments: '',
+    outputIndex: state.nextOutputIndex++
   }
   if (!pending.upstreamCallId) pending.upstreamCallId = stringValue(value.id)
   if (chatName) pending.name = mergeChatToolName(pending.name, chatName)
@@ -1427,7 +1429,7 @@ function appendResponsesToolCallDelta(state: ChatToResponsesState, value: unknow
     name: adapter.responsesName,
     arguments: pending.arguments,
     adapter,
-    outputIndex: state.nextOutputIndex++,
+    outputIndex: pending.outputIndex,
     added: false,
     done: false
   }
