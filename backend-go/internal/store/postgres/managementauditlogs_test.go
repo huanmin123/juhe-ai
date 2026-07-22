@@ -76,3 +76,22 @@ func TestManagementAuditLogDetailQueriesReadMetadataOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestManagementAuditLogPayloadQueryJoinsOnlyBoundedBlobMetadata(t *testing.T) {
+	query := managementAuditLogPayloadQuery()
+	for _, want := range []string{
+		"WHERE refs.audit_log_id = $1::text AND refs.id = $2::text",
+		"LEFT JOIN juhe_dataset.audit_payload_blobs AS headers_blob",
+		"LEFT JOIN juhe_dataset.audit_payload_blobs AS body_blob",
+		"headers_blob.storage_key", "body_blob.compression",
+	} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query missing %q:\n%s", want, query)
+		}
+	}
+	for _, forbidden := range []string{"pg_read_binary_file", "body_bytes", "headers_bytes", "SELECT *"} {
+		if strings.Contains(query, forbidden) {
+			t.Fatalf("query contains %q:\n%s", forbidden, query)
+		}
+	}
+}
