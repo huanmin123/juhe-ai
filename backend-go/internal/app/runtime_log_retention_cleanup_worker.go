@@ -17,12 +17,14 @@ const (
 )
 
 type RuntimeLogRetentionCleanupWorkerOptions struct {
-	RetentionDays int
-	BatchSize     int
-	MaxBatches    int
-	Interval      time.Duration
-	InitialDelay  time.Duration
-	RunOnce       bool
+	// GoExclusiveIndexCleanupOwner must only be enabled after the Node cleanup subowner stops.
+	GoExclusiveIndexCleanupOwner bool
+	RetentionDays                int
+	BatchSize                    int
+	MaxBatches                   int
+	Interval                     time.Duration
+	InitialDelay                 time.Duration
+	RunOnce                      bool
 }
 
 type runtimeLogRetentionCleanupFunc func(context.Context) (runtimelogretention.CleanupResult, error)
@@ -57,10 +59,11 @@ func RunRuntimeLogRetentionCleanupWorker(
 	service := runtimelogretention.NewService(store)
 	return runRuntimeLogRetentionCleanupLoop(ctx, logger, opts, func(ctx context.Context) (runtimelogretention.CleanupResult, error) {
 		return service.Cleanup(ctx, runtimelogretention.CleanupInput{
-			IndexEnabled:  cfg.RuntimeLogIndexEnabled,
-			RetentionDays: opts.RetentionDays,
-			BatchSize:     opts.BatchSize,
-			MaxBatches:    opts.MaxBatches,
+			IndexEnabled:                 cfg.RuntimeLogIndexEnabled,
+			GoExclusiveIndexCleanupOwner: opts.GoExclusiveIndexCleanupOwner,
+			RetentionDays:                opts.RetentionDays,
+			BatchSize:                    opts.BatchSize,
+			MaxBatches:                   opts.MaxBatches,
 		})
 	})
 }
@@ -95,6 +98,7 @@ func runRuntimeLogRetentionCleanupLoop(
 		attrs := []any{
 			slog.Int64("runtimeLogs", result.RuntimeLogs),
 			slog.Int("runtimeLogBatches", result.RuntimeLogBatches),
+			slog.Bool("runtimeLogsDeferred", result.RuntimeLogsDeferred),
 			slog.Int64("runtimeLogFileCursors", result.RuntimeLogFileCursors),
 			slog.Int("runtimeLogFileCursorBatches", result.RuntimeLogFileCursorBatches),
 			slog.String("phase", result.Phase),
@@ -128,6 +132,7 @@ func runRuntimeLogRetentionCleanupLoop(
 		slog.Int("retentionDaysOverride", opts.RetentionDays),
 		slog.Int("batchSize", opts.BatchSize),
 		slog.Int("maxBatches", opts.MaxBatches),
+		slog.Bool("goExclusiveIndexCleanupOwner", opts.GoExclusiveIndexCleanupOwner),
 	)
 	if err := waitRuntimeLogRetentionCleanupWorker(ctx, initialDelay); err != nil {
 		return nil
