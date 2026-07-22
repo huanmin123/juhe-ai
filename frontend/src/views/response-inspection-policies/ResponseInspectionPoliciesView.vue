@@ -56,6 +56,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { api, type ResponseInspectionPolicyPayload } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
@@ -98,6 +99,7 @@ const modalMode = ref<PolicyModalMode>('create')
 const guideOpen = ref(false)
 const editingId = ref<string>()
 const activePolicy = ref<ResponseInspectionPolicySummary>()
+const providerRecovery = useKeepAliveSupersededRecovery(() => loadPolicyProviders())
 
 const allPolicies = computed(() => [...defaultRules.value, ...policies.value])
 const policyProviders = computed(() => providers.value
@@ -133,25 +135,31 @@ async function loadPolicies(): Promise<void> {
 async function loadPageData(force = false): Promise<void> {
   loading.value = true
   try {
-    const [policyResult, providerResult] = await Promise.all([
+    const [policyResult] = await Promise.all([
       api.responseInspectionPolicies.list(),
-      loadProviderOptionsResource({
-        apply: (nextProviders) => { providers.value = nextProviders },
-        force,
-        includeDisabled: false,
-        includeDefinitions: true,
-        isManagementView: true
-      })
+      loadPolicyProviders(force)
     ])
     defaultRules.value = policyResult.defaultRules
     policies.value = policyResult.policies
-    providers.value = providerResult
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载响应检查策略失败'))
   } finally {
     loading.value = false
   }
+}
+
+async function loadPolicyProviders(force = false): Promise<void> {
+  const providerRecoveryRequest = providerRecovery.start()
+  const providerResult = await loadProviderOptionsResource({
+    apply: (nextProviders) => { providers.value = nextProviders },
+    force,
+    includeDisabled: false,
+    includeDefinitions: true,
+    isManagementView: true
+  })
+  providerRecovery.record(providerRecoveryRequest, providerResult.state)
+  if (providerResult.state === 'ready') providers.value = providerResult.data
 }
 
 function openCreate(): void {

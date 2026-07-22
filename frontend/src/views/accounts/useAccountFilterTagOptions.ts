@@ -1,6 +1,8 @@
-import { computed, ref, type ComputedRef } from 'vue'
+import { computed, onUnmounted, ref, type ComputedRef } from 'vue'
 
+import type { PageDataActivation } from '@/composables/usePageDataActivation'
 import { message } from '@/lib/antd'
+import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountScopeParams } from './accountOperationScope'
@@ -13,6 +15,7 @@ import {
 interface UseAccountFilterTagOptionsConfig {
   accountScopeParams: ComputedRef<AccountScopeParams>
   isManagementView: ComputedRef<boolean>
+  pageDataActivation?: PageDataActivation
 }
 
 export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsConfig) {
@@ -23,14 +26,18 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
 
   const disabled = computed(() => config.isManagementView.value && !config.accountScopeParams.value?.systemAccountId)
 
-  async function load(force = false): Promise<void> {
+  async function load(
+    force = false,
+    revalidate = false,
+    activation: PageDataActivationHandle | undefined = config.pageDataActivation
+  ): Promise<void> {
     const nextScopeKey = currentScopeKey()
     if (!nextScopeKey) {
       reset()
       return
     }
-    if (!force && scopeKey.value === nextScopeKey) return
-    const cachedOptions = !force ? readAccountTagOptionsCache(nextScopeKey) : undefined
+    if (!force && !revalidate && scopeKey.value === nextScopeKey) return
+    const cachedOptions = !force && !revalidate ? readAccountTagOptionsCache(nextScopeKey) : undefined
     if (cachedOptions) {
       options.value = cachedOptions
       scopeKey.value = nextScopeKey
@@ -42,13 +49,15 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
     const scopeParams = config.accountScopeParams.value
     loading.value = true
     try {
-      const nextOptions = await loadAccountTagOptionsCached({
+      const result = await loadAccountTagOptionsCached({
+        activation,
         force,
         isManagementView: config.isManagementView.value,
+        revalidate,
         scopeParams
       })
-      if (currentRequestToken !== requestToken || currentScopeKey() !== nextScopeKey) return
-      options.value = nextOptions
+      if (result.superseded || currentRequestToken !== requestToken || currentScopeKey() !== nextScopeKey) return
+      options.value = result.data
       scopeKey.value = nextScopeKey
     } catch (error) {
       console.error(error)
@@ -74,6 +83,12 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
   function currentScopeKey(): string | undefined {
     return resolveAccountTagOptionsScopeKey(config.isManagementView.value, config.accountScopeParams.value)
   }
+
+  const unregisterRevalidator = config.pageDataActivation?.registerRevalidator(
+    'accounts.options',
+    (activation) => load(false, true, activation)
+  )
+  onUnmounted(() => unregisterRevalidator?.())
 
   return {
     disabled,

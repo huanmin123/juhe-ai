@@ -1,9 +1,11 @@
 import { api, pageDataApi } from '@/api/client'
 import { authState } from '@/composables/useAuth'
+import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
 import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { ProviderDefinition, ProviderOption } from '@/types/domain'
 
 interface ProviderOptionsResourceOptions {
+  activation?: PageDataActivationHandle
   apply?: (providers: ProviderDefinition[]) => void
   force?: boolean
   includeDisabled?: boolean
@@ -13,9 +15,13 @@ interface ProviderOptionsResourceOptions {
   systemAccountId?: string
 }
 
+export type ProviderOptionsResourceResult =
+  | { state: 'ready'; data: ProviderDefinition[] }
+  | { state: 'superseded' }
+
 const providerOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
-export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderDefinition[]> {
+export async function loadProviderOptionsResource(options: ProviderOptionsResourceOptions): Promise<ProviderOptionsResourceResult> {
   const includeDisabled = options.includeDisabled === true && options.isManagementView
   const route = includeDisabled ? '/providers' : options.includeDefinitions ? '/providers/definitions' : '/providers/options'
   const scope = providerOptionsScope(options.isManagementView, options.systemAccountId)
@@ -29,6 +35,7 @@ export async function loadProviderOptionsResource(options: ProviderOptionsResour
     },
     domain: 'providers.catalog',
     viewScope: options.isManagementView ? 'admin' : 'self',
+    activation: options.activation,
     ...(options.isManagementView && options.systemAccountId
       ? { targetSystemAccountId: options.systemAccountId }
       : {}),
@@ -38,11 +45,12 @@ export async function loadProviderOptionsResource(options: ProviderOptionsResour
         ? api.providers.definitions(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
         : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined).then((items) => items.map(providerOptionToDefinition))
   })
+  if (result.superseded) return { state: 'superseded' }
   applyIfCurrent(options, result.data)
   void result.confirmation?.then((outcome) => {
-    if (outcome.data) applyIfCurrent(options, outcome.data)
+    if (outcome.state !== 'superseded' && outcome.data) applyIfCurrent(options, outcome.data)
   })
-  return result.data
+  return { state: 'ready', data: result.data }
 }
 
 function providerOptionToDefinition(option: ProviderOption): ProviderDefinition {
