@@ -1,6 +1,6 @@
 <template>
   <div class="ai-composer" :class="{ 'is-disabled': disabled }">
-    <input ref="fileInput" class="ai-composer-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" :disabled="disabled || !imageInputSupported || !conversationId" multiple @change="handleFileChange" />
+    <input ref="fileInput" class="ai-composer-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" :disabled="disabled || !imageInputSupported || !imagePolicy || !conversationId" multiple @change="handleFileChange" />
     <EditorContent :editor="editor" class="ai-composer-editor" />
     <div v-if="commandOpen" class="ai-composer-command-menu" role="listbox">
       <button v-for="(item, index) in commandItems" :key="item.key" type="button" role="option" :aria-selected="index === commandIndex" :class="{ 'is-active': index === commandIndex }" @mouseenter="commandIndex = index" @mousedown.prevent="selectCommand(item)">
@@ -9,14 +9,26 @@
     </div>
     <div class="ai-composer-footer">
       <div class="ai-composer-model-controls">
-        <a-tooltip v-if="showConversationButton" title="对话记录"><a-button type="text" size="small" aria-label="对话记录" @click="emit('open-conversations')"><MenuOutlined /></a-button></a-tooltip>
+        <a-dropdown :trigger="['click']" placement="topLeft">
+          <a-tooltip title="打开工具箱"><a-button class="ai-composer-toolbox-trigger" type="text" size="small" aria-label="打开工具箱"><PlusOutlined /></a-button></a-tooltip>
+          <template #overlay>
+            <a-menu @click="handleToolboxMenuClick">
+              <a-menu-item key="image" :disabled="Boolean(imageToolDisabledReason)" :title="imageToolDisabledReason || '添加图片'">
+                <a-tooltip :title="imageToolDisabledReason || '从本地添加图片'" placement="right">
+                  <span><PictureOutlined /> 添加图片</span>
+                </a-tooltip>
+              </a-menu-item>
+            </a-menu>
+          </template>
+        </a-dropdown>
         <a-select :value="modelValue" :options="modelSelectOptions" :loading="modelsLoading" :disabled="disabled" size="small" :bordered="false" aria-label="选择模型" :style="{ width: `${modelControlWidths.triggerWidth}px` }" :dropdown-match-select-width="modelControlWidths.popupWidth" @dropdown-visible-change="handleModelDropdownVisibleChange" @update:value="emit('update:modelValue', $event)" />
         <a-select v-if="reasoningOptions.length" :value="reasoningEffort" :options="reasoningOptions" :disabled="disabled" allow-clear size="small" :bordered="false" aria-label="思考级别" :style="{ width: `${reasoningControlWidths.triggerWidth}px` }" :dropdown-match-select-width="reasoningControlWidths.popupWidth" @update:value="handleReasoningEffortUpdate" />
         <a-select v-if="serviceTierOptions.length" :value="serviceTier" :options="serviceTierOptions" :disabled="disabled" allow-clear size="small" :bordered="false" aria-label="服务等级" :style="{ width: `${serviceTierControlWidths.triggerWidth}px` }" :dropdown-match-select-width="serviceTierControlWidths.popupWidth" @update:value="handleServiceTierUpdate" />
       </div>
       <a-tooltip :title="contextTooltip">
         <span class="ai-composer-context" role="img" :aria-label="`上下文用量 ${contextTooltip}`">
-          <a-progress type="circle" :percent="contextPercent" :size="18" :stroke-width="12" :show-info="false" :status="contextProgressStatus" />
+          <a-spin v-if="contextStatusLoading" size="small" />
+          <a-progress v-else type="circle" :percent="contextPercent" :size="18" :stroke-width="12" :show-info="false" :status="contextProgressStatus" />
         </span>
       </a-tooltip>
       <a-tooltip v-if="stoppable" title="停止生成"><a-button danger type="primary" aria-label="停止生成" @click="emit('stop')"><StopOutlined /></a-button></a-tooltip>
@@ -26,7 +38,7 @@
 </template>
 
 <script setup lang="ts">
-import { MenuOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
+import { PictureOutlined, PlusOutlined, SendOutlined, StopOutlined } from '@ant-design/icons-vue'
 import Placeholder from '@tiptap/extension-placeholder'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
@@ -45,18 +57,21 @@ import { createChatComposerKeyDownHandler } from './chatComposerKeyDownHandler'
 import { reasoningEffortLabel, selectableChatReasoningEfforts } from './chatModelControls'
 import { replaceEditorContentWithoutHistory } from './chatEditorDocumentBoundary'
 import { maxChatImageCount, selectChatImageFiles, selectChatImageFileSlots } from './chatImageSelection'
-import { createChatImagePreparationState } from './chatImagePreparationState'
+import { ChatImagePreparationQueue } from './chatImagePreparationQueue'
 import { prepareChatImageForUpload } from './chatImageProcessing'
 import type { ChatContextStatus, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier } from '@/types/domain/chat'
+import type { ChatImagePolicy } from '@/types/domain/chat'
 
 const props = defineProps<{
   contextStatus?: ChatContextStatus
+  contextStatusLoading: boolean
   conversationId: string
   disabled: boolean
   stoppable: boolean
   turnLimitReached: boolean
   turnLimitMessage: string
   imageInputSupported: boolean
+  imagePolicy?: ChatImagePolicy
   modelOptions: ChatModelListOption[]
   modelCapabilities?: ChatModelCapabilities
   modelValue?: string
@@ -64,11 +79,12 @@ const props = defineProps<{
   modelCapabilitiesLoading: boolean
   reasoningEffort: ChatReasoningEffort | ''
   serviceTier: ChatServiceTier | ''
-  showConversationButton: boolean
+  mobile: boolean
 }>()
 const emit = defineEmits<{
   (event: 'submit', payload: { blocks: ChatInputBlock[]; snapshot: JSONContent }): void
-  (event: 'stop' | 'open-conversations' | 'models-open'): void
+  (event: 'stop' | 'models-open'): void
+  (event: 'conversation-action', action: 'set-image-model' | 'compact-context' | 'clear-conversation'): void
   (event: 'update:modelValue', value?: string): void
   (event: 'update:reasoningEffort', value: ChatReasoningEffort | ''): void
   (event: 'update:serviceTier', value: ChatServiceTier | ''): void
@@ -83,21 +99,30 @@ function handleReasoningEffortUpdate(value?: ChatReasoningEffort): void {
 function handleServiceTierUpdate(value?: ChatServiceTier): void {
   emit('update:serviceTier', value ?? '')
 }
+function handleToolboxMenuClick(event: { key: string | number }): void {
+  if (String(event.key) === 'image') openImagePicker()
+}
+function openImagePicker(): void {
+  if (imageToolDisabledReason.value) {
+    message.warning(imageToolDisabledReason.value)
+    return
+  }
+  fileInput.value?.click()
+}
 const fileInput = ref<HTMLInputElement>()
 const commandOpen = ref(false)
 const commandQuery = ref('')
 const commandIndex = ref(0)
 const contentRevision = ref(0)
-const imagePreparationState = createChatImagePreparationState()
-const initialImagePreparationSnapshot = imagePreparationState.snapshot()
-const pendingImagePreparationCount = ref(initialImagePreparationSnapshot.pendingCount)
-let conversationGeneration = initialImagePreparationSnapshot.generation
+const pendingImagePreparationCount = ref(0)
+let conversationGeneration = 0
 let imageSyncScheduled = false
 
-type ImageUploadStatus = 'uploading' | 'uploaded' | 'failed'
+type ImageUploadStatus = 'preparing' | 'uploading' | 'uploaded' | 'failed'
 interface ImageUploadRecord {
   localId: string
   file?: File
+  sourceFile?: File
   previewUrl: string
   conversationId: string
   generation: number
@@ -111,9 +136,15 @@ interface ImageUploadRecord {
   byteSize: number
   error: string
   submitted: boolean
+  canceled: boolean
   controller?: AbortController
 }
 const imageUploadRecords = new Map<string, ImageUploadRecord>()
+const imagePreparationQueue = new ChatImagePreparationQueue<ImageUploadRecord>({
+  maxConcurrency: 2,
+  run: prepareImageRecord,
+  onChange: (snapshot) => { pendingImagePreparationCount.value = snapshot.pendingCount }
+})
 
 const handleComposerKeyDown = createChatComposerKeyDownHandler({
   commandOpen: () => commandOpen.value,
@@ -141,8 +172,8 @@ const editor = useEditor({
       const files = Array.from(event.clipboardData?.files ?? [])
       const imageFiles = files.filter((file) => file.type.startsWith('image/'))
       if (!imageFiles.length) return false
-      if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return true }
-      const imageFileSlots = selectChatImageFileSlots(imageFiles, imageItems.value.length + pendingImagePreparationCount.value)
+      if (imageToolDisabledReason.value) { message.warning(imageToolDisabledReason.value); return true }
+      const imageFileSlots = selectChatImageFileSlots(imageFiles, currentComposerImageCount())
       const selectedFiles = imageFileSlots.filter((file): file is File => Boolean(file))
       if (selectedFiles.length < imageFiles.length) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 1 MiB`)
       const html = event.clipboardData?.getData('text/html') ?? ''
@@ -168,8 +199,16 @@ const editor = useEditor({
 })
 watch(() => props.disabled, (disabled) => editor.value?.setEditable(!disabled), { immediate: true })
 
-const commandItems = computed(() => (commandOpen.value ? filterChatComposerCommands(commandQuery.value) : chatComposerCommands)
-  .filter((item) => props.imageInputSupported || item.key !== 'image'))
+const commandItems = computed(() => commandOpen.value ? filterChatComposerCommands(commandQuery.value) : chatComposerCommands)
+const imageToolDisabledReason = computed(() => props.disabled
+  ? '当前正在处理消息，请稍后添加图片'
+  : !props.conversationId
+    ? '请先选择对话'
+    : !props.imageInputSupported
+      ? '当前模型不支持图片输入'
+      : !props.imagePolicy
+        ? '图片处理策略正在加载'
+      : '')
 const selectedModelOption = computed(() => props.modelCapabilities?.id === props.modelValue ? props.modelCapabilities : undefined)
 const modelSelectOptions = computed(() => props.modelOptions.map((item) => ({ label: item.name, value: item.id, title: item.name })))
 const reasoningOptions = computed(() => selectableChatReasoningEfforts(selectedModelOption.value).map((value) => {
@@ -190,6 +229,7 @@ const contextPercent = computed(() => {
 })
 const contextProgressStatus = computed(() => props.contextStatus?.state === 'compact_failed' ? 'exception' : contextPercent.value >= 85 ? 'exception' : 'normal')
 const contextTooltip = computed(() => {
+  if (props.contextStatusLoading) return '正在加载上下文用量'
   if (!props.contextStatus) return '用量暂不可用'
   const used = formatTokenCount(props.contextStatus?.usedTokens ?? 0)
   const limit = contextLimitTokens.value ? formatTokenCount(contextLimitTokens.value) : '未知'
@@ -219,6 +259,7 @@ const canSubmit = computed(() => Boolean(hasContent.value && props.modelValue &&
 const sendTooltip = computed(() => {
   if (props.turnLimitReached) return props.turnLimitMessage
   if (pendingImagePreparationCount.value > 0) return '图片正在压缩，请稍候'
+  if (imageItems.value.some((item) => item.uploadStatus === 'preparing')) return '图片正在压缩，请稍候'
   if (imageItems.value.some((item) => item.uploadStatus === 'failed')) return '请重试或删除上传失败的图片'
   if (!imagesReady.value) return '请等待图片上传完成'
   if (imageItems.value.length && !props.imageInputSupported) return '当前模型不支持图片输入'
@@ -275,7 +316,7 @@ function setBlocks(blocks: ChatInputBlock[]): void {
       attrs: {
         localId: `restored-${block.assetId}-${index}`,
         assetId: block.assetId,
-        previewUrl: chatAssetContentUrl(props.conversationId, block.assetId),
+        previewUrl: chatAssetContentUrl(props.conversationId, block.assetId, 'preview'),
         fileName: '已上传图片',
         mimeType: '', width: 0, height: 0, byteSize: 0,
         uploadStatus: 'uploaded', uploadProgress: 100, uploadError: ''
@@ -295,6 +336,8 @@ function releaseSubmittedAssets(): void {
   })
   for (const [localId, record] of imageUploadRecords) {
     if (retainedLocalIds.has(localId)) continue
+    record.canceled = true
+    imagePreparationQueue.cancel(record)
     record.controller?.abort()
     if (record.status === 'uploaded' && !record.submitted) deleteUploadedAsset(record)
     revokePreviewUrl(record.previewUrl)
@@ -325,56 +368,47 @@ function selectCommand(item: ChatComposerCommand): void {
     commandIndex.value = 0
     return
   }
-  if (item.key === 'clear') {
+  if (item.kind === 'conversation') {
+    editor.value.chain().focus().deleteRange(command.range).run()
+    emit('conversation-action', item.action)
+  } else if (item.key === 'clear-input') {
     clear()
   } else {
     editor.value.chain().focus().deleteRange(command.range).run()
-    if (item.key === 'image') fileInput.value?.click()
-    else editor.value.commands.insertContent(item.insert)
+    if (item.kind === 'image') openImagePicker()
+    else if (item.kind === 'editor') editor.value.commands.insertContent(item.insert)
   }
   commandOpen.value = false
 }
-async function insertImage(sourceFile: File): Promise<void> {
+function currentComposerImageCount(): number {
+  let count = 0
+  editor.value?.state.doc.descendants((node) => { if (node.type.name === 'chatImageAttachment') count += 1 })
+  return count
+}
+function insertImage(sourceFile: File): void {
   const preparationConversationId = props.conversationId
   const preparationGeneration = conversationGeneration
   const preparationEditor = editor.value
-  if (!props.imageInputSupported || !preparationConversationId || !preparationEditor || imageItems.value.length + pendingImagePreparationCount.value >= maxChatImageCount) return
-  const preparationToken = imagePreparationState.begin()
-  syncPendingImagePreparationCount()
-  let file: File
-  try {
-    file = await prepareChatImageForUpload(sourceFile)
-  } catch (error) {
-    message.warning(error instanceof Error ? error.message : '图片压缩失败')
-    return
-  } finally {
-    imagePreparationState.release(preparationToken)
-    syncPendingImagePreparationCount()
-  }
-  if (!props.imageInputSupported
-    || props.conversationId !== preparationConversationId
-    || conversationGeneration !== preparationGeneration
-    || !imagePreparationState.isCurrent(preparationToken)
-    || editor.value !== preparationEditor
-    || imageItems.value.length >= maxChatImageCount) return
+  if (!props.imageInputSupported || !preparationConversationId || !preparationEditor || currentComposerImageCount() >= maxChatImageCount) return
   const localId = crypto.randomUUID()
-  const previewUrl = URL.createObjectURL(file)
+  const previewUrl = URL.createObjectURL(sourceFile)
   const record: ImageUploadRecord = {
     localId,
-    file,
+    sourceFile,
     previewUrl,
     conversationId: preparationConversationId,
     generation: preparationGeneration,
-    status: 'uploading',
+    status: 'preparing',
     progress: 0,
     assetId: '',
-    fileName: file.name || '图片',
-    mimeType: file.type,
+    fileName: sourceFile.name || '图片',
+    mimeType: sourceFile.type,
     width: 0,
     height: 0,
-    byteSize: file.size,
+    byteSize: sourceFile.size,
     error: '',
-    submitted: false
+    submitted: false,
+    canceled: false
   }
   const inserted = preparationEditor.commands.insertContent({ type: 'chatImageAttachment', attrs: imageNodeAttrs(record) })
   if (!inserted) {
@@ -382,29 +416,56 @@ async function insertImage(sourceFile: File): Promise<void> {
     return
   }
   imageUploadRecords.set(localId, record)
+  imagePreparationQueue.enqueue(record)
+}
+async function prepareImageRecord(record: ImageUploadRecord): Promise<void> {
+  const sourceFile = record.sourceFile
+  if (!sourceFile || !isCurrentUploadRecord(record)) return
+  record.status = 'preparing'
+  record.progress = 0
+  record.error = ''
+  patchImageNode(record.localId, imageNodeAttrs(record))
+  let file: File
+  try {
+    if (!props.imagePolicy) throw new Error('图片处理策略尚未加载，请稍后重试')
+    file = await prepareChatImageForUpload(sourceFile, props.imagePolicy.input)
+  } catch (error) {
+    if (!isCurrentUploadRecord(record)) return
+    record.status = 'failed'
+    record.error = error instanceof Error ? error.message : '图片压缩失败'
+    patchImageNode(record.localId, imageNodeAttrs(record))
+    message.warning(record.error)
+    return
+  }
+  if (!isCurrentUploadRecord(record)) return
+  record.file = file
+  record.sourceFile = undefined
+  record.fileName = file.name || record.fileName
+  record.mimeType = file.type
+  record.byteSize = file.size
   void uploadImage(record)
 }
 function insertClipboardText(value: string): void {
   if (!value || !editor.value) return
   editor.value.commands.insertContent(composerTextToDocument(value).content?.[0]?.content ?? [])
 }
-async function insertMixedClipboardParts(parts: readonly ChatMixedClipboardPart[]): Promise<void> {
+function insertMixedClipboardParts(parts: readonly ChatMixedClipboardPart[]): void {
   for (const part of parts) {
     if (part.type === 'text') insertClipboardText(part.text)
-    else await insertImage(part.file)
+    else insertImage(part.file)
   }
 }
-async function insertPlainClipboardParts(text: string, files: readonly File[]): Promise<void> {
+function insertPlainClipboardParts(text: string, files: readonly File[]): void {
   insertClipboardText(text)
-  for (const file of files) await insertImage(file)
+  for (const file of files) insertImage(file)
 }
-async function enqueueImages(files: readonly File[]): Promise<void> {
+function enqueueImages(files: readonly File[]): void {
   if (!props.imageInputSupported) { message.warning('当前模型不支持图片输入'); return }
   if (!props.conversationId) { message.warning('请先选择对话'); return }
-  const selectedFiles = selectChatImageFiles(files, imageItems.value.length + pendingImagePreparationCount.value)
+  const selectedFiles = selectChatImageFiles(files, currentComposerImageCount())
   const imageFileCount = files.filter((file) => file.type.startsWith('image/')).length
   if (selectedFiles.length < imageFileCount) message.warning(`每条消息最多 ${maxChatImageCount} 张图片；原图不能超过 32 MiB，压缩后每张不能超过 1 MiB`)
-  for (const file of selectedFiles) await insertImage(file)
+  for (const file of selectedFiles) insertImage(file)
 }
 function handleFileChange(event: Event): void { const input = event.target as HTMLInputElement; void enqueueImages(Array.from(input.files ?? [])); input.value = '' }
 
@@ -440,7 +501,7 @@ async function uploadImage(record: ImageUploadRecord): Promise<void> {
     record.height = asset.height
     record.byteSize = asset.byteSize
     const previousPreviewUrl = record.previewUrl
-    record.previewUrl = chatAssetContentUrl(record.conversationId, asset.id)
+    record.previewUrl = chatAssetContentUrl(record.conversationId, asset.id, 'preview')
     record.file = undefined
     revokePreviewUrl(previousPreviewUrl)
     patchImageNode(record.localId, imageNodeAttrs(record))
@@ -456,22 +517,31 @@ async function uploadImage(record: ImageUploadRecord): Promise<void> {
 
 function retryImageUpload(localId: string): void {
   const record = imageUploadRecords.get(localId)
-  if (!record || record.status === 'uploading' || !isCurrentUploadRecord(record)) return
-  void uploadImage(record)
+  if (!record) {
+    message.warning('图片已删除，请重新选择图片')
+    return
+  }
+  if (record.status === 'preparing' || record.status === 'uploading') return
+  record.canceled = false
+  if (!isCurrentUploadRecord(record)) return
+  if (record.file) void uploadImage(record)
+  else imagePreparationQueue.enqueue(record)
 }
 
 function removeImageUpload(localId: string): void {
   const record = imageUploadRecords.get(localId)
   if (!record) return
+  record.canceled = true
+  imagePreparationQueue.cancel(record)
   if (record.status === 'uploaded') {
     queueMicrotask(pruneDetachedImageRecords)
     return
   }
-  if (record.status === 'uploading') {
+  if (record.status === 'preparing' || record.status === 'uploading') {
     record.controller?.abort()
     record.status = 'failed'
     record.progress = 0
-    record.error = '上传已取消，可撤销删除后重试'
+    record.error = '上传已取消，请重新选择图片'
   }
   queueMicrotask(pruneDetachedImageRecords)
 }
@@ -482,22 +552,15 @@ function pruneDetachedImageRecords(): void {
     if (node.type.name === 'chatImageAttachment') attached.add(String(node.attrs.localId ?? ''))
   })
   const detached = [...imageUploadRecords.entries()].filter(([localId, record]) => !attached.has(localId) && !record.submitted)
-  for (const [, record] of detached) {
-    if (record.status !== 'uploading') continue
+  for (const [localId, record] of detached) {
+    record.canceled = true
+    imagePreparationQueue.cancel(record)
     record.controller?.abort()
-    record.status = 'failed'
-    record.progress = 0
-    record.error = '上传已取消，可撤销删除后重试'
-  }
-  let retainedBytes = detached.reduce((total, [, record]) => total + (record.file?.size ?? 0), 0)
-  while (detached.length > 8 || retainedBytes > 64 * 1024 * 1024) {
-    const oldest = detached.shift()
-    if (!oldest) break
-    retainedBytes -= oldest[1].file?.size ?? 0
-    oldest[1].controller?.abort()
-    if (oldest[1].status === 'uploaded') deleteUploadedAsset(oldest[1])
-    revokePreviewUrl(oldest[1].previewUrl)
-    imageUploadRecords.delete(oldest[0])
+    if (record.status === 'uploaded') deleteUploadedAsset(record)
+    record.sourceFile = undefined
+    record.file = undefined
+    revokePreviewUrl(record.previewUrl)
+    imageUploadRecords.delete(localId)
   }
 }
 
@@ -556,25 +619,36 @@ function imageNodeAttrs(record: ImageUploadRecord): Record<string, unknown> {
 
 function isCurrentUploadRecord(record: ImageUploadRecord): boolean {
   return imageUploadRecords.get(record.localId) === record
+    && !record.canceled
     && record.generation === conversationGeneration
     && record.conversationId === props.conversationId
+    && isImageNodeAttached(record.localId)
+}
+
+function isImageNodeAttached(localId: string): boolean {
+  let attached = false
+  editor.value?.state.doc.descendants((node) => {
+    if (node.type.name === 'chatImageAttachment' && node.attrs.localId === localId) attached = true
+  })
+  return attached
 }
 
 function disposeImageUploadRecords(deleteUploadedAssets = false): void {
   for (const record of imageUploadRecords.values()) {
+    record.canceled = true
+    imagePreparationQueue.cancel(record)
     record.controller?.abort()
     if (deleteUploadedAssets && record.status === 'uploaded' && !record.submitted) deleteUploadedAsset(record)
     revokePreviewUrl(record.previewUrl)
   }
   imageUploadRecords.clear()
+  imagePreparationQueue.clear()
 }
 function deleteUploadedAsset(record: ImageUploadRecord): void { if (record.assetId) void chatApi.deleteAsset(record.conversationId, record.assetId).catch(() => undefined) }
 function revokePreviewUrl(value: string): void { if (value.startsWith('blob:')) URL.revokeObjectURL(value) }
-function syncPendingImagePreparationCount(): void { pendingImagePreparationCount.value = imagePreparationState.snapshot().pendingCount }
 function advanceConversationGeneration(): void {
-  const snapshot = imagePreparationState.advanceGeneration()
-  conversationGeneration = snapshot.generation
-  pendingImagePreparationCount.value = snapshot.pendingCount
+  conversationGeneration += 1
+  imagePreparationQueue.clear()
 }
 
 onBeforeUnmount(() => {
@@ -592,6 +666,7 @@ defineExpose({ getSnapshot, setText, setBlocks, restore, clear, focus, releaseSu
 .ai-composer-model-controls::-webkit-scrollbar { display: none; }
 .ai-composer-model-controls :deep(.ant-select-selector) { padding-inline: 5px !important; color: #475569; font-size: 12px; }
 .ai-composer-context { width: 26px; height: 26px; flex: 0 0 26px; display: inline-flex; align-items: center; justify-content: center; color: #64748b; }
+.ai-composer-toolbox-trigger { flex: 0 0 auto; }
 .ai-composer-file { display: none; }
 .ai-composer-editor { min-height: 56px; max-height: 220px; overflow-y: auto; padding: 9px 12px; }
 .ai-composer-editor :deep(.ProseMirror) { min-height: 38px; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }

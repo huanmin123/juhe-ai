@@ -351,8 +351,8 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
   }
 
   let transformed = trimmed
-  transformed = transformed.replace(/CHECK\s*\(\s*json_valid\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s+AND\s+json_type\(\s*\1\s*\)\s*=\s*'object'\s*\)/gi, (_match, columnName: string) => {
-    return `CHECK (jsonb_typeof(${columnName}::jsonb) = 'object')`
+  transformed = transformed.replace(/CHECK\s*\(\s*json_valid\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s+AND\s+json_type\(\s*\1\s*\)\s*=\s*'(object|array)'\s*\)/gi, (_match, columnName: string, jsonType: string) => {
+    return `CHECK (jsonb_typeof(${columnName}::jsonb) = '${jsonType.toLowerCase()}')`
   })
   transformed = transformed.replace(/\b([A-Za-z_][A-Za-z0-9_]*)\s+COLLATE\s+NOCASE\b/gi, (_match, columnName: string) => {
     return `lower(${columnName})`

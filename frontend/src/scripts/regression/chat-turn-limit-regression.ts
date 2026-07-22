@@ -58,9 +58,9 @@ assert.ok(turnLimitGuardIndex < submitSource.indexOf('replaceEditorContentWithou
 assert.ok(turnLimitGuardIndex < submitSource.indexOf("emit('submit'"), '达到上限的键盘提交不得 emit submit')
 
 assert.match(viewSource, /const turnLimitReached = computed\([\s\S]{0,300}isChatTurnLimitReached/, 'ChatView 必须从当前会话权威字段计算 reached')
-assert.match(viewSource, /class="turn-limit-bar"[\s\S]{0,300}turnLimitMessage[\s\S]{0,300}@click="openCreateDialog"[\s\S]{0,120}新建对话/, 'Composer 上方必须显示低噪提示和现有新建入口')
+assert.match(viewSource, /class="turn-limit-bar"[\s\S]{0,300}turnLimitMessage[\s\S]{0,300}@click="createConversation"[\s\S]{0,120}新建对话/, 'Composer 上方必须显示低噪提示和现有新建入口')
 assert.match(viewSource, /:turn-limit-reached="turnLimitReached && !editingTurn"/, '编辑最近一轮时 Composer 必须放开 replace 提交')
-assert.match(viewSource, /const activeEdit =[\s\S]{0,300}canSubmitChatTurn\(\{[\s\S]{0,300}replaceTurnId: activeEdit\?\.turnId/, '发送前必须用权威 count 再检查且为 activeEdit 保留例外')
+assert.match(viewSource, /const activeEdit =[\s\S]{0,300}canSubmitChatTurn\(\{[\s\S]{0,300}replaceTurnId: activeEdit\?\.replaceTurnId/, '发送前必须用权威 count 再检查；仅服务端已接受轮次的 activeEdit 才使用替换例外')
 const handleFailureSource = viewSource.slice(viewSource.indexOf('async function handleSubmitFailure'), viewSource.indexOf('async function applySubmissionOutcome'))
 assert.ok(handleFailureSource.includes('if (replaceConflict || isDefinitiveChatRejection(error))'), '确定性拒绝必须进入本地结算分支')
 assert.ok(handleFailureSource.includes('await applySubmissionOutcome({'), '确定性拒绝必须应用草稿恢复决策，不得进入待确认重试')
@@ -72,6 +72,6 @@ assert.ok(backgroundRefreshIndex > localGateIndex, '本地 reached gate 必须�
 assert.doesNotMatch(handleFailureSource, /await refreshConversationSummary\(request\.conversationId\)/, '轮次上限摘要刷新不得阻塞 snapshot 恢复最多 15 秒')
 assert.ok(handleFailureSource.includes('void refreshConversationSummary(request.conversationId).catch(() => undefined)'), '后台摘要刷新失败必须被隔离且不得解除本地发送 gate')
 const applyOutcomeSource = viewSource.slice(viewSource.indexOf('async function applySubmissionOutcome'), viewSource.indexOf('function enterPendingConfirmation'))
-assert.ok(applyOutcomeSource.includes('if (resolution.restoreSubmittedDraft) composer.value?.restore(input.request.snapshot)'), '草稿恢复决策必须接回本次不可变请求快照')
+assert.ok(applyOutcomeSource.includes('if (resolution.restoreSubmittedDraft && !rolledBackReplacement && isRequestUiCurrent(input.request)) composer.value?.restore(input.request.snapshot)'), '草稿恢复决策必须接回当前 lifecycle 的不可变请求快照，且不得覆盖替换轮次的专用回滚结果')
 
 console.log('AI 问答会话轮次限制回归通过')

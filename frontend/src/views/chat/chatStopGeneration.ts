@@ -19,5 +19,6 @@ export async function stopActiveChatGeneration(input: {
   sendSettled?: Promise<unknown>
 }): Promise<void> {
   input.controller?.abort()
-  await Promise.allSettled([input.stop(), input.sendSettled ?? Promise.resolve()])
+  const [stopResult] = await Promise.allSettled([input.stop(), input.sendSettled ?? Promise.resolve()])
+  if (stopResult.status === 'rejected') throw stopResult.reason
 }

@@ -13,10 +13,6 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceBuiltInResetOptIn(t *te
 	if disabled.ExternalSourceBuiltInResetHandler != nil {
 		t.Fatal("built-in reset handler created while management API disabled")
 	}
-	sessionOnly := newManagementAPIHandlerWithPageData(config.Config{ManagementAuthSessionsEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
-	if sessionOnly.ExternalSourceBuiltInResetHandler != nil {
-		t.Fatal("built-in reset handler created for session-only mode")
-	}
 	enabled := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
 	if enabled.ExternalSourceBuiltInResetHandler == nil {
 		t.Fatal("built-in reset handler missing while management API enabled")

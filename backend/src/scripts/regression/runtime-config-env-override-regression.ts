@@ -30,6 +30,7 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_ENV_OVERRIDE_CHILD === '1') {
   assert.equal(runtimeConfig.chat.maxConversationsPerUser, 50, '每用户默认最多应创建 50 个会话')
   assert.equal(runtimeConfig.chat.maxTurnsPerConversation, 50, '每个会话默认最多应接受 50 个用户轮次')
   assert.equal(runtimeConfig.chat.upstreamSseMaxEvents, 65_536, '聊天上游 SSE 默认事件上限应为 65536')
+  assert.equal(runtimeConfig.chat.diagnosticToolEnabled, false, '内部诊断工具默认必须关闭')
 
   process.exit(0)
 }
@@ -68,7 +69,8 @@ if (process.env.JUHE_AI_RUNTIME_CONFIG_PERFORMANCE_CHILD === '1') {
     retentionDays: 9,
     maxConversationsPerUser: 60,
     maxTurnsPerConversation: 70,
-    upstreamSseMaxEvents: 131_072
+    upstreamSseMaxEvents: 131_072,
+    diagnosticToolEnabled: true
   }, '聊天保留、会话上限和轮次上限应支持进程环境变量覆盖')
 
   process.exit(0)
@@ -191,7 +193,8 @@ const performanceResult = spawnRegression({
   JUHE_AI_CHAT_RETENTION_DAYS: '9',
   JUHE_AI_CHAT_MAX_CONVERSATIONS_PER_USER: '60',
   JUHE_AI_CHAT_MAX_TURNS_PER_CONVERSATION: '70',
-  JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS: '131072'
+  JUHE_AI_CHAT_UPSTREAM_SSE_MAX_EVENTS: '131072',
+  JUHE_AI_CHAT_DIAGNOSTIC_TOOL_ENABLED: 'true'
 })
 
 assertRegressionSuccess(performanceResult)

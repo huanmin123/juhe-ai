@@ -1,11 +1,11 @@
 import { strict as assert } from 'node:assert'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { api } from '@/api/client'
 import { http } from '@/api/http'
-import type { AuthSessionListResult, AuthSessionRevokeResult, CurrentUserSummary, SystemAccountListResult, SystemAccountPrincipalSummary, SystemAccountSummary } from '@/types/domain'
+import type { CurrentUserSummary, SystemAccountListResult, SystemAccountPrincipalSummary, SystemAccountSummary } from '@/types/domain'
 
 type HttpMethod = 'get' | 'post' | 'patch' | 'delete'
 
@@ -37,7 +37,7 @@ try {
   Object.assign(httpMethods, originalHttpMethods)
 }
 
-console.log('W3 前端 auth / 系统账户 smoke 通过：会话管理、系统账户写入口和敏感字段边界已固定')
+console.log('W3 前端 auth / 系统账户 smoke 通过：会话管理能力已移除，系统账户写入口和敏感字段边界已固定')
 
 async function assertAuthApiContract(): Promise<void> {
   calls.length = 0
@@ -67,13 +67,8 @@ async function assertAuthApiContract(): Promise<void> {
   await api.auth.changePassword({ oldPassword: 'old-pass', newPassword: 'new-pass' })
   assertLastCall('post', '/auth/change-password', { oldPassword: 'old-pass', newPassword: 'new-pass' }, undefined, '改密应 POST auth/change-password')
 
-  const sessions = await api.auth.sessions({ page: 2, pageSize: 10 })
-  assert.equal(sessions.items[0]?.current, true, '会话列表应保留 current 标记')
-  assertLastCall('get', '/auth/sessions', undefined, { params: { page: 2, pageSize: 10 } }, '会话列表应带 page/pageSize 查询参数')
-
-  const revoke = await api.auth.revokeSession('sess/current')
-  assert.equal(revoke.revoked, true, '撤销响应应保留 revoked 标记')
-  assertLastCall('delete', '/auth/sessions/sess%2Fcurrent', undefined, undefined, '会话撤销应编码 session ID 后拼接路径')
+  assert.equal('sessions' in api.auth, false, 'auth API 不应继续暴露会话列表能力')
+  assert.equal('revokeSession' in api.auth, false, 'auth API 不应继续暴露会话撤销能力')
 
   await api.auth.logout()
   assertLastCall('post', '/auth/logout', undefined, undefined, '登出应走 auth/logout')
@@ -115,22 +110,27 @@ async function assertSystemAccountApiContract(): Promise<void> {
 function assertSourceBoundaries(): void {
   const authSource = readSource('src/api/domains/auth.ts')
   const identitySource = readSource('src/types/domain/identity.ts')
+  const contractsSource = readSource('src/api/contracts.ts')
+  const paramsSource = readSource('src/api/params.ts')
   const appHeaderSource = readSource('src/layouts/AppHeader.vue')
   const appLayoutSource = readSource('src/layouts/AppLayout.vue')
-  const sessionModalSource = readSource('src/layouts/SessionManagementModal.vue')
   const systemAccountsViewSource = readSource('src/views/system-accounts/SystemAccountsView.vue')
   const frontendPackageJson = JSON.parse(readSource('package.json')) as { scripts?: Record<string, string> }
 
-  assertIncludes(authSource, "http.get('/auth/sessions'", 'auth API 必须暴露当前用户会话列表')
-  assertIncludes(authSource, 'http.delete(`/auth/sessions/${encodeURIComponent(sessionId)}`', 'auth API 必须编码 session ID 后撤销会话')
-
-  assertIncludes(appHeaderSource, 'key="sessions">会话管理', '头像菜单必须提供会话管理入口')
-  assertIncludes(appLayoutSource, '<SessionManagementModal', '应用壳必须挂载会话管理弹窗')
-  assertIncludes(appLayoutSource, 'const result = await api.auth.sessions', '会话弹窗加载必须调用 auth.sessions')
-  assertIncludes(appLayoutSource, 'const result = await api.auth.revokeSession(session.id)', '会话撤销必须调用 auth.revokeSession')
-  assertIncludes(appLayoutSource, 'clearAuthState()', '撤销当前会话后必须清理本地登录态')
-  assertIncludes(sessionModalSource, '撤销当前会话后需要重新登录', '撤销当前会话必须有明确确认文案')
-  assertIncludes(sessionModalSource, 'formatDateTime(record.lastSeenAt)', '会话列表必须展示最近活跃时间')
+  assertNotIncludes(authSource, '/auth/sessions', 'auth API 不应保留会话列表或撤销端点')
+  assertNotIncludes(contractsSource, 'AuthSessionListParams', 'API 契约不应保留会话列表参数')
+  assertNotIncludes(paramsSource, 'authSessionListParams', 'API 参数层不应保留会话列表参数转换')
+  assertNotIncludes(identitySource, 'AuthSession', '前端领域类型不应保留会话对象')
+  assertNotIncludes(appHeaderSource, 'key="sessions"', '头像菜单不应保留会话管理入口')
+  assertNotIncludes(appHeaderSource, '会话管理', '头像菜单不应保留会话管理文案')
+  assertNotIncludes(appLayoutSource, 'SessionManagementModal', '应用壳不应挂载会话管理弹窗')
+  assertNotIncludes(appLayoutSource, 'api.auth.sessions', '应用壳不应加载登录会话')
+  assertNotIncludes(appLayoutSource, 'api.auth.revokeSession', '应用壳不应撤销登录会话')
+  assert.equal(
+    existsSync(resolve(frontendRoot, 'src/layouts/SessionManagementModal.vue')),
+    false,
+    '会话管理弹窗组件必须删除'
+  )
 
   assertIncludes(systemAccountsViewSource, 'canManageSystemAccounts = computed(() => isSuperAdminRole', '系统账户写入口必须只对 super_admin 展示')
   assertIncludes(systemAccountsViewSource, 'await api.systemAccounts.create(payload)', '系统账户页必须调用 create API')
@@ -141,7 +141,6 @@ function assertSourceBoundaries(): void {
   for (const forbidden of ['passwordHash', 'tokenHash', 'DefaultAPIKey', 'defaultAPIKey', 'keySecret', 'key_secret']) {
     assertNotIncludes(identitySource, forbidden, `前端 identity 类型不应暴露敏感字段：${forbidden}`)
     assertNotIncludes(systemAccountsViewSource, forbidden, `系统账户页不应引用敏感字段：${forbidden}`)
-    assertNotIncludes(sessionModalSource, forbidden, `会话弹窗不应引用敏感字段：${forbidden}`)
   }
 
   assert.equal(
@@ -173,12 +172,6 @@ function fixtureFor(method: HttpMethod, url: string): unknown {
   if (method === 'post' && url === '/auth/logout') {
     return { loggedOut: true }
   }
-  if (method === 'get' && url === '/auth/sessions') {
-    return sessionListFixture()
-  }
-  if (method === 'delete' && url.startsWith('/auth/sessions/')) {
-    return { id: decodeURIComponent(url.slice('/auth/sessions/'.length)), revoked: true, current: true } satisfies AuthSessionRevokeResult
-  }
   if (method === 'get' && url === '/system-accounts') {
     return systemAccountListFixture()
   }
@@ -198,22 +191,6 @@ function currentUserFixture(): CurrentUserSummary {
     displayName: '管理员',
     role: 'super_admin',
     mustChangePassword: false
-  }
-}
-
-function sessionListFixture(): AuthSessionListResult {
-  return {
-    items: [{
-      id: 'sess/current',
-      current: true,
-      createdAt: '2026-07-09T09:00:00Z',
-      lastSeenAt: '2026-07-09T09:30:00Z',
-      expiresAt: '2026-07-23T09:00:00Z'
-    }],
-    total: 11,
-    hasMore: true,
-    page: 2,
-    pageSize: 10
   }
 }
 

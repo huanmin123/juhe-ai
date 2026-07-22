@@ -87,6 +87,30 @@ try {
   assert.equal(persistentResult.statusCode, 401, '持续失败应保留最后一次真实上游 HTTP 状态')
   assert.equal(hitCount('manual-persistent-401'), 3, '手动账号测试不应按状态码分类提前停止，应完整走三次真实请求')
 
+  const imageAccount = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name: '诊断 mock AI image catalog',
+    type: 'api_key',
+    groupId: group.id,
+    status: 'active',
+    supportedModels: ['gpt-image-2'],
+    healthCheckModel: 'gpt-image-2',
+    healthCheckEndpointMode: 'responses_sse',
+    credentials: {
+      api_key: 'sk-image-catalog',
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_sse']
+    }
+  }, access)
+  const imageResult = await testOpenAIAccountWithDiagnosticRetries(imageAccount)
+  await flushGatewayAccountSideEffects()
+  flushAllUsageRecordQueue()
+  assert.equal(imageResult.success, true, `图像模型目录探针应成功：${imageResult.message}`)
+  assert.equal(imageResult.requestUrl, '/v1/models', '图像生成模型不得再调用文本 Responses 探针')
+  assert.equal(imageResult.message, 'OpenAI 模型目录 测试通过', '图像模型探针结果不得误报为 Responses 测试')
+  assert.equal(hitCount('image-catalog'), 1, '模型目录探针成功后不得重复请求或触发生图')
+
   const codexFailedAccount = createMockAccount(group.id, upstreamBaseUrl, 'codex-explicit-failure', access)
   const codexFailedCandidate = requiredRuntimeAccount(group.id, codexFailedAccount.id, admin.id)
   const codexFailedResult = await probeCodexSwitchCandidateAccount(codexFailedCandidate, {
@@ -97,7 +121,11 @@ try {
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
   assert.equal(codexFailedResult.success, false, 'Codex 切号探针明确失败不应通过')
-  assert.equal(hitCount('codex-explicit-failure'), 1, 'Codex 切号探针拿到明确失败后应立即淘汰候选，不在同账号烧完三档')
+  assert.equal(
+    hitCount('codex-explicit-failure'),
+    1,
+    `Codex 切号探针拿到明确失败后应立即淘汰候选，不在同账号烧完三档：${codexFailedResult.message}`
+  )
 
   const codexTimeoutAccount = createMockAccount(group.id, upstreamBaseUrl, 'codex-timeout', access)
   const codexTimeoutCandidate = requiredRuntimeAccount(group.id, codexTimeoutAccount.id, admin.id)
@@ -151,6 +179,12 @@ function createMockAccount(
 }
 
 function requiredRuntimeAccount(groupId: string, accountId: string, systemAccountId: string) {
+  repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  })
   const account = repositories.findOpenAIAccountForGroup(groupId, accountId, systemAccountId, { ignoreAvailability: true })
   assert(account, `应能读取运行态账号 ${accountId}`)
   return account
@@ -174,6 +208,13 @@ function createMockAIUpstream(): http.Server {
       chunks.push(Buffer.from(chunk))
     })
     req.on('end', () => {
+      if (req.method === 'GET' && url.pathname === '/v1/models') {
+        const key = upstreamKey(req.headers.authorization)
+        incrementHit(key)
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'gpt-image-2', object: 'model' }] }))
+        return
+      }
       const responseMode = mockResponseMode(url.pathname)
       if (req.method !== 'POST' || !responseMode) {
         sendJsonError(res, 404, 'mock path not found')

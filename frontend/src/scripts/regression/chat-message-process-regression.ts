@@ -104,6 +104,16 @@ const failedPriority = projectChatMessageProcess(message([
 ]))
 assert.equal(failedPriority.toolGroups[0]?.status, 'failed', '任一调用失败时整组必须显示失败')
 
+const canceledOnly = projectChatMessageProcess(message([
+  { id: 'canceled_1', type: 'web_search_call', status: 'canceled', item: { query: '已取消' } }
+]))
+assert.equal(canceledOnly.toolGroups[0]?.status, 'canceled', '仅包含取消事件的工具组必须显示已取消')
+const completedAndCanceled = projectChatMessageProcess(message([
+  { id: 'completed_1', type: 'web_search_call', status: 'completed', item: { query: '混合终态' } },
+  { id: 'canceled_2', type: 'web_search_call', status: 'canceled', item: { query: '混合终态' } }
+]))
+assert.equal(completedAndCanceled.toolGroups[0]?.status, 'canceled', '同组存在取消事件时不能回落为已完成')
+
 const malformed = projectChatMessageProcess(message([
   { id: 'unknown_1', type: 'unknown_tool', status: 'completed', item: { opaque: true } },
   { id: 'unknown_2', type: 'unknown_tool', status: 'completed', item: { opaque: true } },

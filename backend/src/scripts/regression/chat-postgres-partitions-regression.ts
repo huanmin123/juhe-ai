@@ -17,6 +17,7 @@ import {
   listChatMessages
 } from '../../storage/chat.repository.js'
 import { applyChatSchema } from '../../storage/schema.js'
+import { collectPostgresSchemaStatements } from '../../storage/postgres-schema.js'
 
 assert.equal(chatMessagePartitionDateKeyFromIso('2026-07-12T23:59:59.000Z'), '20260712')
 assert.equal(chatMessagePartitionDateKeyFromIso('invalid'), undefined)
@@ -26,6 +27,13 @@ assert.deepEqual(chatMessagePartitionBounds('20260712'), {
   endDate: '2026-07-13'
 })
 assert.throws(() => postgresChatMessagePartitionName('2026-07-12'), /日期无效/)
+
+const postgresSchemaStatements = collectPostgresSchemaStatements()
+const assetReferencesCreateSql = postgresSchemaStatements.find((statement) => statement.schemaName === 'juhe_chat' && /^CREATE TABLE IF NOT EXISTS chat_asset_references\b/i.test(statement.sql))?.sql ?? ''
+assert.match(assetReferencesCreateSql, /asset_id text NOT NULL[\s\S]+conversation_id text NOT NULL[\s\S]+turn_id text NOT NULL[\s\S]+message_id text NOT NULL/, 'PG schema 必须生成资产引用绑定字段')
+assert.match(assetReferencesCreateSql, /reference_kind text NOT NULL[\s\S]+content_order integer NOT NULL[\s\S]+created_at text NOT NULL[\s\S]+expires_at text NOT NULL/, 'PG schema 必须保留引用类型、内容顺序和生命周期字段')
+assert.match(assetReferencesCreateSql, /FOREIGN KEY \(asset_id, conversation_id\) REFERENCES chat_assets\(id, conversation_id\) ON DELETE CASCADE/, 'PG 资产引用必须按会话绑定资产并随资产删除')
+assert.doesNotMatch(assetReferencesCreateSql, /PARTITION BY/, '资产引用关系不应随消息日分区')
 
 const database = new DatabaseSync(':memory:')
 applyChatSchema(database)

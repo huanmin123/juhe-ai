@@ -1,7 +1,11 @@
+import { runtimeConfig } from '../../config/runtime.js'
 import { closeStorageDatabases } from '../../storage/database.js'
 import { closePostgresPool } from '../../storage/postgres-client.js'
+import { closeSqliteReadWorkerPool } from '../../storage/sqlite-read-worker-pool.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import { rebuildPublishedModelCatalogSnapshotsAfterModelChangeAsync } from '../../modules/model-pricing/published-model-catalog.service.js'
+
+runtimeConfig.processRole = 'db-service'
 
 const startedAt = Date.now()
 
@@ -19,6 +23,7 @@ main()
     process.exitCode = 1
   })
   .finally(async () => {
+    await closeSqliteReadWorkerPool()
     await closeRedisClients()
     closeStorageDatabases()
     await closePostgresPool()

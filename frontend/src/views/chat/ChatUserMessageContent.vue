@@ -5,7 +5,7 @@
       <img
         v-else
         class="chat-user-image"
-        :src="chatAssetContentUrl(message.conversationId, block.assetId)"
+        :src="chatAssetContentUrl(message.conversationId, block.assetId, 'preview')"
         alt="用户上传的图片"
         loading="lazy"
       />

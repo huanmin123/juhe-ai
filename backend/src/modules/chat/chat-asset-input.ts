@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 
 import type { DatabaseClient } from '../../storage/database-client.js'
 import { listReadyChatAssetsByIds, type ChatAssetRecord } from '../../storage/chat-assets.repository.js'
-import { openChatAssetObject } from '../../storage/chat-asset-storage.js'
+import { openChatAssetObject, openChatGeneratedAssetObject } from '../../storage/chat-asset-storage.js'
 import { estimateChatImageTokens } from './chat-token-count.js'
 
 const maxChatImagesPerTurn = 5
@@ -72,9 +72,14 @@ export async function resolveChatAssetInput(input: {
     dataUrls.set(assetId, `data:${asset.processedMimeType};base64,${buffer.toString('base64')}`)
   }
   return {
-    blocks: input.blocks.map((block) => block.type === 'input_image'
-      ? { type: 'input_image', dataUrl: dataUrls.get(block.assetId?.trim() ?? '') }
-      : { type: 'input_text', text: block.text ?? '' }),
+    blocks: input.blocks.flatMap((block): ChatResolvedInputBlock[] => {
+      if (block.type === 'input_text') return [{ type: 'input_text', text: block.text ?? '' }]
+      const assetId = block.assetId?.trim() ?? ''
+      return [
+        { type: 'input_text', text: `[当前输入图片 assetId=${assetId}]` },
+        { type: 'input_image', dataUrl: dataUrls.get(assetId) }
+      ]
+    }),
     assetIds,
     imageCount: assetIds.length,
     imageTokenEstimate: assets.reduce((total, asset) => total + estimateChatImageTokens(asset.processedWidth, asset.processedHeight), 0),
@@ -86,7 +91,9 @@ async function readVerifiedChatAsset(asset: ChatAssetRecord): Promise<Buffer> {
   if (!asset.storageKey || !asset.processedMimeType || !asset.processedBytes || !asset.processedSha256) {
     throw new ChatAssetInputError('图片处理结果不完整，请重新上传')
   }
-  const object = await openChatAssetObject(asset.storageKey)
+  const object = asset.sourceKind === 'assistant_generated'
+    ? await openChatGeneratedAssetObject(asset.storageKey)
+    : await openChatAssetObject(asset.storageKey)
   if (object.bytes !== asset.processedBytes) throw new ChatAssetInputError('图片文件大小校验失败，请重新上传')
   const chunks: Buffer[] = []
   let bytes = 0

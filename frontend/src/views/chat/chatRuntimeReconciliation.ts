@@ -1,6 +1,7 @@
 import type { RunningTurn } from './chatGenerationRuntime'
 
 const DEFAULT_RETRY_DELAYS_MS = [5_000, 10_000, 20_000, 30_000] as const
+const DEFAULT_MAX_ATTEMPTS = 4
 const MAX_TRACKED_TURNS = 128
 
 interface ReconciliationAttempt {
@@ -8,16 +9,19 @@ interface ReconciliationAttempt {
   attempts: number
   nextAttemptAt: number
   inFlight: boolean
+  maxAttempts: number
 }
 
 export class ChatRuntimeReconciliationScheduler {
   private readonly attempts = new Map<string, ReconciliationAttempt>()
   private readonly retryDelaysMs: readonly number[]
   private readonly now: () => number
+  private readonly maxAttempts: number
 
-  constructor(options: { retryDelaysMs?: readonly number[]; now?: () => number } = {}) {
+  constructor(options: { retryDelaysMs?: readonly number[]; now?: () => number; maxAttempts?: number } = {}) {
     this.retryDelaysMs = options.retryDelaysMs?.length ? options.retryDelaysMs : DEFAULT_RETRY_DELAYS_MS
     this.now = options.now ?? Date.now
+    this.maxAttempts = Math.max(1, Math.min(32, Math.floor(options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)))
   }
 
   get size(): number { return this.attempts.size }
@@ -31,10 +35,11 @@ export class ChatRuntimeReconciliationScheduler {
     const signature = turnSignature(turn)
     let state = this.attempts.get(key)
     if (!state || state.signature !== signature) {
-      state = { signature, attempts: 0, nextAttemptAt: this.now(), inFlight: false }
+      state = { signature, attempts: 0, nextAttemptAt: this.now(), inFlight: false, maxAttempts: reconciliationMaxAttempts(turn, this.maxAttempts) }
       this.attempts.set(key, state)
       this.trim()
     }
+    if (state.attempts >= state.maxAttempts) return false
     if (state.inFlight || this.now() < state.nextAttemptAt) return false
     state.inFlight = true
     return true
@@ -71,8 +76,12 @@ function turnKey(turn: Pick<RunningTurn, 'systemAccountId' | 'conversationId' | 
   return JSON.stringify([turn.systemAccountId, turn.conversationId, turn.turnId ?? turn.clientMessageId])
 }
 
-function turnSignature(turn: Pick<RunningTurn, 'reconciliationReason' | 'eventVersion' | 'status'>): string {
-  return JSON.stringify([turn.reconciliationReason, turn.eventVersion, turn.status])
+function turnSignature(turn: Pick<RunningTurn, 'reconciliationReason' | 'eventVersion' | 'status' | 'error'>): string {
+  return JSON.stringify([turn.reconciliationReason, turn.eventVersion, turn.status, turn.error?.code])
+}
+
+function reconciliationMaxAttempts(turn: RunningTurn, fallback: number): number {
+  return turn.error?.code === 'chat_submission_status_check_limit' ? 1 : fallback
 }
 
 function isTerminal(status: RunningTurn['status']): boolean {

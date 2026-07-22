@@ -197,12 +197,11 @@ func TestRouterExternalIntegrationSourceTokenCreateRequiresIndependentFullManage
 			wantStatus:     http.StatusNotFound,
 		},
 		{
-			name: "session only",
+			name: "management disabled with auth middleware",
 			opts: RouterOptions{
-				Config:                           config.Config{Host: "127.0.0.1", Port: 3000, ManagementAuthSessionsEnabled: true},
+				Config:                           config.Config{Host: "127.0.0.1", Port: 3000},
 				ManagementAPIAuthMiddleware:      writeAuth,
 				ManagementAPIAuthTouchMiddleware: writeAuth,
-				ManagementSessionListHandler:     http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 			},
 			includeHandler: true,
 			wantStatus:     http.StatusNotFound,

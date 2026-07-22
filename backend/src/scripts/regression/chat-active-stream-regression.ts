@@ -3,10 +3,15 @@ import assert from 'node:assert/strict'
 import {
   beginActiveChatAcceptance,
   cancelActiveChatPreparation,
+  claimActiveChatConversationAction,
   claimActiveChatPreparation,
+  deleteActiveChatConversationActionIfMatches,
   deleteActiveChatPreparationIfMatches,
   deleteActiveChatStreamIfMatches,
+  getActiveChatConversationAction,
+  getActiveChatPreparationForConversation,
   hasActiveChatPreparation,
+  type ActiveChatConversationAction,
   type ActiveChatPreparation
 } from '../../modules/chat/chat-active-streams.js'
 
@@ -23,6 +28,7 @@ const preparations = new Map<string, ActiveChatPreparation>()
 const preparation = claimActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1', clientMessageId: 'client_1' })
 assert.ok(preparation, '首个发送准备必须取得会话内排他权')
 assert.equal(hasActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1', clientMessageId: 'client_1' }), true, '准备状态必须能按 owner 和 clientMessageId 权威查询')
+assert.equal(getActiveChatPreparationForConversation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1' }), preparation, '会话动作必须能按 owner 查询任意 active preparation')
 assert.equal(hasActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1', clientMessageId: 'client_other' }), false, '准备状态不得把同会话其他消息误报为 preparing')
 assert.equal(claimActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1', clientMessageId: 'client_2' }), undefined, '同会话并发准备必须在任何收费压缩或上游调用前被拒绝')
 assert.equal(cancelActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_other', clientMessageId: 'client_1' }), undefined, '其他 owner 不得取消准备请求')
@@ -38,5 +44,22 @@ assert.equal(beginActiveChatAcceptance(preparations, 'conv_1', acceptingPreparat
 assert.equal(acceptingPreparation.phase, 'accepting')
 assert.equal(cancelActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1', clientMessageId: 'client_2' }), 'accepting', 'accepting 边界收到停止仍必须中断后续上游请求')
 assert.equal(acceptingPreparation.controller.signal.aborted, true)
+assert.equal(deleteActiveChatPreparationIfMatches(preparations, 'conv_1', acceptingPreparation.token), true)
+
+const actions = new Map<string, ActiveChatConversationAction>()
+const compactingAction = claimActiveChatConversationAction(actions, preparations, {
+  conversationId: 'conv_1', ownerId: 'sys_1', kind: 'compacting'
+})
+assert.ok(compactingAction)
+assert.equal(getActiveChatConversationAction(actions, { conversationId: 'conv_1', ownerId: 'sys_1' }), compactingAction)
+assert.equal(claimActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1', clientMessageId: 'blocked_by_action' }, actions), undefined, '会话动作期间发送不得穿透 preparation 门禁')
+assert.equal(claimActiveChatConversationAction(actions, preparations, { conversationId: 'conv_1', ownerId: 'sys_1', kind: 'clearing' }), undefined, '同一会话动作必须单飞')
+assert.equal(deleteActiveChatConversationActionIfMatches(actions, 'conv_1', Symbol('wrong')), false)
+assert.equal(deleteActiveChatConversationActionIfMatches(actions, 'conv_1', compactingAction!.token), true)
+
+const preparingAgain = claimActiveChatPreparation(preparations, { conversationId: 'conv_1', ownerId: 'sys_1', clientMessageId: 'blocks_action' }, actions)
+assert.ok(preparingAgain)
+assert.equal(claimActiveChatConversationAction(actions, preparations, { conversationId: 'conv_1', ownerId: 'sys_1', kind: 'clearing' }), undefined, 'active preparation 期间不得开始破坏性会话动作')
+assert.equal(deleteActiveChatPreparationIfMatches(preparations, 'conv_1', preparingAgain!.token), true)
 
 console.log('AI 问答活动流条件清理回归通过')

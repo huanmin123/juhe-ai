@@ -1,5 +1,6 @@
 export type ChatMessageRole = 'user' | 'assistant'
 export type ChatMessageStatus = 'completed' | 'streaming' | 'failed' | 'canceled'
+export type ChatImageModel = 'gpt-image-2'
 
 export interface ChatConversation {
   id: string
@@ -10,6 +11,7 @@ export interface ChatConversation {
   title: string
   isPinned: boolean
   lastModel?: string
+  defaultImageModel: ChatImageModel
   activeTurnId?: string
   userTurnCount: number
   messageRevision: number
@@ -33,23 +35,26 @@ export interface ChatMessage {
   traceId?: string
   finishReason?: string
   errorCode?: string
+  errorMessage?: string
   createdAt: string
   completedAt?: string
   expiresAt: string
   reasoningText?: string
   toolEvents?: ChatToolEvent[]
+  eventVersion?: number
+  renderRevision?: number
 }
 
 export type ChatMessageContentBlock =
+  | { type: 'output_text'; blockId?: string; order: number; text: string }
+  | { type: 'reasoning'; blockId?: string; order?: number; text: string; status?: ChatProcessStatus }
+  | { type: 'tool_call'; blockId?: string; order?: number; id?: string; callId?: string; toolType: string; status: ChatToolStatus; item?: Record<string, unknown> }
+  | { type: 'output_image'; blockId: string; order: number; assetId: string; status: ChatProcessStatus; mimeType?: string; width?: number; height?: number; revisedPrompt?: string }
   | { type: 'input_text'; text: string; order: number }
   | { type: 'input_image'; assetId: string; order: number }
-  | { type: 'output_text'; blockId: string; order: number; text: string }
-  | { type: 'reasoning'; text: string; blockId?: string; order?: number; status?: ChatContentBlockStatus }
-  | { type: 'tool_call'; id: string; toolType: string; status: ChatToolStatus; blockId?: string; order?: number; callId?: string; item?: Record<string, unknown> }
-  | { type: 'output_image'; blockId: string; order: number; assetId: string; status: ChatContentBlockStatus; mimeType?: string; width?: number; height?: number; revisedPrompt?: string }
 
-export type ChatContentBlockStatus = 'started' | 'updated' | 'completed' | 'failed' | 'canceled'
-export type ChatToolStatus = ChatContentBlockStatus
+export type ChatProcessStatus = 'started' | 'completed' | 'failed' | 'canceled'
+export type ChatToolStatus = ChatProcessStatus | 'updated'
 export interface ChatToolEvent { id: string; type: string; status: ChatToolStatus; item?: Record<string, unknown> }
 
 export interface ChatApiKeyOption { id: string; name: string; status: string }
@@ -63,6 +68,17 @@ export interface ChatAsset {
   byteSize: number
 }
 
+export interface ChatImageOptimizationPolicy {
+  mimeType: 'image/webp'
+  maxEdge: number
+  quality: number
+  maxBytes: number
+}
+
+export interface ChatImagePolicy {
+  input: ChatImageOptimizationPolicy
+}
+
 export interface ChatContextStatus {
   usedTokens: number
   limitTokens?: number
@@ -71,6 +87,9 @@ export interface ChatContextStatus {
   usageEstimated: boolean
   compactedThroughSequence: number
   revision: number
+  errorCode?: string
+  retryAt?: string
+  attemptCount: number
 }
 
 export interface ChatMessageTail {
@@ -100,9 +119,21 @@ export interface ChatConversationSyncHead {
 }
 
 export type ChatSubmissionStatus =
-  | { state: 'preparing' }
-  | { state: 'not_found' }
-  | { state: 'accepted'; turnId: string; assistantStatus: ChatMessageStatus }
+  | { state: 'preparing'; phase: 'preparing' | 'accepting'; serverTime: string }
+  | { state: 'not_found'; serverTime: string }
+  | {
+      state: 'accepted'
+      turnId: string
+      assistantMessageId: string
+      assistantStatus: ChatMessageStatus
+      runnerState: 'running' | 'missing' | 'terminal'
+      eventVersion?: number
+      lastSemanticActivityAt?: string
+      errorCode?: string
+      errorMessage?: string
+      completedAt?: string
+      serverTime: string
+    }
 
 export type ChatReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ChatServiceTier = 'default' | 'priority' | 'flex'
@@ -135,7 +166,7 @@ export type ChatStreamEvent =
   | { type: 'tool.started' | 'tool.updated' | 'tool.completed'; data: { messageId: string; item: Record<string, unknown>; eventVersion: number } }
   | { type: 'content_block.started'; data: { messageId: string; block: ChatMessageContentBlock; eventVersion: number } }
   | { type: 'content_block.delta'; data: { messageId: string; blockId: string; delta: string; eventVersion: number } }
-  | { type: 'content_block.updated'; data: { messageId: string; blockId: string; patch: Record<string, unknown>; eventVersion: number } }
+  | { type: 'content_block.updated'; data: { messageId: string; blockId: string; patch: Partial<ChatMessageContentBlock>; eventVersion: number } }
   | { type: 'content_block.completed'; data: { messageId: string; block: ChatMessageContentBlock; eventVersion: number } }
   | { type: 'message.completed'; data: { messageId: string; finishReason?: string; traceId?: string; eventVersion: number } }
   | { type: 'message.failed'; data: { messageId: string; code: string; message: string; eventVersion: number } }

@@ -1,20 +1,22 @@
 import { createHash } from 'node:crypto'
+import { readFile, stat } from 'node:fs/promises'
 
 import pLimit from 'p-limit'
 import sharp, { type Metadata } from 'sharp'
+import { chatImageInputPolicy } from './chat-image-policy.js'
 
 // libvips 在 Windows 会缓存最近读取的文件句柄，导致上传临时目录无法及时清理。
 sharp.cache({ files: 0 })
 
 const maxDecodedPixels = 40_000_000
-const maxModelImageBytes = 1024 * 1024
-export const chatImageMaxEdge = 1_024
-export const chatImageJpegQuality = 85
+const maxModelImageBytes = chatImageInputPolicy.maxBytes
+export const chatImageMaxEdge = chatImageInputPolicy.maxEdge
+export const chatImageWebpQuality = chatImageInputPolicy.quality
 const maxModelImagePatches = 2_500
 const patchEdge = 32
 const imageProcessingLimit = pLimit(2)
 
-export type ChatProcessedImageMimeType = 'image/jpeg'
+export type ChatProcessedImageMimeType = 'image/webp'
 
 export interface ChatProcessedImage {
   buffer: Buffer
@@ -55,14 +57,15 @@ export async function processChatImageFile(filePath: string): Promise<ChatProces
     const dimensions = orientedDimensions(metadata)
     if (!dimensions) throw new ChatImageProcessingError('无法读取图片尺寸')
     const target = boundedImageDimensions(dimensions.width, dimensions.height)
-    const output = await encodeModelImage({ filePath, width: target.width, height: target.height })
-    if (output.buffer.byteLength > maxModelImageBytes) throw new ChatImageProcessingError('图片按 JPEG 85 处理后仍超过 1 MiB，请裁剪图片后重试')
+    const output = await reuseCompliantWebp(filePath, metadata, dimensions, target)
+      ?? await encodeModelImage({ filePath, width: target.width, height: target.height })
+    if (output.buffer.byteLength > maxModelImageBytes) throw new ChatImageProcessingError('图片按 WebP 82 处理后仍超过 1 MiB，请裁剪图片后重试')
     return {
       buffer: output.buffer,
       originalMimeType: originalMimeType(metadata.format),
       originalWidth: dimensions.width,
       originalHeight: dimensions.height,
-      mimeType: 'image/jpeg',
+      mimeType: 'image/webp',
       width: output.width,
       height: output.height,
       byteSize: output.buffer.byteLength,
@@ -76,7 +79,7 @@ async function encodeModelImage(input: {
   width: number
   height: number
 }): Promise<{ buffer: Buffer; width: number; height: number }> {
-  let pipeline = sharp(input.filePath, {
+  const pipeline = sharp(input.filePath, {
     failOn: 'error',
     limitInputPixels: maxDecodedPixels,
     sequentialRead: true
@@ -84,9 +87,23 @@ async function encodeModelImage(input: {
     fit: 'inside',
     withoutEnlargement: true,
     fastShrinkOnLoad: true
-  }).flatten({ background: '#ffffff' }).jpeg({ quality: chatImageJpegQuality, mozjpeg: true, chromaSubsampling: '4:2:0' })
+  }).webp({ quality: chatImageWebpQuality, smartSubsample: true })
   const { data, info } = await pipeline.toBuffer({ resolveWithObject: true })
   return { buffer: data, width: info.width, height: info.height }
+}
+
+async function reuseCompliantWebp(
+  filePath: string,
+  metadata: Metadata,
+  dimensions: { width: number; height: number },
+  target: { width: number; height: number }
+): Promise<{ buffer: Buffer; width: number; height: number } | undefined> {
+  if (metadata.format !== 'webp' || (metadata.orientation !== undefined && metadata.orientation !== 1)) return undefined
+  if (dimensions.width !== target.width || dimensions.height !== target.height) return undefined
+  const file = await stat(filePath)
+  if (!file.isFile() || file.size <= 0 || file.size > maxModelImageBytes) return undefined
+  const buffer = await readFile(filePath)
+  return { buffer, width: dimensions.width, height: dimensions.height }
 }
 
 function boundedImageDimensions(width: number, height: number): { width: number; height: number } {
