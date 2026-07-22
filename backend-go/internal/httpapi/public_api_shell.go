@@ -310,7 +310,10 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 		EndedAt:          endedAt,
 		Closed:           closed,
 	})
-	s.logSubmitter.Submit(r.Context(), logInput)
+	outcome := submitPublicAPILog(r.Context(), s.logSubmitter, logInput)
+	if !outcome.Accepted {
+		warnRecordDispatchRejection(s.logger, &publicRecordRejectWarnAt, "public_api_log", outcome.RejectionReason)
+	}
 }
 
 func publicAPIRequestClosed(r *http.Request, response *publicAPIResponseCapture) bool {
