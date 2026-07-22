@@ -864,3 +864,9 @@
 - attempt proxy / upstream URL 保留凭据与 query 原文，只对齐 Node 当前首尾 ECMAScript 空白处理；未新增脱敏、日志清洗或 sanitizer。未知 `trafficSource` 与 Node mapper 一样使详情失败，不返回未定义枚举。
 - `/audit-logs/search-hot`、`/runtime`、`/error-groups*`、`/{id}/payloads/{payloadId}` 仍未迁移并在 Go 保持 404。Node 继续单独拥有这些读路径以及捕获、Redis Stream / IPC、ingest writer、worker 和保留清理。
 - 定向 service / HTTP / router / PostgreSQL 查询测试已通过；真实 Node writer -> Go reader PostgreSQL、查询计划、真实 listener / browser、精确反向代理切流、回滚和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 运行日志索引临时关闭契约同步
+
+- 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
+- Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
+- 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。

@@ -37,6 +37,7 @@ type Config struct {
 	NodeInternalSnapshotRebuildTimeout time.Duration `env:"JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT" envDefault:"60s"`
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
+	RuntimeLogIndexEnabled             bool
 	AuthCaptchaDisabled                bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
 	TrustProxy                         string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
 	CookieSecure                       bool          `env:"JUHE_AI_COOKIE_SECURE" envDefault:"false"`
@@ -71,6 +72,11 @@ func Load(opts LoadOptions) (Config, error) {
 	if err := env.Parse(&cfg); err != nil {
 		return Config{}, fmt.Errorf("读取 Go 后端环境变量失败: %w", err)
 	}
+	runtimeLogIndexEnabled, err := parseDeploymentBooleanEnv("JUHE_AI_RUNTIME_LOG_INDEX_ENABLED", true)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RuntimeLogIndexEnabled = runtimeLogIndexEnabled
 	applyProductionCookieDefaults(&cfg)
 	if err := applyRedisNamespace(&cfg); err != nil {
 		return Config{}, err
@@ -103,6 +109,33 @@ func loadDotEnvForNonProduction() error {
 func applyProductionCookieDefaults(cfg *Config) {
 	if strings.EqualFold(strings.TrimSpace(cfg.Env), "production") && os.Getenv("JUHE_AI_COOKIE_SECURE") == "" {
 		cfg.CookieSecure = true
+	}
+}
+
+func parseDeploymentBooleanEnv(name string, fallback bool) (bool, error) {
+	raw, ok := os.LookupEnv(name)
+	if !ok {
+		return fallback, nil
+	}
+	switch strings.ToLower(strings.TrimFunc(raw, deploymentBooleanECMAScriptWhitespace)) {
+	case "1", "true", "yes", "on":
+		return true, nil
+	case "0", "false", "no", "off":
+		return false, nil
+	default:
+		return false, fmt.Errorf("%s 只能配置为 true/false/1/0/yes/no/on/off", name)
+	}
+}
+
+func deploymentBooleanECMAScriptWhitespace(character rune) bool {
+	switch character {
+	case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680',
+		'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005', '\u2006',
+		'\u2007', '\u2008', '\u2009', '\u200A', '\u202F', '\u205F', '\u3000',
+		'\uFEFF', '\u000A', '\u000D', '\u2028', '\u2029':
+		return true
+	default:
+		return false
 	}
 }
 
