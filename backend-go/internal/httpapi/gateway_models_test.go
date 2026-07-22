@@ -9,7 +9,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"juhe-ai/backend-go/internal/apikeysecret"
+	"juhe-ai/backend-go/internal/config"
 	"juhe-ai/backend-go/internal/modules/gatewayclientcatalog"
 	"juhe-ai/backend-go/internal/modules/gatewayerrors"
 	"juhe-ai/backend-go/internal/store/port"
@@ -280,6 +283,70 @@ func TestGatewayModelsHandlerIsGETOnly(t *testing.T) {
 	}
 }
 
+func TestRouterRegistersGatewayModelsOnlyWhenHandlerProvided(t *testing.T) {
+	for _, path := range []string{"/models", "/v1/models", "/v1beta/models"} {
+		disabled := httptest.NewRecorder()
+		NewRouter(RouterOptions{Config: config.Config{Host: "127.0.0.1", Port: 3000}}).ServeHTTP(disabled, httptest.NewRequest(http.MethodGet, path, nil))
+		if disabled.Code != http.StatusNotFound {
+			t.Fatalf("disabled %s status = %d, want 404", path, disabled.Code)
+		}
+
+		enabled := httptest.NewRecorder()
+		NewRouter(RouterOptions{
+			Config:               config.Config{Host: "127.0.0.1", Port: 3000},
+			GatewayModelsHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
+		}).ServeHTTP(enabled, httptest.NewRequest(http.MethodGet, path, nil))
+		if enabled.Code != http.StatusNoContent {
+			t.Fatalf("enabled %s status = %d, want 204", path, enabled.Code)
+		}
+	}
+}
+
+func TestGatewayModelsCredentialAuthorizerAllowsZeroBindingsAndScopesActiveProviders(t *testing.T) {
+	now := time.Date(2026, 7, 23, 1, 0, 0, 0, time.UTC)
+	reader := &gatewayModelsPreflightReaderStub{
+		record: port.GatewayPreflightAPIKeyRecord{
+			ID: "key-1", SystemAccountID: "sys-1", APIKeyStatus: "active", SystemAccountStatus: "active",
+			RouteStrategyID: "strategy-1", RouteStrategyStatus: "active",
+		},
+		found: true,
+		bindings: []port.GatewayPreflightBindingRecord{
+			{Status: "active", GroupEnabled: true, ProviderCode: " GPT "},
+			{Status: "active", GroupEnabled: true, ProviderCode: "anthropic"},
+			{Status: "disabled", GroupEnabled: true, ProviderCode: "gemini"},
+		},
+	}
+	authorizer := gatewayModelsCredentialAuthorizer{reader: reader, now: func() time.Time { return now }}
+
+	scope, err := authorizer.AuthorizeGatewayModels(context.Background(), "sk-valid")
+	if err != nil {
+		t.Fatalf("AuthorizeGatewayModels() error = %v", err)
+	}
+	if !reflect.DeepEqual(scope, GatewayModelsAPIKeyScope{SystemAccountID: "sys-1", ProviderCodes: []string{"anthropic", "gpt"}}) {
+		t.Fatalf("scope = %#v", scope)
+	}
+	if reader.keyHash != apikeysecret.Hash("sk-valid") || reader.bindingLimit != 20 {
+		t.Fatalf("reader keyHash/limit = %q/%d", reader.keyHash, reader.bindingLimit)
+	}
+
+	reader.bindings = nil
+	scope, err = authorizer.AuthorizeGatewayModels(context.Background(), "sk-valid")
+	if err != nil || scope.SystemAccountID != "sys-1" || len(scope.ProviderCodes) != 0 {
+		t.Fatalf("zero-binding scope = %#v error=%v", scope, err)
+	}
+}
+
+func TestGatewayModelsCredentialAuthorizerRejectsExpiredKey(t *testing.T) {
+	now := time.Date(2026, 7, 23, 1, 0, 0, 0, time.UTC)
+	reader := &gatewayModelsPreflightReaderStub{record: port.GatewayPreflightAPIKeyRecord{
+		ID: "key-1", APIKeyStatus: "active", SystemAccountStatus: "active", ExpiresAt: &now,
+	}, found: true}
+	authorizer := gatewayModelsCredentialAuthorizer{reader: reader, now: func() time.Time { return now }}
+	if _, err := authorizer.AuthorizeGatewayModels(context.Background(), "sk-expired"); !errors.Is(err, gatewayerrors.ErrAPIKeyExpired) {
+		t.Fatalf("error = %v, want expired", err)
+	}
+}
+
 type gatewayModelsAuthorizerStub struct {
 	result GatewayModelsAPIKeyScope
 	err    error
@@ -302,6 +369,28 @@ type gatewayModelsCatalogStub struct {
 
 type gatewayModelsReaderStub struct {
 	modelInputs []port.GatewayClientCatalogModelListInput
+}
+
+type gatewayModelsPreflightReaderStub struct {
+	record       port.GatewayPreflightAPIKeyRecord
+	found        bool
+	bindings     []port.GatewayPreflightBindingRecord
+	keyHash      string
+	bindingLimit int
+}
+
+func (s *gatewayModelsPreflightReaderStub) LoadGatewayPreflightAPIKey(_ context.Context, keyHash string) (port.GatewayPreflightAPIKeyRecord, bool, error) {
+	s.keyHash = keyHash
+	return s.record, s.found, nil
+}
+
+func (s *gatewayModelsPreflightReaderStub) ListGatewayPreflightBindings(_ context.Context, _, _, _ string, _ time.Time, limit int) ([]port.GatewayPreflightBindingRecord, error) {
+	s.bindingLimit = limit
+	return append([]port.GatewayPreflightBindingRecord(nil), s.bindings...), nil
+}
+
+func (*gatewayModelsPreflightReaderStub) LoadGatewayPreflightSettings(context.Context) (port.GatewayPreflightSettingsRecord, error) {
+	return port.GatewayPreflightSettingsRecord{}, nil
 }
 
 func (*gatewayModelsReaderStub) ListGatewayClientCatalogProviders(context.Context) ([]port.GatewayClientCatalogProvider, error) {

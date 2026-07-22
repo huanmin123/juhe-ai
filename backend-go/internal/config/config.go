@@ -37,6 +37,7 @@ type Config struct {
 	NodeInternalSnapshotRebuildTimeout time.Duration `env:"JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT" envDefault:"60s"`
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
+	GatewayModelsEnabled               bool          `env:"JUHE_AI_GATEWAY_MODELS_ENABLED" envDefault:"false"`
 	RuntimeLogIndexEnabled             bool
 	RuntimeLogDirectory                string        `env:"JUHE_AI_LOG_DIR" envDefault:"../backend/logs"`
 	RuntimeLogFileEnabled              bool          `env:"JUHE_AI_LOG_FILE_ENABLED" envDefault:"true"`
@@ -223,6 +224,9 @@ func (cfg Config) Validate() error {
 	if err := validateManagementAPIConfig(cfg); err != nil {
 		return err
 	}
+	if err := validateGatewayModelsConfig(cfg); err != nil {
+		return err
+	}
 	if err := validateUpstreamBaseURLPrivateAllowlist(cfg); err != nil {
 		return err
 	}
@@ -394,6 +398,16 @@ func validateManagementAPIConfig(cfg Config) error {
 	}
 	if len([]rune(secret)) < 32 {
 		return fmt.Errorf("JUHE_AI_SECRET 至少需要 32 个字符")
+	}
+	return nil
+}
+
+func validateGatewayModelsConfig(cfg Config) error {
+	if !cfg.GatewayModelsEnabled {
+		return nil
+	}
+	if strings.TrimSpace(cfg.PostgresURL) == "" {
+		return fmt.Errorf("启用 JUHE_AI_GATEWAY_MODELS_ENABLED 时 JUHE_AI_POSTGRES_URL 不能为空")
 	}
 	return nil
 }

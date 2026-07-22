@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
+	"time"
 
+	"juhe-ai/backend-go/internal/apikeysecret"
 	"juhe-ai/backend-go/internal/modules/gatewayclientcatalog"
 	"juhe-ai/backend-go/internal/modules/gatewaycredentials"
 	"juhe-ai/backend-go/internal/modules/gatewayerrors"
@@ -46,6 +49,65 @@ type GatewayModelsHandlerOptions struct {
 	Credentials GatewayModelsCredentialExtractor
 	Authorizer  GatewayModelsCredentialAuthorizer
 	Catalog     GatewayModelsCatalog
+}
+
+type gatewayModelsCredentialAuthorizer struct {
+	reader port.GatewayPreflightReader
+	now    func() time.Time
+}
+
+func NewGatewayModelsCredentialAuthorizer(reader port.GatewayPreflightReader) GatewayModelsCredentialAuthorizer {
+	return gatewayModelsCredentialAuthorizer{reader: reader, now: time.Now}
+}
+
+func (a gatewayModelsCredentialAuthorizer) AuthorizeGatewayModels(ctx context.Context, rawAPIKey string) (GatewayModelsAPIKeyScope, error) {
+	if !strings.HasPrefix(rawAPIKey, "sk-") {
+		return GatewayModelsAPIKeyScope{}, gatewayerrors.ErrAPIKeyInvalid
+	}
+	if a.reader == nil {
+		return GatewayModelsAPIKeyScope{}, errors.New("gateway models credential reader is required")
+	}
+	now := a.now
+	if now == nil {
+		now = time.Now
+	}
+	current := now().UTC()
+	record, found, err := a.reader.LoadGatewayPreflightAPIKey(ctx, apikeysecret.Hash(rawAPIKey))
+	if err != nil {
+		return GatewayModelsAPIKeyScope{}, err
+	}
+	if !found {
+		return GatewayModelsAPIKeyScope{}, gatewayerrors.ErrAPIKeyInvalid
+	}
+	if record.APIKeyStatus != "active" || record.SystemAccountStatus != "active" {
+		return GatewayModelsAPIKeyScope{}, gatewayerrors.ErrAPIKeyDisabled
+	}
+	if record.ExpiresAt != nil && !current.Before(*record.ExpiresAt) {
+		return GatewayModelsAPIKeyScope{}, gatewayerrors.ErrAPIKeyExpired
+	}
+	scope := GatewayModelsAPIKeyScope{SystemAccountID: strings.TrimSpace(record.SystemAccountID)}
+	if record.RouteStrategyStatus != "active" {
+		return scope, nil
+	}
+	bindings, err := a.reader.ListGatewayPreflightBindings(ctx, record.ID, record.RouteStrategyID, record.SystemAccountID, current, 20)
+	if err != nil {
+		return GatewayModelsAPIKeyScope{}, err
+	}
+	seen := make(map[string]struct{}, len(bindings))
+	for _, binding := range bindings {
+		if binding.Status != "active" || !binding.GroupEnabled || (binding.AccessExpiresAt != nil && !current.Before(*binding.AccessExpiresAt)) {
+			continue
+		}
+		providerCode := strings.ToLower(strings.TrimSpace(binding.ProviderCode))
+		if providerCode != "" {
+			seen[providerCode] = struct{}{}
+		}
+	}
+	for providerCode := range seen {
+		scope.ProviderCodes = append(scope.ProviderCodes, providerCode)
+	}
+	sort.Strings(scope.ProviderCodes)
+	return scope, nil
 }
 
 func NewGatewayModelsHandler(opts GatewayModelsHandlerOptions) http.Handler {

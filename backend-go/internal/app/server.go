@@ -15,6 +15,7 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/gatewayclientcatalog"
 	"juhe-ai/backend-go/internal/modules/managementaccountauthorizeddispatch"
 	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
@@ -258,6 +259,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAPIRateLimitSettingsCache,
 		catalogSnapshotBridge,
 	)
+	var gatewayModelsHandler http.Handler
+	if cfg.GatewayModelsEnabled {
+		gatewayModelsService := gatewayclientcatalog.NewService(store)
+		gatewayModelsHandler = httpapi.NewGatewayModelsHandler(httpapi.GatewayModelsHandlerOptions{
+			Authorizer: httpapi.NewGatewayModelsCredentialAuthorizer(store),
+			Catalog:    httpapi.NewGatewayModelsCatalog(gatewayModelsService),
+		})
+	}
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
 		Logger:                                            logger,
@@ -270,6 +279,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
 		SystemAPIAuthenticatedRateLimiter:                 httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, cfg.RedisNamespace),
 		PublicAPIHandler:                                  publicAPIHandler,
+		GatewayModelsHandler:                              gatewayModelsHandler,
 		NodeModelCatalogBridgeReadinessProber:             catalogSnapshotBridge,
 		ManagementAPIAuthMiddleware:                       managementHandlers.AuthMiddleware,
 		ManagementAPIAuthTouchMiddleware:                  managementHandlers.AuthTouchMiddleware,
