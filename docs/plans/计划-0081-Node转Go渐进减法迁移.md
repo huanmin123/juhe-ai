@@ -919,3 +919,9 @@
 
 - Go 已补管理 / 自助 `GET /__aisys__/api/stats/usage-overview` 与 `GET /__aisys__/api/my-stats/usage-overview` 的代码路径。对照最新 Node 后，summary 修正为按请求日期范围聚合 `juhe_stats.usage_stats_daily` 的 `system_account` 日汇总；trend、model distribution 和 errors 仍只读各自预聚合窗口。请求路径不读取 `usage_records`。
 - 当前 Goose 已有 `usage_stats_daily`，但尚未创建 `usage_overview_trend_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`。为避免与并行 schema 工作争抢 `000070` 或形成两套表定义，本切片不新增 migration；集成前必须由 schema owner 统一补表和索引，并完成 fresh Goose、Node writer -> Go reader 与查询计划 smoke。该门禁未完成前，本切片只算代码预迁移，不得切流或删除 Node 路由。
+
+## 2026-07-22 W6 Node stats writer / Go reader schema 共存门禁
+
+- 新增 `juhe-ai-maintenance stats-schema-contract-preflight`，只读目标 PostgreSQL `information_schema.columns`，按 stats overview、system metrics、table monitor 三个 feature 校验 Go reader 当前实际读取的九张 `juhe_stats` 表及所需列。缺表、缺列或检查不可用均以稳定 JSON 和非零退出 fail-closed，底层数据库错误不写入结果。
+- 门禁固定输出 `contractVersion=1` 和 `writerOwner=node`。本批不实现生产 writer、不运行 schema reconcile、不创建 migration、不修改 owner manifest，也不抢占并行任务使用的 `000070`；这是为了避免请求进程变成第二 schema owner，并保留 Node `stats-worker` 在共存期的唯一写入职责。
+- 部署前必须先由统一 schema owner 合并 fresh Goose 所需表与索引，再启动 Node writer、执行本门禁和真实 writer-reader / EXPLAIN smoke。reader contract 通过只证明关系与列兼容，不证明数据 freshness、Node worker 活跃、Go worker 接管或 Node 可删除。
