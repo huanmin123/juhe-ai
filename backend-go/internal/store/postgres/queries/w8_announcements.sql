@@ -1,7 +1,6 @@
 -- name: ListPublicAnnouncements :many
 SELECT
-  a.id, a.title, a.content, a.level, a.status,
-  a.published_at, ar.read_at, a.created_at, a.updated_at
+  a.id, a.title, a.level, a.published_at, ar.read_at
 FROM juhe_business.announcements a
 LEFT JOIN juhe_business.announcement_reads ar
   ON ar.announcement_id = a.id
@@ -10,6 +9,13 @@ WHERE a.status = 'published'
   AND a.published_at IS NOT NULL
 ORDER BY a.published_at DESC, a.created_at DESC, a.id DESC
 LIMIT sqlc.arg(row_limit)::integer;
+
+-- name: FindPublicAnnouncement :one
+SELECT a.id, a.title, a.content, a.level, a.published_at
+FROM juhe_business.announcements a
+WHERE a.id = sqlc.arg(id)::text
+  AND a.status = 'published'
+  AND a.published_at IS NOT NULL;
 
 -- name: MarkVisibleAnnouncementsRead :many
 WITH visible AS (
@@ -31,7 +37,7 @@ SELECT announcement_id FROM written;
 -- name: ListManagementAnnouncements :many
 SELECT
   a.id, a.title,
-  CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content,
+  CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content_preview,
   a.level, a.status,
   a.created_by, creator.display_name AS created_by_name,
   a.updated_by, updater.display_name AS updated_by_name,

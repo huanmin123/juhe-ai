@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -18,6 +19,29 @@ type announcementManagementService interface {
 }
 
 type announcementManagementServiceAdapter struct{ service *announcements.Service }
+
+type announcementManagementListItemResponse struct {
+	ID             string     `json:"id"`
+	Title          string     `json:"title"`
+	ContentPreview string     `json:"contentPreview"`
+	Level          string     `json:"level"`
+	Status         string     `json:"status"`
+	CreatedBy      string     `json:"createdBy,omitempty"`
+	CreatedByName  string     `json:"createdByName,omitempty"`
+	UpdatedBy      *string    `json:"updatedBy,omitempty"`
+	UpdatedByName  *string    `json:"updatedByName,omitempty"`
+	PublishedAt    *time.Time `json:"publishedAt,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+}
+
+type announcementManagementPageResponse struct {
+	Items    []announcementManagementListItemResponse `json:"items"`
+	Total    int                                      `json:"total"`
+	HasMore  bool                                     `json:"hasMore"`
+	Page     int                                      `json:"page"`
+	PageSize int                                      `json:"pageSize"`
+}
 
 func (s announcementManagementServiceAdapter) ListManagement(ctx context.Context, page int, pageSize int) (announcements.Page, error) {
 	return s.service.ListManagement(ctx, page, pageSize)
@@ -81,8 +105,20 @@ func newAnnouncementManagementHandler(service announcementManagementService) htt
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
+		items := make([]announcementManagementListItemResponse, 0, len(result.Items))
+		for _, item := range result.Items {
+			items = append(items, announcementManagementListItemResponse{
+				ID: item.ID, Title: item.Title, ContentPreview: item.Content, Level: item.Level, Status: item.Status,
+				CreatedBy: item.CreatedBy, CreatedByName: item.CreatedByName,
+				UpdatedBy: item.UpdatedBy, UpdatedByName: item.UpdatedByName,
+				PublishedAt: item.PublishedAt, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt,
+			})
+		}
 		writeAnnouncementNoStore(w)
-		writeData(w, http.StatusOK, result)
+		writeData(w, http.StatusOK, announcementManagementPageResponse{
+			Items: items, Total: result.PageUpperBound, HasMore: result.HasMore,
+			Page: result.Page, PageSize: result.PageSize,
+		})
 	})
 }
 

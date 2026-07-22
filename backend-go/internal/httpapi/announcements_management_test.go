@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -63,6 +64,20 @@ func TestAnnouncementManagementHandlerListsForAdminWithProgressivePage(t *testin
 	}
 	if !strings.Contains(recorder.Body.String(), `"total":21`) || !strings.Contains(recorder.Body.String(), `"hasMore":true`) {
 		t.Fatalf("body = %s", recorder.Body.String())
+	}
+	var response struct {
+		Data struct {
+			Items []map[string]json.RawMessage `json:"items"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if _, ok := response.Data.Items[0]["content"]; ok {
+		t.Fatalf("management list leaked content: %s", recorder.Body.String())
+	}
+	if preview := response.Data.Items[0]["contentPreview"]; string(preview) != `"摘要"` {
+		t.Fatalf("contentPreview=%s body=%s", preview, recorder.Body.String())
 	}
 }
 
