@@ -25,8 +25,14 @@ type SchemaUpResult struct {
 	CurrentVersion int64  `json:"currentVersion"`
 }
 
+type schemaUpSourceState struct {
+	gooseLedgerPresent bool
+	gooseLedgerRows    int64
+	juheRelationCount  int64
+}
+
 // RunSchemaUp lets Goose own both migration execution and ledger updates.
-func RunSchemaUp(ctx context.Context, postgresURL, directory string, out io.Writer) error {
+func RunSchemaUp(ctx context.Context, postgresURL, directory string, out io.Writer) (resultErr error) {
 	if strings.TrimSpace(postgresURL) == "" {
 		return errors.New("JUHE_AI_POSTGRES_URL is required for schema-up")
 	}
@@ -52,11 +58,30 @@ func RunSchemaUp(ctx context.Context, postgresURL, directory string, out io.Writ
 	if err != nil {
 		return fmt.Errorf("create Goose PostgreSQL session locker: %w", err)
 	}
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return errors.New("reserve PostgreSQL connection for schema-up failed")
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, conn.Close())
+	}()
+	if err := locker.SessionLock(ctx, conn); err != nil {
+		return fmt.Errorf("acquire Goose PostgreSQL session lock: %w", err)
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, locker.SessionUnlock(context.WithoutCancel(ctx), conn))
+	}()
+	lockedState, err := inspectSchemaUpSource(ctx, conn)
+	if err != nil {
+		return err
+	}
+	if err := validateSchemaUpSourceState(lockedState); err != nil {
+		return err
+	}
 	provider, err := goose.NewProvider(
 		goose.DialectPostgres,
 		db,
 		os.DirFS(directory),
-		goose.WithSessionLocker(locker),
 	)
 	if err != nil {
 		return fmt.Errorf("create Goose PostgreSQL provider: %w", err)
@@ -74,6 +99,56 @@ func RunSchemaUp(ctx context.Context, postgresURL, directory string, out io.Writ
 			return provider.GetDBVersion(runContext)
 		},
 	)
+}
+
+func inspectSchemaUpSource(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}) (schemaUpSourceState, error) {
+	var state schemaUpSourceState
+	if err := queryer.QueryRowContext(
+		ctx,
+		"SELECT to_regclass('public.goose_db_version') IS NOT NULL",
+	).Scan(&state.gooseLedgerPresent); err != nil {
+		return schemaUpSourceState{}, errors.New("inspect PostgreSQL Goose ledger presence failed")
+	}
+	if state.gooseLedgerPresent {
+		if err := queryer.QueryRowContext(
+			ctx,
+			"SELECT COUNT(*) FROM public.goose_db_version",
+		).Scan(&state.gooseLedgerRows); err != nil {
+			return schemaUpSourceState{}, errors.New("inspect PostgreSQL Goose ledger rows failed")
+		}
+	}
+
+	if err := queryer.QueryRowContext(ctx, `
+SELECT COUNT(*)
+FROM pg_catalog.pg_class c
+INNER JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE left(n.nspname, 5) = 'juhe_'
+  AND c.relkind IN ('r', 'p', 'v', 'm', 'i', 'I', 'S', 'f')
+`).Scan(&state.juheRelationCount); err != nil {
+		return schemaUpSourceState{}, errors.New("inspect PostgreSQL juhe business objects failed")
+	}
+	return state, nil
+}
+
+func validateSchemaUpSourceState(state schemaUpSourceState) error {
+	if state.gooseLedgerRows < 0 || state.juheRelationCount < 0 {
+		return errors.New("PostgreSQL schema source inspection returned an invalid count")
+	}
+	if state.gooseLedgerPresent {
+		if state.gooseLedgerRows == 0 {
+			return errors.New("PostgreSQL goose_db_version exists without migration history")
+		}
+		return nil
+	}
+	if state.gooseLedgerRows != 0 {
+		return errors.New("PostgreSQL Goose ledger source state is inconsistent")
+	}
+	if state.juheRelationCount > 0 {
+		return errors.New("PostgreSQL has juhe business objects without Goose history; rebuild offline before schema-up")
+	}
+	return nil
 }
 
 func runSchemaUpCatalog(
