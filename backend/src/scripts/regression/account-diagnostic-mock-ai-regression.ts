@@ -11,6 +11,12 @@ import type { AccountSummary } from '../../domain/types.js'
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-diagnostic-mock-ai-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 const testSecret = 'account-diagnostic-mock-ai-secret'
 
+process.env.JUHE_AI_DISABLE_BASE_ENV = 'true'
+process.env.JUHE_AI_RUNTIME_MODE = 'standalone'
+process.env.JUHE_AI_DATABASE_DRIVER = 'sqlite'
+process.env.JUHE_AI_CACHE_DRIVER = 'memory'
+process.env.JUHE_AI_RUNTIME_STATE_DRIVER = 'memory'
+process.env.JUHE_AI_QUEUE_DRIVER = 'memory'
 process.env.JUHE_AI_SECRET = testSecret
 process.env.JUHE_AI_DATABASE_PATH = join(tempRoot, 'business.sqlite3')
 process.env.JUHE_AI_DATASET_DATABASE_PATH = join(tempRoot, 'dataset.sqlite3')
@@ -25,6 +31,25 @@ assert.equal(
   process.env.JUHE_AI_SECRET,
   runtimeConfig.secret,
   'SQLite read worker 的 JUHE_AI_SECRET 必须在 config 和 crypto 初始化前与父进程一致'
+)
+assert.deepEqual(
+  {
+    disableBaseEnv: process.env.JUHE_AI_DISABLE_BASE_ENV,
+    runtimeMode: runtimeConfig.runtimeMode,
+    databaseDriver: runtimeConfig.databaseDriver,
+    cacheDriver: runtimeConfig.cacheDriver,
+    runtimeStateDriver: runtimeConfig.runtimeStateDriver,
+    queueDriver: runtimeConfig.queueDriver
+  },
+  {
+    disableBaseEnv: 'true',
+    runtimeMode: 'standalone',
+    databaseDriver: 'sqlite',
+    cacheDriver: 'memory',
+    runtimeStateDriver: 'memory',
+    queueDriver: 'memory'
+  },
+  '账号诊断回归必须禁用基础 .env，并固定使用 standalone SQLite 与进程内驱动'
 )
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
