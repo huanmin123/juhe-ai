@@ -742,6 +742,7 @@ func TestPageDataChangeConfirmerReturnsNodeCompatibleDecisions(t *testing.T) {
 		wantChanges   int
 	}{
 		{name: "missing token reloads", sequence: 1, wantAction: PageDataConfirmActionReload},
+		{name: "old epoch reloads", known: &PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: "old-epoch", Scope: scope.Fingerprint, Domain: pageDataAccountsStaticDomain, Sequence: 1, ResetSequence: 0}, sequence: 1, wantAction: PageDataConfirmActionReload},
 		{
 			name:     "contiguous event is delta",
 			known:    &PageDataRevisionToken{ProtocolVersion: PageDataProtocolVersion, Epoch: "epoch-1", Scope: scope.Fingerprint, Domain: pageDataAccountsStaticDomain, Sequence: 0, ResetSequence: 0},

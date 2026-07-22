@@ -13,9 +13,82 @@ import (
 	"testing"
 	"time"
 
+	"juhe-ai/backend-go/internal/httpapi"
 	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
 )
+
+type pageDataChangeConfirmerStub struct {
+	scope   redisplatform.PageDataScope
+	domains map[string]*redisplatform.PageDataRevisionToken
+	result  redisplatform.PageDataConfirmResult
+	err     error
+	calls   int
+}
+
+func (s *pageDataChangeConfirmerStub) Confirm(_ context.Context, scope redisplatform.PageDataScope, domains map[string]*redisplatform.PageDataRevisionToken) (redisplatform.PageDataConfirmResult, error) {
+	s.calls++
+	s.scope = scope
+	s.domains = domains
+	return s.result, s.err
+}
+
+func TestPageDataChangeConfirmServiceAdapterUsesSharedScopeAndConfirmer(t *testing.T) {
+	result := redisplatform.PageDataConfirmResult{ServerTime: "2026-07-22T00:00:00.000Z"}
+	confirmer := &pageDataChangeConfirmerStub{result: result}
+	service := pageDataChangeConfirmServiceAdapter{confirmer: confirmer}
+	token := &redisplatform.PageDataRevisionToken{ProtocolVersion: 1, Epoch: "old", Scope: "scope", Domain: "accounts.runtime", Sequence: 3, ResetSequence: 1}
+
+	got, err := service.Confirm(t.Context(), httpapi.PageDataChangeConfirmInput{
+		ViewerSystemAccountID: " viewer-1 ",
+		ViewScope:             redisplatform.PageDataViewScopeAdmin,
+		TargetSystemAccountID: " target-1 ",
+		Domains:               map[string]*redisplatform.PageDataRevisionToken{"accounts.runtime": token},
+	})
+	if err != nil || !reflect.DeepEqual(got, result) || confirmer.calls != 1 {
+		t.Fatalf("Confirm() result=%#v err=%v calls=%d", got, err, confirmer.calls)
+	}
+	wantScope, err := redisplatform.NewPageDataScope(redisplatform.PageDataScopeInput{
+		ViewerSystemAccountID: "viewer-1", ViewScope: redisplatform.PageDataViewScopeAdmin, TargetSystemAccountID: "target-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(confirmer.scope, wantScope) || confirmer.domains["accounts.runtime"] != token {
+		t.Fatalf("scope=%#v want=%#v domains=%#v", confirmer.scope, wantScope, confirmer.domains)
+	}
+}
+
+func TestPageDataChangeConfirmServiceAdapterRejectsInvalidScopeBeforeRedis(t *testing.T) {
+	confirmer := &pageDataChangeConfirmerStub{}
+	service := pageDataChangeConfirmServiceAdapter{confirmer: confirmer}
+	_, err := service.Confirm(t.Context(), httpapi.PageDataChangeConfirmInput{
+		ViewerSystemAccountID: "viewer-1",
+		ViewScope:             redisplatform.PageDataViewScopeSelf,
+		TargetSystemAccountID: "target-1",
+		Domains:               map[string]*redisplatform.PageDataRevisionToken{},
+	})
+	if err == nil || confirmer.calls != 0 {
+		t.Fatalf("error=%v calls=%d", err, confirmer.calls)
+	}
+}
+
+func TestPageDataChangeConfirmServerWiringUsesStateRedisAndRouterHandler(t *testing.T) {
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(source)
+	for _, pattern := range []string{
+		`redisplatform.NewPageDataChangeConfirmer(stateRedis, cfg.RedisNamespace)`,
+		`PageDataConfirmHandler:`,
+		`ManagementPageDataConfirmHandler:`,
+	} {
+		if !strings.Contains(text, pattern) {
+			t.Fatalf("server wiring missing %q", pattern)
+		}
+	}
+}
 
 type pageDataCacheWriterStub struct {
 	mu     sync.Mutex

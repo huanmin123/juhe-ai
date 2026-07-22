@@ -870,3 +870,10 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 页面数据确认接口 Go opt-in
+
+- Go management API 已新增 `POST /__aisys__/api/data-changes/confirm`，直接复用现有 `PageDataChangeConfirmer`、协议版本 2、scope fingerprint、Redis key 前缀和单次 Lua 快路径；没有新增第二套 token、事件、publisher 或 Redis 协议。
+- 任意已登录角色可确认 `self` 视图；`admin` 视图继续要求管理员。`self` 携带 target 返回 400，普通用户伪造 admin 返回 403；请求要求 `application/json`、沿用 Node System API 的 `256kb` body 上限，并严格限制顶层与 token 字段、13 个现有 domain、单次最多 32 域和 JavaScript safe integer 序列边界。
+- 该接口虽然使用 POST，仍精确挂载 management read auth / read rate-limit，不 touch session；System API 外层继续设置 `Cache-Control: no-store`。Redis confirm 不可用时返回 `503 + Retry-After: 5`，不查询 PostgreSQL 或其他业务表。
+- 本块只增加 Go opt-in read endpoint。真实 Redis listener smoke、前端浏览器请求、反向代理单 owner、生产切流、回滚和 Node 路由删除继续后置，不能据此声明生产接管。
