@@ -56,6 +56,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementstats"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
+	"juhe-ai/backend-go/internal/modules/managementtablemonitor"
 	"juhe-ai/backend-go/internal/modules/managementusagerecords"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
@@ -467,6 +468,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAuditErrorGroupEventsHandler:            managementHandlers.AuditErrorGroupEventsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
 		ManagementRuntimeLogGrepHandler:                   managementHandlers.RuntimeLogGrepHandler,
+		ManagementTableMonitorHandler:                     managementHandlers.TableMonitorHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
 		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
 		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
@@ -708,6 +710,7 @@ type managementAPIHandlers struct {
 	AuditErrorGroupEventsHandler            http.Handler
 	RuntimeLogsHandler                      http.Handler
 	RuntimeLogGrepHandler                   http.Handler
+	TableMonitorHandler                     http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
 	ExternalIntegrationSourceDetailHandler  http.Handler
 	ExternalIntegrationSourceCreateHandler  http.Handler
@@ -980,6 +983,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		RetentionDays: cfg.RuntimeLogRetentionDays,
 		RGPath:        cfg.RGPath,
 	})
+	tableMonitorService := managementtablemonitor.NewService(store)
 	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
 		managementexternalintegrationsources.ServiceOptions{
 			ListReader:   store,
@@ -1227,6 +1231,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		AuditErrorGroupEventsHandler:            httpapi.NewManagementAuditErrorGroupEventsHandler(auditLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
 		RuntimeLogGrepHandler:                   httpapi.NewManagementRuntimeLogGrepHandler(runtimeLogGrepService),
+		TableMonitorHandler:                     httpapi.NewManagementTableMonitorHandler(tableMonitorService),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),
