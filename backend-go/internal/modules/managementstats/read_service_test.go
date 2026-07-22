@@ -75,6 +75,25 @@ func TestAccountUsageTrendCapsAccountsAndMapsDailyUsage(t *testing.T) {
 	}
 }
 
+func TestAccountUsageTrendFillsMissingDaysWithZeroUsage(t *testing.T) {
+	reader := &managementStatsReadStub{
+		accountTrend: port.ManagementAccountUsageTrendReadResult{
+			Accounts:  []port.ManagementStatsAccount{{ID: "acc_1", Name: "A", ProviderCode: "gpt", SystemAccountID: "sys_self", OwnerSystemAccountID: "sys_self", AccessType: "owner"}},
+			DailyRows: []port.ManagementAccountUsageDailyRow{{AccountID: "acc_1", StatDate: "2026-07-21", Usage: port.ManagementUsageAggregate{RequestCount: 2}}},
+		},
+	}
+	service := readServiceForTest(reader)
+
+	got, err := service.AccountUsageTrend(context.Background(), ReadScope{ActorSystemAccountID: "sys_self"}, AccountUsageTrendInput{StartDate: "2026-07-20", EndDate: "2026-07-22", AccountIDs: []string{"acc_1"}})
+	if err != nil {
+		t.Fatalf("AccountUsageTrend() error = %v", err)
+	}
+	points := got.Rows[0].DailyUsage
+	if len(points) != 3 || points[0].StatDate != "2026-07-20" || points[0].RequestCount != 0 || points[1].StatDate != "2026-07-21" || points[1].RequestCount != 2 || points[2].StatDate != "2026-07-22" || points[2].RequestCount != 0 {
+		t.Fatalf("daily points = %+v", points)
+	}
+}
+
 func TestAccountUsageSingleDateBoundaryMatchesNodeNormalization(t *testing.T) {
 	reader := &managementStatsReadStub{}
 	service := readServiceForTest(reader)
