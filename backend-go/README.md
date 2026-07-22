@@ -157,7 +157,7 @@ go run ./cmd/juhe-ai-worker operation-log-retention-cleanup
 
 该 worker 默认 13 分钟后首次运行，此后每 10 分钟执行一次；每批最多删除 1000 条过期 `operation_logs`，每轮最多 20 批，满批之间暂停 25ms。保留天数优先读取 `system_settings.operationLogRetentionDays`，缺失时使用 Node 当前默认值 365 天；可用 `--run-once` 做一次性 smoke，用 `--retention-days`、`--batch-size`、`--max-batches`、`--interval` 和 `--initial-delay` 调整本地验证参数。它只覆盖操作日志主表保留清理并依赖 FK cascade 清理 targets / viewers / summary search terms；不覆盖 public API log、runtime log、model check、usage record 等完整 data-retention 生产接管。
 
-运行日志索引保留清理目前只提供 `internal/app` 组装入口，不提供稳定 CLI 命令。默认保留 14 天、范围 1..90；单批 1000、单轮最多 20 批，满批之间暂停 25ms。索引按 `time ASC, id ASC` 小批删除，facet summary / level / event 在同一锁定事务中扣减并重算必要时间边界；cursor 只删除过期、已读完且无错误的完成行。生产 supervisor、真实 Node importer 并发 smoke 和 CLI 挂载仍为后置门禁。
+运行日志索引保留清理目前只提供 `internal/app` 组装入口，不提供稳定 CLI 命令。Node cleanup 子 owner 未停止时 `GoExclusiveIndexCleanupOwner` 默认 false，Go 索引删除 fail-closed 并记录 deferred；当前没有生产调用方开启该门禁，不构成双 owner。取得独占 cleanup owner 后，默认保留 14 天、范围 1..90，单批 1000、单轮最多 20 批，满批之间暂停 25ms；索引按 `time ASC, id ASC` + `FOR UPDATE SKIP LOCKED` 小批暂时删除，确有删除后才以 `FOR UPDATE NOWAIT` 锁定 `current` facet summary 行并在 1.5 秒短关键区扣减 / 重算 summary、level、event，不再取得 facet 表锁。Go cleaner 或 Node writer 竞争、25ms lock timeout、1s statement timeout 会整批回滚并记录 deferred，留待下一轮重试；cursor 仍只删除过期、已读完且无错误的完成行。生产 supervisor、真实 Node importer 并发 smoke 和 CLI 挂载仍为后置门禁。
 
 启动 W4 授权到期扫描 worker 需要 PostgreSQL、Redis state 和 Redis cache：
 

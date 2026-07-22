@@ -44,10 +44,11 @@ func TestCleanupUsesFixedCutoffAndIndependentBatches(t *testing.T) {
 	})
 
 	result, err := service.Cleanup(context.Background(), CleanupInput{
-		IndexEnabled: true,
-		Now:          now,
-		BatchSize:    2,
-		MaxBatches:   3,
+		IndexEnabled:                 true,
+		GoExclusiveIndexCleanupOwner: true,
+		Now:                          now,
+		BatchSize:                    2,
+		MaxBatches:                   3,
 	})
 	if err != nil {
 		t.Fatalf("Cleanup() error = %v", err)
@@ -91,8 +92,9 @@ func TestCleanupDefaultsAndClampsCatalogSetting(t *testing.T) {
 			store := &retentionStoreStub{settingDays: tc.days, settingFound: tc.found}
 			service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
 			result, err := service.Cleanup(context.Background(), CleanupInput{
-				IndexEnabled: true,
-				Now:          time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
+				IndexEnabled:                 true,
+				GoExclusiveIndexCleanupOwner: true,
+				Now:                          time.Date(2026, 7, 22, 0, 0, 0, 0, time.UTC),
 			})
 			if err != nil {
 				t.Fatalf("Cleanup() error = %v", err)
@@ -108,8 +110,9 @@ func TestCleanupOverrideSkipsSettingAndValidatesRange(t *testing.T) {
 	store := &retentionStoreStub{settingErr: errors.New("must not read setting")}
 	service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
 	result, err := service.Cleanup(context.Background(), CleanupInput{
-		IndexEnabled:  true,
-		RetentionDays: 30,
+		IndexEnabled:                 true,
+		GoExclusiveIndexCleanupOwner: true,
+		RetentionDays:                30,
 	})
 	if err != nil {
 		t.Fatalf("Cleanup() error = %v", err)
@@ -119,7 +122,7 @@ func TestCleanupOverrideSkipsSettingAndValidatesRange(t *testing.T) {
 	}
 
 	for _, days := range []int{-1, MaxRetentionDays + 1} {
-		_, err := service.Cleanup(context.Background(), CleanupInput{IndexEnabled: true, RetentionDays: days})
+		_, err := service.Cleanup(context.Background(), CleanupInput{IndexEnabled: true, GoExclusiveIndexCleanupOwner: true, RetentionDays: days})
 		if err == nil || !strings.Contains(err.Error(), "runtimeLogIndexRetentionDays") {
 			t.Fatalf("RetentionDays=%d error=%v", days, err)
 		}
@@ -138,7 +141,7 @@ func TestCleanupStopsWhenContextIsCancelledDuringPause(t *testing.T) {
 			return ctx.Err()
 		},
 	})
-	result, err := service.Cleanup(ctx, CleanupInput{IndexEnabled: true, BatchSize: 1, MaxBatches: 2})
+	result, err := service.Cleanup(ctx, CleanupInput{IndexEnabled: true, GoExclusiveIndexCleanupOwner: true, BatchSize: 1, MaxBatches: 2})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Cleanup() error = %v, want context.Canceled", err)
 	}
@@ -193,12 +196,55 @@ func TestCleanupReturnsPartialResultWhenRuntimeLogFileCursorPhaseFails(t *testin
 	}
 }
 
+func TestCleanupRecordsDeferredIndexBatchAndContinuesCursorCleanup(t *testing.T) {
+	store := &retentionStoreStub{
+		indexErr:      port.ErrRuntimeLogRetentionDeferred,
+		cursorDeleted: []int64{1, 0},
+	}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
+	result, err := service.Cleanup(context.Background(), CleanupInput{
+		IndexEnabled:                 true,
+		GoExclusiveIndexCleanupOwner: true,
+		BatchSize:                    1,
+		MaxBatches:                   2,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if !result.RuntimeLogsDeferred || result.RuntimeLogs != 0 || result.RuntimeLogBatches != 0 {
+		t.Fatalf("index result = %+v", result)
+	}
+	if result.RuntimeLogFileCursors != 1 || result.RuntimeLogFileCursorBatches != 1 {
+		t.Fatalf("cursor cleanup must continue after deferred index batch: %+v", result)
+	}
+}
+
+func TestCleanupFailsClosedWhileNodeIndexCleanupStillOwnsTheSubdomain(t *testing.T) {
+	store := &retentionStoreStub{cursorDeleted: []int64{1, 0}}
+	service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
+	result, err := service.Cleanup(context.Background(), CleanupInput{
+		IndexEnabled: true,
+		BatchSize:    1,
+		MaxBatches:   2,
+	})
+	if err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if !result.RuntimeLogsDeferred || len(store.indexInputs) != 0 {
+		t.Fatalf("runtime log deletion must fail closed without exclusive Go ownership: result=%+v inputs=%v", result, store.indexInputs)
+	}
+	if result.RuntimeLogFileCursors != 1 || len(store.cursorInputs) != 2 {
+		t.Fatalf("independent completed cursor cleanup must continue: result=%+v inputs=%v", result, store.cursorInputs)
+	}
+}
+
 type retentionStoreStub struct {
 	settingDays   int
 	settingFound  bool
 	settingErr    error
 	settingReads  int
 	indexDeleted  []int64
+	indexErr      error
 	cursorDeleted []int64
 	indexErrors   []error
 	cursorErrors  []error
@@ -220,6 +266,9 @@ func (s *retentionStoreStub) CleanupRuntimeLogIndexBefore(_ context.Context, inp
 		if err != nil {
 			return 0, err
 		}
+	}
+	if s.indexErr != nil {
+		return 0, s.indexErr
 	}
 	if len(s.indexDeleted) == 0 {
 		return 0, nil
