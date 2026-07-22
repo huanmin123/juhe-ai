@@ -165,6 +165,9 @@ func DecodeRunTaskPayload(data []byte) (RunTaskPayload, error) {
 	if len(data) == 0 || len(data) > MaxPayloadBytes {
 		return RunTaskPayload{}, fmt.Errorf("%w: payload size must be between 1 and %d bytes", ErrInvalidPayload, MaxPayloadBytes)
 	}
+	if err := rejectDuplicateTopLevelFields(data); err != nil {
+		return RunTaskPayload{}, fmt.Errorf("%w: decode payload: %v", ErrInvalidPayload, err)
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var payload RunTaskPayload
@@ -174,11 +177,47 @@ func DecodeRunTaskPayload(data []byte) (RunTaskPayload, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return RunTaskPayload{}, fmt.Errorf("%w: trailing payload data", ErrInvalidPayload)
 	}
+	if err := ValidateRunTaskPayload(payload); err != nil {
+		return RunTaskPayload{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	}
 	normalized, err := NormalizeRunTaskPayload(payload)
 	if err != nil {
 		return RunTaskPayload{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
 	}
 	return normalized, nil
+}
+
+func rejectDuplicateTopLevelFields(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := token.(json.Delim)
+	if !ok || delim != '{' {
+		return errors.New("payload must be a JSON object")
+	}
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		token, err = decoder.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := token.(string)
+		if !ok {
+			return errors.New("payload field name must be a string")
+		}
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("duplicate payload field %q", key)
+		}
+		seen[key] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return err
+		}
+	}
+	_, err = decoder.Token()
+	return err
 }
 
 func UniqueKey(payload RunTaskPayload) (string, error) {
