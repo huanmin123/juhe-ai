@@ -187,6 +187,23 @@ func TestManagementAuditErrorGroupEventsHandlerPassesRouteIDAndListQuery(t *test
 	assertManagementAuditReadResponse(t, rec, service.deadline)
 }
 
+func TestManagementAuditErrorGroupEventsHandlerRejectsWhitespaceOnlyRouteID(t *testing.T) {
+	service := &managementAuditLogServiceStub{}
+	handler := newManagementAuditErrorGroupEventsHandler(service)
+	req := httptest.NewRequest(http.MethodGet, "/__aisys__/api/audit-logs/error-groups/%20/events", nil)
+	routeContext := chi.NewRouteContext()
+	routeContext.URLParams.Add("errorGroupId", "\uFEFF \t\n\uFEFF")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, routeContext))
+	req = req.WithContext(context.WithValue(req.Context(), managementAuthContextKey, managementauth.Context{SystemAccountID: "sys_admin", Role: "admin"}))
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest || service.eventCalled || !strings.Contains(rec.Body.String(), "错误分组 ID 不合法") {
+		t.Fatalf("status=%d called=%v body=%s", rec.Code, service.eventCalled, rec.Body.String())
+	}
+}
+
 func TestManagementAuditErrorGroupEventsHandlerReturnsGenericDependencyError(t *testing.T) {
 	service := &managementAuditLogServiceStub{err: errors.New("postgres password leaked")}
 	handler := newManagementAuditErrorGroupEventsHandler(service)
