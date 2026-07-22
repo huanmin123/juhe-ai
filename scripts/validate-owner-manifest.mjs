@@ -8,7 +8,8 @@ const REQUIRED_ROUTE_OWNERS = ['management', 'public', 'gateway', 'worker']
 const ALLOWED_OWNERS = new Set(['node', 'go'])
 const MIGRATION_FILENAME_PATTERN = /^([0-9]{6})_[a-z0-9_]+\.sql$/
 
-export const CURRENT_SCHEMA_VERSION = 69
+// Release packages omit the source migration catalog; the source-tree regression derives and verifies this value.
+export const CURRENT_SCHEMA_VERSION = 70
 
 export class OwnerManifestValidationError extends Error {
   constructor(message) {
