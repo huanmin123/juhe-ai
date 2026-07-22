@@ -503,7 +503,7 @@ Anthropic 账户测试必须复用真实网关链路。
 }
 ```
 
-`providerProtocolProfileId` 是导入协议层唯一协议档案入口。当前 Anthropic 官方 API Key 账户固定使用 `profile_anthropic_anthropic_v1`；导入协议不接受旧接入类型别名、`type = oauth`、`setup_token`、Claude Code token、WIF 或云平台托管 Claude 字段。
+`providerProtocolProfileId` 是导入协议层唯一协议档案入口。当前 Anthropic 官方账户固定使用 `profile_anthropic_anthropic_v1`；导入协议接受 `type = api_key` 和 Bearer Token 型 `type = oauth`，但仍不接受旧接入类型别名、`setup_token`、WIF、Cookie / sessionKey 或云平台托管 Claude 字段。
 
 ## 参考实现观察
 
