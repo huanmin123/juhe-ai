@@ -877,3 +877,5 @@
 - 当前仍不能直接删除 Node：owner manifest 只有 management/public/gateway/worker 四个粗粒度 owner，release/proxy/owner lock 也不支持 Node/Go 双 listener 的 route-level 分流；已提交 schema authority 69、manifest 67、start scripts 63 和部署文档 57 还存在门禁漂移。
 - Pilot 固定为 `GET /__aisys__/api/settings/public`；随后依次评估 external integration scopes/api-docs、stats usage-window、settings GET 和 operation logs。每条均需 strict real dependency、真实 listener、ingress owner、观察和实际回切证据后才删除 Node 精确入口。
 - Node server、DB service、ingest/stats/ops/temporary-maintenance worker 继续保持 owner；HTTP 纯读路由切到 Go 不代表 writer、worker、gateway 或整个 Node 进程已接管。当前文档提交不修改 proxy、不删除 Node，也不启动任何双 writer。
+- 路由 owner 中 `GET`、`HEAD`、`OPTIONS` 必须独立：删除 Node Express GET 前先固化独立 Node HEAD handler。首批代理只支持 Caddy，冻结 canonical path/alias matrix，并由带锁、journal、validate、原子替换、reload 和失败恢复的 adapter 执行；Nginx 在等价门禁完成前不支持。
+- Node GET 删除后的回滚不能只依赖普通上一发布包：每条 route 删除前必须构建、真实启动并 smoke 与当前 schema 精确匹配的 route rollback artifact。未过期 artifact 在 schema authority 前进前必须刷新，否则阻止发布；保留期结束后该 route 进入永久减法并只允许前滚修复 Go。

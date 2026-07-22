@@ -1,6 +1,6 @@
 # 路由级 Node 减法切流与回滚设计
 
-> 状态：书面设计已批准，待实施。基线：`origin/master=13b7dbd160b408ecb14451a45d803b3628c8f329`（2026-07-22）。关联计划：[PLAN-0081](../plans/计划-0081-Node转Go渐进减法迁移.md)、[PLAN-0153](../plans/计划-0153-路由级Node减法切流.md)。
+> 状态：书面设计已批准，待实施。审计与复核基线：`origin/master=df84d00d0d809e348cb8eff5e40ef4569a02ea6f`（2026-07-22）。关联计划：[PLAN-0081](../plans/计划-0081-Node转Go渐进减法迁移.md)、[PLAN-0153](../plans/计划-0153-路由级Node减法切流.md)。
 
 ## 1. 目标
 
@@ -33,7 +33,7 @@ routeKey = METHOD + " " + canonicalPathPattern
 
 规则：
 
-- method 必须显式；`GET` 不自动包含 `HEAD` 或 `OPTIONS`。
+- method 必须显式；`GET`、`HEAD` 和 `OPTIONS` 是三个独立 routeKey。Node Express 的隐式 HEAD 依附 GET，因此切 GET 前必须先建立并验证独立 Node HEAD handler；删除 GET 后再次验证 HEAD，不能让它随 GET 静默消失。
 - 首批只允许 exact path。带资源 ID 的 pattern 必须等 exact pilot 稳定后再启用，并使用受约束的单段参数，不接受任意正则或 catch-all。
 - 默认 owner 永远是 Node；只有清单中显式标记且通过门禁的 routeKey 才进入 Go。
 - 不允许 exact、parameter、prefix 规则重叠后命中不同 owner；配置生成阶段必须拒绝歧义。
@@ -41,7 +41,19 @@ routeKey = METHOD + " " + canonicalPathPattern
 
 建议 manifest 后续升级为版本化声明，至少包含 `id/method/path/owner/capabilities/rollbackOwner`。代理配置、Go route allowlist、发布预检和 smoke 必须从同一声明生成或校验，禁止维护四份手工清单。
 
-### 3.2 进程 owner 与数据 owner 分离
+### 3.2 首批 URI 与代理规范
+
+首批只支持 Caddy；Nginx 在拥有等价 adapter、alias fixtures 和原子回滚测试前标记为 `unsupported`，不能由运维手写近似规则上线。发布证据必须记录 Caddy 可执行文件路径和版本。
+
+route manifest 的 path 是 rewrite 前的 canonical request path：
+
+- 只接受以 `/` 开头的固定 ASCII path，区分大小写；query 不参与 owner 匹配，但必须原样转发。
+- owner route 禁止 `handle_path`、`uri strip_prefix` 或其他先 rewrite 再匹配的规则。
+- 首批 canonical path 不含尾斜杠、重复斜杠、`.` / `..` 段、反斜杠、控制字符或任何 percent escape。
+- 非 canonical 形式不归一化到 Go，统一落入 Node catch-all。至少覆盖尾斜杠、重复斜杠、大小写变化、`./` / `../`、`%2F` / `%5C`、未保留字符 percent encoding、非法 escape 和带 query 的 property probes。
+- Caddy adapter 必须在实际目标版本上先跑 alias matrix；只要任一非 canonical 请求误命中 Go，就拒绝生成或 reload。不能仅凭 manifest 文本无重叠宣称单 owner。
+
+### 3.3 进程 owner 与数据 owner 分离
 
 HTTP 路由切到 Go 不等于 Node 进程可以退出。首批期间继续保留：
 
@@ -124,34 +136,71 @@ operation log 管理/个人列表和详情四条 GET 作为第一批后半段候
 2. **纯读门禁**：除 read limiter 计数外，无 session touch、DB mutation、enqueue、游标推进、惰性 rebuild、cache version publish 或本地文件状态更新。
 3. **数据门禁**：schema catalog、Node gate、owner manifest、start scripts 和部署文档使用同一已提交版本；真实 PG/Redis/Asynq 测试在 `JUHE_AI_REQUIRE_INTEGRATION=1` 下不能 `SKIP`。
 4. **双 listener 门禁**：Node/Go 使用不同 loopback 端口；分别通过 health JSON `success=true,status=ok`、两个 `readyz` 入口和路由专属真实 smoke。Go 端口不得直接公网暴露。
-5. **owner 门禁**：method+path manifest 无重叠；生成的代理 dry-run 只改变目标 routeKey，默认 catch-all、gateway、其他 methods 仍指向 Node。
+5. **owner 门禁**：method+path manifest 无重叠；Caddy alias matrix 通过；生成的代理 dry-run 只改变目标 GET routeKey，默认 catch-all、gateway、独立 Node HEAD 和其他 methods 仍指向 Node。
 6. **切流门禁**：保存 previous proxy config/hash；原子 reload；通过 ingress 响应标记或受控诊断证明请求实际到 Go，而不是只看业务 200。
 7. **观察门禁**：在预定窗口核对 route 级请求量、4xx/5xx/429、p95/p99、Go readiness、PG pool、Redis limiter 和 Node writer/worker lag；无自动 fallback 掩盖故障。
-8. **删除门禁**：稳定窗口结束后，删除 Node 精确 route 注册、对应仅供该路由使用的 service/test/命令；`rg` 证明无入口残留。共享 service 仍被其他 Node 路由使用时不得误删。
+8. **删除门禁**：切 GET 前先把 Express 隐式 HEAD 固化为独立 Node handler，并生成与当前 schema 精确匹配的 route rollback artifact；稳定窗口结束后删除 Node 精确 GET 注册、对应仅供该 GET 使用的 service/test/命令，并复跑 GET owner 与 Node HEAD。`rg` 证明 GET 入口无残留；共享 service 或 HEAD 仍使用的代码不得误删。
 
 ## 6. 切流步骤
 
 1. 获取最新 `origin/master`，确认工作树干净，记录 Node/Go commit、schema version、manifest hash 和 proxy config hash。
 2. 启动 Node 原 owner；启动 Go 候选 listener。两者仅绑定 loopback，Node bridge 保持直连且不经过公网代理。
 3. 直接端口执行 health/readyz、route smoke 和 Node/Go fixture 对照。
-4. 生成只改变一个 routeKey 的候选代理配置，执行静态校验和 dry-run；验证 catch-all 仍为 Node。
+4. 生成只改变一个 GET routeKey 的候选 Caddy 配置，执行静态校验、alias matrix 和 dry-run；验证 catch-all、HEAD 和相邻 methods 仍为 Node。
 5. 保存 previous config，原子 reload 候选配置。
 6. 从 ingress 执行成功、权限、429、非法输入和 adjacent-route probes，证明 owner 与未切路径均正确。
 7. 观察并记录指标；首批不得同时切下一条，避免归因不清。
-8. 满足稳定窗口后再进入 Node 精确路由删除提交；删除提交仍保留上一发布包用于回滚。
+8. 满足稳定窗口且 route rollback artifact 通过后再进入 Node 精确路由删除提交。
 
-## 7. 回滚
+## 7. Caddy 切流与回滚 adapter
+
+实施阶段提供一个仓库内、可回归的 adapter，接口固定为：
+
+```text
+route-owner-cutover --action takeover|switchback --route-id <id>
+  --manifest <owner-manifest> --caddyfile <active-config>
+  --state-dir <release外绝对目录> --caddy <绝对可执行文件>
+  --timeout 30s --dry-run|--apply
+```
+
+adapter 必须：
+
+1. 在 `state-dir` 获取 deployment-scope 排他锁，拒绝并发切流；状态目录与 active config 在同一文件系统，且不位于 release 内。
+2. 验证当前 Node/Go release commit、schema authority、manifest hash、active config hash、Caddy 版本和 previous Node listener readiness；任一不一致 fail-closed。
+3. 在 `state-dir/staging` 生成完整候选配置，以实际 Caddy 执行 `caddy validate --config <staging>`，再跑 route/alias 静态探针。
+4. 把 active config、hash、manifest、release/schema 元数据写入带时间戳 previous artifact 和 fsync journal；同一 route 至少保留最近两份可恢复 artifact。
+5. 在同卷原子替换 active config，执行有界 `caddy reload --config <active>`，再运行 ingress owner、业务、HEAD、alias 和 adjacent-route probes。
+6. validate、replace、reload 或 probe 任一失败时，在同一锁内恢复 previous config、再次 reload 并证明 Node owner；恢复失败返回非零且保留 journal，不得报告回滚成功。
+7. journal 记录 `prepared/replaced/reloaded/verified/rolled_back/failed` phase。进程中断后下一次运行先恢复未完成 phase，不允许覆盖现场。
+
+本设计不允许 proxy 对单请求自动 failover Node；adapter 的失败恢复是发布事务回滚，不是运行时双 owner。
+
+## 8. 回滚流程
+
+回滚分成两个阶段：
+
+- Node GET 尚未删除：用 previous Caddy artifact 原子回切仍在运行的 Node owner。
+- Node GET 已删除：代理回切本身无效，必须部署该 route 的 Node rollback artifact，再把 routeKey 切回该 release；这是整个 Node HTTP release 的受控回滚，不允许临时启动第二个 writer/supervisor。
+
+每个 route rollback artifact 必须满足：
+
+- 从该 route 删除前的代码构建，记录 route ID、commit、Node version、schema version、owner manifest、配置 hash 和二进制/包 hash。
+- 在与生产相同的当前 schema 上真实启动，执行 health/ready、目标 route、HEAD、相邻路由及 writer/worker 单 owner smoke；只保存源码 tag 或未启动的压缩包不算证据。
+- 保存在 release 目录之外的只读 artifact registry，并在 route rollback index 中可按 route ID 唯一定位。
+- 至少保留 30 天且跨过 3 个成功生产 release，取较晚者；到期删除必须记录该 route 进入永久减法、此后只前滚修复 Go。
+- 未过期 artifact 的 schema 必须与将要发布的 schema 精确一致。schema authority 前进前，要么在维护分支把仍需保留的已删 route 重建到新 schema 并重跑 smoke，要么阻止 schema 发布；不能保留一个注定被精确 schema gate 拒绝的假回滚包。
+- 多路由连续删除时，每次生成的新 artifact/index 必须声明它能恢复哪些 route；不能用只包含最近一条 route 的包声称可恢复全部历史 route。
 
 切流失败不做运行时双读或自动 Node fallback：
 
 1. 立即停止继续放量。
-2. 原子恢复 previous proxy config 并 reload。
+2. 用上述 adapter 的 `switchback --apply` 原子恢复已验证的 previous artifact 并 reload。
 3. 通过 ingress owner 证明和路由 smoke 确认已回到 Node。
 4. Go listener 保留用于取证，不影响 Node writer；必要时停止 Go listener，但不停止 Node server/DB service/worker。
-5. 若 Node 路由已经从当前发布包删除，部署上一份同 schema 契约的 Node release；schema 变化只按已批准的离线恢复方案处理，不由运行时代码降级。
+5. 若 Node GET 已删除，先停止当前 Node HTTP owner（保留外部 worker 单 owner），部署并验证该 route 对应的 current-schema rollback artifact，再切回入口。不存在有效 artifact 时不得宣称可回滚，也不得开始删除。
 
 回滚成功的证据必须包括 owner、业务响应和 worker 新鲜度，不能只记录“代理 reload 成功”。
 
-## 8. 并行实施边界
+## 9. 并行实施边界
 
 可并行：各路由契约、fixture、独立 Go handler/store、真实 smoke、指标查询和文档复核。必须串行：route manifest schema、代理生成器、`router.go/server.go/config.go` 中央接线、schema catalog、最终切流和 Node 删除。所有实现分支先同步最新 master；Node 新业务提交必须重新触发对应 route 的漂移审计。
