@@ -103,7 +103,15 @@ func TestSystemAPIPostReadRoutesUseReadLimitsWithoutTouchingSession(t *testing.T
 }
 
 func TestRetiredPageDataConfirmRouteReturnsNotFound(t *testing.T) {
-	router := NewRouter(RouterOptions{Config: config.Config{ManagementAPIEnabled: true}})
+	passthrough := func(next http.Handler) http.Handler { return next }
+	router := NewRouter(RouterOptions{
+		Config:                           config.Config{ManagementAPIEnabled: true},
+		ManagementAPIAuthMiddleware:      passthrough,
+		ManagementAPIAuthTouchMiddleware: passthrough,
+		ManagementAccountImportPreviewHandler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	})
 	req := httptest.NewRequest(http.MethodPost, "/__aisys__/api/data-changes/confirm", nil)
 	rec := httptest.NewRecorder()
 
