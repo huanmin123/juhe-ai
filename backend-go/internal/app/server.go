@@ -455,6 +455,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAnnouncementPublicListHandler:           managementHandlers.AnnouncementPublicListHandler,
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
+		ManagementSystemMetricsHandler:                    managementHandlers.SystemMetricsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
 	})
@@ -688,6 +689,7 @@ type managementAPIHandlers struct {
 	AnnouncementPublicListHandler           http.Handler
 	AnnouncementPublicReadHandler           http.Handler
 	AnnouncementsHandler                    http.Handler
+	SystemMetricsHandler                    http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
 }
@@ -1165,6 +1167,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
 		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
+		SystemMetricsHandler:                    httpapi.NewManagementSystemMetricsHandler(statsService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
 	}
