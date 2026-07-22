@@ -139,7 +139,7 @@ func recordManagementAPIKeyDeleteOperationLog(
 	statusCode int,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	mode := "self"

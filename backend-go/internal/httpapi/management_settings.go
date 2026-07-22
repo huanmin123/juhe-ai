@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
-	operationlogjob "juhe-ai/backend-go/internal/jobs/operationlog"
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementsettings"
 	"juhe-ai/backend-go/internal/modules/publicsettings"
@@ -203,7 +201,7 @@ func recordGlobalSettingsUpdateOperationLog(
 	result managementsettings.UpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -250,33 +248,17 @@ func enqueueManagementOperationLog(
 	opts managementOperationLogOptions,
 	input port.OperationLogInput,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
-	operationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-	defer cancel()
-
-	maxChanges, err := operationLogMaxChangesPerRecord(operationCtx, opts)
-	if err == nil {
-		input.Changes = sanitizeManagementOperationLogChanges(input.Changes, maxChanges)
-		_, err = operationlogjob.EnqueueWrite(operationCtx, opts.client, input)
-	}
-	if err != nil && opts.logger != nil {
-		opts.logger.Warn("管理端操作日志入队失败",
-			slog.String("event", "operation_log_enqueue_failed"),
-			slog.String("operation_key", input.OperationKey),
-			slog.String("resource_id", input.ResourceID),
-			slog.String("request_id", input.TraceID),
-			slog.Any("error", err),
-		)
-	}
+	opts.submitter.Submit(ctx, input)
 }
 
-func operationLogMaxChangesPerRecord(ctx context.Context, opts managementOperationLogOptions) (int, error) {
-	if opts.settingsReader == nil {
+func operationLogMaxChangesPerRecord(ctx context.Context, settingsReader OperationLogSettingsReader) (int, error) {
+	if settingsReader == nil {
 		return defaultOperationLogMaxChangesPerRecord, nil
 	}
-	value, err := opts.settingsReader.OperationLogMaxChangesPerRecord(ctx)
+	value, err := settingsReader.OperationLogMaxChangesPerRecord(ctx)
 	if err != nil {
 		return 0, err
 	}

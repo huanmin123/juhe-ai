@@ -635,7 +635,7 @@ func recordManagementRouteStrategyCreateOperationLog(
 	result managementroutestrategies.DetailResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

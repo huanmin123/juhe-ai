@@ -132,7 +132,7 @@ func writeManagementAccountForceActivateError(w http.ResponseWriter, err error) 
 }
 
 func recordAccountForceActivateOperationLog(r *http.Request, authContext managementauth.Context, scope managementAccountForceActivateScope, result managementaccountforceactivate.Result, opts managementOperationLogOptions) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

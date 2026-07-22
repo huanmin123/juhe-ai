@@ -546,7 +546,7 @@ func recordSystemTeamCreateOperationLog(
 	result managementsystemteams.Summary,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -603,7 +603,7 @@ func recordSystemTeamUpdateOperationLog(
 	result managementsystemteams.UpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -656,7 +656,7 @@ func recordSystemTeamMembersAddOperationLog(
 	result managementsystemteams.AddMembersResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -712,7 +712,7 @@ func recordSystemTeamMemberRemoveOperationLog(
 	result managementsystemteams.RemoveMemberResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

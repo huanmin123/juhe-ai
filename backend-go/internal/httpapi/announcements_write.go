@@ -328,7 +328,7 @@ func publishAnnouncementChange(r *http.Request, opts announcementManagementWrite
 }
 
 func recordAnnouncementOperationLog(r *http.Request, auth managementauth.Context, result port.Announcement, action string, before *port.Announcement, opts managementOperationLogOptions) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	statusCode := http.StatusOK

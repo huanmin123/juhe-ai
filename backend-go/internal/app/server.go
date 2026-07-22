@@ -192,6 +192,19 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		defer closePublisher()
 		accountsStaticResetPublisher = publisher
 	}
+	publicAPILogQueue, err := newPublicAPILogQueue(cfg)
+	if err != nil {
+		return err
+	}
+	if publicAPILogQueue != nil {
+		defer func() { _ = publicAPILogQueue.Close() }()
+	}
+	var publicAPILogSubmitter httpapi.PublicAPILogSubmitter
+	if publicAPILogQueue != nil {
+		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueue, logger)
+		publicAPILogSubmitter = publicAPILogDispatcher
+		defer shutdownRecordDispatcher(publicAPILogDispatcher, cfg.ShutdownTimeout, logger, "public API log")
+	}
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
 		logger,
@@ -200,13 +213,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		PublicAPIHandlerOptions{
 			APIKeyInvalidator: systemAccountInvalidator,
 			PageDataPublisher: accountsStaticResetPublisher,
+			logQueue:          publicAPILogQueue,
+			logSubmitter:      publicAPILogSubmitter,
 		},
 	)
 	if err != nil {
 		return err
-	}
-	if publicAPILogQueue != nil {
-		defer func() { _ = publicAPILogQueue.Close() }()
 	}
 	managementOperationLogQueue, err := newManagementOperationLogQueue(cfg)
 	if err != nil {
@@ -214,6 +226,16 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	}
 	if managementOperationLogQueue != nil {
 		defer func() { _ = managementOperationLogQueue.Close() }()
+	}
+	var managementOperationLogSubmitter httpapi.ManagementOperationLogSubmitter
+	if managementOperationLogQueue != nil {
+		managementOperationLogDispatcher := httpapi.NewManagementOperationLogDispatcher(
+			managementOperationLogQueue,
+			store,
+			logger,
+		)
+		managementOperationLogSubmitter = managementOperationLogDispatcher
+		defer shutdownRecordDispatcher(managementOperationLogDispatcher, cfg.ShutdownTimeout, logger, "management operation log")
 	}
 	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
 	if err != nil {
@@ -236,6 +258,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		store,
 		stateRedis,
 		managementOperationLogQueue,
+		managementOperationLogSubmitter,
 		logger,
 		systemAccountInvalidator,
 		accountsStaticResetPublisher,
@@ -704,6 +727,21 @@ type managementAPIInvalidator interface {
 	managementclientippolicies.ClientIPPolicyCacheInvalidator
 }
 
+type recordDispatcherShutdowner interface {
+	Shutdown(context.Context) error
+}
+
+func shutdownRecordDispatcher(dispatcher recordDispatcherShutdowner, timeout time.Duration, logger *slog.Logger, recordType string) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := dispatcher.Shutdown(ctx); err != nil && logger != nil {
+		logger.Warn("记录派发器关闭超时",
+			slog.String("record_type", recordType),
+			slog.Any("error", err),
+		)
+	}
+}
+
 type gatewayCacheInvalidator interface {
 	managementAPIInvalidator
 	publicapikeys.APIKeyGatewayCacheInvalidator
@@ -725,6 +763,7 @@ func newManagementAPIHandlerWithPageData(
 		store,
 		stateRedis,
 		operationLogQueue,
+		nil,
 		logger,
 		systemAccountInvalidator,
 		accountsStaticResetPublisher,
@@ -739,6 +778,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	store *postgresstore.Store,
 	stateRedis *redisplatform.Client,
 	operationLogQueue operationLogEnqueueClient,
+	operationLogSubmitter httpapi.ManagementOperationLogSubmitter,
 	logger *slog.Logger,
 	systemAccountInvalidator managementAPIInvalidator,
 	accountsStaticResetPublisher managementPageDataPublisher,
@@ -964,6 +1004,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Logger:         logger,
 		Client:         operationLogQueue,
 		SettingsReader: store,
+		Submitter:      operationLogSubmitter,
 	}
 	return managementAPIHandlers{
 		AuthMiddleware:                          httpapi.NewManagementAPIAuthMiddleware(authenticator),
@@ -1272,6 +1313,22 @@ func newManagementOperationLogQueue(cfg config.Config) (*queue.Client, error) {
 	return logQueue, nil
 }
 
+func newPublicAPILogQueue(cfg config.Config) (*queue.Client, error) {
+	if !cfg.PublicAPIEnabled {
+		return nil, nil
+	}
+	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
+	if err != nil {
+		return nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	}
+	logQueue := queue.NewClient(redisOpts)
+	if err := logQueue.Ping(); err != nil {
+		_ = logQueue.Close()
+		return nil, fmt.Errorf("公开接口日志队列不可用: %w", err)
+	}
+	return logQueue, nil
+}
+
 func newPublicAPIHandler(
 	cfg config.Config,
 	logger *slog.Logger,
@@ -1287,6 +1344,8 @@ type PublicAPIHandlerOptions struct {
 	APIKeyInvalidator            publicapikeys.APIKeyGatewayCacheInvalidator
 	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
 	PageDataPublisher            accountpagedata.Publisher
+	logQueue                     *queue.Client
+	logSubmitter                 httpapi.PublicAPILogSubmitter
 }
 
 func NewPublicAPIHandler(
@@ -1319,19 +1378,25 @@ func newPublicAPIHandlerWithOptions(
 		return nil, nil, nil
 	}
 
-	redisOpts, err := queue.ParseRedisURL(cfg.RedisQueueURL)
-	if err != nil {
-		return nil, nil, fmt.Errorf("JUHE_AI_REDIS_QUEUE_URL 无效: %w", err)
+	logQueue := opts.logQueue
+	createdLogQueue := false
+	if logQueue == nil {
+		var err error
+		logQueue, err = newPublicAPILogQueue(cfg)
+		if err != nil {
+			return nil, nil, err
+		}
+		createdLogQueue = true
 	}
-	logQueue := queue.NewClient(redisOpts)
-	if err := logQueue.Ping(); err != nil {
-		_ = logQueue.Close()
-		return nil, nil, fmt.Errorf("公开接口日志队列不可用: %w", err)
+	closeCreatedLogQueue := func() {
+		if createdLogQueue {
+			_ = logQueue.Close()
+		}
 	}
 
 	limiter, err := publicapiratelimit.NewLimiter(publicapiratelimit.Options{Client: stateRedis})
 	if err != nil {
-		_ = logQueue.Close()
+		closeCreatedLogQueue()
 		return nil, nil, err
 	}
 
@@ -1340,7 +1405,7 @@ func newPublicAPIHandlerWithOptions(
 		opts.AccountHealthCheckDispatcher,
 	)
 	if err != nil {
-		_ = logQueue.Close()
+		closeCreatedLogQueue()
 		return nil, nil, err
 	}
 
@@ -1356,7 +1421,7 @@ func newPublicAPIHandlerWithOptions(
 		nil,
 	)
 	if err != nil {
-		_ = logQueue.Close()
+		closeCreatedLogQueue()
 		return nil, nil, err
 	}
 
@@ -1366,6 +1431,7 @@ func newPublicAPIHandlerWithOptions(
 		Authenticator:           publicapiauth.NewAuthenticator(publicapiauth.AuthenticatorOptions{Store: store}),
 		RateLimiter:             limiter,
 		LogClient:               logQueue,
+		LogSubmitter:            opts.logSubmitter,
 		EndpointHandlers:        handlers,
 		Now:                     opts.Now,
 		NewLogID:                opts.NewLogID,
