@@ -15,8 +15,15 @@ import {
   createMemoryPageDataCacheStorage,
   type PageDataLoadResult
 } from '../../shared/pageDataCache'
-import type { PageDataActivationParticipant } from '../../shared/pageDataActivationCoordinator'
+import type {
+  PageDataActivationHandle,
+  PageDataActivationParticipant
+} from '../../shared/pageDataActivationCoordinator'
 import { myAccountsPageDataActivationManifest } from '../../shared/pageDataActivationManifests'
+import {
+  advancePageDataSessionGeneration,
+  currentPageDataSecurityGeneration
+} from '../../shared/pageDataGenerationFences'
 import type {
   PageDataActivation,
   PageDataActivationLifecycleTimer
@@ -31,11 +38,13 @@ Object.assign(globalThis, {
   HTMLElement: domWindow.HTMLElement,
   SVGElement: domWindow.SVGElement,
   MutationObserver: domWindow.MutationObserver,
+  history: domWindow.history,
+  location: domWindow.location,
   getComputedStyle: domWindow.getComputedStyle.bind(domWindow)
 })
 
 const { usePageDataActivation } = await import('../../composables/usePageDataActivation')
-const { KeepAlive, createApp, defineComponent, h, nextTick, ref } = await import('vue')
+const { KeepAlive, computed, createApp, defineComponent, h, nextTick, ref } = await import('vue')
 
 class FakeClock {
   private nextId = 1
@@ -494,9 +503,9 @@ assert.equal((await targetedRefresh).superseded, false)
 assert.equal(networkCalls.get('accounts.static'), 2)
 assert.equal(networkCalls.get('providers.catalog'), providerNetworkBeforeTargeted)
 assert.equal(networkCalls.get('accounts.options'), tagNetworkBeforeTargeted)
-assert.equal(revalidatorCalls.get('providers.catalog'), providerRunsBeforeTargeted + 1)
-assert.equal(revalidatorCalls.get('accounts.options'), tagRunsBeforeTargeted + 1)
-assert.equal(revalidatorCalls.get('accounts.static'), accountRunsBeforeTargeted + 1, 'runTargeted 不得运行额外全页 revalidator')
+assert.equal(revalidatorCalls.get('providers.catalog'), providerRunsBeforeTargeted + 2, 'targeted 期间 focus 必须合并并在结束后补跑一次 full')
+assert.equal(revalidatorCalls.get('accounts.options'), tagRunsBeforeTargeted + 2, 'targeted 期间 focus 必须补跑 providers/tags')
+assert.equal(revalidatorCalls.get('accounts.static'), accountRunsBeforeTargeted + 2, 'runTargeted 结束后必须恰好补跑一次 pending full')
 assert.deepEqual(Object.keys(requests.at(-1)?.domains ?? {}), ['accounts.static'])
 unregisterFullRevalidator()
 
@@ -513,12 +522,65 @@ const secondTargeted = activation.runTargeted(['accounts.static'], async () => {
   targetedOrder.push('second:end')
   return 'second'
 })
-await flushMicrotasks()
+await clock.advanceBy(100)
 assert.deepEqual(targetedOrder, ['first:start'], '多个 targeted 调用必须 FIFO 串行，不得互相 supersede')
 firstTargetedGate.resolve(undefined)
 assert.equal(await firstTargeted, 'first')
 assert.equal(await secondTargeted, 'second')
 assert.deepEqual(targetedOrder, ['first:start', 'first:end', 'second:start', 'second:end'])
+
+const stuckTargetedStartedAt = clock.nowMs
+const stuckTargeted = activation.runTargeted(['accounts.static'], async () => neverSettles)
+await flushMicrotasks()
+const callsBeforeStuckTargetedFocus = new Map(revalidatorCalls)
+focusListener?.()
+activation.trigger('interval')
+await clock.advanceTo(stuckTargetedStartedAt + revalidationTimeoutMs)
+await assert.rejects(stuckTargeted, /targeted.*deadline/i, 'targeted 永久 pending 必须在 deadline 后释放调用方和 FIFO')
+await clock.advanceBy(100)
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(
+    revalidatorCalls.get(domain),
+    (callsBeforeStuckTargetedFocus.get(domain) ?? 0) + 1,
+    'targeted deadline 后必须补跑期间合并的 full revalidation'
+  )
+}
+
+const cancelledTargeted = activation.runTargeted(['accounts.static'], async () => neverSettles)
+await flushMicrotasks()
+activation.deactivate()
+await assert.rejects(cancelledTargeted, /activation.*不可用/i, 'deactivate 必须立即释放 targeted 锁')
+showActivationPage.value = false
+await nextTick()
+showActivationPage.value = true
+await nextTick()
+await clock.advanceBy(100)
+
+const zombieFullGate = deferred<void>()
+let zombieFullCalls = 0
+let zombieTargetedCalls = 0
+const unregisterZombieFull = activation.registerRevalidator('accounts.static', () => {
+  zombieFullCalls += 1
+  if (zombieFullCalls === 1) return zombieFullGate.promise
+})
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(zombieFullCalls, 1, 'zombie 竞态准备必须保持一个 full revalidator 挂起')
+const zombieTargeted = activation.runTargeted(['accounts.static'], async () => {
+  zombieTargetedCalls += 1
+  return 'zombie'
+})
+await flushMicrotasks()
+activation.deactivate()
+await assert.rejects(zombieTargeted, /activation.*不可用/i, '等待 full 的 targeted 必须可由 deactivate 释放')
+showActivationPage.value = false
+await nextTick()
+showActivationPage.value = true
+await nextTick()
+zombieFullGate.resolve(undefined)
+await clock.advanceBy(100)
+assert.equal(zombieTargetedCalls, 0, '已取消 targeted 的旧 continuation 不得在页面恢复后执行')
+unregisterZombieFull()
 
 gatedConfirmation = deferred<PageDataConfirmResult>()
 const lateParticipant: PageDataActivationParticipant = {
@@ -541,6 +603,172 @@ await flushMicrotasks()
 
 app.unmount()
 for (const controller of controllers.values()) controller.close()
+
+const { api } = await import('../../api/client')
+const { authState } = await import('../../composables/useAuth')
+const { useAccountListData } = await import('../../views/accounts/useAccountListData')
+const { loadProviderOptionsResource } = await import('../../composables/useProviderOptionsResource')
+const { createMemoryHistory, createRouter } = await import('vue-router')
+const {
+  loadAccountTagOptionsCached,
+  readAccountTagOptionsCache,
+  writeAccountTagOptionsCache
+} = await import('../../views/accounts/accountTagOptionsCache')
+const accountRevalidators = new Map<PageDataDomain, (activation: PageDataActivationHandle) => void | Promise<void>>()
+const wiringActivation = {
+  register: async (participant: PageDataActivationParticipant) => unavailableActivationDecision('pre', participant),
+  stabilize: async (participant: PageDataActivationParticipant & { baseline: PageDataRevisionToken }) => unavailableActivationDecision('post', participant),
+  trigger: () => undefined,
+  deactivate: () => undefined,
+  dispose: () => undefined,
+  registerRevalidator(domain: PageDataDomain, revalidate: (activation: PageDataActivationHandle) => void | Promise<void>) {
+    accountRevalidators.set(domain, revalidate)
+    return () => accountRevalidators.delete(domain)
+  },
+  runTargeted<T>(_domains: readonly PageDataDomain[], run: (activation: PageDataActivationHandle) => Promise<T>) {
+    return run(scopedAccountActivation(100))
+  }
+} satisfies PageDataActivation
+const previousCurrentUser = authState.currentUser.value
+const originalMyAccountsList = api.myAccounts.list
+const firstAccountNetworkStarted = deferred<void>()
+const firstAccountNetwork = deferred<ReturnType<typeof accountListResult>>()
+let accountNetworkCalls = 0
+api.myAccounts.list = async () => {
+  accountNetworkCalls += 1
+  if (accountNetworkCalls === 1) {
+    firstAccountNetworkStarted.resolve(undefined)
+    return firstAccountNetwork.promise
+  }
+  return accountListResult('new-generation')
+}
+authState.currentUser.value = {
+  id: 'task3-wiring-user',
+  username: 'task3-wiring-user',
+  displayName: 'Task3 Wiring User',
+  role: 'user',
+  mustChangePassword: false
+}
+let wiringAccounts: ReturnType<typeof useAccountListData> | undefined
+const WiringPage = defineComponent({
+  setup() {
+    wiringAccounts = useAccountListData({
+      isManagementView: computed(() => false),
+      pageDataActivation: wiringActivation,
+      scopedSystemAccountId: () => undefined
+    })
+    return () => h('div', 'account wiring page')
+  }
+})
+const wiringContainer = document.createElement('div')
+document.body.append(wiringContainer)
+const wiringApp = createApp(WiringPage)
+const wiringRouter = createRouter({
+  history: createMemoryHistory(),
+  routes: [{ path: '/my-accounts', component: WiringPage }]
+})
+await wiringRouter.push('/my-accounts')
+await wiringRouter.isReady()
+wiringApp.use(wiringRouter)
+wiringApp.mount(wiringContainer)
+await nextTick()
+const accountRevalidator = accountRevalidators.get('accounts.static')
+assert(accountRevalidator, '账户列表必须注册 accounts.static revalidator')
+const oldGenerationLoad = Promise.resolve(accountRevalidator(scopedAccountActivation(1)))
+await firstAccountNetworkStarted.promise
+const newGenerationLoad = Promise.resolve(accountRevalidator(scopedAccountActivation(2)))
+await waitFor(() => accountNetworkCalls === 2, '新 revalidation generation 不得复用旧账户 GET singleflight')
+await newGenerationLoad
+assert.equal(wiringAccounts?.accounts.value[0]?.id, 'new-generation', '新 generation 必须先应用新账户列表')
+firstAccountNetwork.resolve(accountListResult('old-generation'))
+await oldGenerationLoad
+await flushMicrotasks()
+assert.equal(wiringAccounts?.accounts.value[0]?.id, 'new-generation', '旧 GET 晚返回不得覆盖新 generation 数据')
+wiringApp.unmount()
+api.myAccounts.list = originalMyAccountsList
+authState.currentUser.value = previousCurrentUser
+
+const resourceTestUserBefore = authState.currentUser.value
+const originalProviderDefinitions = api.providers.definitions
+const originalMyAccountTags = api.myAccounts.tags
+const oldProviderStarted = deferred<void>()
+const oldProviderNetwork = deferred<Awaited<ReturnType<typeof originalProviderDefinitions>>>()
+const oldTagsStarted = deferred<void>()
+const oldTagsNetwork = deferred<Awaited<ReturnType<typeof originalMyAccountTags>>>()
+let providerNetworkCalls = 0
+let tagNetworkCalls = 0
+const appliedProviderIds: string[] = []
+try {
+  authState.currentUser.value = {
+    id: 'task3-resource-user',
+    username: 'task3-resource-user',
+    displayName: 'Task3 Resource User',
+    role: 'user',
+    mustChangePassword: false
+  }
+  api.providers.definitions = async () => {
+    providerNetworkCalls += 1
+    if (providerNetworkCalls === 1) {
+      oldProviderStarted.resolve(undefined)
+      return oldProviderNetwork.promise
+    }
+    return [providerDefinition('provider-new')]
+  }
+  api.myAccounts.tags = async () => {
+    tagNetworkCalls += 1
+    if (tagNetworkCalls === 1) {
+      oldTagsStarted.resolve(undefined)
+      return oldTagsNetwork.promise
+    }
+    return [{ id: 'tag-new', name: '新标签', accountCount: 0 }]
+  }
+
+  const oldProviderLoad = loadProviderOptionsResource({
+    activation: scopedDomainActivation('providers.catalog', 1),
+    apply: (items) => { if (items[0]) appliedProviderIds.push(items[0].id) },
+    includeDefinitions: true,
+    isManagementView: false
+  })
+  await oldProviderStarted.promise
+  await loadProviderOptionsResource({
+    activation: scopedDomainActivation('providers.catalog', 2),
+    apply: (items) => { if (items[0]) appliedProviderIds.push(items[0].id) },
+    includeDefinitions: true,
+    isManagementView: false
+  })
+  oldProviderNetwork.resolve([providerDefinition('provider-old')])
+  await oldProviderLoad
+  assert.deepEqual(appliedProviderIds, ['provider-new'], '旧 provider resource 晚返回不得 apply 覆盖新数据')
+
+  const oldTagsLoad = loadAccountTagOptionsCached({
+    activation: scopedDomainActivation('accounts.options', 1),
+    isManagementView: false,
+    revalidate: true
+  })
+  await oldTagsStarted.promise
+  const newTagsResult = await loadAccountTagOptionsCached({
+    activation: scopedDomainActivation('accounts.options', 2),
+    isManagementView: false,
+    revalidate: true
+  })
+  assert.equal(newTagsResult.superseded, false)
+  assert.equal(readAccountTagOptionsCache('self')?.[0]?.id, 'tag-new')
+  oldTagsNetwork.resolve([{ id: 'tag-old', name: '旧标签', accountCount: 0 }])
+  const oldTagsResult = await oldTagsLoad
+  assert.equal(oldTagsResult.superseded, true, '旧 tags resource 必须显式返回 superseded')
+  assert.equal(readAccountTagOptionsCache('self')?.[0]?.id, 'tag-new', '旧 tags resource 晚返回不得覆盖独立内存 cache')
+} finally {
+  api.providers.definitions = originalProviderDefinitions
+  api.myAccounts.tags = originalMyAccountTags
+  authState.currentUser.value = resourceTestUserBefore
+}
+
+const tagMemoryGenerationBefore = currentPageDataSecurityGeneration()
+writeAccountTagOptionsCache('self', [{ id: 'old-security-tag', name: '旧安全上下文标签', accountCount: 0 }])
+assert.equal(readAccountTagOptionsCache('self')?.[0]?.id, 'old-security-tag', '同一 security generation 内标签内存缓存必须可复用')
+advancePageDataSessionGeneration()
+assert.equal(currentPageDataSecurityGeneration(), tagMemoryGenerationBefore + 1)
+assert.equal(readAccountTagOptionsCache('self'), undefined, 'security generation 变化后不得命中旧标签内存缓存')
 
 let disabledActivation: PageDataActivation | undefined
 const disabledApp = createApp(defineComponent({
@@ -573,8 +801,18 @@ assert.match(accountListDataSource, /activation:\s*options\.pageDataActivation/)
 assert.match(accountListDataSource, /pageDataActivation\.runTargeted\(\s*\['accounts\.static'\],[\s\S]{0,180}\(activation\)\s*=>\s*execute\(activation,\s*true\)/)
 assert.match(accountListDataSource, /return refresh \? accountPageCache\.forceRefresh\(\) : accountPageCache\.load\(\)/)
 assert.doesNotMatch(accountListDataSource, /beginTargeted/)
+assert.doesNotMatch(accountListDataSource, /currentPageDataActivation/, '账户 revalidator 不得通过共享可变 activation 跨代传递')
+assert.match(accountListDataSource, /requestIdentity:\s*revalidationGeneration/, '账户 full revalidation 必须带显式请求代次，禁止复用旧 singleflight')
+assert.match(accountListDataSource, /pageDataActivation:\s*activation/, 'scoped activation 必须随单次 load options 传入 fetch/controller')
+assert.match(accountListDataSource, /superseded:\s*accountListResult\.superseded/, '账户旧 controller 返回 superseded 时不得应用列表数据')
+assert.match(accountListDataSource, /skipOptions:\s*true/, 'accounts.static revalidator 不得重复发起 providers/options 资源加载')
 assert.match(tagCacheSource, /activation:\s*input\.activation/)
+assert.match(tagCacheSource, /currentPageDataSecurityGeneration/, 'tags 独立内存缓存必须绑定安全上下文代次')
+assert.match(tagCacheSource, /if\s*\(!superseded\)[\s\S]{0,120}writeAccountTagOptionsCache/, '旧 tags resource 不得写独立内存 cache')
+assert.match(tagCacheSource, /outcome\.state\s*!==\s*'superseded'/, '旧 tags confirmation 不得写独立内存 cache')
 assert.match(providerSource, /activation:\s*options\.activation/)
+assert.match(providerSource, /if\s*\(!result\.superseded\)[\s\S]{0,100}applyIfCurrent/, '旧 provider resource 不得 apply')
+assert.match(providerSource, /outcome\.state\s*!==\s*'superseded'/, '旧 provider confirmation 不得 apply')
 assert.doesNotMatch(activationSource, /setInterval|clearInterval/, '页面 activation 周期必须使用一次性 timeout')
 assert.doesNotMatch(activationSource, /createCoordinatorTimer|setTimeout\(\(\) => undefined/, '生产代码不得使用空 timeout 辅助测试 flush')
 
@@ -584,6 +822,84 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   let resolve!: (value: T) => void
   const promise = new Promise<T>((accept) => { resolve = accept })
   return { promise, resolve }
+}
+
+function scopedAccountActivation(sequence: number): PageDataActivationHandle {
+  return scopedDomainActivation('accounts.static', sequence)
+}
+
+function scopedDomainActivation(domain: PageDataDomain, sequence: number): PageDataActivationHandle {
+  const revision = token(domain)
+  revision.sequence = sequence
+  return {
+    register: async (participant) => ({
+      state: 'confirmed',
+      phase: 'pre',
+      participant,
+      result: { action: 'reload', token: revision, serverTime: new Date().toISOString() }
+    }),
+    stabilize: async (participant) => ({
+      state: 'confirmed',
+      phase: 'post',
+      participant,
+      result: { action: 'unchanged', token: revision, serverTime: new Date().toISOString() }
+    }),
+    trigger: () => undefined,
+    deactivate: () => undefined,
+    dispose: () => undefined
+  }
+}
+
+function providerDefinition(id: string) {
+  return {
+    id,
+    code: id,
+    name: id,
+    enabled: true,
+    defaultProtocolProfileId: `${id}-default`,
+    protocolCode: 'openai',
+    protocolVersion: 'v1',
+    baseUrl: '',
+    defaultHealthCheckModel: '',
+    defaultSupportedModels: [],
+    accountTypes: [],
+    capabilities: [],
+    protocolProfiles: []
+  }
+}
+
+function unavailableActivationDecision(
+  phase: 'pre' | 'post',
+  participant: PageDataActivationParticipant
+) {
+  return { state: 'unavailable' as const, phase, participant }
+}
+
+function accountListResult(id: string) {
+  return {
+    items: [{
+      id,
+      name: id,
+      providerCode: 'openai',
+      providerProtocolProfileId: 'openai-default',
+      protocolCode: 'openai',
+      protocolVersion: 'v1',
+      type: 'api_key',
+      status: 'active',
+      schedulable: true,
+      priority: 0,
+      concurrency: 1,
+      currentConcurrency: 0,
+      tags: [],
+      supportedModels: [],
+      createdAt: '2026-07-22T00:00:00.000Z',
+      updatedAt: '2026-07-22T00:00:00.000Z'
+    }],
+    total: 1,
+    hasMore: false,
+    page: 1,
+    pageSize: 20
+  }
 }
 
 async function flushMicrotasks(): Promise<void> {

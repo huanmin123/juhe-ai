@@ -46,14 +46,14 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     const currentRequestToken = ++requestToken
     accountTagOptionsLoading.value = true
     try {
-      const nextOptions = await loadAccountTagOptionsCached({
+      const result = await loadAccountTagOptionsCached({
         activation: options.pageDataActivation,
         force,
         isManagementView: options.isManagementView.value,
         scopeParams
       })
-      if (currentRequestToken !== requestToken) return
-      accountTagOptions.value = nextOptions
+      if (result.superseded || currentRequestToken !== requestToken) return
+      accountTagOptions.value = result.data
       loadedScopeKey.value = scopeKey
     } catch (error) {
       if (currentRequestToken !== requestToken) return

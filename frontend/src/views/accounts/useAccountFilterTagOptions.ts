@@ -49,15 +49,15 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
     const scopeParams = config.accountScopeParams.value
     loading.value = true
     try {
-      const nextOptions = await loadAccountTagOptionsCached({
+      const result = await loadAccountTagOptionsCached({
         activation,
         force,
         isManagementView: config.isManagementView.value,
         revalidate,
         scopeParams
       })
-      if (currentRequestToken !== requestToken || currentScopeKey() !== nextScopeKey) return
-      options.value = nextOptions
+      if (result.superseded || currentRequestToken !== requestToken || currentScopeKey() !== nextScopeKey) return
+      options.value = result.data
       scopeKey.value = nextScopeKey
     } catch (error) {
       console.error(error)

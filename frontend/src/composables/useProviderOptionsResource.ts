@@ -41,9 +41,9 @@ export async function loadProviderOptionsResource(options: ProviderOptionsResour
         ? api.providers.definitions(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined)
         : api.providers.options(options.systemAccountId ? { systemAccountId: options.systemAccountId } : undefined).then((items) => items.map(providerOptionToDefinition))
   })
-  applyIfCurrent(options, result.data)
+  if (!result.superseded) applyIfCurrent(options, result.data)
   void result.confirmation?.then((outcome) => {
-    if (outcome.data) applyIfCurrent(options, outcome.data)
+    if (outcome.state !== 'superseded' && outcome.data) applyIfCurrent(options, outcome.data)
   })
   return result.data
 }

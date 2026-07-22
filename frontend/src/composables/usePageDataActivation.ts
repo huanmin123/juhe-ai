@@ -85,8 +85,10 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   let activationGeneration = 0
   let scopeGeneration = 0
   let pendingResume: { generation: number; reason: PageDataActivationTriggerReason } | undefined
+  let pendingFullRevalidation: { generation: number; reason: PageDataActivationTriggerReason } | undefined
   let targetedRequests = 0
   let targetedQueue: Promise<void> = Promise.resolve()
+  const cancelTargetedScopes = new Set<(error: Error) => void>()
   let removeFocusListener: (() => void) | undefined
   let removeVisibilityListener: (() => void) | undefined
 
@@ -123,19 +125,34 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
     ): Promise<T> {
       targetedRequests += 1
       const operation = targetedQueue.then(async () => {
-        const pendingFullRevalidation = revalidationInFlight
-        if (pendingFullRevalidation) await pendingFullRevalidation
-        if (disposed || !componentActive || !running || !isVisible()) {
-          throw new Error('页面数据 activation 当前不可用')
-        }
-        const allowedDomains = new Set(domains.filter((domain) => manifestDomains.has(domain)))
-        targetedDomains = allowedDomains
-        const generation = ++scopeGeneration
-        coordinator.trigger('activate')
+        let generation: number | undefined
+        const operationScope = createTargetedOperationScope()
+        cancelTargetedScopes.add(operationScope.cancel)
         try {
-          return await run(scopedHandle(generation, allowedDomains))
+          return await settleTargetedWithin(
+            (async () => {
+              const pendingFull = revalidationInFlight
+              if (pendingFull) await pendingFull
+              operationScope.assertActive()
+              if (disposed || !componentActive || !running || !isVisible()) {
+                throw new Error('页面数据 activation 当前不可用')
+              }
+              const allowedDomains = new Set(domains.filter((domain) => manifestDomains.has(domain)))
+              operationScope.assertActive()
+              targetedDomains = allowedDomains
+              generation = ++scopeGeneration
+              coordinator.trigger('activate')
+              return await run(scopedHandle(generation, allowedDomains))
+            })(),
+            operationScope,
+            revalidationTimeoutMs,
+            timer,
+            () => new Error('页面数据 targeted 请求超过 deadline')
+          )
         } finally {
-          if (scopeGeneration === generation) scopeGeneration += 1
+          operationScope.invalidate()
+          cancelTargetedScopes.delete(operationScope.cancel)
+          if (generation !== undefined && scopeGeneration === generation) scopeGeneration += 1
           targetedDomains = undefined
           coordinator.deactivate()
         }
@@ -146,16 +163,7 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
       ).finally(() => {
         targetedRequests -= 1
         if (targetedRequests !== 0) return
-        const resumeRequest = pendingResume
-        pendingResume = undefined
-        if (
-          resumeRequest?.generation === activationGeneration &&
-          !disposed && componentActive && running && isVisible()
-        ) {
-          revalidate(resumeRequest.reason)
-          return
-        }
-        scheduleInterval()
+        drainPendingRevalidation()
       })
       return operation
     }
@@ -191,9 +199,12 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
       || !componentActive
       || !running
       || !isVisible()
-      || revalidationInFlight
-      || targetedRequests > 0
     ) return
+    if (targetedRequests > 0) {
+      pendingFullRevalidation = { generation: activationGeneration, reason }
+      return
+    }
+    if (revalidationInFlight) return
     targetedDomains = undefined
     const generation = ++scopeGeneration
     coordinator.trigger(reason)
@@ -214,17 +225,7 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
     void operation.finally(() => {
       if (revalidationInFlight !== operation) return
       revalidationInFlight = undefined
-      if (targetedRequests > 0) return
-      const resumeRequest = pendingResume
-      pendingResume = undefined
-      if (
-        resumeRequest?.generation === activationGeneration &&
-        !disposed && componentActive && running && isVisible()
-      ) {
-        revalidate(resumeRequest.reason)
-        return
-      }
-      scheduleInterval()
+      drainPendingRevalidation()
     })
   }
 
@@ -238,9 +239,30 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
     activationGeneration += 1
     scopeGeneration += 1
     pendingResume = undefined
+    pendingFullRevalidation = undefined
     targetedDomains = undefined
-    stopIntervalTimeout()
     coordinator.deactivate()
+    const pendingCancellations = [...cancelTargetedScopes]
+    cancelTargetedScopes.clear()
+    void Promise.resolve().then(() => {
+      for (const cancel of pendingCancellations) cancel(new Error('页面数据 activation 当前不可用'))
+    })
+    stopIntervalTimeout()
+  }
+
+  function drainPendingRevalidation(): void {
+    if (targetedRequests > 0 || revalidationInFlight) return
+    const pending = pendingResume ?? pendingFullRevalidation
+    pendingResume = undefined
+    pendingFullRevalidation = undefined
+    if (
+      pending?.generation === activationGeneration
+      && !disposed && componentActive && running && isVisible()
+    ) {
+      revalidate(pending.reason)
+      return
+    }
+    scheduleInterval()
   }
 
   function dispose(): void {
@@ -351,6 +373,63 @@ function settleWithin(
     }, timeoutMs)
     void operation.then(settle, settle)
   })
+}
+
+function settleTargetedWithin<T>(
+  operation: Promise<T>,
+  operationScope: TargetedOperationScope,
+  timeoutMs: number,
+  timer: PageDataActivationLifecycleTimer,
+  timeoutError: () => Error
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const deadlineHandle = timer.setTimeout(() => operationScope.cancel(timeoutError()), timeoutMs)
+    const settleResolve = (value: T) => {
+      if (settled) return
+      settled = true
+      timer.clearTimeout(deadlineHandle)
+      resolve(value)
+    }
+    const settleReject = (error: unknown) => {
+      if (settled) return
+      settled = true
+      timer.clearTimeout(deadlineHandle)
+      reject(error)
+    }
+    void operation.then(settleResolve, settleReject)
+    void operationScope.cancelled.catch(settleReject)
+  })
+}
+
+interface TargetedOperationScope {
+  readonly cancelled: Promise<never>
+  readonly cancel: (error: Error) => void
+  assertActive(): void
+  invalidate(): void
+}
+
+function createTargetedOperationScope(): TargetedOperationScope {
+  let active = true
+  let cancellationError: Error | undefined
+  let rejectCancellation!: (error: Error) => void
+  const cancelled = new Promise<never>((_resolve, reject) => { rejectCancellation = reject })
+  const cancel = (error: Error) => {
+    if (!active) return
+    active = false
+    cancellationError = error
+    rejectCancellation(error)
+  }
+  return {
+    cancelled,
+    cancel,
+    assertActive() {
+      if (!active) throw cancellationError ?? new Error('页面数据 activation 当前不可用')
+    },
+    invalidate() {
+      active = false
+    }
+  }
 }
 
 function defaultFocusListener(listener: () => void): () => void {

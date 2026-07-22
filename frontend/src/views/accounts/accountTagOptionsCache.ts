@@ -1,6 +1,7 @@
 import { api, pageDataApi } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
+import { currentPageDataSecurityGeneration } from '@/shared/pageDataGenerationFences'
 import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountScopeParams } from './accountOperationScope'
@@ -13,7 +14,17 @@ interface AccountTagOptionsLoadInput {
   scopeParams?: AccountScopeParams
 }
 
-const accountTagOptionsMemory = new Map<string, AccountTagSummary[]>()
+export interface AccountTagOptionsLoadResult {
+  data: AccountTagSummary[]
+  superseded: boolean
+}
+
+interface AccountTagOptionsMemoryEntry {
+  securityGeneration: number
+  options: AccountTagSummary[]
+}
+
+const accountTagOptionsMemory = new Map<string, AccountTagOptionsMemoryEntry>()
 const accountTagOptionsResourceCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
 
 export function resolveAccountTagOptionsScopeKey(isManagementView: boolean, scopeParams?: AccountScopeParams): string | undefined {
@@ -23,12 +34,20 @@ export function resolveAccountTagOptionsScopeKey(isManagementView: boolean, scop
 }
 
 export function readAccountTagOptionsCache(scopeKey: string): AccountTagSummary[] | undefined {
-  const options = accountTagOptionsMemory.get(scopeKey)
-  return options ? [...options] : undefined
+  const entry = accountTagOptionsMemory.get(scopeKey)
+  if (!entry) return undefined
+  if (entry.securityGeneration !== currentPageDataSecurityGeneration()) {
+    accountTagOptionsMemory.delete(scopeKey)
+    return undefined
+  }
+  return [...entry.options]
 }
 
 export function writeAccountTagOptionsCache(scopeKey: string, options: AccountTagSummary[]): void {
-  accountTagOptionsMemory.set(scopeKey, [...options])
+  accountTagOptionsMemory.set(scopeKey, {
+    securityGeneration: currentPageDataSecurityGeneration(),
+    options: [...options]
+  })
 }
 
 export function invalidateAccountTagOptionsCache(scopeKey?: string): void {
@@ -43,13 +62,14 @@ export function invalidateAccountTagOptionsCache(scopeKey?: string): void {
   void accountTagOptionsResourceCache.invalidate('accounts.options', scope, route)
 }
 
-export async function loadAccountTagOptionsCached(input: AccountTagOptionsLoadInput): Promise<AccountTagSummary[]> {
+export async function loadAccountTagOptionsCached(input: AccountTagOptionsLoadInput): Promise<AccountTagOptionsLoadResult> {
   const scopeKey = resolveAccountTagOptionsScopeKey(input.isManagementView, input.scopeParams)
-  if (!scopeKey) return []
+  if (!scopeKey) return { data: [], superseded: false }
+  const securityGeneration = currentPageDataSecurityGeneration()
 
   if (!input.force && !input.revalidate) {
-    const cached = accountTagOptionsMemory.get(scopeKey)
-    if (cached) return [...cached]
+    const cached = readAccountTagOptionsCache(scopeKey)
+    if (cached) return { data: cached, superseded: false }
   }
   const systemAccountId = input.scopeParams?.systemAccountId?.trim()
   const scope = accountTagResourceScope(input.isManagementView, systemAccountId)
@@ -70,11 +90,16 @@ export async function loadAccountTagOptionsCached(input: AccountTagOptionsLoadIn
       ? api.accounts.tags(input.scopeParams)
       : api.myAccounts.tags()
   })
-  accountTagOptionsMemory.set(scopeKey, [...result.data])
+  const superseded = result.superseded || securityGeneration !== currentPageDataSecurityGeneration()
+  if (!superseded) writeAccountTagOptionsCache(scopeKey, result.data)
   void result.confirmation?.then((outcome) => {
-    if (outcome.data) accountTagOptionsMemory.set(scopeKey, [...outcome.data])
+    if (
+      outcome.state !== 'superseded'
+      && outcome.data
+      && securityGeneration === currentPageDataSecurityGeneration()
+    ) writeAccountTagOptionsCache(scopeKey, outcome.data)
   })
-  return result.data
+  return { data: result.data, superseded }
 }
 
 function accountTagResourceScope(isManagementView: boolean, systemAccountId?: string): string {
