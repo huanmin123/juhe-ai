@@ -870,3 +870,10 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 运行日志索引保留清理 Go 可运行切片
+
+- Go 已新增独立 port / service / PostgreSQL store / app worker 入口，只在 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true` 时运行；Node 继续拥有日志文件导入、runtime_logs/cursor/facet 写入和生产 supervisor 调度，本块不改 schema、不删 Node、不切生产 owner。
+- 保留天数读取 `sys_admin/runtimeLogIndexRetentionDays`，缺失或零值默认 14，catalog 值收敛到 1..90，显式 override 严格校验 1..90；一次运行固定毫秒 UTC cutoff。默认每批 1000、每轮 20 批，索引和 cursor 独立循环，满批之间执行 25ms context-aware pause。
+- PostgreSQL 索引批次按 `time ASC, id ASC LIMIT ... FOR UPDATE SKIP LOCKED` 选删，并在同一事务内以固定顺序锁定 summary / level / event facet 表。summary、level 和 event count 使用非负扣减；summary earliest/latest 与受影响 event latest 从 cutoff 后剩余索引重算，事务失败整体回滚。完成 cursor 只删除 `updated_at < cutoff`、已读完且无错误的行，按 `updated_at ASC, log_file ASC` 稳定小批处理。
+- 当前没有修改共享 `cmd/juhe-ai-worker/main.go`，因此 CLI / supervisor 集成点是调用 `app.RunRuntimeLogRetentionCleanupWorker` 并映射 `retention-days/batch-size/max-batches/interval/initial-delay/run-once`；真实 PostgreSQL 下 Node importer 与 Go cleanup 并发 smoke 后置，不能据此声明运行日志生产治理接管。
