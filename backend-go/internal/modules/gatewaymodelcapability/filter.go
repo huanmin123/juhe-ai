@@ -1,15 +1,19 @@
 package gatewaymodelcapability
 
-import "strings"
+import (
+	"strings"
 
-type EndpointFamily string
+	gatewayprotocol "juhe-ai/backend-go/internal/protocols/gateway"
+)
+
+type EndpointFamily = gatewayprotocol.EndpointFamily
 
 const (
-	EndpointFamilyChatCompletions       EndpointFamily = "chat_completions"
-	EndpointFamilyResponses             EndpointFamily = "responses"
-	EndpointFamilyMessages              EndpointFamily = "messages"
-	EndpointFamilyGenerateContent       EndpointFamily = "generate_content"
-	EndpointFamilyStreamGenerateContent EndpointFamily = "stream_generate_content"
+	EndpointFamilyChatCompletions       = gatewayprotocol.EndpointChatCompletions
+	EndpointFamilyResponses             = gatewayprotocol.EndpointResponses
+	EndpointFamilyMessages              = gatewayprotocol.EndpointMessages
+	EndpointFamilyGenerateContent       = gatewayprotocol.EndpointGenerateContent
+	EndpointFamilyStreamGenerateContent = gatewayprotocol.EndpointStreamGenerateContent
 )
 
 type CapabilityMismatchReason string

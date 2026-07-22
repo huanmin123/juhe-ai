@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"juhe-ai/backend-go/internal/modules/gatewaycredentials"
+	gatewayprotocol "juhe-ai/backend-go/internal/protocols/gateway"
 )
 
 func TestClassifyAPIKeyStateUsesOnePublicUnauthorizedError(t *testing.T) {
@@ -80,5 +83,60 @@ func TestRenderUsesProtocolSpecificDTOs(t *testing.T) {
 	gemini, ok := public.Render(ProtocolGemini).Payload.(GeminiErrorPayload)
 	if !ok || gemini.Error.Status != "UNAUTHENTICATED" || gemini.Error.Code != "invalid_api_key" {
 		t.Fatalf("Gemini payload = %#v", public.Render(ProtocolGemini).Payload)
+	}
+}
+
+func TestClassifyCredentialExtractionErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    gatewaycredentials.Input
+		wantCode string
+		wantText string
+	}{
+		{
+			name:     "missing",
+			input:    gatewaycredentials.Input{},
+			wantCode: "missing_api_key",
+			wantText: "缺少访问令牌",
+		},
+		{
+			name:     "malformed",
+			input:    gatewaycredentials.Input{Authorization: []string{"Basic secret"}},
+			wantCode: "invalid_api_key",
+			wantText: "API Key 无效或不可用",
+		},
+		{
+			name:     "ambiguous",
+			input:    gatewaycredentials.Input{XAPIKey: []string{"first", "second"}},
+			wantCode: "invalid_api_key",
+			wantText: "API Key 无效或不可用",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, extractionErr := gatewaycredentials.Extract(test.input)
+			if extractionErr == nil {
+				t.Fatal("Extract() error = nil")
+			}
+			public, ok := Classify(fmt.Errorf("extract gateway credential: %w", extractionErr))
+			if !ok {
+				t.Fatalf("Classify() ok = false for %v", extractionErr)
+			}
+			if public.Code() != test.wantCode || public.Message() != test.wantText {
+				t.Fatalf("Classify() = code %q message %q, want code %q message %q", public.Code(), public.Message(), test.wantCode, test.wantText)
+			}
+		})
+	}
+}
+
+func TestRenderAcceptsProtocolRegistryClientErrorProtocol(t *testing.T) {
+	public, ok := ClassifyAPIKeyState(APIKeyStateInvalid)
+	if !ok {
+		t.Fatal("ClassifyAPIKeyState() ok = false")
+	}
+	rendered := public.Render(gatewayprotocol.ClientErrorAnthropic)
+	if _, ok := rendered.Payload.(AnthropicErrorPayload); !ok {
+		t.Fatalf("Render() payload = %T, want AnthropicErrorPayload", rendered.Payload)
 	}
 }
