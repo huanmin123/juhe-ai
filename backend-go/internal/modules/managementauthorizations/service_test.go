@@ -1,8 +1,10 @@
 package managementauthorizations
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -700,6 +702,28 @@ func TestServiceExpireDueUsesDefaultBatchAndInvalidatesAuthorizationCache(t *tes
 	}
 }
 
+func TestAuthorizationInvalidationUsesDetachedTimeoutAndWarns(t *testing.T) {
+	invalidator := &authorizationInvalidatorStub{err: errors.New("redis unavailable")}
+	var logs bytes.Buffer
+	service := NewServiceWithOptions(ServiceOptions{
+		AuthorizationInvalidator: invalidator,
+		Logger:                   slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	service.invalidateAuthorizationChangedBestEffort(ctx, ResourceAuthorizationExpiredReason)
+
+	if invalidator.contextErr != nil || !invalidator.hasDeadline || invalidator.deadlineRemaining <= 0 || invalidator.deadlineRemaining > authorizationPostCommitSyncTimeout {
+		t.Fatalf("invalidator contextErr=%v deadline=%v remaining=%v", invalidator.contextErr, invalidator.hasDeadline, invalidator.deadlineRemaining)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") ||
+		!strings.Contains(logs.String(), ResourceAuthorizationExpiredReason) ||
+		!strings.Contains(logs.String(), "redis unavailable") {
+		t.Fatalf("warning log = %q", logs.String())
+	}
+}
+
 func TestServiceExpireDueNormalizesNegativeLimitAndSkipsInvalidationWhenEmpty(t *testing.T) {
 	now := time.Date(2026, 7, 9, 13, 30, 0, 0, time.UTC)
 	store := &authorizationExpirySweepStoreStub{}
@@ -894,6 +918,78 @@ func TestServiceAuthorizationInvalidationFailureDoesNotOverrideSuccessfulWrite(t
 				t.Fatalf("invalidator calls=%d reason=%q, want calls=1 reason=%q", invalidator.calls, invalidator.reason, tt.wantReason)
 			}
 		})
+	}
+}
+
+func TestAuthorizationWritesSucceedAfterCommittedAccountWrite(t *testing.T) {
+	now := time.Date(2026, 7, 19, 10, 0, 0, 0, time.UTC)
+	summary := Summary{
+		ID:                           "rauthgrant_main",
+		ResourceType:                 "account",
+		ResourceOwnerSystemAccountID: " owner-b ",
+		GranteeType:                  "system_account",
+		GranteeSystemAccountID:       "owner-a",
+	}
+	tests := []struct {
+		name   string
+		invoke func(context.Context) error
+	}{
+		{
+			name: "create",
+			invoke: func(ctx context.Context) error {
+				service := NewServiceWithOptions(ServiceOptions{Store: &authorizationCreateStoreStub{result: summary}, Now: func() time.Time { return now }})
+				_, err := service.Create(ctx, CreateInput{ResourceType: "account", ResourceID: "acct_main", ResourceOwnerSystemAccountID: "owner-b", GranteeType: "system_account", GranteeID: "owner-a", TargetGroupID: "grp_target", ActorSystemAccountID: "admin"})
+				return err
+			},
+		},
+		{
+			name: "update",
+			invoke: func(ctx context.Context) error {
+				service := NewServiceWithOptions(ServiceOptions{UpdateStore: &authorizationUpdateStoreStub{result: summary, found: true}, Now: func() time.Time { return now }})
+				_, _, err := service.Update(ctx, UpdateInput{AuthorizationID: "rauthgrant_main", ActorSystemAccountID: "admin", ActorRole: "admin", HasStatus: true, Status: "paused"})
+				return err
+			},
+		},
+		{
+			name: "return",
+			invoke: func(ctx context.Context) error {
+				service := NewServiceWithOptions(ServiceOptions{ReturnStore: &authorizationReturnStoreStub{result: summary, found: true}, Now: func() time.Time { return now }})
+				_, _, err := service.Return(ctx, ReturnInput{AuthorizationID: "rauthgrant_main", GranteeSystemAccountID: "owner-a", ActorSystemAccountID: "admin"})
+				return err
+			},
+		},
+		{
+			name: "return by resource",
+			invoke: func(ctx context.Context) error {
+				service := NewServiceWithOptions(ServiceOptions{ResourceReturnStore: &authorizationResourceReturnStoreStub{result: summary, found: true}, Now: func() time.Time { return now }})
+				_, _, err := service.ReturnByResource(ctx, ResourceReturnInput{ResourceType: "account", ResourceID: "acct_main", GranteeSystemAccountID: "owner-a", ActorSystemAccountID: "admin"})
+				return err
+			},
+		},
+		{
+			name: "revoke",
+			invoke: func(ctx context.Context) error {
+				service := NewServiceWithOptions(ServiceOptions{RevokeStore: &authorizationRevokeStoreStub{result: summary, found: true}, Now: func() time.Time { return now }})
+				_, _, err := service.Revoke(ctx, RevokeInput{AuthorizationID: "rauthgrant_main", ActorSystemAccountID: "admin", ActorRole: "admin"})
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.invoke(context.Background()); err != nil {
+				t.Fatalf("write error = %v", err)
+			}
+		})
+	}
+}
+
+func TestAuthorizationGroupResourceRevokeSucceeds(t *testing.T) {
+	service := NewServiceWithOptions(ServiceOptions{
+		RevokeStore: &authorizationRevokeStoreStub{found: true, result: Summary{ResourceType: "group", ResourceOwnerSystemAccountID: "owner"}},
+	})
+	if _, found, err := service.Revoke(context.Background(), RevokeInput{AuthorizationID: "rauthgrant_group", ActorSystemAccountID: "admin", ActorRole: "admin"}); err != nil || !found {
+		t.Fatalf("Revoke() found=%v error=%v", found, err)
 	}
 }
 

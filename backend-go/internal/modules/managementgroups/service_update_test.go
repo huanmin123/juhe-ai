@@ -246,6 +246,38 @@ func TestServiceUpdateMapsStoreErrors(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateReturnsDetailReadFailureAfterCommittedWrite(t *testing.T) {
+	wantErr := errors.New("detail read failed")
+	store := managementGroupUpdateStoreStub{
+		managementGroupDetailStoreStub: managementGroupDetailStoreStub{findErr: wantErr},
+		updateResult: port.ManagementGroupUpdateResult{
+			AccessType:               "owner",
+			OwnerSystemAccountID:     "sys_owner",
+			EffectiveSystemAccountID: "sys_owner",
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Store:              &store,
+		DetailStore:        &store,
+		AccountConcurrency: &managementGroupAccountConcurrencyStub{},
+	})
+
+	_, err := service.Update(context.Background(), UpdateInput{
+		ActorSystemAccountID: "sys_owner",
+		ActorRole:            "user",
+		SelfOnly:             true,
+		GroupID:              "grp_owner",
+		HasEnabled:           true,
+		Enabled:              false,
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Update() error = %v, want %v", err, wantErr)
+	}
+	if store.updateCalls != 1 {
+		t.Fatalf("UpdateManagementGroup() calls = %d, want 1", store.updateCalls)
+	}
+}
+
 func TestServiceUpdateUsesStoreConflictNameForProviderOnlyPatch(t *testing.T) {
 	store := managementGroupUpdateStoreStub{
 		updateErr: fmt.Errorf("%w: 已有名称", port.ErrManagementGroupNameExists),

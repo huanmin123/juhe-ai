@@ -1880,6 +1880,7 @@ func (s *Service) rebuildCatalogSnapshot(ctx context.Context, scope string, syst
 		)
 	}
 }
+
 type mergeKeyFunc func(port.ManagementProviderModelCatalogItem) string
 
 func mergeKeyModel(item port.ManagementProviderModelCatalogItem) string {

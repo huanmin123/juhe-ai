@@ -121,7 +121,6 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 		}
 		return CreateResult{}, err
 	}
-
 	summary := systemAccountSummaryFromPort(result.Account)
 	summary.LastLoginAt = ""
 
