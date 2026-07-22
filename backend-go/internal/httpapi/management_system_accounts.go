@@ -307,7 +307,7 @@ func recordSystemAccountUpdateOperationLog(
 	result managementsystemaccounts.UpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil || (!result.Changed && result.RevokedSessionCount == 0) {
+	if opts.submitter == nil || (!result.Changed && result.RevokedSessionCount == 0) {
 		return
 	}
 	now := opts.now
@@ -374,7 +374,7 @@ func recordSystemAccountPasswordResetOperationLog(
 	result managementsystemaccounts.PasswordResetResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now
@@ -448,7 +448,7 @@ func recordSystemAccountStatusUpdateOperationLog(
 	result managementsystemaccounts.StatusUpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	if result.Before.Status == result.Account.Status && result.RevokedSessionCount == 0 {
@@ -519,7 +519,7 @@ func recordSystemAccountImageGenerationUpdateOperationLog(
 	result managementsystemaccounts.ImageGenerationUpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil || !result.Changed {
+	if opts.submitter == nil || !result.Changed {
 		return
 	}
 	now := opts.now
@@ -582,7 +582,7 @@ func recordSystemAccountProfileUpdateOperationLog(
 	result managementsystemaccounts.ProfileUpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil || !result.Changed {
+	if opts.submitter == nil || !result.Changed {
 		return
 	}
 	changes := systemAccountProfileUpdateChanges(result)

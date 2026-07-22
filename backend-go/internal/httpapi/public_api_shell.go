@@ -46,6 +46,7 @@ type PublicAPIShellOptions struct {
 	Authenticator           PublicAPIAuthenticator
 	RateLimiter             PublicAPIRateLimiter
 	LogClient               publicapilogjob.EnqueueClient
+	LogSubmitter            PublicAPILogSubmitter
 	EndpointHandlers        map[string]http.Handler
 	Now                     func() time.Time
 	NewLogID                func() string
@@ -57,7 +58,7 @@ type publicAPIShell struct {
 	clientIPs     clientIPResolver
 	authenticator PublicAPIAuthenticator
 	rateLimiter   PublicAPIRateLimiter
-	logClient     publicapilogjob.EnqueueClient
+	logSubmitter  PublicAPILogSubmitter
 	handlers      map[string]http.Handler
 	now           func() time.Time
 	newLogID      func() string
@@ -91,12 +92,16 @@ func NewPublicAPIShell(opts PublicAPIShellOptions) http.Handler {
 			return "publog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
 	}
+	logSubmitter := opts.LogSubmitter
+	if logSubmitter == nil {
+		logSubmitter = newSynchronousPublicAPILogSubmitter(opts.LogClient, opts.Logger)
+	}
 	shell := &publicAPIShell{
 		logger:        opts.Logger,
 		clientIPs:     newClientIPResolver(opts.Config),
 		authenticator: opts.Authenticator,
 		rateLimiter:   opts.RateLimiter,
-		logClient:     opts.LogClient,
+		logSubmitter:  logSubmitter,
 		handlers:      clonePublicAPIHandlers(opts.EndpointHandlers),
 		now:           now,
 		newLogID:      newLogID,
@@ -247,7 +252,7 @@ func (s *publicAPIShell) writeAuthError(w http.ResponseWriter, state *publicAPIR
 }
 
 func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponseCapture, state *publicAPIRequestState, startedAt time.Time) {
-	if s.logClient == nil {
+	if s.logSubmitter == nil {
 		return
 	}
 
@@ -267,7 +272,7 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 	requestSnapshot := publicapilog.BuildRequestSnapshot(publicapilog.RequestSnapshotInput{
 		Method:             r.Method,
 		Path:               r.URL.Path,
-		Query:              publicAPIQueryMap(r.URL.Query()),
+		Query:              parsePublicAPIQuery(queryString),
 		Body:               state.requestBody,
 		ContentType:        r.Header.Get("Content-Type"),
 		ContentLength:      r.Header.Get("Content-Length"),
@@ -305,14 +310,9 @@ func (s *publicAPIShell) enqueueLog(r *http.Request, response *publicAPIResponse
 		EndedAt:          endedAt,
 		Closed:           closed,
 	})
-	enqueueCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), publicAPILogEnqueueTimeout)
-	defer cancel()
-	if _, err := publicapilogjob.EnqueueWrite(enqueueCtx, s.logClient, logInput); err != nil && s.logger != nil {
-		s.logger.Warn("公开接口日志入队失败",
-			slog.String("method", r.Method),
-			slog.String("path", r.URL.Path),
-			slog.String("error", err.Error()),
-		)
+	outcome := submitPublicAPILog(r.Context(), s.logSubmitter, logInput)
+	if !outcome.Accepted {
+		warnRecordDispatchRejection(s.logger, &publicRecordRejectWarnAt, "public_api_log", outcome.RejectionReason)
 	}
 }
 
@@ -446,23 +446,6 @@ func publicAPILogSourceContext(authContext *publicapiauth.AuthContext) *publicap
 		TokenPrefix: authContext.TokenPrefix,
 		IsTestToken: authContext.IsTestToken,
 	}
-}
-
-func publicAPIQueryMap(values map[string][]string) map[string]any {
-	out := make(map[string]any, len(values))
-	for key, items := range values {
-		switch len(items) {
-		case 0:
-			out[key] = ""
-		case 1:
-			out[key] = items[0]
-		default:
-			copied := make([]string, len(items))
-			copy(copied, items)
-			out[key] = copied
-		}
-	}
-	return out
 }
 
 func clonePublicAPIHandlers(handlers map[string]http.Handler) map[string]http.Handler {

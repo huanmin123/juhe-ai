@@ -3,7 +3,7 @@ import type { RequestQuotaLimits } from './access'
 import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
-export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
+export type AccountClientCompatibility = 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
 export type AccountGptServiceTierOverride = string
 export type AccountGptReasoningEffortOverride = string
 export type AccountSupportedEndpointMode =
@@ -397,19 +397,7 @@ export interface AccountSummary {
   authorizationTeamCount?: number
 }
 
-type AccountListDeferredField =
-  | 'currentConcurrency'
-  | 'currentConcurrencyAvailable'
-  | 'accountRuntimeAvailabilityAvailable'
-  | 'runtimeAvailability'
-  | 'effectiveAvailability'
-  | 'availabilityPresentation'
-  | 'apiKeyRuntime'
-  | 'todayUsage'
-  | 'lastUsedAt'
-
 export type AccountListItem = Omit<AccountSummary,
-  | AccountListDeferredField
   | 'credentials'
   | 'supportedModels'
   | 'modelMappings'
@@ -420,7 +408,7 @@ export type AccountListItem = Omit<AccountSummary,
   | 'authorizationUsageAvailable'
   | 'authorizationCount'
   | 'authorizationTeamCount'
-> & Partial<Pick<AccountSummary, AccountListDeferredField>>
+>
 
 export interface AccountStatusSnapshotItem {
   id: string
@@ -869,6 +857,9 @@ export interface GroupListResult {
 
 export interface GroupStatusSnapshotResult {
   generatedAt: string
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+  }
   items: Array<{
     id: string
     currentConcurrency: number

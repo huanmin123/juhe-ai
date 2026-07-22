@@ -63,6 +63,7 @@ type ManagementOperationLogOptions struct {
 	Logger         *slog.Logger
 	Client         operationlogjob.EnqueueClient
 	SettingsReader OperationLogSettingsReader
+	Submitter      ManagementOperationLogSubmitter
 	Now            func() time.Time
 	NewLogID       func() string
 }
@@ -75,6 +76,7 @@ type managementOperationLogOptions struct {
 	logger         *slog.Logger
 	client         operationlogjob.EnqueueClient
 	settingsReader OperationLogSettingsReader
+	submitter      ManagementOperationLogSubmitter
 	clientIP       clientIPResolver
 	now            func() time.Time
 	newLogID       func() string
@@ -321,10 +323,15 @@ func newManagementOperationLogOptions(opts ManagementOperationLogOptions) manage
 			return "oplog_" + strings.ReplaceAll(uuid.NewString(), "-", "")
 		}
 	}
+	submitter := opts.Submitter
+	if submitter == nil {
+		submitter = newSynchronousManagementOperationLogSubmitter(opts.Client, opts.SettingsReader, opts.Logger)
+	}
 	return managementOperationLogOptions{
 		logger:         opts.Logger,
 		client:         opts.Client,
 		settingsReader: opts.SettingsReader,
+		submitter:      submitter,
 		clientIP:       newClientIPResolver(opts.Config),
 		now:            now,
 		newLogID:       newLogID,
@@ -346,7 +353,7 @@ func recordAccountTagUpdateOperationLog(
 	result managementaccounts.TagUpdateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

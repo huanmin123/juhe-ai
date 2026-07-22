@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -16,11 +15,9 @@ func TestServiceDeleteUsesSelfScopeAndInvalidatesDeletedAccounts(t *testing.T) {
 		Before:            port.ManagementAccountDeleteSummary{ID: "acc_source", SystemAccountID: "sys_owner", Name: "主账户"},
 		DeletedAccountIDs: []string{"acc_source", "acc_instance"},
 	}}
-	pageData := &deletePageDataStub{}
 	invalidator := &deleteInvalidatorStub{}
 	service := NewService(Options{
 		Store:                      store,
-		PageDataPublisher:          pageData,
 		AccountLookupInvalidator:   invalidator,
 		GroupAccountIDsInvalidator: invalidator,
 		AuthorizationInvalidator:   invalidator,
@@ -46,14 +43,6 @@ func TestServiceDeleteUsesSelfScopeAndInvalidatesDeletedAccounts(t *testing.T) {
 	}
 	if result.Before.ID != "acc_source" || len(result.DeletedAccountIDs) != 2 {
 		t.Fatalf("result = %+v", result)
-	}
-	if len(pageData.inputs) != 2 {
-		t.Fatalf("page data calls = %d, want 2", len(pageData.inputs))
-	}
-	for _, input := range pageData.inputs {
-		if input.Operation != accountpagedata.OperationDelete || !input.MembershipChanged || !input.OrderChanged || !input.FilterChanged || !input.PageChanged {
-			t.Fatalf("page data input = %+v", input)
-		}
 	}
 	if len(invalidator.accountIDs) != 2 || invalidator.groupCalls != 1 || invalidator.authorizationReasons[0] != AccountDeletedReason || invalidator.runtimeReasons[0] != AccountDeletedReason {
 		t.Fatalf("invalidations = %+v", invalidator)
@@ -100,17 +89,6 @@ type deleteStoreStub struct {
 func (s *deleteStoreStub) DeleteManagementAccount(_ context.Context, input port.ManagementAccountDeleteInput) (port.ManagementAccountDeleteResult, error) {
 	s.input = input
 	return s.result, s.err
-}
-
-type deletePageDataStub struct{ inputs []accountpagedata.ChangeInput }
-
-func (s *deletePageDataStub) PublishAccountStaticChange(_ context.Context, input accountpagedata.ChangeInput) error {
-	s.inputs = append(s.inputs, input)
-	return nil
-}
-
-func (s *deletePageDataStub) PublishAccountRuntimeChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
 }
 
 type deleteInvalidatorStub struct {

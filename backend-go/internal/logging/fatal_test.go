@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -78,6 +79,27 @@ func TestWriteFatalIgnoresWriterFailure(t *testing.T) {
 	WriteFatal(failingWriter{}, errors.New("startup failed"))
 }
 
+func TestWriteFatalReturnsWhenWriterBlocks(t *testing.T) {
+	writer := &blockingFatalWriter{started: make(chan struct{}), release: make(chan struct{})}
+	defer close(writer.release)
+	done := make(chan struct{})
+	go func() {
+		WriteFatal(writer, errors.New("shutdown failed"))
+		close(done)
+	}()
+
+	select {
+	case <-writer.started:
+	case <-time.After(time.Second):
+		t.Fatal("writer was not called")
+	}
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("WriteFatal() did not return while writer was blocked")
+	}
+}
+
 func TestWriteFatalPreservesQuotesAroundUnquotedCredential(t *testing.T) {
 	var output bytes.Buffer
 	WriteFatal(&output, errors.New(`unknown command "client_secret=oauth-client-secret-123456" for "juhe-ai"`))
@@ -95,4 +117,15 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) {
 	return 0, io.ErrClosedPipe
+}
+
+type blockingFatalWriter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingFatalWriter) Write(data []byte) (int, error) {
+	close(w.started)
+	<-w.release
+	return len(data), nil
 }

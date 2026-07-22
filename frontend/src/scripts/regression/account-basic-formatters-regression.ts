@@ -28,6 +28,7 @@ import {
   canCreateOAuthAccount,
   canSelectClientCompatibility,
   defaultEndpointModesForAccount,
+  supportsOAuthAccountType,
   profileSupportsCodexResponsesChatBridge
 } from '../../views/accounts/accountProviderCapabilities'
 import { defaultAccountForm } from '../../views/accounts/accountFormDefaults'
@@ -59,6 +60,7 @@ assertEqual(accountClientCompatibilityText(), 'OpenAI-compatible', '空客户端
 assertEqual(accountTypeTitle('OpenAI', 'oauth'), 'OpenAI OAuth', 'OAuth 标题应包含供应商名')
 assertEqual(accountTypeTitle('OpenAI', 'api_key'), 'OpenAI API Key', 'API Key 标题应包含供应商名')
 assertTrue(accountTypeDescription('gpt', 'oauth').includes('Responses / compact'), 'GPT OAuth 描述应说明网关路径限制')
+assertTrue(accountTypeDescription('anthropic', 'oauth').includes('Anthropic'), 'Anthropic OAuth 描述应说明 Bearer Token 导入边界')
 assertTrue(accountTypeDescription('gpt', 'api_key').includes('Base URL'), 'GPT API Key 描述应说明 Base URL')
 assertTrue(accountTypeDescription('glm', 'api_key', 'profile_glm_coding_anthropic_v1').includes('Anthropic Messages 接入'), 'GLM Coding Anthropic 描述不应把 Claude Code 当账户类型')
 assertTrue(accountTypeDescription('other', 'api_key').includes('供应商定义'), '非 GPT 描述应使用通用供应商流程文案')
@@ -121,6 +123,63 @@ assertEqual(canCreateOAuthAccount({
     protocolVersion: 'v1'
   })
 }), false, 'OpenAI-compatible 即使声明 OAuth 类型，也不应误走 GPT OAuth 创建流程')
+assertEqual(supportsOAuthAccountType({
+  provider: providerFixture({
+    code: 'anthropic',
+    accountTypes: ['api_key', 'oauth'],
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  }),
+  profile: providerProfileFixture({
+    providerCode: 'anthropic',
+    accountTypes: ['api_key', 'oauth'],
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  })
+}), true, 'Anthropic 协议档案应支持 OAuth 账户类型')
+assertEqual(canCreateOAuthAccount({
+  provider: providerFixture({
+    code: 'anthropic',
+    accountTypes: ['api_key', 'oauth'],
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  }),
+  profile: providerProfileFixture({
+    providerCode: 'anthropic',
+    accountTypes: ['api_key', 'oauth'],
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  })
+}), false, 'Anthropic OAuth 不应误走 GPT 管理式 OAuth 创建流程')
+assertEqual(
+  accountClientCompatibilityCapabilities({
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1',
+    type: 'oauth'
+  }).join(','),
+  'anthropic_native',
+  'Anthropic OAuth 账户只应展示 Anthropic 原生客户端兼容'
+)
+assertEqual(
+  defaultEndpointModesForAccount({
+    profile: {
+      providerCode: 'anthropic',
+      providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+      protocolCode: 'anthropic',
+      protocolVersion: 'v1',
+      endpointFamilies: [
+        { code: 'messages', name: 'Messages' },
+        { code: 'models', name: 'Models' },
+        { code: 'message_token_counting', name: 'Message Token Counting' }
+      ]
+    },
+    type: 'oauth'
+  }).join(','),
+  'messages_json,messages_sse,message_token_counting',
+  'Anthropic OAuth 默认应保留 Messages JSON/Streaming 和 count_tokens 能力'
+)
 
 const deepSeekBridgeProfile = {
   id: 'profile_deepseek_openai_v1',

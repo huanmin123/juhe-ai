@@ -131,7 +131,6 @@ import AccountAppendSelect from '@/components/AccountAppendSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import { useKeepAliveSupersededRecovery } from '@/composables/useKeepAliveSupersededRecovery'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -146,7 +145,6 @@ import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatInteger } from '@/views/stats/statsFormatters'
-import { loadStatsPageDataResource } from '@/views/stats/statsPageDataResource'
 import AccountUsageStatsTable from './AccountUsageStatsTable.vue'
 import {
   aggregateUsageSummaries,
@@ -185,7 +183,6 @@ const overview = ref<AccountUsageStatsOverview>()
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
-const providerRecovery = useKeepAliveSupersededRecovery(() => loadUsageStatsOptions(false, true))
 const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 6 })
 const initialPageState = pageStateCache.read()
 const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
@@ -230,32 +227,20 @@ const {
     const query = accountUsageParams(isManagementView.value ? systemAccountId : undefined, pageState)
     let usageOverview: AccountUsageStatsOverview | undefined
     await Promise.all([
-      loadStatsPageDataResource<AccountUsageStatsOverview>({
-        apply: (nextOverview, phase) => {
-          const normalizedOverview = normalizeAccountUsageListOverview(nextOverview)
-          usageOverview = normalizedOverview
-          overview.value = normalizedOverview
-          syncDateRangeFromResponse(normalizedOverview.range)
-          pruneLoadedTrendAccounts(normalizedOverview.rows)
-          if (phase === 'confirmation') {
-            applyAccountUsageResult(accountUsagePageResult(normalizedOverview), options)
-            renderChart()
-          }
-        },
-        domain: 'stats.accountUsage',
-        force: options.forceCache === true,
-        isCurrent: () => resourceRequestSeq === usageStatsResourceRequestSeq,
-        isManagementView: isManagementView.value,
-        loadNetwork: () => isManagementView.value
-          ? api.stats.accountUsage(query)
-          : api.myStats.accountUsage(query),
-        query,
-        route: isManagementView.value ? '/stats/account-usage' : '/my-stats/account-usage',
-        targetSystemAccountId: systemAccountId
-      }),
+      (async () => {
+        const nextOverview = isManagementView.value
+          ? await api.stats.accountUsage(query)
+          : await api.myStats.accountUsage(query)
+        if (resourceRequestSeq !== usageStatsResourceRequestSeq) return
+        const normalizedOverview = normalizeAccountUsageListOverview(nextOverview)
+        usageOverview = normalizedOverview
+        overview.value = normalizedOverview
+        syncDateRangeFromResponse(normalizedOverview.range)
+        pruneLoadedTrendAccounts(normalizedOverview.rows)
+      })(),
       loadUsageStatsWindow()
     ])
-    if (!usageOverview) throw new Error('账户用量统计缓存未返回数据')
+    if (!usageOverview) throw new Error('账户用量统计接口未返回数据')
     void loadAccountUsageTrend(usageOverview, systemAccountId)
     return accountUsagePageResult(usageOverview)
   },
@@ -351,15 +336,14 @@ const summaryCards = computed(() => {
   })
 })
 
-async function loadUsageStatsOptions(force = false, recoverSuperseded = false): Promise<void> {
+async function loadUsageStatsOptions(force = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
   if (force) {
     resetSystemAccountOptionsSearch()
   }
-  if (!force && !recoverSuperseded && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
+  if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
     return
   }
-  const providerRecoveryRequest = providerRecovery.start()
   const providerList = await loadProviderOptionsResource({
     apply: (nextProviders) => {
       providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
@@ -367,8 +351,6 @@ async function loadUsageStatsOptions(force = false, recoverSuperseded = false): 
     force,
     isManagementView: isManagementView.value
   })
-  providerRecovery.record(providerRecoveryRequest, providerList.state)
-  if (providerList.state === 'superseded') return
   providers.value = providerList.data.length ? providerList.data : FALLBACK_PROVIDERS
   usageStatsOptionsLoaded.value = true
   usageStatsOptionsScopeKey.value = scopeKey

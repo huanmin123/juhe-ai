@@ -214,6 +214,7 @@ func TestResolveCachedStructureStillHonorsAPIKeyExpiry(t *testing.T) {
 	store := newGatewayPreflightStoreStub(gatewayPreflightKeyWith(func(row *port.GatewayPreflightAPIKeyRecord) {
 		row.ExpiresAt = &expiresAt
 	}))
+	store.bindings[0].AccessExpiresAt = &expiresAt
 	cache := NewCache(CacheOptions{
 		VersionReader: &gatewayPreflightVersionReaderStub{version: "v1"},
 		TTL:           time.Minute,
@@ -230,7 +231,35 @@ func TestResolveCachedStructureStillHonorsAPIKeyExpiry(t *testing.T) {
 		t.Fatalf("second Resolve() error = %v", err)
 	}
 	if second.Decision().Code() != DecisionAPIKeyExpired {
-		t.Fatalf("second decision = %q, want %q", second.Decision().Code(), DecisionAPIKeyExpired)
+		t.Fatalf("second decision = %q, want API Key expiry to keep priority over binding expiry", second.Decision().Code())
+	}
+}
+
+func TestResolveCachedStructureStillHonorsAuthorizedGroupExpiry(t *testing.T) {
+	now := time.Date(2026, 7, 22, 9, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(30 * time.Second)
+	store := newGatewayPreflightStoreStub(activeGatewayPreflightKey())
+	store.bindings[0].AccessExpiresAt = &expiresAt
+	cache := NewCache(CacheOptions{
+		VersionReader: &gatewayPreflightVersionReaderStub{version: "v1"},
+		TTL:           time.Minute,
+		Now:           func() time.Time { return now },
+	})
+	service := NewService(ServiceOptions{Store: store, Cache: cache, Now: func() time.Time { return now }})
+	first, err := service.Resolve(context.Background(), "sk-expiring-authorized-group")
+	if err != nil || first.Decision().Code() != DecisionReady {
+		t.Fatalf("first decision=%q error=%v", first.Decision().Code(), err)
+	}
+	now = expiresAt
+	second, err := service.Resolve(context.Background(), "sk-expiring-authorized-group")
+	if err != nil {
+		t.Fatalf("second Resolve() error = %v", err)
+	}
+	if second.Decision().Code() != DecisionNoActiveBindings {
+		t.Fatalf("second decision = %q, want %q", second.Decision().Code(), DecisionNoActiveBindings)
+	}
+	if got := store.keyCallsCount(); got != 1 {
+		t.Fatalf("key store calls = %d, want cached structure recheck without a DB reload", got)
 	}
 }
 

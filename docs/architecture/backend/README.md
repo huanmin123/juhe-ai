@@ -21,7 +21,7 @@
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
   - [../../functions/PostgreSQL与Redis高性能模式设计.md](../../functions/PostgreSQL与Redis高性能模式设计.md)
   - [../../functions/可靠统计与读写资源隔离设计.md](../../functions/可靠统计与读写资源隔离设计.md)
-  - [../../functions/页面数据缓存与增量更新设计.md](../../functions/页面数据缓存与增量更新设计.md)
+  - [../../functions/页面数据缓存与增量更新设计.md](../../functions/页面数据缓存与增量更新设计.md)（历史归档，机制已退场）
   - [../../functions/存储适配接口设计.md](../../functions/存储适配接口设计.md)
   - [../../functions/SQLite单写者写队列治理设计.md](../../functions/SQLite单写者写队列治理设计.md)
   - [后台任务使用说明](后台任务使用说明.md)
@@ -42,7 +42,7 @@
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：默认 standalone 模式使用 Node 内置 `node:sqlite`，按业务库 `backend/data/juhe-ai.sqlite3`、数据集目录库 `backend/data/juhe-ai-dataset.sqlite3`、使用记录目录库 `backend/data/juhe-ai-usage-catalog.sqlite3`、统计结果库 `backend/data/juhe-ai-stats.sqlite3` 和 usage shard 文件运行；显式 performance 模式使用 PostgreSQL 保存事实域和统计域，使用 Redis 保存可丢弃缓存、短 TTL 运行态和 Redis Streams 队列。业务层必须通过 Store Port 访问存储，不能直接感知 SQLite / PostgreSQL / Redis。
-- 页面数据缓存：统一变更确认已经通过 `PageDataChangeStore` 业务 Port 落地 Node memory / Redis store，不在 routes 中直接拼 Redis key 或读取业务表；账户、使用记录和公共公告已发布首批 revision。standalone DB service dirty domain、完整 SQLite / PostgreSQL outbox 重放、Go Redis adapter 和其他领域 writer 仍按 `PLAN-0115` 分阶段补齐；具体字段投影继续通过领域 service / projection port 返回。
+- 页面数据：通用 `PageDataChangeStore`、confirm/revision、Redis publisher 和 dirty-domain recovery 已由 PLAN-0156-20260722T123439000Z 删除。页面直接调用业务接口；repository/shared cache 与独立业务快照按各自功能维护。
 - 写入边界：standalone 模式下同一个 SQLite 文件必须只有一个运行时写 owner；业务库写入归 DB service，数据集目录库写入归 ingest / log writer，统计结果库写入归 stats writer，usage shard 按 shard 文件串行写。performance 模式下不受 SQLite 文件级写锁限制，但仍必须受 PostgreSQL 连接池、事务范围、热点 key 顺序和 Redis Stream 背压约束。具体规则见 [SQLite 单写者写队列治理设计](../../functions/SQLite单写者写队列治理设计.md)、[PostgreSQL 与 Redis 高性能模式设计](../../functions/PostgreSQL与Redis高性能模式设计.md) 和 [存储适配接口设计](../../functions/存储适配接口设计.md)。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口；`openai` 既可以是 `protocol_code`，也可以是通用 `provider_code`，必须通过字段层级区分。当前供应商协议档案不要在本文硬编码，新增或调整时同步 [核心功能设计](../../functions/核心功能设计.md) 和对应供应商接入文档。
@@ -148,6 +148,8 @@ flowchart LR
 - 请求进入上游前的代码必须按 [请求处理分层设计](../../functions/请求处理分层设计.md) 拆分：入口装配、认证前运行态、请求体保护、请求上下文、授权与本地校验、协议与客户端画像、候选账号筛选、调度运行态、派发保护和上游请求准备分别维护；上游返回后的响应转发、响应语义检查、usage 解析和账号响应侧副作用不写进请求 preflight。
 - 本地 API Key 校验先按 `key_hash` 命中进程内短 TTL 缓存；命中会刷新空闲 TTL，但最多 5 分钟必须重新查库。禁用、删除、修改 API Key 会主动清理对应缓存。
 - API Key 只绑定一条路由策略；路由策略可以绑定并访问调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组。被授权 AI 账户需要先加入调用方自有分组后再参与自有分组调度，授权分组则按有效分组授权直接参与调度。当前 API Key 模型不保存分组绑定字段。
+- 模型列表是固定本地响应，不进入账号调度。普通 `/models` 和 `/v1/models` 默认返回 OpenAI-compatible `object=list + data`；`/v1beta/models` 或明确 Gemini 信号返回 Gemini 原生形态，明确 Anthropic 信号返回 Anthropic 原生形态，单独的 `/models` 路径本身不能推断为 Gemini。
+- 公开模型列表并行读取全部启用、非 `hybrid` 供应商的已有目录缓存；认证模型列表从 API Key 路由策略全部 active 分组绑定收集 `provider_code`，并以 Key 所属系统账户读取个人模型。显式空供应商集合返回空列表，不回退公开目录。网关不按发布时间过滤，也不再依赖 `default/codex` 发布快照；AI Chat 的 `chat_list:*`、`chat_model:*` 快照继续独立维护。
 - 账号选择必须过滤停用、异常、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
 - 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
 - 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按账户错误处理策略、响应语义检查策略或默认冷却规则处理。

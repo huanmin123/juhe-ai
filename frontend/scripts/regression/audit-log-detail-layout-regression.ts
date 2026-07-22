@@ -2,6 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
+import {
+  backgroundJobStatusColor,
+  backgroundJobStatusText,
+  type BackgroundJobRow
+} from '../../src/views/stats/statsBackgroundJobs'
+
 const frontendRoot = resolve(import.meta.dirname, '../..')
 const source = readFileSync(
   resolve(frontendRoot, 'src/views/audit-logs/AuditLogDetailDrawer.vue'),
@@ -13,8 +19,30 @@ const backgroundJobsSource = readFileSync(resolve(frontendRoot, 'src/views/stats
 
 assert.match(listSource, /column\.key === 'model'[\s\S]*record\.model[\s\S]*modelMappingApplied[\s\S]*上游/, '审计日志模型列必须与使用记录一致显示请求模型和映射后的上游模型标签')
 assert.match(columnsSource, /title: '模型', key: 'model', width: 240/, '审计日志模型列宽必须与使用记录对齐')
-assert.ok(!backgroundJobsSource.includes("record.failureCount > 0 ? 'warning'"), '后台任务累计失败后若已成功恢复，不应继续显示当前异常')
-assert.match(backgroundJobsSource, /record\.lastError \? 'warning' : 'success'/, '后台任务当前异常状态必须以尚未恢复的 lastError 为准')
+assert.match(backgroundJobsSource, /backgroundJobStatusColor\(record\)/, '后台任务卡片必须使用统一状态颜色函数')
+assert.match(backgroundJobsSource, /backgroundJobStatusText\(record\)/, '后台任务卡片必须使用统一状态文案函数')
+
+const recoveredJob = backgroundJob({
+  failureCount: 4,
+  lastErrorAt: '2026-07-22T08:00:00.000Z',
+  lastSuccessAt: '2026-07-22T08:01:00.000Z'
+})
+assert.equal(backgroundJobStatusText(recoveredJob), '已恢复', '累计失败后若最近一次运行已成功，状态必须显示已恢复')
+assert.equal(backgroundJobStatusColor(recoveredJob), 'success', '累计失败后若最近一次运行已成功，不应继续显示警告色')
+
+const failingJob = backgroundJob({
+  lastError: 'upstream unavailable',
+  lastErrorAt: '2026-07-22T08:02:00.000Z'
+})
+assert.equal(backgroundJobStatusText(failingJob), '上次失败', '尚未清除的 lastError 必须显示为当前失败')
+assert.equal(backgroundJobStatusColor(failingJob), 'warning', '尚未清除的 lastError 必须显示警告色')
+
+const unresolvedFailure = backgroundJob({
+  lastErrorAt: '2026-07-22T08:02:00.000Z',
+  lastSuccessAt: '2026-07-22T08:01:00.000Z'
+})
+assert.equal(backgroundJobStatusText(unresolvedFailure), '曾失败', '成功时间早于失败时间时不能误报已恢复')
+assert.equal(backgroundJobStatusColor(unresolvedFailure), 'warning', '成功时间早于失败时间时必须保留警告色')
 
 assert.ok(!source.includes('<a-tab-pane key="attempts"'), '审计详情不应保留请求链路页签')
 assert.ok(!source.includes('<a-tab-pane key="payloads"'), '审计详情不应保留原始请求页签')
@@ -45,3 +73,17 @@ assert.ok(
 )
 
 console.log('audit log detail layout regression passed')
+
+function backgroundJob(overrides: Partial<BackgroundJobRow>): BackgroundJobRow {
+  return {
+    name: 'regression-job',
+    running: false,
+    runCount: 0,
+    successCount: 0,
+    failureCount: 0,
+    partialCount: 0,
+    skippedCount: 0,
+    maxDurationMs: 0,
+    ...overrides
+  } as BackgroundJobRow
+}

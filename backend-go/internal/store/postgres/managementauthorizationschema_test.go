@@ -165,6 +165,75 @@ func TestManagementResourceAuthorizationListQueryScopesAndFilters(t *testing.T) 
 	}
 }
 
+func TestManagementResourceAuthorizationListQueryProjectsCompactRow(t *testing.T) {
+	query, _ := managementResourceAuthorizationListQuery(port.ManagementResourceAuthorizationListInput{Limit: 51})
+	selectEnd := strings.Index(query, "FROM juhe_business.resource_authorization_grants AS rag")
+	if selectEnd < 0 {
+		t.Fatalf("authorization list SELECT boundary missing:\n%s", query)
+	}
+	projection := query[:selectEnd]
+	for _, want := range []string{
+		"rag.id",
+		"rag.resource_type",
+		"rag.resource_id",
+		"rag.resource_owner_system_account_id",
+		"rag.grantee_type",
+		"rag.grantee_system_account_id",
+		"rag.grantee_team_id",
+		"rag.status",
+		"rag.remark",
+		"rag.expires_at",
+		"rag.created_at",
+		"owner_accounts.display_name",
+		"grantee_accounts.display_name",
+		"grantee_accounts.username",
+		"teams.name",
+	} {
+		if !strings.Contains(projection, want) {
+			t.Fatalf("authorization compact list projection missing %q:\n%s", want, projection)
+		}
+	}
+	for _, forbidden := range []string{
+		"rag.scope",
+		"rag.limits_json",
+		"accounts.account_expires_at",
+		"rag.created_by",
+		"rag.revoked_by",
+		"rag.revoked_at",
+		"rag.updated_at",
+	} {
+		if strings.Contains(projection, forbidden) {
+			t.Fatalf("authorization compact list projection should not contain %q:\n%s", forbidden, projection)
+		}
+	}
+}
+
+func TestManagementResourceAuthorizationDetailQueryKeepsRichProjection(t *testing.T) {
+	query, _ := managementResourceAuthorizationDetailQuery(port.ManagementResourceAuthorizationListInput{
+		AuthorizationID: "rauthgrant_main",
+		CanAccessAll:    true,
+		Limit:           1,
+	})
+	selectEnd := strings.Index(query, "FROM juhe_business.resource_authorization_grants AS rag")
+	if selectEnd < 0 {
+		t.Fatalf("authorization detail SELECT boundary missing:\n%s", query)
+	}
+	projection := query[:selectEnd]
+	for _, want := range []string{
+		"rag.scope",
+		"rag.limits_json",
+		"accounts.account_expires_at",
+		"rag.created_by",
+		"rag.revoked_by",
+		"rag.revoked_at",
+		"rag.updated_at",
+	} {
+		if !strings.Contains(projection, want) {
+			t.Fatalf("authorization detail projection missing %q:\n%s", want, projection)
+		}
+	}
+}
+
 func TestManagementAuthorizationUsageOverviewQueriesReadRangeWindowsOnly(t *testing.T) {
 	input := port.ManagementAuthorizationUsageOverviewInput{
 		ActorSystemAccountID:   "sys_admin",

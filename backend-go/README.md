@@ -4,6 +4,10 @@
 
 > 当前 W0 Go 工程与 PG/Redis/Asynq 常规基线已落地，W1a 公开设置读接口 Go 实现中，W1b `/__aipublic__` 已补公开维护接口基础设施和四类资源纵切面；W2 已补管理端辅助路径的代理列表 / options、系统账户列表读 / options、授权候选 options、供应商列表 / options / 模型 catalog / 默认检查模型偏好、策略路由 options、分组 options、账户 options、账户标签只读 / 删除 / PATCH、operation log 管理 / 个人读接口、外部来源列表 / 详情 / scope / 接入文档目录 / Token secret 和 operation log 保留清理 worker；W3 已补验证码、登录、当前用户、当前用户资料、改密、登出、系统账户创建、完整 mixed PATCH 和供应商自定义模型 CRUD；W4 已补系统团队读 / 创建 / 更新 / 成员维护，授权列表 / 详情 / 创建 / 更新 / 有效期更新 / 归还 / 回收、批量到期扫描 worker、授权用量 range window 刷新 worker、网关配额快照构建 / 可选 Redis runtime state 发布 worker，以及授权团队 / 用户用量 overview / 授权用量明细 Go opt-in 灰度能力；W5 已补代理管理创建 / 更新 / 删除 / 手动检测、管理端全局品牌设置 GET + PATCH、系统运行设置 GET + PATCH，以及分组 create/list/detail/update/delete Go opt-in 灰度能力；W6 已补管理侧 / 个人侧统计 `usage-window`、使用记录列表 / 详情、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表只读契约、system API 两层 read / write 限流对齐、客户端 IP 统计列表和四条策略写接口。所有生产挂载仍默认关闭，未正式生产接管任何现有 Node 业务接口。
 > 本轮另补 `juhe-ai-worker operation-log-retention-cleanup` 的 Go opt-in worker；该 worker 只覆盖 PostgreSQL `operation_logs` 保留期清理，不覆盖完整数据保留任务、公开接口日志 / 运行日志 / 模型检测清理或生产 supervisor 接管。
+> W6 另提供 `app.RunRuntimeLogRetentionCleanupWorker` 独立组装入口：仅在 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED=true` 时清理 PostgreSQL 运行日志索引和已完成 cursor，并在同一事务内维护 facet。该入口尚未接入共享 CLI / supervisor，Node ingest-worker 继续拥有文件导入、cursor/facet 写入和生产调度。
+> 账户级冷却复测已补 `juhe-ai-worker cooldown-account-retest` 的 Asynq consumer、容量受限 scheduler 和 app/CLI 边界；`JUHE_AI_COOLDOWN_ACCOUNT_RETEST_WORKER_ENABLED=false` 默认关闭，启用要求 worker owner lock。当前 owner manifest 仍为 `worker=node`，真实 Go Probe 与 production outcome adapter 尚未注入，因此该命令只提供 fail-fast 的迁移壳，不回投 Node、不注册 API Key 级 sibling，也不代表生产 worker 接管。
+
+> W9 网关准备层新增 opt-in `GET /models`、`GET /v1/models` 和 `GET /v1beta/models`。设置 `JUHE_AI_GATEWAY_MODELS_ENABLED=true` 时要求 PostgreSQL，Go 读取 client catalog 并按 OpenAI / Codex / Anthropic / Gemini 协议返回模型 DTO；默认值为 `false`，未改变 `gateway=node` owner，也不代表真实 upstream、listener、切流或 Node 删除证据。OpenAI OAuth 当前只固定 Go-native 契约、错误映射和 token/session lease 生命周期，HTTP、store、真实 OAuth upstream 与 worker 仍未迁移。
 
 本目录是 `juhe-ai` 后端从 Node.js 迁移到 Go 的新后端工程。迁移规则见 `../docs/migration/README.md`。
 
@@ -155,6 +159,8 @@ go run ./cmd/juhe-ai-worker operation-log-retention-cleanup
 
 该 worker 默认 13 分钟后首次运行，此后每 10 分钟执行一次；每批最多删除 1000 条过期 `operation_logs`，每轮最多 20 批，满批之间暂停 25ms。保留天数优先读取 `system_settings.operationLogRetentionDays`，缺失时使用 Node 当前默认值 365 天；可用 `--run-once` 做一次性 smoke，用 `--retention-days`、`--batch-size`、`--max-batches`、`--interval` 和 `--initial-delay` 调整本地验证参数。它只覆盖操作日志主表保留清理并依赖 FK cascade 清理 targets / viewers / summary search terms；不覆盖 public API log、runtime log、model check、usage record 等完整 data-retention 生产接管。
 
+运行日志索引保留清理目前只提供 `internal/app` 组装入口，不提供稳定 CLI 命令。Node cleanup 子 owner 未停止时 `GoExclusiveIndexCleanupOwner` 默认 false，Go 索引删除 fail-closed 并记录 deferred；当前没有生产调用方开启该门禁，不构成双 owner。取得独占 cleanup owner 后，默认保留 14 天、范围 1..90，单批 1000、单轮最多 20 批，满批之间暂停 25ms；索引按 `time ASC, id ASC` + `FOR UPDATE SKIP LOCKED` 小批暂时删除，确有删除后才以 `FOR UPDATE NOWAIT` 锁定 `current` facet summary 行并在 1.5 秒短关键区扣减 / 重算 summary、level、event，不再取得 facet 表锁。Go cleaner 或 Node writer 竞争、25ms lock timeout、1s statement timeout 会整批回滚并记录 deferred，留待下一轮重试；cursor 仍只删除过期、已读完且无错误的完成行。生产 supervisor、真实 Node importer 并发 smoke 和 CLI 挂载仍为后置门禁。
+
 启动 W4 授权到期扫描 worker 需要 PostgreSQL、Redis state 和 Redis cache：
 
 ```powershell
@@ -210,6 +216,15 @@ Invoke-RestMethod http://127.0.0.1:3000/__aisys__/api/health
 ```powershell
 go run ./cmd/juhe-ai-maintenance migration-catalog-preflight --dir db/migrations
 ```
+
+在把 `account-usage-ai-performance`、`stats-overview`、`system-metrics` 或 `table-monitor` 的 Go 只读路由加入灰度 owner 前，还必须对目标 PostgreSQL 执行 Node stats writer 共存契约检查：
+
+```powershell
+$env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
+go run ./cmd/juhe-ai-maintenance stats-schema-contract-preflight
+```
+
+该命令只读 `information_schema.columns`，不会建表、补列或启动 writer。成功输出固定声明 `contractVersion=2` 与 `writerOwner=node`，并证明四组 Go reader 的 `juhe_stats` 关系和列存在；它不证明 Node 聚合新鲜、Go stats worker 已接管或可以删除 Node。
 
 真实 PG/Redis/Asynq smoke：
 

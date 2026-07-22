@@ -2,7 +2,6 @@ import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, type AccountDraftTestAccountPayload } from '@/api/client'
-import type { PageDataActivation } from '@/composables/usePageDataActivation'
 import { useProviderModelSelectOptions } from '@/composables/useProviderModelSelectOptions'
 import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
@@ -46,7 +45,7 @@ import { defaultAccountForm } from './accountFormDefaults'
 import { isAuthorizedAccount } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDERS } from './accountOptions'
-import { canCreateOAuthAccount } from './accountProviderCapabilities'
+import { accountProviderProtocolKind, canCreateOAuthAccount, supportsOAuthAccountType } from './accountProviderCapabilities'
 import { authUrl } from './accountOAuthPayload'
 import { loadAccountDetailCached, type AccountDetailLevel } from './accountDetailCache'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
@@ -81,7 +80,6 @@ interface UseAccountEditFormOptions {
   loadAccountOptions: (systemAccountId?: string, force?: boolean) => Promise<void>
   loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: Partial<AccountGroupOptionsScope>, loadOptions?: AccountGroupOptionsLoadOptions) => Promise<void>
   loadData: () => Promise<void>
-  pageDataActivation?: PageDataActivation
   focusCreatedAccount?: (account: AccountSummary) => void
   providers: ReadonlyValue<ProviderDefinition[]>
   draftApiKeyTestSnapshot?: { value: DraftApiKeyTestSnapshot | undefined }
@@ -166,8 +164,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountTagOperationScopeParams,
     extractApiErrorMessage: options.extractApiErrorMessage,
     form,
-    isManagementView: options.isManagementView,
-    pageDataActivation: options.pageDataActivation
+    isManagementView: options.isManagementView
   })
   const targetSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return undefined
@@ -193,10 +190,17 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
   const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
   const isTokenCredentialForm = computed(() => hasAccountType.value && ['oauth', 'google_oauth'].includes(form.type))
+  const isSupportedOAuthForm = computed(() => form.type === 'oauth' && supportsOAuthAccountType({
+    provider: selectedProvider.value,
+    profile: selectedProtocolProfile.value
+  }))
   const isOpenAIOAuthForm = computed(() => form.type === 'oauth' && canCreateOAuthAccount({
     provider: selectedProvider.value,
     profile: selectedProtocolProfile.value
   }))
+  const isAnthropicOAuthForm = computed(() => isSupportedOAuthForm.value
+    && !isOpenAIOAuthForm.value
+    && accountProviderProtocolKind(selectedProtocolProfile.value) === 'anthropic_v1')
   const editingAuthorizedAccount = computed(() => Boolean(editingId.value && editingAccountDetail.value && isAuthorizedAccount(editingAccountDetail.value)))
   const {
     authLoading,
@@ -249,7 +253,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const modalConfirmLoading = computed(() => saving.value)
   const modalOkButtonProps = computed(() => ({
     type: 'primary' as const,
-    disabled: accountEditDetailLoading.value || accountAdvancedDetailLoading.value || saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
+    disabled: accountEditDetailLoading.value || accountAdvancedDetailLoading.value || saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isSupportedOAuthForm.value)
   }))
   const selectedAccountTypeTitle = computed(() => hasAccountType.value ? selectedAccountTypeChoice.value?.label ?? accountTypeTitle(form.providerCode, form.type) : '')
   const apiKeyTestDetails = computed<AccountApiKeyRuntimeDetail[] | undefined>(() => {
@@ -339,6 +343,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     })
     void loadAccountTagOptions(options.accountScopeParams.value)
     modalOpen.value = true
+    void loadCurrentProviderModelOptions()
   }
 
   watch(
@@ -441,6 +446,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     void loadProviderGroupOptions(providerCode)
     ensureDefaultGroupSelected(providerCode)
     authResult.value = undefined
+    void loadCurrentProviderModelOptions()
   }
 
   async function openEdit(account: AccountSummary) {
@@ -481,6 +487,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       accountAdvancedDetailLoaded.value = true
       accountEditDetailLoading.value = false
       modalOpen.value = true
+      void loadCurrentProviderModelOptions()
       return
     }
 
@@ -506,6 +513,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     accountAdvancedDetailLoaded.value = false
     accountEditDetailLoading.value = false
+    void loadCurrentProviderModelOptions()
     const savedApiKeys = [...form.apiKeys]
     void apiKeyRuntimeRequest.then((response) => {
       if (!isCurrentFormOpenRequest(requestToken)) return
@@ -719,6 +727,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountResponseInspectionRules.value = formLoad.responseInspectionRules
     authResult.value = undefined
     modalOpen.value = true
+    void loadCurrentProviderModelOptions()
     void options.loadGroupOptions('', false, {
       providerCode: sourceAccount.providerCode,
       systemAccountId: cloneScopeParams?.systemAccountId,
@@ -819,8 +828,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     handleModalCancel,
     hasAccountType,
     isApiKeyForm,
+    isAnthropicOAuthForm,
     isOAuthForm,
     isOpenAIOAuthForm,
+    isSupportedOAuthForm,
     isTokenCredentialForm,
     mappingAnthropicSourceModelOptions,
     mappingGeminiSourceModelOptions,

@@ -27,6 +27,7 @@ type RouterOptions struct {
 	SystemAPIAuthenticatedRateLimiter                 SystemAPIAuthenticatedRateLimiter
 	NodeModelCatalogBridgeReadinessProber             ReadinessProber
 	PublicAPIHandler                                  http.Handler
+	GatewayModelsHandler                              http.Handler
 	ManagementAPIAuthMiddleware                       func(http.Handler) http.Handler
 	ManagementAPIAuthTouchMiddleware                  func(http.Handler) http.Handler
 	ManagementCaptchaHandler                          http.Handler
@@ -83,8 +84,10 @@ type RouterOptions struct {
 	ManagementMyAuthorizationRevokeHandler            http.Handler
 	ManagementProvidersHandler                        http.Handler
 	ManagementProviderOptionsHandler                  http.Handler
+	ManagementProviderDefinitionsHandler              http.Handler
 	ManagementProviderModelOptionsHandler             http.Handler
 	ManagementProviderModelsHandler                   http.Handler
+	ManagementProviderModelCapabilitiesHandler        http.Handler
 	ManagementProviderDefaultHealthCheckModelHandler  http.Handler
 	ManagementProviderCustomModelCreateHandler        http.Handler
 	ManagementProviderCustomModelUpdateHandler        http.Handler
@@ -208,7 +211,12 @@ type RouterOptions struct {
 	ManagementOperationLogsHandler                    http.Handler
 	ManagementMyOperationLogsHandler                  http.Handler
 	ManagementAuditLogsHandler                        http.Handler
+	ManagementAuditErrorGroupsHandler                 http.Handler
+	ManagementAuditErrorGroupEventsHandler            http.Handler
 	ManagementRuntimeLogsHandler                      http.Handler
+	ManagementRuntimeLogGrepHandler                   http.Handler
+	ManagementTableMonitorHandler                     http.Handler
+	ManagementResponseInspectionPoliciesHandler       http.Handler
 	ManagementExternalIntegrationSourceListHandler    http.Handler
 	ManagementExternalIntegrationSourceDetailHandler  http.Handler
 	ManagementExternalIntegrationSourceCreateHandler  http.Handler
@@ -224,10 +232,22 @@ type RouterOptions struct {
 	ManagementUsageRecordsHandler                     http.Handler
 	ManagementMyUsageRecordsHandler                   http.Handler
 	ManagementAnnouncementPublicListHandler           http.Handler
+	ManagementAnnouncementPublicDetailHandler         http.Handler
 	ManagementAnnouncementPublicReadHandler           http.Handler
 	ManagementAnnouncementsHandler                    http.Handler
+	ManagementSystemMetricsHandler                    http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
+	ManagementStatsAccountUsageHandler                http.Handler
+	ManagementMyStatsAccountUsageHandler              http.Handler
+	ManagementStatsAccountUsageTrendHandler           http.Handler
+	ManagementMyStatsAccountUsageTrendHandler         http.Handler
+	ManagementStatsAIPerformanceHandler               http.Handler
+	ManagementMyStatsAIPerformanceHandler             http.Handler
+	ManagementStatsAIPerformanceAccountsHandler       http.Handler
+	ManagementMyStatsAIPerformanceAccountsHandler     http.Handler
+	ManagementStatsUsageOverviewHandler               http.Handler
+	ManagementMyStatsUsageOverviewHandler             http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -253,6 +273,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 	readiness := NewReadinessHandler(opts.Config, opts.Logger, opts.NodeModelCatalogBridgeReadinessProber)
 	r.Get("/__aisys__/health", health.ServeHTTP)
 	r.Get("/__aisys__/readyz", readiness.ServeHTTP)
+	if opts.GatewayModelsHandler != nil {
+		r.Get("/models", opts.GatewayModelsHandler.ServeHTTP)
+		r.Get("/v1/models", opts.GatewayModelsHandler.ServeHTTP)
+		r.Get("/v1beta/models", opts.GatewayModelsHandler.ServeHTTP)
+	}
 	r.Route("/__aisys__/api", func(system chi.Router) {
 		system.Use(noStoreMiddleware)
 		if opts.SystemAPIRateLimitReader != nil {
@@ -293,7 +318,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 					newSystemAPIAuthenticatedRateLimitMiddleware(
 						opts.SystemAPIRateLimitReader,
 						opts.SystemAPIAuthenticatedRateLimiter,
-						systemAPIMethodRead,
 						clientIPs,
 						systemAPIClientIPAllowlist,
 						opts.Logger,
@@ -306,7 +330,6 @@ func NewRouter(opts RouterOptions) http.Handler {
 						newSystemAPIAuthenticatedRateLimitMiddleware(
 							opts.SystemAPIRateLimitReader,
 							opts.SystemAPIAuthenticatedRateLimiter,
-							systemAPIMethodWrite,
 							clientIPs,
 							systemAPIClientIPAllowlist,
 							opts.Logger,
@@ -370,8 +393,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationRevokeHandler == nil &&
 				opts.ManagementProvidersHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
+				opts.ManagementProviderDefinitionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
+				opts.ManagementProviderModelCapabilitiesHandler == nil &&
 				opts.ManagementProviderDefaultHealthCheckModelHandler == nil &&
 				opts.ManagementProviderCustomModelCreateHandler == nil &&
 				opts.ManagementProviderCustomModelUpdateHandler == nil &&
@@ -495,7 +520,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementOperationLogsHandler == nil &&
 				opts.ManagementMyOperationLogsHandler == nil &&
 				opts.ManagementAuditLogsHandler == nil &&
+				opts.ManagementAuditErrorGroupsHandler == nil &&
+				opts.ManagementAuditErrorGroupEventsHandler == nil &&
 				opts.ManagementRuntimeLogsHandler == nil &&
+				opts.ManagementRuntimeLogGrepHandler == nil &&
+				opts.ManagementTableMonitorHandler == nil &&
+				opts.ManagementResponseInspectionPoliciesHandler == nil &&
 				opts.ManagementExternalIntegrationSourceListHandler == nil &&
 				opts.ManagementExternalIntegrationSourceDetailHandler == nil &&
 				opts.ManagementExternalIntegrationSourceCreateHandler == nil &&
@@ -511,10 +541,22 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementUsageRecordsHandler == nil &&
 				opts.ManagementMyUsageRecordsHandler == nil &&
 				opts.ManagementAnnouncementPublicListHandler == nil &&
+				opts.ManagementAnnouncementPublicDetailHandler == nil &&
 				opts.ManagementAnnouncementPublicReadHandler == nil &&
 				opts.ManagementAnnouncementsHandler == nil &&
+				opts.ManagementSystemMetricsHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
-				opts.ManagementMyStatsUsageWindowHandler == nil {
+				opts.ManagementMyStatsUsageWindowHandler == nil &&
+				opts.ManagementStatsAccountUsageHandler == nil &&
+				opts.ManagementMyStatsAccountUsageHandler == nil &&
+				opts.ManagementStatsAccountUsageTrendHandler == nil &&
+				opts.ManagementMyStatsAccountUsageTrendHandler == nil &&
+				opts.ManagementStatsAIPerformanceHandler == nil &&
+				opts.ManagementMyStatsAIPerformanceHandler == nil &&
+				opts.ManagementStatsAIPerformanceAccountsHandler == nil &&
+				opts.ManagementMyStatsAIPerformanceAccountsHandler == nil &&
+				opts.ManagementStatsUsageOverviewHandler == nil &&
+				opts.ManagementMyStatsUsageOverviewHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.Config.ManagementAPIEnabled {
@@ -686,11 +728,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
 			}
+			if opts.ManagementProviderDefinitionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/definitions", opts.ManagementProviderDefinitionsHandler.ServeHTTP)
+			}
 			if opts.ManagementProviderModelOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/models/options", opts.ManagementProviderModelOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderModelsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/{code}/models", opts.ManagementProviderModelsHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderModelCapabilitiesHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/{code}/models/{modelId}/capabilities", opts.ManagementProviderModelCapabilitiesHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderDefaultHealthCheckModelHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Put("/providers/{code}/default-health-check-model", opts.ManagementProviderDefaultHealthCheckModelHandler.ServeHTTP)
@@ -898,9 +946,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementAccountTestOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/test-options", opts.ManagementAccountTestOptionsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/{id}/test-options/models/{modelId}", opts.ManagementAccountTestOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAccountTestOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/test-options", opts.ManagementMyAccountTestOptionsHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/test-options/models/{modelId}", opts.ManagementMyAccountTestOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountTagsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/tags", opts.ManagementAccountTagsHandler.ServeHTTP)
@@ -1019,10 +1069,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIWriteRateLimitMiddleware).Patch("/my-accounts/{id}/authorized-dispatch", opts.ManagementMyAccountAuthorizedDispatchHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountImportPreviewHandler != nil {
-				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/preview", opts.ManagementAccountImportPreviewHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Post("/accounts/import/preview", opts.ManagementAccountImportPreviewHandler.ServeHTTP)
 			}
 			if opts.ManagementMyAccountImportPreviewHandler != nil {
-				system.With(managementAPIWriteRateLimitMiddleware).Post("/my-accounts/import/preview", opts.ManagementMyAccountImportPreviewHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Post("/my-accounts/import/preview", opts.ManagementMyAccountImportPreviewHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountImportConfirmHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/accounts/import/confirm", opts.ManagementAccountImportConfirmHandler.ServeHTTP)
@@ -1156,6 +1206,12 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-operation-logs/{id}", opts.ManagementMyOperationLogsHandler.ServeHTTP)
 			}
+			if opts.ManagementAuditErrorGroupsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/error-groups", opts.ManagementAuditErrorGroupsHandler.ServeHTTP)
+			}
+			if opts.ManagementAuditErrorGroupEventsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/error-groups/{errorGroupId}/events", opts.ManagementAuditErrorGroupEventsHandler.ServeHTTP)
+			}
 			if opts.ManagementAuditLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs", opts.ManagementAuditLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/audit-logs/{id}", opts.ManagementAuditLogsHandler.ServeHTTP)
@@ -1174,7 +1230,39 @@ func NewRouter(opts RouterOptions) http.Handler {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/facets/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/runtime", opts.ManagementRuntimeLogsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/runtime/", opts.ManagementRuntimeLogsHandler.ServeHTTP)
+			}
+			if opts.ManagementRuntimeLogGrepHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep-options", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep-options/", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/grep/", opts.ManagementRuntimeLogGrepHandler.ServeHTTP)
+			}
+			if opts.ManagementRuntimeLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs/{id}", opts.ManagementRuntimeLogsHandler.ServeHTTP)
+			}
+			if opts.ManagementTableMonitorHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/table-monitor/overview", opts.ManagementTableMonitorHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/table-monitor/history", opts.ManagementTableMonitorHandler.ServeHTTP)
+				system.With(managementAPIReadRateLimitMiddleware).Get("/table-monitor/database-history", opts.ManagementTableMonitorHandler.ServeHTTP)
+			}
+			if opts.ManagementResponseInspectionPoliciesHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).
+					Get("/response-inspection-policies", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementResponseInspectionPolicyCreateMutationGuardConfig()),
+				).Post("/response-inspection-policies", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementResponseInspectionPolicyUpdateMutationGuardConfig()),
+				).Put("/response-inspection-policies/{id}", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementResponseInspectionPolicyDeleteMutationGuardConfig()),
+				).Delete("/response-inspection-policies/{id}", opts.ManagementResponseInspectionPoliciesHandler.ServeHTTP)
 			}
 			if opts.ManagementExternalIntegrationSourceListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get(
@@ -1351,23 +1439,63 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementAnnouncementPublicListHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/public", opts.ManagementAnnouncementPublicListHandler.ServeHTTP)
 			}
+			if opts.ManagementAnnouncementPublicDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/public/{id}", opts.ManagementAnnouncementPublicDetailHandler.ServeHTTP)
+			}
 			if opts.ManagementAnnouncementPublicReadHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Post("/announcements/public/read", opts.ManagementAnnouncementPublicReadHandler.ServeHTTP)
 			}
 			if opts.ManagementAnnouncementsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIReadRateLimitMiddleware).Get("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
-				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
+				system.With(
+					managementAPIWriteRateLimitMiddleware,
+					managementGroupAdminRoleMiddleware,
+					mutationGuards.Middleware(managementAnnouncementCreateMutationGuardConfig()),
+				).Post("/announcements", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Patch("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/publish", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Post("/announcements/{id}/unpublish", opts.ManagementAnnouncementsHandler.ServeHTTP)
 				system.With(managementAPIWriteRateLimitMiddleware, managementGroupAdminRoleMiddleware).Delete("/announcements/{id}", opts.ManagementAnnouncementsHandler.ServeHTTP)
+			}
+			if opts.ManagementSystemMetricsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/system-metrics", opts.ManagementSystemMetricsHandler.ServeHTTP)
 			}
 			if opts.ManagementStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-window", opts.ManagementStatsUsageWindowHandler.ServeHTTP)
 			}
 			if opts.ManagementMyStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-window", opts.ManagementMyStatsUsageWindowHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAccountUsageHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/account-usage", opts.ManagementStatsAccountUsageHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAccountUsageHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/account-usage", opts.ManagementMyStatsAccountUsageHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAccountUsageTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/account-usage/trend", opts.ManagementStatsAccountUsageTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAccountUsageTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/account-usage/trend", opts.ManagementMyStatsAccountUsageTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAIPerformanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/ai-performance", opts.ManagementStatsAIPerformanceHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAIPerformanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/ai-performance", opts.ManagementMyStatsAIPerformanceHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAIPerformanceAccountsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/ai-performance/accounts", opts.ManagementStatsAIPerformanceAccountsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAIPerformanceAccountsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/ai-performance/accounts", opts.ManagementMyStatsAIPerformanceAccountsHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsUsageOverviewHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/usage-overview", opts.ManagementStatsUsageOverviewHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsUsageOverviewHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-overview", opts.ManagementMyStatsUsageOverviewHandler.ServeHTTP)
 			}
 		}
 	})
@@ -1458,8 +1586,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAuthorizationRevokeHandler != nil ||
 		opts.ManagementProvidersHandler != nil ||
 		opts.ManagementProviderOptionsHandler != nil ||
+		opts.ManagementProviderDefinitionsHandler != nil ||
 		opts.ManagementProviderModelOptionsHandler != nil ||
 		opts.ManagementProviderModelsHandler != nil ||
+		opts.ManagementProviderModelCapabilitiesHandler != nil ||
 		opts.ManagementProviderDefaultHealthCheckModelHandler != nil ||
 		opts.ManagementProviderCustomModelCreateHandler != nil ||
 		opts.ManagementProviderCustomModelUpdateHandler != nil ||
@@ -1538,6 +1668,9 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountListHandler != nil ||
 		opts.ManagementAccountExportHandler != nil ||
 		opts.ManagementMyAccountExportHandler != nil ||
+		opts.ManagementAccountImportPreviewHandler != nil ||
+		opts.ManagementMyAccountImportPreviewHandler != nil ||
+		opts.ManagementAccountImportConfirmHandler != nil ||
 		opts.ManagementAccountCreateHandler != nil ||
 		opts.ManagementMyAccountCreateHandler != nil ||
 		opts.ManagementAccountUpdateHandler != nil ||
@@ -1565,7 +1698,12 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementOperationLogsHandler != nil ||
 		opts.ManagementMyOperationLogsHandler != nil ||
 		opts.ManagementAuditLogsHandler != nil ||
+		opts.ManagementAuditErrorGroupsHandler != nil ||
+		opts.ManagementAuditErrorGroupEventsHandler != nil ||
 		opts.ManagementRuntimeLogsHandler != nil ||
+		opts.ManagementRuntimeLogGrepHandler != nil ||
+		opts.ManagementTableMonitorHandler != nil ||
+		opts.ManagementResponseInspectionPoliciesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceListHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDetailHandler != nil ||
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
@@ -1581,10 +1719,22 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementUsageRecordsHandler != nil ||
 		opts.ManagementMyUsageRecordsHandler != nil ||
 		opts.ManagementAnnouncementPublicListHandler != nil ||
+		opts.ManagementAnnouncementPublicDetailHandler != nil ||
 		opts.ManagementAnnouncementPublicReadHandler != nil ||
 		opts.ManagementAnnouncementsHandler != nil ||
+		opts.ManagementSystemMetricsHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
-		opts.ManagementMyStatsUsageWindowHandler != nil
+		opts.ManagementMyStatsUsageWindowHandler != nil ||
+		opts.ManagementStatsAccountUsageHandler != nil ||
+		opts.ManagementMyStatsAccountUsageHandler != nil ||
+		opts.ManagementStatsAccountUsageTrendHandler != nil ||
+		opts.ManagementMyStatsAccountUsageTrendHandler != nil ||
+		opts.ManagementStatsAIPerformanceHandler != nil ||
+		opts.ManagementMyStatsAIPerformanceHandler != nil ||
+		opts.ManagementStatsAIPerformanceAccountsHandler != nil ||
+		opts.ManagementMyStatsAIPerformanceAccountsHandler != nil ||
+		opts.ManagementStatsUsageOverviewHandler != nil ||
+		opts.ManagementMyStatsUsageOverviewHandler != nil
 }
 
 func managementWriteRoutesConfigured(opts RouterOptions) bool {
@@ -1600,8 +1750,9 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementAPIKeyUpdateHandler != nil ||
 		opts.ManagementMyAPIKeyUpdateHandler != nil ||
 		opts.ManagementAPIKeyDeleteHandler != nil ||
-		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementMyAPIKeyDeleteHandler != nil ||
+		opts.ManagementAnnouncementPublicReadHandler != nil ||
+		opts.ManagementAnnouncementsHandler != nil ||
 		opts.ManagementSystemAccountPatchHandler != nil ||
 		opts.ManagementSystemAccountCreateHandler != nil ||
 		opts.ManagementSystemTeamCreateHandler != nil ||
@@ -1660,8 +1811,6 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountUpdateHandler != nil ||
 		opts.ManagementAccountAuthorizedDispatchHandler != nil ||
 		opts.ManagementMyAccountAuthorizedDispatchHandler != nil ||
-		opts.ManagementAccountImportPreviewHandler != nil ||
-		opts.ManagementMyAccountImportPreviewHandler != nil ||
 		opts.ManagementAccountImportConfirmHandler != nil ||
 		opts.ManagementMyAccountImportConfirmHandler != nil ||
 		opts.ManagementAccountTrafficMigrationHandler != nil ||
@@ -1684,6 +1833,7 @@ func managementWriteRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementClientIPUnallowlistHandler != nil ||
 		opts.ManagementClientIPBlacklistHandler != nil ||
 		opts.ManagementClientIPUnblockHandler != nil ||
+		opts.ManagementResponseInspectionPoliciesHandler != nil ||
 		opts.ManagementExternalIntegrationSourceCreateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceUpdateHandler != nil ||
 		opts.ManagementExternalIntegrationSourceDeleteHandler != nil ||

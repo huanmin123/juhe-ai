@@ -36,27 +36,24 @@ func TestAccountRuntimeReleaseMigrationsCoverExistingDatabases(t *testing.T) {
 		t.Fatal("continuous probe migration Down section must remain a non-destructive no-op")
 	}
 
-	dirtyDomainSource, err := os.ReadFile(migrationPath("000056_w7_page_data_dirty_domains.sql"))
+	dirtyDomainSource, err := os.ReadFile(migrationPath("000071_w7_drop_page_data_dirty_domains.sql"))
 	if err != nil {
-		t.Fatalf("read page dirty domain migration: %v", err)
+		t.Fatalf("read page dirty domain retirement migration: %v", err)
 	}
 	dirtyDomainUp, dirtyDomainDown, found := strings.Cut(string(dirtyDomainSource), "-- +goose Down")
 	if !found {
-		t.Fatal("page dirty domain migration is missing goose Down marker")
+		t.Fatal("page dirty domain retirement migration is missing goose Down marker")
 	}
 	for _, required := range []string{
 		"-- +goose Up",
-		"CREATE TABLE IF NOT EXISTS juhe_business.page_data_dirty_domains",
-		"domain TEXT PRIMARY KEY",
-		"generation BIGINT NOT NULL",
-		"is_dirty BOOLEAN NOT NULL DEFAULT TRUE",
+		"DROP TABLE IF EXISTS juhe_business.page_data_dirty_domains;",
 	} {
 		if !strings.Contains(dirtyDomainUp, required) {
-			t.Fatalf("page dirty domain migration Up section missing %q", required)
+			t.Fatalf("page dirty domain retirement migration Up section missing %q", required)
 		}
 	}
-	if !strings.Contains(dirtyDomainDown, "-- no-op:") || strings.Contains(dirtyDomainDown, "DROP TABLE") {
-		t.Fatal("page dirty domain migration Down section must remain a non-destructive no-op")
+	if !strings.Contains(dirtyDomainDown, "-- no-op:") || strings.Contains(dirtyDomainDown, "CREATE TABLE") {
+		t.Fatal("page dirty domain retirement migration Down section must not recreate the retired table")
 	}
 }
 

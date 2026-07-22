@@ -2,11 +2,6 @@ import { computed, ref } from 'vue'
 import axios from 'axios'
 
 import { api } from '@/api/client'
-import {
-  advancePageDataAuthenticationGeneration,
-  advancePageDataPermissionGeneration,
-  currentPageDataSecurityContext
-} from '@/shared/pageDataGenerationFences'
 import { isAdminRole, isSuperAdminRole } from '@/shared/systemAccountRoles'
 import type { CaptchaChallengeSummary, CurrentUserSummary } from '@/types/domain'
 import { chatGenerationRuntime } from '@/views/chat/chatGenerationRuntime'
@@ -18,15 +13,13 @@ const currentUser = ref<CurrentUserSummary>()
 const authChecked = ref(false)
 let authStateVersion = 0
 let authLoadGeneration = 0
-let authTransitionFenceVersion: number | undefined
 
 export const authState = {
   currentUser,
   authChecked,
   isLoggedIn: computed(() => Boolean(currentUser.value)),
   isAdmin: computed(() => isAdminRole(currentUser.value?.role)),
-  isSuperAdmin: computed(() => isSuperAdminRole(currentUser.value?.role)),
-  pageDataSecurityContext: currentPageDataSecurityContext
+  isSuperAdmin: computed(() => isSuperAdminRole(currentUser.value?.role))
 }
 
 export async function loadCurrentUser(force = false): Promise<CurrentUserSummary | undefined> {
@@ -60,32 +53,22 @@ export async function loadCaptcha(): Promise<CaptchaChallengeSummary> {
 
 export async function login(payload: { username: string; password: string; captchaId?: string; captchaCode?: string }): Promise<CurrentUserSummary> {
   const operationVersion = ++authStateVersion
-  beginAuthSessionTransition(operationVersion)
-  try {
-    const user = await api.auth.login(payload)
-    if (operationVersion === authStateVersion) {
-      applyCurrentUser(user, operationVersion)
-      authChecked.value = true
-    }
-    return user
-  } finally {
-    finishAuthSessionTransition(operationVersion)
+  const user = await api.auth.login(payload)
+  if (operationVersion === authStateVersion) {
+    applyCurrentUser(user)
+    authChecked.value = true
   }
+  return user
 }
 
 export async function logout(): Promise<void> {
   const systemAccountId = currentUser.value?.id
   const operationVersion = ++authStateVersion
-  beginAuthSessionTransition(operationVersion)
-  try {
-    await api.auth.logout()
-    if (operationVersion !== authStateVersion) return
-    await clearCurrentAccountChatState(systemAccountId)
-    if (operationVersion !== authStateVersion) return
-    clearAuthState()
-  } finally {
-    finishAuthSessionTransition(operationVersion)
-  }
+  await api.auth.logout()
+  if (operationVersion !== authStateVersion) return
+  await clearCurrentAccountChatState(systemAccountId)
+  if (operationVersion !== authStateVersion) return
+  clearAuthState()
 }
 
 function isExplicitUnauthorized(error: unknown): boolean {
@@ -116,37 +99,11 @@ export async function updateProfile(payload: { displayName: string }): Promise<C
 }
 
 export function clearAuthState(): void {
-  const alreadyFenced = consumeAuthSessionTransition(authStateVersion)
   authStateVersion += 1
-  if (!alreadyFenced) advancePageDataAuthenticationGeneration()
   currentUser.value = undefined
   authChecked.value = true
 }
 
-function applyCurrentUser(user: CurrentUserSummary, transitionVersion?: number): void {
-  const previous = currentUser.value
-  const alreadyFenced = transitionVersion !== undefined && consumeAuthSessionTransition(transitionVersion)
-  if (!alreadyFenced) {
-    if (!previous || previous.id !== user.id) {
-      advancePageDataAuthenticationGeneration()
-    } else if (previous.role !== user.role || previous.mustChangePassword !== user.mustChangePassword) {
-      advancePageDataPermissionGeneration()
-    }
-  }
+function applyCurrentUser(user: CurrentUserSummary): void {
   currentUser.value = user
-}
-
-function beginAuthSessionTransition(operationVersion: number): void {
-  advancePageDataAuthenticationGeneration()
-  authTransitionFenceVersion = operationVersion
-}
-
-function finishAuthSessionTransition(operationVersion: number): void {
-  if (authTransitionFenceVersion === operationVersion) authTransitionFenceVersion = undefined
-}
-
-function consumeAuthSessionTransition(operationVersion: number): boolean {
-  if (authTransitionFenceVersion !== operationVersion) return false
-  authTransitionFenceVersion = undefined
-  return true
 }

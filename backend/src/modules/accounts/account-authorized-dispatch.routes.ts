@@ -8,7 +8,6 @@ import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearServerAccountRuntimeAvailability } from '../db-service/db-service-ipc.js'
 import { applyServerAccountRuntimeToAccount } from '../gateway/runtime/runtime-snapshot.service.js'
 import { operationMode, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { accountPageDataOwnerIds, publishAccountRuntimeChange, publishAccountStaticChange } from '../page-data/page-data-change.publisher.js'
 import { authorizedAccountDispatchSchema } from './account-request.schemas.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
@@ -61,16 +60,6 @@ export function registerAccountAuthorizedDispatchRoutes(router: Router): void {
       }
       if (parsed.data.clearFailureState === true || parsed.data.status === 'active') {
         await clearAccountGatewayRuntimeAfterRestore(account, requestAccess)
-      }
-      const ownerSystemAccountIds = accountPageDataOwnerIds(account, effectiveRequestSystemAccountId(requestAccess))
-      await publishAccountStaticChange({
-        accountId: account.id,
-        ownerSystemAccountIds,
-        fieldMask: Object.keys(parsed.data),
-        orderChanged: Object.prototype.hasOwnProperty.call(parsed.data, 'priority')
-      })
-      if (parsed.data.clearFailureState === true || Object.prototype.hasOwnProperty.call(parsed.data, 'status')) {
-        await publishAccountRuntimeChange({ accountId: account.id, ownerSystemAccountIds, fieldMask: ['status', 'schedulable'] })
       }
       res.json(ok(sanitizeAccountResponse(await applyServerAccountRuntimeToAccount(account))))
     } catch (error) {

@@ -61,9 +61,14 @@ try {
       id: usageRecordShards.generateUsageRecordId(createdAt, `writer-pool-${index}`),
       traceId: `trace-usage-writer-pool-${index}`,
       trafficSource: 'gateway' as const,
+      systemAccountId: 'sys_admin',
       apiKeyId: apiKey.id,
       groupId: group.id,
+      groupOwnerSystemAccountId: access.systemAccountId,
+      groupAccessType: 'owner' as const,
       accountId: account.id,
+      accountOwnerSystemAccountId: access.systemAccountId,
+      accountAccessType: 'owner' as const,
       endpoint: '/v1/chat/completions',
       providerCode: 'gpt',
       model: 'gpt-5.5-mini',
@@ -90,9 +95,14 @@ try {
       id: usageRecordShards.generateUsageRecordId(createdAt, `writer-pool-shutdown-${index}`),
       traceId: `trace-usage-writer-pool-shutdown-${index}`,
       trafficSource: 'gateway' as const,
+      systemAccountId: 'sys_admin',
       apiKeyId: apiKey.id,
       groupId: group.id,
+      groupOwnerSystemAccountId: access.systemAccountId,
+      groupAccessType: 'owner' as const,
       accountId: account.id,
+      accountOwnerSystemAccountId: access.systemAccountId,
+      accountAccessType: 'owner' as const,
       endpoint: '/v1/chat/completions',
       providerCode: 'gpt',
       model: 'gpt-5.5-mini',
@@ -107,6 +117,7 @@ try {
     }
   })
   usageRecordQueue.enqueueUsageRecordsLocal(shutdownRecords)
+  assert.equal(usageRecordQueue.peekPendingUsageRecordForTest()?.accountId, account.id, '完整 owner 访问快照进入队列后应保留账号范围')
   usageRecordQueue.flushUsageRecordQueue()
   await usageRecordQueue.flushUsageRecordQueueForShutdown()
 

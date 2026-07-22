@@ -18,6 +18,7 @@ const usageShardRoot = join(tempRoot, 'usage-shards')
 
 runtimeConfig.databasePath = databasePath
 runtimeConfig.datasetDatabasePath = datasetDatabasePath
+runtimeConfig.usageCatalogDatabasePath = usageCatalogDatabasePath
 runtimeConfig.statsDatabasePath = statsDatabasePath
 runtimeConfig.usageShardRoot = usageShardRoot
 runtimeConfig.usageShardCount = 4

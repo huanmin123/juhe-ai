@@ -168,7 +168,7 @@ func TestManagementAccountTestOptionsHandlerReturnsExactDTO(t *testing.T) {
 	authContext := managementauth.Context{SystemAccountID: "sys_current", Role: "user"}
 	req := managementAccountTestOptionsRequest(
 		http.MethodGet,
-		"/__aisys__/api/my-accounts/acct_1/test-options",
+		"/__aisys__/api/my-accounts/acct_1/test-options?keyword=%EF%BB%BFgpt%EF%BB%BF&limit=7&selectedIds=gpt-5.2&selectedIds=gpt-5.3%2Cgpt-5.4",
 		"acct_1",
 		&authContext,
 	)
@@ -185,18 +185,86 @@ func TestManagementAccountTestOptionsHandlerReturnsExactDTO(t *testing.T) {
 	}
 	var want any
 	if err := json.Unmarshal([]byte(`{
-		"data": {
-			"accountId": "acct_1",
-			"defaultModel": "gpt-5.2",
-			"models": [{"model": "gpt-5.2", "supportedApiProtocols": ["responses", "chat_completions"], "testEndpointModes": ["responses_sse", "chat_sse"]}],
-			"testEndpointModes": ["responses_sse", "chat_sse"],
-			"defaultTestEndpointMode": "responses_sse"
-		}
+		"data": [{"id": "gpt-5.2", "name": "gpt-5.2"}]
 	}`), &want); err != nil {
 		t.Fatalf("decode expected response: %v", err)
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("response = %s", rec.Body.String())
+	}
+	if !reflect.DeepEqual(service.optionsInput, managementaccounttestoptions.OptionsInput{
+		AccountID: "acct_1", SystemAccountID: "sys_current", Keyword: "gpt", Limit: 7,
+		SelectedIDs: []string{"gpt-5.2", "gpt-5.3,gpt-5.4"},
+	}) {
+		t.Fatalf("options input = %#v", service.optionsInput)
+	}
+}
+
+func TestManagementAccountTestOptionsHandlerRejectsInvalidLimit(t *testing.T) {
+	service := &managementAccountTestOptionsServiceStub{found: true}
+	handler := newManagementAccountTestOptionsHandler(service, managementAccountTestOptionsScopeSelf)
+	authContext := managementauth.Context{SystemAccountID: "sys_current", Role: "user"}
+	req := managementAccountTestOptionsRequest(
+		http.MethodGet,
+		"/__aisys__/api/my-accounts/acct_1/test-options?limit=51",
+		"acct_1",
+		&authContext,
+	)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	if service.calls != 0 {
+		t.Fatalf("service calls = %d, want 0", service.calls)
+	}
+}
+
+func TestManagementAccountTestModelCapabilitiesHandlerReturnsExactDTO(t *testing.T) {
+	service := &managementAccountTestOptionsServiceStub{
+		result: managementaccounttestoptions.Result{
+			Models: []managementaccounttestoptions.ModelOption{
+				{Model: "vendor/model", TestEndpointModes: []string{"responses_json", "responses_sse"}},
+			},
+		},
+		found: true,
+	}
+	handler := newManagementAccountTestOptionsHandler(service, managementAccountTestOptionsScopeSelf)
+	authContext := managementauth.Context{SystemAccountID: "sys_current", Role: "user"}
+	req := managementAccountTestOptionsRequest(
+		http.MethodGet,
+		"/__aisys__/api/my-accounts/acct_1/test-options/models/vendor%2Fmodel",
+		"acct_1",
+		&authContext,
+	)
+	routeContext := chi.RouteContext(req.Context())
+	routeContext.URLParams.Add("modelId", "vendor%2Fmodel")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	var got any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	var want any
+	if err := json.Unmarshal([]byte(`{
+		"data": {"id": "vendor/model", "name": "vendor/model", "testEndpointModes": ["responses_json", "responses_sse"]}
+	}`), &want); err != nil {
+		t.Fatalf("decode expected response: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("response = %s", rec.Body.String())
+	}
+	if !reflect.DeepEqual(service.capabilitiesInput, managementaccounttestoptions.ModelCapabilitiesInput{
+		AccountID: "acct_1", SystemAccountID: "sys_current", Model: "vendor/model",
+	}) {
+		t.Fatalf("capabilities input = %#v", service.capabilitiesInput)
 	}
 }
 
@@ -215,6 +283,11 @@ func TestRouterRegistersAccountTestOptionsAsNoStoreLimitedReadRoutes(t *testing.
 		handlerCalls++
 		if chi.URLParam(r, "id") != "acct_1" {
 			t.Fatalf("account id = %q", chi.URLParam(r, "id"))
+		}
+		if strings.Contains(r.URL.RawPath, "/models/") || strings.Contains(r.URL.Path, "/models/") {
+			if chi.URLParam(r, "modelId") != "vendor%2Fmodel" {
+				t.Fatalf("model id = %q", chi.URLParam(r, "modelId"))
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -243,6 +316,8 @@ func TestRouterRegistersAccountTestOptionsAsNoStoreLimitedReadRoutes(t *testing.
 	for _, path := range []string{
 		"/__aisys__/api/accounts/acct_1/test-options",
 		"/__aisys__/api/my-accounts/acct_1/test-options?systemAccountId=sys_forged",
+		"/__aisys__/api/accounts/acct_1/test-options/models/vendor%2Fmodel",
+		"/__aisys__/api/my-accounts/acct_1/test-options/models/vendor%2Fmodel?systemAccountId=sys_forged",
 	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Cookie", "juhe_ai_session=session-token")
@@ -257,13 +332,13 @@ func TestRouterRegistersAccountTestOptionsAsNoStoreLimitedReadRoutes(t *testing.
 			t.Fatalf("%s Cache-Control = %q", path, rec.Header().Get("Cache-Control"))
 		}
 	}
-	if handlerCalls != 2 || authenticator.readCalls != 2 || authenticator.touchCalls != 0 {
+	if handlerCalls != 4 || authenticator.readCalls != 4 || authenticator.touchCalls != 0 {
 		t.Fatalf("handler calls = %d, read auth calls = %d, touch auth calls = %d", handlerCalls, authenticator.readCalls, authenticator.touchCalls)
 	}
-	if ipLimiter.calls != 2 || ipLimiter.settings != (SystemAPIIPRateLimitSettings{PerMinute: 600, BurstPer10Seconds: 120}) {
+	if ipLimiter.calls != 4 || ipLimiter.settings != (SystemAPIIPRateLimitSettings{PerMinute: 600, BurstPer10Seconds: 120}) {
 		t.Fatalf("IP limiter calls = %d, settings = %+v", ipLimiter.calls, ipLimiter.settings)
 	}
-	if userLimiter.calls != 2 || userLimiter.limit != 300 {
+	if userLimiter.calls != 4 || userLimiter.limit != 300 {
 		t.Fatalf("user limiter calls = %d, limit = %d", userLimiter.calls, userLimiter.limit)
 	}
 }
@@ -293,20 +368,44 @@ func TestRouterDoesNotRegisterAccountTestOptionsWhenManagementAPIDisabled(t *tes
 }
 
 type managementAccountTestOptionsServiceStub struct {
-	calls  int
-	input  managementaccounttestoptions.Input
-	result managementaccounttestoptions.Result
-	found  bool
-	err    error
+	calls             int
+	input             managementaccounttestoptions.Input
+	optionsInput      managementaccounttestoptions.OptionsInput
+	capabilitiesInput managementaccounttestoptions.ModelCapabilitiesInput
+	result            managementaccounttestoptions.Result
+	found             bool
+	err               error
 }
 
-func (s *managementAccountTestOptionsServiceStub) Get(
+func (s *managementAccountTestOptionsServiceStub) Options(
 	_ *http.Request,
-	input managementaccounttestoptions.Input,
-) (managementaccounttestoptions.Result, bool, error) {
+	input managementaccounttestoptions.OptionsInput,
+) ([]managementaccounttestoptions.SelectionOption, bool, error) {
 	s.calls++
-	s.input = input
-	return s.result, s.found, s.err
+	s.input = managementaccounttestoptions.Input{AccountID: input.AccountID, SystemAccountID: input.SystemAccountID}
+	s.optionsInput = input
+	result := make([]managementaccounttestoptions.SelectionOption, 0, len(s.result.Models))
+	for _, model := range s.result.Models {
+		result = append(result, managementaccounttestoptions.SelectionOption{ID: model.Model, Name: model.Model})
+	}
+	return result, s.found, s.err
+}
+
+func (s *managementAccountTestOptionsServiceStub) ModelCapabilities(
+	_ *http.Request,
+	input managementaccounttestoptions.ModelCapabilitiesInput,
+) (managementaccounttestoptions.ModelCapabilities, bool, error) {
+	s.calls++
+	s.input = managementaccounttestoptions.Input{AccountID: input.AccountID, SystemAccountID: input.SystemAccountID}
+	s.capabilitiesInput = input
+	for _, model := range s.result.Models {
+		if model.Model == input.Model {
+			return managementaccounttestoptions.ModelCapabilities{
+				ID: model.Model, Name: model.Model, TestEndpointModes: model.TestEndpointModes,
+			}, s.found, s.err
+		}
+	}
+	return managementaccounttestoptions.ModelCapabilities{}, s.found, s.err
 }
 
 func managementAccountTestOptionsRequest(

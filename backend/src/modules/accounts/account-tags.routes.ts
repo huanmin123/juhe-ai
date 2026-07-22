@@ -6,7 +6,6 @@ import { AccountTagInUseError, deleteAccountTagAsync, findAccountSummaryAsync, l
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { accountPageDataOwnerIds, publishAccountStaticChange } from '../page-data/page-data-change.publisher.js'
 import { accountTagsUpdateSchema } from './account-request.schemas.js'
 import { sanitizeAccountResponse } from './account-response-sanitizer.js'
 
@@ -93,13 +92,6 @@ export function registerAccountTagsRoutes(router: Router): void {
           }
         }
       }, req)
-      await publishAccountStaticChange({
-        accountId: account.id,
-        ownerSystemAccountIds: accountPageDataOwnerIds(account, effectiveRequestSystemAccountId(requestAccess)),
-        fieldMask: ['tags'],
-        filterChanged: true,
-        pageChanged: true
-      })
       res.json(ok(sanitizeAccountResponse(account)))
     } catch (error) {
       if (error instanceof Error && error.message === '账户不存在') {

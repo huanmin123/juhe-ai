@@ -43,3 +43,21 @@ INSERT INTO juhe_dataset.public_api_logs (
   $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
 )
 ON CONFLICT(id) DO NOTHING;
+
+-- name: GetPublicAPILogRetentionDays :one
+SELECT value_json
+FROM juhe_business.system_settings
+WHERE system_account_id = 'sys_admin'
+  AND key = 'publicApiLogRetentionDays'
+LIMIT 1;
+
+-- name: CleanupPublicAPILogsBefore :execrows
+WITH stale_public_api_logs AS (
+  SELECT id
+  FROM juhe_dataset.public_api_logs
+  WHERE created_at < sqlc.arg(cutoff_created_at)::timestamptz
+  ORDER BY created_at ASC, id ASC
+  LIMIT sqlc.arg(row_limit)::int
+)
+DELETE FROM juhe_dataset.public_api_logs
+WHERE id IN (SELECT id FROM stale_public_api_logs);

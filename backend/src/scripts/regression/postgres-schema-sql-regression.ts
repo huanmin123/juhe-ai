@@ -47,9 +47,6 @@ const providerModelCatalogCreateSql = statements.find(
 const customProviderModelsCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS custom_provider_models\b/i.test(statement.sql)
 )?.sql ?? ''
-const pageDataDirtyDomainsCreateSql = statements.find(
-  (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS page_data_dirty_domains\b/i.test(statement.sql)
-)?.sql ?? ''
 const gatewayModelCatalogSnapshotsCreateSql = statements.find(
   (statement) => statement.schemaName === 'juhe_business' && /^CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots\b/i.test(statement.sql)
 )?.sql ?? ''
@@ -125,7 +122,6 @@ assert.match(providerModelCatalogCreateSql, /long_context_input_token_threshold_
 assert.match(providerModelCatalogCreateSql, /supports_prompt_caching boolean NOT NULL DEFAULT false(?=\s|,|\)|;|$)/, 'Node PG prompt caching 字段必须与 Go migration 保持 boolean')
 assert.match(providerModelCatalogCreateSql, /catalog_visible boolean NOT NULL DEFAULT true(?=\s|,|\)|;|$)/, 'Node PG 模型目录可见性字段必须与 Go migration 保持 boolean')
 assert.match(customProviderModelsCreateSql, /catalog_visible boolean NOT NULL DEFAULT true/, 'Node PG 自定义模型发布字段必须与 Goose 59 保持 boolean')
-assert.match(pageDataDirtyDomainsCreateSql, /generation bigint NOT NULL[\s\S]+is_dirty boolean NOT NULL DEFAULT TRUE[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 页面数据脏域必须与 Goose 56 保持一致')
 assert.match(gatewayModelCatalogSnapshotsCreateSql, /created_at timestamptz NOT NULL[\s\S]+updated_at timestamptz NOT NULL/, 'Node PG 发布模型快照时间字段必须与 Goose 59 保持一致')
 assert.match(listBuiltInProviderModelsAsyncSql, /FROM juhe_business\.provider_model_catalog\b/, '必须提取 Node PG 模型目录查询的目标 SQL 模板')
 assert.match(

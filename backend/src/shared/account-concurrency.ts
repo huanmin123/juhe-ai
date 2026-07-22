@@ -189,7 +189,7 @@ export async function loadAccountCurrentConcurrencyByIdsAsync(accountIds: string
         lane ? redisAccountConcurrencyLaneKey(accountId, lane) : redisAccountConcurrencyKey(accountId),
         redisAccountConcurrencyMetadataKey(accountId)
       ]),
-      arguments: [String(Date.now())]
+      arguments: []
     }))
     chunk.forEach((accountId, valueIndex) => result.set(accountId, values[valueIndex] ?? 0))
   }
@@ -290,7 +290,7 @@ function markAccountConcurrencyFirstOutput(accountId: string, slotId: number): v
   }
   slot.firstOutputAtMs = Date.now()
   if (slot.redisToken) {
-    void markRedisAccountConcurrencyFirstOutputWithRetry(accountId, slot.redisToken, slot.firstOutputAtMs)
+    void markRedisAccountConcurrencyFirstOutputWithRetry(accountId, slot.redisToken)
   }
 }
 
@@ -398,7 +398,6 @@ async function acquireRedisAccountConcurrency(
   redisToken: string
 ): Promise<[boolean, number, number]> {
   const client = await redisStateClient()
-  const now = Date.now()
   const result = await client.eval(redisAcquireAccountConcurrencyScript, {
     keys: [
       redisAccountConcurrencyKey(accountId),
@@ -411,9 +410,7 @@ async function acquireRedisAccountConcurrency(
       String(limit),
       String(laneLimit),
       String(redisAccountConcurrencySlotLeaseTtlMs),
-      String(now),
-      redisToken,
-      String(now)
+      redisToken
     ]
   })
   const values = numericRedisArray(result)
@@ -442,7 +439,6 @@ async function loadRedisAccountInFlightStatsByIds(accountIds: string[], input: {
     return result
   }
   const client = await redisStateClient()
-  const now = Date.now()
   const slowRequestThresholdMs = normalizePositiveDuration(input.slowRequestThresholdMs, 30_000)
   const firstOutputSlowThresholdMs = normalizePositiveDuration(input.firstOutputSlowThresholdMs, 15_000)
   for (let index = 0; index < ids.length; index += 100) {
@@ -455,7 +451,6 @@ async function loadRedisAccountInFlightStatsByIds(accountIds: string[], input: {
         redisAccountConcurrencyMetadataKey(accountId)
       ],
       arguments: [
-        String(now),
         String(slowRequestThresholdMs),
         String(firstOutputSlowThresholdMs)
       ]
@@ -498,7 +493,6 @@ async function refreshRedisAccountConcurrencySlots(): Promise<void> {
     return
   }
   const client = await redisStateClient()
-  const expiresAtMs = Date.now() + redisAccountConcurrencySlotLeaseTtlMs
   for (let index = 0; index < slots.length; index += 100) {
     const chunk = slots.slice(index, index + 100)
     const result = await client.eval(redisRefreshAccountConcurrencySlotsScript, {
@@ -508,7 +502,6 @@ async function refreshRedisAccountConcurrencySlots(): Promise<void> {
         redisAccountConcurrencyMetadataKey(slot.accountId)
       ]),
       arguments: [
-        String(expiresAtMs),
         String(redisAccountConcurrencySlotLeaseTtlMs),
         ...chunk.map((slot) => slot.redisToken)
       ]
@@ -576,8 +569,7 @@ async function releaseRedisAccountConcurrencyWithRetry(accountId: string, redisT
 
 async function markRedisAccountConcurrencyFirstOutputWithRetry(
   accountId: string,
-  redisToken: string,
-  firstOutputAtMs: number
+  redisToken: string
 ): Promise<void> {
   const delays = [0, 250, 1000]
   let lastError: unknown
@@ -591,10 +583,7 @@ async function markRedisAccountConcurrencyFirstOutputWithRetry(
           redisAccountConcurrencyKey(accountId),
           redisAccountConcurrencyMetadataKey(accountId)
         ],
-        arguments: [
-          redisToken,
-          String(firstOutputAtMs)
-        ]
+        arguments: [redisToken]
       })
       return
     } catch (error) {
@@ -635,9 +624,10 @@ const redisAcquireAccountConcurrencyScript = `
 local total_limit = tonumber(ARGV[1])
 local lane_limit = tonumber(ARGV[2])
 local slot_ttl_ms = tonumber(ARGV[3])
-local now_ms = tonumber(ARGV[4])
-local slot_token = ARGV[5]
-local started_at_ms = tonumber(ARGV[6])
+local slot_token = ARGV[4]
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local started_at_ms = now_ms
 local expires_at_ms = now_ms + slot_ttl_ms
 
 local function hdel_expired(metadata_key, expired)
@@ -659,6 +649,20 @@ local function cleanup_expired()
   redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now_ms)
 end
 
+local function latest_expiry_ms(key)
+  local latest = redis.call('ZREVRANGE', key, 0, 0, 'WITHSCORES')
+  if #latest < 2 then
+    return now_ms
+  end
+  return tonumber(latest[2]) or now_ms
+end
+
+local function expire_at_latest_slot(key, expiry_ms)
+  if redis.call('EXISTS', key) ~= 0 then
+    redis.call('PEXPIRE', key, math.max(1, expiry_ms - now_ms))
+  end
+end
+
 cleanup_expired()
 
 local current = tonumber(redis.call('ZCARD', KEYS[1]) or '0') or 0
@@ -669,9 +673,11 @@ end
 redis.call('ZADD', KEYS[1], expires_at_ms, slot_token)
 redis.call('ZADD', KEYS[4], expires_at_ms, slot_token)
 redis.call('HSET', KEYS[5], slot_token, cjson.encode({startedAtMs = started_at_ms}))
-redis.call('PEXPIRE', KEYS[1], slot_ttl_ms)
-redis.call('PEXPIRE', KEYS[4], slot_ttl_ms)
-redis.call('PEXPIRE', KEYS[5], slot_ttl_ms)
+local total_latest_expiry_ms = latest_expiry_ms(KEYS[1])
+local lane_latest_expiry_ms = latest_expiry_ms(KEYS[4])
+expire_at_latest_slot(KEYS[1], total_latest_expiry_ms)
+expire_at_latest_slot(KEYS[4], lane_latest_expiry_ms)
+expire_at_latest_slot(KEYS[5], total_latest_expiry_ms)
 return {1, current + 1, lane_current + 1}
 `
 
@@ -697,7 +703,8 @@ return 1
 `
 
 const redisLoadAccountConcurrencyBatchScript = `
-local now_ms = tonumber(ARGV[1])
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
 local results = {}
 
 local function hdel_expired(metadata_key, expired)
@@ -727,20 +734,47 @@ return results
 `
 
 const redisRefreshAccountConcurrencySlotsScript = `
-local expires_at_ms = tonumber(ARGV[1])
-local slot_ttl_ms = tonumber(ARGV[2])
+local slot_ttl_ms = tonumber(ARGV[1])
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local requested_expires_at_ms = now_ms + slot_ttl_ms
 local results = {}
-for arg_index = 3, #ARGV do
-  local key_index = (arg_index - 3) * 3 + 1
+
+local function latest_expiry_ms(key)
+  local latest = redis.call('ZREVRANGE', key, 0, 0, 'WITHSCORES')
+  if #latest < 2 then
+    return now_ms
+  end
+  return tonumber(latest[2]) or now_ms
+end
+
+local function expire_at_latest_slot(key, expiry_ms)
+  if redis.call('EXISTS', key) ~= 0 then
+    redis.call('PEXPIRE', key, math.max(1, expiry_ms - now_ms))
+  end
+end
+
+for arg_index = 2, #ARGV do
+  local key_index = (arg_index - 2) * 3 + 1
   local slot_token = ARGV[arg_index]
-  if redis.call('ZSCORE', KEYS[key_index], slot_token) ~= false then
+  local total_expiry_raw = redis.call('ZSCORE', KEYS[key_index], slot_token)
+  local lane_expiry_raw = redis.call('ZSCORE', KEYS[key_index + 1], slot_token)
+  local total_expiry_ms = tonumber(total_expiry_raw)
+  local lane_expiry_ms = tonumber(lane_expiry_raw)
+  if total_expiry_ms ~= nil and lane_expiry_ms ~= nil and total_expiry_ms > now_ms and lane_expiry_ms > now_ms then
+    local expires_at_ms = math.max(requested_expires_at_ms, total_expiry_ms, lane_expiry_ms)
     redis.call('ZADD', KEYS[key_index], expires_at_ms, slot_token)
     redis.call('ZADD', KEYS[key_index + 1], expires_at_ms, slot_token)
-    redis.call('PEXPIRE', KEYS[key_index], slot_ttl_ms)
-    redis.call('PEXPIRE', KEYS[key_index + 1], slot_ttl_ms)
-    redis.call('PEXPIRE', KEYS[key_index + 2], slot_ttl_ms)
+    local total_latest_expiry_ms = latest_expiry_ms(KEYS[key_index])
+    local lane_latest_expiry_ms = latest_expiry_ms(KEYS[key_index + 1])
+    expire_at_latest_slot(KEYS[key_index], total_latest_expiry_ms)
+    expire_at_latest_slot(KEYS[key_index + 1], lane_latest_expiry_ms)
+    expire_at_latest_slot(KEYS[key_index + 2], total_latest_expiry_ms)
     table.insert(results, 1)
   else
+    redis.call('ZREM', KEYS[key_index], slot_token)
+    redis.call('ZREM', KEYS[key_index + 1], slot_token)
+    redis.call('HDEL', KEYS[key_index + 2], slot_token)
     table.insert(results, 0)
   end
 end
@@ -748,9 +782,10 @@ return results
 `
 
 const redisLoadAccountInFlightStatsScript = `
-local now_ms = tonumber(ARGV[1])
-local slow_threshold_ms = tonumber(ARGV[2])
-local first_output_slow_threshold_ms = tonumber(ARGV[3])
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
+local slow_threshold_ms = tonumber(ARGV[1])
+local first_output_slow_threshold_ms = tonumber(ARGV[2])
 
 local function hdel_expired(metadata_key, expired)
   local index = 1
@@ -811,7 +846,8 @@ return {current, slow_count, first_output_slow_count, oldest_in_flight_ms}
 
 const redisMarkAccountConcurrencyFirstOutputScript = `
 local slot_token = ARGV[1]
-local first_output_at_ms = tonumber(ARGV[2])
+local redis_time = redis.call('TIME')
+local first_output_at_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
 if redis.call('ZSCORE', KEYS[1], slot_token) == false then
   return 0
 end

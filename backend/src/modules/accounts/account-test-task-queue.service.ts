@@ -18,7 +18,7 @@ import {
 } from '../../storage/account-test-tasks.repository.js'
 import { requestBackgroundWorkerDbService, sendAccountTestCancelToWorker, sendAccountTestTasksToWorker } from '../background/background-ipc.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
-import { isGatewaySupportedProtocolProfile } from '../../domain/provider-protocol.js'
+import { isGatewaySupportedProtocolProfile, isOpenAIProtocolProfile } from '../../domain/provider-protocol.js'
 import { resolveAccountTestModelAsync, testOpenAIAccount, testOpenAIAccountWithDiagnosticRetries } from './account-test.service.js'
 import {
   type AccountDiagnosticAttemptProgress,
@@ -836,7 +836,7 @@ function keySuffixForDisplay(key: string): string | undefined {
 async function openAIDraftAccountSecret(draft: AccountTestDraftSnapshot, signal: AbortSignal): Promise<OpenAIAccountSecret> {
   const proxy = await draftProxyProfile(draft.proxyProfileId)
   let credentials = { ...draft.credentials }
-  if (draft.type === 'oauth' && shouldRefreshOpenAIOAuthCredentials(credentials)) {
+  if (draft.type === 'oauth' && isOpenAIProtocolProfile(draft) && shouldRefreshOpenAIOAuthCredentials(credentials)) {
     const refreshToken = stringCredential(credentials.refresh_token)
     if (!refreshToken) {
       throw new DraftAccountConfigurationError('OAuth 草稿缺少 Refresh Token，无法刷新 Access Token')

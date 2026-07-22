@@ -10,12 +10,16 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"juhe-ai/backend-go/internal/modules/announcements"
 )
 
 type announcementPublicService interface {
 	ListPublic(ctx context.Context, input announcements.PublicListInput) ([]announcements.Announcement, error)
+	FindPublic(ctx context.Context, id string) (announcements.Announcement, bool, error)
 	MarkPublicRead(ctx context.Context, input announcements.PublicReadInput) (announcements.PublicReadResult, error)
 }
 
@@ -23,6 +27,10 @@ type announcementPublicServiceAdapter struct{ service *announcements.Service }
 
 func (s announcementPublicServiceAdapter) ListPublic(ctx context.Context, input announcements.PublicListInput) ([]announcements.Announcement, error) {
 	return s.service.ListPublic(ctx, input)
+}
+
+func (s announcementPublicServiceAdapter) FindPublic(ctx context.Context, id string) (announcements.Announcement, bool, error) {
+	return s.service.FindPublic(ctx, id)
 }
 
 func (s announcementPublicServiceAdapter) MarkPublicRead(ctx context.Context, input announcements.PublicReadInput) (announcements.PublicReadResult, error) {
@@ -35,6 +43,26 @@ func NewAnnouncementPublicListHandler(service *announcements.Service) http.Handl
 
 func NewAnnouncementPublicReadHandler(service *announcements.Service) http.Handler {
 	return newAnnouncementPublicReadHandler(announcementPublicServiceAdapter{service: service})
+}
+
+func NewAnnouncementPublicDetailHandler(service *announcements.Service) http.Handler {
+	return newAnnouncementPublicDetailHandler(announcementPublicServiceAdapter{service: service})
+}
+
+type announcementPublicListItemResponse struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Level       string     `json:"level"`
+	PublishedAt *time.Time `json:"publishedAt"`
+	ReadAt      *time.Time `json:"readAt,omitempty"`
+}
+
+type announcementPublicDetailResponse struct {
+	ID          string     `json:"id"`
+	Title       string     `json:"title"`
+	Content     string     `json:"content"`
+	Level       string     `json:"level"`
+	PublishedAt *time.Time `json:"publishedAt"`
 }
 
 func newAnnouncementPublicListHandler(service announcementPublicService) http.Handler {
@@ -59,7 +87,45 @@ func newAnnouncementPublicListHandler(service announcementPublicService) http.Ha
 			return
 		}
 		writeAnnouncementNoStore(w)
-		writeData(w, http.StatusOK, items)
+		response := make([]announcementPublicListItemResponse, 0, len(items))
+		for _, item := range items {
+			response = append(response, announcementPublicListItemResponse{
+				ID: item.ID, Title: item.Title, Level: item.Level,
+				PublishedAt: item.PublishedAt, ReadAt: item.ReadAt,
+			})
+		}
+		writeData(w, http.StatusOK, response)
+	})
+}
+
+func newAnnouncementPublicDetailHandler(service announcementPublicService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeAnnouncementNoStore(w)
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok || strings.TrimSpace(authContext.SystemAccountID) == "" {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if service == nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		item, found, err := service.FindPublic(r.Context(), chi.URLParam(r, "id"))
+		if errors.Is(err, announcements.ErrAnnouncementInputInvalid) {
+			writeMessageError(w, http.StatusBadRequest, "公告参数无效")
+			return
+		}
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		if !found {
+			writeMessageError(w, http.StatusNotFound, "公告不存在")
+			return
+		}
+		writeData(w, http.StatusOK, announcementPublicDetailResponse{
+			ID: item.ID, Title: item.Title, Content: item.Content, Level: item.Level, PublishedAt: item.PublishedAt,
+		})
 	})
 }
 

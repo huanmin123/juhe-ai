@@ -15,6 +15,7 @@ import {
   buildAccountSavePayload,
   buildAccountUpdatePayload,
   buildOAuthCreateCommonPayload,
+  resolveFormProviderProfile,
   validateAccountSaveForm,
   type AccountSavePayload
 } from './accountSavePayload'
@@ -24,15 +25,12 @@ import {
   normalizedAccountApiKeys,
   normalizedAccountApiKeyWeights
 } from './accountCredentials'
+import { canCreateOAuthAccount } from './accountProviderCapabilities'
 import {
   normalizeFormTagNames,
   sameTagNames,
   type AccountModelSelectOption
 } from './accountEditFormPayload'
-import {
-  invalidateAccountTagOptionsCache,
-  resolveAccountTagOptionsScopeKey
-} from './accountTagOptionsCache'
 import { invalidateAccountDetailForAccount } from './accountDetailCache'
 
 type ReadonlyValue<T> = {
@@ -116,7 +114,9 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
         message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
       } else if (options.form.type === 'oauth') {
-        const created = await createOAuthAccountFromUnifiedForm()
+        const created = usesManagedOAuthCreateFlow(options.form, options.providers.value)
+          ? await createOAuthAccountFromUnifiedForm()
+          : await createApiKeyAccount(payload)
         message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
       } else {
         const created = await createApiKeyAccount(payload)
@@ -124,7 +124,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
           ? '账户已创建，已因多 Key 自动关闭余额查询'
           : created?.status === 'active' ? '账户已创建并启用' : '账户已创建，等待后台检查')
       }
-      invalidateAccountTagOptions(options.editingId.value ? options.editingAccountScopeParams() : options.createScopeParams.value)
       options.modalOpen.value = false
       await options.loadData()
     } catch (error) {
@@ -134,6 +133,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   })
 
   async function generateOAuthUrl() {
+    if (!usesManagedOAuthCreateFlow(options.form, options.providers.value)) {
+      message.warning('当前供应商 OAuth 使用直接录入 Access Token，不提供站内授权链接')
+      return
+    }
     authLoading.value = true
     try {
       authResult.value = options.isManagementView.value ? await api.openaiOAuth.authUrl({}) : await api.myOpenaiOAuth.authUrl({})
@@ -185,7 +188,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         } else {
           await api.myAccounts.updateTags(account.id, payload)
         }
-        invalidateAccountTagOptions(scopeParams)
       }
       invalidateAccountDetailOptions(account.id, scopeParams)
       message.success('授权账户已更新')
@@ -248,7 +250,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       supportedModels,
       healthCheckModel,
       healthCheckEndpointMode: options.form.healthCheckEndpointMode,
-      credentials: buildBasicEditCredentialsPatch(options.form),
+      credentials: buildBasicEditCredentialsPatch(options.form, options.editingAccountDetail.value?.credentials),
       ...buildAccountBalancePayload(options.form)
     }
     try {
@@ -258,7 +260,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         await api.myAccounts.update(options.editingId.value, payload)
       }
       invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
-      invalidateAccountTagOptions(options.editingAccountScopeParams())
       message.success(balanceAutoDisabled ? '账户基础信息已更新，已因多 Key 自动关闭余额查询' : '账户基础信息已更新')
       options.modalOpen.value = false
       await options.loadData()
@@ -304,10 +305,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
       : api.myAccounts.create(payload)
   }
 
-  function invalidateAccountTagOptions(scopeParams: AccountScopeParams | undefined): void {
-    invalidateAccountTagOptionsCache(resolveAccountTagOptionsScopeKey(options.isManagementView.value, scopeParams))
-  }
-
   function invalidateAccountDetailOptions(accountId: string | undefined, scopeParams: AccountScopeParams | undefined): void {
     if (!accountId) return
     invalidateAccountDetailForAccount({
@@ -349,6 +346,9 @@ export function validateBasicEditCredentialFields(form: AccountFormModel): strin
     const apiKeyCount = normalizedAccountApiKeys(form).length
     if (apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
   }
+  if (form.type === 'oauth') {
+    if (!form.baseUrl.trim()) return '请填写 Base URL'
+  }
   if (form.type === 'google_oauth') {
     if (!form.baseUrl.trim()) return '请填写 Base URL'
   }
@@ -374,7 +374,7 @@ function normalizeBasicEditSupportedModels(value: string[]): string[] {
   return output
 }
 
-function buildBasicEditCredentialsPatch(form: AccountFormModel): Record<string, unknown> {
+function buildBasicEditCredentialsPatch(form: AccountFormModel, currentCredentials: Record<string, unknown> = {}): Record<string, unknown> {
   const credentials: Record<string, unknown> = {
     supported_endpoint_modes: [...form.supportedEndpointModes]
   }
@@ -394,15 +394,42 @@ function buildBasicEditCredentialsPatch(form: AccountFormModel): Record<string, 
       }
     }
   } else if (form.type === 'oauth') {
-    if (form.accessToken.trim()) credentials.access_token = form.accessToken.trim()
-    if (form.refreshToken.trim()) credentials.refresh_token = form.refreshToken.trim()
+    credentials.base_url = form.baseUrl.trim() || credentialText(currentCredentials.base_url) || ''
+    if (form.accessToken.trim() || credentialText(currentCredentials.access_token)) {
+      credentials.access_token = form.accessToken.trim() || credentialText(currentCredentials.access_token)
+    }
+    if (form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)) {
+      credentials.refresh_token = form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)
+    }
   } else if (form.type === 'google_oauth') {
-    if (form.accessToken.trim()) credentials.access_token = form.accessToken.trim()
-    if (form.refreshToken.trim()) credentials.refresh_token = form.refreshToken.trim()
-    if (form.googleClientId.trim()) credentials.client_id = form.googleClientId.trim()
-    if (form.googleClientSecret.trim()) credentials.client_secret = form.googleClientSecret.trim()
-    if (form.googleQuotaProjectId.trim()) credentials.quota_project_id = form.googleQuotaProjectId.trim()
-    credentials.base_url = form.baseUrl.trim()
+    if (form.accessToken.trim() || credentialText(currentCredentials.access_token)) {
+      credentials.access_token = form.accessToken.trim() || credentialText(currentCredentials.access_token)
+    }
+    if (form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)) {
+      credentials.refresh_token = form.refreshToken.trim() || credentialText(currentCredentials.refresh_token)
+    }
+    if (form.googleClientId.trim() || credentialText(currentCredentials.client_id)) {
+      credentials.client_id = form.googleClientId.trim() || credentialText(currentCredentials.client_id)
+    }
+    if (form.googleClientSecret.trim() || credentialText(currentCredentials.client_secret)) {
+      credentials.client_secret = form.googleClientSecret.trim() || credentialText(currentCredentials.client_secret)
+    }
+    if (form.googleQuotaProjectId.trim() || credentialText(currentCredentials.quota_project_id)) {
+      credentials.quota_project_id = form.googleQuotaProjectId.trim() || credentialText(currentCredentials.quota_project_id)
+    }
+    credentials.base_url = form.baseUrl.trim() || credentialText(currentCredentials.base_url) || ''
   }
   return credentials
+}
+
+function usesManagedOAuthCreateFlow(form: AccountFormModel, providers: readonly ProviderDefinition[]): boolean {
+  return canCreateOAuthAccount(
+    providers.length
+      ? resolveFormProviderProfile(form, [...providers])
+      : resolveFormProviderProfile(form)
+  )
+}
+
+function credentialText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }

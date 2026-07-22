@@ -1,15 +1,22 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "deploymentEpoch": "node-production-2026-07-18",
   "release": {
     "nodeVersion": "0.1.0",
     "goVersion": "0.1.0-w0",
-    "schemaVersion": 67
+    "schemaVersion": 71
   },
   "routeOwners": {
     "management": "node",
     "public": "node",
     "gateway": "node",
     "worker": "node"
-  }
+  },
+  "rollbackRouteOwners": {
+    "management": "node",
+    "public": "node",
+    "gateway": "node",
+    "worker": "node"
+  },
+  "routeAllowlist": []
 }

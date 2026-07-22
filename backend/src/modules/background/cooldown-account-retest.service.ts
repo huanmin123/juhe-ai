@@ -8,7 +8,6 @@ import { automaticAccountProbeOutcome } from '../accounts/automatic-account-prob
 import { isCompletedRealUpstreamAttempt } from '../gateway/upstream/attempt.js'
 import { requestBackgroundWorkerDbService } from './background-ipc.js'
 import { backgroundProbeDbServiceTimeoutMs, runWithBackgroundFullDiagnosticSlot } from './account-probe-limits.js'
-import { accountPageDataOwnerIds, publishAccountRuntimeChange } from '../page-data/page-data-change.publisher.js'
 
 interface CooldownAccountRetestQueueItem {
   accountId: string
@@ -113,13 +112,6 @@ async function runCooldownAccountRetestQueueItem(
       expectedConfigRevision: item.configRevision,
       expectedObservationStartedAt: item.cooldownRetestObservationStartedAt
     }, backgroundProbeDbServiceTimeoutMs)
-    if (restored?.changed) {
-      await publishAccountRuntimeChange({
-        accountId: account.id,
-        ownerSystemAccountIds: accountPageDataOwnerIds(account),
-        fieldMask: ['status', 'schedulable', 'cooldownUntil', 'lastErrorCode', 'lastErrorMessage']
-      })
-    }
     logger.info({
       event: 'background_cooldown_account_retest_restored',
       accountId: account.id,
@@ -140,13 +132,6 @@ async function runCooldownAccountRetestQueueItem(
       accountId: account.id,
       delaySeconds: 10
     }, backgroundProbeDbServiceTimeoutMs)
-    if (deferred?.cooldownUntil) {
-      await publishAccountRuntimeChange({
-        accountId: account.id,
-        ownerSystemAccountIds: accountPageDataOwnerIds(account),
-        fieldMask: ['cooldownUntil']
-      })
-    }
     logger.warn({
       event: 'background_cooldown_account_retest_task_failed',
       accountId: account.id,
@@ -176,22 +161,6 @@ async function runCooldownAccountRetestQueueItem(
       maxRecoveryHours: item.maxRecoveryHours
     }
   }, backgroundProbeDbServiceTimeoutMs)
-  if (failure) {
-    await publishAccountRuntimeChange({
-      accountId: account.id,
-      ownerSystemAccountIds: accountPageDataOwnerIds(account),
-      fieldMask: [
-        'status',
-        'schedulable',
-        'cooldownUntil',
-        'lastErrorCode',
-        'lastErrorMessage',
-        'cooldownRetestFailureCount',
-        'cooldownRetestLastAt'
-      ]
-    })
-  }
-
   const logFields = {
     event: 'background_cooldown_account_retest_failed',
     accountId: account.id,

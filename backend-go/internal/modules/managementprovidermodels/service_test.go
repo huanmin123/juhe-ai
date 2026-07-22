@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"math"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +15,195 @@ import (
 
 	"juhe-ai/backend-go/internal/store/port"
 )
+
+func TestServiceModelCapabilitiesUsesPointLookupAndPersonalPrecedence(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		capabilityCandidates: []port.ManagementProviderModelCatalogItem{
+			{ID: "builtin", ProviderCode: "gpt", Model: "vendor/model", Scope: "built_in", Mode: "text", SupportedServiceTiers: []string{"priority"}},
+			{ID: "global", ProviderCode: "gpt", Model: "vendor/model", Scope: "global", Mode: "text", SupportedReasoningEfforts: []string{"high"}},
+			{ID: "personal", ProviderCode: "gpt", Model: "vendor/model", Scope: "personal", SystemAccountID: "sys_user", Mode: "text", SupportedAPIProtocols: []string{"responses"}, SupportedReasoningEfforts: []string{"max"}, DefaultReasoningEffort: "max"},
+		},
+	}
+
+	result, err := NewService(store).ModelCapabilities(context.Background(), ModelCapabilitiesInput{
+		ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "vendor/model",
+	})
+	if err != nil {
+		t.Fatalf("ModelCapabilities() error = %v", err)
+	}
+	if result.ID != "vendor/model" || result.Name != "vendor/model" || result.DefaultReasoningEffort != "max" || len(result.SupportedReasoningEfforts) != 1 || result.SupportedReasoningEfforts[0] != "max" {
+		t.Fatalf("result = %+v", result)
+	}
+	if store.capabilityInput.Model != "vendor/model" || store.capabilityInput.SystemAccountID != "sys_user" ||
+		!slices.Equal(store.capabilityInput.BuiltInProviderCodes, []string{"gpt"}) ||
+		!slices.Equal(store.capabilityInput.CustomProviderCodes, []string{"gpt"}) {
+		t.Fatalf("point lookup input = %+v", store.capabilityInput)
+	}
+	if store.catalogCalls != 0 || store.capabilityCalls != 1 {
+		t.Fatalf("catalog calls = %d, capability calls = %d", store.catalogCalls, store.capabilityCalls)
+	}
+}
+
+func TestServiceModelCapabilitiesRejectsDisabledProviderAndRetainsNonTextWinner(t *testing.T) {
+	tests := []struct {
+		name       string
+		provider   port.ManagementProviderModelProvider
+		candidates []port.ManagementProviderModelCatalogItem
+		wantErr    error
+		wantID     string
+	}{
+		{name: "disabled provider", provider: port.ManagementProviderModelProvider{Code: "gpt", Enabled: false}, wantErr: ErrProviderNotFound},
+		{
+			name:     "personal image shadows global text",
+			provider: port.ManagementProviderModelProvider{Code: "gpt", Enabled: true},
+			candidates: []port.ManagementProviderModelCatalogItem{
+				{ID: "global", ProviderCode: "gpt", Model: "same", Scope: "global", Mode: "text", SupportedAPIProtocols: []string{"responses"}},
+				{ID: "personal", ProviderCode: "gpt", Model: "same", Scope: "personal", Mode: "image", SupportedAPIProtocols: []string{"images"}},
+			},
+			wantID: "same",
+		},
+		{
+			name:       "audio model",
+			provider:   port.ManagementProviderModelProvider{Code: "gpt", Enabled: true},
+			candidates: []port.ManagementProviderModelCatalogItem{{ID: "audio", ProviderCode: "gpt", Model: "same", Scope: "built_in", Mode: "audio", SupportedAPIProtocols: []string{"audio"}}},
+			wantID:     "same",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &providerModelStoreStub{
+				providers:            map[string]port.ManagementProviderModelProvider{"gpt": tt.provider},
+				capabilityCandidates: tt.candidates,
+			}
+			result, err := NewService(store).ModelCapabilities(context.Background(), ModelCapabilitiesInput{ProviderCode: "gpt", SystemAccountID: "sys_user", Model: "same"})
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantID != "" && result.ID != tt.wantID {
+				t.Fatalf("result = %+v, want id %q", result, tt.wantID)
+			}
+			if tt.name == "personal image shadows global text" && !slices.Equal(result.SupportedAPIProtocols, []string{"images"}) {
+				t.Fatalf("result = %+v, want personal image capabilities", result)
+			}
+		})
+	}
+}
+
+func TestServiceModelCapabilitiesKeepsTextProtocolsOutsideAccountTestModes(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"openai": {Code: "openai", Enabled: true},
+		},
+		protocolCodes: map[string][]string{"openai:v1": {"openai"}},
+		capabilityCandidates: []port.ManagementProviderModelCatalogItem{{
+			ID: "interaction", ProviderCode: "openai", Model: "interaction-model", Scope: "global", Mode: "text",
+			SupportedAPIProtocols: []string{"interactions"},
+		}},
+	}
+	result, err := NewService(store).ModelCapabilities(context.Background(), ModelCapabilitiesInput{
+		ProviderCode: "openai", SystemAccountID: "sys_user", Model: "interaction-model",
+	})
+	if err != nil {
+		t.Fatalf("ModelCapabilities() error = %v", err)
+	}
+	if !slices.Equal(result.SupportedAPIProtocols, []string{"interactions"}) {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestServiceModelCapabilitiesHybridKeepsNodeCrossProviderOrdering(t *testing.T) {
+	higherCatalogOrder := 100
+	lowerCatalogOrder := 1
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"hybrid": {Code: "hybrid", Enabled: true},
+		},
+		protocolCodes: map[string][]string{
+			"openai:v1":     {"gpt"},
+			"anthropic:v1":  {"deepseek"},
+			"gemini:v1beta": {},
+		},
+		capabilityCandidates: []port.ManagementProviderModelCatalogItem{
+			{ID: "a-gpt", ProviderCode: "gpt", Model: "shared", Scope: "built_in", CatalogOrder: &higherCatalogOrder, SupportedAPIProtocols: []string{"responses"}},
+			{ID: "z-deepseek", ProviderCode: "deepseek", Model: "shared", Scope: "built_in", CatalogOrder: &lowerCatalogOrder, SupportedAPIProtocols: []string{"chat_completions"}},
+		},
+	}
+
+	result, err := NewService(store).ModelCapabilities(context.Background(), ModelCapabilitiesInput{
+		ProviderCode: "hybrid", SystemAccountID: "sys_user", Model: "shared",
+	})
+	if err != nil {
+		t.Fatalf("ModelCapabilities() error = %v", err)
+	}
+	if !slices.Equal(result.SupportedAPIProtocols, []string{"responses"}) {
+		t.Fatalf("result = %+v, want Node-compatible provider/id ordering", result)
+	}
+}
+
+func TestServiceModelSelectionOptionsUsesBoundedQueryAndLightweightDTO(t *testing.T) {
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"gpt": {Code: "gpt", Enabled: true},
+		},
+		optionCandidates: []port.ManagementProviderModelCatalogItem{
+			{ID: "built-alpha", ProviderCode: "gpt", Model: "alpha", Scope: "built_in"},
+			{ID: "global-alpha", ProviderCode: "gpt", Model: "alpha", Scope: "global"},
+			{ID: "personal-alpha", ProviderCode: "gpt", Model: "alpha", Scope: "personal"},
+			{ID: "selected", ProviderCode: "gpt", Model: "selected/model", Scope: "built_in"},
+			{ID: "ignored", ProviderCode: "gpt", Model: "ignored", Scope: "built_in"},
+		},
+	}
+
+	options, err := NewService(store).ModelSelectionOptions(context.Background(), ModelSelectionOptionListInput{
+		ProviderCode: "gpt", SystemAccountID: " sys_user ", Keyword: " alp ", Limit: 1,
+		SelectedIDs: []string{" selected/model ", "selected/model"},
+	})
+	if err != nil {
+		t.Fatalf("ModelSelectionOptions() error = %v", err)
+	}
+	if !reflect.DeepEqual(options, []ModelSelectionOption{
+		{ID: "selected/model", Name: "selected/model"},
+		{ID: "alpha", Name: "alpha"},
+	}) {
+		t.Fatalf("options = %+v", options)
+	}
+	if store.optionCalls != 1 || store.catalogCalls != 0 {
+		t.Fatalf("option calls = %d, full catalog calls = %d", store.optionCalls, store.catalogCalls)
+	}
+	if store.optionInput.SystemAccountID != "sys_user" || store.optionInput.Keyword != "alp" || store.optionInput.Limit != 2 ||
+		!slices.Equal(store.optionInput.SelectedIDs, []string{"selected/model"}) ||
+		!slices.Equal(store.optionInput.BuiltInProviderCodes, []string{"gpt"}) ||
+		!slices.Equal(store.optionInput.CustomProviderCodes, []string{"gpt"}) {
+		t.Fatalf("option input = %+v", store.optionInput)
+	}
+}
+
+func TestServiceModelSelectionOptionsRejectsDisabledProvider(t *testing.T) {
+	store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{
+		"gpt": {Code: "gpt", Enabled: false},
+	}}
+	_, err := NewService(store).ModelSelectionOptions(context.Background(), ModelSelectionOptionListInput{ProviderCode: "gpt", Limit: 50})
+	if !errors.Is(err, ErrProviderNotFound) || store.optionCalls != 0 {
+		t.Fatalf("error = %v, option calls = %d", err, store.optionCalls)
+	}
+}
+
+func TestServiceModelSelectionOptionsAllProvidersKeepsOpenAIBuiltInAndExcludesHybrid(t *testing.T) {
+	store := &providerModelStoreStub{
+		enabledCodes: []string{"openai", "hybrid"},
+	}
+	_, err := NewService(store).ModelSelectionOptions(context.Background(), ModelSelectionOptionListInput{Limit: 50})
+	if err != nil {
+		t.Fatalf("ModelSelectionOptions() error = %v", err)
+	}
+	if !slices.Equal(store.optionInput.BuiltInProviderCodes, []string{"openai"}) ||
+		!slices.Equal(store.optionInput.CustomProviderCodes, []string{"openai"}) {
+		t.Fatalf("option input = %+v", store.optionInput)
+	}
+}
 
 func TestServiceModelOptionsSelectsHighestPriorityCatalogScope(t *testing.T) {
 	builtIn := port.ManagementProviderModelCatalogItem{
@@ -2243,6 +2433,12 @@ type providerModelStoreStub struct {
 	catalog                []port.ManagementProviderModelCatalogItem
 	catalogInput           port.ManagementProviderModelCatalogListInput
 	catalogCalls           int
+	capabilityCandidates   []port.ManagementProviderModelCatalogItem
+	capabilityInput        port.ManagementProviderModelCapabilitiesInput
+	capabilityCalls        int
+	optionCandidates       []port.ManagementProviderModelCatalogItem
+	optionInput            port.ManagementProviderModelOptionListInput
+	optionCalls            int
 	builtInUpdateInputs    []port.ManagementBuiltInProviderModelPriceUpdateInput
 	builtInUpdateResult    port.ManagementBuiltInProviderModelPriceUpdateResult
 	setDefaultInput        port.ManagementProviderDefaultHealthCheckModelInput
@@ -2271,6 +2467,18 @@ type providerModelStoreStub struct {
 	clearErr               error
 	clearSystemInput       port.ManagementProviderSystemDefaultHealthCheckModelClearInput
 	clearSystemErr         error
+}
+
+func (s *providerModelStoreStub) ListManagementProviderModelCapabilityCandidates(_ context.Context, input port.ManagementProviderModelCapabilitiesInput) ([]port.ManagementProviderModelCatalogItem, error) {
+	s.capabilityCalls++
+	s.capabilityInput = input
+	return append([]port.ManagementProviderModelCatalogItem(nil), s.capabilityCandidates...), nil
+}
+
+func (s *providerModelStoreStub) ListManagementProviderModelOptions(_ context.Context, input port.ManagementProviderModelOptionListInput) ([]port.ManagementProviderModelCatalogItem, error) {
+	s.optionCalls++
+	s.optionInput = input
+	return append([]port.ManagementProviderModelCatalogItem(nil), s.optionCandidates...), nil
 }
 
 func (s *providerModelStoreStub) UpdateManagementBuiltInProviderModelPrices(_ context.Context, input port.ManagementBuiltInProviderModelPriceUpdateInput, validate port.ManagementBuiltInProviderModelUpdateValidate) (port.ManagementBuiltInProviderModelPriceUpdateResult, bool, error) {

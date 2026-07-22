@@ -30,13 +30,13 @@ func (s *Store) ListManagementResourceAuthorizations(ctx context.Context, input 
 		return port.ManagementResourceAuthorizationListResult{}, fmt.Errorf("list management resource authorizations: %w", err)
 	}
 	defer rows.Close()
-	items := make([]port.ManagementResourceAuthorizationSummary, 0, limit)
+	items := make([]port.ManagementResourceAuthorizationListRow, 0, limit)
 	for rows.Next() {
-		summary, err := scanManagementAuthorizationSummary(rows)
+		item, err := scanManagementAuthorizationListRow(rows)
 		if err != nil {
 			return port.ManagementResourceAuthorizationListResult{}, err
 		}
-		items = append(items, summary)
+		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
 		return port.ManagementResourceAuthorizationListResult{}, fmt.Errorf("iterate management resource authorizations: %w", err)
@@ -54,7 +54,7 @@ func (s *Store) FindManagementResourceAuthorization(ctx context.Context, input p
 	if authorizationID == "" {
 		return port.ManagementResourceAuthorizationSummary{}, false, nil
 	}
-	query, args := managementResourceAuthorizationListQuery(port.ManagementResourceAuthorizationListInput{
+	query, args := managementResourceAuthorizationDetailQuery(port.ManagementResourceAuthorizationListInput{
 		AuthorizationID:       authorizationID,
 		ActorSystemAccountID:  input.ActorSystemAccountID,
 		CanAccessAll:          input.CanAccessAll,
@@ -439,6 +439,34 @@ LIMIT 1
 }
 
 func managementResourceAuthorizationListQuery(input port.ManagementResourceAuthorizationListInput) (string, []any) {
+	return managementResourceAuthorizationQuery(input, `
+SELECT rag.id, rag.resource_type, rag.resource_id, rag.resource_owner_system_account_id, rag.grantee_type,
+  rag.grantee_system_account_id, rag.grantee_team_id, rag.status, rag.remark, rag.expires_at, rag.created_at,
+  COALESCE(accounts.name, authorization_instance.name) AS account_name,
+  groups.name AS group_name,
+  owner_accounts.display_name AS owner_display_name,
+  grantee_accounts.display_name AS grantee_display_name,
+  grantee_accounts.username AS grantee_username,
+  teams.name AS team_name
+`)
+}
+
+func managementResourceAuthorizationDetailQuery(input port.ManagementResourceAuthorizationListInput) (string, []any) {
+	return managementResourceAuthorizationQuery(input, `
+SELECT rag.id, rag.resource_type, rag.resource_id, rag.resource_owner_system_account_id, rag.grantee_type,
+  rag.grantee_system_account_id, rag.grantee_team_id, rag.scope, rag.status, rag.remark, rag.expires_at,
+  rag.limits_json, rag.created_by, rag.created_at, rag.revoked_by, rag.revoked_at, rag.updated_at,
+  COALESCE(accounts.name, authorization_instance.name) AS account_name,
+  groups.name AS group_name,
+  accounts.account_expires_at,
+  owner_accounts.display_name AS owner_display_name,
+  grantee_accounts.display_name AS grantee_display_name,
+  grantee_accounts.username AS grantee_username,
+  teams.name AS team_name
+`)
+}
+
+func managementResourceAuthorizationQuery(input port.ManagementResourceAuthorizationListInput, projection string) (string, []any) {
 	args := []any{}
 	clauses := []string{}
 	addArg := func(value any) string {
@@ -523,18 +551,7 @@ func managementResourceAuthorizationListQuery(input port.ManagementResourceAutho
 	}
 	limitArg := addArg(max(0, input.Limit))
 	offsetArg := addArg(max(0, input.Offset))
-	query := `
-SELECT rag.id, rag.resource_type, rag.resource_id, rag.resource_owner_system_account_id, rag.grantee_type,
-  rag.grantee_system_account_id, rag.grantee_team_id, rag.scope, rag.status, rag.remark, rag.expires_at,
-  rag.limits_json, rag.created_by, rag.created_at, rag.revoked_by, rag.revoked_at, rag.updated_at,
-  COALESCE(accounts.name, authorization_instance.name) AS account_name,
-  groups.name AS group_name,
-  accounts.account_expires_at,
-  owner_accounts.display_name AS owner_display_name,
-  grantee_accounts.display_name AS grantee_display_name,
-  grantee_accounts.username AS grantee_username,
-  teams.name AS team_name
-FROM juhe_business.resource_authorization_grants AS rag
+	query := projection + `FROM juhe_business.resource_authorization_grants AS rag
 LEFT JOIN juhe_business.accounts AS accounts
   ON accounts.id = rag.resource_id
   AND rag.resource_type = 'account'
@@ -3263,6 +3280,58 @@ func scanManagementAuthorizationSummary(scanner managementAuthorizationSummarySc
 		return port.ManagementResourceAuthorizationSummary{}, fmt.Errorf("scan management resource authorization: %w", err)
 	}
 	return managementAuthorizationSummaryFromRow(row)
+}
+
+func scanManagementAuthorizationListRow(scanner managementAuthorizationSummaryScanner) (port.ManagementResourceAuthorizationListRow, error) {
+	var (
+		item                   port.ManagementResourceAuthorizationListRow
+		granteeSystemAccountID pgtype.Text
+		granteeTeamID          pgtype.Text
+		remark                 pgtype.Text
+		expiresAt              pgtype.Timestamptz
+		createdAt              pgtype.Timestamptz
+		accountName            pgtype.Text
+		groupName              pgtype.Text
+		ownerDisplayName       pgtype.Text
+		granteeDisplayName     pgtype.Text
+		granteeUsername        pgtype.Text
+		teamName               pgtype.Text
+	)
+	if err := scanner.Scan(
+		&item.ID,
+		&item.ResourceType,
+		&item.ResourceID,
+		&item.ResourceOwnerSystemAccountID,
+		&item.GranteeType,
+		&granteeSystemAccountID,
+		&granteeTeamID,
+		&item.Status,
+		&remark,
+		&expiresAt,
+		&createdAt,
+		&accountName,
+		&groupName,
+		&ownerDisplayName,
+		&granteeDisplayName,
+		&granteeUsername,
+		&teamName,
+	); err != nil {
+		return port.ManagementResourceAuthorizationListRow{}, fmt.Errorf("scan management resource authorization list row: %w", err)
+	}
+	item.ResourceName = textValue(accountName)
+	if item.ResourceType == "group" {
+		item.ResourceName = textValue(groupName)
+	}
+	item.ResourceOwnerSystemAccountName = textValue(ownerDisplayName)
+	item.GranteeSystemAccountID = textValue(granteeSystemAccountID)
+	item.GranteeSystemAccountName = textValue(granteeDisplayName)
+	item.GranteeUsername = textValue(granteeUsername)
+	item.GranteeTeamID = textValue(granteeTeamID)
+	item.GranteeTeamName = textValue(teamName)
+	item.Remark = textValue(remark)
+	item.ExpiresAt = timePtrFromTimestamptz(expiresAt)
+	item.CreatedAt = timestamptzValue(createdAt)
+	return item, nil
 }
 
 func managementAuthorizationSummaryByGrantIDTx(ctx context.Context, tx pgx.Tx, grantID string) (port.ManagementResourceAuthorizationSummary, error) {

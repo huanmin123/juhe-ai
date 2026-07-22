@@ -1,7 +1,7 @@
 # AI 问答设计
 
 > 本文定义 `juhe-ai` 第一版 AI 问答功能的目标架构、页面交互、接口、存储、流式协议、安全边界和验收口径。
-> 当前状态：AI 问答 MVP、Tiptap 输入、Responses/Chat Completions 双协议、有序助手时间线、版本化系统提示、Markdown/代码高亮/LaTeX/Mermaid/SVG、multipart 图片资产、按需会话加载、统一内部工具 Registry/Orchestrator、development/test Demo、`generate_image` 生成/编辑、图像谱系和 WebP 原图/预览双资产均已在隔离工作树实现；本地专项与真实浏览器验收由 [PLAN-0150](../plans/计划-0150-AI问答有序过程生图与按需加载.md) 追踪。真实账户与 Codex 浏览器验收只在本地进行，禁止未经用户批准上线。详细上下文验收见 [AI 问答上下文管理设计](AI问答上下文管理设计.md) 和 PLAN-0104。
+> 当前状态：AI 问答 MVP、Tiptap 输入、Responses/Chat Completions 双协议、有序助手时间线、版本化系统提示、Markdown/代码高亮/LaTeX/Mermaid/SVG、multipart 图片资产、按需会话加载、统一内部工具 Registry/Orchestrator、development/test Demo、`generate_image` 生成/编辑、图像谱系和 WebP 原图/预览双资产均已在隔离工作树实现；本地专项与真实浏览器验收由 [PLAN-0150-20260722T022751000Z](../plans/计划-0150-20260722T022751000Z-AI问答有序过程生图与按需加载.md) 追踪。真实账户与 Codex 浏览器验收只在本地进行，禁止未经用户批准上线。详细上下文验收见 [AI 问答上下文管理设计](AI问答上下文管理设计.md) 和 PLAN-0104。
 
 ## 1. 功能定位
 
@@ -54,7 +54,7 @@ AI 问答模块只新增登录用户会话、消息持久化、上下文组装�
 ### 3.2 本次不包含
 
 - 文件附件、知识库、本站自建联网搜索和语音输入；Responses 可使用上游实际支持的 Hosted Web Search。
-- MCP、Skill、第三方工具热加载和完整工具审批平台；PLAN-0150 只包含受控的本站 function tool 首段、开发 Demo、图片执行器和 worker 可迁移边界。
+- MCP、Skill、第三方工具热加载和完整工具审批平台；PLAN-0150-20260722T022751000Z 只包含受控的本站 function tool 首段、开发 Demo、图片执行器和 worker 可迁移边界。
 - system prompt、temperature、top_p 等高级模型参数的用户配置；产品内置 Markdown 默认提示不开放给用户编辑。
 - 跨会话长期记忆和超过当前配置保留期的聊天保留；当前结构化摘要只服务当前会话的 当前配置保留边界。
 - 任意历史消息编辑、消息分支、指定旧回答重新生成、会话分享、多人协作。
@@ -416,6 +416,7 @@ DELETE /__aisys__/api/my-chat/conversations/:id
 - PATCH 只接受 `title` 和 `isPinned`，至少提供一个字段；标题最长 60 字符。
 - 模型列表先校验会话归属和绑定 Key，再读取 API Key 活跃分组对应供应商的轻量快照；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数和必须返回的模型数有关，不随账户数增长。
 - 模型能力使用 `/conversations/:conversationId/models/:modelId` 按供应商和模型 ID 定点读取；已发布快照按 `chat_list:<provider>` 与 `chat_model:<provider>:<modelId>` 分行保存，列表冷读不会解析完整能力目录。
+- PostgreSQL 从旧 `variant='chat'` 宽快照升级到上述拆分快照时，必须通过新的前向 migration 替换 `gateway_model_catalog_snapshots` 的 CHECK，删除可重建的旧宽快照并投递一次 `all` 模型目录重建请求；不能只修改已经应用过的建表 migration，也不能在运行时保留旧 variant 兼容分支。发布门禁必须检查当前约束允许 `chat_list:*` / `chat_model:*`，并验证代表性启用用户的 `chat_list:gpt` 非空。
 - 模型列表表达稳定配置能力，不因账户临时冷却、并发占满或短时不可用而抖动；实际发送仍由网关按实时账户状态、模型限制和协议能力完成最终校验与调度。
 - 前端首屏不加载模型列表；只有用户展开模型下拉时才按 API Key 缓存轻量列表。当前模型能力按会话和模型 ID 缓存、并发去重，切换模型、切换会话或卸载页面会取消旧请求。未重新选择时优先沿用会话 `lastModel` 或创建响应中的默认模型引用。
 - 能力摘要只保留模型目录真实声明：思考列表移除产品不开放的 `none`；服务列表在模型声明 Priority/Flex 能力时显式加入可供用户手动选择的标准 `default`；上下文返回 `maxInputTokens`，缺少时才使用 `contextWindowTokens`。能力摘要中的默认值不触发页面或服务端自动选择。

@@ -50,9 +50,9 @@ func (s *Store) ListManagementSystemTeams(ctx context.Context, input port.Manage
 	if err != nil {
 		return port.ManagementSystemTeamListResult{}, err
 	}
-	items := make([]port.ManagementSystemTeamSummary, 0, len(rows))
+	items := make([]port.ManagementSystemTeamListRow, 0, len(rows))
 	for _, row := range rows {
-		items = append(items, managementSystemTeamSummaryFromListRow(row, counts[row.ID]))
+		items = append(items, managementSystemTeamListRowFromRow(row, counts[row.ID]))
 	}
 	return port.ManagementSystemTeamListResult{Items: items, HasMore: hasMore}, nil
 }
@@ -1124,7 +1124,7 @@ ON CONFLICT (group_id) DO UPDATE SET
 	return nil
 }
 
-func managementSystemTeamIDsFromListRows(rows []postgresqueries.JuheBusinessSystemTeam) []string {
+func managementSystemTeamIDsFromListRows(rows []postgresqueries.ListManagementSystemTeamsRow) []string {
 	ids := make([]string, 0, len(rows))
 	seen := make(map[string]struct{}, len(rows))
 	for _, row := range rows {
@@ -1140,8 +1140,15 @@ func managementSystemTeamIDsFromListRows(rows []postgresqueries.JuheBusinessSyst
 	return ids
 }
 
-func managementSystemTeamSummaryFromListRow(row postgresqueries.JuheBusinessSystemTeam, activeMemberCount int) port.ManagementSystemTeamSummary {
-	return managementSystemTeamSummaryFromTeamRow(row, activeMemberCount)
+func managementSystemTeamListRowFromRow(row postgresqueries.ListManagementSystemTeamsRow, activeMemberCount int) port.ManagementSystemTeamListRow {
+	return port.ManagementSystemTeamListRow{
+		ID:          row.ID,
+		Name:        row.Name,
+		Description: textValue(row.Description),
+		Status:      row.Status,
+		MemberCount: activeMemberCount,
+		CreatedAt:   timestamptzValue(row.CreatedAt),
+	}
 }
 
 func managementSystemTeamSummaryFromTeamRow(row postgresqueries.JuheBusinessSystemTeam, activeMemberCount int) port.ManagementSystemTeamSummary {

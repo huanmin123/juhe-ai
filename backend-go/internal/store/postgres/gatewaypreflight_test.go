@@ -16,6 +16,8 @@ func TestGatewayPreflightSQLContractIsParameterizedBoundedAndCandidateFree(t *te
 	bindingsSQL := strings.ToLower(gatewayPreflightBindingsSQL)
 	for _, required := range []string{
 		"$1::text as api_key_id", "group_authorization.expires_at > $2", "route_strategies.id = $3",
+		"group_authorization.resource_owner_system_account_id = groups.system_account_id",
+		"else group_authorization.expires_at", "end as access_expires_at",
 		"route_strategies.system_account_id = $4", "order by route_strategy_groups.priority asc, route_strategy_groups.created_at asc, route_strategy_groups.id asc",
 		"limit $5",
 	} {

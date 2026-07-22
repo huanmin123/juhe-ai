@@ -5,7 +5,7 @@
 当前版本启用两个使用 OpenAI v1 协议的供应商，并通过 OpenAI-compatible 入口对外提供兼容网关：
 
 - `openai`：通用 OpenAI-compatible 供应商，只支持 API Key 透传；模型目录聚合自身和显式纳入聚合的 OpenAI-compatible 子供应商模型，不自动包含 DeepSeek 等独立供应商。
-- `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。`codex-auto-review` 是上游 Codex 审核专用 Responses 模型，作为未定价、非默认账户模型的目录项保留；只有用户在 GPT 账户支持模型中主动选择时才会参与调度。
+- `gpt`：GPT 子供应商，父供应商为 `openai`，支持 GPT API Key 和 GPT OAuth，并叠加 Codex Responses 等 GPT 专属能力；模型目录只看 GPT 自身模型。`codex-auto-review` 是上游 Codex 审核专用 Responses 模型，作为未定价目录项保留，并默认加入新建 GPT 账户的支持模型，避免 Codex 客户端因账户模型限制无法调度。
 
 Anthropic、Gemini、智谱 GLM、DeepSeek 的接入细节分别写在 [Anthropic 账号接入](Anthropic账号接入.md)、[Gemini 账号接入](Gemini账号接入.md)、[智谱 GLM 账号接入](智谱GLM账号接入.md) 和 [DeepSeek 账号接入](DeepSeek账号接入.md)。本文只维护 OpenAI 与 GPT 语义，避免把其他厂商兼容差异和 OpenAI / GPT 账户接入混在一起。
 
@@ -71,7 +71,7 @@ type GptAccountType = 'api_key' | 'oauth'
 
 默认检查模型：
 
-- `gpt-5.5` 作为 `profile_gpt_openai_v1` 的内置默认检查模型。`codex-auto-review` 不加入 `DEFAULT_OPENAI_SUPPORTED_MODELS`，不会自动配置到新账户，也不作为默认健康检查模型；用户需要在账户支持模型中显式选择后才能调用。新账户按“当前系统账户个人默认 > 管理员维护的 GPT 系统默认 > 协议档案内置默认”初始化 `healthCheckModel`；个人默认保存到 `provider_default_health_check_models`。默认值只影响新账户，已有账户和后台系统检查始终读取账户自己的检查模型。
+- `gpt-5.5` 作为 `profile_gpt_openai_v1` 的内置默认检查模型。`codex-auto-review` 加入 GPT 专属 `DEFAULT_GPT_SUPPORTED_MODELS`，新建 GPT API Key / OAuth 账户默认选择；它不加入通用 `DEFAULT_OPENAI_SUPPORTED_MODELS`，也不作为默认健康检查模型。新账户按“当前系统账户个人默认 > 管理员维护的 GPT 系统默认 > 协议档案内置默认”初始化 `healthCheckModel`；个人默认保存到 `provider_default_health_check_models`。默认值只影响新账户，已有账户和后台系统检查始终读取账户自己的检查模型。
 
 ## GPT OAuth 创建方式
 
