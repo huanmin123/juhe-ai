@@ -38,7 +38,7 @@ type Service struct {
 	store                    any
 	now                      func() time.Time
 	authorizationInvalidator AuthorizationInvalidator
-	pageDataPublisher        PageDataPublisher
+	pageDataPublisher        AccountsStaticResetPublisher
 	logger                   *slog.Logger
 }
 
@@ -149,7 +149,7 @@ type ServiceOptions struct {
 	Store                    any
 	Now                      func() time.Time
 	AuthorizationInvalidator AuthorizationInvalidator
-	Publisher                PageDataPublisher
+	Publisher                AccountsStaticResetPublisher
 	Logger                   *slog.Logger
 }
 
@@ -157,9 +157,8 @@ type AuthorizationInvalidator interface {
 	InvalidateAuthorizationChanged(ctx context.Context, reason string) error
 }
 
-type PageDataPublisher interface {
+type AccountsStaticResetPublisher interface {
 	PublishAccountsStaticReset(ctx context.Context, ownerSystemAccountIDs []string, allScopes bool) error
-	PublishPageDataReset(ctx context.Context, domain string, ownerSystemAccountIDs []string, allScopes bool) error
 }
 
 func NewService(store port.ManagementSystemTeamCreator) *Service {
@@ -274,7 +273,6 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Summary, error
 		}
 		return Summary{}, err
 	}
-	s.publishDependentPageDataResetsAfterCommit(ctx)
 	return summaryFromPort(row), nil
 }
 
@@ -340,7 +338,6 @@ func (s *Service) Update(ctx context.Context, input UpdateInput) (UpdateResult, 
 	if row.AuthorizationChanged {
 		s.publishAccountsStaticResetAfterCommit(ctx, memberSystemAccountIDs(row.Team.Members))
 	}
-	s.publishDependentPageDataResetsAfterCommit(ctx)
 	return UpdateResult{
 		Before:               summaryFromPort(row.Before),
 		Team:                 detailFromPort(row.Team),
@@ -378,7 +375,6 @@ func (s *Service) AddMembers(ctx context.Context, input AddMembersInput) (AddMem
 	}
 	s.invalidateAuthorization(ctx, TeamMembersChangedReason)
 	s.publishAccountsStaticResetAfterCommit(ctx, addedMemberSystemAccountIDs(row.Before.Members, row.Team.Members))
-	s.publishDependentPageDataResetsAfterCommit(ctx)
 	return AddMembersResult{
 		Before: detailFromPort(row.Before),
 		Team:   detailFromPort(row.Team),
@@ -412,7 +408,6 @@ func (s *Service) RemoveMember(ctx context.Context, input RemoveMemberInput) (Re
 	}
 	s.invalidateAuthorization(ctx, TeamMembersChangedReason)
 	s.publishAccountsStaticResetAfterCommit(ctx, []string{row.RemovedMember.SystemAccountID})
-	s.publishDependentPageDataResetsAfterCommit(ctx)
 	return RemoveMemberResult{
 		Before:        detailFromPort(row.Before),
 		Team:          detailFromPort(row.Team),
@@ -439,34 +434,6 @@ func (s *Service) publishAccountsStaticResetAfterCommit(ctx context.Context, own
 			"domain", "accounts.static",
 			"error", err,
 		)
-	}
-}
-
-func (s *Service) publishDependentPageDataResetsAfterCommit(ctx context.Context) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	domains := []string{"teams.options", "groups.static", "stats.overview", "stats.accountUsage", "stats.aiPerformance"}
-	type publishResult struct {
-		domain string
-		err    error
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), pageDataPublishTimeout)
-	defer cancel()
-	results := make(chan publishResult, len(domains))
-	for _, domain := range domains {
-		go func(domain string) {
-			results <- publishResult{domain: domain, err: s.pageDataPublisher.PublishPageDataReset(publishCtx, domain, nil, true)}
-		}(domain)
-	}
-	for range domains {
-		result := <-results
-		if result.err != nil {
-			s.logger.WarnContext(context.WithoutCancel(ctx), "page data change publish failed",
-				"domain", result.domain,
-				"error", result.err,
-			)
-		}
 	}
 }
 
