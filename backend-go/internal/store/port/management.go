@@ -1165,6 +1165,13 @@ type ManagementProviderOption struct {
 	ProtocolProfiles              []ManagementProviderProtocolProfile
 }
 
+type ManagementProviderSelectOption struct {
+	ID      string
+	Code    string
+	Name    string
+	Enabled bool
+}
+
 type ManagementProviderListInput struct {
 	SystemAccountID string
 }
@@ -1180,6 +1187,7 @@ type ManagementProviderOptionReader interface {
 type ManagementProviderReader interface {
 	ManagementProviderOptionReader
 	ListManagementProviders(ctx context.Context, input ManagementProviderListInput) ([]ManagementProviderOption, error)
+	ListManagementProviderSelectOptions(ctx context.Context) ([]ManagementProviderSelectOption, error)
 }
 
 type ManagementProviderModelProvider struct {
@@ -1256,6 +1264,22 @@ type ManagementProviderModelCatalogListInput struct {
 	CustomProviderCodes  []string
 	SystemAccountID      string
 	IncludeInactive      bool
+}
+
+type ManagementProviderModelCapabilitiesInput struct {
+	BuiltInProviderCodes []string
+	CustomProviderCodes  []string
+	SystemAccountID      string
+	Model                string
+}
+
+type ManagementProviderModelOptionListInput struct {
+	BuiltInProviderCodes []string
+	CustomProviderCodes  []string
+	SystemAccountID      string
+	Keyword              string
+	SelectedIDs          []string
+	Limit                int
 }
 
 type ManagementProviderDefaultHealthCheckModelPreference struct {
@@ -1480,6 +1504,8 @@ type ManagementProviderModelCatalogReader interface {
 	ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error)
 	ListManagementProviderCodesByProtocol(ctx context.Context, protocolCode string, protocolVersion string) ([]string, error)
 	ListManagementProviderModelCatalog(ctx context.Context, input ManagementProviderModelCatalogListInput) ([]ManagementProviderModelCatalogItem, error)
+	ListManagementProviderModelOptions(ctx context.Context, input ManagementProviderModelOptionListInput) ([]ManagementProviderModelCatalogItem, error)
+	ListManagementProviderModelCapabilityCandidates(ctx context.Context, input ManagementProviderModelCapabilitiesInput) ([]ManagementProviderModelCatalogItem, error)
 }
 
 type ManagementProviderDefaultHealthCheckModelWriter interface {

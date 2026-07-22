@@ -30,6 +30,7 @@ const (
 )
 
 var ErrProviderNotFound = errors.New("provider not found")
+var ErrModelCapabilitiesNotFound = errors.New("model capabilities not found")
 var ErrCustomProviderModelNotFound = errors.New("custom provider model not found")
 
 var gptProviderModelServiceTiers = map[string]struct{}{"priority": {}, "flex": {}}
@@ -72,11 +73,40 @@ type ModelOptionListInput struct {
 	Protocol        string
 }
 
+type ModelSelectionOptionListInput struct {
+	ProviderCode    string
+	SystemAccountID string
+	Protocol        string
+	Keyword         string
+	Limit           int
+	SelectedIDs     []string
+}
+
+type ModelSelectionOption struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
 type ModelListInput struct {
 	ProviderCode    string
 	SystemAccountID string
 	IncludeInactive bool
 	IncludeUnpriced bool
+}
+
+type ModelCapabilitiesInput struct {
+	ProviderCode    string
+	SystemAccountID string
+	Model           string
+}
+
+type ModelCapabilities struct {
+	ID                        string   `json:"id"`
+	Name                      string   `json:"name"`
+	SupportedAPIProtocols     []string `json:"supportedApiProtocols"`
+	SupportedServiceTiers     []string `json:"supportedServiceTiers"`
+	SupportedReasoningEfforts []string `json:"supportedReasoningEfforts"`
+	DefaultReasoningEffort    string   `json:"defaultReasoningEffort,omitempty"`
 }
 
 type DefaultHealthCheckModelInput struct {
@@ -402,6 +432,114 @@ func (s *Service) ModelOptions(ctx context.Context, input ModelOptionListInput) 
 	return dedupeModelOptions(items), nil
 }
 
+func (s *Service) ModelSelectionOptions(ctx context.Context, input ModelSelectionOptionListInput) ([]ModelSelectionOption, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("management provider model store is required")
+	}
+	providerCode := strings.TrimSpace(input.ProviderCode)
+	var builtInCodes []string
+	var customCodes []string
+	if providerCode != "" {
+		provider, found, err := s.store.FindManagementProviderModelProvider(ctx, providerCode)
+		if err != nil {
+			return nil, err
+		}
+		if !found || !provider.Enabled {
+			return nil, ErrProviderNotFound
+		}
+		builtInCodes, customCodes, err = s.sourceProviderCodes(ctx, provider.Code)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		providerCodes, err := s.optionProviderCodes(ctx, input.Protocol)
+		if err != nil {
+			return nil, err
+		}
+		for _, code := range providerCodes {
+			code = strings.TrimSpace(code)
+			if code == "" || code == hybridProviderCode {
+				continue
+			}
+			builtInCodes = append(builtInCodes, code)
+			customCodes = append(customCodes, code)
+		}
+		builtInCodes = dedupeStrings(builtInCodes)
+		customCodes = dedupeStrings(customCodes)
+	}
+	if len(builtInCodes) == 0 && len(customCodes) == 0 {
+		return []ModelSelectionOption{}, nil
+	}
+	selectedIDs := dedupeStrings(input.SelectedIDs)
+	if len(selectedIDs) > 50 {
+		selectedIDs = selectedIDs[:50]
+	}
+	limit := input.Limit
+	if limit < 1 || limit > 50 {
+		limit = 50
+	}
+	resultLimit := limit + len(selectedIDs)
+	if resultLimit > 100 {
+		resultLimit = 100
+	}
+	keyword := strings.TrimSpace(input.Keyword)
+	rows, err := s.store.ListManagementProviderModelOptions(ctx, port.ManagementProviderModelOptionListInput{
+		BuiltInProviderCodes: builtInCodes,
+		CustomProviderCodes:  customCodes,
+		SystemAccountID:      strings.TrimSpace(input.SystemAccountID),
+		Keyword:              keyword,
+		SelectedIDs:          selectedIDs,
+		Limit:                resultLimit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	items := mergeCatalogItems(rows, mergeKeyModel)
+	selectedSet := stringSet(selectedIDs)
+	keywordLower := strings.ToLower(keyword)
+	filtered := make([]port.ManagementProviderModelCatalogItem, 0, len(items))
+	for _, item := range items {
+		model := strings.TrimSpace(item.Model)
+		if model == "" {
+			continue
+		}
+		if keywordLower != "" && !strings.Contains(strings.ToLower(model), keywordLower) {
+			if _, selected := selectedSet[model]; !selected {
+				continue
+			}
+		}
+		item.Model = model
+		filtered = append(filtered, item)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		_, leftSelected := selectedSet[filtered[i].Model]
+		_, rightSelected := selectedSet[filtered[j].Model]
+		if leftSelected != rightSelected {
+			return leftSelected
+		}
+		if filtered[i].Model != filtered[j].Model {
+			return filtered[i].Model < filtered[j].Model
+		}
+		return strings.TrimSpace(filtered[i].ProviderCode) < strings.TrimSpace(filtered[j].ProviderCode)
+	})
+	selected := make([]port.ManagementProviderModelCatalogItem, 0, len(selectedIDs))
+	window := make([]port.ManagementProviderModelCatalogItem, 0, limit)
+	for _, item := range filtered {
+		if _, ok := selectedSet[item.Model]; ok {
+			selected = append(selected, item)
+			continue
+		}
+		if len(window) < limit {
+			window = append(window, item)
+		}
+	}
+	output := make([]ModelSelectionOption, 0, len(selected)+len(window))
+	for _, item := range append(selected, window...) {
+		output = append(output, ModelSelectionOption{ID: item.Model, Name: item.Model})
+	}
+	return output, nil
+}
+
 func (s *Service) Models(ctx context.Context, input ModelListInput) ([]ModelCatalogItem, error) {
 	if s.store == nil {
 		return nil, fmt.Errorf("management provider model store is required")
@@ -440,6 +578,54 @@ func (s *Service) Models(ctx context.Context, input ModelListInput) ([]ModelCata
 		output = append(output, catalogItemFromPort(item))
 	}
 	return output, nil
+}
+
+func (s *Service) ModelCapabilities(ctx context.Context, input ModelCapabilitiesInput) (ModelCapabilities, error) {
+	if s.store == nil {
+		return ModelCapabilities{}, fmt.Errorf("management provider model store is required")
+	}
+	providerCode := strings.TrimSpace(input.ProviderCode)
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		return ModelCapabilities{}, ErrModelCapabilitiesNotFound
+	}
+	provider, found, err := s.store.FindManagementProviderModelProvider(ctx, providerCode)
+	if err != nil {
+		return ModelCapabilities{}, err
+	}
+	if !found || !provider.Enabled {
+		return ModelCapabilities{}, ErrProviderNotFound
+	}
+	builtInCodes, customCodes, err := s.sourceProviderCodes(ctx, provider.Code)
+	if err != nil {
+		return ModelCapabilities{}, err
+	}
+	rows, err := s.store.ListManagementProviderModelCapabilityCandidates(ctx, port.ManagementProviderModelCapabilitiesInput{
+		BuiltInProviderCodes: builtInCodes,
+		CustomProviderCodes:  customCodes,
+		SystemAccountID:      strings.TrimSpace(input.SystemAccountID),
+		Model:                model,
+	})
+	if err != nil {
+		return ModelCapabilities{}, err
+	}
+	mergeKey := mergeKeyModel
+	if provider.Code == hybridProviderCode {
+		mergeKey = mergeKeyProviderModel
+	}
+	items := sortCatalogItems(mergeCatalogItems(rows, mergeKey))
+	if len(items) == 0 {
+		return ModelCapabilities{}, ErrModelCapabilitiesNotFound
+	}
+	selected := catalogItemFromPort(items[0])
+	return ModelCapabilities{
+		ID:                        selected.Model,
+		Name:                      selected.Model,
+		SupportedAPIProtocols:     append([]string{}, selected.SupportedAPIProtocols...),
+		SupportedServiceTiers:     append([]string{}, selected.SupportedServiceTiers...),
+		SupportedReasoningEfforts: append([]string{}, selected.SupportedReasoningEfforts...),
+		DefaultReasoningEffort:    selected.DefaultReasoningEffort,
+	}, nil
 }
 
 func (s *Service) SetDefaultHealthCheckModel(ctx context.Context, input DefaultHealthCheckModelInput) (DefaultHealthCheckModelResult, error) {

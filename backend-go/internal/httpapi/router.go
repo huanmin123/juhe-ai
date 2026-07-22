@@ -83,8 +83,10 @@ type RouterOptions struct {
 	ManagementMyAuthorizationRevokeHandler            http.Handler
 	ManagementProvidersHandler                        http.Handler
 	ManagementProviderOptionsHandler                  http.Handler
+	ManagementProviderDefinitionsHandler              http.Handler
 	ManagementProviderModelOptionsHandler             http.Handler
 	ManagementProviderModelsHandler                   http.Handler
+	ManagementProviderModelCapabilitiesHandler        http.Handler
 	ManagementProviderDefaultHealthCheckModelHandler  http.Handler
 	ManagementProviderCustomModelCreateHandler        http.Handler
 	ManagementProviderCustomModelUpdateHandler        http.Handler
@@ -373,8 +375,10 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAuthorizationRevokeHandler == nil &&
 				opts.ManagementProvidersHandler == nil &&
 				opts.ManagementProviderOptionsHandler == nil &&
+				opts.ManagementProviderDefinitionsHandler == nil &&
 				opts.ManagementProviderModelOptionsHandler == nil &&
 				opts.ManagementProviderModelsHandler == nil &&
+				opts.ManagementProviderModelCapabilitiesHandler == nil &&
 				opts.ManagementProviderDefaultHealthCheckModelHandler == nil &&
 				opts.ManagementProviderCustomModelCreateHandler == nil &&
 				opts.ManagementProviderCustomModelUpdateHandler == nil &&
@@ -694,11 +698,17 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementProviderOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/options", opts.ManagementProviderOptionsHandler.ServeHTTP)
 			}
+			if opts.ManagementProviderDefinitionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/definitions", opts.ManagementProviderDefinitionsHandler.ServeHTTP)
+			}
 			if opts.ManagementProviderModelOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/models/options", opts.ManagementProviderModelOptionsHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderModelsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/{code}/models", opts.ManagementProviderModelsHandler.ServeHTTP)
+			}
+			if opts.ManagementProviderModelCapabilitiesHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/providers/{code}/models/{modelId}/capabilities", opts.ManagementProviderModelCapabilitiesHandler.ServeHTTP)
 			}
 			if opts.ManagementProviderDefaultHealthCheckModelHandler != nil {
 				system.With(managementAPIWriteRateLimitMiddleware).Put("/providers/{code}/default-health-check-model", opts.ManagementProviderDefaultHealthCheckModelHandler.ServeHTTP)
@@ -1492,8 +1502,10 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAuthorizationRevokeHandler != nil ||
 		opts.ManagementProvidersHandler != nil ||
 		opts.ManagementProviderOptionsHandler != nil ||
+		opts.ManagementProviderDefinitionsHandler != nil ||
 		opts.ManagementProviderModelOptionsHandler != nil ||
 		opts.ManagementProviderModelsHandler != nil ||
+		opts.ManagementProviderModelCapabilitiesHandler != nil ||
 		opts.ManagementProviderDefaultHealthCheckModelHandler != nil ||
 		opts.ManagementProviderCustomModelCreateHandler != nil ||
 		opts.ManagementProviderCustomModelUpdateHandler != nil ||

@@ -322,8 +322,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAuthorizationRevokeHandler:            managementHandlers.MyAuthorizationRevokeHandler,
 		ManagementProvidersHandler:                        managementHandlers.ProvidersHandler,
 		ManagementProviderOptionsHandler:                  managementHandlers.ProviderOptionsHandler,
+		ManagementProviderDefinitionsHandler:              managementHandlers.ProviderDefinitionsHandler,
 		ManagementProviderModelOptionsHandler:             managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                   managementHandlers.ProviderModelsHandler,
+		ManagementProviderModelCapabilitiesHandler:        managementHandlers.ProviderModelCapabilitiesHandler,
 		ManagementProviderDefaultHealthCheckModelHandler:  managementHandlers.ProviderDefaultHealthCheckModelHandler,
 		ManagementProviderCustomModelCreateHandler:        managementHandlers.ProviderCustomModelCreateHandler,
 		ManagementProviderCustomModelUpdateHandler:        managementHandlers.ProviderCustomModelUpdateHandler,
@@ -560,8 +562,10 @@ type managementAPIHandlers struct {
 	MyAuthorizationRevokeHandler            http.Handler
 	ProvidersHandler                        http.Handler
 	ProviderOptionsHandler                  http.Handler
+	ProviderDefinitionsHandler              http.Handler
 	ProviderModelOptionsHandler             http.Handler
 	ProviderModelsHandler                   http.Handler
+	ProviderModelCapabilitiesHandler        http.Handler
 	ProviderDefaultHealthCheckModelHandler  http.Handler
 	ProviderCustomModelCreateHandler        http.Handler
 	ProviderCustomModelUpdateHandler        http.Handler
@@ -1047,8 +1051,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAuthorizationRevokeHandler:            httpapi.NewManagementMyAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
 		ProvidersHandler:                        httpapi.NewManagementProvidersHandler(providerService),
 		ProviderOptionsHandler:                  httpapi.NewManagementProviderOptionsHandler(providerService),
+		ProviderDefinitionsHandler:              httpapi.NewManagementProviderDefinitionsHandler(providerService),
 		ProviderModelOptionsHandler:             httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),
+		ProviderModelCapabilitiesHandler:        httpapi.NewManagementProviderModelCapabilitiesHandler(providerModelService),
 		ProviderDefaultHealthCheckModelHandler:  httpapi.NewManagementProviderDefaultHealthCheckModelHandler(providerModelService),
 		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
 		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandlerWithOperationLog(providerModelService, operationLogOptions),
