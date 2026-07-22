@@ -43,6 +43,14 @@ func (s *Store) ListManagementProviderModelCatalog(ctx context.Context, input po
 	return listManagementProviderModelCatalog(ctx, s.queries(), input)
 }
 
+func (s *Store) ListManagementProviderModelOptions(ctx context.Context, input port.ManagementProviderModelOptionListInput) ([]port.ManagementProviderModelCatalogItem, error) {
+	return listManagementProviderModelOptions(ctx, s.queries(), input)
+}
+
+func (s *Store) ListManagementProviderModelCapabilityCandidates(ctx context.Context, input port.ManagementProviderModelCapabilitiesInput) ([]port.ManagementProviderModelCatalogItem, error) {
+	return listManagementProviderModelCapabilityCandidates(ctx, s.queries(), input)
+}
+
 func (s *Store) SetManagementProviderDefaultHealthCheckModel(ctx context.Context, input port.ManagementProviderDefaultHealthCheckModelInput) (port.ManagementProviderDefaultHealthCheckModelPreference, error) {
 	return setManagementProviderDefaultHealthCheckModel(ctx, s.queries(), input)
 }
@@ -638,6 +646,77 @@ func listManagementProviderModelCatalog(
 			return nil, err
 		}
 		items = append(items, item)
+	}
+	return items, nil
+}
+
+func listManagementProviderModelOptions(
+	ctx context.Context,
+	q *postgresqueries.Queries,
+	input port.ManagementProviderModelOptionListInput,
+) ([]port.ManagementProviderModelCatalogItem, error) {
+	rows, err := q.ListManagementProviderModelOptions(ctx, postgresqueries.ListManagementProviderModelOptionsParams{
+		BuiltInProviderCodes: input.BuiltInProviderCodes,
+		Keyword:              input.Keyword,
+		SelectedIds:          input.SelectedIDs,
+		ResultLimit:          int32(input.Limit),
+		CustomProviderCodes:  input.CustomProviderCodes,
+		SystemAccountID:      input.SystemAccountID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list management provider model options: %w", err)
+	}
+	items := make([]port.ManagementProviderModelCatalogItem, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, port.ManagementProviderModelCatalogItem{
+			ID: row.ID, ProviderCode: row.ProviderCode, Model: row.Model, Scope: row.Scope,
+		})
+	}
+	return items, nil
+}
+
+func listManagementProviderModelCapabilityCandidates(
+	ctx context.Context,
+	q *postgresqueries.Queries,
+	input port.ManagementProviderModelCapabilitiesInput,
+) ([]port.ManagementProviderModelCatalogItem, error) {
+	rows, err := q.ListManagementProviderModelCapabilityCandidates(ctx, postgresqueries.ListManagementProviderModelCapabilityCandidatesParams{
+		BuiltInProviderCodes: input.BuiltInProviderCodes,
+		Model:                input.Model,
+		CustomProviderCodes:  input.CustomProviderCodes,
+		SystemAccountID:      input.SystemAccountID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list management provider model capability candidates: %w", err)
+	}
+	items := make([]port.ManagementProviderModelCatalogItem, 0, len(rows))
+	for _, row := range rows {
+		protocols, err := decodeProviderStringArray(row.SupportedApiProtocolsJson, "provider model capabilities supported_api_protocols_json")
+		if err != nil {
+			return nil, err
+		}
+		serviceTiers, err := decodeProviderStringArray(row.SupportedServiceTiersJson, "provider model capabilities supported_service_tiers_json")
+		if err != nil {
+			return nil, err
+		}
+		reasoningEfforts, err := decodeProviderStringArray(row.SupportedReasoningEffortsJson, "provider model capabilities supported_reasoning_efforts_json")
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, port.ManagementProviderModelCatalogItem{
+			ID:                        row.ID,
+			ProviderCode:              row.ProviderCode,
+			Model:                     row.Model,
+			Scope:                     row.Scope,
+			SystemAccountID:           row.SystemAccountID,
+			Mode:                      textValue(row.Mode),
+			CatalogOrder:              int4Ptr(row.CatalogOrder),
+			ReleaseDate:               textValue(row.ReleaseDate),
+			SupportedAPIProtocols:     protocols,
+			SupportedServiceTiers:     serviceTiers,
+			SupportedReasoningEfforts: reasoningEfforts,
+			DefaultReasoningEffort:    textValue(row.DefaultReasoningEffort),
+		})
 	}
 	return items, nil
 }
