@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "deploymentEpoch": "node-production-2026-07-18",
   "release": {
     "nodeVersion": "0.1.0",
@@ -11,5 +11,12 @@
     "public": "node",
     "gateway": "node",
     "worker": "node"
-  }
+  },
+  "rollbackRouteOwners": {
+    "management": "node",
+    "public": "node",
+    "gateway": "node",
+    "worker": "node"
+  },
+  "routeAllowlist": []
 }

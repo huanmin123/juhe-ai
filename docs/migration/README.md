@@ -31,29 +31,30 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 5. [Go 迁移指标与观测规划](Go迁移指标与观测规划.md)：系统指标从 Node 事件循环口径切换到 Go runtime、PG/Redis/Asynq 和网关观测口径的规划。
 6. [Go 系统指标字段迁移清单](Go系统指标字段迁移清单.md)：W6 / W7 / W8 执行系统监控迁移时逐项删除 Node 字段、替换 Go 字段和验证前端契约的清单。
 7. [模块迁移顺序与减法清单](模块迁移顺序与减法清单.md)：模块迁移波次、删除条件和验收门禁。
-8. [W1b 外部维护公开接口迁移记录](W1b-外部维护公开接口迁移记录.md)：`/__aipublic__` 外部维护接口的当前契约、Node 对照命令、Go 目标边界和删除门禁。
-9. [W2 管理端只读辅助接口迁移记录](W2-管理端只读辅助接口迁移记录.md)：后台 options / catalog 接口和账号标签切片的当前契约、已迁移路径、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、账号标签 owner-only 只读 / 未绑定删除 / 独立 PATCH opt-in、主账户标签写路径和 operation log 缺口、接管门禁。
-10. [W3 登录与系统账户迁移记录](W3-登录与系统账户迁移记录.md)：登录、当前用户、会话、登出、改密、验证码和系统账户写接口的分块迁移记录；当前覆盖 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前令牌退出切片、`POST /system-accounts` 创建切片，以及 `PATCH /system-accounts/{id}` 完整 mixed partial update；登录会话列表 / 按 ID 撤销已撤销，不属于当前迁移范围。全部仍为 Go opt-in 灰度路径，不代表 W3、Node `/auth` 或 Node `/system-accounts` 已接管。
-11. [W4 团队与统一授权迁移记录](W4-团队与统一授权迁移记录.md)：系统团队、成员、授权 grant、授权来源展开和最终用户授权的分块迁移记录；当前覆盖 `GET /system-teams` / `GET /my-teams` 团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`GET /authorizations` 和 `GET /my-authorizations` 授权列表、`GET /authorizations/{id}` 和 `GET /my-authorizations/{id}` 授权详情、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`PATCH /authorizations/{id}` 和 `PATCH /my-authorizations/{id}` 授权更新、`PATCH /authorizations/{id}/expire` 和 `PATCH /my-authorizations/{id}/expire` 授权有效期更新、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还、`DELETE /authorizations/{id}` 和 `DELETE /my-authorizations/{id}` 授权回收 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 PostgreSQL schema 基线和授权缓存失效，不代表 W4、Node `/system-teams` 或 Node `/authorizations` 已接管。
-12. [W5 管理端全局品牌设置读取记录](W5-管理端全局品牌设置读取记录.md)：`GET/PATCH /__aisys__/api/settings/global` 的 Go opt-in 契约、`publicsettings` / store 复用、管理员权限、读写 session、两层限流、精确品牌 DTO、验证记录和删除门禁。
-13. [W5 管理端系统运行设置迁移记录](W5-管理端系统运行设置迁移记录.md)：已进入 Go opt-in 的 `GET/PATCH /__aisys__/api/settings`，固定 53 key，GPT Priority / Flex 使用模型目录精确档位价格且不提供通用倍率，并覆盖 `256 KiB` / `413`、parser 与鉴权 / 限流顺序、PostgreSQL 有界事务、`000024` 初始设置 seed、`000043` 删除历史倍率设置、双缓存失效、操作日志和删除门禁；真实依赖因 Docker 不可用输出 `SKIP` 时不计通过。
-14. [W5 管理端分组创建迁移记录](W5-管理端分组创建迁移记录.md)：已进入 Go opt-in 的 `POST /groups` 与 `POST /my-groups` 创建契约、作用域、完整高并发策略、唯一约束、写后副作用、验证记录和删除门禁。
-15. [W5 管理端分组列表迁移记录](W5-管理端分组列表迁移记录.md)：`GET /groups` 与 `GET /my-groups` 的权限、分页、progressive DTO、预聚合读取、共存期 Node 单 writer 和最终 Go stats worker 门禁。
-16. [W5 管理端分组详情迁移记录](W5-管理端分组详情迁移记录.md)：`GET /groups/{id}` 与 `GET /my-groups/{id}` 的 owner / authorized 详情 DTO、实时账户并发、授权来源、权限和真实依赖门禁。
-17. [W5 管理端分组更新迁移记录](W5-管理端分组更新迁移记录.md)：`PATCH /groups/{id}` 与 `PATCH /my-groups/{id}` 的 owner / authorized 字段边界、事务保护、路由绑定保护、缓存与运行态失效、操作日志和真实依赖门禁。
-18. [W5 管理端分组删除迁移记录](W5-管理端分组删除迁移记录.md)：`DELETE /groups/{id}` 与 `DELETE /my-groups/{id}` 的 owner-only 权限、默认分组和路由策略保护、硬删除级联、统计脏标记、缓存与运行态失效、操作日志和真实依赖门禁。
-19. [W5 管理端策略路由列表与详情迁移记录](W5-管理端策略路由列表与详情迁移记录.md)：管理 / 个人四条 GET 的 admin global / owner narrowing、self 强制本人、渐进分页、大小写敏感名称前缀、轻量列表、完整详情和真实依赖门禁；Go opt-in 已实现，真实 PostgreSQL smoke 因 Docker 不可用待复跑，不代表生产接管。
-20. [W5 管理端策略路由创建迁移记录](W5-管理端策略路由创建迁移记录.md)：管理 / 个人两条 POST 的 strict JSON、五模式、授权分组事务锁、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
-21. [W5 管理端策略路由更新迁移记录](W5-管理端策略路由更新迁移记录.md)：管理 / 个人两条 PATCH 的 strict partial JSON、事务锁定、绑定整体替换、错误优先级、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
-22. [W5 管理端策略路由删除迁移记录](W5-管理端策略路由删除迁移记录.md)：管理 / 个人两条 DELETE 的 admin global / owner narrowing、self actor、默认与 API Key 引用保护、事务锁读、204 空响应、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
-23. [W5 管理端 API Key 密钥生命周期迁移记录](W5-管理端APIKey密钥生命周期迁移记录.md)：管理端 / 个人端 API Key 创建、完整密钥查看与刷新、加密存储、权限、缓存失效、操作日志和真实依赖门禁。
-24. [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)：`DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 的作用域、204 空响应、原子硬删除、cleanup target、提交后失效、操作日志、残余安全风险和真实依赖门禁。
-25. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前覆盖管理侧 / 个人侧 `usage-window`、使用记录列表 / 详情、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表 Go opt-in。
-26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
-27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
-28. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
-29. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-30. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+8. [精确路由 Owner 清单设计](精确路由Owner清单设计.md)：四大域默认 owner、method + path 精确 allowlist、模板相交安全、回滚 manifest 和未来代理接入门禁。
+9. [W1b 外部维护公开接口迁移记录](W1b-外部维护公开接口迁移记录.md)：`/__aipublic__` 外部维护接口的当前契约、Node 对照命令、Go 目标边界和删除门禁。
+10. [W2 管理端只读辅助接口迁移记录](W2-管理端只读辅助接口迁移记录.md)：后台 options / catalog 接口和账号标签切片的当前契约、已迁移路径、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、账号标签 owner-only 只读 / 未绑定删除 / 独立 PATCH opt-in、主账户标签写路径和 operation log 缺口、接管门禁。
+11. [W3 登录与系统账户迁移记录](W3-登录与系统账户迁移记录.md)：登录、当前用户、会话、登出、改密、验证码和系统账户写接口的分块迁移记录；当前覆盖 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前令牌退出切片、`POST /system-accounts` 创建切片，以及 `PATCH /system-accounts/{id}` 完整 mixed partial update；登录会话列表 / 按 ID 撤销已撤销，不属于当前迁移范围。全部仍为 Go opt-in 灰度路径，不代表 W3、Node `/auth` 或 Node `/system-accounts` 已接管。
+12. [W4 团队与统一授权迁移记录](W4-团队与统一授权迁移记录.md)：系统团队、成员、授权 grant、授权来源展开和最终用户授权的分块迁移记录；当前覆盖 `GET /system-teams` / `GET /my-teams` 团队列表 / 详情读接口、`POST /system-teams` 团队创建、`PATCH /system-teams/{id}` 团队更新、`POST /system-teams/{id}/members` 成员新增、`DELETE /system-teams/{id}/members/{memberId}` 成员移除、`GET /authorizations` 和 `GET /my-authorizations` 授权列表、`GET /authorizations/{id}` 和 `GET /my-authorizations/{id}` 授权详情、`POST /authorizations` 和 `POST /my-authorizations` 授权创建、`PATCH /authorizations/{id}` 和 `PATCH /my-authorizations/{id}` 授权更新、`PATCH /authorizations/{id}/expire` 和 `PATCH /my-authorizations/{id}/expire` 授权有效期更新、`DELETE /authorizations/{id}/return` 和 `DELETE /my-authorizations/{id}/return` 授权归还、`DELETE /authorizations/{id}` 和 `DELETE /my-authorizations/{id}` 授权回收 Go opt-in 灰度能力、授权来源 / grant / 额度窗口 / 统计脏标记 PostgreSQL schema 基线和授权缓存失效，不代表 W4、Node `/system-teams` 或 Node `/authorizations` 已接管。
+13. [W5 管理端全局品牌设置读取记录](W5-管理端全局品牌设置读取记录.md)：`GET/PATCH /__aisys__/api/settings/global` 的 Go opt-in 契约、`publicsettings` / store 复用、管理员权限、读写 session、两层限流、精确品牌 DTO、验证记录和删除门禁。
+14. [W5 管理端系统运行设置迁移记录](W5-管理端系统运行设置迁移记录.md)：已进入 Go opt-in 的 `GET/PATCH /__aisys__/api/settings`，固定 53 key，GPT Priority / Flex 使用模型目录精确档位价格且不提供通用倍率，并覆盖 `256 KiB` / `413`、parser 与鉴权 / 限流顺序、PostgreSQL 有界事务、`000024` 初始设置 seed、`000043` 删除历史倍率设置、双缓存失效、操作日志和删除门禁；真实依赖因 Docker 不可用输出 `SKIP` 时不计通过。
+15. [W5 管理端分组创建迁移记录](W5-管理端分组创建迁移记录.md)：已进入 Go opt-in 的 `POST /groups` 与 `POST /my-groups` 创建契约、作用域、完整高并发策略、唯一约束、写后副作用、验证记录和删除门禁。
+16. [W5 管理端分组列表迁移记录](W5-管理端分组列表迁移记录.md)：`GET /groups` 与 `GET /my-groups` 的权限、分页、progressive DTO、预聚合读取、共存期 Node 单 writer 和最终 Go stats worker 门禁。
+17. [W5 管理端分组详情迁移记录](W5-管理端分组详情迁移记录.md)：`GET /groups/{id}` 与 `GET /my-groups/{id}` 的 owner / authorized 详情 DTO、实时账户并发、授权来源、权限和真实依赖门禁。
+18. [W5 管理端分组更新迁移记录](W5-管理端分组更新迁移记录.md)：`PATCH /groups/{id}` 与 `PATCH /my-groups/{id}` 的 owner / authorized 字段边界、事务保护、路由绑定保护、缓存与运行态失效、操作日志和真实依赖门禁。
+19. [W5 管理端分组删除迁移记录](W5-管理端分组删除迁移记录.md)：`DELETE /groups/{id}` 与 `DELETE /my-groups/{id}` 的 owner-only 权限、默认分组和路由策略保护、硬删除级联、统计脏标记、缓存与运行态失效、操作日志和真实依赖门禁。
+20. [W5 管理端策略路由列表与详情迁移记录](W5-管理端策略路由列表与详情迁移记录.md)：管理 / 个人四条 GET 的 admin global / owner narrowing、self 强制本人、渐进分页、大小写敏感名称前缀、轻量列表、完整详情和真实依赖门禁；Go opt-in 已实现，真实 PostgreSQL smoke 因 Docker 不可用待复跑，不代表生产接管。
+21. [W5 管理端策略路由创建迁移记录](W5-管理端策略路由创建迁移记录.md)：管理 / 个人两条 POST 的 strict JSON、五模式、授权分组事务锁、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
+22. [W5 管理端策略路由更新迁移记录](W5-管理端策略路由更新迁移记录.md)：管理 / 个人两条 PATCH 的 strict partial JSON、事务锁定、绑定整体替换、错误优先级、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
+23. [W5 管理端策略路由删除迁移记录](W5-管理端策略路由删除迁移记录.md)：管理 / 个人两条 DELETE 的 admin global / owner narrowing、self actor、默认与 API Key 引用保护、事务锁读、204 空响应、运行态失效、操作日志、前端 request-capture 和真实依赖门禁。
+24. [W5 管理端 API Key 密钥生命周期迁移记录](W5-管理端APIKey密钥生命周期迁移记录.md)：管理端 / 个人端 API Key 创建、完整密钥查看与刷新、加密存储、权限、缓存失效、操作日志和真实依赖门禁。
+25. [W5 管理端 API Key 删除迁移记录](W5-管理端APIKey删除迁移记录.md)：`DELETE /api-keys/{id}` 与 `DELETE /my-api-keys/{id}` 的作用域、204 空响应、原子硬删除、cleanup target、提交后失效、操作日志、残余安全风险和真实依赖门禁。
+26. [W6 记录与统计读接口迁移记录](W6-记录与统计读接口迁移记录.md)：记录、日志和统计只读接口迁移记录；当前覆盖管理侧 / 个人侧 `usage-window`、使用记录列表 / 详情、运行日志列表 / 详情 / facets / runtime、公开接口日志列表 / 详情和审计日志轻量列表 Go opt-in。
+27. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
+28. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
+29. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
+30. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
+31. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
 
 ## 4. 目录职责
 
@@ -67,6 +68,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 | `Go迁移指标与观测规划.md` | Go 目标系统指标、Prometheus、pprof、PG/Redis/Asynq、worker 和网关观测口径 |
 | `Go系统指标字段迁移清单.md` | Node 系统指标字段删除、Go 字段替换、前端页面迁移和 W6 / W7 / W8 验收清单 |
 | `模块迁移顺序与减法清单.md` | 模块优先级、迁移状态、Node 删除证据和测试门禁 |
+| `精确路由Owner清单设计.md` | 四大域粗粒度默认 owner、method + path 精确 allowlist、安全模板、回滚清单和未来代理接入门禁 |
 | `W1b-外部维护公开接口迁移记录.md` | `/__aipublic__` 外部维护接口契约、Go 迁移范围、Node 对照命令和删除门禁 |
 | `W2-管理端只读辅助接口迁移记录.md` | 管理端只读辅助接口与账号标签只读 / 未绑定删除 / 独立 PATCH 契约、Go 当前实现范围、权限边界、系统账户轻量下拉、authorization grantee accounts / grantee teams / grantee groups、分组授权组只读 union、账户授权账户只读 union、主账户标签写路径 / 完整 summary / operation log 缺口和删除门禁 |
 | `W3-登录与系统账户迁移记录.md` | 登录、当前用户、会话、登出、改密、验证码和系统账户写接口迁移记录；当前固定 `GET /auth/captcha` 验证码发放 / 校验基础、`POST /auth/login` 登录 / session 创建小切片、`GET /auth/me` 只读切片、`PATCH /auth/me` 当前用户资料更新切片、`POST /auth/change-password` 当前用户改密切片、`POST /auth/logout` 当前令牌退出切片、`POST /system-accounts` 创建切片、`PATCH /system-accounts/{id}` 完整 mixed partial update 和后续拆分门禁；登录会话列表 / 按 ID 撤销已撤销，不得作为恢复项 |

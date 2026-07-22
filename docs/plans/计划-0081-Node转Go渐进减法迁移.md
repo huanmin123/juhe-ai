@@ -5,7 +5,7 @@
 - 编号：PLAN-0081
 - 状态：进行中
 - 创建时间：2026-07-06
-- 更新时间：2026-07-21
+- 更新时间：2026-07-22
 - 需求来源：用户对话
 - 执行者：AI / 维护者
 - 关联模块：后端 / 存储 / 网关 / 后台 worker / 公开接口 / 管理接口 / 部署 / 文档 / 验证
@@ -56,6 +56,7 @@
 - 2026-07-20 Go 高并发迁移原则获用户批准并写入长期架构基线：后续账号探针、探活、余额、代理检测、OAuth 保活和后台分析默认使用有界候选窗口后的 goroutine fan-out，删除仅为 Node event loop / worker thread / `p-limit` 妥协存在的低并发和串行胶水，不保留旧字段兼容。goroutine 数量本身不设任意低上限，但 PostgreSQL / Redis / HTTP Transport / 上游配额 / 代理 / FD / CPU / 网络 / payload 内存仍按真实容量分层预算，并以 pool wait、queue lag、P95/P99、timeout、`429/503`、重试率和资源饱和度做自适应背压与渐进恢复；可靠任务继续由 Asynq 承接，禁止无 owner、无取消、无幂等和无观测的无界 goroutine。用户同时授权后续迁移和设计默认按推荐方案直接推进，仅生产写、不可逆数据、新权限 / 费用或真实业务取舍再暂停确认。
 - 2026-07-20 最新远端同步与漂移裁决：fetch 后 `origin/master=28d45c0c6`、`origin/feature/20260706-go=fd014e60b` 已合入当前分支 `e989d2b18`，无冲突；新增 schema `59..61`、供应商认证 / 模型目录、客户端 IP 统计和通用上游失败服务端接管均完成 Go/Node 边界审计。已迁移 Go 的 W2 provider model、W3 system account、W6 IP stats 只采用远端已有 Go 对齐；W3 密码日志“已设置/已重置”经调用链确认会在共享 sanitizer 入队前统一为 `未设置/已变更`，不构成外部契约漂移。通用上游失败、gateway response/hybrid、Chat 模型与路由仍由 Node owner 持有，按 AI Chat 最后迁移顺序登记而不提前复制。
 - 2026-07-18 生产 owner 声明层：新增 `deploy/owner-manifest.json`，当前明确声明 management / public / gateway / worker 仍由 Node owner 持有，记录 deployment epoch、Node / Go release version 与 Goose schema；新增 `pnpm test:owner-manifest` 和 `pnpm validate:owner-manifest` 严格校验 manifest schema。该提交只建立可机器读取的声明，不改变启动入口、代理路由或 owner 互斥；启动互斥、版本匹配、代理切流和自动回滚仍是后续门禁。
+- 2026-07-22 精确 route owner 声明层：owner manifest 升级到 schema v2，保留 management / public / gateway / worker 四大域默认 owner，并增加 method + path template 精确 allowlist、四域及逐 route rollback owner、GET/HEAD 与模板相交拒绝、unsafe wildcard / 编码 / 非规范路径拒绝、全 Node 强断言和只读回滚 manifest 生成。当前 allowlist 为空、四域仍全部 Node；本批不接实际 proxy dispatch、不切流、不部署、不删除 Node。设计见 [精确路由 Owner 清单设计](../migration/精确路由Owner清单设计.md)。
 - 2026-07-18 owner manifest 切流预检：校验器新增 `--require-owners=route=owner,...`，当前 `pnpm validate:owner-manifest:node` 强制确认四类生产 route 仍由 Node 持有；未来 Go 切片必须显式替换为对应 route 的 Go 预期值后才能进入代理切流流程。该命令仍是声明一致性检查，不等价于进程、端口或反向代理运行态互斥。
 - 2026-07-18 owner lock 基础能力：新增 Go `internal/ownerlock` 跨平台 OS 文件句柄锁，Unix 使用 non-blocking `flock`，Windows 使用 `LockFileEx`；锁文件只写诊断 metadata，释放不删除文件，避免 PID/stale 文件竞态。Windows 锁争用 / 释放复用回归与 Linux 交叉编译已通过；当前尚未接入 Go/Node 启动，不改变现有灰度运行行为，后续需补 manifest epoch / route owner 校验和 server / worker 生命周期接入。
 - 2026-07-18 Go server owner lock opt-in：`RunServer` 在配置校验后、PostgreSQL / Redis 初始化前按 `JUHE_AI_OWNER_LOCK_*` 获取 OS lock，metadata 记录 deployment epoch、server role、Go version 与 PID，并在所有退出路径释放；默认关闭，不改变当前 Node owner。配置显式开启时要求 lock path、deployment epoch 和 `server|worker` role。Windows targeted / race、全量 `go test ./...`、`go vet ./...`、`go mod tidy -diff` 与 `CGO_ENABLED=0` Linux 交叉编译均通过；Node server、Go worker、manifest runtime 匹配和代理运行态校验仍未接入。
