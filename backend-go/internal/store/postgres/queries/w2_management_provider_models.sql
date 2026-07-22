@@ -9,8 +9,7 @@ SELECT code
 FROM juhe_business.providers
 WHERE enabled = true
   AND code <> 'hybrid'
-ORDER BY name ASC, code ASC
-LIMIT 50;
+ORDER BY name ASC, code ASC;
 
 -- name: ListManagementProviderCodesByProtocol :many
 SELECT DISTINCT p.code
@@ -21,8 +20,7 @@ WHERE p.enabled = true
   AND ppp.enabled = true
   AND ppp.protocol_code = sqlc.arg(protocol_code)
   AND ppp.protocol_version = sqlc.arg(protocol_version)
-ORDER BY p.code ASC
-LIMIT 50;
+ORDER BY p.code ASC;
 
 -- name: ListManagementProviderModelCatalog :many
 SELECT
