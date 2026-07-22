@@ -98,6 +98,29 @@ const legacyResult = sanitizeCodexResponseHistoryItems(legacyInput, persistentSa
 assert.equal(Object.hasOwn(legacyResult.items[0] as object, 'id'), false)
 assert.deepEqual(legacyResult.issueCodes, ['legacy_item_id'])
 
+for (const invalidId of ['', null, 42]) {
+  const invalidIdInput = [{
+    type: 'message',
+    id: invalidId,
+    role: 'assistant',
+    content: [{ type: 'output_text', text: 'invalid ID remains replayable' }]
+  }]
+  const invalidIdResult = sanitizeCodexResponseHistoryItems(invalidIdInput, persistentSameScope)
+  assert.equal(Object.hasOwn(invalidIdResult.items[0] as object, 'id'), false, `无效 ID ${String(invalidId)} 必须被剥离`)
+  assert.deepEqual(invalidIdResult.issueCodes, ['invalid_item_id'])
+  assert.equal((invalidIdResult.items[0] as Record<string, unknown>).role, 'assistant')
+  assert.deepEqual((invalidIdResult.items[0] as Record<string, unknown>).content, invalidIdInput[0]?.content)
+}
+
+const noIdItem = {
+  type: 'message',
+  role: 'assistant',
+  content: [{ type: 'output_text', text: 'already inline' }]
+}
+const noIdResult = sanitizeCodexResponseHistoryItems([noIdItem], persistentSameScope)
+assert.equal(noIdResult.items[0], noIdItem, '原本没有 ID 字段的 item 必须保持零拷贝')
+assert.equal(noIdResult.changed, false)
+
 const idempotentResult = sanitizeCodexResponseHistoryItems(prefixMismatchResult.items, persistentSameScope)
 assert.equal(idempotentResult.items, prefixMismatchResult.items, '已清洗结果再次执行必须零拷贝')
 assert.equal(idempotentResult.changed, false)
@@ -131,6 +154,16 @@ assert.throws(
   (error) => error instanceof GatewayRequestValidationError
     && error.code === 'codex_history_item_unrecoverable',
   '空 reasoning 容器不能伪装成可重放 payload'
+)
+
+assert.throws(
+  () => sanitizeCodexResponseHistoryItems([{
+    type: 'message',
+    id: null
+  }], persistentSameScope),
+  (error) => error instanceof GatewayRequestValidationError
+    && error.code === 'codex_history_item_unrecoverable',
+  '无效 ID 也不能绕过 ID-only 不可恢复校验'
 )
 
 const unknownItem = { type: 'future_response_item', id: 'future_1', payload: 'opaque' }

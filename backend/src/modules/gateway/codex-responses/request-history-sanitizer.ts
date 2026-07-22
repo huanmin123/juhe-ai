@@ -64,9 +64,13 @@ function itemIdRemovalDecision(
 ): { item: JsonRecord; type: string; issueCode: string } | undefined {
   if (!isPlainObject(value)) return undefined
   const type = stringValue(value.type)
-  const id = stringValue(value.id)
   const expectedPrefix = type ? itemIdPrefixes.get(type) : undefined
-  if (!type || !id || !expectedPrefix) return undefined
+  if (!type || !expectedPrefix || !Object.hasOwn(value, 'id')) return undefined
+
+  const id = stringValue(value.id)
+  if (!id) {
+    return { item: value, type, issueCode: 'invalid_item_id' }
+  }
 
   if (!hasNonEmptyPrefixAndSuffix(id)) {
     return { item: value, type, issueCode: 'legacy_item_id' }
