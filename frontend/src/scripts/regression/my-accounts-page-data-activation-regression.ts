@@ -15,7 +15,7 @@ import {
   createMemoryPageDataCacheStorage,
   type PageDataLoadResult
 } from '../../shared/pageDataCache'
-import type { PageDataActivationParticipant, PageDataActivationTimer } from '../../shared/pageDataActivationCoordinator'
+import type { PageDataActivationParticipant } from '../../shared/pageDataActivationCoordinator'
 import { myAccountsPageDataActivationManifest } from '../../shared/pageDataActivationManifests'
 import type {
   PageDataActivation,
@@ -39,30 +39,36 @@ const { KeepAlive, createApp, defineComponent, h, nextTick, ref } = await import
 
 class FakeClock {
   private nextId = 1
-  private readonly tasks = new Map<number, { at: number; callback: () => void; intervalMs?: number }>()
+  private readonly tasks = new Map<number, { at: number; callback: () => void }>()
   nowMs = 0
 
-  readonly timer: PageDataActivationTimer & PageDataActivationLifecycleTimer = {
+  readonly timer: PageDataActivationLifecycleTimer = {
     setTimeout: (callback, delayMs) => this.schedule(callback, delayMs),
-    clearTimeout: (handle) => this.tasks.delete(handle as number),
-    setInterval: (callback, intervalMs) => this.schedule(callback, intervalMs, Math.max(1, intervalMs)),
-    clearInterval: (handle) => this.tasks.delete(handle as number)
+    clearTimeout: (handle) => this.tasks.delete(handle as number)
   }
 
   delay(delayMs: number): Promise<void> {
     return new Promise((resolve) => { this.schedule(resolve, delayMs) })
   }
 
+  pendingTaskTimes(): number[] {
+    return [...this.tasks.values()].map((task) => task.at).sort((left, right) => left - right)
+  }
+
+  advanceBy(delayMs: number): Promise<void> {
+    return this.advanceTo(this.nowMs + delayMs)
+  }
+
   async advanceTo(targetMs: number): Promise<void> {
     while (true) {
+      await flushMicrotasks()
       const due = [...this.tasks.entries()]
         .filter(([, task]) => task.at <= targetMs)
         .sort((left, right) => left[1].at - right[1].at || left[0] - right[0])[0]
       if (!due) break
       const [id, task] = due
       this.nowMs = task.at
-      if (task.intervalMs) task.at += task.intervalMs
-      else this.tasks.delete(id)
+      this.tasks.delete(id)
       task.callback()
       await flushMicrotasks()
     }
@@ -70,12 +76,11 @@ class FakeClock {
     await flushMicrotasks()
   }
 
-  private schedule(callback: () => void, delayMs: number, intervalMs?: number): number {
+  private schedule(callback: () => void, delayMs: number): number {
     const id = this.nextId++
     this.tasks.set(id, {
       at: this.nowMs + Math.max(0, delayMs),
-      callback,
-      ...(intervalMs ? { intervalMs } : {})
+      callback
     })
     return id
   }
@@ -212,61 +217,143 @@ for (const domain of myAccountsPageDataActivationManifest.domains) {
   assert.equal(networkCalls.get(domain), 1, 'changed 资源只能执行一次 GET')
 }
 
-unregisterFailure?.()
-pageVisible = false
-visibilityListener?.()
-await clock.advanceTo(20_000)
-const callsBeforeResume = new Map(revalidatorCalls)
-pageVisible = true
-visibilityListener?.()
-focusListener?.()
-await flushMicrotasks()
-await clock.advanceTo(20_100)
-assert.equal(requests.length, 2, '30 秒内恢复必须直接使用热缓存')
-for (const domain of myAccountsPageDataActivationManifest.domains) {
-  assert.equal(revalidatorCalls.get(domain), (callsBeforeResume.get(domain) ?? 0) + 1, 'focus 与 visibility 必须去重')
-}
-assert.equal(isolatedFailureCalls, 1, '已注销 revalidator 不得再次执行')
+assert.deepEqual(clock.pendingTaskTimes(), [30_105], '初始 post-confirm 完成后才能开始 30 秒周期')
 
-await clock.advanceTo(80_100)
-assert.equal(requests.length, 3, '周期点最多一个 aggregate confirm')
-assert.deepEqual(Object.keys(requests[2]?.domains ?? {}).sort(), [
-  'accounts.options',
-  'accounts.static',
-  'providers.catalog'
-])
-for (const domain of myAccountsPageDataActivationManifest.domains) assert.equal(networkCalls.get(domain), 1)
+unregisterFailure?.()
+const callsBeforePublicTrigger = new Map(revalidatorCalls)
+const requestsBeforePublicTrigger = requests.length
+activation.trigger('focus')
+activation.trigger('interval')
+await clock.advanceBy(100)
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), (callsBeforePublicTrigger.get(domain) ?? 0) + 1, '公开 trigger 必须走全页 revalidate')
+}
+assert.equal(requests.length, requestsBeforePublicTrigger, '热缓存 trigger 不应额外 confirm')
+assert.deepEqual(clock.pendingTaskTimes(), [30_105], '普通 focus revalidation 不得推迟已有周期')
 
 showActivationPage.value = false
 await nextTick()
-const requestsBeforeDeactivateWait = requests.length
-await clock.advanceTo(120_100)
-assert.equal(requests.length, requestsBeforeDeactivateWait, 'KeepAlive deactivated 不得周期 confirm')
+const callsWhileDeactivated = new Map(revalidatorCalls)
+const requestsWhileDeactivated = requests.length
+pageVisible = false
+visibilityListener?.()
+focusListener?.()
+pageVisible = true
+visibilityListener?.()
+focusListener?.()
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(requests.length, requestsWhileDeactivated, 'KeepAlive deactivated 期间 focus/visibility/trigger 不得 confirm')
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), callsWhileDeactivated.get(domain), 'KeepAlive deactivated 期间 focus/visibility/trigger 不得 revalidate')
+}
+assert.deepEqual(clock.pendingTaskTimes(), [], 'KeepAlive deactivated 必须清理周期 timeout')
 
 const callsBeforeActivate = new Map(revalidatorCalls)
 showActivationPage.value = true
 await nextTick()
 focusListener?.()
-await flushMicrotasks()
-await clock.advanceTo(120_200)
+await clock.advanceBy(100)
 for (const domain of myAccountsPageDataActivationManifest.domains) {
   assert.equal(revalidatorCalls.get(domain), (callsBeforeActivate.get(domain) ?? 0) + 1, 'activate 与紧邻 focus 必须 singleflight')
 }
+assert.equal(isolatedFailureCalls, 1, '已注销 revalidator 不得再次执行')
+
+const activeIntervalAt = clock.pendingTaskTimes()[0]
+assert(activeIntervalAt, '重新激活后必须安排周期 timeout')
+const callsBeforeDocumentPause = new Map(revalidatorCalls)
+const requestsBeforeDocumentPause = requests.length
+pageVisible = false
+visibilityListener?.()
+focusListener?.()
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(requests.length, requestsBeforeDocumentPause, 'document hidden 期间 focus/trigger 不得 confirm')
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), callsBeforeDocumentPause.get(domain), 'document hidden 期间 focus/trigger 不得 revalidate')
+}
+assert.deepEqual(clock.pendingTaskTimes(), [], 'document hidden 必须暂停周期 timeout')
+pageVisible = true
+visibilityListener?.()
+focusListener?.()
+await clock.advanceBy(100)
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), (callsBeforeDocumentPause.get(domain) ?? 0) + 1, 'document visible 且 componentActive 时必须恢复 revalidate')
+}
+assert(clock.pendingTaskTimes()[0] > activeIntervalAt, 'document visible 恢复后必须重新安排周期 timeout')
+
+const callsBeforeFocus = new Map(revalidatorCalls)
+const intervalBeforeFocus = clock.pendingTaskTimes()[0]
+focusListener?.()
+await clock.advanceBy(100)
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), (callsBeforeFocus.get(domain) ?? 0) + 1, 'active 期间 focus 必须执行一次 revalidate')
+}
+assert.deepEqual(clock.pendingTaskTimes(), [intervalBeforeFocus], 'active 期间 focus 不得重排已有周期 timeout')
+
+const callsBeforePublicDeactivate = new Map(revalidatorCalls)
+const requestsBeforePublicDeactivate = requests.length
+activation.deactivate()
+pageVisible = false
+visibilityListener?.()
+focusListener?.()
+pageVisible = true
+visibilityListener?.()
+focusListener?.()
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(requests.length, requestsBeforePublicDeactivate, '公开 deactivate 后 focus/visibility/trigger 不得 confirm')
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), callsBeforePublicDeactivate.get(domain), '公开 deactivate 后 focus/visibility/trigger 不得 revalidate')
+}
+assert.deepEqual(clock.pendingTaskTimes(), [], '公开 deactivate 必须清理周期 timeout')
+
+showActivationPage.value = false
+await nextTick()
+const callsBeforeReactivated = new Map(revalidatorCalls)
+showActivationPage.value = true
+await nextTick()
+await clock.advanceBy(100)
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), (callsBeforeReactivated.get(domain) ?? 0) + 1, '公开 deactivate 后只有 onActivated 可恢复 revalidate')
+}
+
+const intervalAt = clock.pendingTaskTimes()[0]
+assert(intervalAt, '再次激活后必须安排周期 timeout')
+const requestsBeforeInterval = requests.length
+gatedConfirmation = deferred<PageDataConfirmResult>()
+await clock.advanceTo(intervalAt + 50)
+assert.equal(requests.length, requestsBeforeInterval + 1, '周期点必须只有一个 aggregate confirm')
+assert.deepEqual(Object.keys(requests.at(-1)?.domains ?? {}).sort(), [
+  'accounts.options',
+  'accounts.static',
+  'providers.catalog'
+])
+assert.deepEqual(clock.pendingTaskTimes(), [], 'interval callback 必须先清除 handle，confirm 完成前不重排')
+await clock.advanceTo(intervalAt + 5_000)
+const intervalRequest = requests.at(-1)
+assert(intervalRequest)
+gatedConfirmation.resolve(confirmationFor(intervalRequest, clock.nowMs))
+gatedConfirmation = undefined
+await waitFor(() => clock.pendingTaskTimes().length === 1, '周期 confirm 完成后未重排 timeout')
+assert.deepEqual(clock.pendingTaskTimes(), [intervalAt + 35_000], '下一周期必须从 confirm 完成后重新计时 30 秒')
 
 const providerNetworkBeforeTargeted = networkCalls.get('providers.catalog') ?? 0
 const tagNetworkBeforeTargeted = networkCalls.get('accounts.options') ?? 0
 const providerRunsBeforeTargeted = revalidatorCalls.get('providers.catalog') ?? 0
 const tagRunsBeforeTargeted = revalidatorCalls.get('accounts.options') ?? 0
+const accountRunsBeforeTargeted = revalidatorCalls.get('accounts.static') ?? 0
 activation.beginTargeted(['accounts.static'])
 const targetedRefresh = controllers.get('accounts.static')?.refresh()
 assert(targetedRefresh)
-await clock.advanceTo(120_300)
+await clock.advanceBy(100)
 assert.equal((await targetedRefresh).superseded, false)
 assert.equal(networkCalls.get('accounts.static'), 2)
 assert.equal(networkCalls.get('providers.catalog'), providerNetworkBeforeTargeted)
 assert.equal(networkCalls.get('accounts.options'), tagNetworkBeforeTargeted)
 assert.equal(revalidatorCalls.get('providers.catalog'), providerRunsBeforeTargeted)
 assert.equal(revalidatorCalls.get('accounts.options'), tagRunsBeforeTargeted)
+assert.equal(revalidatorCalls.get('accounts.static'), accountRunsBeforeTargeted, 'beginTargeted 不得运行全页 revalidator')
 assert.deepEqual(Object.keys(requests.at(-1)?.domains ?? {}), ['accounts.static'])
 
 gatedConfirmation = deferred<PageDataConfirmResult>()
@@ -279,7 +366,7 @@ const lateParticipant: PageDataActivationParticipant = {
   writeEpoch: 0
 }
 const lateDecision = activation.register(lateParticipant)
-await clock.advanceTo(120_350)
+await clock.advanceBy(50)
 activation.deactivate()
 assert.equal((await lateDecision).state, 'superseded', 'deactivate 必须 supersede 迟到结果')
 gatedConfirmation.resolve(confirmationFor(requests.at(-1)!, clock.nowMs))
@@ -312,12 +399,15 @@ const accountsViewSource = readFileSync(fileURLToPath(new URL('../../views/accou
 const accountListDataSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountListData.ts', import.meta.url)), 'utf8')
 const tagCacheSource = readFileSync(fileURLToPath(new URL('../../views/accounts/accountTagOptionsCache.ts', import.meta.url)), 'utf8')
 const providerSource = readFileSync(fileURLToPath(new URL('../../composables/useProviderOptionsResource.ts', import.meta.url)), 'utf8')
+const activationSource = readFileSync(fileURLToPath(new URL('../../composables/usePageDataActivation.ts', import.meta.url)), 'utf8')
 assert.match(accountsViewSource, /usePageDataActivation/)
 assert.match(accountsViewSource, /accounts\.static[\s\S]*accounts\.options[\s\S]*providers\.catalog/)
 assert.match(accountListDataSource, /activationManaged:\s*Boolean\(/)
 assert.match(accountListDataSource, /activation:\s*options\.pageDataActivation/)
 assert.match(tagCacheSource, /activation:\s*input\.activation/)
 assert.match(providerSource, /activation:\s*options\.activation/)
+assert.doesNotMatch(activationSource, /setInterval|clearInterval/, '页面 activation 周期必须使用一次性 timeout')
+assert.doesNotMatch(activationSource, /createCoordinatorTimer|setTimeout\(\(\) => undefined/, '生产代码不得使用空 timeout 辅助测试 flush')
 
 console.log('我的账户页面数据 activation 回归通过')
 
@@ -328,9 +418,7 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve()
-  await Promise.resolve()
-  await Promise.resolve()
+  for (let turn = 0; turn < 10; turn += 1) await Promise.resolve()
 }
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {

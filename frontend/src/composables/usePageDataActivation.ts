@@ -16,10 +16,7 @@ import {
 } from '@/shared/pageDataActivationCoordinator'
 import type { PageDataActivationManifest } from '@/shared/pageDataActivationManifests'
 
-export interface PageDataActivationLifecycleTimer {
-  setInterval(callback: () => void, intervalMs: number): unknown
-  clearInterval(handle: unknown): void
-}
+export type PageDataActivationLifecycleTimer = PageDataActivationTimer
 
 export interface PageDataActivation extends PageDataActivationHandle {
   registerRevalidator(domain: PageDataDomain, revalidate: () => void | Promise<void>): () => void
@@ -34,7 +31,7 @@ export interface UsePageDataActivationOptions {
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
   batchWindowMs?: number
   intervalMs?: number
-  timer?: PageDataActivationTimer & PageDataActivationLifecycleTimer
+  timer?: PageDataActivationLifecycleTimer
   now?: () => number
   isVisible?: () => boolean
   addFocusListener?: (listener: () => void) => () => void
@@ -43,25 +40,22 @@ export interface UsePageDataActivationOptions {
 
 const DEFAULT_CONFIRM_INTERVAL_MS = 30_000
 
-const defaultTimer: PageDataActivationTimer & PageDataActivationLifecycleTimer = {
+const defaultTimer: PageDataActivationLifecycleTimer = {
   setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
-  clearTimeout: (handle) => globalThis.clearTimeout(handle as number),
-  setInterval: (callback, intervalMs) => globalThis.setInterval(callback, intervalMs),
-  clearInterval: (handle) => globalThis.clearInterval(handle as number)
+  clearTimeout: (handle) => globalThis.clearTimeout(handle as number)
 }
 
 export function usePageDataActivation(options: UsePageDataActivationOptions): PageDataActivation | undefined {
   if (!options.enabled) return undefined
 
   const timer = options.timer ?? defaultTimer
-  const coordinatorTimer = options.timer ? createCoordinatorTimer(timer) : timer
   const coordinator = createPageDataActivationCoordinator({
     manifest: options.manifest,
     viewScope: options.viewScope,
     ...(options.targetSystemAccountId ? { targetSystemAccountId: options.targetSystemAccountId } : {}),
     confirm: options.confirm,
     batchWindowMs: options.batchWindowMs,
-    timer: coordinatorTimer,
+    timer,
     now: options.now
   })
   const manifestDomains = new Set(options.manifest.domains)
@@ -71,7 +65,8 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   const addFocusListener = options.addFocusListener ?? defaultFocusListener
   const addVisibilityListener = options.addVisibilityListener ?? defaultVisibilityListener
 
-  let active = false
+  let componentActive = true
+  let running = false
   let disposed = false
   let targetedDomains: ReadonlySet<PageDataDomain> | undefined
   let intervalHandle: unknown
@@ -89,8 +84,7 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
       return coordinator.stabilize(input)
     },
     trigger(reason) {
-      targetedDomains = undefined
-      coordinator.trigger(reason)
+      revalidate(reason)
     },
     deactivate,
     dispose,
@@ -111,30 +105,31 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
       if (disposed) return
       targetedDomains = new Set(domains.filter((domain) => manifestDomains.has(domain)))
       coordinator.trigger('activate')
-      if (options.timer) timer.setTimeout(() => undefined, 0)
     }
   }
 
   onMounted(() => {
     removeFocusListener = addFocusListener(handleFocus)
     removeVisibilityListener = addVisibilityListener(handleVisibility)
-    activate('mount')
+    resume('mount')
   })
-  onActivated(() => activate('activate'))
+  onActivated(() => {
+    componentActive = true
+    resume('activate')
+  })
   onDeactivated(deactivate)
   onUnmounted(dispose)
 
   return activation
 
-  function activate(reason: PageDataActivationTriggerReason): void {
-    if (disposed || active || !isVisible()) return
-    active = true
-    startInterval()
+  function resume(reason: PageDataActivationTriggerReason): void {
+    if (disposed || !componentActive || running || !isVisible()) return
+    running = true
     revalidate(reason)
   }
 
   function revalidate(reason: PageDataActivationTriggerReason): void {
-    if (disposed || !active || !isVisible() || revalidationInFlight) return
+    if (disposed || !componentActive || !running || !isVisible() || revalidationInFlight) return
     targetedDomains = undefined
     coordinator.trigger(reason)
     const pending = options.manifest.domains.flatMap((domain) =>
@@ -143,14 +138,21 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
     const operation = Promise.all(pending).then(() => undefined)
     revalidationInFlight = operation
     void operation.finally(() => {
-      if (revalidationInFlight === operation) revalidationInFlight = undefined
+      if (revalidationInFlight !== operation) return
+      revalidationInFlight = undefined
+      scheduleInterval()
     })
   }
 
   function deactivate(): void {
-    active = false
+    componentActive = false
+    pause()
+  }
+
+  function pause(): void {
+    running = false
     targetedDomains = undefined
-    stopInterval()
+    stopIntervalTimeout()
     coordinator.deactivate()
   }
 
@@ -166,27 +168,28 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
     coordinator.dispose()
   }
 
-  function startInterval(): void {
-    if (intervalHandle !== undefined) return
-    intervalHandle = timer.setInterval(() => {
-      if (!isVisible()) {
-        deactivate()
+  function scheduleInterval(): void {
+    if (disposed || !componentActive || !running || !isVisible() || intervalHandle !== undefined) return
+    intervalHandle = timer.setTimeout(() => {
+      intervalHandle = undefined
+      if (!componentActive || !isVisible()) {
+        pause()
         return
       }
       revalidate('interval')
     }, intervalMs)
   }
 
-  function stopInterval(): void {
+  function stopIntervalTimeout(): void {
     if (intervalHandle === undefined) return
-    timer.clearInterval(intervalHandle)
+    timer.clearTimeout(intervalHandle)
     intervalHandle = undefined
   }
 
   function handleFocus(): void {
-    if (!isVisible()) return
-    if (!active) {
-      activate('focus')
+    if (!componentActive || !isVisible()) return
+    if (!running) {
+      resume('focus')
       return
     }
     revalidate('focus')
@@ -194,11 +197,12 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
 
   function handleVisibility(): void {
     if (!isVisible()) {
-      deactivate()
+      pause()
       return
     }
-    if (!active) {
-      activate('focus')
+    if (!componentActive) return
+    if (!running) {
+      resume('focus')
       return
     }
     revalidate('focus')
@@ -214,20 +218,6 @@ function runIsolated(run: () => void | Promise<void>): Promise<void> {
     return Promise.resolve(run()).catch(() => undefined)
   } catch {
     return Promise.resolve()
-  }
-}
-
-function createCoordinatorTimer(
-  timer: PageDataActivationTimer & PageDataActivationLifecycleTimer
-): PageDataActivationTimer {
-  return {
-    setTimeout(callback, delayMs) {
-      return timer.setTimeout(() => {
-        callback()
-        timer.setTimeout(() => undefined, 0)
-      }, delayMs)
-    },
-    clearTimeout: (handle) => timer.clearTimeout(handle)
   }
 }
 
