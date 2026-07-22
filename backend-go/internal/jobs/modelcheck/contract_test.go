@@ -3,6 +3,7 @@ package modelcheck
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,6 +18,9 @@ type goldenContract struct {
 	Queue                     string            `json:"queue"`
 	MaxRetry                  int               `json:"maxRetry"`
 	DeadlinePolicy            string            `json:"deadlinePolicy"`
+	LeaseFencingPolicy        string            `json:"leaseFencingPolicy"`
+	EnqueueHandoffPolicy      string            `json:"enqueueHandoffPolicy"`
+	FinishCASPolicy           string            `json:"finishCasPolicy"`
 	PublicStatuses            []RunStatus       `json:"publicStatuses"`
 	TerminalStatuses          []RunStatus       `json:"terminalStatuses"`
 	ApplyTransitions          [][2]RunStatus    `json:"applyTransitions"`
@@ -44,6 +48,9 @@ func TestWriterLifecycleGoldenContract(t *testing.T) {
 
 	if golden.TaskType != TaskTypeRun || golden.PayloadVersion != PayloadVersionV1 || golden.Queue != QueueName || golden.MaxRetry != DefaultMaxRetry || golden.DeadlinePolicy != DeadlinePolicyV1 {
 		t.Fatalf("task contract drifted: type=%q version=%d queue=%q retry=%d deadline=%q", golden.TaskType, golden.PayloadVersion, golden.Queue, golden.MaxRetry, golden.DeadlinePolicy)
+	}
+	if golden.LeaseFencingPolicy != LeaseFencingV1 || golden.EnqueueHandoffPolicy != EnqueueHandoffV1 || golden.FinishCASPolicy != FinishCASV1 {
+		t.Fatalf("coordination contract drifted: fencing=%q handoff=%q finish=%q", golden.LeaseFencingPolicy, golden.EnqueueHandoffPolicy, golden.FinishCASPolicy)
 	}
 	wantStatuses := []RunStatus{RunStatusRunning, RunStatusCompleted, RunStatusFailed, RunStatusCanceled}
 	if !reflect.DeepEqual(golden.PublicStatuses, wantStatuses) {
@@ -85,7 +92,7 @@ func TestWriterLifecycleGoldenContract(t *testing.T) {
 		t.Fatalf("request fingerprint = %q", got)
 	}
 
-	encoded, err := json.Marshal(golden.ExamplePayload)
+	encoded, err := EncodeRunTaskPayload(golden.ExamplePayload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +120,39 @@ func TestWriterLifecycleGoldenContract(t *testing.T) {
 	}
 	if len(golden.NodeDivergenceReasons) < 4 {
 		t.Fatalf("expected recorded Go-native divergence reasons, got %d", len(golden.NodeDivergenceReasons))
+	}
+}
+
+func TestRunTaskPayloadStrictRoundTrip(t *testing.T) {
+	input := RunTaskPayload{
+		Version: PayloadVersionV1, RunID: " run-1 ", SystemAccountID: " owner-1 ", ActorSystemAccountID: " actor-1 ",
+		TargetType: " account ", TargetID: " account-1 ", TargetConfigRevision: 7, Model: " gpt-5.4 ",
+		Profile: " full ", ProbeSetVersion: " probe-v1 ", TraceID: " trace-1 ",
+		RequestedAt: time.Date(2026, 7, 22, 20, 0, 0, 0, time.FixedZone("UTC+8", 8*60*60)),
+	}
+	encoded, err := EncodeRunTaskPayload(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeRunTaskPayload(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.RunID != "run-1" || decoded.Model != "gpt-5.4" || decoded.RequestedAt.Location() != time.UTC {
+		t.Fatalf("decoded payload was not canonical: %#v", decoded)
+	}
+}
+
+func TestDecodeRunTaskPayloadRejectsUnknownTrailingAndOversizedData(t *testing.T) {
+	valid := `{"version":1,"runId":"run-1","systemAccountId":"owner-1","actorSystemAccountId":"actor-1","targetType":"account","targetId":"account-1","targetConfigRevision":1,"model":"gpt-5.4","profile":"full","probeSetVersion":"probe-v1","trustedComparison":false,"traceId":"trace-1","requestedAt":"2026-07-22T12:00:00Z"}`
+	for _, raw := range [][]byte{
+		[]byte(strings.TrimSuffix(valid, "}") + `,"apiKey":"secret"}`),
+		[]byte(valid + ` {}`),
+		bytes.Repeat([]byte("x"), MaxPayloadBytes+1),
+	} {
+		if _, err := DecodeRunTaskPayload(raw); !errors.Is(err, ErrInvalidPayload) {
+			t.Fatalf("DecodeRunTaskPayload() error = %v, want ErrInvalidPayload", err)
+		}
 	}
 }
 
