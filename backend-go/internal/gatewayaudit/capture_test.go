@@ -42,6 +42,41 @@ func TestSanitizeURLRedactsUserInfoAndSensitiveQueryValues(t *testing.T) {
 	}
 }
 
+func TestSanitizeURLRejectsOpaqueCredentialURL(t *testing.T) {
+	if _, err := SanitizeURL("https:user:pass@example.com/v1?token=x"); err == nil {
+		t.Fatal("SanitizeURL() accepted an opaque URL")
+	}
+}
+
+func TestSanitizeURLNormalizesSchemeAndDropsFragment(t *testing.T) {
+	got, err := SanitizeURL("HTTPS://example.com/v1#access_token=secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "https://example.com/v1" {
+		t.Fatalf("SanitizeURL() = %q", got)
+	}
+}
+
+func TestSanitizeURLRejectsOversizedInputBeforeParsing(t *testing.T) {
+	value := "https://example.com/v1?token=" + strings.Repeat("x", MaxURLInputBytes)
+	if _, err := SanitizeURL(value); err == nil || !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("SanitizeURL() error = %v", err)
+	}
+}
+
+func TestSanitizeHeaderPreviewIsBounded(t *testing.T) {
+	preview, truncated := SanitizeHeaderPreview(map[string][]string{
+		"X-Large": {strings.Repeat("x", HeaderPreviewMaxValueBytes+1)},
+	})
+	if !truncated {
+		t.Fatal("SanitizeHeaderPreview() did not report truncation")
+	}
+	if got := len(preview["X-Large"][0]); got != HeaderPreviewMaxValueBytes {
+		t.Fatalf("preview value bytes = %d", got)
+	}
+}
+
 func TestBoundUTF8UsesByteLimitWithoutProducingInvalidText(t *testing.T) {
 	got, truncated := BoundUTF8("你好abc", 7)
 	if got != "你好a" || !truncated {
@@ -65,6 +100,9 @@ func TestResolveTerminalEnforcesStreamTerminalAndRetrySemantics(t *testing.T) {
 	}
 	if streamFailure.ErrorCode != ErrorCodeMissingStreamTerminal {
 		t.Fatalf("missing terminal error code = %q", streamFailure.ErrorCode)
+	}
+	if streamFailure.ErrorCode != "upstream_stream_interrupted" {
+		t.Fatalf("missing terminal grouping code = %q", streamFailure.ErrorCode)
 	}
 	genericStream := ResolveTerminal(TerminalInput{
 		RequestedOutcome: OutcomeSuccess,
@@ -94,42 +132,55 @@ func TestResolveTerminalEnforcesStreamTerminalAndRetrySemantics(t *testing.T) {
 	if aborted.Outcome != OutcomeClientAborted || aborted.ErrorPhase != "client" {
 		t.Fatalf("aborted result = %#v", aborted)
 	}
-}
 
-func TestCaptureBudgetOverflowIsStickyAndProducesNoPayload(t *testing.T) {
-	capture, err := NewCapture(1024)
-	if err != nil {
-		t.Fatalf("NewCapture() error = %v", err)
-	}
-	if err = capture.Add(ResidentItem{Kind: "a", ExternalBytes: 31}); err != nil {
-		t.Fatalf("first Add() error = %v", err)
-	}
-	if err = capture.Add(ResidentItem{Kind: "b", ExternalBytes: 39}); !errors.Is(err, ErrCaptureOverflow) {
-		t.Fatalf("overflow Add() error = %v", err)
-	}
-	if err = capture.Add(ResidentItem{Kind: "late", ExternalBytes: 1}); !errors.Is(err, ErrCaptureOverflow) {
-		t.Fatalf("late Add() error = %v", err)
-	}
-
-	snapshot := capture.Snapshot()
-	if snapshot.Status != CaptureStatusOverflow || snapshot.ResidentBytes != 1096 || snapshot.MaxResidentBytes != 1024 {
-		t.Fatalf("overflow snapshot = %#v", snapshot)
-	}
-	if len(snapshot.Items) != 0 {
-		t.Fatalf("overflow snapshot retained items = %#v", snapshot.Items)
+	contradictoryAbort := ResolveTerminal(TerminalInput{
+		RequestedOutcome: OutcomeSuccess,
+		Success:          true,
+		ClientAborted:    true,
+	})
+	if contradictoryAbort.Outcome != OutcomeClientAborted || contradictoryAbort.Success {
+		t.Fatalf("contradictory aborted result = %#v", contradictoryAbort)
 	}
 }
 
-func TestCaptureRejectsInvalidBudgetAndSize(t *testing.T) {
-	if _, err := NewCapture(0); err == nil || !strings.Contains(err.Error(), "positive") {
-		t.Fatalf("NewCapture(0) error = %v", err)
-	}
-	capture, err := NewCapture(1)
+func TestCaptureHandoffAlwaysContainsConsistentTerminal(t *testing.T) {
+	capture, err := NewCapture(MinResidentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = capture.Add(ResidentItem{ExternalBytes: -1}); err == nil {
-		t.Fatal("Add() accepted a negative size")
+	snapshot := takeSnapshot(t, capture)
+	if snapshot.DTO.Terminal.Outcome != OutcomeGatewayFailed || snapshot.DTO.Terminal.Success || snapshot.DTO.Terminal.ErrorCode != ErrorCodeInconsistentTerminal {
+		t.Fatalf("fallback terminal = %#v", snapshot.DTO.Terminal)
+	}
+}
+
+func TestCaptureBudgetOverflowIsStickyAndProducesNoPayload(t *testing.T) {
+	capture, err := NewCapture(1536)
+	if err != nil {
+		t.Fatalf("NewCapture() error = %v", err)
+	}
+	if err = capture.AddFragment(FragmentDescriptorDTO{PartType: "a", CaptureStatus: "complete"}); err != nil {
+		t.Fatalf("first Add() error = %v", err)
+	}
+	if err = capture.AddFragment(FragmentDescriptorDTO{PartType: "b", CaptureStatus: "complete"}); !errors.Is(err, ErrCaptureOverflow) {
+		t.Fatalf("overflow Add() error = %v", err)
+	}
+	if err = capture.AddFragment(FragmentDescriptorDTO{PartType: "late"}); !errors.Is(err, ErrCaptureOverflow) {
+		t.Fatalf("late Add() error = %v", err)
+	}
+
+	snapshot := takeSnapshot(t, capture)
+	if snapshot.Status != CaptureStatusOverflow || snapshot.ResidentBytes > snapshot.MaxResidentBytes || snapshot.PeakResidentBytes <= snapshot.MaxResidentBytes || snapshot.MaxResidentBytes != 1536 {
+		t.Fatalf("overflow snapshot = %#v", snapshot)
+	}
+	if len(snapshot.DTO.Fragments) != 0 {
+		t.Fatalf("overflow snapshot retained fragments = %#v", snapshot.DTO.Fragments)
+	}
+}
+
+func TestCaptureRejectsInvalidBudget(t *testing.T) {
+	if _, err := NewCapture(MinResidentBytes - 1); err == nil || !strings.Contains(err.Error(), "at least") {
+		t.Fatalf("NewCapture() error = %v", err)
 	}
 }
 
@@ -138,32 +189,100 @@ func TestCaptureClampsConfiguredBudgetToHardLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := capture.Snapshot().MaxResidentBytes; got != MaxResidentBytes {
+	if got := takeSnapshot(t, capture).MaxResidentBytes; got != MaxResidentBytes {
 		t.Fatalf("max resident bytes = %d, want %d", got, MaxResidentBytes)
 	}
 }
 
 func TestCaptureChargesResidentDTOBytes(t *testing.T) {
-	capture, err := NewCapture(ResidentItemOverheadBytes)
+	capture, err := NewCapture(MinResidentBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = capture.Add(ResidentItem{Kind: "12345", ExternalBytes: 0}); !errors.Is(err, ErrCaptureOverflow) {
+	if err = capture.AddFragment(FragmentDescriptorDTO{PartType: "12345"}); !errors.Is(err, ErrCaptureOverflow) {
 		t.Fatalf("Add() error = %v, want overflow", err)
 	}
 }
 
 func TestCaptureChargesEmptyItemOverhead(t *testing.T) {
-	capture, err := NewCapture(ResidentItemOverheadBytes)
+	capture, err := NewCapture(1536)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = capture.Add(ResidentItem{}); err != nil {
+	if err = capture.AddFragment(FragmentDescriptorDTO{}); err != nil {
 		t.Fatalf("first Add() error = %v", err)
 	}
-	if err = capture.Add(ResidentItem{}); !errors.Is(err, ErrCaptureOverflow) {
+	if err = capture.AddFragment(FragmentDescriptorDTO{}); !errors.Is(err, ErrCaptureOverflow) {
 		t.Fatalf("second Add() error = %v, want overflow", err)
 	}
+}
+
+func TestCaptureAccountsForAndCopiesActualHeaderPreview(t *testing.T) {
+	headers := map[string][]string{"X-Large": {strings.Repeat("x", 2048)}}
+	capture, err := NewCapture(1024, MetadataDTO{SanitizedRequestHeaderPreview: headers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers["X-Large"][0] = "changed"
+	snapshot := takeSnapshot(t, capture)
+	if snapshot.Status != CaptureStatusOverflow || snapshot.ResidentBytes > snapshot.MaxResidentBytes || snapshot.PeakResidentBytes <= snapshot.MaxResidentBytes {
+		t.Fatalf("snapshot = %#v, want overflow", snapshot)
+	}
+	if snapshot.DTO.Metadata.SanitizedRequestHeaderPreview != nil {
+		t.Fatalf("overflow retained header preview = %#v", snapshot.DTO.Metadata.SanitizedRequestHeaderPreview)
+	}
+}
+
+func TestCaptureSnapshotIsIndependent(t *testing.T) {
+	capture, err := NewCapture(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragmentHeaders := map[string][]string{"Content-Type": {"application/json"}}
+	if err = capture.AddFragment(FragmentDescriptorDTO{SanitizedHeaderPreview: fragmentHeaders}); err != nil {
+		t.Fatal(err)
+	}
+	fragmentHeaders["Content-Type"][0] = "changed"
+	first := takeSnapshot(t, capture)
+	if got := first.DTO.Fragments[0].SanitizedHeaderPreview["Content-Type"][0]; got != "application/json" {
+		t.Fatalf("snapshot header = %q", got)
+	}
+	if _, err = capture.TakeSnapshot(); !errors.Is(err, ErrCaptureFinalized) {
+		t.Fatalf("second TakeSnapshot() error = %v", err)
+	}
+	if err = capture.AddFragment(FragmentDescriptorDTO{}); !errors.Is(err, ErrCaptureFinalized) {
+		t.Fatalf("AddFragment() after handoff error = %v", err)
+	}
+}
+
+func TestCaptureBuilderResolvesTerminalAndStripsQueryFromPath(t *testing.T) {
+	capture, err := NewCapture(4096, MetadataDTO{Path: "/v1/responses?token=secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = capture.SetTerminal(TerminalInput{
+		Success:          true,
+		Stream:           true,
+		TerminalRequired: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := takeSnapshot(t, capture)
+	if snapshot.DTO.Metadata.Path != "/v1/responses" {
+		t.Fatalf("path = %q", snapshot.DTO.Metadata.Path)
+	}
+	if snapshot.DTO.Terminal.Outcome != OutcomeStreamFailed || snapshot.DTO.Terminal.Success {
+		t.Fatalf("terminal = %#v", snapshot.DTO.Terminal)
+	}
+}
+
+func takeSnapshot(t *testing.T, capture *Capture) Snapshot {
+	t.Helper()
+	snapshot, err := capture.TakeSnapshot()
+	if err != nil {
+		t.Fatalf("TakeSnapshot() error = %v", err)
+	}
+	return snapshot
 }
 
 func TestResolveTerminalNormalizesUnknownOutcome(t *testing.T) {

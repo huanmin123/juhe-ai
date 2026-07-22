@@ -7,45 +7,109 @@ import (
 	"unicode/utf8"
 )
 
-const RedactedValue = "[redacted]"
+const (
+	RedactedValue              = "[redacted]"
+	HeaderPreviewMaxBytes      = 64 * 1024
+	HeaderPreviewMaxEntries    = 128
+	HeaderPreviewMaxInspected  = 256
+	HeaderPreviewMaxValues     = 32
+	HeaderPreviewMaxNameBytes  = 256
+	HeaderPreviewMaxValueBytes = 8192
+	MaxURLInputBytes           = 64 * 1024
+)
 
-// SanitizeHeaders builds the bounded capture DTO header view. Raw audit payload
+// SanitizeHeaders builds the bounded capture DTO header preview. Raw audit payload
 // ownership remains outside this package and may apply a different retention policy.
 func SanitizeHeaders(headers map[string][]string) map[string][]string {
+	sanitized, _ := SanitizeHeaderPreview(headers)
+	return sanitized
+}
+
+func SanitizeHeaderPreview(headers map[string][]string) (map[string][]string, bool) {
 	if headers == nil {
-		return nil
+		return nil, false
 	}
 
-	sanitized := make(map[string][]string, len(headers))
+	capacity := min(len(headers), HeaderPreviewMaxEntries)
+	sanitized := make(map[string][]string, capacity)
+	usedBytes := 0
+	truncated := false
+	inspected := 0
 	for name, values := range headers {
+		inspected++
+		if inspected > HeaderPreviewMaxInspected {
+			truncated = true
+			break
+		}
 		if isUncapturedHeader(name) {
 			continue
 		}
-		cloned := make([]string, len(values))
+		if len(sanitized) >= HeaderPreviewMaxEntries {
+			truncated = true
+			break
+		}
+		boundedName, nameTruncated := BoundUTF8(name, HeaderPreviewMaxNameBytes)
+		truncated = truncated || nameTruncated
+		entryBytes := int(ResidentItemOverheadBytes) + len(boundedName)
+		if usedBytes+entryBytes > HeaderPreviewMaxBytes {
+			truncated = true
+			break
+		}
+		valueCount := min(len(values), HeaderPreviewMaxValues)
+		if valueCount < len(values) {
+			truncated = true
+		}
+		cloned := make([]string, 0, valueCount)
 		if isSensitiveName(name) {
-			for index := range cloned {
-				cloned[index] = RedactedValue
+			for range valueCount {
+				if usedBytes+entryBytes+len(RedactedValue) > HeaderPreviewMaxBytes {
+					truncated = true
+					break
+				}
+				cloned = append(cloned, RedactedValue)
+				entryBytes += len(RedactedValue)
 			}
 		} else {
-			copy(cloned, values)
+			for _, value := range values[:valueCount] {
+				boundedValue, valueTruncated := BoundUTF8(value, HeaderPreviewMaxValueBytes)
+				truncated = truncated || valueTruncated
+				if usedBytes+entryBytes+len(boundedValue) > HeaderPreviewMaxBytes {
+					truncated = true
+					break
+				}
+				cloned = append(cloned, boundedValue)
+				entryBytes += len(boundedValue)
+			}
 		}
-		sanitized[name] = cloned
+		if _, exists := sanitized[boundedName]; exists {
+			truncated = true
+			continue
+		}
+		sanitized[boundedName] = cloned
+		usedBytes += entryBytes
 	}
-	return sanitized
+	return sanitized, truncated
 }
 
 // SanitizeURL removes URL userinfo and redacts credential-like query values.
 // It is intended for attempt metadata, not for the raw client query payload.
 func SanitizeURL(value string) (string, error) {
+	if len(value) > MaxURLInputBytes {
+		return "", fmt.Errorf("parse audit URL: input is too large")
+	}
 	parsed, err := url.Parse(strings.TrimSpace(value))
 	if err != nil {
 		return "", fmt.Errorf("parse audit URL: %w", err)
 	}
-	if parsed.Scheme == "" && parsed.Host == "" {
-		return "", fmt.Errorf("parse audit URL: absolute URL is required")
+	scheme := strings.ToLower(parsed.Scheme)
+	if parsed.Opaque != "" || (scheme != "http" && scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("parse audit URL: absolute HTTP(S) URL is required")
 	}
 
+	parsed.Scheme = scheme
 	parsed.User = nil
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
 	query := parsed.Query()
 	for name, values := range query {
 		if !isSensitiveName(name) {
@@ -65,14 +129,14 @@ func BoundUTF8(value string, maxBytes int) (string, bool) {
 		maxBytes = 0
 	}
 	if len(value) <= maxBytes {
-		return value, false
+		return strings.Clone(value), false
 	}
 
 	end := maxBytes
 	for end > 0 && !utf8.ValidString(value[:end]) {
 		end--
 	}
-	return value[:end], true
+	return strings.Clone(value[:end]), true
 }
 
 func isUncapturedHeader(name string) bool {

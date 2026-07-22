@@ -1,7 +1,7 @@
 package gatewayaudit
 
 const (
-	ErrorCodeMissingStreamTerminal = "missing_stream_terminal"
+	ErrorCodeMissingStreamTerminal = "upstream_stream_interrupted"
 	ErrorCodeInconsistentTerminal  = "inconsistent_terminal"
 )
 
@@ -40,6 +40,16 @@ type Terminal struct {
 // ResolveTerminal derives success from the final outcome instead of accepting
 // the contradictory outcome/success combinations possible in the Node caller API.
 func ResolveTerminal(input TerminalInput) Terminal {
+	if input.ClientAborted {
+		return Terminal{
+			Outcome:      OutcomeClientAborted,
+			Success:      false,
+			ErrorPhase:   firstNonEmpty(input.ErrorPhase, "client"),
+			ErrorCode:    input.ErrorCode,
+			ErrorMessage: firstNonEmpty(input.ErrorMessage, "客户端已中断请求"),
+		}
+	}
+
 	if input.Success {
 		if input.Stream && input.TerminalRequired && !input.TerminalReceived {
 			return Terminal{
@@ -54,16 +64,6 @@ func ResolveTerminal(input TerminalInput) Terminal {
 			return Terminal{Outcome: OutcomeSuccessAfterRetry, Success: true}
 		}
 		return Terminal{Outcome: OutcomeSuccess, Success: true}
-	}
-
-	if input.ClientAborted {
-		return Terminal{
-			Outcome:      OutcomeClientAborted,
-			Success:      false,
-			ErrorPhase:   firstNonEmpty(input.ErrorPhase, "client"),
-			ErrorCode:    input.ErrorCode,
-			ErrorMessage: firstNonEmpty(input.ErrorMessage, "客户端已中断请求"),
-		}
 	}
 
 	outcome := input.RequestedOutcome
