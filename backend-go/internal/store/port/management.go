@@ -458,8 +458,17 @@ type ManagementSystemTeamListInput struct {
 	Offset          int
 }
 
+type ManagementSystemTeamListRow struct {
+	ID          string
+	Name        string
+	Description string
+	Status      string
+	MemberCount int
+	CreatedAt   time.Time
+}
+
 type ManagementSystemTeamListResult struct {
-	Items   []ManagementSystemTeamSummary
+	Items   []ManagementSystemTeamListRow
 	HasMore bool
 }
 
@@ -863,8 +872,27 @@ type ManagementResourceAuthorizationListInput struct {
 	Offset                       int
 }
 
+type ManagementResourceAuthorizationListRow struct {
+	ID                             string
+	ResourceType                   string
+	ResourceID                     string
+	ResourceName                   string
+	ResourceOwnerSystemAccountID   string
+	ResourceOwnerSystemAccountName string
+	GranteeType                    string
+	GranteeSystemAccountID         string
+	GranteeSystemAccountName       string
+	GranteeUsername                string
+	GranteeTeamID                  string
+	GranteeTeamName                string
+	Status                         string
+	Remark                         string
+	ExpiresAt                      *time.Time
+	CreatedAt                      time.Time
+}
+
 type ManagementResourceAuthorizationListResult struct {
-	Items   []ManagementResourceAuthorizationSummary
+	Items   []ManagementResourceAuthorizationListRow
 	HasMore bool
 }
 

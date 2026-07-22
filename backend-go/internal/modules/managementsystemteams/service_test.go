@@ -16,19 +16,16 @@ import (
 )
 
 func TestListNormalizesPagingAndMapsItems(t *testing.T) {
-	updatedAt := time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC)
+	createdAt := time.Date(2026, 7, 9, 10, 0, 0, 0, time.UTC)
 	store := &teamStoreStub{
 		listResult: port.ManagementSystemTeamListResult{
-			Items: []port.ManagementSystemTeamSummary{{
-				ID:                "team_ops",
-				Name:              "运维团队",
-				Description:       "负责稳定性",
-				Status:            "active",
-				MemberCount:       2,
-				ActiveMemberCount: 2,
-				CreatedBy:         "sys_admin",
-				CreatedAt:         updatedAt.Add(-time.Hour),
-				UpdatedAt:         updatedAt,
+			Items: []port.ManagementSystemTeamListRow{{
+				ID:          "team_ops",
+				Name:        "运维团队",
+				Description: "负责稳定性",
+				Status:      "active",
+				MemberCount: 2,
+				CreatedAt:   createdAt,
 			}},
 			HasMore: true,
 		},
@@ -55,7 +52,7 @@ func TestListNormalizesPagingAndMapsItems(t *testing.T) {
 	if result.Total != 3 || !result.HasMore || result.Page != 2 || result.PageSize != 1 {
 		t.Fatalf("list result paging = %+v", result)
 	}
-	if len(result.Items) != 1 || result.Items[0].ID != "team_ops" || result.Items[0].MemberCount != 2 || result.Items[0].UpdatedAt != updatedAt.Format(time.RFC3339Nano) {
+	if len(result.Items) != 1 || result.Items[0].ID != "team_ops" || result.Items[0].MemberCount != 2 || result.Items[0].CreatedAt != createdAt.Format(time.RFC3339Nano) {
 		t.Fatalf("list items = %+v", result.Items)
 	}
 }
