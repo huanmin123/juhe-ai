@@ -19,6 +19,9 @@ type AccountSlotLane string
 const (
 	AccountSlotLaneText  AccountSlotLane = "text"
 	AccountSlotLaneImage AccountSlotLane = "image"
+
+	// AccountSlotLeaseTTL matches the Node writer while both runtimes share v2 keys.
+	AccountSlotLeaseTTL = 90 * time.Second
 )
 
 type AccountSlotAcquireInput struct {
@@ -148,7 +151,7 @@ local slot_token = ARGV[1]
 local slot_ttl_ms = tonumber(ARGV[2])
 local redis_time = redis.call('TIME')
 local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
-local expires_at_ms = now_ms + slot_ttl_ms
+local requested_expires_at_ms = now_ms + slot_ttl_ms
 
 local function latest_expiry_ms(key)
   local latest = redis.call('ZREVRANGE', key, 0, 0, 'WITHSCORES')
@@ -177,16 +180,25 @@ if total_expiry_ms == nil or total_expiry_ms <= now_ms then
   return {0, 0}
 end
 
-local selected_lane_expiry_ms = redis.call('ZSCORE', KEYS[4], slot_token)
+local selected_lane_expiry_raw = redis.call('ZSCORE', KEYS[4], slot_token)
 local other_lane_key = KEYS[2]
 if KEYS[4] == KEYS[2] then
   other_lane_key = KEYS[3]
 end
 local other_lane_expiry_ms = redis.call('ZSCORE', other_lane_key, slot_token)
-if selected_lane_expiry_ms == false or other_lane_expiry_ms ~= false then
+if selected_lane_expiry_raw == false or other_lane_expiry_ms ~= false then
+  return {0, 0}
+end
+local selected_lane_expiry_ms = tonumber(selected_lane_expiry_raw)
+if selected_lane_expiry_ms == nil or selected_lane_expiry_ms <= now_ms then
+  redis.call('ZREM', KEYS[1], slot_token)
+  redis.call('ZREM', KEYS[2], slot_token)
+  redis.call('ZREM', KEYS[3], slot_token)
+  redis.call('HDEL', KEYS[5], slot_token)
   return {0, 0}
 end
 
+local expires_at_ms = math.max(requested_expires_at_ms, total_expiry_ms, selected_lane_expiry_ms)
 redis.call('ZADD', KEYS[1], expires_at_ms, slot_token)
 redis.call('ZADD', KEYS[4], expires_at_ms, slot_token)
 local total_latest_expiry_ms = latest_expiry_ms(KEYS[1])
@@ -426,6 +438,9 @@ func accountSlotTTL(ttl time.Duration) (int64, error) {
 	ttlMS := ttl.Milliseconds()
 	if ttl <= 0 || ttlMS <= 0 {
 		return 0, fmt.Errorf("Redis 账号并发槽 TTL 必须至少为 1ms")
+	}
+	if ttl > AccountSlotLeaseTTL {
+		return 0, fmt.Errorf("Redis 账号并发槽 TTL 不能超过 Node 共存期上限 %s", AccountSlotLeaseTTL)
 	}
 	return ttlMS, nil
 }
