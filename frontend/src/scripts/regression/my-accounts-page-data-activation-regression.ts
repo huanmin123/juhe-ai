@@ -411,6 +411,7 @@ await waitFor(
 assert.deepEqual(clock.pendingTaskTimes(), [intervalAt + 35_000], '下一周期必须从 confirm 完成后重新计时 30 秒')
 
 const neverSettles = new Promise<void>(() => undefined)
+const deadlineRegistrationGate = deferred<void>()
 let deadlineRevalidatorCalls = 0
 let deadlineLateDecision: Promise<ReturnType<PageDataActivation['register']> extends Promise<infer T> ? T : never> | undefined
 const deadlineParticipant: PageDataActivationParticipant = {
@@ -420,34 +421,31 @@ const deadlineParticipant: PageDataActivationParticipant = {
   generation: 98,
   writeEpoch: 0
 }
-const unregisterDeadlineRevalidator = activation.registerRevalidator('accounts.static', () => {
+const unregisterDeadlineRevalidator = activation.registerRevalidator('accounts.static', async (scopedActivation) => {
   deadlineRevalidatorCalls += 1
   if (deadlineRevalidatorCalls !== 1) return
-  deadlineLateDecision = activation.register(deadlineParticipant)
-  return neverSettles
+  await deadlineRegistrationGate.promise
+  deadlineLateDecision = scopedActivation.register(deadlineParticipant)
+  await neverSettles
 })
-gatedConfirmation = deferred<PageDataConfirmResult>()
 const deadlineStartedAt = clock.nowMs
 activation.trigger('focus')
 await clock.advanceBy(50)
 assert.equal(deadlineRevalidatorCalls, 1, 'deadline 竞态准备必须启动永久 pending revalidator')
-assert(deadlineLateDecision, '永久 pending revalidator 必须留下旧 coordinator participant')
+assert.equal(deadlineLateDecision, undefined, '旧 revalidator 必须在 deadline 前尚未登记 participant')
 await clock.advanceTo(deadlineStartedAt + revalidationTimeoutMs - 1)
 activation.trigger('focus')
 await flushMicrotasks()
 assert.equal(deadlineRevalidatorCalls, 1, 'deadline 前新 trigger 不得并发启动 full revalidation')
-let deadlineLateState: string | undefined
-void deadlineLateDecision.then((decision) => { deadlineLateState = decision.state })
 await clock.advanceTo(deadlineStartedAt + revalidationTimeoutMs)
-assert.equal(deadlineLateState, 'superseded', 'deadline 必须推进 coordinator generation 并隔离迟到结果')
-const deadlineRequest = requests.at(-1)
-assert(deadlineRequest)
-gatedConfirmation.resolve(confirmationFor(deadlineRequest, clock.nowMs))
-gatedConfirmation = undefined
-await flushMicrotasks()
 activation.trigger('focus')
-await clock.advanceBy(100)
+await flushMicrotasks()
 assert.equal(deadlineRevalidatorCalls, 2, 'deadline 释放 full 锁后下一次 trigger 必须可运行')
+deadlineRegistrationGate.resolve(undefined)
+await flushMicrotasks()
+assert(deadlineLateDecision, '旧 revalidator 释放后必须尝试登记 participant')
+assert.equal((await deadlineLateDecision).state, 'superseded', '旧 scoped handle 不得加入 deadline 后的新 activation')
+await clock.advanceBy(100)
 unregisterDeadlineRevalidator()
 
 const providerNetworkBeforeTargeted = networkCalls.get('providers.catalog') ?? 0
@@ -530,7 +528,10 @@ const lateParticipant: PageDataActivationParticipant = {
   generation: 99,
   writeEpoch: 0
 }
-const lateDecision = activation.runTargeted(['accounts.static'], () => activation.register(lateParticipant))
+const lateDecision = activation.runTargeted(
+  ['accounts.static'],
+  (scopedActivation) => scopedActivation.register(lateParticipant)
+)
 await clock.advanceBy(50)
 activation.deactivate()
 assert.equal((await lateDecision).state, 'superseded', 'deactivate 必须 supersede 迟到结果')
@@ -569,7 +570,8 @@ assert.match(accountsViewSource, /usePageDataActivation/)
 assert.match(accountsViewSource, /accounts\.static[\s\S]*accounts\.options[\s\S]*providers\.catalog/)
 assert.match(accountListDataSource, /activationManaged:\s*Boolean\(/)
 assert.match(accountListDataSource, /activation:\s*options\.pageDataActivation/)
-assert.match(accountListDataSource, /pageDataActivation\.runTargeted\(\s*\['accounts\.static'\],\s*\(\)\s*=>\s*accountPageCache\.forceRefresh\(\)\s*\)/)
+assert.match(accountListDataSource, /pageDataActivation\.runTargeted\(\s*\['accounts\.static'\],[\s\S]{0,180}\(activation\)\s*=>\s*execute\(activation,\s*true\)/)
+assert.match(accountListDataSource, /return refresh \? accountPageCache\.forceRefresh\(\) : accountPageCache\.load\(\)/)
 assert.doesNotMatch(accountListDataSource, /beginTargeted/)
 assert.match(tagCacheSource, /activation:\s*input\.activation/)
 assert.match(providerSource, /activation:\s*options\.activation/)

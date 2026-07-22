@@ -2,6 +2,7 @@ import { computed, onUnmounted, ref, type ComputedRef } from 'vue'
 
 import type { PageDataActivation } from '@/composables/usePageDataActivation'
 import { message } from '@/lib/antd'
+import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountScopeParams } from './accountOperationScope'
@@ -25,7 +26,11 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
 
   const disabled = computed(() => config.isManagementView.value && !config.accountScopeParams.value?.systemAccountId)
 
-  async function load(force = false, revalidate = false): Promise<void> {
+  async function load(
+    force = false,
+    revalidate = false,
+    activation: PageDataActivationHandle | undefined = config.pageDataActivation
+  ): Promise<void> {
     const nextScopeKey = currentScopeKey()
     if (!nextScopeKey) {
       reset()
@@ -45,7 +50,7 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
     loading.value = true
     try {
       const nextOptions = await loadAccountTagOptionsCached({
-        activation: config.pageDataActivation,
+        activation,
         force,
         isManagementView: config.isManagementView.value,
         revalidate,
@@ -81,7 +86,7 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
 
   const unregisterRevalidator = config.pageDataActivation?.registerRevalidator(
     'accounts.options',
-    () => load(false, true)
+    (activation) => load(false, true, activation)
   )
   onUnmounted(() => unregisterRevalidator?.())
 

@@ -18,9 +18,14 @@ import type { PageDataActivationManifest } from '@/shared/pageDataActivationMani
 
 export type PageDataActivationLifecycleTimer = PageDataActivationTimer
 
+type PageDataRevalidator = (activation: PageDataActivationHandle) => void | Promise<void>
+
 export interface PageDataActivation extends PageDataActivationHandle {
-  registerRevalidator(domain: PageDataDomain, revalidate: () => void | Promise<void>): () => void
-  runTargeted<T>(domains: readonly PageDataDomain[], run: () => Promise<T>): Promise<T>
+  registerRevalidator(domain: PageDataDomain, revalidate: PageDataRevalidator): () => void
+  runTargeted<T>(
+    domains: readonly PageDataDomain[],
+    run: (activation: PageDataActivationHandle) => Promise<T>
+  ): Promise<T>
 }
 
 export interface UsePageDataActivationOptions {
@@ -61,7 +66,7 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
     now: options.now
   })
   const manifestDomains = new Set(options.manifest.domains)
-  const revalidators = new Map<PageDataDomain, Set<() => void | Promise<void>>>()
+  const revalidators = new Map<PageDataDomain, Set<PageDataRevalidator>>()
   const intervalMs = Math.max(1_000, Math.trunc(options.intervalMs ?? DEFAULT_CONFIRM_INTERVAL_MS))
   const revalidationTimeoutMs = Math.max(
     100,
@@ -78,6 +83,7 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   let intervalHandle: unknown
   let revalidationInFlight: Promise<void> | undefined
   let activationGeneration = 0
+  let scopeGeneration = 0
   let pendingResume: { generation: number; reason: PageDataActivationTriggerReason } | undefined
   let targetedRequests = 0
   let targetedQueue: Promise<void> = Promise.resolve()
@@ -111,7 +117,10 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
         if (domainRevalidators?.size === 0) revalidators.delete(domain)
       }
     },
-    runTargeted<T>(domains: readonly PageDataDomain[], run: () => Promise<T>): Promise<T> {
+    runTargeted<T>(
+      domains: readonly PageDataDomain[],
+      run: (activation: PageDataActivationHandle) => Promise<T>
+    ): Promise<T> {
       targetedRequests += 1
       const operation = targetedQueue.then(async () => {
         const pendingFullRevalidation = revalidationInFlight
@@ -119,11 +128,14 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
         if (disposed || !componentActive || !running || !isVisible()) {
           throw new Error('页面数据 activation 当前不可用')
         }
-        targetedDomains = new Set(domains.filter((domain) => manifestDomains.has(domain)))
+        const allowedDomains = new Set(domains.filter((domain) => manifestDomains.has(domain)))
+        targetedDomains = allowedDomains
+        const generation = ++scopeGeneration
         coordinator.trigger('activate')
         try {
-          return await run()
+          return await run(scopedHandle(generation, allowedDomains))
         } finally {
+          if (scopeGeneration === generation) scopeGeneration += 1
           targetedDomains = undefined
           coordinator.deactivate()
         }
@@ -183,15 +195,20 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
       || targetedRequests > 0
     ) return
     targetedDomains = undefined
+    const generation = ++scopeGeneration
     coordinator.trigger(reason)
+    const scopedActivation = scopedHandle(generation)
     const pending = options.manifest.domains.flatMap((domain) =>
-      [...(revalidators.get(domain) ?? [])].map((run) => runIsolated(run))
+      [...(revalidators.get(domain) ?? [])].map((run) => runIsolated(() => run(scopedActivation)))
     )
     const operation = settleWithin(
       Promise.all(pending).then(() => undefined),
       revalidationTimeoutMs,
       timer,
-      () => coordinator.deactivate()
+      () => {
+        if (scopeGeneration === generation) scopeGeneration += 1
+        coordinator.deactivate()
+      }
     )
     revalidationInFlight = operation
     void operation.finally(() => {
@@ -219,6 +236,7 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   function pause(): void {
     running = false
     activationGeneration += 1
+    scopeGeneration += 1
     pendingResume = undefined
     targetedDomains = undefined
     stopIntervalTimeout()
@@ -280,6 +298,28 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   function isTargetDomain(domain: PageDataDomain): boolean {
     return !targetedDomains || targetedDomains.has(domain)
   }
+
+  function scopedHandle(
+    generation: number,
+    allowedDomains: ReadonlySet<PageDataDomain> = manifestDomains
+  ): PageDataActivationHandle {
+    const isCurrent = () => generation === scopeGeneration && !disposed && componentActive && running
+    return {
+      register(input) {
+        if (!isCurrent()) return Promise.resolve(supersededDecision('pre', input))
+        if (!allowedDomains.has(input.domain)) return Promise.resolve(unavailableDecision('pre', input))
+        return coordinator.register(input)
+      },
+      stabilize(input) {
+        if (!isCurrent()) return Promise.resolve(supersededDecision('post', input))
+        if (!allowedDomains.has(input.domain)) return Promise.resolve(unavailableDecision('post', input))
+        return coordinator.stabilize(input)
+      },
+      trigger: () => undefined,
+      deactivate: () => undefined,
+      dispose: () => undefined
+    }
+  }
 }
 
 function runIsolated(run: () => void | Promise<void>): Promise<void> {
@@ -331,6 +371,20 @@ function unavailableDecision(
 ): PageDataActivationDecision {
   return {
     state: 'unavailable',
+    phase,
+    participant: {
+      ...participant,
+      ...(participant.token ? { token: { ...participant.token } } : {})
+    }
+  }
+}
+
+function supersededDecision(
+  phase: PageDataActivationDecision['phase'],
+  participant: PageDataActivationParticipant
+): PageDataActivationDecision {
+  return {
+    state: 'superseded',
     phase,
     participant: {
       ...participant,

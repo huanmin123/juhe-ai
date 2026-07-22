@@ -90,8 +90,10 @@ export type PageDataRequestCacheDefinition<T> = Omit<
   'storage' | 'confirm' | 'tabCoordinator' | 'now' | 'activation' | 'writeEpoch'
 >
 
-export type PageDataResourceCacheDefinition<T> = PageDataRequestCacheDefinition<T>
+export type PageDataBoundRequestCacheDefinition<T> = PageDataRequestCacheDefinition<T>
   & Pick<PageDataCacheControllerOptions<T>, 'activation' | 'writeEpoch'>
+
+export type PageDataResourceCacheDefinition<T> = PageDataBoundRequestCacheDefinition<T>
 
 export interface PageDataRequestCacheManagerOptions {
   storage?: PageDataCacheStorage
@@ -847,7 +849,13 @@ export class PageDataRequestCacheManager<T> {
   private readonly options: PageDataRequestCacheManagerOptions
   private readonly storage: PageDataCacheStorage
   private readonly listeners = new Set<(record: PageDataCacheRecord<T> | undefined) => void>()
-  private active?: { key: string; controller: PageDataCacheController<T>; removeSubscription: () => void }
+  private active?: {
+    key: string
+    activation?: PageDataActivationHandle
+    writeEpoch?: (domain: PageDataDomain) => number
+    controller: PageDataCacheController<T>
+    removeSubscription: () => void
+  }
   private activationGeneration = 0
   private closed = false
 
@@ -860,7 +868,7 @@ export class PageDataRequestCacheManager<T> {
     return this.active?.key
   }
 
-  async load(request: PageDataRequestCacheDefinition<T>): Promise<PageDataLoadResult<T>> {
+  async load(request: PageDataBoundRequestCacheDefinition<T>): Promise<PageDataLoadResult<T>> {
     const active = this.activate(request)
     const generation = this.activationGeneration
     const result = await active.controller.load()
@@ -869,7 +877,7 @@ export class PageDataRequestCacheManager<T> {
       : { ...result, superseded: true }
   }
 
-  async forceRefresh(request: PageDataRequestCacheDefinition<T>): Promise<PageDataLoadResult<T>> {
+  async forceRefresh(request: PageDataBoundRequestCacheDefinition<T>): Promise<PageDataLoadResult<T>> {
     const active = this.activate(request)
     const generation = this.activationGeneration
     const result = await active.controller.refresh()
@@ -895,10 +903,16 @@ export class PageDataRequestCacheManager<T> {
     this.listeners.clear()
   }
 
-  private activate(request: PageDataRequestCacheDefinition<T>): NonNullable<PageDataRequestCacheManager<T>['active']> {
+  private activate(request: PageDataBoundRequestCacheDefinition<T>): NonNullable<PageDataRequestCacheManager<T>['active']> {
     if (this.closed) throw new Error('页面请求缓存 manager 已关闭')
     const key = createPageDataCacheKey({ ...request.cacheKey, domain: request.domain })
-    if (this.active?.key === key) return this.active
+    const activation = request.activation ?? this.options.activation
+    const writeEpoch = request.writeEpoch ?? this.options.writeEpoch
+    if (
+      this.active?.key === key
+      && this.active.activation === activation
+      && this.active.writeEpoch === writeEpoch
+    ) return this.active
     this.activationGeneration += 1
     this.disposeActive()
     const controller = new PageDataCacheController<T>({
@@ -908,11 +922,13 @@ export class PageDataRequestCacheManager<T> {
       confirmBatchKey: this.options.confirmBatchKey,
       tabCoordinator: this.options.tabCoordinator,
       now: this.options.now,
-      activation: this.options.activation,
-      writeEpoch: this.options.writeEpoch
+      activation,
+      writeEpoch
     })
     const active = {
       key,
+      activation,
+      writeEpoch,
       controller,
       removeSubscription: controller.subscribe((record) => {
         if (this.active?.controller !== controller || this.closed) return

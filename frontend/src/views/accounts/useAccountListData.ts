@@ -13,8 +13,9 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
+import type { PageDataActivationHandle } from '@/shared/pageDataActivationCoordinator'
 import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
-import { type PageDataRequestCacheDefinition } from '@/shared/pageDataCache'
+import { type PageDataBoundRequestCacheDefinition } from '@/shared/pageDataCache'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
@@ -85,7 +86,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
   }
 
-  let accountPageCacheRequest: PageDataRequestCacheDefinition<AccountListResult> | undefined
+  let currentPageDataActivation: PageDataActivationHandle | undefined
+  let accountPageCacheRequest: PageDataBoundRequestCacheDefinition<AccountListResult> | undefined
   const accountPageCache = usePageDataRequestCache<AccountListResult>({
     activation: options.pageDataActivation,
     activationManaged: Boolean(options.pageDataActivation),
@@ -121,7 +123,11 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       if (!_loadOptions?.forceData || _loadOptions.forceOptions) {
-        void loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions)).catch((error) => {
+        void loadAccountOptions(
+          systemAccountId,
+          Boolean(_loadOptions?.forceOptions),
+          currentPageDataActivation ?? options.pageDataActivation
+        ).catch((error) => {
           console.error(error)
           message.error('加载账户筛选选项失败')
         })
@@ -174,29 +180,34 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const viewerSystemAccountId = authState.currentUser.value?.id
     if (!viewerSystemAccountId) return loadNetwork()
     const viewScope = options.isManagementView.value ? 'admin' as const : 'self' as const
-    accountPageCacheRequest = {
-      cacheKey: {
-        scope: viewScope === 'admin'
-          ? `admin:${viewerSystemAccountId}:target:${systemAccountId ?? 'global'}`
-          : `self:${viewerSystemAccountId}`,
-        route: viewScope === 'admin' ? '/accounts' : '/my-accounts',
-        query: params,
-        version: 1
-      },
-      domain: 'accounts.static',
-      viewScope,
-      maxStaleMs: 30_000,
-      ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
-      loadNetwork
+    const execute = async (
+      activation: PageDataActivationHandle | undefined,
+      refresh: boolean
+    ) => {
+      accountPageCacheRequest = {
+        cacheKey: {
+          scope: viewScope === 'admin'
+            ? `admin:${viewerSystemAccountId}:target:${systemAccountId ?? 'global'}`
+            : `self:${viewerSystemAccountId}`,
+          route: viewScope === 'admin' ? '/accounts' : '/my-accounts',
+          query: params,
+          version: 1
+        },
+        domain: 'accounts.static',
+        viewScope,
+        maxStaleMs: 30_000,
+        activation,
+        ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
+        loadNetwork
+      }
+      return refresh ? accountPageCache.forceRefresh() : accountPageCache.load()
     }
-    const result = force
-      ? options.pageDataActivation
-        ? await options.pageDataActivation.runTargeted(
-            ['accounts.static'],
-            () => accountPageCache.forceRefresh()
-          )
-        : await accountPageCache.forceRefresh()
-      : await accountPageCache.load()
+    const result = force && options.pageDataActivation
+      ? await options.pageDataActivation.runTargeted(
+          ['accounts.static'],
+          (activation) => execute(activation, true)
+        )
+      : await execute(currentPageDataActivation ?? options.pageDataActivation, force)
     return result.data
   }
 
@@ -283,7 +294,11 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
   }
 
-  async function loadAccountOptions(systemAccountId: string | undefined, force = false): Promise<void> {
+  async function loadAccountOptions(
+    systemAccountId: string | undefined,
+    force = false,
+    activation: PageDataActivationHandle | undefined = options.pageDataActivation
+  ): Promise<void> {
     const scopeKey = options.isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
     if (!force && accountOptionsLoaded.value && accountOptionsScopeKey.value === scopeKey) {
       return
@@ -300,7 +315,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const request = (async () => {
       const [providerList, proxyList] = await Promise.all([
         loadProviderOptionsResource({
-          activation: options.pageDataActivation,
+          activation,
           apply: (nextProviders) => {
             if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
           },
@@ -328,14 +343,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return request
   }
 
-  async function revalidateProviderDefinitions(): Promise<void> {
+  async function revalidateProviderDefinitions(
+    activation: PageDataActivationHandle | undefined = options.pageDataActivation
+  ): Promise<void> {
     const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
     const scopeKey = options.isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
     const currentScopeKey = () => options.isManagementView.value
       ? `management:${accountScopeParams.value?.systemAccountId ?? 'all'}`
       : 'self'
     const providerList = await loadProviderOptionsResource({
-      activation: options.pageDataActivation,
+      activation,
       apply: (nextProviders) => {
         if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
       },
@@ -348,11 +365,19 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
   const unregisterAccountListRevalidator = options.pageDataActivation?.registerRevalidator(
     'accounts.static',
-    async () => { await loadData() }
+    async (activation) => {
+      const previous = currentPageDataActivation
+      currentPageDataActivation = activation
+      try {
+        await loadData()
+      } finally {
+        if (currentPageDataActivation === activation) currentPageDataActivation = previous
+      }
+    }
   )
   const unregisterProviderRevalidator = options.pageDataActivation?.registerRevalidator(
     'providers.catalog',
-    revalidateProviderDefinitions
+    (activation) => revalidateProviderDefinitions(activation)
   )
   onUnmounted(() => {
     unregisterAccountListRevalidator?.()

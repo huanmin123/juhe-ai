@@ -9,13 +9,13 @@ import {
   type PageDataCacheStorage,
   type PageDataConfirmOutcome,
   type PageDataLoadResult,
+  type PageDataBoundRequestCacheDefinition,
   type PageDataRequestCacheManagerOptions,
-  type PageDataRequestCacheDefinition,
   type PageDataTabCoordinator
 } from '@/shared/pageDataCache'
 
 export interface UsePageDataRequestCacheOptions<T> {
-  resolveRequest: () => PageDataRequestCacheDefinition<T>
+  resolveRequest: () => PageDataBoundRequestCacheDefinition<T>
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
   confirmBatchKey?: string
   storage?: PageDataCacheStorage
@@ -77,7 +77,7 @@ export function usePageDataRequestCache<T>(options: UsePageDataRequestCacheOptio
   let removeSubscription: (() => void) | undefined
   let disposed = false
 
-  const run = async (operation: (request: PageDataRequestCacheDefinition<T>) => Promise<PageDataLoadResult<T>>): Promise<PageDataLoadResult<T>> => {
+  const run = async (operation: (request: PageDataBoundRequestCacheDefinition<T>) => Promise<PageDataLoadResult<T>>): Promise<PageDataLoadResult<T>> => {
     const generation = ++operationGeneration
     const request = options.resolveRequest()
     loading.value = true
