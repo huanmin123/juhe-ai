@@ -20,7 +20,7 @@ export type PageDataActivationLifecycleTimer = PageDataActivationTimer
 
 export interface PageDataActivation extends PageDataActivationHandle {
   registerRevalidator(domain: PageDataDomain, revalidate: () => void | Promise<void>): () => void
-  beginTargeted(domains: readonly PageDataDomain[]): void
+  runTargeted<T>(domains: readonly PageDataDomain[], run: () => Promise<T>): Promise<T>
 }
 
 export interface UsePageDataActivationOptions {
@@ -31,6 +31,7 @@ export interface UsePageDataActivationOptions {
   confirm: (request: PageDataConfirmRequest) => Promise<PageDataConfirmResult>
   batchWindowMs?: number
   intervalMs?: number
+  revalidationTimeoutMs?: number
   timer?: PageDataActivationLifecycleTimer
   now?: () => number
   isVisible?: () => boolean
@@ -39,6 +40,7 @@ export interface UsePageDataActivationOptions {
 }
 
 const DEFAULT_CONFIRM_INTERVAL_MS = 30_000
+const DEFAULT_REVALIDATION_TIMEOUT_MS = 20_000
 
 const defaultTimer: PageDataActivationLifecycleTimer = {
   setTimeout: (callback, delayMs) => globalThis.setTimeout(callback, delayMs),
@@ -61,6 +63,10 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   const manifestDomains = new Set(options.manifest.domains)
   const revalidators = new Map<PageDataDomain, Set<() => void | Promise<void>>>()
   const intervalMs = Math.max(1_000, Math.trunc(options.intervalMs ?? DEFAULT_CONFIRM_INTERVAL_MS))
+  const revalidationTimeoutMs = Math.max(
+    100,
+    Math.min(Math.trunc(options.revalidationTimeoutMs ?? DEFAULT_REVALIDATION_TIMEOUT_MS), 60_000)
+  )
   const isVisible = options.isVisible ?? (() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
   const addFocusListener = options.addFocusListener ?? defaultFocusListener
   const addVisibilityListener = options.addVisibilityListener ?? defaultVisibilityListener
@@ -73,6 +79,8 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   let revalidationInFlight: Promise<void> | undefined
   let activationGeneration = 0
   let pendingResume: { generation: number; reason: PageDataActivationTriggerReason } | undefined
+  let targetedRequests = 0
+  let targetedQueue: Promise<void> = Promise.resolve()
   let removeFocusListener: (() => void) | undefined
   let removeVisibilityListener: (() => void) | undefined
 
@@ -103,10 +111,41 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
         if (domainRevalidators?.size === 0) revalidators.delete(domain)
       }
     },
-    beginTargeted(domains) {
-      if (disposed) return
-      targetedDomains = new Set(domains.filter((domain) => manifestDomains.has(domain)))
-      coordinator.trigger('activate')
+    runTargeted<T>(domains: readonly PageDataDomain[], run: () => Promise<T>): Promise<T> {
+      targetedRequests += 1
+      const operation = targetedQueue.then(async () => {
+        const pendingFullRevalidation = revalidationInFlight
+        if (pendingFullRevalidation) await pendingFullRevalidation
+        if (disposed || !componentActive || !running || !isVisible()) {
+          throw new Error('页面数据 activation 当前不可用')
+        }
+        targetedDomains = new Set(domains.filter((domain) => manifestDomains.has(domain)))
+        coordinator.trigger('activate')
+        try {
+          return await run()
+        } finally {
+          targetedDomains = undefined
+          coordinator.deactivate()
+        }
+      })
+      targetedQueue = operation.then(
+        () => undefined,
+        () => undefined
+      ).finally(() => {
+        targetedRequests -= 1
+        if (targetedRequests !== 0) return
+        const resumeRequest = pendingResume
+        pendingResume = undefined
+        if (
+          resumeRequest?.generation === activationGeneration &&
+          !disposed && componentActive && running && isVisible()
+        ) {
+          revalidate(resumeRequest.reason)
+          return
+        }
+        scheduleInterval()
+      })
+      return operation
     }
   }
 
@@ -135,17 +174,30 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   }
 
   function revalidate(reason: PageDataActivationTriggerReason): void {
-    if (disposed || !componentActive || !running || !isVisible() || revalidationInFlight) return
+    if (
+      disposed
+      || !componentActive
+      || !running
+      || !isVisible()
+      || revalidationInFlight
+      || targetedRequests > 0
+    ) return
     targetedDomains = undefined
     coordinator.trigger(reason)
     const pending = options.manifest.domains.flatMap((domain) =>
       [...(revalidators.get(domain) ?? [])].map((run) => runIsolated(run))
     )
-    const operation = Promise.all(pending).then(() => undefined)
+    const operation = settleWithin(
+      Promise.all(pending).then(() => undefined),
+      revalidationTimeoutMs,
+      timer,
+      () => coordinator.deactivate()
+    )
     revalidationInFlight = operation
     void operation.finally(() => {
       if (revalidationInFlight !== operation) return
       revalidationInFlight = undefined
+      if (targetedRequests > 0) return
       const resumeRequest = pendingResume
       pendingResume = undefined
       if (
@@ -236,6 +288,29 @@ function runIsolated(run: () => void | Promise<void>): Promise<void> {
   } catch {
     return Promise.resolve()
   }
+}
+
+function settleWithin(
+  operation: Promise<void>,
+  timeoutMs: number,
+  timer: PageDataActivationLifecycleTimer,
+  onTimeout: () => void
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false
+    let deadlineHandle: unknown
+    const settle = () => {
+      if (settled) return
+      settled = true
+      if (deadlineHandle !== undefined) timer.clearTimeout(deadlineHandle)
+      resolve()
+    }
+    deadlineHandle = timer.setTimeout(() => {
+      onTimeout()
+      settle()
+    }, timeoutMs)
+    void operation.then(settle, settle)
+  })
 }
 
 function defaultFocusListener(listener: () => void): () => void {

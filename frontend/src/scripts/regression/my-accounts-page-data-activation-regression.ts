@@ -104,6 +104,7 @@ const confirmationFor = (request: PageDataConfirmRequest, nowMs: number): PageDa
 })
 
 const clock = new FakeClock()
+const revalidationTimeoutMs = 10_000
 const requests: PageDataConfirmRequest[] = []
 let gatedConfirmation: ReturnType<typeof deferred<PageDataConfirmResult>> | undefined
 let focusListener: (() => void) | undefined
@@ -134,6 +135,7 @@ const ActivationPage = defineComponent({
       },
       batchWindowMs: 50,
       intervalMs: 30_000,
+      revalidationTimeoutMs,
       timer: clock.timer,
       now: () => clock.nowMs,
       isVisible: () => pageVisible,
@@ -392,35 +394,135 @@ assert.deepEqual(Object.keys(requests.at(-1)?.domains ?? {}).sort(), [
   'accounts.static',
   'providers.catalog'
 ])
-assert.deepEqual(clock.pendingTaskTimes(), [], 'interval callback 必须先清除 handle，confirm 完成前不重排')
+assert.deepEqual(
+  clock.pendingTaskTimes(),
+  [intervalAt + revalidationTimeoutMs],
+  'interval callback 必须先清除周期 handle，confirm 完成前只保留 revalidation deadline'
+)
 await clock.advanceTo(intervalAt + 5_000)
 const intervalRequest = requests.at(-1)
 assert(intervalRequest)
 gatedConfirmation.resolve(confirmationFor(intervalRequest, clock.nowMs))
 gatedConfirmation = undefined
-await waitFor(() => clock.pendingTaskTimes().length === 1, '周期 confirm 完成后未重排 timeout')
+await waitFor(
+  () => clock.pendingTaskTimes().length === 1 && clock.pendingTaskTimes()[0] === intervalAt + 35_000,
+  '周期 confirm 完成后未从完成时间重排 timeout'
+)
 assert.deepEqual(clock.pendingTaskTimes(), [intervalAt + 35_000], '下一周期必须从 confirm 完成后重新计时 30 秒')
+
+const neverSettles = new Promise<void>(() => undefined)
+let deadlineRevalidatorCalls = 0
+let deadlineLateDecision: Promise<ReturnType<PageDataActivation['register']> extends Promise<infer T> ? T : never> | undefined
+const deadlineParticipant: PageDataActivationParticipant = {
+  resourceKey: 'deadline-account-list',
+  domain: 'accounts.static',
+  token: token('accounts.static'),
+  generation: 98,
+  writeEpoch: 0
+}
+const unregisterDeadlineRevalidator = activation.registerRevalidator('accounts.static', () => {
+  deadlineRevalidatorCalls += 1
+  if (deadlineRevalidatorCalls !== 1) return
+  deadlineLateDecision = activation.register(deadlineParticipant)
+  return neverSettles
+})
+gatedConfirmation = deferred<PageDataConfirmResult>()
+const deadlineStartedAt = clock.nowMs
+activation.trigger('focus')
+await clock.advanceBy(50)
+assert.equal(deadlineRevalidatorCalls, 1, 'deadline 竞态准备必须启动永久 pending revalidator')
+assert(deadlineLateDecision, '永久 pending revalidator 必须留下旧 coordinator participant')
+await clock.advanceTo(deadlineStartedAt + revalidationTimeoutMs - 1)
+activation.trigger('focus')
+await flushMicrotasks()
+assert.equal(deadlineRevalidatorCalls, 1, 'deadline 前新 trigger 不得并发启动 full revalidation')
+let deadlineLateState: string | undefined
+void deadlineLateDecision.then((decision) => { deadlineLateState = decision.state })
+await clock.advanceTo(deadlineStartedAt + revalidationTimeoutMs)
+assert.equal(deadlineLateState, 'superseded', 'deadline 必须推进 coordinator generation 并隔离迟到结果')
+const deadlineRequest = requests.at(-1)
+assert(deadlineRequest)
+gatedConfirmation.resolve(confirmationFor(deadlineRequest, clock.nowMs))
+gatedConfirmation = undefined
+await flushMicrotasks()
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(deadlineRevalidatorCalls, 2, 'deadline 释放 full 锁后下一次 trigger 必须可运行')
+unregisterDeadlineRevalidator()
 
 const providerNetworkBeforeTargeted = networkCalls.get('providers.catalog') ?? 0
 const tagNetworkBeforeTargeted = networkCalls.get('accounts.options') ?? 0
 const providerRunsBeforeTargeted = revalidatorCalls.get('providers.catalog') ?? 0
 const tagRunsBeforeTargeted = revalidatorCalls.get('accounts.options') ?? 0
 const accountRunsBeforeTargeted = revalidatorCalls.get('accounts.static') ?? 0
-activation.beginTargeted(['accounts.static'])
-const targetedRefresh = controllers.get('accounts.static')?.refresh()
-assert(targetedRefresh)
+const fullRevalidatorGate = deferred<void>()
+let fullRevalidatorCalls = 0
+const unregisterFullRevalidator = activation.registerRevalidator('accounts.static', () => {
+  fullRevalidatorCalls += 1
+  if (fullRevalidatorCalls === 1) return fullRevalidatorGate.promise
+})
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(fullRevalidatorCalls, 1, 'targeted 竞态准备必须保持一个 full revalidator 挂起')
+const providerRunsAfterFullStarted = revalidatorCalls.get('providers.catalog') ?? 0
+const tagRunsAfterFullStarted = revalidatorCalls.get('accounts.options') ?? 0
+const accountRunsAfterFullStarted = revalidatorCalls.get('accounts.static') ?? 0
+let targetedBusinessCalls = 0
+const targetedRunGate = deferred<void>()
+const targetedRefresh = activation.runTargeted(['accounts.static'], async () => {
+  targetedBusinessCalls += 1
+  await targetedRunGate.promise
+  const controller = controllers.get('accounts.static')
+  assert(controller)
+  return controller.refresh()
+})
+await flushMicrotasks()
+assert.equal(targetedBusinessCalls, 0, 'targeted 必须等待当前 full revalidation 结束')
+focusListener?.()
+activation.trigger('interval')
+await clock.advanceBy(100)
+assert.equal(fullRevalidatorCalls, 1, 'targeted pending 期间 focus/interval 不得启动新的 full revalidation')
+fullRevalidatorGate.resolve(undefined)
+await waitFor(() => targetedBusinessCalls === 1, 'full revalidation 结束后 targeted 业务请求未启动')
+focusListener?.()
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(revalidatorCalls.get('providers.catalog'), providerRunsAfterFullStarted, 'targeted 期间 focus 不得启动 providers full revalidator')
+assert.equal(revalidatorCalls.get('accounts.options'), tagRunsAfterFullStarted, 'targeted 期间 focus 不得启动 tags full revalidator')
+assert.equal(revalidatorCalls.get('accounts.static'), accountRunsAfterFullStarted, 'targeted 期间 focus 不得启动 accounts full revalidator')
+targetedRunGate.resolve(undefined)
 await clock.advanceBy(100)
 assert.equal((await targetedRefresh).superseded, false)
 assert.equal(networkCalls.get('accounts.static'), 2)
 assert.equal(networkCalls.get('providers.catalog'), providerNetworkBeforeTargeted)
 assert.equal(networkCalls.get('accounts.options'), tagNetworkBeforeTargeted)
-assert.equal(revalidatorCalls.get('providers.catalog'), providerRunsBeforeTargeted)
-assert.equal(revalidatorCalls.get('accounts.options'), tagRunsBeforeTargeted)
-assert.equal(revalidatorCalls.get('accounts.static'), accountRunsBeforeTargeted, 'beginTargeted 不得运行全页 revalidator')
+assert.equal(revalidatorCalls.get('providers.catalog'), providerRunsBeforeTargeted + 1)
+assert.equal(revalidatorCalls.get('accounts.options'), tagRunsBeforeTargeted + 1)
+assert.equal(revalidatorCalls.get('accounts.static'), accountRunsBeforeTargeted + 1, 'runTargeted 不得运行额外全页 revalidator')
 assert.deepEqual(Object.keys(requests.at(-1)?.domains ?? {}), ['accounts.static'])
+unregisterFullRevalidator()
+
+const targetedOrder: string[] = []
+const firstTargetedGate = deferred<void>()
+const firstTargeted = activation.runTargeted(['accounts.static'], async () => {
+  targetedOrder.push('first:start')
+  await firstTargetedGate.promise
+  targetedOrder.push('first:end')
+  return 'first'
+})
+const secondTargeted = activation.runTargeted(['accounts.static'], async () => {
+  targetedOrder.push('second:start')
+  targetedOrder.push('second:end')
+  return 'second'
+})
+await flushMicrotasks()
+assert.deepEqual(targetedOrder, ['first:start'], '多个 targeted 调用必须 FIFO 串行，不得互相 supersede')
+firstTargetedGate.resolve(undefined)
+assert.equal(await firstTargeted, 'first')
+assert.equal(await secondTargeted, 'second')
+assert.deepEqual(targetedOrder, ['first:start', 'first:end', 'second:start', 'second:end'])
 
 gatedConfirmation = deferred<PageDataConfirmResult>()
-activation.beginTargeted(['accounts.static'])
 const lateParticipant: PageDataActivationParticipant = {
   resourceKey: 'late-account-list',
   domain: 'accounts.static',
@@ -428,7 +530,7 @@ const lateParticipant: PageDataActivationParticipant = {
   generation: 99,
   writeEpoch: 0
 }
-const lateDecision = activation.register(lateParticipant)
+const lateDecision = activation.runTargeted(['accounts.static'], () => activation.register(lateParticipant))
 await clock.advanceBy(50)
 activation.deactivate()
 assert.equal((await lateDecision).state, 'superseded', 'deactivate 必须 supersede 迟到结果')
@@ -467,6 +569,8 @@ assert.match(accountsViewSource, /usePageDataActivation/)
 assert.match(accountsViewSource, /accounts\.static[\s\S]*accounts\.options[\s\S]*providers\.catalog/)
 assert.match(accountListDataSource, /activationManaged:\s*Boolean\(/)
 assert.match(accountListDataSource, /activation:\s*options\.pageDataActivation/)
+assert.match(accountListDataSource, /pageDataActivation\.runTargeted\(\s*\['accounts\.static'\],\s*\(\)\s*=>\s*accountPageCache\.forceRefresh\(\)\s*\)/)
+assert.doesNotMatch(accountListDataSource, /beginTargeted/)
 assert.match(tagCacheSource, /activation:\s*input\.activation/)
 assert.match(providerSource, /activation:\s*options\.activation/)
 assert.doesNotMatch(activationSource, /setInterval|clearInterval/, '页面 activation 周期必须使用一次性 timeout')

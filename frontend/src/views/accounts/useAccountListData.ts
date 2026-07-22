@@ -189,8 +189,14 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
       loadNetwork
     }
-    if (force) options.pageDataActivation?.beginTargeted(['accounts.static'])
-    const result = force ? await accountPageCache.forceRefresh() : await accountPageCache.load()
+    const result = force
+      ? options.pageDataActivation
+        ? await options.pageDataActivation.runTargeted(
+            ['accounts.static'],
+            () => accountPageCache.forceRefresh()
+          )
+        : await accountPageCache.forceRefresh()
+      : await accountPageCache.load()
     return result.data
   }
 
