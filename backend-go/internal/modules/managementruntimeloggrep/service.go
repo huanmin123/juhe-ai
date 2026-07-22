@@ -602,6 +602,9 @@ func runRGCommand(ctx context.Context, executable string, args []string, onLine 
 	if errors.Is(searchContext.Err(), context.DeadlineExceeded) {
 		return rgTimeout, nil
 	}
+	if errors.Is(searchContext.Err(), context.Canceled) {
+		return rgFailed, context.Canceled
+	}
 	if waitErr == nil {
 		if matched {
 			return rgMatched, nil
