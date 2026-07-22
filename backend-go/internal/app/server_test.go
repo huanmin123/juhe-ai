@@ -512,7 +512,7 @@ func TestNewPublicAPIHandlerReturnsErrorsWithoutTransferringInjectedQueueOwnersh
 	}
 }
 
-func TestRunServerCapturesPublicAPILogQueueBeforeHandlerErrors(t *testing.T) {
+func TestRunServerRegistersUnifiedRecordDispatcherShutdownBeforeHandlerErrors(t *testing.T) {
 	fileSet := token.NewFileSet()
 	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
 	if err != nil {
@@ -521,12 +521,15 @@ func TestRunServerCapturesPublicAPILogQueueBeforeHandlerErrors(t *testing.T) {
 
 	runServer := findFunction(t, file, "RunServer")
 	foundHandlerAssembly := false
-	foundOwnedQueueClose := false
-	queueCloseDeferPosition := token.NoPos
-	dispatcherShutdownDeferPosition := token.NoPos
+	foundOwnedQueue := false
+	dispatcherShutdownPosition := token.NoPos
 	handlerAssemblyPosition := token.NoPos
 	ast.Inspect(runServer.Body, func(node ast.Node) bool {
 		switch typed := node.(type) {
+		case *ast.Ident:
+			if typed.Name == "publicAPILogQueueOwner" {
+				foundOwnedQueue = true
+			}
 		case *ast.AssignStmt:
 			if len(typed.Rhs) != 1 {
 				return true
@@ -541,41 +544,83 @@ func TestRunServerCapturesPublicAPILogQueueBeforeHandlerErrors(t *testing.T) {
 				t.Fatalf("newPublicAPIHandlerWithOptions assignment has %d results, want 3", len(typed.Lhs))
 			}
 		case *ast.DeferStmt:
-			if callName(typed.Call.Fun) == "shutdownRecordDispatcher" && dispatcherShutdownDeferPosition == token.NoPos {
-				dispatcherShutdownDeferPosition = typed.Pos()
+			if callName(typed.Call.Fun) == "shutdownRecordDispatchers" && dispatcherShutdownPosition == token.NoPos {
+				dispatcherShutdownPosition = typed.Pos()
 			}
-			if callName(typed.Call.Fun) != "closePublicAPILogQueue" {
-				return true
-			}
-			if len(typed.Call.Args) != 1 {
-				t.Fatalf("closePublicAPILogQueue defer args = %d, want 1", len(typed.Call.Args))
-			}
-			argument, ok := typed.Call.Args[0].(*ast.Ident)
-			if !ok || argument.Name != "publicAPILogQueueOwner" {
-				t.Fatalf("closePublicAPILogQueue defer argument = %#v, want publicAPILogQueueOwner", typed.Call.Args[0])
-			}
-			foundOwnedQueueClose = true
-			queueCloseDeferPosition = typed.Pos()
 		}
 		return true
 	})
 	if !foundHandlerAssembly {
 		t.Fatal("RunServer missing public API handler assembly")
 	}
-	if !foundOwnedQueueClose {
-		t.Fatal("RunServer must defer closing the public API log queue by evaluated argument")
+	if !foundOwnedQueue {
+		t.Fatal("RunServer must retain the created public API log queue owner")
 	}
-	if dispatcherShutdownDeferPosition == token.NoPos {
-		t.Fatal("RunServer missing public API log dispatcher shutdown defer")
+	if dispatcherShutdownPosition == token.NoPos {
+		t.Fatal("RunServer missing unified record dispatcher shutdown defer")
 	}
-	if !(queueCloseDeferPosition < dispatcherShutdownDeferPosition && dispatcherShutdownDeferPosition < handlerAssemblyPosition) {
+	if !(dispatcherShutdownPosition < handlerAssemblyPosition) {
 		t.Fatalf(
-			"public API resource registration order = queue close %d, dispatcher shutdown %d, handler assembly %d; want queue close < dispatcher shutdown < handler assembly",
-			queueCloseDeferPosition,
-			dispatcherShutdownDeferPosition,
+			"record dispatcher shutdown position = %d, handler assembly = %d; want shutdown defer registered before handler assembly",
+			dispatcherShutdownPosition,
 			handlerAssemblyPosition,
 		)
 	}
+}
+
+func TestShutdownRecordDispatchersUsesSharedBudgetAndClosesOnlyCompletedDependencies(t *testing.T) {
+	release := make(chan struct{})
+	completed := &recordDispatcherShutdownStub{done: make(chan struct{})}
+	blocked := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
+	completedCloseCalls := 0
+	blockedCloseCalls := 0
+
+	startedAt := time.Now()
+	resources := []recordDispatcherResource{
+		{dispatcher: completed, closeDependency: func() error { completedCloseCalls++; return nil }, recordType: "completed"},
+		{dispatcher: blocked, closeDependency: func() error { blockedCloseCalls++; return nil }, recordType: "blocked"},
+	}
+	shutdownRecordDispatchers(&resources, 25*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if elapsed := time.Since(startedAt); elapsed > 80*time.Millisecond {
+		close(release)
+		t.Fatalf("shutdown consumed sequential budgets: %s", elapsed)
+	}
+	if completedCloseCalls != 1 {
+		close(release)
+		t.Fatalf("completed dependency close calls = %d, want 1", completedCloseCalls)
+	}
+	if blockedCloseCalls != 0 {
+		close(release)
+		t.Fatalf("blocked dependency close calls = %d, want 0", blockedCloseCalls)
+	}
+	close(release)
+}
+
+type recordDispatcherShutdownStub struct {
+	done    chan struct{}
+	release <-chan struct{}
+}
+
+func (s *recordDispatcherShutdownStub) Shutdown(ctx context.Context) error {
+	if s.release == nil {
+		select {
+		case <-s.done:
+		default:
+			close(s.done)
+		}
+		return nil
+	}
+	select {
+	case <-s.release:
+		close(s.done)
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *recordDispatcherShutdownStub) Done() <-chan struct{} {
+	return s.done
 }
 
 func TestNewManagementOperationLogQueueDisabledSkipsRuntimeDependencies(t *testing.T) {
