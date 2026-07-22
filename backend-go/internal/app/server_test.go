@@ -789,6 +789,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
+		handlers.TableMonitorHandler != nil ||
 		handlers.ExternalIntegrationSourceListHandler != nil ||
 		handlers.ExternalIntegrationSourceDetailHandler != nil ||
 		handlers.ExternalSourceTokenCreateHandler != nil ||
@@ -905,6 +906,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
+		handlers.TableMonitorHandler == nil ||
 		handlers.ExternalIntegrationSourceListHandler == nil ||
 		handlers.ExternalIntegrationSourceDetailHandler == nil ||
 		handlers.ExternalIntegrationSourceCreateHandler == nil ||
