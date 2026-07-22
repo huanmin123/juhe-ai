@@ -3,7 +3,9 @@ import type { Request, Response } from 'express'
 import type { GroupUsageAccessMetadata } from '../../../storage/repositories.js'
 import { responseHeadersToObject, type AuditCaptureContext } from '../audit/capture.service.js'
 import { gatewayErrorPayload } from './responses.js'
-import { isCodexModelsRequest } from '../protocols/openai-v1/route-helpers.js'
+import { buildOpenAIModelsResponse } from '../protocols/openai-v1/route-helpers.js'
+import { buildAnthropicModelsResponse } from '../protocols/anthropic-v1/route-helpers.js'
+import { buildGeminiModelsResponse } from '../protocols/gemini-v1beta/route-helpers.js'
 import { extractBearerToken } from '../request/metadata.js'
 import type { OpenAIGatewayTrafficSource } from '../usage/traffic-source.js'
 import { dispatchUsageRecord } from '../usage/records.js'
@@ -18,7 +20,7 @@ import {
   defaultGatewayUsageProviderCode,
   usageSemanticForProfile
 } from '../../providers/drivers/registry.js'
-import { readPublishedModelCatalogResponseAsync } from '../../model-pricing/published-model-catalog.service.js'
+import { listClientModelCatalogAsync } from '../../model-pricing/client-model-catalog.service.js'
 
 export interface OpenAIModelsResponseUsageContext {
   traceId: string
@@ -155,11 +157,15 @@ async function sendModelsGatewayResponsePayload(input: {
   startedAt: number
 }): Promise<unknown> {
   const { req, res, auditCapture, protocol, systemAccountId, startedAt } = input
-  const responsePayload = await readPublishedModelCatalogResponseAsync({
-    systemAccountId: systemAccountId ?? '',
-    protocol,
-    variant: protocol === 'openai' && isCodexModelsRequest(req) ? 'codex' : 'default'
+  const catalog = await listClientModelCatalogAsync({
+    ...(systemAccountId ? { systemAccountId } : {}),
+    providerCodes: input.providerCodes
   })
+  const responsePayload = protocol === 'anthropic'
+    ? buildAnthropicModelsResponse(catalog)
+    : protocol === 'gemini'
+      ? buildGeminiModelsResponse(catalog)
+      : buildOpenAIModelsResponse(catalog, req)
   if (systemAccountId) {
     setAuthenticatedModelsClientCacheHeaders(res)
   }
