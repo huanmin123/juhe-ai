@@ -792,6 +792,42 @@ func TestPageDataChangeConfirmerReturnsNodeCompatibleDecisions(t *testing.T) {
 	}
 }
 
+func TestPageDataChangeConfirmerResetsForNodeInvalidRedisEventShape(t *testing.T) {
+	scope, err := NewPageDataScope(PageDataScopeInput{
+		ViewerSystemAccountID: "viewer-1",
+		ViewScope:             PageDataViewScopeSelf,
+	})
+	if err != nil {
+		t.Fatalf("NewPageDataScope() error = %v", err)
+	}
+	baseEvent := `{"eventId":"event-1","domain":"accounts.static","entityId":"account-1","operation":"upsert","fieldMask":["name"],"ownerSystemAccountIds":["viewer-1"],"membershipChanged":false,"orderChanged":false,"filterChanged":false,"pageChanged":false,"occurredAt":"2026-07-18T01:02:03.456Z"}`
+	for _, test := range []struct {
+		name  string
+		event string
+	}{
+		{name: "missing field mask", event: strings.Replace(baseEvent, `"fieldMask":["name"],`, "", 1)},
+		{name: "missing owners", event: strings.Replace(baseEvent, `"ownerSystemAccountIds":["viewer-1"],`, "", 1)},
+		{name: "missing membership flag", event: strings.Replace(baseEvent, `"membershipChanged":false,`, "", 1)},
+		{name: "null all scopes", event: strings.TrimSuffix(baseEvent, "}") + `,"allScopes":null}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			confirmer := testPageDataChangeConfirmer(func(_ context.Context, _ []string, _ ...interface{}) (interface{}, error) {
+				return []interface{}{"epoch-1", []interface{}{int64(1), int64(0), []interface{}{"1\t" + test.event}}}, nil
+			})
+			known := &PageDataRevisionToken{
+				ProtocolVersion: PageDataProtocolVersion,
+				Epoch:           "epoch-1",
+				Scope:           scope.Fingerprint,
+				Domain:          pageDataAccountsStaticDomain,
+			}
+			result, confirmErr := confirmer.Confirm(t.Context(), scope, map[string]*PageDataRevisionToken{pageDataAccountsStaticDomain: known})
+			if confirmErr != nil || result.Domains[pageDataAccountsStaticDomain].Action != PageDataConfirmActionReset {
+				t.Fatalf("Confirm() result=%#v error=%v", result, confirmErr)
+			}
+		})
+	}
+}
+
 func TestPageDataChangeConfirmerValidatesInputAndUsesGlobalAnnouncementStream(t *testing.T) {
 	scope, err := NewPageDataScope(PageDataScopeInput{ViewerSystemAccountID: "viewer-1", ViewScope: PageDataViewScopeSelf})
 	if err != nil {
