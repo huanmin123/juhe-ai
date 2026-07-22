@@ -32,7 +32,8 @@ assert(
   'client IP 统计聚合必须是异步批次，不能用同步 for 循环连续占用 stats-worker'
 )
 assert(
-  statsWriterSource.includes('return await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)'),
+  statsWriterSource.includes('const result = await aggregateUsageStats(operation.batchSize, operation.maxBatches, operation.maxRunMs, operation.safeCreatedBefore)')
+    && statsWriterSource.includes('return result'),
   'handleStatsWriteOperation 必须等待 usage 统计异步批次并传入运行预算和安全读取上界'
 )
 assert(

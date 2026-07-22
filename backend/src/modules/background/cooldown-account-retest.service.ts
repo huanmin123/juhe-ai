@@ -161,7 +161,6 @@ async function runCooldownAccountRetestQueueItem(
       maxRecoveryHours: item.maxRecoveryHours
     }
   }, backgroundProbeDbServiceTimeoutMs)
-
   const logFields = {
     event: 'background_cooldown_account_retest_failed',
     accountId: account.id,

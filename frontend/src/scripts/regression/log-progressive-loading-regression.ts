@@ -63,8 +63,11 @@ assert.match(runtimeFacetsStateSource, /catch \(error\)[\s\S]*runtime\.value = u
 assert.match(logsApiSource, /runtime: \(\) => unwrap<RuntimeLogRuntime>/, '运行日志运行态应有独立 API')
 assert.doesNotMatch(runtimeTypesSource, /RuntimeLogRuntime[\s\S]*?queueHealth:/, '运行日志告警接口类型不得携带完整队列指标')
 assert.doesNotMatch(runtimeTypesSource, /RuntimeLogRuntime[\s\S]*?gatewayAccountSideEffects:/, '运行日志告警接口类型不得携带网关副作用明细')
-assert.match(runtimeRouteSource, /requestServerRuntimeLogAvailabilitySnapshot\(\)/, '运行日志运行态接口必须调用轻量 availability scope')
-assert.doesNotMatch(runtimeRouteSource, /requestServerRuntimeSnapshot\(\)/, '运行日志运行态接口不得调用 full runtime snapshot')
+const runtimeAvailabilityRouteSource = runtimeRouteSource.match(
+  /runtimeLogsRouter\.get\('\/runtime'[\s\S]*?(?=\nexport function runtimeLogFileConsumerRuntimeDto)/
+)?.[0] ?? ''
+assert.match(runtimeAvailabilityRouteSource, /requestServerRuntimeLogAvailabilitySnapshot\(\)/, '运行日志运行态接口必须调用轻量 availability scope')
+assert.doesNotMatch(runtimeAvailabilityRouteSource, /requestServerRuntimeSnapshot\(\)/, '运行日志运行态接口不得调用 full runtime snapshot')
 const runtimeAvailabilityBuilderSource = dbServiceIpcSource.match(/async function buildServerRuntimeLogAvailabilitySnapshot[\s\S]*?\n}\n/)?.[0] ?? ''
 assert.match(runtimeAvailabilityBuilderSource, /getIngestWorkerRuntimeLogAvailability/, '运行日志轻量运行态只应读取 ingest worker O(1) 可用性')
 assert.doesNotMatch(runtimeAvailabilityBuilderSource, /requestIngestWorkerSnapshot/, '运行日志轻量运行态不得请求完整 ingest worker 快照')

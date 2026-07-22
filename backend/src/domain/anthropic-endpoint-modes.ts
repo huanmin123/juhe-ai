@@ -129,8 +129,8 @@ export function assertAnthropicEndpointModesCompatible(input: {
   modes: readonly AccountSupportedEndpointMode[]
   accountType?: string
 }): void {
-  if (input.accountType !== 'api_key') {
-    throw new Error('Anthropic 当前仅支持 API Key 账户')
+  if (input.accountType !== 'api_key' && input.accountType !== 'oauth') {
+    throw new Error('Anthropic 当前仅支持 API Key 或 OAuth Access Token 账户')
   }
   const unsupported = input.modes.filter((mode) => !ANTHROPIC_ENDPOINT_MODE_VALUES.includes(mode))
   if (unsupported.length) {

@@ -54,15 +54,11 @@ import {
 } from '../protocols/registry.js'
 import { classifyGatewayUpstreamFailure } from './upstream-failure-classifier.js'
 
-/** Generic takeover is limited to inference endpoints. Resource creation must not be replayed. */
+/** Opaque requests are replayable only when the HTTP method proves they are read-only. */
 export function isOpaqueUpstreamFailoverAllowed(req: Request): boolean {
   const method = req.method.toUpperCase()
-  const path = (req.originalUrl || req.path || '').split('?', 1)[0]
   if (method === 'GET' || method === 'HEAD') return true
-  if (method !== 'POST') return false
-  return /\/(?:chat\/completions|responses|messages|embeddings|images\/(?:generations|edits))$/i.test(path)
-    || /\/models\/[^/]+:(?:generateContent|streamGenerateContent|countTokens|embedContent)$/i.test(path)
-    || /\/interactions\/[^/]+$/i.test(path)
+  return false
 }
 
 export type AccountFailureInput = {
@@ -115,6 +111,7 @@ interface HandleUpstreamRequestErrorInput {
   clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
   accountStateMutationEnabled?: boolean
   retrySameAccount?: boolean
+  opaque?: boolean
 }
 
 type HandleFailedUpstreamResponseResult =
@@ -363,15 +360,8 @@ export async function handleOpaqueFailedUpstreamResponse(
     response,
     attemptStartedAt,
     attemptIndex,
-    auditAttemptIndex,
-    sessionAffinityKey,
-    signal,
-    settings
+    auditAttemptIndex
   } = input
-  const responseBodyRead = await readUpstreamBodyLimited(response.body, {
-    startedAt: attemptStartedAt,
-    signal
-  })
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
   const lastAttempt: UpstreamAttempt = {
     ...(input.lastAttempt ?? {
@@ -388,8 +378,7 @@ export async function handleOpaqueFailedUpstreamResponse(
     providerProtocolProfileId: account.providerProtocolProfileId,
     protocolCode: account.protocolCode,
     protocolVersion: account.protocolVersion,
-    responseHeaders: headersToObject(response.headers),
-    responseBodyText: responseBodyRead.diagnosticBodyText
+    responseHeaders: headersToObject(response.headers)
   }
 
   logGatewayFailureWarning(usageContext, {
@@ -401,67 +390,24 @@ export async function handleOpaqueFailedUpstreamResponse(
     auditAttemptIndex,
     statusCode: response.status,
     elapsedMs: Date.now() - attemptStartedAt,
-    responseBodyBytes: responseBodyRead.body.byteLength,
-    responseBodyTruncated: responseBodyRead.truncated
-  }, '通用客户端上游返回非成功响应，服务端继续尝试可用候选')
+    responseBodyOmitted: true
+  }, '通用客户端上游返回非成功响应')
 
   auditCapture.completeAttempt(auditAttemptId, {
     statusCode: response.status,
     responseHeaders: response.headers,
-    responseBody: responseBodyRead.body,
     success: false,
     errorPhase: 'upstream_response',
-    errorMessage: responseBodyRead.diagnosticBodyText
+    errorMessage: '上游返回非成功 HTTP 响应'
   })
   await recordFailedUpstreamAttempt(req, usageContext, account, {
     upstreamUrl,
     startedAt: attemptStartedAt,
     statusCode: response.status,
     headers: response.headers,
-    bodyText: responseBodyRead.diagnosticBodyText,
     errorMessage: '上游返回非成功 HTTP 响应',
     interpretUpstreamSemantics: false
   })
-  rememberClientIpAccountPendingFailure(input.clientIpAccountAvoidanceTracker, account, {
-    statusCode: response.status,
-    errorPhase: 'upstream_response',
-    endpoint: requestEndpoint(req)
-  })
-
-  if (input.retrySameAccount) {
-    auditCapture.addGatewayMetadata({
-      label: 'same_account_retry_opaque_response_failed',
-      metadata: { accountId: account.id, attemptIndex, auditAttemptIndex }
-    })
-    return { action: 'retry', lastAttempt }
-  }
-
-  await forgetOpenAIAccountForSessionAsync(sessionAffinityKey, account.id)
-  const explicitPolicyDecision = input.accountStateMutationEnabled !== false && usageContext.trafficSource === 'gateway'
-    ? decideAccountErrorPolicy(account, response.status, response.headers, responseBodyRead.body, settings)
-    : undefined
-  if (explicitPolicyDecision) {
-    auditCapture.addGatewayMetadata({
-      label: 'account_error_policy_matched',
-      metadata: {
-        accountId: account.id,
-        ruleName: explicitPolicyDecision.ruleName,
-        action: explicitPolicyDecision.action,
-        cooldownStatus: explicitPolicyDecision.cooldownStatus
-      }
-    })
-    if (explicitPolicyDecision.action !== 'retry_next') {
-      await applyAccountErrorHandlingWithCacheInvalidation(account, {
-        success: false,
-        statusCode: response.status,
-        headers: response.headers,
-        bodyText: responseBodyRead.diagnosticBodyText,
-        settings,
-        trafficSource: usageContext.trafficSource,
-        policyDecision: explicitPolicyDecision
-      })
-    }
-  }
   return {
     action: 'skip_account',
     lastAttempt
@@ -471,6 +417,9 @@ export async function handleOpaqueFailedUpstreamResponse(
 export async function handleUpstreamRequestError(
   input: HandleUpstreamRequestErrorInput
 ): Promise<{ action: 'retry' | 'skip_account'; lastAttempt?: UpstreamAttempt; keyScopedFailure?: boolean }> {
+  if (input.opaque) {
+    return await handleOpaqueUpstreamRequestError(input)
+  }
   const {
     req,
     usageContext,
@@ -638,6 +587,64 @@ export async function handleUpstreamRequestError(
     lastAttempt,
     keyScopedFailure: false
   }
+}
+
+async function handleOpaqueUpstreamRequestError(
+  input: HandleUpstreamRequestErrorInput
+): Promise<{ action: 'skip_account'; lastAttempt?: UpstreamAttempt }> {
+  const { req, usageContext, auditCapture, auditAttemptId, account, upstreamUrl, attemptStartedAt, auditAttemptIndex, error } = input
+  if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+    completeOrRecordFailedAttempt({
+      req,
+      auditCapture,
+      auditAttemptId,
+      account,
+      upstreamUrl,
+      attemptStartedAt,
+      auditAttemptIndex,
+      success: false,
+      errorPhase: 'client',
+      errorMessage: downstreamConnectionClosedMessage
+    })
+    throw error
+  }
+
+  const message = formatUpstreamRequestErrorMessage(error)
+  const lastAttempt: UpstreamAttempt = {
+    accountId: account.id,
+    accountName: account.name,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    upstreamUrl,
+    message
+  }
+  logGatewayFailureWarning(usageContext, {
+    event: 'gateway_opaque_upstream_request_failed',
+    accountId: account.id,
+    upstreamUrl: sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown',
+    errorMessage: message
+  }, '通用客户端上游请求失败')
+  completeOrRecordFailedAttempt({
+    req,
+    auditCapture,
+    auditAttemptId,
+    account,
+    upstreamUrl,
+    attemptStartedAt,
+    auditAttemptIndex,
+    success: false,
+    errorPhase: 'upstream_request',
+    errorMessage: message
+  })
+  await recordFailedUpstreamAttempt(req, usageContext, account, {
+    upstreamUrl,
+    startedAt: attemptStartedAt,
+    errorMessage: message,
+    interpretUpstreamSemantics: false
+  })
+  return { action: 'skip_account', lastAttempt }
 }
 
 export function formatUpstreamRequestErrorMessage(error: unknown): string {

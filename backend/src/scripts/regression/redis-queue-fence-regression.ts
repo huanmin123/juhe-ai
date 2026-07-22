@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 
 import {
   acquireRedisQueueFenceWithClient,
+  renewRedisQueueFenceWithClient,
   releaseRedisQueueFenceIdempotentlyWithClient,
   redisQueueFenceKey,
   releaseRedisQueueFenceWithClient
@@ -11,6 +12,7 @@ import type { RedisCommandClient } from '../../shared/redis-client.js'
 
 let fenceToken: string | null = null
 let nextId = 0
+let fenceLeaseMs: number | null = null
 const evalCalls: Array<{ script: string; keys: string[]; arguments: string[] }> = []
 
 const client: RedisCommandClient = {
@@ -19,6 +21,7 @@ const client: RedisCommandClient = {
   set: async (_key, value, options) => {
     if (options?.NX === true && fenceToken !== null) return null
     fenceToken = value
+    fenceLeaseMs = Number(options?.PX)
     return 'OK'
   },
   del: async () => {
@@ -33,6 +36,11 @@ const client: RedisCommandClient = {
       nextId += 1
       return `${nextId}-0`
     }
+    if (script.includes("redis.call('PEXPIRE'")) {
+      if (fenceToken !== options.arguments[0]) return 0
+      fenceLeaseMs = Number(options.arguments[1])
+      return 1
+    }
     if (script.includes("redis.call('GET'")) {
       if (script.includes('if not current') && fenceToken === null) return 1
       if (fenceToken !== options.arguments[0]) return 0
@@ -46,8 +54,12 @@ const client: RedisCommandClient = {
 }
 
 assert.equal(await acquireRedisQueueFenceWithClient(client, 'release-a'), true, '首个 owner 必须获取 fence')
+assert.equal(fenceLeaseMs, 120_000, 'fence 获取必须设置有限 TTL，避免异常退出后永久阻塞队列')
 assert.equal(await acquireRedisQueueFenceWithClient(client, 'release-b'), false, '已有 owner 时第二个 token 不得覆盖 fence')
 assert.equal(await releaseRedisQueueFenceWithClient(client, 'release-b'), false, '错误 token 不得释放 fence')
+assert.equal(await renewRedisQueueFenceWithClient(client, 'release-b'), false, '错误 token 不得续租其他 owner fence')
+assert.equal(await renewRedisQueueFenceWithClient(client, 'release-a', 90_000), true, '当前 owner 必须能够安全续租 fence')
+assert.equal(fenceLeaseMs, 90_000, '续租必须刷新 fence 的 TTL')
 
 const queue = new RedisStreamQueue<{ id: string }>({
   streamKey: 'queue:fence-regression',
@@ -71,5 +83,6 @@ assert.equal(await releaseRedisQueueFenceIdempotentlyWithClient(client, 'release
 assert.match(redisQueueFenceKey(), /^juhe-ai:[^:]+:queue:fence$/, 'fence key 必须使用部署 namespace')
 assert.ok(evalCalls.some((call) => call.script.includes("redis.call('XADD'") && call.keys.length === 2), 'XADD 必须与 fence 检查处于同一 Lua')
 assert.ok(evalCalls.some((call) => call.script.includes("redis.call('GET'") && call.script.includes("redis.call('DEL'")), '释放必须使用 compare-and-delete Lua')
+assert.ok(evalCalls.some((call) => call.script.includes("redis.call('PEXPIRE'") && call.arguments.length === 2), '续租必须使用 compare-and-PEXPIRE Lua')
 
 console.log('redis-queue-fence-regression passed')

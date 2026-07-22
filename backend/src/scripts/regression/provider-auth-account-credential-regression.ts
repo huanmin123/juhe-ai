@@ -17,8 +17,8 @@ import { assertAccountGptRequestOverridesSupportedByCatalog } from '../../module
 assert(GEMINI_NATIVE_V1BETA_PROFILE_SEED.accountTypes.includes('google_oauth'))
 assert.deepEqual(
   ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED.accountTypes,
-  ['api_key'],
-  '没有可信自动轮换 assertion source 时 Anthropic 档案只能开放 API Key'
+  ['api_key', 'oauth'],
+  'Anthropic 官方档案应开放 API Key 与 OAuth Access Token 两种账户类型'
 )
 
 assert.throws(
@@ -33,6 +33,62 @@ assert.throws(
   '没有可信自动轮换 assertion source 时不得接受 workload_identity 凭据'
 )
 assert.equal(anthropicProviderDriver.prepareAccountBeforeDispatch, undefined, 'Anthropic driver 不得暴露 WIF token exchange 运行钩子')
+
+const anthropicOAuth = normalizeAccountCredentialsForWrite('oauth', {
+  access_token: 'anthropic-access-token',
+  base_url: 'https://api.anthropic.com/v1'
+}, {
+  accountType: 'oauth',
+  providerCode: 'anthropic',
+  providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+  protocolCode: 'anthropic',
+  protocolVersion: 'v1'
+})
+assert.equal(anthropicOAuth.access_token, 'anthropic-access-token')
+assert.deepEqual(anthropicOAuth.supported_endpoint_modes, ['messages_json', 'messages_sse', 'message_token_counting'])
+assert.equal(requiredAccountCredentialSource('oauth', anthropicOAuth), 'anthropic-access-token')
+assert.throws(
+  () => normalizeAccountCredentialsForWrite('oauth', {
+    refresh_token: 'anthropic-refresh-token',
+    base_url: 'https://api.anthropic.com/v1'
+  }, {
+    accountType: 'oauth',
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  }),
+  /Anthropic OAuth Access Token 不能为空/
+)
+
+const anthropicOAuthWithRefresh = normalizeAccountCredentialsForWrite('oauth', {
+  access_token: 'anthropic-access',
+  refresh_token: 'anthropic-refresh',
+  base_url: 'https://api.anthropic.com/v1'
+}, {
+  accountType: 'oauth',
+  providerCode: 'anthropic',
+  providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+  protocolCode: 'anthropic',
+  protocolVersion: 'v1'
+})
+assert.equal(anthropicOAuthWithRefresh.access_token, 'anthropic-access')
+assert.equal(anthropicOAuthWithRefresh.refresh_token, 'anthropic-refresh')
+assert.deepEqual(anthropicOAuthWithRefresh.supported_endpoint_modes, ['messages_json', 'messages_sse', 'message_token_counting'])
+assert.throws(
+  () => normalizeAccountCredentialsForWrite('oauth', {
+    refresh_token: 'anthropic-refresh-only',
+    base_url: 'https://api.anthropic.com/v1'
+  }, {
+    accountType: 'oauth',
+    providerCode: 'anthropic',
+    providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+    protocolCode: 'anthropic',
+    protocolVersion: 'v1'
+  }),
+  /Anthropic OAuth Access Token 不能为空/,
+  'Anthropic OAuth 账户必须显式提供 Access Token'
+)
 
 const googleOAuth = normalizeAccountCredentialsForWrite('google_oauth', {
   access_token: 'google-access',
@@ -113,6 +169,26 @@ const googleParts = await geminiProviderDriver.buildUpstreamRequestParts(interac
 assert.equal(googleParts.headers.get('authorization'), 'Bearer google-access')
 assert.equal(googleParts.headers.get('x-goog-api-key'), null)
 assert.equal(googleParts.headers.get('x-goog-user-project'), 'quota-project')
+
+const anthropicOauthAccount = accountFixture({
+  id: 'anthropic-oauth-driver-account',
+  providerCode: 'anthropic',
+  providerProtocolProfileId: 'profile_anthropic_anthropic_v1',
+  protocolCode: 'anthropic',
+  protocolVersion: 'v1',
+  type: 'oauth',
+  baseUrl: 'https://api.anthropic.com/v1',
+  apiKey: '',
+  credentials: anthropicOAuth
+})
+const anthropicMessagesRequest = requestFixture('/v1/messages', {
+  model: 'claude-opus-4-8',
+  max_tokens: 16,
+  messages: [{ role: 'user', content: 'hello' }]
+})
+const anthropicOauthParts = await anthropicProviderDriver.buildUpstreamRequestParts(anthropicMessagesRequest, anthropicOauthAccount, { systemAccountId: 'sys', groupId: 'grp' })
+assert.equal(anthropicOauthParts.headers.get('authorization'), 'Bearer anthropic-access-token')
+assert.equal(anthropicOauthParts.headers.get('x-api-key'), null)
 
 console.log('provider auth account credential regression passed')
 

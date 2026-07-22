@@ -50,13 +50,23 @@ const { isOpaqueUpstreamFailoverAllowed } = await import('../../modules/gateway/
 const accountSideEffects = await import('../../modules/gateway/runtime/account-side-effects.service.js')
 const proxyHealth = await import('../../modules/gateway/runtime/proxy-health.service.js')
 
-assert.equal(isOpaqueUpstreamFailoverAllowed({ method: 'POST', originalUrl: '/v1/chat/completions' } as express.Request), true)
-assert.equal(isOpaqueUpstreamFailoverAllowed({ method: 'POST', originalUrl: '/v1/responses' } as express.Request), true)
-for (const path of ['/v1/uploads', '/v1/batches', '/v1/fine_tuning/jobs', '/v1/unknown']) {
+assert.equal(isOpaqueUpstreamFailoverAllowed({ method: 'GET', originalUrl: '/v1/models' } as express.Request), true)
+assert.equal(isOpaqueUpstreamFailoverAllowed({ method: 'HEAD', originalUrl: '/v1/models' } as express.Request), true)
+for (const path of [
+  '/v1/chat/completions',
+  '/v1/responses',
+  '/v1/messages',
+  '/v1/images/generations',
+  '/v1/interactions/interaction_123',
+  '/v1/uploads',
+  '/v1/batches',
+  '/v1/fine_tuning/jobs',
+  '/v1/unknown'
+]) {
   assert.equal(
     isOpaqueUpstreamFailoverAllowed({ method: 'POST', originalUrl: path } as express.Request),
     false,
-    `${path} 资源型或未知 POST 不得跨 Key/账户重放`
+    `${path} POST 可能已被上游接受，不能跨 Key/账户重放`
   )
 }
 const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
@@ -239,12 +249,11 @@ try {
     body: JSON.stringify({ model: 'gpt-5.5', messages: [{ role: 'user', content: 'opaque status' }], stream: false })
   })
   const nonStreamText = await nonStream.text()
-  assert.equal(nonStream.status, 200, `通用客户端应由服务端完成 HTTP 失败接管，实际 ${nonStream.status}: ${nonStreamText}`)
-  assert.match(nonStreamText, /server failover completed/)
+  assert.equal(nonStream.status, 418, `通用 POST 非成功响应必须原样返回，实际 ${nonStream.status}: ${nonStreamText}`)
+  assert.match(nonStreamText, /opaque non-stream failure/)
   assert.deepEqual(upstreamAuthorizations, [
-    'Bearer sk-generic-opaque-bad-a',
-    'Bearer sk-generic-opaque-good'
-  ], '通用完整 HTTP 失败不得同账户换 Key 重放，只能切到下一账户')
+    'Bearer sk-generic-opaque-bad-a'
+  ], '通用完整 HTTP 失败不得同账户换 Key 或跨账户重放')
 
   const imageHitOffset = upstreamAuthorizations.length
   const image = await fetch(`${baseUrl}/v1/images/generations`, {
@@ -253,12 +262,11 @@ try {
     body: JSON.stringify({ model: 'gpt-image-1', prompt: 'server side failover' })
   })
   const imageText = await image.text()
-  assert.equal(image.status, 200, `图片请求应复用通用服务端接管，实际 ${image.status}: ${imageText}`)
-  assert.match(imageText, /aW1hZ2U=/)
+  assert.equal(image.status, 418, `图片请求非成功响应必须原样返回，实际 ${image.status}: ${imageText}`)
+  assert.match(imageText, /opaque non-stream failure/)
   assert.deepEqual(upstreamAuthorizations.slice(imageHitOffset), [
-    'Bearer sk-generic-image-bad',
-    'Bearer sk-generic-image-good'
-  ], '图片 HTTP 失败必须与文本一样切换后备账号')
+    'Bearer sk-generic-image-bad'
+  ], '图片 HTTP 失败不得跨账号重放')
 
   const stream = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
@@ -267,7 +275,7 @@ try {
   })
   const streamText = await stream.text()
   assert.equal(stream.status, 200)
-  assert.equal(hits.length, 5, `通用 SSE 必须继续派发上游，且完整 HTTP 失败不得同账户换 Key 重放，实际响应：${streamText}`)
+  assert.equal(hits.length, 3, `通用 SSE 必须继续派发上游且完整 HTTP 失败不得重放，实际响应：${streamText}`)
   assert.match(streamText, /vendor_invented_stream_error/, '通用 SSE 必须原样保留上游失败事件')
   assert.doesNotMatch(streamText, /upstream_retryable_error/, '通用 SSE 不得改写成专用客户端错误码')
 
@@ -293,7 +301,7 @@ try {
   clearTimeout(conflictReleaseTimer)
   heldConflictSlot.release()
   heldFallbackConflictSlot.release()
-  assert.equal(hits.length, 6, 'SSE/非流式传输冲突不得按响应类型切换上游账户')
+  assert.equal(hits.length, 4, 'SSE/非流式传输冲突不得按响应类型切换上游账户')
 
   const accountAfter = repositories.findAccountForTest(account.id, access)
   assert.equal(accountAfter?.status, 'active', '通用响应状态和错误类型不得修改账号状态')
@@ -317,7 +325,7 @@ try {
   const codexStreamText = await codexStream.text()
   assert.equal(codexStream.status, 200)
   assert.match(codexStreamText, /upstream_retryable_error/, '明确 Codex 画像应继续使用专用协议可重试信号')
-  assert.equal(hits.length, 8, '明确客户端语义处理应尝试两个账号，耗尽后不得无限重派')
+  assert.equal(hits.length, 6, '明确客户端语义处理应尝试两个账号，耗尽后不得无限重派')
   const codexRuntimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
   for (const codexAccount of [account, fallbackAccount]) {
     assert.equal(codexRuntimeSnapshot[codexAccount.id], undefined, `明确客户端失败只允许影响当前请求，不得写账户运行态：${codexAccount.name}`)

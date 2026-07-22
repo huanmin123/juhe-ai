@@ -256,7 +256,7 @@ async function main(): Promise<void> {
     await stopProcessTree(backendProcess)
     await closeServer(upstreamServer)
     if (!config.keepTemp) {
-      rmSync(tempRoot, { recursive: true, force: true })
+      await removeTempRootWithRetry(tempRoot)
     }
   }
 }
@@ -322,6 +322,7 @@ function markAccountsDueForOpsJobs(database: DatabaseSync, accountIds: string[],
   const old = new Date(Date.now() - 2 * 3600_000).toISOString()
   const markHealthDue = database.prepare(`
     UPDATE accounts
+    SET
         last_health_check_at = NULL,
         next_health_check_at = NULL,
         last_health_success_at = NULL,
@@ -1116,6 +1117,27 @@ async function stopProcessTree(child: ChildProcess | undefined): Promise<void> {
       resolvePromise()
     })
   })
+}
+
+async function removeTempRootWithRetry(root: string): Promise<void> {
+  const maxAttempts = process.platform === 'win32' ? 10 : 1
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      rmSync(root, { recursive: true, force: true })
+      return
+    } catch (error) {
+      if (attempt >= maxAttempts || !isRetryableTempCleanupError(error)) {
+        throw error
+      }
+      await sleep(Math.min(1000, attempt * 100))
+    }
+  }
+}
+
+function isRetryableTempCleanupError(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false
+  const code = String(error.code)
+  return code === 'EBUSY' || code === 'EPERM' || code === 'ENOTEMPTY'
 }
 
 function loadConfig(): WorkerLoadConfig {

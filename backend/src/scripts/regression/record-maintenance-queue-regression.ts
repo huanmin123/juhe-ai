@@ -322,6 +322,8 @@ function assertRecordMaintenanceCleanupRunsAsync(): void {
   assert(queueSource.includes('cleanupDeletedApiKeyRelatedRecordDataAsync'), '数据维护队列应使用 API Key 异步清理入口')
   assert(queueSource.includes('cleanupDeletedAccountRelatedRecordDataAsync'), '数据维护队列应使用 AI 账户异步清理入口')
   assert(!/cleanupDeleted(ApiKey|Account)RelatedRecordData\(\{/.test(queueSource), '数据维护队列不应回退到同步已删除记录清理入口')
+  assert.match(queueSource, /recordMaintenanceRedisStreamClaimIdleMs\s*=\s*60 \* 60 \* 1000/, '数据维护 Redis Stream 必须使用长任务 reclaim 租约')
+  assert.match(queueSource, /claimIdleMs:\s*Math\.max\(runtimeConfig\.queue\.redisStreamClaimIdleMs, recordMaintenanceRedisStreamClaimIdleMs\)/, '数据维护 Redis Stream 不得沿用 60 秒通用 reclaim 租约')
 
   const backgroundSource = readFileSync(new URL('../../modules/background/maintenance-cleanup-jobs.ts', import.meta.url), 'utf8')
   assert(backgroundSource.includes('cleanupPendingDeletedApiKeyRecordTargetsAsync'), '后台 API Key 清理重试应使用异步入口')

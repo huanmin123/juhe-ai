@@ -75,6 +75,7 @@ import type { SpeedFirstCutoverReservation } from '../runtime/speed-first-cutove
 import type { UsageServiceTier } from '../usage/service-tier.js'
 import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import { requestModel } from '../request/metadata.js'
+import { listGatewayProtocolDrivers } from '../protocols/registry.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -352,6 +353,7 @@ export async function fetchFirstAvailableUpstream(
           let body: Buffer | string | undefined
           let effectiveServiceTier = usageContext.effectiveServiceTier ?? usageContext.requestedServiceTier ?? 'default'
           let upstreamUrls: string[]
+          let interpretAccountResponseSemantics = interpretUpstreamResponseSemantics
           const preparationStartedAt = Date.now()
           const preparationStageStartedAt = performance.now()
           try {
@@ -393,6 +395,8 @@ export async function fetchFirstAvailableUpstream(
               break
             }
             account = selectedAccount
+            interpretAccountResponseSemantics = interpretUpstreamResponseSemantics
+              || isRecognizedCrossProtocolBridgeRequest(req, account)
             if (account.selectedApiKeyFingerprint) {
               accountApiKeyAttemptCount += 1
               excludedApiKeyFingerprints.add(account.selectedApiKeyFingerprint)
@@ -507,7 +511,7 @@ export async function fetchFirstAvailableUpstream(
           }
           for (const upstreamUrl of upstreamUrls) {
             for (let attemptIndex = 0, attemptLimit = maxAttemptCount; attemptIndex < attemptLimit; attemptIndex += 1) {
-              if (!interpretUpstreamResponseSemantics && !opaqueFailoverBudget.attemptedAccountIds.has(originalAccount.id)) {
+              if (!interpretAccountResponseSemantics && !opaqueFailoverBudget.attemptedAccountIds.has(originalAccount.id)) {
                 if (opaqueFailoverBudget.remainingAccounts <= 0) {
                   opaqueFailoverBudgetExhausted = true
                   skipAccount = true
@@ -551,16 +555,7 @@ export async function fetchFirstAvailableUpstream(
                   upstreamUrl,
                   status: response.status
                 }
-                if (response.ok || (!interpretUpstreamResponseSemantics && !isOpaqueUpstreamFailoverAllowed(req))) {
-                  if (!response.ok) {
-                    auditCapture.completeAttempt(auditAttemptId, {
-                      statusCode: response.status,
-                      responseHeaders: response.headers,
-                      success: false,
-                      errorPhase: 'upstream_response',
-                      errorMessage: '上游返回非成功 HTTP 响应'
-                    })
-                  }
+                if (response.ok || (!interpretAccountResponseSemantics && !isOpaqueUpstreamFailoverAllowed(req))) {
                   if (response.ok) {
                     await rememberOpenAIAccountForSessionAsync(sessionAffinityKey, account.id, {
                       systemAccountId: usageContext.systemAccountId,
@@ -605,14 +600,14 @@ export async function fetchFirstAvailableUpstream(
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled,
                   automaticAccountStateMutationEnabled: automaticAccountStateMutationAllowed,
-                  retrySameAccount: interpretUpstreamResponseSemantics && halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
+                  retrySameAccount: interpretAccountResponseSemantics && halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
                     account,
                     attemptIndex,
                     sameAccountRetryPolicy,
                     requestSameAccountRetryBudget
                   )
                 }
-                const failedResponseResult = interpretUpstreamResponseSemantics
+                const failedResponseResult = interpretAccountResponseSemantics
                   ? await handleFailedUpstreamResponse(failedResponseInput)
                   : await handleOpaqueFailedUpstreamResponse(failedResponseInput)
                 lastAttempt = failedResponseResult.lastAttempt
@@ -691,6 +686,7 @@ export async function fetchFirstAvailableUpstream(
                   error,
                   clientIpAccountAvoidanceTracker,
                   accountStateMutationEnabled: automaticAccountStateMutationAllowed,
+                  opaque: !interpretAccountResponseSemantics,
                   retrySameAccount: halfOpenLease?.generation === undefined && await shouldRetrySameAccountAfterFailure(
                     account,
                     attemptIndex,
@@ -699,6 +695,9 @@ export async function fetchFirstAvailableUpstream(
                   )
                 })
                 lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+                if (!interpretAccountResponseSemantics && !isOpaqueUpstreamFailoverAllowed(req)) {
+                  throw error
+                }
                 failedAccountIds.add(account.id)
                 if (
                   requestErrorResult.action === 'skip_account'
@@ -941,6 +940,11 @@ export async function fetchFirstAvailableUpstream(
 
 function shouldRetainTransportFailureForRecovery(upstreamUrl: string, signal?: AbortSignal): boolean {
   return !signal?.aborted && /^https?:\/\//i.test(upstreamUrl)
+}
+
+function isRecognizedCrossProtocolBridgeRequest(req: Request, account: UpstreamAccount): boolean {
+  const requestDriver = listGatewayProtocolDrivers().find((driver) => driver.isNativeRequest?.(req) === true)
+  return Boolean(requestDriver && requestDriver.protocolCode !== account.protocolCode)
 }
 
 function releaseAccountDispatchSlot(releaseConcurrency: () => void): () => void {

@@ -36,7 +36,6 @@ import { recordOperationLogAsync, safeChange } from '../operation-logs/operation
 import {
   listProviderModelSelectionOptionsAsync,
   normalizeProviderModelOptionQuery,
-  type ProviderModelSelectionOption
 } from './provider-model-options.service.js'
 
 export const providersRouter = Router()

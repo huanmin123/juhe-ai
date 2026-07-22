@@ -3,7 +3,7 @@ import type { RequestQuotaLimits } from './access'
 import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
-export type AccountClientCompatibility = 'openai_standard' | 'codex_responses'
+export type AccountClientCompatibility = 'openai_standard' | 'codex_responses' | 'anthropic_native' | 'claude_code'
 export type AccountGptServiceTierOverride = string
 export type AccountGptReasoningEffortOverride = string
 export type AccountSupportedEndpointMode =

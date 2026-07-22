@@ -5,13 +5,13 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 
-import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
-import { logger } from '../../shared/logger.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import { logger } from '../../shared/logger.js'
+import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fixture.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-upstream-request-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'upstream-request-failure.sqlite3')
@@ -31,10 +31,8 @@ const [
   databaseModule,
   readWorkerPool,
   repositories,
-  settingsRepository,
   gatewayCache,
   accountSideEffects,
-  clientIpAccountAvoidanceService,
   gatewayFailureDispatch,
   usageRecordQueue,
   auditLogQueue
@@ -44,10 +42,8 @@ const [
   import('../../storage/database.js'),
   import('../../storage/sqlite-read-worker-pool.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/settings.repository.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
-  import('../../modules/gateway/runtime/client-ip-account-avoidance.service.js'),
   import('../../modules/gateway/response/failure-dispatch.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
@@ -59,594 +55,122 @@ assert.equal(
   '请求失败：ETIMEDOUT',
   '空错误消息应回退到错误码，避免最后一次尝试文案只剩空白'
 )
+assert.equal(
+  gatewayFailureDispatch.isOpaqueUpstreamFailoverAllowed({ method: 'POST' } as express.Request),
+  false,
+  '无法证明幂等的 POST 不得跨 Key 或账号重放'
+)
+assert.equal(
+  gatewayFailureDispatch.isOpaqueUpstreamFailoverAllowed({ method: 'GET' } as express.Request),
+  true,
+  '只读 GET 仍可使用通用候选故障转移'
+)
 
 const app = express()
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-const regressionSupportedModels = ['gpt-4o-mini']
-type RegressionAccount = { id: string; name: string }
+const opaqueFailureBody = JSON.stringify({
+  error: {
+    message: 'Invalid value for model level: expected one of low, medium, high.',
+    type: 'invalid_request_error',
+    code: null
+  }
+})
 
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
   let closedTransportServer: http.Server | undefined
   try {
-    settingsRepository.updateSettings({ temporaryUnschedulableRetryAttempts: 0 })
-    gatewayCache.clearGatewayRuntimeCache()
+    usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(true)
+    auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(true)
 
-    upstreamServer = createRejectedRequestUpstream()
-    await listen(upstreamServer)
-    const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
-
-    const group = repositories.createGroup({ name: '上游失败回归分组', providerCode: 'gpt', enabled: true }, access)
-    const firstAccount = repositories.createAccount({
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '01-上游失败回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-request-failure-1',
-        base_url: upstreamBaseUrl
-      },
-      groupId: group.id,
-      supportedModels: regressionSupportedModels,
-      status: 'active',
-      schedulable: true
-    }, access)
-    const secondAccount = repositories.createAccount({
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '02-上游失败回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-request-failure-2',
-        base_url: upstreamBaseUrl
-      },
-      groupId: group.id,
-      supportedModels: regressionSupportedModels,
-      status: 'active',
-      schedulable: true
-    }, access)
-    const thirdAccount = repositories.createAccount({
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '03-上游失败回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-request-failure-3',
-        base_url: upstreamBaseUrl
-      },
-      groupId: group.id,
-      supportedModels: regressionSupportedModels,
-      status: 'active',
-      schedulable: true
-    }, access)
-    const apiKey = createRegressionApiKey(group.id, 'sk-request-failure-regression')
-    dispatchRaceSecondAccountId = secondAccount.id
-    const fastFailGroup = repositories.createGroup({ name: '本地屏蔽恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
-    const fastFailAccount = repositories.createAccount({
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '单账号恢复等待回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-request-failure-fast-fail',
-        base_url: upstreamBaseUrl
-      },
-      groupId: fastFailGroup.id,
-      supportedModels: regressionSupportedModels,
-      status: 'active',
-      schedulable: true
-    }, access)
-    const fastFailApiKey = createRegressionApiKey(fastFailGroup.id, 'sk-request-failure-fast-fail-key')
-    const cooldownRecoverGroup = repositories.createGroup({ name: '本地冷却恢复等待回归分组', providerCode: 'gpt', enabled: true }, access)
-    const cooldownRecoverAccount = repositories.createAccount({
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '单账号冷却恢复等待回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-request-failure-cooldown-recover',
-        base_url: upstreamBaseUrl
-      },
-      groupId: cooldownRecoverGroup.id,
-      supportedModels: regressionSupportedModels,
-      status: 'active',
-      schedulable: true
-    }, access)
-    const cooldownRecoverApiKey = createRegressionApiKey(cooldownRecoverGroup.id, 'sk-request-failure-cooldown-recover-key')
-    const singleFailureGroup = repositories.createGroup({ name: '单账号上游失败写状态回归分组', providerCode: 'gpt', enabled: true }, access)
-    const singleFailureAccount = repositories.createAccount({
-      providerCode: 'gpt',
-      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-      name: '单账号上游失败写状态回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-single-upstream-failure-cooldown',
-        base_url: upstreamBaseUrl
-      },
-      groupId: singleFailureGroup.id,
-      supportedModels: regressionSupportedModels,
-      status: 'active',
-      schedulable: true
-    }, access)
-    const singleFailureApiKey = createRegressionApiKey(singleFailureGroup.id, 'sk-single-upstream-failure-key')
-    for (const account of [firstAccount, secondAccount, thirdAccount, fastFailAccount, cooldownRecoverAccount, singleFailureAccount]) {
-      repositories.recordAccountHealthCheckSuccess(account.id, {
-        intervalHours: 12,
-        jitterMinutes: 0,
-        failureThreshold: 3,
-        statusCode: 200
+    const upstreamAuthorizations: string[] = []
+    upstreamServer = http.createServer((req, res) => {
+      upstreamAuthorizations.push(String(req.headers.authorization ?? ''))
+      res.writeHead(422, {
+        'content-type': 'application/json; charset=utf-8',
+        'x-upstream-contract': 'opaque'
       })
-    }
+      res.end(opaqueFailureBody)
+    })
+    await listen(upstreamServer)
+    const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
+
+    const opaqueGroup = repositories.createGroup({ name: '不透明非幂等失败回归分组', providerCode: 'gpt', enabled: true }, access)
+    const opaqueAccounts = [
+      createAccount(opaqueGroup.id, '01-不透明失败账户', 'sk-opaque-failure-first', upstreamBaseUrl),
+      createAccount(opaqueGroup.id, '02-不透明后备账户', 'sk-opaque-failure-fallback', upstreamBaseUrl)
+    ]
+    const opaqueApiKey = createRegressionApiKey(opaqueGroup.id, 'sk-opaque-request-failure-regression')
+
     closedTransportServer = http.createServer()
     await listen(closedTransportServer)
-    const closedTransportBaseUrl = `http://127.0.0.1:${serverAddress(closedTransportServer).port}/v1`
+    const closedTransportBaseUrl = `http://127.0.0.1:${serverPort(closedTransportServer)}/v1`
     await closeServer(closedTransportServer)
     closedTransportServer = undefined
-    const directTransportFailureGroup = repositories.createGroup({ name: '直连传输失败回归分组', providerCode: 'gpt', enabled: true }, access)
-    const directTransportFailureAccounts: RegressionAccount[] = []
-    for (let index = 0; index < 2; index += 1) {
-      const account = repositories.createAccount({
-        providerCode: 'gpt',
-        providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
-        name: `直连传输失败回归账户-${index + 1}`,
-        type: 'api_key',
-        credentials: {
-          api_key: `sk-direct-transport-failure-${index + 1}`,
-          base_url: closedTransportBaseUrl
-        },
-        groupId: directTransportFailureGroup.id,
-        supportedModels: regressionSupportedModels,
-        status: 'active',
-        schedulable: true
-      }, access)
-      repositories.recordAccountHealthCheckSuccess(account.id, {
-        intervalHours: 12,
-        jitterMinutes: 0,
-        failureThreshold: 3,
-        statusCode: 200
-      })
-      directTransportFailureAccounts.push(account)
-    }
-    const directTransportFailureApiKey = createRegressionApiKey(directTransportFailureGroup.id, 'sk-direct-transport-failure-key')
+    const transportGroup = repositories.createGroup({ name: '不透明传输失败回归分组', providerCode: 'gpt', enabled: true }, access)
+    const transportAccounts = [
+      createAccount(transportGroup.id, '01-传输失败账户', 'sk-transport-failure-first', closedTransportBaseUrl),
+      createAccount(transportGroup.id, '02-传输失败后备账户', 'sk-transport-failure-fallback', closedTransportBaseUrl)
+    ]
+    const transportApiKey = createRegressionApiKey(transportGroup.id, 'sk-opaque-transport-failure-regression')
 
+    gatewayCache.clearGatewayRuntimeCache()
     appServer = http.createServer(app)
     await listen(appServer)
-    const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
+    const baseUrl = `http://127.0.0.1:${serverPort(appServer)}`
 
-    const directTransportFailureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${directTransportFailureApiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'direct transport failures should write account state' }],
-        stream: false
-      })
-    })
-    const directTransportFailureText = await directTransportFailureResponse.text()
-    assert.equal(directTransportFailureResponse.status, 503, `直连上游传输失败仍应返回统一网关错误，实际 HTTP ${directTransportFailureResponse.status}: ${directTransportFailureText}`)
-    assert.match(directTransportFailureText, /上游暂时不可用，请重试/, `直连上游传输失败应返回网关统一可重试错误：${directTransportFailureText}`)
-    assert.match(directTransportFailureText, /upstream_retryable_error/, `直连上游传输失败应返回稳定可重试码：${directTransportFailureText}`)
-    assertAccountsActive(directTransportFailureAccounts, '直连上游传输失败不得改变账户状态')
-    const directRuntimeSnapshot = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()
-    for (const account of directTransportFailureAccounts) {
-      assert.equal(directRuntimeSnapshot[account.id], undefined, '未收到上游响应头的用户请求失败不得写运行态屏障')
-    }
-    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
-
-    const invalidJsonHitsBefore = totalUpstreamHitCount()
+    const invalidJsonHitsBefore = upstreamAuthorizations.length
     const invalidJsonResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
+      headers: { authorization: `Bearer ${opaqueApiKey.key}`, 'content-type': 'application/json' },
       body: '{"model":"gpt-4o-mini",'
     })
     const invalidJsonText = await invalidJsonResponse.text()
-    assert.equal(invalidJsonResponse.status, 400, `无效 JSON 应由网关直接拒绝，实际 HTTP ${invalidJsonResponse.status}: ${invalidJsonText}`)
-    assert.match(invalidJsonText, /请求体不是合法 JSON/, `无效 JSON 响应应说明请求体错误：${invalidJsonText}`)
-    assert.equal(totalUpstreamHitCount(), invalidJsonHitsBefore, '无效 JSON 不应转发到任何上游账号')
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '无效 JSON 未命中上游账号，不应写账号状态')
+    assert.equal(invalidJsonResponse.status, 400, `无效 JSON 应由网关直接拒绝：${invalidJsonText}`)
+    assert.match(invalidJsonText, /请求体不是合法 JSON/)
+    assert.equal(upstreamAuthorizations.length, invalidJsonHitsBefore, '无效 JSON 不应命中上游')
 
-    currentScenario = 'invalid_request_confirmation'
-    const featureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const opaqueResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
+      headers: { authorization: `Bearer ${opaqueApiKey.key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'bad tool state feature' }],
+        messages: [{ role: 'user', content: 'opaque non-idempotent failure must not replay' }],
         stream: false
       })
     })
-    const featureResponseText = await featureResponse.text()
+    const opaqueResponseText = await opaqueResponse.text()
+    assert.equal(opaqueResponse.status, 422, `通用 POST 应原样返回首个完整上游非 2xx：${opaqueResponseText}`)
+    assert.equal(opaqueResponseText, opaqueFailureBody, '通用 POST 应保留不透明上游错误体')
+    assert.equal(opaqueResponse.headers.get('x-upstream-contract'), 'opaque', '通用 POST 应保留不透明上游响应头')
+    assert.deepEqual(upstreamAuthorizations, ['Bearer sk-opaque-failure-first'], '完整 HTTP 非 2xx 后不得换 Key 或跨账号重放 POST')
+    assertAccountsRemainAvailable(opaqueAccounts, '不透明 HTTP 失败')
 
-    assert.equal(featureResponse.status, 503, `所有账号上游失败后应返回统一网关错误，实际 HTTP ${featureResponse.status}: ${featureResponseText}`)
-    assert.match(featureResponseText, /上游暂时不可用，请重试/, `所有账号失败不应透传上游原文，应返回网关统一可重试错误：${featureResponseText}`)
-    assert.match(featureResponseText, /upstream_retryable_error/, `所有账号失败应返回稳定可重试码：${featureResponseText}`)
-    assert.notEqual(featureResponseText, invalidRequestRejectedRequestBody, '所有账号失败不应把上游原始错误体透传给客户端')
-    assert.equal(invalidRequestUpstreamHitCount, 3, `通用失败流水线应尝试三个账号后再失败，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级 invalid_request 失败不应污染账号运行态')
-    restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
-
-    currentScenario = 'same_signature_third_account_success'
-    const thirdSuccessResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+    const transportResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
+      headers: { authorization: `Bearer ${transportApiKey.key}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'third account can still recover request' }],
+        messages: [{ role: 'user', content: 'opaque transport failure must remain request scoped' }],
         stream: false
       })
     })
-    const thirdSuccessResponseText = await thirdSuccessResponse.text()
-    assert.equal(thirdSuccessResponse.status, 200, `前两个账号返回相同上游错误但第三账号可用时应救回请求，实际 HTTP ${thirdSuccessResponse.status}: ${thirdSuccessResponseText}`)
-    assert.equal(thirdSuccessResponseText, thirdAccountSuccessBody, `第三账号救回响应体异常：${thirdSuccessResponseText}`)
-    assert.equal(thirdAccountSuccessHitCount, 3, `第三账号救回应尝试三个账号，实际 ${thirdAccountSuccessHitCount}`)
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级相同签名失败后由第三账号救回时不应污染账号运行态')
-    restoreRegressionAccounts([firstAccount, secondAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    currentScenario = 'same_signature_confirmation'
-    const sameSignatureRequestBody = JSON.stringify({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: 'same upstream request error' }],
-      stream: false
-    })
-    const signatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: sameSignatureRequestBody
-    })
-    const signatureResponseText = await signatureResponse.text()
-
-    assert.equal(signatureResponse.status, 503, `多个账号返回相同上游错误也应走统一网关错误，实际 HTTP ${signatureResponse.status}: ${signatureResponseText}`)
-    assert.match(signatureResponseText, /上游暂时不可用，请重试/, `相同上游错误失败不应返回上游原文：${signatureResponseText}`)
-    assert.match(signatureResponseText, /upstream_retryable_error/, `相同上游错误失败应返回稳定可重试码：${signatureResponseText}`)
-    assert.notEqual(signatureResponseText, sameSignatureRejectedRequestBody, '相同上游错误失败不应保留上游原始错误体')
-    assert.equal(sameSignatureUpstreamHitCount, 3, `同一错误应尝试全部三个账号，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '请求级相同上游错误不应逐个进入运行态屏障')
-    restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
-
-    const repeatedSignatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: sameSignatureRequestBody
-    })
-    const repeatedSignatureResponseText = await repeatedSignatureResponse.text()
-    assert.equal(repeatedSignatureResponse.status, 503, `重复相同上游错误请求必须重新探测上游，实际 HTTP ${repeatedSignatureResponse.status}: ${repeatedSignatureResponseText}`)
-    assert.equal(sameSignatureUpstreamHitCount, 6, `重复相同上游错误请求清理本地屏蔽后应重新探测上游，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '重复请求级上游错误仍不应污染账号运行态')
-    restoreRegressionAccounts([firstAccount, secondAccount, thirdAccount])
-
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-    currentScenario = 'invalid_request_switch_account_success'
-    const instructionsRequiredResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'instructions required should continue next' }],
-        stream: false
-      })
-    })
-    const instructionsRequiredResponseText = await instructionsRequiredResponse.text()
-
-    assert.equal(instructionsRequiredResponse.status, 200, `首账号 invalid_request_error 但后续账号可用时应切号成功，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
-    assert.equal(instructionsRequiredResponseText, invalidRequestSwitchSuccessBody, `invalid_request_error 切号成功响应体异常：${instructionsRequiredResponseText}`)
-    assert.equal(invalidRequestSwitchUpstreamHitCount, 2, `invalid_request_error 切号成功应命中两个账号，实际 ${invalidRequestSwitchUpstreamHitCount}`)
-    assertAccountsActive([firstAccount, secondAccount], '首账号请求级 invalid_request_error 后由第二账号救回时不应污染账号运行态')
-    restoreRegressionAccounts([firstAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    settingsRepository.updateSettings({
-      temporaryUnschedulableRetryAttempts: 3,
-      temporaryUnschedulableRetryIntervalSeconds: 0
-    })
-    gatewayCache.clearGatewayRuntimeCache()
-    assert.equal(
-      (await gatewayCache.readCachedGatewaySettingsAsync()).temporaryUnschedulableRetryAttempts,
-      3,
-      '测试更新后的网关临时不可调度重试次数应立即生效'
-    )
-    currentScenario = 'same_account_retry_success'
-    const sameAccountRetryResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'same account retry should recover before account switch' }],
-        stream: false
-      })
-    })
-    const sameAccountRetryResponseText = await sameAccountRetryResponse.text()
-
-    assert.equal(sameAccountRetryResponse.status, 200, `同账号原地重试成功时应直接返回成功，实际 HTTP ${sameAccountRetryResponse.status}: ${sameAccountRetryResponseText}`)
-    assert.equal(sameAccountRetryResponseText, JSON.stringify({ id: 'should-not-switch-after-same-account-retry' }), `完整 HTTP 失败不得同账号原地重放，应切到下一账号：${sameAccountRetryResponseText}`)
-    assert.equal(sameAccountRetryFirstAccountHitCount, 1, `完整 HTTP 失败的首账号只应命中 1 次，实际 ${sameAccountRetryFirstAccountHitCount}`)
-    assert.equal(sameAccountRetrySecondAccountHitCount, 1, `完整 HTTP 失败应切到第二账号 1 次，实际 ${sameAccountRetrySecondAccountHitCount}`)
-    assertAccountsActive([firstAccount, secondAccount], '完整 HTTP 失败切号后不应写账号状态')
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    currentScenario = 'unknown_failure_switch_account_success'
-    const switchResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'unknown first account failure should not cooldown' }],
-        stream: false
-      })
-    })
-    const switchResponseText = await switchResponse.text()
-
-    assert.equal(switchResponse.status, 200, `未知失败切到后续账号成功时应返回成功响应，实际 HTTP ${switchResponse.status}: ${switchResponseText}`)
-    assert.equal(unknownSwitchFirstAccountHitCount, 1, `完整 HTTP 失败的首账号只应命中 1 次，实际 ${unknownSwitchFirstAccountHitCount} 次`)
-    assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
-    assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
-    assertAccountsActive([firstAccount, secondAccount], '未知失败切号不得由用户请求改变账户状态')
-    restoreRegressionAccounts([firstAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    currentScenario = 'shared_retry_budget_third_account_success'
-    const sharedRetryBudgetResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'shared retry budget must not reset for every account' }],
-        stream: false
-      })
-    })
-    const sharedRetryBudgetResponseText = await sharedRetryBudgetResponse.text()
-    assert.equal(sharedRetryBudgetResponse.status, 200, `请求级共享确认预算耗尽后仍应继续扫描到第三账号成功，实际 HTTP ${sharedRetryBudgetResponse.status}: ${sharedRetryBudgetResponseText}`)
-    assert.equal(sharedRetryBudgetResponseText, thirdAccountSuccessBody, `请求级共享确认预算场景第三账号响应体异常：${sharedRetryBudgetResponseText}`)
-    assert.equal(sharedRetryBudgetFirstAccountHitCount, 1, `完整 HTTP 失败的首账号只应命中 1 次，实际 ${sharedRetryBudgetFirstAccountHitCount}`)
-    assert.equal(sharedRetryBudgetSecondAccountHitCount, 1, `共享预算耗尽后第二个失败账号不应重新获得 3 次确认，实际 ${sharedRetryBudgetSecondAccountHitCount}`)
-    assert.equal(sharedRetryBudgetThirdAccountHitCount, 1, `共享预算耗尽后仍必须继续扫描第三账号，实际 ${sharedRetryBudgetThirdAccountHitCount}`)
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount], '完整 HTTP 失败切号不得改变失败账号运行态')
-    restoreRegressionAccounts([firstAccount, secondAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    currentScenario = 'shared_retry_budget_across_stream_redispatch'
-    const sharedRetryBudgetStreamResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'shared retry budget must survive stream redispatch' }],
-        stream: true
-      })
-    })
-    const sharedRetryBudgetStreamText = await sharedRetryBudgetStreamResponse.text()
-    assert.equal(sharedRetryBudgetStreamResponse.status, 200, `流式切号后共享确认预算仍应继续扫描到第三账号成功，实际 HTTP ${sharedRetryBudgetStreamResponse.status}: ${sharedRetryBudgetStreamText}`)
-    assert.match(sharedRetryBudgetStreamText, /ok after stream redispatch/, `流式切号后第三账号成功内容异常：${sharedRetryBudgetStreamText}`)
-    assert.equal(sharedRetryBudgetStreamFirstAccountHitCount, 1, `流式请求的完整 HTTP 失败首账号只应命中 1 次，实际 ${sharedRetryBudgetStreamFirstAccountHitCount}`)
-    assert.equal(sharedRetryBudgetStreamSecondAccountHitCount, 1, `流式重新进入调度后第二账号不应重新获得确认预算，实际 ${sharedRetryBudgetStreamSecondAccountHitCount}`)
-    assert.equal(sharedRetryBudgetStreamThirdAccountHitCount, 1, `流式重新进入调度后仍必须继续扫描第三账号，实际 ${sharedRetryBudgetStreamThirdAccountHitCount}`)
-    restoreRegressionAccounts([firstAccount, secondAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    settingsRepository.updateSettings({
-      textFirstResponseTimeoutSeconds: 10,
-      temporaryUnschedulableRetryAttempts: 0
-    })
-    gatewayCache.clearGatewayRuntimeCache()
-    currentScenario = 'non_stream_first_byte_timeout_switch_account_success'
-    const nonStreamFirstByteTimeoutStartedAt = Date.now()
-    const nonStreamFirstByteTimeoutResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'non stream first byte timeout should switch account' }],
-        stream: false
-      })
-    })
-    const nonStreamFirstByteTimeoutText = await nonStreamFirstByteTimeoutResponse.text()
-    assert.equal(nonStreamFirstByteTimeoutResponse.status, 200, `非流式 2xx 首字节超时后应切号救回，实际 HTTP ${nonStreamFirstByteTimeoutResponse.status}: ${nonStreamFirstByteTimeoutText}`)
-    assert.equal(nonStreamFirstByteTimeoutText, nonStreamFirstByteTimeoutSuccessBody, `非流式首字节超时切号成功响应体异常：${nonStreamFirstByteTimeoutText}`)
-    assert.equal(nonStreamFirstByteTimeoutFirstAccountHitCount, 1, `非流式首账号首字节超时应命中 1 次，实际 ${nonStreamFirstByteTimeoutFirstAccountHitCount}`)
-    assert.equal(nonStreamFirstByteTimeoutSecondAccountHitCount, 1, `非流式首字节超时后应切到第二账号，实际 ${nonStreamFirstByteTimeoutSecondAccountHitCount}`)
-    assert(Date.now() - nonStreamFirstByteTimeoutStartedAt >= 9000, '非流式首字节超时应受首包等待上限控制，不应立即切号')
-    assertAccountsActive([firstAccount, secondAccount], '非流式首字节超时不得由用户请求改变账户运行态')
-    assert.equal(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[firstAccount.id], undefined, 'generic 首字节超时不得写账户运行态')
-    restoreRegressionAccounts([firstAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    currentScenario = 'non_stream_body_interrupted_after_output_client_retry'
-    let interruptedRequestFailed = false
-    try {
-      const interruptedResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          authorization: `Bearer ${apiKey.key}`,
-          'content-type': 'application/json',
-          'x-codex-turn-metadata': JSON.stringify({ turn_id: 'turn_non_stream_body_interrupted' })
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [{ role: 'user', content: 'non stream body interruption should fail current connection' }],
-          stream: false
-        })
-      })
-      await interruptedResponse.text()
-    } catch {
-      interruptedRequestFailed = true
-    }
-    assert.equal(interruptedRequestFailed, true, '非流式首字节已输出后正文中断应表现为客户端读取失败，不能优雅结束半截响应')
-    assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 1, `非流式正文中断首请求应命中首账号 1 次，实际 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
-    assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 0, `非流式正文已输出后不应在同一 HTTP 响应里透明切到第二账号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
-
-    for (const message of ['first client retry should not globally suppress account', 'repeated client retry should remain request-scoped']) {
-      try {
-        const response = await fetch(`${baseUrl}/v1/chat/completions`, {
-          method: 'POST',
-          headers: {
-            authorization: `Bearer ${apiKey.key}`,
-            'content-type': 'application/json',
-            'x-codex-turn-metadata': JSON.stringify({ turn_id: `turn_${message.replaceAll(' ', '_')}` })
-          },
-          body: JSON.stringify({ model: 'gpt-4o-mini', messages: [{ role: 'user', content: message }], stream: false })
-        })
-        await response.text()
-      } catch {
-        // A client lifecycle interruption is expected for each request.
-      }
-    }
-    assert.equal(nonStreamBodyInterruptedFirstAccountHitCount, 3, `客户端重试不得把账号写成全局不可调度，实际首账号命中 ${nonStreamBodyInterruptedFirstAccountHitCount}`)
-    assert.equal(nonStreamBodyInterruptedSecondAccountHitCount, 0, `客户端正文中断不得在同一响应内透明切号，实际 ${nonStreamBodyInterruptedSecondAccountHitCount}`)
-    assertAccountsActive([firstAccount], '非流式正文中断不得由用户请求改变账户运行态')
-    assert.equal(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[firstAccount.id], undefined, '精确客户端正文中断也不得写账户运行态')
-    assertAccountsActive([secondAccount], '非流式正文中断后客户端重试成功账号应保持正常')
-    restoreRegressionAccounts([firstAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    currentScenario = 'dispatch_loop_local_suppression_race'
-    const dispatchRaceResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${apiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'second account becomes locally suppressed during dispatch' }],
-        stream: false
-      })
-    })
-    const dispatchRaceResponseText = await dispatchRaceResponse.text()
-    assert.equal(dispatchRaceResponse.status, 200, `调度中途账号被本地屏蔽后应跳过并继续后续账号，实际 HTTP ${dispatchRaceResponse.status}: ${dispatchRaceResponseText}`)
-    assert.equal(dispatchRaceResponseText, dispatchRaceSuccessBody, `调度中途屏蔽后第三账号响应体异常：${dispatchRaceResponseText}`)
-    assert.equal(dispatchRaceFirstAccountHitCount, 1, `调度竞态场景应先命中首账号一次，实际 ${dispatchRaceFirstAccountHitCount}`)
-    assert.equal(dispatchRaceSecondAccountHitCount, 0, `第二账号在首账号失败后被本地屏蔽，不应继续命中，实际 ${dispatchRaceSecondAccountHitCount}`)
-    assert.equal(dispatchRaceThirdAccountHitCount, 1, `第二账号被屏蔽后应切到第三账号成功，实际 ${dispatchRaceThirdAccountHitCount}`)
-    assert(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount >= 1, '调度竞态后显式中途屏蔽账号应处于本地短期屏蔽')
-    assertAccountsActive([firstAccount], '调度竞态中的上游失败不得由用户请求改变账户运行态')
-    assertAccountsActive([secondAccount, thirdAccount], '调度竞态中未命中或成功账号应保持正常')
-    restoreRegressionAccounts([firstAccount])
-    clientIpAccountAvoidanceService.clearClientIpAccountAvoidanceForTest()
-
-    currentScenario = 'single_account_local_suppression_wait_recover'
-    accountSideEffects.suppressGatewayAccountLocallyForTest(fastFailAccount.id, 1_000, '单账号恢复等待回归')
-    const recoverWaitStartedAtMs = Date.now()
-    const waitResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${fastFailApiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'single account local suppression should wait and recover' }],
-        stream: false
-      })
-    })
-    const waitResponseText = await waitResponse.text()
-    const recoverWaitElapsedMs = Date.now() - recoverWaitStartedAtMs
-    assert.equal(waitResponse.status, 200, `单账号本地屏蔽释放后应继续调度成功，实际 HTTP ${waitResponse.status}: ${waitResponseText}`)
-    assert.equal(waitResponseText, singleAccountLocalSuppressionRecoverBody, `单账号本地屏蔽恢复等待响应体异常：${waitResponseText}`)
-    assert(recoverWaitElapsedMs >= 900, `单账号本地屏蔽恢复等待不应在屏蔽释放前打上游，实际耗时 ${recoverWaitElapsedMs}ms`)
-    assert(recoverWaitElapsedMs < 3_000, `单账号本地屏蔽恢复等待不应等满巡检窗口，实际耗时 ${recoverWaitElapsedMs}ms`)
-    assert.equal(singleAccountLocalSuppressionRecoverHitCount, 1, `单账号本地屏蔽恢复后应命中上游一次，实际 ${singleAccountLocalSuppressionRecoverHitCount}`)
-    accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
-
-    currentScenario = 'single_account_cooldown_recover_wait'
-    repositories.markAccountCooldown(
-      cooldownRecoverAccount.id,
-      new Date(Date.now() + 1_000).toISOString(),
-      '单账号冷却恢复等待回归',
-      'rate_limited'
-    )
-    gatewayCache.clearGatewayRuntimeCache()
-    setTimeout(() => {
-      repositories.clearAccountFailureState(cooldownRecoverAccount.id, access)
-      gatewayCache.clearGatewayRuntimeCache()
-    }, 500).unref()
-    const cooldownRecoverStartedAtMs = Date.now()
-    const cooldownRecoverResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${cooldownRecoverApiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'single account cooldown should wait and recover' }],
-        stream: false
-      })
-    })
-    const cooldownRecoverResponseText = await cooldownRecoverResponse.text()
-    const cooldownRecoverElapsedMs = Date.now() - cooldownRecoverStartedAtMs
-    assert.equal(cooldownRecoverResponse.status, 200, `单账号本地冷却恢复后应继续调度成功，实际 HTTP ${cooldownRecoverResponse.status}: ${cooldownRecoverResponseText}`)
-    assert.equal(cooldownRecoverResponseText, singleAccountCooldownRecoverBody, `单账号本地冷却恢复等待响应体异常：${cooldownRecoverResponseText}`)
-    assert(cooldownRecoverElapsedMs >= 900, `单账号本地冷却恢复等待不应在本地冷却时间前打上游，实际耗时 ${cooldownRecoverElapsedMs}ms`)
-    assert(cooldownRecoverElapsedMs < 3_000, `单账号本地冷却恢复等待不应等满巡检窗口，实际耗时 ${cooldownRecoverElapsedMs}ms`)
-    assert.equal(singleAccountCooldownRecoverHitCount, 1, `单账号本地冷却恢复后应命中上游一次，实际 ${singleAccountCooldownRecoverHitCount}`)
-    assertAccountsActive([cooldownRecoverAccount], '单账号本地冷却恢复后应保持正常')
-
-    currentScenario = 'single_account_failure_default_cooldown'
-    gatewayCache.clearGatewayRuntimeCache()
-    const singleFailureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${singleFailureApiKey.key}`,
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'single upstream failure should cooldown account' }],
-        stream: false
-      })
-    })
-    const singleFailureResponseText = await singleFailureResponse.text()
-    assert.equal(singleFailureResponse.status, 503, `单账号上游失败无后备账号时仍应返回统一网关错误，实际 HTTP ${singleFailureResponse.status}: ${singleFailureResponseText}`)
-    assert.match(singleFailureResponseText, /上游暂时不可用，请重试/, `单账号上游失败网关响应应保持统一可重试错误：${singleFailureResponseText}`)
-    assert.match(singleFailureResponseText, /upstream_retryable_error/, `单账号上游失败应返回稳定可重试码：${singleFailureResponseText}`)
-    assert.equal(singleFailureHitCount, 1, `单账号上游失败默认冷却场景应命中上游一次，实际 ${singleFailureHitCount}`)
-    assertAccountsActive([singleFailureAccount], '单账号普通上游失败不得由用户请求改变账户运行态')
+    const transportResponseText = await transportResponse.text()
+    assert.equal(transportResponse.status, 503, `未收到上游响应头的传输失败应返回统一网关错误：${transportResponseText}`)
+    assert.match(transportResponseText, /upstream_retryable_error/)
+    assertAccountsRemainAvailable(transportAccounts, '不透明传输失败')
 
     usageRecordQueue.flushAllUsageRecordQueue()
-    assertAccountsActive([firstAccount, secondAccount, thirdAccount, fastFailAccount, cooldownRecoverAccount], '已恢复的主测试账号最终应保持正常')
-
-    console.log('上游失败回归通过：普通上游失败只影响当前请求，不写账户运行态；共享确认预算不会按账号或流式重新调度重置，耗尽后仍扫描全部后续账号，账户状态交由后台探针确认')
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    assert.equal(Object.keys(accountSideEffects.snapshotGatewayAccountRuntimeAvailability()).length, 0, '不透明用户请求失败不得写账户运行态屏障')
+    console.log('上游请求失败回归通过：通用 POST 完整非 2xx 原样返回且不重放，传输失败保持请求级并返回统一可重试错误，失败不会污染账户状态')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     auditLogQueue.flushAllAuditLogQueue()
     await closeServer(appServer)
     await closeServer(upstreamServer)
@@ -661,447 +185,64 @@ async function main(): Promise<void> {
   }
 }
 
-type RegressionScenario =
-  | 'invalid_request_confirmation'
-  | 'same_signature_third_account_success'
-  | 'same_signature_confirmation'
-  | 'invalid_request_switch_account_success'
-  | 'same_account_retry_success'
-  | 'unknown_failure_switch_account_success'
-  | 'shared_retry_budget_third_account_success'
-  | 'shared_retry_budget_across_stream_redispatch'
-  | 'non_stream_first_byte_timeout_switch_account_success'
-  | 'non_stream_body_interrupted_after_output_client_retry'
-  | 'dispatch_loop_local_suppression_race'
-  | 'single_account_local_suppression_wait_recover'
-  | 'single_account_cooldown_recover_wait'
-  | 'single_account_failure_default_cooldown'
-
-let currentScenario: RegressionScenario = 'invalid_request_confirmation'
-let dispatchRaceSecondAccountId = ''
-let invalidRequestUpstreamHitCount = 0
-let thirdAccountSuccessHitCount = 0
-let sameSignatureUpstreamHitCount = 0
-let invalidRequestSwitchUpstreamHitCount = 0
-let sameAccountRetryFirstAccountHitCount = 0
-let sameAccountRetrySecondAccountHitCount = 0
-let unknownSwitchFirstAccountHitCount = 0
-let unknownSwitchSecondAccountHitCount = 0
-let sharedRetryBudgetFirstAccountHitCount = 0
-let sharedRetryBudgetSecondAccountHitCount = 0
-let sharedRetryBudgetThirdAccountHitCount = 0
-let sharedRetryBudgetStreamFirstAccountHitCount = 0
-let sharedRetryBudgetStreamSecondAccountHitCount = 0
-let sharedRetryBudgetStreamThirdAccountHitCount = 0
-let nonStreamFirstByteTimeoutFirstAccountHitCount = 0
-let nonStreamFirstByteTimeoutSecondAccountHitCount = 0
-let nonStreamBodyInterruptedFirstAccountHitCount = 0
-let nonStreamBodyInterruptedSecondAccountHitCount = 0
-let dispatchRaceFirstAccountHitCount = 0
-let dispatchRaceSecondAccountHitCount = 0
-let dispatchRaceThirdAccountHitCount = 0
-let singleAccountLocalSuppressionRecoverHitCount = 0
-let singleAccountCooldownRecoverHitCount = 0
-let singleFailureHitCount = 0
-const invalidRequestRejectedRequestMessage = 'Invalid value for model level: expected one of low, medium, high.'
-const invalidRequestRejectedRequestBody = JSON.stringify({
-  error: {
-    message: invalidRequestRejectedRequestMessage,
-    type: 'invalid_request_error',
-    code: null
-  }
-})
-const sameSignatureRejectedRequestMessage = 'Regression request payload is invalid.'
-const sameSignatureRejectedRequestBody = JSON.stringify({
-  error: {
-    message: sameSignatureRejectedRequestMessage,
-    type: 'unprocessable_entity',
-    code: 'invalid_payload'
-  }
-})
-const instructionsRequiredRejectedRequestBody = JSON.stringify({
-  error: {
-    message: 'Instructions are required',
-    type: 'invalid_request_error',
-    param: '',
-    code: null
-  }
-})
-const invalidRequestSwitchSuccessBody = JSON.stringify({
-  id: 'chatcmpl-invalid-request-switch-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after account switch' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const thirdAccountSuccessBody = JSON.stringify({
-  id: 'chatcmpl-third-account-success-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok from third account' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const unknownSwitchSuccessBody = JSON.stringify({
-  id: 'chatcmpl-unknown-switch-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok from second account' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const sameAccountRetrySuccessBody = JSON.stringify({
-  id: 'chatcmpl-same-account-retry-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after same account retry' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const nonStreamFirstByteTimeoutSuccessBody = JSON.stringify({
-  id: 'chatcmpl-non-stream-first-byte-timeout-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after non-stream first byte timeout' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const nonStreamBodyInterruptedRetrySuccessBody = JSON.stringify({
-  id: 'chatcmpl-non-stream-body-interrupted-client-retry-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after client retry' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const nonStreamBodyInterruptedDownstreamChunk = Buffer.concat([
-  Buffer.from('{"id":"chatcmpl-partial","object":"chat.completion","padding":"', 'utf8'),
-  Buffer.alloc(1024 * 1024 + 1, 'x')
-])
-const singleAccountLocalSuppressionRecoverBody = JSON.stringify({
-  id: 'chatcmpl-single-account-local-suppression-recover',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after local suppression wait' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const singleAccountCooldownRecoverBody = JSON.stringify({
-  id: 'chatcmpl-single-account-cooldown-recover',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after local cooldown wait' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-const dispatchRaceSuccessBody = JSON.stringify({
-  id: 'chatcmpl-dispatch-race-regression',
-  object: 'chat.completion',
-  choices: [
-    {
-      index: 0,
-      message: { role: 'assistant', content: 'ok after dispatch suppression skip' },
-      finish_reason: 'stop'
-    }
-  ],
-  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
-})
-
-function createRejectedRequestUpstream(): http.Server {
-  return http.createServer((req, res) => {
-    if (currentScenario === 'single_account_local_suppression_wait_recover') {
-      singleAccountLocalSuppressionRecoverHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(singleAccountLocalSuppressionRecoverBody)
-      return
-    }
-    if (currentScenario === 'single_account_cooldown_recover_wait') {
-      singleAccountCooldownRecoverHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(singleAccountCooldownRecoverBody)
-      return
-    }
-    if (currentScenario === 'dispatch_loop_local_suppression_race') {
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        dispatchRaceFirstAccountHitCount += 1
-        if (dispatchRaceSecondAccountId) {
-          accountSideEffects.suppressGatewayAccountLocallyForTest(dispatchRaceSecondAccountId, 30_000, '调度中途屏蔽回归')
-        }
-        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: { message: 'first account failed before dispatch race', type: 'server_error', code: 'bad_gateway' } }))
-        return
-      }
-      if (authorization.includes('sk-request-failure-2')) {
-        dispatchRaceSecondAccountHitCount += 1
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ id: 'should-not-hit-second-account' }))
-        return
-      }
-      dispatchRaceThirdAccountHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(dispatchRaceSuccessBody)
-      return
-    }
-    if (currentScenario === 'unknown_failure_switch_account_success') {
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        unknownSwitchFirstAccountHitCount += 1
-        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: { message: 'temporary first account upstream error', type: 'server_error', code: 'bad_gateway' } }))
-        return
-      }
-      unknownSwitchSecondAccountHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(unknownSwitchSuccessBody)
-      return
-    }
-    if (currentScenario === 'shared_retry_budget_third_account_success') {
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        sharedRetryBudgetFirstAccountHitCount += 1
-        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: { message: 'shared retry budget account failed', type: 'server_error', code: 'first_failed' } }))
-        return
-      }
-      if (authorization.includes('sk-request-failure-2')) {
-        sharedRetryBudgetSecondAccountHitCount += 1
-        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: { message: 'shared retry budget account failed', type: 'server_error', code: 'second_failed' } }))
-        return
-      }
-      sharedRetryBudgetThirdAccountHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(thirdAccountSuccessBody)
-      return
-    }
-    if (currentScenario === 'shared_retry_budget_across_stream_redispatch') {
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        sharedRetryBudgetStreamFirstAccountHitCount += 1
-        if (sharedRetryBudgetStreamFirstAccountHitCount < 4) {
-          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: { message: 'stream redispatch budget warmup failure', type: 'server_error', code: 'warmup_failed' } }))
-          return
-        }
-        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
-        res.end('event: error\ndata: {"type":"error","code":"stream_failed","message":"stream failed before downstream write"}\n\n')
-        return
-      }
-      if (authorization.includes('sk-request-failure-2')) {
-        sharedRetryBudgetStreamSecondAccountHitCount += 1
-        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: { message: 'second account should not receive a fresh retry budget', type: 'server_error', code: 'second_failed' } }))
-        return
-      }
-      sharedRetryBudgetStreamThirdAccountHitCount += 1
-      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
-      res.write('data: {"id":"chatcmpl-stream-redispatch","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok after stream redispatch"},"finish_reason":null}]}\n\n')
-      res.write('data: {"id":"chatcmpl-stream-redispatch","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n')
-      res.end('data: [DONE]\n\n')
-      return
-    }
-    if (currentScenario === 'same_account_retry_success') {
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        sameAccountRetryFirstAccountHitCount += 1
-        if (sameAccountRetryFirstAccountHitCount === 1) {
-          res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-          res.end(JSON.stringify({ error: { message: 'temporary first account upstream error before same account retry', type: 'server_error', code: 'bad_gateway' } }))
-          return
-        }
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(sameAccountRetrySuccessBody)
-        return
-      }
-      sameAccountRetrySecondAccountHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ id: 'should-not-switch-after-same-account-retry' }))
-      return
-    }
-    if (currentScenario === 'invalid_request_switch_account_success') {
-      invalidRequestSwitchUpstreamHitCount += 1
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(instructionsRequiredRejectedRequestBody)
-        return
-      }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(invalidRequestSwitchSuccessBody)
-      return
-    }
-    if (currentScenario === 'non_stream_first_byte_timeout_switch_account_success') {
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        nonStreamFirstByteTimeoutFirstAccountHitCount += 1
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        return
-      }
-      nonStreamFirstByteTimeoutSecondAccountHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(nonStreamFirstByteTimeoutSuccessBody)
-      return
-    }
-    if (currentScenario === 'non_stream_body_interrupted_after_output_client_retry') {
-      const authorization = String(req.headers.authorization ?? '')
-      if (authorization.includes('sk-request-failure-1')) {
-        nonStreamBodyInterruptedFirstAccountHitCount += 1
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-        res.write(nonStreamBodyInterruptedDownstreamChunk)
-        setTimeout(() => {
-          res.destroy(new Error('non stream body interrupted regression'))
-        }, 20).unref()
-        return
-      }
-      nonStreamBodyInterruptedSecondAccountHitCount += 1
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(nonStreamBodyInterruptedRetrySuccessBody)
-      return
-    }
-    if (currentScenario === 'single_account_failure_default_cooldown') {
-      singleFailureHitCount += 1
-      res.writeHead(418, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(JSON.stringify({ error: { message: 'generic upstream failure', type: 'server_error', code: 'generic_failure' } }))
-      return
-    }
-    if (currentScenario === 'same_signature_third_account_success') {
-      thirdAccountSuccessHitCount += 1
-      const authorization = String(req.headers.authorization ?? '')
-      if (!authorization.includes('sk-request-failure-3')) {
-        res.writeHead(422, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(sameSignatureRejectedRequestBody)
-        return
-      }
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
-      res.end(thirdAccountSuccessBody)
-      return
-    }
-
-    const body = currentScenario === 'invalid_request_confirmation'
-      ? invalidRequestRejectedRequestBody
-      : sameSignatureRejectedRequestBody
-    if (currentScenario === 'invalid_request_confirmation') {
-      invalidRequestUpstreamHitCount += 1
-    } else {
-      sameSignatureUpstreamHitCount += 1
-    }
-    res.writeHead(422, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(body)
-  })
-}
-
-function totalUpstreamHitCount(): number {
-  return invalidRequestUpstreamHitCount
-    + thirdAccountSuccessHitCount
-    + sameSignatureUpstreamHitCount
-    + invalidRequestSwitchUpstreamHitCount
-    + sameAccountRetryFirstAccountHitCount
-    + sameAccountRetrySecondAccountHitCount
-    + unknownSwitchFirstAccountHitCount
-    + unknownSwitchSecondAccountHitCount
-    + sharedRetryBudgetFirstAccountHitCount
-    + sharedRetryBudgetSecondAccountHitCount
-    + sharedRetryBudgetThirdAccountHitCount
-    + sharedRetryBudgetStreamFirstAccountHitCount
-    + sharedRetryBudgetStreamSecondAccountHitCount
-    + sharedRetryBudgetStreamThirdAccountHitCount
-    + nonStreamFirstByteTimeoutFirstAccountHitCount
-    + nonStreamFirstByteTimeoutSecondAccountHitCount
-    + nonStreamBodyInterruptedFirstAccountHitCount
-    + nonStreamBodyInterruptedSecondAccountHitCount
-    + dispatchRaceFirstAccountHitCount
-    + dispatchRaceSecondAccountHitCount
-    + dispatchRaceThirdAccountHitCount
-    + singleAccountLocalSuppressionRecoverHitCount
-    + singleAccountCooldownRecoverHitCount
-    + singleFailureHitCount
-}
-
-function createRegressionApiKey(groupId: string, key: string): { id: string; key: string } {
-  const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
-    name: `上游失败回归 Key ${key}`,
-    groupBindings: [{ groupId, priority: 1, status: 'active' }],
-    status: 'active'
+function createAccount(groupId: string, name: string, apiKey: string, baseUrl: string) {
+  const account = repositories.createAccount({
+    providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
+    name,
+    type: 'api_key',
+    credentials: { api_key: apiKey, base_url: baseUrl },
+    groupId,
+    supportedModels: ['gpt-4o-mini'],
+    status: 'active',
+    schedulable: true
   }, access)
-  assert(apiKey.key, '回归 API Key 未返回明文密钥')
-  return { id: apiKey.id, key: apiKey.key }
-}
-
-function assertAccountsActive(accounts: RegressionAccount[], reason: string): void {
-  for (const account of accounts) {
-    const updated = repositories.findAccountSummary(account.id, access)
-    assert(updated, `账号 ${account.name} 不存在`)
-    assert.equal(updated.status, 'active', `${reason}：${account.name} 应保持正常`)
-    assert.equal(updated.schedulable, true, `${reason}：${account.name} 应保持可调度`)
-    assert.equal(updated.cooldownUntil, undefined, `${reason}：${account.name} 不应写入冷却时间`)
-    assert.equal(updated.lastErrorMessage, undefined, `${reason}：${account.name} 不应写入最近错误`)
-  }
-}
-
-function restoreRegressionAccounts(accounts: RegressionAccount[]): void {
-  for (const account of accounts) {
-    repositories.clearAccountFailureState(account.id, access)
-  }
-  accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
-  gatewayCache.clearGatewayRuntimeCache()
-}
-
-function listen(server: http.Server): Promise<void> {
-  if (server.listening) return Promise.resolve()
-  server.listen(0, '127.0.0.1')
-  return new Promise((resolvePromise, rejectPromise) => {
-    server.once('listening', resolvePromise)
-    server.once('error', rejectPromise)
+  repositories.recordAccountHealthCheckSuccess(account.id, {
+    intervalHours: 12,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
   })
+  return account
 }
 
-function serverAddress(server: http.Server): { port: number } {
-  const address = server.address()
-  if (!address || typeof address === 'string') {
-    throw new Error('服务地址不可用')
+function createRegressionApiKey(groupId: string, key: string) {
+  return createApiKeyRecordWithRouteStrategy(repositories, {
+    name: `${key}-name`,
+    groupBindings: [{ groupId, priority: 1, status: 'active' }],
+    status: 'active',
+    description: 'upstream request failure regression'
+  }, access)
+}
+
+function assertAccountsRemainAvailable(accounts: Array<{ id: string; name: string }>, reason: string): void {
+  for (const account of accounts) {
+    const current = repositories.findAccountForTest(account.id, access)
+    assert.equal(current?.status, 'active', `${reason}：${account.name} 应保持 active`)
+    assert.equal(current?.schedulable, true, `${reason}：${account.name} 应保持可调度`)
+    assert.equal(current?.apiKeyRuntime?.temporaryUnavailable ?? 0, 0, `${reason}：${account.name} 的 Key 不应被写为临时不可用`)
   }
-  return { port: address.port }
+}
+
+async function listen(server: http.Server): Promise<void> {
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen)
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', rejectListen)
+      resolveListen()
+    })
+  })
 }
 
 async function closeServer(server: http.Server | undefined): Promise<void> {
   if (!server?.listening) return
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    server.close((error) => error ? rejectPromise(error) : resolvePromise())
-  })
+  await new Promise<void>((resolveClose) => server.close(() => resolveClose()))
+}
+
+function serverPort(server: http.Server): number {
+  const address = server.address()
+  assert(address && typeof address === 'object', 'server address unavailable')
+  return address.port
 }
 
 async function removeTempRoot(): Promise<void> {
@@ -1110,13 +251,14 @@ async function removeTempRoot(): Promise<void> {
       rmSync(tempRoot, { recursive: true, force: true })
       return
     } catch (error) {
-      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) {
-        throw error
-      }
-      if (attempt === 4) return
-      await delay(250)
+      if (!(error instanceof Error) || !/EBUSY|EPERM/.test(error.message)) throw error
+      await delay(200)
     }
   }
+  rmSync(tempRoot, { recursive: true, force: true })
 }
 
-await main()
+main().catch((error) => {
+  console.error(error)
+  process.exitCode = 1
+})

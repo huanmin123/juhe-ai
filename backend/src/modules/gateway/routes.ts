@@ -205,13 +205,13 @@ export async function handleOpenAIGatewayRequest(
     captureMode: options.auditCaptureMode ?? (isAccountProbeTrafficSource(trafficSource) ? 'metadata_only' : 'default')
   })
   let activeDownstreamSessionAffinity: { key: string; accountId: string } | undefined
-  const clearActiveDownstreamSessionAffinity = () => {
+  const clearActiveDownstreamSessionAffinity = async (): Promise<void> => {
     if (!activeDownstreamSessionAffinity) {
       return
     }
     const binding = activeDownstreamSessionAffinity
     activeDownstreamSessionAffinity = undefined
-    void forgetOpenAIAccountForSessionAsync(binding.key, binding.accountId)
+    await forgetOpenAIAccountForSessionAsync(binding.key, binding.accountId)
   }
   req.once('aborted', () => {
     auditCapture.markClientAborted()
@@ -1201,6 +1201,7 @@ export async function handleOpenAIGatewayRequest(
       }
     }
   } catch (error) {
+    await clearActiveDownstreamSessionAffinity()
     if (error instanceof UpstreamAttemptError) {
       for (const accountId of nonStreamResponseStartedFailedAccountIds) {
         error.failedAccountIds.push(accountId)
