@@ -1,6 +1,11 @@
 package gatewayerrors
 
-import "errors"
+import (
+	"errors"
+
+	"juhe-ai/backend-go/internal/modules/gatewaycredentials"
+	gatewayprotocol "juhe-ai/backend-go/internal/protocols/gateway"
+)
 
 type APIKeyState string
 
@@ -11,12 +16,12 @@ const (
 	APIKeyStateExpired  APIKeyState = "expired"
 )
 
-type Protocol string
+type Protocol = gatewayprotocol.ClientErrorProtocol
 
 const (
-	ProtocolOpenAI    Protocol = "openai"
-	ProtocolAnthropic Protocol = "anthropic"
-	ProtocolGemini    Protocol = "gemini"
+	ProtocolOpenAI    = gatewayprotocol.ClientErrorOpenAI
+	ProtocolAnthropic = gatewayprotocol.ClientErrorAnthropic
+	ProtocolGemini    = gatewayprotocol.ClientErrorGemini
 )
 
 type ErrorClass string
@@ -24,10 +29,12 @@ type ErrorClass string
 const ErrorClassAuthentication ErrorClass = "authentication"
 
 var (
-	ErrCredentialMissing = errors.New("gateway credential missing")
-	ErrAPIKeyInvalid     = errors.New("gateway API key invalid")
-	ErrAPIKeyDisabled    = errors.New("gateway API key disabled")
-	ErrAPIKeyExpired     = errors.New("gateway API key expired")
+	ErrCredentialMissing   = gatewaycredentials.ErrMissingCredential
+	ErrCredentialMalformed = gatewaycredentials.ErrMalformedCredential
+	ErrCredentialAmbiguous = gatewaycredentials.ErrAmbiguousCredential
+	ErrAPIKeyInvalid       = errors.New("gateway API key invalid")
+	ErrAPIKeyDisabled      = errors.New("gateway API key disabled")
+	ErrAPIKeyExpired       = errors.New("gateway API key expired")
 )
 
 type APIKeyStateError struct {
@@ -98,6 +105,9 @@ func Classify(err error) (PublicError, bool) {
 	if errors.Is(err, ErrCredentialMissing) {
 		return credentialMissingError(), true
 	}
+	if errors.Is(err, ErrCredentialMalformed) || errors.Is(err, ErrCredentialAmbiguous) {
+		return invalidCredentialError(), true
+	}
 
 	var stateError *APIKeyStateError
 	if errors.As(err, &stateError) {
@@ -166,6 +176,11 @@ func credentialMissingError() PublicError {
 		class:      ErrorClassAuthentication,
 		code:       "missing_api_key",
 	}
+}
+
+func invalidCredentialError() PublicError {
+	public, _ := ClassifyAPIKeyState(APIKeyStateInvalid)
+	return public
 }
 
 func geminiStatus(e PublicError) string {
