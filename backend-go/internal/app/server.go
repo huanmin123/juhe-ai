@@ -188,15 +188,17 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	if publicAPILogQueue != nil {
-		defer func() { _ = publicAPILogQueue.Close() }()
+	publicAPILogQueueOwner := publicAPILogQueue
+	if publicAPILogQueueOwner != nil {
+		defer closePublicAPILogQueue(publicAPILogQueueOwner)
 	}
 	var publicAPILogSubmitter httpapi.PublicAPILogSubmitter
-	if publicAPILogQueue != nil {
-		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueue, logger)
+	if publicAPILogQueueOwner != nil {
+		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueueOwner, logger)
 		publicAPILogSubmitter = publicAPILogDispatcher
 		defer shutdownRecordDispatcher(publicAPILogDispatcher, cfg.ShutdownTimeout, logger, "public API log")
 	}
+	// The owner stays stable if handler assembly replaces its compatibility return value.
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
 		logger,
@@ -204,7 +206,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		stateRedis,
 		PublicAPIHandlerOptions{
 			APIKeyInvalidator: systemAccountInvalidator,
-			logQueue:          publicAPILogQueue,
+			logQueue:          publicAPILogQueueOwner,
 			logSubmitter:      publicAPILogSubmitter,
 		},
 	)
@@ -1390,6 +1392,9 @@ type PublicAPIHandlerOptions struct {
 	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
 	logQueue                     *queue.Client
 	logSubmitter                 httpapi.PublicAPILogSubmitter
+	logQueueFactory              func(config.Config) (*queue.Client, error)
+	closeLogQueue                func(*queue.Client) error
+	endpointHandlersFactory      func() (map[string]http.Handler, error)
 }
 
 func NewPublicAPIHandler(
@@ -1425,19 +1430,31 @@ func newPublicAPIHandlerWithOptions(
 	logQueue := opts.logQueue
 	createdLogQueue := false
 	if logQueue == nil {
+		logQueueFactory := opts.logQueueFactory
+		if logQueueFactory == nil {
+			logQueueFactory = newPublicAPILogQueue
+		}
 		var err error
-		logQueue, err = newPublicAPILogQueue(cfg)
+		logQueue, err = logQueueFactory(cfg)
 		if err != nil {
 			return nil, nil, err
 		}
 		createdLogQueue = true
 	}
+	closeLogQueue := opts.closeLogQueue
+	if closeLogQueue == nil {
+		closeLogQueue = func(logQueue *queue.Client) error { return logQueue.Close() }
+	}
 	closeCreatedLogQueue := func() {
 		if createdLogQueue {
-			_ = logQueue.Close()
+			_ = closeLogQueue(logQueue)
 		}
 	}
 
+	if stateRedis == nil {
+		closeCreatedLogQueue()
+		return nil, nil, fmt.Errorf("public api rate limiter client is required")
+	}
 	limiter, err := publicapiratelimit.NewLimiter(publicapiratelimit.Options{Client: stateRedis})
 	if err != nil {
 		closeCreatedLogQueue()
@@ -1453,16 +1470,22 @@ func newPublicAPIHandlerWithOptions(
 		return nil, nil, err
 	}
 
-	handlers, err := newPublicAPIHandlers(
-		store,
-		cfg.Secret,
-		cfg.UpstreamBaseURLPrivateAllowlist,
-		opts.APIKeyInvalidator,
-		accountHealthCheckDispatcher,
-		logger,
-		cfg.NodeInternalRequestTimeout,
-		nil,
-	)
+	endpointHandlersFactory := opts.endpointHandlersFactory
+	if endpointHandlersFactory == nil {
+		endpointHandlersFactory = func() (map[string]http.Handler, error) {
+			return newPublicAPIHandlers(
+				store,
+				cfg.Secret,
+				cfg.UpstreamBaseURLPrivateAllowlist,
+				opts.APIKeyInvalidator,
+				accountHealthCheckDispatcher,
+				logger,
+				cfg.NodeInternalRequestTimeout,
+				nil,
+			)
+		}
+	}
+	handlers, err := endpointHandlersFactory()
 	if err != nil {
 		closeCreatedLogQueue()
 		return nil, nil, err
@@ -1482,6 +1505,12 @@ func newPublicAPIHandlerWithOptions(
 	})
 
 	return handler, logQueue, nil
+}
+
+func closePublicAPILogQueue(logQueue *queue.Client) {
+	if logQueue != nil {
+		_ = logQueue.Close()
+	}
 }
 
 func newPublicAPIHandlers(
