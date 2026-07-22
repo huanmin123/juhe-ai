@@ -2,6 +2,7 @@ package runtimelogretention
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -37,11 +38,13 @@ type ServiceOptions struct {
 }
 
 type CleanupInput struct {
-	IndexEnabled  bool
-	Now           time.Time
-	RetentionDays int
-	BatchSize     int
-	MaxBatches    int
+	IndexEnabled bool
+	// GoExclusiveIndexCleanupOwner must remain false while Node retention cleanup is active.
+	GoExclusiveIndexCleanupOwner bool
+	Now                          time.Time
+	RetentionDays                int
+	BatchSize                    int
+	MaxBatches                   int
 }
 
 type CleanupResult struct {
@@ -54,6 +57,7 @@ type CleanupResult struct {
 	CutoffISO                   string
 	RuntimeLogs                 int64
 	RuntimeLogBatches           int
+	RuntimeLogsDeferred         bool
 	RuntimeLogFileCursors       int64
 	RuntimeLogFileCursorBatches int
 }
@@ -111,15 +115,23 @@ func (s *Service) Cleanup(ctx context.Context, input CleanupInput) (CleanupResul
 		CutoffISO:     cutoffISO,
 	}
 
-	result.RuntimeLogs, result.RuntimeLogBatches, err = s.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
-		return s.store.CleanupRuntimeLogIndexBefore(ctx, port.RuntimeLogRetentionCleanupInput{CutoffISO: cutoffISO, Limit: batchSize})
-	})
-	if err != nil {
-		result.Partial = cleanupResultHasProgress(result)
-		return result, err
+	if input.GoExclusiveIndexCleanupOwner {
+		result.RuntimeLogs, result.RuntimeLogBatches, result.RuntimeLogsDeferred, err = s.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
+			return s.store.CleanupRuntimeLogIndexBefore(ctx, port.RuntimeLogRetentionCleanupInput{
+				GoExclusiveIndexCleanupOwner: true,
+				CutoffISO:                    cutoffISO,
+				Limit:                        batchSize,
+			})
+		})
+		if err != nil {
+			result.Partial = cleanupResultHasProgress(result)
+			return result, err
+		}
+	} else {
+		result.RuntimeLogsDeferred = true
 	}
 	result.Phase = CleanupPhaseRuntimeLogFileCursors
-	result.RuntimeLogFileCursors, result.RuntimeLogFileCursorBatches, err = s.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
+	result.RuntimeLogFileCursors, result.RuntimeLogFileCursorBatches, _, err = s.cleanupInBatches(ctx, batchSize, maxBatches, func(ctx context.Context) (int64, error) {
 		return s.store.CleanupCompletedRuntimeLogFileCursorsBefore(ctx, port.RuntimeLogRetentionCleanupInput{CutoffISO: cutoffISO, Limit: batchSize})
 	})
 	if err != nil {
@@ -156,16 +168,19 @@ func (s *Service) cleanupInBatches(
 	batchSize int,
 	maxBatches int,
 	cleanup func(context.Context) (int64, error),
-) (int64, int, error) {
+) (int64, int, bool, error) {
 	var total int64
 	batches := 0
 	for attempt := 0; attempt < maxBatches; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return total, batches, err
+			return total, batches, false, err
 		}
 		deleted, err := cleanup(ctx)
+		if errors.Is(err, port.ErrRuntimeLogRetentionDeferred) {
+			return total, batches, true, nil
+		}
 		if err != nil {
-			return total, batches, err
+			return total, batches, false, err
 		}
 		if deleted <= 0 {
 			break
@@ -177,11 +192,11 @@ func (s *Service) cleanupInBatches(
 		}
 		if attempt < maxBatches-1 && s.batchPause > 0 {
 			if err := s.sleep(ctx, s.batchPause); err != nil {
-				return total, batches, err
+				return total, batches, false, err
 			}
 		}
 	}
-	return total, batches, nil
+	return total, batches, false, nil
 }
 
 func normalizeBatchSize(value int) (int, error) {

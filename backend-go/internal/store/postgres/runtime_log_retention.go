@@ -23,17 +23,22 @@ WHERE system_account_id = 'sys_admin'
   AND key = 'runtimeLogIndexRetentionDays'
 LIMIT 1`
 
-const runtimeLogRetentionFacetLockSQL = `
-LOCK TABLE juhe_dataset.runtime_log_facet_summary,
-  juhe_dataset.runtime_log_level_facets,
-  juhe_dataset.runtime_log_event_facets
-IN SHARE ROW EXCLUSIVE MODE`
+const runtimeLogRetentionLockTimeoutSQL = `
+SET LOCAL lock_timeout = '25ms'`
+
+const runtimeLogRetentionStatementTimeoutSQL = `
+SET LOCAL statement_timeout = '1s'`
+
+const runtimeLogRetentionTryAdvisoryLockSQL = `
+SELECT pg_try_advisory_xact_lock(
+  hashtextextended('juhe-ai:runtime-log-retention-cleanup', 0)
+)`
 
 const runtimeLogRetentionEarliestCountedSQL = `
-SELECT COALESCE((SELECT earliest_time
-  FROM juhe_dataset.runtime_log_facet_summary
-  WHERE bucket_key = 'current'
-), '')`
+SELECT COALESCE(earliest_time, '')
+FROM juhe_dataset.runtime_log_facet_summary
+WHERE bucket_key = 'current'
+FOR UPDATE NOWAIT`
 
 const runtimeLogRetentionDeleteSQL = `
 WITH doomed AS (
@@ -129,6 +134,7 @@ SELECT count(*) FROM deleted`
 
 const runtimeLogRetentionBucketKey = "current"
 const runtimeLogRetentionISOLayout = "2006-01-02T15:04:05.000Z"
+const runtimeLogRetentionCriticalSectionTimeout = 1500 * time.Millisecond
 
 type runtimeLogRetentionRows interface {
 	Next() bool
@@ -204,6 +210,9 @@ func cleanupRuntimeLogIndexBefore(
 	if input.Limit <= 0 {
 		return 0, fmt.Errorf("runtime log retention limit must be greater than zero")
 	}
+	if !input.GoExclusiveIndexCleanupOwner {
+		return 0, fmt.Errorf("%w: Go does not own the runtime log index cleanup subdomain exclusively", port.ErrRuntimeLogRetentionDeferred)
+	}
 	tx, err := beginner.BeginRuntimeLogRetentionTx(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("begin runtime log retention tx: %w", err)
@@ -218,76 +227,118 @@ func cleanupRuntimeLogIndexBefore(
 		_ = tx.Rollback(rollbackCtx)
 	}()
 
-	if _, err := tx.Exec(ctx, runtimeLogRetentionFacetLockSQL); err != nil {
-		return 0, fmt.Errorf("lock runtime log facet tables: %w", err)
+	if _, err := tx.Exec(ctx, runtimeLogRetentionLockTimeoutSQL); err != nil {
+		return 0, runtimeLogRetentionOperationError(ctx, ctx, "configure runtime log retention lock bounds", err)
 	}
-	var earliestCounted string
-	if err := tx.QueryRow(ctx, runtimeLogRetentionEarliestCountedSQL).Scan(&earliestCounted); err != nil {
-		return 0, fmt.Errorf("read runtime log facet boundary: %w", err)
+	if _, err := tx.Exec(ctx, runtimeLogRetentionStatementTimeoutSQL); err != nil {
+		return 0, runtimeLogRetentionOperationError(ctx, ctx, "configure runtime log retention statement bounds", err)
+	}
+	var ownsCleanupLock bool
+	if err := tx.QueryRow(ctx, runtimeLogRetentionTryAdvisoryLockSQL).Scan(&ownsCleanupLock); err != nil {
+		return 0, runtimeLogRetentionOperationError(ctx, ctx, "try runtime log retention advisory lock", err)
+	}
+	if !ownsCleanupLock {
+		return 0, fmt.Errorf("%w: another Go cleaner owns the transaction advisory lock", port.ErrRuntimeLogRetentionDeferred)
 	}
 	rows, err := tx.Query(ctx, runtimeLogRetentionDeleteSQL, input.CutoffISO, int32(input.Limit))
 	if err != nil {
-		return 0, fmt.Errorf("delete runtime log retention batch: %w", err)
+		return 0, runtimeLogRetentionOperationError(ctx, ctx, "delete runtime log retention batch", err)
 	}
 	defer rows.Close()
 
-	deleted := int64(0)
-	counted := int64(0)
-	levelCounts := make(map[string]int64)
-	eventCounts := make(map[string]int64)
+	type deletedRuntimeLog struct{ time, level, event string }
+	deletedRows := make([]deletedRuntimeLog, 0, input.Limit)
 	for rows.Next() {
 		var rowTime, level, event string
 		if err := rows.Scan(&rowTime, &level, &event); err != nil {
 			return 0, fmt.Errorf("scan deleted runtime log: %w", err)
 		}
-		deleted++
-		if earliestCounted != "" && rowTime < earliestCounted {
-			continue
-		}
-		counted++
-		levelCounts[level]++
-		if event != "" {
-			eventCounts[event]++
-		}
+		deletedRows = append(deletedRows, deletedRuntimeLog{time: rowTime, level: level, event: event})
 	}
 	if err := rows.Err(); err != nil {
 		return 0, fmt.Errorf("iterate deleted runtime logs: %w", err)
 	}
 	rows.Close()
+	deleted := int64(len(deletedRows))
+	if deleted == 0 {
+		if err := tx.Commit(ctx); err != nil {
+			return 0, fmt.Errorf("commit empty runtime log retention tx: %w", err)
+		}
+		committed = true
+		return 0, nil
+	}
+
+	var earliestCounted string
+	if err := tx.QueryRow(ctx, runtimeLogRetentionEarliestCountedSQL).Scan(&earliestCounted); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, fmt.Errorf("%w: current facet summary row is absent", port.ErrRuntimeLogRetentionDeferred)
+		}
+		return 0, runtimeLogRetentionOperationError(ctx, ctx, "lock runtime log facet summary row", err)
+	}
+	criticalCtx, cancelCritical := context.WithTimeout(ctx, runtimeLogRetentionCriticalSectionTimeout)
+	defer cancelCritical()
+
+	counted := int64(0)
+	levelCounts := make(map[string]int64)
+	eventCounts := make(map[string]int64)
+	for _, row := range deletedRows {
+		if earliestCounted != "" && row.time < earliestCounted {
+			continue
+		}
+		counted++
+		levelCounts[row.level]++
+		if row.event != "" {
+			eventCounts[row.event]++
+		}
+	}
 
 	if counted > 0 {
 		updatedAt := time.Now().UTC().Truncate(time.Millisecond).Format(runtimeLogRetentionISOLayout)
-		if _, err := tx.Exec(ctx, runtimeLogRetentionSummaryUpdateSQL, input.CutoffISO, counted, updatedAt); err != nil {
-			return 0, fmt.Errorf("update runtime log facet summary: %w", err)
+		if _, err := tx.Exec(criticalCtx, runtimeLogRetentionSummaryUpdateSQL, input.CutoffISO, counted, updatedAt); err != nil {
+			return 0, runtimeLogRetentionOperationError(ctx, criticalCtx, "update runtime log facet summary", err)
 		}
-		if _, err := tx.Exec(ctx, runtimeLogRetentionSummaryDeleteSQL); err != nil {
-			return 0, fmt.Errorf("delete empty runtime log facet summary: %w", err)
+		if _, err := tx.Exec(criticalCtx, runtimeLogRetentionSummaryDeleteSQL); err != nil {
+			return 0, runtimeLogRetentionOperationError(ctx, criticalCtx, "delete empty runtime log facet summary", err)
 		}
 		levels, levelDecrements := sortedRuntimeLogRetentionCounts(levelCounts)
 		if len(levels) > 0 {
-			if _, err := tx.Exec(ctx, runtimeLogRetentionLevelUpdateSQL, runtimeLogRetentionBucketKey, levels, levelDecrements, updatedAt); err != nil {
-				return 0, fmt.Errorf("update runtime log level facets: %w", err)
+			if _, err := tx.Exec(criticalCtx, runtimeLogRetentionLevelUpdateSQL, runtimeLogRetentionBucketKey, levels, levelDecrements, updatedAt); err != nil {
+				return 0, runtimeLogRetentionOperationError(ctx, criticalCtx, "update runtime log level facets", err)
 			}
 		}
-		if _, err := tx.Exec(ctx, runtimeLogRetentionLevelDeleteSQL); err != nil {
-			return 0, fmt.Errorf("delete empty runtime log level facets: %w", err)
+		if _, err := tx.Exec(criticalCtx, runtimeLogRetentionLevelDeleteSQL); err != nil {
+			return 0, runtimeLogRetentionOperationError(ctx, criticalCtx, "delete empty runtime log level facets", err)
 		}
 		events, eventDecrements := sortedRuntimeLogRetentionCounts(eventCounts)
 		if len(events) > 0 {
-			if _, err := tx.Exec(ctx, runtimeLogRetentionEventUpdateSQL, runtimeLogRetentionBucketKey, events, eventDecrements, input.CutoffISO, updatedAt); err != nil {
-				return 0, fmt.Errorf("update runtime log event facets: %w", err)
+			if _, err := tx.Exec(criticalCtx, runtimeLogRetentionEventUpdateSQL, runtimeLogRetentionBucketKey, events, eventDecrements, input.CutoffISO, updatedAt); err != nil {
+				return 0, runtimeLogRetentionOperationError(ctx, criticalCtx, "update runtime log event facets", err)
 			}
 		}
-		if _, err := tx.Exec(ctx, runtimeLogRetentionEventDeleteSQL); err != nil {
-			return 0, fmt.Errorf("delete empty runtime log event facets: %w", err)
+		if _, err := tx.Exec(criticalCtx, runtimeLogRetentionEventDeleteSQL); err != nil {
+			return 0, runtimeLogRetentionOperationError(ctx, criticalCtx, "delete empty runtime log event facets", err)
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit runtime log retention tx: %w", err)
+	if err := tx.Commit(criticalCtx); err != nil {
+		return 0, runtimeLogRetentionOperationError(ctx, criticalCtx, "commit runtime log retention tx", err)
 	}
 	committed = true
 	return deleted, nil
+}
+
+func runtimeLogRetentionOperationError(parentCtx, operationCtx context.Context, operation string, err error) error {
+	if parentErr := parentCtx.Err(); parentErr != nil {
+		return fmt.Errorf("%s: %w", operation, parentErr)
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && (pgErr.Code == "55P03" || pgErr.Code == "57014") {
+		return fmt.Errorf("%w: %s: %v", port.ErrRuntimeLogRetentionDeferred, operation, err)
+	}
+	if errors.Is(operationCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("%w: %s exceeded the short critical-section deadline", port.ErrRuntimeLogRetentionDeferred, operation)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 func (s *Store) CleanupCompletedRuntimeLogFileCursorsBefore(ctx context.Context, input port.RuntimeLogRetentionCleanupInput) (int64, error) {

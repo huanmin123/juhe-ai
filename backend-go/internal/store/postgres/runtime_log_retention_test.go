@@ -12,14 +12,28 @@ import (
 )
 
 func TestRuntimeLogRetentionSQLContracts(t *testing.T) {
-	for _, want := range []string{
-		"LOCK TABLE juhe_dataset.runtime_log_facet_summary",
-		"juhe_dataset.runtime_log_level_facets",
-		"juhe_dataset.runtime_log_event_facets",
-		"IN SHARE ROW EXCLUSIVE MODE",
+	for _, statement := range []string{
+		runtimeLogRetentionLockTimeoutSQL,
+		runtimeLogRetentionStatementTimeoutSQL,
+		runtimeLogRetentionTryAdvisoryLockSQL,
+		runtimeLogRetentionEarliestCountedSQL,
 	} {
-		if !strings.Contains(runtimeLogRetentionFacetLockSQL, want) {
-			t.Fatalf("facet lock SQL missing %q", want)
+		if strings.Contains(strings.ToUpper(statement), "LOCK TABLE") {
+			t.Fatalf("runtime log retention must not take a facet table lock:\n%s", statement)
+		}
+	}
+	if !strings.Contains(runtimeLogRetentionLockTimeoutSQL, "SET LOCAL lock_timeout") {
+		t.Fatal("lock timeout SQL is missing")
+	}
+	if !strings.Contains(runtimeLogRetentionStatementTimeoutSQL, "SET LOCAL statement_timeout") {
+		t.Fatal("statement timeout SQL is missing")
+	}
+	if !strings.Contains(runtimeLogRetentionTryAdvisoryLockSQL, "pg_try_advisory_xact_lock") {
+		t.Fatal("cleanup instances must use a non-blocking transaction advisory lock")
+	}
+	for _, want := range []string{"bucket_key = 'current'", "FOR UPDATE NOWAIT"} {
+		if !strings.Contains(runtimeLogRetentionEarliestCountedSQL, want) {
+			t.Fatalf("summary row lock SQL missing %q", want)
 		}
 	}
 	for _, want := range []string{
@@ -73,8 +87,9 @@ func TestCleanupRuntimeLogIndexBeforeCommitsFacetMaintenanceInOneTransaction(t *
 		},
 	}
 	deleted, err := cleanupRuntimeLogIndexBefore(context.Background(), runtimeLogRetentionBeginnerStub{tx: tx}, port.RuntimeLogRetentionCleanupInput{
-		CutoffISO: "2026-07-08T00:00:00.000Z",
-		Limit:     2,
+		GoExclusiveIndexCleanupOwner: true,
+		CutoffISO:                    "2026-07-08T00:00:00.000Z",
+		Limit:                        2,
 	})
 	if err != nil {
 		t.Fatalf("cleanupRuntimeLogIndexBefore() error = %v", err)
@@ -84,9 +99,10 @@ func TestCleanupRuntimeLogIndexBeforeCommitsFacetMaintenanceInOneTransaction(t *
 	}
 	joined := strings.Join(tx.statements, "\n")
 	for _, want := range []string{
-		"LOCK TABLE juhe_dataset.runtime_log_facet_summary",
-		"SELECT COALESCE((SELECT earliest_time",
+		"SET LOCAL lock_timeout",
+		"SELECT pg_try_advisory_xact_lock",
 		"DELETE FROM juhe_dataset.runtime_logs",
+		"FOR UPDATE NOWAIT",
 		"UPDATE juhe_dataset.runtime_log_facet_summary",
 		"UPDATE juhe_dataset.runtime_log_level_facets",
 		"UPDATE juhe_dataset.runtime_log_event_facets",
@@ -94,6 +110,81 @@ func TestCleanupRuntimeLogIndexBeforeCommitsFacetMaintenanceInOneTransaction(t *
 		if !strings.Contains(joined, want) {
 			t.Fatalf("transaction statements missing %q:\n%s", want, joined)
 		}
+	}
+	deleteIndex := strings.Index(joined, "DELETE FROM juhe_dataset.runtime_logs")
+	summaryLockIndex := strings.Index(joined, "FOR UPDATE NOWAIT")
+	if deleteIndex < 0 || summaryLockIndex < 0 || deleteIndex >= summaryLockIndex {
+		t.Fatalf("runtime rows must be selected/deleted before taking the cross-runtime summary row lock:\n%s", joined)
+	}
+}
+
+func TestCleanupRuntimeLogIndexBeforeFailsClosedWithoutExclusiveGoOwner(t *testing.T) {
+	tx := &runtimeLogRetentionTxStub{}
+	beginCalls := 0
+	deleted, err := cleanupRuntimeLogIndexBefore(context.Background(), runtimeLogRetentionBeginnerStub{tx: tx, beginCalls: &beginCalls}, port.RuntimeLogRetentionCleanupInput{
+		CutoffISO: "2026-07-08T00:00:00.000Z",
+		Limit:     2,
+	})
+	if deleted != 0 || !errors.Is(err, port.ErrRuntimeLogRetentionDeferred) {
+		t.Fatalf("deleted=%d error=%v", deleted, err)
+	}
+	if beginCalls != 0 || len(tx.statements) != 0 || tx.committed || tx.rolledBack {
+		t.Fatalf("fail-closed owner gate must run before opening a transaction: beginCalls=%d statements=%v committed=%v rolledBack=%v", beginCalls, tx.statements, tx.committed, tx.rolledBack)
+	}
+}
+
+func TestCleanupRuntimeLogIndexBeforeDefersWhenAnotherGoCleanerOwnsAdvisoryLock(t *testing.T) {
+	tx := &runtimeLogRetentionTxStub{denyAdvisory: true}
+	deleted, err := cleanupRuntimeLogIndexBefore(context.Background(), runtimeLogRetentionBeginnerStub{tx: tx}, port.RuntimeLogRetentionCleanupInput{
+		GoExclusiveIndexCleanupOwner: true,
+		CutoffISO:                    "2026-07-08T00:00:00.000Z",
+		Limit:                        2,
+	})
+	if deleted != 0 || !errors.Is(err, port.ErrRuntimeLogRetentionDeferred) {
+		t.Fatalf("deleted=%d error=%v", deleted, err)
+	}
+	if tx.committed || !tx.rolledBack {
+		t.Fatalf("advisory contention must rollback: committed=%v rolledBack=%v", tx.committed, tx.rolledBack)
+	}
+	if strings.Contains(strings.Join(tx.statements, "\n"), "DELETE FROM juhe_dataset.runtime_logs") {
+		t.Fatal("advisory contention must not touch runtime log rows")
+	}
+}
+
+func TestCleanupRuntimeLogIndexBeforeCommitsEmptyBatchWithoutLockingSummary(t *testing.T) {
+	tx := &runtimeLogRetentionTxStub{}
+	deleted, err := cleanupRuntimeLogIndexBefore(context.Background(), runtimeLogRetentionBeginnerStub{tx: tx}, port.RuntimeLogRetentionCleanupInput{
+		GoExclusiveIndexCleanupOwner: true,
+		CutoffISO:                    "2026-07-08T00:00:00.000Z",
+		Limit:                        2,
+	})
+	if err != nil || deleted != 0 || !tx.committed || tx.rolledBack {
+		t.Fatalf("deleted=%d error=%v committed=%v rolledBack=%v", deleted, err, tx.committed, tx.rolledBack)
+	}
+	if strings.Contains(strings.Join(tx.statements, "\n"), "FOR UPDATE NOWAIT") {
+		t.Fatal("empty cleanup batch must not delay the Node importer on the summary row")
+	}
+}
+
+func TestCleanupRuntimeLogIndexBeforeDefersWhenNodeWriterOwnsSummaryRow(t *testing.T) {
+	tx := &runtimeLogRetentionTxStub{
+		deleted:    []runtimeLogRetentionDeletedRow{{time: "2026-07-01T00:00:00.000Z", level: "warn", event: "failed"}},
+		summaryErr: &pgconn.PgError{Code: "55P03", Message: "could not obtain lock on row"},
+	}
+	deleted, err := cleanupRuntimeLogIndexBefore(context.Background(), runtimeLogRetentionBeginnerStub{tx: tx}, port.RuntimeLogRetentionCleanupInput{
+		GoExclusiveIndexCleanupOwner: true,
+		CutoffISO:                    "2026-07-08T00:00:00.000Z",
+		Limit:                        1,
+	})
+	if deleted != 0 || !errors.Is(err, port.ErrRuntimeLogRetentionDeferred) {
+		t.Fatalf("deleted=%d error=%v", deleted, err)
+	}
+	if tx.committed || !tx.rolledBack {
+		t.Fatalf("summary contention must restore the provisional delete: committed=%v rolledBack=%v", tx.committed, tx.rolledBack)
+	}
+	joined := strings.Join(tx.statements, "\n")
+	if strings.Contains(joined, "UPDATE juhe_dataset.runtime_log_facet_summary") {
+		t.Fatal("summary contention must not mutate facets")
 	}
 }
 
@@ -104,11 +195,32 @@ func TestCleanupRuntimeLogIndexBeforeRollsBackOnFacetFailure(t *testing.T) {
 		failContains: "UPDATE juhe_dataset.runtime_log_level_facets",
 	}
 	_, err := cleanupRuntimeLogIndexBefore(context.Background(), runtimeLogRetentionBeginnerStub{tx: tx}, port.RuntimeLogRetentionCleanupInput{
-		CutoffISO: "2026-07-08T00:00:00.000Z",
-		Limit:     1,
+		GoExclusiveIndexCleanupOwner: true,
+		CutoffISO:                    "2026-07-08T00:00:00.000Z",
+		Limit:                        1,
 	})
 	if err == nil || !tx.rolledBack || tx.committed {
 		t.Fatalf("error=%v committed=%v rolledBack=%v", err, tx.committed, tx.rolledBack)
+	}
+}
+
+func TestCleanupRuntimeLogIndexBeforeDefersOnFacetLockTimeout(t *testing.T) {
+	tx := &runtimeLogRetentionTxStub{
+		earliest:     "2026-07-01T00:00:00.000Z",
+		deleted:      []runtimeLogRetentionDeletedRow{{time: "2026-07-01T00:00:00.000Z", level: "warn", event: "failed"}},
+		failContains: "UPDATE juhe_dataset.runtime_log_level_facets",
+		failErr:      &pgconn.PgError{Code: "55P03", Message: "canceling statement due to lock timeout"},
+	}
+	deleted, err := cleanupRuntimeLogIndexBefore(context.Background(), runtimeLogRetentionBeginnerStub{tx: tx}, port.RuntimeLogRetentionCleanupInput{
+		GoExclusiveIndexCleanupOwner: true,
+		CutoffISO:                    "2026-07-08T00:00:00.000Z",
+		Limit:                        1,
+	})
+	if deleted != 0 || !errors.Is(err, port.ErrRuntimeLogRetentionDeferred) {
+		t.Fatalf("deleted=%d error=%v", deleted, err)
+	}
+	if tx.committed || !tx.rolledBack {
+		t.Fatalf("facet lock timeout must rollback: committed=%v rolledBack=%v", tx.committed, tx.rolledBack)
 	}
 }
 
@@ -131,9 +243,15 @@ func TestParseRuntimeLogIndexRetentionDaysMatchesNodeFallback(t *testing.T) {
 	}
 }
 
-type runtimeLogRetentionBeginnerStub struct{ tx *runtimeLogRetentionTxStub }
+type runtimeLogRetentionBeginnerStub struct {
+	tx         *runtimeLogRetentionTxStub
+	beginCalls *int
+}
 
 func (s runtimeLogRetentionBeginnerStub) BeginRuntimeLogRetentionTx(context.Context) (runtimeLogRetentionTx, error) {
+	if s.beginCalls != nil {
+		(*s.beginCalls)++
+	}
 	return s.tx, nil
 }
 
@@ -144,6 +262,9 @@ type runtimeLogRetentionTxStub struct {
 	deleted      []runtimeLogRetentionDeletedRow
 	statements   []string
 	failContains string
+	failErr      error
+	denyAdvisory bool
+	summaryErr   error
 	committed    bool
 	rolledBack   bool
 }
@@ -151,6 +272,9 @@ type runtimeLogRetentionTxStub struct {
 func (s *runtimeLogRetentionTxStub) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
 	s.statements = append(s.statements, sql)
 	if s.failContains != "" && strings.Contains(sql, s.failContains) {
+		if s.failErr != nil {
+			return pgconn.CommandTag{}, s.failErr
+		}
 		return pgconn.CommandTag{}, errors.New("injected failure")
 	}
 	return pgconn.NewCommandTag("UPDATE 1"), nil
@@ -163,16 +287,32 @@ func (s *runtimeLogRetentionTxStub) Query(_ context.Context, sql string, _ ...an
 
 func (s *runtimeLogRetentionTxStub) QueryRow(_ context.Context, sql string, _ ...any) runtimeLogRetentionRow {
 	s.statements = append(s.statements, sql)
-	return runtimeLogRetentionRowStub{value: s.earliest}
+	if strings.Contains(sql, "pg_try_advisory_xact_lock") {
+		return runtimeLogRetentionRowStub{value: !s.denyAdvisory}
+	}
+	return runtimeLogRetentionRowStub{value: s.earliest, err: s.summaryErr}
 }
 
 func (s *runtimeLogRetentionTxStub) Commit(context.Context) error   { s.committed = true; return nil }
 func (s *runtimeLogRetentionTxStub) Rollback(context.Context) error { s.rolledBack = true; return nil }
 
-type runtimeLogRetentionRowStub struct{ value string }
+type runtimeLogRetentionRowStub struct {
+	value any
+	err   error
+}
 
 func (r runtimeLogRetentionRowStub) Scan(dest ...any) error {
-	*(dest[0].(*string)) = r.value
+	if r.err != nil {
+		return r.err
+	}
+	switch value := r.value.(type) {
+	case bool:
+		*(dest[0].(*bool)) = value
+	case string:
+		*(dest[0].(*string)) = value
+	default:
+		return errors.New("unsupported runtime log retention row stub value")
+	}
 	return nil
 }
 
