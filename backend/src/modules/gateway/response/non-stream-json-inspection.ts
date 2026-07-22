@@ -9,7 +9,14 @@ import {
   responseHeadersToObject,
   type AuditCaptureContext
 } from '../audit/capture.service.js'
-import { responseInspectionAuditMetadata } from '../audit/metadata.js'
+import {
+  codexResponsesGuardAuditMetadata,
+  responseInspectionAuditMetadata
+} from '../audit/metadata.js'
+import {
+  createCodexResponsesResponseGuard,
+  type CodexResponsesGuardJsonResult
+} from '../codex-responses/response-guard.js'
 import type { GatewaySettings } from '../policy/account-error-policy.service.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
@@ -57,6 +64,8 @@ import {
 import {
   shouldExcludeCurrentAccountForStreamServerRetry
 } from './stream-finalization-retry-decision.js'
+import type { GatewayDownstreamCommitState } from './downstream-commit-state.js'
+import { runtimeConfig } from '../../../config/runtime.js'
 export async function inspectBufferedGatewayJsonResponse(input: {
   req: Request
   res: Response
@@ -76,6 +85,8 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   accountStateMutationEnabled: boolean
   automaticAccountStateMutationEnabled: boolean
   protocolValidationEnabled: boolean
+  downstreamCommitState: GatewayDownstreamCommitState
+  onCodexResponsesGuardResult?: (result: CodexResponsesGuardJsonResult) => void
   sessionAffinityKey?: string
 }): Promise<UpstreamResponseHandlingResult | undefined> {
   let parsedJson: unknown
@@ -84,8 +95,12 @@ export async function inspectBufferedGatewayJsonResponse(input: {
       ? JSON.parse(input.responseBodyText) as unknown
       : undefined
   } catch {
+    const guardResult = inspectCodexResponsesJsonAtMarkedBoundary(input, {})
+    if (guardResult) input.onCodexResponsesGuardResult?.(guardResult)
     return undefined
   }
+  const guardResult = inspectCodexResponsesJsonAtMarkedBoundary(input, parsedJson)
+  if (guardResult) input.onCodexResponsesGuardResult?.(guardResult)
   const protocolFailure = input.protocolValidationEnabled
     ? validateBufferedJsonProtocolResponse(parsedJson, input)
     : undefined
@@ -222,6 +237,52 @@ export async function inspectBufferedGatewayJsonResponse(input: {
     firstTokenMs: input.firstTokenMs
   })
   return { alreadyFinalized: true }
+}
+
+export function inspectCodexResponsesJsonAtMarkedBoundary(
+  input: {
+    req: Request
+    upstreamResponse: GatewayUpstreamResponse
+    auditCapture: AuditCaptureContext
+    clientStrategy?: OpenAIGatewayClientStrategyContext
+    downstreamCommitState: GatewayDownstreamCommitState
+    guardMode?: 'off' | 'shadow' | 'safe_repair'
+  },
+  parsedJson: unknown
+): CodexResponsesGuardJsonResult | undefined {
+  const marker = input.upstreamResponse.codexResponsesGuardMarker
+  const mode = input.guardMode ?? runtimeConfig.codexProtocolGuard.mode
+  if (
+    mode === 'off'
+    ||
+    !input.upstreamResponse.ok
+    || !marker
+    || input.clientStrategy?.clientProfile !== 'codex'
+    || gatewayProtocolResponseEndpointFamilyForRequest(input.req, undefined) !== 'responses'
+  ) return undefined
+  const guard = createCodexResponsesResponseGuard({
+    marker,
+    downstreamCommitState: input.downstreamCommitState,
+    mode,
+    envelopeKind: isResponsesCompactRequest(input.req) ? 'compact' : 'response'
+  })
+  try {
+    const result = guard.inspectJson(plainObject(parsedJson) ?? {})
+    if (result.outcome !== 'clean') {
+      input.auditCapture.addGatewayMetadata({
+        label: 'codex_responses_protocol_guard',
+        metadata: codexResponsesGuardAuditMetadata(result)
+      })
+    }
+    return result
+  } finally {
+    guard.dispose()
+  }
+}
+
+function isResponsesCompactRequest(req: Request): boolean {
+  const path = (req.originalUrl || req.path || '').split('?', 1)[0].replace(/^\/v1(?=\/|$)/, '') || '/'
+  return req.method?.toUpperCase() === 'POST' && path === '/responses/compact'
 }
 
 function validateBufferedJsonProtocolResponse(

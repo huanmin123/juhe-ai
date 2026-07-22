@@ -32,6 +32,8 @@ for (const [stage, event] of [
 }
 assert.deepEqual(lifecycle.identityFor(responseResourceId, 0), {
   itemId: 'ctc_stream_0',
+  upstreamItemId: 'ctc_stream_0',
+  clientItemId: undefined,
   itemType: 'custom_tool_call',
   callId: 'call_stream_0',
   outputIndex: 0,
@@ -87,6 +89,38 @@ assert.equal(wrongPrefix.outcome, 'repairable')
 assert.equal(wrongPrefix.issue?.code, 'item_id_prefix_mismatch')
 assert.equal(wrongPrefix.issue?.provenance, 'gateway_bridge')
 
+const repairGuard = createCodexResponsesStreamContractState({
+  provenance: 'gateway_bridge',
+  repairItemIds: true,
+  createItemId: ({ prefix }) => `${prefix}_client_stable`
+})
+const repairAdded = repairGuard.consume({
+  responseResourceId,
+  event: outputItemEvent('added', 0, customToolItem({ id: 'fc_wrong_custom' }))
+})
+assert.equal(repairAdded.outcome, 'repairable')
+assert.equal(repairAdded.repairs[0]?.clientItemId, 'ctc_client_stable')
+assert.equal(repairAdded.repairs[0]?.field, 'item.id')
+assert.equal(repairGuard.identityFor(responseResourceId, 0)?.upstreamItemId, 'fc_wrong_custom')
+assert.equal(repairGuard.identityFor(responseResourceId, 0)?.clientItemId, 'ctc_client_stable')
+const repairDelta = repairGuard.consume({
+  responseResourceId,
+  event: { ...delta, item_id: 'fc_wrong_custom' }
+})
+assert.equal(repairDelta.repairs[0]?.clientItemId, 'ctc_client_stable')
+assert.equal(repairDelta.repairs[0]?.field, 'item_id')
+const repairDone = repairGuard.consume({
+  responseResourceId,
+  event: outputItemEvent('done', 0, customToolItem({ id: 'fc_wrong_custom' }))
+})
+assert.equal(repairDone.repairs[0]?.clientItemId, 'ctc_client_stable')
+const repairCompleted = repairGuard.consume({
+  responseResourceId,
+  event: completedEvent([customToolItem({ id: 'fc_wrong_custom' })])
+})
+assert.equal(repairCompleted.repairs[0]?.clientItemId, 'ctc_client_stable')
+assert.equal(repairCompleted.repairs[0]?.field, 'response.output.id')
+
 const unknownGuard = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' })
 const unknown = unknownGuard.consume({
   responseResourceId,
@@ -136,8 +170,13 @@ const deltaBeforeAdded = createCodexResponsesStreamContractState({ provenance: '
   responseResourceId,
   event: delta
 })
-assert.equal(deltaBeforeAdded.outcome, 'blocked')
-assert.ok(deltaBeforeAdded.issues.some((issue) => issue.code === 'event_item_missing_added'))
+assert.equal(deltaBeforeAdded.outcome, 'clean', 'Codex parser accepts tool delta without a preceding added event')
+
+const standaloneDoneWithoutResourceOrIndex = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' }).consume({
+  responseResourceId: '',
+  event: { type: 'response.output_item.done', item: customToolItem() }
+})
+assert.equal(standaloneDoneWithoutResourceOrIndex.outcome, 'clean', 'Codex wire parser does not require response.created or output_index')
 
 const completedIdentityMismatchGuard = guardWithAdded()
 const completedIdentityMismatch = completedIdentityMismatchGuard.consume({
@@ -153,6 +192,61 @@ const completedResourceMismatch = createCodexResponsesStreamContractState({ prov
 })
 assert.equal(completedResourceMismatch.outcome, 'blocked')
 assert.equal(completedResourceMismatch.issue?.code, 'response_resource_id_inconsistent')
+
+const completedPrefixMismatch = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' }).consume({
+  responseResourceId,
+  event: completedEvent([customToolItem({ id: 'fc_wrong_completed' })])
+})
+assert.equal(completedPrefixMismatch.outcome, 'repairable')
+assert.ok(completedPrefixMismatch.issues.some((issue) => issue.code === 'item_id_prefix_mismatch'))
+
+const completedDuplicateId = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' }).consume({
+  responseResourceId,
+  event: completedEvent([
+    { id: 'msg_duplicate', type: 'message', role: 'assistant', content: [] },
+    { id: 'msg_duplicate', type: 'message', role: 'assistant', content: [] }
+  ])
+})
+assert.equal(completedDuplicateId.outcome, 'blocked')
+assert.ok(completedDuplicateId.issues.some((issue) => issue.code === 'duplicate_item_identity'))
+
+const completedTrigger = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' }).consume({
+  responseResourceId,
+  event: completedEvent([{ type: 'compaction_trigger' }])
+})
+assert.equal(completedTrigger.outcome, 'blocked')
+assert.ok(completedTrigger.issues.some((issue) => issue.code === 'event_stage_invalid'))
+
+const completedUnknownMismatchGuard = guardWithAdded()
+const completedUnknownMismatch = completedUnknownMismatchGuard.consume({
+  responseResourceId,
+  event: completedEvent([{ id: 'ctc_stream_0', type: 'future_item' }])
+})
+assert.equal(completedUnknownMismatch.outcome, 'blocked')
+assert.ok(completedUnknownMismatch.issues.some((issue) => issue.code === 'event_item_type_inconsistent'))
+
+const terminalGuard = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' })
+assert.equal(terminalGuard.consume({ responseResourceId, event: completedEvent([]) }).outcome, 'clean')
+assert.equal(terminalGuard.consume({ responseResourceId, event: done }).outcome, 'blocked')
+assert.equal(terminalGuard.consume({ responseResourceId, event: completedEvent([]) }).outcome, 'blocked')
+
+const unknownDeltaGuard = guardWithAdded()
+const unknownDelta = unknownDeltaGuard.consume({
+  responseResourceId,
+  event: { type: 'response.typo.delta', output_index: 0, item_id: 'ctc_stream_0', delta: 'x' }
+})
+assert.equal(unknownDelta.outcome, 'observed_unknown')
+assert.ok(unknownDelta.issues.some((issue) => issue.code === 'unknown_delta_event_type'))
+
+const longIdentityGuard = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' })
+const longIdentity = `ctc_${'x'.repeat(16 * 1024)}`
+assert.equal(longIdentityGuard.consume({
+  responseResourceId: `resp_${'r'.repeat(16 * 1024)}`,
+  event: outputItemEvent('added', 0, customToolItem({ id: longIdentity, call_id: `call_${'c'.repeat(16 * 1024)}` }))
+}).outcome, 'clean')
+const retainedLongIdentity = longIdentityGuard.identityFor(`resp_${'r'.repeat(16 * 1024)}`, 0)
+assert.match(retainedLongIdentity?.itemId ?? '', /^sha256:/)
+assert.equal(JSON.stringify(longIdentityGuard.snapshot()).includes(longIdentity), false)
 
 const heartbeatGuard = createCodexResponsesStreamContractState({ provenance: 'raw_upstream' })
 const heartbeat = heartbeatGuard.consume({ kind: 'comment', comment: 'juhe-ai waiting for upstream capacity' })
@@ -182,6 +276,8 @@ assert.equal(JSON.stringify(boundedSnapshot).includes(largeBodyMarker), false, '
 boundedGuard.dispose()
 assert.equal(boundedGuard.snapshot().identityCount, 0)
 assert.equal(boundedGuard.snapshot().itemIdOwnerCount, 0)
+assert.equal(boundedGuard.snapshot().diagnostics.length, 0)
+assert.equal(boundedGuard.snapshot().omittedDiagnosticCount, 0)
 
 console.log('Codex Responses SSE contract 回归通过：增量身份、生命周期、字段契约、未知类型、heartbeat 与有界状态已固定')
 

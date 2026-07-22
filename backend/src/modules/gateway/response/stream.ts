@@ -67,6 +67,10 @@ import {
   type StreamPipeResult
 } from './stream-result.js'
 import { GatewayDownstreamCommitState } from './downstream-commit-state.js'
+import {
+  rewriteCodexResponsesSseEvent,
+  type CodexResponsesResponseGuard
+} from '../codex-responses/response-guard.js'
 export type { StreamBodyOmissionSummary, StreamPipeResult } from './stream-result.js'
 
 export interface StreamFailureContext {
@@ -94,6 +98,7 @@ export interface StreamPipeOptions {
   transformUpstreamChunk?: (chunk: Buffer) => Buffer[]
   flushTransformedUpstreamChunks?: () => Buffer[]
   downstreamCommitState?: GatewayDownstreamCommitState
+  codexResponsesGuard?: CodexResponsesResponseGuard
 }
 
 const streamDiagnosticCaptureBytes = 256 * 1024
@@ -126,10 +131,27 @@ export async function pipeUpstreamStream(
   const protocolDriver = requireGatewayProtocolDriverForResponseProtocol(responseProtocol)
   const gatewayErrorProtocol = protocolDriver.clientErrorProtocol
   const inspector = protocolDriver.createStreamInspector()
+  const codexResponsesGuard = options.codexResponsesGuard
+  const codexSafeRepairEnabled = codexResponsesGuard?.mode === 'safe_repair'
+  if (codexResponsesGuard && !codexSafeRepairEnabled && inspector.setParsedEventObserver) {
+    inspector.setParsedEventObserver((event) => {
+      try {
+        codexResponsesGuard.inspectOpenAiSseEvent(event)
+      } catch (error) {
+        getRequestLogger().error({ error }, 'Codex Responses 流式协议检查失败，shadow 模式继续透传')
+      }
+    })
+  }
+  if (codexResponsesGuard && inspector.setParserCoverageObserver) {
+    inspector.setParserCoverageObserver(() => {
+      codexResponsesGuard.observeCoverageGap()
+    })
+  }
   const interpretProtocolFailures = options.interpretProtocolFailures !== false
   const responseInspectionEnabled = interpretProtocolFailures
     && options.responseInspectionContext?.clientProfile !== 'generic_anthropic'
     && (options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0)
+    || codexSafeRepairEnabled
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,
@@ -140,6 +162,16 @@ export async function pipeUpstreamStream(
       ...(protocolDriver.sseResponseInspectionFailureEvent === 'none'
         ? {
             buildFailureEvent: () => undefined
+          }
+        : {}),
+      ...(codexSafeRepairEnabled && codexResponsesGuard
+        ? {
+            transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
+              const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
+              const rewritten = rewriteCodexResponsesSseEvent(event, result.repairs)
+              if (rewritten) codexResponsesGuard.recordAppliedSseRepairs(result.repairs.length)
+              return rewritten
+            }
           }
         : {})
     })
@@ -304,29 +336,34 @@ export async function pipeUpstreamStream(
     imageOutputReceived = false,
     captureSuccessPayloads = true,
     bodyOmission?: StreamBodyOmissionSummary
-  ): StreamPipeResult => streamResult(
-    completed,
-    message,
-    errorCode,
-    firstTokenMs,
-    usage,
-    responseCapture,
-    upstreamCapture,
-    diagnosticCapture,
-    responseInspection,
-    outputReceived,
-    estimatedOutputTokens,
-    imageOutputReceived,
-    captureSuccessPayloads,
-    bodyOmission,
-    responseInspectionObservations,
-    responseInspectionObservationOmittedCount,
-    downstreamCommit.downstreamBytesWritten,
-    downstreamCommit.transportCommitted || res.headersSent,
-    downstreamCommit.semanticCommitted,
-    uncommittedStreamResponseBody(preCommitBuffer),
-    responseResourceId
-  )
+  ): StreamPipeResult => {
+    const guardSnapshot = codexResponsesGuard?.snapshot()
+    codexResponsesGuard?.dispose()
+    return streamResult(
+      completed,
+      message,
+      errorCode,
+      firstTokenMs,
+      usage,
+      responseCapture,
+      upstreamCapture,
+      diagnosticCapture,
+      responseInspection,
+      outputReceived,
+      estimatedOutputTokens,
+      imageOutputReceived,
+      captureSuccessPayloads,
+      bodyOmission,
+      responseInspectionObservations,
+      responseInspectionObservationOmittedCount,
+      downstreamCommit.downstreamBytesWritten,
+      downstreamCommit.transportCommitted || res.headersSent,
+      downstreamCommit.semanticCommitted,
+      uncommittedStreamResponseBody(preCommitBuffer),
+      responseResourceId,
+      guardSnapshot
+    )
+  }
   const finishTerminalSuccess = async (
     inspection: GatewayStreamInspection,
     input: { drainForKeepAlive?: boolean; eofPendingFlush?: boolean } = {}
