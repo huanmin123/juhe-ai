@@ -973,8 +973,6 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		Store:                    store,
 		Secret:                   cfg.Secret,
 		SystemAccountInvalidator: systemAccountInvalidator,
-		PageDataPublisher:        accountsStaticResetPublisher,
-		Logger:                   logger,
 	})
 	systemTeamService := managementsystemteams.NewServiceWithOptions(managementsystemteams.ServiceOptions{
 		Store:                    store,
