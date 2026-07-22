@@ -117,7 +117,7 @@ func (s *Store) readManagementAccountUsageRows(ctx context.Context, input port.M
 	if limit <= 0 {
 		return nil, nil
 	}
-	keyword := norm.NFKC.String(strings.TrimSpace(input.Keyword))
+	keyword := normalizeManagementStatsKeyword(input.Keyword)
 	visibilitySQL := managementStatsVisibilitySQL(input.Scope, "accounts", true)
 	selectionSQL := ""
 	keywordJoinSQL := ""
@@ -300,7 +300,7 @@ func (s *Store) ReadManagementAIPerformance(ctx context.Context, input port.Mana
 func (s *Store) ReadManagementAIPerformanceAccounts(ctx context.Context, input port.ManagementAIPerformanceAccountsReadInput) ([]port.ManagementStatsAccount, error) {
 	input.AccountIDs = boundedManagementStatsIDs(input.AccountIDs, 20)
 	limit := min(max(input.Limit, 1), 50)
-	searchRows, err := s.readManagementStatsRankedAccounts(ctx, input.Scope, norm.NFKC.String(strings.TrimSpace(input.Keyword)), limit)
+	searchRows, err := s.readManagementStatsRankedAccounts(ctx, input.Scope, normalizeManagementStatsKeyword(input.Keyword), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -356,29 +356,77 @@ func (s *Store) readManagementStatsRankedAccounts(ctx context.Context, scope por
 }
 
 func (s *Store) readManagementStatsKeywordAccountIDs(ctx context.Context, scope port.ManagementStatsScope, keyword string, limit int) ([]string, error) {
+	keyword = normalizeManagementStatsKeyword(keyword)
+	boundedLimit := min(max(limit, 1), 50)
 	upper := managementStatsPrefixUpperBound(keyword)
-	visibilitySQL := managementStatsVisibilitySQL(scope, "accounts", false)
-	rows, err := s.pool.Query(ctx, `
+	accountQuery, sourceQuery := managementStatsKeywordAccountIDQueries(scope)
+	args := []any{scope.SystemAccountID, scope.ViewerSystemAccountID, keyword, upper, boundedLimit, 0}
+	accountIDs, err := s.readManagementStatsKeywordCandidateIDs(ctx, accountQuery, args, "account-name")
+	if err != nil {
+		return nil, err
+	}
+	sourceIDs, err := s.readManagementStatsKeywordCandidateIDs(ctx, sourceQuery, args, "source-name")
+	if err != nil {
+		return nil, err
+	}
+	return mergeManagementStatsKeywordAccountIDs(accountIDs, sourceIDs, boundedLimit), nil
+}
+
+func managementStatsKeywordAccountIDQueries(scope port.ManagementStatsScope) (string, string) {
+	accountVisibilitySQL := managementStatsVisibilitySQL(scope, "accounts", false)
+	sourceVisibilitySQL := managementStatsVisibilitySQL(scope, "instance_accounts", false)
+	accountQuery := `
 SELECT accounts.id
 FROM juhe_business.accounts AS accounts
-LEFT JOIN juhe_business.accounts AS source_accounts ON source_accounts.id = accounts.authorization_instance_source_account_id
 WHERE accounts.deleted_at IS NULL
-  AND (`+visibilitySQL+`)
-  AND (
-    (accounts.name COLLATE "C" >= $3::text AND accounts.name COLLATE "C" < $4::text AND starts_with(accounts.name, $3::text))
-    OR (source_accounts.deleted_at IS NULL AND source_accounts.name COLLATE "C" >= $3::text AND source_accounts.name COLLATE "C" < $4::text AND starts_with(source_accounts.name, $3::text))
-  )
-ORDER BY COALESCE(source_accounts.name, accounts.name) COLLATE "C" ASC, accounts.id ASC
+  AND (` + accountVisibilitySQL + `)
+  AND accounts.name COLLATE "C" >= $3::text
+  AND accounts.name COLLATE "C" < $4::text
+  AND starts_with(accounts.name, $3::text)
+ORDER BY accounts.name COLLATE "C" ASC, accounts.id ASC
 LIMIT $5::integer
-OFFSET $6::integer`, scope.SystemAccountID, scope.ViewerSystemAccountID, keyword, upper, min(max(limit, 1), 50), 0)
+OFFSET $6::integer`
+	sourceQuery := `
+SELECT instance_accounts.id
+FROM juhe_business.accounts AS source_accounts
+INNER JOIN juhe_business.accounts AS instance_accounts
+  ON instance_accounts.authorization_instance_source_account_id = source_accounts.id
+WHERE source_accounts.deleted_at IS NULL
+  AND instance_accounts.deleted_at IS NULL
+  AND (` + sourceVisibilitySQL + `)
+  AND source_accounts.name COLLATE "C" >= $3::text
+  AND source_accounts.name COLLATE "C" < $4::text
+  AND starts_with(source_accounts.name, $3::text)
+ORDER BY source_accounts.name COLLATE "C" ASC, instance_accounts.id ASC
+LIMIT $5::integer
+OFFSET $6::integer`
+	return accountQuery, sourceQuery
+}
+
+func (s *Store) readManagementStatsKeywordCandidateIDs(ctx context.Context, query string, args []any, candidateKind string) ([]string, error) {
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("read management stats keyword account ids: %w", err)
+		return nil, fmt.Errorf("read management stats %s keyword account ids: %w", candidateKind, err)
 	}
 	result, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("scan management stats keyword account ids: %w", err)
+		return nil, fmt.Errorf("scan management stats %s keyword account ids: %w", candidateKind, err)
 	}
 	return result, nil
+}
+
+func mergeManagementStatsKeywordAccountIDs(accountIDs, sourceIDs []string, limit int) []string {
+	if limit <= 0 {
+		return []string{}
+	}
+	merged := make([]string, 0, min(len(accountIDs)+len(sourceIDs), limit))
+	merged = append(merged, accountIDs...)
+	merged = append(merged, sourceIDs...)
+	return boundedManagementStatsIDs(merged, limit)
+}
+
+func normalizeManagementStatsKeyword(value string) string {
+	return norm.NFKC.String(strings.TrimSpace(value))
 }
 
 type managementStatsAccountRow struct {
