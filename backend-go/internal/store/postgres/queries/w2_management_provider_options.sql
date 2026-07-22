@@ -1,22 +1,19 @@
 -- name: ListManagementProviders :many
 SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
 FROM juhe_business.providers
-ORDER BY name ASC, code ASC
-LIMIT 50;
+ORDER BY name ASC, code ASC;
 
 -- name: ListManagementProviderOptionProviders :many
 SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
 FROM juhe_business.providers
 WHERE enabled = true
-ORDER BY name ASC, code ASC
-LIMIT 50;
+ORDER BY name ASC, code ASC;
 
 -- name: ListManagementProviderSelectOptions :many
 SELECT id, code, name, enabled
 FROM juhe_business.providers
 WHERE enabled = true
-ORDER BY name ASC, code ASC
-LIMIT 50;
+ORDER BY name ASC, code ASC;
 
 -- name: ListManagementProviderOptionProfiles :many
 SELECT
@@ -33,8 +30,7 @@ SELECT
   capabilities_json
 FROM juhe_business.provider_protocol_profiles
 WHERE provider_code = ANY(sqlc.arg(provider_codes)::text[])
-ORDER BY provider_code ASC, updated_at DESC, id ASC
-LIMIT 200;
+ORDER BY provider_code ASC, updated_at DESC, id ASC;
 
 -- name: ListManagementProviderOptionEndpointFamilies :many
 SELECT

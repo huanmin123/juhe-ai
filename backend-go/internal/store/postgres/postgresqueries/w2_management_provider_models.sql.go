@@ -468,7 +468,6 @@ FROM juhe_business.providers
 WHERE enabled = true
   AND code <> 'hybrid'
 ORDER BY name ASC, code ASC
-LIMIT 50
 `
 
 func (q *Queries) ListManagementEnabledModelProviderCodes(ctx context.Context) ([]string, error) {
@@ -501,7 +500,6 @@ WHERE p.enabled = true
   AND ppp.protocol_code = $1
   AND ppp.protocol_version = $2
 ORDER BY p.code ASC
-LIMIT 50
 `
 
 type ListManagementProviderCodesByProtocolParams struct {
