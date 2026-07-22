@@ -4,13 +4,15 @@ import type {
   CodexContractRevision,
   CodexContractValidationResult,
   CodexProtocolIssue,
-  CodexProtocolIssueProvenance
+  CodexProtocolIssueProvenance,
+  CodexRequiredItemField
 } from './contract-types.js'
 
 type JsonRecord = Record<string, unknown>
 
 const toolOutputTypeByCallType = new Map<string, string>([
   ['function_call', 'function_call_output'],
+  ['local_shell_call', 'function_call_output'],
   ['custom_tool_call', 'custom_tool_call_output'],
   ['tool_search_call', 'tool_search_output']
 ])
@@ -22,7 +24,18 @@ export function validateCodexResponsesJson(input: {
   revision: CodexContractRevision
 }): CodexContractValidationResult {
   const collection = responseItemCollection(input.response)
-  if (!collection) return result(input.revision, [])
+  if (collection.outcome === 'absent') return result(input.revision, [])
+  if (collection.outcome === 'invalid') {
+    return result(input.revision, [issue(
+      input,
+      collection.code,
+      collection.message,
+      collection.path,
+      -1,
+      undefined,
+      'R2'
+    )])
+  }
 
   const issues: CodexProtocolIssue[] = []
   const itemIds = new Map<string, number>()
@@ -46,9 +59,37 @@ export function validateCodexResponsesJson(input: {
       continue
     }
 
-    if (input.provenance !== 'request_history') {
+    let hasRepairableIdIssue = false
+    if (Object.hasOwn(item, 'id')) {
+      if (!contract.prefix || !contract.repairableIdPaths.includes('id')) {
+        issues.push(issue(input, 'item_id_forbidden', `${type} 不允许携带 item ID`, [collection.field, index, 'id'], index, type, 'R2'))
+        continue
+      }
+      if (item.id === null && input.provenance !== 'request_history') {
+        // ResponseItem.id is Option<ResponseItemId>; null is equivalent to no persisted ID.
+      } else {
+      const id = nonEmptyString(item.id)
+      if (!id) {
+        issues.push(issue(input, 'item_id_invalid', `${type} 的 item ID 必须是非空字符串`, [collection.field, index, 'id'], index, type, 'R0'))
+        hasRepairableIdIssue = true
+      } else {
+        if (!isExpectedItemId(id, contract.prefix)) {
+          issues.push(issue(input, 'item_id_prefix_mismatch', `${type} 的 item ID 前缀与 contract 不一致`, [collection.field, index, 'id'], index, type, 'R0'))
+          hasRepairableIdIssue = true
+        }
+        if (itemIds.has(id)) {
+          issues.push(issue(input, 'duplicate_item_identity', '同一 Responses 文档中出现重复 item ID', [collection.field, index, 'id'], index, type, 'R2'))
+        } else {
+          itemIds.set(id, index)
+        }
+      }
+      }
+    }
+
+    const deferHistoryPayloadCheck = input.provenance === 'request_history' && hasRepairableIdIssue
+    if (!deferHistoryPayloadCheck) {
       for (const requiredField of contract.requiredFields) {
-        if (!validRequiredField(item, requiredField.name, requiredField.kind)) {
+        if (!validContractField(item, requiredField, true)) {
           issues.push(issue(
             input,
             'item_required_field_invalid',
@@ -60,27 +101,47 @@ export function validateCodexResponsesJson(input: {
           ))
         }
       }
-    }
-
-    if (Object.hasOwn(item, 'id')) {
-      const id = nonEmptyString(item.id)
-      if (!id) {
-        issues.push(issue(input, 'item_id_invalid', `${type} 的 item ID 必须是非空字符串`, [collection.field, index, 'id'], index, type, 'R0'))
-      } else {
-        if (!isExpectedItemId(id, contract.prefix)) {
-          issues.push(issue(input, 'item_id_prefix_mismatch', `${type} 的 item ID 前缀与 contract 不一致`, [collection.field, index, 'id'], index, type, 'R0'))
-        }
-        if (itemIds.has(id)) {
-          issues.push(issue(input, 'duplicate_item_identity', '同一 Responses 文档中出现重复 item ID', [collection.field, index, 'id'], index, type, 'R0'))
-        } else {
-          itemIds.set(id, index)
+      for (const optionalField of contract.optionalFields) {
+        if (!validContractField(item, optionalField, false)) {
+          issues.push(issue(
+            input,
+            'item_optional_field_invalid',
+            `${type}.${optionalField.name} 不满足 Codex Responses contract`,
+            [collection.field, index, optionalField.name],
+            index,
+            type,
+            'R2'
+          ))
         }
       }
     }
 
-    const callId = nonEmptyString(item.call_id)
-    if (callId && toolOutputTypeByCallType.has(type)) calls.set(callId, type)
-    if (callId && toolOutputTypes.has(type)) outputs.push({ index, type, callId })
+    const callId = stringValue(item.call_id)
+    if (callId !== undefined && toolOutputTypeByCallType.has(type)) {
+      const previousType = calls.get(callId)
+      if (previousType) {
+        issues.push(issue(
+          input,
+          previousType === type ? 'duplicate_tool_call_identity' : 'tool_call_type_mismatch',
+          previousType === type
+            ? `${callId} 在同一 Responses 文档中出现重复工具调用`
+            : `${callId} 同时被声明为 ${previousType} 和 ${type}`,
+          [collection.field, index, 'call_id'],
+          index,
+          type,
+          'R2'
+        ))
+      } else {
+        calls.set(callId, type)
+      }
+    }
+    if (
+      callId !== undefined
+      && toolOutputTypes.has(type)
+      && !(type === 'tool_search_output' && item.execution === 'server')
+    ) {
+      outputs.push({ index, type, callId })
+    }
   }
 
   const externalHistoryAvailable = Boolean(nonEmptyString(input.response.previous_response_id))
@@ -128,10 +189,32 @@ export function validateCodexResponsesJson(input: {
   return result(input.revision, issues)
 }
 
-function responseItemCollection(response: JsonRecord): { field: 'input' | 'output'; items: unknown[] } | undefined {
-  if (Array.isArray(response.output)) return { field: 'output', items: response.output }
-  if (Array.isArray(response.input)) return { field: 'input', items: response.input }
-  return undefined
+function responseItemCollection(response: JsonRecord):
+  | { outcome: 'present'; field: 'input' | 'output'; items: unknown[] }
+  | { outcome: 'absent' }
+  | { outcome: 'invalid'; code: string; message: string; path: readonly string[] } {
+  const hasInput = Object.hasOwn(response, 'input')
+  const hasOutput = Object.hasOwn(response, 'output')
+  if (hasInput && hasOutput) {
+    return {
+      outcome: 'invalid',
+      code: 'response_item_collections_ambiguous',
+      message: '同一 Codex Responses 文档不能同时包含 input 与 output item 集合',
+      path: []
+    }
+  }
+  if (!hasInput && !hasOutput) return { outcome: 'absent' }
+  const field = hasOutput ? 'output' : 'input'
+  const value = response[field]
+  if (!Array.isArray(value)) {
+    return {
+      outcome: 'invalid',
+      code: 'response_item_collection_invalid',
+      message: `${field} 必须是 Responses item 数组`,
+      path: [field]
+    }
+  }
+  return { outcome: 'present', field, items: value }
 }
 
 function result(revision: CodexContractRevision, issues: CodexProtocolIssue[]): CodexContractValidationResult {
@@ -177,20 +260,56 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
-function validRequiredField(
-  item: JsonRecord,
-  name: string,
-  kind: 'present' | 'string' | 'non_empty_string' | 'array' | 'object'
-): boolean {
-  if (!Object.hasOwn(item, name)) return false
-  const value = item[name]
-  switch (kind) {
+function validContractField(item: JsonRecord, field: CodexRequiredItemField, required: boolean): boolean {
+  if (!Object.hasOwn(item, field.name)) return !required
+  const value = item[field.name]
+  if (value === null) return field.nullable === true
+  switch (field.kind) {
     case 'present': return true
     case 'string': return typeof value === 'string'
-    case 'non_empty_string': return typeof value === 'string' && value.length > 0
     case 'array': return Array.isArray(value)
     case 'object': return plainObject(value) !== undefined
+    case 'enum': return typeof value === 'string' && Boolean(field.values?.includes(value))
+    case 'function_output': return validFunctionOutput(value)
+    case 'local_shell_action': return validLocalShellAction(value)
   }
+}
+
+function validFunctionOutput(value: unknown): boolean {
+  if (typeof value === 'string') return true
+  if (!Array.isArray(value)) return false
+  return value.every((entry) => {
+    const item = plainObject(entry)
+    if (!item) return false
+    if (item.type === 'input_text') return typeof item.text === 'string'
+    if (item.type === 'encrypted_content') return typeof item.encrypted_content === 'string'
+    if (item.type !== 'input_image' || typeof item.image_url !== 'string') return false
+    return !Object.hasOwn(item, 'detail')
+      || item.detail === null
+      || (typeof item.detail === 'string' && ['auto', 'low', 'high', 'original'].includes(item.detail))
+  })
+}
+
+function validLocalShellAction(value: unknown): boolean {
+  const action = plainObject(value)
+  if (!action || action.type !== 'exec' || !Array.isArray(action.command) || !action.command.every((part) => typeof part === 'string')) {
+    return false
+  }
+  if (!nullableOptional(action, 'timeout_ms', (candidate) => Number.isSafeInteger(candidate) && Number(candidate) >= 0)) return false
+  if (!nullableOptional(action, 'working_directory', (candidate) => typeof candidate === 'string')) return false
+  if (!nullableOptional(action, 'user', (candidate) => typeof candidate === 'string')) return false
+  return nullableOptional(action, 'env', (candidate) => {
+    const env = plainObject(candidate)
+    return Boolean(env) && Object.values(env ?? {}).every((entry) => typeof entry === 'string')
+  })
+}
+
+function nullableOptional(item: JsonRecord, name: string, validate: (value: unknown) => boolean): boolean {
+  return !Object.hasOwn(item, name) || item[name] === null || validate(item[name])
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
 }
 
 function plainObject(value: unknown): JsonRecord | undefined {

@@ -44,6 +44,9 @@ export function planCodexResponsesJsonRepair(input: {
       operations.push({
         action: 'remove',
         path: issue.path,
+        expectedItemType: target.type,
+        expectedItemIdPresent: Object.hasOwn(target.item, 'id'),
+        expectedItemId: target.item.id,
         issueCode: issue.code,
         ruleId: 'codex.r0.request_history.remove_item_id'
       })
@@ -76,6 +79,9 @@ export function planCodexResponsesJsonRepair(input: {
       action: 'replace',
       path: issue.path,
       value: generated,
+      expectedItemType: target.type,
+      expectedItemIdPresent: Object.hasOwn(target.item, 'id'),
+      expectedItemId: target.item.id,
       issueCode: issue.code,
       ruleId: 'codex.r0.response.replace_item_id'
     })
@@ -108,7 +114,7 @@ function repairPlan(
 function repairTarget(
   document: JsonRecord,
   path: readonly (string | number)[]
-): { field: 'input' | 'output'; index: number; type: string } | undefined {
+): { field: 'input' | 'output'; index: number; type: string; item: JsonRecord } | undefined {
   if (path.length !== 3 || (path[0] !== 'input' && path[0] !== 'output') || !Number.isInteger(path[1]) || path[2] !== 'id') {
     return undefined
   }
@@ -117,7 +123,7 @@ function repairTarget(
   const items = Array.isArray(document[field]) ? document[field] as unknown[] : undefined
   const item = items && plainObject(items[index])
   const type = item && typeof item.type === 'string' ? item.type : undefined
-  return type ? { field, index, type } : undefined
+  return type && item ? { field, index, type, item } : undefined
 }
 
 function responseItemIds(document: JsonRecord): Set<string> {
