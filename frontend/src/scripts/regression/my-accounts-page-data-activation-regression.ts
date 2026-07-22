@@ -291,6 +291,69 @@ for (const domain of myAccountsPageDataActivationManifest.domains) {
 }
 assert.deepEqual(clock.pendingTaskTimes(), [intervalBeforeFocus], 'active 期间 focus 不得重排已有周期 timeout')
 
+const resumedRevalidatorGate = deferred<void>()
+let resumedRevalidatorCalls = 0
+const unregisterResumedRevalidator = activation.registerRevalidator('accounts.static', () => {
+  resumedRevalidatorCalls += 1
+  if (resumedRevalidatorCalls === 1) return resumedRevalidatorGate.promise
+})
+const callsBeforeResumedRevalidation = new Map(revalidatorCalls)
+activation.trigger('focus')
+await clock.advanceBy(100)
+assert.equal(resumedRevalidatorCalls, 1, '竞态准备必须保持一个旧 revalidator 挂起')
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), (callsBeforeResumedRevalidation.get(domain) ?? 0) + 1, '旧 activation 必须只启动一次 revalidate')
+}
+
+showActivationPage.value = false
+await nextTick()
+showActivationPage.value = true
+await nextTick()
+visibilityListener?.()
+focusListener?.()
+await flushMicrotasks()
+assert.equal(resumedRevalidatorCalls, 1, '旧任务完成前 activate/visibility/focus 必须合并为一个 pending resume')
+
+const resumedRevalidationStartedAt = clock.nowMs
+resumedRevalidatorGate.resolve(undefined)
+await flushMicrotasks()
+assert(
+  clock.pendingTaskTimes().every((taskAt) => taskAt < resumedRevalidationStartedAt + 30_000),
+  '旧 operation finally 必须先补跑 pending resume，不得先安排周期 timeout'
+)
+await clock.advanceBy(100)
+assert.equal(resumedRevalidatorCalls, 2, '旧任务完成后必须恰好补跑一次 resumed revalidation')
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), (callsBeforeResumedRevalidation.get(domain) ?? 0) + 2, '恢复后的新 activation 必须补跑且只补跑一次')
+}
+assert.equal(clock.pendingTaskTimes().length, 1, 'pending resume 完成后才能安排一个周期 timeout')
+assert(clock.pendingTaskTimes()[0] > resumedRevalidationStartedAt + 30_000, '周期必须从 resumed revalidation 完成后重新计时')
+unregisterResumedRevalidator()
+
+const pausedRevalidatorGate = deferred<void>()
+let pausedRevalidatorCalls = 0
+const unregisterPausedRevalidator = activation.registerRevalidator('accounts.static', () => {
+  pausedRevalidatorCalls += 1
+  if (pausedRevalidatorCalls === 1) return pausedRevalidatorGate.promise
+})
+const callsBeforePauseOnly = new Map(revalidatorCalls)
+activation.trigger('focus')
+await clock.advanceBy(100)
+showActivationPage.value = false
+await nextTick()
+pausedRevalidatorGate.resolve(undefined)
+await flushMicrotasks()
+await clock.advanceBy(100)
+assert.equal(pausedRevalidatorCalls, 1, '旧任务结束前未 resume 时不得补跑 revalidation')
+for (const domain of myAccountsPageDataActivationManifest.domains) {
+  assert.equal(revalidatorCalls.get(domain), (callsBeforePauseOnly.get(domain) ?? 0) + 1, '暂停且未恢复时必须只保留旧 activation 的一次执行')
+}
+assert.deepEqual(clock.pendingTaskTimes(), [], '暂停且未恢复时旧任务 finally 不得安排周期 timeout')
+unregisterPausedRevalidator()
+showActivationPage.value = true
+await nextTick()
+await clock.advanceBy(100)
+
 const callsBeforePublicDeactivate = new Map(revalidatorCalls)
 const requestsBeforePublicDeactivate = requests.length
 activation.deactivate()

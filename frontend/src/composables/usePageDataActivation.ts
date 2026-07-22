@@ -71,6 +71,8 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   let targetedDomains: ReadonlySet<PageDataDomain> | undefined
   let intervalHandle: unknown
   let revalidationInFlight: Promise<void> | undefined
+  let activationGeneration = 0
+  let pendingResume: { generation: number; reason: PageDataActivationTriggerReason } | undefined
   let removeFocusListener: (() => void) | undefined
   let removeVisibilityListener: (() => void) | undefined
 
@@ -125,6 +127,10 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
   function resume(reason: PageDataActivationTriggerReason): void {
     if (disposed || !componentActive || running || !isVisible()) return
     running = true
+    if (revalidationInFlight) {
+      pendingResume = { generation: activationGeneration, reason }
+      return
+    }
     revalidate(reason)
   }
 
@@ -140,6 +146,15 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
     void operation.finally(() => {
       if (revalidationInFlight !== operation) return
       revalidationInFlight = undefined
+      const resumeRequest = pendingResume
+      pendingResume = undefined
+      if (
+        resumeRequest?.generation === activationGeneration &&
+        !disposed && componentActive && running && isVisible()
+      ) {
+        revalidate(resumeRequest.reason)
+        return
+      }
       scheduleInterval()
     })
   }
@@ -151,6 +166,8 @@ export function usePageDataActivation(options: UsePageDataActivationOptions): Pa
 
   function pause(): void {
     running = false
+    activationGeneration += 1
+    pendingResume = undefined
     targetedDomains = undefined
     stopIntervalTimeout()
     coordinator.deactivate()
