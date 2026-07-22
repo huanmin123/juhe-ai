@@ -137,7 +137,6 @@ const providerRecovery = useKeepAliveSupersededRecovery(() => loadGroupOptions(f
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
-let groupSnapshotRequestSequence = 0
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -173,7 +172,7 @@ const {
   pagination,
   tablePagination,
   handleTableChange,
-  loadData,
+  loadData: loadGroupPage,
   loadMoreMobile: loadMoreMobileGroups,
   removeItems: removeGroupItems,
   refreshMobile: refreshMobileGroupsData,
@@ -187,7 +186,8 @@ const {
     : `共 ${formatNumber(total)} 个分组`,
   fetchPage: async (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-    return groupsApi.listPage(groupsListParams(systemAccountId, pageState))
+    const page = await groupsApi.listPage(groupsListParams(systemAccountId, pageState))
+    return page
   },
   requestSignature: (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
@@ -196,44 +196,14 @@ const {
       groupsListParams(systemAccountId, pageState)
     ]
   },
-  onLoaded: () => {
-    void refreshGroupStatusSnapshot()
-  },
   onError: (error) => {
     console.error(error)
     message.error('加载分组失败')
   }
 })
 
-async function refreshGroupStatusSnapshot(): Promise<void> {
-  const groupIds = [...new Set(groups.value.map((group) => group.id).filter(Boolean))]
-  if (!groupIds.length) return
-  const sequence = ++groupSnapshotRequestSequence
-  const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-  try {
-    const snapshot = await groupsApi.statusSnapshot(groupIds, systemAccountId ? { systemAccountId } : undefined)
-    if (sequence !== groupSnapshotRequestSequence) return
-    const byId = new Map(snapshot.items.map((item) => [item.id, item]))
-    updateGroupItems(
-      (group) => byId.has(group.id),
-      (group) => {
-        const item = byId.get(group.id)
-        if (!item) return group
-        return {
-          ...group,
-          accountStats: {
-            ...group.accountStats,
-            currentConcurrency: item.currentConcurrency,
-            currentConcurrencyAvailable: true,
-            todayUsage: item.todayUsage
-          }
-        }
-      }
-    )
-  } catch (error) {
-    if (sequence !== groupSnapshotRequestSequence) return
-    console.error(error)
-  }
+async function loadData(loadOptions: { forceOptions?: boolean; quiet?: boolean } = {}): Promise<void> {
+  await loadGroupPage(loadOptions)
 }
 
 const rawColumns = computed(() => groupsTableColumns(isManagementView.value))

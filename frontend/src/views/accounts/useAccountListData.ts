@@ -22,7 +22,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { cloneAccountListCacheResult, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -86,14 +86,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return systemAccountId ? { systemAccountId } : undefined
   })
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
-  const accountListRevision = ref(0)
-  let acceptedRuntimeScopeSignature = ''
-
-  const runtimeScopeSignature = (): string => {
-    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-    return `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
-  }
-
   let revalidationGeneration = 0
   let accountPageCacheRequest: PageDataBoundRequestCacheDefinition<AccountListResult> | undefined
   const accountPageCache = usePageDataRequestCache<AccountListResult>({
@@ -147,24 +139,14 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         _loadOptions.pageDataActivation ?? options.pageDataActivation
       )
       const accountList = accountListResult.data
-      const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
       return {
-        items: accountList.items.map((account) => accountListViewModel(account, runtimeAvailable)),
+        items: accountList.items.map((account) => accountListViewModel(account, accountList.runtimeSnapshot)),
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
         hasMore: accountList.hasMore,
         superseded: accountListResult.superseded
       }
-    },
-    transformItems: (nextItems, _loadOptions, _result, currentItems) => {
-      const currentScopeSignature = runtimeScopeSignature()
-      return mergeAccountListRuntimeSnapshot(
-        currentItems,
-        nextItems,
-        nextItems.some((account) => account.accountRuntimeAvailabilityAvailable === true),
-        acceptedRuntimeScopeSignature === currentScopeSignature
-      )
     },
     requestSignature: (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
@@ -175,8 +157,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ]
     },
     onLoaded: () => {
-      acceptedRuntimeScopeSignature = runtimeScopeSignature()
-      accountListRevision.value += 1
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
     },
@@ -429,11 +409,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
   }
 
-  function accountListViewModel(account: AccountListItem, runtimeAvailable: boolean): AccountSummary {
+  function accountListViewModel(account: AccountListItem, runtimeSnapshot: AccountListResult['runtimeSnapshot']): AccountSummary {
     return {
       ...account,
-      currentConcurrencyAvailable: false,
-      accountRuntimeAvailabilityAvailable: runtimeAvailable
+      currentConcurrencyAvailable: runtimeSnapshot?.accountConcurrencyAvailable === true
+        && account.currentConcurrencyAvailable !== false,
+      accountRuntimeAvailabilityAvailable: runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
+        && account.accountRuntimeAvailabilityAvailable !== false
     } as AccountSummary
   }
 
@@ -445,7 +427,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         ...clonedAccountList,
         items: clonedAccountList.items.map((account) => accountListViewModel(
           account as AccountListItem,
-          clonedAccountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
+          clonedAccountList.runtimeSnapshot
         ))
       }
       : {
@@ -456,7 +438,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       hasMore: false
       }
     applyAccountPageCacheResult(cachedResult)
-  })
+  }, { flush: 'sync' })
   watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
   watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })
 
