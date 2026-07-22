@@ -2,24 +2,15 @@ import { message } from '@/lib/antd'
 import { ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { PageDataActivation } from '@/composables/usePageDataActivation'
-import { currentPageDataSecurityGeneration } from '@/shared/pageDataGenerationFences'
 import type { AccountTagSummary } from '@/types/domain'
 import type { AccountFormModel } from './accountFormTypes'
 import type { AccountScopeParams } from './accountOperationScope'
-import {
-  loadAccountTagOptionsCached,
-  readAccountTagOptionsCache,
-  resolveAccountTagOptionsScopeKey,
-  writeAccountTagOptionsCache
-} from './accountTagOptionsCache'
 
 interface UseAccountTagOptionsOptions {
   accountTagOperationScopeParams: () => AccountScopeParams
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   form: AccountFormModel
   isManagementView: ComputedRef<boolean>
-  pageDataActivation?: PageDataActivation
 }
 
 export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
@@ -31,31 +22,20 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
   let deleteRequestToken = 0
 
   async function loadAccountTagOptions(scopeParams: AccountScopeParams | undefined, force = false): Promise<void> {
-    const scopeKey = resolveAccountTagOptionsScopeKey(options.isManagementView.value, scopeParams)
+    const scopeKey = accountTagOptionsScopeKey(options.isManagementView.value, scopeParams)
     if (!scopeKey) {
       resetAccountTagOptions()
       return
     }
     if (!force && loadedScopeKey.value === scopeKey) return
-    const cachedOptions = !force ? readAccountTagOptionsCache(scopeKey) : undefined
-    if (cachedOptions) {
-      accountTagOptions.value = cachedOptions
-      loadedScopeKey.value = scopeKey
-      accountTagOptionsLoading.value = false
-      return
-    }
-
     const currentRequestToken = ++requestToken
     accountTagOptionsLoading.value = true
     try {
-      const result = await loadAccountTagOptionsCached({
-        activation: options.pageDataActivation,
-        force,
-        isManagementView: options.isManagementView.value,
-        scopeParams
-      })
-      if (result.superseded || currentRequestToken !== requestToken) return
-      accountTagOptions.value = result.data
+      const result = options.isManagementView.value
+        ? await api.accounts.tags(scopeParams)
+        : await api.myAccounts.tags()
+      if (currentRequestToken !== requestToken) return
+      accountTagOptions.value = result
       loadedScopeKey.value = scopeKey
     } catch (error) {
       if (currentRequestToken !== requestToken) return
@@ -76,7 +56,6 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
       return
     }
     const currentDeleteRequestToken = ++deleteRequestToken
-    const securityGeneration = currentPageDataSecurityGeneration()
     const scopeKey = loadedScopeKey.value
     deletingAccountTagId.value = tagId
     try {
@@ -86,15 +65,12 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
       } else {
         await api.myAccounts.deleteTag(tagId)
       }
-      if (!isCurrentDeleteRequest(currentDeleteRequestToken, securityGeneration, scopeKey)) return
+      if (!isCurrentDeleteRequest(currentDeleteRequestToken, scopeKey)) return
       options.form.tags = options.form.tags.filter((name) => name.trim() !== tag.name)
       accountTagOptions.value = accountTagOptions.value.filter((item) => item.id !== tagId)
-      if (scopeKey) {
-        writeAccountTagOptionsCache(scopeKey, accountTagOptions.value, securityGeneration)
-      }
       message.success('标签已删除')
     } catch (error) {
-      if (!isCurrentDeleteRequest(currentDeleteRequestToken, securityGeneration, scopeKey)) return
+      if (!isCurrentDeleteRequest(currentDeleteRequestToken, scopeKey)) return
       console.error(error)
       message.error(options.extractApiErrorMessage(error, '删除标签失败'))
       await loadAccountTagOptions(options.accountTagOperationScopeParams(), true)
@@ -113,11 +89,9 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
 
   function isCurrentDeleteRequest(
     currentDeleteRequestToken: number,
-    securityGeneration: number,
     scopeKey: string
   ): boolean {
     return currentDeleteRequestToken === deleteRequestToken
-      && securityGeneration === currentPageDataSecurityGeneration()
       && scopeKey === loadedScopeKey.value
   }
 
@@ -128,4 +102,10 @@ export function useAccountEditTagOptions(options: UseAccountTagOptionsOptions) {
     deletingAccountTagId,
     loadAccountTagOptions
   }
+}
+
+function accountTagOptionsScopeKey(isManagementView: boolean, scopeParams?: AccountScopeParams): string | undefined {
+  if (!isManagementView) return 'self'
+  const systemAccountId = scopeParams?.systemAccountId?.trim()
+  return systemAccountId ? `management:${systemAccountId}` : undefined
 }

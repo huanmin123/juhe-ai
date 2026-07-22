@@ -1106,19 +1106,8 @@ type ManagementResourceAuthorizationExpirySweepInput struct {
 	ExpiredAt time.Time
 }
 
-type ManagementResourceAuthorizationExpiryFanout struct {
-	AuthorizationID              string
-	ResourceType                 string
-	ResourceID                   string
-	ResourceOwnerSystemAccountID string
-	GranteeType                  string
-	GranteeSystemAccountID       string
-	GranteeTeamID                string
-}
-
 type ManagementResourceAuthorizationExpirySweepResult struct {
-	Expired        int
-	Authorizations []ManagementResourceAuthorizationExpiryFanout
+	Expired int
 }
 
 type ManagementResourceAuthorizationExpirySweeper interface {
@@ -1972,8 +1961,4 @@ type ManagementAccountOptionReader interface {
 	ListManagementAccountTags(ctx context.Context, input ManagementAccountTagListInput) ([]ManagementAccountTag, error)
 	DeleteManagementAccountTag(ctx context.Context, input ManagementAccountTagDeleteInput) (bool, error)
 	UpdateManagementAccountTags(ctx context.Context, input ManagementAccountTagUpdateInput) (ManagementAccountTagUpdateResult, bool, error)
-}
-
-type AccountAuthorizationGranteeReader interface {
-	ListAccountAuthorizationGranteeIDs(ctx context.Context, accountID string) ([]string, error)
 }

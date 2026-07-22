@@ -19,17 +19,6 @@ func TestNewClientRequiresNamespace(t *testing.T) {
 	}
 }
 
-func TestNewClientEnablesContextTimeouts(t *testing.T) {
-	client, err := NewClient("redis://127.0.0.1:6379/0", "test")
-	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
-	}
-	defer client.Close()
-	if !client.client.Options().ContextTimeoutEnabled {
-		t.Fatal("Redis client must enable context timeout propagation")
-	}
-}
-
 func TestKeyUsesNamespaceAndTrimsSeparators(t *testing.T) {
 	client := &Client{namespace: "juhe:w0"}
 	if got, want := client.Key(":cache:", ":item:"), "juhe:w0:cache:item"; got != want {

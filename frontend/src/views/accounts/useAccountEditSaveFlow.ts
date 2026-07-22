@@ -29,10 +29,6 @@ import {
   sameTagNames,
   type AccountModelSelectOption
 } from './accountEditFormPayload'
-import {
-  invalidateAccountTagOptionsCache,
-  resolveAccountTagOptionsScopeKey
-} from './accountTagOptionsCache'
 import { invalidateAccountDetailForAccount } from './accountDetailCache'
 
 type ReadonlyValue<T> = {
@@ -305,7 +301,6 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   }
 
   function invalidateAccountTagOptions(scopeParams: AccountScopeParams | undefined): void {
-    invalidateAccountTagOptionsCache(resolveAccountTagOptionsScopeKey(options.isManagementView.value, scopeParams))
   }
 
   function invalidateAccountDetailOptions(accountId: string | undefined, scopeParams: AccountScopeParams | undefined): void {

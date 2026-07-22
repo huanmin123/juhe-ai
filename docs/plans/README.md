@@ -204,7 +204,7 @@ docs/plans/
 | PLAN-0154 | 网关流式管道重构设计 | 草稿（设计审查中） | 2026-07-22 | 网关 / 流式管道 / 响应检查 / 重试 / Go 迁移准备 | `docs/plans/计划-0154-网关流式管道重构.md` |
 | PLAN-0153 | 客户端模型目录动态聚合与两年窗口 | 已撤销（由 PLAN-0152 取代） | 2026-07-22 | 网关 / 模型目录 / API Key / 路由策略 / 分组 / 供应商缓存 / AI Chat 快照 | `docs/plans/计划-0153-客户端模型目录动态聚合与两年窗口.md` |
 | PLAN-0152 | 客户端模型目录动态聚合 | 进行中 / 禁止上线 | 2026-07-22 | 网关 / API Key / 供应商模型目录 / 发布快照 / SQLite / PostgreSQL / Redis | `docs/plans/计划-0152-客户端模型目录动态聚合.md` |
-| PLAN-0151 | 页面级版本确认聚合 | 进行中 | 2026-07-22 | 前端页面缓存 / AI 账户 / System API / Redis / 验证 | `docs/plans/计划-0151-页面级版本确认聚合.md` |
+| PLAN-0151 | 页面级版本确认聚合 | 已由 PLAN-0081 退场记录删除 | 2026-07-22 | 前端页面缓存 / AI 账户 / System API / Redis / 验证 | `docs/plans/计划-0151-页面级版本确认聚合.md` |
 | PLAN-0150 | AI 问答有序过程、生图、编辑、内部工具与按需加载 | 已完成（本地验收完成，禁止上线） | 2026-07-18 | AI 问答 / 内部工具 Registry / Demo / 生图与二次编辑 / 图像谱系 / 默认图像模型 / WebP 双变体资产 / 对话按需加载 / 手机工具箱 / 上下文命令 / SSE 探活 / 失败重试 / 登录会话管理删除 / 真实验收 | `docs/plans/计划-0150-AI问答有序过程生图与按需加载.md` |
 | PLAN-0149 | 审计与运行日志索引临时关闭 | 已发布 / 生产清理完成 | 2026-07-22 | Node / 网关 / 审计 / runtime log file index / PostgreSQL / Redis / 部署 | `docs/plans/计划-0149-审计与运行日志索引临时关闭.md` |
 | PLAN-0148 | 账户测试取消查询无放大 | 已完成 / 已合入 master / 禁止上线 | 2026-07-21 | 账号测试 / worker / DB service / SQLite / PostgreSQL | `docs/plans/计划-0148-账户测试取消查询无放大.md` |
@@ -213,9 +213,9 @@ docs/plans/
 | PLAN-0145 | 全局请求阻塞等待治理 | 部分已发布 / 剩余专项进行中 | 2026-07-20 | 网关 / Redis / DB service / 审计 / usage / 管理接口 / 部署 | `docs/plans/计划-0145-全局请求阻塞等待治理.md` |
 | PLAN-0143 | 供应商认证协议与计价目录扩展 | 已发布 / 真实上游付费 E2E 未执行 | 2026-07-18 | OAuth / 供应商 / 协议 / 模型目录 / 计价 | `docs/plans/计划-0143-供应商认证协议与计价目录扩展.md` |
 | PLAN-0142 | AI 账户弹窗恢复探活布局 | 已发布 / 生产视觉抽查待补 | 2026-07-18 | AI 账户 / 高级配置 / 前端 | `docs/plans/计划-0142-AI账户弹窗恢复探活布局.md` |
-| PLAN-0141 | 页面确认去重与 Redis 快速路径 | 已发布 / 浏览器请求次数专项待复验 | 2026-07-18 | 页面缓存 / 前端生命周期 / Redis / System API | `docs/plans/计划-0141-页面确认去重与Redis快速路径.md` |
+| PLAN-0141 | 页面确认去重与 Redis 快速路径 | 已由 PLAN-0081 退场记录删除 | 2026-07-18 | 页面缓存 / 前端生命周期 / Redis / System API | `docs/plans/计划-0141-页面确认去重与Redis快速路径.md` |
 | PLAN-0140 | 余额失败持续调度与人工刷新 | 已发布 / 专项生产行为待复验 | 2026-07-18 | AI 账户 / 余额查询 / worker / 运行态 | `docs/plans/计划-0140-余额失败持续调度与人工刷新.md` |
-| PLAN-0139 | 双层持久缓存统一第一批 | 实现与本地验证完成；PostgreSQL / Redis smoke 未执行 | 2026-07-18 | 前端 / IndexedDB / System API / Node / Redis / 模型 / 下拉 / 统计 | `docs/plans/计划-0139-双层持久缓存统一第一批.md` |
+| PLAN-0139 | 双层持久缓存统一第一批 | page-data 部分已由 PLAN-0081 退场记录删除 | 2026-07-18 | 前端 / IndexedDB / System API / Node / Redis / 模型 / 下拉 / 统计 | `docs/plans/计划-0139-双层持久缓存统一第一批.md` |
 | PLAN-0138 | 反向代理与高并发隧道部署文档收敛 | 已完成 | 2026-07-18 | 部署 / Edge / WireGuard / Caddy / Nginx / Linux / macOS | `docs/plans/计划-0138-反向代理与高并发隧道部署文档收敛.md` |
 | PLAN-0137 | AI 账户请求覆盖能力合集与按模型生效 | 已完成 | 2026-07-19 | AI 账户 / 模型目录 / GPT API Key / GPT OAuth / 网关 / 前端 / 部署 | `docs/plans/计划-0137-AI账户请求覆盖能力合集与按模型生效.md` |
 | PLAN-0134 | 网关长会话与生图服务端接管 | 已完成 | 2026-07-18 | 网关 / 路由调度 / 响应管道 / 系统设置 / 前端 / Go 管理端 | `docs/plans/计划-0134-网关长会话与生图服务端接管.md` |
@@ -238,7 +238,7 @@ docs/plans/
 | PLAN-0122 | Redis 队列隔离与后台任务降载 | 待开始 | 2026-07-16 | Redis / Redis Streams / worker / 维护任务 / 部署 | `docs/plans/计划-0122-Redis队列隔离与后台任务降载.md` |
 | PLAN-0121 | PostgreSQL 去事务与统计降载 | 待开始 | 2026-07-16 | PostgreSQL / PgBouncer / stats-worker / 统计窗口 / 额度 | `docs/plans/计划-0121-PostgreSQL去事务与统计降载.md` |
 | PLAN-0120 | 生产管理端性能优先治理 | 待开始 | 2026-07-16 | 管理端 / PostgreSQL / Redis / worker / 前端 / 压测 | `docs/plans/计划-0120-生产管理端性能优先治理.md` |
-| PLAN-0115 | 页面数据缓存与增量更新 | 待开始 | 2026-07-16 | 前端 / System API / Node / Go / Redis / SQLite / PostgreSQL / worker / 全部页面 | `docs/plans/计划-0115-页面数据缓存与增量更新.md` |
+| PLAN-0115 | 页面数据缓存与增量更新 | 已由 PLAN-0081 退场记录删除 | 2026-07-16 | 前端 / System API / Node / Go / Redis / SQLite / PostgreSQL / worker / 全部页面 | `docs/plans/计划-0115-页面数据缓存与增量更新.md` |
 | PLAN-0114 | AI 账户临时不可调用有界恢复探活 | 草稿，等待用户评审 | 2026-07-16 | AI 账户 / 高级配置 / ops-worker / 冷却复测 / 存储 / 前端 | `docs/plans/计划-0114-AI账户临时不可调用有界恢复探活.md` |
 | PLAN-0109 | AI 账户失败避让与默认控制流保护性收敛 | 草稿，待用户审核 | 2026-07-16 | 后端 / 网关 / AI 账户 / 运行态探针 / 请求重试 / 多 Key / OAuth / Redis / 文档 / 验证 | `docs/plans/计划-0109-AI账户失败避让与自动恢复收敛.md` |
 | PLAN-0103 | 账户测试模型选项短时缓存 | 已完成，已发布 | 2026-07-16 | AI 账户 / 人工测试 / 前端缓存 | `docs/plans/计划-0103-账户测试模型选项短时缓存.md` |

@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
@@ -405,7 +404,6 @@ func TestNewPublicAPIHandlersCoversCatalog(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil,
 		2*time.Second,
 		nil,
 	)
@@ -638,7 +636,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	const dispatchTimeout = 5 * time.Second
 	privateBaseURLAllowlist := []string{"http://192.168.40.199:8317"}
 	dispatcher := &appAccountHealthCheckDispatcherRecorder{}
-	pageDataPublisher := &appAccountPageDataPublisherStub{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	var captured publicaccounts.Options
 	factoryCalls := 0
@@ -649,7 +646,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 		privateBaseURLAllowlist,
 		nil,
 		dispatcher,
-		pageDataPublisher,
 		logger,
 		dispatchTimeout,
 		func(opts publicaccounts.Options) *publicaccounts.Service {
@@ -670,9 +666,6 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	if captured.HealthCheckDispatcher != dispatcher {
 		t.Fatalf("HealthCheckDispatcher = %T, want injected recorder", captured.HealthCheckDispatcher)
 	}
-	if captured.PageDataPublisher != pageDataPublisher {
-		t.Fatalf("PageDataPublisher = %T, want injected recorder", captured.PageDataPublisher)
-	}
 	if captured.Logger != logger {
 		t.Fatalf("Logger = %p, want %p", captured.Logger, logger)
 	}
@@ -691,18 +684,8 @@ func TestNewPublicAPIHandlersPassesAccountServiceOptionsToFactory(t *testing.T) 
 	}
 }
 
-type appAccountPageDataPublisherStub struct{}
-
-func (*appAccountPageDataPublisherStub) PublishAccountStaticChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
-}
-
-func (*appAccountPageDataPublisherStub) PublishAccountRuntimeChange(context.Context, accountpagedata.ChangeInput) error {
-	return nil
-}
-
 func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
-	handlers := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware != nil ||
 		handlers.AuthTouchMiddleware != nil ||
 		handlers.CaptchaHandler != nil ||
@@ -819,7 +802,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t *testing.T) {
-	handlers := newManagementAPIHandlerWithPageData(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil, nil)
+	handlers := newManagementAPIHandler(config.Config{ManagementAPIEnabled: true}, nil, nil, nil, nil, nil, nil, nil)
 	if handlers.AuthMiddleware == nil ||
 		handlers.AuthTouchMiddleware == nil ||
 		handlers.CaptchaHandler == nil ||
@@ -939,7 +922,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 }
 
 func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ExternalIntegrationSourceListHandler != nil ||
 		disabled.ExternalIntegrationSourceDetailHandler != nil ||
 		disabled.ExternalIntegrationSourceCreateHandler != nil ||
@@ -952,16 +935,16 @@ func TestNewManagementAPIHandlerExternalIntegrationSourceHandlersOptIn(t *testin
 		t.Fatal("external integration source handler was created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.ExternalIntegrationSourceListHandler == nil ||
 		enabled.ExternalIntegrationSourceDetailHandler == nil ||
@@ -1062,13 +1045,13 @@ func TestNewManagementAPIHandlerInjectsProviderModelLogger(t *testing.T) {
 		"providerModelService := managementprovidermodels.NewServiceWithOptions",
 		"routeStrategyService := managementroutestrategies.NewServiceWithOptions",
 	)
-	if !strings.Contains(block, "Logger:            logger") {
+	if !strings.Contains(block, "Logger:           logger") {
 		t.Fatal("server.go must inject the logger into the provider model service")
 	}
 }
 
 func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPAllowlistHandler != nil ||
 		disabled.ClientIPUnallowlistHandler != nil ||
 		disabled.ClientIPBlacklistHandler != nil ||
@@ -1076,16 +1059,16 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 		t.Fatal("client IP policy handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.ClientIPAllowlistHandler == nil ||
 		enabled.ClientIPUnallowlistHandler == nil ||
@@ -1122,21 +1105,21 @@ func TestNewManagementAPIHandlerClientIPPolicyOptInAndSharedServiceWiring(t *tes
 }
 
 func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.ClientIPStatsHandler != nil || disabled.ClientIPStatsDetailHandler != nil {
 		t.Fatal("client IP stats read handler was created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.ClientIPStatsHandler == nil || enabled.ClientIPStatsDetailHandler == nil {
 		t.Fatal("client IP stats read handler was not created while management API enabled")
@@ -1167,22 +1150,22 @@ func TestNewManagementAPIHandlerClientIPStatsReadOptInAndWiring(t *testing.T) {
 }
 
 func TestNewManagementAPIHandlerRouteStrategyDeleteOptInAndSharedServiceWiring(t *testing.T) {
-	disabled := newManagementAPIHandlerWithPageData(config.Config{}, nil, nil, nil, nil, nil, nil, nil, nil)
+	disabled := newManagementAPIHandler(config.Config{}, nil, nil, nil, nil, nil, nil, nil)
 	if disabled.RouteStrategyDeleteHandler != nil ||
 		disabled.MyRouteStrategyDeleteHandler != nil {
 		t.Fatal("route strategy delete handlers were created while management API disabled")
 	}
 
-	enabled := newManagementAPIHandlerWithPageData(
+	enabled := newManagementAPIHandler(
 		config.Config{ManagementAPIEnabled: true},
 		nil,
 		nil,
 		nil,
 		nil,
-		nil, nil,
-
 		nil,
-		nil)
+		nil,
+		nil,
+	)
 
 	if enabled.RouteStrategyDeleteHandler == nil ||
 		enabled.MyRouteStrategyDeleteHandler == nil {
@@ -1316,4 +1299,17 @@ func appNodeDispatchSignature(secret string, body []byte) string {
 	_, _ = mac.Write([]byte("juhe-ai:account-health-check-dispatch:v1\n"))
 	_, _ = mac.Write(body)
 	return "v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func sourceBlockBetween(t *testing.T, source, startMarker, endMarker string) string {
+	t.Helper()
+	start := strings.Index(source, startMarker)
+	if start < 0 {
+		t.Fatalf("source marker %q not found", startMarker)
+	}
+	end := strings.Index(source[start+len(startMarker):], endMarker)
+	if end < 0 {
+		t.Fatalf("source marker %q not found after %q", endMarker, startMarker)
+	}
+	return source[start : start+len(startMarker)+end]
 }

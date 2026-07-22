@@ -3,10 +3,9 @@ import assert from 'node:assert/strict'
 import { computed, createSSRApp, h, nextTick, ref, type ComputedRef, type Ref } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
-import { api, pageDataApi, type ListParams } from '@/api/client'
+import { api, type ListParams } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { clearUsageStatsWindowCache, useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
-import { invalidateDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
 import type { ProviderModelOption, UsageStatsWindow } from '@/types/domain'
 import { useUsageRecordModelOptions } from '@/views/usage-records/useUsageRecordModelOptions'
 
@@ -28,32 +27,26 @@ type UsageStatsWindowHarness = {
 
 const createModelOptions = useUsageRecordModelOptions as unknown as UsageRecordModelOptionsFactory
 const originalModelOptions = api.providers.modelOptions
-const originalConfirm = pageDataApi.confirm
 const originalAdminUsageWindow = api.stats.usageWindow
 const originalSelfUsageWindow = api.myStats.usageWindow
 
 try {
-  pageDataApi.confirm = async () => ({ changed: false })
   await verifyDesktopManagementScopeAndCache()
   await verifyMobileSearchDeduplication()
   await verifyScopeSwitchAndLateResponseIsolation()
-  await verifyRevisitedQueryUsesPageDataConfirmation()
-  await verifyChangedConfirmationReloadsOptions()
+  await verifyRevisitedQueryRequestsCurrentData()
   await verifyUsageWindowAdminTtlAndInflightCache()
   await verifyUsageWindowScopeIsolationAndForceRace()
   console.log('使用记录模型候选按需加载行为回归通过：桌面、移动、作用域、并发、竞态和时区缓存均符合契约')
 } finally {
   api.providers.modelOptions = originalModelOptions
-  pageDataApi.confirm = originalConfirm
   api.stats.usageWindow = originalAdminUsageWindow
   api.myStats.usageWindow = originalSelfUsageWindow
   authState.currentUser.value = undefined
   clearUsageStatsWindowCache()
-  await invalidateDefaultPageDataResourceCache(['providers.catalog'])
 }
 
 async function verifyDesktopManagementScopeAndCache(): Promise<void> {
-  await invalidateDefaultPageDataResourceCache(['providers.catalog'])
   authState.currentUser.value = currentUser('usage-desktop-admin')
   const scopeParams = ref<ListParams | undefined>({ systemAccountId: 'owner-desktop-a' })
   const calls: Array<Record<string, unknown> | undefined> = []
@@ -81,11 +74,10 @@ async function verifyDesktopManagementScopeAndCache(): Promise<void> {
   assert.equal(calls.length, 2, '连续搜索按键必须防抖为最后一次关键词请求')
   assert.equal(calls[1]?.keyword, 'desktop', '防抖搜索必须使用最后一次关键词')
   await harness.handleSearch('desktop')
-  assert.equal(calls.length, 2, '已加载关键词的重复搜索不得再次触发网络读取')
+  assert.equal(calls.length, 3, '已完成关键词的重复搜索必须重新读取当前业务数据')
 }
 
 async function verifyMobileSearchDeduplication(): Promise<void> {
-  await invalidateDefaultPageDataResourceCache(['providers.catalog'])
   authState.currentUser.value = currentUser('usage-mobile-admin')
   const scopeParams = ref<ListParams | undefined>({ systemAccountId: 'owner-mobile-a' })
   const pending = deferred<ProviderModelOption[]>()
@@ -107,11 +99,10 @@ async function verifyMobileSearchDeduplication(): Promise<void> {
   await harness.handleDropdown(true)
   assert.equal(calls, 2, '移动端搜索完成后打开下拉应仅补一次空关键词基础窗口')
   await harness.handleDropdown(true)
-  assert.equal(calls, 2, '移动端基础窗口已加载后重复打开不得再次请求')
+  assert.equal(calls, 3, '移动端基础窗口重复打开必须重新读取当前业务数据')
 }
 
 async function verifyScopeSwitchAndLateResponseIsolation(): Promise<void> {
-  await invalidateDefaultPageDataResourceCache(['providers.catalog'])
   authState.currentUser.value = currentUser('usage-race-admin')
   const scopeParams = ref<ListParams | undefined>({ systemAccountId: 'owner-race-a' })
   const firstPending = deferred<ProviderModelOption[]>()
@@ -143,78 +134,22 @@ async function verifyScopeSwitchAndLateResponseIsolation(): Promise<void> {
   )
 }
 
-async function verifyRevisitedQueryUsesPageDataConfirmation(): Promise<void> {
-  await invalidateDefaultPageDataResourceCache(['providers.catalog'])
-  authState.currentUser.value = currentUser('usage-confirm-admin')
-  const scopeParams = ref<ListParams | undefined>({ systemAccountId: 'owner-confirm-a' })
+async function verifyRevisitedQueryRequestsCurrentData(): Promise<void> {
+  authState.currentUser.value = currentUser('usage-direct-admin')
+  const scopeParams = ref<ListParams | undefined>({ systemAccountId: 'owner-direct-a' })
   let networkCalls = 0
-  let confirmCalls = 0
   api.providers.modelOptions = async (params) => {
     networkCalls += 1
     const keyword = typeof params?.keyword === 'string' ? params.keyword : 'base'
-    return [modelOption(`confirm-${keyword}`)]
-  }
-  pageDataApi.confirm = async () => {
-    confirmCalls += 1
-    return { changed: false }
+    return [modelOption(`direct-${keyword}-${networkCalls}`)]
   }
   const harness = await createModelHarness(computed(() => scopeParams.value))
 
   await harness.handleSearch('alpha')
   await harness.handleSearch('beta')
   await harness.handleSearch('alpha')
-  assert.equal(networkCalls, 2, '重新访问已缓存关键词应复用 page-data 快照而非重复网络读取')
-  assert.equal(confirmCalls, 3, '重新访问旧关键词必须经过 page-data confirmation，不能被永久二级快照绕过')
-
-  await invalidateDefaultPageDataResourceCache(['providers.catalog'])
-  await harness.handleSearch('alpha')
-  assert.equal(networkCalls, 3, '同一关键词在 providers.catalog 失效后必须重新读取，不能被页面级快照短路')
-  pageDataApi.confirm = async () => ({ changed: false })
-}
-
-async function verifyChangedConfirmationReloadsOptions(): Promise<void> {
-  await invalidateDefaultPageDataResourceCache(['providers.catalog'])
-  authState.currentUser.value = currentUser('usage-confirm-change-admin')
-  const scopeParams = ref<ListParams | undefined>({ systemAccountId: 'owner-confirm-change-a' })
-  let networkCalls = 0
-  let catalogChanged = false
-  api.providers.modelOptions = async () => {
-    networkCalls += 1
-    return [modelOption(networkCalls === 1 ? 'catalog-before-change' : 'catalog-after-change')]
-  }
-  pageDataApi.confirm = async (request) => {
-    const current = request.domains['providers.catalog']
-    const sequence = catalogChanged ? 2 : 1
-    return {
-      serverTime: new Date().toISOString(),
-      domains: {
-        'providers.catalog': {
-          action: current && current.sequence < sequence ? 'reload' : 'unchanged',
-          token: {
-            protocolVersion: 1,
-            epoch: 'usage-record-options',
-            scope: current?.scope ?? 'usage-record-options',
-            domain: 'providers.catalog',
-            sequence,
-            resetSequence: 0
-          }
-        }
-      }
-    }
-  }
-  const harness = await createModelHarness(computed(() => scopeParams.value))
-
-  await harness.handleDropdown(true)
-  assert.deepEqual(harness.modelOptions.value.map((item) => item.id), ['catalog-before-change'])
-  catalogChanged = true
-  await harness.handleDropdown(true)
-  await waitFor(
-    () => harness.modelOptions.value.some((item) => item.id === 'catalog-after-change'),
-    'providers.catalog changed confirmation 后未回写新模型候选'
-  )
-  assert.equal(networkCalls, 2, 'changed confirmation 必须只补一次网络刷新')
-  assert.deepEqual(harness.modelOptions.value.map((item) => item.id), ['catalog-after-change'])
-  pageDataApi.confirm = async () => ({ changed: false })
+  assert.equal(networkCalls, 3, '重新访问旧关键词必须直接读取当前业务数据，不能复用已退场的页面快照')
+  assert.deepEqual(harness.modelOptions.value.map((item) => item.id), ['direct-alpha-3'])
 }
 
 async function verifyUsageWindowAdminTtlAndInflightCache(): Promise<void> {
