@@ -53,6 +53,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementruntimelogs"
 	"juhe-ai/backend-go/internal/modules/managementsettings"
 	"juhe-ai/backend-go/internal/modules/managementstats"
+	"juhe-ai/backend-go/internal/modules/managementstatsoverview"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
 	"juhe-ai/backend-go/internal/modules/managementusagerecords"
@@ -457,6 +458,8 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
+		ManagementStatsUsageOverviewHandler:               managementHandlers.StatsUsageOverviewHandler,
+		ManagementMyStatsUsageOverviewHandler:             managementHandlers.MyStatsUsageOverviewHandler,
 	})
 
 	server := &http.Server{
@@ -690,6 +693,8 @@ type managementAPIHandlers struct {
 	AnnouncementsHandler                    http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
+	StatsUsageOverviewHandler               http.Handler
+	MyStatsUsageOverviewHandler             http.Handler
 }
 
 type managementAPIInvalidator interface {
@@ -933,6 +938,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	usageRecordService := managementusagerecords.NewService(store)
 	announcementService := announcements.NewService(store)
 	statsService := managementstats.NewService(store)
+	statsOverviewService := managementstatsoverview.NewService(managementstatsoverview.ServiceOptions{
+		Reader:       store,
+		WindowReader: statsService,
+	})
 	globalSettingsService := publicsettings.NewService(store)
 	globalSettingsUpdateService := managementsettings.NewServiceWithOptions(managementsettings.ServiceOptions{
 		Store:                          store,
@@ -1167,6 +1176,8 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, accountsStaticResetPublisher, logger),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
+		StatsUsageOverviewHandler:               httpapi.NewManagementStatsUsageOverviewHandler(statsOverviewService),
+		MyStatsUsageOverviewHandler:             httpapi.NewManagementMyStatsUsageOverviewHandler(statsOverviewService),
 	}
 }
 
