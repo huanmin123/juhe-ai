@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -172,6 +173,9 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.ShutdownTimeout <= 0 {
 		return fmt.Errorf("JUHE_AI_SHUTDOWN_TIMEOUT 必须大于 0")
+	}
+	if root := strings.TrimSpace(cfg.AuditHotSearchRoot); root != "" && !filepath.IsAbs(root) {
+		return fmt.Errorf("JUHE_AI_AUDIT_HOT_SEARCH_ROOT 必须是绝对路径")
 	}
 	if cfg.OwnerLockEnabled {
 		if strings.TrimSpace(cfg.OwnerLockPath) == "" {
