@@ -227,6 +227,7 @@ func TestAccountSlotLeaseStoreValidatesInputBeforeRedis(t *testing.T) {
 		{AccountID: "acct_1", Lane: AccountSlotLaneText, TotalLimit: 0, LaneLimit: 1, TTL: time.Second, Token: "token"},
 		{AccountID: "acct_1", Lane: AccountSlotLaneText, TotalLimit: 1, LaneLimit: 2, TTL: time.Second, Token: "token"},
 		{AccountID: "acct_1", Lane: AccountSlotLaneText, TotalLimit: 1, LaneLimit: 1, TTL: time.Nanosecond, Token: "token"},
+		{AccountID: "acct_1", Lane: AccountSlotLaneText, TotalLimit: 1, LaneLimit: 1, TTL: AccountSlotLeaseTTL + time.Millisecond, Token: "token"},
 		{AccountID: "acct_1", Lane: AccountSlotLaneText, TotalLimit: 1, LaneLimit: 1, TTL: time.Second},
 	}
 	for _, input := range badAcquire {
@@ -250,6 +251,9 @@ func TestAccountSlotLeaseStoreValidatesInputBeforeRedis(t *testing.T) {
 	}
 	if _, err := store.Refresh(t.Context(), AccountSlotLease{AccountID: "acct_1", Lane: AccountSlotLaneText, Token: "token"}, 0); err == nil {
 		t.Fatal("Refresh() zero TTL error = nil")
+	}
+	if _, err := store.Refresh(t.Context(), AccountSlotLease{AccountID: "acct_1", Lane: AccountSlotLaneText, Token: "token"}, AccountSlotLeaseTTL+time.Millisecond); err == nil {
+		t.Fatal("Refresh() TTL above Node coexistence limit error = nil")
 	}
 	if called {
 		t.Fatal("invalid input reached Redis runner")
@@ -339,8 +343,10 @@ func TestAccountSlotLuaScriptsEnforceFencingAndLongestLeaseTTL(t *testing.T) {
 	for _, want := range []string{
 		"redis.call('TIME')",
 		"total_expiry_ms <= now_ms",
-		"selected_lane_expiry_ms == false",
+		"selected_lane_expiry_raw == false",
+		"selected_lane_expiry_ms <= now_ms",
 		"other_lane_expiry_ms ~= false",
+		"math.max(requested_expires_at_ms, total_expiry_ms, selected_lane_expiry_ms)",
 		"latest_expiry_ms",
 	} {
 		if !strings.Contains(accountSlotRefreshLua, want) {
@@ -382,6 +388,11 @@ func TestAccountSlotLeaseStoreRedisIntegration(t *testing.T) {
 	if err != nil || !first.Acquired {
 		t.Fatalf("first Acquire() = %+v, %v", first, err)
 	}
+	notShortened, err := store.Refresh(t.Context(), first.Lease, time.Second)
+	if err != nil || !notShortened.Refreshed || notShortened.Lease.ExpiresAt.Before(first.Lease.ExpiresAt) {
+		t.Fatalf("short Refresh() = %+v, %v; must not shorten %+v", notShortened, err, first.Lease)
+	}
+	first.Lease = notShortened.Lease
 	retried, err := store.Acquire(t.Context(), AccountSlotAcquireInput{
 		AccountID: accountID, Lane: AccountSlotLaneText, TotalLimit: 2, LaneLimit: 1,
 		TTL: 5 * time.Second, Token: first.Lease.Token,
