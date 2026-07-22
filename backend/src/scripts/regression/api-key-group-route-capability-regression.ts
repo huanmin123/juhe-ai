@@ -441,7 +441,7 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
 
   const beforeCount = upstreamRequests.length
   const traceId = `trace-route-strategy-${item.suffix}-exhausted-fallback`
-  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
+  const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId, undefined, true)
   assert.equal(response.status, 200, `${item.displayName} 下 A 号池真实失败耗尽后应切 B 并成功，实际 ${response.status}: ${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.deepEqual(
