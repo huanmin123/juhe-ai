@@ -15,7 +15,6 @@ import type { GatewayQuotaSnapshot } from '../gateway/quota/quota-snapshot-cache
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
 import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
-import type { PageDataChangeEvent, PageDataDomain } from '../page-data/page-data-change.service.js'
 
 export type BackgroundWorkerProcessRole =
   | 'worker'
@@ -174,10 +173,6 @@ export type BackgroundWorkerMessage =
   | { type: 'gateway_runtime_cache_invalidate' }
   | { type: 'gateway_quota_snapshot_update'; snapshot: GatewayQuotaSnapshot }
   | { type: 'client_ip_policy_snapshot_update'; policies: ActiveClientIpPolicy[] }
-  | { type: 'page_data_change_publish'; event: PageDataChangeEvent }
-  | { type: 'page_data_change_dirty'; requestId: string; domains: PageDataDomain[] }
-  | { type: 'page_data_change_dirty_ack'; requestId: string; ok: true }
-  | { type: 'page_data_change_dirty_ack'; requestId: string; ok: false; errorMessage: string }
 
 export interface PendingRequest {
   resolve: (snapshot: BackgroundWorkerRuntimeSnapshot | undefined) => void

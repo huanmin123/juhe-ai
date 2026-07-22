@@ -24,7 +24,6 @@ import type {
   OpenAIAccountTrafficMigrationRuntimeResult,
   OpenAIAccountTrafficMigrationRuntimeScope
 } from './db-service-types.js'
-import { isPageDataChangeEvent, pageDataDomains, type PageDataChangeEvent, type PageDataDomain } from '../page-data/page-data-change.service.js'
 
 interface PendingRequest {
   resolve: (value: unknown) => void
@@ -77,7 +76,6 @@ const unavailableCircuitOpenMs = 3000
 const maxPendingRequests = 2000
 const maxPendingDatasetWriteRequests = 1000
 const maxPendingStatsWriteRequests = 1000
-const maxPendingPageDataDirtyRequests = 256
 
 let dbServiceProcess: ChildProcess | undefined
 let dbServiceReady = false
@@ -91,7 +89,6 @@ let pendingOpenAIAccountTrafficMigrationRuntimeRequests = new Map<string, Pendin
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let pendingDatasetWriteRequests = new Map<string, PendingDatasetWriteRequest>()
 let pendingStatsWriteRequests = new Map<string, PendingDatasetWriteRequest>()
-let pendingPageDataDirtyRequests = new Map<string, PendingPageDataDirtyRequest>()
 let timedOutRequestCount = 0
 let rejectedRequestCount = 0
 let failedRequestCount = 0
@@ -131,12 +128,6 @@ interface PendingDatasetWriteRequest {
   reject: (error: Error) => void
   timeout: NodeJS.Timeout
   createdAt: number
-}
-
-interface PendingPageDataDirtyRequest {
-  resolve: () => void
-  reject: (error: Error) => void
-  timeout: NodeJS.Timeout
 }
 
 export function attachDbServiceProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
@@ -548,32 +539,6 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   }
 
   const record = message as Partial<DbServiceParentMessage> & Record<string, unknown>
-  if (record.type === 'page_data_change_publish' && isPageDataChangeEvent(record.event)) {
-    void import('../page-data/page-data-change.runtime.js')
-      .then(({ acceptPageDataChangeFromIpc }) => acceptPageDataChangeFromIpc(record.event as PageDataChangeEvent))
-      .catch((error) => {
-        logger.warn(errorLogFields(error, { event: 'page_data_change_ipc_accept_failed' }), '接收页面数据变更 IPC 失败')
-      })
-    return true
-  }
-  if (record.type === 'page_data_change_dirty' && typeof record.requestId === 'string' && Array.isArray(record.domains)) {
-    const domains = registeredPageDataDomains(record.domains)
-    void import('../page-data/page-data-change.runtime.js')
-      .then(({ acceptPageDataDirtyDomainsFromIpc }) => acceptPageDataDirtyDomainsFromIpc(domains))
-      .then(() => {
-        sendDbServiceChildMessage({ type: 'page_data_change_dirty_ack', requestId: record.requestId as string, ok: true })
-      })
-      .catch((error) => {
-        logger.warn(errorLogFields(error, { event: 'page_data_change_dirty_ipc_accept_failed', domains }), '接收页面数据 dirty domain IPC 失败')
-        sendDbServiceChildMessage({
-          type: 'page_data_change_dirty_ack',
-          requestId: record.requestId as string,
-          ok: false,
-          errorMessage: error instanceof Error ? error.message : String(error)
-        })
-      })
-    return true
-  }
   if (record.type === 'db_service_process_event_loop_request' && typeof record.requestId === 'string') {
     const response: DbServiceChildMessage = {
       type: 'db_service_process_event_loop_response',
@@ -628,74 +593,6 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   return true
 }
 
-export async function sendPageDataChangeToDbService(event: PageDataChangeEvent): Promise<void> {
-  if (runtimeConfig.processRole === 'db-service') {
-    const { acceptPageDataChangeFromIpc } = await import('../page-data/page-data-change.runtime.js')
-    await acceptPageDataChangeFromIpc(event)
-    return
-  }
-  const child = dbServiceProcess
-  if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !dbServiceReady) {
-    throw new Error('本地数据库服务未就绪，无法发布页面数据变更')
-  }
-  await new Promise<void>((resolve, reject) => {
-    try {
-      child.send({ type: 'page_data_change_publish', event } satisfies DbServiceParentMessage, (error) => {
-        if (error) reject(error)
-        else resolve()
-      })
-    } catch (error) {
-      reject(error)
-    }
-  })
-}
-
-export async function sendPageDataDirtyDomainsToDbService(input: PageDataDomain[]): Promise<void> {
-  const domains = registeredPageDataDomains(input)
-  if (domains.length === 0) return
-  if (runtimeConfig.processRole === 'db-service') {
-    const { acceptPageDataDirtyDomainsFromIpc } = await import('../page-data/page-data-change.runtime.js')
-    await acceptPageDataDirtyDomainsFromIpc(domains)
-    return
-  }
-  const child = dbServiceProcess
-  if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !dbServiceReady) {
-    throw new Error('本地数据库服务未就绪，无法持久化页面数据 dirty domain')
-  }
-  if (pendingPageDataDirtyRequests.size >= maxPendingPageDataDirtyRequests) {
-    throw new Error('页面数据 dirty domain DB service ACK 队列已满')
-  }
-  const requestId = randomUUID()
-  await new Promise<void>((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      const pending = pendingPageDataDirtyRequests.get(requestId)
-      if (!pending) return
-      pendingPageDataDirtyRequests.delete(requestId)
-      pending.reject(new Error('页面数据 dirty domain DB service 持久化 ACK 超时'))
-    }, requestTimeoutMs)
-    pendingPageDataDirtyRequests.set(requestId, { resolve, reject, timeout })
-    const fail = (error: unknown): void => {
-      const pending = pendingPageDataDirtyRequests.get(requestId)
-      if (!pending) return
-      clearTimeout(pending.timeout)
-      pendingPageDataDirtyRequests.delete(requestId)
-      pending.reject(error instanceof Error ? error : new Error(String(error)))
-    }
-    try {
-      child.send({ type: 'page_data_change_dirty', requestId, domains } satisfies DbServiceParentMessage, (error) => {
-        if (error) fail(error)
-      })
-    } catch (error) {
-      fail(error)
-    }
-  })
-}
-
-function registeredPageDataDomains(values: readonly unknown[]): PageDataDomain[] {
-  const registered = new Set<string>(pageDataDomains)
-  return [...new Set(values.filter((value): value is PageDataDomain => typeof value === 'string' && registered.has(value)))]
-}
-
 function handleDbServiceMessage(message: unknown): void {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return
@@ -703,11 +600,6 @@ function handleDbServiceMessage(message: unknown): void {
 
   const record = message as Partial<DbServiceChildMessage> & Record<string, unknown>
   switch (record.type) {
-    case 'page_data_change_dirty_ack':
-      if (typeof record.requestId === 'string') {
-        finishPageDataDirtyRequest(record.requestId, record.ok === true, typeof record.errorMessage === 'string' ? record.errorMessage : undefined)
-      }
-      break
     case 'db_service_ready':
       dbServiceReady = true
       unavailableCircuitOpenUntilMs = 0
@@ -889,20 +781,6 @@ function failPendingRequests(error: Error): void {
     pending.resolve(undefined)
     pendingStatsWriteRequests.delete(requestId)
   }
-  for (const [requestId, pending] of pendingPageDataDirtyRequests) {
-    clearTimeout(pending.timeout)
-    pending.reject(error)
-    pendingPageDataDirtyRequests.delete(requestId)
-  }
-}
-
-function finishPageDataDirtyRequest(requestId: string, ok: boolean, errorMessage?: string): void {
-  const pending = pendingPageDataDirtyRequests.get(requestId)
-  if (!pending) return
-  clearTimeout(pending.timeout)
-  pendingPageDataDirtyRequests.delete(requestId)
-  if (ok) pending.resolve()
-  else pending.reject(new Error(errorMessage?.trim() || '页面数据 dirty domain DB service 持久化失败'))
 }
 
 function finishProcessEventLoopRequest(requestId: string, sample: ProcessEventLoopSample | undefined): void {
