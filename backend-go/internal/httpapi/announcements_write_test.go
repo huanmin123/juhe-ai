@@ -169,6 +169,19 @@ func TestAnnouncementManagementWriteCreateStrictJSONAndStatus(t *testing.T) {
 	}
 }
 
+func TestAnnouncementManagementWriteCreateRejectsBodyOverNodeLimit(t *testing.T) {
+	fake := &announcementWriteServiceFake{}
+	recorder := httptest.NewRecorder()
+	body := `{"title":"标题","content":"` + strings.Repeat("x", announcementJSONMaxBodyBytes) + `"}`
+	newAnnouncementWriteHandler(fake, &operationLogQueueStub{}, &announcementPageDataFake{}).ServeHTTP(
+		recorder,
+		announcementWriteRequest(http.MethodPost, "/announcements", body, "admin"),
+	)
+	if recorder.Code != http.StatusRequestEntityTooLarge || fake.createCalls != 0 {
+		t.Fatalf("status=%d createCalls=%d body=%s", recorder.Code, fake.createCalls, recorder.Body.String())
+	}
+}
+
 func TestAnnouncementManagementWriteUpdateActionsAndNotFound(t *testing.T) {
 	fake := &announcementWriteServiceFake{
 		findResult: announcementPublished("ann-1"), findFound: true,
@@ -438,7 +451,7 @@ func TestAnnouncementCreateMutationGuardRejectsBodyOverNodeLimit(t *testing.T) {
 		ManagementAPIAuthTouchMiddleware: auth,
 		ManagementAnnouncementsHandler:   handler,
 	})
-	body := `{"title":"标题","content":"` + strings.Repeat("x", 256<<10) + `"}`
+	body := `{"title":"标题","content":"` + strings.Repeat("x", announcementJSONMaxBodyBytes) + `"}`
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/__aisys__/api/announcements", strings.NewReader(body)))
 	if recorder.Code != http.StatusRequestEntityTooLarge || createCalls != 0 {
