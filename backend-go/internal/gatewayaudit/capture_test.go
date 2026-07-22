@@ -2,78 +2,27 @@ package gatewayaudit
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestSanitizeHeadersRedactsCredentialsAndDropsAttestation(t *testing.T) {
-	input := map[string][]string{
-		"Authorization":     {"Bearer secret"},
-		"X-Custom-Token":    {"one", "two"},
-		"X-OAI-Attestation": {"attestation"},
-		"Content-Type":      {"application/json"},
-	}
-
-	got := SanitizeHeaders(input)
-	want := map[string][]string{
-		"Authorization":  {RedactedValue},
-		"X-Custom-Token": {RedactedValue, RedactedValue},
-		"Content-Type":   {"application/json"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("SanitizeHeaders() = %#v, want %#v", got, want)
-	}
-
-	input["Authorization"][0] = "changed"
-	if got["Authorization"][0] != RedactedValue {
-		t.Fatal("SanitizeHeaders() must return an independent snapshot")
-	}
-}
-
-func TestSanitizeURLRedactsUserInfoAndSensitiveQueryValues(t *testing.T) {
-	got, err := SanitizeURL("https://user:pass@example.com/v1/responses?api_key=secret&model=gpt-5&access_token=token")
+func TestNormalizeAttemptPreservesOriginalURLWithExplicitBound(t *testing.T) {
+	const original = "https://user:pass@example.com/v1/responses?api_key=secret&model=gpt-5#fragment"
+	got, err := normalizeAttempt(AttemptInput{UpstreamURL: original})
 	if err != nil {
-		t.Fatalf("SanitizeURL() error = %v", err)
+		t.Fatalf("normalizeAttempt() error = %v", err)
 	}
-	const want = "https://example.com/v1/responses?access_token=%5Bredacted%5D&api_key=%5Bredacted%5D&model=gpt-5"
-	if got != want {
-		t.Fatalf("SanitizeURL() = %q, want %q", got, want)
+	if got.UpstreamURL != original || got.UpstreamURLTruncated {
+		t.Fatalf("normalized URL = %q truncated=%v", got.UpstreamURL, got.UpstreamURLTruncated)
 	}
-}
 
-func TestSanitizeURLRejectsOpaqueCredentialURL(t *testing.T) {
-	if _, err := SanitizeURL("https:user:pass@example.com/v1?token=x"); err == nil {
-		t.Fatal("SanitizeURL() accepted an opaque URL")
-	}
-}
-
-func TestSanitizeURLNormalizesSchemeAndDropsFragment(t *testing.T) {
-	got, err := SanitizeURL("HTTPS://example.com/v1#access_token=secret")
+	longURL := "https://example.com/?value=" + strings.Repeat("x", maxURLBytes)
+	got, err = normalizeAttempt(AttemptInput{UpstreamURL: longURL})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "https://example.com/v1" {
-		t.Fatalf("SanitizeURL() = %q", got)
-	}
-}
-
-func TestSanitizeURLRejectsOversizedInputBeforeParsing(t *testing.T) {
-	value := "https://example.com/v1?token=" + strings.Repeat("x", MaxURLInputBytes)
-	if _, err := SanitizeURL(value); err == nil || !strings.Contains(err.Error(), "too large") {
-		t.Fatalf("SanitizeURL() error = %v", err)
-	}
-}
-
-func TestSanitizeHeaderPreviewIsBounded(t *testing.T) {
-	preview, truncated := SanitizeHeaderPreview(map[string][]string{
-		"X-Large": {strings.Repeat("x", HeaderPreviewMaxValueBytes+1)},
-	})
-	if !truncated {
-		t.Fatal("SanitizeHeaderPreview() did not report truncation")
-	}
-	if got := len(preview["X-Large"][0]); got != HeaderPreviewMaxValueBytes {
-		t.Fatalf("preview value bytes = %d", got)
+	if len(got.UpstreamURL) != maxURLBytes || !got.UpstreamURLTruncated {
+		t.Fatalf("bounded URL bytes = %d truncated=%v", len(got.UpstreamURL), got.UpstreamURLTruncated)
 	}
 }
 
@@ -217,35 +166,19 @@ func TestCaptureChargesEmptyItemOverhead(t *testing.T) {
 	}
 }
 
-func TestCaptureAccountsForAndCopiesActualHeaderPreview(t *testing.T) {
-	headers := map[string][]string{"X-Large": {strings.Repeat("x", 2048)}}
-	capture, err := NewCapture(1024, MetadataDTO{SanitizedRequestHeaderPreview: headers})
-	if err != nil {
-		t.Fatal(err)
-	}
-	headers["X-Large"][0] = "changed"
-	snapshot := takeSnapshot(t, capture)
-	if snapshot.Status != CaptureStatusOverflow || snapshot.ResidentBytes > snapshot.MaxResidentBytes || snapshot.PeakResidentBytes <= snapshot.MaxResidentBytes {
-		t.Fatalf("snapshot = %#v, want overflow", snapshot)
-	}
-	if snapshot.DTO.Metadata.SanitizedRequestHeaderPreview != nil {
-		t.Fatalf("overflow retained header preview = %#v", snapshot.DTO.Metadata.SanitizedRequestHeaderPreview)
-	}
-}
-
 func TestCaptureSnapshotIsIndependent(t *testing.T) {
 	capture, err := NewCapture(4096)
 	if err != nil {
 		t.Fatal(err)
 	}
-	fragmentHeaders := map[string][]string{"Content-Type": {"application/json"}}
-	if err = capture.AddFragment(FragmentDescriptorDTO{SanitizedHeaderPreview: fragmentHeaders}); err != nil {
+	status := 201
+	if err = capture.AddAttempt(AttemptInput{UpstreamStatusCode: &status}); err != nil {
 		t.Fatal(err)
 	}
-	fragmentHeaders["Content-Type"][0] = "changed"
+	status = 500
 	first := takeSnapshot(t, capture)
-	if got := first.DTO.Fragments[0].SanitizedHeaderPreview["Content-Type"][0]; got != "application/json" {
-		t.Fatalf("snapshot header = %q", got)
+	if got := first.DTO.Attempts[0].UpstreamStatusCode; got == nil || *got != 201 {
+		t.Fatalf("snapshot status = %v", got)
 	}
 	if _, err = capture.TakeSnapshot(); !errors.Is(err, ErrCaptureFinalized) {
 		t.Fatalf("second TakeSnapshot() error = %v", err)
