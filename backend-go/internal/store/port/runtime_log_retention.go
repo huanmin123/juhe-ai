@@ -1,10 +1,17 @@
 package port
 
-import "context"
+import (
+	"context"
+	"errors"
+)
+
+var ErrRuntimeLogRetentionDeferred = errors.New("runtime log retention deferred")
 
 type RuntimeLogRetentionCleanupInput struct {
-	CutoffISO string
-	Limit     int
+	// GoExclusiveIndexCleanupOwner asserts that the Node index-cleanup subowner is stopped.
+	GoExclusiveIndexCleanupOwner bool
+	CutoffISO                    string
+	Limit                        int
 }
 
 type RuntimeLogRetentionCleaner interface {
