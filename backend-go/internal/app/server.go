@@ -44,6 +44,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementclientipstats"
 	"juhe-ai/backend-go/internal/modules/managementexternalintegrationsources"
 	"juhe-ai/backend-go/internal/modules/managementgroups"
+	"juhe-ai/backend-go/internal/modules/managementmodelchecks"
 	"juhe-ai/backend-go/internal/modules/managementoperationlogs"
 	"juhe-ai/backend-go/internal/modules/managementprovidermodels"
 	"juhe-ai/backend-go/internal/modules/managementproviders"
@@ -360,6 +361,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAccountOptionsHandler:                 managementHandlers.MyAccountOptionsHandler,
 		ManagementAccountTestOptionsHandler:               managementHandlers.AccountTestOptionsHandler,
 		ManagementMyAccountTestOptionsHandler:             managementHandlers.MyAccountTestOptionsHandler,
+		ManagementModelCheckOptionsHandler:                managementHandlers.ModelCheckOptionsHandler,
+		ManagementMyModelCheckOptionsHandler:              managementHandlers.MyModelCheckOptionsHandler,
+		ManagementModelCheckActiveHandler:                 managementHandlers.ModelCheckActiveHandler,
+		ManagementMyModelCheckActiveHandler:               managementHandlers.MyModelCheckActiveHandler,
+		ManagementModelCheckListHandler:                   managementHandlers.ModelCheckListHandler,
+		ManagementMyModelCheckListHandler:                 managementHandlers.MyModelCheckListHandler,
+		ManagementModelCheckDetailHandler:                 managementHandlers.ModelCheckDetailHandler,
+		ManagementMyModelCheckDetailHandler:               managementHandlers.MyModelCheckDetailHandler,
 		ManagementAccountTagsHandler:                      managementHandlers.AccountTagsHandler,
 		ManagementMyAccountTagsHandler:                    managementHandlers.MyAccountTagsHandler,
 		ManagementAccountTagDeleteHandler:                 managementHandlers.AccountTagDeleteHandler,
@@ -593,6 +602,14 @@ type managementAPIHandlers struct {
 	MyAccountOptionsHandler                 http.Handler
 	AccountTestOptionsHandler               http.Handler
 	MyAccountTestOptionsHandler             http.Handler
+	ModelCheckOptionsHandler                http.Handler
+	MyModelCheckOptionsHandler              http.Handler
+	ModelCheckActiveHandler                 http.Handler
+	MyModelCheckActiveHandler               http.Handler
+	ModelCheckListHandler                   http.Handler
+	MyModelCheckListHandler                 http.Handler
+	ModelCheckDetailHandler                 http.Handler
+	MyModelCheckDetailHandler               http.Handler
 	AccountTagsHandler                      http.Handler
 	MyAccountTagsHandler                    http.Handler
 	AccountTagDeleteHandler                 http.Handler
@@ -914,6 +931,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
 	auditLogService := managementauditlogs.NewService(store)
+	modelCheckService := managementmodelchecks.NewService(store)
 	runtimeLogService := managementruntimelogs.NewService(store)
 	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
 		managementexternalintegrationsources.ServiceOptions{
@@ -1070,6 +1088,14 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAccountOptionsHandler:                 httpapi.NewManagementMyAccountOptionsHandler(accountService),
 		AccountTestOptionsHandler:               httpapi.NewManagementAccountTestOptionsHandler(accountTestOptionsService),
 		MyAccountTestOptionsHandler:             httpapi.NewManagementMyAccountTestOptionsHandler(accountTestOptionsService),
+		ModelCheckOptionsHandler:                httpapi.NewManagementModelCheckOptionsHandler(modelCheckService),
+		MyModelCheckOptionsHandler:              httpapi.NewManagementMyModelCheckOptionsHandler(modelCheckService),
+		ModelCheckActiveHandler:                 httpapi.NewManagementModelCheckActiveHandler(modelCheckService),
+		MyModelCheckActiveHandler:               httpapi.NewManagementMyModelCheckActiveHandler(modelCheckService),
+		ModelCheckListHandler:                   httpapi.NewManagementModelCheckListHandler(modelCheckService),
+		MyModelCheckListHandler:                 httpapi.NewManagementMyModelCheckListHandler(modelCheckService),
+		ModelCheckDetailHandler:                 httpapi.NewManagementModelCheckDetailHandler(modelCheckService),
+		MyModelCheckDetailHandler:               httpapi.NewManagementMyModelCheckDetailHandler(modelCheckService),
 		AccountTagsHandler:                      httpapi.NewManagementAccountTagsHandler(accountService),
 		MyAccountTagsHandler:                    httpapi.NewManagementMyAccountTagsHandler(accountService),
 		AccountTagDeleteHandler:                 httpapi.NewManagementAccountTagDeleteHandler(accountService),

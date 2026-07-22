@@ -131,6 +131,14 @@ type RouterOptions struct {
 	ManagementMyAccountOptionsHandler                 http.Handler
 	ManagementAccountTestOptionsHandler               http.Handler
 	ManagementMyAccountTestOptionsHandler             http.Handler
+	ManagementModelCheckOptionsHandler                http.Handler
+	ManagementMyModelCheckOptionsHandler              http.Handler
+	ManagementModelCheckActiveHandler                 http.Handler
+	ManagementMyModelCheckActiveHandler               http.Handler
+	ManagementModelCheckListHandler                   http.Handler
+	ManagementMyModelCheckListHandler                 http.Handler
+	ManagementModelCheckDetailHandler                 http.Handler
+	ManagementMyModelCheckDetailHandler               http.Handler
 	ManagementAccountTagsHandler                      http.Handler
 	ManagementMyAccountTagsHandler                    http.Handler
 	ManagementAccountTagDeleteHandler                 http.Handler
@@ -418,6 +426,14 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementMyAccountOptionsHandler == nil &&
 				opts.ManagementAccountTestOptionsHandler == nil &&
 				opts.ManagementMyAccountTestOptionsHandler == nil &&
+				opts.ManagementModelCheckOptionsHandler == nil &&
+				opts.ManagementMyModelCheckOptionsHandler == nil &&
+				opts.ManagementModelCheckActiveHandler == nil &&
+				opts.ManagementMyModelCheckActiveHandler == nil &&
+				opts.ManagementModelCheckListHandler == nil &&
+				opts.ManagementMyModelCheckListHandler == nil &&
+				opts.ManagementModelCheckDetailHandler == nil &&
+				opts.ManagementMyModelCheckDetailHandler == nil &&
 				opts.ManagementAccountTagsHandler == nil &&
 				opts.ManagementMyAccountTagsHandler == nil &&
 				opts.ManagementAccountTagDeleteHandler == nil &&
@@ -901,6 +917,30 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementMyAccountTestOptionsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-accounts/{id}/test-options", opts.ManagementMyAccountTestOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementModelCheckOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/model-checks/options", opts.ManagementModelCheckOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyModelCheckOptionsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-model-checks/options", opts.ManagementMyModelCheckOptionsHandler.ServeHTTP)
+			}
+			if opts.ManagementModelCheckActiveHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/model-checks/run/active", opts.ManagementModelCheckActiveHandler.ServeHTTP)
+			}
+			if opts.ManagementMyModelCheckActiveHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-model-checks/run/active", opts.ManagementMyModelCheckActiveHandler.ServeHTTP)
+			}
+			if opts.ManagementModelCheckListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/model-checks/runs", opts.ManagementModelCheckListHandler.ServeHTTP)
+			}
+			if opts.ManagementMyModelCheckListHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-model-checks/runs", opts.ManagementMyModelCheckListHandler.ServeHTTP)
+			}
+			if opts.ManagementModelCheckDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/model-checks/runs/{id}", opts.ManagementModelCheckDetailHandler.ServeHTTP)
+			}
+			if opts.ManagementMyModelCheckDetailHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-model-checks/runs/{id}", opts.ManagementMyModelCheckDetailHandler.ServeHTTP)
 			}
 			if opts.ManagementAccountTagsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/accounts/tags", opts.ManagementAccountTagsHandler.ServeHTTP)
@@ -1506,6 +1546,14 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementMyAccountOptionsHandler != nil ||
 		opts.ManagementAccountTestOptionsHandler != nil ||
 		opts.ManagementMyAccountTestOptionsHandler != nil ||
+		opts.ManagementModelCheckOptionsHandler != nil ||
+		opts.ManagementMyModelCheckOptionsHandler != nil ||
+		opts.ManagementModelCheckActiveHandler != nil ||
+		opts.ManagementMyModelCheckActiveHandler != nil ||
+		opts.ManagementModelCheckListHandler != nil ||
+		opts.ManagementMyModelCheckListHandler != nil ||
+		opts.ManagementModelCheckDetailHandler != nil ||
+		opts.ManagementMyModelCheckDetailHandler != nil ||
 		opts.ManagementAccountTagsHandler != nil ||
 		opts.ManagementMyAccountTagsHandler != nil ||
 		opts.ManagementAccountTagDeleteHandler != nil ||
