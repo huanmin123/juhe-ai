@@ -8,9 +8,12 @@
     :option-filter-prop="optionFilterProp"
     :options="selectOptions"
     :placeholder="placeholder"
+    :filter-option="filterOption"
     show-search
     v-bind="$attrs"
     @change="handleChange"
+    @dropdown-visible-change="handleDropdownVisibleChange"
+    @search="handleSearch"
     @update:value="handleUpdateValue"
   />
 </template>
@@ -43,6 +46,7 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   mode?: SelectMode
   optionFilterProp?: string
+  filterOption?: boolean | ((input: string, option: SelectOption) => boolean)
   placeholder?: string
 }>(), {
   options: () => [],
@@ -58,12 +62,15 @@ const props = withDefaults(defineProps<{
   loading: false,
   mode: undefined,
   optionFilterProp: 'label',
+  filterOption: undefined,
   placeholder: undefined
 })
 
 const emit = defineEmits<{
   (event: 'update:value', value: SelectValue): void
   (event: 'change', value: SelectValue, option: unknown): void
+  (event: 'dropdownVisibleChange', open: boolean): void
+  (event: 'search', value: string): void
 }>()
 
 const lastCommittedValues = ref<Array<string | undefined>>(selectedValues(props.value))
@@ -125,6 +132,14 @@ function handleUpdateValue(value: SelectValue) {
 
 function handleChange(value: SelectValue, option: unknown) {
   emit('change', value, option)
+}
+
+function handleDropdownVisibleChange(open: boolean) {
+  emit('dropdownVisibleChange', open)
+}
+
+function handleSearch(value: string) {
+  emit('search', value)
 }
 
 function selectedValues(value: SelectValue): Array<string | undefined> {

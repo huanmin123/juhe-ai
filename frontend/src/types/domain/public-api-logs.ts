@@ -34,8 +34,21 @@ export interface PublicApiLogDetail extends PublicApiLogSummary {
   responseData: Record<string, unknown>
 }
 
+export interface PublicApiLogListItem {
+  id: string
+  createdAt: string
+  sourceName?: string
+  method: string
+  path: string
+  success: boolean
+  statusCode?: number
+  durationMs?: number
+  clientIp?: string
+  traceId?: string
+}
+
 export interface PublicApiLogListResult {
-  items: PublicApiLogSummary[]
+  items: PublicApiLogListItem[]
   total: number
   hasMore: boolean
   page: number

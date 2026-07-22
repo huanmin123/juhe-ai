@@ -2,6 +2,7 @@ import { getDatasetDatabase } from './database.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import {
+  operationLogListItemFromRow,
   operationLogSummaryFromRow,
   operationLogTargetFromRow,
   operationLogViewerFromRow,
@@ -148,7 +149,7 @@ export async function getOperationLogDetailForViewerAsync(id: string, systemAcco
   return sanitizeOperationLogDetailForViewer(detail, effectiveViewerDetailLevel(detail.detailLevel, viewerLevel, detail.visibilityScope))
 }
 
-function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options: OperationLogListOptions, viewerSystemAccountId?: string): OperationLogListResult {
+function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options: OperationLogListOptions): OperationLogListResult {
   const pageSize = normalizeOperationLogPageSize(options.pageSize)
   const page = normalizeOperationLogPage(options.page, pageSize)
   const offset = (page - 1) * pageSize
@@ -181,14 +182,7 @@ function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options
     optionalString(row.actor_system_account_id),
     optionalString(row.operation_scope_system_account_id)
   ]))
-  const viewerDetailLevels = viewerSystemAccountId
-    ? loadViewerDetailLevels(pageRows.rows.map((row) => String(row.id)), viewerSystemAccountId)
-    : new Map<string, OperationLogDetailLevel>()
-  const items = pageRows.rows.map((row) => {
-    const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
-    if (!viewerSystemAccountId) return summary
-    return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
-  })
+  const items = pageRows.rows.map((row) => operationLogListItemFromRow(row, systemAccountNames))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -202,7 +196,6 @@ async function listOperationLogsWithFiltersAsync(
   client: DatabaseClient,
   filters: OperationLogWhereFilters,
   options: OperationLogListOptions,
-  viewerSystemAccountId?: string
 ): Promise<OperationLogListResult> {
   const pageSize = normalizeOperationLogPageSize(options.pageSize)
   const page = normalizeOperationLogPage(options.page, pageSize)
@@ -231,14 +224,7 @@ async function listOperationLogsWithFiltersAsync(
     optionalString(row.actor_system_account_id),
     optionalString(row.operation_scope_system_account_id)
   ]))
-  const viewerDetailLevels = viewerSystemAccountId
-    ? await loadViewerDetailLevelsAsync(client, pageRows.rows.map((row) => String(row.id)), viewerSystemAccountId)
-    : new Map<string, OperationLogDetailLevel>()
-  const items = pageRows.rows.map((row) => {
-    const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
-    if (!viewerSystemAccountId) return summary
-    return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
-  })
+  const items = pageRows.rows.map((row) => operationLogListItemFromRow(row, systemAccountNames))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -253,27 +239,11 @@ function operationLogListSelectColumns(alias: string): string {
     'id',
     'trace_id',
     'actor_system_account_id',
-    'actor_username',
     'actor_display_name',
-    'actor_role',
     'operation_scope_system_account_id',
-    'mode',
     'module',
     'action',
-    'operation_key',
-    'resource_type',
-    'resource_id',
-    'resource_name',
     'summary',
-    'detail_level',
-    'visibility_scope',
-    "'[]' AS changes_json",
-    "'{}' AS metadata_json",
-    'method',
-    'path',
-    'status_code',
-    'client_ip',
-    'user_agent',
     'created_at'
   ].map((column) => column.includes(' AS ') ? column : `${alias}.${column}`).join(', ')
 }
@@ -293,11 +263,7 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
     optionalString(row.actor_system_account_id),
     optionalString(row.operation_scope_system_account_id)
   ]))
-  const viewerDetailLevels = loadViewerDetailLevels(pageRows.rows.map((row) => String(row.id)), systemAccountId)
-  const items = pageRows.rows.map((row) => {
-    const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
-    return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
-  })
+  const items = pageRows.rows.map((row) => operationLogListItemFromRow(row, systemAccountNames))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -327,11 +293,7 @@ async function listVisibleOperationLogsForViewerAsync(
     optionalString(row.actor_system_account_id),
     optionalString(row.operation_scope_system_account_id)
   ]))
-  const viewerDetailLevels = await loadViewerDetailLevelsAsync(client, pageRows.rows.map((row) => String(row.id)), systemAccountId)
-  const items = pageRows.rows.map((row) => {
-    const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
-    return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
-  })
+  const items = pageRows.rows.map((row) => operationLogListItemFromRow(row, systemAccountNames))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),

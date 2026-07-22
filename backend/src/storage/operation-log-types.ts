@@ -85,11 +85,25 @@ export interface OperationLogListOptions {
 }
 
 export interface OperationLogListResult {
-  items: OperationLogSummary[]
+  items: OperationLogListItem[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
+}
+
+export interface OperationLogListItem {
+  id: string
+  traceId?: string
+  actorSystemAccountId: string
+  actorDisplayName?: string
+  actorSystemAccountName?: string
+  operationScopeSystemAccountId?: string
+  operationScopeSystemAccountName?: string
+  module: string
+  action: string
+  summary: string
+  createdAt: string
 }
 
 export interface OperationLogTargetSummary {

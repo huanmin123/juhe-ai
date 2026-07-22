@@ -3,6 +3,7 @@ import type {
   OperationLogActorRole,
   OperationLogChange,
   OperationLogDetailLevel,
+  OperationLogListItem,
   OperationLogMode,
   OperationLogSummary,
   OperationLogTargetSummary,
@@ -12,6 +13,24 @@ import type {
 } from './operation-log-types.js'
 
 export type OperationLogRow = Record<string, unknown>
+
+export function operationLogListItemFromRow(row: OperationLogRow, systemAccountNames: Map<string, string>): OperationLogListItem {
+  const actorSystemAccountId = String(row.actor_system_account_id)
+  const operationScopeSystemAccountId = optionalString(row.operation_scope_system_account_id)
+  return {
+    id: String(row.id),
+    traceId: optionalString(row.trace_id),
+    actorSystemAccountId,
+    actorDisplayName: optionalString(row.actor_display_name),
+    actorSystemAccountName: systemAccountNames.get(actorSystemAccountId),
+    operationScopeSystemAccountId,
+    operationScopeSystemAccountName: operationScopeSystemAccountId ? systemAccountNames.get(operationScopeSystemAccountId) : undefined,
+    module: String(row.module),
+    action: String(row.action),
+    summary: String(row.summary),
+    createdAt: String(row.created_at)
+  }
+}
 
 export function operationLogSummaryFromRow(row: OperationLogRow, systemAccountNames: Map<string, string>, options: { includePayload?: boolean } = {}): OperationLogSummary {
   const actorSystemAccountId = String(row.actor_system_account_id)

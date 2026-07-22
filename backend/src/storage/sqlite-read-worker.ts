@@ -109,6 +109,7 @@ import { getResourceAuthorizationUsageReadOnly } from './resource-authorization-
 import {
   findRouteStrategySummaryReadOnly,
   listRouteStrategyListItemsPageReadOnly,
+  listRouteStrategyListSnapshotReadOnly,
   listRouteStrategiesPageReadOnly,
   listRouteStrategyOptionsReadOnly
 } from './route-strategy.repository.js'
@@ -128,7 +129,12 @@ import {
   listDatabaseStorageHistory,
   listTableStorageHistory
 } from './table-monitor.repository.js'
-import { listActiveResponseInspectionPoliciesForGateway, listResponseInspectionPolicies } from './response-inspection-policy.repository.js'
+import {
+  getResponseInspectionPolicyDetail,
+  listActiveResponseInspectionPoliciesForGateway,
+  listResponseInspectionPolicies,
+  listResponseInspectionPolicyProviderOptions
+} from './response-inspection-policy.repository.js'
 import {
   findSessionByTokenReadOnly,
   findSystemAccountById,
@@ -274,6 +280,10 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return getModelCheckRunDetail(operation.runId, operation.access)
     case 'list_response_inspection_policies_read_only':
       return listResponseInspectionPolicies()
+    case 'get_response_inspection_policy_detail_read_only':
+      return getResponseInspectionPolicyDetail(operation.id)
+    case 'list_response_inspection_policy_provider_options_read_only':
+      return listResponseInspectionPolicyProviderOptions()
     case 'list_active_response_inspection_policies_read_only':
       return listActiveResponseInspectionPoliciesForGateway(operation.input)
     case 'list_external_integration_sources_read_only':
@@ -360,6 +370,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listRouteStrategiesPageReadOnly(operation.access, operation.options)
     case 'list_route_strategy_list_items_page_read_only':
       return listRouteStrategyListItemsPageReadOnly(operation.access, operation.options)
+    case 'list_route_strategy_list_snapshot_read_only':
+      return listRouteStrategyListSnapshotReadOnly(operation.access, operation.routeStrategyIds)
     case 'list_route_strategy_options_read_only':
       return listRouteStrategyOptionsReadOnly(operation.access, operation.options)
     case 'find_route_strategy_summary_read_only':

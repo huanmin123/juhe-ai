@@ -72,8 +72,9 @@ import { computed, reactive, watch } from 'vue'
 import type { ResponseInspectionPolicyPayload } from '@/api/client'
 import type {
   ResponseInspectionPolicyAction,
-  ResponseInspectionPolicyScopeType,
-  ResponseInspectionPolicySummary
+  ResponseInspectionPolicyDetail,
+  ResponseInspectionPolicyProviderOption,
+  ResponseInspectionPolicyScopeType
 } from '@/types/domain'
 import ResponseInspectionActionSelector from './ResponseInspectionActionSelector.vue'
 import ResponseInspectionMatchFields from './ResponseInspectionMatchFields.vue'
@@ -112,9 +113,9 @@ const open = defineModel<boolean>('open', { required: true })
 
 const props = withDefaults(defineProps<{
   mode: ResponseInspectionPolicyFormMode
-  policy?: ResponseInspectionPolicySummary
+  policy?: ResponseInspectionPolicyDetail
   saving?: boolean
-  providerOptions: Array<{ label: string; value: string; protocolCode: string }>
+  providerOptions: ResponseInspectionPolicyProviderOption[]
   defaultPriority: number
   defaultProviderCode: string
 }>(), {
@@ -132,11 +133,25 @@ const scopeOptions = [
 ]
 const protocolOptions = [
   { label: 'OpenAI v1', value: 'openai' },
-  { label: 'Anthropic v1', value: 'anthropic' }
+  { label: 'Anthropic v1', value: 'anthropic' },
+  { label: 'Gemini v1beta', value: 'gemini' }
 ]
 const form = reactive<ResponseInspectionPolicyForm>(defaultForm())
 const readOnly = computed(() => props.mode === 'view')
-const protocolProviderOptions = computed(() => props.providerOptions.filter((option) => option.protocolCode === form.protocolCode))
+const protocolProviderOptions = computed(() => {
+  const options = props.providerOptions
+    .filter((option) => option.protocolCode === form.protocolCode)
+    .map((option) => ({ label: option.name, value: option.code }))
+  const selectedCode = props.policy?.providerCode
+  if (
+    selectedCode
+    && props.policy?.protocolCode === form.protocolCode
+    && !options.some((option) => option.value === selectedCode)
+  ) {
+    options.push({ label: props.policy.providerName || selectedCode, value: selectedCode })
+  }
+  return options
+})
 const modalTitle = computed(() => {
   if (props.mode === 'view') return '查看默认策略'
   return props.mode === 'edit' ? '编辑响应检查策略' : '新建响应检查策略'
@@ -181,7 +196,7 @@ function defaultForm(): ResponseInspectionPolicyForm {
   }
 }
 
-function fillForm(policy: ResponseInspectionPolicySummary): void {
+function fillForm(policy: ResponseInspectionPolicyDetail): void {
   Object.assign(form, {
     name: policy.name,
     enabled: policy.enabled,

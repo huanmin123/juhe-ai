@@ -21,14 +21,15 @@ export type OperationLogsPageState = {
 }
 
 export type CreatedAtRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
+export const managementOperationLogWindowDays = 31
 
-export const defaultOperationLogsPageState = (pageSize: number): OperationLogsPageState => ({
+export const defaultOperationLogsPageState = (pageSize: number, useManagementDateWindow = false): OperationLogsPageState => ({
   actionFilter: 'all',
   actorSystemAccountFilter: allSystemAccountsValue,
   actorSystemAccountSelection: undefined,
   affectedSystemAccountFilter: allSystemAccountsValue,
   affectedSystemAccountSelection: undefined,
-  createdAtRange: undefined,
+  createdAtRange: useManagementDateWindow ? defaultManagementOperationLogDateRange() : undefined,
   resourceIdFilter: '',
   resourceTypeFilter: 'all',
   summaryKeywordFilter: '',
@@ -38,6 +39,26 @@ export const defaultOperationLogsPageState = (pageSize: number): OperationLogsPa
   pagination: { current: 1, pageSize },
   traceIdFilter: ''
 })
+
+export function defaultManagementOperationLogDateRange(now = dayjs()): [string, string] {
+  return [
+    now.subtract(managementOperationLogWindowDays - 1, 'day').startOf('day').toISOString(),
+    now.endOf('day').toISOString()
+  ]
+}
+
+export function operationLogPageStateForTrace(
+  pageSize: number,
+  isManagementView: boolean,
+  traceId: string
+): OperationLogsPageState {
+  const state = defaultOperationLogsPageState(pageSize, isManagementView && !isExactOperationLogTraceId(traceId))
+  return { ...state, traceIdFilter: traceId }
+}
+
+export function isExactOperationLogTraceId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+}
 
 export function parseCreatedAtRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
   if (!value) return undefined

@@ -73,7 +73,7 @@
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import { formatDateTime } from '@/shared/formatters'
-import type { OperationLogSummary } from '@/types/domain'
+import type { OperationLogListItem } from '@/types/domain'
 import { actorText, displayName } from './operationLogDisplay'
 import { actionColor, actionText, moduleText } from './operationLogLabels'
 import { detailActions } from './operationLogOptions'
@@ -86,17 +86,17 @@ defineProps<{
   loadingMore: boolean
   mobileHasMore: boolean
   pagination: Record<string, unknown> | false
-  records: OperationLogSummary[]
+  records: OperationLogListItem[]
 }>()
 
 const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
-  (event: 'detail', record: OperationLogSummary): void
+  (event: 'detail', record: OperationLogListItem): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
 }>()
 
-function handleActionClick(key: string, record: OperationLogSummary): void {
+function handleActionClick(key: string, record: OperationLogListItem): void {
   if (key === 'detail') {
     emit('detail', record)
   }

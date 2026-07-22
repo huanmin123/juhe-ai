@@ -58,8 +58,11 @@
                     v-model:value="form.proxyProfileId"
                     allow-clear
                     :disabled="disabled"
+                    :loading="proxyOptionsLoading"
                     :options="proxyOptions"
                     placeholder="不使用代理"
+                    @dropdown-visible-change="$emit('proxyOptionsDropdown', $event)"
+                    @search="$emit('proxyOptionsSearch', $event)"
                   />
                 </template>
               </AccountBatchEditField>
@@ -463,10 +466,13 @@ const props = defineProps<{
   isManagementView: boolean
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
+  proxyOptionsLoading?: boolean
   scopeParams?: { systemAccountId: string }
   tags: AccountTagSummary[]
 }>()
 const emit = defineEmits<{
+  (event: 'proxyOptionsDropdown', open: boolean): void
+  (event: 'proxyOptionsSearch', value: string): void
   (event: 'saved'): void
 }>()
 

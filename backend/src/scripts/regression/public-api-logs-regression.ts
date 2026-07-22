@@ -91,11 +91,11 @@ try {
     const successLog = singleLogByTraceId('trace-public-success')
     assert.equal(successLog.statusCode, 200)
     assert.equal(successLog.success, true)
-    assert.equal(successLog.isTestToken, true)
     assert.equal(successLog.sourceName, '内置测试来源')
     assert.equal(successLog.clientIp, '203.0.113.88', '公开接口日志应记录主进程转发后的真实客户端 IP，不能退回 DB service 本地地址')
-    assert.equal(successLog.queryString, 'targetUsername=huanmin&keyword=public-query-secret&providerCode=gpt', '公开接口日志 queryString 应保留查询参数原文')
     const successDetail = requiredDetail(successLog.id)
+    assert.equal(successDetail.isTestToken, true)
+    assert.equal(successDetail.queryString, 'targetUsername=huanmin&keyword=public-query-secret&providerCode=gpt', '公开接口日志 queryString 应保留查询参数原文')
     assert.equal((successDetail.requestData.query as Record<string, unknown>).keyword, 'public-query-secret', '请求快照 query 应保留 keyword 参数原文')
     assert(JSON.stringify(successDetail).includes('public-query-secret'), '公开接口日志详情应保存 query token 原文')
 
@@ -107,8 +107,8 @@ try {
     assert.equal(suffixPathRequest.status, 404)
     const suffixPathLog = singleLogByTraceId('trace-public-path-suffix')
     assert.equal(suffixPathLog.path, suffixPath, '公开接口日志列表应保留完整接口后缀路径')
-    assert.equal(suffixPathLog.queryString, 'targetUsername=huanmin&include=suffix', '公开接口日志后缀路径 queryString 应单独保留')
     const suffixPathDetail = requiredDetail(suffixPathLog.id)
+    assert.equal(suffixPathDetail.queryString, 'targetUsername=huanmin&include=suffix', '公开接口日志后缀路径 queryString 应单独保留')
     assert.equal(suffixPathDetail.path, suffixPath, '公开接口日志详情应保留完整接口后缀路径')
     assert.equal((suffixPathDetail.requestData as Record<string, unknown>).path, suffixPath, '公开接口日志请求摘要应保留完整接口后缀路径')
     assert.deepEqual(
@@ -234,7 +234,7 @@ try {
     const closedLog = await waitForSingleLogByTraceId('trace-public-client-closed')
     assert.equal(closedLog.statusCode, 499, '客户端提前断开应写入 499 公开接口日志')
     assert.equal(closedLog.success, false)
-    assert.equal(closedLog.errorCode, 'public_api_client_closed')
+    assert.equal(requiredDetail(closedLog.id).errorCode, 'public_api_client_closed')
   } finally {
     await closeServer(closeServerInstance)
   }

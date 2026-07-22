@@ -58,6 +58,7 @@ import type {
   SystemTeamPrincipalSummary,
   SystemTeamSummary,
   RouteStrategyListItemResult,
+  RouteStrategyListSnapshotResult,
   RouteStrategyListResult,
   RouteStrategyOptionSummary,
   RouteStrategySummary,
@@ -121,7 +122,12 @@ import type {
   UsageStatsOverview
 } from './usage-stats.repository.js'
 import type { UsageRecordListOptions, UsageRecordListResult, UsageRecordSummary } from './usage-records.repository.js'
-import type { ResponseInspectionPolicyListResult, ResponseInspectionPolicySummary } from './response-inspection-policy.repository.js'
+import type {
+  ResponseInspectionPolicyDetail,
+  ResponseInspectionPolicyListResult,
+  ResponseInspectionPolicyProviderOption,
+  ResponseInspectionPolicySummary
+} from './response-inspection-policy.repository.js'
 import type { ModelCatalogListOptions, ProviderModelCatalogItem } from '../modules/model-pricing/model-catalog.service.js'
 import type { AuthorizationQuotaDecision } from '../modules/gateway/quota/authorization-quota.service.js'
 import type { ApiKeyQuotaDecision } from '../modules/gateway/quota/api-key-quota.service.js'
@@ -381,6 +387,13 @@ export type SqliteReadWorkerOperation =
     type: 'list_response_inspection_policies_read_only'
   }
   | {
+    type: 'get_response_inspection_policy_detail_read_only'
+    id: string
+  }
+  | {
+    type: 'list_response_inspection_policy_provider_options_read_only'
+  }
+  | {
     type: 'list_active_response_inspection_policies_read_only'
     input: {
       protocolCode: string
@@ -568,6 +581,11 @@ export type SqliteReadWorkerOperation =
     type: 'list_route_strategy_list_items_page_read_only'
     access?: AccessScope
     options?: RouteStrategyListOptions
+  }
+  | {
+    type: 'list_route_strategy_list_snapshot_read_only'
+    access?: AccessScope
+    routeStrategyIds: string[]
   }
   | {
     type: 'list_route_strategy_options_read_only'
@@ -771,6 +789,8 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_model_check_runs_read_only' } ? ModelCheckRunListResult :
   T extends { type: 'get_model_check_run_detail_read_only' } ? ModelCheckRunDetail | undefined :
   T extends { type: 'list_response_inspection_policies_read_only' } ? ResponseInspectionPolicyListResult :
+  T extends { type: 'get_response_inspection_policy_detail_read_only' } ? ResponseInspectionPolicyDetail | undefined :
+  T extends { type: 'list_response_inspection_policy_provider_options_read_only' } ? ResponseInspectionPolicyProviderOption[] :
   T extends { type: 'list_active_response_inspection_policies_read_only' } ? ResponseInspectionPolicySummary[] :
   T extends { type: 'list_external_integration_sources_read_only' } ? ExternalIntegrationSourceListResult :
   T extends { type: 'find_external_integration_source_read_only' } ? ExternalIntegrationSourceSummary | undefined :
@@ -807,6 +827,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'find_api_key_secret_read_only' } ? ApiKeySummary | undefined :
   T extends { type: 'list_route_strategies_page_read_only' } ? RouteStrategyListResult :
   T extends { type: 'list_route_strategy_list_items_page_read_only' } ? RouteStrategyListItemResult :
+  T extends { type: 'list_route_strategy_list_snapshot_read_only' } ? RouteStrategyListSnapshotResult :
   T extends { type: 'list_route_strategy_options_read_only' } ? RouteStrategyOptionSummary[] :
   T extends { type: 'find_route_strategy_summary_read_only' } ? RouteStrategySummary | undefined :
   T extends { type: 'list_proxies_read_only' } ? ProxyProfileSummary[] :
