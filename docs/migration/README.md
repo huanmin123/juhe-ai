@@ -52,12 +52,13 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 26. [W6 System API 限流对齐记录](W6-System-API限流对齐记录.md)：system API IP read / write、已认证用户 read / write、client IP allowlist bypass、缓存失效、验证和剩余 Node 差异。
 27. [W6 管理端客户端 IP 统计与策略迁移记录](W6-管理端客户端IP策略迁移记录.md)：`GET /ip-stats` 只读列表与 `allowlist`、`unallowlist`、`blacklist`、`unblock` 四条管理写接口的 Go opt-in 契约、Node writer 边界、预聚合读取、查询计划、前端证据和删除门禁。
 28. [W6 管理端表监控只读 Schema 共存记录](W6-管理端表监控只读Schema共存记录.md)：表监控三条 GET 的 Go reader、Node 单 writer、schema capability gate、已发布 `000070` 后的连续版本规则和删除门禁。
-29. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
-30. [W7 公开接口日志写入与保留契约](W7-公开接口日志写入与保留契约.md)：冻结 Node 单 writer、队列容量、payload 捕获、保留清理和 Go reader 反向约束，供后续 Go-native writer / retention 接管使用；当前不改变生产 owner。
-31. [W7 使用记录写入队列 Node 契约基线](W7-使用记录写入队列Node契约基线.md)：冻结 Node 使用记录 writer / queue 的 owner、可靠性边界、已确认丢失缺陷和 Go 原生接管门禁。
-32. [W7 账户健康探针状态机契约](W7-账户健康探针状态机契约.md)：自动探针归因、周期健康 / 冷却复测边界、陈旧任务护栏和 Go 原生 worker 接线规则。
-33. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-34. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
+29. [W7 模型检测写入与任务契约迁移记录](W7-模型检测写入与任务契约迁移记录.md)：模型检测 durable job payload、幂等写阶段、终态 CAS、停止 / SSE 语义和 Node 专用复杂度删除边界。
+30. [测试与验收策略](测试与验收策略.md)：契约测试、回归矩阵、性能验证和网关专项验收。
+31. [W7 公开接口日志写入与保留契约](W7-公开接口日志写入与保留契约.md)：冻结 Node 单 writer、队列容量、payload 捕获、保留清理和 Go reader 反向约束，供后续 Go-native writer / retention 接管使用；当前不改变生产 owner。
+32. [W7 使用记录写入队列 Node 契约基线](W7-使用记录写入队列Node契约基线.md)：冻结 Node 使用记录 writer / queue 的 owner、可靠性边界、已确认丢失缺陷和 Go 原生接管门禁。
+33. [W7 账户健康探针状态机契约](W7-账户健康探针状态机契约.md)：自动探针归因、周期健康 / 冷却复测边界、陈旧任务护栏和 Go 原生 worker 接线规则。
+34. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
+35. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
 
 ## 4. 目录职责
 
@@ -93,6 +94,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 | `W6-管理端客户端IP策略迁移记录.md` | W6 `GET /ip-stats` 与四条 `POST /ip-stats/{ipHash}/{action}` Go opt-in 记录；列表固定只读 Node 预聚合结果、query/date/status/sort/progressive pagination、默认静态请求数排序和 Node writer / detail 边界，写接口固定 strict JSON、事务、shared cache version、operation log、前端证据和真实依赖门禁 |
 | `W7-账户健康探针状态机契约.md` | W7 自动探针归因、周期健康检查与冷却复测边界、陈旧任务版本护栏、`cooldown_retest` 统计排除和 Go 原生 worker 接线门禁 |
 | `W6-管理端表监控只读Schema共存记录.md` | W6 表监控三条 GET 的 PostgreSQL 只读迁移；固定 Node 单 writer、schema capability gate、缺表不伪造空数据、并行 migration 版本协调和删除门禁 |
+| `W7-模型检测写入与任务契约迁移记录.md` | W7 模型检测 writer/job 契约、Go 主动修复、后续 schema/worker/executor/HTTP 顺序和 Node 删除门禁 |
 | `测试与验收策略.md` | 单模块、系统、网关、性能、安全和发布验收 |
 | `W7-公开接口日志写入与保留契约.md` | Node 公开接口日志单 writer、队列容量、payload 捕获、保留清理、Go reader 反向约束和 Go-native 接管顺序；当前不改生产 owner |
 | `开发构建部署调整.md` | 开发环境、命令、包结构、部署脚本和平台差异 |
