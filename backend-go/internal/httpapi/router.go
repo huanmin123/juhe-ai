@@ -27,6 +27,7 @@ type RouterOptions struct {
 	SystemAPIAuthenticatedRateLimiter                 SystemAPIAuthenticatedRateLimiter
 	NodeModelCatalogBridgeReadinessProber             ReadinessProber
 	PublicAPIHandler                                  http.Handler
+	GatewayModelsHandler                              http.Handler
 	ManagementAPIAuthMiddleware                       func(http.Handler) http.Handler
 	ManagementAPIAuthTouchMiddleware                  func(http.Handler) http.Handler
 	ManagementCaptchaHandler                          http.Handler
@@ -272,6 +273,11 @@ func NewRouter(opts RouterOptions) http.Handler {
 	readiness := NewReadinessHandler(opts.Config, opts.Logger, opts.NodeModelCatalogBridgeReadinessProber)
 	r.Get("/__aisys__/health", health.ServeHTTP)
 	r.Get("/__aisys__/readyz", readiness.ServeHTTP)
+	if opts.GatewayModelsHandler != nil {
+		r.Get("/models", opts.GatewayModelsHandler.ServeHTTP)
+		r.Get("/v1/models", opts.GatewayModelsHandler.ServeHTTP)
+		r.Get("/v1beta/models", opts.GatewayModelsHandler.ServeHTTP)
+	}
 	r.Route("/__aisys__/api", func(system chi.Router) {
 		system.Use(noStoreMiddleware)
 		if opts.SystemAPIRateLimitReader != nil {

@@ -625,6 +625,18 @@ func TestConfigManagementAPIEnabledRequiresRuntimeDependencies(t *testing.T) {
 	}
 }
 
+func TestConfigGatewayModelsEnabledRequiresPostgres(t *testing.T) {
+	cfg := Config{
+		Host: "127.0.0.1", Port: 3000, Env: "test", LogLevel: "info",
+		RedisNamespace: "juhe-ai", TrustProxy: "false",
+		NodeInternalRequestTimeout: 2 * time.Second, ShutdownTimeout: 15 * time.Second,
+		GatewayModelsEnabled: true,
+	}
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JUHE_AI_GATEWAY_MODELS_ENABLED") {
+		t.Fatalf("Validate() error = %v, want gateway models postgres requirement", err)
+	}
+}
+
 func TestConfigDoesNotExposeManagementAuthSessionsSwitch(t *testing.T) {
 	if _, ok := reflect.TypeOf(Config{}).FieldByName("ManagementAuthSessionsEnabled"); ok {
 		t.Fatal("Config still exposes ManagementAuthSessionsEnabled")
