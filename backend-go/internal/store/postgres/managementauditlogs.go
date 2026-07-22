@@ -29,6 +29,20 @@ LEFT JOIN juhe_business.api_keys AS ak ON ak.id = al.api_key_id
 LEFT JOIN juhe_business.groups AS grp ON grp.id = al.group_id
 LEFT JOIN juhe_business.accounts AS acc ON acc.id = al.account_id`
 
+const managementAuditErrorGroupSelect = `SELECT
+  aeg.id, aeg.fingerprint, aeg.window_started_at, aeg.window_ended_at,
+  aeg.system_account_id, sa.display_name, aeg.api_key_id, ak.name,
+  aeg.group_id, grp.name, aeg.account_id, acc.name, aeg.provider_code,
+  aeg.path, aeg.model, aeg.status_code, aeg.error_phase, aeg.error_code, aeg.error_type,
+  aeg.request_fingerprint, aeg.error_fingerprint, aeg.count,
+  aeg.first_event_id, aeg.last_event_id, aeg.sample_event_id, aeg.last_message,
+  aeg.created_at, aeg.updated_at
+FROM juhe_dataset.audit_error_groups AS aeg
+LEFT JOIN juhe_business.system_accounts AS sa ON sa.id = aeg.system_account_id
+LEFT JOIN juhe_business.api_keys AS ak ON ak.id = aeg.api_key_id
+LEFT JOIN juhe_business.groups AS grp ON grp.id = aeg.group_id
+LEFT JOIN juhe_business.accounts AS acc ON acc.id = aeg.account_id`
+
 type managementAuditLogRow struct {
 	ID, TraceID, TrafficSource                                       string
 	SystemAccountID, SystemAccountName, APIKeyID, APIKeyName         pgtype.Text
@@ -114,6 +128,34 @@ func (s *Store) ListManagementAuditLogs(ctx context.Context, input port.Manageme
 	return port.ManagementAuditLogListResult{Items: items, HasMore: hasMore}, nil
 }
 
+func (s *Store) ListManagementAuditErrorGroups(ctx context.Context, input port.ManagementAuditErrorGroupListInput) (port.ManagementAuditErrorGroupListResult, error) {
+	limit := min(max(input.Limit, 1), 100)
+	offset := min(max(input.Offset, 0), 1000-limit)
+	query, args := managementAuditErrorGroupListQuery(input, limit+1, offset)
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return port.ManagementAuditErrorGroupListResult{}, fmt.Errorf("list management audit error groups: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]port.ManagementAuditErrorGroup, 0, limit)
+	for rows.Next() {
+		var row managementAuditErrorGroupRow
+		if err = scanManagementAuditErrorGroupRow(rows, &row); err != nil {
+			return port.ManagementAuditErrorGroupListResult{}, fmt.Errorf("scan management audit error groups: %w", err)
+		}
+		items = append(items, managementAuditErrorGroup(row))
+	}
+	if err = rows.Err(); err != nil {
+		return port.ManagementAuditErrorGroupListResult{}, fmt.Errorf("scan management audit error groups: %w", err)
+	}
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	return port.ManagementAuditErrorGroupListResult{Items: items, HasMore: hasMore}, nil
+}
+
 func (s *Store) GetManagementAuditLog(ctx context.Context, id string) (port.ManagementAuditLogDetail, bool, error) {
 	var row managementAuditLogRow
 	if err := scanManagementAuditLogRow(s.pool.QueryRow(ctx, managementAuditLogDetailQuery(), id), &row); err != nil {
@@ -193,6 +235,18 @@ func scanManagementAuditLogRow(scanner auditLogRowScanner, row *managementAuditL
 	return scanner.Scan(&row.ID, &row.TraceID, &row.TrafficSource, &row.SystemAccountID, &row.SystemAccountName, &row.APIKeyID, &row.APIKeyName, &row.GroupID, &row.GroupName, &row.AccountID, &row.AccountName, &row.ProviderCode, &row.Method, &row.Path, &row.QueryString, &row.Model, &row.UpstreamModel, &row.PricingModel, &row.ModelMappingApplied, &row.ModelMappingSource, &row.SourceEndpointFamily, &row.UpstreamEndpointFamily, &row.Stream, &row.ClientIP, &row.UserAgent, &row.AuditOutcome, &row.Success, &row.FinalStatusCode, &row.ErrorPhase, &row.ErrorCode, &row.ErrorMessage, &row.SampleBucket, &row.SampleReason, &row.AttemptCount, &row.PayloadCount, &row.RawPayloadBytes, &row.CompressedPayloadBytes, &row.CompressionSavedBytes, &row.ErrorGroupID, &row.CaptureStatus, &row.StartedAt, &row.EndedAt, &row.DurationMs, &row.HTTPCompletedAt, &row.HTTPDurationMs, &row.FirstTokenMs, &row.CreatedAt)
 }
 
+func scanManagementAuditErrorGroupRow(scanner auditLogRowScanner, row *managementAuditErrorGroupRow) error {
+	return scanner.Scan(
+		&row.ID, &row.Fingerprint, &row.WindowStartedAt, &row.WindowEndedAt,
+		&row.SystemAccountID, &row.SystemAccountName, &row.APIKeyID, &row.APIKeyName,
+		&row.GroupID, &row.GroupName, &row.AccountID, &row.AccountName, &row.ProviderCode,
+		&row.Path, &row.Model, &row.StatusCode, &row.ErrorPhase, &row.ErrorCode, &row.ErrorType,
+		&row.RequestFingerprint, &row.ErrorFingerprint, &row.Count,
+		&row.FirstEventID, &row.LastEventID, &row.SampleEventID, &row.LastMessage,
+		&row.CreatedAt, &row.UpdatedAt,
+	)
+}
+
 func managementAuditLogDetailQuery() string {
 	return managementAuditLogSelect + "\nWHERE al.id = $1::text"
 }
@@ -225,20 +279,7 @@ ORDER BY refs.sequence_index ASC, refs.id ASC`
 }
 
 func managementAuditErrorGroupDetailQuery() string {
-	return `SELECT
-  groups.id, groups.fingerprint, groups.window_started_at, groups.window_ended_at,
-  groups.system_account_id, system_accounts.display_name, groups.api_key_id, api_keys.name,
-  groups.group_id, business_groups.name, groups.account_id, accounts.name, groups.provider_code,
-  groups.path, groups.model, groups.status_code, groups.error_phase, groups.error_code, groups.error_type,
-  groups.request_fingerprint, groups.error_fingerprint, groups.count,
-  groups.first_event_id, groups.last_event_id, groups.sample_event_id, groups.last_message,
-  groups.created_at, groups.updated_at
-FROM juhe_dataset.audit_error_groups AS groups
-LEFT JOIN juhe_business.system_accounts AS system_accounts ON system_accounts.id = groups.system_account_id
-LEFT JOIN juhe_business.api_keys AS api_keys ON api_keys.id = groups.api_key_id
-LEFT JOIN juhe_business.groups AS business_groups ON business_groups.id = groups.group_id
-LEFT JOIN juhe_business.accounts AS accounts ON accounts.id = groups.account_id
-WHERE groups.id = $1::text`
+	return managementAuditErrorGroupSelect + "\nWHERE aeg.id = $1::text"
 }
 
 func (s *Store) listManagementAuditLogAttempts(ctx context.Context, id string) ([]port.ManagementAuditLogAttempt, error) {
@@ -297,22 +338,19 @@ func (s *Store) listManagementAuditLogPayloadSummaries(ctx context.Context, id s
 
 func (s *Store) getManagementAuditErrorGroup(ctx context.Context, id string) (*port.ManagementAuditErrorGroup, error) {
 	var row managementAuditErrorGroupRow
-	err := s.pool.QueryRow(ctx, managementAuditErrorGroupDetailQuery(), id).Scan(
-		&row.ID, &row.Fingerprint, &row.WindowStartedAt, &row.WindowEndedAt,
-		&row.SystemAccountID, &row.SystemAccountName, &row.APIKeyID, &row.APIKeyName,
-		&row.GroupID, &row.GroupName, &row.AccountID, &row.AccountName, &row.ProviderCode,
-		&row.Path, &row.Model, &row.StatusCode, &row.ErrorPhase, &row.ErrorCode, &row.ErrorType,
-		&row.RequestFingerprint, &row.ErrorFingerprint, &row.Count,
-		&row.FirstEventID, &row.LastEventID, &row.SampleEventID, &row.LastMessage,
-		&row.CreatedAt, &row.UpdatedAt,
-	)
+	err := scanManagementAuditErrorGroupRow(s.pool.QueryRow(ctx, managementAuditErrorGroupDetailQuery(), id), &row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get management audit error group: %w", err)
 	}
-	return &port.ManagementAuditErrorGroup{
+	item := managementAuditErrorGroup(row)
+	return &item, nil
+}
+
+func managementAuditErrorGroup(row managementAuditErrorGroupRow) port.ManagementAuditErrorGroup {
+	return port.ManagementAuditErrorGroup{
 		ID: row.ID, Fingerprint: row.Fingerprint, WindowStartedAt: row.WindowStartedAt, WindowEndedAt: row.WindowEndedAt,
 		SystemAccountID: textPtr(row.SystemAccountID), SystemAccountName: textPtr(row.SystemAccountName), APIKeyID: textPtr(row.APIKeyID), APIKeyName: textPtr(row.APIKeyName),
 		GroupID: textPtr(row.GroupID), GroupName: textPtr(row.GroupName), AccountID: textPtr(row.AccountID), AccountName: textPtr(row.AccountName), ProviderCode: textPtr(row.ProviderCode),
@@ -320,7 +358,44 @@ func (s *Store) getManagementAuditErrorGroup(ctx context.Context, id string) (*p
 		RequestFingerprint: textPtr(row.RequestFingerprint), ErrorFingerprint: textPtr(row.ErrorFingerprint), Count: int(row.Count),
 		FirstEventID: textPtr(row.FirstEventID), LastEventID: textPtr(row.LastEventID), SampleEventID: textPtr(row.SampleEventID), LastMessage: textPtr(row.LastMessage),
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-	}, nil
+	}
+}
+
+func managementAuditErrorGroupListQuery(input port.ManagementAuditErrorGroupListInput, limit, offset int) (string, []any) {
+	conditions := make([]string, 0, 7)
+	args := make([]any, 0, 9)
+	add := func(value any) string {
+		args = append(args, value)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	exact := func(column, value string) {
+		if value = auditLogTrimECMAScriptWhitespace(value); value != "" {
+			conditions = append(conditions, column+" = "+add(value)+"::text")
+		}
+	}
+
+	exact("aeg.path", input.Path)
+	exact("aeg.model", input.Model)
+	if input.StatusCode != nil && *input.StatusCode >= 100 && *input.StatusCode <= 599 {
+		conditions = append(conditions, "aeg.status_code = "+add(int32(*input.StatusCode))+"::integer")
+	}
+	exact("aeg.system_account_id", input.SystemAccountID)
+	exact("aeg.api_key_id", input.APIKeyID)
+	exact("aeg.group_id", input.GroupID)
+	exact("aeg.account_id", input.AccountID)
+
+	var query strings.Builder
+	query.WriteString(managementAuditErrorGroupSelect)
+	if len(conditions) > 0 {
+		query.WriteString("\nWHERE ")
+		query.WriteString(strings.Join(conditions, "\n  AND "))
+	}
+	query.WriteString("\nORDER BY aeg.updated_at DESC, aeg.id DESC\nLIMIT ")
+	query.WriteString(add(int32(limit)))
+	query.WriteString("::integer\nOFFSET ")
+	query.WriteString(add(int32(offset)))
+	query.WriteString("::integer")
+	return query.String(), args
 }
 
 func managementAuditLogListQuery(input port.ManagementAuditLogListInput, limit, offset int) (string, []any) {
