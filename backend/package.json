@@ -221,6 +221,7 @@
     "test:background-worker-performance": "tsx src/scripts/regression/background-worker-performance-regression.ts",
     "test:background-db-service-write-boundary": "tsx src/scripts/regression/background-db-service-write-boundary-regression.ts",
     "test:temporary-maintenance-worker": "tsx src/scripts/regression/temporary-maintenance-worker-regression.ts",
+    "test:dead-code-entrypoints": "tsx src/scripts/regression/dead-code-entrypoints-regression.ts",
     "test:worker-local-queue-limit": "tsx src/scripts/regression/worker-local-queue-limit-regression.ts",
     "test:queue-failure-requeue-boundary": "tsx src/scripts/regression/queue-failure-requeue-boundary-regression.ts",
     "test:record-maintenance-queue": "tsx src/scripts/regression/record-maintenance-queue-regression.ts",
@@ -582,6 +583,7 @@
     "build": "pnpm run clean:dist && tsc -p tsconfig.build.json",
     "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck:unused": "tsc -p tsconfig.unused.json",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

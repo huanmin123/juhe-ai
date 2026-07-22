@@ -19,6 +19,8 @@
     "validate:owner-manifest": "node scripts/validate-owner-manifest.mjs deploy/owner-manifest.json",
     "validate:owner-manifest:node": "node scripts/validate-owner-manifest.mjs --require-owners=management=node,public=node,gateway=node,worker=node --require-node-version=0.1.0 --require-schema-version=67 deploy/owner-manifest.json",
     "typecheck": "pnpm -r typecheck",
+    "test:dead-code:go": "go -C backend-go test -count=1 ./internal/architecture/deadcode -args -deadcode-strict",
+    "test:dead-code": "pnpm --filter juhe-ai-frontend typecheck:unused && pnpm --filter juhe-ai-backend typecheck:unused && pnpm --filter juhe-ai-backend test:dead-code-entrypoints && pnpm run test:dead-code:go",
     "lint": "pnpm -r lint",
     "test:smoke": "pnpm --filter juhe-ai-backend test:smoke",
     "test:smoke:mock": "pnpm --filter juhe-ai-backend test:smoke:mock",
