@@ -870,3 +870,10 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 表监控只读 Schema 共存门禁
+
+- Go 已补管理员三条精确 GET 读路径的 PostgreSQL reader；本次追加运行时 schema capability gate，检查 `juhe_stats.database_storage_snapshots` 与 `table_storage_snapshots` 的 base table、实际读列 / Node PostgreSQL 类型和 SELECT 权限。缺表或列不完整时在数据查询前返回 unavailable，不以空数组伪造“暂无快照”；catalog 查询异常保留 infrastructure error 链，读期间的 drop / alter / revoke SQLSTATE 映射回 unavailable。
+- Node 继续单独拥有两张表的建表、采样、保留清理和数据质量。Go 不创建表、不补 migration、不做 SQLite fallback、不启动 writer，因此不能把本块写成表监控接管或 Node 删除证据。
+- `origin/master` 当前权威 catalog 为 `000069`，而 `000070` 由并行模型目录 / 聊天快照工作占位但尚未合入；本块不复用该版本，也不在缺少 `000070` 时制造不连续 `000071`。后续 schema owner 变更只能从届时最新连续版本新增。
+- 最小验证通过：`go test ./internal/modules/managementtablemonitor ./internal/httpapi ./internal/app ./internal/store/postgres -count=1` 与 `go vet ./internal/store/postgres`。真实 PostgreSQL schema contract、Node writer -> Go reader、查询计划、真实 listener / 反向代理、切流和回滚仍待后续批次，未宣称完成。

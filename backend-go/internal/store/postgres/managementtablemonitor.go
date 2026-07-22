@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -16,6 +18,70 @@ const (
 	tableMonitorDefaultHistoryLimit  = 720
 	tableMonitorMaxHistoryLimit      = 10000
 )
+
+var ErrManagementTableMonitorSchemaUnavailable = errors.New("management table monitor snapshot schema is unavailable")
+
+const tableMonitorSchemaCapabilitySQL = `
+WITH required_tables(table_name) AS (
+  VALUES
+    ('database_storage_snapshots'::text),
+    ('table_storage_snapshots')
+), required_columns(table_name, column_name, data_type) AS (
+  VALUES
+    ('database_storage_snapshots'::text, 'id'::text, 'text'::text),
+    ('database_storage_snapshots', 'database_role', 'text'),
+    ('database_storage_snapshots', 'database_path', 'text'),
+    ('database_storage_snapshots', 'sampled_at', 'text'),
+    ('database_storage_snapshots', 'file_bytes', 'bigint'),
+    ('database_storage_snapshots', 'wal_bytes', 'bigint'),
+    ('database_storage_snapshots', 'shm_bytes', 'bigint'),
+    ('database_storage_snapshots', 'page_size', 'integer'),
+	('database_storage_snapshots', 'page_count', 'bigint'),
+	('database_storage_snapshots', 'freelist_count', 'bigint'),
+    ('database_storage_snapshots', 'used_bytes', 'bigint'),
+    ('database_storage_snapshots', 'free_bytes', 'bigint'),
+	('database_storage_snapshots', 'table_count', 'bigint'),
+	('database_storage_snapshots', 'index_count', 'bigint'),
+    ('table_storage_snapshots', 'id', 'text'),
+    ('table_storage_snapshots', 'database_role', 'text'),
+    ('table_storage_snapshots', 'table_name', 'text'),
+    ('table_storage_snapshots', 'sampled_at', 'text'),
+    ('table_storage_snapshots', 'table_kind', 'text'),
+    ('table_storage_snapshots', 'parent_table_name', 'text'),
+    ('table_storage_snapshots', 'is_partition', 'integer'),
+    ('table_storage_snapshots', 'is_archive', 'integer'),
+	('table_storage_snapshots', 'row_count', 'bigint'),
+    ('table_storage_snapshots', 'table_bytes', 'bigint'),
+    ('table_storage_snapshots', 'index_bytes', 'bigint'),
+    ('table_storage_snapshots', 'total_bytes', 'bigint'),
+	('table_storage_snapshots', 'page_count', 'bigint'),
+	('table_storage_snapshots', 'index_count', 'bigint'),
+	('table_storage_snapshots', 'growth_bytes_1h', 'bigint'),
+	('table_storage_snapshots', 'growth_rows_1h', 'bigint'),
+	('table_storage_snapshots', 'growth_bytes_24h', 'bigint'),
+	('table_storage_snapshots', 'growth_rows_24h', 'bigint')
+)
+SELECT
+NOT EXISTS (
+  SELECT 1
+  FROM required_tables AS required
+  LEFT JOIN information_schema.tables AS actual
+    ON actual.table_schema = 'juhe_stats'
+   AND actual.table_name = required.table_name
+   AND actual.table_type = 'BASE TABLE'
+  WHERE actual.table_name IS NULL
+     OR NOT has_table_privilege(to_regclass('juhe_stats.' || required.table_name), 'SELECT')
+)
+AND NOT EXISTS (
+  SELECT 1
+  FROM required_columns AS required
+  LEFT JOIN information_schema.columns AS actual
+    ON actual.table_schema = 'juhe_stats'
+   AND actual.table_name = required.table_name
+   AND actual.column_name = required.column_name
+   AND actual.data_type = required.data_type
+  WHERE actual.column_name IS NULL
+)`
 
 const tableMonitorOverviewDatabasesSQL = `
 WITH monitored_roles(database_role, sort_order) AS (
@@ -274,6 +340,7 @@ type managementTableStorageSnapshotRow struct {
 }
 
 type managementTableMonitorExecutor interface {
+	QueryManagementTableMonitorSchemaCapability(ctx context.Context) (bool, error)
 	QueryLatestManagementDatabaseStorageSnapshots(ctx context.Context) ([]managementDatabaseStorageSnapshotRow, error)
 	QueryLatestManagementTableStorageSnapshots(ctx context.Context, limit int) ([]managementTableStorageSnapshotRow, error)
 	QueryManagementTableStorageHistory(ctx context.Context, input port.ManagementTableStorageHistoryInput) ([]managementTableStorageSnapshotRow, error)
@@ -281,6 +348,14 @@ type managementTableMonitorExecutor interface {
 }
 
 type postgresManagementTableMonitorExecutor struct{ store *Store }
+
+func (e postgresManagementTableMonitorExecutor) QueryManagementTableMonitorSchemaCapability(ctx context.Context) (bool, error) {
+	var available bool
+	if err := e.store.pool.QueryRow(ctx, tableMonitorSchemaCapabilitySQL).Scan(&available); err != nil {
+		return false, err
+	}
+	return available, nil
+}
 
 func (e postgresManagementTableMonitorExecutor) QueryLatestManagementDatabaseStorageSnapshots(ctx context.Context) ([]managementDatabaseStorageSnapshotRow, error) {
 	rows, err := e.store.pool.Query(ctx, tableMonitorOverviewDatabasesSQL)
@@ -323,13 +398,16 @@ func (s *Store) GetManagementTableStorageOverview(ctx context.Context, limit int
 }
 
 func getManagementTableStorageOverview(ctx context.Context, executor managementTableMonitorExecutor, limit int) (port.ManagementTableStorageOverview, error) {
+	if err := requireManagementTableMonitorSchema(ctx, executor); err != nil {
+		return port.ManagementTableStorageOverview{}, err
+	}
 	databaseRows, err := executor.QueryLatestManagementDatabaseStorageSnapshots(ctx)
 	if err != nil {
-		return port.ManagementTableStorageOverview{}, fmt.Errorf("list table monitor database overview: %w", err)
+		return port.ManagementTableStorageOverview{}, tableMonitorReadError("list table monitor database overview", err)
 	}
 	tableRows, err := executor.QueryLatestManagementTableStorageSnapshots(ctx, limit)
 	if err != nil {
-		return port.ManagementTableStorageOverview{}, fmt.Errorf("list table monitor table overview: %w", err)
+		return port.ManagementTableStorageOverview{}, tableMonitorReadError("list table monitor table overview", err)
 	}
 	databases := make([]port.ManagementDatabaseStorageSnapshot, 0, len(databaseRows))
 	sampledAt := ""
@@ -352,9 +430,12 @@ func (s *Store) ListManagementTableStorageHistory(ctx context.Context, input por
 }
 
 func listManagementTableStorageHistory(ctx context.Context, executor managementTableMonitorExecutor, input port.ManagementTableStorageHistoryInput) ([]port.ManagementTableStorageSnapshot, error) {
+	if err := requireManagementTableMonitorSchema(ctx, executor); err != nil {
+		return nil, err
+	}
 	rows, err := executor.QueryManagementTableStorageHistory(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("list table monitor table history: %w", err)
+		return nil, tableMonitorReadError("list table monitor table history", err)
 	}
 	result := make([]port.ManagementTableStorageSnapshot, 0, len(rows))
 	for _, row := range rows {
@@ -369,15 +450,40 @@ func (s *Store) ListManagementDatabaseStorageHistory(ctx context.Context, input 
 }
 
 func listManagementDatabaseStorageHistory(ctx context.Context, executor managementTableMonitorExecutor, input port.ManagementDatabaseStorageHistoryInput) ([]port.ManagementDatabaseStorageSnapshot, error) {
+	if err := requireManagementTableMonitorSchema(ctx, executor); err != nil {
+		return nil, err
+	}
 	rows, err := executor.QueryManagementDatabaseStorageHistory(ctx, input)
 	if err != nil {
-		return nil, fmt.Errorf("list table monitor database history: %w", err)
+		return nil, tableMonitorReadError("list table monitor database history", err)
 	}
 	result := make([]port.ManagementDatabaseStorageSnapshot, 0, len(rows))
 	for _, row := range rows {
 		result = append(result, managementDatabaseStorageSnapshot(row))
 	}
 	return result, nil
+}
+
+func requireManagementTableMonitorSchema(ctx context.Context, executor managementTableMonitorExecutor) error {
+	available, err := executor.QueryManagementTableMonitorSchemaCapability(ctx)
+	if err != nil {
+		return tableMonitorReadError("check table monitor snapshot schema", err)
+	}
+	if !available {
+		return ErrManagementTableMonitorSchemaUnavailable
+	}
+	return nil
+}
+
+func tableMonitorReadError(operation string, err error) error {
+	var postgresError *pgconn.PgError
+	if errors.As(err, &postgresError) {
+		switch postgresError.Code {
+		case "42P01", "42703", "42501":
+			return fmt.Errorf("%s: %w", operation, ErrManagementTableMonitorSchemaUnavailable)
+		}
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 func scanManagementOverviewDatabaseRows(rows pgx.Rows) ([]managementDatabaseStorageSnapshotRow, error) {
