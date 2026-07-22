@@ -144,8 +144,9 @@ func TestManagementAuditHotSearchLimitMatchesNodeFiniteNumberRules(t *testing.T)
 	}{
 		{name: "missing", want: 0, provided: false},
 		{name: "explicit zero", query: "limit=0", want: 0, provided: true},
-		{name: "negative decimal", query: "limit=-1.8", want: -1, provided: true},
+		{name: "negative decimal", query: "limit=-1.8", want: 0, provided: true},
 		{name: "hex", query: "limit=0x10", want: 16, provided: true},
+		{name: "very large finite", query: "limit=1e308", want: 100, provided: true},
 		{name: "invalid", query: "limit=oops", want: 0, provided: false},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

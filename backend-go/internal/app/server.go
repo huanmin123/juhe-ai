@@ -914,7 +914,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	authorizationOptionService := managementauthorizationoptions.NewService(store)
 	operationLogService := managementoperationlogs.NewService(store)
 	auditLogService := managementauditlogs.NewServiceWithOptions(managementauditlogs.ServiceOptions{
-		Store: store, HotSearchRoot: cfg.AuditHotSearchDirectory(),
+		Store: store, HotSearchRoot: cfg.AuditHotSearchRoot,
 	})
 	runtimeLogService := managementruntimelogs.NewService(store)
 	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(

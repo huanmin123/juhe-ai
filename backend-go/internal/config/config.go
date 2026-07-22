@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -39,7 +38,6 @@ type Config struct {
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
 	RuntimeLogIndexEnabled             bool
-	DatasetDatabasePath                string        `env:"JUHE_AI_DATASET_DATABASE_PATH" envDefault:"../backend/data/juhe-ai-dataset.sqlite3"`
 	AuditHotSearchRoot                 string        `env:"JUHE_AI_AUDIT_HOT_SEARCH_ROOT"`
 	AuthCaptchaDisabled                bool          `env:"JUHE_AI_AUTH_CAPTCHA_DISABLED" envDefault:"false"`
 	TrustProxy                         string        `env:"JUHE_AI_TRUST_PROXY" envDefault:"false"`
@@ -52,15 +50,6 @@ type Config struct {
 	OwnerLockPath                      string        `env:"JUHE_AI_OWNER_LOCK_PATH"`
 	OwnerLockDeploymentEpoch           string        `env:"JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"`
 	OwnerLockRole                      string        `env:"JUHE_AI_OWNER_LOCK_ROLE" envDefault:"server"`
-}
-
-// AuditHotSearchDirectory follows the Node writer's dataset-relative layout unless
-// an explicit shared mirror directory is configured for a split deployment.
-func (cfg Config) AuditHotSearchDirectory() string {
-	if root := strings.TrimSpace(cfg.AuditHotSearchRoot); root != "" {
-		return root
-	}
-	return filepath.Join(filepath.Dir(cfg.DatasetDatabasePath), "audit", "search-hot")
 }
 
 type TrustProxyConfig struct {
