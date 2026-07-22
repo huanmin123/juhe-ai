@@ -14,6 +14,7 @@ func TestGatewayGroupAccessSQLPreservesOwnerAndAuthorizationBoundaries(t *testin
 		"groups.enabled = true",
 		"groups.system_account_id = $2::text",
 		"resource_authorizations.resource_type = 'group'",
+		"resource_authorizations.resource_owner_system_account_id = groups.system_account_id",
 		"resource_authorizations.grantee_system_account_id = $2::text",
 		"resource_authorizations.status = 'active'",
 		"resource_authorizations.expires_at > $3::timestamptz",
@@ -34,10 +35,15 @@ func TestGatewayAccountCandidateSQLIsBoundedAndAuthorizationAware(t *testing.T) 
 		"INNER JOIN juhe_business.groups AS groups",
 		"groups.enabled = true",
 		"group_authorizations.id = $8::text",
+		"group_authorizations.resource_owner_system_account_id = groups.system_account_id",
 		"group_authorizations.grantee_system_account_id = $3::text",
 		"COALESCE(group_authorization_settings.enabled, true) = true",
 		"accounts.provider_code = $4::text",
 		"accounts.deleted_at IS NULL",
+		"accounts.authorization_instance_authorization_id IS NULL",
+		"accounts.authorization_instance_source_account_id IS NULL",
+		"accounts.authorization_instance_owner_system_account_id IS NULL",
+		"group_accounts.account_authorization_id IS NULL",
 		"accounts.schedulable = true",
 		"group_accounts.account_authorization_id = accounts.authorization_instance_authorization_id",
 		"account_authorizations.grantee_system_account_id = $3::text",
@@ -58,6 +64,17 @@ func TestGatewayAccountCandidateSQLIsBoundedAndAuthorizationAware(t *testing.T) 
 	}
 	if strings.Contains(listGatewayAccountCandidatesSQL, "OFFSET") {
 		t.Fatal("candidate SQL must not use OFFSET")
+	}
+}
+
+func TestGatewayAccountCandidateSQLDoesNotDowngradeOrphanedAuthorizationInstances(t *testing.T) {
+	directCandidateClause := `accounts.authorization_instance_authorization_id IS NULL
+      AND accounts.authorization_instance_source_account_id IS NULL
+      AND accounts.authorization_instance_owner_system_account_id IS NULL
+      AND group_accounts.account_authorization_id IS NULL
+      AND accounts.type IN ('api_key', 'oauth', 'google_oauth')`
+	if !strings.Contains(listGatewayAccountCandidatesSQL, directCandidateClause) {
+		t.Fatal("direct candidates must exclude orphaned authorization-instance markers")
 	}
 }
 

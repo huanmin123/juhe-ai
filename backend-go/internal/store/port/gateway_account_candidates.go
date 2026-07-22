@@ -44,6 +44,8 @@ type GatewayAccountCandidateListInput struct {
 
 // GatewayAccountCandidate is the bounded database projection used before
 // credential/model/proxy hydration and runtime dispatch state are applied.
+// A projection is not a dispatch lease: authorization must be revalidated at
+// the final dispatch/claim boundary before credentials are sent upstream.
 type GatewayAccountCandidate struct {
 	AccountID                 string
 	SystemAccountID           string
