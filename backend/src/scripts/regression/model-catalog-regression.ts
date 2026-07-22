@@ -11,6 +11,7 @@ import { HYBRID_PROVIDER_CODE, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '..
 import { logger } from '../../shared/logger.js'
 import { providerModelCatalogId } from '../../storage/provider-model-catalog-id.js'
 import { DEFAULT_PROVIDER_SEEDS } from '../../storage/schema-defaults.js'
+import { seedDefaults } from '../../storage/schema.js'
 import { mergeProviderModelOptionRows } from '../../modules/providers/provider-model-options.service.js'
 
 
@@ -356,7 +357,27 @@ try {
     WHERE code = 'gpt'
   `).get() as { default_supported_models_json?: string }
   const gptDefaultModels = JSON.parse(gptProviderDefaults.default_supported_models_json ?? '[]') as string[]
-  assert.equal(gptDefaultModels.includes('codex-auto-review'), false, 'codex-auto-review 不得自动加入 GPT AI 账户默认模型')
+  assert.equal(gptDefaultModels.includes('codex-auto-review'), true, 'codex-auto-review 应自动加入 GPT AI 账户默认支持模型')
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE providers
+    SET default_supported_models_json = ?
+    WHERE code = 'gpt'
+  `).run(JSON.stringify(gptDefaultModels.filter((model) => model !== 'codex-auto-review')))
+  seedDefaults(databaseModule.getBusinessDatabase())
+  const backfilledGPTProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
+    SELECT default_supported_models_json
+    FROM providers
+    WHERE code = 'gpt'
+  `).get() as { default_supported_models_json?: string }
+  const backfilledGPTDefaultModels = JSON.parse(backfilledGPTProviderDefaults.default_supported_models_json ?? '[]') as string[]
+  assert.equal(backfilledGPTDefaultModels.includes('codex-auto-review'), true, 'SQLite 已有 GPT 默认列表应在重启 seed 时幂等补入 codex-auto-review')
+  const openAIProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
+    SELECT default_supported_models_json
+    FROM providers
+    WHERE code = 'openai'
+  `).get() as { default_supported_models_json?: string }
+  const openAIDefaultModels = JSON.parse(openAIProviderDefaults.default_supported_models_json ?? '[]') as string[]
+  assert.equal(openAIDefaultModels.includes('codex-auto-review'), false, '通用 OpenAI-compatible 账户默认模型不得包含 GPT 专属模型')
   assert.equal(publicModels.has('codex-auto-review'), false, '无价格模型不应进入默认有价公开目录')
   assert(publicCatalog.some((item) => item.model === 'gpt-regression-global' && item.scope === 'global'), '全局自定义模型应进入当前账号模型目录')
   assert(publicModels.has('gpt-regression-personal'), '当前账号个人自定义模型应进入模型目录')

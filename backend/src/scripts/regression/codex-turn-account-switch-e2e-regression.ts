@@ -138,7 +138,7 @@ async function main(): Promise<void> {
     await assertCodexPreCommitFailureReturnsRetryableWhenAllCandidatesFail(baseUrl, probeFailCodexSwitch, upstreamState)
     await assertCodexTurnAvoidanceUsesFormalRequestWithoutProbe(baseUrl, turnProbeFailCodexSwitch, upstreamState)
     await assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(baseUrl, httpFailCodex, upstreamState)
-    await assertGenericHttpNon2xxAllCandidatesReturnsGatewayJson(baseUrl, nonCodexHttpAllFail, upstreamState)
+    await assertGenericHttpNon2xxPassesThroughWithoutReplay(baseUrl, nonCodexHttpAllFail, upstreamState)
     await assertCodexContextWindowSingleRequestSwitchesAccountOnServer(baseUrl, contextWindow, upstreamState)
     await assertCodexCyberPolicySingleRequestSwitchesAccountOnServer(baseUrl, cyberPolicy, upstreamState)
     await assertClientAbortClearsSessionAffinity(baseUrl, clientAbortAffinity, upstreamState)
@@ -164,7 +164,7 @@ async function main(): Promise<void> {
       freshUpstreamKey: nonCodexHttpAllFail.probeFailedUpstreamKey
     }])
 
-    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后 Codex 返回协议可重试 SSE、通用客户端返回可重试 HTTP 503，client_aborted 会释放会话亲和')
+    console.log('Codex turn 切号 e2e 回归通过：服务端优先隐藏切号并扫完候选，Codex turn 避让直接用正式请求验证备用账号且不执行同步探针，HTTP 候选耗尽后 Codex 返回协议可重试 SSE、通用客户端原样返回首个完整 HTTP 非 2xx，client_aborted 会释放会话亲和')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -318,7 +318,7 @@ async function assertCodexHttpNon2xxAllCandidatesReturnRetryableSse(
   assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, 'HTTP 非 2xx 全部失败场景应继续尝试唯一备用号')
 }
 
-async function assertGenericHttpNon2xxAllCandidatesReturnsGatewayJson(
+async function assertGenericHttpNon2xxPassesThroughWithoutReplay(
   baseUrl: string,
   seeded: SeededProbeFailureGateway,
   upstreamState: MockUpstreamState
@@ -332,14 +332,14 @@ async function assertGenericHttpNon2xxAllCandidatesReturnsGatewayJson(
     codex: false,
     retryTag: 'server-retry-exhausted'
   })
-  assert.equal(result.status, 503, `普通客户端 HTTP 非 2xx 全部账号耗尽时应保留网关 JSON 失败：${result.status} ${result.text}`)
-  assert(result.contentType.includes('application/json'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回 JSON：${result.contentType}`)
-  assert(result.text.includes('service_unavailable'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回网关统一错误：${result.text}`)
-  assert(!result.text.includes('response.failed'), `普通客户端 HTTP 非 2xx 全部账号耗尽时不应伪造 SSE：${result.text}`)
-  assert(result.text.includes('upstream_retryable_error'), `普通客户端 HTTP 非 2xx 全部账号耗尽时应返回网关稳定可重试码：${result.text}`)
+  assert.equal(result.status, 503, `普通客户端完整 HTTP 非 2xx 应原样返回上游状态：${result.status} ${result.text}`)
+  assert(result.contentType.includes('application/json'), `普通客户端完整 HTTP 非 2xx 应保留上游 JSON 类型：${result.contentType}`)
+  assert(result.text.includes('server_is_overloaded'), `普通客户端完整 HTTP 非 2xx 应保留不透明上游错误体：${result.text}`)
+  assert(!result.text.includes('response.failed'), `普通客户端完整 HTTP 非 2xx 不应伪造 SSE：${result.text}`)
+  assert(!result.text.includes('upstream_retryable_error'), `普通客户端完整 HTTP 非 2xx 不应被改写成专用客户端错误码：${result.text}`)
 
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端 HTTP 非 2xx 全部失败场景应先命中首选账号')
-  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 1, '普通客户端 HTTP 非 2xx 全部失败场景应继续尝试唯一备用号')
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 1, '普通客户端完整 HTTP 非 2xx 应只命中首选账号一次')
+  assert.equal(hitCount(upstreamState, seeded.probeFailedUpstreamKey) - beforeProbeFailedHits, 0, '普通客户端 POST 可能已被上游接受，完整 HTTP 非 2xx 后不得重放到备用账号')
 }
 
 async function assertCodexContextWindowSingleRequestSwitchesAccountOnServer(

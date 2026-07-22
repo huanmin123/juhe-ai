@@ -187,7 +187,7 @@ try {
   assert(renamedAuthorizedInstance?.name.startsWith(`${renameConflictName}-`), '来源账户改名时授权实例应继续避让被授权用户跨供应商同名账户')
   assert.notEqual(renamedAuthorizedInstance?.name, renameConflictName, '授权实例同步名称不能覆盖被授权用户已有账户名称')
 
-  const preview = accountImport.previewAccountImport({
+  const duplicateImportPayload = {
     type: accountImport.accountImportProtocolType,
     version: accountImport.accountImportProtocolVersion,
     accounts: [
@@ -210,9 +210,17 @@ try {
         credentials: { api_key: 'sk-import-account-name-unique-other', base_url: 'https://other-provider.example.com/v1' }
       }
     ]
-  }, { skipDuplicates: true }, access)
+  }
+  const preview = accountImport.previewAccountImport(duplicateImportPayload, { skipDuplicates: true }, access)
   assert.equal(preview.accounts[0]?.action, 'create', '导入批内第一条同名账户应允许创建')
-  assert.equal(preview.accounts[1]?.action, 'skip', '导入批内跨供应商同名账户应按用户维度跳过')
+  assert.equal(
+    preview.accounts[1]?.action,
+    'skip',
+    `导入批内跨供应商同名账户应按用户维度跳过：${JSON.stringify(preview.accounts[1])}`
+  )
+  const asyncPreview = await accountImport.previewAccountImportAsync(duplicateImportPayload, { skipDuplicates: true }, access)
+  assert.equal(asyncPreview.accounts[0]?.action, 'create', '异步导入预览应保留批内第一条账户')
+  assert.equal(asyncPreview.accounts[1]?.action, 'skip', '异步导入预览也应按用户维度跳过跨供应商同名账户')
 
   const caseVariantPreview = accountImport.previewAccountImport({
     type: accountImport.accountImportProtocolType,
@@ -300,4 +308,3 @@ try {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
-

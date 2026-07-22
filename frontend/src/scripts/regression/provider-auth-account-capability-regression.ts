@@ -6,6 +6,13 @@ import { FALLBACK_PROVIDERS } from '../../views/accounts/accountOptions'
 import { validateAccountSaveForm } from '../../views/accounts/accountSavePayload'
 import { validateBasicEditCredentialFields } from '../../views/accounts/useAccountEditSaveFlow'
 
+const gpt = FALLBACK_PROVIDERS.find((provider) => provider.code === 'gpt')
+const openAICompatible = FALLBACK_PROVIDERS.find((provider) => provider.code === 'openai')
+assert(gpt?.defaultSupportedModels.includes('codex-auto-review'), 'GPT 回退供应商应默认勾选 codex-auto-review')
+assert.equal(openAICompatible?.defaultSupportedModels.includes('codex-auto-review'), false, '通用 OpenAI-compatible 回退供应商不得默认勾选 GPT 专属模型')
+const gptOAuthForm = defaultAccountForm('gpt', 'oauth', FALLBACK_PROVIDERS, 'profile_gpt_openai_v1')
+assert(gptOAuthForm.supportedModels.includes('codex-auto-review'), 'GPT OAuth 新建表单应默认勾选 codex-auto-review')
+
 const gemini = FALLBACK_PROVIDERS.find((provider) => provider.code === 'gemini')
 const geminiProfile = gemini?.protocolProfiles.find((profile) => profile.id === 'profile_gemini_native_v1beta')
 assert(geminiProfile?.accountTypes.includes('google_oauth'))

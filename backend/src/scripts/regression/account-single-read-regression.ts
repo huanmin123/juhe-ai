@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { GPT_OPENAI_V1_PROFILE_ID } from '../../domain/provider-protocol.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-single-read-${Date.now()}-${Math.random().toString(16).slice(2)}`)
@@ -41,6 +42,7 @@ try {
   for (let index = 0; index < 250; index += 1) {
     const account = repositories.createAccount({
       providerCode: 'gpt',
+      providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
       name: `账户单条读取回归-${String(index).padStart(3, '0')}`,
       type: 'api_key',
       credentials: {
@@ -66,6 +68,7 @@ try {
   const accountCountBeforeInvalidCreate = repositories.listAccounts(access).length
   assert.throws(() => repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账户单条读取回归-非法到期时间',
     type: 'api_key',
     credentials: {
@@ -77,6 +80,7 @@ try {
   }, access), /账户套餐到期时间必须是有效时间字符串/, '创建账户时非法到期时间不应被静默当作未设置')
   assert.throws(() => repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账户单条读取回归-非法日历日期',
     type: 'api_key',
     credentials: {
@@ -88,6 +92,7 @@ try {
   }, access), /账户套餐到期时间必须是有效时间字符串/, '创建账户时不存在的日历日期不应被 Date 自动修正')
   assert.throws(() => repositories.createAccount({
     providerCode: 'gpt',
+    providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '账户单条读取回归-非法调度布尔',
     type: 'api_key',
     credentials: {
