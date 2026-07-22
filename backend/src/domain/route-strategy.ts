@@ -12,7 +12,7 @@ import type {
 
 export const DEFAULT_ROUTE_STRATEGY_MODE: RouteStrategyMode = 'normal'
 export const DEFAULT_NORMAL_SCHEDULING_PREFERENCE: RouteStrategyNormalSchedulingPreference = 'cost_first'
-export const DEFAULT_SPEED_FIRST_BYTE_THRESHOLD_MS = 30_000
+export const DEFAULT_NORMAL_FIRST_BYTE_DEADLINE_MS = 10_000
 export const DEFAULT_SPEED_FIRST_SLOW_TRIGGER_COUNT = 3
 export const DEFAULT_SPEED_FIRST_SLOW_WINDOW_SECONDS = 120
 export const DEFAULT_SPEED_FIRST_RECOVERY_SUCCESS_COUNT = 3
@@ -48,7 +48,10 @@ export function routeStrategyConfigJson(config: RouteStrategyRuntimeConfig): str
   const output: Record<string, unknown> = {}
   if (config.normalRoutingConfig) {
     const normalRoutingConfig = normalizeNormalRoutingConfig(config.normalRoutingConfig)
-    if (normalRoutingConfig.schedulingPreference !== DEFAULT_NORMAL_SCHEDULING_PREFERENCE) {
+    if (
+      normalRoutingConfig.schedulingPreference !== DEFAULT_NORMAL_SCHEDULING_PREFERENCE
+      || normalRoutingConfig.firstByteDeadlineMs !== DEFAULT_NORMAL_FIRST_BYTE_DEADLINE_MS
+    ) {
       output.normalRoutingConfig = normalRoutingConfig
     }
   }
@@ -79,12 +82,14 @@ export function parseRouteStrategyRuntimeConfigJson(value: string | null | undef
 }
 
 export function defaultNormalRoutingConfig(): RouteStrategyNormalRoutingConfig {
-  return { schedulingPreference: DEFAULT_NORMAL_SCHEDULING_PREFERENCE }
+  return {
+    schedulingPreference: DEFAULT_NORMAL_SCHEDULING_PREFERENCE,
+    firstByteDeadlineMs: DEFAULT_NORMAL_FIRST_BYTE_DEADLINE_MS
+  }
 }
 
 export function defaultSpeedFirstConfig(): RouteStrategySpeedFirstConfig {
   return {
-    firstByteThresholdMs: DEFAULT_SPEED_FIRST_BYTE_THRESHOLD_MS,
     slowTriggerCount: DEFAULT_SPEED_FIRST_SLOW_TRIGGER_COUNT,
     slowWindowSeconds: DEFAULT_SPEED_FIRST_SLOW_WINDOW_SECONDS,
     recoverySuccessCount: DEFAULT_SPEED_FIRST_RECOVERY_SUCCESS_COUNT,
@@ -103,12 +108,26 @@ export function normalizeNormalRoutingConfig(value: unknown): RouteStrategyNorma
   }
   const record = value as Record<string, unknown>
   const schedulingPreference = normalizeNormalSchedulingPreference(record.schedulingPreference)
+  const speedFirstRecord = normalizeOptionalRecord(record.speedFirstConfig, '速度优先配置无效')
+  const hasCommonDeadline = hasConfiguredValue(record.firstByteDeadlineMs)
+  const hasLegacyDeadline = hasConfiguredValue(speedFirstRecord?.firstByteThresholdMs)
+  if (hasCommonDeadline && hasLegacyDeadline) {
+    throw new Error('首字截止时间不能同时配置 firstByteDeadlineMs 和旧 firstByteThresholdMs')
+  }
+  const firstByteDeadlineMs = normalizeIntegerRange(
+    hasCommonDeadline ? record.firstByteDeadlineMs : speedFirstRecord?.firstByteThresholdMs,
+    DEFAULT_NORMAL_FIRST_BYTE_DEADLINE_MS,
+    10_000,
+    60_000,
+    '首字截止时间必须是 10000-60000 毫秒'
+  )
   if (schedulingPreference === 'cost_first') {
-    return { schedulingPreference }
+    return { schedulingPreference, firstByteDeadlineMs }
   }
   return {
     schedulingPreference,
-    speedFirstConfig: normalizeSpeedFirstConfig(record.speedFirstConfig)
+    firstByteDeadlineMs,
+    speedFirstConfig: normalizeSpeedFirstConfig(speedFirstRecord)
   }
 }
 
@@ -126,7 +145,6 @@ function normalizeSpeedFirstConfig(value: unknown): RouteStrategySpeedFirstConfi
   }
   const record = value as Record<string, unknown>
   return {
-    firstByteThresholdMs: normalizeIntegerRange(record.firstByteThresholdMs, fallback.firstByteThresholdMs, 10_000, 60_000, '首字观察阈值必须是 10000-60000 毫秒'),
     slowTriggerCount: normalizeIntegerRange(record.slowTriggerCount, fallback.slowTriggerCount, 2, 10, '速度优先触发次数必须是 2-10'),
     slowWindowSeconds: normalizeIntegerRange(record.slowWindowSeconds, fallback.slowWindowSeconds, 60, 600, '速度优先窗口期必须是 60-600 秒'),
     recoverySuccessCount: normalizeIntegerRange(record.recoverySuccessCount, fallback.recoverySuccessCount, 3, 10, '速度优先恢复次数必须是 3-10'),
@@ -134,6 +152,18 @@ function normalizeSpeedFirstConfig(value: unknown): RouteStrategySpeedFirstConfi
     degradedTtlSeconds: normalizeIntegerRange(record.degradedTtlSeconds, fallback.degradedTtlSeconds, 60, 3600, '速度优先降级保留时间必须是 60-3600 秒'),
     maxFirstByteRetriesPerRequest: normalizeIntegerRange(record.maxFirstByteRetriesPerRequest, fallback.maxFirstByteRetriesPerRequest, 1, 3, '速度优先单请求切号次数必须是 1-3')
   }
+}
+
+function normalizeOptionalRecord(value: unknown, message: string): Record<string, unknown> | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(message)
+  }
+  return value as Record<string, unknown>
+}
+
+function hasConfiguredValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== ''
 }
 
 function normalizeIntegerRange(

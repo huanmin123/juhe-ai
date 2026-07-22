@@ -8,7 +8,7 @@ import type { AuditCaptureContext } from '../audit/capture.service.js'
 import type { GatewayAccountModelPriority } from '../dispatch/model-filter.js'
 import { responseHeadersToObject } from '../audit/capture.service.js'
 import type { ClientIpAccountAvoidanceTracker } from '../runtime/client-ip-account-avoidance.service.js'
-import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
+import type { GatewayUpstreamRequestCoordinationContext } from '../dispatch/upstream-dispatch.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { splitPathAndQuery } from '../protocols/openai-v1/route-helpers.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
@@ -23,10 +23,7 @@ import { setGatewayModelMappingSourceEndpointFamilyOverride } from '../protocols
 import { gatewayErrorPayload } from '../response/responses.js'
 import { sendGatewayFailureResponse } from '../response/failure-response.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
-import {
-  fetchFirstAvailableUpstream,
-  type SameAccountRetryBudget
-} from '../dispatch/upstream-dispatch.js'
+import { fetchFirstAvailableUpstream } from '../dispatch/upstream-dispatch.js'
 import { readUpstreamBodyLimited } from '../upstream/body.js'
 import { resolveGatewayUsageModel } from '../../providers/drivers/registry.js'
 import {
@@ -56,8 +53,7 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
   modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
-  sameAccountRetryBudget: SameAccountRetryBudget
-  serverRetryBudget: ServerRetryBudget
+  requestCoordination: GatewayUpstreamRequestCoordinationContext
   signal?: AbortSignal
 }): Promise<
   | { outcome: 'continued'; accounts: UpstreamAccount[] }
@@ -112,10 +108,9 @@ export async function applyCodexResponsesChatBridgeCompactPreflight(input: {
       true,
       input.requestClientCompatibility,
       input.modelPriority,
-      input.sameAccountRetryBudget,
       undefined,
       false,
-      input.serverRetryBudget,
+      input.requestCoordination,
       true
     )
     const readResult = await readUpstreamBodyLimited(upstreamResult.response.body, {

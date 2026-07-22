@@ -74,7 +74,6 @@ export interface RouteStrategyGroupBindingSummary {
 }
 
 export interface RouteStrategySpeedFirstConfig {
-  firstByteThresholdMs: number
   slowTriggerCount: number
   slowWindowSeconds: number
   recoverySuccessCount: number
@@ -85,6 +84,7 @@ export interface RouteStrategySpeedFirstConfig {
 
 export interface RouteStrategyNormalRoutingConfig {
   schedulingPreference: RouteStrategyNormalSchedulingPreference
+  firstByteDeadlineMs: number
   speedFirstConfig?: RouteStrategySpeedFirstConfig
 }
 

@@ -1,5 +1,6 @@
 import type { AccountRuntimeAvailability, AccountSummary, GroupSummary } from '../../../domain/types.js'
 import { accountSummaryWithEffectiveAvailability } from '../../../domain/account-effective-availability.js'
+import { publicAccountRuntimeAvailability } from '../../../domain/account-runtime-availability-public.js'
 import { runtimeConfig } from '../../../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
 import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../../db-service/db-service-ipc.js'
@@ -321,12 +322,15 @@ function applyAccountRuntimeAvailability(
     return account
   }
   const runtimeStatus = runtimeAvailability[accountRuntimeAvailabilityKey(account)]
-  return runtimeStatus
-    ? accountSummaryWithEffectiveAvailability({
+  if (!runtimeStatus) return account
+  const withAvailability = accountSummaryWithEffectiveAvailability({
         ...account,
         runtimeAvailability: runtimeStatus
       })
-    : account
+  return {
+    ...withAvailability,
+    runtimeAvailability: publicAccountRuntimeAvailability(runtimeStatus)
+  }
 }
 
 function markAccountConcurrencyUnavailable(account: AccountSummary): AccountSummary {

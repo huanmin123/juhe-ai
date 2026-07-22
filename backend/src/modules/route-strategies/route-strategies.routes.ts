@@ -67,6 +67,7 @@ const hybridRoutingConfigSchema = z.object({
 }).strict()
 
 const speedFirstConfigSchema = z.object({
+  // 迁移期只接受为读取兼容别名；repository 规范化后只写公共 firstByteDeadlineMs。
   firstByteThresholdMs: z.number({ invalid_type_error: '首字观察阈值必须是数字' })
     .int('首字观察阈值必须是整数')
     .min(10000, '首字观察阈值不能低于 10000 毫秒')
@@ -106,6 +107,11 @@ const speedFirstConfigSchema = z.object({
 
 const normalRoutingConfigSchema = z.object({
   schedulingPreference: z.enum(['cost_first', 'speed_first']).optional(),
+  firstByteDeadlineMs: z.number({ invalid_type_error: '首字截止时间必须是数字' })
+    .int('首字截止时间必须是整数')
+    .min(10000, '首字截止时间不能低于 10000 毫秒')
+    .max(60000, '首字截止时间不能高于 60000 毫秒')
+    .optional(),
   speedFirstConfig: speedFirstConfigSchema.optional()
 }).strict()
 

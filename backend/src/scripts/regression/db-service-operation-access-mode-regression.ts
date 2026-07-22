@@ -59,7 +59,9 @@ const huygensReadOperationTypes = [
   'get_runtime_log_detail',
   'get_runtime_log_facets',
   'read_codex_context_response_chain',
-  'read_codex_context_compact_state'
+  'read_codex_context_compact_state',
+  'list_account_circuit_incidents_for_rebuild',
+  'list_account_circuit_projection_gaps'
 ] as const
 
 for (const type of huygensReadOperationTypes) {
@@ -83,7 +85,12 @@ for (const type of [
   'save_codex_context_response_state',
   'save_codex_context_compact_state',
   'mark_account_test_task_running',
-  'record_client_ip_policy_hits'
+  'record_client_ip_policy_hits',
+  'advance_account_circuit_dispatch_revision',
+  'compare_and_set_account_circuit_incident',
+  'claim_account_circuit_outbox',
+  'ack_account_circuit_outbox',
+  'release_account_circuit_outbox_for_replay'
 ] as const) {
   assert.equal(dbServiceOperationAccessMode({ type } as DbServiceOperation), 'write', `${type} 必须归类为 write`)
 }
@@ -102,7 +109,8 @@ for (const type of [
   'list_accounts_due_for_cooldown_retest',
   'find_account_for_cooldown_retest',
   'cleanup_expired_codex_context_states',
-  'account_test_task_maintenance'
+  'account_test_task_maintenance',
+  'cleanup_account_circuit_control_plane'
 ] as const) {
   const operation = { type } as DbServiceOperation
   assert.equal(dbServiceOperationAccessMode(operation), 'maintenance', `${type} 必须归类为 maintenance`)

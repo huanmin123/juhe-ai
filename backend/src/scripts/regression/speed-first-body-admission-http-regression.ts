@@ -24,7 +24,7 @@ app.use((req: GatewayRuntimeRequest, _res: Response, next: NextFunction) => {
       expires_at: null,
       quota_limits_json: null,
       system_account_image_generation_enabled: 1,
-      normal_routing_config: { schedulingPreference: 'speed_first' }
+      normal_routing_config: { schedulingPreference: 'speed_first', firstByteDeadlineMs: 10_000 }
     },
     settings: {} as never,
     groupAccess: {

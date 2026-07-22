@@ -59,6 +59,10 @@ import {
 import type { GatewayAccountModelPriority } from './model-filter.js'
 import type { RouteStrategySpeedFirstConfig } from '../../../domain/types.js'
 import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
+import type {
+  GatewayRequestWallBudget,
+  RouteCoordinationBudget
+} from '../routing/route-coordination.js'
 
 export interface DispatchPreparationFallbackResult {
   attempted: boolean
@@ -97,6 +101,8 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   clientStrategy: OpenAIGatewayClientStrategyContext
   requestLane: OpenAIGatewayRequestLane
   serverRetryBudget: ServerRetryBudget
+  routeCoordinationBudget: RouteCoordinationBudget
+  gatewayRequestWallBudget: GatewayRequestWallBudget
   signal?: AbortSignal
   ignoreAccountRuntimeSuppression?: boolean
   attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
@@ -180,6 +186,8 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
         apiKeyId: input.apiKeyId,
         groupId: input.groupId,
         serverRetryBudget: input.serverRetryBudget,
+        routeCoordinationBudget: input.routeCoordinationBudget,
+        gatewayRequestWallBudget: input.gatewayRequestWallBudget,
         signal: input.signal
       })
   if (!localSuppressionFilter) {

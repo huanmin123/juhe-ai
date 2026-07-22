@@ -1,5 +1,11 @@
 import { getRequestLogger } from '../../../shared/request-context.js'
 import type { AuditCaptureContext } from '../audit/capture.service.js'
+import {
+  defaultGatewayFinalResponseReserveMs,
+  type GatewayRequestWallBudget,
+  type RouteCoordinationBudget,
+  type RouteCoordinationBudgetTransitionResult
+} from '../routing/route-coordination.js'
 
 export const recoverableUnavailableMaxWaitMs = 30_000
 export const recoverableUnavailableCheckIntervalMs = 5_000
@@ -12,6 +18,8 @@ type RecoverableUnavailableWaitSkippedReason =
   | 'deadline_exceeded'
   | 'scope_limit'
   | 'global_limit'
+  | 'temporarily_blocked_coordination_budget_exhausted'
+  | 'temporarily_blocked_coordination_budget_conflict'
 
 export interface RecoverableUnavailableWaitResult<T> {
   state: T
@@ -38,6 +46,10 @@ interface RecoverableUnavailableWaitInput<T> {
   deadlineAtMs?: number
   coordinator?: RecoverableUnavailableWaitCoordinator
   runtimeKeys?: string[]
+  routeCoordinationBudget?: RouteCoordinationBudget
+  gatewayRequestWallBudget?: GatewayRequestWallBudget
+  finalResponseReserveMs?: number
+  now?: () => number
 }
 
 export type RecoverableUnavailableCoordinatorWaitResult =
@@ -117,7 +129,7 @@ export class RecoverableUnavailableWaitCoordinator {
     return new Promise((resolve) => {
       const waiter: RecoverableUnavailableCoordinatorWaiter = {
         id: this.nextWaiterId++,
-        notBeforeMs: Math.min(deadlineAtMs, now + normalizeNonNegativeMs(input.delayMs)),
+        notBeforeMs: now + normalizeNonNegativeMs(input.delayMs),
         deadlineAtMs,
         signal: input.signal,
         resolve
@@ -171,10 +183,10 @@ export class RecoverableUnavailableWaitCoordinator {
       const now = this.now()
       if (head.signal?.aborted) {
         this.settleWaiter(key, head.id, 'aborted')
+      } else if (now >= head.notBeforeMs && head.notBeforeMs <= head.deadlineAtMs) {
+        this.settleWaiter(key, head.id, 'ready')
       } else if (now >= head.deadlineAtMs) {
         this.settleWaiter(key, head.id, 'deadline_exceeded')
-      } else if (now >= head.notBeforeMs) {
-        this.settleWaiter(key, head.id, 'ready')
       } else {
         this.scheduleScope(key, scope)
       }
@@ -230,12 +242,17 @@ export async function waitForRecoverableUnavailableState<T>(
 ): Promise<RecoverableUnavailableWaitResult<T>> {
   const maxWaitMs = normalizePositiveMs(input.maxWaitMs, recoverableUnavailableMaxWaitMs)
   const checkIntervalMs = normalizePositiveMs(input.checkIntervalMs, recoverableUnavailableCheckIntervalMs)
-  const startedAtMs = Date.now()
+  const now = input.now ?? Date.now
+  const startedAtMs = now()
   const requestStartedAtMs = normalizeOptionalTimestamp(input.requestStartedAtMs) ?? startedAtMs
   const localDeadlineAtMs = requestStartedAtMs + maxWaitMs
+  const wallDeadlineAtMs = input.gatewayRequestWallBudget
+    ? input.gatewayRequestWallBudget.deadlineAtMs - normalizeNonNegativeMs(input.finalResponseReserveMs ?? defaultGatewayFinalResponseReserveMs)
+    : Number.POSITIVE_INFINITY
   const deadlineAtMs = Math.min(
     localDeadlineAtMs,
-    normalizeOptionalTimestamp(input.deadlineAtMs) ?? localDeadlineAtMs
+    normalizeOptionalTimestamp(input.deadlineAtMs) ?? localDeadlineAtMs,
+    wallDeadlineAtMs
   )
   const coordinator = input.coordinator ?? defaultRecoverableUnavailableWaitCoordinator
   let state = input.initialState
@@ -251,7 +268,7 @@ export async function waitForRecoverableUnavailableState<T>(
     }
   }
 
-  if (deadlineAtMs <= Date.now()) {
+  if (deadlineAtMs <= now()) {
     return finalizeRecoverableUnavailableWait(input, state, startedAtMs, checkCount, false, true, 'deadline_exceeded')
   }
 
@@ -267,7 +284,23 @@ export async function waitForRecoverableUnavailableState<T>(
   })
 
   while (!input.signal?.aborted) {
-    const remainingMs = deadlineAtMs - Date.now()
+    const turnStartedAtMs = now()
+    const coordinationRemainingMs = input.routeCoordinationBudget?.remainingMs(turnStartedAtMs)
+    if (coordinationRemainingMs !== undefined && coordinationRemainingMs <= 0) {
+      return finalizeRecoverableUnavailableWait(
+        input,
+        state,
+        startedAtMs,
+        checkCount,
+        false,
+        false,
+        'temporarily_blocked_coordination_budget_exhausted'
+      )
+    }
+    const remainingMs = Math.min(
+      deadlineAtMs - turnStartedAtMs,
+      coordinationRemainingMs ?? Number.POSITIVE_INFINITY
+    )
     if (remainingMs <= 0) {
       return finalizeRecoverableUnavailableWait(input, state, startedAtMs, checkCount, false, true)
     }
@@ -291,6 +324,20 @@ export async function waitForRecoverableUnavailableState<T>(
       )
     }
 
+    const coordinationWait = beginRouteCoordinationWait(input, turnStartedAtMs)
+    if (coordinationWait?.outcome === 'version_conflict' || coordinationWait?.outcome === 'invalid_transition') {
+      return finalizeRecoverableUnavailableWait(
+        input,
+        state,
+        startedAtMs,
+        checkCount,
+        false,
+        false,
+        input.routeCoordinationBudget?.exhausted(turnStartedAtMs)
+          ? 'temporarily_blocked_coordination_budget_exhausted'
+          : 'temporarily_blocked_coordination_budget_conflict'
+      )
+    }
     getRequestLogger().info({
       event: 'gateway_recoverable_unavailable_wait_scheduled',
       reason: input.reason,
@@ -298,15 +345,38 @@ export async function waitForRecoverableUnavailableState<T>(
       delayMs: delayMs.delayMs,
       remainingMs
     }, '本地可恢复阻塞短等后重新检查调度候选')
-
-    const turn = await coordinator.waitForTurn({
-      scopeKey: input.scopeKey,
-      reason: input.reason,
-      delayMs: delayMs.delayMs,
-      deadlineAtMs,
-      signal: input.signal,
-      runtimeKeys: input.runtimeKeys
-    })
+    const waitToken = coordinationWait?.snapshot.lastWaitToken
+    let turn: RecoverableUnavailableCoordinatorWaitResult
+    let pauseResult: RouteCoordinationBudgetTransitionResult | undefined
+    try {
+      turn = await coordinator.waitForTurn({
+        scopeKey: input.scopeKey,
+        reason: input.reason,
+        delayMs: delayMs.delayMs,
+        deadlineAtMs: Math.min(deadlineAtMs, turnStartedAtMs + delayMs.delayMs),
+        signal: input.signal,
+        runtimeKeys: input.runtimeKeys
+      })
+    } finally {
+      if (input.routeCoordinationBudget && coordinationWait && waitToken) {
+        pauseResult = input.routeCoordinationBudget.pauseWait({
+          waitToken,
+          expectedVersion: coordinationWait.snapshot.version,
+          nowMs: now()
+        })
+      }
+    }
+    if (pauseResult?.outcome === 'version_conflict' || pauseResult?.outcome === 'invalid_transition') {
+      return finalizeRecoverableUnavailableWait(
+        input,
+        state,
+        startedAtMs,
+        checkCount,
+        false,
+        false,
+        'temporarily_blocked_coordination_budget_conflict'
+      )
+    }
     if (turn !== 'ready') {
       return finalizeRecoverableUnavailableWait(
         input,
@@ -337,7 +407,7 @@ function finalizeRecoverableUnavailableWait<T>(
   timedOut: boolean,
   skippedReason?: RecoverableUnavailableWaitSkippedReason
 ): RecoverableUnavailableWaitResult<T> {
-  const waitedMs = Date.now() - startedAtMs
+  const waitedMs = (input.now ?? Date.now)() - startedAtMs
   input.auditCapture.addGatewayMetadata({
     label: 'recoverable_unavailable_wait_result',
     metadata: {
@@ -359,6 +429,21 @@ function finalizeRecoverableUnavailableWait<T>(
     timedOut,
     skippedReason
   }
+}
+
+function beginRouteCoordinationWait<T>(
+  input: RecoverableUnavailableWaitInput<T>,
+  nowMs: number
+): RouteCoordinationBudgetTransitionResult | undefined {
+  const budget = input.routeCoordinationBudget
+  if (!budget) return undefined
+  const snapshot = budget.snapshot(nowMs)
+  const waitToken = [budget.budgetId, input.reason, input.scopeKey, `v${snapshot.version}`].join(':')
+  return budget.beginWait({
+    waitToken,
+    expectedVersion: snapshot.version,
+    nowMs
+  })
 }
 
 function nextRecoverableWaitDelayMs(input: {

@@ -1,4 +1,5 @@
 import { accountSummaryWithEffectiveAvailability } from '../../domain/account-effective-availability.js'
+import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import type { AccountStatusSnapshotResult } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { listAccountStatusProjectionsAsync } from '../../storage/account-status-snapshot.repository.js'
@@ -32,6 +33,7 @@ export async function getAccountStatusSnapshot(
       accountRuntimeAvailabilityAvailable: runtime.available
     },
     items: projections.map(({ runtimeKey, concurrencyAccountId, permissions: _permissions, accessType: _accessType, boundGroupId: _boundGroupId, groupBindStatus: _groupBindStatus, ...projection }) => {
+      const publicRuntimeAvailability = publicAccountRuntimeAvailability(runtime.values[runtimeKey])
       const withAvailability = accountSummaryWithEffectiveAvailability({
         ...projection,
         permissions: _permissions,
@@ -43,7 +45,7 @@ export async function getAccountStatusSnapshot(
       return {
         ...projection,
         currentConcurrency: concurrency.values[concurrencyAccountId] ?? 0,
-        runtimeAvailability: withAvailability.runtimeAvailability,
+        runtimeAvailability: publicRuntimeAvailability,
         availabilityPresentation: withAvailability.availabilityPresentation,
         effectiveAvailability: withAvailability.effectiveAvailability
       }
