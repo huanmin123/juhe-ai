@@ -50,6 +50,7 @@ type Config struct {
 	MetricsEnabled                     bool          `env:"JUHE_AI_METRICS_ENABLED" envDefault:"false"`
 	PprofEnabled                       bool          `env:"JUHE_AI_PPROF_ENABLED" envDefault:"false"`
 	ShutdownTimeout                    time.Duration `env:"JUHE_AI_SHUTDOWN_TIMEOUT" envDefault:"15s"`
+	CooldownAccountRetestWorkerEnabled bool          `env:"JUHE_AI_COOLDOWN_ACCOUNT_RETEST_WORKER_ENABLED" envDefault:"false"`
 	OwnerLockEnabled                   bool          `env:"JUHE_AI_OWNER_LOCK_ENABLED" envDefault:"false"`
 	OwnerLockPath                      string        `env:"JUHE_AI_OWNER_LOCK_PATH"`
 	OwnerLockDeploymentEpoch           string        `env:"JUHE_AI_OWNER_LOCK_DEPLOYMENT_EPOCH"`
