@@ -1106,19 +1106,8 @@ type ManagementResourceAuthorizationExpirySweepInput struct {
 	ExpiredAt time.Time
 }
 
-type ManagementResourceAuthorizationExpiryFanout struct {
-	AuthorizationID              string
-	ResourceType                 string
-	ResourceID                   string
-	ResourceOwnerSystemAccountID string
-	GranteeType                  string
-	GranteeSystemAccountID       string
-	GranteeTeamID                string
-}
-
 type ManagementResourceAuthorizationExpirySweepResult struct {
-	Expired        int
-	Authorizations []ManagementResourceAuthorizationExpiryFanout
+	Expired int
 }
 
 type ManagementResourceAuthorizationExpirySweeper interface {
