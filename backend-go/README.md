@@ -211,6 +211,15 @@ Invoke-RestMethod http://127.0.0.1:3000/__aisys__/api/health
 go run ./cmd/juhe-ai-maintenance migration-catalog-preflight --dir db/migrations
 ```
 
+在把 `stats-overview`、`system-metrics` 或 `table-monitor` 的 Go 只读路由加入灰度 owner 前，还必须对目标 PostgreSQL 执行 Node stats writer 共存契约检查：
+
+```powershell
+$env:JUHE_AI_POSTGRES_URL = 'postgres://juhe_ai:password@127.0.0.1:5432/juhe_ai?sslmode=disable'
+go run ./cmd/juhe-ai-maintenance stats-schema-contract-preflight
+```
+
+该命令只读 `information_schema.columns`，不会建表、补列或启动 writer。成功输出固定声明 `writerOwner=node`，只证明当前 `juhe_stats` 关系和列足够支撑三组 Go reader；它不证明 Node 聚合新鲜、Go stats worker 已接管或可以删除 Node。
+
 真实 PG/Redis/Asynq smoke：
 
 ```powershell
