@@ -53,10 +53,12 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
     loadingPromise = (async () => {
       try {
         let nextGroups = await input.groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-        nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
-        applyGroups(nextGroups, currentRequestId)
+        const ensured = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+        if (!isCurrentRequest(currentRequestId, requestKey)) return
+        handleMissingGroupOptions(ensured.missingIds)
+        applyGroups(ensured.groups, currentRequestId, requestKey)
       } catch (error) {
-        if (currentRequestId !== requestId) return
+        if (!isCurrentRequest(currentRequestId, requestKey)) return
         console.error(error)
         message.error(extractApiErrorMessage(error, '加载分组选项失败'))
       } finally {
@@ -72,8 +74,8 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
     return loadingPromise
   }
 
-  function applyGroups(nextGroups: GroupOptionSummary[], currentRequestId: number): void {
-    if (currentRequestId !== requestId) return
+  function applyGroups(nextGroups: GroupOptionSummary[], currentRequestId: number, requestKey: string): void {
+    if (!isCurrentRequest(currentRequestId, requestKey)) return
     rememberGroupLabels(nextGroups)
     syncSelectedGroupSelection(nextGroups)
     groups.value = nextGroups
@@ -124,12 +126,12 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
   async function ensureSelectedGroupOptions(
     nextGroups: GroupOptionSummary[],
     systemAccountId: string | undefined
-  ): Promise<GroupOptionSummary[]> {
+  ): Promise<{ groups: GroupOptionSummary[]; missingIds: string[] }> {
     const selectedIds = [input.selectedGroupId()]
       .map((id) => id?.trim())
       .filter((id): id is string => Boolean(id))
     const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
-    if (!missingIds.length) return nextGroups
+    if (!missingIds.length) return { groups: nextGroups, missingIds: [] }
     const selectedGroups = await Promise.all(missingIds.map(async (id) => {
       try {
         return await input.groupsApi.options({ systemAccountId, ids: [id], limit: 1 })
@@ -138,8 +140,22 @@ export function useUsageRecordGroupOptions(input: UseUsageRecordGroupOptionsInpu
       }
     }))
     const foundIds = new Set(selectedGroups.flat().map((group) => group.id))
-    handleMissingGroupOptions(missingIds.filter((id) => !foundIds.has(id)))
-    return mergeOptionsById(selectedGroups.flat(), nextGroups)
+    return {
+      groups: mergeOptionsById(selectedGroups.flat(), nextGroups),
+      missingIds: missingIds.filter((id) => !foundIds.has(id))
+    }
+  }
+
+  function isCurrentRequest(currentRequestId: number, requestKey: string): boolean {
+    if (currentRequestId !== requestId || loadingKey !== requestKey) return false
+    const currentSystemAccountId = input.isManagementView.value ? input.systemAccountId() : undefined
+    const currentSelectedIds = [input.selectedGroupId()].filter((id): id is string => Boolean(id))
+    return requestKey === JSON.stringify([
+      input.isManagementView.value,
+      currentSystemAccountId ?? '',
+      normalizeOptionKeyword(keyword) ?? '',
+      currentSelectedIds
+    ])
   }
 
   function handleMissingGroupOptions(ids: string[]): void {

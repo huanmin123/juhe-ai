@@ -90,11 +90,7 @@ export function useProviderModelSelectOptions(options: UseProviderModelSelectOpt
           : await Promise.all(providerCodes.map((code) => api.providers.modelOptions({
               ...query,
               providerCode: code
-            }))).then((results) => {
-              const byId = new Map<string, ProviderModelOption>()
-              for (const item of results.flat()) byId.set(item.id, item)
-              return [...byId.values()]
-            })
+            }))).then((results) => results.flat())
         if (isCurrentRequest(requestId, contextKey)) {
           providerModelOptions.value = result
           loadedScopeKey = scopeKey

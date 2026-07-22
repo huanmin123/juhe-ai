@@ -112,7 +112,7 @@ export function validateAccountEndpointModes(input: {
     return '不同协议的上游接口能力不能混选'
   }
   if (hasAnthropicMode && !input.modes.includes('messages_json') && !input.modes.includes('messages_sse')) {
-    return `Anthropic API Key 上游接口能力至少需要启用 ${accountEndpointModeLabel('messages_json', input.profile)} 或 ${accountEndpointModeLabel('messages_sse', input.profile)}`
+    return `Anthropic 上游接口能力至少需要启用 ${accountEndpointModeLabel('messages_json', input.profile)} 或 ${accountEndpointModeLabel('messages_sse', input.profile)}`
   }
   if (hasGeminiMode) {
     if (input.type !== 'api_key' && input.type !== 'google_oauth') return 'Gemini 原生协议当前仅支持 API Key 或 Google OAuth 账户'
@@ -122,7 +122,7 @@ export function validateAccountEndpointModes(input: {
     }
     return undefined
   }
-  if (input.type === 'oauth') {
+  if (input.type === 'oauth' && hasOpenAIMode) {
     if (input.modes.some((mode) => !responsesEndpointModes.includes(mode))) {
       return `OAuth 账户上游接口能力只能选择 ${accountEndpointModeLabel('responses_json', input.profile)} 或 ${accountEndpointModeLabel('responses_sse', input.profile)}`
     }

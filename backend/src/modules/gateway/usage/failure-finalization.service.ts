@@ -11,7 +11,12 @@ const gatewayUsageFinalizationMaxConcurrency = 32
 let queuedGatewayUsageFinalizationBytes = 0
 let activeGatewayUsageFinalizations = 0
 let admissionWaitCount = 0
-const capacityWaiters = new Set<() => void>()
+let rejectedAdmissionCount = 0
+const capacityWaiters: Array<{
+  taskFactory: () => Promise<void>
+  bytes: number
+  resolve: () => void
+}> = []
 
 export async function dispatchGatewayUsageFinalization(input: {
   taskFactory: () => Promise<void>
@@ -21,13 +26,18 @@ export async function dispatchGatewayUsageFinalization(input: {
   if (bytes > gatewayUsageFinalizationMaxBytes) {
     throw new Error('网关使用记录异步收尾任务超过单条容量上限')
   }
-  while (!hasGatewayUsageFinalizationCapacity(bytes)) {
-    admissionWaitCount += 1
-    await waitForGatewayUsageFinalizationCapacity()
+  if (capacityWaiters.length === 0 && hasGatewayUsageFinalizationCapacity(bytes)) {
+    admitGatewayUsageFinalization(input.taskFactory, bytes)
+    return
   }
-  queuedGatewayUsageFinalizations.push({ taskFactory: input.taskFactory, bytes })
-  queuedGatewayUsageFinalizationBytes += bytes
-  pumpGatewayUsageFinalizations()
+  if (capacityWaiters.length >= gatewayUsageFinalizationMaxItems) {
+    rejectedAdmissionCount += 1
+    throw new Error('网关使用记录异步收尾等待队列已满')
+  }
+  admissionWaitCount += 1
+  await new Promise<void>((resolvePromise) => {
+    capacityWaiters.push({ taskFactory: input.taskFactory, bytes, resolve: resolvePromise })
+  })
 }
 
 export function trackGatewayUsageFinalization(
@@ -53,7 +63,7 @@ export function trackGatewayFailureUsageFinalization(task: Promise<void>): void 
 }
 
 export function getPendingGatewayFailureUsageFinalizationCount(): number {
-  return pendingGatewayFailureUsageFinalizations.size + queuedGatewayUsageFinalizations.length + capacityWaiters.size
+  return pendingGatewayFailureUsageFinalizations.size + queuedGatewayUsageFinalizations.length + capacityWaiters.length
 }
 
 export interface GatewayUsageFinalizationRuntime {
@@ -74,7 +84,7 @@ export function getGatewayUsageFinalizationRuntime(): GatewayUsageFinalizationRu
     queuedCount: queuedGatewayUsageFinalizations.length,
     queuedBytes: queuedGatewayUsageFinalizationBytes,
     activeCount: activeGatewayUsageFinalizations,
-    droppedCount: 0,
+    droppedCount: rejectedAdmissionCount,
     admissionWaitCount,
     maxItems: gatewayUsageFinalizationMaxItems,
     maxBytes: gatewayUsageFinalizationMaxBytes,
@@ -102,7 +112,7 @@ function pumpGatewayUsageFinalizations(): void {
     const queued = queuedGatewayUsageFinalizations.shift()
     if (!queued) break
     queuedGatewayUsageFinalizationBytes = Math.max(0, queuedGatewayUsageFinalizationBytes - queued.bytes)
-    notifyGatewayUsageFinalizationCapacity()
+    admitWaitingGatewayUsageFinalizations()
     activeGatewayUsageFinalizations += 1
     const task = Promise.resolve()
       .then(queued.taskFactory)
@@ -114,20 +124,24 @@ function pumpGatewayUsageFinalizations(): void {
   }
 }
 
+function admitGatewayUsageFinalization(taskFactory: () => Promise<void>, bytes: number): void {
+  queuedGatewayUsageFinalizations.push({ taskFactory, bytes })
+  queuedGatewayUsageFinalizationBytes += bytes
+  pumpGatewayUsageFinalizations()
+}
+
 function hasGatewayUsageFinalizationCapacity(bytes: number): boolean {
   return queuedGatewayUsageFinalizations.length < gatewayUsageFinalizationMaxItems
     && queuedGatewayUsageFinalizationBytes + bytes <= gatewayUsageFinalizationMaxBytes
 }
 
-function waitForGatewayUsageFinalizationCapacity(): Promise<void> {
-  return new Promise((resolvePromise) => {
-    capacityWaiters.add(resolvePromise)
-  })
-}
-
-function notifyGatewayUsageFinalizationCapacity(): void {
-  for (const resolvePromise of capacityWaiters) {
-    resolvePromise()
+function admitWaitingGatewayUsageFinalizations(): void {
+  while (capacityWaiters.length > 0) {
+    const waiter = capacityWaiters[0]
+    if (!waiter || !hasGatewayUsageFinalizationCapacity(waiter.bytes)) break
+    capacityWaiters.shift()
+    queuedGatewayUsageFinalizations.push({ taskFactory: waiter.taskFactory, bytes: waiter.bytes })
+    queuedGatewayUsageFinalizationBytes += waiter.bytes
+    waiter.resolve()
   }
-  capacityWaiters.clear()
 }

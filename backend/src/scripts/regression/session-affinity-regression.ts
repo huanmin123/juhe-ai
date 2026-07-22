@@ -6,6 +6,7 @@ import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../sha
 import {
   areOpenAIHighConcurrencyAccountsHardBusy,
   forgetOpenAIAccountForSession,
+  forgetOpenAIAccountForSessionBestEffort,
   migrateOpenAIAccountSessionAffinity,
   orderOpenAIAccountsBySessionAffinity,
   rememberOpenAIAccountTrafficMigrationPreference,
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
   testAffinityKeyUsesLocalIdentityOnly()
   testMissingBoundAccountDoesNotAffectCandidates()
   testForgetOnlyClearsMatchingBoundAccount()
+  testBestEffortForgetClearsLocalBindingImmediately()
   testAffinityDoesNotPromoteAcrossPriority()
   testAffinityDoesNotPromoteFallbackOverPrimary()
   testAffinityDoesNotPromoteOverBetterQuality()
@@ -63,6 +65,11 @@ function testSessionAffinityMigrationUsesReverseIndex(): void {
   assert(source.includes('trafficMigrationPreferenceCache'), '手动迁移流量应维护同分组目标偏向运行态')
   assert(!source.includes('for (const [key, binding] of sessionAffinityCache.entries())'), '迁移会话亲和不能扫描全部亲和缓存')
   assert(source.includes('for (const key of sessionAffinityMigrationCandidateKeys(sourceAccountId, scope))'), '迁移会话亲和应只遍历源账号相关候选 key')
+  assert.match(
+    source,
+    /export function forgetOpenAIAccountForSessionBestEffort[\s\S]*?void forgetOpenAIAccountForSessionAsync\(sessionAffinityKey, accountId\)/,
+    'Redis 会话亲和失败清理必须后台触发，不能把 Redis 延迟叠加到网关响应'
+  )
 }
 
 function testAffinityKeyUsesLocalIdentityOnly(): void {
@@ -121,6 +128,22 @@ function testForgetOnlyClearsMatchingBoundAccount(): void {
   assert.deepEqual(orderedIds(accounts, sessionKey), ['sticky-oauth', 'api-key-candidate'], '非绑定账号失败不应误删当前会话亲和')
   forgetOpenAIAccountForSession(sessionKey, 'sticky-oauth')
   assert.deepEqual(orderedIds(accounts, sessionKey), ['api-key-candidate', 'sticky-oauth'], '绑定账号失败才清理当前会话亲和')
+}
+
+function testBestEffortForgetClearsLocalBindingImmediately(): void {
+  const sessionKey = 'session-affinity-regression:best-effort-forget'
+  const accounts = [
+    createAccount('ordinary-account', { priority: 0 }),
+    createAccount('failed-sticky-account', { priority: 0 })
+  ]
+  rememberOpenAIAccountForSession(sessionKey, 'failed-sticky-account')
+  assert.deepEqual(orderedIds(accounts, sessionKey), ['failed-sticky-account', 'ordinary-account'])
+  forgetOpenAIAccountForSessionBestEffort(sessionKey, 'failed-sticky-account')
+  assert.deepEqual(
+    orderedIds(accounts, sessionKey),
+    ['ordinary-account', 'failed-sticky-account'],
+    'memory 模式 best-effort 清理应同步移除失败账号亲和'
+  )
 }
 
 function testAffinityDoesNotPromoteAcrossPriority(): void {

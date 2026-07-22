@@ -1,4 +1,4 @@
-import type { ModelCheckItemSummary } from '../../domain/types.js'
+import type { ModelCheckItemSummary, ModelCheckProfile } from '../../domain/types.js'
 import { createTraceId } from '../../shared/request-context.js'
 import type { ModelCheckItemCreateInput } from '../../storage/repositories.js'
 import { distributionSampleCount } from './model-checks.constants.js'
@@ -257,6 +257,8 @@ export function evaluateUsageShapeProbe(results: GatewayProbeResult[], prefix: M
 }
 
 export function evaluateBehaviorProbeSet(observations: BehaviorProbeObservation[], model: string, prefix: ModelCheckProbePrefix): ModelCheckItemCreateInput {
+  const quickProbe = observations.length === 1
+  const probeLabel = quickProbe ? '快速行为探针' : '多行为指纹探针'
   const summaries = observations.map((observation) => {
     const modelEvidence = buildProbeModelMatchEvidence(observation.result, observation.result.success ? observation.result.model : undefined, model)
     return {
@@ -278,7 +280,7 @@ export function evaluateBehaviorProbeSet(observations: BehaviorProbeObservation[
   const aggregate = requestFailureAggregate(summaries.length, scorableSummaries.length)
   const result = observations[observations.length - 1]?.result ?? emptyProbeResult()
   if (!scorableSummaries.length) {
-    return requestFailureItem(`${prefix}.behavior_probe`, 'behavior_probe', result, '行为指纹探针请求均失败，未形成模型行为证据', {
+    return requestFailureItem(`${prefix}.behavior_probe`, 'behavior_probe', result, `${probeLabel}请求失败，未形成模型行为证据`, {
       expectedModel: model,
       probeCount: summaries.length,
       promptKeys: summaries.map((summary) => summary.key),
@@ -299,14 +301,14 @@ export function evaluateBehaviorProbeSet(observations: BehaviorProbeObservation[
     : evidencePassed ? aggregate.requestFailureCount > 0 ? 'warning' : 'passed' : constraintRate >= 0.6 && modelMatchRate >= 0.6 ? 'warning' : 'failed'
   return item(`${prefix}.behavior_probe`, 'behavior_probe', status, score, 35, result, {
     message: modelMismatch
-      ? '行为指纹探针返回模型与请求模型不一致'
+      ? `${probeLabel}返回模型与请求模型不一致`
       : evidencePassed && aggregate.requestFailureCount > 0
-        ? '多行为指纹可用证据通过，部分探针请求失败未计入评分'
+        ? `${probeLabel}可用证据通过，部分探针请求失败未计入评分`
       : status === 'passed'
-        ? '多行为指纹探针通过'
+        ? `${probeLabel}通过`
         : status === 'warning'
-          ? '多行为指纹探针部分通过，建议结合可信对比观察'
-          : '多行为指纹探针大面积异常',
+          ? quickProbe ? '快速行为探针结果不完整，建议开启深度检测复核' : '多行为指纹探针部分通过，建议结合可信对比观察'
+          : quickProbe ? '快速行为探针异常' : '多行为指纹探针大面积异常',
     expectedModel: model,
     probeCount: summaries.length,
     successRate: roundMetric(aggregate.requestSuccessRate),
@@ -735,7 +737,7 @@ export function emptyProbeResult(): GatewayProbeResult {
   }
 }
 
-export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trustedComparison: boolean }): ModelCheckSummaryResult {
+export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trustedComparison: boolean; profile?: ModelCheckProfile }): ModelCheckSummaryResult {
   const scoredChecks = checks.filter((item) => item.maxScore > 0)
   const maxScore = scoredChecks.reduce((sum, item) => sum + item.maxScore, 0)
   const rawScore = scoredChecks.reduce((sum, item) => sum + item.score, 0)
@@ -784,6 +786,18 @@ export function summarizeChecks(checks: ModelCheckItemSummary[], options: { trus
   }
   if (options.trustedComparison && trustedComparisonItem?.status === 'skipped') {
     return { level: 'uncertain', score, maxScore: 100, message: '可信对比探针请求失败，未形成完整可比模型证据' }
+  }
+  if (options.profile === 'quick') {
+    if (score >= 78 && failedCount <= 1 && behaviorPassed) {
+      return { level: 'likely', score, maxScore: 100, message: '快速检测未发现明显异常，仅形成初步估计；需要更高准确度请开启深度检测' }
+    }
+    if (score >= 50) {
+      return { level: 'uncertain', score, maxScore: 100, message: '快速检测存在不确定项，建议开启深度检测复核' }
+    }
+    if (score >= 25) {
+      return { level: 'suspicious', score, maxScore: 100, message: '快速检测发现明显异常，建议检查上游配置并使用深度检测复核' }
+    }
+    return { level: 'unavailable', score, maxScore: 100, message: '快速检测未形成可用模型证据' }
   }
   if (score >= 92 && failedCount === 0 && behaviorPassed && longContextPassed && stabilityPassed && trustedComparisonPassed && (options.trustedComparison || crossModelPassed)) {
     return {

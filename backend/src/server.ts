@@ -643,6 +643,7 @@ async function waitForIngestFactQueueDrain(timeoutMs: number): Promise<boolean> 
     const parentUsageQueueLength = status.pendingQueues.usageRecords.queueLength
     const parentAuditQueueLength = status.pendingQueues.auditLogs.queueLength
     const workerUsageQueueLength = status.snapshot.usageRecordQueue.queueLength
+      + (status.snapshot.usageRecordQueue.admissionWaiterCount ?? 0)
     const workerAuditQueueLength = status.snapshot.auditLogQueue.queueLength
     if (
       parentUsageQueueLength === 0

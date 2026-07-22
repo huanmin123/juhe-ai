@@ -54,6 +54,12 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
     loading.value = false
   }
 
+  function invalidate(): void {
+    requestToken += 1
+    scopeKey.value = ''
+    loading.value = false
+  }
+
   function handleDropdown(open: boolean): void {
     if (open) void load()
   }
@@ -67,6 +73,7 @@ export function useAccountFilterTagOptions(config: UseAccountFilterTagOptionsCon
   return {
     disabled,
     handleDropdown,
+    invalidate,
     load,
     loading,
     options,

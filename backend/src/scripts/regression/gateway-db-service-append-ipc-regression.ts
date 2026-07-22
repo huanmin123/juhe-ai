@@ -70,7 +70,7 @@ try {
     return true
   }) as NodeJS.Process['send']
 
-  usageRecordQueue.enqueueUsageRecord(usageRecordFixture('trace-usage-db-service-send'))
+  await usageRecordQueue.enqueueUsageRecord(usageRecordFixture('trace-usage-db-service-send'))
   auditLogQueue.enqueueAuditLog(auditLogFixture('trace-audit-db-service-send'))
   assert.equal((sentMessages[0] as { type?: unknown }).type, 'background_worker_usage_records', 'DB service 应发送使用记录 worker IPC 消息')
   assert.equal((sentMessages[1] as { type?: unknown }).type, 'background_worker_audit_logs', 'DB service 应发送审计日志 worker IPC 消息')
@@ -80,10 +80,14 @@ try {
   }) as NodeJS.Process['send']
   const usageDroppedBefore = usageRecordQueue.getUsageRecordQueueRuntime().droppedCount
   const auditDroppedBefore = auditLogQueue.getAuditLogQueueRuntime().droppedFailureCount
+  await assert.rejects(
+    usageRecordQueue.enqueueUsageRecord(usageRecordFixture('trace-usage-db-service-ipc-closed')),
+    /模拟父进程 IPC 已关闭/,
+    'DB service 使用记录 IPC 断开时必须向调用方返回明确失败'
+  )
   assert.doesNotThrow(() => {
-    usageRecordQueue.enqueueUsageRecord(usageRecordFixture('trace-usage-db-service-ipc-closed'))
     auditLogQueue.enqueueAuditLog(auditLogFixture('trace-audit-db-service-ipc-closed'))
-  }, 'DB service 使用记录 / 审计日志投递 IPC 断开时不应抛出异常')
+  }, 'DB service 审计日志投递 IPC 断开时不应抛出异常')
   assert.equal(
     usageRecordQueue.getUsageRecordQueueRuntime().droppedCount,
     usageDroppedBefore + 1,
@@ -98,7 +102,7 @@ try {
   process.send = originalSend
 }
 
-console.log('网关 DB service append IPC 回归通过：使用记录和审计日志可由 DB service 转发给 server，再进入 ingest-worker 队列；父 IPC 异常不打崩请求链路')
+console.log('网关 DB service append IPC 回归通过：使用记录和审计日志可转发到 ingest-worker；使用记录父 IPC 异常会明确 reject，审计仍保持 best-effort')
 
 function usageRecordFixture(traceId: string): UsageRecordInput {
   return {

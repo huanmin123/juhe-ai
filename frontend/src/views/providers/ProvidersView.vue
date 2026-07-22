@@ -328,6 +328,7 @@ const loading = ref(false)
 const modelLoading = ref(false)
 const customModelSaving = ref(false)
 const providers = ref<ProviderDefinition[]>([])
+let providerRequestSequence = 0
 const providerModels = ref<ProviderModelPricing[]>([])
 const modelKeyword = ref('')
 const modelLoadError = ref('')
@@ -446,21 +447,26 @@ function formatDefaultSupportedModels(provider: ProviderDefinition): string {
 }
 
 async function loadProviders(force = false) {
+  const requestSequence = ++providerRequestSequence
+  const requestManagementView = isManagementView.value
   loading.value = true
   try {
     const providerResult = await loadProviderOptionsResource({
-      apply: (nextProviders) => { providers.value = nextProviders },
       force,
-      includeDisabled: isManagementView.value,
-      includeDefinitions: !isManagementView.value,
-      isManagementView: isManagementView.value
+      includeDisabled: requestManagementView,
+      includeDefinitions: !requestManagementView,
+      isCurrent: () => requestSequence === providerRequestSequence
+        && requestManagementView === isManagementView.value,
+      isManagementView: requestManagementView
     })
+    if (requestSequence !== providerRequestSequence || requestManagementView !== isManagementView.value) return
     providers.value = providerResult.data
   } catch (error) {
+    if (requestSequence !== providerRequestSequence) return
     console.error(error)
     message.error('加载供应商失败')
   } finally {
-    loading.value = false
+    if (requestSequence === providerRequestSequence) loading.value = false
   }
 }
 

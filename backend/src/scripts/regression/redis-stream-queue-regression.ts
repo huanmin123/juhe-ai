@@ -14,6 +14,27 @@ const queue = new RedisStreamQueue<TestPayload>({
   redisUrl: 'redis://:unused@127.0.0.1:6379/0'
 })
 
+const heartbeatQueue = new RedisStreamQueue<TestPayload>({
+  streamKey: 'juhe-ai:test:heartbeat-stream',
+  groupName: 'juhe-ai:test:heartbeat-group',
+  consumerName: 'heartbeat-consumer',
+  claimIdleMs: 9_000,
+  redisUrl: 'redis://:unused@127.0.0.1:6379/0'
+})
+assert.equal(heartbeatQueue.pendingHeartbeatIntervalMs(), 3_000, 'pending heartbeat should run at one third of reclaim idle')
+let heartbeatEval: { script?: string; keys?: string[]; arguments?: string[] } = {}
+const heartbeatCount = await (heartbeatQueue as unknown as {
+  heartbeatPendingUnsafe(client: { eval(script: string, options: { keys: string[]; arguments: string[] }): Promise<unknown> }, ids: string[]): Promise<unknown>
+}).heartbeatPendingUnsafe({
+  async eval(script, options) {
+    heartbeatEval = { script, ...options }
+    return options.arguments.slice(2)
+  }
+}, ['1730000000003-0', '1730000000003-1'])
+assert.deepEqual(heartbeatCount, ['1730000000003-0', '1730000000003-1'])
+assert.match(heartbeatEval.script ?? '', /XPENDING[\s\S]*XCLAIM[\s\S]*JUSTID/, 'pending heartbeat Lua must verify ownership before refreshing idle')
+assert.deepEqual(heartbeatEval.arguments?.slice(-2), ['1730000000003-0', '1730000000003-1'], 'pending heartbeat must refresh the requested ids')
+
 const parser = queue as unknown as {
   parseStreamReadResult(result: unknown): Array<RedisStreamMessage<TestPayload>>
   parseAutoClaimResult(result: unknown): Array<RedisStreamMessage<TestPayload>>
@@ -92,6 +113,9 @@ assert.match(redisStreamQueueSource, /isRedisNoGroupError/, 'Redis Stream queue 
 assert.match(redisStreamQueueSource, /recreateGroupAfterNoGroup/, 'Redis Stream queue should recreate deleted stream groups')
 assert.match(redisStreamQueueSource, /readNewUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*readNewUnsafe/, 'XREADGROUP should retry once after recreating a missing group')
 assert.match(redisStreamQueueSource, /claimPendingUnsafe[\s\S]*recreateGroupAfterNoGroup[\s\S]*claimPendingUnsafe/, 'XAUTOCLAIM should retry once after recreating a missing group')
+assert.match(redisStreamQueueSource, /async heartbeatPending\(ids: string\[\]\)[\s\S]*heartbeatPendingUnsafe[\s\S]*recreateGroupAfterNoGroup/, 'Redis Stream pending heartbeat should refresh message ownership and recover after NOGROUP')
+assert.match(redisStreamQueueSource, /redisHeartbeatOwnedPendingMessagesScript[\s\S]*XPENDING[\s\S]*pending\[1\]\[2\] == ARGV\[2\][\s\S]*XCLAIM[\s\S]*JUSTID/, 'Redis Stream pending heartbeat should verify the current owner before resetting idle without loading payloads')
+assert.match(redisStreamQueueSource, /pendingHeartbeatIntervalMs\(\)[\s\S]*this\.claimIdleMs \/ 3/, 'Redis Stream pending heartbeat interval must stay safely below reclaim idle')
 assert.match(redisStreamQueueSource, /parseEntries[\s\S]*try[\s\S]*this\.decode\(payload\)[\s\S]*catch[\s\S]*recordPoisonMessage/, 'Redis Stream parser should retain poison messages pending and record decode failures')
 assert.doesNotMatch(redisStreamQueueSource, /ackPoisonMessage|redis_stream_poison_message_ack_failed/, '坏消息不得自动 XACK/XDEL，否则 one-shot 会在未落库时丢失唯一现场')
 assert.match(redisStreamQueueSource, /Redis Stream 消息解码失败，消息保留 pending 并阻断排空/, '坏消息日志必须明确其保留和门禁语义')

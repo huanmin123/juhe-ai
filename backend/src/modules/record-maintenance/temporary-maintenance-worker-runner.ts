@@ -16,6 +16,7 @@ import { isRecordMaintenanceJob, runRecordMaintenanceJobOnce, type RecordMainten
 const temporaryMaintenanceLeaseMs = 5 * 60 * 1000
 const temporaryMaintenanceHeartbeatMs = 30 * 1000
 const temporaryMaintenanceEventLoopWarmupMs = 20
+const temporaryMaintenanceLeaseUnavailableExitCode = 75
 
 export async function runTemporaryMaintenanceWorker(runId: string): Promise<number> {
   runtimeConfig.processRole = 'worker'
@@ -35,18 +36,24 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
       runId,
       ownerId
     }, '临时维护 worker 未获得任务运行权，已退出')
-    await finishTemporaryBackgroundTaskRun({
-      runId,
-      status: 'skipped',
-      result: { skippedReason: 'lease_or_status_unavailable' },
-      exitCode: 0
-    })
-    return 0
+    return temporaryMaintenanceLeaseUnavailableExitCode
   }
   await warmupTemporaryMaintenanceEventLoopMonitor()
 
+  let heartbeatFailure: unknown
+  let heartbeatInFlight = Promise.resolve()
   const heartbeatTimer = setInterval(() => {
-    void heartbeatTemporaryBackgroundTaskRun(runId, ownerId, leaseUntilIso())
+    heartbeatInFlight = heartbeatInFlight.then(async () => {
+      const renewed = await heartbeatTemporaryBackgroundTaskRun(runId, ownerId, leaseUntilIso())
+      if (!renewed) throw new Error('临时维护 worker 已失去任务租约')
+    }).catch((error) => {
+      heartbeatFailure ??= error
+      logger.error(errorLogFields(error, {
+        event: 'temporary_maintenance_worker_heartbeat_failed',
+        runId,
+        ownerId
+      }), '临时维护 worker 心跳续租失败')
+    })
   }, temporaryMaintenanceHeartbeatMs)
   heartbeatTimer.unref()
 
@@ -57,12 +64,16 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
       throw new Error('临时维护任务参数无效或不允许由临时 worker 执行')
     }
     const result = await runRecordMaintenanceJobOnce(job)
-    await finishTemporaryBackgroundTaskRun({
+    await heartbeatInFlight
+    if (heartbeatFailure) throw heartbeatFailure
+    const completed = await finishTemporaryBackgroundTaskRun({
       runId,
+      ownerId,
       status: 'completed',
       result: result as Record<string, unknown>,
       exitCode: 0
     })
+    if (!completed) throw new Error('临时维护 worker 完成时已失去任务运行权')
     logger.info({
       event: 'temporary_maintenance_worker_completed',
       runId,
@@ -74,6 +85,7 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
   } catch (error) {
     await finishTemporaryBackgroundTaskRun({
       runId,
+      ownerId,
       status: 'failed',
       result: {},
       errorMessage: error instanceof Error ? error.message : String(error),
@@ -87,6 +99,7 @@ export async function runTemporaryMaintenanceWorker(runId: string): Promise<numb
     return 1
   } finally {
     clearInterval(heartbeatTimer)
+    await heartbeatInFlight
   }
 }
 

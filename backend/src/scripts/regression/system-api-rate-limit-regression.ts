@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     await assertAllowlistedIpBypassesRateLimit(baseUrl, adminSession.cookie)
     await assertTestAppBypassesRateLimit(adminSession.cookie)
 
-    console.log('后台系统 API 限流回归通过：DB access mode 在 limiter 前统一分类，confirm 消耗 read bucket 且不 touch session，普通 POST 消耗 write bucket，GET/HEAD、健康检查、IP 白名单和测试 app 旁路符合预期')
+    console.log('后台系统 API 限流回归通过：DB access mode 在 limiter 前统一分类，导入预览 POST 消耗 read bucket 且不 touch session，普通 POST 消耗 write bucket，GET/HEAD、健康检查、IP 白名单和测试 app 旁路符合预期')
   } finally {
     await closeServer(server)
     try {
@@ -113,11 +113,8 @@ async function assertDbAccessModeRateLimitClassification(
   baseUrl: string,
   adminSession: { cookie: string; sessionId: string }
 ): Promise<void> {
-  const confirmPath = '/__aisys__/api/data-changes/confirm'
-  const confirmBody = {
-    viewScope: 'self',
-    domains: {}
-  }
+  const readPostPath = '/__aisys__/api/accounts/import/preview'
+  const readPostBody = { data: {} }
 
   repositories.updateSettings({
     systemApiRateLimitIpReadPerMinute: 1,
@@ -129,26 +126,26 @@ async function assertDbAccessModeRateLimitClassification(
   })
   clearSystemApiRateLimitStateForTest()
 
-  const confirmClientIp = '198.51.100.106'
+  const readPostClientIp = '198.51.100.106'
   const staleLastSeenAt = '2000-01-01T00:00:00.000Z'
   databaseModule.getBusinessDatabase()
     .prepare('UPDATE system_sessions SET last_seen_at = ? WHERE id = ?')
     .run(staleLastSeenAt, adminSession.sessionId)
-  await assertStatus(baseUrl, confirmPath, 200, {
-    clientIp: confirmClientIp,
+  await assertStatus(baseUrl, readPostPath, 200, {
+    clientIp: readPostClientIp,
     cookie: adminSession.cookie,
     method: 'POST',
-    body: confirmBody
+    body: readPostBody
   })
-  const sessionAfterConfirm = databaseModule.getBusinessDatabase()
+  const sessionAfterReadPost = databaseModule.getBusinessDatabase()
     .prepare('SELECT last_seen_at FROM system_sessions WHERE id = ?')
     .get(adminSession.sessionId) as { last_seen_at: string } | undefined
-  assert.equal(sessionAfterConfirm?.last_seen_at, staleLastSeenAt, '页面变更确认必须保持 session no-touch')
-  await assertStatus(baseUrl, confirmPath, 429, {
-    clientIp: confirmClientIp,
+  assert.equal(sessionAfterReadPost?.last_seen_at, staleLastSeenAt, '显式分类为 read 的导入预览 POST 必须保持 session no-touch')
+  await assertStatus(baseUrl, readPostPath, 429, {
+    clientIp: readPostClientIp,
     cookie: adminSession.cookie,
     method: 'POST',
-    body: confirmBody
+    body: readPostBody
   })
 
   repositories.updateSettings({
@@ -162,17 +159,17 @@ async function assertDbAccessModeRateLimitClassification(
   clearSystemApiRateLimitStateForTest()
 
   const userReadClientIp = '198.51.100.109'
-  await assertStatus(baseUrl, confirmPath, 200, {
+  await assertStatus(baseUrl, readPostPath, 200, {
     clientIp: userReadClientIp,
     cookie: adminSession.cookie,
     method: 'POST',
-    body: confirmBody
+    body: readPostBody
   })
-  await assertStatus(baseUrl, confirmPath, 429, {
+  await assertStatus(baseUrl, readPostPath, 429, {
     clientIp: userReadClientIp,
     cookie: adminSession.cookie,
     method: 'POST',
-    body: confirmBody
+    body: readPostBody
   })
 
   repositories.updateSettings({

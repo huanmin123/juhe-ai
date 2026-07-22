@@ -24,10 +24,14 @@ import {
   recordGatewayAccountFailureForPrecheck,
   suppressGatewayAccountLocally
 } from '../runtime/account-side-effects.service.js'
-import { forgetOpenAIAccountForSessionAsync } from '../runtime/session-affinity.service.js'
+import {
+  forgetOpenAIAccountForSessionAsync,
+  forgetOpenAIAccountForSessionBestEffort
+} from '../runtime/session-affinity.service.js'
 import {
   isEffectiveOpenAIStreamRequest,
   isUpstreamRequestAbortedError,
+  cancelGatewayUpstreamResponseBody,
   type GatewayUpstreamResponse
 } from '../upstream/request.js'
 import { headersToObject } from '../upstream/headers.js'
@@ -363,6 +367,8 @@ export async function handleOpaqueFailedUpstreamResponse(
     auditAttemptIndex
   } = input
   const safeUpstreamUrl = sanitizeUrlCredentialsForLog(upstreamUrl) ?? 'unknown'
+  await cancelGatewayUpstreamResponseBody(response, new Error('上游非成功响应已进入只读请求故障转移'))
+  forgetOpenAIAccountForSessionBestEffort(input.sessionAffinityKey, account.id)
   const lastAttempt: UpstreamAttempt = {
     ...(input.lastAttempt ?? {
       accountId: account.id,
@@ -594,6 +600,7 @@ async function handleOpaqueUpstreamRequestError(
 ): Promise<{ action: 'skip_account'; lastAttempt?: UpstreamAttempt }> {
   const { req, usageContext, auditCapture, auditAttemptId, account, upstreamUrl, attemptStartedAt, auditAttemptIndex, error } = input
   if (isUpstreamRequestAbortedError(error) || input.signal?.aborted) {
+    forgetOpenAIAccountForSessionBestEffort(input.sessionAffinityKey, account.id)
     completeOrRecordFailedAttempt({
       req,
       auditCapture,
@@ -610,6 +617,7 @@ async function handleOpaqueUpstreamRequestError(
   }
 
   const message = formatUpstreamRequestErrorMessage(error)
+  forgetOpenAIAccountForSessionBestEffort(input.sessionAffinityKey, account.id)
   const lastAttempt: UpstreamAttempt = {
     accountId: account.id,
     accountName: account.name,

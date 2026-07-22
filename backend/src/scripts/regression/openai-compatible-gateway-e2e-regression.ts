@@ -36,7 +36,8 @@ const [
   gatewayCache,
   accountSideEffects,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  readWorkerPool
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../shared/request-context.js'),
@@ -45,7 +46,8 @@ const [
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/sqlite-read-worker-pool.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -123,6 +125,13 @@ try {
         enabled: true
       }]
     }, access)
+    const activated = repositories.recordAccountHealthCheckSuccess(account.id, {
+      intervalHours: 12,
+      jitterMinutes: 0,
+      failureThreshold: 3,
+      statusCode: 200
+    })
+    assert(activated, '通用 OpenAI-compatible E2E 账户应通过健康检查成功入口从 pending_test 激活')
     const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
       name: '通用 OpenAI 兼容网关 E2E Key',
       groupBindings: [{ groupId: group.id, priority: 1, status: 'active' }],
@@ -147,7 +156,7 @@ try {
       })
     })
     const text = await response.text()
-    assert.equal(response.status, 200, `通用 openai 供应商网关请求应成功，实际 HTTP ${response.status}: ${text}`)
+    assert.equal(response.status, 200, `通用 openai 供应商网关请求应成功，实际 HTTP ${response.status}: ${text}; upstreamHits=${upstreamHitCount}; upstreamPath=${upstreamPath}`)
     const body = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> }
     assert.equal(body.choices?.[0]?.message?.content, 'generic openai provider ok')
     assert.equal(upstreamHitCount, 1, '通用 openai 供应商应命中一次 mock 上游')
@@ -196,8 +205,9 @@ try {
   auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  await readWorkerPool.closeSqliteReadWorkerPool()
   databaseModule.closeStorageDatabases()
-  rmSync(tempRoot, { recursive: true, force: true })
+  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 }
 
 function registerCustomModels(): void {

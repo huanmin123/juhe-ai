@@ -729,6 +729,17 @@ export async function forgetOpenAIAccountForSessionAsync(sessionAffinityKey: str
   }
 }
 
+export function forgetOpenAIAccountForSessionBestEffort(sessionAffinityKey: string | undefined, accountId?: string): void {
+  if (!sessionAffinityKey) {
+    return
+  }
+  if (!shouldUseRedisSessionAffinity()) {
+    forgetOpenAIAccountForSession(sessionAffinityKey, accountId)
+    return
+  }
+  void forgetOpenAIAccountForSessionAsync(sessionAffinityKey, accountId)
+}
+
 export function migrateOpenAIAccountSessionAffinity(
   sourceAccountId: string,
   targetAccountId: string,

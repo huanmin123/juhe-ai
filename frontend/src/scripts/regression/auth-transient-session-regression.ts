@@ -39,6 +39,7 @@ assert(
   'logout 返回后必须先确认仍是当前认证操作，再按 chat cleanup → clear state 顺序清理旧账户'
 )
 assert.equal(logoutVersionGuards.length, 2, '聊天清理期间认证操作变化时也不得清空较新的登录态')
+assert.match(logoutBody, /catch \(error\)[\s\S]*chatCleanupFailed = true[\s\S]*clearAuthState\(\)[\s\S]*if \(chatCleanupFailed\) throw chatCleanupError/, '本地聊天清理失败时必须先清空已被服务端注销的认证态')
 const loginBody = source.match(/export async function login\([\s\S]*?\): Promise<CurrentUserSummary> \{([\s\S]*?)\n\}/)?.[1] ?? ''
 assert.match(layoutSource, /try \{\s*await logout\(\)[\s\S]*router\.replace\('\/login'\)[\s\S]*catch/, '退出失败时页面必须保留当前路由并显示错误')
 assert.match(layoutSource, /if \(!authState\.currentUser\.value\)[\s\S]*?router\.replace\('\/login'\)/, '服务端已退出但本地聊天清理失败时仍必须离开受保护页面')
@@ -100,6 +101,23 @@ try {
   failedLogoutGate.reject(new Error('logout unavailable'))
   await assert.rejects(failedLogout, /logout unavailable/)
   assert.equal(authState.currentUser.value?.id, 'replacement-user', 'logout 失败必须保留当前登录用户')
+
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: Object.defineProperty({}, 'sessionStorage', {
+      get() { throw new Error('local chat cleanup failed') }
+    })
+  })
+  api.auth.logout = async () => undefined
+  try {
+    await assert.rejects(logout(), /local chat cleanup failed/)
+    assert.equal(authState.currentUser.value, undefined, '服务端 logout 成功后，本地聊天清理失败也必须清空登录态')
+  } finally {
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
+  authState.currentUser.value = user('replacement-user')
 
   authState.authChecked.value = false
   api.auth.me = async () => user('replacement-user', 'admin')

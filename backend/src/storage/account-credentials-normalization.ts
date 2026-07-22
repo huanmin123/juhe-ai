@@ -2,6 +2,7 @@ import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-
 import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
 import { providerAccountCredentialDriverForContext } from '../modules/providers/drivers/account-credentials.registry.js'
 import type { ProviderAccountCredentialContext } from '../modules/providers/drivers/_shared/account-credentials.js'
+import { isAnthropicProtocolProfile } from '../domain/provider-protocol.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
@@ -191,6 +192,9 @@ function normalizeOAuthAccountCredentials(
   const refreshToken = optionalCredentialText(input.refresh_token, 'Refresh Token', accountCredentialSecretMaxBytes)
   if (!refreshToken && !accessToken) {
     throw new Error('OAuth 凭据不能为空')
+  }
+  if (isAnthropicProtocolProfile(endpointModeDefaults) && !accessToken) {
+    throw new Error('Anthropic OAuth 需要 Access Token')
   }
 
   const credentials: Record<string, unknown> = {

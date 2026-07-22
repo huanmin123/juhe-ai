@@ -3,19 +3,18 @@ import { readFileSync } from 'node:fs'
 
 const source = readFileSync(new URL('../../storage/gateway-api-key.repository.ts', import.meta.url), 'utf8')
 const body = functionBody(source, 'validateGatewayApiKeyAsync')
-const synchronization = body.indexOf("await syncGatewayCacheInvalidationsFromRuntimeState({ force: true })")
 const processCacheRead = body.indexOf('gatewayApiKeyProcessCache.get(keyHash)')
+const cachedReturn = body.indexOf('return cloneGatewayApiKeyRow(processCached.row)')
+const backgroundSynchronization = body.indexOf('void syncGatewayCacheInvalidationsFromRuntimeState().catch(() => undefined)')
+const cacheMissSynchronization = body.indexOf('await syncGatewayCacheInvalidationsFromRuntimeState()', cachedReturn)
 
-assert(synchronization >= 0, '跨实例 API Key 鉴权必须强制同步 Redis runtime state 失效版本')
 assert(processCacheRead >= 0, 'API Key 异步鉴权应保留进程内热缓存')
-assert(synchronization < processCacheRead, '必须先同步失效版本，再读取进程内 API Key 热缓存')
-assert.doesNotMatch(
-  body,
-  /void syncGatewayCacheInvalidationsFromRuntimeState\(\)\.catch\(\(\) => undefined\)/,
-  'API Key 鉴权不得在已命中本地缓存后异步同步失效版本'
-)
+assert(backgroundSynchronization > processCacheRead, '热缓存命中后应在后台同步 Redis 失效版本')
+assert(backgroundSynchronization < cachedReturn, '后台同步必须在返回热缓存前发起')
+assert(cacheMissSynchronization > cachedReturn, '本地缓存 miss 时必须同步 Redis 失效版本并保持失败关闭')
+assert.match(source, /GATEWAY_API_KEY_CACHE_TTL_MS\s*=\s*60_000/, '断线降级必须受 60 秒进程内缓存 TTL 约束')
 
-console.log('跨实例 API Key 失效回归通过：鉴权读取本地热缓存前强制确认 Redis 失效版本')
+console.log('跨实例 API Key 失效回归通过：热缓存命中非阻塞同步，miss 失败关闭，断线降级受 TTL 约束')
 
 function functionBody(sourceText: string, functionName: string): string {
   const start = sourceText.indexOf(`function ${functionName}`)

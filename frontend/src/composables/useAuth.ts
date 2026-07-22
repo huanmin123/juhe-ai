@@ -66,9 +66,17 @@ export async function logout(): Promise<void> {
   const operationVersion = ++authStateVersion
   await api.auth.logout()
   if (operationVersion !== authStateVersion) return
-  await clearCurrentAccountChatState(systemAccountId)
+  let chatCleanupFailed = false
+  let chatCleanupError: unknown
+  try {
+    await clearCurrentAccountChatState(systemAccountId)
+  } catch (error) {
+    chatCleanupFailed = true
+    chatCleanupError = error
+  }
   if (operationVersion !== authStateVersion) return
   clearAuthState()
+  if (chatCleanupFailed) throw chatCleanupError
 }
 
 function isExplicitUnauthorized(error: unknown): boolean {

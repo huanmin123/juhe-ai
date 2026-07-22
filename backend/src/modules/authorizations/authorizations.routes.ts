@@ -267,7 +267,7 @@ authorizationsRouter.delete('/:id/return', async (req, res) => {
   }
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-    const authorization = await runLoggedOperationAsync(async () => {
+    await runLoggedOperationAsync(async () => {
       const authorization = await returnResourceAuthorizationForGranteeAsync(paramsParsed.data.id, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')

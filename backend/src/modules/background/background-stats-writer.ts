@@ -71,6 +71,7 @@ import {
 import { buildGatewayQuotaSnapshot, buildGatewayQuotaSnapshotAsync } from '../../storage/gateway-quota-snapshot.repository.js'
 import { checkpointSqliteWal } from '../../storage/sqlite-maintenance.js'
 import { getStatsDatabase } from '../../storage/database.js'
+import { createSqliteShardAggregationDrainTracker } from '../../storage/stats-shard-aggregation-drain.js'
 import type { AccountBalanceQueryConfig, AccountBalanceSnapshot } from '../accounts/account-balance.types.js'
 import { activateModelTokenInterceptBaselineAsync, aggregateModelTrustObservationsAsync } from '../../storage/model-trust.repository.js'
 import {
@@ -400,6 +401,9 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
   )
   const normalizedMaxBatches = boundedPositiveInteger(maxBatches, 1, 100)
   const normalizedMaxRunMs = boundedPositiveInteger(maxRunMs, 1, usageStatsAggregationMaxRunMsCap)
+  const sqliteDrainTracker = runtimeConfig.databaseDriver === 'sqlite'
+    ? createSqliteShardAggregationDrainTracker(normalizedBatchSize)
+    : undefined
   for (let index = 0; index < normalizedMaxBatches; index += 1) {
     if (Date.now() - startedAtMs >= normalizedMaxRunMs) {
       stoppedByTimeBudget = true
@@ -407,7 +411,10 @@ async function aggregateUsageStats(batchSize: number, maxBatches: number, maxRun
     }
     const batchProcessed = await aggregateUsageStatsBatchAsync(normalizedBatchSize, safeCreatedBefore)
     processed += batchProcessed
-    if (batchProcessed < normalizedBatchSize) break
+    const aggregationComplete = sqliteDrainTracker
+      ? sqliteDrainTracker.observe(batchProcessed)
+      : batchProcessed < normalizedBatchSize
+    if (aggregationComplete) break
     if (Date.now() - startedAtMs >= normalizedMaxRunMs) {
       stoppedByTimeBudget = true
       break
@@ -433,10 +440,16 @@ async function aggregateClientIpStats(batchSize: number, maxBatches: number, max
   let processed = 0
   const normalizedBatchSize = boundedPositiveInteger(batchSize, 1, 10000)
   const normalizedMaxBatches = boundedPositiveInteger(maxBatches, 1, 100)
+  const sqliteDrainTracker = runtimeConfig.databaseDriver === 'sqlite'
+    ? createSqliteShardAggregationDrainTracker(normalizedBatchSize)
+    : undefined
   for (let index = 0; index < normalizedMaxBatches; index += 1) {
     const batchProcessed = await aggregateClientIpStatsBatchAsync(normalizedBatchSize)
     processed += batchProcessed
-    if (batchProcessed < normalizedBatchSize) break
+    const aggregationComplete = sqliteDrainTracker
+      ? sqliteDrainTracker.observe(batchProcessed)
+      : batchProcessed < normalizedBatchSize
+    if (aggregationComplete) break
     if (Date.now() - startedAtMs >= boundedPositiveInteger(maxRunMs, 1, 60_000)) break
     await yieldToEventLoop()
     await pauseBetweenStatsAggregationBatches()

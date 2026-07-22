@@ -107,6 +107,25 @@ try {
   await waitFor(() => refreshAccountCalls > accountCallsBeforeRefresh, '手动刷新未发起账户列表请求')
   await flushPromises()
   assert.equal(refreshProviderCalls, providerCallsBeforeRefresh, '手动刷新列表不应失效并重查供应商筛选项')
+
+  const oldProviders = deferred<ProviderDefinition[]>()
+  const newProviders = deferred<ProviderDefinition[]>()
+  const oldProxies = deferred<Array<{ id: string; name: string }>>()
+  const newProxies = deferred<Array<{ id: string; name: string }>>()
+  let providerRaceCalls = 0
+  let proxyRaceCalls = 0
+  mutableApi.providers.definitions = () => (++providerRaceCalls === 1 ? oldProviders.promise : newProviders.promise)
+  mutableApi.proxies.options = () => (++proxyRaceCalls === 1 ? oldProxies.promise : newProxies.promise) as Promise<never[]>
+  const oldOptionsLoad = listData.loadAccountOptions(undefined, true)
+  const newOptionsLoad = listData.loadAccountOptions(undefined, true)
+  newProviders.resolve([providerFixture('new-provider')])
+  newProxies.resolve([{ id: 'proxy-new', name: '新代理' }])
+  await newOptionsLoad
+  oldProviders.resolve([providerFixture('old-provider')])
+  oldProxies.resolve([{ id: 'proxy-old', name: '旧代理' }])
+  await oldOptionsLoad
+  assert.equal(listData.providers.value[0]?.code, 'new-provider', '旧强制 options 响应不得覆盖较新的供应商响应')
+  assert.equal(listData.proxies.value[0]?.id, 'proxy-new', '旧强制 options 响应不得覆盖较新的代理响应')
 } finally {
   mutableApi.providers.definitions = originalProviderDefinitions
   mutableApi.proxies.options = originalProxyOptions
@@ -196,10 +215,25 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve()
 }
 
+function providerFixture(code: string): ProviderDefinition {
+  return { id: code, code, name: code } as ProviderDefinition
+}
+
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
   for (let index = 0; index < 50; index += 1) {
     if (predicate()) return
     await flushPromises()
   }
   throw new Error(message)
+}
+
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((nextResolve) => { resolve = nextResolve })
+  return { promise, resolve }
 }

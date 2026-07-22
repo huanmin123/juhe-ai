@@ -83,9 +83,16 @@ export function canCreateOAuthAccount(input: {
   provider?: ProviderDefinition
   profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
 }): boolean {
-  return providerProfileSupportsAccountType('oauth', input.provider, input.profile)
+  return supportsOAuthAccountType(input)
     && isGptVendorCode(providerCodeForOAuthFlow(input))
     && accountProviderProtocolKind(input.profile ?? input.provider) === 'openai_v1'
+}
+
+export function supportsOAuthAccountType(input: {
+  provider?: ProviderDefinition
+  profile?: ProviderProtocolProfileDefinition | AccountProviderProfileLike
+}): boolean {
+  return providerProfileSupportsAccountType('oauth', input.provider, input.profile)
 }
 
 export function defaultAccountClientCompatibilityForProvider(input: {
@@ -123,9 +130,7 @@ export function canSelectClientCompatibility(account: AccountProviderProfileLike
 export function accountClientCompatibilityCapabilities(account: AccountProviderProfileLike): ClientCompatibilityCapability[] {
   const protocolKind = accountProviderProtocolKind(account)
   if (protocolKind === 'anthropic_v1') {
-    return account.type === 'api_key'
-      ? ['anthropic_native', 'claude_code']
-      : ['anthropic_native']
+    return ['anthropic_native', 'claude_code']
   }
   if (protocolKind === 'gemini_v1beta') {
     return ['openai_standard']
@@ -173,7 +178,10 @@ export function defaultEndpointModesForAccount(input: {
 }): AccountSupportedEndpointMode[] {
   if (isHybridProviderProfile(input.profile ?? input.provider)) return [...allAccountEndpointModes]
   const protocolKind = accountProviderProtocolKind(input.profile ?? input.provider)
-  if (input.type === 'oauth') return [...responsesEndpointModes]
+  if (input.type === 'oauth') {
+    if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
+    return [...responsesEndpointModes]
+  }
   if (protocolKind === 'anthropic_v1') return endpointModesForProfile(input.profile ?? input.provider)
   if (protocolKind === 'gemini_v1beta') return endpointModesForProfile(input.profile ?? input.provider)
   if (protocolKind === 'openai_v1') {

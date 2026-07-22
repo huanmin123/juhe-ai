@@ -21,6 +21,7 @@ runtimeConfig.modelCheck.probeRetryDelayMs = 20
 mkdirSync(tempRoot, { recursive: true })
 
 const retryState = {
+  quickBasicAttempts: 0,
   transientBasicAttempts: 0,
   transientStreamAttempts: 0,
   persistentBasicAttempts: 0,
@@ -44,6 +45,28 @@ try {
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstream)}/v1`
+
+  const quickFixture = createMockGatewayFixture({
+    label: 'model-check-retry-quick-persistent',
+    upstreamBaseUrl,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const quickAccount = quickFixture.accounts[0]
+  assert(quickAccount, 'mock fixture should create a quick target account')
+  const quickRun = await runModelCheck({
+    targetType: 'account',
+    targetId: quickAccount.id,
+    model: 'gpt-5.5',
+    profile: 'quick',
+    trustedComparison: false
+  }, access)
+  const quickBasic = requiredCheck(quickRun.checks, 'target.responses_basic')
+  assert.equal(quickRun.level, 'unavailable', '快速基础探针失败时应落不可检测')
+  assert.equal(retryState.quickBasicAttempts, 1, '快速检测失败探针只能尝试一次')
+  assert.equal(quickBasic.evidenceSummary.retryAttemptCount, undefined, '快速检测不得记录额外重试')
+  assert(!quickRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), '快速基础探针失败后不应继续第二个轻探针')
 
   const transientFixture = createMockGatewayFixture({
     label: 'model-check-retry-transient',
@@ -175,6 +198,11 @@ function createRetryAwareUpstream(): http.Server {
         const authorization = String(req.headers.authorization ?? '').toLowerCase()
         const bodyText = JSON.stringify(body).toUpperCase()
         if (bodyText.includes('OK-MODEL-CHECK')) {
+          if (authorization.includes('model-check-retry-quick-persistent')) {
+            retryState.quickBasicAttempts += 1
+            sendError(res, '模拟快速检测持续上游异常')
+            return
+          }
           if (authorization.includes('model-check-retry-rate-limit')) {
             retryState.rateLimitedBasicAttempts += 1
             if (retryState.rateLimitedBasicAttempts <= 2) {

@@ -20,11 +20,7 @@ import {
   stopRecordMaintenanceRedisStreamConsumer
 } from '../../modules/record-maintenance/record-maintenance-queue.service.js'
 import { closeRedisClients, getRedisClient } from '../../shared/redis-client.js'
-import {
-  redisQueueFenceKey,
-  redisQueueFenceLeaseMs,
-  renewRedisQueueFenceWithClient
-} from '../../shared/redis-queue-fence.js'
+import { redisQueueFenceKey } from '../../shared/redis-queue-fence.js'
 import {
   inspectRedisStreamDrain,
   redisStreamDrainContracts,
@@ -35,7 +31,6 @@ import {
 const pollIntervalMs = boundedIntegerEnv('JUHE_AI_QUEUE_DRAIN_POLL_INTERVAL_MS', 2000, 250, 30000)
 const timeoutMs = boundedIntegerEnv('JUHE_AI_QUEUE_DRAIN_TIMEOUT_MS', 900000, 10000, 3600000)
 const requiredStableWindows = boundedIntegerEnv('JUHE_AI_QUEUE_DRAIN_STABLE_WINDOWS', 2, 2, 10)
-const fenceRenewIntervalMs = Math.max(1_000, Math.floor(redisQueueFenceLeaseMs / 3))
 let interrupted = false
 
 process.once('SIGINT', () => { interrupted = true })
@@ -55,29 +50,23 @@ async function drainRedisStreams(): Promise<void> {
   assertDrainRuntime()
   const fenceToken = requiredEnv('JUHE_AI_QUEUE_FENCE_TOKEN')
   const queueUrl = runtimeConfig.redis.queueUrl as string
-  const client = await getRedisClient(queueUrl)
-  const currentFenceToken = await client.get(redisQueueFenceKey())
-  if (currentFenceToken !== fenceToken) {
-    throw new Error('Redis queue fence token 不匹配，拒绝启动排空消费者')
-  }
-
-  const drainContracts = enabledDrainContracts()
-  const preflightSnapshot = await inspectRedisStreamDrain(client, drainContracts)
-  assertRequiredConsumerGroupsPresent(preflightSnapshot, drainContracts)
-
-  const tracker = new RedisStreamDrainStabilityTracker(requiredStableWindows)
-  const deadline = Date.now() + timeoutMs
-  let nextFenceRenewAt = Date.now() + fenceRenewIntervalMs
-  startConsumers()
+  let consumersStarted = false
   try {
+    const client = await getRedisClient(queueUrl)
+    const currentFenceToken = await client.get(redisQueueFenceKey())
+    if (currentFenceToken !== fenceToken) {
+      throw new Error('Redis queue fence token 不匹配，拒绝启动排空消费者')
+    }
+
+    const drainContracts = enabledDrainContracts()
+    const preflightSnapshot = await inspectRedisStreamDrain(client, drainContracts)
+    assertRequiredConsumerGroupsPresent(preflightSnapshot, drainContracts)
+
+    const tracker = new RedisStreamDrainStabilityTracker(requiredStableWindows)
+    const deadline = Date.now() + timeoutMs
+    startConsumers()
+    consumersStarted = true
     while (!interrupted && Date.now() < deadline) {
-      if (Date.now() >= nextFenceRenewAt) {
-        const renewed = await renewRedisQueueFenceWithClient(client, fenceToken)
-        if (!renewed) {
-          throw new Error('Redis queue fence 租约已丢失，拒绝继续排空')
-        }
-        nextFenceRenewAt = Date.now() + fenceRenewIntervalMs
-      }
       const snapshot = await inspectRedisStreamDrain(client, drainContracts)
       console.log(JSON.stringify({ event: 'redis_stream_drain_snapshot', ...snapshot }))
       if (tracker.observe(snapshot)) {
@@ -96,7 +85,9 @@ async function drainRedisStreams(): Promise<void> {
     }
     throw new Error(`Redis Stream 排空超时（${timeoutMs}ms）`)
   } finally {
-    await stopConsumers()
+    if (consumersStarted) {
+      await stopConsumers()
+    }
     await closeRedisClients()
   }
 }

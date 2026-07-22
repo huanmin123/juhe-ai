@@ -161,7 +161,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
   baseUrl: 'https://api.anthropic.com/v1',
   defaultHealthCheckModel: 'claude-opus-4-8',
   defaultSupportedModels: DEFAULT_ANTHROPIC_SUPPORTED_MODELS,
-  accountTypes: ['api_key'],
+  accountTypes: ['api_key', 'oauth'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   protocolProfiles: [
     {
@@ -173,7 +173,7 @@ export const ANTHROPIC_PROVIDER: ProviderDefinition = {
       protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
       baseUrl: 'https://api.anthropic.com/v1',
       defaultHealthCheckModel: 'claude-opus-4-8',
-      accountTypes: ['api_key'],
+      accountTypes: ['api_key', 'oauth'],
       capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
       endpointFamilies: [
         { code: ANTHROPIC_MESSAGES_FAMILY, name: 'Messages' },

@@ -1,4 +1,5 @@
 import { getRequestAuthContext } from '../auth/request-context.js'
+import type { ModelCheckProfile } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { resolveAccessScope } from '../../storage/access-scope.js'
 
@@ -11,6 +12,7 @@ export type ActiveModelCheckRunSummary = {
   targetId?: string
   targetName?: string
   model?: string
+  profile?: ModelCheckProfile
   startedAt: string
   stopRequested: boolean
 }
@@ -79,6 +81,7 @@ function activeModelCheckRunSummary(active: ActiveModelCheckRun): ActiveModelChe
     targetId: active.targetId,
     targetName: active.targetName,
     model: active.model,
+    profile: active.profile,
     startedAt: active.startedAt,
     stopRequested: active.stopRequested
   }

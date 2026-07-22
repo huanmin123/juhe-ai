@@ -15,6 +15,7 @@ import {
   buildAccountSavePayload,
   buildAccountUpdatePayload,
   buildOAuthCreateCommonPayload,
+  resolveFormProviderProfile,
   validateAccountSaveForm,
   type AccountSavePayload
 } from './accountSavePayload'
@@ -30,6 +31,7 @@ import {
   type AccountModelSelectOption
 } from './accountEditFormPayload'
 import { invalidateAccountDetailForAccount } from './accountDetailCache'
+import { canCreateOAuthAccount } from './accountProviderCapabilities'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -48,6 +50,7 @@ interface UseAccountEditSaveFlowOptions {
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   form: AccountFormModel
   isManagementView: ComputedRef<boolean>
+  invalidateAccountTagOptions: (scopeParams: AccountScopeParams | undefined) => void
   loadData: () => Promise<void>
   mappingAnthropicSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
   mappingGeminiSourceModelOptions: ReadonlyValue<AccountModelSelectOption[]>
@@ -111,8 +114,11 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
         }
         invalidateAccountDetailOptions(options.editingId.value, options.editingAccountScopeParams())
         message.success(balanceAutoDisabled ? '账户已更新，已因多 Key 自动关闭余额查询' : '账户已更新')
-      } else if (options.form.type === 'oauth') {
+      } else if (options.form.type === 'oauth' && usesManagedOAuthCreateFlow()) {
         const created = await createOAuthAccountFromUnifiedForm()
+        message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
+      } else if (options.form.type === 'oauth') {
+        const created = await createApiKeyAccount(payload)
         message.success(created?.status === 'active' ? 'OAuth 账户已创建并启用' : 'OAuth 账户已创建，等待后台检查')
       } else {
         const created = await createApiKeyAccount(payload)
@@ -130,6 +136,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   })
 
   async function generateOAuthUrl() {
+    if (!usesManagedOAuthCreateFlow()) {
+      message.warning('当前 OAuth 账户类型不需要生成授权链接')
+      return
+    }
     authLoading.value = true
     try {
       authResult.value = options.isManagementView.value ? await api.openaiOAuth.authUrl({}) : await api.myOpenaiOAuth.authUrl({})
@@ -294,6 +304,10 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
     }
   }
 
+  function usesManagedOAuthCreateFlow(): boolean {
+    return canCreateOAuthAccount(resolveFormProviderProfile(options.form, options.providers.value))
+  }
+
   async function createApiKeyAccount(payload: AccountSavePayload): Promise<AccountSummary> {
     return options.isManagementView.value
       ? api.accounts.create(payload, options.createScopeParams.value)
@@ -301,6 +315,7 @@ export function useAccountEditSaveFlow(options: UseAccountEditSaveFlowOptions) {
   }
 
   function invalidateAccountTagOptions(scopeParams: AccountScopeParams | undefined): void {
+    options.invalidateAccountTagOptions(scopeParams)
   }
 
   function invalidateAccountDetailOptions(accountId: string | undefined, scopeParams: AccountScopeParams | undefined): void {
@@ -343,6 +358,12 @@ export function validateBasicEditCredentialFields(form: AccountFormModel): strin
     if (baseUrlValidation) return baseUrlValidation
     const apiKeyCount = normalizedAccountApiKeys(form).length
     if (apiKeyCount > ACCOUNT_API_KEY_BATCH_CREATE_LIMIT) return `单个账户最多配置 ${ACCOUNT_API_KEY_BATCH_CREATE_LIMIT} 个 API Key`
+  }
+  if (form.type === 'oauth') {
+    if (!form.baseUrl.trim()) return '请填写 Base URL'
+    if (form.providerCode === 'anthropic' && !form.accessToken.trim()) {
+      return '请填写 Claude Code OAuth Token'
+    }
   }
   if (form.type === 'google_oauth') {
     if (!form.baseUrl.trim()) return '请填写 Base URL'
@@ -389,6 +410,7 @@ function buildBasicEditCredentialsPatch(form: AccountFormModel): Record<string, 
       }
     }
   } else if (form.type === 'oauth') {
+    credentials.base_url = form.baseUrl.trim()
     if (form.accessToken.trim()) credentials.access_token = form.accessToken.trim()
     if (form.refreshToken.trim()) credentials.refresh_token = form.refreshToken.trim()
   } else if (form.type === 'google_oauth') {

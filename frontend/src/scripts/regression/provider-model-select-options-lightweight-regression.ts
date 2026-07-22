@@ -48,6 +48,21 @@ try {
   assert.deepEqual(resource.providerModelOptions.value, [{ id: 'claude-sonnet', name: 'Claude Sonnet' }])
   assert.deepEqual(resource.selectOptions.value, [{ label: 'Claude Sonnet', value: 'claude-sonnet', providerCodes: [] }])
   assert.equal(resource.loading.value, false)
+
+  const providerCodes = ref(['openai', 'anthropic'])
+  const combined = useProviderModelSelectOptions({
+    providerCodes: computed(() => providerCodes.value)
+  })
+  const combinedLoad = combined.loadModelOptions()
+  await waitFor(() => calls.length === 4)
+  pending.get('openai')?.resolve([{ id: 'shared-model', name: '共享模型', providerCode: 'openai' }])
+  pending.get('anthropic')?.resolve([{ id: 'shared-model', name: '共享模型', providerCode: 'anthropic' }])
+  await combinedLoad
+  assert.deepEqual(combined.selectOptions.value, [{
+    label: '共享模型（anthropic、openai）',
+    value: 'shared-model',
+    providerCodes: ['anthropic', 'openai']
+  }], '跨供应商相同 modelId 必须保留全部 providerCodes')
 } finally {
   ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = originalLoader
 }

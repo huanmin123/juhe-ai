@@ -120,7 +120,7 @@ try {
   await assertAllRouteStrategiesFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl, upstreamBaseUrl)
   await assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBaseUrl, upstreamBaseUrl)
 
-  console.log('API Key 分组请求级路由回归通过：主号池路径能力、模型不匹配、同组显式模型命中账户优先、高并发号池显式模型命中账户优先、普通/高并发同级多账号按历史质量分选择、普通 Key 跨供应商模型路由、授权额度耗尽、分组容量硬满或本地短期屏蔽时，会在派发前切到可承接的后备分组；响应检查未写下游且当前号池耗尽时可切后备分组；真实上游失败耗尽当前号池账号且未写下游时，会回到 API Key 分组候选序列继续尝试；主备、轮询、权重三种策略下账号耗尽 fallback 均按候选顺序工作；A -> B -> C 后 A 出现未失败可用账号时可回到 A 承接')
+  console.log('API Key 分组请求级路由回归通过：派发前能力、容量和本地屏蔽可切后备；响应检查确认未写下游时可安全重试；真实上游不透明失败一律终止重放，普通/高并发与主备、轮询、权重策略均保持相同边界')
 } finally {
   clearAccountConcurrency()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
@@ -303,34 +303,29 @@ async function assertCrossGroupFallbackAfterUpstreamAccountsExhausted(gatewayBas
   const clientIp = '203.0.113.10'
   const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId, clientIp)
   const responseText = response.text
-  assert.equal(response.status, 200, `主号池真实上游失败且账号耗尽后应切后备并成功，实际 ${response.status}: ${responseText}`)
+  assert.equal(response.status, 502, `主号池已返回不透明上游失败后应终止重放，实际 ${response.status}: ${responseText}`)
   const newRequests = upstreamRequests.slice(beforeCount)
-  assert.equal(newRequests.length, 2, '账号耗尽切后备应先命中主号池，再命中后备号池')
-  assert.equal(newRequests[0]?.accountKey, primaryUpstreamKey, '账号耗尽切后备应先尝试主号池账号')
-  assert.equal(newRequests[1]?.accountKey, fallbackUpstreamKey, '主号池账号耗尽后应命中后备号池账号')
+  assert.deepEqual(newRequests.map((request) => request.accountKey), [primaryUpstreamKey], '不透明请求派发后不得重放到后备号池')
 
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   const usageRecords = usageRecordsByTraceId(traceId)
   assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), '主号池真实上游失败应记录失败尝试并归属主分组')
-  assert(usageRecords.some((record) => record.groupId === fallbackGroup.id && record.success === true), '后备分组成功应记录成功尝试并归属后备分组')
+  assert.equal(usageRecords.some((record) => record.groupId === fallbackGroup.id), false, '不透明失败后不应生成后备分组尝试记录')
   const auditLogs = repositories.listAuditLogs({ traceId, pageSize: 10 })
   assert.equal(auditLogs.total, 1, '账号耗尽切后备应写入一条完整审计事件')
   const auditLog = auditLogs.items[0]
-  assert.equal(auditLog?.groupId, fallbackGroup.id, '账号耗尽切后备成功后审计主记录必须归属实际命中的后备分组')
+  assert.equal(auditLog?.groupId, primaryGroup.id, '不透明失败审计主记录必须归属实际派发的主分组')
   const auditDetail = repositories.getAuditLogDetail(auditLog?.id ?? '')
   assert(auditDetail, '账号耗尽切后备审计详情应可读取')
   assert(auditDetail.attempts.some((attempt) => attempt.groupId === primaryGroup.id && attempt.success === false), '账号耗尽切后备审计应保留主号池失败尝试')
-  assert(auditDetail.attempts.some((attempt) => attempt.groupId === fallbackGroup.id && attempt.success === true), '账号耗尽切后备审计应记录后备分组成功尝试')
+  assert.equal(auditDetail.attempts.some((attempt) => attempt.groupId === fallbackGroup.id), false, '不透明失败审计不应包含后备分组尝试')
   const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
-  assert(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'
-    && metadata.metadata?.reason === 'upstream_accounts_exhausted'
-    && metadata.metadata?.fromGroupId === primaryGroup.id
-    && metadata.metadata?.toGroupId === fallbackGroup.id), '审计 metadata 应记录真实上游失败耗尽当前分组后的跨分组后备切换')
+  assert.equal(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'), false, '不透明失败后不应记录跨分组重放 metadata')
   const clientIpAvoidanceSnapshot = clientIpAccountAvoidance.getClientIpAccountAvoidanceSnapshotForTest()
-  assert(clientIpAvoidanceSnapshot.some((entry) => entry.accountId === primaryAccount.id
+  assert.equal(clientIpAvoidanceSnapshot.some((entry) => entry.accountId === primaryAccount.id
     && entry.apiKeyId === apiKey.id
-    && entry.clientIp === clientIp), '账号耗尽切后备成功后应保留主号池失败账号的客户端 IP 级回避记录')
+    && entry.clientIp === clientIp), false, '不透明失败终止后不应为同请求重放建立客户端 IP 级回避记录')
 }
 
 async function assertAllRouteStrategiesFallbackAfterUpstreamAccountsExhausted(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -442,12 +437,12 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
   const beforeCount = upstreamRequests.length
   const traceId = `trace-route-strategy-${item.suffix}-exhausted-fallback`
   const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
-  assert.equal(response.status, 200, `${item.displayName} 下 A 号池真实失败耗尽后应切 B 并成功，实际 ${response.status}: ${response.text}`)
+  assert.equal(response.status, 502, `${item.displayName} 下 A 号池已返回不透明失败后应终止重放，实际 ${response.status}: ${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.deepEqual(
     newRequests.map((request) => request.accountKey),
-    [primaryUpstreamKey, fallbackUpstreamKey],
-    `${item.displayName} 下账号耗尽 fallback 应按本次候选顺序从 A 切到 B，不应跳到 C`
+    [primaryUpstreamKey],
+    `${item.displayName} 下不透明请求派发后不得重放到 B 或 C`
   )
   assert(!newRequests.some((request) => request.accountKey === thirdUpstreamKey), `${item.displayName} 下 B 可承接时不应继续尝试 C`)
 
@@ -455,14 +450,11 @@ async function assertRouteStrategyFallbackAfterUpstreamAccountsExhausted(
   auditLogQueue.flushAllAuditLogQueue()
   const usageRecords = usageRecordsByTraceId(traceId)
   assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), `${item.displayName} 下 A 失败尝试应归属 A 分组`)
-  assert(usageRecords.some((record) => record.groupId === fallbackGroup.id && record.success === true), `${item.displayName} 下 B 成功尝试应归属 B 分组`)
+  assert.equal(usageRecords.some((record) => record.groupId === fallbackGroup.id), false, `${item.displayName} 下不应生成 B 分组尝试记录`)
   const auditLog = repositories.listAuditLogs({ traceId, pageSize: 10 }).items[0]
-  assert.equal(auditLog?.groupId, fallbackGroup.id, `${item.displayName} 下最终审计主记录应归属实际命中的 B 分组`)
+  assert.equal(auditLog?.groupId, primaryGroup.id, `${item.displayName} 下最终审计主记录应归属实际派发的 A 分组`)
   const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
-  assert(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'
-    && metadata.metadata?.reason === 'upstream_accounts_exhausted'
-    && metadata.metadata?.fromGroupId === primaryGroup.id
-    && metadata.metadata?.toGroupId === fallbackGroup.id), `${item.displayName} 下审计 metadata 应记录 A 到 B 的账号耗尽切换`)
+  assert.equal(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'), false, `${item.displayName} 下不应记录 A 到 B 的重放 metadata`)
 }
 
 async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -564,28 +556,24 @@ async function assertKeyRedistributionWrapsToRecoveredPrimaryAccount(gatewayBase
   const beforeCount = upstreamRequests.length
   const traceId = 'trace-route-wrap-recovered-primary'
   const response = await requestChatCompletion(gatewayBaseUrl, apiKey.key, 'gpt-5.5', traceId)
-  assert.equal(response.status, 200, `A/B/C 都尝试失败后，如果 A 有恢复账号，应回到 A 继续承接，实际 ${response.status}: ${response.text}`)
+  assert.equal(response.status, 502, `A 首次派发已返回不透明失败后应终止重放，实际 ${response.status}: ${response.text}`)
   const newRequests = upstreamRequests.slice(beforeCount)
   assert.deepEqual(
     newRequests.map((request) => request.accountKey),
-    [primaryFailKey, secondFailKey, thirdFailKey, primaryRecoveredKey],
-    '回到 Key 层重新分配时，应跳过本请求已失败账号，并在 A 号池恢复账号可用后继续使用 A'
+    [primaryFailKey],
+    '不透明请求首次派发后不得跨 B、C 或恢复账号重放'
   )
 
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
   const usageRecords = usageRecordsByTraceId(traceId)
   assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === false), '回绕重分配应记录 A 初始失败尝试')
-  assert(usageRecords.some((record) => record.groupId === secondGroup.id && record.success === false), '回绕重分配应记录 B 失败尝试')
-  assert(usageRecords.some((record) => record.groupId === thirdGroup.id && record.success === false), '回绕重分配应记录 C 失败尝试')
-  assert(usageRecords.some((record) => record.groupId === primaryGroup.id && record.success === true), '回绕重分配最终成功应归属恢复后的 A 分组')
+  assert.equal(usageRecords.some((record) => record.groupId === secondGroup.id || record.groupId === thirdGroup.id), false, '不透明失败后不应生成 B/C 尝试')
+  assert.equal(usageRecords.some((record) => record.success === true), false, '不透明失败后不应生成成功尝试')
   const auditLog = repositories.listAuditLogs({ traceId, pageSize: 10 }).items[0]
   assert.equal(auditLog?.groupId, primaryGroup.id, '回绕重分配成功后审计主记录应归属最终恢复承接的 A 分组')
   const metadataPayloads = await gatewayMetadataPayloads(auditLog?.id ?? '')
-  assert(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'
-    && metadata.metadata?.reason === 'upstream_accounts_exhausted'
-    && metadata.metadata?.fromGroupId === thirdGroup.id
-    && metadata.metadata?.toGroupId === primaryGroup.id), '审计 metadata 应记录从 C 回到恢复后的 A 分组')
+  assert.equal(metadataPayloads.some((metadata) => metadata.label === 'api_key_group_route_fallback'), false, '不透明失败后不应记录跨分组重放 metadata')
 }
 
 async function assertCapabilityFallback(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {

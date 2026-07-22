@@ -23,6 +23,7 @@ const targetModel = 'gpt-5.4'
 const mappedRequestModel = 'gpt-5.5'
 const mappedUpstreamModel = 'gpt-5.6-sol'
 const upstream = createMockUpstream()
+let upstreamRequestCount = 0
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -53,6 +54,18 @@ try {
   const mappedAccount = fixture.accounts[1]
   assert(account, 'mock fixture should create an account')
   assert(mappedAccount, 'mock fixture should create a mapped account')
+
+  const quickRequestCountBefore = upstreamRequestCount
+  const quickDetail = await runModelCheck({
+    targetType: 'account',
+    targetId: account.id,
+    model: targetModel,
+    profile: 'quick',
+    trustedComparison: false
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  assert.equal(quickDetail.level, 'suspicious', '快速检测遇到明确模型字段冲突时必须判为疑似不符')
+  assert.equal(upstreamRequestCount - quickRequestCountBefore, 1, '快速检测发现基础模型字段冲突后必须立即结束')
+  assert.deepEqual(quickDetail.checks.map((item) => item.itemType).sort(), ['responses_basic', 'usage_shape'].sort(), '快速模型字段冲突不应继续执行第二个轻探针')
 
   const detail = await runModelCheck({
     targetType: 'account',
@@ -142,6 +155,7 @@ function createMockUpstream(): http.Server {
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
+        upstreamRequestCount += 1
         const outputText = outputForProbe(body)
         const actualResponseModel = responseModelForBody(body)
         if (body.stream === true) {

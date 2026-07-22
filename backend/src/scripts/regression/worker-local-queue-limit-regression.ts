@@ -35,10 +35,16 @@ try {
   }
   const usageBeforeOverflow = usageRecordQueue.getUsageRecordQueueRuntime()
   assert.equal(usageBeforeOverflow.queueLength, 10_000, '使用记录 worker 本地队列应达到硬上限')
-  usageRecordQueue.enqueueUsageRecordsLocal([buildUsageRecord(10_000)])
+  const usageOverflowAdmission = usageRecordQueue.enqueueUsageRecordsLocal([buildUsageRecord(10_000)])
   const usageAfterOverflow = usageRecordQueue.getUsageRecordQueueRuntime()
   assert.equal(usageAfterOverflow.queueLength, 10_000, '使用记录 worker 本地队列满后不应继续增长')
-  assert.equal(usageAfterOverflow.droppedOverflowCount, 1, '使用记录 worker 本地队列满后应记录溢出丢弃')
+  assert.equal(usageAfterOverflow.admissionWaiterCount, 1, '使用记录 worker 本地队列满后应保留一个 admission 等待者')
+  assert.equal(usageAfterOverflow.droppedOverflowCount, 0, '使用记录 worker 本地队列满后不应静默丢弃')
+  usageRecordQueue.releaseUsageRecordQueueCapacityForTest(1)
+  await usageOverflowAdmission
+  const usageAfterAdmission = usageRecordQueue.getUsageRecordQueueRuntime()
+  assert.equal(usageAfterAdmission.queueLength, 10_000, '释放一个槽位后等待中的使用记录应补入队列')
+  assert.equal(usageAfterAdmission.admissionWaiterCount, 0, '释放容量后 admission 等待者应归零')
   usageRecordQueue.clearUsageRecordQueueForTest()
 
   runtimeConfig.workerRole = 'ingest-worker'

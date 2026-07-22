@@ -81,25 +81,21 @@ class FakeDbServiceChild extends EventEmitter {
     try {
       runtimeConfig.processRole = 'db-service'
       const result = await dbServiceHandlers.handleDbServiceOperation(message.operation)
-      queueMicrotask(() => {
-        this.emit('message', {
-          type: 'db_service_response',
-          requestId: message.requestId,
-          jobId: message.jobId,
-          ok: true,
-          result
-        })
+      this.emit('message', {
+        type: 'db_service_response',
+        requestId: message.requestId,
+        jobId: message.jobId,
+        ok: true,
+        result
       })
       callback?.()
     } catch (error) {
-      queueMicrotask(() => {
-        this.emit('message', {
-          type: 'db_service_response',
-          requestId: message.requestId,
-          jobId: message.jobId,
-          ok: false,
-          errorMessage: error instanceof Error ? error.message : String(error)
-        })
+      this.emit('message', {
+        type: 'db_service_response',
+        requestId: message.requestId,
+        jobId: message.jobId,
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error)
       })
       callback?.()
     } finally {

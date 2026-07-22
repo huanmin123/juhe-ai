@@ -26,7 +26,7 @@ const [modelChecks, repository, security, database, statistics] = await Promise.
 const run = modelChecks.createModelCheckRun({
   systemAccountId: 'sys_identity', actorSystemAccountId: 'sys_identity', providerCode: 'gpt',
   targetType: 'account', targetId: 'acct_same_source', accountId: 'acct_same_source',
-  model: 'gpt-5.6-sol', trustedComparison: false, probeSetVersion: 'identity-mock-v1'
+  model: 'gpt-5.6-sol', profile: 'full', trustedComparison: false, probeSetVersion: 'identity-mock-v1'
 })
 const populationKeyHmac = security.modelCheckObservationHmac('identity-mock-population', 'population')
 const models = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4']

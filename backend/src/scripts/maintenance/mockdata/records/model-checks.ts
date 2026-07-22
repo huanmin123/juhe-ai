@@ -1,4 +1,4 @@
-import type { AccountSummary, GroupSummary, SystemAccountSummary } from '../../../../domain/types.js'
+import type { AccountSummary, GroupSummary, ModelCheckProfile, SystemAccountSummary } from '../../../../domain/types.js'
 import {
   modelCheckObservationHmac
 } from '../../../../modules/model-checks/model-checks-observation-security.js'
@@ -64,7 +64,8 @@ export async function createModelCheckMockdata(created: CreatedMockdata, options
     const target = targets[index % targets.length]
     const model = index % 3 === 0 ? 'gpt-5.5' : 'gpt-5.4'
     const runStatus = modelCheckRunStatusForIndex(index)
-    const trustedComparison = Boolean(target.comparisonAccount) && index % 3 === 0
+    const profile: ModelCheckProfile = index % 2 === 0 ? 'quick' : 'full'
+    const trustedComparison = profile === 'full' && Boolean(target.comparisonAccount) && index % 3 === 0
     const startedAtMs = Date.now() - 20 * minuteMs - Math.floor((index / Math.max(1, runCount - 1)) * options.days * dayMs)
     const startedAt = new Date(startedAtMs).toISOString()
     const runId = `${idPrefix}model_check_run_${String(index + 1).padStart(4, '0')}`
@@ -73,12 +74,13 @@ export async function createModelCheckMockdata(created: CreatedMockdata, options
       runIndex: index,
       runId,
       model,
+      profile,
       startedAtMs,
       trustedComparison,
       runStatus
     })
-    const level = modelCheckLevelForRun(index, runStatus, checks.score, checks.maxScore)
-    const message = modelCheckRunMessage(runStatus, level, checks.score, checks.maxScore)
+    const level = modelCheckLevelForRun(index, runStatus, checks.score, checks.maxScore, profile)
+    const message = modelCheckRunMessage(runStatus, level, checks.score, checks.maxScore, profile)
 
     repositories.createModelCheckRun({
       id: runId,
@@ -93,18 +95,18 @@ export async function createModelCheckMockdata(created: CreatedMockdata, options
       groupId: target.group.id,
       apiKeyId: target.apiKey.id,
       model,
-      profile: 'full',
+      profile,
       trustedComparison,
       trustedComparisonAvailable: trustedComparison && index % 4 !== 0,
       traceId,
-      probeSetVersion: 'openai-model-check-v1',
+      probeSetVersion: profile === 'quick' ? 'mockdata-model-check-quick-v1' : 'openai-model-check-v1',
       startedAt,
       requestSummary: {
         targetType: 'account',
         targetId: target.account.id,
         targetName: target.account.name,
         model,
-        profile: 'full',
+        profile,
         trustedComparison,
         trustedComparisonAccountId: trustedComparison ? target.comparisonAccount?.id : undefined,
         trustedComparisonAccountName: trustedComparison ? target.comparisonAccount?.name : undefined,
@@ -259,6 +261,7 @@ function buildModelCheckItems(input: {
   runIndex: number
   runId: string
   model: 'gpt-5.5' | 'gpt-5.4'
+  profile: ModelCheckProfile
   startedAtMs: number
   trustedComparison: boolean
   runStatus: MockModelCheckRunStatus
@@ -280,16 +283,23 @@ function buildModelCheckItems(input: {
   score: number
   maxScore: number
 } {
-  const definitions = [
-    ['target.responses_basic', 'responses_basic', 15],
-    ['target.responses_stream', 'responses_stream', 15],
-    ['target.structured_output', 'structured_output', 15],
-    ['target.tool_calling', 'tool_calling', 10],
-    ['target.behavior_probe', 'behavior_probe', 15],
-    ['target.long_context', 'long_context', 10],
-    ['target.stability_a', 'stability', 10],
-    ...(input.trustedComparison ? [['trusted_comparison.comparison', 'trusted_comparison', 10] as const] : [])
-  ] as const
+  const definitions = input.profile === 'quick'
+    ? [
+        ['target.responses_basic', 'responses_basic', 20],
+        ['target.behavior_probe', 'behavior_probe', 35],
+        ['target.usage_shape', 'usage_shape', 10]
+      ] as const
+    : [
+        ['target.responses_basic', 'responses_basic', 15],
+        ['target.responses_stream', 'responses_stream', 15],
+        ['target.structured_output', 'structured_output', 15],
+        ['target.tool_calling', 'tool_calling', 10],
+        ['target.behavior_probe', 'behavior_probe', 15],
+        ['target.long_context', 'long_context', 10],
+        ['target.stability_a', 'stability', 10],
+        ...(input.trustedComparison ? [['trusted_comparison.comparison', 'trusted_comparison', 10] as const] : [])
+      ] as const
+  const failedItemIndex = input.profile === 'quick' ? 1 : 2
   const items = definitions.map(([itemKey, itemType, maxScore], itemIndex) => {
     let status: MockModelCheckItemStatus = 'passed'
     let score: number = maxScore
@@ -301,7 +311,7 @@ function buildModelCheckItems(input: {
     } else if (input.runStatus === 'canceled' && itemIndex > 3) {
       status = 'skipped'
       score = 0
-    } else if (input.runStatus === 'failed' && itemIndex === 2) {
+    } else if (input.runStatus === 'failed' && itemIndex === failedItemIndex) {
       status = 'failed'
       score = 0
       errorCode = 'mockdata_probe_failed'
@@ -362,15 +372,16 @@ function modelCheckLevelForScore(score: number, maxScore: number): MockModelChec
   return 'unavailable'
 }
 
-function modelCheckLevelForRun(index: number, status: MockModelCheckRunStatus, score: number, maxScore: number): MockModelCheckLevel {
+function modelCheckLevelForRun(index: number, status: MockModelCheckRunStatus, score: number, maxScore: number, profile: ModelCheckProfile): MockModelCheckLevel {
   if (status !== 'completed') return 'unavailable'
   const base = modelCheckLevelForScore(score, maxScore)
+  if (profile === 'quick' && base === 'high_confidence') return 'likely'
   if (index % 12 === 0 && base !== 'high_confidence') return 'likely'
   if (index % 10 === 0 && base === 'high_confidence') return 'uncertain'
   return base
 }
 
-function modelCheckRunMessage(status: MockModelCheckRunStatus, level: MockModelCheckLevel, score: number, maxScore: number): string {
+function modelCheckRunMessage(status: MockModelCheckRunStatus, level: MockModelCheckLevel, score: number, maxScore: number, profile: ModelCheckProfile): string {
   if (status === 'running') return 'Mockdata 模拟检测仍在运行，等待后续探针完成'
   if (status === 'failed') return 'Mockdata 模拟检测失败：流式探针响应中断'
   if (status === 'canceled') return 'Mockdata 模拟检测已手动停止'
@@ -381,7 +392,7 @@ function modelCheckRunMessage(status: MockModelCheckRunStatus, level: MockModelC
     suspicious: '疑似异常',
     unavailable: '不可用'
   }
-  return `Mockdata 检测完成：${labels[level]}，得分 ${score}/${maxScore}`
+  return `Mockdata ${profile === 'quick' ? '快速' : '深度'}检测完成：${labels[level]}，得分 ${score}/${maxScore}`
 }
 
 function modelCheckItemMessage(status: MockModelCheckItemStatus, itemType: string): string {

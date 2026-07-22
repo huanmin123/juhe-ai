@@ -155,7 +155,15 @@ const allLongTimeoutSummary = summarizeChecks([
 assert.equal(allLongTimeoutSummary.level, 'uncertain', '长上下文请求失败应压为证据不足，而不是疑似不符')
 assert.notEqual(allLongTimeoutSummary.level, 'suspicious', '长上下文请求失败不能作为模型异常')
 
-console.log('模型检测请求失败评分回归通过：超时和请求失败不进入可信度评分与异常计数')
+const quickPassSummary = summarizeChecks([
+  summary(evaluateBasicResponsesProbe(successProbe('trace_quick_basic_ok', 'OK-MODEL-CHECK'), model, 'target')),
+  summary(passedItem('target.behavior_probe', 'behavior_probe', 35)),
+  summary(evaluateUsageShapeProbe([successProbe('trace_quick_usage_ok', 'QUARTZ')], 'target'))
+], { trustedComparison: false, profile: 'quick' })
+assert.equal(quickPassSummary.level, 'likely', '快速检测全部通过也只能形成较可信的初步估计')
+assert.match(quickPassSummary.message, /快速检测|初步估计/, '快速检测结论必须明确证据边界')
+
+console.log('模型检测请求失败评分回归通过：超时和请求失败不进入可信度评分，快速检测最高只形成初步较可信结论')
 
 function successProbe(traceId: string, outputText: string): GatewayProbeResult {
   return {

@@ -38,7 +38,8 @@ import {
   responseInspectionAuditMetadata
 } from '../audit/metadata.js'
 import {
-  forgetOpenAIAccountForSessionAsync
+  forgetOpenAIAccountForSessionAsync,
+  forgetOpenAIAccountForSessionBestEffort
 } from '../runtime/session-affinity.service.js'
 import {
   gatewayStreamClientRetryErrorCode,
@@ -1188,7 +1189,7 @@ function managementResponseInspectionPoliciesForInput(
     : false
   return interpretUpstreamResponseSemantics
     ? input.responseInspectionPolicies
-    : input.responseInspectionPolicies?.filter((policy) => policy.defaultRule !== true)
+    : undefined
 }
 
 function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponseInput) {
@@ -1609,6 +1610,9 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
   const forwardedResponseSuccessful = upstreamResponse.ok
+  if (!interpretUpstreamResponseSemantics && !upstreamResponse.ok) {
+    forgetOpenAIAccountForSessionBestEffort(input.sessionAffinityKey, account.id)
+  }
   if (interpretUpstreamResponseSemantics && upstreamResponse.ok) {
     if (!isAccountDiagnosticTrafficSource(usageContext.trafficSource)) {
       if (input.automaticAccountStateMutationEnabled !== false) {

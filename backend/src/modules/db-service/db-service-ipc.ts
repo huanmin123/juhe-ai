@@ -682,7 +682,13 @@ function handleDbServiceMessage(message: unknown): void {
       break
     case 'background_worker_usage_records':
       if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
-        void forwardUsageRecordsToWorker(record.items)
+        const usageRecordItems = record.items
+        void forwardUsageRecordsToWorker(usageRecordItems).catch((error) => {
+          logger.error(errorLogFields(error, {
+            event: 'db_service_usage_records_forward_failed',
+            itemCount: usageRecordItems.length
+          }), 'DB service 使用记录转发失败')
+        })
       }
       break
     case 'background_worker_audit_logs':
@@ -1480,11 +1486,8 @@ async function forwardUsageRecordsToWorker(items: unknown[]): Promise<void> {
   const backgroundIpc = await import('../background/background-ipc.js')
   const usageRecordQueue = await import('../gateway/usage/record-queue.service.js')
   const usageRecords = items.filter(usageRecordQueue.isUsageRecordInput)
-  if (usageRecords.length > 0 && !backgroundIpc.sendUsageRecordsToWorker(usageRecords)) {
-    logger.warn({
-      event: 'db_service_usage_records_forward_failed',
-      itemCount: usageRecords.length
-    }, 'DB service 转发使用记录到后台 worker 失败')
+  if (usageRecords.length > 0) {
+    await backgroundIpc.sendUsageRecordsToWorkerAsync(usageRecords)
   }
 }
 

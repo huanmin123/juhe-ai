@@ -32,8 +32,12 @@ for (const token of [
   assert(recordMaintenanceQueueSource.includes(token), `临时维护 worker 子进程必须显式继承运行驱动配置：${token}`)
 }
 assert.match(temporaryMaintenanceWorkerSource, /job\.type === 'usage_records_cleanup' \|\| job\.type === 'non_business_data_cleanup' \|\| job\.type === 'audit_retained_data_cleanup'/, '临时维护 worker runner 必须允许审计保留清理任务')
+assert.match(temporaryMaintenanceWorkerSource, /temporaryMaintenanceLeaseUnavailableExitCode = 75[\s\S]*return temporaryMaintenanceLeaseUnavailableExitCode/, '未获得 job 租约的 worker 必须非零退出，使 Redis 消息保持 pending')
+assert.match(temporaryMaintenanceWorkerSource, /heartbeatFailure[\s\S]*heartbeatTemporaryBackgroundTaskRun[\s\S]*临时维护 worker 已失去任务租约/, '长任务必须记录心跳续租失败并禁止无租约成功完成')
+assert.match(backgroundTaskRunRepositorySource, /SELECT run_id, job_name, lease_key[\s\S]*acquireBackgroundJobLease\([\s\S]*leaseKey: String\(row\.lease_key\)/, '任务启动必须使用 run 中声明的 job 级 leaseKey')
+assert.match(backgroundTaskRunRepositorySource, /AND owner_id = \?[\s\S]*AND run_id = \?/, '租约续租和释放必须同时校验 ownerId 与 runId')
 assert.match(backgroundTaskRunRepositorySource, /client\.transaction\(async \(tx\)[\s\S]*reconcileQueuedTaskRunsSql[\s\S]*reconcileRunningTaskRunsSql[\s\S]*deleteExpiredTemporaryLeasesSql/, 'PostgreSQL 陈旧任务回收必须在同一事务内收口任务并清理租约')
-assert.match(backgroundTaskRunRepositorySource, /leases\.lease_until > \?[\s\S]*runs\.status = 'running'/, '陈旧任务回收必须检查有效租约，不能仅凭旧心跳误伤活跃 worker')
+assert.match(backgroundTaskRunRepositorySource, /current_lease\.run_id = target\.run_id[\s\S]*current_lease\.lease_key = target\.lease_key[\s\S]*current_lease\.lease_until > \?/, '陈旧任务回收必须按 task 的 runId 与 job leaseKey 检查有效租约')
 assert.match(backgroundTaskRunReconcileJobSource, /backgroundTaskRunReconcileInitialDelayMs = 2_000[\s\S]*backgroundTaskRunReconcileIntervalMs = 5 \* 60_000[\s\S]*backgroundTaskRunStaleAfterMs = 10 \* 60_000/, '陈旧任务回收必须在 worker 启动后执行并保持低频、带宽限的周期扫描')
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
@@ -94,12 +98,39 @@ try {
   assert.equal(activeLeaseCount(runId), 0, '临时维护 worker 完成后不应残留租约')
   assert.equal(usageRecordCount('temporary_usage_cleanup_regression'), 0, '临时维护 worker 应删除符合条件的使用记录')
   assert.equal(eventLoopSampleCount('temporary-maintenance-worker'), 0, '临时维护 worker 禁止直接写入 stats 事件循环采样')
+  verifyJobLeaseOwnership()
   verifyStaleBackgroundTaskRunReconciliation()
 
   console.log('临时维护 worker 回归通过：清理任务隔离执行，陈旧 queued/running 状态按心跳与租约条件安全回收')
 } finally {
   await databaseModule.closeStorageDatabases()
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function verifyJobLeaseOwnership(): void {
+  const first = taskRunsRepository.createBackgroundTaskRun({
+    jobName: 'record-maintenance:lease-regression',
+    jobType: 'lease-regression',
+    workerRole: 'temporary-maintenance-worker',
+    leaseKey: 'record-maintenance:lease-regression'
+  })
+  const second = taskRunsRepository.createBackgroundTaskRun({
+    jobName: 'record-maintenance:lease-regression',
+    jobType: 'lease-regression',
+    workerRole: 'temporary-maintenance-worker',
+    leaseKey: 'record-maintenance:lease-regression'
+  })
+  const now = '2026-07-14T12:00:00.000Z'
+  const leaseUntil = '2026-07-14T12:05:00.000Z'
+  assert.equal(taskRunsRepository.tryStartBackgroundTaskRun({ runId: first.runId, ownerId: 'owner:first', leaseUntil, now }), true, '第一个同类任务应取得 job 租约')
+  assert.equal(taskRunsRepository.tryStartBackgroundTaskRun({ runId: second.runId, ownerId: 'owner:second', leaseUntil, now }), false, '同一 job leaseKey 不得并发启动第二个任务')
+  assert.equal(taskRunsRepository.getBackgroundTaskRun(second.runId)?.status, 'queued', '租约竞争失败不得留下无租约 running 状态')
+  assert.equal(taskRunsRepository.heartbeatBackgroundTaskRun(first.runId, 'owner:wrong', leaseUntil, now), false, '错误 owner 不得续租')
+  assert.equal(taskRunsRepository.finishBackgroundTaskRun({ runId: first.runId, ownerId: 'owner:wrong', status: 'completed', finishedAt: now }), false, '错误 owner 不得完成任务')
+  assert.equal(taskRunsRepository.heartbeatBackgroundTaskRun(first.runId, 'owner:first', leaseUntil, now), true, '正确 runId 与 ownerId 应成功续租')
+  assert.equal(taskRunsRepository.finishBackgroundTaskRun({ runId: first.runId, ownerId: 'owner:first', status: 'completed', finishedAt: now }), true, '租约 owner 应完成并释放 job 租约')
+  assert.equal(taskRunsRepository.tryStartBackgroundTaskRun({ runId: second.runId, ownerId: 'owner:second', leaseUntil, now }), true, '前一任务释放后下一同类任务应取得 job 租约')
+  assert.equal(taskRunsRepository.finishBackgroundTaskRun({ runId: second.runId, ownerId: 'owner:second', status: 'completed', finishedAt: now }), true, '第二个任务应正常完成')
 }
 
 async function waitForTaskRun(runId: string): Promise<BackgroundTaskRunSummary> {
@@ -210,7 +241,7 @@ function seedTaskRun(input: {
   `).run(
     input.runId,
     input.status,
-    `record-maintenance:${input.runId}`,
+    taskLeaseKey(input.runId),
     input.status === 'queued' ? null : `owner:${input.runId}`,
     input.submittedAt,
     input.startedAt ?? null,
@@ -225,9 +256,9 @@ function seedTaskLease(runId: string, leaseUntil: string, heartbeatAt: string): 
   databaseModule.getStatsDatabase().prepare(`
     INSERT INTO background_job_leases (
       lease_key, job_name, shard_key, owner_id, run_id, lease_until, heartbeat_at, started_at, updated_at
-    ) VALUES (?, 'temporary-maintenance-worker', ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, 'record-maintenance:audit_retained_data_cleanup', ?, ?, ?, ?, ?, ?, ?)
   `).run(
-    `temporary-maintenance-worker:${runId}`,
+    taskLeaseKey(runId),
     runId,
     `owner:${runId}`,
     runId,
@@ -236,6 +267,10 @@ function seedTaskLease(runId: string, leaseUntil: string, heartbeatAt: string): 
     heartbeatAt,
     heartbeatAt
   )
+}
+
+function taskLeaseKey(runId: string): string {
+  return `record-maintenance:${runId}`
 }
 
 function eventLoopSampleCount(processRole: string): number {

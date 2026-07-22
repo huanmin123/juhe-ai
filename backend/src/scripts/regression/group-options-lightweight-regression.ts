@@ -164,7 +164,9 @@ try {
     assert(keywordIds.includes(seed.matchedGroupId), '分组选项关键词应命中名称精确值')
     assert(keywordIds.includes(seed.matchedPrefixGroupId), '分组选项关键词应命中名称前缀值')
     assert(!keywordIds.includes(seed.middleGroupId), '分组选项关键词不应命中名称中间包含值')
+    const firstKeywordFactReadCount = capturedCalls.length
     await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&keyword=${keyword}&limit=20`, seed.adminCookie)
+    assert(capturedCalls.length > firstKeywordFactReadCount, '相同分组 options 第二次查询必须再次直读事实库，不得恢复已退役的 page-data 读缓存')
 
     const wildcardOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('percent%')}&limit=20`, seed.adminCookie)
     const wildcardIds = wildcardOptions.map((group) => group.id)

@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
@@ -22,7 +23,7 @@ runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'api-key-image-permission-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'server'
+runtimeConfig.processRole = 'db-service'
 runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
@@ -41,7 +42,9 @@ const [
   jsonParserModule,
   dbServiceHandlers,
   dbServiceIpc,
-  readWorkerPool
+  readWorkerPool,
+  usageWriterPool,
+  auditLogTransport
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -56,7 +59,9 @@ const [
   import('../../modules/gateway/request/json-parser.js'),
   import('../../modules/db-service/db-service-handlers.js'),
   import('../../modules/db-service/db-service-ipc.js'),
-  import('../../storage/sqlite-read-worker-pool.js')
+  import('../../storage/sqlite-read-worker-pool.js'),
+  import('../../storage/usage-record-writer-pool.js'),
+  import('../../modules/audit-logs/audit-log-transport.service.js')
 ])
 
 interface SeededGateway {
@@ -82,51 +87,12 @@ let gatewayServer: http.Server | undefined
 let upstreamServer: http.Server | undefined
 const upstreamState: MockUpstreamState = { requests: [] }
 
-class FakeDbServiceChild extends EventTarget {
+class FakeDbServiceChild extends EventEmitter {
   readonly pid = 929292
   readonly connected = true
-  private listeners = new Map<string, Set<(message?: unknown) => void>>()
 
   send(message: unknown, callback?: (error?: Error | null) => void): boolean {
     void this.handleMessage(message, callback)
-    return true
-  }
-
-  on(event: string, listener: (message?: unknown) => void): this {
-    const listeners = this.listeners.get(event) ?? new Set()
-    listeners.add(listener)
-    this.listeners.set(event, listeners)
-    return this
-  }
-
-  once(event: string, listener: (message?: unknown) => void): this {
-    const onceListener = (message?: unknown) => {
-      this.off(event, onceListener)
-      listener(message)
-    }
-    return this.on(event, onceListener)
-  }
-
-  off(event: string, listener: (message?: unknown) => void): this {
-    this.listeners.get(event)?.delete(listener)
-    return this
-  }
-
-  removeAllListeners(event?: string): this {
-    if (event) {
-      this.listeners.delete(event)
-    } else {
-      this.listeners.clear()
-    }
-    return this
-  }
-
-  emit(event: string, message?: unknown): boolean {
-    const listeners = this.listeners.get(event)
-    if (!listeners?.size) return false
-    for (const listener of [...listeners]) {
-      listener(message)
-    }
     return true
   }
 
@@ -139,25 +105,21 @@ class FakeDbServiceChild extends EventTarget {
     try {
       runtimeConfig.processRole = 'db-service'
       const result = await dbServiceHandlers.handleDbServiceOperation(message.operation)
-      queueMicrotask(() => {
-        this.emit('message', {
-          type: 'db_service_response',
-          requestId: message.requestId,
-          jobId: message.jobId,
-          ok: true,
-          result
-        })
+      this.emit('message', {
+        type: 'db_service_response',
+        requestId: message.requestId,
+        jobId: message.jobId,
+        ok: true,
+        result
       })
       callback?.()
     } catch (error) {
-      queueMicrotask(() => {
-        this.emit('message', {
-          type: 'db_service_response',
-          requestId: message.requestId,
-          jobId: message.jobId,
-          ok: false,
-          errorMessage: error instanceof Error ? error.message : String(error)
-        })
+      this.emit('message', {
+        type: 'db_service_response',
+        requestId: message.requestId,
+        jobId: message.jobId,
+        ok: false,
+        errorMessage: error instanceof Error ? error.message : String(error)
       })
       callback?.()
     } finally {
@@ -167,11 +129,19 @@ class FakeDbServiceChild extends EventTarget {
 }
 
 try {
+  databaseModule.getBusinessDatabase()
   upstreamServer = createMockOpenAIUpstream(upstreamState)
   await listen(upstreamServer)
   const upstreamBaseUrl = `http://127.0.0.1:${serverPort(upstreamServer)}/v1`
   const seeded = seedGateway(upstreamBaseUrl)
+  const seededRuntime = await dbServiceHandlers.handleDbServiceOperation({
+    type: 'read_gateway_runtime',
+    key: seeded.apiKey,
+    skipDynamicRouteSelection: true
+  })
+  assert.equal(seededRuntime.apiKey?.system_account_image_generation_enabled, 0, '图像权限夹具应把所属系统账户的禁用状态写入网关运行时')
   const fakeChild = new FakeDbServiceChild()
+  runtimeConfig.processRole = 'server'
   dbServiceIpc.attachDbServiceProcess(fakeChild as never)
   fakeChild.emit('message', {
     type: 'db_service_ready',
@@ -191,7 +161,7 @@ try {
   assert.equal(upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/images/generations'), 0, '禁用图像生成时不应请求上游图片接口')
 
   const downgradedLargeTool = await requestLargeResponsesImageTool(baseUrl, seeded.apiKey)
-  assert.equal(downgradedLargeTool.status, 200, `大 JSON 后段 auto image_generation 工具应被移除后继续文本请求，实际 ${downgradedLargeTool.status}: ${downgradedLargeTool.text}`)
+  assert.equal(downgradedLargeTool.status, 200, `大 JSON 后段 auto image_generation 工具应被移除后继续文本请求，实际 ${downgradedLargeTool.status}: ${downgradedLargeTool.text}; upstream=${JSON.stringify(upstreamState.requests)}`)
   const responsesHitsAfterDowngradedLargeTool = upstreamHitCount(upstreamState, seeded.upstreamKey, '/v1/responses')
   assert.equal(responsesHitsAfterDowngradedLargeTool, 1, '禁用图像生成时 auto 图像工具请求应按文本请求继续进入上游')
   assert.equal(hasImageGenerationTool(lastUpstreamRequest(upstreamState, seeded.upstreamKey, '/v1/responses')?.body), false, '禁用图像生成时转发给上游的 Responses body 不应保留 image_generation 工具')
@@ -231,11 +201,15 @@ try {
 } finally {
   usageRecordQueue.flushAllUsageRecordQueue()
   auditLogQueue.flushAllAuditLogQueue()
+  usageRecordQueue.clearUsageRecordQueueForTest()
+  auditLogQueue.clearAuditLogQueueForTest()
   upstreamModule.closeGatewayUpstreamAgentsForTest()
   await jsonParserModule.stopGatewayJsonParseWorker()
   await closeServer(gatewayServer)
   await closeServer(upstreamServer)
   try {
+    await usageWriterPool.closeUsageRecordWriterPool()
+    await auditLogTransport.stopAuditLogTransportWorker()
     await readWorkerPool.closeSqliteReadWorkerPool()
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
@@ -272,8 +246,10 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     },
     status: 'active',
     schedulable: true,
-    groupId: group.id
+    groupId: group.id,
+    supportedModels: ['gpt-5.4', 'gpt-image-1']
   }, access)
+  activateAccount(account.id)
   assert.equal(account.boundGroupId, group.id, '新建账户应绑定指定分组')
   const boundGroupId = account.boundGroupId
 
@@ -292,7 +268,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     name: '图像权限 normal 路由 GPT 目标分组',
     providerCode: 'gpt'
   }, access)
-  repositories.createAccount({
+  const normalRouteAnthropicAccount = repositories.createAccount({
     providerCode: ANTHROPIC_PROVIDER_CODE,
     providerProtocolProfileId: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
     name: '图像权限 normal 路由 Anthropic 初始账号',
@@ -306,8 +282,9 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     schedulable: true,
     groupId: normalRouteAnthropicGroup.id
   }, access)
+  activateAccount(normalRouteAnthropicAccount.id)
   const normalRouteGptUpstreamKey = 'sk-image-permission-normal-route-gpt-upstream'
-  repositories.createAccount({
+  const normalRouteGptAccount = repositories.createAccount({
     providerCode: 'gpt',
     providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
     name: '图像权限 normal 路由 GPT 目标账号',
@@ -321,6 +298,7 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     groupId: normalRouteGptGroup.id,
     supportedModels: ['gpt-5.4']
   }, access)
+  activateAccount(normalRouteGptAccount.id)
   const normalRouteApiKey = createApiKeyRecordWithRouteStrategy(repositories, {
     name: '图像权限 normal 路由 API Key',
     routeMode: 'normal',
@@ -340,6 +318,15 @@ function seedGateway(upstreamBaseUrl: string): SeededGateway {
     normalRouteApiKey: normalRouteApiKey.key,
     normalRouteGptUpstreamKey
   }
+}
+
+function activateAccount(accountId: string): void {
+  assert(repositories.recordAccountHealthCheckSuccess(accountId, {
+    intervalHours: 24,
+    jitterMinutes: 0,
+    failureThreshold: 3,
+    statusCode: 200
+  }), `测试账号 ${accountId} 应在成功健康检查后进入可调度状态`)
 }
 
 function createGatewayServer(): http.Server {
@@ -372,6 +359,19 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         return
       }
 
+      if (requestRecord.path.endsWith('/responses')) {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({
+          id: 'resp-image-permission',
+          object: 'response',
+          status: 'completed',
+          model: requestRecord.model,
+          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'text ok' }] }],
+          usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 }
+        }))
+        return
+      }
+
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(JSON.stringify({
         id: 'chatcmpl-image-permission',
@@ -392,6 +392,7 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
 async function requestImageGeneration(baseUrl: string, apiKey: string, prompt: string): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/images/generations`, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json'
@@ -410,6 +411,7 @@ async function requestImageGeneration(baseUrl: string, apiKey: string, prompt: s
 async function requestChatCompletion(baseUrl: string, apiKey: string): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json'
@@ -428,6 +430,7 @@ async function requestChatCompletion(baseUrl: string, apiKey: string): Promise<{
 async function requestLargeResponsesImageTool(baseUrl: string, apiKey: string): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json'
@@ -447,6 +450,7 @@ async function requestLargeResponsesImageTool(baseUrl: string, apiKey: string): 
 async function requestOversizedResponsesImageTool(baseUrl: string, apiKey: string): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json'
@@ -466,6 +470,7 @@ async function requestOversizedResponsesImageTool(baseUrl: string, apiKey: strin
 async function requestForcedResponsesImageTool(baseUrl: string, apiKey: string): Promise<{ status: number; text: string }> {
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: {
       authorization: `Bearer ${apiKey}`,
       'content-type': 'application/json'
@@ -557,5 +562,6 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
       }
       resolvePromise()
     })
+    server.closeAllConnections()
   })
 }

@@ -34,7 +34,12 @@ const [
   usageRecordQueue,
   gatewayCache,
   accountSideEffects,
-  readWorkerPool
+  readWorkerPool,
+  auditLogReadRepository,
+  upstreamModule,
+  jsonParserModule,
+  usageWriterPool,
+  auditLogTransport
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
   import('../../modules/gateway/request/body-middleware.js'),
@@ -46,7 +51,12 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
-  import('../../storage/sqlite-read-worker-pool.js')
+  import('../../storage/sqlite-read-worker-pool.js'),
+  import('../../storage/audit-log-read.repository.js'),
+  import('../../modules/gateway/upstream/request.js'),
+  import('../../modules/gateway/request/json-parser.js'),
+  import('../../storage/usage-record-writer-pool.js'),
+  import('../../modules/audit-logs/audit-log-transport.service.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -116,7 +126,7 @@ try {
     await assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
     await assertHotRetainedStreamSuccess(gatewayBaseUrl, upstreamBaseUrl)
     await assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseUrl, upstreamBaseUrl)
-    await assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl, upstreamBaseUrl)
+    await assertImageStreamFailureOmissionRecordsMetadata(gatewayBaseUrl, upstreamBaseUrl)
     await assertImageStreamSuccessOmissionRecordsMetadata(gatewayBaseUrl, upstreamBaseUrl)
     await assertNonStreamImageSuccessOmissionRecordsMetadata(gatewayBaseUrl, upstreamBaseUrl)
     await assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseUrl, upstreamBaseUrl)
@@ -127,19 +137,23 @@ try {
 
   console.log('网关审计 payload 存储回归通过：非流式成功、先失败后成功、全失败、流式成功、流式失败、图像流省略和非流式图像省略均符合预期')
 } finally {
-  usageRecordQueue.flushAllUsageRecordQueue()
-  auditLogQueue.flushAllAuditLogQueue()
+  usageRecordQueue.clearUsageRecordQueueForTest()
+  auditLogQueue.clearAuditLogQueueForTest()
   auditLogQueue.setDbServiceAuditLogLocalWriteAllowedForTest(false)
   usageRecordQueue.setDbServiceUsageRecordLocalWriteAllowedForTest(false)
+  upstreamModule.closeGatewayUpstreamAgentsForTest()
+  await jsonParserModule.stopGatewayJsonParseWorker()
   try {
     cleanupAuditBlobFilesForTest()
     accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
+    await usageWriterPool.closeUsageRecordWriterPool()
+    await auditLogTransport.stopAuditLogTransportWorker()
     await readWorkerPool.closeSqliteReadWorkerPool()
     databaseModule.getBusinessDatabase().close()
     databaseModule.closeStorageDatabases()
   } catch {
   }
-  rmSync(tempRoot, { recursive: true, force: true })
+  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 }
 
 async function assertHotRetainedNonStreamSuccess(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -174,18 +188,22 @@ async function assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseU
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计先失败后成功', ['sk-audit-retry-fail', 'sk-audit-retry-success'])
   const traceId = 'trace-audit-success-after-retry'
 
-  const response = await fetch(`${gatewayBaseUrl}/v1/chat/completions`, {
+  const response = await fetch(`${gatewayBaseUrl}/v1/responses`, {
     method: 'POST',
-    headers: gatewayHeaders(seeded.apiKey, traceId),
+    headers: {
+      ...gatewayHeaders(seeded.apiKey, traceId),
+      accept: 'text/event-stream',
+      'x-codex-turn-metadata': JSON.stringify({ turn_id: 'audit-success-after-retry' })
+    },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'user', content: 'audit retry success' }],
-      stream: false
+      input: 'audit retry success',
+      stream: true
     })
   })
   const text = await response.text()
   assert.equal(response.status, 200, `先失败后成功应返回 200，实际 ${response.status}: ${text}`)
-  assert.equal(text, retrySuccessBody, '先失败后成功最终响应体应来自第二账号')
+  assert.match(text, /response\.completed/, '先失败后成功最终流式响应体应来自第二账号')
 
   const detail = auditDetailByTrace(traceId)
   assert.equal(detail.auditOutcome, 'success_after_retry', '先失败后成功应写入 success_after_retry 审计')
@@ -194,8 +212,8 @@ async function assertSuccessAfterRetryCapturesFinalUpstreamResponse(gatewayBaseU
   const successAttemptId = detail.attempts[1]?.id
   assert(failedAttemptId && successAttemptId, '先失败后成功审计缺少 attempt id')
   await assertPayloadBodyEquals(detail, 'upstream_response', retryFailureBody, failedAttemptId)
-  await assertPayloadBodyEquals(detail, 'upstream_response', retrySuccessBody, successAttemptId)
-  await assertPayloadBodyEquals(detail, 'gateway_response', retrySuccessBody)
+  await assertPayloadBodyContains(detail, 'upstream_response', 'response.completed', successAttemptId)
+  await assertPayloadBodyContains(detail, 'gateway_response', 'response.completed')
 }
 
 async function assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -212,7 +230,7 @@ async function assertAllUpstreamFailureCapturesUpstreamResponse(gatewayBaseUrl: 
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `全失败应返回统一 503，实际 ${response.status}: ${text}`)
+  assert.equal(response.status, 418, `通用客户端全失败应保留上游状态，实际 ${response.status}: ${text}`)
 
   const detail = auditDetailByTrace(traceId)
   assert.equal(detail.auditOutcome, 'upstream_failed', '全失败应写入 upstream_failed 审计')
@@ -257,16 +275,16 @@ async function assertUnsampledStreamFailureCapturesUpstreamResponse(gatewayBaseU
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `普通客户端预输出流失败应转换为可重试 503，实际 ${response.status}: ${text}`)
-  assert.match(text, /upstream_retryable_error/, '普通客户端预输出流失败应返回稳定可重试错误码')
+  assert.equal(response.status, 200, `通用客户端应原样保留上游 200 SSE，实际 ${response.status}: ${text}`)
+  assert.match(text, /response\.failed/, '通用客户端应看到上游原始 response.failed 事件')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'upstream_failed', '客户端尚未收到流数据的失败应写入 upstream_failed 审计')
+  assert.equal(detail.auditOutcome, 'success', '通用客户端的上游 200 SSE 应按传输成功记录审计')
   await assertPayloadBodyContains(detail, 'upstream_response', 'response.failed')
-  await assertPayloadBodyEquals(detail, 'gateway_error', text)
+  await assertPayloadBodyEquals(detail, 'gateway_response', text)
 }
 
-async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
+async function assertImageStreamFailureOmissionRecordsMetadata(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
   const seeded = seedGatewayRoute(upstreamBaseUrl, '审计图像流失败省略', ['sk-audit-image-stream-failure'])
   const traceId = 'trace-audit-image-stream-failure-omission'
 
@@ -280,13 +298,12 @@ async function assertImageStreamFailureOmissionPreservesRequestPayloads(gatewayB
     })
   })
   const text = await response.text()
-  assert.equal(response.status, 503, `普通客户端图像流预输出失败应转换为可重试 503，实际 ${response.status}: ${text}`)
-  assert.match(text, /upstream_retryable_error/, '图像流预输出失败应返回稳定可重试错误码')
+  assert.equal(response.status, 200, `通用客户端图像流应原样保留上游 200 SSE，实际 ${response.status}: ${text}`)
+  assert.match(text, /response\.failed/, '通用客户端应看到上游原始图像 response.failed 事件')
 
   const detail = auditDetailByTrace(traceId)
-  assert.equal(detail.auditOutcome, 'upstream_failed', '客户端尚未收到图像流数据的失败应写入 upstream_failed 审计')
-  await assertPayloadBodyContains(detail, 'client_request', 'audit image stream failure should keep request payload')
-  await assertPayloadBodyContains(detail, 'upstream_request', 'audit image stream failure should keep request payload')
+  assert.equal(detail.auditOutcome, 'success', '通用客户端的图像 200 SSE 应按传输成功记录审计')
+  await assertStreamBodyOmissionMetadata(detail)
 }
 
 async function assertImageStreamSuccessOmissionRecordsMetadata(gatewayBaseUrl: string, upstreamBaseUrl: string): Promise<void> {
@@ -401,7 +418,7 @@ async function assertMissingPayloadBlobReportsStatusAndRepairsAsync(gatewayBaseU
   await auditLogQueue.flushAllAuditLogQueueAsync()
   assert.equal(existsSync(filePath), true, '异步审计批量写入遇到已有 blob 元数据时应补回缺失文件')
 
-  const payloadRepaired = await repositories.getAuditLogPayload(detail.id, payload.id, { limit: 1024 * 1024 })
+  const payloadRepaired = await auditLogReadRepository.getAuditLogPayloadReadOnly(detail.id, payload.id, { limit: 1024 * 1024 })
   assert.equal(payloadRepaired?.bodyStorageStatus, 'available', '补回文件后原 payload 应恢复可读取状态')
   assert.equal(payloadRepaired?.bodyText, nonStreamSuccessBody, '补回文件后原 payload 正文应可读')
 }
@@ -463,6 +480,14 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (url.pathname === '/v1/responses') {
+        if (authorization.includes('sk-audit-retry-fail')) {
+          sendJson(res, 502, retryFailureBody)
+          return
+        }
+        if (authorization.includes('sk-audit-retry-success')) {
+          sendStreamSuccess(res)
+          return
+        }
         if (String(body.input ?? '').includes('image non stream success')) {
           sendJson(res, 200, nonStreamImageSuccessBody)
           return

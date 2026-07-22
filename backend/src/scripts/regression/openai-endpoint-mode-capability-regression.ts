@@ -136,22 +136,22 @@ assert.throws(
 )
 assert.throws(
   () => assertAnthropicEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
-  /Anthropic API Key 账户上游接口能力不支持：chat_json/,
+  /Anthropic 账户上游接口能力不支持：chat_json/,
   'Anthropic 上游接口能力兼容校验必须返回统一文案'
 )
 assert.throws(
   () => assertGeminiEndpointModesCompatible({ modes: ['chat_json'], accountType: 'api_key' }),
-  /Gemini API Key 账户上游接口能力不支持：chat_json/,
+  /Gemini 账户上游接口能力不支持：chat_json/,
   'Gemini 上游接口能力兼容校验必须返回统一文案'
 )
 assert.throws(
   () => assertAnthropicEndpointModesCompatible({ modes: ['message_token_counting'], accountType: 'api_key' }),
-  /Anthropic API Key 账户上游接口能力必须至少启用 Messages API/,
+  /Anthropic 账户上游接口能力必须至少启用 Messages API/,
   'Anthropic 必选上游接口能力校验必须返回统一文案'
 )
 assert.throws(
   () => assertGeminiEndpointModesCompatible({ modes: ['count_tokens'], accountType: 'api_key' }),
-  /Gemini API Key 账户上游接口能力必须至少启用 generateContent JSON/,
+  /Gemini 账户上游接口能力必须至少启用 generateContent、streamGenerateContent 或 Interactions/,
   'Gemini 必选上游接口能力校验必须返回统一文案'
 )
 assert.throws(

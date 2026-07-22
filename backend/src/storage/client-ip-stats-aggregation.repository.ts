@@ -4,6 +4,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { beginImmediateDatabaseTransaction, commitDatabaseTransaction, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, type DatabaseClient } from './database-client.js'
 import { getPostgresPool } from './postgres-client.js'
+import { statsAggregationMaxShardsPerBatch } from './stats-shard-aggregation-drain.js'
 import { getUsageRecordShardDatabase, listUsageRecordShardLocationsPage, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { usageStatsTimezoneAsync } from './usage-stats-helpers.js'
 import {
@@ -15,7 +16,6 @@ import { writeClientIpStatsAggregatesFromUsageRows, writeClientIpStatsAggregates
 
 const clientIpStatsJobName = 'client_ip_stats_aggregation'
 const cursorSafetyDelaySeconds = 15
-const clientIpStatsMaxShardsPerBatch = 16
 let clientIpStatsShardScanOffset = 0
 
 export function aggregateClientIpStatsBatch(limit = 2000): number {
@@ -209,7 +209,7 @@ export async function latestClientIpStatsLagSecondsAsync(): Promise<number | und
 }
 
 function clientIpStatsShardLocationsForBatch(batchLimit: number): ReturnType<typeof listUsageRecordShardLocationsPage> {
-  const maxShardCount = Math.max(1, Math.min(clientIpStatsMaxShardsPerBatch, Math.trunc(batchLimit)))
+  const maxShardCount = Math.max(1, Math.min(statsAggregationMaxShardsPerBatch, Math.trunc(batchLimit)))
   const window = listUsageRecordShardLocationsPage({
     offset: clientIpStatsShardScanOffset,
     limit: maxShardCount

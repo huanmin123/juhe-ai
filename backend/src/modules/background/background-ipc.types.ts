@@ -34,6 +34,9 @@ export interface BackgroundWorkerQueueRuntime {
   droppedFailureCount?: number
   droppedOverflowCount?: number
   droppedOversizeCount?: number
+  admissionWaitCount?: number
+  admissionWaiterCount?: number
+  rejectedAdmissionCount?: number
   retainedOverflowWarningCount?: number
   flushFailureCount?: number
   oldestQueuedMs?: number

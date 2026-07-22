@@ -5,7 +5,9 @@
       :account-select-placeholder="accountSelectPlaceholder"
       :comparison-options="comparisonOptions"
       :comparison-options-loading="comparisonOptionsLoading"
+      :comparison-select-disabled="comparisonSelectDisabled"
       :comparison-select-placeholder="comparisonSelectPlaceholder"
+      :deep-detection="deepDetection"
       :is-management-view="isManagementView"
       :model="form.model"
       :model-options="runModelOptions"
@@ -40,11 +42,12 @@
       @target-search="handleTargetSearch"
       @target-value-update="handleTargetValueUpdate"
       @update:model="handleModelUpdate"
+      @update:deep-detection="handleDeepDetectionUpdate"
       @update:selected-comparison-account="selectedComparisonAccount = $event"
       @update:selected-target-account="selectedTargetAccount = $event"
       @update:system-account-filter="systemAccountFilter = $event || allSystemAccountsValue"
       @update:system-account-filter-selection="systemAccountFilterSelection = $event"
-      @update:trusted-comparison-account-id="form.trustedComparisonAccountId = $event"
+      @update:trusted-comparison-account-id="handleTrustedComparisonAccountUpdate"
     />
 
     <ModelCheckRunHistoryList
@@ -119,6 +122,7 @@ import type {
   ModelCheckLevel,
   ModelCheckModel,
   ModelCheckOptions,
+  ModelCheckProfile,
   ModelCheckProgressEvent,
   ModelCheckRunDetail,
   ModelCheckRunPayload,
@@ -130,6 +134,7 @@ import {
   checkStatusText,
   formatModelCheckDuration as formatDuration,
   levelText,
+  modelCheckProfileText,
   progressItemTitle,
   statusText,
   terminalLevelForCheckStatus
@@ -207,7 +212,7 @@ const form = reactive<ModelCheckRunPayload>({
   targetType: 'account',
   targetId: '',
   model: modelCheckFallbackOptions.defaultModel,
-  profile: 'full',
+  profile: modelCheckFallbackOptions.defaultProfile,
   trustedComparison: false,
   trustedComparisonAccountId: undefined
 })
@@ -270,7 +275,9 @@ function modelCheckRunListParams(pageState: { current: number; pageSize: number 
 }
 const accountSelectDisabled = computed(() => submitting.value)
 const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
-const comparisonSelectPlaceholder = computed(() => '可信对比账户（可选）')
+const deepDetection = computed(() => form.profile === 'full')
+const comparisonSelectDisabled = computed(() => accountSelectDisabled.value || !deepDetection.value)
+const comparisonSelectPlaceholder = computed(() => deepDetection.value ? '可信对比账户（可选）' : '开启深度检测后可选可信对比')
 const {
   comparisonOptions,
   comparisonOptionsLoading,
@@ -323,7 +330,7 @@ async function loadOptions() {
     const nextOptions = await modelChecksApi.options(modelCheckScopeParams.value)
     options.value = nextOptions
     form.model = nextOptions.defaultModel
-    form.profile = nextOptions.defaultProfile
+    applyModelCheckProfile(nextOptions.defaultProfile)
     ensureRunModelMatchesTarget()
   } catch (error) {
     console.error(error)
@@ -336,6 +343,27 @@ async function loadOptions() {
 function handleModelUpdate(model: ModelCheckModel) {
   form.model = model
   clearIncompatibleComparisonAccount()
+}
+
+function handleDeepDetectionUpdate(enabled: boolean) {
+  applyModelCheckProfile(enabled ? 'full' : 'quick')
+}
+
+function handleTrustedComparisonAccountUpdate(accountId?: string) {
+  form.trustedComparisonAccountId = deepDetection.value ? accountId : undefined
+}
+
+function applyModelCheckProfile(profile: ModelCheckProfile) {
+  form.profile = profile
+  if (profile === 'quick') {
+    clearTrustedComparisonAccount()
+  }
+}
+
+function clearTrustedComparisonAccount() {
+  form.trustedComparison = false
+  form.trustedComparisonAccountId = undefined
+  selectedComparisonAccount.value = undefined
 }
 
 function handleTargetChange() {
@@ -359,9 +387,7 @@ function clearIncompatibleComparisonAccount() {
   const targetProfile = selectedTargetAccountProfile.value
   const sameProfile = targetProfile ? sameModelCheckAccountProfile(targetProfile, comparisonProfile) : true
   if (sameProfile && canUseModelCheckModelForAccount(comparisonProfile, form.model)) return
-  form.trustedComparison = false
-  form.trustedComparisonAccountId = undefined
-  selectedComparisonAccount.value = undefined
+  clearTrustedComparisonAccount()
 }
 
 async function submitRun() {
@@ -370,7 +396,7 @@ async function submitRun() {
     return
   }
   const targetId = form.targetId.trim()
-  const trustedComparisonAccountId = form.trustedComparisonAccountId?.trim()
+  const trustedComparisonAccountId = form.profile === 'full' ? form.trustedComparisonAccountId?.trim() : undefined
   if (!targetId) {
     message.warning('请选择 AI 账户')
     return
@@ -396,7 +422,7 @@ async function submitRun() {
       trustedComparisonAccountId: trustedComparisonAccountId || undefined
     }
     currentRun.value = await startModelCheckRunSession({
-      commandText: `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`,
+      commandText: `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model} --profile ${form.profile}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`,
       onProgress: handleModelCheckProgress,
       run: (signal, onProgress) => modelChecksApi.runStream(payload, {
         signal,
@@ -480,13 +506,16 @@ function resetModelCheckScopedState() {
 function resetRunForm() {
   resetRunAccountSelection()
   form.model = options.value.defaultModel
-  form.profile = options.value.defaultProfile
+  applyModelCheckProfile(options.value.defaultProfile)
   ensureRunModelMatchesTarget()
 }
 
 async function syncActiveModelCheckRun() {
   try {
     const active = await modelChecksApi.active(modelCheckScopeParams.value)
+    if (active?.profile) {
+      applyModelCheckProfile(active.profile)
+    }
     reconcileModelCheckRunSessionWithActiveRun(active)
     if (!active && modelCheckRunSession.terminalLines.length) {
       await loadRuns()
@@ -595,7 +624,7 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
     const comparisonText = event.trustedComparison
       ? `，可信对比 ${event.trustedComparisonAccountName?.trim() || (event.trustedComparisonAccountId ? comparisonOptionText(event.trustedComparisonAccountId) : '未记录账户名称')}`
       : '，可信对比关闭'
-    appendTerminalLine('info', `检测启动：目标 AI 账户 ${targetLabel}，模型 ${event.model}${comparisonText}`)
+    appendTerminalLine('info', `${modelCheckProfileText(event.profile)}启动：目标 AI 账户 ${targetLabel}，模型 ${event.model}${comparisonText}`)
     return
   }
   if (event.type === 'run_created') {
@@ -681,7 +710,8 @@ function isAbortError(error: unknown): boolean {
 onMounted(async () => {
   updateViewportWidth()
   window.addEventListener('resize', updateViewportWidth)
-  await Promise.all([loadOptions(), loadRuns(), syncActiveModelCheckRun()])
+  await Promise.all([loadOptions(), loadRuns()])
+  await syncActiveModelCheckRun()
 })
 
 onBeforeUnmount(() => {

@@ -859,9 +859,11 @@ async function loadAuthorizedAccountSummaryContextAsync(
     loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, rows),
     loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
     loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)).catch((error) =>
-      accountCurrentConcurrencySnapshotFallback(error, rows.map((row) => row.id))
-    ),
+    listProjection
+      ? Promise.resolve(new Map<string, number>())
+      : loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)).catch((error) =>
+        accountCurrentConcurrencySnapshotFallback(error, rows.map((row) => row.id))
+      ),
     loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(factAccountIds)
   ])
   void access
@@ -916,9 +918,11 @@ async function ownerAccountSummariesFromRowsAsync(
     loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(accountIds).catch((error) =>
-      accountCurrentConcurrencySnapshotFallback(error, accountIds)
-    ),
+    listProjection
+      ? Promise.resolve(new Map<string, number>())
+      : loadAccountCurrentConcurrencyByIdsAsync(accountIds).catch((error) =>
+        accountCurrentConcurrencySnapshotFallback(error, accountIds)
+      ),
     loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
     listProjection ? Promise.resolve(new Map()) : loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
   ])
@@ -1005,7 +1009,7 @@ function accountCurrentConcurrencySnapshotFallback(error: unknown, accountIds: s
   logger.warn(errorLogFields(error, {
     event: 'account_list_redis_concurrency_snapshot_unavailable',
     accountCount: new Set(accountIds.filter(Boolean)).size
-  }), 'Redis 账号并发快照不可用，账户列表按未知并发返回')
+  }), 'Redis 账号并发快照不可用，账户摘要暂用 0 占位，最终响应必须标记快照不可用')
   return new Map<string, number>()
 }
 

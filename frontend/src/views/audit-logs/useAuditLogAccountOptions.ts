@@ -52,8 +52,12 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
     const requestKeyword = nextKeyword.trim() || undefined
     const systemAccountId = params.selectedSystemAccountId()
     if (!systemAccountId) {
+      requestSeq += 1
       options.value = []
       params.accountSelection.value = undefined
+      loading.value = false
+      loadingKey = undefined
+      loadingPromise = undefined
       return
     }
     const selectedIds = [params.selectedAccountId()].filter(Boolean)
@@ -67,10 +71,10 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
     loadingPromise = (async () => {
       try {
         let nextOptions = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-        nextOptions = await ensureSelectedAccountOption(nextOptions)
-        applyOptions(nextOptions, currentRequestSeq)
+        nextOptions = await ensureSelectedAccountOption(nextOptions, systemAccountId)
+        applyOptions(nextOptions, currentRequestSeq, requestKey, requestKeyword)
       } catch (error) {
-        if (currentRequestSeq !== requestSeq) return
+        if (!isCurrentRequest(currentRequestSeq, requestKey, requestKeyword)) return
         console.error(error)
         message.error('AI账户筛选项加载失败')
       } finally {
@@ -86,22 +90,36 @@ export function useAuditLogAccountOptions(params: UseAuditLogAccountOptionsParam
     return loadingPromise
   }
 
-  function applyOptions(nextOptions: AccountOptionSummary[], currentRequestSeq: number): void {
-    if (currentRequestSeq !== requestSeq) return
+  function applyOptions(
+    nextOptions: AccountOptionSummary[],
+    currentRequestSeq: number,
+    requestKey: string,
+    requestKeyword?: string
+  ): void {
+    if (!isCurrentRequest(currentRequestSeq, requestKey, requestKeyword)) return
     options.value = nextOptions
     syncSelectedAccountFromOptions(nextOptions)
   }
 
-  async function ensureSelectedAccountOption(currentOptions: AccountOptionSummary[]): Promise<AccountOptionSummary[]> {
+  async function ensureSelectedAccountOption(currentOptions: AccountOptionSummary[], systemAccountId: string): Promise<AccountOptionSummary[]> {
     const selectedIds = [params.selectedAccountId()].filter(Boolean)
     const missingIds = selectedIds.filter((id) => !currentOptions.some((account) => account.id === id))
     if (!missingIds.length) return currentOptions
     try {
-      const selectedOptions = await api.accounts.options({ systemAccountId: params.selectedSystemAccountId(), ids: missingIds, limit: 50 })
+      const selectedOptions = await api.accounts.options({ systemAccountId, ids: missingIds, limit: 50 })
       return mergeOptionsById(selectedOptions, currentOptions)
     } catch {
       return currentOptions
     }
+  }
+
+  function isCurrentRequest(currentRequestSeq: number, requestKey: string, requestKeyword?: string): boolean {
+    return currentRequestSeq === requestSeq
+      && requestKey === JSON.stringify([
+        params.selectedSystemAccountId(),
+        requestKeyword ?? '',
+        [params.selectedAccountId()].filter(Boolean)
+      ])
   }
 
   function syncSelectedAccountFromOptions(currentOptions: AccountOptionSummary[]): void {

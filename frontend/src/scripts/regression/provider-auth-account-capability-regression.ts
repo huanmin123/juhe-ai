@@ -18,8 +18,8 @@ const geminiProfile = gemini?.protocolProfiles.find((profile) => profile.id === 
 assert(geminiProfile?.accountTypes.includes('google_oauth'))
 const anthropic = FALLBACK_PROVIDERS.find((provider) => provider.code === 'anthropic')
 const anthropicProfile = anthropic?.protocolProfiles.find((profile) => profile.id === 'profile_anthropic_anthropic_v1')
-assert.deepEqual(anthropic?.accountTypes, ['api_key'], 'Anthropic 回退供应商不得开放 workload_identity')
-assert.deepEqual(anthropicProfile?.accountTypes, ['api_key'], 'Anthropic 回退协议档案不得开放 workload_identity')
+assert.deepEqual(anthropic?.accountTypes, ['api_key', 'oauth'], 'Anthropic 回退供应商应开放官方 token 型 OAuth')
+assert.deepEqual(anthropicProfile?.accountTypes, ['api_key', 'oauth'], 'Anthropic 回退协议档案应开放官方 token 型 OAuth')
 const googleForm = defaultAccountForm('gemini', 'google_oauth', FALLBACK_PROVIDERS, 'profile_gemini_native_v1beta')
 Object.assign(googleForm, {
   accessToken: 'access',

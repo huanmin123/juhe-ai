@@ -13,6 +13,7 @@ import {
 import type { Request } from 'express'
 
 import { createProxyAgent } from '../../openai-oauth/openai-oauth.service.js'
+import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { prepareSafeUpstreamRequestUrl } from '../../../shared/upstream-url-policy.js'
 import { createProcessLocalResourceCache } from '../../../shared/cache.js'
 import type { GatewayTimeoutProfile } from '../policy/timeout-profile.js'
@@ -34,6 +35,7 @@ export interface GatewayUpstreamResponse {
   readonly ok: boolean
   readonly headers: Headers
   readonly body: AsyncIterable<Uint8Array> | null
+  cancelBody?(reason?: unknown): Promise<void>
 }
 
 interface UpstreamRequestOptions {
@@ -51,6 +53,10 @@ interface UpstreamHeaderAccount {
   id?: string
   apiKey: string
   type?: string
+  providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
   credentials?: Record<string, unknown>
 }
 
@@ -106,6 +112,11 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
     return this.decodedBody
   }
 
+  async cancelBody(_reason?: unknown): Promise<void> {
+    if (!this.message.destroyed) {
+      this.message.destroy()
+    }
+  }
 }
 
 export async function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
@@ -309,6 +320,30 @@ class FetchGatewayUpstreamResponse implements GatewayUpstreamResponse {
       : null
     return this.decodedBody
   }
+
+  async cancelBody(reason?: unknown): Promise<void> {
+    if (this.decodedBody) {
+      const iterator = this.decodedBody[Symbol.asyncIterator]()
+      await iterator.return?.()
+      return
+    }
+    try {
+      await this.response.body?.cancel(reason)
+    } catch {
+    }
+  }
+}
+
+export async function cancelGatewayUpstreamResponseBody(
+  response: GatewayUpstreamResponse,
+  reason?: unknown
+): Promise<void> {
+  if (response.cancelBody) {
+    await response.cancelBody(reason)
+    return
+  }
+  const iterator = response.body?.[Symbol.asyncIterator]()
+  await iterator?.return?.()
 }
 
 function fetchReadableStreamBody(
@@ -433,11 +468,29 @@ export function upstreamRequestTimeoutMs(profile: GatewayTimeoutProfile): number
   return profile.firstResponseTimeoutMs
 }
 
-export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: string }): boolean {
-  if (account?.type === 'oauth') {
+export function isEffectiveOpenAIStreamRequest(req: Request, account?: {
+  type?: string
+  providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
+}): boolean {
+  if (usesOpenAIOAuthCompactStreamRules(account)) {
     return !isOpenAIOAuthCodexCompactRequest(req)
   }
   return requestStream(req)
+}
+
+function usesOpenAIOAuthCompactStreamRules(account?: {
+  type?: string
+  providerCode?: string
+  providerProtocolProfileId?: string
+  protocolCode?: string
+  protocolVersion?: string
+}): boolean {
+  if (account?.type !== 'oauth') return false
+  if (!account.protocolCode) return true
+  return isOpenAIProtocolProfile(account)
 }
 
 export function buildUpstreamRequestBody(req: Request): Buffer | undefined {
@@ -459,7 +512,7 @@ export function buildUpstreamRequestBody(req: Request): Buffer | undefined {
 export function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamHeaderAccount): Headers {
   const headers = copySafeUpstreamRequestHeaders(inputHeaders)
   headers.set('authorization', `Bearer ${account.apiKey}`)
-  if (account.type === 'oauth') {
+  if (account.type === 'oauth' && isOpenAIProtocolProfile(account)) {
     applyOpenAICodexHeaders(headers, account)
   }
   return headers

@@ -56,7 +56,7 @@
               :selected-account="selectedComparisonAccount"
               show-search
               allow-clear
-              :disabled="accountSelectDisabled"
+              :disabled="comparisonSelectDisabled"
               :filter-option="false"
               :loading="comparisonOptionsLoading"
               :options="comparisonOptions"
@@ -77,11 +77,19 @@
         </div>
 
         <div class="model-checks-toolbar">
+          <div class="model-checks-depth-toggle">
+            <span>深度检测</span>
+            <a-switch
+              :checked="deepDetection"
+              :disabled="submitting || optionsLoading"
+              @update:checked="handleDeepDetectionUpdate"
+            />
+          </div>
           <a-button type="primary" :loading="submitting" @click="emit('submit')">
             <template #icon>
               <ExperimentOutlined />
             </template>
-            开始检测
+            {{ deepDetection ? '开始深度检测' : '开始快速检测' }}
           </a-button>
         </div>
       </div>
@@ -114,9 +122,11 @@ type SelectValue = string | string[] | undefined
 defineProps<{
   accountSelectDisabled: boolean
   accountSelectPlaceholder: string
+  comparisonSelectDisabled: boolean
   comparisonOptions: SelectOption[]
   comparisonOptionsLoading: boolean
   comparisonSelectPlaceholder: string
+  deepDetection: boolean
   isManagementView: boolean
   model: ModelCheckModel
   modelOptions: Array<{ label: string; value: string }>
@@ -153,6 +163,7 @@ const emit = defineEmits<{
   (event: 'target-dropdown-visible-change', open: boolean): void
   (event: 'target-search', value: string): void
   (event: 'target-value-update', value: SelectValue): void
+  (event: 'update:deepDetection', value: boolean): void
   (event: 'update:model', value: ModelCheckModel): void
   (event: 'update:selectedComparisonAccount', value?: AccountSelection): void
   (event: 'update:selectedTargetAccount', value?: AccountSelection): void
@@ -177,6 +188,10 @@ function handleModelValueUpdate(value: SelectValue) {
 
 function handleComparisonValueUpdate(value: SelectValue) {
   emit('update:trustedComparisonAccountId', selectStringValue(value))
+}
+
+function handleDeepDetectionUpdate(value: boolean) {
+  emit('update:deepDetection', value)
 }
 
 function selectStringValue(value: SelectValue): string | undefined {
@@ -240,6 +255,16 @@ function selectStringValue(value: SelectValue): string | undefined {
   flex-wrap: wrap;
 }
 
+.model-checks-depth-toggle {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 8px;
+  color: #334155;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
   .model-checks-control-panel,
   .model-checks-fields {
@@ -266,6 +291,11 @@ function selectStringValue(value: SelectValue): string | undefined {
     width: 100%;
     flex-direction: column;
     justify-content: flex-start;
+  }
+
+  .model-checks-depth-toggle {
+    width: 100%;
+    justify-content: space-between;
   }
 
   .model-checks-fields :deep(.ant-btn),

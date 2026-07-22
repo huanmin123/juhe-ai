@@ -10,9 +10,10 @@ import {
 } from '../../storage/database.js'
 import {
   listUsageRecordShardLocations,
-  getUsageRecordShardDatabase
+  getUsageRecordShardDatabase,
+  usageRecordShardLocationForRecord
 } from '../../storage/usage-record-shards.js'
-import { chunks, idPrefix, type CreatedMockdata } from './mockdata/shared.js'
+import { chunks, idPrefix, type CreatedMockdata, type UsageRecordSeed } from './mockdata/shared.js'
 
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 
@@ -22,10 +23,10 @@ const allowedEmptyTables = new Set([
   'stats.usage_range_window_requests'
 ])
 
-export function assertMockdataCoverage(created: CreatedMockdata): void {
+export function assertMockdataCoverage(created: CreatedMockdata, usageRecords: UsageRecordSeed[]): void {
   const database = getBusinessDatabase()
   assertBusinessCoverage(database, created)
-  assertUsageCoverage()
+  assertUsageCoverage(usageRecords)
   assertCreatedShape(created)
   assertModelTrustCoverage()
   assertApplicationTablesHaveRows()
@@ -106,7 +107,8 @@ function assertBusinessCoverage(database: BusinessDatabase, created: CreatedMock
   assertMinimum('系统账号图像权限样本缺失', scalar(database, "SELECT COUNT(*) AS value FROM system_accounts WHERE username LIKE 'mockdata_%' AND image_generation_enabled = 1"), 1)
 }
 
-function assertUsageCoverage(): void {
+function assertUsageCoverage(usageRecords: UsageRecordSeed[]): void {
+  assertCurrentMockdataUsageRun(usageRecords)
   const trafficSources = new Set<string>()
   const endpoints = new Set<string>()
   const billedServiceTiers = new Set<string>()
@@ -144,6 +146,66 @@ function assertUsageCoverage(): void {
   assertMinimum('图片 token 使用记录样本缺失', imageTokenRows, 1)
   assertMinimum('模型映射使用记录样本缺失', modelMappingRows, 1)
   assertMinimum('使用记录写入时计价快照样本缺失', pricingSnapshotRows, 1)
+}
+
+export function assertCurrentMockdataUsageRun(usageRecords: UsageRecordSeed[]): void {
+  assertMinimum('本轮 Mockdata 使用记录总量不足', usageRecords.length, 1)
+  const expectedById = new Map(usageRecords.map((record) => [record.id, record]))
+  if (expectedById.size !== usageRecords.length) {
+    throw new Error(`本轮 Mockdata 使用记录 ID 不唯一，输入 ${usageRecords.length} 条，唯一 ID ${expectedById.size} 个`)
+  }
+
+  const catalogRows: Array<{ usage_id: string, shard_key: string, created_at: string }> = []
+  const catalogDatabase = getUsageCatalogDatabase()
+  for (const idChunk of chunks([...expectedById.keys()], 800)) {
+    catalogRows.push(...catalogDatabase.prepare(`
+      SELECT usage_id, shard_key, created_at
+      FROM usage_record_shard_entries
+      WHERE usage_id IN (${placeholders(idChunk)})
+    `).all(...idChunk) as Array<{ usage_id: string, shard_key: string, created_at: string }>)
+  }
+  if (catalogRows.length !== usageRecords.length) {
+    throw new Error(`本轮 Mockdata usage catalog 记录总量错误，期望 ${usageRecords.length}，实际 ${catalogRows.length}`)
+  }
+
+  const expectedShardKeys = new Set<string>()
+  const actualShardKeys = new Set<string>()
+  for (const row of catalogRows) {
+    const expected = expectedById.get(row.usage_id)
+    if (!expected) continue
+    const expectedLocation = usageRecordShardLocationForRecord(expected.id, expected.createdAt)
+    expectedShardKeys.add(expectedLocation.shardKey)
+    actualShardKeys.add(row.shard_key)
+    if (row.shard_key !== expectedLocation.shardKey) {
+      throw new Error(`本轮 Mockdata usage catalog 分片错误：${row.usage_id} 期望 ${expectedLocation.shardKey}，实际 ${row.shard_key}`)
+    }
+  }
+  assertPresent('本轮 Mockdata usage catalog 涉及分片覆盖不完整', actualShardKeys, [...expectedShardKeys])
+
+  const expectedCreatedAt = usageRecords.map((record) => record.createdAt).sort()
+  const actualCreatedAt = catalogRows.map((row) => row.created_at).sort()
+  if (actualCreatedAt[0] !== expectedCreatedAt[0] || actualCreatedAt.at(-1) !== expectedCreatedAt.at(-1)) {
+    throw new Error(`本轮 Mockdata usage catalog 日期跨度错误，期望 ${expectedCreatedAt[0]} ~ ${expectedCreatedAt.at(-1)}，实际 ${actualCreatedAt[0] ?? '空'} ~ ${actualCreatedAt.at(-1) ?? '空'}`)
+  }
+
+  let physicalRowCount = 0
+  const expectedRecordsByShard = new Map<string, UsageRecordSeed[]>()
+  for (const record of usageRecords) {
+    const shardKey = usageRecordShardLocationForRecord(record.id, record.createdAt).shardKey
+    const shardRecords = expectedRecordsByShard.get(shardKey) ?? []
+    shardRecords.push(record)
+    expectedRecordsByShard.set(shardKey, shardRecords)
+  }
+  for (const shardRecords of expectedRecordsByShard.values()) {
+    const location = usageRecordShardLocationForRecord(shardRecords[0].id, shardRecords[0].createdAt)
+    const shardDatabase = getUsageRecordShardDatabase(location, { registerLocation: false })
+    for (const idChunk of chunks(shardRecords.map((record) => record.id), 800)) {
+      physicalRowCount += scalar(shardDatabase, `SELECT COUNT(*) AS value FROM usage_records WHERE id IN (${placeholders(idChunk)})`, ...idChunk)
+    }
+  }
+  if (physicalRowCount !== usageRecords.length) {
+    throw new Error(`本轮 Mockdata usage shard 明细总量错误，期望 ${usageRecords.length}，实际 ${physicalRowCount}`)
+  }
 }
 
 function assertCreatedShape(created: CreatedMockdata): void {

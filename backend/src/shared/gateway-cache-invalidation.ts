@@ -228,8 +228,11 @@ async function publishGatewayCacheInvalidationToRuntimeStateAsync(
 }
 
 async function syncGatewayCacheInvalidationsFromRuntimeStateUnsafe(): Promise<void> {
-  for (const topic of gatewayCacheInvalidationTopics) {
-    const state = await gatewayCacheInvalidationState.getJson<GatewayCacheInvalidationState>(gatewayCacheInvalidationStateKey(topic))
+  const states = await gatewayCacheInvalidationState.getJsonMany<GatewayCacheInvalidationState>(
+    gatewayCacheInvalidationTopics.map(gatewayCacheInvalidationStateKey)
+  )
+  for (const [index, topic] of gatewayCacheInvalidationTopics.entries()) {
+    const state = states[index]
     if (!state?.version) continue
     if (lastSeenGatewayCacheInvalidationVersions.get(topic) === state.version) continue
     try {
