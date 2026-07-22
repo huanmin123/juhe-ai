@@ -870,3 +870,10 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 账户用量与 AI 性能统计只读首轮迁移
+
+- Go 已新增 admin/self `account-usage`、`account-usage/trend`、`ai-performance`、`ai-performance/accounts` 八条 opt-in GET，复用只读 session、System API 两层 read limiter 与 `no-store`；admin 支持 global / 指定系统账户，self 强制 actor scope。
+- reader 只读既有 `usage_scope_range_windows`、`usage_rank_snapshots`、`usage_stats_daily`、`usage_stats_hourly`、`ai_performance_summary_windows` 和账户授权 metadata，不回扫 `usage_records`，不新增 migration、writer、worker 或冷窗口登记。Node stats worker 继续单写预聚合。
+- 首轮对齐 31 天范围、1000 行 progressive pagination、显式账户 50、trend 10、性能选择 20、options 50、默认榜单、授权可见性、NFKC 名称前缀、小时补零、平均 / 最大样本边界和前端 DTO；options 不返回 `selected/defaultVisible`。
+- 定向 service / PostgreSQL guard / HTTP / router / app 测试、`go test ./... -count=1` 与 `go vet ./...` 已通过；真实 PostgreSQL schema 衔接、Node writer -> Go reader、查询计划、真实 listener / browser、精确切流、回滚和 Node 删除继续后置，当前不宣称生产接管。
