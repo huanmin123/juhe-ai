@@ -114,6 +114,35 @@ func TestServiceModelCapabilitiesKeepsTextProtocolsOutsideAccountTestModes(t *te
 	}
 }
 
+func TestServiceModelCapabilitiesHybridKeepsNodeCrossProviderOrdering(t *testing.T) {
+	higherCatalogOrder := 100
+	lowerCatalogOrder := 1
+	store := &providerModelStoreStub{
+		providers: map[string]port.ManagementProviderModelProvider{
+			"hybrid": {Code: "hybrid", Enabled: true},
+		},
+		protocolCodes: map[string][]string{
+			"openai:v1":     {"gpt"},
+			"anthropic:v1":  {"deepseek"},
+			"gemini:v1beta": {},
+		},
+		capabilityCandidates: []port.ManagementProviderModelCatalogItem{
+			{ID: "a-gpt", ProviderCode: "gpt", Model: "shared", Scope: "built_in", CatalogOrder: &higherCatalogOrder, SupportedAPIProtocols: []string{"responses"}},
+			{ID: "z-deepseek", ProviderCode: "deepseek", Model: "shared", Scope: "built_in", CatalogOrder: &lowerCatalogOrder, SupportedAPIProtocols: []string{"chat_completions"}},
+		},
+	}
+
+	result, err := NewService(store).ModelCapabilities(context.Background(), ModelCapabilitiesInput{
+		ProviderCode: "hybrid", SystemAccountID: "sys_user", Model: "shared",
+	})
+	if err != nil {
+		t.Fatalf("ModelCapabilities() error = %v", err)
+	}
+	if !slices.Equal(result.SupportedAPIProtocols, []string{"responses"}) {
+		t.Fatalf("result = %+v, want Node-compatible provider/id ordering", result)
+	}
+}
+
 func TestServiceModelSelectionOptionsUsesBoundedQueryAndLightweightDTO(t *testing.T) {
 	store := &providerModelStoreStub{
 		providers: map[string]port.ManagementProviderModelProvider{
