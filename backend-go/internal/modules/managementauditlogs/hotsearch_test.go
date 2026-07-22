@@ -2,12 +2,14 @@ package managementauditlogs
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestHotSearchScannerMatchesAnyKeywordWithinBoundedWindow(t *testing.T) {
@@ -92,6 +94,46 @@ func TestHotSearchScannerCapsResultsAndSkipsMalformedOrOversizedLines(t *testing
 		Keywords: []string{"needle"}, Limit: 1, Now: time.Date(2026, 7, 22, 11, 0, 0, 0, time.UTC),
 	})
 	if !result.Available || len(result.IDs) != 1 || result.IDs[0].ID != "a" || !result.Truncated {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestHotSearchScannerReadsNewestMatchesFromAppendOnlyFile(t *testing.T) {
+	root := t.TempDir()
+	start := time.Date(2026, 7, 22, 10, 0, 0, 0, time.UTC)
+	var body strings.Builder
+	for index := 0; index <= maxHotSearchMatches; index++ {
+		fmt.Fprintf(&body, `{"auditLogId":"audit_%04d","createdAt":"%s","text":"needle"}`+"\n", index, start.Add(time.Duration(index)*time.Second).Format(time.RFC3339))
+	}
+	writeHotSearchFile(t, root, "audit-hot-2026072210.ndjson", body.String())
+
+	result := newHotSearchScanner(root).Search(context.Background(), HotSearchInput{
+		Keywords: []string{"needle"}, Limit: 100, Now: start.Add(time.Hour),
+	})
+	if !result.Available || !result.Truncated || len(result.IDs) != 100 || result.IDs[0].ID != "audit_2000" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestHotSearchScannerSearchesDecodedTextWhenJSONEscapingExceedsRuneLimit(t *testing.T) {
+	root := t.TempDir()
+	item := hotSearchLine{
+		AuditLogID: "audit_escaped", CreatedAt: "2026-07-22T10:00:00Z",
+		Text: strings.Repeat("\n", 11_000) + "needle",
+	}
+	line, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if utf8.RuneCount(line) <= maxHotSearchLineRunes || len(line) > maxHotSearchLineBytes {
+		t.Fatalf("fixture bounds: bytes=%d runes=%d", len(line), utf8.RuneCount(line))
+	}
+	writeHotSearchFile(t, root, "audit-hot-2026072210.ndjson", string(line))
+
+	result := newHotSearchScanner(root).Search(context.Background(), HotSearchInput{
+		Keywords: []string{"needle"}, Now: time.Date(2026, 7, 22, 11, 0, 0, 0, time.UTC),
+	})
+	if !result.Available || result.Truncated || len(result.IDs) != 1 || result.IDs[0].ID != "audit_escaped" {
 		t.Fatalf("result = %+v", result)
 	}
 }
