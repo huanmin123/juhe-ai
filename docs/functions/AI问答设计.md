@@ -416,6 +416,7 @@ DELETE /__aisys__/api/my-chat/conversations/:id
 - PATCH 只接受 `title` 和 `isPinned`，至少提供一个字段；标题最长 60 字符。
 - 模型列表先校验会话归属和绑定 Key，再读取 API Key 活跃分组对应供应商的轻量快照；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数和必须返回的模型数有关，不随账户数增长。
 - 模型能力使用 `/conversations/:conversationId/models/:modelId` 按供应商和模型 ID 定点读取；已发布快照按 `chat_list:<provider>` 与 `chat_model:<provider>:<modelId>` 分行保存，列表冷读不会解析完整能力目录。
+- PostgreSQL 从旧 `variant='chat'` 宽快照升级到上述拆分快照时，必须通过新的前向 migration 替换 `gateway_model_catalog_snapshots` 的 CHECK，删除可重建的旧宽快照并投递一次 `all` 模型目录重建请求；不能只修改已经应用过的建表 migration，也不能在运行时保留旧 variant 兼容分支。发布门禁必须检查当前约束允许 `chat_list:*` / `chat_model:*`，并验证代表性启用用户的 `chat_list:gpt` 非空。
 - 模型列表表达稳定配置能力，不因账户临时冷却、并发占满或短时不可用而抖动；实际发送仍由网关按实时账户状态、模型限制和协议能力完成最终校验与调度。
 - 前端首屏不加载模型列表；只有用户展开模型下拉时才按 API Key 缓存轻量列表。当前模型能力按会话和模型 ID 缓存、并发去重，切换模型、切换会话或卸载页面会取消旧请求。未重新选择时优先沿用会话 `lastModel` 或创建响应中的默认模型引用。
 - 能力摘要只保留模型目录真实声明：思考列表移除产品不开放的 `none`；服务列表在模型声明 Priority/Flex 能力时显式加入可供用户手动选择的标准 `default`；上下文返回 `maxInputTokens`，缺少时才使用 `contextWindowTokens`。能力摘要中的默认值不触发页面或服务端自动选择。
