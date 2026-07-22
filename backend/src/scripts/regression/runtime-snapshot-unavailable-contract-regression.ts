@@ -148,7 +148,13 @@ interface SystemMetricsRuntimeResponse {
 interface AccountListResponse {
   items: Array<{
     id: string
+    currentConcurrency: number
+    currentConcurrencyAvailable?: boolean
   }>
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+    accountRuntimeAvailabilityAvailable: boolean
+  }
 }
 
 interface AccountStatusSnapshotResponse {
@@ -167,6 +173,19 @@ interface GroupListResponse {
     id: string
     accountStats: Record<string, unknown>
   }>
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+  }
+}
+
+interface GroupStatusSnapshotResponse {
+  items: Array<{
+    id: string
+    currentConcurrency: number
+  }>
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+  }
 }
 
 let server: http.Server | undefined
@@ -306,8 +325,10 @@ try {
   const accountPage = await getEnvelope<AccountListResponse>(baseUrl, '/__aisys__/api/accounts?page=1&pageSize=20', seed.adminCookie)
   const account = accountPage.items.find((item) => item.id === seed.accountId)
   assert(account, '测试账户应出现在账户列表')
-  assert.equal('runtimeSnapshot' in accountPage, false, '账户分页不得内联实时状态快照')
-  assert.equal('currentConcurrency' in account, false, '账户分页不得把延迟加载的实时并发伪装成 0')
+  assert.equal(accountPage.runtimeSnapshot.accountConcurrencyAvailable, false, '账户分页必须内联并发不可用标记')
+  assert.equal(accountPage.runtimeSnapshot.accountRuntimeAvailabilityAvailable, false, '账户分页必须内联运行态不可用标记')
+  assert.equal(account.currentConcurrency, 0, '账户并发不可用时列表只保留数值占位')
+  assert.equal(account.currentConcurrencyAvailable, false, '账户列表不得把占位并发标记为可信')
 
   const accountStatusSnapshot = await getEnvelope<AccountStatusSnapshotResponse>(
     baseUrl,
@@ -321,8 +342,19 @@ try {
   const groupPage = await getEnvelope<GroupListResponse>(baseUrl, '/__aisys__/api/groups?page=1&pageSize=20', seed.adminCookie)
   const group = groupPage.items.find((item) => item.id === seed.groupId)
   assert(group, '测试分组应出现在分组列表')
-  assert.equal('runtimeSnapshot' in groupPage, false, '分组分页不得内联实时状态快照')
-  assert.equal('currentConcurrency' in group.accountStats, false, '分组分页不得把延迟加载的实时并发伪装成 0')
+  assert.equal(groupPage.runtimeSnapshot.accountConcurrencyAvailable, false, '分组分页必须内联并发不可用标记')
+  assert.equal(group.accountStats.currentConcurrency, 0, '分组并发不可用时列表只保留数值占位')
+  assert.equal(group.accountStats.currentConcurrencyAvailable, false, '分组列表不得把占位并发标记为可信')
+  assert.equal('todayUsage' in group.accountStats, true, '分组列表必须内联当日用量')
+
+  const groupStatusSnapshot = await getEnvelope<GroupStatusSnapshotResponse>(
+    baseUrl,
+    `/__aisys__/api/groups/status-snapshot?groupIds=${encodeURIComponent(seed.groupId)}`,
+    seed.adminCookie
+  )
+  assert.equal('runtimeSnapshot' in groupStatusSnapshot, true, '分组状态快照必须返回实时并发可用性')
+  assert.equal(groupStatusSnapshot.runtimeSnapshot.accountConcurrencyAvailable, false, '分组状态快照应显式标记实时并发不可用')
+  assert.equal(groupStatusSnapshot.items[0]?.currentConcurrency, 0, '分组实时并发不可用时只保留数值占位')
 
   console.log('运行态快照不可用契约回归通过：API 不再把 unknown 伪装成 0、false、[] 或默认天数')
 } finally {
