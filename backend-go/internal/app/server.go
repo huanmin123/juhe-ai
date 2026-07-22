@@ -55,6 +55,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementstats"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
+	"juhe-ai/backend-go/internal/modules/managementtablemonitor"
 	"juhe-ai/backend-go/internal/modules/managementusagerecords"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
@@ -438,6 +439,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementAuditLogsHandler:                        managementHandlers.AuditLogsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
+		ManagementTableMonitorHandler:                     managementHandlers.TableMonitorHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
 		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
 		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
@@ -671,6 +673,7 @@ type managementAPIHandlers struct {
 	MyOperationLogsHandler                  http.Handler
 	AuditLogsHandler                        http.Handler
 	RuntimeLogsHandler                      http.Handler
+	TableMonitorHandler                     http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
 	ExternalIntegrationSourceDetailHandler  http.Handler
 	ExternalIntegrationSourceCreateHandler  http.Handler
@@ -915,6 +918,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	operationLogService := managementoperationlogs.NewService(store)
 	auditLogService := managementauditlogs.NewService(store)
 	runtimeLogService := managementruntimelogs.NewService(store)
+	tableMonitorService := managementtablemonitor.NewService(store)
 	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
 		managementexternalintegrationsources.ServiceOptions{
 			ListReader:   store,
@@ -1148,6 +1152,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		AuditLogsHandler:                        httpapi.NewManagementAuditLogsHandler(auditLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
+		TableMonitorHandler:                     httpapi.NewManagementTableMonitorHandler(tableMonitorService),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),
