@@ -32,6 +32,7 @@ import { recordGatewayProxyFailureAsync } from '../runtime/proxy-health.service.
 import { requestEndpoint } from '../request/metadata.js'
 import { loadGatewayAccountApiKeyTransientStatesForDispatch } from '../runtime/account-api-key-failure-guard.service.js'
 import { extractGatewayJsonBodyMetadata } from '../request/json-metadata-scanner.js'
+import { replaceGatewayJsonBody, type GatewayRawBodyRequest } from '../request/body.js'
 import type { UsageServiceTier } from '../usage/service-tier.js'
 import type { UsageReasoningEffort } from '../usage/reasoning-effort.js'
 import { prepareCodexResponsesContextForAccount } from '../codex-responses/chat-bridge-state.js'
