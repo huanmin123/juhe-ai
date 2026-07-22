@@ -4,6 +4,9 @@
   "queue": "model-check",
   "maxRetry": 3,
   "deadlinePolicy": "probe-plan-budget-v1",
+  "leaseFencingPolicy": "claim-epoch-v1",
+  "enqueueHandoffPolicy": "transactional-outbox-v1",
+  "finishCasPolicy": "running-active-claim-no-stop-v1",
   "publicStatuses": ["running", "completed", "failed", "canceled"],
   "terminalStatuses": ["completed", "failed", "canceled"],
   "applyTransitions": [
@@ -67,7 +70,7 @@
     "checkpoint_probe_attempts": "persist one bounded internal result per run, probe key, and attempt before starting the next probe; retries resume completed work without exposing partial report items",
     "upsert_items": "one item per run id and item key; retry replaces the sanitized result instead of duplicating it",
     "append_observations": "observation ids are deterministic per run, probe, round, and sample; conflict is a no-op",
-    "finish_run": "compare-and-set running to one terminal state; replay of the same terminal result is a no-op"
+    "finish_run": "compare-and-set running to one terminal state only for the active claim epoch, an unexpired lease, and no stop intent; replay of the same terminal result is a no-op"
   },
   "nodeDivergenceReasons": [
     "Go uses an Asynq ops task instead of keeping the expensive probe lifecycle inside an HTTP request.",

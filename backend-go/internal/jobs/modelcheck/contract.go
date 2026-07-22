@@ -1,10 +1,13 @@
 package modelcheck
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 	"unicode"
@@ -16,11 +19,17 @@ const (
 	QueueName        = "model-check"
 	DefaultMaxRetry  = 3
 	DeadlinePolicyV1 = "probe-plan-budget-v1"
+	LeaseFencingV1   = "claim-epoch-v1"
+	EnqueueHandoffV1 = "transactional-outbox-v1"
+	FinishCASV1      = "running-active-claim-no-stop-v1"
 
 	MaxIdentifierBytes = 200
 	MaxModelBytes      = 200
 	MaxTraceIDBytes    = 200
+	MaxPayloadBytes    = 8 * 1024
 )
+
+var ErrInvalidPayload = errors.New("invalid model-check task payload")
 
 type RunStatus string
 
@@ -135,6 +144,41 @@ func NormalizeRunTaskPayload(payload RunTaskPayload) (RunTaskPayload, error) {
 		return RunTaskPayload{}, err
 	}
 	return payload, nil
+}
+
+func EncodeRunTaskPayload(payload RunTaskPayload) ([]byte, error) {
+	normalized, err := NormalizeRunTaskPayload(payload)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	}
+	encoded, err := json.Marshal(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("%w: encode payload: %v", ErrInvalidPayload, err)
+	}
+	if len(encoded) > MaxPayloadBytes {
+		return nil, fmt.Errorf("%w: payload exceeds %d bytes", ErrInvalidPayload, MaxPayloadBytes)
+	}
+	return encoded, nil
+}
+
+func DecodeRunTaskPayload(data []byte) (RunTaskPayload, error) {
+	if len(data) == 0 || len(data) > MaxPayloadBytes {
+		return RunTaskPayload{}, fmt.Errorf("%w: payload size must be between 1 and %d bytes", ErrInvalidPayload, MaxPayloadBytes)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var payload RunTaskPayload
+	if err := decoder.Decode(&payload); err != nil {
+		return RunTaskPayload{}, fmt.Errorf("%w: decode payload: %v", ErrInvalidPayload, err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return RunTaskPayload{}, fmt.Errorf("%w: trailing payload data", ErrInvalidPayload)
+	}
+	normalized, err := NormalizeRunTaskPayload(payload)
+	if err != nil {
+		return RunTaskPayload{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	}
+	return normalized, nil
 }
 
 func UniqueKey(payload RunTaskPayload) (string, error) {
