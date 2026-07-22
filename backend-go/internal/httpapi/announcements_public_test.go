@@ -225,3 +225,21 @@ func TestRouterRegistersAnnouncementPublicHandlersOnlyWhenManagementAPIEnabled(t
 		t.Fatalf("disabled status=%d, want 404", recorder.Code)
 	}
 }
+
+func TestRouterRequiresTouchAuthWhenAnnouncementPublicReadIsTheOnlyWriteRoute(t *testing.T) {
+	defer func() {
+		recovered := recover()
+		if recovered != "ManagementAPIAuthTouchMiddleware is required for Go management write routes" {
+			t.Fatalf("panic = %v, want missing write auth middleware", recovered)
+		}
+	}()
+
+	opts := RouterOptions{
+		ManagementAPIAuthMiddleware: func(next http.Handler) http.Handler {
+			return next
+		},
+		ManagementAnnouncementPublicReadHandler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	}
+	opts.Config.ManagementAPIEnabled = true
+	NewRouter(opts)
+}
