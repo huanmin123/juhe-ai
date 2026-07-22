@@ -129,7 +129,7 @@ async function sendModelsGatewayResponse(input: SendOpenAIModelsGatewayResponseI
     systemAccountId: usageContext.systemAccountId,
     providerCodes: normalizedProviderCodes
   })
-  dispatchUsageRecord({
+  await dispatchUsageRecord({
     ...usageContext,
     providerCode,
     usageSemantic: usageSemanticForProfile({

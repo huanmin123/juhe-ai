@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   accountHealthCheckEndpointModeOptions,
   defaultAccountHealthCheckEndpointMode
 } from '../../views/accounts/accountHealthCheckEndpointMode'
 import { accountTestEndpointModesForAccount } from '../../views/accounts/accountEndpointModes'
-import { readFileSync } from 'node:fs'
-import { accountTestEndpointModesForModelOption } from '../../views/accounts/useAccountTestModels'
 
 assert.equal(defaultAccountHealthCheckEndpointMode('gpt', 'profile_gpt_openai_v1', ['chat_json', 'responses_sse']), 'responses_sse')
 assert.equal(defaultAccountHealthCheckEndpointMode('openai', 'profile_openai_openai_v1', ['responses_json', 'chat_json']), 'chat_json')
@@ -55,29 +54,30 @@ const hybridEndpointModes = accountTestEndpointModesForAccount({
   }
 })
 assert.deepEqual(hybridEndpointModes, ['messages_sse', 'chat_json', 'generate_content_sse'], '混合供应商人工测试应保留全部已启用生成协议并排除工具接口')
-const perModelOptions = [
-  {
-    label: 'chat-model',
-    value: 'chat-model',
-    supportedApiProtocols: ['chat_completions' as const],
-    testEndpointModes: ['chat_json', 'chat_sse'] as const
-  },
-  {
-    label: 'responses-model',
-    value: 'responses-model',
-    supportedApiProtocols: ['responses' as const],
-    testEndpointModes: ['responses_sse'] as const
-  }
-]
-assert.deepEqual(
-  accountTestEndpointModesForModelOption(perModelOptions.map((item) => ({ ...item, testEndpointModes: [...item.testEndpointModes] })), 'chat-model'),
-  ['chat_json', 'chat_sse'],
-  '人工测试切换模型时必须只显示后端返回的模型 mode 交集'
+
+const accountTestModelsSource = readFileSync(
+  new URL('../../views/accounts/useAccountTestModels.ts', import.meta.url),
+  'utf8'
 )
-assert.deepEqual(
-  accountTestEndpointModesForModelOption(perModelOptions.map((item) => ({ ...item, testEndpointModes: [...item.testEndpointModes] })), 'responses-model'),
-  ['responses_sse'],
-  '模型切换后不得残留前一个模型的检查协议'
+assert.match(
+  accountTestModelsSource,
+  /loadAccountTestModelCapabilitiesCached\(\{/,
+  '人工测试切换模型时必须独立请求模型能力'
+)
+assert.match(
+  accountTestModelsSource,
+  /testEndpointModes\.value = normalizeEndpointModes\(response\.testEndpointModes\)/,
+  '模型请求形态必须以后端返回的模型能力为准'
+)
+assert.match(
+  accountTestModelsSource,
+  /modelAbortController = controller\s+testEndpointModes\.value = \[\]\s+input\.testForm\.testEndpointMode = 'account_default'/,
+  '模型切换后必须先清理前一个模型的请求形态'
+)
+assert.doesNotMatch(
+  accountTestModelsSource,
+  /accountTestEndpointModesForModelOption/,
+  '模型列表不得再承载已拆分的模型能力逻辑'
 )
 
 for (const relativePath of [

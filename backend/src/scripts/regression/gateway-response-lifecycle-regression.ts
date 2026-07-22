@@ -241,25 +241,23 @@ let startedBoundedUsageTasks = 0
 const boundedUsageGate = new Promise<void>((resolvePromise) => {
   releaseBoundedUsageTasks = resolvePromise
 })
-let acceptedBoundedUsageTasks = 0
+const boundedUsageTasks: Promise<void>[] = []
 for (let index = 0; index < 2_081; index += 1) {
-  if (failureUsageFinalization.dispatchGatewayUsageFinalization({
+  boundedUsageTasks.push(failureUsageFinalization.dispatchGatewayUsageFinalization({
     taskFactory: async () => {
       startedBoundedUsageTasks += 1
       await boundedUsageGate
     },
     bytes: 1
-  })) {
-    acceptedBoundedUsageTasks += 1
-  }
+  }))
 }
-assert.equal(acceptedBoundedUsageTasks, 2_080, 'usage 异步收尾必须在数量上限处拒绝多余投递')
 await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
 assert.equal(startedBoundedUsageTasks, 32, 'usage 异步收尾并发必须受上限保护')
 releaseBoundedUsageTasks?.()
+await Promise.all(boundedUsageTasks)
 assert.equal(await failureUsageFinalization.waitForGatewayFailureUsageFinalizationsIdle(2_000), true, '有界 usage 收尾队列应可排空')
 const usageFinalizationRuntime = failureUsageFinalization.getGatewayUsageFinalizationRuntime()
-assert.equal(usageFinalizationRuntime.droppedCount, 1, '有界 usage 收尾溢出必须暴露累计 dropped 计数')
+assert.equal(usageFinalizationRuntime.admissionWaitCount, 1, 'usage 收尾满水位时必须背压等待，不能丢弃完成事实')
 assert.equal(usageFinalizationRuntime.pendingCount, 0, '有界 usage 收尾排空后运行态 pending 必须归零')
 assert.equal(usageFinalizationRuntime.queuedBytes, 0, '有界 usage 收尾排空后运行态 queued bytes 必须归零')
 

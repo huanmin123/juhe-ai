@@ -1,8 +1,8 @@
-import { api, pageDataApi } from '@/api/client'
+import { api } from '@/api/client'
 import type { AccountTestModelCapabilities, AccountTestOptions } from '@/api/domains/accounts'
 import type { AccountTestOptionsParams, RequestControlOptions } from '@/api/contracts'
 import { authState } from '@/composables/useAuth'
-import { getDefaultPageDataResourceCache } from '@/shared/pageDataResourceCache'
+import { createShortLivedRequestCache } from '@/shared/shortLivedRequestCache'
 import type { AccountSummary } from '@/types/domain'
 import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 
@@ -18,12 +18,20 @@ interface AccountTestModelCapabilitiesLoadInput extends AccountTestOptionsLoadIn
   modelId: string
 }
 
-const accountTestOptionsCache = getDefaultPageDataResourceCache((request) => pageDataApi.confirm(request))
+const accountTestOptionsCache = createShortLivedRequestCache<AccountTestOptions>({
+  maxEntries: 100,
+  ttlMs: 5 * 60_000
+})
+const accountTestModelCapabilitiesCache = createShortLivedRequestCache<AccountTestModelCapabilities>({
+  maxEntries: 200,
+  ttlMs: 5 * 60_000
+})
 let cacheGeneration = 0
 
 export function invalidateAccountTestOptionsCache(): void {
   cacheGeneration += 1
-  void accountTestOptionsCache.invalidate('accounts.options')
+  accountTestOptionsCache.clear()
+  accountTestModelCapabilitiesCache.clear()
 }
 
 export async function loadAccountTestOptionsCached(input: AccountTestOptionsLoadInput): Promise<AccountTestOptions> {
@@ -32,38 +40,19 @@ export async function loadAccountTestOptionsCached(input: AccountTestOptionsLoad
   const loader = () => input.isManagementView
     ? api.accounts.testOptions(input.account.id, params, input.options)
     : api.myAccounts.testOptions(input.account.id, input.params, input.options)
-  const configRevision = input.account.configRevision
-  if (!Number.isInteger(configRevision) || Number(configRevision) < 1) {
-    return await loadAbortable(loader, input.options?.signal)
-  }
-  const viewScope = input.isManagementView ? 'admin' as const : 'self' as const
-  const route = input.isManagementView
-    ? `/accounts/${input.account.id}/test-options`
-    : `/my-accounts/${input.account.id}/test-options`
-  return await loadCachedAbortable(route, input.options?.signal, async () => {
-    const result = await accountTestOptionsCache.load<AccountTestOptions>({
-      cacheKey: {
-        scope: resolveAccountTestOptionsCacheKey(input, scopeParams, Number(configRevision)),
-        route,
-        query: {
-          accountId: input.account.id,
-          configRevision: Number(configRevision),
-          keyword: input.params?.keyword,
-          limit: input.params?.limit,
-          selectedIds: input.params?.selectedIds,
-          systemAccountId: scopeParams?.systemAccountId
-        },
-        version: `${cacheGeneration}:1`
-      },
-      domain: 'accounts.options',
-      viewScope,
-      ...(viewScope === 'admin' && scopeParams?.systemAccountId
-        ? { targetSystemAccountId: scopeParams.systemAccountId }
-        : {}),
-      loadNetwork: loader
-    })
-    return result.data
-  })
+  const configRevision = normalizedConfigRevision(input.account.configRevision)
+  if (configRevision === undefined) return await loadAbortable(loader, input.options?.signal)
+
+  const cacheKey = [
+    resolveAccountTestOptionsCacheScope(input, scopeParams, configRevision),
+    input.params?.keyword?.trim() ?? '',
+    input.params?.limit ?? '',
+    [...(input.params?.selectedIds ?? [])].sort().join(',')
+  ].join(':')
+  return await loadAbortable(
+    () => accountTestOptionsCache.load(cacheKey, loader),
+    input.options?.signal
+  )
 }
 
 export async function loadAccountTestModelCapabilitiesCached(
@@ -73,55 +62,18 @@ export async function loadAccountTestModelCapabilitiesCached(
   const loader = () => input.isManagementView
     ? api.accounts.testModelCapabilities(input.account.id, input.modelId, scopeParams, input.options)
     : api.myAccounts.testModelCapabilities(input.account.id, input.modelId, input.options)
-  const configRevision = input.account.configRevision
-  if (!Number.isInteger(configRevision) || Number(configRevision) < 1) {
-    return await loadAbortable(loader, input.options?.signal)
-  }
-  const viewScope = input.isManagementView ? 'admin' as const : 'self' as const
-  const route = input.isManagementView
-    ? `/accounts/${input.account.id}/test-options/models/${encodeURIComponent(input.modelId)}`
-    : `/my-accounts/${input.account.id}/test-options/models/${encodeURIComponent(input.modelId)}`
-  return await loadCachedAbortable(route, input.options?.signal, async () => {
-    const result = await accountTestOptionsCache.load<AccountTestModelCapabilities>({
-      cacheKey: {
-        scope: `${resolveAccountTestOptionsCacheKey(input, scopeParams, Number(configRevision))}:${input.modelId}`,
-        route,
-        query: {
-          accountId: input.account.id,
-          configRevision: Number(configRevision),
-          modelId: input.modelId,
-          systemAccountId: scopeParams?.systemAccountId
-        },
-        version: `${cacheGeneration}:1`
-      },
-      domain: 'accounts.options',
-      viewScope,
-      ...(viewScope === 'admin' && scopeParams?.systemAccountId
-        ? { targetSystemAccountId: scopeParams.systemAccountId }
-        : {}),
-      loadNetwork: loader
-    })
-    return result.data
-  })
-}
+  const configRevision = normalizedConfigRevision(input.account.configRevision)
+  if (configRevision === undefined) return await loadAbortable(loader, input.options?.signal)
 
-async function loadCachedAbortable<T>(
-  route: string,
-  signal: AbortSignal | undefined,
-  load: () => Promise<T>
-): Promise<T> {
-  try {
-    const result = await load()
-    if (signal?.aborted) {
-      await accountTestOptionsCache.invalidate('accounts.options', undefined, route)
-      throw abortError()
-    }
-    return result
-  } catch (error) {
-    if (!signal?.aborted) throw error
-    await accountTestOptionsCache.invalidate('accounts.options', undefined, route)
-    throw abortError()
-  }
+  const cacheKey = [
+    resolveAccountTestOptionsCacheScope(input, scopeParams, configRevision),
+    'capabilities',
+    input.modelId.trim()
+  ].join(':')
+  return await loadAbortable(
+    () => accountTestModelCapabilitiesCache.load(cacheKey, loader),
+    input.options?.signal
+  )
 }
 
 async function loadAbortable<T>(load: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -139,15 +91,25 @@ function abortError(): DOMException {
   return new DOMException('请求已取消', 'AbortError')
 }
 
-function resolveAccountTestOptionsCacheKey(
+function normalizedConfigRevision(value: number | undefined): number | undefined {
+  return Number.isInteger(value) && Number(value) >= 1 ? Number(value) : undefined
+}
+
+function resolveAccountTestOptionsCacheScope(
   input: AccountTestOptionsLoadInput,
   scopeParams: AccountScopeParams,
   configRevision: number
 ): string {
-  const userId = authState.currentUser.value?.id ?? 'anonymous'
+  const viewer = authState.currentUser.value
   const viewScope = input.isManagementView
     ? `management:${scopeParams?.systemAccountId ?? 'all'}`
     : 'self'
-  const role = authState.currentUser.value?.role ?? 'anonymous'
-  return `${userId}:${role}:${viewScope}:${input.account.id}:${configRevision}`
+  return [
+    cacheGeneration,
+    viewer?.id ?? 'anonymous',
+    viewer?.role ?? 'anonymous',
+    viewScope,
+    input.account.id,
+    configRevision
+  ].join(':')
 }

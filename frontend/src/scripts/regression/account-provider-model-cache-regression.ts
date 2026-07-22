@@ -37,12 +37,13 @@ try {
     { id: 'gpt-cache-new', name: 'GPT Cache New' }
   ]
   await modelOptions.loadProviderModelOptions('openai')
-  assert.equal(calls.length, 1, '未失效时应继续使用供应商维度缓存')
+  assert.deepEqual(modelOptions.providerModelOptions.value.map((item) => item.value), ['gpt-cache-old', 'gpt-cache-new'])
+  assert.equal(calls.length, 2, '重新打开模型下拉必须重新请求，不能让旧浏览器缓存掩盖其他会话的模型修改')
 
   invalidateAccountProviderModelOptionsCache('openai')
   await modelOptions.loadProviderModelOptions('openai')
   assert.deepEqual(modelOptions.providerModelOptions.value.map((item) => item.value), ['gpt-cache-old', 'gpt-cache-new'])
-  assert.equal(calls.length, 2, '当前供应商失效后应重新请求轻量选项')
+  assert.equal(calls.length, 3, '显式失效后仍应正常请求轻量选项')
 
   invalidateAccountProviderModelOptionsCache()
   const scopeId = ref('sys_scope_a')
@@ -70,7 +71,7 @@ try {
   assert.deepEqual(raced.providerModelOptions.value, [{ label: 'Scope B', value: 'scope-b-model' }])
   assert.equal(raced.providerModelsLoading.value, false)
 
-  console.log('账户模型选项缓存回归通过：轻量契约、供应商缓存失效、作用域隔离和逆序响应均符合预期')
+  console.log('账户模型选项实时加载回归通过：轻量契约、跨会话刷新、作用域隔离和逆序响应均符合预期')
 } finally {
   ;(api.providers as unknown as { modelOptions: ModelOptionsLoader }).modelOptions = originalModelOptions
   invalidateAccountProviderModelOptionsCache()

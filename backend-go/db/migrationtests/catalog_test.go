@@ -78,6 +78,28 @@ func TestProviderAuthProtocolCatchUpMigrationUpgradesVersion59Databases(t *testi
 	}
 }
 
+func TestGPTCodexAutoReviewDefaultMigrationIsProviderScopedAndIdempotent(t *testing.T) {
+	const migrationName = "000071_w2_gpt_codex_auto_review_default.sql"
+	source, err := os.ReadFile(migrationPath(migrationName))
+	if err != nil {
+		t.Fatalf("read %s: %v", migrationName, err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+
+	for _, want := range []string{
+		"WHERE code = 'gpt'",
+		`'["codex-auto-review"]'::jsonb`,
+		"NOT (default_supported_models_json::jsonb @>",
+	} {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("%s missing %q", migrationName, want)
+		}
+	}
+	if strings.Contains(sql, "WHERE code = 'openai'") {
+		t.Fatalf("%s must not change generic OpenAI-compatible defaults", migrationName)
+	}
+}
+
 func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testing.T) {
 	catalog, err := migrationcatalog.Inspect(os.DirFS(migrationPath(".")))
 	if err != nil {
@@ -95,7 +117,7 @@ func TestMigrationCatalogContainsOnlyUniqueContiguousVersionedSQLFiles(t *testin
 
 	wantLatest := migrationcatalog.Entry{
 		Version: migrationcatalog.CurrentSchemaVersion,
-		Name:    "000070_w2_gateway_model_catalog_chat_snapshot_variants.sql",
+		Name:    "000071_w2_gpt_codex_auto_review_default.sql",
 	}
 	if gotLatest := catalog.Entries[len(catalog.Entries)-1]; gotLatest != wantLatest {
 		t.Fatalf("latest migration = %+v, want %+v", gotLatest, wantLatest)

@@ -55,6 +55,16 @@ const stopAccountTestSource = sourceSection(
   'function stopAccountTest',
   'function closeTestModal'
 )
+const terminateAttachedTestRunSource = sourceSection(
+  accountTestModalSource,
+  'function terminateAttachedTestRun',
+  'function stopAccountTest'
+)
+const closeTestModalSource = sourceSection(
+  accountTestModalSource,
+  'function closeTestModal',
+  'onBeforeUnmount'
+)
 const updateSelectableTestModelSource = sourceSection(
   accountTestModelsSource,
   'function updateSelectableTestModel',
@@ -92,11 +102,11 @@ assertIncludes(accountTestModelsSource, 'selectedIds', '测试模型搜索必须
 assertIncludes(accountTestComponentSource, "@search=\"$emit('search-model-options', $event)\"", '模型选择器搜索必须触发服务端按需加载')
 assertIncludes(accountTestModelsSource, 'optionsAbortController?.abort()', '关闭或切换账户时必须取消候选模型请求')
 assertIncludes(accountTestModelsSource, 'modelAbortController?.abort()', '关闭或切换账户时必须取消模型能力请求')
-assertIncludes(accountTestOptionsCacheSource, 'getDefaultPageDataResourceCache', '账户测试选项必须复用统一 IndexedDB resource cache')
-assertIncludes(accountTestOptionsCacheSource, "domain: 'accounts.options'", '账户测试选项必须绑定 accounts.options revision')
-assertNotIncludes(accountTestOptionsCacheSource, 'createShortLivedRequestCache', '账户测试选项不得继续维护独立 5 分钟内存缓存')
-assertIncludes(accountTestOptionsCacheSource, 'authState.currentUser.value?.id', '账户测试选项缓存应按当前登录用户隔离')
-assertIncludes(accountTestOptionsCacheSource, 'Number.isInteger(configRevision)', '缺少有效配置版本时不应缓存账户测试选项')
+assertNotIncludes(accountTestOptionsCacheSource, 'pageData', '账户测试选项不得依赖已移除的页面缓存')
+assertIncludes(accountTestOptionsCacheSource, 'createShortLivedRequestCache', '移除页面缓存后应使用有界短时请求缓存')
+assertIncludes(accountTestOptionsCacheSource, 'accountTestModelCapabilitiesCache', '模型能力应与模型列表分开缓存')
+assertIncludes(accountTestOptionsCacheSource, 'authState.currentUser.value', '账户测试缓存应按当前用户隔离')
+assertIncludes(accountTestOptionsCacheSource, 'normalizedConfigRevision', '缺少有效配置版本时不应缓存账户测试选项')
 assertIncludes(accountTestOptionsCacheSource, 'cacheGeneration', '缓存失效后旧请求不得回填当前代次')
 assertIncludes(accountDetailCacheSource, 'invalidateAccountTestOptionsCache()', '账户写操作清理详情缓存时应同步清理测试选项')
 assertIncludes(accountRemovalActionsSource, 'invalidateAccountTestOptionsCache()', '删除或归还账户后应清理测试选项')
@@ -135,12 +145,15 @@ assert.equal(
   '运行异常和恢复异常都必须转换为终端 AccountTestResult；候选列表失败使用局部加载状态'
 )
 
-assertIncludes(detachCurrentTestViewSource, 'persistAccountTestRunSession(run, true)', '关闭视图前应保留当前账户单任务快照')
-assertIncludes(detachCurrentTestViewSource, 'run.controller.abort()', '关闭视图应只终止当前前端轮询绑定')
-assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestRunBackend', '关闭视图不能取消后台 session 或 task')
-assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestTaskRequest', '关闭视图不能取消后台 task')
-assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestSessionRequest', '关闭视图不能取消后台 session')
-assertIncludes(stopAccountTestSource, 'cancelAccountTestRunBackend(run)', '用户显式停止时才应取消当前后台运行')
+assertIncludes(detachCurrentTestViewSource, 'persistAccountTestRunSession(run, true)', '切换账户或组件卸载时应保留当前账户单任务快照')
+assertIncludes(detachCurrentTestViewSource, 'run.controller.abort()', '分离视图应只终止当前前端轮询绑定')
+assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestRunBackend', '分离视图不能取消后台 session 或 task')
+assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestTaskRequest', '分离视图不能取消后台 task')
+assertNotIncludes(detachCurrentTestViewSource, 'cancelAccountTestSessionRequest', '分离视图不能取消后台 session')
+assertIncludes(stopAccountTestSource, 'terminateAttachedTestRun(true)', '用户显式停止应进入完整终止流程')
+assertIncludes(terminateAttachedTestRunSource, 'cancelAccountTestRunBackend(run)', '完整终止流程应取消当前后台运行')
+assertIncludes(closeTestModalSource, 'terminateAttachedTestRun(true)', '关闭弹窗必须终止正在运行的后台任务')
+assertIncludes(closeTestModalSource, 'detachCurrentTestView()', '没有运行任务时关闭弹窗仍应清理视图绑定')
 
 assertIncludes(accountTestComponentSource, 'v-if="modelReadonly"', '草稿测试模型应使用只读控件展示')
 assertIncludes(accountTestComponentSource, ':mask-closable="true"', '运行中也应允许关闭并分离当前测试视图')

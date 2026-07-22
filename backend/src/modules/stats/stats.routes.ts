@@ -28,26 +28,9 @@ import { getUsageRecordRedisStreamRuntime } from '../gateway/usage/record-queue.
 import { getOperationLogRedisStreamRuntime } from '../operation-logs/operation-log-queue.service.js'
 import { getPublicApiLogRedisStreamRuntime } from '../public-api-logs/public-api-log-queue.service.js'
 import { getRecordMaintenanceRedisStreamRuntime } from '../record-maintenance/record-maintenance-queue.service.js'
-import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
 
 export const statsRouter = Router()
 
-const usageOverviewReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof getUsageStatsOverviewAsync>>>('stats.overview', {
-  max: 512,
-  ttlMs: 30 * 60 * 1000
-})
-const accountUsageReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof getAccountUsageStatsOverviewPageAsync>>>('stats.accountUsage', {
-  max: 512,
-  ttlMs: 30 * 60 * 1000
-})
-const aiPerformanceReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof getAiPerformanceOverviewAsync>>>('stats.aiPerformance', {
-  max: 512,
-  ttlMs: 30 * 60 * 1000
-})
-const aiPerformanceAccountOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listAiPerformanceAccountOptionsAsync>>>('accounts.options', {
-  max: 512,
-  ttlMs: 30 * 60 * 1000
-})
 
 const usageOverviewQuerySchema = z.object({
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
@@ -118,11 +101,7 @@ statsRouter.get('/usage-overview', async (req, res, next) => {
   try {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const range = await normalizeUsageOverviewDateRangeAsync(parsed.data)
-    const overview = await usageOverviewReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/stats/usage-overview',
-      query: range
-    }), () => getUsageStatsOverviewAsync(access, range))
+    const overview = await getUsageStatsOverviewAsync(access, range)
     res.json(ok(overview))
   } catch (error) {
     next(error)
@@ -155,11 +134,7 @@ statsRouter.get('/ai-performance', async (req, res, next) => {
     const access = getRequestAccessScope(req.query.systemAccountId)
     const range = await normalizeStatsDateRangeAsync(parsed.data)
     const accountIds = parseAccountIds(req.query.accountIds)
-    const overview = await aiPerformanceReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/stats/ai-performance',
-      query: { range, accountIds }
-    }), () => getAiPerformanceOverviewAsync(access, range, accountIds))
+    const overview = await getAiPerformanceOverviewAsync(access, range, accountIds)
     res.json(ok(overview))
   } catch (error) {
     next(error)
@@ -179,11 +154,7 @@ statsRouter.get('/ai-performance/accounts', async (req, res, next) => {
       accountIds: parseAccountIds(req.query.accountIds),
       limit: parsed.data.limit
     }
-    const options = await aiPerformanceAccountOptionsReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/stats/ai-performance/accounts',
-      query
-    }), () => listAiPerformanceAccountOptionsAsync(access, query))
+    const options = await listAiPerformanceAccountOptionsAsync(access, query)
     res.json(ok(options))
   } catch (error) {
     next(error)
@@ -195,11 +166,7 @@ statsRouter.get('/account-usage', async (req, res, next) => {
     const timezone = await usageStatsTimezoneAsync()
     const access = getRequestAccessScope(req.query.systemAccountId)
     const query = parseAccountUsageOptions(req.query, timezone)
-    const overview = await accountUsageReadCache.load(pageDataReadCacheKey({
-      scope: access,
-      route: '/stats/account-usage',
-      query
-    }), () => getAccountUsageStatsOverviewPageAsync(access, query))
+    const overview = await getAccountUsageStatsOverviewPageAsync(access, query)
     res.json(ok(overview))
   } catch (error) {
     next(error)

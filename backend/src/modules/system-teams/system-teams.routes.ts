@@ -19,11 +19,6 @@ import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-co
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sortedTextValues } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
-import {
-  publishAccountStaticReset,
-  publishPageDataDomainGlobalReset,
-  publishStatsPageDataGlobalReset
-} from '../page-data/page-data-change.publisher.js'
 
 export const systemTeamsRouter = Router()
 export const myTeamsRouter = Router()
@@ -171,7 +166,6 @@ systemTeamsRouter.post('/', requireAdmin, mutationGuard({
         }
       }
     }, req)
-    await publishTeamDependentPageDataReset()
     res.status(201).json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建团队失败'))
@@ -230,10 +224,6 @@ systemTeamsRouter.patch('/:id', requireAdmin, async (req, res) => {
         }
       }
     }, req)
-    if (authorizationAffectedOwnerSystemAccountIds.length > 0) {
-      await publishAccountStaticReset(authorizationAffectedOwnerSystemAccountIds)
-    }
-    await publishTeamDependentPageDataReset()
     res.json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     if (error instanceof Error && error.message === '团队不存在') {
@@ -306,8 +296,6 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
         }
       }
     }, req)
-    if (affectedOwnerSystemAccountIds.length > 0) await publishAccountStaticReset(affectedOwnerSystemAccountIds)
-    await publishTeamDependentPageDataReset()
     res.json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     if (error instanceof Error && error.message === '团队不存在或已停用') {
@@ -366,8 +354,6 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, async (req, res
         }
       }
     }, req)
-    if (affectedOwnerSystemAccountId) await publishAccountStaticReset([affectedOwnerSystemAccountId])
-    await publishTeamDependentPageDataReset()
     res.json(ok(compactSystemTeamResult(team)))
   } catch (error) {
     if (error instanceof Error && error.message === '团队成员不存在') {
@@ -405,14 +391,6 @@ function compactSystemTeamResult(team: SystemTeamSummary): SystemTeamDetail {
       })),
     createdAt: team.createdAt
   }
-}
-
-async function publishTeamDependentPageDataReset(): Promise<void> {
-  await Promise.all([
-    publishPageDataDomainGlobalReset('teams.options'),
-    publishPageDataDomainGlobalReset('groups.static'),
-    publishStatsPageDataGlobalReset()
-  ])
 }
 
 function teamMemberViewers(team: SystemTeamSummary) {

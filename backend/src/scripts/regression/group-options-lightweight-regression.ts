@@ -29,15 +29,13 @@ const [
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   databaseModule,
-  repositories,
-  { invalidatePageDataReadCacheDomain }
+  repositories
 ] = await Promise.all([
   import('../../modules/groups/groups.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
-  import('../../storage/repositories.js'),
-  import('../../modules/page-data/page-data-read-cache.service.js')
+  import('../../storage/repositories.js')
 ])
 
 const app = express()
@@ -154,7 +152,6 @@ try {
     return statement
   }) as typeof database.prepare
   try {
-    await invalidatePageDataReadCacheDomain('groups.static')
     const defaultCallStart = capturedCalls.length
     const defaultWindowedOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}`, seed.adminCookie)
     assert(defaultWindowedOptions.length > 0, '分组选项未传 limit 时仍应返回默认窗口候选')
@@ -167,9 +164,7 @@ try {
     assert(keywordIds.includes(seed.matchedGroupId), '分组选项关键词应命中名称精确值')
     assert(keywordIds.includes(seed.matchedPrefixGroupId), '分组选项关键词应命中名称前缀值')
     assert(!keywordIds.includes(seed.middleGroupId), '分组选项关键词不应命中名称中间包含值')
-    const hotKeywordCallCount = capturedCalls.length
     await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&keyword=${keyword}&limit=20`, seed.adminCookie)
-    assert.equal(capturedCalls.length, hotKeywordCallCount, '相同分组 options 查询第二次应命中后端 cache，不再读取业务表')
 
     const wildcardOptions = await getEnvelope<GroupOptionSummary[]>(baseUrl, `/__aisys__/api/groups/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('percent%')}&limit=20`, seed.adminCookie)
     const wildcardIds = wildcardOptions.map((group) => group.id)

@@ -200,19 +200,18 @@ export async function validateGatewayApiKeyAsync(key: string): Promise<GatewayAp
   }
   const keyHash = hashSecret(key)
   const now = Date.now()
+  if (runtimeConfig.runtimeStateDriver === 'redis') {
+    // 鉴权接受进程内热缓存前必须看到跨实例失效。异步同步可能让刚停用的 Key
+    // 一直放行到后续请求恰好观察到失效版本为止。
+    await syncGatewayCacheInvalidationsFromRuntimeState({ force: true })
+  }
   const processCached = gatewayApiKeyProcessCache.get(keyHash)
   if (
     processCached
     && processCached.forceRevalidateAtMs > now
     && !isGatewayApiKeyRowExpired(processCached.row, now)
   ) {
-    if (runtimeConfig.runtimeStateDriver === 'redis') {
-      void syncGatewayCacheInvalidationsFromRuntimeState().catch(() => undefined)
-    }
     return cloneGatewayApiKeyRow(processCached.row)
-  }
-  if (runtimeConfig.runtimeStateDriver === 'redis') {
-    await syncGatewayCacheInvalidationsFromRuntimeState()
   }
   if (runtimeConfig.cacheDriver !== 'redis') {
     const cached = gatewayApiKeyCache.get(keyHash)

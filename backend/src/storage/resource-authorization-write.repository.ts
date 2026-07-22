@@ -335,20 +335,7 @@ export async function updateResourceAuthorizationAsync(authorizationId: string, 
 
 export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizationExpirySweepBatchSize): Promise<number> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    const database = getBusinessDatabase()
-    const now = nowIso()
-    const dueGrants = database.prepare(`
-      SELECT *
-      FROM resource_authorization_grants
-      WHERE status IN ('active', 'paused')
-        AND expires_at IS NOT NULL
-        AND expires_at <= ?
-      ORDER BY expires_at ASC, updated_at ASC, id ASC
-      LIMIT ?
-    `).all(now, Math.max(1, Math.trunc(limit))) as unknown as ResourceAuthorizationGrantRow[]
-    const expired = expireDueResourceAuthorizations(limit)
-    if (expired > 0) await publishExpiredAccountAuthorizationPageData(dueGrants)
-    return expired
+    return expireDueResourceAuthorizations(limit)
   }
   const now = nowIso()
   const client = await getResourceAuthorizationWriteClient()
@@ -384,43 +371,8 @@ export async function expireDueResourceAuthorizationsAsync(limit = maxAuthorizat
   })
   if (dueGrants.length > 0) {
     await refreshAfterResourceAuthorizationBusinessWriteAsync('authorization_expired')
-    await publishExpiredAccountAuthorizationPageData(dueGrants, client)
   }
   return dueGrants.length
-}
-
-async function publishExpiredAccountAuthorizationPageData(
-  grants: ResourceAuthorizationGrantRow[],
-  client?: DatabaseClient
-): Promise<void> {
-  try {
-    const ownerSystemAccountIds = new Set<string>()
-    for (const grant of grants) {
-      if (grant.resource_type !== 'account') continue
-      ownerSystemAccountIds.add(grant.resource_owner_system_account_id)
-      if (grant.grantee_system_account_id) ownerSystemAccountIds.add(grant.grantee_system_account_id)
-      if (grant.grantee_type === 'team' && grant.grantee_team_id) {
-        const members = client
-          ? await activeTeamMemberRowsAsync(grant.grantee_team_id, client)
-          : activeTeamMemberRows(grant.grantee_team_id)
-        for (const member of members) ownerSystemAccountIds.add(member.system_account_id)
-      }
-    }
-    const groupAuthorizationExpired = grants.some((grant) => grant.resource_type === 'group')
-    const {
-      publishAccountStaticReset,
-      publishPageDataDomainGlobalReset,
-      publishStatsPageDataGlobalReset
-    } = await import('../modules/page-data/page-data-change.publisher.js')
-    await Promise.all([
-      ...(ownerSystemAccountIds.size > 0 ? [publishAccountStaticReset([...ownerSystemAccountIds])] : []),
-      ...(groupAuthorizationExpired ? [publishPageDataDomainGlobalReset('groups.static')] : []),
-      ...(ownerSystemAccountIds.size > 0 || groupAuthorizationExpired ? [publishStatsPageDataGlobalReset()] : [])
-    ])
-  } catch (error) {
-    const { reportPageDataPublishFailure } = await import('../modules/page-data/page-data-change.publisher.js')
-    reportPageDataPublishFailure(error, { domain: 'accounts.static', operation: 'authorization_expired' })
-  }
 }
 
 function findResourceAuthorizationAfterWrite(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {

@@ -5,6 +5,7 @@ import { isGptVendorCode } from '../domain/provider-protocol.js'
 import { accountSummaryWithEffectiveAvailability } from '../domain/account-effective-availability.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIds, loadAccountCurrentConcurrencyByIdsAsync } from '../shared/account-concurrency.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { accountCredentialsForList, accountRowSelectColumns, findAccountRowForAccess, hydrateAccountRowsWithQualityState, hydrateAccountRowsWithRuntimeState, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, type AccountListOptions, type NormalizedAccountListOptions } from './account-list-options.js'
@@ -858,7 +859,9 @@ async function loadAuthorizedAccountSummaryContextAsync(
     loadAuthorizationQuotaExceededByAuthorizationIdAsync(client, rows),
     loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization'),
     loadAuthorizationUsageSummariesForScopesAsync(authorizationScopes, 'account_authorization', todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)),
+    loadAccountCurrentConcurrencyByIdsAsync(rows.map((row) => row.id)).catch((error) =>
+      accountCurrentConcurrencySnapshotFallback(error, rows.map((row) => row.id))
+    ),
     loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(factAccountIds)
   ])
   void access
@@ -913,7 +916,9 @@ async function ownerAccountSummariesFromRowsAsync(
     loadAccountSummarySystemAccountNamesAsync(client, includeAccountNames ? rows.map((row) => row.system_account_id) : []),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes),
     loadAccountUsageSummariesForScopesAsync(accountUsageScopes, todayDateKey(timezone)),
-    loadAccountCurrentConcurrencyByIdsAsync(accountIds),
+    loadAccountCurrentConcurrencyByIdsAsync(accountIds).catch((error) =>
+      accountCurrentConcurrencySnapshotFallback(error, accountIds)
+    ),
     loadAccountApiKeyRuntimeSummariesByAccountIdsAsync(accountIds),
     listProjection ? Promise.resolve(new Map()) : loadAccountApiKeyRuntimeDetailsByAccountIdsAsync(ownerAccountIds)
   ])
@@ -991,6 +996,17 @@ async function ownerAccountSummariesFromRowsAsync(
       authorizationTeamCount: 0
     })
   })
+}
+
+function accountCurrentConcurrencySnapshotFallback(error: unknown, accountIds: string[]): Map<string, number> {
+  if (runtimeConfig.runtimeStateDriver !== 'redis') {
+    throw error
+  }
+  logger.warn(errorLogFields(error, {
+    event: 'account_list_redis_concurrency_snapshot_unavailable',
+    accountCount: new Set(accountIds.filter(Boolean)).size
+  }), 'Redis 账号并发快照不可用，账户列表按未知并发返回')
+  return new Map<string, number>()
 }
 
 function ownerAccountListFilters(
