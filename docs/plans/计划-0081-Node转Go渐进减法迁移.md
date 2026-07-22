@@ -870,3 +870,8 @@
 - 最新 Node 为运行日志索引增加部署级开关 `JUHE_AI_RUNTIME_LOG_INDEX_ENABLED`。Go 已迁移的 `/runtime-logs/facets` 同步返回 `indexEnabled`；关闭时返回 `unavailableReason=index_disabled`，继续读取历史 facet，不隐藏已有索引数据。
 - Go 通过同名环境变量解析开关，接受 `true/false/1/0/yes/no/on/off`（大小写不敏感），仅在变量完全未设置时默认 `true`；显式空值或非法值启动失败。首尾空白按 ECMAScript `trim()` 裁剪，`U+FEFF` 会被裁剪，`U+0085` 保留并导致非法值。`/runtime-logs/runtime` 保持现有 lightweight unavailable 契约，不新增 `indexEnabled`，与 Node `/runtime` 字段集一致。
 - 本块不接管 Node 文件 consumer、writer cursor、grep、索引写入或保留清理。定向 config / HTTP / app 测试覆盖默认启用、全部合法布尔值、显式空值 / 非法值、`U+FEFF` / `U+0085`、facets 启停与历史数据保留、runtime DTO 字段集和 app 装配；真实 PostgreSQL、真实 listener / browser、生产切流和 Node 删除仍未执行，不宣称生产接管。
+
+## 2026-07-22 W6 统计 overview 代码预迁移
+
+- Go 已补管理 / 自助 `GET /__aisys__/api/stats/usage-overview` 与 `GET /__aisys__/api/my-stats/usage-overview` 的代码路径。对照最新 Node 后，summary 修正为按请求日期范围聚合 `juhe_stats.usage_stats_daily` 的 `system_account` 日汇总；trend、model distribution 和 errors 仍只读各自预聚合窗口。请求路径不读取 `usage_records`。
+- 当前 Goose 已有 `usage_stats_daily`，但尚未创建 `usage_overview_trend_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`。为避免与并行 schema 工作争抢 `000070` 或形成两套表定义，本切片不新增 migration；集成前必须由 schema owner 统一补表和索引，并完成 fresh Goose、Node writer -> Go reader 与查询计划 smoke。该门禁未完成前，本切片只算代码预迁移，不得切流或删除 Node 路由。
