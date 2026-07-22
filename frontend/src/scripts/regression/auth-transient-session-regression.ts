@@ -22,7 +22,21 @@ const logoutBody = source.match(/export async function logout\(\): Promise<void>
 const apiLogoutIndex = logoutBody.indexOf('await api.auth.logout()')
 const clearAuthIndex = logoutBody.indexOf('clearAuthState()')
 assert(apiLogoutIndex >= 0 && clearAuthIndex > apiLogoutIndex, '只有服务端 logout 成功后才能清空本地登录态')
+const loginBody = source.match(/export async function login\([\s\S]*?\): Promise<CurrentUserSummary> \{([\s\S]*?)\n\}/)?.[1] ?? ''
+assert(
+  loginBody.indexOf('beginAuthSessionTransition(operationVersion)') >= 0
+    && loginBody.indexOf('beginAuthSessionTransition(operationVersion)') < loginBody.indexOf('await api.auth.login(payload)'),
+  'login 必须在请求发出前推进 session/permission generation'
+)
+assert(
+  logoutBody.indexOf('beginAuthSessionTransition(operationVersion)') >= 0
+    && logoutBody.indexOf('beginAuthSessionTransition(operationVersion)') < apiLogoutIndex,
+  'logout 必须在请求发出前推进 session/permission generation，即使请求失败也保守失效'
+)
 assert.match(layoutSource, /try \{\s*await logout\(\)[\s\S]*router\.replace\('\/login'\)[\s\S]*catch/, '退出失败时页面必须保留当前路由并显示错误')
 assert.match(layoutSource, /if \(!authState\.currentUser\.value\)[\s\S]*?router\.replace\('\/login'\)/, '服务端已退出但本地聊天清理失败时仍必须离开受保护页面')
+assert.match(source, /function applyCurrentUser\(/, '认证结果必须经单一 helper 比较身份与角色变化')
+assert.match(source, /advancePageDataAuthenticationGeneration\(\)/, '登录身份建立或清理时必须推进 session/permission generation')
+assert.match(source, /advancePageDataPermissionGeneration\(\)/, '同一用户角色变化必须只推进 permission generation')
 
 console.log('AUTH_TRANSIENT_SESSION_TEST_OK')

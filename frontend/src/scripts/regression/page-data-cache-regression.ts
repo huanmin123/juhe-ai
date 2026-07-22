@@ -21,6 +21,13 @@ import {
   createPageDataCacheKey,
   createPageDataCacheStorage
 } from '../../shared/pageDataCache'
+import { beginPageDataMutation } from '../../shared/pageDataMutationInvalidation'
+import {
+  advancePageDataPermissionGeneration,
+  advancePageDataSessionGeneration,
+  currentPageDataSecurityGeneration,
+  currentPageDataWriteEpoch
+} from '../../shared/pageDataGenerationFences'
 
 const token = (sequence: number, epoch = 'epoch-1'): PageDataRevisionToken => ({
   protocolVersion: 2,
@@ -514,6 +521,8 @@ follower.close()
 await testFollowerTakesOverWhenLeaderDoesNotOwnKey()
 await testFollowerMaxStaleFallsBackToNetwork()
 await testLeaderInvalidationWithdrawsFollowerData()
+await testDefaultMutationWriteEpochFence()
+await testSecurityGenerationFence()
 
 const composableSource = readFileSync(fileURLToPath(new URL('../../composables/usePageDataCache.ts', import.meta.url)), 'utf8')
 assert.match(composableSource, /controller\.subscribe/, 'Vue composable 必须订阅跨标签与后台更新')
@@ -637,6 +646,233 @@ function assertSourceOrder(source: string, markers: string[], message: string): 
 async function microtask(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
+}
+
+async function testDefaultMutationWriteEpochFence(): Promise<void> {
+  const staticToken: PageDataRevisionToken = { ...token(7), domain: 'accounts.static' }
+  const keyInput = { scope: 'self:mutation-fence', route: '/my-accounts', query: {}, version: 1 }
+  const key = createPageDataCacheKey({ ...keyInput, domain: 'accounts.static' })
+  const storage = createMemoryPageDataCacheStorage()
+  await storage.writeIfCurrent(cacheRecord(key, ['before'], {
+    domain: 'accounts.static',
+    scope: keyInput.scope,
+    route: keyInput.route,
+    token: staticToken,
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const confirmGate = deferred<PageDataConfirmResult>()
+  const confirmStarted = deferred<void>()
+  const confirmController = new PageDataCacheController<string[]>({
+    cacheKey: keyInput,
+    domain: 'accounts.static',
+    viewScope: 'self',
+    storage,
+    confirm: async () => {
+      confirmStarted.resolve()
+      return confirmGate.promise
+    },
+    loadNetwork: async () => ['network']
+  })
+  const pendingConfirm = confirmController.requestConfirm()
+  await confirmStarted.promise
+  beginPageDataMutation('patch', '/accounts/account-a')
+  confirmGate.resolve({
+    serverTime: '2026-07-17T12:01:00.000Z',
+    domains: { 'accounts.static': { action: 'unchanged', token: staticToken } }
+  })
+  assert.equal((await pendingConfirm).state, 'superseded', '默认 controller 必须丢弃 mutation 前发出的 unchanged confirm')
+  assert.equal((await storage.read<string[]>(key))?.confirmedAt, '2026-07-17T12:00:00.000Z', '旧 confirm 不得 touch mutation 后缓存')
+  confirmController.close()
+
+  const getStorage = createMemoryPageDataCacheStorage()
+  const networkGate = deferred<string[]>()
+  const networkStarted = deferred<void>()
+  const getController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:mutation-get-fence' },
+    domain: 'accounts.static',
+    viewScope: 'self',
+    storage: getStorage,
+    confirm: async () => ({
+      serverTime: '2026-07-17T12:01:00.000Z',
+      domains: { 'accounts.static': { action: 'reload', token: staticToken } }
+    }),
+    loadNetwork: async () => {
+      networkStarted.resolve()
+      return networkGate.promise
+    }
+  })
+  const pendingGet = getController.load()
+  await networkStarted.promise
+  beginPageDataMutation('post', '/accounts/import/confirm')
+  networkGate.resolve(['stale-before-import'])
+  assert.equal((await pendingGet).superseded, true, '默认 controller 必须丢弃 mutation 前发出的旧 GET')
+  assert.equal(await getStorage.read(getController.key), undefined, '旧 GET 不得写入 mutation 后的缓存 key')
+  getController.close()
+}
+
+async function testSecurityGenerationFence(): Promise<void> {
+  const keyInput = { scope: 'self:security-fence', route: '/my-accounts', query: {}, version: 1 }
+  const staticToken: PageDataRevisionToken = { ...token(8), domain: 'accounts.static' }
+  const beforeGeneration = currentPageDataSecurityGeneration()
+  const beforeKey = createPageDataCacheKey({ ...keyInput, domain: 'accounts.static' })
+  const hotStorage = createMemoryPageDataCacheStorage()
+  const hotController = new PageDataCacheController<string[]>({
+    cacheKey: keyInput,
+    domain: 'accounts.static',
+    viewScope: 'self',
+    storage: hotStorage,
+    now: () => new Date('2026-07-17T12:00:10.000Z'),
+    confirm: async () => { throw new Error('stale controller must not confirm') },
+    loadNetwork: async () => { throw new Error('stale controller must not load network') }
+  })
+  await hotStorage.writeIfCurrent(cacheRecord(hotController.key, ['hot-old-permission'], {
+    domain: 'accounts.static',
+    token: staticToken,
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  advancePageDataPermissionGeneration()
+  assert.equal(currentPageDataSecurityGeneration(), beforeGeneration + 1)
+  assert.notEqual(
+    createPageDataCacheKey({ ...keyInput, domain: 'accounts.static' }),
+    beforeKey,
+    '权限 generation 必须参与缓存 key，避免旧安全上下文快照被重新命中'
+  )
+  assert.equal((await hotController.load()).superseded, true, '旧安全 generation controller 不得直接返回热缓存')
+  hotController.close()
+
+  const storage = createMemoryPageDataCacheStorage()
+  const currentKey = createPageDataCacheKey({ ...keyInput, domain: 'accounts.static' })
+  await storage.writeIfCurrent(cacheRecord(currentKey, ['role-before'], {
+    domain: 'accounts.static',
+    scope: keyInput.scope,
+    route: keyInput.route,
+    token: staticToken,
+    confirmedAt: '2026-07-17T12:00:00.000Z'
+  }))
+  const confirmGate = deferred<PageDataConfirmResult>()
+  const confirmStarted = deferred<void>()
+  const confirmController = new PageDataCacheController<string[]>({
+    cacheKey: keyInput,
+    domain: 'accounts.static',
+    viewScope: 'self',
+    storage,
+    confirm: async () => {
+      confirmStarted.resolve()
+      return confirmGate.promise
+    },
+    loadNetwork: async () => ['network']
+  })
+  const pendingConfirm = confirmController.requestConfirm()
+  await confirmStarted.promise
+  advancePageDataPermissionGeneration()
+  confirmGate.resolve({
+    serverTime: '2026-07-17T12:02:00.000Z',
+    domains: { 'accounts.static': { action: 'unchanged', token: staticToken } }
+  })
+  assert.equal((await pendingConfirm).state, 'superseded', '角色/权限切换前的 confirm 返回必须被丢弃')
+  assert.equal((await storage.read<string[]>(currentKey))?.confirmedAt, '2026-07-17T12:00:00.000Z', '旧权限 confirm 不得 touch 旧记录')
+  confirmController.close()
+
+  const getStorage = createMemoryPageDataCacheStorage()
+  const networkGate = deferred<string[]>()
+  const networkStarted = deferred<void>()
+  const getController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:session-fence' },
+    domain: 'accounts.static',
+    viewScope: 'self',
+    storage: getStorage,
+    confirm: async () => ({
+      serverTime: '2026-07-17T12:02:00.000Z',
+      domains: { 'accounts.static': { action: 'reload', token: staticToken } }
+    }),
+    loadNetwork: async () => {
+      networkStarted.resolve()
+      return networkGate.promise
+    }
+  })
+  const pendingGet = getController.load()
+  await networkStarted.promise
+  advancePageDataSessionGeneration()
+  networkGate.resolve(['old-session'])
+  assert.equal((await pendingGet).superseded, true, '旧 session 发出的 GET 返回必须被丢弃')
+  assert.equal(await getStorage.read(getController.key), undefined, '旧 session GET 不得写回缓存')
+  getController.close()
+
+  const hub = new FakeChannelHub()
+  const controllerTab = new BrowserPageDataTabCoordinator({ tabId: 'security-a', channelFactory: hub.factory, heartbeatIntervalMs: 60_000 })
+  const peerTab = new BrowserPageDataTabCoordinator({ tabId: 'security-b', channelFactory: hub.factory, heartbeatIntervalMs: 60_000 })
+  const broadcastStorage = createMemoryPageDataCacheStorage()
+  const broadcastController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:security-broadcast-fence' },
+    domain: 'accounts.static',
+    viewScope: 'self',
+    storage: broadcastStorage,
+    tabCoordinator: controllerTab,
+    confirm: async () => { throw new Error('not used') },
+    loadNetwork: async () => ['not-used']
+  })
+  await broadcastStorage.writeIfCurrent(cacheRecord(broadcastController.key, ['old-permission-broadcast'], {
+    domain: 'accounts.static',
+    token: staticToken
+  }))
+  const broadcastUpdates: Array<string[] | undefined> = []
+  broadcastController.subscribe((record) => broadcastUpdates.push(record?.value))
+  const staleSecuritySignal = {
+    securityGeneration: currentPageDataSecurityGeneration(),
+    writeEpoch: currentPageDataWriteEpoch('accounts.static')
+  }
+  advancePageDataPermissionGeneration()
+  peerTab.notifyUpdated(broadcastController.key, staleSecuritySignal)
+  await microtask()
+  assert.deepEqual(broadcastUpdates, [], '安全 generation 变化后旧跨标签更新不得再触发当前页面订阅')
+  peerTab.notifyInvalidated(broadcastController.key, staleSecuritySignal)
+  await microtask()
+  assert.ok(await broadcastStorage.read(broadcastController.key), '旧安全 generation 的失效广播不得删除当前缓存记录')
+  broadcastController.close()
+  controllerTab.close()
+  peerTab.close()
+
+  const epochHub = new FakeChannelHub()
+  const epochLeader = new BrowserPageDataTabCoordinator({ tabId: 'epoch-a', channelFactory: epochHub.factory, heartbeatIntervalMs: 60_000 })
+  const epochFollower = new BrowserPageDataTabCoordinator({ tabId: 'epoch-b', channelFactory: epochHub.factory, heartbeatIntervalMs: 60_000 })
+  const epochStorage = createMemoryPageDataCacheStorage()
+  let peerConfirmCalls = 0
+  const epochController = new PageDataCacheController<string[]>({
+    cacheKey: { ...keyInput, scope: 'self:write-epoch-broadcast-fence' },
+    domain: 'accounts.static',
+    viewScope: 'self',
+    storage: epochStorage,
+    tabCoordinator: epochLeader,
+    confirm: async () => {
+      peerConfirmCalls += 1
+      return {
+        serverTime: '2026-07-17T12:03:00.000Z',
+        domains: { 'accounts.static': { action: 'unchanged', token: staticToken } }
+      }
+    },
+    loadNetwork: async () => ['not-used']
+  })
+  await epochStorage.writeIfCurrent(cacheRecord(epochController.key, ['old-write-epoch'], {
+    domain: 'accounts.static',
+    token: staticToken
+  }))
+  const staleWriteEpochSignal = {
+    securityGeneration: currentPageDataSecurityGeneration(),
+    writeEpoch: currentPageDataWriteEpoch('accounts.static')
+  }
+  const epochUpdates: Array<string[] | undefined> = []
+  epochController.subscribe((record) => epochUpdates.push(record?.value))
+  beginPageDataMutation('patch', '/accounts/account-c')
+  epochFollower.notifyUpdated(epochController.key, staleWriteEpochSignal)
+  epochFollower.notifyInvalidated(epochController.key, staleWriteEpochSignal)
+  assert.equal(await epochFollower.requestConfirm(epochController.key, staleWriteEpochSignal), false, '旧 writeEpoch 的 confirm handoff 不得由 leader 接管')
+  await microtask()
+  assert.deepEqual(epochUpdates, [], '旧 writeEpoch 的跨标签更新/失效不得 emit')
+  assert.ok(await epochStorage.read(epochController.key), '旧 writeEpoch 的失效广播不得删除当前缓存记录')
+  assert.equal(peerConfirmCalls, 0, '旧 writeEpoch 的 confirm-request 不得触发 controller confirm')
+  epochController.close()
+  epochLeader.close()
+  epochFollower.close()
 }
 
 async function testPendingConfirmFallbackMetadata(): Promise<void> {
@@ -1682,7 +1918,7 @@ async function testLeaderInvalidationWithdrawsFollowerData(): Promise<void> {
   followerController.subscribe((record) => followerUpdates.push(record?.value))
   try {
     const outcome = await followerController.requestConfirm()
-    assert.equal(outcome.state, 'unavailable')
+    assert.equal(outcome.state, 'superseded', 'leader handoff 完成前收到 invalidated 时，旧 follower 操作必须 supersede')
     await microtask()
     assert.equal(await followerStorage.read(key), undefined, 'leader 删除缓存后 follower 本地缓存也必须失效')
     assert.deepEqual(followerUpdates, [undefined], 'invalidated 广播必须通知页面撤下旧数据')
