@@ -37,25 +37,39 @@ ORDER BY bucket_key ASC, process_role ASC
 LIMIT $5`
 
 const managementSystemMetricsLatestSQL = `
-SELECT DISTINCT ON (process_role)
-  process_role, process_pid, sampled_at, event_loop_lag_ms,
-  process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes,
-  process_external_bytes, process_array_buffers_bytes
-FROM juhe_stats.process_event_loop_samples
-WHERE process_role = ANY($1::text[])
-ORDER BY process_role, sampled_at DESC, id DESC
+SELECT sample.process_role, sample.process_pid, sample.sampled_at, sample.event_loop_lag_ms,
+  sample.process_rss_bytes, sample.process_heap_used_bytes, sample.process_heap_total_bytes,
+  sample.process_external_bytes, sample.process_array_buffers_bytes
+FROM unnest($1::text[]) WITH ORDINALITY AS requested(process_role, ordinal)
+CROSS JOIN LATERAL (
+  SELECT samples.process_role, samples.process_pid, samples.sampled_at, samples.event_loop_lag_ms,
+    samples.process_rss_bytes, samples.process_heap_used_bytes, samples.process_heap_total_bytes,
+    samples.process_external_bytes, samples.process_array_buffers_bytes
+  FROM juhe_stats.process_event_loop_samples AS samples
+  WHERE samples.process_role = requested.process_role
+  ORDER BY samples.sampled_at DESC, samples.id DESC
+  LIMIT 1
+) AS sample
+ORDER BY requested.ordinal
 LIMIT $2`
 
 const managementSystemMetricsPeakSQL = `
-SELECT DISTINCT ON (process_role)
-  process_role, process_pid, sampled_at, event_loop_lag_ms,
-  process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes,
-  process_external_bytes, process_array_buffers_bytes
-FROM juhe_stats.process_event_loop_samples
-WHERE process_role = ANY($1::text[])
-  AND sampled_at >= $2
-  AND event_loop_lag_ms IS NOT NULL
-ORDER BY process_role, event_loop_lag_ms DESC, sampled_at DESC, id DESC
+SELECT sample.process_role, sample.process_pid, sample.sampled_at, sample.event_loop_lag_ms,
+  sample.process_rss_bytes, sample.process_heap_used_bytes, sample.process_heap_total_bytes,
+  sample.process_external_bytes, sample.process_array_buffers_bytes
+FROM unnest($1::text[]) WITH ORDINALITY AS requested(process_role, ordinal)
+CROSS JOIN LATERAL (
+  SELECT samples.process_role, samples.process_pid, samples.sampled_at, samples.event_loop_lag_ms,
+    samples.process_rss_bytes, samples.process_heap_used_bytes, samples.process_heap_total_bytes,
+    samples.process_external_bytes, samples.process_array_buffers_bytes
+  FROM juhe_stats.process_event_loop_samples AS samples
+  WHERE samples.process_role = requested.process_role
+    AND samples.sampled_at >= $2
+    AND samples.event_loop_lag_ms IS NOT NULL
+  ORDER BY samples.event_loop_lag_ms DESC, samples.sampled_at DESC, samples.id DESC
+  LIMIT 1
+) AS sample
+ORDER BY requested.ordinal
 LIMIT $3`
 
 const (
