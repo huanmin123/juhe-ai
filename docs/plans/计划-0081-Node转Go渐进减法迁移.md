@@ -907,3 +907,10 @@
 - Node 继续单独拥有两张表的建表、采样、保留清理和数据质量。Go 不创建表、不补 migration、不做 SQLite fallback、不启动 writer，因此不能把本块写成表监控接管或 Node 删除证据。
 - `origin/master` 当前权威 catalog 为 `000069`，而 `000070` 由并行模型目录 / 聊天快照工作占位但尚未合入；本块不复用该版本，也不在缺少 `000070` 时制造不连续 `000071`。后续 schema owner 变更只能从届时最新连续版本新增。
 - 最小验证通过：`go test ./internal/modules/managementtablemonitor ./internal/httpapi ./internal/app ./internal/store/postgres -count=1` 与 `go vet ./internal/store/postgres`。真实 PostgreSQL schema contract、Node writer -> Go reader、查询计划、真实 listener / 反向代理、切流和回滚仍待后续批次，未宣称完成。
+
+## 2026-07-22 W6 账户用量与 AI 性能统计只读首轮迁移
+
+- Go 已新增 admin/self `account-usage`、`account-usage/trend`、`ai-performance`、`ai-performance/accounts` 八条 opt-in GET，复用只读 session、System API 两层 read limiter 与 `no-store`；admin 支持 global / 指定系统账户，self 强制 actor scope。
+- reader 只读既有 `usage_scope_range_windows`、`usage_rank_snapshots`、`usage_stats_daily`、`usage_stats_hourly`、`ai_performance_summary_windows` 和账户授权 metadata，不回扫 `usage_records`，不新增 migration、writer、worker 或冷窗口登记。Node stats worker 继续单写预聚合。
+- 首轮对齐 31 天范围、1000 行 progressive pagination、显式账户 50、trend 10、性能选择 20、options 50、默认榜单、授权可见性、NFKC 名称前缀、小时补零、平均 / 最大样本边界和前端 DTO；options 不返回 `selected/defaultVisible`。
+- 定向 service / PostgreSQL guard / HTTP / router / app 测试、`go test ./... -count=1` 与 `go vet ./...` 已通过；真实 PostgreSQL schema 衔接、Node writer -> Go reader、查询计划、真实 listener / browser、精确切流、回滚和 Node 删除继续后置，当前不宣称生产接管。

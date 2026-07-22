@@ -491,6 +491,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementPageDataConfirmHandler:                  managementHandlers.PageDataConfirmHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
+		ManagementStatsAccountUsageHandler:                managementHandlers.StatsAccountUsageHandler,
+		ManagementMyStatsAccountUsageHandler:              managementHandlers.MyStatsAccountUsageHandler,
+		ManagementStatsAccountUsageTrendHandler:           managementHandlers.StatsAccountUsageTrendHandler,
+		ManagementMyStatsAccountUsageTrendHandler:         managementHandlers.MyStatsAccountUsageTrendHandler,
+		ManagementStatsAIPerformanceHandler:               managementHandlers.StatsAIPerformanceHandler,
+		ManagementMyStatsAIPerformanceHandler:             managementHandlers.MyStatsAIPerformanceHandler,
+		ManagementStatsAIPerformanceAccountsHandler:       managementHandlers.StatsAIPerformanceAccountsHandler,
+		ManagementMyStatsAIPerformanceAccountsHandler:     managementHandlers.MyStatsAIPerformanceAccountsHandler,
 	})
 
 	server := &http.Server{
@@ -733,6 +741,14 @@ type managementAPIHandlers struct {
 	PageDataConfirmHandler                  http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
+	StatsAccountUsageHandler                http.Handler
+	MyStatsAccountUsageHandler              http.Handler
+	StatsAccountUsageTrendHandler           http.Handler
+	MyStatsAccountUsageTrendHandler         http.Handler
+	StatsAIPerformanceHandler               http.Handler
+	MyStatsAIPerformanceHandler             http.Handler
+	StatsAIPerformanceAccountsHandler       http.Handler
+	MyStatsAIPerformanceAccountsHandler     http.Handler
 }
 
 type managementAPIInvalidator interface {
@@ -1254,6 +1270,14 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		PageDataConfirmHandler:                  pageDataConfirmHandler,
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
+		StatsAccountUsageHandler:                httpapi.NewManagementStatsAccountUsageHandler(statsService),
+		MyStatsAccountUsageHandler:              httpapi.NewManagementMyStatsAccountUsageHandler(statsService),
+		StatsAccountUsageTrendHandler:           httpapi.NewManagementStatsAccountUsageTrendHandler(statsService),
+		MyStatsAccountUsageTrendHandler:         httpapi.NewManagementMyStatsAccountUsageTrendHandler(statsService),
+		StatsAIPerformanceHandler:               httpapi.NewManagementStatsAIPerformanceHandler(statsService),
+		MyStatsAIPerformanceHandler:             httpapi.NewManagementMyStatsAIPerformanceHandler(statsService),
+		StatsAIPerformanceAccountsHandler:       httpapi.NewManagementStatsAIPerformanceAccountsHandler(statsService),
+		MyStatsAIPerformanceAccountsHandler:     httpapi.NewManagementMyStatsAIPerformanceAccountsHandler(statsService),
 	}
 }
 

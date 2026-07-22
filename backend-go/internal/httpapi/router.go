@@ -237,6 +237,14 @@ type RouterOptions struct {
 	ManagementPageDataConfirmHandler                  http.Handler
 	ManagementStatsUsageWindowHandler                 http.Handler
 	ManagementMyStatsUsageWindowHandler               http.Handler
+	ManagementStatsAccountUsageHandler                http.Handler
+	ManagementMyStatsAccountUsageHandler              http.Handler
+	ManagementStatsAccountUsageTrendHandler           http.Handler
+	ManagementMyStatsAccountUsageTrendHandler         http.Handler
+	ManagementStatsAIPerformanceHandler               http.Handler
+	ManagementMyStatsAIPerformanceHandler             http.Handler
+	ManagementStatsAIPerformanceAccountsHandler       http.Handler
+	ManagementMyStatsAIPerformanceAccountsHandler     http.Handler
 }
 
 func NewRouter(opts RouterOptions) http.Handler {
@@ -530,7 +538,15 @@ func NewRouter(opts RouterOptions) http.Handler {
 				opts.ManagementSystemMetricsHandler == nil &&
 				opts.ManagementPageDataConfirmHandler == nil &&
 				opts.ManagementStatsUsageWindowHandler == nil &&
-				opts.ManagementMyStatsUsageWindowHandler == nil {
+				opts.ManagementMyStatsUsageWindowHandler == nil &&
+				opts.ManagementStatsAccountUsageHandler == nil &&
+				opts.ManagementMyStatsAccountUsageHandler == nil &&
+				opts.ManagementStatsAccountUsageTrendHandler == nil &&
+				opts.ManagementMyStatsAccountUsageTrendHandler == nil &&
+				opts.ManagementStatsAIPerformanceHandler == nil &&
+				opts.ManagementMyStatsAIPerformanceHandler == nil &&
+				opts.ManagementStatsAIPerformanceAccountsHandler == nil &&
+				opts.ManagementMyStatsAIPerformanceAccountsHandler == nil {
 				panic("at least one management API handler is required when JUHE_AI_MANAGEMENT_API_ENABLED is true")
 			}
 			if opts.Config.ManagementAPIEnabled {
@@ -1425,6 +1441,30 @@ func NewRouter(opts RouterOptions) http.Handler {
 			if opts.ManagementMyStatsUsageWindowHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/usage-window", opts.ManagementMyStatsUsageWindowHandler.ServeHTTP)
 			}
+			if opts.ManagementStatsAccountUsageHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/account-usage", opts.ManagementStatsAccountUsageHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAccountUsageHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/account-usage", opts.ManagementMyStatsAccountUsageHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAccountUsageTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/account-usage/trend", opts.ManagementStatsAccountUsageTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAccountUsageTrendHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/account-usage/trend", opts.ManagementMyStatsAccountUsageTrendHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAIPerformanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/ai-performance", opts.ManagementStatsAIPerformanceHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAIPerformanceHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/ai-performance", opts.ManagementMyStatsAIPerformanceHandler.ServeHTTP)
+			}
+			if opts.ManagementStatsAIPerformanceAccountsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/stats/ai-performance/accounts", opts.ManagementStatsAIPerformanceAccountsHandler.ServeHTTP)
+			}
+			if opts.ManagementMyStatsAIPerformanceAccountsHandler != nil {
+				system.With(managementAPIReadRateLimitMiddleware).Get("/my-stats/ai-performance/accounts", opts.ManagementMyStatsAIPerformanceAccountsHandler.ServeHTTP)
+			}
 		}
 	})
 
@@ -1649,7 +1689,15 @@ func managementBusinessRoutesConfigured(opts RouterOptions) bool {
 		opts.ManagementSystemMetricsHandler != nil ||
 		opts.ManagementPageDataConfirmHandler != nil ||
 		opts.ManagementStatsUsageWindowHandler != nil ||
-		opts.ManagementMyStatsUsageWindowHandler != nil
+		opts.ManagementMyStatsUsageWindowHandler != nil ||
+		opts.ManagementStatsAccountUsageHandler != nil ||
+		opts.ManagementMyStatsAccountUsageHandler != nil ||
+		opts.ManagementStatsAccountUsageTrendHandler != nil ||
+		opts.ManagementMyStatsAccountUsageTrendHandler != nil ||
+		opts.ManagementStatsAIPerformanceHandler != nil ||
+		opts.ManagementMyStatsAIPerformanceHandler != nil ||
+		opts.ManagementStatsAIPerformanceAccountsHandler != nil ||
+		opts.ManagementMyStatsAIPerformanceAccountsHandler != nil
 }
 
 func managementWriteRoutesConfigured(opts RouterOptions) bool {
