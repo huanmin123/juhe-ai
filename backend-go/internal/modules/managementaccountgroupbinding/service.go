@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -33,8 +32,6 @@ type GroupAccountIDsInvalidator interface {
 
 type Options struct {
 	Store                      Store
-	GranteeReader              accountpagedata.GranteeReader
-	PageDataPublisher          accountpagedata.Publisher
 	RuntimeInvalidator         RuntimeInvalidator
 	GroupAccountIDsInvalidator GroupAccountIDsInvalidator
 	Logger                     *slog.Logger
@@ -43,8 +40,6 @@ type Options struct {
 
 type Service struct {
 	store                      Store
-	granteeReader              accountpagedata.GranteeReader
-	pageDataPublisher          accountpagedata.Publisher
 	runtimeInvalidator         RuntimeInvalidator
 	groupAccountIDsInvalidator GroupAccountIDsInvalidator
 	logger                     *slog.Logger
@@ -99,8 +94,6 @@ func NewService(opts Options) *Service {
 	}
 	return &Service{
 		store:                      opts.Store,
-		granteeReader:              opts.GranteeReader,
-		pageDataPublisher:          opts.PageDataPublisher,
 		runtimeInvalidator:         opts.RuntimeInvalidator,
 		groupAccountIDsInvalidator: opts.GroupAccountIDsInvalidator,
 		logger:                     logger,
@@ -161,7 +154,6 @@ func (s *Service) Bind(ctx context.Context, input BindInput) (BindResult, error)
 		},
 		PreviousGroupID: saved.PreviousGroupID,
 	}
-	s.publishPageData(ctx, result.Account)
 	s.invalidateGroupAccountIDs(ctx)
 	s.invalidateRuntime(ctx)
 	return result, nil
@@ -185,32 +177,6 @@ func isAdminRole(role string) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func (s *Service) publishPageData(ctx context.Context, account Account) {
-	if s.pageDataPublisher == nil {
-		return
-	}
-	lookupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidationTimeout)
-	owners, allScopes, err := accountpagedata.ResolveOwners(lookupCtx, s.granteeReader, account.ID, []string{account.SystemAccountID})
-	cancel()
-	if err != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "账户绑定分组后页面数据 owner 查询失败", "accountId", account.ID, "error", err)
-	}
-	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), invalidationTimeout)
-	defer cancel()
-	if err := s.pageDataPublisher.PublishAccountStaticChange(publishCtx, accountpagedata.ChangeInput{
-		AccountID:             account.ID,
-		Operation:             accountpagedata.OperationUpsert,
-		OwnerSystemAccountIDs: owners,
-		FieldMask:             []string{"boundGroupId"},
-		MembershipChanged:     true,
-		FilterChanged:         true,
-		PageChanged:           true,
-		AllScopes:             allScopes,
-	}); err != nil {
-		s.logger.WarnContext(context.WithoutCancel(ctx), "账户绑定分组后页面数据失效失败", "accountId", account.ID, "error", err)
 	}
 }
 

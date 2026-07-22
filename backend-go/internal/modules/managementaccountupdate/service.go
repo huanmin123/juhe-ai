@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -48,8 +47,6 @@ type GatewayRuntimeInvalidator interface {
 type Options struct {
 	Store                      port.ManagementAccountUpdater
 	CredentialCodec            CredentialCodec
-	GranteeReader              accountpagedata.GranteeReader
-	PageDataPublisher          accountpagedata.Publisher
 	AccountLookupInvalidator   AccountLookupInvalidator
 	GroupAccountIDsInvalidator GroupAccountIDsInvalidator
 	GatewayRuntimeInvalidator  GatewayRuntimeInvalidator
@@ -60,8 +57,6 @@ type Options struct {
 type Service struct {
 	store                      port.ManagementAccountUpdater
 	credentialCodec            CredentialCodec
-	granteeReader              accountpagedata.GranteeReader
-	pageDataPublisher          accountpagedata.Publisher
 	accountLookupInvalidator   AccountLookupInvalidator
 	groupAccountIDsInvalidator GroupAccountIDsInvalidator
 	gatewayRuntimeInvalidator  GatewayRuntimeInvalidator
@@ -96,8 +91,8 @@ func NewService(opts Options) *Service {
 		now = time.Now
 	}
 	return &Service{
-		store: opts.Store, credentialCodec: opts.CredentialCodec, granteeReader: opts.GranteeReader,
-		pageDataPublisher: opts.PageDataPublisher, accountLookupInvalidator: opts.AccountLookupInvalidator,
+		store: opts.Store, credentialCodec: opts.CredentialCodec,
+		accountLookupInvalidator:   opts.AccountLookupInvalidator,
 		groupAccountIDsInvalidator: opts.GroupAccountIDsInvalidator,
 		gatewayRuntimeInvalidator:  opts.GatewayRuntimeInvalidator, logger: logger, now: now,
 	}
@@ -329,30 +324,6 @@ func (s *Service) afterCommit(ctx context.Context, result port.ManagementAccount
 	if s.gatewayRuntimeInvalidator != nil {
 		if err := s.gatewayRuntimeInvalidator.InvalidateGatewayRuntime(postCtx, GatewayRuntimeReason); err != nil {
 			s.logger.WarnContext(postCtx, "账户更新后网关运行态失效失败", "accountId", result.AccountID, "error", err)
-		}
-	}
-	if s.pageDataPublisher == nil {
-		return
-	}
-	owners, allScopes, err := accountpagedata.ResolveOwners(postCtx, s.granteeReader, result.AccountID, []string{result.OwnerSystemAccountID})
-	if err != nil {
-		s.logger.WarnContext(postCtx, "账户更新后页面数据 owner 查询失败", "accountId", result.AccountID, "error", err)
-	}
-	change := accountpagedata.ChangeInput{
-		AccountID: result.AccountID, Operation: accountpagedata.OperationUpsert,
-		OwnerSystemAccountIDs: owners, AllScopes: allScopes, FieldMask: fields,
-		MembershipChanged: contains(fields, "groupId"),
-		OrderChanged:      contains(fields, "name") || contains(fields, "priority"),
-		FilterChanged:     contains(fields, "groupId") || contains(fields, "status"),
-		PageChanged:       contains(fields, "groupId"),
-	}
-	if err := s.pageDataPublisher.PublishAccountStaticChange(postCtx, change); err != nil {
-		s.logger.WarnContext(postCtx, "账户更新后静态页面数据失效失败", "accountId", result.AccountID, "error", err)
-	}
-	if containsAny(fields, "status", "schedulable", "clearFailureState") {
-		change.FieldMask = []string{"status", "schedulable", "cooldownUntil", "lastErrorCode", "lastErrorMessage"}
-		if err := s.pageDataPublisher.PublishAccountRuntimeChange(postCtx, change); err != nil {
-			s.logger.WarnContext(postCtx, "账户更新后运行态页面数据失效失败", "accountId", result.AccountID, "error", err)
 		}
 	}
 }
