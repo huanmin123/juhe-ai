@@ -267,6 +267,86 @@ func TestNewManagementAPIHandlerInjectsRuntimeLogIndexEnabled(t *testing.T) {
 	}
 }
 
+func TestNewManagementAPIHandlerInjectsRuntimeLogGrepConfiguration(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	function := findFunction(t, file, "newManagementAPIHandlerWithCatalogSnapshotRebuilder")
+	foundService := false
+	foundHandler := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch callName(call.Fun) {
+		case "managementruntimeloggrep.NewService":
+			if len(call.Args) != 1 {
+				t.Fatalf("runtime log grep service args=%d", len(call.Args))
+			}
+			literal, ok := call.Args[0].(*ast.CompositeLit)
+			if !ok {
+				t.Fatalf("runtime log grep options=%#v", call.Args[0])
+			}
+			want := map[string]string{
+				"Directory":     "cfg.RuntimeLogDirectory",
+				"FileEnabled":   "cfg.RuntimeLogFileEnabled",
+				"MaxFiles":      "cfg.RuntimeLogMaxFiles",
+				"RetentionDays": "cfg.RuntimeLogRetentionDays",
+				"RGPath":        "cfg.RGPath",
+			}
+			for _, element := range literal.Elts {
+				pair, ok := element.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := pair.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if expected, exists := want[key.Name]; exists {
+					if got := selectorName(pair.Value); got != expected {
+						t.Fatalf("%s=%s, want %s", key.Name, got, expected)
+					}
+					delete(want, key.Name)
+				}
+			}
+			if len(want) != 0 {
+				t.Fatalf("runtime log grep options missing %#v", want)
+			}
+			foundService = true
+		case "httpapi.NewManagementRuntimeLogGrepHandler":
+			if len(call.Args) != 1 {
+				t.Fatalf("runtime log grep handler args=%d", len(call.Args))
+			}
+			identifier, ok := call.Args[0].(*ast.Ident)
+			if !ok || identifier.Name != "runtimeLogGrepService" {
+				t.Fatalf("runtime log grep handler service=%#v", call.Args[0])
+			}
+			foundHandler = true
+		}
+		return true
+	})
+	if !foundService || !foundHandler {
+		t.Fatalf("runtime log grep wiring service=%v handler=%v", foundService, foundHandler)
+	}
+}
+
+func selectorName(expression ast.Expr) string {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return receiver.Name + "." + selector.Sel.Name
+}
+
 func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
 	_, _, err := newPublicAPIHandler(config.Config{
 		PublicAPIEnabled: true,
