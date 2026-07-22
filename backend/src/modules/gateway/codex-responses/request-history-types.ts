@@ -1,3 +1,5 @@
+import type { CodexContractRevision } from './contract-types.js'
+
 export type ResponsesPersistenceScope =
   | 'none'
   | 'account'
@@ -10,7 +12,7 @@ export interface CodexHistorySanitizerContext {
   sourceScopeKey?: string
   targetScopeKey?: string
   targetPersistenceScope: ResponsesPersistenceScope
-  contractRevision: string
+  contractRevision: CodexContractRevision
 }
 
 export interface CodexHistorySanitizerResult {
