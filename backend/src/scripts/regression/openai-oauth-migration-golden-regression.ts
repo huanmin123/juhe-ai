@@ -73,6 +73,7 @@ interface OAuthMigrationGolden {
     response: string
     reauthorize: string[]
   }
+  errorStatusScope: string
   errors: Array<{ operation: string; statuses: number[] }>
   knownNodeDefects: Array<{
     id: string
@@ -235,6 +236,10 @@ assert.deepEqual(golden.persistence.reauthorize, [
 assert.match(routesSource, /return \{[\s\S]*?\.\.\.currentCredentials,[\s\S]*?\.\.\.buildOpenAIOAuthCredentials\(tokenInfo, fallback\)[\s\S]*?\}/)
 assert.match(routesSource, /updateAccountAsync\(account\.id, \{[\s\S]*?credentials[\s\S]*?\}, access\)/)
 
+assert.equal(
+  golden.errorStatusScope,
+  'explicit_route_handler_branches_only_excludes_middleware_and_uncaught_async_errors'
+)
 assert.deepEqual(golden.errors, [
   { operation: 'auth_url', statuses: [200, 400, 500] },
   { operation: 'create_from_code', statuses: [201, 400, 409, 502] },
@@ -277,6 +282,17 @@ for (const defect of golden.knownNodeDefects) {
 }
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'session-consumed-before-token-success'))
 assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'no-stable-machine-error-code'))
+assert.ok(golden.knownNodeDefects.some((defect) => defect.id === 'reauthorize-refresh-token-without-idempotency-or-cas'))
+
+const refreshTokenReauthorizeStart = routesSource.indexOf("openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token'")
+const refreshTokenReauthorizeBlock = routesSource.slice(refreshTokenReauthorizeStart)
+assert.ok(refreshTokenReauthorizeStart >= 0)
+assert.doesNotMatch(refreshTokenReauthorizeBlock, /mutationGuard\(/)
+const credentialUpdateStart = routesSource.indexOf('async function updateOpenAIOAuthAccountCredentials')
+const credentialUpdateEnd = routesSource.indexOf('\nexport function buildReauthorizedOpenAIOAuthCredentials', credentialUpdateStart)
+const credentialUpdateBlock = routesSource.slice(credentialUpdateStart, credentialUpdateEnd)
+assert.match(credentialUpdateBlock, /updateAccountAsync\(account\.id/)
+assert.doesNotMatch(credentialUpdateBlock, /configRevision|expectedRevision|ExpectedConfigRevision/)
 
 console.log('OpenAI OAuth Node->Go 迁移 golden 通过：实际 HTTP、PKCE/session、token、错误、幂等与落库边界已冻结')
 
