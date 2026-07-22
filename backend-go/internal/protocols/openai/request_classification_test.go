@@ -1,166 +1,162 @@
 package openai
 
-import "testing"
+import (
+	"testing"
+
+	gatewayprotocol "juhe-ai/backend-go/internal/protocols/gateway"
+)
 
 func TestClassifyHybridRequest(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		input      HybridRequestInput
-		eligible   bool
-		reason     HybridEligibilityReason
-		family     HybridEndpointFamily
-		modelKind  ModelKind
-		normalized string
+		name      string
+		input     HybridRequestInput
+		eligible  bool
+		reason    HybridEligibilityReason
+		family    gatewayprotocol.EndpointFamily
+		operation gatewayprotocol.OpenAIOperation
+		lane      gatewayprotocol.RequestLane
 	}{
 		{
-			name: "chat completions",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/v1/chat/completions?trace=1",
-				ContentType:  "application/json; charset=utf-8",
-				BodyPresent:  true,
-				Model:        " GPT-5.4 ",
-			},
-			eligible:   true,
-			reason:     HybridEligible,
-			family:     HybridEndpointChatCompletions,
-			modelKind:  ModelKindOther,
-			normalized: "gpt-5.4",
-		},
-		{
-			name: "responses vendor json",
-			input: HybridRequestInput{
-				Method:       "post",
-				PathAndQuery: "/responses",
-				ContentType:  "application/vnd.openai.request+json",
-				BodyPresent:  true,
-			},
+			name:      "chat completions",
+			input:     requestInput("POST", "/v1/chat/completions?trace=1", "gpt-5.4"),
 			eligible:  true,
 			reason:    HybridEligible,
-			family:    HybridEndpointResponses,
-			modelKind: ModelKindMissing,
+			family:    gatewayprotocol.EndpointChatCompletions,
+			operation: gatewayprotocol.OpenAIOperationChatCompletionsCreate,
+			lane:      gatewayprotocol.RequestLaneText,
 		},
 		{
-			name: "image model on responses",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/v1/responses",
-				ContentType:  "application/json",
-				BodyPresent:  true,
-				Model:        "gpt-image-1.5",
-			},
-			eligible:   false,
-			reason:     HybridImageGenerationRequest,
-			family:     HybridEndpointResponses,
-			modelKind:  ModelKindImageGeneration,
-			normalized: "gpt-image-1.5",
+			name:      "chat completions trailing slash",
+			input:     requestInput("POST", "/v1/chat/completions/", "gpt-5.4"),
+			eligible:  true,
+			reason:    HybridEligible,
+			family:    gatewayprotocol.EndpointChatCompletions,
+			operation: gatewayprotocol.OpenAIOperationChatCompletionsCreate,
+			lane:      gatewayprotocol.RequestLaneText,
+		},
+		{
+			name:      "responses",
+			input:     requestInput("post", "/responses", ""),
+			eligible:  true,
+			reason:    HybridEligible,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneText,
+		},
+		{
+			name: "body pipeline may accept legacy text json",
+			input: func() HybridRequestInput {
+				input := requestInput("POST", "/v1/responses", "gpt-5.4")
+				input.Request.Headers = map[string]string{"content-type": "text/json"}
+				return input
+			}(),
+			eligible:  true,
+			reason:    HybridEligible,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneText,
+		},
+		{
+			name:      "image model on responses",
+			input:     requestInput("POST", "/v1/responses", "gpt-image-1.5"),
+			eligible:  false,
+			reason:    HybridImageGenerationRequest,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneImage,
+		},
+		{
+			name:      "image family prefix uses the shared lane",
+			input:     requestInput("POST", "/v1/responses", "gpt-imageology"),
+			eligible:  false,
+			reason:    HybridImageGenerationRequest,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneImage,
 		},
 		{
 			name: "image tool hint on responses",
-			input: HybridRequestInput{
-				Method:              "POST",
-				PathAndQuery:        "/v1/responses",
-				ContentType:         "application/json",
-				BodyPresent:         true,
-				Model:               "gpt-5.4",
-				ImageGenerationHint: true,
-			},
-			eligible:   false,
-			reason:     HybridImageGenerationRequest,
-			family:     HybridEndpointResponses,
-			modelKind:  ModelKindOther,
-			normalized: "gpt-5.4",
-		},
-		{
-			name: "embeddings excluded",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/v1/embeddings",
-				ContentType:  "application/json",
-				BodyPresent:  true,
-				Model:        "text-embedding-3-small",
-			},
-			eligible:   false,
-			reason:     HybridUnsupportedEndpoint,
-			modelKind:  ModelKindOther,
-			normalized: "text-embedding-3-small",
-		},
-		{
-			name: "responses compact excluded",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/v1/responses/compact",
-				ContentType:  "application/json",
-				BodyPresent:  true,
-			},
+			input: func() HybridRequestInput {
+				input := requestInput("POST", "/v1/responses", "gpt-5.4")
+				input.Request.ImageGenerationHint = true
+				return input
+			}(),
 			eligible:  false,
-			reason:    HybridUnsupportedEndpoint,
-			modelKind: ModelKindMissing,
+			reason:    HybridImageGenerationRequest,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneImage,
 		},
 		{
-			name: "path substring excluded",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/internal/responses/replay",
-				ContentType:  "application/json",
-				BodyPresent:  true,
-			},
+			name:     "embeddings excluded",
+			input:    requestInput("POST", "/v1/embeddings", "text-embedding-3-small"),
+			eligible: false,
+			reason:   HybridUnsupportedOperation,
+			family:   gatewayprotocol.EndpointEmbeddings,
+			lane:     gatewayprotocol.RequestLaneText,
+		},
+		{
+			name:      "responses compact excluded",
+			input:     requestInput("POST", "/v1/responses/compact", "gpt-5.4"),
 			eligible:  false,
-			reason:    HybridUnsupportedEndpoint,
-			modelKind: ModelKindMissing,
+			reason:    HybridUnsupportedOperation,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCompact,
+			lane:      gatewayprotocol.RequestLaneText,
 		},
 		{
-			name: "get excluded",
-			input: HybridRequestInput{
-				Method:       "GET",
-				PathAndQuery: "/v1/responses",
-				ContentType:  "application/json",
-				BodyPresent:  true,
-			},
+			name:     "path substring excluded",
+			input:    requestInput("POST", "/internal/responses/replay", "gpt-5.4"),
+			eligible: false,
+			reason:   HybridUnsupportedOperation,
+			family:   gatewayprotocol.EndpointUnknown,
+			lane:     gatewayprotocol.RequestLaneText,
+		},
+		{
+			name:      "shared path normalization accepts uppercase",
+			input:     requestInput("POST", "/V1/RESPONSES", "gpt-5.4"),
+			eligible:  true,
+			reason:    HybridEligible,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneText,
+		},
+		{
+			name:      "get excluded",
+			input:     requestInput("GET", "/v1/responses", "gpt-5.4"),
 			eligible:  false,
 			reason:    HybridMethodNotAllowed,
-			family:    HybridEndpointResponses,
-			modelKind: ModelKindMissing,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneText,
 		},
 		{
-			name: "misleading json substring excluded",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/v1/responses",
-				ContentType:  "text/not-json",
-				BodyPresent:  true,
-			},
+			name: "non json body excluded",
+			input: func() HybridRequestInput {
+				input := requestInput("POST", "/v1/responses", "gpt-5.4")
+				input.JSONBody = false
+				return input
+			}(),
 			eligible:  false,
-			reason:    HybridUnsupportedMediaType,
-			family:    HybridEndpointResponses,
-			modelKind: ModelKindMissing,
-		},
-		{
-			name: "malformed media type excluded",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/v1/responses",
-				ContentType:  "application/json; charset",
-				BodyPresent:  true,
-			},
-			eligible:  false,
-			reason:    HybridUnsupportedMediaType,
-			family:    HybridEndpointResponses,
-			modelKind: ModelKindMissing,
+			reason:    HybridNonJSONBody,
+			family:    gatewayprotocol.EndpointResponses,
+			operation: gatewayprotocol.OpenAIOperationResponsesCreate,
+			lane:      gatewayprotocol.RequestLaneText,
 		},
 		{
 			name: "empty body excluded",
-			input: HybridRequestInput{
-				Method:       "POST",
-				PathAndQuery: "/v1/chat/completions",
-				ContentType:  "application/json",
-			},
+			input: func() HybridRequestInput {
+				input := requestInput("POST", "/v1/chat/completions", "gpt-5.4")
+				input.BodyPresent = false
+				return input
+			}(),
 			eligible:  false,
 			reason:    HybridEmptyBody,
-			family:    HybridEndpointChatCompletions,
-			modelKind: ModelKindMissing,
+			family:    gatewayprotocol.EndpointChatCompletions,
+			operation: gatewayprotocol.OpenAIOperationChatCompletionsCreate,
+			lane:      gatewayprotocol.RequestLaneText,
 		},
 	}
 
@@ -177,68 +173,43 @@ func TestClassifyHybridRequest(t *testing.T) {
 			if got.EndpointFamily != tt.family {
 				t.Errorf("EndpointFamily = %q, want %q", got.EndpointFamily, tt.family)
 			}
-			if got.Model.Kind != tt.modelKind {
-				t.Errorf("Model.Kind = %q, want %q", got.Model.Kind, tt.modelKind)
+			if got.Operation != tt.operation {
+				t.Errorf("Operation = %q, want %q", got.Operation, tt.operation)
 			}
-			if got.Model.Normalized != tt.normalized {
-				t.Errorf("Model.Normalized = %q, want %q", got.Model.Normalized, tt.normalized)
+			if got.Lane != tt.lane {
+				t.Errorf("Lane = %q, want %q", got.Lane, tt.lane)
 			}
-		})
-	}
-}
-
-func TestClassifyModelHintUsesFamilyBoundaries(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		model string
-		kind  ModelKind
-	}{
-		{model: "gpt-image", kind: ModelKindImageGeneration},
-		{model: "gpt-image-1", kind: ModelKindImageGeneration},
-		{model: "dall-e", kind: ModelKindImageGeneration},
-		{model: "DALL-E-3", kind: ModelKindImageGeneration},
-		{model: "gpt-imageology", kind: ModelKindOther},
-		{model: "dall-east", kind: ModelKindOther},
-		{model: "", kind: ModelKindMissing},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.model, func(t *testing.T) {
-			t.Parallel()
-			if got := ClassifyModelHint(tt.model); got.Kind != tt.kind {
-				t.Fatalf("ClassifyModelHint(%q).Kind = %q, want %q", tt.model, got.Kind, tt.kind)
+			if got.Eligible {
+				assertEligibleFamilyMatchesOperation(t, got)
 			}
 		})
 	}
 }
 
-func TestHybridEndpointFamilyFromPathIsExact(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		path   string
-		family HybridEndpointFamily
-	}{
-		{path: "/v1/chat/completions", family: HybridEndpointChatCompletions},
-		{path: "/chat/completions///?request_id=1", family: HybridEndpointChatCompletions},
-		{path: "/v1/responses", family: HybridEndpointResponses},
-		{path: "/responses/?request_id=1", family: HybridEndpointResponses},
-		{path: "/V1/responses", family: HybridEndpointUnknown},
-		{path: "/v1/%72esponses", family: HybridEndpointUnknown},
-		{path: "/v1/other/../responses", family: HybridEndpointUnknown},
-		{path: "https://api.openai.com/v1/responses", family: HybridEndpointUnknown},
-		{path: "/v1/responses/compact", family: HybridEndpointUnknown},
-		{path: "/v1/responses/replay", family: HybridEndpointUnknown},
-		{path: "/v1/chat/completions/batches", family: HybridEndpointUnknown},
+func assertEligibleFamilyMatchesOperation(t *testing.T, got HybridRequestClassification) {
+	t.Helper()
+	switch got.Operation {
+	case gatewayprotocol.OpenAIOperationChatCompletionsCreate:
+		if got.EndpointFamily != gatewayprotocol.EndpointChatCompletions {
+			t.Fatalf("eligible chat operation has endpoint family %q", got.EndpointFamily)
+		}
+	case gatewayprotocol.OpenAIOperationResponsesCreate:
+		if got.EndpointFamily != gatewayprotocol.EndpointResponses {
+			t.Fatalf("eligible responses operation has endpoint family %q", got.EndpointFamily)
+		}
+	default:
+		t.Fatalf("eligible request has unsupported operation %q", got.Operation)
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.path, func(t *testing.T) {
-			t.Parallel()
-			if got := HybridEndpointFamilyFromPath(tt.path); got != tt.family {
-				t.Fatalf("HybridEndpointFamilyFromPath(%q) = %q, want %q", tt.path, got, tt.family)
-			}
-		})
+func requestInput(method, path, model string) HybridRequestInput {
+	return HybridRequestInput{
+		Request: gatewayprotocol.RequestShape{
+			Method: method,
+			Path:   path,
+			Model:  model,
+		},
+		JSONBody:    true,
+		BodyPresent: true,
 	}
 }

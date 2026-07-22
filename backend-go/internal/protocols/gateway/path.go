@@ -109,7 +109,7 @@ func isGeminiInteractionResourcePath(path string) bool {
 func openAIEndpointFamily(pathAndQuery string) EndpointFamily {
 	path := normalizedPath(pathAndQuery, "/v1")
 	switch {
-	case path == "/chat/completions":
+	case path == "/chat/completions" || path == "/chat/completions/":
 		return EndpointChatCompletions
 	case path == "/responses" || strings.HasPrefix(path, "/responses/"):
 		return EndpointResponses

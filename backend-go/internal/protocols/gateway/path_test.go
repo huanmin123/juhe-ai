@@ -12,6 +12,7 @@ func TestEndpointFamilyFromPath(t *testing.T) {
 		want     EndpointFamily
 	}{
 		{name: "openai chat", protocol: ProtocolOpenAI, path: "/v1/chat/completions?trace=1", want: EndpointChatCompletions},
+		{name: "openai chat trailing slash", protocol: ProtocolOpenAI, path: "/v1/chat/completions/", want: EndpointChatCompletions},
 		{name: "openai responses compact", protocol: ProtocolOpenAI, path: "/responses/compact", want: EndpointResponses},
 		{name: "openai models", protocol: ProtocolOpenAI, path: "/v1/models", want: EndpointModels},
 		{name: "openai images", protocol: ProtocolOpenAI, path: "/v1/images/edits", want: EndpointImages},
