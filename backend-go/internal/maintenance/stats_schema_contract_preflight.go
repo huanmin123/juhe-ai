@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const statsSchemaContractVersion = 1
+const statsSchemaContractVersion = 2
 
 const statsSchemaColumnsQuery = `
 SELECT COALESCE(jsonb_object_agg(column_name, data_type), '{}'::jsonb)::text
@@ -212,6 +212,32 @@ func joinComma(values []string) string {
 
 func statsSchemaReadContracts() []StatsSchemaFeatureContract {
 	return []StatsSchemaFeatureContract{
+		{
+			Name: "account-usage-ai-performance",
+			Relations: []StatsSchemaRelationContract{
+				{Name: "usage_scope_range_windows", Columns: []string{
+					"system_account_id", "scope_type", "scope_id", "window_key", "request_count", "input_tokens", "output_tokens",
+					"cache_read_tokens", "cache_read_cost_usd", "cache_write_tokens", "cache_write_1h_tokens", "cache_write_cost_usd",
+					"thinking_tokens", "input_image_tokens", "output_image_tokens", "total_cost_usd", "last_used_at",
+				}},
+				{Name: "usage_rank_snapshots", Columns: []string{
+					"system_account_id", "scope_type", "scope_id", "window_key", "metric", "snapshot_at", "rank", "metric_value",
+				}},
+				{Name: "usage_stats_daily", Columns: []string{
+					"system_account_id", "scope_type", "scope_id", "stat_date", "request_count", "input_tokens", "output_tokens",
+					"cache_read_tokens", "cache_read_cost_usd", "cache_write_tokens", "cache_write_1h_tokens", "cache_write_cost_usd",
+					"thinking_tokens", "input_image_tokens", "output_image_tokens", "total_cost_usd", "last_used_at",
+				}},
+				{Name: "usage_stats_hourly", Columns: []string{
+					"system_account_id", "scope_type", "scope_id", "stat_hour", "request_count", "first_token_ms_sum",
+					"first_token_ms_count", "first_token_ms_max", "duration_ms_sum", "duration_ms_count", "duration_ms_max",
+				}},
+				{Name: "ai_performance_summary_windows", Columns: []string{
+					"system_account_id", "window_key", "start_date", "end_date", "request_count", "first_token_ms_sum",
+					"first_token_ms_count", "first_token_ms_max", "duration_ms_sum", "duration_ms_count", "duration_ms_max",
+				}},
+			},
+		},
 		{
 			Name: "stats-overview",
 			Relations: []StatsSchemaRelationContract{
