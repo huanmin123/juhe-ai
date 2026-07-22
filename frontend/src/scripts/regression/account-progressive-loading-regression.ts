@@ -3,14 +3,16 @@ import assert from 'node:assert/strict'
 import { computed, createApp } from 'vue'
 import { routeLocationKey } from 'vue-router'
 
-import { api } from '../../api/client.js'
+import { api, pageDataApi } from '../../api/client.js'
+import type { PageDataConfirmRequest, PageDataConfirmResult } from '../../api/domains/pageData.js'
 import { authState } from '../../composables/useAuth.js'
 import { message } from '../../lib/antd.js'
 import type { AccountSummary, ProviderDefinition } from '../../types/domain/index.js'
 import { useAccountListData } from '../../views/accounts/useAccountListData.js'
+import { accountProxyDisplay } from '../../views/accounts/accountProxyDisplay.js'
 
 const mutableApi = api as unknown as {
-  providers: { definitions: (...args: unknown[]) => Promise<ProviderDefinition[]> }
+  providers: { options: (...args: unknown[]) => Promise<ProviderDefinition[]> }
   proxies: { options: (...args: unknown[]) => Promise<never[]> }
   myAccounts: { list: (...args: unknown[]) => Promise<AccountListPage> }
 }
@@ -26,9 +28,10 @@ interface AccountListPage {
   }
 }
 
-const originalProviderDefinitions = mutableApi.providers.definitions
+const originalProviderOptions = mutableApi.providers.options
 const originalProxyOptions = mutableApi.proxies.options
 const originalAccountList = mutableApi.myAccounts.list
+const originalConfirm = pageDataApi.confirm
 const originalMessageError = message.error
 const originalConsoleError = console.error
 const originalConsoleWarn = console.warn
@@ -49,12 +52,21 @@ try {
     role: 'admin',
     mustChangePassword: false
   }
+  const confirmDomains: string[][] = []
+  pageDataApi.confirm = async (request: PageDataConfirmRequest): Promise<PageDataConfirmResult> => {
+    confirmDomains.push(Object.keys(request.domains).sort())
+    return confirmResult(request)
+  }
   let resolveProviderOptions: ((value: ProviderDefinition[]) => void) | undefined
   let listStarted = false
-  mutableApi.providers.definitions = () => new Promise((resolve) => {
+  let proxyOptionCalls = 0
+  mutableApi.providers.options = () => new Promise((resolve) => {
     resolveProviderOptions = resolve
   })
-  mutableApi.proxies.options = async () => []
+  mutableApi.proxies.options = async () => {
+    proxyOptionCalls += 1
+    return []
+  }
   mutableApi.myAccounts.list = async () => {
     listStarted = true
     return accountPage(accountFixture('account_parallel', '并行账户'))
@@ -67,12 +79,29 @@ try {
 
   assert.equal(listStarted, true, '账户列表必须在 provider / proxy options 完成前发起')
   assert.equal(listData.accounts.value[0]?.name, '并行账户', 'options 尚未完成时列表结果必须已经可见')
+  assert.equal(proxyOptionCalls, 0, '账户列表加载不得预拉代理 options')
 
   resolveProviderOptions?.([])
   assert.equal(await firstLoad, true)
   assert.equal(listData.accounts.value[0]?.name, '并行账户')
 
-  mutableApi.providers.definitions = async () => {
+  const responseProxy = accountProxyDisplay({
+    ...accountFixture('account_proxy_display', '代理展示账户'),
+    proxyProfileId: 'proxy_from_response',
+    proxyProfileName: '响应代理',
+    proxyProfileType: 'http',
+    proxyProfileEnabled: true
+  }, { id: 'proxy_from_cache', name: '缓存代理', type: 'socks5', enabled: true })
+  assert.equal(responseProxy?.id, 'proxy_from_response', '账户行代理展示字段必须优先于旧标签缓存')
+  assert.equal(responseProxy?.name, '响应代理')
+  const hiddenProxy = accountProxyDisplay({
+    ...accountFixture('account_hidden_proxy', '不可见代理账户'),
+    proxyProfileId: 'proxy_disabled',
+    proxyProfileUnavailable: true
+  }, { id: 'proxy_disabled', name: '不应泄露的停用代理', type: 'http', enabled: false })
+  assert.equal(hiddenProxy, undefined, '普通用户不可见代理不得由旧标签缓存重新泄露')
+
+  mutableApi.providers.options = async () => {
     throw new Error('provider options unavailable')
   }
   mutableApi.myAccounts.list = async () => accountPage(accountFixture('account_options_failed', '选项失败后账户'))
@@ -96,22 +125,24 @@ try {
     refreshAccountCalls += 1
     return accountPage(accountFixture('account_refresh', '手动刷新账户'))
   }
-  mutableApi.providers.definitions = async () => {
+  mutableApi.providers.options = async () => {
     refreshProviderCalls += 1
     return []
   }
   await listData.loadAccountOptions(undefined, true)
+  const confirmCountBeforeRefresh = confirmDomains.length
   const providerCallsBeforeRefresh = refreshProviderCalls
   const accountCallsBeforeRefresh = refreshAccountCalls
   listData.refreshData()
   await waitFor(() => refreshAccountCalls > accountCallsBeforeRefresh, '手动刷新未发起账户列表请求')
   await flushPromises()
   assert.equal(refreshProviderCalls, providerCallsBeforeRefresh, '手动刷新列表不应失效并重查供应商筛选项')
-  assert.equal(refreshAccountCalls, accountCallsBeforeRefresh + 1, '手动刷新必须直接请求一次账户列表')
+  assert.deepEqual(confirmDomains.slice(confirmCountBeforeRefresh), [['accounts.static']], '手动刷新只应为账户列表执行一次轻量确认')
 } finally {
-  mutableApi.providers.definitions = originalProviderDefinitions
+  mutableApi.providers.options = originalProviderOptions
   mutableApi.proxies.options = originalProxyOptions
   mutableApi.myAccounts.list = originalAccountList
+  pageDataApi.confirm = originalConfirm
   authState.currentUser.value = undefined
   message.error = originalMessageError
   console.error = originalConsoleError
@@ -203,4 +234,21 @@ async function waitFor(predicate: () => boolean, message: string): Promise<void>
     await flushPromises()
   }
   throw new Error(message)
+}
+
+function confirmResult(request: PageDataConfirmRequest): PageDataConfirmResult {
+  return {
+    serverTime: '2026-07-19T12:00:00.000Z',
+    domains: Object.fromEntries(Object.entries(request.domains).map(([domain, known]) => [domain, {
+      action: known ? 'unchanged' : 'reload',
+      token: known ?? {
+        protocolVersion: 2,
+        epoch: 'account-refresh-epoch',
+        scope: `scope:${request.viewScope}:${request.targetSystemAccountId ?? 'self'}`,
+        domain,
+        sequence: 1,
+        resetSequence: 0
+      }
+    }])) as PageDataConfirmResult['domains']
+  }
 }

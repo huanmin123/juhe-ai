@@ -29,8 +29,12 @@ const proxyUpdateSchema = proxySchema.partial().strict()
 
 proxiesRouter.get('/options', async (req, res, next) => {
   try {
-    res.json(ok(await listProxyOptionsAsync(parseProxyOptionListOptions(req.query))))
+    res.json(ok(await listProxyOptionsAsync(parseProxyOptionListOptions(req.query as Record<string, unknown>))))
   } catch (error) {
+    if (error instanceof ProxyOptionQueryError) {
+      res.status(400).json(badRequest(error.message))
+      return
+    }
     next(error)
   }
 })
@@ -54,8 +58,64 @@ function parseProxyListOptions(query: Record<string, unknown>) {
 function parseProxyOptionListOptions(query: Record<string, unknown>) {
   return {
     keyword: optionalQueryText(query.keyword),
-    limit: optionLimitValue(integerQueryValue(query.limit))
+    limit: optionLimitValue(integerQueryValue(query.limit)),
+    selectedIds: parseSelectedProxyOptionIds(query)
   }
+}
+
+class ProxyOptionQueryError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ProxyOptionQueryError'
+  }
+}
+
+function parseSelectedProxyOptionIds(query: Record<string, unknown>): string[] | undefined {
+  for (const key of Object.keys(query)) {
+    if (key === 'selectedIds' || key === 'selectedIds[]') continue
+    if (key.startsWith('selectedIds[')) {
+      throw new ProxyOptionQueryError('代理选项 selectedIds 无效')
+    }
+  }
+
+  const rawValues: unknown[] = []
+  if (Object.prototype.hasOwnProperty.call(query, 'selectedIds')) {
+    rawValues.push(...normalizeSelectedProxyOptionRaw(query.selectedIds))
+  }
+  if (Object.prototype.hasOwnProperty.call(query, 'selectedIds[]')) {
+    rawValues.push(...normalizeSelectedProxyOptionRaw(query['selectedIds[]']))
+  }
+  if (rawValues.length === 0) return undefined
+
+  const selectedIds: string[] = []
+  const seen = new Set<string>()
+  for (const value of rawValues) {
+    if (typeof value !== 'string') {
+      throw new ProxyOptionQueryError('代理选项 selectedIds 无效')
+    }
+    const text = value.trim()
+    if (!text) continue
+    if (text.includes(',') || text.startsWith('[') || text.length > 120) {
+      throw new ProxyOptionQueryError('代理选项 selectedIds 无效')
+    }
+    if (seen.has(text)) continue
+    seen.add(text)
+    selectedIds.push(text)
+  }
+  selectedIds.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))
+  if (selectedIds.length > 20) {
+    throw new ProxyOptionQueryError('代理选项 selectedIds 最多 20 个')
+  }
+  return selectedIds
+}
+
+function normalizeSelectedProxyOptionRaw(value: unknown): unknown[] {
+  if (value === undefined || value === null) return []
+  if (Array.isArray(value)) return value
+  if (typeof value === 'object') {
+    throw new ProxyOptionQueryError('代理选项 selectedIds 无效')
+  }
+  return [value]
 }
 
 function optionLimitValue(value: number | undefined): number {

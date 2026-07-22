@@ -32,6 +32,7 @@
     "test:auth-profile-postgres-smoke": "tsx src/scripts/regression/auth-profile-postgres-smoke.ts",
     "test:deduplication-maintenance-boundary": "tsx src/scripts/regression/deduplication-maintenance-boundary-regression.ts",
     "test:proxy-negative": "tsx src/scripts/regression/proxy-negative-regression.ts",
+    "test:proxy-options-progressive-contract": "tsx src/scripts/regression/proxy-options-progressive-contract-regression.ts",
     "test:proxy-postgres-smoke": "tsx src/scripts/regression/proxy-postgres-smoke.ts",
     "test:large-response": "node --expose-gc --import tsx src/scripts/regression/non-stream-large-response-regression.ts",
     "test:stream-first-output-timeout": "tsx src/scripts/regression/stream-first-output-timeout-regression.ts",
@@ -43,6 +44,7 @@
     "test:gateway-downstream-commit": "tsx src/scripts/regression/gateway-downstream-commit-regression.ts",
     "test:stream-event-token-estimate-boundary": "tsx src/scripts/regression/stream-event-token-estimate-boundary-regression.ts",
     "test:response-inspection-policy": "tsx src/scripts/regression/response-inspection-policy-regression.ts",
+    "test:response-inspection-policy-progressive-loading": "tsx src/scripts/regression/response-inspection-policy-progressive-loading-regression.ts",
     "test:response-inspection-policy-postgres-smoke": "tsx src/scripts/regression/response-inspection-policy-postgres-smoke.ts",
     "test:response-inspection-gateway-e2e": "tsx src/scripts/regression/response-inspection-gateway-e2e-regression.ts",
     "test:response-inspection-mock-ai-fields": "tsx src/scripts/regression/response-inspection-mock-ai-fields-regression.ts",
@@ -98,6 +100,7 @@
     "test:account-response-credentials-redaction": "tsx src/scripts/regression/account-response-credentials-redaction-regression.ts",
     "test:account-client-compatibility-boundary": "tsx src/scripts/regression/account-client-compatibility-boundary-regression.ts",
     "test:account-list-visible": "tsx src/scripts/regression/account-list-visible-regression.ts",
+    "test:account-proxy-display-contract": "tsx src/scripts/regression/account-proxy-display-contract-regression.ts",
     "test:account-options-lightweight": "tsx src/scripts/regression/account-options-lightweight-regression.ts",
     "test:account-name-uniqueness": "tsx src/scripts/regression/account-name-uniqueness-regression.ts",
     "test:account-credential-duplicates": "tsx src/scripts/regression/account-credential-duplicates-regression.ts",
@@ -308,6 +311,8 @@
     "test:account-import-postgres-smoke": "tsx src/scripts/regression/account-import-postgres-smoke.ts",
     "test:route-strategy-group-bindings": "tsx src/scripts/regression/route-strategy-group-bindings-regression.ts",
     "test:route-strategy-list-query-guard": "tsx src/scripts/regression/route-strategy-list-query-guard-regression.ts",
+    "test:route-strategy-list-snapshot": "tsx src/scripts/regression/route-strategy-list-snapshot-regression.ts",
+    "test:route-strategy-list-snapshot-postgres-smoke": "tsx src/scripts/regression/route-strategy-list-snapshot-postgres-smoke.ts",
     "test:api-key-group-route-capability": "tsx src/scripts/regression/api-key-group-route-capability-regression.ts",
     "test:api-key-group-route-cache": "tsx src/scripts/regression/api-key-group-route-cache-regression.ts",
     "test:log-list-query-guard": "tsx src/scripts/regression/log-list-query-guard-regression.ts",
@@ -582,7 +587,10 @@
     "build": "pnpm run clean:dist && tsc -p tsconfig.build.json",
     "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test:public-api-log-list-lightweight": "tsx src/scripts/regression/public-api-log-list-lightweight-regression.ts",
+    "test:operation-log-list-lightweight": "tsx src/scripts/regression/operation-log-list-lightweight-regression.ts",
+    "test:operation-log-default-window": "tsx src/scripts/regression/operation-log-default-window-regression.ts"
   },
   "engines": {
     "node": ">=22.13.0 <23 || >=24.11.0 <25"

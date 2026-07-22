@@ -45,7 +45,7 @@ import axios from 'axios'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { PublicApiLogDetail, PublicApiLogResultFilter, PublicApiLogSummary } from '@/types/domain'
+import type { PublicApiLogDetail, PublicApiLogListItem, PublicApiLogResultFilter } from '@/types/domain'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { extractApiErrorMessage } from '@/shared/apiError'
@@ -53,6 +53,7 @@ import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import PublicApiLogDetailDrawer from './PublicApiLogDetailDrawer.vue'
 import PublicApiLogFilterToolbar from './PublicApiLogFilterToolbar.vue'
 import PublicApiLogList from './PublicApiLogList.vue'
+import { mergePublicApiLogListItems } from './publicApiLogPageWindow'
 import {
   normalizePublicApiLogStatusCode,
   normalizePublicApiLogTimeRange,
@@ -72,7 +73,7 @@ type PublicApiLogsPageState = {
   traceIdFilter: string
 }
 
-const pageSize = 100
+const pageSize = 50
 const defaultPageState = (): PublicApiLogsPageState => ({
   clientIpFilter: '',
   pathFilter: '',
@@ -83,7 +84,7 @@ const defaultPageState = (): PublicApiLogsPageState => ({
   timeRange: undefined,
   traceIdFilter: ''
 })
-const pageStateCache = usePageStateCache<PublicApiLogsPageState>(undefined, defaultPageState, { version: 1 })
+const pageStateCache = usePageStateCache<PublicApiLogsPageState>(undefined, defaultPageState, { version: 2 })
 const initialState = pageStateCache.read()
 
 const traceIdFilter = ref(initialState.traceIdFilter)
@@ -110,8 +111,9 @@ const {
   loadMoreMobile: loadMoreMobileRecords,
   refreshMobile: refreshMobileRecords,
   resetPagination
-} = useResponsivePagedList<PublicApiLogSummary>({
+} = useResponsivePagedList<PublicApiLogListItem>({
   pageSize,
+  mergeItems: mergePublicApiLogListItems,
   initialPagination: initialState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 条公开接口日志，还有更多`
@@ -178,7 +180,7 @@ function resetFilters(): void {
   void loadData()
 }
 
-async function openDetail(record: PublicApiLogSummary): Promise<void> {
+async function openDetail(record: PublicApiLogListItem): Promise<void> {
   const requestId = detailRequestId + 1
   detailRequestId = requestId
   detailOpen.value = true

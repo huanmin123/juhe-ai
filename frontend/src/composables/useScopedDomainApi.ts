@@ -19,6 +19,7 @@ type GroupMutationScopeParams = Parameters<typeof api.groups.create>[1]
 type GroupMutationPayload = Parameters<typeof api.groups.create>[0]
 type GroupOptionParams = Parameters<typeof api.groups.options>[0]
 type RouteStrategyListParams = Parameters<typeof api.routeStrategies.list>[0]
+type RouteStrategyListSnapshotScopeParams = Parameters<typeof api.routeStrategies.listSnapshot>[1]
 type RouteStrategyMutationPayload = Parameters<typeof api.routeStrategies.create>[0]
 type RouteStrategyMutationScopeParams = Parameters<typeof api.routeStrategies.create>[1]
 type RouteStrategyOptionsParams = Parameters<typeof api.routeStrategies.options>[0]
@@ -108,6 +109,9 @@ export function useScopedRouteStrategiesApi(isManagementView: Ref<boolean>) {
     list: (params?: RouteStrategyListParams) => isManagementView.value
       ? api.routeStrategies.list(params)
       : api.myRouteStrategies.list(params),
+    listSnapshot: (ids: string[], params?: RouteStrategyListSnapshotScopeParams) => isManagementView.value
+      ? api.routeStrategies.listSnapshot(ids, params)
+      : api.myRouteStrategies.listSnapshot(ids),
     options: (params?: RouteStrategyOptionsParams) => isManagementView.value
       ? api.routeStrategies.options(params)
       : api.myRouteStrategies.options(params),

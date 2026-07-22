@@ -333,6 +333,9 @@ export interface AccountSummary {
   qualityLastErrorMessage?: string
   qualityUpdatedAt?: string
   proxyProfileId?: string
+  proxyProfileName?: string
+  proxyProfileType?: 'http' | 'https' | 'socks5' | 'socks5h'
+  proxyProfileEnabled?: boolean
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
   schedulable: boolean

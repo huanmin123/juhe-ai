@@ -78,7 +78,7 @@
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import { formatDateTime } from '@/shared/formatters'
-import type { PublicApiLogSummary } from '@/types/domain'
+import type { PublicApiLogListItem } from '@/types/domain'
 import {
   formatPublicApiLogDuration,
   getPublicApiLogStatusColor
@@ -91,23 +91,23 @@ defineProps<{
   mobileHasMore: boolean
   mobileLoadingMore: boolean
   pagination: Record<string, unknown> | false
-  records: PublicApiLogSummary[]
+  records: PublicApiLogListItem[]
 }>()
 
 const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
-  (event: 'detail', record: PublicApiLogSummary): void
+  (event: 'detail', record: PublicApiLogListItem): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
 }>()
 
-function handleActionClick(key: string, record: PublicApiLogSummary): void {
+function handleActionClick(key: string, record: PublicApiLogListItem): void {
   if (key === 'detail') {
     emit('detail', record)
   }
 }
 
-function publicApiEndpointText(record: PublicApiLogSummary): string {
+function publicApiEndpointText(record: PublicApiLogListItem): string {
   return `${record.method} ${record.path}`
 }
 </script>

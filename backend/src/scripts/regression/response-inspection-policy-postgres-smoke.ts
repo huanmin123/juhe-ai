@@ -5,7 +5,9 @@ import { GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE } from '../../domain/provider-pro
 import {
   createResponseInspectionPolicyAsync,
   deleteResponseInspectionPolicyAsync,
+  getResponseInspectionPolicyDetailAsync,
   listActiveResponseInspectionPoliciesForGatewayAsync,
+  listResponseInspectionPolicyProviderOptionsAsync,
   listResponseInspectionPoliciesAsync,
   updateResponseInspectionPolicyAsync
 } from '../../storage/response-inspection-policy.repository.js'
@@ -33,7 +35,27 @@ try {
   createdPolicyIds.push(created.id)
 
   const listed = await listResponseInspectionPoliciesAsync()
-  assert.ok(listed.policies.some((policy) => policy.id === created.id), 'PG list 应返回刚创建的管理端响应检查策略')
+  const createdOverview = listed.policies.find((policy) => policy.id === created.id)
+  assert.ok(createdOverview, 'PG list 应返回刚创建的管理端响应检查策略')
+  assertOverviewShape(createdOverview)
+  for (const defaultRule of listed.defaultRules) assertOverviewShape(defaultRule)
+
+  const createdDetail = await getResponseInspectionPolicyDetailAsync(created.id)
+  assert.ok(createdDetail, 'PG detail 应返回刚创建的管理端响应检查策略')
+  assert.deepEqual(createdDetail.match, { errorCodes: [`${marker}_protocol_error`] }, 'PG detail 必须保留完整 matcher')
+  assert.equal(createdDetail.notes, 'response inspection policy postgres smoke', 'PG detail 必须保留备注')
+  assert.equal(typeof createdDetail.createdAt, 'string', 'PG detail 必须保留 createdAt')
+
+  const defaultDetail = await getResponseInspectionPolicyDetailAsync(listed.defaultRules[0]?.id ?? '')
+  assert.ok(defaultDetail?.defaultRule, 'PG detail 必须支持系统默认规则')
+  assert(defaultDetail.match && Object.keys(defaultDetail.match).length > 0, 'PG 默认规则 detail 必须包含 matcher')
+
+  const providerOptions = await listResponseInspectionPolicyProviderOptionsAsync()
+  assert(providerOptions.length > 0, 'PG provider options 必须返回启用的受支持供应商')
+  for (const option of providerOptions) {
+    assert.deepEqual(Object.keys(option).sort(), ['code', 'name', 'protocolCode'], 'PG provider option 只能返回三字段')
+  }
+  assert.equal(new Set(providerOptions.map((option) => `${option.code}\u0000${option.protocolCode}`)).size, providerOptions.length, 'PG provider options 必须去重')
 
   const activeProtocolPolicies = await listActiveResponseInspectionPoliciesForGatewayAsync({
     protocolCode: OPENAI_PROTOCOL_CODE
@@ -93,18 +115,30 @@ try {
   assert.equal(deleted, true, 'PG delete 应返回已删除')
   const listedAfterDelete = await listResponseInspectionPoliciesAsync()
   assert.equal(listedAfterDelete.policies.some((policy) => policy.id === created.id), false, 'PG delete 后 list 不应再返回策略')
+  assert.equal(await getResponseInspectionPolicyDetailAsync(created.id), undefined, 'PG delete 后 detail 应返回 undefined，供 HTTP 映射 404')
 
   console.log(JSON.stringify({
     message: '响应检查策略 PG smoke 通过',
     createdPolicyId: created.id,
     activeProtocolChecked: true,
     activeProviderChecked: true,
+    overviewDetailOptionsChecked: true,
     explainIndexed: true
   }))
 } finally {
   await cleanupSmokeRows()
   await closeRedisClients()
   await closePostgresPool()
+}
+
+function assertOverviewShape(value: object): void {
+  const policy = value as Record<string, unknown>
+  const allowed = new Set([
+    'id', 'defaultRule', 'editable', 'name', 'enabled', 'priority', 'scopeType', 'protocolCode',
+    'providerCode', 'providerName', 'action', 'updatedAt'
+  ])
+  for (const key of Object.keys(policy)) assert(allowed.has(key), `PG overview 出现非白名单字段：${key}`)
+  for (const key of ['match', 'notes', 'createdAt']) assert.equal(Object.hasOwn(policy, key), false, `PG overview 禁止返回 ${key}`)
 }
 
 async function assertActivePolicyExplainUsesIndex(): Promise<void> {

@@ -102,7 +102,7 @@ async function assertLatencyRefreshCandidateExplainUsesIndex(): Promise<void> {
       EXPLAIN (COSTS OFF)
       SELECT id
       FROM juhe_business.proxy_profiles
-      WHERE enabled = 1
+      WHERE enabled = true
       ORDER BY (last_tested_at IS NOT NULL) ASC, last_tested_at ASC, updated_at DESC, id ASC
       LIMIT 20
     `)
