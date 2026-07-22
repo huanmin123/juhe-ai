@@ -1,0 +1,77 @@
+{
+  "version": "audit-writer-contract/v1",
+  "referenceOwner": "node",
+  "implementationStatus": "golden_only_no_go_writer",
+  "cases": [
+    {
+      "id": "capture-finalization-and-overflow",
+      "boundary": "Capture waits for HTTP completion, finalization wins over late cancellation, and active capture overflow produces an explicit bounded audit outcome.",
+      "regressions": ["audit-log-retention-regression.ts"],
+      "guarantees": [
+        "A cancelled capture cannot be resurrected by a late HTTP completion.",
+        "A finalized capture releases its active reservation exactly once.",
+        "Oversized active capture is represented as overflow rather than silently persisting the body."
+      ]
+    },
+    {
+      "id": "local-queue-backpressure",
+      "boundary": "The ingest worker local audit queue is bounded and records overflow drops instead of growing without limit.",
+      "regressions": ["worker-local-queue-limit-regression.ts"],
+      "guarantees": [
+        "Queue length never exceeds the configured hard item limit.",
+        "An over-limit enqueue increments the audit overflow-drop counter.",
+        "Shutdown flush remains bounded."
+      ]
+    },
+    {
+      "id": "transport-capacity-fallback",
+      "boundary": "Server-to-worker transport must retry capacity rejection once with bounded metadata and preserve the audit identity.",
+      "regressions": ["audit-log-dispatch-estimate-boundary-regression.ts"],
+      "guarantees": [
+        "The fallback keeps audit ID and trace ID while removing body bytes.",
+        "Fallback transport is below the server inline budget.",
+        "Only a failed fallback is counted as a whole-record overflow drop."
+      ]
+    },
+    {
+      "id": "transport-summary-budget",
+      "boundary": "Redis transport encoding has a hard total-byte budget and reduces oversized payloads to a structured summary.",
+      "regressions": ["audit-log-transport-worker-regression.ts"],
+      "guarantees": [
+        "Encoded Redis Stream payload is at most 4 MiB.",
+        "Large payload summaries retain SHA-256, source size, and 256 KiB head and tail windows.",
+        "Problem-chain success uses the failure body retention budget."
+      ]
+    },
+    {
+      "id": "writer-idempotence-and-error-groups",
+      "boundary": "A batch write skips existing and in-batch duplicate audit IDs while grouping equivalent failures in one five-minute error window.",
+      "regressions": ["audit-log-batch-existing-lookup-regression.ts"],
+      "guarantees": [
+        "Duplicate audit IDs do not produce attempts or payload references.",
+        "Existing IDs are looked up in one batch rather than one query per record.",
+        "Equivalent failures increment one error group event count."
+      ]
+    },
+    {
+      "id": "payload-blob-refcount-and-window-read",
+      "boundary": "Payload storage deduplicates by content identity, keeps reference counts correct, and returns the original body through bounded window reads.",
+      "regressions": ["audit-log-async-flush-regression.ts"],
+      "guarantees": [
+        "Repeated body content reuses one payload blob and increments ref_count.",
+        "Compressed payload can be read back as the original body window.",
+        "Blob identity is shared while audit payload references remain distinct."
+      ]
+    },
+    {
+      "id": "retention-and-unreferenced-blob-cleanup",
+      "boundary": "Audit retention uses the dedicated policy and deletes blob metadata/files only after no payload reference remains.",
+      "regressions": ["audit-log-retention-regression.ts"],
+      "guarantees": [
+        "Success hot retention is distinct from long-term sampled success retention.",
+        "Failure retention is distinct from success retention.",
+        "Referenced payload blobs survive cleanup and unreferenced candidates are removed."
+      ]
+    }
+  ]
+}
