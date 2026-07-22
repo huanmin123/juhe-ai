@@ -42,12 +42,14 @@ const [
   databaseModule,
   repositories,
   dbServiceIpc,
-  runtimeSnapshot
+  runtimeSnapshot,
+  groupStatusSnapshot
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
   import('../../modules/db-service/db-service-ipc.js'),
-  import('../../modules/gateway/runtime/runtime-snapshot.service.js')
+  import('../../modules/gateway/runtime/runtime-snapshot.service.js'),
+  import('../../modules/groups/group-status-snapshot.service.js')
 ])
 
 let serverConcurrency: Record<string, number | string> = {}
@@ -208,8 +210,17 @@ try {
     assert(targetGroup, '测试分组应存在')
     assert.equal(targetGroup.accountStats.currentConcurrency, 7, '分组列表应汇总 server 当前并发')
     assert.equal(targetGroup.accountStats.currentConcurrencyAvailable, true, '分组列表应标记 server 并发快照可用')
-    assert.equal(requestedScopes.length, 2, '账户列表连续读取应复用短 TTL server 运行态快照，分组列表单独读取并发快照')
-    assert.deepEqual(requestedScopes, ['account_runtime', 'account_concurrency'], '系统 API 应按账户运行态和分组并发分别请求轻量快照')
+
+    const groupSnapshot = await groupStatusSnapshot.getGroupStatusSnapshot(access, [group.id])
+    assert.equal('runtimeSnapshot' in groupSnapshot, true, '分组状态快照必须返回实时并发可用性')
+    assert.equal(groupSnapshot.runtimeSnapshot.accountConcurrencyAvailable, true, '分组状态快照应标记 server 并发快照可用')
+    assert.equal(groupSnapshot.items[0]?.currentConcurrency, 7, '分组状态快照必须按成员账户汇总 server 当前并发')
+
+    const authorizedGroupSnapshot = await groupStatusSnapshot.getGroupStatusSnapshot(granteeAccess, [granteeTargetGroup.id])
+    assert.equal(authorizedGroupSnapshot.runtimeSnapshot.accountConcurrencyAvailable, true)
+    assert.equal(authorizedGroupSnapshot.items[0]?.currentConcurrency, 6, '授权实例所在分组必须按来源账户 ID 汇总并发')
+    assert.equal(requestedScopes.length, 2, '账户与分组连续读取必须复用短 TTL server 运行态快照，避免同次刷新重复 IPC')
+    assert.deepEqual(requestedScopes, ['account_runtime', 'account_concurrency'], '系统 API 应只读取一次账户运行态和一次并发轻量快照')
   } finally {
     runtimeConfig.processRole = previousProcessRole
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend

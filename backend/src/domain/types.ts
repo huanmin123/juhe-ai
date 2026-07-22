@@ -1218,6 +1218,9 @@ export interface GroupAuthorizationOption extends GroupSelectOption {
 
 export interface GroupStatusSnapshotResult {
   generatedAt: string
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+  }
   items: Array<{
     id: string
     currentConcurrency: number

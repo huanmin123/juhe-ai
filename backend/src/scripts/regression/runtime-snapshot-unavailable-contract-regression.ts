@@ -169,6 +169,16 @@ interface GroupListResponse {
   }>
 }
 
+interface GroupStatusSnapshotResponse {
+  items: Array<{
+    id: string
+    currentConcurrency: number
+  }>
+  runtimeSnapshot: {
+    accountConcurrencyAvailable: boolean
+  }
+}
+
 let server: http.Server | undefined
 
 try {
@@ -323,6 +333,15 @@ try {
   assert(group, '测试分组应出现在分组列表')
   assert.equal('runtimeSnapshot' in groupPage, false, '分组分页不得内联实时状态快照')
   assert.equal('currentConcurrency' in group.accountStats, false, '分组分页不得把延迟加载的实时并发伪装成 0')
+
+  const groupStatusSnapshot = await getEnvelope<GroupStatusSnapshotResponse>(
+    baseUrl,
+    `/__aisys__/api/groups/status-snapshot?groupIds=${encodeURIComponent(seed.groupId)}`,
+    seed.adminCookie
+  )
+  assert.equal('runtimeSnapshot' in groupStatusSnapshot, true, '分组状态快照必须返回实时并发可用性')
+  assert.equal(groupStatusSnapshot.runtimeSnapshot.accountConcurrencyAvailable, false, '分组状态快照应显式标记实时并发不可用')
+  assert.equal(groupStatusSnapshot.items[0]?.currentConcurrency, 0, '分组实时并发不可用时只保留数值占位')
 
   console.log('运行态快照不可用契约回归通过：API 不再把 unknown 伪装成 0、false、[] 或默认天数')
 } finally {
