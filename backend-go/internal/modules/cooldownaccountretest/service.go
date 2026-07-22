@@ -31,6 +31,7 @@ type Probe interface {
 type QueueSnapshot struct {
 	PendingCount int
 	RunningCount int
+	RetryCount   int
 }
 
 type QueueCapacity interface {
@@ -65,7 +66,7 @@ func (s Scheduler) RunPage(ctx context.Context, cursor *port.CooldownAccountRete
 		if err != nil {
 			return ScheduleResult{}, cursor, fmt.Errorf("read cooldown account retest queue capacity: %w", err)
 		}
-		occupied := max(snapshot.PendingCount, 0) + max(snapshot.RunningCount, 0)
+		occupied := max(snapshot.PendingCount, 0) + max(snapshot.RunningCount, 0) + max(snapshot.RetryCount, 0)
 		availableSlots = max(0, limit-occupied)
 		if availableSlots == 0 {
 			return ScheduleResult{AvailableSlots: 0}, cursor, nil
@@ -161,6 +162,9 @@ func (p Processor) RunTask(ctx context.Context, task port.CooldownAccountRetestT
 	}
 	result, err := p.Probe.Probe(taskCtx, candidate)
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("probe cooldown account retest interrupted: %w", ctx.Err())
+		}
 		// A transport or timeout error has no attributable upstream result.  Move
 		// the candidate out of the due set before acknowledging this task; otherwise
 		// a queue retry and the scheduler can issue duplicate probes concurrently.
@@ -196,10 +200,9 @@ func (p Processor) recordOutcome(ctx context.Context, write func(context.Context
 	if timeout <= 0 {
 		timeout = DefaultOutcomeTimeout
 	}
-	// The probe budget may already have elapsed. Outcome writes need their own
-	// bounded context so an observed result is not silently dropped because the
-	// probe context was cancelled immediately before persistence.
-	outcomeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	// The probe uses a child budget, while outcome persistence uses the outer task
+	// budget. Preserve outer cancellation so shutdown cannot outlive worker ownership.
+	outcomeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	return write(outcomeCtx)
 }

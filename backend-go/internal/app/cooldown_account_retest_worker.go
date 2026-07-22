@@ -217,7 +217,7 @@ func (r *cooldownAccountRetestSchedulerRunner) RunPage(ctx context.Context, now 
 	}
 	scheduler := module.Scheduler{
 		Store: r.store, Enqueuer: r.enqueuer, Capacity: r.capacity,
-		BatchSize: settings.BatchSize, EnqueueWorkers: settings.BatchSize,
+		BatchSize: settings.BatchSize, EnqueueWorkers: module.DefaultEnqueueWorkers,
 		MaxPauseMinutes: settings.MaxPauseMinutes, MaxRecoveryHours: settings.MaxRecoveryHours,
 	}
 	result, next, err := scheduler.RunPage(ctx, r.cursor, now)
@@ -377,5 +377,5 @@ func (c cooldownAccountRetestQueueCapacity) CooldownAccountRetestQueueSnapshot(c
 	if err != nil {
 		return module.QueueSnapshot{}, err
 	}
-	return module.QueueSnapshot{PendingCount: info.Pending, RunningCount: info.Active}, nil
+	return module.QueueSnapshot{PendingCount: info.Pending, RunningCount: info.Active, RetryCount: info.Retry}, nil
 }

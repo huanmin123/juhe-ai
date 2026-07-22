@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	DefaultUniqueTTL = 2 * time.Minute
-	DefaultMaxRetry  = 3
+	// Keep Asynq's unique lease alive across the default executions and retry backoff.
+	DefaultUniqueTTL   = 10 * time.Minute
+	DefaultMaxRetry    = 3
+	DefaultTaskTimeout = 70 * time.Second
 )
 
 type EnqueueClient interface {
@@ -39,7 +41,7 @@ func (e Enqueuer) EnqueueCooldownAccountRetest(ctx context.Context, task port.Co
 	}
 	timeout := e.TaskTimeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = DefaultTaskTimeout
 	}
 	maxRetry := DefaultMaxRetry
 	if e.MaxRetry != nil {
