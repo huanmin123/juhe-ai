@@ -37,6 +37,7 @@ export interface OpenAIResponseInspectionBufferOptions {
   context?: ResponseInspectionRuntimeContext
   extractSemanticFrames?: (event: ParsedOpenAIStreamEvent) => ResponseSemanticFrame[]
   buildFailureEvent?: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
+  transformEvent?: (event: ParsedOpenAIStreamEvent) => Buffer | undefined
 }
 
 const maxBufferedSseEventBytes = 256 * 1024
@@ -50,6 +51,7 @@ export class OpenAIResponseInspectionBuffer {
   private readonly context: ResponseInspectionRuntimeContext | undefined
   private readonly extractSemanticFrames: (event: ParsedOpenAIStreamEvent) => ResponseSemanticFrame[]
   private readonly buildFailureEvent: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
+  private readonly transformEvent: ((event: ParsedOpenAIStreamEvent) => Buffer | undefined) | undefined
   private readonly deferredLeadingNoopChunks: Buffer[] = []
   private readonly deferredCodexCompactionChunks: Buffer[] = []
   private codexCompactionOutputItemCount = 0
@@ -66,6 +68,7 @@ export class OpenAIResponseInspectionBuffer {
     this.context = options.context
     this.extractSemanticFrames = options.extractSemanticFrames ?? ((event) => extractOpenAISseSemanticFrames(event, openAIEndpointFamilyOrUnknown(this.endpointFamily)))
     this.buildFailureEvent = options.buildFailureEvent ?? failureEventForDecision
+    this.transformEvent = options.transformEvent
   }
 
   markDownstreamWrite(): void {
@@ -74,7 +77,7 @@ export class OpenAIResponseInspectionBuffer {
   }
 
   pushChunk(chunk: Buffer): ResponseInspectionSseResult {
-    if (!this.clientRetryEnabled && this.policies.length === 0) {
+    if (!this.clientRetryEnabled && this.policies.length === 0 && !this.transformEvent) {
       return { chunks: [chunk], pendingEvent: false, parserSkipped: false }
     }
     if (this.parserSkipped) {
@@ -100,16 +103,17 @@ export class OpenAIResponseInspectionBuffer {
         continue
       }
       const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
+      const outboundBuffer = this.transformEvent?.(event) ?? rawBuffer
       if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
-        this.deferredLeadingNoopChunks.push(rawBuffer)
+        this.deferredLeadingNoopChunks.push(outboundBuffer)
         continue
       }
       if (this.canPassThroughUninspectableVisibleOutputTextEvent(event)) {
         chunks.push(...this.drainDeferredLeadingNoopChunks())
-        chunks.push(rawBuffer)
+        chunks.push(outboundBuffer)
         continue
       }
-      const codexCompaction = this.prepareCodexCompactionEvent(event, rawBuffer)
+      const codexCompaction = this.prepareCodexCompactionEvent(event, outboundBuffer)
       const frames = this.extractSemanticFrames(event)
       if (codexCompaction.contractFrame) {
         frames.push(codexCompaction.contractFrame)
@@ -125,7 +129,7 @@ export class OpenAIResponseInspectionBuffer {
       if (inspection.decision) {
         const decision = inspection.decision
         if (decision.action === 'discard_event') {
-          this.removeLastDeferredCodexCompactionChunk(rawBuffer)
+          this.removeLastDeferredCodexCompactionChunk(outboundBuffer)
           continue
         }
         this.clearDeferredLeadingNoopChunks()
@@ -154,7 +158,7 @@ export class OpenAIResponseInspectionBuffer {
         continue
       }
       chunks.push(...this.drainDeferredLeadingNoopChunks())
-      chunks.push(rawBuffer)
+      chunks.push(outboundBuffer)
     }
 
     return {
@@ -166,7 +170,7 @@ export class OpenAIResponseInspectionBuffer {
   }
 
   flushPendingOnEof(): ResponseInspectionSseResult {
-    if (!this.clientRetryEnabled && this.policies.length === 0) {
+    if (!this.clientRetryEnabled && this.policies.length === 0 && !this.transformEvent) {
       return { chunks: [], pendingEvent: false, parserSkipped: false }
     }
     if (!this.parserSkipped && this.pendingBuffer.length === 0 && this.deferredCodexCompactionChunks.length > 0) {
@@ -192,19 +196,20 @@ export class OpenAIResponseInspectionBuffer {
       }
     }
     const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
+    const outboundBuffer = this.transformEvent?.(event) ?? rawBuffer
     if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
-      this.deferredLeadingNoopChunks.push(rawBuffer)
+      this.deferredLeadingNoopChunks.push(outboundBuffer)
       this.clearDeferredLeadingNoopChunks()
       return { chunks: [], pendingEvent: this.hasPendingProtocolEvent(), parserSkipped: this.parserSkipped }
     }
     if (this.canPassThroughUninspectableVisibleOutputTextEvent(event)) {
       return {
-        chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
+        chunks: [...this.drainDeferredLeadingNoopChunks(), outboundBuffer],
         pendingEvent: this.hasPendingProtocolEvent(),
         parserSkipped: this.parserSkipped
       }
     }
-    const codexCompaction = this.prepareCodexCompactionEvent(event, rawBuffer)
+    const codexCompaction = this.prepareCodexCompactionEvent(event, outboundBuffer)
     const frames = this.extractSemanticFrames(event)
     if (codexCompaction.contractFrame) {
       frames.push(codexCompaction.contractFrame)
@@ -237,7 +242,7 @@ export class OpenAIResponseInspectionBuffer {
         }
       }
       return {
-        chunks: [...this.drainDeferredLeadingNoopChunks(), rawBuffer],
+        chunks: [...this.drainDeferredLeadingNoopChunks(), outboundBuffer],
         observations: inspection.observations,
         pendingEvent: this.hasPendingProtocolEvent(),
         parserSkipped: this.parserSkipped
@@ -245,7 +250,7 @@ export class OpenAIResponseInspectionBuffer {
     }
     const decision = inspection.decision
     if (decision.action === 'discard_event') {
-      this.removeLastDeferredCodexCompactionChunk(rawBuffer)
+      this.removeLastDeferredCodexCompactionChunk(outboundBuffer)
       return {
         chunks: [],
         observations: inspection.observations,

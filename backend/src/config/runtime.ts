@@ -114,6 +114,9 @@ export interface RuntimeConfig {
     successFullBodyLimitBytes: number
     problemFullBodyLimitBytes: number
   }
+  codexProtocolGuard: {
+    mode: CodexProtocolGuardGlobalMode
+  }
   codexWebSearch: {
     endpoint?: string
     apiKey?: string
@@ -189,6 +192,7 @@ export type WorkerRuntimeRole =
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
 export type HostedToolRuntimeMode = 'guidance' | 'reject' | 'mock' | 'local_runtime'
 export type ImageGenerationProviderApi = 'images' | 'responses'
+export type CodexProtocolGuardGlobalMode = 'off' | 'shadow' | 'safe_repair'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -361,6 +365,9 @@ export const runtimeConfig: RuntimeConfig = {
     probeRetryDelayMs: numberConfig('JUHE_AI_MODEL_CHECK_PROBE_RETRY_DELAY_MS', defaultModelCheckProbeRetryDelayMs, 0, 300000)
   },
   auditLog: auditLogRuntimeConfig(),
+  codexProtocolGuard: {
+    mode: codexProtocolGuardModeConfig('JUHE_AI_CODEX_PROTOCOL_GUARD_MODE', 'shadow')
+  },
   codexWebSearch: {
     endpoint: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_ENDPOINT'),
     apiKey: optionalStringConfig('JUHE_AI_CODEX_WEB_SEARCH_API_KEY'),
@@ -864,6 +871,16 @@ function hostedToolRuntimeModeConfig(name: string, fallback: HostedToolRuntimeMo
   if (!value) return fallback
   if (value === 'guidance' || value === 'reject' || value === 'mock' || value === 'local_runtime') return value
   throw new Error(`${name} 只能配置为 guidance、reject、mock 或 local_runtime`)
+}
+
+function codexProtocolGuardModeConfig(
+  name: string,
+  fallback: CodexProtocolGuardGlobalMode
+): CodexProtocolGuardGlobalMode {
+  const value = rawStringConfig(name)?.toLowerCase()
+  if (!value) return fallback
+  if (value === 'off' || value === 'shadow' || value === 'safe_repair') return value
+  throw new Error(`${name} 只能配置为 off、shadow 或 safe_repair`)
 }
 
 function imageGenerationProviderApiConfig(name: string, fallback: ImageGenerationProviderApi): ImageGenerationProviderApi {

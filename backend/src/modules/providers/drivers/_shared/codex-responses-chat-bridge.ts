@@ -19,6 +19,7 @@ import {
 } from '../../../gateway/protocols/openai-v1/stream-events.js'
 import { splitPathAndQuery } from '../../../gateway/protocols/openai-v1/route-helpers.js'
 import type { CodexResponsesChatBridgeCompletionHandler } from '../../../gateway/codex-responses/chat-bridge-state.js'
+import { createCodexResponsesGuardMarker } from '../../../gateway/codex-responses/response-guard.js'
 import type { GatewayUpstreamResponse } from '../../../gateway/upstream/request.js'
 import { createCodexBridgeToolIdentity } from './codex-responses-chat-bridge-tool-identity.js'
 type JsonRecord = Record<string, unknown>
@@ -308,7 +309,8 @@ export function transformCodexResponsesChatBridgeUpstreamResponse(
       status: response.status,
       ok: response.ok,
       headers,
-      body: transformChatCompletionsSseToResponsesJson(response.body, transformInput)
+      body: transformChatCompletionsSseToResponsesJson(response.body, transformInput),
+      codexResponsesGuardMarker: createCodexResponsesGuardMarker('gateway_bridge')
     }
   }
   headers.set('content-type', 'text/event-stream; charset=utf-8')
@@ -316,7 +318,8 @@ export function transformCodexResponsesChatBridgeUpstreamResponse(
     status: response.status,
     ok: response.ok,
     headers,
-    body: transformChatCompletionsSseToResponsesSse(response.body, transformInput)
+    body: transformChatCompletionsSseToResponsesSse(response.body, transformInput),
+    codexResponsesGuardMarker: createCodexResponsesGuardMarker('gateway_bridge')
   }
 }
 

@@ -1,3 +1,5 @@
+import { createHash, randomUUID } from 'node:crypto'
+
 import {
   codexResponsesContractRegistry,
   codexResponsesContractRevision
@@ -18,10 +20,19 @@ export const codexStreamContractDiagnosticLimit = 32
 
 export interface CodexStreamItemIdentity {
   itemId?: string
+  upstreamItemId?: string
+  clientItemId?: string
   itemType?: string
   callId?: string
   outputIndex: number
   stage: CodexResponseItemEventStage
+}
+
+export interface CodexStreamIdRepair {
+  outputIndex?: number
+  itemType: string
+  field: 'item.id' | 'item_id' | 'response.output.id'
+  clientItemId: string
 }
 
 export interface CodexStreamContractEventResult {
@@ -29,6 +40,7 @@ export interface CodexStreamContractEventResult {
   outcome: CodexContractOutcome
   issue?: CodexProtocolIssue
   issues: readonly CodexProtocolIssue[]
+  repairs: readonly CodexStreamIdRepair[]
   eventCategory: 'sse_comment' | 'protocol_event'
 }
 
@@ -53,13 +65,37 @@ export class CodexResponsesStreamContractState {
   readonly #identities = new Map<string, CodexStreamItemIdentity>()
   readonly #itemIdOwners = new Map<string, string>()
   readonly #diagnostics: CodexProtocolIssue[] = []
+  readonly #clientItemIds = new Set<string>()
+  readonly #observedItemIds = new Set<string>()
+  readonly #eventRepairs: CodexStreamIdRepair[] = []
+  readonly #repairItemIds: boolean
+  readonly #createItemId?: (input: { prefix: string; type: string; sequence: number; outputIndex: number }) => string
   #omittedDiagnosticCount = 0
+  #completed = false
+  #standaloneSequence = 0
+  #repairSequence = 1
+  #allowNewRepair = true
 
-  constructor(input: { provenance: CodexProtocolIssueProvenance }) {
+  constructor(input: {
+    provenance: CodexProtocolIssueProvenance
+    repairItemIds?: boolean
+    createItemId?: (input: { prefix: string; type: string; sequence: number; outputIndex: number }) => string
+  }) {
     this.#provenance = input.provenance
+    this.#repairItemIds = input.repairItemIds === true
+    this.#createItemId = input.createItemId
   }
 
-  consume(input: CodexStreamContractInput): CodexStreamContractEventResult {
+  consume(input: CodexStreamContractInput, options: { allowNewRepair?: boolean } = {}): CodexStreamContractEventResult {
+    this.#allowNewRepair = options.allowNewRepair !== false
+    try {
+      return this.#consume(input)
+    } finally {
+      this.#allowNewRepair = true
+    }
+  }
+
+  #consume(input: CodexStreamContractInput): CodexStreamContractEventResult {
     if ('kind' in input) return cleanResult('sse_comment')
     const event = plainObject(input.event)
     if (!event) {
@@ -83,7 +119,20 @@ export class CodexResponsesStreamContractState {
         'R2'
       )])
     }
-    if (eventType === 'response.completed') return this.#consumeCompleted(input.responseResourceId, event)
+    if (this.#completed) {
+      return this.#result([this.#issue(
+        'event_after_response_completed',
+        'response.completed 后不得继续发送协议事件',
+        ['event', 'type'],
+        undefined,
+        undefined,
+        'R2'
+      )])
+    }
+    if (eventType === 'response.completed') {
+      this.#completed = true
+      return this.#consumeCompleted(input.responseResourceId, event)
+    }
     const stage = eventStage(eventType)
     if (!stage) return cleanResult('protocol_event')
     return this.#consumeItemEvent(input.responseResourceId, eventType, event, stage)
@@ -94,7 +143,7 @@ export class CodexResponsesStreamContractState {
   }
 
   identityFor(responseResourceId: string, outputIndex: number): CodexStreamItemIdentity | undefined {
-    const identity = this.#identities.get(itemKey(responseResourceId, outputIndex))
+    const identity = this.#identities.get(itemKey(responseScope(responseResourceId), outputIndex))
     return identity ? { ...identity } : undefined
   }
 
@@ -111,6 +160,15 @@ export class CodexResponsesStreamContractState {
   dispose(): void {
     this.#identities.clear()
     this.#itemIdOwners.clear()
+    this.#clientItemIds.clear()
+    this.#observedItemIds.clear()
+    this.#eventRepairs.length = 0
+    this.#diagnostics.length = 0
+    this.#omittedDiagnosticCount = 0
+    this.#completed = false
+    this.#standaloneSequence = 0
+    this.#repairSequence = 1
+    this.#allowNewRepair = true
   }
 
   #consumeCompleted(responseResourceId: string, event: JsonRecord): CodexStreamContractEventResult {
@@ -119,7 +177,7 @@ export class CodexResponsesStreamContractState {
     const issues: CodexProtocolIssue[] = []
     if (!completedResponseId) {
       issues.push(this.#issue('response_resource_id_missing', 'response.completed 缺少 response.id', ['event', 'response', 'id'], undefined, undefined, 'R2'))
-    } else if (!nonEmptyString(responseResourceId) || completedResponseId !== responseResourceId) {
+    } else if (nonEmptyString(responseResourceId) && completedResponseId !== responseResourceId) {
       issues.push(this.#issue(
         'response_resource_id_inconsistent',
         'response.completed 的 response.id 与当前流资源不一致',
@@ -133,33 +191,86 @@ export class CodexResponsesStreamContractState {
       if (!Array.isArray(response.output)) {
         issues.push(this.#issue('response_item_collection_invalid', 'response.completed.response.output 必须是数组', ['event', 'response', 'output'], undefined, undefined, 'R2'))
       } else {
+        const completedItemIdOwners = new Map<string, number>()
         for (let index = 0; index < response.output.length; index += 1) {
-          issues.push(...this.#inspectCompletedItem(responseResourceId, index, response.output[index]))
+          issues.push(...this.#inspectCompletedItem(
+            responseResourceId,
+            index,
+            response.output[index],
+            completedItemIdOwners
+          ))
         }
       }
     }
     return this.#result(issues)
   }
 
-  #inspectCompletedItem(responseResourceId: string, outputIndex: number, value: unknown): CodexProtocolIssue[] {
+  #inspectCompletedItem(
+    responseResourceId: string,
+    outputIndex: number,
+    value: unknown,
+    completedItemIdOwners: Map<string, number>
+  ): CodexProtocolIssue[] {
     const item = plainObject(value)
     if (!item) return [this.#issue('item_not_object', 'completed output item 必须是对象', ['event', 'response', 'output', outputIndex], outputIndex, undefined, 'R2')]
     const itemType = nonEmptyString(item.type)
     if (!itemType) return [this.#issue('item_type_missing', 'completed output item 缺少 type', ['event', 'response', 'output', outputIndex, 'type'], outputIndex, undefined, 'R2')]
-    const contract = codexResponsesContractRegistry.item(itemType)
-    if (!contract) return [this.#issue('unknown_item_type', 'completed output 出现 registry 未知 item type', ['event', 'response', 'output', outputIndex, 'type'], outputIndex, itemType)]
-    const issues = this.#itemContractIssues(item, contract, 'done', outputIndex, ['event', 'response', 'output', outputIndex])
-    const previous = this.#identities.get(itemKey(responseResourceId, outputIndex))
+    const issues: CodexProtocolIssue[] = []
+    const previous = this.#identities.get(itemKey(responseScope(responseResourceId), outputIndex))
     const itemId = stringValue(item.id)
     const callId = stringValue(item.call_id)
-    if (previous?.itemId !== undefined && itemId !== undefined && previous.itemId !== itemId) {
+    if (previous?.itemId !== undefined && itemId !== undefined && previous.itemId !== identityToken(itemId)) {
       issues.push(this.#issue('event_item_id_inconsistent', 'completed output 的 item ID 与流式 identity 不一致', ['event', 'response', 'output', outputIndex, 'id'], outputIndex, itemType, 'R2'))
     }
-    if (previous?.itemType && previous.itemType !== itemType) {
+    if (previous?.itemType && previous.itemType !== identityToken(itemType)) {
       issues.push(this.#issue('event_item_type_inconsistent', 'completed output 的 item type 与流式 identity 不一致', ['event', 'response', 'output', outputIndex, 'type'], outputIndex, itemType, 'R2'))
     }
-    if (previous?.callId !== undefined && callId !== undefined && previous.callId !== callId) {
+    if (previous?.callId !== undefined && callId !== undefined && previous.callId !== identityToken(callId)) {
       issues.push(this.#issue('event_call_id_inconsistent', 'completed output 的 call_id 与流式 identity 不一致', ['event', 'response', 'output', outputIndex, 'call_id'], outputIndex, itemType, 'R2'))
+    }
+    const contract = codexResponsesContractRegistry.item(itemType)
+    if (!contract) {
+      issues.push(this.#issue('unknown_item_type', 'completed output 出现 registry 未知 item type', ['event', 'response', 'output', outputIndex, 'type'], outputIndex, itemType))
+      return issues
+    }
+    if (!contract.eventStages.includes('done')) {
+      issues.push(this.#issue('event_stage_invalid', `${itemType} 不允许 done 阶段`, ['event', 'response', 'output', outputIndex, 'type'], outputIndex, itemType, 'R2'))
+    }
+    issues.push(...this.#itemContractIssues(item, contract, 'done', outputIndex, ['event', 'response', 'output', outputIndex]))
+    if (Object.hasOwn(item, 'id')) {
+      const rawId = item.id
+      if (!contract.prefix || !contract.repairableIdPaths.includes('id')) {
+        issues.push(this.#issue('item_id_forbidden', `${itemType} 不允许携带 item ID`, ['event', 'response', 'output', outputIndex, 'id'], outputIndex, itemType, 'R2'))
+      } else if (rawId !== null && (typeof rawId !== 'string' || rawId.length === 0)) {
+        issues.push(this.#issue('item_id_invalid', `${itemType} 的 item ID 必须是字符串或 null`, ['event', 'response', 'output', outputIndex, 'id'], outputIndex, itemType, 'R0'))
+      } else if (itemId && !expectedItemId(itemId, contract.prefix)) {
+        issues.push(this.#issue('item_id_prefix_mismatch', `${itemType} 的 item ID 前缀与 contract 不一致`, ['event', 'response', 'output', outputIndex, 'id'], outputIndex, itemType, 'R0'))
+      }
+    }
+    if (itemId) {
+      const itemIdToken = identityToken(itemId)
+      this.#observedItemIds.add(itemIdToken)
+      const priorIndex = completedItemIdOwners.get(itemIdToken)
+      if (priorIndex !== undefined && priorIndex !== outputIndex) {
+        issues.push(this.#issue('duplicate_item_identity', 'completed output 的多个 item 使用了重复 ID', ['event', 'response', 'output', outputIndex, 'id'], outputIndex, itemType, 'R2'))
+      } else {
+        completedItemIdOwners.set(itemIdToken, outputIndex)
+      }
+    }
+    if (
+      !issues.some((value) => value.repairLevel === 'R2')
+      && issues.some((value) => value.repairLevel === 'R0')
+    ) {
+      const clientItemId = previous?.clientItemId
+        ?? (this.#allowNewRepair ? this.#newClientItemId(contract, outputIndex) : undefined)
+      if (clientItemId) {
+        this.#eventRepairs.push({
+          outputIndex,
+          itemType: contract.type,
+          field: 'response.output.id',
+          clientItemId
+        })
+      }
     }
     return issues
   }
@@ -170,11 +281,8 @@ export class CodexResponsesStreamContractState {
     event: JsonRecord,
     stage: CodexResponseItemEventStage
   ): CodexStreamContractEventResult {
-    if (!nonEmptyString(responseResourceId)) {
-      return this.#result([this.#issue('response_resource_id_missing', 'Responses item event 缺少当前 response resource ID', ['responseResourceId'], undefined, undefined, 'R2')])
-    }
     const outputIndex = nonNegativeInteger(event.output_index)
-    if (outputIndex === undefined) {
+    if (Object.hasOwn(event, 'output_index') && outputIndex === undefined) {
       return this.#result([this.#issue('event_output_index_invalid', 'Responses item event 的 output_index 必须是非负整数', ['event', 'output_index'], undefined, undefined, 'R2')])
     }
     const item = plainObject(event.item)
@@ -182,28 +290,40 @@ export class CodexResponsesStreamContractState {
       return this.#result([this.#issue('event_item_missing', 'output_item added/done 必须包含 item 对象', ['event', 'item'], outputIndex, undefined, 'R2')])
     }
 
-    const internalKey = itemKey(responseResourceId, outputIndex)
-    const previous = this.#identities.get(internalKey)
     const expectedDeltaType = stage === 'delta' ? deltaItemType(eventType) : undefined
     const itemId = stringValue(item?.id) ?? stringValue(event.item_id)
     const itemType = nonEmptyString(item?.type) ?? nonEmptyString(event.item_type) ?? expectedDeltaType
     const callId = stringValue(item?.call_id) ?? stringValue(event.call_id)
+    const scope = responseScope(responseResourceId)
+    const existingOwnerKey = itemId ? this.#itemIdOwners.get(itemIdKey(scope, itemId)) : undefined
+    const internalKey = outputIndex !== undefined
+      ? itemKey(scope, outputIndex)
+      : stage === 'delta' && existingOwnerKey
+        ? existingOwnerKey
+        : standaloneItemKey(scope, ++this.#standaloneSequence)
+    const previous = this.#identities.get(internalKey)
     const issues: CodexProtocolIssue[] = []
 
     issues.push(...this.#stageIssues(previous, stage, outputIndex, itemType))
-    if (stage === 'delta' && !previous) {
-      issues.push(this.#issue('event_item_missing_added', 'delta 到达前没有 output_item.added identity', ['event', 'output_index'], outputIndex, itemType, 'R2'))
+    if (stage === 'delta' && !expectedDeltaType) {
+      issues.push(this.#issue(
+        'unknown_delta_event_type',
+        'Responses stream 出现 registry 未识别的 delta event',
+        ['event', 'type'],
+        outputIndex,
+        previous?.itemType
+      ))
     }
-    if (expectedDeltaType && previous?.itemType && previous.itemType !== expectedDeltaType) {
+    if (expectedDeltaType && previous?.itemType && previous.itemType !== identityToken(expectedDeltaType)) {
       issues.push(this.#issue('event_delta_type_mismatch', `${eventType} 不能用于 ${previous.itemType}`, ['event', 'type'], outputIndex, previous.itemType, 'R2'))
     }
-    if (previous?.itemId !== undefined && itemId !== undefined && previous.itemId !== itemId) {
+    if (previous?.itemId !== undefined && itemId !== undefined && previous.itemId !== identityToken(itemId)) {
       issues.push(this.#issue('event_item_id_inconsistent', '同一 Responses output identity 的 item ID 在事件间发生变化', itemFieldPath(stage, 'id'), outputIndex, itemType ?? previous.itemType, 'R2'))
     }
-    if (previous?.itemType && itemType && previous.itemType !== itemType) {
+    if (previous?.itemType && itemType && previous.itemType !== identityToken(itemType)) {
       issues.push(this.#issue('event_item_type_inconsistent', '同一 Responses output identity 的 item type 在事件间发生变化', itemFieldPath(stage, 'type'), outputIndex, itemType, 'R2'))
     }
-    if (previous?.callId !== undefined && callId !== undefined && previous.callId !== callId) {
+    if (previous?.callId !== undefined && callId !== undefined && previous.callId !== identityToken(callId)) {
       issues.push(this.#issue('event_call_id_inconsistent', '同一 Responses output identity 的 call_id 在事件间发生变化', itemFieldPath(stage, 'call_id'), outputIndex, itemType ?? previous.itemType, 'R2'))
     }
 
@@ -232,33 +352,76 @@ export class CodexResponsesStreamContractState {
     }
 
     if (effectiveId) {
-      const ownerKey = this.#itemIdOwners.get(itemIdKey(responseResourceId, effectiveId))
+      this.#observedItemIds.add(identityToken(effectiveId))
+      const ownerKey = this.#itemIdOwners.get(itemIdKey(scope, effectiveId))
       if (ownerKey && ownerKey !== internalKey) {
         issues.push(this.#issue('duplicate_item_identity', '同一 Responses 流的多个 output index 使用了重复 item ID', itemFieldPath(stage, 'id'), outputIndex, effectiveType, 'R2'))
       }
     }
 
+    let clientItemId = previous?.clientItemId
+    if (
+      contract
+      && !issues.some((value) => value.repairLevel === 'R2')
+      && issues.some((value) => value.repairLevel === 'R0')
+    ) {
+      clientItemId = clientItemId
+        ?? (this.#allowNewRepair ? this.#newClientItemId(contract, outputIndex) : undefined)
+      if (clientItemId) {
+        this.#eventRepairs.push({
+          outputIndex,
+          itemType: contract.type,
+          field: stage === 'delta' ? 'item_id' : 'item.id',
+          clientItemId
+        })
+      }
+    }
+
     if (!issues.some((value) => value.repairLevel === 'R2')) {
       const identity: CodexStreamItemIdentity = {
-        itemId: effectiveId,
-        itemType: effectiveType,
-        callId: callId ?? previous?.callId,
-        outputIndex,
+        itemId: effectiveId ? identityToken(effectiveId) : undefined,
+        upstreamItemId: effectiveId ? identityToken(effectiveId) : undefined,
+        clientItemId,
+        itemType: effectiveType ? identityToken(effectiveType) : undefined,
+        callId: callId ? identityToken(callId) : previous?.callId,
+        outputIndex: outputIndex ?? -1,
         stage
       }
       this.#identities.set(internalKey, identity)
       if (identity.itemId) {
-        const ownerIdKey = itemIdKey(responseResourceId, identity.itemId)
+        const ownerIdKey = itemIdKey(scope, identity.itemId)
         if (!this.#itemIdOwners.has(ownerIdKey)) this.#itemIdOwners.set(ownerIdKey, internalKey)
       }
     }
     return this.#result(issues)
   }
 
+  #newClientItemId(contract: CodexItemContract, outputIndex: number | undefined): string | undefined {
+    if (!this.#repairItemIds || !contract.prefix) return undefined
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const sequence = this.#repairSequence++
+      const candidate = (this.#createItemId ?? defaultStreamItemIdFactory)({
+        prefix: contract.prefix,
+        type: contract.type,
+        sequence,
+        outputIndex: outputIndex ?? Math.max(0, this.#standaloneSequence - 1)
+      })
+      if (
+        expectedItemId(candidate, contract.prefix)
+        && !this.#clientItemIds.has(candidate)
+        && !this.#observedItemIds.has(identityToken(candidate))
+      ) {
+        this.#clientItemIds.add(candidate)
+        return candidate
+      }
+    }
+    return undefined
+  }
+
   #stageIssues(
     previous: CodexStreamItemIdentity | undefined,
     stage: CodexResponseItemEventStage,
-    outputIndex: number,
+    outputIndex: number | undefined,
     itemType: string | undefined
   ): CodexProtocolIssue[] {
     if (!previous) return []
@@ -275,7 +438,7 @@ export class CodexResponsesStreamContractState {
     item: JsonRecord,
     contract: CodexItemContract,
     stage: CodexResponseItemEventStage,
-    outputIndex: number,
+    outputIndex: number | undefined,
     basePath: readonly (string | number)[]
   ): CodexProtocolIssue[] {
     return validateCodexItemContractFields(item, contract).map((fieldIssue) => this.#issue(
@@ -296,8 +459,15 @@ export class CodexResponsesStreamContractState {
       outcome: outcomeFor(issues),
       issue: boundedIssues[0],
       issues: boundedIssues,
+      repairs: this.#takeEventRepairs(),
       eventCategory: 'protocol_event'
     }
+  }
+
+  #takeEventRepairs(): CodexStreamIdRepair[] {
+    const repairs = this.#eventRepairs.map((repair) => ({ ...repair }))
+    this.#eventRepairs.length = 0
+    return repairs
   }
 
   #recordDiagnostics(issues: readonly CodexProtocolIssue[]): void {
@@ -315,18 +485,28 @@ export class CodexResponsesStreamContractState {
     itemType?: string,
     repairLevel?: 'R0' | 'R2'
   ): CodexProtocolIssue {
-    return { code, message, path, provenance: this.#provenance, outputIndex, itemType, repairLevel }
+    return {
+      code: boundedDiagnosticString(code, 96),
+      message: boundedDiagnosticString(message, 256),
+      path: path.slice(0, 12).map((part) => typeof part === 'string' ? boundedDiagnosticString(part, 64) : part),
+      provenance: this.#provenance,
+      outputIndex,
+      itemType: itemType === undefined ? undefined : boundedDiagnosticString(itemType, 128),
+      repairLevel
+    }
   }
 }
 
 export function createCodexResponsesStreamContractState(input: {
   provenance: CodexProtocolIssueProvenance
+  repairItemIds?: boolean
+  createItemId?: (input: { prefix: string; type: string; sequence: number; outputIndex: number }) => string
 }): CodexResponsesStreamContractState {
   return new CodexResponsesStreamContractState(input)
 }
 
 function cleanResult(eventCategory: 'sse_comment' | 'protocol_event'): CodexStreamContractEventResult {
-  return { revision: codexResponsesContractRevision, outcome: 'clean', issues: [], eventCategory }
+  return { revision: codexResponsesContractRevision, outcome: 'clean', issues: [], repairs: [], eventCategory }
 }
 
 function outcomeFor(issues: readonly CodexProtocolIssue[]): CodexContractOutcome {
@@ -362,8 +542,31 @@ function itemKey(responseResourceId: string, outputIndex: number): string {
   return `${responseResourceId.length}:${responseResourceId}:${outputIndex}`
 }
 
+function standaloneItemKey(responseResourceId: string, sequence: number): string {
+  return `${responseResourceId.length}:${responseResourceId}:standalone:${sequence}`
+}
+
+function responseScope(responseResourceId: string): string {
+  const value = nonEmptyString(responseResourceId)
+  return value ? identityToken(value) : '<unscoped>'
+}
+
 function itemIdKey(responseResourceId: string, itemId: string): string {
-  return `${responseResourceId.length}:${responseResourceId}:${itemId}`
+  const token = identityToken(itemId)
+  return `${responseResourceId.length}:${responseResourceId}:${token}`
+}
+
+function identityToken(value: string): string {
+  if (value.length <= 256) return value
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`
+}
+
+function boundedDiagnosticString(value: string, maximumLength: number): string {
+  return value.length <= maximumLength ? value : value.slice(0, maximumLength)
+}
+
+function defaultStreamItemIdFactory(input: { prefix: string }): string {
+  return `${input.prefix}_${randomUUID()}`
 }
 
 function expectedItemId(itemId: string, prefix: string): boolean {

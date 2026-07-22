@@ -34,6 +34,8 @@ export interface GatewayUpstreamResponse {
   readonly ok: boolean
   readonly headers: Headers
   readonly body: AsyncIterable<Uint8Array> | null
+  /** Internal-only provenance set by an explicit gateway transformer. */
+  readonly codexResponsesGuardMarker?: import('../codex-responses/response-guard.js').CodexResponsesGuardMarker
 }
 
 interface UpstreamRequestOptions {
