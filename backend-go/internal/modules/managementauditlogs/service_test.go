@@ -90,8 +90,17 @@ func TestListErrorGroupsNormalizesFiltersMapsOptionalFieldsAndProgressiveWindow(
 		FirstEventID: *group.FirstEventID, LastEventID: *group.LastEventID, SampleEventID: *group.SampleEventID, LastMessage: *group.LastMessage,
 		CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt,
 	}
-	if result.Page != 10 || result.PageSize != 100 || result.Total != 902 || !result.HasMore || len(result.Items) != 1 || result.Items[0] != want {
-		t.Fatalf("result = %+v, want item = %+v", result, want)
+	if result.Page != 10 || result.PageSize != 100 || result.Total != 902 || !result.HasMore || len(result.Items) != 1 {
+		t.Fatalf("result = %+v", result)
+	}
+	actual := result.Items[0]
+	if actual.StatusCode == nil || want.StatusCode == nil || *actual.StatusCode != *want.StatusCode {
+		t.Fatalf("statusCode = %v, want %v", actual.StatusCode, want.StatusCode)
+	}
+	actual.StatusCode = nil
+	want.StatusCode = nil
+	if actual != want {
+		t.Fatalf("item = %+v, want %+v", actual, want)
 	}
 }
 
@@ -188,9 +197,6 @@ func (s *auditLogReaderStub) ListManagementAuditLogs(_ context.Context, input po
 
 func (s *auditLogReaderStub) ListManagementAuditErrorGroups(_ context.Context, input port.ManagementAuditErrorGroupListInput) (port.ManagementAuditErrorGroupListResult, error) {
 	s.errorGroupInput = input
-	if s.errorGroupResult.Items == nil {
-		s.errorGroupResult.Items = []port.ManagementAuditErrorGroup{}
-	}
 	return s.errorGroupResult, nil
 }
 
