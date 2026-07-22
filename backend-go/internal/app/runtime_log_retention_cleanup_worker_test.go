@@ -43,6 +43,27 @@ func TestRuntimeLogRetentionCleanupWorkerValidatesEnabledOptions(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogRetentionCleanupInputKeepsOwnerGateClosedByDefault(t *testing.T) {
+	cfg := config.Config{RuntimeLogIndexEnabled: true}
+
+	input := runtimeLogRetentionCleanupInput(cfg, RuntimeLogRetentionCleanupWorkerOptions{
+		RetentionDays: 21,
+		BatchSize:     50,
+		MaxBatches:    4,
+	})
+	if !input.IndexEnabled || input.GoExclusiveIndexCleanupOwner {
+		t.Fatalf("default input must enable reads but keep cleanup owner closed: %+v", input)
+	}
+	if input.RetentionDays != 21 || input.BatchSize != 50 || input.MaxBatches != 4 {
+		t.Fatalf("worker options were not preserved: %+v", input)
+	}
+
+	input = runtimeLogRetentionCleanupInput(cfg, RuntimeLogRetentionCleanupWorkerOptions{GoExclusiveIndexCleanupOwner: true})
+	if !input.GoExclusiveIndexCleanupOwner {
+		t.Fatalf("explicit owner handoff was not passed to service: %+v", input)
+	}
+}
+
 func TestRunRuntimeLogRetentionCleanupLoopSupportsRunOnce(t *testing.T) {
 	calls := 0
 	err := runRuntimeLogRetentionCleanupLoop(context.Background(), slog.Default(), RuntimeLogRetentionCleanupWorkerOptions{RunOnce: true}, func(context.Context) (runtimelogretention.CleanupResult, error) {
