@@ -33,3 +33,7 @@ It is a read-only golden. Tests must never rewrite it. A later Node business cha
 - Use bounded ordered retention claims; use `FOR UPDATE SKIP LOCKED` when cleanup can overlap.
 
 The ordered implementation slices are recorded in `contract.json`. They deliberately separate parser/reader, transactional storage, discovery/rotation worker, and retention/cutover so each can be migrated and reviewed without a second runtime owner.
+
+The Go contract test executes these fixtures as a reference model, including exact-limit
+directory continuation, oversized complete-line progress with bounded storage, and
+independent pending/error rotation guards.

@@ -73,6 +73,30 @@
         "secondWindow": 2,
         "uniqueAcrossWindows": 2050
       }
+    },
+    {
+      "id": "unrelated-entry-window-eventually-discovers",
+      "principle": "Directory continuation counts every directory entry, so controlled files after a full unrelated-entry window must still be found on the next bounded poll.",
+      "input": {
+        "unrelatedLeading": 2050,
+        "controlledTrailing": 2
+      },
+      "expected": {
+        "pollsUntilAllControlledFound": 2,
+        "allControlledFound": true
+      }
+    },
+    {
+      "id": "exact-limit-reopens-at-eof",
+      "principle": "When a poll returns exactly 2048 matching entries and the lookahead observes EOF, the next poll reopens the directory immediately rather than returning an artificial empty window.",
+      "input": {
+        "matchingFiles": 2048
+      },
+      "expected": {
+        "firstWindow": 2048,
+        "nextWindowAfterReopen": 2048,
+        "emptyWindowForbidden": true
+      }
     }
   ],
   "cursorCases": [
@@ -182,6 +206,15 @@
       "chunks": [],
       "generatedInputBytes": 131073,
       "expected": {"storedMaxBytes": 131072, "policy": "utf8_prefix_with_truncation_marker", "summaryPreserved": true}
+    },
+    {
+      "id": "oversized-complete-line-progresses",
+      "principle": "A complete line larger than the nominal one-poll byte budget must be consumed once so the cursor cannot livelock, while its stored raw_json remains bounded independently.",
+      "sourceKey": "",
+      "expectedStableId": "",
+      "chunks": [],
+      "generatedInputBytes": 1048577,
+      "expected": {"rowCount": 1, "cursorOffset": 1048578, "storedMaxBytes": 131072, "progresses": true}
     }
   ],
   "timestampCases": [
@@ -231,6 +264,18 @@
       "id": "pending-or-error-rotated-file-cannot-be-deleted",
       "principle": "File retention must not delete a rotated file while its cursor is short of size or has an error.",
       "input": {"cursorOffset": 90, "fileSize": 100, "lastError": "write failed"},
+      "expected": {"fileDeleteAllowed": false, "cursorCleanupAllowed": false}
+    },
+    {
+      "id": "pending-without-error-cannot-be-deleted",
+      "principle": "A clean cursor that has not reached the rotated file size still protects the unread tail from file deletion and cursor cleanup.",
+      "input": {"cursorOffset": 90, "fileSize": 100, "lastError": null},
+      "expected": {"fileDeleteAllowed": false, "cursorCleanupAllowed": false}
+    },
+    {
+      "id": "completed-with-error-cannot-be-deleted",
+      "principle": "A cursor at EOF with a retained import error is not complete and must continue protecting the rotated file.",
+      "input": {"cursorOffset": 100, "fileSize": 100, "lastError": "write failed"},
       "expected": {"fileDeleteAllowed": false, "cursorCleanupAllowed": false}
     },
     {
