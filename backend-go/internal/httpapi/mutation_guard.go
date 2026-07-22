@@ -370,7 +370,7 @@ func managementAnnouncementCreateMutationGuardConfig() mutationGuardConfig {
 	return mutationGuardConfig{
 		operationKey: "announcements.create",
 		fingerprint: func(w http.ResponseWriter, r *http.Request) (any, error) {
-			fields, err := mutationJSONFieldsWithLimit(w, r, 256<<10)
+			fields, err := mutationJSONFieldsWithLimit(w, r, announcementJSONMaxBodyBytes)
 			if err != nil {
 				return nil, err
 			}
