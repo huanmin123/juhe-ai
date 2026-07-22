@@ -922,6 +922,6 @@
 
 ## 2026-07-22 W6 Node stats writer / Go reader schema 共存门禁
 
-- 新增 `juhe-ai-maintenance stats-schema-contract-preflight`，只读目标 PostgreSQL `information_schema.columns`，按 stats overview、system metrics、table monitor 三个 feature 校验 Go reader 当前实际读取的九张 `juhe_stats` 表及所需列。缺表、缺列或检查不可用均以稳定 JSON 和非零退出 fail-closed，底层数据库错误不写入结果。
-- 门禁固定输出 `contractVersion=1` 和 `writerOwner=node`。本批不实现生产 writer、不运行 schema reconcile、不创建 migration、不修改 owner manifest，也不抢占并行任务使用的 `000070`；这是为了避免请求进程变成第二 schema owner，并保留 Node `stats-worker` 在共存期的唯一写入职责。
+- 新增 `juhe-ai-maintenance stats-schema-contract-preflight`，只读目标 PostgreSQL `information_schema.columns`，按 account-usage/AI performance、stats overview、system metrics、table monitor 四个 feature 校验 Go reader 当前实际读取的 13 张唯一 `juhe_stats` 表、14 组 feature-relation 依赖及所需列。缺表、缺列或检查不可用均以稳定 JSON 和非零退出 fail-closed，底层数据库错误不写入结果。
+- 门禁固定输出 `contractVersion=2` 和 `writerOwner=node`。本批不实现生产 writer、不运行 schema reconcile、不创建 migration、不修改 owner manifest，也不抢占并行任务使用的 `000070`；这是为了避免请求进程变成第二 schema owner，并保留 Node `stats-worker` 在共存期的唯一写入职责。
 - 部署前必须先由统一 schema owner 合并 fresh Goose 所需表与索引，再启动 Node writer、执行本门禁和真实 writer-reader / EXPLAIN smoke。reader contract 通过只证明关系与列兼容，不证明数据 freshness、Node worker 活跃、Go worker 接管或 Node 可删除。

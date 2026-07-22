@@ -67,10 +67,10 @@ func TestInspectStatsSchemaContractAcceptsCompleteNodeWriterSchema(t *testing.T)
 	if err != nil {
 		t.Fatalf("inspectStatsSchemaContract() error = %v", err)
 	}
-	if !result.Success || result.ContractVersion != 1 || result.Schema != "juhe_stats" || result.WriterOwner != "node" {
+	if !result.Success || result.ContractVersion != 2 || result.Schema != "juhe_stats" || result.WriterOwner != "node" {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(result.Features) != 3 || len(result.Issues) != 0 {
+	if len(result.Features) != len(contracts) || len(result.Issues) != 0 {
 		t.Fatalf("result = %+v", result)
 	}
 	for _, feature := range result.Features {
@@ -95,6 +95,7 @@ func TestInspectStatsSchemaContractRejectsMissingRelationAndColumn(t *testing.T)
 	contracts := statsSchemaReadContracts()
 	columns := contractColumns(contracts)
 	delete(columns, "database_storage_snapshots")
+	delete(columns, "usage_stats_hourly")
 	columns["system_metrics_trend_windows"] = withoutColumn(columns["system_metrics_trend_windows"], "stats_lag_seconds_max")
 	querier := &statsSchemaContractQuerierStub{columnsByTable: columns}
 
@@ -108,13 +109,14 @@ func TestInspectStatsSchemaContractRejectsMissingRelationAndColumn(t *testing.T)
 	joined := strings.Join(result.Issues, "\n")
 	for _, want := range []string{
 		"juhe_stats.database_storage_snapshots is missing",
+		"juhe_stats.usage_stats_hourly is missing",
 		"juhe_stats.system_metrics_trend_windows missing columns: stats_lag_seconds_max",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("issues = %q, want %q", joined, want)
 		}
 	}
-	if featureReady(result, "table-monitor") || featureReady(result, "system-metrics") {
+	if featureReady(result, "account-usage-ai-performance") || featureReady(result, "table-monitor") || featureReady(result, "system-metrics") {
 		t.Fatalf("result = %+v, missing dependencies must fail their features", result)
 	}
 	if !featureReady(result, "stats-overview") {
@@ -180,6 +182,13 @@ func TestStatsSchemaReadContractsTrackGoReadersWithoutClaimingWriterOwnership(t 
 		byFeature[contract.Name] = relations
 	}
 	for feature, required := range map[string][]string{
+		"account-usage-ai-performance": {
+			"usage_scope_range_windows",
+			"usage_rank_snapshots",
+			"usage_stats_daily",
+			"usage_stats_hourly",
+			"ai_performance_summary_windows",
+		},
 		"stats-overview": {
 			"usage_stats_daily",
 			"usage_overview_trend_windows",
