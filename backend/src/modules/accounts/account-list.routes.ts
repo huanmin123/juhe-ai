@@ -45,15 +45,15 @@ export function registerAccountListRoutes(router: Router): void {
         const listStartedAt = performance.now()
         const result = await listAccountItemsPageAsync(requestAccess, listOptions)
         listDurationMs = performance.now() - listStartedAt
+        const concurrencyStartedAt = performance.now()
+        const hydratedResult = await applyServerAccountConcurrencyToAccountList(result)
+        concurrencyDurationMs = performance.now() - concurrencyStartedAt
         if (needsRuntimeStatusFilter) {
-          const concurrencyStartedAt = performance.now()
-          const hydratedResult = await applyServerAccountConcurrencyToAccountList(result)
-          concurrencyDurationMs = performance.now() - concurrencyStartedAt
           const fallbackStatusFilterStartedAt = performance.now()
           filteredResult = await applyAccountListRuntimeStatusFilter(requestAccess, listOptions, hydratedResult)
           statusFilterDurationMs += performance.now() - fallbackStatusFilterStartedAt
         } else {
-          filteredResult = result
+          filteredResult = hydratedResult
         }
       }
 

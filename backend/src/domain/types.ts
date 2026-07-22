@@ -757,14 +757,6 @@ export type AccountListItem = Omit<AccountSummary,
   | 'authorizationCount'
   | 'authorizationTeamCount'
   | 'authorizationUsageAvailable'
-  | 'currentConcurrency'
-  | 'currentConcurrencyAvailable'
-  | 'runtimeAvailability'
-  | 'effectiveAvailability'
-  | 'availabilityPresentation'
-  | 'apiKeyRuntime'
-  | 'todayUsage'
-  | 'lastUsedAt'
 >
 
 export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
@@ -1201,6 +1193,9 @@ export interface GroupListResult {
   hasMore: boolean
   page: number
   pageSize: number
+  runtimeSnapshot?: {
+    accountConcurrencyAvailable: boolean
+  }
 }
 
 export interface GroupListPageResult extends Omit<GroupListResult, 'items'> {

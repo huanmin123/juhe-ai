@@ -49,25 +49,7 @@ try {
 
   seedAccountUsage(account.id)
   seedAccountQuality(account.id)
-  const businessDatabase = databaseModule.getBusinessDatabase()
-  const statsDatabase = databaseModule.getStatsDatabase()
-  const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
-  const originalStatsPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
-  businessDatabase.prepare = ((sql: string) => {
-    assert.doesNotMatch(sql, /\b(account_supported_models|account_model_mappings|account_api_key_runtime_states)\b/i, '基础列表不得查询模型或 API Key 运行详情表')
-    return originalBusinessPrepare(sql)
-  }) as typeof businessDatabase.prepare
-  statsDatabase.prepare = ((sql: string) => {
-    assert.doesNotMatch(sql, /\b(usage_stats_totals|usage_stats_daily|account_usage_snapshots)\b/i, '基础列表不得查询累计、今日或 OAuth 用量表')
-    return originalStatsPrepare(sql)
-  }) as typeof statsDatabase.prepare
-  let result: ReturnType<typeof repositories.listAccountItemsPageReadOnly>
-  try {
-    result = repositories.listAccountItemsPageReadOnly(access, { page: 1, pageSize: 20 })
-  } finally {
-    businessDatabase.prepare = originalBusinessPrepare
-    statsDatabase.prepare = originalStatsPrepare
-  }
+  const result = repositories.listAccountItemsPageReadOnly(access, { page: 1, pageSize: 20 })
   const response = sanitizeAccountListResponse(result)
   const item = response.items.find((candidate) => candidate.id === account.id)
   assert(item, '账户基础列表应返回新建账户')
@@ -86,16 +68,16 @@ try {
   for (const field of forbiddenFields) {
     assert.equal(Object.prototype.hasOwnProperty.call(item, field), false, `账户基础列表不应返回重量字段 ${field}`)
   }
-  assert.equal(Object.prototype.hasOwnProperty.call(item, 'todayUsage'), false, '今日用量应由 status-snapshot 异步补齐')
-  assert.equal(Object.prototype.hasOwnProperty.call(item, 'currentConcurrency'), false, '当前并发应由 status-snapshot 异步补齐')
-  assert.equal(Object.prototype.hasOwnProperty.call(item, 'lastUsedAt'), false, '最近使用时间应由 status-snapshot 异步补齐')
+  assert.equal(Object.prototype.hasOwnProperty.call(item, 'todayUsage'), true, '今日用量必须随列表一次返回')
+  assert.equal(Object.prototype.hasOwnProperty.call(item, 'currentConcurrency'), true, '当前并发必须随列表一次返回')
+  assert.equal(Object.prototype.hasOwnProperty.call(item, 'lastUsedAt'), true, '最近使用时间必须随列表一次返回')
 
   assert.equal(item.name, '列表严格投影账户')
   assert.equal(item.providerCode, 'gpt')
   assert.equal(item.qualityScore, 1234, '基础列表必须保留轻量质量快照字段')
   assert.equal(item.permissions?.canEdit, true, '基础列表必须保留行操作权限')
 
-  console.log('AI 账户列表严格投影回归通过：基础列表不返回详情、累计统计或运行态字段')
+  console.log('AI 账户列表投影回归通过：动态字段与轻量静态字段均在列表一次返回')
 } finally {
   try {
     databaseModule.closeStorageDatabases()
