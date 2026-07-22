@@ -167,16 +167,16 @@ func mapSystemMetricsOverview(snapshot port.ManagementSystemMetricsSnapshot) Sys
 		overview.HourlyTrend = append(overview.HourlyTrend, SystemMetricsHourly{
 			StatHour:                   row.StatHour,
 			SampleCount:                row.SampleCount,
-			CPUPercentAvg:              roundedAverage(row.CPUPercentSum, row.SampleCount),
+			CPUPercentAvg:              roundedSystemMetricAverage(row.CPUPercentSum, row.SampleCount),
 			CPUPercentMax:              row.CPUPercentMax,
-			MemoryUsedPercentAvg:       roundedAverage(row.MemoryUsedPercentSum, row.SampleCount),
+			MemoryUsedPercentAvg:       roundedSystemMetricAverage(row.MemoryUsedPercentSum, row.SampleCount),
 			MemoryUsedPercentMax:       row.MemoryUsedPercentMax,
 			EventLoopLagMSSampleCount:  row.EventLoopLagMSSampleCount,
-			EventLoopLagMSAvg:          roundedAverage(row.EventLoopLagMSSum, row.EventLoopLagMSSampleCount),
+			EventLoopLagMSAvg:          roundedSystemMetricAverage(row.EventLoopLagMSSum, row.EventLoopLagMSSampleCount),
 			EventLoopLagMSMax:          row.EventLoopLagMSMax,
-			NetworkRXBytesPerSecondAvg: roundedAverage(row.NetworkRXBytesPerSecondSum, row.NetworkRXBytesPerSecondCount),
+			NetworkRXBytesPerSecondAvg: roundedSystemMetricAverage(row.NetworkRXBytesPerSecondSum, row.NetworkRXBytesPerSecondCount),
 			NetworkRXBytesPerSecondMax: row.NetworkRXBytesPerSecondMax,
-			NetworkTXBytesPerSecondAvg: roundedAverage(row.NetworkTXBytesPerSecondSum, row.NetworkTXBytesPerSecondCount),
+			NetworkTXBytesPerSecondAvg: roundedSystemMetricAverage(row.NetworkTXBytesPerSecondSum, row.NetworkTXBytesPerSecondCount),
 			NetworkTXBytesPerSecondMax: row.NetworkTXBytesPerSecondMax,
 			NetworkRXTotalBytesMax:     row.NetworkRXTotalBytesMax,
 			NetworkTXTotalBytesMax:     row.NetworkTXTotalBytesMax,
@@ -193,13 +193,13 @@ func mapSystemMetricsOverview(snapshot port.ManagementSystemMetricsSnapshot) Sys
 			ProcessRole:               row.ProcessRole,
 			SampleCount:               row.SampleCount,
 			EventLoopLagMSSampleCount: row.EventLoopLagMSSampleCount,
-			EventLoopLagMSAvg:         roundedAverage(row.EventLoopLagMSSum, row.EventLoopLagMSSampleCount),
+			EventLoopLagMSAvg:         roundedSystemMetricAverage(row.EventLoopLagMSSum, row.EventLoopLagMSSampleCount),
 			EventLoopLagMSMax:         row.EventLoopLagMSMax,
-			ProcessRSSBytesAvg:        roundedAverage(float64(row.ProcessRSSBytesSum), row.SampleCount),
+			ProcessRSSBytesAvg:        roundedSystemMetricAverage(float64(row.ProcessRSSBytesSum), row.SampleCount),
 			ProcessRSSBytesMax:        row.ProcessRSSBytesMax,
-			ProcessHeapUsedBytesAvg:   roundedAverage(float64(row.ProcessHeapUsedBytesSum), row.SampleCount),
+			ProcessHeapUsedBytesAvg:   roundedSystemMetricAverage(float64(row.ProcessHeapUsedBytesSum), row.SampleCount),
 			ProcessHeapUsedBytesMax:   row.ProcessHeapUsedBytesMax,
-			ProcessHeapTotalBytesAvg:  roundedAverage(float64(row.ProcessHeapTotalBytesSum), row.SampleCount),
+			ProcessHeapTotalBytesAvg:  roundedSystemMetricAverage(float64(row.ProcessHeapTotalBytesSum), row.SampleCount),
 			ProcessHeapTotalBytesMax:  row.ProcessHeapTotalBytesMax,
 		})
 	}
@@ -237,7 +237,7 @@ func mapSystemMetricsProcessStatus(rows []port.ManagementProcessMetricSample) []
 	return result
 }
 
-func roundedAverage(sum float64, count int64) *float64 {
+func roundedSystemMetricAverage(sum float64, count int64) *float64 {
 	if count <= 0 {
 		return nil
 	}
