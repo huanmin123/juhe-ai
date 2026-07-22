@@ -29,8 +29,6 @@ import { systemAccountsRouter } from '../system-accounts/system-accounts.routes.
 import { myTeamsRouter, systemTeamsRouter } from '../system-teams/system-teams.routes.js'
 import { tableMonitorRouter } from '../table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from '../usage-records/usage-records.routes.js'
-import { createPageDataChangesRouter } from '../page-data/page-data-change.routes.js'
-import { getPageDataChangeStore } from '../page-data/page-data-change.runtime.js'
 import { ok } from '../../shared/http.js'
 import { getRequestLogger, requestContextMiddleware, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { listPublicGlobalSettingsAsync } from '../../storage/repositories.js'
@@ -71,14 +69,14 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(requestContextMiddleware)
   app.use(createHttpCompressionMiddleware())
   app.use(systemApiPrefix, noStoreSystemApiResponse)
+  app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   if (!options.bypassSystemApiRateLimitForTest) {
     app.use(systemApiPrefix, systemApiIpRateLimit)
-    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiAuthenticatedRateLimit, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
   } else {
-    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbAccessModeMiddleware(systemApiPrefix), systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
+    app.use(`${systemApiPrefix}/my-chat`, requireAuth, systemApiDbServiceAdmissionControl, express.json({ limit: chatSystemApiJsonBodyLimit }), handleJsonBodyError, forceSelfAccessScope, chatRouter)
   }
   app.use(systemApiPrefix, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
-  app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))
   app.use(publicApiPrefix, capturePublicApiLog, express.json({ limit: systemApiJsonBodyLimit }), handleJsonBodyError)
   app.use(publicApiPrefix, systemApiDbAccessModeMiddleware(publicApiPrefix), systemApiDbServiceAdmissionControl)
 
@@ -101,7 +99,6 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
     app.use(systemApiPrefix, systemApiAuthenticatedRateLimit)
   }
   app.use(systemApiPrefix, systemApiDbServiceAdmissionControl)
-  app.use(`${systemApiPrefix}/data-changes`, createPageDataChangesRouter({ store: getPageDataChangeStore() }))
   app.use(`${systemApiPrefix}/announcements`, announcementsRouter)
   app.use(`${systemApiPrefix}/my-accounts`, forceSelfAccessScope, accountsRouter)
   app.use(`${systemApiPrefix}/my-groups`, forceSelfAccessScope, groupsRouter)

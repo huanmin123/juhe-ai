@@ -7,6 +7,7 @@ export type ResponsivePagedListResult<T> = {
   pageSize: number
   total: number
   hasMore?: boolean
+  superseded?: boolean
 }
 
 export type ResponsivePagedListLoadOptions = {
@@ -117,11 +118,11 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   async function executeLoadData(requestId: number, loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): Promise<boolean> {
     try {
       const result = await options.fetchPage(loadOptions, pagination)
-      if (requestId !== loadRequestId || loadOptions.shouldApply?.() === false) return false
+      if (result.superseded || requestId !== loadRequestId || loadOptions.shouldApply?.() === false) return false
       if (!loadOptions.append && result.page > 1 && result.items.length === 0 && result.hasMore === false) {
         pagination.current = 1
         const fallbackResult = await options.fetchPage(loadOptions, pagination)
-        if (requestId !== loadRequestId || loadOptions.shouldApply?.() === false) return false
+        if (fallbackResult.superseded || requestId !== loadRequestId || loadOptions.shouldApply?.() === false) return false
         applyPageResult(fallbackResult, loadOptions)
       } else {
         applyPageResult(result, loadOptions)

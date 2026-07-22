@@ -3,8 +3,6 @@ package managementsystemaccounts
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -176,12 +174,9 @@ func TestResetPasswordHashesPasswordAndMapsResult(t *testing.T) {
 			RevokedSessionCount: 2,
 		},
 	}
-	publisher := &systemAccountPageDataPublisherStub{err: errors.New("page data unavailable")}
 	service := NewServiceWithOptions(ServiceOptions{
-		Store:             store,
-		PageDataPublisher: publisher,
-		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Now:               func() time.Time { return updatedAt },
+		Store: store,
+		Now:   func() time.Time { return updatedAt },
 		HashPassword: func(password string) (string, error) {
 			if password != "NewPass123" {
 				t.Fatalf("hash password input = %q", password)
@@ -212,7 +207,6 @@ func TestResetPasswordHashesPasswordAndMapsResult(t *testing.T) {
 		result.RevokedSessionCount != 2 {
 		t.Fatalf("result = %+v", result)
 	}
-	assertSystemAccountPageDataResets(t, publisher)
 }
 
 func TestResetPasswordNormalizesAdminMustChangePassword(t *testing.T) {
@@ -291,20 +285,15 @@ func TestResetPasswordMapsStoreNotFoundAndErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			publisher := &systemAccountPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
-				Store:             tt.store,
-				HashPassword:      func(string) (string, error) { return "hash", nil },
-				PageDataPublisher: publisher,
+				Store:        tt.store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
 			})
 
 			_, err := service.ResetPassword(context.Background(), PasswordResetInput{SystemAccountID: "sys_user", Password: "NewPass123"})
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("ResetPassword() error = %v, want %v", err, tt.wantErr)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -420,55 +409,15 @@ func TestUpdateStatusReturnsGatewayCacheInvalidationError(t *testing.T) {
 			Account: port.ManagementSystemAccountSummary{ID: "sys_user", Status: "disabled", CreatedAt: now, UpdatedAt: now},
 		},
 	}
-	publisher := &systemAccountPageDataPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
 		Store:                    store,
 		SystemAccountInvalidator: &systemAccountInvalidatorStub{statusErr: want},
-		PageDataPublisher:        publisher,
 	})
 
 	_, err := service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: "sys_user", Status: "disabled"})
 
 	if !errors.Is(err, want) {
 		t.Fatalf("UpdateStatus() error = %v, want %v", err, want)
-	}
-	assertSystemAccountPageDataResets(t, publisher)
-}
-
-type systemAccountPageDataPublisherStub struct {
-	domains      []string
-	owners       [][]string
-	allScopes    []bool
-	contextErr   []error
-	hasDeadlines []bool
-	err          error
-}
-
-func (s *systemAccountPageDataPublisherStub) PublishPageDataReset(
-	ctx context.Context,
-	domain string,
-	owners []string,
-	allScopes bool,
-) error {
-	s.domains = append(s.domains, domain)
-	s.owners = append(s.owners, append([]string(nil), owners...))
-	s.allScopes = append(s.allScopes, allScopes)
-	s.contextErr = append(s.contextErr, ctx.Err())
-	_, hasDeadline := ctx.Deadline()
-	s.hasDeadlines = append(s.hasDeadlines, hasDeadline)
-	return s.err
-}
-
-func assertSystemAccountPageDataResets(t *testing.T, publisher *systemAccountPageDataPublisherStub) {
-	t.Helper()
-	wantDomains := []string{"systemAccounts.options", "accounts.options"}
-	if len(publisher.domains) != len(wantDomains) {
-		t.Fatalf("page data domains = %#v, want %#v", publisher.domains, wantDomains)
-	}
-	for index, domain := range wantDomains {
-		if publisher.domains[index] != domain || len(publisher.owners[index]) != 0 || !publisher.allScopes[index] || publisher.contextErr[index] != nil || !publisher.hasDeadlines[index] {
-			t.Fatalf("page data call %d domain=%q owners=%#v allScopes=%v contextErr=%v deadline=%v", index, publisher.domains[index], publisher.owners[index], publisher.allScopes[index], publisher.contextErr[index], publisher.hasDeadlines[index])
-		}
 	}
 }
 
@@ -558,20 +507,15 @@ func TestUpdateStatusSkipsGatewayCacheInvalidationForBlockedAndStoreErrors(t *te
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			invalidator := &systemAccountInvalidatorStub{}
-			publisher := &systemAccountPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
 				Store:                    tt.store,
 				SystemAccountInvalidator: invalidator,
-				PageDataPublisher:        publisher,
 			})
 
 			_, _ = service.UpdateStatus(context.Background(), StatusUpdateInput{SystemAccountID: "sys_user", Status: "disabled"})
 
 			if invalidator.statusCalls != 0 || invalidator.imageCalls != 0 {
 				t.Fatalf("invalidation calls = status %d image %d, want 0", invalidator.statusCalls, invalidator.imageCalls)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -581,7 +525,6 @@ func TestUpdateImageGenerationNormalizesInputMapsResultAndInvalidatesGatewayCach
 	now := time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC)
 	updatedAt := now.Add(time.Minute)
 	invalidator := &systemAccountInvalidatorStub{}
-	publisher := &systemAccountPageDataPublisherStub{}
 	store := &systemAccountOptionStoreStub{
 		imageFound: true,
 		imageResult: port.ManagementSystemAccountImageGenerationUpdateResult{
@@ -609,7 +552,6 @@ func TestUpdateImageGenerationNormalizesInputMapsResultAndInvalidatesGatewayCach
 		Store:                    store,
 		Now:                      func() time.Time { return updatedAt },
 		SystemAccountInvalidator: invalidator,
-		PageDataPublisher:        publisher,
 	})
 
 	result, err := service.UpdateImageGeneration(context.Background(), ImageGenerationUpdateInput{SystemAccountID: " sys_user ", ImageGenerationEnabled: true})
@@ -634,7 +576,6 @@ func TestUpdateImageGenerationNormalizesInputMapsResultAndInvalidatesGatewayCach
 	if invalidator.statusCalls != 0 {
 		t.Fatalf("status invalidation calls = %d, want 0", invalidator.statusCalls)
 	}
-	assertSystemAccountPageDataResets(t, publisher)
 }
 
 func TestUpdateImageGenerationSkipsGatewayCacheInvalidationWhenUnchanged(t *testing.T) {
@@ -680,11 +621,9 @@ func TestUpdateImageGenerationRejectsInvalidInputAndMapsErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			invalidator := &systemAccountInvalidatorStub{}
-			publisher := &systemAccountPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
 				Store:                    tt.store,
 				SystemAccountInvalidator: invalidator,
-				PageDataPublisher:        publisher,
 			})
 
 			_, err := service.UpdateImageGeneration(context.Background(), tt.input)
@@ -694,9 +633,6 @@ func TestUpdateImageGenerationRejectsInvalidInputAndMapsErrors(t *testing.T) {
 			}
 			if invalidator.imageCalls != 0 || invalidator.statusCalls != 0 {
 				t.Fatalf("invalidation calls = image %d status %d, want 0", invalidator.imageCalls, invalidator.statusCalls)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -712,11 +648,9 @@ func TestUpdateImageGenerationReturnsGatewayCacheInvalidationError(t *testing.T)
 			Account: port.ManagementSystemAccountSummary{ID: "sys_user", ImageGenerationEnabled: true, CreatedAt: now, UpdatedAt: now},
 		},
 	}
-	publisher := &systemAccountPageDataPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
 		Store:                    store,
 		SystemAccountInvalidator: &systemAccountInvalidatorStub{imageErr: want},
-		PageDataPublisher:        publisher,
 	})
 
 	_, err := service.UpdateImageGeneration(context.Background(), ImageGenerationUpdateInput{SystemAccountID: "sys_user", ImageGenerationEnabled: true})
@@ -724,7 +658,6 @@ func TestUpdateImageGenerationReturnsGatewayCacheInvalidationError(t *testing.T)
 	if !errors.Is(err, want) {
 		t.Fatalf("UpdateImageGeneration() error = %v, want %v", err, want)
 	}
-	assertSystemAccountPageDataResets(t, publisher)
 }
 
 func TestUpdateProfileNormalizesInputAndMapsResult(t *testing.T) {
@@ -761,11 +694,9 @@ func TestUpdateProfileNormalizesInputAndMapsResult(t *testing.T) {
 			},
 		},
 	}
-	publisher := &systemAccountPageDataPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
-		Store:             store,
-		PageDataPublisher: publisher,
-		Now:               func() time.Time { return updatedAt },
+		Store: store,
+		Now:   func() time.Time { return updatedAt },
 	})
 
 	result, err := service.UpdateProfile(context.Background(), ProfileUpdateInput{
@@ -802,7 +733,6 @@ func TestUpdateProfileNormalizesInputAndMapsResult(t *testing.T) {
 		result.Account.MustChangePassword {
 		t.Fatalf("result = %+v", result)
 	}
-	assertSystemAccountPageDataResets(t, publisher)
 }
 
 func TestUpdateProfileAllowsDescriptionNull(t *testing.T) {
@@ -890,16 +820,12 @@ func TestUpdateProfileMapsStoreErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			publisher := &systemAccountPageDataPublisherStub{}
-			service := NewServiceWithOptions(ServiceOptions{Store: tt.store, PageDataPublisher: publisher})
+			service := NewServiceWithOptions(ServiceOptions{Store: tt.store})
 
 			_, err := service.UpdateProfile(context.Background(), ProfileUpdateInput{SystemAccountID: "sys_user", DisplayName: stringPtr("用户")})
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("UpdateProfile() error = %v, want %v", err, tt.wantErr)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -916,7 +842,6 @@ func TestUpdateNormalizesMixedInputMapsResultAndInvalidatesStatusFirst(t *testin
 	mustChangePassword := true
 	imageGenerationEnabled := true
 	invalidator := &systemAccountInvalidatorStub{}
-	publisher := &systemAccountPageDataPublisherStub{}
 	store := &systemAccountOptionStoreStub{
 		updateFound: true,
 		updateResult: port.ManagementSystemAccountUpdateResult{
@@ -951,7 +876,6 @@ func TestUpdateNormalizesMixedInputMapsResultAndInvalidatesStatusFirst(t *testin
 		Store:                    store,
 		Now:                      func() time.Time { return updatedAt },
 		SystemAccountInvalidator: invalidator,
-		PageDataPublisher:        publisher,
 		HashPassword: func(value string) (string, error) {
 			if value != password {
 				t.Fatalf("hash password input = %q", value)
@@ -1010,7 +934,6 @@ func TestUpdateNormalizesMixedInputMapsResultAndInvalidatesStatusFirst(t *testin
 	if invalidator.imageCalls != 0 {
 		t.Fatalf("image invalidation calls = %d, want 0", invalidator.imageCalls)
 	}
-	assertSystemAccountPageDataResets(t, publisher)
 }
 
 func TestUpdateInvalidatesImageWhenStatusUnchanged(t *testing.T) {
@@ -1106,20 +1029,15 @@ func TestUpdateMapsStoreErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			publisher := &systemAccountPageDataPublisherStub{}
 			service := NewServiceWithOptions(ServiceOptions{
-				Store:             tt.store,
-				HashPassword:      func(string) (string, error) { return "hash", nil },
-				PageDataPublisher: publisher,
+				Store:        tt.store,
+				HashPassword: func(string) (string, error) { return "hash", nil },
 			})
 
 			_, err := service.Update(context.Background(), UpdateInput{SystemAccountID: "sys_user", DisplayName: stringPtr("用户")})
 
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Update() error = %v, want %v", err, tt.wantErr)
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}
@@ -1257,13 +1175,11 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 	}
 	description := " 说明 "
 	imageEnabled := true
-	publisher := &systemAccountPageDataPublisherStub{}
 	service := NewServiceWithOptions(ServiceOptions{
-		Store:             store,
-		PageDataPublisher: publisher,
-		Now:               func() time.Time { return now },
-		HashPassword:      func(value string) (string, error) { return "hashed:" + value, nil },
-		Secret:            credentialSecret,
+		Store:        store,
+		Now:          func() time.Time { return now },
+		HashPassword: func(value string) (string, error) { return "hashed:" + value, nil },
+		Secret:       credentialSecret,
 	})
 
 	result, err := service.Create(context.Background(), CreateInput{
@@ -1321,7 +1237,6 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 	if result.Account.ID != "sys_new" || result.Account.LastLoginAt != "" || len(result.DefaultAPIKeyIDs) != 1 || len(result.DefaultGroupIDs) != 1 {
 		t.Fatalf("result = %+v", result)
 	}
-	assertSystemAccountPageDataResets(t, publisher)
 }
 
 func TestCreateSystemAccountNormalizesAdminMustChangePassword(t *testing.T) {
@@ -1395,8 +1310,7 @@ func TestCreateSystemAccountRejectsInvalidAndDuplicateInputs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			publisher := &systemAccountPageDataPublisherStub{}
-			service := NewServiceWithOptions(ServiceOptions{Store: tt.store, HashPassword: func(string) (string, error) { return "hash", nil }, PageDataPublisher: publisher})
+			service := NewServiceWithOptions(ServiceOptions{Store: tt.store, HashPassword: func(string) (string, error) { return "hash", nil }})
 
 			_, err := service.Create(context.Background(), tt.input)
 
@@ -1407,9 +1321,6 @@ func TestCreateSystemAccountRejectsInvalidAndDuplicateInputs(t *testing.T) {
 				if tt.store.createCalled {
 					t.Fatal("store should not be called for invalid input")
 				}
-			}
-			if len(publisher.domains) != 0 {
-				t.Fatalf("page data domains = %#v, want none", publisher.domains)
 			}
 		})
 	}

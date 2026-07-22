@@ -369,7 +369,6 @@ function transformSqliteStatementToPostgres(sql: string, schemaName: PostgresSch
   transformed = transformed.replace(/\bTEXT\b/gi, 'text')
   transformed = transformProviderModelCatalogTableForPostgres(transformed, schemaName)
   transformed = transformCustomProviderModelsTableForPostgres(transformed, schemaName)
-  transformed = transformPageDataDirtyDomainsTableForPostgres(transformed, schemaName)
   transformed = transformGatewayModelCatalogSnapshotsTableForPostgres(transformed, schemaName)
   transformed = transformUsageRecordsTableForPostgres(transformed, schemaName)
   transformed = transformChatMessagesTableForPostgres(transformed, schemaName)
@@ -423,18 +422,6 @@ function transformCustomProviderModelsTableForPostgres(sql: string, schemaName: 
   if (schemaName !== 'juhe_business') return sql
   if (!/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+custom_provider_models\s*\(/i.test(sql.trim())) return sql
   return sql.replace(/\bcatalog_visible\s+integer\s+NOT\s+NULL\s+DEFAULT\s+1\b/i, 'catalog_visible boolean NOT NULL DEFAULT true')
-}
-
-function transformPageDataDirtyDomainsTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {
-  if (schemaName !== 'juhe_business') return sql
-  if (!/^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+page_data_dirty_domains\s*\(/i.test(sql.trim())) return sql
-  return sql
-    .replace(/\bgeneration\s+integer\b/i, 'generation bigint')
-    .replace(
-      /\bis_dirty\s+integer\s+NOT\s+NULL\s+DEFAULT\s+1\s+CHECK\s*\(\s*is_dirty\s+IN\s*\(\s*0\s*,\s*1\s*\)\s*\)/i,
-      'is_dirty boolean NOT NULL DEFAULT TRUE'
-    )
-    .replace(/\bupdated_at\s+text\s+NOT\s+NULL\b/i, 'updated_at timestamptz NOT NULL')
 }
 
 function transformGatewayModelCatalogSnapshotsTableForPostgres(sql: string, schemaName: PostgresSchemaName): string {

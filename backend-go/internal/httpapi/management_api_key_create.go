@@ -349,7 +349,7 @@ func recordManagementAPIKeyCreateOperationLog(
 	result managementapikeys.CreateResult,
 	opts managementOperationLogOptions,
 ) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	mode := "self"

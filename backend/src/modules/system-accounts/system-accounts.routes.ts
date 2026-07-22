@@ -8,17 +8,10 @@ import { hashPasswordAsync } from '../../storage/crypto.js'
 import { createSystemAccountWithPasswordHashAsync, findSystemAccountByIdAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, revokeAllSessionsForAccountAsync, updateSystemAccountWithPasswordHashAsync } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { createPageDataDomainReadCache, pageDataReadCacheKey } from '../page-data/page-data-read-cache.service.js'
-import { publishPageDataDomainGlobalReset } from '../page-data/page-data-change.publisher.js'
 import { rebuildPublishedModelCatalogSnapshotsBestEffortAsync } from '../model-pricing/published-model-catalog.service.js'
 
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
-
-const systemAccountOptionsReadCache = createPageDataDomainReadCache<Awaited<ReturnType<typeof listSystemAccountOptionsAsync>>>('systemAccounts.options', {
-  max: 256,
-  ttlMs: 6 * 60 * 60 * 1000
-})
 
 const createSchema = z.object({
   username: z.string().min(2),
@@ -52,11 +45,7 @@ systemAccountsRouter.get('/', requireAdmin, async (req, res, next) => {
 systemAccountsRouter.get('/options', requireAdmin, async (req, res, next) => {
   try {
     const query = parseSystemAccountOptionListOptions(req.query)
-    const options = await systemAccountOptionsReadCache.load(pageDataReadCacheKey({
-      scope: { role: 'admin' },
-      route: '/system-accounts/options',
-      query
-    }), () => listSystemAccountOptionsAsync(query))
+    const options = await listSystemAccountOptionsAsync(query)
     res.json(ok(options))
   } catch (error) {
     next(error)
@@ -128,10 +117,6 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
         }
       }
     }, req)
-    await Promise.all([
-      publishPageDataDomainGlobalReset('systemAccounts.options'),
-      publishPageDataDomainGlobalReset('accounts.options')
-    ])
     await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(account.id)
     res.status(201).json(ok(account))
   } catch (error) {
@@ -192,10 +177,6 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
         }
       }
     }, req)
-    await Promise.all([
-      publishPageDataDomainGlobalReset('systemAccounts.options'),
-      publishPageDataDomainGlobalReset('accounts.options')
-    ])
     if (parsed.data.status === 'active' && before?.status !== 'active') {
       await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(account.id)
     } else if (parsed.data.status === 'disabled') {

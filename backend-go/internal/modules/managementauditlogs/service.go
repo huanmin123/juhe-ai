@@ -1,21 +1,43 @@
 package managementauditlogs
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"juhe-ai/backend-go/internal/store/port"
 )
 
 const (
-	defaultPageSize   = 100
-	maxPageSize       = 100
-	maxListWindowRows = 1001
+	defaultPageSize              = 100
+	maxPageSize                  = 100
+	maxListWindowRows            = 1001
+	defaultPayloadReadLimitBytes = 256 * 1024
+	maxPayloadReadLimitBytes     = 1024 * 1024
+	maxGzipPayloadBlobRawBytes   = 1024 * 1024
+	maxAuditPayloadBlobRawBytes  = 2 * 1024 * 1024
 )
 
-type Service struct{ store port.ManagementAuditLogReader }
+var auditPayloadReadSlots = make(chan struct{}, 4)
+
+type Service struct {
+	store           port.ManagementAuditLogReader
+	payloadBlobRoot string
+	hotSearch       hotSearchSearcher
+}
+
+type Options struct {
+	PayloadBlobRoot string
+	HotSearchRoot   string
+}
 
 type ListInput struct {
 	TraceID, ErrorGroupID, Outcome, Path, Model, SystemAccountID string
@@ -31,6 +53,39 @@ type ListResult struct {
 	HasMore  bool      `json:"hasMore"`
 	Page     int       `json:"page"`
 	PageSize int       `json:"pageSize"`
+}
+
+type ErrorGroupListInput struct {
+	Path, Model, SystemAccountID string
+	APIKeyID, GroupID, AccountID string
+	StatusCode                   int
+	Page, PageSize               int
+	PageSizeProvided             bool
+}
+
+type ErrorGroupListResult struct {
+	Items    []ErrorGroup `json:"items"`
+	Total    int          `json:"total"`
+	HasMore  bool         `json:"hasMore"`
+	Page     int          `json:"page"`
+	PageSize int          `json:"pageSize"`
+}
+
+type HotSearchResult struct {
+	Items            []Summary `json:"items"`
+	Total            int       `json:"total"`
+	HasMore          bool      `json:"hasMore"`
+	Page             int       `json:"page"`
+	PageSize         int       `json:"pageSize"`
+	Available        bool      `json:"available"`
+	ElapsedMs        int64     `json:"elapsedMs"`
+	Keywords         []string  `json:"keywords"`
+	StartAt          string    `json:"startAt"`
+	EndAt            string    `json:"endAt"`
+	Limit            int       `json:"limit"`
+	Truncated        bool      `json:"truncated"`
+	ScannedFileCount int       `json:"scannedFileCount"`
+	Message          string    `json:"message,omitempty"`
 }
 
 type Summary struct {
@@ -167,17 +222,87 @@ type Detail struct {
 	Payloads   []PayloadSummary `json:"payloads"`
 }
 
-func NewService(store port.ManagementAuditLogReader) *Service { return &Service{store: store} }
+type PayloadInput struct{ Offset, Limit int64 }
+
+type PayloadDetail struct {
+	PayloadSummary
+	Headers              map[string]any `json:"headers,omitempty"`
+	BodyText             string         `json:"bodyText,omitempty"`
+	BodyBase64           string         `json:"bodyBase64,omitempty"`
+	HeadersIncluded      bool           `json:"headersIncluded"`
+	HeadersStorageStatus string         `json:"headersStorageStatus"`
+	BodyStorageStatus    string         `json:"bodyStorageStatus"`
+	BodyOffset           int64          `json:"bodyOffset"`
+	BodyLimit            int64          `json:"bodyLimit"`
+	BodyBytesReturned    int64          `json:"bodyBytesReturned"`
+	BodyTotalBytes       int64          `json:"bodyTotalBytes"`
+	BodyNextOffset       *int64         `json:"bodyNextOffset,omitempty"`
+	BodyTruncated        bool           `json:"bodyTruncated"`
+}
+
+func NewService(store port.ManagementAuditLogReader) *Service {
+	return NewServiceWithOptions(store, Options{})
+}
+func NewServiceWithOptions(store port.ManagementAuditLogReader, options Options) *Service {
+	return &Service{
+		store:           store,
+		payloadBlobRoot: strings.TrimSpace(options.PayloadBlobRoot),
+		hotSearch:       newHotSearchScanner(options.HotSearchRoot),
+	}
+}
+
+func (s *Service) HotSearch(ctx context.Context, input HotSearchInput) (HotSearchResult, error) {
+	startedAt := time.Now()
+	if s.hotSearch == nil {
+		s.hotSearch = newHotSearchScanner("")
+	}
+	scan := s.hotSearch.Search(ctx, input)
+	result := HotSearchResult{
+		Items: []Summary{}, Page: 1, PageSize: scan.Limit, Available: scan.Available,
+		ElapsedMs: time.Since(startedAt).Milliseconds(), Keywords: scan.Keywords,
+		StartAt: scan.StartAt, EndAt: scan.EndAt, Limit: scan.Limit, Truncated: scan.Truncated,
+		ScannedFileCount: scan.ScannedFileCount, Message: scan.Message,
+	}
+	if !scan.Available || len(scan.IDs) == 0 {
+		return result, nil
+	}
+	if s.store == nil {
+		return HotSearchResult{}, fmt.Errorf("management audit log reader is required")
+	}
+	ids := make([]string, 0, len(scan.IDs))
+	for _, item := range scan.IDs {
+		ids = append(ids, item.ID)
+	}
+	rows, err := s.store.ListManagementAuditLogsByIDs(ctx, ids)
+	if err != nil {
+		return HotSearchResult{}, err
+	}
+	byID := make(map[string]Summary, len(rows))
+	for _, row := range rows {
+		item, mapErr := summary(row)
+		if mapErr != nil {
+			return HotSearchResult{}, mapErr
+		}
+		byID[item.ID] = item
+	}
+	for _, id := range ids {
+		if item, found := byID[id]; found {
+			result.Items = append(result.Items, item)
+		}
+	}
+	result.HasMore = scan.Truncated
+	result.Total = len(result.Items)
+	if result.HasMore {
+		result.Total = max(result.Total+1, len(ids))
+	}
+	return result, nil
+}
 
 func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error) {
 	if s.store == nil {
 		return ListResult{}, fmt.Errorf("management audit log reader is required")
 	}
-	pageSize := defaultPageSize
-	if input.PageSizeProvided {
-		pageSize = min(max(input.PageSize, 1), maxPageSize)
-	}
-	page := min(max(input.Page, 1), max(1, (maxListWindowRows-1)/pageSize))
+	page, pageSize := normalizeListWindow(input.Page, input.PageSize, input.PageSizeProvided)
 	result, err := s.store.ListManagementAuditLogs(ctx, port.ManagementAuditLogListInput{
 		TraceID: trim(input.TraceID), ErrorGroupID: trim(input.ErrorGroupID), Outcome: normalizeOutcome(input.Outcome),
 		StatusCode: normalizeStatusCode(input.StatusCode), Path: normalizePath(input.Path), Model: trim(input.Model),
@@ -201,6 +326,39 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		total++
 	}
 	return ListResult{Items: items, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
+}
+
+func (s *Service) ListErrorGroupEvents(ctx context.Context, errorGroupID string, input ListInput) (ListResult, error) {
+	id := trim(errorGroupID)
+	if id == "" {
+		return ListResult{}, fmt.Errorf("error group id is required")
+	}
+	input.ErrorGroupID = id
+	return s.List(ctx, input)
+}
+
+func (s *Service) ListErrorGroups(ctx context.Context, input ErrorGroupListInput) (ErrorGroupListResult, error) {
+	if s.store == nil {
+		return ErrorGroupListResult{}, fmt.Errorf("management audit log reader is required")
+	}
+	page, pageSize := normalizeListWindow(input.Page, input.PageSize, input.PageSizeProvided)
+	result, err := s.store.ListManagementAuditErrorGroups(ctx, port.ManagementAuditErrorGroupListInput{
+		Path: normalizePath(input.Path), Model: trim(input.Model), SystemAccountID: trim(input.SystemAccountID),
+		APIKeyID: trim(input.APIKeyID), GroupID: trim(input.GroupID), AccountID: trim(input.AccountID),
+		StatusCode: normalizeStatusCode(input.StatusCode), Limit: pageSize, Offset: (page - 1) * pageSize,
+	})
+	if err != nil {
+		return ErrorGroupListResult{}, err
+	}
+	items := make([]ErrorGroup, 0, len(result.Items))
+	for _, row := range result.Items {
+		items = append(items, errorGroup(row))
+	}
+	total := (page-1)*pageSize + len(items)
+	if result.HasMore {
+		total++
+	}
+	return ErrorGroupListResult{Items: items, Total: total, HasMore: result.HasMore, Page: page, PageSize: pageSize}, nil
 }
 
 func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
@@ -234,17 +392,8 @@ func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
 		})
 	}
 	if row.ErrorGroup != nil {
-		group := row.ErrorGroup
-		result.ErrorGroup = &ErrorGroup{
-			ID: group.ID, Fingerprint: group.Fingerprint, WindowStartedAt: group.WindowStartedAt, WindowEndedAt: group.WindowEndedAt,
-			SystemAccountID: text(group.SystemAccountID), SystemAccountName: text(group.SystemAccountName), APIKeyID: text(group.APIKeyID), APIKeyName: text(group.APIKeyName),
-			GroupID: text(group.GroupID), GroupName: text(group.GroupName), AccountID: text(group.AccountID), AccountName: text(group.AccountName),
-			ProviderCode: text(group.ProviderCode), Path: text(group.Path), Model: text(group.Model), StatusCode: group.StatusCode,
-			ErrorPhase: text(group.ErrorPhase), ErrorCode: text(group.ErrorCode), ErrorType: text(group.ErrorType),
-			RequestFingerprint: text(group.RequestFingerprint), ErrorFingerprint: text(group.ErrorFingerprint), Count: group.Count,
-			FirstEventID: text(group.FirstEventID), LastEventID: text(group.LastEventID), SampleEventID: text(group.SampleEventID), LastMessage: text(group.LastMessage),
-			CreatedAt: group.CreatedAt, UpdatedAt: group.UpdatedAt,
-		}
+		group := errorGroup(*row.ErrorGroup)
+		result.ErrorGroup = &group
 	}
 	for _, payload := range row.Payloads {
 		result.Payloads = append(result.Payloads, PayloadSummary{
@@ -255,6 +404,280 @@ func (s *Service) Detail(ctx context.Context, id string) (Detail, bool, error) {
 		})
 	}
 	return result, true, nil
+}
+
+func (s *Service) Payload(ctx context.Context, auditLogID, payloadID string, input PayloadInput) (PayloadDetail, bool, error) {
+	if s.store == nil {
+		return PayloadDetail{}, false, fmt.Errorf("management audit log reader is required")
+	}
+	payloadStore, ok := s.store.(port.ManagementAuditLogPayloadReader)
+	if !ok {
+		return PayloadDetail{}, false, fmt.Errorf("management audit log payload reader is required")
+	}
+	row, found, err := payloadStore.GetManagementAuditLogPayload(ctx, trim(auditLogID), trim(payloadID))
+	if err != nil || !found {
+		return PayloadDetail{}, found, err
+	}
+	offset := max(input.Offset, 0)
+	limit := input.Limit
+	if limit <= 0 {
+		limit = defaultPayloadReadLimitBytes
+	}
+	limit = min(limit, maxPayloadReadLimitBytes)
+	headersStorageStatus := "not_saved"
+	if offset == 0 {
+		headersStorageStatus = payloadStorageStatus(row.Summary.HasHeaders, row.HeadersBlob)
+	}
+	result := PayloadDetail{
+		PayloadSummary:       payloadSummary(row.Summary),
+		HeadersIncluded:      offset == 0,
+		HeadersStorageStatus: headersStorageStatus,
+		BodyStorageStatus:    payloadStorageStatus(row.Summary.HasBody, row.BodyBlob),
+		BodyOffset:           offset,
+		BodyLimit:            limit,
+	}
+	if offset == 0 && row.HeadersBlob != nil {
+		headerWindow, err := s.readBlobWindow(ctx, row.HeadersBlob, 0, maxPayloadReadLimitBytes, maxPayloadReadLimitBytes)
+		if err != nil {
+			return PayloadDetail{}, false, fmt.Errorf("read audit payload headers: %w", err)
+		}
+		result.HeadersStorageStatus = headerWindow.status
+		result.Headers = auditHeaders(headerWindow.bytes)
+	}
+	if row.BodyBlob == nil {
+		return result, true, nil
+	}
+	bodyWindow, err := s.readBlobWindow(ctx, row.BodyBlob, offset, limit, maxAuditPayloadBlobRawBytes)
+	if err != nil {
+		return PayloadDetail{}, false, fmt.Errorf("read audit payload body: %w", err)
+	}
+	result.BodyStorageStatus = bodyWindow.status
+	result.BodyTotalBytes = bodyWindow.total
+	result.BodyBytesReturned = int64(len(bodyWindow.bytes))
+	nextOffset := offset + result.BodyBytesReturned
+	result.BodyTruncated = nextOffset < bodyWindow.total
+	if result.BodyTruncated && result.BodyBytesReturned > 0 {
+		result.BodyNextOffset = &nextOffset
+	}
+	if len(bodyWindow.bytes) > 0 {
+		if utf8.Valid(bodyWindow.bytes) {
+			result.BodyText = string(bodyWindow.bytes)
+		} else {
+			result.BodyBase64 = base64.StdEncoding.EncodeToString(bodyWindow.bytes)
+		}
+	}
+	return result, true, nil
+}
+
+type payloadBlobWindow struct {
+	bytes  []byte
+	total  int64
+	status string
+}
+
+func (s *Service) readBlobWindow(ctx context.Context, blob *port.ManagementAuditPayloadBlob, offset, limit, maxRawBytes int64) (payloadBlobWindow, error) {
+	if blob.RawSizeBytes < 0 || blob.RawSizeBytes > maxRawBytes {
+		return payloadBlobWindow{}, fmt.Errorf("invalid raw payload size: %d", blob.RawSizeBytes)
+	}
+	if blob.CompressedSizeBytes < 0 || blob.CompressedSizeBytes > maxAuditPayloadBlobRawBytes+maxPayloadReadLimitBytes {
+		return payloadBlobWindow{}, fmt.Errorf("invalid compressed payload size: %d", blob.CompressedSizeBytes)
+	}
+	if blob.Compression != "none" && blob.Compression != "gzip" {
+		return payloadBlobWindow{}, fmt.Errorf("unsupported payload compression: %q", blob.Compression)
+	}
+	if blob.Compression == "gzip" && blob.RawSizeBytes > maxGzipPayloadBlobRawBytes {
+		return payloadBlobWindow{}, fmt.Errorf("gzip payload blob exceeds writer compression boundary")
+	}
+	if blob.Compression == "none" && blob.RawSizeBytes != blob.CompressedSizeBytes {
+		return payloadBlobWindow{}, fmt.Errorf("plain payload blob size mismatch")
+	}
+	if strings.TrimSpace(s.payloadBlobRoot) == "" {
+		return payloadBlobWindow{}, fmt.Errorf("audit payload blob root is required")
+	}
+	select {
+	case auditPayloadReadSlots <- struct{}{}:
+		defer func() { <-auditPayloadReadSlots }()
+	case <-ctx.Done():
+		return payloadBlobWindow{}, ctx.Err()
+	}
+	file, found, err := openAuditPayloadBlob(s.payloadBlobRoot, blob.StorageKey)
+	if err != nil {
+		return payloadBlobWindow{}, err
+	}
+	if !found {
+		return payloadBlobWindow{total: blob.RawSizeBytes, status: "file_missing"}, nil
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return payloadBlobWindow{}, fmt.Errorf("stat payload blob: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != blob.CompressedSizeBytes {
+		return payloadBlobWindow{}, fmt.Errorf("payload blob size mismatch")
+	}
+	if offset >= blob.RawSizeBytes || limit <= 0 {
+		return payloadBlobWindow{total: blob.RawSizeBytes, status: "available"}, nil
+	}
+	select {
+	case <-ctx.Done():
+		return payloadBlobWindow{}, ctx.Err()
+	default:
+	}
+	var bytes []byte
+	if blob.Compression == "gzip" {
+		bytes, err = readGzipAuditPayloadWindow(ctx, file, blob.RawSizeBytes, offset, limit)
+	} else {
+		bytes, err = readPlainAuditPayloadWindow(file, blob.RawSizeBytes, offset, limit)
+	}
+	if err != nil {
+		return payloadBlobWindow{}, err
+	}
+	return payloadBlobWindow{bytes: bytes, total: blob.RawSizeBytes, status: "available"}, nil
+}
+
+func openAuditPayloadBlob(root, storageKey string) (*os.File, bool, error) {
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve audit payload root: %w", err)
+	}
+	key := filepath.FromSlash(storageKey)
+	if strings.TrimSpace(key) == "" || filepath.IsAbs(key) || filepath.Clean(key) == "." {
+		return nil, false, fmt.Errorf("invalid audit payload storage path")
+	}
+	targetAbs, err := filepath.Abs(filepath.Join(rootAbs, key))
+	if err != nil || !pathWithin(rootAbs, targetAbs) {
+		return nil, false, fmt.Errorf("invalid audit payload storage path")
+	}
+	if _, err = os.Stat(targetAbs); os.IsNotExist(err) {
+		return nil, false, nil
+	} else if err != nil {
+		return nil, false, fmt.Errorf("stat audit payload storage path: %w", err)
+	}
+	rootReal := rootAbs
+	if resolved, resolveErr := filepath.EvalSymlinks(rootAbs); resolveErr == nil {
+		rootReal = resolved
+	}
+	targetReal, err := filepath.EvalSymlinks(targetAbs)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve audit payload storage path: %w", err)
+	}
+	if !pathWithin(rootReal, targetReal) {
+		return nil, false, fmt.Errorf("invalid audit payload storage path")
+	}
+	file, err := os.Open(targetReal)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("open audit payload blob: %w", err)
+	}
+	return file, true, nil
+}
+
+func pathWithin(root, target string) bool {
+	relative, err := filepath.Rel(root, target)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
+func readPlainAuditPayloadWindow(file *os.File, total, offset, limit int64) ([]byte, error) {
+	want := min(limit, total-offset)
+	bytes := make([]byte, want)
+	n, err := file.ReadAt(bytes, offset)
+	if err != nil && err != io.EOF {
+		return nil, fmt.Errorf("read payload blob: %w", err)
+	}
+	if int64(n) != want {
+		return nil, fmt.Errorf("payload blob ended before declared size")
+	}
+	return bytes, nil
+}
+
+func readGzipAuditPayloadWindow(ctx context.Context, file *os.File, total, offset, limit int64) ([]byte, error) {
+	reader, err := gzip.NewReader(file)
+	if err != nil {
+		return nil, fmt.Errorf("open gzip payload blob: %w", err)
+	}
+	defer reader.Close()
+	bounded := io.LimitReader(reader, total+1)
+	if offset > 0 {
+		copied, err := io.CopyN(io.Discard, &contextReader{ctx: ctx, reader: bounded}, offset)
+		if err != nil || copied != offset {
+			return nil, fmt.Errorf("gzip payload ended before declared offset")
+		}
+	}
+	want := min(limit, total-offset)
+	bytes, err := io.ReadAll(io.LimitReader(&contextReader{ctx: ctx, reader: bounded}, want))
+	if err != nil {
+		return nil, fmt.Errorf("read gzip payload blob: %w", err)
+	}
+	if int64(len(bytes)) != want {
+		return nil, fmt.Errorf("gzip payload ended before declared size")
+	}
+	if offset+want == total {
+		var extra [1]byte
+		n, tailErr := (&contextReader{ctx: ctx, reader: bounded}).Read(extra[:])
+		if n != 0 || (tailErr != nil && tailErr != io.EOF) {
+			return nil, fmt.Errorf("gzip payload exceeds declared size")
+		}
+	}
+	return bytes, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r *contextReader) Read(bytes []byte) (int, error) {
+	select {
+	case <-r.ctx.Done():
+		return 0, r.ctx.Err()
+	default:
+		return r.reader.Read(bytes)
+	}
+}
+
+func auditHeaders(bytes []byte) map[string]any {
+	if len(bytes) == 0 {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(bytes, &raw) != nil {
+		return nil
+	}
+	result := make(map[string]any, len(raw))
+	for key, value := range raw {
+		var single string
+		if json.Unmarshal(value, &single) == nil {
+			result[key] = single
+			continue
+		}
+		var multiple []string
+		if json.Unmarshal(value, &multiple) != nil {
+			return nil
+		}
+		result[key] = multiple
+	}
+	return result
+}
+
+func payloadStorageStatus(saved bool, blob *port.ManagementAuditPayloadBlob) string {
+	if !saved {
+		return "not_saved"
+	}
+	if blob == nil {
+		return "metadata_missing"
+	}
+	return "available"
+}
+
+func payloadSummary(row port.ManagementAuditLogPayloadSummary) PayloadSummary {
+	return PayloadSummary{
+		ID: row.ID, AttemptID: text(row.AttemptID), PartType: row.PartType, SequenceIndex: row.SequenceIndex,
+		ContentType: text(row.ContentType), ContentEncoding: text(row.ContentEncoding), HeadersSHA256: text(row.HeadersSHA256), BodySHA256: text(row.BodySHA256),
+		SizeBytes: row.SizeBytes, CompressedSizeBytes: row.CompressedSizeBytes, CaptureStatus: row.CaptureStatus,
+		CreatedAt: row.CreatedAt, HasHeaders: row.HasHeaders, HasBody: row.HasBody,
+	}
 }
 
 func summary(row port.ManagementAuditLogSummary) (Summary, error) {
@@ -273,6 +696,28 @@ func summary(row port.ManagementAuditLogSummary) (Summary, error) {
 		CompressionSavedBytes: row.CompressionSavedBytes, ErrorGroupID: text(row.ErrorGroupID), CaptureStatus: row.CaptureStatus, StartedAt: row.StartedAt, EndedAt: row.EndedAt,
 		DurationMs: row.DurationMs, HTTPCompletedAt: text(row.HTTPCompletedAt), HTTPDurationMs: row.HTTPDurationMs, FirstTokenMs: row.FirstTokenMs, CreatedAt: row.CreatedAt,
 	}, nil
+}
+
+func errorGroup(row port.ManagementAuditErrorGroup) ErrorGroup {
+	return ErrorGroup{
+		ID: row.ID, Fingerprint: row.Fingerprint, WindowStartedAt: row.WindowStartedAt, WindowEndedAt: row.WindowEndedAt,
+		SystemAccountID: text(row.SystemAccountID), SystemAccountName: text(row.SystemAccountName), APIKeyID: text(row.APIKeyID), APIKeyName: text(row.APIKeyName),
+		GroupID: text(row.GroupID), GroupName: text(row.GroupName), AccountID: text(row.AccountID), AccountName: text(row.AccountName), ProviderCode: text(row.ProviderCode),
+		Path: text(row.Path), Model: text(row.Model), StatusCode: row.StatusCode, ErrorPhase: text(row.ErrorPhase), ErrorCode: text(row.ErrorCode), ErrorType: text(row.ErrorType),
+		RequestFingerprint: text(row.RequestFingerprint), ErrorFingerprint: text(row.ErrorFingerprint), Count: row.Count,
+		FirstEventID: text(row.FirstEventID), LastEventID: text(row.LastEventID), SampleEventID: text(row.SampleEventID), LastMessage: text(row.LastMessage),
+		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+	}
+}
+
+func normalizeListWindow(page, pageSize int, pageSizeProvided bool) (int, int) {
+	if !pageSizeProvided {
+		pageSize = defaultPageSize
+	} else {
+		pageSize = min(max(pageSize, 1), maxPageSize)
+	}
+	page = min(max(page, 1), max(1, (maxListWindowRows-1)/pageSize))
+	return page, pageSize
 }
 
 func validTrafficSource(value string) bool {

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://juhe-ai.local/schemas/owner-manifest-v2.json",
+  "title": "juhe-ai route owner manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "deploymentEpoch",
+    "release",
+    "routeOwners",
+    "rollbackRouteOwners",
+    "routeAllowlist"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "deploymentEpoch": { "type": "string", "minLength": 1 },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodeVersion", "goVersion", "schemaVersion"],
+      "properties": {
+        "nodeVersion": { "type": "string", "minLength": 1 },
+        "goVersion": { "type": "string", "minLength": 1 },
+        "schemaVersion": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "routeOwners": { "$ref": "#/$defs/ownerMap" },
+    "rollbackRouteOwners": { "$ref": "#/$defs/ownerMap" },
+    "routeAllowlist": {
+      "type": "array",
+      "maxItems": 2048,
+      "items": { "$ref": "#/$defs/route" }
+    }
+  },
+  "$defs": {
+    "owner": { "enum": ["node", "go"] },
+    "ownerMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["management", "public", "gateway", "worker"],
+      "properties": {
+        "management": { "$ref": "#/$defs/owner" },
+        "public": { "$ref": "#/$defs/owner" },
+        "gateway": { "$ref": "#/$defs/owner" },
+        "worker": { "$ref": "#/$defs/owner" }
+      }
+    },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "method", "path", "owner", "rollbackOwner"],
+      "properties": {
+        "surface": { "enum": ["management", "public", "gateway"] },
+        "method": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] },
+        "path": { "type": "string", "pattern": "^/" },
+        "owner": { "$ref": "#/$defs/owner" },
+        "rollbackOwner": { "$ref": "#/$defs/owner" }
+      }
+    }
+  }
+}

@@ -8,6 +8,7 @@ import { getRequestAuthContext } from '../auth/request-context.js'
 import { getSettingsAsync } from '../../storage/repositories.js'
 import { getRequestContext, getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
 import { inspectClientIpPolicy } from '../gateway/runtime/client-ip-policy-cache.service.js'
+import { systemApiDbAccessModeFromResponse } from './system-api-db-access.js'
 
 type MethodClass = 'read' | 'write'
 type LimiterScope = 'ip' | 'user'
@@ -82,7 +83,7 @@ export async function systemApiIpRateLimit(req: Request, res: Response, next: Ne
     return
   }
 
-  const methodClass = methodClassFor(req.method)
+  const methodClass = methodClassFor(req, res)
   const clientIp = clientIpKey(req)
   const key = `${clientIp}:${methodClass}`
   const decision = await checkRateLimit([
@@ -126,7 +127,7 @@ export async function systemApiAuthenticatedRateLimit(req: Request, res: Respons
     return
   }
 
-  const methodClass = methodClassFor(req.method)
+  const methodClass = methodClassFor(req, res)
   const limit = methodClass === 'read' ? settings.userReadPerMinute : settings.userWritePerMinute
   const decision = await checkRateLimit([
     {
@@ -337,8 +338,12 @@ function respondRateLimitFailure(req: Request, res: Response, error: unknown): v
   res.status(500).json({ message: '服务器内部错误' })
 }
 
-function methodClassFor(method: string): MethodClass {
-  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS' ? 'read' : 'write'
+function methodClassFor(req: Pick<Request, 'method'>, res: Response): MethodClass {
+  const dbAccessMode = systemApiDbAccessModeFromResponse(res)
+  if (dbAccessMode === 'noDb' || dbAccessMode === 'read' || dbAccessMode === 'longRead') {
+    return 'read'
+  }
+  return req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS' ? 'read' : 'write'
 }
 
 function isSystemApiHealthPath(req: Request): boolean {

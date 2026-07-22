@@ -2,6 +2,7 @@ import { normalizeAccountErrorHandlingRules } from '../modules/accounts/account-
 import { normalizeAccountResponseInspectionRules } from '../modules/accounts/account-response-inspection-policy-validation.js'
 import { providerAccountCredentialDriverForContext } from '../modules/providers/drivers/account-credentials.registry.js'
 import type { ProviderAccountCredentialContext } from '../modules/providers/drivers/_shared/account-credentials.js'
+import { isAnthropicProtocolProfile } from '../domain/provider-protocol.js'
 import { assertSafeUpstreamBaseUrl } from '../shared/upstream-url-policy.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
 
@@ -189,7 +190,10 @@ function normalizeOAuthAccountCredentials(
 ): Record<string, unknown> {
   const accessToken = optionalCredentialText(input.access_token, 'Access Token', accountCredentialSecretMaxBytes)
   const refreshToken = optionalCredentialText(input.refresh_token, 'Refresh Token', accountCredentialSecretMaxBytes)
-  if (!refreshToken && !accessToken) {
+  if (isAnthropicProtocolProfile(endpointModeDefaults) && !accessToken) {
+    throw new Error('Anthropic OAuth Access Token 不能为空')
+  }
+  if (!isAnthropicProtocolProfile(endpointModeDefaults) && !refreshToken && !accessToken) {
     throw new Error('OAuth 凭据不能为空')
   }
 
@@ -197,8 +201,7 @@ function normalizeOAuthAccountCredentials(
     base_url: requiredCredentialTextInput(input.base_url, 'Base URL', accountCredentialBaseUrlMaxBytes),
     supported_endpoint_modes: normalizeEndpointModesForWrite(input.supported_endpoint_modes, {
       ...endpointModeDefaults,
-      accountType: 'oauth',
-      clientCompatibility: 'codex_responses'
+      accountType: 'oauth'
     })
   }
   assertSafeUpstreamBaseUrl(String(credentials.base_url))

@@ -11,6 +11,7 @@ import { HYBRID_PROVIDER_CODE, OPENAI_COMPATIBLE_OPENAI_V1_PROFILE_ID } from '..
 import { logger } from '../../shared/logger.js'
 import { providerModelCatalogId } from '../../storage/provider-model-catalog-id.js'
 import { DEFAULT_PROVIDER_SEEDS } from '../../storage/schema-defaults.js'
+import { seedDefaults } from '../../storage/schema.js'
 import { mergeProviderModelOptionRows } from '../../modules/providers/provider-model-options.service.js'
 
 
@@ -28,6 +29,7 @@ logger.level = 'silent'
 const [
   databaseModule,
   catalogService,
+  clientCatalogService,
   modelPricingService,
   { providersRouter },
   { requireAuth },
@@ -41,6 +43,7 @@ const [
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
+  import('../../modules/model-pricing/client-model-catalog.service.js'),
   import('../../modules/model-pricing/model-pricing.service.js'),
   import('../../modules/providers/providers.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
@@ -354,7 +357,27 @@ try {
     WHERE code = 'gpt'
   `).get() as { default_supported_models_json?: string }
   const gptDefaultModels = JSON.parse(gptProviderDefaults.default_supported_models_json ?? '[]') as string[]
-  assert.equal(gptDefaultModels.includes('codex-auto-review'), false, 'codex-auto-review 不得自动加入 GPT AI 账户默认模型')
+  assert.equal(gptDefaultModels.includes('codex-auto-review'), true, 'codex-auto-review 应自动加入 GPT AI 账户默认支持模型')
+  databaseModule.getBusinessDatabase().prepare(`
+    UPDATE providers
+    SET default_supported_models_json = ?
+    WHERE code = 'gpt'
+  `).run(JSON.stringify(gptDefaultModels.filter((model) => model !== 'codex-auto-review')))
+  seedDefaults(databaseModule.getBusinessDatabase())
+  const backfilledGPTProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
+    SELECT default_supported_models_json
+    FROM providers
+    WHERE code = 'gpt'
+  `).get() as { default_supported_models_json?: string }
+  const backfilledGPTDefaultModels = JSON.parse(backfilledGPTProviderDefaults.default_supported_models_json ?? '[]') as string[]
+  assert.equal(backfilledGPTDefaultModels.includes('codex-auto-review'), true, 'SQLite 已有 GPT 默认列表应在重启 seed 时幂等补入 codex-auto-review')
+  const openAIProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
+    SELECT default_supported_models_json
+    FROM providers
+    WHERE code = 'openai'
+  `).get() as { default_supported_models_json?: string }
+  const openAIDefaultModels = JSON.parse(openAIProviderDefaults.default_supported_models_json ?? '[]') as string[]
+  assert.equal(openAIDefaultModels.includes('codex-auto-review'), false, '通用 OpenAI-compatible 账户默认模型不得包含 GPT 专属模型')
   assert.equal(publicModels.has('codex-auto-review'), false, '无价格模型不应进入默认有价公开目录')
   assert(publicCatalog.some((item) => item.model === 'gpt-regression-global' && item.scope === 'global'), '全局自定义模型应进入当前账号模型目录')
   assert(publicModels.has('gpt-regression-personal'), '当前账号个人自定义模型应进入模型目录')
@@ -779,6 +802,35 @@ try {
       'claude-haiku-4-5-20251001'
     ],
     'Anthropic 模型目录应按官方当前模型从新到旧排序，并隐藏 Claude Code 本地别名'
+  )
+
+  const publicClientCatalog = await clientCatalogService.listClientModelCatalogAsync()
+  const publicClientProviderCodes = new Set(publicClientCatalog.map((item) => item.providerCode))
+  for (const providerCode of ['gpt', 'deepseek', 'glm', 'anthropic', 'gemini', 'xai']) {
+    assert(publicClientProviderCodes.has(providerCode), `公开客户端目录必须包含启用供应商 ${providerCode}`)
+  }
+  assert.equal(publicClientProviderCodes.has(HYBRID_PROVIDER_CODE), false, '公开客户端目录不得返回 hybrid 虚拟供应商模型')
+  assert(
+    publicClientCatalog.some((item) => item.providerCode === 'gemini' && !item.releaseDate),
+    '缺少发布时间的 Gemini 可用模型也必须进入全量客户端目录'
+  )
+
+  const scopedClientCatalog = await clientCatalogService.listClientModelCatalogAsync({
+    systemAccountId: 'sys_model_regression',
+    providerCodes: ['gpt', 'gemini']
+  })
+  const scopedClientProviderCodes = new Set(scopedClientCatalog.map((item) => item.providerCode))
+  assert(scopedClientProviderCodes.has('gpt'), 'API Key 多供应商作用域必须包含 GPT 目录')
+  assert(scopedClientProviderCodes.has('gemini'), 'API Key 多供应商作用域必须包含 Gemini 目录')
+  assert.deepEqual(
+    [...scopedClientProviderCodes].sort(),
+    ['gemini', 'gpt'],
+    'API Key 多供应商作用域不得泄漏未绑定供应商模型'
+  )
+  assert.deepEqual(
+    await clientCatalogService.listClientModelCatalogAsync({ providerCodes: [] }),
+    [],
+    'API Key 没有有效供应商绑定时不得回退公开全量目录'
   )
 
   const response = catalogService.buildOpenAIModelsResponseFromCatalog(publicCatalog)

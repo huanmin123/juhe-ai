@@ -649,6 +649,160 @@ func TestServiceGetReturnsValidationErrorsForBusinessFailures(t *testing.T) {
 	}
 }
 
+func TestServiceOptionsUsesLightweightReaderAndPreservesSelectedModels(t *testing.T) {
+	heavyReader := &accountTestOptionsReaderStub{err: errors.New("heavy reader must not be called")}
+	codec := &credentialCodecStub{err: errors.New("credentials must not be decrypted")}
+	fullCatalog := &modelCatalogStub{err: errors.New("full catalog must not be hydrated")}
+	optionReader := &accountTestOptionReaderStub{
+		listSource: port.ManagementAccountTestOptionListSource{
+			ID: "account-1", OwnerSystemAccountID: "owner-1", ProviderCode: "openai",
+			ProviderProtocolProfileID: "profile_openai_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
+			Type: "api_key", ClientCompatibility: "openai", HealthCheckModel: "model-default",
+		},
+		listFound: true,
+		catalogItems: []port.ManagementAccountTestModelCatalogItem{
+			{ID: "builtin-default", ProviderCode: "gpt", Model: "model-default", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"responses"}},
+			{ID: "personal-selected", ProviderCode: "gpt", Model: "model-selected", Scope: "personal", Mode: "chat", SupportedAPIProtocols: []string{"responses"}},
+			{ID: "builtin-match", ProviderCode: "gpt", Model: "model-match", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"chat_completions"}},
+			{ID: "builtin-image", ProviderCode: "gpt", Model: "model-image-match", Scope: "built_in", Mode: "image", SupportedAPIProtocols: []string{"responses"}},
+			{ID: "builtin-messages", ProviderCode: "anthropic", Model: "model-messages-match", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"messages"}},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Reader: heavyReader, OptionReader: optionReader, ModelCatalog: fullCatalog, CredentialCodec: codec,
+	})
+
+	got, found, err := service.Options(context.Background(), OptionsInput{
+		AccountID: " account-1 ", SystemAccountID: " viewer-1 ", Keyword: " match ", Limit: 1,
+		SelectedIDs: []string{" model-selected ", "model-selected"},
+	})
+	if err != nil || !found {
+		t.Fatalf("Options() found = %t, err = %v", found, err)
+	}
+	want := []SelectionOption{
+		{ID: "model-default", Name: "model-default"},
+		{ID: "model-selected", Name: "model-selected"},
+		{ID: "model-match", Name: "model-match"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Options() = %#v, want %#v", got, want)
+	}
+	if heavyReader.calls != 0 || codec.calls != 0 || fullCatalog.calls != 0 {
+		t.Fatalf("heavy dependencies called: reader=%d codec=%d catalog=%d", heavyReader.calls, codec.calls, fullCatalog.calls)
+	}
+	if !reflect.DeepEqual(optionReader.listInput, port.ManagementAccountTestOptionsInput{
+		AccountID: "account-1", SystemAccountID: "viewer-1",
+	}) {
+		t.Fatalf("list input = %#v", optionReader.listInput)
+	}
+	wantCatalogInput := port.ManagementAccountTestModelCatalogInput{
+		ProviderCode: "openai", SystemAccountID: "owner-1", Keyword: "match", Limit: 1,
+		SelectedIDs: []string{"model-selected", "model-default"},
+	}
+	if !reflect.DeepEqual(optionReader.catalogInputs, []port.ManagementAccountTestModelCatalogInput{wantCatalogInput}) {
+		t.Fatalf("catalog inputs = %#v, want %#v", optionReader.catalogInputs, wantCatalogInput)
+	}
+}
+
+func TestServiceOptionsHybridKeepsAnEligibleDuplicateModelFromAnotherProvider(t *testing.T) {
+	optionReader := &accountTestOptionReaderStub{
+		listSource: port.ManagementAccountTestOptionListSource{
+			ID: "account-hybrid", OwnerSystemAccountID: "owner-1", ProviderCode: "hybrid",
+			ProviderProtocolProfileID: "profile_hybrid_openai_chat_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
+			Type: "api_key", ClientCompatibility: "openai", HealthCheckModel: "shared-model",
+		},
+		listFound: true,
+		catalogItems: []port.ManagementAccountTestModelCatalogItem{
+			{ID: "a-ineligible", ProviderCode: "alpha", Model: "shared-model", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"interactions"}},
+			{ID: "b-ineligible", ProviderCode: "beta", Model: "shared-model", Scope: "personal", Mode: "audio", SupportedAPIProtocols: []string{"messages"}},
+			{ID: "c-eligible", ProviderCode: "gamma", Model: "shared-model", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"messages"}},
+			{ID: "window", ProviderCode: "gamma", Model: "window-model", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"chat_completions"}},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{OptionReader: optionReader})
+
+	got, found, err := service.Options(context.Background(), OptionsInput{
+		AccountID: "account-hybrid", SystemAccountID: "viewer-1", Limit: 1,
+	})
+	if err != nil || !found {
+		t.Fatalf("Options() found = %t, err = %v", found, err)
+	}
+	want := []SelectionOption{
+		{ID: "shared-model", Name: "shared-model"},
+		{ID: "window-model", Name: "window-model"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Options() = %#v, want %#v", got, want)
+	}
+	if got[0].ID != "shared-model" {
+		t.Fatalf("hybrid duplicate model lost eligible source: %#v", got)
+	}
+}
+
+func TestTrimAccountTestTextMatchesECMAScriptWhitespace(t *testing.T) {
+	if got := trimAccountTestText("\uFEFF\u3000model\u2029"); got != "model" {
+		t.Fatalf("ECMAScript whitespace trim = %q", got)
+	}
+	if got := trimAccountTestText("\u0085model\u0085"); got != "\u0085model\u0085" {
+		t.Fatalf("non-ECMAScript whitespace was trimmed: %q", got)
+	}
+}
+
+func TestServiceModelCapabilitiesLoadsOnlyRequestedAndMappedModels(t *testing.T) {
+	source := baseAccountTestOptionsSource()
+	source.ProviderCode = "hybrid"
+	source.ProviderProtocolProfileID = "profile_hybrid_openai_chat_v1"
+	source.HealthCheckModel = "source-model"
+	source.HealthCheckEndpointMode = "messages_sse"
+	source.ModelMappings = []port.ManagementAccountTestModelMapping{
+		{SourceModel: "source-model", SourceEndpointFamily: "messages", UpstreamModel: "upstream-chat", UpstreamEndpointFamily: "chat_completions", Enabled: true},
+		{SourceModel: "other-model", SourceEndpointFamily: "messages", UpstreamModel: "unrelated", UpstreamEndpointFamily: "chat_completions", Enabled: true},
+	}
+	reader := &accountTestOptionsReaderStub{source: source, found: true}
+	codec := &credentialCodecStub{credentials: map[string]any{
+		"supported_endpoint_modes": []any{"messages_sse", "chat_json"},
+	}}
+	fullCatalog := &modelCatalogStub{err: errors.New("full catalog must not be hydrated")}
+	optionReader := &accountTestOptionReaderStub{
+		capabilitiesSource: source,
+		capabilitiesFound:  true,
+		catalogItems: []port.ManagementAccountTestModelCatalogItem{
+			{ID: "source", ProviderCode: "gpt", Model: "source-model", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"messages"}},
+			{ID: "upstream", ProviderCode: "deepseek", Model: "upstream-chat", Scope: "built_in", Mode: "chat", SupportedAPIProtocols: []string{"chat_completions"}},
+		},
+	}
+	service := NewServiceWithOptions(ServiceOptions{
+		Reader: reader, OptionReader: optionReader, ModelCatalog: fullCatalog, CredentialCodec: codec,
+	})
+
+	got, found, err := service.ModelCapabilities(context.Background(), ModelCapabilitiesInput{
+		AccountID: " account-1 ", SystemAccountID: " viewer-1 ", Model: " source-model ",
+	})
+	if err != nil || !found {
+		t.Fatalf("ModelCapabilities() found = %t, err = %v", found, err)
+	}
+	want := ModelCapabilities{ID: "source-model", Name: "source-model", TestEndpointModes: []string{"messages_sse"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ModelCapabilities() = %#v, want %#v", got, want)
+	}
+	if fullCatalog.calls != 0 || codec.calls != 1 {
+		t.Fatalf("full catalog calls = %d, codec calls = %d", fullCatalog.calls, codec.calls)
+	}
+	wantCatalogInput := port.ManagementAccountTestModelCatalogInput{
+		ProviderCode: "hybrid", SystemAccountID: "owner-1", Limit: 100,
+		SelectedIDs: []string{"source-model", "upstream-chat"},
+		ModelIDs:    []string{"source-model", "upstream-chat"},
+	}
+	if !reflect.DeepEqual(optionReader.catalogInputs, []port.ManagementAccountTestModelCatalogInput{wantCatalogInput}) {
+		t.Fatalf("catalog inputs = %#v, want %#v", optionReader.catalogInputs, wantCatalogInput)
+	}
+	if !reflect.DeepEqual(optionReader.capabilitiesInput, port.ManagementAccountTestModelCapabilitiesSourceInput{
+		AccountID: "account-1", SystemAccountID: "viewer-1", Model: "source-model",
+	}) {
+		t.Fatalf("capabilities input = %#v", optionReader.capabilitiesInput)
+	}
+}
+
 func baseAccountTestOptionsSource() port.ManagementAccountTestOptionsSource {
 	return port.ManagementAccountTestOptionsSource{
 		ID:                        "account-1",
@@ -692,6 +846,46 @@ type accountTestOptionsReaderStub struct {
 	err    error
 	input  port.ManagementAccountTestOptionsInput
 	calls  int
+}
+
+type accountTestOptionReaderStub struct {
+	listSource         port.ManagementAccountTestOptionListSource
+	listFound          bool
+	listErr            error
+	listInput          port.ManagementAccountTestOptionsInput
+	listCalls          int
+	capabilitiesSource port.ManagementAccountTestOptionsSource
+	capabilitiesFound  bool
+	capabilitiesErr    error
+	capabilitiesInput  port.ManagementAccountTestModelCapabilitiesSourceInput
+	catalogItems       []port.ManagementAccountTestModelCatalogItem
+	catalogErr         error
+	catalogInputs      []port.ManagementAccountTestModelCatalogInput
+}
+
+func (s *accountTestOptionReaderStub) GetManagementAccountTestModelCapabilitiesSource(
+	_ context.Context,
+	input port.ManagementAccountTestModelCapabilitiesSourceInput,
+) (port.ManagementAccountTestOptionsSource, bool, error) {
+	s.capabilitiesInput = input
+	return s.capabilitiesSource, s.capabilitiesFound, s.capabilitiesErr
+}
+
+func (s *accountTestOptionReaderStub) GetManagementAccountTestOptionListSource(
+	_ context.Context,
+	input port.ManagementAccountTestOptionsInput,
+) (port.ManagementAccountTestOptionListSource, bool, error) {
+	s.listCalls++
+	s.listInput = input
+	return s.listSource, s.listFound, s.listErr
+}
+
+func (s *accountTestOptionReaderStub) ListManagementAccountTestModelCatalog(
+	_ context.Context,
+	input port.ManagementAccountTestModelCatalogInput,
+) ([]port.ManagementAccountTestModelCatalogItem, error) {
+	s.catalogInputs = append(s.catalogInputs, input)
+	return s.catalogItems, s.catalogErr
 }
 
 func (s *accountTestOptionsReaderStub) GetManagementAccountTestOptionsSource(

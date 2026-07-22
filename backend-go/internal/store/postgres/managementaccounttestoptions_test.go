@@ -146,6 +146,35 @@ func TestGetManagementAccountTestOptionsSourceMapsAuthorizedInstanceForGlobalAnd
 	}
 }
 
+func TestAuthorizedInstanceUsesSourceFactHealthCheckConfiguration(t *testing.T) {
+	want := port.ManagementAccountTestOptionsSource{
+		ID:                        "account_instance",
+		OwnerSystemAccountID:      "sys_resource_owner",
+		ProviderCode:              "anthropic",
+		ProviderProtocolProfileID: "profile_anthropic_messages_v1",
+		ProtocolCode:              "anthropic",
+		ProtocolVersion:           "v1",
+		Type:                      "api_key",
+		ClientCompatibility:       "claude_code",
+		HealthCheckModel:          "source-current-model",
+		HealthCheckEndpointMode:   "messages_json",
+		CredentialsEncrypted:      "v1:source-ciphertext",
+	}
+	q := &managementAccountTestOptionsQueriesStub{
+		row: managementAccountTestOptionsRow(want, "account_source"),
+	}
+
+	got, found, err := getManagementAccountTestOptionsSource(
+		context.Background(), q, port.ManagementAccountTestOptionsInput{AccountID: "account_instance", SystemAccountID: "sys_grantee"},
+	)
+	if err != nil || !found {
+		t.Fatalf("get authorized source: found = %t, err = %v", found, err)
+	}
+	if got.HealthCheckModel != "source-current-model" || got.HealthCheckEndpointMode != "messages_json" {
+		t.Fatalf("authorized fact health configuration = %#v", got)
+	}
+}
+
 func TestGetManagementAccountTestOptionsSourceNarrowScopeRejectsOtherViewerAccounts(t *testing.T) {
 	for _, accountID := range []string{"account_owner", "account_instance"} {
 		t.Run(accountID, func(t *testing.T) {
@@ -241,7 +270,12 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 	if markerIndex < 0 {
 		t.Fatalf("management account test options SQL is missing %q", marker)
 	}
-	querySQL := sql[markerIndex:]
+	queryEndMarker := "-- name: GetManagementAccountTestOptionListSource :one"
+	queryEndIndex := strings.Index(sql[markerIndex+len(marker):], queryEndMarker)
+	if queryEndIndex < 0 {
+		t.Fatalf("management account test options SQL is missing %q", queryEndMarker)
+	}
+	querySQL := sql[markerIndex : markerIndex+len(marker)+queryEndIndex]
 
 	for _, required := range []string{
 		"accounts.system_account_id AS owner_system_account_id",
@@ -294,8 +328,8 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 		"    source_accounts.protocol_version,",
 		"    source_accounts.type,",
 		"    source_accounts.client_compatibility,",
-		"    accounts.health_check_model,",
-		"    accounts.health_check_endpoint_mode,",
+		"    source_accounts.health_check_model,",
+		"    source_accounts.health_check_endpoint_mode,",
 		"    source_accounts.credentials_encrypted",
 		"sqlc.arg(system_account_id)::text = ''",
 		"OR accounts.system_account_id = sqlc.arg(system_account_id)::text",
@@ -311,8 +345,8 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 		"\n    accounts.protocol_version,",
 		"\n    accounts.type,",
 		"\n    accounts.client_compatibility,",
-		"\n    source_accounts.health_check_model,",
-		"\n    source_accounts.health_check_endpoint_mode,",
+		"\n    accounts.health_check_model,",
+		"\n    accounts.health_check_endpoint_mode,",
 		"\n    accounts.credentials_encrypted",
 		"\n    accounts.id AS model_mapping_account_id,",
 		"'revoked'",
@@ -350,6 +384,117 @@ func TestManagementAccountTestOptionsSQLUsesSourceAndInstanceFieldsWithExactScop
 			t.Fatalf("management account model mappings SQL missing %q", required)
 		}
 	}
+}
+
+func TestManagementAccountTestOptionListSourceAndCatalogStayLightweight(t *testing.T) {
+	queries := &managementAccountTestOptionQueriesStub{
+		listSourceRow: postgresqueries.GetManagementAccountTestOptionListSourceRow{
+			ID: "account-1", OwnerSystemAccountID: "owner-1", ProviderCode: "openai",
+			ProviderProtocolProfileID: "profile_openai_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
+			Type: "api_key", ClientCompatibility: "openai", HealthCheckModel: "model-default",
+		},
+		catalogRows: []postgresqueries.ListManagementAccountTestModelCatalogRow{
+			{ID: "model-1", ProviderCode: "gpt", Model: "model-default", Scope: "personal", Mode: "chat", SupportedApiProtocolsJson: `["responses"]`},
+		},
+	}
+
+	source, found, err := getManagementAccountTestOptionListSource(context.Background(), queries, port.ManagementAccountTestOptionsInput{
+		AccountID: "\uFEFFaccount-1\u3000", SystemAccountID: "\uFEFFowner-1\u2029",
+	})
+	if err != nil || !found {
+		t.Fatalf("list source found = %t, err = %v", found, err)
+	}
+	wantSource := port.ManagementAccountTestOptionListSource{
+		ID: "account-1", OwnerSystemAccountID: "owner-1", ProviderCode: "openai",
+		ProviderProtocolProfileID: "profile_openai_openai_v1", ProtocolCode: "openai", ProtocolVersion: "v1",
+		Type: "api_key", ClientCompatibility: "openai", HealthCheckModel: "model-default",
+	}
+	if !reflect.DeepEqual(source, wantSource) {
+		t.Fatalf("list source = %#v, want %#v", source, wantSource)
+	}
+	items, err := listManagementAccountTestModelCatalog(context.Background(), queries, port.ManagementAccountTestModelCatalogInput{
+		ProviderCode: "\uFEFFopenai\u3000", SystemAccountID: "\uFEFFowner-1\u2029", Keyword: "\u0085model\u0085", Limit: 2,
+		SelectedIDs: []string{"model-default"}, ModelIDs: []string{"model-default", "upstream"},
+	})
+	if err != nil {
+		t.Fatalf("list catalog: %v", err)
+	}
+	wantItems := []port.ManagementAccountTestModelCatalogItem{
+		{ID: "model-1", ProviderCode: "gpt", Model: "model-default", Scope: "personal", Mode: "chat", SupportedAPIProtocols: []string{"responses"}},
+	}
+	if !reflect.DeepEqual(items, wantItems) {
+		t.Fatalf("catalog items = %#v, want %#v", items, wantItems)
+	}
+	if !reflect.DeepEqual(queries.listSourceParams, []postgresqueries.GetManagementAccountTestOptionListSourceParams{
+		{AccountID: "account-1", SystemAccountID: "owner-1"},
+	}) {
+		t.Fatalf("list source params = %#v", queries.listSourceParams)
+	}
+	wantCatalogParams := postgresqueries.ListManagementAccountTestModelCatalogParams{
+		SelectedIds: []string{"model-default"}, ResultLimit: 2, ProviderCode: "openai",
+		ModelIds: []string{"model-default", "upstream"}, Keyword: "\u0085model\u0085", OwnerSystemAccountID: "owner-1",
+	}
+	if !reflect.DeepEqual(queries.catalogParams, []postgresqueries.ListManagementAccountTestModelCatalogParams{wantCatalogParams}) {
+		t.Fatalf("catalog params = %#v, want %#v", queries.catalogParams, wantCatalogParams)
+	}
+}
+
+func TestManagementAccountTestOptionSQLProjectionsAreBounded(t *testing.T) {
+	source, err := os.ReadFile("queries/w2_management_account_test_options.sql")
+	if err != nil {
+		t.Fatalf("read management account test options SQL: %v", err)
+	}
+	sql := strings.ReplaceAll(string(source), "\r\n", "\n")
+	listContext := sqlQuerySection(t, sql, "-- name: GetManagementAccountTestOptionListSource :one", "-- name: GetManagementAccountTestModelCapabilitiesSource :one")
+	if strings.Contains(listContext, "credentials_encrypted") || strings.Contains(listContext, "account_model_mappings") || strings.Contains(listContext, "SELECT *") {
+		t.Fatalf("lightweight list context reads heavy fields:\n%s", listContext)
+	}
+	for _, required := range []string{"accounts.health_check_model", "source_accounts.provider_code", "resource_authorizations.status IN ('active', 'paused', 'expired')"} {
+		if !strings.Contains(listContext, required) {
+			t.Fatalf("lightweight list context missing %q", required)
+		}
+	}
+	catalog := sqlQuerySection(t, sql, "-- name: ListManagementAccountTestModelCatalog :many", "-- name: ListManagementAccountTestOptionModelMappings :many")
+	for _, required := range []string{
+		"catalog.supported_api_protocols_json", "custom_models.supported_api_protocols_json",
+		"cardinality(sqlc.arg(model_ids)::text[]) = 0", "catalog.model = ANY(sqlc.arg(model_ids)::text[])",
+		"custom_models.model = ANY(sqlc.arg(model_ids)::text[])",
+		"ELSE sqlc.arg(result_limit)::integer + cardinality(sqlc.arg(selected_ids)::text[])",
+	} {
+		if !strings.Contains(catalog, required) {
+			t.Fatalf("lightweight catalog SQL missing %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"input_usd_per_1m", "output_usd_per_1m", "service_tier_prices_json", "capability_notes", "pricing_notes", "credentials_encrypted", "SELECT *",
+	} {
+		if strings.Contains(catalog, forbidden) {
+			t.Fatalf("lightweight catalog SQL must not contain %q", forbidden)
+		}
+	}
+	for _, required := range []string{
+		"PARTITION BY\n        CASE\n          WHEN sqlc.arg(provider_code)::text = 'hybrid'\n          THEN candidate_models.provider_code",
+		"windowed_models AS",
+		"PARTITION BY\n        CASE\n          WHEN sqlc.arg(provider_code)::text = 'hybrid'\n          THEN ranked_models.provider_code",
+		"WHERE windowed_models.provider_window_rank <=",
+	} {
+		if !strings.Contains(catalog, required) {
+			t.Fatalf("hybrid catalog SQL missing per-provider bounded window %q", required)
+		}
+	}
+}
+
+func sqlQuerySection(t *testing.T, sql string, start string, end string) string {
+	t.Helper()
+	startIndex := strings.Index(sql, start)
+	if startIndex < 0 {
+		t.Fatalf("SQL is missing %q", start)
+	}
+	endOffset := strings.Index(sql[startIndex+len(start):], end)
+	if endOffset < 0 {
+		t.Fatalf("SQL is missing %q after %q", end, start)
+	}
+	return sql[startIndex : startIndex+len(start)+endOffset]
 }
 
 func managementAccountTestOptionsRow(
@@ -396,6 +541,55 @@ type managementAccountTestOptionsQueriesStub struct {
 	calls        []postgresqueries.GetManagementAccountTestOptionsSourceParams
 	mappingCalls []string
 }
+
+type managementAccountTestOptionQueriesStub struct {
+	listSourceRow      postgresqueries.GetManagementAccountTestOptionListSourceRow
+	listSourceErr      error
+	listSourceParams   []postgresqueries.GetManagementAccountTestOptionListSourceParams
+	capabilitiesRow    postgresqueries.GetManagementAccountTestModelCapabilitiesSourceRow
+	capabilitiesErr    error
+	capabilitiesParams []postgresqueries.GetManagementAccountTestModelCapabilitiesSourceParams
+	catalogRows        []postgresqueries.ListManagementAccountTestModelCatalogRow
+	catalogErr         error
+	catalogParams      []postgresqueries.ListManagementAccountTestModelCatalogParams
+	mappingRows        []postgresqueries.ListManagementAccountTestOptionModelMappingsBySourceModelRow
+	mappingErr         error
+	mappingParams      []postgresqueries.ListManagementAccountTestOptionModelMappingsBySourceModelParams
+}
+
+func (s *managementAccountTestOptionQueriesStub) GetManagementAccountTestOptionListSource(
+	_ context.Context,
+	arg postgresqueries.GetManagementAccountTestOptionListSourceParams,
+) (postgresqueries.GetManagementAccountTestOptionListSourceRow, error) {
+	s.listSourceParams = append(s.listSourceParams, arg)
+	return s.listSourceRow, s.listSourceErr
+}
+
+func (s *managementAccountTestOptionQueriesStub) ListManagementAccountTestModelCatalog(
+	_ context.Context,
+	arg postgresqueries.ListManagementAccountTestModelCatalogParams,
+) ([]postgresqueries.ListManagementAccountTestModelCatalogRow, error) {
+	s.catalogParams = append(s.catalogParams, arg)
+	return s.catalogRows, s.catalogErr
+}
+
+func (s *managementAccountTestOptionQueriesStub) GetManagementAccountTestModelCapabilitiesSource(
+	_ context.Context,
+	arg postgresqueries.GetManagementAccountTestModelCapabilitiesSourceParams,
+) (postgresqueries.GetManagementAccountTestModelCapabilitiesSourceRow, error) {
+	s.capabilitiesParams = append(s.capabilitiesParams, arg)
+	return s.capabilitiesRow, s.capabilitiesErr
+}
+
+func (s *managementAccountTestOptionQueriesStub) ListManagementAccountTestOptionModelMappingsBySourceModel(
+	_ context.Context,
+	arg postgresqueries.ListManagementAccountTestOptionModelMappingsBySourceModelParams,
+) ([]postgresqueries.ListManagementAccountTestOptionModelMappingsBySourceModelRow, error) {
+	s.mappingParams = append(s.mappingParams, arg)
+	return s.mappingRows, s.mappingErr
+}
+
+var _ managementAccountTestOptionQueries = (*managementAccountTestOptionQueriesStub)(nil)
 
 func (s *managementAccountTestOptionsQueriesStub) GetManagementAccountTestOptionsSource(
 	_ context.Context,

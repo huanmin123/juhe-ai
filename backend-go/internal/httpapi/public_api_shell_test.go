@@ -43,7 +43,7 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 
 	const querySecret = "sk-0123456789abcdef0123456789abcdef"
 	const queryBearer = "Bearer abcdefghijklmnop"
-	const rawQuery = "targetUsername=admin&keyword=" + querySecret + "&authorization=Bearer%20abcdefghijklmnop"
+	const rawQuery = "targetUsername=admin&keyword=" + querySecret + "&authorization=Bearer%20abcdefghijklmnop&filter%5Bstatus%5D=active"
 	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list?"+rawQuery, nil)
 	req.Header.Set("Authorization", "Bearer juis_plain")
 	req.Header.Set("Cookie", "session=secret")
@@ -98,9 +98,51 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 	if !ok || query["keyword"] != querySecret || query["authorization"] != queryBearer {
 		t.Fatalf("request query = %#v, want original captured values", log.RequestData["query"])
 	}
+	filter, ok := query["filter"].(map[string]any)
+	if !ok || filter["status"] != "active" {
+		t.Fatalf("request query filter = %#v, want extended bracket object", query["filter"])
+	}
 	responseBody, ok := log.ResponseData["body"].(map[string]any)
 	if !ok || responseBody["data"] == nil {
 		t.Fatalf("response body = %#v", log.ResponseData["body"])
+	}
+}
+
+func TestPublicAPIShellDoesNotWaitForBlockedLogQueue(t *testing.T) {
+	client := &blockingPublicAPILogQueue{started: make(chan struct{}), release: make(chan struct{})}
+	dispatcher := NewPublicAPILogDispatcher(client, nil)
+	t.Cleanup(func() {
+		close(client.release)
+		shutdownRecordDispatcher(t, dispatcher)
+	})
+	router := NewPublicAPIShell(PublicAPIShellOptions{
+		Config:        config.Config{Host: "127.0.0.1", Port: 3000},
+		Authenticator: &publicAPIShellAuthStub{ctx: publicAPIShellAuthContext()},
+		RateLimiter:   &publicAPIShellLimiterStub{decision: publicapiratelimit.Decision{Allowed: true}},
+		LogSubmitter:  dispatcher,
+		EndpointHandlers: map[string]http.Handler{
+			"group-list": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{}})
+			}),
+		},
+		SkipRequestIDMiddleware: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list", nil)
+	req.Header.Set("Authorization", "Bearer juis_plain")
+	rec := httptest.NewRecorder()
+	startedAt := time.Now()
+	router.ServeHTTP(rec, req)
+	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
+		t.Fatalf("ServeHTTP() blocked for %s", elapsed)
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("queue client was not called")
 	}
 }
 

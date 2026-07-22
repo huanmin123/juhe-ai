@@ -119,6 +119,7 @@ export const DEFAULT_GLOBAL_SETTINGS = [
 ] as const
 
 export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2'] as const
+export const DEFAULT_GPT_SUPPORTED_MODELS = [...DEFAULT_OPENAI_SUPPORTED_MODELS, 'codex-auto-review'] as const
 export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.3'] as const
 export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5'] as const
 export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash'] as const
@@ -133,7 +134,7 @@ export const GPT_PROVIDER_SEED = {
   parentCode: OPENAI_COMPATIBLE_PROVIDER_CODE,
   description: 'GPT 官方供应商，继承通用 OpenAI-compatible 能力，并启用 OAuth、Codex Responses 等 GPT 专属能力',
   enabled: 1,
-  defaultSupportedModels: DEFAULT_OPENAI_SUPPORTED_MODELS
+  defaultSupportedModels: DEFAULT_GPT_SUPPORTED_MODELS
 } as const
 
 export const OPENAI_COMPATIBLE_PROVIDER_SEED = {
@@ -161,7 +162,7 @@ export const ANTHROPIC_PROVIDER_SEED = {
   code: ANTHROPIC_PROVIDER_CODE,
   name: 'Anthropic',
   parentCode: null,
-  description: 'Anthropic 官方供应商，使用 API Key 接入 Anthropic Messages 原生协议',
+  description: 'Anthropic 官方供应商，支持 API Key 或 OAuth Access Token（Bearer）接入 Anthropic Messages 原生协议',
   enabled: 1,
   defaultSupportedModels: DEFAULT_ANTHROPIC_SUPPORTED_MODELS
 } as const
@@ -404,13 +405,13 @@ export const ANTHROPIC_ANTHROPIC_V1_PROFILE_SEED = {
   id: ANTHROPIC_ANTHROPIC_V1_PROFILE_ID,
   providerCode: ANTHROPIC_PROVIDER_CODE,
   name: 'Anthropic / Anthropic v1',
-  description: 'Anthropic 官方 API Key 协议档案，仅承载 x-api-key、anthropic-version 与 Messages 原生协议',
+  description: 'Anthropic 官方协议档案，支持 API Key 或 OAuth Access Token，承载 anthropic-version 与 Messages 原生协议',
   enabled: 1,
   protocolCode: ANTHROPIC_PROTOCOL_CODE,
   protocolVersion: ANTHROPIC_PROTOCOL_VERSION,
   baseUrl: 'https://api.anthropic.com/v1',
   defaultHealthCheckModel: 'claude-opus-4-8',
-  accountTypes: ['api_key'],
+  accountTypes: ['api_key', 'oauth'],
   capabilities: ['messages', 'models', 'count_tokens', 'passthrough'],
   endpointFamilies: [ANTHROPIC_MESSAGES_FAMILY, ANTHROPIC_MODELS_FAMILY, ANTHROPIC_MESSAGE_TOKEN_COUNTING_FAMILY]
 } as const

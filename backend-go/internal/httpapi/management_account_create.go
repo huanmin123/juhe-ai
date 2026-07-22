@@ -137,7 +137,7 @@ func writeManagementAccountCreateError(w http.ResponseWriter, err error) {
 }
 
 func recordAccountCreateOperationLog(r *http.Request, auth managementauth.Context, account map[string]any, opts managementOperationLogOptions) {
-	if opts.client == nil {
+	if opts.submitter == nil {
 		return
 	}
 	now := opts.now

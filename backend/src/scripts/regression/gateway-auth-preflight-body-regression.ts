@@ -85,6 +85,7 @@ class FakeDbServiceChild extends EventEmitter {
         this.emit('message', {
           type: 'db_service_response',
           requestId: message.requestId,
+          jobId: message.jobId,
           ok: true,
           result
         })
@@ -95,6 +96,7 @@ class FakeDbServiceChild extends EventEmitter {
         this.emit('message', {
           type: 'db_service_response',
           requestId: message.requestId,
+          jobId: message.jobId,
           ok: false,
           errorMessage: error instanceof Error ? error.message : String(error)
         })
@@ -383,12 +385,13 @@ async function close(server: Server): Promise<void> {
   })
 }
 
-function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0] } {
+function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; jobId: string; operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0] } {
   return typeof value === 'object'
     && value !== null
     && !Array.isArray(value)
     && (value as Record<string, unknown>).type === 'db_service_request'
     && typeof (value as Record<string, unknown>).requestId === 'string'
+    && typeof (value as Record<string, unknown>).jobId === 'string'
     && typeof (value as Record<string, unknown>).operation === 'object'
     && (value as Record<string, unknown>).operation !== null
 }

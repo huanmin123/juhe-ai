@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"juhe-ai/backend-go/internal/modules/accountpagedata"
 	"juhe-ai/backend-go/internal/store/port"
 )
 
@@ -46,7 +45,6 @@ type Options struct {
 	RuntimeClearer           RuntimeAvailabilityClearer
 	AccountLookupInvalidator AccountLookupInvalidator
 	GatewayInvalidator       GatewayRuntimeInvalidator
-	PageDataPublisher        accountpagedata.Publisher
 	Logger                   *slog.Logger
 	Now                      func() time.Time
 }
@@ -183,21 +181,6 @@ func (s *Service) afterCommit(ctx context.Context, account Account, fields []str
 	if s.opts.GatewayInvalidator != nil {
 		if err := s.opts.GatewayInvalidator.InvalidateGatewayRuntime(postCtx, GatewayRuntimeReason); err != nil {
 			s.opts.Logger.WarnContext(postCtx, "授权账户调度更新后网关运行态失效失败", "accountId", account.ID, "error", err)
-		}
-	}
-	if s.opts.PageDataPublisher == nil {
-		return
-	}
-	change := accountpagedata.ChangeInput{AccountID: account.ID, Operation: accountpagedata.OperationUpsert,
-		OwnerSystemAccountIDs: []string{account.SystemAccountID}, FieldMask: fields,
-		OrderChanged: contains(fields, "priority")}
-	if err := s.opts.PageDataPublisher.PublishAccountStaticChange(postCtx, change); err != nil {
-		s.opts.Logger.WarnContext(postCtx, "授权账户调度更新后静态页面数据失效失败", "accountId", account.ID, "error", err)
-	}
-	if contains(fields, "status") || contains(fields, "clearFailureState") {
-		change.FieldMask = []string{"status", "schedulable"}
-		if err := s.opts.PageDataPublisher.PublishAccountRuntimeChange(postCtx, change); err != nil {
-			s.opts.Logger.WarnContext(postCtx, "授权账户调度更新后运行态页面数据失效失败", "accountId", account.ID, "error", err)
 		}
 	}
 }

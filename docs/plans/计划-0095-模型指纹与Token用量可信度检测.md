@@ -37,6 +37,7 @@
 - 不自动修改上游 usage、成本、额度或账单，不自动处罚疑似账号。
 - 不把 OAuth / Codex、Chat bridge、Anthropic bridge 与 API Key Responses cohort 混合建模；这些链路先保持协议检测和独立证据不足状态。
 - 不引入重型外部 eval 平台、向量数据库、分布式训练服务或第三方模型检测网站。
+- 默认快速检测不执行或写入模型指纹 / Token observation；本计划的受控探针和群体基线只由显式深度检测样本驱动。
 
 ## 关联文档
 
@@ -180,6 +181,7 @@ Pro / Max / Ultra、思考档位、多智能体和 service tier 由账号套餐�
 - 2026-07-14：复查修正身份来源累计语义：特征使用 `sum/sample_count`，约束使用通过率；`undeclared_mismatch` / `protocol failed` observation 只保留事实和 latest 诊断，不进入 Token / 身份来源及基线。漂移候选按 observation 时间补齐恢复、拒绝、7 天过期和 3 天稳定晋升，历史候选不再永久优先 active。
 - 2026-07-14：为 cohort 独立来源 `COUNT(DISTINCT upstream_bucket_hmac)` 增加 `idx_model_trust_window_sources_cohort(cohort_key_hmac, upstream_bucket_hmac)`，SQLite 查询计划和生成 PostgreSQL DDL 同步。生产本批首次创建可信度 8 表 / 11 索引，不执行旧表清空；曾试跑旧聚合的非生产环境需停 worker 后离线重建派生结果。
 - 2026-07-15：新增 `model_token_intercept_baseline_versions`，stats-worker 按上游桶塌缩并预聚合固定开销分布，候选账号使用 LOO 结果；待校准版本强判门固定关闭，激活函数要求稳定门槛、有限阈值和校准记录。新增七类 feature v2、模型 max input 动态长上下文阶梯、显式极限开关和前端专项契约。真实阈值、误报、成本与限流观察仍未执行，不能用回归数据标记完成。
+- 2026-07-23：模型检测默认改为快速初筛；Token 差分、身份 canary 和 observation 明确只在 `profile=full` 的深度检测运行，避免不完整快速样本污染群体基线。
 
 ## 验收标准
 

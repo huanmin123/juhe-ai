@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +16,8 @@ const accountConcurrencyBatchSize = 100
 var invalidAccountConcurrencyNamespaceChars = regexp.MustCompile(`[^a-zA-Z0-9_.:-]+`)
 
 const loadAccountConcurrencyLua = `
-local now_ms = tonumber(ARGV[1])
+local redis_time = redis.call('TIME')
+local now_ms = tonumber(redis_time[1]) * 1000 + math.floor(tonumber(redis_time[2]) / 1000)
 
 local function hdel_expired(metadata_key, expired)
   local index = 1
@@ -68,12 +68,11 @@ func NewAccountConcurrencyReader(client *Client, rootNamespace string) (*Account
 	}
 	return &AccountConcurrencyReader{
 		rootNamespace: namespace,
-		run: func(ctx context.Context, keys []string, nowMillis int64) (int64, error) {
+		run: func(ctx context.Context, keys []string, _ int64) (int64, error) {
 			return loadAccountConcurrencyScript.Run(
 				ctx,
 				client.client,
 				keys,
-				strconv.FormatInt(nowMillis, 10),
 			).Int64()
 		},
 	}, nil

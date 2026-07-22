@@ -101,6 +101,38 @@ func TestManagementSystemTeamReadSQLScopeIsNarrow(t *testing.T) {
 	}
 }
 
+func TestManagementSystemTeamListSQLProjectsNodeCompactRow(t *testing.T) {
+	source, err := os.ReadFile("queries/w4_management_system_teams.sql")
+	if err != nil {
+		t.Fatalf("read system teams query: %v", err)
+	}
+	listBlock := sqlBlock(t, string(source), "-- name: ListManagementSystemTeams :many")
+	selectEnd := strings.Index(listBlock, "FROM juhe_business.system_teams AS teams")
+	if selectEnd < 0 {
+		t.Fatalf("system team list SELECT boundary missing:\n%s", listBlock)
+	}
+	projection := listBlock[:selectEnd]
+	for _, want := range []string{
+		"teams.id",
+		"teams.name",
+		"teams.description",
+		"teams.status",
+		"teams.created_at",
+	} {
+		if !strings.Contains(projection, want) {
+			t.Fatalf("system team compact list projection missing %q:\n%s", want, projection)
+		}
+	}
+	for _, forbidden := range []string{
+		"teams.created_by",
+		"teams.updated_at",
+	} {
+		if strings.Contains(projection, forbidden) {
+			t.Fatalf("system team compact list projection should not contain %q:\n%s", forbidden, projection)
+		}
+	}
+}
+
 func TestManagementSystemTeamWritesBuildReturnedStateBeforeCommit(t *testing.T) {
 	source, err := os.ReadFile("managementsystemteams.go")
 	if err != nil {

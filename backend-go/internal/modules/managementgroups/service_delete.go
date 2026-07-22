@@ -55,7 +55,6 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (DeleteResult, 
 	s.invalidateGroupLookup(ctx)
 	s.invalidateGroupAccountIDs(ctx)
 	s.invalidateRuntimeWithReason(ctx, GroupDeletedReason)
-	s.publishDependentPageDataResets(ctx)
 	return DeleteResult{
 		Before:                  deleted.Before,
 		OwnerSystemAccountID:    deleted.OwnerSystemAccountID,

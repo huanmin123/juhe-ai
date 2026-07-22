@@ -55,7 +55,7 @@
 
 ## 复发记录
 
-- 暂无。
+- 2026-07-22：公告 Go create 路由的 mutation guard 曾沿用默认 `1 MiB` JSON 读取，超过 Node system API `256 KiB` 的请求可能进入公告 handler；独立 handler 又会把超限误报为 `400`。修复为共享 `announcementJSONMaxBodyBytes = 256 << 10`，guard 和 handler 均将 `http.MaxBytesError` 映射为 `413 { "message": "请求体过大" }`，并固定超限时不调用公告 create service。该修复不改变 Node writer / 发布 owner，只补 Go opt-in 契约。
 
 ## 下次遇到
 
@@ -67,4 +67,4 @@
 
 - 完成时间：2026-07-10。
 - 结论：Go 已迁移管理设置接口恢复为 Node 的 `256 KiB/413` 请求体边界，后续 W5 系统运行设置沿用同一契约。
-- 后续建议：新增管理 JSON 写接口时复用统一 body decoder 或明确引用同一常量和错误映射。
+- 后续建议：新增管理 JSON 写接口时复用统一 body decoder 或明确引用同一常量和错误映射；已接入 mutation guard 的写路由还必须验证 guard 与实际 handler 都不会接受超过 `256 KiB` 的请求。

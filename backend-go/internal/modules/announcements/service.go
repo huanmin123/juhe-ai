@@ -95,6 +95,21 @@ func (s *Service) ListPublic(ctx context.Context, input PublicListInput) ([]Anno
 	return items, nil
 }
 
+func (s *Service) FindPublic(ctx context.Context, id string) (Announcement, bool, error) {
+	if s == nil || s.store == nil {
+		return Announcement{}, false, fmt.Errorf("announcement store is required")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return Announcement{}, false, fmt.Errorf("%w: announcement id is required", ErrAnnouncementInputInvalid)
+	}
+	result, found, err := s.store.FindPublicAnnouncement(ctx, id)
+	if err != nil {
+		return Announcement{}, false, fmt.Errorf("find public announcement: %w", err)
+	}
+	return result, found, nil
+}
+
 func (s *Service) ListManagement(ctx context.Context, page int, pageSize int) (Page, error) {
 	if s == nil || s.store == nil {
 		return Page{}, fmt.Errorf("announcement store is required")

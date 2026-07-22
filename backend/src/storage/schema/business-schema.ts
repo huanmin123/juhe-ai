@@ -822,13 +822,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_gateway_model_catalog_snapshots_updated
       ON gateway_model_catalog_snapshots(updated_at, system_account_id, protocol, variant);
 
-    CREATE TABLE IF NOT EXISTS page_data_dirty_domains (
-      domain TEXT PRIMARY KEY,
-      generation INTEGER NOT NULL,
-      is_dirty INTEGER NOT NULL DEFAULT 1 CHECK (is_dirty IN (0, 1)),
-      updated_at TEXT NOT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS announcements (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,

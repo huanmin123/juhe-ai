@@ -47,15 +47,15 @@ async function main(): Promise<void> {
     server = app.listen(0, '127.0.0.1')
     await listen(server)
     const baseUrl = `http://127.0.0.1:${serverAddress(server).port}`
-    const adminCookie = createAdminCookie()
+    const adminSession = createAdminSession()
 
     await assertIpReadLimit(baseUrl)
     await assertRateLimitCannotBeDisabled()
-    await assertAuthenticatedUserLimit(baseUrl, adminCookie)
-    await assertAllowlistedIpBypassesRateLimit(baseUrl, adminCookie)
-    await assertTestAppBypassesRateLimit(adminCookie)
+    await assertAuthenticatedUserLimit(baseUrl, adminSession.cookie)
+    await assertAllowlistedIpBypassesRateLimit(baseUrl, adminSession.cookie)
+    await assertTestAppBypassesRateLimit(adminSession.cookie)
 
-    console.log('后台系统 API 限流回归通过：限流位于 body parser 前，阈值可配置且固定启用，IP 与登录用户超限返回 429，健康检查、IP 白名单和测试 app 实例旁路符合预期')
+    console.log('后台系统 API 限流回归通过：DB access mode 在 limiter 前统一分类，GET/HEAD、健康检查、IP 白名单和测试 app 旁路符合预期')
   } finally {
     await closeServer(server)
     try {
@@ -69,12 +69,15 @@ async function main(): Promise<void> {
 
 function assertSystemApiRateLimitSourceOrder(): void {
   const source = readFileSync(resolve('src/modules/system-api/system-api-app.ts'), 'utf8')
+  const dbAccessMode = source.indexOf('app.use(systemApiPrefix, systemApiDbAccessModeMiddleware(systemApiPrefix))')
   const ipLimiter = source.indexOf('app.use(systemApiPrefix, systemApiIpRateLimit)')
   const jsonParser = source.indexOf('app.use(systemApiPrefix, express.json')
   const authMiddleware = source.indexOf('app.use(systemApiPrefix, requireAuth)')
   const userLimiter = source.indexOf('app.use(systemApiPrefix, systemApiAuthenticatedRateLimit)')
+  assert(dbAccessMode >= 0, '系统 API DB access mode middleware 必须挂载在应用入口')
   assert(ipLimiter >= 0, '系统 API IP 级限流必须挂载在应用入口')
   assert(jsonParser >= 0, '系统 API JSON parser 必须存在')
+  assert(dbAccessMode < ipLimiter, 'DB access mode 必须在 IP limiter 前解析，供 read/write bucket 统一分类')
   assert(ipLimiter < jsonParser, 'IP 级限流必须位于 JSON body parser 前')
   assert(authMiddleware >= 0, '系统 API 登录态中间件必须存在')
   assert(userLimiter > authMiddleware, '用户级限流必须位于 requireAuth 之后')
@@ -97,9 +100,11 @@ function prepareAdminSessionAccount(): void {
     .run(new Date().toISOString())
 }
 
-function createAdminCookie(): string {
+function createAdminSession(): { cookie: string } {
   const session = repositories.createSession('sys_admin')
-  return `juhe_ai_session=${encodeURIComponent(session.token)}`
+  return {
+    cookie: `juhe_ai_session=${encodeURIComponent(session.token)}`
+  }
 }
 
 async function assertIpReadLimit(baseUrl: string): Promise<void> {
@@ -249,13 +254,20 @@ async function assertStatus(
 interface RequestOptions {
   clientIp?: string
   cookie?: string
+  method?: string
+  body?: unknown
 }
 
 function request(baseUrl: string, path: string, options: RequestOptions = {}): Promise<Response> {
   const headers: Record<string, string> = {}
   if (options.clientIp) headers['x-forwarded-for'] = options.clientIp
   if (options.cookie) headers.cookie = options.cookie
-  return fetch(`${baseUrl}${path}`, { headers })
+  if (options.body !== undefined) headers['content-type'] = 'application/json'
+  return fetch(`${baseUrl}${path}`, {
+    headers,
+    method: options.method,
+    body: options.body === undefined ? undefined : JSON.stringify(options.body)
+  })
 }
 
 function listen(server: http.Server): Promise<void> {

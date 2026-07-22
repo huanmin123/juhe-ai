@@ -1,8 +1,34 @@
-import { aggregateUsageStatsBatch, aggregateUsageStatsBatchAsync, refreshUsageRankSnapshotsInStages } from '../../storage/usage-stats.repository.js'
-import { closeStorageDatabases, datasetDatabasePath, getDatasetDatabase, getStatsDatabase, getUsageCatalogDatabase, nowIso, statsDatabasePath, usageCatalogDatabasePath } from '../../storage/database.js'
-import { runtimeConfig } from '../../config/runtime.js'
-import { createPostgresDatabaseClient, type DatabaseClient } from '../../storage/database-client.js'
-import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
+import type { DatabaseClient } from '../../storage/database-client.js'
+
+process.env.JUHE_AI_PROCESS_ROLE = 'worker'
+process.env.JUHE_AI_WORKER_ROLE = 'temporary-maintenance-worker'
+
+const { runtimeConfig } = await import('../../config/runtime.js')
+const offlineConfirmed = process.argv.includes('--confirm-offline')
+  || process.env.JUHE_AI_CONFIRM_USAGE_STATS_REBUILD === '1'
+if (runtimeConfig.databaseDriver === 'sqlite' && offlineConfirmed) {
+  process.env.JUHE_AI_SQLITE_OFFLINE_MAINTENANCE = '1'
+}
+
+const [usageStatsRepository, databaseModule, databaseClientModule, postgresModule] = await Promise.all([
+  import('../../storage/usage-stats.repository.js'),
+  import('../../storage/database.js'),
+  import('../../storage/database-client.js'),
+  import('../../storage/postgres-client.js')
+])
+const { aggregateUsageStatsBatch, aggregateUsageStatsBatchAsync, refreshUsageRankSnapshotsInStages } = usageStatsRepository
+const {
+  closeStorageDatabases,
+  datasetDatabasePath,
+  getDatasetDatabase,
+  getStatsDatabase,
+  getUsageCatalogDatabase,
+  nowIso,
+  statsDatabasePath,
+  usageCatalogDatabasePath
+} = databaseModule
+const { createPostgresDatabaseClient } = databaseClientModule
+const { closePostgresPool, getPostgresPool } = postgresModule
 
 interface RebuildUsageStatsOptions {
   batchSize: number
