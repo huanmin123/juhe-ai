@@ -159,14 +159,15 @@ func TestCleanupReturnsPartialResultWhenRuntimeLogSecondBatchFails(t *testing.T)
 	service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
 
 	result, err := service.Cleanup(context.Background(), CleanupInput{
-		IndexEnabled: true,
-		BatchSize:    2,
-		MaxBatches:   3,
+		IndexEnabled:                 true,
+		GoExclusiveIndexCleanupOwner: true,
+		BatchSize:                    2,
+		MaxBatches:                   3,
 	})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Cleanup() error = %v, want %v", err, wantErr)
 	}
-	if result.RuntimeLogs != 2 || result.RuntimeLogBatches != 1 || !result.Partial || result.Phase != CleanupPhaseRuntimeLogs {
+	if result.RuntimeLogs != 2 || result.RuntimeLogBatches != 1 || !result.Partial || result.RuntimeLogsDeferred || result.Phase != CleanupPhaseRuntimeLogs {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -181,9 +182,10 @@ func TestCleanupReturnsPartialResultWhenRuntimeLogFileCursorPhaseFails(t *testin
 	service := NewServiceWithOptions(ServiceOptions{Store: store, BatchPause: -1})
 
 	result, err := service.Cleanup(context.Background(), CleanupInput{
-		IndexEnabled: true,
-		BatchSize:    2,
-		MaxBatches:   2,
+		IndexEnabled:                 true,
+		GoExclusiveIndexCleanupOwner: true,
+		BatchSize:                    2,
+		MaxBatches:                   2,
 	})
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("Cleanup() error = %v, want %v", err, wantErr)
@@ -191,7 +193,7 @@ func TestCleanupReturnsPartialResultWhenRuntimeLogFileCursorPhaseFails(t *testin
 	if result.RuntimeLogs != 1 || result.RuntimeLogBatches != 1 || result.RuntimeLogFileCursors != 2 || result.RuntimeLogFileCursorBatches != 1 {
 		t.Fatalf("result = %+v", result)
 	}
-	if !result.Partial || result.Phase != CleanupPhaseRuntimeLogFileCursors {
+	if !result.Partial || result.RuntimeLogsDeferred || result.Phase != CleanupPhaseRuntimeLogFileCursors {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -217,6 +219,9 @@ func TestCleanupRecordsDeferredIndexBatchAndContinuesCursorCleanup(t *testing.T)
 	if result.RuntimeLogFileCursors != 1 || result.RuntimeLogFileCursorBatches != 1 {
 		t.Fatalf("cursor cleanup must continue after deferred index batch: %+v", result)
 	}
+	if result.Phase != CleanupPhaseComplete || result.Partial {
+		t.Fatalf("deferred index with successful cursor cleanup must be a completed non-error run: %+v", result)
+	}
 }
 
 func TestCleanupFailsClosedWhileNodeIndexCleanupStillOwnsTheSubdomain(t *testing.T) {
@@ -235,6 +240,9 @@ func TestCleanupFailsClosedWhileNodeIndexCleanupStillOwnsTheSubdomain(t *testing
 	}
 	if result.RuntimeLogFileCursors != 1 || len(store.cursorInputs) != 2 {
 		t.Fatalf("independent completed cursor cleanup must continue: result=%+v inputs=%v", result, store.cursorInputs)
+	}
+	if result.Phase != CleanupPhaseComplete || result.Partial {
+		t.Fatalf("default owner gate must finish cursor phase without reporting partial failure: %+v", result)
 	}
 }
 
