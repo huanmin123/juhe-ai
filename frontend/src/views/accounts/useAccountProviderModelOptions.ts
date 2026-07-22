@@ -38,8 +38,6 @@ export async function loadAccountProviderModelOptionsResource(
   }
 }
 
-export function invalidateAccountProviderModelOptionsCache(_providerCode?: string): void {}
-
 export function useAccountProviderModelOptions(options: UseAccountProviderModelOptionsOptions) {
   const providerModelOptions = ref<AccountModelSelectOption[]>([])
   const providerModelsLoading = ref(false)
