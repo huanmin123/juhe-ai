@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { ref } from 'vue'
 
 import type { AccountListResult, AccountRuntimeAvailabilityStatus, AccountStatusSnapshotResult, AccountSummary } from '../../types/domain/accounts.js'
-import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountListRow } from '../../views/accounts/accountListMutations.js'
+import * as accountListMutations from '../../views/accounts/accountListMutations.js'
+const { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountListRow } = accountListMutations
 const usage = (requestCount: number) => ({
   requestCount,
   inputTokens: requestCount,
@@ -70,6 +71,20 @@ const snapshot: AccountStatusSnapshotResult = {
 }
 const originalAccounts = [account]
 
+assert.equal('accountListItemHasDynamicSnapshot' in accountListMutations, true, '账户列表必须能识别直接返回的完整动态快照')
+const accountListItemHasDynamicSnapshot = (accountListMutations as typeof accountListMutations & {
+  accountListItemHasDynamicSnapshot: (value: AccountSummary) => boolean
+}).accountListItemHasDynamicSnapshot
+assert.equal(accountListItemHasDynamicSnapshot({
+  ...account,
+  effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' }
+} as AccountSummary), true)
+assert.equal(accountListItemHasDynamicSnapshot({
+  ...account,
+  todayUsage: undefined,
+  effectiveAvailability: { available: true, status: 'available', label: '可调度', color: 'green' }
+} as unknown as AccountSummary), false)
+
 const reactiveCachedResult = ref<AccountListResult>({
   items: [account],
   page: 1,
@@ -97,6 +112,24 @@ assert.equal(merged[0]?.availabilityPresentation?.status, 'available', '快照�
 assert.equal(merged[0]?.availabilityPresentation?.probe?.lastObservation, undefined, '快照必须清除旧 observation 与 traceId')
 assert.notEqual(merged, originalAccounts)
 
+const unavailableConcurrencySnapshot = mergeAccountStatusSnapshot(originalAccounts, {
+  ...snapshot,
+  runtimeSnapshot: {
+    ...snapshot.runtimeSnapshot,
+    accountConcurrencyAvailable: false
+  },
+  items: snapshot.items.map((item) => ({
+    ...item,
+    currentConcurrency: 0,
+    lastUsedAt: '2026-07-16T00:59:30.000Z',
+    todayUsage: usage(9)
+  }))
+})
+assert.equal(unavailableConcurrencySnapshot[0]?.currentConcurrency, 1, 'Redis 并发不可用时必须保留同作用域可信并发')
+assert.equal(unavailableConcurrencySnapshot[0]?.currentConcurrencyAvailable, true, '保留可信并发时必须保留可用标记')
+assert.equal(unavailableConcurrencySnapshot[0]?.todayUsage.requestCount, 9, 'Redis 不可用不能阻止 SQL 统计动态字段更新')
+assert.equal(unavailableConcurrencySnapshot[0]?.lastUsedAt, '2026-07-16T00:59:30.000Z')
+
 const rowUpdated = replaceAccountListRow(originalAccounts, {
   ...account,
   superPriorityEnabled: true,
@@ -114,9 +147,11 @@ assert.equal(replaceAccountListRow(originalAccounts, { ...account, id: 'missing'
 const accountListDataSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountListData.ts', import.meta.url)), 'utf8')
 assert.doesNotMatch(accountListDataSource, /createAccountStatusSnapshotPolling/, '账户列表不得创建状态快照自动轮询器')
 assert.doesNotMatch(accountListDataSource, /accountStatusSnapshotPolling/, '账户列表不得导入状态快照轮询 helper')
-assert.doesNotMatch(accountListDataSource, /statusSnapshot\(/, '账户列表生命周期不得自动请求状态快照接口')
+assert.match(accountListDataSource, /refreshAccountStatusSnapshot/, '账户列表加载完成后必须执行一次动态快照补齐')
+assert.match(accountListDataSource, /statusSnapshot\(/, '账户列表缺少动态字段时必须请求状态快照')
 assert.doesNotMatch(accountListDataSource, /snapshotPolling/, '账户列表不得保留状态快照轮询生命周期连接')
-assert.doesNotMatch(accountListDataSource, /visibilitychange/, '账户列表不得因页面可见性变化触发状态快照刷新')
+assert.doesNotMatch(accountListDataSource, /setInterval|setTimeout/, '账户动态快照不得恢复定时轮询')
+assert.doesNotMatch(accountListDataSource, /visibilitychange|window\.addEventListener\(['"]focus/, '账户动态快照不得因页面可见性或聚焦变化触发刷新')
 
 const previousRuntimeAccount = {
   id: 'acc_runtime_refresh',
@@ -147,6 +182,14 @@ assert.equal(preservedRefresh[0]?.accountRuntimeAvailabilityAvailable, true)
 
 assert.equal(preservedRefresh[0]?.effectiveAvailability, previousRuntimeAccount.effectiveAvailability)
 assert.equal(preservedRefresh[0]?.availabilityPresentation, previousRuntimeAccount.availabilityPresentation, '完整列表保留旧运行态时必须同步保留 presentation')
+
+const preservedConcurrency = mergeAccountListRuntimeSnapshot(
+  [{ ...account, currentConcurrency: 3, currentConcurrencyAvailable: true } as AccountSummary],
+  [{ ...account, currentConcurrency: 0, currentConcurrencyAvailable: false } as AccountSummary],
+  false
+)
+assert.equal(preservedConcurrency[0]?.currentConcurrency, 3, '静态刷新缺少并发快照时必须保留同作用域可信并发')
+assert.equal(preservedConcurrency[0]?.currentConcurrencyAvailable, true, '保留可信并发时必须同步保留可用标记')
 
 const allRuntimeStatuses = [
   'normal',

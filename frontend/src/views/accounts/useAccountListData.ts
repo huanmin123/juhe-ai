@@ -8,7 +8,8 @@ import { usePageDataRequestCache } from '@/composables/usePageDataRequestCache'
 import { loadProviderOptionsResource } from '@/composables/useProviderOptionsResource'
 import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
-import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
+import { loadDynamicSnapshotsInBatches } from '@/shared/dynamicSnapshotBatches'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
@@ -20,7 +21,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { accountListItemHasDynamicSnapshot, cloneAccountListCacheResult, mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -32,6 +33,10 @@ interface UseAccountListDataOptions {
   isManagementView: ComputedRef<boolean>
   scopedSystemAccountId: (filterValue?: string) => string | undefined
   onLoaded?: (selectableAccountIds: Set<string>) => void
+}
+
+interface AccountListPageViewResult extends ResponsivePagedListResult<AccountSummary> {
+  dynamicSnapshotFallbackIds: string[]
 }
 
 const defaultAccountsPageState = (): AccountsPageState => ({
@@ -77,6 +82,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
   const accountListRevision = ref(0)
   let acceptedRuntimeScopeSignature = ''
+  let accountSnapshotRequestSequence = 0
+  let accountListFetchInFlight = 0
+  let accountSnapshotFallbackIds = new Set<string>()
 
   const runtimeScopeSignature = (): string => {
     const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
@@ -115,20 +123,25 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 个账户，还有更多`
       : `共 ${formatNumber(total)} 个账户`,
     fetchPage: async (_loadOptions, pageState) => {
+      accountSnapshotRequestSequence += 1
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
       void loadAccountOptions(systemAccountId, Boolean(_loadOptions?.forceOptions)).catch((error) => {
         console.error(error)
         message.error('加载账户筛选选项失败')
       })
       const accountList = await fetchAccountList(systemAccountId, pageState, _loadOptions.forceData === true)
-      const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
-      return {
-        items: accountList.items.map((account) => accountListViewModel(account, runtimeAvailable)),
+      const fallbackIds = accountList.items
+        .filter((account) => !accountListItemHasDynamicSnapshot(account as AccountSummary))
+        .map((account) => account.id)
+      const result: AccountListPageViewResult = {
+        items: accountList.items.map((account) => accountListViewModel(account, accountList.runtimeSnapshot)),
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
-        hasMore: accountList.hasMore
+        hasMore: accountList.hasMore,
+        dynamicSnapshotFallbackIds: fallbackIds
       }
+      return result
     },
     transformItems: (nextItems, _loadOptions, _result, currentItems) => {
       const currentScopeSignature = runtimeScopeSignature()
@@ -146,11 +159,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         accountListParams(systemAccountId, pageState)
       ]
     },
-    onLoaded: () => {
+    onLoaded: (result, loadOptions) => {
       acceptedRuntimeScopeSignature = runtimeScopeSignature()
       accountListRevision.value += 1
+      const fallbackIds = (result as AccountListPageViewResult).dynamicSnapshotFallbackIds ?? []
+      accountSnapshotFallbackIds = loadOptions.append
+        ? new Set([...accountSnapshotFallbackIds, ...fallbackIds])
+        : new Set(fallbackIds)
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
+      void refreshAccountStatusSnapshot()
     },
     onError: (error) => {
       console.error(error)
@@ -160,31 +178,78 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const filteredAccounts = computed(() => accounts.value)
   const mobileRefreshing = computed(() => loading.value)
   const mobileVisibleAccounts = computed(() => filteredAccounts.value)
-  async function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, force: boolean) {
-    const params = accountListParams(systemAccountId, pageState)
-    const loadNetwork = () => options.isManagementView.value
-      ? api.accounts.list(params)
-      : api.myAccounts.list(accountListParams(undefined, pageState))
-    const viewerSystemAccountId = authState.currentUser.value?.id
-    if (!viewerSystemAccountId) return loadNetwork()
-    const viewScope = options.isManagementView.value ? 'admin' as const : 'self' as const
-    accountPageCacheRequest = {
-      cacheKey: {
-        scope: viewScope === 'admin'
-          ? `admin:${viewerSystemAccountId}:target:${systemAccountId ?? 'global'}`
-          : `self:${viewerSystemAccountId}`,
-        route: viewScope === 'admin' ? '/accounts' : '/my-accounts',
-        query: params,
-        version: 1
-      },
-      domain: 'accounts.static',
-      viewScope,
-      maxStaleMs: 30_000,
-      ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
-      loadNetwork
+
+  async function refreshAccountStatusSnapshot(): Promise<void> {
+    const loadedIds = new Set(accounts.value.map((account) => account.id).filter(Boolean))
+    const accountIds = [...accountSnapshotFallbackIds].filter((accountId) => loadedIds.has(accountId))
+    if (!accountIds.length) return
+
+    const sequence = ++accountSnapshotRequestSequence
+    const revision = accountListRevision.value
+    const scopeSignature = runtimeScopeSignature()
+    const idSignature = loadedAccountIdSignature()
+    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
+    const results = await loadDynamicSnapshotsInBatches(accountIds, (batchIds) => options.isManagementView.value
+      ? api.accounts.statusSnapshot(batchIds, systemAccountId ? { systemAccountId } : undefined)
+      : api.myAccounts.statusSnapshot(batchIds))
+
+    for (const result of results) {
+      if (!accountStatusSnapshotRequestIsCurrent(sequence, revision, scopeSignature, idSignature)) return
+      if (result.error) {
+        console.error(result.error)
+        continue
+      }
+      if (!result.value) continue
+      const nextAccounts = mergeAccountStatusSnapshot(accounts.value, result.value)
+      if (nextAccounts !== accounts.value) accounts.value = nextAccounts
+      const returnedIds = new Set(result.value.items.map((item) => item.id))
+      for (const accountId of result.ids) {
+        if (returnedIds.has(accountId)) accountSnapshotFallbackIds.delete(accountId)
+      }
     }
-    const result = force ? await accountPageCache.forceRefresh() : await accountPageCache.load()
-    return result.data
+  }
+
+  function accountStatusSnapshotRequestIsCurrent(sequence: number, revision: number, scopeSignature: string, idSignature: string): boolean {
+    return sequence === accountSnapshotRequestSequence
+      && revision === accountListRevision.value
+      && scopeSignature === runtimeScopeSignature()
+      && idSignature === loadedAccountIdSignature()
+  }
+
+  function loadedAccountIdSignature(): string {
+    return accounts.value.map((account) => account.id).filter(Boolean).join('\u0000')
+  }
+
+  async function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, force: boolean) {
+    accountListFetchInFlight += 1
+    try {
+      const params = accountListParams(systemAccountId, pageState)
+      const loadNetwork = () => options.isManagementView.value
+        ? api.accounts.list(params)
+        : api.myAccounts.list(accountListParams(undefined, pageState))
+      const viewerSystemAccountId = authState.currentUser.value?.id
+      if (!viewerSystemAccountId) return loadNetwork()
+      const viewScope = options.isManagementView.value ? 'admin' as const : 'self' as const
+      accountPageCacheRequest = {
+        cacheKey: {
+          scope: viewScope === 'admin'
+            ? `admin:${viewerSystemAccountId}:target:${systemAccountId ?? 'global'}`
+            : `self:${viewerSystemAccountId}`,
+          route: viewScope === 'admin' ? '/accounts' : '/my-accounts',
+          query: params,
+          version: 1
+        },
+        domain: 'accounts.static',
+        viewScope,
+        maxStaleMs: 30_000,
+        ...(viewScope === 'admin' && systemAccountId ? { targetSystemAccountId: systemAccountId } : {}),
+        loadNetwork
+      }
+      const result = force ? await accountPageCache.forceRefresh() : await accountPageCache.load()
+      return result.data
+    } finally {
+      accountListFetchInFlight = Math.max(0, accountListFetchInFlight - 1)
+    }
   }
 
   function refreshData() {
@@ -329,34 +394,44 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
   }
 
-  function accountListViewModel(account: AccountListItem, runtimeAvailable: boolean): AccountSummary {
+  function accountListViewModel(account: AccountListItem, runtimeSnapshot: AccountListResult['runtimeSnapshot']): AccountSummary {
+    const hasDynamicSnapshot = accountListItemHasDynamicSnapshot(account as AccountSummary)
     return {
       ...account,
-      currentConcurrencyAvailable: false,
-      accountRuntimeAvailabilityAvailable: runtimeAvailable
+      currentConcurrencyAvailable: hasDynamicSnapshot
+        && runtimeSnapshot?.accountConcurrencyAvailable === true
+        && account.currentConcurrencyAvailable !== false,
+      accountRuntimeAvailabilityAvailable: hasDynamicSnapshot
+        && runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
+        && account.accountRuntimeAvailabilityAvailable !== false
     } as AccountSummary
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
   watch(accountPageCache.data, (accountList) => {
+    if (accountListFetchInFlight > 0) return
     const clonedAccountList = accountList ? cloneAccountListCacheResult(accountList as AccountListResult) : undefined
     const cachedResult = clonedAccountList
       ? {
         ...clonedAccountList,
         items: clonedAccountList.items.map((account) => accountListViewModel(
           account as AccountListItem,
-          clonedAccountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
-        ))
+          clonedAccountList.runtimeSnapshot
+        )),
+        dynamicSnapshotFallbackIds: clonedAccountList.items
+          .filter((account) => !accountListItemHasDynamicSnapshot(account as AccountSummary))
+          .map((account) => account.id)
       }
       : {
       items: [],
       page: accountPagination.current,
       pageSize: accountPagination.pageSize,
       total: 0,
-      hasMore: false
+      hasMore: false,
+      dynamicSnapshotFallbackIds: []
       }
     applyAccountPageCacheResult(cachedResult)
-  })
+  }, { flush: 'sync' })
   watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
   watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })
 

@@ -2,6 +2,12 @@ import { toRaw } from 'vue'
 
 import type { AccountBalanceSnapshot, AccountStatusSnapshotResult, AccountSummary } from '@/types/domain'
 
+export function accountListItemHasDynamicSnapshot(account: Partial<AccountSummary>): boolean {
+  return typeof account.currentConcurrency === 'number'
+    && account.todayUsage !== undefined
+    && account.effectiveAvailability !== undefined
+}
+
 export function cloneAccountListCacheResult<T>(value: T): T {
   return structuredClone(toRaw(value as object)) as T
 }
@@ -12,18 +18,30 @@ export function mergeAccountListRuntimeSnapshot(
   runtimeSnapshotAvailable: boolean,
   sameScope = true
 ): AccountSummary[] {
-  if (runtimeSnapshotAvailable || !sameScope || current.length === 0) return incoming
+  if (!sameScope || current.length === 0) return incoming
   const currentByIdentity = new Map(current.map((account) => [accountRuntimeIdentity(account), account]))
   return incoming.map((account) => {
     const previous = currentByIdentity.get(accountRuntimeIdentity(account))
-    if (!previous || previous.accountRuntimeAvailabilityAvailable !== true) return account
-    const effectiveAvailability = effectiveAvailabilityWithPreservedRuntime(previous, account)
+    if (!previous) return account
+    const preserveRuntime = !runtimeSnapshotAvailable && previous.accountRuntimeAvailabilityAvailable === true
+    const effectiveAvailability = preserveRuntime
+      ? effectiveAvailabilityWithPreservedRuntime(previous, account)
+      : account.effectiveAvailability
+    const preserveConcurrency = account.currentConcurrencyAvailable !== true
+      && previous.currentConcurrencyAvailable === true
+    const incomingHasDynamicSnapshot = accountListItemHasDynamicSnapshot(account)
     return {
       ...account,
-      runtimeAvailability: previous.runtimeAvailability,
+      currentConcurrency: preserveConcurrency ? previous.currentConcurrency : account.currentConcurrency,
+      currentConcurrencyAvailable: preserveConcurrency ? true : account.currentConcurrencyAvailable,
+      todayUsage: account.todayUsage ?? previous.todayUsage,
+      lastUsedAt: incomingHasDynamicSnapshot ? account.lastUsedAt : previous.lastUsedAt,
+      runtimeAvailability: preserveRuntime ? previous.runtimeAvailability : account.runtimeAvailability,
       effectiveAvailability,
-      availabilityPresentation: presentationWithPreservedRuntime(previous, account, effectiveAvailability),
-      accountRuntimeAvailabilityAvailable: true
+      availabilityPresentation: preserveRuntime
+        ? presentationWithPreservedRuntime(previous, account, effectiveAvailability)
+        : account.availabilityPresentation,
+      accountRuntimeAvailabilityAvailable: preserveRuntime ? true : account.accountRuntimeAvailabilityAvailable
     }
   })
 }
@@ -122,6 +140,7 @@ export function mergeAccountStatusSnapshot(
 ): AccountSummary[] {
   const itemsById = new Map(snapshot.items.map((item) => [item.id, item]))
   const runtimeSnapshotAvailable = snapshot.runtimeSnapshot.accountRuntimeAvailabilityAvailable === true
+  const concurrencySnapshotAvailable = snapshot.runtimeSnapshot.accountConcurrencyAvailable === true
   let changed = false
   const next = accounts.map((account) => {
     const item = itemsById.get(account.id)
@@ -135,8 +154,12 @@ export function mergeAccountStatusSnapshot(
       ...account,
       status: item.status,
       schedulable: item.schedulable,
-      currentConcurrency: item.currentConcurrency,
-      currentConcurrencyAvailable: snapshot.runtimeSnapshot.accountConcurrencyAvailable === true,
+      currentConcurrency: concurrencySnapshotAvailable || account.currentConcurrencyAvailable !== true
+        ? item.currentConcurrency
+        : account.currentConcurrency,
+      currentConcurrencyAvailable: concurrencySnapshotAvailable || account.currentConcurrencyAvailable !== true
+        ? concurrencySnapshotAvailable
+        : true,
       cooldownUntil: item.cooldownUntil,
       lastErrorCode: item.lastErrorCode,
       lastErrorMessage: item.lastErrorMessage,
