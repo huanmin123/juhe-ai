@@ -7,6 +7,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,8 +20,9 @@ import (
 )
 
 type managementProviderModelService interface {
-	ModelOptions(r *http.Request, input managementprovidermodels.ModelOptionListInput) ([]managementprovidermodels.ModelOption, error)
+	ModelSelectionOptions(r *http.Request, input managementprovidermodels.ModelSelectionOptionListInput) ([]managementprovidermodels.ModelSelectionOption, error)
 	Models(r *http.Request, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error)
+	ModelCapabilities(r *http.Request, input managementprovidermodels.ModelCapabilitiesInput) (managementprovidermodels.ModelCapabilities, error)
 	SetDefaultHealthCheckModel(r *http.Request, input managementprovidermodels.DefaultHealthCheckModelInput) (managementprovidermodels.DefaultHealthCheckModelResult, error)
 	CreateCustomModel(r *http.Request, input managementprovidermodels.CustomModelCreateInput) (managementprovidermodels.ModelCatalogItem, error)
 	UpdateCustomModelWithSnapshots(r *http.Request, input managementprovidermodels.CustomModelUpdateInput) (managementprovidermodels.CustomModelUpdateResult, error)
@@ -30,12 +33,16 @@ type managementProviderModelServiceAdapter struct {
 	service *managementprovidermodels.Service
 }
 
-func (s managementProviderModelServiceAdapter) ModelOptions(r *http.Request, input managementprovidermodels.ModelOptionListInput) ([]managementprovidermodels.ModelOption, error) {
-	return s.service.ModelOptions(r.Context(), input)
+func (s managementProviderModelServiceAdapter) ModelSelectionOptions(r *http.Request, input managementprovidermodels.ModelSelectionOptionListInput) ([]managementprovidermodels.ModelSelectionOption, error) {
+	return s.service.ModelSelectionOptions(r.Context(), input)
 }
 
 func (s managementProviderModelServiceAdapter) Models(r *http.Request, input managementprovidermodels.ModelListInput) ([]managementprovidermodels.ModelCatalogItem, error) {
 	return s.service.Models(r.Context(), input)
+}
+
+func (s managementProviderModelServiceAdapter) ModelCapabilities(r *http.Request, input managementprovidermodels.ModelCapabilitiesInput) (managementprovidermodels.ModelCapabilities, error) {
+	return s.service.ModelCapabilities(r.Context(), input)
 }
 
 func (s managementProviderModelServiceAdapter) SetDefaultHealthCheckModel(r *http.Request, input managementprovidermodels.DefaultHealthCheckModelInput) (managementprovidermodels.DefaultHealthCheckModelResult, error) {
@@ -60,6 +67,10 @@ func NewManagementProviderModelOptionsHandler(service *managementprovidermodels.
 
 func NewManagementProviderModelsHandler(service *managementprovidermodels.Service) http.Handler {
 	return newManagementProviderModelsHandler(managementProviderModelServiceAdapter{service: service})
+}
+
+func NewManagementProviderModelCapabilitiesHandler(service *managementprovidermodels.Service) http.Handler {
+	return newManagementProviderModelCapabilitiesHandler(managementProviderModelServiceAdapter{service: service})
 }
 
 func NewManagementProviderDefaultHealthCheckModelHandler(service *managementprovidermodels.Service) http.Handler {
@@ -92,16 +103,68 @@ func newManagementProviderModelOptionsHandler(service managementProviderModelSer
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
-		options, err := service.ModelOptions(r, managementprovidermodels.ModelOptionListInput{
-			SystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
-			Protocol:        firstManagementQueryText(r.URL.Query(), "protocol"),
-		})
+		input, message := managementProviderModelSelectionInput(r, authContext)
+		if message != "" {
+			writeMessageError(w, http.StatusBadRequest, message)
+			return
+		}
+		options, err := service.ModelSelectionOptions(r, input)
 		if err != nil {
+			if errors.Is(err, managementprovidermodels.ErrProviderNotFound) {
+				writeMessageError(w, http.StatusNotFound, "供应商不存在或已停用")
+				return
+			}
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
 		writeData(w, http.StatusOK, options)
 	})
+}
+
+func managementProviderModelSelectionInput(r *http.Request, authContext managementauth.Context) (managementprovidermodels.ModelSelectionOptionListInput, string) {
+	values := r.URL.Query()
+	protocol := firstManagementQueryText(values, "protocol")
+	if protocol != "" && protocol != "openai" && protocol != "anthropic" && protocol != "gemini" {
+		return managementprovidermodels.ModelSelectionOptionListInput{}, "protocol 必须是 openai、anthropic 或 gemini"
+	}
+	limit := 50
+	if rawLimit := firstManagementQueryText(values, "limit"); rawLimit != "" {
+		parsed, err := strconv.ParseFloat(rawLimit, 64)
+		if err != nil || math.Trunc(parsed) != parsed || parsed < 1 || parsed > 50 {
+			return managementprovidermodels.ModelSelectionOptionListInput{}, "limit 必须是 1 到 50 的整数"
+		}
+		limit = int(parsed)
+	}
+	return managementprovidermodels.ModelSelectionOptionListInput{
+		ProviderCode:    firstManagementQueryText(values, "providerCode"),
+		SystemAccountID: managementScopedSystemAccountID(authContext, values),
+		Protocol:        protocol,
+		Keyword:         firstManagementQueryText(values, "keyword"),
+		Limit:           limit,
+		SelectedIDs:     managementProviderModelSelectedIDs(values["selectedIds"]),
+	}, ""
+}
+
+func managementProviderModelSelectedIDs(values []string) []string {
+	items := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		for _, candidate := range strings.Split(value, ",") {
+			id := strings.TrimSpace(candidate)
+			if id == "" {
+				continue
+			}
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			items = append(items, id)
+			if len(items) == 50 {
+				return items
+			}
+		}
+	}
+	return items
 }
 
 func newManagementProviderModelsHandler(service managementProviderModelService) http.Handler {
@@ -128,6 +191,39 @@ func newManagementProviderModelsHandler(service managementProviderModelService) 
 			return
 		}
 		writeData(w, http.StatusOK, models)
+	})
+}
+
+func newManagementProviderModelCapabilitiesHandler(service managementProviderModelService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authContext, ok := ManagementAuthContextFromRequest(r)
+		if !ok {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		modelID, err := url.PathUnescape(chi.URLParam(r, "modelId"))
+		if err != nil {
+			writeMessageError(w, http.StatusNotFound, "模型不存在")
+			return
+		}
+		capabilities, err := service.ModelCapabilities(r, managementprovidermodels.ModelCapabilitiesInput{
+			ProviderCode:    chi.URLParam(r, "code"),
+			SystemAccountID: managementScopedSystemAccountID(authContext, r.URL.Query()),
+			Model:           modelID,
+		})
+		if err != nil {
+			if errors.Is(err, managementprovidermodels.ErrProviderNotFound) {
+				writeMessageError(w, http.StatusNotFound, "供应商不存在或已停用")
+				return
+			}
+			if errors.Is(err, managementprovidermodels.ErrModelCapabilitiesNotFound) {
+				writeMessageError(w, http.StatusNotFound, "模型不存在")
+				return
+			}
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, capabilities)
 	})
 }
 

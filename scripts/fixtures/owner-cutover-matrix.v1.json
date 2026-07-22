@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "manifestPath": "../deploy/owner-manifest.json",
+  "baselineOwner": "node",
+  "takeoverEvidence": false,
+  "runtimeRoutingEvaluated": false,
+  "routes": [
+    {
+      "id": "management-announcements-list",
+      "ownerClass": "management",
+      "method": "GET",
+      "path": "/__aisys__/api/announcements",
+      "goContractFile": "backend-go/internal/httpapi/announcements_management_test.go",
+      "nodeContractEvidence": [
+        {
+          "file": "backend/src/modules/system-api/system-api-app.ts",
+          "tokens": ["app.use(`${systemApiPrefix}/announcements`, announcementsRouter)"]
+        },
+        {
+          "file": "backend/src/modules/announcements/announcements.routes.ts",
+          "tokens": ["announcementsRouter.get('/', requireAdmin"]
+        }
+      ]
+    },
+    {
+      "id": "management-announcements-create",
+      "ownerClass": "management",
+      "method": "POST",
+      "path": "/__aisys__/api/announcements",
+      "goContractFile": "backend-go/internal/httpapi/announcements_write_test.go",
+      "nodeContractEvidence": [
+        {
+          "file": "backend/src/modules/system-api/system-api-app.ts",
+          "tokens": ["app.use(`${systemApiPrefix}/announcements`, announcementsRouter)"]
+        },
+        {
+          "file": "backend/src/modules/announcements/announcements.routes.ts",
+          "tokens": ["announcementsRouter.post('/', requireAdmin"]
+        }
+      ]
+    },
+    {
+      "id": "public-groups-list",
+      "ownerClass": "public",
+      "method": "GET",
+      "path": "/__aipublic__/group/list",
+      "goContractFile": "backend-go/internal/httpapi/public_groups_test.go",
+      "nodeContractEvidence": [
+        {
+          "file": "backend/src/modules/system-api/system-api-app.ts",
+          "tokens": ["app.use(publicApiPrefix, externalIntegrationsRouter)"]
+        },
+        {
+          "file": "backend/src/modules/external-integrations/external-integrations.routes.ts",
+          "tokens": ["externalIntegrationsRouter.get(", "'/group/list'"]
+        }
+      ]
+    },
+    {
+      "id": "public-groups-create",
+      "ownerClass": "public",
+      "method": "POST",
+      "path": "/__aipublic__/group/add",
+      "goContractFile": "backend-go/internal/httpapi/public_groups_test.go",
+      "nodeContractEvidence": [
+        {
+          "file": "backend/src/modules/system-api/system-api-app.ts",
+          "tokens": ["app.use(publicApiPrefix, externalIntegrationsRouter)"]
+        },
+        {
+          "file": "backend/src/modules/external-integrations/external-integrations.routes.ts",
+          "tokens": ["externalIntegrationsRouter.post(", "'/group/add'"]
+        }
+      ]
+    }
+  ],
+  "stages": {
+    "default": {
+      "regular": {
+        "GET /__aisys__/api/announcements": ["manifest"],
+        "POST /__aisys__/api/announcements": ["manifest"],
+        "GET /__aipublic__/group/list": ["manifest"],
+        "POST /__aipublic__/group/add": ["manifest"]
+      },
+      "canary": {
+        "GET /__aisys__/api/announcements": ["manifest"],
+        "POST /__aisys__/api/announcements": ["manifest"],
+        "GET /__aipublic__/group/list": ["manifest"],
+        "POST /__aipublic__/group/add": ["manifest"]
+      }
+    },
+    "canary": {
+      "regular": {
+        "GET /__aisys__/api/announcements": ["manifest"],
+        "POST /__aisys__/api/announcements": ["manifest"],
+        "GET /__aipublic__/group/list": ["manifest"],
+        "POST /__aipublic__/group/add": ["manifest"]
+      },
+      "canary": {
+        "GET /__aisys__/api/announcements": ["go"],
+        "POST /__aisys__/api/announcements": ["go"],
+        "GET /__aipublic__/group/list": ["go"],
+        "POST /__aipublic__/group/add": ["go"]
+      }
+    },
+    "cutover": {
+      "regular": {
+        "GET /__aisys__/api/announcements": ["go"],
+        "POST /__aisys__/api/announcements": ["go"],
+        "GET /__aipublic__/group/list": ["go"],
+        "POST /__aipublic__/group/add": ["go"]
+      },
+      "canary": {
+        "GET /__aisys__/api/announcements": ["go"],
+        "POST /__aisys__/api/announcements": ["go"],
+        "GET /__aipublic__/group/list": ["go"],
+        "POST /__aipublic__/group/add": ["go"]
+      }
+    },
+    "rollback": {
+      "regular": {
+        "GET /__aisys__/api/announcements": ["node"],
+        "POST /__aisys__/api/announcements": ["node"],
+        "GET /__aipublic__/group/list": ["node"],
+        "POST /__aipublic__/group/add": ["node"]
+      },
+      "canary": {
+        "GET /__aisys__/api/announcements": ["node"],
+        "POST /__aisys__/api/announcements": ["node"],
+        "GET /__aipublic__/group/list": ["node"],
+        "POST /__aipublic__/group/add": ["node"]
+      }
+    }
+  }
+}

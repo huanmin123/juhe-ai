@@ -43,7 +43,7 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 
 	const querySecret = "sk-0123456789abcdef0123456789abcdef"
 	const queryBearer = "Bearer abcdefghijklmnop"
-	const rawQuery = "targetUsername=admin&keyword=" + querySecret + "&authorization=Bearer%20abcdefghijklmnop"
+	const rawQuery = "targetUsername=admin&keyword=" + querySecret + "&authorization=Bearer%20abcdefghijklmnop&filter%5Bstatus%5D=active"
 	req := httptest.NewRequest(http.MethodGet, "/__aipublic__/group/list?"+rawQuery, nil)
 	req.Header.Set("Authorization", "Bearer juis_plain")
 	req.Header.Set("Cookie", "session=secret")
@@ -97,6 +97,10 @@ func TestPublicAPIShellSuccessCapturesAndEnqueuesLog(t *testing.T) {
 	query, ok := log.RequestData["query"].(map[string]any)
 	if !ok || query["keyword"] != querySecret || query["authorization"] != queryBearer {
 		t.Fatalf("request query = %#v, want original captured values", log.RequestData["query"])
+	}
+	filter, ok := query["filter"].(map[string]any)
+	if !ok || filter["status"] != "active" {
+		t.Fatalf("request query filter = %#v, want extended bracket object", query["filter"])
 	}
 	responseBody, ok := log.ResponseData["body"].(map[string]any)
 	if !ok || responseBody["data"] == nil {

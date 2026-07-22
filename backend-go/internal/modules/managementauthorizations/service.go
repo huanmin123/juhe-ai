@@ -212,22 +212,13 @@ type ListItem struct {
 	GranteeUsername                string        `json:"granteeUsername,omitempty"`
 	GranteeTeamID                  string        `json:"granteeTeamId,omitempty"`
 	GranteeTeamName                string        `json:"granteeTeamName,omitempty"`
-	Scope                          string        `json:"scope"`
 	Status                         string        `json:"status"`
 	Remark                         string        `json:"remark,omitempty"`
 	ExpiresAt                      *time.Time    `json:"expiresAt,omitempty"`
-	EffectiveSourceType            string        `json:"effectiveSourceType,omitempty"`
+	EffectiveSourceType            string        `json:"effectiveSourceType"`
 	EffectiveSourceTeamID          string        `json:"effectiveSourceTeamId,omitempty"`
 	EffectiveSourceTeamName        string        `json:"effectiveSourceTeamName,omitempty"`
-	ActivatedAt                    *time.Time    `json:"activatedAt,omitempty"`
-	LastSourceChangedAt            *time.Time    `json:"lastSourceChangedAt,omitempty"`
-	LastUsedAt                     *time.Time    `json:"lastUsedAt,omitempty"`
-	CreatedBy                      string        `json:"createdBy"`
 	CreatedAt                      time.Time     `json:"createdAt"`
-	RevokedBy                      string        `json:"revokedBy,omitempty"`
-	RevokedAt                      *time.Time    `json:"revokedAt,omitempty"`
-	RevokedReason                  string        `json:"revokedReason,omitempty"`
-	UpdatedAt                      time.Time     `json:"updatedAt"`
 	Permissions                    Permissions   `json:"permissions"`
 	SourceSummary                  SourceSummary `json:"sourceSummary"`
 }
@@ -471,7 +462,7 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 	}
 	items := make([]ListItem, 0, len(result.Items))
 	for _, row := range result.Items {
-		items = append(items, listItemFromSummary(row, canManageAuthorizationResourceOwner(row.ResourceOwnerSystemAccountID, canAccessAll, scopedSystemAccountID)))
+		items = append(items, listItemFromPort(row, canManageAuthorizationResourceOwner(row.ResourceOwnerSystemAccountID, canAccessAll, scopedSystemAccountID)))
 	}
 	return ListResult{
 		Items:    items,
@@ -1273,47 +1264,54 @@ func canManageAuthorizationResourceOwner(ownerSystemAccountID string, canAccessA
 	return canAccessAll
 }
 
-func listItemFromSummary(summary Summary, canManage bool) ListItem {
+func listItemFromPort(row port.ManagementResourceAuthorizationListRow, canManage bool) ListItem {
+	isTeamSource := row.GranteeType == "team"
+	sourceActive := row.Status == "active" || row.Status == "paused"
+	activeSourceCount := 0
+	if sourceActive {
+		activeSourceCount = 1
+	}
+	effectiveSourceType := "manual"
+	if isTeamSource {
+		effectiveSourceType = "team"
+	}
 	item := ListItem{
-		ID:                             summary.ID,
-		ResourceType:                   summary.ResourceType,
-		ResourceID:                     summary.ResourceID,
-		ResourceName:                   summary.ResourceName,
-		ResourceOwnerSystemAccountID:   summary.ResourceOwnerSystemAccountID,
-		ResourceOwnerSystemAccountName: summary.ResourceOwnerSystemAccountName,
-		GranteeType:                    summary.GranteeType,
-		GranteeSystemAccountID:         summary.GranteeSystemAccountID,
-		GranteeSystemAccountName:       summary.GranteeSystemAccountName,
-		GranteeUsername:                summary.GranteeUsername,
-		GranteeTeamID:                  summary.GranteeTeamID,
-		GranteeTeamName:                summary.GranteeTeamName,
-		Scope:                          summary.Scope,
-		Status:                         summary.Status,
-		Remark:                         summary.Remark,
-		ExpiresAt:                      summary.ExpiresAt,
-		EffectiveSourceType:            summary.EffectiveSourceType,
-		EffectiveSourceTeamID:          summary.EffectiveSourceTeamID,
-		EffectiveSourceTeamName:        summary.EffectiveSourceTeamName,
-		ActivatedAt:                    summary.ActivatedAt,
-		LastSourceChangedAt:            summary.LastSourceChangedAt,
-		LastUsedAt:                     summary.LastUsedAt,
-		CreatedBy:                      summary.CreatedBy,
-		CreatedAt:                      summary.CreatedAt,
-		RevokedBy:                      summary.RevokedBy,
-		RevokedAt:                      summary.RevokedAt,
-		RevokedReason:                  summary.RevokedReason,
-		UpdatedAt:                      summary.UpdatedAt,
+		ID:                             row.ID,
+		ResourceType:                   row.ResourceType,
+		ResourceID:                     row.ResourceID,
+		ResourceName:                   row.ResourceName,
+		ResourceOwnerSystemAccountID:   row.ResourceOwnerSystemAccountID,
+		ResourceOwnerSystemAccountName: row.ResourceOwnerSystemAccountName,
+		GranteeType:                    row.GranteeType,
+		GranteeSystemAccountID:         row.GranteeSystemAccountID,
+		GranteeSystemAccountName:       row.GranteeSystemAccountName,
+		GranteeUsername:                row.GranteeUsername,
+		GranteeTeamID:                  row.GranteeTeamID,
+		GranteeTeamName:                row.GranteeTeamName,
+		Status:                         row.Status,
+		Remark:                         row.Remark,
+		ExpiresAt:                      row.ExpiresAt,
+		EffectiveSourceType:            effectiveSourceType,
+		CreatedAt:                      row.CreatedAt,
 		Permissions: Permissions{
 			CanEdit:      canManage,
 			CanAuthorize: canManage,
 		},
-		SourceSummary: sourceSummary(summary.AuthorizationSources, canManage),
+		SourceSummary: SourceSummary{
+			ActiveSourceCount: activeSourceCount,
+			HasManual:         sourceActive && !isTeamSource,
+			HasTeam:           sourceActive && isTeamSource,
+			TeamSources:       []TeamSourceItem{},
+		},
 	}
-	if !canManage {
-		item.EffectiveSourceTeamID = ""
-		item.EffectiveSourceTeamName = ""
-		item.CreatedBy = ""
-		item.RevokedBy = ""
+	if canManage && isTeamSource {
+		item.EffectiveSourceTeamID = row.GranteeTeamID
+		item.EffectiveSourceTeamName = row.GranteeTeamName
+		if sourceActive && strings.TrimSpace(row.GranteeTeamID) != "" {
+			item.SourceSummary.TeamSources = []TeamSourceItem{{
+				SourceTeamID: row.GranteeTeamID, SourceTeamName: row.GranteeTeamName,
+			}}
+		}
 	}
 	return item
 }
@@ -1354,29 +1352,6 @@ func sanitizeAuthorizationSourcesForViewer(sources []port.ManagementResourceAuth
 		})
 	}
 	return out
-}
-
-func sourceSummary(sources []port.ManagementResourceAuthorizationSourceSummary, canManage bool) SourceSummary {
-	result := SourceSummary{TeamSources: []TeamSourceItem{}}
-	for _, source := range sources {
-		if source.Status != "active" {
-			continue
-		}
-		result.ActiveSourceCount++
-		if source.SourceType == "manual" {
-			result.HasManual = true
-		}
-		if source.SourceType == "team" {
-			result.HasTeam = true
-			if canManage && strings.TrimSpace(source.SourceTeamID) != "" {
-				result.TeamSources = append(result.TeamSources, TeamSourceItem{
-					SourceTeamID:   source.SourceTeamID,
-					SourceTeamName: source.SourceTeamName,
-				})
-			}
-		}
-	}
-	return result
 }
 
 func parseServerDateTime(value string) (time.Time, error) {

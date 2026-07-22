@@ -11,6 +11,7 @@ import (
 type managementProviderOptionService interface {
 	List(r *http.Request, input managementproviders.ListInput) ([]managementproviders.Option, error)
 	Options(r *http.Request, input managementproviders.OptionListInput) ([]managementproviders.Option, error)
+	SelectOptions(r *http.Request) ([]managementproviders.SelectOption, error)
 }
 
 type managementProviderOptionServiceAdapter struct {
@@ -19,6 +20,10 @@ type managementProviderOptionServiceAdapter struct {
 
 func (s managementProviderOptionServiceAdapter) Options(r *http.Request, input managementproviders.OptionListInput) ([]managementproviders.Option, error) {
 	return s.service.Options(r.Context(), input)
+}
+
+func (s managementProviderOptionServiceAdapter) SelectOptions(r *http.Request) ([]managementproviders.SelectOption, error) {
+	return s.service.SelectOptions(r.Context())
 }
 
 func (s managementProviderOptionServiceAdapter) List(r *http.Request, input managementproviders.ListInput) ([]managementproviders.Option, error) {
@@ -31,6 +36,10 @@ func NewManagementProvidersHandler(service *managementproviders.Service) http.Ha
 
 func NewManagementProviderOptionsHandler(service *managementproviders.Service) http.Handler {
 	return newManagementProviderOptionsHandler(managementProviderOptionServiceAdapter{service: service})
+}
+
+func NewManagementProviderDefinitionsHandler(service *managementproviders.Service) http.Handler {
+	return newManagementProviderDefinitionsHandler(managementProviderOptionServiceAdapter{service: service})
 }
 
 func newManagementProvidersHandler(service managementProviderOptionService) http.Handler {
@@ -55,13 +64,23 @@ func newManagementProvidersHandler(service managementProviderOptionService) http
 
 func newManagementProviderOptionsHandler(service managementProviderOptionService) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		input := managementProviderOptionListInput(r)
-		options, err := service.Options(r, input)
+		options, err := service.SelectOptions(r)
 		if err != nil {
 			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
 			return
 		}
 		writeData(w, http.StatusOK, options)
+	})
+}
+
+func newManagementProviderDefinitionsHandler(service managementProviderOptionService) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		definitions, err := service.Options(r, managementProviderOptionListInput(r))
+		if err != nil {
+			writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
+			return
+		}
+		writeData(w, http.StatusOK, definitions)
 	})
 }
 

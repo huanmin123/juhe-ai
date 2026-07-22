@@ -15,6 +15,7 @@ import (
 	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/announcements"
 	"juhe-ai/backend-go/internal/modules/gatewaycache"
+	"juhe-ai/backend-go/internal/modules/gatewayclientcatalog"
 	"juhe-ai/backend-go/internal/modules/managementaccountauthorizeddispatch"
 	"juhe-ai/backend-go/internal/modules/managementaccountbalance"
 	"juhe-ai/backend-go/internal/modules/managementaccountbatchedit"
@@ -48,12 +49,16 @@ import (
 	"juhe-ai/backend-go/internal/modules/managementproviders"
 	"juhe-ai/backend-go/internal/modules/managementproxies"
 	"juhe-ai/backend-go/internal/modules/managementpublicapilogs"
+	"juhe-ai/backend-go/internal/modules/managementresponseinspectionpolicies"
 	"juhe-ai/backend-go/internal/modules/managementroutestrategies"
+	"juhe-ai/backend-go/internal/modules/managementruntimeloggrep"
 	"juhe-ai/backend-go/internal/modules/managementruntimelogs"
 	"juhe-ai/backend-go/internal/modules/managementsettings"
 	"juhe-ai/backend-go/internal/modules/managementstats"
+	"juhe-ai/backend-go/internal/modules/managementstatsoverview"
 	"juhe-ai/backend-go/internal/modules/managementsystemaccounts"
 	"juhe-ai/backend-go/internal/modules/managementsystemteams"
+	"juhe-ai/backend-go/internal/modules/managementtablemonitor"
 	"juhe-ai/backend-go/internal/modules/managementusagerecords"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
@@ -67,6 +72,7 @@ import (
 	"juhe-ai/backend-go/internal/platform/accounthealthcheckdispatch"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
 	redisplatform "juhe-ai/backend-go/internal/platform/redis"
+	"juhe-ai/backend-go/internal/recorddispatch"
 	"juhe-ai/backend-go/internal/secretcrypto"
 	postgresstore "juhe-ai/backend-go/internal/store/postgres"
 	"juhe-ai/backend-go/internal/version"
@@ -180,19 +186,25 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAPIRateLimitSettingsVersionReader,
 	)
 
+	recordDispatcherResources := make([]recordDispatcherResource, 0, 2)
+	defer shutdownRecordDispatchers(&recordDispatcherResources, cfg.ShutdownTimeout, logger)
+
 	publicAPILogQueue, err := newPublicAPILogQueue(cfg)
 	if err != nil {
 		return err
 	}
-	if publicAPILogQueue != nil {
-		defer func() { _ = publicAPILogQueue.Close() }()
-	}
+	publicAPILogQueueOwner := publicAPILogQueue
 	var publicAPILogSubmitter httpapi.PublicAPILogSubmitter
-	if publicAPILogQueue != nil {
-		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueue, logger)
+	if publicAPILogQueueOwner != nil {
+		publicAPILogDispatcher := httpapi.NewPublicAPILogDispatcher(publicAPILogQueueOwner, logger)
 		publicAPILogSubmitter = publicAPILogDispatcher
-		defer shutdownRecordDispatcher(publicAPILogDispatcher, cfg.ShutdownTimeout, logger, "public API log")
+		recordDispatcherResources = append(recordDispatcherResources, recordDispatcherResource{
+			dispatcher:      publicAPILogDispatcher,
+			closeDependency: publicAPILogQueueOwner.Close,
+			recordType:      "public API log",
+		})
 	}
+	// The owner stays stable if handler assembly replaces its compatibility return value.
 	publicAPIHandler, publicAPILogQueue, err := newPublicAPIHandlerWithOptions(
 		cfg,
 		logger,
@@ -200,7 +212,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		stateRedis,
 		PublicAPIHandlerOptions{
 			APIKeyInvalidator: systemAccountInvalidator,
-			logQueue:          publicAPILogQueue,
+			logQueue:          publicAPILogQueueOwner,
 			logSubmitter:      publicAPILogSubmitter,
 		},
 	)
@@ -211,9 +223,6 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 	if err != nil {
 		return err
 	}
-	if managementOperationLogQueue != nil {
-		defer func() { _ = managementOperationLogQueue.Close() }()
-	}
 	var managementOperationLogSubmitter httpapi.ManagementOperationLogSubmitter
 	if managementOperationLogQueue != nil {
 		managementOperationLogDispatcher := httpapi.NewManagementOperationLogDispatcher(
@@ -222,7 +231,11 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 			logger,
 		)
 		managementOperationLogSubmitter = managementOperationLogDispatcher
-		defer shutdownRecordDispatcher(managementOperationLogDispatcher, cfg.ShutdownTimeout, logger, "management operation log")
+		recordDispatcherResources = append(recordDispatcherResources, recordDispatcherResource{
+			dispatcher:      managementOperationLogDispatcher,
+			closeDependency: managementOperationLogQueue.Close,
+			recordType:      "management operation log",
+		})
 	}
 	catalogSnapshotBridge, err := newManagementCatalogSnapshotRebuilder(cfg)
 	if err != nil {
@@ -252,6 +265,14 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		systemAPIRateLimitSettingsCache,
 		catalogSnapshotBridge,
 	)
+	var gatewayModelsHandler http.Handler
+	if cfg.GatewayModelsEnabled {
+		gatewayModelsService := gatewayclientcatalog.NewService(store)
+		gatewayModelsHandler = httpapi.NewGatewayModelsHandler(httpapi.GatewayModelsHandlerOptions{
+			Authorizer: httpapi.NewGatewayModelsCredentialAuthorizer(store),
+			Catalog:    httpapi.NewGatewayModelsCatalog(gatewayModelsService),
+		})
+	}
 	router := httpapi.NewRouter(httpapi.RouterOptions{
 		Config:                                            cfg,
 		Logger:                                            logger,
@@ -264,6 +285,7 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		SystemAPIIPRateLimiter:                            httpapi.NewRedisSystemAPIIPRateLimiter(stateRedis, cfg.RedisNamespace),
 		SystemAPIAuthenticatedRateLimiter:                 httpapi.NewRedisSystemAPIAuthenticatedRateLimiter(stateRedis, cfg.RedisNamespace),
 		PublicAPIHandler:                                  publicAPIHandler,
+		GatewayModelsHandler:                              gatewayModelsHandler,
 		NodeModelCatalogBridgeReadinessProber:             catalogSnapshotBridge,
 		ManagementAPIAuthMiddleware:                       managementHandlers.AuthMiddleware,
 		ManagementAPIAuthTouchMiddleware:                  managementHandlers.AuthTouchMiddleware,
@@ -321,8 +343,10 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementMyAuthorizationRevokeHandler:            managementHandlers.MyAuthorizationRevokeHandler,
 		ManagementProvidersHandler:                        managementHandlers.ProvidersHandler,
 		ManagementProviderOptionsHandler:                  managementHandlers.ProviderOptionsHandler,
+		ManagementProviderDefinitionsHandler:              managementHandlers.ProviderDefinitionsHandler,
 		ManagementProviderModelOptionsHandler:             managementHandlers.ProviderModelOptionsHandler,
 		ManagementProviderModelsHandler:                   managementHandlers.ProviderModelsHandler,
+		ManagementProviderModelCapabilitiesHandler:        managementHandlers.ProviderModelCapabilitiesHandler,
 		ManagementProviderDefaultHealthCheckModelHandler:  managementHandlers.ProviderDefaultHealthCheckModelHandler,
 		ManagementProviderCustomModelCreateHandler:        managementHandlers.ProviderCustomModelCreateHandler,
 		ManagementProviderCustomModelUpdateHandler:        managementHandlers.ProviderCustomModelUpdateHandler,
@@ -446,7 +470,12 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementOperationLogsHandler:                    managementHandlers.OperationLogsHandler,
 		ManagementMyOperationLogsHandler:                  managementHandlers.MyOperationLogsHandler,
 		ManagementAuditLogsHandler:                        managementHandlers.AuditLogsHandler,
+		ManagementAuditErrorGroupsHandler:                 managementHandlers.AuditErrorGroupsHandler,
+		ManagementAuditErrorGroupEventsHandler:            managementHandlers.AuditErrorGroupEventsHandler,
 		ManagementRuntimeLogsHandler:                      managementHandlers.RuntimeLogsHandler,
+		ManagementRuntimeLogGrepHandler:                   managementHandlers.RuntimeLogGrepHandler,
+		ManagementTableMonitorHandler:                     managementHandlers.TableMonitorHandler,
+		ManagementResponseInspectionPoliciesHandler:       managementHandlers.ResponseInspectionPoliciesHandler,
 		ManagementExternalIntegrationSourceListHandler:    managementHandlers.ExternalIntegrationSourceListHandler,
 		ManagementExternalIntegrationSourceDetailHandler:  managementHandlers.ExternalIntegrationSourceDetailHandler,
 		ManagementExternalIntegrationSourceCreateHandler:  managementHandlers.ExternalIntegrationSourceCreateHandler,
@@ -462,10 +491,22 @@ func RunServer(ctx context.Context, cfg config.Config, logger *slog.Logger) erro
 		ManagementUsageRecordsHandler:                     managementHandlers.UsageRecordsHandler,
 		ManagementMyUsageRecordsHandler:                   managementHandlers.MyUsageRecordsHandler,
 		ManagementAnnouncementPublicListHandler:           managementHandlers.AnnouncementPublicListHandler,
+		ManagementAnnouncementPublicDetailHandler:         managementHandlers.AnnouncementPublicDetailHandler,
 		ManagementAnnouncementPublicReadHandler:           managementHandlers.AnnouncementPublicReadHandler,
 		ManagementAnnouncementsHandler:                    managementHandlers.AnnouncementsHandler,
+		ManagementSystemMetricsHandler:                    managementHandlers.SystemMetricsHandler,
 		ManagementStatsUsageWindowHandler:                 managementHandlers.StatsUsageWindowHandler,
 		ManagementMyStatsUsageWindowHandler:               managementHandlers.MyStatsUsageWindowHandler,
+		ManagementStatsAccountUsageHandler:                managementHandlers.StatsAccountUsageHandler,
+		ManagementMyStatsAccountUsageHandler:              managementHandlers.MyStatsAccountUsageHandler,
+		ManagementStatsAccountUsageTrendHandler:           managementHandlers.StatsAccountUsageTrendHandler,
+		ManagementMyStatsAccountUsageTrendHandler:         managementHandlers.MyStatsAccountUsageTrendHandler,
+		ManagementStatsAIPerformanceHandler:               managementHandlers.StatsAIPerformanceHandler,
+		ManagementMyStatsAIPerformanceHandler:             managementHandlers.MyStatsAIPerformanceHandler,
+		ManagementStatsAIPerformanceAccountsHandler:       managementHandlers.StatsAIPerformanceAccountsHandler,
+		ManagementMyStatsAIPerformanceAccountsHandler:     managementHandlers.MyStatsAIPerformanceAccountsHandler,
+		ManagementStatsUsageOverviewHandler:               managementHandlers.StatsUsageOverviewHandler,
+		ManagementMyStatsUsageOverviewHandler:             managementHandlers.MyStatsUsageOverviewHandler,
 	})
 
 	server := &http.Server{
@@ -554,8 +595,10 @@ type managementAPIHandlers struct {
 	MyAuthorizationRevokeHandler            http.Handler
 	ProvidersHandler                        http.Handler
 	ProviderOptionsHandler                  http.Handler
+	ProviderDefinitionsHandler              http.Handler
 	ProviderModelOptionsHandler             http.Handler
 	ProviderModelsHandler                   http.Handler
+	ProviderModelCapabilitiesHandler        http.Handler
 	ProviderDefaultHealthCheckModelHandler  http.Handler
 	ProviderCustomModelCreateHandler        http.Handler
 	ProviderCustomModelUpdateHandler        http.Handler
@@ -679,7 +722,12 @@ type managementAPIHandlers struct {
 	OperationLogsHandler                    http.Handler
 	MyOperationLogsHandler                  http.Handler
 	AuditLogsHandler                        http.Handler
+	AuditErrorGroupsHandler                 http.Handler
+	AuditErrorGroupEventsHandler            http.Handler
 	RuntimeLogsHandler                      http.Handler
+	RuntimeLogGrepHandler                   http.Handler
+	TableMonitorHandler                     http.Handler
+	ResponseInspectionPoliciesHandler       http.Handler
 	ExternalIntegrationSourceListHandler    http.Handler
 	ExternalIntegrationSourceDetailHandler  http.Handler
 	ExternalIntegrationSourceCreateHandler  http.Handler
@@ -695,10 +743,22 @@ type managementAPIHandlers struct {
 	UsageRecordsHandler                     http.Handler
 	MyUsageRecordsHandler                   http.Handler
 	AnnouncementPublicListHandler           http.Handler
+	AnnouncementPublicDetailHandler         http.Handler
 	AnnouncementPublicReadHandler           http.Handler
 	AnnouncementsHandler                    http.Handler
+	SystemMetricsHandler                    http.Handler
 	StatsUsageWindowHandler                 http.Handler
 	MyStatsUsageWindowHandler               http.Handler
+	StatsAccountUsageHandler                http.Handler
+	MyStatsAccountUsageHandler              http.Handler
+	StatsAccountUsageTrendHandler           http.Handler
+	MyStatsAccountUsageTrendHandler         http.Handler
+	StatsAIPerformanceHandler               http.Handler
+	MyStatsAIPerformanceHandler             http.Handler
+	StatsAIPerformanceAccountsHandler       http.Handler
+	MyStatsAIPerformanceAccountsHandler     http.Handler
+	StatsUsageOverviewHandler               http.Handler
+	MyStatsUsageOverviewHandler             http.Handler
 }
 
 type managementAPIInvalidator interface {
@@ -715,14 +775,53 @@ type managementAPIInvalidator interface {
 
 type recordDispatcherShutdowner interface {
 	Shutdown(context.Context) error
+	Done() <-chan struct{}
 }
 
-func shutdownRecordDispatcher(dispatcher recordDispatcherShutdowner, timeout time.Duration, logger *slog.Logger, recordType string) {
+type recordDispatcherResource struct {
+	dispatcher      recordDispatcherShutdowner
+	closeDependency func() error
+	recordType      string
+}
+
+func shutdownRecordDispatchers(resources *[]recordDispatcherResource, timeout time.Duration, logger *slog.Logger) {
+	if resources == nil || len(*resources) == 0 {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	if err := dispatcher.Shutdown(ctx); err != nil && logger != nil {
-		logger.Warn("记录派发器关闭超时",
-			slog.String("record_type", recordType),
+	shutdowners := make([]interface{ Shutdown(context.Context) error }, 0, len(*resources))
+	for _, resource := range *resources {
+		shutdowners = append(shutdowners, resource.dispatcher)
+	}
+	if err := recorddispatch.ShutdownAll(ctx, shutdowners...); err != nil && logger != nil {
+		logger.Warn("记录派发器共享关闭预算耗尽", slog.Any("error", err))
+	}
+	for _, resource := range *resources {
+		select {
+		case <-resource.dispatcher.Done():
+			closeRecordDispatcherDependency(resource, logger)
+		default:
+			if logger != nil {
+				logger.Warn("记录派发器仍在运行，等待完成后关闭依赖",
+					slog.String("record_type", resource.recordType),
+				)
+			}
+			go func(pending recordDispatcherResource) {
+				<-pending.dispatcher.Done()
+				closeRecordDispatcherDependency(pending, logger)
+			}(resource)
+		}
+	}
+}
+
+func closeRecordDispatcherDependency(resource recordDispatcherResource, logger *slog.Logger) {
+	if resource.closeDependency == nil {
+		return
+	}
+	if err := resource.closeDependency(); err != nil && logger != nil {
+		logger.Warn("记录派发器依赖关闭失败",
+			slog.String("record_type", resource.recordType),
 			slog.Any("error", err),
 		)
 	}
@@ -803,6 +902,12 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 			Logger:       logger,
 		},
 	)
+	responseInspectionInvalidator, _ := systemAccountInvalidator.(managementresponseinspectionpolicies.RuntimeInvalidator)
+	responseInspectionPolicyService := managementresponseinspectionpolicies.NewService(
+		managementresponseinspectionpolicies.Options{
+			Store: store, Invalidator: responseInspectionInvalidator, Logger: logger,
+		},
+	)
 	apiKeyService := managementapikeys.NewServiceWithOptions(managementapikeys.ServiceOptions{
 		ListReader:               store,
 		Creator:                  store,
@@ -871,6 +976,7 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	})
 	accountTestOptionsService := managementaccounttestoptions.NewServiceWithOptions(managementaccounttestoptions.ServiceOptions{
 		Reader:          store,
+		OptionReader:    store,
 		ModelCatalog:    providerModelService,
 		CredentialCodec: secretcrypto.NewJSONCodec(cfg.Secret),
 	})
@@ -920,6 +1026,14 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	operationLogService := managementoperationlogs.NewService(store)
 	auditLogService := managementauditlogs.NewService(store)
 	runtimeLogService := managementruntimelogs.NewService(store)
+	runtimeLogGrepService := managementruntimeloggrep.NewService(managementruntimeloggrep.Options{
+		Directory:     cfg.RuntimeLogDirectory,
+		FileEnabled:   cfg.RuntimeLogFileEnabled,
+		MaxFiles:      cfg.RuntimeLogMaxFiles,
+		RetentionDays: cfg.RuntimeLogRetentionDays,
+		RGPath:        cfg.RGPath,
+	})
+	tableMonitorService := managementtablemonitor.NewService(store)
 	externalIntegrationSourceService := managementexternalintegrationsources.NewServiceWithOptions(
 		managementexternalintegrationsources.ServiceOptions{
 			ListReader:   store,
@@ -938,6 +1052,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 	usageRecordService := managementusagerecords.NewService(store)
 	announcementService := announcements.NewService(store)
 	statsService := managementstats.NewService(store)
+	statsOverviewService := managementstatsoverview.NewService(managementstatsoverview.ServiceOptions{
+		Reader:       store,
+		WindowReader: statsService,
+	})
 	globalSettingsService := publicsettings.NewService(store)
 	globalSettingsUpdateService := managementsettings.NewServiceWithOptions(managementsettings.ServiceOptions{
 		Store:                          store,
@@ -1028,8 +1146,10 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		MyAuthorizationRevokeHandler:            httpapi.NewManagementMyAuthorizationRevokeHandlerWithOperationLog(authorizationService, operationLogOptions),
 		ProvidersHandler:                        httpapi.NewManagementProvidersHandler(providerService),
 		ProviderOptionsHandler:                  httpapi.NewManagementProviderOptionsHandler(providerService),
+		ProviderDefinitionsHandler:              httpapi.NewManagementProviderDefinitionsHandler(providerService),
 		ProviderModelOptionsHandler:             httpapi.NewManagementProviderModelOptionsHandler(providerModelService),
 		ProviderModelsHandler:                   httpapi.NewManagementProviderModelsHandler(providerModelService),
+		ProviderModelCapabilitiesHandler:        httpapi.NewManagementProviderModelCapabilitiesHandler(providerModelService),
 		ProviderDefaultHealthCheckModelHandler:  httpapi.NewManagementProviderDefaultHealthCheckModelHandler(providerModelService),
 		ProviderCustomModelCreateHandler:        httpapi.NewManagementProviderCustomModelCreateHandler(providerModelService),
 		ProviderCustomModelUpdateHandler:        httpapi.NewManagementProviderCustomModelUpdateHandlerWithOperationLog(providerModelService, operationLogOptions),
@@ -1153,7 +1273,12 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		OperationLogsHandler:                    httpapi.NewManagementOperationLogsHandler(operationLogService),
 		MyOperationLogsHandler:                  httpapi.NewManagementMyOperationLogsHandler(operationLogService),
 		AuditLogsHandler:                        httpapi.NewManagementAuditLogsHandler(auditLogService),
+		AuditErrorGroupsHandler:                 httpapi.NewManagementAuditErrorGroupsHandler(auditLogService),
+		AuditErrorGroupEventsHandler:            httpapi.NewManagementAuditErrorGroupEventsHandler(auditLogService),
 		RuntimeLogsHandler:                      httpapi.NewManagementRuntimeLogsHandler(runtimeLogService, cfg.RuntimeLogIndexEnabled),
+		RuntimeLogGrepHandler:                   httpapi.NewManagementRuntimeLogGrepHandler(runtimeLogGrepService),
+		TableMonitorHandler:                     httpapi.NewManagementTableMonitorHandler(tableMonitorService),
+		ResponseInspectionPoliciesHandler:       httpapi.NewManagementResponseInspectionPoliciesHandlerWithOperationLog(responseInspectionPolicyService, operationLogOptions),
 		ExternalIntegrationSourceListHandler:    httpapi.NewManagementExternalIntegrationSourceListHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceDetailHandler:  httpapi.NewManagementExternalIntegrationSourceDetailHandler(externalIntegrationSourceService),
 		ExternalIntegrationSourceCreateHandler:  httpapi.NewManagementExternalIntegrationSourceCreateHandlerWithOperationLog(externalIntegrationSourceCreateService, operationLogOptions),
@@ -1169,10 +1294,22 @@ func newManagementAPIHandlerWithCatalogSnapshotRebuilder(
 		UsageRecordsHandler:                     httpapi.NewManagementUsageRecordsHandler(usageRecordService),
 		MyUsageRecordsHandler:                   httpapi.NewManagementMyUsageRecordsHandler(usageRecordService),
 		AnnouncementPublicListHandler:           httpapi.NewAnnouncementPublicListHandler(announcementService),
+		AnnouncementPublicDetailHandler:         httpapi.NewAnnouncementPublicDetailHandler(announcementService),
 		AnnouncementPublicReadHandler:           httpapi.NewAnnouncementPublicReadHandler(announcementService),
 		AnnouncementsHandler:                    httpapi.NewAnnouncementManagementHandlerWithOptions(announcementService, operationLogOptions, logger),
+		SystemMetricsHandler:                    httpapi.NewManagementSystemMetricsHandler(statsService),
 		StatsUsageWindowHandler:                 httpapi.NewManagementStatsUsageWindowHandler(statsService),
 		MyStatsUsageWindowHandler:               httpapi.NewManagementMyStatsUsageWindowHandler(statsService),
+		StatsAccountUsageHandler:                httpapi.NewManagementStatsAccountUsageHandler(statsService),
+		MyStatsAccountUsageHandler:              httpapi.NewManagementMyStatsAccountUsageHandler(statsService),
+		StatsAccountUsageTrendHandler:           httpapi.NewManagementStatsAccountUsageTrendHandler(statsService),
+		MyStatsAccountUsageTrendHandler:         httpapi.NewManagementMyStatsAccountUsageTrendHandler(statsService),
+		StatsAIPerformanceHandler:               httpapi.NewManagementStatsAIPerformanceHandler(statsService),
+		MyStatsAIPerformanceHandler:             httpapi.NewManagementMyStatsAIPerformanceHandler(statsService),
+		StatsAIPerformanceAccountsHandler:       httpapi.NewManagementStatsAIPerformanceAccountsHandler(statsService),
+		MyStatsAIPerformanceAccountsHandler:     httpapi.NewManagementMyStatsAIPerformanceAccountsHandler(statsService),
+		StatsUsageOverviewHandler:               httpapi.NewManagementStatsUsageOverviewHandler(statsOverviewService),
+		MyStatsUsageOverviewHandler:             httpapi.NewManagementMyStatsUsageOverviewHandler(statsOverviewService),
 	}
 }
 
@@ -1310,6 +1447,9 @@ type PublicAPIHandlerOptions struct {
 	AccountHealthCheckDispatcher publicaccounts.AccountHealthCheckDispatcher
 	logQueue                     *queue.Client
 	logSubmitter                 httpapi.PublicAPILogSubmitter
+	logQueueFactory              func(config.Config) (*queue.Client, error)
+	closeLogQueue                func(*queue.Client) error
+	endpointHandlersFactory      func() (map[string]http.Handler, error)
 }
 
 func NewPublicAPIHandler(
@@ -1345,19 +1485,31 @@ func newPublicAPIHandlerWithOptions(
 	logQueue := opts.logQueue
 	createdLogQueue := false
 	if logQueue == nil {
+		logQueueFactory := opts.logQueueFactory
+		if logQueueFactory == nil {
+			logQueueFactory = newPublicAPILogQueue
+		}
 		var err error
-		logQueue, err = newPublicAPILogQueue(cfg)
+		logQueue, err = logQueueFactory(cfg)
 		if err != nil {
 			return nil, nil, err
 		}
 		createdLogQueue = true
 	}
+	closeLogQueue := opts.closeLogQueue
+	if closeLogQueue == nil {
+		closeLogQueue = func(logQueue *queue.Client) error { return logQueue.Close() }
+	}
 	closeCreatedLogQueue := func() {
 		if createdLogQueue {
-			_ = logQueue.Close()
+			_ = closeLogQueue(logQueue)
 		}
 	}
 
+	if stateRedis == nil {
+		closeCreatedLogQueue()
+		return nil, nil, fmt.Errorf("public api rate limiter client is required")
+	}
 	limiter, err := publicapiratelimit.NewLimiter(publicapiratelimit.Options{Client: stateRedis})
 	if err != nil {
 		closeCreatedLogQueue()
@@ -1373,16 +1525,22 @@ func newPublicAPIHandlerWithOptions(
 		return nil, nil, err
 	}
 
-	handlers, err := newPublicAPIHandlers(
-		store,
-		cfg.Secret,
-		cfg.UpstreamBaseURLPrivateAllowlist,
-		opts.APIKeyInvalidator,
-		accountHealthCheckDispatcher,
-		logger,
-		cfg.NodeInternalRequestTimeout,
-		nil,
-	)
+	endpointHandlersFactory := opts.endpointHandlersFactory
+	if endpointHandlersFactory == nil {
+		endpointHandlersFactory = func() (map[string]http.Handler, error) {
+			return newPublicAPIHandlers(
+				store,
+				cfg.Secret,
+				cfg.UpstreamBaseURLPrivateAllowlist,
+				opts.APIKeyInvalidator,
+				accountHealthCheckDispatcher,
+				logger,
+				cfg.NodeInternalRequestTimeout,
+				nil,
+			)
+		}
+	}
+	handlers, err := endpointHandlersFactory()
 	if err != nil {
 		closeCreatedLogQueue()
 		return nil, nil, err

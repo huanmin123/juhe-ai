@@ -22,15 +22,12 @@ import (
 func TestManagementSystemTeamsHandlerListsAdminScope(t *testing.T) {
 	service := &managementSystemTeamServiceStub{
 		listResult: managementsystemteams.ListResult{
-			Items: []managementsystemteams.Summary{{
-				ID:                "team_ops",
-				Name:              "运维团队",
-				Status:            "active",
-				MemberCount:       2,
-				ActiveMemberCount: 2,
-				CreatedBy:         "sys_admin",
-				CreatedAt:         "2026-07-09T10:00:00Z",
-				UpdatedAt:         "2026-07-09T11:00:00Z",
+			Items: []managementsystemteams.ListItem{{
+				ID:          "team_ops",
+				Name:        "运维团队",
+				Status:      "active",
+				MemberCount: 2,
+				CreatedAt:   "2026-07-09T10:00:00Z",
 			}},
 			Total:    3,
 			HasMore:  true,
@@ -191,12 +188,12 @@ func TestManagementSystemTeamCreateHandlerRequiresAdminAndWritesOperationLog(t *
 		t.Fatalf("service input = %+v", service.input)
 	}
 	var body struct {
-		Data managementsystemteams.Summary `json:"data"`
+		Data managementSystemTeamDetailResponse `json:"data"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if body.Data.ID != "team_ops" || body.Data.Name != "运维团队" || body.Data.CreatedBy != "sys_admin" {
+	if body.Data.ID != "team_ops" || body.Data.Name != "运维团队" || body.Data.MemberCount != 0 || len(body.Data.Members) != 0 {
 		t.Fatalf("response = %+v", body.Data)
 	}
 	if queueStub.calls != 1 || queueStub.taskType != operationlogjob.TaskTypeWrite {
@@ -861,7 +858,7 @@ func TestRouterRegistersW4ManagementSystemTeamMemberDelete(t *testing.T) {
 
 func TestRouterRegistersW4ManagementSystemTeamsReadWithoutTouch(t *testing.T) {
 	service := &managementSystemTeamServiceStub{
-		listResult: managementsystemteams.ListResult{Items: []managementsystemteams.Summary{{ID: "team_ops", Name: "运维团队", Status: "active"}}},
+		listResult: managementsystemteams.ListResult{Items: []managementsystemteams.ListItem{{ID: "team_ops", Name: "运维团队", Status: "active"}}},
 	}
 	readAuthenticator := &managementAPIAuthenticatorStub{
 		context: managementauth.Context{SystemAccountID: "sys_admin", Username: "admin", Role: "admin", SessionID: "sess_read"},

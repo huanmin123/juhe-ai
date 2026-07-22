@@ -169,6 +169,7 @@ func TestNormalizeAccountConcurrencyNamespaceMatchesNodeSanitization(t *testing.
 
 func TestLoadAccountConcurrencyScriptMatchesNodeCleanupBoundary(t *testing.T) {
 	for _, want := range []string{
+		"redis.call('TIME')",
 		"ZRANGEBYSCORE', KEYS[1], '-inf', now_ms",
 		"math.min(index + 199, #expired)",
 		"ZREMRANGEBYSCORE', KEYS[1], '-inf', now_ms",
@@ -179,5 +180,8 @@ func TestLoadAccountConcurrencyScriptMatchesNodeCleanupBoundary(t *testing.T) {
 		if !strings.Contains(loadAccountConcurrencyLua, want) {
 			t.Fatalf("account concurrency script missing %q", want)
 		}
+	}
+	if strings.Contains(loadAccountConcurrencyLua, "ARGV[1]") {
+		t.Fatal("account concurrency reader must use Redis TIME instead of a process-local clock")
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
+	"juhe-ai/backend-go/internal/jobs/queue"
 	"juhe-ai/backend-go/internal/modules/publicaccounts"
 	publicapicatalog "juhe-ai/backend-go/internal/modules/publicapi"
 	"juhe-ai/backend-go/internal/platform/modelcatalogsnapshotrebuild"
@@ -32,6 +33,26 @@ func TestManagementAPIHandlersDoNotExposeSessionManagement(t *testing.T) {
 	for _, name := range []string{"SessionListHandler", "SessionRevokeHandler"} {
 		if _, ok := typeOfHandlers.FieldByName(name); ok {
 			t.Fatalf("managementAPIHandlers still exposes %s", name)
+		}
+	}
+}
+
+func TestManagementSystemMetricsHandlerIsWiredThroughServer(t *testing.T) {
+	typeOfHandlers := reflect.TypeOf(managementAPIHandlers{})
+	if _, ok := typeOfHandlers.FieldByName("SystemMetricsHandler"); !ok {
+		t.Fatal("managementAPIHandlers does not expose SystemMetricsHandler")
+	}
+	source, err := os.ReadFile("server.go")
+	if err != nil {
+		t.Fatalf("read server.go: %v", err)
+	}
+	text := strings.Join(strings.Fields(string(source)), "")
+	for _, required := range []string{
+		"ManagementSystemMetricsHandler:managementHandlers.SystemMetricsHandler",
+		"SystemMetricsHandler:httpapi.NewManagementSystemMetricsHandler(statsService)",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server.go missing system metrics wiring %q", required)
 		}
 	}
 }
@@ -266,6 +287,86 @@ func TestNewManagementAPIHandlerInjectsRuntimeLogIndexEnabled(t *testing.T) {
 	}
 }
 
+func TestNewManagementAPIHandlerInjectsRuntimeLogGrepConfiguration(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	function := findFunction(t, file, "newManagementAPIHandlerWithCatalogSnapshotRebuilder")
+	foundService := false
+	foundHandler := false
+	ast.Inspect(function.Body, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch callName(call.Fun) {
+		case "managementruntimeloggrep.NewService":
+			if len(call.Args) != 1 {
+				t.Fatalf("runtime log grep service args=%d", len(call.Args))
+			}
+			literal, ok := call.Args[0].(*ast.CompositeLit)
+			if !ok {
+				t.Fatalf("runtime log grep options=%#v", call.Args[0])
+			}
+			want := map[string]string{
+				"Directory":     "cfg.RuntimeLogDirectory",
+				"FileEnabled":   "cfg.RuntimeLogFileEnabled",
+				"MaxFiles":      "cfg.RuntimeLogMaxFiles",
+				"RetentionDays": "cfg.RuntimeLogRetentionDays",
+				"RGPath":        "cfg.RGPath",
+			}
+			for _, element := range literal.Elts {
+				pair, ok := element.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := pair.Key.(*ast.Ident)
+				if !ok {
+					continue
+				}
+				if expected, exists := want[key.Name]; exists {
+					if got := selectorName(pair.Value); got != expected {
+						t.Fatalf("%s=%s, want %s", key.Name, got, expected)
+					}
+					delete(want, key.Name)
+				}
+			}
+			if len(want) != 0 {
+				t.Fatalf("runtime log grep options missing %#v", want)
+			}
+			foundService = true
+		case "httpapi.NewManagementRuntimeLogGrepHandler":
+			if len(call.Args) != 1 {
+				t.Fatalf("runtime log grep handler args=%d", len(call.Args))
+			}
+			identifier, ok := call.Args[0].(*ast.Ident)
+			if !ok || identifier.Name != "runtimeLogGrepService" {
+				t.Fatalf("runtime log grep handler service=%#v", call.Args[0])
+			}
+			foundHandler = true
+		}
+		return true
+	})
+	if !foundService || !foundHandler {
+		t.Fatalf("runtime log grep wiring service=%v handler=%v", foundService, foundHandler)
+	}
+}
+
+func selectorName(expression ast.Expr) string {
+	selector, ok := expression.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	receiver, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	return receiver.Name + "." + selector.Sel.Name
+}
+
 func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
 	_, _, err := newPublicAPIHandler(config.Config{
 		PublicAPIEnabled: true,
@@ -274,6 +375,268 @@ func TestNewPublicAPIHandlerRejectsInvalidQueueURLWhenEnabled(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "JUHE_AI_REDIS_QUEUE_URL") {
 		t.Fatalf("newPublicAPIHandler() error = %v, want redis queue url error", err)
 	}
+}
+
+func TestNewPublicAPIHandlerReturnsErrorsWithoutTransferringInjectedQueueOwnership(t *testing.T) {
+	stateRedis, err := redisplatform.NewClient("redis://127.0.0.1:1/0", "public-api-handler-error-test")
+	if err != nil {
+		t.Fatalf("new state redis client: %v", err)
+	}
+	t.Cleanup(func() { _ = stateRedis.Close() })
+
+	newLogQueue := func(t *testing.T) *queue.Client {
+		t.Helper()
+		client := queue.NewClient(queue.RedisOptions{
+			Addr:         "127.0.0.1:1",
+			DialTimeout:  time.Millisecond,
+			ReadTimeout:  time.Millisecond,
+			WriteTimeout: time.Millisecond,
+		})
+		t.Cleanup(func() { _ = client.Close() })
+		return client
+	}
+
+	handlerAssemblyError := errors.New("endpoint handler assembly failed")
+	tests := []struct {
+		name       string
+		stateRedis *redisplatform.Client
+		config     config.Config
+		options    func(*queue.Client) PublicAPIHandlerOptions
+		wantError  string
+	}{
+		{
+			name:       "rate limiter",
+			stateRedis: nil,
+			config: config.Config{
+				PublicAPIEnabled: true,
+			},
+			options: func(logQueue *queue.Client) PublicAPIHandlerOptions {
+				return PublicAPIHandlerOptions{logQueue: logQueue}
+			},
+			wantError: "rate limiter client is required",
+		},
+		{
+			name:       "account health check dispatcher",
+			stateRedis: stateRedis,
+			config: config.Config{
+				PublicAPIEnabled:           true,
+				NodeInternalBaseURL:        "http://example.com:3000",
+				NodeInternalRequestTimeout: time.Second,
+				Secret:                     "secret",
+			},
+			options: func(logQueue *queue.Client) PublicAPIHandlerOptions {
+				return PublicAPIHandlerOptions{logQueue: logQueue}
+			},
+			wantError: "仅允许 loopback IP literal",
+		},
+		{
+			name:       "endpoint handlers",
+			stateRedis: stateRedis,
+			config: config.Config{
+				PublicAPIEnabled: true,
+			},
+			options: func(logQueue *queue.Client) PublicAPIHandlerOptions {
+				return PublicAPIHandlerOptions{
+					logQueue:                     logQueue,
+					AccountHealthCheckDispatcher: &appAccountHealthCheckDispatcherRecorder{},
+					endpointHandlersFactory: func() (map[string]http.Handler, error) {
+						return nil, handlerAssemblyError
+					},
+				}
+			},
+			wantError: handlerAssemblyError.Error(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+"/injected", func(t *testing.T) {
+			logQueue := newLogQueue(t)
+			closeCalls := 0
+			options := tt.options(logQueue)
+			options.closeLogQueue = func(got *queue.Client) error {
+				closeCalls++
+				if got != logQueue {
+					t.Fatalf("closed queue = %p, want injected queue %p", got, logQueue)
+				}
+				return nil
+			}
+			handler, returnedQueue, err := newPublicAPIHandlerWithOptions(
+				tt.config,
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+				nil,
+				tt.stateRedis,
+				options,
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("newPublicAPIHandlerWithOptions() error = %v, want %q", err, tt.wantError)
+			}
+			if handler != nil || returnedQueue != nil {
+				t.Fatalf("newPublicAPIHandlerWithOptions() = (%v, %v), want nil handler and queue on error", handler, returnedQueue)
+			}
+			if closeCalls != 0 {
+				t.Fatalf("injected queue close calls = %d, want 0", closeCalls)
+			}
+		})
+
+		t.Run(tt.name+"/created", func(t *testing.T) {
+			logQueue := newLogQueue(t)
+			closeCalls := 0
+			options := tt.options(nil)
+			options.logQueueFactory = func(config.Config) (*queue.Client, error) {
+				return logQueue, nil
+			}
+			options.closeLogQueue = func(got *queue.Client) error {
+				closeCalls++
+				if got != logQueue {
+					t.Fatalf("closed queue = %p, want created queue %p", got, logQueue)
+				}
+				return nil
+			}
+			handler, returnedQueue, err := newPublicAPIHandlerWithOptions(
+				tt.config,
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+				nil,
+				tt.stateRedis,
+				options,
+			)
+			if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("newPublicAPIHandlerWithOptions() error = %v, want %q", err, tt.wantError)
+			}
+			if handler != nil || returnedQueue != nil {
+				t.Fatalf("newPublicAPIHandlerWithOptions() = (%v, %v), want nil handler and queue on error", handler, returnedQueue)
+			}
+			if closeCalls != 1 {
+				t.Fatalf("created queue close calls = %d, want 1", closeCalls)
+			}
+		})
+	}
+}
+
+func TestRunServerRegistersUnifiedRecordDispatcherShutdownBeforeHandlerErrors(t *testing.T) {
+	fileSet := token.NewFileSet()
+	file, err := parser.ParseFile(fileSet, "server.go", nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse server.go: %v", err)
+	}
+
+	runServer := findFunction(t, file, "RunServer")
+	foundHandlerAssembly := false
+	foundOwnedQueue := false
+	dispatcherShutdownPosition := token.NoPos
+	handlerAssemblyPosition := token.NoPos
+	ast.Inspect(runServer.Body, func(node ast.Node) bool {
+		switch typed := node.(type) {
+		case *ast.Ident:
+			if typed.Name == "publicAPILogQueueOwner" {
+				foundOwnedQueue = true
+			}
+		case *ast.AssignStmt:
+			if len(typed.Rhs) != 1 {
+				return true
+			}
+			call, ok := typed.Rhs[0].(*ast.CallExpr)
+			if !ok || callName(call.Fun) != "newPublicAPIHandlerWithOptions" {
+				return true
+			}
+			foundHandlerAssembly = true
+			handlerAssemblyPosition = typed.Pos()
+			if len(typed.Lhs) != 3 {
+				t.Fatalf("newPublicAPIHandlerWithOptions assignment has %d results, want 3", len(typed.Lhs))
+			}
+		case *ast.DeferStmt:
+			if callName(typed.Call.Fun) == "shutdownRecordDispatchers" && dispatcherShutdownPosition == token.NoPos {
+				dispatcherShutdownPosition = typed.Pos()
+			}
+		}
+		return true
+	})
+	if !foundHandlerAssembly {
+		t.Fatal("RunServer missing public API handler assembly")
+	}
+	if !foundOwnedQueue {
+		t.Fatal("RunServer must retain the created public API log queue owner")
+	}
+	if dispatcherShutdownPosition == token.NoPos {
+		t.Fatal("RunServer missing unified record dispatcher shutdown defer")
+	}
+	if !(dispatcherShutdownPosition < handlerAssemblyPosition) {
+		t.Fatalf(
+			"record dispatcher shutdown position = %d, handler assembly = %d; want shutdown defer registered before handler assembly",
+			dispatcherShutdownPosition,
+			handlerAssemblyPosition,
+		)
+	}
+}
+
+func TestShutdownRecordDispatchersUsesSharedBudgetAndClosesOnlyCompletedDependencies(t *testing.T) {
+	release := make(chan struct{})
+	completed := &recordDispatcherShutdownStub{done: make(chan struct{})}
+	blockedOne := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
+	blockedTwo := &recordDispatcherShutdownStub{done: make(chan struct{}), release: release}
+	completedCloseCalls := 0
+	blockedOneClosed := make(chan struct{}, 1)
+	blockedTwoClosed := make(chan struct{}, 1)
+	go func() {
+		<-release
+		close(blockedOne.done)
+		close(blockedTwo.done)
+	}()
+
+	startedAt := time.Now()
+	resources := []recordDispatcherResource{
+		{dispatcher: completed, closeDependency: func() error { completedCloseCalls++; return nil }, recordType: "completed"},
+		{dispatcher: blockedOne, closeDependency: func() error { blockedOneClosed <- struct{}{}; return nil }, recordType: "blocked-one"},
+		{dispatcher: blockedTwo, closeDependency: func() error { blockedTwoClosed <- struct{}{}; return nil }, recordType: "blocked-two"},
+	}
+	shutdownRecordDispatchers(&resources, 25*time.Millisecond, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if elapsed := time.Since(startedAt); elapsed > 80*time.Millisecond {
+		close(release)
+		t.Fatalf("shutdown consumed sequential budgets: %s", elapsed)
+	}
+	if completedCloseCalls != 1 {
+		close(release)
+		t.Fatalf("completed dependency close calls = %d, want 1", completedCloseCalls)
+	}
+	select {
+	case <-blockedOneClosed:
+		close(release)
+		t.Fatal("blocked dependency closed before dispatcher completion")
+	default:
+	}
+	close(release)
+	for name, closed := range map[string]<-chan struct{}{"blocked-one": blockedOneClosed, "blocked-two": blockedTwoClosed} {
+		select {
+		case <-closed:
+		case <-time.After(time.Second):
+			t.Fatalf("%s dependency was not closed after dispatcher completion", name)
+		}
+	}
+}
+
+type recordDispatcherShutdownStub struct {
+	done    chan struct{}
+	release <-chan struct{}
+}
+
+func (s *recordDispatcherShutdownStub) Shutdown(ctx context.Context) error {
+	if s.release == nil {
+		select {
+		case <-s.done:
+		default:
+			close(s.done)
+		}
+		return nil
+	}
+	select {
+	case <-s.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *recordDispatcherShutdownStub) Done() <-chan struct{} {
+	return s.done
 }
 
 func TestNewManagementOperationLogQueueDisabledSkipsRuntimeDependencies(t *testing.T) {
@@ -632,8 +995,10 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.MyAuthorizationRevokeHandler != nil ||
 		handlers.ProvidersHandler != nil ||
 		handlers.ProviderOptionsHandler != nil ||
+		handlers.ProviderDefinitionsHandler != nil ||
 		handlers.ProviderModelOptionsHandler != nil ||
 		handlers.ProviderModelsHandler != nil ||
+		handlers.ProviderModelCapabilitiesHandler != nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler != nil ||
 		handlers.RouteStrategyListHandler != nil ||
 		handlers.MyRouteStrategyListHandler != nil ||
@@ -687,6 +1052,7 @@ func TestNewManagementAPIHandlerDisabledSkipsRuntimeDependencies(t *testing.T) {
 		handlers.ClientIPUnblockHandler != nil ||
 		handlers.OperationLogsHandler != nil ||
 		handlers.MyOperationLogsHandler != nil ||
+		handlers.TableMonitorHandler != nil ||
 		handlers.ExternalIntegrationSourceListHandler != nil ||
 		handlers.ExternalIntegrationSourceDetailHandler != nil ||
 		handlers.ExternalSourceTokenCreateHandler != nil ||
@@ -746,8 +1112,10 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.MyAuthorizationRevokeHandler == nil ||
 		handlers.ProvidersHandler == nil ||
 		handlers.ProviderOptionsHandler == nil ||
+		handlers.ProviderDefinitionsHandler == nil ||
 		handlers.ProviderModelOptionsHandler == nil ||
 		handlers.ProviderModelsHandler == nil ||
+		handlers.ProviderModelCapabilitiesHandler == nil ||
 		handlers.ProviderDefaultHealthCheckModelHandler == nil ||
 		handlers.RouteStrategyListHandler == nil ||
 		handlers.MyRouteStrategyListHandler == nil ||
@@ -801,6 +1169,7 @@ func TestNewManagementAPIHandlerEnabledReturnsAuthAndManagementOptionsHandlers(t
 		handlers.ClientIPUnblockHandler == nil ||
 		handlers.OperationLogsHandler == nil ||
 		handlers.MyOperationLogsHandler == nil ||
+		handlers.TableMonitorHandler == nil ||
 		handlers.ExternalIntegrationSourceListHandler == nil ||
 		handlers.ExternalIntegrationSourceDetailHandler == nil ||
 		handlers.ExternalIntegrationSourceCreateHandler == nil ||

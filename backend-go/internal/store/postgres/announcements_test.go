@@ -28,11 +28,12 @@ func TestAnnouncementQueriesPreserveVisibilityPaginationAndTransactions(t *testi
 		"a.published_at IS NOT NULL",
 		"ORDER BY a.published_at DESC, a.created_at DESC, a.id DESC",
 		"LEFT JOIN juhe_business.announcement_reads ar",
+		"-- name: FindPublicAnnouncement :one",
 		"-- name: MarkVisibleAnnouncementsRead :many",
 		"ON CONFLICT (announcement_id, system_account_id)",
 		"DO UPDATE SET read_at = EXCLUDED.read_at",
 		"-- name: ListManagementAnnouncements :many",
-		"CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content",
+		"CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content_preview",
 		"ORDER BY a.updated_at DESC, a.created_at DESC, a.id DESC",
 		"LEFT JOIN juhe_business.system_accounts creator",
 		"LEFT JOIN juhe_business.system_accounts updater",
@@ -48,8 +49,15 @@ func TestAnnouncementQueriesPreserveVisibilityPaginationAndTransactions(t *testi
 			t.Fatalf("announcement queries missing %q", required)
 		}
 	}
-	if got := strings.Count(sql, "CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content"); got != 1 {
+	if got := strings.Count(sql, "CAST(CASE WHEN char_length(a.content) > 240 THEN substr(a.content, 1, 240) || '...' ELSE a.content END AS text) AS content_preview"); got != 1 {
 		t.Fatalf("announcement management content summary expressions = %d, want 1", got)
+	}
+	publicList := sql[strings.Index(sql, "-- name: ListPublicAnnouncements"):strings.Index(sql, "-- name: FindPublicAnnouncement")]
+	publicSelect := publicList[strings.Index(publicList, "SELECT"):strings.Index(publicList, "FROM")]
+	for _, forbidden := range []string{"a.content", "a.status", "a.created_at", "a.updated_at"} {
+		if strings.Contains(publicSelect, forbidden) {
+			t.Fatalf("public list select leaked %s: %s", forbidden, publicSelect)
+		}
 	}
 }
 

@@ -93,7 +93,7 @@ func newManagementSystemTeamsHandler(service managementSystemTeamService, scope 
 				writeMessageError(w, http.StatusNotFound, "团队不存在")
 				return
 			}
-			writeData(w, http.StatusOK, result)
+			writeData(w, http.StatusOK, compactManagementSystemTeamDetail(result))
 			return
 		}
 		result, err := service.List(r.Context(), managementSystemTeamListInput(systemAccountID, r.URL.Query()))
@@ -150,7 +150,7 @@ func newManagementSystemTeamCreateHandler(service managementSystemTeamService, o
 		}
 
 		recordSystemTeamCreateOperationLog(r, authContext, result, opts)
-		writeData(w, http.StatusCreated, result)
+		writeData(w, http.StatusCreated, compactManagementSystemTeamSummary(result))
 	})
 }
 
@@ -215,7 +215,7 @@ func newManagementSystemTeamPatchHandler(service managementSystemTeamService, op
 		}
 
 		recordSystemTeamUpdateOperationLog(r, authContext, result, opts)
-		writeData(w, http.StatusOK, result.Team)
+		writeData(w, http.StatusOK, compactManagementSystemTeamDetail(result.Team))
 	})
 }
 
@@ -272,7 +272,7 @@ func newManagementSystemTeamMembersAddHandler(service managementSystemTeamServic
 		}
 
 		recordSystemTeamMembersAddOperationLog(r, authContext, result, opts)
-		writeData(w, http.StatusOK, result.Team)
+		writeData(w, http.StatusOK, compactManagementSystemTeamDetail(result.Team))
 	})
 }
 
@@ -326,8 +326,49 @@ func newManagementSystemTeamMemberDeleteHandler(service managementSystemTeamServ
 		}
 
 		recordSystemTeamMemberRemoveOperationLog(r, authContext, result, opts)
-		writeData(w, http.StatusOK, result.Team)
+		writeData(w, http.StatusOK, compactManagementSystemTeamDetail(result.Team))
 	})
+}
+
+type managementSystemTeamDetailResponse struct {
+	ID          string                               `json:"id"`
+	Name        string                               `json:"name"`
+	Description string                               `json:"description,omitempty"`
+	Status      string                               `json:"status"`
+	MemberCount int                                  `json:"memberCount"`
+	Members     []managementSystemTeamMemberResponse `json:"members"`
+	CreatedAt   string                               `json:"createdAt"`
+}
+
+type managementSystemTeamMemberResponse struct {
+	ID                string `json:"id"`
+	SystemAccountID   string `json:"systemAccountId"`
+	SystemAccountName string `json:"systemAccountName,omitempty"`
+	JoinedAt          string `json:"joinedAt"`
+}
+
+func compactManagementSystemTeamSummary(summary managementsystemteams.Summary) managementSystemTeamDetailResponse {
+	return managementSystemTeamDetailResponse{
+		ID: summary.ID, Name: summary.Name, Description: summary.Description, Status: summary.Status,
+		MemberCount: summary.ActiveMemberCount, Members: []managementSystemTeamMemberResponse{}, CreatedAt: summary.CreatedAt,
+	}
+}
+
+func compactManagementSystemTeamDetail(detail managementsystemteams.Detail) managementSystemTeamDetailResponse {
+	result := compactManagementSystemTeamSummary(detail.Summary)
+	result.MemberCount = 0
+	result.Members = make([]managementSystemTeamMemberResponse, 0, len(detail.Members))
+	for _, member := range detail.Members {
+		if member.Status != "active" {
+			continue
+		}
+		result.Members = append(result.Members, managementSystemTeamMemberResponse{
+			ID: member.ID, SystemAccountID: member.SystemAccountID,
+			SystemAccountName: member.SystemAccountName, JoinedAt: member.JoinedAt,
+		})
+	}
+	result.MemberCount = len(result.Members)
+	return result
 }
 
 func managementSystemTeamScopedSystemAccountID(authContext managementauth.Context, values url.Values, scope managementSystemTeamScope) (string, bool) {

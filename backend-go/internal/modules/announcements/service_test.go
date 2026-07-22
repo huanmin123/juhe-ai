@@ -18,11 +18,23 @@ type announcementStoreStub struct {
 	publicLimit   int
 	publicAccount string
 	publicErr     error
+	publicDetail  port.Announcement
+	publicID      string
+	publicFound   bool
+	publicFindErr error
 	readAccount   string
 	readIDs       []string
 	readAt        time.Time
 	readCount     int
 	readErr       error
+}
+
+func (s *announcementStoreStub) FindPublicAnnouncement(_ context.Context, id string) (port.Announcement, bool, error) {
+	s.publicID = id
+	if s.publicFindErr != nil {
+		return port.Announcement{}, false, s.publicFindErr
+	}
+	return s.publicDetail, s.publicFound, nil
 }
 
 func (s *announcementStoreStub) ListPublicAnnouncements(_ context.Context, accountID string, limit int) ([]port.Announcement, error) {
@@ -65,6 +77,36 @@ func TestServiceListPublicUsesDefaultLimit(t *testing.T) {
 	}
 	if store.publicLimit != 30 {
 		t.Fatalf("default limit = %d, want 30", store.publicLimit)
+	}
+}
+
+func TestServiceFindPublicTrimsIDAndPreservesVisibilityResult(t *testing.T) {
+	want := port.Announcement{ID: "announcement-1", Content: "完整正文"}
+	store := &announcementStoreStub{publicDetail: want, publicFound: true}
+	got, found, err := NewService(store).FindPublic(context.Background(), "  announcement-1  ")
+	if err != nil || !found || !reflect.DeepEqual(got, want) || store.publicID != "announcement-1" {
+		t.Fatalf("FindPublic() = %#v, %v, %v; store id=%q", got, found, err, store.publicID)
+	}
+
+	store.publicDetail = port.Announcement{}
+	store.publicFound = false
+	got, found, err = NewService(store).FindPublic(context.Background(), "draft")
+	if err != nil || found || got != (port.Announcement{}) {
+		t.Fatalf("hidden FindPublic() = %#v, %v, %v", got, found, err)
+	}
+}
+
+func TestServiceFindPublicRejectsBlankIDAndWrapsStoreError(t *testing.T) {
+	store := &announcementStoreStub{}
+	_, _, err := NewService(store).FindPublic(context.Background(), " \t ")
+	if !errors.Is(err, ErrAnnouncementInputInvalid) || store.publicID != "" {
+		t.Fatalf("blank FindPublic() error=%v store id=%q", err, store.publicID)
+	}
+
+	store.publicFindErr = errAnnouncementStore
+	_, _, err = NewService(store).FindPublic(context.Background(), "announcement-1")
+	if !errors.Is(err, errAnnouncementStore) || err.Error() == errAnnouncementStore.Error() {
+		t.Fatalf("wrapped FindPublic() error=%v", err)
 	}
 }
 

@@ -145,6 +145,48 @@ func TestPublicAPILogDispatcherPreservesLogContextCorrelation(t *testing.T) {
 	}
 }
 
+func TestRecordLogClonesDetachMutableValues(t *testing.T) {
+	statusCode := 200
+	duration := int64(12)
+	operationInput := port.OperationLogInput{
+		Changes:    []port.OperationLogChange{{Before: map[string]any{"items": []any{"before"}}}},
+		Metadata:   map[string]any{"labels": []string{"one"}},
+		Targets:    []port.OperationLogTargetInput{{TargetID: "target-1"}},
+		Viewers:    []port.OperationLogViewerInput{{SystemAccountID: "viewer-1"}},
+		StatusCode: &statusCode,
+	}
+	operationClone := cloneOperationLogInput(operationInput)
+	operationInput.Changes[0].Before.(map[string]any)["items"].([]any)[0] = "after"
+	operationInput.Metadata["labels"].([]string)[0] = "two"
+	operationInput.Targets[0].TargetID = "target-2"
+	operationInput.Viewers[0].SystemAccountID = "viewer-2"
+	statusCode = 500
+	if got := operationClone.Changes[0].Before.(map[string]any)["items"].([]any)[0]; got != "before" {
+		t.Fatalf("operation change clone = %v", got)
+	}
+	if got := operationClone.Metadata["labels"].([]string)[0]; got != "one" {
+		t.Fatalf("metadata clone = %v", got)
+	}
+	if operationClone.Targets[0].TargetID != "target-1" || operationClone.Viewers[0].SystemAccountID != "viewer-1" || *operationClone.StatusCode != 200 {
+		t.Fatalf("operation clone retained mutable aliases: %+v", operationClone)
+	}
+
+	publicInput := port.PublicAPILogInput{
+		RequestData:  map[string]any{"items": []any{"request"}},
+		ResponseData: map[string]any{"items": []any{"response"}},
+		StatusCode:   &statusCode,
+		DurationMs:   &duration,
+	}
+	publicClone := clonePublicAPILogInput(publicInput)
+	publicInput.RequestData["items"].([]any)[0] = "changed"
+	publicInput.ResponseData["items"].([]any)[0] = "changed"
+	statusCode = 201
+	duration = 99
+	if publicClone.RequestData["items"].([]any)[0] != "request" || publicClone.ResponseData["items"].([]any)[0] != "response" || *publicClone.StatusCode != 500 || *publicClone.DurationMs != 12 {
+		t.Fatalf("public clone retained mutable aliases: %+v", publicClone)
+	}
+}
+
 type operationLogSettingsReaderFunc func(context.Context) (int, error)
 
 func (f operationLogSettingsReaderFunc) OperationLogMaxChangesPerRecord(ctx context.Context) (int, error) {
