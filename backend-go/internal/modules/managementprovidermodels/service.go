@@ -48,24 +48,18 @@ type CustomProviderModelInvalidator interface {
 	InvalidateCustomProviderModelChanged(ctx context.Context, reason string) error
 }
 
-type CatalogSnapshotRebuilder interface {
-	Rebuild(ctx context.Context, scope string, systemAccountID string) error
-}
-
 type ServiceOptions struct {
-	Store            Store
-	Invalidator      CustomProviderModelInvalidator
-	CatalogRebuilder CatalogSnapshotRebuilder
-	NewID            func(prefix string) string
-	Logger           *slog.Logger
+	Store       Store
+	Invalidator CustomProviderModelInvalidator
+	NewID       func(prefix string) string
+	Logger      *slog.Logger
 }
 
 type Service struct {
-	store            Store
-	invalidator      CustomProviderModelInvalidator
-	catalogRebuilder CatalogSnapshotRebuilder
-	newID            func(prefix string) string
-	logger           *slog.Logger
+	store       Store
+	invalidator CustomProviderModelInvalidator
+	newID       func(prefix string) string
+	logger      *slog.Logger
 }
 
 type ModelOptionListInput struct {
@@ -396,10 +390,7 @@ func NewServiceWithOptions(opts ServiceOptions) *Service {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{
-		store: opts.Store, invalidator: opts.Invalidator, catalogRebuilder: opts.CatalogRebuilder,
-		newID: newID, logger: logger,
-	}
+	return &Service{store: opts.Store, invalidator: opts.Invalidator, newID: newID, logger: logger}
 }
 
 func (s *Service) ModelOptions(ctx context.Context, input ModelOptionListInput) ([]ModelOption, error) {
@@ -761,7 +752,6 @@ func (s *Service) CreateCustomModel(ctx context.Context, input CustomModelCreate
 		return ModelCatalogItem{}, &CustomModelValidationError{Message: "自定义模型保存失败"}
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	s.rebuildCatalogSnapshot(ctx, saved.Scope, saved.SystemAccountID)
 	return catalogItemFromPort(saved), nil
 }
 
@@ -824,7 +814,6 @@ func (s *Service) UpdateCustomModelWithSnapshots(ctx context.Context, input Cust
 	if persisted.After.Status != "active" {
 		cleanupErr = s.clearDefaultHealthCheckModelReferences(ctx, persisted.After)
 	}
-	s.rebuildCatalogSnapshot(ctx, persisted.After.Scope, persisted.After.SystemAccountID)
 	if cleanupErr != nil {
 		return CustomModelUpdateResult{}, cleanupErr
 	}
@@ -955,7 +944,6 @@ func (s *Service) updateBuiltInModelConfiguration(ctx context.Context, existing 
 		return CustomModelUpdateResult{}, ErrCustomProviderModelNotFound
 	}
 	s.invalidateCustomProviderModel(ctx, CustomProviderModelSavedReason, input.TraceID)
-	s.rebuildCatalogSnapshot(ctx, "all", "")
 	return CustomModelUpdateResult{
 		Before: builtInCatalogItemWithConfigurationSnapshot(existing, persisted.Before),
 		After:  builtInCatalogItemWithConfigurationSnapshot(existing, persisted.After),
@@ -1094,7 +1082,6 @@ func (s *Service) DeleteCustomModel(ctx context.Context, input CustomModelDelete
 	if deleted {
 		s.invalidateCustomProviderModel(ctx, CustomProviderModelDeletedReason, input.TraceID)
 		cleanupErr := s.clearDefaultHealthCheckModelReferences(ctx, existing)
-		s.rebuildCatalogSnapshot(ctx, existing.Scope, existing.SystemAccountID)
 		if cleanupErr != nil {
 			return CustomModelDeleteResult{}, cleanupErr
 		}
@@ -1855,27 +1842,6 @@ func (s *Service) invalidateCustomProviderModel(ctx context.Context, reason stri
 			slog.String("event", "model_cache_sync_failed_after_commit"),
 			slog.String("reason", reason),
 			slog.String("trace_id", strings.TrimSpace(traceID)),
-			slog.Any("error", err),
-		)
-	}
-}
-
-func (s *Service) rebuildCatalogSnapshot(ctx context.Context, scope string, systemAccountID string) {
-	if s.catalogRebuilder == nil {
-		return
-	}
-	rebuildCtx := context.WithoutCancel(ctx)
-	rebuildScope := "all"
-	rebuildSystemAccountID := ""
-	if strings.TrimSpace(scope) == "personal" {
-		rebuildScope = "personal"
-		rebuildSystemAccountID = strings.TrimSpace(systemAccountID)
-	}
-	if err := s.catalogRebuilder.Rebuild(rebuildCtx, rebuildScope, rebuildSystemAccountID); err != nil {
-		s.logger.WarnContext(rebuildCtx, "模型事实已保存，但发布快照重建失败，保留 dirty generation 等待后台重试",
-			slog.String("event", "model_catalog_snapshot_rebuild_failed_after_commit"),
-			slog.String("scope", rebuildScope),
-			slog.String("system_account_id", rebuildSystemAccountID),
 			slog.Any("error", err),
 		)
 	}
