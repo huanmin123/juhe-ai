@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
@@ -10,15 +10,14 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountBalanceSnapshot, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { mergeAccountListRuntimeSnapshot, mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
-import { createAccountStatusSnapshotPolling, isAccountStatusSnapshotCurrent } from './accountStatusSnapshotPolling'
+import { replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -73,14 +72,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return systemAccountId ? { systemAccountId } : undefined
   })
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
-  const accountListRevision = ref(0)
-  let acceptedRuntimeScopeSignature = ''
-
-  const runtimeScopeSignature = (): string => {
-    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-    return `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
-  }
-
   const {
     items: accounts,
     loading,
@@ -107,23 +98,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         message.error('加载账户筛选选项失败')
       })
       const accountList = await fetchAccountList(systemAccountId, pageState, _loadOptions.forceData === true)
-      const runtimeAvailable = accountList.runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
       return {
-        items: accountList.items.map((account) => ({ ...account, accountRuntimeAvailabilityAvailable: runtimeAvailable })),
+        items: accountList.items.map((account) => accountListViewModel(account, accountList.runtimeSnapshot)),
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
         hasMore: accountList.hasMore
       }
-    },
-    transformItems: (nextItems, _loadOptions, _result, currentItems) => {
-      const currentScopeSignature = runtimeScopeSignature()
-      return mergeAccountListRuntimeSnapshot(
-        currentItems,
-        nextItems,
-        nextItems.some((account) => account.accountRuntimeAvailabilityAvailable === true),
-        acceptedRuntimeScopeSignature === currentScopeSignature
-      )
     },
     requestSignature: (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
@@ -133,8 +114,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ]
     },
     onLoaded: () => {
-      acceptedRuntimeScopeSignature = runtimeScopeSignature()
-      accountListRevision.value += 1
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
     },
@@ -146,50 +125,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const filteredAccounts = computed(() => accounts.value)
   const mobileRefreshing = computed(() => loading.value)
   const mobileVisibleAccounts = computed(() => filteredAccounts.value)
-  let snapshotRequestSequence = 0
-
-  const loadedAccountIds = () => [...new Set(accounts.value.map((account) => account.id).filter(Boolean))]
-  const snapshotPolling = createAccountStatusSnapshotPolling({
-    accountIds: loadedAccountIds,
-    isBlocked: () => loading.value,
-    isVisible: () => typeof document === 'undefined' || document.visibilityState === 'visible',
-    request: async (accountIds, signal) => {
-      const sequence = ++snapshotRequestSequence
-      const revision = accountListRevision.value
-      const signature = loadedAccountIds().join('\u0000')
-      const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      const scopeSignature = `${options.isManagementView.value ? 'management' : 'self'}:${systemAccountId ?? ''}`
-      const result = options.isManagementView.value
-        ? await api.accounts.statusSnapshot(accountIds, systemAccountId ? { systemAccountId } : undefined, { signal })
-        : await api.myAccounts.statusSnapshot(accountIds, { signal })
-      const currentSystemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      if (!isAccountStatusSnapshotCurrent(
-        { sequence, revision, idSignature: signature, scopeSignature },
-        {
-          sequence: snapshotRequestSequence,
-          revision: accountListRevision.value,
-          idSignature: loadedAccountIds().join('\u0000'),
-          scopeSignature: `${options.isManagementView.value ? 'management' : 'self'}:${currentSystemAccountId ?? ''}`
-        }
-      )) return
-      const nextAccounts = mergeAccountStatusSnapshot(accounts.value, result)
-      if (nextAccounts !== accounts.value) accounts.value = nextAccounts
-    }
-  })
-
-  const refreshStatusSnapshot = () => snapshotPolling.refreshNow()
-  onMounted(() => {
-    snapshotPolling.start()
-    document.addEventListener('visibilitychange', refreshStatusSnapshot)
-    window.addEventListener('focus', refreshStatusSnapshot)
-  })
-  onBeforeUnmount(() => {
-    snapshotRequestSequence += 1
-    snapshotPolling.stop()
-    document.removeEventListener('visibilitychange', refreshStatusSnapshot)
-    window.removeEventListener('focus', refreshStatusSnapshot)
-  })
-
   function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }, _force: boolean) {
     const params = accountListParams(systemAccountId, pageState)
     const loadNetwork = () => options.isManagementView.value
@@ -296,7 +231,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
-      const providerList = await loadProviderOptionsResource({
+      const { data: providerList } = await loadProviderOptionsResource({
         apply: (nextProviders) => {
           if (currentScopeKey() === scopeKey) providers.value = nextProviders.length ? nextProviders : FALLBACK_PROVIDERS
         },
@@ -335,10 +270,17 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
   }
 
+  function accountListViewModel(account: AccountListItem, runtimeSnapshot: AccountListResult['runtimeSnapshot']): AccountSummary {
+    return {
+      ...account,
+      currentConcurrencyAvailable: runtimeSnapshot?.accountConcurrencyAvailable === true
+        && account.currentConcurrencyAvailable !== false,
+      accountRuntimeAvailabilityAvailable: runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
+        && account.accountRuntimeAvailabilityAvailable !== false
+    } as AccountSummary
+  }
+
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-  watch(loading, (value) => {
-    if (!value) snapshotPolling.refreshNow()
-  })
   watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
   watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })
 

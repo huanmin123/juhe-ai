@@ -366,11 +366,18 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
     nowMs?: number
   }): Promise<number> {
     const now = normalizedNow(input.nowMs ?? this.now())
-    this.escalationEvidence.delete(input.accountRuntimeKey)
+    for (const [runtimeKey, evidence] of this.escalationEvidence) {
+      if (runtimeKeyMatchesDispatchRevisionTarget(runtimeKey, input.accountRuntimeKey)
+        && evidence.dispatchRevision !== input.dispatchRevision
+        && !isOlderNumericDispatchRevision(input.dispatchRevision, evidence.dispatchRevision)) {
+        this.escalationEvidence.delete(runtimeKey)
+      }
+    }
     let changed = 0
     for (const entry of this.entries.values()) {
-      if (entry.state.scope.accountRuntimeKey !== input.accountRuntimeKey) continue
+      if (!runtimeKeyMatchesDispatchRevisionTarget(entry.state.scope.accountRuntimeKey, input.accountRuntimeKey)) continue
       if (entry.state.dispatchRevision === input.dispatchRevision) continue
+      if (isOlderNumericDispatchRevision(input.dispatchRevision, entry.state.dispatchRevision)) continue
       const state = closedAccountCircuitState(
         entry.state.scope,
         input.dispatchRevision,
@@ -673,6 +680,19 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
       if (oldest) entry.replayIds.delete(oldest)
     }
   }
+}
+
+function runtimeKeyMatchesDispatchRevisionTarget(runtimeKey: string, target: string): boolean {
+  return runtimeKey === target || (!target.includes(':authorized:') && runtimeKey.startsWith(`${target}:authorized:`))
+}
+
+function isOlderNumericDispatchRevision(candidate: string, current: string): boolean {
+  const candidateNumber = Number(candidate)
+  const currentNumber = Number(current)
+  return Number.isSafeInteger(candidateNumber)
+    && candidateNumber > 0
+    && Number.isSafeInteger(currentNumber)
+    && currentNumber > candidateNumber
 }
 
 function accountCircuitLease(

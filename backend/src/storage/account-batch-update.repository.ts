@@ -9,6 +9,7 @@ import type {
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { invalidateGatewayRuntimeAfterBusinessWrite } from './account-runtime-mutation-helpers.js'
+import { advanceAccountCircuitDispatchRevisionFamilyInTransaction } from './account-circuit-control-plane.repository.js'
 import { accountAvailabilityScheduleJson, parseAccountAvailabilityScheduleJson } from './account-availability-schedule.js'
 import { replaceAccountModelMappingsInClientAsync } from './account-model-mappings.repository.js'
 import { replaceAccountSupportedModelsInClientAsync } from './account-supported-models.repository.js'
@@ -97,6 +98,7 @@ export interface AccountBatchUpdatePreparedAccount {
   modelMappingsChanged: boolean
   tagsChanged: boolean
   dispatchChanged: boolean
+  dispatchRevisionChanged: boolean
   resetHealthCheckState: boolean
   disableBalanceQuery: boolean
   resetBalanceQuery: boolean
@@ -260,6 +262,14 @@ export async function updateAccountsBatchAsync(input: {
           prepared.tags,
           updatedAt
         )
+      }
+      if (prepared.dispatchRevisionChanged) {
+        await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+          accountId: prepared.accountId,
+          accountRuntimeKey: prepared.accountId,
+          transitionId: `${batchId}:${prepared.accountId}`,
+          nowMs: Date.parse(updatedAt)
+        })
       }
       if (prepared.dispatchChanged) {
         await tx.execute(`

@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto'
 import {
   type AccountCircuitIncidentRecord,
   type AccountCircuitIncidentRebuildPage,
-  type AccountCircuitIncidentState
+  type AccountCircuitIncidentState,
+  type CompareAndSetAccountCircuitIncidentInput,
+  type CompareAndSetAccountCircuitIncidentResult
 } from '../../../storage/account-circuit-control-plane.repository.js'
 import { requestDbService } from '../../db-service/db-service-ipc.js'
 import type { AccountCircuitScope, AccountCircuitState, AccountCircuitStore } from './account-circuit-store.js'
@@ -12,8 +14,12 @@ export interface AccountCircuitControlPlaneBridgeOptions {
   store: AccountCircuitStore
   ownerId?: string
   retryDelayMs?: number
+  maxPersistAttempts?: number
   closedRetentionMs?: number
   now?: () => number
+  persistIncident?: (
+    input: CompareAndSetAccountCircuitIncidentInput
+  ) => Promise<CompareAndSetAccountCircuitIncidentResult>
   loadRebuildPage?: (input: {
     nowMs: number
     afterUpdatedAtMs?: number
@@ -53,18 +59,25 @@ export async function loadPublicAccountCircuitSummaries(
 }
 
 /**
- * Serializes runtime transitions per scope and hands bounded control facts to the
- * DB ledger. Runtime state remains the fast path; the outbox projector is the
- * only component that acknowledges durable projection progress.
+ * Coalesces runtime transitions to the latest state per scope and serializes
+ * bounded persistence attempts into the DB ledger. Runtime state remains the
+ * fast path; the outbox projector is the only component that acknowledges
+ * durable projection progress.
  */
 export class AccountCircuitControlPlaneBridge {
   private readonly store: AccountCircuitStore
   private readonly ownerId: string
   private readonly retryDelayMs: number
+  private readonly maxPersistAttempts: number
   private readonly closedRetentionMs: number
   private readonly now: () => number
+  private readonly persistIncident: NonNullable<AccountCircuitControlPlaneBridgeOptions['persistIncident']>
   private readonly loadRebuildPage: NonNullable<AccountCircuitControlPlaneBridgeOptions['loadRebuildPage']>
-  private readonly queues = new Map<string, Promise<void>>()
+  private readonly pending = new Map<string, { scope: AccountCircuitScope; state: AccountCircuitState }>()
+  private readonly workers = new Map<string, Promise<void>>()
+  private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly retryBackoffs = new Map<string, number>()
+  private readonly persistenceFailures = new Set<string>()
   private readonly ledgerRevisions = new Map<string, number>()
   private readonly dispatchRevisions = new Map<string, number>()
   private rebuilding = true
@@ -75,26 +88,25 @@ export class AccountCircuitControlPlaneBridge {
     this.store = options.store
     this.ownerId = options.ownerId?.trim() || `circuit-bridge:${randomUUID()}`
     this.retryDelayMs = positive(options.retryDelayMs ?? 1_000)
+    this.maxPersistAttempts = positive(options.maxPersistAttempts ?? 3)
     this.closedRetentionMs = positive(options.closedRetentionMs ?? 5 * 60_000)
     this.now = options.now ?? Date.now
+    this.persistIncident = options.persistIncident ?? (async (input) => await requestDbService({
+      type: 'compare_and_set_account_circuit_incident',
+      input
+    }))
     this.loadRebuildPage = options.loadRebuildPage ?? (async (input) => await requestDbService({
       type: 'list_account_circuit_incidents_for_rebuild',
       ...input
     }))
   }
 
-  isReady(): boolean { return !this.rebuilding }
+  isReady(): boolean { return !this.rebuilding && this.persistenceFailures.size === 0 }
 
   observe(input: { scope: AccountCircuitScope; state: AccountCircuitState }): void {
     const scopeKey = input.state.scopeKey
-    const previous = this.queues.get(scopeKey) ?? Promise.resolve()
-    const next = previous
-      .catch(() => undefined)
-      .then(() => this.persistWithRetry(input.scope, input.state))
-    const queued = next.finally(() => {
-      if (this.queues.get(scopeKey) === queued) this.queues.delete(scopeKey)
-    })
-    this.queues.set(scopeKey, queued)
+    this.pending.set(scopeKey, input)
+    this.startScopeWorker(scopeKey)
   }
 
   async rebuild(): Promise<AccountCircuitControlPlaneRebuildResult> {
@@ -130,6 +142,10 @@ export class AccountCircuitControlPlaneBridge {
         }
         cursor = page.nextCursor
         if (!cursor) break
+      }
+      await this.retryPendingImmediately()
+      if (this.persistenceFailures.size > 0) {
+        throw new Error('账户 circuit control-plane 仍有未持久化状态')
       }
       this.rebuilding = false
       return { loaded, blocked: false }
@@ -220,18 +236,16 @@ export class AccountCircuitControlPlaneBridge {
 
   private async persistWithRetry(scope: AccountCircuitScope, state: AccountCircuitState): Promise<void> {
     let delay = this.retryDelayMs
-    for (;;) {
+    const accountId = accountIdFromRuntimeKey(scope.accountRuntimeKey)
+    const stateDispatchRevision = Number(state.dispatchRevision)
+    const dispatchRevision = Number.isSafeInteger(stateDispatchRevision) && stateDispatchRevision > 0
+      ? stateDispatchRevision
+      : this.dispatchRevisions.get(accountId) ?? 1
+    this.dispatchRevisions.set(accountId, dispatchRevision)
+    for (let attempt = 1; attempt <= this.maxPersistAttempts; attempt++) {
       try {
-        const accountId = accountIdFromRuntimeKey(scope.accountRuntimeKey)
-        const stateDispatchRevision = Number(state.dispatchRevision)
-        const dispatchRevision = Number.isSafeInteger(stateDispatchRevision) && stateDispatchRevision > 0
-          ? stateDispatchRevision
-          : this.dispatchRevisions.get(accountId) ?? 1
-        this.dispatchRevisions.set(accountId, dispatchRevision)
         const transitionId = state.transitionId || `rebuild:${state.scopeKey}:${state.generation}`
-        const persisted = await requestDbService({
-          type: 'compare_and_set_account_circuit_incident',
-          input: {
+        const persisted = await this.persistIncident({
           accountId,
           accountRuntimeKey: scope.accountRuntimeKey,
           circuitScopeKey: state.scopeKey,
@@ -262,20 +276,75 @@ export class AccountCircuitControlPlaneBridge {
           ...(state.failureReason ? { lastFailureClass: classifyFailure(state.failureReason) } : {}),
           ...(state.phase === 'CLOSED' ? { retainedUntilMs: this.now() + this.closedRetentionMs } : {}),
           nowMs: this.now()
-          }
         })
         this.dispatchRevisions.set(accountId, persisted.currentDispatchRevision)
         if (persisted.incident) this.ledgerRevisions.set(state.scopeKey, persisted.incident.ledgerRevision)
-        if (persisted.status === 'cas_conflict' || persisted.status === 'stale_dispatch_revision') {
+        if (persisted.status === 'stale_dispatch_revision') return
+        if (persisted.status === 'cas_conflict') {
+          if (persisted.incident && persisted.incident.generation >= state.generation) return
+          if (attempt === this.maxPersistAttempts) break
           await wait(Math.min(delay, 250))
+          delay = Math.min(delay * 2, 30_000)
           continue
         }
         return
       } catch {
+        if (attempt === this.maxPersistAttempts) break
         await wait(delay)
         delay = Math.min(delay * 2, 30_000)
       }
     }
+    throw new Error('账户 circuit control-plane 持久化重试耗尽')
+  }
+
+  private startScopeWorker(scopeKey: string): Promise<void> | undefined {
+    if (this.workers.has(scopeKey) || this.retryTimers.has(scopeKey)) return this.workers.get(scopeKey)
+    const worker = this.drainScope(scopeKey).finally(() => {
+      if (this.workers.get(scopeKey) === worker) this.workers.delete(scopeKey)
+      if (this.pending.has(scopeKey)) this.scheduleScopeRetry(scopeKey)
+    })
+    this.workers.set(scopeKey, worker)
+    return worker
+  }
+
+  private async drainScope(scopeKey: string): Promise<void> {
+    for (;;) {
+      const current = this.pending.get(scopeKey)
+      if (!current) return
+      this.pending.delete(scopeKey)
+      try {
+        await this.persistWithRetry(current.scope, current.state)
+        this.persistenceFailures.delete(scopeKey)
+        this.retryBackoffs.delete(scopeKey)
+      } catch {
+        if (!this.pending.has(scopeKey)) this.pending.set(scopeKey, current)
+        this.persistenceFailures.add(scopeKey)
+        return
+      }
+    }
+  }
+
+  private scheduleScopeRetry(scopeKey: string): void {
+    if (this.retryTimers.has(scopeKey)) return
+    const delay = this.retryBackoffs.get(scopeKey) ?? this.retryDelayMs
+    this.retryBackoffs.set(scopeKey, Math.min(delay * 2, 30_000))
+    const timer = setTimeout(() => {
+      if (this.retryTimers.get(scopeKey) === timer) this.retryTimers.delete(scopeKey)
+      this.startScopeWorker(scopeKey)
+    }, delay)
+    timer.unref()
+    this.retryTimers.set(scopeKey, timer)
+  }
+
+  private async retryPendingImmediately(): Promise<void> {
+    for (const [scopeKey, timer] of this.retryTimers) {
+      clearTimeout(timer)
+      this.retryTimers.delete(scopeKey)
+    }
+    const workers = [...this.pending.keys()]
+      .map((scopeKey) => this.startScopeWorker(scopeKey))
+      .filter((worker): worker is Promise<void> => worker !== undefined)
+    await Promise.all(workers)
   }
 }
 

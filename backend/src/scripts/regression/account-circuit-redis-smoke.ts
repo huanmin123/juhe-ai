@@ -167,6 +167,28 @@ try {
 
   now += 101
   assert.equal(await first.size(), 0, 'CLOSED tombstone 到期后必须从共享容量索引清理')
+
+  const authorizedInstanceId = `redis-authorized-${process.pid}`
+  const authorizedScopes: AccountCircuitScope[] = [
+    { kind: 'account', accountRuntimeKey: `${authorizedInstanceId}:authorized:grantee:group-a:grant` },
+    { kind: 'account', accountRuntimeKey: `${authorizedInstanceId}:authorized:grantee:group-b:grant` }
+  ]
+  for (const [index, authorizedScope] of authorizedScopes.entries()) {
+    await first.suspect({ scope: authorizedScope, dispatchRevision: '7', transitionId: `authorized-suspect-${index}`, reason: 'old config', nowMs: now })
+  }
+  assert.equal(await second.replaceAccountDispatchRevision({
+    accountRuntimeKey: authorizedInstanceId,
+    dispatchRevision: '8',
+    transitionId: 'authorized-revision-8',
+    nowMs: now
+  }), 2, 'Redis 裸授权实例 ID 必须原子 fence 全部 runtime-key family')
+  await Promise.all([
+    first.replaceAccountDispatchRevision({ accountRuntimeKey: authorizedInstanceId, dispatchRevision: '10', transitionId: 'authorized-revision-10', nowMs: now + 1 }),
+    second.replaceAccountDispatchRevision({ accountRuntimeKey: authorizedInstanceId, dispatchRevision: '9', transitionId: 'authorized-revision-9', nowMs: now + 1 })
+  ])
+  for (const authorizedScope of authorizedScopes) {
+    assert.equal((await first.get(authorizedScope, now + 1)).dispatchRevision, '10', 'Redis 并发乱序投影必须保留最大 numeric revision')
+  }
   console.log('account-circuit-redis-smoke passed')
 } finally {
   try {

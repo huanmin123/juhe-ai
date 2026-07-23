@@ -216,6 +216,9 @@ export class CodexResponsesResponseGuard {
   }
 
   inspectOpenAiSseEvent(event: ParsedOpenAIStreamEvent): CodexResponsesGuardSseResult {
+    if (!event.data && !event.dataParseError && !event.eventName && !event.dataText) {
+      return this.inspectParsedSse({ kind: 'comment' })
+    }
     const eventData = event.data
     const response = plainObject(eventData?.response)
     const observedResponseId = stringValue(response?.id)

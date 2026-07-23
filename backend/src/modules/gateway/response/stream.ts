@@ -149,9 +149,11 @@ export async function pipeUpstreamStream(
     })
   }
   const interpretProtocolFailures = options.interpretProtocolFailures !== false
+  const hasResponseInspectionPolicies = (options.responseInspectionPolicies?.length ?? 0) > 0
   const responseInspectionEnabled = interpretProtocolFailures
     && options.responseInspectionContext?.clientProfile !== 'generic_anthropic'
-    && (options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0)
+    && (options.clientRetryEnabled === true || hasResponseInspectionPolicies)
+    || hasResponseInspectionPolicies
     || codexSafeRepairEnabled
     || codexStrictInterceptEnabled
   const interceptor = responseInspectionEnabled
@@ -692,6 +694,7 @@ export async function pipeUpstreamStream(
           }, '网关在下游提交前命中流式失败，交由上层决定是否服务端换号重试')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
+        await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, false))
         endResponse(res)
         streamLogger.warn({
           event: 'gateway_response_inspected',
@@ -708,7 +711,7 @@ export async function pipeUpstreamStream(
         }, '网关已命中响应检查策略并结束当前流')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
-      if ((chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && chunkCanEndAfterTerminal) {
+      if (!interceptor && (chunkWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && chunkCanEndAfterTerminal && !pendingProtocolEvent) {
         await flushPreCommitChunks()
         terminalEventWritten = true
         return await finishTerminalSuccess(inspector.finish(), {
@@ -867,6 +870,7 @@ export async function pipeUpstreamStream(
           }, '网关在 EOF pending 事件下游提交前命中流式失败，交由上层决定是否服务端换号重试')
           return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
         }
+        await handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, latestInspection.outputReceived, false))
         endResponse(res)
         streamLogger.warn({
           event: 'gateway_response_inspected',
@@ -884,7 +888,7 @@ export async function pipeUpstreamStream(
         }, '网关已在上游 EOF 时命中响应检查策略并结束当前流')
         return finishStreamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens, latestInspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(latestInspection))
       }
-      if ((eofWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && eofCanEndAfterTerminal) {
+      if ((eofWroteDownstream || preCommitBuffer.chunks.length > 0) && latestInspection.terminalReceived && !interpretedProtocolFailure(latestInspection) && eofCanEndAfterTerminal && !pendingProtocolEvent) {
         await flushPreCommitChunks()
         terminalEventWritten = true
         return await finishTerminalSuccess(latestInspection, { eofPendingFlush: true })
@@ -1085,10 +1089,10 @@ export async function pipeUpstreamStream(
 
   const inspection = inspector.finish()
   omitBodyCaptureIfImageStream(inspection, { eofPendingFlush: true })
-  // Opaque forwarding may ignore the semantics of a terminal failure event,
-  // but EOF itself is not a protocol terminal. Preserve the pre-commit failure
-  // path when the upstream closes after only response.created/heartbeats.
-  if (!interpretProtocolFailures && completed && inspection.terminalReceived) {
+  // Generic clients keep opaque upstream SSE semantics: a clean transport EOF
+  // is sufficient even when the protocol driver does not recognize a terminal.
+  // Precise clients use interpretProtocolFailures and still require framing.
+  if (!interpretProtocolFailures && completed) {
     await flushPreCommitChunks()
     endResponse(res)
     return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))

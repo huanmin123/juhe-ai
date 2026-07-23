@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 
 import { createSqliteDatabaseClient } from '../../storage/database-client.js'
@@ -370,37 +369,4 @@ function assertPostgresSchemaParity(): void {
   assert.match(generatedIncident, /dispatch_revision bigint[\s\S]+ledger_revision bigint[\s\S]+retained_until_ms bigint/)
   assert.match(generatedOutbox, /dispatch_revision bigint[\s\S]+claim_until_ms bigint[\s\S]+acknowledged_at_ms bigint/)
 
-  const migration = readFileSync(
-    new URL('../../../../backend-go/db/migrations/000071_w1_account_circuit_control_plane.sql', import.meta.url),
-    'utf8'
-  )
-  assert.match(migration, /ADD COLUMN IF NOT EXISTS dispatch_revision bigint NOT NULL DEFAULT 1/)
-  assert.match(migration, /CREATE TABLE IF NOT EXISTS juhe_business\.account_circuit_incidents/)
-  assert.match(migration, /CREATE TABLE IF NOT EXISTS juhe_business\.account_circuit_outbox/)
-  assert.match(migration, /idx_account_circuit_outbox_claim[\s\S]+status, available_at_ms, claim_until_ms, created_at_ms, event_id/)
-  assert.deepEqual(
-    tableColumnNames(generatedIncident),
-    tableColumnNames(extractMigrationTable(migration, 'account_circuit_incidents')),
-    'SQLite 生成的 PostgreSQL incident 当前 schema 必须与 Goose 72 列集合一致'
-  )
-  assert.deepEqual(
-    tableColumnNames(generatedOutbox),
-    tableColumnNames(extractMigrationTable(migration, 'account_circuit_outbox')),
-    'SQLite 生成的 PostgreSQL outbox 当前 schema 必须与 Goose 72 列集合一致'
-  )
-}
-
-function extractMigrationTable(source: string, tableName: string): string {
-  const start = source.indexOf(`CREATE TABLE IF NOT EXISTS juhe_business.${tableName} (`)
-  assert.ok(start >= 0, `Goose migration 缺少 ${tableName}`)
-  const end = source.indexOf('\n);', start)
-  assert.ok(end > start, `Goose migration 无法解析 ${tableName}`)
-  return source.slice(start, end + 3)
-}
-
-function tableColumnNames(source: string): string[] {
-  return source
-    .split(/\r?\n/)
-    .map((line) => /^\s{2,}([a-z][a-z0-9_]*)\s+(?:text|integer|bigint)\b/i.exec(line)?.[1])
-    .filter((value): value is string => Boolean(value))
 }

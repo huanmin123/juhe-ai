@@ -1410,7 +1410,9 @@ assert.equal(validateAccountResponseInspectionRules([
     async () => { failureCalled = true },
     undefined,
     {
-      endpointFamily: 'responses'
+      endpointFamily: 'responses',
+      responseInspectionPolicies: [responsePolicy({ match: { errorCodes: ['server_overloaded'] } })],
+      responseInspectionContext: { clientProfile: 'codex' }
     }
   )
   assert.equal(result.completed, false, '同批终止后失败应返回失败结果')
@@ -1464,7 +1466,9 @@ assert.equal(validateAccountResponseInspectionRules([
     async () => { failureCalled = true },
     undefined,
     {
-      endpointFamily: 'responses'
+      endpointFamily: 'responses',
+      responseInspectionPolicies: [responsePolicy({ match: { errorCodes: ['server_overloaded'] } })],
+      responseInspectionContext: { clientProfile: 'codex' }
     }
   )
   assert.equal(result.completed, false, '终止事件后一批失败也应返回失败结果')
@@ -1532,7 +1536,7 @@ await assertMalformedResponsesSseFailsBeforeDownstreamCommit('未闭合 data 直
   )
   assert.match(
     gatewayPreflightSource,
-    /try \{\s*runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync\(codexBridgeCompactPreflight\.accounts\)[\s\S]*?catch \(error\) \{\s*dispatchPreparation\.releaseClientIpConcurrency\(\)/,
+    /try \{\s*runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync\(codexBridgeCompactPreflight\.accounts\)[\s\S]*?catch \(error\) \{[\s\S]*?dispatchPreparation\.releaseClientIpConcurrency\(\)/,
     '最终策略加载失败时必须释放已取得的 high-concurrency 客户端 IP 槽位'
   )
   assert.match(

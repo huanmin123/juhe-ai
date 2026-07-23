@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
@@ -332,6 +332,34 @@ export async function advanceAccountCircuitDispatchRevisionInTransaction(
   }
 }
 
+export async function advanceAccountCircuitDispatchRevisionFamilyInTransaction(
+  client: DatabaseClient,
+  rawInput: AdvanceAccountCircuitDispatchRevisionInput
+): Promise<AdvanceAccountCircuitDispatchRevisionResult[]> {
+  const input = normalizeDispatchRevisionInput(rawInput)
+  const accounts = businessTable(client, 'accounts')
+  const instances = await client.query<{ id: string }>(`
+    SELECT id
+    FROM ${accounts}
+    WHERE authorization_instance_source_account_id = ?
+      AND deleted_at IS NULL
+    ORDER BY id ASC${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
+  `, [input.accountId])
+  const accountIds = [input.accountId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
+  const results: AdvanceAccountCircuitDispatchRevisionResult[] = []
+  for (const accountId of accountIds) {
+    results.push(await advanceAccountCircuitDispatchRevisionInTransaction(client, {
+      accountId,
+      accountRuntimeKey: accountId,
+      transitionId: accountId === input.accountId
+        ? input.transitionId
+        : familyDispatchTransitionId(input.transitionId, accountId),
+      nowMs: input.nowMs
+    }))
+  }
+  return results
+}
+
 export function advanceAccountCircuitDispatchRevisionInSqliteTransaction(
   database: DatabaseSync,
   rawInput: AdvanceAccountCircuitDispatchRevisionInput
@@ -389,6 +417,29 @@ export function advanceAccountCircuitDispatchRevisionInSqliteTransaction(
   }
 }
 
+export function advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(
+  database: DatabaseSync,
+  rawInput: AdvanceAccountCircuitDispatchRevisionInput
+): AdvanceAccountCircuitDispatchRevisionResult[] {
+  const input = normalizeDispatchRevisionInput(rawInput)
+  const instances = database.prepare(`
+    SELECT id
+    FROM accounts
+    WHERE authorization_instance_source_account_id = ?
+      AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all(input.accountId) as unknown as Array<{ id: string }>
+  const accountIds = [input.accountId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
+  return accountIds.map((accountId) => advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+    accountId,
+    accountRuntimeKey: accountId,
+    transitionId: accountId === input.accountId
+      ? input.transitionId
+      : familyDispatchTransitionId(input.transitionId, accountId),
+    nowMs: input.nowMs
+  }))
+}
+
 export async function compareAndSetAccountCircuitIncident(
   input: CompareAndSetAccountCircuitIncidentInput
 ): Promise<CompareAndSetAccountCircuitIncidentResult> {
@@ -424,7 +475,7 @@ export async function getAccountCircuitIncidentByScopeKeyInClient(
   const incidents = businessTable(client, 'account_circuit_incidents')
   const row = await client.one<AccountCircuitIncidentRow>(`
     SELECT ${incidentColumnList}
-    FROM ${incidents}
+    FROM ${incidents} circuit_incident
     WHERE circuit_scope_key = ?
   `, [scopeKey])
   return row ? mapIncidentRow(row) : undefined
@@ -641,11 +692,17 @@ export async function listAccountCircuitIncidentsByRuntimeKeysInClient(
   if (keys.length === 0) return []
   if (keys.length > 100) throw new Error('账户 circuit 摘要单次最多查询 100 个运行态键')
   const incidents = businessTable(client, 'account_circuit_incidents')
+  const accounts = businessTable(client, 'accounts')
   const rows = await client.query<AccountCircuitIncidentRow>(`
     SELECT ${incidentColumnList}
-    FROM ${incidents}
+    FROM ${incidents} circuit_incident
     WHERE account_runtime_key IN (${keys.map(() => '?').join(', ')})
       AND state <> 'CLOSED'
+      AND dispatch_revision = (
+        SELECT current_account.dispatch_revision
+        FROM ${accounts} current_account
+        WHERE current_account.id = circuit_incident.account_id
+      )
     ORDER BY account_runtime_key ASC, updated_at_ms ASC, circuit_scope_key ASC
   `, keys)
   return rows.map(mapIncidentRow)
@@ -660,10 +717,16 @@ export async function listAccountCircuitIncidentsForRebuildInClient(
   const afterCircuitScopeKey = optionalCursorText(input.afterCircuitScopeKey, 2048, 'afterCircuitScopeKey')
   const limit = positiveInteger(input.limit, 'limit', 500)
   const incidents = businessTable(client, 'account_circuit_incidents')
+  const accounts = businessTable(client, 'accounts')
   const rows = await client.query<AccountCircuitIncidentRow>(`
     SELECT ${incidentColumnList}
-    FROM ${incidents}
+    FROM ${incidents} circuit_incident
     WHERE (state <> 'CLOSED' OR retained_until_ms > ?)
+      AND dispatch_revision = (
+        SELECT current_account.dispatch_revision
+        FROM ${accounts} current_account
+        WHERE current_account.id = circuit_incident.account_id
+      )
       AND (updated_at_ms > ? OR (updated_at_ms = ? AND circuit_scope_key > ?))
     ORDER BY updated_at_ms ASC, circuit_scope_key ASC
     LIMIT ?
@@ -704,8 +767,13 @@ export async function listAccountCircuitProjectionGapsInClient(
     `, [afterAccountId, limit]),
     client.query<AccountCircuitIncidentRow>(`
       SELECT ${incidentColumnList}
-      FROM ${incidents}
+      FROM ${incidents} circuit_incident
       WHERE projected_ledger_revision < ledger_revision
+        AND dispatch_revision = (
+          SELECT current_account.dispatch_revision
+          FROM ${accounts} current_account
+          WHERE current_account.id = circuit_incident.account_id
+        )
         AND (updated_at_ms > ? OR (updated_at_ms = ? AND circuit_scope_key > ?))
       ORDER BY updated_at_ms ASC, circuit_scope_key ASC
       LIMIT ?
@@ -1031,6 +1099,10 @@ function normalizeDispatchRevisionInput(input: AdvanceAccountCircuitDispatchRevi
     transitionId: requiredText(input.transitionId, 256, 'transitionId'),
     nowMs: nonNegativeInteger(input.nowMs ?? Date.now(), 'nowMs')
   }
+}
+
+function familyDispatchTransitionId(transitionId: string, accountId: string): string {
+  return `dispatch-family:${createHash('sha256').update(transitionId).update('\0').update(accountId).digest('hex')}`
 }
 
 function normalizeIncidentMutation(input: CompareAndSetAccountCircuitIncidentInput): NormalizedIncidentMutation {

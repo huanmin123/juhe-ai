@@ -268,4 +268,51 @@ for (const [index, evidenceScopeKey] of [accountCircuitScopeKey(hierarchyChildre
 assert.equal((await hierarchyStore.get(hierarchyChildren[0]!)).shadowedByIncidentId, undefined, '父级关闭只能解除自身 shadow，不删除子级状态')
 assert.equal((await hierarchyStore.get(hierarchyChildren[0]!)).phase, 'OPEN')
 
+const authorizedFamilyStore = new MemoryAccountCircuitStore({ capacity: 8, now: () => now })
+const authorizedInstanceId = 'authorized-instance'
+const authorizedScopes: AccountCircuitScope[] = [
+  { kind: 'account', accountRuntimeKey: `${authorizedInstanceId}:authorized:grantee-a:group-a:grant-a` },
+  { kind: 'account', accountRuntimeKey: `${authorizedInstanceId}:authorized:grantee-a:group-b:grant-a` }
+]
+const unrelatedScope: AccountCircuitScope = { kind: 'account', accountRuntimeKey: 'authorized-instance-similar' }
+for (const [index, authorizedScope] of authorizedScopes.entries()) {
+  await authorizedFamilyStore.suspect({
+    scope: authorizedScope,
+    dispatchRevision: '7',
+    transitionId: `authorized-suspect-${index}`,
+    reason: 'old authorized configuration',
+    nowMs: now
+  })
+}
+await authorizedFamilyStore.suspect({
+  scope: unrelatedScope,
+  dispatchRevision: '7',
+  transitionId: 'unrelated-suspect',
+  reason: 'unrelated',
+  nowMs: now
+})
+assert.equal(await authorizedFamilyStore.replaceAccountDispatchRevision({
+  accountRuntimeKey: authorizedInstanceId,
+  dispatchRevision: '8',
+  transitionId: 'authorized-revision-8',
+  nowMs: now
+}), 2, '裸授权实例 ID 必须立即 fence 该实例的全部 runtime key 上下文')
+for (const authorizedScope of authorizedScopes) {
+  const state = await authorizedFamilyStore.get(authorizedScope, now)
+  assert.equal(state.phase, 'CLOSED')
+  assert.equal(state.dispatchRevision, '8')
+}
+assert.equal((await authorizedFamilyStore.get(unrelatedScope, now)).phase, 'SUSPECT', 'family 匹配不能误伤相似账户 ID')
+assert.equal(await authorizedFamilyStore.replaceAccountDispatchRevision({
+  accountRuntimeKey: authorizedInstanceId,
+  dispatchRevision: '7',
+  transitionId: 'authorized-late-revision-7',
+  nowMs: now + 1
+}), 0, '迟到旧 revision 不得覆盖已投影的新 revision')
+await Promise.all([
+  authorizedFamilyStore.replaceAccountDispatchRevision({ accountRuntimeKey: authorizedInstanceId, dispatchRevision: '10', transitionId: 'authorized-revision-10', nowMs: now + 2 }),
+  authorizedFamilyStore.replaceAccountDispatchRevision({ accountRuntimeKey: authorizedInstanceId, dispatchRevision: '9', transitionId: 'authorized-revision-9', nowMs: now + 2 })
+])
+assert.equal((await authorizedFamilyStore.get(authorizedScopes[0]!, now + 2)).dispatchRevision, '10', '并发乱序投影必须保留最大 numeric revision')
+
 console.log('account-circuit-memory-store-regression passed')

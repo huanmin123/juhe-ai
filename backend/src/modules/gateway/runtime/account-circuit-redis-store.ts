@@ -869,13 +869,27 @@ local transition_id = ARGV[3]
 local now_ms = tonumber(ARGV[4])
 local retention_ms = tonumber(ARGV[5])
 local values = redis.call('HGETALL', states_key)
-redis.call('HDEL', escalation_key, runtime_key)
+local family_prefix = runtime_key .. ':authorized:'
+local function matches_runtime_key(candidate)
+  return candidate == runtime_key or (
+    not string.find(runtime_key, ':authorized:', 1, true)
+    and string.sub(candidate, 1, string.len(family_prefix)) == family_prefix
+  )
+end
+local function is_older_revision(current_revision)
+  local incoming_number = tonumber(dispatch_revision)
+  local current_number = tonumber(current_revision)
+  return incoming_number and current_number and current_number > incoming_number
+end
 local changed = 0
 for index = 1, #values, 2 do
   local scope_key = values[index]
   local entry = cjson.decode(values[index + 1])
   local state = entry['state']
-  if state['scope']['accountRuntimeKey'] == runtime_key and state['dispatchRevision'] ~= dispatch_revision then
+  local state_runtime_key = state['scope']['accountRuntimeKey']
+  if matches_runtime_key(state_runtime_key)
+    and state['dispatchRevision'] ~= dispatch_revision
+    and not is_older_revision(state['dispatchRevision']) then
     state['phase'] = 'CLOSED'
     state['generation'] = tonumber(state['generation'] or 0) + 1
     state['dispatchRevision'] = dispatch_revision
@@ -900,7 +914,18 @@ for index = 1, #values, 2 do
     redis.call('HSET', states_key, scope_key, cjson.encode(entry))
     redis.call('ZREM', due_key, scope_key)
     redis.call('ZADD', closed_key, now_ms + retention_ms, scope_key)
+    redis.call('HDEL', escalation_key, state_runtime_key)
     changed = changed + 1
+  end
+end
+local evidence_values = redis.call('HGETALL', escalation_key)
+for index = 1, #evidence_values, 2 do
+  local evidence_runtime_key = evidence_values[index]
+  local evidence = cjson.decode(evidence_values[index + 1])
+  if matches_runtime_key(evidence_runtime_key)
+    and evidence['dispatchRevision'] ~= dispatch_revision
+    and not is_older_revision(evidence['dispatchRevision']) then
+    redis.call('HDEL', escalation_key, evidence_runtime_key)
   end
 end
 return changed

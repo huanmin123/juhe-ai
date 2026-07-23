@@ -140,7 +140,10 @@ export {
   listGroupsPageAsync
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
-import { advanceAccountCircuitDispatchRevisionInSqliteTransaction, advanceAccountCircuitDispatchRevisionInTransaction } from './account-circuit-control-plane.repository.js'
+import {
+  advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInTransaction
+} from './account-circuit-control-plane.repository.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import {
   findProviderDefaultHealthCheckModel,
@@ -1918,7 +1921,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     replaceAccountModelMappings(account.id, providerCode, modelMappings)
     replaceAccountNameSearchTerms(database, account.id, systemAccountId, account.name, now)
     savedTags = replaceAccountTags(account.id, systemAccountId, tagNames, now, database)
-    advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+    advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
       accountId: account.id,
       accountRuntimeKey: account.id,
       transitionId: newId('dispatch'),
@@ -2177,7 +2180,7 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     await replaceAccountModelMappingsInClientAsync(client, account.id, providerCode, modelMappings)
     await replaceAccountNameSearchTermsAsync(client, account.id, systemAccountId, account.name, now)
     savedTags = await replaceAccountTagsAsync(client, account.id, systemAccountId, tagNames, now)
-    await advanceAccountCircuitDispatchRevisionInTransaction(client, {
+    await advanceAccountCircuitDispatchRevisionFamilyInTransaction(client, {
       accountId: account.id,
       accountRuntimeKey: account.id,
       transitionId: newId('dispatch'),
@@ -2609,7 +2612,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       savedTags = replaceAccountTags(id, systemAccountId, nextTagNames, updatedAt, database)
     }
     if (Number(result.changes ?? 0) > 0 && dispatchConfigurationChanged) {
-      advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+      advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
         accountId: id,
         accountRuntimeKey: id,
         transitionId: newId('dispatch'),
@@ -3123,7 +3126,7 @@ export async function updateAccountAsync(
         savedTags = await replaceAccountTagsAsync(tx, id, systemAccountId, nextTagNames, updatedAt)
       }
       if (dispatchConfigurationChanged) {
-        await advanceAccountCircuitDispatchRevisionInTransaction(tx, {
+        await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
           accountId: id,
           accountRuntimeKey: id,
           transitionId: newId('dispatch'),

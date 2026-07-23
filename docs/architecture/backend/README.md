@@ -323,4 +323,4 @@ erDiagram
 
 ## 11. 网关账户运行态专题入口
 
-普通路由账户的短窗口热质量、账户电路单飞、同层探索、请求内精准切号、墙钟 handoff、受控半开、控制面交接和有界观测，统一按 [AI 账户短窗口热质量与精准切号设计](../../functions/AI账户短窗口热质量与精准切号设计.md) 与 [PLAN-0158-20260722T160050118Z](../../plans/计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md) 执行。热状态只允许使用 memory / Redis runtime adapter；控制面 ledger、revision 和 outbox 属于可重建控制事实，不得把热质量写入业务统计库。当前实现仍需完成 revision 写入路径、冷启动 / maintenance 收口及真实 Redis 验证。
+普通路由账户的短窗口热质量、账户电路单飞、同层探索、请求内精准切号、墙钟 handoff、受控半开、控制面交接和有界观测，统一按 [AI 账户短窗口热质量与精准切号设计](../../functions/AI账户短窗口热质量与精准切号设计.md) 与 [PLAN-0158-20260722T160050118Z](../../plans/计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md) 执行。热状态只允许使用 memory / Redis runtime adapter；控制面 ledger、revision 和 outbox 属于可重建控制事实，不得把热质量写入业务统计库。当前实现已完成 owner / authorized revision 原子写入、冷启动 fail-closed 重建、maintenance、真实 Redis 多 adapter 和临时 PostgreSQL 验证。
