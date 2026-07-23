@@ -892,25 +892,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots (
-      system_account_id TEXT NOT NULL,
-      protocol TEXT NOT NULL,
-      variant TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      model_count INTEGER NOT NULL DEFAULT 0,
-      revision TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, protocol, variant),
-      CHECK (protocol IN ('openai', 'anthropic', 'gemini')),
-      CHECK (variant IN ('default', 'codex') OR variant LIKE 'chat_list:%' OR variant LIKE 'chat_model:%'),
-      CHECK (model_count >= 0),
-      CHECK (json_valid(payload_json) AND json_type(payload_json) = 'object')
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_gateway_model_catalog_snapshots_updated
-      ON gateway_model_catalog_snapshots(updated_at, system_account_id, protocol, variant);
-
     CREATE TABLE IF NOT EXISTS announcements (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
@@ -1176,6 +1157,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  database.exec('DROP TABLE IF EXISTS gateway_model_catalog_snapshots')
   ensureApiKeyPurposeSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)

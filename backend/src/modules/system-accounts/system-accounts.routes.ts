@@ -8,7 +8,6 @@ import { hashPasswordAsync } from '../../storage/crypto.js'
 import { createSystemAccountWithPasswordHashAsync, findSystemAccountByIdAsync, listSystemAccountOptionsAsync, listSystemAccountsPageAsync, revokeAllSessionsForAccountAsync, updateSystemAccountWithPasswordHashAsync } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { rebuildPublishedModelCatalogSnapshotsBestEffortAsync } from '../model-pricing/published-model-catalog.service.js'
 
 export const systemAccountsRouter = Router()
 const whitespacePattern = /\s/
@@ -117,7 +116,6 @@ systemAccountsRouter.post('/', requireSuperAdmin, mutationGuard({
         }
       }
     }, req)
-    await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(account.id)
     res.status(201).json(ok(account))
   } catch (error) {
     res.status(409).json({ message: error instanceof Error ? error.message : '创建系统账户失败' })
@@ -177,11 +175,6 @@ systemAccountsRouter.patch('/:id', requireSuperAdmin, async (req, res, next) => 
         }
       }
     }, req)
-    if (parsed.data.status === 'active' && before?.status !== 'active') {
-      await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(account.id)
-    } else if (parsed.data.status === 'disabled') {
-      await rebuildPublishedModelCatalogSnapshotsBestEffortAsync()
-    }
     res.json(ok(account))
   } catch (error) {
     if (error instanceof Error && error.message === '系统账户不存在') {

@@ -486,6 +486,8 @@ export {
   findApiKeySummaryAsync,
   ensureDefaultApiKeysForSystemAccount,
   ensureDefaultApiKeysForSystemAccountAsync,
+  ensureChatApiKeyForSystemAccount,
+  ensureChatApiKeyForSystemAccountAsync,
   listApiKeys,
   listApiKeysAsync,
   listApiKeysPage,
@@ -497,7 +499,7 @@ export {
 } from './api-key.repository.js'
 export {
   findChatApiKeySecretAsync,
-  findDefaultChatApiKeySecretForProviderAsync,
+  findChatApiKeySecretByPurposeAsync,
   type ChatApiKeySecret
 } from './chat-api-key.repository.js'
 export {
