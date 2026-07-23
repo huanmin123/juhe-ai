@@ -115,6 +115,8 @@ export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
 }
 
 export class OpenAIStreamInspector {
+  private parsedEventObserver: ((event: import('./stream-events.js').ParsedOpenAIStreamEvent) => void) | undefined
+  private parserCoverageObserver: ((reason: string) => void) | undefined
   private inspection: OpenAIStreamInspection = {
     terminalReceived: false,
     failedReceived: false,
@@ -142,6 +144,16 @@ export class OpenAIStreamInspector {
   private lightweightFragmentTail = ''
   private lightweightTerminalPending = false
   private pendingEventSummaries: OpenAIStreamEventSummary[] = []
+
+  setParsedEventObserver(
+    observer: ((event: import('./stream-events.js').ParsedOpenAIStreamEvent) => void) | undefined
+  ): void {
+    this.parsedEventObserver = observer
+  }
+
+  setParserCoverageObserver(observer: ((reason: string) => void) | undefined): void {
+    this.parserCoverageObserver = observer
+  }
 
   pushChunk(
     chunk: Buffer | Uint8Array | string,
@@ -284,6 +296,7 @@ export class OpenAIStreamInspector {
       return
     }
     const event = parseOpenAIStreamEventData(data, currentEventName)
+    this.parsedEventObserver?.(event)
     if (event.dataParseError) {
       this.recordEventSummary({
         type: currentEventName || 'message',
@@ -334,6 +347,7 @@ export class OpenAIStreamInspector {
   }
 
   private tryFlushCommonResponsesTextDelta(data: string, currentEventName: string, currentDataBytes: number): boolean {
+    if (this.parsedEventObserver) return false
     if (currentEventName !== 'response.output_text.delta') {
       return false
     }
@@ -363,6 +377,7 @@ export class OpenAIStreamInspector {
   }
 
   private skipParsing(reason: string): OpenAIStreamInspection {
+    this.parserCoverageObserver?.(reason)
     this.pendingLine = ''
     this.eventName = ''
     this.dataLines = []
@@ -475,6 +490,7 @@ export class OpenAIStreamInspector {
   }
 
   private flushOversizedEvent(): void {
+    this.parserCoverageObserver?.('SSE event 超过完整协议检查上限')
     const eventType = this.oversizedEventType || this.eventName || 'message'
     const classification = classifyOversizedOpenAIStreamEvent(eventType, this.oversizedEventImageOutput)
     if (classification.visibleOutput) {

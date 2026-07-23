@@ -13,6 +13,7 @@ import {
   sanitizeStringHeaderRecord
 } from '../upstream/headers.js'
 import type { UpstreamAttempt } from '../upstream/attempt.js'
+import type { CodexResponsesGuardUsageSummary } from '../codex-responses/response-guard.js'
 
 export interface UsageRequestSnapshot {
   method: string
@@ -35,6 +36,7 @@ export interface UsageResponseSnapshot {
   bodyOmission?: unknown
   errorMessage?: string
   generatedBy?: 'gateway'
+  codexResponsesGuard?: CodexResponsesGuardUsageSummary
   lastUpstreamAttempt?: {
     accountId: string
     accountName: string
@@ -99,6 +101,7 @@ export function buildUsageResponseSnapshot(input: {
   bodyOmission?: unknown
   errorMessage?: string
   generatedBy?: 'gateway'
+  codexResponsesGuard?: CodexResponsesGuardUsageSummary
 }): UsageResponseSnapshot {
   return {
     upstreamUrl: input.upstreamUrl,
@@ -109,7 +112,8 @@ export function buildUsageResponseSnapshot(input: {
     bodyText: input.bodyText,
     bodyOmission: input.bodyOmission,
     errorMessage: input.errorMessage,
-    generatedBy: input.generatedBy
+    generatedBy: input.generatedBy,
+    codexResponsesGuard: input.codexResponsesGuard
   }
 }
 
