@@ -305,7 +305,7 @@ apiKeysRouter.delete('/:id', async (req, res, next) => {
       res.status(404).json({ message: 'API Key 不存在' })
       return
     }
-    if (error instanceof Error && error.message.includes('默认 API Key 不允许删除')) {
+    if (error instanceof Error && (error.message.includes('默认 API Key 不允许删除') || error.message.includes('AI 对话 API Key 不允许删除'))) {
       res.status(409).json(badRequest(error.message))
       return
     }

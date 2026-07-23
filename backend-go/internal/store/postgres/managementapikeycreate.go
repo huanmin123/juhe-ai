@@ -81,6 +81,7 @@ func createManagementAPIKey(
 		KeySuffix:                row.KeySuffix.String,
 		Status:                   row.ApiKeyStatus.String,
 		IsDefault:                row.IsDefault.Bool,
+		Purpose:                  row.Purpose.String,
 		RouteStrategyID:          row.RouteStrategyID.String,
 		RouteStrategyName:        row.RouteStrategyName,
 		RouteStrategyMode:        row.RouteStrategyMode,

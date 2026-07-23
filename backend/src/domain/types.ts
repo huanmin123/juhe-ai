@@ -1667,6 +1667,7 @@ export interface ApiKeySummary {
   key?: string
   status: 'active' | 'disabled'
   isDefault?: boolean
+  purpose: 'general' | 'chat'
   routeStrategyId: string
   routeStrategyName?: string
   routeStrategyMode?: RouteStrategyMode

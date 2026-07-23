@@ -141,6 +141,7 @@ func lockManagementAPIKeySecretRefreshTarget(
 		KeySuffix:                row.KeySuffix,
 		Status:                   row.Status,
 		IsDefault:                row.IsDefault,
+		Purpose:                  row.Purpose,
 		RouteStrategyID:          row.RouteStrategyID,
 		RouteStrategyName:        row.RouteStrategyName,
 		RouteStrategyMode:        row.RouteStrategyMode,

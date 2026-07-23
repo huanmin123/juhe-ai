@@ -67,6 +67,7 @@ type ListItem struct {
 	KeySuffix            string                             `json:"keySuffix"`
 	Status               string                             `json:"status"`
 	IsDefault            bool                               `json:"isDefault"`
+	Purpose              string                             `json:"purpose"`
 	RouteStrategyID      string                             `json:"routeStrategyId"`
 	RouteStrategyName    string                             `json:"routeStrategyName,omitempty"`
 	RouteStrategyMode    string                             `json:"routeStrategyMode,omitempty"`
@@ -259,6 +260,7 @@ func listItemDetailed(
 		KeySuffix:           row.KeySuffix,
 		Status:              row.Status,
 		IsDefault:           row.IsDefault,
+		Purpose:             normalizeAPIKeyPurpose(row.Purpose),
 		RouteStrategyID:     row.RouteStrategyID,
 		RouteStrategyName:   row.RouteStrategyName,
 		RouteStrategyMode:   row.RouteStrategyMode,
@@ -297,6 +299,13 @@ func listItemDetailed(
 		uncertain = nil
 	}
 	return item, uncertain, parseErr
+}
+
+func normalizeAPIKeyPurpose(value string) string {
+	if strings.TrimSpace(value) == "chat" {
+		return "chat"
+	}
+	return "general"
 }
 
 func parseQuotaLimits(raw *string) (port.ManagementRequestQuotaLimits, error) {

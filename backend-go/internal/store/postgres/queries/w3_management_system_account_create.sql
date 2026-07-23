@@ -82,7 +82,7 @@ INSERT INTO juhe_business.route_strategy_groups (
 -- name: CreateManagementDefaultAPIKey :one
 INSERT INTO juhe_business.api_keys (
   id, system_account_id, route_strategy_id, name, description, key_hash,
-  key_prefix, key_suffix, key_secret_encrypted, status, is_default,
+  key_prefix, key_suffix, key_secret_encrypted, status, is_default, purpose,
   expires_at, quota_limits_json, availability_schedule_json,
   availability_schedule_next_check_at, created_at, updated_at
 ) VALUES (
@@ -96,7 +96,8 @@ INSERT INTO juhe_business.api_keys (
   sqlc.arg(key_suffix)::text,
   sqlc.narg(key_secret_encrypted)::text,
   'active',
-  true,
+  sqlc.arg(is_default)::boolean,
+  sqlc.arg(purpose)::text,
   NULL,
   NULL,
   NULL,

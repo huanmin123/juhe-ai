@@ -397,6 +397,7 @@ type ManagementSystemAccountCreateResult struct {
 
 type ManagementDefaultAPIKeyCreateInput struct {
 	ID                 string
+	Purpose            string
 	KeyHash            string
 	KeyPrefix          string
 	KeySuffix          string
@@ -640,6 +641,7 @@ type ManagementAPIKeyListRow struct {
 	KeySuffix                string
 	Status                   string
 	IsDefault                bool
+	Purpose                  string
 	RouteStrategyID          string
 	RouteStrategyName        string
 	RouteStrategyMode        string
@@ -662,6 +664,7 @@ var (
 	ErrManagementAPIKeyNotFound              = errors.New("management API Key not found")
 	ErrManagementAPIKeyDefaultRouteChange    = errors.New("management default API Key route change")
 	ErrManagementAPIKeyDefaultDelete         = errors.New("management default API Key delete")
+	ErrManagementAPIKeyChatDelete            = errors.New("management chat API Key delete")
 )
 
 type ManagementAPIKeyCreateInput struct {

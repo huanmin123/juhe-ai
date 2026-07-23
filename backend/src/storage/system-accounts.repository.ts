@@ -5,7 +5,7 @@ import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPass
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
 import { ensureDefaultBuiltInGroupsForSystemAccount } from './default-group.repository.js'
-import { ensureDefaultApiKeysForSystemAccount, ensureDefaultApiKeysForSystemAccountAsync } from './api-key.repository.js'
+import { ensureChatApiKeyForSystemAccount, ensureChatApiKeyForSystemAccountAsync, ensureDefaultApiKeysForSystemAccount, ensureDefaultApiKeysForSystemAccountAsync } from './api-key.repository.js'
 import { clearGatewayApiKeyValidationCache, clearGatewayApiKeyValidationCacheAsync } from './gateway-api-key.repository.js'
 import { getPostgresPool } from './postgres-client.js'
 import { ensureDefaultRouteStrategiesForSystemAccount, ensureDefaultRouteStrategiesForSystemAccountAsync } from './route-strategy.repository.js'
@@ -496,6 +496,7 @@ export function createSystemAccountWithPasswordHash(input: SystemAccountWithPass
     ensureDefaultBuiltInGroupsForSystemAccount(summary.id, now)
     ensureDefaultRouteStrategiesForSystemAccount(summary.id, now)
     ensureDefaultApiKeysForSystemAccount(summary.id, now)
+    ensureChatApiKeyForSystemAccount(summary.id, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -548,6 +549,7 @@ export async function createSystemAccountWithPasswordHashInClientAsync(
   await ensureDefaultBuiltInGroupsForSystemAccountAsync(client, summary.id, now)
   await ensureDefaultRouteStrategiesForSystemAccountAsync(client, summary.id, now)
   await ensureDefaultApiKeysForSystemAccountAsync(client, summary.id, now)
+  await ensureChatApiKeyForSystemAccountAsync(summary.id, now, client)
   return summary
 }
 

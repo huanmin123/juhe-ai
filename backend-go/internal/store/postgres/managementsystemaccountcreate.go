@@ -111,9 +111,19 @@ func createDefaultResources(
 	now time.Time,
 ) (groupIDs []string, strategyIDs []string, apiKeyIDs []string, err error) {
 	routeGroupCount := defaultRouteGroupCount()
-	if len(defaultAPIKeys) != routeGroupCount {
-		return nil, nil, nil, fmt.Errorf("default api key count = %d, want %d", len(defaultAPIKeys), routeGroupCount)
+	if len(defaultAPIKeys) != routeGroupCount+1 {
+		return nil, nil, nil, fmt.Errorf("default api key count = %d, want %d", len(defaultAPIKeys), routeGroupCount+1)
 	}
+	for index, apiKey := range defaultAPIKeys {
+		expectedPurpose := "general"
+		if index == routeGroupCount {
+			expectedPurpose = "chat"
+		}
+		if apiKey.Purpose != expectedPurpose {
+			return nil, nil, nil, fmt.Errorf("default api key %d purpose = %q, want %q", index, apiKey.Purpose, expectedPurpose)
+		}
+	}
+	chatAPIKey := defaultAPIKeys[routeGroupCount]
 	apiKeyIndex := 0
 	for _, group := range defaultBuiltInGroups {
 		groupID := prefixedUUID("grp")
@@ -178,6 +188,8 @@ func createDefaultResources(
 			KeyPrefix:          defaultAPIKey.KeyPrefix,
 			KeySuffix:          defaultAPIKey.KeySuffix,
 			KeySecretEncrypted: pgtype.Text{String: defaultAPIKey.KeySecretEncrypted, Valid: defaultAPIKey.KeySecretEncrypted != ""},
+			IsDefault:          true,
+			Purpose:            "general",
 			CreatedAt:          pgTimestamptz(now),
 			UpdatedAt:          pgTimestamptz(now),
 		})
@@ -185,6 +197,29 @@ func createDefaultResources(
 			return nil, nil, nil, fmt.Errorf("create default api key: %w", err)
 		}
 		apiKeyIDs = append(apiKeyIDs, defaultAPIKey.ID)
+
+		if group.ProviderCode == "gpt" {
+			chatDescription := "AI 对话专用 API Key，默认绑定" + strategyName + "，可在 API Key 页面修改策略路由。"
+			_, err = q.CreateManagementDefaultAPIKey(ctx, postgresqueries.CreateManagementDefaultAPIKeyParams{
+				ID:                 chatAPIKey.ID,
+				SystemAccountID:    systemAccountID,
+				RouteStrategyID:    strategyID,
+				Name:               "AI 对话 API Key",
+				Description:        pgtype.Text{String: chatDescription, Valid: true},
+				KeyHash:            chatAPIKey.KeyHash,
+				KeyPrefix:          chatAPIKey.KeyPrefix,
+				KeySuffix:          chatAPIKey.KeySuffix,
+				KeySecretEncrypted: pgtype.Text{String: chatAPIKey.KeySecretEncrypted, Valid: chatAPIKey.KeySecretEncrypted != ""},
+				IsDefault:          false,
+				Purpose:            "chat",
+				CreatedAt:          pgTimestamptz(now),
+				UpdatedAt:          pgTimestamptz(now),
+			})
+			if err != nil {
+				return nil, nil, nil, fmt.Errorf("create chat api key: %w", err)
+			}
+			apiKeyIDs = append(apiKeyIDs, chatAPIKey.ID)
+		}
 	}
 	return groupIDs, strategyIDs, apiKeyIDs, nil
 }

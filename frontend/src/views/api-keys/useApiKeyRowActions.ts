@@ -53,7 +53,7 @@ export function useApiKeyRowActions(input: UseApiKeyRowActionsInput) {
     const actions: RowActionItem[] = [
       { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: busy }
     ]
-    if (!apiKey.isDefault) {
+    if (!apiKey.isDefault && apiKey.purpose !== 'chat') {
       actions.push({
         key: 'delete',
         label: '删除',

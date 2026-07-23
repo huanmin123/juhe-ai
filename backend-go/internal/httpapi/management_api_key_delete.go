@@ -124,6 +124,8 @@ func managementAPIKeyDeleteErrorResponse(err error) (int, string, bool) {
 		return http.StatusNotFound, "API Key 不存在", true
 	case errors.Is(err, managementapikeys.ErrAPIKeyDefaultDelete):
 		return http.StatusConflict, "默认 API Key 不允许删除", true
+	case errors.Is(err, managementapikeys.ErrAPIKeyChatDelete):
+		return http.StatusConflict, "AI 对话 API Key 不允许删除", true
 	case errors.Is(err, managementapikeys.ErrAPIKeyDeleteInvalid):
 		return http.StatusBadRequest, "API Key 参数无效", true
 	default:
