@@ -58,7 +58,7 @@ Agent 分工：主 Agent 负责迁移主线、接口整合、冲突、批次提�
 32. [W7 使用记录写入队列 Node 契约基线](W7-使用记录写入队列Node契约基线.md)：冻结 Node 使用记录 writer / queue 的 owner、可靠性边界、已确认丢失缺陷和 Go 原生接管门禁。
 33. [W7 账户健康探针状态机契约](W7-账户健康探针状态机契约.md)：自动探针归因、周期健康 / 冷却复测边界、陈旧任务护栏和 Go 原生 worker 接线规则。
 34. [开发构建部署调整](开发构建部署调整.md)：本地开发、构建、发布包、Docker 和常驻运行的迁移安排。
-35. [W10 网关上游请求与流式中转核心迁移记录](W10-网关上游请求与流式中转核心迁移记录.md)：Go-native 上游请求构造、凭据与 header 隔离、有界 body、流式背压、超时、取消、终态和 usage/audit handoff；当前不接 HTTP listener、生产 upstream 或 owner 切换。
+35. [W10 网关上游请求与流式中转核心迁移记录](W10-网关上游请求与流式中转核心迁移记录.md)：Go-native 上游请求构造、HTTP transport dispatch seam、凭据与 header 隔离、有界 body、流式背压、超时、取消、终态和 usage/audit handoff；当前不接生产 listener、upstream policy 或 owner 切换。
 36. [迁移文档示例](迁移文档示例.md)：后续单模块迁移记录的写法示例。
 37. [精确路由 Owner 清单设计](精确路由Owner清单设计.md)：四大域默认 owner、method + path template 精确 allowlist、回滚 manifest 和未来代理接入门禁。
 38. [Goose 与 Node 初始化边界复审记录](Goose与Node初始化边界复审记录.md)：schema 73 的 Go-only Goose 执行命令、Node 补充 DDL 仍保留的原因和未追踪 schema 拒绝门禁。
