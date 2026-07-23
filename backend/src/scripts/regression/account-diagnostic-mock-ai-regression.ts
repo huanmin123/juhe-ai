@@ -283,6 +283,7 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
       output: [
         {
           type: 'message',
+          role: 'assistant',
           content: [{ type: 'output_text', text: outputText }]
         }
       ],
