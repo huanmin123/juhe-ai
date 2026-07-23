@@ -23,8 +23,8 @@
 
 - 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses 必须明确证明 `store=false`，Chat 允许缺省 / `null` / `false`，资源读取、资源 mutation、未知 GET/POST，以及非法、超限和未扫描 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
 - 新增 attempt 级 `gatewaydeadline.Controller`：Service 冻结 absolute wall/first-byte deadline，HTTPExecutor 在 dispatch 前把 cancel-cause context 绑定到真实 request；response headers、JSON body 与 stream body 共用同一 deadline，首个下游字节后停止 first-byte timer。timeout 的 FailureFacts、usage、audit 使用一致的 `first_byte_timeout` 归因，下游阻塞/取消不会被误写成上游超时或触发跨账户重试。
-- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误和 client-lifecycle 重试。downstream commit、typed store metadata 和 account policy writer 两批集中 normal/race/vet 与 diff check 通过。当前进度口径更新为：代码迁移约 `74%`，可独立验证 Go 能力约 `71%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
-- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、account circuit outbox consumer/projector、Redis circuit/hot quality、真实 upstream/listener/canary/rollback；PolicyApplier 的 target/source revision CAS 与 dispatch outbox producer 已完成，但不据此改变 owner manifest 或删除 Node gateway。
+- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误、client-lifecycle 重试，以及 outbox family 局部高 revision 误推 tombstone、失败退避起点和 worker 配置 fail-fast。downstream commit、typed store metadata、account policy writer 与 dispatch-revision projector 集中 normal/race/vet/diff check 通过。当前进度口径更新为：代码迁移约 `75%`，可独立验证 Go 能力约 `72%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
+- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、Redis state writer revision fence/runtime-key 索引、incident/gap/rebuild/cleanup、hot quality、真实 upstream/PostgreSQL/Redis/listener/canary/rollback；PolicyApplier producer 与 dispatch-revision compatibility projector 已完成，但不据此改变 owner manifest 或删除 Node gateway。
 
 ### 2026-07-23 网关传输核心批次
 
@@ -1005,8 +1005,16 @@
 - [x] PolicyMutation 改为不含 CredentialSet/body/message 的 typed persistence facts；稳定 MutationID 生成有界 transition，非法外部 decision 和不完整授权身份 fail-closed。
 - [x] PolicyApplier 返回 applied/idempotent/stale/ineligible，writer 错误保留 attempt/usage/audit 并停止重放，unsafe 请求顺序保持不变。
 - [x] PostgreSQL 单事务完成 target status CAS、source/authorization/binding 重验、普通 source 的授权实例 revision fan-out、000072 dispatch outbox 和 direct/authorized stats dirty；授权实例只改本地 target，API-key runtime 不写。
-- [ ] outbox worker/Redis projector、提交后本地 invalidation、API-key runtime observation writer、cooldown recovery writer、真实 PostgreSQL 并发/回滚 smoke、生产 listener/owner 仍待后续批次。
+- [x] outbox dispatch-revision consumer / Redis compatibility projector：只 claim 已支持事件，完成 PostgreSQL lease/token/ACK/release、单调 revision tombstone、有界 service 和默认关闭的独占 worker seam；不抢 Node incident 事件。
+- [ ] Redis state writer runtime-key 索引、incident projector/gap/rebuild/cleanup、提交后本地 invalidation、API-key runtime observation writer、cooldown recovery writer、真实 PostgreSQL/Redis 并发/回滚 smoke、生产 listener/owner 仍待后续批次。
 
 集中验证已通过：`gatewayattemptloop`、`gatewaycandidatewindow`、`store/postgres` 的 `go test`、`go test -race`、`go vet` 和 `git diff --check`。本轮未执行全仓、Docker 或真实 PostgreSQL；SQL 锁序、回滚和并发行为仍需后续真实依赖 smoke，不能用静态守卫代替。
+
+## 2026-07-24 account circuit outbox 大批次完成标准
+
+- 代码边界：Go 只消费 `dispatch_revision_changed`，unsupported event 留给 Node；单条 CTE claim 代替逐行更新，ACK 与 durable projection watermark 同事务，失败重试和 lease reclaim 由 token fencing 保护。
+- 共存边界：Redis key 与 Node 一致，持久 revision tombstone 只由对应 outbox 事件推进；重复 revision 仍修复 family 遗留旧 state，不能从局部 runtime state 猜测 tombstone。临时 `HGETALL` 与尚未接 tombstone CAS 的在途 Node state writer 都是接管前硬门禁，不把兼容实现当成最终架构。
+- 所有权边界：app worker 默认 disabled，必须显式 exclusive 才初始化依赖，未接 CLI/supervisor/manifest；gateway 和 worker 生产 owner 仍为 Node。
+- 验证边界：整模块完成后一次性执行定向 test/race/vet/diff 与独立复查；真实 PostgreSQL/Redis、incident/rebuild/cleanup、canary/rollback 后置，不能据此删除 Node。
 
 本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。
