@@ -19,7 +19,7 @@ import {
   type OpenAIOAuthCodexSessionResolution
 } from './oauth-normalizer.js'
 import { OpenAIOAuthCodexAdapterError } from './oauth-errors.js'
-import { normalizeOpenAICodexClientHeaders } from './client-headers.js'
+import { isOpenAICodexClientHeaders, normalizeOpenAICodexClientHeaders } from './client-headers.js'
 import { getRequestLogger, sanitizeUrlForLog } from '../../../../shared/request-context.js'
 import type { GptRequestOverrideModelCapabilities } from '../../../providers/drivers/gpt/request-overrides.js'
 
@@ -191,10 +191,13 @@ function buildOpenAIOAuthCodexHeaders(
 ): Headers {
   const headers = copySafeOpenAIOAuthCodexClientHeaders(inputHeaders)
   copyOpenAIOAuthCodexAttestationHeader(headers, inputHeaders)
+  const nativeCodexClient = isOpenAICodexClientHeaders(headers)
   normalizeOpenAICodexClientHeaders(headers, input.model)
   headers.set('authorization', `Bearer ${account.apiKey}`)
-  headers.set('content-type', 'application/json')
-  headers.set('accept', input.compact || !input.stream ? 'application/json' : 'text/event-stream')
+  if (!nativeCodexClient) {
+    headers.set('content-type', 'application/json')
+    headers.set('accept', input.compact || !input.stream ? 'application/json' : 'text/event-stream')
+  }
 
   const accountId = stringCredential(account.credentials, 'account_id')
   if (accountId) {

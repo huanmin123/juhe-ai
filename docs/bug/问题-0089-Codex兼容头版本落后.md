@@ -33,3 +33,10 @@ Codex 兼容头在多个适配器中重复硬编码，版本升级时没有统�
 - Codex 版本和请求头只能在共享 helper 维护，适配器不得重复硬编码。
 - 升级前以本地当前源码、模型清单和实际运行时 pin 为事实来源，不能只看旧稳定 tag。
 - 发现额外优化先记录结论和风险；没有用户确认时，不把 `/models` 过滤或其他策略性限制顺带加入故障修复。
+
+## 2026-07-23 真实 Codex Desktop 校正
+
+- 本机 `codex-cli 0.145.0` 实际请求使用 `Originator: Codex Desktop`，UA 为 `Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)`，不能再用 `^codex(?:_|$)` 识别或固定 `codex_cli_rs`。
+- 原生 Codex 请求不再覆盖客户端身份头，也不再删除客户端的 `version`、`openai-beta` 或 Lite 标志；仅剔除连接级头和入站鉴权，避免把代理凭据转发到上游。
+- 非 Codex 请求才补齐当前版本的 Codex 会话/线程/请求 ID、Turn Metadata、Beta Features 和 `client_metadata`。OAuth 适配器从安全转发头集合构建，保留 Codex 设备证明及其他可转发客户端头。
+- 使用页面账户测试机制验证了真实 Responses SSE 请求：`gpt-5.6-sol` 返回 HTTP 200 并输出 `OK`。

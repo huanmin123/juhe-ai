@@ -21,6 +21,7 @@ import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.
 import type {
   AccountManualTestCapabilitiesContext
 } from '../../storage/account-manual-test-context.repository.js'
+import type { AccountTestDraftSnapshot } from '../../storage/account-test-tasks.repository.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import { resolveOpenAIAccountModelMapping } from '../gateway/protocols/openai-v1/model-mapping.js'
 
@@ -79,7 +80,7 @@ export async function accountManualTestOptionsAsync(
 }
 
 export async function resolveAccountManualTestSelectionAsync(
-  account: AccountSummary,
+  account: AccountSummary | AccountManualTestCapabilitiesContext,
   modelInput: unknown,
   testEndpointMode?: AccountSupportedEndpointMode
 ): Promise<{ model: string; testEndpointMode: AccountSupportedEndpointMode }> {
@@ -88,11 +89,33 @@ export async function resolveAccountManualTestSelectionAsync(
     throw new Error('请选择测试模型')
   }
   const option = await accountManualTestModelCapabilitiesAsync(account, model)
-  const resolvedTestEndpointMode = testEndpointMode ?? option.testEndpointModes[0]
+  const resolvedTestEndpointMode = option.testEndpointModes.includes('images_json')
+    ? 'images_json'
+    : testEndpointMode ?? option.testEndpointModes[0]
   if (!resolvedTestEndpointMode || !option.testEndpointModes.includes(resolvedTestEndpointMode)) {
     throw new Error(`模型 ${model} 不支持本次检查协议：${testEndpointMode ?? '未选择'}`)
   }
   return { model, testEndpointMode: resolvedTestEndpointMode }
+}
+
+export function accountManualTestCapabilitiesContextFromDraft(
+  account: AccountTestDraftSnapshot
+): AccountManualTestCapabilitiesContext {
+  return {
+    id: account.id,
+    factAccountId: account.stateTargetAccountId ?? account.id,
+    ownerSystemAccountId: account.ownerSystemAccountId,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    type: account.type,
+    clientCompatibility: account.clientCompatibility,
+    healthCheckModel: account.healthCheckModel,
+    healthCheckEndpointMode: account.healthCheckEndpointMode,
+    supportedEndpointModes: accountManualTestEndpointModes(account),
+    modelMappings: account.modelMappings ?? []
+  }
 }
 
 export async function accountManualTestModelCapabilitiesAsync(

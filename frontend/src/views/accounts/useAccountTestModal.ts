@@ -123,30 +123,34 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       account.healthCheckEndpointMode
     )
     testModalOpen.value = true
+    void updateSelectableTestModel(account.healthCheckModel).catch(() => undefined)
     void restoreSavedAccountTestRun(account, viewToken)
   }
 
   function openDraftTestModal(
     account: AccountSummary,
     draftPayload: AccountDraftTestPayload['account'],
-    fixedHealthCheckModel: string
+    fixedHealthCheckModel: string,
+    fixedEndpointModes?: AccountSupportedEndpointMode[]
   ): void {
-    openFixedDraftTestModal(account, draftPayload, fixedHealthCheckModel, 'create')
+    openFixedDraftTestModal(account, draftPayload, fixedHealthCheckModel, 'create', fixedEndpointModes)
   }
 
   function openSavedDraftTestModal(
     account: AccountSummary,
     draftPayload: AccountDraftTestPayload['account'],
-    fixedHealthCheckModel: string
+    fixedHealthCheckModel: string,
+    fixedEndpointModes?: AccountSupportedEndpointMode[]
   ): void {
-    openFixedDraftTestModal(account, draftPayload, fixedHealthCheckModel, 'saved')
+    openFixedDraftTestModal(account, draftPayload, fixedHealthCheckModel, 'saved', fixedEndpointModes)
   }
 
   function openFixedDraftTestModal(
     account: AccountSummary,
     draftPayload: AccountDraftTestPayload['account'],
     fixedHealthCheckModel: string,
-    mode: AccountTestDraftMode
+    mode: AccountTestDraftMode,
+    fixedEndpointModes?: AccountSupportedEndpointMode[]
   ): void {
     if (!isGatewayTestableAccountProfile(account)) {
       message.warning('当前仅支持测试 OpenAI、Anthropic 或 Gemini 协议账户')
@@ -160,7 +164,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     beginTestView(account)
     draftTestingAccountPayload.value = draftPayload
     draftTestMode.value = mode
-    useFixedTestModel(model, accountTestEndpointModesForAccount(account, draftPayload))
+    useFixedTestModel(model, fixedEndpointModes ?? accountTestEndpointModesForAccount(account, draftPayload))
     testModalOpen.value = true
   }
 

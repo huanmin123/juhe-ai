@@ -217,13 +217,13 @@ async function testResponsesBodyNormalization(): Promise<void> {
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
   assert.equal(parts.headers.get('cookie'), null)
   assert.equal(parts.headers.get('x-forwarded-for'), null)
-  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
+  assert.equal(parts.headers.get('user-agent'), 'Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)')
   assert.equal(parts.headers.get('version'), null)
   assert.equal(parts.headers.get('openai-beta'), null)
   assert.equal(typeof parts.headers.get('session-id'), 'string')
   assert.equal(typeof parts.headers.get('thread-id'), 'string')
-  assert.equal(parts.headers.get('session_id'), null)
-  assert.equal(parts.headers.get('conversation_id'), null)
+  assert.equal(parts.headers.get('session_id'), 'client-session')
+  assert.equal(parts.headers.get('conversation_id'), 'client-conversation')
 }
 
 async function testCompactBodyNormalization(): Promise<void> {
@@ -276,13 +276,13 @@ async function testHeaderAllowlistAndDefaults(): Promise<void> {
 
   assert.equal(parts.headers.get('authorization'), 'Bearer oauth-access-token')
   assert.equal(parts.headers.get('chatgpt-account-id'), 'chatgpt-account')
-  assert.equal(parts.headers.get('content-type'), 'application/json')
-  assert.equal(parts.headers.get('accept'), 'text/event-stream')
+  assert.equal(parts.headers.get('content-type'), 'application/json; charset=utf-8')
+  assert.equal(parts.headers.get('accept'), 'application/json')
   assert.equal(parts.headers.get('accept-language'), 'zh-CN,zh;q=0.9')
   assert.equal(parts.headers.get('originator'), 'codex_vscode')
-  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/0.144.4')
-  assert.equal(parts.headers.get('version'), null)
-  assert.equal(parts.headers.get('openai-beta'), null)
+  assert.equal(parts.headers.get('user-agent'), 'codex_vscode/1.2.3')
+  assert.equal(parts.headers.get('version'), '1.2.3')
+  assert.equal(parts.headers.get('openai-beta'), 'responses=experimental')
   assert.equal(parts.headers.get('x-client-request-id'), 'client-request')
   assert.equal(parts.headers.get('x-codex-turn-state'), 'turn-state')
   assert.equal(parts.headers.get('x-codex-turn-metadata'), 'turn-metadata')
@@ -303,10 +303,10 @@ async function testOldCodexHeadersAreRaisedToCompatibilityFloor(): Promise<void>
   const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
 
   assert.equal(parts.headers.get('originator'), 'codex_cli_rs')
-  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.144.4')
-  assert.equal(parts.headers.get('version'), null)
+  assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
+  assert.equal(parts.headers.get('version'), '0.125.0')
   assert.equal(parts.headers.get('openai-beta'), null)
-  assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), 'true')
+  assert.equal(parts.headers.get('x-openai-internal-codex-responses-lite'), null)
 }
 
 async function testInvalidAttestationRejection(): Promise<void> {

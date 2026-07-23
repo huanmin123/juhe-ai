@@ -31,6 +31,7 @@ import {
 } from '../../storage/account-balance.repository.js'
 import { registerAccountExportRoutes } from './account-export.routes.js'
 import { registerAccountTestSessionRoutes } from './account-test-session.routes.js'
+import { resolveAccountManualTestSelectionAsync } from './account-test-options.service.js'
 import { registerAccountTestStatusRoutes } from './account-test-status.routes.js'
 import { registerAccountListRoutes } from './account-list.routes.js'
 import { registerAccountImportRoutes } from './account-import.routes.js'
@@ -84,13 +85,18 @@ accountsRouter.post('/test-draft', async (req, res) => {
       requestAccess
     })
     const { prompt: _ignoredPrompt, testSessionId, ...testOptions } = parsed.data
+    const selection = await resolveAccountManualTestSelectionAsync(
+      preparedDraft.account,
+      preparedDraft.account.healthCheckModel,
+      testOptions.testEndpointMode ?? preparedDraft.account.healthCheckEndpointMode
+    )
     const task = await createAccountTestTaskAsync({
       account: preparedDraft.account,
       access: requestAccess,
       diagnostics: 'full',
       sessionId: testSessionId,
-      model: preparedDraft.account.healthCheckModel,
-      testEndpointMode: testOptions.testEndpointMode,
+      model: selection.model,
+      testEndpointMode: selection.testEndpointMode,
       draftAccount: preparedDraft.draftAccount
     })
     if (!dispatchAccountTestTasks([task.id])) {
