@@ -24,7 +24,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 
 | 档案 | 默认 Base URL | 账户类型 | 默认模型 | 默认能力 |
 | --- | --- | --- | --- | --- |
-| `profile_xai_openai_v1` | `https://api.x.ai/v1` | xAI API Key (`api_key`) | `grok-4.3` | Chat JSON/SSE、Responses JSON/SSE |
+| `profile_xai_openai_v1` | `https://api.x.ai/v1` | xAI API Key (`api_key`) | `grok-4.5` | Chat JSON/SSE、Responses JSON/SSE |
 
 账户保存规则：
 
@@ -52,7 +52,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 
 本地内置目录按 `2026-07-18` xAI 官方模型页和价格页快照维护，当前包含：
 
-- 文本模型：`grok-4.5`、`grok-4.3`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-build-0.1`、`grok-4.20-multi-agent-0309`；官方模型页均记录 `Text, Image -> Text`，本地目录按模型保留图片输入能力。
+- 文本模型：`grok-4.5`、`grok-4.20-0309-reasoning`、`grok-4.20-0309-non-reasoning`、`grok-build-0.1`、`grok-4.20-multi-agent-0309`；官方模型页均记录 `Text, Image -> Text`，本地目录按模型保留图片输入能力。`grok-4.3` 因无法交叉确认精确首发日期，已从内置目录移除。
 - 图片模型计价项：`grok-imagine-image` 每张 0.02 USD、`grok-imagine-image-quality` 每张 0.05 USD。当前 xAI provider driver 只开放 Chat / Responses 文本主链；账户模型选项和最终保存会按 `profile_xai_openai_v1` 的 Chat / Responses 协议交集过滤，图片专用模型不能进入 `supportedModels` 或 `healthCheckModel`。实际使用图片模型前需补专用 Images driver / 回归。
 - 当前没有可靠证据支持为这些模型暴露可选 `reasoning_effort` 枚举或默认档位，因此目录保持空数组，My Chat 不显示思考档位控件；模型名中的 reasoning / non-reasoning 事实不等于可任意猜测请求参数。
 
@@ -61,7 +61,7 @@ type AccountSupportedEndpointMode = 'chat_json' | 'chat_sse' | 'responses_json' 
 | 模型 | Input | Cached input | Output | 上下文 |
 | --- | ---: | ---: | ---: | ---: |
 | `grok-4.5` | 2.00 | 0.50 | 6.00 | 500K |
-| `grok-4.3`、`grok-4.20-*` | 1.25 | 0.20 | 2.50 | 1M |
+| `grok-4.20-*` | 1.25 | 0.20 | 2.50 | 1M |
 | `grok-build-0.1` | 1.00 | 0.20 | 2.00 | 256K |
 
 价格驱动同时保存 `priority` 两倍价格、输入达到 200K 阈值时对整次请求应用的长上下文两倍倍率，以及 prompt caching。阈值包含性是逐模型价格元数据：xAI 使用 `>= 200K`，Gemini 仍使用 `> 200K`。历史使用记录在写入时固化成本快照；后续价格变化必须新增快照，不按当前目录重算历史账单。

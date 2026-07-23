@@ -10,6 +10,14 @@ const apiKeyModalSource = readFileSync(
   fileURLToPath(new URL('../../views/api-keys/ApiKeyEditModal.vue', import.meta.url)),
   'utf8'
 )
+const apiKeyListSource = readFileSync(
+  fileURLToPath(new URL('../../views/api-keys/ApiKeyResponsiveList.vue', import.meta.url)),
+  'utf8'
+)
+const apiKeyApiSource = readFileSync(
+  fileURLToPath(new URL('../../api/domains/apiKeys.ts', import.meta.url)),
+  'utf8'
+)
 
 const fetchPageSource = sourceBetween(
   apiKeysViewSource,
@@ -21,15 +29,13 @@ assert.match(fetchPageSource, /await\s+apiKeysApi\.list\(/, 'API Key 首屏必�
 assert.doesNotMatch(fetchPageSource, /loadApiKeyOptions|loadRouteStrategyOptions/, 'API Key 首屏不得预取策略路由候选')
 assert.doesNotMatch(fetchPageSource, /Promise\.all/, 'API Key 列表请求不得与辅助 options 绑定成同一个首屏等待链')
 assert.doesNotMatch(apiKeysViewSource, /function loadApiKeyOptions\(/, '页面不得保留由列表加载链调用的宽 options 聚合入口')
-assert.match(apiKeysViewSource, /onLoaded:[\s\S]*loadApiKeyUsage/, '列表落地后应独立加载当前页 API Key 用量')
-const usageSource = sourceBetween(apiKeysViewSource, 'async function loadApiKeyUsage', 'function emptyApiKeyUsage')
-assert.match(usageSource, /apiKeysApi\.usage\(\{ ids: normalizedIds, systemAccountId \}\)/, '用量接口必须只携带当前页 ids 与作用域')
-assert.match(usageSource, /requestToken !== apiKeyUsageRequestToken/, '用量回填必须拒绝过期请求')
-assert.match(apiKeysViewSource, /apiKeyUsageState = ref<Record<string, 'pending' \| 'loaded' \| 'error'>>/, '用量必须显式维护 pending/loaded/error 状态')
-assert.match(apiKeysViewSource, /@retry-usage="retryApiKeyUsage"/, '用量失败必须提供独立重试入口')
-assert.match(apiKeysViewSource, /onDeactivated\(\(\) =>/, 'KeepAlive 失活时必须作废用量请求')
+assert.doesNotMatch(apiKeysViewSource, /loadApiKeyUsage|apiKeyUsageState|apiKeyUsageErrors|retryApiKeyUsage/, 'API Key 页面不得保留用量补发状态机')
+assert.doesNotMatch(apiKeyApiSource, /\/api-keys\/usage|\/my-api-keys\/usage|usage:/, '前端 API 不得保留独立用量接口')
+assert.match(apiKeyListSource, /<UsageSummaryTags :usage="record\.usage" \/>/, '桌面列表应直接展示列表项用量')
+assert.match(apiKeyListSource, /<strong>\{\{ formatUsageSummary\(record\.usage\) \}\}<\/strong>/, '移动列表应直接展示列表项用量')
+assert.doesNotMatch(apiKeyListSource, /usageState|usageErrors|retry-usage|用量加载失败/, '列表组件不得保留用量加载占位或重试状态')
+assert.match(apiKeysViewSource, /onDeactivated\(\(\) =>/, 'KeepAlive 失活时应标记页面需要重载')
 assert.match(apiKeysViewSource, /onActivated\(\(\) =>/, 'KeepAlive 激活时必须重载列表')
-assert.match(usageSource, /authState\.revision\.value/, '用量请求签名必须包含 auth revision')
 
 const filterDropdownSource = sourceBetween(
   apiKeysViewSource,
@@ -45,7 +51,7 @@ const openEditSource = sourceBetween(apiKeyModalSource, 'async function openEdit
 assert.match(openCreateSource, /await loadRouteStrategyOptions\(\)/, '新建弹窗应在打开操作中按需加载策略路由候选')
 assert.match(openEditSource, /await loadRouteStrategyOptions\('', \[apiKey\.routeStrategyId\]\)/, '编辑弹窗应按需加载候选并补齐已选策略')
 
-console.log('API Key 策略路由候选按需加载回归通过')
+console.log('API Key 单接口完整列表与策略路由候选按需加载回归通过')
 
 function sourceBetween(source: string, start: string, end: string): string {
   const startIndex = source.indexOf(start)

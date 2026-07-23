@@ -74,7 +74,39 @@ try {
     'PostgreSQL 内置模型目录必须用 boolean TRUE 过滤 catalog_visible，不能与整数 1 比较'
   )
 
-  databaseModule.getBusinessDatabase()
+  const businessDatabase = databaseModule.getBusinessDatabase()
+  const legacyIdTarget = businessDatabase.prepare(`
+    SELECT id, provider_code, model FROM provider_model_catalog
+    WHERE provider_code = 'gpt' AND status = 'active' AND catalog_visible = 1
+    ORDER BY model LIMIT 1
+  `).get() as unknown as { id: string; provider_code: string; model: string }
+  const legacyModelId = `provider_model_${legacyIdTarget.provider_code}_${legacyIdTarget.model.replace(/[^a-zA-Z0-9]+/g, '_')}`
+  businessDatabase.prepare('UPDATE provider_model_catalog SET id = ? WHERE id = ?').run(legacyModelId, legacyIdTarget.id)
+  seedDefaults(businessDatabase)
+  const legacyIdAfterSeed = businessDatabase.prepare(`
+    SELECT status, catalog_visible FROM provider_model_catalog WHERE provider_code = ? AND model = ?
+  `).get(legacyIdTarget.provider_code, legacyIdTarget.model) as unknown as { status: string; catalog_visible: number }
+  assert.equal(legacyIdAfterSeed.status, 'active', '旧版无 hash 内置模型 ID 升级后不得被误判为 stale')
+  assert.equal(legacyIdAfterSeed.catalog_visible, 1, '旧版无 hash 内置模型 ID 升级后不得被隐藏')
+  businessDatabase.prepare(`
+    UPDATE provider_model_catalog SET status = 'disabled', catalog_visible = 0, source = 'legacy-pricing-snapshot'
+    WHERE provider_code = ? AND model = ?
+  `).run(legacyIdTarget.provider_code, legacyIdTarget.model)
+  seedDefaults(businessDatabase)
+  const repairedSnapshotVisibility = businessDatabase.prepare(`
+    SELECT status, catalog_visible FROM provider_model_catalog WHERE provider_code = ? AND model = ?
+  `).get(legacyIdTarget.provider_code, legacyIdTarget.model) as unknown as { status: string; catalog_visible: number }
+  assert.equal(repairedSnapshotVisibility.status, 'active', '旧快照隐藏的模型补齐事实后应随新快照恢复状态')
+  assert.equal(repairedSnapshotVisibility.catalog_visible, 1, '旧快照隐藏的模型补齐事实后应随新快照恢复可见性')
+  const manuallyHidden = await providerModelCatalogRepository.updateBuiltInProviderModelConfigurationAsync(legacyModelId, { catalogVisible: false })
+  assert.equal(manuallyHidden?.source, 'manual-visibility-override', '手工隐藏必须与历史快照隐藏使用不同来源标记')
+  seedDefaults(businessDatabase)
+  assert.equal(
+    (businessDatabase.prepare('SELECT catalog_visible FROM provider_model_catalog WHERE id = ?').get(legacyModelId) as { catalog_visible: number }).catalog_visible,
+    0,
+    '默认 seed 不得重新打开管理员手工隐藏的内置模型'
+  )
+  await providerModelCatalogRepository.updateBuiltInProviderModelConfigurationAsync(legacyModelId, { catalogVisible: true })
   runtimeConfig.processRole = 'db-service'
   assert.equal(sqliteReadWorkerPool.sqliteReadWorkerPoolEnabled(), true, '模型目录缓存回归必须真实启用 SQLite read worker')
   await gatewayCacheInvalidation.notifyGatewayRuntimeCacheInvalidationAsync('provider_model_configuration_updated')
@@ -149,7 +181,7 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 126, '当前 Node 权威模型目录应包含 126 个完整模型键')
+  assert.equal(expectedSqliteModelKeys.length, 122, '当前 Node 权威模型目录应包含 122 个完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
@@ -1045,8 +1077,12 @@ try {
     inputUsdPer1M: (partialPatchTarget.inputUsdPer1M ?? 0) + 0.125
   })
   assert(partialPatchSaved, '内置模型部分价格 PATCH 后应返回模型')
+  assert.equal(partialPatchSaved.source, 'manual-override', '内置模型人工配置必须留下可识别的覆盖来源')
   assert.equal(partialPatchSaved.outputUsdPer1M, partialPatchTarget.outputUsdPer1M, '部分价格 PATCH 不得清空未提交的输出价格')
   assert.deepEqual(partialPatchSaved.serviceTierPrices, partialPatchTarget.serviceTierPrices, '部分价格 PATCH 不得清空未提交的档位价格')
+  seedDefaults(databaseModule.getBusinessDatabase())
+  const partialPatchAfterSeed = await providerModelCatalogRepository.findBuiltInProviderModelByIdAsync(partialPatchTarget.id)
+  assert.equal(partialPatchAfterSeed?.inputUsdPer1M, partialPatchSaved.inputUsdPer1M, '默认 seed 不得覆盖明确标记的管理员价格')
 
   const deleteCacheTarget = await customProviderModelsRepository.upsertCustomProviderModelAsync({
     providerCode: 'gpt', model: 'gpt-delete-cache-sync', scope: 'personal', systemAccountId: 'sys_admin',
@@ -1280,6 +1316,22 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     )
     const userATemplate = userATemplateCatalog.find((item) => item.model === 'gpt-5.6-sol' && item.status === 'active')
     assert(userATemplate?.id, '普通用户配置复制回归需要可见的 GPT 内置模型')
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/gpt/models/${userATemplate.id}`,
+      adminCookie,
+      'PATCH',
+      { releaseDate: null },
+      400,
+      '管理员不得清空内置可见模型的发布时间'
+    )
+    await assertHttpStatus(
+      `${baseUrl}/__aisys__/api/providers/gpt/models/${userATemplate.id}`,
+      adminCookie,
+      'PATCH',
+      { supportedApiProtocols: [] },
+      400,
+      '管理员不得清空内置可见模型的接口协议'
+    )
     const copiedUserModel = await postEnvelope<{
       model: string
       status: string

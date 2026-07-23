@@ -420,6 +420,11 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         res.status(400).json(badRequest(capabilityMessage))
         return
       }
+      const completenessMessage = validateBuiltInModelCompleteness(next)
+      if (completenessMessage) {
+        res.status(400).json(badRequest(completenessMessage))
+        return
+      }
       const saved = await updateBuiltInProviderModelConfigurationAsync(builtIn.id, configurationPatch)
       if (!saved) {
         sendNotFound(res, '模型不存在')
@@ -798,6 +803,21 @@ function validateCustomModelCapabilities(providerCode: string, input: CustomMode
   }
   if (defaultReasoningEffort && !reasoningEfforts.includes(defaultReasoningEffort)) {
     return '默认思考级别必须属于支持的思考级别'
+  }
+  return undefined
+}
+
+function validateBuiltInModelCompleteness(input: CustomModelPricingInput & {
+  releaseDate?: string | null
+  contextWindowTokens?: number | null
+  maxInputTokens?: number | null
+}): string | undefined {
+  if (!input.releaseDate) return '内置模型必须配置发布时间'
+  if (!input.supportedApiProtocols?.length) return '内置模型必须配置接口协议'
+  if (!customInputHasDirectPrice(input)) return '内置模型必须配置当前价格'
+  const isTextModel = !input.mode?.startsWith('image') && !input.mode?.startsWith('audio') && input.mode !== 'embedding'
+  if (isTextModel && !input.contextWindowTokens && !input.maxInputTokens) {
+    return '内置文本模型必须配置上下文或最大输入容量'
   }
   return undefined
 }

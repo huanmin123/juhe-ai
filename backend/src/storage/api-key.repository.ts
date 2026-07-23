@@ -12,7 +12,7 @@ import {
   nextApiKeyAvailabilityScheduleCheckAt
 } from './api-key-availability-schedule.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
-import { apiKeyListItemsFromRows, apiKeyListItemsFromRowsAsync, apiKeySummariesFromRows, apiKeySummariesFromRowsAsync, type ApiKeyRow } from './api-key-mappers.js'
+import { apiKeySummariesFromRows, apiKeySummariesFromRowsAsync, type ApiKeyRow } from './api-key-mappers.js'
 import { registerDeletedApiKeyRecordCleanupTargetInClientAsync } from './api-key-record-cleanup.js'
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -31,8 +31,6 @@ import {
 } from './route-strategy.repository.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
 import { optionalServerDateTimeIso } from './value-utils.js'
-import { loadApiKeyUsageSummariesForScopesAsync } from './usage-summary-loaders.js'
-import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 
 const businessSchemaName = 'juhe_business'
 const apiKeyMutationInputKeys = new Set([
@@ -54,15 +52,11 @@ export interface ApiKeyListOptions {
 }
 
 export interface ApiKeyListResult {
-  items: Array<Omit<ApiKeySummary, 'usage'>>
+  items: ApiKeySummary[]
   total: number
   hasMore: boolean
   page: number
   pageSize: number
-}
-
-export interface ApiKeyUsageResult {
-  items: Array<{ id: string; usage: ApiKeySummary['usage'] }>
 }
 
 type ApiKeyDeleteRow = {
@@ -114,26 +108,6 @@ export async function listApiKeysPageAsync(access?: AccessScope, options?: ApiKe
 
 export function listApiKeysPageReadOnly(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListResult {
   return queryApiKeys(access, options, true)
-}
-
-export async function getApiKeyUsageByIdsAsync(ids: string[], access?: AccessScope): Promise<ApiKeyUsageResult> {
-  const normalizedIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
-  if (normalizedIds.length < 1 || normalizedIds.length > 100) throw new Error('API Key 用量 ids 数量必须为 1 到 100')
-  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
-  const client = await getApiKeyDatabaseClient()
-  const rows = await client.query<{ id: string; system_account_id: string }>(`
-    SELECT id, system_account_id
-    FROM ${apiKeyTable(client, 'api_keys')} api_keys
-    WHERE api_keys.id IN (${client.dialect.bindPlaceholders(normalizedIds.length)})${scope.clause}
-  `, [...normalizedIds, ...scope.params])
-  const usage = await loadApiKeyUsageSummariesForScopesAsync(rows.map((row) => ({
-    rowKey: row.id,
-    systemAccountId: row.system_account_id,
-    scopeId: row.id
-  })))
-  return {
-    items: rows.map((row) => ({ id: row.id, usage: usage.get(row.id) ?? emptyAccountUsageSummary() }))
-  }
 }
 
 export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
@@ -223,9 +197,7 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
     `)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
-  const items = paged
-    ? apiKeyListItemsFromRows(pageRows.rows, access)
-    : apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
+  const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
   return {
     items,
     total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
@@ -276,9 +248,7 @@ async function queryApiKeysAsync(access?: AccessScope, options?: ApiKeyListOptio
     ORDER BY api_keys.is_default DESC, api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC
   `, [...(keywordCte?.params ?? []), ...filters.params, ...limitParams])
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
-  const items = paged
-    ? await apiKeyListItemsFromRowsAsync(pageRows.rows, access)
-    : await apiKeySummariesFromRowsAsync(pageRows.rows, access, { includeSecret: false })
+  const items = await apiKeySummariesFromRowsAsync(pageRows.rows, access, { includeSecret: false })
   return {
     items,
     total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,

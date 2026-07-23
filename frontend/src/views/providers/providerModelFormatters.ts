@@ -361,11 +361,19 @@ export function formatTokens(value?: number): string {
 }
 
 export function formatModelInputTokens(item: ProviderModelPricing): string {
-  return formatTokens(item.maxInputTokens)
+  if (item.maxInputTokens !== undefined) return formatTokens(item.maxInputTokens)
+  if (item.contextWindowTokens !== undefined && item.maxOutputTokens !== undefined) {
+    return `${formatTokens(Math.max(0, item.contextWindowTokens - item.maxOutputTokens))}（按上下文推导）`
+  }
+  return '官方未单独公布'
 }
 
 export function formatModelContextTokens(item: ProviderModelPricing): string {
-  return formatTokens(item.contextWindowTokens)
+  return item.contextWindowTokens === undefined ? '官方未单独公布' : formatTokens(item.contextWindowTokens)
+}
+
+export function formatModelOutputTokens(item: ProviderModelPricing): string {
+  return item.maxOutputTokens === undefined ? '官方未单独公布' : formatTokens(item.maxOutputTokens)
 }
 
 export function formatModelModalities(values?: readonly string[]): string {

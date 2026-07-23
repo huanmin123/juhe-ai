@@ -143,7 +143,7 @@
             <div class="price-cell">
               <span>总上下文 {{ formatModelContextTokens(record) }}</span>
               <span>最大输入 {{ formatModelInputTokens(record) }}</span>
-              <span>最大输出 {{ formatTokens(record.maxOutputTokens) }}</span>
+              <span>最大输出 {{ formatModelOutputTokens(record) }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'actions'">
@@ -189,7 +189,7 @@
               <span>最大输入</span>
               <strong>{{ formatModelInputTokens(record) }}</strong>
               <span>最大输出</span>
-              <strong>{{ formatTokens(record.maxOutputTokens) }}</strong>
+              <strong>{{ formatModelOutputTokens(record) }}</strong>
             </div>
             <RowActions v-if="rowActions(record).length" variant="button" :actions="rowActions(record)" @action-click="emit('model-action', $event, record)" />
           </article>
@@ -213,6 +213,7 @@ import {
   formatModelContextTokens,
   formatModelInputTokens,
   formatModelModalities,
+  formatModelOutputTokens,
   formatModelTools,
   formatModelPriceSummary,
   formatModelReasoningCapabilities,
@@ -222,7 +223,6 @@ import {
   formatModelScope,
   formatModelStatus,
   formatPrice,
-  formatTokens,
   formatUnitPrice,
   getApiProtocolTagColor,
   modelScopeColor,

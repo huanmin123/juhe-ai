@@ -63,22 +63,21 @@ assert.equal(modelAtSnapshot('gemini', 'gemini-embedding-2').inputUsdPer1M, 0.2,
 assert(modelAtSnapshot('gemini', 'gemini-3.5-flash').supportedApiProtocols.includes('interactions'), 'Gemini 3.5 Flash must expose the official Interactions protocol')
 assert(modelAtSnapshot('gemini', 'gemini-2.5-pro').supportedApiProtocols.includes('interactions'), 'Gemini 2.5 Pro must expose the official Interactions protocol')
 
-const grok43 = modelAtSnapshot('xai', 'grok-4.3')
-assert.equal(grok43.contextWindowTokens, 1_000_000, 'Grok 4.3 context window must match official xAI models')
-assert.equal(grok43.inputUsdPer1M, 1.25, 'Grok 4.3 input price must match official xAI pricing')
-assert.equal(grok43.cachedInputUsdPer1M, 0.2, 'Grok 4.3 cached input price must match official xAI pricing')
-assert.equal(grok43.outputUsdPer1M, 2.5, 'Grok 4.3 output price must match official xAI pricing')
-assert.deepEqual(grok43.supportedApiProtocols, ['chat_completions', 'responses'])
-assert.deepEqual(grok43.supportedServiceTiers, ['priority'])
-assert.equal(grok43.serviceTierPrices.priority?.inputUsdPer1M, 2.5, 'xAI priority pricing is 2x standard input')
-assert.equal(grok43.longContextInputTokenThreshold, 200_000, 'xAI long-context threshold must be explicit')
-assert.equal(grok43.longContextInputTokenThresholdInclusive, true, 'xAI long-context pricing starts at the 200k boundary')
-assert.equal(grok43.longContextInputCostMultiplier, 2, 'xAI long-context input multiplier must be explicit')
-assert.equal(grok43.longContextOutputCostMultiplier, 2, 'xAI long-context output multiplier must be explicit')
+const grok420 = modelAtSnapshot('xai', 'grok-4.20-0309-reasoning')
+assert.equal(grok420.contextWindowTokens, 1_000_000, 'Grok 4.20 context window must match official xAI models')
+assert.equal(grok420.inputUsdPer1M, 1.25, 'Grok 4.20 input price must match official xAI pricing')
+assert.equal(grok420.cachedInputUsdPer1M, 0.2, 'Grok 4.20 cached input price must match official xAI pricing')
+assert.equal(grok420.outputUsdPer1M, 2.5, 'Grok 4.20 output price must match official xAI pricing')
+assert.deepEqual(grok420.supportedApiProtocols, ['chat_completions', 'responses'])
+assert.deepEqual(grok420.supportedServiceTiers, ['priority'])
+assert.equal(grok420.serviceTierPrices.priority?.inputUsdPer1M, 2.5, 'xAI priority pricing is 2x standard input')
+assert.equal(grok420.longContextInputTokenThreshold, 200_000, 'xAI long-context threshold must be explicit')
+assert.equal(grok420.longContextInputTokenThresholdInclusive, true, 'xAI long-context pricing starts at the 200k boundary')
+assert.equal(grok420.longContextInputCostMultiplier, 2, 'xAI long-context input multiplier must be explicit')
+assert.equal(grok420.longContextOutputCostMultiplier, 2, 'xAI long-context output multiplier must be explicit')
 assert.equal(modelAtSnapshot('xai', 'grok-imagine-image').outputUsdPerImage, 0.02, 'xAI standard image price must match official pricing')
 for (const model of [
   'grok-4.5',
-  'grok-4.3',
   'grok-4.20-0309-reasoning',
   'grok-4.20-0309-non-reasoning',
   'grok-build-0.1',
@@ -90,8 +89,6 @@ for (const model of [
 }
 assert.deepEqual(modelAtSnapshot('xai', 'grok-4.5').supportedReasoningEfforts, ['low', 'medium', 'high', 'xhigh'])
 assert.equal(modelAtSnapshot('xai', 'grok-4.5').defaultReasoningEffort, 'high')
-assert.deepEqual(grok43.supportedReasoningEfforts, ['none', 'low', 'medium', 'high', 'xhigh'])
-assert.equal(grok43.defaultReasoningEffort, 'low')
 for (const model of ['grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-build-0.1', 'grok-4.20-multi-agent-0309']) {
   const item = modelAtSnapshot('xai', model)
   assert.deepEqual(item.supportedReasoningEfforts, [], `${model} must not invent unverified reasoning_effort values`)
@@ -107,7 +104,6 @@ for (const [model, context, output] of [
   ['glm-5.1', 200_000, 128_000],
   ['glm-5', 200_000, 128_000],
   ['glm-5-turbo', 200_000, 128_000],
-  ['glm-4-long', 1_000_000, 4_000],
   ['glm-4-flashx-250414', 128_000, 16_000],
   ['glm-4-flash-250414', 128_000, 16_000]
 ] as const) {
@@ -161,23 +157,24 @@ assert(
   'generated SQL must record the fixed snapshot as-of date'
 )
 assert(providerModelCatalogSnapshotSQL.includes('service_tier_prices_json'), 'generated catalog must use unified service tier prices JSON')
+assert(
+  providerModelCatalogSnapshotSQL.includes("status = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override')"),
+  'catalog sync must distinguish explicit administrator visibility from legacy snapshot state'
+)
+assert(
+  providerModelCatalogSnapshotSQL.includes("catalog_visible = CASE WHEN provider_model_catalog.source IN ('manual-override', 'manual-visibility-override')"),
+  'catalog sync must reopen repaired legacy rows without reopening administrator-hidden rows'
+)
 for (const legacy of ['pricing_model', 'priority_input_usd_per_1m', 'flex_input_usd_per_1m']) {
   assert.equal(providerModelCatalogSnapshotSQL.includes(legacy), false, `generated catalog must not use ${legacy}`)
 }
 for (const pricingAssignment of [
-  'input_usd_per_1m = COALESCE(provider_model_catalog.input_usd_per_1m, EXCLUDED.input_usd_per_1m)',
-  'output_usd_per_1m = COALESCE(provider_model_catalog.output_usd_per_1m, EXCLUDED.output_usd_per_1m)',
-  'cached_input_usd_per_1m = COALESCE(provider_model_catalog.cached_input_usd_per_1m, EXCLUDED.cached_input_usd_per_1m)',
-  'cache_write_usd_per_1m = COALESCE(provider_model_catalog.cache_write_usd_per_1m, EXCLUDED.cache_write_usd_per_1m)',
-  'cache_write_1h_usd_per_1m = COALESCE(provider_model_catalog.cache_write_1h_usd_per_1m, EXCLUDED.cache_write_1h_usd_per_1m)',
-  "service_tier_prices_json = CASE WHEN provider_model_catalog.service_tier_prices_json IS NULL OR btrim(provider_model_catalog.service_tier_prices_json) IN ('', '{}')",
-  'image_input_usd_per_1m = COALESCE(provider_model_catalog.image_input_usd_per_1m, EXCLUDED.image_input_usd_per_1m)',
-  'image_output_usd_per_1m = COALESCE(provider_model_catalog.image_output_usd_per_1m, EXCLUDED.image_output_usd_per_1m)',
-  'audio_input_usd_per_1m = COALESCE(provider_model_catalog.audio_input_usd_per_1m, EXCLUDED.audio_input_usd_per_1m)',
-  'audio_output_usd_per_1m = COALESCE(provider_model_catalog.audio_output_usd_per_1m, EXCLUDED.audio_output_usd_per_1m)',
-  'output_usd_per_image = COALESCE(provider_model_catalog.output_usd_per_image, EXCLUDED.output_usd_per_image)'
+  "input_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.input_usd_per_1m ELSE EXCLUDED.input_usd_per_1m END",
+  "output_usd_per_1m = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.output_usd_per_1m ELSE EXCLUDED.output_usd_per_1m END",
+  "service_tier_prices_json = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.service_tier_prices_json ELSE EXCLUDED.service_tier_prices_json END",
+  "output_usd_per_image = CASE WHEN provider_model_catalog.source = 'manual-override' THEN provider_model_catalog.output_usd_per_image ELSE EXCLUDED.output_usd_per_image END"
 ]) {
-  assert(providerModelCatalogSnapshotSQL.includes(pricingAssignment), `catalog sync must fill missing built-in pricing without overwriting administrator values: ${pricingAssignment}`)
+  assert(providerModelCatalogSnapshotSQL.includes(pricingAssignment), `catalog sync must refresh snapshot pricing while preserving explicit manual overrides: ${pricingAssignment}`)
 }
 const insertIndex = providerModelCatalogSnapshotSQL.indexOf('INSERT INTO juhe_business.provider_model_catalog')
 const staleDisableIndex = providerModelCatalogSnapshotSQL.indexOf('UPDATE juhe_business.provider_model_catalog AS existing')

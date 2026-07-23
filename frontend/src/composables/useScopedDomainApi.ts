@@ -29,9 +29,6 @@ export function useScopedApiKeysApi(isManagementView: Ref<boolean>) {
     list: (params?: ApiKeyListParams) => isManagementView.value
       ? api.apiKeys.list(params)
       : api.myApiKeys.list(params),
-    usage: (params: Parameters<typeof api.apiKeys.usage>[0]) => isManagementView.value
-      ? api.apiKeys.usage(params)
-      : api.myApiKeys.usage(params),
     create: (payload: ApiKeyMutationPayload, params?: ApiKeyMutationScopeParams) => isManagementView.value
       ? api.apiKeys.create(payload, params)
       : api.myApiKeys.create(payload),

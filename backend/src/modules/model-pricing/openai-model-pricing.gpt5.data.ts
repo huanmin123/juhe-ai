@@ -111,19 +111,6 @@ export const openAIGPT5ModelPricingData = [
     supported_tools: ["function_calling","web_search","file_search","image_generation","code_interpreter","hosted_shell","apply_patch","skills","computer_use","mcp","tool_search"],
   },
   {
-    model: "gpt-5-search-api",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 200000,
-    max_input_tokens: 200000,
-    supported_api_protocols: ["chat_completions"]
-  ,
-    input_modalities: ["text"],
-    output_modalities: ["text"],
-    supported_tools: ["web_search"],
-    catalog_visible: false
-  },
-  {
     model: "gpt-5.5",
     litellm_provider: "openai",
     mode: "chat",

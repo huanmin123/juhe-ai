@@ -240,22 +240,6 @@ export const glmModelPricingData = [
     output_modalities: ["text"]
   },
   {
-    model: 'glm-4-long',
-    mode: 'chat',
-    catalog_order: 150,
-    catalog_visible: false,
-    input_cost_per_token: 0.14 / 1_000_000,
-    output_cost_per_token: 0.14 / 1_000_000,
-    context_window_tokens: 1_000_000,
-    max_output_tokens: 4_000,
-    supported_api_protocols: ["chat_completions"],
-    supports_prompt_caching: false,
-    supports_service_tier: false
-  ,
-    input_modalities: ["text"],
-    output_modalities: ["text"]
-  },
-  {
     model: 'glm-4-flashx-250414',
     mode: 'chat',
     catalog_order: 160,
@@ -286,19 +270,5 @@ export const glmModelPricingData = [
   ,
     input_modalities: ["text"],
     output_modalities: ["text"]
-  },
-  {
-    model: 'glm-5.2-free',
-    mode: 'chat',
-    catalog_order: 999,
-    release_date: '2026-06-16',
-    input_cost_per_token: 0,
-    output_cost_per_token: 0,
-    context_window_tokens: 1_000_000,
-    max_output_tokens: 128_000,
-    supported_api_protocols: ['chat_completions'],
-    supports_prompt_caching: false,
-    supports_service_tier: false,
-    catalog_visible: false
   }
 ] as const

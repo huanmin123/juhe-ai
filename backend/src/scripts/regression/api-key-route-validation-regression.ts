@@ -74,6 +74,13 @@ interface ApiKeySummary {
     enabled?: boolean
     windows?: unknown[]
   }
+  usage: {
+    requestCount: number
+  }
+}
+
+interface ApiKeyListResult {
+  items: ApiKeySummary[]
 }
 
 interface ApiKeySecretResult {
@@ -127,7 +134,7 @@ async function main(): Promise<void> {
     assert(!Object.prototype.hasOwnProperty.call(validApiKey, 'clientProfile'), 'API Key 摘要不应返回 clientProfile')
     assert(!Object.prototype.hasOwnProperty.call(validApiKey, 'explicitHybridRouteRules'), 'API Key 摘要不应返回 explicitHybridRouteRules')
 
-    await assertApiKeyUsageQueryContracts(baseUrl, adminCookie, validApiKey.id)
+    await assertApiKeyListUsageContract(baseUrl, adminCookie, validApiKey.id)
 
     const secretResult = await getEnvelope<ApiKeySecretResult>(baseUrl, `/__aisys__/api/api-keys/${validApiKey.id}/secret`, adminCookie)
     assert(secretResult.key === validApiKey.key, '复制完整密钥接口应返回创建时的完整 API Key')
@@ -324,20 +331,13 @@ async function assertPatchBadRequestMessage(baseUrl: string, cookie: string, id:
   assert(parsed.message === expectedMessage, `更新 API Key 错误文案异常：${parsed.message}`)
 }
 
-async function assertApiKeyUsageQueryContracts(baseUrl: string, cookie: string, apiKeyId: string): Promise<void> {
-  const valid = await fetch(`${baseUrl}/__aisys__/api/api-keys/usage?ids=${encodeURIComponent(apiKeyId)}&ids=${encodeURIComponent(apiKeyId)}`, { headers: { cookie } })
-  assert(valid.status === 200, `重复 ids 查询键应被接受，实际 HTTP ${valid.status}: ${await valid.text()}`)
-  for (const query of [
-    '',
-    '?ids=',
-    `?ids=${encodeURIComponent(`${apiKeyId},other`)}`,
-    `?ids[]=${encodeURIComponent(apiKeyId)}`,
-    `?${Array.from({ length: 101 }, (_, index) => `ids=id_${index}`).join('&')}`
-  ]) {
-    const response = await fetch(`${baseUrl}/__aisys__/api/api-keys/usage${query}`, { headers: { cookie } })
-    const text = await response.text()
-    assert(response.status === 400, `非法 usage ids 查询应返回 400，query=${query || '<missing>'}，实际 HTTP ${response.status}: ${text}`)
-  }
+async function assertApiKeyListUsageContract(baseUrl: string, cookie: string, apiKeyId: string): Promise<void> {
+  const list = await getEnvelope<ApiKeyListResult>(baseUrl, '/__aisys__/api/api-keys?page=1&pageSize=100', cookie)
+  const listed = list.items.find((item) => item.id === apiKeyId)
+  assert(listed, 'API Key 列表应返回刚创建的 Key')
+  assert(typeof listed.usage.requestCount === 'number', 'API Key 列表应同步返回累计用量')
+  const removed = await fetch(`${baseUrl}/__aisys__/api/api-keys/usage?ids=${encodeURIComponent(apiKeyId)}`, { headers: { cookie } })
+  assert(removed.status === 404, `独立 API Key 用量路由应删除，实际 HTTP ${removed.status}`)
 }
 
 async function login(baseUrl: string): Promise<string> {

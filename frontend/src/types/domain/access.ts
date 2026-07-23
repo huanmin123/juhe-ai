@@ -197,18 +197,12 @@ export interface ApiKeySummary {
   usage: AccountUsageSummary
 }
 
-export type ApiKeyListItem = Omit<ApiKeySummary, 'usage'>
-
 export interface ApiKeyListResult {
-  items: ApiKeyListItem[]
+  items: ApiKeySummary[]
   total: number
   hasMore?: boolean
   page: number
   pageSize: number
-}
-
-export interface ApiKeyUsageResult {
-  items: Array<Pick<ApiKeySummary, 'id' | 'usage'>>
 }
 
 export interface CreatedApiKey extends ApiKeySummary {

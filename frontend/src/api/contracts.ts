@@ -197,10 +197,6 @@ export interface ApiKeyListParams extends ListParams {
   routeStrategyId?: string
 }
 
-export interface ApiKeyUsageParams extends ListParams {
-  ids: string[]
-}
-
 export interface UsageRecordListParams extends ListParams {
   page?: number
   pageSize?: number

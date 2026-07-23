@@ -58,10 +58,10 @@ assert.deepEqual(credentials.supported_endpoint_modes, ['chat_json', 'chat_sse',
 
 assert.deepEqual(
   providerModelsForProtocolProfile([
-    { label: 'grok-4.3', value: 'grok-4.3', supportedApiProtocols: ['chat_completions', 'responses'] },
+    { label: 'grok-4.5', value: 'grok-4.5', supportedApiProtocols: ['chat_completions', 'responses'] },
     { label: 'grok-imagine-image', value: 'grok-imagine-image', supportedApiProtocols: ['images'] }
   ], profile).map((item) => item.value),
-  ['grok-4.3'],
+  ['grok-4.5'],
   'xAI OpenAI v1 文本档案不得把 image-only 模型暴露给 supportedModels 或 healthCheckModel'
 )
 

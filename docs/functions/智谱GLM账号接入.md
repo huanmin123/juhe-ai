@@ -176,7 +176,6 @@ GLM 模型目录必须单独维护在 `glm` 供应商下，不要混进 GPT 价�
 - `glm-4.5-airx`
 - `glm-4.5-flash`
 - `glm-4-32b-0414-128k`
-- `glm-4-long`
 - `glm-4-flashx-250414`
 - `glm-4-flash-250414`
 

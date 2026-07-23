@@ -259,7 +259,7 @@ API Key 管理关键路径已落地到 `backend/src/storage/api-key.repository.t
 - `createResourceAuthorizationAsync()` 已新增 PG 授权创建路径：`POST /__aisys__/api/authorizations` 会在同一事务内写入 grant、runtime authorization、source、额度窗口配置；授权 AI 账号给个人时会创建或恢复授权实例账号并绑定目标分组。当前 HTTP smoke 覆盖个人账号授权创建 / 回收，团队授权 fanout 逻辑已按同步路径迁移但仍建议补独立团队场景回归。
 - `updateResourceAuthorizationAsync()` 和 `revokeResourceAuthorizationAsync()` 已新增 PG 现有授权管理写路径：`PATCH /__aisys__/api/authorizations/:id` 支持暂停 / 恢复和额度更新，`PATCH /__aisys__/api/authorizations/:id/expire` 支持有效期与额度更新，`DELETE /__aisys__/api/authorizations/:id` 支持回收；PG 事务内会更新 grant、runtime authorization、source、额度窗口配置，并在提交后失效网关运行态、授权额度、API Key 校验和授权读取缓存。
 - 完整账号管理端还需授权实例列表视图、过期物理清理、统计聚合和使用记录读写继续迁移；当前 `authorizations` 路由本身没有独立 `GET /:id` 详情入口。
-- PG 模式下 API Key 摘要会读取真实绑定路由策略及其策略分组；`usage` 暂时返回空聚合，等待 usage / stats repository 迁移后接入预聚合窗口。
+- PG 模式下 API Key 摘要会读取真实绑定路由策略及其策略分组；列表按当前页 Key 批量读取 `juhe_stats` 预聚合 `usage`，不再通过前端独立用量请求补发，也不扫描使用记录明细。
 - PG 模式下删除 API Key 会删除业务库中的 key 和绑定，并投递关联记录清理目标；record-maintenance 通过 PostgreSQL usage / dataset / stats 清理实现推进，不再因 PostgreSQL driver 跳过历史数据清理。
 - PG 模式下 API Key 列表 keyword 搜索使用 `matched_api_key_ids` materialized CTE 先按 `lower(name) COLLATE "C"` 前缀范围命中名称索引，再按原列表排序输出；如果直接在主查询中叠加 keyword 过滤，PostgreSQL 可能优先选择列表排序索引后过滤名称，导致大表搜索退化。
 - PG 模式下 API Key 创建 / 更新混合路由配置会通过 async provider 与模型目录读取校验评分模型、质量评分模型和等级目标模型；`test:performance-system-api-smoke` 已覆盖 SQLite 与远端 PostgreSQL / Redis 下混合路由 API Key 的 HTTP 创建、更新和删除。

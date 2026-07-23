@@ -81,12 +81,10 @@ try {
   assert.equal(Object.prototype.hasOwnProperty.call(listedApiKey, 'key'), false, 'API Key 列表不应返回完整密钥字段')
   assert.equal(listedApiKey.routeStrategyId, apiKey.routeStrategyId, 'API Key 列表应保留 routeStrategyId')
   assert.equal(listedApiKey.status, 'active', 'API Key 列表应保留状态字段')
-  assert.equal(Object.prototype.hasOwnProperty.call(listedApiKey, 'usage'), false, 'API Key 列表不应同步返回累计用量')
-  const apiKeyUsage = await repositories.getApiKeyUsageByIdsAsync([apiKey.id], access)
-  assert.equal(apiKeyUsage.items[0]?.usage.requestCount, 11, 'API Key 用量接口应读取预聚合真实总请求数')
-  assert.equal(apiKeyUsage.items[0]?.usage.inputTokens, 2200, 'API Key 用量接口应读取预聚合真实输入 token')
-  assert.equal(apiKeyUsage.items[0]?.usage.outputTokens, 900, 'API Key 用量接口应读取预聚合真实输出 token')
-  assertUsageContract(apiKeyUsage.items[0]!.usage, 'API Key 用量接口 usage')
+  assert.equal(listedApiKey.usage.requestCount, 11, 'API Key 列表应读取预聚合真实总请求数')
+  assert.equal(listedApiKey.usage.inputTokens, 2200, 'API Key 列表应读取预聚合真实输入 token')
+  assert.equal(listedApiKey.usage.outputTokens, 900, 'API Key 列表应读取预聚合真实输出 token')
+  assertUsageContract(listedApiKey.usage, 'API Key 列表 usage')
 
   const routeStrategyList = await repositories.listCompleteRouteStrategyListItemsPageAsync(access, { page: 1, pageSize: 20 })
   const listedRouteStrategy = routeStrategyList.items.find((item) => item.id === apiKey.routeStrategyId)
@@ -110,9 +108,10 @@ try {
   const groupDetail = repositories.findGroupSummary(group.id, access)
   assert.deepEqual(groupDetail?.accountIds, [account.id], '分组详情应保留真实绑定账号 ID')
 
-  assertStatsBusyDoesNotBlock(
+  assertStatsBusyFails(
+    'API Key 列表用量读取',
     () => repositories.listApiKeysPage(access, { page: 1, pageSize: 20 }),
-    'API Key 基础列表不应访问统计库'
+    'API Key 列表统计库忙锁时必须明确失败，不能返回零用量伪装成功'
   )
   assertStatsBusyFails(
     '分组列表统计读取',
@@ -210,20 +209,6 @@ function assertStatsBusyFails(label: string, action: () => unknown, message: str
     statsDatabase.prepare = originalPrepare
   }
   assert.ok(true, message)
-}
-
-function assertStatsBusyDoesNotBlock(action: () => unknown, message: string): void {
-  const statsDatabase = databaseModule.getStatsDatabase()
-  const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
-  statsDatabase.prepare = ((sql: string) => {
-    if (isManagementListStatsLookupSql(sql)) throw sqliteBusyError()
-    return originalPrepare(sql)
-  }) as typeof statsDatabase.prepare
-  try {
-    assert.doesNotThrow(action, message)
-  } finally {
-    statsDatabase.prepare = originalPrepare
-  }
 }
 
 function isManagementListStatsLookupSql(sql: string): boolean {

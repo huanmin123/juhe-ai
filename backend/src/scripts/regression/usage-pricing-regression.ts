@@ -448,11 +448,9 @@ assert.deepEqual(glmModelPricingList.map((item) => item.model), [
   'glm-4.5-airx',
   'glm-4.5-flash',
   'glm-4-32b-0414-128k',
-  'glm-4-long',
   'glm-4-flashx-250414',
-  'glm-4-flash-250414',
-  'glm-5.2-free'
-], 'GLM 价格目录应按官方当前模型从新到旧排序，隐藏历史估算项排最后')
+  'glm-4-flash-250414'
+], 'GLM 价格目录应按官方当前模型从新到旧排序')
 const glmPricingById = new Map(glmModelPricingList.map((item) => [item.model, item]))
 for (const id of [
   'glm-5.2',
@@ -469,15 +467,12 @@ for (const id of [
   'glm-4.5-airx',
   'glm-4.5-flash',
   'glm-4-32b-0414-128k',
-  'glm-4-long',
   'glm-4-flashx-250414',
-  'glm-4-flash-250414',
-  'glm-5.2-free'
+  'glm-4-flash-250414'
 ]) {
   assert(glmPricingById.has(id), `GLM 模型价格目录应包含 ${id}`)
   assert.deepEqual(glmPricingById.get(id)?.supportedApiProtocols, ['chat_completions'])
 }
-assert.equal(glmPricingById.get('glm-5.2-free')?.catalogVisible, false, '非官方 glm-5.2-free 不应进入可见模型目录')
 assert.equal(glmPricingById.get('glm-5.2')?.inputUsdPer1M, 1.4)
 assert.equal(glmPricingById.get('glm-5.2')?.cachedInputUsdPer1M, 0.26)
 assert.equal(glmPricingById.get('glm-5.2')?.outputUsdPer1M, 4.4)
@@ -511,8 +506,6 @@ assert.equal(glmPricingById.get('glm-4.5-flash')?.inputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-4.5-flash')?.outputUsdPer1M, 0)
 assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.inputUsdPer1M, 0.1)
 assert.equal(glmPricingById.get('glm-4-32b-0414-128k')?.outputUsdPer1M, 0.1)
-assert.equal(glmPricingById.get('glm-4-long')?.inputUsdPer1M, 0.14)
-assert.equal(glmPricingById.get('glm-4-long')?.outputUsdPer1M, 0.14)
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5.2-20260620')?.model, 'glm-5.2')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-5-turbo-20260620')?.model, 'glm-5-turbo')
 assert.equal(getProviderModelPricing(GLM_PROVIDER_CODE, 'glm-4.7-flashx-20260620')?.model, 'glm-4.7-flashx')
@@ -558,7 +551,7 @@ for (const serviceTier of ['priority', 'flex'] as const) {
 }
 assert.equal(estimateProviderCostUsd({
   providerCode: XAI_PROVIDER_CODE,
-  model: 'grok-4.3',
+  model: 'grok-4.20-0309-reasoning',
   inputTokens: 200_000,
   outputTokens: 0
 }), 0.5, 'xAI 输入达到 200k 阈值时必须对全量输入启用长上下文价格')
@@ -865,7 +858,7 @@ assert.equal(openAIModelPricingById.get('gpt-5.5')?.releaseDate, '2026-04-23')
 assert.equal(openAIModelPricingById.get('gpt-5.4-mini')?.releaseDate, '2026-03-17')
 assert.equal(openAIModelPricingById.get('gpt-5.3-codex')?.releaseDate, '2026-02-24')
 assert.equal(openAIModelPricingById.get('gpt-5.2')?.releaseDate, '2025-12-11')
-assert.equal(openAIModelPricingById.get('gpt-5-search-api')?.releaseDate, '2025-08-07')
+assert.equal(openAIModelPricingById.has('gpt-5-search-api'), false, '缺少完整计价事实的搜索专用模型必须移出内置目录')
 assert.equal(openAIModelPricingById.get('gpt-4.1')?.releaseDate, '2025-04-14')
 assert.equal(openAIModelPricingById.has('babbage-002'), false)
 assert.equal(openAIModelPricingById.get('gpt-5.6-sol')?.inputUsdPer1M, 5)

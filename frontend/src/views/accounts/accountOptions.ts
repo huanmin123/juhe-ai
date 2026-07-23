@@ -42,12 +42,12 @@ export { GPT_VENDOR_CODE }
 
 export const DEFAULT_OPENAI_SUPPORTED_MODELS = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-image-2']
 export const DEFAULT_GPT_SUPPORTED_MODELS = [...DEFAULT_OPENAI_SUPPORTED_MODELS]
-export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.3']
+export const DEFAULT_XAI_SUPPORTED_MODELS = ['grok-4.5']
 export const DEFAULT_ANTHROPIC_SUPPORTED_MODELS = ['claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5']
 export const DEFAULT_GEMINI_SUPPORTED_MODELS = ['gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']
 export const DEFAULT_DEEPSEEK_SUPPORTED_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro']
 export const DEFAULT_GLM_SUPPORTED_MODELS = ['glm-5.2', 'glm-5.1', 'glm-5', 'glm-5-turbo', 'glm-4.7-flashx', 'glm-4.7-flash']
-export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.5', 'claude-opus-4-8', 'gemini-3.5-flash', 'deepseek-v4-flash', 'glm-5.2']
+export const DEFAULT_HYBRID_SUPPORTED_MODELS = ['gpt-5.6-sol', 'claude-opus-4-8', 'gemini-3.5-flash', 'deepseek-v4-flash', 'glm-5.2']
 
 export const OPENAI_COMPATIBLE_PROVIDER: ProviderDefinition = {
   id: OPENAI_COMPATIBLE_PROVIDER_CODE,
@@ -126,7 +126,7 @@ export const XAI_PROVIDER: ProviderDefinition = {
   protocolCode: OPENAI_PROTOCOL_CODE,
   protocolVersion: OPENAI_PROTOCOL_VERSION,
   baseUrl: 'https://api.x.ai/v1',
-  defaultHealthCheckModel: 'grok-4.3',
+  defaultHealthCheckModel: 'grok-4.5',
   defaultSupportedModels: DEFAULT_XAI_SUPPORTED_MODELS,
   accountTypes: ['api_key'],
   capabilities: ['responses', 'chat', 'passthrough'],
@@ -139,7 +139,7 @@ export const XAI_PROVIDER: ProviderDefinition = {
       protocolCode: OPENAI_PROTOCOL_CODE,
       protocolVersion: OPENAI_PROTOCOL_VERSION,
       baseUrl: 'https://api.x.ai/v1',
-      defaultHealthCheckModel: 'grok-4.3',
+      defaultHealthCheckModel: 'grok-4.5',
       accountTypes: ['api_key'],
       capabilities: ['responses', 'chat', 'passthrough'],
       endpointFamilies: [
