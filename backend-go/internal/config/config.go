@@ -34,7 +34,6 @@ type Config struct {
 	NodeInternalBaseURL                string        `env:"JUHE_AI_NODE_INTERNAL_BASE_URL"`
 	UpstreamBaseURLPrivateAllowlist    []string      `env:"JUHE_AI_UPSTREAM_BASE_URL_PRIVATE_ALLOWLIST" envSeparator:","`
 	NodeInternalRequestTimeout         time.Duration `env:"JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT" envDefault:"2s"`
-	NodeInternalSnapshotRebuildTimeout time.Duration `env:"JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT" envDefault:"60s"`
 	PublicAPIEnabled                   bool          `env:"JUHE_AI_PUBLIC_API_ENABLED" envDefault:"false"`
 	ManagementAPIEnabled               bool          `env:"JUHE_AI_MANAGEMENT_API_ENABLED" envDefault:"false"`
 	GatewayModelsEnabled               bool          `env:"JUHE_AI_GATEWAY_MODELS_ENABLED" envDefault:"false"`
@@ -200,10 +199,6 @@ func (cfg Config) Validate() error {
 	if cfg.NodeInternalRequestTimeout < 100*time.Millisecond ||
 		cfg.NodeInternalRequestTimeout > 10*time.Second {
 		return fmt.Errorf("JUHE_AI_NODE_INTERNAL_REQUEST_TIMEOUT 必须在 100ms 到 10s 之间")
-	}
-	if cfg.NodeInternalSnapshotRebuildTimeout != 0 &&
-		(cfg.NodeInternalSnapshotRebuildTimeout < time.Second || cfg.NodeInternalSnapshotRebuildTimeout > 5*time.Minute) {
-		return fmt.Errorf("JUHE_AI_NODE_INTERNAL_SNAPSHOT_REBUILD_TIMEOUT 必须在 1s 到 5m 之间")
 	}
 	if strings.TrimSpace(cfg.RedisNamespace) == "" {
 		return fmt.Errorf("JUHE_AI_REDIS_NAMESPACE 不能为空")
