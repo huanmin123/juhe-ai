@@ -348,6 +348,12 @@ func (h Handler) finishStreamFailure(input Input, result Result, err error) (Res
 		signal = gatewayretry.ResponseSignalProtocolContract
 		code = firstText(code, "upstream_protocol_contract")
 		message = firstText(message, "上游流式协议检查失败")
+	} else if errors.Is(err, gatewaystreamrelay.ErrClientCanceled) || errors.Is(err, gatewaystreamrelay.ErrDestinationWrite) {
+		phase = gatewayretry.PhaseClientLifecycle
+		attribution = gatewayusage.FailureAttributionClientLifecycle
+		auditOutcome = gatewayaudit.OutcomeClientAborted
+		code = firstText(code, "client_stream_interrupted")
+		message = firstText(message, "客户端流式连接已中断")
 	} else if errors.Is(err, gatewaydeadline.ErrFirstByteDeadline) || errors.Is(err, gatewaystreamrelay.ErrMissingTerminal) || errors.Is(err, gatewaystreamrelay.ErrSourceRead) || errors.Is(err, gatewaystreamrelay.ErrIdleDeadline) || errors.Is(err, gatewaystreamrelay.ErrTotalDeadline) || errors.Is(err, gatewaydispatch.ErrResponseBodyClose) {
 		closeOnlyCompleted := errors.Is(err, gatewaydispatch.ErrResponseBodyClose) && result.Stream != nil && result.Stream.State == gatewaystreamrelay.StateCompleted
 		if closeOnlyCompleted {
@@ -361,12 +367,6 @@ func (h Handler) finishStreamFailure(input Input, result Result, err error) (Res
 			code = firstText(code, "upstream_stream_interrupted")
 			message = firstText(message, "上游流式响应未完整结束")
 		}
-	} else if errors.Is(err, gatewaystreamrelay.ErrClientCanceled) || errors.Is(err, gatewaystreamrelay.ErrDestinationWrite) {
-		phase = gatewayretry.PhaseClientLifecycle
-		attribution = gatewayusage.FailureAttributionClientLifecycle
-		auditOutcome = gatewayaudit.OutcomeClientAborted
-		code = firstText(code, "client_stream_interrupted")
-		message = firstText(message, "客户端流式连接已中断")
 	} else if errors.Is(err, gatewaystreamrelay.ErrInvalidLimits) {
 		phase = gatewayretry.PhaseGatewayPolicy
 		attribution = gatewayusage.FailureAttributionGatewayPolicy

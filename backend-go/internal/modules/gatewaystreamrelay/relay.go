@@ -541,7 +541,18 @@ func classifyContextFailure(cause error) failure {
 
 func classifyWriteContextFailure(cause error) failure {
 	if !errors.Is(cause, ErrIdleDeadline) && !errors.Is(cause, ErrTotalDeadline) {
-		return classifyContextFailure(cause)
+		if !errors.Is(cause, gatewaydeadline.ErrFirstByteDeadline) {
+			classified := classifyContextFailure(cause)
+			classified.err = errors.Join(ErrDestinationWrite, classified.err)
+			return classified
+		}
+		return failure{
+			err: fmt.Errorf("%w: %w", ErrDestinationWrite, cause), code: "client_stream_write_canceled",
+			message: "客户端流式写入已取消", phase: "client",
+			attribution: gatewayusage.FailureAttributionClientLifecycle,
+			audit:       gatewayaudit.OutcomeClientAborted,
+			clientAbort: true,
+		}
 	}
 	code := "client_stream_idle_timeout"
 	message := "客户端流式写入空闲超时"
@@ -552,7 +563,7 @@ func classifyWriteContextFailure(cause error) failure {
 		err = ErrTotalDeadline
 	}
 	return failure{
-		err: err, code: code, message: message, phase: "client",
+		err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: code, message: message, phase: "client",
 		attribution: gatewayusage.FailureAttributionClientLifecycle,
 		audit:       gatewayaudit.OutcomeClientAborted,
 		clientAbort: true,

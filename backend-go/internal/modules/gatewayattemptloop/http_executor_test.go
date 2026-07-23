@@ -126,6 +126,28 @@ func TestHTTPExecutorDoesNotRetrySlowDownstreamAsUpstreamTimeout(t *testing.T) {
 	}
 }
 
+func TestHTTPExecutorDoesNotRetrySlowStreamSinkAsUpstreamTimeout(t *testing.T) {
+	client := doerStub{response: &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("data: visible\n\n"))}}
+	dispatcher := gatewaydispatch.Dispatcher{Client: client}
+	executor := HTTPExecutor{
+		Dispatcher: dispatcher, Handler: gatewayresponse.Handler{Dispatcher: dispatcher},
+		Prepare: func(context.Context, Attempt) (gatewayupstream.Input, gatewayresponse.Input, error) {
+			credential, _ := gatewayupstream.NewCredential("sk-test", gatewayupstream.CredentialOptions{})
+			return gatewayupstream.Input{Request: protocolgateway.RequestShape{Method: http.MethodGet, Path: "/v1/models"}, Candidate: gatewaycandidate("a").Projection, BaseURL: "https://upstream.example.com", Credential: credential}, gatewayresponse.Input{
+				Transport: gatewayresponse.TransportStream,
+				Sink: gatewaystreamrelay.SinkFunc(func(ctx context.Context, _ []byte) (int, error) {
+					<-ctx.Done()
+					return 0, context.Cause(ctx)
+				}),
+			}, nil
+		},
+	}
+	result, err := executor.Execute(context.Background(), Attempt{ReplayAllowed: true, Budget: AttemptBudget{FirstByteDeadline: time.Now().Add(15 * time.Millisecond)}})
+	if err == nil || result.RetryAllowed || result.Failure.ErrorCode == "first_byte_timeout" || result.Usage.FailureAttribution != gatewayusage.FailureAttributionClientLifecycle {
+		t.Fatalf("result = %+v err=%v", result, err)
+	}
+}
+
 func TestHTTPExecutorTransparentForUnmatchedUpstreamFailure(t *testing.T) {
 	client := doerStub{response: &http.Response{StatusCode: http.StatusServiceUnavailable, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"maintenance"}`))}}
 	dispatcher := gatewaydispatch.Dispatcher{Client: client}
