@@ -39,6 +39,8 @@ type GatewayAccountCandidateListInput struct {
 	Access             GatewayGroupAccess
 	Now                time.Time
 	IncludeUnavailable bool
+	RequestedModel     string
+	EndpointFamily     string
 	Limit              int
 }
 
@@ -98,6 +100,7 @@ type GatewayAccountCandidate struct {
 	ResourceAccountExpiresAt          *time.Time
 	ResourceConcurrencyLimit          int
 	ResourceClientCompatibility       string
+	ModelRank                         int
 }
 
 type GatewayAccountCandidateReader interface {

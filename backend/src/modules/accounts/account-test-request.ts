@@ -21,7 +21,7 @@ const claudeCodeVersion = '2.1.201'
 const claudeCodeBuildId = 'eb7'
 const claudeCodeDeviceId = '7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc'
 export const accountTestModelsPath = '/v1/models'
-export const accountImageTestDefaultPrompt = 'A small solid white square on a plain background.'
+export const accountImageTestDefaultPrompt = 'Solid black image. No objects or text.'
 
 export type AccountTestRequestInput = {
   explicitModel?: string
@@ -74,7 +74,8 @@ export function createOpenAIImageGenerationTestRequest(input: {
       n: 1,
       size: '1024x1024',
       quality: 'low',
-      output_format: 'png'
+      output_format: 'webp',
+      output_compression: 100
     },
     model
   }

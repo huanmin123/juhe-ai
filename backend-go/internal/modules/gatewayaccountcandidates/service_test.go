@@ -55,6 +55,8 @@ func TestServiceProjectResolvesAccessBeforeBoundedCandidateRead(t *testing.T) {
 		Access:             store.access,
 		Now:                now,
 		IncludeUnavailable: true,
+		RequestedModel:     "",
+		EndpointFamily:     "",
 		Limit:              port.GatewayAccountCandidateScanLimit,
 	}
 	if !reflect.DeepEqual(store.listInput, wantList) {

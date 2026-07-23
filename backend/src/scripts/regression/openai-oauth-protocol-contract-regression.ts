@@ -148,8 +148,8 @@ const refreshRequest = buildTokenHttpRequest({
 })
 assert.equal(headerValue(refreshRequest.headers, 'content-type'), 'application/json')
 assert.equal(headerValue(refreshRequest.headers, 'content-length'), Buffer.byteLength(refreshRequest.body))
-assert.equal(headerValue(refreshRequest.headers, 'originator'), 'codex_cli_rs')
-assert.equal(headerValue(refreshRequest.headers, 'user-agent'), 'codex_cli_rs/0.144.4')
+assert.equal(headerValue(refreshRequest.headers, 'originator'), 'Codex Desktop')
+assert.equal(headerValue(refreshRequest.headers, 'user-agent'), 'Codex Desktop/0.145.0 (Windows 10.0.22621; x86_64) unknown (codex_exec; 0.145.0)')
 assert.deepEqual(JSON.parse(refreshRequest.body), {
   grant_type: 'refresh_token',
   refresh_token: 'contract-refresh-token',

@@ -98,9 +98,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
       if (!input.testForm.model) {
         input.testForm.model = defaultModel || testModelOptions.value[0]?.value || ''
       }
-      if (input.testForm.model === defaultModel) {
-        useDefaultTestEndpointMode()
-      }
       return response
     } catch (error) {
       if (!isAbortError(error) && isCurrentOptionsRequest(requestToken, account.id)) {
@@ -163,12 +160,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     modelAbortController?.abort()
     modelAbortController = undefined
     const requestToken = nextModelRequestToken()
-    if (normalizedModel === defaultModel) {
-      testModelCapabilitiesLoading.value = false
-      useDefaultTestEndpointMode()
-      return
-    }
-
     testModelCapabilitiesLoading.value = true
     const controller = new AbortController()
     modelAbortController = controller
@@ -228,11 +219,6 @@ export function useAccountTestModels(input: UseAccountTestModelsInput) {
     testEndpointModes.value = []
     input.testForm.model = ''
     input.testForm.testEndpointMode = 'account_default'
-  }
-
-  function useDefaultTestEndpointMode(): void {
-    testEndpointModes.value = defaultTestEndpointMode ? [defaultTestEndpointMode] : []
-    input.testForm.testEndpointMode = defaultTestEndpointMode ?? 'account_default'
   }
 
   function nextOptionsRequestToken(): number {

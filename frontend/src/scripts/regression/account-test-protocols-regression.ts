@@ -15,7 +15,11 @@ import {
   isGatewaySupportedTestSelection
 } from '../../views/accounts/accountDerivedState'
 import { canTestAccount } from '../../views/accounts/accountRules'
-import { accountEndpointModeLabel, validateAccountEndpointModes } from '../../views/accounts/accountEndpointModes'
+import {
+  accountEndpointModeLabel,
+  accountTestEndpointModesForModel,
+  validateAccountEndpointModes
+} from '../../views/accounts/accountEndpointModes'
 
 const openAIAccount = accountFixture({
   id: 'acct_openai_protocol_test',
@@ -81,6 +85,20 @@ assertTrue(isGatewaySupportedProtocolProfile(geminiAccount), 'Gemini v1beta 账�
 assertTrue(isGatewaySupportedProtocolProfile(geminiOpenAIChatAccount), 'Gemini OpenAI Chat 账户应允许走前端账户测试入口')
 assertFalse(isGatewaySupportedProtocolProfile(unsupportedAccount), '未接入网关测试的协议不应允许走前端账户测试入口')
 assertEqual(accountEndpointModeLabel('images_json'), 'Images API', '图片模型测试形态必须显示为 Images API')
+assertDeepEqual(
+  accountTestEndpointModesForModel(openAIAccount, 'gpt-image-2', undefined, { supportedApiProtocols: ['images'] }),
+  ['images_json'],
+  'OpenAI API Key 草稿选择图片模型时只能显示 Images API'
+)
+assertDeepEqual(
+  accountTestEndpointModesForModel(openAIAccount, 'vendor/custom-image', undefined, { supportedApiProtocols: ['images'] }),
+  ['images_json'],
+  '自定义图片模型必须按目录能力限制为 Images API，不能依赖模型名'
+)
+assertFalse(
+  accountTestEndpointModesForModel({ ...openAIAccount, type: 'oauth' }, 'gpt-image-2').includes('images_json'),
+  'OAuth 账户没有 Images API Key 探针能力，不得显示 Images API'
+)
 
 assertTrue(canTestAccount(openAIAccount), 'OpenAI v1 正常账户应可测试')
 assertTrue(canTestAccount(anthropicAccount), 'Anthropic API Key 正常账户应可测试')

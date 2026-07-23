@@ -948,3 +948,36 @@
 - 新增 `juhe-ai-maintenance stats-schema-contract-preflight`，只读目标 PostgreSQL `information_schema.columns`，按 account-usage/AI performance、stats overview、system metrics、table monitor 四个 feature 校验 Go reader 当前实际读取的 13 张唯一 `juhe_stats` 表、14 组 feature-relation 依赖及所需列。缺表、缺列或检查不可用均以稳定 JSON 和非零退出 fail-closed，底层数据库错误不写入结果。
 - 门禁固定输出 `contractVersion=2` 和 `writerOwner=node`。本批不实现生产 writer、不运行 schema reconcile、不创建 migration、不修改 owner manifest，也不复用或改写已发布的 `000070`；后续 migration 必须从真实 catalog 派生下一连续版本。这是为了避免请求进程变成第二 schema owner，并保留 Node `stats-worker` 在共存期的唯一写入职责。
 - 部署前必须先由统一 schema owner 合并 fresh Goose 所需表与索引，再启动 Node writer、执行本门禁和真实 writer-reader / EXPLAIN smoke。reader contract 通过只证明关系与列兼容，不证明数据 freshness、Node worker 活跃、Go worker 接管或 Node 可删除。
+
+## 2026-07-23 gatewaycandidatewindow 批量迁移计划结果
+
+- [x] 完成单次 512 候选扫描、模型/endpoint 感知排序和无 OFFSET 有界查询。
+- [x] 完成 256 批量 hydration 组合契约、失败候选补位、最终 256 上限和固定诊断字段。
+- [x] 完成模型匹配、fallback/super/priority 业务桶、同桶质量排序和 name/id 稳定排序。
+- [x] 完成 hydrator 返回重复/未知账户的 fail-closed 协议检查；公开候选结构不携带明文凭据。
+- [x] 接入 PostgreSQL 批量凭据/模型/代理/API-key runtime/新鲜 quality hydrator；账户策略、dispatch revision/circuit 和真实请求循环继续后置。
+- [ ] 完成真实 PostgreSQL/Redis/upstream smoke、listener canary、owner manifest 切换和 Node gateway 删除门禁。
+
+本轮仍按第一波快速迁移规则执行：未在每个文件修改后单独编译或测试，全部代码与文档完成后统一验证；后续轮次再逐模块反复对照 Node 和真实依赖。
+
+## 2026-07-23 gatewaycandidatewindow PostgreSQL hydrator 结果
+
+- [x] 新增最多 256 账户的 typed hydration port 和 PostgreSQL bulk reader；模型/映射、代理与 24 小时新鲜质量均按集合读取，无 N+1。
+- [x] 候选 SQL 输出 `modelRank`；窗口为全部最多 512 行批量加载 view-account 新鲜质量，并在首个 256 hydration 批次前完成 model/business/quality 排序，后段高质量同桶候选可前移。
+- [x] 新增资源账户凭据解密、API-key pool HMAC fingerprint、既有 runtime states 批量复用和缺失 state 默认 active 的当前契约。
+- [x] API-key pool 保留原始数组 index、不对非法非空数组回退单 key；runtime handoff 补齐 `cooldownUntil/nextProbeAt`。
+- [x] 新增代理 host/port/user/password hydration，账户/代理明文使用 redacted `CredentialSet`，不进入 JSON diagnostics。
+- [x] 账户凭据损坏按固定 drop reason 隔离；代理故障保留候选并标记 unavailable；批量业务事实/runtime 失败保持 fail-closed；授权实例使用 source resource facts，质量使用 view account facts。
+- [ ] 下一批把 candidate window 接到 account policy + attempt loop，并加入 dispatch revision、Redis circuit/hot quality 和公共 deadline。
+- [ ] 真实 PostgreSQL schema/query plan、真实 Redis runtime、upstream smoke、listener/canary/rollback 和 Node 删除仍待后续统一验收。
+
+## 2026-07-23 account policy 与 candidate attempt loop 结果
+
+- [x] 新增 bounded typed policy normalize/decision：显式规则匹配才执行 retry-next/cooldown/disable，普通失败不隐式改账户状态。
+- [x] 新增 hydrated candidate/key attempt loop：key-scoped retry、显式 replay-safe 跨账户 retry、单请求最多 4 账户、mutation applier、max attempts、wall deadline、first-byte budget 传播、commit/cancel fence 和逐次 usage/audit handoff；first-byte transport enforcement 仍待接入。
+- [x] 新增具体 HTTP executor adapter，组合既有 upstream builder、dispatcher 和 response handler；非 2xx body 读取后按 typed account policy 动态选择透明转发或显式策略，nested protocol facts 与唯一 `PolicyDecision` handoff 一并返回；每次 attempt summary 保留 usage/audit，避免成功-after-retry 覆盖前次终态记录。
+- [x] 新增 policy 与 loop 定向测试，覆盖规则优先级、错误码/类型/关键字、reset、未命中透明转发、命中显式策略、单账户最多两个 API Key、key 顺序、策略切换、终态提交、预算和取消。
+- [ ] 接入跨请求 round-robin / weighted-round-robin 共享游标；本轮只完成请求级双 key 放大上限，避免把未迁移的 Redis runtime 假装成已完成。
+- [ ] 下一批接请求 replay 分类、first-byte transport enforcement、账户状态 PostgreSQL writer、dispatch revision、Redis circuit/hot quality、生产 request preparation/listener 和 owner manifest。
+
+本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。

@@ -1,8 +1,11 @@
 package postgres
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestManagementAccountStatusSnapshotSQLKeepsScopeAndInputOrder(t *testing.T) {
@@ -34,6 +37,24 @@ func TestManagementAccountStatusSnapshotSQLKeepsScopeAndInputOrder(t *testing.T)
 	}
 }
 
+func TestScanManagementAccountAPIKeyRuntimeStateIncludesCooldown(t *testing.T) {
+	values := []any{
+		"account_1", "fingerprint", 3, "rate_limited",
+		pgtype.Text{String: "2026-07-23T12:00:00Z", Valid: true},
+		pgtype.Text{String: "2026-07-23T12:05:00Z", Valid: true},
+		pgtype.Text{}, pgtype.Text{}, pgtype.Text{}, pgtype.Text{},
+	}
+	accountID, state, err := scanManagementAccountAPIKeyRuntimeState(func(dest ...any) error {
+		for index := range dest {
+			reflect.ValueOf(dest[index]).Elem().Set(reflect.ValueOf(values[index]))
+		}
+		return nil
+	})
+	if err != nil || accountID != "account_1" || state.CooldownUntil != "2026-07-23T12:00:00Z" || state.NextProbeAt != "2026-07-23T12:05:00Z" {
+		t.Fatalf("runtime state = %q %+v err=%v", accountID, state, err)
+	}
+}
+
 func TestManagementAccountStatusSnapshotRuntimeQueriesReuseSourceAccount(t *testing.T) {
 	for _, fragment := range []string{
 		"COALESCE(source.id, account.id)",
@@ -51,6 +72,7 @@ func TestManagementAccountStatusSnapshotRuntimeQueriesReuseSourceAccount(t *test
 	for _, fragment := range []string{
 		"unnest($1::text[], $2::text[])",
 		"requested.key_fingerprint = states.key_fingerprint",
+		"cooldown_until",
 		"ORDER BY states.account_id, states.key_index, states.key_fingerprint",
 	} {
 		if !strings.Contains(managementAccountAPIKeyRuntimeStatesSQL, fragment) {

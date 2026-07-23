@@ -22,6 +22,7 @@ logger.level = 'silent'
 
 const [
   { accountsRouter },
+  { accountManualTestCapabilitiesContextFromDraft, resolveAccountManualTestSelectionAsync },
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { saveCustomProviderModel },
   { requestContextMiddleware },
@@ -30,6 +31,7 @@ const [
   repositories
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
+  import('../../modules/accounts/account-test-options.service.js'),
   import('../../modules/auth/auth.middleware.js'),
   import('../../modules/model-pricing/model-catalog.service.js'),
   import('../../shared/request-context.js'),
@@ -129,6 +131,41 @@ try {
       supported_endpoint_modes: ['responses_json', 'responses_sse']
     }
   }, userAccess)
+  assert.deepEqual(
+    await resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, imageModelId, 'responses_sse'),
+    { model: imageModelId, testEndpointMode: 'images_json' },
+    '图片模型即使收到旧文本请求形态，也必须强制改用 Images API'
+  )
+  const draftImageContext = accountManualTestCapabilitiesContextFromDraft({
+    id: 'acctdraft_image_protocol',
+    ownerSystemAccountId: user.id,
+    groupId: group.id,
+    providerCode: account.providerCode,
+    providerProtocolProfileId: account.providerProtocolProfileId,
+    protocolCode: account.protocolCode,
+    protocolVersion: account.protocolVersion,
+    name: '图片草稿测试账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-draft-image-protocol',
+      base_url: 'https://api.openai.com/v1',
+      supported_endpoint_modes: ['responses_json', 'responses_sse']
+    },
+    concurrencyLimit: 1,
+    priority: 0,
+    superPriorityEnabled: false,
+    fallbackEnabled: false,
+    clientCompatibility: 'openai_standard',
+    supportedModels: [imageModelId],
+    healthCheckModel: imageModelId,
+    healthCheckEndpointMode: 'responses_sse',
+    modelMappings: []
+  })
+  assert.deepEqual(
+    await resolveAccountManualTestSelectionAsync(draftImageContext, imageModelId, 'responses_sse'),
+    { model: imageModelId, testEndpointMode: 'images_json' },
+    '新增或编辑账户草稿中的图片模型必须把旧文本请求形态收口为 Images API'
+  )
   const openaiGroup = repositories.createGroup({ name: '账户测试选项 HTTP OpenAI分组', providerCode: 'openai' }, userAccess)
   const chatOnlyAccount = repositories.createAccount({
     providerCode: 'openai',

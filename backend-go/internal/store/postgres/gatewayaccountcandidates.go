@@ -70,6 +70,8 @@ func (s *Store) ListGatewayAccountCandidates(ctx context.Context, input port.Gat
 		input.Now.UTC(),
 		string(input.Access.AccessType),
 		input.Access.GroupAuthorizationID,
+		input.RequestedModel,
+		input.EndpointFamily,
 		limit,
 	)
 	if err != nil {
@@ -153,6 +155,7 @@ func scanGatewayAccountCandidate(scan gatewayAccountCandidateScan) (port.Gateway
 		&resourceAccountExpiresAt,
 		&resourceConcurrencyLimit,
 		&resourceCompatibility,
+		&candidate.ModelRank,
 	); err != nil {
 		return port.GatewayAccountCandidate{}, fmt.Errorf("scan gateway account candidate: %w", err)
 	}
@@ -194,6 +197,8 @@ func normalizeGatewayCandidateInput(input *port.GatewayAccountCandidateListInput
 	input.Access.CallerSystemAccountID = strings.TrimSpace(input.Access.CallerSystemAccountID)
 	input.Access.ProviderCode = strings.TrimSpace(input.Access.ProviderCode)
 	input.Access.GroupAuthorizationID = strings.TrimSpace(input.Access.GroupAuthorizationID)
+	input.RequestedModel = strings.TrimSpace(input.RequestedModel)
+	input.EndpointFamily = strings.TrimSpace(input.EndpointFamily)
 	if input.Now.IsZero() {
 		input.Now = time.Now()
 	}

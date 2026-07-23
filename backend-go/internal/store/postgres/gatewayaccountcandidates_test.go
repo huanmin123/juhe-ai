@@ -51,12 +51,27 @@ func TestGatewayAccountCandidateSQLIsBoundedAndAuthorizationAware(t *testing.T) 
 		"accounts.authorization_instance_owner_system_account_id = account_authorizations.resource_owner_system_account_id",
 		"source_accounts.deleted_at IS NULL",
 		"source_accounts.schedulable = true",
-		"ORDER BY group_accounts.local_fallback_enabled ASC",
+		"CROSS JOIN LATERAL",
+		"END AS model_rank",
+		"FROM juhe_business.account_supported_models AS supported_models",
+		"supported_models.account_id = COALESCE(source_accounts.id, accounts.id)",
+		"supported_models.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)",
+		"FROM juhe_business.account_model_mappings AS model_mappings",
+		"model_mappings.source_model = $9::text",
+		"model_mappings.source_endpoint_family = $10::text",
+		"model_mappings.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)",
+		"model_mappings.upstream_model <> model_mappings.source_model",
+		"model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family",
+		"mapped_models.provider_code = model_mappings.provider_code",
+		"model_ranking.model_rank < 3",
+		"ORDER BY model_ranking.model_rank ASC",
+		"mapped_models.model = model_mappings.upstream_model",
+		"group_accounts.local_fallback_enabled ASC",
 		"group_accounts.local_super_priority_enabled DESC",
 		"group_accounts.local_priority ASC",
 		"group_accounts.created_at ASC",
 		"group_accounts.account_id ASC",
-		"LIMIT $9",
+		"LIMIT $11",
 	} {
 		if !strings.Contains(listGatewayAccountCandidatesSQL, fragment) {
 			t.Fatalf("candidate SQL missing %q", fragment)
@@ -96,6 +111,7 @@ func TestScanGatewayAccountCandidateMapsDirectAndResourceFields(t *testing.T) {
 		pgtype.Text{String: "active", Valid: true}, pgtype.Bool{Bool: true, Valid: true}, pgtype.Text{String: "encrypted_source", Valid: true},
 		pgtype.Text{String: "proxy_source", Valid: true}, pgtype.Timestamptz{}, pgtype.Timestamptz{Time: later, Valid: true},
 		pgtype.Int4{Int32: 99, Valid: true}, pgtype.Text{String: "openai_standard", Valid: true},
+		1,
 	}
 	candidate, err := scanGatewayAccountCandidate(func(dest ...any) error {
 		if len(dest) != len(values) {
@@ -117,6 +133,9 @@ func TestScanGatewayAccountCandidateMapsDirectAndResourceFields(t *testing.T) {
 	}
 	if candidate.ResourceAccountID != "acc_source" || candidate.ResourceCredentialsEncrypted != "encrypted_source" || candidate.ResourceConcurrencyLimit != 99 {
 		t.Fatalf("candidate resource fields = %+v", candidate)
+	}
+	if candidate.ModelRank != 1 {
+		t.Fatalf("candidate model rank = %d", candidate.ModelRank)
 	}
 	if candidate.CooldownUntil == nil || !candidate.CooldownUntil.Equal(later) || candidate.ResourceAccountExpiresAt == nil || !candidate.ResourceAccountExpiresAt.Equal(later) {
 		t.Fatalf("candidate time fields = %+v", candidate)

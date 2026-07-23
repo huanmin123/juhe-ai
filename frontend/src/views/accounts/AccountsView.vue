@@ -329,6 +329,7 @@ import { useAccountSelectionActions } from './useAccountSelectionActions'
 import { useAccountTestModal } from './useAccountTestModal'
 import type { DraftApiKeyTestSnapshot } from './accountDraftApiKeyTestRuntime'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
+import { accountTestEndpointModesForModel } from './accountEndpointModes'
 
 const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
 const AccountBatchEditModal = defineAsyncComponent(() => import('./AccountBatchEditModal.vue'))
@@ -763,20 +764,34 @@ function openDraftTestModal(
   account: AccountSummary,
   draftPayload: AccountDraftTestAccountPayload
 ): void {
+  const model = draftHealthCheckModel(draftPayload)
   openDraftTestModalWithHealthCheckModel(
     account,
     draftPayload,
-    draftHealthCheckModel(draftPayload)
+    model,
+    accountTestEndpointModesForModel(
+      account,
+      model,
+      draftPayload,
+      providerModelOptions.value.find((option) => option.value === model)
+    )
   )
 }
 function openSavedDraftTestModal(
   account: AccountSummary,
   draftPayload: AccountDraftTestAccountPayload
 ): void {
+  const model = draftHealthCheckModel(draftPayload)
   openSavedDraftTestModalWithHealthCheckModel(
     account,
     draftPayload,
-    draftHealthCheckModel(draftPayload)
+    model,
+    accountTestEndpointModesForModel(
+      account,
+      model,
+      draftPayload,
+      providerModelOptions.value.find((option) => option.value === model)
+    )
   )
 }
 function draftHealthCheckModel(draftPayload: AccountDraftTestAccountPayload): string {

@@ -31,7 +31,7 @@ WITH requested(account_id, key_fingerprint) AS (
   SELECT * FROM unnest($1::text[], $2::text[])
 )
 SELECT states.account_id, states.key_fingerprint, states.key_index, states.status,
-       next_probe_at, last_failure_at, last_error_code, last_error_message, last_trace_id
+       cooldown_until, next_probe_at, last_failure_at, last_error_code, last_error_message, last_trace_id
 FROM juhe_business.account_api_key_runtime_states AS states
 JOIN requested ON requested.account_id = states.account_id
               AND requested.key_fingerprint = states.key_fingerprint
@@ -73,23 +73,34 @@ func (s *Store) ListManagementAccountAPIKeyRuntimeStatesByFingerprints(ctx conte
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var accountID string
-		var state port.ManagementAccountAPIKeyRuntimeState
-		var nextProbeAt, lastFailureAt, lastErrorCode, lastErrorMessage, lastTraceID pgtype.Text
-		if err := rows.Scan(&accountID, &state.KeyFingerprint, &state.KeyIndex, &state.Status, &nextProbeAt, &lastFailureAt, &lastErrorCode, &lastErrorMessage, &lastTraceID); err != nil {
-			return nil, fmt.Errorf("scan management account api key runtime state: %w", err)
+		accountID, state, scanErr := scanManagementAccountAPIKeyRuntimeState(rows.Scan)
+		if scanErr != nil {
+			return nil, scanErr
 		}
-		state.NextProbeAt = textValue(nextProbeAt)
-		state.LastFailureAt = textValue(lastFailureAt)
-		state.LastErrorCode = textValue(lastErrorCode)
-		state.LastErrorMessage = textValue(lastErrorMessage)
-		state.LastTraceID = textValue(lastTraceID)
 		result[accountID] = append(result[accountID], state)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate management account api key runtime states: %w", err)
 	}
 	return result, nil
+}
+
+type managementAccountAPIKeyRuntimeStateScan func(...any) error
+
+func scanManagementAccountAPIKeyRuntimeState(scan managementAccountAPIKeyRuntimeStateScan) (string, port.ManagementAccountAPIKeyRuntimeState, error) {
+	var accountID string
+	var state port.ManagementAccountAPIKeyRuntimeState
+	var cooldownUntil, nextProbeAt, lastFailureAt, lastErrorCode, lastErrorMessage, lastTraceID pgtype.Text
+	if err := scan(&accountID, &state.KeyFingerprint, &state.KeyIndex, &state.Status, &cooldownUntil, &nextProbeAt, &lastFailureAt, &lastErrorCode, &lastErrorMessage, &lastTraceID); err != nil {
+		return "", port.ManagementAccountAPIKeyRuntimeState{}, fmt.Errorf("scan management account api key runtime state: %w", err)
+	}
+	state.CooldownUntil = textValue(cooldownUntil)
+	state.NextProbeAt = textValue(nextProbeAt)
+	state.LastFailureAt = textValue(lastFailureAt)
+	state.LastErrorCode = textValue(lastErrorCode)
+	state.LastErrorMessage = textValue(lastErrorMessage)
+	state.LastTraceID = textValue(lastTraceID)
+	return accountID, state, nil
 }
 
 func normalizedRuntimeFingerprints(values map[string][]string) ([]string, []string) {
