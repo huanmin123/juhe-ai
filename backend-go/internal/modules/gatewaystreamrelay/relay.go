@@ -66,6 +66,13 @@ type TerminalInspector interface {
 	Snapshot() Inspection
 }
 
+// CommitObserver is optional. Inspectors that classify protocol violations at
+// the downstream commit boundary can receive this notification without making
+// transport relay depend on a protocol package.
+type CommitObserver interface {
+	ObserveCommit(transportCommitted, semanticCommitted bool, downstreamBytes int64)
+}
+
 type Inspection struct {
 	TerminalRequired bool
 	TerminalReceived bool
@@ -215,7 +222,11 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 				}
 			}
 			semanticOutput := options.Inspector == nil || result.Inspection.SemanticOutput
-			if writeFailure := writeChunk(totalCtx, sink, chunk, limits.IdleTimeout, semanticOutput, &result, now); writeFailure != nil {
+			writeFailure := writeChunk(totalCtx, sink, chunk, limits.IdleTimeout, semanticOutput, &result, now)
+			if observer, ok := options.Inspector.(CommitObserver); ok {
+				observer.ObserveCommit(result.TransportCommitted, result.SemanticCommitted, result.BytesWritten)
+			}
+			if writeFailure != nil {
 				return finalizeFailure(result, options, startedAt, now, *writeFailure)
 			}
 			if result.Inspection.TerminalReceived {

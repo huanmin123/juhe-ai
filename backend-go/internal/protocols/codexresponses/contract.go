@@ -25,6 +25,7 @@ const (
 	OutcomeRepairable      Outcome = "repairable"
 	OutcomeBlocked         Outcome = "blocked"
 	OutcomeObservedUnknown Outcome = "observed_unknown"
+	OutcomeLateViolation   Outcome = "late_violation"
 )
 
 type Mode string
@@ -43,6 +44,13 @@ type CommitState struct {
 
 func (state CommitState) CanRetryUpstream() bool {
 	return !state.TransportCommitted && !state.SemanticCommitted && state.DownstreamBytes <= 0
+}
+
+func OutcomeAtCommit(outcome Outcome, state CommitState) Outcome {
+	if state.SemanticCommitted && (outcome == OutcomeRepairable || outcome == OutcomeBlocked) {
+		return OutcomeLateViolation
+	}
+	return outcome
 }
 
 type RepairLevel string

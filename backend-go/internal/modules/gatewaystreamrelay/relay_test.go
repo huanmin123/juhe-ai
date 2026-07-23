@@ -142,7 +142,8 @@ func TestRelayCapFailureAfterFirstByteCannotRetry(t *testing.T) {
 func TestRelayPartialDestinationWriteCommitsFirstByteAndDisablesRetry(t *testing.T) {
 	sinkErr := errors.New("client disconnected")
 	sink := SinkFunc(func(_ context.Context, p []byte) (int, error) { return 2, sinkErr })
-	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("hello")}}, sink, Options{Limits: testLimits(), StartedAt: time.Now()})
+	inspector := &inspectorStub{inspection: Inspection{SemanticOutput: true}}
+	result, err := Relay(context.Background(), &sliceSource{chunks: [][]byte{[]byte("hello")}}, sink, Options{Limits: testLimits(), StartedAt: time.Now(), Inspector: inspector})
 	if !errors.Is(err, sinkErr) || !errors.Is(err, ErrDestinationWrite) {
 		t.Fatalf("Relay() error = %v", err)
 	}
@@ -151,6 +152,9 @@ func TestRelayPartialDestinationWriteCommitsFirstByteAndDisablesRetry(t *testing
 	}
 	if !result.Handoff.Audit.ClientAborted {
 		t.Fatalf("audit = %#v", result.Handoff.Audit)
+	}
+	if inspector.commitCalls != 1 || !inspector.transportCommitted || !inspector.semanticCommitted || inspector.downstreamBytes != 2 {
+		t.Fatalf("commit observer = %#v", inspector)
 	}
 }
 
@@ -333,13 +337,17 @@ func (s *recordingSink) Len() int {
 }
 
 type inspectorStub struct {
-	seen           bytes.Buffer
-	observeErr     error
-	finishErr      error
-	inspection     Inspection
-	terminalOnText string
-	failedOnText   string
-	finished       bool
+	seen               bytes.Buffer
+	observeErr         error
+	finishErr          error
+	inspection         Inspection
+	terminalOnText     string
+	failedOnText       string
+	finished           bool
+	commitCalls        int
+	transportCommitted bool
+	semanticCommitted  bool
+	downstreamBytes    int64
 }
 
 func (s *inspectorStub) Observe(p []byte) error {
@@ -362,5 +370,12 @@ func (s *inspectorStub) Finish() error {
 }
 
 func (s *inspectorStub) Snapshot() Inspection { return s.inspection }
+
+func (s *inspectorStub) ObserveCommit(transportCommitted, semanticCommitted bool, downstreamBytes int64) {
+	s.commitCalls++
+	s.transportCommitted = transportCommitted
+	s.semanticCommitted = semanticCommitted
+	s.downstreamBytes = downstreamBytes
+}
 
 func int64Pointer(value int64) *int64 { return &value }

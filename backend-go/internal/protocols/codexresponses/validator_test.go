@@ -126,6 +126,15 @@ func TestCommitStateRequiresNoTransportCommitForRetry(t *testing.T) {
 	}
 }
 
+func TestOutcomeAtCommitMarksLateContractViolations(t *testing.T) {
+	if got := OutcomeAtCommit(OutcomeBlocked, CommitState{SemanticCommitted: true}); got != OutcomeLateViolation {
+		t.Fatalf("OutcomeAtCommit() = %q", got)
+	}
+	if got := OutcomeAtCommit(OutcomeRepairable, CommitState{}); got != OutcomeRepairable {
+		t.Fatalf("uncommitted OutcomeAtCommit() = %q", got)
+	}
+}
+
 func TestValidateJSONEnforcesSafeLocalShellTimeout(t *testing.T) {
 	valid := `{"output":[{"type":"local_shell_call","id":"lsh_1","status":"completed","action":{"type":"exec","command":["go","test"],"timeout_ms":9007199254740991}}]}`
 	if result, err := ValidateJSON([]byte(valid), ProvenanceRawUpstream); err != nil || result.Outcome != OutcomeClean {

@@ -107,6 +107,18 @@ type SSEInspection struct {
 	Finished            bool
 }
 
+// SSEEvent is emitted after the generic OpenAI parser has classified one data
+// event. Data is detached from parser-owned state before the observer receives it.
+type SSEEvent struct {
+	EventName string
+	EventType string
+	Data      map[string]any
+	Done      bool
+	Malformed bool
+}
+
+type SSEEventObserver func(SSEEvent) error
+
 // SSEInspector incrementally inspects an OpenAI-compatible SSE stream. It has no
 // goroutines or context dependency; one owner feeds it bytes and reads snapshots.
 type SSEInspector struct {
@@ -120,13 +132,18 @@ type SSEInspector struct {
 	eventBytes int64
 	hasData    bool
 	stickyErr  error
+	observer   SSEEventObserver
 }
 
 func NewSSEInspector(limits SSELimits) (*SSEInspector, error) {
+	return NewSSEInspectorWithObserver(limits, nil)
+}
+
+func NewSSEInspectorWithObserver(limits SSELimits, observer SSEEventObserver) (*SSEInspector, error) {
 	if limits.MaxLineBytes <= 0 || limits.MaxEventBytes <= 0 || limits.MaxTotalBytes <= 0 {
 		return nil, fmt.Errorf("openai SSE limits must all be positive: %#v", limits)
 	}
-	return &SSEInspector{limits: limits}, nil
+	return &SSEInspector{limits: limits, observer: observer}, nil
 }
 
 // Write accepts arbitrary byte boundaries, including boundaries inside CRLF and
@@ -197,7 +214,9 @@ func (i *SSEInspector) Finish() error {
 		}
 	}
 	if i.pendingEvent() {
-		i.dispatchEvent()
+		if err := i.dispatchEvent(); err != nil {
+			return err
+		}
 	}
 	i.inspection.Finished = true
 	return nil
@@ -221,8 +240,7 @@ func (i *SSEInspector) consumeLine() error {
 		line = line[:len(line)-1]
 	}
 	if len(line) == 0 {
-		i.dispatchEvent()
-		return nil
+		return i.dispatchEvent()
 	}
 
 	separatorBytes := int64(0)
@@ -255,32 +273,47 @@ func (i *SSEInspector) consumeLine() error {
 	return nil
 }
 
-func (i *SSEInspector) dispatchEvent() {
+func (i *SSEInspector) dispatchEvent() error {
 	if !i.hasData {
 		i.resetEvent()
-		return
+		return nil
 	}
 	dataText := strings.TrimSpace(string(i.eventData))
 	eventName := i.eventName
 	i.resetEvent()
 	if dataText == "" {
-		return
+		return nil
 	}
 
 	i.inspection.EventCount++
 	if dataText == "[DONE]" {
 		i.recordEvent("[DONE]", eventName, nil)
-		return
+		return i.notify(SSEEvent{EventName: eventName, EventType: "[DONE]", Done: true})
 	}
 
 	payload, ok := decodeSSEPayload(dataText)
 	if !ok {
 		i.inspection.MalformedEventCount++
 		i.inspection.LastEventType = firstNonEmpty(eventName, "message")
-		return
+		return i.notify(SSEEvent{EventName: eventName, EventType: i.inspection.LastEventType, Malformed: true})
 	}
 	eventType := firstNonEmpty(stringField(payload, "type"), stringField(payload, "event_type"), eventName, "message")
 	i.recordEvent(eventType, eventName, payload)
+	return i.notify(SSEEvent{EventName: eventName, EventType: eventType, Data: payload})
+}
+
+func (i *SSEInspector) notify(event SSEEvent) error {
+	if i.observer == nil {
+		return nil
+	}
+	if event.Data != nil {
+		event.Data = cloneObject(event.Data)
+	}
+	if err := i.observer(event); err != nil {
+		i.stickyErr = fmt.Errorf("openai SSE event observer: %w", err)
+		return i.stickyErr
+	}
+	return nil
 }
 
 func (i *SSEInspector) recordEvent(eventType, eventName string, payload map[string]any) {
@@ -340,6 +373,29 @@ func decodeSSEPayload(text string) (map[string]any, bool) {
 		return nil, false
 	}
 	return payload, true
+}
+
+func cloneObject(value map[string]any) map[string]any {
+	result := make(map[string]any, len(value))
+	for key, entry := range value {
+		result[key] = cloneJSONValue(entry)
+	}
+	return result
+}
+
+func cloneJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneObject(typed)
+	case []any:
+		result := make([]any, len(typed))
+		for index, entry := range typed {
+			result[index] = cloneJSONValue(entry)
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 func isSSETerminalEvent(eventType string) bool {

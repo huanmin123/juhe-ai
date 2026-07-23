@@ -16,7 +16,7 @@
 
 - 本轮完成：最新 `origin/master` 已变基合入，page-data 已按 master 最新业务调整继续保持退场；Goose / owner gate 统一到 `73`；OpenAI OAuth 只完成 Go-native 契约基础；W9 增加 PostgreSQL client catalog reader、`GET /models`、`GET /v1/models`、`GET /v1beta/models` 的 opt-in 纵切面；dispatcher 统一共享 shutdown budget，并在 `Done()` 后释放队列依赖；补回账户导入三条路由的 authenticated rate-limit 覆盖。
 - 本轮证据：Go `config/httpapi/app/gatewayclientcatalog/store/postgres` 定向测试、`app/httpapi/recorddispatch` 回归与 dispatcher race、migration catalog / maintenance、owner manifest、Node owner validator、page-data removal gate 均通过。真实 PostgreSQL / Redis / upstream / worker、真实 Go listener、反向代理切流和 Node owner 移交仍未完成。
-- 进度口径：代码迁移约 `65%`，可独立验证的 Go 能力约 `58%~59%`；生产 owner 接管 `0%`（`management=node`、`public=node`、`gateway=node`、`worker=node`，Go allowlist 为空）；Node 通用减法约 `3%`，本轮 page-data 删除属于产品退场清理，不计作已开始通用 Node 删除。
+- 进度口径：代码迁移约 `65%`，可独立验证的 Go 能力约 `59%`；生产 owner 接管 `0%`（`management=node`、`public=node`、`gateway=node`、`worker=node`，Go allowlist 为空）；Node 通用减法约 `3%`，本轮 page-data 删除属于产品退场清理，不计作已开始通用 Node 删除。
 - 本轮完成标准：`origin/master` behind 为 `0`、变基冲突已裁决、工作树无未提交代码、候选提交已合入或有明确延期理由、page-data removal gate 通过、目标测试通过、计划与迁移清单同步、远端检查点推送成功。下一轮从 W9 网关准备层继续，优先把模型目录接入真实依赖和 owner 灰度证据，不扩大到 Chat 或最终 Node 删除。
 
 ### 2026-07-23 网关传输核心批次
@@ -26,7 +26,8 @@
 - 本批完成标准：核心包可独立导入；凭据、URL、header、body、取消、背压、超时、终态和首字节后重试边界均有测试；最新 master 已合入开发分支；配套迁移记录已更新。下一批应把 `gatewayupstream` 与已有 protocol inspector / retry / candidate 组合为可测试的 Go HTTP dispatch seam，再补真实依赖 smoke，仍不提前切 owner。
 - dispatch seam 进展：新增 `internal/modules/gatewaydispatch`，将一次已选候选交给注入的 HTTP client，保留完整 gateway definition，提供有界 non-stream body 读取、可识别的 read/close error 和 response-body-to-relay 适配。该批补齐 transport error、非 2xx 透传、body 超限、close error、HTTP status handoff 和 body close 回归；仍未注册生产 listener、proxy/SSRF policy、retry/candidate/quota 组合或任何 gateway owner。
 - 最新 Node 漂移审计：远程 `master=f16aab65e` 已完成 Codex Responses firewall / history self-heal 的 Node 纵切面（contract registry、provenance、safe repair、strict intercept、account policy、历史 ID sanitizer、usage/audit/account explanation）。Go 现有 Responses parser 只覆盖终态/usage，尚无同等 contract registry；本轮不照搬 Node 账户字段或 SQLite sanitizer，已在 W10 记录为下一批 protocol contract blocker，Node firewall owner 和生产切流保持不变。
-- Codex Responses contract 批次已落地：`backend-go/internal/protocols/codexresponses` 以 Go-native registry / validator 固定 17 类 item、字段和 ID 规则，并补齐 unknown / R0 / R2、外部 history、tool correlation、诊断上限、JSON fail-closed 与 commit state。该包仅提供可选 inspector 基础，不接管 repair、SSE、账户策略、usage/audit 或 owner；对应 race/vet/定向测试通过，下一批继续做 dispatch 可选接线与真实 bridge/provenance。
+- Codex Responses contract 首批已落地：`backend-go/internal/protocols/codexresponses` 以 Go-native registry / validator 固定 17 类 item、字段和 ID 规则，并补齐 unknown / R0 / R2、外部 history、tool correlation、诊断上限、JSON fail-closed 与 commit state。该首批只提供 inspector 基础，不接管 repair、账户策略、usage/audit 或 owner；对应 race/vet/定向测试通过。
+- Codex Responses stream contract 批次已落地：新增 `StreamState` 覆盖 `added -> delta -> done -> completed` identity consistency、重复 ID、resource ID、unknown delta、R0 repair suggestion 和有界 retained diagnostics；新增 `gatewaycodexresponses.Inspector` 接入既有 relay seam，shadow 透传、strict 首字节前拦截，safe repair 因缺少 Go 字节重写执行器而明确拒绝。OpenAI SSE parser 增加只读 parsed-event observer，relay 通过可选 commit observer 把首字节后异常标为 `late_violation`；Go 全量 test/vet 与 Node registry/JSON/SSE/provenance/account-policy/history 六组回归通过。本批仍不改变 owner manifest，Node firewall 继续是 production owner。
 
 ## 多轮批量迁移规则（2026-07-20）
 
