@@ -177,6 +177,11 @@ try {
   assert.equal(failedPending?.effectiveAvailability?.color, 'red', '待检查失败应使用红色状态')
   assert.match(failedPending?.effectiveAvailability?.reason ?? '', /自动重试/, '待检查失败应说明系统会自动重试')
 
+  const pendingBeforeRestart = repositories.findAccountSummary(pending.id, access)
+  assert(pendingBeforeRestart, '重新检查前应能读取待检查账户')
+  databaseModule.getBusinessDatabase()
+    .prepare('UPDATE accounts SET last_error_trace_id = ?, last_health_check_trace_id = ? WHERE id = ?')
+    .run('stale-error-trace', 'stale-health-trace', pending.id)
   const restartedPending = repositories.clearAccountFailureState(pending.id, access, { allowPendingTestRestore: true })
   assert.equal(restartedPending?.status, 'pending_test', '重新检查必须保持待检查状态')
   assert.equal(restartedPending?.schedulable, false, '重新检查后必须保持不可调度')
@@ -184,6 +189,14 @@ try {
   assert.equal(restartedPending?.healthCheckFailureCount, 0, '重新检查必须清空健康检查失败计数')
   assert.equal(restartedPending?.healthCheckFailureStartedAt, undefined, '重新检查必须清空首次失败窗口')
   assert.equal(restartedPending?.lastHealthCheckErrorCode, undefined, '重新检查必须清空健康检查错误码')
+  assert.equal(restartedPending?.lastErrorTraceId, undefined, '重新检查必须清空旧错误 trace')
+  assert.equal(restartedPending?.lastHealthCheckTraceId, undefined, '重新检查必须清空旧健康检查 trace')
+  assert((restartedPending?.configRevision ?? 0) > (pendingBeforeRestart?.configRevision ?? 0), '重新检查必须递增配置版本以拒绝在途旧探针结果')
+  assert.equal(repositories.recordAccountHealthCheckSuccess(pending.id, {
+    ...healthSettings,
+    statusCode: 200,
+    expectedConfigRevision: pendingBeforeRestart?.configRevision
+  }), false, '重新检查后在途旧健康成功不得写回')
 
   repositories.recordAccountHealthCheckFailure(pending.id, {
     ...healthSettings,
@@ -222,6 +235,16 @@ try {
   assert.equal(activated?.status, 'active', '后台健康检查成功应把待检查账户改为正常')
   assert.equal(activated?.schedulable, true, '后台健康检查成功应恢复调度')
 
+  databaseModule.getBusinessDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET last_error_trace_id = ?,
+          last_health_check_at = ?,
+          last_health_success_at = ?,
+          last_health_check_trace_id = ?
+      WHERE id = ?
+    `)
+    .run('stale-config-error-trace', new Date().toISOString(), new Date().toISOString(), 'stale-config-health-trace', pending.id)
   const changedCredentials = repositories.updateAccount(pending.id, {
     credentials: {
       api_key: 'sk-manual-failure',
@@ -230,6 +253,11 @@ try {
   }, access)
   assert.equal(changedCredentials?.status, 'pending_test', '关键配置变更后应重新进入待检查')
   assert.equal(changedCredentials?.schedulable, false, '关键配置变更后后台检查成功前不得调度')
+  assert.equal(changedCredentials?.lastErrorTraceId, undefined, '关键配置变更进入待检查时必须清理旧错误 trace')
+  const changedCredentialsStored = repositories.findAccountSummary(pending.id, access)
+  assert.equal(changedCredentialsStored?.lastHealthCheckAt, undefined, '关键配置变更进入待检查时必须清理旧健康检查时间')
+  assert.equal(changedCredentialsStored?.lastHealthSuccessAt, undefined, '关键配置变更进入待检查时必须清理旧健康成功事实')
+  assert.equal(changedCredentialsStored?.lastHealthCheckTraceId, undefined, '关键配置变更进入待检查时必须清理旧健康检查 trace')
 
   const failedCandidate = repositories.findOpenAIAccountForGroup(
     group.id,
@@ -354,7 +382,18 @@ function createMockOpenAIServer(): http.Server {
       }
       if (String(req.headers.accept ?? '').includes('text/event-stream')) {
         res.writeHead(200, { 'content-type': 'text/event-stream' })
-        res.end('event: response.completed\ndata: {"type":"response.completed","response":{"object":"response","status":"completed","output":[]}}\n\n')
+        res.end([
+          'event: response.created',
+          'data: {"type":"response.created","response":{"id":"resp_pending_test_mock","status":"in_progress"}}',
+          '',
+          'event: response.output_text.delta',
+          'data: {"type":"response.output_text.delta","delta":"ok"}',
+          '',
+          'event: response.completed',
+          'data: {"type":"response.completed","response":{"id":"resp_pending_test_mock","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}',
+          '',
+          ''
+        ].join('\n'))
         return
       }
       res.writeHead(200, { 'content-type': 'application/json' })
