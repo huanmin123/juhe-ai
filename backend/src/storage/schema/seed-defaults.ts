@@ -245,6 +245,7 @@ export function seedDefaults(database: DatabaseSync): void {
 
   seedAdminDefaultBuiltInGroups(database, now)
   seedAdminDefaultRouteStrategiesAndApiKeys(database, now)
+  seedAdminChatApiKey(database, now)
   seedBuiltInExternalIntegrationTestToken(database, now)
 
   const statement = database.prepare(`
@@ -255,6 +256,31 @@ export function seedDefaults(database: DatabaseSync): void {
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
     statement.run('sys_admin', key, JSON.stringify(value), now)
   }
+}
+
+function seedAdminChatApiKey(database: DatabaseSync, timestamp: string): void {
+  const existing = database.prepare("SELECT id FROM api_keys WHERE system_account_id = 'sys_admin' AND purpose = 'chat' LIMIT 1").get() as { id?: string } | undefined
+  if (existing?.id) return
+  const group = database.prepare(`
+    SELECT id FROM groups
+    WHERE system_account_id = 'sys_admin' AND provider_code = ? AND is_default = 1
+    ORDER BY created_at ASC, id ASC LIMIT 1
+  `).get(GPT_VENDOR_CODE) as { id?: string } | undefined
+  if (!group?.id) return
+  const routeStrategyId = defaultRouteStrategyIdForGroup(group.id)
+  const route = database.prepare("SELECT id, name FROM route_strategies WHERE id = ? AND status = 'active' LIMIT 1").get(routeStrategyId) as { id?: string; name?: string } | undefined
+  if (!route?.id) return
+  const key = createApiKey()
+  database.prepare(`
+    INSERT OR IGNORE INTO api_keys (
+      id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+      key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json, availability_schedule_json,
+      availability_schedule_next_check_at, created_at, updated_at
+    ) VALUES (?, 'sys_admin', ?, 'AI 对话 API Key', ?, ?, ?, ?, ?, 'active', 0, 'chat', NULL, NULL, NULL, NULL, ?, ?)
+  `).run(
+    'key_chat_sys_admin', route.id, `AI 对话专用 API Key，默认绑定${route.name ?? 'GPT 路由'}。`,
+    hashSecret(key), key.slice(0, 8), key.slice(-8), encryptJson({ key }), timestamp, timestamp
+  )
 }
 
 function seedAdminDefaultRouteStrategiesAndApiKeys(database: DatabaseSync, timestamp: string): void {

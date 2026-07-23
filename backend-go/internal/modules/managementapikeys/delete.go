@@ -18,6 +18,7 @@ const (
 var (
 	ErrAPIKeyDeleteInvalid                     = errors.New("API Key 删除参数无效")
 	ErrAPIKeyDefaultDelete                     = errors.New("默认 API Key 不允许删除")
+	ErrAPIKeyChatDelete                        = errors.New("AI 对话 API Key 不允许删除")
 	ErrAPIKeyDeleteValidationCacheInvalidation = errors.New("API Key 删除后校验缓存失效失败")
 )
 
@@ -59,6 +60,8 @@ func (s *Service) Delete(ctx context.Context, input DeleteInput) (DeleteResult, 
 			return DeleteResult{}, ErrAPIKeyNotFound
 		case errors.Is(err, port.ErrManagementAPIKeyDefaultDelete):
 			return DeleteResult{}, ErrAPIKeyDefaultDelete
+		case errors.Is(err, port.ErrManagementAPIKeyChatDelete):
+			return DeleteResult{}, ErrAPIKeyChatDelete
 		default:
 			return DeleteResult{}, err
 		}

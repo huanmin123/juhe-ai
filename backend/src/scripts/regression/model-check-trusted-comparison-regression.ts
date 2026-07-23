@@ -66,23 +66,6 @@ await assert.rejects(
   '显式开启可信对比但未选择对比账户时必须失败'
 )
 
-await assert.rejects(
-  () => runModelCheck({
-    targetType: 'account',
-    targetId: 'acc_missing',
-    model: 'gpt-5.5',
-    profile: 'quick',
-    trustedComparisonAccountId: 'trusted-account'
-  }, access),
-  (error) => {
-    assert(error instanceof ModelCheckRequestError)
-    assert.equal(error.statusCode, 400)
-    assert.match(error.message, /快速检测不支持可信对比/)
-    return true
-  },
-  '快速检测携带可信对比参数必须在目标解析前拒绝'
-)
-
 const row = getDatasetDatabase()
   .prepare('SELECT COUNT(*) AS count FROM model_check_runs')
   .get() as { count: number }

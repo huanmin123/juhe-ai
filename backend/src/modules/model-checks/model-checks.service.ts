@@ -242,9 +242,6 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
 
   const trustedComparisonAccountId = input.trustedComparisonAccountId?.trim()
   const trustedComparison = input.trustedComparison === true || Boolean(trustedComparisonAccountId)
-  if (profile === 'quick' && trustedComparison) {
-    throw new ModelCheckRequestError(400, '快速检测不支持可信对比，请开启深度检测')
-  }
   if (trustedComparison && !trustedComparisonAccountId) {
     throw new ModelCheckRequestError(400, '请选择可信对比账户后再开启可信对比检测')
   }
@@ -318,12 +315,23 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     throwIfAborted(signal)
     const targetSuite = await executeProbeSuite(target, model, 'target', profile, signal, progress)
     if (profile === 'quick') {
+      const comparisonSuite = comparison && targetSuite.basic?.success === true
+        ? await executeProbeSuite(comparison, model, 'trusted_comparison', profile, signal, progress)
+        : undefined
+      const trustedComparisonItem = comparisonSuite
+        ? buildTrustedComparisonItem(targetSuite, comparisonSuite)
+        : undefined
+      if (trustedComparisonItem) emitModelCheckItemProgress(progress, trustedComparisonItem)
       const checks = await requestDatasetWriter({
         type: 'create_model_check_items',
         runId: run.id,
-        items: targetSuite.items
+        items: [
+          ...targetSuite.items,
+          ...(comparisonSuite?.items ?? []),
+          ...(trustedComparisonItem ? [trustedComparisonItem] : [])
+        ]
       })
-      const summary = summarizeChecks(checks, { trustedComparison: false, profile })
+      const summary = summarizeChecks(checks, { trustedComparison, profile })
       const evidenceCompleteness = summarizeEvidenceCompleteness(checks)
       const trustReport = buildModelCheckTrustReport(checks, {
         requestedModel: model,
@@ -347,7 +355,8 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
             requestFailureCount: checks.filter((item) => recordValue(item.evidenceSummary)?.requestFailure === true).length,
             evidenceCompleteness,
             trustReport,
-            trustedComparison: false,
+            trustedComparison,
+            trustedComparisonAccountId: comparison?.targetId,
             profile
           }
         }

@@ -7,9 +7,8 @@ const capabilityBase = { supportedApiProtocols: ['responses'], inputModalities: 
 
 assert.equal(reasoningEffortLabel('medium'), '中')
 assert.deepEqual(selectableChatReasoningEfforts({ ...capabilityBase, id: 'test', supportedReasoningEfforts: ['low', 'medium', 'high'], supportedServiceTiers: [], contextWindowTokens: 128_000 }), ['low', 'medium', 'high'])
-assert.equal(defaultChatReasoningEffort({ ...capabilityBase, id: 'test', supportedReasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'high', supportedServiceTiers: [] }), '', '目录默认值只用于能力说明，中转前端不得主动选择')
-assert.equal(defaultChatReasoningEffort({ ...capabilityBase, id: 'test', supportedReasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', supportedServiceTiers: [] }), '')
-assert.equal(defaultChatReasoningEffort({ ...capabilityBase, id: 'test', supportedReasoningEfforts: ['low', 'medium', 'high'], supportedServiceTiers: [] }), '', '未声明默认思考级别时中转前端不得替上游选择 medium')
+assert.equal(defaultChatReasoningEffort({ ...capabilityBase, id: 'test', supportedReasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'high', supportedServiceTiers: [] }), 'low', '思考级别必须默认选择能力列表第一项')
+assert.equal(defaultChatReasoningEffort({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: [] }), '', '模型不支持思考级别时必须保持为空')
 assert.deepEqual(normalizeChatModelControls({
   model: { ...capabilityBase, id: 'test', supportedReasoningEfforts: ['medium', 'high'], supportedServiceTiers: ['default', 'priority'] },
   reasoningEffort: 'high',
@@ -19,9 +18,10 @@ assert.deepEqual(normalizeChatModelControls({
   model: { ...capabilityBase, id: 'test', supportedReasoningEfforts: ['medium'], supportedServiceTiers: ['default'] },
   reasoningEffort: 'high',
   serviceTier: 'priority'
-}), { reasoningEffort: '', serviceTier: '' }, '刷新同模型能力时必须清除失效值，且不得主动补供应商默认')
-assert.equal(defaultChatServiceTier({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: ['default', 'priority'] }), '', '中转前端不得主动选择服务等级')
-assert.equal(defaultChatServiceTier({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: ['priority'] }), '', '仅声明 Priority 时中转前端不得自动选择付费服务等级')
+}), { reasoningEffort: 'medium', serviceTier: 'default' }, '刷新同模型能力时必须清除失效值并回落能力列表第一项')
+assert.equal(defaultChatServiceTier({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: ['default', 'priority'] }), 'default', '服务等级必须默认选择能力列表第一项')
+assert.equal(defaultChatServiceTier({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: ['priority'] }), 'priority', '仅支持 Priority 时必须默认选择 Priority')
+assert.equal(defaultChatServiceTier({ ...capabilityBase, id: 'test', supportedReasoningEfforts: [], supportedServiceTiers: [] }), '', '模型不支持服务等级时必须保持为空')
 assert.match(composerSource, /<a-select v-if="reasoningOptions\.length"[^>]*allow-clear[^>]*@update:value="handleReasoningEffortUpdate"/, '思考级别必须可清除并回到由上游决定')
 assert.match(composerSource, /<a-select v-if="serviceTierOptions\.length"[^>]*allow-clear[^>]*@update:value="handleServiceTierUpdate"/, '服务等级必须可清除并回到由上游决定')
 assert.match(composerSource, /emit\('update:reasoningEffort', value \?\? ''\)/, '清除思考级别时必须归一为空字符串')

@@ -3,7 +3,8 @@ SELECT
   api_keys.id,
   api_keys.system_account_id,
   api_keys.name,
-  api_keys.is_default
+  api_keys.is_default,
+  api_keys.purpose
 FROM juhe_business.api_keys AS api_keys
 WHERE api_keys.id = sqlc.arg(api_key_id)::text
   AND (

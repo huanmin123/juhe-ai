@@ -1,6 +1,6 @@
 import type { DatabaseClient } from './database-client.js'
 import { createApiKey, encryptJson, hashPassword, hashSecret } from './crypto.js'
-import { HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
 import { providerModelCatalogId } from './provider-model-catalog-id.js'
 import {
@@ -311,6 +311,7 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
   }
 
   await seedAdminDefaultRouteStrategiesAndApiKeys(client, query, now)
+  await seedAdminChatApiKey(client, query, now)
   await seedBuiltInExternalIntegrationTestToken(client, query, now)
 
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
@@ -325,6 +326,40 @@ export async function seedPostgresDefaults(client: Pick<DatabaseClient, 'execute
   }
 
   return { statementCount }
+}
+
+async function seedAdminChatApiKey(
+  client: Pick<DatabaseClient, 'one'>,
+  query: (sql: string, values?: readonly unknown[]) => Promise<void>,
+  timestamp: string
+): Promise<void> {
+  const existing = await client.one<{ id?: string }>(`
+    SELECT id FROM ${businessTable('api_keys')} WHERE system_account_id = 'sys_admin' AND purpose = 'chat' LIMIT 1
+  `)
+  if (existing?.id) return
+  const group = await client.one<{ id?: string }>(`
+    SELECT id FROM ${businessTable('groups')}
+    WHERE system_account_id = 'sys_admin' AND provider_code = $1 AND is_default = 1
+    ORDER BY created_at ASC, id ASC LIMIT 1
+  `, [GPT_VENDOR_CODE])
+  if (!group?.id) return
+  const routeStrategyId = defaultRouteStrategyIdForGroup(group.id)
+  const route = await client.one<{ id?: string; name?: string }>(`
+    SELECT id, name FROM ${businessTable('route_strategies')} WHERE id = $1 AND status = 'active' LIMIT 1
+  `, [routeStrategyId])
+  if (!route?.id) return
+  const key = createApiKey()
+  await query(`
+    INSERT INTO ${businessTable('api_keys')} (
+      id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+      key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json, availability_schedule_json,
+      availability_schedule_next_check_at, created_at, updated_at
+    ) VALUES ($1, 'sys_admin', $2, 'AI 对话 API Key', $3, $4, $5, $6, $7, 'active', 0, 'chat', NULL, NULL, NULL, NULL, $8, $9)
+    ON CONFLICT DO NOTHING
+  `, [
+    'key_chat_sys_admin', route.id, `AI 对话专用 API Key，默认绑定${route.name ?? 'GPT 路由'}。`,
+    hashSecret(key), key.slice(0, 8), key.slice(-8), encryptJson({ key }), timestamp, timestamp
+  ])
 }
 
 async function seedAdminDefaultRouteStrategiesAndApiKeys(

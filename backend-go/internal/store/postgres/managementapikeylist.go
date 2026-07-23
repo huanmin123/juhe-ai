@@ -32,6 +32,7 @@ type managementAPIKeyListRecord struct {
 	KeySuffix                string
 	Status                   string
 	IsDefault                bool
+	Purpose                  string
 	RouteStrategyID          string
 	RouteStrategyName        string
 	RouteStrategyMode        string
@@ -115,6 +116,7 @@ func listManagementAPIKeys(
 			KeySuffix:                row.KeySuffix,
 			Status:                   row.Status,
 			IsDefault:                row.IsDefault,
+			Purpose:                  row.Purpose,
 			RouteStrategyID:          row.RouteStrategyID,
 			RouteStrategyName:        row.RouteStrategyName,
 			RouteStrategyMode:        row.RouteStrategyMode,
@@ -142,6 +144,7 @@ func managementAPIKeyListRecords(
 			KeySuffix:                row.KeySuffix,
 			Status:                   row.Status,
 			IsDefault:                row.IsDefault,
+			Purpose:                  row.Purpose,
 			RouteStrategyID:          row.RouteStrategyID,
 			RouteStrategyName:        row.RouteStrategyName,
 			RouteStrategyMode:        row.RouteStrategyMode,
@@ -169,6 +172,7 @@ func managementAPIKeyListKeywordRecords(
 			KeySuffix:                row.KeySuffix,
 			Status:                   row.Status,
 			IsDefault:                row.IsDefault,
+			Purpose:                  row.Purpose,
 			RouteStrategyID:          row.RouteStrategyID,
 			RouteStrategyName:        row.RouteStrategyName,
 			RouteStrategyMode:        row.RouteStrategyMode,

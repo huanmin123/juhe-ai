@@ -11,7 +11,7 @@ import {
   rollbackDatabaseTransaction
 } from './database.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
-import { refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
+import { refreshGroupAccountStatsAfterWrite, refreshGroupAccountStatsAfterWriteAsync } from './group-account-stats-write-invalidation.js'
 import { getPostgresPool } from './postgres-client.js'
 import { invalidateAccountLookupCache } from './repository-lookups.js'
 
@@ -154,6 +154,7 @@ export function syncAccountAvailabilityScheduleStatuses(now = new Date()): Accou
   }
 
   if (result.changedIds.length > 0) {
+    refreshGroupAccountStatsAfterWrite({ accountIds: result.changedIds, reason: 'account_availability_schedule' })
     for (const id of result.changedIds) {
       invalidateAccountLookupCache(id)
     }

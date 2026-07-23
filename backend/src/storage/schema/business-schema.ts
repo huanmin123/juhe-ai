@@ -787,6 +787,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       key_secret_encrypted TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       is_default INTEGER NOT NULL DEFAULT 0,
+      purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat')),
       expires_at TEXT,
       quota_limits_json TEXT,
       availability_schedule_json TEXT,
@@ -890,25 +891,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       PRIMARY KEY (system_account_id, key),
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
-
-    CREATE TABLE IF NOT EXISTS gateway_model_catalog_snapshots (
-      system_account_id TEXT NOT NULL,
-      protocol TEXT NOT NULL,
-      variant TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      model_count INTEGER NOT NULL DEFAULT 0,
-      revision TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, protocol, variant),
-      CHECK (protocol IN ('openai', 'anthropic', 'gemini')),
-      CHECK (variant IN ('default', 'codex') OR variant LIKE 'chat_list:%' OR variant LIKE 'chat_model:%'),
-      CHECK (model_count >= 0),
-      CHECK (json_valid(payload_json) AND json_type(payload_json) = 'object')
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_gateway_model_catalog_snapshots_updated
-      ON gateway_model_catalog_snapshots(updated_at, system_account_id, protocol, variant);
 
     CREATE TABLE IF NOT EXISTS announcements (
       id TEXT PRIMARY KEY,
@@ -1175,9 +1157,26 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin_page ON announcements(updated_at DESC, created_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  database.exec(`
+    DROP TABLE IF EXISTS model_catalog_snapshot_rebuild_requests;
+    DROP TABLE IF EXISTS gateway_model_catalog_snapshots;
+  `)
+  ensureApiKeyPurposeSchema(database)
   ensureResponseInspectionPolicyIndexes(database)
   ensureExternalIntegrationSourceIndexes(database)
   ensureAuthorizationInstanceIndexes(database)
+}
+
+function ensureApiKeyPurposeSchema(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(api_keys)').all() as Array<{ name?: string }>
+  if (!columns.some((column) => column.name === 'purpose')) {
+    database.exec("ALTER TABLE api_keys ADD COLUMN purpose TEXT NOT NULL DEFAULT 'general' CHECK (purpose IN ('general', 'chat'))")
+  }
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_chat_purpose_unique
+      ON api_keys(system_account_id)
+      WHERE purpose = 'chat';
+  `)
 }
 
 function ensureExternalIntegrationSourceIndexes(database: DatabaseSync): void {

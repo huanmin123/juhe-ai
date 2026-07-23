@@ -33,7 +33,8 @@ SELECT
   api_keys.id,
   api_keys.system_account_id,
   api_keys.name,
-  api_keys.is_default
+  api_keys.is_default,
+  api_keys.purpose
 FROM juhe_business.api_keys AS api_keys
 WHERE api_keys.id = $1::text
   AND (
@@ -53,6 +54,7 @@ type LockManagementAPIKeyDeleteTargetRow struct {
 	SystemAccountID string
 	Name            string
 	IsDefault       bool
+	Purpose         string
 }
 
 func (q *Queries) LockManagementAPIKeyDeleteTarget(ctx context.Context, arg LockManagementAPIKeyDeleteTargetParams) (LockManagementAPIKeyDeleteTargetRow, error) {
@@ -63,6 +65,7 @@ func (q *Queries) LockManagementAPIKeyDeleteTarget(ctx context.Context, arg Lock
 		&i.SystemAccountID,
 		&i.Name,
 		&i.IsDefault,
+		&i.Purpose,
 	)
 	return i, err
 }

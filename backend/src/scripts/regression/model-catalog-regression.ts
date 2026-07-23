@@ -1128,8 +1128,6 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-await import('./model-catalog-snapshot-rebuild-http-regression.js')
-await import('./model-catalog-snapshot-reconcile-regression.js')
 
 function assertCatalogReleaseDateDescending(items: Array<{ model: string; releaseDate?: string }>, label: string): void {
   for (let index = 1; index < items.length; index += 1) {

@@ -46,7 +46,7 @@ assert.match(modelCatalogModalSource, /class="capability-tag-list"/, '思考级�
 assert.doesNotMatch(modelCatalogModalSource, /class="capability-prefix"/, '模型目录思考列不能混排 API 或 Codex 前缀')
 assert.doesNotMatch(modelCatalogModalSource, /codexSupportedReasoningLevels/, '模型目录思考列只能消费 API reasoning effort')
 assert.doesNotMatch(modelCatalogModalSource, /codexMultiAgentVersion/, '模型目录思考列不能展示 Codex 多代理能力')
-assert.match(modelCatalogModalSource, /（默认）/, '模型目录思考列必须标明默认思考级别')
+assert.doesNotMatch(modelCatalogModalSource, /默认由上游决定|（默认）/, '模型目录思考列只展示客户端可选能力，不展示默认语义')
 const requestOverridesSectionSource = readFileSync(new URL('../../views/accounts/AccountGptRequestOverridesSection.vue', import.meta.url), 'utf8')
 const batchEditModalSource = readFileSync(new URL('../../views/accounts/AccountBatchEditModal.vue', import.meta.url), 'utf8')
 assert.match(requestOverridesSectionSource, /v-if="requestOverridesSupported"/, '支持账户覆盖的供应商必须保留配置区')

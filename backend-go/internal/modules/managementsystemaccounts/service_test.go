@@ -1206,8 +1206,8 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 	if input.PasswordHash != "hashed:Pass1234" || !input.CreatedAt.Equal(now) || !input.UpdatedAt.Equal(now) {
 		t.Fatalf("password/time input = %+v", input)
 	}
-	if len(input.DefaultAPIKeys) != 7 {
-		t.Fatalf("default api keys = %d, want 7", len(input.DefaultAPIKeys))
+	if len(input.DefaultAPIKeys) != 8 {
+		t.Fatalf("default api keys = %d, want 8", len(input.DefaultAPIKeys))
 	}
 	seen := map[string]bool{}
 	codec := secretcrypto.NewJSONCodec(credentialSecret)
@@ -1233,6 +1233,14 @@ func TestCreateSystemAccountNormalizesDefaultsAndDefaultAPIKeys(t *testing.T) {
 			t.Fatalf("default api key material mismatch: item=%+v payload=%#v", item, payload)
 		}
 		seen[item.KeyHash] = true
+	}
+	if input.DefaultAPIKeys[7].Purpose != "chat" {
+		t.Fatalf("last default API Key purpose = %q, want chat", input.DefaultAPIKeys[7].Purpose)
+	}
+	for _, item := range input.DefaultAPIKeys[:7] {
+		if item.Purpose != "general" {
+			t.Fatalf("regular default API Key purpose = %q, want general", item.Purpose)
+		}
 	}
 	if result.Account.ID != "sys_new" || result.Account.LastLoginAt != "" || len(result.DefaultAPIKeyIDs) != 1 || len(result.DefaultGroupIDs) != 1 {
 		t.Fatalf("result = %+v", result)

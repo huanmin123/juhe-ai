@@ -301,9 +301,11 @@ export function clearAccountFailureStateResult(
         UPDATE accounts
         SET status = 'pending_test',
             schedulable = 0,
+            config_revision = config_revision + 1,
             cooldown_until = NULL,
             last_error_code = NULL,
             last_error_message = '账户已重置，等待后台健康检查',
+            last_error_trace_id = NULL,
             cooldown_retest_failure_count = 0,
             cooldown_retest_observation_started_at = NULL,
             cooldown_retest_last_at = NULL,
@@ -316,6 +318,7 @@ export function clearAccountFailureStateResult(
             last_health_check_status_code = NULL,
             last_health_check_error_code = NULL,
             last_health_check_error_message = NULL,
+            last_health_check_trace_id = NULL,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
             updated_at = ?
@@ -454,9 +457,11 @@ export async function clearAccountFailureStateResultAsync(
       UPDATE ${accountRuntimeMutationTable(client, 'accounts')}
       SET status = 'pending_test',
           schedulable = 0,
+          config_revision = config_revision + 1,
           cooldown_until = NULL,
           last_error_code = NULL,
           last_error_message = '账户已重置，等待后台健康检查',
+          last_error_trace_id = NULL,
           cooldown_retest_failure_count = 0,
           cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
@@ -469,6 +474,7 @@ export async function clearAccountFailureStateResultAsync(
           last_health_check_status_code = NULL,
           last_health_check_error_code = NULL,
           last_health_check_error_message = NULL,
+          last_health_check_trace_id = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?

@@ -6,6 +6,8 @@
 
 - [核心功能设计](核心功能设计.md)
 - [AI 问答设计](AI问答设计.md)
+- [AI 问答专用 API Key 与动态模型目录设计](AI问答专用APIKey与动态模型目录设计.md)
+- [发布模型快照完整退场设计](发布模型快照完整退场设计.md)
 - [AI 问答上下文管理设计](AI问答上下文管理设计.md)
 - [接口契约与权限矩阵](接口契约与权限矩阵.md)
 - [页面数据缓存与增量更新设计（历史归档，机制已退场）](页面数据缓存与增量更新设计.md)
@@ -97,7 +99,7 @@
 - 普通 `GET /models` 与 `GET /v1/models` 默认使用 OpenAI-compatible 响应；`GET /v1beta/models` 或明确 Gemini 客户端信号使用 Gemini 原生响应，明确 Anthropic 客户端信号使用 Anthropic 原生响应。
 - 无 API Key 时聚合全部已启用、非 `hybrid` 供应商目录；有效 API Key 按其路由策略全部 active 分组绑定的供应商聚合，不只取当前选中分组，空绑定不回退公开全量。
 - 聚合复用供应商级进程内 / Redis 缓存，只保留启用、可见、可计价模型；按用户最终要求返回新旧及缺少发布时间的全部可用模型，`releaseDate` 只参与稳定排序和响应元数据。
-- 网关模型列表不读写 `default/codex` 发布响应快照；AI Chat 仍使用 `chat_list:*` 与 `chat_model:*` 能力快照。
+- 网关与 AI 问答模型列表都不读取 `default/codex`、`chat_list:*` 或 `chat_model:*` 发布响应快照；AI 问答按会话 API Key 的路由供应商合集复用同一动态目录服务。
 
 ## 备选 / 历史 / 背景文档
 

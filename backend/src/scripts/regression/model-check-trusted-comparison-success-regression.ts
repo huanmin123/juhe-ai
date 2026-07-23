@@ -78,7 +78,28 @@ try {
   assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity' && item.status === 'passed'), '可信对比应执行并通过分布相似度对照')
   assert(!JSON.stringify(detail).includes('sk-mockdata'), '可信对比报告不应泄露账户 API Key')
 
-  console.log('模型检测可信对比成功回归通过：显式选择账户后执行目标与可信对比同探针集')
+  const quickDetail = await runModelCheck({
+    targetType: 'account',
+    targetId: targetAccount.id,
+    model: 'gpt-5.5',
+    profile: 'quick',
+    trustedComparison: true,
+    trustedComparisonAccountId: comparisonAccount.id
+  }, access)
+
+  assert.equal(quickDetail.status, 'completed')
+  assert.equal(quickDetail.profile, 'quick')
+  assert.equal(quickDetail.trustedComparison, true)
+  assert.equal(quickDetail.trustedComparisonAvailable, true)
+  assert.equal(quickDetail.level, 'likely', '快速可信对比通过后仍只能给出初步可信结论')
+  assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '快速检测应执行可信对比基础探针')
+  assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.behavior_probe' && item.status === 'passed'), '快速检测应执行可信对比轻量行为探针')
+  assert(quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '快速检测应记录可信对比汇总项')
+  assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity'), '快速检测不应执行深度分布相似度探针')
+  assert(!quickDetail.checks.some((item) => item.itemKey === 'trusted_comparison.long_context'), '快速检测不应执行可信对比长上下文探针')
+  assert(!JSON.stringify(quickDetail).includes('sk-mockdata'), '快速可信对比报告不应泄露账户 API Key')
+
+  console.log('模型检测可信对比成功回归通过：快速与深度检测均可显式选择可信对比账户')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)

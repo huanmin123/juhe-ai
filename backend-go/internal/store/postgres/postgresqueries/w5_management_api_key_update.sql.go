@@ -28,6 +28,7 @@ current_target AS MATERIALIZED (
     api_keys.key_suffix,
     api_keys.status,
     api_keys.is_default,
+    api_keys.purpose,
     api_keys.route_strategy_id,
     route_strategies.name AS route_strategy_name,
     route_strategies.mode AS route_strategy_mode,
@@ -65,7 +66,7 @@ changed_route_target AS MATERIALIZED (
 ),
 mutation_decision AS (
   SELECT
-    current_target.id, current_target.system_account_id, current_target.system_account_name, current_target.name, current_target.description, current_target.key_prefix, current_target.key_suffix, current_target.status, current_target.is_default, current_target.route_strategy_id, current_target.route_strategy_name, current_target.route_strategy_mode, current_target.route_strategy_status, current_target.expires_at, current_target.quota_limits_json, current_target.availability_schedule_json,
+    current_target.id, current_target.system_account_id, current_target.system_account_name, current_target.name, current_target.description, current_target.key_prefix, current_target.key_suffix, current_target.status, current_target.is_default, current_target.purpose, current_target.route_strategy_id, current_target.route_strategy_name, current_target.route_strategy_mode, current_target.route_strategy_status, current_target.expires_at, current_target.quota_limits_json, current_target.availability_schedule_json,
     (
       $3::boolean
       AND $4::text <> current_target.route_strategy_id
@@ -121,6 +122,7 @@ updated_api_key AS (
     api_keys.key_suffix,
     api_keys.status,
     api_keys.is_default,
+    api_keys.purpose,
     api_keys.route_strategy_id,
     api_keys.expires_at,
     api_keys.quota_limits_json,
@@ -153,6 +155,7 @@ SELECT
   current_target.key_suffix AS before_key_suffix,
   current_target.status AS before_status,
   current_target.is_default AS before_is_default,
+  current_target.purpose AS before_purpose,
   current_target.route_strategy_id AS before_route_strategy_id,
   current_target.route_strategy_name AS before_route_strategy_name,
   current_target.route_strategy_mode AS before_route_strategy_mode,
@@ -169,6 +172,7 @@ SELECT
   updated_api_key.key_suffix AS after_key_suffix,
   updated_api_key.status AS after_status,
   updated_api_key.is_default AS after_is_default,
+  updated_api_key.purpose AS after_purpose,
   updated_api_key.route_strategy_id AS after_route_strategy_id,
   coalesce(
     CASE WHEN mutation_decision.route_changed
@@ -250,6 +254,7 @@ type UpdateManagementAPIKeyRow struct {
 	BeforeKeySuffix                pgtype.Text
 	BeforeStatus                   pgtype.Text
 	BeforeIsDefault                pgtype.Bool
+	BeforePurpose                  pgtype.Text
 	BeforeRouteStrategyID          pgtype.Text
 	BeforeRouteStrategyName        pgtype.Text
 	BeforeRouteStrategyMode        pgtype.Text
@@ -266,6 +271,7 @@ type UpdateManagementAPIKeyRow struct {
 	AfterKeySuffix                 pgtype.Text
 	AfterStatus                    pgtype.Text
 	AfterIsDefault                 pgtype.Bool
+	AfterPurpose                   pgtype.Text
 	AfterRouteStrategyID           pgtype.Text
 	AfterRouteStrategyName         string
 	AfterRouteStrategyMode         string
@@ -313,6 +319,7 @@ func (q *Queries) UpdateManagementAPIKey(ctx context.Context, arg UpdateManageme
 		&i.BeforeKeySuffix,
 		&i.BeforeStatus,
 		&i.BeforeIsDefault,
+		&i.BeforePurpose,
 		&i.BeforeRouteStrategyID,
 		&i.BeforeRouteStrategyName,
 		&i.BeforeRouteStrategyMode,
@@ -329,6 +336,7 @@ func (q *Queries) UpdateManagementAPIKey(ctx context.Context, arg UpdateManageme
 		&i.AfterKeySuffix,
 		&i.AfterStatus,
 		&i.AfterIsDefault,
+		&i.AfterPurpose,
 		&i.AfterRouteStrategyID,
 		&i.AfterRouteStrategyName,
 		&i.AfterRouteStrategyMode,

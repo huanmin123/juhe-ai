@@ -163,6 +163,21 @@ func TestDeleteManagementAPIKeyRejectsDefaultBeforeDelete(t *testing.T) {
 	}
 }
 
+func TestDeleteManagementAPIKeyRejectsChatPurposeBeforeDelete(t *testing.T) {
+	q := successfulManagementAPIKeyDeleteQueries()
+	q.lockRow.Purpose = "chat"
+
+	_, err := deleteManagementAPIKey(context.Background(), q, port.ManagementAPIKeyDeleteInput{
+		APIKeyID: "key_chat",
+	})
+	if !errors.Is(err, port.ErrManagementAPIKeyChatDelete) {
+		t.Fatalf("deleteManagementAPIKey() error = %v, want chat delete", err)
+	}
+	if got, want := q.calls, []string{"lock"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("query calls = %v, want %v", got, want)
+	}
+}
+
 func TestDeleteManagementAPIKeyMapsConcurrentDeleteToNotFoundAndSkipsCleanup(t *testing.T) {
 	q := successfulManagementAPIKeyDeleteQueries()
 	q.deleteErr = pgx.ErrNoRows
