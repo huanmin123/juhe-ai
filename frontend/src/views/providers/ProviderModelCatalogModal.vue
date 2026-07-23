@@ -105,9 +105,8 @@
                 v-for="effort in record.supportedReasoningEfforts"
                 :key="effort"
               >
-                {{ formatModelReasoningEffort(effort) }}{{ effort === record.defaultReasoningEffort ? '（默认）' : '' }}
+                {{ formatModelReasoningEffort(effort) }}
               </a-tag>
-              <span v-if="record.supportedReasoningEfforts?.length && !record.defaultReasoningEffort" class="muted-text">默认由上游决定</span>
               <span v-if="!record.supportedReasoningEfforts?.length" class="muted-text">不支持</span>
             </div>
           </template>
