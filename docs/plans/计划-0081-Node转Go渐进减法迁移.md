@@ -21,10 +21,10 @@
 
 ### 2026-07-23 attempt deadline 与 replay safety 批次
 
-- 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses/Chat 必须由请求元数据层明确证明 `store=false`，资源读取、资源 mutation、未知 GET/POST 和未解析 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
+- 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses 必须明确证明 `store=false`，Chat 允许缺省 / `null` / `false`，资源读取、资源 mutation、未知 GET/POST，以及非法、超限和未扫描 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
 - 新增 attempt 级 `gatewaydeadline.Controller`：Service 冻结 absolute wall/first-byte deadline，HTTPExecutor 在 dispatch 前把 cancel-cause context 绑定到真实 request；response headers、JSON body 与 stream body 共用同一 deadline，首个下游字节后停止 first-byte timer。timeout 的 FailureFacts、usage、audit 使用一致的 `first_byte_timeout` 归因，下游阻塞/取消不会被误写成上游超时或触发跨账户重试。
 - 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误和 client-lifecycle 重试。集中 normal/race/vet 与 diff check 通过。当前进度口径更新为：代码迁移约 `71%`，可独立验证 Go 能力约 `68%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
-- 尚未完成：生产 request metadata -> `StoreRequested` 接线、downstream header staging/WriteHeader commit、PolicyApplier 的 target/source revision CAS 与 dispatch outbox、Redis circuit/hot quality、真实 upstream/listener/canary/rollback；因此本批不改变 owner manifest，也不删除 Node gateway。
+- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、PolicyApplier 的 target/source revision CAS 与 dispatch outbox、Redis circuit/hot quality、真实 upstream/listener/canary/rollback；因此本批不改变 owner manifest，也不删除 Node gateway。
 
 ### 2026-07-23 网关传输核心批次
 
@@ -981,10 +981,21 @@
 ## 2026-07-23 account policy 与 candidate attempt loop 结果
 
 - [x] 新增 bounded typed policy normalize/decision：显式规则匹配才执行 retry-next/cooldown/disable，普通失败不隐式改账户状态。
-- [x] 新增 hydrated candidate/key attempt loop：key-scoped retry、基于 `RequestShape` 的显式 replay-safe 跨账户 retry、单请求最多 4 账户、unsafe mutation 不跨账户、mutation applier、max attempts、wall deadline、JSON/stream 共用 attempt 级 first-byte controller、commit/cancel fence 和逐次 usage/audit handoff；downstream header staging/WriteHeader owner 仍待接入。
+- [x] 新增 hydrated candidate/key attempt loop：key-scoped retry、基于 `RequestShape` 的显式 replay-safe 跨账户 retry、单请求最多 4 账户、unsafe mutation 不跨账户、mutation applier、max attempts、wall deadline、JSON/stream 共用 attempt 级 first-byte controller、commit/cancel fence 和逐次 usage/audit handoff。
 - [x] 新增具体 HTTP executor adapter，组合既有 upstream builder、dispatcher 和 response handler；非 2xx body 读取后按 typed account policy 动态选择透明转发或显式策略，nested protocol facts 与唯一 `PolicyDecision` handoff 一并返回；每次 attempt summary 保留 usage/audit，避免成功-after-retry 覆盖前次终态记录；attempt 级 controller 从 dispatch 前接管真实 request context。
 - [x] 新增 policy 与 loop 定向测试，覆盖规则优先级、错误码/类型/关键字、reset、未命中透明转发、命中显式策略、单账户最多两个 API Key、key 顺序、策略切换、终态提交、预算和取消。
 - [ ] 接入跨请求 round-robin / weighted-round-robin 共享游标；本轮只完成请求级双 key 放大上限，避免把未迁移的 Redis runtime 假装成已完成。
-- [ ] 下一批接 downstream header staging/WriteHeader owner、生产 request metadata 到 `StoreRequested` 的解析接线、账户状态 PostgreSQL writer（含 target/source revision CAS、dispatch outbox）、Redis circuit/hot quality、生产 request preparation/listener 和 owner manifest。
+- [x] 新增 downstream typed stage/commit/snapshot adapter，并把 header-only、透明失败、SSE 首次输出和 attempt deadline 可见性接入 response/executor；该 adapter 尚无生产 listener owner。
+- [x] 新增 bounded request metadata scanner 与 typed store fact，替代无法区分缺省/非法/未扫描的 `*bool`；生产 listener/body admission 接线仍待后续。
+- [ ] 下一批接账户状态 PostgreSQL writer（含 target/source revision CAS、dispatch outbox）、Redis circuit/hot quality、生产 request preparation/listener、request metadata Apply 和 owner manifest。
+
+## 2026-07-24 downstream commit 与 store metadata 结果
+
+- [x] 完成 JSON、SSE、透明非 2xx 和 header-only 响应的统一 staged sink；响应头提交即形成单调 retry fence，首正文回调与 transport commit 回调分离。
+- [x] 完成 hop-by-hop / 动态 Connection token / 内部及 gateway-owned header 清洗、现有 writer 危险头清除、SSE 默认头和有界 header 计划；opaque 编码正文按 Go transport 语义保留 `Content-Encoding`，编码 JSON/SSE fail-closed，不复制 Node 解压假设。
+- [x] 完成 store 七态扫描与 Chat/Responses 差异化 replay 判定；非法、重复、超限和未扫描默认不可重放。
+- [ ] 生产 listener、HEAD method fact、真实 request body admission、真实反向代理/header smoke、owner manifest 与 Node 删除仍待后续批次。
+
+集中验证已通过：相关 6 包 `go test`、`go test -race`、`go vet` 与 `git diff --check`。本轮未执行全仓测试、Docker、真实 upstream 或 listener smoke，按第一波大模块完成后集中校验的节奏后置。
 
 本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。

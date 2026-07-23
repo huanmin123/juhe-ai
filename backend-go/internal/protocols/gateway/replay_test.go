@@ -3,8 +3,6 @@ package gateway
 import "testing"
 
 func TestClassifyReplayUsesExactMethodAndOperation(t *testing.T) {
-	storeFalse := false
-	storeTrue := true
 	tests := []struct {
 		name    string
 		request RequestShape
@@ -13,12 +11,14 @@ func TestClassifyReplayUsesExactMethodAndOperation(t *testing.T) {
 		class   ReplayClass
 	}{
 		{name: "safe get", request: RequestShape{Method: " get ", Path: "/v1/models"}, allowed: true, class: ReplaySafeRead},
-		{name: "openai inference", request: RequestShape{Method: "POST", Path: "/v1/responses?stream=true", StoreRequested: &storeFalse}, allowed: true, class: ReplayInference},
-		{name: "chat inference", request: RequestShape{Method: "POST", Path: "/v1/chat/completions", StoreRequested: &storeFalse}, allowed: true, class: ReplayInference},
+		{name: "openai inference", request: RequestShape{Method: "POST", Path: "/v1/responses?stream=true", StoreRequest: StoreRequestFact{State: StoreExplicitFalse}}, allowed: true, class: ReplayInference},
+		{name: "chat inference", request: RequestShape{Method: "POST", Path: "/v1/chat/completions", StoreRequest: StoreRequestFact{State: StoreExplicitFalse}}, allowed: true, class: ReplayInference},
+		{name: "chat absent store", request: RequestShape{Method: "POST", Path: "/v1/chat/completions", StoreRequest: StoreRequestFact{State: StoreAbsent}}, allowed: true, class: ReplayInference},
 		{name: "unparsed chat store", request: RequestShape{Method: "POST", Path: "/v1/chat/completions"}, class: ReplayResourceMutation},
-		{name: "stored chat", request: RequestShape{Method: "POST", Path: "/v1/chat/completions", StoreRequested: &storeTrue}, class: ReplayResourceMutation},
+		{name: "stored chat", request: RequestShape{Method: "POST", Path: "/v1/chat/completions", StoreRequest: StoreRequestFact{State: StoreExplicitTrue}}, class: ReplayResourceMutation},
 		{name: "unparsed responses store", request: RequestShape{Method: "POST", Path: "/v1/responses"}, class: ReplayResourceMutation},
-		{name: "stored response", request: RequestShape{Method: "POST", Path: "/v1/responses", StoreRequested: &storeTrue}, class: ReplayResourceMutation},
+		{name: "absent response store", request: RequestShape{Method: "POST", Path: "/v1/responses", StoreRequest: StoreRequestFact{State: StoreAbsent}}, class: ReplayResourceMutation},
+		{name: "stored response", request: RequestShape{Method: "POST", Path: "/v1/responses", StoreRequest: StoreRequestFact{State: StoreExplicitTrue}}, class: ReplayResourceMutation},
 		{name: "anthropic inference", request: RequestShape{Method: "POST", Path: "/v1/messages"}, allowed: true, class: ReplayInference},
 		{name: "gemini inference", request: RequestShape{Method: "POST", Path: "/v1beta/models/gemini-2.5-pro:streamGenerateContent?alt=sse"}, allowed: true, class: ReplayInference},
 		{name: "image generation", request: RequestShape{Method: "POST", Path: "/v1/images/generations"}, allowed: true, class: ReplayInference},

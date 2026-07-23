@@ -61,6 +61,13 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 			preparedOnFirstByte()
 		}
 	}
+	preparedOnTransportCommit := responseInput.OnTransportCommit
+	responseInput.OnTransportCommit = func() {
+		deadline.MarkVisible()
+		if preparedOnTransportCommit != nil {
+			preparedOnTransportCommit()
+		}
+	}
 	responseInput.ResponsePolicy.HasAlternativeAPIKeys = responseInput.ResponsePolicy.HasAlternativeAPIKeys || attempt.HasAlternativeKeys
 	preparedResolver := responseInput.DispositionResolver
 	var policyDecision *PolicyDecision

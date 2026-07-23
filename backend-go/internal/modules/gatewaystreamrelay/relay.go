@@ -49,6 +49,22 @@ type Sink interface {
 	Write(ctx context.Context, p []byte) (int, error)
 }
 
+type SinkState struct {
+	TransportCommitted bool
+	SemanticCommitted  bool
+	DownstreamBytes    int64
+}
+
+// StatefulSink is implemented by HTTP-aware downstream adapters. Commit may
+// send headers without writing body bytes; Snapshot is the retry-fence source
+// of truth after every operation.
+type StatefulSink interface {
+	Sink
+	Commit(context.Context) error
+	MarkSemantic()
+	Snapshot() SinkState
+}
+
 type SourceFunc func(context.Context, []byte) (int, error)
 
 func (fn SourceFunc) Read(ctx context.Context, p []byte) (int, error) { return fn(ctx, p) }
@@ -111,13 +127,14 @@ func DefaultLimits() Limits {
 }
 
 type Options struct {
-	Limits           Limits
-	Inspector        TerminalInspector
-	StartedAt        time.Time
-	StatusCode       int
-	HadFailedAttempt bool
-	Now              func() time.Time
-	OnFirstByte      func()
+	Limits            Limits
+	Inspector         TerminalInspector
+	StartedAt         time.Time
+	StatusCode        int
+	HadFailedAttempt  bool
+	Now               func() time.Time
+	OnFirstByte       func()
+	OnTransportCommit func()
 }
 
 type State string
@@ -189,6 +206,7 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 	defer cancelTotal()
 	buffer := make([]byte, limits.BufferBytes)
 	result := Result{}
+	syncSinkState(sink, &result)
 	for {
 		readLimit := len(buffer)
 		remaining := limits.MaxBytes - result.BytesRead
@@ -256,7 +274,7 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 					return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
 				}
 				semanticOutput := options.Inspector == nil || result.Inspection.SemanticOutput
-				writeFailure := writeChunk(totalCtx, sink, outputChunk, limits.IdleTimeout, semanticOutput, &result, now, options.OnFirstByte)
+				writeFailure := writeChunk(totalCtx, sink, outputChunk, limits.IdleTimeout, semanticOutput, &result, now, options.OnFirstByte, options.OnTransportCommit)
 				notifyCommit(options.Inspector, result)
 				if writeFailure != nil {
 					return finalizeFailure(result, options, startedAt, now, *writeFailure)
@@ -284,7 +302,7 @@ func Relay(parent context.Context, source Source, sink Sink, options Options) (R
 						return finalizeFailure(result, options, startedAt, now, streamTooLargeFailure())
 					}
 					if len(tail) > 0 {
-						writeFailure := writeChunk(totalCtx, sink, tail, limits.IdleTimeout, result.Inspection.SemanticOutput, &result, now, options.OnFirstByte)
+						writeFailure := writeChunk(totalCtx, sink, tail, limits.IdleTimeout, result.Inspection.SemanticOutput, &result, now, options.OnFirstByte, options.OnTransportCommit)
 						notifyCommit(options.Inspector, result)
 						if writeFailure != nil {
 							return finalizeFailure(result, options, startedAt, now, *writeFailure)
@@ -329,7 +347,22 @@ func inspectorFailure(err error, code, message string) failure {
 	}
 }
 
-func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout time.Duration, semanticOutput bool, result *Result, now func() time.Time, onFirstByte func()) *failure {
+func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout time.Duration, semanticOutput bool, result *Result, now func() time.Time, onFirstByte, onTransportCommit func()) *failure {
+	if stateful, ok := sink.(StatefulSink); ok && !stateful.Snapshot().TransportCommitted {
+		wasCommitted := result.TransportCommitted
+		err := stateful.Commit(parent)
+		syncSinkState(sink, result)
+		if !wasCommitted && result.TransportCommitted && onTransportCommit != nil {
+			onTransportCommit()
+		}
+		if err != nil {
+			return &failure{
+				err: fmt.Errorf("%w: %w", ErrDestinationWrite, err), code: "client_response_header_commit_failed",
+				message: "提交客户端响应头失败", phase: "client",
+				attribution: gatewayusage.FailureAttributionClientLifecycle, audit: gatewayaudit.OutcomeClientAborted, clientAbort: true,
+			}
+		}
+	}
 	for offset := 0; offset < len(chunk); {
 		writeCtx, cancelWrite := context.WithTimeoutCause(parent, idleTimeout, ErrIdleDeadline)
 		n, err := sink.Write(writeCtx, chunk[offset:])
@@ -343,12 +376,12 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 			}
 		}
 		if n > 0 {
-			firstByte := !result.TransportCommitted
+			firstByte := !result.FirstByteSent
 			var committedAt time.Time
-			if !result.TransportCommitted || (semanticOutput && !result.SemanticCommitted) {
+			if firstByte || (semanticOutput && !result.SemanticCommitted) {
 				committedAt = now()
 			}
-			if !result.TransportCommitted {
+			if firstByte {
 				result.TransportCommitted = true
 				result.FirstByteSent = true
 				result.FirstByteAt = committedAt
@@ -360,7 +393,14 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 				result.SemanticCommitted = true
 				result.SemanticFirstByteAt = committedAt
 			}
-			result.BytesWritten += int64(n)
+			if stateful, ok := sink.(StatefulSink); ok {
+				if semanticOutput {
+					stateful.MarkSemantic()
+				}
+				syncSinkState(sink, result)
+			} else {
+				result.BytesWritten += int64(n)
+			}
 			offset += n
 		}
 		if writeCause != nil {
@@ -383,6 +423,19 @@ func writeChunk(parent context.Context, sink Sink, chunk []byte, idleTimeout tim
 		}
 	}
 	return nil
+}
+
+func syncSinkState(sink Sink, result *Result) {
+	stateful, ok := sink.(StatefulSink)
+	if !ok {
+		return
+	}
+	state := stateful.Snapshot()
+	result.TransportCommitted = result.TransportCommitted || state.TransportCommitted
+	result.SemanticCommitted = result.SemanticCommitted || state.SemanticCommitted
+	if state.DownstreamBytes > result.BytesWritten {
+		result.BytesWritten = state.DownstreamBytes
+	}
 }
 
 func finalizeEOF(result Result, options Options, startedAt time.Time, now func() time.Time) (Result, error) {
@@ -458,7 +511,7 @@ func finalizeFailure(result Result, options Options, startedAt time.Time, now fu
 
 func finalizeFailureWithInspection(result Result, options Options, startedAt time.Time, now func() time.Time, value failure) (Result, error) {
 	result.CompletedAt = now()
-	if result.FirstByteSent {
+	if result.FirstByteSent || result.TransportCommitted {
 		result.State = StateFailedAfterFirstByte
 		result.RetryAllowed = false
 	} else {

@@ -18,6 +18,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/gatewaycodexresponses"
 	"juhe-ai/backend-go/internal/modules/gatewaydeadline"
 	"juhe-ai/backend-go/internal/modules/gatewaydispatch"
+	"juhe-ai/backend-go/internal/modules/gatewaydownstream"
 	"juhe-ai/backend-go/internal/modules/gatewayretry"
 	"juhe-ai/backend-go/internal/modules/gatewaystreamrelay"
 	"juhe-ai/backend-go/internal/modules/gatewayusage"
@@ -86,6 +87,7 @@ type Input struct {
 	InitialCommit       codexresponses.CommitState
 	RelayOptions        gatewaystreamrelay.Options
 	OnFirstByte         func()
+	OnTransportCommit   func()
 	ResponseDisposition gatewayretry.ResponseDisposition
 	DispositionResolver ResponseDispositionResolver
 	ResponsePolicy      ResponsePolicyFacts
@@ -246,11 +248,18 @@ func (h Handler) handleJSON(input Input) (Result, error) {
 		result.Handoff.Usage.Usage = usage
 		return result, returnedErr
 	}
+	bodyLength := int64(len(body))
+	if err := stageResponse(input.Sink, status, input.Dispatch.Response.Header, gatewaydownstream.ModeJSON, &bodyLength); err != nil {
+		return h.failureWithGuard(input, StateFailedBeforeCommit, status, int64(len(body)), guardSummary, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_response_stage_failed", "准备下游响应头失败", false)
+	}
+	if _, err := commitResponseSink(input.Context, input.Sink, input.OnTransportCommit); err != nil {
+		return h.failureWithGuard(input, StateFailedBeforeCommit, status, int64(len(body)), guardSummary, fmt.Errorf("%w: %w", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_header_commit_failed", "提交下游响应头失败", false)
+	}
 	written, writeErr := writeAll(input.Context, input.Sink, body, input.OnFirstByte)
 	if writeErr != nil {
 		result, returnedErr := h.failureWithGuard(input, stateForBytes(written), status, int64(len(body)), guardSummary, fmt.Errorf("%w: %v", ErrDestinationWrite, writeErr), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败", false)
 		result.BytesWritten = written
-		commit := combineCommit(input.InitialCommit, codexresponses.CommitState{TransportCommitted: written > 0, SemanticCommitted: written > 0, DownstreamBytes: written})
+		commit := combineCommit(input.InitialCommit, commitStateFromSink(input.Sink, written, written > 0))
 		result.TransportCommitted = commit.TransportCommitted
 		result.SemanticCommitted = commit.SemanticCommitted
 		result.Handoff = h.failureHandoff(input, status, result, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败")
@@ -259,7 +268,8 @@ func (h Handler) handleJSON(input Input) (Result, error) {
 		result.Handoff.Usage.ResponseSnapshot = guardSummary
 		return result, returnedErr
 	}
-	commit := combineCommit(input.InitialCommit, codexresponses.CommitState{TransportCommitted: written > 0, SemanticCommitted: written > 0, DownstreamBytes: written})
+	markSinkSemantic(input.Sink)
+	commit := combineCommit(input.InitialCommit, commitStateFromSink(input.Sink, written, true))
 	handoff := h.successHandoff(input, status, usage, commit)
 	handoff.Usage.ResponseSnapshot = guardSummary
 	return Result{State: StateSucceeded, StatusCode: status, BytesRead: int64(len(raw)), BytesWritten: written, TransportCommitted: commit.TransportCommitted, SemanticCommitted: commit.SemanticCommitted, Guard: guardSummary, Handoff: handoff, RetryAllowed: false}, nil
@@ -304,6 +314,7 @@ func (h Handler) handleStream(input Input) (Result, error) {
 	}
 	options := input.RelayOptions
 	options.OnFirstByte = input.OnFirstByte
+	options.OnTransportCommit = input.OnTransportCommit
 	options.StatusCode = status
 	options.StartedAt = input.StartedAt
 	options.HadFailedAttempt = input.HadFailedAttempt
@@ -325,7 +336,23 @@ func (h Handler) handleStream(input Input) (Result, error) {
 		inspector.ObserveCommit(input.InitialCommit.TransportCommitted, input.InitialCommit.SemanticCommitted, input.InitialCommit.DownstreamBytes)
 		options.Inspector = inspector
 	}
+	if err := stageResponse(input.Sink, status, input.Dispatch.Response.Header, gatewaydownstream.ModeSSE, nil); err != nil {
+		return h.failAndClose(input, StateFailedBeforeCommit, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_response_stage_failed", "准备下游响应头失败", false)
+	}
 	relayResult, err := h.Dispatcher.Relay(input.Context, input.Dispatch, input.Sink, options)
+	if err == nil && !relayResult.TransportCommitted {
+		state, commitErr := commitResponseSink(input.Context, input.Sink, input.OnTransportCommit)
+		relayResult.TransportCommitted = state.TransportCommitted
+		relayResult.SemanticCommitted = state.SemanticCommitted
+		relayResult.BytesWritten = max(relayResult.BytesWritten, state.DownstreamBytes)
+		if commitErr != nil {
+			err = fmt.Errorf("%w: %w", gatewaystreamrelay.ErrDestinationWrite, commitErr)
+		} else if state.TransportCommitted {
+			markSinkSemantic(input.Sink)
+			state = sinkState(input.Sink)
+			relayResult.SemanticCommitted = state.SemanticCommitted
+		}
+	}
 	var guard *GuardSummary
 	if inspector != nil {
 		guard = guardFromStreamSnapshot(relayResult.Inspection.ResponseSnapshot)
@@ -429,18 +456,26 @@ func (h Handler) forwardUpstreamFailure(input Input, status int, body []byte) (R
 	if input.Sink == nil {
 		return h.failure(input, StateFailedBeforeCommit, status, int64(len(body)), body, ErrSinkRequired, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_sink_missing", "响应下游 sink 缺失", false)
 	}
+	bodyLength := int64(len(body))
+	if err := stageResponse(input.Sink, status, input.Dispatch.Response.Header, gatewaydownstream.ModeOpaque, &bodyLength); err != nil {
+		return h.failure(input, StateFailedBeforeCommit, status, int64(len(body)), body, err, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionGatewayPolicy, gatewayaudit.OutcomeGatewayFailed, "downstream_response_stage_failed", "准备下游响应头失败", false)
+	}
+	if _, err := commitResponseSink(input.Context, input.Sink, input.OnTransportCommit); err != nil {
+		return h.failure(input, StateFailedBeforeCommit, status, int64(len(body)), body, fmt.Errorf("%w: %w", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_header_commit_failed", "提交下游响应头失败", false)
+	}
 	written, err := writeAll(input.Context, input.Sink, body, input.OnFirstByte)
 	if err != nil {
 		result, returnedErr := h.failure(input, stateForBytes(written), status, int64(len(body)), nil, fmt.Errorf("%w: %v", ErrDestinationWrite, err), gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败", false)
 		result.BytesWritten = written
-		commit := combineCommit(input.InitialCommit, codexresponses.CommitState{TransportCommitted: written > 0, SemanticCommitted: written > 0, DownstreamBytes: written})
+		commit := combineCommit(input.InitialCommit, commitStateFromSink(input.Sink, written, written > 0))
 		result.TransportCommitted = commit.TransportCommitted
 		result.SemanticCommitted = commit.SemanticCommitted
 		result.Handoff = h.failureHandoff(input, status, result, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionClientLifecycle, gatewayaudit.OutcomeClientAborted, "downstream_write_failed", "写入下游响应失败")
 		result.Handoff.Commit = commit
 		return result, returnedErr
 	}
-	commit := combineCommit(input.InitialCommit, codexresponses.CommitState{TransportCommitted: written > 0, SemanticCommitted: written > 0, DownstreamBytes: written})
+	markSinkSemantic(input.Sink)
+	commit := combineCommit(input.InitialCommit, commitStateFromSink(input.Sink, written, true))
 	result := Result{State: StateUpstreamFailureForwarded, StatusCode: status, BytesRead: int64(len(body)), BytesWritten: written, TransportCommitted: commit.TransportCommitted, SemanticCommitted: commit.SemanticCommitted, Handoff: h.failureHandoff(input, status, Result{TransportCommitted: commit.TransportCommitted, SemanticCommitted: commit.SemanticCommitted, BytesWritten: written}, gatewayretry.ResponseSignalNone, gatewayusage.FailureAttributionAccountUpstream, gatewayaudit.OutcomeUpstreamFailed, "upstream_http_status", "上游完整失败响应已透明转发")}
 	result.Handoff.Commit = commit
 	result.RetryAllowed = false
@@ -449,7 +484,7 @@ func (h Handler) forwardUpstreamFailure(input Input, status int, body []byte) (R
 }
 
 func (h Handler) failure(input Input, state State, status int, bytesRead int64, buffered []byte, err error, signal gatewayretry.ResponseSignal, attribution gatewayusage.FailureAttribution, auditOutcome gatewayaudit.Outcome, code, message string, retryAllowed bool) (Result, error) {
-	commit := input.InitialCommit
+	commit := combineCommit(input.InitialCommit, commitStateFromSink(input.Sink, 0, false))
 	if commit.TransportCommitted || commit.SemanticCommitted || commit.DownstreamBytes > 0 {
 		state = StateFailedAfterCommit
 	}
@@ -690,6 +725,54 @@ func guardFailure(mode codexresponses.Mode) (string, string, error) {
 	return "codex_responses_protocol_blocked", "Codex Responses JSON 安全模式已阻断", ErrCodexProtocolBlocked
 }
 
+func stageResponse(sink gatewaystreamrelay.Sink, status int, header http.Header, mode gatewaydownstream.Mode, bodyBytes *int64) error {
+	staged, ok := sink.(gatewaydownstream.StagedSink)
+	if !ok {
+		return nil
+	}
+	plan, err := gatewaydownstream.NewPlan(status, header, mode, bodyBytes)
+	if err != nil {
+		return err
+	}
+	return staged.Stage(plan)
+}
+
+func commitResponseSink(ctx context.Context, sink gatewaystreamrelay.Sink, onCommit func()) (gatewaystreamrelay.SinkState, error) {
+	stateful, ok := sink.(gatewaystreamrelay.StatefulSink)
+	if !ok {
+		return gatewaystreamrelay.SinkState{}, nil
+	}
+	before := stateful.Snapshot()
+	err := stateful.Commit(ctx)
+	after := stateful.Snapshot()
+	if !before.TransportCommitted && after.TransportCommitted && onCommit != nil {
+		onCommit()
+	}
+	return after, err
+}
+
+func markSinkSemantic(sink gatewaystreamrelay.Sink) {
+	if stateful, ok := sink.(gatewaystreamrelay.StatefulSink); ok {
+		stateful.MarkSemantic()
+	}
+}
+
+func sinkState(sink gatewaystreamrelay.Sink) gatewaystreamrelay.SinkState {
+	if stateful, ok := sink.(gatewaystreamrelay.StatefulSink); ok {
+		return stateful.Snapshot()
+	}
+	return gatewaystreamrelay.SinkState{}
+}
+
+func commitStateFromSink(sink gatewaystreamrelay.Sink, written int64, semantic bool) codexresponses.CommitState {
+	state := sinkState(sink)
+	return codexresponses.CommitState{
+		TransportCommitted: state.TransportCommitted || written > 0,
+		SemanticCommitted:  state.SemanticCommitted || semantic,
+		DownstreamBytes:    max(state.DownstreamBytes, written),
+	}
+}
+
 func writeAll(ctx context.Context, sink gatewaystreamrelay.Sink, body []byte, onFirstByte func()) (int64, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -705,6 +788,9 @@ func writeAll(ctx context.Context, sink gatewaystreamrelay.Sink, body []byte, on
 		}
 		if n > 0 && written == 0 && onFirstByte != nil {
 			onFirstByte()
+		}
+		if n > 0 {
+			markSinkSemantic(sink)
 		}
 		written += int64(n)
 		body = body[n:]

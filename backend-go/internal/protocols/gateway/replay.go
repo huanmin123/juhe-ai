@@ -51,8 +51,10 @@ func isReplayablePost(protocol ProtocolCode, path string, request RequestShape) 
 		switch path {
 		case "/embeddings", "/images/generations", "/images/edits":
 			return true
-		case "/chat/completions", "/responses":
-			return request.StoreRequested != nil && !*request.StoreRequested
+		case "/chat/completions":
+			return request.StoreRequest.State == StoreAbsent || request.StoreRequest.State == StoreNull || request.StoreRequest.State == StoreExplicitFalse
+		case "/responses":
+			return request.StoreRequest.State == StoreExplicitFalse
 		}
 	case ProtocolAnthropic:
 		return path == "/messages" || path == "/messages/count_tokens"

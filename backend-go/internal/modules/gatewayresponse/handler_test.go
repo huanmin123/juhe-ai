@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"juhe-ai/backend-go/internal/gatewayaudit"
 	"juhe-ai/backend-go/internal/modules/gatewaydispatch"
+	"juhe-ai/backend-go/internal/modules/gatewaydownstream"
 	"juhe-ai/backend-go/internal/modules/gatewayretry"
 	"juhe-ai/backend-go/internal/modules/gatewayrouting"
 	"juhe-ai/backend-go/internal/modules/gatewaystreamrelay"
@@ -138,6 +140,56 @@ func TestHandleNonSuccessStatusForwardsCompleteResponseWithoutPolicy(t *testing.
 	}
 	if result.Handoff.Usage.StatusCode == nil || *result.Handoff.Usage.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("handoff = %#v", result.Handoff)
+	}
+}
+
+func TestHandleTransparentFailureCommitsStatusAndSafeHeaders(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	sink, _ := gatewaydownstream.NewHTTPWriterSink(recorder)
+	body := &trackingBody{Reader: strings.NewReader(`{"error":"busy"}`)}
+	result, err := testHandler().Handle(Input{
+		Context: context.Background(), Transport: TransportJSON, Sink: sink,
+		Dispatch: gatewaydispatch.Result{Response: &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Retry-After": {"9"}, "Set-Cookie": {"secret=1"}}, Body: body}},
+	})
+	if err != nil || recorder.Code != http.StatusServiceUnavailable || recorder.Header().Get("Retry-After") != "9" || recorder.Header().Get("Set-Cookie") != "" || recorder.Body.String() != `{"error":"busy"}` || !result.TransportCommitted || !result.SemanticCommitted {
+		t.Fatalf("result/error/recorder = %+v/%v/%#v", result, err, recorder)
+	}
+}
+
+func TestHandleExplicitPolicyDoesNotCommitStagedResponse(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	sink, _ := gatewaydownstream.NewHTTPWriterSink(recorder)
+	result, err := testHandler().Handle(Input{
+		Context: context.Background(), Transport: TransportJSON, Sink: sink,
+		Dispatch:            gatewaydispatch.Result{Response: &http.Response{StatusCode: http.StatusServiceUnavailable, Header: http.Header{"Retry-After": {"9"}}, Body: &trackingBody{Reader: strings.NewReader(`{"error":"busy"}`)}}},
+		ResponseDisposition: gatewayretry.ResponseDispositionExplicitPolicy,
+	})
+	if !errors.Is(err, ErrUpstreamStatus) || !result.RetryAllowed || sink.Snapshot().TransportCommitted || recorder.Body.Len() != 0 {
+		t.Fatalf("result/error/state = %+v/%v/%+v", result, err, sink.Snapshot())
+	}
+}
+
+func TestHandleJSONHeaderOnlySuccessCommitsWithoutBodyBytes(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	sink, _ := gatewaydownstream.NewHTTPWriterSink(recorder)
+	result, err := testHandler().Handle(Input{
+		Context: context.Background(), Transport: TransportJSON, Sink: sink,
+		Dispatch: gatewaydispatch.Result{Response: &http.Response{StatusCode: http.StatusNoContent, Header: http.Header{"Content-Length": {"99"}}, Body: &trackingBody{Reader: strings.NewReader("")}}},
+	})
+	if err != nil || result.State != StateSucceeded || recorder.Code != http.StatusNoContent || recorder.Header().Get("Content-Length") != "" || !result.TransportCommitted || !result.SemanticCommitted || result.BytesWritten != 0 || !sink.Snapshot().TransportCommitted {
+		t.Fatalf("result/error/recorder/state = %+v/%v/%#v/%+v", result, err, recorder, sink.Snapshot())
+	}
+}
+
+func TestHandleJSONHeaderCommitFailureBeforeWriteRemainsUncommitted(t *testing.T) {
+	commitErr := errors.New("commit failed")
+	sink := &failingCommitSink{err: commitErr}
+	result, err := testHandler().Handle(Input{
+		Context: context.Background(), Transport: TransportJSON, Sink: sink,
+		Dispatch: gatewaydispatch.Result{Response: &http.Response{StatusCode: http.StatusOK, Body: &trackingBody{Reader: strings.NewReader(`{"ok":true}`)}}},
+	})
+	if !errors.Is(err, ErrDestinationWrite) || !errors.Is(err, commitErr) || result.State != StateFailedBeforeCommit || result.TransportCommitted || sink.Snapshot().TransportCommitted {
+		t.Fatalf("result/error/state = %+v/%v/%+v", result, err, sink.Snapshot())
 	}
 }
 
@@ -358,6 +410,31 @@ func TestHandleStreamCloseErrorCannotRemainSuccessful(t *testing.T) {
 	}
 }
 
+func TestHandleStreamHeaderCommitFencesZeroByteWrite(t *testing.T) {
+	writer := &zeroWriteResponseWriter{header: make(http.Header)}
+	sink, _ := gatewaydownstream.NewHTTPWriterSink(writer)
+	result, err := testHandler().Handle(Input{
+		Context: context.Background(), Transport: TransportStream, Sink: sink,
+		Dispatch: gatewaydispatch.Result{Response: &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: &trackingBody{Reader: strings.NewReader("data: visible\n\n")}}},
+	})
+	if err == nil || result.State != StateFailedAfterCommit || result.RetryAllowed || !result.TransportCommitted || result.BytesWritten != 0 || writer.status != http.StatusOK || !sink.Snapshot().TransportCommitted {
+		t.Fatalf("result/error/writer/state = %+v/%v/%+v/%+v", result, err, writer, sink.Snapshot())
+	}
+}
+
+func TestHandleEmptyStreamFlushFailurePreservesHeaderCommit(t *testing.T) {
+	flushErr := errors.New("flush failed")
+	writer := &flushErrorResponseWriter{header: make(http.Header), err: flushErr}
+	sink, _ := gatewaydownstream.NewHTTPWriterSink(writer)
+	result, err := testHandler().Handle(Input{
+		Context: context.Background(), Transport: TransportStream, Sink: sink,
+		Dispatch: gatewaydispatch.Result{Response: &http.Response{StatusCode: http.StatusOK, Body: &trackingBody{Reader: strings.NewReader("")}}},
+	})
+	if !errors.Is(err, flushErr) || result.State != StateFailedAfterCommit || !result.TransportCommitted || result.RetryAllowed || writer.status != http.StatusOK {
+		t.Fatalf("result/error/writer = %+v/%v/%+v", result, err, writer)
+	}
+}
+
 func TestResponsePolicyFactsUseValidBoundedUTF8(t *testing.T) {
 	message := strings.Repeat("界", 100) + "🙂"
 	facts := parseResponsePolicyFacts([]byte(`{"error":{"message":"` + message + `"}}`))
@@ -391,6 +468,38 @@ type trackingBody struct {
 	*strings.Reader
 	closed   bool
 	closeErr error
+}
+
+type zeroWriteResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func (w *zeroWriteResponseWriter) Header() http.Header       { return w.header }
+func (w *zeroWriteResponseWriter) WriteHeader(status int)    { w.status = status }
+func (w *zeroWriteResponseWriter) Write([]byte) (int, error) { return 0, nil }
+
+type flushErrorResponseWriter struct {
+	header http.Header
+	status int
+	err    error
+}
+
+func (w *flushErrorResponseWriter) Header() http.Header            { return w.header }
+func (w *flushErrorResponseWriter) WriteHeader(status int)         { w.status = status }
+func (w *flushErrorResponseWriter) Write(body []byte) (int, error) { return len(body), nil }
+func (w *flushErrorResponseWriter) FlushError() error              { return w.err }
+
+type failingCommitSink struct{ err error }
+
+func (s *failingCommitSink) Stage(gatewaydownstream.Plan) error { return nil }
+func (s *failingCommitSink) Commit(context.Context) error       { return s.err }
+func (s *failingCommitSink) Write(context.Context, []byte) (int, error) {
+	return 0, errors.New("write should not be called")
+}
+func (s *failingCommitSink) MarkSemantic() {}
+func (s *failingCommitSink) Snapshot() gatewaystreamrelay.SinkState {
+	return gatewaystreamrelay.SinkState{}
 }
 
 func (b *trackingBody) Close() error { b.closed = true; return b.closeErr }
