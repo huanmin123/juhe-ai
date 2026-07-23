@@ -133,7 +133,8 @@ export async function pipeUpstreamStream(
   const inspector = protocolDriver.createStreamInspector()
   const codexResponsesGuard = options.codexResponsesGuard
   const codexSafeRepairEnabled = codexResponsesGuard?.mode === 'safe_repair'
-  if (codexResponsesGuard && !codexSafeRepairEnabled && inspector.setParsedEventObserver) {
+  const codexStrictInterceptEnabled = codexResponsesGuard?.mode === 'strict_intercept'
+  if (codexResponsesGuard && !codexSafeRepairEnabled && !codexStrictInterceptEnabled && inspector.setParsedEventObserver) {
     inspector.setParsedEventObserver((event) => {
       try {
         codexResponsesGuard.inspectOpenAiSseEvent(event)
@@ -152,6 +153,7 @@ export async function pipeUpstreamStream(
     && options.responseInspectionContext?.clientProfile !== 'generic_anthropic'
     && (options.clientRetryEnabled === true || (options.responseInspectionPolicies?.length ?? 0) > 0)
     || codexSafeRepairEnabled
+    || codexStrictInterceptEnabled
   const interceptor = responseInspectionEnabled
     ? new OpenAIResponseInspectionBuffer({
       clientRetryEnabled: options.clientRetryEnabled === true,
@@ -168,9 +170,21 @@ export async function pipeUpstreamStream(
         ? {
             transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
               const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
+              if (result.outcome === 'blocked' && result.retryable) {
+                return { intercepted: codexResponsesProtocolDecision(result, false) }
+              }
               const rewritten = rewriteCodexResponsesSseEvent(event, result.repairs)
               if (rewritten) codexResponsesGuard.recordAppliedSseRepairs(result.repairs.length)
               return rewritten
+            }
+          }
+        : {}),
+      ...(codexStrictInterceptEnabled && codexResponsesGuard
+        ? {
+            transformEvent: (event: import('../protocols/openai-v1/stream-events.js').ParsedOpenAIStreamEvent) => {
+              const result = codexResponsesGuard.inspectOpenAiSseEvent(event)
+              if (result.outcome !== 'repairable' && result.outcome !== 'blocked') return undefined
+              return { intercepted: codexResponsesProtocolDecision(result, true) }
             }
           }
         : {})
@@ -1233,6 +1247,37 @@ export async function pipeUpstreamStream(
     outputEventCount: inspection.outputEventCount
   }, '网关流式响应已成功结束')
   return finishStreamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens, inspection.imageOutputReceived, captureSuccessPayloads, bodyOmissionFor(inspection))
+}
+
+function codexResponsesProtocolDecision(
+  result: import('../codex-responses/response-guard.js').CodexResponsesGuardSseResult,
+  strict: boolean
+): ResponseInspectionDecision {
+  const codes = [...new Set(result.issues.map((issue) => issue.code))]
+  const detail = codes.length > 0 ? `：${codes.join(', ')}` : ''
+  return {
+    reason: 'configured_response_policy',
+    action: 'replace_with_failure',
+    transport: 'sse',
+    triggerPhase: result.commit.semanticCommitted ? 'after_downstream_write' : 'before_downstream_write',
+    endpointFamily: 'responses',
+    frameType: 'raw_json_path',
+    upstreamErrorCode: strict ? 'codex_responses_protocol_intercepted' : 'codex_responses_protocol_blocked',
+    upstreamErrorMessage: strict
+      ? `Codex Responses 流式响应协议异常，严格模式已拦截并请求更换账户${detail}`
+      : `Codex Responses 流式响应协议异常，安全模式已阻止本次响应并请求下一账户${detail}`,
+    clientProfile: 'codex',
+    downstreamWritten: result.commit.semanticCommitted,
+    policyId: strict ? 'codex_responses_strict_intercept' : 'codex_responses_protocol_blocked',
+    policyName: strict ? 'Codex Responses 严格拦截' : 'Codex Responses 协议阻断',
+    policySource: 'account',
+    policyProtocolCode: 'openai_v1',
+    executionMode: 'intercept',
+    dataHandling: 'replace_with_failure',
+    retryEnabled: true,
+    accountSwitch: 'request_next_account',
+    accountState: strict ? 'runtime_avoidance' : 'none'
+  }
 }
 
 function withTransportFailure(

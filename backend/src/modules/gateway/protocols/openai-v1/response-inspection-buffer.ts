@@ -37,8 +37,13 @@ export interface OpenAIResponseInspectionBufferOptions {
   context?: ResponseInspectionRuntimeContext
   extractSemanticFrames?: (event: ParsedOpenAIStreamEvent) => ResponseSemanticFrame[]
   buildFailureEvent?: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
-  transformEvent?: (event: ParsedOpenAIStreamEvent) => Buffer | undefined
+  transformEvent?: (event: ParsedOpenAIStreamEvent) => ResponseInspectionEventTransform
 }
+
+export type ResponseInspectionEventTransform = Buffer | {
+  buffer?: Buffer
+  intercepted?: ResponseInspectionDecision
+} | undefined
 
 const maxBufferedSseEventBytes = 256 * 1024
 
@@ -51,7 +56,7 @@ export class OpenAIResponseInspectionBuffer {
   private readonly context: ResponseInspectionRuntimeContext | undefined
   private readonly extractSemanticFrames: (event: ParsedOpenAIStreamEvent) => ResponseSemanticFrame[]
   private readonly buildFailureEvent: (decision: ResponseInspectionDecision, clientRetryEnabled: boolean) => Buffer | undefined
-  private readonly transformEvent: ((event: ParsedOpenAIStreamEvent) => Buffer | undefined) | undefined
+  private readonly transformEvent: ((event: ParsedOpenAIStreamEvent) => ResponseInspectionEventTransform) | undefined
   private readonly deferredLeadingNoopChunks: Buffer[] = []
   private readonly deferredCodexCompactionChunks: Buffer[] = []
   private codexCompactionOutputItemCount = 0
@@ -72,7 +77,7 @@ export class OpenAIResponseInspectionBuffer {
   }
 
   markDownstreamWrite(): void {
-    if (!this.clientRetryEnabled && this.policies.length === 0) return
+    if (!this.clientRetryEnabled && this.policies.length === 0 && !this.transformEvent) return
     this.downstreamWritten = true
   }
 
@@ -103,7 +108,20 @@ export class OpenAIResponseInspectionBuffer {
         continue
       }
       const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
-      const outboundBuffer = this.transformEvent?.(event) ?? rawBuffer
+      const transformed = normalizeEventTransform(this.transformEvent?.(event), rawBuffer)
+      const outboundBuffer = transformed.buffer
+      if (transformed.intercepted) {
+        this.clearDeferredLeadingNoopChunks()
+        this.clearDeferredCodexCompactionChunks()
+        if (!this.downstreamWritten) chunks.length = 0
+        return {
+          chunks,
+          intercepted: transformed.intercepted,
+          observations: observations.length > 0 ? observations : undefined,
+          pendingEvent: this.hasPendingProtocolEvent(),
+          parserSkipped: this.parserSkipped
+        }
+      }
       if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
         this.deferredLeadingNoopChunks.push(outboundBuffer)
         continue
@@ -196,7 +214,18 @@ export class OpenAIResponseInspectionBuffer {
       }
     }
     const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
-    const outboundBuffer = this.transformEvent?.(event) ?? rawBuffer
+    const transformed = normalizeEventTransform(this.transformEvent?.(event), rawBuffer)
+    const outboundBuffer = transformed.buffer
+    if (transformed.intercepted) {
+      this.clearDeferredLeadingNoopChunks()
+      this.clearDeferredCodexCompactionChunks()
+      return {
+        chunks: [],
+        intercepted: transformed.intercepted,
+        pendingEvent: this.hasPendingProtocolEvent(),
+        parserSkipped: this.parserSkipped
+      }
+    }
     if (!this.downstreamWritten && isDeferrableLeadingChatCompletionNoopEvent(event)) {
       this.deferredLeadingNoopChunks.push(outboundBuffer)
       this.clearDeferredLeadingNoopChunks()
@@ -432,6 +461,17 @@ export class OpenAIResponseInspectionBuffer {
       && this.context?.codexCompactionExpected === true
       && this.context.clientProfile === 'codex'
       && this.context.accountClientCompatibility === 'codex_responses'
+  }
+}
+
+function normalizeEventTransform(
+  value: ResponseInspectionEventTransform,
+  fallback: Buffer
+): { buffer: Buffer; intercepted?: ResponseInspectionDecision } {
+  if (Buffer.isBuffer(value)) return { buffer: value }
+  return {
+    buffer: value?.buffer ?? fallback,
+    intercepted: value?.intercepted
   }
 }
 

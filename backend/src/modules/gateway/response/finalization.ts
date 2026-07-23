@@ -40,9 +40,12 @@ import {
   responseInspectionAuditMetadata
 } from '../audit/metadata.js'
 import {
+  codexResponsesGuardUsageSummary,
   createCodexResponsesResponseGuard,
+  type CodexResponsesGuardUsageSummary,
   type CodexResponsesResponseGuard
 } from '../codex-responses/response-guard.js'
+import { resolveCodexResponsesGuardMode } from '../codex-responses/account-policy.js'
 import {
   forgetOpenAIAccountForSessionAsync
 } from '../runtime/session-affinity.service.js'
@@ -388,7 +391,10 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
         headers: upstreamResponse.headers,
         bodyText: streamResult.bodyOmission ? undefined : streamResult.responseBodyText,
         bodyOmission: streamResult.bodyOmission,
-        errorMessage: streamResult.message
+        errorMessage: streamResult.message,
+        codexResponsesGuard: streamResult.codexResponsesGuard
+          ? codexResponsesGuardUsageSummary(streamResult.codexResponsesGuard)
+          : undefined
       }),
       errorMessage: streamResult.message
     })
@@ -531,6 +537,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     return { alreadyFinalized: true, transportFailure: streamResult.transportFailure }
   }
 
+  const codexResponsesGuardSnapshot = streamResult.codexResponsesGuard
   return {
     alreadyFinalized: false,
     usage: streamUsageFallback.usage,
@@ -538,6 +545,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     responseBodyText: streamResult.responseBodyText,
     responseResourceId: streamResult.responseResourceId,
     bodyOmission: streamResult.bodyOmission,
+    codexResponsesGuard: codexResponsesGuardSnapshot && codexResponsesGuardSnapshot.outcome !== 'clean'
+      ? codexResponsesGuardUsageSummary(codexResponsesGuardSnapshot)
+      : undefined,
     errorPayload: {}
   }
 }
@@ -646,6 +656,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
   let responseSemanticText: string | undefined
   let codexGuardedCompleteBody: Buffer | undefined
   let codexGuardedCompleteBodyText: string | undefined
+  let codexResponsesGuard: CodexResponsesGuardUsageSummary | undefined
   let bodyOmission: StreamBodyOmissionSummary | undefined
   let firstTokenMs: number | undefined
   let usage = emptyUsage()
@@ -734,6 +745,9 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             protocolValidationEnabled: false,
             downstreamCommitState: input.downstreamCommitState,
             onCodexResponsesGuardResult: (result) => {
+              if (result.outcome !== 'clean') {
+                codexResponsesGuard = codexResponsesGuardUsageSummary(result)
+              }
               if (result.outcome === 'repaired_safe' || result.outcome === 'repaired_bridge') {
                 codexGuardedCompleteBodyText = JSON.stringify(result.value)
                 codexGuardedCompleteBody = Buffer.from(codexGuardedCompleteBodyText, 'utf8')
@@ -779,8 +793,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
             responseBodyText = downstreamBodyText
           }
           responseUsageText = downstreamBodyText
-        } else {
-          recordCodexResponsesGuardCoverageGap(input)
+          } else {
+            codexResponsesGuard = recordCodexResponsesGuardCoverageGap(input)
           logger.warn({
             event: 'gateway_non_stream_response_inspection_omitted',
             accountId: account.id,
@@ -1071,6 +1085,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     responseBodyText,
     responseResourceId,
     bodyOmission,
+    codexResponsesGuard,
     errorPayload
   }
 }
@@ -1110,7 +1125,10 @@ function createCodexResponsesGuardForInput(
   input: HandleUpstreamResponseInput
 ): CodexResponsesResponseGuard | undefined {
   if (!isCodexResponsesGuardEligible(input)) return undefined
-  const mode = runtimeConfig.codexProtocolGuard.mode
+  const mode = resolveCodexResponsesGuardMode({
+    globalMode: runtimeConfig.codexProtocolGuard.mode,
+    credentials: input.account.credentials
+  })
   if (mode === 'off') return undefined
   const marker = input.upstreamResponse.codexResponsesGuardMarker
   if (!marker) return undefined
@@ -1127,15 +1145,16 @@ function isCodexResponsesCompactRequest(req: Request): boolean {
   return req.method.toUpperCase() === 'POST' && path === '/responses/compact'
 }
 
-function recordCodexResponsesGuardCoverageGap(input: HandleUpstreamResponseInput): void {
+function recordCodexResponsesGuardCoverageGap(input: HandleUpstreamResponseInput): CodexResponsesGuardUsageSummary | undefined {
   const guard = createCodexResponsesGuardForInput(input)
-  if (!guard) return
+  if (!guard) return undefined
   try {
     const result = guard.observeCoverageGap()
     input.auditCapture.addGatewayMetadata({
       label: 'codex_responses_protocol_guard',
       metadata: codexResponsesGuardAuditMetadata(result)
     })
+    return codexResponsesGuardUsageSummary(result)
   } finally {
     guard.dispose()
   }
@@ -1664,14 +1683,25 @@ export async function finalizeHandledUpstreamResponse(input: FinalizeHandledUpst
         upstreamUrl,
         statusCode: upstreamResponse.status,
         headers: upstreamResponse.headers,
-        bodyOmission: result.bodyOmission
+        bodyOmission: result.bodyOmission,
+        codexResponsesGuard: result.codexResponsesGuard
       })
-      : forwardedResponseSuccessful ? undefined : buildUsageResponseSnapshot({
-        upstreamUrl,
-        statusCode: upstreamResponse.status,
-        headers: upstreamResponse.headers,
-        bodyText: result.responseBodyText
-      })
+      : forwardedResponseSuccessful
+        ? result.codexResponsesGuard
+          ? buildUsageResponseSnapshot({
+            upstreamUrl,
+            statusCode: upstreamResponse.status,
+            headers: upstreamResponse.headers,
+            codexResponsesGuard: result.codexResponsesGuard
+          })
+          : undefined
+        : buildUsageResponseSnapshot({
+          upstreamUrl,
+          statusCode: upstreamResponse.status,
+          headers: upstreamResponse.headers,
+          bodyText: result.responseBodyText,
+          codexResponsesGuard: result.codexResponsesGuard
+        })
   })
   if (result.bodyOmission) {
     auditCapture.omitPayloadBodies({

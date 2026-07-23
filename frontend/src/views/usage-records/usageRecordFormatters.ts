@@ -150,6 +150,35 @@ export function errorText(record: UsageRecordSummary): string {
   return '-'
 }
 
+export interface UsageRecordCodexGuardStatus {
+  label: '已修复' | '协议异常'
+  detail: string
+}
+
+export function usageRecordCodexGuardStatus(record: UsageRecordSummary): UsageRecordCodexGuardStatus | undefined {
+  if (!record.success) return undefined
+  const value = record.responseSnapshot?.codexResponsesGuard
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const guard = value as Record<string, unknown>
+  const outcome = typeof guard.outcome === 'string' ? guard.outcome : ''
+  if (outcome !== 'repaired_safe' && outcome !== 'repaired_bridge' && outcome !== 'observed_unknown') return undefined
+  const codes = Array.isArray(guard.diagnosticCodes)
+    ? guard.diagnosticCodes.filter((item): item is string => typeof item === 'string').slice(0, 8)
+    : []
+  const rules = Array.isArray(guard.repairRuleIds)
+    ? guard.repairRuleIds.filter((item): item is string => typeof item === 'string').slice(0, 8)
+    : []
+  const detail = [
+    outcome === 'observed_unknown' ? '检测到未识别的 Responses 类型，已透传并记录' : '响应已在网关复制后完成安全修复',
+    rules.length ? `修复规则：${rules.join(', ')}` : '',
+    codes.length ? `诊断码：${codes.join(', ')}` : ''
+  ].filter(Boolean).join('；')
+  return {
+    label: outcome === 'observed_unknown' ? '协议异常' : '已修复',
+    detail
+  }
+}
+
 export function usageRecordSystemAccountText(record: UsageRecordSummary): string {
   return systemAccountDisplayText(record)
 }

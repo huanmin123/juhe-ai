@@ -35,16 +35,16 @@ guard 不根据账户类型、URL、响应字段或缺少 marker 推断 provenan
 
 AI 账户配置最终提供两个独立开关：
 
-1. `codexResponsesSafeRepairEnabled`，默认开启。
+1. 账户凭据 `codex_responses_safe_repair_enabled`（前端字段 `codexResponsesSafeRepairEnabled`），默认开启。
    - 对确定的 R0 ID/字段错误执行确定性修复。
    - 不改变上游选择，不把账户标成故障。
    - 使用记录标记为黄色 `repaired`，并记录规则 ID、provenance 和是否在语义提交前完成。
-2. `codexResponsesStrictInterceptEnabled`，默认关闭。
+2. 账户凭据 `codex_responses_strict_intercept_enabled`（前端字段 `codexResponsesStrictInterceptEnabled`），默认关闭。
    - 命中确定的 R2 违规或错误模型证据时，丢弃当前响应，切换到下一账户或返回受控错误。
    - 进入账户异常处理，保存异常原因和证据摘要。
    - 与 safe repair 互斥：严格拦截启用时，不能先把同一响应修复后继续交付；不确定结果仍不得切号。
 
-全局运行模式用于灰度和紧急回退：`off`、`shadow`、`safe_repair`、`strict_intercept`。账户策略和全局模式取更严格者，但 `off` 仅用于明确的运维回退，默认值为 `shadow`；生产默认账户修复开启、严格拦截关闭。
+全局运行模式用于灰度和紧急回退：`off`、`shadow`、`safe_repair`、`strict_intercept`。Node 网关按“全局 off 优先，其余取更严格者”解析；旧账户缺少字段时按安全修复开启、严格拦截关闭处理。严格拦截命中后通过已有服务端 retry/exclude 机制换号，并进入账户运行态抑制；未知结果不会换号。
 
 ## 4. ID 与历史 item 自愈
 
@@ -110,7 +110,7 @@ SSE 修复必须改写实际下游事件，包括 `item.id`、`item_id` 和 `res
 - 黄色：`repaired` 或 `observed_unknown`，请求可用但存在修复或检查覆盖不足。
 - 红色：`blocked`、`late_violation` 或严格拦截导致切号。
 
-记录字段至少包括：guard revision、mode、provenance、outcome、repair rule IDs、retryable、account switch、strict intercept、diagnostic count 和 omitted count。账户异常处理只接受 `blocked` 的确定 raw/bridge 证据；`unknown` 和纯 gateway bridge 观察不写 R2 账户故障。
+记录字段至少包括：guard revision、mode、provenance、outcome、repair rule IDs、diagnostic codes、retryable、account switch、strict intercept、diagnostic count 和 omitted count。Node 使用记录在 `responseSnapshot.codexResponsesGuard` 中保存有界摘要；成功但 `repaired_safe`、`repaired_bridge` 或 `observed_unknown` 显示黄色，失败/严格拦截保持红色。账户异常处理只接受确定 raw/bridge 证据；`unknown` 和纯 gateway bridge 观察不写 R2 账户故障。
 
 ## 9. 失败安全原则
 
@@ -124,6 +124,6 @@ SSE 修复必须改写实际下游事件，包括 `item.id`、`item_id` 和 `res
 
 - Codex 官方源码/契约对齐：item prefix、event stage、completed 终态和 standalone event。
 - JSON/SSE 单元回归、provenance 双检查点回归、真实 mock gateway E2E。
-- 账户开关和黄色 usage tag 的 API/UI/存储契约回归。
+- Node 账户开关和黄色 usage tag 的 API/UI/存储契约回归。
 - SQLite、PostgreSQL、Redis 三种测试边界；测试数据库允许按现行 schema 重建，不修改生产数据。
 - 真实模型测试只从本机密码文件读取，凭据不进入日志、提交和文档。

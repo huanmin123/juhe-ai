@@ -59,7 +59,7 @@ interface SseMemoryGate {
   identityHeapGrowthLimitBytes: number
 }
 
-const modes = ['off', 'shadow', 'safe_repair'] as const
+const modes = ['off', 'shadow', 'safe_repair', 'strict_intercept'] as const
 const sizes = [100, 1_000, 10_000] as const
 const scenarios = ['clean', 'dirty_1pct'] as const
 
@@ -146,7 +146,7 @@ function runJsonOnce(
     const repairedItemCount = run.result.outcome === 'repaired_safe' || run.result.outcome === 'repaired_bridge'
       ? diagnosticCount + omittedDiagnosticCount
       : 0
-    if (mode === 'safe_repair' && dirtyItemCount === 0) {
+    if ((mode === 'safe_repair' || mode === 'strict_intercept') && dirtyItemCount === 0) {
       assert.equal(run.idFactoryCallCount, 0, 'clean safe_repair 不得进入 ID repair factory')
     }
     return {
@@ -514,7 +514,7 @@ function assertRuntimeModeContract(): void {
   const invalid = runRuntimeProbe('repair_everything')
   assert.notEqual(invalid.status, 0, '非法 guard mode 必须令配置加载失败')
   assert.match(invalid.stderr, /JUHE_AI_CODEX_PROTOCOL_GUARD_MODE/)
-  assert.match(invalid.stderr, /off.*shadow.*safe_repair/)
+  assert.match(invalid.stderr, /off.*shadow.*safe_repair.*strict_intercept/)
 }
 
 function readRuntimeMode(mode: CodexProtocolGuardGlobalMode | undefined): string {

@@ -27,7 +27,7 @@ const codexResponsesGuardMarkerKind = 'codex_responses_guard_checkpoint_v1'
 export const codexResponsesGuardDiagnosticLimit = 32
 
 export type CodexResponsesGuardCheckpoint = 'raw_upstream' | 'gateway_bridge'
-export type CodexResponsesGuardMode = 'shadow' | 'safe_repair'
+export type CodexResponsesGuardMode = 'shadow' | 'safe_repair' | 'strict_intercept'
 export type CodexResponsesGuardOutcome =
   | CodexContractOutcome
   | 'repaired_safe'
@@ -78,6 +78,16 @@ export interface CodexResponsesGuardSnapshot {
   omittedDiagnosticCount: number
   stream: CodexStreamContractSnapshot
   commit: CodexResponsesGuardCommitSnapshot
+}
+
+export interface CodexResponsesGuardUsageSummary {
+  revision: typeof codexResponsesContractRevision
+  checkpoint: CodexResponsesGuardCheckpoint
+  mode: CodexResponsesGuardMode
+  outcome: CodexResponsesGuardOutcome
+  repairRuleIds: readonly string[]
+  diagnosticCodes: readonly string[]
+  omittedDiagnosticCount: number
 }
 
 export interface CreateCodexResponsesResponseGuardInput {
@@ -363,6 +373,23 @@ export function createCodexResponsesResponseGuard(
   input: CreateCodexResponsesResponseGuardInput
 ): CodexResponsesResponseGuard {
   return new CodexResponsesResponseGuard(input)
+}
+
+export function codexResponsesGuardUsageSummary(
+  result: CodexResponsesGuardJsonResult | CodexResponsesGuardSseResult | CodexResponsesGuardSnapshot
+): CodexResponsesGuardUsageSummary {
+  const diagnostics = 'diagnostics' in result ? result.diagnostics : result.issues
+  return {
+    revision: result.revision,
+    checkpoint: result.checkpoint,
+    mode: result.mode,
+    outcome: result.outcome,
+    repairRuleIds: [...result.repairRuleIds],
+    diagnosticCodes: [...new Set(diagnostics.map((issue) => issue.code))],
+    omittedDiagnosticCount: 'omittedDiagnosticCount' in result
+      ? result.omittedDiagnosticCount
+      : result.omittedIssueCount
+  }
 }
 
 function validateResponseEnvelope(

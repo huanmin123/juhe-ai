@@ -120,6 +120,17 @@ assert.equal(((safeRepairResult.value.output as JsonRecord[])[0] as JsonRecord).
 assert.equal(((safeRepairInput.output as JsonRecord[])[0] as JsonRecord).id, 'fc_wrong_custom')
 assert.deepEqual(safeRepairResult.repairRuleIds, ['codex.r0.response.replace_item_id'])
 
+const strictGuard = createCodexResponsesResponseGuard({
+  marker: createCodexResponsesGuardMarker('raw_upstream'),
+  downstreamCommitState: new GatewayDownstreamCommitState(),
+  mode: 'strict_intercept'
+})
+const strictResult = strictGuard.inspectJson(safeRepairInput)
+assert.equal(strictResult.outcome, 'repairable', '严格模式仍要诊断 R0，但不得执行修复')
+assert.equal(strictResult.value, safeRepairInput)
+assert.deepEqual(strictResult.repairRuleIds, [])
+strictGuard.dispose()
+
 const streamCommitState = new GatewayDownstreamCommitState()
 const streamGuard = createCodexResponsesResponseGuard({
   marker: createCodexResponsesGuardMarker('gateway_bridge'),
@@ -461,5 +472,125 @@ assert.equal(safeStreamResult.codexResponsesGuard?.outcome, 'repaired_safe')
 assert.match(safeStreamText, /ctc_stream_repaired/)
 assert.equal(safeStreamText.includes('fc_wrong_stream'), false, 'safe_repair 必须把 added/done/completed 的错误 ID 一致改写到 wire')
 assert.deepEqual(safeStreamResult.codexResponsesGuard?.repairRuleIds, ['codex.r0.response.replace_stream_item_id'])
+
+const strictStreamCommitState = new GatewayDownstreamCommitState()
+const strictStreamGuard = createCodexResponsesResponseGuard({
+  marker: createCodexResponsesGuardMarker('raw_upstream'),
+  downstreamCommitState: strictStreamCommitState,
+  mode: 'strict_intercept'
+})
+const strictStreamChunks: Buffer[] = []
+const strictStreamResponse = {
+  headersSent: false,
+  writableEnded: false,
+  destroyed: false,
+  writableLength: 0,
+  writableHighWaterMark: 16 * 1024,
+  once() { return this },
+  off() { return this },
+  hasHeader() { return false },
+  setHeader() { return this },
+  status() { return this },
+  write(chunk: Buffer) {
+    this.headersSent = true
+    strictStreamChunks.push(Buffer.from(chunk))
+    return true
+  },
+  end() {
+    this.writableEnded = true
+    return this
+  }
+}
+async function* strictStreamUpstream(): AsyncIterable<Uint8Array> {
+  const event = {
+    type: 'response.output_item.added',
+    output_index: 0,
+    item: { id: 'fc_strict_wrong', type: 'custom_tool_call', call_id: 'call_strict', name: 'apply_patch', input: '' }
+  }
+  yield Buffer.from(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`, 'utf8')
+}
+const strictStreamResult = await pipeUpstreamStream(
+  strictStreamUpstream(),
+  strictStreamResponse as never,
+  {
+    firstResponseTimeoutMs: 5_000,
+    firstByteTimeoutMs: 5_000,
+    idleTimeoutMs: 5_000,
+    uncommittedAttemptMaxLifetimeMs: 30_000,
+    noAvailableAccountWaitMs: 5_000
+  },
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'responses',
+    interpretProtocolFailures: false,
+    downstreamCommitState: strictStreamCommitState,
+    codexResponsesGuard: strictStreamGuard
+  }
+)
+assert.equal(strictStreamResult.completed, false)
+assert.equal(strictStreamResult.responseInspection?.upstreamErrorCode, 'codex_responses_protocol_intercepted')
+assert.equal(strictStreamResult.codexResponsesGuard?.mode, 'strict_intercept')
+assert.equal(strictStreamChunks.length, 0, '严格拦截必须在下游写入前阻止污染事件')
+
+const safeBlockedCommitState = new GatewayDownstreamCommitState()
+const safeBlockedGuard = createCodexResponsesResponseGuard({
+  marker: createCodexResponsesGuardMarker('raw_upstream'),
+  downstreamCommitState: safeBlockedCommitState,
+  mode: 'safe_repair'
+})
+const safeBlockedResponse = {
+  headersSent: false,
+  writableEnded: false,
+  destroyed: false,
+  writableLength: 0,
+  writableHighWaterMark: 16 * 1024,
+  once() { return this },
+  off() { return this },
+  hasHeader() { return false },
+  setHeader() { return this },
+  status() { return this },
+  write() {
+    this.headersSent = true
+    return true
+  },
+  end() {
+    this.writableEnded = true
+    return this
+  }
+}
+const safeBlockedResult = await pipeUpstreamStream(
+  (async function* safeBlockedUpstream(): AsyncIterable<Uint8Array> {
+    const event = {
+      type: 'response.output_item.added',
+      output_index: 0,
+      item: { id: 'ctc_blocked', type: 'custom_tool_call' }
+    }
+    yield Buffer.from(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`, 'utf8')
+  })(),
+  safeBlockedResponse as never,
+  {
+    firstResponseTimeoutMs: 5_000,
+    firstByteTimeoutMs: 5_000,
+    idleTimeoutMs: 5_000,
+    uncommittedAttemptMaxLifetimeMs: 30_000,
+    noAvailableAccountWaitMs: 5_000
+  },
+  Date.now(),
+  async () => {},
+  undefined,
+  {
+    responseProtocol: 'openai_v1',
+    endpointFamily: 'responses',
+    interpretProtocolFailures: false,
+    downstreamCommitState: safeBlockedCommitState,
+    codexResponsesGuard: safeBlockedGuard
+  }
+)
+assert.equal(safeBlockedResult.completed, false)
+assert.equal(safeBlockedResult.responseInspection?.upstreamErrorCode, 'codex_responses_protocol_blocked')
+assert.equal(safeBlockedResult.codexResponsesGuard?.mode, 'safe_repair')
 
 console.log('Codex Responses 双检查点回归通过：显式 provenance、shadow、R0、副作用边界与 late violation 已固定')

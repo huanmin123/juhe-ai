@@ -192,7 +192,7 @@ export type WorkerRuntimeRole =
 export type CookieSameSiteRuntimeConfig = 'lax' | 'strict' | 'none'
 export type HostedToolRuntimeMode = 'guidance' | 'reject' | 'mock' | 'local_runtime'
 export type ImageGenerationProviderApi = 'images' | 'responses'
-export type CodexProtocolGuardGlobalMode = 'off' | 'shadow' | 'safe_repair'
+export type CodexProtocolGuardGlobalMode = 'off' | 'shadow' | 'safe_repair' | 'strict_intercept'
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
 export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
@@ -879,8 +879,8 @@ function codexProtocolGuardModeConfig(
 ): CodexProtocolGuardGlobalMode {
   const value = rawStringConfig(name)?.toLowerCase()
   if (!value) return fallback
-  if (value === 'off' || value === 'shadow' || value === 'safe_repair') return value
-  throw new Error(`${name} 只能配置为 off、shadow 或 safe_repair`)
+  if (value === 'off' || value === 'shadow' || value === 'safe_repair' || value === 'strict_intercept') return value
+  throw new Error(`${name} 只能配置为 off、shadow、safe_repair 或 strict_intercept`)
 }
 
 function imageGenerationProviderApiConfig(name: string, fallback: ImageGenerationProviderApi): ImageGenerationProviderApi {
