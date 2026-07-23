@@ -114,6 +114,9 @@
         <template v-else-if="column.key === 'model'">
           {{ modelText(record.model) }}
         </template>
+        <template v-else-if="column.key === 'profile'">
+          <a-tag :color="profileColor(record.profile)">{{ profileText(record.profile) }}</a-tag>
+        </template>
         <template v-else-if="column.key === 'createdAt'">
           {{ formatDateTime(record.createdAt) }}
         </template>
@@ -136,6 +139,7 @@
             <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
             <a-tag color="geekblue">{{ providerText(record.providerCode) }}</a-tag>
             <a-tag>{{ modelText(record.model) }}</a-tag>
+            <a-tag :color="profileColor(record.profile)">{{ profileText(record.profile) }}</a-tag>
             <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
             <a-tag v-if="runTrustedComparison(record)" color="blue">可信对比</a-tag>
           </div>
@@ -191,6 +195,8 @@ import {
   modelCheckModelText,
   modelCheckStatusOptions as statusOptions,
   providerText,
+  profileColor,
+  profileText,
   runTrustedComparison,
   statusColor,
   statusText,

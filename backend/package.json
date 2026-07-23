@@ -443,6 +443,7 @@
     "test:model-check-trusted-comparison-success": "tsx src/scripts/regression/model-check-trusted-comparison-success-regression.ts",
     "test:model-check-protocol-profiles": "tsx src/scripts/regression/model-check-protocol-profiles-regression.ts",
     "test:model-check-full-profile": "tsx src/scripts/regression/model-check-full-profile-regression.ts",
+    "test:model-check-quick-profile": "tsx src/scripts/regression/model-check-full-profile-regression.ts",
     "test:model-check-gateway-postgres-mock-ai": "tsx src/scripts/regression/model-check-gateway-postgres-mock-ai-regression.ts",
     "test:model-check-long-context-routing": "tsx src/scripts/regression/model-check-long-context-routing-regression.ts",
     "test:model-check-probe-retry": "tsx src/scripts/regression/model-check-probe-retry-regression.ts",

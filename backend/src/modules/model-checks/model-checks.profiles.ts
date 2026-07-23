@@ -141,8 +141,9 @@ export const supportedModelSet = new Set<string>(supportedModels)
 export type SupportedModel = string
 
 export const defaultModel = modelCheckProtocolProfiles[0]?.defaultModel ?? 'gpt-5.6-sol'
-export const defaultProfile = 'full'
+export const defaultProfile = 'quick'
 export const probeSetVersion = 'multi-provider-model-check-v4-gpt56-preview'
+export const quickProbeSetVersion = 'multi-provider-model-check-quick-v1'
 export const distributionSampleCount = 5
 export const modelCheckSupportedProtocolLabel = 'OpenAI Responses / OpenAI Chat Completions / Anthropic Messages / Gemini native'
 

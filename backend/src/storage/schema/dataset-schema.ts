@@ -19,7 +19,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           group_id TEXT,
           api_key_id TEXT,
           model TEXT NOT NULL,
-          profile TEXT NOT NULL DEFAULT 'full',
+          profile TEXT NOT NULL DEFAULT 'quick',
           trusted_comparison_enabled INTEGER NOT NULL DEFAULT 0,
           trusted_comparison_available INTEGER NOT NULL DEFAULT 0,
           level TEXT NOT NULL DEFAULT 'unavailable',
