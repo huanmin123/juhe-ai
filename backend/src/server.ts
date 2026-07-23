@@ -63,11 +63,7 @@ import {
   getPendingGatewayFailureUsageFinalizationCount,
   waitForGatewayFailureUsageFinalizationsIdle
 } from './modules/gateway/usage/failure-finalization.service.js'
-import {
-  EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION,
-  checkPostgresGooseSchemaVersion,
-  enforcePostgresGooseSchemaGate
-} from './storage/postgres-goose-schema-gate.js'
+import { enforcePostgresGooseSchemaGate } from './storage/postgres-goose-schema-gate.js'
 import { prewarmGatewayApiKeyValidationCacheAsync } from './storage/gateway-api-key.repository.js'
 
 const app = express()

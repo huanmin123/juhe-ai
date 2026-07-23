@@ -543,19 +543,6 @@ RETURNING
 WITH deleted AS (
   DELETE FROM juhe_business.custom_provider_models
   WHERE id = sqlc.arg(id)
-  RETURNING scope, COALESCE(system_account_id, '') AS system_account_id
-), marked AS (
-  INSERT INTO juhe_business.model_catalog_snapshot_rebuild_requests (scope, system_account_id, generation, updated_at)
-  SELECT
-    CASE WHEN scope = 'personal' THEN 'personal' ELSE 'all' END,
-    CASE WHEN scope = 'personal' THEN system_account_id ELSE '' END,
-    1,
-    now()
-  FROM deleted
-  WHERE true
-  ON CONFLICT (scope, system_account_id) DO UPDATE SET
-    generation = juhe_business.model_catalog_snapshot_rebuild_requests.generation + 1,
-    updated_at = EXCLUDED.updated_at
   RETURNING 1
 )
 SELECT COUNT(*)::bigint AS deleted_count

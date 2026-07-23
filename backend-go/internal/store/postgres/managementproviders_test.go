@@ -531,9 +531,6 @@ func TestUpdateManagementBuiltInProviderModelPricesMapsSparsePresenceToSQLC(t *t
 		result.Before.ContextWindowTokens != nil || result.After.Status != "disabled" || validateCalls != 1 {
 		t.Fatalf("atomic snapshots = before=%+v after=%+v", result.Before, result.After)
 	}
-	if q.dirtyInput.Scope != "all" || q.dirtyInput.SystemAccountID != "" || !q.dirtyInput.UpdatedAt.Valid {
-		t.Fatalf("dirty input = %+v", q.dirtyInput)
-	}
 }
 
 func TestUpdateManagementBuiltInProviderModelPricesMapsNoRowsToNotFound(t *testing.T) {
@@ -628,7 +625,7 @@ func TestUpdateManagementBuiltInProviderModelPricesTransactionValidationAndCommi
 		if err != nil || !found || validateCalls != 1 || tx.commitCalls != 1 || tx.rollbackCalls != 0 {
 			t.Fatalf("result/err/found/validate/commit/rollback = %+v/%v/%t/%d/%d/%d", result, err, found, validateCalls, tx.commitCalls, tx.rollbackCalls)
 		}
-		if !reflect.DeepEqual(tx.calls, []string{"lock", "update", "mark-dirty", "commit"}) {
+		if !reflect.DeepEqual(tx.calls, []string{"lock", "update", "commit"}) {
 			t.Fatalf("transaction order = %v", tx.calls)
 		}
 	})
@@ -664,8 +661,6 @@ type managementBuiltInProviderModelPriceUpdateQueriesStub struct {
 	updateInput postgresqueries.UpdateManagementBuiltInProviderModelConfigurationParams
 	updated     postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow
 	updateErr   error
-	dirtyInput  postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams
-	dirtyErr    error
 }
 
 func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) LockManagementBuiltInProviderModelConfiguration(
@@ -682,14 +677,6 @@ func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) UpdateManagementB
 ) (postgresqueries.UpdateManagementBuiltInProviderModelConfigurationRow, error) {
 	s.updateInput = input
 	return s.updated, s.updateErr
-}
-
-func (s *managementBuiltInProviderModelPriceUpdateQueriesStub) MarkManagementModelCatalogSnapshotRebuildDirty(
-	_ context.Context,
-	input postgresqueries.MarkManagementModelCatalogSnapshotRebuildDirtyParams,
-) error {
-	s.dirtyInput = input
-	return s.dirtyErr
 }
 
 type managementProviderModelRollbackContextKey struct{}
@@ -721,14 +708,6 @@ func (s *managementBuiltInProviderModelUpdateTxStub) QueryRow(_ context.Context,
 	row := s.rows[0]
 	s.rows = s.rows[1:]
 	return row
-}
-
-func (s *managementBuiltInProviderModelUpdateTxStub) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
-	if strings.Contains(sql, "model_catalog_snapshot_rebuild_requests") {
-		s.calls = append(s.calls, "mark-dirty")
-		return pgconn.NewCommandTag("INSERT 0 1"), nil
-	}
-	return pgconn.CommandTag{}, fmt.Errorf("unexpected SQL: %s", sql)
 }
 
 func (s *managementBuiltInProviderModelUpdateTxStub) Commit(context.Context) error {

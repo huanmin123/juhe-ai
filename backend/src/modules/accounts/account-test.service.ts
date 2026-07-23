@@ -30,6 +30,10 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import { accountTestFailureEligibleForAccount } from './account-test-failure-eligibility.js'
 import { accountManualTestEndpointModes } from './account-test-endpoint-modes.js'
 import {
+  parseAccountTestUpstreamErrorCode,
+  resolveAccountTestResponseDiagnostics
+} from './account-test-response-diagnostics.js'
+import {
   hasAccountModelCatalogSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from './account-test-success-evidence.js'
@@ -305,14 +309,19 @@ export async function testOpenAIAccount(
       ? account
       : await loadAccountForTest(input, account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
     const finalAccountStatus = finalSummary?.status ?? finalAccount.status
-    const responseText = response.bodyText()
-    const diagnosticAttemptText = diagnosticLastAttempt?.responseBodyText?.trim() ?? ''
+    const diagnosticAttemptResponseText = diagnosticLastAttempt?.responseBodyText ?? ''
+    const diagnosticAttemptText = diagnosticAttemptResponseText.trim()
+    const { responseText, responseHeaders } = resolveAccountTestResponseDiagnostics({
+      downstreamResponseText: response.bodyText(),
+      downstreamResponseHeaders: response.headersObject(),
+      upstreamAttempt: diagnosticLastAttempt
+    })
     const upstreamMessage = messagesTestMode
       ? parseAnthropicUpstreamMessage(diagnosticAttemptText) ?? parseAnthropicUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
       : geminiTestMode
         ? parseGeminiUpstreamMessage(diagnosticAttemptText) ?? parseGeminiUpstreamMessage(responseText) ?? parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
       : parseOpenAIUpstreamMessage(diagnosticAttemptText, { rawFallback: true }) ?? parseOpenAIUpstreamMessage(responseText, { rawFallback: true })
-    const upstreamErrorCode = parseUpstreamErrorCode(diagnosticAttemptText) ?? parseUpstreamErrorCode(responseText)
+    const upstreamErrorCode = parseAccountTestUpstreamErrorCode(diagnosticAttemptText) ?? parseAccountTestUpstreamErrorCode(responseText)
     const streamFailureMessage = messagesTestMode
       ? parseAnthropicStreamFailureMessage(responseText) ?? parseOpenAIStreamFailureMessage(responseText)
       : geminiTestMode
@@ -359,7 +368,7 @@ export async function testOpenAIAccount(
       testEndpointMode,
       requestUrl,
       requestBody,
-      responseHeaders: response.headersObject(),
+      responseHeaders,
       responseBody: parseOpenAIJsonBody(responseText),
       responseText,
       responseTruncated,
@@ -765,22 +774,6 @@ function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret
   const before = stringValue(original.credentials.access_token)
   const after = stringValue(resolved.apiKey)
   return Boolean(after && before !== after)
-}
-
-function parseUpstreamErrorCode(bodyText: string): string | undefined {
-  if (!bodyText) return undefined
-  try {
-    const payload = JSON.parse(bodyText) as Record<string, unknown>
-    const error = typeof payload.error === 'object' && payload.error !== null
-      ? payload.error as Record<string, unknown>
-      : payload
-    const code = stringValue(error.code)
-    if (code) return code
-    const type = stringValue(error.type)
-    return type || undefined
-  } catch {
-    return undefined
-  }
 }
 
 function parseGeminiUpstreamMessage(bodyText: string): string | undefined {

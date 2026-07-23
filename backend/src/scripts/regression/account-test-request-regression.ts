@@ -14,6 +14,10 @@ import {
 } from '../../modules/accounts/account-test-request.js'
 import { accountTestProbeKind } from '../../modules/accounts/account-test-probe-policy.js'
 import {
+  parseAccountTestUpstreamErrorCode,
+  resolveAccountTestResponseDiagnostics
+} from '../../modules/accounts/account-test-response-diagnostics.js'
+import {
   hasAccountModelCatalogSuccessEvidence,
   hasAccountTestProtocolSuccessEvidence
 } from '../../modules/accounts/account-test-success-evidence.js'
@@ -96,6 +100,38 @@ assert.equal(hasAccountTestProtocolSuccessEvidence(
   'chat_sse',
   `data: [DONE]\n\ndata: ${JSON.stringify({ choices: [{ delta: { content: 'late' }, finish_reason: null }] })}\n\n`
 ), false, '[DONE] 之后追加内容属于非法事件顺序，不得构成成功证据')
+
+const upstreamFailureResponse = 'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","message":"upstream original failure"}}}\n\n'
+assert.equal(parseAccountTestUpstreamErrorCode(upstreamFailureResponse), 'server_is_overloaded', '人工账号测试必须从上游原始 SSE 提取错误码')
+assert.deepEqual(resolveAccountTestResponseDiagnostics({
+  downstreamResponseText: 'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"code":"upstream_retryable_error","message":"上游流式响应在输出前失败，请重试"}}}\n\n',
+  downstreamResponseHeaders: { 'content-type': 'text/event-stream; charset=utf-8' },
+  upstreamAttempt: {
+    accountId: 'account-upstream-failure',
+    accountName: '上游失败账户',
+    upstreamUrl: 'https://upstream.example/v1/responses',
+    status: 503,
+    responseHeaders: { 'content-type': 'application/json', 'x-upstream-diagnostic': 'original' },
+    responseBodyText: upstreamFailureResponse
+  }
+}), {
+  responseText: upstreamFailureResponse,
+  responseHeaders: { 'content-type': 'application/json', 'x-upstream-diagnostic': 'original' }
+}, '人工账号测试失败时必须展示上游原始响应正文和 header，不能展示网关生成的客户端重试错误')
+assert.deepEqual(resolveAccountTestResponseDiagnostics({
+  downstreamResponseText: 'downstream fallback',
+  downstreamResponseHeaders: { 'content-type': 'application/json' },
+  upstreamAttempt: {
+    accountId: 'account-empty-upstream-body',
+    accountName: '空上游正文账户',
+    upstreamUrl: 'https://upstream.example/v1/responses',
+    status: 503,
+    responseBodyText: '   '
+  }
+}), {
+  responseText: 'downstream fallback',
+  responseHeaders: { 'content-type': 'application/json' }
+}, '上游诊断未捕获正文时必须保留下游兜底响应，避免返回空控制台')
 
 assert.equal(testPathFromEndpointMode('chat_json'), '/v1/chat/completions', 'Chat JSON 测试应使用 Chat Completions 路径')
 assert.equal(testPathFromEndpointMode('chat_sse'), '/v1/chat/completions', 'Chat SSE 测试应使用 Chat Completions 路径')

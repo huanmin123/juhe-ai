@@ -274,7 +274,7 @@ function modelCheckRunListParams(pageState: { current: number; pageSize: number 
 }
 const deepDetection = computed(() => form.profile === 'full')
 const accountSelectDisabled = computed(() => submitting.value)
-const comparisonSelectDisabled = computed(() => submitting.value || !deepDetection.value)
+const comparisonSelectDisabled = computed(() => submitting.value)
 const accountSelectPlaceholder = computed(() => '输入账户名称搜索')
 const comparisonSelectPlaceholder = computed(() => '可信对比账户（可选）')
 const {
@@ -346,11 +346,6 @@ function handleModelUpdate(model: ModelCheckModel) {
 
 function handleDeepDetectionUpdate(enabled: boolean) {
   form.profile = enabled ? 'full' : 'quick'
-  if (!enabled) {
-    form.trustedComparison = false
-    form.trustedComparisonAccountId = undefined
-    selectedComparisonAccount.value = undefined
-  }
 }
 
 function handleTargetChange() {
@@ -399,10 +394,6 @@ async function submitRun() {
     message.warning('可信对比账户不能和检测目标相同')
     return
   }
-  if (form.profile !== 'full' && trustedComparisonAccountId) {
-    message.warning('快速检测不支持可信对比，请开启深度检测')
-    return
-  }
   detailOpen.value = false
   currentRun.value = undefined
   try {
@@ -411,8 +402,8 @@ async function submitRun() {
       targetId,
       model: form.model,
       profile: form.profile,
-      trustedComparison: form.profile === 'full' && Boolean(trustedComparisonAccountId),
-      trustedComparisonAccountId: form.profile === 'full' ? trustedComparisonAccountId || undefined : undefined
+      trustedComparison: Boolean(trustedComparisonAccountId),
+      trustedComparisonAccountId: trustedComparisonAccountId || undefined
     }
     currentRun.value = await startModelCheckRunSession({
       commandText: `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model} --profile ${form.profile}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`,
