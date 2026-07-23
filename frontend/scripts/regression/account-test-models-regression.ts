@@ -82,6 +82,7 @@ assertNotIncludes(accountApiSource, 'default-test-model', '账户 API 不应保�
 
 assertIncludes(accountTestModelsSource, 'loadTestModelOptions', '候选模型列表必须提供独立的按需加载入口')
 assertNotIncludes(openTestModalSource, 'loadSavedAccountTestOptions(', '打开测试弹窗时不得请求候选模型列表')
+assertIncludes(openTestModalSource, 'updateSelectableTestModel(account.healthCheckModel)', '打开测试弹窗时必须读取默认模型能力，以便图片模型立即显示 Images API')
 assertIncludes(openTestModalSource, 'account.healthCheckModel', '测试弹窗默认模型必须直接使用当前账户检查模型')
 assertIncludes(openTestModalSource, 'account.healthCheckEndpointMode', '测试弹窗默认请求形态必须直接使用当前账户检查形态')
 assertIncludes(accountTestComponentSource, '@dropdown-visible-change', '模型选择器首次展开时才应触发候选模型列表加载')
@@ -98,6 +99,7 @@ assertIncludes(accountTestModelsSource, 'modelAbortController?.abort()', '关闭
 assertIncludes(accountTestModelsSource, 'testModelCapabilities', '切换非默认模型时应按模型 ID 请求能力')
 assertNotIncludes(accountTestModelsSource, 'supportedApiProtocols', '前端不得从轻量模型摘要读取支持协议数组')
 assertIncludes(updateSelectableTestModelSource, 'testModelCapabilities', '切换模型必须按模型 ID 重新读取请求形态')
+assertNotIncludes(updateSelectableTestModelSource, 'normalizedModel === defaultModel', '切回默认模型也必须重新读取模型能力，不能沿用账户文本检查形态')
 assertNotIncludes(accountTestModelsSource, 'accountTestEndpointModesForAccount', '保存账户测试不得从裁剪后的列表账户推导请求形态')
 assertNotIncludes(accountTestModelsSource, 'endpointModesForProtocol', '模型协议标签不得决定保存账户可测试请求形态')
 assertIncludes(accountTestModelsSource, 'let modelRequestToken = 0', '模型请求应使用独立 token 隔离旧结果')
@@ -108,7 +110,7 @@ assertNotIncludes(accountTestModelsSource, 'api.providers.options', '列表人�
 assertNotIncludes(accountTestModelsSource, 'api.providers.models', '列表人工测试不应自行拼供应商模型目录')
 
 assertIncludes(accountTestModalSource, 'fixedHealthCheckModel: string', '草稿测试入口应要求调用者传入固定检查模型')
-assertIncludes(accountTestModalSource, 'useFixedTestModel(model, accountTestEndpointModesForAccount(account, draftPayload))', '草稿测试应固定使用调用者传入的检查模型')
+assertIncludes(accountTestModalSource, 'fixedEndpointModes ?? accountTestEndpointModesForAccount(account, draftPayload)', '草稿测试应优先使用调用者按模型能力收口的请求形态')
 assertIncludes(accountTestModalSource, 'let testViewToken = 0', '测试弹窗应使用视图 token 隔离 A/B 账户')
 assertIncludes(accountTestModalSource, 'run.viewToken === testViewToken', '旧运行结果只能更新其绑定视图')
 assertIncludes(accountTestModalSource, 'readAccountTestRunSession(options.isManagementView.value, account.id)', '单任务恢复应按账户读取 session 快照')

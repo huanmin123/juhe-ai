@@ -204,7 +204,7 @@ const imageRequest = createOpenAIImageGenerationTestRequest({
   explicitModel: ' gpt-image-2 ',
   fallbackModel: 'fallback-image-model'
 })
-assert.equal(accountImageTestDefaultPrompt, 'A small solid white square on a plain background.', '图片测试提示词应保持轻量且稳定')
+assert.equal(accountImageTestDefaultPrompt, 'Solid black image. No objects or text.', '图片测试提示词应保持轻量且稳定')
 assert.equal(imageRequest.path, '/v1/images/generations', '图片模型测试必须调用 Images generations')
 assert.deepEqual(imageRequest.body, {
   model: 'gpt-image-2',
@@ -212,7 +212,8 @@ assert.deepEqual(imageRequest.body, {
   n: 1,
   size: '1024x1024',
   quality: 'low',
-  output_format: 'png'
+  output_format: 'webp',
+  output_compression: 100
 }, '图片测试必须使用单张、低质量的最小成本请求')
 
 const chatSseRequest = createOpenAITestRequest({
@@ -254,6 +255,18 @@ assert.equal(codexSsePayload.parallel_tool_calls, undefined, '非 Lite Codex Res
 const responsesLiteSsePayload = createOpenAIResponsesTestPayload('gpt-5.6-sol', 'ok', false, 'codex_responses', true)
 assert.deepEqual(responsesLiteSsePayload.reasoning, { context: 'all_turns' }, 'Lite 账户测试必须声明全部轮次 reasoning context')
 assert.equal(responsesLiteSsePayload.parallel_tool_calls, false, 'Lite 账户测试必须关闭并行工具调用')
+const latestCodexProbe = createOpenAITestRequest({
+  fallbackModel: 'gpt-5.6-sol',
+  prompt: 'ok',
+  isOAuth: false,
+  clientCompatibility: 'codex_responses',
+  testEndpointMode: 'responses_sse'
+})
+assert.equal(latestCodexProbe.headers?.originator, 'Codex Desktop')
+assert.equal(latestCodexProbe.headers?.['x-codex-beta-features'], 'remote_compaction_v2')
+assert.equal(latestCodexProbe.headers?.['x-openai-internal-codex-responses-lite'], 'true')
+assert.equal(typeof latestCodexProbe.body.client_metadata, 'object', '手动测试与后台探针必须携带当前 Codex client_metadata')
+assert.equal(typeof latestCodexProbe.body.prompt_cache_key, 'string', '手动测试与后台探针必须携带当前 Codex prompt cache key')
 
 assert.deepEqual(
   createOpenAIChatCompletionsTestPayload('gpt-5.5-chat', 'ok', true),

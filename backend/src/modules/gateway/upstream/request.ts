@@ -605,13 +605,15 @@ function shouldSkipUpstreamRequestHeader(name: string, preserveCodexClientHeader
 }
 
 function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccount): void {
-  if (!headers.get('accept')) {
-    headers.set('accept', 'text/event-stream')
+  if (!isOpenAICodexClientHeaders(headers)) {
+    if (!headers.get('accept')) {
+      headers.set('accept', 'text/event-stream')
+    }
+    if (!headers.get('content-type')) {
+      headers.set('content-type', 'application/json')
+    }
+    normalizeOpenAICodexClientHeaders(headers)
   }
-  if (!headers.get('content-type')) {
-    headers.set('content-type', 'application/json')
-  }
-  normalizeOpenAICodexClientHeaders(headers)
   const accountId = stringCredential(account.credentials, 'account_id')
   if (accountId && !headers.get('chatgpt-account-id')) {
     headers.set('chatgpt-account-id', accountId)
