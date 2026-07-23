@@ -14,10 +14,16 @@
 
 ## 2026-07-23 本轮收口与总进度
 
-- 本轮完成：最新 `origin/master` 已变基合入，page-data 已按 master 最新业务调整继续保持退场；Goose / owner gate 统一到 `71`；OpenAI OAuth 只完成 Go-native 契约基础；W9 增加 PostgreSQL client catalog reader、`GET /models`、`GET /v1/models`、`GET /v1beta/models` 的 opt-in 纵切面；dispatcher 统一共享 shutdown budget，并在 `Done()` 后释放队列依赖；补回账户导入三条路由的 authenticated rate-limit 覆盖。
+- 本轮完成：最新 `origin/master` 已变基合入，page-data 已按 master 最新业务调整继续保持退场；Goose / owner gate 统一到 `73`；OpenAI OAuth 只完成 Go-native 契约基础；W9 增加 PostgreSQL client catalog reader、`GET /models`、`GET /v1/models`、`GET /v1beta/models` 的 opt-in 纵切面；dispatcher 统一共享 shutdown budget，并在 `Done()` 后释放队列依赖；补回账户导入三条路由的 authenticated rate-limit 覆盖。
 - 本轮证据：Go `config/httpapi/app/gatewayclientcatalog/store/postgres` 定向测试、`app/httpapi/recorddispatch` 回归与 dispatcher race、migration catalog / maintenance、owner manifest、Node owner validator、page-data removal gate 均通过。真实 PostgreSQL / Redis / upstream / worker、真实 Go listener、反向代理切流和 Node owner 移交仍未完成。
 - 进度口径：代码迁移约 `65%`，可独立验证的 Go 能力约 `58%~59%`；生产 owner 接管 `0%`（`management=node`、`public=node`、`gateway=node`、`worker=node`，Go allowlist 为空）；Node 通用减法约 `3%`，本轮 page-data 删除属于产品退场清理，不计作已开始通用 Node 删除。
 - 本轮完成标准：`origin/master` behind 为 `0`、变基冲突已裁决、工作树无未提交代码、候选提交已合入或有明确延期理由、page-data removal gate 通过、目标测试通过、计划与迁移清单同步、远端检查点推送成功。下一轮从 W9 网关准备层继续，优先把模型目录接入真实依赖和 owner 灰度证据，不扩大到 Chat 或最终 Node 删除。
+
+### 2026-07-23 网关传输核心批次
+
+- 开发分支先同步最新 `master=4d48a5d60`，再合入 `gatewayupstream` 与 `gatewaystreamrelay` 两个 Go-native 核心模块。上游构造器按候选实际资源协议生成 OpenAI / Anthropic / Gemini URL，隔离认证、hop-by-hop、代理和追踪头，复制并限制请求体，保留 context 取消与 `GetBody` 重试能力；流式 relay 使用同步读写形成背压边界，限制 64 MiB / idle / total timeout，记录首字节和语义首字节，终态检查失败或客户端取消时禁止错误重试，并产生有界 usage / audit handoff。
+- 本批已通过目标包 race、vet、协议依赖测试和 `git diff --check`。这只是网关传输核心，不包含 HTTP listener、上游 dial / proxy / SSRF policy、retry planner 接线、协议 inspector 实例化、usage/audit/operation queue 写入、真实 upstream smoke、owner allowlist 或生产切流；因此不计为 gateway production owner 接管，也不删除 Node gateway。
+- 本批完成标准：核心包可独立导入；凭据、URL、header、body、取消、背压、超时、终态和首字节后重试边界均有测试；最新 master 已合入开发分支；配套迁移记录已更新。下一批应把 `gatewayupstream` 与已有 protocol inspector / retry / candidate 组合为可测试的 Go HTTP dispatch seam，再补真实依赖 smoke，仍不提前切 owner。
 
 ## 多轮批量迁移规则（2026-07-20）
 
