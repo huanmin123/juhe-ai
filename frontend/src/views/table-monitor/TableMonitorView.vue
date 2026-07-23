@@ -217,7 +217,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import { stringOrFallback } from '@/shared/pageStateSanitizers'
-import type { DatabaseStorageSnapshotSummary, NonBusinessDataCleanupResult, TableStorageOverview } from '@/types/domain'
+import type { DatabaseStorageHistoryPoint, NonBusinessDataCleanupResult, TableStorageOverview } from '@/types/domain'
 
 import TableMonitorCleanupModal from './TableMonitorCleanupModal.vue'
 import {
@@ -239,6 +239,7 @@ import {
   tableStateLabel,
   totalDatabaseBytes
 } from './tableMonitorDisplay'
+import { createTableMonitorHistoryRequestGate } from './tableMonitorHistoryRequestGate'
 
 interface TableMonitorPageState {
   historyRange: [string, string] | null
@@ -264,11 +265,12 @@ const databaseSummaryRoles = tableMonitorDatabaseRoles
 const historyChartPointLimit = 720
 const historyLoaded = ref(false)
 const historyLoading = ref(false)
-const databaseHistoryRows = ref<DatabaseStorageSnapshotSummary[]>([])
+const databaseHistoryRows = ref<DatabaseStorageHistoryPoint[]>([])
 const historyCardElement = ref<HTMLDivElement>()
 const historyChartElement = ref<HTMLDivElement>()
 const historyChart = shallowRef<ECharts>()
 let historyObserver: IntersectionObserver | undefined
+const historyRequestGate = createTableMonitorHistoryRequestGate()
 const { pageActive } = useEchartsPageLifecycle({
   renderCharts: renderHistoryCharts,
   resizeCharts: resizeHistoryChart,
@@ -323,20 +325,31 @@ async function loadData() {
 }
 
 async function loadHistoryData() {
-  if (historyLoading.value) return
+  const params = {
+    ...historyRangeParams(),
+    limit: historyChartPointLimit
+  }
+  const request = historyRequestGate.begin(JSON.stringify(params))
   historyLoading.value = true
   try {
-    databaseHistoryRows.value = await api.tableMonitor.databaseHistory({
-      ...historyRangeParams(),
-      limit: historyChartPointLimit
-    })
+    const rows = await api.tableMonitor.databaseHistory(params)
+    if (!request.isCurrent(currentHistoryRequestSignature())) return
+    databaseHistoryRows.value = rows
     await renderHistoryChart()
   } catch (error) {
+    if (!request.isCurrent(currentHistoryRequestSignature())) return
     console.error(error)
     message.error('表监控趋势加载失败')
   } finally {
-    historyLoading.value = false
+    if (request.isCurrent(currentHistoryRequestSignature())) historyLoading.value = false
   }
+}
+
+function currentHistoryRequestSignature() {
+  return JSON.stringify({
+    ...historyRangeParams(),
+    limit: historyChartPointLimit
+  })
 }
 
 async function onTableMonitorMounted() {
@@ -509,6 +522,7 @@ function resizeHistoryChart() {
 }
 
 onBeforeUnmount(() => {
+  historyRequestGate.invalidate()
   historyObserver?.disconnect()
   historyObserver = undefined
 })

@@ -1,7 +1,9 @@
 <template>
   <a-card :title="title" class="page-card chart-card" :loading="loading">
     <p v-if="description" class="chart-card-description">{{ description }}</p>
-    <a-empty v-if="!hasData" :description="emptyDescription" />
+    <a-empty v-if="!hasData" :description="error || emptyDescription">
+      <a-button v-if="error" type="link" @click="onRetry?.()">重试</a-button>
+    </a-empty>
     <slot v-else />
   </a-card>
 </template>
@@ -13,6 +15,8 @@ defineProps<{
   loading: boolean
   hasData: boolean
   emptyDescription: string
+  error?: string
+  onRetry?: () => void
 }>()
 </script>
 

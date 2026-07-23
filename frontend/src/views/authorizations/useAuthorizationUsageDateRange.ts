@@ -8,6 +8,7 @@ const defaultMaxRangeDays = 31
 
 export function useAuthorizationUsageDateRange(options: {
   maxRangeDays?: number
+  viewScope?: 'admin' | 'self'
   onChange?: () => void | Promise<void>
 } = {}) {
   const maxRangeDays = options.maxRangeDays ?? defaultMaxRangeDays
@@ -78,7 +79,7 @@ export function useAuthorizationUsageDateRange(options: {
     return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: maxRangeDays })
   }
 
-  void loadUsageStatsWindow()
+  void loadUsageStatsWindow({ viewScope: options.viewScope ?? 'self' })
 
   return {
     dateRange,

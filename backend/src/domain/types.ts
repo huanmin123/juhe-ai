@@ -392,8 +392,30 @@ export interface AiPerformancePoint {
 export interface AiPerformanceAccountSeries {
   accountId: string
   accountName: string
+  providerCode: string
   systemAccountId: string
   points: AiPerformancePoint[]
+}
+
+export interface AiPerformanceSummary {
+  requestCount: number
+  averageFirstTokenMs?: number
+  maxFirstTokenMs?: number
+  averageDurationMs?: number
+  maxDurationMs?: number
+}
+
+export interface AiPerformanceBase {
+  range: AccountUsageStatsRange
+  summary: AiPerformanceSummary
+  accounts: AiPerformanceAccount[]
+  hourlySeries: AiPerformanceAccountSeries[]
+}
+
+export interface AiPerformanceSeries {
+  range: AccountUsageStatsRange
+  accounts: AiPerformanceAccount[]
+  hourlySeries: AiPerformanceAccountSeries[]
 }
 
 export interface AiPerformanceOverview {
@@ -402,13 +424,7 @@ export interface AiPerformanceOverview {
   selectedAccounts: AiPerformanceAccount[]
   accounts: AiPerformanceAccount[]
   hourlySeries: AiPerformanceAccountSeries[]
-  summary: {
-    requestCount: number
-    averageFirstTokenMs?: number
-    maxFirstTokenMs?: number
-    averageDurationMs?: number
-    maxDurationMs?: number
-  }
+  summary: AiPerformanceSummary
 }
 
 export interface AccountUsageStatsRange {
@@ -1364,60 +1380,69 @@ export interface ResourceAuthorizationListResult {
 
 export type ResourceAuthorizationUsageSummary = ResourceAuthorizationSummary
 
+export interface AuthorizationUsageRowSummary {
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+}
+
+export interface AuthorizationUsageAggregateSummary extends AuthorizationUsageRowSummary {
+  inputTokens: number
+  cacheWriteTokens: number
+  lastUsedAt?: string
+}
+
 export interface AuthorizationTeamUsageRow {
   id: string
   teamId: string
   teamName: string
-  status: SystemTeamStatus
   resourceType?: ResourceAuthorizationResourceType
   resourceId?: string
   resourceName?: string
-  accountId?: string
-  accountName?: string
   accountOwnerSystemAccountId?: string
   accountOwnerSystemAccountName?: string
-  usage: AccountUsageSummary
+  usage: AuthorizationUsageRowSummary
   lastUsedAt?: string
 }
 
-export interface AuthorizationTeamUsageOverview {
+export interface AuthorizationTeamUsageRowsResult {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary
   rows: AuthorizationTeamUsageRow[]
-  teamCount: number
   total: number
   page: number
   pageSize: number
   hasMore: boolean
+}
+
+export interface AuthorizationTeamUsageSummary {
+  range: AccountUsageStatsRange
+  summary: AuthorizationUsageAggregateSummary
 }
 
 export interface AuthorizationUserUsageRow {
   id: string
-  systemAccountId: string
   userName: string
   username?: string
   teamNames?: string[]
   resourceType?: ResourceAuthorizationResourceType
-  resourceId?: string
   resourceName?: string
-  accountId?: string
-  accountName?: string
-  accountOwnerSystemAccountId?: string
   accountOwnerSystemAccountName?: string
-  sourceLabels: string[]
-  usage: AccountUsageSummary
+  usage: AuthorizationUsageRowSummary
   lastUsedAt?: string
 }
 
-export interface AuthorizationUserUsageOverview {
+export interface AuthorizationUserUsageRowsResult {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary
   rows: AuthorizationUserUsageRow[]
-  userCount: number
   total: number
   page: number
   pageSize: number
   hasMore: boolean
+}
+
+export interface AuthorizationUserUsageSummary {
+  range: AccountUsageStatsRange
+  summary: AuthorizationUsageAggregateSummary
 }
 
 export type ApiKeyGroupBindingStatus = 'active' | 'disabled'

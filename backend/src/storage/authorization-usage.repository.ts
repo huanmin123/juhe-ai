@@ -1,12 +1,14 @@
 import type {
   AccountUsageStatsRange,
-  AccountUsageSummary,
-  AuthorizationTeamUsageOverview,
+  AuthorizationUsageAggregateSummary,
+  AuthorizationUsageRowSummary,
+  AuthorizationTeamUsageRowsResult,
+  AuthorizationTeamUsageSummary,
   AuthorizationTeamUsageRow,
-  AuthorizationUserUsageOverview,
+  AuthorizationUserUsageRowsResult,
+  AuthorizationUserUsageSummary,
   AuthorizationUserUsageRow,
   ResourceAuthorizationResourceType,
-  SystemTeamStatus
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
@@ -18,8 +20,6 @@ import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-sta
 import {
   loadAccountLookupMap,
   loadAccountLookupMapAsync,
-  loadActiveSystemAccountTeamNameMapByIds,
-  loadActiveSystemAccountTeamNameMapByIdsAsync,
   loadGroupLookupMap,
   loadGroupLookupMapAsync,
   loadSystemAccountNameMapByIds,
@@ -90,11 +90,11 @@ interface AuthorizationResourceInfo {
   ownerSystemAccountId: string
 }
 
-export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): AuthorizationTeamUsageOverview {
+export function getAuthorizationTeamUsageRows(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): AuthorizationTeamUsageRowsResult {
   const pageOptions = normalizeAuthorizationUsagePageOptions(options)
   const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationTeamUsageOverview(range, pageOptions)
+    return emptyAuthorizationTeamUsageRowsResult(range, pageOptions)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -139,27 +139,23 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
   const teams = loadTeamRowsByIds(pageRows.rows.map((row) => row.team_id))
   const resources = loadAuthorizationResourceInfoMap(pageRows.rows)
   const resourceOwners = loadAuthorizationResourceOwners(resources)
-  const summary = loadAuthorizationTeamUsageSummary(filterKey)
   const overviewRows = pageRows.rows.map((row): AuthorizationTeamUsageRow => {
     const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
       id: [row.team_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
       teamId: row.team_id,
       teamName: teams.get(row.team_id)?.name ?? '',
-      status: teams.get(row.team_id)?.status ?? 'active',
       resourceType: row.resource_filter_type,
       resourceId: row.resource_filter_id,
       resourceName: resource?.name ?? '',
       ...resourceOwnerFields(resource, resourceOwners),
-      usage: usageSummaryFromAggregate(row),
+      usage: authorizationUsageRowSummary(row),
       lastUsedAt: row.last_used_at ?? undefined
     }
   })
   return {
     range: filterKey.range,
-    summary,
     rows: overviewRows,
-    teamCount: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     total: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
@@ -167,10 +163,25 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
   }
 }
 
-export async function getAuthorizationTeamUsageOverviewAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): Promise<AuthorizationTeamUsageOverview> {
+export function getAuthorizationTeamUsageSummary(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): AuthorizationTeamUsageSummary {
+  const filterKey = authorizationReportFilterKey(filters, access, range)
+  return { range, summary: filterKey ? loadAuthorizationTeamUsageSummary(filterKey) : authorizationUsageAggregateSummary() }
+}
+
+export async function getAuthorizationTeamUsageSummaryAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): Promise<AuthorizationTeamUsageSummary> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'get_authorization_team_usage_summary_read_only', filters, access, range })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return getAuthorizationTeamUsageSummary(filters, access, range)
+  const filterKey = authorizationReportFilterKey(filters, access, range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return { range, summary: filterKey ? await loadAuthorizationTeamUsageSummaryAsync(client, filterKey) : authorizationUsageAggregateSummary() }
+}
+
+export async function getAuthorizationTeamUsageRowsAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): Promise<AuthorizationTeamUsageRowsResult> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
-      type: 'get_authorization_team_usage_overview_read_only',
+      type: 'get_authorization_team_usage_rows_read_only',
       filters,
       access,
       range,
@@ -178,12 +189,12 @@ export async function getAuthorizationTeamUsageOverviewAsync(filters: Authorizat
     })
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return getAuthorizationTeamUsageOverview(filters, access, range, options)
+    return getAuthorizationTeamUsageRows(filters, access, range, options)
   }
   const pageOptions = normalizeAuthorizationUsagePageOptions(options)
   const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationTeamUsageOverview(range, pageOptions)
+    return emptyAuthorizationTeamUsageRowsResult(range, pageOptions)
   }
 
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -226,30 +237,28 @@ export async function getAuthorizationTeamUsageOverviewAsync(filters: Authorizat
     (pageOptions.page - 1) * pageOptions.pageSize
   ])
   const pageRows = takePageRows(rows, pageOptions.pageSize)
-  const teams = await loadTeamRowsByIdsAsync(client, pageRows.rows.map((row) => row.team_id))
-  const resources = await loadAuthorizationResourceInfoMapAsync(client, pageRows.rows)
+  const [teams, resources] = await Promise.all([
+    loadTeamRowsByIdsAsync(client, pageRows.rows.map((row) => row.team_id)),
+    loadAuthorizationResourceInfoMapAsync(client, pageRows.rows)
+  ])
   const resourceOwners = await loadAuthorizationResourceOwnersAsync(client, resources)
-  const summary = await loadAuthorizationTeamUsageSummaryAsync(client, filterKey)
   const overviewRows = pageRows.rows.map((row): AuthorizationTeamUsageRow => {
     const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
       id: [row.team_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
       teamId: row.team_id,
       teamName: teams.get(row.team_id)?.name ?? '',
-      status: teams.get(row.team_id)?.status ?? 'active',
       resourceType: row.resource_filter_type,
       resourceId: row.resource_filter_id,
       resourceName: resource?.name ?? '',
       ...resourceOwnerFields(resource, resourceOwners),
-      usage: usageSummaryFromAggregate(row),
+      usage: authorizationUsageRowSummary(row),
       lastUsedAt: row.last_used_at ?? undefined
     }
   })
   return {
     range: filterKey.range,
-    summary,
     rows: overviewRows,
-    teamCount: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     total: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
@@ -257,11 +266,11 @@ export async function getAuthorizationTeamUsageOverviewAsync(filters: Authorizat
   }
 }
 
-export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): AuthorizationUserUsageOverview {
+export function getAuthorizationUserUsageRows(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): AuthorizationUserUsageRowsResult {
   const pageOptions = normalizeAuthorizationUsagePageOptions(options)
   const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationUserUsageOverview(range, pageOptions)
+    return emptyAuthorizationUserUsageRowsResult(range, pageOptions)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -308,34 +317,26 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
   const pageRows = takePageRows(rows, pageOptions.pageSize)
   const accounts = loadSystemAccountPrincipalMapByIds(pageRows.rows.map((row) => row.grantee_system_account_id))
   const teams = loadTeamRowsByIds(pageRows.rows.map((row) => row.team_filter_id))
-  const teamMemberships = loadActiveSystemAccountTeamNameMapByIds(pageRows.rows.map((row) => row.grantee_system_account_id))
   const resources = loadAuthorizationResourceInfoMap(pageRows.rows)
   const resourceOwners = loadAuthorizationResourceOwners(resources)
-  const summary = loadAuthorizationUserUsageSummary(filterKey)
-  const sourceLabels = userUsageSourceLabels(filterKey.teamFilterId)
   const overviewRows = pageRows.rows.map((row): AuthorizationUserUsageRow => {
     const user = accounts.get(row.grantee_system_account_id)
     const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
       id: [row.grantee_system_account_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
-      systemAccountId: row.grantee_system_account_id,
       userName: user?.displayName ?? '',
       username: user?.username,
-      teamNames: userUsageTeamNames(row, teams, teamMemberships),
+      teamNames: userUsageTeamNames(row, teams),
       resourceType: row.resource_filter_type,
-      resourceId: row.resource_filter_id,
       resourceName: resource?.name ?? '',
-      ...resourceOwnerFields(resource, resourceOwners),
-      sourceLabels,
-      usage: usageSummaryFromAggregate(row),
+      accountOwnerSystemAccountName: resource?.ownerSystemAccountId ? resourceOwners.get(resource.ownerSystemAccountId) : undefined,
+      usage: authorizationUsageRowSummary(row),
       lastUsedAt: row.last_used_at ?? undefined
     }
   })
   return {
     range: filterKey.range,
-    summary,
     rows: overviewRows,
-    userCount: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     total: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
@@ -343,10 +344,25 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
   }
 }
 
-export async function getAuthorizationUserUsageOverviewAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): Promise<AuthorizationUserUsageOverview> {
+export function getAuthorizationUserUsageSummary(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): AuthorizationUserUsageSummary {
+  const filterKey = authorizationReportFilterKey(filters, access, range)
+  return { range, summary: filterKey ? loadAuthorizationUserUsageSummary(filterKey) : authorizationUsageAggregateSummary() }
+}
+
+export async function getAuthorizationUserUsageSummaryAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): Promise<AuthorizationUserUsageSummary> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'get_authorization_user_usage_summary_read_only', filters, access, range })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return getAuthorizationUserUsageSummary(filters, access, range)
+  const filterKey = authorizationReportFilterKey(filters, access, range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  return { range, summary: filterKey ? await loadAuthorizationUserUsageSummaryAsync(client, filterKey) : authorizationUsageAggregateSummary() }
+}
+
+export async function getAuthorizationUserUsageRowsAsync(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): Promise<AuthorizationUserUsageRowsResult> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
-      type: 'get_authorization_user_usage_overview_read_only',
+      type: 'get_authorization_user_usage_rows_read_only',
       filters,
       access,
       range,
@@ -354,12 +370,12 @@ export async function getAuthorizationUserUsageOverviewAsync(filters: Authorizat
     })
   }
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    return getAuthorizationUserUsageOverview(filters, access, range, options)
+    return getAuthorizationUserUsageRows(filters, access, range, options)
   }
   const pageOptions = normalizeAuthorizationUsagePageOptions(options)
   const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationUserUsageOverview(range, pageOptions)
+    return emptyAuthorizationUserUsageRowsResult(range, pageOptions)
   }
 
   const client = createPostgresDatabaseClient(await getPostgresPool())
@@ -405,36 +421,31 @@ export async function getAuthorizationUserUsageOverviewAsync(filters: Authorizat
     (pageOptions.page - 1) * pageOptions.pageSize
   ])
   const pageRows = takePageRows(rows, pageOptions.pageSize)
-  const accounts = await loadSystemAccountPrincipalMapByIdsAsync(client, pageRows.rows.map((row) => row.grantee_system_account_id))
-  const teams = await loadTeamRowsByIdsAsync(client, pageRows.rows.map((row) => row.team_filter_id))
-  const teamMemberships = await loadActiveSystemAccountTeamNameMapByIdsAsync(client, pageRows.rows.map((row) => row.grantee_system_account_id))
-  const resources = await loadAuthorizationResourceInfoMapAsync(client, pageRows.rows)
+  const granteeIds = pageRows.rows.map((row) => row.grantee_system_account_id)
+  const [accounts, teams, resources] = await Promise.all([
+    loadSystemAccountPrincipalMapByIdsAsync(client, granteeIds),
+    loadTeamRowsByIdsAsync(client, pageRows.rows.map((row) => row.team_filter_id)),
+    loadAuthorizationResourceInfoMapAsync(client, pageRows.rows)
+  ])
   const resourceOwners = await loadAuthorizationResourceOwnersAsync(client, resources)
-  const summary = await loadAuthorizationUserUsageSummaryAsync(client, filterKey)
-  const sourceLabels = userUsageSourceLabels(filterKey.teamFilterId)
   const overviewRows = pageRows.rows.map((row): AuthorizationUserUsageRow => {
     const user = accounts.get(row.grantee_system_account_id)
     const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
       id: [row.grantee_system_account_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
-      systemAccountId: row.grantee_system_account_id,
       userName: user?.displayName ?? '',
       username: user?.username,
-      teamNames: userUsageTeamNames(row, teams, teamMemberships),
+      teamNames: userUsageTeamNames(row, teams),
       resourceType: row.resource_filter_type,
-      resourceId: row.resource_filter_id,
       resourceName: resource?.name ?? '',
-      ...resourceOwnerFields(resource, resourceOwners),
-      sourceLabels,
-      usage: usageSummaryFromAggregate(row),
+      accountOwnerSystemAccountName: resource?.ownerSystemAccountId ? resourceOwners.get(resource.ownerSystemAccountId) : undefined,
+      usage: authorizationUsageRowSummary(row),
       lastUsedAt: row.last_used_at ?? undefined
     }
   })
   return {
     range: filterKey.range,
-    summary,
     rows: overviewRows,
-    userCount: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     total: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
@@ -485,7 +496,7 @@ function authorizationDetailResourcePredicate(filterKey: ReportFilterKey): { sql
   }
 }
 
-function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AccountUsageSummary {
+function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AuthorizationUsageAggregateSummary {
   const row = getStatsDatabase().prepare(`
     SELECT
       request_count,
@@ -517,10 +528,10 @@ function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AccountU
     filterKey.resourceFilterType,
     filterKey.resourceFilterId
   ) as unknown as AuthorizationUsageSummaryRow | undefined
-  return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
+  return authorizationUsageAggregateSummary(row)
 }
 
-async function loadAuthorizationTeamUsageSummaryAsync(client: DatabaseClient, filterKey: ReportFilterKey): Promise<AccountUsageSummary> {
+async function loadAuthorizationTeamUsageSummaryAsync(client: DatabaseClient, filterKey: ReportFilterKey): Promise<AuthorizationUsageAggregateSummary> {
   const row = await client.one<AuthorizationUsageSummaryRow>(`
     SELECT
       request_count,
@@ -552,10 +563,10 @@ async function loadAuthorizationTeamUsageSummaryAsync(client: DatabaseClient, fi
     filterKey.resourceFilterType,
     filterKey.resourceFilterId
   ])
-  return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
+  return authorizationUsageAggregateSummary(row)
 }
 
-function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountUsageSummary {
+function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AuthorizationUsageAggregateSummary {
   const row = getStatsDatabase().prepare(`
     SELECT
       request_count,
@@ -589,10 +600,10 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
     filterKey.resourceFilterType,
     filterKey.resourceFilterId
   ) as unknown as AuthorizationUsageSummaryRow | undefined
-  return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
+  return authorizationUsageAggregateSummary(row)
 }
 
-async function loadAuthorizationUserUsageSummaryAsync(client: DatabaseClient, filterKey: ReportFilterKey): Promise<AccountUsageSummary> {
+async function loadAuthorizationUserUsageSummaryAsync(client: DatabaseClient, filterKey: ReportFilterKey): Promise<AuthorizationUsageAggregateSummary> {
   const row = await client.one<AuthorizationUsageSummaryRow>(`
     SELECT
       request_count,
@@ -626,15 +637,13 @@ async function loadAuthorizationUserUsageSummaryAsync(client: DatabaseClient, fi
     filterKey.resourceFilterType,
     filterKey.resourceFilterId
   ])
-  return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
+  return authorizationUsageAggregateSummary(row)
 }
 
-function emptyAuthorizationTeamUsageOverview(range: AccountUsageStatsRange, options: Required<AuthorizationUsagePageOptions>): AuthorizationTeamUsageOverview {
+function emptyAuthorizationTeamUsageRowsResult(range: AccountUsageStatsRange, options: Required<AuthorizationUsagePageOptions>): AuthorizationTeamUsageRowsResult {
   return {
     range,
-    summary: emptyAccountUsageSummary(),
     rows: [],
-    teamCount: 0,
     total: 0,
     page: options.page,
     pageSize: options.pageSize,
@@ -642,12 +651,10 @@ function emptyAuthorizationTeamUsageOverview(range: AccountUsageStatsRange, opti
   }
 }
 
-function emptyAuthorizationUserUsageOverview(range: AccountUsageStatsRange, options: Required<AuthorizationUsagePageOptions>): AuthorizationUserUsageOverview {
+function emptyAuthorizationUserUsageRowsResult(range: AccountUsageStatsRange, options: Required<AuthorizationUsagePageOptions>): AuthorizationUserUsageRowsResult {
   return {
     range,
-    summary: emptyAccountUsageSummary(),
     rows: [],
-    userCount: 0,
     total: 0,
     page: options.page,
     pageSize: options.pageSize,
@@ -655,29 +662,39 @@ function emptyAuthorizationUserUsageOverview(range: AccountUsageStatsRange, opti
   }
 }
 
-function userUsageSourceLabels(teamFilterId: string): string[] {
-  return teamFilterId ? ['团队授权'] : ['全部授权来源']
-}
-
-function loadTeamRowsByIds(teamIds: string[]): Map<string, { name: string; status: SystemTeamStatus }> {
+function loadTeamRowsByIds(teamIds: string[]): Map<string, { name: string }> {
   const teams = loadSystemTeamLookupMap(teamIds)
-  return new Map([...teams].map(([id, team]) => [id, { name: team.name, status: team.status }]))
+  return new Map([...teams].map(([id, team]) => [id, { name: team.name }]))
 }
 
-async function loadTeamRowsByIdsAsync(client: DatabaseClient, teamIds: string[]): Promise<Map<string, { name: string; status: SystemTeamStatus }>> {
+async function loadTeamRowsByIdsAsync(client: DatabaseClient, teamIds: string[]): Promise<Map<string, { name: string }>> {
   const teams = await loadSystemTeamLookupMapAsync(client, teamIds)
-  return new Map([...teams].map(([id, team]) => [id, { name: team.name, status: team.status }]))
+  return new Map([...teams].map(([id, team]) => [id, { name: team.name }]))
 }
 
 function userUsageTeamNames(
-  row: Pick<AuthorizationUserUsageReportRow, 'team_filter_id' | 'grantee_system_account_id'>,
-  teams: ReturnType<typeof loadTeamRowsByIds>,
-  memberships: ReturnType<typeof loadActiveSystemAccountTeamNameMapByIds>
+  row: Pick<AuthorizationUserUsageReportRow, 'team_filter_id'>,
+  teams: ReturnType<typeof loadTeamRowsByIds>
 ): string[] {
-  if (row.team_filter_id) {
-    return [teams.get(row.team_filter_id)?.name ?? '']
+  const teamName = row.team_filter_id ? teams.get(row.team_filter_id)?.name : undefined
+  return teamName ? [teamName] : []
+}
+
+function authorizationUsageRowSummary(row: UsageReportRow): AuthorizationUsageRowSummary {
+  const summary = usageSummaryFromAggregate(row)
+  return { requestCount: summary.requestCount, totalTokens: summary.totalTokens, totalCost: summary.totalCost }
+}
+
+function authorizationUsageAggregateSummary(row?: UsageReportRow): AuthorizationUsageAggregateSummary {
+  const summary = row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
+  return {
+    requestCount: summary.requestCount,
+    inputTokens: summary.inputTokens,
+    cacheWriteTokens: summary.cacheWriteTokens,
+    totalTokens: summary.totalTokens,
+    totalCost: summary.totalCost,
+    lastUsedAt: summary.lastUsedAt
   }
-  return memberships.get(row.grantee_system_account_id) ?? []
 }
 
 function loadAuthorizationResourceInfoMap(rows: Array<{ resource_filter_type: ResourceAuthorizationResourceType; resource_filter_id: string }>): Map<string, AuthorizationResourceInfo> {

@@ -76,16 +76,33 @@ import {
   type StatsAggregateMathRow,
   type StatsJobStateRow,
   type UsageStatsAccumulator,
+  type UsageStatsOverviewErrorsResult,
+  type UsageStatsOverviewHourlyTrendResult,
+  type UsageStatsOverviewModelDistributionResult,
+  type UsageStatsOverviewSummaryResult,
   type UsageStatsEntry,
   type UsageStatsOverview,
   type UsageStatsRecordRow
 } from './usage-stats-types.js'
 import { statsParamsTail, statsSubtractParams } from './usage-stats-writer-params.js'
 
-export type { ProcessEventLoopSampleInput, SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
+export type {
+  ProcessEventLoopSampleInput,
+  SystemMetricsOverview,
+  SystemMetricsSampleInput,
+  UsageStatsOverview,
+  UsageStatsOverviewErrorsResult,
+  UsageStatsOverviewHourlyTrendResult,
+  UsageStatsOverviewModelDistributionResult,
+  UsageStatsOverviewSummaryResult
+} from './usage-stats-types.js'
 export {
+  getAiPerformanceBase,
+  getAiPerformanceBaseAsync,
   getAiPerformanceOverview,
   getAiPerformanceOverviewAsync,
+  getAiPerformanceSeries,
+  getAiPerformanceSeriesAsync,
   listAiPerformanceAccountOptions,
   listAiPerformanceAccountOptionsAsync
 } from './usage-stats-ai-performance.repository.js'
@@ -2547,6 +2564,139 @@ export async function getUsageStatsOverviewAsync(access?: AccessScope, range: Ac
   }
 }
 
+export function getUsageStatsOverviewSummary(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): UsageStatsOverviewSummaryResult {
+  const statsScope = usageOverviewStatsScope(access)
+  const summaryRow = loadUsageOverviewSummaryRow(getStatsDatabase(), statsScope, range)
+  return { range, summary: usageSummaryWithMath(summaryRow ?? emptyStatsAggregateMathRow()) }
+}
+
+export async function getUsageStatsOverviewSummaryAsync(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): Promise<UsageStatsOverviewSummaryResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'get_usage_stats_overview_summary_read_only', access, range })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return getUsageStatsOverviewSummary(access, range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const statsScope = usageOverviewStatsScope(access)
+  const summaryRow = await loadUsageOverviewSummaryRowAsync(client, statsScope, range)
+  return { range, summary: usageSummaryWithMath(summaryRow ?? emptyStatsAggregateMathRow()) }
+}
+
+export function getUsageStatsOverviewHourlyTrend(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): UsageStatsOverviewHourlyTrendResult {
+  const database = getStatsDatabase()
+  const statsScope = usageOverviewStatsScope(access)
+  const rows = database.prepare(`
+    SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd,
+      thinking_tokens, input_image_tokens, output_image_tokens, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
+    FROM usage_overview_trend_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY bucket_key ASC
+  `).all(statsScope.systemAccountId, rangeWindowKey(range), range.startDate, range.endDate) as unknown as UsageOverviewHourlyRow[]
+  return { range, hourlyTrend: mapUsageTrendRows(rows) }
+}
+
+export async function getUsageStatsOverviewHourlyTrendAsync(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): Promise<UsageStatsOverviewHourlyTrendResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'get_usage_stats_overview_hourly_trend_read_only', access, range })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return getUsageStatsOverviewHourlyTrend(access, range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const statsScope = usageOverviewStatsScope(access)
+  const rows = await client.query<UsageOverviewHourlyRow>(`
+    SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
+      CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd, thinking_tokens, input_image_tokens,
+      output_image_tokens, CAST(total_cost_usd AS double precision) AS total_cost, duration_ms_sum, duration_ms_count
+    FROM juhe_stats.usage_overview_trend_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY bucket_key ASC
+  `, [statsScope.systemAccountId, rangeWindowKey(range), range.startDate, range.endDate])
+  return { range, hourlyTrend: mapUsageTrendRows(rows) }
+}
+
+export function getUsageStatsOverviewModelDistribution(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): UsageStatsOverviewModelDistributionResult {
+  const statsScope = usageOverviewStatsScope(access)
+  const rows = getStatsDatabase().prepare(`
+    SELECT provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd,
+      cache_write_tokens, cache_write_1h_tokens, cache_write_cost_usd, thinking_tokens, input_image_tokens,
+      output_image_tokens, total_cost_usd AS total_cost
+    FROM usage_model_rank_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY rank ASC
+  `).all(statsScope.systemAccountId, rangeWindowKey(range), range.startDate, range.endDate) as unknown as UsageOverviewModelRow[]
+  return { range, modelDistribution: mapUsageModelRows(rows) }
+}
+
+export async function getUsageStatsOverviewModelDistributionAsync(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): Promise<UsageStatsOverviewModelDistributionResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'get_usage_stats_overview_model_distribution_read_only', access, range })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return getUsageStatsOverviewModelDistribution(access, range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const statsScope = usageOverviewStatsScope(access)
+  const rows = await client.query<UsageOverviewModelRow>(`
+    SELECT provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens,
+      CAST(cache_read_cost_usd AS double precision) AS cache_read_cost_usd, cache_write_tokens, cache_write_1h_tokens,
+      CAST(cache_write_cost_usd AS double precision) AS cache_write_cost_usd, thinking_tokens, input_image_tokens,
+      output_image_tokens, CAST(total_cost_usd AS double precision) AS total_cost
+    FROM juhe_stats.usage_model_rank_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY rank ASC
+  `, [statsScope.systemAccountId, rangeWindowKey(range), range.startDate, range.endDate])
+  return { range, modelDistribution: mapUsageModelRows(rows) }
+}
+
+export function getUsageStatsOverviewErrors(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): UsageStatsOverviewErrorsResult {
+  const statsScope = usageOverviewStatsScope(access)
+  const rows = getStatsDatabase().prepare(`
+    SELECT provider_code, error_code, status_code, error_message, error_count
+    FROM usage_error_rank_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY rank ASC
+  `).all(statsScope.systemAccountId, rangeWindowKey(range), range.startDate, range.endDate) as unknown as UsageOverviewErrorRow[]
+  return { range, errors: mapUsageErrorRows(rows) }
+}
+
+export async function getUsageStatsOverviewErrorsAsync(
+  access?: AccessScope,
+  range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()
+): Promise<UsageStatsOverviewErrorsResult> {
+  if (sqliteReadWorkerPoolEnabled()) {
+    return requestSqliteReadWorker({ type: 'get_usage_stats_overview_errors_read_only', access, range })
+  }
+  if (runtimeConfig.databaseDriver !== 'postgres') return getUsageStatsOverviewErrors(access, range)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const statsScope = usageOverviewStatsScope(access)
+  const rows = await client.query<UsageOverviewErrorRow>(`
+    SELECT provider_code, error_code, status_code, error_message, error_count
+    FROM juhe_stats.usage_error_rank_windows
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY rank ASC
+  `, [statsScope.systemAccountId, rangeWindowKey(range), range.startDate, range.endDate])
+  return { range, errors: mapUsageErrorRows(rows) }
+}
+
 export async function latestUsageStatsLagSecondsForRuntime(): Promise<number | undefined> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     return latestUsageStatsLagSeconds()
@@ -2626,8 +2776,49 @@ function usageOverviewSummaryRowFromAggregate(accountId: string, aggregate: Usag
   }
 }
 
+type UsageOverviewHourlyRow = StatsAggregateMathRow & {
+  stat_hour: string
+  error_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
+  total_cost: number
+}
+
+type UsageOverviewModelRow = {
+  provider_code: string
+  model: string
+  request_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  cache_read_cost_usd: number
+  cache_write_tokens?: number
+  cache_write_1h_tokens?: number
+  cache_write_cost_usd?: number
+  thinking_tokens?: number
+  input_image_tokens?: number
+  output_image_tokens?: number
+  total_cost: number
+}
+
+type UsageOverviewErrorRow = {
+  provider_code: string
+  error_code: string
+  status_code: number
+  error_message: string | null
+  error_count: number
+}
+
 function mapUsageTrendRows(
-  rows: Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; cache_write_tokens?: number; cache_write_1h_tokens?: number; cache_write_cost_usd?: number; thinking_tokens?: number; input_image_tokens?: number; output_image_tokens?: number; total_cost: number }>,
+  rows: UsageOverviewHourlyRow[],
 ): UsageStatsOverview['hourlyTrend'] {
   return rows.map((row) => ({
     statHour: row.stat_hour,
@@ -2642,6 +2833,33 @@ function mapUsageTrendRows(
     outputImageTokens: Number(row.output_image_tokens ?? 0),
     totalCost: Number(row.total_cost ?? 0),
     averageDurationMs: averageFromSum(row.duration_ms_sum, row.duration_ms_count),
+    errorCount: Number(row.error_count ?? 0)
+  }))
+}
+
+function mapUsageModelRows(rows: UsageOverviewModelRow[]): UsageStatsOverview['modelDistribution'] {
+  return rows.map((row) => ({
+    providerCode: row.provider_code,
+    model: row.model,
+    requestCount: Number(row.request_count ?? 0),
+    totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0),
+    cacheReadTokens: Number(row.cache_read_tokens ?? 0),
+    cacheWriteTokens: Number(row.cache_write_tokens ?? 0),
+    cacheWrite1hTokens: Number(row.cache_write_1h_tokens ?? 0),
+    cacheWriteCost: Number(row.cache_write_cost_usd ?? 0),
+    thinkingTokens: Number(row.thinking_tokens ?? 0),
+    inputImageTokens: Number(row.input_image_tokens ?? 0),
+    outputImageTokens: Number(row.output_image_tokens ?? 0),
+    totalCost: Number(row.total_cost ?? 0)
+  }))
+}
+
+function mapUsageErrorRows(rows: UsageOverviewErrorRow[]): UsageStatsOverview['errors'] {
+  return rows.map((row) => ({
+    providerCode: row.provider_code,
+    errorCode: row.error_code,
+    statusCode: row.status_code || undefined,
+    errorMessage: row.error_message ?? undefined,
     errorCount: Number(row.error_count ?? 0)
   }))
 }

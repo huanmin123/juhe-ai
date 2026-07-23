@@ -5,6 +5,7 @@ import type {
   AccountUsageStatsParams,
   AiPerformanceAccountOptionsParams,
   AiPerformanceParams,
+  AiPerformanceSeriesParams,
   AuthorizationGranteeGroupOptionsParams,
   AuthorizationPrincipalOptionsParams,
   GroupListParams,
@@ -199,8 +200,18 @@ export function aiPerformanceParams(params?: AiPerformanceParams, includeSystemA
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.startDate) output.startDate = params.startDate
   if (params.endDate) output.endDate = params.endDate
-  if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
   return Object.keys(output).length ? output : undefined
+}
+
+export function aiPerformanceSeriesParams(params: AiPerformanceSeriesParams, includeSystemAccount = true): URLSearchParams {
+  const output = new URLSearchParams()
+  if (includeSystemAccount && params.systemAccountId) output.set('systemAccountId', params.systemAccountId)
+  if (params.startDate) output.set('startDate', params.startDate)
+  if (params.endDate) output.set('endDate', params.endDate)
+  for (const accountId of [...new Set(params.accountIds.map((id) => id.trim()).filter(Boolean))].slice(0, 20)) {
+    output.append('accountIds', accountId)
+  }
+  return output
 }
 
 export function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountOptionsParams, includeSystemAccount = true): Record<string, unknown> | undefined {

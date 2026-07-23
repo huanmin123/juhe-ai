@@ -34,6 +34,14 @@ try {
   seedNewUsageSources(range.endDate)
 
   const before = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
+  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewSummary(adminAccess, range), { range, summary: before.summary }, '独立 summary 应与兼容 overview 保持一致')
+  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewHourlyTrend(adminAccess, range), { range, hourlyTrend: before.hourlyTrend }, '独立 hourly trend 应与兼容 overview 保持一致')
+  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewModelDistribution(adminAccess, range), { range, modelDistribution: before.modelDistribution }, '独立 model distribution 应与兼容 overview 保持一致')
+  assert.deepEqual(usageStatsRepository.getUsageStatsOverviewErrors(adminAccess, range), { range, errors: before.errors }, '独立 errors 应与兼容 overview 保持一致')
+  assertSectionQueryBoundary('summary', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewSummary(adminAccess, range)), 'usage_stats_daily')
+  assertSectionQueryBoundary('hourly trend', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewHourlyTrend(adminAccess, range)), 'usage_overview_trend_windows')
+  assertSectionQueryBoundary('model distribution', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewModelDistribution(adminAccess, range)), 'usage_model_rank_windows')
+  assertSectionQueryBoundary('errors', capturePreparedSql(() => usageStatsRepository.getUsageStatsOverviewErrors(adminAccess, range)), 'usage_error_rank_windows')
   assert.equal(before.summary.requestCount, 5, 'summary 应直接读取最新 daily 聚合数据')
   assert.equal(before.hourlyTrend[0]?.requestCount, 1, '测试前应读到已发布 trend 窗口')
   assert.equal(before.modelDistribution[0]?.requestCount, 1, '测试前应读到已发布 model 窗口')
@@ -213,4 +221,31 @@ function assertOverviewWindowTables(input: {
   assert.equal(model?.requests, input.modelRequests, 'model 窗口表请求数不符合预期')
   assert.equal(errors?.rows, 1, 'error 窗口表目标窗口应只有一行')
   assert.equal(errors?.errors, input.errorCount, 'error 窗口表错误数不符合预期')
+}
+
+function capturePreparedSql(run: () => unknown): string[] {
+  const database = databaseModule.getStatsDatabase()
+  const captured: string[] = []
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  database.prepare = ((sql: string) => {
+    captured.push(sql)
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  try {
+    run()
+  } finally {
+    database.prepare = originalPrepare
+  }
+  return captured
+}
+
+function assertSectionQueryBoundary(label: string, statements: string[], expectedTable: string): void {
+  assert(statements.length > 0, `${label} 独立读取必须执行查询`)
+  assert(statements.some((sql) => sql.includes(`FROM ${expectedTable}`)), `${label} 必须读取 ${expectedTable}`)
+  assert(statements.every((sql) => !/\busage_records\b/i.test(sql)), `${label} 不得回扫 usage_records`)
+  const otherTables = ['usage_stats_daily', 'usage_overview_trend_windows', 'usage_model_rank_windows', 'usage_error_rank_windows']
+    .filter((table) => table !== expectedTable)
+  for (const table of otherTables) {
+    assert(statements.every((sql) => !sql.includes(`FROM ${table}`)), `${label} 不得读取其他首页区块 ${table}`)
+  }
 }

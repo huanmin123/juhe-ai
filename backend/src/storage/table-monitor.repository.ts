@@ -67,6 +67,15 @@ export interface DatabaseStorageSnapshotSummary {
   indexCount?: number
 }
 
+export interface DatabaseStorageHistoryPoint {
+  databaseRole: MonitoredDatabaseRole
+  sampledAt: string
+  fileBytes?: number
+  walBytes?: number
+  freeBytes?: number
+  tableCount?: number
+}
+
 export interface TableStorageOverviewSummary {
   databaseRole: MonitoredDatabaseRole
   tableName: string
@@ -193,6 +202,15 @@ interface LatestDatabaseSnapshotRow {
   free_bytes: SnapshotNumberValue
   table_count: SnapshotNumberValue
   index_count: SnapshotNumberValue
+}
+
+interface DatabaseStorageHistoryRow {
+  database_role: MonitoredDatabaseRole
+  sampled_at: string
+  file_bytes: SnapshotNumberValue
+  wal_bytes: SnapshotNumberValue
+  free_bytes: SnapshotNumberValue
+  table_count: SnapshotNumberValue
 }
 
 export const tableMonitorSampleRetentionDays = 30
@@ -480,13 +498,13 @@ export function listDatabaseStorageHistory(input: {
   startAt?: string
   endAt?: string
   limit?: number
-} = {}): DatabaseStorageSnapshotSummary[] {
+} = {}): DatabaseStorageHistoryPoint[] {
   const range = normalizeDateRange(input.startAt, input.endAt)
   const database = getStatsDatabase()
   const limit = normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
   const statement = database
     .prepare(`
-      SELECT ${databaseStorageSnapshotSelectColumns()}
+      SELECT ${databaseStorageHistorySelectColumns()}
       FROM database_storage_snapshots
       WHERE database_role = ?
         AND sampled_at >= ?
@@ -495,18 +513,18 @@ export function listDatabaseStorageHistory(input: {
       LIMIT ?
     `)
   const rows = monitoredDatabaseRoles.flatMap((databaseRole) => (
-    statement.all(databaseRole, range.startAt, range.endAt, limit) as unknown as LatestDatabaseSnapshotRow[]
+    statement.all(databaseRole, range.startAt, range.endAt, limit) as unknown as DatabaseStorageHistoryRow[]
   ))
   return rows
     .sort(compareDatabaseSnapshotsByTimeAsc)
-    .map(databaseSnapshotFromRow)
+    .map(databaseHistoryPointFromRow)
 }
 
 export async function listDatabaseStorageHistoryAsync(input: {
   startAt?: string
   endAt?: string
   limit?: number
-} = {}): Promise<DatabaseStorageSnapshotSummary[]> {
+} = {}): Promise<DatabaseStorageHistoryPoint[]> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
       type: 'list_database_storage_history_read_only',
@@ -519,8 +537,8 @@ export async function listDatabaseStorageHistoryAsync(input: {
   const client = createPostgresDatabaseClient(await getPostgresPool())
   const range = normalizeDateRange(input.startAt, input.endAt)
   const limit = normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
-  const rowsByRole = await Promise.all(monitoredDatabaseRoles.map((databaseRole) => client.query<LatestDatabaseSnapshotRow>(`
-    SELECT ${databaseStorageSnapshotSelectColumns()}
+  const rowsByRole = await Promise.all(monitoredDatabaseRoles.map((databaseRole) => client.query<DatabaseStorageHistoryRow>(`
+    SELECT ${databaseStorageHistorySelectColumns()}
     FROM ${statsTable(client, 'database_storage_snapshots')}
     WHERE database_role = ?
       AND sampled_at >= ?
@@ -531,7 +549,7 @@ export async function listDatabaseStorageHistoryAsync(input: {
   return rowsByRole
     .flat()
     .sort(compareDatabaseSnapshotsByTimeAsc)
-    .map(databaseSnapshotFromRow)
+    .map(databaseHistoryPointFromRow)
 }
 
 export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10000): number {
@@ -1279,6 +1297,18 @@ function databaseStorageOverviewSelectColumns(alias?: string): string {
   ].map((column) => `${prefix}${column}`).join(', ')
 }
 
+function databaseStorageHistorySelectColumns(alias?: string): string {
+  const prefix = alias ? `${alias}.` : ''
+  return [
+    'database_role',
+    'sampled_at',
+    'file_bytes',
+    'wal_bytes',
+    'free_bytes',
+    'table_count'
+  ].map((column) => `${prefix}${column}`).join(', ')
+}
+
 function tableStorageSnapshotSelectColumns(alias?: string): string {
   const prefix = alias ? `${alias}.` : ''
   return [
@@ -1327,11 +1357,17 @@ function statsTable(client: DatabaseClient, tableName: string): string {
   return client.dialect.qualifyTable(statsSchemaName, tableName)
 }
 
-function compareDatabaseSnapshotsByRole(left: LatestDatabaseSnapshotRow, right: LatestDatabaseSnapshotRow): number {
+function compareDatabaseSnapshotsByRole(
+  left: Pick<LatestDatabaseSnapshotRow, 'database_role'>,
+  right: Pick<LatestDatabaseSnapshotRow, 'database_role'>
+): number {
   return databaseRoleSortRank(left.database_role) - databaseRoleSortRank(right.database_role)
 }
 
-function compareDatabaseSnapshotsByTimeAsc(left: LatestDatabaseSnapshotRow, right: LatestDatabaseSnapshotRow): number {
+function compareDatabaseSnapshotsByTimeAsc(
+  left: Pick<LatestDatabaseSnapshotRow, 'database_role' | 'sampled_at'>,
+  right: Pick<LatestDatabaseSnapshotRow, 'database_role' | 'sampled_at'>
+): number {
   const sampledAt = left.sampled_at.localeCompare(right.sampled_at)
   return sampledAt !== 0 ? sampledAt : compareDatabaseSnapshotsByRole(left, right)
 }
@@ -1446,21 +1482,14 @@ async function deletePostgresSnapshotRowsById(
   return result.changes
 }
 
-function databaseSnapshotFromRow(row: LatestDatabaseSnapshotRow): DatabaseStorageSnapshotSummary {
+function databaseHistoryPointFromRow(row: DatabaseStorageHistoryRow): DatabaseStorageHistoryPoint {
   return {
     databaseRole: row.database_role,
-    databasePath: basename(row.database_path),
     sampledAt: row.sampled_at,
     fileBytes: optionalNumber(row.file_bytes),
     walBytes: optionalNumber(row.wal_bytes),
-    shmBytes: optionalNumber(row.shm_bytes),
-    pageSize: optionalNumber(row.page_size),
-    pageCount: optionalNumber(row.page_count),
-    freelistCount: optionalNumber(row.freelist_count),
-    usedBytes: optionalNumber(row.used_bytes),
     freeBytes: optionalNumber(row.free_bytes),
-    tableCount: optionalNumber(row.table_count),
-    indexCount: optionalNumber(row.index_count)
+    tableCount: optionalNumber(row.table_count)
   }
 }
 

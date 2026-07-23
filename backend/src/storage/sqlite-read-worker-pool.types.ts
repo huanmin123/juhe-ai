@@ -35,11 +35,15 @@ import type {
   AnnouncementSummary,
   PublicAnnouncementDetail,
   PublicAnnouncementListItem,
+  AiPerformanceBase,
   AiPerformanceAccountOption,
   AiPerformanceOverview,
+  AiPerformanceSeries,
   ApiKeySummary,
-  AuthorizationTeamUsageOverview,
-  AuthorizationUserUsageOverview,
+  AuthorizationTeamUsageRowsResult,
+  AuthorizationTeamUsageSummary,
+  AuthorizationUserUsageRowsResult,
+  AuthorizationUserUsageSummary,
   AuthorizationGranteeGroupOptionSummary,
   GatewayRequestEndpointFamily,
   GroupListResult,
@@ -107,6 +111,7 @@ import type { SystemTeamListOptions } from './system-team.repository.js'
 import type { SystemAccountListOptions, SystemAccountListResult, SystemAccountOptionListOptions } from './system-accounts.repository.js'
 import type { SessionWithAccount } from './system-accounts.repository.js'
 import type {
+  DatabaseStorageHistoryPoint,
   DatabaseStorageSnapshotSummary,
   MonitoredDatabaseRole,
   TableStorageOverview,
@@ -119,7 +124,11 @@ import type {
 } from './openai-account-selector.types.js'
 import type {
   SystemMetricsOverview,
-  UsageStatsOverview
+  UsageStatsOverview,
+  UsageStatsOverviewErrorsResult,
+  UsageStatsOverviewHourlyTrendResult,
+  UsageStatsOverviewModelDistributionResult,
+  UsageStatsOverviewSummaryResult
 } from './usage-stats.repository.js'
 import type { UsageRecordListOptions, UsageRecordListResult, UsageRecordSummary } from './usage-records.repository.js'
 import type {
@@ -241,18 +250,30 @@ export type SqliteReadWorkerOperation =
     options?: AuthorizationGranteeGroupOptionListOptions
   }
   | {
-    type: 'get_authorization_team_usage_overview_read_only'
+    type: 'get_authorization_team_usage_rows_read_only'
     filters: AuthorizationUsageFilters
     access?: AccessScope
     range: AccountUsageStatsRange
     options?: AuthorizationUsagePageOptions
   }
   | {
-    type: 'get_authorization_user_usage_overview_read_only'
+    type: 'get_authorization_team_usage_summary_read_only'
+    filters: AuthorizationUsageFilters
+    access?: AccessScope
+    range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_authorization_user_usage_rows_read_only'
     filters: AuthorizationUsageFilters
     access?: AccessScope
     range: AccountUsageStatsRange
     options?: AuthorizationUsagePageOptions
+  }
+  | {
+    type: 'get_authorization_user_usage_summary_read_only'
+    filters: AuthorizationUsageFilters
+    access?: AccessScope
+    range: AccountUsageStatsRange
   }
   | {
     type: 'list_public_announcements_read_only'
@@ -424,6 +445,37 @@ export type SqliteReadWorkerOperation =
     type: 'get_usage_stats_overview_read_only'
     access?: AccessScope
     range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_usage_stats_overview_summary_read_only'
+    access?: AccessScope
+    range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_usage_stats_overview_hourly_trend_read_only'
+    access?: AccessScope
+    range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_usage_stats_overview_model_distribution_read_only'
+    access?: AccessScope
+    range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_usage_stats_overview_errors_read_only'
+    access?: AccessScope
+    range: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_ai_performance_base_read_only'
+    access?: AccessScope
+    range?: AccountUsageStatsRange
+  }
+  | {
+    type: 'get_ai_performance_series_read_only'
+    access?: AccessScope
+    range?: AccountUsageStatsRange
+    accountIds: string[]
   }
   | {
     type: 'get_ai_performance_overview_read_only'
@@ -757,8 +809,10 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_authorization_grantee_accounts_read_only' } ? SystemAccountPrincipalSummary[] :
   T extends { type: 'list_authorization_grantee_teams_read_only' } ? SystemTeamPrincipalSummary[] :
   T extends { type: 'list_authorization_grantee_groups_read_only' } ? AuthorizationGranteeGroupOptionSummary[] :
-  T extends { type: 'get_authorization_team_usage_overview_read_only' } ? AuthorizationTeamUsageOverview :
-  T extends { type: 'get_authorization_user_usage_overview_read_only' } ? AuthorizationUserUsageOverview :
+  T extends { type: 'get_authorization_team_usage_rows_read_only' } ? AuthorizationTeamUsageRowsResult :
+  T extends { type: 'get_authorization_team_usage_summary_read_only' } ? AuthorizationTeamUsageSummary :
+  T extends { type: 'get_authorization_user_usage_rows_read_only' } ? AuthorizationUserUsageRowsResult :
+  T extends { type: 'get_authorization_user_usage_summary_read_only' } ? AuthorizationUserUsageSummary :
   T extends { type: 'list_public_announcements_read_only' } ? PublicAnnouncementListItem[] :
   T extends { type: 'find_public_announcement_read_only' } ? PublicAnnouncementDetail | undefined :
   T extends { type: 'list_announcements_page_read_only' } ? AnnouncementListResult :
@@ -785,7 +839,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_client_ip_stats_detail_read_only' } ? ClientIpStatsDetailResult | undefined :
   T extends { type: 'get_table_storage_overview_read_only' } ? TableStorageOverview :
   T extends { type: 'list_table_storage_history_read_only' } ? TableStorageSnapshotSummary[] :
-  T extends { type: 'list_database_storage_history_read_only' } ? DatabaseStorageSnapshotSummary[] :
+  T extends { type: 'list_database_storage_history_read_only' } ? DatabaseStorageHistoryPoint[] :
   T extends { type: 'list_model_check_runs_read_only' } ? ModelCheckRunListResult :
   T extends { type: 'get_model_check_run_detail_read_only' } ? ModelCheckRunDetail | undefined :
   T extends { type: 'list_response_inspection_policies_read_only' } ? ResponseInspectionPolicyListResult :
@@ -798,6 +852,12 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'load_external_integration_source_token_for_auth_read_only' } ? ExternalIntegrationSourceTokenRow | undefined :
   T extends { type: 'get_usage_stats_timezone_read_only' } ? string :
   T extends { type: 'get_usage_stats_overview_read_only' } ? UsageStatsOverview :
+  T extends { type: 'get_usage_stats_overview_summary_read_only' } ? UsageStatsOverviewSummaryResult :
+  T extends { type: 'get_usage_stats_overview_hourly_trend_read_only' } ? UsageStatsOverviewHourlyTrendResult :
+  T extends { type: 'get_usage_stats_overview_model_distribution_read_only' } ? UsageStatsOverviewModelDistributionResult :
+  T extends { type: 'get_usage_stats_overview_errors_read_only' } ? UsageStatsOverviewErrorsResult :
+  T extends { type: 'get_ai_performance_base_read_only' } ? AiPerformanceBase :
+  T extends { type: 'get_ai_performance_series_read_only' } ? AiPerformanceSeries :
   T extends { type: 'get_ai_performance_overview_read_only' } ? AiPerformanceOverview :
   T extends { type: 'list_ai_performance_account_options_read_only' } ? AiPerformanceAccountOption[] :
   T extends { type: 'get_account_usage_stats_overview_page_read_only' } ? AccountUsageStatsOverview :

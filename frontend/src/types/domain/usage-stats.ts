@@ -96,10 +96,8 @@ export interface AiPerformanceAccountSeries {
   points: AiPerformancePoint[]
 }
 
-export interface AiPerformanceOverview {
+export interface AiPerformanceBaseResult {
   range: AccountUsageStatsRange
-  defaultAccounts: AiPerformanceAccount[]
-  selectedAccounts: AiPerformanceAccount[]
   accounts: AiPerformanceAccount[]
   hourlySeries: AiPerformanceAccountSeries[]
   summary: {
@@ -110,6 +108,14 @@ export interface AiPerformanceOverview {
     maxDurationMs?: number
   }
 }
+
+export interface AiPerformanceSeriesResult {
+  range: AccountUsageStatsRange
+  accounts: AiPerformanceAccount[]
+  hourlySeries: AiPerformanceAccountSeries[]
+}
+
+export type AiPerformanceOverview = AiPerformanceBaseResult
 
 export interface UsageStatsOverview {
   range: AccountUsageStatsRange
@@ -156,6 +162,26 @@ export interface UsageStatsOverview {
     errorMessage?: string
     errorCount: number
   }>
+}
+
+export interface UsageStatsOverviewSummaryResult {
+  range: AccountUsageStatsRange
+  summary: UsageStatsOverview['summary']
+}
+
+export interface UsageStatsOverviewHourlyTrendResult {
+  range: AccountUsageStatsRange
+  hourlyTrend: UsageStatsOverview['hourlyTrend']
+}
+
+export interface UsageStatsOverviewModelDistributionResult {
+  range: AccountUsageStatsRange
+  modelDistribution: UsageStatsOverview['modelDistribution']
+}
+
+export interface UsageStatsOverviewErrorsResult {
+  range: AccountUsageStatsRange
+  errors: UsageStatsOverview['errors']
 }
 
 export interface SystemMetricsOverview {

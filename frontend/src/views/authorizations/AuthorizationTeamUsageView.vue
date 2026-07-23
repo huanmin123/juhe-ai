@@ -6,9 +6,9 @@
         filter-title="筛选团队消耗"
         :active-filter-count="activeFilterCount"
         :advanced-filter-count="advancedFilterCount"
-        :refresh-loading="loading"
+        :refresh-loading="loading || summaryLoading"
         @reset="resetFilters"
-        @refresh="loadData"
+        @refresh="refreshUsage"
         @search="loadData"
       >
         <template #inline-filters>
@@ -152,17 +152,23 @@
       </ResponsiveListToolbar>
     </a-card>
 
-    <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
+    <a-alert v-if="summaryError" type="error" show-icon :message="summaryError">
+      <template #action><a-button size="small" @click="loadUsageSummary">重试汇总</a-button></template>
+    </a-alert>
+    <StatsSummaryCards :cards="summaryCards" :loading="summaryLoading" />
 
-    <a-card class="page-card authorization-usage-table-card" :loading="initialLoading">
+    <a-card class="page-card authorization-usage-table-card" :loading="rowsInitialLoading">
       <div class="authorization-usage-table-head">
         <h3>团队消耗明细</h3>
       </div>
+      <a-alert v-if="rowsError" type="error" show-icon :message="rowsError">
+        <template #action><a-button size="small" @click="loadData">重试明细</a-button></template>
+      </a-alert>
       <ResponsiveDataList
         class="authorization-usage-responsive-list"
         table-class="page-table authorization-usage-table"
         :columns="columns"
-        :data-source="teamRows"
+        :data-source="visibleTeamRows"
         row-key="id"
         :loading="loading"
         :pagination="tablePagination"
@@ -174,7 +180,7 @@
         :refreshing="loading"
         @change="handleTableChange"
         @mobile-load-more="loadMoreMobileTeamRows"
-        @mobile-refresh="refreshMobileTeamRows"
+        @mobile-refresh="refreshMobileUsage"
       >
         <template #emptyText>
           <a-empty class="page-empty-card" description="当前筛选范围暂无团队消耗。" />
@@ -241,8 +247,7 @@
 </template>
 
 <script setup lang="ts">
-import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -252,11 +257,12 @@ import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { authState } from '@/composables/useAuth'
 import { useRemoteAuthorizationPrincipalOptions } from '@/composables/useRemoteAuthorizationPrincipalOptions'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListLoadOptions } from '@/composables/useResponsivePagedList'
 import { sanitizePaginationState, type PagePaginationState } from '@/shared/pageStateSanitizers'
-import type { AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { AuthorizationTeamUsageRowsResult, AuthorizationTeamUsageRow, AuthorizationTeamUsageSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDateTime } from './authorizationFormatters'
 import {
@@ -276,6 +282,7 @@ import { authorizationTeamUsageColumns, authorizationTeamUsageDetailActions } fr
 import { authorizationResourceTypeOptions } from './authorizationTableColumns'
 import { useAuthorizationUsageDateRange } from './useAuthorizationUsageDateRange'
 import { useAuthorizationUsageResourceFilters } from './useAuthorizationUsageResourceFilters'
+import { buildAuthorizationUsageSignature, createAuthorizationUsageRequestGate } from './authorizationUsageRequestGate'
 
 interface AuthorizationTeamUsagePageState {
   dateRange: {
@@ -291,13 +298,20 @@ const router = useRouter()
 const authorizationUsagePageSize = 20
 const pageStateCache = usePageStateCache<AuthorizationTeamUsagePageState>(undefined, defaultAuthorizationTeamUsagePageState, {
   sanitize: sanitizeAuthorizationTeamUsagePageState,
-  version: 1
+  version: 2
 })
 const initialPageState = pageStateCache.read()
-const overview = ref<AuthorizationTeamUsageOverview>()
-let optionsLoaded = false
-let optionsLoading: Promise<void> | undefined
-let usageRequestSeq = 0
+const overview = ref<AuthorizationTeamUsageRowsResult>()
+const usageSummary = ref<AuthorizationTeamUsageSummary>()
+const summaryLoading = ref(false)
+const summaryError = ref('')
+const rowsError = ref('')
+const summaryResolvedSignature = ref('')
+const rowsResolvedSignature = ref('')
+const requestGate = createAuthorizationUsageRequestGate()
+let pageActive = true
+let reloadOnActivate = false
+const requestEpoch = ref(0)
 
 const filters = reactive<AuthorizationTeamUsageFilters>({ ...defaultAuthorizationTeamUsageFilters(), ...initialPageState.filters })
 const {
@@ -308,7 +322,6 @@ const {
   resourceOptionsLoading,
   handleResourceOptionsDropdown,
   handleResourceOptionsSearch,
-  loadAuthorizableResourceOptions,
   resetResourceId,
   resetResourceOptionsSearch
 } = useAuthorizationUsageResourceFilters(filters)
@@ -350,7 +363,10 @@ const {
   resetDateRange,
   setExplicitDateRange,
   syncDateRangeFromResponse
-} = useAuthorizationUsageDateRange({ onChange: reloadFromFirstPage })
+} = useAuthorizationUsageDateRange({
+  viewScope: isManagementView.value ? 'admin' : 'self',
+  onChange: reloadFromFirstPage
+})
 if (initialPageState.dateRange.explicit) {
   setExplicitDateRange({
     startDate: initialPageState.dateRange.startDate,
@@ -367,7 +383,6 @@ const {
   handleTableChange,
   loadData,
   loadMoreMobile: loadMoreMobileTeamRows,
-  refreshMobile: refreshMobileTeamRows,
   resetPagination
 } = useResponsivePagedList<AuthorizationTeamUsageRow, { forceOptions?: boolean }>({
   pageSize: authorizationUsagePageSize,
@@ -376,66 +391,33 @@ const {
   fetchPage: fetchTeamUsagePage,
   onError: (error) => {
     console.error(error)
-    message.error('加载团队消耗明细失败')
-  }
+    rowsError.value = '加载团队消耗明细失败'
+  },
+  requestSignature: () => [currentUsageSignature(), requestEpoch.value]
 })
 const resourceTypeOptions = authorizationResourceTypeOptions
 const detailActions = authorizationTeamUsageDetailActions
 const columns = authorizationTeamUsageColumns
 
-const initialLoading = computed(() => loading.value && !overview.value)
+const rowsInitialLoading = computed(() => loading.value && !overview.value)
 const activeFilterCount = computed(() => countAuthorizationTeamUsageActiveFilters(filters, {
   dateRangeExplicit: dateRangeExplicit.value,
   resourceGroupDisabled: resourceGroupDisabled.value,
   selectedResourceOwnerSystemAccountId: selectedResourceOwnerSystemAccountId.value
 }))
 const advancedFilterCount = computed(() => countAuthorizationUsageAdvancedFilters(filters, resourceGroupDisabled.value))
+const visibleTeamRows = computed(() => rowsResolvedSignature.value === currentUsageSignature() ? teamRows.value : [])
 const summaryCards = computed(() => buildAuthorizationTeamUsageSummaryCards({
-  hasMore: overview.value?.hasMore,
+  hasMore: rowsResolvedSignature.value === currentUsageSignature() ? overview.value?.hasMore : undefined,
+  loadedCount: visibleTeamRows.value.length,
   rangeLabel: rangeLabel.value,
-  summary: overview.value?.summary,
-  teamCount: overview.value?.teamCount
+  summary: summaryResolvedSignature.value === currentUsageSignature() ? usageSummary.value?.summary : undefined
 }))
 
-async function loadOptions(options: { force?: boolean } = {}) {
-  if (options.force) {
-    resetResourceOwnerOptionsSearch()
-    resetTeamOptionsSearch()
-    resetResourceOptionsSearch()
-  }
-  if (optionsLoaded && !options.force) return
-  if (optionsLoading && !options.force) return optionsLoading
-  optionsLoading = loadOptionsNow()
-  try {
-    await optionsLoading
-    optionsLoaded = true
-  } finally {
-    optionsLoading = undefined
-  }
-}
-
-async function loadOptionsNow() {
-  const [teamResult, ownerResult, resourceResult] = await Promise.allSettled([
-    loadTeamOptions(),
-    loadResourceOwnerOptions(),
-    loadAuthorizableResourceOptions()
-  ])
-  if (teamResult.status === 'rejected') {
-    console.error(teamResult.reason)
-    message.error('加载被授权团队失败')
-  }
-  if (ownerResult.status === 'rejected') {
-    console.error(ownerResult.reason)
-    message.error('加载资源归属用户失败')
-  }
-  if (resourceResult.status === 'rejected') {
-    console.error(resourceResult.reason)
-    message.error('加载资源选项失败')
-  }
-}
-
 async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOptions & { forceOptions?: boolean }, pageState: { current: number; pageSize: number }) {
-  const requestSeq = ++usageRequestSeq
+  const signature = currentUsageSignature()
+  const requestToken = requestGate.begin('rows', signature)
+  rowsError.value = ''
   const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
   const rangeParams = selectedRangeParams()
   const params = {
@@ -453,10 +435,11 @@ async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOption
     resetResourceOptionsSearch()
   }
   const usageOverview = isManagementView.value ? await api.authorizations.teamUsage(params) : await api.myAuthorizations.teamUsage(params)
-  if (requestSeq === usageRequestSeq) {
-    overview.value = usageOverview
-    syncDateRangeFromResponse(usageOverview.range)
-  }
+  if (!requestGate.isCurrent(requestToken, currentUsageSignature())) return { ...usageOverview, items: [], superseded: true }
+  if (!requestGate.acceptRange(requestToken, currentUsageSignature(), usageOverview.range)) throw new Error('团队明细与汇总统计范围不一致')
+  overview.value = usageOverview
+  rowsResolvedSignature.value = signature
+  syncDateRangeFromResponse(usageOverview.range)
   return {
     items: usageOverview.rows,
     page: usageOverview.page,
@@ -466,9 +449,73 @@ async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOption
   }
 }
 
+async function loadUsageSummary() {
+  const signature = currentUsageSignature()
+  const requestToken = requestGate.begin('summary', signature)
+  if (summaryResolvedSignature.value !== signature) usageSummary.value = undefined
+  summaryError.value = ''
+  summaryLoading.value = true
+  try {
+    const params = {
+      systemAccountId: selectedResourceOwnerSystemAccountId.value,
+      resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
+      resourceId: filters.resourceType === 'all' || resourceGroupDisabled.value ? undefined : filters.resourceId,
+      teamId: filters.teamId,
+      ...selectedRangeParams()
+    }
+    const result = isManagementView.value ? await api.authorizations.teamUsageSummary(params) : await api.myAuthorizations.teamUsageSummary(params)
+    if (!requestGate.isCurrent(requestToken, currentUsageSignature())) return
+    if (!requestGate.acceptRange(requestToken, currentUsageSignature(), result.range)) throw new Error('团队明细与汇总统计范围不一致')
+    usageSummary.value = result
+    summaryResolvedSignature.value = signature
+  } catch (error) {
+    if (requestGate.isCurrent(requestToken, currentUsageSignature())) {
+      console.error(error)
+      summaryError.value = '加载团队消耗汇总失败'
+    }
+  } finally {
+    if (requestGate.isCurrent(requestToken, currentUsageSignature())) summaryLoading.value = false
+  }
+}
+
+function currentUsageSignature(): string {
+  const range = selectedRangeParams()
+  const user = authState.currentUser.value
+  return buildAuthorizationUsageSignature({
+    kind: 'team',
+    scope: isManagementView.value ? 'admin' : 'self',
+    authRevision: authState.revision.value,
+    viewerId: user?.id,
+    viewerRole: user?.role,
+    ownerSystemAccountId: isManagementView.value ? selectedResourceOwnerSystemAccountId.value : user?.id,
+    startDate: range.startDate,
+    endDate: range.endDate,
+    resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
+    resourceId: filters.resourceType === 'all' || resourceGroupDisabled.value ? undefined : filters.resourceId,
+    teamId: filters.teamId
+  })
+}
+
 function reloadFromFirstPage(options: { forceOptions?: boolean } = {}) {
   resetPagination()
+  if (!pageActive) {
+    reloadOnActivate = true
+    return
+  }
+  requestGate.beginBatch(currentUsageSignature())
+  void loadUsageSummary()
   void loadData(options)
+}
+
+function refreshUsage() {
+  requestGate.beginBatch(currentUsageSignature())
+  void loadUsageSummary()
+  void loadData()
+}
+
+function refreshMobileUsage() {
+  resetPagination()
+  refreshUsage()
 }
 
 function handleTeamChange() {
@@ -558,8 +605,32 @@ function snapshotPageState(): AuthorizationTeamUsagePageState {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(() => authState.revision.value, () => {
+  if (pageActive) reloadFromFirstPage()
+  else reloadOnActivate = true
+})
 
-onMounted(loadData)
+onMounted(() => {
+  requestGate.beginBatch(currentUsageSignature())
+  void loadUsageSummary()
+  void loadData()
+})
+onDeactivated(() => {
+  reloadOnActivate = loading.value || summaryLoading.value
+  pageActive = false
+  requestGate.deactivate()
+  summaryLoading.value = false
+})
+onActivated(() => {
+  pageActive = true
+  requestGate.activate()
+  if (reloadOnActivate) {
+    reloadOnActivate = false
+    requestEpoch.value += 1
+    reloadFromFirstPage()
+  }
+})
+onBeforeUnmount(() => requestGate.deactivate())
 </script>
 
 <style scoped src="./authorization-usage.css"></style>

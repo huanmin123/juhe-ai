@@ -3,13 +3,13 @@ import { resolve } from 'node:path'
 import assert from 'node:assert/strict'
 
 const frontendRoot = resolve(import.meta.dirname, '..', '..')
-const usageStatsWindowSource = readFileSync(resolve(frontendRoot, 'composables', 'useUsageStatsWindow.ts'), 'utf8')
 const statsViewSource = readFileSync(resolve(frontendRoot, 'views', 'stats', 'StatsView.vue'), 'utf8')
 const systemMetricsViewSource = readFileSync(resolve(frontendRoot, 'views', 'stats', 'SystemMetricsStatsView.vue'), 'utf8')
 const usageStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'usage-stats', 'UsageStatsView.vue'), 'utf8')
 const usageStatsPageConfigSource = readFileSync(resolve(frontendRoot, 'views', 'usage-stats', 'usageStatsPageConfig.ts'), 'utf8')
 const aiPerformanceViewSource = readFileSync(resolve(frontendRoot, 'views', 'ai-performance', 'AiPerformanceView.vue'), 'utf8')
 const ipStatsViewSource = readFileSync(resolve(frontendRoot, 'views', 'ip-stats', 'IpStatsView.vue'), 'utf8')
+const usageStatsWindowSource = readFileSync(resolve(frontendRoot, 'composables', 'useUsageStatsWindow.ts'), 'utf8')
 const statsRoutesSource = readFileSync(resolve(frontendRoot, '..', '..', 'backend', 'src', 'modules', 'stats', 'stats.routes.ts'), 'utf8')
 
 assert.match(
@@ -97,8 +97,8 @@ assert.match(
 
 assert.match(
   aiPerformanceViewSource,
-  /await\s+loadUsageStatsWindow\(\{ force: true \}\)[\s\S]*const systemAccountId = selectedPerformanceSystemAccountId\(\)/,
-  'AI performance must refresh the stats window before building default date params'
+  /const windowScope = isManagementView\.value \? 'admin' : 'self'[\s\S]*await\s+loadUsageStatsWindow\(\{[\s\S]*force:\s*options\.force === true,[\s\S]*viewScope:\s*windowScope[\s\S]*\}\)[\s\S]*const systemAccountId = selectedPerformanceSystemAccountId\(\)/,
+  'AI performance must use the scoped cached stats window before building date params'
 )
 
 assert.match(
@@ -109,6 +109,11 @@ assert.match(
 
 assert.match(
   ipStatsViewSource,
-  /await\s+loadUsageStatsWindow\(\{ force: true \}\)[\s\S]*api\.ipStats\.list\(buildListParams\(\)\)/,
-  'IP stats must refresh the stats window before calculating segmented date ranges'
+  /await\s+loadUsageStatsWindow\(\{[\s\S]*force:\s*options\.force === true,[\s\S]*viewScope:\s*'admin'[\s\S]*\}\)[\s\S]*api\.ipStats\.list\(buildListParams\(\)\)/,
+  'IP stats must use the scoped cached stats window before calculating segmented date ranges'
 )
+
+assert.match(usageStatsWindowSource, /lastLoadFailed:\s*boolean/, 'usage-window must retain an explicit failure state')
+assert.match(usageStatsWindowSource, /scopeState\.value = undefined[\s\S]*scopeState\.lastLoadFailed = true/, 'failed usage-window requests must not be cached as successful fallback windows')
+assert.match(aiPerformanceViewSource, /didUsageStatsWindowLoadFail\(windowScope\)/, 'AI performance must stop before using a failed server window')
+assert.match(ipStatsViewSource, /didUsageStatsWindowLoadFail\('admin'\)/, 'IP stats must stop before using a failed server window')

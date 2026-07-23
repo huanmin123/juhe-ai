@@ -91,7 +91,10 @@ export interface AccountUsageStatsParams extends ListParams {
 export interface AiPerformanceParams extends ListParams {
   startDate?: string
   endDate?: string
-  accountIds?: string[]
+}
+
+export interface AiPerformanceSeriesParams extends AiPerformanceParams {
+  accountIds: string[]
 }
 
 export interface AiPerformanceAccountOptionsParams extends ListParams {
@@ -394,7 +397,7 @@ export interface AuthorizationUsageParams extends AuthorizationScopeParams {
   pageSize?: number
 }
 
-export interface AuthorizationUsageOverviewParams extends AuthorizationScopeParams {
+export interface AuthorizationUsageRowsParams extends AuthorizationScopeParams {
   resourceType?: AuthorizationResourceType
   resourceId?: string
   granteeSystemAccountId?: string
@@ -404,6 +407,9 @@ export interface AuthorizationUsageOverviewParams extends AuthorizationScopePara
   page?: number
   pageSize?: number
 }
+
+export type AuthorizationTeamUsageSummaryParams = Omit<AuthorizationUsageRowsParams, 'page' | 'pageSize' | 'granteeSystemAccountId'>
+export type AuthorizationUserUsageSummaryParams = Omit<AuthorizationUsageRowsParams, 'page' | 'pageSize'>
 
 export interface AnnouncementListParams {
   limit?: number

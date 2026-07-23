@@ -61,8 +61,10 @@ interface ApiEnvelope<T> {
 }
 
 interface CurrentUser {
+  id: string
   username: string
   displayName: string
+  role: 'admin' | 'user'
   mustChangePassword: boolean
 }
 
@@ -78,6 +80,7 @@ async function main(): Promise<void> {
 
     const adminCookie = await login(baseUrl)
     const currentAdmin = await getEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', adminCookie)
+    assertCurrentUserProjection(currentAdmin, 'GET /auth/me')
     assert(currentAdmin.username === 'admin', '默认管理员登录后应能读取当前用户')
     assert(currentAdmin.mustChangePassword === false, '管理员账户不应触发初始密码强制修改')
 
@@ -89,6 +92,7 @@ async function main(): Promise<void> {
     const renamedAdmin = await patchEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', adminCookie, {
       displayName: '控制台管理员'
     })
+    assertCurrentUserProjection(renamedAdmin, 'PATCH /auth/me')
     assert(renamedAdmin.displayName === '控制台管理员', `管理员修改显示名称后响应应返回新名称，实际：${renamedAdmin.displayName}`)
 
     const createdUser = repositories.createSystemAccount({
@@ -101,6 +105,7 @@ async function main(): Promise<void> {
     assert(createdUser.mustChangePassword === true, '普通用户仍应保留初始密码修改标记')
     const cookie = await login(baseUrl, 'locked_user', 'user-password')
     const currentUser = await getEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie)
+    assertCurrentUserProjection(currentUser, '普通用户 GET /auth/me')
     assert(currentUser.username === 'locked_user', '普通用户登录后应能读取当前用户')
     assert(currentUser.mustChangePassword === true, '普通用户应保留初始密码修改标记')
 
@@ -116,6 +121,7 @@ async function main(): Promise<void> {
     const changedUser = await postEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/change-password', cookie, {
       newPassword: 'changed-password'
     })
+    assertCurrentUserProjection(changedUser, '初始密码 POST /auth/change-password')
     assert(changedUser.mustChangePassword === false, '修改密码后应清除初始密码标记')
 
     const allowed = await getEnvelope<{ protected: boolean }>(baseUrl, '/__aisys__/api/protected', cookie)
@@ -126,8 +132,10 @@ async function main(): Promise<void> {
     const renamedUser = await patchEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie, {
       displayName: '普通控制台用户'
     })
+    assertCurrentUserProjection(renamedUser, '普通用户 PATCH /auth/me')
     assert(renamedUser.displayName === '普通控制台用户', `修改显示名称后响应应返回新名称，实际：${renamedUser.displayName}`)
     const renamedCurrentUser = await getEnvelope<CurrentUser>(baseUrl, '/__aisys__/api/auth/me', cookie)
+    assertCurrentUserProjection(renamedCurrentUser, '改名后 GET /auth/me')
     assert(renamedCurrentUser.displayName === '普通控制台用户', '修改显示名称后当前会话应读取到新名称')
 
     const secondCookie = await login(baseUrl, 'locked_user', 'changed-password')
@@ -143,6 +151,7 @@ async function main(): Promise<void> {
       oldPassword: 'changed-password',
       newPassword: 'changed-password-again'
     })
+    assertCurrentUserProjection(finalUser, '普通改密 POST /auth/change-password')
     assert(finalUser.mustChangePassword === false, '普通改密后应保持非初始密码状态')
     await assertGetStatus(baseUrl, '/__aisys__/api/protected', cookie, 401, '普通改密后应撤销其他旧会话')
     const currentAllowed = await getEnvelope<{ protected: boolean }>(baseUrl, '/__aisys__/api/protected', secondCookie)
@@ -174,10 +183,20 @@ async function login(baseUrl: string, username = 'admin', password = 'admin'): P
       captchaCode
     })
   })
+  const responseText = await response.text()
   const cookie = response.headers.get('set-cookie')?.split(';')[0]
-  assert(response.ok, `登录失败：HTTP ${response.status} ${await response.text()}`)
+  assert(response.ok, `登录失败：HTTP ${response.status} ${responseText}`)
   assert(cookie, '登录未返回会话 Cookie')
+  const loginData = (JSON.parse(responseText) as { data?: CurrentUser }).data
+  assert(loginData, '登录响应缺少 CurrentUserSummary')
+  assertCurrentUserProjection(loginData, 'POST /auth/login')
   return cookie
+}
+
+function assertCurrentUserProjection(value: CurrentUser, label: string): void {
+  const actualKeys = JSON.stringify(Object.keys(value).sort())
+  const expectedKeys = JSON.stringify(['displayName', 'id', 'mustChangePassword', 'role', 'username'].sort())
+  assert(actualKeys === expectedKeys, `${label} 响应必须使用 CurrentUserSummary 窄投影，实际字段：${actualKeys}`)
 }
 
 function assertCaptchaImageDoesNotExposeAnswer(image: string, answer: string): void {

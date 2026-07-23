@@ -28,6 +28,7 @@ try {
   assertTableMonitorAsyncSourceGuard()
 
   const businessDatabase = databaseModule.getBusinessDatabase()
+  databaseModule.getCodexContextStateShardDatabase(0)
   for (let index = 0; index < 8; index += 1) {
     businessDatabase.prepare(`CREATE TABLE table_monitor_default_${index} (id TEXT PRIMARY KEY, value TEXT)`).run()
     businessDatabase.prepare(`INSERT INTO table_monitor_default_${index} (id, value) VALUES (?, ?)`).run(`id-${index}`, `value-${index}`)
@@ -145,8 +146,16 @@ try {
   assert(databaseHistoryRoles.has('usage-catalog'), '四库增长趋势应包含使用记录目录库')
   assert(databaseHistoryRoles.has('stats'), '四库增长趋势应包含统计结果库')
   assert(databaseHistoryRoles.has('codex-context-state'), '数据库增长趋势应包含 codex context state')
+  assert.deepEqual(
+    Object.keys(databaseHistory[0] ?? {}).sort(),
+    ['databaseRole', 'fileBytes', 'freeBytes', 'sampledAt', 'tableCount', 'walBytes'].sort(),
+    '数据库增长趋势必须使用严格六字段投影'
+  )
   const databaseHistorySql = capturedHistorySql.find((sql) => sql.includes('FROM database_storage_snapshots'))
   assert(databaseHistorySql, '四库增长趋势应按库角色读取历史快照')
+  for (const unusedColumn of ['database_path', 'shm_bytes', 'page_size', 'page_count', 'freelist_count', 'used_bytes', 'index_count']) {
+    assert(!databaseHistorySql.includes(unusedColumn), `数据库增长趋势查询不应读取 ${unusedColumn}`)
+  }
   const databaseHistoryPlan = explainQueryPlan(statsDatabase, databaseHistorySql, ['business', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 720])
   assertNoTempBtree(databaseHistoryPlan, '四库增长趋势查询')
   assert(databaseHistoryPlan.includes('idx_database_storage_snapshots_role_time_id'), `四库增长趋势应使用 role+time+id 索引，实际计划：${databaseHistoryPlan}`)

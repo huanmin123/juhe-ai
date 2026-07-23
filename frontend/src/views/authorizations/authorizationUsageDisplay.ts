@@ -1,6 +1,6 @@
 import type { StatsSummaryCardItem } from '@/views/stats/StatsSummaryCards.vue'
 import type {
-  AccountUsageSummary,
+  AuthorizationUsageAggregateSummary,
   AuthorizationResourceType,
   AuthorizationTeamUsageRow,
   AuthorizationUserUsageRow
@@ -20,8 +20,8 @@ export function resourceTypeTag(resourceType: AuthorizationResourceType): { text
     : { text: 'AI账户', color: 'blue' }
 }
 
-export function resourceDisplayName(row: Pick<AuthorizationTeamUsageRow | AuthorizationUserUsageRow, 'resourceName' | 'accountName'>): string {
-  return row.resourceName || row.accountName || '-'
+export function resourceDisplayName(row: Pick<AuthorizationTeamUsageRow | AuthorizationUserUsageRow, 'resourceName'>): string {
+  return row.resourceName || '-'
 }
 
 export function teamDisplayName(row: Pick<AuthorizationUserUsageRow, 'teamNames'>): string {
@@ -46,13 +46,13 @@ export function createAuthorizationUsageShowTotal(itemLabel: string) {
 
 export function buildAuthorizationUserUsageSummaryCards(options: {
   hasMore?: boolean
+  loadedCount: number
   rangeLabel: string
-  summary?: AccountUsageSummary
-  userCount?: number
+  summary?: AuthorizationUsageAggregateSummary
 }): StatsSummaryCardItem[] {
   const summary = options.summary ?? emptyUsageSummary()
   return [
-    { key: 'users', label: options.hasMore ? '已加载用户' : '被授权用户', value: formatNumber(options.userCount ?? 0), extra: options.hasMore ? '还有更多用户消耗' : `范围 ${options.rangeLabel}` },
+    { key: 'rows', label: '已加载明细', value: formatNumber(options.loadedCount), extra: options.hasMore ? '还有更多用户消耗' : `范围 ${options.rangeLabel}` },
     { key: 'requests', label: '范围请求', value: formatNumber(summary.requestCount), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` },
     { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(summary.totalTokens), extra: `输入 ${formatUsageAmount(summary.inputTokens)} / 缓存写 ${formatUsageAmount(summary.cacheWriteTokens)}` },
     { key: 'cost', label: '成本', value: formatCost(summary.totalCost), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` }
@@ -61,13 +61,13 @@ export function buildAuthorizationUserUsageSummaryCards(options: {
 
 export function buildAuthorizationTeamUsageSummaryCards(options: {
   hasMore?: boolean
+  loadedCount: number
   rangeLabel: string
-  summary?: AccountUsageSummary
-  teamCount?: number
+  summary?: AuthorizationUsageAggregateSummary
 }): StatsSummaryCardItem[] {
   const summary = options.summary ?? emptyUsageSummary()
   return [
-    { key: 'teams', label: options.hasMore ? '已加载团队' : '被授权团队', value: formatNumber(options.teamCount ?? 0), extra: options.hasMore ? '还有更多团队消耗' : `范围 ${options.rangeLabel}` },
+    { key: 'rows', label: '已加载明细', value: formatNumber(options.loadedCount), extra: options.hasMore ? '还有更多团队消耗' : `范围 ${options.rangeLabel}` },
     { key: 'requests', label: '范围请求', value: formatNumber(summary.requestCount), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` },
     { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(summary.totalTokens), extra: `输入 ${formatUsageAmount(summary.inputTokens)} / 缓存写 ${formatUsageAmount(summary.cacheWriteTokens)}` },
     { key: 'cost', label: '成本', value: formatCost(summary.totalCost), extra: `最后使用 ${formatDateTime(summary.lastUsedAt)}` }

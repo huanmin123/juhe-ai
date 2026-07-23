@@ -15,6 +15,55 @@ export const defaultAppBrand: AppBrandSettings = {
 
 export const appBrand = reactive<AppBrandSettings>({ ...defaultAppBrand })
 
+export interface AppBrandSettingsResource<T> {
+  load: () => Promise<T>
+  set: (value: T) => T
+  clear: () => void
+}
+
+export function createAppBrandSettingsResource<T>(options: {
+  fetch: () => Promise<T>
+  commit: (value: T) => void
+}): AppBrandSettingsResource<T> {
+  let cached: T | undefined
+  let inFlight: Promise<T> | undefined
+  let revision = 0
+
+  return {
+    async load() {
+      if (cached !== undefined) return cached
+      if (inFlight) return inFlight
+      const requestRevision = revision
+      const request = options.fetch().then((value) => {
+        if (requestRevision !== revision) return cached ?? value
+        cached = value
+        options.commit(value)
+        return value
+      }).finally(() => {
+        if (inFlight === request) inFlight = undefined
+      })
+      inFlight = request
+      return request
+    },
+    set(value) {
+      revision += 1
+      cached = value
+      options.commit(value)
+      return value
+    },
+    clear() {
+      revision += 1
+      cached = undefined
+      inFlight = undefined
+    }
+  }
+}
+
+const appBrandSettingsResource = createAppBrandSettingsResource<GlobalSettings>({
+  fetch: () => api.settings.public(),
+  commit: applyAppBrandValue
+})
+
 export function normalizeAppBrand(settings: Pick<GlobalSettings, 'appName' | 'appIcon'>): AppBrandSettings {
   return {
     appName: stringValue(settings.appName, defaultAppBrand.appName),
@@ -24,11 +73,16 @@ export function normalizeAppBrand(settings: Pick<GlobalSettings, 'appName' | 'ap
 
 export function applyAppBrand(settings: Pick<GlobalSettings, 'appName' | 'appIcon'>): AppBrandSettings {
   const next = normalizeAppBrand(settings)
+  appBrandSettingsResource.set(next)
+  return next
+}
+
+function applyAppBrandValue(settings: Pick<GlobalSettings, 'appName' | 'appIcon'>): void {
+  const next = normalizeAppBrand(settings)
   appBrand.appName = next.appName
   appBrand.appIcon = next.appIcon
   syncDocumentBrand(next.appIcon)
   syncDocumentTitle()
-  return next
 }
 
 export function syncDocumentTitle(pageTitle?: string): void {
@@ -37,15 +91,7 @@ export function syncDocumentTitle(pageTitle?: string): void {
 }
 
 export async function loadAppBrandSettings(): Promise<GlobalSettings> {
-  const settings = await api.settings.public()
-  applyAppBrand(settings)
-  return settings
-}
-
-export async function loadGlobalBrandSettings(): Promise<GlobalSettings> {
-  const settings = await api.settings.public()
-  applyAppBrand(settings)
-  return settings
+  return appBrandSettingsResource.load()
 }
 
 function stringValue(value: unknown, fallback: string): string {

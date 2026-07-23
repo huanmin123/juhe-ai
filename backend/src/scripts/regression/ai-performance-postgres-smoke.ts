@@ -12,7 +12,8 @@ import {
 } from '../../storage/repositories.js'
 import { defaultProviderProtocolProfileAsync } from '../../storage/provider.repository.js'
 import {
-  getAiPerformanceOverviewAsync,
+  getAiPerformanceBaseAsync,
+  getAiPerformanceSeriesAsync,
   listAiPerformanceAccountOptionsAsync
 } from '../../storage/usage-stats.repository.js'
 import { rangeWindowKey } from '../../storage/usage-stats-window-helpers.js'
@@ -69,10 +70,12 @@ try {
   })
   assert(selectedOptions.some((item) => item.id === account.id), 'PG AI 性能账号选项应回填显式选中账号')
 
-  const overview = await getAiPerformanceOverviewAsync(access, range, [account.id])
-  assert.equal(overview.summary.requestCount, 42, 'PG AI 性能概览应读取 summary window')
-  const series = overview.hourlySeries.find((item) => item.accountId === account.id)
-  assert(series, 'PG AI 性能概览应返回选中账号趋势')
+  const base = await getAiPerformanceBaseAsync(access, range)
+  assert.equal(base.summary.requestCount, 42, 'PG AI 性能 base 应读取 summary window')
+  assert(base.accounts.length <= 10, 'PG AI 性能 base 默认账号不得超过 10 个')
+  const selected = await getAiPerformanceSeriesAsync(access, range, [account.id])
+  const series = selected.hourlySeries.find((item) => item.accountId === account.id)
+  assert(series, 'PG AI 性能 series 应返回选中账号趋势')
   const point = series.points.find((item) => item.statHour === statHour)
   assert.equal(point?.requestCount, 42, 'PG AI 性能小时趋势应读取 usage_stats_hourly')
   assert.equal(point?.averageFirstTokenMs, 12, 'PG AI 性能小时趋势应计算首 token 平均耗时')
@@ -82,7 +85,7 @@ try {
     message: 'AI 性能监控 PG smoke 通过',
     accountId: account.id,
     optionCount: options.length,
-    summaryRequestCount: overview.summary.requestCount
+    summaryRequestCount: base.summary.requestCount
   }))
 } finally {
   await cleanupSmokeRows()

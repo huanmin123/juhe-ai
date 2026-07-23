@@ -108,7 +108,7 @@ authRouter.post('/login', async (req, res, next) => {
     const session = await createSessionAsync(account.id)
     await updateSystemAccountLastLoginAsync(account.id)
     res.cookie(sessionCookieName, session.token, sessionCookieOptions({ maxAge: sessionMaxAgeMs }))
-    res.json(ok({ ...account, lastLoginAt: new Date().toISOString() }))
+    res.json(ok(currentUserSummary(account)))
   } catch (error) {
     next(error)
   }
@@ -238,7 +238,7 @@ authRouter.post('/change-password', requireSessionContext, async (req, res, next
       return
     }
     await revokeOtherSessionsForAccountAsync(context.systemAccountId, context.sessionId)
-    res.json(ok(account))
+    res.json(ok(currentUserSummary(account)))
   } catch (error) {
     next(error)
   }

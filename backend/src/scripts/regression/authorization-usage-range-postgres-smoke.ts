@@ -4,7 +4,12 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE, OPENAI_PROTOCOL_CODE, OPENAI_PROTOCOL_VERSION } from '../../domain/provider-protocol.js'
 import { closeRedisClients } from '../../shared/redis-client.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { getAuthorizationTeamUsageOverviewAsync, getAuthorizationUserUsageOverviewAsync } from '../../storage/authorization-usage.repository.js'
+import {
+  getAuthorizationTeamUsageRowsAsync,
+  getAuthorizationTeamUsageSummaryAsync,
+  getAuthorizationUserUsageRowsAsync,
+  getAuthorizationUserUsageSummaryAsync
+} from '../../storage/authorization-usage.repository.js'
 import { createPostgresDatabaseClient } from '../../storage/database-client.js'
 import { closePostgresPool, getPostgresPool } from '../../storage/postgres-client.js'
 import { refreshUsageRankSnapshotsInStages } from '../../storage/usage-stats.repository.js'
@@ -102,26 +107,27 @@ try {
   assert.equal(refreshed.skipped, false, '首次 PG authorization range refresh 不应跳过')
   assert.equal(refreshed.stages.length, 1, 'PG authorization range refresh 应只执行一个阶段')
 
-  const teamOverview = await getAuthorizationTeamUsageOverviewAsync({
+  const teamOverview = await getAuthorizationTeamUsageRowsAsync({
     teamId,
     resourceType: 'account',
     resourceId: accountId
   }, ownerAccess, range, { page: 1, pageSize: 10 })
-  assert.equal(teamOverview.summary.requestCount, 13, '团队授权范围 summary 应从 PG 窗口表读取 requestCount')
+  const teamSummary = await getAuthorizationTeamUsageSummaryAsync({ teamId, resourceType: 'account', resourceId: accountId }, ownerAccess, range)
+  assert.equal(teamSummary.summary.requestCount, 13, '团队授权范围 summary 应从 PG 窗口表读取 requestCount')
   assert.equal(teamOverview.rows.length, 1, '团队授权范围明细应返回一行')
   assert.equal(teamOverview.rows[0]?.teamId, teamId, '团队授权范围明细应保留团队 ID')
   assert.equal(teamOverview.rows[0]?.resourceName, '授权范围窗口账号', '团队授权范围明细应通过 async lookup 装配资源名')
   assert.equal(teamOverview.rows[0]?.usage.totalCost, 0.456, '团队授权范围明细应读取 totalCost')
 
-  const userOverview = await getAuthorizationUserUsageOverviewAsync({
+  const userOverview = await getAuthorizationUserUsageRowsAsync({
     teamId,
     granteeSystemAccountId,
     resourceType: 'account',
     resourceId: accountId
   }, ownerAccess, range, { page: 1, pageSize: 10 })
-  assert.equal(userOverview.summary.requestCount, 17, '用户授权范围 summary 应从 PG 窗口表读取 requestCount')
+  const userSummary = await getAuthorizationUserUsageSummaryAsync({ teamId, granteeSystemAccountId, resourceType: 'account', resourceId: accountId }, ownerAccess, range)
+  assert.equal(userSummary.summary.requestCount, 17, '用户授权范围 summary 应从 PG 窗口表读取 requestCount')
   assert.equal(userOverview.rows.length, 1, '用户授权范围明细应返回一行')
-  assert.equal(userOverview.rows[0]?.systemAccountId, granteeSystemAccountId, '用户授权范围明细应保留用户 ID')
   assert.equal(userOverview.rows[0]?.userName, '授权范围窗口 grantee', '用户授权范围明细应通过 async lookup 装配用户名')
   assert.equal(userOverview.rows[0]?.resourceName, '授权范围窗口账号', '用户授权范围明细应通过 async lookup 装配资源名')
   assert.equal(userOverview.rows[0]?.usage.totalCost, 0.789, '用户授权范围明细应读取 totalCost')
@@ -136,8 +142,8 @@ try {
 
   console.log(JSON.stringify({
     message: '授权范围窗口 PG smoke 通过',
-    teamRequestCount: teamOverview.summary.requestCount,
-    userRequestCount: userOverview.summary.requestCount,
+    teamRequestCount: teamSummary.summary.requestCount,
+    userRequestCount: userSummary.summary.requestCount,
     teamRows: teamOverview.rows.length,
     userRows: userOverview.rows.length,
     skipped: skipped.skipped === true

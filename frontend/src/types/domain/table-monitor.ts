@@ -16,6 +16,15 @@ export interface DatabaseStorageSnapshotSummary {
   indexCount?: number
 }
 
+export interface DatabaseStorageHistoryPoint {
+  databaseRole: MonitoredDatabaseRole
+  sampledAt: string
+  fileBytes?: number
+  walBytes?: number
+  freeBytes?: number
+  tableCount?: number
+}
+
 export interface TableStorageOverviewSummary {
   databaseRole: MonitoredDatabaseRole
   tableName: string

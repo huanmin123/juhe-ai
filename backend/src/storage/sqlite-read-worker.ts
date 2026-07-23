@@ -41,7 +41,7 @@ import {
   listAuthorizationGranteeGroups,
   listAuthorizationGranteeTeams
 } from './authorization-options.repository.js'
-import { getAuthorizationTeamUsageOverview, getAuthorizationUserUsageOverview } from './authorization-usage.repository.js'
+import { getAuthorizationTeamUsageRows, getAuthorizationTeamUsageSummary, getAuthorizationUserUsageRows, getAuthorizationUserUsageSummary } from './authorization-usage.repository.js'
 import { closeStorageDatabases } from './database.js'
 import { listClientIpStats, getClientIpStatsDetail, listActiveClientIpPolicies, findActiveClientIpPolicyByHash } from './client-ip-stats.repository.js'
 import {
@@ -144,8 +144,19 @@ import {
 } from './system-accounts.repository.js'
 import { findSystemTeamDetail, findSystemTeamSummary, listSystemTeams, listSystemTeamsPage } from './system-team.repository.js'
 import { getSystemMetricsOverview } from './system-metrics.repository.js'
-import { getUsageStatsOverview } from './usage-stats.repository.js'
-import { getAiPerformanceOverview, listAiPerformanceAccountOptions } from './usage-stats-ai-performance.repository.js'
+import {
+  getUsageStatsOverview,
+  getUsageStatsOverviewErrors,
+  getUsageStatsOverviewHourlyTrend,
+  getUsageStatsOverviewModelDistribution,
+  getUsageStatsOverviewSummary
+} from './usage-stats.repository.js'
+import {
+  getAiPerformanceBase,
+  getAiPerformanceOverview,
+  getAiPerformanceSeries,
+  listAiPerformanceAccountOptions
+} from './usage-stats-ai-performance.repository.js'
 import { usageStatsTimezone } from './usage-stats-helpers.js'
 import { getUsageRecordDetail, listUsageRecords } from './usage-records.repository.js'
 
@@ -216,10 +227,14 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listAuthorizationGranteeTeams(operation.access, operation.options)
     case 'list_authorization_grantee_groups_read_only':
       return listAuthorizationGranteeGroups(operation.access, operation.options)
-    case 'get_authorization_team_usage_overview_read_only':
-      return getAuthorizationTeamUsageOverview(operation.filters, operation.access, operation.range, operation.options)
-    case 'get_authorization_user_usage_overview_read_only':
-      return getAuthorizationUserUsageOverview(operation.filters, operation.access, operation.range, operation.options)
+    case 'get_authorization_team_usage_rows_read_only':
+      return getAuthorizationTeamUsageRows(operation.filters, operation.access, operation.range, operation.options)
+    case 'get_authorization_team_usage_summary_read_only':
+      return getAuthorizationTeamUsageSummary(operation.filters, operation.access, operation.range)
+    case 'get_authorization_user_usage_rows_read_only':
+      return getAuthorizationUserUsageRows(operation.filters, operation.access, operation.range, operation.options)
+    case 'get_authorization_user_usage_summary_read_only':
+      return getAuthorizationUserUsageSummary(operation.filters, operation.access, operation.range)
     case 'list_public_announcements_read_only':
       return listPublicAnnouncements(operation.systemAccountId, operation.limit)
     case 'find_public_announcement_read_only':
@@ -298,6 +313,18 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return usageStatsTimezone()
     case 'get_usage_stats_overview_read_only':
       return getUsageStatsOverview(operation.access, operation.range)
+    case 'get_usage_stats_overview_summary_read_only':
+      return getUsageStatsOverviewSummary(operation.access, operation.range)
+    case 'get_usage_stats_overview_hourly_trend_read_only':
+      return getUsageStatsOverviewHourlyTrend(operation.access, operation.range)
+    case 'get_usage_stats_overview_model_distribution_read_only':
+      return getUsageStatsOverviewModelDistribution(operation.access, operation.range)
+    case 'get_usage_stats_overview_errors_read_only':
+      return getUsageStatsOverviewErrors(operation.access, operation.range)
+    case 'get_ai_performance_base_read_only':
+      return getAiPerformanceBase(operation.access, operation.range)
+    case 'get_ai_performance_series_read_only':
+      return getAiPerformanceSeries(operation.access, operation.range, operation.accountIds)
     case 'get_ai_performance_overview_read_only':
       return getAiPerformanceOverview(operation.access, operation.range, operation.accountIds)
     case 'list_ai_performance_account_options_read_only':

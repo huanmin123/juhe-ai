@@ -51,51 +51,68 @@
       </div>
     </a-card>
 
-    <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
+    <a-alert v-if="summaryError" :message="summaryError" show-icon type="error">
+      <template #action>
+        <a-button size="small" @click="loadData({ force: true })">重试</a-button>
+      </template>
+    </a-alert>
+    <StatsSummaryCards v-else :cards="summaryCards" :loading="summaryLoading" />
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">
+        <div ref="usageTrendSectionRef" class="stats-chart-section">
         <StatsChartCard
           :title="`请求、失败、Token 消耗、平均总耗时（${currentWindowLabel}）`"
           :description="usageTrendDescription"
-          :loading="initialLoading"
+          :loading="usageTrendLoading"
           :has-data="hasUsageTrend"
           :empty-description="usageTrendEmptyDescription"
+          :error="usageTrendError"
+          :on-retry="() => loadChartSection('hourlyTrend', true)"
         >
           <div ref="usageTrendChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
+        </div>
       </a-col>
       <a-col :xs="24" :xl="10">
+        <div ref="modelDistributionSectionRef" class="stats-chart-section">
         <StatsChartCard
           :title="`模型分布（${currentWindowLabel}）`"
           description="按模型汇总 Token 消耗；没有 Token 的记录会用请求次数参与展示。"
-          :loading="initialLoading"
+          :loading="modelDistributionLoading"
           :has-data="hasModelDistribution"
           :empty-description="modelDistributionEmptyDescription"
+          :error="modelDistributionError"
+          :on-retry="() => loadChartSection('modelDistribution', true)"
         >
           <div ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
+        </div>
       </a-col>
     </a-row>
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24">
+        <div ref="errorSectionRef" class="stats-chart-section">
         <StatsChartCard
           :title="`错误 Top 10（${currentWindowLabel}）`"
           description="统计窗口内失败请求按错误码聚合；悬浮可查看状态码和错误信息。"
-          :loading="initialLoading"
+          :loading="errorsLoading"
           :has-data="hasErrors"
           :empty-description="errorEmptyDescription"
+          :error="errorsError"
+          :on-retry="() => loadChartSection('errors', true)"
         >
           <div ref="errorChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
+        </div>
       </a-col>
     </a-row>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
@@ -104,9 +121,10 @@ import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
+import { didUsageStatsWindowLoadFail, useUsageStatsWindow } from '@/composables/useUsageStatsWindow'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { UsageStatsOverview } from '@/types/domain'
@@ -142,6 +160,8 @@ const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStats
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
+const summaryLoading = ref(false)
+const summaryError = ref('')
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
@@ -168,19 +188,35 @@ const usageTrendChart = shallowRef<ECharts>()
 const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 let statsRequestSeq = 0
+const usageTrendSectionRef = ref<HTMLDivElement>()
+const modelDistributionSectionRef = ref<HTMLDivElement>()
+const errorSectionRef = ref<HTMLDivElement>()
+const usageTrendLoaded = ref(false)
+const modelDistributionLoaded = ref(false)
+const errorsLoaded = ref(false)
+const usageTrendLoading = ref(false)
+const modelDistributionLoading = ref(false)
+const errorsLoading = ref(false)
+const usageTrendError = ref('')
+const modelDistributionError = ref('')
+const errorsError = ref('')
+const chartRequestSeq = { hourlyTrend: 0, modelDistribution: 0, errors: 0 }
+const chartSectionResolved = { hourlyTrend: false, modelDistribution: false, errors: false }
+let chartObserver: IntersectionObserver | undefined
+let reloadOnActivate = false
+let wasDeactivated = false
 
 const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   renderCharts: renderStatsCharts,
   resizeCharts,
   disposeCharts,
-  onMounted: loadData
+  onMounted: loadData,
+  onDeactivate: handlePageDeactivate
 })
 
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
-const hasUsageOverview = computed(() => Boolean(usageOverview.value))
-const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const quickRangeValue = computed<QuickRange | undefined>(() => {
@@ -223,30 +259,190 @@ function formatOptionalCost(value?: number) {
 
 async function loadData(options: { force?: boolean } = {}) {
   const requestSeq = ++statsRequestSeq
+  chartRequestSeq.hourlyTrend += 1
+  chartRequestSeq.modelDistribution += 1
+  chartRequestSeq.errors += 1
   loading.value = true
+  summaryLoading.value = true
+  summaryError.value = ''
+  usageOverview.value = undefined
+  usageTrendLoading.value = false
+  modelDistributionLoading.value = false
+  errorsLoading.value = false
+  usageTrendError.value = ''
+  modelDistributionError.value = ''
+  errorsError.value = ''
+  chartSectionResolved.hourlyTrend = false
+  chartSectionResolved.modelDistribution = false
+  chartSectionResolved.errors = false
   try {
+    await loadUsageStatsWindow()
+    if (didUsageStatsWindowLoadFail(isManagementView.value ? 'admin' : 'self')) {
+      throw new Error('统计日期窗口加载失败')
+    }
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
     const rangeParams = selectedRangeParams()
-    const [nextOverview] = await Promise.all([
-      isManagementView.value
-        ? api.stats.usageOverview({ ...rangeParams, systemAccountId })
-        : api.myStats.usageOverview(rangeParams),
-      loadUsageStatsWindow()
-    ])
+    const nextSummary = isManagementView.value
+      ? await api.stats.usageOverviewSummary({ ...rangeParams, systemAccountId })
+      : await api.myStats.usageOverviewSummary(rangeParams)
     if (requestSeq !== statsRequestSeq) return
-    usageOverview.value = nextOverview
-    syncDateRangeFromResponse(nextOverview.range)
+    usageOverview.value = {
+      range: nextSummary.range,
+      summary: nextSummary.summary,
+      hourlyTrend: [],
+      modelDistribution: [],
+      errors: []
+    }
+    syncDateRangeFromResponse(nextSummary.range)
+    summaryError.value = ''
     renderCharts()
+    if (usageTrendLoaded.value) void loadChartSection('hourlyTrend', options.force === true)
+    if (modelDistributionLoaded.value) void loadChartSection('modelDistribution', options.force === true)
+    if (errorsLoaded.value) void loadChartSection('errors', options.force === true)
   } catch (error) {
     if (requestSeq !== statsRequestSeq) return
     console.error(error)
+    summaryError.value = '统计摘要加载失败，请重试'
     message.error('统计数据加载失败')
   } finally {
     if (requestSeq === statsRequestSeq) {
       loading.value = false
+      summaryLoading.value = false
       renderCharts()
     }
   }
+}
+
+type StatsChartSection = 'hourlyTrend' | 'modelDistribution' | 'errors'
+
+async function loadChartSection(section: StatsChartSection, force = false): Promise<void> {
+  if (!usageOverview.value || (!force && chartSectionResolved[section])) return
+  const sectionLoading = sectionLoadingRef(section)
+  if (sectionLoading.value) return
+  const requestSeq = ++chartRequestSeq[section]
+  const pageSeq = statsRequestSeq
+  const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
+  const rangeParams = selectedRangeParams()
+  const signature = JSON.stringify([pageSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', systemAccountId ?? '', rangeParams.startDate ?? '', rangeParams.endDate ?? '', section])
+  sectionLoading.value = true
+  sectionErrorRef(section).value = ''
+  try {
+    const result = isManagementView.value
+      ? await loadAdminChartSection(section, { ...rangeParams, systemAccountId })
+      : await loadSelfChartSection(section, rangeParams)
+    const currentSignature = JSON.stringify([statsRequestSeq, ...currentAuthSignature(), isManagementView.value ? 'admin' : 'self', isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) ?? '' : '', selectedRangeParams().startDate ?? '', selectedRangeParams().endDate ?? '', section])
+    if (requestSeq !== chartRequestSeq[section] || signature !== currentSignature) return
+    const currentOverview = usageOverview.value
+    if (!currentOverview) return
+    if (rangeSignature(result.range) !== rangeSignature(currentOverview.range)) {
+      sectionErrorRef(section).value = '图表范围已变化，请重试'
+      return
+    }
+    usageOverview.value = {
+      ...currentOverview,
+      range: result.range,
+      ...(section === 'hourlyTrend' && 'hourlyTrend' in result ? { hourlyTrend: result.hourlyTrend } : {}),
+      ...(section === 'modelDistribution' && 'modelDistribution' in result ? { modelDistribution: result.modelDistribution } : {}),
+      ...(section === 'errors' && 'errors' in result ? { errors: result.errors } : {})
+    }
+    chartSectionResolved[section] = true
+    renderCharts()
+  } catch (error) {
+    if (requestSeq !== chartRequestSeq[section]) return
+    console.error(error)
+    sectionErrorRef(section).value = '图表加载失败，请重试'
+  } finally {
+    if (requestSeq === chartRequestSeq[section]) sectionLoading.value = false
+  }
+}
+
+function rangeSignature(range: { startDate: string; endDate: string; days: number; maxDays: number }): string {
+  return JSON.stringify([range.startDate, range.endDate, range.days, range.maxDays])
+}
+
+function sectionLoadingRef(section: StatsChartSection) {
+  return section === 'hourlyTrend' ? usageTrendLoading : section === 'modelDistribution' ? modelDistributionLoading : errorsLoading
+}
+
+function sectionErrorRef(section: StatsChartSection) {
+  return section === 'hourlyTrend' ? usageTrendError : section === 'modelDistribution' ? modelDistributionError : errorsError
+}
+
+function loadAdminChartSection(section: StatsChartSection, params: { startDate?: string; endDate?: string; systemAccountId?: string }) {
+  if (section === 'hourlyTrend') return api.stats.usageOverviewHourlyTrend(params)
+  if (section === 'modelDistribution') return api.stats.usageOverviewModelDistribution(params)
+  return api.stats.usageOverviewErrors(params)
+}
+
+function loadSelfChartSection(section: StatsChartSection, params: { startDate?: string; endDate?: string }) {
+  if (section === 'hourlyTrend') return api.myStats.usageOverviewHourlyTrend(params)
+  if (section === 'modelDistribution') return api.myStats.usageOverviewModelDistribution(params)
+  return api.myStats.usageOverviewErrors(params)
+}
+
+onMounted(async () => {
+  await nextTick()
+  setupChartObservers()
+})
+
+function setupChartObservers(): void {
+  chartObserver?.disconnect()
+  const targets: Array<[HTMLDivElement | undefined, StatsChartSection]> = [
+    [usageTrendSectionRef.value, 'hourlyTrend'],
+    [modelDistributionSectionRef.value, 'modelDistribution'],
+    [errorSectionRef.value, 'errors']
+  ]
+  if (typeof IntersectionObserver === 'undefined') {
+    for (const [, section] of targets) {
+      markSectionLoaded(section)
+      void loadChartSection(section)
+    }
+    return
+  }
+  chartObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      const section = targets.find(([element]) => element === entry.target)?.[1]
+      if (!section) continue
+      markSectionLoaded(section)
+      chartObserver?.unobserve(entry.target)
+      void loadChartSection(section)
+    }
+  }, { rootMargin: '240px 0px' })
+  for (const [element] of targets) {
+    if (element) chartObserver.observe(element)
+  }
+}
+
+function currentAuthSignature(): [number, string, string] {
+  const user = authState.currentUser.value
+  return [authState.revision.value, user?.id ?? 'anonymous', user?.role ?? 'anonymous']
+}
+
+function invalidateStatsRequests(): void {
+  statsRequestSeq += 1
+  chartRequestSeq.hourlyTrend += 1
+  chartRequestSeq.modelDistribution += 1
+  chartRequestSeq.errors += 1
+  loading.value = false
+  summaryLoading.value = false
+  usageTrendLoading.value = false
+  modelDistributionLoading.value = false
+  errorsLoading.value = false
+}
+
+function handlePageDeactivate(): void {
+  reloadOnActivate = loading.value || summaryLoading.value || usageTrendLoading.value || modelDistributionLoading.value || errorsLoading.value
+  wasDeactivated = true
+  invalidateStatsRequests()
+  chartObserver?.disconnect()
+  chartObserver = undefined
+}
+
+function markSectionLoaded(section: StatsChartSection): void {
+  if (section === 'hourlyTrend') usageTrendLoaded.value = true
+  else if (section === 'modelDistribution') modelDistributionLoaded.value = true
+  else errorsLoaded.value = true
 }
 
 function handleDateRangeChange() {
@@ -395,6 +591,26 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(() => authState.revision.value, () => {
+  if (pageActive.value) void loadData()
+  else reloadOnActivate = true
+})
+watch(pageActive, async (active) => {
+  if (!active || !wasDeactivated) return
+  wasDeactivated = false
+  if (reloadOnActivate) {
+    reloadOnActivate = false
+    await loadData()
+  }
+  await nextTick()
+  setupChartObservers()
+})
+
+onBeforeUnmount(() => {
+  invalidateStatsRequests()
+  chartObserver?.disconnect()
+  chartObserver = undefined
+})
 </script>
 
 <style scoped>
@@ -433,6 +649,10 @@ watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection
 
 .stats-section :deep(.ant-col) {
   display: flex;
+}
+
+.stats-chart-section {
+  width: 100%;
 }
 
 .chart-panel {

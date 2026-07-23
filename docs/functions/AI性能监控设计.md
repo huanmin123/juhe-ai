@@ -125,8 +125,10 @@
 
 ```text
 GET /__aisys__/api/my-stats/ai-performance
+GET /__aisys__/api/my-stats/ai-performance/series
 GET /__aisys__/api/my-stats/ai-performance/accounts
 GET /__aisys__/api/stats/ai-performance
+GET /__aisys__/api/stats/ai-performance/series
 GET /__aisys__/api/stats/ai-performance/accounts
 ```
 
@@ -137,7 +139,7 @@ GET /__aisys__/api/stats/ai-performance/accounts
 | `startDate` | 日期范围开始，格式 `YYYY-MM-DD`；接口缺省为今天，页面首次进入显式传最近 3 天范围 |
 | `endDate` | 日期范围结束，格式 `YYYY-MM-DD`；接口缺省为今天，最大最近 31 天 |
 | `systemAccountId` | 仅管理侧有效；筛选指定系统账户，缺省为全部用户全局缓存 |
-| `accountIds` | 搜索追加到账户列表的临时账户 ID，支持逗号分隔或重复参数；不持久化；不表示当前点击筛选 |
+| `accountIds` | 仅 series 路由使用的重复裸键账户 ID，1-20 个；base 路由拒绝该参数；不持久化 |
 
 账户选项查询参数：
 
@@ -150,10 +152,8 @@ GET /__aisys__/api/stats/ai-performance/accounts
 当前响应：
 
 ```ts
-interface AiPerformanceOverview {
+interface AiPerformanceBaseResult {
   range: { startDate: string; endDate: string; days: number; maxDays: number }
-  defaultAccounts: AiPerformanceAccount[]
-  selectedAccounts: AiPerformanceAccount[]
   accounts: AiPerformanceAccount[]
   hourlySeries: AiPerformanceAccountSeries[]
   summary: {
@@ -163,6 +163,12 @@ interface AiPerformanceOverview {
     averageDurationMs?: number
     maxDurationMs?: number
   }
+}
+
+interface AiPerformanceSeriesResult {
+  range: { startDate: string; endDate: string; days: number; maxDays: number }
+  accounts: AiPerformanceAccount[]
+  hourlySeries: AiPerformanceAccountSeries[]
 }
 
 interface AiPerformanceAccount {
@@ -190,6 +196,7 @@ interface AiPerformanceAccountOption {
 interface AiPerformanceAccountSeries {
   accountId: string
   accountName: string
+  providerCode: string
   systemAccountId: string
   points: Array<{
     statHour: string
@@ -204,9 +211,9 @@ interface AiPerformanceAccountSeries {
 
 返回要求：
 
-- `defaultAccounts` 表示后端按最近 7 天活跃度选出的默认前 10。
-- `selectedAccounts` 沿用接口字段名，表示本次请求里合法且可见的搜索追加账户，不表示前端点击筛选状态。
-- `accounts` 是当前账户列表集合，等于默认账户与搜索追加账户去重后的结果。
+- base 的 `accounts` 表示后端按最近 7 天活跃度选出的默认前 10。
+- series 的 `accounts` 只包含本次请求中合法且可见的搜索追加账户；不可见或不存在 ID 静默省略。
+- 前端按账户 ID 将 base 与 series 去重合并，点击筛选只控制本地显隐。
 - `hourlySeries` 必须按 `accounts` 顺序返回，便于前端颜色和图例稳定。
 - 后端需要补齐窗口内小时桶；没有数据的小时返回 `requestCount = 0`，平均耗时为空。
 

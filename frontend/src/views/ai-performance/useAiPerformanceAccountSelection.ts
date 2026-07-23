@@ -11,7 +11,7 @@ import {
   type AccountSelection
 } from '@/shared/accountLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
+import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceBaseResult, AiPerformanceOverview, AiPerformanceSeriesResult } from '@/types/domain'
 import { chartColors, orderedAiPerformanceSeries } from './aiPerformanceChartOptions'
 
 type AiPerformanceAccountRow = AiPerformanceOverview['accounts'][number]
@@ -20,8 +20,10 @@ type AiPerformanceSeriesRow = AiPerformanceOverview['hourlySeries'][number]
 interface UseAiPerformanceAccountSelectionOptions {
   isManagementView: Ref<boolean>
   isPageActive: () => boolean
-  overview: Ref<AiPerformanceOverview | undefined>
-  reloadPerformance: () => void
+  base: Ref<AiPerformanceBaseResult | undefined>
+  series: Ref<AiPerformanceSeriesResult | undefined>
+  loadMissingSeries: (accountIds: string[]) => void
+  clearSeries: () => void
   requestRender: () => void
   selectedSystemAccountId: () => string | undefined
 }
@@ -38,14 +40,16 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
   let loadingAccountOptionsKey: string | undefined
   let loadingAccountOptionsPromise: Promise<void> | undefined
 
-  const responseAccounts = computed(() => options.overview.value?.accounts ?? [])
+  const responseAccounts = computed(() => dedupePerformanceAccounts([
+    ...(options.base.value?.accounts ?? []).map((account) => ({ ...account, defaultVisible: true, selected: false })),
+    ...(options.series.value?.accounts ?? [])
+      .filter((account) => addedAccountIds.value.includes(account.id))
+      .map((account) => ({ ...account, defaultVisible: false, selected: true }))
+  ]))
   const responseAccountById = computed(() => new Map(responseAccounts.value.map((account) => [account.id, account])))
   const accountOptionById = computed(() => new Map(accounts.value.map((account) => [account.id, account])))
   const addedAccountSelectionById = computed(() => new Map(addedAccountSelections.value.map((account) => [account.id, account])))
-  const defaultAccountIdSet = computed(() => new Set([
-    ...(options.overview.value?.defaultAccounts ?? []).map((account) => account.id),
-    ...responseAccounts.value.filter((account) => account.defaultVisible).map((account) => account.id)
-  ]))
+  const defaultAccountIdSet = computed(() => new Set((options.base.value?.accounts ?? []).map((account) => account.id)))
   const overviewAccounts = computed(() => dedupePerformanceAccounts([
     ...responseAccounts.value,
     ...addedAccountIds.value
@@ -53,7 +57,10 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
       .filter((account): account is AiPerformanceAccountRow => Boolean(account))
   ]))
   const overviewHourlySeries = computed(() => {
-    const responseSeries = options.overview.value?.hourlySeries ?? []
+    const responseSeries = [
+      ...(options.base.value?.hourlySeries ?? []),
+      ...(options.series.value?.hourlySeries ?? []).filter((series) => addedAccountIds.value.includes(series.accountId))
+    ]
     const responseSeriesIds = new Set(responseSeries.map((series) => series.accountId))
     const placeholderSeries = addedAccountIds.value
       .filter((id) => !responseSeriesIds.has(id))
@@ -62,14 +69,11 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     return [...responseSeries, ...placeholderSeries]
   })
   const displayOverview = computed<AiPerformanceOverview | undefined>(() => {
-    const currentOverview = options.overview.value
+    const currentOverview = options.base.value
     if (!currentOverview) return undefined
-    const accountIds = new Set(overviewAccounts.value.map((account) => account.id))
     return {
       ...currentOverview,
       accounts: overviewAccounts.value,
-      defaultAccounts: currentOverview.defaultAccounts.filter((account) => accountIds.has(account.id)),
-      selectedAccounts: overviewAccounts.value.filter((account) => account.selected && accountIds.has(account.id)),
       hourlySeries: overviewHourlySeries.value
     }
   })
@@ -88,8 +92,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     return {
       ...currentOverview,
       accounts: visibleAccounts.value,
-      defaultAccounts: currentOverview.defaultAccounts.filter((account) => visibleIds.has(account.id)),
-      selectedAccounts: currentOverview.selectedAccounts.filter((account) => visibleIds.has(account.id)),
       hourlySeries: visibleHourlySeries.value
     }
   })
@@ -154,7 +156,7 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
         console.error(error)
         message.error(extractApiErrorMessage(error, 'AI 账户列表加载失败'))
       } finally {
-        if (loadingAccountOptionsKey === request.key) {
+        if (requestSeq === accountSearchSeq && loadingAccountOptionsKey === request.key) {
           loadingAccountOptionsPromise = undefined
           loadingAccountOptionsKey = undefined
         }
@@ -187,12 +189,8 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     activeAccountIds.value = hasActiveAccountFilter.value
       ? [...new Set([...nextActiveIds, ...newlyAddedIds])]
       : nextActiveIds
-    void loadAccounts()
-    if (newlyAddedIds.length || acceptedIds.length !== previousValue.length) {
-      options.reloadPerformance()
-    } else {
-      options.requestRender()
-    }
+    if (newlyAddedIds.length) options.loadMissingSeries(acceptedIds)
+    options.requestRender()
   }
 
   function removeAddedAccount(id: string) {
@@ -200,8 +198,6 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     addedAccountIds.value = addedAccountIds.value.filter((accountId) => accountId !== id)
     addedAccountSelections.value = addedAccountSelections.value.filter((selection) => selection.id !== id)
     activeAccountIds.value = activeAccountIds.value.filter((accountId) => accountId !== id)
-    void loadAccounts()
-    options.reloadPerformance()
     options.requestRender()
   }
 
@@ -227,6 +223,16 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     addedAccountSelections.value = []
     activeAccountIds.value = []
     accountSearchKeyword.value = ''
+    options.clearSeries()
+  }
+
+  function invalidateAccountOptions() {
+    clearAccountSearchTimer()
+    accountSearchSeq += 1
+    accounts.value = []
+    accountsLoading.value = false
+    loadingAccountOptionsKey = undefined
+    loadingAccountOptionsPromise = undefined
   }
 
   function toggleAccountFilter(id: string) {
@@ -245,7 +251,7 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
   }
 
   function pruneAccountState() {
-    const currentOverview = options.overview.value
+    const currentOverview = options.base.value
     if (!currentOverview) return
     syncAddedAccountSelections()
     const visibleIds = new Set([...overviewAccounts.value.map((account) => account.id), ...addedAccountIds.value])
@@ -359,6 +365,7 @@ export function useAiPerformanceAccountSelection(options: UseAiPerformanceAccoun
     handleAccountSearch,
     handleAddedAccountsChange,
     hasActiveAccountFilter,
+    invalidateAccountOptions,
     loadAccounts,
     pruneAccountState,
     removeAddedAccount,

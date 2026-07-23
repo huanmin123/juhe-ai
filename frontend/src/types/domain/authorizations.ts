@@ -194,60 +194,69 @@ export interface ResourceAuthorizationListResult {
   pageSize: number
 }
 
+export interface AuthorizationUsageRowSummary {
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+}
+
+export interface AuthorizationUsageAggregateSummary extends AuthorizationUsageRowSummary {
+  inputTokens: number
+  cacheWriteTokens: number
+  lastUsedAt?: string
+}
+
 export interface AuthorizationTeamUsageRow {
   id: string
   teamId: string
   teamName: string
-  status: TeamStatus
   resourceType?: AuthorizationResourceType
   resourceId?: string
   resourceName?: string
-  accountId?: string
-  accountName?: string
   accountOwnerSystemAccountId?: string
   accountOwnerSystemAccountName?: string
-  usage: AccountUsageSummary
+  usage: AuthorizationUsageRowSummary
   lastUsedAt?: string
 }
 
-export interface AuthorizationTeamUsageOverview {
+export interface AuthorizationTeamUsageRowsResult {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary
   rows: AuthorizationTeamUsageRow[]
-  teamCount: number
   total: number
   page: number
   pageSize: number
   hasMore: boolean
+}
+
+export interface AuthorizationTeamUsageSummary {
+  range: AccountUsageStatsRange
+  summary: AuthorizationUsageAggregateSummary
 }
 
 export interface AuthorizationUserUsageRow {
   id: string
-  systemAccountId: string
   userName: string
   username?: string
   teamNames?: string[]
   resourceType?: AuthorizationResourceType
-  resourceId?: string
   resourceName?: string
-  accountId?: string
-  accountName?: string
-  accountOwnerSystemAccountId?: string
   accountOwnerSystemAccountName?: string
-  sourceLabels: string[]
-  usage: AccountUsageSummary
+  usage: AuthorizationUsageRowSummary
   lastUsedAt?: string
 }
 
-export interface AuthorizationUserUsageOverview {
+export interface AuthorizationUserUsageRowsResult {
   range: AccountUsageStatsRange
-  summary: AccountUsageSummary
   rows: AuthorizationUserUsageRow[]
-  userCount: number
   total: number
   page: number
   pageSize: number
   hasMore: boolean
+}
+
+export interface AuthorizationUserUsageSummary {
+  range: AccountUsageStatsRange
+  summary: AuthorizationUsageAggregateSummary
 }
 
 export interface AccountUsageStatsRow {
