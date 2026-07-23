@@ -69,6 +69,9 @@ func (e HTTPExecutor) Execute(ctx context.Context, attempt Attempt) (AttemptResu
 		if preparedResolver != nil {
 			return preparedResolver(statusCode, body)
 		}
+		if responseInput.ResponseDisposition == gatewayretry.ResponseDispositionExplicitPolicy {
+			return gatewayretry.ResponseDispositionExplicitPolicy, nil
+		}
 		return gatewayretry.ResponseDispositionCompleteTransparent, nil
 	}
 	handled, handleErr := e.Handler.Handle(responseInput)
@@ -115,6 +118,9 @@ func extractErrorFacts(body string) (string, string, string) {
 	code := find("code")
 	if code == "" {
 		code = find("status")
+	}
+	if code == "" {
+		code = find("type")
 	}
 	return code, find("type"), find("message")
 }

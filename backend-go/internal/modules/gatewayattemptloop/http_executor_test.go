@@ -119,6 +119,10 @@ func TestExtractErrorFactsSupportsNestedProtocolPayload(t *testing.T) {
 	if code != "rate_limit" || errorType != "overloaded_error" || message != "busy" {
 		t.Fatalf("facts = %q/%q/%q", code, errorType, message)
 	}
+	code, errorType, message = extractErrorFacts(`{"type":"error","error":{"type":"overloaded_error","message":"busy"}}`)
+	if code != "overloaded_error" || errorType != "overloaded_error" || message != "busy" {
+		t.Fatalf("type fallback facts = %q/%q/%q", code, errorType, message)
+	}
 	code, errorType, message = extractErrorFacts(`{"error":{"code":429,"status":"RESOURCE_EXHAUSTED","message":"quota"}}`)
 	if code != "429" || errorType != "" || message != "quota" {
 		t.Fatalf("gemini facts = %q/%q/%q", code, errorType, message)
