@@ -78,17 +78,6 @@ type ManagementUsageRecordSummary struct {
 	CreatedAt                 time.Time
 }
 
-type ManagementUsageRecordDetail struct {
-	ManagementUsageRecordSummary
-	RequestSnapshotJSON  string
-	ResponseSnapshotJSON string
-}
-
-type ManagementUsageRecordDetailInput struct {
-	ID              string
-	SystemAccountID string
-}
-
 type ManagementUsageRecordListResult struct {
 	Items   []ManagementUsageRecordSummary
 	HasMore bool
@@ -96,5 +85,4 @@ type ManagementUsageRecordListResult struct {
 
 type ManagementUsageRecordReader interface {
 	ListManagementUsageRecords(context.Context, ManagementUsageRecordListInput) (ManagementUsageRecordListResult, error)
-	GetManagementUsageRecord(context.Context, ManagementUsageRecordDetailInput) (ManagementUsageRecordDetail, bool, error)
 }

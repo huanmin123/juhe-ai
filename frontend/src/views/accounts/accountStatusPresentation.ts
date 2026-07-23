@@ -32,13 +32,13 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
 }
 
 function accountStatusFallbackLabel(status: AccountSummary['status']): string {
-  if (status === 'active') return '正常'
+  if (status === 'active') return '可调度'
   if (status === 'pending_test') return '待检查'
   if (status === 'disabled') return '停用'
   if (status === 'error') return '异常'
   if (status === 'rate_limited') return '限流中'
   if (status === 'temporary_unavailable') return '临时不可调用'
-  return '未知状态'
+  return '状态异常'
 }
 
 export function accountStatusTooltipTraceId(account: AccountSummary): string | undefined {

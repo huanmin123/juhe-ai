@@ -85,6 +85,7 @@ try {
   const encodedModelId = 'vendor/model-test'
   const responsesOnlyModelId = 'vendor/responses-only'
   const imageModelId = 'vendor/image-only'
+  const mixedImageResponsesModelId = 'vendor/image-responses'
   const messagesOnlyModelId = 'vendor/messages-only'
   for (const model of [encodedModelId, responsesOnlyModelId]) {
     saveCustomProviderModel({
@@ -105,6 +106,16 @@ try {
     status: 'active',
     mode: 'image_generation',
     supportedApiProtocols: ['images'],
+    actorSystemAccountId: user.id
+  })
+  saveCustomProviderModel({
+    providerCode: 'openai',
+    model: mixedImageResponsesModelId,
+    scope: 'personal',
+    systemAccountId: user.id,
+    status: 'active',
+    mode: 'image_generation',
+    supportedApiProtocols: ['responses', 'images'],
     actorSystemAccountId: user.id
   })
   saveCustomProviderModel({
@@ -131,10 +142,15 @@ try {
       supported_endpoint_modes: ['responses_json', 'responses_sse']
     }
   }, userAccess)
+  await assert.rejects(
+    resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, imageModelId, 'responses_sse'),
+    /不支持本次检查协议/,
+    '只声明 Images 的模型不得接受 Responses，也不能静默改写用户选择'
+  )
   assert.deepEqual(
-    await resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, imageModelId, 'responses_sse'),
-    { model: imageModelId, testEndpointMode: 'images_json' },
-    '图片模型即使收到旧文本请求形态，也必须强制改用 Images API'
+    await resolveAccountManualTestSelectionAsync({ ...account, systemAccountId: user.id }, mixedImageResponsesModelId, 'responses_sse'),
+    { model: mixedImageResponsesModelId, testEndpointMode: 'responses_sse' },
+    '同时声明 Responses 与 Images 的模型必须保留用户选择的 Responses 形态'
   )
   const draftImageContext = accountManualTestCapabilitiesContextFromDraft({
     id: 'acctdraft_image_protocol',
@@ -161,10 +177,10 @@ try {
     healthCheckEndpointMode: 'responses_sse',
     modelMappings: []
   })
-  assert.deepEqual(
-    await resolveAccountManualTestSelectionAsync(draftImageContext, imageModelId, 'responses_sse'),
-    { model: imageModelId, testEndpointMode: 'images_json' },
-    '新增或编辑账户草稿中的图片模型必须把旧文本请求形态收口为 Images API'
+  await assert.rejects(
+    resolveAccountManualTestSelectionAsync(draftImageContext, imageModelId, 'responses_sse'),
+    /不支持本次检查协议/,
+    '草稿测试也必须按模型目录协议拒绝不受支持的 Responses 形态'
   )
   const openaiGroup = repositories.createGroup({ name: '账户测试选项 HTTP OpenAI分组', providerCode: 'openai' }, userAccess)
   const chatOnlyAccount = repositories.createAccount({
@@ -238,6 +254,7 @@ try {
       200
     )
     assert.equal(protocolEligibleOptions.some((item) => item.id === imageModelId), true, `${target.label}模型候选应包含可使用 Images API 测试的图片模型`)
+    assert.equal(protocolEligibleOptions.some((item) => item.id === mixedImageResponsesModelId), true, `${target.label}模型候选应包含同时支持 Images 与 Responses 的模型`)
     assert.equal(protocolEligibleOptions.some((item) => item.id === messagesOnlyModelId), false, `${target.label}OpenAI 档案模型候选不得包含仅支持 Messages 的模型`)
 
     await requestEnvelope(
@@ -271,6 +288,18 @@ try {
       200
     )
     assert.deepEqual(imageCapabilities.testEndpointModes, ['images_json'], `${target.label}图片模型必须返回 Images API 测试形态`)
+
+    const mixedCapabilities = await requestEnvelope<ModelCapabilities>(
+      baseUrl,
+      `${target.prefix}/${account.id}/test-options/models/${encodeURIComponent(mixedImageResponsesModelId)}${target.query}`,
+      target.cookie,
+      200
+    )
+    assert.deepEqual(
+      [...mixedCapabilities.testEndpointModes].sort(),
+      ['images_json', 'responses_json', 'responses_sse'],
+      `${target.label}模型测试形态必须完整反映模型目录与账户能力交集`
+    )
 
     await requestEnvelope(
       baseUrl,

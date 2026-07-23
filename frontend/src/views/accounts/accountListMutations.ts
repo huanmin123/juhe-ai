@@ -33,7 +33,7 @@ export function replaceAccountListRow(
   if (accountIndex < 0) return accounts
 
   const current = accounts[accountIndex]
-  const preserveRuntime = current.accountRuntimeAvailabilityAvailable === true
+  const preserveRuntime = current.runtimeAvailability !== undefined
   const effectiveAvailability = preserveRuntime
     ? effectiveAvailabilityWithPreservedRuntime(current, updated)
     : updated.effectiveAvailability
@@ -44,8 +44,6 @@ export function replaceAccountListRow(
   nextAccounts[accountIndex] = {
     ...updated,
     currentConcurrency: current.currentConcurrency,
-    currentConcurrencyAvailable: current.currentConcurrencyAvailable,
-    accountRuntimeAvailabilityAvailable: current.accountRuntimeAvailabilityAvailable,
     runtimeAvailability: preserveRuntime ? current.runtimeAvailability : updated.runtimeAvailability,
     effectiveAvailability,
     availabilityPresentation,

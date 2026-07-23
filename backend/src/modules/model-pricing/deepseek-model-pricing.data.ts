@@ -42,6 +42,7 @@ export const deepSeekModelPricingData = [
     model: 'deepseek-chat',
     mode: 'chat',
     catalog_order: 50,
+    release_date: '2026-04-24',
     input_cost_per_token: 0.14 / 1_000_000,
     cache_read_input_token_cost: 0.0028 / 1_000_000,
     output_cost_per_token: 0.28 / 1_000_000,

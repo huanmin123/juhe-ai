@@ -46,7 +46,6 @@
     "test:system-metrics-progressive-loading": "pnpm --filter juhe-ai-frontend test:system-metrics-progressive-loading",
     "test:provider-catalog-progressive-loading": "pnpm --filter juhe-ai-backend test:provider-repository-driver && pnpm --filter juhe-ai-frontend test:provider-catalog-progressive-loading",
     "test:settings-sections-progressive-loading": "pnpm --filter juhe-ai-backend test:settings-sections-progressive-loading && pnpm --filter juhe-ai-frontend test:settings-sections-progressive-loading",
-    "test:usage-record-detail-request-gate": "pnpm --filter juhe-ai-frontend test:usage-record-detail-request-gate",
     "test:log-list-projection": "pnpm --filter juhe-ai-backend test:audit-log-list-projection && pnpm --filter juhe-ai-backend test:log-list-projection",
     "test:response-inspection-gateway-e2e": "pnpm --filter juhe-ai-backend test:response-inspection-gateway-e2e",
     "test:response-inspection-mock-ai-fields": "pnpm --filter juhe-ai-backend test:response-inspection-mock-ai-fields",

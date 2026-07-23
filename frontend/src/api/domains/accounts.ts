@@ -8,7 +8,6 @@ import type {
   AccountListResult,
   AccountOptionSummary,
   AccountSummary,
-  AccountStatusSnapshotResult,
   AccountTagSummary,
   AccountTagsUpdateResult,
   AccountTestSession,
@@ -51,10 +50,6 @@ export type AccountTestOptions = AccountManualTestModelOption[]
 
 export const accountsApi = {
   list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
-  statusSnapshot: (accountIds: string[], params?: ListParams, options?: RequestControlOptions) => unwrap<AccountStatusSnapshotResult>(http.get('/accounts/status-snapshot', {
-    params: { ...params, accountIds: accountIds.join(',') },
-    signal: options?.signal
-  })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
   tags: (params?: ListParams) => unwrap<AccountTagSummary[]>(http.get('/accounts/tags', { params })),
   deleteTag: (id: string, params?: ListParams) => http.delete(`/accounts/tags/${id}`, { params }),
@@ -92,10 +87,6 @@ export const accountsApi = {
 
 export const myAccountsApi = {
   list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false) })),
-  statusSnapshot: (accountIds: string[], options?: RequestControlOptions) => unwrap<AccountStatusSnapshotResult>(http.get('/my-accounts/status-snapshot', {
-    params: { accountIds: accountIds.join(',') },
-    signal: options?.signal
-  })),
   options: (params?: AccountOptionParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
   tags: () => unwrap<AccountTagSummary[]>(http.get('/my-accounts/tags')),
   deleteTag: (id: string) => http.delete(`/my-accounts/tags/${id}`),

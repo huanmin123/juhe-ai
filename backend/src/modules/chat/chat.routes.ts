@@ -910,7 +910,6 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
               apiKey: apiKeySecret,
               gatewayBaseUrl: gatewayUrl(''),
               traceId,
-              userContent: body.content,
               defaultImageModel: conversation.defaultImageModel,
               loadImageEditReferences: (assetIds) => loadChatImageEditReferences(client, {
                 assetIds,
@@ -927,7 +926,6 @@ chatRouter.post('/conversations/:conversationId/stream', async (req, res, next) 
                   model: imageRequest.model,
                   prompt: imageRequest.prompt,
                   size: imageRequest.size,
-                  allowLarge: imageRequest.allowLarge,
                   quality: imageRequest.quality,
                   outputFormat: imageRequest.outputFormat,
                   references: imageRequest.references,

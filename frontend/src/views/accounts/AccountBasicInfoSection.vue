@@ -38,14 +38,14 @@
       </a-form-item>
       <a-form-item label="特权">
         <a-select v-model:value="form.privilege" :disabled="authorizedEditing" style="width: 100%">
-          <a-select-option value="normal">正常</a-select-option>
+          <a-select-option value="normal">可调度</a-select-option>
           <a-select-option value="super_priority">超级优先</a-select-option>
           <a-select-option value="fallback">降级备用</a-select-option>
         </a-select>
       </a-form-item>
       <a-form-item label="状态">
         <a-radio-group v-model:value="form.status" :disabled="authorizedEditing">
-          <a-radio value="active">正常</a-radio>
+          <a-radio value="active">可调度</a-radio>
           <a-radio value="disabled">停用</a-radio>
         </a-radio-group>
       </a-form-item>

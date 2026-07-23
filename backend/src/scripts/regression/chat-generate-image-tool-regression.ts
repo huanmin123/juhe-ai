@@ -20,7 +20,6 @@ const tool = createGenerateImageTool()
 const result = await tool.execute({ prompt: '一张普通尺寸的测试图' }, {
   environment: 'test', ownerId: 'owner-1', conversationId: 'conversation-1', turnId: 'turn-1', assistantMessageId: 'assistant-1', signal: new AbortController().signal,
   defaultImageModel: 'gpt-image-2',
-  userContent: '请生成一张测试图片',
   imageGeneration: async (input) => {
     request = input as unknown as Record<string, unknown>
     return { path: sourcePath, bytes: 7, sha256: 'a'.repeat(64), mimeType: 'image/webp' as const, width: 1024, height: 1024 }
@@ -35,10 +34,15 @@ const result = await tool.execute({ prompt: '一张普通尺寸的测试图' }, 
   }
 })
 assert.equal(request?.model, 'gpt-image-2')
-assert.equal(request?.size, '1024x1024')
+assert.equal(request?.size, 'auto')
 assert.equal(request?.outputFormat, 'webp')
 assert.equal(committed, true)
 assert.equal(JSON.parse(result.modelOutput).assetId, 'asset-1')
+
+await assert.rejects(tool.execute({ prompt: '生成图片', size: '800x800' }, {
+  environment: 'test', ownerId: 'owner-1', conversationId: 'conversation-1', turnId: 'turn-invalid-size', assistantMessageId: 'assistant-invalid-size', signal: new AbortController().signal,
+  defaultImageModel: 'gpt-image-2', imageGeneration: async () => { throw new Error('非法尺寸不得调用上游') }, artifactSink: { commitGeneratedImage: async () => { throw new Error('非法尺寸不得提交') } }
+}), /总像素/)
 
 let editRequest: Record<string, unknown> | undefined
 const editReferenceId = `chat_asset_${'4'.repeat(32)}`

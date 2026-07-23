@@ -1,4 +1,4 @@
-import type { AccountGroupOptionSummary, GroupListResult, GroupOptionSummary, GroupStatusSnapshotResult, GroupSummary } from '@/types/domain'
+import type { AccountGroupOptionSummary, GroupListResult, GroupOptionSummary, GroupSummary } from '@/types/domain'
 import type { GroupListParams, GroupOptionParams, ListParams } from '../contracts'
 import { http, unwrap } from '../http'
 import { groupListParams, groupOptionParams } from '../params'
@@ -8,7 +8,6 @@ type MyGroupOptionParams = Pick<GroupOptionParams, 'ids' | 'keyword' | 'provider
 export const groupsApi = {
   list: async (params?: GroupListParams) => (await unwrap<GroupListResult>(http.get('/groups', { params: groupListParams({ page: 1, pageSize: 500, ...params }) }))).items,
   listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/groups', { params: groupListParams(params) })),
-  statusSnapshot: (groupIds: string[], params?: ListParams) => unwrap<GroupStatusSnapshotResult>(http.get('/groups/status-snapshot', { params: { ...params, groupIds: groupIds.join(',') } })),
   detail: (id: string, params?: ListParams) => unwrap<GroupSummary>(http.get(`/groups/${id}`, { params })),
   options: (params?: GroupOptionParams) => unwrap<GroupOptionSummary[]>(http.get('/groups/options', { params: groupOptionParams(params) })),
   authorizationOptions: async (params?: GroupOptionParams): Promise<GroupOptionSummary[]> => (await unwrap<Array<{ id: string; name: string; canAuthorize: boolean }>>(http.get('/groups/authorization-options', { params: groupOptionParams(params) })))
@@ -23,7 +22,6 @@ export const groupsApi = {
 export const myGroupsApi = {
   list: async (params?: Omit<GroupListParams, 'systemAccountId'>) => (await unwrap<GroupListResult>(http.get('/my-groups', { params: groupListParams({ page: 1, pageSize: 500, ...params }, false) }))).items,
   listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/my-groups', { params: groupListParams(params, false) })),
-  statusSnapshot: (groupIds: string[]) => unwrap<GroupStatusSnapshotResult>(http.get('/my-groups/status-snapshot', { params: { groupIds: groupIds.join(',') } })),
   detail: (id: string) => unwrap<GroupSummary>(http.get(`/my-groups/${id}`)),
   options: (params?: MyGroupOptionParams) => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options', { params: groupOptionParams(params, false) })),
   authorizationOptions: async (params?: MyGroupOptionParams): Promise<GroupOptionSummary[]> => (await unwrap<Array<{ id: string; name: string; canAuthorize: boolean }>>(http.get('/my-groups/authorization-options', { params: groupOptionParams(params, false) })))

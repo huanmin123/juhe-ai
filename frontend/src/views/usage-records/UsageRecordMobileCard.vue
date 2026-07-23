@@ -61,20 +61,22 @@
       </div>
       <div class="mobile-list-meta-item mobile-list-meta-wide">
         <span>traceId</span>
-        <strong class="mono-cell">{{ record.traceId }}</strong>
+        <strong class="mobile-trace-id mono-cell">
+          <span>{{ record.traceId }}</span>
+          <a-tooltip title="复制 traceId">
+            <a-button size="small" type="text" @click="emit('copyTraceId', record.traceId)">
+              <template #icon><copy-outlined /></template>
+            </a-button>
+          </a-tooltip>
+        </strong>
       </div>
-    </div>
-    <div class="mobile-list-card-actions">
-      <RowActions variant="button" :actions="traceActions" :more-actions="traceMoreActions" @action-click="handleTraceAction" />
     </div>
   </article>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { CopyOutlined } from '@ant-design/icons-vue'
 
-import RowActions from '@/components/RowActions.vue'
-import type { RowActionItem } from '@/components/rowActions'
 import type { UsageRecordSummary } from '@/types/domain'
 import {
   accountDisplayText,
@@ -103,41 +105,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (event: 'copyTraceId', traceId: string): void
-  (event: 'openDetail'): void
-  (event: 'openAuditLogs'): void
-  (event: 'openRuntimeLogs'): void
 }>()
-
-const traceActions = computed<RowActionItem[]>(() => [
-  { key: 'open-detail', label: '查看详情', icon: 'detail', tone: 'info' },
-  { key: 'copy-trace-id', label: '复制 traceId', icon: 'copy', tone: 'primary' }
-])
-const traceMoreActions = computed<RowActionItem[]>(() => {
-  const actions: RowActionItem[] = []
-  if (props.isManagementView) {
-    actions.push({ key: 'open-runtime-logs', label: '运行日志', icon: 'detail', tone: 'info' })
-    actions.push({ key: 'open-audit-logs', label: '审计日志', icon: 'detail', tone: 'info' })
-  }
-  return actions
-})
-
-function handleTraceAction(key: string): void {
-  if (key === 'open-detail') {
-    emit('openDetail')
-    return
-  }
-  if (key === 'copy-trace-id') {
-    emit('copyTraceId', props.record.traceId)
-    return
-  }
-  if (key === 'open-runtime-logs') {
-    emit('openRuntimeLogs')
-    return
-  }
-  if (key === 'open-audit-logs') {
-    emit('openAuditLogs')
-  }
-}
 </script>
 
 <style scoped>
@@ -145,5 +113,17 @@ function handleTraceAction(key: string): void {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.mobile-trace-id {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+}
+
+.mobile-trace-id > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 </style>

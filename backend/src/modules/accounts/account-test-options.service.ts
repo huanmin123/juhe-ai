@@ -89,9 +89,7 @@ export async function resolveAccountManualTestSelectionAsync(
     throw new Error('请选择测试模型')
   }
   const option = await accountManualTestModelCapabilitiesAsync(account, model)
-  const resolvedTestEndpointMode = option.testEndpointModes.includes('images_json')
-    ? 'images_json'
-    : testEndpointMode ?? option.testEndpointModes[0]
+  const resolvedTestEndpointMode = testEndpointMode ?? option.testEndpointModes[0]
   if (!resolvedTestEndpointMode || !option.testEndpointModes.includes(resolvedTestEndpointMode)) {
     throw new Error(`模型 ${model} 不支持本次检查协议：${testEndpointMode ?? '未选择'}`)
   }
@@ -149,7 +147,6 @@ async function accountManualTestEndpointModesForTargetModelAsync(
   model: ProviderModelTestCatalogItem,
   systemAccountId: string
 ): Promise<AccountSupportedEndpointMode[]> {
-  if (isImageGenerationManualTestModel(model, account)) return ['images_json']
   const accountEndpointModes = accountManualTestEndpointModes({
     providerCode: account.providerCode,
     providerProtocolProfileId: account.providerProtocolProfileId,
@@ -194,6 +191,7 @@ async function accountManualTestEndpointModesForTargetModelAsync(
       output.push(mode)
     }
   }
+  if (modelSupportsImagesProtocol(model, account)) output.push('images_json')
   return output
 }
 
@@ -203,8 +201,7 @@ export function accountManualTestEndpointModesForModel(
   catalog: ProviderModelCatalogItem[],
   accountEndpointModes = accountManualTestEndpointModes(account)
 ): AccountSupportedEndpointMode[] {
-  if (isImageGenerationManualTestModel(model, account)) return ['images_json']
-  return accountEndpointModes.filter((mode) => {
+  const output = accountEndpointModes.filter((mode) => {
     if (mode === 'interactions_json' || mode === 'interactions_sse') {
       return modelSupportsProtocol(model, 'interactions')
     }
@@ -215,6 +212,8 @@ export function accountManualTestEndpointModesForModel(
     return modelSupportsProtocol(model, sourceFamily)
       && (!upstreamModel || modelSupportsProtocol(upstreamModel, mapping.upstreamEndpointFamily))
   })
+  if (modelSupportsImagesProtocol(model, account)) output.push('images_json')
+  return output
 }
 
 function endpointModeProtocol(mode: AccountSupportedEndpointMode): AccountModelMappingSourceEndpointFamily {
@@ -237,10 +236,9 @@ function isAccountManualTestModel(
   item: Pick<ProviderModelCatalogItem, 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
   account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>
 ): boolean {
-  if (isImageGenerationManualTestModel(item, account)) return true
   if (item.mode === 'image' || item.mode === 'audio') return false
   const protocols = item.supportedApiProtocols ?? []
-  if (!protocols.length) return true
+  if (!protocols.length) return item.mode !== 'image_generation'
   if (isHybridProviderCode(account.providerCode)) {
     return protocols.some((protocol) => (
       protocol === 'chat_completions'
@@ -248,10 +246,15 @@ function isAccountManualTestModel(
       || protocol === 'messages'
       || protocol === 'generate_content'
       || protocol === 'stream_generate_content'
+      || (account.type === 'api_key' && protocol === 'images')
     ))
   }
   if (isOpenAIProtocolProfile(account)) {
-    return protocols.some((protocol) => protocol === 'chat_completions' || protocol === 'responses')
+    return protocols.some((protocol) => (
+      protocol === 'chat_completions'
+      || protocol === 'responses'
+      || (account.type === 'api_key' && protocol === 'images')
+    ))
   }
   if (isAnthropicProtocolProfile(account)) {
     return protocols.includes('messages')
@@ -262,11 +265,11 @@ function isAccountManualTestModel(
   return false
 }
 
-function isImageGenerationManualTestModel(
-  item: Pick<ProviderModelCatalogItem, 'mode' | 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
+function modelSupportsImagesProtocol(
+  item: Pick<ProviderModelCatalogItem, 'supportedApiProtocols'> | ProviderModelTestCatalogItem | ProviderModelOptionRow,
   account: Pick<AccountSummary, 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion' | 'type'>
 ): boolean {
   return account.type === 'api_key'
     && isOpenAIProtocolProfile(account)
-    && (item.mode === 'image_generation' || item.supportedApiProtocols?.includes('images') === true)
+    && item.supportedApiProtocols?.includes('images') === true
 }

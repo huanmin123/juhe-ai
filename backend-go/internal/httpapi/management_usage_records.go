@@ -5,8 +5,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
-
 	"juhe-ai/backend-go/internal/modules/managementauth"
 	"juhe-ai/backend-go/internal/modules/managementusagerecords"
 )
@@ -20,7 +18,6 @@ const (
 
 type managementUsageRecordService interface {
 	List(*http.Request, managementusagerecords.ListInput) (managementusagerecords.ListResult, error)
-	Detail(*http.Request, managementusagerecords.DetailInput) (managementusagerecords.Summary, bool, error)
 }
 
 type managementUsageRecordServiceAdapter struct {
@@ -29,10 +26,6 @@ type managementUsageRecordServiceAdapter struct {
 
 func (a managementUsageRecordServiceAdapter) List(r *http.Request, input managementusagerecords.ListInput) (managementusagerecords.ListResult, error) {
 	return a.service.List(r.Context(), input)
-}
-
-func (a managementUsageRecordServiceAdapter) Detail(r *http.Request, input managementusagerecords.DetailInput) (managementusagerecords.Summary, bool, error) {
-	return a.service.Detail(r.Context(), input)
 }
 
 func NewManagementUsageRecordsHandler(service *managementusagerecords.Service) http.Handler {
@@ -53,21 +46,6 @@ func newManagementUsageRecordsHandler(service managementUsageRecordService, scop
 		input, allowed := managementUsageRecordListInput(authContext, r.URL.Query(), scope)
 		if !allowed {
 			writeMessageError(w, http.StatusForbidden, "需要管理员权限")
-			return
-		}
-		if id := chi.URLParam(r, "id"); id != "" {
-			detail, found, err := service.Detail(r, managementusagerecords.DetailInput{
-				ID: id, ScopeSystemAccountID: input.ScopeSystemAccountID, IncludeSystemAccount: input.IncludeSystemAccount,
-			})
-			if err != nil {
-				writeMessageError(w, http.StatusInternalServerError, "服务器内部错误")
-				return
-			}
-			if !found {
-				writeMessageError(w, http.StatusNotFound, "使用记录不存在")
-				return
-			}
-			writeData(w, http.StatusOK, detail)
 			return
 		}
 		if scope == managementUsageRecordScopeAdmin && input.ScopeSystemAccountID == "" && managementUsageRecordHasUnsupportedAllAccountFilters(r.URL.Query()) {

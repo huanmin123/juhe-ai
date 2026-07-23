@@ -59,7 +59,7 @@ export function statusColor(status: AccountStatus) {
 }
 
 export function statusText(status: AccountStatus) {
-  if (status === 'active') return '正常'
+  if (status === 'active') return '可调度'
   if (status === 'pending_test') return '待检查'
   if (status === 'error') return '异常'
   if (status === 'rate_limited') return '限流中'
@@ -143,7 +143,7 @@ function accountQualityStatusInfo(account: AccountSummary): AccountQualityStatus
     `AI账户质量：近窗口 ${formatNumber(requestCount)} 次请求，失败 ${formatNumber(errorCount)} 次${successRateText}`,
     '归因范围：仅统计真实上游失败和账号依赖失败',
     '不计入：并发满、额度/认证/规则拦截、客户端断开',
-    '账户状态：数据库仍为正常，不参与状态筛选'
+    '账户状态：基础状态仍为可调度，不参与状态筛选'
   ]
   if (account.qualityLastErrorAt) {
     lines.push(`最后质量失败：${formatDateTime(account.qualityLastErrorAt)}`)
@@ -316,7 +316,7 @@ function authorizedInstanceLocalStatusTooltipLines(account: AccountSummary): str
     const retestText = accountCooldownRetestText(account)
     if (retestText) lines.push(`本地${retestText}`)
     if (isLongTermUnavailableAccount(account)) {
-      lines.push('本地已进入长期不可用低频复测；后台仍会自动探活，成功后恢复正常')
+      lines.push('本地已进入长期不可用低频复测；后台仍会自动探活，成功后恢复可调度')
     }
   }
   lines.push(...accountDiagnosticTooltipLines(account.lastErrorMessage, {

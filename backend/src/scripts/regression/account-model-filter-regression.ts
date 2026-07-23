@@ -158,12 +158,12 @@ async function assertStorageRoundTrip(): Promise<void> {
         base_url: 'https://api.openai.com/v1'
       },
       status: 'active',
-      supportedModels: ['gpt-5.5', 'gpt-5.4', 'codex-auto-review'],
+      supportedModels: ['gpt-5.5', 'gpt-5.4'],
       healthCheckModel: 'gpt-5.4',
       groupId: group.id
     }, access)
-    assert.deepEqual(sorted(account.supportedModels), ['codex-auto-review', 'gpt-5.4', 'gpt-5.5'], '创建账户应允许保存 active 未计价 Codex 自动审查模型')
-    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['codex-auto-review', 'gpt-5.4', 'gpt-5.5'], '创建账户应写入 active 未计价模型关系')
+    assert.deepEqual(sorted(account.supportedModels), ['gpt-5.4', 'gpt-5.5'], '创建账户应保存资料完整的内置模型')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '创建账户应写入模型关系')
 
     assert.equal(repositories.recordAccountHealthCheckSuccess(account.id, {
       intervalHours: 12,
@@ -174,55 +174,55 @@ async function assertStorageRoundTrip(): Promise<void> {
 
     const runtimeAccount = repositories.listOpenAIAccountsForGroup(account.boundGroupId ?? '', access.systemAccountId)
       .find((item) => item.id === account.id)
-    assert.deepEqual(sorted(runtimeAccount?.supportedModels), ['codex-auto-review', 'gpt-5.4', 'gpt-5.5'], '网关候选账号快照应带上 active 未计价模型限制')
+    assert.deepEqual(sorted(runtimeAccount?.supportedModels), ['gpt-5.4', 'gpt-5.5'], '网关候选账号快照应带上模型限制')
 
     const updated = repositories.updateAccount(account.id, { supportedModels: ['gpt-5.4'] }, access)
     assert.deepEqual(sorted(updated?.supportedModels), ['gpt-5.4'], '更新账户应返回新的模型限制')
     assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4'], '更新账户应替换模型限制关系表')
 
-    const updatedWithCodexAutoReview = repositories.updateAccount(account.id, {
-      supportedModels: ['gpt-5.4', 'codex-auto-review']
+    const updatedWithTwoModels = repositories.updateAccount(account.id, {
+      supportedModels: ['gpt-5.4', 'gpt-5.5']
     }, access)
-    assert.deepEqual(sorted(updatedWithCodexAutoReview?.supportedModels), ['codex-auto-review', 'gpt-5.4'], '更新账户应允许恢复 active 未计价 Codex 自动审查模型')
-    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['codex-auto-review', 'gpt-5.4'], '更新账户应持久化 active 未计价模型关系')
+    assert.deepEqual(sorted(updatedWithTwoModels?.supportedModels), ['gpt-5.4', 'gpt-5.5'], '更新账户应允许恢复资料完整的内置模型')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '更新账户应持久化模型关系')
 
     const renamed = repositories.updateAccount(account.id, { name: '账户模型限制回归-仅改名' }, access)
-    assert.deepEqual(sorted(renamed?.supportedModels), ['codex-auto-review', 'gpt-5.4'], '未提交 supportedModels 时不应清空已有模型限制')
-    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['codex-auto-review', 'gpt-5.4'], '未提交 supportedModels 时关系表应保持不变')
+    assert.deepEqual(sorted(renamed?.supportedModels), ['gpt-5.4', 'gpt-5.5'], '未提交 supportedModels 时不应清空已有模型限制')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '未提交 supportedModels 时关系表应保持不变')
 
     assert.throws(
       () => repositories.updateAccount(account.id, { supportedModels: [] }, access),
       /账户检查模型必须属于账户支持模型/,
       '提交空数组不应清空模型限制'
     )
-    assert.deepEqual(sorted(repositories.findAccountSummary(account.id, access)?.supportedModels), ['codex-auto-review', 'gpt-5.4'], '提交空数组失败后应保留原模型限制')
-    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['codex-auto-review', 'gpt-5.4'], '提交空数组失败后关系表应保持不变')
+    assert.deepEqual(sorted(repositories.findAccountSummary(account.id, access)?.supportedModels), ['gpt-5.4', 'gpt-5.5'], '提交空数组失败后应保留原模型限制')
+    assert.deepEqual(loadStoredModels(databaseModule.getBusinessDatabase(), account.id), ['gpt-5.4', 'gpt-5.5'], '提交空数组失败后关系表应保持不变')
 
     const importResult = accountImport.executeAccountImport({
       type: accountImport.accountImportProtocolType,
       version: accountImport.accountImportProtocolVersion,
       accounts: [{
-        name: 'Codex 自动审查导入账户',
+        name: '内置模型导入账户',
         providerCode: GPT_VENDOR_CODE,
         providerProtocolProfileId: GPT_OPENAI_V1_PROFILE_ID,
         type: 'api_key',
         status: 'active',
         groupId: group.id,
-        supportedModels: ['gpt-5.4', 'codex-auto-review'],
+        supportedModels: ['gpt-5.4', 'gpt-5.5'],
         healthCheckModel: 'gpt-5.4',
         credentials: {
-          api_key: 'sk-account-model-filter-import-codex-review',
+          api_key: 'sk-account-model-filter-import-built-in',
           base_url: 'https://api.openai.com/v1'
         }
       }]
     }, {}, access)
-    assert.equal(importResult.summary.accounts.create, 1, '账户导入应允许 active 未计价 Codex 自动审查模型')
+    assert.equal(importResult.summary.accounts.create, 1, '账户导入应允许资料完整的内置模型')
     const importedAccountId = importResult.accounts[0]?.accountId
-    assert(importedAccountId, 'Codex 自动审查导入应返回账户 ID')
+    assert(importedAccountId, '内置模型导入应返回账户 ID')
     assert.deepEqual(
       sorted(repositories.findAccountSummary(importedAccountId, access)?.supportedModels),
-      ['codex-auto-review', 'gpt-5.4'],
-      '账户导入应真实持久化 active 未计价模型'
+      ['gpt-5.4', 'gpt-5.5'],
+      '账户导入应真实持久化内置模型'
     )
 
     const defaultedAccount = repositories.createAccount({

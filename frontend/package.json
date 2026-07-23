@@ -68,7 +68,6 @@
     "test:account-provider-model-cache": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-provider-model-cache-regression.ts",
     "test:provider-model-select-options-lightweight": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/provider-model-select-options-lightweight-regression.ts",
     "test:usage-record-lazy-options-behavior": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/usage-record-lazy-options-behavior-regression.ts",
-    "test:usage-record-detail-request-gate": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/usage-record-detail-request-gate-regression.ts",
     "test:account-gpt-request-overrides": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/account-gpt-request-overrides-regression.ts",
     "test:xai-account-capability": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/xai-account-capability-regression.ts",
     "test:provider-auth-account-capability": "pnpm --dir ../backend exec tsx --tsconfig ../frontend/tsconfig.json ../frontend/src/scripts/regression/provider-auth-account-capability-regression.ts",

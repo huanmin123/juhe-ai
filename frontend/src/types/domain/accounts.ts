@@ -232,7 +232,6 @@ export interface GroupAccountStats {
   error: number
   rateLimited: number
   currentConcurrency?: number
-  currentConcurrencyAvailable?: boolean
   concurrencyLimit: number
   todayUsage?: AccountUsageSummary
   usage: AccountUsageSummary
@@ -303,8 +302,6 @@ export interface AccountSummary {
   status: AccountStatus
   concurrencyLimit: number
   currentConcurrency: number
-  currentConcurrencyAvailable?: boolean
-  accountRuntimeAvailabilityAvailable?: boolean
   runtimeAvailability?: AccountRuntimeAvailability
   effectiveAvailability?: AccountEffectiveAvailability
   availabilityPresentation?: AccountAvailabilityPresentation
@@ -400,79 +397,14 @@ export type AccountListItem = Omit<AccountSummary,
   | 'supportedModels'
   | 'modelMappings'
   | 'apiKeyRuntimeDetails'
-  | 'apiKeyRuntime'
-  | 'balanceQueryEnabled'
   | 'balanceQueryConfig'
-  | 'balanceQueryNextRefreshAt'
-  | 'balanceSnapshot'
   | 'usage'
-  | 'todayUsage'
-  | 'currentConcurrency'
-  | 'lastUsedAt'
-  | 'runtimeAvailability'
-  | 'effectiveAvailability'
-  | 'availabilityPresentation'
   | 'oauthUsage'
   | 'authorizationSources'
   | 'authorizationUsageAvailable'
   | 'authorizationCount'
   | 'authorizationTeamCount'
 >
-
-export interface AccountStatusSnapshotItem {
-  id: string
-  status: AccountStatus
-  schedulable: boolean
-  currentConcurrency: number
-  cooldownUntil?: string
-  lastErrorCode?: string
-  lastErrorMessage?: string
-  lastErrorTraceId?: string
-  cooldownRetestLastAt?: string
-  cooldownRetestLastStatusCode?: number
-  lastHealthCheckAt?: string
-  nextHealthCheckAt?: string
-  lastHealthCheckStatusCode?: number
-  lastHealthCheckErrorCode?: string
-  lastHealthCheckErrorMessage?: string
-  lastHealthCheckTraceId?: string
-  authorizationStatus?: AuthorizationStatus
-  authorizationExpiresAt?: string
-  authorizationQuotaExceeded?: boolean
-  authorizationInstanceSourceAccountStatus?: AccountStatus
-  authorizationInstanceSourceAccountSchedulable?: boolean
-  authorizationInstanceSourceAccountExpiresAt?: string
-  authorizationInstanceSourceAccountCooldownUntil?: string
-  authorizationInstanceSourceAccountLastErrorCode?: string
-  authorizationInstanceSourceAccountLastErrorMessage?: string
-  authorizationInstanceSourceAccountLastErrorTraceId?: string
-  authorizationInstanceSourceAccountCooldownRetestLastAt?: string
-  authorizationInstanceSourceAccountCooldownRetestLastStatusCode?: number
-  authorizationInstanceSourceAccountLastHealthCheckAt?: string
-  authorizationInstanceSourceAccountNextHealthCheckAt?: string
-  authorizationInstanceSourceAccountLastHealthCheckStatusCode?: number
-  authorizationInstanceSourceAccountLastHealthCheckErrorCode?: string
-  authorizationInstanceSourceAccountLastHealthCheckErrorMessage?: string
-  authorizationInstanceSourceAccountLastHealthCheckTraceId?: string
-  apiKeyRuntime?: AccountApiKeyRuntimeSummary
-  balanceQueryEnabled?: boolean
-  balanceQueryNextRefreshAt?: string
-  balanceSnapshot?: AccountBalanceSnapshot
-  runtimeAvailability?: AccountRuntimeAvailability
-  effectiveAvailability: AccountEffectiveAvailability
-  availabilityPresentation?: AccountAvailabilityPresentation
-  lastUsedAt?: string
-  todayUsage: AccountUsageSummary
-}
-
-export interface AccountStatusSnapshotResult {
-  generatedAt: string
-  runtimeSnapshot: {
-    accountConcurrencyAvailable: boolean
-    accountRuntimeAvailabilityAvailable: boolean
-  }
-  items: AccountStatusSnapshotItem[]
-}
 
 export interface AccountBatchEditTarget {
   accountId: string
@@ -554,14 +486,11 @@ export interface AccountApiKeyRuntimeResponse {
 
 export interface AccountListResult {
   items: AccountListItem[]
+  generatedAt: string
   total: number
   hasMore?: boolean
   page: number
   pageSize: number
-  runtimeSnapshot?: {
-    accountConcurrencyAvailable: boolean
-    accountRuntimeAvailabilityAvailable?: boolean
-  }
 }
 
 export type AccountOptionSummary = Pick<
@@ -858,25 +787,11 @@ export interface GroupSummary {
 
 export interface GroupListResult {
   items: GroupSummary[]
+  generatedAt: string
   total: number
   hasMore: boolean
   page: number
   pageSize: number
-  runtimeSnapshot?: {
-    accountConcurrencyAvailable: boolean
-  }
-}
-
-export interface GroupStatusSnapshotResult {
-  generatedAt: string
-  runtimeSnapshot: {
-    accountConcurrencyAvailable: boolean
-  }
-  items: Array<{
-    id: string
-    currentConcurrency: number
-    todayUsage: AccountUsageSummary
-  }>
 }
 
 export type GroupOptionSummary = Pick<GroupSummary, 'id' | 'name'> & Partial<Pick<

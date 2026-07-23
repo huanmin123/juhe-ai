@@ -10,7 +10,7 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
 import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
-import type { AccountBalanceSnapshot, AccountListItem, AccountListResult, AccountSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountBalanceSnapshot, AccountListResult, AccountSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
@@ -106,9 +106,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         })
       }
       const accountList = await fetchAccountList(systemAccountId, pageState)
-      const items = accountList.items.map((account) => accountListViewModel(account, accountList.runtimeSnapshot))
       return {
-        items,
+        items: accountList.items as AccountSummary[],
         page: accountList.page,
         pageSize: accountList.pageSize,
         total: accountList.total,
@@ -284,16 +283,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       tagIds: filters.tagIds,
       status: filters.status
     }
-  }
-
-  function accountListViewModel(account: AccountListItem, runtimeSnapshot: AccountListResult['runtimeSnapshot']): AccountSummary {
-    return {
-      ...account,
-      currentConcurrencyAvailable: runtimeSnapshot?.accountConcurrencyAvailable === true
-        && account.currentConcurrencyAvailable !== false,
-      accountRuntimeAvailabilityAvailable: runtimeSnapshot?.accountRuntimeAvailabilityAvailable === true
-        && account.accountRuntimeAvailabilityAvailable !== false
-    } as AccountSummary
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })

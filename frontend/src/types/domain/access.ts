@@ -120,20 +120,11 @@ export interface RouteStrategyListItem {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
-  createdAt: string
-  updatedAt: string
-}
-
-export interface RouteStrategyListSnapshotItem {
-  id: string
-  groupBindingPreview: RouteStrategyGroupBindingPreview[]
   bindingCount: number
   apiKeyCount: number
-}
-
-export interface RouteStrategyListSnapshotResult {
-  generatedAt: string
-  items: RouteStrategyListSnapshotItem[]
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+  createdAt: string
+  updatedAt: string
 }
 
 export interface RouteStrategyOptionSummary {
@@ -148,6 +139,7 @@ export interface RouteStrategyOptionSummary {
 
 export interface RouteStrategyListResult {
   items: RouteStrategyListItem[]
+  generatedAt: string
   total: number
   hasMore?: boolean
   page: number

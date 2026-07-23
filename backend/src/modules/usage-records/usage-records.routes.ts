@@ -1,8 +1,8 @@
 import { Router } from 'express'
 
-import { ok, sendBadRequest, sendNotFound } from '../../shared/http.js'
+import { ok, sendBadRequest } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { getUsageRecordDetailAsync, listUsageRecordsAsync, type UsageRecordListItem, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
+import { listUsageRecordsAsync, type UsageRecordListItem, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
 import { canAccessAll, scopedSystemAccountId } from '../../storage/access-scope.js'
 import { dateKey, startOfZonedDateKeyIso, usageStatsTimezoneAsync } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -27,19 +27,6 @@ usageRecordsRouter.get('/', async (req, res, next) => {
     const records = await listUsageRecordsAsync(access, options)
     void seedUsageRecordFirstPage(access, options, records)
     res.json(ok({ ...records, items: await Promise.all(records.items.map(withCostBreakdownAsync)) }))
-  } catch (error) {
-    next(error)
-  }
-})
-
-usageRecordsRouter.get('/:id', async (req, res, next) => {
-  try {
-    const record = await getUsageRecordDetailAsync(req.params.id, getRequestAccessScope(req.query.systemAccountId))
-    if (!record) {
-      sendNotFound(res, '使用记录不存在')
-      return
-    }
-    res.json(ok(await withCostBreakdownAsync(record)))
   } catch (error) {
     next(error)
   }

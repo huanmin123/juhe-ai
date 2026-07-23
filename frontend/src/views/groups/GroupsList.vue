@@ -65,12 +65,11 @@
       </template>
       <template v-else-if="column.key === 'concurrency'">
         <a-tooltip :title="groupConcurrencyTooltip(record)">
-          <a-tag :color="groupConcurrencyAvailable(record) ? 'blue' : 'default'">{{ groupConcurrencyText(record) }}</a-tag>
+          <a-tag color="blue">{{ groupConcurrencyText(record) }}</a-tag>
         </a-tooltip>
       </template>
       <template v-else-if="column.key === 'usage'">
-        <UsageSummaryTags v-if="groupTodayUsageAvailable(record)" :usage="groupStats(record).todayUsage" />
-        <span v-else class="muted-cell">未知</span>
+        <UsageSummaryTags :usage="groupStats(record).todayUsage" />
       </template>
       <template v-else-if="column.key === 'status'">
         <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
@@ -125,7 +124,7 @@
           </div>
           <div class="mobile-list-meta-item">
             <span>用量(日)</span>
-            <strong>{{ groupTodayUsageAvailable(record) ? formatUsageSummary(groupStats(record).todayUsage) : '未知' }}</strong>
+            <strong>{{ formatUsageSummary(groupStats(record).todayUsage) }}</strong>
           </div>
         </div>
         <div v-if="groupRowActions(record).length || groupMoreActions(record).length" class="mobile-list-card-actions">
@@ -152,7 +151,6 @@ import type { GroupSummary } from '@/types/domain'
 import {
   formatUsageSummary,
   groupAccountStatsTooltip,
-  groupConcurrencyAvailable,
   groupConcurrencyText,
   groupConcurrencyTooltip,
   groupDisplayDescription,
@@ -161,8 +159,7 @@ import {
   groupStats,
   groupStatusColor,
   groupStatusText,
-  groupSystemAccountText,
-  groupTodayUsageAvailable
+  groupSystemAccountText
 } from './groupDisplay'
 import {
   groupPolicySummary,

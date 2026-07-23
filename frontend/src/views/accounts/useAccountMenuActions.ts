@@ -97,7 +97,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     if (key === 'restore-normal') {
       if (account.status === 'pending_test') {
         if (isAuthorizedAccount(account) || !canEditAccount(account)) {
-          message.warning('只有可编辑的自有待检查账户可以恢复正常')
+          message.warning('只有可编辑的自有待检查账户可以恢复可调度')
           return
         }
         const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
@@ -108,7 +108,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
           invalidateAccountDetail(account, scopeParams)
           options.updateLoadedAccount(updated)
           message.success(updated.status === 'active'
-            ? '账户已恢复正常并参与调度'
+            ? '账户已恢复可调度并参与调度'
             : '账户已恢复，当前按时间计划保持停用')
         } catch (error) {
           console.error(error)
@@ -121,7 +121,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
           message.warning('当前授权账户不需要恢复')
           return
         }
-        await updateAccountState(account, { clearFailureState: true }, '授权账户已恢复正常')
+        await updateAccountState(account, { clearFailureState: true }, '授权账户已恢复可调度')
         return
       }
       if (account.status === 'error') {
@@ -132,7 +132,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         message.warning('当前账户不需要恢复')
         return
       }
-      await updateAccountState(account, { clearFailureState: true }, '账户已恢复正常')
+      await updateAccountState(account, { clearFailureState: true }, '账户已恢复可调度')
       return
     }
     if (key === 'recheck-health') {
@@ -192,7 +192,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         return
       }
       if (enabled && account.status !== 'active' && account.status !== 'pending_test') {
-        message.warning('只有正常或待检查状态的账户可以设置超级优先')
+        message.warning('只有可调度或待检查状态的账户可以设置超级优先')
         return
       }
       if (isAuthorizedAccount(account) && !account.boundGroupId) {
@@ -213,7 +213,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         return
       }
       if (enabled && account.status !== 'active' && account.status !== 'pending_test') {
-        message.warning('只有正常或待检查状态的账户可以设置降级备用')
+        message.warning('只有可调度或待检查状态的账户可以设置降级备用')
         return
       }
       if (isAuthorizedAccount(account) && !account.boundGroupId) {

@@ -16,6 +16,7 @@ import type {
   RouteStrategyNormalRoutingConfig,
   RouteStrategyListItem,
   RouteStrategyListItemResult,
+  CompleteRouteStrategyListItemResult,
   RouteStrategyListSnapshotItem,
   RouteStrategyListSnapshotResult,
   RouteStrategyListResult,
@@ -258,6 +259,26 @@ export async function listRouteStrategyListItemsPageAsync(access?: AccessScope, 
     hasMore: pageRows.hasMore,
     page: normalized.page,
     pageSize: normalized.pageSize
+  }
+}
+
+export async function listCompleteRouteStrategyListItemsPageAsync(
+  access?: AccessScope,
+  options?: RouteStrategyListOptions
+): Promise<CompleteRouteStrategyListItemResult> {
+  const page = await listRouteStrategyListItemsPageAsync(access, options)
+  if (page.items.length === 0) return { ...page, items: [], generatedAt: new Date().toISOString() }
+  const snapshot = await listRouteStrategyListSnapshotAsync(access, page.items.map((item) => item.id))
+  const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
+  return {
+    ...page,
+    generatedAt: snapshot.generatedAt,
+    items: page.items.map((item) => ({
+      ...item,
+      bindingCount: snapshotById.get(item.id)?.bindingCount ?? 0,
+      apiKeyCount: snapshotById.get(item.id)?.apiKeyCount ?? 0,
+      groupBindingPreview: snapshotById.get(item.id)?.groupBindingPreview ?? []
+    }))
   }
 }
 

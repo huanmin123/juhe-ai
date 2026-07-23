@@ -9,6 +9,7 @@ export const xAIModelPricingData = [
     defaultReasoningEffort: 'high'
   }),
   textModel('grok-4.3', 1_000_000, 1.25, 0.2, 2.5, {
+    catalogVisible: false,
     supportedReasoningEfforts: ['none', 'low', 'medium', 'high', 'xhigh'],
     defaultReasoningEffort: 'low'
   }),
@@ -48,6 +49,7 @@ export const xAIModelPricingData = [
 type XAIReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'xhigh'
 
 interface XAITextModelMetadata {
+  catalogVisible?: boolean
   releaseDate?: string
   supportedApiProtocols?: readonly ('chat_completions' | 'responses')[]
   supportedReasoningEfforts?: readonly XAIReasoningEffort[]
@@ -65,6 +67,7 @@ function textModel(
   return {
     model,
     mode: 'chat',
+    catalog_visible: metadata.catalogVisible,
     release_date: metadata.releaseDate,
     context_window_tokens: contextWindowTokens,
     input_cost_per_token: inputUsdPer1M / 1_000_000,

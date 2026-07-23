@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -69,8 +68,6 @@ const managementUsageRecordSelectColumns = `
   ur.error_message,
   ur.created_at`
 
-var managementUsageRecordIDDatePattern = regexp.MustCompile(`^usage_(\d{8})_s\d+_`)
-
 const managementUsageRecordFromClause = `
 FROM juhe_usage.usage_records AS ur
 LEFT JOIN juhe_business.system_accounts AS sa ON sa.id = ur.system_account_id
@@ -132,8 +129,6 @@ type managementUsageRecordRow struct {
 	ErrorCode                 pgtype.Text   `db:"error_code"`
 	ErrorMessage              pgtype.Text   `db:"error_message"`
 	CreatedAt                 time.Time     `db:"created_at"`
-	RequestSnapshotJSON       pgtype.Text   `db:"request_snapshot_json"`
-	ResponseSnapshotJSON      pgtype.Text   `db:"response_snapshot_json"`
 }
 
 func (s *Store) ListManagementUsageRecords(ctx context.Context, input port.ManagementUsageRecordListInput) (port.ManagementUsageRecordListResult, error) {
@@ -157,27 +152,6 @@ func (s *Store) ListManagementUsageRecords(ctx context.Context, input port.Manag
 		result = append(result, managementUsageRecordSummary(item))
 	}
 	return port.ManagementUsageRecordListResult{Items: result, HasMore: hasMore}, nil
-}
-
-func (s *Store) GetManagementUsageRecord(ctx context.Context, input port.ManagementUsageRecordDetailInput) (port.ManagementUsageRecordDetail, bool, error) {
-	query, args := managementUsageRecordDetailQuery(input)
-	rows, err := s.pool.Query(ctx, query, args...)
-	if err != nil {
-		return port.ManagementUsageRecordDetail{}, false, fmt.Errorf("get management usage record: %w", err)
-	}
-	items, err := pgx.CollectRows(rows, pgx.RowToStructByNameLax[managementUsageRecordRow])
-	if err != nil {
-		return port.ManagementUsageRecordDetail{}, false, fmt.Errorf("scan management usage record: %w", err)
-	}
-	if len(items) == 0 {
-		return port.ManagementUsageRecordDetail{}, false, nil
-	}
-	item := items[0]
-	return port.ManagementUsageRecordDetail{
-		ManagementUsageRecordSummary: managementUsageRecordSummary(item),
-		RequestSnapshotJSON:          textValue(item.RequestSnapshotJSON),
-		ResponseSnapshotJSON:         textValue(item.ResponseSnapshotJSON),
-	}, true, nil
 }
 
 func managementUsageRecordListQuery(input port.ManagementUsageRecordListInput, limit, offset int) (string, []any) {
@@ -312,39 +286,6 @@ func boundedManagementUsageRecordAccountMatch(query, alias, orderBy string) stri
       ORDER BY ` + orderBy + `
       LIMIT 200
     ) AS ` + alias
-}
-
-func managementUsageRecordDetailQuery(input port.ManagementUsageRecordDetailInput) (string, []any) {
-	recordID := strings.TrimSpace(input.ID)
-	args := []any{recordID}
-	addArg := func(value any) string {
-		args = append(args, value)
-		return fmt.Sprintf("$%d", len(args))
-	}
-	query := "SELECT" + managementUsageRecordSelectColumns + `,
-  ur.request_snapshot_json,
-  ur.response_snapshot_json` + managementUsageRecordFromClause + "\nWHERE ur.id = $1::text"
-	if startAt, endAt, ok := managementUsageRecordPartitionBoundsFromID(recordID); ok {
-		query += "\n  AND ur.created_at >= " + addArg(startAt) + "::timestamptz"
-		query += "\n  AND ur.created_at < " + addArg(endAt) + "::timestamptz"
-	}
-	if systemAccountID := strings.TrimSpace(input.SystemAccountID); systemAccountID != "" {
-		query += "\n  AND ur.system_account_id = " + addArg(systemAccountID) + "::text"
-	}
-	query += "\nLIMIT 1"
-	return query, args
-}
-
-func managementUsageRecordPartitionBoundsFromID(id string) (time.Time, time.Time, bool) {
-	match := managementUsageRecordIDDatePattern.FindStringSubmatch(strings.TrimSpace(id))
-	if len(match) != 2 {
-		return time.Time{}, time.Time{}, false
-	}
-	startAt, err := time.Parse("20060102", match[1])
-	if err != nil {
-		return time.Time{}, time.Time{}, false
-	}
-	return startAt, startAt.AddDate(0, 0, 1), true
 }
 
 func addManagementUsageRecordPrefixFilter(conditions *[]string, args *[]any, column, value string) {

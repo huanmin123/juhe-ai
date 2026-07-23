@@ -4,15 +4,6 @@
 
 export const openAIGPT5ModelPricingData = [
   {
-    model: "codex-auto-review",
-    litellm_provider: "openai",
-    mode: "responses",
-    catalog_order: 3,
-    supported_api_protocols: ["responses"],
-    input_modalities: ["text"],
-    output_modalities: ["text"]
-  },
-  {
     model: "gpt-5.6-sol",
     litellm_provider: "openai",
     mode: "chat",
@@ -129,7 +120,8 @@ export const openAIGPT5ModelPricingData = [
   ,
     input_modalities: ["text"],
     output_modalities: ["text"],
-    supported_tools: ["web_search"]
+    supported_tools: ["web_search"],
+    catalog_visible: false
   },
   {
     model: "gpt-5.5",
@@ -392,6 +384,7 @@ export const openAIGPT5ModelPricingData = [
     output_cost_per_token_priority: 0.000028,
     cache_read_input_token_cost: 1.75e-7,
     cache_read_input_token_cost_priority: 3.5e-7,
+    shutdown_date: "2026-08-10",
     supports_prompt_caching: true
   ,
     supported_api_protocols: ["chat_completions","responses"],
@@ -512,6 +505,7 @@ export const openAIGPT5ModelPricingData = [
     input_cost_per_token: 0.00000175,
     output_cost_per_token: 0.000014,
     cache_read_input_token_cost: 1.75e-7,
+    shutdown_date: "2026-08-10",
     supports_prompt_caching: true
   ,
     supported_api_protocols: ["chat_completions","responses"],

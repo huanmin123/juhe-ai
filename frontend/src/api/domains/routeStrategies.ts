@@ -2,7 +2,6 @@ import type {
   ApiKeyHybridRoutingConfig,
   RouteStrategyNormalRoutingConfig,
   RouteStrategyListResult,
-  RouteStrategyListSnapshotResult,
   RouteStrategyMode,
   RouteStrategyOptionSummary,
   RouteStrategyGroupBindingStatus,
@@ -45,9 +44,6 @@ export interface RouteStrategyMutationPayload {
 
 export const routeStrategiesApi = {
   list: (params?: RouteStrategyListParams) => unwrap<RouteStrategyListResult>(http.get('/route-strategies', { params })),
-  listSnapshot: (ids: string[], params?: ListParams) => unwrap<RouteStrategyListSnapshotResult>(http.get('/route-strategies/list-snapshot', {
-    params: routeStrategyListSnapshotParams(ids, params)
-  })),
   options: (params?: RouteStrategyOptionsParams) => unwrap<RouteStrategyOptionSummary[]>(http.get('/route-strategies/options', { params })),
   detail: (id: string, params?: ListParams) => unwrap<RouteStrategySummary>(http.get(`/route-strategies/${id}`, { params })),
   create: (payload: RouteStrategyMutationPayload, params?: ListParams) => unwrap<RouteStrategySummary>(http.post('/route-strategies', payload, { params })),
@@ -57,23 +53,9 @@ export const routeStrategiesApi = {
 
 export const myRouteStrategiesApi = {
   list: (params?: RouteStrategyListParams) => unwrap<RouteStrategyListResult>(http.get('/my-route-strategies', { params: stripSystemAccountParam(params) })),
-  listSnapshot: (ids: string[]) => unwrap<RouteStrategyListSnapshotResult>(http.get('/my-route-strategies/list-snapshot', {
-    params: routeStrategyListSnapshotParams(ids)
-  })),
   options: (params?: RouteStrategyOptionsParams) => unwrap<RouteStrategyOptionSummary[]>(http.get('/my-route-strategies/options', { params: stripSystemAccountParam(params) })),
   detail: (id: string) => unwrap<RouteStrategySummary>(http.get(`/my-route-strategies/${id}`)),
   create: (payload: RouteStrategyMutationPayload) => unwrap<RouteStrategySummary>(http.post('/my-route-strategies', payload)),
   update: (id: string, payload: RouteStrategyMutationPayload) => unwrap<RouteStrategySummary>(http.patch(`/my-route-strategies/${id}`, payload)),
   delete: (id: string) => http.delete(`/my-route-strategies/${id}`)
-}
-
-function routeStrategyListSnapshotParams(ids: string[], params?: ListParams): URLSearchParams {
-  const searchParams = new URLSearchParams()
-  for (const id of [...new Set(ids.map((value) => value.trim()).filter(Boolean))]) {
-    searchParams.append('ids', id)
-  }
-  if (params?.systemAccountId?.trim()) {
-    searchParams.set('systemAccountId', params.systemAccountId.trim())
-  }
-  return searchParams
 }

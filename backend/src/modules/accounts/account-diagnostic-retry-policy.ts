@@ -2,6 +2,13 @@ import type { GatewaySettings } from '../gateway/policy/account-error-policy.ser
 
 export const accountDiagnosticRetryTimeoutMs = [10_000, 20_000, 30_000] as const
 export const accountDiagnosticRetryMaxTotalTimeoutMs = accountDiagnosticRetryTimeoutMs.reduce((sum, timeoutMs) => sum + timeoutMs, 0)
+export const accountImageDiagnosticRetryTimeoutMs = [60_000] as const
+
+export function accountDiagnosticRetryTimeouts(probeKind: 'generation' | 'image_generation' | 'models_catalog'): readonly number[] {
+  return probeKind === 'image_generation'
+    ? accountImageDiagnosticRetryTimeoutMs
+    : accountDiagnosticRetryTimeoutMs
+}
 
 export interface AccountDiagnosticAttemptProgress {
   attemptIndex: number
@@ -49,14 +56,15 @@ export function isDiagnosticTimeoutSignal(signal: AbortSignal): boolean {
 export function accountDiagnosticAttemptProgress(
   attemptIndex: number,
   timeoutMs: number,
-  startedAt: number
+  startedAt: number,
+  timeoutSchedule: readonly number[] = accountDiagnosticRetryTimeoutMs
 ): AccountDiagnosticAttemptProgress {
   return {
     attemptIndex,
     attemptNumber: attemptIndex + 1,
-    totalAttempts: accountDiagnosticRetryTimeoutMs.length,
+    totalAttempts: timeoutSchedule.length,
     timeoutMs,
-    maxTotalTimeoutMs: accountDiagnosticRetryMaxTotalTimeoutMs,
+    maxTotalTimeoutMs: timeoutSchedule.reduce((sum, attemptTimeoutMs) => sum + attemptTimeoutMs, 0),
     elapsedMs: Math.max(0, Date.now() - startedAt)
   }
 }

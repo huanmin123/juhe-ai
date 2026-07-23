@@ -15,7 +15,6 @@ export function groupStats(group?: GroupSummary): GroupAccountStats & { currentC
     error: normalizedNumber(stats?.error),
     rateLimited: normalizedNumber(stats?.rateLimited),
     currentConcurrency: normalizedNumber(stats?.currentConcurrency),
-    currentConcurrencyAvailable: stats?.currentConcurrencyAvailable,
     concurrencyLimit: normalizedNumber(stats?.concurrencyLimit),
     todayUsage: stats?.todayUsage ?? emptyUsageSummary(),
     usage: stats?.usage ?? emptyUsageSummary()
@@ -27,27 +26,19 @@ export function groupAccountStatsTooltip(group: GroupSummary): string {
   return [
     `可用账号：${formatNumber(stats.available)}`,
     `总账号：${formatNumber(stats.total)}`,
-    `正常：${formatNumber(stats.active)}`,
+    `可调度：${formatNumber(stats.active)}`,
     `停用：${formatNumber(stats.disabled)}`,
     `异常：${formatNumber(stats.error)}`,
     `限流：${formatNumber(stats.rateLimited)}`
   ].join('\n')
 }
 
-export function groupConcurrencyAvailable(group: GroupSummary): boolean {
-  return groupStats(group).currentConcurrencyAvailable === true
-}
-
 export function groupConcurrencyText(group: GroupSummary): string {
-  return groupConcurrencyAvailable(group) ? String(groupStats(group).currentConcurrency) : '未知'
+  return String(groupStats(group).currentConcurrency)
 }
 
 export function groupConcurrencyTooltip(group: GroupSummary): string {
-  return groupConcurrencyAvailable(group) ? '当前正在转发的请求数' : '实时并发快照尚未加载或暂不可用'
-}
-
-export function groupTodayUsageAvailable(group: GroupSummary): boolean {
-  return Boolean(group.accountStats?.todayUsage)
+  return '当前正在转发的请求数'
 }
 
 export function groupStatusText(group: GroupSummary): string {
