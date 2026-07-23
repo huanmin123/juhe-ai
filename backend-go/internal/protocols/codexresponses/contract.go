@@ -23,6 +23,8 @@ type Outcome string
 const (
 	OutcomeClean           Outcome = "clean"
 	OutcomeRepairable      Outcome = "repairable"
+	OutcomeRepairedSafe    Outcome = "repaired_safe"
+	OutcomeRepairedBridge  Outcome = "repaired_bridge"
 	OutcomeBlocked         Outcome = "blocked"
 	OutcomeObservedUnknown Outcome = "observed_unknown"
 	OutcomeLateViolation   Outcome = "late_violation"
