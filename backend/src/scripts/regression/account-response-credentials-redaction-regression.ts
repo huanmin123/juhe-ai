@@ -112,14 +112,6 @@ try {
   assert.equal(Object.prototype.hasOwnProperty.call(basicDetail, 'apiKeyRuntimeDetails'), false, '账户基础详情不应返回 API Key 运行明细')
   assertNoCredentialLeak(basicDetail, '账户基础详情响应')
 
-  const statusSnapshot = await getEnvelope<{ items: AccountResponse[] }>(
-    baseUrl,
-    `/__aisys__/api/accounts/status-snapshot?accountIds=${encodeURIComponent(seed.apiKeyAccountId)}`,
-    seed.adminCookie
-  )
-  assert.equal(statusSnapshot.items.length, 1, '账户状态快照应返回请求账户')
-  assertNoInternalRuntimeLeak(statusSnapshot.items[0]!, '账户状态快照响应')
-
   const unsafeRuntime = publicAccountRuntimeAvailability({
     status: 'precheck_pending',
     reason: '回归测试',

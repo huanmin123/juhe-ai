@@ -31,7 +31,7 @@
     <span v-else class="muted-cell">不使用</span>
   </template>
   <a-tooltip v-else-if="columnKey === 'concurrency'" :title="concurrencyTooltip">
-    <a-tag :color="concurrencyAvailable ? 'blue' : 'default'">{{ concurrencyText }}</a-tag>
+    <a-tag color="blue">{{ concurrencyText }}</a-tag>
   </a-tooltip>
   <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" :refreshing="balanceRefreshing" @refresh-balance="$emit('refresh-balance', $event)" />
   <AccountTagsCell v-else-if="columnKey === 'tags'" :account="account" />
@@ -132,11 +132,8 @@ const proxyTooltip = computed(() => {
   if (currentProxy.value) return `${currentProxy.value.name}（${currentProxy.value.type}）`
   return '代理配置不存在或当前不可见'
 })
-const concurrencyAvailable = computed(() => props.account.currentConcurrencyAvailable !== false)
-const concurrencyText = computed(() => concurrencyAvailable.value ? `${props.account.currentConcurrency}/${props.account.concurrencyLimit}` : '暂不可用')
-const concurrencyTooltip = computed(() => concurrencyAvailable.value
-  ? `当前正在转发 ${props.account.currentConcurrency} 个请求，配置上限 ${props.account.concurrencyLimit}`
-  : '实时并发快照暂不可用')
+const concurrencyText = computed(() => `${Math.max(0, props.account.currentConcurrency ?? 0)}/${props.account.concurrencyLimit}`)
+const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, props.account.currentConcurrency ?? 0)} 个请求，配置上限 ${props.account.concurrencyLimit}`)
 </script>
 
 <style scoped>

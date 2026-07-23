@@ -210,21 +210,32 @@ export function accountTestEndpointModesForAccount(
 
 export function accountTestEndpointModesForModel(
   account: AccountTestEndpointModeSource,
-  model: string,
   draftAccount?: AccountTestEndpointModeDraftSource,
   capabilities?: { supportedApiProtocols?: readonly string[] }
 ): AccountSupportedEndpointMode[] {
   const source = { ...account, ...(draftAccount ?? {}) }
-  const imageOnlyModel = capabilities?.supportedApiProtocols?.includes('images') === true
-    || /^(?:gpt-image|dall-e)(?:-|$)/iu.test(model.trim())
+  const accountModes = accountTestEndpointModesForAccount(account, draftAccount)
+  const protocols = capabilities?.supportedApiProtocols ?? []
+  if (!protocols.length) return accountModes
+  const output = accountModes.filter((mode) => protocols.includes(testEndpointModeProtocol(mode)))
   if (
-    imageOnlyModel
+    protocols.includes('images')
     && normalizedAccountType(source.type) === 'api_key'
-    && accountProviderProtocolKind(source) === 'openai_v1'
+    && accountProviderProtocolKind({ ...source, type: normalizedAccountType(source.type) }) === 'openai_v1'
   ) {
-    return ['images_json']
+    output.push('images_json')
   }
-  return accountTestEndpointModesForAccount(account, draftAccount)
+  return [...new Set(output)]
+}
+
+function testEndpointModeProtocol(mode: AccountSupportedEndpointMode): string {
+  if (mode === 'chat_json' || mode === 'chat_sse') return 'chat_completions'
+  if (mode === 'responses_json' || mode === 'responses_sse') return 'responses'
+  if (mode === 'messages_json' || mode === 'messages_sse') return 'messages'
+  if (mode === 'generate_content_json') return 'generate_content'
+  if (mode === 'generate_content_sse') return 'stream_generate_content'
+  if (mode === 'interactions_json' || mode === 'interactions_sse') return 'interactions'
+  return mode === 'images_json' ? 'images' : mode
 }
 
 export function prioritizeAccountTestEndpointModes(

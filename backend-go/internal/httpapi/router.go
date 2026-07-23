@@ -1217,11 +1217,9 @@ func NewRouter(opts RouterOptions) http.Handler {
 			}
 			if opts.ManagementUsageRecordsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records", opts.ManagementUsageRecordsHandler.ServeHTTP)
-				system.With(managementAPIReadRateLimitMiddleware).Get("/usage-records/{id}", opts.ManagementUsageRecordsHandler.ServeHTTP)
 			}
 			if opts.ManagementMyUsageRecordsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/my-usage-records", opts.ManagementMyUsageRecordsHandler.ServeHTTP)
-				system.With(managementAPIReadRateLimitMiddleware).Get("/my-usage-records/{id}", opts.ManagementMyUsageRecordsHandler.ServeHTTP)
 			}
 			if opts.ManagementRuntimeLogsHandler != nil {
 				system.With(managementAPIReadRateLimitMiddleware).Get("/runtime-logs", opts.ManagementRuntimeLogsHandler.ServeHTTP)

@@ -336,36 +336,25 @@ async function startHttpServer(): Promise<Server> {
 
 async function assertHttpContract(httpServer: Server): Promise<void> {
   const baseUrl = `http://127.0.0.1:${serverPort(httpServer)}`
-  const forbiddenManagement = await fetch(`${baseUrl}/route-strategies/list-snapshot?ids=${encodeURIComponent(previewStrategy.id)}`)
-  assert.equal(forbiddenManagement.status, 403, '普通用户请求管理端 list-snapshot 必须被生产 requireAdmin 边界拒绝')
+  const forbiddenManagement = await fetch(`${baseUrl}/route-strategies?page=1&pageSize=20`)
+  assert.equal(forbiddenManagement.status, 403, '普通用户请求管理端策略路由列表必须被生产 requireAdmin 边界拒绝')
 
-  const repeated = await fetch(`${baseUrl}/route-strategies/list-snapshot?ids=${encodeURIComponent(zeroStrategy.id)}&ids=${encodeURIComponent(previewStrategy.id)}&ids=${encodeURIComponent(previewStrategy.id)}&systemAccountId=${encodeURIComponent(owner.id)}`, {
+  const listResponse = await fetch(`${baseUrl}/route-strategies?page=1&pageSize=50&systemAccountId=${encodeURIComponent(owner.id)}`, {
     headers: { 'x-test-role': 'admin' }
   })
-  assert.equal(repeated.status, 200, 'list-snapshot 必须注册在 /:id 之前并接受重复裸 ids 键')
-  const repeatedPayload = await repeated.json() as { data: { items: Array<{ id: string }> } }
-  assert.deepEqual(repeatedPayload.data.items.map((item) => item.id), [zeroStrategy.id, previewStrategy.id])
+  assert.equal(listResponse.status, 200, '管理端策略路由列表应返回完整当前页')
+  const listPayload = await listResponse.json() as { data: { generatedAt: string; items: Array<{ id: string; bindingCount: number; apiKeyCount: number; groupBindingPreview: unknown[] }> } }
+  const previewItem = listPayload.data.items.find((item) => item.id === previewStrategy.id)
+  assert(previewItem, '完整列表应返回目标策略路由')
+  assert.equal(typeof previewItem.bindingCount, 'number', '完整列表应内联绑定分组数')
+  assert.equal(typeof previewItem.apiKeyCount, 'number', '完整列表应内联 API Key 数')
+  assert.ok(Array.isArray(previewItem.groupBindingPreview), '完整列表应内联绑定分组预览')
+  assert.ok(listPayload.data.generatedAt, '完整列表应返回生成时间')
 
-  const commaSeparated = await fetch(`${baseUrl}/route-strategies/list-snapshot?ids=${encodeURIComponent(`${previewStrategy.id},${zeroStrategy.id}`)}&systemAccountId=${encodeURIComponent(owner.id)}`, {
-    headers: { 'x-test-role': 'admin' }
-  })
-  assert.equal(commaSeparated.status, 200, 'list-snapshot 应兼容逗号分隔 ids')
-  const commaPayload = await commaSeparated.json() as { data: { items: Array<{ id: string }> } }
-  assert.deepEqual(commaPayload.data.items.map((item) => item.id), [previewStrategy.id, zeroStrategy.id])
-
-  const forgedSelf = await fetch(`${baseUrl}/my-route-strategies/list-snapshot?ids=${encodeURIComponent(foreignStrategy.id)}&ids=${encodeURIComponent(previewStrategy.id)}&systemAccountId=sys_admin`)
-  assert.equal(forgedSelf.status, 200, '个人 snapshot 路由应正常处理伪造 owner query')
+  const forgedSelf = await fetch(`${baseUrl}/my-route-strategies?page=1&pageSize=50&systemAccountId=sys_admin`)
+  assert.equal(forgedSelf.status, 200, '个人列表应忽略伪造 owner query')
   const forgedPayload = await forgedSelf.json() as { data: { items: Array<{ id: string }> } }
-  assert.deepEqual(forgedPayload.data.items.map((item) => item.id), [previewStrategy.id], '个人路由必须删除伪造 scope 并强制当前用户')
-
-  const empty = await fetch(`${baseUrl}/route-strategies/list-snapshot`, { headers: { 'x-test-role': 'admin' } })
-  assert.equal(empty.status, 400, '空 IDs 必须返回 400')
-  const longId = await fetch(`${baseUrl}/route-strategies/list-snapshot?ids=${'x'.repeat(201)}`, { headers: { 'x-test-role': 'admin' } })
-  assert.equal(longId.status, 400, '超长 ID 必须返回 400')
-  const tooManyParams = new URLSearchParams()
-  for (let index = 0; index < 201; index += 1) tooManyParams.append('ids', `route-${index}`)
-  const tooMany = await fetch(`${baseUrl}/route-strategies/list-snapshot?${tooManyParams.toString()}`, { headers: { 'x-test-role': 'admin' } })
-  assert.equal(tooMany.status, 400, '超过 200 个去重 ID 必须返回 400')
+  assert.equal(forgedPayload.data.items.some((item) => item.id === foreignStrategy.id), false, '个人列表必须强制当前用户作用域')
 }
 
 function listen(httpServer: Server): Promise<void> {

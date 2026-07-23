@@ -149,13 +149,11 @@ try {
   const sqliteModelKeys = sqliteBuiltInModels
     .map((row) => `${row.provider_code}\u0000${row.model}`)
     .sort()
-  assert.equal(expectedSqliteModelKeys.length, 164, '当前 Node 权威模型目录应包含 164 个模型键')
+  assert.equal(expectedSqliteModelKeys.length, 126, '当前 Node 权威模型目录应包含 126 个完整模型键')
   assert.equal(sqliteBuiltInModels.length, expectedSqliteModelKeys.length, 'SQLite fresh seed 必须落库全部权威模型')
   assert.deepEqual(sqliteModelKeys, expectedSqliteModelKeys, 'SQLite fresh seed 最终模型键集合必须与 Node 权威目录一致')
   assert.equal(new Set(sqliteBuiltInModels.map((row) => row.id)).size, expectedSqliteModelKeys.length, 'SQLite 模型 ID 必须全局唯一')
-  for (const model of ['antigravity-claude-opus-4-6-thinking', 'antigravity/claude-opus-4-6-thinking']) {
-    assert(sqliteBuiltInModels.some((row) => row.provider_code === 'anthropic' && row.model === model), `SQLite 必须落库碰撞样本 ${model}`)
-  }
+  assert.equal(sqliteBuiltInModels.some((row) => row.model.includes('antigravity')), false, 'SQLite 不得落库非官方 antigravity 模型')
 
   const builtInVisibilityFixture = databaseModule.getBusinessDatabase().prepare(`
     SELECT status, shutdown_date
@@ -349,31 +347,14 @@ try {
   })
   assertCatalogReleaseDateDescending(publicCatalog, 'GPT 公开模型目录')
   const publicModels = new Set(publicCatalog.map((item) => item.model))
-  const codexAutoReview = gptCatalogIncludingUnpriced.find((item) => item.model === 'codex-auto-review')
-  assert(codexAutoReview, 'GPT 模型目录必须包含 codex-auto-review')
-  assert.deepEqual(codexAutoReview.supportedApiProtocols, ['responses'], 'codex-auto-review 只应声明已确认的 Responses 协议')
-  assert.deepEqual(codexAutoReview.inputModalities, ['text'], 'codex-auto-review 输入能力应为文本')
-  assert.equal(codexAutoReview.inputUsdPer1M, undefined, 'codex-auto-review 未有官方独立价格时必须保持 unpriced')
+  assert.equal(gptCatalogIncludingUnpriced.some((item) => item.model === 'codex-auto-review'), false, '缺少完整元数据的 codex-auto-review 不得进入 GPT 内置目录')
   const gptProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
     SELECT default_supported_models_json
     FROM providers
     WHERE code = 'gpt'
   `).get() as { default_supported_models_json?: string }
   const gptDefaultModels = JSON.parse(gptProviderDefaults.default_supported_models_json ?? '[]') as string[]
-  assert.equal(gptDefaultModels.includes('codex-auto-review'), true, 'codex-auto-review 应自动加入 GPT AI 账户默认支持模型')
-  databaseModule.getBusinessDatabase().prepare(`
-    UPDATE providers
-    SET default_supported_models_json = ?
-    WHERE code = 'gpt'
-  `).run(JSON.stringify(gptDefaultModels.filter((model) => model !== 'codex-auto-review')))
-  seedDefaults(databaseModule.getBusinessDatabase())
-  const backfilledGPTProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
-    SELECT default_supported_models_json
-    FROM providers
-    WHERE code = 'gpt'
-  `).get() as { default_supported_models_json?: string }
-  const backfilledGPTDefaultModels = JSON.parse(backfilledGPTProviderDefaults.default_supported_models_json ?? '[]') as string[]
-  assert.equal(backfilledGPTDefaultModels.includes('codex-auto-review'), true, 'SQLite 已有 GPT 默认列表应在重启 seed 时幂等补入 codex-auto-review')
+  assert.equal(gptDefaultModels.includes('codex-auto-review'), false, 'GPT AI 账户默认支持模型不得包含已移除的 codex-auto-review')
   const openAIProviderDefaults = databaseModule.getBusinessDatabase().prepare(`
     SELECT default_supported_models_json
     FROM providers
@@ -642,7 +623,6 @@ try {
     'glm-4.5-airx',
     'glm-4.5-flash',
     'glm-4-32b-0414-128k',
-    'glm-4-long',
     'glm-4-flashx-250414',
     'glm-4-flash-250414'
   ]) {
@@ -654,8 +634,8 @@ try {
     [
       'glm-5.2',
       'glm-5.1',
-      'glm-5',
       'glm-5-turbo',
+      'glm-5',
       'glm-4.7',
       'glm-4.7-flashx',
       'glm-4.7-flash',
@@ -666,7 +646,6 @@ try {
       'glm-4.5-airx',
       'glm-4.5-flash',
       'glm-4-32b-0414-128k',
-      'glm-4-long',
       'glm-4-flashx-250414',
       'glm-4-flash-250414'
     ],
@@ -704,15 +683,17 @@ try {
   assert.deepEqual(
     geminiCatalog.map((item) => item.model),
     [
+      'gemini-3.6-flash',
+      'gemini-3.5-flash-lite',
       'gemini-3.5-flash',
+      'gemini-3.1-flash-lite',
+      'gemini-embedding-2',
       'gemini-3.1-pro-preview',
       'gemini-3.1-pro-preview-customtools',
       'gemini-3-flash-preview',
-      'gemini-3.1-flash-lite',
-      'gemini-2.5-pro',
-      'gemini-2.5-flash',
       'gemini-2.5-flash-lite',
-      'gemini-embedding-2'
+      'gemini-2.5-pro',
+      'gemini-2.5-flash'
     ],
     'Gemini 模型目录应只包含当前收录的 Google 官方模型，并按官网当前主序排序'
   )
@@ -749,12 +730,11 @@ try {
     'claude-opus-4-8',
     'claude-opus-4-7',
     'claude-opus-4-6',
-    'claude-opus-4-6-thinking',
     'claude-sonnet-4-6',
-    'claude-sonnet-4-6-thinking',
     'claude-haiku-4-5',
     'claude-sonnet-4-5',
-    'claude-opus-4-5'
+    'claude-opus-4-5',
+    'claude-opus-4-1'
   ]) {
     assert(anthropicModels.has(id), `Anthropic 模型目录应包含当前官网模型 ${id}`)
   }
@@ -801,23 +781,20 @@ try {
   assert.deepEqual(
     anthropicCatalog.map((item) => item.model),
     [
+      'claude-sonnet-5',
       'claude-fable-5',
       'claude-mythos-5',
-      'claude-sonnet-5',
-      ...(new Date().toISOString().slice(0, 10) < '2026-06-30' ? ['claude-mythos-preview'] : []),
       'claude-opus-4-8',
       'claude-opus-4-7',
+      'claude-sonnet-4-6',
       'claude-opus-4-6',
-      'claude-opus-4-6-thinking',
       'claude-opus-4-5',
       'claude-opus-4-5-20251101',
-      ...(new Date().toISOString().slice(0, 10) < '2026-08-05' ? ['claude-opus-4-1', 'claude-opus-4-1-20250805'] : []),
-      'claude-sonnet-4-6',
-      'claude-sonnet-4-6-thinking',
+      'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
       'claude-sonnet-4-5',
       'claude-sonnet-4-5-20250929',
-      'claude-haiku-4-5',
-      'claude-haiku-4-5-20251001'
+      ...(new Date().toISOString().slice(0, 10) < '2026-08-05' ? ['claude-opus-4-1', 'claude-opus-4-1-20250805'] : [])
     ],
     'Anthropic 模型目录应按官方当前模型从新到旧排序，并隐藏 Claude Code 本地别名'
   )
@@ -828,9 +805,10 @@ try {
     assert(publicClientProviderCodes.has(providerCode), `公开客户端目录必须包含启用供应商 ${providerCode}`)
   }
   assert.equal(publicClientProviderCodes.has(HYBRID_PROVIDER_CODE), false, '公开客户端目录不得返回 hybrid 虚拟供应商模型')
-  assert(
-    publicClientCatalog.some((item) => item.providerCode === 'gemini' && !item.releaseDate),
-    '缺少发布时间的 Gemini 可用模型也必须进入全量客户端目录'
+  assert.equal(
+    publicClientCatalog.filter((item) => item.scope === 'built_in').every((item) => Boolean(item.releaseDate)),
+    true,
+    '全量客户端目录中的内置可见模型必须全部带发布时间'
   )
 
   const scopedClientCatalog = await clientCatalogService.listClientModelCatalogAsync({

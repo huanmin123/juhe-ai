@@ -8,8 +8,7 @@ import {
   createRouteStrategyAsync,
   deleteRouteStrategyAsync,
   findRouteStrategySummaryAsync,
-  listRouteStrategyListItemsPageAsync,
-  listRouteStrategyListSnapshotAsync,
+  listCompleteRouteStrategyListItemsPageAsync,
   listRouteStrategyOptionsAsync,
   updateRouteStrategyAsync,
   type RouteStrategyListOptions
@@ -21,9 +20,6 @@ import { clearNormalRouteLatencyDegradationForRouteStrategyAsync } from '../gate
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const routeStrategiesRouter = Router()
-
-const maxRouteStrategyListSnapshotIds = 200
-const maxRouteStrategyListSnapshotIdLength = 200
 
 const routeStrategyGroupBindingSchema = z.object({
   groupId: z.string().trim().min(1, '策略路由分组无效'),
@@ -132,7 +128,7 @@ const routeStrategyUpdateSchema = routeStrategyMutationSchema.partial().refine((
 
 routeStrategiesRouter.get('/', async (req, res, next) => {
   try {
-    res.json(ok(await listRouteStrategyListItemsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseRouteStrategyListOptions(req.query))))
+    res.json(ok(await listCompleteRouteStrategyListItemsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseRouteStrategyListOptions(req.query))))
   } catch (error) {
     next(error)
   }
@@ -150,20 +146,6 @@ routeStrategiesRouter.get('/options', async (req, res, next) => {
     const options = await listRouteStrategyOptionsAsync(access, query)
     res.json(ok(options))
   } catch (error) {
-    next(error)
-  }
-})
-
-routeStrategiesRouter.get('/list-snapshot', async (req, res, next) => {
-  try {
-    const routeStrategyIds = parseRouteStrategyListSnapshotIds(req.query as Record<string, unknown>)
-    const snapshot = await listRouteStrategyListSnapshotAsync(getRequestAccessScope(req.query.systemAccountId), routeStrategyIds)
-    res.json(ok(snapshot))
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('策略路由列表快照')) {
-      res.status(400).json(badRequest(error.message))
-      return
-    }
     next(error)
   }
 })
@@ -358,28 +340,6 @@ function parseRouteStrategyListOptions(query: Record<string, unknown>): RouteStr
     mode: routeStrategyModeQueryValue(query.mode),
     status: routeStrategyStatusQueryValue(query.status)
   }
-}
-
-function parseRouteStrategyListSnapshotIds(query: Record<string, unknown>): string[] {
-  const rawValues = [query.ids, query['ids[]']]
-    .filter((value) => value !== undefined)
-    .flatMap((value) => Array.isArray(value) ? value : [value])
-  if (rawValues.some((value) => typeof value !== 'string')) {
-    throw new Error('策略路由列表快照 ids 参数无效')
-  }
-  const normalized = rawValues
-    .flatMap((value) => (value as string).split(','))
-    .map((id) => id.trim())
-    .filter(Boolean)
-  if (normalized.some((id) => id.length > maxRouteStrategyListSnapshotIdLength)) {
-    throw new Error(`策略路由列表快照 ID 不能超过 ${maxRouteStrategyListSnapshotIdLength} 个字符`)
-  }
-  const ids = [...new Set(normalized)]
-  if (ids.length === 0) throw new Error('策略路由列表快照至少选择 1 个策略路由')
-  if (ids.length > maxRouteStrategyListSnapshotIds) {
-    throw new Error(`策略路由列表快照最多查询 ${maxRouteStrategyListSnapshotIds} 个策略路由`)
-  }
-  return ids
 }
 
 function routeStrategyModeQueryValue(value: unknown): RouteStrategyListOptions['mode'] {

@@ -3,6 +3,7 @@ import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-a
 import type { AccountStatusSnapshotResult } from '../../domain/types.js'
 import type { PublicAccountCircuitSummary } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import type { AccountListResult } from '../../storage/account-summary.repository.js'
 import {
   accountBalanceSnapshotMatchesConfiguration,
   loadAccountBalanceConfigurationsByAccountIdsAsync,
@@ -11,10 +12,32 @@ import {
 import { listAccountStatusProjectionsAsync } from '../../storage/account-status-snapshot.repository.js'
 import { isAccountBalanceSnapshotSuppressed } from './account-balance-snapshot-cleanup.service.js'
 import { loadAccountConcurrencyByIds, loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
+import type { AccountRuntimeSnapshotStatus } from '../gateway/runtime/runtime-snapshot.service.js'
 import { loadPublicAccountCircuitSummaries } from '../gateway/runtime/account-circuit-control-plane-bridge.js'
 
 const maxSnapshotAccountIds = 100
 const maxSnapshotQueryLength = 8192
+
+export async function hydrateAccountListPage(
+  access: AccessScope | undefined,
+  page: AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }
+): Promise<Omit<AccountListResult & { runtimeSnapshot?: AccountRuntimeSnapshotStatus }, 'runtimeSnapshot'> & { generatedAt: string }> {
+  const { runtimeSnapshot: _runtimeSnapshot, ...listPage } = page
+  if (page.items.length === 0) {
+    return { ...listPage, generatedAt: new Date().toISOString() }
+  }
+  const snapshot = await getAccountStatusSnapshot(access, page.items.map((item) => item.id))
+  const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
+  return {
+    ...listPage,
+    generatedAt: snapshot.generatedAt,
+    items: page.items.map((item) => ({
+      ...item,
+      ...snapshotById.get(item.id),
+      currentConcurrency: snapshotById.get(item.id)?.currentConcurrency ?? 0
+    }))
+  }
+}
 
 export function parseAccountStatusSnapshotAccountIds(value: unknown): string[] {
   const raw = typeof value === 'string' ? value : ''

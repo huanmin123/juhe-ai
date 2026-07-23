@@ -39,6 +39,7 @@ import {
   hasAccountTestProtocolSuccessEvidence
 } from './account-test-success-evidence.js'
 import { accountTestProbeKind, type AccountTestProbeKind } from './account-test-probe-policy.js'
+import { findProviderModelTestCatalogItemAsync } from '../model-pricing/model-catalog.service.js'
 import { withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/routes.js'
 import { sanitizeDiagnosticPayload } from '../gateway/diagnostics/diagnostic-sanitizer.js'
@@ -70,7 +71,7 @@ import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source
 import {
   type AccountDiagnosticAttemptProgressHandler,
   accountDiagnosticAttemptProgress,
-  accountDiagnosticRetryTimeoutMs,
+  accountDiagnosticRetryTimeouts,
   diagnosticAccountTestGatewaySettingsOverride,
   diagnosticAttemptSignal,
   isDiagnosticTimeoutSignal
@@ -113,10 +114,14 @@ export async function testOpenAIAccountWithDiagnosticRetries(
     systemAccountId: input.systemAccountId,
     testEndpointMode: input.testEndpointMode
   })
+  const timeoutSchedule = accountDiagnosticRetryTimeouts(await accountTestProbeKindAsync(account, model, {
+    systemAccountId: input.systemAccountId,
+    testEndpointMode: input.testEndpointMode
+  }))
   let lastResult: AccountTestResult | undefined
-  for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
-    const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
-    notifyDiagnosticAttemptProgress(input.onDiagnosticAttemptProgress, attemptIndex, timeoutMs, startedAt)
+  for (let attemptIndex = 0; attemptIndex < timeoutSchedule.length; attemptIndex += 1) {
+    const timeoutMs = timeoutSchedule[attemptIndex] ?? timeoutSchedule[timeoutSchedule.length - 1]
+    notifyDiagnosticAttemptProgress(input.onDiagnosticAttemptProgress, attemptIndex, timeoutMs, startedAt, timeoutSchedule)
     const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
     const result = await testOpenAIAccount(account, {
       ...input,
@@ -128,7 +133,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
     if (result.success || (!input.retryAllFailures && result.accountFailureEligible === false) || input.signal?.aborted) {
       return accountTestResultWithTotalDuration(result, startedAt)
     }
-    if (attemptIndex + 1 < accountDiagnosticRetryTimeoutMs.length) {
+    if (attemptIndex + 1 < timeoutSchedule.length) {
       logger.debug({
         event: 'account_diagnostic_test_retry_scheduled',
         accountId: account.id,
@@ -136,7 +141,7 @@ export async function testOpenAIAccountWithDiagnosticRetries(
         attemptNumber: attemptIndex + 1,
         nextAttemptNumber: attemptIndex + 2,
         attemptTimeoutMs: timeoutMs,
-        nextAttemptTimeoutMs: accountDiagnosticRetryTimeoutMs[attemptIndex + 1],
+        nextAttemptTimeoutMs: timeoutSchedule[attemptIndex + 1],
         durationMs: result.durationMs,
         totalElapsedMs: Date.now() - startedAt,
         traceId: result.traceId
@@ -150,11 +155,12 @@ function notifyDiagnosticAttemptProgress(
   handler: AccountDiagnosticAttemptProgressHandler | undefined,
   attemptIndex: number,
   timeoutMs: number,
-  startedAt: number
+  startedAt: number,
+  timeoutSchedule: readonly number[]
 ): void {
   if (!handler) return
   try {
-    handler(accountDiagnosticAttemptProgress(attemptIndex, timeoutMs, startedAt))
+    handler(accountDiagnosticAttemptProgress(attemptIndex, timeoutMs, startedAt, timeoutSchedule))
   } catch (error) {
     logger.warn(errorLogFields(error, { event: 'account_diagnostic_attempt_progress_callback_failed' }), '账户诊断进度回调执行失败')
   }
@@ -197,7 +203,8 @@ export async function testOpenAIAccount(
       systemAccountId: input.systemAccountId
     })
     testedModel = model
-    probeKind = accountTestProbeKind(account, model, {
+    probeKind = await accountTestProbeKindAsync(account, model, {
+      systemAccountId: input.systemAccountId,
       testEndpointMode: input.testEndpointMode
     })
     const supportedEndpointModes = probeKind === 'image_generation'
@@ -435,6 +442,28 @@ export async function testOpenAIAccount(
       accountFailureEligible
     }), limitedDiagnostics)
   }
+}
+
+async function accountTestProbeKindAsync(
+  account: AccountSummary,
+  model: string,
+  input: { systemAccountId?: string; testEndpointMode?: AccountSupportedEndpointMode }
+): Promise<AccountTestProbeKind> {
+  const systemAccountId = stringValue(input.systemAccountId)
+    || stringValue(account.ownerSystemAccountId)
+    || stringValue(account.systemAccountId)
+  const catalogItem = systemAccountId
+    ? await findProviderModelTestCatalogItemAsync({
+        providerCode: account.providerCode,
+        systemAccountId,
+        model,
+        protocolsOnly: true
+      })
+    : undefined
+  return accountTestProbeKind(account, {
+    testEndpointMode: input.testEndpointMode,
+    supportedApiProtocols: catalogItem?.supportedApiProtocols
+  })
 }
 
 function notifyUpstreamAttempt(handler: AccountTestInput['onUpstreamAttempt'], attempt: UpstreamAttempt): void {

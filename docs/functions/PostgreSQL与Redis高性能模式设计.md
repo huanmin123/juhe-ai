@@ -320,7 +320,7 @@ juhe-ai:{namespace}:{driver}:{cache-name}:v{version}:{scope}:{key}
 - API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文和可能造成越权的权限中间结果不得进入通用 Redis cache。
 - 调度运行态、并发占用、IP 级错误熔断、登录失败窗口、验证码挑战、会话亲和和 cache invalidation index 在 performance 模式下进入 Redis state。
 - 当前已落地 `RuntimeStateStore` Redis driver、`RuntimeProbeStateStore` Redis driver、`SharedJsonCache` Redis driver、登录失败窗口 Redis state、验证码 challenge / 发放限频 Redis state、账号并发槽 Redis 原子获取 / 释放、账号并发列表展示 Redis 批量读取、网关缓存失效 runtime state 版本广播、AI 账户运行态探针 due / generation、上游桶避让、IP 级账号回避、IP 错误熔断、Codex turn retry 和记录型 Redis Streams 队列；不能在 performance 模式下把跨进程事实绑定到进程内 memory。
-- 账户页展示的当前并发是列表加载时的瞬时 in-flight 快照，不是累计请求数。performance 模式下管理端和用户侧账户列表必须在列表响应中读取当前可见账户在 Redis state 中的并发槽，并保留 `currentConcurrencyAvailable` 可用性标记；授权实例必须按来源账号 ID 读取同一个硬并发槽，不能按授权实例 ID 另算一份并发；Redis state 不可用时显示不可用状态，不能把默认 `0` 误当成真实无并发。前端不得为账户当前并发额外开启定时轮询。
+- 账户页展示的当前并发是列表加载时的瞬时 in-flight 值，不是累计请求数。performance 模式下管理端和用户侧账户列表必须在列表响应中批量读取当前可见账户在 Redis state 中的并发槽；授权实例必须按来源账号 ID 读取同一个硬并发槽，不能按授权实例 ID 另算一份并发。没有占用或 Redis state 读取失败时当前并发返回 `0`；前端不得为账户当前并发额外请求快照或开启定时轮询。
 
 ### 页面数据 revision 与投影缓存
 

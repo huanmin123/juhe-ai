@@ -21,7 +21,7 @@ const claudeCodeVersion = '2.1.201'
 const claudeCodeBuildId = 'eb7'
 const claudeCodeDeviceId = '7cfe24060ed291eb6ea9b7a6edf6947d14da82a0068470a6fc9cf8c147b252dc'
 export const accountTestModelsPath = '/v1/models'
-export const accountImageTestDefaultPrompt = 'Solid black image. No objects or text.'
+export const accountImageTestDefaultPrompt = 'Solid black.'
 
 export type AccountTestRequestInput = {
   explicitModel?: string

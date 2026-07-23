@@ -9,7 +9,7 @@
     :loading-more="loadingMore"
     :mobile-has-more="mobileHasMore"
     :pagination="pagination"
-    :scroll-x="isManagementView ? 2480 : 2300"
+    :scroll-x="isManagementView ? 2408 : 2228"
     mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
@@ -28,16 +28,6 @@
             <a-tooltip title="复制 traceId">
               <a-button size="small" type="text" @click.stop="$emit('copy-trace-id', record.traceId)">
                 <template #icon><copy-outlined /></template>
-              </a-button>
-            </a-tooltip>
-            <a-tooltip v-if="isManagementView" title="查看运行日志">
-              <a-button size="small" type="text" @click.stop="$emit('open-trace-target', record.traceId, 'runtime')">
-                <template #icon><search-outlined /></template>
-              </a-button>
-            </a-tooltip>
-            <a-tooltip v-if="isManagementView" title="查看审计日志">
-              <a-button size="small" type="text" @click.stop="$emit('open-trace-target', record.traceId, 'audit')">
-                <template #icon><file-search-outlined /></template>
               </a-button>
             </a-tooltip>
           </span>
@@ -106,29 +96,19 @@
       <template v-else-if="column.key === 'createdAt'">
         <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
       </template>
-      <template v-else-if="column.key === 'actions'">
-        <a-tooltip title="查看详情">
-          <a-button size="small" type="text" @click.stop="$emit('open-detail', record)">
-            <template #icon><info-circle-outlined /></template>
-          </a-button>
-        </a-tooltip>
-      </template>
     </template>
     <template #card="{ record }">
       <UsageRecordMobileCard
         :is-management-view="isManagementView"
         :record="record"
-        @open-detail="$emit('open-detail', record)"
         @copy-trace-id="$emit('copy-trace-id', $event)"
-        @open-audit-logs="$emit('open-trace-target', record.traceId, 'audit')"
-        @open-runtime-logs="$emit('open-trace-target', record.traceId, 'runtime')"
       />
     </template>
   </ResponsiveDataList>
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, FileSearchOutlined, InfoCircleOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined } from '@ant-design/icons-vue'
 
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { UsageRecordSummary } from '@/types/domain'
@@ -152,8 +132,6 @@ import {
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
-type TraceTarget = 'audit' | 'runtime'
-
 withDefaults(defineProps<{
   columns: Array<Record<string, any>>
   isManagementView: boolean
@@ -173,8 +151,6 @@ const emit = defineEmits<{
   (event: 'copy-trace-id', traceId: string): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
-  (event: 'open-trace-target', traceId: string | undefined, target: TraceTarget): void
-  (event: 'open-detail', record: UsageRecordSummary): void
 }>()
 
 function handleTableChange(...args: unknown[]): void {

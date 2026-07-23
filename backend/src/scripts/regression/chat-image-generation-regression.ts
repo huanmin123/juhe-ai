@@ -37,8 +37,14 @@ assert.match(repository, /output_image|insertChatAssetReference/)
 const { buildChatImageGenerationRequest, generateChatImage } = await import('../../modules/chat/chat-image-generation-transport.js')
 assert.deepEqual(buildChatImageGenerationRequest({ model: 'gpt-image-2', prompt: '生成验收图' }), {
   path: '/v1/images/generations',
-  body: { model: 'gpt-image-2', prompt: '生成验收图', n: 1, size: '1024x1024', quality: 'auto', output_format: 'webp' }
-}, 'GPT Image 请求必须使用有界默认尺寸与 WebP，依赖默认 Base64 返回且不能发送不受支持的 response_format')
+  body: { model: 'gpt-image-2', prompt: '生成验收图', n: 1, size: 'auto', quality: 'auto', output_format: 'webp' }
+}, 'GPT Image 请求缺省尺寸必须使用公开的 auto 默认值与 WebP，依赖默认 Base64 返回且不能发送不受支持的 response_format')
+assert.equal(buildChatImageGenerationRequest({ model: 'gpt-image-2', prompt: '生成 4K 图', size: '3840x2160' }).body.size, '3840x2160', '合法尺寸必须原样传递')
+assert.throws(
+  () => buildChatImageGenerationRequest({ model: 'gpt-image-2', prompt: '任意提示词都不能放宽非法尺寸', size: '4096x2048' }),
+  /最长边/,
+  '非法尺寸必须在网络调用前失败，不能按提示词关键词放行'
+)
 
 const providerPng = await sharp({
   create: { width: 2, height: 1, channels: 4, background: { r: 220, g: 40, b: 40, alpha: 1 } }

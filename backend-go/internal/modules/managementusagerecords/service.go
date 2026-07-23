@@ -51,12 +51,6 @@ type ListInput struct {
 	PageSizeProvided     bool
 }
 
-type DetailInput struct {
-	ID                   string
-	ScopeSystemAccountID string
-	IncludeSystemAccount bool
-}
-
 type ListResult struct {
 	Items    []Summary `json:"items"`
 	Total    int       `json:"total"`
@@ -94,61 +88,59 @@ type CostBreakdown struct {
 }
 
 type Summary struct {
-	ID                        string          `json:"id"`
-	SystemAccountID           string          `json:"systemAccountId,omitempty"`
-	SystemAccountName         string          `json:"systemAccountName,omitempty"`
-	TraceID                   string          `json:"traceId"`
-	TrafficSource             string          `json:"trafficSource"`
-	ClientIP                  string          `json:"clientIp,omitempty"`
-	APIKeyID                  string          `json:"apiKeyId,omitempty"`
-	APIKeyName                string          `json:"apiKeyName,omitempty"`
-	GroupID                   string          `json:"groupId,omitempty"`
-	GroupName                 string          `json:"groupName,omitempty"`
-	AccountID                 string          `json:"accountId,omitempty"`
-	AccountName               string          `json:"accountName,omitempty"`
-	Endpoint                  string          `json:"endpoint,omitempty"`
-	ProviderCode              string          `json:"providerCode,omitempty"`
-	ProviderProtocolProfileID string          `json:"providerProtocolProfileId,omitempty"`
-	UsageSemantic             string          `json:"usageSemantic,omitempty"`
-	Model                     string          `json:"model,omitempty"`
-	UpstreamModel             string          `json:"upstreamModel,omitempty"`
-	PricingModel              string          `json:"pricingModel,omitempty"`
-	RequestedServiceTier      string          `json:"requestedServiceTier,omitempty"`
-	EffectiveServiceTier      string          `json:"effectiveServiceTier,omitempty"`
-	ReportedServiceTier       string          `json:"reportedServiceTier,omitempty"`
-	BilledServiceTier         string          `json:"billedServiceTier,omitempty"`
-	RequestedReasoningEffort  string          `json:"requestedReasoningEffort,omitempty"`
-	EffectiveReasoningEffort  string          `json:"effectiveReasoningEffort,omitempty"`
-	ModelMappingApplied       bool            `json:"modelMappingApplied"`
-	ModelMappingSource        string          `json:"modelMappingSource,omitempty"`
-	SourceEndpointFamily      string          `json:"sourceEndpointFamily,omitempty"`
-	UpstreamEndpointFamily    string          `json:"upstreamEndpointFamily,omitempty"`
-	Stream                    bool            `json:"stream"`
-	StatusCode                *int            `json:"statusCode,omitempty"`
-	Success                   bool            `json:"success"`
-	FailureAttribution        string          `json:"failureAttribution,omitempty"`
-	FirstTokenMs              *int64          `json:"firstTokenMs,omitempty"`
-	DurationMs                *int64          `json:"durationMs,omitempty"`
-	InputTokens               *int64          `json:"inputTokens,omitempty"`
-	OutputTokens              *int64          `json:"outputTokens,omitempty"`
-	CacheReadTokens           *int64          `json:"cacheReadTokens,omitempty"`
-	CacheReadCostUSD          *float64        `json:"cacheReadCostUsd,omitempty"`
-	CacheWriteTokens          *int64          `json:"cacheWriteTokens,omitempty"`
-	CacheWrite1hTokens        *int64          `json:"cacheWrite1hTokens,omitempty"`
-	CacheWriteCostUSD         *float64        `json:"cacheWriteCostUsd,omitempty"`
-	ThinkingTokens            *int64          `json:"thinkingTokens,omitempty"`
-	InputImageTokens          *int64          `json:"inputImageTokens,omitempty"`
-	OutputImageTokens         *int64          `json:"outputImageTokens,omitempty"`
-	InputAudioTokens          *int64          `json:"inputAudioTokens,omitempty"`
-	OutputAudioTokens         *int64          `json:"outputAudioTokens,omitempty"`
-	OutputImageCount          *int64          `json:"outputImageCount,omitempty"`
-	CostUSD                   *float64        `json:"costUsd,omitempty"`
-	CostBreakdown             *CostBreakdown  `json:"costBreakdown,omitempty"`
-	ErrorCode                 string          `json:"errorCode,omitempty"`
-	ErrorMessage              string          `json:"errorMessage,omitempty"`
-	RequestSnapshot           *map[string]any `json:"requestSnapshot,omitempty"`
-	ResponseSnapshot          *map[string]any `json:"responseSnapshot,omitempty"`
-	CreatedAt                 string          `json:"createdAt"`
+	ID                        string         `json:"id"`
+	SystemAccountID           string         `json:"systemAccountId,omitempty"`
+	SystemAccountName         string         `json:"systemAccountName,omitempty"`
+	TraceID                   string         `json:"traceId"`
+	TrafficSource             string         `json:"trafficSource"`
+	ClientIP                  string         `json:"clientIp,omitempty"`
+	APIKeyID                  string         `json:"apiKeyId,omitempty"`
+	APIKeyName                string         `json:"apiKeyName,omitempty"`
+	GroupID                   string         `json:"groupId,omitempty"`
+	GroupName                 string         `json:"groupName,omitempty"`
+	AccountID                 string         `json:"accountId,omitempty"`
+	AccountName               string         `json:"accountName,omitempty"`
+	Endpoint                  string         `json:"endpoint,omitempty"`
+	ProviderCode              string         `json:"providerCode,omitempty"`
+	ProviderProtocolProfileID string         `json:"providerProtocolProfileId,omitempty"`
+	UsageSemantic             string         `json:"usageSemantic,omitempty"`
+	Model                     string         `json:"model,omitempty"`
+	UpstreamModel             string         `json:"upstreamModel,omitempty"`
+	PricingModel              string         `json:"pricingModel,omitempty"`
+	RequestedServiceTier      string         `json:"requestedServiceTier,omitempty"`
+	EffectiveServiceTier      string         `json:"effectiveServiceTier,omitempty"`
+	ReportedServiceTier       string         `json:"reportedServiceTier,omitempty"`
+	BilledServiceTier         string         `json:"billedServiceTier,omitempty"`
+	RequestedReasoningEffort  string         `json:"requestedReasoningEffort,omitempty"`
+	EffectiveReasoningEffort  string         `json:"effectiveReasoningEffort,omitempty"`
+	ModelMappingApplied       bool           `json:"modelMappingApplied"`
+	ModelMappingSource        string         `json:"modelMappingSource,omitempty"`
+	SourceEndpointFamily      string         `json:"sourceEndpointFamily,omitempty"`
+	UpstreamEndpointFamily    string         `json:"upstreamEndpointFamily,omitempty"`
+	Stream                    bool           `json:"stream"`
+	StatusCode                *int           `json:"statusCode,omitempty"`
+	Success                   bool           `json:"success"`
+	FailureAttribution        string         `json:"failureAttribution,omitempty"`
+	FirstTokenMs              *int64         `json:"firstTokenMs,omitempty"`
+	DurationMs                *int64         `json:"durationMs,omitempty"`
+	InputTokens               *int64         `json:"inputTokens,omitempty"`
+	OutputTokens              *int64         `json:"outputTokens,omitempty"`
+	CacheReadTokens           *int64         `json:"cacheReadTokens,omitempty"`
+	CacheReadCostUSD          *float64       `json:"cacheReadCostUsd,omitempty"`
+	CacheWriteTokens          *int64         `json:"cacheWriteTokens,omitempty"`
+	CacheWrite1hTokens        *int64         `json:"cacheWrite1hTokens,omitempty"`
+	CacheWriteCostUSD         *float64       `json:"cacheWriteCostUsd,omitempty"`
+	ThinkingTokens            *int64         `json:"thinkingTokens,omitempty"`
+	InputImageTokens          *int64         `json:"inputImageTokens,omitempty"`
+	OutputImageTokens         *int64         `json:"outputImageTokens,omitempty"`
+	InputAudioTokens          *int64         `json:"inputAudioTokens,omitempty"`
+	OutputAudioTokens         *int64         `json:"outputAudioTokens,omitempty"`
+	OutputImageCount          *int64         `json:"outputImageCount,omitempty"`
+	CostUSD                   *float64       `json:"costUsd,omitempty"`
+	CostBreakdown             *CostBreakdown `json:"costBreakdown,omitempty"`
+	ErrorCode                 string         `json:"errorCode,omitempty"`
+	ErrorMessage              string         `json:"errorMessage,omitempty"`
+	CreatedAt                 string         `json:"createdAt"`
 }
 
 func NewService(store Store) *Service {
@@ -203,33 +195,6 @@ func (s *Service) List(ctx context.Context, input ListInput) (ListResult, error)
 		Page:     page,
 		PageSize: pageSize,
 	}, nil
-}
-
-func (s *Service) Detail(ctx context.Context, input DetailInput) (Summary, bool, error) {
-	if s.store == nil {
-		return Summary{}, false, fmt.Errorf("management usage record store is required")
-	}
-	detail, found, err := s.store.GetManagementUsageRecord(ctx, port.ManagementUsageRecordDetailInput{
-		ID: strings.TrimSpace(input.ID), SystemAccountID: strings.TrimSpace(input.ScopeSystemAccountID),
-	})
-	if err != nil || !found {
-		return Summary{}, found, err
-	}
-	result := summaryFromStore(detail.ManagementUsageRecordSummary, input.IncludeSystemAccount)
-	requestSnapshot, err := parseOptionalObject(detail.RequestSnapshotJSON)
-	if err != nil {
-		return Summary{}, false, fmt.Errorf("parse usage record request snapshot: %w", err)
-	}
-	responseSnapshot, err := parseOptionalObject(detail.ResponseSnapshotJSON)
-	if err != nil {
-		return Summary{}, false, fmt.Errorf("parse usage record response snapshot: %w", err)
-	}
-	result.RequestSnapshot = requestSnapshot
-	result.ResponseSnapshot = responseSnapshot
-	if result.Endpoint == "" && requestSnapshot != nil {
-		result.Endpoint = endpointFromSnapshot(*requestSnapshot)
-	}
-	return result, true, nil
 }
 
 func (s *Service) dateRange(ctx context.Context, startText, endText string) (time.Time, time.Time, error) {
@@ -311,57 +276,6 @@ func costBreakdown(row port.ManagementUsageRecordSummary) *CostBreakdown {
 		ThinkingTokens: row.ThinkingTokens, AccountChargeUSD: row.CostUSD,
 		Multiplier: 1, ServiceTierPricingSource: "unknown",
 	}
-}
-
-func parseOptionalObject(raw string) (*map[string]any, error) {
-	if strings.TrimFunc(raw, usageRecordECMAScriptWhitespace) == "" {
-		return nil, nil
-	}
-	var value any
-	if err := json.Unmarshal([]byte(raw), &value); err != nil {
-		return nil, err
-	}
-	object, ok := value.(map[string]any)
-	if !ok {
-		return nil, fmt.Errorf("JSON 对象字段必须是对象")
-	}
-	return &object, nil
-}
-
-func usageRecordECMAScriptWhitespace(character rune) bool {
-	switch character {
-	case '\u0009', '\u000B', '\u000C', '\u0020', '\u00A0', '\u1680',
-		'\u2000', '\u2001', '\u2002', '\u2003', '\u2004', '\u2005',
-		'\u2006', '\u2007', '\u2008', '\u2009', '\u200A', '\u202F',
-		'\u205F', '\u3000', '\uFEFF', '\u000A', '\u000D', '\u2028',
-		'\u2029':
-		return true
-	default:
-		return false
-	}
-}
-
-func endpointFromSnapshot(snapshot map[string]any) string {
-	if snapshot == nil {
-		return ""
-	}
-	method, hasMethod := snapshot["method"].(string)
-	if hasMethod {
-		method = strings.ToUpper(method)
-	} else {
-		method = "GET"
-	}
-	originalURL, hasOriginalURL := snapshot["originalUrl"].(string)
-	endpoint := ""
-	if hasOriginalURL {
-		endpoint = strings.SplitN(originalURL, "?", 2)[0]
-	} else if path, ok := snapshot["path"].(string); ok {
-		endpoint = path
-	}
-	if endpoint == "" {
-		return ""
-	}
-	return method + " " + endpoint
 }
 
 func normalizedPageSize(value int, provided bool) int {

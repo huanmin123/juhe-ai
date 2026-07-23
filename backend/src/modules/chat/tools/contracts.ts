@@ -25,7 +25,6 @@ export interface ChatToolExecutionContext {
   apiKey?: string
   gatewayBaseUrl?: string
   traceId?: string
-  userContent?: string
   defaultImageModel?: ChatImageModel
   loadImageEditReferences?: (assetIds: readonly string[]) => Promise<ChatImageEditReference[]>
   imageGeneration?: (input: {
@@ -33,7 +32,6 @@ export interface ChatToolExecutionContext {
     model: string
     prompt: string
     size: string
-    allowLarge: boolean
     quality: string
     outputFormat: string
     references: readonly ChatImageEditReference[]

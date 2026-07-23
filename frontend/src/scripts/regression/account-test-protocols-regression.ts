@@ -86,17 +86,22 @@ assertTrue(isGatewaySupportedProtocolProfile(geminiOpenAIChatAccount), 'Gemini O
 assertFalse(isGatewaySupportedProtocolProfile(unsupportedAccount), '未接入网关测试的协议不应允许走前端账户测试入口')
 assertEqual(accountEndpointModeLabel('images_json'), 'Images API', '图片模型测试形态必须显示为 Images API')
 assertDeepEqual(
-  accountTestEndpointModesForModel(openAIAccount, 'gpt-image-2', undefined, { supportedApiProtocols: ['images'] }),
+  accountTestEndpointModesForModel(openAIAccount, undefined, { supportedApiProtocols: ['images'] }),
   ['images_json'],
-  'OpenAI API Key 草稿选择图片模型时只能显示 Images API'
+  '只声明 Images 的模型只能显示 Images API'
 )
 assertDeepEqual(
-  accountTestEndpointModesForModel(openAIAccount, 'vendor/custom-image', undefined, { supportedApiProtocols: ['images'] }),
-  ['images_json'],
-  '自定义图片模型必须按目录能力限制为 Images API，不能依赖模型名'
+  accountTestEndpointModesForModel(openAIAccount, undefined, { supportedApiProtocols: ['responses', 'images'] }),
+  ['responses_json', 'responses_sse', 'images_json'],
+  '模型声明 Responses 与 Images 时必须完整显示两类可用请求形态'
+)
+assertDeepEqual(
+  accountTestEndpointModesForModel(openAIAccount, undefined, { supportedApiProtocols: ['responses'] }),
+  ['responses_json', 'responses_sse'],
+  '模型协议选择只能来自目录能力，不能根据模型名猜测 Images'
 )
 assertFalse(
-  accountTestEndpointModesForModel({ ...openAIAccount, type: 'oauth' }, 'gpt-image-2').includes('images_json'),
+  accountTestEndpointModesForModel({ ...openAIAccount, type: 'oauth' }, undefined, { supportedApiProtocols: ['images'] }).includes('images_json'),
   'OAuth 账户没有 Images API Key 探针能力，不得显示 Images API'
 )
 

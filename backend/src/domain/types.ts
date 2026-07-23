@@ -806,23 +806,14 @@ export type AccountListItem = Omit<AccountSummary,
   | 'supportedModels'
   | 'modelMappings'
   | 'apiKeyRuntimeDetails'
-  | 'apiKeyRuntime'
-  | 'balanceQueryEnabled'
   | 'balanceQueryConfig'
-  | 'balanceQueryNextRefreshAt'
-  | 'balanceSnapshot'
   | 'usage'
-  | 'todayUsage'
-  | 'currentConcurrency'
-  | 'lastUsedAt'
-  | 'runtimeAvailability'
-  | 'effectiveAvailability'
-  | 'availabilityPresentation'
   | 'oauthUsage'
   | 'authorizationSources'
   | 'authorizationCount'
   | 'authorizationTeamCount'
   | 'authorizationUsageAvailable'
+  | 'currentConcurrencyAvailable'
 >
 
 export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
@@ -1248,7 +1239,6 @@ export interface GroupSummary {
 export interface GroupListItem extends Omit<GroupSummary, 'accountIds' | 'schedulingPolicy' | 'authorizationLimits' | 'authorizationSources' | 'accountStats' | 'permissions'> {
   accountStats: Pick<GroupAccountStats, 'total' | 'available' | 'active' | 'disabled' | 'error' | 'rateLimited' | 'concurrencyLimit'> & {
     currentConcurrency?: number
-    currentConcurrencyAvailable?: boolean
     todayUsage?: AccountUsageSummary
   }
   canEdit: boolean
@@ -1275,6 +1265,7 @@ export interface GroupListResult {
 
 export interface GroupListPageResult extends Omit<GroupListResult, 'items'> {
   items: GroupListItem[]
+  generatedAt?: string
 }
 
 export interface GroupSelectOption {
@@ -1617,6 +1608,9 @@ export interface RouteStrategyListItem {
   status: RouteStrategyStatus
   isDefault: boolean
   normalRoutingConfig?: RouteStrategyNormalRoutingConfig
+  bindingCount?: number
+  apiKeyCount?: number
+  groupBindingPreview?: RouteStrategyGroupBindingPreview[]
   createdAt: string
   updatedAt: string
 }
@@ -1649,6 +1643,17 @@ export interface RouteStrategyListItemResult {
   hasMore: boolean
   page: number
   pageSize: number
+}
+
+export type CompleteRouteStrategyListItem = Omit<RouteStrategyListItem, 'bindingCount' | 'apiKeyCount' | 'groupBindingPreview'> & {
+  bindingCount: number
+  apiKeyCount: number
+  groupBindingPreview: RouteStrategyGroupBindingPreview[]
+}
+
+export interface CompleteRouteStrategyListItemResult extends Omit<RouteStrategyListItemResult, 'items'> {
+  items: CompleteRouteStrategyListItem[]
+  generatedAt: string
 }
 
 export interface RouteStrategyListResult {

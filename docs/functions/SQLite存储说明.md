@@ -118,7 +118,7 @@ Responses 桥接状态索引写入仍归 DB service 所有；`JUHE_AI_CODEX_CONT
 - 当前实现由 `ingest-worker` 承接 background worker usage 队列，在 ingest-worker 内按 shard 分组并对每个 shard 执行短事务；usage shard catalog 写入会在同一批使用记录目录库事务内合并 shard location、entry 和 scope catalog。已知 shard location 使用进程内缓存跳过重复 upsert；同一批 entry 先按 `usage_id` 去重；scope catalog 按账号 / API Key / shard 计算 `first_created_at` 最小值和 `last_seen_at` 最大值，冲突更新带 `WHERE` 条件避免无变化写页。真实压测显示 shard 数不是越大越好，需要按机器测试 8 / 16 / 32 shard 的吞吐和 usage catalog 写放大后再定默认值。
 - `JUHE_AI_USAGE_RECORD_WRITER_POOL_ENABLED` 是可选优化开关，默认关闭。开启后只有 usage shard 行写入会按目标 shard 交给 keyed child process writer pool；使用记录目录库里的 `usage_record_shards`、`usage_record_shard_entries`、scope catalog、账号最后使用时间和成功时间副作用仍由 `ingest-worker` 单写者批量提交，避免子进程并发写同一个 usage catalog。当前本机真实 SQLite 压测显示 usage writer pool 在现有批量模型下未提升吞吐，反而会被 IPC 与 catalog 单写者瓶颈抵消，因此不能默认开启；后续只在目标机器压测 direct 与 pool 都稳定后再考虑打开。
 - 统计结果库仍不分片；统计 worker 改为按 shard 独立游标读取 usage，再在统计结果库同事务写结果和推进水位。
-- 使用记录详情通过 usage id 中的日期和 shard 信息直接定位；usage id 必须携带可定位 shard 的日期信息。
+- 使用记录列表按 shard 有界读取；页面不提供使用记录按 ID 详情。后台维护或存储验证如需按 usage id 定位 shard，仍可使用日期和 shard 信息，但不得重新暴露为使用记录 HTTP 详情接口。
 - 使用记录列表由 repository 内部跨 shard 有界读取并稳定合并，不做全 shard 精确 `COUNT(*)`。
 - 使用记录账户名筛选不在 usage shard 上做 `LIKE`。后端先在业务库按账户名称精确 / 前缀匹配解析最多 200 个当前作用域可见的实际 `account_id`，再对 usage shard 使用 `account_id IN (...)`。对授权场景，解析必须覆盖被授权人的授权实例名称、授权实例来源账户名称，以及分组授权来源分组内账户名称；这样被授权用户用来源账户名查询时能命中自己的使用记录，同时不会越过 `usage_records.system_account_id` 看到授权方或其他调用方明细。
 - 数据保留优先按 shard 文件删除或归档旧数据，避免大表批量 `DELETE` 和 freelist 膨胀。

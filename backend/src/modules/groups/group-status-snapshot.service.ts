@@ -1,4 +1,4 @@
-import type { GroupStatusSnapshotResult } from '../../domain/types.js'
+import type { GroupListPageResult, GroupStatusSnapshotResult } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import {
   listGroupOptionRowsForAccess,
@@ -18,6 +18,33 @@ import { loadAccountConcurrencyByIds } from '../gateway/runtime/runtime-snapshot
 
 const maxSnapshotGroupIds = 100
 const maxSnapshotQueryLength = 8192
+
+export async function hydrateGroupListPage(
+  access: AccessScope | undefined,
+  page: GroupListPageResult
+): Promise<Omit<GroupListPageResult, 'runtimeSnapshot'> & { generatedAt: string }> {
+  const { runtimeSnapshot: _runtimeSnapshot, ...listPage } = page
+  if (page.items.length === 0) {
+    return { ...listPage, generatedAt: new Date().toISOString() }
+  }
+  const snapshot = await getGroupStatusSnapshot(access, page.items.map((item) => item.id))
+  const snapshotById = new Map(snapshot.items.map((item) => [item.id, item]))
+  return {
+    ...listPage,
+    generatedAt: snapshot.generatedAt,
+    items: page.items.map((item) => {
+      const dynamic = snapshotById.get(item.id)
+      return {
+        ...item,
+        accountStats: {
+          ...item.accountStats,
+          currentConcurrency: dynamic?.currentConcurrency ?? 0,
+          todayUsage: dynamic?.todayUsage ?? emptyAccountUsageSummary()
+        }
+      }
+    })
+  }
+}
 
 export function parseGroupStatusSnapshotGroupIds(value: unknown): string[] {
   const raw = typeof value === 'string' ? value : ''

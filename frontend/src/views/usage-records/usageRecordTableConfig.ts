@@ -23,8 +23,7 @@ export function usageRecordTableColumns(input: {
     { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
     { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
     { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 },
-    { title: 'traceId', dataIndex: 'traceId', key: 'traceId', width: 300 },
-    { title: '操作', key: 'actions', width: 72, fixed: 'right' }
+    { title: 'traceId', dataIndex: 'traceId', key: 'traceId', width: 300 }
   )
   return baseColumns
 }

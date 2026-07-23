@@ -23,7 +23,7 @@
       <a-form-item
         label="目标账户"
         required
-        :tooltip="isAuthorizedSource ? '只显示你当前同一分组下处于正常状态且可调度的授权账户。' : '只显示同一系统账户、同一分组下处于正常状态且可调度的账户。'"
+        :tooltip="isAuthorizedSource ? '只显示你当前同一分组下处于可调度状态的授权账户。' : '只显示同一系统账户、同一分组下处于可调度状态的账户。'"
       >
         <AccountSelect
           :value="targetAccountId"

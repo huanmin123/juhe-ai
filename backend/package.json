@@ -266,7 +266,7 @@
     "test:keyed-child-process-pool-watchdog": "tsx src/scripts/regression/keyed-child-process-pool-watchdog-regression.ts",
     "test:usage-pricing": "tsx src/scripts/regression/usage-pricing-regression.ts",
     "test:provider-boundary-source": "tsx src/scripts/regression/provider-boundary-source-regression.ts",
-    "test:model-catalog": "tsx ../backend-go/scripts/provider-model-catalog-snapshot-regression.ts && tsx src/scripts/regression/model-catalog-regression.ts",
+    "test:model-catalog": "tsx ../backend-go/scripts/provider-model-catalog-snapshot-regression.ts && tsx src/scripts/regression/provider-model-catalog-completeness-regression.ts && tsx src/scripts/regression/model-catalog-regression.ts",
     "test:provider-model-options-lightweight": "tsx src/scripts/regression/provider-model-options-lightweight-regression.ts",
     "test:gpt-model-capabilities": "tsx src/scripts/regression/gpt-model-capabilities-regression.ts",
     "test:account-gpt-request-overrides": "tsx src/scripts/regression/account-gpt-request-overrides-regression.ts",

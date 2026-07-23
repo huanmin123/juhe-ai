@@ -1021,7 +1021,7 @@ function accountCurrentConcurrencySnapshotFallback(error: unknown, accountIds: s
   logger.warn(errorLogFields(error, {
     event: 'account_list_redis_concurrency_snapshot_unavailable',
     accountCount: new Set(accountIds.filter(Boolean)).size
-  }), 'Redis 账号并发快照不可用，账户列表按未知并发返回')
+  }), 'Redis 账号并发快照不可用，账户列表并发按 0 返回')
   return new Map<string, number>()
 }
 

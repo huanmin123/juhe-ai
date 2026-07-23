@@ -38,7 +38,7 @@ export function registerAccountForceActivateRoutes(router: Router): void {
       return
     }
     if (before.status !== 'pending_test') {
-      res.status(409).json({ message: '只有待检查账户可以人工恢复正常' })
+      res.status(409).json({ message: '只有待检查账户可以人工恢复可调度' })
       return
     }
     try {

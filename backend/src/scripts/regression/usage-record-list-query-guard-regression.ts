@@ -68,6 +68,8 @@ try {
       api_key: 'sk-usage-record-list-query-guard',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: group.id
   }, access)
   const middleNameAccount = repositories.createAccount({
@@ -79,6 +81,8 @@ try {
       api_key: 'sk-usage-record-list-query-guard-middle',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: group.id
   }, access)
   const otherGroupAccount = repositories.createAccount({
@@ -90,6 +94,8 @@ try {
       api_key: 'sk-usage-record-list-query-guard-other-group',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: otherGroup.id
   }, access)
   const apiKey = createApiKeyRecordWithRouteStrategy(repositories, {
@@ -133,6 +139,8 @@ try {
       api_key: 'sk-usage-record-authorized-source',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: repositories.createGroup({
       name: '使用记录来源账户分组',
       providerCode: 'gpt',
@@ -172,6 +180,8 @@ try {
       api_key: 'sk-usage-record-group-authorized-source',
       base_url: 'https://api.openai.com/v1'
     },
+    supportedModels: ['gpt-5.5'],
+    healthCheckModel: 'gpt-5.5',
     groupId: ownerGroup.id
   }, ownerAccess)
   repositories.createResourceAuthorization({
@@ -610,13 +620,15 @@ try {
     assert.deepEqual(routeDefaultWindow.items.map((item) => item.id), [routeDefaultWindowInsideId], '使用记录路由未传日期时应默认限制今天')
     assert.equal('requestSnapshot' in routeDefaultWindow.items[0], false, '使用记录列表 DTO 不应返回请求快照')
     assert.equal('responseSnapshot' in routeDefaultWindow.items[0], false, '使用记录列表 DTO 不应返回响应快照')
-    const routeDetail = await getEnvelope<Record<string, unknown>>(
-      routeBaseUrl,
+    for (const path of [
       `/__aisys__/api/usage-records/${routeDefaultWindowInsideId}?systemAccountId=sys_admin`,
-      sessionCookie(admin.id)
-    )
-    assert.deepEqual(routeDetail.requestSnapshot, { marker: 'detail-request-snapshot' }, '使用记录详情必须保留完整请求快照')
-    assert.deepEqual(routeDetail.responseSnapshot, { marker: 'detail-response-snapshot' }, '使用记录详情必须保留完整响应快照')
+      `/__aisys__/api/my-usage-records/${routeDefaultWindowInsideId}`
+    ]) {
+      const detailResponse: Response = await fetch(`${routeBaseUrl}${path}`, {
+        headers: { cookie: sessionCookie(admin.id) }
+      })
+      assert.equal(detailResponse.status, 404, `使用记录详情路径必须退场：${path}`)
+    }
 
     const routeWithoutSystemAccount = await getEnvelope<UsageRecordListResult>(
       routeBaseUrl,

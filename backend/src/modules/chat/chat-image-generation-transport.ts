@@ -13,7 +13,6 @@ export interface ChatImageGenerationRequestInput {
   model: string
   prompt: string
   size?: string
-  allowLarge?: boolean
   quality?: string
   outputFormat?: string
   references?: readonly ChatImageEditReference[]
@@ -26,7 +25,7 @@ export interface ChatImageGenerationResult extends ChatImageResultTempFile {
   revisedPrompt?: string
 }
 
-export function buildChatImageGenerationRequest(input: Pick<ChatImageGenerationRequestInput, 'model' | 'prompt'> & Partial<Pick<ChatImageGenerationRequestInput, 'size' | 'quality' | 'outputFormat' | 'allowLarge'>>): {
+export function buildChatImageGenerationRequest(input: Pick<ChatImageGenerationRequestInput, 'model' | 'prompt'> & Partial<Pick<ChatImageGenerationRequestInput, 'size' | 'quality' | 'outputFormat'>>): {
   path: '/v1/images/generations'
   body: { model: string; prompt: string; n: 1; size: string; quality: string; output_format: string }
 } {
@@ -34,7 +33,7 @@ export function buildChatImageGenerationRequest(input: Pick<ChatImageGenerationR
   const prompt = input.prompt.trim()
   if (!model) throw new Error('图像生成模型不能为空')
   if (!prompt) throw new Error('图像生成提示词不能为空')
-  const size = normalizeChatImageSize(input.size, { allowLarge: input.allowLarge === true }).size
+  const size = normalizeChatImageSize(input.size).size
   const quality = normalizeChatImageQuality(input.quality)
   const outputFormat = normalizeChatImageOutputFormat(input.outputFormat)
   return {
@@ -44,9 +43,7 @@ export function buildChatImageGenerationRequest(input: Pick<ChatImageGenerationR
 }
 
 export async function generateChatImage(input: ChatImageGenerationRequestInput): Promise<ChatImageGenerationResult> {
-  const allowLarge = input.allowLarge === true || /(?:\b(?:2k|4k|2048|4096)\b|2\s*千|4\s*千|超高清|原图级)/iu.test(input.prompt)
-  const normalizedSize = normalizeChatImageSize(input.size, { allowLarge })
-  const request = buildChatImageGenerationRequest({ ...input, size: normalizedSize.size, allowLarge })
+  const request = buildChatImageGenerationRequest(input)
   const fetchImpl = input.fetchImpl ?? fetch
   const references = input.references ?? []
   const response = references.length > 0

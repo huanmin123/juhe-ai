@@ -10,6 +10,7 @@ import {
 } from './account-list-runtime-status-filter.js'
 import { parseAccountListOptions, parseAccountOptionsQuery } from './account-list-query.js'
 import { sanitizeAccountListResponse } from './account-response-sanitizer.js'
+import { hydrateAccountListPage } from './account-status-snapshot.service.js'
 
 export function registerAccountListRoutes(router: Router): void {
   router.get('/', async (req, res, next) => {
@@ -43,7 +44,8 @@ export function registerAccountListRoutes(router: Router): void {
         serverTimingMetric('account-list', listDurationMs),
         serverTimingMetric('account-status-filter', statusFilterDurationMs)
       ].join(', '))
-      res.json(ok(sanitizeAccountListResponse(filteredResult)))
+      const completePage = await hydrateAccountListPage(requestAccess, filteredResult)
+      res.json(ok(sanitizeAccountListResponse(completePage)))
     } catch (error) {
       next(error)
     }

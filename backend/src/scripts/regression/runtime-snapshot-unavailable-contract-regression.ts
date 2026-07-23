@@ -126,24 +126,9 @@ interface SystemMetricsRuntimeResponse {
 interface AccountListResponse {
   items: Array<{
     id: string
-    currentConcurrency?: number
-    currentConcurrencyAvailable?: boolean
-  }>
-  runtimeSnapshot?: {
-    accountConcurrencyAvailable: boolean
-    accountRuntimeAvailabilityAvailable: boolean
-  }
-}
-
-interface AccountStatusSnapshotResponse {
-  items: Array<{
-    id: string
     currentConcurrency: number
+    effectiveAvailability: { label: string }
   }>
-  runtimeSnapshot: {
-    accountConcurrencyAvailable: boolean
-    accountRuntimeAvailabilityAvailable: boolean
-  }
 }
 
 interface GroupListResponse {
@@ -152,16 +137,6 @@ interface GroupListResponse {
     accountStats: Record<string, unknown>
   }>
   runtimeSnapshot?: {
-    accountConcurrencyAvailable: boolean
-  }
-}
-
-interface GroupStatusSnapshotResponse {
-  items: Array<{
-    id: string
-    currentConcurrency: number
-  }>
-  runtimeSnapshot: {
     accountConcurrencyAvailable: boolean
   }
 }
@@ -271,37 +246,16 @@ try {
   const accountPage = await getEnvelope<AccountListResponse>(baseUrl, '/__aisys__/api/accounts?page=1&pageSize=20', seed.adminCookie)
   const account = accountPage.items.find((item) => item.id === seed.accountId)
   assert(account, '测试账户应出现在账户列表')
-  assert.equal(accountPage.runtimeSnapshot, undefined, '账户静态分页不得内联运行态快照')
-  assert.equal('currentConcurrency' in account, false, '账户静态分页不得内联当前并发')
-  assert.equal('currentConcurrencyAvailable' in account, false, '账户静态分页不得内联并发可用性')
-
-  const accountStatusSnapshot = await getEnvelope<AccountStatusSnapshotResponse>(
-    baseUrl,
-    `/__aisys__/api/accounts/status-snapshot?accountIds=${encodeURIComponent(seed.accountId)}`,
-    seed.adminCookie
-  )
-  assert.equal(accountStatusSnapshot.runtimeSnapshot.accountConcurrencyAvailable, false, '账户状态快照应标记实时并发不可用')
-  assert.equal(accountStatusSnapshot.runtimeSnapshot.accountRuntimeAvailabilityAvailable, false, '账户状态快照应标记运行态可用性不可用')
-  assert.equal(accountStatusSnapshot.items[0]?.currentConcurrency, 0, '实时并发不可用时状态快照保留数值占位')
+  assert.equal(account.currentConcurrency, 0, '运行态读取不可用时账户列表并发应返回 0')
+  assert.equal(account.effectiveAvailability.label, '可调度', '账户列表必须返回综合后的真实调度状态')
 
   const groupPage = await getEnvelope<GroupListResponse>(baseUrl, '/__aisys__/api/groups?page=1&pageSize=20', seed.adminCookie)
   const group = groupPage.items.find((item) => item.id === seed.groupId)
   assert(group, '测试分组应出现在分组列表')
-  assert.equal(groupPage.runtimeSnapshot, undefined, '分组静态分页不得内联运行态快照')
-  assert.equal('currentConcurrency' in group.accountStats, false, '分组静态分页不得内联当前并发')
-  assert.equal('currentConcurrencyAvailable' in group.accountStats, false, '分组静态分页不得内联并发可用性')
-  assert.equal('todayUsage' in group.accountStats, false, '分组静态分页不得内联当日用量')
+  assert.equal(group.accountStats.currentConcurrency, 0, '运行态读取不可用时分组列表并发应返回 0')
+  assert.equal(typeof group.accountStats.todayUsage, 'object', '分组列表必须内联当日用量')
 
-  const groupStatusSnapshot = await getEnvelope<GroupStatusSnapshotResponse>(
-    baseUrl,
-    `/__aisys__/api/groups/status-snapshot?groupIds=${encodeURIComponent(seed.groupId)}`,
-    seed.adminCookie
-  )
-  assert.equal('runtimeSnapshot' in groupStatusSnapshot, true, '分组状态快照必须返回实时并发可用性')
-  assert.equal(groupStatusSnapshot.runtimeSnapshot.accountConcurrencyAvailable, false, '分组状态快照应显式标记实时并发不可用')
-  assert.equal(groupStatusSnapshot.items[0]?.currentConcurrency, 0, '分组实时并发不可用时只保留数值占位')
-
-  console.log('运行态快照不可用契约回归通过：API 不再把 unknown 伪装成 0、false、[] 或默认天数')
+  console.log('列表完整响应契约回归通过：运行态无占用或读取不可用时并发返回 0，状态和用量随列表返回')
 } finally {
   await closeServer(server)
   const { closeSqliteReadWorkerPool } = await import('../../storage/sqlite-read-worker-pool.js')

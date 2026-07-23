@@ -8,7 +8,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperationAsync, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
-import { getGroupStatusSnapshot, parseGroupStatusSnapshotGroupIds } from './group-status-snapshot.service.js'
+import { hydrateGroupListPage } from './group-status-snapshot.service.js'
 
 export const groupsRouter = Router()
 
@@ -32,8 +32,9 @@ const groupPatchSchema = groupSchema.partial().refine((value) => Object.keys(val
 
 groupsRouter.get('/', async (req, res, next) => {
   try {
-    const page = await listGroupItemsPageAsync(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
-    res.json(ok(page))
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const page = await listGroupItemsPageAsync(access, parseGroupListOptions(req.query))
+    res.json(ok(await hydrateGroupListPage(access, page)))
   } catch (error) {
     next(error)
   }
@@ -81,20 +82,6 @@ groupsRouter.get('/account-options', async (req, res, next) => {
     const options = await listAccountGroupOptionsAsync(access, query)
     res.json(ok(options))
   } catch (error) {
-    next(error)
-  }
-})
-
-groupsRouter.get('/status-snapshot', async (req, res, next) => {
-  try {
-    const groupIds = parseGroupStatusSnapshotGroupIds(req.query.groupIds)
-    const result = await getGroupStatusSnapshot(getRequestAccessScope(req.query.systemAccountId), groupIds)
-    res.json(ok(result))
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('分组状态快照')) {
-      res.status(400).json(badRequest(error.message))
-      return
-    }
     next(error)
   }
 })

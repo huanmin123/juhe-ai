@@ -1,4 +1,5 @@
 import type { ChatInternalToolDefinition } from '../contracts.js'
+import { ChatToolSchemaError } from '../schema.js'
 import { normalizeChatImageOutputFormat, normalizeChatImageQuality, normalizeChatImageSize } from '../../chat-image-policy.js'
 import { resolveChatImageModel } from '../../chat-image-model-registry.js'
 import type { ChatImageEditReference } from '../../chat-image-edit-references.js'
@@ -17,7 +18,11 @@ const generateImageInputSchema = {
       items: { type: 'string', pattern: '^chat_asset_[a-f0-9]{32}$' }
     },
     model: { type: 'string', enum: ['gpt-image-2'] },
-    size: { type: 'string', minLength: 3, maxLength: 20 },
+    size: {
+      type: 'string',
+      pattern: '^(?:auto|[1-9]\\d{1,3}x[1-9]\\d{1,3})$',
+      description: '使用 auto，或 WIDTHxHEIGHT；宽高必须是 16 的倍数，最长边不超过 3840px，比例不超过 3:1，总像素为 655360..8294400。'
+    },
     quality: { type: 'string', enum: ['auto', 'low', 'medium', 'high'] },
     output_format: { type: 'string', enum: ['webp', 'png', 'jpeg'] }
   },
@@ -33,7 +38,7 @@ export function createGenerateImageTool(): ChatInternalToolDefinition {
     version: '2.0.0',
     modelName: 'generate_image',
     title: '生成或编辑图片',
-    description: '根据用户需求生成图片，或使用同一会话中明确的 assetId 编辑既有图片。编辑时必须传 reference_asset_ids；无法唯一判断目标图片时先询问用户。未指定格式时优先输出 WebP；未指定尺寸时按用途选择常规尺寸和比例，不要无依据选择 2K 或 4K。',
+    description: '根据用户需求生成图片，或使用同一会话中明确的 assetId 编辑既有图片。编辑时必须传 reference_asset_ids；无法唯一判断目标图片时先询问用户。请根据用户需求直接设置 size、quality 和 output_format；size 可用 auto 或满足 Schema 描述约束的 WIDTHxHEIGHT。未设置 size 时使用 auto，未设置 quality 时使用 auto，未设置 output_format 时使用 WebP。',
     inputSchema: generateImageInputSchema,
     executionKind: 'network_adapter',
     executionOwner: 'application',
@@ -60,8 +65,12 @@ export function createGenerateImageTool(): ChatInternalToolDefinition {
       const references = operation === 'edit'
         ? await requireImageEditReferences(context.loadImageEditReferences, referenceAssetIds)
         : []
-      const allowLarge = /(?:\b(?:2k|4k|2048|4096)\b|2\s*千|4\s*千|超高清|原图级)/iu.test(context.userContent ?? '')
-      const size = normalizeChatImageSize(input.size, { allowLarge })
+      let size: ReturnType<typeof normalizeChatImageSize>
+      try {
+        size = normalizeChatImageSize(input.size)
+      } catch (error) {
+        throw new ChatToolSchemaError('tool_arguments_invalid', error instanceof Error ? error.message : '图片尺寸参数无效')
+      }
       const quality = normalizeChatImageQuality(input.quality)
       const outputFormat = normalizeChatImageOutputFormat(input.output_format)
       try {
@@ -70,7 +79,6 @@ export function createGenerateImageTool(): ChatInternalToolDefinition {
           model: imageModel.id,
           prompt,
           size: size.size,
-          allowLarge,
           quality,
           outputFormat,
           references,
@@ -103,7 +111,6 @@ export function createGenerateImageTool(): ChatInternalToolDefinition {
             model: imageModel.id,
             sourceAssetIds: referenceAssetIds,
             size: size.size,
-            sizeAdjusted: size.sizeAdjusted,
             outputFormat,
             ...(generated.revisedPrompt ? { revisedPrompt: generated.revisedPrompt } : {})
           }

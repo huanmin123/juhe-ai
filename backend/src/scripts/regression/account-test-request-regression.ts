@@ -16,6 +16,10 @@ import {
 } from '../../modules/accounts/account-test-request.js'
 import { accountTestProbeKind } from '../../modules/accounts/account-test-probe-policy.js'
 import {
+  accountDiagnosticAttemptProgress,
+  accountDiagnosticRetryTimeouts
+} from '../../modules/accounts/account-diagnostic-retry-policy.js'
+import {
   parseAccountTestUpstreamErrorCode,
   resolveAccountTestResponseDiagnostics
 } from '../../modules/accounts/account-test-response-diagnostics.js'
@@ -28,21 +32,50 @@ import { accountBatchEditSchema, accountCreateSchema, accountTestSchema, account
 
 assert.equal(accountTestDefaultPrompt, '只输出 OK', '账号测试默认 prompt 应保持中文默认值')
 assert.equal(accountTestModelsPath, '/v1/models', '模型列表探测路径应保持 /v1/models')
+assert.deepEqual(accountDiagnosticRetryTimeouts('generation'), [10_000, 20_000, 30_000], '文本测试必须保留三档重试窗口')
+assert.deepEqual(accountDiagnosticRetryTimeouts('image_generation'), [60_000], '图片测试必须只生成一次，避免重试产生多张计费图片')
+assert.deepEqual(
+  accountDiagnosticAttemptProgress(0, 60_000, Date.now() + 1_000, accountDiagnosticRetryTimeouts('image_generation')),
+  {
+    attemptIndex: 0,
+    attemptNumber: 1,
+    totalAttempts: 1,
+    timeoutMs: 60_000,
+    maxTotalTimeoutMs: 60_000,
+    elapsedMs: 0
+  },
+  '图片测试进度必须显示单次 60 秒窗口'
+)
 const openAIProfile = { providerCode: 'gpt', protocolCode: 'openai', protocolVersion: 'v1', type: 'api_key' }
-assert.equal(accountTestProbeKind(openAIProfile, 'gpt-image-2'), 'image_generation', 'OpenAI v1 纯图像模型探针必须调用真实图片生成接口，不得调用文本 Responses')
-assert.equal(accountTestProbeKind(openAIProfile, 'gpt-5.5'), 'generation', '文本模型探针必须继续使用保存的生成请求形态')
+assert.equal(accountTestProbeKind(openAIProfile, { supportedApiProtocols: ['images'] }), 'image_generation', '只声明 Images 的模型必须调用真实图片生成接口')
+assert.equal(accountTestProbeKind(openAIProfile, { supportedApiProtocols: ['responses'] }), 'generation', '文本模型探针必须继续使用保存的生成请求形态')
 assert.equal(
-  accountTestProbeKind(openAIProfile, 'vendor/custom-image', { mode: 'image_generation', supportedApiProtocols: ['images'] }),
+  accountTestProbeKind(openAIProfile, { supportedApiProtocols: ['images'] }),
   'image_generation',
   '自定义图片模型必须按模型目录能力识别，不能依赖 gpt-image 命名'
 )
 assert.equal(
-  accountTestProbeKind({ ...openAIProfile, type: 'oauth' }, 'gpt-image-2'),
+  accountTestProbeKind(openAIProfile, { testEndpointMode: 'responses_sse', supportedApiProtocols: ['responses', 'images'] }),
+  'generation',
+  '同时支持 Responses 与 Images 的模型选择 Responses 时必须执行文本生成探针'
+)
+assert.equal(
+  accountTestProbeKind(openAIProfile, { testEndpointMode: 'images_json', supportedApiProtocols: ['responses', 'images'] }),
+  'image_generation',
+  '同时支持 Responses 与 Images 的模型选择 Images 时必须执行图片生成探针'
+)
+assert.equal(
+  accountTestProbeKind(openAIProfile, { testEndpointMode: 'images_json', supportedApiProtocols: ['responses'] }),
+  'generation',
+  '模型目录未声明 Images 时不得仅凭请求形态启用图片探针'
+)
+assert.equal(
+  accountTestProbeKind({ ...openAIProfile, type: 'oauth' }, { supportedApiProtocols: ['images'] }),
   'generation',
   'OAuth 账户没有 Images API 探针能力，不得误判为可测试的 gpt-image-2 账户'
 )
 assert.equal(
-  accountTestProbeKind({ ...openAIProfile, protocolCode: 'gemini', protocolVersion: 'v1beta' }, 'gpt-image-2'),
+  accountTestProbeKind({ ...openAIProfile, protocolCode: 'gemini', protocolVersion: 'v1beta' }, { supportedApiProtocols: ['images'] }),
   'generation',
   '非 OpenAI 协议不得猜测复用 OpenAI 图片生成探针'
 )
@@ -204,7 +237,7 @@ const imageRequest = createOpenAIImageGenerationTestRequest({
   explicitModel: ' gpt-image-2 ',
   fallbackModel: 'fallback-image-model'
 })
-assert.equal(accountImageTestDefaultPrompt, 'Solid black image. No objects or text.', '图片测试提示词应保持轻量且稳定')
+assert.equal(accountImageTestDefaultPrompt, 'Solid black.', '图片测试提示词应保持轻量且稳定')
 assert.equal(imageRequest.path, '/v1/images/generations', '图片模型测试必须调用 Images generations')
 assert.deepEqual(imageRequest.body, {
   model: 'gpt-image-2',

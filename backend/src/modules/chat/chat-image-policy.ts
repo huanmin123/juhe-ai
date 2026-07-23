@@ -6,10 +6,9 @@ export function isChatImageGenerationAccount(account: { type?: string }): boolea
 }
 
 export interface ChatImageSize {
-  width: number
-  height: number
+  width?: number
+  height?: number
   size: string
-  sizeAdjusted: boolean
 }
 
 export interface ChatImageOptimizationPolicy {
@@ -33,11 +32,10 @@ export const chatImagePreviewPolicy: ChatImageOptimizationPolicy = {
   maxBytes: 512 * 1024
 }
 
-const regularMaxEdge = 1536
-const regularMaxPixels = 1_572_864
-const explicitMaxEdge = 4096
-const explicitMaxPixels = 16_777_216
-const maxAspectRatio = 3
+const imageMinPixels = 655_360
+const imageMaxPixels = 8_294_400
+const imageMaxEdge = 3840
+const imageMaxAspectRatio = 3
 
 export function normalizeChatImageOutputFormat(value: unknown): ChatImageOutputFormat {
   if (value === undefined || value === null || String(value).trim() === '') return 'webp'
@@ -55,32 +53,22 @@ export function normalizeChatImageQuality(value: unknown): ChatImageQuality {
   throw new Error('图片质量只支持 auto、low、medium 或 high')
 }
 
-export function normalizeChatImageSize(value: unknown, options: { allowLarge: boolean }): ChatImageSize {
+export function normalizeChatImageSize(value: unknown): ChatImageSize {
   if (value === undefined || value === null || String(value).trim() === '') {
-    return { width: 1024, height: 1024, size: '1024x1024', sizeAdjusted: false }
+    return { size: 'auto' }
   }
-  const match = String(value).trim().match(/^(\d{2,5})\s*x\s*(\d{2,5})$/iu)
-  if (!match) return { width: 1024, height: 1024, size: '1024x1024', sizeAdjusted: true }
-  const requestedWidth = Number(match[1])
-  const requestedHeight = Number(match[2])
-  if (!Number.isSafeInteger(requestedWidth) || !Number.isSafeInteger(requestedHeight) || requestedWidth <= 0 || requestedHeight <= 0) {
-    return { width: 1024, height: 1024, size: '1024x1024', sizeAdjusted: true }
+  const normalized = String(value).trim().toLowerCase()
+  if (normalized === 'auto') return { size: 'auto' }
+  const match = normalized.match(/^(\d{2,4})x(\d{2,4})$/u)
+  if (!match) throw new Error('图片尺寸必须是 auto 或 WIDTHxHEIGHT 格式')
+  const width = Number(match[1])
+  const height = Number(match[2])
+  if (width % 16 !== 0 || height % 16 !== 0) throw new Error('图片宽高必须是 16px 的倍数')
+  if (Math.max(width, height) > imageMaxEdge) throw new Error(`图片最长边不能超过 ${imageMaxEdge}px`)
+  if (Math.max(width, height) / Math.min(width, height) > imageMaxAspectRatio) throw new Error('图片长短边比例不能超过 3:1')
+  const pixels = width * height
+  if (pixels < imageMinPixels || pixels > imageMaxPixels) {
+    throw new Error(`图片总像素必须在 ${imageMinPixels.toLocaleString('en-US')} 到 ${imageMaxPixels.toLocaleString('en-US')} 之间`)
   }
-  const maxEdge = options.allowLarge ? explicitMaxEdge : regularMaxEdge
-  const maxPixels = options.allowLarge ? explicitMaxPixels : regularMaxPixels
-  const scale = Math.min(1, maxEdge / Math.max(requestedWidth, requestedHeight), Math.sqrt(maxPixels / (requestedWidth * requestedHeight)))
-  let width = Math.max(16, Math.floor(requestedWidth * scale / 16) * 16)
-  let height = Math.max(16, Math.floor(requestedHeight * scale / 16) * 16)
-  if (Math.max(width, height) / Math.min(width, height) > maxAspectRatio) {
-    if (width < height) width = Math.ceil(height / maxAspectRatio / 16) * 16
-    else height = Math.ceil(width / maxAspectRatio / 16) * 16
-  }
-  if (width * height > maxPixels || Math.max(width, height) > maxEdge) {
-    const finalScale = Math.min(maxEdge / Math.max(width, height), Math.sqrt(maxPixels / (width * height)))
-    width = Math.max(16, Math.floor(width * finalScale / 16) * 16)
-    height = Math.max(16, Math.floor(height * finalScale / 16) * 16)
-  }
-  const size = `${width}x${height}`
-  const requestedSize = `${requestedWidth}x${requestedHeight}`
-  return { width, height, size, sizeAdjusted: size !== requestedSize }
+  return { width, height, size: `${width}x${height}` }
 }

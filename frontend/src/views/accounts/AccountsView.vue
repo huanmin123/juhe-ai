@@ -771,7 +771,6 @@ function openDraftTestModal(
     model,
     accountTestEndpointModesForModel(
       account,
-      model,
       draftPayload,
       providerModelOptions.value.find((option) => option.value === model)
     )
@@ -788,7 +787,6 @@ function openSavedDraftTestModal(
     model,
     accountTestEndpointModesForModel(
       account,
-      model,
       draftPayload,
       providerModelOptions.value.find((option) => option.value === model)
     )

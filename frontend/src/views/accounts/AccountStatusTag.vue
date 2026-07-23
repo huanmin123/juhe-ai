@@ -54,11 +54,11 @@ const props = defineProps<{
 const dispatchFlagActive = computed(() => props.account.effectiveAvailability?.available ?? (props.account.status === 'active' && props.account.schedulable))
 const superPriorityTooltip = computed(() => dispatchFlagActive.value
   ? '超级优先：下次调度优先使用此账户'
-  : '超级优先已保留；账户恢复正常并参与调度后自动生效'
+  : '超级优先已保留；账户恢复可调度并参与调度后自动生效'
 )
 const fallbackTooltip = computed(() => dispatchFlagActive.value
   ? '降级备用：仅在同分组其他可用账户都不可用时使用'
-  : '降级备用已保留；账户恢复正常并参与调度后自动生效'
+  : '降级备用已保留；账户恢复可调度并参与调度后自动生效'
 )
 
 const tooltipLines = computed(() => {

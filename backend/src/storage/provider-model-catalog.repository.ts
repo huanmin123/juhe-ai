@@ -327,8 +327,8 @@ export async function updateBuiltInProviderModelPricesAsync(id: string, patch: P
 export async function updateBuiltInProviderModelConfigurationAsync(id: string, patch: ProviderModelConfigurationPatch): Promise<BuiltInProviderModelRecord | undefined> {
   const { assignments, params } = configurationPatchAssignments(patch)
   if (!assignments.length) return findBuiltInProviderModelByIdAsync(id)
-  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}, updated_at = ? WHERE id = ?`
-  const writeParams = [...params, nowIso(), id]
+  const sql = `UPDATE provider_model_catalog SET ${assignments.join(', ')}, source = ?, updated_at = ? WHERE id = ?`
+  const writeParams = [...params, 'manual-override', nowIso(), id]
   if (runtimeConfig.databaseDriver !== 'postgres') {
     getBusinessDatabase().prepare(sql).run(...writeParams as SQLInputValue[])
   } else {

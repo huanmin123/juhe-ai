@@ -24,6 +24,7 @@ import {
   type AccountDiagnosticAttemptProgress,
   accountDiagnosticAttemptProgress,
   accountDiagnosticRetryTimeoutMs,
+  accountDiagnosticRetryTimeouts,
   diagnosticAccountTestGatewaySettingsOverride,
   diagnosticAttemptSignal,
   isDiagnosticTimeoutSignal
@@ -477,11 +478,14 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
     supportedModels: draft.supportedModels,
     testEndpointMode: input.testEndpointMode
   })
+  const timeoutSchedule = accountDiagnosticRetryTimeouts(
+    input.testEndpointMode === 'images_json' ? 'image_generation' : 'generation'
+  )
   let candidateAccount: OpenAIAccountSecret | undefined
   let lastResult: AccountTestResult | undefined
-  for (let attemptIndex = 0; attemptIndex < accountDiagnosticRetryTimeoutMs.length; attemptIndex += 1) {
-    const timeoutMs = accountDiagnosticRetryTimeoutMs[attemptIndex] ?? accountDiagnosticRetryTimeoutMs[accountDiagnosticRetryTimeoutMs.length - 1]
-    input.onDiagnosticAttemptProgress?.(accountDiagnosticAttemptProgress(attemptIndex, timeoutMs, startedAt))
+  for (let attemptIndex = 0; attemptIndex < timeoutSchedule.length; attemptIndex += 1) {
+    const timeoutMs = timeoutSchedule[attemptIndex] ?? timeoutSchedule[timeoutSchedule.length - 1]
+    input.onDiagnosticAttemptProgress?.(accountDiagnosticAttemptProgress(attemptIndex, timeoutMs, startedAt, timeoutSchedule))
     const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
     const attemptStartedAt = Date.now()
     let result: AccountTestResult
@@ -508,7 +512,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
     if (result.success || result.accountFailureEligible === false || input.signal.aborted) {
       return accountTestResultWithTotalDuration(result, startedAt)
     }
-    if (attemptIndex + 1 < accountDiagnosticRetryTimeoutMs.length) {
+    if (attemptIndex + 1 < timeoutSchedule.length) {
       logger.info({
         event: 'account_draft_diagnostic_test_retry_scheduled',
         accountId: account.id,
@@ -516,7 +520,7 @@ async function testOpenAIDraftAccountWithDiagnosticRetries(
         attemptNumber: attemptIndex + 1,
         nextAttemptNumber: attemptIndex + 2,
         attemptTimeoutMs: timeoutMs,
-        nextAttemptTimeoutMs: accountDiagnosticRetryTimeoutMs[attemptIndex + 1],
+        nextAttemptTimeoutMs: timeoutSchedule[attemptIndex + 1],
         durationMs: result.durationMs,
         totalElapsedMs: Date.now() - startedAt,
         traceId: result.traceId
@@ -696,7 +700,8 @@ async function runAccountApiKeyPoolEntryTest(
     systemAccountId: string
   }
 ): Promise<AccountApiKeyPoolEntryTestResult> {
-  const timeoutMs = accountDiagnosticRetryTimeoutMs[0] ?? 10_000
+  const timeoutSchedule = accountDiagnosticRetryTimeouts(input.testEndpointMode === 'images_json' ? 'image_generation' : 'generation')
+  const timeoutMs = timeoutSchedule[0] ?? 10_000
   const attemptSignal = diagnosticAttemptSignal(input.signal, timeoutMs)
   const startedAt = Date.now()
   const fixedCandidate = fixedAccountApiKeyPoolCandidate(baseCandidate, entry, { apiKeyRuntimeStateDisabled: true })

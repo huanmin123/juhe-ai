@@ -521,6 +521,7 @@ export {
   listRouteStrategyListSnapshotAsync,
   listRouteStrategyListItemsPage,
   listRouteStrategyListItemsPageAsync,
+  listCompleteRouteStrategyListItemsPageAsync,
   listRouteStrategiesPage,
   listRouteStrategiesPageAsync,
   listRouteStrategyOptions,

@@ -145,11 +145,8 @@ const priorityText = computed(() => {
   if (!props.account.fallbackEnabled) return String(props.account.priority)
   return `${props.account.priority} / ${props.account.status === 'active' && props.account.schedulable ? '备用' : '备用暂停'}`
 })
-const concurrencyAvailable = computed(() => props.account.currentConcurrencyAvailable !== false)
-const concurrencyText = computed(() => concurrencyAvailable.value ? `${props.account.currentConcurrency}/${props.account.concurrencyLimit}` : '暂不可用')
-const concurrencyTooltip = computed(() => concurrencyAvailable.value
-  ? `当前正在转发 ${props.account.currentConcurrency} 个请求，配置上限 ${props.account.concurrencyLimit}`
-  : '实时并发快照暂不可用')
+const concurrencyText = computed(() => `${Math.max(0, props.account.currentConcurrency ?? 0)}/${props.account.concurrencyLimit}`)
+const concurrencyTooltip = computed(() => `当前正在转发 ${Math.max(0, props.account.currentConcurrency ?? 0)} 个请求，配置上限 ${props.account.concurrencyLimit}`)
 const actions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []
   if (props.canEdit) {
