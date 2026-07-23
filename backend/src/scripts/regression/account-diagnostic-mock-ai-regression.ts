@@ -69,6 +69,7 @@ try {
   const transientProgress: number[] = []
   const transientResult = await testOpenAIAccountWithDiagnosticRetries(transientAccount, {
     model: 'gpt-5.5',
+    testEndpointMode: 'responses_sse',
     onDiagnosticAttemptProgress: (progress) => {
       transientProgress.push(progress.timeoutMs)
     }
@@ -80,7 +81,7 @@ try {
   assert.deepEqual(transientProgress, [10_000, 20_000, 30_000], '手动账号测试进度应按 10s、20s、30s 上报')
 
   const persistentAccount = createMockAccount(group.id, upstreamBaseUrl, 'manual-persistent-401', access)
-  const persistentResult = await testOpenAIAccountWithDiagnosticRetries(persistentAccount, { model: 'gpt-5.5' })
+  const persistentResult = await testOpenAIAccountWithDiagnosticRetries(persistentAccount, { model: 'gpt-5.5', testEndpointMode: 'responses_sse' })
   await flushGatewayAccountSideEffects()
   flushAllUsageRecordQueue()
   assert.equal(persistentResult.success, false, '持续 401 的 mock AI 不应被误判成功')
@@ -171,9 +172,11 @@ function createMockAccount(
     type: 'api_key',
     groupId,
     status: 'active',
+    healthCheckEndpointMode: 'responses_sse',
     credentials: {
       api_key: `sk-${label}`,
-      base_url: upstreamBaseUrl
+      base_url: upstreamBaseUrl,
+      supported_endpoint_modes: ['responses_sse']
     }
   }, access)
 }

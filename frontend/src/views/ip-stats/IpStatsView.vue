@@ -49,14 +49,6 @@
       </template>
     </ResponsiveListToolbar>
 
-    <a-alert
-      v-if="!rangeReady"
-      class="ip-stats-range-alert"
-      type="info"
-      show-icon
-      :message="`${currentUsageWindowLabel}统计窗口尚未完成预聚合，当前仅展示全部 IP 与状态，统计数据暂为 0。`"
-    />
-
     <IpStatsList
       :empty-description="emptyDescription"
       :loading="loading"
@@ -130,14 +122,6 @@
         <a-descriptions-item label="统计范围">{{ currentUsageWindowLabel }}</a-descriptions-item>
         <a-descriptions-item label="最近使用">{{ formatDateTime(detailTarget.lastSeenAt || detailTarget.rangeUsage.lastUsedAt) }}</a-descriptions-item>
       </a-descriptions>
-
-      <a-alert
-        v-if="!detailRangeReady"
-        class="ip-detail-alert"
-        type="info"
-        show-icon
-        :message="`${currentUsageWindowLabel}用量窗口尚未完成预聚合，请稍后刷新。`"
-      />
 
       <ResponsiveDataList
         class="ip-detail-account-table"
@@ -682,10 +666,6 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
   width: 130px;
 }
 
-.ip-stats-range-alert {
-  margin-bottom: 12px;
-}
-
 .policy-duration-input {
   width: 100%;
 }
@@ -709,10 +689,6 @@ function usageWindowDateRange(value: UsageWindow): [Dayjs, Dayjs] {
 }
 
 .ip-detail-summary {
-  margin-bottom: 16px;
-}
-
-.ip-detail-alert {
   margin-bottom: 16px;
 }
 

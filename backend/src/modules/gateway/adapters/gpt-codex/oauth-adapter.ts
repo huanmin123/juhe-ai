@@ -189,25 +189,8 @@ function buildOpenAIOAuthCodexHeaders(
     model?: string
   }
 ): Headers {
-  const headers = new Headers()
-
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'accept-language')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-client-request-id')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-beta-features')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-installation-id')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-window-id')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-parent-thread-id')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-turn-state')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-codex-turn-metadata')
-  copyAllowedOpenAIOAuthCodexHeader(headers, inputHeaders, 'x-openai-subagent')
+  const headers = copySafeOpenAIOAuthCodexClientHeaders(inputHeaders)
   copyOpenAIOAuthCodexAttestationHeader(headers, inputHeaders)
-
-  const incomingOriginator = headerValue(inputHeaders, 'originator')
-  if (incomingOriginator) headers.set('originator', incomingOriginator)
-  const incomingUserAgent = headerValue(inputHeaders, 'user-agent')
-  if (incomingUserAgent) headers.set('user-agent', incomingUserAgent)
-  const incomingVersion = headerValue(inputHeaders, 'version')
-  if (incomingVersion) headers.set('version', incomingVersion)
   normalizeOpenAICodexClientHeaders(headers, input.model)
   headers.set('authorization', `Bearer ${account.apiKey}`)
   headers.set('content-type', 'application/json')
@@ -245,16 +228,17 @@ function copyOpenAIOAuthCodexAttestationHeader(
   output.set('x-oai-attestation', value)
 }
 
-function copyAllowedOpenAIOAuthCodexHeader(
-  output: Headers,
-  inputHeaders: Record<string, string | string[] | undefined>,
-  name: string
-): void {
-  const value = headerValue(inputHeaders, name)
-  if (!value) {
-    return
+function copySafeOpenAIOAuthCodexClientHeaders(
+  inputHeaders: Record<string, string | string[] | undefined>
+): Headers {
+  const output = new Headers()
+  for (const [name, value] of Object.entries(inputHeaders)) {
+    if (unsafeOpenAIOAuthCodexClientHeaders.has(name.toLowerCase()) || value === undefined) {
+      continue
+    }
+    output.set(name, Array.isArray(value) ? value.join(', ') : value)
   }
-  output.set(name, value)
+  return output
 }
 
 function headerValue(inputHeaders: Record<string, string | string[] | undefined>, name: string): string | undefined {
@@ -268,6 +252,50 @@ function headerValue(inputHeaders: Record<string, string | string[] | undefined>
   }
   return undefined
 }
+
+const unsafeOpenAIOAuthCodexClientHeaders = new Set([
+  'host',
+  'authorization',
+  'content-length',
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+  'expect',
+  'content-encoding',
+  'accept-encoding',
+  'cookie',
+  'set-cookie',
+  'openai-api-key',
+  'x-api-key',
+  'anthropic-api-key',
+  'x-goog-api-key',
+  'api-key',
+  'chatgpt-account-id',
+  'x-oai-attestation',
+  'openai-organization',
+  'openai-project',
+  'x-juhe-client-profile',
+  'x-request-id',
+  'traceparent',
+  'tracestate',
+  'baggage',
+  'x-amzn-trace-id',
+  'x-cloud-trace-context',
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-port',
+  'x-forwarded-proto',
+  'x-forwarded-server',
+  'x-real-ip',
+  'forwarded',
+  'via',
+  'cf-connecting-ip'
+])
 
 function isEmptyPlainObject(value: unknown): boolean {
   if (!isPlainObject(value)) return false

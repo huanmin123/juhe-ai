@@ -44,12 +44,20 @@ export function createOpenAITestRequest(input: AccountTestRequestInput): Account
   const path = testPathFromEndpointMode(mode)
   const stream = mode === 'chat_sse' || mode === 'responses_sse'
   const model = stringValue(input.explicitModel) || input.fallbackModel
+  const body = path === gatewayChatCompletionsPath
+    ? createOpenAIChatCompletionsTestPayload(model, input.prompt, stream)
+    : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, stream)
+  const codexHeaders = input.clientCompatibility === 'codex_responses' && stream && path === gatewayTestPath
+    ? new Headers()
+    : undefined
+  if (codexHeaders) {
+    normalizeOpenAICodexResponsesLiteBody(body, model, codexHeaders)
+  }
   return {
     path,
-    body: path === gatewayChatCompletionsPath
-      ? createOpenAIChatCompletionsTestPayload(model, input.prompt, stream)
-      : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.clientCompatibility, stream),
-    model
+    body,
+    model,
+    headers: codexHeaders ? Object.fromEntries(codexHeaders.entries()) : undefined
   }
 }
 

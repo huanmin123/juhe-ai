@@ -51,12 +51,7 @@
       </div>
     </a-card>
 
-    <a-alert v-if="summaryError" :message="summaryError" show-icon type="error">
-      <template #action>
-        <a-button size="small" @click="loadData({ force: true })">重试</a-button>
-      </template>
-    </a-alert>
-    <StatsSummaryCards v-else :cards="summaryCards" :loading="summaryLoading" />
+    <StatsSummaryCards :cards="summaryCards" :loading="summaryLoading" />
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">

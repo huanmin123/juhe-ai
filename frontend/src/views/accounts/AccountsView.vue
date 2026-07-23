@@ -63,18 +63,6 @@
       @restore="batchRestoreSelected"
     />
 
-    <a-alert
-      v-if="accountStatusSnapshotLoading || accountStatusSnapshotError"
-      class="account-status-snapshot-alert"
-      :type="accountStatusSnapshotError ? 'warning' : 'info'"
-      :message="accountStatusSnapshotError || '正在更新账户状态'"
-      show-icon
-    >
-      <template #action>
-        <a-button v-if="accountStatusSnapshotError" size="small" @click="retryCurrentPageStatusSnapshot">重试</a-button>
-      </template>
-    </a-alert>
-
     <AccountBatchEditModal
       v-if="batchEditOpen"
       v-model:open="batchEditOpen"
@@ -370,9 +358,6 @@ const {
   mobileRefreshing,
   mobileVisibleAccounts,
   accountTablePagination,
-  accountStatusSnapshotLoading,
-  accountStatusSnapshotError,
-  retryCurrentPageStatusSnapshot,
   systemAccountOptionsLoading,
   handleSystemAccountOptionsDropdown,
   handleSystemAccountOptionsSearch,
@@ -988,10 +973,6 @@ onMounted(() => {
   border: 1px solid #e8edf5;
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
-}
-
-.account-status-snapshot-alert {
-  margin: 12px 0;
 }
 
 .credential-cell {

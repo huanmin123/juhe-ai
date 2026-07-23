@@ -20,14 +20,6 @@
   </template>
 
   <template v-else>
-    <a-alert
-      v-if="grepResult?.message"
-      :type="grepResult.available === false || grepResult.truncated ? 'warning' : 'info'"
-      show-icon
-      :message="grepResult.message"
-      class="grep-alert"
-    />
-
     <RuntimeLogDataList
       table-class="page-table grep-table"
       :columns="grepColumns"
@@ -77,8 +69,3 @@ defineEmits<{
 }>()
 </script>
 
-<style scoped>
-.grep-alert {
-  margin-bottom: 14px;
-}
-</style>

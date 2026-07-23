@@ -74,20 +74,6 @@
       </template>
     </ResponsiveListToolbar>
 
-    <RuntimeAvailabilityAlert
-      :visible="auditRuntimeAlertVisible"
-      message="审计队列需要关注"
-      :description="auditRuntimeAlertDescription"
-    />
-
-    <a-alert
-      v-if="viewMode === 'search' && hotSearchResult?.message"
-      :type="hotSearchResult.available === false || hotSearchResult.truncated ? 'warning' : 'info'"
-      show-icon
-      :message="hotSearchResult.message"
-      class="audit-search-alert"
-    />
-
     <AuditLogList
       :columns="managedColumns"
       :records="currentRecords"
@@ -127,7 +113,6 @@ import type {
   AuditTrafficSource
 } from '@/types/domain'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
@@ -190,8 +175,6 @@ const {
 })
 const {
   auditRuntimeSettings,
-  auditRuntimeAlertDescription,
-  auditRuntimeAlertVisible,
   cancelAuditRuntimeRequest,
   refreshAuditRuntimeQuietly
 } = useAuditLogRuntimeAlert()
@@ -604,10 +587,6 @@ onDeactivated(() => {
 
 .audit-mode-segmented {
   white-space: nowrap;
-}
-
-.audit-search-alert {
-  margin-bottom: 12px;
 }
 
 .form-help {

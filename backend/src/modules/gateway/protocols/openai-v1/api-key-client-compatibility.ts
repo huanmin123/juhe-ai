@@ -12,6 +12,7 @@ import {
 } from '../../request/json-parser.js'
 import { splitPathAndQuery } from './route-helpers.js'
 import {
+  isOpenAICodexClientHeaders,
   normalizeOpenAICodexClientHeaders,
   normalizeOpenAICodexResponsesLiteBody
 } from '../../adapters/gpt-codex/client-headers.js'
@@ -46,6 +47,9 @@ export function applyOpenAIClientCompatibilityHeaders(
   options: OpenAIClientCompatibilityOptions = {}
 ): void {
   if (!shouldForceOpenAICodexResponsesSse(req, options.requestClientCompatibility)) {
+    return
+  }
+  if (isOpenAICodexClientHeaders(req.headers)) {
     return
   }
   headers.set('accept', 'text/event-stream')

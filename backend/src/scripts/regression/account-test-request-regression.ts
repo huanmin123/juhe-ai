@@ -32,6 +32,11 @@ const openAIProfile = { providerCode: 'gpt', protocolCode: 'openai', protocolVer
 assert.equal(accountTestProbeKind(openAIProfile, 'gpt-image-2'), 'image_generation', 'OpenAI v1 纯图像模型探针必须调用真实图片生成接口，不得调用文本 Responses')
 assert.equal(accountTestProbeKind(openAIProfile, 'gpt-5.5'), 'generation', '文本模型探针必须继续使用保存的生成请求形态')
 assert.equal(
+  accountTestProbeKind(openAIProfile, 'vendor/custom-image', { mode: 'image_generation', supportedApiProtocols: ['images'] }),
+  'image_generation',
+  '自定义图片模型必须按模型目录能力识别，不能依赖 gpt-image 命名'
+)
+assert.equal(
   accountTestProbeKind({ ...openAIProfile, type: 'oauth' }, 'gpt-image-2'),
   'generation',
   'OAuth 账户没有 Images API 探针能力，不得误判为可测试的 gpt-image-2 账户'
