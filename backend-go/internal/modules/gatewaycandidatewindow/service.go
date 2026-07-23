@@ -29,6 +29,7 @@ type HydrateInput struct {
 }
 
 type ModelMapping struct {
+	ProviderCode           string
 	SourceModel            string
 	SourceEndpointFamily   string
 	UpstreamModel          string
@@ -237,15 +238,26 @@ func modelRank(candidate Candidate, model, endpointFamily string) int {
 		}
 	}
 	for _, mapping := range candidate.ModelMappings {
+		provider := candidate.Projection.ProviderCode
+		if candidate.Projection.ResourceProviderCode != "" {
+			provider = candidate.Projection.ResourceProviderCode
+		}
+		if mapping.ProviderCode != "" && !strings.EqualFold(strings.TrimSpace(mapping.ProviderCode), provider) {
+			continue
+		}
 		if !strings.EqualFold(strings.TrimSpace(mapping.SourceModel), model) {
 			continue
 		}
 		family := strings.TrimSpace(mapping.SourceEndpointFamily)
-		if endpointFamily != "" && !strings.EqualFold(family, endpointFamily) {
+		if endpointFamily == "" || !strings.EqualFold(family, endpointFamily) {
 			continue
 		}
 		upstream := strings.TrimSpace(mapping.UpstreamModel)
-		if upstream == "" || strings.EqualFold(upstream, model) || !supportsModel(candidate.SupportedModels, upstream) {
+		upstreamFamily := strings.TrimSpace(mapping.UpstreamEndpointFamily)
+		if upstream == "" || (strings.EqualFold(upstream, model) && strings.EqualFold(upstreamFamily, family)) {
+			continue
+		}
+		if len(candidate.SupportedModels) > 0 && !supportsModel(candidate.SupportedModels, upstream) {
 			continue
 		}
 		return 1

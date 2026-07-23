@@ -179,6 +179,7 @@ WHERE group_accounts.group_id = $1::text
     OR EXISTS (
       SELECT 1 FROM juhe_business.account_supported_models AS supported_models
       WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND supported_models.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
         AND supported_models.model = $9::text
     )
     OR NOT EXISTS (
@@ -188,14 +189,26 @@ WHERE group_accounts.group_id = $1::text
     OR EXISTS (
       SELECT 1 FROM juhe_business.account_model_mappings AS model_mappings
       WHERE model_mappings.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND model_mappings.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
         AND model_mappings.enabled = true
         AND model_mappings.source_model = $9::text
-        AND model_mappings.upstream_model <> model_mappings.source_model
-        AND ($10::text = '' OR model_mappings.source_endpoint_family = $10::text)
-        AND EXISTS (
-          SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
-          WHERE mapped_models.account_id = model_mappings.account_id
-            AND mapped_models.model = model_mappings.upstream_model
+        AND $10::text <> ''
+        AND model_mappings.source_endpoint_family = $10::text
+        AND (
+          model_mappings.upstream_model <> model_mappings.source_model
+          OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
+        )
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM juhe_business.account_supported_models AS limited_models
+            WHERE limited_models.account_id = model_mappings.account_id
+          )
+          OR EXISTS (
+            SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
+            WHERE mapped_models.account_id = model_mappings.account_id
+              AND mapped_models.provider_code = model_mappings.provider_code
+              AND mapped_models.model = model_mappings.upstream_model
+          )
         )
     )
   )
@@ -205,20 +218,33 @@ ORDER BY CASE
       SELECT 1
       FROM juhe_business.account_supported_models AS supported_models
       WHERE supported_models.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND supported_models.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
         AND supported_models.model = $9::text
     ) THEN 0
     WHEN EXISTS (
       SELECT 1
       FROM juhe_business.account_model_mappings AS model_mappings
       WHERE model_mappings.account_id = COALESCE(source_accounts.id, accounts.id)
+        AND model_mappings.provider_code = COALESCE(source_accounts.provider_code, accounts.provider_code)
         AND model_mappings.enabled = true
         AND model_mappings.source_model = $9::text
-        AND model_mappings.upstream_model <> model_mappings.source_model
-        AND ($10::text = '' OR model_mappings.source_endpoint_family = $10::text)
-        AND EXISTS (
-          SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
-          WHERE mapped_models.account_id = model_mappings.account_id
-            AND mapped_models.model = model_mappings.upstream_model
+        AND $10::text <> ''
+        AND model_mappings.source_endpoint_family = $10::text
+        AND (
+          model_mappings.upstream_model <> model_mappings.source_model
+          OR model_mappings.upstream_endpoint_family <> model_mappings.source_endpoint_family
+        )
+        AND (
+          NOT EXISTS (
+            SELECT 1 FROM juhe_business.account_supported_models AS limited_models
+            WHERE limited_models.account_id = model_mappings.account_id
+          )
+          OR EXISTS (
+            SELECT 1 FROM juhe_business.account_supported_models AS mapped_models
+            WHERE mapped_models.account_id = model_mappings.account_id
+              AND mapped_models.provider_code = model_mappings.provider_code
+              AND mapped_models.model = model_mappings.upstream_model
+          )
         )
     ) THEN 1
     ELSE 2
