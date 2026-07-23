@@ -42,6 +42,43 @@ type PolicySettings struct {
 	DefaultTemporaryCooldown time.Duration
 }
 
+func normalizePolicyDecision(decision PolicyDecision, now time.Time) (PolicyDecision, error) {
+	decision.RuleName = strings.TrimSpace(decision.RuleName)
+	if len(decision.RuleName) > 256 || strings.ToValidUTF8(decision.RuleName, "") != decision.RuleName {
+		return PolicyDecision{}, fmt.Errorf("policy rule name is invalid")
+	}
+	if decision.CooldownUntil != nil {
+		until := decision.CooldownUntil.UTC()
+		decision.CooldownUntil = &until
+	}
+	switch decision.Action {
+	case PolicyActionNone:
+		if decision.RuleName != "" || decision.CooldownStatus != "" || decision.CooldownUntil != nil {
+			return PolicyDecision{}, fmt.Errorf("none policy decision contains mutation facts")
+		}
+	case PolicyActionRetryNext, PolicyActionDisable:
+		if decision.RuleName == "" {
+			return PolicyDecision{}, fmt.Errorf("policy rule name is required")
+		}
+		if decision.CooldownStatus != "" || decision.CooldownUntil != nil {
+			return PolicyDecision{}, fmt.Errorf("non-cooldown policy decision contains cooldown facts")
+		}
+	case PolicyActionCooldown:
+		if decision.RuleName == "" {
+			return PolicyDecision{}, fmt.Errorf("policy rule name is required")
+		}
+		if decision.CooldownStatus != CooldownRateLimited && decision.CooldownStatus != CooldownTemporaryUnavailable {
+			return PolicyDecision{}, fmt.Errorf("policy cooldown status is invalid")
+		}
+		if decision.CooldownUntil == nil || !decision.CooldownUntil.After(now) {
+			return PolicyDecision{}, fmt.Errorf("policy cooldown deadline must be in the future")
+		}
+	default:
+		return PolicyDecision{}, fmt.Errorf("policy action %q is invalid", decision.Action)
+	}
+	return decision, nil
+}
+
 type policyRule struct {
 	enabled         bool
 	name            string

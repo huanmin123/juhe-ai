@@ -70,6 +70,39 @@ func TestDecidePolicyRejectsInvalidRuntimeRules(t *testing.T) {
 	}
 }
 
+func TestNormalizePolicyDecisionRejectsNonCanonicalExternalMutations(t *testing.T) {
+	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	tests := []PolicyDecision{
+		{Action: PolicyAction("future"), RuleName: "rule"},
+		{Action: PolicyActionCooldown, RuleName: "rule", CooldownStatus: CooldownRateLimited},
+		{Action: PolicyActionCooldown, RuleName: "rule", CooldownStatus: CooldownStatus("future"), CooldownUntil: &future},
+		{Action: PolicyActionDisable, RuleName: "rule", CooldownUntil: &future},
+		{Action: PolicyActionRetryNext},
+		{Action: PolicyActionNone, RuleName: "stale"},
+	}
+	for index, decision := range tests {
+		if _, err := normalizePolicyDecision(decision, now); err == nil {
+			t.Fatalf("case %d error = nil", index)
+		}
+	}
+}
+
+func TestNormalizePolicyDecisionClonesAndNormalizesCooldown(t *testing.T) {
+	now := time.Date(2026, 7, 24, 10, 0, 0, 0, time.UTC)
+	location := time.FixedZone("UTC+8", 8*60*60)
+	until := now.Add(time.Hour).In(location)
+	decision, err := normalizePolicyDecision(PolicyDecision{
+		Action: PolicyActionCooldown, RuleName: " rule ", CooldownStatus: CooldownRateLimited, CooldownUntil: &until,
+	}, now)
+	if err != nil || decision.RuleName != "rule" || decision.CooldownUntil == nil || decision.CooldownUntil.Location() != time.UTC || !decision.CooldownUntil.Equal(until) {
+		t.Fatalf("decision=%+v err=%v", decision, err)
+	}
+	if decision.CooldownUntil == &until {
+		t.Fatal("cooldown pointer was not detached")
+	}
+}
+
 func rule(overrides map[string]any) map[string]any {
 	value := map[string]any{
 		"enabled": true, "name": "rule", "priority": float64(10),

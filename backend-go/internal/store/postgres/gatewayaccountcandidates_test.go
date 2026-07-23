@@ -51,6 +51,9 @@ func TestGatewayAccountCandidateSQLIsBoundedAndAuthorizationAware(t *testing.T) 
 		"accounts.authorization_instance_owner_system_account_id = account_authorizations.resource_owner_system_account_id",
 		"source_accounts.deleted_at IS NULL",
 		"source_accounts.schedulable = true",
+		"accounts.dispatch_revision",
+		"source_accounts.config_revision",
+		"source_accounts.dispatch_revision",
 		"CROSS JOIN LATERAL",
 		"END AS model_rank",
 		"FROM juhe_business.account_supported_models AS supported_models",
@@ -102,7 +105,7 @@ func TestScanGatewayAccountCandidateMapsDirectAndResourceFields(t *testing.T) {
 		"gpt", "profile_1", "openai", "v1", "实例", "oauth", "active", true,
 		20, 4, false, true, "codex_responses", "encrypted_instance",
 		pgtype.Text{String: "proxy_instance", Valid: true}, pgtype.Text{String: `{}`, Valid: true},
-		pgtype.Timestamptz{Time: later, Valid: true}, pgtype.Timestamptz{}, 7,
+		pgtype.Timestamptz{Time: later, Valid: true}, pgtype.Timestamptz{}, 7, int64(11),
 		pgtype.Text{String: "acc_source", Valid: true}, pgtype.Text{String: "auth_account", Valid: true}, pgtype.Text{String: "sys_owner", Valid: true},
 		pgtype.Timestamptz{Time: later, Valid: true}, pgtype.Text{String: `{"total":{"enabled":true}}`, Valid: true},
 		pgtype.Text{String: "team", Valid: true}, pgtype.Text{String: "team_1", Valid: true},
@@ -111,6 +114,7 @@ func TestScanGatewayAccountCandidateMapsDirectAndResourceFields(t *testing.T) {
 		pgtype.Text{String: "active", Valid: true}, pgtype.Bool{Bool: true, Valid: true}, pgtype.Text{String: "encrypted_source", Valid: true},
 		pgtype.Text{String: "proxy_source", Valid: true}, pgtype.Timestamptz{}, pgtype.Timestamptz{Time: later, Valid: true},
 		pgtype.Int4{Int32: 99, Valid: true}, pgtype.Text{String: "openai_standard", Valid: true},
+		pgtype.Int4{Int32: 13, Valid: true}, pgtype.Int8{Int64: 17, Valid: true},
 		1,
 	}
 	candidate, err := scanGatewayAccountCandidate(func(dest ...any) error {
@@ -125,13 +129,13 @@ func TestScanGatewayAccountCandidateMapsDirectAndResourceFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scanGatewayAccountCandidate() error = %v", err)
 	}
-	if candidate.AccountID != "acc_instance" || candidate.AccountAuthorizationID != "auth_account" || candidate.ConfigRevision != 7 {
+	if candidate.AccountID != "acc_instance" || candidate.AccountAuthorizationID != "auth_account" || candidate.ConfigRevision != 7 || candidate.DispatchRevision != 11 {
 		t.Fatalf("candidate direct fields = %+v", candidate)
 	}
 	if candidate.AuthorizationOwnerSystemAccountID != "sys_owner" || candidate.AuthorizationSourceTeamID != "team_1" {
 		t.Fatalf("candidate authorization fields = %+v", candidate)
 	}
-	if candidate.ResourceAccountID != "acc_source" || candidate.ResourceCredentialsEncrypted != "encrypted_source" || candidate.ResourceConcurrencyLimit != 99 {
+	if candidate.ResourceAccountID != "acc_source" || candidate.ResourceCredentialsEncrypted != "encrypted_source" || candidate.ResourceConcurrencyLimit != 99 || candidate.ResourceConfigRevision != 13 || candidate.ResourceDispatchRevision != 17 {
 		t.Fatalf("candidate resource fields = %+v", candidate)
 	}
 	if candidate.ModelRank != 1 {

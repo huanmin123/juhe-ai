@@ -3,10 +3,13 @@ package gatewayattemptloop
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	"juhe-ai/backend-go/internal/gatewayaudit"
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
+	"juhe-ai/backend-go/internal/modules/gatewayusage"
 	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
 	"juhe-ai/backend-go/internal/store/port"
 )
@@ -17,7 +20,7 @@ func TestRunRetriesNextAPIKeyBeforeNextAccount(t *testing.T) {
 		{Success: true, Committed: true},
 	}}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: 10 * time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{1, 3}), apiKeyCandidate("b", []int{0})}, Request: replaySafeRequest()})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{1, 3}), apiKeyCandidate("b", []int{0})}, Request: replaySafeRequest()})
 	if err != nil || result.Outcome != OutcomeSucceeded || len(executor.attempts) != 2 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -34,7 +37,7 @@ func TestRunExplicitRetryNextSkipsRemainingKeys(t *testing.T) {
 	first := apiKeyCandidate("a", []int{0, 1})
 	first.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{"action": "retry_next"})}})
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: replaySafeRequest()})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: replaySafeRequest()})
 	if err != nil || result.Outcome != OutcomeSucceeded || len(executor.attempts) != 2 || executor.attempts[1].CandidateIndex != 1 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -50,9 +53,19 @@ func TestRunAppliesCooldownThenAdvancesAccount(t *testing.T) {
 		"action": "rate_limited", "error_codes": []any{"rate_limit"}, "reset_strategy": "duration", "duration_hours": float64(1),
 	})}})
 	service := newTestService(t, executor, applier, Config{MaxAttempts: 3, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: replaySafeRequest()})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", TraceID: "trace-1", Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: replaySafeRequest()})
 	if err != nil || result.Outcome != OutcomeSucceeded || len(applier.mutations) != 1 || applier.mutations[0].Decision.Action != PolicyActionCooldown {
 		t.Fatalf("result = %+v err=%v mutations=%+v", result, err, applier.mutations)
+	}
+	mutation := applier.mutations[0]
+	if mutation.Target.AccountID != "a" || mutation.Target.ExpectedConfigRevision != 1 || mutation.Target.ExpectedDispatchRevision != 1 || mutation.Source.AccountID != "a" {
+		t.Fatalf("mutation identity = %+v", mutation)
+	}
+	if mutation.TraceID != "trace-1" || len(mutation.TransitionID) > 256 || !strings.HasPrefix(mutation.TransitionID, policyTransitionPrefix) || strings.Contains(mutation.Reason, "quota") {
+		t.Fatalf("mutation diagnostics = %+v", mutation)
+	}
+	if result.Attempts[0].PolicyApply == nil || result.Attempts[0].PolicyApply.Status != PolicyApplyApplied {
+		t.Fatalf("policy apply summary = %+v", result.Attempts[0].PolicyApply)
 	}
 }
 
@@ -63,7 +76,7 @@ func TestRunStopsAfterCommitAndOnNonRetryableFailure(t *testing.T) {
 	} {
 		executor := &executorStub{results: []AttemptResult{attemptResult}}
 		service := newTestService(t, executor, nil, Config{MaxAttempts: 3, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-		result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}, Request: replaySafeRequest()})
+		result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}, Request: replaySafeRequest()})
 		if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 {
 			t.Fatalf("result = %+v err=%v attempts=%d", result, err, len(executor.attempts))
 		}
@@ -75,7 +88,7 @@ func TestRunHonorsMaxAttemptsAndSkipsUnavailableKeys(t *testing.T) {
 	candidate := apiKeyCandidate("a", []int{0, 1, 2})
 	candidate.APIKeyRuntime[0].Status = "disabled"
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 1, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{candidate}, Request: replaySafeRequest()})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{candidate}, Request: replaySafeRequest()})
 	if err != nil || result.Outcome != OutcomeMaxAttempts || len(executor.attempts) != 1 || executor.attempts[0].APIKeyIndex != 1 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -84,7 +97,7 @@ func TestRunHonorsMaxAttemptsAndSkipsUnavailableKeys(t *testing.T) {
 func TestRunCapsAPIKeyAttemptsPerCandidate(t *testing.T) {
 	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true, KeyScopedFailure: true}}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 8, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{0, 1, 2, 3}), oauthCandidate("b")}, Request: replaySafeRequest()})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{apiKeyCandidate("a", []int{0, 1, 2, 3}), oauthCandidate("b")}, Request: replaySafeRequest()})
 	if err != nil || result.Outcome != OutcomeCandidatesExhausted || len(executor.attempts) != 3 {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -97,28 +110,74 @@ func TestRunCapsDistinctCandidateAttempts(t *testing.T) {
 	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true}}
 	candidates := []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b"), oauthCandidate("c"), oauthCandidate("d"), oauthCandidate("e")}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 16, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: candidates, Request: replaySafeRequest()})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: candidates, Request: replaySafeRequest()})
 	if err != nil || result.Outcome != OutcomeMaxAttempts || len(executor.attempts) != MaxCandidateAttemptsPerRequest {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
 }
 
 func TestRunUnsafePolicyMutationDoesNotReplayNextCandidate(t *testing.T) {
-	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true, Failure: FailureFacts{StatusCode: 429, ErrorCode: "rate_limit"}}}
-	applier := &applierStub{}
+	for _, status := range []PolicyApplyStatus{PolicyApplyApplied, PolicyApplyIdempotent, PolicyApplyStaleTarget, PolicyApplyStaleSource, PolicyApplyIneligible} {
+		t.Run(string(status), func(t *testing.T) {
+			executor := &executorStub{fallback: AttemptResult{RetryAllowed: true, Failure: FailureFacts{StatusCode: 429, ErrorCode: "rate_limit"}}}
+			applier := &applierStub{result: validPolicyApplyResult(status)}
+			first := oauthCandidate("a")
+			first.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{"action": "rate_limited", "error_codes": []any{"rate_limit"}, "reset_strategy": "duration", "duration_hours": float64(1)})}})
+			service := newTestService(t, executor, applier, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
+			result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: protocolgateway.RequestShape{Method: "POST", Path: "/v1beta/interactions"}})
+			if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 || len(applier.mutations) != 1 || result.Attempts[0].PolicyApply == nil || result.Attempts[0].PolicyApply.Status != status {
+				t.Fatalf("result = %+v err=%v attempts=%+v mutations=%+v", result, err, executor.attempts, applier.mutations)
+			}
+		})
+	}
+}
+
+func TestRunPolicyWriterErrorPreservesAttemptEvidenceAndStops(t *testing.T) {
+	storeErr := errors.New("postgres unavailable")
+	usage := gatewayusage.TerminalFacts{Outcome: gatewayusage.OutcomeFailed, ErrorCode: "usage-proof"}
+	audit := gatewayaudit.TerminalInput{RequestedOutcome: gatewayaudit.OutcomeUpstreamFailed, ErrorCode: "audit-proof"}
+	executor := &executorStub{results: []AttemptResult{{
+		RetryAllowed: true,
+		Failure:      FailureFacts{StatusCode: 429, ErrorCode: "rate_limit"},
+		Usage:        usage,
+		Audit:        audit,
+	}}}
+	applier := &applierStub{err: storeErr}
 	first := oauthCandidate("a")
 	first.Credentials = gatewaycandidatewindow.NewCredentialSet(map[string]any{"error_handling_rules": []any{rule(map[string]any{"action": "rate_limited", "error_codes": []any{"rate_limit"}, "reset_strategy": "duration", "duration_hours": float64(1)})}})
 	service := newTestService(t, executor, applier, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: protocolgateway.RequestShape{Method: "POST", Path: "/v1beta/interactions"}})
-	if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 || len(applier.mutations) != 1 {
-		t.Fatalf("result = %+v err=%v attempts=%+v mutations=%+v", result, err, executor.attempts, applier.mutations)
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-error", Candidates: []gatewaycandidatewindow.Candidate{first, oauthCandidate("b")}, Request: replaySafeRequest()})
+	if !errors.Is(err, storeErr) || result.Outcome != OutcomeFailed || !errors.Is(result.TerminalError, storeErr) || len(executor.attempts) != 1 || len(result.Attempts) != 1 || result.LastAttempt == nil {
+		t.Fatalf("result = %+v err=%v attempts=%d", result, err, len(executor.attempts))
+	}
+	if result.Attempts[0].Usage.ErrorCode != "usage-proof" || result.Attempts[0].Audit.ErrorCode != "audit-proof" || result.LastAttempt.Usage.ErrorCode != "usage-proof" || result.LastAttempt.Audit.ErrorCode != "audit-proof" {
+		t.Fatalf("attempt evidence was lost: %+v / %+v", result.Attempts[0], result.LastAttempt)
+	}
+}
+
+func TestRunRejectsInvalidExternalPolicyDecisionBeforeWriter(t *testing.T) {
+	invalid := PolicyDecision{Action: PolicyActionCooldown, RuleName: "external", CooldownStatus: CooldownRateLimited}
+	executor := &executorStub{results: []AttemptResult{{RetryAllowed: true, Failure: FailureFacts{StatusCode: 429}, PolicyDecision: &invalid}}}
+	applier := &applierStub{}
+	service := newTestService(t, executor, applier, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-invalid", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}, Request: replaySafeRequest()})
+	if err == nil || result.Outcome != OutcomeFailed || len(result.Attempts) != 1 || len(executor.attempts) != 1 || len(applier.mutations) != 0 {
+		t.Fatalf("result = %+v err=%v attempts=%d mutations=%d", result, err, len(executor.attempts), len(applier.mutations))
+	}
+}
+
+func TestRunRequiresStableMutationIDBeforeExecuting(t *testing.T) {
+	executor := &executorStub{fallback: AttemptResult{Success: true, Committed: true}}
+	service := newTestService(t, executor, nil, Config{WallTimeout: time.Minute, FirstByteTimeout: time.Second})
+	if _, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a")}}); err == nil || len(executor.attempts) != 0 {
+		t.Fatalf("err=%v attempts=%d", err, len(executor.attempts))
 	}
 }
 
 func TestRunDoesNotReplayUnlessRequestIsClassifiedSafe(t *testing.T) {
 	executor := &executorStub{fallback: AttemptResult{RetryAllowed: true}}
 	service := newTestService(t, executor, nil, Config{MaxAttempts: 4, WallTimeout: time.Minute, FirstByteTimeout: time.Second})
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a"), oauthCandidate("b")}})
 	if err != nil || result.Outcome != OutcomeFailed || len(executor.attempts) != 1 || result.LastAttempt == nil || result.LastAttempt.RetryAllowed {
 		t.Fatalf("result = %+v err=%v attempts=%+v", result, err, executor.attempts)
 	}
@@ -128,14 +187,14 @@ func TestRunPropagatesBudgetsAndContextTerminalStates(t *testing.T) {
 	now := time.Now().UTC()
 	executor := &executorStub{results: []AttemptResult{{Success: true, Committed: true}}}
 	service := newTestService(t, executor, nil, Config{WallTimeout: 30 * time.Second, FirstByteTimeout: 7 * time.Second}).WithNow(func() time.Time { return now })
-	result, err := service.Run(Input{Context: context.Background(), Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a")}})
+	result, err := service.Run(Input{Context: context.Background(), MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a")}})
 	if err != nil || result.Outcome != OutcomeSucceeded || !executor.attempts[0].Budget.WallDeadline.Equal(now.Add(30*time.Second)) || executor.attempts[0].Budget.FirstByteTimeout != 7*time.Second || !executor.attempts[0].Budget.FirstByteDeadline.Equal(now.Add(7*time.Second)) {
 		t.Fatalf("result = %+v err=%v attempt=%+v", result, err, executor.attempts[0])
 	}
 
 	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	result, err = service.Run(Input{Context: canceled, Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a")}})
+	result, err = service.Run(Input{Context: canceled, MutationID: "request-1", Candidates: []gatewaycandidatewindow.Candidate{oauthCandidate("a")}})
 	if err != nil || result.Outcome != OutcomeCanceled || !errors.Is(result.TerminalError, context.Canceled) {
 		t.Fatalf("canceled result = %+v err=%v", result, err)
 	}
@@ -173,11 +232,33 @@ func (s *executorStub) Execute(_ context.Context, attempt Attempt) (AttemptResul
 	return result, nil
 }
 
-type applierStub struct{ mutations []PolicyMutation }
+type applierStub struct {
+	mutations []PolicyMutation
+	result    PolicyApplyResult
+	err       error
+}
 
-func (s *applierStub) Apply(_ context.Context, mutation PolicyMutation) error {
+func (s *applierStub) Apply(_ context.Context, mutation PolicyMutation) (PolicyApplyResult, error) {
 	s.mutations = append(s.mutations, mutation)
-	return nil
+	if s.err != nil {
+		return PolicyApplyResult{}, s.err
+	}
+	if s.result.Status != "" {
+		if s.result.TransitionID == "" {
+			s.result.TransitionID = mutation.TransitionID
+		}
+		return s.result, nil
+	}
+	return PolicyApplyResult{Status: PolicyApplyApplied, TransitionID: mutation.TransitionID, TargetDispatchRevision: mutation.Target.ExpectedDispatchRevision + 1, OutboxEventID: "event-1"}, nil
+}
+
+func validPolicyApplyResult(status PolicyApplyStatus) PolicyApplyResult {
+	result := PolicyApplyResult{Status: status}
+	if status == PolicyApplyApplied || status == PolicyApplyIdempotent {
+		result.TargetDispatchRevision = 2
+		result.OutboxEventID = "event-1"
+	}
+	return result
 }
 
 func newTestService(t *testing.T, executor AttemptExecutor, applier PolicyApplier, config Config) *Service {
@@ -194,11 +275,18 @@ func apiKeyCandidate(id string, indices []int) gatewaycandidatewindow.Candidate 
 	for _, index := range indices {
 		runtime = append(runtime, gatewaycandidatewindow.APIKeyRuntime{KeyIndex: index, Status: "active"})
 	}
-	return gatewaycandidatewindow.Candidate{Projection: port.GatewayAccountCandidate{AccountID: id, Type: "api_key"}, APIKeyRuntime: runtime}
+	return gatewaycandidatewindow.Candidate{Projection: testProjection(id, "api_key"), APIKeyRuntime: runtime}
 }
 
 func oauthCandidate(id string) gatewaycandidatewindow.Candidate {
-	return gatewaycandidatewindow.Candidate{Projection: port.GatewayAccountCandidate{AccountID: id, Type: "oauth"}}
+	return gatewaycandidatewindow.Candidate{Projection: testProjection(id, "oauth")}
+}
+
+func testProjection(id, accountType string) port.GatewayAccountCandidate {
+	return port.GatewayAccountCandidate{
+		AccountID: id, SystemAccountID: "system-1", GroupID: "group-1", Type: accountType,
+		Status: "active", ConfigRevision: 1, DispatchRevision: 1,
+	}
 }
 
 func replaySafeRequest() protocolgateway.RequestShape {

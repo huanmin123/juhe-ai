@@ -106,6 +106,8 @@ func scanGatewayAccountCandidate(scan gatewayAccountCandidateScan) (port.Gateway
 	var resourceSchedulable pgtype.Bool
 	var resourceCooldownUntil, resourceAccountExpiresAt pgtype.Timestamptz
 	var resourceConcurrencyLimit pgtype.Int4
+	var resourceConfigRevision pgtype.Int4
+	var resourceDispatchRevision pgtype.Int8
 	if err := scan(
 		&candidate.AccountID,
 		&candidate.SystemAccountID,
@@ -134,6 +136,7 @@ func scanGatewayAccountCandidate(scan gatewayAccountCandidateScan) (port.Gateway
 		&cooldownUntil,
 		&accountExpiresAt,
 		&candidate.ConfigRevision,
+		&candidate.DispatchRevision,
 		&authorizationSourceAccountID,
 		&authorizationID,
 		&authorizationOwnerID,
@@ -155,6 +158,8 @@ func scanGatewayAccountCandidate(scan gatewayAccountCandidateScan) (port.Gateway
 		&resourceAccountExpiresAt,
 		&resourceConcurrencyLimit,
 		&resourceCompatibility,
+		&resourceConfigRevision,
+		&resourceDispatchRevision,
 		&candidate.ModelRank,
 	); err != nil {
 		return port.GatewayAccountCandidate{}, fmt.Errorf("scan gateway account candidate: %w", err)
@@ -187,6 +192,12 @@ func scanGatewayAccountCandidate(scan gatewayAccountCandidateScan) (port.Gateway
 		candidate.ResourceConcurrencyLimit = int(resourceConcurrencyLimit.Int32)
 	}
 	candidate.ResourceClientCompatibility = textValue(resourceCompatibility)
+	if resourceConfigRevision.Valid {
+		candidate.ResourceConfigRevision = int(resourceConfigRevision.Int32)
+	}
+	if resourceDispatchRevision.Valid {
+		candidate.ResourceDispatchRevision = resourceDispatchRevision.Int64
+	}
 	candidate.BindingCreatedAt = candidate.BindingCreatedAt.UTC()
 	return candidate, nil
 }

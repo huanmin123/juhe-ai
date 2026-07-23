@@ -12,6 +12,7 @@ import (
 	"juhe-ai/backend-go/internal/modules/gatewaycandidatewindow"
 	"juhe-ai/backend-go/internal/modules/gatewayusage"
 	protocolgateway "juhe-ai/backend-go/internal/protocols/gateway"
+	"juhe-ai/backend-go/internal/store/port"
 )
 
 const (
@@ -66,13 +67,29 @@ type AttemptExecutor interface {
 }
 
 type PolicyMutation struct {
-	Candidate gatewaycandidatewindow.Candidate
-	Decision  PolicyDecision
-	Failure   FailureFacts
+	TransitionID string
+	Target       port.GatewayAccountPolicyTarget
+	Source       port.GatewayAccountPolicyRevisionFence
+	Decision     PolicyDecision
+	Reason       string
+	TraceID      string
+	AppliedAt    time.Time
 }
 
+type PolicyApplyStatus = port.GatewayAccountPolicyWriteStatus
+
+const (
+	PolicyApplyApplied     = port.GatewayAccountPolicyWriteApplied
+	PolicyApplyIdempotent  = port.GatewayAccountPolicyWriteIdempotent
+	PolicyApplyStaleTarget = port.GatewayAccountPolicyWriteStaleTarget
+	PolicyApplyStaleSource = port.GatewayAccountPolicyWriteStaleSource
+	PolicyApplyIneligible  = port.GatewayAccountPolicyWriteIneligible
+)
+
+type PolicyApplyResult = port.GatewayAccountPolicyWriteResult
+
 type PolicyApplier interface {
-	Apply(context.Context, PolicyMutation) error
+	Apply(context.Context, PolicyMutation) (PolicyApplyResult, error)
 }
 
 type AttemptSummary struct {
@@ -84,6 +101,7 @@ type AttemptSummary struct {
 	Committed      bool
 	RetryAllowed   bool
 	PolicyAction   PolicyAction
+	PolicyApply    *PolicyApplyResult
 	StatusCode     int
 	ErrorCode      string
 	Usage          gatewayusage.TerminalFacts
@@ -99,6 +117,8 @@ type Config struct {
 
 type Input struct {
 	Context    context.Context
+	MutationID string
+	TraceID    string
 	Candidates []gatewaycandidatewindow.Candidate
 	Request    protocolgateway.RequestShape
 	Profile    *protocolgateway.Profile
@@ -151,6 +171,14 @@ func (s *Service) WithNow(now func() time.Time) *Service {
 func (s *Service) Run(input Input) (Result, error) {
 	if input.Context == nil {
 		return Result{}, fmt.Errorf("gateway attempt context is required")
+	}
+	mutationID, err := stableInputID(input.MutationID, 256)
+	if err != nil {
+		return Result{}, fmt.Errorf("gateway attempt mutation ID: %w", err)
+	}
+	traceID, err := optionalStableInputID(input.TraceID, 200)
+	if err != nil {
+		return Result{}, fmt.Errorf("gateway attempt trace ID: %w", err)
 	}
 	if len(input.Candidates) > gatewaycandidatewindow.FinalLimit {
 		return Result{}, fmt.Errorf("gateway attempt candidates exceed limit: %d", gatewaycandidatewindow.FinalLimit)
@@ -234,18 +262,34 @@ func (s *Service) Run(input Input) (Result, error) {
 				decision, policyErr = s.decide(candidate, attemptResult.Failure, s.now())
 			}
 			if policyErr != nil {
-				return Result{}, policyErr
+				return s.finish(result, OutcomeFailed, &attemptResult, policyErr), policyErr
+			}
+			decision, policyErr = normalizePolicyDecision(decision, s.now())
+			if policyErr != nil {
+				policyErr = fmt.Errorf("invalid gateway account policy decision: %w", policyErr)
+				return s.finish(result, OutcomeFailed, &attemptResult, policyErr), policyErr
 			}
 			result.Attempts[len(result.Attempts)-1].PolicyAction = decision.Action
 			if decision.Action == PolicyActionCooldown || decision.Action == PolicyActionDisable {
 				if s.applier == nil {
-					return Result{}, fmt.Errorf("gateway account policy applier is required for %s", decision.Action)
+					policyErr = fmt.Errorf("gateway account policy applier is required for %s", decision.Action)
+					return s.finish(result, OutcomeFailed, &attemptResult, policyErr), policyErr
 				}
-				mutationFailure := attemptResult.Failure
-				mutationFailure.BodyText = ""
-				if err := s.applier.Apply(ctx, PolicyMutation{Candidate: candidate, Decision: decision, Failure: mutationFailure}); err != nil {
-					return Result{}, fmt.Errorf("apply gateway account policy: %w", err)
+				mutation, mutationErr := newPolicyMutation(mutationID, traceID, attempt.Index, candidate, decision, attemptResult.Failure, s.now())
+				if mutationErr != nil {
+					mutationErr = fmt.Errorf("build gateway account policy mutation: %w", mutationErr)
+					return s.finish(result, OutcomeFailed, &attemptResult, mutationErr), mutationErr
 				}
+				applyResult, applyErr := s.applier.Apply(ctx, mutation)
+				if applyErr != nil {
+					applyErr = fmt.Errorf("apply gateway account policy: %w", applyErr)
+					return s.finish(result, OutcomeFailed, &attemptResult, applyErr), applyErr
+				}
+				if applyErr = validatePolicyApplyResult(applyResult, mutation.TransitionID); applyErr != nil {
+					applyErr = fmt.Errorf("apply gateway account policy result: %w", applyErr)
+					return s.finish(result, OutcomeFailed, &attemptResult, applyErr), applyErr
+				}
+				result.Attempts[len(result.Attempts)-1].PolicyApply = clonePolicyApplyResult(applyResult)
 			}
 			if decision.Action == PolicyActionRetryNext || decision.Action == PolicyActionCooldown || decision.Action == PolicyActionDisable {
 				if !replayPolicy.Allowed {

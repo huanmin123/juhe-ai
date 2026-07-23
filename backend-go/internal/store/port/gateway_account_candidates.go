@@ -77,6 +77,7 @@ type GatewayAccountCandidate struct {
 	CooldownUntil             *time.Time
 	AccountExpiresAt          *time.Time
 	ConfigRevision            int
+	DispatchRevision          int64
 
 	AuthorizationSourceAccountID      string
 	AuthorizationID                   string
@@ -100,6 +101,8 @@ type GatewayAccountCandidate struct {
 	ResourceAccountExpiresAt          *time.Time
 	ResourceConcurrencyLimit          int
 	ResourceClientCompatibility       string
+	ResourceConfigRevision            int
+	ResourceDispatchRevision          int64
 	ModelRank                         int
 }
 

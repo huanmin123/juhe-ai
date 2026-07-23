@@ -23,8 +23,8 @@
 
 - 本批将重放安全从调用方裸 bool 收敛为 `RequestShape` typed classifier：只允许 account-independent models 读取和权威策略允许的有界推理操作；Responses 必须明确证明 `store=false`，Chat 允许缺省 / `null` / `false`，资源读取、资源 mutation、未知 GET/POST，以及非法、超限和未扫描 store 均 fail-closed。显式 cooldown/disable 在 unsafe 请求上仍可写当前账户 mutation，但不能进入下一个候选。
 - 新增 attempt 级 `gatewaydeadline.Controller`：Service 冻结 absolute wall/first-byte deadline，HTTPExecutor 在 dispatch 前把 cancel-cause context 绑定到真实 request；response headers、JSON body 与 stream body 共用同一 deadline，首个下游字节后停止 first-byte timer。timeout 的 FailureFacts、usage、audit 使用一致的 `first_byte_timeout` 归因，下游阻塞/取消不会被误写成上游超时或触发跨账户重试。
-- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误和 client-lifecycle 重试。集中 normal/race/vet 与 diff check 通过。当前进度口径更新为：代码迁移约 `71%`，可独立验证 Go 能力约 `68%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
-- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、PolicyApplier 的 target/source revision CAS 与 dispatch outbox、Redis circuit/hot quality、真实 upstream/listener/canary/rollback；因此本批不改变 owner manifest，也不删除 Node gateway。
+- 独立复查已修复 stream partial write/tail callback、资源 GET 跨账户、Responses/Chat store、wall deadline 漂移、timeout 覆盖无关错误和 client-lifecycle 重试。downstream commit、typed store metadata 和 account policy writer 两批集中 normal/race/vet 与 diff check 通过。当前进度口径更新为：代码迁移约 `74%`，可独立验证 Go 能力约 `71%`，生产 owner 接管 `0%`，Node 通用减法约 `3%~4%`。
+- 尚未完成：生产 listener/body admission -> typed request metadata 接线、HEAD method fact、account circuit outbox consumer/projector、Redis circuit/hot quality、真实 upstream/listener/canary/rollback；PolicyApplier 的 target/source revision CAS 与 dispatch outbox producer 已完成，但不据此改变 owner manifest 或删除 Node gateway。
 
 ### 2026-07-23 网关传输核心批次
 
@@ -987,7 +987,8 @@
 - [ ] 接入跨请求 round-robin / weighted-round-robin 共享游标；本轮只完成请求级双 key 放大上限，避免把未迁移的 Redis runtime 假装成已完成。
 - [x] 新增 downstream typed stage/commit/snapshot adapter，并把 header-only、透明失败、SSE 首次输出和 attempt deadline 可见性接入 response/executor；该 adapter 尚无生产 listener owner。
 - [x] 新增 bounded request metadata scanner 与 typed store fact，替代无法区分缺省/非法/未扫描的 `*bool`；生产 listener/body admission 接线仍待后续。
-- [ ] 下一批接账户状态 PostgreSQL writer（含 target/source revision CAS、dispatch outbox）、Redis circuit/hot quality、生产 request preparation/listener、request metadata Apply 和 owner manifest。
+- [x] 接入账户状态 PostgreSQL writer：脱敏 mutation、稳定 transition、target/source revision CAS、授权身份重验、source family revision fan-out、事务内 dispatch outbox 与 stats dirty；Node 非事务/固定 3 秒临时冷却缺陷不照搬。
+- [ ] 下一批接 account circuit outbox consumer/projector、Redis circuit/hot quality、API-key runtime observation writer、生产 request preparation/listener、request metadata Apply 和 owner manifest。
 
 ## 2026-07-24 downstream commit 与 store metadata 结果
 
@@ -997,5 +998,15 @@
 - [ ] 生产 listener、HEAD method fact、真实 request body admission、真实反向代理/header smoke、owner manifest 与 Node 删除仍待后续批次。
 
 集中验证已通过：相关 6 包 `go test`、`go test -race`、`go vet` 与 `git diff --check`。本轮未执行全仓测试、Docker、真实 upstream 或 listener smoke，按第一波大模块完成后集中校验的节奏后置。
+
+## 2026-07-24 account policy PostgreSQL writer 结果
+
+- [x] 候选 projection 增加 target/source config + dispatch revision，授权实例旧 attempt 可分别识别 stale target/source。
+- [x] PolicyMutation 改为不含 CredentialSet/body/message 的 typed persistence facts；稳定 MutationID 生成有界 transition，非法外部 decision 和不完整授权身份 fail-closed。
+- [x] PolicyApplier 返回 applied/idempotent/stale/ineligible，writer 错误保留 attempt/usage/audit 并停止重放，unsafe 请求顺序保持不变。
+- [x] PostgreSQL 单事务完成 target status CAS、source/authorization/binding 重验、普通 source 的授权实例 revision fan-out、000072 dispatch outbox 和 direct/authorized stats dirty；授权实例只改本地 target，API-key runtime 不写。
+- [ ] outbox worker/Redis projector、提交后本地 invalidation、API-key runtime observation writer、cooldown recovery writer、真实 PostgreSQL 并发/回滚 smoke、生产 listener/owner 仍待后续批次。
+
+集中验证已通过：`gatewayattemptloop`、`gatewaycandidatewindow`、`store/postgres` 的 `go test`、`go test -race`、`go vet` 和 `git diff --check`。本轮未执行全仓、Docker 或真实 PostgreSQL；SQL 锁序、回滚和并发行为仍需后续真实依赖 smoke，不能用静态守卫代替。
 
 本批集中验证：候选窗口、BatchHydrator、PostgreSQL hydration SQL 和既有 API-key runtime reader 的定向 `go test`、`go test -race`、`go vet` 均通过；未将真实 PostgreSQL/Redis/upstream 证据误记为通过。

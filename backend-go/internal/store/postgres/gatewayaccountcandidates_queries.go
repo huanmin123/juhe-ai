@@ -77,6 +77,7 @@ SELECT
   accounts.cooldown_until,
   accounts.account_expires_at,
   accounts.config_revision,
+  accounts.dispatch_revision,
   accounts.authorization_instance_source_account_id,
   accounts.authorization_instance_authorization_id,
   accounts.authorization_instance_owner_system_account_id,
@@ -98,6 +99,8 @@ SELECT
   source_accounts.account_expires_at,
   source_accounts.concurrency_limit,
   source_accounts.client_compatibility,
+  source_accounts.config_revision,
+  source_accounts.dispatch_revision,
   model_ranking.model_rank
 FROM juhe_business.group_accounts AS group_accounts
 INNER JOIN juhe_business.groups AS groups
