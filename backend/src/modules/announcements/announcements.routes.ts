@@ -21,6 +21,11 @@ import { diffSafeFields, runLoggedOperationAsync, safeChange } from '../operatio
 
 export const announcementsRouter = Router()
 
+interface AnnouncementMutationResult {
+  id: string
+  revision: string
+}
+
 const publicListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(30).optional()
 })
@@ -146,7 +151,7 @@ announcementsRouter.post('/', requireAdmin, mutationGuard({
       }
     }
   }, req)
-  res.status(201).json(ok(announcement))
+  res.status(201).json(ok(toAnnouncementMutationResult(announcement)))
 })
 
 announcementsRouter.patch('/:id', requireAdmin, async (req, res) => {
@@ -187,7 +192,7 @@ announcementsRouter.patch('/:id', requireAdmin, async (req, res) => {
       }
     }
   }, req)
-  res.json(ok(announcement))
+  res.json(ok(toAnnouncementMutationResult(announcement)))
 })
 
 announcementsRouter.post('/:id/publish', requireAdmin, async (req, res) => {
@@ -221,7 +226,7 @@ announcementsRouter.post('/:id/publish', requireAdmin, async (req, res) => {
       }
     }
   }, req)
-  res.json(ok(announcement))
+  res.json(ok(toAnnouncementMutationResult(announcement)))
 })
 
 announcementsRouter.post('/:id/unpublish', requireAdmin, async (req, res) => {
@@ -254,7 +259,7 @@ announcementsRouter.post('/:id/unpublish', requireAdmin, async (req, res) => {
       }
     }
   }, req)
-  res.json(ok(announcement))
+  res.json(ok(toAnnouncementMutationResult(announcement)))
 })
 
 announcementsRouter.delete('/:id', requireAdmin, async (req, res) => {
@@ -293,4 +298,11 @@ function requireActor(): string {
     throw new Error('请先登录')
   }
   return context.systemAccountId
+}
+
+function toAnnouncementMutationResult(announcement: { id: string; updatedAt: string }): AnnouncementMutationResult {
+  return {
+    id: announcement.id,
+    revision: announcement.updatedAt
+  }
 }

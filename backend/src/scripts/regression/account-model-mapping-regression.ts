@@ -1535,7 +1535,7 @@ async function assertUsageRecordFields(
     }
   })
   flushAllUsageRecordQueue()
-  const record = repositories.listUsageRecords(undefined, { page: 1, pageSize: 20 })
+  const record = repositories.listUsageRecords(undefined, { traceId, page: 1, pageSize: 20 })
     .items
     .find((item) => item.traceId === traceId)
   assert(record, '模型映射调用应写入使用记录')
@@ -1666,12 +1666,12 @@ async function assertAuditLogFields(
   assert(record, '模型映射调用应写入审计日志')
   assert.equal(record.model, sourceModel, '审计日志 model 应保留下游模型')
   assert.equal(record.upstreamModel, upstreamModel, '审计日志 upstreamModel 应记录实际上游模型')
-  assert.equal(record.pricingModel, upstreamModel, '审计日志 pricingModel 应记录实际计价模型')
   assert.equal(record.modelMappingApplied, true, '审计日志应标记命中模型映射')
-  assert.equal(record.modelMappingSource, 'account', '审计日志映射来源应固定为 account')
 
   const detail = repositories.getAuditLogDetail(record.id)
   assert.equal(detail?.upstreamModel, upstreamModel, '审计详情应返回实际上游模型')
+  assert.equal(detail?.pricingModel, upstreamModel, '审计详情 pricingModel 应记录实际计价模型')
+  assert.equal(detail?.modelMappingSource, 'account', '审计详情映射来源应固定为 account')
   const upstreamRequestPayload = detail?.payloads.find((payload) => payload.partType === 'upstream_request')
   assert(upstreamRequestPayload, '审计详情应保留上游请求 payload 摘要')
 }

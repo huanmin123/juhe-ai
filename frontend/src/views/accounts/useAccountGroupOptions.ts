@@ -198,7 +198,8 @@ function groupOptionParams(scope: Required<AccountGroupOptionsScope>, keyword: s
     keyword,
     limit,
     manageableOnly: true,
-    preferDefault: true
+    preferDefault: true,
+    purpose: 'account' as const
   }
 }
 

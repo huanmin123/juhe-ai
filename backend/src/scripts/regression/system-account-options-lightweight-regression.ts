@@ -49,16 +49,8 @@ interface ApiEnvelope<T> {
 
 interface SystemAccountOptionSummary {
   id: string
-  username: string
-  displayName: string
-  status: 'active' | 'disabled'
-  role?: unknown
-  description?: unknown
-  mustChangePassword?: unknown
-  lastLoginAt?: unknown
-  createdAt?: unknown
-  updatedAt?: unknown
-  passwordHash?: unknown
+  name: string
+  disabledReason?: 'account_disabled'
 }
 
 interface SystemAccountSummary {
@@ -67,6 +59,8 @@ interface SystemAccountSummary {
   displayName: string
   role: 'super_admin' | 'admin' | 'user'
   status: 'active' | 'disabled'
+  createdAt?: unknown
+  updatedAt?: unknown
 }
 
 interface SystemAccountListResult {
@@ -118,11 +112,11 @@ try {
     const adminOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options', seed.adminCookie)
     const activeOption = adminOptions.find((account) => account.id === seed.activeUserId)
     assert(activeOption, '系统账户选项应包含普通启用用户')
-    assert.equal(activeOption.displayName, '系统账户选项用户')
-    assert.equal(activeOption.status, 'active')
+    assert.equal(activeOption.name, '系统账户选项用户')
+    assert.equal(activeOption.disabledReason, undefined)
     const disabledOption = adminOptions.find((account) => account.id === seed.disabledUserId)
     assert(disabledOption, '系统账户选项应包含停用用户，供筛选和历史归属展示')
-    assert.equal(disabledOption.status, 'disabled')
+    assert.equal(disabledOption.disabledReason, 'account_disabled')
     assertLightweightSystemAccountOption(activeOption)
     assertLightweightSystemAccountOption(disabledOption)
 
@@ -131,6 +125,7 @@ try {
     assert.equal(systemAccountOptionSqls.length, 2, '相同系统账户 options 查询应直接读取业务表，不依赖页面缓存')
     assert.equal(systemAccountOptionSqls.some((sql) => /SELECT\s+\*/i.test(sql)), false, '系统账户选项查询不应 SELECT *')
     assert.equal(systemAccountOptionSqls.some((sql) => /\bpassword_hash\b/i.test(sql)), false, '系统账户选项查询不应读取 password_hash')
+    assert.equal(systemAccountOptionSqls.some((sql) => /SELECT\s+id\s*,\s*username\b/i.test(sql)), false, '系统账户选项响应投影不应读取 username')
     assert.equal(systemAccountOptionSqls.some((sql) => /\brole\b|\bmust_change_password\b|\blast_login_at\b|\bcreated_at\b|\bupdated_at\b/i.test(sql)), false, '系统账户选项查询不应读取管理字段')
     assert.equal(systemAccountOptionSqls.some((sql) => /\bCOALESCE\s*\(/i.test(sql)), false, '系统账户选项查询不应通过 COALESCE 扫描展示字段')
 
@@ -151,6 +146,14 @@ try {
 
     const readonlyAdminList = await getEnvelope<SystemAccountListResult>(baseUrl, '/__aisys__/api/system-accounts?page=1&pageSize=10', seed.readonlyAdminCookie)
     assert(readonlyAdminList.items.some((account) => account.id === seed.activeUserId), '普通管理员应能查看系统账户列表')
+    for (const account of readonlyAdminList.items) {
+      assert.equal(Object.prototype.hasOwnProperty.call(account, 'createdAt'), false, '系统账户列表不应返回 createdAt')
+      assert.equal(Object.prototype.hasOwnProperty.call(account, 'updatedAt'), false, '系统账户列表不应返回 updatedAt')
+    }
+    const listProjectionSql = systemAccountOptionSqls.find((sql) => /\bLIMIT\s+\?\s+OFFSET\s+\?/i.test(sql) && /\bmust_change_password\b/i.test(sql))
+    assert(listProjectionSql, '系统账户列表应执行轻量分页查询')
+    const listSelectProjection = listProjectionSql.match(/\bSELECT\b([\s\S]*?)\bFROM\b/i)?.[1] ?? ''
+    assert.doesNotMatch(listSelectProjection, /\bcreated_at\b|\bupdated_at\b/i, '系统账户列表 SQL 不应读取未展示时间字段')
     const readonlyAdminOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options?limit=10', seed.readonlyAdminCookie)
     assert(readonlyAdminOptions.some((account) => account.id === seed.activeUserId), '普通管理员应能查看系统账户选项')
     await assertJsonStatus(baseUrl, '/__aisys__/api/system-accounts', seed.readonlyAdminCookie, 'POST', {
@@ -284,9 +287,7 @@ function seedData(): SeedState {
 }
 
 function assertLightweightSystemAccountOption(account: SystemAccountOptionSummary): void {
-  for (const field of ['role', 'description', 'mustChangePassword', 'lastLoginAt', 'createdAt', 'updatedAt', 'passwordHash'] as const) {
-    assert.equal(Object.prototype.hasOwnProperty.call(account, field), false, `系统账户选项不应返回 ${field}`)
-  }
+  assert.deepEqual(Object.keys(account).sort(), account.disabledReason ? ['disabledReason', 'id', 'name'] : ['id', 'name'], '系统账户选项必须是严格轻量 DTO')
 }
 
 function sessionCookie(systemAccountId: string): string {

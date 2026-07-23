@@ -207,8 +207,8 @@ try {
     assistantStatus: 'canceled', runnerState: 'terminal'
   }, 'stop 必须把失去内存句柄的孤立 streaming 轮次权威收口')
 
-  const keys = await apiJson<{ data: Array<{ id: string }> }>(baseUrl, '/__aisys__/api/my-chat/api-keys', cookie)
-  assert(keys.data.some((item) => item.id === gatewayKey.id), 'AI 问答应列出当前用户自己的可用 API Key')
+  const retiredApiKeyList = await fetch(`${baseUrl}/__aisys__/api/my-chat/api-keys`, { headers: { cookie } })
+  assert.equal(retiredApiKeyList.status, 404, 'AI 问答不应保留未被界面使用的 API Key 列表端点')
   const invalidCreate = await fetch(`${baseUrl}/__aisys__/api/my-chat/conversations`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ unexpected: true }) })
   assert.equal(invalidCreate.status, 400, 'AI 问答参数校验失败必须返回 400 而不是全局 500')
   const defaultConversation = await apiJson<{ data: { id: string; apiKeyNameSnapshot: string; userTurnLimit: number } }>(baseUrl, '/__aisys__/api/my-chat/conversations', cookie, {})

@@ -1,6 +1,6 @@
 import { computed, type Ref } from 'vue'
 
-import type { AuditLogSummary } from '@/types/domain'
+import type { AuditLogListItem } from '@/types/domain'
 
 type AuditLogViewMode = 'list' | 'search'
 type TablePaginationState = Record<string, unknown>
@@ -13,7 +13,7 @@ export function useAuditLogModeBridge(input: {
   hotSearchActiveFilterCount: Ref<number>
   hotSearchKeywordFilter: Ref<string>
   hotSearchLoading: Ref<boolean>
-  hotSearchRecords: Ref<AuditLogSummary[]>
+  hotSearchRecords: Ref<AuditLogListItem[]>
   hotSearchResult: Ref<unknown>
   hotSearchTablePagination: Ref<TablePaginationState>
   loadData: (options?: { forceOptions?: boolean }) => unknown
@@ -21,7 +21,7 @@ export function useAuditLogModeBridge(input: {
   loadMoreMobileRecords: () => void
   mobileHasMore: Ref<boolean>
   mobileLoadingMore: Ref<boolean>
-  records: Ref<AuditLogSummary[]>
+  records: Ref<AuditLogListItem[]>
   refreshMobileRecords: () => void
   resetFilters: () => void
   resetHotSearch: () => void

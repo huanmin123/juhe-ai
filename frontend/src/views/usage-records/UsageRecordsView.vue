@@ -65,9 +65,16 @@
       @copy-trace-id="copyTraceId"
       @mobile-load-more="loadMoreMobileRecords"
       @mobile-refresh="refreshMobileRecords"
+      @open-detail="openUsageRecordDetail"
       @open-trace-target="openTraceTarget"
     />
   </a-card>
+  <UsageRecordDetailDrawer
+    v-model:open="detailOpen"
+    :detail="detailRecord"
+    :loading="detailLoading"
+    @update:open="handleDetailOpenChange"
+  />
 </template>
 
 <script setup lang="ts">
@@ -89,10 +96,11 @@ import { copyTextToClipboard } from '@/shared/clipboard'
 import { rememberGroupLabel, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { trimmedRouteQueryValue } from '@/shared/routeQuery'
-import type { UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
+import type { UsageRecordListItem, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import UsageRecordsTable from './UsageRecordsTable.vue'
+import UsageRecordDetailDrawer from './UsageRecordDetailDrawer.vue'
 import { usageRecordActiveFilterCount, usageRecordAdvancedFilterCount, usageRecordListParams } from './usageRecordFilters'
 import {
   defaultUsageRecordTrafficSourceFilter,
@@ -113,6 +121,7 @@ import {
 import { useUsageRecordGroupOptions } from './useUsageRecordGroupOptions'
 import { useUsageRecordModelOptions } from './useUsageRecordModelOptions'
 import { useUsageRecordTraceRoute } from './useUsageRecordTraceRoute'
+import { createUsageRecordDetailRequestGate } from './usageRecordDetailRequestGate'
 
 type TraceTarget = 'audit' | 'runtime'
 const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
@@ -145,6 +154,11 @@ const usageRecordsApi = useScopedUsageRecordsApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
 const router = useRouter()
 const sortState = ref<{ field: UsageRecordSortField; order: UsageRecordTableSortOrder }>(initialPageState.sortState)
+const detailOpen = ref(false)
+const detailLoading = ref(false)
+const detailRecord = ref<UsageRecordSummary>()
+const detailRecordId = ref('')
+const detailRequestGate = createUsageRecordDetailRequestGate()
 const groupFilter = computed({
   get: () => groupFilterSelection.value?.id,
   set: (id: string | undefined) => {
@@ -223,7 +237,7 @@ const {
   loadMoreMobile: loadMoreMobileRecords,
   refreshMobile: refreshMobileRecordsList,
   resetPagination
-} = useResponsivePagedList<UsageRecordSummary, { forceOptions?: boolean }>({
+} = useResponsivePagedList<UsageRecordListItem, { forceOptions?: boolean }>({
   pageSize: usageRecordsPageSize,
   initialPagination: initialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -472,6 +486,45 @@ async function copyTraceId(traceId?: string): Promise<void> {
   await copyTextToClipboard(traceId ?? '', 'traceId 已复制')
 }
 
+function detailRequestSignature(record: UsageRecordListItem): string {
+  return JSON.stringify([
+    isManagementView.value ? 'management' : 'self',
+    record.systemAccountId ?? '',
+    record.id
+  ])
+}
+
+async function openUsageRecordDetail(record: UsageRecordListItem): Promise<void> {
+  const signature = detailRequestSignature(record)
+  const token = detailRequestGate.begin(record.id, signature)
+  detailRecordId.value = record.id
+  detailRecord.value = undefined
+  detailOpen.value = true
+  detailLoading.value = true
+  try {
+    const detail = await usageRecordsApi.detail(
+      record.id,
+      isManagementView.value && record.systemAccountId ? { systemAccountId: record.systemAccountId } : undefined
+    )
+    if (!detailRequestGate.isCurrent(token, detailRecordId.value, signature)) return
+    detailRecord.value = detail
+  } catch (error) {
+    if (!detailRequestGate.isCurrent(token, detailRecordId.value, signature)) return
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载使用记录详情失败'))
+  } finally {
+    if (detailRequestGate.isCurrent(token, detailRecordId.value, signature)) detailLoading.value = false
+  }
+}
+
+function handleDetailOpenChange(open: boolean): void {
+  if (open) return
+  detailRequestGate.invalidate()
+  detailRecordId.value = ''
+  detailLoading.value = false
+  detailRecord.value = undefined
+}
+
 function openTraceTarget(traceId: string | undefined, target: TraceTarget): void {
   const text = traceId?.trim()
   if (!text) return
@@ -558,9 +611,8 @@ function millisecondsUntilNextDeploymentDay(now: Date): number {
 }
 
 async function loadDeploymentTimezone(): Promise<void> {
-  if (!isManagementView.value) return
   try {
-    const usageWindow = await loadUsageStatsWindow({ viewScope: 'admin' })
+    const usageWindow = await loadUsageStatsWindow({ viewScope: isManagementView.value ? 'admin' : 'self' })
     deploymentTimezone.value = usageWindow.timezone
     refreshAutoDateAfterRollover()
     scheduleAutoDateRollover()
@@ -631,10 +683,17 @@ onBeforeUnmount(() => {
   clearGroupOptionsSearchTimer()
   deactivateAutoDateLifecycle()
   traceRoute.stop()
+  detailRequestGate.deactivate()
 })
 
-onActivated(activateAutoDateLifecycle)
-onDeactivated(deactivateAutoDateLifecycle)
+onActivated(() => {
+  detailRequestGate.activate()
+  activateAutoDateLifecycle()
+})
+onDeactivated(() => {
+  detailRequestGate.deactivate()
+  deactivateAutoDateLifecycle()
+})
 
 onMounted(() => {
   activateAutoDateLifecycle()

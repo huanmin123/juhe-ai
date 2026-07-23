@@ -1,5 +1,6 @@
 import type {
   AnnouncementListResult,
+  AnnouncementMutationResult,
   AnnouncementSummary,
   PublishedAnnouncementDetail,
   PublishedAnnouncementListItem
@@ -14,9 +15,9 @@ export const announcementsApi = {
   list: async () => (await unwrap<AnnouncementListResult>(http.get('/announcements', { params: { page: 1, pageSize: 100 } }))).items,
   listPage: (params?: { page?: number; pageSize?: number }) => unwrap<AnnouncementListResult>(http.get('/announcements', { params })),
   detail: (id: string) => unwrap<AnnouncementSummary>(http.get(`/announcements/${id}`)),
-  create: (payload: AnnouncementPayload) => unwrap<AnnouncementSummary>(http.post('/announcements', payload)),
-  update: (id: string, payload: Partial<AnnouncementPayload>) => unwrap<AnnouncementSummary>(http.patch(`/announcements/${id}`, payload)),
-  publish: (id: string) => unwrap<AnnouncementSummary>(http.post(`/announcements/${id}/publish`)),
-  unpublish: (id: string) => unwrap<AnnouncementSummary>(http.post(`/announcements/${id}/unpublish`)),
+  create: (payload: AnnouncementPayload) => unwrap<AnnouncementMutationResult>(http.post('/announcements', payload)),
+  update: (id: string, payload: Partial<AnnouncementPayload>) => unwrap<AnnouncementMutationResult>(http.patch(`/announcements/${id}`, payload)),
+  publish: (id: string) => unwrap<AnnouncementMutationResult>(http.post(`/announcements/${id}/publish`)),
+  unpublish: (id: string) => unwrap<AnnouncementMutationResult>(http.post(`/announcements/${id}/unpublish`)),
   delete: (id: string) => http.delete(`/announcements/${id}`)
 }

@@ -12,7 +12,7 @@ import { listProviderModelCatalogReadOnly } from '../modules/model-pricing/model
 import { logger } from '../shared/logger.js'
 import { findAccountSummary, listAccountItemsPageReadOnly, listAccountsPageReadOnly } from './account-summary.repository.js'
 import { listAccountStatusProjectionsReadOnly } from './account-status-snapshot.repository.js'
-import { listAccountOptions } from './account-options.repository.js'
+import { listAccountOptions, listModelCheckAccountOptions } from './account-options.repository.js'
 import { listAccountTags } from './account-tags.repository.js'
 import {
   accountTestTaskCancelMessage,
@@ -118,7 +118,7 @@ import {
   getRuntimeLogFacetsReadOnly,
   listRuntimeLogsReadOnly
 } from './runtime-logs.repository.js'
-import { getSettingsReadOnly, listGlobalSettingsReadOnly } from './settings.repository.js'
+import { getManagementSettingsSectionReadOnly, getSettingsReadOnly, listGlobalSettingsReadOnly } from './settings.repository.js'
 import type {
   SqliteReadWorkerMessage,
   SqliteReadWorkerOperation,
@@ -203,6 +203,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return findAccountSummary(operation.accountId, operation.access)
     case 'list_account_options_read_only':
       return listAccountOptions(operation.access, operation.options)
+    case 'list_model_check_account_options_read_only':
+      return listModelCheckAccountOptions(operation.access, operation.options)
     case 'list_account_tags_read_only':
       return listAccountTags(operation.access)
     case 'get_account_test_session_read_only':
@@ -443,6 +445,8 @@ async function handleSqliteReadWorkerOperation(operation: SqliteReadWorkerOperat
       return listGlobalSettingsReadOnly()
     case 'get_settings_read_only':
       return getSettingsReadOnly()
+    case 'get_management_settings_section_read_only':
+      return getManagementSettingsSectionReadOnly(operation.sectionKey)
     case 'read_gateway_settings_read_only':
       return readGatewaySettingsReadOnly()
     case 'list_runtime_logs_read_only':

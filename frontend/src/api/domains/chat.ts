@@ -1,9 +1,8 @@
 import { apiUrl, http, readFetchErrorMessage, unwrap } from '../http'
-import type { ChatApiKeyOption, ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
+import type { ChatAsset, ChatContextStatus, ChatConversation, ChatConversationSyncHead, ChatImageModel, ChatImagePolicy, ChatMessage, ChatModelCapabilities, ChatModelListOption, ChatReasoningEffort, ChatServiceTier, ChatStreamEvent, ChatSubmissionStatus } from '@/types/domain/chat'
 import { parseChatSseBlock } from '@/views/chat/chatStream'
 
 export const chatApi = {
-  listApiKeys: () => unwrap<ChatApiKeyOption[]>(http.get('/my-chat/api-keys')),
   getImagePolicy: () => unwrap<ChatImagePolicy>(http.get('/my-chat/image-policy')),
   listConversations: (params?: { beforeIsPinned?: boolean; beforeLastMessageAt?: string; beforeId?: string; limit?: number }) => unwrap<ChatConversation[]>(http.get('/my-chat/conversations', { params })),
   createConversation: (apiKeyId?: string) => unwrap<ChatConversation>(http.post('/my-chat/conversations', apiKeyId ? { apiKeyId } : {})),

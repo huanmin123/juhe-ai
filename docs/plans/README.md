@@ -4,8 +4,11 @@
 
 - [PLAN-0157（授权用量渐进加载）](计划-0157-授权用量渐进加载.md)：严格 rows/summary DTO、SQLite worker、权限矩阵、身份签名和竞态门已实现，真实 PostgreSQL 与浏览器证据待补。
 - [PLAN-0156（首页统计渐进加载）](计划-0156-首页统计渐进加载.md)：四端点、SQLite worker、Vue 视口加载与本地浏览器网络已验证，真实 PostgreSQL 和失活/失败注入竞态证据待补。
-- [PLAN-0159（低风险接口收敛）](计划-0159-低风险接口收敛.md)：品牌/Auth 阶段 A 已实现，外部来源轻响应回归已注册，其余 breaking 阶段待实施。
+- [PLAN-0159（低风险接口收敛）](计划-0159-低风险接口收敛.md)：品牌/Auth、Chat 死 GET、公告 mutation、授权死 loader 与外部来源回归已实现；Vue `updateToken` 死 method 和完整浏览器证据待补。
 - [PLAN-0160（AI 性能与统计窗口渐进加载）](计划-0160-AI性能与统计窗口渐进加载.md)：AI base/series、身份请求门、AI/IP usage-window 与 table history 六字段已实现，真实 PostgreSQL 和浏览器证据待补。
+- [PLAN-0154（供应商管理渐进加载）](计划-0154-供应商管理渐进加载.md)：供应商窄 list/options、单 detail/code lookup 与 Vue 点击加载已实现，真实 PostgreSQL 和浏览器证据待补。
+- [PLAN-0155（模型检查账户选项渐进加载）](计划-0155-模型检查账户选项渐进加载.md)：专用六字段 account-options、run/history 资格、SQLite worker、PG async 与 Vue 按需 consumer 已实现，真实 PostgreSQL 和浏览器证据待补。
+- [PLAN-0158（系统设置分区渐进加载）](计划-0158-系统设置分区渐进加载.md)：section GET/PATCH、SQLite read-worker、完整 settings cache 回填和 Vue 分区已通过本地专项，真实 PostgreSQL、浏览器与完整生命周期证据待补。
 
 - [PLAN-0158-20260722T160050118Z](计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md)：按定稿设计实施账户短窗口热质量、故障单飞、精准切号、墙钟 handoff、受控半开与后台恢复闭环；不包含生产发布。
 - [PLAN-0156-20260722T123439000Z](计划-0156-20260722T123439000Z-彻底移除页面数据确认机制.md)：彻底删除通用 page-data confirm/revision、前端持久响应缓存、写端 publisher 与 dirty-domain recovery；页面恢复直接调用业务接口；禁止上线。

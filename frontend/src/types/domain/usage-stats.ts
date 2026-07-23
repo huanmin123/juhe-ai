@@ -51,6 +51,11 @@ export interface AccountUsageStatsTrendOverview {
   }>
 }
 
+export interface AccountUsageStatsSummaryResult {
+  range: AccountUsageStatsRange
+  summary: AccountUsageSummary
+}
+
 export interface AiPerformanceAccount {
   id: string
   name: string
@@ -246,6 +251,10 @@ export interface SystemMetricsOverview {
     processHeapTotalBytesMax?: number
   }>
 }
+
+export type SystemMetricsTrendOverview = Pick<SystemMetricsOverview,
+  'hourlyTrend' | 'processEventLoopLatestStatus' | 'processEventLoopPeakStatus' | 'processEventLoopTrend'
+>
 
 export interface SystemMetricsRuntimeOverview {
   runtimeSnapshotAvailable: boolean

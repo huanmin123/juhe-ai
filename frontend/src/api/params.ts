@@ -99,7 +99,7 @@ export function groupListParams(params?: GroupListParams, includeSystemAccount =
   return Object.keys(output).length ? output : undefined
 }
 
-export function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
+export function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault' | 'purpose'>, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
   if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
@@ -109,6 +109,7 @@ export function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionP
   if (params.limit) output.limit = params.limit
   if (typeof params.manageableOnly === 'boolean') output.manageableOnly = params.manageableOnly
   if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
+  if (params.purpose) output.purpose = params.purpose
   return Object.keys(output).length ? output : undefined
 }
 

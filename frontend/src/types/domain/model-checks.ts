@@ -67,6 +67,15 @@ export interface ModelCheckOptions {
   defaultProfile: ModelCheckProfile
 }
 
+export interface ModelCheckAccountOption {
+  id: string
+  name: string
+  providerCode: string
+  providerProtocolProfileId: string
+  protocolCode?: string
+  protocolVersion?: string
+}
+
 export interface ModelCheckRunPayload {
   targetType: ModelCheckTargetType
   targetId: string

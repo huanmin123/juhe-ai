@@ -4,6 +4,8 @@
     :loading="loading"
     :has-data="hasData"
     :empty-description="emptyDescription"
+    :error="error"
+    :on-retry="onRetry"
   >
     <RuntimeAvailabilityAlert
       :visible="runtimeAlertVisible"
@@ -140,6 +142,8 @@ defineProps<{
   rows: BackgroundQueueRow[]
   runtimeAlertDescription: string
   runtimeAlertVisible: boolean
+  error?: string
+  onRetry?: () => void
 }>()
 
 const emit = defineEmits<{

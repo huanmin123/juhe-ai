@@ -59,7 +59,7 @@ assert.match(
 )
 assert.match(modelOptionsSource, /setTimeout\([\s\S]*searchDebounceMs/, '模型搜索必须防抖，避免每次按键确认缓存')
 assert.match(modelOptionsSource, /watch\(currentScopeKey, resetModelOptions/, '切换系统账户作用域必须清除旧候选')
-assert.match(viewSource, /loadUsageStatsWindow\(\{ viewScope: 'admin' \}\)/, '管理端日期时区应复用带缓存的轻量 usage-window 接口')
+assert.match(viewSource, /loadUsageStatsWindow\(\{ viewScope: isManagementView\.value \? 'admin' : 'self' \}\)/, '管理端和个人端日期时区应复用对应作用域的轻量 usage-window 接口')
 assert.doesNotMatch(viewSource, /api\.settings\.get\(\)/, '使用记录首屏不得读取完整系统设置')
 const tableChangeSource = viewSource.match(/async function handleTableChange[\s\S]*?\n}/)?.[0] ?? ''
 assert.match(tableChangeSource, /businessFiltersDisabled\.value[\s\S]*field: 'createdAt'[\s\S]*order: 'descend'/, '全用户列表处理表格排序时必须强制 createdAt 降序')
@@ -91,5 +91,10 @@ const costCellSource = readFileSync(resolve('../frontend/src/views/usage-records
 assert.doesNotMatch(costCellSource, />计价信息</, '成本明细不得保留独立计价信息分组')
 assert.match(costCellSource, />最终单价<[\s\S]*v-for="row in finalPriceRows"/, '最终单价分组必须展示合并后的计价事实和单价')
 assert.match(costCellSource, /finalPriceRows = computed\(\(\) => \[\.\.\.metadataRows\.value, \.\.\.unitPriceRows\.value\]\)/, '计价模型等计价事实必须并入最终单价行列表')
+assert.match(viewSource, /openUsageRecordDetail/, '使用记录列表必须提供按 ID 打开详情的入口')
+assert.match(viewSource, /createUsageRecordDetailRequestGate/, '使用记录详情请求必须具备按 ID 竞态门禁')
+assert.match(tableSource, /column\.key === 'actions'[\s\S]*open-detail/, '桌面列表行必须提供详情操作')
+const mobileSource = readFileSync(resolve('../frontend/src/views/usage-records/UsageRecordMobileCard.vue'), 'utf8')
+assert.match(mobileSource, /open-detail/, '移动端使用记录卡片必须提供详情操作')
 
 console.log('管理员使用记录前端回归通过：列表状态合并、列顺序、auto/manual 日期模式、跨日刷新与筛选锁定均已接入')

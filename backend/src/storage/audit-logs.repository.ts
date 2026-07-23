@@ -78,6 +78,7 @@ export type {
   AuditLogAttemptSummary,
   AuditLogDetail,
   AuditLogInput,
+  AuditLogListItem,
   AuditLogListOptions,
   AuditLogListResult,
   AuditLogPayloadDetail,

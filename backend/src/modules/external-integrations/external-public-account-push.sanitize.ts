@@ -167,7 +167,9 @@ export function sanitizeGroup(group: GroupSummary): PublicGroupSummary {
   }
 }
 
-export function sanitizeApiKey(apiKey: ApiKeySummary & { key?: string }, options: { includeSecret?: boolean } = {}): PublicApiKeySummary {
+type PublicApiKeySanitizeInput = Pick<ApiKeySummary, 'id' | 'name' | 'keyPrefix' | 'status' | 'routeStrategyId' | 'routeStrategyName' | 'routeStrategyMode' | 'routeStrategyStatus' | 'expiresAt' | 'availabilitySchedule'> & { key?: string }
+
+export function sanitizeApiKey(apiKey: PublicApiKeySanitizeInput, options: { includeSecret?: boolean } = {}): PublicApiKeySummary {
   return {
     id: apiKey.id,
     name: apiKey.name,

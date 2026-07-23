@@ -106,11 +106,19 @@
       <template v-else-if="column.key === 'createdAt'">
         <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
       </template>
+      <template v-else-if="column.key === 'actions'">
+        <a-tooltip title="查看详情">
+          <a-button size="small" type="text" @click.stop="$emit('open-detail', record)">
+            <template #icon><info-circle-outlined /></template>
+          </a-button>
+        </a-tooltip>
+      </template>
     </template>
     <template #card="{ record }">
       <UsageRecordMobileCard
         :is-management-view="isManagementView"
         :record="record"
+        @open-detail="$emit('open-detail', record)"
         @copy-trace-id="$emit('copy-trace-id', $event)"
         @open-audit-logs="$emit('open-trace-target', record.traceId, 'audit')"
         @open-runtime-logs="$emit('open-trace-target', record.traceId, 'runtime')"
@@ -120,7 +128,7 @@
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, FileSearchOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, FileSearchOutlined, InfoCircleOutlined, SearchOutlined } from '@ant-design/icons-vue'
 
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { UsageRecordSummary } from '@/types/domain'
@@ -166,6 +174,7 @@ const emit = defineEmits<{
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
   (event: 'open-trace-target', traceId: string | undefined, target: TraceTarget): void
+  (event: 'open-detail', record: UsageRecordSummary): void
 }>()
 
 function handleTableChange(...args: unknown[]): void {

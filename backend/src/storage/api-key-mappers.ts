@@ -36,50 +36,69 @@ export interface ApiKeyRow {
 export function apiKeySummariesFromRows(
   rows: ApiKeyRow[],
   access?: AccessScope,
-  options: { includeSecret?: boolean } = {}
+  options: { includeSecret?: boolean; includeUsage?: boolean } = {}
 ): ApiKeySummary[] {
   const includeSecret = options.includeSecret === true
+  const includeUsage = options.includeUsage !== false
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields
     ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
     : new Map<string, string>()
-  const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
-  const usageByApiKey = loadApiKeyUsageSummariesForScopes(usageScopes)
+  const usageScopes = includeUsage ? rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id })) : []
+  const usageByApiKey = includeUsage ? loadApiKeyUsageSummariesForScopes(usageScopes) : new Map()
   return rows.map((row) => apiKeySummaryFromRow(row, {
     includeSecret,
+    includeUsage,
     shouldIncludeSystemAccountFields,
     accountNames,
     usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
 }
 
+export function apiKeyListItemsFromRows(
+  rows: ApiKeyRow[],
+  access?: AccessScope
+): Array<Omit<ApiKeySummary, 'usage'>> {
+  return apiKeySummariesFromRows(rows, access, { includeUsage: false }).map(({ usage: _usage, ...item }) => item)
+}
+
 export async function apiKeySummariesFromRowsAsync(
   rows: ApiKeyRow[],
   access?: AccessScope,
-  options: { includeSecret?: boolean } = {}
+  options: { includeSecret?: boolean; includeUsage?: boolean } = {}
 ): Promise<ApiKeySummary[]> {
   const includeSecret = options.includeSecret === true
+  const includeUsage = options.includeUsage !== false
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const client = await getApiKeyMapperDatabaseClient()
-  const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
+  const usageScopes = includeUsage ? rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id })) : []
   const [accountNames, usageByApiKey] = await Promise.all([
     shouldIncludeSystemAccountFields
       ? loadSystemAccountNameMapByIdsAsync(client, rows.map((row) => row.system_account_id))
       : Promise.resolve(new Map<string, string>()),
-    loadApiKeyUsageSummariesForScopesAsync(usageScopes)
+    includeUsage ? loadApiKeyUsageSummariesForScopesAsync(usageScopes) : Promise.resolve(new Map())
   ])
   return rows.map((row) => apiKeySummaryFromRow(row, {
     includeSecret,
+    includeUsage,
     shouldIncludeSystemAccountFields,
     accountNames,
     usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
+}
+
+export async function apiKeyListItemsFromRowsAsync(
+  rows: ApiKeyRow[],
+  access?: AccessScope
+): Promise<Array<Omit<ApiKeySummary, 'usage'>>> {
+  return (await apiKeySummariesFromRowsAsync(rows, access, { includeUsage: false })).map(({ usage: _usage, ...item }) => item)
 }
 
 function apiKeySummaryFromRow(
   row: ApiKeyRow,
   options: {
     includeSecret: boolean
+    includeUsage: boolean
     shouldIncludeSystemAccountFields: boolean
     accountNames: Map<string, string>
     usage: ApiKeySummary['usage']
@@ -87,7 +106,7 @@ function apiKeySummaryFromRow(
 ): ApiKeySummary {
   const availabilitySchedule = parseApiKeyAvailabilityScheduleJson(row.availability_schedule_json)
   const routeStrategyMode = row.route_strategy_mode ? normalizeRouteStrategyMode(row.route_strategy_mode) : undefined
-  const summary: ApiKeySummary = {
+  const summary = {
     id: row.id,
     systemAccountId: options.shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
     systemAccountName: options.shouldIncludeSystemAccountFields
@@ -106,8 +125,8 @@ function apiKeySummaryFromRow(
     expiresAt: row.expires_at ?? undefined,
     quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
     availabilitySchedule,
-    usage: options.usage
-  }
+    ...(options.includeUsage ? { usage: options.usage } : {})
+  } as ApiKeySummary
   if (options.includeSecret) {
     summary.key = decryptApiKeySecret(row.key_secret_encrypted)
   }

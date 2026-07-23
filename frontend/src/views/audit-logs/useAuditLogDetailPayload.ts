@@ -6,7 +6,7 @@ import { loadEntityDetailCached } from '@/shared/entityDetailCache'
 import type {
   AuditLogDetail,
   AuditLogPayloadDetail,
-  AuditLogSummary
+  AuditLogListItem
 } from '@/types/domain'
 import {
   finalizeMergedPayloadBody,
@@ -31,7 +31,7 @@ export function useAuditLogDetailPayload(dependencies: AuditLogDetailPayloadDepe
   let detailRequestId = 0
   let payloadRequestId = 0
 
-  async function openDetail(record: AuditLogSummary): Promise<void> {
+  async function openDetail(record: AuditLogListItem): Promise<void> {
     const requestId = detailRequestId + 1
     detailRequestId = requestId
     payloadRequestId += 1

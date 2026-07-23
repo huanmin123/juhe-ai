@@ -84,7 +84,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
@@ -93,6 +93,7 @@ import TableColumnManager from '@/components/TableColumnManager.vue'
 import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { authState } from '@/composables/useAuth'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -135,6 +136,10 @@ const providers = ref<ProviderDefinition[]>([])
 const availableProviders = computed(() => providers.value.length ? providers.value : FALLBACK_PROVIDERS)
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
+let groupStatusRequestSeq = 0
+const groupPageEpoch = ref(0)
+const groupPageActive = ref(true)
+let hasActivated = false
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -191,6 +196,8 @@ const {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
     return [
       isManagementView.value ? 'management' : 'self',
+      authState.revision.value,
+      groupPageEpoch.value,
       groupsListParams(systemAccountId, pageState)
     ]
   },
@@ -202,6 +209,70 @@ const {
 
 async function loadData(loadOptions: { forceOptions?: boolean; quiet?: boolean } = {}): Promise<void> {
   await loadGroupPage(loadOptions)
+}
+
+async function loadGroupStatusSnapshot(): Promise<void> {
+  const currentGroups = groups.value
+  if (!groupPageActive.value || !currentGroups.length) return
+  const requestSeq = ++groupStatusRequestSeq
+  const requestRevision = authState.revision.value
+  const requestEpoch = groupPageEpoch.value
+  const ids = currentGroups.map((group) => group.id)
+  updateGroupItems(
+    (group) => ids.includes(group.id),
+    (group) => ({
+      ...group,
+      accountStats: {
+        ...group.accountStats,
+        currentConcurrency: undefined,
+        currentConcurrencyAvailable: undefined,
+        todayUsage: undefined
+      }
+    })
+  )
+  try {
+    const snapshots = await Promise.all(chunkGroupIds(ids).map((batch) => groupsApi.statusSnapshot(batch, groupScopeParams.value)))
+    if (requestSeq !== groupStatusRequestSeq || requestRevision !== authState.revision.value || requestEpoch !== groupPageEpoch.value) return
+    const byId = new Map(snapshots.flatMap((snapshot) => snapshot.items).map((item) => [item.id, item]))
+    const concurrencyAvailable = snapshots.every((snapshot) => snapshot.runtimeSnapshot.accountConcurrencyAvailable)
+    updateGroupItems(
+      (group) => byId.has(group.id),
+      (group) => {
+        const item = byId.get(group.id)
+        if (!item) return group
+        return {
+          ...group,
+          accountStats: {
+            ...group.accountStats,
+            currentConcurrency: item.currentConcurrency,
+            currentConcurrencyAvailable: concurrencyAvailable,
+            todayUsage: item.todayUsage
+          }
+        }
+      }
+    )
+  } catch (error) {
+    if (requestSeq !== groupStatusRequestSeq || requestRevision !== authState.revision.value || requestEpoch !== groupPageEpoch.value) return
+    console.error(error)
+    updateGroupItems(
+      (group) => currentGroups.some((item) => item.id === group.id),
+      (group) => ({
+        ...group,
+        accountStats: {
+          ...group.accountStats,
+          currentConcurrency: undefined,
+          currentConcurrencyAvailable: false,
+          todayUsage: undefined
+        }
+      })
+    )
+  }
+}
+
+function chunkGroupIds(ids: string[]): string[][] {
+  const batches: string[][] = []
+  for (let index = 0; index < ids.length; index += 100) batches.push(ids.slice(index, index + 100))
+  return batches
 }
 
 const rawColumns = computed(() => groupsTableColumns(isManagementView.value))
@@ -219,6 +290,37 @@ const {
 const groupScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
+})
+watch(
+  () => [
+    isManagementView.value ? 'management' : 'self',
+    authState.revision.value,
+    groupPageEpoch.value,
+    groupScopeParams.value?.systemAccountId ?? '',
+    groups.value.map((group) => group.id).join(',')
+  ].join('|'),
+  () => { void loadGroupStatusSnapshot() },
+  { immediate: true }
+)
+
+onDeactivated(() => {
+  groupPageActive.value = false
+  groupStatusRequestSeq += 1
+  groupPageEpoch.value += 1
+})
+
+onActivated(() => {
+  if (!hasActivated) {
+    hasActivated = true
+    return
+  }
+  groupPageActive.value = true
+  groupPageEpoch.value += 1
+  void loadData({ quiet: true })
+})
+
+watch(authState.revision, () => {
+  if (groupPageActive.value) void loadData({ quiet: true })
 })
 const providerOptions = computed(() => groupsProviderOptions(availableProviders.value))
 const editingGroup = computed(() => groups.value.find((group) => group.id === editingId.value))

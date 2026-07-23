@@ -55,3 +55,8 @@ export interface AnnouncementListResult {
   page: number
   pageSize: number
 }
+
+export interface AnnouncementMutationResult {
+  id: string
+  revision: string
+}

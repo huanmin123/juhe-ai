@@ -116,7 +116,7 @@ import { computed } from 'vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
-import type { AuditLogSummary } from '@/types/domain'
+import type { AuditLogListItem } from '@/types/domain'
 import {
   displayAuditGroupName,
   displayName,
@@ -137,7 +137,7 @@ const props = withDefaults(defineProps<{
   mobileHasMore: boolean
   mobilePagination?: boolean
   pagination: Record<string, unknown>
-  records: AuditLogSummary[]
+  records: AuditLogListItem[]
   emptyDescription?: string
 }>(), {
   columns: () => auditLogColumns,
@@ -147,7 +147,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
-  (event: 'detail', record: AuditLogSummary): void
+  (event: 'detail', record: AuditLogListItem): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
 }>()
@@ -157,21 +157,21 @@ const detailActions: RowActionItem[] = [
   { key: 'detail', label: '详情', icon: 'detail', tone: 'info' }
 ]
 
-function handleActionClick(key: string, record: AuditLogSummary) {
+function handleActionClick(key: string, record: AuditLogListItem) {
   if (key === 'detail') {
     emit('detail', record)
   }
 }
 
-function auditEndpointText(record: AuditLogSummary): string {
+function auditEndpointText(record: AuditLogListItem): string {
   return `${record.method} ${record.path}`
 }
 
-function auditDurationMs(record: AuditLogSummary): number | undefined {
+function auditDurationMs(record: AuditLogListItem): number | undefined {
   return record.httpDurationMs ?? record.durationMs
 }
 
-function auditDurationLabel(record: AuditLogSummary): string {
+function auditDurationLabel(record: AuditLogListItem): string {
   return record.httpDurationMs === undefined ? '审计耗时' : '客户端耗时'
 }
 </script>

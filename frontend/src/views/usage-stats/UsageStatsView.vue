@@ -139,7 +139,7 @@ import { loadProviderOptionsResource } from '@/composables/useProviderOptionsRes
 import { formatDateKey, formatDateLabel } from '@/shared/dateRange'
 import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import { providerDisplayName } from '@/shared/providerDisplay'
-import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageStatsTrendOverview, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
+import type { AccountUsageStatsListResult, AccountUsageStatsRow, AccountUsageStatsTrendOverview, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { FALLBACK_PROVIDERS } from '@/views/accounts/accountOptions'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -179,7 +179,9 @@ import { buildAccountUsageTrendOption, orderedUsageRows, type UsageTrendMetric }
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const { usageStatsWindowEndDate, usageStatsWindowMaxDays, loadUsageStatsWindow } = useUsageStatsWindow()
 
-const overview = ref<AccountUsageStatsOverview>()
+const overview = ref<AccountUsageStatsListResult>()
+const rangeSummary = ref<AccountUsageSummary>()
+const rangeSummaryLoading = ref(false)
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
@@ -204,6 +206,7 @@ const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedTrendAccountIds = ref<string[]>([])
 let usageStatsResourceRequestSeq = 0
 let usageStatsTrendRequestSeq = 0
+let usageStatsSummaryRequestSeq = 0
 const {
   applyResult: applyAccountUsageResult,
   items: accountUsageRows,
@@ -223,9 +226,15 @@ const {
     : `共 ${formatInteger(total)} 条账户消耗`,
   fetchPage: async (options, pageState): Promise<ResponsivePagedListResult<AccountUsageStatsRow>> => {
     const resourceRequestSeq = ++usageStatsResourceRequestSeq
+    if (pageState.current === 1) {
+      usageStatsSummaryRequestSeq += 1
+      usageStatsTrendRequestSeq += 1
+      rangeSummary.value = undefined
+      rangeSummaryLoading.value = true
+    }
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
     const query = accountUsageParams(isManagementView.value ? systemAccountId : undefined, pageState)
-    let usageOverview: AccountUsageStatsOverview | undefined
+    let usageOverview: AccountUsageStatsListResult | undefined
     await Promise.all([
       (async () => {
         const nextOverview = isManagementView.value
@@ -237,10 +246,24 @@ const {
         overview.value = normalizedOverview
         syncDateRangeFromResponse(normalizedOverview.range)
         pruneLoadedTrendAccounts(normalizedOverview.rows)
+        if (pageState.current === 1) {
+          void loadAccountUsageSummary(normalizedOverview.range, systemAccountId)
+        }
       })(),
       loadUsageStatsWindow()
     ])
-    if (!usageOverview) throw new Error('账户用量统计接口未返回数据')
+    if (!usageOverview) {
+      if (resourceRequestSeq !== usageStatsResourceRequestSeq) {
+        return {
+          items: [],
+          page: pageState.current,
+          pageSize: pageState.pageSize,
+          total: 0,
+          hasMore: false
+        }
+      }
+      throw new Error('账户用量统计接口未返回数据')
+    }
     void loadAccountUsageTrend(usageOverview, systemAccountId)
     return accountUsagePageResult(usageOverview)
   },
@@ -255,6 +278,7 @@ const {
   onLoaded: () => renderChart(),
   onError: (error) => {
     console.error(error)
+    rangeSummaryLoading.value = false
     message.error('用量统计加载失败')
     renderChart()
   }
@@ -328,8 +352,8 @@ const tableScrollX = computed(() => accountUsageStatsTableScrollX(isManagementVi
 const columns = computed(() => accountUsageStatsTableColumns(isManagementView.value))
 const displaySummary = computed(() => hasSelectedTrendAccounts.value
   ? aggregateUsageSummaries(displayRows.value.map((row) => row.rangeUsage))
-  : overview.value?.summary)
-const summaryCardsLoading = computed(() => initialLoading.value)
+  : rangeSummary.value)
+const summaryCardsLoading = computed(() => hasSelectedTrendAccounts.value ? false : rangeSummaryLoading.value)
 const summaryCards = computed(() => {
   return buildAccountUsageSummaryCards({
     summary: displaySummary.value
@@ -395,7 +419,7 @@ async function refreshMobileRows() {
   await loadData({ forceCache: true })
 }
 
-function accountUsagePageResult(usageOverview: AccountUsageStatsOverview): ResponsivePagedListResult<AccountUsageStatsRow> {
+function accountUsagePageResult(usageOverview: AccountUsageStatsListResult): ResponsivePagedListResult<AccountUsageStatsRow> {
   return {
     items: usageOverview.rows,
     page: usageOverview.page,
@@ -405,7 +429,7 @@ function accountUsagePageResult(usageOverview: AccountUsageStatsOverview): Respo
   }
 }
 
-function normalizeAccountUsageListOverview(nextOverview: AccountUsageStatsOverview): AccountUsageStatsOverview {
+function normalizeAccountUsageListOverview(nextOverview: AccountUsageStatsListResult): AccountUsageStatsListResult {
   const previousDailyUsageById = new Map((overview.value?.rows ?? []).map((row) => [row.id, row.dailyUsage]))
   const defaultTrendAccountIds = nextOverview.rows
     .map((row) => row.id)
@@ -421,7 +445,7 @@ function normalizeAccountUsageListOverview(nextOverview: AccountUsageStatsOvervi
   }
 }
 
-async function loadAccountUsageTrend(usageOverview: AccountUsageStatsOverview, systemAccountId?: string): Promise<void> {
+async function loadAccountUsageTrend(usageOverview: AccountUsageStatsListResult, systemAccountId?: string): Promise<void> {
   const requestSeq = ++usageStatsTrendRequestSeq
   const accountIds = [...new Set([
     ...addedTrendAccountIds.value,
@@ -447,6 +471,26 @@ async function loadAccountUsageTrend(usageOverview: AccountUsageStatsOverview, s
     if (requestSeq !== usageStatsTrendRequestSeq) return
     console.error(error)
     message.error('账户趋势加载失败')
+  }
+}
+
+async function loadAccountUsageSummary(range: AccountUsageStatsListResult['range'], systemAccountId?: string): Promise<void> {
+  const requestSeq = ++usageStatsSummaryRequestSeq
+  rangeSummaryLoading.value = true
+  try {
+    const params = { systemAccountId, startDate: range.startDate, endDate: range.endDate }
+    const result = isManagementView.value
+      ? await api.stats.accountUsageSummary(params)
+      : await api.myStats.accountUsageSummary(params)
+    if (requestSeq !== usageStatsSummaryRequestSeq) return
+    rangeSummary.value = result.summary
+  } catch (error) {
+    if (requestSeq !== usageStatsSummaryRequestSeq) return
+    console.error(error)
+    rangeSummary.value = undefined
+    message.error('用量汇总加载失败')
+  } finally {
+    if (requestSeq === usageStatsSummaryRequestSeq) rangeSummaryLoading.value = false
   }
 }
 

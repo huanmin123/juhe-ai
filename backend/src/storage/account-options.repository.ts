@@ -1,4 +1,4 @@
-import type { AccountOptionSummary, AccountStatus, AuthorizationStatus } from '../domain/types.js'
+import type { AccountOptionSummary, AccountStatus, AuthorizationStatus, ModelCheckAccountOption } from '../domain/types.js'
 import { canAccessAll, includeSystemAccountFields, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, normalizeAccountOptionListOptions, type AccountOptionListOptions } from './account-list-options.js'
 import { accountApiKeyPoolAllUnavailableSql, ensureAccountDerivedStatusSqlFunctions } from './account-derived-status-sql.js'
@@ -63,6 +63,44 @@ interface AccountOptionRow {
 interface AccountOptionCandidatePage<T> {
   items: T[]
   exhausted: boolean
+}
+
+export interface ModelCheckAccountOptionListOptions {
+  purpose: 'run' | 'history'
+  keyword?: string
+  selectedIds?: string[]
+  limit: number
+}
+
+export function listModelCheckAccountOptions(access: AccessScope | undefined, options: ModelCheckAccountOptionListOptions): ModelCheckAccountOption[] {
+  const base = normalizeAccountOptionListOptions({ keyword: options.keyword, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.limit })
+  const rows = queryAccountOptionRowsForAccess(access, base)
+  const selected = options.selectedIds?.length ? queryAccountOptionRowsForAccess(access, normalizeAccountOptionListOptions({ ids: options.selectedIds, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.selectedIds.length })) : []
+  return modelCheckOptionsFromRows([...rows, ...selected], options.limit)
+}
+
+export async function listModelCheckAccountOptionsAsync(access: AccessScope | undefined, options: ModelCheckAccountOptionListOptions): Promise<ModelCheckAccountOption[]> {
+  if (sqliteReadWorkerPoolEnabled()) return requestSqliteReadWorker({ type: 'list_model_check_account_options_read_only', access, options })
+  if (runtimeConfig.databaseDriver !== 'postgres') return listModelCheckAccountOptions(access, options)
+  const client = createPostgresDatabaseClient(await getPostgresPool())
+  const base = normalizeAccountOptionListOptions({ keyword: options.keyword, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.limit })
+  const rows = await queryAccountOptionRowsForAccessAsync(client, access, base)
+  const selected = options.selectedIds?.length ? await queryAccountOptionRowsForAccessAsync(client, access, normalizeAccountOptionListOptions({ ids: options.selectedIds, status: options.purpose === 'run' ? 'active' : undefined, schedulable: options.purpose === 'run' ? 'enabled' : 'all', limit: options.selectedIds.length })) : []
+  return modelCheckOptionsFromRows([...rows, ...selected], options.limit)
+}
+
+function modelCheckOptionsFromRows(rows: AccountOptionRow[], limit: number): ModelCheckAccountOption[] {
+  const seen = new Set<string>()
+  return rows.filter((row) => {
+    if (seen.has(row.id) || !row.name.trim()) return false
+    seen.add(row.id)
+    return [
+      ['gpt', 'profile_gpt_openai_v1'], ['openai', 'profile_openai_openai_v1'],
+      ['deepseek', 'profile_deepseek_openai_v1'], ['deepseek', 'profile_deepseek_anthropic_v1'],
+      ['glm', 'profile_glm_general_openai_v1'], ['glm', 'profile_glm_coding_openai_v1'], ['glm', 'profile_glm_coding_anthropic_v1'],
+      ['anthropic', 'profile_anthropic_anthropic_v1'], ['gemini', 'profile_gemini_native_v1beta'], ['gemini', 'profile_gemini_openai_chat_v1beta']
+    ].some(([provider, profile]) => provider === row.provider_code && profile === row.provider_protocol_profile_id)
+  }).sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: 'base' }) || left.id.localeCompare(right.id)).slice(0, limit).map((row) => ({ id: row.id, name: row.name, providerCode: row.provider_code, providerProtocolProfileId: row.provider_protocol_profile_id, protocolCode: row.protocol_code, protocolVersion: row.protocol_version }))
 }
 
 export async function collectAccountOptionCandidateMatches<T>(

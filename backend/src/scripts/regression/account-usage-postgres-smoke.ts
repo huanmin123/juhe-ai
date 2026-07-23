@@ -12,7 +12,7 @@ import {
   deleteGroupAsync,
   getAccountUsageStatsOverviewPageAsync
 } from '../../storage/repositories.js'
-import { getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
+import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
 
 assert.equal(runtimeConfig.databaseDriver, 'postgres', '账号用量统计 PG smoke 需要 JUHE_AI_DATABASE_DRIVER=postgres')
 
@@ -73,7 +73,8 @@ try {
   })
   assert.deepEqual(defaultResult.rows.map((row) => row.id), [matchedAccount.id], 'PG 账号用量默认列表应按 caller_account 窗口请求数排序')
   assert.equal(defaultResult.hasMore, true, 'PG 账号用量分页应保留窗口表 hasMore')
-  assert.equal(defaultResult.summary.requestCount, 38, 'PG 账号用量概览应读取 system_account 范围窗口汇总')
+  const defaultSummary = await getAccountUsageStatsSummaryAsync(access, range)
+  assert.equal(defaultSummary.summary.requestCount, 38, 'PG 账号用量独立汇总应读取 system_account 范围窗口汇总')
   assert.deepEqual(defaultResult.defaultTrendAccountIds.slice(0, 1), [matchedAccount.id], 'PG 账号用量默认趋势账号应读取 rank snapshot')
 
   const keywordResult = await getAccountUsageStatsOverviewPageAsync(access, {
@@ -103,7 +104,7 @@ try {
     message: '账号用量统计 PG smoke 通过',
     matchedAccountId: matchedAccount.id,
     selectedAccountId: selectedAccount.id,
-    summaryRequestCount: defaultResult.summary.requestCount
+    summaryRequestCount: defaultSummary.summary.requestCount
   }))
 } finally {
   await cleanupSmokeRows()

@@ -106,6 +106,19 @@ try {
   const baseUrl = `http://127.0.0.1:${address.port}`
   const seed = seedData(upstreamBaseUrl)
 
+  const optionResponse = await fetch(`${baseUrl}/__aisys__/api/my-model-checks/options/accounts?purpose=run&selectedIds=${encodeURIComponent(seed.ownerAccountId)}`, { headers: { cookie: seed.granteeCookie } })
+  assert.equal(optionResponse.status, 200, '用户侧模型检测 run options 应成功')
+  const optionEnvelope = await optionResponse.json() as ApiEnvelope<Array<Record<string, unknown>>>
+  const selectedOption = optionEnvelope.data.find((item) => item.id === seed.ownerAccountId)
+  assert(selectedOption, 'run options 必须补齐当前用户可见的已选授权账户')
+  assert.deepEqual(Object.keys(selectedOption).sort(), ['id', 'name', 'protocolCode', 'protocolVersion', 'providerCode', 'providerProtocolProfileId'].sort(), '模型检测账户 options 必须使用窄 DTO')
+  const forgedScopeOptions = await fetch(`${baseUrl}/__aisys__/api/my-model-checks/options/accounts?purpose=history&systemAccountId=${encodeURIComponent(seed.ownerId)}`, { headers: { cookie: seed.granteeCookie } })
+  assert.equal(forgedScopeOptions.status, 200, 'self history options 应忽略伪造管理作用域')
+  const malformedSelected = await fetch(`${baseUrl}/__aisys__/api/my-model-checks/options/accounts?purpose=run&selectedIds=${encodeURIComponent(`${seed.ownerAccountId},other`)}`, { headers: { cookie: seed.granteeCookie } })
+  assert.equal(malformedSelected.status, 400, '逗号拼接 selectedIds 必须被严格拒绝')
+  const invalidPurpose = await fetch(`${baseUrl}/__aisys__/api/my-model-checks/options/accounts?purpose=other`, { headers: { cookie: seed.granteeCookie } })
+  assert.equal(invalidPurpose.status, 400, '未知模型检测 options purpose 必须被拒绝')
+
   const detail = await postEnvelope<ModelCheckDetail>(
     baseUrl,
     `/__aisys__/api/my-model-checks/run?systemAccountId=${seed.ownerId}`,

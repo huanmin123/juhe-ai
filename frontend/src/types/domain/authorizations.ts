@@ -287,3 +287,5 @@ export interface AccountUsageStatsOverview {
   page: number
   pageSize: number
 }
+
+export type AccountUsageStatsListResult = Omit<AccountUsageStatsOverview, 'summary'>

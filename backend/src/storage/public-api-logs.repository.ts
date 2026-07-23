@@ -117,7 +117,7 @@ type PublicApiLogRow = Record<string, unknown>
 type PublicApiLogFilterValue = string | number
 
 const publicApiLogDefaultPageSize = 50
-const publicApiLogMaxPageSize = 100
+const publicApiLogMaxPageSize = 50
 const publicApiLogMaxListWindowRows = 1001
 const publicApiLogPostgresRowsPerInsert = 1000
 

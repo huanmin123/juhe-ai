@@ -50,11 +50,6 @@
     "ChatImageInputMimeType": ["image/webp"]
   },
   "dtos": {
-    "ChatApiKeyOption": {
-      "required": { "id": "id", "name": "string", "status": "literal:active" },
-      "optional": {},
-      "additionalProperties": false
-    },
     "ChatImageOptimizationPolicy": {
       "required": { "mimeType": "enum:ChatImageInputMimeType", "maxEdge": "integer", "quality": "integer", "maxBytes": "integer" },
       "optional": {},
@@ -322,18 +317,6 @@
     }
   },
   "routes": [
-    {
-      "id": "list-api-keys",
-      "method": "GET",
-      "path": "/api-keys",
-      "frontend": "chatApi.listApiKeys",
-      "auth": "session",
-      "owner": { "scope": "self-list", "source": "listApiKeysAsync(systemAccountId, role=user)" },
-      "request": { "path": {}, "query": {}, "body": { "kind": "none", "fields": [] } },
-      "cursor": null,
-      "success": [{ "status": 200, "envelope": "json-data", "dto": "ChatApiKeyOption[]", "fixture": { "data": [{ "id": "<api-key-id>", "name": "默认 GPT Key", "status": "active" }] } }],
-      "errors": []
-    },
     {
       "id": "get-image-policy",
       "method": "GET",

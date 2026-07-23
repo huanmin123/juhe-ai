@@ -122,7 +122,7 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type {
-  AuditLogSummary,
+  AuditLogListItem,
   AuditOutcome,
   AuditTrafficSource
 } from '@/types/domain'
@@ -270,7 +270,7 @@ const {
   loadMoreMobile: loadMoreMobileRecords,
   refreshMobile: refreshMobileRecords,
   resetPagination
-} = useResponsivePagedList<AuditLogSummary, { forceOptions?: boolean }>({
+} = useResponsivePagedList<AuditLogListItem, { forceOptions?: boolean }>({
   pageSize,
   initialPagination: effectiveInitialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
@@ -422,7 +422,7 @@ function auditLogRequestParams(pageState: { current: number; pageSize: number })
   return auditLogListParams(currentFilterValues.value, pageState)
 }
 
-function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {
+function rememberAuditRecordGroupLabels(items: AuditLogListItem[]): void {
   for (const item of items) {
     rememberGroupLabel(item.groupId, item.groupName)
   }

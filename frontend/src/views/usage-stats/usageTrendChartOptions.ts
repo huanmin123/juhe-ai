@@ -1,7 +1,7 @@
 import type { EChartsOption } from 'echarts'
 
 import { formatDateShortLabel } from '@/shared/dateRange'
-import type { AccountUsageStatsOverview, AccountUsageStatsRow } from '@/types/domain'
+import type { AccountUsageStatsListResult, AccountUsageStatsRow } from '@/types/domain'
 import { axisNumberLabel, formatCost, formatInteger } from '@/views/stats/statsFormatters'
 import { chartColors as aiPerformanceChartColors } from '@/views/ai-performance/aiPerformanceChartOptions'
 import { metricValue, type UsageTrendMetric } from './usageTrendMetrics'
@@ -9,7 +9,7 @@ import { metricValue, type UsageTrendMetric } from './usageTrendMetrics'
 export type { UsageTrendMetric } from './usageTrendMetrics'
 export const chartColors = aiPerformanceChartColors
 
-export function buildAccountUsageTrendOption(overview: AccountUsageStatsOverview, metric: UsageTrendMetric, visibleRows?: AccountUsageStatsRow[]): EChartsOption {
+export function buildAccountUsageTrendOption(overview: AccountUsageStatsListResult, metric: UsageTrendMetric, visibleRows?: AccountUsageStatsRow[]): EChartsOption {
   const rows = visibleRows ?? orderedUsageRows(overview.rows)
   const dates = rows[0]?.dailyUsage.map((point) => point.statDate) ?? overview.rows[0]?.dailyUsage.map((point) => point.statDate) ?? []
   const tooltipUsage = rows.map((row) => row.dailyUsage)

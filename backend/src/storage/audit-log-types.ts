@@ -143,6 +143,16 @@ export interface AuditLogSummary {
   createdAt: string
 }
 
+export type AuditLogListItem = Pick<AuditLogSummary,
+  | 'id' | 'traceId' | 'trafficSource'
+  | 'systemAccountId' | 'systemAccountName'
+  | 'apiKeyId' | 'apiKeyName' | 'groupId' | 'groupName'
+  | 'accountId' | 'accountName'
+  | 'method' | 'path' | 'model' | 'upstreamModel' | 'modelMappingApplied'
+  | 'stream' | 'auditOutcome' | 'success' | 'finalStatusCode'
+  | 'durationMs' | 'httpDurationMs' | 'createdAt'
+>
+
 export interface AuditLogAttemptSummary {
   id: string
   attemptIndex: number
@@ -241,7 +251,7 @@ export interface AuditLogPayloadReadOptions {
 }
 
 export interface AuditLogListResult {
-  items: AuditLogSummary[]
+  items: AuditLogListItem[]
   total: number
   hasMore: boolean
   page: number

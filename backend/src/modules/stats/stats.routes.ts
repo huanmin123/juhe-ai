@@ -9,7 +9,7 @@ import {
   type AccountListOptions,
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
-import { getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
+import { getAccountUsageStatsSummaryAsync, getAccountUsageStatsTrendAsync } from '../../storage/account-usage.repository.js'
 import {
   getAiPerformanceBaseAsync,
   getAiPerformanceSeriesAsync,
@@ -229,11 +229,29 @@ statsRouter.get('/ai-performance/accounts', async (req, res, next) => {
 
 statsRouter.get('/account-usage', async (req, res, next) => {
   try {
+    if (req.query.includeSummary !== undefined) {
+      res.status(400).json(badRequest('account-usage 列表不支持 includeSummary，请使用 /account-usage/summary'))
+      return
+    }
     const timezone = await usageStatsTimezoneAsync()
     const access = getRequestAccessScope(req.query.systemAccountId)
     const query = parseAccountUsageOptions(req.query, timezone)
     const overview = await getAccountUsageStatsOverviewPageAsync(access, query)
     res.json(ok(overview))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/account-usage/summary', async (req, res, next) => {
+  try {
+    const timezone = await usageStatsTimezoneAsync()
+    const access = getRequestAccessScope(req.query.systemAccountId)
+    const range = normalizeAccountUsageStatsRange({
+      startDate: optionalQueryText(req.query.startDate),
+      endDate: optionalQueryText(req.query.endDate)
+    }, timezone)
+    res.json(ok(await getAccountUsageStatsSummaryAsync(access, range)))
   } catch (error) {
     next(error)
   }
@@ -660,6 +678,25 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res, next) => {
   try {
     const overview = await getSystemMetricsOverviewAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))
     res.json(ok(overview))
+  } catch (error) {
+    next(error)
+  }
+})
+
+statsRouter.get('/system-metrics/trend', requireAdmin, async (req, res, next) => {
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '监控日期范围不合法')))
+    return
+  }
+  try {
+    const overview = await getSystemMetricsOverviewAsync(await normalizeSystemMetricsDateRangeAsync(parsed.data))
+    res.json(ok({
+      hourlyTrend: overview.hourlyTrend,
+      processEventLoopLatestStatus: overview.processEventLoopLatestStatus,
+      processEventLoopPeakStatus: overview.processEventLoopPeakStatus,
+      processEventLoopTrend: overview.processEventLoopTrend
+    }))
   } catch (error) {
     next(error)
   }

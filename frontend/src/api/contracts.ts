@@ -23,6 +23,7 @@ import type {
 
 export interface ListParams {
   systemAccountId?: string
+  viewScope?: 'admin' | 'self'
 }
 
 export interface GroupListParams extends ListParams {
@@ -37,6 +38,7 @@ export interface GroupOptionParams extends ListParams {
   limit?: number
   manageableOnly?: boolean
   preferDefault?: boolean
+  purpose?: 'select' | 'account'
 }
 
 export interface TeamListParams extends ListParams {
@@ -193,6 +195,10 @@ export interface ApiKeyListParams extends ListParams {
   keyword?: string
   status?: 'active' | 'disabled' | 'all'
   routeStrategyId?: string
+}
+
+export interface ApiKeyUsageParams extends ListParams {
+  ids: string[]
 }
 
 export interface UsageRecordListParams extends ListParams {

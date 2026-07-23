@@ -33,6 +33,7 @@ import {
   findProviderSystemDefaultHealthCheckModel,
   findProviderSystemDefaultHealthCheckModelAsync
 } from './provider-system-default-health-check-model.repository.js'
+import type { ProviderListItem } from '../domain/types.js'
 
 interface ProviderRow {
   id: string
@@ -73,19 +74,121 @@ const maxProviderDefinitions = 50
 const maxProviderProtocolProfiles = 200
 const businessSchemaName = 'juhe_business'
 
+export function listProviderListItems(): ProviderListItem[] {
+  const rows = getBusinessDatabase().prepare(`
+    SELECT p.id, p.code, p.name, p.parent_code, p.description, p.enabled,
+      p.default_supported_models_json,
+      ppp.base_url, ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json
+    FROM providers p
+    LEFT JOIN provider_protocol_profiles ppp ON ppp.id = (
+      SELECT candidate.id FROM provider_protocol_profiles candidate
+      WHERE candidate.provider_code = p.code
+      ORDER BY candidate.enabled DESC,
+        CASE WHEN candidate.id IN (?, ?) THEN 0 ELSE 1 END,
+        candidate.updated_at DESC, candidate.id ASC LIMIT 1
+    )
+    ORDER BY p.name ASC, p.code ASC LIMIT ?
+  `).all(GEMINI_NATIVE_V1BETA_PROFILE_ID, GLM_CODING_OPENAI_V1_PROFILE_ID, maxProviderDefinitions) as unknown as ProviderListRow[]
+  return rows.map(mapProviderListRow)
+}
+
+export async function listProviderListItemsAsync(): Promise<ProviderListItem[]> {
+  if (runtimeConfig.databaseDriver !== 'postgres') return listProviderListItems()
+  const client = await getProviderDatabaseClient()
+  const providers = providerTable(client, 'providers')
+  const profiles = providerTable(client, 'provider_protocol_profiles')
+  const rows = await client.query<ProviderListRow>(`
+    SELECT p.id, p.code, p.name, p.parent_code, p.description, p.enabled,
+      p.default_supported_models_json,
+      ppp.base_url, ppp.default_health_check_model, ppp.account_types_json, ppp.capabilities_json
+    FROM ${providers} p
+    LEFT JOIN ${profiles} ppp ON ppp.id = (
+      SELECT candidate.id FROM ${profiles} candidate
+      WHERE candidate.provider_code = p.code
+      ORDER BY candidate.enabled DESC,
+        CASE WHEN candidate.id IN (?, ?) THEN 0 ELSE 1 END,
+        candidate.updated_at DESC, candidate.id ASC LIMIT 1
+    )
+    ORDER BY p.name ASC, p.code ASC LIMIT ?
+  `, [GEMINI_NATIVE_V1BETA_PROFILE_ID, GLM_CODING_OPENAI_V1_PROFILE_ID, maxProviderDefinitions])
+  return rows.map(mapProviderListRow)
+}
+
+interface ProviderListRow {
+  id: string; code: ProviderCode; name: string; parent_code: ProviderCode | null; description: string | null; enabled: number | boolean
+  default_supported_models_json: string | null; base_url: string | null; default_health_check_model: string | null
+  account_types_json: string | null; capabilities_json: string | null
+}
+
+export interface ProviderOptionRecord {
+  id: string
+  code: ProviderCode
+  name: string
+  enabled: boolean
+}
+
+interface ProviderOptionRow {
+  id: string
+  code: ProviderCode
+  name: string
+  enabled: number | boolean
+}
+
+export async function listEnabledProviderOptionsAsync(): Promise<ProviderOptionRecord[]> {
+  const client = await getProviderDatabaseClient()
+  const rows = await client.query<ProviderOptionRow>(`
+    SELECT id, code, name, enabled
+    FROM ${providerTable(client, 'providers')}
+    WHERE ${providerEnabledPredicate(client, 'enabled')}
+    ORDER BY name ASC, code ASC
+    LIMIT ?
+  `, [maxProviderDefinitions])
+  return rows.map(mapProviderOptionRow)
+}
+
+export async function findProviderOptionByCodeAsync(providerCode: string): Promise<ProviderOptionRecord | undefined> {
+  const code = providerCode.trim()
+  if (!code) return undefined
+  const client = await getProviderDatabaseClient()
+  const row = await client.one<ProviderOptionRow>(`
+    SELECT id, code, name, enabled
+    FROM ${providerTable(client, 'providers')}
+    WHERE code = ?
+    LIMIT 1
+  `, [code])
+  return row ? mapProviderOptionRow(row) : undefined
+}
+
+function mapProviderOptionRow(row: ProviderOptionRow): ProviderOptionRecord {
+  return { id: row.id, code: row.code, name: row.name, enabled: Number(row.enabled) === 1 }
+}
+
+function mapProviderListRow(row: ProviderListRow): ProviderListItem {
+  return {
+    id: row.id, code: row.code, name: row.name, parentCode: row.parent_code ?? undefined,
+    description: row.description ?? undefined, enabled: Number(row.enabled) === 1,
+    baseUrl: row.base_url ?? '', defaultHealthCheckModel: row.default_health_check_model ?? '',
+    defaultSupportedModels: providerDefaultSupportedModels(row.default_supported_models_json),
+    accountTypes: parseJsonArray(row.account_types_json ?? '') as AccountType[], capabilities: parseJsonArray(row.capabilities_json ?? '')
+  }
+}
+
 export function listProviders(): ProviderDefinition[] {
   return listProvidersReadOnly()
 }
 
-export function listProvidersReadOnly(): ProviderDefinition[] {
+export function listProvidersReadOnly(providerCode?: string): ProviderDefinition[] {
+  const code = providerCode?.trim()
+  const where = code ? 'WHERE code = ?' : ''
   const rows = getBusinessDatabase()
     .prepare(`
       SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
       FROM providers
+      ${where}
       ORDER BY name ASC, code ASC
       LIMIT ?
     `)
-    .all(maxProviderDefinitions) as unknown as ProviderRow[]
+    .all(...(code ? [code, maxProviderDefinitions] : [maxProviderDefinitions])) as unknown as ProviderRow[]
   const profilesByProvider = providerProtocolProfilesByProviderCode(rows.map((row) => row.code))
   return rows.map((row) => ({
     id: row.id,
@@ -100,22 +203,24 @@ export function listProvidersReadOnly(): ProviderDefinition[] {
   }))
 }
 
-export async function listProvidersAsync(): Promise<ProviderDefinition[]> {
+export async function listProvidersAsync(providerCode?: string): Promise<ProviderDefinition[]> {
+  const code = providerCode?.trim()
   if (runtimeConfig.databaseDriver !== 'postgres') {
-    if (sqliteReadWorkerPoolEnabled()) {
+    if (!code && sqliteReadWorkerPoolEnabled()) {
       return requestSqliteReadWorker({
         type: 'list_providers_read_only'
       })
     }
-    return listProvidersReadOnly()
+    return listProvidersReadOnly(code)
   }
   const client = await getProviderDatabaseClient()
   const rows = await client.query<ProviderRow>(`
     SELECT id, code, name, parent_code, description, enabled, default_supported_models_json
     FROM ${providerTable(client, 'providers')}
+    ${code ? 'WHERE code = ?' : ''}
     ORDER BY name ASC, code ASC
     LIMIT ?
-  `, [maxProviderDefinitions])
+  `, code ? [code, maxProviderDefinitions] : [maxProviderDefinitions])
   const profilesByProvider = await providerProtocolProfilesByProviderCodeAsync(client, rows.map((row) => row.code))
   return rows.map((row) => ({
     id: row.id,

@@ -1,5 +1,6 @@
 import type {
   ProviderDefinition,
+  ProviderListItem,
   ProviderDefaultHealthCheckModelResult,
   ProviderModelOption,
   ProviderModelCapabilities,
@@ -20,7 +21,9 @@ export interface ProviderModelOptionsParams extends ListParams {
 }
 
 export const providersApi = {
+  listItems: (params?: ListParams) => unwrap<ProviderListItem[]>(http.get('/providers/list', { params })),
   list: (params?: ListParams) => unwrap<ProviderDefinition[]>(http.get('/providers', { params })),
+  detail: (code: string, params?: ListParams) => unwrap<ProviderDefinition>(http.get(`/providers/${code}`, { params })),
   options: (params?: ListParams) => unwrap<ProviderOption[]>(http.get('/providers/options', { params })),
   definitions: (params?: ListParams) => unwrap<ProviderDefinition[]>(http.get('/providers/definitions', { params })),
   modelOptions: (params?: ProviderModelOptionsParams) => unwrap<ProviderModelOption[]>(http.get('/providers/models/options', { params })),

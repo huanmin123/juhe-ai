@@ -1195,6 +1195,11 @@ async function assertProviderModelHttpContracts(): Promise<void> {
     const lightweightProviders = await getEnvelope<Array<Record<string, unknown>>>(baseUrl, '/__aisys__/api/providers/options', userACookie)
     assert(lightweightProviders.length > 0, '供应商轻量选项不得为空')
     assert(lightweightProviders.every((item) => Object.keys(item).sort().join(',') === 'code,enabled,id,name'), '供应商 options 只能返回 id/code/name/enabled')
+    const providerListItems = await getEnvelope<Array<Record<string, unknown>>>(baseUrl, '/__aisys__/api/providers/list', userACookie)
+    assert(providerListItems.length > 0, '供应商目录列表不得为空')
+    assert(providerListItems.every((item) => !('protocolProfiles' in item)), '供应商目录列表不得预加载 protocolProfiles')
+    const providerDetail = await getEnvelope<Record<string, unknown>>(baseUrl, '/__aisys__/api/providers/gpt', userACookie)
+    assert(Array.isArray(providerDetail.protocolProfiles), '供应商详情必须按需返回 protocolProfiles')
     const providerDefinitions = await getEnvelope<Array<{ code: string; protocolProfiles: unknown[] }>>(baseUrl, '/__aisys__/api/providers/definitions', userACookie)
     assert(providerDefinitions.some((item) => item.code === 'openai' && Array.isArray(item.protocolProfiles)), '账户创建所需完整供应商定义必须走 definitions')
 

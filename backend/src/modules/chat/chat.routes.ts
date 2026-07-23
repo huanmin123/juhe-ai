@@ -26,7 +26,7 @@ import {
   type ChatMessageStatus
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
-import { findChatApiKeySecretAsync, findDefaultChatApiKeySecretForProviderAsync, listApiKeysAsync } from '../../storage/repositories.js'
+import { findChatApiKeySecretAsync, findDefaultChatApiKeySecretForProviderAsync } from '../../storage/repositories.js'
 import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { listCachedOpenAIAccountsForGroupAsync, listCachedProviderModelCatalogAsync } from '../gateway/runtime/runtime-cache.service.js'
@@ -169,14 +169,6 @@ class ChatPreparationCanceledError extends Error {
     this.name = 'ChatPreparationCanceledError'
   }
 }
-
-chatRouter.get('/api-keys', async (_req, res, next) => {
-  try {
-    const auth = requireChatAuth()
-    const keys = await listApiKeysAsync({ systemAccountId: auth.systemAccountId, role: 'user' })
-    res.json(ok(keys.filter((key) => key.status === 'active').map((key) => ({ id: key.id, name: key.name, status: key.status }))))
-  } catch (error) { next(error) }
-})
 
 chatRouter.get('/image-policy', async (_req, res, next) => {
   try {

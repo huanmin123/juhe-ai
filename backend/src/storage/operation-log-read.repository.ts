@@ -37,8 +37,10 @@ interface OperationLogWhereFilters {
   searchTerm?: string
 }
 
-const operationLogDefaultPageSize = 100
-const operationLogMaxPageSize = 100
+// List endpoints only need the compact DTO below; keep each request inside a
+// bounded window while allowing the UI's 20-row and mobile 50-row views.
+const operationLogDefaultPageSize = 20
+const operationLogMaxPageSize = 50
 const operationLogMaxListWindowRows = 1001
 
 export function listOperationLogs(options: OperationLogListOptions = {}): OperationLogListResult {

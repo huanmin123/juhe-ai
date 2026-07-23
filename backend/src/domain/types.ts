@@ -76,6 +76,13 @@ export interface SystemAccountSummary {
 }
 
 export type SystemAccountPrincipalSummary = Pick<SystemAccountSummary, 'id' | 'username' | 'displayName' | 'status'>
+export type SystemAccountListItem = Omit<SystemAccountSummary, 'createdAt' | 'updatedAt'>
+
+export interface SystemAccountOptionSummary {
+  id: string
+  name: string
+  disabledReason?: 'account_disabled'
+}
 
 export interface CurrentUserSummary {
   id: string
@@ -232,6 +239,21 @@ export interface ProviderDefinition {
   accountTypes: AccountType[]
   capabilities: string[]
   protocolProfiles: ProviderProtocolProfileDefinition[]
+}
+
+/** Fields rendered by the provider catalogue list; protocol profiles are loaded on demand. */
+export interface ProviderListItem {
+  id: string
+  code: ProviderCode
+  name: string
+  parentCode?: ProviderCode
+  description?: string
+  enabled: boolean
+  baseUrl: string
+  defaultHealthCheckModel: string
+  defaultSupportedModels: string[]
+  accountTypes: AccountType[]
+  capabilities: string[]
 }
 
 export interface ProtocolEndpointFamilyDefinition {
@@ -775,7 +797,18 @@ export type AccountListItem = Omit<AccountSummary,
   | 'supportedModels'
   | 'modelMappings'
   | 'apiKeyRuntimeDetails'
+  | 'apiKeyRuntime'
+  | 'balanceQueryEnabled'
+  | 'balanceQueryConfig'
+  | 'balanceQueryNextRefreshAt'
+  | 'balanceSnapshot'
   | 'usage'
+  | 'todayUsage'
+  | 'currentConcurrency'
+  | 'lastUsedAt'
+  | 'runtimeAvailability'
+  | 'effectiveAvailability'
+  | 'availabilityPresentation'
   | 'oauthUsage'
   | 'authorizationSources'
   | 'authorizationCount'
@@ -819,6 +852,9 @@ export interface AccountStatusSnapshotItem extends Pick<AccountSummary,
   | 'authorizationInstanceSourceAccountLastHealthCheckErrorMessage'
   | 'authorizationInstanceSourceAccountLastHealthCheckTraceId'
   | 'apiKeyRuntime'
+  | 'balanceQueryEnabled'
+  | 'balanceQueryNextRefreshAt'
+  | 'balanceSnapshot'
   | 'runtimeAvailability'
   | 'effectiveAvailability'
   | 'availabilityPresentation'
@@ -946,6 +982,8 @@ export interface AccountUsageStatsOverview {
   page: number
   pageSize: number
 }
+
+export type AccountUsageStatsListResult = Omit<AccountUsageStatsOverview, 'summary'>
 
 export interface AccountTestResult {
   accountId: string
@@ -1075,6 +1113,8 @@ export interface ModelCheckOptions {
   defaultProfile: ModelCheckProfile
   trustedComparison: ModelCheckTrustedComparisonStatus
 }
+
+export type ModelCheckAccountOption = Pick<AccountOptionSummary, 'id' | 'name' | 'providerCode' | 'providerProtocolProfileId' | 'protocolCode' | 'protocolVersion'>
 
 export interface ModelCheckRunRequest {
   targetType: ModelCheckTargetType

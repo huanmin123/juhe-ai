@@ -106,8 +106,9 @@ import { message } from '@/lib/antd'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
-import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
+import { useScopedModelCheckAccountOptionsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { authState } from '@/composables/useAuth'
 import {
   accountLabelForId,
   rememberAccountLabel,
@@ -173,7 +174,7 @@ interface ModelChecksPageState {
 
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
-const accountsApi = useScopedAccountsApi(isManagementView)
+const accountsApi = useScopedModelCheckAccountOptionsApi(isManagementView)
 const pageStateCache = usePageStateCache<ModelChecksPageState>(undefined, defaultModelChecksPageState, {
   sanitize: sanitizeModelChecksPageState,
   version: 1
@@ -306,7 +307,14 @@ const {
   accountsApi,
   form,
   modelCheckScopeParams,
-  knownTargetName
+  knownTargetName,
+  identityKey: computed(() => JSON.stringify([
+    isManagementView.value ? 'management' : 'self',
+    authState.currentUser.value?.id ?? '',
+    authState.currentUser.value?.role ?? '',
+    authState.revision.value,
+    modelCheckScopeParams.value?.systemAccountId ?? ''
+  ]))
 })
 selectedHistoryTargetAccount.value = initialPageState.historyTargetAccount
 const historyModelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))

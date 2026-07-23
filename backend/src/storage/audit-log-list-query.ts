@@ -10,6 +10,17 @@ export const errorGroupDefaultPageSize = 100
 export const errorGroupMaxPageSize = 100
 export const auditLogMaxListWindowRows = 1001
 
+// Keep list/search projections bounded. Detail reads intentionally use their own
+// wider projection below; list callers never need payload/error body columns.
+export function auditLogListSelectColumns(alias: string): string {
+  return [
+    'id', 'trace_id', 'traffic_source', 'system_account_id', 'api_key_id',
+    'group_id', 'account_id', 'method', 'path', 'model', 'upstream_model',
+    'model_mapping_applied', 'stream', 'audit_outcome', 'success',
+    'final_status_code', 'duration_ms', 'http_duration_ms', 'created_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
+}
+
 export function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; params: AuditLogFilterValue[] } {
   const clauses: string[] = []
   const params: AuditLogFilterValue[] = []

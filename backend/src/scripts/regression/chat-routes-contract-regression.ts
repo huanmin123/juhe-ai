@@ -38,7 +38,6 @@ assert.equal(shouldOfferChatImageGenerationTool('画调用链'), false, '调用�
 
 assert.match(appSource, /my-chat.*forceSelfAccessScope.*chatRouter/, 'AI 问答路由必须挂在登录态和个人作用域之后')
 for (const contract of [
-  /chatRouter\.get\('\/api-keys'/,
   /chatRouter\.get\('\/conversations'/,
   /chatRouter\.post\('\/conversations'/,
   /chatRouter\.get\('\/conversations\/:conversationId\/messages'/,
@@ -59,6 +58,8 @@ for (const contract of [
 ]) {
   assert.match(routesSource, contract)
 }
+assert.doesNotMatch(routesSource, /chatRouter\.get\('\/api-keys'/, 'AI 问答不得保留未被界面使用的 API Key 列表端点')
+assert.doesNotMatch(routesSource, /listApiKeysAsync/, 'AI 问答不得通过通用管理列表读取 API Key')
 assert.match(routesSource, /findChatApiKeySecretAsync/, '模型和发送必须通过聊天专用轻量查询按当前用户读取真实 API Key')
 assert.doesNotMatch(routesSource, /findApiKeySecretAsync|findDefaultApiKeySecretForProviderAsync/, '聊天请求不得加载通用 API Key 用量摘要')
 assert.match(routesSource, /createConversationSchema = z\.object\(\{ apiKeyId: z\.string\(\)[\s\S]{0,120}optional\(\)/, '创建会话必须允许省略 API Key')

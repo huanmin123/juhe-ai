@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 import { createApp } from 'vue'
 
@@ -14,6 +16,10 @@ const originalOptions = mutableApi.proxies.options
 const messageApi = message as unknown as { error?: (content: unknown) => void }
 const originalMessageError = messageApi.error
 const originalConsoleError = console.error
+const accountListDataSource = readFileSync(fileURLToPath(new URL('../../views/accounts/useAccountListData.ts', import.meta.url)), 'utf8')
+
+assert.doesNotMatch(accountListDataSource, /api\.proxies\.options/, '账户列表首屏不得预取代理 options')
+assert.doesNotMatch(accountListDataSource, /const proxies = ref<ProxyProfileOptionSummary/, '账户列表数据层不得保留未使用的代理 options 状态')
 
 interface Option {
   id: string

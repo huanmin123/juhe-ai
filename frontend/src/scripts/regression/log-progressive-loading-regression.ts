@@ -129,6 +129,16 @@ assert.match(logsApiSource, /grepOptions: \(\) => unwrap<RuntimeLogGrepRuntime>/
 assert.match(runtimeViewSource, /loadRuntimeLogGrepOptions/, '只有 grep 模式才应加载文件范围选项')
 const facetsType = runtimeTypesSource.match(/export interface RuntimeLogFacets \{[\s\S]*?\n\}/)?.[0] ?? ''
 assert.doesNotMatch(facetsType, /grep:/, '索引 facets 不得夹带 grep 文件扫描结果')
+assert.deepEqual(
+  [...facetsType.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9]*)(?:\?|):/gm)].map((match) => match[1]),
+  ['retentionDays', 'earliestIndexedAt', 'latestIndexedAt', 'totalIndexed', 'levels', 'events'],
+  '索引 facets 类型只应包含保留范围、索引数量与筛选项'
+)
+const runtimeFacetsRouteSource = runtimeRouteSource.match(
+  /runtimeLogsRouter\.get\('\/facets'[\s\S]*?(?=\nruntimeLogsRouter\.get\('\/grep-options')/
+)?.[0] ?? ''
+assert.match(runtimeFacetsRouteSource, /requestDbService\(\{ type: 'get_runtime_log_facets' \}\)/, 'facets 必须只读取专用只读 worker 结果')
+assert.doesNotMatch(runtimeFacetsRouteSource, /requestServerRuntime|type: 'status'|getRuntimeLogGrepRuntime|buildBackgroundQueueHealthSnapshot|gatewayAccountSideEffects/, 'facets 不得读取 server runtime、DB status、grep 或网关副作用')
 
 assert.doesNotMatch(
   auditPayloadStateSource,

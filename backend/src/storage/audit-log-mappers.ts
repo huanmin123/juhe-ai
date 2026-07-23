@@ -1,6 +1,7 @@
 import type {
   AuditErrorGroupSummary,
   AuditLogAttemptSummary,
+  AuditLogListItem,
   AuditLogPayloadSummary,
   AuditLogSummary,
   AuditOutcome,
@@ -77,6 +78,35 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
     httpCompletedAt: optionalString(row.http_completed_at),
     httpDurationMs: numberValue(row.http_duration_ms),
     firstTokenMs: numberValue(row.first_token_ms),
+    createdAt: String(row.created_at)
+  }
+}
+
+export function auditLogListItemFromRow(row: AuditLogRow, systemAccountNames: Map<string, string>): AuditLogListItem {
+  const systemAccountId = optionalString(row.system_account_id)
+  return {
+    id: String(row.id),
+    traceId: String(row.trace_id),
+    trafficSource: auditTrafficSource(row.traffic_source),
+    systemAccountId,
+    systemAccountName: systemAccountId ? systemAccountNames.get(systemAccountId) : undefined,
+    apiKeyId: optionalString(row.api_key_id),
+    apiKeyName: optionalString(row.api_key_name),
+    groupId: optionalString(row.group_id),
+    groupName: optionalString(row.group_name),
+    accountId: optionalString(row.account_id),
+    accountName: optionalString(row.account_name),
+    method: String(row.method),
+    path: String(row.path),
+    model: optionalString(row.model),
+    upstreamModel: optionalString(row.upstream_model),
+    modelMappingApplied: row.model_mapping_applied === 1,
+    stream: row.stream === 1,
+    auditOutcome: String(row.audit_outcome) as AuditOutcome,
+    success: row.success === 1,
+    finalStatusCode: numberValue(row.final_status_code),
+    durationMs: numberValue(row.duration_ms),
+    httpDurationMs: numberValue(row.http_duration_ms),
     createdAt: String(row.created_at)
   }
 }

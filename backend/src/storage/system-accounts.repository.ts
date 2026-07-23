@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import { isAdminRole, isSuperAdminRole, type SystemAccountPrincipalSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
+import { isAdminRole, isSuperAdminRole, type SystemAccountListItem, type SystemAccountOptionSummary, type SystemAccountRole, type SystemAccountStatus, type SystemAccountSummary } from '../domain/types.js'
 import { hashPassword, hashPasswordAsync, hashSecret, verifyPassword, verifyPasswordAsync } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -15,7 +15,7 @@ import { DEFAULT_BUILT_IN_GROUPS } from './schema-defaults.js'
 import { normalizeListPage, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { requestSqliteReadWorker, sqliteReadWorkerPoolEnabled } from './sqlite-read-worker-pool.js'
-import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
+import { systemAccountListItemFromRow, systemAccountOptionSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalString } from './value-utils.js'
 
 interface SystemSessionRow {
@@ -51,7 +51,7 @@ export interface SystemAccountListOptions {
 }
 
 export interface SystemAccountListResult {
-  items: SystemAccountSummary[]
+  items: SystemAccountListItem[]
   total: number
   hasMore: boolean
   page: number
@@ -65,11 +65,11 @@ export interface SessionWithAccount {
   account: SystemAccountSummary
 }
 
-export function listSystemAccounts(): SystemAccountSummary[] {
+export function listSystemAccounts(): SystemAccountListItem[] {
   return listSystemAccountsPage({ page: 1, pageSize: maxSystemAccountPageSize }).items
 }
 
-export async function listSystemAccountsAsync(): Promise<SystemAccountSummary[]> {
+export async function listSystemAccountsAsync(): Promise<SystemAccountListItem[]> {
   return (await listSystemAccountsPageAsync({ page: 1, pageSize: maxSystemAccountPageSize })).items
 }
 
@@ -82,7 +82,7 @@ export function listSystemAccountsPageReadOnly(options: SystemAccountListOptions
   const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
+      SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at
       FROM system_accounts
       ${keywordFilter.clause}
       ORDER BY updated_at DESC, id DESC
@@ -90,7 +90,7 @@ export function listSystemAccountsPageReadOnly(options: SystemAccountListOptions
     `)
     .all(...keywordFilter.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as SystemAccountRow[]
   const pageRows = takePageRows(rows, normalized.pageSize)
-  const items = pageRows.rows.map(systemAccountSummaryFromRow)
+  const items = pageRows.rows.map(systemAccountListItemFromRow)
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -114,14 +114,14 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
   const client = await getSystemAccountDatabaseClient()
   const keywordFilter = buildSystemAccountListKeywordFilterForClient(client, normalized.keyword)
   const rows = await client.query<SystemAccountRow>(`
-    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at, created_at, updated_at
+    SELECT id, username, display_name, description, role, status, must_change_password, image_generation_enabled, last_login_at
     FROM ${systemAccountTable(client, 'system_accounts')}
     ${keywordFilter.clause}
     ORDER BY updated_at DESC, id DESC
     LIMIT ? OFFSET ?
   `, [...keywordFilter.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize])
   const pageRows = takePageRows(rows, normalized.pageSize)
-  const items = pageRows.rows.map(systemAccountSummaryFromRow)
+  const items = pageRows.rows.map(systemAccountListItemFromRow)
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -131,26 +131,26 @@ export async function listSystemAccountsPageAsync(options: SystemAccountListOpti
   }
 }
 
-export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
+export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountOptionSummary[] {
   return listSystemAccountOptionsReadOnly(options)
 }
 
-export function listSystemAccountOptionsReadOnly(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
+export function listSystemAccountOptionsReadOnly(options: SystemAccountOptionListOptions = {}): SystemAccountOptionSummary[] {
   const optionFilter = buildSystemAccountOptionFilter(options)
   const limitClause = systemAccountOptionLimitClause(options.limit)
   const rows = getBusinessDatabase()
     .prepare(`
-      SELECT id, username, display_name, status
+      SELECT id, display_name, status
       FROM system_accounts
       ${optionFilter.clause}
       ORDER BY status ASC, display_name ASC, username ASC, id ASC
       ${limitClause.clause}
     `)
-    .all(...optionFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
-  return rows.map(systemAccountPrincipalSummaryFromRow)
+    .all(...optionFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'display_name' | 'status'>>
+  return rows.map(systemAccountOptionSummaryFromRow)
 }
 
-export async function listSystemAccountOptionsAsync(options: SystemAccountOptionListOptions = {}): Promise<SystemAccountPrincipalSummary[]> {
+export async function listSystemAccountOptionsAsync(options: SystemAccountOptionListOptions = {}): Promise<SystemAccountOptionSummary[]> {
   if (runtimeConfig.databaseDriver !== 'postgres') {
     if (sqliteReadWorkerPoolEnabled()) {
       return requestSqliteReadWorker({
@@ -163,14 +163,14 @@ export async function listSystemAccountOptionsAsync(options: SystemAccountOption
   const client = await getSystemAccountDatabaseClient()
   const optionFilter = buildSystemAccountOptionFilterForClient(client, options)
   const limitClause = systemAccountOptionLimitClause(options.limit)
-  const rows = await client.query<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>(`
-    SELECT id, username, display_name, status
+  const rows = await client.query<Pick<SystemAccountRow, 'id' | 'display_name' | 'status'>>(`
+    SELECT id, display_name, status
     FROM ${systemAccountTable(client, 'system_accounts')}
     ${optionFilter.clause}
     ORDER BY status ASC, display_name ASC, username ASC, id ASC
     ${limitClause.clause}
   `, [...optionFilter.params, ...limitClause.params])
-  return rows.map(systemAccountPrincipalSummaryFromRow)
+  return rows.map(systemAccountOptionSummaryFromRow)
 }
 
 function buildSystemAccountListKeywordFilter(keyword?: string): { clause: string; params: string[] } {

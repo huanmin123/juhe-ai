@@ -2,7 +2,13 @@ import { accountSummaryWithEffectiveAvailability } from '../../domain/account-ef
 import { publicAccountRuntimeAvailability } from '../../domain/account-runtime-availability-public.js'
 import type { AccountStatusSnapshotResult } from '../../domain/types.js'
 import type { AccessScope } from '../../storage/access-scope.js'
+import {
+  accountBalanceSnapshotMatchesConfiguration,
+  loadAccountBalanceConfigurationsByAccountIdsAsync,
+  loadAccountBalanceSnapshotRecordsByAccountIdsAsync
+} from '../../storage/account-balance.repository.js'
 import { listAccountStatusProjectionsAsync } from '../../storage/account-status-snapshot.repository.js'
+import { isAccountBalanceSnapshotSuppressed } from './account-balance-snapshot-cleanup.service.js'
 import { loadAccountConcurrencyByIds, loadAccountRuntimeAvailabilityByKeys } from '../gateway/runtime/runtime-snapshot.service.js'
 
 const maxSnapshotAccountIds = 100
@@ -22,9 +28,12 @@ export async function getAccountStatusSnapshot(
   accountIds: string[]
 ): Promise<AccountStatusSnapshotResult> {
   const projections = await listAccountStatusProjectionsAsync(access, accountIds)
-  const [runtime, concurrency] = await Promise.all([
+  const ownerIds = projections.filter((item) => item.accessType !== 'authorized').map((item) => item.id)
+  const [runtime, concurrency, balanceConfigurations, balanceSnapshots] = await Promise.all([
     loadAccountRuntimeAvailabilityByKeys(projections.map((item) => item.runtimeKey)),
-    loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId))
+    loadAccountConcurrencyByIds(projections.map((item) => item.concurrencyAccountId)),
+    loadAccountBalanceConfigurationsByAccountIdsAsync(ownerIds),
+    loadAccountBalanceSnapshotRecordsByAccountIdsAsync(ownerIds)
   ])
   return {
     generatedAt: new Date().toISOString(),
@@ -34,6 +43,8 @@ export async function getAccountStatusSnapshot(
     },
     items: projections.map(({ runtimeKey, concurrencyAccountId, permissions: _permissions, accessType: _accessType, boundGroupId: _boundGroupId, groupBindStatus: _groupBindStatus, ...projection }) => {
       const publicRuntimeAvailability = publicAccountRuntimeAvailability(runtime.values[runtimeKey])
+      const balanceConfiguration = balanceConfigurations.get(projection.id)
+      const balanceSnapshotRecord = balanceSnapshots.get(projection.id)
       const withAvailability = accountSummaryWithEffectiveAvailability({
         ...projection,
         permissions: _permissions,
@@ -44,6 +55,13 @@ export async function getAccountStatusSnapshot(
       })
       return {
         ...projection,
+        balanceQueryEnabled: balanceConfiguration?.enabled,
+        balanceQueryNextRefreshAt: balanceConfiguration?.nextRefreshAt,
+        balanceSnapshot: balanceConfiguration?.enabled
+          && !isAccountBalanceSnapshotSuppressed(projection.id, { configuration: balanceConfiguration, snapshotRecord: balanceSnapshotRecord })
+          && accountBalanceSnapshotMatchesConfiguration(balanceConfiguration, balanceSnapshotRecord)
+          ? balanceSnapshotRecord.snapshot
+          : undefined,
         currentConcurrency: concurrency.values[concurrencyAccountId] ?? 0,
         runtimeAvailability: publicRuntimeAvailability,
         availabilityPresentation: withAvailability.availabilityPresentation,

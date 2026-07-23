@@ -53,6 +53,20 @@ export interface ProviderDefinition {
   protocolProfiles: ProviderProtocolProfileDefinition[]
 }
 
+export interface ProviderListItem {
+  id: string
+  code: ProviderCode
+  name: string
+  parentCode?: ProviderCode
+  description?: string
+  enabled: boolean
+  baseUrl: string
+  defaultHealthCheckModel: string
+  defaultSupportedModels: string[]
+  accountTypes: AccountType[]
+  capabilities: string[]
+}
+
 export interface ProviderOption {
   id: string
   code: ProviderCode
@@ -154,6 +168,7 @@ export interface ProviderDefaultHealthCheckModelResult {
 
 export interface ProviderModelsParams {
   systemAccountId?: string
+  viewScope?: 'admin' | 'self'
   includeInactive?: boolean
   includeUnpriced?: boolean
 }

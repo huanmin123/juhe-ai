@@ -1,4 +1,7 @@
 import type { AccountListOptions, AccountOptionListOptions } from './account-list-options.js'
+import type { ModelCheckAccountOptionListOptions } from './account-options.repository.js'
+import type { ModelCheckAccountOption } from '../domain/types.js'
+import type { ManagementSettingsSectionKey } from './settings.repository.js'
 import type { AccountListResult } from './account-summary.repository.js'
 import type { AccountStatusProjection } from './account-status-snapshot.repository.js'
 import type { AccountTagSummary } from './account-tags.repository.js'
@@ -13,7 +16,7 @@ import type {
   AuditLogListResult,
   AuditLogPayloadDetail,
   AuditLogPayloadReadOptions,
-  AuditLogSummary
+  AuditLogListItem
 } from './audit-logs.repository.js'
 import type {
   AuthorizationGranteeGroupOptionListOptions,
@@ -30,7 +33,7 @@ import type {
   AccountTestSession,
   AccountTestTask,
   AccountGroupOptionSummary,
-  AccountUsageStatsOverview,
+  AccountUsageStatsListResult,
   AccountUsageStatsRange,
   AnnouncementSummary,
   PublicAnnouncementDetail,
@@ -66,6 +69,7 @@ import type {
   RouteStrategyListResult,
   RouteStrategyOptionSummary,
   RouteStrategySummary,
+  SystemAccountOptionSummary,
   SystemAccountPrincipalSummary,
   SystemAccountSummary
 } from '../domain/types.js'
@@ -188,6 +192,11 @@ export type SqliteReadWorkerOperation =
     type: 'list_account_options_read_only'
     access?: AccessScope
     options?: AccountOptionListOptions
+  }
+  | {
+    type: 'list_model_check_account_options_read_only'
+    access?: AccessScope
+    options: ModelCheckAccountOptionListOptions
   }
   | {
     type: 'list_account_tags_read_only'
@@ -730,6 +739,10 @@ export type SqliteReadWorkerOperation =
     type: 'get_settings_read_only'
   }
   | {
+    type: 'get_management_settings_section_read_only'
+    sectionKey: ManagementSettingsSectionKey
+  }
+  | {
     type: 'read_gateway_settings_read_only'
   }
   | {
@@ -797,6 +810,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_account_status_snapshots_read_only' } ? AccountStatusProjection[] :
   T extends { type: 'find_account_summary_read_only' } ? AccountSummary | undefined :
   T extends { type: 'list_account_options_read_only' } ? AccountOptionSummary[] :
+  T extends { type: 'list_model_check_account_options_read_only' } ? ModelCheckAccountOption[] :
   T extends { type: 'list_account_tags_read_only' } ? AccountTagSummary[] :
   T extends { type: 'get_account_test_session_read_only' } ? AccountTestSession | undefined :
   T extends { type: 'get_account_test_task_read_only' } ? AccountTestTask | undefined :
@@ -830,7 +844,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_public_api_logs_read_only' } ? PublicApiLogListResult :
   T extends { type: 'get_public_api_log_detail_read_only' } ? PublicApiLogDetail | undefined :
   T extends { type: 'list_audit_logs_read_only' } ? AuditLogListResult :
-  T extends { type: 'list_audit_logs_by_ids_read_only' } ? AuditLogSummary[] :
+  T extends { type: 'list_audit_logs_by_ids_read_only' } ? AuditLogListItem[] :
   T extends { type: 'list_audit_error_groups_read_only' } ? AuditErrorGroupListResult :
   T extends { type: 'list_audit_error_group_events_read_only' } ? AuditLogListResult :
   T extends { type: 'get_audit_log_detail_read_only' } ? AuditLogDetail | undefined :
@@ -860,7 +874,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'get_ai_performance_series_read_only' } ? AiPerformanceSeries :
   T extends { type: 'get_ai_performance_overview_read_only' } ? AiPerformanceOverview :
   T extends { type: 'list_ai_performance_account_options_read_only' } ? AiPerformanceAccountOption[] :
-  T extends { type: 'get_account_usage_stats_overview_page_read_only' } ? AccountUsageStatsOverview :
+  T extends { type: 'get_account_usage_stats_overview_page_read_only' } ? AccountUsageStatsListResult :
   T extends { type: 'get_system_metrics_overview_read_only' } ? SystemMetricsOverview :
   T extends { type: 'resolve_group_usage_access_read_only' } ? GroupUsageAccessMetadata | undefined :
   T extends { type: 'list_openai_accounts_for_group_read_only' } ? OpenAIAccountSecret[] :
@@ -895,7 +909,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_proxy_options_read_only' } ? ProxyProfileOptionSummary[] :
   T extends { type: 'find_proxy_read_only' } ? ProxyProfileSummary | undefined :
   T extends { type: 'list_system_accounts_page_read_only' } ? SystemAccountListResult :
-  T extends { type: 'list_system_account_options_read_only' } ? SystemAccountPrincipalSummary[] :
+  T extends { type: 'list_system_account_options_read_only' } ? SystemAccountOptionSummary[] :
   T extends { type: 'find_system_account_by_id_read_only' } ? SystemAccountSummary | undefined :
   T extends { type: 'find_system_account_by_username_read_only' } ? (SystemAccountSummary & { passwordHash: string }) | undefined :
   T extends { type: 'find_session_by_token_read_only' } ? (SessionWithAccount & { tokenHash: string }) | undefined :
@@ -910,6 +924,7 @@ export type SqliteReadWorkerOperationResult<T extends SqliteReadWorkerOperation>
   T extends { type: 'list_provider_default_health_check_model_preferences_read_only' } ? ProviderDefaultHealthCheckModelPreferenceEntries :
   T extends { type: 'list_global_settings_read_only' } ? Record<string, unknown> :
   T extends { type: 'get_settings_read_only' } ? Record<string, unknown> :
+  T extends { type: 'get_management_settings_section_read_only' } ? Record<string, unknown> :
   T extends { type: 'read_gateway_settings_read_only' } ? GatewaySettings :
   T extends { type: 'list_runtime_logs_read_only' } ? RuntimeLogListResult :
   T extends { type: 'get_runtime_log_detail_read_only' } ? RuntimeLogDetail | undefined :

@@ -390,16 +390,7 @@ backend/src/storage/
 
 所有接口位于 `/__aisys__/api/my-chat`，只操作当前登录用户数据。成功响应遵循 System API `{ data, message? }` 包装；流式发送接口除外。
 
-### 10.1 API Key 选项
-
-```http
-GET /__aisys__/api/my-chat/api-keys
-```
-
-- 返回当前用户状态为 `active` 的轻量 `{ id, name, status }` 列表，不返回完整密钥。
-- API Key 的所有权、当前密钥、额度、路由和运行态在创建会话或发送时继续由服务端与网关校验。
-
-### 10.2 会话与模型
+### 10.1 会话与模型
 
 ```http
 POST /__aisys__/api/my-chat/conversations
@@ -411,7 +402,7 @@ DELETE /__aisys__/api/my-chat/conversations/:id
 ```
 
 - 创建请求允许省略 `apiKeyId`；省略时服务端按“默认 API Key -> 默认普通路由 -> GPT 分组”关系绑定当前用户的默认 GPT API Key，成功返回 `201`。显式传入 `apiKeyId` 仍用于受控调用和回归测试；会话绑定后不提供更换 API Key 的接口。
-- 页面新建会话不加载 API Key 选项，也不显示 Key 选择框；现有 `GET /api-keys` 仅保留为轻量服务端能力，不进入普通新建交互。
+- 页面新建会话不加载 API Key 选项，也不显示 Key 选择框；未被页面调用且会重复读取完整 API Key 管理数据的旧 `GET /my-chat/api-keys` 已删除，前后端不再保留该 HTTP 契约。默认 Key 选择仍只在服务端创建会话链路内部完成。
 - 会话列表使用 `(last_message_at, id)` 复合游标，默认 30、最大 50，只返回摘要。
 - PATCH 只接受 `title` 和 `isPinned`，至少提供一个字段；标题最长 60 字符。
 - 模型列表先校验会话归属和绑定 Key，再读取 API Key 活跃分组对应供应商的轻量快照；禁止通过内部 `/v1/models` 重走网关预检，也禁止为下拉列表加载账户快照。列表只返回 `id/name`，请求成本只与供应商数和必须返回的模型数有关，不随账户数增长。

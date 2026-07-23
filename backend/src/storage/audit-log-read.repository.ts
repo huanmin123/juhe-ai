@@ -10,6 +10,7 @@ import {
 import {
   auditErrorGroupFromRow,
   auditLogAttemptFromRow,
+  auditLogListItemFromRow,
   auditLogPayloadSummaryFromRow,
   auditLogSummaryFromRow,
   hydrateAuditRows,
@@ -17,6 +18,7 @@ import {
 } from './audit-log-mappers.js'
 import {
   auditErrorGroupListSelectColumns,
+  auditLogListSelectColumns,
   auditLogDefaultPageSize,
   auditLogMaxPageSize,
   buildAuditErrorGroupFilters,
@@ -35,7 +37,7 @@ import type {
   AuditLogListResult,
   AuditLogPayloadDetail,
   AuditLogPayloadReadOptions,
-  AuditLogSummary
+  AuditLogListItem
 } from './audit-log-types.js'
 import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } from './repository-lookups.js'
@@ -53,7 +55,7 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
   const rows = database
     .prepare(`
       SELECT
-        al.*
+        ${auditLogListSelectColumns('al')}
       FROM audit_logs al
       ${filters.clause}
       ORDER BY al.created_at DESC, al.id DESC
@@ -63,7 +65,7 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
   const pageRows = takePageRows(rows, pageSize)
   const rowsWithNames = hydrateAuditRows(pageRows.rows)
   const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
-  const items = rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
+  const items = rowsWithNames.map((row) => auditLogListItemFromRow(row, systemAccountNames))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -87,7 +89,7 @@ export async function listAuditLogsAsync(options: AuditLogListOptions = {}): Pro
   return listAuditLogsWithClientAsync(client, options)
 }
 
-export function listAuditLogsByIds(ids: string[]): AuditLogSummary[] {
+export function listAuditLogsByIds(ids: string[]): AuditLogListItem[] {
   const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))]
   if (uniqueIds.length === 0) return []
   const database = getDatasetDatabase()
@@ -95,7 +97,7 @@ export function listAuditLogsByIds(ids: string[]): AuditLogSummary[] {
   for (const chunk of chunkValues(uniqueIds, 900)) {
     rows.push(...database
       .prepare(`
-        SELECT al.*
+        SELECT ${auditLogListSelectColumns('al')}
         FROM audit_logs al
         WHERE al.id IN (${sqlPlaceholders(chunk.length)})
       `)
@@ -109,10 +111,10 @@ export function listAuditLogsByIds(ids: string[]): AuditLogSummary[] {
   })
   const rowsWithNames = hydrateAuditRows(rows)
   const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
-  return rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
+  return rowsWithNames.map((row) => auditLogListItemFromRow(row, systemAccountNames))
 }
 
-export async function listAuditLogsByIdsAsync(ids: string[]): Promise<AuditLogSummary[]> {
+export async function listAuditLogsByIdsAsync(ids: string[]): Promise<AuditLogListItem[]> {
   if (sqliteReadWorkerPoolEnabled()) {
     return requestSqliteReadWorker({
       type: 'list_audit_logs_by_ids_read_only',
@@ -128,7 +130,7 @@ export async function listAuditLogsByIdsAsync(ids: string[]): Promise<AuditLogSu
   const rows: AuditLogRow[] = []
   for (const chunk of chunkValues(uniqueIds, 900)) {
     rows.push(...await client.query<AuditLogRow>(`
-      SELECT ${auditLogSelectColumns('al')}
+      SELECT ${auditLogListSelectColumns('al')}, ${auditLogListNameColumns()}
       FROM juhe_dataset.audit_logs al
       ${auditLogNameJoins()}
       WHERE al.id IN (${sqlPlaceholders(chunk.length)})
@@ -140,7 +142,7 @@ export async function listAuditLogsByIdsAsync(ids: string[]): Promise<AuditLogSu
     const rightOrder = order.get(String(right.id ?? '')) ?? Number.MAX_SAFE_INTEGER
     return leftOrder - rightOrder
   })
-  return rows.map((row) => auditLogSummaryFromRow(row, systemAccountNamesFromRows(rows)))
+  return rows.map((row) => auditLogListItemFromRow(row, systemAccountNamesFromRows(rows)))
 }
 
 export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): AuditErrorGroupListResult {
@@ -365,7 +367,7 @@ async function listAuditLogsWithClientAsync(client: DatabaseClient, options: Aud
   const page = normalizePage(options.page, pageSize)
   const offset = (page - 1) * pageSize
   const rows = await client.query<AuditLogRow>(`
-    SELECT ${auditLogSelectColumns('al')}
+    SELECT ${auditLogListSelectColumns('al')}, ${auditLogListNameColumns()}
     FROM juhe_dataset.audit_logs al
     ${auditLogNameJoins()}
     ${filters.clause}
@@ -373,7 +375,7 @@ async function listAuditLogsWithClientAsync(client: DatabaseClient, options: Aud
     LIMIT ? OFFSET ?
   `, [...filters.params, pageSize + 1, offset])
   const pageRows = takePageRows(rows, pageSize)
-  const items = pageRows.rows.map((row) => auditLogSummaryFromRow(row, systemAccountNamesFromRows(pageRows.rows)))
+  const items = pageRows.rows.map((row) => auditLogListItemFromRow(row, systemAccountNamesFromRows(pageRows.rows)))
   return {
     items,
     total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
@@ -449,6 +451,15 @@ async function getAuditPayloadRowsAsync(client: DatabaseClient, auditLogId: stri
 function auditLogSelectColumns(alias: string): string {
   return [
     `${alias}.*`,
+    'api_keys.name AS api_key_name',
+    'groups.name AS group_name',
+    'accounts.name AS account_name',
+    'system_accounts.display_name AS system_account_name'
+  ].join(', ')
+}
+
+function auditLogListNameColumns(): string {
+  return [
     'api_keys.name AS api_key_name',
     'groups.name AS group_name',
     'accounts.name AS account_name',
