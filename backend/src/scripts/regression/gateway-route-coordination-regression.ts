@@ -11,6 +11,7 @@ import {
   defaultGatewayRequestWallBudgetMs,
   defaultRouteCoordinationBudgetMs,
   gatewayAttemptProtocolModelKey,
+  type GatewayRouteCoordinatorOwner,
   type RouteCoordinationResult
 } from '../../modules/gateway/routing/route-coordination.js'
 
@@ -235,9 +236,38 @@ assert.deepEqual(results.map(result => result.outcome), [
   'client_handoff'
 ])
 
+const fallbackReasons: string[] = []
+const completedFailureCodes: string[] = []
+const routeOwner: GatewayRouteCoordinatorOwner<{ groupId: string }> = {
+  async requestFallback(reason) {
+    fallbackReasons.push(reason)
+    return { attempted: true, context: { groupId: 'group-b' } }
+  },
+  async completeFailure(failure) {
+    completedFailureCodes.push(failure.errorCode ?? failure.errorType)
+  }
+}
+assert.deepEqual(await routeOwner.requestFallback('group_capacity_busy'), {
+  attempted: true,
+  context: { groupId: 'group-b' }
+})
+assert.deepEqual(fallbackReasons, ['group_capacity_busy'], 'fallback 请求必须由 route owner 统一解释')
+await routeOwner.completeFailure({
+  statusCode: 503,
+  message: 'temporary failure',
+  errorType: 'service_unavailable',
+  errorCode: 'temporarily_blocked',
+  errorPhase: 'dispatch'
+})
+assert.deepEqual(completedFailureCodes, ['temporarily_blocked'], '最终 HTTP 失败也必须由 route owner 统一提交')
+
 const preflightSource = readFileSync(new URL('../../modules/gateway/request/preflight.ts', import.meta.url), 'utf8')
 const routesSource = readFileSync(new URL('../../modules/gateway/routes.ts', import.meta.url), 'utf8')
 const dispatchSource = readFileSync(new URL('../../modules/gateway/dispatch/upstream-dispatch.ts', import.meta.url), 'utf8')
+const candidateFilterSource = readFileSync(new URL('../../modules/gateway/dispatch/candidate-filter.ts', import.meta.url), 'utf8')
+const fallbackCandidateSource = readFileSync(new URL('../../modules/gateway/dispatch/api-key-group-fallback-candidate.ts', import.meta.url), 'utf8')
+const preparationSource = readFileSync(new URL('../../modules/gateway/dispatch/preparation.ts', import.meta.url), 'utf8')
+const localSuppressionSource = readFileSync(new URL('../../modules/gateway/runtime/local-suppression-preflight.ts', import.meta.url), 'utf8')
 const compactPreflightSource = readFileSync(new URL('../../modules/gateway/codex-responses/compact-preflight.ts', import.meta.url), 'utf8')
 const auxiliaryDispatchSource = readFileSync(new URL('../../modules/gateway/hybrid/auxiliary-dispatch.service.ts', import.meta.url), 'utf8')
 assert.match(preflightSource, /gatewayRequestWallBudget\?: GatewayRequestWallBudget/, 'preflight 必须显式携带整请求墙钟')
@@ -251,5 +281,19 @@ assert.match(dispatchSource, /fetchFirstAvailableUpstream requires shared reques
 assert.match(dispatchSource, /tryRecordDispatchAttempt/, '实际 HTTP attempt 前必须登记请求去重键')
 assert.match(compactPreflightSource, /requestCoordination: GatewayUpstreamRequestCoordinationContext/, 'compact 预检必须接收主请求协调上下文')
 assert.match(auxiliaryDispatchSource, /gateway_internal_request_coordination/, '独立 hybrid 辅助请求必须显式记录其独立预算原因')
+assert.match(preflightSource, /const routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>/, 'preflight 必须为候选过滤和 preparation 建立共享 route owner')
+assert.match(preflightSource, /createOpenAIGatewayRoutePlanSnapshot/, 'preflight 必须在真实主路径创建请求级 route plan snapshot')
+assert.match(preflightSource, /routePlanSnapshot: candidate\.routePlanSnapshot/, '分组 fallback 预检必须传递推进后的 route plan snapshot')
+assert.doesNotMatch(candidateFilterSource, /input\.attemptFallback\(/, 'candidate filter 不得直接解释 fallback callback')
+assert.doesNotMatch(preparationSource, /input\.attemptFallback\(/, 'preparation 不得直接解释 fallback callback')
+assert.match(candidateFilterSource, /input\.routeCoordinator\.requestFallback\(reason\)/, 'candidate filter 必须通过 route owner 请求 fallback')
+assert.match(preparationSource, /input\.routeCoordinator\.requestFallback\(reason\)/, 'preparation 必须通过 route owner 请求 fallback')
+assert.doesNotMatch(candidateFilterSource, /sendGatewayFailureResponse/, 'candidate filter 不得直接提交最终 HTTP 响应')
+assert.doesNotMatch(preparationSource, /sendGatewayFailureResponse/, 'preparation 不得直接提交最终 HTTP 响应')
+assert.doesNotMatch(localSuppressionSource, /sendGatewayFailureResponse/, 'local suppression preflight 不得直接提交最终 HTTP 响应')
+assert.match(localSuppressionSource, /input\.routeCoordinator\.completeFailure/, 'local suppression 失败必须交给 route owner 提交')
+assert.match(routesSource, /advanceGatewayRoutePlanCursor/, 'routes 必须单向推进 route plan cursor')
+assert.doesNotMatch(routesSource, /allowCandidateWrap/, '主路由不得启用候选回绕')
+assert.match(fallbackCandidateSource, /routePlanSnapshot/, 'fallback candidate 必须消费不可变 route plan snapshot')
 
 console.log('gateway route coordination regression passed')

@@ -2,6 +2,8 @@ import {
   SAME_TIER_EXPLORATION_CREDIT_CAP,
   SAME_TIER_EXPLORATION_CREDIT_COST,
   SAME_TIER_EXPLORATION_CREDIT_INCREMENT,
+  SAME_TIER_EXPLORATION_IDENTITY_CAPACITY,
+  SAME_TIER_EXPLORATION_POOL_CAPACITY,
   SAME_TIER_EXPLORATION_STATE_TTL_MS,
   SAME_TIER_EXPLORATION_TARGET_COOLDOWN_MS,
   cloneSameTierExplorationState,
@@ -14,16 +16,19 @@ import {
 export interface MemorySameTierExplorationStoreOptions {
   now?: () => number
   stateTtlMs?: number
+  poolCapacity?: number
 }
 
 export class MemorySameTierExplorationStore implements SameTierExplorationStore {
   private readonly states = new Map<string, SameTierExplorationState>()
   private readonly now: () => number
   private readonly stateTtlMs: number
+  private readonly poolCapacity: number
 
   constructor(options: MemorySameTierExplorationStoreOptions = {}) {
     this.now = options.now ?? Date.now
     this.stateTtlMs = positiveInteger(options.stateTtlMs ?? SAME_TIER_EXPLORATION_STATE_TTL_MS, 'stateTtlMs')
+    this.poolCapacity = positiveInteger(options.poolCapacity ?? SAME_TIER_EXPLORATION_POOL_CAPACITY, 'poolCapacity')
   }
 
   async get(input: { poolKey: string; nowMs?: number }): Promise<SameTierExplorationState> {
@@ -36,9 +41,13 @@ export class MemorySameTierExplorationStore implements SameTierExplorationStore 
     const nowMs = normalizedNow(input.nowMs ?? this.now())
     const state = this.load(input.poolKey, nowMs)
     const token = requiredKey(input.accrualToken, 'accrualToken')
+    if (!this.states.has(state.poolKey)) return cloneSameTierExplorationState(state)
     if (input.eligible && !state.accruedTokens.includes(token)) {
+      if (state.accruedTokens.length >= SAME_TIER_EXPLORATION_IDENTITY_CAPACITY) {
+        return cloneSameTierExplorationState(state)
+      }
       state.credit = Math.min(SAME_TIER_EXPLORATION_CREDIT_CAP, state.credit + SAME_TIER_EXPLORATION_CREDIT_INCREMENT)
-      state.accruedTokens = [...state.accruedTokens, token].slice(-2048)
+      state.accruedTokens = [...state.accruedTokens, token]
     }
     state.expiresAtMs = nowMs + this.stateTtlMs
     this.states.set(state.poolKey, state)
@@ -52,7 +61,7 @@ export class MemorySameTierExplorationStore implements SameTierExplorationStore 
     leaseUntilMs: number
     nowMs?: number
   }): Promise<{
-    status: 'reserved' | 'credit_unavailable' | 'target_busy' | 'target_cooldown' | 'reservation_conflict'
+    status: 'reserved' | 'credit_unavailable' | 'pool_busy' | 'target_cooldown' | 'reservation_conflict'
     state: SameTierExplorationState
     reservation?: { reservationId: string; accountRuntimeKey: string; leaseUntilMs: number }
   }> {
@@ -61,18 +70,27 @@ export class MemorySameTierExplorationStore implements SameTierExplorationStore 
     const reservationId = requiredKey(input.reservationId, 'reservationId')
     const accountRuntimeKey = requiredKey(input.accountRuntimeKey, 'accountRuntimeKey')
     const leaseUntilMs = normalizedNow(input.leaseUntilMs)
+    if (leaseUntilMs <= nowMs) throw new RangeError('leaseUntilMs 必须晚于 nowMs')
+    if (leaseUntilMs > nowMs + this.stateTtlMs) throw new RangeError('leaseUntilMs 不得晚于 pool TTL')
     const existing = state.reservations.find((reservation) => reservation.reservationId === reservationId)
     if (existing) {
       const status = existing.accountRuntimeKey === accountRuntimeKey ? 'reserved' : 'reservation_conflict'
       return { status, state: cloneSameTierExplorationState(state), reservation: status === 'reserved' ? { ...existing } : undefined }
     }
+    if (state.settledReservationIds.includes(reservationId)) {
+      return { status: 'reservation_conflict', state: cloneSameTierExplorationState(state) }
+    }
     if (state.credit < SAME_TIER_EXPLORATION_CREDIT_COST) {
       return { status: 'credit_unavailable', state: cloneSameTierExplorationState(state) }
     }
-    if (state.reservations.some((reservation) => reservation.accountRuntimeKey === accountRuntimeKey)) {
-      return { status: 'target_busy', state: cloneSameTierExplorationState(state) }
+    if (state.reservations.length > 0) {
+      return { status: 'pool_busy', state: cloneSameTierExplorationState(state) }
     }
     if ((state.cooldownUntilMsByRuntimeKey[accountRuntimeKey] ?? 0) > nowMs) {
+      return { status: 'target_cooldown', state: cloneSameTierExplorationState(state) }
+    }
+    if (!(accountRuntimeKey in state.cooldownUntilMsByRuntimeKey)
+      && Object.keys(state.cooldownUntilMsByRuntimeKey).length >= SAME_TIER_EXPLORATION_IDENTITY_CAPACITY) {
       return { status: 'target_cooldown', state: cloneSameTierExplorationState(state) }
     }
     const reservation = { reservationId, accountRuntimeKey, leaseUntilMs }
@@ -102,14 +120,15 @@ export class MemorySameTierExplorationStore implements SameTierExplorationStore 
       return { status: 'reservation_conflict', state: cloneSameTierExplorationState(state) }
     }
     state.reservations = state.reservations.filter((item) => item.reservationId !== reservationId)
-    state.settledReservationIds = [...state.settledReservationIds, reservationId].slice(-2048)
-    state.cooldownUntilMsByRuntimeKey = {
-      ...state.cooldownUntilMsByRuntimeKey,
-      [accountRuntimeKey]: nowMs + SAME_TIER_EXPLORATION_TARGET_COOLDOWN_MS
-    }
+    state.settledReservationIds = [...state.settledReservationIds, reservationId]
+      .slice(-SAME_TIER_EXPLORATION_IDENTITY_CAPACITY)
     if (input.outcome === 'dispatched') {
       state.credit = Math.max(0, state.credit - SAME_TIER_EXPLORATION_CREDIT_COST)
       state.cursor = state.cursor === Number.MAX_SAFE_INTEGER ? 0 : state.cursor + 1
+      state.cooldownUntilMsByRuntimeKey = {
+        ...state.cooldownUntilMsByRuntimeKey,
+        [accountRuntimeKey]: nowMs + SAME_TIER_EXPLORATION_TARGET_COOLDOWN_MS
+      }
     }
     state.expiresAtMs = nowMs + this.stateTtlMs
     this.states.set(state.poolKey, state)
@@ -118,16 +137,30 @@ export class MemorySameTierExplorationStore implements SameTierExplorationStore 
 
   private load(poolKey: string, nowMs: number): SameTierExplorationState {
     const normalizedPoolKey = requiredKey(poolKey, 'poolKey')
-    const current = this.states.get(normalizedPoolKey)
+    let current = this.states.get(normalizedPoolKey)
+    if (current && current.expiresAtMs <= nowMs) {
+      this.states.delete(normalizedPoolKey)
+      current = undefined
+    }
     if (!current || current.expiresAtMs <= nowMs) {
       const empty = emptySameTierExplorationState(normalizedPoolKey, nowMs)
       empty.expiresAtMs = nowMs + this.stateTtlMs
+      if (!this.reservePoolCapacity(nowMs)) return empty
       this.states.set(normalizedPoolKey, empty)
       return empty
     }
     const normalized = normalizeSameTierExplorationState(current, nowMs)
+    normalized.expiresAtMs = nowMs + this.stateTtlMs
     this.states.set(normalizedPoolKey, normalized)
     return normalized
+  }
+
+  private reservePoolCapacity(nowMs: number): boolean {
+    if (this.states.size < this.poolCapacity) return true
+    for (const [poolKey, state] of this.states) {
+      if (state.expiresAtMs <= nowMs) this.states.delete(poolKey)
+    }
+    return this.states.size < this.poolCapacity
   }
 }
 

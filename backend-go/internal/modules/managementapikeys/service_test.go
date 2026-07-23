@@ -30,6 +30,7 @@ func TestServiceListMapsAdminSummaryAndLoadsCurrentPageUsageOnce(t *testing.T) {
 				KeySuffix:                "suffix",
 				Status:                   "active",
 				IsDefault:                true,
+				Purpose:                  "chat",
 				RouteStrategyID:          "route_1",
 				RouteStrategyName:        "默认策略",
 				RouteStrategyMode:        "normal",
@@ -103,6 +104,7 @@ func TestServiceListMapsAdminSummaryAndLoadsCurrentPageUsageOnce(t *testing.T) {
 		item.RouteStrategyMode != "normal" ||
 		item.RouteStrategyStatus != "active" ||
 		!item.IsDefault ||
+		item.Purpose != "chat" ||
 		item.Usage.RequestCount != 12 ||
 		item.Usage.TotalTokens != 50 {
 		t.Fatalf("item = %+v", item)

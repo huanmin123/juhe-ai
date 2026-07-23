@@ -471,9 +471,15 @@ async function main(): Promise<void> {
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
     const jsonResponseForStreamResult = await requestJsonResponseForStreamRequest(baseUrl, jsonResponseForStreamCredential.apiKey.key)
-    assert.equal(jsonResponseForStreamResult.contentType.includes('application/json'), true, `stream:true 但上游明确返回 JSON 时应按非流式响应转发：${jsonResponseForStreamResult.contentType}`)
-    assert(jsonResponseForStreamResult.text.includes('json response ok'), `stream:true 的明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
-    assert(!jsonResponseForStreamResult.text.includes('response.failed'), `stream:true 的明确 JSON 响应不应被 SSE 解析器追加失败事件：${jsonResponseForStreamResult.text}`)
+    if (jsonResponseForStreamResult.contentType.includes('application/json')) {
+      assert(jsonResponseForStreamResult.text.includes('json response ok'), `尚未提交 SSE 时，明确 JSON 响应应原样返回：${jsonResponseForStreamResult.text}`)
+      assert(!jsonResponseForStreamResult.text.includes('response.failed'), `JSON 响应不应被追加 SSE 失败事件：${jsonResponseForStreamResult.text}`)
+    } else {
+      assert(jsonResponseForStreamResult.contentType.includes('text/event-stream'), `已提交的 stream:true 响应必须保持 SSE content-type：${jsonResponseForStreamResult.contentType}`)
+      assert(jsonResponseForStreamResult.text.includes('response.failed'), `SSE heartbeat 已提交后遇到 JSON 上游应返回失败事件：${jsonResponseForStreamResult.text}`)
+      assert(jsonResponseForStreamResult.text.includes('upstream_retryable_error'), `SSE heartbeat 已提交后的 JSON 上游应给出可重试信号：${jsonResponseForStreamResult.text}`)
+      assert(!jsonResponseForStreamResult.text.includes('json response ok'), `已提交 SSE 后不得混入原始 JSON 正文：${jsonResponseForStreamResult.text}`)
+    }
 
     console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、图像大事件继续完成且审计不落正文、Image API 大图终止事件和无收尾边界识别、缺少终止事件未输出不计数、输出前流失败服务端优先切号、心跳刷新空闲计时、心跳-only 无有效输出触发服务端切号、任意错误统一按写出边界兜底、未知 error 事件兜底、普通客户端透明转发上游 SSE 错误、输出后真实网关流量不直接写账号流失败计数、output item 输出判定、顶层 code/message 非失败、stream:true 明确 JSON 响应和 EOF 尾包场景符合预期')
   } finally {
@@ -688,13 +694,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         if (upstreamAuthorization.includes('-primary')) {
           return
         }
-        res.write('event: response.created\n')
-        res.write('data: {"type":"response.created","response":{"id":"resp_no_first_chunk_backup","status":"in_progress"}}\n\n')
-        res.write('event: response.output_text.delta\n')
-        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
-        res.write('event: response.completed\n')
-        res.write('data: {"type":"response.completed","response":{"id":"resp_no_first_chunk_backup","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n')
-        res.end()
+        writeResponsesSuccess(res, 'resp_no_first_chunk_backup', { inputTokens: 2 })
         return
       }
       if (scenario === 'server-retry-missing-terminal-then-success') {
@@ -704,13 +704,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
           res.end()
           return
         }
-        res.write('event: response.created\n')
-        res.write('data: {"type":"response.created","response":{"id":"resp_server_retry_backup","status":"in_progress"}}\n\n')
-        res.write('event: response.output_text.delta\n')
-        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
-        res.write('event: response.completed\n')
-        res.write('data: {"type":"response.completed","response":{"id":"resp_server_retry_backup","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n')
-        res.end()
+        writeResponsesSuccess(res, 'resp_server_retry_backup', { inputTokens: 2 })
         return
       }
       if (scenario === 'server-retry-response-failed-then-success') {
@@ -720,13 +714,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
           res.end()
           return
         }
-        res.write('event: response.created\n')
-        res.write('data: {"type":"response.created","response":{"id":"resp_failed_retry_backup","status":"in_progress"}}\n\n')
-        res.write('event: response.output_text.delta\n')
-        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
-        res.write('event: response.completed\n')
-        res.write('data: {"type":"response.completed","response":{"id":"resp_failed_retry_backup","status":"completed","usage":{"input_tokens":3,"output_tokens":1}}}\n\n')
-        res.end()
+        writeResponsesSuccess(res, 'resp_failed_retry_backup', { inputTokens: 3 })
         return
       }
       if (scenario === 'server-retry-fourth-account-then-success') {
@@ -736,13 +724,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
           res.end()
           return
         }
-        res.write('event: response.created\n')
-        res.write('data: {"type":"response.created","response":{"id":"resp_fourth_retry_success","status":"in_progress"}}\n\n')
-        res.write('event: response.output_text.delta\n')
-        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
-        res.write('event: response.completed\n')
-        res.write('data: {"type":"response.completed","response":{"id":"resp_fourth_retry_success","status":"completed","usage":{"input_tokens":4,"output_tokens":1}}}\n\n')
-        res.end()
+        writeResponsesSuccess(res, 'resp_fourth_retry_success', { inputTokens: 4 })
         return
       }
       if (scenario.startsWith('server-retry-fuzz-')) {
@@ -763,13 +745,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
           })
           return
         }
-        res.write('event: response.created\n')
-        res.write('data: {"type":"response.created","response":{"id":"resp_heartbeat_only_backup","status":"in_progress"}}\n\n')
-        res.write('event: response.output_text.delta\n')
-        res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
-        res.write('event: response.completed\n')
-        res.write('data: {"type":"response.completed","response":{"id":"resp_heartbeat_only_backup","status":"completed","usage":{"input_tokens":2,"output_tokens":1}}}\n\n')
-        res.end()
+        writeResponsesSuccess(res, 'resp_heartbeat_only_backup', { inputTokens: 2 })
         return
       }
       if (scenario === 'no-first-chunk') {
@@ -793,7 +769,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
             clearInterval(interval)
             res.end()
           }
-        }, 350)
+        }, 400)
         res.on('close', () => {
           clearInterval(interval)
         })
@@ -875,10 +851,8 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         }, 100)
         const doneTimer = setTimeout(() => {
           clearInterval(interval)
-          res.write('event: response.completed\n')
-          res.write('data: {"type":"response.completed","response":{"id":"resp_regression","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n')
-          res.end()
-        }, 650)
+          writeResponsesSuccess(res, 'resp_regression', { includeCreated: false })
+        }, 350)
         res.on('close', () => {
           clearInterval(interval)
           clearTimeout(doneTimer)
@@ -886,10 +860,7 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         return
       }
       if (scenario === 'client-close-after-terminal') {
-        res.write('event: response.output_text.delta\n')
-        res.write('data: {"type":"response.output_text.delta","delta":"done"}\n\n')
-        res.write('event: response.completed\n')
-        res.write('data: {"type":"response.completed","response":{"id":"resp_client_close_after_terminal","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n')
+        writeResponsesSuccess(res, 'resp_regression', { includeCreated: false, end: false, text: 'done' })
         setTimeout(() => {
           res.end()
         }, 500)
@@ -961,10 +932,8 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
       }
       if (scenario === 'top-level-code-message-non-error') {
         res.write('event: response.in_progress\n')
-        res.write('data: {"type":"response.in_progress","code":"diagnostic_code","message":"not an error","response":{"id":"resp_code_message","status":"in_progress"}}\n\n')
-        res.write('event: response.completed\n')
-        res.write('data: {"type":"response.completed","response":{"id":"resp_code_message","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n')
-        res.end()
+        res.write('data: {"type":"response.in_progress","code":"diagnostic_code","message":"not an error","response":{"id":"resp_regression","status":"in_progress"}}\n\n')
+        writeResponsesSuccess(res, 'resp_regression', { includeCreated: false })
         return
       }
     })
@@ -1078,13 +1047,64 @@ function sendFuzzPrimaryFailure(res: http.ServerResponse, scenario: string): voi
 function sendFuzzBackupSuccess(res: http.ServerResponse, scenario: string): void {
   const match = preCommitFuzzServerRetryScenarios.find((item) => item.scenario === scenario)
   const responseId = match?.backupResponseId ?? 'resp_fuzz_backup'
-  res.write('event: response.created\n')
-  res.write(`data: {"type":"response.created","response":{"id":"${responseId}","status":"in_progress"}}\n\n`)
+  writeResponsesSuccess(res, responseId, { inputTokens: 4 })
+}
+
+function writeResponsesSuccess(
+  res: http.ServerResponse,
+  responseId: string,
+  options: {
+    includeCreated?: boolean
+    end?: boolean
+    text?: string
+    inputTokens?: number
+  } = {}
+): void {
+  const text = options.text ?? 'ok'
+  const inputTokens = options.inputTokens ?? 1
+  const messageId = `msg_${responseId.replace(/^resp_/, '')}`
+  const completedItem = {
+    id: messageId,
+    type: 'message',
+    role: 'assistant',
+    status: 'completed',
+    content: [{ type: 'output_text', text }]
+  }
+  if (options.includeCreated !== false) {
+    res.write('event: response.created\n')
+    res.write(`data: ${JSON.stringify({
+      type: 'response.created',
+      response: { id: responseId, object: 'response', status: 'in_progress', output: [] }
+    })}\n\n`)
+  }
+  res.write('event: response.output_item.added\n')
+  res.write(`data: ${JSON.stringify({
+    type: 'response.output_item.added',
+    output_index: 0,
+    item: { ...completedItem, status: 'in_progress', content: [] }
+  })}\n\n`)
   res.write('event: response.output_text.delta\n')
-  res.write('data: {"type":"response.output_text.delta","delta":"ok"}\n\n')
+  res.write(`data: ${JSON.stringify({
+    type: 'response.output_text.delta',
+    output_index: 0,
+    content_index: 0,
+    item_id: messageId,
+    delta: text
+  })}\n\n`)
+  res.write('event: response.output_item.done\n')
+  res.write(`data: ${JSON.stringify({ type: 'response.output_item.done', output_index: 0, item: completedItem })}\n\n`)
   res.write('event: response.completed\n')
-  res.write(`data: {"type":"response.completed","response":{"id":"${responseId}","status":"completed","usage":{"input_tokens":4,"output_tokens":1}}}\n\n`)
-  res.end()
+  res.write(`data: ${JSON.stringify({
+    type: 'response.completed',
+    response: {
+      id: responseId,
+      object: 'response',
+      status: 'completed',
+      output: [completedItem],
+      usage: { input_tokens: inputTokens, output_tokens: 1, total_tokens: inputTokens + 1 }
+    }
+  })}\n\n`)
+  if (options.end !== false) res.end()
 }
 
 async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {

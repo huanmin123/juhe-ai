@@ -32,7 +32,6 @@ import {
   type ProviderModelCatalogItem
 } from '../model-pricing/model-catalog.service.js'
 import type { ProviderModelApiProtocol } from '../model-pricing/provider-driver.types.js'
-import { rebuildPublishedModelCatalogSnapshotsBestEffortAsync } from '../model-pricing/published-model-catalog.service.js'
 import {
   findBuiltInProviderModelByIdAsync,
   updateBuiltInProviderModelConfigurationAsync
@@ -381,7 +380,6 @@ providersRouter.post('/:code/models', async (req, res, next) => {
         systemAccountId: ownerSystemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
-      await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(saved.scope === 'personal' ? saved.systemAccountId : undefined)
       res.status(201).json(ok(saved))
     } catch (error) {
       res.status(400).json(badRequest(error instanceof Error ? error.message : '自定义模型保存失败'))
@@ -427,7 +425,6 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         sendNotFound(res, '模型不存在')
         return
       }
-      await rebuildPublishedModelCatalogSnapshotsBestEffortAsync()
       await recordOperationLogAsync({
         module: 'providers', action: 'update_model_configuration', operationKey: 'providers.update_model_configuration',
         resourceType: 'provider_model', resourceId: saved.id, resourceName: saved.model,
@@ -477,7 +474,6 @@ providersRouter.patch('/:code/models/:id', async (req, res, next) => {
         systemAccountId: existing.systemAccountId,
         actorSystemAccountId: context.systemAccountId
       })
-      await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(saved.scope === 'personal' ? saved.systemAccountId : undefined)
       if (saved.status !== 'active') {
         await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
           providerCode: saved.providerCode,
@@ -530,7 +526,6 @@ providersRouter.delete('/:code/models/:id', async (req, res, next) => {
     }
     const deleted = await removeCustomProviderModelAsync(existing.id)
     if (deleted) {
-      await rebuildPublishedModelCatalogSnapshotsBestEffortAsync(existing.scope === 'personal' ? existing.systemAccountId : undefined)
       await clearProviderDefaultHealthCheckModelPreferenceIfModelAsync({
         providerCode: existing.providerCode,
         systemAccountId: existing.scope === 'global' ? undefined : existing.systemAccountId,

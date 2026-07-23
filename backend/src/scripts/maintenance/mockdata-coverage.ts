@@ -17,7 +17,6 @@ import { chunks, idPrefix, type CreatedMockdata } from './mockdata/shared.js'
 type BusinessDatabase = ReturnType<typeof getBusinessDatabase>
 
 const allowedEmptyTables = new Set([
-  'business.gateway_model_catalog_snapshots',
   'stats.model_trust_latest_dirty_accounts',
   'stats.usage_range_window_requests'
 ])

@@ -12,13 +12,12 @@ import {
   type GatewayModelAccountFilterResult,
   gatewayModelFilterFailureMessage
 } from './model-filter.js'
-import { sendGatewayFailureResponse } from '../response/failure-response.js'
-import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import { requestModel } from '../request/metadata.js'
 import { gatewayRequestEndpointFamily } from '../protocols/openai-v1/model-mapping.js'
 import type { GatewayFailureUsageContext } from '../usage/records.js'
 import type { OpenAIGatewayDispatchContext } from '../request/preflight.js'
+import type { GatewayRouteCoordinatorOwner } from '../routing/route-coordination.js'
 
 export interface RequestCandidateFallbackResult {
   attempted: boolean
@@ -27,7 +26,7 @@ export interface RequestCandidateFallbackResult {
 
 export type RequestCandidateFilterResult =
   | { outcome: 'accounts'; accounts: UpstreamAccount[]; modelPriority: GatewayAccountModelPriority }
-  | { outcome: 'fallback'; context?: OpenAIGatewayDispatchContext }
+  | { outcome: 'fallback'; reason: string; context?: OpenAIGatewayDispatchContext }
   | { outcome: 'completed' }
 
 export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
@@ -45,7 +44,7 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   endpoint: string
   bypassModelFilter?: boolean
   requestModelOverride?: string
-  attemptFallback: (reason: string) => Promise<RequestCandidateFallbackResult>
+  routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
   recoverUnavailableCandidateAccounts?: () => Promise<UpstreamAccount[] | undefined>
   loadModelAwareCandidateAccounts?: (requestedModel: string, sourceEndpointFamily?: ReturnType<typeof gatewayRequestEndpointFamily>) => Promise<UpstreamAccount[] | undefined>
 }): Promise<RequestCandidateFilterResult> {
@@ -56,9 +55,9 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     rawCandidateAccounts = await input.loadModelAwareCandidateAccounts(requestedModel, sourceEndpointFamily) ?? rawCandidateAccounts
   }
   if (rawCandidateAccounts.length === 0) {
-    const fallback = await input.attemptFallback('no_candidate_accounts')
+    const fallback = await requestRouteFallback(input, 'no_candidate_accounts')
     if (fallback.attempted) {
-      return { outcome: 'fallback', context: fallback.context }
+      return { outcome: 'fallback', reason: 'no_candidate_accounts', context: fallback.context }
     }
     rawCandidateAccounts = await input.recoverUnavailableCandidateAccounts?.() ?? rawCandidateAccounts
   }
@@ -79,27 +78,17 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
   }
   if (rawCandidateAccounts.length > 0 && capabilityFilter.accounts.length === 0) {
     const reason = capabilityFilter.reason ?? 'request_capability_mismatch'
-    const fallback = await input.attemptFallback(reason)
+    const fallback = await requestRouteFallback(input, reason)
     if (fallback.attempted) {
-      return { outcome: 'fallback', context: fallback.context }
+      return { outcome: 'fallback', reason, context: fallback.context }
     }
-    const statusCode = 503
     const message = requestCapabilityMismatchMessage(reason)
-    const responsePayload = gatewayErrorPayload(message, 'service_unavailable', reason)
-    await sendGatewayFailureResponse({
-      req: input.req,
-      res: input.res,
-      auditCapture: input.auditCapture,
-      usageContext: input.usageContext,
-      startedAt: input.startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'dispatch',
-        errorCode: reason,
-        errorMessage: message
-      }
+    await input.routeCoordinator.completeFailure({
+      statusCode: 503,
+      message,
+      errorType: 'service_unavailable',
+      errorCode: reason,
+      errorPhase: 'dispatch'
     })
     return { outcome: 'completed' }
   }
@@ -152,27 +141,17 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     })
   }
   if (capabilityFilter.accounts.length > 0 && modelFilter.accounts.length === 0) {
-    const fallback = await input.attemptFallback(modelFilter.reason ?? 'unsupported_model')
+    const fallback = await requestRouteFallback(input, modelFilter.reason ?? 'unsupported_model')
     if (fallback.attempted) {
-      return { outcome: 'fallback', context: fallback.context }
+      return { outcome: 'fallback', reason: modelFilter.reason ?? 'unsupported_model', context: fallback.context }
     }
-    const statusCode = 503
     const message = gatewayModelFilterFailureMessage(modelFilter)
-    const responsePayload = gatewayErrorPayload(message, 'service_unavailable', modelFilter.reason ?? 'unsupported_model')
-    await sendGatewayFailureResponse({
-      req: input.req,
-      res: input.res,
-      auditCapture: input.auditCapture,
-      usageContext: input.usageContext,
-      startedAt: input.startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'dispatch',
-        errorCode: modelFilter.reason ?? 'unsupported_model',
-        errorMessage: message
-      }
+    await input.routeCoordinator.completeFailure({
+      statusCode: 503,
+      message,
+      errorType: 'service_unavailable',
+      errorCode: modelFilter.reason ?? 'unsupported_model',
+      errorPhase: 'dispatch'
     })
     return { outcome: 'completed' }
   }
@@ -182,6 +161,15 @@ export async function filterOpenAIGatewayRequestCandidateAccounts(input: {
     accounts: modelFilter.accounts,
     modelPriority: modelFilter.modelPriority
   }
+}
+
+async function requestRouteFallback(
+  input: {
+    routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
+  },
+  reason: string
+): Promise<RequestCandidateFallbackResult> {
+  return input.routeCoordinator.requestFallback(reason)
 }
 
 function bypassGatewayModelFilter(

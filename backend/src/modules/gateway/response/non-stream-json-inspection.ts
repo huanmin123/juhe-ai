@@ -161,14 +161,14 @@ export async function inspectBufferedGatewayJsonResponse(input: {
   const interpretUpstreamResponseSemantics = input.clientStrategy
     ? gatewayClientAllowsUpstreamSemanticInterpretation(input.clientStrategy)
     : false
-  if (!interpretUpstreamResponseSemantics) return undefined
+  if (!interpretUpstreamResponseSemantics && (input.responseInspectionPolicies?.length ?? 0) === 0) return undefined
   const defaultClientProfile = gatewayProtocolDefaultClientProfileForRequest(input.req, input.account)
   const context = {
     clientProfile: input.clientStrategy?.clientProfile ?? defaultClientProfile,
     accountClientCompatibility: input.account.clientCompatibility,
     codexCompactionExpected: input.clientStrategy?.codexCompactionExpected
   }
-  if (context.clientProfile === 'generic_anthropic') {
+  if (context.clientProfile === 'generic_anthropic' && (input.responseInspectionPolicies?.length ?? 0) === 0) {
     return undefined
   }
   const frames = extractGatewayProtocolJsonSemanticFramesForRequest(parsedJson, input.req, input.account)

@@ -40,6 +40,7 @@ inserted_api_key AS (
     key_secret_encrypted,
     status,
     is_default,
+    purpose,
     expires_at,
     quota_limits_json,
     availability_schedule_json,
@@ -59,6 +60,7 @@ inserted_api_key AS (
     $9::text,
     $10::text,
     false,
+    'general',
     $11::timestamptz,
     $12::text,
     $13::text,
@@ -76,6 +78,7 @@ inserted_api_key AS (
     key_suffix,
     status AS api_key_status,
     is_default,
+    purpose,
     route_strategy_id,
     expires_at,
     quota_limits_json,
@@ -107,6 +110,7 @@ SELECT
   inserted_api_key.key_suffix,
   inserted_api_key.api_key_status,
   inserted_api_key.is_default,
+  inserted_api_key.purpose,
   inserted_api_key.route_strategy_id,
   route_target.route_strategy_name,
   route_target.route_strategy_mode,
@@ -153,6 +157,7 @@ type CreateManagementAPIKeyRow struct {
 	KeySuffix                pgtype.Text
 	ApiKeyStatus             pgtype.Text
 	IsDefault                pgtype.Bool
+	Purpose                  pgtype.Text
 	RouteStrategyID          pgtype.Text
 	RouteStrategyName        string
 	RouteStrategyMode        string
@@ -194,6 +199,7 @@ func (q *Queries) CreateManagementAPIKey(ctx context.Context, arg CreateManageme
 		&i.KeySuffix,
 		&i.ApiKeyStatus,
 		&i.IsDefault,
+		&i.Purpose,
 		&i.RouteStrategyID,
 		&i.RouteStrategyName,
 		&i.RouteStrategyMode,

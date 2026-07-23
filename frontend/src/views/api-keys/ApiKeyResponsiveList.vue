@@ -24,6 +24,7 @@
       <template v-if="column.key === 'name'">
         <div class="name-with-tag">
           <span>{{ record.name }}</span>
+          <a-tag v-if="record.purpose === 'chat'" color="purple">AI 对话</a-tag>
           <a-tag v-if="record.isDefault" color="blue">默认</a-tag>
         </div>
       </template>
@@ -96,6 +97,7 @@
         <div class="mobile-list-card-head">
           <div class="mobile-list-card-title">
             <span>{{ record.name }}</span>
+            <a-tag v-if="record.purpose === 'chat'" color="purple">AI 对话</a-tag>
             <a-tag v-if="record.isDefault" color="blue">默认</a-tag>
           </div>
           <div class="mobile-list-card-tags">

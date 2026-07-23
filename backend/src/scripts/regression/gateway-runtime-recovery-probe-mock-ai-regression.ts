@@ -11,6 +11,7 @@ import { createApiKeyRecordWithRouteStrategy } from '../shared/route-strategy-fi
 import { runtimeConfig } from '../../config/runtime.js'
 import { GPT_OPENAI_V1_PROFILE_ID, GPT_VENDOR_CODE } from '../../domain/provider-protocol.js'
 import { captureGatewayRawBody } from '../../modules/gateway/request/body-middleware.js'
+import type { UpstreamAttempt } from '../../modules/gateway/upstream/attempt.js'
 import { logger } from '../../shared/logger.js'
 
 interface MockUpstreamHit {
@@ -22,6 +23,8 @@ interface MockUpstreamHit {
 
 interface GatewayScenario {
   accountId: string
+  groupId: string
+  systemAccountId: string
   apiKey: string
 }
 
@@ -46,6 +49,10 @@ const [
   repositories,
   gatewayCache,
   accountSideEffects,
+  accountCircuit,
+  circuitRecovery,
+  accountTest,
+  accountProbeOutcome,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
@@ -56,6 +63,10 @@ const [
   import('../../storage/repositories.js'),
   import('../../modules/gateway/runtime/runtime-cache.service.js'),
   import('../../modules/gateway/runtime/account-side-effects.service.js'),
+  import('../../modules/gateway/runtime/account-circuit.service.js'),
+  import('../../modules/background/account-circuit-recovery.service.js'),
+  import('../../modules/accounts/account-test.service.js'),
+  import('../../modules/accounts/automatic-account-probe-outcome.js'),
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
@@ -70,6 +81,7 @@ app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRa
 
 try {
   gatewayCache.clearGatewayRuntimeCache()
+  accountCircuit.resetGatewayAccountCircuitStoreForTest()
   await assertGatewayAutomaticProbeConcurrencyLimit()
   let upstreamServer: http.Server | undefined
   let appServer: http.Server | undefined
@@ -83,8 +95,10 @@ try {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    await assertUserFailureOnlySchedulesBackgroundRecovery(baseUrl, scenario)
-    await assertBackgroundProbeRecoversWithoutUserTraffic(baseUrl, scenario)
+    const opened = await assertConfirmedTransportFailureOpensCircuit(baseUrl, scenario)
+    await assertDispatchRevisionFencesStaleRecovery(opened, scenario)
+    const reopened = await assertConfirmedTransportFailureOpensCircuit(baseUrl, scenario)
+    await assertControlledRecoverySingleFlightAndCloses(baseUrl, reopened, scenario)
 
     console.log('gateway runtime recovery probe mock ai regression passed')
   } finally {
@@ -92,6 +106,8 @@ try {
     await closeServer(upstreamServer)
   }
 } finally {
+  circuitRecovery.installScheduledAccountCircuitRecoveryResolver(undefined)
+  accountCircuit.resetGatewayAccountCircuitStoreForTest()
   accountSideEffects.clearGatewayLocalAccountSuppressionsForTest()
   usageRecordQueue.clearUsageRecordQueueForTest()
   auditLogQueue.clearAuditLogQueueForTest()
@@ -112,40 +128,167 @@ async function assertGatewayAutomaticProbeConcurrencyLimit(): Promise<void> {
   assert.equal(maxRunningCount, 3, 'server 恢复探针和 precheck 必须共享最多 3 路自动诊断门禁')
 }
 
-async function assertUserFailureOnlySchedulesBackgroundRecovery(baseUrl: string, scenario: GatewayScenario): Promise<void> {
+async function assertConfirmedTransportFailureOpensCircuit(
+  baseUrl: string,
+  scenario: GatewayScenario
+): Promise<{ scope: ReturnType<typeof accountCircuit.gatewayAccountProtocolModelScope>; dispatchRevision: string }> {
   upstreamPhase = 'failing'
-  const response = await postChat(baseUrl, scenario.apiKey, 'first user request should only discover failure')
-  assert(response.status >= 500, `Mock AI 失败阶段应返回网关失败，实际 HTTP ${response.status}: ${response.text}`)
+  const firstResponse = await postChat(baseUrl, scenario.apiKey, 'first request should establish suspect')
+  assert(firstResponse.status >= 500, `Mock AI 连接中断阶段应返回网关失败，实际 HTTP ${firstResponse.status}: ${firstResponse.text}`)
   assert(upstreamHits.some((hit) => hit.phase === 'failing'), '失败阶段应真实命中 Mock AI 上游')
 
-  const runtime = accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[scenario.accountId]
-  assert.notEqual(runtime?.status, 'degraded', '用户请求失败不应直接激活账号调度降级')
-  assert.notEqual(runtime?.status, 'precheck_pending', '用户请求失败不应绕过观察窗口直接进入事前确认')
-  assert(
-    accountSideEffects.getGatewayAccountSideEffectState().recoveryProbePendingAccountCount >= 1,
-    '用户请求失败后应调度后台恢复探针'
+  const candidate = repositories.findOpenAIAccountForGroup(
+    scenario.groupId,
+    scenario.accountId,
+    scenario.systemAccountId,
+    { includeUnavailable: true, ignoreAvailability: true }
   )
+  assert(candidate, '应能加载真实账户候选以核对电路作用域')
+  const scope = accountCircuit.gatewayAccountProtocolModelScope(candidate, 'text', 'gpt-5.5')
+  const store = accountCircuit.getGatewayAccountCircuitStore()
+  const suspected = await store.get(scope)
+  assert.equal(suspected.phase, 'SUSPECT', '首次独立传输失败只能建立 SUSPECT，不能由同一请求自我确认')
+  assert.equal(suspected.lease, undefined, '首次请求结束后必须释放 confirmation lease，留给后续请求确认')
+
+  const secondResponse = await postChat(baseUrl, scenario.apiKey, 'second request should confirm transport failure')
+  assert(secondResponse.status >= 500, `第二次 Mock AI 连接中断应返回网关失败，实际 HTTP ${secondResponse.status}: ${secondResponse.text}`)
+  const opened = await store.get(scope)
+  assert.equal(opened.phase, 'OPEN', '后续独立请求确认传输失败后必须打开账户电路')
+  assert.equal(opened.lease, undefined, 'OPEN 状态不得残留 confirmation lease')
+  assert.equal(opened.backoffAttempt, 1, '首次确认失败应进入第一档恢复退避')
+  assert.equal(opened.dispatchRevision, accountCircuit.accountCircuitDispatchRevision(candidate))
+  return { scope, dispatchRevision: opened.dispatchRevision }
 }
 
-async function assertBackgroundProbeRecoversWithoutUserTraffic(baseUrl: string, scenario: GatewayScenario): Promise<void> {
-  const recoveredHitStart = upstreamHits.length
+async function assertDispatchRevisionFencesStaleRecovery(
+  opened: { scope: ReturnType<typeof accountCircuit.gatewayAccountProtocolModelScope>; dispatchRevision: string },
+  scenario: GatewayScenario
+): Promise<void> {
   upstreamPhase = 'recovered'
-  await accountSideEffects.flushGatewayAccountRecoveryProbesForTest()
-
-  const probeHits = upstreamHits.slice(recoveredHitStart)
-  assert(
-    probeHits.some((hit) => hit.authorization === 'Bearer sk-runtime-recovery-probe' && hit.path === '/v1/responses'),
-    `后台恢复探针应在无用户请求时命中 Mock AI responses 探针链路，实际命中：${JSON.stringify(probeHits)}`
+  const updated = repositories.updateAccount(scenario.accountId, { priority: 2 }, access)
+  assert(updated, '测试应能通过真实账户更新入口推进 dispatch revision')
+  const candidate = repositories.findOpenAIAccountForGroup(
+    scenario.groupId,
+    scenario.accountId,
+    scenario.systemAccountId,
+    { includeUnavailable: true, ignoreAvailability: true }
   )
-  assert.equal(
-    accountSideEffects.snapshotGatewayAccountRuntimeAvailability()[scenario.accountId],
-    undefined,
-    '后台恢复探针成功后应清理账号本地运行态'
+  assert(candidate, 'revision 更新后应能重新加载账户候选')
+  const nextRevision = accountCircuit.accountCircuitDispatchRevision(candidate)
+  assert.notEqual(nextRevision, opened.dispatchRevision, '调度相关配置变化必须推进 dispatch revision')
+
+  const store = accountCircuit.getGatewayAccountCircuitStore()
+  const beforeHits = upstreamHits.length
+  let nowMs = (await store.get(opened.scope)).retryAtMs ?? Date.now()
+  const fenced = await createRecoveryService(store, scenario, () => nowMs).sweep()
+  assert.equal(fenced.fencedCount, 1, '旧 dispatch revision 的恢复任务必须被 fencing')
+  assert.equal(upstreamHits.length, beforeHits, 'revision fencing 必须发生在真实上游探针之前')
+  const state = await store.get(opened.scope, nowMs)
+  assert.equal(state.phase, 'CLOSED', 'revision 替换后旧事故应关闭，等待新 revision 独立取证')
+  assert.equal(state.dispatchRevision, nextRevision)
+}
+
+async function assertControlledRecoverySingleFlightAndCloses(
+  baseUrl: string,
+  opened: { scope: ReturnType<typeof accountCircuit.gatewayAccountProtocolModelScope>; dispatchRevision: string },
+  scenario: GatewayScenario
+): Promise<void> {
+  upstreamPhase = 'recovered'
+  const store = accountCircuit.getGatewayAccountCircuitStore()
+  const openedState = await store.get(opened.scope)
+  let nowMs = openedState.retryAtMs ?? Date.now()
+  let releaseProbe!: () => void
+  let markProbeStarted!: () => void
+  const probeStarted = new Promise<void>((resolve) => { markProbeStarted = resolve })
+  const probeGate = new Promise<void>((resolve) => { releaseProbe = resolve })
+  let probeCount = 0
+  const recoveryA = createRecoveryService(store, scenario, () => nowMs, async () => {
+    probeCount += 1
+    markProbeStarted()
+    await probeGate
+  })
+  const recoveryB = createRecoveryService(store, scenario, () => nowMs, async () => {
+    probeCount += 1
+    markProbeStarted()
+    await probeGate
+  })
+  const sweepA = recoveryA.sweep()
+  const sweepB = recoveryB.sweep()
+  await probeStarted
+  const leased = await store.get(opened.scope, nowMs)
+  assert.equal(leased.phase, 'HALF_OPEN', '恢复 worker 发真实探针前必须原子进入 HALF_OPEN')
+  assert.equal(leased.lease?.kind, 'half_open', 'OPEN 来源的首个 canary 必须持有 half_open lease')
+  releaseProbe()
+  const [resultA, resultB] = await Promise.all([sweepA, sweepB])
+  assert.equal(resultA.leasedCount + resultB.leasedCount, 1, '两个恢复 worker 并发扫描同一 generation 时只能一个取得 lease')
+  assert.equal(probeCount, 1, '并发恢复 worker 必须保持真实上游探针单飞')
+
+  let state = await store.get(opened.scope, nowMs)
+  assert.equal(state.phase, 'RECOVERING', '首次 framing 完整 canary 应进入 RECOVERING')
+  assert.equal(state.recoverySuccessCount, 0, 'OPEN 到 RECOVERING 的首次 canary 不计入连续恢复计数')
+  assert.equal(state.lease, undefined, '完成 canary 后必须释放 half_open lease')
+
+  for (const expectedSuccessCount of [1, 2, 0]) {
+    nowMs = state.retryAtMs ?? nowMs + 3_000
+    const result = await createRecoveryService(store, scenario, () => nowMs).sweep()
+    assert.equal(result.framingCompleteCount, 1, '每轮到期恢复应完成一个真实 framing 探针')
+    state = await store.get(opened.scope, nowMs)
+    assert.equal(state.recoverySuccessCount, expectedSuccessCount)
+  }
+  assert.equal(state.phase, 'CLOSED', '三次 RECOVERING 成功后必须关闭账户电路')
+  assert.equal(state.lease, undefined, 'CLOSED 状态不得残留恢复 lease')
+
+  const probeHits = upstreamHits.filter((hit) => hit.phase === 'recovered' && hit.path === '/v1/responses')
+  assert(
+    probeHits.length >= 4 && probeHits.every((hit) => hit.authorization === 'Bearer sk-runtime-recovery-probe'),
+    `受控恢复应在无用户流量时通过真实账户测试命中 Mock AI responses，实际命中：${JSON.stringify(probeHits)}`
   )
 
   const response = await postChat(baseUrl, scenario.apiKey, 'user request after background probe should recover')
   assert.equal(response.status, 200, `后台探针恢复后真实用户请求应成功，实际 HTTP ${response.status}: ${response.text}`)
   assert.match(response.text, /mock ai recovered chat/, '恢复后的用户请求应返回 Mock AI 正常响应')
+}
+
+function createRecoveryService(
+  store: ReturnType<typeof accountCircuit.getGatewayAccountCircuitStore>,
+  scenario: GatewayScenario,
+  now: () => number,
+  beforeProbe?: () => Promise<void>
+): InstanceType<typeof circuitRecovery.AccountCircuitRecoveryService> {
+  const resolver = circuitRecovery.createScheduledAccountCircuitRecoveryResolver({
+    findAccountForTest: async (accountId, scopeAccess) => repositories.findAccountForTest(accountId, scopeAccess),
+    findOpenAIAccountForGroup: async (groupId, accountId, systemAccountId) => repositories.findOpenAIAccountForGroup(
+      groupId,
+      accountId,
+      systemAccountId,
+      { includeUnavailable: true, ignoreAvailability: true }
+    ),
+    probe: async (input) => {
+      await beforeProbe?.()
+      let upstreamAttempt: UpstreamAttempt | undefined
+      const result = await accountTest.testOpenAIAccount(input.account, {
+        diagnostics: 'limited',
+        groupId: input.groupId,
+        systemAccountId: input.systemAccountId,
+        model: input.model,
+        signal: input.signal,
+        trafficSource: 'runtime_recovery_probe',
+        testEndpointMode: input.account.healthCheckEndpointMode,
+        candidateAccount: input.candidateAccount,
+        disableAccountStateMutation: true,
+        onUpstreamAttempt: (attempt) => { upstreamAttempt = attempt }
+      })
+      return accountProbeOutcome.transportProbeOutcomeFromAccountTestResult(result, {
+        upstreamAttempt,
+        canceled: input.signal.aborted
+      })
+    }
+  })
+  return new circuitRecovery.AccountCircuitRecoveryService(store, resolver, {
+    batchSize: 10,
+    leaseDurationMs: 30_000,
+    now
+  })
 }
 
 function createSingleAccountScenario(upstreamBaseUrl: string): GatewayScenario {
@@ -184,6 +327,8 @@ function createSingleAccountScenario(upstreamBaseUrl: string): GatewayScenario {
   assert(apiKey.key, '后台恢复探针 Mock AI 网关 Key 未返回明文密钥')
   return {
     accountId: account.id,
+    groupId: group.id,
+    systemAccountId: access.systemAccountId,
     apiKey: apiKey.key
   }
 }
@@ -225,7 +370,7 @@ function createMockOpenAIUpstream(): http.Server {
         return
       }
       if (upstreamPhase === 'failing') {
-        sendJsonError(res, 503, 'mock ai temporary failure')
+        res.destroy(new Error('mock ai transport interrupted'))
         return
       }
       if (path === '/v1/responses') {
@@ -271,8 +416,11 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
       status: 'completed',
       output: [
         {
+          id: 'msg_runtime_recovery_probe_mock_ai',
           type: 'message',
-          content: [{ type: 'output_text', text: outputText }]
+          status: 'completed',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: outputText, annotations: [] }]
         }
       ],
       usage: {

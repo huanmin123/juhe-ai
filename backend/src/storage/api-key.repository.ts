@@ -1,5 +1,5 @@
 import type { ApiKeySummary, RequestQuotaLimits } from '../domain/types.js'
-import { HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
+import { GPT_VENDOR_CODE, HYBRID_PROVIDER_CODE } from '../domain/provider-protocol.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
@@ -69,6 +69,7 @@ type ApiKeyDeleteRow = {
   id: string
   system_account_id: string
   is_default?: number | string | boolean | null
+  purpose?: string | null
 }
 
 export function listApiKeys(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
@@ -328,6 +329,7 @@ function apiKeyListColumns(options: { includeSecret?: boolean } = {}): string {
     'api_keys.key_suffix',
     'api_keys.status',
     'api_keys.is_default',
+    'api_keys.purpose',
     'api_keys.expires_at',
     'api_keys.quota_limits_json',
     'api_keys.availability_schedule_json'
@@ -383,6 +385,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     keyPrefix,
     keySuffix,
     status,
+    purpose: 'general',
     routeStrategyId,
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
@@ -485,6 +488,7 @@ export async function createApiKeyRecordAsync(input: Record<string, unknown>, ac
     keyPrefix,
     keySuffix,
     status,
+    purpose: 'general',
     routeStrategyId,
     expiresAt: normalizeOptionalApiKeyExpiresAt(input.expiresAt),
     quotaLimits,
@@ -567,7 +571,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   let nextRouteStrategyId = hasRouteStrategyInput
     ? assertRouteStrategySelectableForApiKey(systemAccountId, input.routeStrategyId)
     : current.routeStrategyId
-  if (current.isDefault && nextRouteStrategyId !== current.routeStrategyId) {
+  if (current.isDefault && current.purpose !== 'chat' && nextRouteStrategyId !== current.routeStrategyId) {
     throw new Error('默认 API Key 不允许更换策略路由')
   }
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
@@ -655,7 +659,7 @@ export async function updateApiKeyAsync(id: string, input: Record<string, unknow
   let nextRouteStrategyId = hasRouteStrategyInput
     ? await assertRouteStrategySelectableForApiKeyAsync(systemAccountId, input.routeStrategyId)
     : current.routeStrategyId
-  if (current.isDefault && nextRouteStrategyId !== current.routeStrategyId) {
+  if (current.isDefault && current.purpose !== 'chat' && nextRouteStrategyId !== current.routeStrategyId) {
     throw new Error('默认 API Key 不允许更换策略路由')
   }
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
@@ -793,7 +797,7 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
   const scope = buildSystemAccountScopeClause(access)
   const database = getBusinessDatabase()
   const row = database
-    .prepare(`SELECT id, system_account_id, is_default FROM api_keys WHERE id = ?${scope.clause}`)
+    .prepare(`SELECT id, system_account_id, is_default, purpose FROM api_keys WHERE id = ?${scope.clause}`)
     .get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
   if (!row) return { deleted: false }
   assertApiKeyNotDefault(row)
@@ -817,7 +821,7 @@ export async function deleteApiKeyWithRelatedCleanupAsync(id: string, access?: A
   const client = await getApiKeyDatabaseClient()
   const scope = buildSystemAccountScopeClause(access)
   const row = await client.one<ApiKeyDeleteRow>(`
-    SELECT id, system_account_id, is_default
+    SELECT id, system_account_id, is_default, purpose
     FROM ${apiKeyTable(client, 'api_keys')}
     WHERE id = ?${scope.clause}
   `, [id, ...scope.params])
@@ -950,6 +954,142 @@ export async function ensureDefaultApiKeysForSystemAccountAsync(client: Database
   return apiKeyIds
 }
 
+export function ensureChatApiKeyForSystemAccount(systemAccountId: string, timestamp = nowIso()): string {
+  ensureDefaultRouteStrategiesForSystemAccount(systemAccountId, timestamp)
+  const database = getBusinessDatabase()
+  const existing = chatApiKeyIdForSystemAccount(database, systemAccountId)
+  if (existing) return existing
+  const routeStrategy = defaultGptRouteStrategyForSystemAccount(database, systemAccountId)
+  if (!routeStrategy) throw new Error('创建 AI 对话 API Key 前必须先创建 GPT 默认策略路由')
+  const apiKeyId = newId('key')
+  const key = createApiKey()
+  const name = nextDefaultApiKeyName(database, systemAccountId, 'AI 对话 API Key')
+  try {
+    database.prepare(`
+      INSERT INTO api_keys (
+        id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+        key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json, availability_schedule_json,
+        availability_schedule_next_check_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 'chat', NULL, NULL, NULL, NULL, ?, ?)
+    `).run(
+      apiKeyId,
+      systemAccountId,
+      routeStrategy.id,
+      name,
+      `AI 对话专用 API Key，默认绑定${routeStrategy.name}，可在 API Key 页面修改策略路由。`,
+      hashSecret(key),
+      key.slice(0, 8),
+      key.slice(-8),
+      encryptJson({ key }),
+      timestamp,
+      timestamp
+    )
+    return apiKeyId
+  } catch (error) {
+    const raced = chatApiKeyIdForSystemAccount(database, systemAccountId)
+    if (raced && (isDuplicateApiKeyNameError(error) || isDuplicateChatApiKeyError(error))) return raced
+    throw error
+  }
+}
+
+export async function ensureChatApiKeyForSystemAccountAsync(systemAccountId: string, timestamp = nowIso(), client?: DatabaseClient): Promise<string> {
+  const databaseClient = client ?? await getApiKeyDatabaseClient()
+  await ensureDefaultRouteStrategiesForSystemAccountAsync(databaseClient, systemAccountId, timestamp)
+  const existing = await chatApiKeyIdForSystemAccountAsync(databaseClient, systemAccountId)
+  if (existing) return existing
+  const routeStrategy = await defaultGptRouteStrategyForSystemAccountAsync(databaseClient, systemAccountId)
+  if (!routeStrategy) throw new Error('创建 AI 对话 API Key 前必须先创建 GPT 默认策略路由')
+  const apiKeyId = newId('key')
+  const key = createApiKey()
+  const name = await nextDefaultApiKeyNameAsync(databaseClient, systemAccountId, 'AI 对话 API Key')
+  try {
+    await databaseClient.execute(`
+      INSERT INTO ${apiKeyTable(databaseClient, 'api_keys')} (
+        id, system_account_id, route_strategy_id, name, description, key_hash, key_prefix, key_suffix,
+        key_secret_encrypted, status, is_default, purpose, expires_at, quota_limits_json, availability_schedule_json,
+        availability_schedule_next_check_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 'chat', NULL, NULL, NULL, NULL, ?, ?)
+    `, [
+      apiKeyId,
+      systemAccountId,
+      routeStrategy.id,
+      name,
+      `AI 对话专用 API Key，默认绑定${routeStrategy.name}，可在 API Key 页面修改策略路由。`,
+      hashSecret(key),
+      key.slice(0, 8),
+      key.slice(-8),
+      encryptJson({ key }),
+      timestamp,
+      timestamp
+    ])
+    return apiKeyId
+  } catch (error) {
+    const raced = await chatApiKeyIdForSystemAccountAsync(databaseClient, systemAccountId)
+    if (raced && (isDuplicateApiKeyNameError(error) || isDuplicateChatApiKeyError(error))) return raced
+    throw error
+  }
+}
+
+function chatApiKeyIdForSystemAccount(database: ReturnType<typeof getBusinessDatabase>, systemAccountId: string): string | undefined {
+  const row = database.prepare(`
+    SELECT id FROM api_keys WHERE system_account_id = ? AND purpose = 'chat' LIMIT 1
+  `).get(systemAccountId) as { id?: string } | undefined
+  return row?.id
+}
+
+async function chatApiKeyIdForSystemAccountAsync(client: DatabaseClient, systemAccountId: string): Promise<string | undefined> {
+  const row = await client.one<{ id?: string }>(`
+    SELECT id FROM ${apiKeyTable(client, 'api_keys')} WHERE system_account_id = ? AND purpose = 'chat' LIMIT 1
+  `, [systemAccountId])
+  return row?.id
+}
+
+function defaultGptRouteStrategyForSystemAccount(
+  database: ReturnType<typeof getBusinessDatabase>,
+  systemAccountId: string
+): { id: string; name: string } | undefined {
+  return database.prepare(`
+    SELECT route_strategies.id, route_strategies.name
+    FROM route_strategies
+    INNER JOIN route_strategy_groups ON route_strategy_groups.route_strategy_id = route_strategies.id
+      AND route_strategy_groups.system_account_id = route_strategies.system_account_id
+      AND route_strategy_groups.status = 'active'
+    INNER JOIN groups ON groups.id = route_strategy_groups.group_id
+      AND groups.system_account_id = route_strategy_groups.system_account_id
+      AND groups.enabled = 1
+    WHERE route_strategies.system_account_id = ?
+      AND route_strategies.status = 'active'
+      AND route_strategies.is_default = 1
+      AND groups.provider_code = ?
+    ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
+    LIMIT 1
+  `).get(systemAccountId, GPT_VENDOR_CODE) as { id: string; name: string } | undefined
+}
+
+async function defaultGptRouteStrategyForSystemAccountAsync(
+  client: DatabaseClient,
+  systemAccountId: string
+): Promise<{ id: string; name: string } | undefined> {
+  return client.one<{ id: string; name: string }>(`
+    SELECT route_strategies.id, route_strategies.name
+    FROM ${apiKeyTable(client, 'route_strategies')} route_strategies
+    INNER JOIN ${apiKeyTable(client, 'route_strategy_groups')} route_strategy_groups
+      ON route_strategy_groups.route_strategy_id = route_strategies.id
+      AND route_strategy_groups.system_account_id = route_strategies.system_account_id
+      AND route_strategy_groups.status = 'active'
+    INNER JOIN ${apiKeyTable(client, 'groups')} groups
+      ON groups.id = route_strategy_groups.group_id
+      AND groups.system_account_id = route_strategy_groups.system_account_id
+      AND groups.enabled = 1
+    WHERE route_strategies.system_account_id = ?
+      AND route_strategies.status = 'active'
+      AND route_strategies.is_default = 1
+      AND groups.provider_code = ?
+    ORDER BY route_strategies.created_at ASC, route_strategies.id ASC
+    LIMIT 1
+  `, [systemAccountId, GPT_VENDOR_CODE])
+}
+
 function defaultRouteStrategiesForSystemAccount(database: ReturnType<typeof getBusinessDatabase>, systemAccountId: string): Array<{ id: string; name: string }> {
   return database.prepare(`
     SELECT route_strategies.id, route_strategies.name
@@ -1036,7 +1176,10 @@ function defaultApiKeyNameForRouteStrategy(routeStrategyName: string): string {
   return routeStrategyName.replace(/路由$/, 'API Key')
 }
 
-function assertApiKeyNotDefault(row: Pick<ApiKeyDeleteRow, 'is_default'>): void {
+function assertApiKeyNotDefault(row: Pick<ApiKeyDeleteRow, 'is_default' | 'purpose'>): void {
+  if (row.purpose === 'chat') {
+    throw new Error('AI 对话 API Key 不允许删除')
+  }
   if (normalizeApiKeyDefaultFlag(row.is_default)) {
     throw new Error('默认 API Key 不允许删除')
   }
@@ -1178,4 +1321,11 @@ function isDuplicateApiKeyNameError(error: unknown): boolean {
 function isDuplicateDefaultApiKeyError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   return error.message.includes('idx_api_keys_route_default_unique')
+}
+
+function isDuplicateChatApiKeyError(error: unknown): boolean {
+  return error instanceof Error && (
+    error.message.includes('idx_api_keys_chat_purpose_unique')
+    || error.message.includes('UNIQUE constraint failed: api_keys.system_account_id')
+  )
 }

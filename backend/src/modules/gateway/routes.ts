@@ -48,21 +48,25 @@ import {
   handleStreamUpstreamResponse,
   type StreamServerRetryReason
 } from './response/finalization.js'
+import { observeGatewayRouting } from './observability/routing-observability.service.js'
 import { rememberCodexTurnStreamFailureAsync } from './client-profiles/codex-turn-retry.service.js'
 import { sendGatewayFailureResponse } from './response/failure-response.js'
 import { handleUpstreamRequestError } from './response/failure-dispatch.js'
 import { handleGatewayRequestKnownErrorResponse } from './request/error-response.js'
 import {
+  isOpenAIGatewayRouteAction,
   prepareOpenAIGatewayDispatchContext,
   prepareApiKeyGroupFallbackDispatchContext,
   type OpenAIGatewayDispatchContext,
+  type OpenAIGatewayRouteAction,
   type OpenAIGatewayRequestIdentity
 } from './request/preflight.js'
 import { resolveNextHybridGatewayRoute } from './hybrid/routing.service.js'
 import { appendHybridQualityRepairInstruction } from './hybrid/quality-repair.service.js'
 import {
   fetchFirstAvailableUpstream,
-  UpstreamAttemptError
+  UpstreamAttemptError,
+  type GatewayUpstreamRequestCoordinationContext
 } from './dispatch/upstream-dispatch.js'
 import type { UpstreamAttempt } from './upstream/attempt.js'
 import type { ResponseInspectionDecision } from './response/inspection.js'
@@ -111,7 +115,8 @@ import {
   GatewayRequestAttemptTracker,
   GatewayRequestWallBudget,
   RouteCoordinationBudget,
-  defaultGatewayFinalResponseReserveMs
+  defaultGatewayFinalResponseReserveMs,
+  advanceGatewayRoutePlanCursor
 } from './routing/route-coordination.js'
 
 export const openAIGatewayRouter = Router()
@@ -245,6 +250,121 @@ export async function handleOpenAIGatewayRequest(
   })
 
   let preflight: Awaited<ReturnType<typeof prepareOpenAIGatewayDispatchContext>>
+  const routeActionVisitedGroupIds = new Set<string>()
+  const finalizeRouteAction = async (action: OpenAIGatewayRouteAction): Promise<void> => {
+    if (res.writableEnded || res.destroyed) return
+    const failure = action.failure
+    if (failure) {
+      if (failure.retryAfterMs !== undefined && !res.headersSent) {
+        res.setHeader('Retry-After', String(Math.max(1, Math.ceil(failure.retryAfterMs / 1000))))
+      }
+      await sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: action.usageContext,
+        startedAt,
+        statusCode: failure.statusCode,
+        responsePayload: gatewayErrorPayload(failure.message, failure.errorType, failure.errorCode),
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: failure.errorPhase,
+          errorCode: failure.errorCode,
+          errorMessage: failure.message
+        },
+        failureAttribution: failure.failureAttribution
+      })
+      return
+    }
+    if (action.coordination.outcome === 'client_handoff') {
+      await sendStreamServerRetryExhaustedResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext: action.usageContext,
+        startedAt,
+        retryReason: 'pre_commit_stream_failure',
+        message: '当前路由暂时无法继续派发，请客户端重试并重新选择可用账户',
+        errorCode: gatewayStreamClientRetryErrorCode,
+        clientStrategy: action.clientStrategy
+      })
+      return
+    }
+    const temporarilyBlocked = action.coordination.outcome === 'temporarily_blocked'
+    const message = temporarilyBlocked
+      ? '当前路由暂时没有可派发账户，请稍后重试'
+      : '当前路由没有可用的上游账户'
+    await sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: action.usageContext,
+      startedAt,
+      statusCode: 503,
+      responsePayload: gatewayErrorPayload(message, 'service_unavailable', 'upstream_retryable_error'),
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'dispatch',
+        errorCode: 'upstream_retryable_error',
+        errorMessage: message
+      }
+    })
+  }
+  const resolveRouteAction = async (
+    initial: OpenAIGatewayDispatchContext | OpenAIGatewayRouteAction
+  ): Promise<OpenAIGatewayDispatchContext | undefined> => {
+    let result: OpenAIGatewayDispatchContext | OpenAIGatewayRouteAction = initial
+    while (isOpenAIGatewayRouteAction(result)) {
+      const action = result
+      const groupId = action.usageContext.groupId
+      const mayTryFallback = action.coordination.outcome !== 'client_handoff'
+        && !action.interactionResourceAffinity
+        && !routeActionVisitedGroupIds.has(groupId)
+      routeActionVisitedGroupIds.add(groupId)
+      if (mayTryFallback) {
+        const fallback = await prepareApiKeyGroupFallbackDispatchContext({
+          req,
+          res,
+          auditCapture,
+          options: {
+            ...options,
+            trafficSource,
+            requestLane: action.requestLane,
+            serverRetryBudget: action.serverRetryBudget,
+            gatewayRequestWallBudget: action.gatewayRequestWallBudget,
+            routeCoordinationBudget: action.routeCoordinationBudget,
+            requestAttemptTracker: action.requestAttemptTracker,
+            downstreamCommitState: action.downstreamCommitState,
+            normalRouteFirstByteConfig: action.normalRouteFirstByteConfig,
+          },
+          startedAt,
+          traceId,
+          clientIp,
+          endpoint,
+          requestSnapshot,
+          signal: abortController.signal,
+          routePlanSnapshot: action.routePlanSnapshot,
+          reason: action.coordination.reason,
+          apiKeyRecord: action.groupFallbackApiKeyRecord ?? action.apiKeyRecord,
+          groupFallbackApiKeyRecord: action.groupFallbackApiKeyRecord ?? action.apiKeyRecord,
+          systemAccountId: action.usageContext.systemAccountId,
+          apiKeyId: action.usageContext.apiKeyId,
+          groupId,
+          trafficSource: action.usageContext.trafficSource,
+          requestLane: action.requestLane,
+          requestClientCompatibility: action.clientStrategy.requestClientCompatibility
+        })
+        if (fallback.attempted && fallback.context) {
+          result = fallback.context
+          continue
+        }
+        if (fallback.attempted && !fallback.context) return undefined
+      }
+      await finalizeRouteAction(action)
+      return undefined
+    }
+    return result
+  }
   const preflightStartedAt = performance.now()
   try {
     preflight = await prepareOpenAIGatewayDispatchContext({
@@ -275,6 +395,9 @@ export async function handleOpenAIGatewayRequest(
     auditCapture.cancel()
     throw error
   }
+  if (preflight && isOpenAIGatewayRouteAction(preflight)) {
+    preflight = await resolveRouteAction(preflight)
+  }
   if (!preflight) {
     logRequestStage('preflight.rejected', {
       traceId,
@@ -302,12 +425,12 @@ export async function handleOpenAIGatewayRequest(
   let pendingAccountCircuitConfirmation: GatewayAccountCircuitConfirmation | undefined
   let codexTurnAvoidedFallbackEnabled = false
   let fallbackSwitchCount = 0
+  const enteredRouteGroupIds = new Set<string>([currentPreflight.usageContext.groupId])
   let forceRecoverableFailureWait = false
   const exhaustedAccountIds = new Set<string>()
   const nonStreamResponseStartedFailedAccountIds = new Set<string>()
   const switchToFallbackGroup = async (
-    reason: string,
-    input: { allowCandidateWrap?: boolean } = {}
+    reason: string
   ): Promise<'none' | 'switched' | 'completed'> => {
     if (currentPreflight.interactionResourceAffinity) {
       return 'none'
@@ -341,7 +464,9 @@ export async function handleOpenAIGatewayRequest(
         gatewayRequestWallBudget: currentPreflight.gatewayRequestWallBudget,
         routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
         requestAttemptTracker: currentPreflight.requestAttemptTracker,
-        downstreamCommitState: currentPreflight.downstreamCommitState
+        downstreamCommitState: currentPreflight.downstreamCommitState,
+        normalRouteFirstByteConfig: currentPreflight.normalRouteFirstByteConfig,
+        routePlanSnapshot: currentPreflight.routePlanSnapshot
       },
       startedAt,
       traceId,
@@ -357,23 +482,34 @@ export async function handleOpenAIGatewayRequest(
       trafficSource: gatewayUsageContext.trafficSource,
       requestLane: currentPreflight.requestLane,
       requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
+      routePlanSnapshot: currentPreflight.routePlanSnapshot,
       groupFallbackApiKeyRecord: currentPreflight.groupFallbackApiKeyRecord ?? currentPreflight.apiKeyRecord,
-      excludedAccountIds: exhaustedAccountIds,
-      allowCandidateWrap: input.allowCandidateWrap
+      excludedAccountIds: exhaustedAccountIds
     })
     if (!fallback.attempted) {
       return 'none'
     }
     if (!fallback.context) {
+      await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
+      return 'completed'
+    }
+    const fallbackContext = await resolveRouteAction(fallback.context)
+    if (!fallbackContext) {
+      await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
       return 'completed'
     }
     fallbackSwitchCount += 1
+    if (enteredRouteGroupIds.has(fallbackContext.usageContext.groupId)) {
+      return 'none'
+    }
+    enteredRouteGroupIds.add(fallbackContext.usageContext.groupId)
     transferClientIpAccountPendingFailures(
       currentPreflight.clientIpAccountAvoidanceTracker,
-      fallback.context.clientIpAccountAvoidanceTracker
+      fallbackContext.clientIpAccountAvoidanceTracker
     )
     releaseClientIpSlot()
-    currentPreflight = fallback.context
+    await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
+    currentPreflight = fallbackContext
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
@@ -391,9 +527,17 @@ export async function handleOpenAIGatewayRequest(
     if (!hybridRoute) {
       return 'none'
     }
+    const remainingHybridGroupIds = new Set(
+      currentPreflight.routePlanSnapshot.orderedAllowedTargets.slice(currentPreflight.routePlanSnapshot.cursor + 1)
+    )
     const nextRoute = await resolveNextHybridGatewayRoute({
       req,
-      apiKeyRecord: hybridRoute.apiKeyRecord,
+      apiKeyRecord: {
+        ...hybridRoute.apiKeyRecord,
+        group_bindings: hybridRoute.apiKeyRecord.group_bindings?.filter((binding) => (
+          remainingHybridGroupIds.has(binding.group_id) && !enteredRouteGroupIds.has(binding.group_id)
+        ))
+      },
       currentRoute: hybridRoute.route,
       requestClientCompatibility: currentPreflight.clientStrategy.requestClientCompatibility,
       signal: requestExecutionSignal
@@ -432,6 +576,11 @@ export async function handleOpenAIGatewayRequest(
         routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
         requestAttemptTracker: currentPreflight.requestAttemptTracker,
         downstreamCommitState: currentPreflight.downstreamCommitState,
+        normalRouteFirstByteConfig: currentPreflight.normalRouteFirstByteConfig,
+        routePlanSnapshot: advanceGatewayRoutePlanCursor(
+          currentPreflight.routePlanSnapshot,
+          currentPreflight.routePlanSnapshot.orderedAllowedTargets.indexOf(nextRoute.groupId)
+        ),
         identity: {
           systemAccountId: currentPreflight.usageContext.systemAccountId,
           apiKeyId: currentPreflight.usageContext.apiKeyId,
@@ -451,11 +600,18 @@ export async function handleOpenAIGatewayRequest(
       signal: requestExecutionSignal
     })
     if (!context) {
+      await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
+      return 'completed'
+    }
+    const resolvedContext = await resolveRouteAction(context)
+    if (!resolvedContext) {
+      await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
       return 'completed'
     }
     releaseClientIpSlot()
+    await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
     currentPreflight = {
-      ...context,
+      ...resolvedContext,
       hybridRoute: {
         apiKeyRecord: nextRoute.apiKeyRecord,
         config: hybridRoute.config,
@@ -467,6 +623,7 @@ export async function handleOpenAIGatewayRequest(
         qualityRetryCount: hybridRoute.qualityRetryCount + 1
       }
     }
+    enteredRouteGroupIds.add(currentPreflight.usageContext.groupId)
     releaseClientIpSlot = attachClientIpSlotRelease(res, currentPreflight)
     streamServerRetryExcludedAccountIds = new Set<string>()
     streamServerRetryCount = 0
@@ -483,6 +640,8 @@ export async function handleOpenAIGatewayRequest(
       if (currentPreflight.gatewayRequestWallBudget.handoffRequired({
         finalResponseReserveMs: defaultGatewayFinalResponseReserveMs
       })) {
+        observeGatewayRouting({ kind: 'budget', outcome: 'wall_exhausted' })
+        observeGatewayRouting({ kind: 'budget', outcome: 'client_handoff' })
         if (pendingAccountCircuitConfirmation) {
           await getGatewayAccountCircuitService().completeConfirmation(pendingAccountCircuitConfirmation, 'unknown')
           pendingAccountCircuitConfirmation = undefined
@@ -520,6 +679,7 @@ export async function handleOpenAIGatewayRequest(
         modelPriority,
         responseInspectionPolicies,
         apiKeyRecord,
+        normalRouteFirstByteConfig,
         normalRouteSpeedFirstConfig,
         normalRouteLatencyDegradationApplied,
         codexTurnAccountAvoidanceApplied,
@@ -560,7 +720,7 @@ export async function handleOpenAIGatewayRequest(
         for (const accountId of streamServerRetryExcludedAccountIds) {
           exhaustedAccountIds.add(accountId)
         }
-        const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted', { allowCandidateWrap: true })
+        const fallbackSwitch = await switchToFallbackGroup('upstream_accounts_exhausted')
         if (fallbackSwitch === 'completed') {
           return
         }
@@ -579,6 +739,83 @@ export async function handleOpenAIGatewayRequest(
       pendingAccountCircuitConfirmation = undefined
       const dispatchCutoverReservation = speedFirstCutoverReservation
       speedFirstCutoverReservation = undefined
+      const speedFirstLatencyScope = normalRouteLatencyDegradationScope({
+        systemAccountId: gatewayUsageContext.systemAccountId,
+        routeStrategyId: apiKeyRecord?.route_strategy_id,
+        groupId: gatewayUsageContext.groupId
+      })
+      let speedFirstSlowObservedForAttempt: NormalRouteLatencySlowResult | undefined
+      let speedFirstCutoverAllowedAtDeadline = false
+      const onNormalRouteFirstByteDeadline: NonNullable<GatewayUpstreamRequestCoordinationContext['onNormalRouteFirstByteDeadline']> = async ({
+        account,
+        deadline
+      }) => {
+        if (deadline.schedulingPreference === 'cost_first') {
+          return 'abort'
+        }
+        if (!normalRouteSpeedFirstConfig || deadline.limitingFactor !== 'configured') {
+          return 'abort'
+        }
+        const alreadyDegraded = await isNormalRouteAccountLatencyDegradedAsync(account, speedFirstLatencyScope)
+        speedFirstSlowObservedForAttempt = await recordNormalRouteFirstByteSlowAsync(
+          account,
+          speedFirstLatencyScope,
+          normalRouteSpeedFirstConfig,
+          `普通路由速度优先首字观察阈值 ${deadline.effectiveDeadlineMs}ms 已到达`
+        )
+        const nextExcludedAccountIds = new Set(streamServerRetryExcludedAccountIds)
+        nextExcludedAccountIds.add(account.id)
+        const remainingAccounts = await speedFirstRouteEligibleDispatchAccounts(accounts, nextExcludedAccountIds, speedFirstLatencyScope)
+        const remainingCandidateCount = remainingAccounts.length
+        const maxRetries = normalRouteSpeedFirstConfig.maxFirstByteRetriesPerRequest
+        const degradedForCutover = alreadyDegraded || speedFirstSlowObservedForAttempt?.degraded === true
+        const cutoverPreconditionsMet = degradedForCutover
+          && speedFirstByteRetryCount < maxRetries
+          && remainingCandidateCount > 0
+        speedFirstCutoverReservation = cutoverPreconditionsMet
+          ? await reserveSpeedFirstCutoverTarget({
+              systemAccountId: gatewayUsageContext.systemAccountId,
+              routeStrategyId: apiKeyRecord?.route_strategy_id ?? '',
+              groupId: gatewayUsageContext.groupId,
+              slowAccountId: gatewayAccountConcurrencyAccountId(account),
+              targets: remainingAccounts,
+              lane: currentPreflight.requestLane,
+              groupSchedulingPolicy: currentPreflight.groupSchedulingPolicy
+            })
+          : undefined
+        speedFirstCutoverAllowedAtDeadline = speedFirstCutoverReservation !== undefined
+        auditCapture.addGatewayMetadata({
+          label: 'normal_route_speed_first_slow_observed',
+          metadata: {
+            accountId: account.id,
+            accountName: account.name,
+            firstTokenMs: undefined,
+            thresholdMs: normalRouteSpeedFirstConfig.firstByteDeadlineMs,
+            elapsedMs: Date.now() - (deadline.deadlineAtMs - deadline.effectiveDeadlineMs),
+            observedAt: 'first_byte_deadline',
+            alreadyDegraded,
+            slowCount: speedFirstSlowObservedForAttempt?.slowCount,
+            degraded: speedFirstSlowObservedForAttempt?.degraded,
+            degradedUntil: speedFirstSlowObservedForAttempt?.degradedUntil,
+            nextProbeAt: speedFirstSlowObservedForAttempt?.nextProbeAt,
+            cutoverAllowed: speedFirstCutoverAllowedAtDeadline,
+            retryBlockedReason: speedFirstCutoverAllowedAtDeadline
+              ? undefined
+              : remainingCandidateCount <= 0
+                  ? 'no_remaining_candidate'
+                  : !degradedForCutover
+                    ? 'slow_observation_not_degraded'
+                  : !cutoverPreconditionsMet
+                    ? 'max_retry_exceeded'
+                    : 'target_slot_or_cutover_budget_unavailable',
+            retryCount: speedFirstByteRetryCount,
+            maxRetries,
+            remainingCandidateCount,
+            remainingCandidateAccountIds: remainingAccounts.map((item) => item.id)
+          }
+        })
+        return speedFirstCutoverAllowedAtDeadline ? 'abort' : 'continue'
+      }
       const upstreamDispatchStartedAt = performance.now()
       try {
         upstreamResult = await fetchFirstAvailableUpstream(
@@ -602,7 +839,9 @@ export async function handleOpenAIGatewayRequest(
             serverRetryBudget: currentPreflight.serverRetryBudget,
             gatewayRequestWallBudget: currentPreflight.gatewayRequestWallBudget,
             routeCoordinationBudget: currentPreflight.routeCoordinationBudget,
-            requestAttemptTracker: currentPreflight.requestAttemptTracker
+            requestAttemptTracker: currentPreflight.requestAttemptTracker,
+            normalRouteFirstByteConfig,
+            onNormalRouteFirstByteDeadline
           },
           gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy),
           forceRecoverableFailureWait
@@ -656,7 +895,7 @@ export async function handleOpenAIGatewayRequest(
           const fallbackReason = error.agentGuidanceResponse
             ? 'account_scoped_agent_guidance_exhausted'
             : 'upstream_accounts_exhausted'
-          const fallbackSwitch = await switchToFallbackGroup(fallbackReason, { allowCandidateWrap: true })
+          const fallbackSwitch = await switchToFallbackGroup(fallbackReason)
           if (fallbackSwitch === 'completed') {
             return
           }
@@ -677,11 +916,18 @@ export async function handleOpenAIGatewayRequest(
           dispatchCutoverReservation.release()
         }
       }
-      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease, accountCircuitAttempt } = upstreamResult
+      const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, attemptStartedAt, timeoutProfile, releaseConcurrency, markFirstOutput, confirmSameAccountApiKeyFailures, confirmHalfOpenSuccess, releaseHalfOpenLease, accountCircuitAttempt, hotQualityAttempt, normalRouteFirstByteDeadline, onFirstByteDeadline } = upstreamResult
+      await settleHotQualityExplorationSafely(
+        currentPreflight,
+        currentPreflight.hotQualityExplorationReservation?.accountRuntimeKey === gatewayAccountRuntimeKey(account)
+          ? 'dispatched'
+          : 'not_dispatched'
+      )
       let firstOutputLogged = false
       const markFirstOutputWithTiming = () => {
         if (!firstOutputLogged) {
           firstOutputLogged = true
+          hotQualityAttempt.markFirstByte(Date.now() - attemptStartedAt)
           logRequestStage('upstream.first_output', {
             traceId,
             accountId: account.id,
@@ -708,77 +954,7 @@ export async function handleOpenAIGatewayRequest(
         status: upstreamResponse.status
       })
       const releaseAccountSlot = attachAccountSlotRelease(res, releaseConcurrency)
-      const speedFirstFirstByteDeadlineMs = normalRouteSpeedFirstByteDeadlineMs(normalRouteSpeedFirstConfig)
-      const speedFirstLatencyScope = normalRouteLatencyDegradationScope({
-        systemAccountId: gatewayUsageContext.systemAccountId,
-        routeStrategyId: apiKeyRecord?.route_strategy_id,
-        groupId: gatewayUsageContext.groupId
-      })
-      let speedFirstSlowObservedForAttempt: NormalRouteLatencySlowResult | undefined
-      let speedFirstCutoverAllowedAtDeadline = false
-      const onSpeedFirstFirstByteDeadline = speedFirstFirstByteDeadlineMs !== undefined && normalRouteSpeedFirstConfig
-        ? async () => {
-            const alreadyDegraded = await isNormalRouteAccountLatencyDegradedAsync(account, speedFirstLatencyScope)
-            speedFirstSlowObservedForAttempt = await recordNormalRouteFirstByteSlowAsync(
-              account,
-              speedFirstLatencyScope,
-              normalRouteSpeedFirstConfig,
-              `普通路由速度优先首字观察阈值 ${speedFirstFirstByteDeadlineMs}ms 已到达`
-            )
-            const nextExcludedAccountIds = new Set(streamServerRetryExcludedAccountIds)
-            nextExcludedAccountIds.add(account.id)
-            const remainingAccounts = await speedFirstRouteEligibleDispatchAccounts(accounts, nextExcludedAccountIds, speedFirstLatencyScope)
-            const remainingCandidateCount = remainingAccounts.length
-            const maxRetries = normalRouteSpeedFirstConfig.maxFirstByteRetriesPerRequest
-            const degradedForCutover = alreadyDegraded || speedFirstSlowObservedForAttempt?.degraded === true
-            const cutoverPreconditionsMet = degradedForCutover
-              && speedFirstByteRetryCount < maxRetries
-              && remainingCandidateCount > 0
-            speedFirstCutoverReservation = cutoverPreconditionsMet
-              ? await reserveSpeedFirstCutoverTarget({
-                  systemAccountId: gatewayUsageContext.systemAccountId,
-                  routeStrategyId: apiKeyRecord?.route_strategy_id ?? '',
-                  groupId: gatewayUsageContext.groupId,
-                  slowAccountId: gatewayAccountConcurrencyAccountId(account),
-                  targets: remainingAccounts,
-                  lane: currentPreflight.requestLane,
-                  groupSchedulingPolicy: currentPreflight.groupSchedulingPolicy
-                })
-              : undefined
-            speedFirstCutoverAllowedAtDeadline = speedFirstCutoverReservation !== undefined
-            auditCapture.addGatewayMetadata({
-              label: 'normal_route_speed_first_slow_observed',
-              metadata: {
-                accountId: account.id,
-                accountName: account.name,
-                firstTokenMs: undefined,
-                thresholdMs: normalRouteSpeedFirstConfig.firstByteDeadlineMs,
-                elapsedMs: Date.now() - attemptStartedAt,
-                observedAt: 'first_byte_deadline',
-                alreadyDegraded,
-                slowCount: speedFirstSlowObservedForAttempt?.slowCount,
-                degraded: speedFirstSlowObservedForAttempt?.degraded,
-                degradedUntil: speedFirstSlowObservedForAttempt?.degradedUntil,
-                nextProbeAt: speedFirstSlowObservedForAttempt?.nextProbeAt,
-                cutoverAllowed: speedFirstCutoverAllowedAtDeadline,
-                retryBlockedReason: speedFirstCutoverAllowedAtDeadline
-                  ? undefined
-                  : remainingCandidateCount <= 0
-                      ? 'no_remaining_candidate'
-                      : !degradedForCutover
-                        ? 'slow_observation_not_degraded'
-                      : !cutoverPreconditionsMet
-                        ? 'max_retry_exceeded'
-                        : 'target_slot_or_cutover_budget_unavailable',
-                retryCount: speedFirstByteRetryCount,
-                maxRetries,
-                remainingCandidateCount,
-                remainingCandidateAccountIds: remainingAccounts.map((item) => item.id)
-              }
-            })
-            return speedFirstCutoverAllowedAtDeadline ? 'abort' as const : 'continue' as const
-          }
-        : undefined
+      const effectiveFirstByteDeadlineMs = normalRouteFirstByteDeadline?.effectiveDeadlineMs
 
       try {
         activeDownstreamSessionAffinity = sessionAffinityKey
@@ -811,8 +987,8 @@ export async function handleOpenAIGatewayRequest(
             usageContext: gatewayUsageContext,
             startedAt: attemptStartedAt,
             signal: requestExecutionSignal,
-            firstByteDeadlineMs: speedFirstFirstByteDeadlineMs,
-            onFirstByteDeadline: onSpeedFirstFirstByteDeadline,
+            firstByteDeadlineMs: effectiveFirstByteDeadlineMs,
+            onFirstByteDeadline,
             sessionAffinityKey,
             clientStrategy,
             responseInspectionPolicies,
@@ -839,8 +1015,8 @@ export async function handleOpenAIGatewayRequest(
               usageContext: gatewayUsageContext,
               startedAt: attemptStartedAt,
               signal: requestExecutionSignal,
-              firstByteDeadlineMs: speedFirstFirstByteDeadlineMs,
-              onFirstByteDeadline: onSpeedFirstFirstByteDeadline,
+              firstByteDeadlineMs: effectiveFirstByteDeadlineMs,
+              onFirstByteDeadline,
               sessionAffinityKey,
               responseInspectionPolicies,
               hybridRoute: currentPreflight.hybridRoute,
@@ -853,11 +1029,27 @@ export async function handleOpenAIGatewayRequest(
             })
           } catch (error) {
             if (error instanceof GeminiInteractionAffinityUnavailableError) {
+              await hotQualityAttempt.recordTerminal({ outcomeClass: 'unknown', source: 'request_lifecycle' })
               throw error
             }
             if (res.headersSent || res.writableEnded || res.destroyed) {
+              await hotQualityAttempt.recordTerminal({
+                outcomeClass: requestExecutionSignal.aborted ? 'client_cancellation' : 'read_interruption',
+                failureScope: requestExecutionSignal.aborted ? 'none' : 'protocol_model',
+                source: requestExecutionSignal.aborted ? 'request_lifecycle' : 'gateway_transport'
+              })
               throw error
             }
+            const bodyFailure = accountCircuitTransportFailure(error)
+            await hotQualityAttempt.recordTerminal({
+              outcomeClass: requestExecutionSignal.aborted
+                ? 'client_cancellation'
+                : bodyFailure.kind === 'timeout'
+                  ? 'timeout'
+                  : 'transport_failure',
+              failureScope: requestExecutionSignal.aborted ? 'none' : 'protocol_model',
+              source: requestExecutionSignal.aborted ? 'request_lifecycle' : 'gateway_transport'
+            })
             const requestErrorResult = await handleUpstreamRequestError({
               req,
               usageContext: gatewayUsageContext,
@@ -887,13 +1079,11 @@ export async function handleOpenAIGatewayRequest(
               accountStateMutationEnabled: false
             })
             nonStreamResponseStartedFailedAccountIds.add(account.id)
-            const circuitDecision = accountCircuitAttempt
+            const circuitDecision = gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy) && accountCircuitAttempt
               ? await accountCircuitAttempt.reportTransportFailure(accountCircuitTransportFailure(error))
               : undefined
             if (circuitDecision?.outcome === 'confirmation_acquired') {
-              pendingAccountCircuitConfirmation = circuitDecision.confirmation
-              streamServerRetryExcludedAccountIds.delete(account.id)
-              continue
+              await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
             }
             if (requestErrorResult.action === 'skip_account') {
               streamServerRetryExcludedAccountIds.add(account.id)
@@ -907,13 +1097,25 @@ export async function handleOpenAIGatewayRequest(
         const transportFailure = 'transportFailure' in handledResponse
           ? handledResponse.transportFailure
           : undefined
-        const circuitDecision = transportFailure && accountCircuitAttempt
+        const circuitDecision = transportFailure
+          && gatewayClientAllowsUpstreamSemanticInterpretation(currentPreflight.clientStrategy)
+          && accountCircuitAttempt
           ? await accountCircuitAttempt.reportTransportFailure({
               kind: transportFailure.kind,
               reason: transportFailure.reason
             })
           : undefined
-        if (!transportFailure) {
+        await hotQualityAttempt.recordTerminal({
+          outcomeClass: transportFailure
+            ? hotQualityOutcomeForTransportFailure(transportFailure.kind)
+            : responseRetryUpstream
+              ? 'explicit_policy_failure'
+              : 'completed_response',
+          failureScope: transportFailure ? 'protocol_model' : responseRetryUpstream ? 'account' : 'none',
+          source: transportFailure ? 'gateway_transport' : responseRetryUpstream ? 'explicit_policy' : 'request_lifecycle',
+          firstByteMs: 'firstTokenMs' in handledResponse ? handledResponse.firstTokenMs : undefined
+        })
+        if (!transportFailure && !responseRetryUpstream) {
           await accountCircuitAttempt?.reportFramingComplete()
         }
         logRequestStage('upstream.body.completed', {
@@ -939,12 +1141,50 @@ export async function handleOpenAIGatewayRequest(
         }
         if (handledResponse.retryUpstream) {
           if (circuitDecision?.outcome === 'confirmation_acquired') {
-            pendingAccountCircuitConfirmation = circuitDecision.confirmation
-            streamServerRetryExcludedAccountIds.delete(account.id)
-            speedFirstRetryCandidateAccountIds = undefined
-            continue
+            // Confirmation is intentionally deferred to a later request. The
+            // request that observed the failure may rotate to another account,
+            // but it must never replay the same physical credential implicitly.
+            await getGatewayAccountCircuitService().completeConfirmation(circuitDecision.confirmation, 'unknown')
           }
-          if (handledResponse.retryReason === 'speed_first_first_byte_timeout') {
+          if (
+            handledResponse.retryReason === 'normal_route_first_byte_timeout'
+            && normalRouteFirstByteConfig?.schedulingPreference === 'cost_first'
+          ) {
+            streamServerRetryExcludedAccountIds.add(account.id)
+            exhaustedAccountIds.add(account.id)
+            const remainingAccounts = streamRetryDispatchAccounts(accounts, streamServerRetryExcludedAccountIds)
+            auditCapture.addGatewayMetadata({
+              label: 'normal_route_cost_first_first_byte_cutover',
+              metadata: {
+                accountId: account.id,
+                configuredDeadlineMs: normalRouteFirstByteDeadline?.configuredDeadlineMs,
+                effectiveDeadlineMs: normalRouteFirstByteDeadline?.effectiveDeadlineMs,
+                limitingFactor: normalRouteFirstByteDeadline?.limitingFactor,
+                remainingCandidateCount: remainingAccounts.length
+              }
+            })
+            if (remainingAccounts.length > 0) {
+              continue
+            }
+            const fallbackSwitch = await switchToFallbackGroup('normal_route_cost_first_first_byte_exhausted')
+            if (fallbackSwitch === 'completed') return
+            if (fallbackSwitch === 'switched') continue
+            await sendStreamServerRetryExhaustedResponse({
+              req,
+              res,
+              auditCapture,
+              usageContext: gatewayUsageContext,
+              startedAt,
+              retryReason: handledResponse.retryReason,
+              message: handledResponse.message,
+              errorCode: handledResponse.errorCode,
+              uncommittedResponseBody: handledResponse.uncommittedResponseBody,
+              accountId: account.id,
+              clientStrategy
+            })
+            return
+          }
+          if (handledResponse.retryReason === 'normal_route_first_byte_timeout') {
             speedFirstByteRetryCount += 1
             streamServerRetryExcludedAccountIds.add(account.id)
             const remainingAccounts = await speedFirstRouteEligibleDispatchAccounts(accounts, streamServerRetryExcludedAccountIds, speedFirstLatencyScope)
@@ -990,7 +1230,7 @@ export async function handleOpenAIGatewayRequest(
               for (const accountId of streamServerRetryExcludedAccountIds) {
                 exhaustedAccountIds.add(accountId)
               }
-              const fallbackSwitch = await switchToFallbackGroup('normal_route_speed_first_exhausted', { allowCandidateWrap: true })
+              const fallbackSwitch = await switchToFallbackGroup('normal_route_speed_first_exhausted')
               if (fallbackSwitch !== 'none') {
                 if (fallbackSwitch === 'completed') {
                   return
@@ -1193,7 +1433,7 @@ export async function handleOpenAIGatewayRequest(
               exhaustedAccountIds.add(accountId)
             }
             const fallbackReason = streamServerRetryFallbackReason(handledResponse.retryReason)
-            const fallbackSwitch = await switchToFallbackGroup(fallbackReason, { allowCandidateWrap: true })
+            const fallbackSwitch = await switchToFallbackGroup(fallbackReason)
             if (fallbackSwitch !== 'none') {
               if (fallbackSwitch === 'completed') {
                 return
@@ -1291,6 +1531,10 @@ export async function handleOpenAIGatewayRequest(
         }
         return
       } finally {
+        await hotQualityAttempt.recordTerminal({
+          outcomeClass: requestExecutionSignal.aborted ? 'client_cancellation' : 'unknown',
+          source: 'request_lifecycle'
+        })
         await releaseHalfOpenLease()
         releaseAccountSlot()
       }
@@ -1387,6 +1631,7 @@ export async function handleOpenAIGatewayRequest(
       usageErrorMessage: message
     })
   } finally {
+    await settleHotQualityExplorationSafely(currentPreflight, 'not_dispatched')
     speedFirstCutoverReservation?.release()
     releaseClientIpSlot()
     auditCapture.cancel()
@@ -1451,6 +1696,25 @@ function once(callback: () => void): () => void {
     called = true
     callback()
   }
+}
+
+async function settleHotQualityExplorationSafely(
+  preflight: OpenAIGatewayDispatchContext,
+  outcome: 'dispatched' | 'not_dispatched'
+): Promise<void> {
+  try {
+    await preflight.settleHotQualityExplorationAfterDispatch?.(outcome)
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'gateway_hot_quality_exploration_settlement_failed',
+      outcome,
+      accountRuntimeKey: preflight.hotQualityExplorationReservation?.accountRuntimeKey
+    }), '结算热质量同层探索失败')
+  }
+}
+
+function hotQualityOutcomeForTransportFailure(kind: 'timeout' | 'read_incomplete'): 'timeout' | 'read_interruption' {
+  return kind === 'timeout' ? 'timeout' : 'read_interruption'
 }
 
 function attachClientIpSlotRelease(res: Response, preflight: OpenAIGatewayDispatchContext): () => void {

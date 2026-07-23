@@ -5,6 +5,7 @@ import { runtimeConfig } from '../../../config/runtime.js'
 import { loadAccountCurrentConcurrencyByIdsAsync } from '../../../shared/account-concurrency.js'
 import { requestServerAccountConcurrencySnapshot, requestServerAccountRuntimeSnapshot } from '../../db-service/db-service-ipc.js'
 import { loadDistributedGatewayAccountRuntimeAvailability } from './account-side-effects.service.js'
+import { loadPublicAccountCircuitSummaries, type PublicAccountCircuitSummary } from './account-circuit-control-plane-bridge.js'
 
 type AccountConcurrencySnapshot = Record<string, number>
 export type AccountRuntimeAvailabilitySnapshot = Record<string, AccountRuntimeAvailability>
@@ -23,6 +24,7 @@ interface RuntimeSnapshotCache<T> {
 export interface AccountRuntimeSnapshotStatus {
   accountConcurrencyAvailable: boolean
   accountRuntimeAvailabilityAvailable: boolean
+  accountCircuitSummaryAvailable: boolean
 }
 
 export async function loadAccountRuntimeAvailabilityByKeys(runtimeKeys: string[]): Promise<{
@@ -89,22 +91,27 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
       ...result,
       runtimeSnapshot: {
         accountConcurrencyAvailable: true,
-        accountRuntimeAvailabilityAvailable: true
+        accountRuntimeAvailabilityAvailable: true,
+        accountCircuitSummaryAvailable: true
       }
     }
   }
   if (runtimeConfig.runtimeStateDriver === 'redis') {
     return await applyRedisAccountRuntimeToAccountList(result)
   }
-  const runtime = await loadServerAccountRuntimeSnapshot()
+  const [runtime, circuits] = await Promise.all([
+    loadServerAccountRuntimeSnapshot(),
+    loadAccountCircuitSummarySnapshot(result.items)
+  ])
   if (!runtime?.accountConcurrency) {
     return {
       ...result,
       runtimeSnapshot: {
         accountConcurrencyAvailable: false,
-        accountRuntimeAvailabilityAvailable: Boolean(runtime?.accountRuntimeAvailability)
+        accountRuntimeAvailabilityAvailable: Boolean(runtime?.accountRuntimeAvailability),
+        accountCircuitSummaryAvailable: circuits.available
       },
-      items: result.items.map(markAccountConcurrencyUnavailable)
+      items: result.items.map((account) => applyAccountCircuitSummary(markAccountConcurrencyUnavailable(account), circuits.values))
     }
   }
   const runtimeAvailability = runtime.accountRuntimeAvailability
@@ -112,32 +119,34 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
     ...result,
     runtimeSnapshot: {
       accountConcurrencyAvailable: true,
-      accountRuntimeAvailabilityAvailable: Boolean(runtimeAvailability)
+      accountRuntimeAvailabilityAvailable: Boolean(runtimeAvailability),
+      accountCircuitSummaryAvailable: circuits.available
     },
-    items: result.items.map((account) => applyAccountRuntimeAvailability(
-      applyAccountConcurrency(account, runtime.accountConcurrency ?? {}),
-      runtimeAvailability
-    ))
+    items: result.items.map((account) => applyAccountCircuitSummary(applyAccountRuntimeAvailability(
+      applyAccountConcurrency(account, runtime.accountConcurrency ?? {}), runtimeAvailability
+    ), circuits.values))
   }
 }
 
 export async function applyServerAccountRuntimeToAccount(account: AccountSummary): Promise<AccountSummary> {
+  const circuitsPromise = loadAccountCircuitSummarySnapshot([account])
   if (runtimeConfig.runtimeStateDriver === 'redis') {
     const runtimeAvailability = peekServerAccountRuntimeAvailabilitySnapshot()
     const concurrency = await loadRedisAccountConcurrencySnapshot([accountConcurrencySnapshotId(account)])
     const withConcurrency = concurrency
       ? applyAccountConcurrency(account, concurrency)
       : markAccountConcurrencyUnavailable(account)
-    return applyAccountRuntimeAvailability(withConcurrency, runtimeAvailability)
+    const circuits = await circuitsPromise
+    return applyAccountCircuitSummary(applyAccountRuntimeAvailability(withConcurrency, runtimeAvailability), circuits.values)
   }
-  const runtime = await loadServerAccountRuntimeSnapshot()
+  const [runtime, circuits] = await Promise.all([loadServerAccountRuntimeSnapshot(), circuitsPromise])
   if (!runtime?.accountConcurrency && !runtime?.accountRuntimeAvailability) {
-    return account
+    return applyAccountCircuitSummary(account, circuits.values)
   }
-  return applyAccountRuntimeAvailability(
+  return applyAccountCircuitSummary(applyAccountRuntimeAvailability(
     runtime.accountConcurrency ? applyAccountConcurrency(account, runtime.accountConcurrency) : account,
     runtime.accountRuntimeAvailability
-  )
+  ), circuits.values)
 }
 
 export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary[]): Promise<GroupSummary[]> {
@@ -264,17 +273,22 @@ async function refreshServerRuntimeSnapshotCache<T>(
 async function applyRedisAccountRuntimeToAccountList<T extends { items: AccountSummary[] }>(
   result: T
 ): Promise<T & { runtimeSnapshot: AccountRuntimeSnapshotStatus }> {
-  const concurrency = await loadRedisAccountConcurrencySnapshot(accountConcurrencySnapshotIds(result.items))
+  const [concurrency, circuits] = await Promise.all([
+    loadRedisAccountConcurrencySnapshot(accountConcurrencySnapshotIds(result.items)),
+    loadAccountCircuitSummarySnapshot(result.items)
+  ])
   return {
     ...result,
     runtimeSnapshot: {
       accountConcurrencyAvailable: Boolean(concurrency),
-      accountRuntimeAvailabilityAvailable: false
+      accountRuntimeAvailabilityAvailable: false,
+      accountCircuitSummaryAvailable: circuits.available
     },
     items: result.items.map((account) => {
-      return concurrency
+      const withConcurrency = concurrency
         ? applyAccountConcurrency(account, concurrency)
         : markAccountConcurrencyUnavailable(account)
+      return applyAccountCircuitSummary(withConcurrency, circuits.values)
     })
   }
 }
@@ -393,6 +407,26 @@ function accountRuntimeAvailabilityKey(account: AccountSummary): string {
     }
   }
   return account.id
+}
+
+async function loadAccountCircuitSummarySnapshot(accounts: AccountSummary[]): Promise<{
+  available: boolean
+  values: Record<string, PublicAccountCircuitSummary>
+}> {
+  try {
+    const keys = accounts.map(accountRuntimeAvailabilityKey)
+    return { available: true, values: await loadPublicAccountCircuitSummaries(keys) }
+  } catch {
+    return { available: false, values: {} }
+  }
+}
+
+function applyAccountCircuitSummary(
+  account: AccountSummary,
+  summaries: Record<string, PublicAccountCircuitSummary>
+): AccountSummary {
+  const summary = summaries[accountRuntimeAvailabilityKey(account)]
+  return summary ? { ...account, circuitSummary: summary } : account
 }
 
 function sumCurrentConcurrency(accountIds: string[], concurrency: AccountConcurrencySnapshot): number {

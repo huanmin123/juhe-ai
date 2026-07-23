@@ -63,7 +63,6 @@ logger.level = 'silent'
 const databaseModule = await import('../../storage/database.js')
 const repositories = await import('../../storage/repositories.js')
 const modelCatalogService = await import('../../modules/model-pricing/model-catalog.service.js')
-const publishedModelCatalogService = await import('../../modules/model-pricing/published-model-catalog.service.js')
 
 try {
   if (!realCredential) {
@@ -155,7 +154,6 @@ try {
     assert.equal(chatOnlySelection.accounts.length, 1, `Chat-only 账户应进入调度候选：${JSON.stringify(chatOnlySelection.diagnostics)}`)
     assert.deepEqual(chatOnlySelection.accounts[0]?.supportedEndpointModes, ['chat_json', 'chat_sse'])
   }
-  await publishedModelCatalogService.rebuildPublishedModelCatalogSnapshotsForSystemAccountAsync(access.systemAccountId)
   const session = repositories.createSession('sys_admin', 1)
   const cookie = `juhe_ai_session=${session.token}`
   if (Number(process.env.JUHE_AI_CHAT_UI_BULK_MESSAGES ?? 0) > 0) {

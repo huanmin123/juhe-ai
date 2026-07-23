@@ -99,7 +99,13 @@ export interface ResponseInspectionFailurePayload {
 }
 
 const textMatchSnippetChars = 160
-
+const systemDefaultStreamFailureCodes = new Set([
+  'server_is_overloaded',
+  'slow_down',
+  'cyber_policy',
+  'context_length_exceeded',
+  'internal_server_error'
+])
 export function resolveRuntimeResponseInspectionPolicies(input: {
   account: UpstreamAccount
   managementPolicies?: ResponseInspectionPolicySummary[]
@@ -171,6 +177,19 @@ export function matchRuntimeResponseInspectionPolicy(
 ): ResponseInspectionMatchResult | undefined {
   for (const policy of policies) {
     if (!policy.enabled) continue
+    if (
+      policy.source === 'system_default'
+      && policy.protocolCode === OPENAI_PROTOCOL_CODE
+      && genericInspectionClientProfile(context?.clientProfile)
+      && !(policy.scopeType === 'provider' && systemDefaultStreamFailureCodes.has(frame.errorCode?.trim().toLowerCase() ?? ''))
+    ) continue
+    if (
+      policy.source === 'system_default'
+      && policy.protocolCode === OPENAI_PROTOCOL_CODE
+      && frame.transport === 'sse'
+      && !policy.match.clientProfiles?.length
+      && !systemDefaultStreamFailureCodes.has(frame.errorCode?.trim().toLowerCase() ?? '')
+    ) continue
     if (!policyMatchesRuntimeContext(policy, context)) continue
     const match = firstPositiveMatch(frame, policy.match)
     if (!match) continue
@@ -182,6 +201,14 @@ export function matchRuntimeResponseInspectionPolicy(
     }
   }
   return undefined
+}
+
+function preciseInspectionClientProfile(clientProfile: ResponseInspectionPolicyClientProfile | undefined): boolean {
+  return clientProfile === 'codex' || clientProfile === 'claude_code' || clientProfile === 'gemini_cli'
+}
+
+function genericInspectionClientProfile(clientProfile: ResponseInspectionPolicyClientProfile | undefined): boolean {
+  return clientProfile === 'generic_openai' || clientProfile === 'generic_anthropic' || clientProfile === 'generic_gemini'
 }
 
 function firstPositiveMatch(frame: ResponseSemanticFrame, match: ResponseInspectionPolicyMatch): Pick<ResponseInspectionMatchResult, 'matchedField' | 'matchedValue' | 'snippet'> | undefined {
@@ -290,14 +317,8 @@ function policyMatchesRuntimeContext(
   if (hasClientProfileMatcher) {
     if (!context?.clientProfile || !firstExactMatch(context.clientProfile, policy.match.clientProfiles)) return false
   }
-  if (!hasClientProfileMatcher && policy.scopeType === 'provider' && policy.providerCode) {
-    const preciseClientProfile = context?.clientProfile
-    if (preciseClientProfile !== 'codex' && preciseClientProfile !== 'claude_code' && preciseClientProfile !== 'gemini_cli') {
-      return false
-    }
-  }
   if (
-    !hasClientProfileMatcher
+      !hasClientProfileMatcher
     && policy.match.errorCodes?.length
     && (policy.scopeType !== 'provider' || !policy.providerCode)
   ) return false

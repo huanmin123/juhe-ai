@@ -91,12 +91,23 @@ async function assertApiKeyManagementAsync(repositories: typeof import('../../st
   const defaultApiKeys = defaultApiKeyPage.items.filter((item) => item.isDefault)
   assert.equal(defaultApiKeys.length, defaultRouteResourceCount, 'API Key 列表应包含非混合默认路由对应的默认 API Key')
   assert.equal(defaultApiKeys.every((item) => item.routeStrategyMode === 'normal'), true, '默认 API Key 必须绑定默认普通路由')
-  const defaultGptApiKey = await repositories.findDefaultChatApiKeySecretForProviderAsync(GPT_VENDOR_CODE, adminAccess.systemAccountId)
-  assert.equal(defaultGptApiKey?.status, 'active', '默认 GPT API Key 必须处于可用状态')
-  assert.ok(defaultGptApiKey?.key?.startsWith('sk-'), '默认 GPT API Key 查询必须返回服务端调用所需完整密钥')
-  assert.equal((await repositories.findChatApiKeySecretAsync(defaultGptApiKey!.id, adminAccess.systemAccountId))?.key, defaultGptApiKey?.key, '聊天专用 Key ID 查询必须返回同一完整密钥')
-  assert.equal(await repositories.findChatApiKeySecretAsync(defaultGptApiKey!.id, 'sys_other'), undefined, '聊天专用 Key 查询不得跨系统账户读取密钥')
-  assert.equal(await repositories.findDefaultChatApiKeySecretForProviderAsync('provider_not_found', adminAccess.systemAccountId), undefined, '默认 Key 查询不得命中未绑定的供应商')
+  const chatApiKeyId = await repositories.ensureChatApiKeyForSystemAccountAsync(adminAccess.systemAccountId)
+  assert.equal(await repositories.ensureChatApiKeyForSystemAccountAsync(adminAccess.systemAccountId), chatApiKeyId, 'AI 对话专用 Key 补齐必须幂等')
+  const chatApiKey = await repositories.findChatApiKeySecretByPurposeAsync(adminAccess.systemAccountId)
+  assert.equal(chatApiKey?.id, chatApiKeyId, 'AI 对话必须按专用用途读取 Key')
+  assert.equal(chatApiKey?.status, 'active', 'AI 对话专用 Key 必须默认处于可用状态')
+  assert.ok(chatApiKey?.key?.startsWith('sk-'), 'AI 对话专用 Key 查询必须返回服务端调用所需完整密钥')
+  assert.equal((await repositories.findChatApiKeySecretAsync(chatApiKeyId, adminAccess.systemAccountId))?.key, chatApiKey?.key, '聊天专用 Key ID 查询必须返回同一完整密钥')
+  assert.equal(await repositories.findChatApiKeySecretAsync(chatApiKeyId, 'sys_other'), undefined, '聊天专用 Key 查询不得跨系统账户读取密钥')
+  assert.equal(await repositories.findChatApiKeySecretByPurposeAsync('sys_other'), undefined, '聊天用途查询不得跨系统账户读取密钥')
+  const chatSummary = (await repositories.listApiKeysPageAsync({ ...adminAccess, systemAccountFilterId: adminAccess.systemAccountId }, { page: 1, pageSize: 50 })).items.find((item) => item.id === chatApiKeyId)
+  assert.equal(chatSummary?.purpose, 'chat', 'API Key 列表必须暴露 AI 对话用途')
+  assert.equal(chatSummary?.isDefault, false, 'AI 对话专用 Key 不能占用不可换路由的默认 Key 身份')
+  await assert.rejects(
+    repositories.deleteApiKeyWithRelatedCleanupAsync(chatApiKeyId, adminAccess),
+    /AI 对话 API Key 不允许删除/,
+    'AI 对话专用 Key 必须拒绝删除'
+  )
 
   const suffix = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`
   const group = await repositories.createGroupAsync({

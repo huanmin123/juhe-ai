@@ -83,7 +83,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return systemAccountId ? { systemAccountId } : undefined
   })
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
-
   const {
     items: accounts,
     loading,
@@ -142,7 +141,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const filteredAccounts = computed(() => accounts.value)
   const mobileRefreshing = computed(() => loading.value)
   const mobileVisibleAccounts = computed(() => filteredAccounts.value)
-
   function fetchAccountList(
     systemAccountId: string | undefined,
     pageState: { current: number; pageSize: number },

@@ -133,9 +133,13 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (CreateResult, 
 
 func (s *Service) defaultAPIKeyInputs() ([]port.ManagementDefaultAPIKeyCreateInput, error) {
 	const defaultRouteResourceCount = 7
-	items := make([]port.ManagementDefaultAPIKeyCreateInput, 0, defaultRouteResourceCount)
+	items := make([]port.ManagementDefaultAPIKeyCreateInput, 0, defaultRouteResourceCount+1)
 	codec := secretcrypto.NewJSONCodec(s.secret)
-	for i := 0; i < defaultRouteResourceCount; i++ {
+	for i := 0; i < defaultRouteResourceCount+1; i++ {
+		purpose := "general"
+		if i == defaultRouteResourceCount {
+			purpose = "chat"
+		}
 		secret, err := apikeysecret.Generate()
 		if err != nil {
 			return nil, fmt.Errorf("generate api key secret: %w", err)
@@ -146,6 +150,7 @@ func (s *Service) defaultAPIKeyInputs() ([]port.ManagementDefaultAPIKeyCreateInp
 		}
 		items = append(items, port.ManagementDefaultAPIKeyCreateInput{
 			ID:                 createID("key"),
+			Purpose:            purpose,
 			KeyHash:            apikeysecret.Hash(secret),
 			KeyPrefix:          apikeysecret.Prefix(secret),
 			KeySuffix:          apikeysecret.Suffix(secret),

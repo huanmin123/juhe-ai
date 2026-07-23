@@ -15,6 +15,7 @@ current_target AS MATERIALIZED (
     api_keys.key_suffix,
     api_keys.status,
     api_keys.is_default,
+    api_keys.purpose,
     api_keys.route_strategy_id,
     route_strategies.name AS route_strategy_name,
     route_strategies.mode AS route_strategy_mode,
@@ -108,6 +109,7 @@ updated_api_key AS (
     api_keys.key_suffix,
     api_keys.status,
     api_keys.is_default,
+    api_keys.purpose,
     api_keys.route_strategy_id,
     api_keys.expires_at,
     api_keys.quota_limits_json,
@@ -140,6 +142,7 @@ SELECT
   current_target.key_suffix AS before_key_suffix,
   current_target.status AS before_status,
   current_target.is_default AS before_is_default,
+  current_target.purpose AS before_purpose,
   current_target.route_strategy_id AS before_route_strategy_id,
   current_target.route_strategy_name AS before_route_strategy_name,
   current_target.route_strategy_mode AS before_route_strategy_mode,
@@ -156,6 +159,7 @@ SELECT
   updated_api_key.key_suffix AS after_key_suffix,
   updated_api_key.status AS after_status,
   updated_api_key.is_default AS after_is_default,
+  updated_api_key.purpose AS after_purpose,
   updated_api_key.route_strategy_id AS after_route_strategy_id,
   coalesce(
     CASE WHEN mutation_decision.route_changed

@@ -22,7 +22,6 @@ import type { OpenAIGatewayTrafficSource } from '../gateway/usage/traffic-source
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AccountHealthCheckTriggerReason } from '../accounts/account-health-check-trigger.js'
 import type { ProviderModelCatalogItem } from '../model-pricing/model-catalog.service.js'
-import type { GatewayModelCatalogProtocol, GatewayModelCatalogSnapshot, GatewayModelCatalogVariant } from '../../storage/gateway-model-catalog-snapshot.repository.js'
 import type { AccountApiKeyRuntimeStatus } from '../../storage/account-api-key-rotation.js'
 import type {
   CodexContextExpiredStateCleanupResult,
@@ -58,6 +57,7 @@ import type {
 import type {
   AccountCircuitControlPlaneCleanupResult,
   AccountCircuitIncidentRebuildPage,
+  AccountCircuitIncidentRecord,
   AccountCircuitOutboxRecord,
   AccountCircuitProjectionGaps,
   AdvanceAccountCircuitDispatchRevisionInput,
@@ -579,16 +579,6 @@ export type DbServiceOperation =
     includeUnpriced?: boolean
   }
   | {
-    type: 'find_gateway_model_catalog_snapshot'
-    systemAccountId: string
-    protocol: GatewayModelCatalogProtocol
-    variant: GatewayModelCatalogVariant
-  }
-  | {
-    type: 'list_gateway_model_catalog_snapshots'
-    systemAccountId?: string
-  }
-  | {
     type: 'check_api_key_quota'
     apiKey: GatewayApiKeyRow
   }
@@ -909,6 +899,10 @@ export type DbServiceOperation =
     limit: number
   }
   | {
+    type: 'list_account_circuit_incidents_by_runtime_keys'
+    accountRuntimeKeys: string[]
+  }
+  | {
     type: 'list_account_circuit_projection_gaps'
     afterAccountId?: string
     afterUpdatedAtMs?: number
@@ -1051,8 +1045,6 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'search_openai_compatible_vector_store' } ? OpenAICompatibleVectorStoreSearchResult[] :
   T extends { type: 'list_openai_compatible_vector_store_file_chunks' } ? OpenAICompatibleVectorStoreFileChunkRecord[] :
   T extends { type: 'list_provider_model_catalog' } ? ProviderModelCatalogItem[] :
-  T extends { type: 'find_gateway_model_catalog_snapshot' } ? GatewayModelCatalogSnapshot | undefined :
-  T extends { type: 'list_gateway_model_catalog_snapshots' } ? GatewayModelCatalogSnapshot[] :
   T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
   T extends { type: 'read_api_key_quota_costs' } ? RequestQuotaCosts :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
@@ -1096,6 +1088,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'ack_account_circuit_outbox' } ? { acknowledged: boolean } :
   T extends { type: 'release_account_circuit_outbox_for_replay' } ? { released: boolean } :
   T extends { type: 'list_account_circuit_incidents_for_rebuild' } ? AccountCircuitIncidentRebuildPage :
+  T extends { type: 'list_account_circuit_incidents_by_runtime_keys' } ? AccountCircuitIncidentRecord[] :
   T extends { type: 'list_account_circuit_projection_gaps' } ? AccountCircuitProjectionGaps :
   T extends { type: 'cleanup_account_circuit_control_plane' } ? AccountCircuitControlPlaneCleanupResult :
   T extends { type: 'cleanup_chat_retention' } ? import('../../storage/chat.repository.js').ChatRetentionCleanupResult :

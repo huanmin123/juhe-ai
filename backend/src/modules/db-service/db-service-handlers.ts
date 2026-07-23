@@ -187,12 +187,6 @@ import {
 } from '../gateway/adapters/gpt-codex/usage.service.js'
 import { listProviderModelCatalog, listProviderModelCatalogAsync } from '../model-pricing/model-catalog.service.js'
 import {
-  findGatewayModelCatalogSnapshot,
-  findGatewayModelCatalogSnapshotAsync,
-  listGatewayModelCatalogSnapshots,
-  listGatewayModelCatalogSnapshotsAsync
-} from '../../storage/gateway-model-catalog-snapshot.repository.js'
-import {
   recordAccountApiKeyRuntimeFailure,
   recordAccountApiKeyRuntimeFailureAsync,
   recordAccountApiKeyRuntimeSuccess,
@@ -237,6 +231,7 @@ import {
   cleanupAccountCircuitControlPlane,
   compareAndSetAccountCircuitIncident,
   listAccountCircuitIncidentsForRebuild,
+  listAccountCircuitIncidentsByRuntimeKeys,
   listAccountCircuitProjectionGaps,
   releaseAccountCircuitOutboxForReplay
 } from '../../storage/account-circuit-control-plane.repository.js'
@@ -547,10 +542,6 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
           includeUnpriced: operation.includeUnpriced
         }
       })
-    case 'find_gateway_model_catalog_snapshot':
-      return await findGatewayModelCatalogSnapshotAsync(operation)
-    case 'list_gateway_model_catalog_snapshots':
-      return await listGatewayModelCatalogSnapshotsAsync(operation.systemAccountId)
     case 'find_account_for_test':
       if (runtimeConfig.databaseDriver === 'postgres') {
         return await findAccountForTestAsync(operation.accountId, operation.access)
@@ -1083,6 +1074,8 @@ async function handleDbServiceOperationDispatch(operation: DbServiceOperation): 
       }
     case 'list_account_circuit_incidents_for_rebuild':
       return await listAccountCircuitIncidentsForRebuild(operation)
+    case 'list_account_circuit_incidents_by_runtime_keys':
+      return await listAccountCircuitIncidentsByRuntimeKeys(operation.accountRuntimeKeys)
     case 'list_account_circuit_projection_gaps':
       return await listAccountCircuitProjectionGaps(operation)
     case 'cleanup_account_circuit_control_plane':
@@ -1283,10 +1276,6 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         includeInactive: operation.includeInactive,
         includeUnpriced: operation.includeUnpriced
       })
-    case 'find_gateway_model_catalog_snapshot':
-      return findGatewayModelCatalogSnapshot(operation)
-    case 'list_gateway_model_catalog_snapshots':
-      return listGatewayModelCatalogSnapshots(operation.systemAccountId)
     case 'check_api_key_quota':
       return runtimeConfig.databaseDriver === 'postgres'
         ? checkGatewayApiKeyQuotaExactAsync(operation.apiKey)
@@ -1560,6 +1549,7 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'ack_account_circuit_outbox':
     case 'release_account_circuit_outbox_for_replay':
     case 'list_account_circuit_incidents_for_rebuild':
+    case 'list_account_circuit_incidents_by_runtime_keys':
     case 'list_account_circuit_projection_gaps':
     case 'cleanup_account_circuit_control_plane':
       throw new Error(`DB service 操作 ${operation.type} 必须通过异步 repository 执行`)

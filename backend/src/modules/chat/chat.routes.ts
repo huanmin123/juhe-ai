@@ -26,7 +26,7 @@ import {
   type ChatMessageStatus
 } from '../../storage/chat.repository.js'
 import { getChatDatabaseClient } from '../../storage/chat-client.js'
-import { findChatApiKeySecretAsync, findDefaultChatApiKeySecretForProviderAsync } from '../../storage/repositories.js'
+import { ensureChatApiKeyForSystemAccountAsync, findChatApiKeySecretAsync } from '../../storage/repositories.js'
 import { validateGatewayApiKeyAsync } from '../../storage/gateway-api-key.repository.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
 import { listCachedOpenAIAccountsForGroupAsync, listCachedProviderModelCatalogAsync } from '../gateway/runtime/runtime-cache.service.js'
@@ -34,7 +34,7 @@ import { collectOpenAIChatSse } from './chat-gateway-sse.js'
 import { ChatContextBudgetError, estimateChatInputTokens, validateFixedChatInputBudget } from './chat-context-budget.js'
 import { collectChatResponsesSse } from './chat-responses-sse.js'
 import { buildChatTransportRequest, resolveChatBudgetContent, resolveChatSupportedProtocols, selectChatTransport, type ChatTransportProtocol } from './chat-transport.js'
-import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, mergeChatModelCapabilities, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption, type ChatModelOption } from './chat-model-options.js'
+import { buildChatModelOptions, ChatModelCapabilityError, chatReasoningEfforts, chatServiceTiers, resolveChatModelRequestOptions, type ChatModelCapabilities, type ChatModelListOption, type ChatModelOption } from './chat-model-options.js'
 import { buildChatSystemInstructions } from './chat-system-instructions.js'
 import {
   beginActiveChatAcceptance,
@@ -80,7 +80,7 @@ import { createChatGeneratedImageArtifactSink } from './tools/artifact-sink.js'
 import { loadChatImageEditReferences } from './chat-image-edit-references.js'
 import type { ChatToolExecutionEvent, ChatToolRuntimeEnvironment } from './tools/contracts.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { readPublishedChatModelCapabilitiesAsync, readPublishedChatModelListAsync } from '../model-pricing/published-model-catalog.service.js'
+import { listClientModelCatalogAsync } from '../model-pricing/client-model-catalog.service.js'
 
 export const chatRouter = Router()
 export { isActiveChatGeneration, shutdownChatGenerationRegistry }
@@ -198,7 +198,7 @@ chatRouter.post('/conversations', async (req, res, next) => {
     const auth = requireChatAuth()
     const apiKey = body.apiKeyId
       ? await requireOwnedApiKey(body.apiKeyId, auth.systemAccountId)
-      : await requireDefaultChatApiKey(auth.systemAccountId)
+      : await requireChatApiKeyForOwnerAsync(auth.systemAccountId)
     const modelAccess = await loadChatModelAccessAsync(apiKey, auth.systemAccountId)
     const defaultModel = (await loadChatModelListsAsync(auth.systemAccountId, modelAccess.providerCodes)).defaultModel
     const client = await getChatDatabaseClient()
@@ -552,11 +552,14 @@ chatRouter.get('/conversations/:conversationId/models/:modelId', async (req, res
   try {
     const auth = requireChatAuth()
     const modelAccess = await requireOwnedChatModelAccessAsync(req.params.conversationId, auth.systemAccountId)
-    const capabilities = await Promise.all(modelAccess.providerCodes.map((providerCode) => (
-      readPublishedChatModelCapabilitiesAsync(auth.systemAccountId, providerCode, req.params.modelId)
-    )))
-    const availableCapabilities = capabilities.filter((item): item is ChatModelCapabilities => Boolean(item))
-    const model = mergeChatModelCapabilities(availableCapabilities)
+    const catalog = (await Promise.all(modelAccess.providerCodes.map((providerCode) => (
+      listClientModelCatalogAsync({ systemAccountId: auth.systemAccountId, providerCodes: [providerCode] })
+    )))).flat().filter((item) => (
+      item.model === req.params.modelId
+      && item.supportedApiProtocols.some(isChatModelProtocol)
+    ))
+    const modelOption = catalog.length ? buildChatModelOptions([req.params.modelId], catalog)[0] : undefined
+    const model = modelOption ? { ...modelOption, name: modelOption.id } satisfies ChatModelCapabilities : undefined
     if (!model) {
       res.status(404).json({ message: '当前会话没有可用的该模型', code: 'chat_model_not_found' })
       return
@@ -1460,10 +1463,15 @@ async function loadChatModelAccessAsync(apiKey: Awaited<ReturnType<typeof requir
 }
 
 async function loadChatModelListsAsync(systemAccountId: string, providerCodes: readonly string[]) {
-  const lists = await Promise.all(providerCodes.map((providerCode) => readPublishedChatModelListAsync(systemAccountId, providerCode)))
-  const models = new Map<string, ChatModelListOption>()
-  for (const list of lists) for (const model of list.models) if (!models.has(model.id)) models.set(model.id, model)
-  return { defaultModel: lists.find((list) => list.defaultModel)?.defaultModel, models: [...models.values()] }
+  const catalog = await listClientModelCatalogAsync({ systemAccountId, providerCodes })
+  const models = catalog
+    .filter((item) => item.supportedApiProtocols.some(isChatModelProtocol))
+    .map((item) => ({ id: item.model, name: item.model }))
+  return { defaultModel: models[0], models }
+}
+
+function isChatModelProtocol(protocol: string): boolean {
+  return protocol === 'chat_completions' || protocol === 'responses'
 }
 
 function gatewayUrl(path: string): string { return `http://127.0.0.1:${runtimeConfig.port}${path}` }
@@ -1477,9 +1485,10 @@ async function listChatModelCatalog(input: { groupIds: readonly string[]; system
   return (await loadChatModelCatalogSnapshot(input)).catalog
 }
 
-async function requireDefaultChatApiKey(ownerId: string) {
-  const key = await findDefaultChatApiKeySecretForProviderAsync(GPT_VENDOR_CODE, ownerId)
-  if (!key?.key || key.status !== 'active') throw new Error('默认 GPT API Key 不存在或不可用')
+async function requireChatApiKeyForOwnerAsync(ownerId: string) {
+  const apiKeyId = await ensureChatApiKeyForSystemAccountAsync(ownerId)
+  const key = await findChatApiKeySecretAsync(apiKeyId, ownerId)
+  if (!key?.key || key.status !== 'active') throw new Error('AI 对话专用 API Key 不存在、已停用或已过期')
   return key
 }
 

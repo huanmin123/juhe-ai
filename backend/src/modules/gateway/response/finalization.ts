@@ -258,7 +258,9 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       signal,
       {
         clientRetryEnabled: false,
-        interpretProtocolFailures: false,
+        // Enable the policy interceptor for precise clients. Unmatched vendor
+        // events remain opaque in pipeUpstreamStream.
+        interpretProtocolFailures: interpretUpstreamResponseSemantics,
         retryBeforeDownstreamWriteUntilOutput: true,
         onFirstOutput: markFirstOutput,
         captureSuccessPayloads: auditCapture.shouldCaptureSuccessPayloads(),
@@ -409,7 +411,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     }
     if (speedFirstFirstByteCutover) {
       auditCapture.addGatewayMetadata({
-        label: 'normal_route_speed_first_confirmed_cutover',
+        label: 'normal_route_first_byte_deadline_cutover',
         metadata: {
           accountId: account.id,
           accountName: account.name,
@@ -420,7 +422,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       return {
         alreadyFinalized: false,
         retryUpstream: true,
-        retryReason: 'speed_first_first_byte_timeout',
+        retryReason: 'normal_route_first_byte_timeout',
         excludeCurrentAccount: true,
         message: streamResult.message,
         errorCode: streamResult.errorCode,
@@ -860,7 +862,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     if (
       input.firstByteDeadlineMs !== undefined
       && isGatewayFirstByteTimeoutError(error)
-      && error.source === 'speed_first_deadline'
+      && error.source === 'configured_deadline'
       && error.timeoutMs === input.firstByteDeadlineMs
       && !res.headersSent
       && !res.writableEnded
@@ -895,7 +897,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
         })
       })
       auditCapture.addGatewayMetadata({
-        label: 'normal_route_speed_first_confirmed_cutover',
+        label: 'normal_route_first_byte_deadline_cutover',
         metadata: {
           accountId: account.id,
           accountName: account.name,
@@ -906,7 +908,7 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       return {
         alreadyFinalized: false,
         retryUpstream: true,
-        retryReason: 'speed_first_first_byte_timeout',
+        retryReason: 'normal_route_first_byte_timeout',
         excludeCurrentAccount: true,
         message: errorMessage,
         errorCode: error.code
@@ -1163,7 +1165,7 @@ function recordCodexResponsesGuardCoverageGap(input: HandleUpstreamResponseInput
 function managementResponseInspectionPoliciesForInput(
   input: HandleUpstreamResponseInput
 ): ResponseInspectionPolicySummary[] | undefined {
-  return undefined
+  return input.responseInspectionPolicies
 }
 
 function runtimeResponseInspectionPoliciesForInput(input: HandleUpstreamResponseInput) {

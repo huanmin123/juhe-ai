@@ -360,6 +360,20 @@ export const backgroundScheduledJobs = [
     writes: ['runtime-state:gateway-normal-route-latency-degradation', 'usage-shards:usage_records', 'dataset:audit_logs']
   }),
   scheduled({
+    jobName: 'account-circuit-control-plane-maintenance',
+    category: 'scheduled',
+    kind: 'maintenance',
+    lifecycle: 'persistent',
+    defaultRole: 'ops-worker',
+    hotspot: false,
+    singleOwner: true,
+    shardable: false,
+    leaseRequired: true,
+    blocksUserVisibleFreshness: true,
+    writes: ['business:account_circuit_outbox', 'runtime:account_circuit'],
+    notes: '投影 dispatch revision / incident outbox，并有界修复 Redis 状态与 due 索引孤儿'
+  }),
+  scheduled({
     jobName: 'account-circuit-recovery',
     category: 'scheduled',
     kind: 'probe',

@@ -28,6 +28,7 @@ export interface ApiKeyRow {
   key_secret_encrypted?: string | null
   status: 'active' | 'disabled'
   is_default?: number | string | boolean | null
+  purpose?: 'general' | 'chat' | string | null
   expires_at: string | null
   quota_limits_json: string | null
   availability_schedule_json?: string | null
@@ -118,6 +119,7 @@ function apiKeySummaryFromRow(
     keySuffix: row.key_suffix,
     status: row.status,
     isDefault: normalizeApiKeyDefaultFlag(row.is_default),
+    purpose: row.purpose === 'chat' ? 'chat' : 'general',
     routeStrategyId: row.route_strategy_id,
     routeStrategyName: row.route_strategy_name ?? undefined,
     routeStrategyMode,

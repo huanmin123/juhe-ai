@@ -571,7 +571,8 @@ func TestManagementSystemAccountCreateSQLFansOutDefaultResources(t *testing.T) {
 				"key_prefix",
 				"key_suffix",
 				"key_secret_encrypted",
-				"true,",
+				"sqlc.arg(is_default)::boolean",
+				"sqlc.arg(purpose)::text",
 			},
 		},
 	}

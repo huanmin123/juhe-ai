@@ -16,6 +16,7 @@ import {
   codexResponsesChatBridgeCompletionHandlerForRequest,
   getCodexResponsesContextState
 } from '../codex-responses/chat-bridge-state.js'
+import type { FirstByteDeadlineHandler } from '../upstream/first-byte-deadline.js'
 import { createCodexResponsesGuardMarker } from '../codex-responses/response-guard.js'
 
 interface PerformUpstreamRequestAttemptInput {
@@ -30,6 +31,8 @@ interface PerformUpstreamRequestAttemptInput {
   attemptStartedAt: number
   signal?: AbortSignal
   requestClientCompatibility?: ClientCompatibilityCapability
+  firstByteDeadlineMs?: number
+  onFirstByteDeadline?: FirstByteDeadlineHandler
 }
 
 export async function performUpstreamRequestAttempt(
@@ -46,7 +49,9 @@ export async function performUpstreamRequestAttempt(
     timeoutProfile,
     attemptStartedAt,
     signal,
-    requestClientCompatibility
+    requestClientCompatibility,
+    firstByteDeadlineMs,
+    onFirstByteDeadline
   } = input
   const socketTimeoutMs = upstreamSocketTimeoutMs(req, timeoutProfile, account)
   const requestTimeoutMs = upstreamRequestTimeoutMs(timeoutProfile)
@@ -79,6 +84,9 @@ export async function performUpstreamRequestAttempt(
       proxyUrl: account.proxyUrl,
       timeoutMs: socketTimeoutMs,
       requestTimeoutMs,
+      firstByteDeadlineMs,
+      firstByteDeadlineTransport: isEffectiveOpenAIStreamRequest(req, account) ? 'stream' : 'non_stream',
+      onFirstByteDeadline,
       signal,
       transport: upstreamTransportForAttempt(headers, upstreamUrl)
     })

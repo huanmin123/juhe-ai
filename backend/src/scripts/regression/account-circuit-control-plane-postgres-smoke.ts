@@ -28,11 +28,15 @@ try {
     `SELECT provider_code, provider_protocol_profile_id
      FROM juhe_business.accounts
      WHERE deleted_at IS NULL
-     ORDER BY id
+     UNION ALL
+     SELECT profile.provider_code, profile.id AS provider_protocol_profile_id
+     FROM juhe_business.provider_protocol_profiles profile
+     WHERE NOT EXISTS (SELECT 1 FROM juhe_business.accounts WHERE deleted_at IS NULL)
+     ORDER BY provider_code, provider_protocol_profile_id
      LIMIT 1`
   )
   const source = fixture.rows[0] as { provider_code?: string; provider_protocol_profile_id?: string } | undefined
-  assert.ok(source?.provider_code && source.provider_protocol_profile_id, 'PG smoke 需要至少一个现有账户作为 provider/profile fixture')
+  assert.ok(source?.provider_code && source.provider_protocol_profile_id, 'PG smoke 需要 provider/profile fixture')
   const now = Date.now()
   const iso = new Date(now).toISOString()
   await pool.query(`

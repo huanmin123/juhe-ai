@@ -100,6 +100,8 @@ func deleteManagementAPIKey(
 			fmt.Errorf("lock management API Key delete target: %w", err)
 	case current.IsDefault:
 		return port.ManagementAPIKeyDeleteResult{}, port.ErrManagementAPIKeyDefaultDelete
+	case current.Purpose == "chat":
+		return port.ManagementAPIKeyDeleteResult{}, port.ErrManagementAPIKeyChatDelete
 	}
 
 	deletedID, err := q.HardDeleteManagementAPIKey(

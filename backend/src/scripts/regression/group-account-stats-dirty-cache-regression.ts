@@ -345,6 +345,9 @@ function assertSourceGuards(): void {
   const healthCheckSource = readFileSync(resolve('src/storage/account-health-check.repository.ts'), 'utf8')
   assert.match(healthCheckSource, /refreshGroupAccountStatsAfterWrite\(\{ accountIds: \[accountId\], reason: 'account_health_check_success' \}\)/, 'SQLite 健康激活后必须按账户 ID 标记分组统计脏队列')
   assert.match(healthCheckSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ accountIds: \[accountId\], reason: 'account_health_check_success' \}, tx\)/, 'PostgreSQL 健康激活后必须在当前事务按账户 ID 标记分组统计脏队列')
+  const scheduleSource = readFileSync(resolve('src/storage/account-availability-schedule-status-sync.repository.ts'), 'utf8')
+  assert.match(scheduleSource, /refreshGroupAccountStatsAfterWrite\(\{ accountIds: result\.changedIds, reason: 'account_availability_schedule' \}\)/, 'SQLite 时间计划切换后必须按账户 ID 标记分组统计脏队列')
+  assert.match(scheduleSource, /await refreshGroupAccountStatsAfterWriteAsync\(\{ accountIds: result\.changedIds, reason: 'account_availability_schedule' \}, client\)/, 'PostgreSQL 时间计划切换后必须按账户 ID 标记分组统计脏队列')
   const dbServiceSource = readFileSync(resolve('src/modules/db-service/db-service-handlers.ts'), 'utf8')
   const dispatchHealthSuccessCase = switchCaseBody(
     functionBody(dbServiceSource, 'handleDbServiceOperationDispatch'),

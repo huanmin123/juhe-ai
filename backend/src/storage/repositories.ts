@@ -140,6 +140,10 @@ export {
   listGroupsPageAsync
 } from './group-summary.repository.js'
 import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import {
+  advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction,
+  advanceAccountCircuitDispatchRevisionFamilyInTransaction
+} from './account-circuit-control-plane.repository.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import {
   findProviderDefaultHealthCheckModel,
@@ -484,6 +488,8 @@ export {
   getApiKeyUsageByIdsAsync,
   ensureDefaultApiKeysForSystemAccount,
   ensureDefaultApiKeysForSystemAccountAsync,
+  ensureChatApiKeyForSystemAccount,
+  ensureChatApiKeyForSystemAccountAsync,
   listApiKeys,
   listApiKeysAsync,
   listApiKeysPage,
@@ -495,7 +501,7 @@ export {
 } from './api-key.repository.js'
 export {
   findChatApiKeySecretAsync,
-  findDefaultChatApiKeySecretForProviderAsync,
+  findChatApiKeySecretByPurposeAsync,
   type ChatApiKeySecret
 } from './chat-api-key.repository.js'
 export {
@@ -1270,6 +1276,24 @@ function accountConnectionConfigurationChanged(input: {
   ))
 }
 
+function accountDispatchConfigurationChanged(current: AccountSummary, next: AccountSummary): boolean {
+  return !isDeepStrictEqual(current.credentials, next.credentials)
+    || current.proxyProfileId !== next.proxyProfileId
+    || current.status !== next.status
+    || current.concurrencyLimit !== next.concurrencyLimit
+    || current.priority !== next.priority
+    || current.superPriorityEnabled !== next.superPriorityEnabled
+    || current.fallbackEnabled !== next.fallbackEnabled
+    || current.clientCompatibility !== next.clientCompatibility
+    || current.schedulable !== next.schedulable
+    || !isDeepStrictEqual(current.availabilitySchedule, next.availabilitySchedule)
+    || current.accountExpiresAt !== next.accountExpiresAt
+    || current.cooldownUntil !== next.cooldownUntil
+    || current.temporaryUnavailableContinuousProbeEnabled !== next.temporaryUnavailableContinuousProbeEnabled
+    || !unorderedStringListEquals(current.supportedModels, next.supportedModels)
+    || !accountModelMappingsEqual(current.modelMappings, next.modelMappings)
+}
+
 export function updateAccountHealthCheckModel(
   accountId: string,
   model: string,
@@ -1905,6 +1929,12 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     replaceAccountModelMappings(account.id, providerCode, modelMappings)
     replaceAccountNameSearchTerms(database, account.id, systemAccountId, account.name, now)
     savedTags = replaceAccountTags(account.id, systemAccountId, tagNames, now, database)
+    advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+      accountId: account.id,
+      accountRuntimeKey: account.id,
+      transitionId: newId('dispatch'),
+      nowMs
+    })
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -2158,6 +2188,12 @@ export async function createAccountInClientAsync(client: DatabaseClient, input: 
     await replaceAccountModelMappingsInClientAsync(client, account.id, providerCode, modelMappings)
     await replaceAccountNameSearchTermsAsync(client, account.id, systemAccountId, account.name, now)
     savedTags = await replaceAccountTagsAsync(client, account.id, systemAccountId, tagNames, now)
+    await advanceAccountCircuitDispatchRevisionFamilyInTransaction(client, {
+      accountId: account.id,
+      accountRuntimeKey: account.id,
+      transitionId: newId('dispatch'),
+      nowMs
+    })
   } catch (error) {
     if (isDuplicateAccountNameError(error)) {
       throw new Error(`同一用户下账户名称已存在：${account.name}`)
@@ -2323,6 +2359,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
+  let nextLastErrorTraceId = current.lastErrorTraceId
   let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
   let clearCooldownRetestState = false
   const nextTemporaryUnavailableContinuousProbeEnabled = normalizeOptionalBooleanInput(
@@ -2351,12 +2388,14 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
       nextLastErrorMessage = undefined
+      nextLastErrorTraceId = undefined
       nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'pending_test') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
       nextLastErrorMessage = '账户配置已保存，等待后台检查'
+      nextLastErrorTraceId = undefined
       nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
@@ -2365,6 +2404,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       if (nextStatus === 'disabled') {
         nextLastErrorCode = undefined
         nextLastErrorMessage = undefined
+        nextLastErrorTraceId = undefined
         clearCooldownRetestState = true
       }
     } else if (isCoolingAccountStatus(nextStatus) && (nextStatus !== current.status || !nextCooldownUntil)) {
@@ -2380,6 +2420,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     nextCooldownUntil = undefined
     nextLastErrorCode = 'account_expired'
     nextLastErrorMessage = '账户套餐已过期，已自动停用'
+    nextLastErrorTraceId = undefined
     nextCooldownRetestObservationStartedAt = undefined
     clearCooldownRetestState = true
   }
@@ -2426,6 +2467,13 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     supportedModels: nextSupportedModels,
     healthCheckModel: nextHealthCheckModel,
     healthCheckEndpointMode: nextHealthCheckEndpointMode,
+    nextHealthCheckAt: requiresHealthCheckSchedule ? undefined : current.nextHealthCheckAt,
+    lastHealthCheckAt: requiresBackgroundRecheck ? undefined : current.lastHealthCheckAt,
+    lastHealthSuccessAt: requiresBackgroundRecheck ? undefined : current.lastHealthSuccessAt,
+    lastHealthCheckStatusCode: requiresBackgroundRecheck ? undefined : current.lastHealthCheckStatusCode,
+    lastHealthCheckErrorCode: requiresBackgroundRecheck ? undefined : current.lastHealthCheckErrorCode,
+    lastHealthCheckErrorMessage: requiresBackgroundRecheck ? undefined : current.lastHealthCheckErrorMessage,
+    lastHealthCheckTraceId: requiresBackgroundRecheck ? undefined : current.lastHealthCheckTraceId,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId: nextProxyProfileId,
@@ -2440,6 +2488,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
     lastErrorMessage: nextLastErrorMessage,
+    lastErrorTraceId: nextLastErrorTraceId,
     cooldownRetestFailureCount: clearCooldownRetestState ? 0 : current.cooldownRetestFailureCount,
     cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
@@ -2457,6 +2506,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
+  const dispatchConfigurationChanged = accountDispatchConfigurationChanged(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2469,7 +2519,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, last_error_trace_id = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
@@ -2503,6 +2553,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownUntil ?? null,
         next.lastErrorCode ?? null,
         next.lastErrorMessage ?? null,
+        next.lastErrorTraceId ?? null,
         next.cooldownRetestFailureCount ?? 0,
         next.cooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
@@ -2526,14 +2577,20 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       database.prepare(`
         UPDATE accounts
         SET next_health_check_at = NULL,
+            last_health_check_at = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_at END,
+            last_health_success_at = CASE WHEN ? = 1 THEN NULL ELSE last_health_success_at END,
             health_check_failure_count = CASE WHEN ? = 1 THEN 0 ELSE health_check_failure_count END,
             health_check_failure_started_at = CASE WHEN ? = 1 THEN NULL ELSE health_check_failure_started_at END,
             last_health_check_status_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_status_code END,
             last_health_check_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_code END,
-            last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END
+            last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END,
+            last_health_check_trace_id = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_trace_id END
         WHERE id = ?
           AND system_account_id = ?
       `).run(
+        requiresBackgroundRecheck ? 1 : 0,
+        requiresBackgroundRecheck ? 1 : 0,
+        requiresBackgroundRecheck ? 1 : 0,
         requiresBackgroundRecheck ? 1 : 0,
         requiresBackgroundRecheck ? 1 : 0,
         requiresBackgroundRecheck ? 1 : 0,
@@ -2581,6 +2638,14 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     }
     if (Number(result.changes ?? 0) > 0 && hasTagsInput) {
       savedTags = replaceAccountTags(id, systemAccountId, nextTagNames, updatedAt, database)
+    }
+    if (Number(result.changes ?? 0) > 0 && dispatchConfigurationChanged) {
+      advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(database, {
+        accountId: id,
+        accountRuntimeKey: id,
+        transitionId: newId('dispatch'),
+        nowMs: updateNowMs
+      })
     }
     if (Number(result.changes ?? 0) > 0 && (hasPriorityInput || hasSuperPriorityInput || hasFallbackInput)) {
       database.prepare(`
@@ -2815,6 +2880,7 @@ export async function updateAccountAsync(
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
+  let nextLastErrorTraceId = current.lastErrorTraceId
   let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
   let clearCooldownRetestState = false
   const nextTemporaryUnavailableContinuousProbeEnabled = normalizeOptionalBooleanInput(
@@ -2843,12 +2909,14 @@ export async function updateAccountAsync(
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
       nextLastErrorMessage = undefined
+      nextLastErrorTraceId = undefined
       nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'pending_test') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
       nextLastErrorMessage = '账户配置已保存，等待后台检查'
+      nextLastErrorTraceId = undefined
       nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
@@ -2857,6 +2925,7 @@ export async function updateAccountAsync(
       if (nextStatus === 'disabled') {
         nextLastErrorCode = undefined
         nextLastErrorMessage = undefined
+        nextLastErrorTraceId = undefined
         clearCooldownRetestState = true
       }
     } else if (isCoolingAccountStatus(nextStatus) && (nextStatus !== current.status || !nextCooldownUntil)) {
@@ -2872,6 +2941,7 @@ export async function updateAccountAsync(
     nextCooldownUntil = undefined
     nextLastErrorCode = 'account_expired'
     nextLastErrorMessage = '账户套餐已过期，已自动停用'
+    nextLastErrorTraceId = undefined
     nextCooldownRetestObservationStartedAt = undefined
     clearCooldownRetestState = true
   }
@@ -2918,6 +2988,13 @@ export async function updateAccountAsync(
     supportedModels: nextSupportedModels,
     healthCheckModel: nextHealthCheckModel,
     healthCheckEndpointMode: nextHealthCheckEndpointMode,
+    nextHealthCheckAt: requiresHealthCheckSchedule ? undefined : current.nextHealthCheckAt,
+    lastHealthCheckAt: requiresBackgroundRecheck ? undefined : current.lastHealthCheckAt,
+    lastHealthSuccessAt: requiresBackgroundRecheck ? undefined : current.lastHealthSuccessAt,
+    lastHealthCheckStatusCode: requiresBackgroundRecheck ? undefined : current.lastHealthCheckStatusCode,
+    lastHealthCheckErrorCode: requiresBackgroundRecheck ? undefined : current.lastHealthCheckErrorCode,
+    lastHealthCheckErrorMessage: requiresBackgroundRecheck ? undefined : current.lastHealthCheckErrorMessage,
+    lastHealthCheckTraceId: requiresBackgroundRecheck ? undefined : current.lastHealthCheckTraceId,
     modelMappings: nextModelMappings,
     tags: hasTagsInput ? nextTagNames.map((name) => ({ id: '', name })) : current.tags ?? [],
     proxyProfileId,
@@ -2932,6 +3009,7 @@ export async function updateAccountAsync(
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
     lastErrorMessage: nextLastErrorMessage,
+    lastErrorTraceId: nextLastErrorTraceId,
     cooldownRetestFailureCount: clearCooldownRetestState ? 0 : current.cooldownRetestFailureCount,
     cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
@@ -2949,6 +3027,7 @@ export async function updateAccountAsync(
   const supportedModelsChanged = hasSupportedModelsInput && !unorderedStringListEquals(current.supportedModels, nextSupportedModels)
   const modelMappingsChanged = hasModelMappingsInput && !accountModelMappingsEqual(current.modelMappings, nextModelMappings)
   const continuousProbePolicyChanged = current.temporaryUnavailableContinuousProbeEnabled !== nextTemporaryUnavailableContinuousProbeEnabled
+  const dispatchConfigurationChanged = accountDispatchConfigurationChanged(current, next)
   const updatedAt = nowIso()
   const availabilityScheduleNextCheckAt = nextAccountAvailabilityScheduleCheckAt(next.availabilitySchedule, new Date(updateNowMs))
   let renamedAuthorizationInstanceIds: string[] = []
@@ -2964,7 +3043,7 @@ export async function updateAccountAsync(
         SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             oauth_access_token_expires_at = ?, oauth_refresh_token_present = ?,
             proxy_profile_id = ?, concurrency_limit = ?,
-            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            priority = ?, super_priority_enabled = ?, fallback_enabled = ?, client_compatibility = ?, schedulable = ?, availability_schedule_json = ?, availability_schedule_next_check_at = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, last_error_trace_id = ?,
             cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, temporary_unavailable_continuous_probe_enabled = ?, health_check_model = ?, health_check_endpoint_mode = ?,
             balance_query_enabled = CASE WHEN ? = 1 THEN ? ELSE balance_query_enabled END,
             balance_query_config_json = CASE
@@ -3000,6 +3079,7 @@ export async function updateAccountAsync(
         next.cooldownUntil ?? null,
         next.lastErrorCode ?? null,
         next.lastErrorMessage ?? null,
+        next.lastErrorTraceId ?? null,
         next.cooldownRetestFailureCount ?? 0,
         nextCooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
@@ -3031,14 +3111,20 @@ export async function updateAccountAsync(
         await tx.execute(`
           UPDATE ${accountWriteTable(tx, 'accounts')}
           SET next_health_check_at = NULL,
+              last_health_check_at = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_at END,
+              last_health_success_at = CASE WHEN ? = 1 THEN NULL ELSE last_health_success_at END,
               health_check_failure_count = CASE WHEN ? = 1 THEN 0 ELSE health_check_failure_count END,
               health_check_failure_started_at = CASE WHEN ? = 1 THEN NULL ELSE health_check_failure_started_at END,
               last_health_check_status_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_status_code END,
               last_health_check_error_code = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_code END,
-              last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END
+              last_health_check_error_message = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_error_message END,
+              last_health_check_trace_id = CASE WHEN ? = 1 THEN NULL ELSE last_health_check_trace_id END
           WHERE id = ?
             AND system_account_id = ?
         `, [
+          requiresBackgroundRecheck ? 1 : 0,
+          requiresBackgroundRecheck ? 1 : 0,
+          requiresBackgroundRecheck ? 1 : 0,
           requiresBackgroundRecheck ? 1 : 0,
           requiresBackgroundRecheck ? 1 : 0,
           requiresBackgroundRecheck ? 1 : 0,
@@ -3086,6 +3172,14 @@ export async function updateAccountAsync(
       }
       if (hasTagsInput) {
         savedTags = await replaceAccountTagsAsync(tx, id, systemAccountId, nextTagNames, updatedAt)
+      }
+      if (dispatchConfigurationChanged) {
+        await advanceAccountCircuitDispatchRevisionFamilyInTransaction(tx, {
+          accountId: id,
+          accountRuntimeKey: id,
+          transitionId: newId('dispatch'),
+          nowMs: updateNowMs
+        })
       }
       if (hasPriorityInput || hasSuperPriorityInput || hasFallbackInput) {
         await tx.execute(`

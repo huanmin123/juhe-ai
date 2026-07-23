@@ -114,6 +114,7 @@ SELECT
   api_keys.key_suffix,
   api_keys.status,
   api_keys.is_default,
+  api_keys.purpose,
   api_keys.route_strategy_id,
   route_strategies.name AS route_strategy_name,
   route_strategies.mode AS route_strategy_mode,
@@ -166,6 +167,7 @@ type ListManagementAPIKeysRow struct {
 	KeySuffix                string
 	Status                   string
 	IsDefault                bool
+	Purpose                  string
 	RouteStrategyID          string
 	RouteStrategyName        string
 	RouteStrategyMode        string
@@ -200,6 +202,7 @@ func (q *Queries) ListManagementAPIKeys(ctx context.Context, arg ListManagementA
 			&i.KeySuffix,
 			&i.Status,
 			&i.IsDefault,
+			&i.Purpose,
 			&i.RouteStrategyID,
 			&i.RouteStrategyName,
 			&i.RouteStrategyMode,
@@ -240,6 +243,7 @@ SELECT
   api_keys.key_suffix,
   api_keys.status,
   api_keys.is_default,
+  api_keys.purpose,
   api_keys.route_strategy_id,
   route_strategies.name AS route_strategy_name,
   route_strategies.mode AS route_strategy_mode,
@@ -291,6 +295,7 @@ type ListManagementAPIKeysByKeywordRow struct {
 	KeySuffix                string
 	Status                   string
 	IsDefault                bool
+	Purpose                  string
 	RouteStrategyID          string
 	RouteStrategyName        string
 	RouteStrategyMode        string
@@ -327,6 +332,7 @@ func (q *Queries) ListManagementAPIKeysByKeyword(ctx context.Context, arg ListMa
 			&i.KeySuffix,
 			&i.Status,
 			&i.IsDefault,
+			&i.Purpose,
 			&i.RouteStrategyID,
 			&i.RouteStrategyName,
 			&i.RouteStrategyMode,

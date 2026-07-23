@@ -112,10 +112,22 @@ import { ServerRetryBudget } from '../runtime/server-retry-budget.js'
 import {
   GatewayRequestAttemptTracker,
   GatewayRequestWallBudget,
-  RouteCoordinationBudget
+  RouteCoordinationBudget,
+  createGatewayRoutePlanSnapshot,
+  type GatewayRouteCoordinatorOwner,
+  type GatewayRouteFinalFailure,
+  type GatewayRoutePlanSnapshot,
+  type RouteCoordinationResult
 } from '../routing/route-coordination.js'
 import { GatewayDownstreamCommitState } from '../response/downstream-commit-state.js'
 import { createGatewaySseWaitHeartbeatObserver } from '../response/sse-wait-heartbeat.js'
+import {
+  onceGatewayHotQualityExplorationSettlement,
+  type GatewayHotQualityExplorationReservation
+} from '../runtime/hot-quality-runtime.service.js'
+import { gatewayAccountRuntimeKey } from '../runtime/account-runtime-keys.js'
+import { defaultNormalRoutingConfig } from '../../../domain/route-strategy.js'
+import type { NormalRouteFirstByteRuntimeConfig } from '../routing/normal-route-first-byte-deadline.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -141,6 +153,8 @@ interface OpenAIGatewayRequestPreflightOptions {
   routeCoordinationBudget?: RouteCoordinationBudget
   requestAttemptTracker?: GatewayRequestAttemptTracker
   downstreamCommitState?: GatewayDownstreamCommitState
+  normalRouteFirstByteConfig?: NormalRouteFirstByteRuntimeConfig
+  routePlanSnapshot?: GatewayRoutePlanSnapshot<string>
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -166,6 +180,7 @@ export interface OpenAIGatewayDispatchContext {
   modelPriority: GatewayAccountModelPriority
   requestLane: OpenAIGatewayRequestLane
   groupSchedulingPolicy?: GroupSchedulingPolicy
+  normalRouteFirstByteConfig?: NormalRouteFirstByteRuntimeConfig
   normalRouteSpeedFirstConfig?: NormalRouteSpeedFirstRuntimeConfig
   responseInspectionPolicies: ResponseInspectionPolicySummary[]
   apiKeyRecord?: GatewayApiKeyRow
@@ -180,13 +195,79 @@ export interface OpenAIGatewayDispatchContext {
   routeCoordinationBudget: RouteCoordinationBudget
   requestAttemptTracker: GatewayRequestAttemptTracker
   downstreamCommitState: GatewayDownstreamCommitState
+  routePlanSnapshot: GatewayRoutePlanSnapshot<string>
   interactionResourceAffinity?: GeminiInteractionAffinityBinding
+  hotQualityExplorationReservation?: GatewayHotQualityExplorationReservation
+  settleHotQualityExplorationAfterDispatch?: (outcome: 'dispatched' | 'not_dispatched') => Promise<void>
   releaseClientIpConcurrency: () => void
+}
+
+export interface OpenAIGatewayRouteAction {
+  outcome: 'route_action'
+  coordination: Exclude<RouteCoordinationResult<never>, { outcome: 'dispatchable' }>
+  failure?: GatewayRouteFinalFailure
+  usageContext: GatewayFailureUsageContext
+  apiKeyRecord?: GatewayApiKeyRow
+  groupFallbackApiKeyRecord?: GatewayApiKeyRow
+  requestLane: OpenAIGatewayRequestLane
+  clientStrategy: OpenAIGatewayClientStrategyContext
+  serverRetryBudget: ServerRetryBudget
+  gatewayRequestWallBudget: GatewayRequestWallBudget
+  routeCoordinationBudget: RouteCoordinationBudget
+  requestAttemptTracker: GatewayRequestAttemptTracker
+  downstreamCommitState: GatewayDownstreamCommitState
+  routePlanSnapshot: GatewayRoutePlanSnapshot<string>
+  interactionResourceAffinity?: GeminiInteractionAffinityBinding
+  normalRouteFirstByteConfig?: NormalRouteFirstByteRuntimeConfig
+}
+
+export function isOpenAIGatewayRouteAction(
+  result: OpenAIGatewayDispatchContext | OpenAIGatewayRouteAction | undefined
+): result is OpenAIGatewayRouteAction {
+  return Boolean(result && 'outcome' in result && result.outcome === 'route_action')
+}
+
+function createOpenAIGatewayRoutePlanSnapshot(input: {
+  traceId: string
+  startedAt: number
+  groupId: string
+  apiKeyRecord?: GatewayApiKeyRow
+  gatewayRequestWallBudget: GatewayRequestWallBudget
+  normalRouteFirstByteConfig?: NormalRouteFirstByteRuntimeConfig
+  hybridRoute?: HybridGatewayRuntimeRoute
+}): GatewayRoutePlanSnapshot<string> {
+  const orderedAllowedTargets = uniqueActiveRouteGroupIds(input.apiKeyRecord)
+  if (!orderedAllowedTargets.includes(input.groupId)) orderedAllowedTargets.unshift(input.groupId)
+  const cursor = Math.max(0, orderedAllowedTargets.indexOf(input.groupId))
+  const selectedBinding = input.apiKeyRecord?.group_bindings?.find((binding) => binding.group_id === input.groupId)
+  const hybridScoreDecision = input.hybridRoute
+    ? Object.freeze({
+        level: input.hybridRoute.scoring.level,
+        targetModel: input.hybridRoute.targetModel,
+        minLevel: input.hybridRoute.route.minLevel,
+        maxLevel: input.hybridRoute.route.maxLevel,
+        scoringDefaulted: input.hybridRoute.scoring.defaulted === true
+      })
+    : undefined
+  return createGatewayRoutePlanSnapshot({
+    routePlanId: `${input.traceId}:route`,
+    mode: input.apiKeyRecord?.route_strategy_mode ?? 'normal',
+    requestAcceptedAtMs: input.startedAt,
+    gatewayRequestWallBudgetMs: input.gatewayRequestWallBudget.budgetMs,
+    firstByteDeadlineMs: input.normalRouteFirstByteConfig?.firstByteDeadlineMs,
+    requestPrecommitDeadlineAtMs: input.gatewayRequestWallBudget.deadlineAtMs,
+    orderedAllowedTargets,
+    cursor,
+    weightedDecisionToken: input.apiKeyRecord?.route_strategy_mode === 'weighted'
+      ? selectedBinding?.id ?? input.groupId
+      : undefined,
+    hybridScoreDecision
+  })
 }
 
 export async function prepareOpenAIGatewayDispatchContext(
   input: PrepareOpenAIGatewayDispatchContextInput
-): Promise<OpenAIGatewayDispatchContext | undefined> {
+): Promise<OpenAIGatewayDispatchContext | OpenAIGatewayRouteAction | undefined> {
   const { req, res, auditCapture, options, startedAt, traceId, clientIp, endpoint, requestSnapshot, signal } = input
   let gatewaySettings: GatewaySettings | undefined
   let apiKeyRecord: GatewayApiKeyRow | undefined = options.apiKeyRecord
@@ -885,6 +966,58 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (codexBridgeStatePreflight === 'completed') {
     return undefined
   }
+  const routePlanSnapshot = options.routePlanSnapshot ?? createOpenAIGatewayRoutePlanSnapshot({
+    traceId,
+    startedAt,
+    groupId,
+    apiKeyRecord: groupFallbackApiKeyRecord ?? apiKeyRecord,
+    gatewayRequestWallBudget,
+    normalRouteFirstByteConfig: options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord),
+    hybridRoute: selectedHybridRoute
+  })
+  let pendingRouteReason: string | undefined
+  let pendingRouteFailure: GatewayRouteFinalFailure | undefined
+  const buildRouteAction = (reason = pendingRouteReason ?? pendingRouteFailure?.errorCode ?? 'route_unavailable'): OpenAIGatewayRouteAction => ({
+    outcome: 'route_action',
+    coordination: pendingRouteFailure && isTemporarilyBlockedRouteFailure(pendingRouteFailure)
+      ? {
+          outcome: 'temporarily_blocked',
+          reason,
+          earliestRetryAtMs: pendingRouteFailure.retryAfterMs === undefined ? undefined : Date.now() + pendingRouteFailure.retryAfterMs,
+          confirmationInFlight: false,
+          blockedAccountIds: [],
+          waitableByCurrentRequest: false,
+          foreignLeaseInFlight: false
+        }
+      : { outcome: 'hard_exhausted', reason },
+    failure: pendingRouteFailure,
+    usageContext,
+    apiKeyRecord,
+    groupFallbackApiKeyRecord,
+    requestLane,
+    clientStrategy,
+    serverRetryBudget,
+    gatewayRequestWallBudget,
+    routeCoordinationBudget,
+    requestAttemptTracker,
+    downstreamCommitState,
+    routePlanSnapshot,
+    interactionResourceAffinity,
+    normalRouteFirstByteConfig: options.normalRouteFirstByteConfig ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
+  })
+  // Candidate and preparation layers only report route actions. The HTTP route
+  // loop owns group switching and the eventual terminal response.
+  const routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext> = {
+    requestFallback: interactionResourceAffinity
+      ? async () => ({ attempted: false })
+      : async (reason) => {
+          pendingRouteReason = reason
+          return { attempted: true }
+        },
+    async completeFailure(failure) {
+      pendingRouteFailure = failure
+    }
+  }
   const candidateFilterStartedAt = performance.now()
   const candidateFilter = await filterOpenAIGatewayRequestCandidateAccounts({
     req,
@@ -918,28 +1051,7 @@ export async function prepareOpenAIGatewayDispatchContext(
         gatewayRequestWallBudget,
         signal
       }),
-    attemptFallback: interactionResourceAffinity
-      ? async () => ({ attempted: false })
-      : (reason) => prepareApiKeyGroupFallbackDispatchContext({
-      req,
-      res,
-      auditCapture,
-      options,
-      startedAt,
-      traceId,
-      clientIp,
-      endpoint,
-      requestSnapshot,
-      signal,
-      reason,
-      apiKeyRecord,
-      systemAccountId,
-      apiKeyId,
-      groupId,
-      trafficSource,
-      requestLane,
-      requestClientCompatibility: clientStrategy.requestClientCompatibility
-    })
+    routeCoordinator,
   })
   logRequestStage('model.capability_filter', {
     traceId,
@@ -958,10 +1070,10 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
   }, candidateFilter.outcome === 'accounts' ? 'success' : 'expected_failure', candidateFilterStartedAt)
   if (candidateFilter.outcome === 'fallback') {
-    return candidateFilter.context
+    return buildRouteAction(candidateFilter.reason)
   }
   if (candidateFilter.outcome === 'completed') {
-    return undefined
+    return pendingRouteFailure ? buildRouteAction() : undefined
   }
   const imagePermissionPreflight = await applyOpenAIGatewayImagePermissionPreflight({
     req,
@@ -988,6 +1100,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
   requestLane = imagePermissionPreflight.requestLane
+  const normalRouteFirstByteConfig = options.normalRouteFirstByteConfig
+    ?? normalRouteFirstByteConfigForApiKey(apiKeyRecord)
   const normalRouteSpeedFirstConfig = normalRouteSpeedFirstAppliesToLane(requestLane)
     ? normalRouteSpeedFirstConfigForApiKey(apiKeyRecord)
     : undefined
@@ -1015,35 +1129,17 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewayRequestWallBudget,
     signal,
     ignoreAccountRuntimeSuppression: options.ignoreAccountRuntimeSuppression === true,
-    attemptFallback: interactionResourceAffinity
-      ? async () => ({ attempted: false })
-      : (reason) => prepareApiKeyGroupFallbackDispatchContext({
-      req,
-      res,
-      auditCapture,
-      options,
-      startedAt,
-      traceId,
-      clientIp,
-      endpoint,
-      requestSnapshot,
-      signal,
-      reason,
-      apiKeyRecord,
-      systemAccountId,
-      apiKeyId,
-      groupId,
-      trafficSource,
-      requestLane,
-      requestClientCompatibility: clientStrategy.requestClientCompatibility
-    })
+    routeCoordinator,
   })
   if (dispatchPreparation.outcome === 'fallback') {
-    return dispatchPreparation.context
+    return buildRouteAction(dispatchPreparation.reason)
   }
   if (dispatchPreparation.outcome === 'completed') {
-    return undefined
+    return pendingRouteFailure ? buildRouteAction() : undefined
   }
+  const settleHotQualityExplorationAfterDispatch = dispatchPreparation.settleHotQualityExplorationAfterDispatch
+    ? onceGatewayHotQualityExplorationSettlement(dispatchPreparation.settleHotQualityExplorationAfterDispatch)
+    : undefined
 
   const codexBridgeCompactPreflight = await applyCodexResponsesChatBridgeCompactPreflight({
     req,
@@ -1069,15 +1165,22 @@ export async function prepareOpenAIGatewayDispatchContext(
       routeCoordinationBudget,
       requestAttemptTracker
     },
+    onDispatchedAccount: async (account) => settleHotQualityExplorationAfterDispatch?.(
+      dispatchPreparation.hotQualityExplorationReservation?.accountRuntimeKey === gatewayAccountRuntimeKey(account)
+        ? 'dispatched'
+        : 'not_dispatched'
+    ),
     signal
   })
   if (codexBridgeCompactPreflight.outcome === 'completed') {
+    await settleHotQualityExplorationAfterDispatch?.('not_dispatched')
     dispatchPreparation.releaseClientIpConcurrency()
     return undefined
   }
   try {
     runtimeResponseInspectionPolicies = await listCachedActiveResponseInspectionPoliciesForAccountsAsync(codexBridgeCompactPreflight.accounts)
   } catch (error) {
+    await settleHotQualityExplorationAfterDispatch?.('not_dispatched')
     dispatchPreparation.releaseClientIpConcurrency()
     throw error
   }
@@ -1093,6 +1196,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     modelPriority: candidateFilter.modelPriority,
     requestLane,
     groupSchedulingPolicy: groupAccess.schedulingPolicy,
+    normalRouteFirstByteConfig,
     normalRouteSpeedFirstConfig,
     responseInspectionPolicies: runtimeResponseInspectionPolicies ?? [],
     apiKeyRecord,
@@ -1107,7 +1211,10 @@ export async function prepareOpenAIGatewayDispatchContext(
     routeCoordinationBudget,
     requestAttemptTracker,
     downstreamCommitState,
+    routePlanSnapshot,
     interactionResourceAffinity,
+    hotQualityExplorationReservation: dispatchPreparation.hotQualityExplorationReservation,
+    settleHotQualityExplorationAfterDispatch,
     releaseClientIpConcurrency: dispatchPreparation.releaseClientIpConcurrency
   }
 }
@@ -1125,6 +1232,15 @@ function normalRouteSpeedFirstConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | u
   if (!normalConfig.speedFirstConfig) return undefined
   return {
     ...normalConfig.speedFirstConfig,
+    firstByteDeadlineMs: normalConfig.firstByteDeadlineMs
+  }
+}
+
+function normalRouteFirstByteConfigForApiKey(apiKeyRecord: GatewayApiKeyRow | undefined): NormalRouteFirstByteRuntimeConfig | undefined {
+  if (apiKeyRecord?.route_strategy_mode !== 'normal') return undefined
+  const normalConfig = apiKeyRecord.normal_routing_config ?? defaultNormalRoutingConfig()
+  return {
+    schedulingPreference: normalConfig.schedulingPreference,
     firstByteDeadlineMs: normalConfig.firstByteDeadlineMs
   }
 }
@@ -1460,18 +1576,18 @@ interface ApiKeyGroupFallbackDispatchInput {
   requestLane: OpenAIGatewayRequestLane
   requestClientCompatibility?: ClientCompatibilityCapability
   excludedAccountIds?: Iterable<string>
-  allowCandidateWrap?: boolean
+  routePlanSnapshot: GatewayRoutePlanSnapshot<string>
 }
 
 interface ApiKeyGroupFallbackDispatchResult {
   attempted: boolean
-  context?: OpenAIGatewayDispatchContext
+  context?: OpenAIGatewayDispatchContext | OpenAIGatewayRouteAction
 }
 
 export async function prepareApiKeyGroupFallbackDispatchContext(
   input: ApiKeyGroupFallbackDispatchInput
 ): Promise<ApiKeyGroupFallbackDispatchResult> {
-  if (!canAttemptApiKeyGroupFallback(input.apiKeyRecord, input.groupId, input.allowCandidateWrap === true)) {
+  if (!canAttemptApiKeyGroupFallback(input.apiKeyRecord, input.groupId, input.routePlanSnapshot)) {
     return { attempted: false }
   }
   const candidate = await resolveNextApiKeyGroupFallbackCandidate(input)
@@ -1502,7 +1618,8 @@ export async function prepareApiKeyGroupFallbackDispatchContext(
       candidateAccounts: candidate.accounts,
       responseInspectionPolicies: candidate.responseInspectionPolicies,
       trafficSource: input.trafficSource,
-      requestLane: input.requestLane
+      requestLane: input.requestLane,
+      routePlanSnapshot: candidate.routePlanSnapshot ?? input.routePlanSnapshot
     },
     startedAt: input.startedAt,
     traceId: input.traceId,
@@ -1512,6 +1629,18 @@ export async function prepareApiKeyGroupFallbackDispatchContext(
     signal: input.signal
   })
   return { attempted: true, context }
+}
+
+function uniqueActiveRouteGroupIds(apiKeyRecord: GatewayApiKeyRow | undefined): string[] {
+  const result: string[] = []
+  const seen = new Set<string>()
+  for (const binding of apiKeyRecord?.group_bindings ?? []) {
+    const groupId = binding.group_id?.trim()
+    if (!groupId || binding.status !== 'active' || binding.group_enabled === 0 || seen.has(groupId)) continue
+    seen.add(groupId)
+    result.push(groupId)
+  }
+  return result
 }
 
 function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewaySettings>): GatewaySettings {
@@ -1532,6 +1661,12 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
     streamFailureThresholdCount: override.streamFailureThresholdCount ?? base.streamFailureThresholdCount,
     streamFailureThresholdWindowMinutes: override.streamFailureThresholdWindowMinutes ?? base.streamFailureThresholdWindowMinutes
   }
+}
+
+function isTemporarilyBlockedRouteFailure(failure: GatewayRouteFinalFailure): boolean {
+  return failure.retryAfterMs !== undefined
+    || failure.failureAttribution === 'gateway_capacity'
+    || failure.statusCode === 429
 }
 
 async function sendClientIpErrorCircuitGatewayResponse(input: {

@@ -25,7 +25,7 @@ const postgresConfig = {
   }
 }
 
-assert.equal(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION, 73)
+assert.equal(EXPECTED_POSTGRES_GOOSE_SCHEMA_VERSION, 74)
 assertOwnerLockEnabledParsing()
 
 await assertDoesNotQueryWhenDisabled()

@@ -184,7 +184,7 @@ async function openEdit(apiKey: ApiKeySummary) {
     return
   }
   editingId.value = apiKey.id
-  editingIsDefault.value = apiKey.isDefault === true
+  editingIsDefault.value = apiKey.isDefault === true && apiKey.purpose !== 'chat'
   editingSystemAccountId.value = editScopeParams?.systemAccountId
   Object.assign(form, {
     name: apiKey.name,

@@ -54,7 +54,11 @@ import {
   runBackgroundTaskRunReconcile
 } from './background-task-run-reconcile.job.js'
 import { seedUsageRecordFirstPage } from '../usage-records/usage-record-first-page-cache.service.js'
-import { runScheduledAccountCircuitRecovery } from './account-circuit-recovery.service.js'
+import {
+  installDefaultScheduledAccountCircuitRecoveryResolver,
+  runScheduledAccountCircuitRecovery
+} from './account-circuit-recovery.service.js'
+import { runGatewayAccountCircuitControlPlaneMaintenance } from '../gateway/runtime/account-circuit.service.js'
 
 let started = false
 let usageStatsAggregationRunning = false
@@ -175,6 +179,7 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('usage-stats-consistency-check'), intervalMs: 60 * minuteMs, initialDelayMs: 11 * minuteMs, task: runUsageStatsConsistencyCheck })
       return
     case 'ops-worker':
+      installDefaultScheduledAccountCircuitRecoveryResolver()
       scheduler.schedule({ name: backgroundScheduledJobName('chat-retention-cleanup'), intervalMs: 10 * minuteMs, initialDelayMs: 3 * minuteMs, task: runChatRetentionCleanup })
       scheduler.schedule({ name: backgroundScheduledJobName('api-key-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: secondMs, task: runApiKeyAvailabilityScheduleStatusSync })
       scheduler.schedule({ name: backgroundScheduledJobName('account-availability-schedule-status-sync'), intervalMs: 10 * secondMs, initialDelayMs: 2 * secondMs, task: runAccountAvailabilityScheduleStatusSync })
@@ -185,12 +190,23 @@ function scheduleBackgroundJobs(): void {
       scheduler.schedule({ name: backgroundScheduledJobName('cooldown-account-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: cooldownAccountRetestStartupDelayMs, task: () => runCooldownAccountRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('account-api-key-cooldown-retest'), intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 1, 3600) * secondMs, initialDelayMs: accountApiKeyCooldownRetestStartupDelayMs, task: () => runAccountApiKeyCooldownRetest({ settingsNumber }) })
       scheduler.schedule({ name: backgroundScheduledJobName('normal-route-speed-first-recovery-probe'), intervalMs: 10 * secondMs, initialDelayMs: normalRouteSpeedFirstProbeStartupDelayMs, task: runNormalRouteSpeedFirstRecoveryProbe })
+      scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-control-plane-maintenance'), intervalMs: 5 * secondMs, initialDelayMs: secondMs, task: runAccountCircuitControlPlaneMaintenance })
       scheduler.schedule({ name: backgroundScheduledJobName('account-circuit-recovery'), intervalMs: 5 * secondMs, initialDelayMs: 5 * secondMs, task: runScheduledAccountCircuitRecovery })
       scheduler.schedule({ name: backgroundScheduledJobName('proxy-latency-refresh'), intervalMs: proxyLatencyRefreshIntervalSeconds * secondMs, initialDelayMs: 4 * minuteMs, task: runProxyLatencyRefresh })
       scheduler.schedule({ name: backgroundScheduledJobName('openai-oauth-access-token-refresh'), intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 10, 3600) * secondMs, initialDelayMs: 35 * secondMs, task: runOpenAIOAuthAccessTokenRefresh })
       return
     default:
       return
+  }
+}
+
+async function runAccountCircuitControlPlaneMaintenance(): Promise<void> {
+  const processed = await runGatewayAccountCircuitControlPlaneMaintenance(100)
+  if (processed > 0) {
+    logger.debug({
+      event: 'gateway_account_circuit_control_plane_maintenance_completed',
+      processed
+    }, '账户电路 control-plane 投影与对账完成')
   }
 }
 

@@ -149,7 +149,7 @@ flowchart LR
 - 本地 API Key 校验先按 `key_hash` 命中进程内短 TTL 缓存；命中会刷新空闲 TTL，但最多 5 分钟必须重新查库。禁用、删除、修改 API Key 会主动清理对应缓存。
 - API Key 只绑定一条路由策略；路由策略可以绑定并访问调用方自己的一个或多个分组，也可以绑定有效授权给调用方的分组。被授权 AI 账户需要先加入调用方自有分组后再参与自有分组调度，授权分组则按有效分组授权直接参与调度。当前 API Key 模型不保存分组绑定字段。
 - 模型列表是固定本地响应，不进入账号调度。普通 `/models` 和 `/v1/models` 默认返回 OpenAI-compatible `object=list + data`；`/v1beta/models` 或明确 Gemini 信号返回 Gemini 原生形态，明确 Anthropic 信号返回 Anthropic 原生形态，单独的 `/models` 路径本身不能推断为 Gemini。
-- 公开模型列表并行读取全部启用、非 `hybrid` 供应商的已有目录缓存；认证模型列表从 API Key 路由策略全部 active 分组绑定收集 `provider_code`，并以 Key 所属系统账户读取个人模型。显式空供应商集合返回空列表，不回退公开目录。网关不按发布时间过滤，也不再依赖 `default/codex` 发布快照；AI Chat 的 `chat_list:*`、`chat_model:*` 快照继续独立维护。
+- 公开模型列表并行读取全部启用、非 `hybrid` 供应商的已有目录缓存；认证模型列表和 AI 问答从 API Key 路由策略全部 active 分组绑定收集 `provider_code`，并以 Key 所属系统账户读取个人模型。显式空供应商集合返回空列表，不回退公开目录。网关不按发布时间过滤，`default/codex`、`chat_list:*`、`chat_model:*` 最终发布快照及其预热、重建链路均已退场。
 - 账号选择必须过滤停用、异常、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
 - 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
 - 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按账户错误处理策略、响应语义检查策略或默认冷却规则处理。
@@ -320,3 +320,7 @@ erDiagram
 - 涉及后台定时任务、worker IPC、队列 flush、统计聚合或批量清理时，同时看 [后台任务使用说明](后台任务使用说明.md)；涉及多 worker 拆分、热点隔离、任务租约或 worker 角色配置时，同时看 [后台 Worker 多角色拆分设计](后台Worker多角色拆分设计.md)。
 - 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。
 - 涉及运行、联调和验证时，按 [开发运行说明](../../develop/运行说明.md) 和 [开发测试与验证说明](../../develop/测试与验证说明.md) 执行。
+
+## 11. 网关账户运行态专题入口
+
+普通路由账户的短窗口热质量、账户电路单飞、同层探索、请求内精准切号、墙钟 handoff、受控半开、控制面交接和有界观测，统一按 [AI 账户短窗口热质量与精准切号设计](../../functions/AI账户短窗口热质量与精准切号设计.md) 与 [PLAN-0158-20260722T160050118Z](../../plans/计划-0158-20260722T160050118Z-AI账户热质量与精准切号实施.md) 执行。热状态只允许使用 memory / Redis runtime adapter；控制面 ledger、revision 和 outbox 属于可重建控制事实，不得把热质量写入业务统计库。当前实现已完成 owner / authorized revision 原子写入、冷启动 fail-closed 重建、maintenance、真实 Redis 多 adapter 和临时 PostgreSQL 验证。

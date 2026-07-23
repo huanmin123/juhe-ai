@@ -85,6 +85,7 @@ const [
   usageRecordQueue,
   auditLogQueue,
   latencyDegradation,
+  gatewayHotQuality,
   accountTestService
 ] = await Promise.all([
   import('../../modules/gateway/routes.js'),
@@ -97,6 +98,7 @@ const [
   import('../../modules/gateway/usage/record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js'),
   import('../../modules/gateway/runtime/normal-route-latency-degradation.service.js'),
+  import('../../modules/gateway/runtime/hot-quality-runtime.service.js'),
   import('../../modules/accounts/account-test.service.js')
 ])
 
@@ -140,6 +142,9 @@ try {
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
     await assertTransientSlowThenFastDoesNotDegrade(baseUrl, speedScenario)
+    // The previous scenario intentionally creates valid hot-quality observations;
+    // this latency-degradation scenario owns a fresh independent observation window.
+    gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
     await assertNonStreamSlowFirstByteRetriesAndDegrades(baseUrl, speedScenario)
     await assertCostFirstRouteUnaffected(baseUrl, costScenario)
     await assertSpeedFirstCanCrossPriorityPreference(baseUrl, priorityScenario)
@@ -361,10 +366,13 @@ async function assertBackgroundProbeRestoresPrimary(baseUrl: string, scenario: S
     assert.equal(stillDegraded, index < speedFirstConfig.recoverySuccessCount, `第 ${index} 次恢复探针后的降级清理状态不符合恢复次数`)
   }
 
+  // This regression owns latency-degradation recovery; isolate it from hot-quality
+  // samples accumulated by the deliberately slow attempts above.
+  gatewayHotQuality.resetGatewayHotQualityRuntimeForTest()
   const hitStart = upstreamHits.length
   const response = await postChat(baseUrl, scenario.apiKey, 'after background probe recovery', false)
   assert.equal(response.status, 200, `后台探针恢复后请求应成功，实际 HTTP ${response.status}: ${response.text}`)
-  assert.match(response.text, /mock ai chat sk-speed-primary/, '后台探针恢复后应回到主号正常调度')
+  assert.match(response.text, /mock ai chat sk-speed-primary/, `后台探针恢复后应回到主号正常调度，实际=${response.text}，hits=${JSON.stringify(upstreamHits.slice(hitStart).map((hit) => ({ accountKey: hit.accountKey, path: hit.path, phase: hit.phase })))}`)
   const hits = upstreamHits.slice(hitStart)
   assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 1, '恢复后应真实命中主号')
   assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复后不应继续绕到副号')
@@ -377,12 +385,12 @@ async function assertBulkFastTrafficAfterRecovery(baseUrl: string, scenario: Spe
   const responses = await runBulkChatRequests(baseUrl, scenario.apiKey, 'bulk after recovery', 120, 5)
   for (const [index, response] of responses.entries()) {
     assert.equal(response.status, 200, `恢复后批量请求 ${index + 1} 应成功，实际 HTTP ${response.status}: ${response.text}`)
-    assert.match(response.text, /sk-speed-primary/, `恢复后批量请求 ${index + 1} 应稳定命中主号`)
+    assert.match(response.text, /sk-speed-(primary|secondary)/, `恢复后批量请求 ${index + 1} 应命中同层健康账户`)
     assertChatTransportShape(response, `恢复后批量请求 ${index + 1}`)
   }
   const hits = upstreamHits.slice(hitStart)
-  assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 120, '恢复后批量请求应全部命中主号')
-  assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 0, '恢复后批量请求不应误切副号')
+  assert.equal(countHits(hits, 'sk-speed-primary', '/v1/chat/completions'), 119, '恢复后主号应承接除单次同层探索外的全部请求')
+  assert.equal(countHits(hits, 'sk-speed-secondary', '/v1/chat/completions'), 1, '恢复后只允许 credit 驱动的一次同层探索命中副号')
 }
 
 async function assertSpeedFirstCutoverDoesNotPersistSubstituteAffinity(baseUrl: string, scenario: SpeedFirstScenario): Promise<void> {
@@ -915,6 +923,7 @@ function sendResponsesCompleted(res: http.ServerResponse, outputText: string): v
 }
 
 function writeResponsesCompletedEvent(res: http.ServerResponse, outputText: string): void {
+  const messageId = 'msg_normal_route_speed_first_probe'
   const completedEvent = {
     type: 'response.completed',
     response: {
@@ -923,7 +932,10 @@ function writeResponsesCompletedEvent(res: http.ServerResponse, outputText: stri
       status: 'completed',
       output: [
         {
+          id: messageId,
           type: 'message',
+          role: 'assistant',
+          status: 'completed',
           content: [{ type: 'output_text', text: outputText }]
         }
       ],

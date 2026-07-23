@@ -110,30 +110,31 @@ assert.equal((await store.acquireCanaryLease({
 now += 3_000
 const canary1 = await store.acquireCanaryLease({
   ...confirmationIdentity,
-  transitionId: 'canary-acquire-1',
-  leaseId: 'canary-1',
+  transitionId: 'half-open-acquire',
+  leaseId: 'half-open-lease',
   leaseUntilMs: now + 1_000,
   nowMs: now
 })
 assert.equal(canary1.state.phase, 'HALF_OPEN')
 const recovery1 = await store.completeCanary({
   ...confirmationIdentity,
-  transitionId: 'canary-success-1',
-  leaseId: 'canary-1',
+  transitionId: 'half-open-success',
+  leaseId: 'half-open-lease',
   outcome: 'framing_complete',
   nowMs: now
 })
 assert.equal(recovery1.state.phase, 'RECOVERING')
-assert.equal(recovery1.state.recoverySuccessCount, 1)
+assert.equal(recovery1.state.recoverySuccessCount, 0, '首次 half-open 成功只进入 RECOVERING，不计入三次 canary')
 assert.equal((await store.completeCanary({
   ...confirmationIdentity,
-  transitionId: 'canary-success-1',
-  leaseId: 'canary-1',
+  transitionId: 'half-open-success',
+  leaseId: 'half-open-lease',
   outcome: 'framing_complete',
   nowMs: now
 })).status, 'idempotent', '重复 canary 结果不得重复增加恢复计数')
 
-for (const index of [2, 3]) {
+for (const index of [1, 2, 3]) {
+  now += 3_000
   const acquired = await store.acquireCanaryLease({
     ...confirmationIdentity,
     transitionId: `canary-acquire-${index}`,
@@ -229,5 +230,89 @@ assert.equal((await capacityStore.suspect({
 })).status, 'capacity_exhausted', '容量满时不得淘汰活动电路')
 assert.equal((await capacityStore.get(capacityA)).phase, 'SUSPECT')
 assert.equal((await capacityStore.get(capacityB)).phase, 'SUSPECT')
+
+const hierarchyStore = new MemoryAccountCircuitStore({ capacity: 10, now: () => now })
+const hierarchyAccount: AccountCircuitScope = { kind: 'account', accountRuntimeKey: 'hierarchy-account' }
+const hierarchyChildren: Array<Extract<AccountCircuitScope, { kind: 'protocol_model' }>> = [
+  { kind: 'protocol_model', accountRuntimeKey: 'hierarchy-account', protocolProfile: 'profile', requestLane: 'text', modelBucket: 'model-a' },
+  { kind: 'protocol_model', accountRuntimeKey: 'hierarchy-account', protocolProfile: 'profile', requestLane: 'text', modelBucket: 'model-b' }
+]
+for (const [index, childScope] of hierarchyChildren.entries()) {
+  await hierarchyStore.suspect({ scope: childScope, dispatchRevision: 'h1', transitionId: `hierarchy-suspect-${index}`, reason: 'transport', nowMs: now })
+  await hierarchyStore.acquireConfirmationLease({ scope: childScope, generation: 1, dispatchRevision: 'h1', transitionId: `hierarchy-acquire-${index}`, leaseId: `hierarchy-lease-${index}`, leaseUntilMs: now + 1_000, nowMs: now })
+  await hierarchyStore.completeConfirmation({ scope: childScope, generation: 1, dispatchRevision: 'h1', transitionId: `hierarchy-open-${index}`, leaseId: `hierarchy-lease-${index}`, outcome: 'transport_failure', nowMs: now })
+}
+const hierarchyEvidenceA = await hierarchyStore.recordProtocolModelOpenEvidence({
+  scope: hierarchyChildren[0]!, generation: 1, dispatchRevision: 'h1', evidenceId: 'hierarchy-evidence-a', accountTransitionId: 'hierarchy-account-open', reason: 'multiple protocol failures', confirmedFailureCount: 2, windowMs: 60_000, maxProtocolScopes: 8, nowMs: now
+})
+assert.equal(hierarchyEvidenceA.status, 'recorded')
+const hierarchyEvidenceB = await hierarchyStore.recordProtocolModelOpenEvidence({
+  scope: hierarchyChildren[1]!, generation: 1, dispatchRevision: 'h1', evidenceId: 'hierarchy-evidence-b', accountTransitionId: 'hierarchy-account-open', reason: 'multiple protocol failures', confirmedFailureCount: 2, windowMs: 60_000, maxProtocolScopes: 8, nowMs: now
+})
+assert.equal(hierarchyEvidenceB.status, 'escalated')
+assert.equal((await hierarchyStore.get(hierarchyAccount)).phase, 'OPEN')
+assert.equal((await hierarchyStore.get(hierarchyChildren[0]!)).shadowedByIncidentId, 'hierarchy-account-open')
+assert.equal((await hierarchyStore.get(hierarchyChildren[1]!)).shadowedByIncidentId, 'hierarchy-account-open')
+now += 3_000
+const hierarchyAccountLease = await hierarchyStore.acquireCanaryLease({ scope: hierarchyAccount, generation: 1, dispatchRevision: 'h1', transitionId: 'hierarchy-half-open', leaseId: 'hierarchy-half-open-lease', leaseUntilMs: now + 1_000, nowMs: now })
+assert.equal(hierarchyAccountLease.status, 'applied')
+const hierarchyFirst = await hierarchyStore.completeCanary({ scope: hierarchyAccount, generation: 1, dispatchRevision: 'h1', transitionId: 'hierarchy-half-open-complete', leaseId: 'hierarchy-half-open-lease', outcome: 'framing_complete', nowMs: now })
+assert.equal(hierarchyFirst.state.recoverySuccessCount, 0)
+for (const [index, evidenceScopeKey] of [accountCircuitScopeKey(hierarchyChildren[0]!), accountCircuitScopeKey(hierarchyChildren[1]!), accountCircuitScopeKey(hierarchyChildren[0]!)].entries()) {
+  now += 3_000
+  const lease = await hierarchyStore.acquireCanaryLease({ scope: hierarchyAccount, generation: 1, dispatchRevision: 'h1', transitionId: `hierarchy-canary-acquire-${index}`, leaseId: `hierarchy-canary-${index}`, leaseUntilMs: now + 1_000, nowMs: now })
+  assert.equal(lease.status, 'applied')
+  const completed = await hierarchyStore.completeCanary({ scope: hierarchyAccount, generation: 1, dispatchRevision: 'h1', transitionId: `hierarchy-canary-complete-${index}`, leaseId: `hierarchy-canary-${index}`, outcome: 'framing_complete', evidenceScopeKey, nowMs: now })
+  assert.equal(completed.state.phase, index === 2 ? 'CLOSED' : 'RECOVERING')
+}
+assert.equal((await hierarchyStore.get(hierarchyChildren[0]!)).shadowedByIncidentId, undefined, '父级关闭只能解除自身 shadow，不删除子级状态')
+assert.equal((await hierarchyStore.get(hierarchyChildren[0]!)).phase, 'OPEN')
+
+const authorizedFamilyStore = new MemoryAccountCircuitStore({ capacity: 8, now: () => now })
+const authorizedInstanceId = 'authorized-instance'
+const authorizedScopes: AccountCircuitScope[] = [
+  { kind: 'account', accountRuntimeKey: `${authorizedInstanceId}:authorized:grantee-a:group-a:grant-a` },
+  { kind: 'account', accountRuntimeKey: `${authorizedInstanceId}:authorized:grantee-a:group-b:grant-a` }
+]
+const unrelatedScope: AccountCircuitScope = { kind: 'account', accountRuntimeKey: 'authorized-instance-similar' }
+for (const [index, authorizedScope] of authorizedScopes.entries()) {
+  await authorizedFamilyStore.suspect({
+    scope: authorizedScope,
+    dispatchRevision: '7',
+    transitionId: `authorized-suspect-${index}`,
+    reason: 'old authorized configuration',
+    nowMs: now
+  })
+}
+await authorizedFamilyStore.suspect({
+  scope: unrelatedScope,
+  dispatchRevision: '7',
+  transitionId: 'unrelated-suspect',
+  reason: 'unrelated',
+  nowMs: now
+})
+assert.equal(await authorizedFamilyStore.replaceAccountDispatchRevision({
+  accountRuntimeKey: authorizedInstanceId,
+  dispatchRevision: '8',
+  transitionId: 'authorized-revision-8',
+  nowMs: now
+}), 2, '裸授权实例 ID 必须立即 fence 该实例的全部 runtime key 上下文')
+for (const authorizedScope of authorizedScopes) {
+  const state = await authorizedFamilyStore.get(authorizedScope, now)
+  assert.equal(state.phase, 'CLOSED')
+  assert.equal(state.dispatchRevision, '8')
+}
+assert.equal((await authorizedFamilyStore.get(unrelatedScope, now)).phase, 'SUSPECT', 'family 匹配不能误伤相似账户 ID')
+assert.equal(await authorizedFamilyStore.replaceAccountDispatchRevision({
+  accountRuntimeKey: authorizedInstanceId,
+  dispatchRevision: '7',
+  transitionId: 'authorized-late-revision-7',
+  nowMs: now + 1
+}), 0, '迟到旧 revision 不得覆盖已投影的新 revision')
+await Promise.all([
+  authorizedFamilyStore.replaceAccountDispatchRevision({ accountRuntimeKey: authorizedInstanceId, dispatchRevision: '10', transitionId: 'authorized-revision-10', nowMs: now + 2 }),
+  authorizedFamilyStore.replaceAccountDispatchRevision({ accountRuntimeKey: authorizedInstanceId, dispatchRevision: '9', transitionId: 'authorized-revision-9', nowMs: now + 2 })
+])
+assert.equal((await authorizedFamilyStore.get(authorizedScopes[0]!, now + 2)).dispatchRevision, '10', '并发乱序投影必须保留最大 numeric revision')
 
 console.log('account-circuit-memory-store-regression passed')

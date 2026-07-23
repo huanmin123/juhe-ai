@@ -1,4 +1,5 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { createPostgresDatabaseClient, createSqliteDatabaseClient, type DatabaseClient } from './database-client.js'
@@ -279,57 +280,205 @@ export async function advanceAccountCircuitDispatchRevisionInClient(
   client: DatabaseClient,
   rawInput: AdvanceAccountCircuitDispatchRevisionInput
 ): Promise<AdvanceAccountCircuitDispatchRevisionResult> {
+  return client.transaction((tx) => advanceAccountCircuitDispatchRevisionInTransaction(tx, rawInput))
+}
+
+export async function advanceAccountCircuitDispatchRevisionInTransaction(
+  client: DatabaseClient,
+  rawInput: AdvanceAccountCircuitDispatchRevisionInput
+): Promise<AdvanceAccountCircuitDispatchRevisionResult> {
   const input = normalizeDispatchRevisionInput(rawInput)
-  return client.transaction(async (tx) => {
-    const account = await lockAccountDispatchRevision(tx, input.accountId)
-    if (!account) throw new Error(`AI 账户不存在：${input.accountId}`)
+  const account = await lockAccountDispatchRevision(client, input.accountId)
+  if (!account) throw new Error(`AI 账户不存在：${input.accountId}`)
 
-    const dedupeKey = `dispatch:${input.transitionId}`
-    const replay = await findOutboxByDedupeKey(tx, dedupeKey)
-    if (replay) {
-      assertOutboxReplayIdentity(replay, 'dispatch_revision_changed', input.accountId, input.accountRuntimeKey)
-      return {
-        status: 'idempotent',
-        accountId: replay.account_id,
-        accountRuntimeKey: replay.account_runtime_key,
-        dispatchRevision: integerValue(replay.dispatch_revision, 'dispatch_revision'),
-        transitionId: replay.transition_id
-      }
-    }
-
-    const accounts = businessTable(tx, 'accounts')
-    const revised = await tx.one<AccountDispatchRevisionRow>(`
-      UPDATE ${accounts}
-      SET dispatch_revision = dispatch_revision + 1
-      WHERE id = ?
-      RETURNING id, dispatch_revision, circuit_projection_revision
-    `, [input.accountId])
-    if (!revised) throw new Error(`AI 账户不存在：${input.accountId}`)
-    const dispatchRevision = integerValue(revised.dispatch_revision, 'dispatch_revision')
-    await insertOutbox(tx, {
-      eventId: randomUUID(),
-      dedupeKey,
-      eventType: 'dispatch_revision_changed',
-      accountId: input.accountId,
-      accountRuntimeKey: input.accountRuntimeKey,
-      transitionId: input.transitionId,
-      dispatchRevision,
-      nowMs: input.nowMs
-    })
+  const dedupeKey = `dispatch:${input.transitionId}`
+  const replay = await findOutboxByDedupeKey(client, dedupeKey)
+  if (replay) {
+    assertOutboxReplayIdentity(replay, 'dispatch_revision_changed', input.accountId, input.accountRuntimeKey)
     return {
-      status: 'applied',
-      accountId: input.accountId,
-      accountRuntimeKey: input.accountRuntimeKey,
-      dispatchRevision,
-      transitionId: input.transitionId
+      status: 'idempotent',
+      accountId: replay.account_id,
+      accountRuntimeKey: replay.account_runtime_key,
+      dispatchRevision: integerValue(replay.dispatch_revision, 'dispatch_revision'),
+      transitionId: replay.transition_id
     }
+  }
+
+  const accounts = businessTable(client, 'accounts')
+  const revised = await client.one<AccountDispatchRevisionRow>(`
+    UPDATE ${accounts}
+    SET dispatch_revision = dispatch_revision + 1
+    WHERE id = ?
+    RETURNING id, dispatch_revision, circuit_projection_revision
+  `, [input.accountId])
+  if (!revised) throw new Error(`AI 账户不存在：${input.accountId}`)
+  const dispatchRevision = integerValue(revised.dispatch_revision, 'dispatch_revision')
+  await insertOutbox(client, {
+    eventId: randomUUID(),
+    dedupeKey,
+    eventType: 'dispatch_revision_changed',
+    accountId: input.accountId,
+    accountRuntimeKey: input.accountRuntimeKey,
+    transitionId: input.transitionId,
+    dispatchRevision,
+    nowMs: input.nowMs
   })
+  return {
+    status: 'applied',
+    accountId: input.accountId,
+    accountRuntimeKey: input.accountRuntimeKey,
+    dispatchRevision,
+    transitionId: input.transitionId
+  }
+}
+
+export async function advanceAccountCircuitDispatchRevisionFamilyInTransaction(
+  client: DatabaseClient,
+  rawInput: AdvanceAccountCircuitDispatchRevisionInput
+): Promise<AdvanceAccountCircuitDispatchRevisionResult[]> {
+  const input = normalizeDispatchRevisionInput(rawInput)
+  const accounts = businessTable(client, 'accounts')
+  const instances = await client.query<{ id: string }>(`
+    SELECT id
+    FROM ${accounts}
+    WHERE authorization_instance_source_account_id = ?
+      AND deleted_at IS NULL
+    ORDER BY id ASC${client.driver === 'postgres' ? ' FOR UPDATE' : ''}
+  `, [input.accountId])
+  const accountIds = [input.accountId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
+  const results: AdvanceAccountCircuitDispatchRevisionResult[] = []
+  for (const accountId of accountIds) {
+    results.push(await advanceAccountCircuitDispatchRevisionInTransaction(client, {
+      accountId,
+      accountRuntimeKey: accountId,
+      transitionId: accountId === input.accountId
+        ? input.transitionId
+        : familyDispatchTransitionId(input.transitionId, accountId),
+      nowMs: input.nowMs
+    }))
+  }
+  return results
+}
+
+export function advanceAccountCircuitDispatchRevisionInSqliteTransaction(
+  database: DatabaseSync,
+  rawInput: AdvanceAccountCircuitDispatchRevisionInput
+): AdvanceAccountCircuitDispatchRevisionResult {
+  const input = normalizeDispatchRevisionInput(rawInput)
+  const dedupeKey = `dispatch:${input.transitionId}`
+  const replay = database.prepare(`
+    SELECT ${outboxColumnList}
+    FROM account_circuit_outbox
+    WHERE dedupe_key = ?
+  `).get(dedupeKey) as unknown as AccountCircuitOutboxRow | undefined
+  if (replay) {
+    assertOutboxReplayIdentity(replay, 'dispatch_revision_changed', input.accountId, input.accountRuntimeKey)
+    return {
+      status: 'idempotent',
+      accountId: replay.account_id,
+      accountRuntimeKey: replay.account_runtime_key,
+      dispatchRevision: integerValue(replay.dispatch_revision, 'dispatch_revision'),
+      transitionId: replay.transition_id
+    }
+  }
+
+  const revised = database.prepare(`
+    UPDATE accounts
+    SET dispatch_revision = dispatch_revision + 1
+    WHERE id = ?
+    RETURNING id, dispatch_revision, circuit_projection_revision
+  `).get(input.accountId) as unknown as AccountDispatchRevisionRow | undefined
+  if (!revised) throw new Error(`AI 账户不存在：${input.accountId}`)
+  const dispatchRevision = integerValue(revised.dispatch_revision, 'dispatch_revision')
+  database.prepare(`
+    INSERT INTO account_circuit_outbox (
+      event_id, projection_key, dedupe_key, event_type, account_id, account_runtime_key,
+      circuit_scope_key, incident_id, transition_id, dispatch_revision, generation,
+      ledger_revision, status, available_at_ms, attempt_count, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, ?, 'dispatch_revision_changed', ?, ?, NULL, NULL, ?, ?, NULL, NULL, 'pending', ?, 0, ?, ?)
+  `).run(
+    randomUUID(),
+    accountCircuitProjectionKey,
+    dedupeKey,
+    input.accountId,
+    input.accountRuntimeKey,
+    input.transitionId,
+    dispatchRevision,
+    input.nowMs,
+    input.nowMs,
+    input.nowMs
+  )
+  return {
+    status: 'applied',
+    accountId: input.accountId,
+    accountRuntimeKey: input.accountRuntimeKey,
+    dispatchRevision,
+    transitionId: input.transitionId
+  }
+}
+
+export function advanceAccountCircuitDispatchRevisionFamilyInSqliteTransaction(
+  database: DatabaseSync,
+  rawInput: AdvanceAccountCircuitDispatchRevisionInput
+): AdvanceAccountCircuitDispatchRevisionResult[] {
+  const input = normalizeDispatchRevisionInput(rawInput)
+  const instances = database.prepare(`
+    SELECT id
+    FROM accounts
+    WHERE authorization_instance_source_account_id = ?
+      AND deleted_at IS NULL
+    ORDER BY id ASC
+  `).all(input.accountId) as unknown as Array<{ id: string }>
+  const accountIds = [input.accountId, ...instances.map((row) => requiredText(row.id, 256, 'authorizedAccountId'))]
+  return accountIds.map((accountId) => advanceAccountCircuitDispatchRevisionInSqliteTransaction(database, {
+    accountId,
+    accountRuntimeKey: accountId,
+    transitionId: accountId === input.accountId
+      ? input.transitionId
+      : familyDispatchTransitionId(input.transitionId, accountId),
+    nowMs: input.nowMs
+  }))
 }
 
 export async function compareAndSetAccountCircuitIncident(
   input: CompareAndSetAccountCircuitIncidentInput
 ): Promise<CompareAndSetAccountCircuitIncidentResult> {
   return compareAndSetAccountCircuitIncidentInClient(await accountCircuitDatabaseClient(), input)
+}
+
+/** Reads one incident for bridge CAS/reconciliation without exposing response data. */
+export async function getAccountCircuitIncidentByScopeKey(
+  circuitScopeKey: string
+): Promise<AccountCircuitIncidentRecord | undefined> {
+  return getAccountCircuitIncidentByScopeKeyInClient(await accountCircuitDatabaseClient(), circuitScopeKey)
+}
+
+export async function getAccountCircuitDispatchRevision(accountId: string): Promise<number> {
+  return getAccountCircuitDispatchRevisionInClient(await accountCircuitDatabaseClient(), accountId)
+}
+
+export async function getAccountCircuitDispatchRevisionInClient(client: DatabaseClient, accountId: string): Promise<number> {
+  const id = requiredText(accountId, 256, 'accountId')
+  const accounts = businessTable(client, 'accounts')
+  const row = await client.one<{ dispatch_revision: number | bigint | string }>(
+    `SELECT dispatch_revision FROM ${accounts} WHERE id = ?`, [id]
+  )
+  if (!row) throw new Error(`AI 账户不存在：${id}`)
+  return integerValue(row.dispatch_revision, 'dispatch_revision')
+}
+
+export async function getAccountCircuitIncidentByScopeKeyInClient(
+  client: DatabaseClient,
+  circuitScopeKey: string
+): Promise<AccountCircuitIncidentRecord | undefined> {
+  const scopeKey = requiredText(circuitScopeKey, 2048, 'circuitScopeKey')
+  const incidents = businessTable(client, 'account_circuit_incidents')
+  const row = await client.one<AccountCircuitIncidentRow>(`
+    SELECT ${incidentColumnList}
+    FROM ${incidents} circuit_incident
+    WHERE circuit_scope_key = ?
+  `, [scopeKey])
+  return row ? mapIncidentRow(row) : undefined
 }
 
 export async function compareAndSetAccountCircuitIncidentInClient(
@@ -529,6 +678,36 @@ export async function listAccountCircuitIncidentsForRebuild(
   return listAccountCircuitIncidentsForRebuildInClient(await accountCircuitDatabaseClient(), input)
 }
 
+export async function listAccountCircuitIncidentsByRuntimeKeys(
+  accountRuntimeKeys: string[]
+): Promise<AccountCircuitIncidentRecord[]> {
+  return listAccountCircuitIncidentsByRuntimeKeysInClient(await accountCircuitDatabaseClient(), accountRuntimeKeys)
+}
+
+export async function listAccountCircuitIncidentsByRuntimeKeysInClient(
+  client: DatabaseClient,
+  accountRuntimeKeys: string[]
+): Promise<AccountCircuitIncidentRecord[]> {
+  const keys = [...new Set(accountRuntimeKeys.map((key) => requiredText(key, 1024, 'accountRuntimeKey')))]
+  if (keys.length === 0) return []
+  if (keys.length > 100) throw new Error('账户 circuit 摘要单次最多查询 100 个运行态键')
+  const incidents = businessTable(client, 'account_circuit_incidents')
+  const accounts = businessTable(client, 'accounts')
+  const rows = await client.query<AccountCircuitIncidentRow>(`
+    SELECT ${incidentColumnList}
+    FROM ${incidents} circuit_incident
+    WHERE account_runtime_key IN (${keys.map(() => '?').join(', ')})
+      AND state <> 'CLOSED'
+      AND dispatch_revision = (
+        SELECT current_account.dispatch_revision
+        FROM ${accounts} current_account
+        WHERE current_account.id = circuit_incident.account_id
+      )
+    ORDER BY account_runtime_key ASC, updated_at_ms ASC, circuit_scope_key ASC
+  `, keys)
+  return rows.map(mapIncidentRow)
+}
+
 export async function listAccountCircuitIncidentsForRebuildInClient(
   client: DatabaseClient,
   input: { nowMs?: number; afterUpdatedAtMs?: number; afterCircuitScopeKey?: string; limit: number }
@@ -538,10 +717,16 @@ export async function listAccountCircuitIncidentsForRebuildInClient(
   const afterCircuitScopeKey = optionalCursorText(input.afterCircuitScopeKey, 2048, 'afterCircuitScopeKey')
   const limit = positiveInteger(input.limit, 'limit', 500)
   const incidents = businessTable(client, 'account_circuit_incidents')
+  const accounts = businessTable(client, 'accounts')
   const rows = await client.query<AccountCircuitIncidentRow>(`
     SELECT ${incidentColumnList}
-    FROM ${incidents}
+    FROM ${incidents} circuit_incident
     WHERE (state <> 'CLOSED' OR retained_until_ms > ?)
+      AND dispatch_revision = (
+        SELECT current_account.dispatch_revision
+        FROM ${accounts} current_account
+        WHERE current_account.id = circuit_incident.account_id
+      )
       AND (updated_at_ms > ? OR (updated_at_ms = ? AND circuit_scope_key > ?))
     ORDER BY updated_at_ms ASC, circuit_scope_key ASC
     LIMIT ?
@@ -582,8 +767,13 @@ export async function listAccountCircuitProjectionGapsInClient(
     `, [afterAccountId, limit]),
     client.query<AccountCircuitIncidentRow>(`
       SELECT ${incidentColumnList}
-      FROM ${incidents}
+      FROM ${incidents} circuit_incident
       WHERE projected_ledger_revision < ledger_revision
+        AND dispatch_revision = (
+          SELECT current_account.dispatch_revision
+          FROM ${accounts} current_account
+          WHERE current_account.id = circuit_incident.account_id
+        )
         AND (updated_at_ms > ? OR (updated_at_ms = ? AND circuit_scope_key > ?))
       ORDER BY updated_at_ms ASC, circuit_scope_key ASC
       LIMIT ?
@@ -909,6 +1099,10 @@ function normalizeDispatchRevisionInput(input: AdvanceAccountCircuitDispatchRevi
     transitionId: requiredText(input.transitionId, 256, 'transitionId'),
     nowMs: nonNegativeInteger(input.nowMs ?? Date.now(), 'nowMs')
   }
+}
+
+function familyDispatchTransitionId(transitionId: string, accountId: string): string {
+  return `dispatch-family:${createHash('sha256').update(transitionId).update('\0').update(accountId).digest('hex')}`
 }
 
 function normalizeIncidentMutation(input: CompareAndSetAccountCircuitIncidentInput): NormalizedIncidentMutation {

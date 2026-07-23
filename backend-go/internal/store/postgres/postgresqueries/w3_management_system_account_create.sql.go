@@ -34,7 +34,7 @@ func (q *Queries) CountManagementDefaultGroupsForProvider(ctx context.Context, a
 const createManagementDefaultAPIKey = `-- name: CreateManagementDefaultAPIKey :one
 INSERT INTO juhe_business.api_keys (
   id, system_account_id, route_strategy_id, name, description, key_hash,
-  key_prefix, key_suffix, key_secret_encrypted, status, is_default,
+  key_prefix, key_suffix, key_secret_encrypted, status, is_default, purpose,
   expires_at, quota_limits_json, availability_schedule_json,
   availability_schedule_next_check_at, created_at, updated_at
 ) VALUES (
@@ -48,13 +48,14 @@ INSERT INTO juhe_business.api_keys (
   $8::text,
   $9::text,
   'active',
-  true,
+  $10::boolean,
+  $11::text,
   NULL,
   NULL,
   NULL,
   NULL,
-  $10::timestamptz,
-  $11::timestamptz
+  $12::timestamptz,
+  $13::timestamptz
 )
 RETURNING
   id,
@@ -83,6 +84,8 @@ type CreateManagementDefaultAPIKeyParams struct {
 	KeyPrefix          string
 	KeySuffix          string
 	KeySecretEncrypted pgtype.Text
+	IsDefault          bool
+	Purpose            string
 	CreatedAt          pgtype.Timestamptz
 	UpdatedAt          pgtype.Timestamptz
 }
@@ -115,6 +118,8 @@ func (q *Queries) CreateManagementDefaultAPIKey(ctx context.Context, arg CreateM
 		arg.KeyPrefix,
 		arg.KeySuffix,
 		arg.KeySecretEncrypted,
+		arg.IsDefault,
+		arg.Purpose,
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)

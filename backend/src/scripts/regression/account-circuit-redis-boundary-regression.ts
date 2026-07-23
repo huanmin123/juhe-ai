@@ -15,6 +15,8 @@ assert.match(source, /leaseUntilMs[\s\S]*halfOpenOrigin[\s\S]*retryAtMs/, '租�
 assert.match(source, /local function reserve_capacity[\s\S]*ZRANGE[\s\S]*closed_key[\s\S]*capacity_exhausted/, '容量回收只能选择 CLOSED 索引，活动电路满载时必须拒绝')
 assert.match(source, /state\['phase'\] == 'CLOSED'[\s\S]*closedExpiresAtMs/, '只有 CLOSED tombstone 可以按 retention 过期')
 assert.match(source, /ZADD[\s\S]*due_key/, '状态与 due 索引必须在同一 Lua 内维护')
+assert.match(source, /family_prefix[\s\S]*matches_runtime_key/, '裸账户 ID revision 投影必须覆盖授权实例 runtime-key family')
+assert.match(source, /is_older_revision[\s\S]*current_number > incoming_number/, '迟到旧 numeric revision 不得回退较新运行态')
 assert.doesNotMatch(source, /catch\s*\([^)]*\)\s*\{[\s\S]{0,300}closedAccountCircuitState/, 'Redis 故障不得捕获后伪装 CLOSED')
 assert.doesNotMatch(source, /runtimeStateDriver[\s\S]*MemoryAccountCircuitStore/, 'Redis adapter 不得静默回退本机 memory')
 

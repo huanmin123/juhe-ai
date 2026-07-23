@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { UpstreamAccount } from '../../modules/gateway/protocols/openai-v1/route-helpers.js'
 import { MemoryAccountCircuitStore } from '../../modules/gateway/runtime/account-circuit-memory-store.js'
-import type { AccountCircuitStore } from '../../modules/gateway/runtime/account-circuit-store.js'
+import { accountCircuitScopeKey, type AccountCircuitStore } from '../../modules/gateway/runtime/account-circuit-store.js'
 import {
   GatewayAccountCircuitService,
   accountCircuitDispatchRevision,
@@ -35,6 +35,31 @@ const dispatchRevision = accountCircuitDispatchRevision(account)
 assert.ok(dispatchRevision.startsWith('v1:'))
 assert.doesNotMatch(dispatchRevision, /secret-api-key|refresh-secret/)
 assert.notEqual(dispatchRevision, accountCircuitDispatchRevision({ ...account, apiKey: 'changed-secret' }))
+assert.equal(accountCircuitDispatchRevision({ ...account, dispatchRevision: 7 }), '7', 'DB dispatch revision 必须优先于兼容哈希')
+
+const rebuiltAccount = { ...account, dispatchRevision: 7 }
+const rebuiltScope = gatewayAccountProtocolModelScope(rebuiltAccount, 'text', 'gpt-5.4')
+const rebuiltStore = new MemoryAccountCircuitStore({ capacity: 4, now: () => now })
+await rebuiltStore.restore({
+  scope: rebuiltScope,
+  scopeKey: accountCircuitScopeKey(rebuiltScope),
+  phase: 'OPEN',
+  generation: 1,
+  dispatchRevision: '7',
+  transitionId: 'rebuild-open',
+  backoffAttempt: 1,
+  recoverySuccessCount: 0,
+  openedAtMs: now,
+  retryAtMs: now + 30_000,
+  updatedAtMs: now
+})
+const rebuiltDecision = await new GatewayAccountCircuitService(rebuiltStore, { now: () => now }).prepareAttempt({
+  account: rebuiltAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000
+})
+assert.equal(rebuiltDecision.outcome, 'blocked', '持久 OPEN 重建后的首次 prepare 不得因 revision 表示差异变成 CLOSED')
 
 const initialAttempts = await Promise.all(Array.from({ length: 20 }, () => service.prepareAttempt({
   account,
@@ -114,7 +139,155 @@ const recoveryConfirmation = await service.prepareAttempt({
 assert.equal(recoveryConfirmation.outcome, 'dispatchable')
 if (recoveryConfirmation.outcome !== 'dispatchable') throw new Error('recovery confirmation 不可派发')
 await recoveryConfirmation.attempt.reportFramingComplete()
-assert.equal((await store.get(gatewayAccountProtocolModelScope(recoveryAccount, 'text', 'gpt-5.4'))).phase, 'CLOSED')
+const recoveryState = await store.get(gatewayAccountProtocolModelScope(recoveryAccount, 'text', 'gpt-5.4'))
+assert.equal(recoveryState.phase, 'RECOVERING', '首次 confirmation 完整成功必须进入 RECOVERING')
+assert.equal(recoveryState.recoverySuccessCount, 0, 'confirmation 成功不得计入恢复 canary')
+
+const escalationAccount = accountFixture({
+  id: 'account-parent-escalation',
+  supportedModels: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.4-nano']
+})
+const escalationMutations: Array<{
+  scopeKind: string
+  operation: string
+  status: string
+  phase: string
+  previousPhase?: string
+}> = []
+const escalationStore = new MemoryAccountCircuitStore({ capacity: 32, now: () => now })
+const escalationService = new GatewayAccountCircuitService(escalationStore, {
+  now: () => now,
+  createId: () => `escalation-${++id}`,
+  onMutation: (mutation) => {
+    escalationMutations.push({
+      scopeKind: mutation.scope.kind,
+      operation: mutation.operation,
+      status: mutation.status,
+      phase: mutation.state.phase,
+      ...(mutation.previousPhase ? { previousPhase: mutation.previousPhase } : {})
+    })
+  }
+})
+
+const escalationTargets = [
+  { requestLane: 'text' as const, model: 'gpt-5.4' },
+  { requestLane: 'text' as const, model: 'gpt-5.4-mini' },
+  { requestLane: 'text' as const, model: 'gpt-5.4-nano' },
+  { requestLane: 'image' as const, model: 'gpt-5.4' }
+]
+const escalationInitialAttempts = await Promise.all(escalationTargets.map(async ({ requestLane, model }) => {
+  const initial = await escalationService.prepareAttempt({
+    account: escalationAccount,
+    requestLane,
+    model,
+    confirmationLeaseDurationMs: 30_000
+  })
+  assert.equal(initial.outcome, 'dispatchable')
+  if (initial.outcome !== 'dispatchable') throw new Error(`${model} 初始 attempt 不可派发`)
+  return initial.attempt
+}))
+const escalationDecisions = await Promise.all(escalationInitialAttempts.map(async (attempt, index) => {
+  const target = escalationTargets[index]!
+  const decision = await attempt.reportTransportFailure({
+    kind: 'transport',
+    reason: `${target.requestLane}/${target.model} 初始失败`
+  })
+  assert.equal(decision.outcome, 'confirmation_acquired')
+  if (decision.outcome !== 'confirmation_acquired') throw new Error(`${target.model} 未取得 confirmation`)
+  return decision.confirmation
+}))
+const escalationConfirmationAttempts = await Promise.all(escalationDecisions.map(async (confirmation, index) => {
+  const target = escalationTargets[index]!
+  const confirmationResult = await escalationService.prepareAttempt({
+    account: escalationAccount,
+    requestLane: target.requestLane,
+    model: target.model,
+    confirmationLeaseDurationMs: 30_000,
+    confirmation
+  })
+  assert.equal(confirmationResult.outcome, 'dispatchable')
+  if (confirmationResult.outcome !== 'dispatchable') throw new Error(`${target.model} confirmation 不可派发`)
+  return confirmationResult.attempt
+}))
+await Promise.all(escalationConfirmationAttempts.slice(0, 3).map(async (attempt, index) => {
+  await attempt.reportTransportFailure({ kind: 'timeout', reason: `${escalationTargets[index]!.model} confirmation 失败` })
+}))
+const escalatedGeneration = (await escalationStore.get({
+  kind: 'account',
+  accountRuntimeKey: escalationAccount.id
+}, now)).generation
+await escalationConfirmationAttempts[3]!.reportTransportFailure({
+  kind: 'read_incomplete',
+  reason: '父级已打开后的晚到 confirmation 失败'
+})
+
+const parentScope = { kind: 'account' as const, accountRuntimeKey: escalationAccount.id }
+const parentState = await escalationStore.get(parentScope, now)
+assert.equal(parentState.phase, 'OPEN', '三个独立协议/模型确认失败必须升级账户父级 OPEN')
+assert.equal(parentState.childScopeKeys?.length, 4, '并发升级与晚到 confirmation 必须保留全部子作用域证据')
+assert.equal(parentState.generation, escalatedGeneration, '父级已 OPEN 时晚到证据只能追加，不得重复升代')
+assert.equal(
+  escalationMutations.filter((mutation) => (
+    mutation.scopeKind === 'account'
+    && mutation.operation === 'record_parent_evidence'
+    && mutation.status === 'applied'
+    && mutation.previousPhase === 'CLOSED'
+  )).length,
+  1,
+  '父级 CLOSED -> OPEN 只能持久化/观测一次'
+)
+const parentBlocked = await escalationService.prepareAttempt({
+  account: escalationAccount,
+  requestLane: 'image',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000
+})
+assert.equal(parentBlocked.outcome, 'blocked', '账户父级 OPEN 必须阻断其他 lane/model')
+if (parentBlocked.outcome === 'blocked') assert.equal(parentBlocked.state.scope.kind, 'account')
+
+const revisionAccount = accountFixture({ id: 'account-parent-revision', dispatchRevision: 2 })
+const revisionStore = new MemoryAccountCircuitStore({ capacity: 8, now: () => now })
+const staleParentScope = { kind: 'account' as const, accountRuntimeKey: revisionAccount.id }
+await revisionStore.restore({
+  scope: staleParentScope,
+  scopeKey: accountCircuitScopeKey(staleParentScope),
+  phase: 'OPEN',
+  generation: 4,
+  dispatchRevision: '1',
+  transitionId: 'old-parent-open',
+  backoffAttempt: 2,
+  recoverySuccessCount: 0,
+  openedAtMs: now,
+  retryAtMs: now + 30_000,
+  updatedAtMs: now
+})
+const revisionMutations: Array<{ operation: string; status: string; scopeKind: string }> = []
+const revisionService = new GatewayAccountCircuitService(revisionStore, {
+  now: () => now,
+  createId: () => `revision-${++id}`,
+  onMutation: (mutation) => {
+    revisionMutations.push({
+      operation: mutation.operation,
+      status: mutation.status,
+      scopeKind: mutation.scope.kind
+    })
+  }
+})
+const revisionDecision = await revisionService.prepareAttempt({
+  account: revisionAccount,
+  requestLane: 'text',
+  model: 'gpt-5.4',
+  confirmationLeaseDurationMs: 30_000
+})
+assert.equal(revisionDecision.outcome, 'dispatchable', '旧 revision 父级 OPEN 不得阻断新配置')
+assert.ok(revisionMutations.some((mutation) => (
+  mutation.operation === 'replace_revision'
+  && mutation.status === 'applied'
+  && mutation.scopeKind === 'account'
+)), '父级 revision fence 必须进入 bridge mutation')
+const replacedParent = await revisionStore.get(staleParentScope, now)
+assert.equal(replacedParent.phase, 'CLOSED')
+assert.equal(replacedParent.dispatchRevision, '2')
 
 const failingStore = {
   ...store,

@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from 'node:util'
+
 import type {
   AccountBatchEditResult,
   AccountModelMapping,
@@ -348,6 +350,19 @@ async function prepareAccountUpdateAsync(
     dispatchChanged: account.priority !== nextPriority
       || account.superPriorityEnabled !== nextSuperPriorityEnabled
       || account.fallbackEnabled !== nextFallbackEnabled,
+    dispatchRevisionChanged: !isDeepStrictEqual(account.credentials, nextCredentials)
+      || account.proxyProfileId !== nextProxyProfileId
+      || account.status !== nextStatus
+      || account.concurrencyLimit !== nextConcurrencyLimit
+      || account.priority !== nextPriority
+      || account.superPriorityEnabled !== nextSuperPriorityEnabled
+      || account.fallbackEnabled !== nextFallbackEnabled
+      || account.schedulable !== (expiredByPackage || statusForcesSchedulableOff(nextStatus) ? false : account.schedulable)
+      || !isDeepStrictEqual(account.availabilitySchedule, nextAvailabilitySchedule)
+      || account.accountExpiresAt !== nextAccountExpiresAt
+      || account.cooldownUntil !== (expiredByPackage ? undefined : account.cooldownUntil)
+      || supportedModelsChanged
+      || modelMappingsChanged,
     resetHealthCheckState: shouldScheduleHealthCheck && nextStatus !== 'disabled',
     disableBalanceQuery: account.type === 'api_key' && effectiveAccountApiKeyCount(nextCredentials) > 1,
     resetBalanceQuery: proxyChanged && account.balanceQueryEnabled

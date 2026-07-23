@@ -1,11 +1,14 @@
 import {
   accountCircuitBackoffDelayMs,
+  accountCircuitRecoveryCanaryIntervalMs,
   accountCircuitRecoverySuccessThreshold,
   accountCircuitScopeKey,
   cloneAccountCircuitState,
   closedAccountCircuitState,
   type AccountCircuitLease,
+  type AccountCircuitEscalationResult,
   type AccountCircuitMutationResult,
+  type AccountCircuitProtocolModelOpenEvidenceInput,
   type AccountCircuitScope,
   type AccountCircuitState,
   type AccountCircuitStore,
@@ -26,8 +29,22 @@ interface MemoryAccountCircuitEntry {
   replayIds: Set<string>
 }
 
+interface MemoryAccountCircuitEscalationScopeEvidence {
+  scopeKey: string
+  incidentId: string
+  evidenceId: string
+  confirmedFailureCount: number
+  observedAtMs: number
+}
+
+interface MemoryAccountCircuitEscalationEvidence {
+  dispatchRevision: string
+  scopes: MemoryAccountCircuitEscalationScopeEvidence[]
+}
+
 export class MemoryAccountCircuitStore implements AccountCircuitStore {
   private readonly entries = new Map<string, MemoryAccountCircuitEntry>()
+  private readonly escalationEvidence = new Map<string, MemoryAccountCircuitEscalationEvidence>()
   private readonly capacity: number
   private readonly closedRetentionMs: number
   private readonly replayLimitPerScope: number
@@ -70,6 +87,7 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
       transitionId: requiredValue(input.transitionId, 'transitionId'),
       backoffAttempt: 0,
       recoverySuccessCount: 0,
+      incidentId: input.transitionId,
       failureReason: input.reason,
       updatedAtMs: now
     }
@@ -93,7 +111,7 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
     if ('result' in checked) return checked.result
     const { entry, now } = checked
     if (input.outcome === 'framing_complete') {
-      return this.close(entry, input.transitionId, now)
+      return this.enterRecovering(entry, input.transitionId, now)
     }
     if (input.outcome === 'unknown') {
       return this.apply(entry, {
@@ -121,7 +139,7 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
       return result('state_mismatch', entry.state)
     }
     if (entry.state.lease) return result('state_mismatch', entry.state)
-    if (entry.state.phase === 'OPEN' && (entry.state.retryAtMs ?? Number.POSITIVE_INFINITY) > now) {
+    if ((entry.state.phase === 'OPEN' || entry.state.phase === 'RECOVERING') && (entry.state.retryAtMs ?? Number.POSITIVE_INFINITY) > now) {
       return result('not_due', entry.state)
     }
     const origin = entry.state.phase
@@ -145,6 +163,7 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
     leaseId: string
     outcome: 'framing_complete' | 'transport_failure' | 'unknown'
     reason?: string
+    evidenceScopeKey?: string
   }): Promise<AccountCircuitMutationResult> {
     const now = normalizedNow(input.nowMs ?? this.now())
     const entry = this.freshEntry(input.scope, now)
@@ -163,8 +182,17 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
     if (input.outcome === 'unknown') {
       return this.restoreCanaryOrigin(entry, input.transitionId, now)
     }
+    if (entry.state.halfOpenOrigin === 'OPEN') {
+      return this.enterRecovering(entry, input.transitionId, now)
+    }
+    const recoveryEvidenceScopeKeys = this.nextRecoveryEvidenceScopeKeys(entry.state, input.evidenceScopeKey)
+    if (entry.state.scope.kind === 'account' && !recoveryEvidenceScopeKeys) {
+      return result('state_mismatch', entry.state)
+    }
     const recoverySuccessCount = entry.state.recoverySuccessCount + 1
-    if (recoverySuccessCount >= accountCircuitRecoverySuccessThreshold) {
+    const requiredRecoveryScopeKeys = entry.state.requiredRecoveryScopeKeys ?? []
+    const hasRequiredCoverage = requiredRecoveryScopeKeys.every((scopeKey) => recoveryEvidenceScopeKeys?.includes(scopeKey))
+    if (recoverySuccessCount >= accountCircuitRecoverySuccessThreshold && hasRequiredCoverage) {
       return this.close(entry, input.transitionId, now)
     }
     return this.apply(entry, {
@@ -172,11 +200,117 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
       phase: 'RECOVERING',
       transitionId: input.transitionId,
       recoverySuccessCount,
+      recoveryEvidenceScopeKeys,
       lease: undefined,
       halfOpenOrigin: undefined,
       retryAtMs: now,
       updatedAtMs: now
     }, input.transitionId)
+  }
+
+  async recordProtocolModelOpenEvidence(
+    input: AccountCircuitProtocolModelOpenEvidenceInput
+  ): Promise<AccountCircuitEscalationResult> {
+    const now = normalizedNow(input.nowMs ?? this.now())
+    const scopeKey = accountCircuitScopeKey(input.scope)
+    const child = this.freshEntry(input.scope, now)
+    const accountScope: AccountCircuitScope = { kind: 'account', accountRuntimeKey: input.scope.accountRuntimeKey }
+    const closedAccountState = closedAccountCircuitState(accountScope, input.dispatchRevision)
+    if (!child) return escalationResult('not_found', closedAccountState, 0, 0)
+    if (child.state.generation !== input.generation) {
+      return escalationResult('stale_generation', closedAccountState, 0, 0)
+    }
+    if (child.state.dispatchRevision !== input.dispatchRevision) {
+      return escalationResult('stale_dispatch_revision', closedAccountState, 0, 0)
+    }
+    if (child.state.phase !== 'OPEN') {
+      return escalationResult('state_mismatch', closedAccountState, 0, 0)
+    }
+
+    const windowMs = positiveInteger(input.windowMs, 'windowMs')
+    const maxProtocolScopes = positiveInteger(input.maxProtocolScopes, 'maxProtocolScopes')
+    const confirmedFailureCount = positiveInteger(input.confirmedFailureCount, 'confirmedFailureCount')
+    const cutoff = now - windowMs
+    const previous = this.escalationEvidence.get(input.scope.accountRuntimeKey)
+    const evidence: MemoryAccountCircuitEscalationEvidence = previous?.dispatchRevision === input.dispatchRevision
+      ? {
+          dispatchRevision: previous.dispatchRevision,
+          scopes: previous.scopes.filter((item) => item.observedAtMs >= cutoff)
+        }
+      : { dispatchRevision: input.dispatchRevision, scopes: [] }
+    if (evidence.scopes.some((item) => item.evidenceId === input.evidenceId)) {
+      const accountState = await this.get(accountScope, now)
+      return escalationResult('idempotent', accountState, evidence.scopes.length, totalConfirmedFailures(evidence.scopes))
+    }
+    const incidentId = child.state.incidentId ?? `${scopeKey}@${child.state.generation}`
+    const existingIndex = evidence.scopes.findIndex((item) => item.scopeKey === scopeKey)
+    const nextScopeEvidence: MemoryAccountCircuitEscalationScopeEvidence = {
+      scopeKey,
+      incidentId,
+      evidenceId: requiredValue(input.evidenceId, 'evidenceId'),
+      confirmedFailureCount,
+      observedAtMs: now
+    }
+    if (existingIndex >= 0) evidence.scopes[existingIndex] = nextScopeEvidence
+    else evidence.scopes.push(nextScopeEvidence)
+    evidence.scopes.sort((left, right) => left.observedAtMs - right.observedAtMs)
+    while (evidence.scopes.length > maxProtocolScopes) evidence.scopes.shift()
+    this.escalationEvidence.set(input.scope.accountRuntimeKey, evidence)
+
+    const failureTotal = totalConfirmedFailures(evidence.scopes)
+    const accountEntry = this.freshEntry(accountScope, now)
+    if (evidence.scopes.length < 2 || failureTotal < 3) {
+      return escalationResult('recorded', accountEntry?.state ?? closedAccountState, evidence.scopes.length, failureTotal)
+    }
+
+    const childScopeKeys = evidence.scopes.map((item) => item.scopeKey)
+    const childIncidentIds = evidence.scopes.map((item) => item.incidentId)
+    if (accountEntry && accountEntry.state.phase !== 'CLOSED') {
+      if (accountEntry.state.dispatchRevision !== input.dispatchRevision) {
+        return escalationResult('stale_dispatch_revision', accountEntry.state, evidence.scopes.length, failureTotal)
+      }
+      this.attachAccountShadow(accountEntry, childScopeKeys, childIncidentIds, now)
+      return escalationResult('already_active', accountEntry.state, evidence.scopes.length, failureTotal)
+    }
+    if (!accountEntry && !this.reserveCapacity(now)) {
+      return escalationResult('capacity_exhausted', closedAccountState, evidence.scopes.length, failureTotal)
+    }
+    const target = accountEntry ?? this.newEntry(closedAccountState)
+    const accountIncidentId = requiredValue(input.accountTransitionId, 'accountTransitionId')
+    const accountState: AccountCircuitState = {
+      ...closedAccountState,
+      phase: 'OPEN',
+      generation: target.state.generation + 1,
+      dispatchRevision: requiredValue(input.dispatchRevision, 'dispatchRevision'),
+      transitionId: accountIncidentId,
+      incidentId: accountIncidentId,
+      backoffAttempt: 1,
+      openedAtMs: now,
+      retryAtMs: now + accountCircuitBackoffDelayMs(1),
+      failureReason: requiredValue(input.reason, 'reason'),
+      childScopeKeys,
+      childIncidentIds,
+      requiredRecoveryScopeKeys: [...childScopeKeys],
+      recoveryEvidenceScopeKeys: [],
+      updatedAtMs: now
+    }
+    this.apply(target, accountState, accountIncidentId)
+    this.shadowChildren(childScopeKeys, accountIncidentId, input.dispatchRevision, now)
+    return escalationResult('escalated', accountState, evidence.scopes.length, failureTotal)
+  }
+
+  async clearAccountEscalationEvidence(input: {
+    accountRuntimeKey: string
+    dispatchRevision: string
+    evidenceId: string
+    nowMs?: number
+  }): Promise<boolean> {
+    normalizedNow(input.nowMs ?? this.now())
+    requiredValue(input.evidenceId, 'evidenceId')
+    const evidence = this.escalationEvidence.get(requiredValue(input.accountRuntimeKey, 'accountRuntimeKey'))
+    if (!evidence || evidence.dispatchRevision !== requiredValue(input.dispatchRevision, 'dispatchRevision')) return false
+    this.escalationEvidence.delete(input.accountRuntimeKey)
+    return true
   }
 
   async replaceDispatchRevision(input: {
@@ -186,6 +320,7 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
     nowMs?: number
   }): Promise<AccountCircuitMutationResult> {
     const now = normalizedNow(input.nowMs ?? this.now())
+    this.escalationEvidence.delete(input.scope.accountRuntimeKey)
     const entry = this.freshEntry(input.scope, now)
     const replay = this.idempotentResult(entry, input.transitionId)
     if (replay) return replay
@@ -202,6 +337,61 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
         now
       )
     }, input.transitionId, now + this.closedRetentionMs)
+  }
+
+  async restore(rawState: AccountCircuitState, nowMs = this.now()): Promise<AccountCircuitMutationResult> {
+    const now = normalizedNow(nowMs)
+    const state = cloneAccountCircuitState(rawState)
+    const existing = this.freshEntry(state.scope, now)
+    if (existing && (existing.state.generation > state.generation
+      || (existing.state.generation === state.generation && existing.state.updatedAtMs >= state.updatedAtMs))) {
+      return result('idempotent', existing.state)
+    }
+    if (!existing && !this.reserveCapacity(now)) return result('capacity_exhausted', state)
+    const entry = existing ?? this.newEntry(state)
+    entry.state = state
+    entry.closedExpiresAtMs = state.phase === 'CLOSED' ? now + this.closedRetentionMs : undefined
+    if (!entry.replayIds.has(state.transitionId)) {
+      entry.replayIds.add(state.transitionId)
+      entry.replayOrder.push(state.transitionId)
+    }
+    this.entries.set(state.scopeKey, entry)
+    return result('applied', state)
+  }
+
+  async replaceAccountDispatchRevision(input: {
+    accountRuntimeKey: string
+    dispatchRevision: string
+    transitionId: string
+    nowMs?: number
+  }): Promise<number> {
+    const now = normalizedNow(input.nowMs ?? this.now())
+    for (const [runtimeKey, evidence] of this.escalationEvidence) {
+      if (runtimeKeyMatchesDispatchRevisionTarget(runtimeKey, input.accountRuntimeKey)
+        && evidence.dispatchRevision !== input.dispatchRevision
+        && !isOlderNumericDispatchRevision(input.dispatchRevision, evidence.dispatchRevision)) {
+        this.escalationEvidence.delete(runtimeKey)
+      }
+    }
+    let changed = 0
+    for (const entry of this.entries.values()) {
+      if (!runtimeKeyMatchesDispatchRevisionTarget(entry.state.scope.accountRuntimeKey, input.accountRuntimeKey)) continue
+      if (entry.state.dispatchRevision === input.dispatchRevision) continue
+      if (isOlderNumericDispatchRevision(input.dispatchRevision, entry.state.dispatchRevision)) continue
+      const state = closedAccountCircuitState(
+        entry.state.scope,
+        input.dispatchRevision,
+        entry.state.generation + 1,
+        input.transitionId,
+        now
+      )
+      entry.state = state
+      entry.closedExpiresAtMs = now + this.closedRetentionMs
+      entry.replayIds.add(input.transitionId)
+      entry.replayOrder.push(input.transitionId)
+      changed++
+    }
+    return changed
   }
 
   async listDue(nowMs: number, limit: number): Promise<AccountCircuitState[]> {
@@ -285,6 +475,8 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
       transitionId,
       backoffAttempt,
       recoverySuccessCount: 0,
+      recoveryEvidenceScopeKeys: [],
+      incidentId: entry.state.incidentId ?? transitionId,
       openedAtMs: now,
       retryAtMs: now + accountCircuitBackoffDelayMs(backoffAttempt),
       failureReason: reason ?? entry.state.failureReason,
@@ -294,16 +486,90 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
     }, transitionId)
   }
 
-  private close(entry: MemoryAccountCircuitEntry, transitionId: string, now: number): AccountCircuitMutationResult {
+  private enterRecovering(
+    entry: MemoryAccountCircuitEntry,
+    transitionId: string,
+    now: number
+  ): AccountCircuitMutationResult {
     return this.apply(entry, {
+      ...entry.state,
+      phase: 'RECOVERING',
+      transitionId,
+      recoverySuccessCount: 0,
+      recoveryEvidenceScopeKeys: [],
+      lease: undefined,
+      halfOpenOrigin: undefined,
+      retryAtMs: now + accountCircuitRecoveryCanaryIntervalMs,
+      updatedAtMs: now
+    }, transitionId)
+  }
+
+  private close(entry: MemoryAccountCircuitEntry, transitionId: string, now: number): AccountCircuitMutationResult {
+    const childScopeKeys = entry.state.childScopeKeys ?? []
+    const incidentId = entry.state.incidentId
+    const closed = this.apply(entry, {
       ...closedAccountCircuitState(
         entry.state.scope,
         entry.state.dispatchRevision,
         entry.state.generation,
         transitionId,
         now
-      )
+      ),
+      incidentId
     }, transitionId, now + this.closedRetentionMs)
+    if (incidentId) this.unshadowChildren(childScopeKeys, incidentId, now)
+    return closed
+  }
+
+  private nextRecoveryEvidenceScopeKeys(
+    state: AccountCircuitState,
+    evidenceScopeKey: string | undefined
+  ): string[] | undefined {
+    if (state.scope.kind !== 'account') return state.recoveryEvidenceScopeKeys ?? []
+    const requiredScopeKeys = state.requiredRecoveryScopeKeys ?? []
+    if (requiredScopeKeys.length === 0) return state.recoveryEvidenceScopeKeys ?? []
+    const normalized = evidenceScopeKey?.trim()
+    if (!normalized || !requiredScopeKeys.includes(normalized)) return undefined
+    return [...new Set([...(state.recoveryEvidenceScopeKeys ?? []), normalized])]
+  }
+
+  private attachAccountShadow(
+    entry: MemoryAccountCircuitEntry,
+    childScopeKeys: string[],
+    childIncidentIds: string[],
+    now: number
+  ): void {
+    const incidentId = entry.state.incidentId ?? entry.state.transitionId
+    entry.state = {
+      ...entry.state,
+      incidentId,
+      childScopeKeys: [...new Set([...(entry.state.childScopeKeys ?? []), ...childScopeKeys])],
+      childIncidentIds: [...new Set([...(entry.state.childIncidentIds ?? []), ...childIncidentIds])],
+      requiredRecoveryScopeKeys: [...new Set([...(entry.state.requiredRecoveryScopeKeys ?? []), ...childScopeKeys])],
+      updatedAtMs: now
+    }
+    this.shadowChildren(childScopeKeys, incidentId, entry.state.dispatchRevision, now)
+  }
+
+  private shadowChildren(
+    scopeKeys: string[],
+    parentIncidentId: string,
+    dispatchRevision: string,
+    now: number
+  ): void {
+    for (const scopeKey of scopeKeys) {
+      const child = this.entries.get(scopeKey)
+      if (!child || child.state.phase === 'CLOSED' || child.state.dispatchRevision !== dispatchRevision) continue
+      child.state = { ...child.state, shadowedByIncidentId: parentIncidentId, updatedAtMs: now }
+    }
+  }
+
+  private unshadowChildren(scopeKeys: string[], parentIncidentId: string, now: number): void {
+    for (const scopeKey of scopeKeys) {
+      const child = this.entries.get(scopeKey)
+      if (!child || child.state.shadowedByIncidentId !== parentIncidentId) continue
+      child.state = { ...child.state, shadowedByIncidentId: undefined, updatedAtMs: now }
+    }
   }
 
   private restoreCanaryOrigin(
@@ -416,6 +682,19 @@ export class MemoryAccountCircuitStore implements AccountCircuitStore {
   }
 }
 
+function runtimeKeyMatchesDispatchRevisionTarget(runtimeKey: string, target: string): boolean {
+  return runtimeKey === target || (!target.includes(':authorized:') && runtimeKey.startsWith(`${target}:authorized:`))
+}
+
+function isOlderNumericDispatchRevision(candidate: string, current: string): boolean {
+  const candidateNumber = Number(candidate)
+  const currentNumber = Number(current)
+  return Number.isSafeInteger(candidateNumber)
+    && candidateNumber > 0
+    && Number.isSafeInteger(currentNumber)
+    && currentNumber > candidateNumber
+}
+
 function accountCircuitLease(
   kind: AccountCircuitLease['kind'],
   leaseId: string,
@@ -430,6 +709,24 @@ function accountCircuitLease(
 
 function result(status: AccountCircuitMutationResult['status'], state: AccountCircuitState): AccountCircuitMutationResult {
   return { status, state: cloneAccountCircuitState(state) }
+}
+
+function escalationResult(
+  status: AccountCircuitEscalationResult['status'],
+  accountState: AccountCircuitState,
+  protocolScopeCount: number,
+  confirmedFailureCount: number
+): AccountCircuitEscalationResult {
+  return {
+    status,
+    accountState: cloneAccountCircuitState(accountState),
+    protocolScopeCount,
+    confirmedFailureCount
+  }
+}
+
+function totalConfirmedFailures(scopes: MemoryAccountCircuitEscalationScopeEvidence[]): number {
+  return scopes.reduce((total, item) => total + item.confirmedFailureCount, 0)
 }
 
 function requiredValue(value: string, name: string): string {

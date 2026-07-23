@@ -19,6 +19,27 @@ interface RequestStageSummary {
   endedOffsetMs?: number
 }
 
+export interface GatewayRoutingDispatchSummary {
+  observedEvents: number
+  droppedEvents: number
+  attemptsStarted: number
+  attemptsCompleted: number
+  attemptsFailed: number
+  circuitTransitions: number
+  circuitSkips: number
+  circuitCasConflicts: number
+  circuitLeasesAcquired: number
+  circuitLeasesRejected: number
+  hotQualityDeduplications: number
+  hotQualityConflicts: number
+  explorationsReserved: number
+  explorationsDispatched: number
+  tierEscapes: number
+  wallBudgetExhausted: number
+  precommitClipped: number
+  clientHandoffs: number
+}
+
 export interface RequestContext {
   traceId: string
   requestId?: string
@@ -28,6 +49,7 @@ export interface RequestContext {
   stageSummaries?: RequestStageSummary[]
   stageSummaryDropped?: number
   timingSummaryLogged?: boolean
+  gatewayRoutingDispatchSummary?: GatewayRoutingDispatchSummary
   terminalExpectedFailure?: boolean
   method: string
   path: string
@@ -385,7 +407,7 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
 }
 
 function logRequestTimingSummary(context: RequestContext, statusCode: number, outcome: GatewayRequestStageOutcome): void {
-  if (context.timingSummaryLogged || !context.stageSummaries?.length) return
+  if (context.timingSummaryLogged || (!context.stageSummaries?.length && !context.gatewayRoutingDispatchSummary)) return
   context.timingSummaryLogged = true
   captureTimingLogQueueSnapshot(context)
   const totalDurationMs = Math.max(0, performance.now() - (context.monotonicStartedAt ?? performance.now()))
@@ -416,12 +438,15 @@ function logRequestTimingSummary(context: RequestContext, statusCode: number, ou
     firstOutputDurationMs: lastStage(context, 'upstream.first_output')?.durationMs ?? null,
     upstreamBodyDurationMs: sumStageDurations(context, 'upstream.body.completed') ?? null,
     downstreamFinishDurationMs: lastStage(context, 'downstream.finish')?.durationMs ?? null,
-    stageCount: context.stageSequence ?? context.stageSummaries.length,
+    stageCount: context.stageSequence ?? context.stageSummaries?.length ?? 0,
     timingLogDroppedCount: context.timingLogDroppedCount ?? 0,
     timingLogQueuePeakCount: context.timingLogQueuePeakCount ?? 0,
     timingLogQueuePeakBytes: context.timingLogQueuePeakBytes ?? 0,
     droppedStageSummaries: context.stageSummaryDropped ?? 0,
-    stages: context.stageSummaries
+    dispatchSummary: context.gatewayRoutingDispatchSummary
+      ? { ...context.gatewayRoutingDispatchSummary }
+      : null,
+    stages: context.stageSummaries ?? []
   }, '网关请求阶段耗时汇总')
 }
 

@@ -3,6 +3,8 @@ export const SAME_TIER_EXPLORATION_TARGET_COOLDOWN_MS = 60_000
 export const SAME_TIER_EXPLORATION_CREDIT_INCREMENT = 0.05
 export const SAME_TIER_EXPLORATION_CREDIT_COST = 1
 export const SAME_TIER_EXPLORATION_CREDIT_CAP = 1
+export const SAME_TIER_EXPLORATION_POOL_CAPACITY = 10_000
+export const SAME_TIER_EXPLORATION_IDENTITY_CAPACITY = 2_048
 
 export interface SameTierExplorationReservation {
   reservationId: string
@@ -24,7 +26,7 @@ export interface SameTierExplorationState {
 export type SameTierExplorationReservationStatus =
   | 'reserved'
   | 'credit_unavailable'
-  | 'target_busy'
+  | 'pool_busy'
   | 'target_cooldown'
   | 'reservation_conflict'
 
@@ -85,13 +87,15 @@ export function normalizeSameTierExplorationState(
   const poolKey = requiredKey(input.poolKey, 'poolKey')
   const credit = finiteRange(input.credit, 0, SAME_TIER_EXPLORATION_CREDIT_CAP, 'credit')
   const cursor = nonNegativeInteger(input.cursor, 'cursor')
-  const reservations = input.reservations
-    .filter((reservation) => reservation && reservation.leaseUntilMs > nowMs)
-    .map((reservation) => ({
+  const normalizedReservations = input.reservations.filter(Boolean).map((reservation) => ({
       reservationId: requiredKey(reservation.reservationId, 'reservationId'),
       accountRuntimeKey: requiredKey(reservation.accountRuntimeKey, 'accountRuntimeKey'),
       leaseUntilMs: nonNegativeInteger(reservation.leaseUntilMs, 'leaseUntilMs')
     }))
+  const reservations = normalizedReservations.filter((reservation) => reservation.leaseUntilMs > nowMs)
+  const expiredReservationIds = normalizedReservations
+    .filter((reservation) => reservation.leaseUntilMs <= nowMs)
+    .map((reservation) => reservation.reservationId)
   const cooldownUntilMsByRuntimeKey: Record<string, number> = {}
   for (const [runtimeKey, untilMs] of Object.entries(input.cooldownUntilMsByRuntimeKey)) {
     if (untilMs <= nowMs) continue
@@ -103,8 +107,13 @@ export function normalizeSameTierExplorationState(
     cursor,
     reservations,
     cooldownUntilMsByRuntimeKey,
-    accruedTokens: uniqueBoundedKeys(input.accruedTokens, 2048),
-    settledReservationIds: uniqueBoundedKeys(input.settledReservationIds, 2048),
+    accruedTokens: uniqueBoundedKeys(input.accruedTokens, SAME_TIER_EXPLORATION_IDENTITY_CAPACITY),
+    // Expired IDs are retained as fencing tombstones so a late owner cannot
+    // reuse its reservation ID and settle a newer lease.
+    settledReservationIds: uniqueBoundedKeys(
+      [...input.settledReservationIds, ...expiredReservationIds],
+      SAME_TIER_EXPLORATION_IDENTITY_CAPACITY
+    ),
     expiresAtMs: Math.max(nowMs + 1, nonNegativeInteger(input.expiresAtMs, 'expiresAtMs'))
   }
 }
@@ -125,11 +134,11 @@ export function cloneSameTierExplorationState(input: SameTierExplorationState): 
 function uniqueBoundedKeys(values: readonly string[], limit: number): string[] {
   const result: string[] = []
   const seen = new Set<string>()
-  for (const value of values) {
+  for (const value of [...values].reverse()) {
     const normalized = requiredKey(value, '状态 identity')
     if (seen.has(normalized)) continue
     seen.add(normalized)
-    result.push(normalized)
+    result.unshift(normalized)
     if (result.length >= limit) break
   }
   return result

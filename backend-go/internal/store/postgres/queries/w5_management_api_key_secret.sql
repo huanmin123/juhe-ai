@@ -24,6 +24,7 @@ SELECT
   api_keys.key_suffix,
   api_keys.status,
   api_keys.is_default,
+  api_keys.purpose,
   api_keys.route_strategy_id,
   route_strategies.name AS route_strategy_name,
   route_strategies.mode AS route_strategy_mode,

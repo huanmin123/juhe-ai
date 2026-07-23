@@ -28,7 +28,6 @@ import {
   orderGatewayAccountsByLaneCapacityAvailabilityAsync,
   refreshGatewayAccountCurrentConcurrencyAsync
 } from './capacity.js'
-import { sendGatewayFailureResponse, sendQuotaExceededResponse } from '../response/failure-response.js'
 import { waitForHighConcurrencyGroupCapacity } from '../runtime/high-concurrency-queue.service.js'
 import { resolveLocalSuppressionFilter } from '../runtime/local-suppression-preflight.js'
 import {
@@ -39,7 +38,6 @@ import {
   orderGatewayAccountsByNormalRouteLatencyDegradationAsync
 } from '../runtime/normal-route-latency-degradation.service.js'
 import type { OpenAIGatewayRequestLane } from '../protocols/openai-v1/request-lane.js'
-import { gatewayErrorPayload } from '../response/responses.js'
 import type { UpstreamAccount } from '../protocols/openai-v1/route-helpers.js'
 import {
   areOpenAIHighConcurrencyAccountsBusyForLane,
@@ -59,9 +57,11 @@ import {
 import type { GatewayAccountModelPriority } from './model-filter.js'
 import type { NormalRouteSpeedFirstRuntimeConfig } from '../runtime/normal-route-latency-degradation.service.js'
 import type { ServerRetryBudget } from '../runtime/server-retry-budget.js'
+import { requestModel } from '../request/metadata.js'
 import type {
   GatewayRequestWallBudget,
-  RouteCoordinationBudget
+  RouteCoordinationBudget,
+  GatewayRouteCoordinatorOwner
 } from '../routing/route-coordination.js'
 import {
   orderGatewayAccountsByHotQualityAsync,
@@ -85,7 +85,7 @@ export type DispatchPreparationResult =
     hotQualityExplorationReservation?: GatewayHotQualityExplorationReservation
     settleHotQualityExplorationAfterDispatch?: (outcome: 'dispatched' | 'not_dispatched') => Promise<void>
   }
-  | { outcome: 'fallback'; context?: OpenAIGatewayDispatchContext }
+  | { outcome: 'fallback'; reason: string; context?: OpenAIGatewayDispatchContext }
   | { outcome: 'completed' }
 
 export async function prepareOpenAIGatewayDispatchAccounts(input: {
@@ -111,7 +111,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   gatewayRequestWallBudget: GatewayRequestWallBudget
   signal?: AbortSignal
   ignoreAccountRuntimeSuppression?: boolean
-  attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
+  routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
 }): Promise<DispatchPreparationResult> {
   const sessionAffinityStartedAt = performance.now()
   const dispatchOrderingOptions = {
@@ -150,7 +150,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   }, 'success', suppressionStartedAt)
   let precheckHalfOpenEligible = false
   if (initialLocalSuppressionFilter.allSuppressed) {
-    const fallback = await input.attemptFallback('local_account_suppressed')
+    const fallback = await requestRouteFallback(input, 'local_account_suppressed')
     if (fallback.attempted) {
       logger.warn({
         event: 'gateway_local_account_suppression_fallback',
@@ -171,7 +171,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
           fallbackAttempted: true
         }
       })
-      return { outcome: 'fallback', context: fallback.context }
+      return { outcome: 'fallback', reason: 'local_account_suppressed', context: fallback.context }
     }
     precheckHalfOpenEligible = initialLocalSuppressionFilter.precheckSuppressedAccountIds?.length === orderedCandidateAccounts.length
       && (initialLocalSuppressionFilter.configuredPolicySuppressedAccountIds?.length ?? 0) === 0
@@ -194,6 +194,7 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
         serverRetryBudget: input.serverRetryBudget,
         routeCoordinationBudget: input.routeCoordinationBudget,
         gatewayRequestWallBudget: input.gatewayRequestWallBudget,
+        routeCoordinator: input.routeCoordinator,
         signal: input.signal
       })
   if (!localSuppressionFilter) {
@@ -230,9 +231,9 @@ export async function prepareOpenAIGatewayDispatchAccounts(input: {
   }
 
   if (runtimeDegradationOrder.bypassedAllDegraded) {
-    const fallback = await input.attemptFallback('runtime_degraded')
+    const fallback = await requestRouteFallback(input, 'runtime_degraded')
     if (fallback.attempted) {
-      return { outcome: 'fallback', context: fallback.context }
+      return { outcome: 'fallback', reason: 'runtime_degraded', context: fallback.context }
     }
   }
 
@@ -449,7 +450,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   requestLane: OpenAIGatewayRequestLane
   signal?: AbortSignal
   dispatchOrderingOptions: OpenAIAccountDispatchOrderingOptions
-  attemptFallback: (reason: string) => Promise<DispatchPreparationFallbackResult>
+  routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
   latencyDegradedAccountIds: ReadonlySet<string>
   hotQualityMode: 'cost_first' | 'speed_first'
   eligibleFirstPrimaryDispatch: boolean
@@ -488,29 +489,25 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
 
   if (accounts.length === 0) {
     if (authorizationQuotaDeniedAccountCount > 0) {
-      const fallback = await input.attemptFallback('authorization_quota_exceeded')
+      const fallback = await requestRouteFallback(input, 'authorization_quota_exceeded')
       if (fallback.attempted) {
-        return { outcome: 'fallback', context: fallback.context }
+        return { outcome: 'fallback', reason: 'authorization_quota_exceeded', context: fallback.context }
       }
-      await sendQuotaExceededResponse(input.req, input.res, input.auditCapture, input.usageContext, input.startedAt, AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE)
+      await input.routeCoordinator.completeFailure({
+        statusCode: 429,
+        message: AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE,
+        errorType: 'rate_limit_exceeded',
+        errorCode: 'rate_limit_exceeded',
+        errorPhase: 'quota'
+      })
       return { outcome: 'completed' }
     }
-    const statusCode = 503
-    const responsePayload = gatewayErrorPayload('上游暂时不可用，请重试', 'service_unavailable', 'upstream_retryable_error')
-    await sendGatewayFailureResponse({
-      req: input.req,
-      res: input.res,
-      auditCapture: input.auditCapture,
-      usageContext: input.usageContext,
-      startedAt: input.startedAt,
-      statusCode,
-      responsePayload,
-      audit: {
-        outcome: 'gateway_failed',
-        errorPhase: 'dispatch',
-        errorCode: 'service_unavailable',
-        errorMessage: '上游暂时不可用，请重试'
-      }
+    await input.routeCoordinator.completeFailure({
+      statusCode: 503,
+      message: '上游暂时不可用，请重试',
+      errorType: 'service_unavailable',
+      errorCode: 'upstream_retryable_error',
+      errorPhase: 'dispatch'
     })
     return { outcome: 'completed' }
   }
@@ -537,6 +534,7 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       routeStrategyId: input.routeStrategyId,
       groupId: input.groupId,
       requestLane: input.requestLane,
+      model: requestModel(input.req),
       requestId: input.usageContext.traceId,
       latencyDegradedAccountIds: input.latencyDegradedAccountIds,
       eligibleFirstPrimaryDispatch: input.eligibleFirstPrimaryDispatch
@@ -563,9 +561,9 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
   }
 
   if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
-    const fallback = await input.attemptFallback('high_concurrency_group_busy')
+    const fallback = await requestRouteFallback(input, 'high_concurrency_group_busy')
     if (fallback.attempted) {
-      return { outcome: 'fallback', context: fallback.context }
+      return { outcome: 'fallback', reason: 'high_concurrency_group_busy', context: fallback.context }
     }
   }
 
@@ -577,12 +575,10 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
       input.dispatchOrderingOptions.modelPriority
     )
     await applyHotQualityOrder()
-    if (await areGatewayAccountsCapacityBusyForLaneAsync(accounts, input.requestLane, input.groupAccess.schedulingPolicy)) {
-      const fallback = await input.attemptFallback('group_capacity_busy')
-      if (fallback.attempted) {
-        return { outcome: 'fallback', context: fallback.context }
-      }
-    }
+    // Keep busy candidates in the dispatch context. The upstream dispatcher
+    // owns bounded capacity waiting and can acquire whichever account becomes
+    // free; treating this snapshot as a route fallback would discard the group
+    // before its own queue has a chance to observe the release.
   }
 
   let releaseClientIpConcurrency = noop
@@ -634,22 +630,12 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
         if (input.signal?.aborted || input.res.writableEnded) {
           return { outcome: 'completed' }
         }
-        const statusCode = 429
-        const responsePayload = gatewayErrorPayload(clientIpConcurrencyFailureMessage(clientIpConcurrency), 'rate_limit_exceeded')
-        await sendGatewayFailureResponse({
-          req: input.req,
-          res: input.res,
-          auditCapture: input.auditCapture,
-          usageContext: input.usageContext,
-          startedAt: input.startedAt,
-          statusCode,
-          responsePayload,
-          audit: {
-            outcome: 'gateway_failed',
-            errorPhase: 'dispatch',
-            errorCode: 'rate_limit_exceeded',
-            errorMessage: responsePayload.error.message
-          },
+        await input.routeCoordinator.completeFailure({
+          statusCode: 429,
+          message: clientIpConcurrencyFailureMessage(clientIpConcurrency),
+          errorType: 'rate_limit_exceeded',
+          errorCode: 'rate_limit_exceeded',
+          errorPhase: 'dispatch',
           failureAttribution: 'gateway_capacity'
         })
         return { outcome: 'completed' }
@@ -696,28 +682,18 @@ async function prepareQuotaAndCapacityReadyAccounts(input: {
     }
 
     if (await areOpenAIHighConcurrencyAccountsBusyForLaneAsync(accounts, laneAwareDispatchOrderingOptions)) {
-      const fallback = await input.attemptFallback('high_concurrency_group_busy')
+      const fallback = await requestRouteFallback(input, 'high_concurrency_group_busy')
       if (fallback.attempted) {
         releaseClientIpConcurrencyOnce()
-        return { outcome: 'fallback', context: fallback.context }
+        return { outcome: 'fallback', reason: 'high_concurrency_group_busy', context: fallback.context }
       }
-      const statusCode = 429
-      const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
       releaseClientIpConcurrencyOnce()
-      await sendGatewayFailureResponse({
-        req: input.req,
-        res: input.res,
-        auditCapture: input.auditCapture,
-        usageContext: input.usageContext,
-        startedAt: input.startedAt,
-        statusCode,
-        responsePayload,
-        audit: {
-          outcome: 'gateway_failed',
-          errorPhase: 'dispatch',
-          errorCode: 'rate_limit_exceeded',
-          errorMessage: responsePayload.error.message
-        },
+      await input.routeCoordinator.completeFailure({
+        statusCode: 429,
+        message: '分组繁忙，请稍后重试',
+        errorType: 'rate_limit_exceeded',
+        errorCode: 'rate_limit_exceeded',
+        errorPhase: 'dispatch',
         failureAttribution: 'gateway_capacity'
       })
       return { outcome: 'completed' }
@@ -780,3 +756,12 @@ function clientIpConcurrencyFailureMessage(decision: ClientIpConcurrencyDecision
 }
 
 function noop(): void {}
+
+async function requestRouteFallback(
+  input: {
+    routeCoordinator: GatewayRouteCoordinatorOwner<OpenAIGatewayDispatchContext>
+  },
+  reason: string
+): Promise<DispatchPreparationFallbackResult> {
+  return input.routeCoordinator.requestFallback(reason)
+}

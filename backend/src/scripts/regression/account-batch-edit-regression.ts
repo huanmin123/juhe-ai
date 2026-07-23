@@ -142,6 +142,10 @@ try {
     assert.deepEqual(account.tags?.map((tag) => tag.name).sort(), ['主力', '生产'], '标签应直接覆盖')
     assert.equal(account.status, 'active', '非连接配置不应改变账户状态')
     assert.equal(account.schedulable, true, '非连接配置不应改变调度状态')
+    const revision = databaseModule.getBusinessDatabase()
+      .prepare('SELECT dispatch_revision FROM accounts WHERE id = ?')
+      .get(account.id) as unknown as { dispatch_revision: number }
+    assert.equal(revision.dispatch_revision, 3, '批量调度配置变化必须在同一事务推进 dispatch revision')
   }
   assertCredentialPoliciesMerged(accountA.id, 'sk-account-batch-edit-a')
   assertCredentialPoliciesMerged(accountB.id, 'sk-account-batch-edit-b')
