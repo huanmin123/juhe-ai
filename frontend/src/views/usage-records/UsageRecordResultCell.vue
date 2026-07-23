@@ -8,18 +8,28 @@
     </a-popover>
     <a-tag color="red">失败</a-tag>
   </span>
-  <a-tag v-else color="green">成功</a-tag>
+  <span v-else class="result-cell">
+    <a-popover v-if="codexGuardStatus" trigger="hover" placement="right">
+      <template #content>
+        <div class="usage-guard-message">{{ codexGuardStatus.detail }}</div>
+      </template>
+      <InfoCircleOutlined class="usage-guard-icon" />
+    </a-popover>
+    <a-tag :color="codexGuardStatus ? 'gold' : 'green'">{{ codexGuardStatus?.label ?? '成功' }}</a-tag>
+  </span>
 </template>
 
 <script setup lang="ts">
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
+import { computed } from 'vue'
 
 import type { UsageRecordSummary } from '@/types/domain'
-import { errorText } from './usageRecordFormatters'
+import { errorText, usageRecordCodexGuardStatus } from './usageRecordFormatters'
 
-defineProps<{
+const props = defineProps<{
   record: UsageRecordSummary
 }>()
+const codexGuardStatus = computed(() => usageRecordCodexGuardStatus(props.record))
 </script>
 
 <style scoped>
@@ -48,6 +58,19 @@ defineProps<{
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.usage-guard-icon {
+  color: #d97706;
+  cursor: help;
+  font-size: 13px;
+}
+
+.usage-guard-message {
+  max-width: 460px;
+  color: #78350f;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 :global(.usage-error-popover .ant-popover-inner) {

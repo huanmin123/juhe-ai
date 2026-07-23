@@ -18,7 +18,9 @@ const apiKeyAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'codex_responses_safe_repair_enabled',
+  'codex_responses_strict_intercept_enabled'
 ])
 
 const oauthAccountCredentialKeys = new Set([
@@ -36,7 +38,9 @@ const oauthAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'codex_responses_safe_repair_enabled',
+  'codex_responses_strict_intercept_enabled'
 ])
 
 const googleOAuthAccountCredentialKeys = new Set([
@@ -51,7 +55,9 @@ const googleOAuthAccountCredentialKeys = new Set([
   'service_tier_override',
   'reasoning_effort_override',
   'error_handling_rules',
-  'response_inspection_rules'
+  'response_inspection_rules',
+  'codex_responses_safe_repair_enabled',
+  'codex_responses_strict_intercept_enabled'
 ])
 
 const accountCredentialBaseUrlMaxBytes = 2048
@@ -271,6 +277,24 @@ function normalizeAccountCredentialPolicies(input: Record<string, unknown>, cred
   if (Object.prototype.hasOwnProperty.call(input, 'response_inspection_rules')) {
     credentials.response_inspection_rules = normalizeAccountResponseInspectionRules(input.response_inspection_rules)
   }
+  credentials.codex_responses_safe_repair_enabled = booleanCredentialPolicy(
+    input.codex_responses_safe_repair_enabled,
+    '安全修复',
+    true
+  )
+  credentials.codex_responses_strict_intercept_enabled = booleanCredentialPolicy(
+    input.codex_responses_strict_intercept_enabled,
+    '严格拦截',
+    false
+  )
+}
+
+function booleanCredentialPolicy(value: unknown, label: string, fallback: boolean): boolean {
+  if (value === undefined) return fallback
+  if (typeof value !== 'boolean') {
+    throw new Error(`Codex Responses ${label}开关必须是布尔值`)
+  }
+  return value
 }
 
 function normalizeGptAccountRequestOverrides(

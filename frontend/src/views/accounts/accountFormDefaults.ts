@@ -60,6 +60,8 @@ export function defaultAccountForm(
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     clientCompatibility,
+    codexResponsesSafeRepairEnabled: true,
+    codexResponsesStrictInterceptEnabled: false,
     supportedEndpointModes,
     supportedModels,
     healthCheckModel: defaultHealthCheckModelForProvider(provider, profile, supportedModels),

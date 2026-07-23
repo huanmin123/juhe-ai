@@ -9,7 +9,10 @@
         <a-tag v-if="usageRecordReasoningEffortText(record)" color="cyan">思考 {{ usageRecordReasoningEffortText(record) }}</a-tag>
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
         <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
-        <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
+        <a-tag v-if="!record.success" color="red">失败</a-tag>
+        <a-tag v-else :title="usageRecordCodexGuardStatus(record)?.detail" :color="usageRecordCodexGuardStatus(record) ? 'gold' : 'green'">
+          {{ usageRecordCodexGuardStatus(record)?.label ?? '成功' }}
+        </a-tag>
         <a-tag v-if="typeof record.statusCode === 'number'" :color="statusCodeColor(record)">状态码 {{ statusCodeText(record) }}</a-tag>
       </div>
     </div>
@@ -89,7 +92,8 @@ import {
   usageRecordDisplayCostUsd,
   usageRecordReasoningEffortText,
   usageRecordServiceTierText,
-  usageRecordSystemAccountText
+  usageRecordSystemAccountText,
+  usageRecordCodexGuardStatus
 } from './usageRecordFormatters'
 
 const props = defineProps<{

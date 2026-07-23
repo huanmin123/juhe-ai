@@ -1,4 +1,8 @@
 import type { ResponseInspectionDecision } from '../response/inspection.js'
+import type {
+  CodexResponsesGuardResultBase,
+  CodexResponsesGuardSnapshot
+} from '../codex-responses/response-guard.js'
 
 export function responseInspectionAuditMetadata(decision: ResponseInspectionDecision): Record<string, unknown> {
   return {
@@ -34,5 +38,29 @@ export function responseInspectionAuditMetadata(decision: ResponseInspectionDeci
     matchedField: decision.matchedField,
     matchedValue: decision.matchedValue,
     matchedSnippet: decision.matchedSnippet
+  }
+}
+
+export function codexResponsesGuardAuditMetadata(
+  value: CodexResponsesGuardResultBase | CodexResponsesGuardSnapshot
+): Record<string, unknown> {
+  const issues = 'issues' in value ? value.issues : value.diagnostics
+  const omittedIssueCount = 'omittedIssueCount' in value
+    ? value.omittedIssueCount
+    : value.omittedDiagnosticCount
+  return {
+    codexResponsesContractRevision: value.revision,
+    codexResponsesGuardCheckpoint: value.checkpoint,
+    codexResponsesGuardProvenance: value.provenance,
+    codexResponsesGuardMode: value.mode,
+    codexResponsesGuardOutcome: value.outcome,
+    codexResponsesGuardIssueCodes: [...new Set(issues.map((issue) => issue.code))].slice(0, 8),
+    codexResponsesGuardRepairRuleIds: 'repairRuleIds' in value
+      ? [...value.repairRuleIds].slice(0, 4)
+      : [],
+    codexResponsesGuardOmittedIssueCount: omittedIssueCount,
+    codexResponsesGuardRetryableAtObservation: value.retryable,
+    codexResponsesGuardTransportCommitted: value.commit.transportCommitted,
+    codexResponsesGuardSemanticCommitted: value.commit.semanticCommitted
   }
 }

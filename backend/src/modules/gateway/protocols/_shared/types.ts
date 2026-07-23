@@ -59,6 +59,8 @@ export interface GatewayStreamInspection {
 }
 
 export interface GatewayStreamInspector {
+  setParsedEventObserver?(observer: ((event: ParsedOpenAIStreamEvent) => void) | undefined): void
+  setParserCoverageObserver?(observer: ((reason: string) => void) | undefined): void
   pushChunk(
     chunk: Buffer | Uint8Array | string,
     options?: { lightweightImageStream?: boolean }

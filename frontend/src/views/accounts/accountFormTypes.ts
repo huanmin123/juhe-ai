@@ -37,6 +37,8 @@ export interface AccountFormModel {
   concurrencyLimit: number
   priority: number
   clientCompatibility: AccountClientCompatibility
+  codexResponsesSafeRepairEnabled: boolean
+  codexResponsesStrictInterceptEnabled: boolean
   supportedEndpointModes: AccountSupportedEndpointMode[]
   supportedModels: string[]
   healthCheckModel: string
