@@ -1,11 +1,15 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { resolveDevelopmentAutoLoginUsername } from './dev-config.mjs'
+import {
+  resolveDevelopmentAutoLoginUsername,
+  resolveDevelopmentBackendTarget
+} from './dev-config.mjs'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const frontendRoot = resolve(root, 'frontend')
+const backendRoot = resolve(root, 'backend')
 const backendReadyTimeoutMs = positiveInteger(process.env.JUHE_AI_DEV_BACKEND_READY_TIMEOUT_MS, 60_000)
 const backendTarget = resolveBackendTarget()
 const backendHealthUrl = resolveBackendHealthUrl(backendTarget)
@@ -43,7 +47,10 @@ function startPnpm(args, label, onOutput) {
           ? {}
           : { JUHE_AI_DEV_AUTO_LOGIN_USERNAME: developmentAutoLoginUsername })
       }
-    : process.env
+    : {
+        ...process.env,
+        VITE_JUHE_AI_BACKEND_TARGET: backendTarget
+      }
   const child = spawn(pnpmRunner.command, [...pnpmRunner.args, ...args], {
     cwd: root,
     env: childEnv,
@@ -184,9 +191,7 @@ async function fetchWithTimeout(url, timeoutMs) {
 
 function resolveBackendTarget() {
   const frontendEnv = loadFrontendEnv()
-  return process.env.VITE_JUHE_AI_BACKEND_TARGET
-    || frontendEnv.VITE_JUHE_AI_BACKEND_TARGET
-    || 'http://127.0.0.1:3000'
+  return resolveDevelopmentBackendTarget(process.env, frontendEnv, loadBackendEnv())
 }
 
 function resolveBackendHealthUrl(target) {
@@ -215,6 +220,19 @@ function loadFrontendEnv() {
   }
 
   return env
+}
+
+function loadBackendEnv() {
+  const baseEnv = loadEnvFile(resolve(backendRoot, '.env'))
+  const overlayValue = process.env.JUHE_AI_ENV_FILE?.trim() || baseEnv.JUHE_AI_ENV_FILE?.trim()
+  if (!overlayValue) return baseEnv
+
+  const overlayPath = isAbsolute(overlayValue) ? overlayValue : resolve(backendRoot, overlayValue)
+  return { ...baseEnv, ...loadEnvFile(overlayPath) }
+}
+
+function loadEnvFile(filePath) {
+  return existsSync(filePath) ? parseEnvFile(readFileSync(filePath, 'utf8')) : {}
 }
 
 function parseEnvFile(content) {

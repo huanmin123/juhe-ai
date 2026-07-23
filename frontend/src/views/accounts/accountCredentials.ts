@@ -36,6 +36,8 @@ export function buildAccountCredentials(input: {
   writeAccountGptRequestOverrides(credentials, input.form)
   writeAccountErrorPolicyToCredentials(credentials, input.errorPolicyRules)
   writeAccountResponseInspectionRulesToCredentials(credentials, input.responseInspectionRules)
+  credentials.codex_responses_safe_repair_enabled = input.form.codexResponsesSafeRepairEnabled
+  credentials.codex_responses_strict_intercept_enabled = input.form.codexResponsesStrictInterceptEnabled
   return credentials
 }
 

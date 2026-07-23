@@ -16,6 +16,7 @@ import {
   codexResponsesChatBridgeCompletionHandlerForRequest,
   getCodexResponsesContextState
 } from '../codex-responses/chat-bridge-state.js'
+import { createCodexResponsesGuardMarker } from '../codex-responses/response-guard.js'
 
 interface PerformUpstreamRequestAttemptInput {
   req: Request
@@ -148,7 +149,7 @@ export async function performUpstreamRequestAttempt(
 
   const codexBridgeState = getCodexResponsesContextState(req)
   const codexBridgeCompletionHandler = codexResponsesChatBridgeCompletionHandlerForRequest(req, account)
-  return transformGatewayUpstreamResponseForAccount(req, account, response, {
+  const transformedResponse = transformGatewayUpstreamResponseForAccount(req, account, response, {
     signal,
     requestClientCompatibility,
     continueUpstreamJsonRequest,
@@ -158,6 +159,19 @@ export async function performUpstreamRequestAttempt(
       return continueUpstreamJsonRequest(nextBody, 'gateway_codex_bridge_continue_chat_request_started')
     }
   })
+  if (
+    requestClientCompatibility !== 'codex_responses'
+    || transformedResponse.codexResponsesGuardMarker
+  ) {
+    return transformedResponse
+  }
+  return {
+    status: transformedResponse.status,
+    ok: transformedResponse.ok,
+    headers: transformedResponse.headers,
+    body: transformedResponse.body,
+    codexResponsesGuardMarker: createCodexResponsesGuardMarker('raw_upstream')
+  }
 }
 
 function upstreamTransportForAttempt(

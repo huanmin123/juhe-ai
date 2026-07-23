@@ -36,7 +36,7 @@ func TestAccountRuntimeReleaseMigrationsCoverExistingDatabases(t *testing.T) {
 		t.Fatal("continuous probe migration Down section must remain a non-destructive no-op")
 	}
 
-	dirtyDomainSource, err := os.ReadFile(migrationPath("000072_w7_drop_page_data_dirty_domains.sql"))
+	dirtyDomainSource, err := os.ReadFile(migrationPath("000073_w7_drop_page_data_dirty_domains.sql"))
 	if err != nil {
 		t.Fatalf("read page dirty domain retirement migration: %v", err)
 	}

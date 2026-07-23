@@ -20,6 +20,7 @@ runtimeConfig.upstreamUrlSecurity.allowPrivateBaseUrls = true
 mkdirSync(tempRoot, { recursive: true })
 
 const upstream = createMockUpstream()
+let upstreamResponseRequestCount = 0
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
 try {
@@ -49,6 +50,21 @@ try {
   const secondAccount = fixture.accounts[1]
   assert(account, 'mock fixture should create a target account')
   assert(secondAccount, 'mock fixture should create a second group account')
+
+  const quickRun = await runModelCheck({
+    targetType: 'account',
+    targetId: account.id,
+    model: 'gpt-5.6-sol'
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  assert.equal(quickRun.status, 'completed')
+  assert.equal(quickRun.profile, 'quick', '省略 profile 时必须使用快速检测')
+  assert.equal(upstreamResponseRequestCount, 2, '快速检测最多应执行基础请求和一个行为探针')
+  assert(quickRun.checks.some((item) => item.itemKey === 'target.responses_basic'), '快速检测应包含基础响应探针')
+  assert(quickRun.checks.some((item) => item.itemKey === 'target.behavior_probe'), '快速检测应包含轻量行为探针')
+  assert(!quickRun.checks.some((item) => ['responses_stream', 'structured_output', 'tool_calling', 'usage_shape', 'long_context', 'stability', 'cross_model'].includes(item.itemType)), '快速检测不应执行深度探针')
+  assert.equal(quickRun.resultSummary.trustedComparison, false)
+  assert.notEqual(quickRun.level, 'high_confidence', '快速检测不允许输出高可信结论')
+  upstreamResponseRequestCount = 0
 
   const progressItemKeys: string[] = []
   const accountRun = await runModelCheck({
@@ -134,6 +150,7 @@ function createMockUpstream(): http.Server {
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
+        upstreamResponseRequestCount += 1
         const outputText = outputForProbe(body)
         if (body.stream === true) {
           sendStream(res, String(body.model ?? 'gpt-5.6-sol'), outputText)

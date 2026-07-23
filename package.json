@@ -123,6 +123,7 @@
     "test:model-check-trusted-comparison-success": "pnpm --filter juhe-ai-backend test:model-check-trusted-comparison-success",
     "test:model-check-protocol-profiles": "pnpm --filter juhe-ai-backend test:model-check-protocol-profiles",
     "test:model-check-full-profile": "pnpm --filter juhe-ai-backend test:model-check-full-profile",
+    "test:model-check-quick-profile": "pnpm --filter juhe-ai-backend test:model-check-quick-profile",
     "test:model-check-gateway-postgres-mock-ai": "pnpm --filter juhe-ai-backend test:model-check-gateway-postgres-mock-ai",
     "test:model-check-long-context-routing": "pnpm --filter juhe-ai-backend test:model-check-long-context-routing",
     "test:model-check-probe-retry": "pnpm --filter juhe-ai-backend test:model-check-probe-retry",

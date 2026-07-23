@@ -63,8 +63,9 @@ export async function createModelCheckMockdata(created: CreatedMockdata, options
   for (let index = 0; index < runCount; index += 1) {
     const target = targets[index % targets.length]
     const model = index % 3 === 0 ? 'gpt-5.5' : 'gpt-5.4'
+    const profile = index % 4 === 0 ? 'quick' : 'full'
     const runStatus = modelCheckRunStatusForIndex(index)
-    const trustedComparison = Boolean(target.comparisonAccount) && index % 3 === 0
+    const trustedComparison = profile === 'full' && Boolean(target.comparisonAccount) && index % 3 === 0
     const startedAtMs = Date.now() - 20 * minuteMs - Math.floor((index / Math.max(1, runCount - 1)) * options.days * dayMs)
     const startedAt = new Date(startedAtMs).toISOString()
     const runId = `${idPrefix}model_check_run_${String(index + 1).padStart(4, '0')}`
@@ -74,10 +75,11 @@ export async function createModelCheckMockdata(created: CreatedMockdata, options
       runId,
       model,
       startedAtMs,
+      profile,
       trustedComparison,
       runStatus
     })
-    const level = modelCheckLevelForRun(index, runStatus, checks.score, checks.maxScore)
+    const level = modelCheckLevelForRun(index, runStatus, checks.score, checks.maxScore, profile)
     const message = modelCheckRunMessage(runStatus, level, checks.score, checks.maxScore)
 
     repositories.createModelCheckRun({
@@ -93,7 +95,7 @@ export async function createModelCheckMockdata(created: CreatedMockdata, options
       groupId: target.group.id,
       apiKeyId: target.apiKey.id,
       model,
-      profile: 'full',
+      profile,
       trustedComparison,
       trustedComparisonAvailable: trustedComparison && index % 4 !== 0,
       traceId,
@@ -104,7 +106,7 @@ export async function createModelCheckMockdata(created: CreatedMockdata, options
         targetId: target.account.id,
         targetName: target.account.name,
         model,
-        profile: 'full',
+        profile,
         trustedComparison,
         trustedComparisonAccountId: trustedComparison ? target.comparisonAccount?.id : undefined,
         trustedComparisonAccountName: trustedComparison ? target.comparisonAccount?.name : undefined,
@@ -260,6 +262,7 @@ function buildModelCheckItems(input: {
   runId: string
   model: 'gpt-5.5' | 'gpt-5.4'
   startedAtMs: number
+  profile: 'quick' | 'full'
   trustedComparison: boolean
   runStatus: MockModelCheckRunStatus
 }): {
@@ -280,7 +283,10 @@ function buildModelCheckItems(input: {
   score: number
   maxScore: number
 } {
-  const definitions = [
+  const definitions = input.profile === 'quick' ? [
+    ['target.responses_basic', 'responses_basic', 65],
+    ['target.behavior_probe', 'behavior_probe', 35]
+  ] as const : [
     ['target.responses_basic', 'responses_basic', 15],
     ['target.responses_stream', 'responses_stream', 15],
     ['target.structured_output', 'structured_output', 15],
@@ -362,9 +368,10 @@ function modelCheckLevelForScore(score: number, maxScore: number): MockModelChec
   return 'unavailable'
 }
 
-function modelCheckLevelForRun(index: number, status: MockModelCheckRunStatus, score: number, maxScore: number): MockModelCheckLevel {
+function modelCheckLevelForRun(index: number, status: MockModelCheckRunStatus, score: number, maxScore: number, profile: 'quick' | 'full'): MockModelCheckLevel {
   if (status !== 'completed') return 'unavailable'
   const base = modelCheckLevelForScore(score, maxScore)
+  if (profile === 'quick') return base === 'high_confidence' ? 'likely' : base
   if (index % 12 === 0 && base !== 'high_confidence') return 'likely'
   if (index % 10 === 0 && base === 'high_confidence') return 'uncertain'
   return base

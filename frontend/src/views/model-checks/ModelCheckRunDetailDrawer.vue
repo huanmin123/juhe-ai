@@ -20,6 +20,7 @@
         <a-space wrap>
           <a-tag :color="statusColor(run.status)">{{ statusText(run.status) }}</a-tag>
           <a-tag :color="levelColor(run.level)">{{ levelText(run.level) }}</a-tag>
+          <a-tag :color="profileColor(run.profile)">{{ profileText(run.profile) }}</a-tag>
           <a-tag v-if="runTrustedComparison(run)" color="blue">可信对比</a-tag>
           <a-tag>{{ run.score }} / {{ run.maxScore }}</a-tag>
         </a-space>
@@ -29,6 +30,7 @@
         <a-descriptions-item label="检测 ID">{{ run.id }}</a-descriptions-item>
         <a-descriptions-item label="账户名称">{{ targetDisplayName(run) }}</a-descriptions-item>
         <a-descriptions-item label="模型">{{ modelText(run.model) }}</a-descriptions-item>
+        <a-descriptions-item label="检测模式">{{ profileText(run.profile) }}</a-descriptions-item>
         <a-descriptions-item label="创建时间">{{ formatDateTime(run.createdAt) }}</a-descriptions-item>
         <a-descriptions-item label="完成时间">{{ formatDateTime(run.finishedAt) }}</a-descriptions-item>
         <a-descriptions-item label="耗时">{{ formatDuration(run.durationMs) }}</a-descriptions-item>
@@ -94,6 +96,8 @@ import {
   levelColor,
   levelText,
   modelCheckModelText,
+  profileColor,
+  profileText,
   runTrustedComparison,
   statusColor,
   statusText
