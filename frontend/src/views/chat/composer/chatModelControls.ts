@@ -4,12 +4,12 @@ export function selectableChatReasoningEfforts(model?: ChatModelCapabilities): C
   return [...(model?.supportedReasoningEfforts ?? [])]
 }
 
-export function defaultChatReasoningEffort(_model?: ChatModelCapabilities): ChatReasoningEffort | '' {
-  return ''
+export function defaultChatReasoningEffort(model?: ChatModelCapabilities): ChatReasoningEffort | '' {
+  return model?.supportedReasoningEfforts[0] ?? ''
 }
 
-export function defaultChatServiceTier(_model?: ChatModelCapabilities): ChatServiceTier | '' {
-  return ''
+export function defaultChatServiceTier(model?: ChatModelCapabilities): ChatServiceTier | '' {
+  return model?.supportedServiceTiers[0] ?? ''
 }
 
 export function normalizeChatModelControls(input: {
