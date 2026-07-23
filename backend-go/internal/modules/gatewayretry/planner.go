@@ -18,6 +18,7 @@ type FailurePhase string
 
 const (
 	PhaseClientLifecycle  FailurePhase = "client_lifecycle"
+	PhaseGatewayPolicy    FailurePhase = "gateway_policy"
 	PhaseUpstreamRequest  FailurePhase = "upstream_request"
 	PhaseUpstreamResponse FailurePhase = "upstream_response"
 )
@@ -25,13 +26,37 @@ const (
 type FailureClass string
 
 const (
-	FailureClassClientLifecycle FailureClass = "client_lifecycle"
-	FailureClassRequestSemantic FailureClass = "request_semantic"
-	FailureClassCredential      FailureClass = "credential"
-	FailureClassRateLimit       FailureClass = "rate_limit"
-	FailureClassUpstreamService FailureClass = "upstream_service"
-	FailureClassTransport       FailureClass = "transport"
-	FailureClassUnknown         FailureClass = "unknown"
+	FailureClassClientLifecycle  FailureClass = "client_lifecycle"
+	FailureClassGatewayPolicy    FailureClass = "gateway_policy"
+	FailureClassRequestSemantic  FailureClass = "request_semantic"
+	FailureClassCredential       FailureClass = "credential"
+	FailureClassRateLimit        FailureClass = "rate_limit"
+	FailureClassUpstreamService  FailureClass = "upstream_service"
+	FailureClassTransport        FailureClass = "transport"
+	FailureClassUpstreamProtocol FailureClass = "upstream_protocol"
+	FailureClassUpstreamStream   FailureClass = "upstream_stream"
+	FailureClassUnknown          FailureClass = "unknown"
+)
+
+// ResponseSignal carries an explicit, protocol-independent reason from a
+// response adapter. It prevents a 2xx protocol failure from being disguised as
+// a synthetic HTTP status or an upstream request transport error.
+type ResponseSignal string
+
+const (
+	ResponseSignalNone              ResponseSignal = ""
+	ResponseSignalProtocolContract  ResponseSignal = "protocol_contract"
+	ResponseSignalStreamInterrupted ResponseSignal = "stream_interrupted"
+)
+
+type ResponseDisposition string
+
+const (
+	ResponseDispositionUnspecified         ResponseDisposition = ""
+	ResponseDispositionCompleteTransparent ResponseDisposition = "complete_transparent"
+	// ResponseDispositionExplicitPolicy opts into status/error classification;
+	// it is not the Node account-policy action (retry_next/skip_account).
+	ResponseDispositionExplicitPolicy ResponseDisposition = "explicit_policy"
 )
 
 type Failure struct {
@@ -44,6 +69,8 @@ type Failure struct {
 	FirstByteForwarded    bool
 	DownstreamCommitted   bool
 	HasAlternativeAPIKeys bool
+	ResponseSignal        ResponseSignal
+	ResponseDisposition   ResponseDisposition
 }
 
 type FailureClassification struct {
@@ -345,6 +372,9 @@ func ClassifyFailure(failure Failure) FailureClassification {
 	if failure.Phase == PhaseClientLifecycle {
 		return lifecycleClassification("client_lifecycle_failure")
 	}
+	if failure.Phase == PhaseGatewayPolicy {
+		return FailureClassification{Class: FailureClassGatewayPolicy, Reason: "gateway_policy_failure"}
+	}
 	if failure.Phase == PhaseUpstreamRequest {
 		return FailureClassification{
 			Class:              FailureClassTransport,
@@ -356,6 +386,30 @@ func ClassifyFailure(failure Failure) FailureClassification {
 	}
 	if failure.Phase != PhaseUpstreamResponse {
 		return FailureClassification{Class: FailureClassUnknown, Reason: "invalid_failure_phase"}
+	}
+	if failure.ResponseSignal != ResponseSignalNone {
+		switch failure.ResponseSignal {
+		case ResponseSignalProtocolContract:
+			return FailureClassification{
+				Class: FailureClassUpstreamProtocol, Reason: "upstream_protocol_contract",
+				Retryable: true, WouldAvoidAccount: true,
+			}
+		case ResponseSignalStreamInterrupted:
+			return FailureClassification{
+				Class: FailureClassUpstreamStream, Reason: "upstream_stream_interrupted",
+				Retryable: true, WouldAvoidAccount: true, WouldAvoidUpstream: true,
+			}
+		default:
+			return FailureClassification{Class: FailureClassUnknown, Reason: "invalid_response_signal"}
+		}
+	}
+	switch failure.ResponseDisposition {
+	case ResponseDispositionUnspecified, ResponseDispositionCompleteTransparent:
+		return FailureClassification{Class: FailureClassUpstreamService, Reason: "complete_response_transparent"}
+	case ResponseDispositionExplicitPolicy:
+		// Continue into explicit status/error policy classification below.
+	default:
+		return FailureClassification{Class: FailureClassUnknown, Reason: "invalid_response_disposition"}
 	}
 
 	errorCode := normalizeIdentifier(failure.ErrorCode)
