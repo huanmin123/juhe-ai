@@ -294,7 +294,8 @@ function isAccountTestEndpointMode(value: unknown): value is AccountTestEndpoint
 }
 
 function isAccountSupportedEndpointMode(value: unknown): value is AccountSupportedEndpointMode {
-  return value === 'chat_json'
+  return value === 'images_json'
+    || value === 'chat_json'
     || value === 'chat_sse'
     || value === 'responses_json'
     || value === 'responses_sse'

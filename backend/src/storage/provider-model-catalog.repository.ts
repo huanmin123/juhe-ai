@@ -82,6 +82,7 @@ export interface ProviderModelOptionRow {
   providerCode: string
   model: string
   scope: 'built_in'
+  releaseDate?: string
 }
 
 export async function listBuiltInProviderModelOptionsAsync(input: {
@@ -117,15 +118,17 @@ export async function listBuiltInProviderModelOptionsAsync(input: {
     : ''
   const sql = `
     WITH ranked_options AS (
-      SELECT provider_code, model, id, mode, supported_api_protocols_json,
+      SELECT provider_code, model, id, mode, release_date, supported_api_protocols_json,
         ROW_NUMBER() OVER (PARTITION BY model ORDER BY provider_code ASC, id ASC) AS option_rank
       FROM ${table}
       WHERE ${whereParts.join('\n        AND ')}
     )
-    SELECT provider_code, model, mode, supported_api_protocols_json
+    SELECT provider_code, model, mode, release_date, supported_api_protocols_json
     FROM ranked_options
     WHERE option_rank = 1
-    ORDER BY ${order} lower(model) ASC, provider_code ASC, id ASC
+    ORDER BY ${order}
+      CASE WHEN release_date IS NULL OR trim(release_date) = '' THEN 1 ELSE 0 END ASC,
+      release_date DESC, lower(model) ASC, provider_code ASC, id ASC
     LIMIT ?
   `
   const params: unknown[] = client ? [providerCodes] : [...providerCodes]
@@ -140,11 +143,12 @@ export async function listBuiltInProviderModelOptionsAsync(input: {
   }
   params.push(resultLimit)
   const rows = client
-    ? await client.query<{ provider_code: string; model: string; mode?: string | null; supported_api_protocols_json?: string | null }>(sql, params)
+    ? await client.query<{ provider_code: string; model: string; mode?: string | null; release_date?: string | null; supported_api_protocols_json?: string | null }>(sql, params)
     : getBusinessDatabase().prepare(sql).all(...params as SQLInputValue[]) as unknown as Array<{
         provider_code: string
         model: string
         mode?: string | null
+        release_date?: string | null
         supported_api_protocols_json?: string | null
       }>
   return rows.map((row) => ({
@@ -153,6 +157,7 @@ export async function listBuiltInProviderModelOptionsAsync(input: {
     model: row.model,
     scope: 'built_in' as const,
     mode: text(row.mode),
+    releaseDate: text(row.release_date),
     supportedApiProtocols: parseProviderModelOptionProtocols(row.supported_api_protocols_json)
   }))
 }

@@ -3,23 +3,15 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"juhe-ai/backend-go/internal/config"
 )
-
-type readinessProberFunc func(context.Context) error
-
-func (f readinessProberFunc) Probe(ctx context.Context) error {
-	return f(ctx)
-}
 
 type observingContext struct {
 	context.Context
@@ -151,7 +143,7 @@ func TestReadinessRequiresPostgresForEnabledBusinessRoutes(t *testing.T) {
 		{Host: "127.0.0.1", Port: 3000, PublicAPIEnabled: true},
 		{Host: "127.0.0.1", Port: 3000, ManagementAPIEnabled: true},
 	} {
-		handler := NewReadinessHandler(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)), nil)
+		handler := NewReadinessHandler(cfg, slog.New(slog.NewTextHandler(testWriter{t: t}, nil)))
 		req := httptest.NewRequest(http.MethodGet, "/__aisys__/readyz", nil)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -202,106 +194,6 @@ func TestReadinessCachesDependencyChecks(t *testing.T) {
 	request()
 	if checks != 2 {
 		t.Fatalf("dependency checks = %d, want 2 after cache expiry", checks)
-	}
-}
-
-func TestNodeModelCatalogBridgeDependency(t *testing.T) {
-	tests := []struct {
-		name           string
-		cfg            config.Config
-		prober         ReadinessProber
-		wantConfigured bool
-		wantStatus     string
-		wantHTTPStatus int
-	}{
-		{
-			name: "management success",
-			cfg:  config.Config{ManagementAPIEnabled: true},
-			prober: readinessProberFunc(func(context.Context) error {
-				return nil
-			}),
-			wantConfigured: true,
-			wantStatus:     "ok",
-			wantHTTPStatus: http.StatusServiceUnavailable,
-		},
-		{
-			name: "management failure",
-			cfg:  config.Config{ManagementAPIEnabled: true},
-			prober: readinessProberFunc(func(context.Context) error {
-				return errors.New("http://127.0.0.1:3001 private response body")
-			}),
-			wantConfigured: true,
-			wantStatus:     "error",
-			wantHTTPStatus: http.StatusServiceUnavailable,
-		},
-		{
-			name:           "management missing prober",
-			cfg:            config.Config{ManagementAPIEnabled: true},
-			wantConfigured: false,
-			wantStatus:     "error",
-			wantHTTPStatus: http.StatusServiceUnavailable,
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			router := NewRouter(RouterOptions{
-				Config:                   test.cfg,
-				Logger:                   slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-				ManagementCaptchaHandler: http.NotFoundHandler(),
-				ManagementAPIAuthMiddleware: func(next http.Handler) http.Handler {
-					return next
-				},
-				NodeModelCatalogBridgeReadinessProber: test.prober,
-			})
-			req := httptest.NewRequest(http.MethodGet, "/__aisys__/readyz", nil)
-			rec := httptest.NewRecorder()
-			router.ServeHTTP(rec, req)
-
-			if rec.Code != test.wantHTTPStatus {
-				t.Fatalf("status = %d, want %d", rec.Code, test.wantHTTPStatus)
-			}
-			var body HealthResponse
-			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-				t.Fatal(err)
-			}
-			got := body.Dependencies["nodeModelCatalogBridge"]
-			if got.Configured != test.wantConfigured || got.Status != test.wantStatus {
-				t.Fatalf("nodeModelCatalogBridge = %+v", got)
-			}
-			if got.Status == "error" && got.Error != "dependency check failed" {
-				t.Fatalf("error = %q, want redacted dependency error", got.Error)
-			}
-			if strings.Contains(rec.Body.String(), "127.0.0.1") || strings.Contains(rec.Body.String(), "private response body") {
-				t.Fatalf("response leaked probe details: %s", rec.Body.String())
-			}
-		})
-	}
-}
-
-func TestHealthReturnsDegradedForRequiredNodeModelCatalogBridgeFailure(t *testing.T) {
-	router := NewRouter(RouterOptions{
-		Config:                   config.Config{ManagementAPIEnabled: true},
-		Logger:                   slog.New(slog.NewTextHandler(testWriter{t: t}, nil)),
-		ManagementCaptchaHandler: http.NotFoundHandler(),
-		ManagementAPIAuthMiddleware: func(next http.Handler) http.Handler {
-			return next
-		},
-		NodeModelCatalogBridgeReadinessProber: readinessProberFunc(func(context.Context) error {
-			return errors.New("private bridge failure")
-		}),
-	})
-	rec := httptest.NewRecorder()
-	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/__aisys__/health", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var body HealthResponse
-	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Status != "degraded" || body.Dependencies["nodeModelCatalogBridge"].Error != "dependency check failed" {
-		t.Fatalf("body = %+v", body)
 	}
 }
 

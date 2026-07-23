@@ -54,34 +54,17 @@ func (q *Queries) ClearManagementProviderSystemDefaultHealthCheckModelIfModel(ct
 	return result.RowsAffected(), nil
 }
 
-const deleteManagementCustomProviderModel = `-- name: DeleteManagementCustomProviderModel :one
-WITH deleted AS (
-  DELETE FROM juhe_business.custom_provider_models
-  WHERE id = $1
-  RETURNING scope, COALESCE(system_account_id, '') AS system_account_id
-), marked AS (
-  INSERT INTO juhe_business.model_catalog_snapshot_rebuild_requests (scope, system_account_id, generation, updated_at)
-  SELECT
-    CASE WHEN scope = 'personal' THEN 'personal' ELSE 'all' END,
-    CASE WHEN scope = 'personal' THEN system_account_id ELSE '' END,
-    1,
-    now()
-  FROM deleted
-  WHERE true
-  ON CONFLICT (scope, system_account_id) DO UPDATE SET
-    generation = juhe_business.model_catalog_snapshot_rebuild_requests.generation + 1,
-    updated_at = EXCLUDED.updated_at
-  RETURNING 1
-)
-SELECT COUNT(*)::bigint AS deleted_count
-FROM deleted
+const deleteManagementCustomProviderModel = `-- name: DeleteManagementCustomProviderModel :execrows
+DELETE FROM juhe_business.custom_provider_models
+WHERE id = $1
 `
 
 func (q *Queries) DeleteManagementCustomProviderModel(ctx context.Context, id string) (int64, error) {
-	row := q.db.QueryRow(ctx, deleteManagementCustomProviderModel, id)
-	var deleted_count int64
-	err := row.Scan(&deleted_count)
-	return deleted_count, err
+	result, err := q.db.Exec(ctx, deleteManagementCustomProviderModel, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const findManagementCustomProviderModel = `-- name: FindManagementCustomProviderModel :one

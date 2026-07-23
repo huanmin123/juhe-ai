@@ -59,6 +59,8 @@ export function defaultAccountForm(
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
+    privilege: 'normal',
+    status: 'active',
     clientCompatibility,
     codexResponsesSafeRepairEnabled: true,
     codexResponsesStrictInterceptEnabled: false,

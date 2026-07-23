@@ -22,6 +22,7 @@ const logsApiSource = source('../../api/domains/logs.ts')
 const runtimeTypesSource = source('../../types/domain/runtime-logs.ts')
 const runtimeRouteSource = source('../../../../backend/src/modules/runtime-logs/runtime-logs.routes.ts')
 const dbServiceIpcSource = source('../../../../backend/src/modules/db-service/db-service-ipc.ts')
+const globalStylesSource = source('../../styles/global.css')
 
 const auditFetchPageSource = auditViewSource.match(/fetchPage: async[\s\S]*?requestSignature:/)?.[0] ?? ''
 assert.doesNotMatch(
@@ -59,7 +60,10 @@ assert.match(runtimePageContentSource, /@facets-open="emit\('facetsOpen'\)"/, '�
 assert.match(runtimeViewSource, /@facets-open="loadRuntimeLogFacets"/, '页面只在筛选交互时读取轻 facets')
 assert.match(runtimeViewSource, /scheduleRuntimeStatusRefresh/, '运行日志重量运行态应在首屏之外空闲补充')
 assert.match(runtimeViewSource, /loadRuntimeLogRuntime\(true\)/, '页面重新激活时应刷新而不是永久复用旧运行态')
-assert.match(runtimeFacetsStateSource, /catch \(error\)[\s\S]*runtime\.value = unavailableRuntimeLogRuntime\(\)/, '运行态请求失败必须显式进入 unavailable，不能沿用旧健康状态或隐藏告警')
+assert.match(runtimeFacetsStateSource, /catch \(error\)[\s\S]*runtime\.value = unavailableRuntimeLogRuntime\(\)/, '运行态请求失败必须显式进入 unavailable，不能沿用旧健康状态')
+assert.doesNotMatch(auditViewSource, /<RuntimeAvailabilityAlert|<a-alert/, '审计日志页面不得显示运行态或搜索结果横幅')
+assert.doesNotMatch(source('../../views/runtime-logs/RuntimeLogListSection.vue'), /<a-alert/, '运行日志页面不得显示搜索结果横幅')
+assert.match(globalStylesSource, /\.ant-alert\s*\{\s*display:\s*none\s*!important;/, '全局样式必须禁止页面横幅展示')
 assert.match(logsApiSource, /runtime: \(\) => unwrap<RuntimeLogRuntime>/, '运行日志运行态应有独立 API')
 assert.doesNotMatch(runtimeTypesSource, /RuntimeLogRuntime[\s\S]*?queueHealth:/, '运行日志告警接口类型不得携带完整队列指标')
 assert.doesNotMatch(runtimeTypesSource, /RuntimeLogRuntime[\s\S]*?gatewayAccountSideEffects:/, '运行日志告警接口类型不得携带网关副作用明细')

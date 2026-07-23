@@ -48,6 +48,9 @@ export type AccountSavePayload = {
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
+  status: 'active' | 'disabled'
+  superPriorityEnabled: boolean
+  fallbackEnabled: boolean
   supportedModels: string[]
   healthCheckModel: string
   healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
@@ -63,7 +66,9 @@ export type AccountSavePayload = {
   balanceQueryConfig?: Record<string, unknown>
 }
 
-export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type'>
+export type AccountUpdatePayload = Omit<AccountSavePayload, 'providerCode' | 'providerProtocolProfileId' | 'type' | 'status'> & {
+  status?: 'active' | 'disabled'
+}
 
 export type AccountOAuthCreateCommonPayload = {
   providerProtocolProfileId?: string
@@ -71,6 +76,9 @@ export type AccountOAuthCreateCommonPayload = {
   groupId?: string
   concurrencyLimit: number
   priority: number
+  status: 'active' | 'disabled'
+  superPriorityEnabled: boolean
+  fallbackEnabled: boolean
   supportedModels: string[]
   healthCheckModel: string
   healthCheckEndpointMode: AccountFormModel['healthCheckEndpointMode']
@@ -214,6 +222,9 @@ export function buildAccountSavePayload(input: {
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
+    status: input.form.status,
+    superPriorityEnabled: input.form.privilege === 'super_priority',
+    fallbackEnabled: input.form.privilege === 'fallback',
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,
@@ -229,12 +240,15 @@ export function buildAccountSavePayload(input: {
   }
 }
 
-export function buildAccountUpdatePayload(payload: AccountSavePayload): AccountUpdatePayload {
+export function buildAccountUpdatePayload(payload: AccountSavePayload, currentStatus?: AccountSummary['status']): AccountUpdatePayload {
   return {
     name: payload.name,
     credentials: payload.credentials,
     concurrencyLimit: payload.concurrencyLimit,
     priority: payload.priority,
+    ...(payload.status === 'disabled' || currentStatus === 'disabled' || currentStatus === 'active' ? { status: payload.status } : {}),
+    superPriorityEnabled: payload.superPriorityEnabled,
+    fallbackEnabled: payload.fallbackEnabled,
     supportedModels: payload.supportedModels,
     healthCheckModel: payload.healthCheckModel,
     healthCheckEndpointMode: payload.healthCheckEndpointMode,
@@ -265,6 +279,9 @@ export function buildOAuthCreateCommonPayload(input: {
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
+    status: input.form.status,
+    superPriorityEnabled: input.form.privilege === 'super_priority',
+    fallbackEnabled: input.form.privilege === 'fallback',
     supportedModels: normalizeSupportedModels(input.form.supportedModels),
     healthCheckModel: input.form.healthCheckModel.trim(),
     healthCheckEndpointMode: input.form.healthCheckEndpointMode,

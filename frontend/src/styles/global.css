@@ -69,6 +69,10 @@ body.immersive-layout-active {
   box-shadow: 0 12px 36px rgba(15, 23, 42, 0.06);
 }
 
+.ant-alert {
+  display: none !important;
+}
+
 .page-card .ant-card-head {
   min-height: 58px;
   padding: 0 24px;

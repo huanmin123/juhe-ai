@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { accountBalanceQueryConfigSchema } from './account-balance-config.js'
 
 const accountTestEndpointModeSchema = z.enum([
+  'images_json',
   'chat_json',
   'chat_sse',
   'responses_json',

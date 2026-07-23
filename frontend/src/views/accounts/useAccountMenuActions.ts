@@ -191,8 +191,8 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能设置调度标记')
         return
       }
-      if (enabled && account.status !== 'active') {
-        message.warning('只有正常状态的账户可以设置超级优先')
+      if (enabled && account.status !== 'active' && account.status !== 'pending_test') {
+        message.warning('只有正常或待检查状态的账户可以设置超级优先')
         return
       }
       if (isAuthorizedAccount(account) && !account.boundGroupId) {
@@ -212,8 +212,8 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
         message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能设置调度标记')
         return
       }
-      if (enabled && account.status !== 'active') {
-        message.warning('只有正常状态的账户可以设置降级备用')
+      if (enabled && account.status !== 'active' && account.status !== 'pending_test') {
+        message.warning('只有正常或待检查状态的账户可以设置降级备用')
         return
       }
       if (isAuthorizedAccount(account) && !account.boundGroupId) {

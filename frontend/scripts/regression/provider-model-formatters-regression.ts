@@ -100,8 +100,10 @@ assert.doesNotMatch(providersViewSource, /:disabled="editingBuiltInModel"/, '管
 assert.doesNotMatch(providersViewSource, /编辑模型价格/, '内置模型编辑已不是仅价格编辑')
 assert.match(catalogModalSource, /serviceTierPrices/, '模型目录必须展示服务等级价格明细')
 assert.doesNotMatch(catalogModalSource, /默认由上游决定|（默认）/, '模型目录思考级别只展示客户端可选能力，不展示默认语义')
-assert.match(catalogModalSource, /serviceTierPrices\?\.\[tier\]\?\.cacheWriteUsdPer1M/, '桌面档位价格必须展示缓存写入')
-assert.match(catalogModalSource, /serviceTierPrices\?\.\[tier\]\?\.cacheWrite1hUsdPer1M/, '桌面档位价格必须展示 1h 缓存写入')
+assert.match(catalogModalSource, /tier-price-metrics/, '服务等级价格必须使用紧凑指标布局')
+assert.match(catalogModalSource, /暂无价格/, '缺失服务等级价格应合并为简洁空态')
+assert.match(catalogModalSource, /prices\.cacheWriteUsdPer1M/, '桌面档位价格必须展示缓存写入')
+assert.match(catalogModalSource, /prices\.cacheWrite1hUsdPer1M/, '桌面档位价格必须展示 1h 缓存写入')
 assert.match(catalogModalSource, /缓存写入/, '移动端模型目录必须展示缓存写入价格')
 assert.match(catalogModalSource, /:row-key="modelRowKey"/, '聚合模型目录必须使用稳定复合键，不能只用可能跨供应商重复的模型名')
 

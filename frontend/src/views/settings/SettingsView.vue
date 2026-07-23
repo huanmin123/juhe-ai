@@ -20,10 +20,7 @@
             </div>
           </div>
 
-          <a-alert v-if="sectionErrors.brand" type="error" show-icon :message="sectionErrors.brand">
-            <template #action><a-button size="small" @click="retrySection('brand')">重试</a-button></template>
-          </a-alert>
-          <a-skeleton v-else-if="!sectionReady.brand" active :paragraph="{ rows: 1 }" />
+          <a-skeleton v-if="!sectionReady.brand" active :paragraph="{ rows: 1 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
               <a-form-item label="系统名称" tooltip="保存后显示到左侧菜单标题、浏览器 tab，并用于登录页“系统名称 + 管理平台”标题。">
@@ -65,10 +62,7 @@
             </div>
           </div>
 
-          <a-alert v-if="sectionErrors['gateway-core']" type="error" show-icon :message="sectionErrors['gateway-core']">
-            <template #action><a-button size="small" @click="retrySection('gateway-core')">重试</a-button></template>
-          </a-alert>
-          <a-skeleton v-else-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 1 }" />
+          <a-skeleton v-if="!sectionReady['gateway-core']" active :paragraph="{ rows: 1 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
               <a-form-item label="文本请求体上限（MB）" tooltip="可设置 1 到 64；调大可承载更长上下文，也会增加单请求内存压力。">
@@ -90,10 +84,7 @@
             </div>
           </div>
 
-          <a-alert v-if="sectionErrors['account-health']" type="error" show-icon :message="sectionErrors['account-health']">
-            <template #action><a-button size="small" @click="retrySection('account-health')">重试</a-button></template>
-          </a-alert>
-          <a-skeleton v-else-if="!sectionReady['account-health']" active :paragraph="{ rows: 2 }" />
+          <a-skeleton v-if="!sectionReady['account-health']" active :paragraph="{ rows: 2 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
               <a-form-item label="检测间隔（小时）" tooltip="默认 12 小时；账号近期已有真实成功请求时不再额外探测。">
@@ -130,10 +121,7 @@
             </div>
           </div>
 
-          <a-alert v-if="sectionErrors['api-rate-limit']" type="error" show-icon :message="sectionErrors['api-rate-limit']">
-            <template #action><a-button size="small" @click="retrySection('api-rate-limit')">重试</a-button></template>
-          </a-alert>
-          <a-skeleton v-else-if="!sectionReady['api-rate-limit']" active :paragraph="{ rows: 3 }" />
+          <a-skeleton v-if="!sectionReady['api-rate-limit']" active :paragraph="{ rows: 3 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
               <a-form-item label="IP 读请求每分钟" tooltip="默认 600；适用于 GET、HEAD 和 OPTIONS。">
@@ -180,10 +168,7 @@
             </div>
           </div>
 
-          <a-alert v-if="sectionErrors['account-test']" type="error" show-icon :message="sectionErrors['account-test']">
-            <template #action><a-button size="small" @click="retrySection('account-test')">重试</a-button></template>
-          </a-alert>
-          <a-skeleton v-else-if="!sectionReady['account-test']" active :paragraph="{ rows: 1 }" />
+          <a-skeleton v-if="!sectionReady['account-test']" active :paragraph="{ rows: 1 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
               <a-form-item label="后台并发上限" tooltip="默认 100；用于限制全系统同时执行的单账户人工测试任务数量。">
@@ -236,10 +221,7 @@
             </div>
           </div>
 
-          <a-alert v-if="sectionErrors['cooldown-retest']" type="error" show-icon :message="sectionErrors['cooldown-retest']">
-            <template #action><a-button size="small" @click="retrySection('cooldown-retest')">重试</a-button></template>
-          </a-alert>
-          <a-skeleton v-else-if="!sectionReady['cooldown-retest']" active :paragraph="{ rows: 1 }" />
+          <a-skeleton v-if="!sectionReady['cooldown-retest']" active :paragraph="{ rows: 1 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
               <a-form-item label="长期不可用观察阈值（小时）" tooltip="默认 12 小时；从进入临时不可调用或限流中开始计时，超过后不转异常，而是显示为长期不可用。">
@@ -313,10 +295,7 @@
             </div>
           </div>
 
-          <a-alert v-if="sectionErrors['data-retention']" type="error" show-icon :message="sectionErrors['data-retention']">
-            <template #action><a-button size="small" @click="retrySection('data-retention')">重试</a-button></template>
-          </a-alert>
-          <a-skeleton v-else-if="!sectionReady['data-retention']" active :paragraph="{ rows: 2 }" />
+          <a-skeleton v-if="!sectionReady['data-retention']" active :paragraph="{ rows: 2 }" />
           <div v-else class="settings-grid">
             <div class="setting-item">
               <a-form-item label="使用记录保留天数" tooltip="默认 30 天，最大 180 天；清理前会等待统计游标处理完成，避免破坏聚合。">

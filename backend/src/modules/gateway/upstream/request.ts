@@ -25,7 +25,9 @@ import {
   gatewayClientProfileHeader
 } from '../client-profiles/strategy.js'
 import {
-  normalizeOpenAICodexClientHeaders
+  isOpenAICodexClientHeaders,
+  normalizeOpenAICodexClientHeaders,
+  openAICodexResponsesLiteHeader
 } from '../adapters/gpt-codex/client-headers.js'
 import { isOpenAIProtocolProfile } from '../../../domain/provider-protocol.js'
 import { runtimeConfig } from '../../../config/runtime.js'
@@ -514,7 +516,9 @@ export function buildUpstreamRequestBody(req: Request): Buffer | undefined {
 }
 
 export function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamHeaderAccount): Headers {
-  const headers = copySafeUpstreamRequestHeaders(inputHeaders)
+  const headers = copySafeUpstreamRequestHeaders(inputHeaders, {
+    preserveCodexClientHeaders: isOpenAICodexClientHeaders(inputHeaders)
+  })
   headers.set('authorization', `Bearer ${account.apiKey}`)
   if (usesOpenAIOAuthCompactStreamRules(account)) {
     applyOpenAICodexHeaders(headers, account)
@@ -538,11 +542,14 @@ function usesOpenAIOAuthCompactStreamRules(account?: {
   return isOpenAIProtocolProfile(account)
 }
 
-export function copySafeUpstreamRequestHeaders(inputHeaders: Record<string, string | string[] | undefined>): Headers {
+export function copySafeUpstreamRequestHeaders(
+  inputHeaders: Record<string, string | string[] | undefined>,
+  options: { preserveCodexClientHeaders?: boolean } = {}
+): Headers {
   const headers = new Headers()
   for (const [name, value] of Object.entries(inputHeaders)) {
     const lowerName = name.toLowerCase()
-    if (shouldSkipUpstreamRequestHeader(lowerName)) {
+    if (shouldSkipUpstreamRequestHeader(lowerName, options.preserveCodexClientHeaders)) {
       continue
     }
     if (Array.isArray(value)) {
@@ -586,8 +593,11 @@ function parseConnectionHeaderTokens(value: string | null): Set<string> | undefi
   return tokens.length > 0 ? new Set(tokens) : undefined
 }
 
-function shouldSkipUpstreamRequestHeader(name: string): boolean {
+function shouldSkipUpstreamRequestHeader(name: string, preserveCodexClientHeaders = false): boolean {
   const lowerName = name.toLowerCase()
+  if (preserveCodexClientHeaders && preservedCodexClientHeaders.has(lowerName)) {
+    return false
+  }
   if (skippedUpstreamRequestHeaders.has(lowerName)) {
     return true
   }
@@ -797,6 +807,12 @@ const skippedUpstreamRequestHeaderPrefixes = [
   'x-stainless-',
   'x-vercel-'
 ]
+
+const preservedCodexClientHeaders = new Set([
+  'x-oai-attestation',
+  'x-openai-subagent',
+  openAICodexResponsesLiteHeader
+])
 
 const skippedUpstreamResponseHeaders = new Set([
   'connection',

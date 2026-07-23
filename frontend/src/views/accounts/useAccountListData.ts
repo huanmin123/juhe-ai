@@ -17,7 +17,7 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDERS } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canSelectAccountForBatch } from './accountRules'
-import { mergeAccountStatusSnapshot, replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
+import { replaceAccountBalanceSnapshot, replaceAccountListRow } from './accountListMutations'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -53,11 +53,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const accountOptionsLoaded = ref(false)
   const accountOptionsScopeKey = ref('')
   const accountOptionsInFlight = new Map<string, Promise<void>>()
-  let statusSnapshotRequestId = 0
-  const accountStatusSnapshotLoading = ref(false)
-  const accountStatusSnapshotError = ref<string | undefined>()
-  const lastStatusSnapshotItems = ref<AccountSummary[]>([])
-  const lastStatusSnapshotSystemAccountId = ref<string | undefined>()
   const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
   const {
@@ -128,10 +123,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         accountListParams(systemAccountId, pageState)
       ]
     },
-    onLoaded: (result) => {
+    onLoaded: () => {
       const selectableAccountIds = new Set(accounts.value.filter(canSelectAccountForBatch).map((account) => account.id))
       options.onLoaded?.(selectableAccountIds)
-      void loadCurrentPageStatusSnapshot(result.items, options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined)
     },
     onError: (error) => {
       console.error(error)
@@ -150,39 +144,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       ? api.accounts.list(params)
       : api.myAccounts.list(accountListParams(undefined, pageState))
     return loadNetwork()
-  }
-
-  async function loadCurrentPageStatusSnapshot(items: AccountSummary[], systemAccountId: string | undefined): Promise<void> {
-    const requestId = ++statusSnapshotRequestId
-    lastStatusSnapshotItems.value = [...items]
-    lastStatusSnapshotSystemAccountId.value = systemAccountId
-    accountStatusSnapshotError.value = undefined
-    if (!items.length) {
-      accountStatusSnapshotLoading.value = false
-      return
-    }
-    accountStatusSnapshotLoading.value = true
-    try {
-      const snapshot = options.isManagementView.value
-        ? await api.accounts.statusSnapshot(items.map((account) => account.id), systemAccountId ? { systemAccountId } : undefined)
-        : await api.myAccounts.statusSnapshot(items.map((account) => account.id))
-      if (requestId !== statusSnapshotRequestId) return
-      for (const item of snapshot.items) {
-        accounts.value = mergeAccountStatusSnapshot(accounts.value, item, snapshot.runtimeSnapshot)
-      }
-    } catch (error) {
-      if (requestId !== statusSnapshotRequestId) return
-      console.error(error)
-      accountStatusSnapshotError.value = '账户状态更新失败'
-    } finally {
-      if (requestId === statusSnapshotRequestId) {
-        accountStatusSnapshotLoading.value = false
-      }
-    }
-  }
-
-  function retryCurrentPageStatusSnapshot(): void {
-    void loadCurrentPageStatusSnapshot(lastStatusSnapshotItems.value, lastStatusSnapshotSystemAccountId.value)
   }
 
   function refreshData() {
@@ -356,9 +317,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     mobileVisibleAccounts,
     accountTablePagination,
     systemAccountOptionsLoading,
-    accountStatusSnapshotLoading,
-    accountStatusSnapshotError,
-    retryCurrentPageStatusSnapshot,
     handleSystemAccountOptionsDropdown,
     handleSystemAccountOptionsSearch,
     loadMoreMobileAccounts,

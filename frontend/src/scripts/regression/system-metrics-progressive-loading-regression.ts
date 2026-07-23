@@ -17,6 +17,6 @@ if (!view.includes(':error="trendError"') || !view.includes(':on-retry="loadData
 if (!view.includes(':error="runtimeError"') || !view.includes(':on-retry="loadRuntimeData"')) throw new Error('runtime cards must expose retry state')
 if (!view.includes('onActivated(() =>') || !view.includes('needsReloadOnActivate')) throw new Error('KeepAlive activation must reload stale system metrics')
 if (!view.includes('void loadUsageStatsWindow().then')) throw new Error('initial page load must start usage-window independently')
-if (!card.includes('<a-alert v-if="error && hasData"')) throw new Error('chart cards must show retry state even when existing data remains visible')
+if (card.includes('<a-alert')) throw new Error('chart cards must not expose loading failures as page banners')
 
 console.log('system metrics progressive loading regression passed')

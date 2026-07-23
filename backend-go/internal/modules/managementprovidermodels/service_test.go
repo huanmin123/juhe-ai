@@ -1057,52 +1057,6 @@ func TestServiceCreateCustomModelChecksProviderBeforeInvalidFields(t *testing.T)
 	}
 }
 
-func TestServiceCreateCustomModelRebuildsPublishedCatalogAfterCommit(t *testing.T) {
-	price := 1.25
-	rebuilder := &catalogSnapshotRebuilderStub{}
-	store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}}}
-	service := NewServiceWithOptions(ServiceOptions{Store: store, CatalogRebuilder: rebuilder})
-	if _, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
-		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", Fields: CustomModelMutation{
-			Model: OptionalString{Set: true, Value: "custom-chat"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price},
-		},
-	}); err != nil {
-		t.Fatalf("CreateCustomModel() error = %v", err)
-	}
-	if len(rebuilder.calls) != 1 || rebuilder.calls[0] != "personal:sys_user" {
-		t.Fatalf("rebuild calls = %v", rebuilder.calls)
-	}
-}
-
-func TestServiceCreateCustomModelKeepsCommittedSuccessWhenSnapshotRebuildFails(t *testing.T) {
-	logger, logs := cacheWarningLogger()
-	price := 1.25
-	rebuilder := &catalogSnapshotRebuilderStub{err: errors.New("bridge unavailable")}
-	store := &providerModelStoreStub{providers: map[string]port.ManagementProviderModelProvider{"gpt": {Code: "gpt", Enabled: true}}}
-	service := NewServiceWithOptions(ServiceOptions{Store: store, CatalogRebuilder: rebuilder, Logger: logger})
-	result, err := service.CreateCustomModel(context.Background(), CustomModelCreateInput{
-		ProviderCode: "gpt", ActorSystemAccountID: "sys_user", ActorRole: "user", Fields: CustomModelMutation{
-			Model: OptionalString{Set: true, Value: "custom-chat"}, InputUSDPer1M: OptionalFloat{Set: true, Value: &price},
-		},
-	})
-	if err != nil || result.Model != "custom-chat" {
-		t.Fatalf("CreateCustomModel() result=%+v error=%v", result, err)
-	}
-	if len(rebuilder.calls) != 1 || rebuilder.calls[0] != "personal:sys_user" {
-		t.Fatalf("rebuild calls = %v", rebuilder.calls)
-	}
-	for _, expected := range []string{
-		`"event":"model_catalog_snapshot_rebuild_failed_after_commit"`,
-		`"scope":"personal"`,
-		`"system_account_id":"sys_user"`,
-		`"error":"bridge unavailable"`,
-	} {
-		if !strings.Contains(logs.String(), expected) {
-			t.Fatalf("snapshot rebuild warning = %s, want %s", logs.String(), expected)
-		}
-	}
-}
-
 func TestCustomModelEnumsRejectWhitespacePadding(t *testing.T) {
 	price := 1.25
 	tests := []struct {
@@ -1783,9 +1737,7 @@ func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.
 		ID: "provider_model_gpt_real", ProviderCode: "gpt", Model: "gpt-real", Scope: "built_in", Status: "active",
 		Mode: "text", SupportedAPIProtocols: []string{"responses"}, InputUSDPer1M: &inputPrice,
 	}}}
-	logger, _ := cacheWarningLogger()
-	rebuilder := &catalogSnapshotRebuilderStub{err: errors.New("bridge unavailable")}
-	result, err := NewServiceWithOptions(ServiceOptions{Store: store, CatalogRebuilder: rebuilder, Logger: logger}).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
+	result, err := NewServiceWithOptions(ServiceOptions{Store: store}).UpdateCustomModel(context.Background(), CustomModelUpdateInput{
 		ProviderCode: "gpt", ID: "provider_model_gpt_real", ActorSystemAccountID: "sys_admin", ActorRole: "admin",
 		Fields: CustomModelMutation{
 			Status: OptionalString{Set: true, Value: "disabled"}, Mode: OptionalString{Set: true, Value: "text"},
@@ -1804,9 +1756,6 @@ func TestServiceUpdateBuiltInModelAllowsCompleteCatalogConfiguration(t *testing.
 		!slices.Equal(result.SupportedServiceTiers, []string{"priority"}) || result.DefaultReasoningEffort != "" ||
 		result.ContextWindowTokens == nil || *result.ContextWindowTokens != contextTokens || result.MaxInputTokens == nil || *result.MaxInputTokens != maxInputTokens {
 		t.Fatalf("result = %+v", result)
-	}
-	if len(rebuilder.calls) != 1 || rebuilder.calls[0] != "all:" {
-		t.Fatalf("rebuild calls = %v", rebuilder.calls)
 	}
 }
 
@@ -2207,9 +2156,7 @@ func TestServiceUpdateCustomModelRejectsModelChangeAndClearsDefaultWhenDisabled(
 	}
 
 	invalidator := &customProviderModelInvalidatorStub{}
-	logger, _ := cacheWarningLogger()
-	rebuilder := &catalogSnapshotRebuilderStub{err: errors.New("bridge unavailable")}
-	service = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, CatalogRebuilder: rebuilder, Logger: logger})
+	service = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator})
 	result, err := service.UpdateCustomModel(context.Background(), CustomModelUpdateInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
@@ -2242,9 +2189,6 @@ func TestServiceUpdateCustomModelRejectsModelChangeAndClearsDefaultWhenDisabled(
 	}
 	if invalidator.reason != CustomProviderModelSavedReason {
 		t.Fatalf("invalidation should happen before clear error, reason = %q", invalidator.reason)
-	}
-	if len(rebuilder.calls) != 2 || rebuilder.calls[1] != "personal:sys_user" {
-		t.Fatalf("rebuild should still happen after committed update, calls = %v", rebuilder.calls)
 	}
 }
 
@@ -2349,11 +2293,9 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	}
 
 	invalidator := &customProviderModelInvalidatorStub{}
-	logger, _ := cacheWarningLogger()
-	rebuilder := &catalogSnapshotRebuilderStub{err: errors.New("bridge unavailable")}
 	store.bindingSummary = port.ManagementCustomProviderModelBindingSummary{}
 	store.deleteResult = true
-	result, err := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, CatalogRebuilder: rebuilder, Logger: logger}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
+	result, err := NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
@@ -2372,7 +2314,7 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	clearErr := errors.New("clear default failed")
 	store.clearErr = clearErr
 	invalidator.reason = ""
-	_, err = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator, CatalogRebuilder: rebuilder}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
+	_, err = NewServiceWithOptions(ServiceOptions{Store: store, Invalidator: invalidator}).DeleteCustomModel(context.Background(), CustomModelDeleteInput{
 		ProviderCode:         "gpt",
 		ID:                   "custom_model_1",
 		ActorSystemAccountID: "sys_user",
@@ -2383,9 +2325,6 @@ func TestServiceDeleteCustomModelChecksBindingsAndInvalidates(t *testing.T) {
 	}
 	if invalidator.reason != CustomProviderModelDeletedReason {
 		t.Fatalf("invalidation should happen before clear error, reason = %q", invalidator.reason)
-	}
-	if len(rebuilder.calls) != 2 || rebuilder.calls[1] != "personal:sys_user" {
-		t.Fatalf("rebuild should still happen after committed delete, calls = %v", rebuilder.calls)
 	}
 }
 
@@ -2796,16 +2735,6 @@ type customProviderModelInvalidatorStub struct {
 	reason string
 	err    error
 	calls  int
-}
-
-type catalogSnapshotRebuilderStub struct {
-	calls []string
-	err   error
-}
-
-func (s *catalogSnapshotRebuilderStub) Rebuild(_ context.Context, scope string, systemAccountID string) error {
-	s.calls = append(s.calls, scope+":"+systemAccountID)
-	return s.err
 }
 
 func (s *customProviderModelInvalidatorStub) InvalidateCustomProviderModelChanged(_ context.Context, reason string) error {

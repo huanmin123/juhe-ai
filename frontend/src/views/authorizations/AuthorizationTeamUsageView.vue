@@ -152,18 +152,12 @@
       </ResponsiveListToolbar>
     </a-card>
 
-    <a-alert v-if="summaryError" type="error" show-icon :message="summaryError">
-      <template #action><a-button size="small" @click="loadUsageSummary">重试汇总</a-button></template>
-    </a-alert>
     <StatsSummaryCards :cards="summaryCards" :loading="summaryLoading" />
 
     <a-card class="page-card authorization-usage-table-card" :loading="rowsInitialLoading">
       <div class="authorization-usage-table-head">
         <h3>团队消耗明细</h3>
       </div>
-      <a-alert v-if="rowsError" type="error" show-icon :message="rowsError">
-        <template #action><a-button size="small" @click="loadData">重试明细</a-button></template>
-      </a-alert>
       <ResponsiveDataList
         class="authorization-usage-responsive-list"
         table-class="page-table authorization-usage-table"

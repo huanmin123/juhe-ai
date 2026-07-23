@@ -10,7 +10,7 @@ import { apiKeyStatusTagColor, apiKeyStatusTagLabel, apiKeyStatusTooltipLines } 
 const accountStatusValues: AccountStatus[] = ['active', 'pending_test', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 
 assertStatus('可调度账户', accountFixture(), '可调度', 'green')
-assertStatus('待检查账户', accountFixture({
+const pendingAccount = accountFixture({
   status: 'pending_test',
   effectiveAvailability: {
     available: false,
@@ -20,7 +20,17 @@ assertStatus('待检查账户', accountFixture({
     blockerScope: 'account',
     reason: '账户正在等待后台健康检查，检查通过前不会参与调度'
   }
-}), '待检查', 'blue')
+})
+assertStatus('待检查账户', pendingAccount, '待检查', 'blue')
+assertTrue(
+  !accountMenuItems(pendingAccount).some((item) => item.key === 'restore-normal' || item.key === 'recheck-health'),
+  '未失败的待检查账户不应显示恢复或重新检查操作'
+)
+assertTrue(
+  accountMenuItems(pendingAccount).some((item) => item.key === 'super-priority-on')
+    && accountMenuItems(pendingAccount).some((item) => item.key === 'fallback-on'),
+  '待检查账户应允许直接设置超级优先或降级备用'
+)
 const pendingHealthCheckFailedAccount = accountFixture({
   status: 'pending_test',
   lastHealthCheckAt: '2026-07-11T01:00:00.000Z',
@@ -74,18 +84,14 @@ assertTrue(
   '检查失败的自有待检查账户应显示重新检查'
 )
 assertTrue(
-  accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'restore-normal' && item.label === '恢复正常'),
-  '自有待检查账户应复用统一的恢复正常操作'
+  !accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'restore-normal'),
+  '检查失败的待检查账户不应显示跳过检查的恢复正常操作'
 )
 assertTrue(
   !accountMenuItems(pendingHealthCheckFailedAccount).some((item) => item.key === 'force-activate'),
   '自有待检查账户不应额外暴露独立的人工恢复操作'
 )
 const accountMenuActionsSource = readFileSync(resolve('../frontend/src/views/accounts/useAccountMenuActions.ts'), 'utf8')
-assertTrue(
-  /if \(key === 'restore-normal'\)[\s\S]+account\.status === 'pending_test'[\s\S]+api\.(?:accounts|myAccounts)\.forceActivate/.test(accountMenuActionsSource),
-  '待检查账户应在统一恢复正常处理分支内复用原子放行能力'
-)
 assertTrue(
   !/if \(key === 'force-activate'\)/.test(accountMenuActionsSource),
   '账户菜单处理器不应保留独立的人工恢复分支'

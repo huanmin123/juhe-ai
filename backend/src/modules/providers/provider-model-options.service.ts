@@ -26,6 +26,7 @@ export interface ProviderModelOptionRow {
   model: string
   scope: 'built_in' | 'global' | 'personal'
   mode?: string
+  releaseDate?: string
   supportedApiProtocols?: string[]
 }
 
@@ -111,18 +112,35 @@ export function mergeProviderModelOptionRows(
     }
   }
   const ordered = [...byProviderModel.values()].sort((left, right) => {
-    const selectedOrder = Number(!selectedIds.has(left.model)) - Number(!selectedIds.has(right.model))
-    if (selectedOrder !== 0) return selectedOrder
+    const releaseDateOrder = compareModelReleaseDateDescending(left.releaseDate, right.releaseDate)
+    if (releaseDateOrder !== 0) return releaseDateOrder
     const modelOrder = left.model.localeCompare(right.model, 'en')
     if (modelOrder !== 0) return modelOrder
     return left.providerCode.localeCompare(right.providerCode, 'en')
   })
-  const selected = ordered.filter((row) => selectedIds.has(row.model))
-  const window = ordered.filter((row) => !selectedIds.has(row.model)).slice(0, query.limit)
-  return [...selected, ...window].map((row) => ({
+  const visibleModels = new Set([
+    ...query.selectedIds,
+    ...ordered.filter((row) => !selectedIds.has(row.model)).slice(0, query.limit).map((row) => row.model)
+  ])
+  return ordered.filter((row) => visibleModels.has(row.model)).map((row) => ({
     id: row.model,
     name: row.model,
   }))
+}
+
+function compareModelReleaseDateDescending(left?: string, right?: string): number {
+  const leftDate = normalizedModelReleaseDate(left)
+  const rightDate = normalizedModelReleaseDate(right)
+  if (leftDate && rightDate && leftDate !== rightDate) return rightDate.localeCompare(leftDate, 'en')
+  if (leftDate) return -1
+  if (rightDate) return 1
+  return 0
+}
+
+function normalizedModelReleaseDate(value?: string): string {
+  const normalized = value?.trim().slice(0, 10) ?? ''
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return ''
+  return Number.isFinite(Date.parse(`${normalized}T00:00:00.000Z`)) ? normalized : ''
 }
 
 async function providerModelSourceCodesAsync(

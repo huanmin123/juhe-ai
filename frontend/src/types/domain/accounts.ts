@@ -7,6 +7,7 @@ export type AccountClientCompatibility = 'openai_standard' | 'codex_responses' |
 export type AccountGptServiceTierOverride = string
 export type AccountGptReasoningEffortOverride = string
 export type AccountSupportedEndpointMode =
+  | 'images_json'
   | 'chat_json'
   | 'chat_sse'
   | 'responses_json'
